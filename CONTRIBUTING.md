@@ -7,8 +7,9 @@ covers building, testing and tooling in depth.
 ## Ground rules
 
 - Be kind and constructive. We follow the [Code of Conduct](CODE_OF_CONDUCT.md).
-- Discuss significant changes (new analyses, annotation syntax, architectural
-  changes) in an issue or discussion before opening a large PR.
+- Discuss significant changes in an issue before opening a large PR. Changes
+  to the ownership model, checker rules or annotations go through an RFC; see
+  [Proposing larger changes](#proposing-larger-changes).
 - Keep PRs small and focused. Several small PRs are easier to review than one
   large one.
 - All contributions are licensed under the project's
@@ -43,7 +44,26 @@ Issues labelled `good first issue` are self-contained and well specified.
 Issues labelled `help wanted` are larger but scoped. If you want to take one,
 leave a comment so work is not duplicated.
 
-The [roadmap](docs/roadmap.md) lists the larger pieces of planned work.
+The [roadmap](docs/roadmap.md) lists the larger pieces of planned work and
+links each milestone to the RFC that specifies it.
+
+## Proposing larger changes
+
+Anything that changes what WeaveC guarantees needs an RFC before code: adding
+to or changing the ownership model in `lib/Core`, adding a checker rule or
+changing what an existing rule accepts, adding or changing an annotation in
+`weavec.h`, or adding a diagnostic id. Copy
+[`docs/rfcs/0000-template.md`](docs/rfcs/0000-template.md) to
+`docs/rfcs/NNNN-short-title.md` with the next unused number, fill it in
+(the *Soundness*, *Diagnostics* and *Unresolved questions* sections are the
+ones reviewers read first), and open a PR containing only the RFC. Discussion
+happens on that PR; once there is consensus the RFC is merged as **Accepted**
+and implementation proceeds in follow-up PRs that reference it. The full
+process and the index of existing RFCs are in
+[`docs/rfcs/README.md`](docs/rfcs/README.md).
+
+Driver, CLI, build, CI, documentation and rendering changes, and bug fixes
+that bring the implementation in line with an accepted RFC, do not need one.
 
 ## Coding standards
 
@@ -74,8 +94,10 @@ Additional rules:
   explaining why.
 - **Tests.** New checker behaviour needs both a unit test (in `unittests/`)
   exercising the core logic and a lit test (in `test/`) exercising the
-  end-to-end diagnostic. False-positive fixes need a regression test in
-  `test/Analysis/clean.c` or a new file.
+  end-to-end diagnostic. Lit tests that pin behaviour specified by an RFC
+  carry its number in the filename (`test/Analysis/rfc0002-*.c`).
+  False-positive fixes need a regression test in `test/Analysis/clean.c` or a
+  new file.
 
 ## Commit messages
 

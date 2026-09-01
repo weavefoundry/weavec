@@ -34,8 +34,8 @@ struct AnalysisOptions {
 /// The current implementation is an intentionally small, path-insensitive
 /// checker for local heap ownership (use-after-free / double-free of locals
 /// released with `free`). It exists to exercise the end-to-end pipeline and
-/// will be superseded by a CFG-based dataflow analysis; see
-/// docs/design/ownership-model.md.
+/// will be superseded by the CFG-based dataflow analysis specified in
+/// docs/rfcs/0002-intraprocedural-checking.md (model: docs/rfcs/0001).
 class FunctionAnalyzer {
 public:
   FunctionAnalyzer(clang::ASTContext &ctx, core::DiagnosticSink &diagSink,
