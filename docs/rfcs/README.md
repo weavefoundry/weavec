@@ -11,7 +11,7 @@ Write an RFC when a change would:
 - add to, remove from or change the meaning of anything in `weavec::Core`
   (the lattice, places, loans, lifetimes, move tracking);
 - add a checker rule or change what an existing rule accepts or rejects
-  (`lib/Analysis/FunctionAnalysis.cpp` and its successors);
+  (`lib/Analysis/Dataflow.cpp` and its successors);
 - add or change an annotation in `resources/include/weavec.h`;
 - add a diagnostic id or change the meaning of an existing one;
 - change what WeaveC guarantees, including trading soundness for precision.
@@ -48,6 +48,6 @@ decision is a new RFC that supersedes the relevant section.
 | RFC                                      | Title                              | Status   |
 | ---------------------------------------- | ---------------------------------- | -------- |
 | [0001](0001-ownership-model.md)          | Ownership, borrowing and lifetimes | Accepted |
-| [0002](0002-intraprocedural-checking.md) | Sound intra-procedural checking    | Accepted |
+| [0002](0002-intraprocedural-checking.md) | Sound intra-procedural checking    | Implemented |
 
 The [roadmap](../roadmap.md) links each milestone to the RFCs that define it.

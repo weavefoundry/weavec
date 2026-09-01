@@ -30,5 +30,37 @@ follows [Semantic Versioning](https://semver.org/) once it reaches 1.0.
 - RFC process for changes to the model, checker rules, annotations and
   diagnostics (`docs/rfcs/`), with RFC 0001 (ownership model) and RFC 0002
   (sound intra-procedural checking), both Accepted.
+- Sound intra-procedural checking (RFC 0002): a forward dataflow over
+  `clang::CFG` replaces the path-insensitive AST walk, so loops, `switch`
+  fall-through, `goto` and short-circuit operands are analysed on every path
+  and each problem is reported once.
+- Pointer copies are tracked as aliases (`core::AliasRelation`): freeing
+  through one name frees every name, and the note says which
+  (`freed here (through 'q')`).
+- Structured places: `s.f`, `p->f`, `*pp`, nested field paths, and one
+  summary place per array (`a[*]`).
+- Allocator and release recognition (`malloc`, `calloc`, `realloc`, `strdup`,
+  `strndup`, `aligned_alloc`, `free`, `WEAVEC_OWNED` returns/parameters),
+  with the `realloc` failure idiom (`if (!q) free(p)`) accepted.
+- New diagnostics: `use-after-move` (owned pointer passed to a `WEAVEC_OWNED`
+  parameter or to `realloc`, then used), `conflicting-borrow` (two live
+  borrows that conflict, or writing/freeing/moving a borrowed object) and
+  `lifetime-too-short` (a pointer to a local stored somewhere that outlives
+  it, or returned).
+- Borrows from `&x`, `&s->f`, array decay and `WEAVEC_BORROWED`/`WEAVEC_MUT`
+  arguments; loans are mutable unless the pointer's pointee is `const`.
+- `weavec --dump-analysis` prints the inferred places, lifetimes and exit
+  state of every analysed function.
+
+### Changed
+
+- `double-free` and `use-after-free` are now also reported for the second
+  iteration of a loop that frees a pointer declared outside it.
+- `AnalysisOptions` gained `dumpStream`; `core::Loan` gained `holder` and
+  `core::MoveRecord` gained `via`.
+
+### Removed
+
+- `LocalOwnershipChecker` (superseded by `FunctionDataflow`).
 
 [Unreleased]: https://github.com/weavefoundry/weavec/commits/main

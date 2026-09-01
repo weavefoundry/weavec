@@ -67,5 +67,27 @@ TEST(MoveTracker, JoinIsUnion) {
   EXPECT_FALSE(a.isMoved(PlaceId{2}));
 }
 
+TEST(MoveTracker, RecordsTheAliasTheMoveWentThrough) {
+  MoveTracker tracker;
+  ASSERT_FALSE(tracker.markMoved(PlaceId{0}, MoveReason::Freed, at(1)));
+  ASSERT_FALSE(
+      tracker.markMoved(PlaceId{1}, MoveReason::Freed, at(1), PlaceId{0}));
+  EXPECT_FALSE(tracker.movedAt(PlaceId{0})->via);
+  EXPECT_EQ(tracker.movedAt(PlaceId{1})->via, PlaceId{0});
+}
+
+TEST(MoveTracker, EqualityAndOrderedListing) {
+  MoveTracker a;
+  MoveTracker b;
+  EXPECT_EQ(a, b);
+  ASSERT_FALSE(a.markMoved(PlaceId{2}, MoveReason::Freed, at(1)));
+  ASSERT_FALSE(a.markMoved(PlaceId{0}, MoveReason::Freed, at(1)));
+  EXPECT_NE(a, b);
+  ASSERT_FALSE(b.markMoved(PlaceId{0}, MoveReason::Freed, at(1)));
+  ASSERT_FALSE(b.markMoved(PlaceId{2}, MoveReason::Freed, at(1)));
+  EXPECT_EQ(a, b) << "insertion order is irrelevant";
+  EXPECT_EQ(a.movedPlaces(), (std::vector<PlaceId>{PlaceId{0}, PlaceId{2}}));
+}
+
 } // namespace
 } // namespace weavec::core

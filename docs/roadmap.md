@@ -15,24 +15,24 @@ Model: [RFC 0001 — Ownership, borrowing and lifetimes](rfcs/0001-ownership-mod
 - [x] Annotation header and recognition.
 - [x] RFC process and the model RFC.
 
-## Milestone 1 — Sound intra-procedural checking
+## Milestone 1 — Sound intra-procedural checking (done)
 
 Design: [RFC 0002 — Sound intra-procedural checking](rfcs/0002-intraprocedural-checking.md)
-(Accepted). The items below summarise it; the RFC is authoritative.
+(Implemented). The items below summarise it; the RFC is authoritative.
 
-- [ ] Replace the AST walk with a forward dataflow over `clang::CFG`
+- [x] Replace the AST walk with a forward dataflow over `clang::CFG`
       (fixpoint for loops, proper handling of `switch`, `goto`, short-circuit;
       diagnostics emitted in a post-fixpoint reporting pass).
-- [ ] Alias partition so copies of an owned pointer share one resource.
-- [ ] Model allocation/release functions: `malloc`, `calloc`, `realloc`,
+- [x] Alias relation so copies of an owned pointer share one resource.
+- [x] Model allocation/release functions: `malloc`, `calloc`, `realloc`,
       `strdup`, `free`, plus user-annotated allocators; `realloc` failure
       idiom accepted via null-edge reinstatement.
-- [ ] Drive `BorrowState` from address-of, array decay and annotated calls;
+- [x] Drive `BorrowState` from address-of, array decay and annotated calls;
       emit `conflicting-borrow`.
-- [ ] Drive `LifetimeConstraints` from scopes; emit `lifetime-too-short` for
+- [x] Drive `LifetimeConstraints` from scopes; emit `lifetime-too-short` for
       escaping pointers to locals.
-- [ ] Field-sensitive places (`s->p`, `a[i]` as a summary place).
-- [ ] `--dump-analysis` for debugging inferred facts.
+- [x] Field-sensitive places (`s->p`, `a[i]` as a summary place).
+- [x] `--dump-analysis` for debugging inferred facts.
 
 ## Milestone 2 — Signature inference and annotations
 

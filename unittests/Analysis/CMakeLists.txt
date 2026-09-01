@@ -1,4 +1,5 @@
 weavec_add_unittest(
   WeaveCAnalysisTests
-  SOURCES AnnotationsTest.cpp FunctionAnalysisTest.cpp
+  SOURCES AllocatorsTest.cpp AnnotationsTest.cpp DataflowTest.cpp
+          FunctionAnalysisTest.cpp
   DEPS weavec::Analysis weavec::Frontend)

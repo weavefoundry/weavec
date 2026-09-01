@@ -13,6 +13,16 @@
 
 namespace weavec::core {
 
+std::string_view toString(BorrowKind kind) noexcept {
+  switch (kind) {
+  case BorrowKind::Shared:
+    return "shared";
+  case BorrowKind::Mutable:
+    return "mutable";
+  }
+  return "?";
+}
+
 static bool conflicts(const Loan &existing, const Loan &attempted) {
   if (existing.place != attempted.place)
     return false;
@@ -22,13 +32,25 @@ static bool conflicts(const Loan &existing, const Loan &attempted) {
          attempted.kind == BorrowKind::Mutable;
 }
 
-std::optional<BorrowConflict> BorrowState::addLoan(const Loan &loan) {
+std::optional<BorrowConflict>
+BorrowState::findConflict(const Loan &loan) const {
   for (const Loan &existing : live) {
     if (conflicts(existing, loan))
       return BorrowConflict{.existing = existing, .attempted = loan};
   }
-  live.push_back(loan);
   return std::nullopt;
+}
+
+std::optional<BorrowConflict> BorrowState::addLoan(const Loan &loan) {
+  if (auto conflict = findConflict(loan))
+    return conflict;
+  addLoanUnchecked(loan);
+  return std::nullopt;
+}
+
+void BorrowState::addLoanUnchecked(const Loan &loan) {
+  if (!contains(loan))
+    live.push_back(loan);
 }
 
 std::optional<BorrowConflict> BorrowState::checkMove(PlaceId place) const {
@@ -56,9 +78,48 @@ void BorrowState::release(PlaceId place) {
                 [place](const Loan &loan) { return loan.place == place; });
 }
 
+void BorrowState::dropHolder(PlaceId holder) {
+  std::erase_if(live,
+                [holder](const Loan &loan) { return loan.holder == holder; });
+}
+
+void BorrowState::copyHolder(PlaceId from, PlaceId to) {
+  if (from == to)
+    return;
+  for (Loan loan : heldBy(from)) {
+    loan.holder = to;
+    addLoanUnchecked(loan);
+  }
+}
+
+std::vector<Loan> BorrowState::heldBy(PlaceId holder) const {
+  std::vector<Loan> result;
+  for (const Loan &loan : live) {
+    if (loan.holder == holder)
+      result.push_back(loan);
+  }
+  return result;
+}
+
+void BorrowState::join(const BorrowState &other) {
+  for (const Loan &loan : other.live)
+    addLoanUnchecked(loan);
+}
+
 bool BorrowState::hasLoans(PlaceId place) const noexcept {
   return std::ranges::any_of(
       live, [place](const Loan &loan) { return loan.place == place; });
+}
+
+bool BorrowState::contains(const Loan &loan) const noexcept {
+  return std::ranges::find(live, loan) != live.end();
+}
+
+bool operator==(const BorrowState &lhs, const BorrowState &rhs) {
+  if (lhs.live.size() != rhs.live.size())
+    return false;
+  return std::ranges::all_of(
+      lhs.live, [&rhs](const Loan &loan) { return rhs.contains(loan); });
 }
 
 } // namespace weavec::core

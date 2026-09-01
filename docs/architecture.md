@@ -37,10 +37,12 @@ tools.
 | Header             | Purpose                                                                                        |
 | ------------------ | ---------------------------------------------------------------------------------------------- |
 | `Ownership.h`      | `OwnershipKind` lattice (`Unknown ⊑ {Owned, Shared, Mutable} ⊑ Raw`) and `join`.               |
-| `Place.h`          | `PlaceId` — an opaque handle for a storage location — and `PlaceTable` for display names.     |
+| `Place.h`          | `PlaceId` and `PlaceTable`: structured places (`p`, `s.f`, `*p`, `p->f`, `a[*]`) with parent/descendant/translate queries. |
+| `AliasRelation.h`  | Symmetric may-alias graph over places; closed under copies, plain union at joins (deliberately not transitive). |
 | `Lifetime.h`       | `LifetimeId` and `LifetimeConstraints` (transitive `outlives` queries; `'static` is id 0).      |
-| `Borrow.h`         | `Loan` and `BorrowState`: may this borrow be created; may this place be moved or mutated.       |
-| `Moves.h`          | `MoveTracker`: which places are currently moved-out/freed, with a conservative `join`.         |
+| `Borrow.h`         | `Loan` (place, kind, lifetime, holder) and `BorrowState`: may this borrow be created; may this place be moved or mutated. |
+| `Moves.h`          | `MoveTracker`: which places are currently moved-out/freed (and through which alias), with a conservative `join`. |
+| `AnalysisState.h`  | The dataflow state: moves, loans, aliases, pending `realloc`s and inferred kinds, with component-wise `join`. |
 | `Diagnostic.h`     | `Diagnostic`, stable ids in `diag::`, `DiagnosticSink`, and an in-memory `DiagnosticCollector`. |
 | `SourceLocation.h` | Frontend-neutral positions with an `opaque` slot for the frontend's native encoding.           |
 
@@ -56,14 +58,20 @@ the frontend fills in so it can report at the exact original position.
 - recognises WeaveC annotations on declarations and statements
   (`Annotations.h`);
 - converts source locations in both directions (`ClangLocation.h`);
-- walks function bodies, maps declarations onto `PlaceId`s, and feeds events
-  (borrow, move, free, use) into the core model (`FunctionAnalysis.h`).
+- classifies calls by their ownership effect: libc allocators and `free` by
+  name, plus `WEAVEC_OWNED`/`WEAVEC_BORROWED`/`WEAVEC_MUT` on the callee's
+  declaration (`Allocators.h`);
+- maps expressions onto structured places and classifies pointer-typed
+  values as allocation, copy, borrow, null or opaque
+  (`lib/Analysis/PlaceBuilder.h`);
+- runs a forward dataflow over `clang::CFG` for each function body
+  (`lib/Analysis/Dataflow.h`, `FunctionDataflow`): a worklist to a fixpoint
+  with `core::AnalysisState` as the lattice, then one reporting pass that
+  emits each diagnostic once. `FunctionAnalysis.h` is the public entry point.
 
-The current `LocalOwnershipChecker` is a small, path-insensitive AST walk that
-exists to exercise the pipeline end to end. The planned replacement is a
-CFG-based dataflow analysis over `clang::CFG`; the model is specified by
-[RFC 0001](rfcs/0001-ownership-model.md) and the dataflow by
-[RFC 0002](rfcs/0002-intraprocedural-checking.md).
+The model is specified by [RFC 0001](rfcs/0001-ownership-model.md) and the
+dataflow by [RFC 0002](rfcs/0002-intraprocedural-checking.md); the RFC's
+*Implementation notes* record where the code refines the design.
 
 ## `weavec::Frontend` — Clang integration
 
@@ -85,7 +93,8 @@ analysis.
 Today `weavec` is a libTooling application: `weavec file.c -- <compiler
 flags>` or `weavec -p build/ file.c` with a compilation database. It injects
 `-isystem <resource-dir>/include` and `-D__WEAVEC__=1` so user code can
-`#include <weavec.h>`.
+`#include <weavec.h>`. `--dump-analysis` prints the inferred facts per
+function for debugging.
 
 A drop-in compiler mode (`weavec -c foo.c -o foo.o`, i.e. behaving as `cc`
 and delegating code generation to Clang) is planned; see
