@@ -4,7 +4,9 @@
 # only is what allows the model to be reused outside the Clang integration.
 weavec_add_library(
   Core
-  SOURCES Borrow.cpp
+  SOURCES AliasRelation.cpp
+          AnalysisState.cpp
+          Borrow.cpp
           Diagnostic.cpp
           Lifetime.cpp
           Moves.cpp

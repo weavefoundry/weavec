@@ -9,7 +9,7 @@ WeaveC is built on Clang/LLVM rather than implementing a compiler from scratch, 
 
 WeaveC itself is written in modern C++, which provides the most direct and complete access to Clang/LLVM's APIs and infrastructure. The core ownership, borrowing, lifetime, and inference logic should be kept as modular as possible so it remains cleanly separated from the Clang integration layer and can potentially be reused or extended in the future.
 
-> **Status:** early scaffolding. The pipeline runs end to end (parse → analyse → diagnose) with a deliberately small local-ownership checker; the real inference engine is being built on top. See [docs/roadmap.md](docs/roadmap.md).
+> **Status:** early. Every function is checked in isolation by a sound intra-procedural dataflow ([RFC 0002](docs/rfcs/0002-intraprocedural-checking.md)): use-after-free and double-free through any alias and across loops, use-after-move, conflicting borrows, and pointers that outlive what they point to. Calls to unannotated functions are not yet modelled; signature inference is next. See [docs/roadmap.md](docs/roadmap.md).
 
 ## Quick look
 
@@ -22,19 +22,31 @@ size_t buffer_len(const struct buffer *WEAVEC_BORROWED b);
 
 void example(void) {
   int *p = malloc(sizeof *p);
-  free(p);
+  int *q = p;
+  free(q);
   *p = 1;            // error: use of 'p' after it was freed [weavec::use-after-free]
+}
+
+int *escape(void) {
+  int x = 0;
+  return &x;         // error: returned pointer may outlive 'x' [weavec::lifetime-too-short]
 }
 ```
 
 ```
 $ weavec example.c --
-example.c:10:4: error: use of 'p' after it was freed [weavec::use-after-free]
-   10 |   *p = 1;
+example.c:11:4: error: use of 'p' after it was freed [weavec::use-after-free]
+   11 |   *p = 1;
       |    ^
-example.c:9:3: note: freed here
-    9 |   free(p);
+example.c:10:3: note: freed here (through 'q')
+   10 |   free(q);
       |   ^
+example.c:16:10: error: returned pointer may outlive 'x', which it points to [weavec::lifetime-too-short]
+   16 |   return &x;
+      |          ^
+example.c:15:7: note: 'x' is declared here
+   15 |   int x = 0;
+      |       ^
 ```
 
 Annotations (`WEAVEC_OWNED`, `WEAVEC_BORROWED`, `WEAVEC_MUT`, `WEAVEC_UNSAFE`) expand to nothing on other compilers, so annotated code remains plain, portable C. See [docs/annotations.md](docs/annotations.md).

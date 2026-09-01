@@ -437,12 +437,14 @@ change it.
 | Component            | Status                                                                 |
 | -------------------- | ---------------------------------------------------------------------- |
 | Ownership lattice    | Implemented (`Ownership.h`), unit-tested.                              |
-| Places               | Implemented for locals and parameters. Field paths: RFC 0002.          |
-| Moves / free tracking | Implemented (`MoveTracker`); used by the scaffold checker.            |
-| Borrow state         | Implemented and unit-tested; not yet driven by the AST walk.           |
-| Lifetime constraints | Implemented and unit-tested; not yet driven by the AST walk.           |
-| Local checker        | Path-insensitive AST walk with branch join; loops analysed once.       |
-| CFG dataflow         | RFC 0002.                                                              |
+| Places               | Implemented with field, deref and array-summary paths (`Place.h`).     |
+| Moves / free tracking | Implemented (`MoveTracker`), driven by the CFG dataflow.              |
+| Borrow state         | Implemented (`Borrow.h`), driven by address-of, decay and annotated calls. |
+| Lifetime constraints | Implemented (`Lifetime.h`), one lifetime per scope; `lifetime-too-short` emitted. |
+| Aliases              | Implemented (`AliasRelation.h`); copies alias, see RFC 0002.           |
+| Local checker        | Replaced by the RFC 0002 CFG dataflow (`lib/Analysis/Dataflow.cpp`).   |
+| CFG dataflow         | Implemented (RFC 0002).                                                |
 | Signature inference  | Future RFC.                                                            |
-| Annotations          | Parsed and honoured for `unsafe`; ownership annotations recorded only. |
+| Annotations          | `unsafe` honoured; `WEAVEC_OWNED` parameters move, `WEAVEC_BORROWED`/`WEAVEC_MUT` loan. Inference/annotation reconciliation: future RFC. |
+| `unsafe-operation`   | Future RFC (unsafe blocks).                                            |
 | Cross-TU summaries   | Future RFC.                                                            |

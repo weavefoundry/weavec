@@ -50,6 +50,12 @@ cl::opt<bool> analyzeHeaders(
     cl::desc("Also analyse function definitions found in included headers"),
     cl::init(false), cl::cat(weavecCategory));
 
+cl::opt<bool> dumpAnalysis(
+    "dump-analysis",
+    cl::desc("Print the inferred places, lifetimes and exit state of every "
+             "analysed function to stdout (debugging aid; format unstable)"),
+    cl::init(false), cl::cat(weavecCategory));
+
 // HelpMessage is a constant-initialised string literal, so the usual
 // initialisation-order concern does not apply (this is the libTooling idiom).
 // NOLINTNEXTLINE(cppcoreguidelines-interfaces-global-init)
@@ -133,6 +139,8 @@ int main(int argc, const char **argv) {
 
   weavec::frontend::FrontendOptions options;
   options.analysis.reportUnannotated = reportUnannotated;
+  if (dumpAnalysis)
+    options.analysis.dumpStream = &llvm::outs();
   options.mainFileOnly = !analyzeHeaders;
 
   return tool.run(weavec::frontend::createWeaveCActionFactory(options).get());

@@ -1,14 +1,22 @@
-//===- FunctionAnalysisTest.cpp - Tests for the local ownership checker ---===//
+//===- FunctionAnalysisTest.cpp - Tests for the per-function driver -------===//
 //
 // Part of WeaveC, under the Apache License v2.0 with LLVM Exceptions.
 // See LICENSE for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
+//
+// Smoke tests for `FunctionAnalyzer`: the basic detections, the unsafe
+// escape hatch and the annotation checks. The dataflow itself is exercised
+// in DataflowTest.cpp.
+//
+//===----------------------------------------------------------------------===//
 
 #include "weavec/Analysis/FunctionAnalysis.h"
 
 #include "TestUtils.h"
+
+#include "llvm/Support/raw_ostream.h"
 
 #include <gtest/gtest.h>
 
@@ -17,8 +25,10 @@ namespace {
 
 using weavec::test::analyze;
 using weavec::test::ids;
+using weavec::test::messages;
+using weavec::test::notes;
 
-TEST(LocalOwnershipChecker, CleanCodeProducesNoDiagnostics) {
+TEST(FunctionAnalyzer, CleanCodeProducesNoDiagnostics) {
   const auto result = analyze(R"c(
     void f(void) {
       int *p = malloc(sizeof(int));
@@ -31,7 +41,7 @@ TEST(LocalOwnershipChecker, CleanCodeProducesNoDiagnostics) {
   EXPECT_TRUE(result.diagnostics.empty());
 }
 
-TEST(LocalOwnershipChecker, DetectsUseAfterFree) {
+TEST(FunctionAnalyzer, DetectsUseAfterFree) {
   const auto result = analyze(R"c(
     void f(void) {
       int *p = malloc(sizeof(int));
@@ -44,13 +54,14 @@ TEST(LocalOwnershipChecker, DetectsUseAfterFree) {
   const core::Diagnostic &d = result.diagnostics.diagnostics()[0];
   EXPECT_EQ(d.id, core::diag::UseAfterFree);
   EXPECT_EQ(d.severity, core::Severity::Error);
-  EXPECT_NE(d.message.find("'p'"), std::string::npos);
+  EXPECT_EQ(d.message, "use of 'p' after it was freed");
+  EXPECT_EQ(d.location.line, 5U);
   ASSERT_EQ(d.notes.size(), 1U);
-  EXPECT_LT(d.notes[0].location.line, d.location.line)
-      << "the note points at the earlier free";
+  EXPECT_EQ(d.notes[0].message, "freed here");
+  EXPECT_EQ(d.notes[0].location.line, 4U);
 }
 
-TEST(LocalOwnershipChecker, DetectsDoubleFree) {
+TEST(FunctionAnalyzer, DetectsDoubleFree) {
   const auto result = analyze(R"c(
     void f(int *p) {
       free(p);
@@ -60,9 +71,13 @@ TEST(LocalOwnershipChecker, DetectsDoubleFree) {
   ASSERT_TRUE(result.ast);
   EXPECT_EQ(ids(result.diagnostics),
             std::vector<std::string>{std::string(core::diag::DoubleFree)});
+  EXPECT_EQ(messages(result.diagnostics),
+            std::vector<std::string>{"4: 'p' is freed twice"});
+  EXPECT_EQ(notes(result.diagnostics),
+            std::vector<std::string>{"previously freed here"});
 }
 
-TEST(LocalOwnershipChecker, ReassignmentReinitializes) {
+TEST(FunctionAnalyzer, ReassignmentReinitializes) {
   const auto result = analyze(R"c(
     void f(void) {
       int *p = malloc(4);
@@ -78,7 +93,7 @@ TEST(LocalOwnershipChecker, ReassignmentReinitializes) {
   EXPECT_TRUE(result.diagnostics.empty());
 }
 
-TEST(LocalOwnershipChecker, BranchesAreJoinedConservatively) {
+TEST(FunctionAnalyzer, BranchesAreJoinedConservatively) {
   const auto result = analyze(R"c(
     void f(int c) {
       int *p = malloc(4);
@@ -90,11 +105,11 @@ TEST(LocalOwnershipChecker, BranchesAreJoinedConservatively) {
     }
   )c");
   ASSERT_TRUE(result.ast);
-  ASSERT_EQ(result.diagnostics.size(), 1U);
-  EXPECT_EQ(result.diagnostics.diagnostics()[0].id, core::diag::UseAfterFree);
+  EXPECT_EQ(messages(result.diagnostics),
+            std::vector<std::string>{"8: use of 'p' after it was freed"});
 }
 
-TEST(LocalOwnershipChecker, UnsafeFunctionIsSkipped) {
+TEST(FunctionAnalyzer, UnsafeFunctionIsSkipped) {
   const auto result = analyze(R"c(
     __attribute__((annotate("weavec.unsafe")))
     void f(int *p) {
@@ -106,7 +121,7 @@ TEST(LocalOwnershipChecker, UnsafeFunctionIsSkipped) {
   EXPECT_TRUE(result.diagnostics.empty());
 }
 
-TEST(LocalOwnershipChecker, UnsafeBlockIsSkipped) {
+TEST(FunctionAnalyzer, UnsafeBlockIsSkipped) {
   const auto result = analyze(R"c(
     void f(int *p) {
       free(p);
@@ -114,6 +129,30 @@ TEST(LocalOwnershipChecker, UnsafeBlockIsSkipped) {
         use(p);
       }
     }
+  )c");
+  ASSERT_TRUE(result.ast);
+  EXPECT_TRUE(result.diagnostics.empty());
+}
+
+TEST(FunctionAnalyzer, UnsafeBlockIsIdentityTransfer) {
+  // RFC 0002, "Unsafe interaction": the block contributes no facts, so a
+  // free inside it is invisible outside. The escape rule is a later RFC.
+  const auto result = analyze(R"c(
+    void f(int *p) {
+      __attribute__((annotate("weavec.unsafe"))) {
+        free(p);
+      }
+      use(p);
+    }
+  )c");
+  ASSERT_TRUE(result.ast);
+  EXPECT_TRUE(result.diagnostics.empty());
+}
+
+TEST(FunctionAnalyzer, DeclarationsAndBodylessFunctionsAreIgnored) {
+  const auto result = analyze(R"c(
+    void g(int *p);
+    static inline void h(int *p) __attribute__((annotate("weavec.unsafe")));
   )c");
   ASSERT_TRUE(result.ast);
   EXPECT_TRUE(result.diagnostics.empty());
@@ -150,6 +189,31 @@ TEST(FunctionAnalyzer, ReportUnannotatedIsOptIn) {
             core::diag::AnnotationRequired);
   EXPECT_NE(loud.diagnostics.diagnostics()[0].message.find("'p'"),
             std::string::npos);
+}
+
+TEST(FunctionAnalyzer, DumpStreamDescribesEveryFunction) {
+  std::string dump;
+  llvm::raw_string_ostream stream(dump);
+  AnalysisOptions options;
+  options.dumpStream = &stream;
+  const auto result = analyze(R"c(
+    struct s { int *buf; };
+    void f(struct s *p, int c) {
+      int x = 0;
+      int *a = &x;
+      if (c) free(p->buf);
+      use(a);
+    }
+    void g(void) {}
+  )c",
+                              options);
+  ASSERT_TRUE(result.ast);
+  EXPECT_TRUE(result.diagnostics.empty());
+  EXPECT_NE(dump.find("function 'f':"), std::string::npos) << dump;
+  EXPECT_NE(dump.find("function 'g':"), std::string::npos) << dump;
+  EXPECT_NE(dump.find("p (param, unknown)"), std::string::npos) << dump;
+  EXPECT_NE(dump.find("a (local, mutable)"), std::string::npos) << dump;
+  EXPECT_NE(dump.find("moved{p->buf@"), std::string::npos) << dump;
 }
 
 } // namespace

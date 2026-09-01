@@ -15,8 +15,8 @@ behind them: `docs/rfcs/` (start with `0001-ownership-model.md`).
 
 ## Before touching the model or the checker
 
-Design decisions for `Core`, `lib/Analysis/FunctionAnalysis.cpp` (and its
-successors), `weavec.h` and diagnostic ids are recorded as RFCs in
+Design decisions for `Core`, `lib/Analysis/Dataflow.cpp` (the checker),
+`weavec.h` and diagnostic ids are recorded as RFCs in
 `docs/rfcs/`. **Read the relevant RFC before changing any of these**, and
 treat it as authoritative over comments in the code. If the change you are
 about to make is not covered by an Accepted RFC, or contradicts one, stop and
@@ -62,7 +62,10 @@ cmake --preset dev && cmake --build --preset dev && ctest --preset dev
 | Task                                 | Look at                                                |
 | ------------------------------------ | ------------------------------------------------------ |
 | Propose a model / checker change     | `docs/rfcs/README.md`, `docs/rfcs/0000-template.md`    |
-| Add a checker rule                   | `lib/Analysis/FunctionAnalysis.cpp` (after an RFC)     |
+| Add a checker rule                   | `lib/Analysis/Dataflow.cpp` (after an RFC)             |
+| Map an expression to a place         | `lib/Analysis/PlaceBuilder.cpp`                        |
+| Recognise an allocator / releaser    | `lib/Analysis/Allocators.cpp`                          |
+| Debug what the checker inferred      | `weavec --dump-analysis file.c --`                     |
 | Change how diagnostics are rendered  | `lib/Frontend/ClangDiagnosticSink.cpp`                 |
 | Add a CLI flag                       | `tools/weavec/main.cpp`, `FrontendOptions`             |
 | Add an annotation                    | `Annotations.h`, `weavec.h`, `docs/annotations.md`     |

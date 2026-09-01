@@ -20,6 +20,8 @@
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/Decl.h"
 
+#include "llvm/Support/raw_ostream.h"
+
 namespace weavec::analysis {
 
 /// Tunables for the per-function analyses.
@@ -27,15 +29,19 @@ struct AnalysisOptions {
   /// Report pointer-typed parameters/locals whose ownership could not be
   /// inferred and that carry no annotation.
   bool reportUnannotated = false;
+  /// If set, print the inferred facts for every analysed function
+  /// (`--dump-analysis`): places and their kinds, lifetimes, and the state
+  /// at function exit. Intended for debugging and lit tests; the format is
+  /// not stable.
+  llvm::raw_ostream *dumpStream = nullptr;
 };
 
 /// Runs every WeaveC check over a single function definition.
 ///
-/// The current implementation is an intentionally small, path-insensitive
-/// checker for local heap ownership (use-after-free / double-free of locals
-/// released with `free`). It exists to exercise the end-to-end pipeline and
-/// will be superseded by the CFG-based dataflow analysis specified in
-/// docs/rfcs/0002-intraprocedural-checking.md (model: docs/rfcs/0001).
+/// Implements the sound intra-procedural checker of RFC 0002 (model:
+/// RFC 0001): a forward dataflow over the function's `clang::CFG` whose
+/// state is `core::AnalysisState`, followed by one reporting pass. Function
+/// signatures are not inferred; parameters are treated per their annotations.
 class FunctionAnalyzer {
 public:
   FunctionAnalyzer(clang::ASTContext &ctx, core::DiagnosticSink &diagSink,

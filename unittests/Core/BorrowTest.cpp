@@ -13,8 +13,11 @@
 namespace weavec::core {
 
 static Loan makeLoan(PlaceId place, BorrowKind kind, LifetimeId lifetime) {
-  return Loan{
-      .place = place, .kind = kind, .lifetime = lifetime, .location = {}};
+  return Loan{.place = place,
+              .kind = kind,
+              .lifetime = lifetime,
+              .location = {},
+              .holder = PlaceId{100}};
 }
 
 namespace {
@@ -91,6 +94,61 @@ TEST_F(BorrowStateTest, ReleaseDropsLoansForPlace) {
   state.release(p);
   EXPECT_FALSE(state.hasLoans(p));
   EXPECT_TRUE(state.hasLoans(q));
+}
+
+TEST_F(BorrowStateTest, FindConflictDoesNotRecord) {
+  ASSERT_FALSE(state.addLoan(makeLoan(p, BorrowKind::Mutable, l1)));
+  EXPECT_TRUE(state.findConflict(makeLoan(p, BorrowKind::Shared, l2)));
+  EXPECT_FALSE(state.findConflict(makeLoan(q, BorrowKind::Mutable, l2)));
+  EXPECT_EQ(state.loans().size(), 1U);
+}
+
+TEST_F(BorrowStateTest, HoldersCanBeCopiedAndDropped) {
+  const PlaceId a = places.create("a");
+  const PlaceId b = places.create("b");
+  Loan loan = makeLoan(p, BorrowKind::Mutable, l1);
+  loan.holder = a;
+  ASSERT_FALSE(state.addLoan(loan));
+
+  // `b = a` shares the borrow rather than creating a second one.
+  state.copyHolder(a, b);
+  EXPECT_EQ(state.heldBy(b).size(), 1U);
+  EXPECT_EQ(state.heldBy(b)[0].place, p);
+  EXPECT_EQ(state.loans().size(), 2U);
+
+  state.dropHolder(a);
+  EXPECT_TRUE(state.heldBy(a).empty());
+  EXPECT_TRUE(state.hasLoans(p)) << "b still holds it";
+  state.dropHolder(b);
+  EXPECT_FALSE(state.hasLoans(p));
+}
+
+TEST_F(BorrowStateTest, AddLoanUncheckedIgnoresConflictsAndDuplicates) {
+  const Loan loan = makeLoan(p, BorrowKind::Mutable, l1);
+  state.addLoanUnchecked(loan);
+  state.addLoanUnchecked(loan);
+  state.addLoanUnchecked(makeLoan(p, BorrowKind::Mutable, l2));
+  EXPECT_EQ(state.loans().size(), 2U);
+}
+
+TEST_F(BorrowStateTest, JoinIsSetUnionAndEqualityIgnoresOrder) {
+  BorrowState other;
+  ASSERT_FALSE(state.addLoan(makeLoan(p, BorrowKind::Shared, l1)));
+  ASSERT_FALSE(state.addLoan(makeLoan(q, BorrowKind::Shared, l1)));
+  ASSERT_FALSE(other.addLoan(makeLoan(q, BorrowKind::Shared, l1)));
+  ASSERT_FALSE(other.addLoan(makeLoan(p, BorrowKind::Shared, l1)));
+  EXPECT_EQ(state, other);
+
+  ASSERT_FALSE(other.addLoan(makeLoan(q, BorrowKind::Shared, l2)));
+  EXPECT_NE(state, other);
+  state.join(other);
+  EXPECT_EQ(state, other);
+  EXPECT_EQ(state.loans().size(), 3U);
+}
+
+TEST(BorrowKind, ToString) {
+  EXPECT_EQ(toString(BorrowKind::Shared), "shared");
+  EXPECT_EQ(toString(BorrowKind::Mutable), "mutable");
 }
 
 } // namespace

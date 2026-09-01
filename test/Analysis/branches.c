@@ -16,9 +16,10 @@ void maybe_freed(int c) {
 void freed_in_loop(int n) {
   int *p = malloc(4);
   for (int i = 0; i < n; ++i)
+    // CHECK: branches.c:[[@LINE+1]]:5: error: 'p' is freed twice [weavec::double-free]
     free(p);
   // CHECK: branches.c:[[@LINE+1]]:7: error: use of 'p' after it was freed [weavec::use-after-free]
   use(p);
 }
 
-// CHECK: 2 errors generated.
+// CHECK: 3 errors generated.

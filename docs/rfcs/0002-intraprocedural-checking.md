@@ -1,11 +1,70 @@
 # RFC 0002: Sound intra-procedural checking
 
-- **Status**: Accepted
+- **Status**: Implemented
 - **Authors**: WeaveC authors
 - **Created**: 2026-09-01
 - **Accepted**: 2026-09-01
+- **Implemented**: 2026-09-01
 - **Tracking issue**: TBD
 - **Supersedes / superseded by**: — (implements phase 1 of RFC 0001)
+
+## Implementation notes
+
+The design below landed as written except where this section says
+otherwise. Each item is a clarification of *how* a decision was built, not a
+change of decision; where the text below disagrees with an item here, the
+item wins. Behaviour is pinned by `test/Analysis/rfc0002-*.c` and
+`unittests/Analysis/DataflowTest.cpp`.
+
+- **Alias relation instead of a partition.** `core::AliasRelation` replaced
+  the proposed `core::Partition` (union-find). The join of two *equivalence*
+  relations is not the union of the relations but its transitive closure,
+  and that closure invented aliases between pointers that never named the
+  same object on any single path. Concretely, walking a list with
+  `prev`/`cur`/`cur->next` in a loop merged every node into one class after
+  two iterations and the canonical unlink-and-free idiom reported
+  `use-after-free`. `AliasRelation` is a symmetric may-alias graph: `unite`
+  relates two places *and* each with the other's current aliases (so it is
+  closed under copies within a path), `separate` removes a place from every
+  edge, and `join` is a plain union of edges. Everything the RFC says about
+  "alias classes" reads as "the aliases of" in the implementation
+  (`AliasRelation::members`). Same operations, same soundness argument (a
+  fact about a place is applied to every place that may alias it on some
+  path), strictly fewer false positives.
+- **Dereference is a path step.** `p->next` is the place `*p` `.next`, with
+  `*` an explicit `Deref` step (`PathStep::Deref`) rather than "the alias
+  class of `p`". Facts about the objects under `*p` are *mirrored* onto
+  `*q` when `q = p` copies the pointer, and queries expand a place to the
+  same path under every alias of each dereferenced pointer on its path
+  (`FunctionDataflow::mirrors`). Synthesised mirror paths are capped at
+  depth 8 so cyclic structures cannot grow the place table without bound;
+  paths written in the source are never truncated.
+- **`reallocs` maps the result to the consumed places** (the argument and
+  its aliases at the call), not to a class id, so the entry stays meaningful
+  after the relation changes. Join semantics are as specified.
+- **Allocator list.** `posix_memalign` is not modelled; it lands with the
+  signature-inference work. Recognition requires global linkage, so a
+  `static` helper named `free` is *not* libc's (the "shadow is treated as
+  libc" limitation only applies to global redefinitions).
+- **Iteration cap.** 64 visits per block, always on: a block past the cap is
+  dropped from the worklist and analysis continues from the states already
+  computed. Every state component is a finite lattice so the cap is a guard
+  against non-monotone bugs, not a budget.
+- **Direct `return &x`** is reported as `returned pointer may outlive '<x>',
+  which it points to` since there is no holder to name; the `'<x>' goes out
+  of scope here` note is omitted for returns.
+- **`--dump-analysis` format** (unstable, see *Debug output*):
+
+  ```
+  function 'f':
+    places: p (param, unknown) c (param) x (local) a (local, mutable)
+    lifetimes: caller fn
+    exit: moved{p->buf@8:10 freed} loans{} aliases{}
+  ```
+
+  Loans and aliases held by locals are already dropped at function exit, so
+  `exit:` shows what escaped: moved places, and loans/aliases through
+  parameters and globals.
 
 ## Summary
 
@@ -160,7 +219,8 @@ class).
 
 `core::Partition` is a small union-find over `PlaceId` with the operations
 `unite`, `separate`, `members`, `join`, added to `weavec::Core`. It is
-Clang-free.
+Clang-free. *(Built as `core::AliasRelation` with the same operations but
+without transitive closure at joins; see Implementation notes.)*
 
 This is the decision RFC 0001 left open under *Copies as aliases*. See
 *Alternatives* for why not Rust's move-on-copy.
@@ -337,13 +397,14 @@ live loans, alias classes) in a stable textual form intended for FileCheck:
 
 ```
 function 'alias':
-  places: p (param, Owned)  q (local, Unknown)
-  lifetimes: fn, scope@3:1 (fn: scope@3:1)
-  exit: moved{p,q@5:3 freed} loans{} aliases{{p,q}}
+  places: p (param, owned) q (local, owned)
+  lifetimes: caller fn
+  exit: moved{p@5:3 freed} loans{} aliases{}
 ```
 
-The exact format is fixed by the lit tests that use it and may change in a
-minor release with a CHANGELOG entry; it is a debugging aid, not an API.
+The exact format is fixed by the lit tests that use it
+(`test/Driver/dump-analysis.c`) and may change in a minor release with a
+CHANGELOG entry; it is a debugging aid, not an API.
 
 ### Layering
 
@@ -355,6 +416,12 @@ Analysis layer contributes `CFGDataflow` (the worklist), `PlaceBuilder`
 `AllocatorRegistry`. `LocalOwnershipChecker` is deleted once the lit tests
 for `use-after-free` and `double-free` pass against the new engine with
 identical messages.
+
+*(As built: `core::AliasRelation`, `core::AnalysisState`
+(`include/weavec/Core/`); `FunctionDataflow` in `lib/Analysis/Dataflow.cpp`
+combines the worklist and the event translation; `PlaceBuilder` in
+`lib/Analysis/PlaceBuilder.cpp`; `classifyCall` in
+`include/weavec/Analysis/Allocators.h`.)*
 
 ## Annotation surface
 
@@ -372,8 +439,10 @@ Newly emitted (ids already reserved by RFC 0001):
 | `conflicting-borrow` | error    | `cannot borrow '<x>' as mutable because it is already borrowed`         | `previous borrow of '<x>' by '<a>' here`               |
 | `conflicting-borrow` | error    | `cannot borrow '<x>' as shared because it is already mutably borrowed`  | `previous borrow of '<x>' by '<a>' here`               |
 | `conflicting-borrow` | error    | `cannot free '<p>' while it is borrowed`                                | `borrowed by '<a>' here`                               |
+| `conflicting-borrow` | error    | `cannot move '<p>' while it is borrowed`                                | `borrowed by '<a>' here`                               |
 | `conflicting-borrow` | error    | `cannot assign to '<x>' while it is borrowed`                           | `borrowed by '<a>' here`                               |
-| `lifetime-too-short` | error    | `'<p>' may outlive '<x>', which it points to`                           | `'<x>' is declared here`; `'<x>' goes out of scope here` (or `returned here`) |
+| `lifetime-too-short` | error    | `'<p>' may outlive '<x>', which it points to`                           | `'<x>' is declared here`; `'<x>' goes out of scope here` (omitted for returns) |
+| `lifetime-too-short` | error    | `returned pointer may outlive '<x>', which it points to` (for `return &x`) | `'<x>' is declared here`                             |
 
 Wording decision: the messages keep the *borrow* vocabulary. The annotation
 names (`WEAVEC_BORROWED`), the id (`conflicting-borrow`) and RFC 0001 all
@@ -483,17 +552,17 @@ Summary, so the reasoning is findable from here:
 | Diagnostic deduplication          | None needed: diagnostics are emitted in a post-fixpoint reporting pass, once per block.      |
 | `conflicting-borrow` wording      | Keep the *borrow* vocabulary; notes name the other pointer.                                  |
 
-**Deferred to implementation** (may be settled in the implementing PRs
-without a new RFC, provided the lit tests document the choice):
+**Settled during implementation** (see *Implementation notes*):
 
-- Exact `--dump-analysis` format and whether it is stable enough to
-  document beyond the lit tests.
-- The iteration cap (64 per block) and whether it should be a hard assert or
-  a "gave up, treated as unsafe" warning in release builds.
-- Whether `posix_memalign`'s out-parameter form is worth modelling in the
-  first cut or lands with the allocator-registry work.
-- How `CFGScopeEnd` interacts with `goto` *into* a scope, which Clang's CFG
-  represents but which no lifetime rule here relies on.
+- Exact `--dump-analysis` format: pinned by `test/Driver/dump-analysis.c`,
+  documented only there.
+- The iteration cap (64 per block): silent, always on; the block is dropped
+  from the worklist and analysis continues.
+- `posix_memalign`'s out-parameter form: not modelled yet.
+- `goto` *into* a scope: lifetimes are attached to `CFGLifetimeEnds`
+  elements per variable rather than to scope-end markers, so a jump into a
+  scope simply never sees the variable's end on that path. No lifetime rule
+  relies on it.
 
 **Deferred to corpus testing** (empirical; may motivate a follow-up RFC):
 
