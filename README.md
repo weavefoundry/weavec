@@ -73,7 +73,7 @@ tools/weavec/     The command-line tool
 resources/        weavec.h, the C-facing annotation header (installed to lib/weavec/include)
 unittests/        GoogleTest unit tests
 test/             lit + FileCheck integration tests
-docs/             Architecture, design notes, roadmap
+docs/             Architecture, RFCs (docs/rfcs/), roadmap
 cmake/            Build-system modules
 ```
 

@@ -5,7 +5,7 @@
 # The core model is the heart of the project; changes need extra scrutiny.
 /include/weavec/Core/   @weavefoundry/maintainers
 /lib/Core/              @weavefoundry/maintainers
-/docs/design/           @weavefoundry/maintainers
+/docs/rfcs/             @weavefoundry/maintainers
 
 # Build and CI infrastructure.
 /cmake/                 @weavefoundry/maintainers

@@ -61,8 +61,9 @@ the frontend fills in so it can report at the exact original position.
 
 The current `LocalOwnershipChecker` is a small, path-insensitive AST walk that
 exists to exercise the pipeline end to end. The planned replacement is a
-CFG-based dataflow analysis over `clang::CFG`; see
-[design/ownership-model.md](design/ownership-model.md).
+CFG-based dataflow analysis over `clang::CFG`; the model is specified by
+[RFC 0001](rfcs/0001-ownership-model.md) and the dataflow by
+[RFC 0002](rfcs/0002-intraprocedural-checking.md).
 
 ## `weavec::Frontend` — Clang integration
 

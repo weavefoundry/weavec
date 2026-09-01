@@ -25,7 +25,10 @@ follows [Semantic Versioning](https://semver.org/) once it reaches 1.0.
 - GoogleTest unit tests and lit/FileCheck integration tests.
 - GitHub Actions CI (Linux ASan/UBSan + Release, macOS Release, clang-format,
   cmake-format, clang-tidy, CodeQL), Dependabot, issue and PR templates.
-- Project documentation: architecture, ownership-model design notes,
-  annotations reference, developer guide, roadmap.
+- Project documentation: architecture, annotations reference, developer
+  guide, roadmap.
+- RFC process for changes to the model, checker rules, annotations and
+  diagnostics (`docs/rfcs/`), with RFC 0001 (ownership model) and RFC 0002
+  (sound intra-procedural checking), both Accepted.
 
 [Unreleased]: https://github.com/weavefoundry/weavec/commits/main

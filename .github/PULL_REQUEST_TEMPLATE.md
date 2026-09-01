@@ -11,7 +11,9 @@ Small, focused PRs are much easier to review than large ones.
 
 <!--
 Anything a reviewer should know: alternatives considered, trade-offs,
-interactions with the ownership model, follow-up work.
+interactions with the ownership model, follow-up work. Changes to Core,
+checker rules, annotations or diagnostic ids must link the RFC in docs/rfcs/
+that specifies them.
 Delete this section if not applicable.
 -->
 
