@@ -1,0 +1,171 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  merge_group:
+  workflow_dispatch:
+
+# Cancel superseded runs on the same ref.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  # Keep in sync with .pre-commit-config.yaml (clang-format) and docs/development.md.
+  LLVM_VERSION: "23"
+  LIT_VERSION: "23.1.0"
+  CCACHE_MAXSIZE: 500M
+
+jobs:
+  # ---------------------------------------------------------------------------
+  format:
+    name: Formatting
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install clang-format
+        run: |
+          wget -qO- https://apt.llvm.org/llvm.sh | sudo bash -s -- "$LLVM_VERSION"
+          sudo apt-get install -y "clang-format-$LLVM_VERSION"
+          sudo ln -sf "/usr/bin/clang-format-$LLVM_VERSION" /usr/local/bin/clang-format
+          clang-format --version
+
+      - name: clang-format
+        run: scripts/check-format.sh
+
+      - name: cmake-format
+        run: |
+          # cmakelang does not declare pyyaml as a dependency but needs it to
+          # read .cmake-format.yaml.
+          pipx install cmakelang
+          pipx inject cmakelang pyyaml
+          scripts/check-cmake-format.sh
+
+  # ---------------------------------------------------------------------------
+  build-test:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux / Clang / Debug + ASan/UBSan
+            os: ubuntu-24.04
+            preset: ci-debug
+          - name: Linux / Clang / Release
+            os: ubuntu-24.04
+            preset: ci-release
+          - name: macOS / Clang / Release
+            os: macos-15
+            preset: ci-release
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install LLVM (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          wget -qO- https://apt.llvm.org/llvm.sh | sudo bash -s -- "$LLVM_VERSION" all
+          sudo apt-get install -y ninja-build ccache
+          echo "WEAVEC_LLVM_PREFIX=/usr/lib/llvm-$LLVM_VERSION" >> "$GITHUB_ENV"
+          echo "CC=clang-$LLVM_VERSION" >> "$GITHUB_ENV"
+          echo "CXX=clang++-$LLVM_VERSION" >> "$GITHUB_ENV"
+
+      - name: Install LLVM (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install llvm ninja ccache
+          prefix="$(brew --prefix llvm)"
+          echo "WEAVEC_LLVM_PREFIX=$prefix" >> "$GITHUB_ENV"
+          echo "CC=$prefix/bin/clang" >> "$GITHUB_ENV"
+          echo "CXX=$prefix/bin/clang++" >> "$GITHUB_ENV"
+          echo "$prefix/bin" >> "$GITHUB_PATH"
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install lit
+        run: pip install "lit==$LIT_VERSION"
+
+      - name: ccache
+        uses: hendrikmuhs/ccache-action@v1
+        with:
+          key: ${{ matrix.os }}-${{ matrix.preset }}
+          max-size: ${{ env.CCACHE_MAXSIZE }}
+
+      - name: Configure
+        run: cmake --preset "${{ matrix.preset }}"
+
+      - name: Build
+        run: cmake --build --preset "${{ matrix.preset }}"
+
+      - name: Test
+        env:
+          ASAN_OPTIONS: detect_leaks=0:strict_string_checks=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        run: ctest --preset "${{ matrix.preset }}"
+
+      - name: Smoke-test install
+        run: |
+          cmake --install "build/${{ matrix.preset }}" --prefix "$RUNNER_TEMP/weavec-install"
+          "$RUNNER_TEMP/weavec-install/bin/weavec" --version
+          test -f "$RUNNER_TEMP/weavec-install/lib/weavec/include/weavec.h"
+          test -f "$RUNNER_TEMP/weavec-install/lib/cmake/WeaveC/WeaveCConfig.cmake"
+
+      - name: Upload test logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-logs-${{ matrix.os }}-${{ matrix.preset }}
+          path: |
+            build/${{ matrix.preset }}/Testing/Temporary/LastTest.log
+            build/${{ matrix.preset }}/test/**/Output/**
+          if-no-files-found: ignore
+
+  # ---------------------------------------------------------------------------
+  tidy:
+    name: clang-tidy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install LLVM
+        run: |
+          wget -qO- https://apt.llvm.org/llvm.sh | sudo bash -s -- "$LLVM_VERSION" all
+          sudo apt-get install -y ninja-build
+          echo "WEAVEC_LLVM_PREFIX=/usr/lib/llvm-$LLVM_VERSION" >> "$GITHUB_ENV"
+          echo "CC=clang-$LLVM_VERSION" >> "$GITHUB_ENV"
+          echo "CXX=clang++-$LLVM_VERSION" >> "$GITHUB_ENV"
+          echo "/usr/lib/llvm-$LLVM_VERSION/bin" >> "$GITHUB_PATH"
+
+      - name: Configure
+        run: cmake --preset ci-tidy -DWEAVEC_BUILD_TESTS=OFF
+
+      - name: Build with clang-tidy
+        run: cmake --build --preset ci-tidy
+
+  # Aggregate job for branch protection: require only this check.
+  ci-ok:
+    name: CI passed
+    if: always()
+    needs: [format, build-test, tidy]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check results
+        run: |
+          echo "format: ${{ needs.format.result }}"
+          echo "build-test: ${{ needs.build-test.result }}"
+          echo "tidy: ${{ needs.tidy.result }}"
+          [ "${{ needs.format.result }}" = "success" ] &&
+          [ "${{ needs.build-test.result }}" = "success" ] &&
+          [ "${{ needs.tidy.result }}" = "success" ]

@@ -1,0 +1,156 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 3, "minor": 25, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "WEAVEC_BUILD_TESTS": "ON"
+      },
+      "environment": {
+        "WEAVEC_LLVM_PREFIX": "$penv{WEAVEC_LLVM_PREFIX}"
+      }
+    },
+    {
+      "name": "llvm-from-env",
+      "hidden": true,
+      "description": "Locate LLVM/Clang from $WEAVEC_LLVM_PREFIX (e.g. $(brew --prefix llvm) or /usr/lib/llvm-23).",
+      "cacheVariables": {
+        "CMAKE_PREFIX_PATH": "$env{WEAVEC_LLVM_PREFIX}"
+      }
+    },
+
+    {
+      "name": "dev",
+      "displayName": "Developer (Debug)",
+      "description": "Debug build with assertions; default for day-to-day development.",
+      "inherits": ["base", "llvm-from-env"],
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    },
+    {
+      "name": "dev-asan",
+      "displayName": "Developer (Debug + ASan/UBSan)",
+      "inherits": "dev",
+      "cacheVariables": {
+        "WEAVEC_SANITIZERS": "address;undefined"
+      }
+    },
+    {
+      "name": "dev-tidy",
+      "displayName": "Developer (Debug + clang-tidy)",
+      "inherits": "dev",
+      "cacheVariables": {
+        "WEAVEC_ENABLE_CLANG_TIDY": "ON"
+      }
+    },
+    {
+      "name": "release",
+      "displayName": "Release",
+      "inherits": ["base", "llvm-from-env"],
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "WEAVEC_ENABLE_LTO": "ON"
+      }
+    },
+    {
+      "name": "relwithdebinfo",
+      "displayName": "RelWithDebInfo",
+      "inherits": ["base", "llvm-from-env"],
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo"
+      }
+    },
+
+    {
+      "name": "ci-base",
+      "hidden": true,
+      "inherits": ["base", "llvm-from-env"],
+      "cacheVariables": {
+        "WEAVEC_WARNINGS_AS_ERRORS": "ON",
+        "WEAVEC_ENABLE_CCACHE": "ON"
+      }
+    },
+    {
+      "name": "ci-debug",
+      "displayName": "CI (Debug + ASan/UBSan)",
+      "inherits": "ci-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "WEAVEC_SANITIZERS": "address;undefined"
+      }
+    },
+    {
+      "name": "ci-release",
+      "displayName": "CI (Release)",
+      "inherits": "ci-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    },
+    {
+      "name": "ci-tidy",
+      "displayName": "CI (clang-tidy)",
+      "inherits": "ci-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "WEAVEC_ENABLE_CLANG_TIDY": "ON",
+        "WEAVEC_ENABLE_CCACHE": "OFF"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "dev", "configurePreset": "dev" },
+    { "name": "dev-asan", "configurePreset": "dev-asan" },
+    { "name": "dev-tidy", "configurePreset": "dev-tidy" },
+    { "name": "release", "configurePreset": "release" },
+    { "name": "relwithdebinfo", "configurePreset": "relwithdebinfo" },
+    { "name": "ci-debug", "configurePreset": "ci-debug" },
+    { "name": "ci-release", "configurePreset": "ci-release" },
+    { "name": "ci-tidy", "configurePreset": "ci-tidy" }
+  ],
+  "testPresets": [
+    {
+      "name": "test-base",
+      "hidden": true,
+      "output": { "outputOnFailure": true },
+      "execution": { "noTestsAction": "error", "stopOnFailure": false }
+    },
+    { "name": "dev", "inherits": "test-base", "configurePreset": "dev" },
+    { "name": "dev-asan", "inherits": "test-base", "configurePreset": "dev-asan" },
+    { "name": "release", "inherits": "test-base", "configurePreset": "release" },
+    { "name": "ci-debug", "inherits": "test-base", "configurePreset": "ci-debug" },
+    { "name": "ci-release", "inherits": "test-base", "configurePreset": "ci-release" }
+  ],
+  "workflowPresets": [
+    {
+      "name": "dev",
+      "steps": [
+        { "type": "configure", "name": "dev" },
+        { "type": "build", "name": "dev" },
+        { "type": "test", "name": "dev" }
+      ]
+    },
+    {
+      "name": "ci-debug",
+      "steps": [
+        { "type": "configure", "name": "ci-debug" },
+        { "type": "build", "name": "ci-debug" },
+        { "type": "test", "name": "ci-debug" }
+      ]
+    },
+    {
+      "name": "ci-release",
+      "steps": [
+        { "type": "configure", "name": "ci-release" },
+        { "type": "build", "name": "ci-release" },
+        { "type": "test", "name": "ci-release" }
+      ]
+    }
+  ]
+}

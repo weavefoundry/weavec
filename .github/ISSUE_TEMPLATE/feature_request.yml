@@ -1,0 +1,38 @@
+name: Feature request
+description: Propose an analysis, annotation, diagnostic, or tooling improvement
+title: "[feature]: "
+labels: [enhancement, needs-triage]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What can't you do today, or what is painful?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: >
+        How should WeaveC behave? Include example C code and the diagnostics or
+        inference results you would expect.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Affected areas
+      options:
+        - label: Core ownership / borrow / lifetime model (`lib/Core`)
+        - label: Inference or checkers (`lib/Analysis`)
+        - label: Clang integration or driver (`lib/Frontend`, `tools/`)
+        - label: Annotations (`weavec.h`)
+        - label: Build, CI, or documentation

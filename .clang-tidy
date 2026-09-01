@@ -1,0 +1,109 @@
+# clang-tidy configuration for WeaveC.
+#
+# Run locally with:  ninja -C build tidy    (or scripts/run-clang-tidy.sh)
+# Checks are intentionally strict; suppress with NOLINT and a justification.
+---
+Checks: >
+  -*,
+  bugprone-*,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-unchecked-optional-access,
+  cert-*,
+  -cert-err58-cpp,
+  clang-analyzer-*,
+  cppcoreguidelines-*,
+  -cppcoreguidelines-avoid-magic-numbers,
+  -cppcoreguidelines-non-private-member-variables-in-classes,
+  -cppcoreguidelines-owning-memory,
+  -cppcoreguidelines-pro-bounds-array-to-pointer-decay,
+  -cppcoreguidelines-pro-bounds-pointer-arithmetic,
+  -cppcoreguidelines-pro-bounds-avoid-unchecked-container-access,
+  -cppcoreguidelines-pro-type-static-cast-downcast,
+  -cppcoreguidelines-avoid-do-while,
+  -cppcoreguidelines-avoid-const-or-ref-data-members,
+  -cppcoreguidelines-macro-to-enum,
+  llvm-*,
+  -llvm-header-guard,
+  -llvm-include-order,
+  -llvm-use-ranges,
+  misc-*,
+  -misc-non-private-member-variables-in-classes,
+  -misc-include-cleaner,
+  -misc-no-recursion,
+  -misc-use-anonymous-namespace,
+  modernize-*,
+  -modernize-use-trailing-return-type,
+  -modernize-use-nodiscard,
+  -modernize-macro-to-enum,
+  performance-*,
+  portability-*,
+  readability-*,
+  -readability-identifier-length,
+  -readability-magic-numbers,
+  -readability-function-cognitive-complexity,
+  -readability-named-parameter,
+  -readability-else-after-return,
+  -readability-braces-around-statements,
+  -readability-trailing-comma
+
+# Notes on disabled checks:
+#   *-braces-around-statements, -else-after-return: LLVM style omits both.
+#   *-avoid-const-or-ref-data-members: reference members (ASTContext &) are
+#     idiomatic throughout Clang-based code.
+#   misc-use-anonymous-namespace: contradicts
+#     llvm-prefer-static-over-anonymous-namespace, which we follow.
+#   llvm-use-ranges: lib/Core must not depend on LLVM ADT.
+#   *-macro-to-enum: configuration macros live in generated headers.
+#   readability-trailing-comma: conflicts with clang-format's bin-packing.
+
+WarningsAsErrors: '*'
+HeaderFilterRegex: '(include|lib|tools|unittests)/.*'
+FormatStyle: file
+
+CheckOptions:
+  - key: readability-identifier-naming.NamespaceCase
+    value: lower_case
+  - key: readability-identifier-naming.ClassCase
+    value: CamelCase
+  - key: readability-identifier-naming.StructCase
+    value: CamelCase
+  - key: readability-identifier-naming.EnumCase
+    value: CamelCase
+  - key: readability-identifier-naming.EnumConstantCase
+    value: CamelCase
+  - key: readability-identifier-naming.FunctionCase
+    value: camelBack
+  - key: readability-identifier-naming.MethodCase
+    value: camelBack
+  - key: readability-identifier-naming.VariableCase
+    value: camelBack
+  - key: readability-identifier-naming.ParameterCase
+    value: camelBack
+  - key: readability-identifier-naming.MemberCase
+    value: camelBack
+  # Compile-time constants use CamelCase like LLVM (no `k` prefix).
+  - key: readability-identifier-naming.GlobalConstantCase
+    value: CamelCase
+  - key: readability-identifier-naming.StaticConstantCase
+    value: CamelCase
+  - key: readability-identifier-naming.ConstexprVariableCase
+    value: CamelCase
+  - key: readability-identifier-naming.TypeAliasCase
+    value: CamelCase
+  - key: readability-identifier-naming.TemplateParameterCase
+    value: CamelCase
+  - key: readability-identifier-naming.MacroDefinitionCase
+    value: UPPER_CASE
+  - key: readability-identifier-naming.MacroDefinitionIgnoredRegexp
+    value: '^WEAVEC_.*'
+  - key: readability-implicit-bool-conversion.AllowPointerConditions
+    value: true
+  - key: readability-implicit-bool-conversion.AllowIntegerConditions
+    value: true
+  - key: misc-const-correctness.AnalyzeValues
+    value: false
+  - key: cppcoreguidelines-special-member-functions.AllowSoleDefaultDtor
+    value: true
+  - key: cppcoreguidelines-special-member-functions.AllowMissingMoveFunctionsWhenCopyIsDeleted
+    value: true
+...

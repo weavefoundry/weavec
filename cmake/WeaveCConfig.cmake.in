@@ -1,0 +1,26 @@
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+
+# WeaveC's public interface exposes LLVM and Clang types.
+find_dependency(LLVM @LLVM_PACKAGE_VERSION@ CONFIG)
+find_dependency(Clang CONFIG)
+
+include("${CMAKE_CURRENT_LIST_DIR}/WeaveCTargets.cmake")
+
+# Re-attach LLVM/Clang include directories to the imported interface target
+# (they are deliberately not baked into the export file).
+set_property(
+  TARGET weavec::llvm
+  APPEND
+  PROPERTY INTERFACE_INCLUDE_DIRECTORIES ${LLVM_INCLUDE_DIRS} ${CLANG_INCLUDE_DIRS})
+set_property(
+  TARGET weavec::llvm
+  APPEND
+  PROPERTY INTERFACE_SYSTEM_INCLUDE_DIRECTORIES ${LLVM_INCLUDE_DIRS}
+           ${CLANG_INCLUDE_DIRS})
+
+set_and_check(WEAVEC_RESOURCE_DIR "${PACKAGE_PREFIX_DIR}/@WEAVEC_RESOURCE_DIR_RELATIVE@")
+set(WEAVEC_VERSION "@WEAVEC_VERSION_STRING@")
+
+check_required_components(WeaveC)

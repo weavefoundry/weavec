@@ -1,0 +1,51 @@
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Weekly, Monday 06:00 UTC.
+    - cron: "0 6 * * 1"
+
+permissions:
+  contents: read
+
+env:
+  LLVM_VERSION: "23"
+
+jobs:
+  analyze:
+    name: Analyze (C++)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install LLVM
+        run: |
+          wget -qO- https://apt.llvm.org/llvm.sh | sudo bash -s -- "$LLVM_VERSION" all
+          sudo apt-get install -y ninja-build
+          echo "WEAVEC_LLVM_PREFIX=/usr/lib/llvm-$LLVM_VERSION" >> "$GITHUB_ENV"
+          echo "CC=clang-$LLVM_VERSION" >> "$GITHUB_ENV"
+          echo "CXX=clang++-$LLVM_VERSION" >> "$GITHUB_ENV"
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: c-cpp
+          queries: security-and-quality
+
+      - name: Build
+        run: |
+          cmake --preset ci-release -DWEAVEC_BUILD_TESTS=OFF -DWEAVEC_ENABLE_CCACHE=OFF
+          cmake --build --preset ci-release
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@v4
+        with:
+          category: "/language:c-cpp"

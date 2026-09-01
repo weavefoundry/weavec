@@ -1,0 +1,27 @@
+# clangd language-server configuration.
+# Expects a compile_commands.json in ./build (created by the dev CMake presets).
+CompileFlags:
+  CompilationDatabase: build
+  Add:
+    - -Wall
+    - -Wextra
+  Remove:
+    # Flags clangd itself does not understand or that are toolchain-specific.
+    - -fno-canonical-system-headers
+    - -Werror
+
+Diagnostics:
+  UnusedIncludes: Strict
+  MissingIncludes: Strict
+  ClangTidy:
+    # Inherit from .clang-tidy; these are too noisy for editor feedback.
+    Remove:
+      - readability-identifier-naming
+
+InlayHints:
+  Enabled: true
+  ParameterNames: true
+  DeducedTypes: true
+
+Hover:
+  ShowAKA: true

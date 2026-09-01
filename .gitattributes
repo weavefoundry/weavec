@@ -1,0 +1,31 @@
+# Normalize line endings for all text files.
+* text=auto eol=lf
+
+# Source files
+*.c text
+*.h text
+*.cpp text
+*.hpp text
+*.inc text
+*.td text
+*.py text
+*.sh text eol=lf
+*.cmake text
+CMakeLists.txt text
+*.json text
+*.yml text
+*.yaml text
+*.md text
+*.txt text
+
+# Binary files
+*.png binary
+*.jpg binary
+*.gif binary
+*.pdf binary
+
+# Language detection hints for GitHub.
+*.h linguist-language=C++
+*.inc linguist-language=C++
+test/**/*.c linguist-detectable=false
+docs/** linguist-documentation

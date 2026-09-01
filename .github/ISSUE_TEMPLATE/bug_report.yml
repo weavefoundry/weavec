@@ -1,0 +1,61 @@
+name: Bug report
+description: WeaveC crashed, rejected valid code, or accepted unsafe code
+title: "[bug]: "
+labels: [bug, needs-triage]
+body:
+  - type: dropdown
+    id: kind
+    attributes:
+      label: Kind of bug
+      options:
+        - False positive (safe code rejected)
+        - False negative (unsafe code accepted)
+        - Crash / assertion failure
+        - Wrong or unhelpful diagnostic
+        - Build or installation problem
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproducer
+    attributes:
+      label: Minimal reproducer
+      description: >
+        The smallest C program that shows the problem, plus the exact `weavec`
+        command line. Please avoid system headers where possible.
+      render: c
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behaviour
+      description: Full diagnostic output or crash backtrace.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: weavec --version
+      placeholder: "weavec version 0.1.0-dev (abc123def456), built with LLVM 23.1.0"
+    validations:
+      required: true
+
+  - type: input
+    id: platform
+    attributes:
+      label: Platform
+      placeholder: "macOS 15 / arm64, Ubuntu 24.04 / x86_64, ..."
+    validations:
+      required: true

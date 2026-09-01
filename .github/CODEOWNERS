@@ -1,0 +1,12 @@
+# Default owners for everything in the repository.
+# Later lines take precedence over earlier ones.
+*                       @weavefoundry/maintainers
+
+# The core model is the heart of the project; changes need extra scrutiny.
+/include/weavec/Core/   @weavefoundry/maintainers
+/lib/Core/              @weavefoundry/maintainers
+/docs/design/           @weavefoundry/maintainers
+
+# Build and CI infrastructure.
+/cmake/                 @weavefoundry/maintainers
+/.github/               @weavefoundry/maintainers

@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions and discussion
+    url: https://github.com/weavefoundry/weavec/discussions
+    about: Ask questions, share ideas, or discuss the ownership model design.
+  - name: Security vulnerability
+    url: https://github.com/weavefoundry/weavec/security/advisories/new
+    about: Please report security issues privately; see SECURITY.md.

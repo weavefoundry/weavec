@@ -1,0 +1,31 @@
+//===- Version.h - WeaveC version information (generated) -------*- C++ -*-===//
+//
+// Part of WeaveC, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+//
+// This file is generated from include/weavec/Config/Version.h.in by CMake.
+// Do not edit the generated copy.
+//
+//===----------------------------------------------------------------------===//
+
+#ifndef WEAVEC_CONFIG_VERSION_H
+#define WEAVEC_CONFIG_VERSION_H
+
+// Macros (rather than constexpr) so the values are usable from C and in
+// preprocessor conditions.
+// clang-format off
+// NOLINTBEGIN(cppcoreguidelines-macro-usage)
+#define WEAVEC_VERSION_MAJOR @WEAVEC_VERSION_MAJOR@
+#define WEAVEC_VERSION_MINOR @WEAVEC_VERSION_MINOR@
+#define WEAVEC_VERSION_PATCH @WEAVEC_VERSION_PATCH@
+#define WEAVEC_VERSION_STRING "@WEAVEC_VERSION_STRING@"
+#define WEAVEC_GIT_REVISION "@WEAVEC_GIT_REVISION@"
+#define WEAVEC_GIT_DIRTY @WEAVEC_GIT_DIRTY_INT@
+#define WEAVEC_LLVM_VERSION_STRING "@LLVM_PACKAGE_VERSION@"
+// NOLINTEND(cppcoreguidelines-macro-usage)
+// clang-format on
+
+#endif // WEAVEC_CONFIG_VERSION_H
