@@ -38,7 +38,11 @@ jobs:
         uses: github/codeql-action/init@v4
         with:
           languages: c-cpp
-          queries: security-and-quality
+          # Security queries only: style and maintainability are clang-tidy's
+          # job (.clang-tidy, warnings-as-errors), and the `quality` pack
+          # duplicates it with heuristics (long switch cases, comment
+          # density, ...) that are not defects this project gates on.
+          queries: security-extended
 
       - name: Build
         run: |
