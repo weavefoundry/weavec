@@ -780,9 +780,11 @@ TEST(Dataflow, LifetimesThatDoOutlive) {
   EXPECT_TRUE(result.diagnostics.empty()) << messages(result.diagnostics)[0];
 }
 
-// -- Opaque values (documented holes) -----------------------------------------
+// -- Pointer identity (RFC 0004) ----------------------------------------------
 
-TEST(Dataflow, PointerArithmeticIsOpaque) {
+TEST(Dataflow, PointerArithmeticPreservesIdentity) {
+  // `p + 1` and `p++` denote the same object as `p` (RFC 0004, *Pointer
+  // identity*), so a free through one is a free of the other.
   const auto result = analyze(R"c(
     void f(void) {
       char *p = malloc(4);
@@ -797,7 +799,310 @@ TEST(Dataflow, PointerArithmeticIsOpaque) {
     }
   )c");
   ASSERT_TRUE(result.ast);
-  EXPECT_TRUE(result.diagnostics.empty());
+  EXPECT_EQ(messages(result.diagnostics),
+            Strings{"6: use of 'q' after it was freed"});
+  EXPECT_EQ(notes(result.diagnostics, 0), Strings{"freed here (through 'p')"});
+}
+
+TEST(Dataflow, SelfAssignmentKeepsEveryFact) {
+  // `cur = cur + 1` means the same as `cur++`: the place keeps its aliases,
+  // and so do `cur = cur` and `cur = (T *)cur` (RFC 0004, *Pointer
+  // identity*).
+  const auto result = analyze(R"c(
+    struct node { int v; };
+    int a(struct node *OWNED head) {
+      struct node *cur = head;
+      cur = cur + 1;
+      free(cur);
+      return head->v;
+    }
+    int b(struct node *OWNED head) {
+      struct node *cur = head;
+      cur = cur;
+      free(cur);
+      return head->v;
+    }
+    int c(struct node *OWNED head) {
+      struct node *cur = head;
+      cur = (struct node *)(void *)cur;
+      free(cur);
+      return head->v;
+    }
+    void d(long x) {
+      int *r = (int *)x;
+      r = r + 1;
+      *r = 1;
+    }
+  )c");
+  ASSERT_TRUE(result.ast);
+  EXPECT_EQ(
+      messages(result.diagnostics),
+      (Strings{"7: use of 'head' after it was freed",
+               "13: use of 'head' after it was freed",
+               "19: use of 'head' after it was freed",
+               "24: dereference of raw pointer 'r' outside an unsafe region"}));
+  EXPECT_EQ(notes(result.diagnostics, 3)[0],
+            "'r' is raw: cast from an integer here");
+}
+
+TEST(Dataflow, PointerCastsPreserveIdentity) {
+  // `(struct sockaddr *)&addr` is still `addr` (RFC 0004, *Pointer
+  // identity*): a pointer-to-pointer cast changes the type, not the object.
+  const auto result = analyze(R"c(
+    struct a { int x; };
+    struct b { int y; };
+    void f(void) {
+      struct a *p = malloc(sizeof *p);
+      struct b *q = (struct b *)p;
+      free(q);
+      use((char *)p);
+    }
+  )c");
+  ASSERT_TRUE(result.ast);
+  EXPECT_EQ(messages(result.diagnostics),
+            Strings{"8: use of 'p' after it was freed"});
+}
+
+TEST(Dataflow, IntegerCastsYieldRawPointers) {
+  // Only a round trip through an integer loses provenance; the result is a
+  // raw pointer, and dereferencing it is a raw operation (RFC 0004, *Raw
+  // pointers*).
+  const auto result = analyze(R"c(
+    void f(long x) {
+      int *p = (int *)x;
+      *p = 1;
+    }
+    void g(long x) {
+      int *p = (int *)x;
+      int *q = p;
+      use((char *)q);
+      if (q == 0) return;
+    }
+  )c");
+  ASSERT_TRUE(result.ast);
+  EXPECT_EQ(
+      messages(result.diagnostics),
+      (Strings{"4: dereference of raw pointer 'p' outside an unsafe region",
+               "9: 'use' dereferences raw pointer 'q' outside an unsafe "
+               "region"}))
+      << "copies and comparisons of a raw pointer are fine";
+  EXPECT_EQ(ids(result.diagnostics),
+            (Strings{"unsafe-operation", "unsafe-operation"}));
+  EXPECT_EQ(notes(result.diagnostics, 0),
+            (Strings{"'p' is raw: cast from an integer here",
+                     "move this operation into a WEAVEC_UNSAFE block or "
+                     "function, or assert the pointer's ownership first"}));
+  EXPECT_EQ(notes(result.diagnostics, 1)[0],
+            "'q' is raw: cast from an integer here (through 'p')");
+}
+
+// -- Raw pointers and unsafe regions (RFC 0004)
+// --------------------------------
+
+TEST(Dataflow, RawOperationsAreReleaseAndOwnershipTransferToo) {
+  const auto result = analyze(R"c(
+    void f(long x) {
+      char *p = (char *)x;
+      free(p);
+    }
+    void g(long x) {
+      char *p = (char *)x;
+      take(p);
+    }
+    void h(long x) {
+      char *p = (char *)x;
+      poke(p);
+    }
+  )c");
+  ASSERT_TRUE(result.ast);
+  EXPECT_EQ(
+      messages(result.diagnostics),
+      (Strings{"4: 'free' releases raw pointer 'p' outside an unsafe region",
+               "8: 'take' takes ownership of raw pointer 'p' outside an "
+               "unsafe region",
+               "12: 'poke' dereferences raw pointer 'p' outside an unsafe "
+               "region"}));
+}
+
+TEST(Dataflow, RawAnnotationOnParametersFieldsAndLocals) {
+  const auto result = analyze(R"c(
+    struct ctx { void *RAW cookie; int *plain; };
+    void param(int *RAW r) { *r = 1; }
+    void field(struct ctx *c) {
+      int *p = c->cookie;
+      *p = 1;
+      *c->plain = 1;        /* an ordinary field */
+    }
+    void local(int *q) {
+      int *RAW r = q;       /* q stays tracked; r is raw */
+      *r = 1;
+      *q = 1;
+    }
+    void raw_stays_raw_when_reassigned(int *RAW r, int *q) {
+      r = q;                /* the place is declared raw: still raw */
+      *r = 1;
+    }
+  )c");
+  ASSERT_TRUE(result.ast);
+  EXPECT_EQ(
+      messages(result.diagnostics),
+      (Strings{"3: dereference of raw pointer 'r' outside an unsafe region",
+               "6: dereference of raw pointer 'p' outside an unsafe region",
+               "11: dereference of raw pointer 'r' outside an unsafe region",
+               "16: dereference of raw pointer 'r' outside an unsafe region"}));
+  EXPECT_EQ(notes(result.diagnostics, 0)[0],
+            "'r' is raw: declared WEAVEC_RAW here");
+  EXPECT_EQ(notes(result.diagnostics, 1)[0],
+            "'p' is raw: declared WEAVEC_RAW here (through 'c->cookie')");
+}
+
+TEST(Dataflow, UnsafeRegionPermitsRawOperationsAndSuppressesReports) {
+  const auto result = analyze(R"c(
+    void f(long x, int *p) {
+      UNSAFE {
+        int *r = (int *)x;
+        *r = 1;
+        free(r);
+        free(p);
+        free(p);
+      }
+    }
+    UNSAFE void g(int *RAW r) { *r = 1; free(r); }
+  )c");
+  ASSERT_TRUE(result.ast);
+  EXPECT_TRUE(result.diagnostics.empty()) << messages(result.diagnostics)[0];
+  // The unsafe function still has a summary its callers use.
+  ASSERT_NE(result.summary("g"), nullptr);
+  EXPECT_TRUE(result.summary("g")->frees(0));
+}
+
+TEST(Dataflow, LaunderingByAssertion) {
+  // RFC 0004, "Laundering": storing a raw value into a place declared with a
+  // safe kind, or returning it from a function whose return type is
+  // annotated, asserts that kind. Fine inside an unsafe region, an error
+  // outside; the kind holds afterwards either way.
+  const auto result = analyze(R"c(
+    struct box { int *OWNED owned; };
+    int *OWNED by_return(long x) {
+      UNSAFE { return (int *)x; }
+    }
+    int *OWNED by_return_outside(long x) {
+      return (int *)x;
+    }
+    void by_local(long x) {
+      OWNED int *p;
+      UNSAFE { p = (int *)x; }
+      free(p);
+      free(p);
+    }
+    void by_local_outside(long x) {
+      int *raw = (int *)x;
+      OWNED int *p = raw;
+      free(p);
+    }
+    void by_field(struct box *b, long x) {
+      UNSAFE { b->owned = (int *)x; }
+      free(b->owned);
+      use(b->owned);
+    }
+    void caller(long x) {
+      int *p = by_return(x);
+      *p = 1;
+      free(p);
+    }
+  )c");
+  ASSERT_TRUE(result.ast);
+  EXPECT_EQ(
+      messages(result.diagnostics),
+      (Strings{"7: raw pointer is returned from a function whose return type "
+               "is annotated WEAVEC_OWNED outside an unsafe region",
+               "13: 'p' is freed twice",
+               "17: raw pointer 'raw' is assigned to 'p', which is declared "
+               "WEAVEC_OWNED, outside an unsafe region",
+               "23: use of 'b->owned' after it was freed"}));
+  // What the body hands back is raw, but the annotation is the contract:
+  // callers see an owned result (and `caller` above therefore has nothing to
+  // report).
+  EXPECT_EQ(result.summary("by_return")->inferredReturnKind(),
+            core::OwnershipKind::Raw);
+  const auto resolved =
+      result.analyzer->summaries().lookup(*result.function("by_return"));
+  ASSERT_TRUE(resolved);
+  EXPECT_EQ(resolved->source, analysis::SummarySource::Annotation);
+  EXPECT_EQ(resolved->summary->inferredReturnKind(),
+            core::OwnershipKind::Owned);
+}
+
+TEST(Dataflow, RawIsAValueSourceInSummaries) {
+  const auto result = analyze(R"c(
+    struct s { int *field; };
+    static int *from_int(long x) { return (int *)x; }
+    static void store_raw(struct s *s, long x) { s->field = (int *)x; }
+    static int *RAW declared(void *RAW p) { return p; }
+    void caller(struct s *s, long x) {
+      int *a = from_int(x);
+      *a = 1;
+      store_raw(s, x);
+      *s->field = 2;
+      int *b = declared(a);
+      *b = 3;
+    }
+  )c");
+  ASSERT_TRUE(result.ast);
+  EXPECT_EQ(result.summary("from_int")->returns,
+            std::set<core::ValueSource>{core::ValueSource::raw()});
+  EXPECT_EQ(
+      messages(result.diagnostics),
+      (Strings{"8: dereference of raw pointer 'a' outside an unsafe region",
+               "10: dereference of raw pointer 's->field' outside an unsafe "
+               "region",
+               "12: dereference of raw pointer 'b' outside an unsafe region"}));
+  EXPECT_EQ(notes(result.diagnostics, 0)[0],
+            "'a' is raw: handed out by 'from_int' here");
+  EXPECT_EQ(notes(result.diagnostics, 1)[0],
+            "'s->field' is raw: handed out by 'store_raw' here");
+}
+
+// -- Indirect calls (RFC 0004, "Signatures for function pointers")
+// -------------
+
+TEST(Dataflow, IndirectCallsUseTypeAnnotationsOrAddressTakenJoin) {
+  const auto result = analyze(R"c(
+    struct node { int v; };
+    typedef void (*dtor_t)(struct node *OWNED);
+    typedef OWNED struct node *(*maker_t)(void);
+    static void node_free(struct node *n) { free(n); }
+    struct hooks { void (*drop)(struct node *); };
+    static struct hooks H = { node_free };
+    void a(dtor_t d, struct node *n) { d(n); use(n); }
+    void b(maker_t m) { struct node *n = m(); free(n); use(n); }
+    void c(struct node *n) { H.drop(n); use(n); }
+    void d(void (*cb)(struct node *), struct node *n) { cb(n); use(n); }
+    void e(int (*cmp)(int, int), struct node *n) { cmp(1, 2); use(n); }
+  )c");
+  ASSERT_TRUE(result.ast);
+  EXPECT_EQ(messages(result.diagnostics),
+            (Strings{"8: use of 'n' after it was moved",
+                     "9: use of 'n' after it was freed",
+                     "10: use of 'n' after it was freed",
+                     "11: use of 'n' after it was freed"}))
+      << "`cmp` has no pointer parameters: not even a boundary warning";
+}
+
+TEST(Dataflow, CallbacksAreAnalysedBeforeTheirCallers) {
+  // The call graph has an edge from an indirect call to every address-taken
+  // function of the type, so `node_free` is summarised before `f`, whichever
+  // comes first in the file.
+  const auto result = analyze(R"c(
+    struct node { int v; };
+    static void node_free(struct node *n);
+    void f(void (*cb)(struct node *), struct node *n) { cb(n); use(n); }
+    static void (*registered)(struct node *) = node_free;
+    static void node_free(struct node *n) { free(n); }
+  )c");
+  ASSERT_TRUE(result.ast);
+  EXPECT_EQ(messages(result.diagnostics),
+            Strings{"4: use of 'n' after it was freed"});
 }
 
 } // namespace

@@ -47,12 +47,15 @@ void array_summary(void) {
   use(arr[1]);
 }
 
-// Pointer arithmetic produces an opaque value; nothing is tracked for it.
-void opaque(void) {
+// Pointer arithmetic keeps the identity of the object (RFC 0004, *Pointer
+// identity*): `q` is `p`.
+void arithmetic(void) {
   char *p = malloc(4);
   char *q = p + 1;
   free(p);
+  // CHECK: rfc0002-places.c:[[@LINE+1]]:7: error: use of 'q' after it was freed [weavec::use-after-free]
   use(q);
+  // CHECK: rfc0002-places.c:[[@LINE-3]]:3: note: freed here (through 'p')
 }
 
-// CHECK: 5 errors generated.
+// CHECK: 6 errors generated.

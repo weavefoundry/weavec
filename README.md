@@ -9,11 +9,12 @@ WeaveC is built on Clang/LLVM rather than implementing a compiler from scratch, 
 
 WeaveC itself is written in modern C++, which provides the most direct and complete access to Clang/LLVM's APIs and infrastructure. The core ownership, borrowing, lifetime, and inference logic should be kept as modular as possible so it remains cleanly separated from the Clang integration layer and can potentially be reused or extended in the future.
 
-> **Status:** early. Every function body is checked by a sound dataflow ([RFC 0002](docs/rfcs/0002-intraprocedural-checking.md)): use-after-free and double-free through any alias and across loops, use-after-move, conflicting borrows, and pointers that outlive what they point to. Calls are modelled by inferred signatures ([RFC 0003](docs/rfcs/0003-signature-inference.md)): every function in the translation unit gets a summary of what it frees, writes, stores and returns, so `node_free(n); n->v` is caught without annotations; the C standard library is covered by a shipped table, and annotations are checked against the bodies that carry them. Cross-translation-unit inference and unsafe blocks are next. See [docs/roadmap.md](docs/roadmap.md).
+> **Status:** early. Every function body is checked by a sound dataflow ([RFC 0002](docs/rfcs/0002-intraprocedural-checking.md)): use-after-free and double-free through any alias and across loops, use-after-move, conflicting borrows, and pointers that outlive what they point to. Calls are modelled by inferred signatures ([RFC 0003](docs/rfcs/0003-signature-inference.md)): every function in the translation unit gets a summary of what it frees, writes, stores and returns, so `node_free(n); n->v` is caught without annotations; the C standard library and POSIX are covered by a shipped table, and annotations are checked against the bodies that carry them. Unsafe code has a boundary ([RFC 0004](docs/rfcs/0004-unsafe-boundaries.md)): pointers cast from integers or declared `WEAVEC_RAW` are *raw* and may only be dereferenced or released inside a `WEAVEC_UNSAFE` region, which is analysed rather than skipped; calls through function pointers are checked from the pointer type's annotations or from the functions assigned to it. Cross-translation-unit inference and the drop-in compiler driver are next. See [docs/roadmap.md](docs/roadmap.md).
 
 ## Quick look
 
 ```c
+#include <stdint.h>
 #include <stdlib.h>
 #include <weavec.h>
 
@@ -33,6 +34,15 @@ int *escape(void) {
   int x = 0;
   return &x;         // error: returned pointer may outlive 'x' [weavec::lifetime-too-short]
 }
+
+struct node *WEAVEC_OWNED from_handle(uintptr_t h) {
+  WEAVEC_UNSAFE { return (struct node *)h; }   // asserts ownership, at one greppable point
+}
+
+int handle(uintptr_t h) {
+  struct node *r = (struct node *)h;             // r is raw: no one knows who owns it
+  return r->v;       // error: dereference of raw pointer 'r' outside an unsafe region [weavec::unsafe-operation]
+}
 ```
 
 ```
@@ -49,9 +59,16 @@ example.c:18:10: error: returned pointer may outlive 'x', which it points to [we
 example.c:17:7: note: 'x' is declared here
    17 |   int x = 0;
       |       ^
+example.c:27:10: error: dereference of raw pointer 'r' outside an unsafe region [weavec::unsafe-operation]
+   27 |   return r->v;
+      |          ^
+example.c:26:20: note: 'r' is raw: cast from an integer here
+   26 |   struct node *r = (struct node *)h;
+      |                    ^
+example.c:27:10: note: move this operation into a WEAVEC_UNSAFE block or function, or assert the pointer's ownership first
 ```
 
-Annotations (`WEAVEC_OWNED`, `WEAVEC_BORROWED`, `WEAVEC_MUT`, `WEAVEC_UNSAFE`) expand to nothing on other compilers, so annotated code remains plain, portable C. See [docs/annotations.md](docs/annotations.md).
+Annotations (`WEAVEC_OWNED`, `WEAVEC_BORROWED`, `WEAVEC_MUT`, `WEAVEC_RAW`, `WEAVEC_UNSAFE`) expand to nothing on other compilers, so annotated code remains plain, portable C. See [docs/annotations.md](docs/annotations.md).
 
 ## Building
 

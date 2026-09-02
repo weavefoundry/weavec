@@ -41,11 +41,13 @@ TEST(AnalysisState, JoinUnionsMovesLoansAndAliases) {
 
   AnalysisState right;
   right.loans.addLoanUnchecked(loanOn(X, Q));
+  right.raw.markRaw(Q, RawReason::IntegerCast, at(4));
 
   left.join(right);
   EXPECT_TRUE(left.moves.isMoved(P));
   EXPECT_TRUE(left.aliases.mayAlias(P, Q));
   EXPECT_TRUE(left.loans.hasLoans(X));
+  EXPECT_TRUE(left.raw.isRaw(Q)) << "raw on either path is may-raw";
 }
 
 TEST(AnalysisState, JoinKeepsOnlyAgreedReallocs) {
@@ -97,8 +99,10 @@ TEST(AnalysisState, ForgetClearsEveryFactAboutThePlace) {
   state.loans.addLoanUnchecked(loanOn(P, Q));
   state.reallocs[P] = {Q};
   state.kinds[P] = OwnershipKind::Owned;
+  state.raw.markRaw(P, RawReason::Declared, at(3));
 
   state.forget(P);
+  EXPECT_FALSE(state.raw.isRaw(P));
   EXPECT_FALSE(state.moves.isMoved(P));
   EXPECT_FALSE(state.aliases.mayAlias(P, Q));
   EXPECT_TRUE(state.loans.heldBy(P).empty()) << "loans held by p dropped";

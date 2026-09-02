@@ -8,7 +8,7 @@
 //
 // The dataflow state RFC 0002 carries through a function body:
 //
-//   State = { moves, loans, aliases, reallocs, kinds }
+//   State = { moves, loans, aliases, reallocs, kinds, raw }
 //
 // Every component is a finite-height lattice whose `join` is monotone, so a
 // worklist iteration over the CFG terminates without widening. Lifetimes are
@@ -25,6 +25,7 @@
 #include "weavec/Core/Moves.h"
 #include "weavec/Core/Ownership.h"
 #include "weavec/Core/Place.h"
+#include "weavec/Core/Raw.h"
 
 #include <map>
 #include <optional>
@@ -46,6 +47,9 @@ struct AnalysisState {
   std::map<PlaceId, std::vector<PlaceId>> reallocs;
   /// Inferred ownership kind per pointer place.
   std::map<PlaceId, OwnershipKind> kinds;
+  /// Pointer places holding a raw pointer (RFC 0004): dereferencing or
+  /// releasing one is legal only inside an unsafe region.
+  RawTracker raw;
 
   /// Component-wise join with the state of another incoming edge.
   void join(const AnalysisState &other);
@@ -55,8 +59,9 @@ struct AnalysisState {
 
   /// Forgets everything about `place` itself: its move record, its alias
   /// class membership, the loans it holds, the loans against it, its pending
-  /// realloc and its kind. Used when the place is (re)initialised or goes out
-  /// of scope. Descendants are the caller's responsibility.
+  /// realloc, its kind and its raw record. Used when the place is
+  /// (re)initialised or goes out of scope. Descendants are the caller's
+  /// responsibility.
   void forget(PlaceId place);
 
   friend bool operator==(const AnalysisState &,

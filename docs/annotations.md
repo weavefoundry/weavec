@@ -11,8 +11,25 @@ portable C.
 | `WEAVEC_OWNED`    | pointer parameters, returns, variables, fields | The pointer uniquely owns its referent and must release it exactly once. |
 | `WEAVEC_BORROWED` | pointer parameters, returns, variables, fields | Shared, read-only borrow. The referent outlives the borrow.              |
 | `WEAVEC_MUT`      | pointer parameters, returns, variables, fields | Exclusive, mutable borrow.                                               |
-| `WEAVEC_UNSAFE`   | function declarations, compound statements     | Opt out of checking for the function body or the block.                  |
+| `WEAVEC_RAW`      | pointer parameters, returns, variables, fields, function-pointer types | No guarantee at all: the checker tracks the pointer but any dereference, release or transfer of ownership must happen inside a `WEAVEC_UNSAFE` region. |
+| `WEAVEC_UNSAFE`   | function declarations, compound statements     | An *unsafe region*: raw operations are permitted and nothing inside is reported, but ownership still flows through it and out of it. |
 | `WEAVEC_ENABLED`  | (macro, not an attribute)      | `1` when the TU is being processed by `weavec`, else `0`.                |
+
+Annotations on a function-pointer type describe whatever is called through it
+([RFC 0004](rfcs/0004-unsafe-boundaries.md)):
+
+```c
+typedef void (*dtor_t)(struct node *WEAVEC_OWNED);          /* every call consumes */
+typedef WEAVEC_OWNED struct node *(*maker_t)(void);         /* every call allocates */
+struct ops {
+  void (*drop)(struct node *WEAVEC_OWNED);                  /* fields too      */
+  void *(*WEAVEC_OWNED alloc)(size_t);                      /* result of alloc */
+};
+```
+
+An annotation on the declarator of a function pointer (the typedef name, the
+field or the parameter) describes the *result* of calls through it; the
+annotations inside its parameter list describe the arguments.
 
 ## Placement
 
@@ -46,6 +63,43 @@ void f(int *p) {
 }
 ```
 
+An unsafe region is a boundary, not a hole: the checker still analyses what
+happens inside it (so a `free` inside the block is a free as far as the code
+after it is concerned, and the function's summary is still inferred) and only
+stops *reporting* there. It is also the only place a `WEAVEC_RAW` pointer may
+be dereferenced, released or handed to an owning parameter, and the place to
+assert what a raw pointer really is:
+
+```c
+struct node *WEAVEC_OWNED node_from_handle(uintptr_t h) {
+  WEAVEC_UNSAFE { return (struct node *)h; }   /* asserts: this is owned */
+}
+
+void stash(struct node *WEAVEC_OWNED n) {
+  WEAVEC_UNSAFE { registry[key] = (uintptr_t)n; } /* ownership leaves the model */
+}
+```
+
+Outside an unsafe region the same statements are `unsafe-operation` errors,
+but the asserted kind still holds afterwards, so a single error replaces a
+cascade. See [RFC 0004](rfcs/0004-unsafe-boundaries.md), *Laundering*.
+
+### Where raw pointers come from
+
+- a cast from an integer (`(struct node *)h`, `(void *)uintptr`);
+- a declaration annotated `WEAVEC_RAW` (parameters, variables, fields,
+  results and function-pointer results);
+- a load through a raw pointer (`raw->next` is raw too);
+- the result of a callee whose body returns or stores a raw value, or whose
+  declaration says `WEAVEC_RAW`;
+- under `--strict-externs`, every pointer that passes through a call the
+  checker cannot resolve (see `annotation-required`).
+
+Copying, comparing and converting a raw pointer back to an integer are fine
+anywhere; passing it to a callee's `WEAVEC_RAW` parameter is fine too. Only a
+dereference, a release, a move into an owning parameter, or a borrow by a
+callee that reads or writes through it is a *raw operation*.
+
 ## Diagnostics
 
 Every WeaveC diagnostic ends with a stable identifier in brackets, e.g.
@@ -58,16 +112,17 @@ Every WeaveC diagnostic ends with a stable identifier in brackets, e.g.
 | `use-after-move`      | error    | A pointer is used after being passed to a `WEAVEC_OWNED` parameter or to `realloc` (without a null test). Note: `moved here`. |
 | `conflicting-borrow`  | error    | A borrow violates the aliasing rules: `cannot borrow '<x>' as mutable because it is already borrowed`, `... as shared because it is already mutably borrowed`, `cannot assign to '<x>' while it is borrowed`, `cannot free '<p>' while it is borrowed`, `cannot move '<p>' while it is borrowed`. Note names the other pointer. |
 | `lifetime-too-short`  | error    | A pointer may outlive what it points to: `'<p>' may outlive '<x>', which it points to` (stored into an outer scope, a global or through a parameter) or `returned pointer may outlive '<x>', which it points to`. Notes: where `<x>` is declared and where it goes out of scope. |
-| `unsafe-operation`    | error    | A `Raw` pointer is used outside `WEAVEC_UNSAFE`. *(reserved)*         |
+| `unsafe-operation`    | error    | A raw operation outside a `WEAVEC_UNSAFE` region ([RFC 0004](rfcs/0004-unsafe-boundaries.md)): `dereference of raw pointer '<p>' outside an unsafe region`, `'<f>' dereferences raw pointer '<p>' ...` (also `releases`, `takes ownership of`), `raw pointer '<p>' is assigned to '<q>', which is declared WEAVEC_OWNED, outside an unsafe region` (any safe annotation), `raw pointer is returned from a function whose return type is annotated WEAVEC_OWNED outside an unsafe region`, and with `--strict-externs`, `unchecked call to '<f>' outside an unsafe region` / `unchecked call through '<fp>' ...`. Notes: why the pointer is raw (`'<p>' is raw: cast from an integer here`, `declared WEAVEC_RAW here`, `loaded through raw pointer '<q>' here`, `handed out by '<f>' here`, `returned by a call into unchecked code ('<f>') here`, each optionally `(through '<alias>')`) and `move this operation into a WEAVEC_UNSAFE block or function, or assert the pointer's ownership first`. |
 | `annotation-mismatch` | error    | A definition contradicts its own annotation: `'<p>' is annotated WEAVEC_BORROWED but is freed here` (also `WEAVEC_MUT`; also `moved`, `written through`; also `... but '<p>->f' is freed here` for a path under the parameter), `function returns a borrow but its return type is annotated WEAVEC_OWNED`, `function returns a fresh allocation but its return type is annotated WEAVEC_BORROWED` (or `WEAVEC_MUT`). Notes: `'<p>' is annotated here` / `annotated here`; `'<q>' is a copy of '<p>'` when through an alias. Callers keep trusting the annotation. |
-| `annotation-required` | warning (error with `--strict-externs`) | **On by default:** `call to '<f>' is not checked: it has no definition or ownership annotations here`, once per callee per translation unit, for a callee with pointer parameters or a pointer result that has no body here, no annotations and no libc entry; callees from system headers are exempt. Notes: `'<f>' is declared here`, `annotate its pointer parameters with WEAVEC_OWNED, WEAVEC_BORROWED or WEAVEC_MUT, or define it in this translation unit`. **With `--report-unannotated`:** every exported (non-`static`) definition additionally gets `pointer parameter '<p>' of '<f>' is inferred WEAVEC_OWNED; add the annotation to its declaration` (or `WEAVEC_BORROWED` / `WEAVEC_MUT`; `return value of '<f>' is inferred ...`) with a fix-it that inserts the annotation, or `pointer parameter '<p>' has no inferable ownership; annotate it with WEAVEC_OWNED, WEAVEC_BORROWED or WEAVEC_MUT` when the body gives no evidence. |
+| `annotation-required` | warning  | **On by default:** `call to '<f>' is not checked: it has no definition or ownership annotations here`, once per callee per translation unit, for a callee with pointer parameters or a pointer result that has no body here, no annotations and no libc entry; callees from system headers are exempt. Notes: `'<f>' is declared here`, `annotate its pointer parameters with WEAVEC_OWNED, WEAVEC_BORROWED, WEAVEC_MUT or WEAVEC_RAW, or define it in this translation unit`. Likewise `call through '<fp>' is not checked: its function type has no ownership annotations and no function of that type has its address taken in this translation unit`, once per function-pointer type. With `--strict-externs` these calls are `unsafe-operation` errors instead (at every call site, including callees from system headers), and their pointer result is raw. **With `--report-unannotated`:** every exported (non-`static`) definition additionally gets `pointer parameter '<p>' of '<f>' is inferred WEAVEC_OWNED; add the annotation to its declaration` (or `WEAVEC_BORROWED` / `WEAVEC_MUT`; `return value of '<f>' is inferred ...`) with a fix-it that inserts the annotation, or `pointer parameter '<p>' has no inferable ownership; annotate it with WEAVEC_OWNED, WEAVEC_BORROWED or WEAVEC_MUT` when the body gives no evidence. |
 | `invalid-annotation`  | warning  | A `weavec.*` annotation WeaveC does not recognise.                    |
 
 The identifiers are defined in `include/weavec/Core/Diagnostic.h`
 (`weavec::core::diag`). Renaming one is a breaking change. The rules behind
 them are specified by [RFC 0001](rfcs/0001-ownership-model.md),
-[RFC 0002](rfcs/0002-intraprocedural-checking.md) and
-[RFC 0003](rfcs/0003-signature-inference.md).
+[RFC 0002](rfcs/0002-intraprocedural-checking.md),
+[RFC 0003](rfcs/0003-signature-inference.md) and
+[RFC 0004](rfcs/0004-unsafe-boundaries.md).
 
 Fix-its are emitted through Clang, so `-fdiagnostics-parseable-fixits` and
 editor integrations that apply Clang fix-its work unchanged:
@@ -83,15 +138,28 @@ buffer.c:12:27: warning: pointer parameter 'b' of 'buffer_free' is inferred WEAV
 ## What the checker understands
 
 - **Ownership sources**: `malloc`, `calloc`, `realloc`, `strdup`, `strndup`,
-  `aligned_alloc`, `fopen`, ... (the shipped libc table), any function whose
-  return type carries `WEAVEC_OWNED`, and any function defined in the
-  translation unit whose body returns a fresh allocation.
-- **Releases and moves**: `free`, `fclose`, ..., passing a pointer to a
+  `aligned_alloc`, `fopen`, `opendir`, `getaddrinfo`, `asprintf`, `getline`,
+  `mmap`, `pthread_create`, ... (the shipped libc/POSIX table, about 490
+  functions from `<stdlib.h>`, `<stdio.h>`, `<string.h>`, `<unistd.h>`,
+  `<fcntl.h>`, `<dirent.h>`, `<sys/mman.h>`, `<netdb.h>`, `<pthread.h>`,
+  `<time.h>`, `<pwd.h>`, `<grp.h>`, `<regex.h>`, `<dlfcn.h>`, `<wchar.h>`
+  and friends), any function whose return type carries `WEAVEC_OWNED`, and
+  any function defined in the translation unit whose body returns a fresh
+  allocation.
+- **Releases and moves**: `free`, `fclose`, `closedir`, `freeaddrinfo`,
+  `munmap`, `regfree`, `dlclose`, ..., passing a pointer to a
   `WEAVEC_OWNED` parameter, and passing it to a function defined in the
   translation unit whose body frees or moves that parameter (through any
   depth of wrappers and through recursion). `realloc(p, n)` moves `p`; on
   the path where the result is tested null (`if (!q)`, `q == NULL`, ...),
   `p` is valid again.
+- **Calls through function pointers**: the callee's signature is taken from
+  the annotations on the function-pointer type (typedef, field or parameter)
+  when it has any; otherwise from the join of the summaries of every
+  function of that type whose address is taken in the translation unit
+  (`ops.drop = node_free;`, `qsort(a, n, sz, cmp)`), so a call through
+  `ops->drop` frees what `node_free` frees. Pointers with neither are
+  reported once per type as `annotation-required`.
 - **Effects through parameters**: a callee that frees `b->data`, writes
   `*out`, or stores a fresh allocation into `*out` or a global has that
   effect at the call site. A callee that re-nulls what it freed
@@ -115,15 +183,27 @@ buffer.c:12:27: warning: pointer parameter 'b' of 'buffer_free' is inferred WEAV
 - **Annotations are checked**: a body that frees a `WEAVEC_BORROWED`
   parameter is an `annotation-mismatch`; the annotation still governs what
   callers assume.
-- **Not tracked**: pointer arithmetic (`p + 1`, `p++`) and casts between
-  unrelated pointer types yield opaque values that are neither checked nor
-  reported; calls through function pointers have no effect on their
-  arguments; a call to a function with no body here, no annotations and no
-  libc entry borrows its pointer arguments for the call, retains nothing,
-  and returns an unknown value (this is what `annotation-required` reports).
+- **Pointer identity**: pointer arithmetic (`p + 1`, `p++`, `&a[i]`) and
+  casts between pointer types (`(char *)p`, `(void *)p`) name the same
+  object as the operand, so `free(p); use(p + 1)` is a use after free. Only
+  a round trip through an integer loses identity, and what comes back is a
+  *raw* pointer.
+- **Raw pointers and unsafe regions**: a raw pointer is tracked (copies,
+  comparisons and conversions to integers are fine) but dereferencing,
+  releasing or handing it to an owning parameter outside a `WEAVEC_UNSAFE`
+  region is an `unsafe-operation`. Unsafe regions are analysed like any
+  other code with their diagnostics suppressed, so a `free` inside one is
+  still a free afterwards.
+- **Unchecked calls**: a call to a function with no body here, no annotations
+  and no libc entry borrows its pointer arguments for the call, retains
+  nothing, and returns an unknown value (this is what `annotation-required`
+  reports). With `--strict-externs` the call is an `unsafe-operation` unless
+  it is inside an unsafe region; its arguments are left alone and its
+  pointer result is raw.
 
 `weavec --dump-analysis file.c -- <flags>` prints the inferred places,
-lifetimes, exit state and summary of every analysed function.
+lifetimes, exit state (including which places hold raw pointers, and why)
+and summary of every analysed function.
 
 ## Compatibility with other annotation schemes
 

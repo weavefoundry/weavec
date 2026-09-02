@@ -23,7 +23,11 @@
 //
 // Calls are interpreted through the callee's summary (RFC 0003, *Applying a
 // summary at a call*), so the same semantic actions that handle `free(p)`
-// handle `node_free(p)`.
+// handle `node_free(p)` and `o->drop(p)`.
+//
+// Unsafe regions (RFC 0004) are analysed like everything else; while the
+// element being transferred lies in one, raw pointers may be dereferenced
+// and released and no diagnostic is emitted.
 //
 //===----------------------------------------------------------------------===//
 
@@ -59,6 +63,11 @@ static constexpr unsigned MaxVisitsPerBlock = 64;
 /// only bounds the closure over alias classes (see `mirrors`).
 static constexpr std::size_t MaxPlaceDepth = 8;
 
+/// `raw pointer 'p'`, or just `raw pointer` for a value with no place.
+static std::string rawPointerPhrase(const std::optional<std::string> &name) {
+  return name ? "raw pointer '" + *name + "'" : std::string("raw pointer");
+}
+
 FunctionDataflow::FunctionDataflow(ASTContext &ctx, const FunctionDecl &fn,
                                    core::DiagnosticSink &diagSink,
                                    const AnalysisOptions &analysisOptions,
@@ -68,8 +77,10 @@ FunctionDataflow::FunctionDataflow(ASTContext &ctx, const FunctionDecl &fn,
       builder(places, summaryStore), callerLifetime(lifetimes.fresh("caller")),
       fnLifetime(lifetimes.fresh("fn")),
       paramReassigned(fn.getNumParams(), false),
-      signature(collectAnnotations(fn)) {
+      signature(collectAnnotations(fn)), unsafeBody(signature.unsafe),
+      inUnsafe(unsafeBody) {
   lifetimes.addOutlives(callerLifetime, fnLifetime);
+  builder.setStrictExterns(options.strictExterns);
 }
 
 // -- Pre-passes ---------------------------------------------------------------
@@ -133,10 +144,10 @@ void FunctionDataflow::collectUnsafe(const Stmt &stmt) {
 void FunctionDataflow::classifyStmt(const Stmt *stmt) {
   if (stmt == nullptr)
     return;
-  if (isUnsafeBlock(*stmt)) {
+  // An unsafe block is analysed like any other (RFC 0004); its statements
+  // are only remembered so the transfer function knows where it is.
+  if (isUnsafeBlock(*stmt))
     collectUnsafe(*stmt);
-    return;
-  }
   if (const auto *decl = dyn_cast<DeclStmt>(stmt)) {
     for (const Decl *d : decl->decls()) {
       const auto *var = dyn_cast<VarDecl>(d);
@@ -310,7 +321,19 @@ core::AnalysisState FunctionDataflow::initialState() {
       kind = core::OwnershipKind::Mutable;
     else if (annotations.borrowed)
       kind = core::OwnershipKind::Shared;
+    else if (annotations.raw)
+      kind = core::OwnershipKind::Raw;
+    if (annotations.ownership())
+      declaredKinds[place] = annotations;
     setKind(place, kind, state);
+    if (annotations.raw) {
+      markRaw(place,
+              core::RawRecord{.reason = core::RawReason::Declared,
+                              .location = locate(param->getLocation()),
+                              .via = std::nullopt,
+                              .detail = nameOf(place)},
+              state);
+    }
   }
   return state;
 }
@@ -405,18 +428,25 @@ void FunctionDataflow::transfer(const CFGBlock &block,
   for (const CFGElement &element : block) {
     if (const auto stmtElement = element.getAs<CFGStmt>()) {
       const Stmt *stmt = stmtElement->getStmt();
-      if (stmt == nullptr || unsafeStmts.contains(stmt))
+      if (stmt == nullptr)
         continue;
+      inUnsafe = unsafeBody || unsafeStmts.contains(stmt);
       if (const auto *expr = dyn_cast<Expr>(stmt))
         handleExpr(*expr, state);
       else if (const auto *decl = dyn_cast<DeclStmt>(stmt))
         handleDecl(*decl, state);
       else if (const auto *ret = dyn_cast<ReturnStmt>(stmt))
         handleReturn(*ret, state);
+      inUnsafe = unsafeBody;
       continue;
     }
     if (const auto lifetimeEnd = element.getAs<CFGLifetimeEnds>()) {
-      if (const VarDecl *var = lifetimeEnd->getVarDecl())
+      // Clang <= 22 also ends parameter lifetimes at every `return` (Clang 23
+      // gates this behind `AddParameterLifetimes`). Parameters live for the
+      // whole function in the model, and forgetting them here would drop
+      // their facts from the exit state and the summary.
+      if (const VarDecl *var = lifetimeEnd->getVarDecl();
+          var != nullptr && !isa<ParmVarDecl>(var))
         handleLifetimeEnd(*var, state);
     }
   }
@@ -493,23 +523,28 @@ void FunctionDataflow::handleExpr(const Expr &expr,
     if (role == Role::Ignore)
       return;
     const auto ref = builder.resolve(expr);
-    if (!ref)
+    if (!ref) {
+      // `((T *)(uintptr_t)x)->f`: a dereference of a raw value that lives
+      // in no place (RFC 0004, *Raw pointers*, rule 1).
+      if (const auto raw = builder.rawBaseOf(expr)) {
+        if (const auto record = rawRecordOf(*raw, expr, state))
+          reportRawOperation(
+              "dereference of raw pointer outside an unsafe region", "",
+              *record, expr);
+      }
       return;
+    }
     switch (role) {
     case Role::Read:
       doRead(*ref, expr, state, /*includeSelf=*/true);
       break;
     case Role::ReadWrite:
+      // `p++` keeps `p` on the same object (RFC 0004, *Pointer identity*),
+      // so nothing about it changes.
       doRead(*ref, expr, state, /*includeSelf=*/true);
       doMutationCheck(ref->place, expr, state);
       checkAnnotationOnWrite(*ref, expr, state);
       recordAccess(ref->place, /*write=*/true, state);
-      if (expr.getType()->isPointerType()) {
-        // Pointer arithmetic in place: the pointer now denotes an interior
-        // position we cannot track.
-        reinit(ref->place, state);
-        setKind(ref->place, core::OwnershipKind::Unknown, state);
-      }
       break;
     case Role::Write:
     case Role::Consume:
@@ -543,8 +578,14 @@ void FunctionDataflow::handleDecl(const DeclStmt &decl,
     if (!var->getType()->isPointerType()) {
       continue;
     }
+    const AnnotationSet annotations = getAnnotations(*var);
+    if (annotations.ownership())
+      declaredKinds[place] = annotations;
     if (init == nullptr) {
-      setKind(place, core::OwnershipKind::Unknown, state);
+      setKind(place,
+              annotations.raw ? core::OwnershipKind::Raw
+                              : core::OwnershipKind::Unknown,
+              state);
       continue;
     }
     applyPointerAssign(place, builder.classifyValue(*init), *init,
@@ -581,7 +622,7 @@ void FunctionDataflow::handleCall(const CallExpr &call,
                                   core::AnalysisState &state) {
   const auto effects = classifyCall(call, summaries);
   if (!effects) {
-    noteUnknownCallee(call);
+    handleUncheckedCall(call);
     return;
   }
   applySummary(call, *effects, state);
@@ -603,11 +644,13 @@ void FunctionDataflow::applySummary(const CallExpr &call,
     for (const unsigned index : effects.consumedArgs) {
       if (index >= call.getNumArgs())
         continue;
-      const core::MoveReason reason = effects.frees(index) && !effects.isRealloc
-                                          ? core::MoveReason::Freed
-                                          : core::MoveReason::Moved;
+      const bool freed = effects.frees(index) && !effects.isRealloc;
+      checkRawArgument(call, index, freed ? "releases" : "takes ownership of",
+                       state);
       if (const auto arg = builder.resolvePointerValue(*call.getArg(index)))
-        doConsume(*arg, reason, call, state);
+        doConsume(*arg,
+                  freed ? core::MoveReason::Freed : core::MoveReason::Moved,
+                  call, state);
     }
   }
 
@@ -633,10 +676,12 @@ void FunctionDataflow::applySummary(const CallExpr &call,
               call, state);
   }
 
-  // 2. Borrows for the duration of the call.
+  // 2. Borrows for the duration of the call. The callee dereferences the
+  //    argument, which is a raw operation if the argument is raw (RFC 0004).
   for (const auto &[index, kind] : effects.borrowedArgs) {
     if (index >= call.getNumArgs())
       continue;
+    checkRawArgument(call, index, "dereferences", state);
     const ValueOrigin origin = builder.classifyValue(*call.getArg(index));
     std::optional<PlaceRef> pointee;
     if (origin.kind == ValueOrigin::Kind::Borrow && origin.place) {
@@ -684,18 +729,97 @@ void FunctionDataflow::applySummary(const CallExpr &call,
   }
 }
 
-void FunctionDataflow::noteUnknownCallee(const CallExpr &call) {
-  if (!recording() || !emitDiagnostics)
-    return;
+/// Compiler intrinsics (`__builtin_*`, `__sync_*`, ...) are not a checking
+/// boundary: they are part of the language, not unknown code.
+static bool isCompilerIntrinsic(const FunctionDecl &callee) {
+  return callee.getBuiltinID() != 0 && callee.getName().starts_with("__");
+}
+
+bool FunctionDataflow::callInvolvesPointers(const CallExpr &call) {
+  return call.getType()->isPointerType() ||
+         llvm::any_of(call.arguments(), [](const Expr *arg) {
+           return arg->getType()->isPointerType();
+         });
+}
+
+std::string FunctionDataflow::calleeName(const CallExpr &call) {
+  if (const FunctionDecl *callee = call.getDirectCallee())
+    return "'" + callee->getNameAsString() + "'";
+  if (const auto ref = builder.resolvePointerValue(*call.getCallee()))
+    return "'" + nameOf(ref->place) + "'";
+  return "a function pointer";
+}
+
+void FunctionDataflow::handleUncheckedCall(const CallExpr &call) {
   const FunctionDecl *callee = call.getDirectCallee();
-  if (callee == nullptr || callee->getBuiltinID() != 0)
+  if (callee != nullptr && isCompilerIntrinsic(*callee))
+    return;
+  if (!callInvolvesPointers(call))
     return;
 
-  bool hasPointer = callee->getReturnType()->isPointerType();
-  for (const ParmVarDecl *param : callee->parameters())
-    hasPointer = hasPointer || param->getType()->isPointerType();
-  if (!hasPointer)
+  if (!options.strictExterns) {
+    noteUnknownCallee(call);
     return;
+  }
+
+  // Strict mode (RFC 0004, *Boundaries*): calling into unchecked code is a
+  // raw operation. Its arguments are untouched (the region's author vouches
+  // for the callee) and its result is raw, which `classifyValue` arranges.
+  if (!recording() || !emitDiagnostics || inUnsafe)
+    return;
+  const bool direct = callee != nullptr;
+  const std::string name = calleeName(call);
+  core::Diagnostic diagnostic =
+      makeError(core::diag::UnsafeOperation,
+                std::string("unchecked call ") + (direct ? "to " : "through ") +
+                    name + " outside an unsafe region",
+                call);
+  if (direct) {
+    diagnostic.addNote(name + " is declared here",
+                       locate(callee->getLocation()));
+    diagnostic.addNote(
+        "annotate its pointer parameters with WEAVEC_OWNED, WEAVEC_BORROWED, "
+        "WEAVEC_MUT or WEAVEC_RAW, define it in this translation unit, or "
+        "move the call into a WEAVEC_UNSAFE region",
+        locate(callee->getLocation()));
+  } else {
+    diagnostic.addNote(
+        "annotate the parameters of its function type, take the address of "
+        "a function of that type in this translation unit, or move the call "
+        "into a WEAVEC_UNSAFE region",
+        locate(call));
+  }
+  report(std::move(diagnostic));
+}
+
+void FunctionDataflow::noteUnknownCallee(const CallExpr &call) {
+  if (!recording() || !emitDiagnostics || inUnsafe)
+    return;
+  const FunctionDecl *callee = call.getDirectCallee();
+  if (callee == nullptr) {
+    // A call through a function pointer with no signature: once per
+    // function type (RFC 0004, *Boundaries*).
+    if (!summaries.noteUnknownIndirect(call))
+      return;
+    core::Diagnostic diagnostic{
+        .severity = core::Severity::Warning,
+        .id = core::diag::AnnotationRequired,
+        .message = "call through " + calleeName(call) +
+                   " is not checked: its function type has no ownership "
+                   "annotations and no function of that type has its address "
+                   "taken in this translation unit",
+        .location = locate(call),
+        .notes = {},
+        .fixits = {},
+    };
+    diagnostic.addNote(
+        "annotate the parameters of its function type with WEAVEC_OWNED, "
+        "WEAVEC_BORROWED, WEAVEC_MUT or WEAVEC_RAW, or take the address of a "
+        "function of that type in this translation unit",
+        locate(call));
+    report(std::move(diagnostic));
+    return;
+  }
 
   const SourceManager &sm = context.getSourceManager();
   if (!options.reportUnannotated && sm.isInSystemHeader(callee->getLocation()))
@@ -705,8 +829,7 @@ void FunctionDataflow::noteUnknownCallee(const CallExpr &call) {
 
   const std::string name = callee->getNameAsString();
   core::Diagnostic diagnostic{
-      .severity = options.strictExterns ? core::Severity::Error
-                                        : core::Severity::Warning,
+      .severity = core::Severity::Warning,
       .id = core::diag::AnnotationRequired,
       .message = "call to '" + name +
                  "' is not checked: it has no definition or ownership "
@@ -718,8 +841,8 @@ void FunctionDataflow::noteUnknownCallee(const CallExpr &call) {
   diagnostic.addNote("'" + name + "' is declared here",
                      locate(callee->getLocation()));
   diagnostic.addNote("annotate its pointer parameters with WEAVEC_OWNED, "
-                     "WEAVEC_BORROWED or WEAVEC_MUT, or define it in this "
-                     "translation unit",
+                     "WEAVEC_BORROWED, WEAVEC_MUT or WEAVEC_RAW, or define it "
+                     "in this translation unit",
                      locate(callee->getLocation()));
   report(std::move(diagnostic));
 }
@@ -736,6 +859,21 @@ void FunctionDataflow::handleReturn(const ReturnStmt &ret,
     origins.pop_back();
     if (origin.kind != ValueOrigin::Kind::Conditional) {
       checkAnnotationOnReturn(origin, *value, state);
+      // Returning a raw value from a function whose signature promises a
+      // safe kind asserts that kind (RFC 0004, *Raw pointers*, rule 4).
+      if (signature.result.safeKind()) {
+        if (const auto raw = rawRecordOf(origin, *value, state)) {
+          const std::optional<std::string> name =
+              origin.place ? std::optional(nameOf(origin.place->place))
+                           : std::nullopt;
+          reportRawOperation(
+              rawPointerPhrase(name) +
+                  " is returned from a function whose return type is "
+                  "annotated " +
+                  macroSpelling(signature.result) + " outside an unsafe region",
+              name.value_or(""), *raw, *value);
+        }
+      }
       if (recording())
         inferred.addReturn(sourceOf(origin, state));
     }
@@ -814,6 +952,8 @@ void FunctionDataflow::mirrorSubtree(core::PlaceId src, core::PlaceId dest,
     }
     if (const auto it = state.kinds.find(place); it != state.kinds.end())
       state.kinds[mirror] = it->second;
+    if (const auto record = state.raw.rawAt(place))
+      state.raw.markRaw(mirror, *record);
   }
 }
 
@@ -830,9 +970,17 @@ void FunctionDataflow::doRead(const PlaceRef &ref, const Expr &at,
   for (std::size_t i = 0; i < ref.derefs.size(); ++i) {
     // Loading a pointer stored in caller memory is a read of that memory.
     recordAccess(ref.derefs[i], /*write=*/false, state);
+    const Expr *where = ref.derefExprs[i];
     if (const auto hit = findMoved(ref.derefs[i], state)) {
-      const Expr *where = ref.derefExprs[i];
       reportUseOfMoved(ref.derefs[i], *hit, where != nullptr ? *where : at);
+      return;
+    }
+    // Dereferencing a raw pointer (RFC 0004, *Raw pointers*, rule 1).
+    if (const auto raw = rawAt(ref.derefs[i], state)) {
+      const std::string name = nameOf(ref.derefs[i]);
+      reportRawOperation("dereference of raw pointer '" + name +
+                             "' outside an unsafe region",
+                         name, *raw, where != nullptr ? *where : at);
       return;
     }
   }
@@ -935,6 +1083,7 @@ void FunctionDataflow::applyPointerAssign(core::PlaceId dest,
   struct Arm {
     const ValueOrigin *origin;
     std::optional<CopySource> source;
+    std::optional<core::RawRecord> raw;
     core::ValueSource summary;
   };
   std::vector<Arm> arms;
@@ -960,8 +1109,52 @@ void FunctionDataflow::applyPointerAssign(core::PlaceId dest,
     }
     arms.push_back(Arm{.origin = current,
                        .source = std::move(source),
+                       .raw = rawRecordOf(*current, at, state),
                        .summary = recording() ? sourceOf(*current, state)
                                               : core::ValueSource::unknown()});
+  }
+
+  // `p = p + k`, `p = (T *)p`, `p = p`: the value is the place's own, so every
+  // fact about it (aliases, loans, move and raw records) stays. RFC 0004,
+  // *Pointer identity*, makes `p = p + 1` mean the same as `p += 1`.
+  if (arms.size() == 1 && arms[0].origin->kind == ValueOrigin::Kind::Copy &&
+      arms[0].origin->place && arms[0].origin->place->place == dest)
+    return;
+
+  // RFC 0004, *Raw pointers*: a `WEAVEC_RAW` destination takes the value out
+  // of the model, whatever it was; a destination declared with a safe kind
+  // takes a raw value only as an assertion, which needs an unsafe region.
+  const std::optional<AnnotationSet> declared = declaredAnnotations(dest);
+  if (declared && declared->raw) {
+    reinit(dest, state);
+    markRaw(dest,
+            core::RawRecord{.reason = core::RawReason::Declared,
+                            .location = locate(at),
+                            .via = std::nullopt,
+                            .detail = nameOf(dest)},
+            state);
+    if (recording()) {
+      for (std::size_t i = 0; i < arms.size(); ++i)
+        recordStore(dest, core::ValueSource::raw());
+    }
+    return;
+  }
+  const bool assertsKind = declared && declared->safeKind().has_value();
+  for (Arm &arm : arms) {
+    if (!arm.raw)
+      continue;
+    if (assertsKind) {
+      const std::optional<std::string> name =
+          arm.source ? std::optional(nameOf(arm.source->place)) : std::nullopt;
+      reportRawOperation(rawPointerPhrase(name) + " is assigned to '" +
+                             nameOf(dest) + "', which is declared " +
+                             macroSpelling(*declared) +
+                             ", outside an unsafe region",
+                         name.value_or(""), *arm.raw, at);
+      // The assertion holds from here on either way; not asserting would
+      // only cascade into a report per later use.
+      arm.raw.reset();
+    }
   }
 
   // `q = realloc(p, n)` consumes p's class before q is reset, because q may
@@ -980,7 +1173,23 @@ void FunctionDataflow::applyPointerAssign(core::PlaceId dest,
   for (const Arm &armRecord : arms) {
     const ValueOrigin *arm = armRecord.origin;
     const std::optional<CopySource> &source = armRecord.source;
+    if (armRecord.raw) {
+      // Raw values copy freely but carry no ownership, loans or aliases
+      // worth tracking (RFC 0004, *Raw pointers*).
+      markRaw(dest, *armRecord.raw, state);
+      continue;
+    }
+    if (assertsKind && arm->kind != ValueOrigin::Kind::Copy &&
+        arm->kind != ValueOrigin::Kind::Borrow &&
+        arm->kind != ValueOrigin::Kind::Null) {
+      // Anything else stored into an annotated place is the declared kind.
+      setKind(dest, core::join(state.kindOf(dest), *declared->safeKind()),
+              state);
+    }
     switch (arm->kind) {
+    case ValueOrigin::Kind::Raw:
+      // Handled above: `rawRecordOf` never misses a raw origin.
+      break;
     case ValueOrigin::Kind::Alloc:
       setKind(dest, core::join(state.kindOf(dest), core::OwnershipKind::Owned),
               state);
@@ -1000,7 +1209,12 @@ void FunctionDataflow::applyPointerAssign(core::PlaceId dest,
     case ValueOrigin::Kind::Copy: {
       if (!source)
         break;
-      setKind(dest, core::join(state.kindOf(dest), source->kind), state);
+      // An asserted raw source has the declared kind from here on.
+      const core::OwnershipKind sourceKind =
+          assertsKind && source->kind == core::OwnershipKind::Raw
+              ? *declared->safeKind()
+              : source->kind;
+      setKind(dest, core::join(state.kindOf(dest), sourceKind), state);
       if (source->belowDest)
         break;
       state.aliases.unite(dest, source->place);
@@ -1302,7 +1516,10 @@ std::string FunctionDataflow::nameOf(core::PlaceId place) const {
 }
 
 void FunctionDataflow::report(core::Diagnostic diagnostic) {
-  if (phase == Phase::Final && emitDiagnostics)
+  // Nothing is reported for code inside an unsafe region (RFC 0004, *Unsafe
+  // regions*); the region is still analysed so its effects reach the code
+  // around it, where they are checked.
+  if (phase == Phase::Final && emitDiagnostics && !inUnsafe)
     pending.push_back(std::move(diagnostic));
 }
 
@@ -1370,11 +1587,193 @@ void FunctionDataflow::reportLifetimeTooShort(core::PlaceId holder,
   report(std::move(diagnostic));
 }
 
+core::Diagnostic FunctionDataflow::makeError(std::string_view id,
+                                             std::string message,
+                                             const Expr &at) const {
+  return core::Diagnostic{
+      .severity = core::Severity::Error,
+      .id = id,
+      .message = std::move(message),
+      .location = locate(at),
+      .notes = {},
+      .fixits = {},
+  };
+}
+
+// -- Raw pointers (RFC 0004) --------------------------------------------------
+
+std::optional<AnnotationSet>
+FunctionDataflow::declaredAnnotations(core::PlaceId place) const {
+  if (const auto it = declaredKinds.find(place); it != declaredKinds.end())
+    return it->second;
+  const NamedDecl *decl = builder.declFor(place);
+  if (decl == nullptr)
+    return std::nullopt;
+  if (const auto *field = dyn_cast<FieldDecl>(decl)) {
+    const AnnotationSet annotations = getAnnotations(*field);
+    if (annotations.ownership())
+      return annotations;
+    return std::nullopt;
+  }
+  if (const auto *var = dyn_cast<VarDecl>(decl);
+      var != nullptr && var->hasGlobalStorage()) {
+    const AnnotationSet annotations = getAnnotations(*var);
+    if (annotations.ownership())
+      return annotations;
+  }
+  return std::nullopt;
+}
+
+std::optional<core::RawRecord>
+FunctionDataflow::rawAt(core::PlaceId place,
+                        const core::AnalysisState &state) const {
+  if (auto record = state.raw.rawAt(place))
+    return record;
+  if (!builder.isDeclaredRaw(place))
+    return std::nullopt;
+  const NamedDecl *decl = builder.declFor(place);
+  return core::RawRecord{
+      .reason = core::RawReason::Declared,
+      .location = decl != nullptr ? locate(decl->getLocation())
+                                  : core::SourceLocation{},
+      .via = std::nullopt,
+      .detail = nameOf(place),
+  };
+}
+
+std::optional<core::RawRecord>
+FunctionDataflow::rawRecordOf(const ValueOrigin &origin, const Expr &at,
+                              const core::AnalysisState &state) {
+  switch (origin.kind) {
+  case ValueOrigin::Kind::Raw: {
+    // Point at the cast or the call that made the value raw when we can.
+    const Expr *where = origin.call != nullptr
+                            ? static_cast<const Expr *>(origin.call)
+                            : origin.source;
+    return core::RawRecord{
+        .reason = origin.rawReason,
+        .location = locate(where != nullptr ? *where : at),
+        .via = std::nullopt,
+        .detail = origin.call != nullptr ? calleeName(*origin.call) : "",
+    };
+  }
+  case ValueOrigin::Kind::Copy: {
+    if (!origin.place)
+      return std::nullopt;
+    if (auto record = rawAt(origin.place->place, state)) {
+      // Remember the first place the value was copied from, as `MoveTracker`
+      // does, so notes can say "(through 'q')".
+      if (!record->via)
+        record->via = origin.place->place;
+      return record;
+    }
+    // A value loaded through a raw pointer is raw (RFC 0004, *Raw pointers*).
+    for (const core::PlaceId deref : origin.place->derefs) {
+      if (const auto record = rawAt(deref, state)) {
+        return core::RawRecord{.reason = core::RawReason::LoadedThroughRaw,
+                               .location = locate(at),
+                               .via = std::nullopt,
+                               .detail = nameOf(deref)};
+      }
+    }
+    return std::nullopt;
+  }
+  case ValueOrigin::Kind::Alloc:
+  case ValueOrigin::Kind::Realloc:
+  case ValueOrigin::Kind::Borrow:
+  case ValueOrigin::Kind::Null:
+  case ValueOrigin::Kind::Opaque:
+  case ValueOrigin::Kind::Conditional:
+    return std::nullopt;
+  }
+  return std::nullopt;
+}
+
+void FunctionDataflow::markRaw(core::PlaceId place,
+                               const core::RawRecord &record,
+                               core::AnalysisState &state) {
+  setKind(place, core::OwnershipKind::Raw, state);
+  for (const core::PlaceId mirror : mirrors(place, state))
+    state.raw.markRaw(mirror, record);
+  for (const core::PlaceId alias : targets(place, state))
+    state.raw.markRaw(alias, record);
+}
+
+std::string FunctionDataflow::rawNote(const core::RawRecord &record,
+                                      std::string_view name) const {
+  std::string note = name.empty() ? "the pointer is raw: "
+                                  : "'" + std::string(name) + "' is raw: ";
+  switch (record.reason) {
+  case core::RawReason::IntegerCast:
+    note += "cast from an integer";
+    break;
+  case core::RawReason::Declared:
+    note += "declared WEAVEC_RAW";
+    break;
+  case core::RawReason::LoadedThroughRaw:
+    note += "loaded through raw pointer '" + record.detail + "'";
+    break;
+  case core::RawReason::Callee:
+    // `detail` is `calleeName`: quoted, or `a function pointer`.
+    note += "handed out by " +
+            (record.detail.empty() ? std::string("a callee") : record.detail);
+    break;
+  case core::RawReason::UnknownCallee:
+    note += "returned by a call into unchecked code";
+    if (!record.detail.empty())
+      note += " (" + record.detail + ")";
+    break;
+  }
+  note += " here";
+  if (record.via && nameOf(*record.via) != name)
+    note += " (through '" + nameOf(*record.via) + "')";
+  return note;
+}
+
+std::optional<std::string> FunctionDataflow::pointerName(const Expr &value) {
+  if (const auto ref = builder.resolvePointerValue(value))
+    return nameOf(ref->place);
+  return std::nullopt;
+}
+
+void FunctionDataflow::reportRawOperation(std::string message,
+                                          std::string_view name,
+                                          const core::RawRecord &record,
+                                          const Expr &at) {
+  if (inUnsafe)
+    return;
+  core::Diagnostic diagnostic =
+      makeError(core::diag::UnsafeOperation, std::move(message), at);
+  if (record.location.isValid())
+    diagnostic.addNote(rawNote(record, name), record.location);
+  diagnostic.addNote("move this operation into a WEAVEC_UNSAFE block or "
+                     "function, or assert the pointer's ownership first",
+                     locate(at));
+  report(std::move(diagnostic));
+}
+
+void FunctionDataflow::checkRawArgument(const CallExpr &call, unsigned index,
+                                        const char *verb,
+                                        const core::AnalysisState &state) {
+  if (inUnsafe || index >= call.getNumArgs())
+    return;
+  const Expr &arg = *call.getArg(index);
+  const auto raw = rawRecordOf(builder.classifyValue(arg), arg, state);
+  if (!raw)
+    return;
+  const std::optional<std::string> argName = pointerName(arg);
+  reportRawOperation(calleeName(call) + " " + verb + " " +
+                         rawPointerPhrase(argName) +
+                         " outside an unsafe region",
+                     argName.value_or(""), *raw, arg);
+}
+
 // -- Dump ---------------------------------------------------------------------
 
 void FunctionDataflow::dump(const core::AnalysisState *exitState) {
   llvm::raw_ostream &os = *options.dumpStream;
-  os << "function '" << function.getNameAsString() << "':\n";
+  os << "function '" << function.getNameAsString() << "'"
+     << (unsafeBody ? " (unsafe)" : "") << ":\n";
 
   os << "  places:";
   for (const VarDecl *var : builder.variables()) {
@@ -1426,6 +1825,16 @@ void FunctionDataflow::dump(const core::AnalysisState *exitState) {
     first = true;
     for (const auto &[a, b] : exitState->aliases.pairs()) {
       os << (first ? "" : ", ") << places.name(a) << "~" << places.name(b);
+      first = false;
+    }
+    os << "} raw{";
+    first = true;
+    for (const core::PlaceId place : exitState->raw.rawPlaces()) {
+      const auto record = exitState->raw.rawAt(place);
+      os << (first ? "" : ", ") << places.name(place);
+      if (record->location.isValid())
+        os << "@" << record->location.line << ":" << record->location.column;
+      os << " " << core::toString(record->reason);
       first = false;
     }
     os << "}\n";
@@ -1551,10 +1960,16 @@ core::ValueSource FunctionDataflow::sourceOf(const ValueOrigin &origin,
         return core::ValueSource::borrow(*path);
     }
     return core::ValueSource::unknown();
+  case ValueOrigin::Kind::Raw:
+    return core::ValueSource::raw();
   case ValueOrigin::Kind::Copy: {
     if (!origin.place)
       return core::ValueSource::unknown();
     const core::PlaceId src = origin.place->place;
+    // A raw value stays raw for the caller (RFC 0004): a `WEAVEC_RAW`
+    // parameter or field, or anything made raw on the way.
+    if (state.raw.isRaw(src) || builder.isDeclaredRaw(src))
+      return core::ValueSource::raw();
     if (const auto path = stableSummaryPathOf(src))
       return core::ValueSource::copy(*path);
     // A local: resolve through what it aliases, then what it borrows, then

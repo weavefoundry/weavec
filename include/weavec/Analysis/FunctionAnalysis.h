@@ -33,9 +33,10 @@ struct AnalysisOptions {
   /// declared in system headers in the external-boundary
   /// `annotation-required` report.
   bool reportUnannotated = false;
-  /// `--strict-externs` (RFC 0003): report calls to functions with no
-  /// definition, annotation or library summary as errors instead of
-  /// warnings.
+  /// `--strict-externs` (RFC 0004, *Boundaries*): a call into code with no
+  /// definition, annotation or library summary is a raw operation. It is an
+  /// `unsafe-operation` error outside an unsafe region and its pointer
+  /// result is raw, instead of the RFC 0003 once-per-callee warning.
   bool strictExterns = false;
   /// If set, print the inferred facts for every analysed function
   /// (`--dump-analysis`): places and their kinds, lifetimes, and the state

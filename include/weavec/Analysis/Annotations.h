@@ -16,14 +16,18 @@
 #ifndef WEAVEC_ANALYSIS_ANNOTATIONS_H
 #define WEAVEC_ANALYSIS_ANNOTATIONS_H
 
+#include "weavec/Core/Ownership.h"
+
 #include "clang/AST/Attr.h"
 #include "clang/AST/Decl.h"
 #include "clang/AST/Stmt.h"
+#include "clang/AST/Type.h"
 
 #include "llvm/ADT/StringRef.h"
 
 #include <cstdint>
 #include <optional>
+#include <vector>
 
 namespace weavec::analysis {
 
@@ -35,7 +39,10 @@ enum class Annotation : std::uint8_t {
   Borrowed,
   /// `weavec.mut_borrowed` -- exclusive, mutable borrow.
   MutBorrowed,
-  /// `weavec.unsafe` -- opt out of checking for a function or block.
+  /// `weavec.raw` -- no ownership guarantee; dereferencing or releasing the
+  /// pointer requires an unsafe region (RFC 0004).
+  Raw,
+  /// `weavec.unsafe` -- the function body or block is an unsafe region.
   Unsafe,
   /// A `weavec.`-prefixed annotation WeaveC does not recognise.
   Invalid,
@@ -47,6 +54,7 @@ inline constexpr llvm::StringLiteral Prefix = "weavec.";
 inline constexpr llvm::StringLiteral Owned = "weavec.owned";
 inline constexpr llvm::StringLiteral Borrowed = "weavec.borrowed";
 inline constexpr llvm::StringLiteral MutBorrowed = "weavec.mut_borrowed";
+inline constexpr llvm::StringLiteral Raw = "weavec.raw";
 inline constexpr llvm::StringLiteral Unsafe = "weavec.unsafe";
 } // namespace spelling
 
@@ -60,12 +68,32 @@ struct AnnotationSet {
   bool owned = false;
   bool borrowed = false;
   bool mutBorrowed = false;
+  bool raw = false;
   bool unsafe = false;
   bool invalid = false;
 
   [[nodiscard]] bool any() const noexcept {
-    return owned || borrowed || mutBorrowed || unsafe || invalid;
+    return owned || borrowed || mutBorrowed || raw || unsafe || invalid;
   }
+  /// True if the set says something about ownership (`owned`, `borrowed`,
+  /// `mutBorrowed` or `raw`), as opposed to `unsafe`/`invalid`.
+  [[nodiscard]] bool ownership() const noexcept {
+    return owned || borrowed || mutBorrowed || raw;
+  }
+  /// The kind a raw pointer may be *asserted* into (RFC 0004, *Laundering*):
+  /// the declared ownership kind, if it is anything but `raw`.
+  [[nodiscard]] std::optional<core::OwnershipKind> safeKind() const noexcept {
+    if (owned)
+      return core::OwnershipKind::Owned;
+    if (mutBorrowed)
+      return core::OwnershipKind::Mutable;
+    if (borrowed)
+      return core::OwnershipKind::Shared;
+    return std::nullopt;
+  }
+
+  /// Merges `other` into this set.
+  void merge(const AnnotationSet &other) noexcept;
 };
 
 /// Collects WeaveC annotations from `decl`.
@@ -73,6 +101,32 @@ struct AnnotationSet {
 
 /// Returns true if `stmt` is an attributed statement carrying `weavec.unsafe`.
 [[nodiscard]] bool isUnsafeBlock(const clang::Stmt &stmt);
+
+/// The macro spelling for the ownership annotation in `set`, if exactly one
+/// of `WEAVEC_OWNED`, `WEAVEC_BORROWED`, `WEAVEC_MUT`, `WEAVEC_RAW` applies
+/// (the first in that order wins otherwise); null if none does.
+[[nodiscard]] const char *macroSpelling(const AnnotationSet &set) noexcept;
+
+/// Ownership annotations written on a function *type* (RFC 0004, *Signatures
+/// for function pointers*): those on the parameters of the prototype in a
+/// declarator of function-pointer type, and, as the result's annotations,
+/// those on the declarator itself and on any `typedef` passed through on
+/// the way to the prototype.
+struct FunctionTypeAnnotations {
+  AnnotationSet result;
+  std::vector<AnnotationSet> params;
+  /// The prototype the annotations were read from, or null if the type is
+  /// not a (pointer to) prototyped function.
+  const clang::FunctionProtoType *prototype = nullptr;
+
+  [[nodiscard]] bool anyOwnership() const noexcept;
+};
+
+/// Reads the function-type annotations reachable from `decl`'s written type.
+/// `decl` is the variable, parameter, field or typedef the callee expression
+/// of an indirect call names.
+[[nodiscard]] FunctionTypeAnnotations
+collectFunctionTypeAnnotations(const clang::Decl &decl);
 
 } // namespace weavec::analysis
 

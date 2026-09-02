@@ -11,7 +11,7 @@ struct s {
 // CHECK-LABEL: function 'f':
 // CHECK-NEXT: places:{{.*}}p (param, unknown){{.*}}a (local, mutable)
 // CHECK-NEXT: lifetimes:{{.*}}caller
-// CHECK-NEXT: exit: moved{p->buf@[[@LINE+6]]:{{[0-9]+}} freed} loans{} aliases{}
+// CHECK-NEXT: exit: moved{p->buf@[[@LINE+6]]:{{[0-9]+}} freed} loans{} aliases{} raw{}
 // CHECK-NEXT: summary: p->buf: freed; stores{} returns{}
 void f(struct s *p, int c) {
   int x = 0;
@@ -22,7 +22,7 @@ void f(struct s *p, int c) {
 }
 
 // CHECK-LABEL: function 'g':
-// CHECK: exit: moved{} loans{} aliases{}
+// CHECK: exit: moved{} loans{} aliases{} raw{}
 // CHECK-NEXT: summary: stores{} returns{}
 void g(void) {}
 
@@ -33,6 +33,17 @@ static int *gp;
 int *h(struct s *p) {
   gp = malloc(4);
   return p->buf;
+}
+
+// Raw places show their kind, the raw component says why (RFC 0004), and
+// `raw` is a value source in the summary.
+// CHECK-LABEL: function 'launder':
+// CHECK-NEXT: places:{{.*}}r (param, raw)
+// CHECK: exit: moved{} loans{} aliases{} raw{r@[[@LINE+3]]:{{[0-9]+}} integer-cast}
+// CHECK-NEXT: summary: stores{} returns{raw}
+char *launder(char *r, unsigned long x) {
+  r = (char *)x;
+  return r;
 }
 
 // HELP: --dump-analysis

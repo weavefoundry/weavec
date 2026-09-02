@@ -56,7 +56,8 @@ struct CallEffects {
 };
 
 /// Returns the ownership effects of `call`, or `std::nullopt` for calls with
-/// no known effect: indirect calls, and callees `summaries` cannot resolve.
+/// no known effect: callees `summaries` cannot resolve, directly or (RFC
+/// 0004) through a function pointer.
 [[nodiscard]] std::optional<CallEffects>
 classifyCall(const clang::CallExpr &call, SummaryStore &summaries);
 

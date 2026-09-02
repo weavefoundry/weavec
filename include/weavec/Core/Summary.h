@@ -136,6 +136,9 @@ struct ValueSource {
     Null,
     /// Nothing is known about the value.
     Unknown,
+    /// A raw pointer (RFC 0004): the receiver may dereference or release it
+    /// only inside an unsafe region.
+    Raw,
   };
 
   Kind kind = Kind::Unknown;
@@ -144,6 +147,9 @@ struct ValueSource {
 
   [[nodiscard]] static ValueSource fresh() {
     return ValueSource{.kind = Kind::Fresh, .path = std::nullopt};
+  }
+  [[nodiscard]] static ValueSource raw() {
+    return ValueSource{.kind = Kind::Raw, .path = std::nullopt};
   }
   [[nodiscard]] static ValueSource copy(SummaryPath of) {
     return ValueSource{.kind = Kind::Copy, .path = std::move(of)};
@@ -208,9 +214,10 @@ public:
   /// `Owned` if consumed, else the borrow kind, else `Unknown`.
   [[nodiscard]] OwnershipKind inferredKind(std::uint32_t param) const;
 
-  /// The kind implied for the return value: `Owned` if every alternative is
-  /// fresh (ignoring null), `Shared`/`Mutable` if every alternative is a
-  /// borrow or copy, else `Unknown`.
+  /// The kind implied for the return value: `Raw` if any alternative is
+  /// raw, else `Owned` if every alternative is fresh (ignoring null),
+  /// `Shared`/`Mutable` if every alternative is a borrow or copy, else
+  /// `Unknown`.
   [[nodiscard]] OwnershipKind inferredReturnKind() const;
 
   [[nodiscard]] bool empty() const noexcept {

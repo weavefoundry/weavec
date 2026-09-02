@@ -41,6 +41,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace weavec::analysis {
@@ -105,12 +106,21 @@ private:
   std::map<std::uint32_t, core::SourceLocation> scopeEnds;
   std::map<std::vector<std::uint32_t>, core::LifetimeId> meetCache;
 
+  /// Statements inside a `WEAVEC_UNSAFE` block (RFC 0004, *Unsafe regions*).
   llvm::DenseSet<const clang::Stmt *> unsafeStmts;
   llvm::DenseMap<const clang::Expr *, Role> roles;
   llvm::DenseSet<const clang::CallExpr *> assignedCalls;
   /// Parameters whose variable is assigned or address-taken in the body.
   std::vector<bool> paramReassigned;
   SignatureAnnotations signature;
+  /// The whole body is an unsafe region (`WEAVEC_UNSAFE` on the function).
+  bool unsafeBody;
+  /// The CFG element being transferred lies in an unsafe region: raw
+  /// operations are permitted and nothing is reported.
+  bool inUnsafe;
+  /// Ownership annotations on local variables, consumed for the assertion
+  /// rule (RFC 0004, *Laundering*).
+  std::map<core::PlaceId, AnnotationSet> declaredKinds;
 
   std::unique_ptr<clang::CFG> cfg;
   std::vector<std::optional<core::AnalysisState>> entryStates;
@@ -185,9 +195,50 @@ private:
   /// stores through arguments and into globals.
   void applySummary(const clang::CallExpr &call, const CallEffects &effects,
                     core::AnalysisState &state);
+  /// Handles a call across the checking boundary (no summary): the RFC 0003
+  /// warning by default, a raw operation under `--strict-externs` (RFC
+  /// 0004, *Boundaries*).
+  void handleUncheckedCall(const clang::CallExpr &call);
   /// Reports `annotation-required` the first time an unresolvable callee
   /// with pointer parameters or result is called from reported code.
   void noteUnknownCallee(const clang::CallExpr &call);
+  /// True if `call` has a pointer argument or result worth reporting on.
+  [[nodiscard]] static bool callInvolvesPointers(const clang::CallExpr &call);
+  /// `'free'`, `'o.drop'`, or `a function pointer`, for messages.
+  [[nodiscard]] std::string calleeName(const clang::CallExpr &call);
+
+  // -- Raw pointers (RFC 0004) ----------------------------------------------
+
+  /// The raw record for `place`: from the state, or synthesised if the
+  /// place's variable or field is declared `WEAVEC_RAW`.
+  [[nodiscard]] std::optional<core::RawRecord>
+  rawAt(core::PlaceId place, const core::AnalysisState &state) const;
+  /// The raw record a value with `origin` would give its destination, if
+  /// any: a raw origin, a copy of a raw place, or a value reached through a
+  /// raw pointer.
+  [[nodiscard]] std::optional<core::RawRecord>
+  rawRecordOf(const ValueOrigin &origin, const clang::Expr &at,
+              const core::AnalysisState &state);
+  /// The ownership annotations on the variable `place` names (a local's
+  /// own, a parameter's signature), if any.
+  [[nodiscard]] std::optional<AnnotationSet>
+  declaredAnnotations(core::PlaceId place) const;
+  void markRaw(core::PlaceId place, const core::RawRecord &record,
+               core::AnalysisState &state);
+  /// Reports a raw operation on the pointer `name` (empty for a value with
+  /// no place) unless inside an unsafe region.
+  void reportRawOperation(std::string message, std::string_view name,
+                          const core::RawRecord &record, const clang::Expr &at);
+  /// A raw pointer passed where the callee dereferences, releases or takes
+  /// ownership of it.
+  void checkRawArgument(const clang::CallExpr &call, unsigned index,
+                        const char *verb, const core::AnalysisState &state);
+  /// `'p' is raw: cast from an integer here (through 'q')`.
+  [[nodiscard]] std::string rawNote(const core::RawRecord &record,
+                                    std::string_view name) const;
+  /// The name of the place a pointer value names, if it names one.
+  [[nodiscard]] std::optional<std::string>
+  pointerName(const clang::Expr &value);
 
   // -- Summary recording (RFC 0003) -----------------------------------------
 
@@ -269,6 +320,9 @@ private:
                               const clang::Expr &at, bool returned);
   [[nodiscard]] std::string nameOf(core::PlaceId place) const;
   [[nodiscard]] std::string summaryName(const core::SummaryPath &path) const;
+  [[nodiscard]] core::Diagnostic makeError(std::string_view id,
+                                           std::string message,
+                                           const clang::Expr &at) const;
 };
 
 } // namespace weavec::analysis

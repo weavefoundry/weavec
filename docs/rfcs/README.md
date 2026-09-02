@@ -50,5 +50,6 @@ decision is a new RFC that supersedes the relevant section.
 | [0001](0001-ownership-model.md)          | Ownership, borrowing and lifetimes | Accepted |
 | [0002](0002-intraprocedural-checking.md) | Sound intra-procedural checking    | Implemented |
 | [0003](0003-signature-inference.md)      | Signature inference                | Implemented |
+| [0004](0004-unsafe-boundaries.md)        | Unsafe boundaries: raw pointers, unsafe regions and indirect calls | Implemented |
 
 The [roadmap](../roadmap.md) links each milestone to the RFCs that define it.

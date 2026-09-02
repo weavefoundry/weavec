@@ -33,6 +33,15 @@ static ValueOrigin makeOrigin(ValueOrigin::Kind kind,
   return origin;
 }
 
+static ValueOrigin makeRaw(core::RawReason reason,
+                           const CallExpr *call = nullptr,
+                           const Expr *source = nullptr) {
+  ValueOrigin origin = makeOrigin(ValueOrigin::Kind::Raw, std::nullopt, call);
+  origin.rawReason = reason;
+  origin.source = source;
+  return origin;
+}
+
 core::PlaceId PlaceBuilder::placeForVar(const VarDecl &var) {
   const VarDecl *canonical = var.getCanonicalDecl();
   if (const auto it = varPlaces.find(canonical); it != varPlaces.end())
@@ -54,6 +63,25 @@ std::optional<core::PlaceId> PlaceBuilder::lookupVar(const VarDecl &var) const {
 const VarDecl *PlaceBuilder::varForPlace(core::PlaceId place) const {
   const auto it = placeVars.find(place.value);
   return it == placeVars.end() ? nullptr : it->second;
+}
+
+core::PlaceId PlaceBuilder::fieldPlace(core::PlaceId parent,
+                                       const ValueDecl &member) {
+  const core::PlaceId id = places.field(parent, member.getNameAsString());
+  if (const auto *field = dyn_cast<FieldDecl>(&member))
+    placeFields.try_emplace(id.value, field);
+  return id;
+}
+
+const NamedDecl *PlaceBuilder::declFor(core::PlaceId place) const {
+  if (const auto it = placeFields.find(place.value); it != placeFields.end())
+    return it->second;
+  return varForPlace(place);
+}
+
+bool PlaceBuilder::isDeclaredRaw(core::PlaceId place) const {
+  const NamedDecl *decl = declFor(place);
+  return decl != nullptr && getAnnotations(*decl).raw;
 }
 
 std::optional<core::SummaryPath>
@@ -180,6 +208,8 @@ ValueOrigin PlaceBuilder::originFromSource(const core::ValueSource &source,
   }
   case core::ValueSource::Kind::Null:
     return makeOrigin(ValueOrigin::Kind::Null);
+  case core::ValueSource::Kind::Raw:
+    return makeRaw(core::RawReason::Callee, &call);
   case core::ValueSource::Kind::Unknown:
     return ValueOrigin{};
   }
@@ -187,16 +217,9 @@ ValueOrigin PlaceBuilder::originFromSource(const core::ValueSource &source,
 }
 
 bool PlaceBuilder::isTransparentCast(QualType from, QualType to) {
-  if (!from->isPointerType() || !to->isPointerType())
-    return false;
-  const QualType fromPointee = from->getPointeeType().getUnqualifiedType();
-  const QualType toPointee = to->getPointeeType().getUnqualifiedType();
-  if (fromPointee.getCanonicalType() == toPointee.getCanonicalType())
-    return true;
-  const auto isGeneric = [](QualType pointee) {
-    return pointee->isVoidType() || pointee->isCharType();
-  };
-  return isGeneric(fromPointee) || isGeneric(toPointee);
+  // A pointer cast changes the type an object is viewed through, never the
+  // object; only integer round-trips lose provenance (RFC 0004).
+  return from->isPointerType() && to->isPointerType();
 }
 
 const Expr &PlaceBuilder::stripTransparent(const Expr &expr) {
@@ -265,13 +288,13 @@ std::optional<PlaceRef> PlaceBuilder::resolve(const Expr &expr) {
   }
 
   if (const auto *member = dyn_cast<MemberExpr>(&e)) {
-    const std::string field = member->getMemberDecl()->getNameAsString();
+    const ValueDecl &field = *member->getMemberDecl();
     const Expr &base = stripTransparent(*member->getBase());
     if (!member->isArrow()) {
       auto ref = resolve(base);
       if (!ref)
         return std::nullopt;
-      ref->place = places.field(ref->place, field);
+      ref->place = fieldPlace(ref->place, field);
       return ref;
     }
     // `(&s)->f` is `s.f`.
@@ -280,14 +303,14 @@ std::optional<PlaceRef> PlaceBuilder::resolve(const Expr &expr) {
       auto ref = resolve(*addr->getSubExpr());
       if (!ref)
         return std::nullopt;
-      ref->place = places.field(ref->place, field);
+      ref->place = fieldPlace(ref->place, field);
       return ref;
     }
     auto pointer = resolvePointerValue(base);
     if (!pointer)
       return std::nullopt;
     pointer->addDeref(pointer->place, &base);
-    pointer->place = places.field(places.deref(pointer->place), field);
+    pointer->place = fieldPlace(places.deref(pointer->place), field);
     return pointer;
   }
 
@@ -329,6 +352,35 @@ std::optional<PlaceRef> PlaceBuilder::resolve(const Expr &expr) {
   return std::nullopt;
 }
 
+std::optional<ValueOrigin> PlaceBuilder::rawBaseOf(const Expr &placeExpr) {
+  const Expr &e = stripTransparent(placeExpr);
+  const Expr *base = nullptr;
+  if (const auto *member = dyn_cast<MemberExpr>(&e)) {
+    base = member->isArrow() ? member->getBase() : nullptr;
+    if (base == nullptr)
+      return rawBaseOf(*member->getBase());
+  } else if (const auto *subscript = dyn_cast<ArraySubscriptExpr>(&e)) {
+    const Expr &sub = stripTransparent(*subscript->getBase());
+    if (sub.getType()->isArrayType())
+      return rawBaseOf(sub);
+    base = subscript->getBase();
+  } else if (const auto *unary = dyn_cast<UnaryOperator>(&e);
+             unary != nullptr && unary->getOpcode() == UO_Deref) {
+    const Expr &operand = stripTransparent(*unary->getSubExpr());
+    const Expr *pointerExpr = pointerOperandOfArithmetic(operand);
+    base = pointerExpr != nullptr ? pointerExpr : &operand;
+  } else {
+    return std::nullopt;
+  }
+  const Expr &stripped = stripTransparent(*base);
+  if (isPlaceExpr(stripped))
+    return rawBaseOf(stripped);
+  ValueOrigin origin = classifyValue(stripped);
+  if (origin.kind == ValueOrigin::Kind::Raw)
+    return origin;
+  return std::nullopt;
+}
+
 ValueOrigin PlaceBuilder::classifyValue(const Expr &expr) {
   const Expr *e = expr.IgnoreParens();
 
@@ -336,6 +388,9 @@ ValueOrigin PlaceBuilder::classifyValue(const Expr &expr) {
     switch (cast->getCastKind()) {
     case CK_NullToPointer:
       return makeOrigin(ValueOrigin::Kind::Null);
+    case CK_IntegralToPointer:
+      // Provenance is lost on the way through the integer (RFC 0004).
+      return makeRaw(core::RawReason::IntegerCast, nullptr, cast);
     case CK_ArrayToPointerDecay: {
       auto ref = resolve(*cast->getSubExpr());
       if (!ref)
@@ -371,8 +426,12 @@ ValueOrigin PlaceBuilder::classifyValue(const Expr &expr) {
 
   if (const auto *call = dyn_cast<CallExpr>(e)) {
     const auto effects = classifyCall(*call, summaries);
-    if (!effects)
-      return ValueOrigin{};
+    if (!effects) {
+      // Unchecked code: under strict mode its result is raw (RFC 0004,
+      // *Boundaries*); by default nothing is known about it.
+      return strictExterns ? makeRaw(core::RawReason::UnknownCallee, call)
+                           : ValueOrigin{};
+    }
     if (effects->isRealloc && call->getNumArgs() >= 1) {
       auto arg = resolvePointerValue(*call->getArg(0));
       return makeOrigin(ValueOrigin::Kind::Realloc, std::move(arg), call);
@@ -388,13 +447,29 @@ ValueOrigin PlaceBuilder::classifyValue(const Expr &expr) {
     return origin;
   }
 
-  if (const auto *unary = dyn_cast<UnaryOperator>(e);
-      unary != nullptr && unary->getOpcode() == UO_AddrOf) {
-    auto ref = resolve(*unary->getSubExpr());
-    if (!ref)
+  if (const auto *unary = dyn_cast<UnaryOperator>(e)) {
+    switch (unary->getOpcode()) {
+    case UO_AddrOf: {
+      auto ref = resolve(*unary->getSubExpr());
+      if (!ref)
+        return ValueOrigin{};
+      return makeOrigin(ValueOrigin::Kind::Borrow, std::move(ref), nullptr,
+                        unary->getSubExpr()->getType().isConstQualified());
+    }
+    case UO_PreInc:
+    case UO_PreDec:
+    case UO_PostInc:
+    case UO_PostDec: {
+      // `p++` as a value: an interior pointer into the same object (RFC
+      // 0004, *Pointer identity*).
+      auto ref = resolve(*unary->getSubExpr());
+      if (!ref)
+        return ValueOrigin{};
+      return makeOrigin(ValueOrigin::Kind::Copy, std::move(ref));
+    }
+    default:
       return ValueOrigin{};
-    return makeOrigin(ValueOrigin::Kind::Borrow, std::move(ref), nullptr,
-                      unary->getSubExpr()->getType().isConstQualified());
+    }
   }
 
   if (const auto *binary = dyn_cast<BinaryOperator>(e)) {
@@ -404,9 +479,18 @@ ValueOrigin PlaceBuilder::classifyValue(const Expr &expr) {
         return ValueOrigin{};
       return makeOrigin(ValueOrigin::Kind::Copy, std::move(ref));
     }
+    if (binary->isCompoundAssignmentOp()) {
+      auto ref = resolve(*binary->getLHS());
+      if (!ref)
+        return ValueOrigin{};
+      return makeOrigin(ValueOrigin::Kind::Copy, std::move(ref));
+    }
     if (binary->getOpcode() == BO_Comma)
       return classifyValue(*binary->getRHS());
-    // Pointer arithmetic may leave the object: opaque (RFC 0002, *Places*).
+    // `p + k` refers to the same object as `p` (RFC 0004, *Pointer
+    // identity*); whether it stays in bounds is outside the model.
+    if (const Expr *pointer = pointerOperandOfArithmetic(*binary))
+      return classifyValue(*pointer);
     return ValueOrigin{};
   }
 

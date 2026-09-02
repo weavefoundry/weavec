@@ -8,9 +8,10 @@
 //
 // Maps Clang lvalue expressions onto structured `core::PlaceId`s (RFC 0002,
 // *Places*) and classifies pointer-typed rvalues by how they were produced
-// (allocation, copy, borrow, ...). Anything the mapping cannot express
-// (pointer arithmetic that may leave an object, casts between unrelated
-// pointer types) is *opaque*: it yields no place and no facts.
+// (allocation, copy, borrow, ...). Pointer arithmetic and pointer-to-pointer
+// casts preserve the identity of the object referred to (RFC 0004, *Pointer
+// identity*); an integer-to-pointer conversion yields a *raw* value; anything
+// else the mapping cannot express is *opaque*: no place and no facts.
 //
 //===----------------------------------------------------------------------===//
 
@@ -19,6 +20,7 @@
 
 #include "weavec/Analysis/Summaries.h"
 #include "weavec/Core/Place.h"
+#include "weavec/Core/Raw.h"
 #include "weavec/Core/Summary.h"
 
 #include "clang/AST/Decl.h"
@@ -65,6 +67,10 @@ struct ValueOrigin {
     Null,
     /// `c ? a : b`; see `alternatives`.
     Conditional,
+    /// A raw pointer (RFC 0004): cast from an integer, handed out by a
+    /// callee as raw, or returned by unchecked code under
+    /// `--strict-externs`. See `rawReason`.
+    Raw,
     /// Anything else: no facts can be derived.
     Opaque,
   };
@@ -73,13 +79,17 @@ struct ValueOrigin {
   /// Copy: the source pointer place. Borrow: the borrowed place. Realloc:
   /// the consumed argument.
   std::optional<PlaceRef> place;
-  /// Alloc/Realloc: the call.
+  /// Alloc/Realloc/Raw (callee-produced): the call.
   const clang::CallExpr *call = nullptr;
+  /// Raw (integer cast): the cast expression, where notes point.
+  const clang::Expr *source = nullptr;
   /// Conditional: the two arms.
   std::vector<ValueOrigin> alternatives;
   /// Borrow: whether the borrowed object is `const`-qualified, in which case
   /// the borrow is shared regardless of the destination type.
   bool constObject = false;
+  /// Raw: why.
+  core::RawReason rawReason = core::RawReason::IntegerCast;
 };
 
 class PlaceBuilder {
@@ -100,6 +110,24 @@ public:
   /// Resolves an lvalue expression to a place path, or `std::nullopt` if it
   /// is opaque or not a place at all.
   [[nodiscard]] std::optional<PlaceRef> resolve(const clang::Expr &expr);
+
+  /// For a place expression that `resolve` cannot map because its
+  /// dereferenced base is not a place (`((T *)(uintptr_t)x)->f`), the
+  /// origin of that base if it is a raw value; otherwise `std::nullopt`.
+  [[nodiscard]] std::optional<ValueOrigin>
+  rawBaseOf(const clang::Expr &placeExpr);
+
+  /// True if the variable or field `place` names is declared `WEAVEC_RAW`
+  /// (RFC 0004, *Annotation surface*): every value read from it is raw.
+  [[nodiscard]] bool isDeclaredRaw(core::PlaceId place) const;
+
+  /// The declaration `place` names (its variable for a base, its field for
+  /// a field step), for locating notes; null when unknown.
+  [[nodiscard]] const clang::NamedDecl *declFor(core::PlaceId place) const;
+
+  /// Under `--strict-externs`, a call into code with no summary yields a raw
+  /// result rather than an unknown one (RFC 0004, *Boundaries*).
+  void setStrictExterns(bool strict) noexcept { strictExterns = strict; }
 
   /// Resolves an expression yielding a pointer *value* to the place that
   /// pointer is stored in (`p`, `s.p`, `q->next`), looking through parens
@@ -139,10 +167,9 @@ public:
   /// understands (a variable, member, subscript or dereference).
   [[nodiscard]] static bool isPlaceExpr(const clang::Expr &expr);
 
-  /// True if a cast between these two types preserves place identity.
-  /// `void *` and byte pointers are how C spells generic pointers, so casts
-  /// to and from them are transparent; other pointer-to-pointer casts are
-  /// opaque (RFC 0002).
+  /// True if a cast between these two types preserves place identity: every
+  /// pointer-to-pointer cast does (RFC 0004, *Pointer identity*); a cast
+  /// from or to an integer does not.
   [[nodiscard]] static bool isTransparentCast(clang::QualType from,
                                               clang::QualType to);
 
@@ -161,9 +188,14 @@ public:
 private:
   core::PlaceTable &places;
   SummaryStore &summaries;
+  bool strictExterns = false;
   llvm::DenseMap<const clang::VarDecl *, core::PlaceId> varPlaces;
   llvm::DenseMap<std::uint32_t, const clang::VarDecl *> placeVars;
+  llvm::DenseMap<std::uint32_t, const clang::FieldDecl *> placeFields;
   std::vector<const clang::VarDecl *> order;
+
+  [[nodiscard]] core::PlaceId fieldPlace(core::PlaceId parent,
+                                         const clang::ValueDecl &member);
 };
 
 } // namespace weavec::analysis

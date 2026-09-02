@@ -177,7 +177,11 @@ argument and every caller sees that.
 - **Calls through function pointers.** No summary is available; the call has
   no effect (the RFC 0002 behaviour). RFC 0001's *Function pointers and
   callbacks* question remains open. Arguments passed to a function pointer
-  are not moved, not borrowed and not checked.
+  are not moved, not borrowed and not checked. *Superseded by
+  [RFC 0004](0004-unsafe-boundaries.md), which gives indirect calls a
+  signature from the function-pointer type's annotations or from the
+  address-taken functions of that type, and otherwise treats them as the
+  boundary described in the next item.*
 - **Unannotated external functions** (no body in the TU, no annotation, not
   in the shipped table). By default their pointer arguments are treated as
   borrowed for the call and not retained, their result as unknown, and one
@@ -412,6 +416,9 @@ twice.
 - **Returns** are classified the same way from every `return` statement.
 - A summary for a function whose body is skipped (`WEAVEC_UNSAFE`) is its
   annotation-derived summary only (RFC 0001: the signature still applies).
+  *Narrowed by [RFC 0004](0004-unsafe-boundaries.md): unsafe bodies are
+  analysed and summarised like any other; only a `WEAVEC_UNSAFE`
+  declaration without a body keeps the annotation-only summary.*
 
 ### Reconciliation
 
@@ -446,6 +453,9 @@ is replaced by two:
    library table is expected to cover what matters there, and the rest is
    RFC 0001's "unsafe by default for external code"); `--report-unannotated`
    lifts the exemption. `--strict-externs` raises the severity to error.
+   *Superseded by [RFC 0004](0004-unsafe-boundaries.md) for strict mode:
+   the call is an `unsafe-operation` at every call site outside an unsafe
+   region and its result is raw; no `annotation-required` is emitted.*
 2. **Exported API, opt-in.** With `--report-unannotated`, every non-`static`
    function definition whose pointer parameter or pointer return has no
    annotation gets one warning per such position, carrying a **fix-it** that
@@ -611,10 +621,10 @@ lit test under `test/Analysis/rfc0003-*.c`.
 
 | Question                              | Decision                                                                                       |
 | ------------------------------------- | ---------------------------------------------------------------------------------------------- |
-| Unannotated externs                   | Default: borrowed-for-the-call, no retention, unknown result; warning once per callee; `--strict-externs` for error. |
+| Unannotated externs                   | Default: borrowed-for-the-call, no retention, unknown result; warning once per callee; `--strict-externs` for error (strict mode redefined by RFC 0004). |
 | System-header externs                 | Exempt from the default warning; `--report-unannotated` includes them.                        |
 | Where effects are read from           | Parameter roots: as they happen. Everything else: exit state, unless the parameter variable is reassigned. |
-| Function pointers                     | Not modelled; remains open from RFC 0001.                                                      |
+| Function pointers                     | Not modelled here; resolved by RFC 0004.                                                       |
 | Partial annotations                   | Annotated roots use the annotation; unannotated roots of the same function use inference.     |
 | Debug output                          | Extend `--dump-analysis` rather than add a flag.                                               |
 
@@ -629,12 +639,13 @@ lit test under `test/Analysis/rfc0003-*.c`.
 
 ## Future work
 
-- **Unsafe-blocks RFC** (0004): escape rule, `unsafe-operation`, opaque
-  values and strict-mode extern results becoming `Raw`.
+- **Unsafe-blocks RFC** (done: [RFC 0004](0004-unsafe-boundaries.md)):
+  `unsafe-operation`, analysed unsafe regions, strict-mode extern results
+  becoming `Raw`.
 - **Cross-TU summaries** (Milestone 4): serialise `FunctionSummary` next to
   `compile_commands.json`; the format here is designed to be the on-disk
   format, keyed by mangled name.
 - **Return-value-conditional summaries** and general null tracking.
-- **Function pointer summaries** via the `typedef` or by joining every
-  function assigned to the pointer.
+- **Function pointer summaries** (done: RFC 0004) via the type's
+  annotations or by joining every address-taken function of the type.
 - **Non-lexical loans**, unchanged from RFC 0002.

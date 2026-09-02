@@ -28,8 +28,9 @@ follows [Semantic Versioning](https://semver.org/) once it reaches 1.0.
 - Project documentation: architecture, annotations reference, developer
   guide, roadmap.
 - RFC process for changes to the model, checker rules, annotations and
-  diagnostics (`docs/rfcs/`), with RFC 0001 (ownership model) and RFC 0002
-  (sound intra-procedural checking), both Accepted.
+  diagnostics (`docs/rfcs/`), with RFC 0001 (ownership model), RFC 0002
+  (sound intra-procedural checking), RFC 0003 (signature inference) and
+  RFC 0004 (unsafe boundaries).
 - Sound intra-procedural checking (RFC 0002): a forward dataflow over
   `clang::CFG` replaces the path-insensitive AST walk, so loops, `switch`
   fall-through, `goto` and short-circuit operands are analysed on every path
@@ -81,8 +82,74 @@ follows [Semantic Versioning](https://semver.org/) once it reaches 1.0.
 - `TranslationUnitAnalyzer` (Analysis) and `SummaryStore` as the public
   entry points for whole-TU analysis; `FunctionAnalyzer::analyze` now takes
   the store.
+- Raw pointers (RFC 0004): a pointer cast from an integer, declared
+  `WEAVEC_RAW`, loaded through another raw pointer, or handed out as raw by
+  a callee is tracked as *raw* (`core::RawTracker`, `AnalysisState::raw`,
+  `ValueSource::raw()`). Dereferencing it, releasing it, passing it to an
+  owning or dereferencing parameter, or asserting a safe kind for it outside
+  a `WEAVEC_UNSAFE` region is the new `unsafe-operation` error, with a note
+  saying why the pointer is raw. Copying, comparing and converting it back
+  to an integer are fine anywhere.
+- `WEAVEC_RAW` annotation for pointer parameters, returns, variables, fields
+  and function-pointer types ("no ownership guarantee"). `weavec.h` is at
+  header version 0.2.
+- Laundering (RFC 0004): inside a `WEAVEC_UNSAFE` region, assigning a raw
+  pointer to a place declared `WEAVEC_OWNED`/`WEAVEC_BORROWED`/`WEAVEC_MUT`
+  or returning it from a function whose return type is so annotated asserts
+  that kind, so pointers can be brought back into the model at one explicit
+  point (`WEAVEC_UNSAFE { n = (struct node *)handle; } free(n);`).
+- Calls through function pointers (RFC 0004) are checked: the signature
+  comes from ownership annotations on the function-pointer type (`typedef
+  void (*dtor_t)(void *WEAVEC_OWNED);`, fields, parameters), else from the
+  join of the summaries of every function of that type whose address is
+  taken in the translation unit (`ops.drop = node_free;`, `qsort(..., cmp)`).
+  Callbacks are analysed before their callers. Pointers with neither get one
+  `annotation-required` warning per function-pointer type.
+- POSIX and common GNU/BSD functions in the shipped library table (about 490
+  entries, up from 85): `<unistd.h>`, `<fcntl.h>`, `<sys/stat.h>`,
+  `<dirent.h>` (`opendir`/`closedir`/`readdir`), `<stdio.h>` extensions
+  (`getline`, `getdelim`, `asprintf`, `popen`/`pclose`, `fmemopen`,
+  `open_memstream`), `<stdlib.h>` extensions (`posix_memalign`,
+  `reallocarray`, `realpath`, `mkstemp`, `qsort_r`), `<string.h>` extensions
+  (`strtok_r`, `strsep`, `stpcpy`, `strlcpy`, `memmem`, ...), `<time.h>`,
+  `<sys/mman.h>` (`mmap`/`munmap`), `<pthread.h>`, `<sys/socket.h>`,
+  `<netdb.h>` (`getaddrinfo`/`freeaddrinfo`), `<arpa/inet.h>`, `<dlfcn.h>`,
+  `<regex.h>`, `<signal.h>`, `<sys/wait.h>`, `<poll.h>`, `<pwd.h>`,
+  `<grp.h>`, `<iconv.h>`, `<glob.h>`, `<wchar.h>` and more.
+- `--dump-analysis` prints the raw component of the exit state (`raw{r@3:13
+  integer-cast}`), `raw` as a place kind and as a value source.
+- `core::FunctionSummary::inferredReturnKind` reports `Raw`;
+  `--report-unannotated` offers `WEAVEC_RAW` for a result inferred raw.
+- `SummaryStore::lookupIndirect`, `addAddressTaken`, `candidatesFor`;
+  `analysis::collectFunctionTypeAnnotations`; `TranslationUnitAnalyzer::
+  collectAddressTaken`.
 
 ### Changed
+
+- `WEAVEC_UNSAFE` blocks and function bodies are analysed instead of skipped
+  (RFC 0004): diagnostics inside the region are suppressed, raw operations
+  are permitted, but ownership effects flow out of it, so
+  `WEAVEC_UNSAFE { free(p); } p[0]` is now a `use-after-free` at `p[0]` and
+  a `WEAVEC_UNSAFE` function's callers see its inferred effects. A
+  `WEAVEC_UNSAFE` declaration without a body is unchanged (empty summary, no
+  boundary warning).
+- Pointer arithmetic (`p + 1`, `p++`, `&a[i]`) and casts between pointer
+  types preserve the identity of the pointed-to object instead of producing
+  an untracked value (RFC 0004), so `q = p + 1; free(p); q[0]` is a
+  `use-after-free` and `bind(fd, (struct sockaddr *)&addr, len)` borrows
+  `addr`. Only integer-to-pointer casts lose identity, and they yield a raw
+  pointer.
+- `--strict-externs` (RFC 0004): a call the checker cannot resolve is now an
+  `unsafe-operation` error at every call site outside a `WEAVEC_UNSAFE`
+  region (system headers included) and its pointer result is raw, instead
+  of an `annotation-required` error once per callee. Inside an unsafe
+  region it is silent.
+- `annotation-required`'s notes mention `WEAVEC_RAW`; a new form covers
+  calls through function pointers with no signature.
+- `analysis::AnnotationSet::safeKind()` returns
+  `std::optional<core::OwnershipKind>`; `AnnotationSet` gained `raw`,
+  `ownership()` and `merge()`; `analysis::ValueOrigin` gained `Raw` and
+  `rawReason`.
 
 - `double-free` and `use-after-free` are now also reported for the second
   iteration of a loop that frees a pointer declared outside it.

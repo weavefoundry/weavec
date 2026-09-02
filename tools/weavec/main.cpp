@@ -49,8 +49,9 @@ cl::opt<bool> reportUnannotated(
 
 cl::opt<bool> strictExterns(
     "strict-externs",
-    cl::desc("Treat calls to functions with no definition, annotation or "
-             "library summary as errors instead of warnings"),
+    cl::desc("Treat calls into unchecked code (no definition, annotation or "
+             "library summary) as raw operations: an error outside "
+             "WEAVEC_UNSAFE regions, and their pointer results are raw"),
     cl::init(false), cl::cat(weavecCategory));
 
 cl::opt<bool> analyzeHeaders(

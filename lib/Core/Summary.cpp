@@ -150,9 +150,13 @@ OwnershipKind FunctionSummary::inferredKind(std::uint32_t param) const {
 }
 
 OwnershipKind FunctionSummary::inferredReturnKind() const {
+  if (returns.contains(ValueSource::raw()))
+    return OwnershipKind::Raw;
   OwnershipKind result = OwnershipKind::Unknown;
   for (const ValueSource &source : returns) {
     switch (source.kind) {
+    case ValueSource::Kind::Raw:
+      break;
     case ValueSource::Kind::Fresh:
       result = core::join(result, OwnershipKind::Owned);
       break;
@@ -191,6 +195,8 @@ std::string_view toString(ValueSource::Kind kind) noexcept {
     return "null";
   case ValueSource::Kind::Unknown:
     return "unknown";
+  case ValueSource::Kind::Raw:
+    return "raw";
   }
   return "<invalid>";
 }
