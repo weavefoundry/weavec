@@ -200,7 +200,7 @@ SummaryStore::lookup(const FunctionDecl &callee) {
       body != nullptr ? *body : core::FunctionSummary{};
   if (annotated)
     applyAnnotations(result, callee, annotations);
-  const auto [it, inserted] = merged.try_emplace(canonical, std::move(result));
+  const auto it = merged.try_emplace(canonical, std::move(result)).first;
   return ResolvedSummary{.summary = &it->second,
                          .source = annotated ? SummarySource::Annotation
                                              : SummarySource::Inferred};

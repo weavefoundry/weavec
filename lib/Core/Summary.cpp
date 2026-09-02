@@ -55,17 +55,18 @@ bool SummaryPath::hasDeref() const noexcept {
 
 std::string SummaryPath::toString(std::string_view rootName) const {
   std::string name(rootName);
-  for (std::size_t i = 0; i < steps.size(); ++i) {
+  std::size_t i = 0;
+  while (i < steps.size()) {
     switch (steps[i].step) {
     case PathStep::Deref:
       // `(*p).f` is spelled `p->f`; a trailing or non-field-followed deref
       // is spelled `*p`.
       if (i + 1 < steps.size() && steps[i + 1].step == PathStep::Field) {
         name += "->" + steps[i + 1].field;
-        ++i;
-      } else {
-        name.insert(0, 1, '*');
+        i += 2;
+        continue;
       }
+      name.insert(0, 1, '*');
       break;
     case PathStep::Field:
       name += "." + steps[i].field;
@@ -74,6 +75,7 @@ std::string SummaryPath::toString(std::string_view rootName) const {
       name += "[*]";
       break;
     }
+    ++i;
   }
   return name;
 }
