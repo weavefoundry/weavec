@@ -9,5 +9,6 @@ weavec_add_unittest(
           OwnershipTest.cpp
           PlaceTest.cpp
           RawTest.cpp
+          SummaryIOTest.cpp
           SummaryTest.cpp
   DEPS weavec::Core)

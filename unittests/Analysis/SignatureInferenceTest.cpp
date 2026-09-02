@@ -583,11 +583,10 @@ TEST(SignatureInference, UnresolvableArgumentsAreDropped) {
   EXPECT_EQ(messages(result.diagnostics),
             (Strings{"8: call through 'make' is not checked: its function type "
                      "has no ownership annotations and no function of that "
-                     "type has its address taken in this translation unit",
+                     "type has its address taken in this program",
                      "9: call through 'drop' is not checked: its function "
                      "type has no ownership annotations and no function of "
-                     "that type has its address taken in this translation "
-                     "unit"}));
+                     "that type has its address taken in this program"}));
 }
 
 TEST(SignatureInference, CopiedLoansAreLifetimeChecked) {
@@ -716,7 +715,7 @@ TEST(SignatureInference, UnknownExternalCalleeWarnsOnce) {
             (Strings{"'mystery' is declared here",
                      "annotate its pointer parameters with WEAVEC_OWNED, "
                      "WEAVEC_BORROWED, WEAVEC_MUT or WEAVEC_RAW, or define it "
-                     "in this translation unit"}));
+                     "in this program"}));
   EXPECT_EQ(result.diagnostics.diagnostics()[0].notes[0].location.line, 2U);
   EXPECT_EQ(result.diagnostics.diagnostics()[0].severity,
             core::Severity::Warning);

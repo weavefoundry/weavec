@@ -114,7 +114,7 @@ Every WeaveC diagnostic ends with a stable identifier in brackets, e.g.
 | `lifetime-too-short`  | error    | A pointer may outlive what it points to: `'<p>' may outlive '<x>', which it points to` (stored into an outer scope, a global or through a parameter) or `returned pointer may outlive '<x>', which it points to`. Notes: where `<x>` is declared and where it goes out of scope. |
 | `unsafe-operation`    | error    | A raw operation outside a `WEAVEC_UNSAFE` region ([RFC 0004](rfcs/0004-unsafe-boundaries.md)): `dereference of raw pointer '<p>' outside an unsafe region`, `'<f>' dereferences raw pointer '<p>' ...` (also `releases`, `takes ownership of`), `raw pointer '<p>' is assigned to '<q>', which is declared WEAVEC_OWNED, outside an unsafe region` (any safe annotation), `raw pointer is returned from a function whose return type is annotated WEAVEC_OWNED outside an unsafe region`, and with `--strict-externs`, `unchecked call to '<f>' outside an unsafe region` / `unchecked call through '<fp>' ...`. Notes: why the pointer is raw (`'<p>' is raw: cast from an integer here`, `declared WEAVEC_RAW here`, `loaded through raw pointer '<q>' here`, `handed out by '<f>' here`, `returned by a call into unchecked code ('<f>') here`, each optionally `(through '<alias>')`) and `move this operation into a WEAVEC_UNSAFE block or function, or assert the pointer's ownership first`. |
 | `annotation-mismatch` | error    | A definition contradicts its own annotation: `'<p>' is annotated WEAVEC_BORROWED but is freed here` (also `WEAVEC_MUT`; also `moved`, `written through`; also `... but '<p>->f' is freed here` for a path under the parameter), `function returns a borrow but its return type is annotated WEAVEC_OWNED`, `function returns a fresh allocation but its return type is annotated WEAVEC_BORROWED` (or `WEAVEC_MUT`). Notes: `'<p>' is annotated here` / `annotated here`; `'<q>' is a copy of '<p>'` when through an alias. Callers keep trusting the annotation. |
-| `annotation-required` | warning  | **On by default:** `call to '<f>' is not checked: it has no definition or ownership annotations here`, once per callee per translation unit, for a callee with pointer parameters or a pointer result that has no body here, no annotations and no libc entry; callees from system headers are exempt. Notes: `'<f>' is declared here`, `annotate its pointer parameters with WEAVEC_OWNED, WEAVEC_BORROWED, WEAVEC_MUT or WEAVEC_RAW, or define it in this translation unit`. Likewise `call through '<fp>' is not checked: its function type has no ownership annotations and no function of that type has its address taken in this translation unit`, once per function-pointer type. With `--strict-externs` these calls are `unsafe-operation` errors instead (at every call site, including callees from system headers), and their pointer result is raw. **With `--report-unannotated`:** every exported (non-`static`) definition additionally gets `pointer parameter '<p>' of '<f>' is inferred WEAVEC_OWNED; add the annotation to its declaration` (or `WEAVEC_BORROWED` / `WEAVEC_MUT`; `return value of '<f>' is inferred ...`) with a fix-it that inserts the annotation, or `pointer parameter '<p>' has no inferable ownership; annotate it with WEAVEC_OWNED, WEAVEC_BORROWED or WEAVEC_MUT` when the body gives no evidence. |
+| `annotation-required` | warning  | **On by default:** `call to '<f>' is not checked: it has no definition or ownership annotations here`, once per callee per program (RFC 0005: a definition in any unit analysed together with this one counts; alone, the unit is the program), for a callee with pointer parameters or a pointer result that has no body in the program, no annotations and no libc entry; callees from system headers are exempt. Notes: `'<f>' is declared here`, `annotate its pointer parameters with WEAVEC_OWNED, WEAVEC_BORROWED, WEAVEC_MUT or WEAVEC_RAW, or define it in this program`. Likewise `call through '<fp>' is not checked: its function type has no ownership annotations and no function of that type has its address taken in this program`, once per function-pointer type. With `--strict-externs` these calls are `unsafe-operation` errors instead (at every call site, including callees from system headers), and their pointer result is raw. **With `--report-unannotated`:** every exported (non-`static`) definition additionally gets `pointer parameter '<p>' of '<f>' is inferred WEAVEC_OWNED; add the annotation to its declaration` (or `WEAVEC_BORROWED` / `WEAVEC_MUT`; `return value of '<f>' is inferred ...`) with a fix-it that inserts the annotation, or `pointer parameter '<p>' has no inferable ownership; annotate it with WEAVEC_OWNED, WEAVEC_BORROWED or WEAVEC_MUT` when the body gives no evidence. |
 | `invalid-annotation`  | warning  | A `weavec.*` annotation WeaveC does not recognise.                    |
 
 The identifiers are defined in `include/weavec/Core/Diagnostic.h`
@@ -144,22 +144,29 @@ buffer.c:12:27: warning: pointer parameter 'b' of 'buffer_free' is inferred WEAV
   `<fcntl.h>`, `<dirent.h>`, `<sys/mman.h>`, `<netdb.h>`, `<pthread.h>`,
   `<time.h>`, `<pwd.h>`, `<grp.h>`, `<regex.h>`, `<dlfcn.h>`, `<wchar.h>`
   and friends), any function whose return type carries `WEAVEC_OWNED`, and
-  any function defined in the translation unit whose body returns a fresh
+  any function defined in the program whose body returns a fresh
   allocation.
 - **Releases and moves**: `free`, `fclose`, `closedir`, `freeaddrinfo`,
   `munmap`, `regfree`, `dlclose`, ..., passing a pointer to a
   `WEAVEC_OWNED` parameter, and passing it to a function defined in the
-  translation unit whose body frees or moves that parameter (through any
-  depth of wrappers and through recursion). `realloc(p, n)` moves `p`; on
-  the path where the result is tested null (`if (!q)`, `q == NULL`, ...),
-  `p` is valid again.
+  program whose body frees or moves that parameter (through any depth of
+  wrappers and through recursion). `realloc(p, n)` moves `p`; on the path
+  where the result is tested null (`if (!q)`, `q == NULL`, ...), `p` is
+  valid again.
 - **Calls through function pointers**: the callee's signature is taken from
   the annotations on the function-pointer type (typedef, field or parameter)
   when it has any; otherwise from the join of the summaries of every
-  function of that type whose address is taken in the translation unit
+  function of that type whose address is taken anywhere in the program
   (`ops.drop = node_free;`, `qsort(a, n, sz, cmp)`), so a call through
   `ops->drop` frees what `node_free` frees. Pointers with neither are
   reported once per type as `annotation-required`.
+- **The program**: with `weavec file.c --` the program is that one file;
+  with `weavec --whole-program` or `weavec-cc` it is every file analysed or
+  linked together, and a callee defined in another file is checked from
+  its body there (a definition wins over the libc table, so a program that
+  defines its own `strdup` is checked against its own). A whole-struct
+  copy `b = a` copies the facts of every pointer field, so `b = a;
+  free(a.data); b.data[0]` is a use after free.
 - **Effects through parameters**: a callee that frees `b->data`, writes
   `*out`, or stores a fresh allocation into `*out` or a global has that
   effect at the call site. A callee that re-nulls what it freed
@@ -203,7 +210,27 @@ buffer.c:12:27: warning: pointer parameter 'b' of 'buffer_free' is inferred WEAV
 
 `weavec --dump-analysis file.c -- <flags>` prints the inferred places,
 lifetimes, exit state (including which places hold raw pointers, and why)
-and summary of every analysed function.
+and summary of every analysed function; with `--whole-program` it ends with
+the program database (every exported summary). `weavec-cc` writes each
+unit's exported summaries to `<object>.weavec` in the same text form.
+
+## Controlling diagnostics
+
+`weavec` and `weavec-cc` accept Clang-style warning flags for WeaveC's ids:
+
+| Flag                          | Effect                                                                                            |
+| ----------------------------- | ------------------------------------------------------------------------------------------------- |
+| `-Wno-weavec-<id>`            | Disable a diagnostic whose default severity is *warning* (`annotation-required`, `invalid-annotation`). Refused for an error. |
+| `-Wweavec-<id>`               | Re-enable it.                                                                                     |
+| `-Wno-error=weavec-<id>`      | Report an error as a warning (the migration path for a codebase that wants to build while it works through the reports). |
+| `-Werror=weavec-<id>`         | Report a warning as an error.                                                                     |
+| `-Wno-weavec`, `-Wno-error=weavec`, `-Werror=weavec` | The same for every WeaveC id (`-Wno-weavec` leaves the errors alone).                  |
+
+The soundness statement assumes default severities. `weavec-cc` additionally
+takes `-fno-weavec` (compile only), `-fweavec-strict` (`--strict-externs`),
+`-fweavec-report-unannotated`, `-fweavec-analyze-headers`,
+`-fweavec-dump-analysis` and `-fno-weavec-link` (skip the link-time
+whole-program step).
 
 ## Compatibility with other annotation schemes
 

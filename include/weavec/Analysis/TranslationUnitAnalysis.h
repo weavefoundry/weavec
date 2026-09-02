@@ -18,6 +18,7 @@
 #define WEAVEC_ANALYSIS_TRANSLATIONUNITANALYSIS_H
 
 #include "weavec/Analysis/FunctionAnalysis.h"
+#include "weavec/Analysis/ProgramDatabase.h"
 #include "weavec/Analysis/Summaries.h"
 #include "weavec/Core/Diagnostic.h"
 
@@ -26,6 +27,8 @@
 
 #include "llvm/ADT/STLFunctionalExtras.h"
 
+#include <set>
+#include <string>
 #include <vector>
 
 namespace weavec::analysis {
@@ -47,6 +50,23 @@ public:
     run([](const clang::FunctionDecl &) { return true; });
   }
 
+  /// Attaches the exports of the other units of the program (RFC 0005);
+  /// call before `run`. The database must outlive the analyzer.
+  void setDatabase(const ProgramDatabase *database) noexcept {
+    store.setDatabase(database);
+  }
+
+  /// What the unit defines, imports and calls indirectly, without
+  /// analysing anything: the discovery pass of RFC 0005's whole-program
+  /// algorithm. Summaries in the result are empty.
+  [[nodiscard]] UnitExports discover();
+
+  /// The unit's exports after `run` (RFC 0005, *Programs, units and
+  /// exports*): every external-linkage or address-taken definition with the
+  /// summary a caller here would see, globals by name, plus the imports and
+  /// the callees that were boundaries.
+  [[nodiscard]] UnitExports exports();
+
   /// The summaries inferred by `run`, plus the store's lookup facilities.
   [[nodiscard]] SummaryStore &summaries() noexcept { return store; }
   [[nodiscard]] const SummaryStore &summaries() const noexcept { return store; }
@@ -63,6 +83,10 @@ private:
 
   /// Function definitions in source order.
   std::vector<const clang::FunctionDecl *> definitions;
+  /// Direct callees with no definition in the unit and the type keys of the
+  /// indirect calls, collected by `buildCallGraph` for the exports.
+  std::vector<const clang::FunctionDecl *> externalCallees;
+  std::set<std::string> indirectTypeKeys;
 
   void collectDefinitions(const clang::DeclContext &dc);
   /// Registers every function used as a value with the store (RFC 0004,
@@ -70,7 +94,11 @@ private:
   void collectAddressTaken();
   /// Direct edges plus, for each indirect call, an edge to every
   /// address-taken function of the callee's type.
-  [[nodiscard]] std::vector<std::vector<unsigned>> buildCallGraph() const;
+  [[nodiscard]] std::vector<std::vector<unsigned>> buildCallGraph();
+  /// `collectDefinitions`, `collectAddressTaken` and `buildCallGraph`.
+  void prepare();
+  /// The exports without summaries: definitions, imports, indirect types.
+  [[nodiscard]] UnitExports skeletonExports() const;
   void analyzeComponent(
       const std::vector<unsigned> &component, bool recursive,
       FunctionAnalyzer &analyzer,

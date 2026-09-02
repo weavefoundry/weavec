@@ -1105,5 +1105,82 @@ TEST(Dataflow, CallbacksAreAnalysedBeforeTheirCallers) {
             Strings{"4: use of 'n' after it was freed"});
 }
 
+TEST(Dataflow, StructCopiesCopyTheirPointerFields) {
+  // RFC 0005, *Struct copies*: `b = a` is `b.f = a.f` for every pointer
+  // field, so `b.data` aliases `a.data` and shares its move records.
+  const auto result = analyze(R"c(
+    struct buf { char *data; int n; };
+    struct outer { struct buf b; char *tag; };
+    int init_copy(void) {
+      struct buf a = { malloc(8), 8 };
+      struct buf b = a;
+      free(a.data);
+      return b.data[0];
+    }
+    int assign_copy(void) {
+      struct buf a; a.data = malloc(8);
+      struct buf b; b = a;
+      free(b.data);
+      free(a.data);
+      return 0;
+    }
+    int nested(void) {
+      struct outer o = { { malloc(4), 4 }, malloc(2) };
+      struct outer p = o;
+      free(o.b.data);
+      return p.b.data[0];
+    }
+    int literal(void) {
+      struct buf a;
+      a = (struct buf){ .n = 8, .data = malloc(8) };
+      free(a.data);
+      return a.data[0];
+    }
+    int through_pointer(struct buf *p) {
+      struct buf local = *p;
+      free(local.data);
+      return p->data[0];
+    }
+    int fine(void) {
+      struct buf a = { malloc(8), 8 };
+      struct buf b = a;
+      b.data[0] = 1;
+      free(a.data);
+      return 0;
+    }
+    struct buf make(void);
+    int opaque(void) {
+      struct buf a = make();
+      free(a.data);
+      return a.n;
+    }
+  )c");
+  ASSERT_TRUE(result.ast);
+  EXPECT_EQ(messages(result.diagnostics),
+            (Strings{"8: use of 'b.data' after it was freed",
+                     "14: 'a.data' is freed twice",
+                     "21: use of 'p.b.data' after it was freed",
+                     "27: use of 'a.data' after it was freed",
+                     "32: use of 'p->data' after it was freed"}));
+}
+
+TEST(Dataflow, StructCopiesCarryLoansAndKinds) {
+  const auto result = analyze(R"c(
+    struct view { const char *s; int n; };
+    struct view *g;
+    struct view keep(struct view v) { return v; }
+    const char *escape(void) {
+      char local[8];
+      struct view a = { local, 8 };
+      struct view b = a;
+      return b.s;
+    }
+    void self(struct view *v) { *v = *v; use(v->s); }
+  )c");
+  ASSERT_TRUE(result.ast);
+  EXPECT_EQ(messages(result.diagnostics),
+            Strings{"9: 'b.s' may outlive 'local', which it points to"});
+}
+
 } // namespace
 } // namespace weavec::analysis

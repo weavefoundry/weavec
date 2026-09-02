@@ -38,6 +38,11 @@ struct AnalysisOptions {
   /// `unsafe-operation` error outside an unsafe region and its pointer
   /// result is raw, instead of the RFC 0003 once-per-callee warning.
   bool strictExterns = false;
+  /// RFC 0005, *`weavec-cc`*, compile step: record the callees that are
+  /// boundaries (for the unit's exports) but do not emit the
+  /// `annotation-required` warning for them; the link step decides whether
+  /// the program defines them.
+  bool deferBoundary = false;
   /// If set, print the inferred facts for every analysed function
   /// (`--dump-analysis`): places and their kinds, lifetimes, and the state
   /// at function exit. Intended for debugging and lit tests; the format is

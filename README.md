@@ -9,7 +9,7 @@ WeaveC is built on Clang/LLVM rather than implementing a compiler from scratch, 
 
 WeaveC itself is written in modern C++, which provides the most direct and complete access to Clang/LLVM's APIs and infrastructure. The core ownership, borrowing, lifetime, and inference logic should be kept as modular as possible so it remains cleanly separated from the Clang integration layer and can potentially be reused or extended in the future.
 
-> **Status:** early. Every function body is checked by a sound dataflow ([RFC 0002](docs/rfcs/0002-intraprocedural-checking.md)): use-after-free and double-free through any alias and across loops, use-after-move, conflicting borrows, and pointers that outlive what they point to. Calls are modelled by inferred signatures ([RFC 0003](docs/rfcs/0003-signature-inference.md)): every function in the translation unit gets a summary of what it frees, writes, stores and returns, so `node_free(n); n->v` is caught without annotations; the C standard library and POSIX are covered by a shipped table, and annotations are checked against the bodies that carry them. Unsafe code has a boundary ([RFC 0004](docs/rfcs/0004-unsafe-boundaries.md)): pointers cast from integers or declared `WEAVEC_RAW` are *raw* and may only be dereferenced or released inside a `WEAVEC_UNSAFE` region, which is analysed rather than skipped; calls through function pointers are checked from the pointer type's annotations or from the functions assigned to it. Cross-translation-unit inference and the drop-in compiler driver are next. See [docs/roadmap.md](docs/roadmap.md).
+> **Status:** early. Every function body is checked by a sound dataflow ([RFC 0002](docs/rfcs/0002-intraprocedural-checking.md)): use-after-free and double-free through any alias and across loops, use-after-move, conflicting borrows, and pointers that outlive what they point to. Calls are modelled by inferred signatures ([RFC 0003](docs/rfcs/0003-signature-inference.md)): every function in the translation unit gets a summary of what it frees, writes, stores and returns, so `node_free(n); n->v` is caught without annotations; the C standard library and POSIX are covered by a shipped table, and annotations are checked against the bodies that carry them. Unsafe code has a boundary ([RFC 0004](docs/rfcs/0004-unsafe-boundaries.md)): pointers cast from integers or declared `WEAVEC_RAW` are *raw* and may only be dereferenced or released inside a `WEAVEC_UNSAFE` region, which is analysed rather than skipped; calls through function pointers are checked from the pointer type's annotations or from the functions assigned to it. Programs are analysed whole ([RFC 0005](docs/rfcs/0005-whole-program-analysis.md)): every translation unit exports the summaries of what it defines, so `other_free(o); o->v` is caught when `other_free` lives in another file, callbacks registered in one file are checked in the file that calls them, and `annotation-required` fires only for code defined nowhere in the program. `weavec-cc` is a drop-in `cc` that does this as part of a normal build. Shipped summaries for libraries beyond libc and a Clang plugin packaging are next. See [docs/roadmap.md](docs/roadmap.md).
 
 ## Quick look
 
@@ -70,6 +70,28 @@ example.c:27:10: note: move this operation into a WEAVEC_UNSAFE block or functio
 
 Annotations (`WEAVEC_OWNED`, `WEAVEC_BORROWED`, `WEAVEC_MUT`, `WEAVEC_RAW`, `WEAVEC_UNSAFE`) expand to nothing on other compilers, so annotated code remains plain, portable C. See [docs/annotations.md](docs/annotations.md).
 
+## Using it as the compiler
+
+`weavec-cc` is Clang's driver with WeaveC inside. Point a build at it and it compiles as `clang` would, analyses each file as it compiles it, and checks the whole program when it links:
+
+```sh
+$ CC=weavec-cc make
+weavec-cc -c node.c -o node.o          # node.o and node.o.weavec (its summaries)
+weavec-cc -c main.c -o main.o
+weavec-cc node.o main.o -o prog        # reads the sidecars, analyses the program, then links
+main.c:8:3: error: 'n' is freed twice [weavec::double-free]
+    8 |   node_free(n);
+      |   ^
+main.c:7:3: note: previously freed here
+    7 |   node_free(n);
+      |   ^
+1 error generated.
+```
+
+A bug inside one file is reported when that file is compiled; a bug that needs two files (`node_free` is defined in `node.c`) is reported when they are linked, and an error stops the link. Flags: `-fno-weavec` (compile only), `-fweavec-strict` (every call into unknown code is a raw operation), `-fno-weavec-link` (skip the link-time step), `-Wno-weavec-annotation-required`, `-Wno-error=weavec-use-after-free` (lower an error to a warning while migrating), `-Werror=weavec`.
+
+The tooling form analyses a compilation database without building: `weavec --whole-program -p build/` (all sources) or `weavec --whole-program a.c b.c -- -Iinclude`. Without `--whole-program`, `weavec file.c --` checks one file as before.
+
 ## Building
 
 Requirements: CMake ≥ 3.24, Ninja, a C++20 compiler, and an LLVM/Clang development install (23.x recommended; ≥ 20 supported). Tests additionally need `lit` and LLVM's `FileCheck`.
@@ -100,7 +122,8 @@ include/weavec/   Public C++ headers
   Analysis/       Clang AST -> core facts; the checkers
   Frontend/       Clang FrontendAction / libTooling integration
 lib/              Implementations, mirroring include/
-tools/weavec/     The command-line tool
+tools/weavec/     The analysis tool (libTooling; --whole-program for a compilation database)
+tools/weavec-cc/  The drop-in compiler driver (Clang's driver with WeaveC inside)
 resources/        weavec.h, the C-facing annotation header (installed to lib/weavec/include)
 unittests/        GoogleTest unit tests
 test/             lit + FileCheck integration tests

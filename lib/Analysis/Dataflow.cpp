@@ -576,6 +576,8 @@ void FunctionDataflow::handleDecl(const DeclStmt &decl,
     reinit(place, state);
     const Expr *init = var->getInit();
     if (!var->getType()->isPointerType()) {
+      if (init != nullptr && var->getType()->isRecordType())
+        copyRecord(place, *init, state);
       continue;
     }
     const AnnotationSet annotations = getAnnotations(*var);
@@ -610,11 +612,147 @@ void FunctionDataflow::handleAssign(const BinaryOperator &assign,
                        state);
     return;
   }
-  if (type->isRecordType()) {
-    // Whole-struct copy: every field is overwritten with values we do not
-    // track individually.
-    for (const core::PlaceId child : places.descendants(lhs->place))
-      state.forget(child);
+  if (type->isRecordType())
+    copyRecord(lhs->place, *assign.getRHS(), state);
+}
+
+void FunctionDataflow::copyRecord(core::PlaceId dest, const Expr &value,
+                                  core::AnalysisState &state) {
+  const Expr *source = &PlaceBuilder::stripTransparent(value);
+  if (const auto *literal = dyn_cast<CompoundLiteralExpr>(source))
+    source = &PlaceBuilder::stripTransparent(*literal->getInitializer());
+  if (const auto *init = dyn_cast<InitListExpr>(source)) {
+    reinit(dest, state);
+    initRecord(dest, *init, state);
+    return;
+  }
+  const std::optional<PlaceRef> src = PlaceBuilder::isPlaceExpr(*source)
+                                          ? builder.resolve(*source)
+                                          : std::nullopt;
+  if (!src) {
+    // A struct produced by a call or some other opaque expression: every
+    // field is overwritten with values nothing is known about.
+    reinit(dest, state);
+    return;
+  }
+  if (src->place == dest)
+    return;
+
+  // `b = a` is `b.f = a.f` for every field path `f` known under `a`: the
+  // fields themselves become aliases carrying the same loans, moves and raw
+  // records; the objects below a copied pointer are the same objects, so
+  // their facts are mirrored as `mirrorSubtree` does for a pointer copy.
+  // Facts are captured first because `a` may lie below `b` (`*n = *n->next`).
+  struct FieldFacts {
+    core::PlaceId from;
+    core::PlaceId to;
+    bool belowPointer;
+    std::optional<core::MoveRecord> moved;
+    std::optional<core::RawRecord> raw;
+    std::optional<core::OwnershipKind> kind;
+    std::vector<core::Loan> loans;
+  };
+  std::vector<FieldFacts> facts;
+  const std::size_t srcDepth = places.depth(src->place);
+  const std::size_t destDepth = places.depth(dest);
+  for (const core::PlaceId place : places.descendants(src->place)) {
+    if (places.depth(place) - srcDepth + destDepth > MaxPlaceDepth)
+      continue;
+    bool belowPointer = false;
+    for (core::PlaceId cursor = place; cursor != src->place;
+         cursor = *places.parent(cursor)) {
+      if (places.step(cursor) == core::PathStep::Deref) {
+        belowPointer = true;
+        break;
+      }
+    }
+    FieldFacts field{
+        .from = place,
+        .to = places.translate(place, src->place, dest),
+        .belowPointer = belowPointer,
+        .moved = std::nullopt,
+        .raw = std::nullopt,
+        .kind = std::nullopt,
+        .loans = {},
+    };
+    if (const auto record = state.moves.movedAt(place))
+      field.moved = *record;
+    if (const auto record = state.raw.rawAt(place))
+      field.raw = *record;
+    if (const auto it = state.kinds.find(place); it != state.kinds.end())
+      field.kind = it->second;
+    for (const core::Loan &loan : state.loans.loans()) {
+      if (loan.holder == place || (belowPointer && loan.place == place))
+        field.loans.push_back(loan);
+    }
+    facts.push_back(std::move(field));
+  }
+
+  reinit(dest, state);
+  for (const FieldFacts &field : facts) {
+    if (field.kind)
+      setKind(field.to, *field.kind, state);
+    if (field.moved) {
+      state.moves.markMoved(field.to, field.moved->reason,
+                            field.moved->location,
+                            field.moved->via.value_or(field.from));
+    }
+    if (field.raw)
+      state.raw.markRaw(field.to, *field.raw);
+    if (!field.belowPointer) {
+      state.aliases.unite(field.to, field.from);
+      state.loans.copyHolder(field.from, field.to);
+      continue;
+    }
+    for (core::Loan loan : field.loans) {
+      if (loan.place == field.from)
+        loan.place = field.to;
+      if (loan.holder == field.from)
+        loan.holder = field.to;
+      state.loans.addLoanUnchecked(loan);
+    }
+  }
+}
+
+void FunctionDataflow::initRecord(core::PlaceId dest, const InitListExpr &init,
+                                  core::AnalysisState &state) {
+  const InitListExpr *semantic =
+      init.isSemanticForm() ? &init : init.getSemanticForm();
+  const RecordDecl *record = init.getType()->getAsRecordDecl();
+  if (semantic == nullptr || record == nullptr)
+    return;
+
+  const auto assignField = [&](const FieldDecl &field, const Expr &value) {
+    if (isa<ImplicitValueInitExpr>(&value))
+      return;
+    const core::PlaceId place = builder.fieldPlace(dest, field);
+    const QualType type = field.getType();
+    if (type->isPointerType()) {
+      applyPointerAssign(place, builder.classifyValue(value), value,
+                         type->getPointeeType().isConstQualified(), state);
+    } else if (type->isRecordType()) {
+      copyRecord(place, value, state);
+    }
+  };
+
+  if (record->isUnion()) {
+    const FieldDecl *field = semantic->getInitializedFieldInUnion();
+    if (field != nullptr && semantic->getNumInits() > 0 &&
+        semantic->getInit(0) != nullptr)
+      assignField(*field, *semantic->getInit(0));
+    return;
+  }
+  // Mirrors the semantic form's layout: one initializer per field in
+  // declaration order, unnamed bit-fields skipped.
+  unsigned next = 0;
+  for (const FieldDecl *field : record->fields()) {
+    if (field->isUnnamedBitField())
+      continue;
+    if (next >= semantic->getNumInits())
+      break;
+    const Expr *value = semantic->getInit(next++);
+    if (value != nullptr)
+      assignField(*field, *value);
   }
 }
 
@@ -779,13 +917,13 @@ void FunctionDataflow::handleUncheckedCall(const CallExpr &call) {
                        locate(callee->getLocation()));
     diagnostic.addNote(
         "annotate its pointer parameters with WEAVEC_OWNED, WEAVEC_BORROWED, "
-        "WEAVEC_MUT or WEAVEC_RAW, define it in this translation unit, or "
+        "WEAVEC_MUT or WEAVEC_RAW, define it in this program, or "
         "move the call into a WEAVEC_UNSAFE region",
         locate(callee->getLocation()));
   } else {
     diagnostic.addNote(
         "annotate the parameters of its function type, take the address of "
-        "a function of that type in this translation unit, or move the call "
+        "a function of that type in this program, or move the call "
         "into a WEAVEC_UNSAFE region",
         locate(call));
   }
@@ -799,7 +937,7 @@ void FunctionDataflow::noteUnknownCallee(const CallExpr &call) {
   if (callee == nullptr) {
     // A call through a function pointer with no signature: once per
     // function type (RFC 0004, *Boundaries*).
-    if (!summaries.noteUnknownIndirect(call))
+    if (!summaries.noteUnknownIndirect(call) || options.deferBoundary)
       return;
     core::Diagnostic diagnostic{
         .severity = core::Severity::Warning,
@@ -807,7 +945,7 @@ void FunctionDataflow::noteUnknownCallee(const CallExpr &call) {
         .message = "call through " + calleeName(call) +
                    " is not checked: its function type has no ownership "
                    "annotations and no function of that type has its address "
-                   "taken in this translation unit",
+                   "taken in this program",
         .location = locate(call),
         .notes = {},
         .fixits = {},
@@ -815,7 +953,7 @@ void FunctionDataflow::noteUnknownCallee(const CallExpr &call) {
     diagnostic.addNote(
         "annotate the parameters of its function type with WEAVEC_OWNED, "
         "WEAVEC_BORROWED, WEAVEC_MUT or WEAVEC_RAW, or take the address of a "
-        "function of that type in this translation unit",
+        "function of that type in this program",
         locate(call));
     report(std::move(diagnostic));
     return;
@@ -824,7 +962,10 @@ void FunctionDataflow::noteUnknownCallee(const CallExpr &call) {
   const SourceManager &sm = context.getSourceManager();
   if (!options.reportUnannotated && sm.isInSystemHeader(callee->getLocation()))
     return;
-  if (!summaries.noteUnknownCallee(*callee))
+  // RFC 0005: in the compile step of the driver the boundary is recorded
+  // for the exports and the link step reports it if the program has no
+  // definition either.
+  if (!summaries.noteUnknownCallee(*callee) || options.deferBoundary)
     return;
 
   const std::string name = callee->getNameAsString();
@@ -842,7 +983,7 @@ void FunctionDataflow::noteUnknownCallee(const CallExpr &call) {
                      locate(callee->getLocation()));
   diagnostic.addNote("annotate its pointer parameters with WEAVEC_OWNED, "
                      "WEAVEC_BORROWED, WEAVEC_MUT or WEAVEC_RAW, or define it "
-                     "in this translation unit",
+                     "in this program",
                      locate(callee->getLocation()));
   report(std::move(diagnostic));
 }

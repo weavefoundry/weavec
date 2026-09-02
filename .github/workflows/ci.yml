@@ -118,6 +118,10 @@ jobs:
         run: |
           cmake --install "build/${{ matrix.preset }}" --prefix "$RUNNER_TEMP/weavec-install"
           "$RUNNER_TEMP/weavec-install/bin/weavec" --version
+          "$RUNNER_TEMP/weavec-install/bin/weavec-cc" --version
+          printf 'int main(void) { return 0; }\n' > "$RUNNER_TEMP/hello.c"
+          "$RUNNER_TEMP/weavec-install/bin/weavec-cc" "$RUNNER_TEMP/hello.c" -o "$RUNNER_TEMP/hello"
+          "$RUNNER_TEMP/hello"
           test -f "$RUNNER_TEMP/weavec-install/lib/weavec/include/weavec.h"
           test -f "$RUNNER_TEMP/weavec-install/lib/cmake/WeaveC/WeaveCConfig.cmake"
 

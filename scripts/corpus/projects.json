@@ -5,7 +5,8 @@
     "names the files to analyse (globs, relative to the checkout) and the compiler",
     "arguments passed after `--`. Keep this list short enough to run in a few",
     "minutes; add a project when an RFC defers a question to corpus testing that",
-    "the current set cannot answer."
+    "the current set cannot answer. `whole_program: true` analyses the files as one",
+    "program (weavec --whole-program, RFC 0005) instead of one at a time."
   ],
   "projects": [
     {
@@ -55,6 +56,24 @@
       "files": ["linenoise.c"],
       "args": ["-std=c99", "-I.", "-D_GNU_SOURCE"],
       "notes": "History as a global array of strdup'd strings; strdup/free through helpers."
+    },
+    {
+      "name": "cJSON-program",
+      "url": "https://github.com/DaveGamble/cJSON.git",
+      "ref": "master",
+      "files": ["cJSON.c", "cJSON_Utils.c"],
+      "args": ["-std=c89", "-I."],
+      "whole_program": true,
+      "notes": "cJSON_Utils.c calls into cJSON.c (cJSON_free, cJSON_Delete, cJSON_Duplicate, ...): every one of its 20 single-unit boundary warnings resolves to a summary."
+    },
+    {
+      "name": "linenoise-program",
+      "url": "https://github.com/antirez/linenoise.git",
+      "ref": "master",
+      "files": ["linenoise.c", "example.c"],
+      "args": ["-std=c99", "-I.", "-D_GNU_SOURCE"],
+      "whole_program": true,
+      "notes": "example.c installs the completion and hints callbacks linenoise.c calls through pointers, and frees what linenoise() returns."
     }
   ]
 }

@@ -17,6 +17,8 @@
 
 #include "weavec/Core/SourceLocation.h"
 
+#include <algorithm>
+#include <array>
 #include <cstddef>
 #include <string>
 #include <string_view>
@@ -45,6 +47,25 @@ inline constexpr std::string_view UnsafeOperation = "unsafe-operation";
 inline constexpr std::string_view AnnotationRequired = "annotation-required";
 inline constexpr std::string_view AnnotationMismatch = "annotation-mismatch";
 inline constexpr std::string_view InvalidAnnotation = "invalid-annotation";
+
+/// Every id, for validating user input (`-Wweavec-<id>`).
+inline constexpr std::array<std::string_view, 9> All{
+    UseAfterFree,       DoubleFree,         UseAfterMove,
+    ConflictingBorrow,  LifetimeTooShort,   UnsafeOperation,
+    AnnotationRequired, AnnotationMismatch, InvalidAnnotation,
+};
+
+[[nodiscard]] constexpr bool isKnown(std::string_view id) noexcept {
+  return std::ranges::any_of(
+      All, [id](const std::string_view known) { return known == id; });
+}
+
+/// The severity the checker emits `id` with unless the user overrides it
+/// (RFC 0005, *Flags*): `annotation-required` and `invalid-annotation` are
+/// warnings, everything else is an error.
+[[nodiscard]] constexpr bool isWarningByDefault(std::string_view id) noexcept {
+  return id == AnnotationRequired || id == InvalidAnnotation;
+}
 } // namespace diag
 
 /// A suggested source edit: insert `insertion` at `location`. Frontends

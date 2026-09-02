@@ -60,3 +60,4 @@ add_custom_target(
 
 add_subdirectory(Core)
 add_subdirectory(Analysis)
+add_subdirectory(Frontend)

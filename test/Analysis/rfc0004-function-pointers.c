@@ -73,11 +73,11 @@ int calls_directly(int x) { return helper(x); }
 
 // 3. Otherwise a boundary: once per function type by default.
 void boundary(int (*cmp)(const void *, const void *), char *a, char *b) {
-  // CHECK: rfc0004-function-pointers.c:[[@LINE+1]]:3: warning: call through 'cmp' is not checked: its function type has no ownership annotations and no function of that type has its address taken in this translation unit [weavec::annotation-required]
+  // CHECK: rfc0004-function-pointers.c:[[@LINE+1]]:3: warning: call through 'cmp' is not checked: its function type has no ownership annotations and no function of that type has its address taken in this program [weavec::annotation-required]
   cmp(a, b);
   // CHECK-NEXT: {{.*}}cmp(a, b);
   // CHECK-NEXT: {{.*}}^
-  // CHECK-NEXT: rfc0004-function-pointers.c:[[@LINE-3]]:3: note: annotate the parameters of its function type with WEAVEC_OWNED, WEAVEC_BORROWED, WEAVEC_MUT or WEAVEC_RAW, or take the address of a function of that type in this translation unit
+  // CHECK-NEXT: rfc0004-function-pointers.c:[[@LINE-3]]:3: note: annotate the parameters of its function type with WEAVEC_OWNED, WEAVEC_BORROWED, WEAVEC_MUT or WEAVEC_RAW, or take the address of a function of that type in this program
   cmp(b, a);
   // STRICT: rfc0004-function-pointers.c:[[@LINE-5]]:3: error: unchecked call through 'cmp' outside an unsafe region [weavec::unsafe-operation]
   // STRICT: rfc0004-function-pointers.c:[[@LINE-2]]:3: error: unchecked call through 'cmp' outside an unsafe region [weavec::unsafe-operation]

@@ -8,6 +8,7 @@ weavec_add_library(
           Dataflow.cpp
           FunctionAnalysis.cpp
           PlaceBuilder.cpp
+          ProgramDatabase.cpp
           Summaries.cpp
           TranslationUnitAnalysis.cpp
   PUBLIC_DEPS weavec::Core

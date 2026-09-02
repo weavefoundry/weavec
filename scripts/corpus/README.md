@@ -16,7 +16,10 @@ scripts/corpus.py --weavec build/dev/bin/weavec --local ~/src/foo --local-args -
 
 - `projects.json` lists the projects: a git URL and ref, the translation
   units to analyse (globs) and the compiler arguments passed after `--`.
-  Checkouts go under `build/corpus/`; `--refresh` re-fetches them.
+  `"whole_program": true` runs `weavec --whole-program` once over all the
+  files (RFC 0005) instead of once per file; `--local-whole-program` does
+  the same for `--local`. Checkouts go under `build/corpus/`; `--refresh`
+  re-fetches them.
 - `baseline.json` records the per-project counts from the last accepted
   run. `--baseline` compares against it and exits non-zero when any
   diagnostic id's total grows; `--update-baseline` rewrites it after a
@@ -68,3 +71,21 @@ resolve through the address-taken join and produce nothing. No `use-after-free`,
 `double-free` or `conflicting-borrow` changed when pointer arithmetic and
 casts started preserving identity, which supports the RFC's claim that the
 identity rule costs no precision on real code.
+
+RFC 0005 (whole-program analysis) added the `*-program` entries, which
+analyse two files of a project together. The single-file rows did not move:
+the struct-copy rule and the program tier cost nothing on the single-unit
+view. The whole-program rows show both what the RFC set out to do and what
+it exposes:
+
+| Project           | Diagnostic                                                      | Cause                                                                                                                                                                                                                                                                                                                                                                                    |
+| ----------------- | --------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| cJSON-program     | (none of `cJSON_Utils.c`'s 20 `annotation-required`)            | Alone, `cJSON_Utils.c` warns at every call into `cJSON.c` (`cJSON_free`, `cJSON_Delete`, `cJSON_Duplicate`, ...). As a program every one resolves to a summary: the boundary the RFC moved is the whole of that file's noise.                                                                                                                                                             |
+| cJSON-program     | `use-after-free` + `double-free` on `object->string` (876, 878) | `overwrite_item` frees `root->string` and then `memcpy(root, &replacement, ...)` replaces the whole struct. RFC 0003 effects are a set, not a sequence: `written` on `*root` does not reinstate the `freed` descendant at the call site. `cJSON_free` was unknown in the single-unit view, which is why this did not show before. Candidate refinement: a `written` effect on a place forgets what is below it. |
+| cJSON-program     | `double-free` on `object` at `apply_patch(...)` (1056, 1085)   | Path-insensitive join (RFC 0002): on the `MOVE` arm `value` is `detach_path(object, ...)`, whose summary (through `get_item_from_pointer`, which returns its argument for an empty pointer) may return `object` itself; on the other arms it is fresh. At `cleanup:` `cJSON_Delete(value)` therefore *may* free `object`, and the next loop iteration frees it again. Real code separates the arms by `opcode`.                                                          |
+| linenoise-program | `annotation-required` ×1 (down from 3)                          | `example.c` installs the completion and hints callbacks, so those two indirect calls now have candidates; `freeHintsCallback` is never set anywhere in the program and remains a boundary, as it should.                                                                                                                                                                                  |
+| linenoise-program | 14 `use-after-free`, 1 `double-free` on `line` in `example.c`   | One root cause. `linenoiseEditFeed` returns either a fresh line or the sentinel global `linenoiseEditMore`, so `linenoise()` returns `{fresh, copy linenoiseEditMore}` and `free(line)` may free the global; the guard `if (line != linenoiseEditMore)` is pointer equality, which RFC 0002 deferred. Every later use of `line` in the loop, and the free on the next iteration, then reports. Pointer-equality guards are the highest-value refinement the corpus points at. |
+
+Analysis time for the two-file programs is about the sum of the two
+single-file runs plus one extra parse (discovery), as the RFC's cost model
+predicts.

@@ -1,17 +1,20 @@
 # Architecture
 
-WeaveC is organised as three C++ libraries and a thin command-line tool. The
-libraries form a strict dependency chain; the arrows below point from a layer
-to what it may depend on.
+WeaveC is organised as three C++ libraries and two thin command-line tools.
+The libraries form a strict dependency chain; the arrows below point from a
+layer to what it may depend on.
 
 ```
-                 ┌──────────────────────────┐
-                 │  tools/weavec (driver)   │
-                 └────────────┬─────────────┘
-                              ▼
+        ┌──────────────────────┐  ┌──────────────────────────┐
+        │  tools/weavec        │  │  tools/weavec-cc         │
+        │  (libTooling)        │  │  (drop-in C compiler)    │
+        └──────────┬───────────┘  └────────────┬─────────────┘
+                   └───────────┬───────────────┘
+                               ▼
                  ┌──────────────────────────┐
                  │  weavec::Frontend        │  Clang FrontendAction, libTooling,
-                 │  lib/Frontend            │  diagnostics bridging, resource dir
+                 │  lib/Frontend            │  whole-program orchestration,
+                 │                          │  sidecars, driver, diagnostics
                  └────────────┬─────────────┘
                               ▼
                  ┌──────────────────────────┐
@@ -44,8 +47,10 @@ tools.
 | `Moves.h`          | `MoveTracker`: which places are currently moved-out/freed (and through which alias), with a conservative `join`. |
 | `Raw.h`            | `RawTracker`: which places currently hold a raw pointer, why (`RawReason`: integer cast, `WEAVEC_RAW` declaration, loaded through a raw pointer, callee result, unchecked callee) and through which alias; union at joins. |
 | `AnalysisState.h`  | The dataflow state: moves, loans, aliases, raw pointers, pending `realloc`s and inferred kinds, with component-wise `join`. |
-| `Summary.h`        | `FunctionSummary`: what a function does to its interface. `SummaryPath` (`param(i)`/`global(g)` plus deref/field/index steps), `PlaceEffect` (read/written/freed/moved), `Store` (value written into caller-visible memory), `ValueSource` (fresh/copy/borrow/null/raw/unknown), with `join` and the derived `consumes`/`borrowKind`/`inferredKind` queries. |
-| `Diagnostic.h`     | `Diagnostic`, stable ids in `diag::`, `FixItHint`, `DiagnosticSink`, and an in-memory `DiagnosticCollector`. |
+| `Summary.h`        | `FunctionSummary`: what a function does to its interface. `SummaryPath` (`param(i)`/`global(g)` plus deref/field/index steps), `PlaceEffect` (read/written/freed/moved), `Store` (value written into caller-visible memory), `ValueSource` (fresh/copy/borrow/null/raw/unknown), with `join`, `remapGlobals` and the derived `consumes`/`borrowKind`/`inferredKind` queries. |
+| `SummaryIO.h`      | The stable text form of a `FunctionSummary` (`summary` ... `end` records; RFC 0005): `printSummary`/`parseSummary` with callbacks that name and resolve globals, so the format is Clang-free and the on-disk sidecar format is defined here. |
+| `Scc.h`            | Tarjan's strongly connected components over an adjacency list, in reverse topological order; used for the call graph inside a unit and for the unit graph of a program. |
+| `Diagnostic.h`     | `Diagnostic`, stable ids in `diag::` (with `All`, `isKnown`, `isWarningByDefault`), `FixItHint`, `DiagnosticSink`, and an in-memory `DiagnosticCollector`. |
 | `SourceLocation.h` | Frontend-neutral positions with an `opaque` slot for the frontend's native encoding.           |
 
 The core never sees a `clang::VarDecl`; it sees a `PlaceId`. It never sees a
@@ -63,11 +68,19 @@ the frontend fills in so it can report at the exact original position.
 - converts source locations in both directions (`ClangLocation.h`);
 - resolves the summary of any callee (`Summaries.h`, `SummaryStore`), in
   order: the callee's own annotations, the summary inferred from its body in
-  this TU, the shipped libc/POSIX table (`Builtins.cpp`), and finally a
+  this TU, the program database (a definition in another unit of the
+  program), the shipped libc/POSIX table (`Builtins.cpp`), and finally a
   documented default that also records the callee as an unknown boundary.
   For a call through a function pointer (`lookupIndirect`) the order is:
   annotations on the pointer's type, else the join of the summaries of every
-  address-taken function of that type in the TU, else the same default;
+  address-taken function of that type in the TU and in the program
+  database, else the same default;
+- holds what other units export (`ProgramDatabase.h`): `UnitExports` (the
+  functions a unit defines with their summaries, linkage, canonical type key
+  and address-taken flag; the names it imports; the indirect-call type keys
+  it has no signature for; the boundaries it deferred) and
+  `ProgramDatabase`, which joins exports by name and by type key and remaps
+  summaries that mention globals into the importing unit's `GlobalTable`;
 - classifies calls by their ownership effect on top of that
   (`Allocators.h`, `classifyCall` → `CallEffects`);
 - maps expressions onto structured places, classifies pointer-typed values
@@ -90,14 +103,19 @@ the frontend fills in so it can report at the exact original position.
   functions, builds the call graph (with an edge from every indirect call to
   each candidate of its type), and analyses strongly connected components in
   reverse topological order (callees first), iterating recursive components
-  to a fixpoint on their summaries before the final reporting pass.
+  to a fixpoint on their summaries before the final reporting pass. With a
+  `ProgramDatabase` attached, callers see callees from other units;
+  `discover()` returns the unit's exports without analysing it (what it
+  defines and imports, for ordering units) and `exports()` returns them
+  with summaries after `run()`.
 
 The model is specified by [RFC 0001](rfcs/0001-ownership-model.md), the
 dataflow by [RFC 0002](rfcs/0002-intraprocedural-checking.md), summaries by
-[RFC 0003](rfcs/0003-signature-inference.md), and raw pointers, unsafe
+[RFC 0003](rfcs/0003-signature-inference.md), raw pointers, unsafe
 regions and indirect calls by
-[RFC 0004](rfcs/0004-unsafe-boundaries.md); each RFC's *Implementation
-notes* record where the code refines the design.
+[RFC 0004](rfcs/0004-unsafe-boundaries.md), and cross-unit analysis by
+[RFC 0005](rfcs/0005-whole-program-analysis.md); each RFC's
+*Implementation notes* record where the code refines the design.
 
 ## `weavec::Frontend` — Clang integration
 
@@ -105,30 +123,59 @@ notes* record where the code refines the design.
 
 - `WeaveCAction` is an `ASTFrontendAction` whose consumer hands the whole
   translation unit to `TranslationUnitAnalyzer`; every definition contributes
-  a summary, but by default only those in the main file are reported.
+  a summary, but by default only those in the main file are reported. The
+  same consumer (`createWeaveCConsumer`) is what `weavec-cc` multiplexes
+  beside Clang's code generator. `FrontendOptions` carries the analysis
+  options, the program database to consult, the diagnostics already
+  reported for the unit, and a receiver for the unit's exports.
 - `ClangDiagnosticSink` forwards `core::Diagnostic`s (including fix-its) to
   Clang's `DiagnosticsEngine`, so WeaveC's output is rendered exactly like
   Clang's own (carets, colours, `-fdiagnostics-format=`,
-  `-fdiagnostics-parseable-fixits`, `-Werror`, ...).
-- `ResourceDir.h` locates `weavec.h` in installed and build-tree layouts.
+  `-fdiagnostics-parseable-fixits`, `-Werror`, ...). `DiagnosticControl`
+  applies `-Wno-weavec-<id>`, `-Wno-error=weavec-<id>`, `-Werror=weavec`
+  and friends before the sink sees a diagnostic; `FilteringSink` drops
+  diagnostics already reported by an earlier step and repeats of a boundary
+  warning within a program.
+- `ProgramAnalysis` is the whole-program algorithm over an abstract
+  `ProgramUnit` (something that can parse a unit and run an action over
+  it): discover every unit's exports, build the unit graph (who imports
+  whose definitions, who calls through a type someone else has a candidate
+  for), analyse acyclic units once and cyclic groups to a fixpoint, each
+  against the database of what has been analysed so far.
+  `CompilationDatabaseUnit` parses from a compilation database.
+- `Sidecar.h` reads and writes `foo.o.weavec`: the unit's exports, the cc1
+  command that produced it and the diagnostics already reported, in a
+  line-oriented text format versioned by its `weavec-summaries 1` header.
+- `Driver.h` is `weavec-cc`: Clang's `driver::Driver` plans the jobs, each
+  `-cc1` job runs in-process with WeaveC's consumer multiplexed beside
+  Clang's, the compile step writes the sidecar, and the link step runs
+  `ProgramAnalysis` over the sidecars of the objects being linked before
+  the linker.
+- `ResourceDir.h` locates `weavec.h`, Clang's resource directory and the
+  `clang` binary in installed and build-tree layouts.
 
-Because it is a standard `FrontendAction`, the same code can later be exposed
-as a Clang plugin or wired into a full compiler driver without changes to the
-analysis.
+## `tools/weavec` and `tools/weavec-cc`
 
-## `tools/weavec` — the driver
-
-Today `weavec` is a libTooling application: `weavec file.c -- <compiler
-flags>` or `weavec -p build/ file.c` with a compilation database. It injects
+`weavec` is a libTooling application: `weavec file.c -- <compiler flags>`
+or `weavec -p build/ file.c` with a compilation database. It injects
 `-isystem <resource-dir>/include` and `-D__WEAVEC__=1` so user code can
-`#include <weavec.h>`. `--dump-analysis` prints the inferred facts and
-summary per function for debugging; `--report-unannotated` offers fix-its
-for exported functions; `--strict-externs` makes every call into unknown
-code a raw operation, so it is an error outside a `WEAVEC_UNSAFE` region.
+`#include <weavec.h>`. `--whole-program` analyses every file given (or every
+file of the compilation database) as one program. `--dump-analysis` prints
+the inferred facts and summary per function for debugging (and, in
+whole-program mode, the program database); `--report-unannotated` offers
+fix-its for exported functions; `--strict-externs` makes every call into
+unknown code a raw operation, so it is an error outside a `WEAVEC_UNSAFE`
+region. `-Wno-weavec-<id>` and the other `-W` spellings are accepted.
 
-A drop-in compiler mode (`weavec -c foo.c -o foo.o`, i.e. behaving as `cc`
-and delegating code generation to Clang) is planned; see
-[roadmap.md](roadmap.md).
+`weavec-cc` is the drop-in compiler: `CC=weavec-cc make`. Compile steps
+analyse the unit alone and write `<object>.weavec`; the link step reads the
+sidecars, re-analyses the units whose results depend on other units, reports
+what only the program could know, and refuses to link on an error. WeaveC's
+own flags are `-fweavec`/`-fno-weavec`, `-fweavec-strict`,
+`-fweavec-report-unannotated`, `-fweavec-analyze-headers`,
+`-fweavec-dump-analysis`, `-fweavec-link`/`-fno-weavec-link` and the `-W`
+spellings; everything else is Clang's. The design is
+[RFC 0005](rfcs/0005-whole-program-analysis.md).
 
 ## Diagnostics contract
 
@@ -152,6 +199,7 @@ scripts and editors may filter on it, so renaming one is a breaking change.
 ## Corpus
 
 `scripts/corpus.py` runs the tool over real C projects
-(`scripts/corpus/projects.json`) and compares diagnostic counts with
+(`scripts/corpus/projects.json`), one file at a time or whole-program
+(`"whole_program": true`), and compares diagnostic counts with
 `scripts/corpus/baseline.json`; see `scripts/corpus/README.md`. It is the
 empirical check on the RFCs' precision claims and runs weekly in CI.

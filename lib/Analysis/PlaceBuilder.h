@@ -104,6 +104,11 @@ public:
   [[nodiscard]] std::optional<core::PlaceId>
   lookupVar(const clang::VarDecl &var) const;
 
+  /// The place of `member` within the record at `parent`, created on first
+  /// use and remembered for `declFor`.
+  [[nodiscard]] core::PlaceId fieldPlace(core::PlaceId parent,
+                                         const clang::ValueDecl &member);
+
   /// The variable a base place stands for.
   [[nodiscard]] const clang::VarDecl *varForPlace(core::PlaceId place) const;
 
@@ -193,9 +198,6 @@ private:
   llvm::DenseMap<std::uint32_t, const clang::VarDecl *> placeVars;
   llvm::DenseMap<std::uint32_t, const clang::FieldDecl *> placeFields;
   std::vector<const clang::VarDecl *> order;
-
-  [[nodiscard]] core::PlaceId fieldPlace(core::PlaceId parent,
-                                         const clang::ValueDecl &member);
 };
 
 } // namespace weavec::analysis

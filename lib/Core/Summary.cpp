@@ -183,6 +183,46 @@ void FunctionSummary::join(const FunctionSummary &other) {
   reallocLike = reallocLike || other.reallocLike;
 }
 
+FunctionSummary remapGlobals(const FunctionSummary &summary,
+                             const GlobalIdMap &map) {
+  const auto remapPath =
+      [&map](const SummaryPath &path) -> std::optional<SummaryPath> {
+    if (path.isParam())
+      return path;
+    const std::optional<std::uint32_t> id = map(path.index);
+    if (!id)
+      return std::nullopt;
+    SummaryPath result = path;
+    result.index = *id;
+    return result;
+  };
+  const auto remapSource = [&remapPath](const ValueSource &source) {
+    if ((source.kind != ValueSource::Kind::Copy &&
+         source.kind != ValueSource::Kind::Borrow) ||
+        !source.path)
+      return source;
+    const std::optional<SummaryPath> path = remapPath(*source.path);
+    if (!path)
+      return ValueSource::unknown();
+    return source.kind == ValueSource::Kind::Copy ? ValueSource::copy(*path)
+                                                  : ValueSource::borrow(*path);
+  };
+
+  FunctionSummary result;
+  for (const auto &[path, effect] : summary.effects) {
+    if (const auto mapped = remapPath(path))
+      result.addEffect(*mapped, effect);
+  }
+  for (const Store &store : summary.stores) {
+    if (const auto dest = remapPath(store.dest))
+      result.addStore(Store{.dest = *dest, .value = remapSource(store.value)});
+  }
+  for (const ValueSource &source : summary.returns)
+    result.addReturn(remapSource(source));
+  result.reallocLike = summary.reallocLike;
+  return result;
+}
+
 std::string_view toString(ValueSource::Kind kind) noexcept {
   switch (kind) {
   case ValueSource::Kind::Fresh:

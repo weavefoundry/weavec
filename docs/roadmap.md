@@ -68,26 +68,44 @@ Design: [RFC 0003 — Signature inference](rfcs/0003-signature-inference.md)
       ...).
 - [ ] Follow-ups surfaced by the corpus: may-moves for `a[*]` element places
       (`free(a[i])` in a loop), pointer-equality guards.
-- [ ] Function pointers stored in globals and returned from other TUs
-      (needs cross-TU summaries, Milestone 4).
+- [x] Function pointers stored in globals and returned from other TUs
+      (RFC 0005: candidates are joined across the program).
 
-## Milestone 3 — Compiler driver
+## Milestone 3 — Compiler driver (done)
 
-- [ ] `weavec` as a drop-in `cc`: parse driver flags with Clang's driver,
-      run the analysis, then delegate code generation to Clang.
-- [ ] `-fweavec-strict` / `-fno-weavec` and warning-group style control over
-      diagnostic identifiers (`-Wweavec-use-after-free`).
-- [ ] Clang plugin packaging so existing builds can add `-fplugin=weavec`.
+Design: [RFC 0005 — Whole-program analysis](rfcs/0005-whole-program-analysis.md)
+(Implemented), *`weavec-cc`*.
 
-## Milestone 4 — Whole-program
+- [x] `weavec-cc` as a drop-in `cc`: Clang's driver plans the jobs, each
+      `-cc1` runs in-process with WeaveC's consumer multiplexed beside
+      Clang's code generation, and a WeaveC error fails the compile.
+- [x] `-fweavec-strict` / `-fno-weavec` / `-fweavec-report-unannotated` /
+      `-fweavec-dump-analysis` / `-fno-weavec-link`, and warning-group style
+      control over diagnostic identifiers (`-Wno-weavec-annotation-required`,
+      `-Wno-error=weavec-use-after-free`, `-Werror=weavec`).
+- [ ] Clang plugin packaging so existing builds can add `-fplugin=weavec`
+      and run `weavec --link-check` as the link step.
 
-RFC: to be written (cross-TU summaries).
+## Milestone 4 — Whole-program (in progress)
 
-- [ ] Summary database alongside `compile_commands.json` for cross-TU
-      inference (`core::FunctionSummary` is designed to be the on-disk
-      format).
-- [ ] Summaries for common libraries beyond libc shipped with WeaveC.
-- [ ] Incremental re-analysis.
+Design: [RFC 0005 — Whole-program analysis](rfcs/0005-whole-program-analysis.md)
+(Implemented).
+
+- [x] Cross-TU summaries: every unit exports the summaries of its external
+      definitions and address-taken functions; a `ProgramDatabase` sits
+      between a unit's own inference and the libc table in `SummaryStore`.
+- [x] `FunctionSummary` text format (`Core/SummaryIO.h`), the on-disk and
+      debugging form.
+- [x] `weavec --whole-program` over a compilation database: units ordered
+      by SCC, cyclic groups iterated to a fixpoint.
+- [x] `weavec-cc` sidecars (`foo.o.weavec`) written at compile time and
+      combined at link time; deferred `annotation-required` decided per
+      program; compile-time reports not repeated at link time.
+- [x] Whole-struct copies carry the facts of their pointer fields.
+- [ ] Summaries for common libraries beyond libc shipped with WeaveC
+      (`libz.weavec` next to `libz.a`, read like any sidecar).
+- [ ] AST caching in the sidecar so the link step loads rather than parses.
+- [ ] Incremental link steps (re-analyse only units whose imports changed).
 
 ## Ongoing
 

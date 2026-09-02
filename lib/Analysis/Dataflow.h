@@ -186,6 +186,14 @@ private:
   /// Copies every fact about the objects below `*src` onto `*dest`.
   void mirrorSubtree(core::PlaceId src, core::PlaceId dest,
                      core::AnalysisState &state);
+  /// `dest = value` for a record: field-wise pointer copies when `value` is
+  /// a place, field-wise assignments when it is an initializer list, and a
+  /// reset otherwise (RFC 0005, *Struct copies*).
+  void copyRecord(core::PlaceId dest, const clang::Expr &value,
+                  core::AnalysisState &state);
+  /// `dest = { ... }`: assigns each initialised field.
+  void initRecord(core::PlaceId dest, const clang::InitListExpr &init,
+                  core::AnalysisState &state);
   void setKind(core::PlaceId place, core::OwnershipKind kind,
                core::AnalysisState &state);
 

@@ -123,8 +123,84 @@ follows [Semantic Versioning](https://semver.org/) once it reaches 1.0.
 - `SummaryStore::lookupIndirect`, `addAddressTaken`, `candidatesFor`;
   `analysis::collectFunctionTypeAnnotations`; `TranslationUnitAnalyzer::
   collectAddressTaken`.
+- Whole-program analysis (RFC 0005): the unit of analysis is the program,
+  not the translation unit. Every unit exports the summaries of its
+  external-linkage definitions and address-taken functions; a
+  `ProgramDatabase` (Analysis) collects them and `SummaryStore` consults it
+  between a unit's own inference and the libc table, so `node_free(n);
+  n->v` is caught when `node_free` is defined in another file, a program's
+  own `strdup` is checked against its own body, and a callback installed in
+  one file is joined into the signature of the function-pointer type it is
+  called through in another. Units are analysed dependencies-first by
+  strongly connected component (`core::stronglyConnectedComponents`,
+  `Core/Scc.h`); mutually dependent units iterate to a fixpoint.
+- `weavec --whole-program [files] -- <flags>` (or `-p build/` for every
+  file of a compilation database) analyses the files as one program;
+  `--dump-analysis` then ends with the program database.
+- `weavec-cc`, a drop-in C compiler: Clang's driver plans the jobs, each
+  `-cc1` runs in-process with WeaveC's consumer multiplexed beside Clang's
+  code generation (one parse; a WeaveC error fails the compile). The
+  compile step writes the unit's exports, its cc1 command and the
+  diagnostics it reported to `<object>.weavec`; the link step reads the
+  sidecars of the objects on the link line, re-analyses the units whose
+  results depend on other units, reports what needs two files (once), and
+  refuses to link on an error. Objects without a sidecar are unknown code;
+  a sidecar older than its object is ignored with a warning; sidecars of
+  one-step builds (`weavec-cc a.c b.c -o prog`) are read and removed with
+  the temporaries. `-cc1as` and other jobs are delegated to `clang`
+  (`WEAVEC_CLANG`, the configured `WEAVEC_CLANG_EXECUTABLE`, or `PATH`).
+- Driver flags: `-fweavec`/`-fno-weavec`, `-fweavec-strict`,
+  `-fweavec-report-unannotated`, `-fweavec-analyze-headers`,
+  `-fweavec-dump-analysis`, `-fweavec-link`/`-fno-weavec-link`. Warning
+  control for both tools (`frontend::DiagnosticControl`):
+  `-Wno-weavec-<id>` (warnings only), `-Wweavec-<id>`,
+  `-Wno-error=weavec-<id>`, `-Werror=weavec-<id>`, `-Wno-weavec`,
+  `-Wno-error=weavec`, `-Werror=weavec`. Disabling an error is refused
+  with a message naming the `-Wno-error=` form.
+- `core::FunctionSummary` text format (`Core/SummaryIO.h`:
+  `printSummary`/`parseSummary`, `SummaryFormatVersion`), Clang-free and
+  round-trip tested; globals are spelled by name through callbacks.
+  `core::FunctionSummary::remapGlobals`. `core::diag::All`, `isKnown`,
+  `isWarningByDefault`.
+- `analysis::UnitExports`, `ExportedFunction`, `functionTypeKey`,
+  `ProgramDatabase`; `SummaryStore::setDatabase`, `SummarySource::Program`,
+  `isAddressTaken`, `unknownCalleeNames`, `unknownIndirectTypeKeys`;
+  `TranslationUnitAnalyzer::setDatabase`, `discover()`, `exports()`;
+  `AnalysisOptions::deferBoundary`.
+- `frontend::ProgramAnalysis` (over an abstract `ProgramUnit`;
+  `CompilationDatabaseUnit`), `frontend::Sidecar.h` (`UnitRecord`,
+  `readSidecar`/`writeSidecar`, `weavec-summaries 1`),
+  `frontend::Driver.h` (`DriverOptions`, `runDriver`, `runCc1`),
+  `createWeaveCConsumer`, `FrontendOptions::{database, alreadyReported,
+  boundaryOnce, silent, discoverOnly, onResult}`, `UnitResult`.
+- `WeaveCFrontendTests` unit-test binary; `test/WholeProgram/` and
+  `test/Driver/rfc0005-*.c` lit suites.
+- `scripts/corpus.py`: `"whole_program": true` projects are analysed as one
+  program (`--local-whole-program` for `--local`); `cJSON-program` and
+  `linenoise-program` added to the corpus, with triage in
+  `scripts/corpus/README.md`.
 
 ### Changed
+
+- A whole-struct assignment or initialisation (`b = a`, `struct buf b = a;`,
+  `*p = s`) copies the facts of every pointer-typed field (aliases, loans,
+  moves, raw records, kinds) instead of forgetting them (RFC 0005), so
+  `b = a; free(a.data); b.data[0]` is a `use-after-free`. Fields with no
+  place under the source are still forgotten.
+- `annotation-required` fires for a callee with no definition anywhere in
+  the program (previously: in the translation unit), once per callee per
+  program; in `weavec-cc` it is deferred from the compile step to the link
+  step. The second note now ends `or define it in this program`; the
+  indirect form says `in this program` instead of `in this translation
+  unit`.
+- `--dump-analysis` in whole-program mode prefixes each unit's dump with
+  `unit '<source>':`.
+- `tools/weavec` accepts zero source files with `-p` (every file of the
+  database is analysed).
+- `SccFinder` moved from `TranslationUnitAnalysis.cpp` to
+  `core::stronglyConnectedComponents` (`Core/Scc.h`).
+- `cmake/WeaveCLLVM.cmake` records `WEAVEC_CLANG_EXECUTABLE`;
+  `frontend::getClangExecutable()`.
 
 - `WEAVEC_UNSAFE` blocks and function bodies are analysed instead of skipped
   (RFC 0004): diagnostics inside the region are suppressed, raw operations
