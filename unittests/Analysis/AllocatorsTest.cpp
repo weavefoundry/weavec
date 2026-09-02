@@ -14,6 +14,8 @@
 
 #include <gtest/gtest.h>
 
+#include <optional>
+
 namespace weavec::analysis {
 namespace {
 
@@ -36,7 +38,14 @@ public:
 struct Parsed {
   std::unique_ptr<clang::ASTUnit> ast;
   std::vector<const clang::CallExpr *> calls;
+  SummaryStore store;
+
+  std::optional<CallEffects> classify(std::size_t index) {
+    return classifyCall(*calls[index], store);
+  }
 };
+
+} // namespace
 
 static Parsed parseCalls(const std::string &code) {
   Parsed parsed;
@@ -52,50 +61,58 @@ static Parsed parseCalls(const std::string &code) {
   return parsed;
 }
 
+namespace {
+
 TEST(Allocators, MallocProducesOwned) {
-  const auto parsed = parseCalls("void f(void) { use(malloc(4)); }");
+  auto parsed = parseCalls("void f(void) { use(malloc(4)); }");
   ASSERT_EQ(parsed.calls.size(), 2U);
-  EXPECT_FALSE(classifyCall(*parsed.calls[0])) << "`use` has no effects";
-  const auto effects = classifyCall(*parsed.calls[1]);
+  const auto use = parsed.classify(0);
+  ASSERT_TRUE(use) << "`use` is annotated in the prelude";
+  EXPECT_EQ(use->source, SummarySource::Annotation);
+  EXPECT_FALSE(use->producesOwned);
+  ASSERT_EQ(use->borrowedArgs.size(), 1U);
+  EXPECT_EQ(use->borrowedArgs[0].second, core::BorrowKind::Shared);
+  const auto effects = parsed.classify(1);
   ASSERT_TRUE(effects);
+  EXPECT_EQ(effects->source, SummarySource::Builtin);
   EXPECT_TRUE(effects->producesOwned);
   EXPECT_FALSE(effects->isRealloc);
   EXPECT_TRUE(effects->consumedArgs.empty());
 }
 
 TEST(Allocators, FreeConsumesAndReleases) {
-  const auto parsed = parseCalls("void f(void *p) { free(p); }");
+  auto parsed = parseCalls("void f(void *p) { free(p); }");
   ASSERT_EQ(parsed.calls.size(), 1U);
-  const auto effects = classifyCall(*parsed.calls[0]);
+  const auto effects = parsed.classify(0);
   ASSERT_TRUE(effects);
   EXPECT_FALSE(effects->producesOwned);
-  EXPECT_TRUE(effects->releasesArgs);
   EXPECT_TRUE(effects->consumes(0));
+  EXPECT_TRUE(effects->frees(0));
 }
 
 TEST(Allocators, ReallocConsumesAndProduces) {
-  const auto parsed = parseCalls("void f(void *p) { use(realloc(p, 8)); }");
+  auto parsed = parseCalls("void f(void *p) { use(realloc(p, 8)); }");
   ASSERT_EQ(parsed.calls.size(), 2U);
-  const auto effects = classifyCall(*parsed.calls[1]);
+  const auto effects = parsed.classify(1);
   ASSERT_TRUE(effects);
   EXPECT_TRUE(effects->producesOwned);
   EXPECT_TRUE(effects->isRealloc);
   EXPECT_TRUE(effects->consumes(0));
-  EXPECT_FALSE(effects->releasesArgs) << "moved, not released";
+  EXPECT_FALSE(effects->frees(0)) << "moved, not released";
 }
 
 TEST(Allocators, AnnotatedParametersAreAuthoritative) {
-  const auto parsed = parseCalls(R"c(
+  auto parsed = parseCalls(R"c(
     void *OWNED make(void);
     void sink(int n, void *OWNED a, const void *BORROWED b, void *MUT c);
     void f(void *x, void *y, void *z) { sink(1, x, y, z); use(make()); }
   )c");
   ASSERT_EQ(parsed.calls.size(), 3U);
 
-  const auto sink = classifyCall(*parsed.calls[0]);
+  const auto sink = parsed.classify(0);
   ASSERT_TRUE(sink);
   EXPECT_FALSE(sink->producesOwned);
-  EXPECT_FALSE(sink->releasesArgs);
+  EXPECT_FALSE(sink->frees(1)) << "moved to the callee, not released";
   EXPECT_EQ(sink->consumedArgs, std::vector<unsigned>{1});
   ASSERT_EQ(sink->borrowedArgs.size(), 2U);
   EXPECT_EQ(sink->borrowedArgs[0].first, 2U);
@@ -103,13 +120,13 @@ TEST(Allocators, AnnotatedParametersAreAuthoritative) {
   EXPECT_EQ(sink->borrowedArgs[1].first, 3U);
   EXPECT_EQ(sink->borrowedArgs[1].second, core::BorrowKind::Mutable);
 
-  const auto make = classifyCall(*parsed.calls[2]);
+  const auto make = parsed.classify(2);
   ASSERT_TRUE(make);
   EXPECT_TRUE(make->producesOwned);
 }
 
 TEST(Allocators, IndirectAndStaticCallsAreNotRecognised) {
-  const auto parsed = parseCalls(R"c(
+  auto parsed = parseCalls(R"c(
     static void free_local(void *p) {}
     static char *strdup(const char *s) { return 0; } /* file-local, not libc */
     void f(void (*fp)(void *), void *p) {
@@ -119,8 +136,10 @@ TEST(Allocators, IndirectAndStaticCallsAreNotRecognised) {
     }
   )c");
   ASSERT_EQ(parsed.calls.size(), 4U);
-  for (const clang::CallExpr *call : parsed.calls)
-    EXPECT_FALSE(classifyCall(*call));
+  // Nothing has been analysed, so the static helpers have no summary yet.
+  EXPECT_FALSE(parsed.classify(0)) << "indirect call";
+  EXPECT_FALSE(parsed.classify(1)) << "static helper, not analysed";
+  EXPECT_FALSE(parsed.classify(3)) << "file-local strdup is not libc";
   EXPECT_FALSE(isKnownAllocator(*parsed.calls[3]->getDirectCallee()));
 }
 

@@ -1,0 +1,60 @@
+{
+  "_comment": [
+    "Projects analysed by scripts/corpus.py. Small, self-contained, allocation-heavy",
+    "C libraries whose translation units build with a handful of -I flags. Each entry",
+    "names the files to analyse (globs, relative to the checkout) and the compiler",
+    "arguments passed after `--`. Keep this list short enough to run in a few",
+    "minutes; add a project when an RFC defers a question to corpus testing that",
+    "the current set cannot answer."
+  ],
+  "projects": [
+    {
+      "name": "sds",
+      "url": "https://github.com/antirez/sds.git",
+      "ref": "master",
+      "files": ["sds.c"],
+      "args": ["-std=c99", "-I."],
+      "notes": "Simple dynamic strings: realloc-heavy, returns owned pointers with a header offset."
+    },
+    {
+      "name": "cJSON",
+      "url": "https://github.com/DaveGamble/cJSON.git",
+      "ref": "master",
+      "files": ["cJSON.c"],
+      "args": ["-std=c89", "-I."],
+      "notes": "Tree of malloc'd nodes freed recursively; custom allocator hooks via function pointers."
+    },
+    {
+      "name": "jsmn",
+      "url": "https://github.com/zserge/jsmn.git",
+      "ref": "master",
+      "files": ["example/simple.c", "example/jsondump.c"],
+      "args": ["-std=c99", "-I."],
+      "notes": "Header-only parser; the examples are the translation units."
+    },
+    {
+      "name": "log.c",
+      "url": "https://github.com/rxi/log.c.git",
+      "ref": "master",
+      "files": ["src/log.c"],
+      "args": ["-std=c99", "-Isrc", "-DLOG_USE_COLOR"],
+      "notes": "Callbacks stored in a global table; FILE* borrowed across calls."
+    },
+    {
+      "name": "printf",
+      "url": "https://github.com/mpaland/printf.git",
+      "ref": "master",
+      "files": ["printf.c"],
+      "args": ["-std=c99", "-I."],
+      "notes": "Pointer arithmetic over caller buffers with no allocation: a false-positive canary."
+    },
+    {
+      "name": "linenoise",
+      "url": "https://github.com/antirez/linenoise.git",
+      "ref": "master",
+      "files": ["linenoise.c"],
+      "args": ["-std=c99", "-I.", "-D_GNU_SOURCE"],
+      "notes": "History as a global array of strdup'd strings; strdup/free through helpers."
+    }
+  ]
+}

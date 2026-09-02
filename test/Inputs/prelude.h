@@ -7,7 +7,9 @@ typedef unsigned long size_t;
 void *malloc(size_t size);
 void *realloc(void *ptr, size_t size);
 void free(void *ptr);
-void use(void *ptr);
+/* The opaque "look at this pointer" helper. It is annotated because a call
+ * to an unannotated external function warns by default (RFC 0003). */
+void use(const void *__attribute__((annotate("weavec.borrowed"))) ptr);
 
 #define NULL ((void *)0)
 

@@ -23,5 +23,6 @@
 #include "weavec/Core/Moves.h"      // IWYU pragma: export
 #include "weavec/Core/Ownership.h"  // IWYU pragma: export
 #include "weavec/Core/Place.h"      // IWYU pragma: export
+#include "weavec/Core/Summary.h"    // IWYU pragma: export
 
 #endif // WEAVEC_CORE_CORE_H

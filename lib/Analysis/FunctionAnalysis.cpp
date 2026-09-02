@@ -23,14 +23,15 @@ FunctionAnalyzer::FunctionAnalyzer(ASTContext &ctx,
                                    AnalysisOptions analysisOptions)
     : context(ctx), sink(diagSink), options(analysisOptions) {}
 
-void FunctionAnalyzer::analyze(const FunctionDecl &function) {
+bool FunctionAnalyzer::analyze(const FunctionDecl &function,
+                               SummaryStore &summaries, bool emitDiagnostics) {
   if (!function.doesThisDeclarationHaveABody())
-    return;
+    return false;
 
   const SourceManager &sm = context.getSourceManager();
 
   const AnnotationSet annotations = getAnnotations(function);
-  if (annotations.invalid) {
+  if (annotations.invalid && emitDiagnostics) {
     sink.report(core::Diagnostic{
         .severity = core::Severity::Warning,
         .id = core::diag::InvalidAnnotation,
@@ -38,29 +39,16 @@ void FunctionAnalyzer::analyze(const FunctionDecl &function) {
                    function.getNameAsString() + "'",
         .location = toCoreLocation(sm, function.getLocation()),
         .notes = {},
+        .fixits = {},
     });
   }
   if (annotations.unsafe)
-    return;
+    return false;
 
-  if (options.reportUnannotated) {
-    for (const ParmVarDecl *param : function.parameters()) {
-      if (!param->getType()->isPointerType() || getAnnotations(*param).any())
-        continue;
-      sink.report(core::Diagnostic{
-          .severity = core::Severity::Warning,
-          .id = core::diag::AnnotationRequired,
-          .message = "pointer parameter '" + param->getNameAsString() +
-                     "' has no inferable ownership; annotate it with "
-                     "WEAVEC_OWNED, WEAVEC_BORROWED or WEAVEC_MUT",
-          .location = toCoreLocation(sm, param->getLocation()),
-          .notes = {},
-      });
-    }
-  }
-
-  FunctionDataflow dataflow(context, function, sink, options);
+  FunctionDataflow dataflow(context, function, sink, options, summaries,
+                            emitDiagnostics);
   dataflow.run();
+  return summaries.setInferred(function, dataflow.summary());
 }
 
 } // namespace weavec::analysis

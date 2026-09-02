@@ -41,8 +41,16 @@ cl::OptionCategory weavecCategory("weavec options");
 
 cl::opt<bool> reportUnannotated(
     "report-unannotated",
-    cl::desc("Warn about pointer parameters whose ownership cannot be "
-             "inferred and that carry no annotation"),
+    cl::desc("Warn about unannotated pointer parameters and results of "
+             "exported functions, offering the inferred annotation as a "
+             "fix-it, and about calls to unannotated functions from system "
+             "headers"),
+    cl::init(false), cl::cat(weavecCategory));
+
+cl::opt<bool> strictExterns(
+    "strict-externs",
+    cl::desc("Treat calls to functions with no definition, annotation or "
+             "library summary as errors instead of warnings"),
     cl::init(false), cl::cat(weavecCategory));
 
 cl::opt<bool> analyzeHeaders(
@@ -52,8 +60,9 @@ cl::opt<bool> analyzeHeaders(
 
 cl::opt<bool> dumpAnalysis(
     "dump-analysis",
-    cl::desc("Print the inferred places, lifetimes and exit state of every "
-             "analysed function to stdout (debugging aid; format unstable)"),
+    cl::desc("Print the inferred places, lifetimes, exit state and summary "
+             "of every analysed function to stdout (debugging aid; format "
+             "unstable)"),
     cl::init(false), cl::cat(weavecCategory));
 
 // HelpMessage is a constant-initialised string literal, so the usual
@@ -139,6 +148,7 @@ int main(int argc, const char **argv) {
 
   weavec::frontend::FrontendOptions options;
   options.analysis.reportUnannotated = reportUnannotated;
+  options.analysis.strictExterns = strictExterns;
   if (dumpAnalysis)
     options.analysis.dumpStream = &llvm::outs();
   options.mainFileOnly = !analyzeHeaders;

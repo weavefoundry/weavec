@@ -33,7 +33,14 @@ Diagnostic &Diagnostic::addNote(std::string noteMessage,
       .message = std::move(noteMessage),
       .location = std::move(noteLocation),
       .notes = {},
+      .fixits = {},
   });
+  return *this;
+}
+
+Diagnostic &Diagnostic::addFixIt(SourceLocation at, std::string insertion) {
+  fixits.push_back(
+      FixItHint{.location = std::move(at), .insertion = std::move(insertion)});
   return *this;
 }
 

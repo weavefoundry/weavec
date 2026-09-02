@@ -15,6 +15,7 @@
 #ifndef WEAVEC_ANALYSIS_FUNCTIONANALYSIS_H
 #define WEAVEC_ANALYSIS_FUNCTIONANALYSIS_H
 
+#include "weavec/Analysis/Summaries.h"
 #include "weavec/Core/Diagnostic.h"
 
 #include "clang/AST/ASTContext.h"
@@ -24,11 +25,18 @@
 
 namespace weavec::analysis {
 
-/// Tunables for the per-function analyses.
+/// Tunables for the analyses.
 struct AnalysisOptions {
-  /// Report pointer-typed parameters/locals whose ownership could not be
-  /// inferred and that carry no annotation.
+  /// `--report-unannotated` (RFC 0003): for every exported function
+  /// definition, report pointer parameters and results without an
+  /// annotation, offering the inferred one as a fix-it; and include callees
+  /// declared in system headers in the external-boundary
+  /// `annotation-required` report.
   bool reportUnannotated = false;
+  /// `--strict-externs` (RFC 0003): report calls to functions with no
+  /// definition, annotation or library summary as errors instead of
+  /// warnings.
+  bool strictExterns = false;
   /// If set, print the inferred facts for every analysed function
   /// (`--dump-analysis`): places and their kinds, lifetimes, and the state
   /// at function exit. Intended for debugging and lit tests; the format is
@@ -40,16 +48,22 @@ struct AnalysisOptions {
 ///
 /// Implements the sound intra-procedural checker of RFC 0002 (model:
 /// RFC 0001): a forward dataflow over the function's `clang::CFG` whose
-/// state is `core::AnalysisState`, followed by one reporting pass. Function
-/// signatures are not inferred; parameters are treated per their annotations.
+/// state is `core::AnalysisState`, followed by one final pass that reports
+/// and records the function's summary (RFC 0003). Calls are interpreted
+/// through the summaries in the `SummaryStore` handed to `analyze`;
+/// `TranslationUnitAnalyzer` orders functions so callees come first.
 class FunctionAnalyzer {
 public:
   FunctionAnalyzer(clang::ASTContext &ctx, core::DiagnosticSink &diagSink,
                    AnalysisOptions analysisOptions = {});
 
-  /// Analyzes `function`, which must have a body. Functions annotated
-  /// `weavec.unsafe` are skipped entirely.
-  void analyze(const clang::FunctionDecl &function);
+  /// Analyzes `function`, which must have a body, resolving callees from
+  /// `summaries` and recording the inferred summary into it. Diagnostics
+  /// are emitted only if `emitDiagnostics`. Functions annotated
+  /// `weavec.unsafe` are skipped entirely (their signature is their
+  /// summary). Returns true if the recorded summary changed.
+  bool analyze(const clang::FunctionDecl &function, SummaryStore &summaries,
+               bool emitDiagnostics = true);
 
 private:
   clang::ASTContext &context;

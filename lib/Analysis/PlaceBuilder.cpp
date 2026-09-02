@@ -14,11 +14,24 @@
 #include "clang/AST/ExprCXX.h"
 #include "clang/AST/OperationKinds.h"
 
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Casting.h"
 
 using namespace clang;
 
 namespace weavec::analysis {
+
+static ValueOrigin makeOrigin(ValueOrigin::Kind kind,
+                              std::optional<PlaceRef> place = std::nullopt,
+                              const CallExpr *call = nullptr,
+                              bool constObject = false) {
+  ValueOrigin origin;
+  origin.kind = kind;
+  origin.place = std::move(place);
+  origin.call = call;
+  origin.constObject = constObject;
+  return origin;
+}
 
 core::PlaceId PlaceBuilder::placeForVar(const VarDecl &var) {
   const VarDecl *canonical = var.getCanonicalDecl();
@@ -26,6 +39,7 @@ core::PlaceId PlaceBuilder::placeForVar(const VarDecl &var) {
     return it->second;
   const core::PlaceId id = places.create(var.getNameAsString());
   varPlaces.try_emplace(canonical, id);
+  placeVars.try_emplace(id.value, canonical);
   order.push_back(canonical);
   return id;
 }
@@ -38,11 +52,138 @@ std::optional<core::PlaceId> PlaceBuilder::lookupVar(const VarDecl &var) const {
 }
 
 const VarDecl *PlaceBuilder::varForPlace(core::PlaceId place) const {
-  for (const auto &[var, id] : varPlaces) {
-    if (id == place)
-      return var;
+  const auto it = placeVars.find(place.value);
+  return it == placeVars.end() ? nullptr : it->second;
+}
+
+std::optional<core::SummaryPath>
+PlaceBuilder::summaryPathOf(core::PlaceId place) {
+  const core::PlaceId root = places.root(place);
+  const VarDecl *var = varForPlace(root);
+  if (var == nullptr)
+    return std::nullopt;
+
+  core::SummaryPath path;
+  if (const auto *param = dyn_cast<ParmVarDecl>(var)) {
+    path = core::SummaryPath::param(param->getFunctionScopeIndex());
+  } else if (var->hasGlobalStorage()) {
+    path = core::SummaryPath::global(summaries.globals().idFor(*var));
+  } else {
+    return std::nullopt;
   }
-  return nullptr;
+
+  // Ancestors come nearest-first; the path is spelled root-first.
+  std::vector<core::PlaceId> chain{place};
+  llvm::append_range(chain, places.ancestors(place));
+  for (const core::PlaceId node : llvm::reverse(chain)) {
+    if (node == root)
+      continue;
+    switch (places.step(node)) {
+    case core::PathStep::Deref:
+      path = path.deref();
+      break;
+    case core::PathStep::Field:
+      path = path.field(places.fieldName(node));
+      break;
+    case core::PathStep::Index:
+      path = path.indexed();
+      break;
+    }
+  }
+  return path;
+}
+
+std::optional<PlaceRef>
+PlaceBuilder::resolveSummaryPath(const core::SummaryPath &path,
+                                 const CallExpr &call) {
+  PlaceRef ref;
+  std::size_t firstStep = 0;
+  const Expr *argExpr = nullptr;
+
+  if (path.isParam()) {
+    if (path.index >= call.getNumArgs())
+      return std::nullopt;
+    argExpr = call.getArg(path.index);
+    const ValueOrigin origin = classifyValue(*argExpr);
+    if (origin.kind == ValueOrigin::Kind::Copy && origin.place) {
+      ref = *origin.place;
+    } else if (origin.kind == ValueOrigin::Kind::Borrow && origin.place) {
+      // The argument is `&x`: there is no place holding the pointer, and
+      // `param(i)*` is `x` itself.
+      if (path.steps.empty() ||
+          path.steps.front().step != core::PathStep::Deref)
+        return std::nullopt;
+      ref = *origin.place;
+      firstStep = 1;
+    } else {
+      return std::nullopt;
+    }
+  } else {
+    const VarDecl *global = summaries.globals().declFor(path.index);
+    if (global == nullptr)
+      return std::nullopt;
+    ref =
+        PlaceRef{.place = placeForVar(*global), .derefs = {}, .derefExprs = {}};
+  }
+
+  for (std::size_t i = firstStep; i < path.steps.size(); ++i) {
+    switch (path.steps[i].step) {
+    case core::PathStep::Deref:
+      // The first dereference is of the argument as written; deeper ones
+      // are synthesised and report at the call.
+      ref.addDeref(ref.place, i == firstStep ? argExpr : nullptr);
+      ref.place = places.deref(ref.place);
+      break;
+    case core::PathStep::Field:
+      ref.place = places.field(ref.place, path.steps[i].field);
+      break;
+    case core::PathStep::Index:
+      ref.place = places.index(ref.place);
+      break;
+    }
+  }
+  return ref;
+}
+
+ValueOrigin PlaceBuilder::originFromSource(const core::ValueSource &source,
+                                           const CallExpr &call,
+                                           const core::FunctionSummary &of) {
+  switch (source.kind) {
+  case core::ValueSource::Kind::Fresh:
+    return makeOrigin(ValueOrigin::Kind::Alloc, std::nullopt, &call);
+  case core::ValueSource::Kind::Copy: {
+    if (!source.path)
+      return ValueOrigin{};
+    // `T *f(T *WEAVEC_OWNED p) { ...; return p; }`: the caller's pointer is
+    // dead and the result is the same resource, now owned by the result.
+    if (source.path->isParam() && source.path->isRoot()) {
+      if (source.path->index >= call.getNumArgs())
+        return ValueOrigin{};
+      if (of.consumes(source.path->index))
+        return makeOrigin(ValueOrigin::Kind::Alloc, std::nullopt, &call);
+      // The argument value itself, whatever it was: `&x` stays a borrow of
+      // `x`, `malloc(n)` stays an allocation, `p` is a copy of `p`.
+      return classifyValue(*call.getArg(source.path->index));
+    }
+    auto ref = resolveSummaryPath(*source.path, call);
+    if (!ref)
+      return ValueOrigin{};
+    return makeOrigin(ValueOrigin::Kind::Copy, std::move(ref));
+  }
+  case core::ValueSource::Kind::Borrow: {
+    if (!source.path)
+      return ValueOrigin{};
+    auto ref = resolveSummaryPath(*source.path, call);
+    if (!ref)
+      return ValueOrigin{};
+    return makeOrigin(ValueOrigin::Kind::Borrow, std::move(ref));
+  }
+  case core::ValueSource::Kind::Null:
+    return makeOrigin(ValueOrigin::Kind::Null);
+  case core::ValueSource::Kind::Unknown:
+    return ValueOrigin{};
+  }
+  return ValueOrigin{};
 }
 
 bool PlaceBuilder::isTransparentCast(QualType from, QualType to) {
@@ -188,18 +329,6 @@ std::optional<PlaceRef> PlaceBuilder::resolve(const Expr &expr) {
   return std::nullopt;
 }
 
-static ValueOrigin makeOrigin(ValueOrigin::Kind kind,
-                              std::optional<PlaceRef> place = std::nullopt,
-                              const CallExpr *call = nullptr,
-                              bool constObject = false) {
-  ValueOrigin origin;
-  origin.kind = kind;
-  origin.place = std::move(place);
-  origin.call = call;
-  origin.constObject = constObject;
-  return origin;
-}
-
 ValueOrigin PlaceBuilder::classifyValue(const Expr &expr) {
   const Expr *e = expr.IgnoreParens();
 
@@ -241,14 +370,22 @@ ValueOrigin PlaceBuilder::classifyValue(const Expr &expr) {
   }
 
   if (const auto *call = dyn_cast<CallExpr>(e)) {
-    const auto effects = classifyCall(*call);
-    if (!effects || !effects->producesOwned)
+    const auto effects = classifyCall(*call, summaries);
+    if (!effects)
       return ValueOrigin{};
-    if (effects->isRealloc) {
+    if (effects->isRealloc && call->getNumArgs() >= 1) {
       auto arg = resolvePointerValue(*call->getArg(0));
       return makeOrigin(ValueOrigin::Kind::Realloc, std::move(arg), call);
     }
-    return makeOrigin(ValueOrigin::Kind::Alloc, std::nullopt, call);
+    const core::FunctionSummary &summary = *effects->summary;
+    if (summary.returns.empty())
+      return ValueOrigin{};
+    if (summary.returns.size() == 1)
+      return originFromSource(*summary.returns.begin(), *call, summary);
+    ValueOrigin origin = makeOrigin(ValueOrigin::Kind::Conditional);
+    for (const core::ValueSource &source : summary.returns)
+      origin.alternatives.push_back(originFromSource(source, *call, summary));
+    return origin;
   }
 
   if (const auto *unary = dyn_cast<UnaryOperator>(e);
