@@ -83,6 +83,16 @@ if(NOT WEAVEC_CLANG_RESOURCE_DIR)
         "${LLVM_LIBRARY_DIR}/clang/${LLVM_VERSION_MAJOR}")
   endif()
 endif()
+# The `clang` binary itself: `weavec-cc` hands `-cc1as` jobs (assembling
+# `.s` inputs) to it, since Clang does not ship the assembler entry point as a
+# library.
+set(WEAVEC_CLANG_EXECUTABLE
+    ""
+    CACHE FILEPATH "The clang binary weavec-cc delegates -cc1as jobs to (auto)")
+mark_as_advanced(WEAVEC_CLANG_EXECUTABLE)
+if(NOT WEAVEC_CLANG_EXECUTABLE AND _weavec_clang_exe)
+  set(WEAVEC_CLANG_EXECUTABLE "${_weavec_clang_exe}")
+endif()
 if(WEAVEC_CLANG_RESOURCE_DIR)
   message(STATUS "Clang resource dir: ${WEAVEC_CLANG_RESOURCE_DIR}")
 else()

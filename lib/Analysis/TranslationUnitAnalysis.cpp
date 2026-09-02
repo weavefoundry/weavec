@@ -9,7 +9,9 @@
 #include "weavec/Analysis/TranslationUnitAnalysis.h"
 
 #include "weavec/Analysis/ClangLocation.h"
+#include "weavec/Analysis/ProgramDatabase.h"
 #include "weavec/Core/Ownership.h"
+#include "weavec/Core/Scc.h"
 
 #include "clang/AST/RecursiveASTVisitor.h"
 
@@ -80,86 +82,14 @@ private:
   llvm::DenseSet<const FunctionDecl *> seen;
 };
 
-/// Iterative Tarjan: emits strongly connected components in reverse
-/// topological order of the condensation, i.e. callees before callers.
-class SccFinder {
-public:
-  explicit SccFinder(const std::vector<std::vector<unsigned>> &adjacency)
-      : graph(adjacency), index(adjacency.size(), Unvisited),
-        low(adjacency.size(), 0), onStack(adjacency.size(), false) {}
-
-  std::vector<std::vector<unsigned>> run() {
-    for (unsigned root = 0; root < graph.size(); ++root) {
-      if (index[root] == Unvisited)
-        visit(root);
-    }
-    return components;
-  }
-
-private:
-  static constexpr unsigned Unvisited = ~0U;
-
-  const std::vector<std::vector<unsigned>> &graph;
-  std::vector<unsigned> index;
-  std::vector<unsigned> low;
-  std::vector<bool> onStack;
-  std::vector<unsigned> stack;
-  std::vector<std::vector<unsigned>> components;
-  unsigned counter = 0;
-
-  void visit(unsigned root) {
-    struct Frame {
-      unsigned node;
-      std::size_t nextEdge;
-    };
-    std::vector<Frame> frames{Frame{.node = root, .nextEdge = 0}};
-    enter(root);
-    while (!frames.empty()) {
-      Frame &frame = frames.back();
-      const unsigned node = frame.node;
-      if (frame.nextEdge < graph[node].size()) {
-        const unsigned succ = graph[node][frame.nextEdge++];
-        if (index[succ] == Unvisited) {
-          enter(succ);
-          frames.push_back(Frame{.node = succ, .nextEdge = 0});
-        } else if (onStack[succ]) {
-          low[node] = std::min(low[node], index[succ]);
-        }
-        continue;
-      }
-      if (low[node] == index[node]) {
-        std::vector<unsigned> component;
-        unsigned member = 0;
-        do {
-          member = stack.back();
-          stack.pop_back();
-          onStack[member] = false;
-          component.push_back(member);
-        } while (member != node);
-        std::ranges::sort(component);
-        components.push_back(std::move(component));
-      }
-      frames.pop_back();
-      if (!frames.empty()) {
-        const unsigned parent = frames.back().node;
-        low[parent] = std::min(low[parent], low[node]);
-      }
-    }
-  }
-
-  void enter(unsigned node) {
-    index[node] = low[node] = counter++;
-    stack.push_back(node);
-    onStack[node] = true;
-  }
-};
-
 } // namespace
 
 TranslationUnitAnalyzer::TranslationUnitAnalyzer(
     ASTContext &ctx, core::DiagnosticSink &diagSink,
     AnalysisOptions analysisOptions)
-    : context(ctx), sink(diagSink), options(analysisOptions) {}
+    : context(ctx), sink(diagSink), options(analysisOptions) {
+  store.setContext(&context);
+}
 
 void TranslationUnitAnalyzer::collectDefinitions(const DeclContext &dc) {
   for (const Decl *decl : dc.decls()) {
@@ -184,20 +114,29 @@ void TranslationUnitAnalyzer::collectAddressTaken() {
     store.addAddressTaken(*function);
 }
 
-std::vector<std::vector<unsigned>>
-TranslationUnitAnalyzer::buildCallGraph() const {
+std::vector<std::vector<unsigned>> TranslationUnitAnalyzer::buildCallGraph() {
   llvm::DenseMap<const FunctionDecl *, unsigned> indexOf;
   for (unsigned i = 0; i < definitions.size(); ++i)
     indexOf[definitions[i]->getCanonicalDecl()] = i;
 
+  externalCallees.clear();
+  indirectTypeKeys.clear();
+  llvm::DenseSet<const FunctionDecl *> seenExternal;
   std::vector<std::vector<unsigned>> adjacency(definitions.size());
   for (unsigned i = 0; i < definitions.size(); ++i) {
     CalleeCollector collector;
     collector.TraverseStmt(definitions[i]->getBody());
     const auto addEdge = [&](const FunctionDecl *callee) {
-      if (const auto it = indexOf.find(callee->getCanonicalDecl());
-          it != indexOf.end())
+      const FunctionDecl *canonical = callee->getCanonicalDecl();
+      if (const auto it = indexOf.find(canonical); it != indexOf.end()) {
         adjacency[i].push_back(it->second);
+      } else if (callee->isExternallyVisible() &&
+                 callee->getIdentifier() != nullptr &&
+                 !callee->getName().starts_with("__builtin_") &&
+                 seenExternal.insert(canonical).second) {
+        // Compiler builtins are never defined by another unit.
+        externalCallees.push_back(canonical);
+      }
     };
     for (const FunctionDecl *callee : collector.callees)
       addEdge(callee);
@@ -206,6 +145,11 @@ TranslationUnitAnalyzer::buildCallGraph() const {
     for (const CallExpr *call : collector.indirectCalls) {
       for (const FunctionDecl *candidate : store.candidatesFor(*call))
         addEdge(candidate);
+      if (const FunctionProtoType *type = indirectCalleeType(*call)) {
+        std::string key = functionTypeKey(QualType(type, 0), context);
+        if (!key.empty())
+          indirectTypeKeys.insert(std::move(key));
+      }
     }
     std::ranges::sort(adjacency[i]);
     adjacency[i].erase(std::ranges::unique(adjacency[i]).begin(),
@@ -214,15 +158,76 @@ TranslationUnitAnalyzer::buildCallGraph() const {
   return adjacency;
 }
 
-void TranslationUnitAnalyzer::run(
-    llvm::function_ref<bool(const FunctionDecl &)> shouldReport) {
+void TranslationUnitAnalyzer::prepare() {
   definitions.clear();
   collectDefinitions(*context.getTranslationUnitDecl());
   collectAddressTaken();
+}
+
+UnitExports TranslationUnitAnalyzer::skeletonExports() const {
+  UnitExports result;
+  const SourceManager &sm = context.getSourceManager();
+  if (const auto entry = sm.getFileEntryRefForID(sm.getMainFileID()))
+    result.source = entry->getName().str();
+
+  for (const FunctionDecl *function : definitions) {
+    if (function->isMain() || function->getIdentifier() == nullptr)
+      continue;
+    const bool external = function->isExternallyVisible();
+    const bool addressTaken = store.isAddressTaken(*function);
+    if (!external && !addressTaken)
+      continue;
+    result.functions[function->getNameAsString()] = ExportedFunction{
+        .summary = {},
+        .typeKey = functionTypeKey(function->getType(), context),
+        .external = external,
+        .addressTaken = addressTaken,
+    };
+  }
+  for (const FunctionDecl *callee : externalCallees)
+    result.imports.insert(callee->getNameAsString());
+  result.indirectTypes = indirectTypeKeys;
+  return result;
+}
+
+UnitExports TranslationUnitAnalyzer::discover() {
+  prepare();
+  (void)buildCallGraph();
+  return skeletonExports();
+}
+
+UnitExports TranslationUnitAnalyzer::exports() {
+  UnitExports result = skeletonExports();
+  const GlobalTable &table = store.globals();
+  // Globals travel by name; a `static` one means nothing elsewhere and is
+  // dropped (RFC 0005, *The program database*).
+  const core::GlobalIdMap byName = [&](std::uint32_t id) {
+    const VarDecl *var = table.declFor(id);
+    if (var == nullptr || !var->isExternallyVisible())
+      return std::optional<std::uint32_t>();
+    return std::optional(result.globals.idFor(var->getName()));
+  };
+  for (const FunctionDecl *function : definitions) {
+    const auto it = result.functions.find(function->getNameAsString());
+    if (it == result.functions.end())
+      continue;
+    if (const auto resolved = store.lookup(*function))
+      it->second.summary = core::remapGlobals(*resolved->summary, byName);
+  }
+  for (std::string &name : store.unknownCalleeNames())
+    result.unknownCallees.insert(std::move(name));
+  for (std::string &key : store.unknownIndirectTypeKeys())
+    result.unknownIndirectTypes.insert(std::move(key));
+  return result;
+}
+
+void TranslationUnitAnalyzer::run(
+    llvm::function_ref<bool(const FunctionDecl &)> shouldReport) {
+  prepare();
 
   const std::vector<std::vector<unsigned>> adjacency = buildCallGraph();
   const std::vector<std::vector<unsigned>> components =
-      SccFinder(adjacency).run();
+      core::stronglyConnectedComponents(adjacency);
 
   FunctionAnalyzer analyzer(context, sink, options);
   for (const std::vector<unsigned> &component : components) {

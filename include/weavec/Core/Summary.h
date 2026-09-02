@@ -29,6 +29,7 @@
 
 #include <compare>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <optional>
 #include <set>
@@ -232,6 +233,15 @@ public:
 };
 
 [[nodiscard]] std::string_view toString(ValueSource::Kind kind) noexcept;
+
+/// Maps a global root id to another id, or to `nullopt` to drop the root.
+using GlobalIdMap = std::function<std::optional<std::uint32_t>(std::uint32_t)>;
+
+/// Rewrites every global root of `summary` through `map` (RFC 0005, *The
+/// program database*): effects on and stores into a dropped root vanish; a
+/// `copy` or `borrow` of one becomes `unknown`. Parameter roots are kept.
+[[nodiscard]] FunctionSummary remapGlobals(const FunctionSummary &summary,
+                                           const GlobalIdMap &map);
 
 } // namespace weavec::core
 

@@ -4,8 +4,9 @@
 The corpus is the empirical side of the RFCs: every "deferred to corpus
 testing" question in docs/rfcs/ is answered by looking at these numbers. The
 harness clones (shallow) each project listed in scripts/corpus/projects.json,
-runs weavec on the listed translation units, parses the diagnostics and
-prints a table of counts per diagnostic id along with analysis time. Results
+runs weavec on the listed translation units (one at a time, or as one
+program with `"whole_program": true`), parses the diagnostics and prints a
+table of counts per diagnostic id along with analysis time. Results
 are written as JSON so runs can be diffed; `--baseline` compares against a
 previous run and exits non-zero when a diagnostic id's count grows.
 
@@ -56,6 +57,9 @@ class Project:
     files: list[str]
     args: list[str]
     notes: str = ""
+    # Analyse every file as one program (`weavec --whole-program`, RFC 0005)
+    # instead of one translation unit at a time.
+    whole_program: bool = False
     path: Path | None = None
 
     @staticmethod
@@ -67,6 +71,7 @@ class Project:
             files=list(obj["files"]),
             args=list(obj.get("args", [])),
             notes=obj.get("notes", ""),
+            whole_program=bool(obj.get("whole_program", False)),
         )
 
 
@@ -175,15 +180,20 @@ def parse_output(project: str, root: Path, text: str) -> tuple[list[Diagnostic],
     return diagnostics, clang_errors
 
 
-def run_unit(weavec: str, project: Project, root: Path, file: Path, extra: list[str]) -> UnitResult:
-    cmd = [weavec, *extra, str(file), "--", *project.args]
+def run_units(weavec: str, project: Project, root: Path, files: list[Path], extra: list[str]) -> UnitResult:
+    """Run weavec once over `files`: one unit, or a whole program."""
+    cmd = [weavec, *extra]
+    if project.whole_program:
+        cmd.append("--whole-program")
+    cmd.extend(str(f) for f in files)
+    cmd.extend(["--", *project.args])
     start = time.perf_counter()
     proc = subprocess.run(cmd, cwd=root, capture_output=True, text=True)
     seconds = time.perf_counter() - start
     diagnostics, clang_errors = parse_output(project.name, root, proc.stderr + proc.stdout)
     return UnitResult(
         project=project.name,
-        file=str(file.relative_to(root)),
+        file=" ".join(str(f.relative_to(root)) for f in files),
         seconds=seconds,
         exit_code=proc.returncode,
         diagnostics=diagnostics,
@@ -266,6 +276,7 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--refresh", action="store_true", help="re-fetch already cloned projects")
     ap.add_argument("--local", type=Path, help="analyse a local directory instead of the manifest")
     ap.add_argument("--local-files", default="**/*.c", help="glob for --local (default: **/*.c)")
+    ap.add_argument("--local-whole-program", action="store_true", help="analyse --local files as one program")
     ap.add_argument("--local-args", nargs=argparse.REMAINDER, default=[], help="compiler args for --local")
     ap.add_argument("--weavec-arg", action="append", default=[], help="extra weavec option (repeatable)")
     ap.add_argument("--show", action="append", default=[], help="print every diagnostic with this id")
@@ -287,6 +298,7 @@ def main(argv: list[str]) -> int:
                 ref="local",
                 files=[args.local_files],
                 args=args.local_args,
+                whole_program=args.local_whole_program,
                 path=args.local.resolve(),
             )
         ]
@@ -310,9 +322,11 @@ def main(argv: list[str]) -> int:
             return 2
         commits[project.name] = resolved_commit(root)
         files = expand_files(root, project.files)
-        log(f"[{project.name}] {len(files)} translation unit(s)")
-        for file in files:
-            unit = run_unit(args.weavec, project, root, file, args.weavec_arg)
+        mode = "as one program" if project.whole_program else "one at a time"
+        log(f"[{project.name}] {len(files)} translation unit(s), {mode}")
+        groups = [files] if project.whole_program and files else [[f] for f in files]
+        for group in groups:
+            unit = run_units(args.weavec, project, root, group, args.weavec_arg)
             results.append(unit)
             if unit.clang_errors:
                 log(f"[{project.name}] {unit.file}: {unit.clang_errors} clang error(s); check args")

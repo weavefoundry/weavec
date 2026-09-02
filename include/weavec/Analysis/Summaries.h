@@ -33,6 +33,7 @@
 #include <cstdint>
 #include <map>
 #include <optional>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -66,9 +67,14 @@ enum class SummarySource : std::uint8_t {
   Annotation,
   /// Inferred from the callee's body in this translation unit.
   Inferred,
+  /// Inferred from the callee's body in another unit of the program (RFC
+  /// 0005, *The program database*).
+  Program,
   /// The shipped table for the C standard library.
   Builtin,
 };
+
+class ProgramDatabase;
 
 /// A summary together with its provenance.
 struct ResolvedSummary {
@@ -151,9 +157,33 @@ public:
   /// translation unit, so it may be the target of an indirect call.
   void addAddressTaken(const clang::FunctionDecl &function);
 
+  /// Whether `addAddressTaken` was called for `function`.
+  [[nodiscard]] bool isAddressTaken(const clang::FunctionDecl &function) const;
+
   /// The address-taken functions whose type matches `call`'s callee type.
   [[nodiscard]] std::vector<const clang::FunctionDecl *>
   candidatesFor(const clang::CallExpr &call) const;
+
+  /// The unit being analysed; needed to spell type keys and to name the
+  /// unit's globals when importing program summaries.
+  void setContext(const clang::ASTContext *unitContext) noexcept {
+    context = unitContext;
+  }
+
+  /// Attaches the exports of the other units of the program (RFC 0005):
+  /// `lookup` consults them for a callee with external linkage and no body
+  /// here, `lookupIndirect` joins their candidates with this unit's.
+  void setDatabase(const ProgramDatabase *program) noexcept {
+    database = program;
+  }
+  [[nodiscard]] const ProgramDatabase *programDatabase() const noexcept {
+    return database;
+  }
+
+  /// The callees `noteUnknownCallee` recorded and the type keys
+  /// `noteUnknownIndirect` recorded, sorted (RFC 0005 exports).
+  [[nodiscard]] std::vector<std::string> unknownCalleeNames() const;
+  [[nodiscard]] std::vector<std::string> unknownIndirectTypeKeys() const;
 
   [[nodiscard]] GlobalTable &globals() noexcept { return globalTable; }
   [[nodiscard]] const GlobalTable &globals() const noexcept {
@@ -173,6 +203,7 @@ private:
   // valid while further lookups insert.
   std::map<const clang::FunctionDecl *, core::FunctionSummary> inferred;
   std::map<const clang::FunctionDecl *, core::FunctionSummary> merged;
+  std::map<const clang::FunctionDecl *, SummarySource> mergedSource;
   /// Indirect summaries, keyed by the canonical function type and the
   /// declaration whose annotations were applied (null if none).
   std::map<std::pair<const clang::Type *, const clang::Decl *>,
@@ -183,6 +214,13 @@ private:
   llvm::DenseSet<const clang::FunctionDecl *> unknownCallees;
   llvm::DenseSet<const clang::Type *> unknownIndirect;
   GlobalTable globalTable;
+  const ProgramDatabase *database = nullptr;
+  const clang::ASTContext *context = nullptr;
+
+  /// The database summary for `callee`, imported into this unit, if the
+  /// program defines it elsewhere.
+  [[nodiscard]] std::optional<core::FunctionSummary>
+  programSummaryFor(const clang::FunctionDecl &callee);
 
   [[nodiscard]] static const clang::FunctionDecl *
   key(const clang::FunctionDecl &function) noexcept {

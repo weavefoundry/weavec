@@ -18,10 +18,10 @@ void f(char *p) {
   // CHECK: rfc0003-unknown-extern.c:[[@LINE+1]]:3: warning: call to 'mystery' is not checked: it has no definition or ownership annotations here [weavec::annotation-required]
   mystery(p);
   // CHECK: rfc0003-unknown-extern.c:[[@LINE-8]]:6: note: 'mystery' is declared here
-  // CHECK: note: annotate its pointer parameters with WEAVEC_OWNED, WEAVEC_BORROWED, WEAVEC_MUT or WEAVEC_RAW, or define it in this translation unit
+  // CHECK: note: annotate its pointer parameters with WEAVEC_OWNED, WEAVEC_BORROWED, WEAVEC_MUT or WEAVEC_RAW, or define it in this program
   // STRICT: rfc0003-unknown-extern.c:[[@LINE-3]]:3: error: unchecked call to 'mystery' outside an unsafe region [weavec::unsafe-operation]
   // STRICT: rfc0003-unknown-extern.c:[[@LINE-11]]:6: note: 'mystery' is declared here
-  // STRICT: note: annotate its pointer parameters with WEAVEC_OWNED, WEAVEC_BORROWED, WEAVEC_MUT or WEAVEC_RAW, define it in this translation unit, or move the call into a WEAVEC_UNSAFE region
+  // STRICT: note: annotate its pointer parameters with WEAVEC_OWNED, WEAVEC_BORROWED, WEAVEC_MUT or WEAVEC_RAW, define it in this program, or move the call into a WEAVEC_UNSAFE region
   // STRICT: rfc0003-unknown-extern.c:[[@LINE+1]]:3: error: unchecked call to 'mystery' outside an unsafe region [weavec::unsafe-operation]
   mystery(p);
   pure(1);

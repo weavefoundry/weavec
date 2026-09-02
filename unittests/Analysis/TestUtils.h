@@ -81,20 +81,32 @@ struct AnalysisResult {
   }
 };
 
-inline AnalysisResult analyze(const std::string &code,
-                              analysis::AnalysisOptions options = {}) {
+/// Like `analyze`, with the exports of other units attached (RFC 0005).
+/// `database` must outlive the result.
+inline AnalysisResult
+analyzeInProgram(const std::string &code,
+                 const analysis::ProgramDatabase *database,
+                 analysis::AnalysisOptions options = {},
+                 const std::string &fileName = "input.c") {
   AnalysisResult result;
   // `-w`: Clang's own warnings (e.g. -Wreturn-stack-address) are noise here.
   result.ast = clang::tooling::buildASTFromCodeWithArgs(
-      std::string(Prelude) + code, {"-std=c17", "-x", "c", "-w"}, "input.c");
+      std::string(Prelude) + code, {"-std=c17", "-x", "c", "-w"}, fileName);
   if (!result.ast)
     return result;
 
   clang::ASTContext &context = result.ast->getASTContext();
   result.analyzer = std::make_unique<analysis::TranslationUnitAnalyzer>(
       context, result.diagnostics, options);
+  if (database != nullptr)
+    result.analyzer->setDatabase(database);
   result.analyzer->run();
   return result;
+}
+
+inline AnalysisResult analyze(const std::string &code,
+                              analysis::AnalysisOptions options = {}) {
+  return analyzeInProgram(code, nullptr, options);
 }
 
 /// Returns the ids of all reported (non-note) diagnostics, in order.

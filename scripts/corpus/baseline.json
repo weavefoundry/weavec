@@ -5,7 +5,9 @@
     "jsmn": "25647e6",
     "log.c": "f9ea349",
     "printf": "d3b9846",
-    "linenoise": "a473823"
+    "linenoise": "a473823",
+    "cJSON-program": "fb16e5c",
+    "linenoise-program": "a473823"
   },
   "summary": {
     "projects": {
@@ -47,13 +49,32 @@
           "conflicting-borrow": 2,
           "double-free": 3
         }
+      },
+      "cJSON-program": {
+        "units": 1,
+        "clang_errors": 0,
+        "by_id": {
+          "double-free": 3,
+          "use-after-free": 1
+        }
+      },
+      "linenoise-program": {
+        "units": 1,
+        "clang_errors": 0,
+        "by_id": {
+          "annotation-required": 1,
+          "conflicting-borrow": 2,
+          "double-free": 4,
+          "use-after-free": 14
+        }
       }
     },
     "totals": {
-      "annotation-required": 5,
-      "conflicting-borrow": 2,
-      "double-free": 3,
-      "unsafe-operation": 1
+      "annotation-required": 6,
+      "conflicting-borrow": 4,
+      "double-free": 10,
+      "unsafe-operation": 1,
+      "use-after-free": 15
     }
   }
 }

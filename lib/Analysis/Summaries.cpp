@@ -9,6 +9,7 @@
 #include "weavec/Analysis/Summaries.h"
 
 #include "weavec/Analysis/Annotations.h"
+#include "weavec/Analysis/ProgramDatabase.h"
 
 // Defines `LazyGenerationalUpdatePtr::makeValue`, which `Redeclarable`
 // walks (`getCanonicalDecl`, `redecls()`) instantiate here.
@@ -210,6 +211,7 @@ bool SummaryStore::setInferred(const FunctionDecl &function,
                                core::FunctionSummary summary) {
   const FunctionDecl *canonical = key(function);
   merged.erase(canonical);
+  mergedSource.erase(canonical);
   auto [it, inserted] = inferred.try_emplace(canonical, std::move(summary));
   if (inserted) {
     mergedIndirect.clear();
@@ -229,41 +231,61 @@ SummaryStore::inferredFor(const FunctionDecl &function) const {
   return it == inferred.end() ? nullptr : &it->second;
 }
 
+std::optional<core::FunctionSummary>
+SummaryStore::programSummaryFor(const FunctionDecl &callee) {
+  if (database == nullptr || context == nullptr ||
+      !callee.isExternallyVisible() || callee.getIdentifier() == nullptr)
+    return std::nullopt;
+  const core::FunctionSummary *exported = database->find(callee.getName());
+  if (exported == nullptr)
+    return std::nullopt;
+  return database->importInto(*exported, *context, globalTable);
+}
+
 std::optional<ResolvedSummary>
 SummaryStore::lookup(const FunctionDecl &callee) {
   const FunctionDecl *canonical = key(callee);
-  if (const auto it = merged.find(canonical); it != merged.end()) {
+  if (const auto it = merged.find(canonical); it != merged.end())
     return ResolvedSummary{.summary = &it->second,
-                           .source = hasOwnershipAnnotations(callee)
-                                         ? SummarySource::Annotation
-                                         : SummarySource::Inferred};
-  }
+                           .source = mergedSource.at(canonical)};
 
   const SignatureAnnotations annotations = collectAnnotations(callee);
   const core::FunctionSummary *inferredBody = inferredFor(callee);
+  // RFC 0005: a body in another unit of the program, below this unit's own
+  // inference and above the library table.
+  const std::optional<core::FunctionSummary> programBody =
+      inferredBody == nullptr ? programSummaryFor(callee) : std::nullopt;
   // `WEAVEC_UNSAFE` on a declaration with no analysed body is an explicit
   // opt-out: the user asked for the empty summary rather than a warning. A
   // `WEAVEC_UNSAFE` definition is analysed like any other (RFC 0004, *Unsafe
   // regions*) and its inferred summary is used once it exists.
-  const bool annotated = annotations.anyOwnership() ||
-                         (annotations.unsafe && inferredBody == nullptr);
+  const bool haveBody = inferredBody != nullptr || programBody.has_value();
+  const bool annotated =
+      annotations.anyOwnership() || (annotations.unsafe && !haveBody);
 
-  if (inferredBody == nullptr && !annotated) {
+  if (!haveBody && !annotated) {
     if (const core::FunctionSummary *builtin = builtinSummary(callee))
       return ResolvedSummary{.summary = builtin,
                              .source = SummarySource::Builtin};
     return std::nullopt;
   }
 
-  core::FunctionSummary result =
-      inferredBody != nullptr ? *inferredBody : core::FunctionSummary{};
-  if (annotated)
+  core::FunctionSummary result;
+  SummarySource source = SummarySource::Program;
+  if (inferredBody != nullptr) {
+    result = *inferredBody;
+    source = SummarySource::Inferred;
+  } else if (programBody) {
+    result = *programBody;
+  }
+  if (annotated) {
     applyAnnotations(result, shapeOf(callee), annotations.result,
                      annotations.params);
+    source = SummarySource::Annotation;
+  }
   const auto it = merged.try_emplace(canonical, std::move(result)).first;
-  return ResolvedSummary{.summary = &it->second,
-                         .source = annotated ? SummarySource::Annotation
-                                             : SummarySource::Inferred};
+  mergedSource[canonical] = source;
+  return ResolvedSummary{.summary = &it->second, .source = source};
 }
 
 void SummaryStore::addAddressTaken(const FunctionDecl &function) {
@@ -272,6 +294,10 @@ void SummaryStore::addAddressTaken(const FunctionDecl &function) {
     addressTaken.push_back(canonical);
     mergedIndirect.clear();
   }
+}
+
+bool SummaryStore::isAddressTaken(const FunctionDecl &function) const {
+  return addressTakenSet.contains(key(function));
 }
 
 std::vector<const FunctionDecl *>
@@ -312,24 +338,59 @@ SummaryStore::lookupIndirect(const CallExpr &call) {
 
   core::FunctionSummary joined;
   bool anyCandidate = false;
+  bool anyLocal = false;
   for (const FunctionDecl *candidate : candidatesFor(call)) {
     const auto resolved = lookup(*candidate);
     if (!resolved)
       continue;
     joined.join(*resolved->summary);
     anyCandidate = true;
+    anyLocal = true;
+  }
+  // RFC 0005: address-taken functions of the type anywhere in the program.
+  if (database != nullptr && context != nullptr) {
+    const std::string typeKey = functionTypeKey(QualType(type, 0), *context);
+    if (const core::FunctionSummary *program =
+            typeKey.empty() ? nullptr : database->candidates(typeKey)) {
+      joined.join(database->importInto(*program, *context, globalTable));
+      anyCandidate = true;
+    }
   }
   if (!annotated && !anyCandidate)
     return std::nullopt;
 
+  SummarySource source =
+      anyLocal ? SummarySource::Inferred : SummarySource::Program;
   if (annotated) {
     applyAnnotations(joined, shapeOf(*type), annotations.result,
                      annotations.params);
+    source = SummarySource::Annotation;
   }
   const auto it = mergedIndirect.try_emplace(cacheKey, std::move(joined)).first;
-  return ResolvedSummary{.summary = &it->second,
-                         .source = annotated ? SummarySource::Annotation
-                                             : SummarySource::Inferred};
+  return ResolvedSummary{.summary = &it->second, .source = source};
+}
+
+std::vector<std::string> SummaryStore::unknownCalleeNames() const {
+  std::vector<std::string> names;
+  for (const FunctionDecl *callee : unknownCallees) {
+    if (callee->getIdentifier() != nullptr && callee->isExternallyVisible())
+      names.push_back(callee->getNameAsString());
+  }
+  llvm::sort(names);
+  return names;
+}
+
+std::vector<std::string> SummaryStore::unknownIndirectTypeKeys() const {
+  std::vector<std::string> keys;
+  if (context == nullptr)
+    return keys;
+  for (const Type *type : unknownIndirect) {
+    std::string key = functionTypeKey(QualType(type, 0), *context);
+    if (!key.empty())
+      keys.push_back(std::move(key));
+  }
+  llvm::sort(keys);
+  return keys;
 }
 
 bool SummaryStore::noteUnknownCallee(const FunctionDecl &callee) {

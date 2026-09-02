@@ -28,6 +28,11 @@ std::string findResourceIncludeDir(const char *argv0, void *mainAddr);
 /// not available on this machine.
 std::string getClangResourceDir();
 
+/// The `clang` binary `weavec-cc` delegates to for jobs it cannot run
+/// itself (`-cc1as`): `$WEAVEC_CLANG`, then the one WeaveC was built
+/// against, then `clang` on `PATH`. Empty if none exists.
+std::string getClangExecutable();
+
 /// A default system root for the host, used when the command line does not
 /// specify one. On Apple platforms this is `$SDKROOT` or the SDK reported by
 /// `xcrun --show-sdk-path`; elsewhere it is empty (the driver's defaults are

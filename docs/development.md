@@ -70,7 +70,12 @@ Useful cache variables (`-D...` or in `CMakeUserPresets.json`):
 
 Build targets of note:
 
-- `weavec` — the tool, in `build/<preset>/bin/`.
+- `weavec` — the analysis tool, in `build/<preset>/bin/`.
+- `weavec-cc` — the drop-in compiler driver, next to it. It needs Clang's
+  resource directory and (for jobs it does not run in-process, such as
+  `-cc1as`) a `clang` binary; both are recorded at configure time from the
+  LLVM install used to build, and can be overridden with
+  `WEAVEC_RESOURCE_DIR` and `WEAVEC_CLANG`.
 - `check-weavec` — build and run all tests.
 - `check-weavec-unit`, `check-weavec-lit` — only one suite.
 
@@ -78,10 +83,13 @@ Build targets of note:
 
 ### Unit tests (`unittests/`)
 
-GoogleTest, one binary per library (`WeaveCCoreTests`, `WeaveCAnalysisTests`).
-Core tests exercise the model directly; Analysis tests parse snippets with
-`clang::tooling::buildASTFromCodeWithArgs` and collect diagnostics with
-`core::DiagnosticCollector`. Run one with
+GoogleTest, one binary per library (`WeaveCCoreTests`, `WeaveCAnalysisTests`,
+`WeaveCFrontendTests`). Core tests exercise the model directly; Analysis
+tests parse snippets with `clang::tooling::buildASTFromCodeWithArgs` and
+collect diagnostics with `core::DiagnosticCollector` (`TestUtils.h` has
+`analyzeInProgram` for a snippet checked against another unit's exports);
+Frontend tests run `ProgramAnalysis` over in-memory units and round-trip
+sidecars. Run one with
 `build/dev/unittests/WeaveCCoreTests --gtest_filter='Borrow*'`.
 
 ### Integration tests (`test/`)
@@ -89,6 +97,9 @@ Core tests exercise the model directly; Analysis tests parse snippets with
 lit + FileCheck; see [`test/README.md`](../test/README.md). Run a single test
 with `lit -v build/dev/test/Analysis/use-after-free.c`. Every diagnostic change
 should be covered by a lit test because they pin the exact user-visible output.
+`test/WholeProgram/` runs several files through `%weavec --whole-program`
+(shared inputs in `test/WholeProgram/Inputs/`); `test/Driver/` drives
+`%weavec_cc` through compile, link and flag handling.
 
 ### Sanitizers
 
@@ -115,6 +126,14 @@ editor integration.
   replaces Clang's); use `clang -fsyntax-only -Xclang -ast-dump file.c`
   directly to inspect the AST.
 - Run the tool under a debugger with `lldb -- build/dev/bin/weavec file.c --`.
+- `weavec-cc` runs its `-cc1` jobs in-process, so `lldb -- build/dev/bin/
+  weavec-cc -c file.c` stops in the analysis directly; `weavec-cc -###
+  file.c` prints the jobs Clang's driver planned. A unit's exports are in
+  `<object>.weavec` next to the object (`weavec-summaries 1` header; one
+  `function ... summary ... end` record per exported function); the link
+  step re-runs the `arg` lines recorded there.
+- `weavec --whole-program --dump-analysis a.c b.c --` prints each unit's
+  dump in analysis order and then the joined program database.
 - For lit failures, `lit -a` prints the full command and output; the test's
   working files are under `build/<preset>/test/<suite>/Output/`.
 

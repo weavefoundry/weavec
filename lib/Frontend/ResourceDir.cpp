@@ -28,6 +28,9 @@
 #ifndef WEAVEC_CLANG_RESOURCE_DIR
 #define WEAVEC_CLANG_RESOURCE_DIR ""
 #endif
+#ifndef WEAVEC_CLANG_EXECUTABLE
+#define WEAVEC_CLANG_EXECUTABLE ""
+#endif
 
 namespace weavec::frontend {
 
@@ -72,6 +75,19 @@ std::string getClangResourceDir() {
   if (dir.empty() || !llvm::sys::fs::is_directory(dir))
     return {};
   return dir.str();
+}
+
+std::string getClangExecutable() {
+  // NOLINTNEXTLINE(concurrency-mt-unsafe) -- read once at startup.
+  if (const char *env = std::getenv("WEAVEC_CLANG");
+      env != nullptr && llvm::sys::fs::can_execute(env))
+    return env;
+  const llvm::StringRef built(WEAVEC_CLANG_EXECUTABLE);
+  if (!built.empty() && llvm::sys::fs::can_execute(built))
+    return built.str();
+  if (llvm::ErrorOr<std::string> found = llvm::sys::findProgramByName("clang"))
+    return *found;
+  return {};
 }
 
 #ifdef __APPLE__
