@@ -28,10 +28,13 @@ namespace weavec::analysis {
 
 namespace {
 
-/// Collects the direct callees of one function body.
+/// Collects the direct callees of one function body, and the indirect calls
+/// whose candidates are resolved against the address-taken set (RFC 0004,
+/// *Signatures for function pointers*).
 class CalleeCollector : public RecursiveASTVisitor<CalleeCollector> {
 public:
   llvm::DenseSet<const FunctionDecl *> callees;
+  std::vector<const CallExpr *> indirectCalls;
 
   // RecursiveASTVisitor's CRTP hooks are found by name; both checks are
   // wrong about it.
@@ -39,8 +42,42 @@ public:
   bool VisitCallExpr(CallExpr *call) {
     if (const FunctionDecl *callee = call->getDirectCallee())
       callees.insert(callee->getCanonicalDecl());
+    else
+      indirectCalls.push_back(call);
     return true;
   }
+};
+
+/// Collects every function whose name is used as a value rather than called:
+/// `&f`, `f` in an initialiser, `hook = f`, `register(f)`.
+class AddressTakenCollector
+    : public RecursiveASTVisitor<AddressTakenCollector> {
+public:
+  std::vector<const FunctionDecl *> functions;
+
+  // NOLINTNEXTLINE(readability-identifier-naming,bugprone-derived-method-shadowing-base-method)
+  bool VisitCallExpr(CallExpr *call) {
+    const auto *ref =
+        dyn_cast<DeclRefExpr>(call->getCallee()->IgnoreParenImpCasts());
+    if (ref != nullptr && isa<FunctionDecl>(ref->getDecl()))
+      calledDirectly.insert(ref);
+    return true;
+  }
+
+  // NOLINTNEXTLINE(readability-identifier-naming,bugprone-derived-method-shadowing-base-method)
+  bool VisitDeclRefExpr(DeclRefExpr *ref) {
+    const auto *function = dyn_cast<FunctionDecl>(ref->getDecl());
+    if (function == nullptr || calledDirectly.contains(ref))
+      return true;
+    const FunctionDecl *canonical = function->getCanonicalDecl();
+    if (seen.insert(canonical).second)
+      functions.push_back(canonical);
+    return true;
+  }
+
+private:
+  llvm::DenseSet<const DeclRefExpr *> calledDirectly;
+  llvm::DenseSet<const FunctionDecl *> seen;
 };
 
 /// Iterative Tarjan: emits strongly connected components in reverse
@@ -138,6 +175,15 @@ void TranslationUnitAnalyzer::collectDefinitions(const DeclContext &dc) {
   }
 }
 
+void TranslationUnitAnalyzer::collectAddressTaken() {
+  // The whole translation unit, not just function bodies: a static table of
+  // callbacks at file scope is the common case.
+  AddressTakenCollector collector;
+  collector.TraverseDecl(context.getTranslationUnitDecl());
+  for (const FunctionDecl *function : collector.functions)
+    store.addAddressTaken(*function);
+}
+
 std::vector<std::vector<unsigned>>
 TranslationUnitAnalyzer::buildCallGraph() const {
   llvm::DenseMap<const FunctionDecl *, unsigned> indexOf;
@@ -148,11 +194,22 @@ TranslationUnitAnalyzer::buildCallGraph() const {
   for (unsigned i = 0; i < definitions.size(); ++i) {
     CalleeCollector collector;
     collector.TraverseStmt(definitions[i]->getBody());
-    for (const FunctionDecl *callee : collector.callees) {
-      if (const auto it = indexOf.find(callee); it != indexOf.end())
+    const auto addEdge = [&](const FunctionDecl *callee) {
+      if (const auto it = indexOf.find(callee->getCanonicalDecl());
+          it != indexOf.end())
         adjacency[i].push_back(it->second);
+    };
+    for (const FunctionDecl *callee : collector.callees)
+      addEdge(callee);
+    // An indirect call may reach any address-taken function of its type, so
+    // those must be summarised first (or in the same component).
+    for (const CallExpr *call : collector.indirectCalls) {
+      for (const FunctionDecl *candidate : store.candidatesFor(*call))
+        addEdge(candidate);
     }
     std::ranges::sort(adjacency[i]);
+    adjacency[i].erase(std::ranges::unique(adjacency[i]).begin(),
+                       adjacency[i].end());
   }
   return adjacency;
 }
@@ -161,6 +218,7 @@ void TranslationUnitAnalyzer::run(
     llvm::function_ref<bool(const FunctionDecl &)> shouldReport) {
   definitions.clear();
   collectDefinitions(*context.getTranslationUnitDecl());
+  collectAddressTaken();
 
   const std::vector<std::vector<unsigned>> adjacency = buildCallGraph();
   const std::vector<std::vector<unsigned>> components =
@@ -213,8 +271,9 @@ static const char *macroFor(core::OwnershipKind kind) {
     return "WEAVEC_BORROWED";
   case core::OwnershipKind::Mutable:
     return "WEAVEC_MUT";
-  case core::OwnershipKind::Unknown:
   case core::OwnershipKind::Raw:
+    return "WEAVEC_RAW";
+  case core::OwnershipKind::Unknown:
     break;
   }
   return nullptr;

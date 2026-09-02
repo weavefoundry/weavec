@@ -14,6 +14,7 @@ void AnalysisState::join(const AnalysisState &other) {
   moves.join(other.moves);
   loans.join(other.loans);
   aliases.join(other.aliases);
+  raw.join(other.raw);
 
   // A pending realloc that is only pending on one incoming path cannot be
   // safely undone, so keep only entries both sides agree on.
@@ -44,6 +45,7 @@ void AnalysisState::forget(PlaceId place) {
   loans.release(place);
   reallocs.erase(place);
   kinds.erase(place);
+  raw.clear(place);
 }
 
 } // namespace weavec::core

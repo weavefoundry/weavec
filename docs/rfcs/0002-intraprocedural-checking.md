@@ -242,6 +242,12 @@ paths through different aliases of one resource resolve to the same place.
 summary. Paths are interned, so `PlaceId` stays a small integer and the state
 maps stay dense.
 
+> **Superseded by [RFC 0004](0004-unsafe-boundaries.md), *Pointer
+> identity*.** Pointer arithmetic and every pointer-to-pointer cast now
+> preserve the place of their operand; only integer-to-pointer casts yield a
+> (raw) value with no place. The paragraph below records the RFC 0002
+> decision for history.
+
 Anything the mapping cannot express (pointer arithmetic that leaves an
 object, casts between unrelated pointer types, `container_of`-style
 subtraction) yields *no* place: the expression is treated as an opaque read
@@ -381,6 +387,11 @@ reasoning this RFC does; there is no inference of relationships between
 parameters (that is the signature RFC).
 
 ### Unsafe interaction
+
+> **Superseded by [RFC 0004](0004-unsafe-boundaries.md), *Unsafe
+> regions*.** Unsafe blocks and unsafe function bodies are now analysed with
+> their diagnostics suppressed, so a free inside one is reported at a use
+> outside it.
 
 `WEAVEC_UNSAFE` on the function still skips it entirely. `WEAVEC_UNSAFE { }`
 blocks are *skipped* by the transfer function (their CFG blocks are treated
@@ -546,7 +557,7 @@ Summary, so the reasoning is findable from here:
 | Question                          | Decision                                                                                     |
 | --------------------------------- | -------------------------------------------------------------------------------------------- |
 | `realloc` failure path            | Narrow null-edge reinstatement for the directly-tested result; no general null tracking.     |
-| Opaque pointer expressions        | No place (hole) in this RFC; become `Raw` in the unsafe-blocks RFC. Builder returns a distinct "opaque" result. |
+| Opaque pointer expressions        | No place (hole) in this RFC; resolved by RFC 0004 the other way: arithmetic and pointer casts preserve the place, only integer casts are `Raw`. |
 | Loan kind of `&x`                 | `Mutable` unless the destination pointee is `const`; no read-only inference yet.             |
 | Field summary granularity         | One place per field path, `[*]` per array; measure on the corpus, extend compatibly if needed. |
 | Diagnostic deduplication          | None needed: diagnostics are emitted in a post-fixpoint reporting pass, once per block.      |
@@ -576,10 +587,12 @@ Summary, so the reasoning is findable from here:
 
 ## Future work
 
-- **Signature inference RFC**: summaries make unannotated callees stop being
-  a hole and make `annotation-required` default-on.
-- **Unsafe blocks RFC**: escape rule, `unsafe-operation`, and turning
-  opaque pointer expressions into `Raw`.
+- **Signature inference RFC** (done: [RFC 0003](0003-signature-inference.md)):
+  summaries make unannotated callees stop being a hole and make
+  `annotation-required` default-on.
+- **Unsafe blocks RFC** (done: [RFC 0004](0004-unsafe-boundaries.md)):
+  `unsafe-operation`, analysed unsafe regions, and pointer identity for
+  arithmetic and casts.
 - **Non-lexical loans**: liveness from the CFG dataflow; removes the
   lexical-loan false positives and enables read-only loan inference.
 - **General null tracking** alongside signature inference, subsuming the

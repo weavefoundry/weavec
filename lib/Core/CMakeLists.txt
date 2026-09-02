@@ -12,5 +12,6 @@ weavec_add_library(
           Moves.cpp
           Ownership.cpp
           Place.cpp
+          Raw.cpp
           SourceLocation.cpp
           Summary.cpp)

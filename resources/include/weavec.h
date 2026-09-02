@@ -17,8 +17,11 @@
 |*   void buffer_free(struct buffer *WEAVEC_OWNED b);
 |*   size_t buffer_len(const struct buffer *WEAVEC_BORROWED b);
 |*   void buffer_push(struct buffer *WEAVEC_MUT b, int v);
+|*   void *WEAVEC_RAW map_pages(size_t n);   // no ownership guarantee
 |*
-|*   WEAVEC_UNSAFE void poke(void) { ... }   // opt a function out of checking
+|*   typedef void (*dtor_t)(void *WEAVEC_OWNED);   // callbacks, too
+|*
+|*   WEAVEC_UNSAFE void poke(void) { ... }   // the body is an unsafe region
 |*   WEAVEC_UNSAFE { ... }                   // or just a block
 |*
 \*===----------------------------------------------------------------------===*/
@@ -27,7 +30,7 @@
 #define WEAVEC_H
 
 #define WEAVEC_H_VERSION_MAJOR 0
-#define WEAVEC_H_VERSION_MINOR 1
+#define WEAVEC_H_VERSION_MINOR 2
 
 #if defined(__has_attribute)
 #if __has_attribute(annotate)
@@ -51,8 +54,18 @@
 #define WEAVEC_MUT WEAVEC_ANNOTATE_("weavec.mut_borrowed")
 
 /**
- * Opts a function (when placed before its declaration) or a block (when
- * placed before a compound statement) out of WeaveC's checks. Use sparingly
+ * A raw pointer: no ownership guarantee at all. Dereferencing or releasing
+ * it is allowed only inside a WEAVEC_UNSAFE function or block. Copying,
+ * comparing and passing it to another WEAVEC_RAW parameter are fine.
+ */
+#define WEAVEC_RAW WEAVEC_ANNOTATE_("weavec.raw")
+
+/**
+ * Makes a function body (when placed before its definition) or a block (when
+ * placed before a compound statement) an unsafe region: raw pointers may be
+ * dereferenced and released inside it, and no diagnostic is reported for
+ * code inside it. The region is still analysed, so what it does to the
+ * surrounding code (a free, a store) is checked there. Keep regions small
  * and document the invariant that makes the code sound.
  */
 #define WEAVEC_UNSAFE WEAVEC_ANNOTATE_("weavec.unsafe")

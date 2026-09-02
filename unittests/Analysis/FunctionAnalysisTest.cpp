@@ -28,6 +28,8 @@ using weavec::test::ids;
 using weavec::test::messages;
 using weavec::test::notes;
 
+using Strings = std::vector<std::string>;
+
 TEST(FunctionAnalyzer, CleanCodeProducesNoDiagnostics) {
   const auto result = analyze(R"c(
     void f(void) {
@@ -134,9 +136,9 @@ TEST(FunctionAnalyzer, UnsafeBlockIsSkipped) {
   EXPECT_TRUE(result.diagnostics.empty());
 }
 
-TEST(FunctionAnalyzer, UnsafeBlockIsIdentityTransfer) {
-  // RFC 0002, "Unsafe interaction": the block contributes no facts, so a
-  // free inside it is invisible outside. The escape rule is a later RFC.
+TEST(FunctionAnalyzer, UnsafeBlockEffectsEscape) {
+  // RFC 0004, "Unsafe regions": the block is analysed but not reported, so
+  // a free inside it is checked against the uses after it.
   const auto result = analyze(R"c(
     void f(int *p) {
       __attribute__((annotate("weavec.unsafe"))) {
@@ -146,7 +148,26 @@ TEST(FunctionAnalyzer, UnsafeBlockIsIdentityTransfer) {
     }
   )c");
   ASSERT_TRUE(result.ast);
-  EXPECT_TRUE(result.diagnostics.empty());
+  EXPECT_EQ(messages(result.diagnostics),
+            Strings{"6: use of 'p' after it was freed"});
+}
+
+TEST(FunctionAnalyzer, UnsafeBlockSuppressesReportsInside) {
+  const auto result = analyze(R"c(
+    void f(int *p) {
+      free(p);
+      __attribute__((annotate("weavec.unsafe"))) {
+        use(p);
+        free(p);
+      }
+    }
+    __attribute__((annotate("weavec.unsafe"))) void g(int *p) {
+      free(p);
+      free(p);
+    }
+  )c");
+  ASSERT_TRUE(result.ast);
+  EXPECT_TRUE(result.diagnostics.empty()) << messages(result.diagnostics)[0];
 }
 
 TEST(FunctionAnalyzer, DeclarationsAndBodylessFunctionsAreIgnored) {

@@ -27,25 +27,33 @@
       "log.c": {
         "units": 1,
         "clang_errors": 0,
-        "by_id": {}
+        "by_id": {
+          "annotation-required": 1
+        }
       },
       "printf": {
         "units": 1,
         "clang_errors": 0,
-        "by_id": {}
+        "by_id": {
+          "annotation-required": 1,
+          "unsafe-operation": 1
+        }
       },
       "linenoise": {
         "units": 1,
         "clang_errors": 0,
         "by_id": {
+          "annotation-required": 3,
           "conflicting-borrow": 2,
           "double-free": 3
         }
       }
     },
     "totals": {
+      "annotation-required": 5,
       "conflicting-borrow": 2,
-      "double-free": 3
+      "double-free": 3,
+      "unsafe-operation": 1
     }
   }
 }

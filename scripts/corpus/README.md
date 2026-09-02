@@ -43,5 +43,28 @@ positives, and each one is an instance of a limitation an RFC already names:
 
 Neither is introduced by signature inference (RFC 0003); the inter-procedural
 part of the corpus (sds, cJSON, jsmn, log.c, printf) is clean, and no
-`annotation-required` boundary warnings fire because the shipped libc table
-covers every external call these projects make.
+`annotation-required` boundary warnings fire for *direct* calls because the
+shipped libc table covers every external call these projects make.
+
+RFC 0004 (unsafe boundaries) added the rows below. They are the boundary
+reports the RFC predicted rather than false positives: each one points at a
+place where the tool genuinely cannot see what is called or what a pointer
+is, and each names its fix.
+
+| Project   | Diagnostic                                                                 | Cause                                                                                                                                                                                                                                              |
+| --------- | -------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| log.c     | `annotation-required` at `L.lock(...)`                                     | The lock callback is installed by the library's *user* (`log_set_lock`); no function of its type has its address taken in `log.c`, so the call is a boundary. Annotating `log_LockFn`'s parameter (`void *WEAVEC_BORROWED`) would resolve it.        |
+| printf    | `annotation-required` at `buffer->fct(...)`                                | Same shape: `fctprintf`'s `out` callback comes from the caller. The internal `_out_*` functions have a different type, so the per-type join finds nothing.                                                                                          |
+| printf    | `unsafe-operation` at `_vsnprintf(..., (char*)(uintptr_t)&out_fct_wrap, ...)` | A deliberate integer round-trip (to shed `const`) is exactly the RFC 0004 definition of a raw pointer, and `_vsnprintf` writes through that parameter. The RFC lists this idiom under *Deliberately not caught*; the intended fix is a `WEAVEC_UNSAFE` region around the call. |
+| linenoise | `annotation-required` ×3 at `completionCallback`, `hintsCallback`, `freeHintsCallback` | User-installed callbacks (`linenoiseSetCompletionCallback` and friends): no candidate of the type in the TU.                                                                                                                                       |
+
+So the corpus answer to RFC 0004's deferred question ("how many indirect
+calls fall to the boundary") is: five call sites across six projects, all of
+them library hooks installed by code outside the translation unit, which is
+the single-TU limitation Milestone 4 addresses. Hook tables initialised
+*inside* a TU (cJSON's `global_hooks = { internal_malloc, internal_free,
+internal_realloc }`, called as `global_hooks.deallocate(item->valuestring)`)
+resolve through the address-taken join and produce nothing. No `use-after-free`,
+`double-free` or `conflicting-borrow` changed when pointer arithmetic and
+casts started preserving identity, which supports the RFC's claim that the
+identity rule costs no precision on real code.

@@ -37,7 +37,8 @@ Design: [RFC 0002 — Sound intra-procedural checking](rfcs/0002-intraprocedural
 ## Milestone 2 — Signature inference and annotations
 
 Design: [RFC 0003 — Signature inference](rfcs/0003-signature-inference.md)
-(Implemented). Unsafe blocks are the remaining item and get their own RFC.
+(Implemented) and [RFC 0004 — Unsafe boundaries](rfcs/0004-unsafe-boundaries.md)
+(Implemented).
 
 - [x] Per-function summaries (effects on parameters, paths and globals;
       stores into caller-visible memory; return-value provenance) computed
@@ -49,14 +50,26 @@ Design: [RFC 0003 — Signature inference](rfcs/0003-signature-inference.md)
 - [x] Shipped summaries for the C standard library (`Builtins.cpp`), so
       `strchr`, `strtol`, `fopen`/`fclose`, ... need no annotations.
 - [x] `annotation-required` on by default at the external boundary (once per
-      unknown callee; `--strict-externs` makes it an error); with
-      `--report-unannotated`, exported functions get fix-its that insert the
-      inferred annotation.
+      unknown callee); with `--report-unannotated`, exported functions get
+      fix-its that insert the inferred annotation.
 - [x] Corpus harness (`scripts/corpus.py`) with a tracked baseline.
-- [ ] Unsafe blocks (RFC 0004, to be written): pointers escaping an unsafe
-      block become `Raw`; `unsafe-operation` for `Raw` use outside unsafe.
+- [x] `Raw` pointers and unsafe regions (RFC 0004): integer casts and
+      `WEAVEC_RAW` yield raw pointers; `unsafe-operation` for raw operations
+      outside `WEAVEC_UNSAFE`; unsafe regions are analysed with reports
+      suppressed, so ownership flows through them; laundering by assertion.
+- [x] Calls through function pointers (RFC 0004): annotations on the
+      function-pointer type, else the join of the address-taken functions of
+      that type; indirect edges in the call graph.
+- [x] Pointer arithmetic and pointer casts preserve identity (RFC 0004).
+- [x] `--strict-externs` makes unchecked calls raw operations (RFC 0004).
+- [x] POSIX / common GNU-BSD coverage in the shipped table (`<unistd.h>`,
+      `<fcntl.h>`, `<dirent.h>`, `<sys/mman.h>`, `<netdb.h>`, `<pthread.h>`,
+      `<time.h>`, `<pwd.h>`, `<regex.h>`, `<dlfcn.h>`, `asprintf`, `getline`,
+      ...).
 - [ ] Follow-ups surfaced by the corpus: may-moves for `a[*]` element places
       (`free(a[i])` in a loop), pointer-equality guards.
+- [ ] Function pointers stored in globals and returned from other TUs
+      (needs cross-TU summaries, Milestone 4).
 
 ## Milestone 3 — Compiler driver
 

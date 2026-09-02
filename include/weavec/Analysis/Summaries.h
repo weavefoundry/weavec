@@ -9,7 +9,10 @@
 // Resolves a callee to its `core::FunctionSummary` (RFC 0003, *The
 // translation-unit driver*), in this order: annotations on the declaration,
 // the summary inferred from its body in this TU, the shipped table for the
-// C standard library, or nothing (an unannotated external function).
+// C standard library, or nothing (an unannotated external function). For a
+// call through a function pointer (RFC 0004, *Boundaries*): annotations on
+// the function-pointer type, then the join of every function of that type
+// whose address is taken in the TU, or nothing.
 //
 //===----------------------------------------------------------------------===//
 
@@ -20,6 +23,8 @@
 #include "weavec/Core/Summary.h"
 
 #include "clang/AST/Decl.h"
+#include "clang/AST/Expr.h"
+#include "clang/AST/Type.h"
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
@@ -28,6 +33,7 @@
 #include <cstdint>
 #include <map>
 #include <optional>
+#include <utility>
 #include <vector>
 
 namespace weavec::analysis {
@@ -78,7 +84,8 @@ struct SignatureAnnotations {
   std::vector<AnnotationSet> params;
   bool unsafe = false;
 
-  /// True if the result or any parameter carries an ownership annotation.
+  /// True if the result or any parameter carries an ownership annotation
+  /// (`WEAVEC_OWNED`, `WEAVEC_BORROWED`, `WEAVEC_MUT` or `WEAVEC_RAW`).
   [[nodiscard]] bool anyOwnership() const noexcept;
 };
 
@@ -86,13 +93,25 @@ struct SignatureAnnotations {
 collectAnnotations(const clang::FunctionDecl &function);
 
 /// True if `function` or any of its parameters carries an ownership
-/// annotation (`WEAVEC_OWNED`, `WEAVEC_BORROWED`, `WEAVEC_MUT`).
+/// annotation (`WEAVEC_OWNED`, `WEAVEC_BORROWED`, `WEAVEC_MUT`,
+/// `WEAVEC_RAW`).
 [[nodiscard]] bool hasOwnershipAnnotations(const clang::FunctionDecl &function);
 
 /// The summary implied by the annotations on `function`'s declaration alone
 /// (RFC 0003, provider step 1). Empty if there are none.
 [[nodiscard]] core::FunctionSummary
 summaryFromAnnotations(const clang::FunctionDecl &function);
+
+/// The function type an indirect call goes through, or null if the callee
+/// expression's type is not a (pointer to) prototyped function.
+[[nodiscard]] const clang::FunctionProtoType *
+indirectCalleeType(const clang::CallExpr &call);
+
+/// The declaration the callee expression of an indirect call names (a
+/// variable, parameter or field of function-pointer type), or null when the
+/// callee is not a place (`get_hook()(x)`).
+[[nodiscard]] const clang::Decl *
+indirectCalleeDecl(const clang::CallExpr &call);
 
 /// The shipped summary for a C standard library function, matched by global
 /// name as RFC 0002 matches allocators; null for anything else.
@@ -121,6 +140,21 @@ public:
   [[nodiscard]] std::optional<ResolvedSummary>
   lookup(const clang::FunctionDecl &callee);
 
+  /// Resolves the callee of an indirect `call` (RFC 0004, *Signatures for
+  /// function pointers*): annotations on the function-pointer type, else
+  /// the join of the summaries of every address-taken function of that
+  /// type. Returns an empty optional when neither applies.
+  [[nodiscard]] std::optional<ResolvedSummary>
+  lookupIndirect(const clang::CallExpr &call);
+
+  /// Records that `function`'s name is used as a value somewhere in the
+  /// translation unit, so it may be the target of an indirect call.
+  void addAddressTaken(const clang::FunctionDecl &function);
+
+  /// The address-taken functions whose type matches `call`'s callee type.
+  [[nodiscard]] std::vector<const clang::FunctionDecl *>
+  candidatesFor(const clang::CallExpr &call) const;
+
   [[nodiscard]] GlobalTable &globals() noexcept { return globalTable; }
   [[nodiscard]] const GlobalTable &globals() const noexcept {
     return globalTable;
@@ -130,12 +164,24 @@ public:
   /// seen in reported code. Returns true the first time for this callee.
   bool noteUnknownCallee(const clang::FunctionDecl &callee);
 
+  /// The same for an indirect call `lookupIndirect` could not resolve,
+  /// once per function type.
+  bool noteUnknownIndirect(const clang::CallExpr &call);
+
 private:
   // Node-based maps: `lookup` hands out pointers into them that must stay
   // valid while further lookups insert.
   std::map<const clang::FunctionDecl *, core::FunctionSummary> inferred;
   std::map<const clang::FunctionDecl *, core::FunctionSummary> merged;
+  /// Indirect summaries, keyed by the canonical function type and the
+  /// declaration whose annotations were applied (null if none).
+  std::map<std::pair<const clang::Type *, const clang::Decl *>,
+           core::FunctionSummary>
+      mergedIndirect;
+  std::vector<const clang::FunctionDecl *> addressTaken;
+  llvm::DenseSet<const clang::FunctionDecl *> addressTakenSet;
   llvm::DenseSet<const clang::FunctionDecl *> unknownCallees;
+  llvm::DenseSet<const clang::Type *> unknownIndirect;
   GlobalTable globalTable;
 
   [[nodiscard]] static const clang::FunctionDecl *

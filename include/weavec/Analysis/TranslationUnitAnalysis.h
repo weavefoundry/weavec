@@ -65,6 +65,11 @@ private:
   std::vector<const clang::FunctionDecl *> definitions;
 
   void collectDefinitions(const clang::DeclContext &dc);
+  /// Registers every function used as a value with the store (RFC 0004,
+  /// *Signatures for function pointers*).
+  void collectAddressTaken();
+  /// Direct edges plus, for each indirect call, an edge to every
+  /// address-taken function of the callee's type.
   [[nodiscard]] std::vector<std::vector<unsigned>> buildCallGraph() const;
   void analyzeComponent(
       const std::vector<unsigned> &component, bool recursive,

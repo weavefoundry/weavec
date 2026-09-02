@@ -27,9 +27,10 @@
 namespace weavec::test {
 
 /// Minimal prelude so tests can call `free`/`malloc` without system headers.
-/// `OWNED`/`BORROWED`/`MUT` spell the annotations without `weavec.h`. `use`
-/// is the opaque "look at this pointer" helper; it is annotated because an
-/// unannotated external function warns by default (RFC 0003).
+/// `OWNED`/`BORROWED`/`MUT`/`RAW`/`UNSAFE` spell the annotations without
+/// `weavec.h`. `use` is the opaque "look at this pointer" helper; it is
+/// annotated because an unannotated external function warns by default (RFC
+/// 0003).
 inline constexpr const char *Prelude = R"c(
 typedef unsigned long size_t;
 void *malloc(size_t);
@@ -38,6 +39,8 @@ void free(void *);
 #define OWNED __attribute__((annotate("weavec.owned")))
 #define BORROWED __attribute__((annotate("weavec.borrowed")))
 #define MUT __attribute__((annotate("weavec.mut_borrowed")))
+#define RAW __attribute__((annotate("weavec.raw")))
+#define UNSAFE __attribute__((annotate("weavec.unsafe")))
 void use(const void *BORROWED);
 int cond(void);
 #define NULL ((void *)0)

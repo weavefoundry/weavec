@@ -25,9 +25,20 @@ bool CallEffects::frees(unsigned arg) const noexcept {
 std::optional<CallEffects> classifyCall(const CallExpr &call,
                                         SummaryStore &summaries) {
   const FunctionDecl *callee = call.getDirectCallee();
-  if (callee == nullptr)
-    return std::nullopt;
-  const auto resolved = summaries.lookup(*callee);
+  std::optional<ResolvedSummary> resolved;
+  std::vector<bool> pointerParams;
+  if (callee != nullptr) {
+    resolved = summaries.lookup(*callee);
+    for (const ParmVarDecl *param : callee->parameters())
+      pointerParams.push_back(param->getType()->isPointerType());
+  } else {
+    // A call through a function pointer (RFC 0004, *Boundaries*).
+    resolved = summaries.lookupIndirect(call);
+    if (const FunctionProtoType *type = indirectCalleeType(call)) {
+      for (const QualType param : type->getParamTypes())
+        pointerParams.push_back(param->isPointerType());
+    }
+  }
   if (!resolved)
     return std::nullopt;
 
@@ -38,9 +49,9 @@ std::optional<CallEffects> classifyCall(const CallExpr &call,
   effects.producesOwned =
       effects.summary->returns.contains(core::ValueSource::fresh());
 
-  const unsigned params = callee->getNumParams();
+  const auto params = static_cast<unsigned>(pointerParams.size());
   for (unsigned i = 0; i < params && i < call.getNumArgs(); ++i) {
-    if (!callee->getParamDecl(i)->getType()->isPointerType())
+    if (!pointerParams[i])
       continue;
     if (effects.summary->consumes(i)) {
       effects.consumedArgs.push_back(i);

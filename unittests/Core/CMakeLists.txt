@@ -8,5 +8,6 @@ weavec_add_unittest(
           MovesTest.cpp
           OwnershipTest.cpp
           PlaceTest.cpp
+          RawTest.cpp
           SummaryTest.cpp
   DEPS weavec::Core)

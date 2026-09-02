@@ -146,6 +146,12 @@ TEST(FunctionSummary, ReturnKind) {
   unknown.addReturn(ValueSource::unknown());
   EXPECT_EQ(unknown.inferredReturnKind(), OwnershipKind::Unknown);
 
+  // RFC 0004: a raw alternative makes the whole result raw.
+  FunctionSummary raw;
+  raw.addReturn(ValueSource::fresh());
+  raw.addReturn(ValueSource::raw());
+  EXPECT_EQ(raw.inferredReturnKind(), OwnershipKind::Raw);
+
   EXPECT_EQ(FunctionSummary{}.inferredReturnKind(), OwnershipKind::Unknown);
 }
 
@@ -187,6 +193,7 @@ TEST(ValueSource, KindNames) {
   EXPECT_EQ(toString(ValueSource::Kind::Borrow), "borrow");
   EXPECT_EQ(toString(ValueSource::Kind::Null), "null");
   EXPECT_EQ(toString(ValueSource::Kind::Unknown), "unknown");
+  EXPECT_EQ(toString(ValueSource::Kind::Raw), "raw");
 }
 
 } // namespace

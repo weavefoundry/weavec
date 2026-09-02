@@ -30,8 +30,10 @@ namespace weavec::core {
 ///             \   |   /
 ///               Unknown         (bottom: not yet inferred)
 ///
-/// `join` moves up the lattice; two conflicting concrete kinds join to `Raw`,
-/// which the checker reports unless the use is inside an unsafe region.
+/// `join` moves up the lattice; two conflicting concrete kinds join to `Raw`.
+/// The checker does not act on the lattice value: whether a *place* holds a
+/// raw pointer is a separate fact (`RawTracker`, RFC 0004), and a
+/// contradictory join is a precision loss visible in `--dump-analysis`.
 enum class OwnershipKind : std::uint8_t {
   /// No information yet; the bottom element.
   Unknown,
@@ -42,7 +44,9 @@ enum class OwnershipKind : std::uint8_t {
   Shared,
   /// Exclusive (mutable) borrow. Excludes all other borrows of the place.
   Mutable,
-  /// Escaped to unsafe code or contradictory facts; the top element.
+  /// No ownership guarantee (RFC 0004): cast from an integer, declared
+  /// `WEAVEC_RAW`, or handed out by unchecked code. Also the top element,
+  /// reached by joining contradictory facts.
   Raw,
 };
 

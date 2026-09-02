@@ -15,9 +15,13 @@
 
 #include "TestUtils.h"
 
+#include "clang/AST/RecursiveASTVisitor.h"
+
 #include "llvm/ADT/STLExtras.h"
 
 #include <gtest/gtest.h>
+
+#include <algorithm>
 
 namespace weavec::analysis {
 namespace {
@@ -190,6 +194,169 @@ TEST(Summaries, AnnotationsOverrideInferredRootsOnly) {
       << "stores through a borrowed parameter are kept";
 }
 
+// -- Function-pointer types (RFC 0004, "Signatures for function pointers") ----
+
+TEST(Summaries, RawAnnotationDerivesASummary) {
+  const auto parsed = parse(R"c(
+    void *RAW lookup(int key, void *RAW ctx, void *OWNED taken);
+  )c");
+  ASSERT_TRUE(parsed.ast);
+  const clang::FunctionDecl *lookup = parsed.fn("lookup");
+  ASSERT_NE(lookup, nullptr);
+  EXPECT_TRUE(hasOwnershipAnnotations(*lookup));
+  const SignatureAnnotations annotations = collectAnnotations(*lookup);
+  EXPECT_TRUE(annotations.result.raw);
+  EXPECT_TRUE(annotations.params[1].raw);
+  EXPECT_FALSE(annotations.params[1].safeKind().has_value());
+  EXPECT_EQ(annotations.params[2].safeKind(), core::OwnershipKind::Owned);
+  EXPECT_STREQ(macroSpelling(annotations.result), "WEAVEC_RAW");
+  EXPECT_STREQ(macroSpelling(annotations.params[2]), "WEAVEC_OWNED");
+  EXPECT_EQ(macroSpelling(annotations.params[0]), nullptr);
+
+  const core::FunctionSummary summary = summaryFromAnnotations(*lookup);
+  EXPECT_EQ(summary.returns, std::set<ValueSource>{ValueSource::raw()});
+  EXPECT_EQ(summary.inferredReturnKind(), core::OwnershipKind::Raw);
+  EXPECT_FALSE(summary.consumes(1)) << "a raw parameter is neither moved";
+  EXPECT_FALSE(summary.borrowKind(1).has_value()) << "nor borrowed";
+  EXPECT_TRUE(summary.consumes(2));
+}
+
+TEST(Summaries, FunctionTypeAnnotationsAreCollected) {
+  const auto parsed = parse(R"c(
+    struct node;
+    typedef void (*dtor_t)(void *OWNED);
+    typedef OWNED struct node *(*maker_t)(void);
+    typedef RAW void *(*lookup_t)(int);
+    struct ops {
+      dtor_t drop;
+      void *(*OWNED alloc)(size_t);
+      void (*release)(void *OWNED);
+      int (*plain)(int);
+    };
+    void user(dtor_t d, maker_t m, lookup_t l, struct ops *o,
+              void (*inline_param)(void *OWNED), int (*cmp)(const void *, const void *),
+              void (*table[2])(void *OWNED));
+  )c");
+  ASSERT_TRUE(parsed.ast);
+  const clang::FunctionDecl *user = parsed.fn("user");
+  ASSERT_NE(user, nullptr);
+
+  // Through a typedef: annotations on the prototype's parameters.
+  FunctionTypeAnnotations dtor =
+      collectFunctionTypeAnnotations(*user->getParamDecl(0));
+  ASSERT_NE(dtor.prototype, nullptr);
+  ASSERT_EQ(dtor.params.size(), 1U);
+  EXPECT_TRUE(dtor.params[0].owned);
+  EXPECT_TRUE(dtor.anyOwnership());
+
+  // An annotation on the typedef describes the result.
+  FunctionTypeAnnotations maker =
+      collectFunctionTypeAnnotations(*user->getParamDecl(1));
+  ASSERT_NE(maker.prototype, nullptr);
+  EXPECT_TRUE(maker.result.owned);
+  EXPECT_TRUE(
+      collectFunctionTypeAnnotations(*user->getParamDecl(2)).result.raw);
+
+  // Inline on a parameter declarator, and on an array of callbacks.
+  EXPECT_TRUE(
+      collectFunctionTypeAnnotations(*user->getParamDecl(4)).params[0].owned);
+  EXPECT_TRUE(
+      collectFunctionTypeAnnotations(*user->getParamDecl(6)).params[0].owned);
+
+  // Nothing on `cmp`.
+  FunctionTypeAnnotations cmp =
+      collectFunctionTypeAnnotations(*user->getParamDecl(5));
+  ASSERT_NE(cmp.prototype, nullptr);
+  EXPECT_FALSE(cmp.anyOwnership());
+
+  // Fields: the declarator's own annotation is the result, the prototype's
+  // parameters are the parameters.
+  const clang::RecordDecl *ops = nullptr;
+  for (const clang::Decl *decl :
+       parsed.ast->getASTContext().getTranslationUnitDecl()->decls()) {
+    if (const auto *record = llvm::dyn_cast<clang::RecordDecl>(decl);
+        record != nullptr && record->getName() == "ops")
+      ops = record;
+  }
+  ASSERT_NE(ops, nullptr);
+  std::vector<const clang::FieldDecl *> fields;
+  for (const clang::FieldDecl *field : ops->fields())
+    fields.push_back(field);
+  ASSERT_EQ(fields.size(), 4U);
+  EXPECT_TRUE(collectFunctionTypeAnnotations(*fields[0]).params[0].owned)
+      << "through the typedef";
+  EXPECT_TRUE(collectFunctionTypeAnnotations(*fields[1]).result.owned);
+  EXPECT_TRUE(collectFunctionTypeAnnotations(*fields[2]).params[0].owned);
+  EXPECT_FALSE(collectFunctionTypeAnnotations(*fields[3]).anyOwnership());
+
+  // A declaration that is not of function-pointer type has no prototype.
+  EXPECT_EQ(collectFunctionTypeAnnotations(*user->getParamDecl(3)).prototype,
+            nullptr);
+}
+
+TEST(Summaries, IndirectLookupOrder) {
+  const auto result = weavec::test::analyze(R"c(
+    struct node { int v; };
+    typedef void (*dtor_t)(struct node *OWNED);
+    static void node_free(struct node *n) { free(n); }
+    static void node_peek(struct node *n) { use(n); }
+    static void (*hook)(struct node *) = node_free;
+    void f(dtor_t d, void (*cb)(struct node *), int (*cmp)(int, int),
+           struct node *a, struct node *b, struct node *c) {
+      d(a);
+      cb(b);
+      hook(c);
+      cmp(1, 2);
+      (void)node_peek;
+    }
+  )c");
+  ASSERT_TRUE(result.ast);
+  SummaryStore &store = result.analyzer->summaries();
+  const clang::FunctionDecl *f = result.function("f");
+  ASSERT_NE(f, nullptr);
+
+  std::vector<const clang::CallExpr *> calls;
+  struct Collector : clang::RecursiveASTVisitor<Collector> {
+    std::vector<const clang::CallExpr *> *out = nullptr;
+    // NOLINTNEXTLINE(readability-identifier-naming,bugprone-derived-method-shadowing-base-method,readability-make-member-function-const)
+    bool VisitCallExpr(clang::CallExpr *call) {
+      out->push_back(call);
+      return true;
+    }
+  } collector;
+  collector.out = &calls;
+  collector.TraverseStmt(f->getBody());
+  ASSERT_EQ(calls.size(), 4U);
+
+  // 1. Type annotations win.
+  const auto viaType = store.lookupIndirect(*calls[0]);
+  ASSERT_TRUE(viaType);
+  EXPECT_EQ(viaType->source, SummarySource::Annotation);
+  EXPECT_TRUE(viaType->summary->consumes(0));
+  EXPECT_FALSE(viaType->summary->frees(0)) << "moved, per the annotation";
+
+  // 2. The join of address-taken functions of the type: `node_free` (in an
+  //    initialiser) and `node_peek` (as a discarded value).
+  EXPECT_EQ(store.candidatesFor(*calls[1]).size(), 2U);
+  const auto viaJoin = store.lookupIndirect(*calls[1]);
+  ASSERT_TRUE(viaJoin);
+  EXPECT_EQ(viaJoin->source, SummarySource::Inferred);
+  EXPECT_TRUE(viaJoin->summary->frees(0)) << "may free";
+  EXPECT_EQ(viaJoin->summary->effectOf(SummaryPath::param(0).deref()).read,
+            true)
+      << "may read";
+  EXPECT_TRUE(store.lookupIndirect(*calls[2]));
+
+  // 3. Nothing for `cmp`; the boundary is noted once per type.
+  EXPECT_TRUE(store.candidatesFor(*calls[3]).empty());
+  EXPECT_FALSE(store.lookupIndirect(*calls[3]));
+  EXPECT_TRUE(store.noteUnknownIndirect(*calls[3]));
+  EXPECT_FALSE(store.noteUnknownIndirect(*calls[3]));
+
+  EXPECT_EQ(indirectCalleeDecl(*calls[0]), f->getParamDecl(0));
+  EXPECT_EQ(indirectCalleeDecl(*calls[2])->getKind(), clang::Decl::Var);
+}
+
 TEST(Summaries, GlobalTableInternsCanonicalDecls) {
   const auto parsed = parse(R"c(
     extern int g;
@@ -288,6 +455,145 @@ TEST(Builtins, Entries) {
 
   EXPECT_EQ(builtinSummary(*parsed.fn("strdup")), nullptr)
       << "a file-local function is not libc";
+}
+
+// -- POSIX / GNU / BSD entries (RFC 0004, "The library table") ----------------
+
+TEST(Builtins, TableHasNoDuplicatesAndCoversPosix) {
+  std::vector<llvm::StringRef> names = builtinNames();
+  EXPECT_GE(names.size(), 200U);
+  std::ranges::sort(names);
+  EXPECT_EQ(std::ranges::adjacent_find(names), names.end())
+      << "duplicate entry: "
+      << (std::ranges::adjacent_find(names) == names.end()
+              ? ""
+              : std::ranges::adjacent_find(names)->str());
+  for (const char *expected : {"getline",
+                               "asprintf",
+                               "popen",
+                               "pclose",
+                               "opendir",
+                               "closedir",
+                               "readdir",
+                               "mmap",
+                               "munmap",
+                               "getaddrinfo",
+                               "freeaddrinfo",
+                               "dlopen",
+                               "dlclose",
+                               "pthread_create",
+                               "pthread_mutex_lock",
+                               "read",
+                               "write",
+                               "open",
+                               "stat",
+                               "localtime_r",
+                               "strtok_r",
+                               "strlcpy",
+                               "inet_ntop",
+                               "regcomp",
+                               "regfree",
+                               "iconv_open",
+                               "iconv_close",
+                               "posix_memalign",
+                               "reallocarray",
+                               "realpath",
+                               "__errno_location",
+                               "__error"})
+    EXPECT_TRUE(llvm::is_contained(names, expected)) << expected;
+}
+
+TEST(Builtins, PosixEntries) {
+  const auto parsed = parse(R"c(
+    typedef struct FILE FILE;
+    typedef struct DIR DIR;
+    typedef long ssize_t;
+    struct dirent; struct addrinfo; struct tm; typedef long time_t;
+    ssize_t getline(char **, size_t *, FILE *);
+    int asprintf(char **, const char *, ...);
+    int posix_memalign(void **, size_t, size_t);
+    FILE *popen(const char *, const char *);
+    int pclose(FILE *);
+    DIR *opendir(const char *);
+    struct dirent *readdir(DIR *);
+    int closedir(DIR *);
+    void *mmap(void *, size_t, int, int, int, long);
+    int munmap(void *, size_t);
+    int getaddrinfo(const char *, const char *, const struct addrinfo *, struct addrinfo **);
+    void freeaddrinfo(struct addrinfo *);
+    char *strtok_r(char *, const char *, char **);
+    struct tm *localtime_r(const time_t *, struct tm *);
+    struct tm *localtime(const time_t *);
+    void *reallocarray(void *, size_t, size_t);
+    int pthread_create(void *, const void *, void *(*)(void *), void *);
+    ssize_t read(int, void *, size_t);
+    ssize_t write(int, const void *, size_t);
+  )c");
+  ASSERT_TRUE(parsed.ast);
+
+  const auto *getlineSummary = builtinSummary(*parsed.fn("getline"));
+  ASSERT_NE(getlineSummary, nullptr);
+  EXPECT_EQ(getlineSummary->borrowKind(0), core::BorrowKind::Mutable);
+  EXPECT_EQ(getlineSummary->borrowKind(2), core::BorrowKind::Mutable);
+  ASSERT_EQ(getlineSummary->stores.size(), 1U);
+  EXPECT_EQ(getlineSummary->stores.begin()->dest,
+            SummaryPath::param(0).deref());
+  EXPECT_EQ(getlineSummary->stores.begin()->value, ValueSource::fresh());
+
+  const auto *asprintfSummary = builtinSummary(*parsed.fn("asprintf"));
+  ASSERT_NE(asprintfSummary, nullptr);
+  EXPECT_EQ(asprintfSummary->stores.begin()->dest,
+            SummaryPath::param(0).deref());
+  EXPECT_EQ(asprintfSummary->stores.begin()->value, ValueSource::fresh());
+  EXPECT_EQ(builtinSummary(*parsed.fn("posix_memalign"))->stores,
+            asprintfSummary->stores);
+
+  EXPECT_TRUE(builtinSummary(*parsed.fn("popen"))
+                  ->returns.contains(ValueSource::fresh()));
+  EXPECT_TRUE(builtinSummary(*parsed.fn("pclose"))->frees(0));
+  EXPECT_TRUE(builtinSummary(*parsed.fn("opendir"))
+                  ->returns.contains(ValueSource::fresh()));
+  EXPECT_TRUE(builtinSummary(*parsed.fn("closedir"))->frees(0));
+  EXPECT_EQ(builtinSummary(*parsed.fn("readdir"))->returns,
+            std::set<ValueSource>{ValueSource::copy(SummaryPath::param(0))})
+      << "the entry lives in the stream";
+  EXPECT_TRUE(builtinSummary(*parsed.fn("mmap"))
+                  ->returns.contains(ValueSource::fresh()));
+  EXPECT_TRUE(builtinSummary(*parsed.fn("munmap"))->frees(0));
+
+  const auto *gaiSummary = builtinSummary(*parsed.fn("getaddrinfo"));
+  ASSERT_NE(gaiSummary, nullptr);
+  EXPECT_EQ(gaiSummary->borrowKind(2), core::BorrowKind::Shared);
+  EXPECT_EQ(gaiSummary->stores.begin()->dest, SummaryPath::param(3).deref());
+  EXPECT_EQ(gaiSummary->stores.begin()->value, ValueSource::fresh());
+  EXPECT_TRUE(builtinSummary(*parsed.fn("freeaddrinfo"))->frees(0));
+
+  const auto *strtokSummary = builtinSummary(*parsed.fn("strtok_r"));
+  ASSERT_NE(strtokSummary, nullptr);
+  EXPECT_EQ(strtokSummary->returns,
+            std::set<ValueSource>{ValueSource::copy(SummaryPath::param(0))});
+  EXPECT_EQ(strtokSummary->stores.begin()->dest, SummaryPath::param(2).deref());
+
+  EXPECT_EQ(builtinSummary(*parsed.fn("localtime_r"))->returns,
+            std::set<ValueSource>{ValueSource::copy(SummaryPath::param(1))});
+  EXPECT_TRUE(builtinSummary(*parsed.fn("localtime"))->returns.empty())
+      << "static storage: unknown";
+
+  const auto *reallocarraySummary = builtinSummary(*parsed.fn("reallocarray"));
+  ASSERT_NE(reallocarraySummary, nullptr);
+  EXPECT_TRUE(reallocarraySummary->reallocLike);
+  EXPECT_TRUE(reallocarraySummary->consumes(0));
+
+  const auto *createSummary = builtinSummary(*parsed.fn("pthread_create"));
+  ASSERT_NE(createSummary, nullptr);
+  EXPECT_EQ(createSummary->borrowKind(0), core::BorrowKind::Mutable);
+  EXPECT_FALSE(createSummary->borrowKind(3).has_value())
+      << "the start routine's argument is out of scope (threads)";
+
+  EXPECT_EQ(builtinSummary(*parsed.fn("read"))->borrowKind(1),
+            core::BorrowKind::Mutable);
+  EXPECT_EQ(builtinSummary(*parsed.fn("write"))->borrowKind(1),
+            core::BorrowKind::Shared);
 }
 
 } // namespace

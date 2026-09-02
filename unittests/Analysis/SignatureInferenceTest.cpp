@@ -206,7 +206,7 @@ TEST(SignatureInference, ReturnSources) {
     static struct node *pick(struct node *a, struct node *b, int c) { return c ? a : b; }
     static char *local_alias(struct node *n) { struct node *m = n; return (char *)m; }
     static char *owned_local(void) { char *p = malloc(4); return p; }
-    static char *opaque(long x) { return (char *)x; }
+    static char *from_int(long x) { return (char *)x; }
   )c");
   ASSERT_TRUE(result.ast);
   const SummaryPath n = SummaryPath::param(0);
@@ -225,8 +225,11 @@ TEST(SignatureInference, ReturnSources) {
             std::set<ValueSource>{ValueSource::copy(n)});
   EXPECT_EQ(result.summary("owned_local")->returns,
             std::set<ValueSource>{ValueSource::fresh()});
-  EXPECT_EQ(result.summary("opaque")->returns,
-            std::set<ValueSource>{ValueSource::unknown()});
+  // An integer cast yields a raw pointer (RFC 0004), and the summary says so.
+  EXPECT_EQ(result.summary("from_int")->returns,
+            std::set<ValueSource>{ValueSource::raw()});
+  EXPECT_EQ(result.summary("from_int")->inferredReturnKind(),
+            core::OwnershipKind::Raw);
 }
 
 TEST(SignatureInference, RecursionReachesAFixpoint) {
@@ -251,21 +254,36 @@ TEST(SignatureInference, RecursionReachesAFixpoint) {
 }
 
 TEST(SignatureInference, UnsafeAndAnnotatedDefinitions) {
+  // RFC 0004 supersedes RFC 0003 here: an unsafe body is analysed (silently)
+  // and its summary is consulted by callers like any other.
   const auto result = analyze(std::string(Types) + R"c(
-    __attribute__((annotate("weavec.unsafe")))
-    static void raw(struct node *n) { free(n); }
+    UNSAFE static void unsafe_free(struct node *n) { free(n); free(n); }
     static void annotated(struct node *OWNED n) { use(n); }
     void f(struct node *a, struct node *b) {
-      raw(a);
-      use(a);           /* the unsafe body is not consulted */
+      unsafe_free(a);
+      use(a);           /* the unsafe body is consulted */
       annotated(b);
       use(b);           /* the annotation is */
     }
   )c");
   ASSERT_TRUE(result.ast);
-  EXPECT_EQ(result.summary("raw"), nullptr);
+  ASSERT_NE(result.summary("unsafe_free"), nullptr);
+  EXPECT_TRUE(result.summary("unsafe_free")->frees(0));
   EXPECT_EQ(messages(result.diagnostics),
-            (Strings{"9: use of 'b' after it was moved"}));
+            (Strings{"6: use of 'a' after it was freed",
+                     "8: use of 'b' after it was moved"}))
+      << "the double free inside the unsafe body is not reported";
+}
+
+TEST(SignatureInference, UnsafeDeclarationWithoutBodyIsAnEmptySummary) {
+  // RFC 0003: `WEAVEC_UNSAFE` on a bodyless declaration asks for the empty
+  // summary rather than the boundary warning.
+  const auto result = analyze(R"c(
+    UNSAFE void vouched(void *p);
+    void f(char *p) { vouched(p); use(p); }
+  )c");
+  ASSERT_TRUE(result.ast);
+  EXPECT_TRUE(result.diagnostics.empty()) << messages(result.diagnostics)[0];
 }
 
 // -- Applying a summary at a call (RFC 0003, "Soundness") ---------------------
@@ -552,13 +570,24 @@ TEST(SignatureInference, UnresolvableArgumentsAreDropped) {
       node_free(NULL);
       node_free(node_new());
       free(malloc(1));
-      struct node *n = make();   /* indirect: unknown */
-      drop(n);                   /* indirect: no effect */
+      struct node *n = make();   /* indirect, unresolvable: unknown */
+      drop(n);                   /* indirect, unresolvable: no effect */
       use(n);
     }
   )c");
   ASSERT_TRUE(result.ast);
-  EXPECT_TRUE(result.diagnostics.empty()) << messages(result.diagnostics)[0];
+  // The two unresolvable indirect calls are checking boundaries and warn
+  // once per function type (RFC 0004, *Boundaries*); nothing is an error.
+  EXPECT_EQ(ids(result.diagnostics),
+            (Strings{"annotation-required", "annotation-required"}));
+  EXPECT_EQ(messages(result.diagnostics),
+            (Strings{"8: call through 'make' is not checked: its function type "
+                     "has no ownership annotations and no function of that "
+                     "type has its address taken in this translation unit",
+                     "9: call through 'drop' is not checked: its function "
+                     "type has no ownership annotations and no function of "
+                     "that type has its address taken in this translation "
+                     "unit"}));
 }
 
 TEST(SignatureInference, CopiedLoansAreLifetimeChecked) {
@@ -686,25 +715,46 @@ TEST(SignatureInference, UnknownExternalCalleeWarnsOnce) {
   EXPECT_EQ(notes(result.diagnostics, 0),
             (Strings{"'mystery' is declared here",
                      "annotate its pointer parameters with WEAVEC_OWNED, "
-                     "WEAVEC_BORROWED or WEAVEC_MUT, or define it in this "
-                     "translation unit"}));
+                     "WEAVEC_BORROWED, WEAVEC_MUT or WEAVEC_RAW, or define it "
+                     "in this translation unit"}));
   EXPECT_EQ(result.diagnostics.diagnostics()[0].notes[0].location.line, 2U);
   EXPECT_EQ(result.diagnostics.diagnostics()[0].severity,
             core::Severity::Warning);
 }
 
-TEST(SignatureInference, StrictExternsIsAnError) {
+TEST(SignatureInference, StrictExternsMakesUncheckedCallsRawOperations) {
+  // RFC 0004, "Boundaries": under --strict-externs an unchecked call is a
+  // raw operation, so it is an error outside and permitted inside an unsafe
+  // region, and its result is a raw pointer.
   AnalysisOptions options;
   options.strictExterns = true;
   const auto result = analyze(R"c(
     void mystery(void *p);
-    void f(char *p) { mystery(p); }
+    void *maker(void);
+    void f(char *p) { mystery(p); mystery(p); }
+    void g(void) {
+      char *q;
+      UNSAFE { q = maker(); }
+      *q = 1;
+    }
   )c",
                               options);
   ASSERT_TRUE(result.ast);
-  ASSERT_EQ(result.diagnostics.size(), 1U);
+  EXPECT_EQ(
+      ids(result.diagnostics),
+      (Strings{"unsafe-operation", "unsafe-operation", "unsafe-operation"}));
+  EXPECT_EQ(
+      messages(result.diagnostics),
+      (Strings{"4: unchecked call to 'mystery' outside an unsafe region",
+               "4: unchecked call to 'mystery' outside an unsafe region",
+               "8: dereference of raw pointer 'q' outside an unsafe region"}));
   EXPECT_EQ(result.diagnostics.diagnostics()[0].severity,
             core::Severity::Error);
+  EXPECT_EQ(notes(result.diagnostics, 2),
+            (Strings{"'q' is raw: returned by a call into unchecked code "
+                     "('maker') here",
+                     "move this operation into a WEAVEC_UNSAFE block or "
+                     "function, or assert the pointer's ownership first"}));
 }
 
 TEST(SignatureInference, ReportUnannotatedOffersTheInferredAnnotation) {

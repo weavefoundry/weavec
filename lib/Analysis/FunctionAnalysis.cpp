@@ -42,9 +42,9 @@ bool FunctionAnalyzer::analyze(const FunctionDecl &function,
         .fixits = {},
     });
   }
-  if (annotations.unsafe)
-    return false;
-
+  // A `WEAVEC_UNSAFE` function is analysed like any other so its callers see
+  // what it does; the dataflow itself suppresses reports inside it (RFC
+  // 0004, *Unsafe regions*).
   FunctionDataflow dataflow(context, function, sink, options, summaries,
                             emitDiagnostics);
   dataflow.run();
