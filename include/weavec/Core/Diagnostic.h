@@ -43,8 +43,18 @@ inline constexpr std::string_view ConflictingBorrow = "conflicting-borrow";
 inline constexpr std::string_view LifetimeTooShort = "lifetime-too-short";
 inline constexpr std::string_view UnsafeOperation = "unsafe-operation";
 inline constexpr std::string_view AnnotationRequired = "annotation-required";
+inline constexpr std::string_view AnnotationMismatch = "annotation-mismatch";
 inline constexpr std::string_view InvalidAnnotation = "invalid-annotation";
 } // namespace diag
+
+/// A suggested source edit: insert `insertion` at `location`. Frontends
+/// render it as their native fix-it (Clang's `FixItHint`).
+struct FixItHint {
+  SourceLocation location;
+  std::string insertion;
+
+  friend bool operator==(const FixItHint &, const FixItHint &) = default;
+};
 
 /// A single diagnostic, optionally accompanied by explanatory notes.
 struct Diagnostic {
@@ -54,9 +64,12 @@ struct Diagnostic {
   std::string message;
   SourceLocation location;
   std::vector<Diagnostic> notes;
+  std::vector<FixItHint> fixits;
 
   /// Fluent helper for attaching a note.
   Diagnostic &addNote(std::string noteMessage, SourceLocation noteLocation);
+  /// Fluent helper for attaching an insertion fix-it.
+  Diagnostic &addFixIt(SourceLocation at, std::string insertion);
 };
 
 /// Receives diagnostics produced by the analyses.

@@ -36,16 +36,27 @@ Design: [RFC 0002 — Sound intra-procedural checking](rfcs/0002-intraprocedural
 
 ## Milestone 2 — Signature inference and annotations
 
-RFC: to be written (signature inference; unsafe blocks).
+Design: [RFC 0003 — Signature inference](rfcs/0003-signature-inference.md)
+(Implemented). Unsafe blocks are the remaining item and get their own RFC.
 
-- [ ] Per-function summaries (parameter/return ownership, outlives relations)
-      computed bottom-up over the TU call graph.
-- [ ] Honour `WEAVEC_OWNED` / `WEAVEC_BORROWED` / `WEAVEC_MUT` on
-      declarations; report inference/annotation disagreements.
-- [ ] `annotation-required` on by default at ABI boundaries, with fix-it hints
-      that insert the inferred annotation.
-- [ ] Unsafe blocks: pointers escaping an unsafe block become `Raw`;
-      `unsafe-operation` for `Raw` use outside unsafe.
+- [x] Per-function summaries (effects on parameters, paths and globals;
+      stores into caller-visible memory; return-value provenance) computed
+      bottom-up over the TU call graph, to a fixpoint inside recursive SCCs,
+      and applied at every call site.
+- [x] Honour `WEAVEC_OWNED` / `WEAVEC_BORROWED` / `WEAVEC_MUT` on
+      declarations; check definitions against their own annotations
+      (`annotation-mismatch`).
+- [x] Shipped summaries for the C standard library (`Builtins.cpp`), so
+      `strchr`, `strtol`, `fopen`/`fclose`, ... need no annotations.
+- [x] `annotation-required` on by default at the external boundary (once per
+      unknown callee; `--strict-externs` makes it an error); with
+      `--report-unannotated`, exported functions get fix-its that insert the
+      inferred annotation.
+- [x] Corpus harness (`scripts/corpus.py`) with a tracked baseline.
+- [ ] Unsafe blocks (RFC 0004, to be written): pointers escaping an unsafe
+      block become `Raw`; `unsafe-operation` for `Raw` use outside unsafe.
+- [ ] Follow-ups surfaced by the corpus: may-moves for `a[*]` element places
+      (`free(a[i])` in a loop), pointer-equality guards.
 
 ## Milestone 3 — Compiler driver
 
@@ -60,13 +71,14 @@ RFC: to be written (signature inference; unsafe blocks).
 RFC: to be written (cross-TU summaries).
 
 - [ ] Summary database alongside `compile_commands.json` for cross-TU
-      inference.
-- [ ] Summaries for libc and common libraries shipped with WeaveC.
+      inference (`core::FunctionSummary` is designed to be the on-disk
+      format).
+- [ ] Summaries for common libraries beyond libc shipped with WeaveC.
 - [ ] Incremental re-analysis.
 
 ## Ongoing
 
-- Corpus testing against real C projects (false-positive rate as a tracked
-  metric).
+- Corpus testing against real C projects (`scripts/corpus.py`; false-positive
+  rate as a tracked metric, `scripts/corpus/baseline.json`).
 - Fuzzing the analyzer with generated C.
 - Windows support once the analysis stabilises.

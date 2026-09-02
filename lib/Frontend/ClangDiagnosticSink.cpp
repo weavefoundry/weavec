@@ -45,6 +45,11 @@ void ClangDiagnosticSink::emit(const core::Diagnostic &diagnostic,
   builder << diagnostic.message;
   if (!isNote)
     builder << diagnostic.id;
+  for (const core::FixItHint &fixit : diagnostic.fixits) {
+    const clang::SourceLocation at = analysis::toClangLocation(fixit.location);
+    if (at.isValid())
+      builder << clang::FixItHint::CreateInsertion(at, fixit.insertion);
+  }
 }
 
 } // namespace weavec::frontend

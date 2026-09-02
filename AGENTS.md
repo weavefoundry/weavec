@@ -64,8 +64,11 @@ cmake --preset dev && cmake --build --preset dev && ctest --preset dev
 | Propose a model / checker change     | `docs/rfcs/README.md`, `docs/rfcs/0000-template.md`    |
 | Add a checker rule                   | `lib/Analysis/Dataflow.cpp` (after an RFC)             |
 | Map an expression to a place         | `lib/Analysis/PlaceBuilder.cpp`                        |
-| Recognise an allocator / releaser    | `lib/Analysis/Allocators.cpp`                          |
+| Recognise an allocator / releaser    | `lib/Analysis/Allocators.cpp`, `lib/Analysis/Builtins.cpp` (libc table) |
+| Change how a callee's summary is found | `lib/Analysis/Summaries.cpp` (`SummaryStore`, RFC 0003) |
+| Change the TU driver / call graph    | `lib/Analysis/TranslationUnitAnalysis.cpp`             |
 | Debug what the checker inferred      | `weavec --dump-analysis file.c --`                     |
+| Measure precision on real code       | `scripts/corpus.py`, `scripts/corpus/README.md`        |
 | Change how diagnostics are rendered  | `lib/Frontend/ClangDiagnosticSink.cpp`                 |
 | Add a CLI flag                       | `tools/weavec/main.cpp`, `FrontendOptions`             |
 | Add an annotation                    | `Annotations.h`, `weavec.h`, `docs/annotations.md`     |

@@ -49,5 +49,6 @@ decision is a new RFC that supersedes the relevant section.
 | ---------------------------------------- | ---------------------------------- | -------- |
 | [0001](0001-ownership-model.md)          | Ownership, borrowing and lifetimes | Accepted |
 | [0002](0002-intraprocedural-checking.md) | Sound intra-procedural checking    | Implemented |
+| [0003](0003-signature-inference.md)      | Signature inference                | Implemented |
 
 The [roadmap](../roadmap.md) links each milestone to the RFCs that define it.

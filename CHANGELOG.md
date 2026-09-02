@@ -51,6 +51,36 @@ follows [Semantic Versioning](https://semver.org/) once it reaches 1.0.
   arguments; loans are mutable unless the pointer's pointee is `const`.
 - `weavec --dump-analysis` prints the inferred places, lifetimes and exit
   state of every analysed function.
+- Signature inference (RFC 0003): every function definition in a translation
+  unit gets a `core::FunctionSummary` (effects on parameters, paths under
+  them and globals; stores into caller-visible memory; return-value
+  provenance), inferred bottom-up over the call graph with a fixpoint inside
+  recursive cycles, and applied at every call site. `node_free(n); n->v`,
+  `buf_destroy(&b); b.data[0]`, out-parameters, helpers that free globals
+  and wrappers of wrappers are now checked without annotations.
+- Shipped summaries for the C standard library (`malloc` family, `str*`,
+  `mem*`, `stdio`, `strtol`, `getenv`, ...), including which results alias
+  which arguments (`strchr`, `strtol`'s end pointer) so real headers need no
+  annotations.
+- `annotation-mismatch` (error): a definition's body contradicts its own
+  `WEAVEC_OWNED`/`WEAVEC_BORROWED`/`WEAVEC_MUT` annotation (frees or writes
+  through a borrowed parameter, moves a `WEAVEC_MUT` one, returns a borrow
+  from a `WEAVEC_OWNED` result, ...). Callers keep trusting the annotation.
+- `annotation-required` is on by default at the external boundary: the
+  first call to a function with no definition here, no annotations and no
+  libc entry warns once per callee (system headers exempt).
+  `--strict-externs` makes it an error. With `--report-unannotated`,
+  exported functions get one warning per unannotated pointer position
+  carrying a fix-it that inserts the inferred annotation.
+- `core::Diagnostic` carries `FixItHint`s, bridged to Clang so
+  `-fdiagnostics-parseable-fixits` and editors can apply them.
+- `--dump-analysis` prints a `summary:` line per function.
+- `scripts/corpus.py`: runs `weavec` over real C projects
+  (`scripts/corpus/projects.json`), tallies diagnostics per id and compares
+  with `scripts/corpus/baseline.json`; a weekly `Corpus` workflow runs it.
+- `TranslationUnitAnalyzer` (Analysis) and `SummaryStore` as the public
+  entry points for whole-TU analysis; `FunctionAnalyzer::analyze` now takes
+  the store.
 
 ### Changed
 
@@ -58,6 +88,17 @@ follows [Semantic Versioning](https://semver.org/) once it reaches 1.0.
   iteration of a loop that frees a pointer declared outside it.
 - `AnalysisOptions` gained `dumpStream`; `core::Loan` gained `holder` and
   `core::MoveRecord` gained `via`.
+- Copying a pointer that holds a loan into a longer-lived pointer (`g = p`
+  where `p = &local`) is now `lifetime-too-short`, like `g = &local` already
+  was.
+- Calls to unannotated functions now borrow their pointer arguments for the
+  duration of the call (previously: no effect), so `set(&x)` while `x` is
+  borrowed is a `conflicting-borrow`.
+- `--report-unannotated` no longer reports `static` functions or `main`, and
+  its message names the inferred annotation.
+- `analysis::CallEffects` is now backed by a `core::FunctionSummary`
+  (`releasesArgs` replaced by `frees(i)`; `classifyCall` takes a
+  `SummaryStore`).
 
 ### Removed
 

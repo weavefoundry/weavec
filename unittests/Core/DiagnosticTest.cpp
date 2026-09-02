@@ -31,7 +31,8 @@ TEST(Diagnostic, AddNoteInheritsId) {
                         .id = diag::UseAfterFree,
                         .message = "use after free",
                         .location = {},
-                        .notes = {}};
+                        .notes = {},
+                        .fixits = {}};
   diagnostic.addNote("freed here", {}).addNote("allocated here", {});
   ASSERT_EQ(diagnostic.notes.size(), 2U);
   EXPECT_EQ(diagnostic.notes[0].severity, Severity::Note);
@@ -48,12 +49,14 @@ TEST(DiagnosticCollector, CountsBySeverity) {
                               .id = diag::AnnotationRequired,
                               .message = "w",
                               .location = {},
-                              .notes = {}});
+                              .notes = {},
+                              .fixits = {}});
   collector.report(Diagnostic{.severity = Severity::Error,
                               .id = diag::DoubleFree,
                               .message = "e",
                               .location = {},
-                              .notes = {}});
+                              .notes = {},
+                              .fixits = {}});
 
   EXPECT_EQ(collector.size(), 2U);
   EXPECT_EQ(collector.count(Severity::Warning), 1U);

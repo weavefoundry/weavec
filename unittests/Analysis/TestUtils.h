@@ -10,7 +10,10 @@
 #define WEAVEC_UNITTESTS_ANALYSIS_TESTUTILS_H
 
 #include "weavec/Analysis/FunctionAnalysis.h"
+#include "weavec/Analysis/Summaries.h"
+#include "weavec/Analysis/TranslationUnitAnalysis.h"
 #include "weavec/Core/Diagnostic.h"
+#include "weavec/Core/Summary.h"
 
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/Decl.h"
@@ -24,18 +27,20 @@
 namespace weavec::test {
 
 /// Minimal prelude so tests can call `free`/`malloc` without system headers.
-/// `OWNED`/`BORROWED`/`MUT` spell the annotations without `weavec.h`.
+/// `OWNED`/`BORROWED`/`MUT` spell the annotations without `weavec.h`. `use`
+/// is the opaque "look at this pointer" helper; it is annotated because an
+/// unannotated external function warns by default (RFC 0003).
 inline constexpr const char *Prelude = R"c(
 typedef unsigned long size_t;
 void *malloc(size_t);
 void *realloc(void *, size_t);
 void free(void *);
-void use(void *);
-int cond(void);
-#define NULL ((void *)0)
 #define OWNED __attribute__((annotate("weavec.owned")))
 #define BORROWED __attribute__((annotate("weavec.borrowed")))
 #define MUT __attribute__((annotate("weavec.mut_borrowed")))
+void use(const void *BORROWED);
+int cond(void);
+#define NULL ((void *)0)
 void take(void *OWNED p);
 void peek(const void *BORROWED p);
 void poke(void *MUT p);
@@ -43,10 +48,34 @@ void poke(void *MUT p);
 )c";
 
 /// Parses `code` (prepended with `Prelude`) as C and runs the analyzer over
-/// every function definition, collecting core diagnostics.
+/// the translation unit, collecting core diagnostics and summaries.
 struct AnalysisResult {
   std::unique_ptr<clang::ASTUnit> ast;
   core::DiagnosticCollector diagnostics;
+  std::unique_ptr<analysis::TranslationUnitAnalyzer> analyzer;
+
+  /// The function definition named `name`, or null.
+  [[nodiscard]] const clang::FunctionDecl *
+  function(llvm::StringRef name) const {
+    if (!ast)
+      return nullptr;
+    for (const clang::Decl *decl :
+         ast->getASTContext().getTranslationUnitDecl()->decls()) {
+      const auto *fn = llvm::dyn_cast<clang::FunctionDecl>(decl);
+      if (fn != nullptr && fn->getName() == name)
+        return fn;
+    }
+    return nullptr;
+  }
+
+  /// The inferred summary of the function named `name`, or null.
+  [[nodiscard]] const core::FunctionSummary *
+  summary(llvm::StringRef name) const {
+    const clang::FunctionDecl *fn = function(name);
+    if (fn == nullptr || !analyzer)
+      return nullptr;
+    return analyzer->summaries().inferredFor(*fn);
+  }
 };
 
 inline AnalysisResult analyze(const std::string &code,
@@ -59,11 +88,9 @@ inline AnalysisResult analyze(const std::string &code,
     return result;
 
   clang::ASTContext &context = result.ast->getASTContext();
-  analysis::FunctionAnalyzer analyzer(context, result.diagnostics, options);
-  for (const clang::Decl *decl : context.getTranslationUnitDecl()->decls()) {
-    if (const auto *function = llvm::dyn_cast<clang::FunctionDecl>(decl))
-      analyzer.analyze(*function);
-  }
+  result.analyzer = std::make_unique<analysis::TranslationUnitAnalyzer>(
+      context, result.diagnostics, options);
+  result.analyzer->run();
   return result;
 }
 

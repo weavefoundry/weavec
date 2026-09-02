@@ -8,7 +8,8 @@
 //
 // The intra-procedural engine specified by RFC 0002: a forward worklist
 // iteration over `clang::CFG` whose state is `core::AnalysisState`, followed
-// by a single reporting pass that emits diagnostics once per program point.
+// by a single final pass that emits diagnostics once per program point and
+// records the function's summary (RFC 0003).
 //
 //===----------------------------------------------------------------------===//
 
@@ -17,11 +18,14 @@
 
 #include "PlaceBuilder.h"
 #include "weavec/Analysis/Allocators.h"
+#include "weavec/Analysis/Annotations.h"
 #include "weavec/Analysis/FunctionAnalysis.h"
+#include "weavec/Analysis/Summaries.h"
 #include "weavec/Core/AnalysisState.h"
 #include "weavec/Core/Diagnostic.h"
 #include "weavec/Core/Lifetime.h"
 #include "weavec/Core/Place.h"
+#include "weavec/Core/Summary.h"
 
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/Decl.h"
@@ -43,12 +47,22 @@ namespace weavec::analysis {
 
 class FunctionDataflow {
 public:
+  /// `summaries` supplies callee summaries and receives this function's
+  /// global roots. Diagnostics are produced only if `emitDiagnostics`; the
+  /// summary is produced either way.
   FunctionDataflow(clang::ASTContext &ctx, const clang::FunctionDecl &fn,
                    core::DiagnosticSink &diagSink,
-                   const AnalysisOptions &analysisOptions);
+                   const AnalysisOptions &analysisOptions,
+                   SummaryStore &summaryStore, bool emitDiags);
 
-  /// Runs the analysis over `fn`'s body and reports diagnostics to the sink.
+  /// Runs the analysis over `fn`'s body, reports diagnostics to the sink
+  /// (if enabled) and computes the summary.
   void run();
+
+  /// The summary inferred by `run` (RFC 0003, *Deriving a summary*).
+  [[nodiscard]] const core::FunctionSummary &summary() const noexcept {
+    return inferred;
+  }
 
 private:
   /// How a place expression is used at its position in the tree, decided by
@@ -70,10 +84,16 @@ private:
     Ignore,
   };
 
+  /// The worklist iteration computes states silently; the final pass, run
+  /// once per block from the fixpoint states, reports and records.
+  enum class Phase : std::uint8_t { Fixpoint, Final };
+
   clang::ASTContext &context;
   const clang::FunctionDecl &function;
   core::DiagnosticSink &sink;
   const AnalysisOptions &options;
+  SummaryStore &summaries;
+  const bool emitDiagnostics;
 
   core::PlaceTable places;
   PlaceBuilder builder;
@@ -88,13 +108,22 @@ private:
   llvm::DenseSet<const clang::Stmt *> unsafeStmts;
   llvm::DenseMap<const clang::Expr *, Role> roles;
   llvm::DenseSet<const clang::CallExpr *> assignedCalls;
+  /// Parameters whose variable is assigned or address-taken in the body.
+  std::vector<bool> paramReassigned;
+  SignatureAnnotations signature;
 
   std::unique_ptr<clang::CFG> cfg;
   std::vector<std::optional<core::AnalysisState>> entryStates;
 
-  bool reporting = false;
+  Phase phase = Phase::Fixpoint;
   std::vector<core::Diagnostic> pending;
   std::map<core::PlaceId, core::OwnershipKind> summaryKinds;
+
+  /// The summary under construction (final pass only).
+  core::FunctionSummary inferred;
+  /// Consumption recorded as it happens, keyed by summary path; used for
+  /// parameter roots and for paths under reassigned parameters.
+  std::map<core::SummaryPath, core::PlaceEffect> eventEffects;
 
   // -- Pre-passes -----------------------------------------------------------
 
@@ -103,6 +132,7 @@ private:
   void classifyExpr(const clang::Expr *expr, Role role);
   void markPathInterior(const clang::Expr &root);
   void noteAssignedCall(const clang::Expr &rhs);
+  void noteParamAccess(const clang::Expr &place, Role role);
   void collectUnsafe(const clang::Stmt &stmt);
   core::AnalysisState initialState();
 
@@ -149,6 +179,57 @@ private:
   void setKind(core::PlaceId place, core::OwnershipKind kind,
                core::AnalysisState &state);
 
+  // -- Calls (RFC 0003) -----------------------------------------------------
+
+  /// Applies a resolved callee summary: consumption, borrows for the call,
+  /// stores through arguments and into globals.
+  void applySummary(const clang::CallExpr &call, const CallEffects &effects,
+                    core::AnalysisState &state);
+  /// Reports `annotation-required` the first time an unresolvable callee
+  /// with pointer parameters or result is called from reported code.
+  void noteUnknownCallee(const clang::CallExpr &call);
+
+  // -- Summary recording (RFC 0003) -----------------------------------------
+
+  [[nodiscard]] bool recording() const noexcept {
+    return phase == Phase::Final;
+  }
+  /// Marks the summary path of `place` (and of its mirrors) as read or
+  /// written, when it names caller memory.
+  void recordAccess(core::PlaceId place, bool write,
+                    const core::AnalysisState &state);
+  /// Records a release/move of `target` as it happens.
+  void recordConsume(core::PlaceId target, core::MoveReason reason);
+  /// Records a pointer value written into caller-visible memory.
+  void recordStore(core::PlaceId dest, const core::ValueSource &value);
+  /// Classifies a value the callee hands out (stores or returns).
+  [[nodiscard]] core::ValueSource sourceOf(const ValueOrigin &origin,
+                                           const core::AnalysisState &state);
+  /// Summary path for `place`, ignoring parameters that were reassigned
+  /// (their variable no longer holds the argument).
+  [[nodiscard]] std::optional<core::SummaryPath>
+  stableSummaryPathOf(core::PlaceId place);
+  void finalizeSummary(const core::AnalysisState *exitState);
+
+  // -- Reconciliation (RFC 0003) --------------------------------------------
+
+  struct AnnotatedParam {
+    core::PlaceId place;
+    Annotation annotation = Annotation::Borrowed;
+  };
+  /// The borrowed/mutably-borrowed parameter that `place` is, or aliases.
+  [[nodiscard]] std::optional<AnnotatedParam>
+  borrowedParamFor(core::PlaceId place, const core::AnalysisState &state);
+  void checkAnnotationOnConsume(const PlaceRef &ref, core::MoveReason reason,
+                                const clang::Expr &at,
+                                const core::AnalysisState &state);
+  void checkAnnotationOnWrite(const PlaceRef &ref, const clang::Expr &at,
+                              const core::AnalysisState &state);
+  void checkAnnotationOnReturn(const ValueOrigin &origin, const clang::Expr &at,
+                               const core::AnalysisState &state);
+  void reportMismatch(const AnnotatedParam &param, const std::string &what,
+                      core::PlaceId through, const clang::Expr &at);
+
   // -- Queries --------------------------------------------------------------
 
   /// Every place a fact about `place` also applies to: the direct aliases of
@@ -187,6 +268,7 @@ private:
   void reportLifetimeTooShort(core::PlaceId holder, core::PlaceId borrowed,
                               const clang::Expr &at, bool returned);
   [[nodiscard]] std::string nameOf(core::PlaceId place) const;
+  [[nodiscard]] std::string summaryName(const core::SummaryPath &path) const;
 };
 
 } // namespace weavec::analysis

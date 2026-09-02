@@ -1,8 +1,15 @@
 # weavec::Analysis -- bridges Clang's AST to the core ownership model.
 weavec_add_library(
   Analysis
-  SOURCES Allocators.cpp Annotations.cpp ClangLocation.cpp Dataflow.cpp
-          FunctionAnalysis.cpp PlaceBuilder.cpp
+  SOURCES Allocators.cpp
+          Annotations.cpp
+          Builtins.cpp
+          ClangLocation.cpp
+          Dataflow.cpp
+          FunctionAnalysis.cpp
+          PlaceBuilder.cpp
+          Summaries.cpp
+          TranslationUnitAnalysis.cpp
   PUBLIC_DEPS weavec::Core
   USES_LLVM)
 

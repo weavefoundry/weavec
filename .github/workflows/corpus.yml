@@ -1,0 +1,59 @@
+name: Corpus
+
+# Runs weavec over the real-world projects in scripts/corpus/projects.json
+# and compares diagnostic counts with scripts/corpus/baseline.json. Not part of
+# the PR gate: the projects track branches and can change under us.
+on:
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  LLVM_VERSION: "23"
+
+jobs:
+  corpus:
+    name: Corpus regression
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install LLVM
+        run: |
+          wget -qO- https://apt.llvm.org/llvm.sh | sudo bash -s -- "$LLVM_VERSION" all
+          sudo apt-get install -y ninja-build ccache
+          echo "WEAVEC_LLVM_PREFIX=/usr/lib/llvm-$LLVM_VERSION" >> "$GITHUB_ENV"
+          echo "CC=clang-$LLVM_VERSION" >> "$GITHUB_ENV"
+          echo "CXX=clang++-$LLVM_VERSION" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: ccache
+        uses: hendrikmuhs/ccache-action@v1
+        with:
+          key: ubuntu-24.04-ci-release-corpus
+          max-size: 500M
+
+      - name: Configure and build
+        run: |
+          cmake --preset ci-release -DWEAVEC_BUILD_TESTS=OFF
+          cmake --build --preset ci-release
+
+      - name: Run corpus
+        run: |
+          scripts/corpus.py --weavec build/ci-release/bin/weavec \
+            --json corpus-results.json \
+            --baseline scripts/corpus/baseline.json
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: corpus-results
+          path: corpus-results.json

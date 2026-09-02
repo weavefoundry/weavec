@@ -1,0 +1,51 @@
+{
+  "commits": {
+    "sds": "5347739",
+    "cJSON": "fb16e5c",
+    "jsmn": "25647e6",
+    "log.c": "f9ea349",
+    "printf": "d3b9846",
+    "linenoise": "a473823"
+  },
+  "summary": {
+    "projects": {
+      "sds": {
+        "units": 1,
+        "clang_errors": 0,
+        "by_id": {}
+      },
+      "cJSON": {
+        "units": 1,
+        "clang_errors": 0,
+        "by_id": {}
+      },
+      "jsmn": {
+        "units": 2,
+        "clang_errors": 0,
+        "by_id": {}
+      },
+      "log.c": {
+        "units": 1,
+        "clang_errors": 0,
+        "by_id": {}
+      },
+      "printf": {
+        "units": 1,
+        "clang_errors": 0,
+        "by_id": {}
+      },
+      "linenoise": {
+        "units": 1,
+        "clang_errors": 0,
+        "by_id": {
+          "conflicting-borrow": 2,
+          "double-free": 3
+        }
+      }
+    },
+    "totals": {
+      "conflicting-borrow": 2,
+      "double-free": 3
+    }
+  }
+}

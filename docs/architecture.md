@@ -43,7 +43,8 @@ tools.
 | `Borrow.h`         | `Loan` (place, kind, lifetime, holder) and `BorrowState`: may this borrow be created; may this place be moved or mutated. |
 | `Moves.h`          | `MoveTracker`: which places are currently moved-out/freed (and through which alias), with a conservative `join`. |
 | `AnalysisState.h`  | The dataflow state: moves, loans, aliases, pending `realloc`s and inferred kinds, with component-wise `join`. |
-| `Diagnostic.h`     | `Diagnostic`, stable ids in `diag::`, `DiagnosticSink`, and an in-memory `DiagnosticCollector`. |
+| `Summary.h`        | `FunctionSummary`: what a function does to its interface. `SummaryPath` (`param(i)`/`global(g)` plus deref/field/index steps), `PlaceEffect` (read/written/freed/moved), `Store` (value written into caller-visible memory), `ValueSource` (fresh/copy/borrow/null/unknown), with `join` and the derived `consumes`/`borrowKind`/`inferredKind` queries. |
+| `Diagnostic.h`     | `Diagnostic`, stable ids in `diag::`, `FixItHint`, `DiagnosticSink`, and an in-memory `DiagnosticCollector`. |
 | `SourceLocation.h` | Frontend-neutral positions with an `opaque` slot for the frontend's native encoding.           |
 
 The core never sees a `clang::VarDecl`; it sees a `PlaceId`. It never sees a
@@ -58,30 +59,45 @@ the frontend fills in so it can report at the exact original position.
 - recognises WeaveC annotations on declarations and statements
   (`Annotations.h`);
 - converts source locations in both directions (`ClangLocation.h`);
-- classifies calls by their ownership effect: libc allocators and `free` by
-  name, plus `WEAVEC_OWNED`/`WEAVEC_BORROWED`/`WEAVEC_MUT` on the callee's
-  declaration (`Allocators.h`);
-- maps expressions onto structured places and classifies pointer-typed
-  values as allocation, copy, borrow, null or opaque
-  (`lib/Analysis/PlaceBuilder.h`);
+- resolves the summary of any callee (`Summaries.h`, `SummaryStore`), in
+  order: the callee's own annotations, the summary inferred from its body in
+  this TU, the shipped libc table (`Builtins.cpp`), and finally a documented
+  default that also records the callee as an unknown boundary;
+- classifies calls by their ownership effect on top of that
+  (`Allocators.h`, `classifyCall` → `CallEffects`);
+- maps expressions onto structured places, classifies pointer-typed values
+  as allocation, copy, borrow, null or opaque, and translates summary paths
+  into the caller's places and back (`lib/Analysis/PlaceBuilder.h`);
 - runs a forward dataflow over `clang::CFG` for each function body
   (`lib/Analysis/Dataflow.h`, `FunctionDataflow`): a worklist to a fixpoint
   with `core::AnalysisState` as the lattice, then one reporting pass that
-  emits each diagnostic once. `FunctionAnalysis.h` is the public entry point.
+  emits each diagnostic once. While running it applies callee summaries at
+  every call, records its own effects, stores and returns, checks them
+  against the function's annotations, and produces the function's
+  `FunctionSummary` at exit. `FunctionAnalysis.h` is the per-function entry
+  point;
+- drives a whole translation unit (`TranslationUnitAnalysis.h`,
+  `TranslationUnitAnalyzer`): collects definitions, builds the call graph,
+  and analyses strongly connected components in reverse topological order
+  (callees first), iterating recursive components to a fixpoint on their
+  summaries before the final reporting pass.
 
-The model is specified by [RFC 0001](rfcs/0001-ownership-model.md) and the
-dataflow by [RFC 0002](rfcs/0002-intraprocedural-checking.md); the RFC's
+The model is specified by [RFC 0001](rfcs/0001-ownership-model.md), the
+dataflow by [RFC 0002](rfcs/0002-intraprocedural-checking.md) and
+summaries by [RFC 0003](rfcs/0003-signature-inference.md); each RFC's
 *Implementation notes* record where the code refines the design.
 
 ## `weavec::Frontend` — Clang integration
 
 `lib/Frontend` adapts the analysis to Clang's frontend machinery:
 
-- `WeaveCAction` is an `ASTFrontendAction` whose consumer runs the analyzer
-  over every function definition (by default only those in the main file).
-- `ClangDiagnosticSink` forwards `core::Diagnostic`s to Clang's
-  `DiagnosticsEngine`, so WeaveC's output is rendered exactly like Clang's own
-  (carets, colours, `-fdiagnostics-format=`, `-Werror`, ...).
+- `WeaveCAction` is an `ASTFrontendAction` whose consumer hands the whole
+  translation unit to `TranslationUnitAnalyzer`; every definition contributes
+  a summary, but by default only those in the main file are reported.
+- `ClangDiagnosticSink` forwards `core::Diagnostic`s (including fix-its) to
+  Clang's `DiagnosticsEngine`, so WeaveC's output is rendered exactly like
+  Clang's own (carets, colours, `-fdiagnostics-format=`,
+  `-fdiagnostics-parseable-fixits`, `-Werror`, ...).
 - `ResourceDir.h` locates `weavec.h` in installed and build-tree layouts.
 
 Because it is a standard `FrontendAction`, the same code can later be exposed
@@ -93,8 +109,10 @@ analysis.
 Today `weavec` is a libTooling application: `weavec file.c -- <compiler
 flags>` or `weavec -p build/ file.c` with a compilation database. It injects
 `-isystem <resource-dir>/include` and `-D__WEAVEC__=1` so user code can
-`#include <weavec.h>`. `--dump-analysis` prints the inferred facts per
-function for debugging.
+`#include <weavec.h>`. `--dump-analysis` prints the inferred facts and
+summary per function for debugging; `--report-unannotated` offers fix-its
+for exported functions; `--strict-externs` turns calls into unknown code
+into errors.
 
 A drop-in compiler mode (`weavec -c foo.c -o foo.o`, i.e. behaving as `cc`
 and delegating code generation to Clang) is planned; see
@@ -118,3 +136,10 @@ scripts and editors may filter on it, so renaming one is a breaking change.
   metadata uniformly.
 - Everything is installed with a CMake package config (`find_package(WeaveC)`)
   so external tools can link `weavec::Core` or `weavec::Frontend`.
+
+## Corpus
+
+`scripts/corpus.py` runs the tool over real C projects
+(`scripts/corpus/projects.json`) and compares diagnostic counts with
+`scripts/corpus/baseline.json`; see `scripts/corpus/README.md`. It is the
+empirical check on the RFCs' precision claims and runs weekly in CI.

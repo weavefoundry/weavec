@@ -15,9 +15,15 @@
 //   2. A forward worklist iteration over `clang::CFG` computes the entry
 //      state of every reachable block. Transfer functions translate CFG
 //      elements into core events; diagnostics are suppressed.
-//   3. A reporting pass re-runs the transfer function once per block from
-//      the fixpoint entry states with diagnostics enabled, then emits them
-//      in source order.
+//   3. A final pass re-runs the transfer function once per block from the
+//      fixpoint entry states with diagnostics enabled, emits them in source
+//      order, and records the function's summary (RFC 0003): what it does
+//      to its parameters and globals, what it stores through them, and where
+//      its result comes from.
+//
+// Calls are interpreted through the callee's summary (RFC 0003, *Applying a
+// summary at a call*), so the same semantic actions that handle `free(p)`
+// handle `node_free(p)`.
 //
 //===----------------------------------------------------------------------===//
 
@@ -55,10 +61,14 @@ static constexpr std::size_t MaxPlaceDepth = 8;
 
 FunctionDataflow::FunctionDataflow(ASTContext &ctx, const FunctionDecl &fn,
                                    core::DiagnosticSink &diagSink,
-                                   const AnalysisOptions &analysisOptions)
+                                   const AnalysisOptions &analysisOptions,
+                                   SummaryStore &summaryStore, bool emitDiags)
     : context(ctx), function(fn), sink(diagSink), options(analysisOptions),
-      builder(places), callerLifetime(lifetimes.fresh("caller")),
-      fnLifetime(lifetimes.fresh("fn")) {
+      summaries(summaryStore), emitDiagnostics(emitDiags),
+      builder(places, summaryStore), callerLifetime(lifetimes.fresh("caller")),
+      fnLifetime(lifetimes.fresh("fn")),
+      paramReassigned(fn.getNumParams(), false),
+      signature(collectAnnotations(fn)) {
   lifetimes.addOutlives(callerLifetime, fnLifetime);
 }
 
@@ -157,9 +167,26 @@ void FunctionDataflow::classifyStmt(const Stmt *stmt) {
 void FunctionDataflow::noteAssignedCall(const Expr &rhs) {
   const Expr &stripped = PlaceBuilder::stripTransparent(rhs);
   if (const auto *call = dyn_cast<CallExpr>(&stripped)) {
-    const auto effects = classifyCall(*call);
+    const auto effects = classifyCall(*call, summaries);
     if (effects && effects->isRealloc)
       assignedCalls.insert(call);
+  }
+}
+
+void FunctionDataflow::noteParamAccess(const Expr &place, Role role) {
+  // A parameter that is assigned, or whose address escapes, no longer holds
+  // the argument; effects on paths under it are then recorded as they
+  // happen rather than read from the exit state (RFC 0003, *Deriving a
+  // summary*).
+  if (role != Role::Write && role != Role::ReadWrite && role != Role::AddressOf)
+    return;
+  const auto *ref = dyn_cast<DeclRefExpr>(&place);
+  if (ref == nullptr)
+    return;
+  if (const auto *param = dyn_cast<ParmVarDecl>(ref->getDecl())) {
+    const unsigned index = param->getFunctionScopeIndex();
+    if (index < paramReassigned.size())
+      paramReassigned[index] = true;
   }
 }
 
@@ -175,6 +202,7 @@ void FunctionDataflow::classifyExpr(const Expr *expr, Role role) {
 
   if (PlaceBuilder::isPlaceExpr(*e)) {
     roles[e] = role;
+    noteParamAccess(*e, role);
     markPathInterior(*e);
     return;
   }
@@ -216,7 +244,7 @@ void FunctionDataflow::classifyExpr(const Expr *expr, Role role) {
 
   if (const auto *call = dyn_cast<CallExpr>(e)) {
     classifyExpr(call->getCallee(), Role::Read);
-    const auto effects = classifyCall(*call);
+    const auto effects = classifyCall(*call, summaries);
     for (unsigned i = 0; i < call->getNumArgs(); ++i) {
       const bool consumed = effects && effects->consumes(i);
       classifyExpr(call->getArg(i), consumed ? Role::Consume : Role::Read);
@@ -353,21 +381,23 @@ void FunctionDataflow::run() {
     }
   }
 
-  // Reporting pass: once per reachable block, from its fixpoint entry state.
-  reporting = true;
+  // Final pass: once per reachable block, from its fixpoint entry state.
+  // Diagnostics and summary facts are recorded from here only, so they see
+  // the fixpoint states and each program point exactly once.
+  phase = Phase::Final;
   for (const CFGBlock *block : *cfg) {
     if (block == nullptr || !entryStates[block->getBlockID()])
       continue;
     core::AnalysisState state = *entryStates[block->getBlockID()];
     transfer(*block, state);
   }
-  reporting = false;
+  const auto &exitState = entryStates[cfg->getExit().getBlockID()];
+  finalizeSummary(exitState ? &*exitState : nullptr);
+  phase = Phase::Fixpoint;
   flushDiagnostics();
 
-  if (options.dumpStream != nullptr) {
-    const auto &exitState = entryStates[cfg->getExit().getBlockID()];
+  if (options.dumpStream != nullptr && emitDiagnostics)
     dump(exitState ? &*exitState : nullptr);
-  }
 }
 
 void FunctionDataflow::transfer(const CFGBlock &block,
@@ -472,6 +502,8 @@ void FunctionDataflow::handleExpr(const Expr &expr,
     case Role::ReadWrite:
       doRead(*ref, expr, state, /*includeSelf=*/true);
       doMutationCheck(ref->place, expr, state);
+      checkAnnotationOnWrite(*ref, expr, state);
+      recordAccess(ref->place, /*write=*/true, state);
       if (expr.getType()->isPointerType()) {
         // Pointer arithmetic in place: the pointer now denotes an interior
         // position we cannot track.
@@ -527,6 +559,8 @@ void FunctionDataflow::handleAssign(const BinaryOperator &assign,
   if (!lhs)
     return;
   doMutationCheck(lhs->place, assign, state);
+  checkAnnotationOnWrite(*lhs, assign, state);
+  recordAccess(lhs->place, /*write=*/true, state);
 
   const QualType type = assign.getLHS()->getType();
   if (type->isPointerType()) {
@@ -545,39 +579,149 @@ void FunctionDataflow::handleAssign(const BinaryOperator &assign,
 
 void FunctionDataflow::handleCall(const CallExpr &call,
                                   core::AnalysisState &state) {
-  const auto effects = classifyCall(call);
-  if (!effects)
+  const auto effects = classifyCall(call, summaries);
+  if (!effects) {
+    noteUnknownCallee(call);
     return;
+  }
+  applySummary(call, *effects, state);
+}
 
-  // A realloc whose result is stored is handled by the assignment, which
-  // needs to record the consumed places against the result.
+// -- Calls (RFC 0003) ---------------------------------------------------------
+
+void FunctionDataflow::applySummary(const CallExpr &call,
+                                    const CallEffects &effects,
+                                    core::AnalysisState &state) {
+  const core::FunctionSummary &summary = *effects.summary;
+
+  // 1. Consumption of the arguments themselves. A realloc whose result is
+  //    stored is handled by the assignment, which needs to record the
+  //    consumed places against the result.
   const bool consumeHere =
-      !(effects->isRealloc && assignedCalls.contains(&call));
+      !(effects.isRealloc && assignedCalls.contains(&call));
   if (consumeHere) {
-    const core::MoveReason reason = effects->releasesArgs && !effects->isRealloc
-                                        ? core::MoveReason::Freed
-                                        : core::MoveReason::Moved;
-    for (const unsigned index : effects->consumedArgs) {
+    for (const unsigned index : effects.consumedArgs) {
       if (index >= call.getNumArgs())
         continue;
+      const core::MoveReason reason = effects.frees(index) && !effects.isRealloc
+                                          ? core::MoveReason::Freed
+                                          : core::MoveReason::Moved;
       if (const auto arg = builder.resolvePointerValue(*call.getArg(index)))
         doConsume(*arg, reason, call, state);
     }
   }
 
-  for (const auto &[index, kind] : effects->borrowedArgs) {
+  //    ... and of the caller's memory below them (`free(b->data)` in the
+  //    callee) or of globals, skipping anything under an argument that is
+  //    itself consumed and anything under a path already consumed here.
+  std::vector<core::SummaryPath> consumedPaths;
+  for (const auto &[path, effect] : summary.effects) {
+    if (!effect.consumed() || (path.isParam() && path.isRoot()))
+      continue;
+    if (path.isParam() && summary.consumes(path.index))
+      continue;
+    if (llvm::any_of(consumedPaths, [&path](const core::SummaryPath &prefix) {
+          return prefix.isProperPrefixOf(path);
+        }))
+      continue;
+    const auto ref = builder.resolveSummaryPath(path, call);
+    if (!ref)
+      continue;
+    consumedPaths.push_back(path);
+    doConsume(*ref,
+              effect.freed ? core::MoveReason::Freed : core::MoveReason::Moved,
+              call, state);
+  }
+
+  // 2. Borrows for the duration of the call.
+  for (const auto &[index, kind] : effects.borrowedArgs) {
     if (index >= call.getNumArgs())
       continue;
     const ValueOrigin origin = builder.classifyValue(*call.getArg(index));
+    std::optional<PlaceRef> pointee;
     if (origin.kind == ValueOrigin::Kind::Borrow && origin.place) {
-      checkTemporaryBorrow(*origin.place, kind, call, state);
+      pointee = *origin.place;
     } else if (origin.kind == ValueOrigin::Kind::Copy && origin.place) {
-      PlaceRef pointee = *origin.place;
-      pointee.addDeref(pointee.place, nullptr);
-      pointee.place = places.deref(pointee.place);
-      checkTemporaryBorrow(pointee, kind, call, state);
+      pointee = *origin.place;
+      pointee->addDeref(pointee->place, nullptr);
+      pointee->place = places.deref(pointee->place);
+    }
+    if (!pointee)
+      continue;
+    checkTemporaryBorrow(*pointee, kind, call, state);
+    if (kind == core::BorrowKind::Shared) {
+      recordAccess(pointee->place, /*write=*/false, state);
+    } else {
+      checkAnnotationOnWrite(*pointee, call, state);
+      recordAccess(pointee->place, /*write=*/true, state);
     }
   }
+
+  // 3. Stores through arguments and into globals. Several stores to one
+  //    destination form one conditional assignment.
+  std::map<core::SummaryPath, std::vector<core::ValueSource>> byDest;
+  for (const core::Store &store : summary.stores)
+    byDest[store.dest].push_back(store.value);
+  for (const auto &[dest, values] : byDest) {
+    if (dest.isParam() && summary.consumes(dest.index))
+      continue;
+    const auto ref = builder.resolveSummaryPath(dest, call);
+    if (!ref)
+      continue;
+    ValueOrigin origin;
+    if (values.size() == 1) {
+      origin = builder.originFromSource(values.front(), call, summary);
+    } else {
+      origin.kind = ValueOrigin::Kind::Conditional;
+      for (const core::ValueSource &value : values)
+        origin.alternatives.push_back(
+            builder.originFromSource(value, call, summary));
+    }
+    doMutationCheck(ref->place, call, state);
+    checkAnnotationOnWrite(*ref, call, state);
+    recordAccess(ref->place, /*write=*/true, state);
+    applyPointerAssign(ref->place, origin, call, /*constPointee=*/false, state);
+  }
+}
+
+void FunctionDataflow::noteUnknownCallee(const CallExpr &call) {
+  if (!recording() || !emitDiagnostics)
+    return;
+  const FunctionDecl *callee = call.getDirectCallee();
+  if (callee == nullptr || callee->getBuiltinID() != 0)
+    return;
+
+  bool hasPointer = callee->getReturnType()->isPointerType();
+  for (const ParmVarDecl *param : callee->parameters())
+    hasPointer = hasPointer || param->getType()->isPointerType();
+  if (!hasPointer)
+    return;
+
+  const SourceManager &sm = context.getSourceManager();
+  if (!options.reportUnannotated && sm.isInSystemHeader(callee->getLocation()))
+    return;
+  if (!summaries.noteUnknownCallee(*callee))
+    return;
+
+  const std::string name = callee->getNameAsString();
+  core::Diagnostic diagnostic{
+      .severity = options.strictExterns ? core::Severity::Error
+                                        : core::Severity::Warning,
+      .id = core::diag::AnnotationRequired,
+      .message = "call to '" + name +
+                 "' is not checked: it has no definition or ownership "
+                 "annotations here",
+      .location = locate(call),
+      .notes = {},
+      .fixits = {},
+  };
+  diagnostic.addNote("'" + name + "' is declared here",
+                     locate(callee->getLocation()));
+  diagnostic.addNote("annotate its pointer parameters with WEAVEC_OWNED, "
+                     "WEAVEC_BORROWED or WEAVEC_MUT, or define it in this "
+                     "translation unit",
+                     locate(callee->getLocation()));
+  report(std::move(diagnostic));
 }
 
 void FunctionDataflow::handleReturn(const ReturnStmt &ret,
@@ -590,6 +734,11 @@ void FunctionDataflow::handleReturn(const ReturnStmt &ret,
   while (!origins.empty()) {
     const ValueOrigin origin = std::move(origins.back());
     origins.pop_back();
+    if (origin.kind != ValueOrigin::Kind::Conditional) {
+      checkAnnotationOnReturn(origin, *value, state);
+      if (recording())
+        inferred.addReturn(sourceOf(origin, state));
+    }
     switch (origin.kind) {
     case ValueOrigin::Kind::Conditional:
       for (const ValueOrigin &alternative : origin.alternatives)
@@ -679,6 +828,8 @@ void FunctionDataflow::setKind(core::PlaceId place, core::OwnershipKind kind,
 void FunctionDataflow::doRead(const PlaceRef &ref, const Expr &at,
                               core::AnalysisState &state, bool includeSelf) {
   for (std::size_t i = 0; i < ref.derefs.size(); ++i) {
+    // Loading a pointer stored in caller memory is a read of that memory.
+    recordAccess(ref.derefs[i], /*write=*/false, state);
     if (const auto hit = findMoved(ref.derefs[i], state)) {
       const Expr *where = ref.derefExprs[i];
       reportUseOfMoved(ref.derefs[i], *hit, where != nullptr ? *where : at);
@@ -687,6 +838,7 @@ void FunctionDataflow::doRead(const PlaceRef &ref, const Expr &at,
   }
   if (!includeSelf)
     return;
+  recordAccess(ref.place, /*write=*/false, state);
   if (const auto hit = findMoved(ref.place, state))
     reportUseOfMoved(ref.place, *hit, at);
 }
@@ -694,6 +846,7 @@ void FunctionDataflow::doRead(const PlaceRef &ref, const Expr &at,
 bool FunctionDataflow::doConsume(const PlaceRef &ref, core::MoveReason reason,
                                  const Expr &at, core::AnalysisState &state) {
   const core::PlaceId place = ref.place;
+  checkAnnotationOnConsume(ref, reason, at, state);
 
   if (const auto hit = findMoved(place, state)) {
     const bool bothFreed = hit->record.reason == core::MoveReason::Freed &&
@@ -705,6 +858,7 @@ bool FunctionDataflow::doConsume(const PlaceRef &ref, core::MoveReason reason,
           .message = "'" + nameOf(place) + "' is freed twice",
           .location = locate(at),
           .notes = {},
+          .fixits = {},
       };
       std::string note = "previously freed here";
       const core::PlaceId via = hit->record.via.value_or(hit->target);
@@ -728,6 +882,7 @@ bool FunctionDataflow::doConsume(const PlaceRef &ref, core::MoveReason reason,
                    nameOf(place) + "' while it is borrowed",
         .location = locate(at),
         .notes = {},
+        .fixits = {},
     };
     diagnostic.addNote("borrowed by '" + nameOf(conflict->holder) + "' here",
                        conflict->location);
@@ -740,6 +895,7 @@ bool FunctionDataflow::doConsume(const PlaceRef &ref, core::MoveReason reason,
     if (target != place)
       via = place;
     state.moves.markMoved(target, reason, here, via);
+    recordConsume(target, reason);
   }
   return true;
 }
@@ -756,6 +912,7 @@ void FunctionDataflow::doMutationCheck(core::PlaceId place, const Expr &at,
           "cannot assign to '" + nameOf(place) + "' while it is borrowed",
       .location = locate(at),
       .notes = {},
+      .fixits = {},
   };
   diagnostic.addNote("borrowed by '" + nameOf(conflict->holder) + "' here",
                      conflict->location);
@@ -772,9 +929,15 @@ void FunctionDataflow::applyPointerAssign(core::PlaceId dest,
     core::PlaceId place;
     core::OwnershipKind kind;
     std::optional<MovedHit> moved;
+    std::vector<core::Loan> loans;
     bool belowDest;
   };
-  std::vector<std::pair<const ValueOrigin *, std::optional<CopySource>>> arms;
+  struct Arm {
+    const ValueOrigin *origin;
+    std::optional<CopySource> source;
+    core::ValueSource summary;
+  };
+  std::vector<Arm> arms;
   std::vector<const ValueOrigin *> pendingOrigins{&origin};
   while (!pendingOrigins.empty()) {
     const ValueOrigin *current = pendingOrigins.back();
@@ -791,26 +954,32 @@ void FunctionDataflow::applyPointerAssign(core::PlaceId dest,
           .place = src,
           .kind = state.kindOf(src),
           .moved = findMoved(src, state),
+          .loans = state.loans.heldBy(src),
           .belowDest = src == dest || places.isDescendantOf(src, dest),
       };
     }
-    arms.emplace_back(current, source);
+    arms.push_back(Arm{.origin = current,
+                       .source = std::move(source),
+                       .summary = recording() ? sourceOf(*current, state)
+                                              : core::ValueSource::unknown()});
   }
 
   // `q = realloc(p, n)` consumes p's class before q is reset, because q may
   // be p (`p = realloc(p, n)`).
   std::vector<core::PlaceId> consumed;
-  for (const auto &[arm, source] : arms) {
-    if (arm->kind != ValueOrigin::Kind::Realloc || !arm->place)
+  for (const Arm &arm : arms) {
+    if (arm.origin->kind != ValueOrigin::Kind::Realloc || !arm.origin->place)
       continue;
-    consumed = targets(arm->place->place, state);
-    if (!doConsume(*arm->place, core::MoveReason::Moved, at, state))
+    consumed = targets(arm.origin->place->place, state);
+    if (!doConsume(*arm.origin->place, core::MoveReason::Moved, at, state))
       consumed.clear();
   }
 
   reinit(dest, state);
 
-  for (const auto &[arm, source] : arms) {
+  for (const Arm &armRecord : arms) {
+    const ValueOrigin *arm = armRecord.origin;
+    const std::optional<CopySource> &source = armRecord.source;
     switch (arm->kind) {
     case ValueOrigin::Kind::Alloc:
       setKind(dest, core::join(state.kindOf(dest), core::OwnershipKind::Owned),
@@ -837,6 +1006,23 @@ void FunctionDataflow::applyPointerAssign(core::PlaceId dest,
       state.aliases.unite(dest, source->place);
       state.loans.copyHolder(source->place, dest);
       mirrorSubtree(source->place, dest, state);
+      // A copied loan must outlive its new holder (RFC 0001, *Lifetimes*),
+      // just as a fresh borrow must; this is how `g = p` with `p = &local`
+      // and, through a summary, `keep(local)` are caught.
+      for (const core::Loan &loan : source->loans) {
+        bool tooShort = false;
+        for (const core::LifetimeId destLifetime :
+             lifetimesOfPlace(dest, state)) {
+          if (!lifetimes.outlives(loan.lifetime, destLifetime)) {
+            tooShort = true;
+            break;
+          }
+        }
+        if (tooShort) {
+          reportLifetimeTooShort(dest, loan.place, at, /*returned=*/false);
+          break;
+        }
+      }
       if (source->moved) {
         // The read itself was reported at the load; keep the copy moved so
         // uses through it do not cascade into a second report per alias.
@@ -861,6 +1047,11 @@ void FunctionDataflow::applyPointerAssign(core::PlaceId dest,
       setKind(dest, state.kindOf(dest), state);
       break;
     }
+  }
+
+  if (recording()) {
+    for (const Arm &arm : arms)
+      recordStore(dest, arm.summary);
   }
 }
 
@@ -895,6 +1086,7 @@ void FunctionDataflow::applyBorrow(core::PlaceId dest, const PlaceRef &borrowed,
                    (mutableAttempt ? "borrowed" : "mutably borrowed"),
         .location = locate(at),
         .notes = {},
+        .fixits = {},
     };
     diagnostic.addNote("previous borrow of '" + nameOf(conflict->place) +
                            "' by '" + nameOf(conflict->holder) + "' here",
@@ -932,6 +1124,7 @@ void FunctionDataflow::checkTemporaryBorrow(const PlaceRef &borrowed,
                  (mutableAttempt ? "borrowed" : "mutably borrowed"),
       .location = locate(at),
       .notes = {},
+      .fixits = {},
   };
   diagnostic.addNote("previous borrow of '" + nameOf(conflict->place) +
                          "' by '" + nameOf(conflict->holder) + "' here",
@@ -1109,7 +1302,7 @@ std::string FunctionDataflow::nameOf(core::PlaceId place) const {
 }
 
 void FunctionDataflow::report(core::Diagnostic diagnostic) {
-  if (reporting)
+  if (phase == Phase::Final && emitDiagnostics)
     pending.push_back(std::move(diagnostic));
 }
 
@@ -1137,6 +1330,7 @@ void FunctionDataflow::reportUseOfMoved(core::PlaceId used, const MovedHit &hit,
                  (freed ? "freed" : "moved"),
       .location = locate(at),
       .notes = {},
+      .fixits = {},
   };
   std::string note = freed ? "freed here" : "moved here";
   const core::PlaceId via = hit.record.via.value_or(hit.target);
@@ -1161,6 +1355,7 @@ void FunctionDataflow::reportLifetimeTooShort(core::PlaceId holder,
                            "', which it points to",
       .location = locate(at),
       .notes = {},
+      .fixits = {},
   };
   if (const VarDecl *var = builder.varForPlace(borrowedRoot)) {
     diagnostic.addNote("'" + borrowedName + "' is declared here",
@@ -1209,32 +1404,320 @@ void FunctionDataflow::dump(const core::AnalysisState *exitState) {
   os << "  exit:";
   if (exitState == nullptr) {
     os << " <unreachable>\n";
+  } else {
+    os << " moved{";
+    bool first = true;
+    for (const core::PlaceId place : exitState->moves.movedPlaces()) {
+      const auto record = exitState->moves.movedAt(place);
+      os << (first ? "" : ", ") << places.name(place) << "@"
+         << record->location.line << ":" << record->location.column << " "
+         << (record->reason == core::MoveReason::Freed ? "freed" : "moved");
+      first = false;
+    }
+    os << "} loans{";
+    first = true;
+    for (const core::Loan &loan : exitState->loans.loans()) {
+      os << (first ? "" : ", ") << places.name(loan.place) << ": "
+         << core::toString(loan.kind) << " by " << places.name(loan.holder)
+         << " for " << lifetimes.name(loan.lifetime);
+      first = false;
+    }
+    os << "} aliases{";
+    first = true;
+    for (const auto &[a, b] : exitState->aliases.pairs()) {
+      os << (first ? "" : ", ") << places.name(a) << "~" << places.name(b);
+      first = false;
+    }
+    os << "}\n";
+  }
+
+  os << "  summary:";
+  const auto describeSource = [this](const core::ValueSource &source) {
+    std::string text(core::toString(source.kind));
+    if (source.path)
+      text += " " + summaryName(*source.path);
+    return text;
+  };
+  for (const auto &[path, effect] : inferred.effects) {
+    os << " " << summaryName(path) << ":";
+    const char *sep = " ";
+    for (const auto &[flag, label] :
+         {std::pair{effect.read, "read"}, std::pair{effect.written, "written"},
+          std::pair{effect.freed, "freed"}, std::pair{effect.moved, "moved"}}) {
+      if (flag) {
+        os << sep << label;
+        sep = "|";
+      }
+    }
+    os << ";";
+  }
+  os << " stores{";
+  bool first = true;
+  for (const core::Store &store : inferred.stores) {
+    os << (first ? "" : ", ") << summaryName(store.dest) << " = "
+       << describeSource(store.value);
+    first = false;
+  }
+  os << "} returns{";
+  first = true;
+  for (const core::ValueSource &source : inferred.returns) {
+    os << (first ? "" : ", ") << describeSource(source);
+    first = false;
+  }
+  os << "}";
+  if (inferred.reallocLike)
+    os << " realloc-like";
+  os << "\n";
+}
+
+std::string FunctionDataflow::summaryName(const core::SummaryPath &path) const {
+  std::string root;
+  if (path.isParam()) {
+    root = path.index < function.getNumParams()
+               ? function.getParamDecl(path.index)->getNameAsString()
+               : "param" + std::to_string(path.index);
+    if (root.empty())
+      root = "param" + std::to_string(path.index);
+  } else {
+    root = summaries.globals().nameOf(path.index).str();
+  }
+  return path.toString(root);
+}
+
+// -- Summary recording (RFC 0003) ---------------------------------------------
+
+std::optional<core::SummaryPath>
+FunctionDataflow::stableSummaryPathOf(core::PlaceId place) {
+  auto path = builder.summaryPathOf(place);
+  if (path && path->isParam() && path->index < paramReassigned.size() &&
+      paramReassigned[path->index])
+    return std::nullopt;
+  return path;
+}
+
+void FunctionDataflow::recordAccess(core::PlaceId place, bool write,
+                                    const core::AnalysisState &state) {
+  if (!recording())
+    return;
+  std::vector<core::PlaceId> affected = mirrors(place, state);
+  if (!llvm::is_contained(affected, place))
+    affected.push_back(place);
+  for (const core::PlaceId affectedPlace : affected) {
+    const auto path = builder.summaryPathOf(affectedPlace);
+    // Only caller memory counts: the parameter variable itself is the
+    // callee's own copy, and a global's value is reported through stores.
+    if (!path || !path->hasDeref())
+      continue;
+    inferred.addEffect(*path, write ? core::PlaceEffect{.written = true}
+                                    : core::PlaceEffect{.read = true});
+  }
+}
+
+void FunctionDataflow::recordConsume(core::PlaceId target,
+                                     core::MoveReason reason) {
+  if (!recording())
+    return;
+  const auto path = builder.summaryPathOf(target);
+  if (!path)
+    return;
+  eventEffects[*path].join(reason == core::MoveReason::Freed
+                               ? core::PlaceEffect{.freed = true}
+                               : core::PlaceEffect{.moved = true});
+}
+
+void FunctionDataflow::recordStore(core::PlaceId dest,
+                                   const core::ValueSource &value) {
+  if (!recording())
+    return;
+  const auto path = stableSummaryPathOf(dest);
+  // Caller-visible destinations only: memory below a dereference, or a
+  // global (including a `static` local, which outlives the call).
+  if (!path || (path->isParam() && !path->hasDeref()))
+    return;
+  inferred.addStore(core::Store{.dest = *path, .value = value});
+}
+
+core::ValueSource FunctionDataflow::sourceOf(const ValueOrigin &origin,
+                                             const core::AnalysisState &state) {
+  switch (origin.kind) {
+  case ValueOrigin::Kind::Alloc:
+  case ValueOrigin::Kind::Realloc:
+    return core::ValueSource::fresh();
+  case ValueOrigin::Kind::Null:
+    return core::ValueSource::null();
+  case ValueOrigin::Kind::Borrow:
+    if (origin.place) {
+      if (const auto path = stableSummaryPathOf(origin.place->place))
+        return core::ValueSource::borrow(*path);
+    }
+    return core::ValueSource::unknown();
+  case ValueOrigin::Kind::Copy: {
+    if (!origin.place)
+      return core::ValueSource::unknown();
+    const core::PlaceId src = origin.place->place;
+    if (const auto path = stableSummaryPathOf(src))
+      return core::ValueSource::copy(*path);
+    // A local: resolve through what it aliases, then what it borrows, then
+    // what it owns.
+    for (const core::PlaceId alias : state.aliases.members(src)) {
+      if (const auto path = stableSummaryPathOf(alias))
+        return core::ValueSource::copy(*path);
+    }
+    for (const core::Loan &loan : state.loans.heldBy(src)) {
+      if (const auto path = stableSummaryPathOf(loan.place))
+        return core::ValueSource::borrow(*path);
+    }
+    if (state.kindOf(src) == core::OwnershipKind::Owned)
+      return core::ValueSource::fresh();
+    return core::ValueSource::unknown();
+  }
+  case ValueOrigin::Kind::Opaque:
+  case ValueOrigin::Kind::Conditional:
+    return core::ValueSource::unknown();
+  }
+  return core::ValueSource::unknown();
+}
+
+void FunctionDataflow::finalizeSummary(const core::AnalysisState *exitState) {
+  // Parameter roots, and everything under a reassigned parameter, take their
+  // consumption from the events; everything else from the exit state (RFC
+  // 0003, *Deriving a summary*).
+  for (const auto &[path, effect] : eventEffects) {
+    const bool eventBased =
+        path.isParam() &&
+        (path.isRoot() ||
+         (path.index < paramReassigned.size() && paramReassigned[path.index]));
+    if (eventBased)
+      inferred.addEffect(path, effect);
+  }
+  if (exitState != nullptr) {
+    for (const core::PlaceId place : exitState->moves.movedPlaces()) {
+      const auto path = builder.summaryPathOf(place);
+      if (!path)
+        continue;
+      const auto record = exitState->moves.movedAt(place);
+      inferred.addEffect(*path, record->reason == core::MoveReason::Freed
+                                    ? core::PlaceEffect{.freed = true}
+                                    : core::PlaceEffect{.moved = true});
+    }
+  }
+}
+
+// -- Reconciliation (RFC 0003) ------------------------------------------------
+
+std::optional<FunctionDataflow::AnnotatedParam>
+FunctionDataflow::borrowedParamFor(core::PlaceId place,
+                                   const core::AnalysisState &state) {
+  std::vector<core::PlaceId> candidates{place};
+  llvm::append_range(candidates, state.aliases.members(place));
+  for (const core::PlaceId candidate : candidates) {
+    if (!places.isBase(candidate))
+      continue;
+    const auto *param =
+        dyn_cast_if_present<ParmVarDecl>(builder.varForPlace(candidate));
+    if (param == nullptr)
+      continue;
+    const unsigned index = param->getFunctionScopeIndex();
+    if (index >= signature.params.size())
+      continue;
+    if (signature.params[index].borrowed)
+      return AnnotatedParam{.place = candidate,
+                            .annotation = Annotation::Borrowed};
+    if (signature.params[index].mutBorrowed)
+      return AnnotatedParam{.place = candidate,
+                            .annotation = Annotation::MutBorrowed};
+  }
+  return std::nullopt;
+}
+
+void FunctionDataflow::checkAnnotationOnConsume(
+    const PlaceRef &ref, core::MoveReason reason, const Expr &at,
+    const core::AnalysisState &state) {
+  if (!recording())
+    return;
+  const char *verb = reason == core::MoveReason::Freed ? "freed" : "moved";
+  if (const auto param = borrowedParamFor(ref.place, state)) {
+    reportMismatch(*param, std::string("is ") + verb + " here", ref.place, at);
     return;
   }
-  os << " moved{";
-  bool first = true;
-  for (const core::PlaceId place : exitState->moves.movedPlaces()) {
-    const auto record = exitState->moves.movedAt(place);
-    os << (first ? "" : ", ") << places.name(place) << "@"
-       << record->location.line << ":" << record->location.column << " "
-       << (record->reason == core::MoveReason::Freed ? "freed" : "moved");
-    first = false;
+  // Releasing something the borrowed object owns mutates it.
+  if (!ref.derefs.empty()) {
+    const core::PlaceId through = ref.derefs.back();
+    const auto param = borrowedParamFor(through, state);
+    if (param && param->annotation == Annotation::Borrowed)
+      reportMismatch(*param, "'" + nameOf(ref.place) + "' is " + verb + " here",
+                     through, at);
   }
-  os << "} loans{";
-  first = true;
-  for (const core::Loan &loan : exitState->loans.loans()) {
-    os << (first ? "" : ", ") << places.name(loan.place) << ": "
-       << core::toString(loan.kind) << " by " << places.name(loan.holder)
-       << " for " << lifetimes.name(loan.lifetime);
-    first = false;
+}
+
+void FunctionDataflow::checkAnnotationOnWrite(
+    const PlaceRef &ref, const Expr &at, const core::AnalysisState &state) {
+  if (!recording() || ref.derefs.empty())
+    return;
+  const core::PlaceId through = ref.derefs.back();
+  const auto param = borrowedParamFor(through, state);
+  if (param && param->annotation == Annotation::Borrowed)
+    reportMismatch(*param, "is written through here", through, at);
+}
+
+void FunctionDataflow::checkAnnotationOnReturn(
+    const ValueOrigin &origin, const Expr &at,
+    const core::AnalysisState &state) {
+  if (!recording())
+    return;
+  const AnnotationSet &annotation = signature.result;
+  const bool promisesOwned = annotation.owned;
+  const bool promisesBorrow = annotation.borrowed || annotation.mutBorrowed;
+  if (!promisesOwned && !promisesBorrow)
+    return;
+
+  const core::ValueSource source = sourceOf(origin, state);
+  std::string message;
+  if (promisesOwned && source.kind == core::ValueSource::Kind::Borrow) {
+    message = "function returns a borrow but its return type is annotated "
+              "WEAVEC_OWNED";
+  } else if (promisesBorrow && source.kind == core::ValueSource::Kind::Fresh) {
+    message = std::string("function returns a fresh allocation but its return "
+                          "type is annotated ") +
+              (annotation.borrowed ? "WEAVEC_BORROWED" : "WEAVEC_MUT");
+  } else {
+    return;
   }
-  os << "} aliases{";
-  first = true;
-  for (const auto &[a, b] : exitState->aliases.pairs()) {
-    os << (first ? "" : ", ") << places.name(a) << "~" << places.name(b);
-    first = false;
-  }
-  os << "}\n";
+  core::Diagnostic diagnostic{
+      .severity = core::Severity::Error,
+      .id = core::diag::AnnotationMismatch,
+      .message = std::move(message),
+      .location = locate(at),
+      .notes = {},
+      .fixits = {},
+  };
+  diagnostic.addNote("annotated here", locate(function.getLocation()));
+  report(std::move(diagnostic));
+}
+
+void FunctionDataflow::reportMismatch(const AnnotatedParam &param,
+                                      const std::string &what,
+                                      core::PlaceId through, const Expr &at) {
+  const std::string paramName = nameOf(param.place);
+  const char *macro = param.annotation == Annotation::Borrowed
+                          ? "WEAVEC_BORROWED"
+                          : "WEAVEC_MUT";
+  core::Diagnostic diagnostic{
+      .severity = core::Severity::Error,
+      .id = core::diag::AnnotationMismatch,
+      .message = "'" + paramName + "' is annotated " + macro + " but " + what,
+      .location = locate(at),
+      .notes = {},
+      .fixits = {},
+  };
+  if (const VarDecl *var = builder.varForPlace(param.place))
+    diagnostic.addNote("'" + paramName + "' is annotated here",
+                       locate(var->getLocation()));
+  if (through != param.place)
+    diagnostic.addNote("'" + nameOf(through) + "' is a copy of '" + paramName +
+                           "'",
+                       locate(at));
+  report(std::move(diagnostic));
 }
 
 } // namespace weavec::analysis

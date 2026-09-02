@@ -17,17 +17,22 @@
 #ifndef WEAVEC_LIB_ANALYSIS_PLACEBUILDER_H
 #define WEAVEC_LIB_ANALYSIS_PLACEBUILDER_H
 
+#include "weavec/Analysis/Summaries.h"
 #include "weavec/Core/Place.h"
+#include "weavec/Core/Summary.h"
 
 #include "clang/AST/Decl.h"
 #include "clang/AST/Expr.h"
 
 #include "llvm/ADT/DenseMap.h"
 
+#include <cstdint>
 #include <optional>
 #include <vector>
 
 namespace weavec::analysis {
+
+struct CallEffects;
 
 /// A place denoted by an lvalue expression together with the pointer places
 /// that had to be dereferenced to reach it (each of those is *read* by the
@@ -79,7 +84,8 @@ struct ValueOrigin {
 
 class PlaceBuilder {
 public:
-  explicit PlaceBuilder(core::PlaceTable &table) : places(table) {}
+  PlaceBuilder(core::PlaceTable &table, SummaryStore &summaryStore)
+      : places(table), summaries(summaryStore) {}
 
   /// The base place for `var`, created on first use.
   core::PlaceId placeForVar(const clang::VarDecl &var);
@@ -101,8 +107,33 @@ public:
   [[nodiscard]] std::optional<PlaceRef>
   resolvePointerValue(const clang::Expr &expr);
 
-  /// Classifies a pointer-typed rvalue.
+  /// Classifies a pointer-typed rvalue. Calls are classified through the
+  /// callee's summary (RFC 0003): a fresh return is an allocation, a return
+  /// of argument `k` is a copy of that argument, and so on.
   [[nodiscard]] ValueOrigin classifyValue(const clang::Expr &expr);
+
+  /// The caller-side place a summary path denotes at `call` (RFC 0003,
+  /// *Applying a summary at a call*): `param(i)` is the place holding the
+  /// `i`-th argument, `param(i)*` what it points to (or `x` itself when the
+  /// argument is `&x`), `global(g)` the global's place. `std::nullopt` when
+  /// the argument is not a place.
+  [[nodiscard]] std::optional<PlaceRef>
+  resolveSummaryPath(const core::SummaryPath &path,
+                     const clang::CallExpr &call);
+
+  /// Translates a summary value source at `call` into a caller value
+  /// origin. A copy of an argument the callee consumed is reported as a
+  /// fresh allocation: ownership went in and came back out.
+  [[nodiscard]] ValueOrigin originFromSource(const core::ValueSource &source,
+                                             const clang::CallExpr &call,
+                                             const core::FunctionSummary &of);
+
+  /// The summary path of a place rooted at a parameter or a global of
+  /// `function`, or `std::nullopt` for places rooted at locals.
+  [[nodiscard]] std::optional<core::SummaryPath>
+  summaryPathOf(core::PlaceId place);
+
+  [[nodiscard]] SummaryStore &summaryStore() noexcept { return summaries; }
 
   /// True if `expr` is an lvalue expression whose shape the builder
   /// understands (a variable, member, subscript or dereference).
@@ -129,7 +160,9 @@ public:
 
 private:
   core::PlaceTable &places;
+  SummaryStore &summaries;
   llvm::DenseMap<const clang::VarDecl *, core::PlaceId> varPlaces;
+  llvm::DenseMap<std::uint32_t, const clang::VarDecl *> placeVars;
   std::vector<const clang::VarDecl *> order;
 };
 
