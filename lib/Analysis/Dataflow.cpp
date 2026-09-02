@@ -441,7 +441,12 @@ void FunctionDataflow::transfer(const CFGBlock &block,
       continue;
     }
     if (const auto lifetimeEnd = element.getAs<CFGLifetimeEnds>()) {
-      if (const VarDecl *var = lifetimeEnd->getVarDecl())
+      // Clang <= 22 also ends parameter lifetimes at every `return` (Clang 23
+      // gates this behind `AddParameterLifetimes`). Parameters live for the
+      // whole function in the model, and forgetting them here would drop
+      // their facts from the exit state and the summary.
+      if (const VarDecl *var = lifetimeEnd->getVarDecl();
+          var != nullptr && !isa<ParmVarDecl>(var))
         handleLifetimeEnd(*var, state);
     }
   }
@@ -1622,8 +1627,8 @@ FunctionDataflow::declaredAnnotations(core::PlaceId place) const {
 std::optional<core::RawRecord>
 FunctionDataflow::rawAt(core::PlaceId place,
                         const core::AnalysisState &state) const {
-  if (const auto record = state.raw.rawAt(place))
-    return *record;
+  if (auto record = state.raw.rawAt(place))
+    return record;
   if (!builder.isDeclaredRaw(place))
     return std::nullopt;
   const NamedDecl *decl = builder.declFor(place);

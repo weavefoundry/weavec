@@ -10,6 +10,10 @@
 
 #include "weavec/Analysis/Annotations.h"
 
+// Defines `LazyGenerationalUpdatePtr::makeValue`, which `Redeclarable`
+// walks (`getCanonicalDecl`, `redecls()`) instantiate here.
+#include "clang/AST/ASTContext.h"
+
 #include "llvm/ADT/STLExtras.h"
 
 #include <utility>
