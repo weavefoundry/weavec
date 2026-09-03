@@ -103,16 +103,16 @@ row above and all but one of the `double-free` rows, without adding any:
 
 Two larger projects were added as precision canaries. zlib (15 units as one
 program) is clean apart from two boundary warnings for its `in`/`out`
-callbacks. Lua (34 units as one program, ~5 minutes) exercises the model
-harder than anything else here, and every one of its reports is a false
-positive of a kind an RFC already names:
+callbacks. Lua (34 units as one program, ~12 minutes since RFC 0007, ~6
+before; see below) exercises the model harder than anything else here, and
+every one of its reports is a false positive of a kind an RFC already names:
 
 | Project | Diagnostic                                                                | Cause                                                                                                                                                                                                                                                                                         |
 | ------- | ------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | lua     | `lifetime-too-short` ×10 (`fs->bl = bl`, `ls->fs = new_fs`, `L->errorJmp = &lj`, `endptr`) | The linked-stack-of-locals idiom: a local's address is stored into a longer-lived struct and unlinked again before the local dies. RFC 0001's lifetime rule cannot see the unlink; RFC 0006 lists it under *Accepted false positives* for loans.                                    |
 | lua     | `use-after-free` ×5 (`oldstack`, `tb->hash`, `buff->b`)                   | `realloc` through `l_alloc`, which also does `if (nsize == 0) { free(ptr); return NULL; }`. Its null class therefore *may* free, and a `newp == NULL` test cannot retract (RFC 0006 tracks the result, not the size argument). `buff->b` adds a `?:` whose arms are separated by a pointer test on a different place. |
 | lua     | `double-free` ×4 (`block`, `dummy`, `stdin` ×2)                           | The same `l_alloc` shape (`firsttry` then `tryagain` on the same block), and `luaL_loadfilex` closing `stdin` only `if (filename)`: a correlation between a parameter and which global was used.                                                                                             |
-| lua     | `conflicting-borrow` at `luaM_free(L, l)` in `luaE_freethread`           | `l` is an interior pointer to `L1` (`fromstate`), and `L1->stack.p` was passed to a callee just before; the loan is held through the parameter and so does not end.                                                                                                                             |
+| lua     | `conflicting-borrow` ×4 (`luaM_free(L, l)` in `luaE_freethread`, `L->l_G` ×2 in `close_state`, `newt.node` in `luaH_resize`) | An interior pointer into the object being freed is still live: `l` points into `L1` (`fromstate`), `L` is `&g->mainth.l` inside the `global_State` that `close_state` frees, `newt.lastfree` points into `newt.node`. RFC 0001's conflict rule; the holder dies with the object. The `close_state` and `luaH_resize` reports appeared with RFC 0007: the coarse `*L: written` that every callee used to report had made callers forget the very aliases the rule needs (RFC 0006, *What a callee wrote, its caller wrote*). |
 | lua     | `annotation-required` at `lua.c:498`                                      | `l_getenv` is a function-pointer variable set to `getenv` or `no_getenv`; neither is address-taken *as that type* in the program.                                                                                                                                                              |
 
 Lua also found three scalability problems that would have made the corpus
@@ -122,3 +122,27 @@ under computed `goto`) grew a dense alias relation over dead variables,
 `PlaceTable::descendants` scanned the whole table at every call site, and
 `BorrowState` was an unsorted vector. The unit went from 56 s to 3 s; the
 whole program from 23 minutes to under 6.
+
+### RFC 0007: leaks
+
+The leak check adds 18 `leak` reports across the ten projects and no
+`mismatched-release`. Six are genuine; the rest fall into three shapes the
+summaries cannot express, each already named by RFC 0006 or RFC 0007:
+
+| Project             | Diagnostic                                                                                  | Cause                                                                                                                                                                                                                                                                                                                                                                       |
+| ------------------- | ------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| jsmn                | `leak` ×6 (`js`, `tok` at `return 1/2/3` in `jsondump.c`'s `main`)                          | **Genuine.** The example's error exits return from `main` without freeing the growing buffers. RFC 0007 does not exempt `main` (*Unresolved questions*); these are the reports that decision costs, and they are correct.                                                                                                                                                       |
+| cJSON, cJSON-program | `leak` on `p.buffer` in `cJSON_PrintPreallocated`                                           | `print_value` may store a fresh buffer into `p->buffer` — but only when `p->noalloc` is false, and this caller set it true. An integer field separates the arms (RFC 0006, *Accepted false positives*).                                                                                                                                                                       |
+| linenoise-program   | `leak` on `ls.buf` at the end of `main`                                                     | `linenoiseEditFeed` may grow `l->buf` with `realloc` — only when `l->buflen_max` is non-zero, and `linenoiseEditStart` with a caller buffer sets it to zero. The same integer correlation.                                                                                                                                                                                       |
+| zlib                | `leak` ×2 on `stream.state` after `deflateInit`/`inflateInit` fails (`compress.c`, `uncompr.c`) | `deflateInit2_` ends in `return deflateReset(strm)`, whose error class (a state check that cannot fail on a state just built) leaves the fresh `strm->state` in place. The `!= Z_OK` class therefore *may* hold the allocation; *Per-outcome null stores* can only say where a class holds nothing.                                                                            |
+| zlib                | `leak` ×2 on `state->msg` when `state` is freed (`gzclose_r`, `gzclose_w`)                  | `gz_error(state, Z_OK, NULL)` frees the old message and returns early because `msg` is null; on its other paths it stores a fresh message. The store depends on an argument's value, which the summary has no class for.                                                                                                                                                       |
+| lua                 | `leak` ×5 (`result of a function pointer` ×4, `p.buff.buffer` in `luaD_protectedparser`)   | Lua frees through its allocator: `(*g->frealloc)(ud, block, osize, 0)` returns null and `luaZ_resizebuffer(L, buff, 0)` stores it. The `lua_Alloc` summary returns `{fresh, null}` and nothing ties the fresh alternative to `nsize != 0`, so the discarded result, and the value stored into `p.buff.buffer`, look like allocations. The same size-argument blindness as the `use-after-free` row above. |
+
+RFC 0007 also made Lua slower: about twice the time on the same machine.
+Every callee's writes below a mutably borrowed argument are now copied into
+the caller's summary path by path, where the coarse `*L: written` used to
+stand for all of them and, applied at the caller, erased everything the
+caller knew below `L` (the `close_state` row above). Lua threads one state
+pointer through every call, so its summaries carry an order of magnitude
+more written paths and every call applies them; RFC 0007's *Performance*
+section records what was done about it and what is left.

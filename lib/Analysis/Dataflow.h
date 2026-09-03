@@ -25,6 +25,8 @@
 #include "weavec/Core/Diagnostic.h"
 #include "weavec/Core/Lifetime.h"
 #include "weavec/Core/Place.h"
+#include "weavec/Core/Resource.h"
+#include "weavec/Core/SourceLocation.h"
 #include "weavec/Core/Summary.h"
 
 #include "clang/AST/ASTContext.h"
@@ -39,6 +41,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <memory>
 #include <optional>
@@ -115,6 +118,12 @@ private:
   llvm::DenseMap<const clang::Expr *, Role> roles;
   /// Parameters whose variable is assigned or address-taken in the body.
   std::vector<bool> paramReassigned;
+  /// Calls whose result is discarded (a statement expression): a fresh
+  /// result is leaked on the spot (RFC 0007).
+  llvm::DenseSet<const clang::CallExpr *> discardedCalls;
+  /// Place expressions whose pointer value is converted to an integer: the
+  /// resource escapes the model (RFC 0007, *Escape*).
+  llvm::DenseSet<const clang::Expr *> escapingExprs;
 
   // -- Liveness (RFC 0006, *Loans end at the last use of their holder*) -----
 
@@ -126,6 +135,11 @@ private:
   llvm::DenseSet<const clang::VarDecl *> addressTaken;
   /// Per block, per element: the locals live *before* that element.
   std::vector<std::vector<llvm::BitVector>> liveBefore;
+  /// Per block: the locals live at its end (the union over its successors).
+  std::vector<llvm::BitVector> liveOut;
+  /// Per block: the locals live at its entry; what is live on the edge into
+  /// it, which is narrower than the predecessor's `liveOut`.
+  std::vector<llvm::BitVector> liveIn;
   SignatureAnnotations signature;
   /// The whole body is an unsafe region (`WEAVEC_UNSAFE` on the function).
   bool unsafeBody;
@@ -145,9 +159,29 @@ private:
 
   /// The summary under construction (final pass only).
   core::FunctionSummary inferred;
+  /// The (call, pointee path) pairs whose callee writes `replayWrites` has
+  /// already copied into `inferred`; a block visited again adds nothing.
+  std::set<std::pair<const clang::CallExpr *, core::SummaryPath>> replayed;
+  /// Per call, the places this function knows below the callee's written
+  /// paths, valid while the place table has `placesSeen` entries.
+  struct WrittenPlaces {
+    std::optional<std::size_t> placesSeen;
+    std::vector<core::PlaceId> places;
+  };
+  llvm::DenseMap<const clang::CallExpr *, WrittenPlaces> writtenAt;
   /// Consumption recorded as it happens, keyed by summary path; used for
   /// parameter roots and for paths under reassigned parameters.
   std::map<core::SummaryPath, core::PlaceEffect> eventEffects;
+  /// Per outcome class (RFC 0007, *Per-outcome null stores*): the caller
+  /// memory null at every `return` of that class seen so far, and the
+  /// caller memory holding a resource at some return of it. A `fresh` store
+  /// destination held at no return of a class did not take effect on it
+  /// (`if (strm == NULL) return Z_STREAM_ERROR;` before the store).
+  struct NullAtReturn {
+    std::set<core::SummaryPath> null;
+    std::set<core::SummaryPath> held;
+  };
+  std::map<core::Outcome, NullAtReturn> nullAtReturn;
 
   /// The consumption a call in the block being transferred performed that
   /// depends on its result (RFC 0006, *Pending outcomes*), until the result
@@ -166,6 +200,7 @@ private:
   void markPathInterior(const clang::Expr &root);
   void noteParamAccess(const clang::Expr &place, Role role);
   void collectUnsafe(const clang::Stmt &stmt);
+  void collectDiscardedCalls(const clang::Stmt *stmt);
   core::AnalysisState initialState();
   /// Backward liveness of the function's locals over the CFG, filling
   /// `liveBefore` (RFC 0006).
@@ -178,13 +213,47 @@ private:
   /// `index` of `block`.
   void expireDeadLoans(const clang::CFGBlock &block, std::size_t index,
                        core::AnalysisState &state);
+  /// Reports the resources held by locals that die before element `index`
+  /// of `block` (RFC 0007, *Death points*); runs before the dead locals'
+  /// alias edges go.
+  void checkDeadResources(const clang::CFGBlock &block, std::size_t index,
+                          core::AnalysisState &state);
+  /// The liveness bit of the local that `element` writes outright (a
+  /// declaration with an initialiser, `p = ...`), if any.
+  [[nodiscard]] std::optional<unsigned>
+  localWrittenBy(const clang::CFGElement &element) const;
+  /// The same at the end of `block`, on the edge to `successor`: what is
+  /// live at the block's end but not read by `successor`, and everything
+  /// local when `successor` is the exit (or null).
+  void checkBlockEndResources(const clang::CFGBlock &block,
+                              const clang::CFGBlock *successor,
+                              core::AnalysisState &state);
+  /// Refines `state` with the condition of the edge from `from` to its
+  /// successor `succIndex`, then checks what dies on it.
+  void leaveBlock(const clang::CFGBlock &from, unsigned succIndex,
+                  core::AnalysisState &state);
   void applyEdge(const clang::CFGBlock &from, unsigned succIndex,
                  core::AnalysisState &state);
+  /// Refines `state` with `condition` being true (`holds`) or false.
+  /// `wrapped` says the condition's value was computed before the branch
+  /// (`!(c)`, `__builtin_expect(c, k)`, `(c) != 0`) rather than the branch
+  /// being on the operand Clang's short-circuit CFG evaluated last.
+  void applyCondition(const clang::Expr &condition, bool holds, bool wrapped,
+                      core::AnalysisState &state);
   /// A test of a call result on a conditional edge (RFC 0006, *Outcome
   /// tests*): the classes the edge selects for the pending outcome of the
   /// tested operand.
   void applyOutcomeTest(const clang::Expr &operand,
                         const std::set<core::Outcome> &selected,
+                        core::AnalysisState &state);
+  /// `place` and its exact copies hold null (RFC 0007, *Null*).
+  void markNullWithCopies(core::PlaceId place, core::AnalysisState &state);
+  /// Drops every fact below `place` and its exact copies on the edge where
+  /// they are null: nothing lies below a null pointer (RFC 0006, *Null
+  /// edges*).
+  void forgetBelowNull(core::PlaceId place, core::AnalysisState &state);
+  /// Marks null what `narrowed` says is null in every class still possible.
+  void markNullOutcomes(const core::PendingOutcome &narrowed,
                         core::AnalysisState &state);
   void flushDiagnostics();
   void dump(const core::AnalysisState *exitState);
@@ -197,7 +266,67 @@ private:
                     core::AnalysisState &state);
   void handleCall(const clang::CallExpr &call, core::AnalysisState &state);
   void handleReturn(const clang::ReturnStmt &ret, core::AnalysisState &state);
-  void handleLifetimeEnd(const clang::VarDecl &var, core::AnalysisState &state);
+  void handleLifetimeEnd(const clang::VarDecl &var, core::SourceLocation at,
+                         core::AnalysisState &state);
+
+  // -- Resources (RFC 0007) -------------------------------------------------
+
+  /// The forms a `leak` report takes.
+  enum class LeakForm : std::uint8_t {
+    /// `'p' is leaked`: its holder went out of reach.
+    Lost,
+    /// `'p' is leaked: it is overwritten without being released`.
+    Overwritten,
+    /// `'b->p' is leaked when 'b' is freed`.
+    Container,
+  };
+  /// `place` and every descendant reachable without crossing a dereference:
+  /// the memory the place's own storage holds.
+  [[nodiscard]] std::vector<core::PlaceId> storageOf(core::PlaceId place);
+  /// Memory below a dereference of a parameter: the caller's, never a leak
+  /// candidate here, and its records outlive the parameter name's last use.
+  [[nodiscard]] bool isCallerMemory(core::PlaceId place) const;
+  /// The resource at `place` escapes the model: its loss is not a leak.
+  void escape(core::PlaceId place, core::AnalysisState &state);
+  /// Escapes the places a value names: the copied place of a copy (and the
+  /// storage below it when `deep`), the storage of a borrowed object.
+  void escapeValue(const ValueOrigin &origin, bool deep,
+                   core::AnalysisState &state);
+  /// True if the resource at `place` (with `record`) is lost when every
+  /// place `dying` says so goes away: nothing else reaches it.
+  [[nodiscard]] bool
+  resourceLost(core::PlaceId place, const core::ResourceRecord &record,
+               const std::function<bool(core::PlaceId)> &dying,
+               const core::AnalysisState &state);
+  /// Reports and forgets every resource among `candidates` that is lost when
+  /// the places `dying` says so go away.
+  void checkLeaks(const std::vector<core::PlaceId> &candidates,
+                  const std::function<bool(core::PlaceId)> &dying,
+                  LeakForm form, core::SourceLocation at,
+                  core::AnalysisState &state,
+                  std::optional<core::PlaceId> container = std::nullopt);
+  /// A whole-place assignment to `dest`: what it held is lost unless
+  /// something else reaches it.
+  void checkOverwrite(core::PlaceId dest, const clang::Expr &at,
+                      core::AnalysisState &state);
+  /// The object `*pointer` is being freed by a shipped-table release: the
+  /// resources its storage holds go with it (RFC 0007, *Owned fields*).
+  void checkContainerFree(core::PlaceId pointer, const clang::Expr &at,
+                          core::AnalysisState &state);
+  /// The object `*pointer` is being freed by a defined or annotated
+  /// destructor: what its storage holds is the destructor's to release, so
+  /// the records below escape rather than being reported.
+  void releaseStorageBelow(core::PlaceId pointer, core::AnalysisState &state);
+  /// `'p' is released with 'free' but must be released with 'fclose'`.
+  void checkReleaseFamily(core::PlaceId place, std::string_view family,
+                          const clang::Expr &at,
+                          const core::AnalysisState &state);
+  void reportLeak(core::PlaceId place, const core::ResourceRecord &record,
+                  std::string message, core::SourceLocation at);
+  /// The source location of element `index` of `block` (the statement, or
+  /// the block's terminator / the function's end for anything else).
+  [[nodiscard]] core::SourceLocation locateElement(const clang::CFGBlock &block,
+                                                   std::size_t index) const;
 
   // -- Semantic actions -----------------------------------------------------
 
@@ -205,10 +334,10 @@ private:
               core::AnalysisState &state, bool includeSelf);
   /// Returns the places marked moved (the place, its mirrors and aliases);
   /// empty if the place was already moved (reported, not re-marked).
-  std::vector<core::PlaceId> doConsume(const PlaceRef &ref,
-                                       core::MoveReason reason,
-                                       const clang::Expr &at,
-                                       core::AnalysisState &state);
+  std::vector<core::PlaceId>
+  doConsume(const PlaceRef &ref, core::MoveReason reason, const clang::Expr &at,
+            core::AnalysisState &state, std::string_view family = {},
+            bool library = false);
   void doMutationCheck(core::PlaceId place, const clang::Expr &at,
                        core::AnalysisState &state);
   /// The variable `place` names (if it is a base place) was assigned or had
@@ -239,6 +368,27 @@ private:
   /// Forgets every fact about the places strictly below `place` (the object
   /// was overwritten; RFC 0006, *`written` forgets what lies below*).
   void forgetBelow(core::PlaceId place, core::AnalysisState &state);
+  /// `pointer` is about to be forgotten (reassigned or dead) while an alias
+  /// still reaches its object: the resources the object refers to escape,
+  /// since the references below `*pointer` go with it (RFC 0007, *Escape*).
+  void loseTrackBelow(core::PlaceId pointer, core::AnalysisState &state);
+  /// Drops the move records of the mirrors of `place` (the same cell under
+  /// an aliased pointer): a whole write to `place` replaces what that cell
+  /// held under every name (RFC 0002, aliases).
+  void reinitMirrors(core::PlaceId place, core::AnalysisState &state);
+  /// True if `dest` lies below a dereference of a pointer whose object
+  /// nobody here owns, borrows or names (a local holding a value of unknown
+  /// origin): memory reached that way belongs to whoever handed the pointer
+  /// out, so a value stored there escapes (RFC 0007, *Escape*).
+  [[nodiscard]] bool isBelowOpaquePointer(core::PlaceId dest,
+                                          const core::AnalysisState &state);
+  /// True if `dest` has no summary path but lies below a dereference of a
+  /// local that borrows caller memory or a global (`tb = &L->strt;
+  /// tb->hash = p`): the store landed in an object that outlives this
+  /// function, under a name the summary cannot report (RFC 0007, *Escape*).
+  [[nodiscard]] bool
+  isBelowBorrowOfCallerMemory(core::PlaceId dest,
+                              const core::AnalysisState &state);
   /// Copies every fact about the objects below `*src` onto `*dest`.
   void mirrorSubtree(core::PlaceId src, core::PlaceId dest,
                      core::AnalysisState &state);
@@ -269,7 +419,8 @@ private:
   /// Handles a call across the checking boundary (no summary): the RFC 0003
   /// warning by default, a raw operation under `--strict-externs` (RFC
   /// 0004, *Boundaries*).
-  void handleUncheckedCall(const clang::CallExpr &call);
+  void handleUncheckedCall(const clang::CallExpr &call,
+                           core::AnalysisState &state);
   /// Reports `annotation-required` the first time an unresolvable callee
   /// with pointer parameters or result is called from reported code.
   void noteUnknownCallee(const clang::CallExpr &call);
@@ -320,11 +471,19 @@ private:
   /// written, when it names caller memory.
   void recordAccess(core::PlaceId place, bool write,
                     const core::AnalysisState &state);
+  /// Records what a callee wrote below `pointee`, the object argument
+  /// `argument` points to, as this function's writes: the callee's written
+  /// paths below `param(argument)*`, or the pointee itself when the summary
+  /// has none (an annotation).
+  void replayWrites(const clang::CallExpr &call, const PlaceRef &pointee,
+                    std::uint32_t argument,
+                    const core::FunctionSummary &summary,
+                    const core::AnalysisState &state);
   /// Records a release/move of `target` as it happens: in the state's
   /// flow-sensitive `consumed` map (every phase) and in `eventEffects`
   /// (final pass).
   void recordConsume(core::PlaceId target, core::MoveReason reason,
-                     core::AnalysisState &state);
+                     std::string_view family, core::AnalysisState &state);
   /// True if consumption of `path` is recorded as it happens rather than
   /// read from the exit state (RFC 0003, *Deriving a summary*): parameter
   /// roots and paths under reassigned parameters.
@@ -338,6 +497,14 @@ private:
   /// this path for each (final pass).
   void recordOutcomes(const clang::Expr &value, const ValueOrigin &origin,
                       const core::AnalysisState &state);
+  /// The stable summary path of `place` if it names caller memory (below a
+  /// dereference of a parameter, or a global).
+  [[nodiscard]] std::optional<core::SummaryPath>
+  callerVisiblePath(core::PlaceId place);
+  /// For `return p != NULL`, `return !p` and their negations: the tested
+  /// place and the integer class the function returns when it is null.
+  [[nodiscard]] std::optional<std::pair<const clang::Expr *, core::Outcome>>
+  nullTestReturn(const clang::Expr &value) const;
   /// Records a pointer value written into caller-visible memory.
   void recordStore(core::PlaceId dest, const core::ValueSource &value);
   /// Classifies a value the callee hands out (stores or returns).
@@ -388,6 +555,12 @@ private:
   [[nodiscard]] std::vector<ConsumeTarget>
   consumeTargets(core::PlaceId place, core::ElementWitness element,
                  const core::AnalysisState &state);
+  /// Whether this function has said anything about `place` (or a mirror or
+  /// alias of it): named it, aliased it, or recorded a resource, move or
+  /// null fact there. RFC 0007, *Applying a summary: deepest paths first*.
+  [[nodiscard]] bool knowsPlace(core::PlaceId place,
+                                core::ElementWitness element,
+                                const core::AnalysisState &state);
   [[nodiscard]] std::vector<core::PlaceId>
   mirrors(core::PlaceId place, const core::AnalysisState &state);
   /// `place` together with its ancestors and descendants.
@@ -402,9 +575,13 @@ private:
   [[nodiscard]] static std::optional<MovedHit>
   findMoved(core::PlaceId place, const core::AnalysisState &state,
             core::ElementWitness element = core::ElementWitness::whole());
+  /// A loan that conflicts with a move or mutation of `place` (`kind`
+  /// unset) or with a new borrow of it. Loans on the place's ancestors count
+  /// unless `ancestors` is false: freeing what `s.buf` points to leaves a
+  /// borrow of `s` intact.
   [[nodiscard]] std::optional<core::Loan>
   findLoanConflict(core::PlaceId place, std::optional<core::BorrowKind> kind,
-                   const core::AnalysisState &state);
+                   const core::AnalysisState &state, bool ancestors = true);
 
   [[nodiscard]] std::vector<core::LifetimeId>
   lifetimesOfPlace(core::PlaceId place, const core::AnalysisState &state);

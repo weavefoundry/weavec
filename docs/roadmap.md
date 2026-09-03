@@ -126,6 +126,31 @@ Design: [RFC 0006 — Precision](rfcs/0006-precision.md) (Accepted).
 - [x] `written` effects forget the facts below the written object.
 - [ ] Corpus: clean baseline on the tracked projects; zlib and Lua added.
 
+## Milestone 6 — Resource lifecycle (in progress)
+
+Design: [RFC 0007 — Resource lifecycle](rfcs/0007-resource-lifecycle.md)
+(Accepted).
+
+- [x] `ResourceTracker` in the state: what this function owns, where it came
+      from, its release family, and whether it escaped.
+- [x] `leak` (warning) where a resource's last holder goes out of reach, is
+      overwritten, is a discarded allocating call, or is a field dropped with
+      its container.
+- [x] `mismatched-release` (error): families on every allocator and releaser
+      of the shipped table, inferred through wrappers, crossing units
+      (summary format v3, sidecar v3).
+- [x] `WEAVEC_OWNED` on struct fields enforced; inferred owned fields and
+      array elements checked the same way.
+- [x] Deepest-first application of consumed summary paths (a soundness fix
+      for callees that free a field together with its object).
+- [x] Per-outcome null facts for out-parameter constructors
+      (`null <class> <path>`): `if (mk(&x) != 0) return -1;` is clean when
+      `mk`'s error returns leave `*out` null or untouched.
+- [ ] Per-outcome *stores* (which of several stores holds on which class).
+- [ ] A release family for `WEAVEC_OWNED` declarations (`WEAVEC_OWNED_BY(f)`
+      or a family attribute), so annotated APIs get the mismatch check too.
+- [ ] Corpus triage of the new `leak` reports; leak rate as a tracked metric.
+
 ## Ongoing
 
 - Corpus testing against real C projects (`scripts/corpus.py`; false-positive

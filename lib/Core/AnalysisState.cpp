@@ -9,6 +9,8 @@
 #include "weavec/Core/AnalysisState.h"
 
 #include <algorithm>
+#include <iterator>
+#include <utility>
 
 namespace weavec::core {
 
@@ -43,6 +45,29 @@ std::vector<PlaceId> PendingOutcome::select(const std::set<Outcome> &selected) {
   return reinstated;
 }
 
+std::vector<PlaceId> PendingOutcome::nullInAll() const {
+  std::vector<PlaceId> result;
+  bool first = true;
+  for (const auto &[outcome, places] : consumedBy) {
+    const auto it = nullOn.find(outcome);
+    if (it == nullOn.end())
+      return {};
+    std::vector<PlaceId> theirs = it->second;
+    std::ranges::sort(theirs);
+    if (first) {
+      result = std::move(theirs);
+      first = false;
+      continue;
+    }
+    std::vector<PlaceId> both;
+    std::ranges::set_intersection(result, theirs, std::back_inserter(both));
+    result = std::move(both);
+    if (result.empty())
+      return {};
+  }
+  return result;
+}
+
 bool PendingOutcome::settled() const {
   const std::vector<PlaceId> all = places();
   return std::ranges::all_of(consumedBy, [&all](const auto &entry) {
@@ -58,6 +83,7 @@ bool AnalysisState::join(const AnalysisState &other) {
   changed |= loans.join(other.loans);
   changed |= aliases.join(other.aliases);
   changed |= raw.join(other.raw);
+  changed |= resources.join(other.resources);
 
   // A pending outcome that is only pending on one incoming path cannot be
   // safely undone, so keep only entries both sides agree on.
@@ -110,6 +136,7 @@ void AnalysisState::forget(PlaceId place) {
   pending.erase(place);
   kinds.erase(place);
   raw.clear(place);
+  resources.forget(place);
 }
 
 } // namespace weavec::core

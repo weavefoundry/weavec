@@ -38,7 +38,12 @@ item wins. Behaviour is pinned by `test/Analysis/rfc0002-*.c` and
   same path under every alias of each dereferenced pointer on its path
   (`FunctionDataflow::mirrors`). Synthesised mirror paths are capped at
   depth 8 so cyclic structures cannot grow the place table without bound;
-  paths written in the source are never truncated.
+  paths written in the source are never truncated. The rule runs both
+  ways: a whole write to `p->x` (`reinit`) also drops the move records of
+  its mirrors `q->x`, since it replaces what that cell held under every
+  name (`reinitMirrors`, added with RFC 0007). Before that, `free(L->stack);
+  L->stack = fresh` with `L->twups ~ L` left `L->twups->stack` freed
+  forever, and every second call was a `double-free`.
 - **`reallocs` maps the result to the consumed places** (the argument and
   its aliases at the call), not to a class id, so the entry stays meaningful
   after the relation changes. Join semantics are as specified.

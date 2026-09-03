@@ -67,13 +67,13 @@ TEST(SignatureInference, AllocatingWrapperReturnsFresh) {
   ASSERT_TRUE(result.ast);
   const core::FunctionSummary *s = result.summary("node_new");
   ASSERT_NE(s, nullptr);
-  EXPECT_EQ(s->returns, std::set<ValueSource>{ValueSource::fresh()});
+  EXPECT_EQ(s->returns, std::set<ValueSource>{ValueSource::fresh("free")});
   EXPECT_EQ(s->inferredReturnKind(), core::OwnershipKind::Owned);
 
   const core::FunctionSummary *m = result.summary("maybe");
   ASSERT_NE(m, nullptr);
-  EXPECT_EQ(m->returns,
-            (std::set<ValueSource>{ValueSource::fresh(), ValueSource::null()}));
+  EXPECT_EQ(m->returns, (std::set<ValueSource>{ValueSource::fresh("free"),
+                                               ValueSource::null()}));
   EXPECT_EQ(m->inferredReturnKind(), core::OwnershipKind::Owned);
 }
 
@@ -113,16 +113,16 @@ TEST(SignatureInference, StoresThroughParameters) {
 
   const core::FunctionSummary *init = result.summary("buf_init");
   ASSERT_NE(init, nullptr);
-  EXPECT_EQ(init->stores, (std::set<core::Store>{
-                              core::Store{.dest = b.deref().field("data"),
-                                          .value = ValueSource::fresh()}}));
+  EXPECT_EQ(init->stores, (std::set<core::Store>{core::Store{
+                              .dest = b.deref().field("data"),
+                              .value = ValueSource::fresh("free")}}));
   EXPECT_EQ(init->borrowKind(0), core::BorrowKind::Mutable);
   EXPECT_TRUE(init->effectOf(b.deref().field("len")).written);
 
   const core::FunctionSummary *make = result.summary("make");
   ASSERT_NE(make, nullptr);
   EXPECT_TRUE(make->stores.contains(
-      core::Store{.dest = b.deref(), .value = ValueSource::fresh()}));
+      core::Store{.dest = b.deref(), .value = ValueSource::fresh("free")}));
 
   const core::FunctionSummary *link = result.summary("link");
   ASSERT_NE(link, nullptr);
@@ -151,7 +151,7 @@ TEST(SignatureInference, EscapesIntoGlobals) {
   const core::FunctionSummary *keepAlloc = result.summary("keep_alloc");
   ASSERT_NE(keepAlloc, nullptr);
   ASSERT_EQ(keepAlloc->stores.size(), 1U);
-  EXPECT_EQ(keepAlloc->stores.begin()->value, ValueSource::fresh());
+  EXPECT_EQ(keepAlloc->stores.begin()->value, ValueSource::fresh("free"));
 
   const core::FunctionSummary *drop = result.summary("drop");
   ASSERT_NE(drop, nullptr);
@@ -224,7 +224,7 @@ TEST(SignatureInference, ReturnSources) {
   EXPECT_EQ(result.summary("local_alias")->returns,
             std::set<ValueSource>{ValueSource::copy(n)});
   EXPECT_EQ(result.summary("owned_local")->returns,
-            std::set<ValueSource>{ValueSource::fresh()});
+            std::set<ValueSource>{ValueSource::fresh("free")});
   // An integer cast yields a raw pointer (RFC 0004), and the summary says so.
   EXPECT_EQ(result.summary("from_int")->returns,
             std::set<ValueSource>{ValueSource::raw()});
@@ -270,9 +270,10 @@ TEST(SignatureInference, UnsafeAndAnnotatedDefinitions) {
   ASSERT_NE(result.summary("unsafe_free"), nullptr);
   EXPECT_TRUE(result.summary("unsafe_free")->frees(0));
   EXPECT_EQ(messages(result.diagnostics),
-            (Strings{"6: use of 'a' after it was freed",
+            (Strings{"3: 'n' is leaked", "6: use of 'a' after it was freed",
                      "8: use of 'b' after it was moved"}))
-      << "the double free inside the unsafe body is not reported";
+      << "the double free inside the unsafe body is not reported; the owned "
+         "parameter `annotated` never releases is (RFC 0007)";
 }
 
 TEST(SignatureInference, UnsafeDeclarationWithoutBodyIsAnEmptySummary) {
@@ -541,8 +542,10 @@ TEST(SignatureInference, ConditionalEffectsAreMayEffects) {
     }
   )c");
   ASSERT_TRUE(result.ast);
+  // `f` is clean of use-after-free; on the path where `free_if` declined,
+  // nobody releases `p` (RFC 0007).
   EXPECT_EQ(messages(result.diagnostics),
-            (Strings{"12: use of 'p' after it was freed",
+            (Strings{"7: 'p' is leaked", "12: use of 'p' after it was freed",
                      "17: use of 'p' after it was freed"}));
   const core::FunctionSummary *summary = result.summary("free_if");
   ASSERT_NE(summary, nullptr);

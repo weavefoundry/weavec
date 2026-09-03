@@ -29,15 +29,15 @@ bool ElementWitness::matches(const ElementWitness &other) const noexcept {
   return false;
 }
 
-std::optional<MoveRecord> MoveTracker::markMoved(PlaceId place,
-                                                 MoveReason reason,
-                                                 SourceLocation location,
-                                                 std::optional<PlaceId> via,
-                                                 ElementWitness element) {
+std::optional<MoveRecord>
+MoveTracker::markMoved(PlaceId place, MoveReason reason,
+                       SourceLocation location, std::optional<PlaceId> via,
+                       ElementWitness element, std::string family) {
   MoveRecord record{.reason = reason,
                     .location = std::move(location),
                     .via = via,
-                    .element = element};
+                    .element = element,
+                    .family = std::move(family)};
   auto [it, inserted] = moved.try_emplace(place, record);
   if (inserted)
     return std::nullopt;

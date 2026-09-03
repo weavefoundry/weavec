@@ -37,7 +37,13 @@
 // Callback arguments (`qsort`'s comparator, `pthread_create`'s start
 // routine) are '.': the function pointer itself is not dereferenced in the
 // ownership sense, and what the callee does with the data pointer is
-// out of scope (RFC 0001, threads).
+// out of scope (RFC 0001, threads). A '.' on a pointer argument is
+// load-bearing for RFC 0007: the caller treats the value as *escaped* (the
+// library may retain it), so `putenv`'s string and `setvbuf`'s buffer are
+// '.' rather than 'r'/'w'.
+//
+// Every 'F', 'f' and 'm' carries a release family (RFC 0007), stamped in
+// `buildTable` from the member list there.
 //
 //===----------------------------------------------------------------------===//
 
@@ -48,6 +54,8 @@
 
 #include <array>
 #include <cassert>
+#include <set>
+#include <utility>
 
 using namespace clang;
 
@@ -157,7 +165,7 @@ static constexpr auto Specs = std::to_array<BuiltinSpec>({
     {"perror",        "r",      '-'},
     {"remove",        "r",      '-'},
     {"rename",        "rr",     '-'},
-    {"setvbuf",       "ww..",   '-'},
+    {"setvbuf",       "w...",   '-'},  // keeps the buffer: no effect, escapes
     {"setbuf",        "ww",     '-'},
     {"fileno",        "r",      '-'},
 
@@ -229,7 +237,7 @@ static constexpr auto Specs = std::to_array<BuiltinSpec>({
     {"mktemp",        "w",      'A'},
     {"setenv",        "rr.",    '-'},
     {"unsetenv",      "r",      '-'},
-    {"putenv",        "r",      '-'},
+    {"putenv",        ".",      '-'},  // keeps the string: no effect, escapes
     {"clearenv",      "",       '-'},
     {"qsort_r",       "w....",  '-'},
     {"random",        "",       '-'},
@@ -698,6 +706,71 @@ static llvm::StringMap<core::FunctionSummary> buildTable() {
   storesFresh("posix_memalign", 0);
   storesFresh("getaddrinfo", 3);
   storesFresh("scandir", 1);
+
+  // `getline`/`getdelim` reallocate the buffer they are given: the old
+  // `*lineptr` is consumed before the fresh one is stored, so reusing the
+  // buffer across iterations is not a leak (RFC 0007, *The library table*).
+  for (const llvm::StringLiteral name :
+       {llvm::StringLiteral("getline"), llvm::StringLiteral("getdelim")}) {
+    table[name].addEffect(core::SummaryPath::param(0).deref(),
+                          core::PlaceEffect{.moved = true});
+  }
+
+  // Release families (RFC 0007): every allocator, releaser and consuming
+  // parameter in the table belongs to the family named after its releaser.
+  // The releaser itself is a member so `free` is `freed(free)`.
+  struct FamilyMember {
+    llvm::StringLiteral member;
+    llvm::StringLiteral family;
+  };
+  // clang-format off
+  static constexpr FamilyMember Families[] = {
+      {"free", "free"},           {"malloc", "free"},
+      {"calloc", "free"},         {"realloc", "free"},
+      {"reallocarray", "free"},   {"aligned_alloc", "free"},
+      {"strdup", "free"},         {"strndup", "free"},
+      {"tempnam", "free"},        {"backtrace_symbols", "free"},
+      {"getline", "free"},        {"getdelim", "free"},
+      {"asprintf", "free"},       {"vasprintf", "free"},
+      {"posix_memalign", "free"}, {"scandir", "free"},
+      {"fclose", "fclose"},       {"fopen", "fclose"},
+      {"fdopen", "fclose"},       {"tmpfile", "fclose"},
+      {"fmemopen", "fclose"},     {"open_memstream", "fclose"},
+      {"pclose", "pclose"},       {"popen", "pclose"},
+      {"closedir", "closedir"},   {"opendir", "closedir"},
+      {"fdopendir", "closedir"},
+      {"munmap", "munmap"},       {"mmap", "munmap"},
+      {"freeaddrinfo", "freeaddrinfo"}, {"getaddrinfo", "freeaddrinfo"},
+      {"dlclose", "dlclose"},     {"dlopen", "dlclose"},
+      {"iconv_close", "iconv_close"}, {"iconv_open", "iconv_close"},
+      {"freelocale", "freelocale"}, {"newlocale", "freelocale"},
+  };
+  // clang-format on
+  const auto stamp = [&table](llvm::StringRef member, llvm::StringRef family) {
+    const auto it = table.find(member);
+    assert(it != table.end() && "family member missing from the table");
+    core::FunctionSummary &summary = it->second;
+    for (auto &[path, effect] : summary.effects)
+      if (effect.consumed())
+        effect.family = family.str();
+    for (auto &[outcome, effects] : summary.outcomes)
+      for (auto &[path, effect] : effects)
+        if (effect.consumed())
+          effect.family = family.str();
+    std::set<core::Store> stores;
+    for (core::Store store : summary.stores) {
+      if (store.value.isFresh())
+        store.value.family = family.str();
+      stores.insert(std::move(store));
+    }
+    summary.stores = std::move(stores);
+    if (summary.returnsFresh()) {
+      summary.eraseFreshReturns();
+      summary.addReturn(core::ValueSource::fresh(family.str()));
+    }
+  };
+  for (const FamilyMember &entry : Families)
+    stamp(entry.member, entry.family);
 
   // `strtok_r(s, delim, &save)` parks a pointer into `s` in `*save`.
   table["strtok_r"].addStore(core::Store{

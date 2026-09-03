@@ -126,7 +126,7 @@ TEST(Summaries, LookupOrder) {
   const auto builtin = store.lookup(*parsed.fn("calloc"));
   ASSERT_TRUE(builtin);
   EXPECT_EQ(builtin->source, SummarySource::Builtin);
-  EXPECT_TRUE(builtin->summary->returns.contains(ValueSource::fresh()));
+  EXPECT_TRUE(builtin->summary->returns.contains(ValueSource::fresh("free")));
 
   const auto annotated = store.lookup(*parsed.fn("take"));
   ASSERT_TRUE(annotated);
@@ -411,7 +411,7 @@ TEST(Builtins, Entries) {
 
   const auto *fopenSummary = builtinSummary(*parsed.fn("fopen"));
   ASSERT_NE(fopenSummary, nullptr);
-  EXPECT_TRUE(fopenSummary->returns.contains(ValueSource::fresh()));
+  EXPECT_TRUE(fopenSummary->returns.contains(ValueSource::fresh("fclose")));
   EXPECT_EQ(fopenSummary->borrowKind(0), core::BorrowKind::Shared);
 
   const auto *fcloseSummary = builtinSummary(*parsed.fn("fclose"));
@@ -540,35 +540,36 @@ TEST(Builtins, PosixEntries) {
   ASSERT_EQ(getlineSummary->stores.size(), 1U);
   EXPECT_EQ(getlineSummary->stores.begin()->dest,
             SummaryPath::param(0).deref());
-  EXPECT_EQ(getlineSummary->stores.begin()->value, ValueSource::fresh());
+  EXPECT_EQ(getlineSummary->stores.begin()->value, ValueSource::fresh("free"));
 
   const auto *asprintfSummary = builtinSummary(*parsed.fn("asprintf"));
   ASSERT_NE(asprintfSummary, nullptr);
   EXPECT_EQ(asprintfSummary->stores.begin()->dest,
             SummaryPath::param(0).deref());
-  EXPECT_EQ(asprintfSummary->stores.begin()->value, ValueSource::fresh());
+  EXPECT_EQ(asprintfSummary->stores.begin()->value, ValueSource::fresh("free"));
   EXPECT_EQ(builtinSummary(*parsed.fn("posix_memalign"))->stores,
             asprintfSummary->stores);
 
   EXPECT_TRUE(builtinSummary(*parsed.fn("popen"))
-                  ->returns.contains(ValueSource::fresh()));
+                  ->returns.contains(ValueSource::fresh("pclose")));
   EXPECT_TRUE(builtinSummary(*parsed.fn("pclose"))->frees(0));
   EXPECT_TRUE(builtinSummary(*parsed.fn("opendir"))
-                  ->returns.contains(ValueSource::fresh()));
+                  ->returns.contains(ValueSource::fresh("closedir")));
   EXPECT_TRUE(builtinSummary(*parsed.fn("closedir"))->frees(0));
   EXPECT_EQ(
       builtinSummary(*parsed.fn("readdir"))->returns,
       std::set<ValueSource>{ValueSource::interiorCopy(SummaryPath::param(0))})
       << "the entry lives in the stream";
   EXPECT_TRUE(builtinSummary(*parsed.fn("mmap"))
-                  ->returns.contains(ValueSource::fresh()));
+                  ->returns.contains(ValueSource::fresh("munmap")));
   EXPECT_TRUE(builtinSummary(*parsed.fn("munmap"))->frees(0));
 
   const auto *gaiSummary = builtinSummary(*parsed.fn("getaddrinfo"));
   ASSERT_NE(gaiSummary, nullptr);
   EXPECT_EQ(gaiSummary->borrowKind(2), core::BorrowKind::Shared);
   EXPECT_EQ(gaiSummary->stores.begin()->dest, SummaryPath::param(3).deref());
-  EXPECT_EQ(gaiSummary->stores.begin()->value, ValueSource::fresh());
+  EXPECT_EQ(gaiSummary->stores.begin()->value,
+            ValueSource::fresh("freeaddrinfo"));
   EXPECT_TRUE(builtinSummary(*parsed.fn("freeaddrinfo"))->frees(0));
 
   // RFC 0006, *Alias exactness*: a pointer *into* the argument is an

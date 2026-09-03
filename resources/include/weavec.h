@@ -30,7 +30,7 @@
 #define WEAVEC_H
 
 #define WEAVEC_H_VERSION_MAJOR 0
-#define WEAVEC_H_VERSION_MINOR 2
+#define WEAVEC_H_VERSION_MINOR 3
 
 #if defined(__has_attribute)
 #if __has_attribute(annotate)
@@ -44,7 +44,11 @@
 
 /* The spellings below must match weavec::analysis::spelling. */
 
-/** The pointer uniquely owns its referent and must release it exactly once. */
+/**
+ * The pointer uniquely owns its referent and must release it exactly once.
+ * On a struct field, the object owns the referent: releasing the object
+ * while the field still holds one is reported as a leak.
+ */
 #define WEAVEC_OWNED WEAVEC_ANNOTATE_("weavec.owned")
 
 /** A shared, read-only borrow; the referent outlives the borrow. */

@@ -82,6 +82,11 @@ public:
   /// what makes the set of places finite for any given function.
   [[nodiscard]] PlaceId index(PlaceId parent);
 
+  /// The child `field`/`deref`/`index` would return, if it already exists;
+  /// nothing is interned. `field` is ignored unless `step` is `Field`.
+  [[nodiscard]] std::optional<PlaceId> child(PlaceId parent, PathStep step,
+                                             std::string_view field) const;
+
   /// Display name for `id`, e.g. `p`, `p->next`, `a[*]`, `*p`.
   [[nodiscard]] std::string_view name(PlaceId id) const noexcept;
 
@@ -119,6 +124,12 @@ public:
   /// it. Used to mirror facts between aliases: `p->f` under `p` becomes
   /// `q->f` under `q`.
   [[nodiscard]] PlaceId translate(PlaceId id, PlaceId from, PlaceId to);
+
+  /// `translate` without interning: the translated place if every step of
+  /// it already exists, none otherwise. For facts that need only reach
+  /// places something has already named.
+  [[nodiscard]] std::optional<PlaceId>
+  lookupTranslated(PlaceId id, PlaceId from, PlaceId to) const;
 
   /// The nearest ancestor-or-self of `id` whose step is `Deref`, if any. The
   /// object holding `id` lives as long as whatever that pointer refers to.

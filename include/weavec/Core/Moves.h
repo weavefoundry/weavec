@@ -27,6 +27,7 @@
 #include <cstdint>
 #include <map>
 #include <optional>
+#include <string>
 #include <vector>
 
 namespace weavec::core {
@@ -92,6 +93,9 @@ struct MoveRecord {
   std::optional<PlaceId> via;
   /// Which element the move named (RFC 0006); `Whole` for a plain place.
   ElementWitness element;
+  /// The release family of the consume (RFC 0007), e.g. `free`; empty when
+  /// unknown. Fed into the summary as the effect's family.
+  std::string family = {};
 
   friend bool operator==(const MoveRecord &, const MoveRecord &) = default;
 };
@@ -108,7 +112,8 @@ public:
   std::optional<MoveRecord>
   markMoved(PlaceId place, MoveReason reason, SourceLocation location,
             std::optional<PlaceId> via = {},
-            ElementWitness element = ElementWitness::whole());
+            ElementWitness element = ElementWitness::whole(),
+            std::string family = {});
 
   /// Reinitializes `place`, e.g. after assignment of a fresh value. With a
   /// witness, only a record whose witness matches is erased (an element

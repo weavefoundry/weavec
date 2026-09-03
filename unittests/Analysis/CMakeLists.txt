@@ -5,6 +5,7 @@ weavec_add_unittest(
           DataflowTest.cpp
           FunctionAnalysisTest.cpp
           ProgramDatabaseTest.cpp
+          ResourceLifecycleTest.cpp
           SignatureInferenceTest.cpp
           SummariesTest.cpp
   DEPS weavec::Analysis weavec::Frontend)

@@ -197,12 +197,113 @@ PlaceBuilder::resolveSummaryPath(const core::SummaryPath &path,
   return ref;
 }
 
+/// The caller-side place a summary path's root denotes at `call`, and the
+/// index of the first step still to apply: `1` when the argument is `&x`
+/// and the path's first step is the dereference `x` already is.
+std::optional<std::pair<core::PlaceId, std::size_t>>
+PlaceBuilder::lookupSummaryRoot(const core::SummaryPath &path,
+                                const CallExpr &call) {
+  if (!path.isParam()) {
+    const VarDecl *global = summaries.globals().declFor(path.index);
+    if (global == nullptr)
+      return std::nullopt;
+    return std::pair{placeForVar(*global), std::size_t{0}};
+  }
+  if (path.index >= call.getNumArgs())
+    return std::nullopt;
+  const ValueOrigin origin = classifyValue(*call.getArg(path.index));
+  if (origin.kind == ValueOrigin::Kind::Copy && origin.place)
+    return std::pair{origin.place->place, std::size_t{0}};
+  if (origin.kind == ValueOrigin::Kind::Borrow && origin.place) {
+    if (path.steps.empty() || path.steps.front().step != core::PathStep::Deref)
+      return std::nullopt;
+    return std::pair{origin.place->place, std::size_t{1}};
+  }
+  return std::nullopt;
+}
+
+std::optional<core::PlaceId>
+PlaceBuilder::lookupSummaryPath(const core::SummaryPath &path,
+                                const CallExpr &call) {
+  const auto root = lookupSummaryRoot(path, call);
+  if (!root)
+    return std::nullopt;
+  core::PlaceId place = root->first;
+  for (std::size_t i = root->second; i < path.steps.size(); ++i) {
+    const auto child =
+        places.child(place, path.steps[i].step, path.steps[i].field);
+    if (!child)
+      return std::nullopt;
+    place = *child;
+  }
+  return place;
+}
+
+std::optional<core::PlaceId>
+PlaceBuilder::lookupSummaryPath(const core::SummaryPath &path,
+                                const CallExpr &call, PathLookupCache &cache) {
+  // A `&x` argument makes `firstStep` depend on the path's first step, so a
+  // root is shared only between paths that agree on it; a root that found
+  // nothing is looked up again (the failure may have been the path's shape).
+  const bool sameRoot = cache.rootKnown && cache.last &&
+                        cache.last->root == path.root &&
+                        cache.last->index == path.index &&
+                        (cache.firstStep == 0 ||
+                         (!path.steps.empty() &&
+                          path.steps.front().step == core::PathStep::Deref));
+  if (!sameRoot) {
+    cache.chain.clear();
+    const auto root = lookupSummaryRoot(path, call);
+    cache.rootKnown = root.has_value();
+    if (root) {
+      cache.chain.push_back(root->first);
+      cache.firstStep = root->second;
+    }
+  }
+  if (!cache.rootKnown) {
+    cache.last = path;
+    return std::nullopt;
+  }
+  // Keep the prefix shared with the previous path, then extend.
+  std::size_t common = 0;
+  if (sameRoot) {
+    const auto &prev = cache.last->steps;
+    while (cache.firstStep + common < prev.size() &&
+           cache.firstStep + common < path.steps.size() &&
+           prev[cache.firstStep + common] ==
+               path.steps[cache.firstStep + common])
+      ++common;
+  }
+  const std::size_t wanted = path.steps.size() - cache.firstStep;
+  cache.last = path;
+  if (common + 1 <= cache.chain.size()) {
+    cache.chain.resize(common + 1);
+  } else {
+    // The previous path already failed inside the shared prefix.
+    return std::nullopt;
+  }
+  for (std::size_t k = cache.chain.size() - 1; k < wanted; ++k) {
+    const core::PathElem &elem = path.steps[cache.firstStep + k];
+    const auto child = places.child(cache.chain.back(), elem.step, elem.field);
+    if (!child)
+      return std::nullopt;
+    cache.chain.push_back(*child);
+  }
+  return cache.chain.back();
+}
+
 ValueOrigin PlaceBuilder::originFromSource(const core::ValueSource &source,
                                            const CallExpr &call,
                                            const core::FunctionSummary &of) {
+  const auto fresh = [&call](std::string family) {
+    ValueOrigin origin =
+        makeOrigin(ValueOrigin::Kind::Alloc, std::nullopt, &call);
+    origin.family = std::move(family);
+    return origin;
+  };
   switch (source.kind) {
   case core::ValueSource::Kind::Fresh:
-    return makeOrigin(ValueOrigin::Kind::Alloc, std::nullopt, &call);
+    return fresh(source.family);
   case core::ValueSource::Kind::Copy: {
     if (!source.path)
       return ValueOrigin{};
@@ -212,7 +313,7 @@ ValueOrigin PlaceBuilder::originFromSource(const core::ValueSource &source,
       if (source.path->index >= call.getNumArgs())
         return ValueOrigin{};
       if (of.consumes(source.path->index))
-        return makeOrigin(ValueOrigin::Kind::Alloc, std::nullopt, &call);
+        return fresh(of.effectOf(*source.path).family);
       // The argument value itself, whatever it was: `&x` stays a borrow of
       // `x`, `malloc(n)` stays an allocation, `p` is a copy of `p`.
       ValueOrigin origin = classifyValue(*call.getArg(source.path->index));
@@ -221,9 +322,17 @@ ValueOrigin PlaceBuilder::originFromSource(const core::ValueSource &source,
     // The same for a path below an argument or a global (`t->array =
     // resizearray(L, t, ...)` in Lua): a copy of a resource the callee
     // consumed is that resource, not a dangling pointer to it (RFC 0006,
-    // *Interactions*).
-    if (of.effectOf(*source.path).consumed())
-      return makeOrigin(ValueOrigin::Kind::Alloc, std::nullopt, &call);
+    // *Interactions*). A copy of a path *freed* on some class only
+    // (`state->x.next = state->out` in a body whose error path frees
+    // `state->out`) is nobody's new resource, and a test of the result
+    // (`== -1`) cannot retract the class: the value is not tracked (RFC
+    // 0007, *Applying a summary: deepest paths first*).
+    if (const core::PlaceEffect effect = of.effectOf(*source.path);
+        effect.consumed()) {
+      if (effect.moved || of.consumesUnconditionally(*source.path))
+        return fresh(effect.family);
+      return ValueOrigin{};
+    }
     auto ref = resolveSummaryPath(*source.path, call);
     if (!ref)
       return ValueOrigin{};
@@ -288,13 +397,6 @@ bool PlaceBuilder::isPlaceExpr(const Expr &expr) {
   return false;
 }
 
-std::optional<PlaceRef> PlaceBuilder::resolvePointerValue(const Expr &expr) {
-  const Expr &stripped = stripTransparent(expr);
-  if (!isPlaceExpr(stripped))
-    return std::nullopt;
-  return resolve(stripped);
-}
-
 /// `*(p + k)` and `*(k + p)` denote an element of whatever `p` points to.
 static const Expr *pointerOperandOfArithmetic(const Expr &expr) {
   const auto *binary = dyn_cast<BinaryOperator>(&expr);
@@ -308,6 +410,17 @@ static const Expr *pointerOperandOfArithmetic(const Expr &expr) {
       binary->getRHS()->getType()->isPointerType())
     return binary->getRHS();
   return nullptr;
+}
+
+std::optional<PlaceRef> PlaceBuilder::resolvePointerValue(const Expr &expr) {
+  const Expr &stripped = stripTransparent(expr);
+  // `free(s - header)` releases the object `s` points into (RFC 0004,
+  // *Pointer identity*): the argument names `s`'s object, at another offset.
+  if (const Expr *pointer = pointerOperandOfArithmetic(stripped))
+    return resolvePointerValue(*pointer);
+  if (!isPlaceExpr(stripped))
+    return std::nullopt;
+  return resolve(stripped);
 }
 
 std::optional<PlaceRef> PlaceBuilder::resolve(const Expr &expr) {
@@ -340,6 +453,16 @@ std::optional<PlaceRef> PlaceBuilder::resolve(const Expr &expr) {
       auto ref = resolve(*addr->getSubExpr());
       if (!ref)
         return std::nullopt;
+      ref->place = fieldPlace(ref->place, field);
+      return ref;
+    }
+    // `a->f` on an array is `a[0].f`, like `*a` below.
+    if (base.getType()->isArrayType() && isPlaceExpr(base)) {
+      auto ref = resolve(base);
+      if (!ref)
+        return std::nullopt;
+      ref->place = places.index(ref->place);
+      setWitness(*ref, core::ElementWitness::ofConstant(0));
       ref->place = fieldPlace(ref->place, field);
       return ref;
     }

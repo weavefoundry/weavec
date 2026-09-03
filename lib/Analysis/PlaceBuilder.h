@@ -32,6 +32,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <string>
 #include <vector>
 
 namespace weavec::analysis {
@@ -102,6 +103,9 @@ struct ValueOrigin {
   bool constObject = false;
   /// Raw: why.
   core::RawReason rawReason = core::RawReason::IntegerCast;
+  /// Alloc: the release family of the allocation (RFC 0007); empty when
+  /// unknown.
+  std::string family;
 };
 
 class PlaceBuilder {
@@ -171,6 +175,30 @@ public:
   resolveSummaryPath(const core::SummaryPath &path,
                      const clang::CallExpr &call);
 
+  /// Like `resolveSummaryPath`, but only finds a place this function has
+  /// already named: nothing is interned, and a path below an unknown place
+  /// is `std::nullopt`. For effects that touch only what is known (a
+  /// callee's writes forgetting the facts below a place).
+  [[nodiscard]] std::optional<core::PlaceId>
+  lookupSummaryPath(const core::SummaryPath &path, const clang::CallExpr &call);
+
+  /// State for `lookupSummaryPath` over a run of paths in summary order at
+  /// one call: consecutive paths share a root and a prefix, so the root is
+  /// classified once and the previous chain of places is extended rather
+  /// than rebuilt (a Lua summary names dozens of written fields below one
+  /// state pointer, applied at thousands of calls).
+  struct PathLookupCache {
+    std::optional<core::SummaryPath> last;
+    /// `chain[k]` is the place after `k` steps past `firstStep` of `last`;
+    /// shorter than the steps when a step found nothing.
+    std::vector<core::PlaceId> chain;
+    std::size_t firstStep = 0;
+    bool rootKnown = false;
+  };
+  [[nodiscard]] std::optional<core::PlaceId>
+  lookupSummaryPath(const core::SummaryPath &path, const clang::CallExpr &call,
+                    PathLookupCache &cache);
+
   /// Translates a summary value source at `call` into a caller value
   /// origin. A copy of an argument the callee consumed is reported as a
   /// fresh allocation: ownership went in and came back out.
@@ -208,6 +236,9 @@ public:
   }
 
 private:
+  [[nodiscard]] std::optional<std::pair<core::PlaceId, std::size_t>>
+  lookupSummaryRoot(const core::SummaryPath &path, const clang::CallExpr &call);
+
   core::PlaceTable &places;
   SummaryStore &summaries;
   const clang::ASTContext &context;

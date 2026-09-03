@@ -26,6 +26,7 @@
 #include "weavec/Core/Ownership.h"
 #include "weavec/Core/Place.h"
 #include "weavec/Core/Raw.h"
+#include "weavec/Core/Resource.h"
 #include "weavec/Core/Summary.h"
 
 #include <map>
@@ -42,6 +43,19 @@ namespace weavec::core {
 /// reinstated on that edge.
 struct PendingOutcome {
   std::map<Outcome, std::vector<PlaceId>> consumedBy;
+  /// Places whose value the callee may return as its non-null result
+  /// (`if (c) { free(p); return NULL; } return p;`). One of them that is
+  /// reinstated on the non-null edge *is* the result: the holder of the
+  /// result and the place are exact aliases there and the result owns
+  /// nothing of its own (RFC 0007, *Acquiring and losing a resource*).
+  std::vector<PlaceId> returned = {};
+  /// Per class, the caller places the callee left null on every path
+  /// returning it (RFC 0007, *Per-outcome null stores*): once the test has
+  /// narrowed the classes, a place null in all of them is null.
+  std::map<Outcome, std::vector<PlaceId>> nullOn = {};
+
+  /// The places null in every class still possible; empty when no class is.
+  [[nodiscard]] std::vector<PlaceId> nullInAll() const;
 
   /// Every place mentioned in any class, ascending.
   [[nodiscard]] std::vector<PlaceId> places() const;
@@ -80,6 +94,9 @@ struct AnalysisState {
   /// Pointer places holding a raw pointer (RFC 0004): dereferencing or
   /// releasing one is legal only inside an unsafe region.
   RawTracker raw;
+  /// Places holding an owned resource this function must account for, and
+  /// places known to be null (RFC 0007).
+  ResourceTracker resources;
 
   /// Component-wise join with the state of another incoming edge. Returns
   /// whether this state changed, so the fixpoint engine need not copy and

@@ -75,7 +75,7 @@ TEST(UnitExports, ExportsExternalAndAddressTakenDefinitions) {
   EXPECT_TRUE(drop.summary.frees(0));
 
   EXPECT_TRUE(exports.functions.at("node_new")
-                  .summary.returns.contains(ValueSource::fresh()));
+                  .summary.returns.contains(ValueSource::fresh("free")));
   EXPECT_TRUE(exports.functions.at("node_name")
                   .summary.returns.contains(ValueSource::copy(
                       SummaryPath::param(0).deref().field("name"))));
@@ -326,7 +326,8 @@ TEST(ProgramDatabase, ProgramDefinitionOutranksTheLibraryTable) {
   )c";
   const auto alone = analyze(code);
   ASSERT_TRUE(alone.ast);
-  EXPECT_TRUE(alone.diagnostics.empty());
+  EXPECT_EQ(ids(alone.diagnostics), (std::vector<std::string>{"leak"}))
+      << "the library's strdup returns a fresh copy that is never released";
   const auto together = analyzeInProgram(code, &db);
   ASSERT_TRUE(together.ast);
   EXPECT_EQ(ids(together.diagnostics),
@@ -353,7 +354,9 @@ TEST(ProgramDatabase, LocalDefinitionAndAnnotationsOutrankTheProgram) {
   )c",
                                       &program.db);
   ASSERT_TRUE(local.ast);
-  EXPECT_TRUE(local.diagnostics.empty());
+  // No use-after-free: the local `node_free` releases nothing, so the node
+  // `node_new` handed out is leaked instead (RFC 0007).
+  EXPECT_EQ(ids(local.diagnostics), (std::vector<std::string>{"leak"}));
   EXPECT_EQ(
       local.analyzer->summaries().lookup(*local.function("node_free"))->source,
       SummarySource::Inferred);
@@ -372,7 +375,8 @@ TEST(ProgramDatabase, LocalDefinitionAndAnnotationsOutrankTheProgram) {
   )c",
                                           &program.db);
   ASSERT_TRUE(annotated.ast);
-  EXPECT_TRUE(annotated.diagnostics.empty());
+  EXPECT_EQ(ids(annotated.diagnostics), (std::vector<std::string>{"leak"}))
+      << "a borrowing node_free leaves the node unreleased";
   EXPECT_EQ(annotated.analyzer->summaries()
                 .lookup(*annotated.function("node_free"))
                 ->source,
@@ -412,19 +416,20 @@ TEST(ProgramDatabase, DumpListsFunctionsAndCandidates) {
   llvm::raw_string_ostream os(text);
   program.db.dump(os);
   EXPECT_NE(text.find("program:\n"), std::string::npos);
-  EXPECT_NE(text.find("  function 'node_free': param 0: freed; stores{} "
+  EXPECT_NE(text.find("  function 'node_free': param 0: freed(free); stores{} "
                       "returns{}\n"),
             std::string::npos);
-  EXPECT_NE(text.find("  function 'reset_caches': global g_cache: freed; "
+  EXPECT_NE(text.find("  function 'reset_caches': global g_cache: freed(free); "
                       "stores{} returns{}\n"),
             std::string::npos);
   EXPECT_NE(text.find("  function 'node_vp': stores{} "
                       "returns{borrow param 0 *.v}\n"),
             std::string::npos)
       << text;
-  EXPECT_NE(text.find("  candidate 'void (void *)': param 0: freed; stores{} "
-                      "returns{}\n"),
-            std::string::npos);
+  EXPECT_NE(
+      text.find("  candidate 'void (void *)': param 0: freed(free); stores{} "
+                "returns{}\n"),
+      std::string::npos);
 }
 
 } // namespace

@@ -269,7 +269,7 @@ void b(void) { a_free(malloc(1)); }
       << dump;
   EXPECT_NE(dump.find("unit '/src/b.c':\nfunction 'b':\n"), std::string::npos)
       << dump;
-  EXPECT_NE(dump.find("program:\n  function 'a_free': param 0: freed; "
+  EXPECT_NE(dump.find("program:\n  function 'a_free': param 0: freed(free); "
                       "stores{} returns{}\n"),
             std::string::npos)
       << dump;

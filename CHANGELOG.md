@@ -235,13 +235,149 @@ follows [Semantic Versioning](https://semver.org/) once it reaches 1.0.
   triaged in `scripts/corpus/README.md`. The corpus baseline now has no
   `use-after-free` outside Lua, no `conflicting-borrow` outside Lua and two
   `double-free` outside Lua (down from 15, 4 and 10).
+- Resource lifecycle (RFC 0007). Every allocation, `WEAVEC_OWNED` parameter
+  and fresh result puts a resource on the function's books
+  (`core::ResourceTracker`, `AnalysisState::resources`, `ResourceRecord`),
+  and the checker reports what happens to it:
+  - `leak` (new, **warning**): the resource's last holder goes out of reach
+    (`return`, scope end, the statement after its last use, a value that is
+    never read) without it having been released, moved, returned, stored
+    into caller-visible memory, handed to unknown code or cast to an
+    integer; also `'<p>' is leaked: it is overwritten without being
+    released`, `'<b>->p' is leaked when '<b>' is freed`, `result of '<f>'
+    is leaked` for a discarded allocating call. Copies share one record and
+    one report; a callee summarised from its body that records no effect on
+    a pointer parameter is trusted not to retain it; the null edge of a
+    test of the holder owns nothing (through `__builtin_expect` and
+    `(c) != 0` too); a block ending in a `noreturn` call is not a death
+    point, nor is the edge into one; a value stored below a pointer whose
+    object nobody here owns or names (`box = lua_touserdata(L, 1);
+    box->buf = malloc(n)`) escapes; a resource kept by a global or `static`
+    local is not a leak.
+  - `mismatched-release` (new, **error**): every allocator in the shipped
+    table belongs to the family of its releaser (`malloc`/`strdup`/`realloc`
+    → `free`, `fopen` → `fclose`, `opendir` → `closedir`, `getaddrinfo` →
+    `freeaddrinfo`, `mmap` → `munmap`, `popen` → `pclose`, ...), and
+    releasing a resource of one family with a function of another
+    (`free(fopen(...))`, `fclose((FILE *)malloc(8))`, `realloc(f, n)` on a
+    `FILE`) is reported, through wrappers defined in the program and across
+    units. Inferred summaries carry the family (`fresh(fclose)`,
+    `freed(free)`, `moved(free)`; `ValueSource::family`,
+    `PlaceEffect::family`, `FunctionSummary::freshReturnFamily`).
+  - `WEAVEC_OWNED` on a struct field is now enforced: `free(b)` with `b->p`
+    neither freed, moved, tested nor nulled is a `leak` of `b->p`, for
+    objects that came from outside (a parameter, a global, a load). A field
+    this function stored an owned value into is checked the same way
+    without the annotation (`b->data = malloc(8); free(b);`), as are array
+    elements (`a[0] = strdup("x"); free(a);`).
+  - Per-outcome null facts (`FunctionSummary::nullOn`, `PendingOutcome::
+    nullOn`): a constructor that reports failure through its result (`int
+    make(char **out) { *out = malloc(n); return *out != NULL; }`, or `if
+    (*out == NULL) return -1;`) is summarised with the classes on which
+    `*out` is null or holds nothing the callee stored (the guard returns
+    before the store, `if (strm == NULL) return Z_STREAM_ERROR;`), so `if
+    (!make(&s)) return; free(s);` and `err = init(&s); if (err != 0) return
+    err;` are clean (RFC 0007, *Per-outcome null stores*).
+  - `weavec.h` header version 0.2 → 0.3 (documentation of `WEAVEC_OWNED` on
+    fields). `-Wno-weavec-leak` disables the warning; `-Werror=weavec-leak`
+    promotes it.
+  - Summary text format version 2 → 3: `freed(<family>)`, `moved(<family>)`,
+    `fresh(<family>)` and `null <class> <path>` lines; sidecar format
+    version 3 (`weavec-summaries 3`). `--dump-analysis` prints the exit
+    state's resources (`owned{p@3:14 allocated free}`) and the families in
+    summaries; the program dump uses the same spellings.
+
+### Fixed
+
+- Applying a callee's summary consumed shallower paths before deeper ones,
+  so `static void both(struct box *b) { free(b->p); free(b); }` followed by
+  a use of a caller's copy of `b->p` was not reported: freeing `b` first
+  dropped the facts under it before `b->p`'s consumption reached the alias.
+  Consumed paths are now applied deepest first; memory below an object the
+  same call frees is consumed on its own only when the caller knows the
+  place, and reported once (at the object) when the object is already gone
+  (RFC 0007, *Applying a summary: deepest paths first*).
+- `putenv` keeps its string and `setvbuf` keeps its buffer in the shipped
+  table (RFC 0007, *Assumptions*).
+- `a->f` on an array (`printbuffer buffer[1]; buffer->buffer = ...`) is the
+  place `a[0].f`, as `*a` already was `a[0]`; it used to be the element
+  summary `a[*].f`, whose null store could not clear a record.
+- Condition facts on the right operand of `||` / `&&`: the block that
+  evaluates `(p = malloc(n)) == NULL` in `if (fd == -1 || (p = malloc(n))
+  == NULL) return NULL;` branches on that operand, but Clang hands back
+  the whole condition; the null edge did not clear `p`'s record and the
+  return was a false `leak`.
+- Freeing memory reached *below* a borrowed object is not a
+  `conflicting-borrow`: `z_streamp strm = &state->strm;
+  inflateInit2(&state->strm, ...)`, whose callee frees
+  `state->strm.state->window`, left `strm` pointing at storage nothing
+  released. Loans on ancestors of the consumed place no longer count for
+  the consume query (RFC 0006, *Conflict rules*, amended).
+- A `leak` at the end of an address-taken local's scope is reported on the
+  statement the scope ends after (the `return`), not on the declaration.
+- A block ending in a `noreturn` call no longer flows into the function's
+  exit state, so what such a path frees (Lua's `os_exit` closing the state
+  behind `exit`) does not become a `freed` effect of the summary and a
+  `double-free` at every caller; the summary describes the state after a
+  *return* (RFC 0007, *Interaction with existing RFCs*).
+- On the null edge of a pointer test every fact below the pointer is dropped
+  (there is nothing there), so records, moves and aliases of the pointer's
+  fields no longer report on a path where the pointer is null.
+- A whole write to a field also clears the move records of the same cell
+  under the pointer's aliases (`free(L->stack); L->stack = fresh` with
+  `L->twups ~ L` left `L->twups->stack` freed for good), which on Lua made
+  every second `luaD_reallocstack` a `double-free` (RFC 0002, *Alias
+  relation*, implementation notes).
+- An `&&`/`||` under `!`, `__builtin_expect` or `!= 0` is computed as a value
+  before the branch, so only the whole value is known on an edge: a true `&&`
+  or a false `||` now holds each operand (Lua's `l_unlikely(newblock == NULL
+  && nsize > 0)` makes `newblock` null, and overwriting it is no `leak`),
+  and the other edges say nothing, where the right operand alone used to be
+  taken (`if (__builtin_expect(n > 0 && p != NULL, 1)) { free(p); return 0;
+  } return -1;` was wrongly clean).
+- Two paths of one callee summary that name the same cell through the
+  caller's aliases (`g->allgc` and `g->twups->l_G->allgc` with `g->twups ~
+  L`, Lua's `luaC_freeallobjects`) are one release, not a `double-free`
+  (RFC 0007, *Applying a summary: deepest paths first*).
+- A value stored below a local that borrows caller memory or a global
+  (`tb = &G(L)->strt; tb->hash = newvect`, Lua's `luaS_resize`) escapes:
+  the store landed in an object that outlives the function under a name the
+  summary cannot report, and the last local name's death was a false `leak`
+  (RFC 0007, *Escape*).
 
 ### Changed
 
+- The RFC 0007 leak check found real leaks in the existing unit-test
+  snippets (`realloc` success paths, an `OWNED` parameter that was only
+  looked at, a `switch` without `default`, a loop whose `free` is behind
+  `break`); their expectations now include the `leak`.
+- A callee's summary store into a place that holds a resource this function
+  made owned escapes the old value instead of reporting an overwrite:
+  RFC 0003 shows the caller only the store for the far more common
+  `free(b->data); b->data = NULL;` (RFC 0007, *Deliberately not caught*).
+- A call with a mutably borrowed argument copies the callee's written paths
+  below the argument into the caller's summary (`L->nci: written`,
+  `L->ci->top.p: written`, ...) instead of marking the pointee itself
+  `written`, which told every caller the whole object had been overwritten
+  and made it forget everything it knew below the argument (Lua's
+  `close_state` lost the frees `freestack` reported to it). Summaries on
+  Lua-sized programs are an order of magnitude longer as a result; the
+  paths are resolved incrementally, cached per call while no new place is
+  interned, and copied once per call and pointee, but the Lua program still
+  takes about twice as long as before (RFC 0006, *What a callee wrote, its
+  caller wrote*; RFC 0007, *Performance*). The three new Lua
+  `conflicting-borrow` reports are facts this used to erase (`close_state`
+  frees `L->l_G` while `L`, an interior pointer into it, is live), of the
+  interior-pointer kind RFC 0001 already accepts.
 - A callee that consumes a path below an argument or a global and returns a
   `copy` of it (`t->array = resizearray(L, t, ...)`) makes the result the
   same resource, now owned by the result, as RFC 0003 already did for
-  consumed parameters (RFC 0006, *Interaction with existing RFCs*).
+  consumed parameters (RFC 0006, *Interaction with existing RFCs*). Only
+  when the path is moved or consumed on every class: a copy of a path
+  `freed` on some classes only (zlib's `gz_look` copying `state->out`,
+  which `gz_fetch` frees on its error class) is not tracked, otherwise the
+  copy's later overwrite was a false `leak` (RFC 0007, *Applying a
+  summary: deepest paths first*).
 - `(res = feed()) == sentinel` and `(p = f()) != q` are pointer-equality
   condition facts about `res` / `p` (RFC 0006), so the "loop until the
   reader returns something other than the sentinel" idiom is clean.

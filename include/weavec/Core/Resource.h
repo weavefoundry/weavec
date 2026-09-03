@@ -1,0 +1,128 @@
+//===- Resource.h - Owned resource tracking --------------------*- C++ -*-===//
+//
+// Part of WeaveC, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+//
+// `ResourceTracker` records which places hold an owned resource *this
+// function is responsible for* (RFC 0007): the result of an allocating call
+// or the value of a `WEAVEC_OWNED` parameter, until it is released, moved,
+// returned, stored where the caller can see it, or handed to code the
+// checker cannot follow ("escaped"). A holder that dies with a record, no
+// move record and no other live alias has leaked its resource.
+//
+// The record also carries the *release family* (`free`, `fclose`, ...) so a
+// release by the wrong family can be reported, and the tracker keeps a set
+// of places known to hold null so a declared-owned field that was nulled is
+// not reported when its container is freed.
+//
+// This is not ownership *kind*: `kinds` says a place is `Owned` (RFC 0001);
+// the record says which resource it holds and whether it is still on this
+// function's books.
+//
+//===----------------------------------------------------------------------===//
+
+#ifndef WEAVEC_CORE_RESOURCE_H
+#define WEAVEC_CORE_RESOURCE_H
+
+#include "weavec/Core/Place.h"
+#include "weavec/Core/SourceLocation.h"
+
+#include <cstdint>
+#include <map>
+#include <optional>
+#include <set>
+#include <string>
+#include <string_view>
+#include <vector>
+
+namespace weavec::core {
+
+/// How a place came to hold a resource.
+enum class ResourceOrigin : std::uint8_t {
+  /// An allocating call (`malloc`, `fopen`, a callee returning `fresh`).
+  Allocated,
+  /// A parameter or field declared `WEAVEC_OWNED`.
+  Declared,
+};
+
+struct ResourceRecord {
+  ResourceOrigin origin = ResourceOrigin::Allocated;
+  /// The allocating call, or the declaration for `Declared`.
+  SourceLocation location = {};
+  /// The release family the resource must be released with; empty when
+  /// unknown.
+  std::string family = {};
+  /// The resource was handed to code the checker cannot follow (an unknown
+  /// callee, an integer cast, a raw destination): its holder's death is not
+  /// a leak.
+  bool escaped = false;
+
+  friend bool operator==(const ResourceRecord &,
+                         const ResourceRecord &) = default;
+};
+
+/// Flow-insensitive record of resource holders and known-null places; the
+/// analysis driver clones and joins trackers per CFG block, exactly as for
+/// `MoveTracker`.
+class ResourceTracker {
+public:
+  /// `place` now holds the resource described by `record`, replacing any
+  /// earlier record (a reassignment is a new resource). Clears the null mark.
+  void hold(PlaceId place, ResourceRecord record);
+
+  /// The record if `place` holds a tracked resource.
+  [[nodiscard]] std::optional<ResourceRecord> recordOf(PlaceId place) const;
+  [[nodiscard]] bool holds(PlaceId place) const {
+    return owned.contains(place);
+  }
+
+  /// Flags the resource at `place` as escaped; no-op without a record.
+  void escape(PlaceId place);
+  [[nodiscard]] bool isEscaped(PlaceId place) const;
+
+  /// Forgets the resource at `place` (released, lost, reassigned).
+  void clear(PlaceId place);
+
+  /// `place` is known to hold a null pointer (an assignment of a null
+  /// constant, or the edge on which its null test holds). Drops any record.
+  void markNull(PlaceId place);
+  [[nodiscard]] bool isNull(PlaceId place) const {
+    return null.contains(place);
+  }
+  void forgetNull(PlaceId place) { null.erase(place); }
+
+  /// Forgets everything about `place`.
+  void forget(PlaceId place);
+
+  /// Records join by union (a place *may* hold a resource): for a place on
+  /// both sides this side's record is kept, `escaped` is or-ed and the
+  /// family cleared when the sides disagree. Null facts join by intersection
+  /// (a place *must* be null). Returns whether this tracker changed.
+  bool join(const ResourceTracker &other);
+
+  /// Holders in ascending order (for dumps and the leak scan).
+  [[nodiscard]] std::vector<PlaceId> holders() const;
+  /// Known-null places in ascending order (for dumps).
+  [[nodiscard]] std::vector<PlaceId> nullPlaces() const;
+
+  [[nodiscard]] bool empty() const noexcept {
+    return owned.empty() && null.empty();
+  }
+
+  friend bool operator==(const ResourceTracker &,
+                         const ResourceTracker &) = default;
+
+private:
+  std::map<PlaceId, ResourceRecord> owned;
+  std::set<PlaceId> null;
+};
+
+/// Stable spelling used in dumps: `allocated`, `declared`.
+[[nodiscard]] std::string_view toString(ResourceOrigin origin) noexcept;
+
+} // namespace weavec::core
+
+#endif // WEAVEC_CORE_RESOURCE_H

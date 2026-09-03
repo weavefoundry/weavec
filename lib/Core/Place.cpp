@@ -77,6 +77,22 @@ PlaceId PlaceTable::index(PlaceId parent) {
   return intern(parent, PathStep::Index, {});
 }
 
+std::optional<PlaceId> PlaceTable::child(PlaceId parent, PathStep step,
+                                         std::string_view field) const {
+  assert(parent.value < entries.size() && "unknown parent place");
+  const Entry &entry = entries[parent.value];
+  if (step == PathStep::Index && entry.parent &&
+      (entry.step == PathStep::Index || entry.step == PathStep::Deref))
+    return parent;
+  ChildKey key{.parent = parent.value,
+               .step = step,
+               .field = step == PathStep::Field ? std::string(field)
+                                                : std::string()};
+  if (const auto it = children.find(key); it != children.end())
+    return it->second;
+  return std::nullopt;
+}
+
 std::string_view PlaceTable::name(PlaceId id) const noexcept {
   if (id.value < entries.size())
     return entries[id.value].name;
@@ -165,6 +181,18 @@ PlaceId PlaceTable::translate(PlaceId id, PlaceId from, PlaceId to) {
     return index(newParent);
   }
   return to;
+}
+
+std::optional<PlaceId> PlaceTable::lookupTranslated(PlaceId id, PlaceId from,
+                                                    PlaceId to) const {
+  if (id == from)
+    return to;
+  assert(isDescendantOf(id, from) && "lookupTranslated: id is not below from");
+  const Entry &entry = entries[id.value];
+  const auto newParent = lookupTranslated(*entry.parent, from, to);
+  if (!newParent)
+    return std::nullopt;
+  return child(*newParent, entry.step, entry.field);
 }
 
 std::optional<PlaceId> PlaceTable::innermostDeref(PlaceId id) const noexcept {

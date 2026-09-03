@@ -216,7 +216,12 @@ TEST(DiagnosticIds, DefaultSeverities) {
   EXPECT_FALSE(core::diag::isWarningByDefault(core::diag::UnsafeOperation));
   EXPECT_TRUE(core::diag::isKnown("lifetime-too-short"));
   EXPECT_FALSE(core::diag::isKnown("lifetime"));
-  EXPECT_EQ(core::diag::All.size(), 9U);
+  // RFC 0007: a leak is a warning, a mismatched release an error.
+  EXPECT_TRUE(core::diag::isWarningByDefault(core::diag::Leak));
+  EXPECT_FALSE(core::diag::isWarningByDefault(core::diag::MismatchedRelease));
+  EXPECT_TRUE(core::diag::isKnown("leak"));
+  EXPECT_TRUE(core::diag::isKnown("mismatched-release"));
+  EXPECT_EQ(core::diag::All.size(), 11U);
 }
 
 } // namespace

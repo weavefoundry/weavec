@@ -201,6 +201,73 @@ TEST(SummaryIO, RemapGlobalsRenumbersAndDrops) {
   EXPECT_EQ(identity, s);
 }
 
+// RFC 0007, *Summary text format*: `freed`, `moved` and `fresh` carry their
+// release family in parentheses, and `null <class> <path>` records a caller
+// place that is null in an outcome class.
+TEST(SummaryIO, PrintsAndParsesFamiliesAndNullOn) {
+  FunctionSummary s;
+  s.addEffect(SummaryPath::param(0),
+              PlaceEffect{.freed = true, .family = "fclose"});
+  s.addEffect(SummaryPath::param(1),
+              PlaceEffect{.read = true, .moved = true, .family = "free"});
+  s.addStore(Store{.dest = SummaryPath::param(2).deref(),
+                   .value = ValueSource::fresh("free")});
+  s.addReturn(ValueSource::fresh("closedir"));
+  // A class with null facts is a possible class (RFC 0006).
+  s.addOutcome(Outcome::Zero);
+  s.addOutcome(Outcome::Negative);
+  s.nullOn[Outcome::Negative].insert(SummaryPath::param(2).deref());
+  s.nullOn[Outcome::Negative].insert(SummaryPath::param(3).deref());
+  s.nullOn[Outcome::Zero].insert(SummaryPath::param(2).deref());
+
+  const std::string text = printSummary(s, Names);
+  EXPECT_EQ(text, "summary\n"
+                  "  effect param 0 freed(fclose)\n"
+                  "  effect param 1 read,moved(free)\n"
+                  "  store param 2 * fresh(free)\n"
+                  "  return fresh(closedir)\n"
+                  "  outcome zero\n"
+                  "  outcome negative\n"
+                  "  null zero param 2 *\n"
+                  "  null negative param 2 *\n"
+                  "  null negative param 3 *\n"
+                  "end\n");
+  std::string error;
+  const auto parsed = parseSummary(text, ResolveAll, &error);
+  ASSERT_TRUE(parsed) << error;
+  EXPECT_EQ(*parsed, s);
+  EXPECT_EQ(parsed->freshReturnFamily(), "closedir");
+}
+
+TEST(SummaryIO, BareFlagsHaveNoFamily) {
+  // A version 2 record (no families) still parses; the family is unknown.
+  const auto parsed = parseSummary("summary\n  effect param 0 freed\n"
+                                   "  return fresh\nend\n",
+                                   ResolveAll);
+  ASSERT_TRUE(parsed);
+  EXPECT_EQ(parsed->effectOf(SummaryPath::param(0)).family, "");
+  EXPECT_EQ(parsed->freshReturnFamily(), "");
+}
+
+TEST(SummaryIO, RejectsMalformedFamilies) {
+  std::string error;
+  EXPECT_FALSE(parseSummary("summary\n  effect param 0 freed(\nend\n",
+                            ResolveAll, &error));
+  EXPECT_FALSE(parseSummary("summary\n  effect param 0 freed()\nend\n",
+                            ResolveAll, &error));
+  EXPECT_FALSE(parseSummary("summary\n  effect param 0 freed(free)x\nend\n",
+                            ResolveAll, &error));
+  EXPECT_FALSE(parseSummary("summary\n  effect param 0 read(free)\nend\n",
+                            ResolveAll, &error))
+      << "only freed and moved take a family";
+  EXPECT_FALSE(
+      parseSummary("summary\n  return null(free)\nend\n", ResolveAll, &error))
+      << "only fresh takes a family";
+  EXPECT_FALSE(parseSummary("summary\n  null bogus param 0 *\nend\n",
+                            ResolveAll, &error));
+  EXPECT_FALSE(parseSummary("summary\n  null zero\nend\n", ResolveAll, &error));
+}
+
 TEST(SummaryIO, SkipsUnknownLinesAndBlankLines) {
   const auto parsed = parseSummary("\n\nsummary\n  effect param 0 freed\n"
                                    "  some-future-line with args\n\nend\n\n",
