@@ -66,22 +66,66 @@ TEST(SummaryIO, RoundTrips) {
   EXPECT_EQ(*parsed, original);
 }
 
-TEST(SummaryIO, RoundTripsEmptyAndReallocLike) {
+TEST(SummaryIO, RoundTripsEmpty) {
   FunctionSummary empty;
   EXPECT_EQ(printSummary(empty, Names), "summary\nend\n");
   const auto parsedEmpty = parseSummary("summary\nend\n", ResolveAll);
   ASSERT_TRUE(parsedEmpty);
   EXPECT_EQ(*parsedEmpty, empty);
+}
 
+// RFC 0006, *Text format*: `realloc` is spelled with outcome lines.
+TEST(SummaryIO, PrintsAndParsesOutcomes) {
   FunctionSummary realloc;
   realloc.addEffect(SummaryPath::param(0), PlaceEffect{.moved = true});
   realloc.addReturn(ValueSource::fresh());
-  realloc.reallocLike = true;
+  realloc.addReturn(ValueSource::null());
+  realloc.addOutcome(Outcome::Null);
+  realloc.addOutcome(Outcome::NonNull, SummaryPath::param(0),
+                     PlaceEffect{.moved = true});
   const std::string text = printSummary(realloc, Names);
-  EXPECT_NE(text.find("  realloc-like\n"), std::string::npos);
+  EXPECT_EQ(text, "summary\n"
+                  "  effect param 0 moved\n"
+                  "  return fresh\n"
+                  "  return null\n"
+                  "  outcome null\n"
+                  "  outcome nonnull param 0 moved\n"
+                  "end\n");
   const auto parsed = parseSummary(text, ResolveAll);
   ASSERT_TRUE(parsed);
   EXPECT_EQ(*parsed, realloc);
+
+  FunctionSummary status;
+  status.addEffect(SummaryPath::param(0), PlaceEffect{.freed = true});
+  status.addOutcome(Outcome::Zero, SummaryPath::param(0),
+                    PlaceEffect{.freed = true});
+  status.addOutcome(Outcome::Negative);
+  status.addOutcome(Outcome::Positive, SummaryPath::param(1).deref(),
+                    PlaceEffect{.freed = true, .moved = true});
+  const auto reparsed = parseSummary(printSummary(status, Names), ResolveAll);
+  ASSERT_TRUE(reparsed);
+  EXPECT_EQ(*reparsed, status);
+
+  std::string error;
+  EXPECT_FALSE(
+      parseSummary("summary\n  outcome maybe\nend\n", ResolveAll, &error));
+  EXPECT_FALSE(parseSummary("summary\n  outcome zero param 0\nend\n",
+                            ResolveAll, &error));
+}
+
+TEST(SummaryIO, InteriorCopiesRoundTrip) {
+  FunctionSummary s;
+  s.addReturn(ValueSource::interiorCopy(SummaryPath::param(0)));
+  s.addStore(Store{.dest = SummaryPath::param(1).deref(),
+                   .value = ValueSource::copy(SummaryPath::param(0))});
+  const std::string text = printSummary(s, Names);
+  EXPECT_NE(text.find("  return interior param 0\n"), std::string::npos);
+  EXPECT_NE(text.find("  store param 1 * copy param 0\n"), std::string::npos);
+  const auto parsed = parseSummary(text, ResolveAll);
+  ASSERT_TRUE(parsed);
+  EXPECT_EQ(*parsed, s);
+  EXPECT_NE(ValueSource::interiorCopy(SummaryPath::param(0)),
+            ValueSource::copy(SummaryPath::param(0)));
 }
 
 TEST(SummaryIO, SpellsPathsAndSources) {
@@ -93,6 +137,9 @@ TEST(SummaryIO, SpellsPathsAndSources) {
   EXPECT_EQ(printValueSource(ValueSource::unknown(), Names), "unknown");
   EXPECT_EQ(printValueSource(ValueSource::copy(SummaryPath::global(0)), Names),
             "copy global g_buf");
+  EXPECT_EQ(
+      printValueSource(ValueSource::interiorCopy(SummaryPath::param(2)), Names),
+      "interior param 2");
 }
 
 TEST(SummaryIO, DeclinedGlobalsAreDropped) {
@@ -127,7 +174,11 @@ TEST(SummaryIO, RemapGlobalsRenumbersAndDrops) {
   s.addStore(Store{.dest = SummaryPath::param(0).deref(),
                    .value = ValueSource::borrow(SummaryPath::global(1))});
   s.addReturn(ValueSource::copy(SummaryPath::global(0)));
-  s.reallocLike = true;
+  s.addOutcome(Outcome::Zero, SummaryPath::global(0).deref(),
+               PlaceEffect{.freed = true});
+  s.addOutcome(Outcome::Zero, SummaryPath::global(1),
+               PlaceEffect{.moved = true});
+  s.addOutcome(Outcome::Positive);
 
   // 0 -> 5, 1 dropped.
   const FunctionSummary mapped = remapGlobals(s, [](std::uint32_t id) {
@@ -140,7 +191,9 @@ TEST(SummaryIO, RemapGlobalsRenumbersAndDrops) {
   expected.addStore(Store{.dest = SummaryPath::param(0).deref(),
                           .value = ValueSource::unknown()});
   expected.addReturn(ValueSource::copy(SummaryPath::global(5)));
-  expected.reallocLike = true;
+  expected.addOutcome(Outcome::Zero, SummaryPath::global(5).deref(),
+                      PlaceEffect{.freed = true});
+  expected.addOutcome(Outcome::Positive);
   EXPECT_EQ(mapped, expected);
 
   const FunctionSummary identity =

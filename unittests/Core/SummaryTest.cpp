@@ -167,7 +167,6 @@ TEST(FunctionSummary, JoinIsUnion) {
   b.addStore(
       Store{.dest = SummaryPath::global(0), .value = ValueSource::copy(p)});
   b.addReturn(ValueSource::null());
-  b.reallocLike = true;
 
   FunctionSummary joined = a;
   joined.join(b);
@@ -175,7 +174,6 @@ TEST(FunctionSummary, JoinIsUnion) {
   EXPECT_EQ(joined.effectOf(p.deref()), (PlaceEffect{.written = true}));
   EXPECT_EQ(joined.stores.size(), 1U);
   EXPECT_EQ(joined.returns.size(), 2U);
-  EXPECT_TRUE(joined.reallocLike);
 
   // Idempotent and commutative.
   FunctionSummary again = joined;
@@ -185,6 +183,49 @@ TEST(FunctionSummary, JoinIsUnion) {
   FunctionSummary other = b;
   other.join(a);
   EXPECT_EQ(other, joined);
+}
+
+// RFC 0006, *Outcome-conditional summaries*.
+TEST(FunctionSummary, OutcomesJoinPerClassAndDecideConditionality) {
+  const SummaryPath p = SummaryPath::param(0);
+  FunctionSummary a;
+  a.addEffect(p, PlaceEffect{.freed = true});
+  a.addOutcome(Outcome::Zero, p, PlaceEffect{.freed = true});
+  a.addOutcome(Outcome::Negative);
+  EXPECT_FALSE(a.consumesUnconditionally(p))
+      << "a negative return keeps the argument";
+
+  FunctionSummary b;
+  b.addEffect(p, PlaceEffect{.freed = true});
+  b.addOutcome(Outcome::Negative, p, PlaceEffect{.freed = true});
+  FunctionSummary joined = a;
+  joined.join(b);
+  EXPECT_TRUE(joined.consumesUnconditionally(p))
+      << "every class frees p once the negative path does too";
+  EXPECT_EQ(joined.outcomes.size(), 2U);
+
+  FunctionSummary nothingKnown;
+  nothingKnown.addEffect(p, PlaceEffect{.freed = true});
+  EXPECT_TRUE(nothingKnown.consumesUnconditionally(p));
+  FunctionSummary mixed = a;
+  mixed.join(nothingKnown);
+  EXPECT_TRUE(mixed.outcomes.empty())
+      << "a side without outcome knowledge makes the join unconditional";
+
+  FunctionSummary fromBottom;
+  fromBottom.join(a);
+  EXPECT_EQ(fromBottom.outcomes, a.outcomes)
+      << "the empty summary is bottom: joining candidates into it keeps "
+         "the first candidate's classes";
+  EXPECT_FALSE(fromBottom.consumesUnconditionally(p));
+
+  EXPECT_EQ(toString(Outcome::Null), "null");
+  EXPECT_EQ(toString(Outcome::NonNull), "nonnull");
+  EXPECT_EQ(toString(Outcome::Zero), "zero");
+  EXPECT_EQ(toString(Outcome::Positive), "positive");
+  EXPECT_EQ(toString(Outcome::Negative), "negative");
+  EXPECT_EQ(parseOutcome("nonnull"), Outcome::NonNull);
+  EXPECT_FALSE(parseOutcome("maybe"));
 }
 
 TEST(ValueSource, KindNames) {

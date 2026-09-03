@@ -40,6 +40,8 @@ struct DriverOptions {
   bool enabled = true;
   /// `-fweavec-strict`: `--strict-externs`.
   bool strict = false;
+  /// `-fweavec-exclusive-borrows`: `--exclusive-borrows` (RFC 0006).
+  bool exclusiveBorrows = false;
   /// `-fweavec-report-unannotated`.
   bool reportUnannotated = false;
   /// `-fweavec-analyze-headers`.

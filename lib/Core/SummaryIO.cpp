@@ -49,7 +49,9 @@ std::string printSummaryPath(const SummaryPath &path,
 
 std::string printValueSource(const ValueSource &source,
                              const GlobalNamer &names) {
-  std::string text(toString(source.kind));
+  std::string text(source.kind == ValueSource::Kind::Copy && source.interior
+                       ? std::string_view("interior")
+                       : toString(source.kind));
   if ((source.kind == ValueSource::Kind::Copy ||
        source.kind == ValueSource::Kind::Borrow) &&
       source.path) {
@@ -90,8 +92,20 @@ std::string printSummary(const FunctionSummary &summary,
   }
   for (const ValueSource &source : summary.returns)
     text += "  return " + printValueSource(source, names) + '\n';
-  if (summary.reallocLike)
-    text += "  realloc-like\n";
+  for (const auto &[outcome, effects] : summary.outcomes) {
+    // A class with effects is implied by its effect lines; a bare line
+    // records a class that is possible but consumes nothing.
+    bool printed = false;
+    for (const auto &[path, effect] : effects) {
+      if (effect.empty())
+        continue;
+      text += "  outcome " + std::string(toString(outcome)) + ' ' +
+              printSummaryPath(path, names) + ' ' + printFlags(effect) + '\n';
+      printed = true;
+    }
+    if (!printed)
+      text += "  outcome " + std::string(toString(outcome)) + '\n';
+  }
   text += "end\n";
   return text;
 }
@@ -222,7 +236,7 @@ static bool parseSource(Tokens &tokens, const GlobalResolver &resolve,
     source = ValueSource::unknown();
   } else if (kind == "raw") {
     source = ValueSource::raw();
-  } else if (kind == "copy" || kind == "borrow") {
+  } else if (kind == "copy" || kind == "interior" || kind == "borrow") {
     ParsedPath path;
     if (!parsePath(tokens, resolve, path))
       return false;
@@ -230,6 +244,8 @@ static bool parseSource(Tokens &tokens, const GlobalResolver &resolve,
       source = ValueSource::unknown();
     else if (kind == "copy")
       source = ValueSource::copy(std::move(*path.path));
+    else if (kind == "interior")
+      source = ValueSource::interiorCopy(std::move(*path.path));
     else
       source = ValueSource::borrow(std::move(*path.path));
   } else {
@@ -331,8 +347,21 @@ std::optional<FunctionSummary> parseSummary(std::string_view record,
       ok = parseSource(tokens, resolve, value);
       if (ok)
         summary.addReturn(value);
-    } else if (kind == "realloc-like") {
-      summary.reallocLike = true;
+    } else if (kind == "outcome") {
+      const std::optional<Outcome> outcome = parseOutcome(tokens.take());
+      if (!outcome) {
+        ok = false;
+      } else if (tokens.empty()) {
+        summary.addOutcome(*outcome);
+      } else {
+        ParsedPath path;
+        PlaceEffect effect;
+        ok = parsePath(tokens, resolve, path) &&
+             parseFlags(tokens.take(), effect);
+        summary.addOutcome(*outcome);
+        if (ok && path.path)
+          summary.addOutcome(*outcome, *path.path, effect);
+      }
     } else {
       // Unknown line kinds are skipped for forward compatibility.
       continue;

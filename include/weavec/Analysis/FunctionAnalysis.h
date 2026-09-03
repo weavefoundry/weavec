@@ -43,6 +43,12 @@ struct AnalysisOptions {
   /// `annotation-required` warning for them; the link step decides whether
   /// the program defines them.
   bool deferBoundary = false;
+  /// `--exclusive-borrows` (RFC 0006, *Conflict rules*): enforce RFC 0001's
+  /// exclusivity rule in full, so a second mutable borrow, a shared borrow
+  /// of a mutably borrowed place, or a direct write to a borrowed place is
+  /// a `conflicting-borrow`. By default only freeing, moving or
+  /// reallocating a borrowed object conflicts with a live loan.
+  bool exclusiveBorrows = false;
   /// If set, print the inferred facts for every analysed function
   /// (`--dump-analysis`): places and their kinds, lifetimes, and the state
   /// at function exit. Intended for debugging and lit tests; the format is

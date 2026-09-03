@@ -20,6 +20,7 @@
 #include "weavec/Core/SourceLocation.h"
 
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <string_view>
 #include <vector>
@@ -95,6 +96,10 @@ public:
   /// Drops every loan held by `holder`, e.g. because it was reassigned.
   void dropHolder(PlaceId holder);
 
+  /// Drops every loan whose holder satisfies `dead`: the holder will not be
+  /// read again (RFC 0006, *Loans end at the last use of their holder*).
+  void expireHolders(const std::function<bool(PlaceId)> &dead);
+
   /// Gives `to` a copy of every loan held by `from`.
   void copyHolder(PlaceId from, PlaceId to);
 
@@ -102,17 +107,23 @@ public:
   [[nodiscard]] std::vector<Loan> heldBy(PlaceId holder) const;
 
   /// Set union with `other`: a loan live on either incoming path is live.
-  void join(const BorrowState &other);
+  /// Returns whether this state changed.
+  bool join(const BorrowState &other);
 
+  /// The live loans, ascending by place, then holder.
   [[nodiscard]] const std::vector<Loan> &loans() const noexcept { return live; }
   [[nodiscard]] bool hasLoans(PlaceId place) const noexcept;
   [[nodiscard]] bool contains(const Loan &loan) const noexcept;
 
-  /// Order-insensitive comparison.
   friend bool operator==(const BorrowState &lhs, const BorrowState &rhs);
 
 private:
+  /// Kept sorted (see `before`) so membership is a binary search and `join`
+  /// a merge: a large function holds hundreds of loans, and both run at
+  /// every CFG edge.
   std::vector<Loan> live;
+
+  [[nodiscard]] static bool before(const Loan &lhs, const Loan &rhs) noexcept;
 };
 
 } // namespace weavec::core

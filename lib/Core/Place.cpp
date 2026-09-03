@@ -8,6 +8,7 @@
 
 #include "weavec/Core/Place.h"
 
+#include <algorithm>
 #include <cassert>
 #include <utility>
 
@@ -18,7 +19,8 @@ PlaceId PlaceTable::create(std::string displayName) {
   entries.push_back(Entry{.name = std::move(displayName),
                           .parent = std::nullopt,
                           .step = PathStep::Field,
-                          .field = {}});
+                          .field = {},
+                          .children = {}});
   return PlaceId{id};
 }
 
@@ -49,7 +51,9 @@ PlaceId PlaceTable::intern(PlaceId parent, PathStep step, std::string field) {
   entries.push_back(Entry{.name = std::move(displayName),
                           .parent = parent,
                           .step = step,
-                          .field = std::move(field)});
+                          .field = std::move(field),
+                          .children = {}});
+  entries[parent.value].children.push_back(PlaceId{id});
   children.emplace(std::move(key), PlaceId{id});
   return PlaceId{id};
 }
@@ -122,11 +126,18 @@ bool PlaceTable::isDescendantOf(PlaceId id, PlaceId ancestor) const noexcept {
 }
 
 std::vector<PlaceId> PlaceTable::descendants(PlaceId id) const {
+  // Children are created after their parent, so a breadth-first walk that
+  // sorts at the end yields creation order without touching the rest of the
+  // table.
   std::vector<PlaceId> result;
-  for (std::uint32_t i = 0; i < entries.size(); ++i) {
-    if (isDescendantOf(PlaceId{i}, id))
-      result.push_back(PlaceId{i});
+  if (id.value >= entries.size())
+    return result;
+  for (std::size_t next = 0; next <= result.size(); ++next) {
+    const PlaceId current = next == 0 ? id : result[next - 1];
+    const std::vector<PlaceId> &kids = entries[current.value].children;
+    result.insert(result.end(), kids.begin(), kids.end());
   }
+  std::ranges::sort(result);
   return result;
 }
 

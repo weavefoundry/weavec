@@ -67,6 +67,24 @@
       "notes": "cJSON_Utils.c calls into cJSON.c (cJSON_free, cJSON_Delete, cJSON_Duplicate, ...): every one of its 20 single-unit boundary warnings resolves to a summary."
     },
     {
+      "name": "zlib",
+      "url": "https://github.com/madler/zlib.git",
+      "ref": "master",
+      "files": ["adler32.c", "compress.c", "crc32.c", "deflate.c", "infback.c", "inffast.c", "inflate.c", "inftrees.c", "trees.c", "uncompr.c", "zutil.c", "gzclose.c", "gzlib.c", "gzread.c", "gzwrite.c"],
+      "args": ["-std=c99", "-I.", "-DHAVE_UNISTD_H", "-DHAVE_STDARG_H"],
+      "whole_program": true,
+      "notes": "Allocation through zalloc/zfree function pointers stored in the stream; windows and tables freed in deflateEnd/inflateEnd; gz* wraps FILE-like state. A precision canary for RFC 0006: element places, sentinel tests, outcome-conditional helpers."
+    },
+    {
+      "name": "lua",
+      "url": "https://github.com/lua/lua.git",
+      "ref": "master",
+      "files": ["l*.c"],
+      "args": ["-std=c99", "-I.", "-DLUA_USE_POSIX"],
+      "whole_program": true,
+      "notes": "A garbage-collected VM, about five minutes as one program. realloc through the l_alloc function pointer, a 968-block interpreter loop with computed goto (luaV_execute), linked stacks of locals in the parser. Stresses outcome-conditional summaries, dead-variable cleanup and analysis time; see the triage in README.md."
+    },
+    {
       "name": "linenoise-program",
       "url": "https://github.com/antirez/linenoise.git",
       "ref": "master",

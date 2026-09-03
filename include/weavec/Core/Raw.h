@@ -82,7 +82,8 @@ public:
   }
 
   /// Set union ("may be raw"); this side's record wins for shared places.
-  void join(const RawTracker &other);
+  /// Returns whether this tracker changed.
+  bool join(const RawTracker &other);
 
   /// Raw places in ascending order (for dumps).
   [[nodiscard]] std::vector<PlaceId> rawPlaces() const;

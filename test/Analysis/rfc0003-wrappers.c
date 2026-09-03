@@ -80,10 +80,19 @@ void fine(struct node *(*make)(void), void (*drop)(struct node *)) {
 
 void maybe(int c) {
   struct node *n = node_new();
-  if (free_if(n, c))
-    return;
+  free_if(n, c);
   // CHECK: rfc0003-wrappers.c:[[@LINE+1]]:3: error: use of 'n' after it was freed [weavec::use-after-free]
   n->v = 1;
+}
+
+// Testing the result that tells the paths apart retracts the may-free on
+// the path that did not free (RFC 0006, *Outcome-conditional summaries*).
+void tested(int c) {
+  struct node *n = node_new();
+  if (free_if(n, c))
+    return;
+  n->v = 1;
+  free(n);
 }
 
 // CHECK: 5 errors generated.

@@ -7,6 +7,8 @@
     "printf": "d3b9846",
     "linenoise": "a473823",
     "cJSON-program": "fb16e5c",
+    "zlib": "da607da",
+    "lua": "7579fc9",
     "linenoise-program": "a473823"
   },
   "summary": {
@@ -45,36 +47,49 @@
         "units": 1,
         "clang_errors": 0,
         "by_id": {
-          "annotation-required": 3,
-          "conflicting-borrow": 2,
-          "double-free": 3
+          "annotation-required": 3
         }
       },
       "cJSON-program": {
         "units": 1,
         "clang_errors": 0,
         "by_id": {
-          "double-free": 3,
-          "use-after-free": 1
+          "double-free": 2
+        }
+      },
+      "zlib": {
+        "units": 1,
+        "clang_errors": 0,
+        "by_id": {
+          "annotation-required": 2
+        }
+      },
+      "lua": {
+        "units": 1,
+        "clang_errors": 0,
+        "by_id": {
+          "annotation-required": 1,
+          "conflicting-borrow": 1,
+          "double-free": 4,
+          "lifetime-too-short": 10,
+          "use-after-free": 5
         }
       },
       "linenoise-program": {
         "units": 1,
         "clang_errors": 0,
         "by_id": {
-          "annotation-required": 1,
-          "conflicting-borrow": 2,
-          "double-free": 4,
-          "use-after-free": 14
+          "annotation-required": 1
         }
       }
     },
     "totals": {
-      "annotation-required": 6,
-      "conflicting-borrow": 4,
-      "double-free": 10,
+      "annotation-required": 9,
+      "conflicting-borrow": 1,
+      "double-free": 6,
+      "lifetime-too-short": 10,
       "unsafe-operation": 1,
-      "use-after-free": 15
+      "use-after-free": 5
     }
   }
 }

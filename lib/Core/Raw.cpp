@@ -35,9 +35,11 @@ std::optional<RawRecord> RawTracker::rawAt(PlaceId place) const {
   return it->second;
 }
 
-void RawTracker::join(const RawTracker &other) {
+bool RawTracker::join(const RawTracker &other) {
+  bool changed = false;
   for (const auto &[place, record] : other.raw)
-    raw.try_emplace(place, record);
+    changed |= raw.try_emplace(place, record).second;
+  return changed;
 }
 
 std::vector<PlaceId> RawTracker::rawPlaces() const {

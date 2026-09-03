@@ -33,6 +33,23 @@ static ValueOrigin makeOrigin(ValueOrigin::Kind kind,
   return origin;
 }
 
+/// Marks a copy as pointing *into* its source's object rather than at the
+/// same address (RFC 0006, *Alias exactness*); other origins are unchanged.
+static ValueOrigin asInterior(ValueOrigin origin) {
+  if (origin.kind == ValueOrigin::Kind::Copy)
+    origin.interior = true;
+  for (ValueOrigin &alternative : origin.alternatives)
+    alternative = asInterior(std::move(alternative));
+  return origin;
+}
+
+/// Records the subscript an access was spelled with. A second subscript on
+/// the same path (`m[i][j]`) names an element no witness can identify.
+static void setWitness(PlaceRef &ref, core::ElementWitness witness) {
+  ref.element =
+      ref.element.isWhole() ? witness : core::ElementWitness::unknown();
+}
+
 static ValueOrigin makeRaw(core::RawReason reason,
                            const CallExpr *call = nullptr,
                            const Expr *source = nullptr) {
@@ -150,8 +167,11 @@ PlaceBuilder::resolveSummaryPath(const core::SummaryPath &path,
     const VarDecl *global = summaries.globals().declFor(path.index);
     if (global == nullptr)
       return std::nullopt;
-    ref =
-        PlaceRef{.place = placeForVar(*global), .derefs = {}, .derefExprs = {}};
+    ref = PlaceRef{.place = placeForVar(*global),
+                   .derefs = {},
+                   .derefExprs = {},
+                   .derefElements = {},
+                   .element = {}};
   }
 
   for (std::size_t i = firstStep; i < path.steps.size(); ++i) {
@@ -166,7 +186,11 @@ PlaceBuilder::resolveSummaryPath(const core::SummaryPath &path,
       ref.place = places.field(ref.place, path.steps[i].field);
       break;
     case core::PathStep::Index:
+      // The callee's subscript is not visible here: the effect applies to
+      // every element (RFC 0006, *Element witnesses*), and to an unknown
+      // one if the argument itself was an element.
       ref.place = places.index(ref.place);
+      setWitness(ref, core::ElementWitness::whole());
       break;
     }
   }
@@ -191,12 +215,21 @@ ValueOrigin PlaceBuilder::originFromSource(const core::ValueSource &source,
         return makeOrigin(ValueOrigin::Kind::Alloc, std::nullopt, &call);
       // The argument value itself, whatever it was: `&x` stays a borrow of
       // `x`, `malloc(n)` stays an allocation, `p` is a copy of `p`.
-      return classifyValue(*call.getArg(source.path->index));
+      ValueOrigin origin = classifyValue(*call.getArg(source.path->index));
+      return source.interior ? asInterior(std::move(origin)) : origin;
     }
+    // The same for a path below an argument or a global (`t->array =
+    // resizearray(L, t, ...)` in Lua): a copy of a resource the callee
+    // consumed is that resource, not a dangling pointer to it (RFC 0006,
+    // *Interactions*).
+    if (of.effectOf(*source.path).consumed())
+      return makeOrigin(ValueOrigin::Kind::Alloc, std::nullopt, &call);
     auto ref = resolveSummaryPath(*source.path, call);
     if (!ref)
       return ValueOrigin{};
-    return makeOrigin(ValueOrigin::Kind::Copy, std::move(ref));
+    ValueOrigin origin = makeOrigin(ValueOrigin::Kind::Copy, std::move(ref));
+    origin.interior = source.interior;
+    return origin;
   }
   case core::ValueSource::Kind::Borrow: {
     if (!source.path)
@@ -284,7 +317,11 @@ std::optional<PlaceRef> PlaceBuilder::resolve(const Expr &expr) {
     const auto *var = dyn_cast<VarDecl>(ref->getDecl());
     if (var == nullptr)
       return std::nullopt;
-    return PlaceRef{.place = placeForVar(*var), .derefs = {}, .derefExprs = {}};
+    return PlaceRef{.place = placeForVar(*var),
+                    .derefs = {},
+                    .derefExprs = {},
+                    .derefElements = {},
+                    .element = {}};
   }
 
   if (const auto *member = dyn_cast<MemberExpr>(&e)) {
@@ -316,11 +353,13 @@ std::optional<PlaceRef> PlaceBuilder::resolve(const Expr &expr) {
 
   if (const auto *subscript = dyn_cast<ArraySubscriptExpr>(&e)) {
     const Expr &base = stripTransparent(*subscript->getBase());
+    const core::ElementWitness witness = witnessOf(*subscript->getIdx());
     if (base.getType()->isArrayType()) {
       auto ref = resolve(base);
       if (!ref)
         return std::nullopt;
       ref->place = places.index(ref->place);
+      setWitness(*ref, witness);
       return ref;
     }
     auto pointer = resolvePointerValue(base);
@@ -328,6 +367,7 @@ std::optional<PlaceRef> PlaceBuilder::resolve(const Expr &expr) {
       return std::nullopt;
     pointer->addDeref(pointer->place, &base);
     pointer->place = places.deref(pointer->place);
+    setWitness(*pointer, witness);
     return pointer;
   }
 
@@ -338,18 +378,48 @@ std::optional<PlaceRef> PlaceBuilder::resolve(const Expr &expr) {
     if (const auto *addr = dyn_cast<UnaryOperator>(&operand);
         addr != nullptr && addr->getOpcode() == UO_AddrOf)
       return resolve(*addr->getSubExpr());
+    // `*a` on an array is its first element, `a[0]`.
+    if (operand.getType()->isArrayType() && isPlaceExpr(operand)) {
+      auto ref = resolve(operand);
+      if (!ref)
+        return std::nullopt;
+      ref->place = places.index(ref->place);
+      setWitness(*ref, core::ElementWitness::ofConstant(0));
+      return ref;
+    }
     const Expr *pointerExpr = pointerOperandOfArithmetic(operand);
-    if (pointerExpr == nullptr)
+    const Expr *indexExpr = nullptr;
+    if (pointerExpr != nullptr) {
+      const auto *binary = cast<BinaryOperator>(&operand);
+      indexExpr =
+          pointerExpr == binary->getLHS() ? binary->getRHS() : binary->getLHS();
+    } else {
       pointerExpr = &operand;
+    }
     auto pointer = resolvePointerValue(*pointerExpr);
     if (!pointer)
       return std::nullopt;
     pointer->addDeref(pointer->place, pointerExpr);
     pointer->place = places.deref(pointer->place);
+    if (indexExpr != nullptr)
+      setWitness(*pointer, witnessOf(*indexExpr));
     return pointer;
   }
 
   return std::nullopt;
+}
+
+core::ElementWitness PlaceBuilder::witnessOf(const Expr &index) {
+  const Expr *e = index.IgnoreParenImpCasts();
+  if (Expr::EvalResult result;
+      !e->isValueDependent() && e->EvaluateAsInt(result, context) &&
+      result.Val.isInt() && result.Val.getInt().getSignificantBits() <= 64)
+    return core::ElementWitness::ofConstant(result.Val.getInt().getSExtValue());
+  if (const auto *ref = dyn_cast<DeclRefExpr>(e)) {
+    if (const auto *var = dyn_cast<VarDecl>(ref->getDecl()))
+      return core::ElementWitness::ofVariable(placeForVar(*var));
+  }
+  return core::ElementWitness::unknown();
 }
 
 std::optional<ValueOrigin> PlaceBuilder::rawBaseOf(const Expr &placeExpr) {
@@ -432,16 +502,18 @@ ValueOrigin PlaceBuilder::classifyValue(const Expr &expr) {
       return strictExterns ? makeRaw(core::RawReason::UnknownCallee, call)
                            : ValueOrigin{};
     }
-    if (effects->isRealloc && call->getNumArgs() >= 1) {
-      auto arg = resolvePointerValue(*call->getArg(0));
-      return makeOrigin(ValueOrigin::Kind::Realloc, std::move(arg), call);
-    }
     const core::FunctionSummary &summary = *effects->summary;
     if (summary.returns.empty())
       return ValueOrigin{};
-    if (summary.returns.size() == 1)
-      return originFromSource(*summary.returns.begin(), *call, summary);
+    if (summary.returns.size() == 1) {
+      ValueOrigin origin =
+          originFromSource(*summary.returns.begin(), *call, summary);
+      if (origin.call == nullptr)
+        origin.call = call;
+      return origin;
+    }
     ValueOrigin origin = makeOrigin(ValueOrigin::Kind::Conditional);
+    origin.call = call;
     for (const core::ValueSource &source : summary.returns)
       origin.alternatives.push_back(originFromSource(source, *call, summary));
     return origin;
@@ -465,7 +537,7 @@ ValueOrigin PlaceBuilder::classifyValue(const Expr &expr) {
       auto ref = resolve(*unary->getSubExpr());
       if (!ref)
         return ValueOrigin{};
-      return makeOrigin(ValueOrigin::Kind::Copy, std::move(ref));
+      return asInterior(makeOrigin(ValueOrigin::Kind::Copy, std::move(ref)));
     }
     default:
       return ValueOrigin{};
@@ -483,14 +555,16 @@ ValueOrigin PlaceBuilder::classifyValue(const Expr &expr) {
       auto ref = resolve(*binary->getLHS());
       if (!ref)
         return ValueOrigin{};
-      return makeOrigin(ValueOrigin::Kind::Copy, std::move(ref));
+      // `p += k` as a value is interior like `p + k`.
+      return asInterior(makeOrigin(ValueOrigin::Kind::Copy, std::move(ref)));
     }
     if (binary->getOpcode() == BO_Comma)
       return classifyValue(*binary->getRHS());
     // `p + k` refers to the same object as `p` (RFC 0004, *Pointer
-    // identity*); whether it stays in bounds is outside the model.
+    // identity*) but not to the same address (RFC 0006, *Alias exactness*);
+    // whether it stays in bounds is outside the model.
     if (const Expr *pointer = pointerOperandOfArithmetic(*binary))
-      return classifyValue(*pointer);
+      return asInterior(classifyValue(*pointer));
     return ValueOrigin{};
   }
 

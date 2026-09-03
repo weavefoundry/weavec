@@ -9,17 +9,20 @@
 // Structure (RFC 0002, *Detailed design*):
 //
 //   1. Pre-passes over the AST allocate one lifetime per lexical scope,
-//      record which statements sit inside `WEAVEC_UNSAFE` blocks and classify
+//      record which statements sit inside `WEAVEC_UNSAFE` blocks, classify
 //      every place expression by the role it plays in its parent (read,
-//      written, consumed, borrowed).
+//      written, consumed, borrowed) and compute the liveness of the
+//      function's locals (RFC 0006).
 //   2. A forward worklist iteration over `clang::CFG` computes the entry
 //      state of every reachable block. Transfer functions translate CFG
-//      elements into core events; diagnostics are suppressed.
+//      elements into core events; diagnostics are suppressed. Conditional
+//      edges refine the state (RFC 0006, *Condition facts*).
 //   3. A final pass re-runs the transfer function once per block from the
 //      fixpoint entry states with diagnostics enabled, emits them in source
 //      order, and records the function's summary (RFC 0003): what it does
-//      to its parameters and globals, what it stores through them, and where
-//      its result comes from.
+//      to its parameters and globals, what it stores through them, where
+//      its result comes from and, per class of result, what it consumed on
+//      the paths returning it (RFC 0006).
 //
 // Calls are interpreted through the callee's summary (RFC 0003, *Applying a
 // summary at a call*), so the same semantic actions that handle `free(p)`
@@ -41,11 +44,14 @@
 #include "clang/AST/OperationKinds.h"
 
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
+#include <array>
 #include <deque>
+#include <limits>
 #include <tuple>
 #include <utility>
 
@@ -74,7 +80,8 @@ FunctionDataflow::FunctionDataflow(ASTContext &ctx, const FunctionDecl &fn,
                                    SummaryStore &summaryStore, bool emitDiags)
     : context(ctx), function(fn), sink(diagSink), options(analysisOptions),
       summaries(summaryStore), emitDiagnostics(emitDiags),
-      builder(places, summaryStore), callerLifetime(lifetimes.fresh("caller")),
+      builder(places, summaryStore, ctx),
+      callerLifetime(lifetimes.fresh("caller")),
       fnLifetime(lifetimes.fresh("fn")),
       paramReassigned(fn.getNumParams(), false),
       signature(collectAnnotations(fn)), unsafeBody(signature.unsafe),
@@ -154,8 +161,6 @@ void FunctionDataflow::classifyStmt(const Stmt *stmt) {
       if (var == nullptr || var->getInit() == nullptr)
         continue;
       classifyExpr(var->getInit(), Role::Read);
-      if (var->getType()->isPointerType())
-        noteAssignedCall(*var->getInit());
     }
     return;
   }
@@ -172,15 +177,6 @@ void FunctionDataflow::classifyStmt(const Stmt *stmt) {
       classifyExpr(expr, Role::Read);
     else
       classifyStmt(child);
-  }
-}
-
-void FunctionDataflow::noteAssignedCall(const Expr &rhs) {
-  const Expr &stripped = PlaceBuilder::stripTransparent(rhs);
-  if (const auto *call = dyn_cast<CallExpr>(&stripped)) {
-    const auto effects = classifyCall(*call, summaries);
-    if (effects && effects->isRealloc)
-      assignedCalls.insert(call);
   }
 }
 
@@ -239,8 +235,6 @@ void FunctionDataflow::classifyExpr(const Expr *expr, Role role) {
     if (binary->getOpcode() == BO_Assign) {
       classifyExpr(binary->getLHS(), Role::Write);
       classifyExpr(binary->getRHS(), Role::Read);
-      if (binary->getLHS()->getType()->isPointerType())
-        noteAssignedCall(*binary->getRHS());
       return;
     }
     if (binary->isCompoundAssignmentOp()) {
@@ -338,6 +332,232 @@ core::AnalysisState FunctionDataflow::initialState() {
   return state;
 }
 
+// -- Liveness (RFC 0006) ------------------------------------------------------
+
+/// The local variable an address-of or array decay exposes: `&v`, `&v.f`,
+/// `&v[i]`, `v` decaying to a pointer. Null for anything else.
+static const VarDecl *addressedLocal(const Expr &operand) {
+  const Expr *e = operand.IgnoreParenCasts();
+  while (true) {
+    if (const auto *member = dyn_cast<MemberExpr>(e);
+        member != nullptr && !member->isArrow()) {
+      e = member->getBase()->IgnoreParenCasts();
+      continue;
+    }
+    if (const auto *subscript = dyn_cast<ArraySubscriptExpr>(e);
+        subscript != nullptr &&
+        subscript->getBase()->IgnoreParenImpCasts()->getType()->isArrayType()) {
+      e = subscript->getBase()->IgnoreParenCasts();
+      continue;
+    }
+    break;
+  }
+  if (const auto *ref = dyn_cast<DeclRefExpr>(e)) {
+    if (const auto *var = dyn_cast<VarDecl>(ref->getDecl());
+        var != nullptr && var->isLocalVarDeclOrParm() && !var->isStaticLocal())
+      return var->getCanonicalDecl();
+  }
+  return nullptr;
+}
+
+void FunctionDataflow::computeLiveness() {
+  // Domain: the locals (parameters included) referenced anywhere in the
+  // CFG. Address-taken locals are recorded on the way: they may be read
+  // through the pointer at any time, so their loans never expire on
+  // liveness.
+  llvm::DenseSet<const DeclRefExpr *> assignedRefs;
+  const auto localOf = [](const DeclRefExpr &ref) -> const VarDecl * {
+    const auto *var = dyn_cast<VarDecl>(ref.getDecl());
+    if (var == nullptr || !var->isLocalVarDeclOrParm() || var->isStaticLocal())
+      return nullptr;
+    return var->getCanonicalDecl();
+  };
+  const auto indexOf = [this](const VarDecl &var) {
+    return liveIndex.try_emplace(&var, liveIndex.size()).first->second;
+  };
+  for (const CFGBlock *block : *cfg) {
+    if (block == nullptr)
+      continue;
+    for (const CFGElement &element : *block) {
+      const auto stmtElement = element.getAs<CFGStmt>();
+      if (!stmtElement)
+        continue;
+      const Stmt *stmt = stmtElement->getStmt();
+      if (const auto *ref = dyn_cast<DeclRefExpr>(stmt)) {
+        if (const VarDecl *var = localOf(*ref))
+          indexOf(*var);
+      } else if (const auto *decl = dyn_cast<DeclStmt>(stmt)) {
+        for (const Decl *d : decl->decls()) {
+          if (const auto *var = dyn_cast<VarDecl>(d);
+              var != nullptr && !var->isStaticLocal())
+            indexOf(*var->getCanonicalDecl());
+        }
+      } else if (const auto *binary = dyn_cast<BinaryOperator>(stmt);
+                 binary != nullptr && binary->getOpcode() == BO_Assign) {
+        if (const auto *lhs =
+                dyn_cast<DeclRefExpr>(binary->getLHS()->IgnoreParens()))
+          assignedRefs.insert(lhs);
+      } else if (const auto *unary = dyn_cast<UnaryOperator>(stmt);
+                 unary != nullptr && unary->getOpcode() == UO_AddrOf) {
+        if (const VarDecl *var = addressedLocal(*unary->getSubExpr()))
+          addressTaken.insert(var);
+      } else if (const auto *cast = dyn_cast<CastExpr>(stmt);
+                 cast != nullptr &&
+                 cast->getCastKind() == CK_ArrayToPointerDecay) {
+        if (const VarDecl *var = addressedLocal(*cast->getSubExpr()))
+          addressTaken.insert(var);
+      }
+    }
+  }
+
+  const unsigned width = liveIndex.size();
+  const unsigned blocks = cfg->getNumBlockIDs();
+  liveBefore.assign(blocks, {});
+  std::vector<llvm::BitVector> liveIn(blocks, llvm::BitVector(width));
+
+  // Every reference below a statement is a use of that statement: the value
+  // read by an operand is consumed by the enclosing expression, so `p` in
+  // `return p;` or `q = p;` must stay live up to the `ReturnStmt` /
+  // assignment element, which are later elements than the `DeclRefExpr`.
+  const auto markUses = [&](const Stmt &root, llvm::BitVector &live) {
+    llvm::SmallVector<const Stmt *, 16> work{&root};
+    while (!work.empty()) {
+      const Stmt *stmt = work.pop_back_val();
+      if (const auto *ref = dyn_cast<DeclRefExpr>(stmt)) {
+        if (assignedRefs.contains(ref))
+          continue;
+        if (const VarDecl *var = localOf(*ref))
+          live.set(liveIndex.lookup(var));
+        continue;
+      }
+      for (const Stmt *child : stmt->children()) {
+        if (child != nullptr)
+          work.push_back(child);
+      }
+    }
+  };
+
+  // One element of a block, backwards: the assignment kills its target (the
+  // target's own `DeclRefExpr`, an earlier element, is then not a use) and
+  // then uses what its right operand references; a declaration kills what it
+  // declares and uses its initialisers; anything else uses its references.
+  const auto transferElement = [&](const CFGElement &element,
+                                   llvm::BitVector &live) {
+    const auto stmtElement = element.getAs<CFGStmt>();
+    if (!stmtElement)
+      return;
+    const Stmt *stmt = stmtElement->getStmt();
+    if (const auto *decl = dyn_cast<DeclStmt>(stmt)) {
+      for (const Decl *d : decl->decls()) {
+        const auto *var = dyn_cast<VarDecl>(d);
+        if (var == nullptr || var->isStaticLocal())
+          continue;
+        live.reset(liveIndex.lookup(var->getCanonicalDecl()));
+        if (const Expr *init = var->getInit())
+          markUses(*init, live);
+      }
+      return;
+    }
+    if (const auto *binary = dyn_cast<BinaryOperator>(stmt);
+        binary != nullptr && binary->getOpcode() == BO_Assign) {
+      if (const auto *lhs =
+              dyn_cast<DeclRefExpr>(binary->getLHS()->IgnoreParens())) {
+        if (const VarDecl *var = localOf(*lhs))
+          live.reset(liveIndex.lookup(var));
+      } else {
+        markUses(*binary->getLHS(), live);
+      }
+      markUses(*binary->getRHS(), live);
+      return;
+    }
+    markUses(*stmt, live);
+  };
+
+  // Blocks are numbered from the exit up, so iterating them in that order
+  // visits most successors before their predecessors; the loop repeats
+  // until nothing changes whatever the order.
+  bool changed = true;
+  while (changed) {
+    changed = false;
+    for (const CFGBlock *block : *cfg) {
+      if (block == nullptr)
+        continue;
+      llvm::BitVector live(width);
+      for (const CFGBlock::AdjacentBlock &adjacent : block->succs()) {
+        if (const CFGBlock *succ = adjacent.getReachableBlock())
+          live |= liveIn[succ->getBlockID()];
+      }
+      std::vector<llvm::BitVector> &before = liveBefore[block->getBlockID()];
+      before.assign(block->size(), llvm::BitVector(width));
+      for (std::size_t i = block->size(); i-- > 0;) {
+        transferElement((*block)[i], live);
+        before[i] = live;
+      }
+      if (live != liveIn[block->getBlockID()]) {
+        liveIn[block->getBlockID()] = std::move(live);
+        changed = true;
+      }
+    }
+  }
+}
+
+void FunctionDataflow::expireDeadLoans(const CFGBlock &block, std::size_t index,
+                                       core::AnalysisState &state) {
+  const std::vector<llvm::BitVector> &before = liveBefore[block.getBlockID()];
+  if (index >= before.size())
+    return;
+  const llvm::BitVector &live = before[index];
+  if (state.loans.loans().empty() && state.aliases.size() == 0)
+    return;
+  // Within a block only an element that kills a variable can expire
+  // anything; the block's first element sees what the predecessors left.
+  if (index > 0) {
+    llvm::BitVector died = before[index - 1];
+    died.reset(live);
+    if (died.none())
+      return;
+  }
+  // A local that is dead here (not live, not address-taken, not a global or
+  // `static` local) will not be read again (RFC 0006, *Loans end at the last
+  // use of their holder*). Memoised per root: hundreds of loans and edges
+  // share a few dozen roots.
+  llvm::SmallDenseMap<std::uint32_t, const VarDecl *, 32> roots;
+  const auto rootVar = [this, &roots](core::PlaceId place) {
+    const core::PlaceId root = places.root(place);
+    auto [it, inserted] = roots.try_emplace(root.value, nullptr);
+    if (inserted)
+      it->second = builder.varForPlace(root);
+    return it->second;
+  };
+  const auto deadLocal = [this, &live](const VarDecl *var) {
+    if (var == nullptr || var->hasGlobalStorage())
+      return false;
+    const VarDecl *canonical = var->getCanonicalDecl();
+    if (addressTaken.contains(canonical))
+      return false;
+    const auto it = liveIndex.find(canonical);
+    return it != liveIndex.end() && !live.test(it->second);
+  };
+  state.loans.expireHolders([this, &rootVar, &deadLocal](core::PlaceId holder) {
+    // Loans held through a pointer (`node->buf`) or by a global end only
+    // when the holder is reassigned.
+    if (places.innermostDeref(holder))
+      return false;
+    return deadLocal(rootVar(holder));
+  });
+  // A dead local variable, and everything below it, holds nothing anyone
+  // can observe any more: its alias edges go too. This is what keeps the
+  // relation small in a function with hundreds of block-scoped pointers
+  // (an interpreter loop), where scope ends may never appear in the CFG
+  // (computed `goto`). Parameters are exempt: a live local's edge to a dead
+  // parameter is how its accesses reach the summary (`m = n; return m->v`
+  // borrows `n`).
+  state.aliases.separateIf([&rootVar, &deadLocal](core::PlaceId place) {
+    const VarDecl *var = rootVar(place);
+    return !isa_and_nonnull<ParmVarDecl>(var) && deadLocal(var);
+  });
+}
+
 // -- Engine -------------------------------------------------------------------
 
 void FunctionDataflow::run() {
@@ -354,6 +574,7 @@ void FunctionDataflow::run() {
 
   collectScopes(body, fnLifetime);
   classifyStmt(body);
+  computeLiveness();
 
   entryStates.assign(cfg->getNumBlockIDs(), std::nullopt);
   std::vector<unsigned> visits(cfg->getNumBlockIDs(), 0);
@@ -374,34 +595,39 @@ void FunctionDataflow::run() {
     core::AnalysisState out = *entryStates[block->getBlockID()];
     transfer(*block, out);
 
-    unsigned index = 0;
-    for (const CFGBlock::AdjacentBlock &adjacent : block->succs()) {
-      const unsigned succIndex = index++;
-      const CFGBlock *succ = adjacent.getReachableBlock();
-      if (succ == nullptr)
-        continue;
-      core::AnalysisState edgeState = out;
+    const auto propagate = [&](unsigned succIndex, const CFGBlock &succ,
+                               core::AnalysisState edgeState) {
       applyEdge(*block, succIndex, edgeState);
-
       std::optional<core::AnalysisState> &target =
-          entryStates[succ->getBlockID()];
+          entryStates[succ.getBlockID()];
       bool changed = false;
       if (!target) {
         target = std::move(edgeState);
         changed = true;
       } else {
-        core::AnalysisState joined = *target;
-        joined.join(edgeState);
-        if (joined != *target) {
-          *target = std::move(joined);
-          changed = true;
-        }
+        changed = target->join(edgeState);
       }
-      if (changed && !queued[succ->getBlockID()]) {
-        queued[succ->getBlockID()] = true;
-        worklist.push_back(succ);
+      if (changed && !queued[succ.getBlockID()]) {
+        queued[succ.getBlockID()] = true;
+        worklist.push_back(&succ);
       }
+    };
+
+    // The last reachable successor takes the block's state itself; every
+    // earlier one gets a copy. States in a large function are big (the
+    // alias relation over a loop body is dense), so copies are the cost.
+    llvm::SmallVector<std::pair<unsigned, const CFGBlock *>, 4> reachable;
+    unsigned index = 0;
+    for (const CFGBlock::AdjacentBlock &adjacent : block->succs()) {
+      if (const CFGBlock *succ = adjacent.getReachableBlock())
+        reachable.emplace_back(index, succ);
+      ++index;
     }
+    if (reachable.empty())
+      continue;
+    for (const auto &[succIndex, succ] : llvm::drop_end(reachable))
+      propagate(succIndex, *succ, out);
+    propagate(reachable.back().first, *reachable.back().second, std::move(out));
   }
 
   // Final pass: once per reachable block, from its fixpoint entry state.
@@ -425,7 +651,10 @@ void FunctionDataflow::run() {
 
 void FunctionDataflow::transfer(const CFGBlock &block,
                                 core::AnalysisState &state) {
-  for (const CFGElement &element : block) {
+  lastCall.reset();
+  for (std::size_t index = 0; index < block.size(); ++index) {
+    const CFGElement &element = block[index];
+    expireDeadLoans(block, index, state);
     if (const auto stmtElement = element.getAs<CFGStmt>()) {
       const Stmt *stmt = stmtElement->getStmt();
       if (stmt == nullptr)
@@ -452,65 +681,246 @@ void FunctionDataflow::transfer(const CFGBlock &block,
   }
 }
 
-/// Recognises `q`, `!q`, `q == NULL`, `q != NULL` (and the flipped forms).
-/// Returns the tested place and whether the *true* edge is the null one.
-static std::optional<std::pair<const Expr *, bool>>
-matchNullTest(const Expr &condition, ASTContext &context) {
-  const Expr *e = condition.IgnoreParenImpCasts();
-  if (const auto *unary = dyn_cast<UnaryOperator>(e);
-      unary != nullptr && unary->getOpcode() == UO_LNot) {
-    const Expr *operand = unary->getSubExpr()->IgnoreParenImpCasts();
-    if (operand->getType()->isPointerType())
-      return std::make_pair(operand, true);
-    return std::nullopt;
+// -- Condition facts (RFC 0006) -----------------------------------------------
+
+/// The outcome classes of an integer result that satisfy (`holds`) or
+/// falsify (`!holds`) `x OP k` (RFC 0006, *Outcome tests*): a class is
+/// selected when some value in its range does.
+static std::set<core::Outcome> classesSatisfying(BinaryOperatorKind op,
+                                                 std::int64_t k, bool holds) {
+  constexpr std::int64_t Min = std::numeric_limits<std::int64_t>::min();
+  constexpr std::int64_t Max = std::numeric_limits<std::int64_t>::max();
+  struct Range {
+    core::Outcome outcome;
+    std::int64_t lo;
+    std::int64_t hi;
+  };
+  constexpr std::array<Range, 3> Ranges = {
+      Range{.outcome = core::Outcome::Negative, .lo = Min, .hi = -1},
+      Range{.outcome = core::Outcome::Zero, .lo = 0, .hi = 0},
+      Range{.outcome = core::Outcome::Positive, .lo = 1, .hi = Max},
+  };
+  // `!(x OP k)` is `x OP' k` for the complementary comparison.
+  if (!holds) {
+    switch (op) {
+    case BO_LT:
+      op = BO_GE;
+      break;
+    case BO_GT:
+      op = BO_LE;
+      break;
+    case BO_LE:
+      op = BO_GT;
+      break;
+    case BO_GE:
+      op = BO_LT;
+      break;
+    case BO_EQ:
+      op = BO_NE;
+      break;
+    case BO_NE:
+      op = BO_EQ;
+      break;
+    default:
+      return {};
+    }
   }
-  if (const auto *binary = dyn_cast<BinaryOperator>(e);
-      binary != nullptr &&
-      (binary->getOpcode() == BO_EQ || binary->getOpcode() == BO_NE)) {
-    const bool nullOnTrue = binary->getOpcode() == BO_EQ;
-    const auto isNull = [&context](const Expr *side) {
-      return side->isNullPointerConstant(
-                 context, Expr::NPC_ValueDependentIsNull) != Expr::NPCK_NotNull;
-    };
-    if (isNull(binary->getRHS()))
-      return std::make_pair(binary->getLHS(), nullOnTrue);
-    if (isNull(binary->getLHS()))
-      return std::make_pair(binary->getRHS(), nullOnTrue);
-    return std::nullopt;
+  std::set<core::Outcome> result;
+  for (const Range &range : Ranges) {
+    bool possible = false;
+    switch (op) {
+    case BO_LT:
+      possible = range.lo < k;
+      break;
+    case BO_GT:
+      possible = range.hi > k;
+      break;
+    case BO_LE:
+      possible = range.lo <= k;
+      break;
+    case BO_GE:
+      possible = range.hi >= k;
+      break;
+    case BO_EQ:
+      possible = range.lo <= k && k <= range.hi;
+      break;
+    case BO_NE:
+      possible = range.lo != k || range.hi != k;
+      break;
+    default:
+      break;
+    }
+    if (possible)
+      result.insert(range.outcome);
   }
-  if (e->getType()->isPointerType())
-    return std::make_pair(e, false);
-  return std::nullopt;
+  return result;
+}
+
+/// `k OP x` as `x OP' k`.
+static BinaryOperatorKind flipComparison(BinaryOperatorKind op) {
+  switch (op) {
+  case BO_LT:
+    return BO_GT;
+  case BO_GT:
+    return BO_LT;
+  case BO_LE:
+    return BO_GE;
+  case BO_GE:
+    return BO_LE;
+  default:
+    return op;
+  }
+}
+
+static bool isNullConstant(const Expr &expr, ASTContext &context) {
+  return expr.isNullPointerConstant(context, Expr::NPC_ValueDependentIsNull) !=
+         Expr::NPCK_NotNull;
+}
+
+static std::optional<std::int64_t> integerConstant(const Expr &expr,
+                                                   const ASTContext &context) {
+  Expr::EvalResult result;
+  if (expr.isValueDependent() || !expr.getType()->isIntegerType() ||
+      !expr.EvaluateAsInt(result, context) || !result.Val.isInt() ||
+      result.Val.getInt().getSignificantBits() > 64)
+    return std::nullopt;
+  return result.Val.getInt().getSExtValue();
 }
 
 void FunctionDataflow::applyEdge(const CFGBlock &from, unsigned succIndex,
                                  core::AnalysisState &state) {
-  if (state.reallocs.empty() || from.succ_size() != 2)
+  if (from.succ_size() != 2)
     return;
-  const Stmt *condition = from.getTerminatorCondition();
+  const auto *condition = dyn_cast_or_null<Expr>(from.getTerminatorCondition());
   if (condition == nullptr)
     return;
-  const auto *conditionExpr = dyn_cast<Expr>(condition);
-  if (conditionExpr == nullptr)
-    return;
-  const auto test = matchNullTest(*conditionExpr, context);
-  if (!test)
-    return;
-  const auto tested = builder.resolvePointerValue(*test->first);
-  if (!tested)
-    return;
-  const auto entry = state.reallocs.find(tested->place);
-  if (entry == state.reallocs.end())
-    return;
 
-  // Successor 0 is the edge taken when the condition holds.
-  const bool isNullEdge = (succIndex == 0) == test->second;
-  if (isNullEdge) {
-    // realloc failed: the old block is still owned by the argument.
-    for (const core::PlaceId consumed : entry->second)
-      state.moves.reinitialize(consumed);
+  // Successor 0 is the edge taken when the condition holds; `!c` flips it.
+  bool holds = succIndex == 0;
+  const Expr *e = condition->IgnoreParenImpCasts();
+  while (const auto *unary = dyn_cast<UnaryOperator>(e)) {
+    if (unary->getOpcode() != UO_LNot)
+      break;
+    holds = !holds;
+    e = unary->getSubExpr()->IgnoreParenImpCasts();
   }
-  state.reallocs.erase(entry);
+
+  if (const auto *binary = dyn_cast<BinaryOperator>(e);
+      binary != nullptr && binary->isComparisonOp()) {
+    const Expr &lhs = *binary->getLHS();
+    const Expr &rhs = *binary->getRHS();
+    const BinaryOperatorKind op = binary->getOpcode();
+    const bool equality = op == BO_EQ || op == BO_NE;
+
+    // `x == NULL`, `NULL != x`: a null test of `x`.
+    if (equality && lhs.getType()->isPointerType() &&
+        rhs.getType()->isPointerType()) {
+      const bool nullLhs = isNullConstant(lhs, context);
+      const bool nullRhs = isNullConstant(rhs, context);
+      if (nullLhs != nullRhs) {
+        const bool selectsNull = (op == BO_EQ) == holds;
+        applyOutcomeTest(
+            nullLhs ? rhs : lhs,
+            {selectsNull ? core::Outcome::Null : core::Outcome::NonNull},
+            state);
+        return;
+      }
+      if (nullLhs)
+        return;
+      // `p == q`: on the equal edge the two places hold the same value; on
+      // the other they do not, which refutes an exact alias. `(p = f()) ==
+      // q` compares what was just stored in `p`.
+      const auto assigned = [](const Expr &operand) -> const Expr * {
+        const Expr *stripped = operand.IgnoreParenCasts();
+        if (const auto *assign = dyn_cast<BinaryOperator>(stripped);
+            assign != nullptr && assign->getOpcode() == BO_Assign)
+          return assign->getLHS();
+        return &operand;
+      };
+      const auto p = builder.resolvePointerValue(*assigned(lhs));
+      const auto q = builder.resolvePointerValue(*assigned(rhs));
+      if (!p || !q || p->place == q->place)
+        return;
+      if ((op == BO_EQ) == holds)
+        state.aliases.unite(p->place, q->place);
+      else
+        state.aliases.separateExact(p->place, q->place);
+      return;
+    }
+
+    // `x OP k`, `k OP x` on an integer result.
+    if (lhs.getType()->isIntegerType() && rhs.getType()->isIntegerType()) {
+      if (const auto k = integerConstant(rhs, context)) {
+        applyOutcomeTest(lhs, classesSatisfying(op, *k, holds), state);
+      } else if (const auto flipped = integerConstant(lhs, context)) {
+        applyOutcomeTest(
+            rhs, classesSatisfying(flipComparison(op), *flipped, holds), state);
+      }
+    }
+    return;
+  }
+
+  // `x` alone: non-null / non-zero on the true edge.
+  if (e->getType()->isPointerType()) {
+    applyOutcomeTest(*e, {holds ? core::Outcome::NonNull : core::Outcome::Null},
+                     state);
+  } else if (e->getType()->isIntegerType()) {
+    if (holds)
+      applyOutcomeTest(*e, {core::Outcome::Positive, core::Outcome::Negative},
+                       state);
+    else
+      applyOutcomeTest(*e, {core::Outcome::Zero}, state);
+  }
+}
+
+void FunctionDataflow::applyOutcomeTest(const Expr &operand,
+                                        const std::set<core::Outcome> &selected,
+                                        core::AnalysisState &state) {
+  if (selected.empty())
+    return;
+  const Expr *e = operand.IgnoreParenCasts();
+  // `(r = f(p)) < 0` tests what was just stored in `r`.
+  if (const auto *assign = dyn_cast<BinaryOperator>(e);
+      assign != nullptr && assign->getOpcode() == BO_Assign)
+    e = assign->getLHS()->IgnoreParenCasts();
+
+  // On this edge the consumption did not happen: the move record goes, and
+  // so does the flow-sensitive consumption that feeds the outcome classes
+  // at `return` (RFC 0006, *Inference*), so a wrapper's own summary sees
+  // the retraction. A place that was reassigned since the call keeps its
+  // `consumed` entry: that consumption was real (RFC 0003).
+  const auto reinstate = [this,
+                          &state](const std::vector<core::PlaceId> &targets) {
+    for (const core::PlaceId place : targets) {
+      if (!state.moves.recordOf(place))
+        continue;
+      state.moves.reinitialize(place);
+      if (const auto path = builder.summaryPathOf(place))
+        state.consumed.erase(*path);
+    }
+  };
+
+  if (const auto *call = dyn_cast<CallExpr>(e)) {
+    // A result tested directly: the call sits in this block, and its
+    // pending outcome was recorded when it was transferred.
+    if (!lastCall || lastCall->call != call)
+      return;
+    core::PendingOutcome narrowed = lastCall->pending;
+    reinstate(narrowed.select(selected));
+    return;
+  }
+  if (!PlaceBuilder::isPlaceExpr(*e))
+    return;
+  const auto ref = builder.resolve(*e);
+  if (!ref)
+    return;
+  const auto entry = state.pending.find(ref->place);
+  if (entry == state.pending.end())
+    return;
+  // The narrowed entry stays even once nothing more can be retracted: it
+  // records which classes the result can still be in, which a later
+  // `return` of it needs. It goes when the result is reassigned.
+  reinstate(entry->second.select(selected));
 }
 
 // -- Element handlers ---------------------------------------------------------
@@ -545,10 +955,14 @@ void FunctionDataflow::handleExpr(const Expr &expr,
       doMutationCheck(ref->place, expr, state);
       checkAnnotationOnWrite(*ref, expr, state);
       recordAccess(ref->place, /*write=*/true, state);
+      noteVariableWrite(ref->place, state);
       break;
     case Role::Write:
-    case Role::Consume:
     case Role::AddressOf:
+      doRead(*ref, expr, state, /*includeSelf=*/false);
+      noteVariableWrite(ref->place, state);
+      break;
+    case Role::Consume:
       doRead(*ref, expr, state, /*includeSelf=*/false);
       break;
     case Role::Ignore:
@@ -574,10 +988,13 @@ void FunctionDataflow::handleDecl(const DeclStmt &decl,
       continue;
     const core::PlaceId place = builder.placeForVar(*var);
     reinit(place, state);
+    noteVariableWrite(place, state);
     const Expr *init = var->getInit();
     if (!var->getType()->isPointerType()) {
       if (init != nullptr && var->getType()->isRecordType())
         copyRecord(place, *init, state);
+      else
+        attachOutcome(place, init, state);
       continue;
     }
     const AnnotationSet annotations = getAnnotations(*var);
@@ -593,7 +1010,32 @@ void FunctionDataflow::handleDecl(const DeclStmt &decl,
     applyPointerAssign(place, builder.classifyValue(*init), *init,
                        var->getType()->getPointeeType().isConstQualified(),
                        state);
+    attachOutcome(place, init, state);
   }
+}
+
+void FunctionDataflow::attachOutcome(core::PlaceId dest, const Expr *init,
+                                     core::AnalysisState &state) {
+  if (init == nullptr || !lastCall)
+    return;
+  const auto *call = dyn_cast<CallExpr>(init->IgnoreParenCasts());
+  if (call == nullptr || call != lastCall->call)
+    return;
+  // `p = realloc(p, n)`: `p` now holds the result, so nothing about the old
+  // block can be retracted through it.
+  core::PendingOutcome outcome = std::move(lastCall->pending);
+  lastCall.reset();
+  for (auto &[cls, consumed] : outcome.consumedBy)
+    std::erase(consumed, dest);
+  if (outcome.places().empty())
+    return;
+  state.pending[dest] = std::move(outcome);
+}
+
+void FunctionDataflow::noteVariableWrite(core::PlaceId place,
+                                         core::AnalysisState &state) {
+  if (places.isBase(place))
+    state.moves.forgetWitness(place);
 }
 
 void FunctionDataflow::handleAssign(const BinaryOperator &assign,
@@ -608,12 +1050,19 @@ void FunctionDataflow::handleAssign(const BinaryOperator &assign,
   const QualType type = assign.getLHS()->getType();
   if (type->isPointerType()) {
     applyPointerAssign(lhs->place, builder.classifyValue(*assign.getRHS()),
-                       assign, type->getPointeeType().isConstQualified(),
-                       state);
+                       assign, type->getPointeeType().isConstQualified(), state,
+                       lhs->element);
+    attachOutcome(lhs->place, assign.getRHS(), state);
     return;
   }
-  if (type->isRecordType())
+  if (type->isRecordType()) {
     copyRecord(lhs->place, *assign.getRHS(), state);
+    return;
+  }
+  // A scalar result (`int rc = try_take(p)`) carries its call's pending
+  // outcome to the place that will be tested.
+  state.pending.erase(lhs->place);
+  attachOutcome(lhs->place, assign.getRHS(), state);
 }
 
 void FunctionDataflow::copyRecord(core::PlaceId dest, const Expr &value,
@@ -675,7 +1124,7 @@ void FunctionDataflow::copyRecord(core::PlaceId dest, const Expr &value,
         .kind = std::nullopt,
         .loans = {},
     };
-    if (const auto record = state.moves.movedAt(place))
+    if (const auto record = state.moves.recordOf(place))
       field.moved = *record;
     if (const auto record = state.raw.rawAt(place))
       field.raw = *record;
@@ -693,9 +1142,9 @@ void FunctionDataflow::copyRecord(core::PlaceId dest, const Expr &value,
     if (field.kind)
       setKind(field.to, *field.kind, state);
     if (field.moved) {
-      state.moves.markMoved(field.to, field.moved->reason,
-                            field.moved->location,
-                            field.moved->via.value_or(field.from));
+      state.moves.markMoved(
+          field.to, field.moved->reason, field.moved->location,
+          field.moved->via.value_or(field.from), field.moved->element);
     }
     if (field.raw)
       state.raw.markRaw(field.to, *field.raw);
@@ -758,6 +1207,7 @@ void FunctionDataflow::initRecord(core::PlaceId dest, const InitListExpr &init,
 
 void FunctionDataflow::handleCall(const CallExpr &call,
                                   core::AnalysisState &state) {
+  lastCall.reset();
   const auto effects = classifyCall(call, summaries);
   if (!effects) {
     handleUncheckedCall(call);
@@ -773,22 +1223,21 @@ void FunctionDataflow::applySummary(const CallExpr &call,
                                     core::AnalysisState &state) {
   const core::FunctionSummary &summary = *effects.summary;
 
-  // 1. Consumption of the arguments themselves. A realloc whose result is
-  //    stored is handled by the assignment, which needs to record the
-  //    consumed places against the result.
-  const bool consumeHere =
-      !(effects.isRealloc && assignedCalls.contains(&call));
-  if (consumeHere) {
-    for (const unsigned index : effects.consumedArgs) {
-      if (index >= call.getNumArgs())
-        continue;
-      const bool freed = effects.frees(index) && !effects.isRealloc;
-      checkRawArgument(call, index, freed ? "releases" : "takes ownership of",
-                       state);
-      if (const auto arg = builder.resolvePointerValue(*call.getArg(index)))
-        doConsume(*arg,
-                  freed ? core::MoveReason::Freed : core::MoveReason::Moved,
-                  call, state);
+  // 1. Consumption of the arguments themselves ...
+  std::vector<std::pair<core::SummaryPath, std::vector<core::PlaceId>>>
+      consumedTargets;
+  for (const unsigned index : effects.consumedArgs) {
+    if (index >= call.getNumArgs())
+      continue;
+    const bool freed = effects.frees(index);
+    checkRawArgument(call, index, freed ? "releases" : "takes ownership of",
+                     state);
+    if (const auto arg = builder.resolvePointerValue(*call.getArg(index))) {
+      consumedTargets.emplace_back(
+          core::SummaryPath::param(index),
+          doConsume(*arg,
+                    freed ? core::MoveReason::Freed : core::MoveReason::Moved,
+                    call, state));
     }
   }
 
@@ -809,9 +1258,24 @@ void FunctionDataflow::applySummary(const CallExpr &call,
     if (!ref)
       continue;
     consumedPaths.push_back(path);
-    doConsume(*ref,
-              effect.freed ? core::MoveReason::Freed : core::MoveReason::Moved,
-              call, state);
+    consumedTargets.emplace_back(path, doConsume(*ref,
+                                                 effect.freed
+                                                     ? core::MoveReason::Freed
+                                                     : core::MoveReason::Moved,
+                                                 call, state));
+  }
+  notePendingOutcome(call, summary, consumedTargets);
+
+  //    A callee that overwrote an object (`memcpy(root, &tmp, n)`) leaves
+  //    nothing known about what lies below it (RFC 0006, *`written` forgets
+  //    what lies below*); its stores, applied below, say what is there now.
+  for (const auto &[path, effect] : summary.effects) {
+    if (!effect.written || effect.consumed())
+      continue;
+    if (path.isParam() && summary.consumes(path.index))
+      continue;
+    if (const auto ref = builder.resolveSummaryPath(path, call))
+      forgetBelow(ref->place, state);
   }
 
   // 2. Borrows for the duration of the call. The callee dereferences the
@@ -863,8 +1327,35 @@ void FunctionDataflow::applySummary(const CallExpr &call,
     doMutationCheck(ref->place, call, state);
     checkAnnotationOnWrite(*ref, call, state);
     recordAccess(ref->place, /*write=*/true, state);
-    applyPointerAssign(ref->place, origin, call, /*constPointee=*/false, state);
+    applyPointerAssign(ref->place, origin, call, /*constPointee=*/false, state,
+                       ref->element);
   }
+}
+
+void FunctionDataflow::notePendingOutcome(
+    const CallExpr &call, const core::FunctionSummary &summary,
+    const std::vector<std::pair<core::SummaryPath, std::vector<core::PlaceId>>>
+        &consumedTargets) {
+  if (summary.outcomes.empty())
+    return;
+  core::PendingOutcome conditional;
+  for (const auto &[path, targets] : consumedTargets) {
+    if (targets.empty() || summary.consumesUnconditionally(path))
+      continue;
+    for (const auto &[outcome, effects] : summary.outcomes) {
+      std::vector<core::PlaceId> &consumed = conditional.consumedBy[outcome];
+      const auto it = effects.find(path);
+      if (it == effects.end() || !it->second.consumed())
+        continue;
+      for (const core::PlaceId target : targets) {
+        if (!llvm::is_contained(consumed, target))
+          consumed.push_back(target);
+      }
+    }
+  }
+  if (conditional.consumedBy.empty())
+    return;
+  lastCall = CallOutcome{.call = &call, .pending = std::move(conditional)};
 }
 
 /// Compiler intrinsics (`__builtin_*`, `__sync_*`, ...) are not a checking
@@ -991,10 +1482,17 @@ void FunctionDataflow::noteUnknownCallee(const CallExpr &call) {
 void FunctionDataflow::handleReturn(const ReturnStmt &ret,
                                     core::AnalysisState &state) {
   const Expr *value = ret.getRetValue();
-  if (value == nullptr || !value->getType()->isPointerType())
+  if (value == nullptr)
     return;
+  if (!value->getType()->isPointerType()) {
+    if (value->getType()->isIntegerType())
+      recordOutcomes(*value, ValueOrigin{}, state);
+    return;
+  }
 
-  std::vector<ValueOrigin> origins{builder.classifyValue(*value)};
+  const ValueOrigin returned = builder.classifyValue(*value);
+  recordOutcomes(*value, returned, state);
+  std::vector<ValueOrigin> origins{returned};
   while (!origins.empty()) {
     const ValueOrigin origin = std::move(origins.back());
     origins.pop_back();
@@ -1059,10 +1557,37 @@ void FunctionDataflow::handleLifetimeEnd(const VarDecl &var,
 
 // -- Semantic actions ---------------------------------------------------------
 
-void FunctionDataflow::reinit(core::PlaceId place, core::AnalysisState &state) {
+void FunctionDataflow::reinit(core::PlaceId place, core::AnalysisState &state,
+                              core::ElementWitness element) {
+  // `a[i] = ...` overwrites one element: a record that another element was
+  // freed still holds (RFC 0006, *Element witnesses*).
+  std::optional<core::MoveRecord> survivor;
+  if (!element.isWhole()) {
+    if (const auto record = state.moves.recordOf(place);
+        record && !record->element.matches(element))
+      survivor = record;
+  }
   state.forget(place);
+  if (survivor) {
+    state.moves.markMoved(place, survivor->reason, survivor->location,
+                          survivor->via, survivor->element);
+  }
   for (const core::PlaceId child : places.descendants(place))
     state.forget(child);
+}
+
+void FunctionDataflow::forgetBelow(core::PlaceId place,
+                                   core::AnalysisState &state) {
+  // The objects below were overwritten: what they held is unknown. They
+  // still exist, so loans *against* them stay.
+  for (const core::PlaceId child : places.descendants(place)) {
+    state.moves.reinitialize(child);
+    state.aliases.separate(child);
+    state.loans.dropHolder(child);
+    state.pending.erase(child);
+    state.kinds.erase(child);
+    state.raw.clear(child);
+  }
 }
 
 void FunctionDataflow::mirrorSubtree(core::PlaceId src, core::PlaceId dest,
@@ -1078,9 +1603,9 @@ void FunctionDataflow::mirrorSubtree(core::PlaceId src, core::PlaceId dest,
     if (places.depth(place) + extraDepth > MaxPlaceDepth)
       continue;
     const core::PlaceId mirror = places.translate(place, from, to);
-    if (const auto record = state.moves.movedAt(place)) {
+    if (const auto record = state.moves.recordOf(place)) {
       state.moves.markMoved(mirror, record->reason, record->location,
-                            record->via.value_or(place));
+                            record->via.value_or(place), record->element);
     }
     for (core::Loan loan : state.loans.loans()) {
       if (loan.place == place) {
@@ -1112,7 +1637,8 @@ void FunctionDataflow::doRead(const PlaceRef &ref, const Expr &at,
     // Loading a pointer stored in caller memory is a read of that memory.
     recordAccess(ref.derefs[i], /*write=*/false, state);
     const Expr *where = ref.derefExprs[i];
-    if (const auto hit = findMoved(ref.derefs[i], state)) {
+    if (const auto hit =
+            findMoved(ref.derefs[i], state, ref.derefElements[i])) {
       reportUseOfMoved(ref.derefs[i], *hit, where != nullptr ? *where : at);
       return;
     }
@@ -1128,16 +1654,17 @@ void FunctionDataflow::doRead(const PlaceRef &ref, const Expr &at,
   if (!includeSelf)
     return;
   recordAccess(ref.place, /*write=*/false, state);
-  if (const auto hit = findMoved(ref.place, state))
+  if (const auto hit = findMoved(ref.place, state, ref.element))
     reportUseOfMoved(ref.place, *hit, at);
 }
 
-bool FunctionDataflow::doConsume(const PlaceRef &ref, core::MoveReason reason,
-                                 const Expr &at, core::AnalysisState &state) {
+std::vector<core::PlaceId>
+FunctionDataflow::doConsume(const PlaceRef &ref, core::MoveReason reason,
+                            const Expr &at, core::AnalysisState &state) {
   const core::PlaceId place = ref.place;
   checkAnnotationOnConsume(ref, reason, at, state);
 
-  if (const auto hit = findMoved(place, state)) {
+  if (const auto hit = findMoved(place, state, ref.element)) {
     const bool bothFreed = hit->record.reason == core::MoveReason::Freed &&
                            reason == core::MoveReason::Freed;
     if (bothFreed) {
@@ -1159,9 +1686,11 @@ bool FunctionDataflow::doConsume(const PlaceRef &ref, core::MoveReason reason,
       reportUseOfMoved(place, *hit, at);
     }
     // Keep the original record so later diagnostics point at the first site.
-    return false;
+    return {};
   }
 
+  // Freeing or moving a borrowed object invalidates the loan (RFC 0006,
+  // *Conflict rules*): the one borrow conflict reported by default.
   if (const auto conflict = findLoanConflict(place, std::nullopt, state)) {
     const bool freeing = reason == core::MoveReason::Freed;
     core::Diagnostic diagnostic{
@@ -1179,18 +1708,25 @@ bool FunctionDataflow::doConsume(const PlaceRef &ref, core::MoveReason reason,
   }
 
   const core::SourceLocation here = locate(at);
-  for (const core::PlaceId target : targets(place, state)) {
+  std::vector<core::PlaceId> marked;
+  for (const ConsumeTarget &target :
+       consumeTargets(place, ref.element, state)) {
     std::optional<core::PlaceId> via;
-    if (target != place)
+    if (target.place != place)
       via = place;
-    state.moves.markMoved(target, reason, here, via);
-    recordConsume(target, reason);
+    state.moves.markMoved(target.place, reason, here, via, target.element);
+    recordConsume(target.place, reason, state);
+    marked.push_back(target.place);
   }
-  return true;
+  return marked;
 }
 
 void FunctionDataflow::doMutationCheck(core::PlaceId place, const Expr &at,
                                        core::AnalysisState &state) {
+  // Writing to a borrowed place is Rust's exclusivity rule, opt-in under
+  // `--exclusive-borrows` (RFC 0006, *Conflict rules*).
+  if (!options.exclusiveBorrows)
+    return;
   const auto conflict = findLoanConflict(place, std::nullopt, state);
   if (!conflict)
     return;
@@ -1211,11 +1747,14 @@ void FunctionDataflow::doMutationCheck(core::PlaceId place, const Expr &at,
 void FunctionDataflow::applyPointerAssign(core::PlaceId dest,
                                           const ValueOrigin &origin,
                                           const Expr &at, bool constPointee,
-                                          core::AnalysisState &state) {
+                                          core::AnalysisState &state,
+                                          core::ElementWitness element) {
   // Facts about the source must be captured before the destination is reset:
   // `p = p->next` copies from a place below `p` that `reinit` forgets.
   struct CopySource {
     core::PlaceId place;
+    core::ElementWitness element;
+    bool interior;
     core::OwnershipKind kind;
     std::optional<MovedHit> moved;
     std::vector<core::Loan> loans;
@@ -1242,8 +1781,10 @@ void FunctionDataflow::applyPointerAssign(core::PlaceId dest,
       const core::PlaceId src = current->place->place;
       source = CopySource{
           .place = src,
+          .element = current->place->element,
+          .interior = current->interior,
           .kind = state.kindOf(src),
-          .moved = findMoved(src, state),
+          .moved = findMoved(src, state, current->place->element),
           .loans = state.loans.heldBy(src),
           .belowDest = src == dest || places.isDescendantOf(src, dest),
       };
@@ -1298,18 +1839,7 @@ void FunctionDataflow::applyPointerAssign(core::PlaceId dest,
     }
   }
 
-  // `q = realloc(p, n)` consumes p's class before q is reset, because q may
-  // be p (`p = realloc(p, n)`).
-  std::vector<core::PlaceId> consumed;
-  for (const Arm &arm : arms) {
-    if (arm.origin->kind != ValueOrigin::Kind::Realloc || !arm.origin->place)
-      continue;
-    consumed = targets(arm.origin->place->place, state);
-    if (!doConsume(*arm.origin->place, core::MoveReason::Moved, at, state))
-      consumed.clear();
-  }
-
-  reinit(dest, state);
+  reinit(dest, state, element);
 
   for (const Arm &armRecord : arms) {
     const ValueOrigin *arm = armRecord.origin;
@@ -1335,18 +1865,6 @@ void FunctionDataflow::applyPointerAssign(core::PlaceId dest,
       setKind(dest, core::join(state.kindOf(dest), core::OwnershipKind::Owned),
               state);
       break;
-    case ValueOrigin::Kind::Realloc: {
-      setKind(dest, core::join(state.kindOf(dest), core::OwnershipKind::Owned),
-              state);
-      std::vector<core::PlaceId> stillConsumed;
-      for (const core::PlaceId place : consumed) {
-        if (place != dest)
-          stillConsumed.push_back(place);
-      }
-      if (!stillConsumed.empty())
-        state.reallocs[dest] = std::move(stillConsumed);
-      break;
-    }
     case ValueOrigin::Kind::Copy: {
       if (!source)
         break;
@@ -1358,7 +1876,8 @@ void FunctionDataflow::applyPointerAssign(core::PlaceId dest,
       setKind(dest, core::join(state.kindOf(dest), sourceKind), state);
       if (source->belowDest)
         break;
-      state.aliases.unite(dest, source->place);
+      state.aliases.unite(dest, source->place, !source->interior, element,
+                          source->element);
       state.loans.copyHolder(source->place, dest);
       mirrorSubtree(source->place, dest, state);
       // A copied loan must outlive its new holder (RFC 0001, *Lifetimes*),
@@ -1383,7 +1902,7 @@ void FunctionDataflow::applyPointerAssign(core::PlaceId dest,
         // uses through it do not cascade into a second report per alias.
         state.moves.markMoved(
             dest, source->moved->record.reason, source->moved->record.location,
-            source->moved->record.via.value_or(source->moved->target));
+            source->moved->record.via.value_or(source->moved->target), element);
       }
       break;
     }
@@ -1429,8 +1948,11 @@ void FunctionDataflow::applyBorrow(core::PlaceId dest, const PlaceRef &borrowed,
     }
   }
 
-  // Borrow rules.
-  if (const auto conflict = findLoanConflict(target, kind, state)) {
+  // Exclusivity (RFC 0001), opt-in under `--exclusive-borrows` (RFC 0006,
+  // *Conflict rules*).
+  if (const auto conflict = options.exclusiveBorrows
+                                ? findLoanConflict(target, kind, state)
+                                : std::nullopt) {
     const bool mutableAttempt = kind == core::BorrowKind::Mutable;
     core::Diagnostic diagnostic{
         .severity = core::Severity::Error,
@@ -1466,6 +1988,8 @@ void FunctionDataflow::checkTemporaryBorrow(const PlaceRef &borrowed,
                                             core::BorrowKind kind,
                                             const Expr &at,
                                             const core::AnalysisState &state) {
+  if (!options.exclusiveBorrows)
+    return;
   const auto conflict = findLoanConflict(borrowed.place, kind, state);
   if (!conflict)
     return;
@@ -1541,6 +2065,38 @@ FunctionDataflow::targets(core::PlaceId place,
   return result;
 }
 
+std::vector<FunctionDataflow::ConsumeTarget>
+FunctionDataflow::consumeTargets(core::PlaceId place,
+                                 core::ElementWitness element,
+                                 const core::AnalysisState &state) {
+  std::vector<ConsumeTarget> result;
+  const auto add = [&result](core::PlaceId id, core::ElementWitness witness) {
+    for (ConsumeTarget &existing : result) {
+      if (existing.place != id)
+        continue;
+      // Named twice (through two mirrors): the record covers both.
+      if (existing.element != witness)
+        existing.element = core::ElementWitness::whole();
+      return;
+    }
+    result.push_back(ConsumeTarget{.place = id, .element = witness});
+  };
+  for (const core::PlaceId mirror : mirrors(place, state)) {
+    add(mirror, element);
+    for (const auto &[alias, edge] : state.aliases.edgesFrom(mirror)) {
+      // `edge.element` is the element of `alias` this mirror holds; the
+      // edge back says which element of the mirror `alias` holds, which
+      // must be the one being consumed.
+      const auto back = state.aliases.edge(alias, mirror);
+      if (!back || !back->element.matches(element))
+        continue;
+      add(alias, edge.element);
+    }
+  }
+  std::ranges::sort(result, {}, &ConsumeTarget::place);
+  return result;
+}
+
 std::vector<core::PlaceId> FunctionDataflow::related(core::PlaceId place) {
   std::vector<core::PlaceId> result{place};
   llvm::append_range(result, places.ancestors(place));
@@ -1550,14 +2106,15 @@ std::vector<core::PlaceId> FunctionDataflow::related(core::PlaceId place) {
 
 std::optional<FunctionDataflow::MovedHit>
 FunctionDataflow::findMoved(core::PlaceId place,
-                            const core::AnalysisState &state) {
+                            const core::AnalysisState &state,
+                            core::ElementWitness element) {
   // Facts are propagated eagerly to every alias and mirror when they are
   // created (`doConsume`, `mirrorSubtree`), so a query only needs to look at
   // the place itself. Looking at the whole class here would turn the
   // may-alias over-approximation introduced by joins into false positives:
   // after `cur = next` in a list walk, `cur` may alias both the freed node
   // and the live one, but only the freed node carries a move record.
-  if (const auto record = state.moves.movedAt(place))
+  if (const auto record = state.moves.movedAt(place, element))
     return MovedHit{.target = place, .record = *record};
   return std::nullopt;
 }
@@ -1820,7 +2377,6 @@ FunctionDataflow::rawRecordOf(const ValueOrigin &origin, const Expr &at,
     return std::nullopt;
   }
   case ValueOrigin::Kind::Alloc:
-  case ValueOrigin::Kind::Realloc:
   case ValueOrigin::Kind::Borrow:
   case ValueOrigin::Kind::Null:
   case ValueOrigin::Kind::Opaque:
@@ -1983,7 +2539,10 @@ void FunctionDataflow::dump(const core::AnalysisState *exitState) {
 
   os << "  summary:";
   const auto describeSource = [this](const core::ValueSource &source) {
-    std::string text(core::toString(source.kind));
+    std::string text(source.kind == core::ValueSource::Kind::Copy &&
+                             source.interior
+                         ? std::string_view("interior")
+                         : core::toString(source.kind));
     if (source.path)
       text += " " + summaryName(*source.path);
     return text;
@@ -2015,8 +2574,16 @@ void FunctionDataflow::dump(const core::AnalysisState *exitState) {
     first = false;
   }
   os << "}";
-  if (inferred.reallocLike)
-    os << " realloc-like";
+  for (const auto &[outcome, effects] : inferred.outcomes) {
+    os << " outcome " << core::toString(outcome) << "{";
+    first = true;
+    for (const auto &[path, effect] : effects) {
+      os << (first ? "" : ", ") << summaryName(path) << ":"
+         << (effect.freed ? " freed" : "") << (effect.moved ? " moved" : "");
+      first = false;
+    }
+    os << "}";
+  }
   os << "\n";
 }
 
@@ -2063,16 +2630,125 @@ void FunctionDataflow::recordAccess(core::PlaceId place, bool write,
   }
 }
 
+bool FunctionDataflow::isEventBased(const core::SummaryPath &path) const {
+  return path.isParam() &&
+         (path.isRoot() ||
+          (path.index < paramReassigned.size() && paramReassigned[path.index]));
+}
+
 void FunctionDataflow::recordConsume(core::PlaceId target,
-                                     core::MoveReason reason) {
-  if (!recording())
-    return;
+                                     core::MoveReason reason,
+                                     core::AnalysisState &state) {
   const auto path = builder.summaryPathOf(target);
   if (!path)
     return;
-  eventEffects[*path].join(reason == core::MoveReason::Freed
-                               ? core::PlaceEffect{.freed = true}
-                               : core::PlaceEffect{.moved = true});
+  const core::PlaceEffect effect = reason == core::MoveReason::Freed
+                                       ? core::PlaceEffect{.freed = true}
+                                       : core::PlaceEffect{.moved = true};
+  // The flow-sensitive record feeds the outcome classes at each `return`
+  // (RFC 0006); it is part of the state so the fixpoint sees it.
+  if (isEventBased(*path))
+    state.consumed[*path].join(effect);
+  if (recording())
+    eventEffects[*path].join(effect);
+}
+
+core::OutcomeEffects
+FunctionDataflow::consumptionAt(const core::AnalysisState &state) {
+  core::OutcomeEffects result = state.consumed;
+  for (const core::PlaceId place : state.moves.movedPlaces()) {
+    const auto path = builder.summaryPathOf(place);
+    if (!path || isEventBased(*path))
+      continue;
+    const auto record = state.moves.recordOf(place);
+    result[*path].join(record->reason == core::MoveReason::Freed
+                           ? core::PlaceEffect{.freed = true}
+                           : core::PlaceEffect{.moved = true});
+  }
+  return result;
+}
+
+/// The outcome classes a returned value may fall in (RFC 0006,
+/// *Inference*).
+static std::set<core::Outcome>
+outcomesOf(const Expr &value, const ValueOrigin &origin, ASTContext &context) {
+  const QualType type = value.getType();
+  if (type->isPointerType()) {
+    switch (origin.kind) {
+    case ValueOrigin::Kind::Null:
+      return {core::Outcome::Null};
+    case ValueOrigin::Kind::Borrow:
+      return {core::Outcome::NonNull};
+    case ValueOrigin::Kind::Conditional: {
+      std::set<core::Outcome> result;
+      for (const ValueOrigin &alternative : origin.alternatives)
+        result.merge(outcomesOf(value, alternative, context));
+      return result;
+    }
+    default:
+      return {core::Outcome::Null, core::Outcome::NonNull};
+    }
+  }
+  if (!type->isIntegerType())
+    return {};
+  if (const auto k = integerConstant(value, context)) {
+    if (*k == 0)
+      return {core::Outcome::Zero};
+    return {*k > 0 ? core::Outcome::Positive : core::Outcome::Negative};
+  }
+  if (type->isUnsignedIntegerType())
+    return {core::Outcome::Zero, core::Outcome::Positive};
+  return {core::Outcome::Zero, core::Outcome::Positive,
+          core::Outcome::Negative};
+}
+
+void FunctionDataflow::recordOutcomes(const Expr &value,
+                                      const ValueOrigin &origin,
+                                      const core::AnalysisState &state) {
+  if (!recording())
+    return;
+  std::set<core::Outcome> classes = outcomesOf(value, origin, context);
+  if (classes.empty())
+    return;
+  const core::OutcomeEffects base = consumptionAt(state);
+
+  // `return realloc(p, n)`, `q = realloc(p, n); return q;`: the paths
+  // returning each class inherit what that class retracts, and the result
+  // can only be in a class the (possibly narrowed) pending outcome still
+  // allows: after `if (!q) return NULL;`, `return q` is `nonnull`.
+  const core::PendingOutcome *retractable = nullptr;
+  const Expr *e = value.IgnoreParenCasts();
+  if (const auto *call = dyn_cast<CallExpr>(e)) {
+    if (lastCall && lastCall->call == call)
+      retractable = &lastCall->pending;
+  } else if (const auto ref = builder.resolvePointerValue(*e)) {
+    if (const auto it = state.pending.find(ref->place);
+        it != state.pending.end())
+      retractable = &it->second;
+  }
+  if (retractable != nullptr) {
+    std::set<core::Outcome> allowed;
+    for (const auto &[outcome, consumed] : retractable->consumedBy) {
+      if (classes.contains(outcome))
+        allowed.insert(outcome);
+    }
+    if (!allowed.empty())
+      classes = std::move(allowed);
+  }
+
+  for (const core::Outcome outcome : classes) {
+    core::OutcomeEffects effects = base;
+    if (retractable != nullptr) {
+      core::PendingOutcome narrowed = *retractable;
+      for (const core::PlaceId place : narrowed.select({outcome})) {
+        if (const auto path = builder.summaryPathOf(place))
+          effects.erase(*path);
+      }
+    }
+    inferred.addOutcome(outcome);
+    for (const auto &[path, effect] : effects)
+      inferred.addOutcome(outcome, path, effect);
+  }
 }
 
 void FunctionDataflow::recordStore(core::PlaceId dest,
@@ -2091,7 +2767,6 @@ core::ValueSource FunctionDataflow::sourceOf(const ValueOrigin &origin,
                                              const core::AnalysisState &state) {
   switch (origin.kind) {
   case ValueOrigin::Kind::Alloc:
-  case ValueOrigin::Kind::Realloc:
     return core::ValueSource::fresh();
   case ValueOrigin::Kind::Null:
     return core::ValueSource::null();
@@ -2111,13 +2786,20 @@ core::ValueSource FunctionDataflow::sourceOf(const ValueOrigin &origin,
     // parameter or field, or anything made raw on the way.
     if (state.raw.isRaw(src) || builder.isDeclaredRaw(src))
       return core::ValueSource::raw();
+    // `p + 1` is a copy into the argument's object, not of its value (RFC
+    // 0006, *Alias exactness*); so is a local that aliases the argument
+    // through an interior edge.
+    const auto copyOf = [](const core::SummaryPath &path, bool interior) {
+      return interior ? core::ValueSource::interiorCopy(path)
+                      : core::ValueSource::copy(path);
+    };
     if (const auto path = stableSummaryPathOf(src))
-      return core::ValueSource::copy(*path);
+      return copyOf(*path, origin.interior);
     // A local: resolve through what it aliases, then what it borrows, then
     // what it owns.
-    for (const core::PlaceId alias : state.aliases.members(src)) {
+    for (const auto &[alias, edge] : state.aliases.edgesFrom(src)) {
       if (const auto path = stableSummaryPathOf(alias))
-        return core::ValueSource::copy(*path);
+        return copyOf(*path, origin.interior || !edge.exact);
     }
     for (const core::Loan &loan : state.loans.heldBy(src)) {
       if (const auto path = stableSummaryPathOf(loan.place))
@@ -2139,11 +2821,7 @@ void FunctionDataflow::finalizeSummary(const core::AnalysisState *exitState) {
   // consumption from the events; everything else from the exit state (RFC
   // 0003, *Deriving a summary*).
   for (const auto &[path, effect] : eventEffects) {
-    const bool eventBased =
-        path.isParam() &&
-        (path.isRoot() ||
-         (path.index < paramReassigned.size() && paramReassigned[path.index]));
-    if (eventBased)
+    if (isEventBased(path))
       inferred.addEffect(path, effect);
   }
   if (exitState != nullptr) {
@@ -2151,12 +2829,28 @@ void FunctionDataflow::finalizeSummary(const core::AnalysisState *exitState) {
       const auto path = builder.summaryPathOf(place);
       if (!path)
         continue;
-      const auto record = exitState->moves.movedAt(place);
+      const auto record = exitState->moves.recordOf(place);
       inferred.addEffect(*path, record->reason == core::MoveReason::Freed
                                     ? core::PlaceEffect{.freed = true}
                                     : core::PlaceEffect{.moved = true});
     }
   }
+  // Every class's consumption is part of the unconditional effects; a
+  // class recorded from a path whose effects the exit state lacks (it
+  // returned before a later reinitialisation) must not claim more than the
+  // union does.
+  bool conditional = false;
+  for (const auto &[outcome, effects] : inferred.outcomes) {
+    for (const auto &[path, effect] : effects) {
+      inferred.addEffect(path, effect);
+      if (effect.consumed() && !inferred.consumesUnconditionally(path))
+        conditional = true;
+    }
+  }
+  // Classes only matter when some consumption depends on them; a summary
+  // without conditional consumption stays as small as an RFC 0003 one.
+  if (!conditional)
+    inferred.outcomes.clear();
 }
 
 // -- Reconciliation (RFC 0003) ------------------------------------------------

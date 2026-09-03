@@ -123,6 +123,24 @@ TEST_F(BorrowStateTest, HoldersCanBeCopiedAndDropped) {
   EXPECT_FALSE(state.hasLoans(p));
 }
 
+// RFC 0006, *Loans end at the last use of their holder*.
+TEST_F(BorrowStateTest, ExpireHoldersDropsByPredicate) {
+  const PlaceId a = places.create("a");
+  const PlaceId b = places.create("b");
+  Loan first = makeLoan(p, BorrowKind::Shared, l1);
+  first.holder = a;
+  Loan second = makeLoan(q, BorrowKind::Mutable, l1);
+  second.holder = b;
+  state.addLoanUnchecked(first);
+  state.addLoanUnchecked(second);
+
+  state.expireHolders([a](PlaceId holder) { return holder == a; });
+  EXPECT_FALSE(state.hasLoans(p)) << "a is dead: its loan is gone";
+  EXPECT_TRUE(state.hasLoans(q)) << "b is live";
+  state.expireHolders([](PlaceId) { return false; });
+  EXPECT_EQ(state.loans().size(), 1U);
+}
+
 TEST_F(BorrowStateTest, AddLoanUncheckedIgnoresConflictsAndDuplicates) {
   const Loan loan = makeLoan(p, BorrowKind::Mutable, l1);
   state.addLoanUnchecked(loan);
@@ -141,9 +159,31 @@ TEST_F(BorrowStateTest, JoinIsSetUnionAndEqualityIgnoresOrder) {
 
   ASSERT_FALSE(other.addLoan(makeLoan(q, BorrowKind::Shared, l2)));
   EXPECT_NE(state, other);
-  state.join(other);
+  EXPECT_TRUE(state.join(other));
   EXPECT_EQ(state, other);
   EXPECT_EQ(state.loans().size(), 3U);
+  EXPECT_FALSE(state.join(other)) << "nothing new: unchanged";
+  EXPECT_FALSE(state.join(BorrowState{}));
+}
+
+TEST_F(BorrowStateTest, LoansAreKeptSortedByPlaceThenHolder) {
+  Loan late = makeLoan(q, BorrowKind::Shared, l1);
+  late.holder = PlaceId{7};
+  Loan early = makeLoan(p, BorrowKind::Shared, l1);
+  early.holder = PlaceId{9};
+  Loan middle = makeLoan(q, BorrowKind::Shared, l1);
+  middle.holder = PlaceId{3};
+  state.addLoanUnchecked(late);
+  state.addLoanUnchecked(early);
+  state.addLoanUnchecked(middle);
+  ASSERT_EQ(state.loans().size(), 3U);
+  EXPECT_EQ(state.loans()[0], early);
+  EXPECT_EQ(state.loans()[1], middle);
+  EXPECT_EQ(state.loans()[2], late);
+  EXPECT_TRUE(state.contains(middle));
+  Loan absent = middle;
+  absent.kind = BorrowKind::Mutable;
+  EXPECT_FALSE(state.contains(absent));
 }
 
 TEST(BorrowKind, ToString) {

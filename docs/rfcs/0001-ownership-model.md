@@ -191,6 +191,13 @@ A refused `addLoan`, `checkMove` or `checkMutation` yields a
 Loans end either when their lifetime expires (`expire(lifetime)`) or when the
 place is released (`release(place)`).
 
+> **Superseded by [RFC 0006](0006-precision.md), *Conflict rules* and
+> *Loans end at the last use of their holder*.** By default only the third
+> rule is enforced (a place with a live loan may not be freed or moved);
+> the two exclusivity rules run under `--exclusive-borrows`. A loan lives
+> until its holder's last use, not until its lifetime expires. The
+> paragraph below records the RFC 0001 decision for history.
+
 Design decision: these are Rust's *lexical* borrow rules, not NLL. A loan
 lives until its lifetime expires, not until its last use. This is simpler,
 matches how the scopes-as-lifetimes scheme below assigns lifetimes, and

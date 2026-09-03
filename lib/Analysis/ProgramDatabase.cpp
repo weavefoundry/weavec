@@ -14,6 +14,7 @@
 #include "clang/AST/Decl.h"
 #include "clang/AST/DeclBase.h"
 #include "clang/AST/PrettyPrinter.h"
+#include "clang/Basic/Version.h"
 
 #include <string>
 #include <utility>
@@ -58,8 +59,12 @@ std::string functionTypeKey(QualType type, const ASTContext &context) {
     return {};
   PrintingPolicy policy(context.getLangOpts());
   policy.SuppressTagKeyword = false;
+#if CLANG_VERSION_MAJOR >= 23
   policy.AnonymousTagNameStyle =
       llvm::to_underlying(PrintingPolicy::AnonymousTagMode::SourceLocation);
+#else
+  policy.AnonymousTagLocations = true;
+#endif
   policy.SuppressScope = true;
   policy.Bool = false;
   std::string key = type.getCanonicalType().getAsString(policy);
@@ -178,8 +183,16 @@ static void describe(llvm::raw_ostream &os,
     first = false;
   }
   os << "}";
-  if (summary.reallocLike)
-    os << " realloc-like";
+  for (const auto &[outcome, effects] : summary.outcomes) {
+    os << " outcome " << core::toString(outcome) << "{";
+    first = true;
+    for (const auto &[path, effect] : effects) {
+      os << (first ? "" : ", ") << core::printSummaryPath(path, namer) << ":"
+         << (effect.freed ? " freed" : "") << (effect.moved ? " moved" : "");
+      first = false;
+    }
+    os << "}";
+  }
   os << "\n";
 }
 

@@ -33,15 +33,19 @@
 #include "clang/AST/Stmt.h"
 #include "clang/Analysis/CFG.h"
 
+#include "llvm/ADT/BitVector.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <map>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace weavec::analysis {
@@ -109,9 +113,19 @@ private:
   /// Statements inside a `WEAVEC_UNSAFE` block (RFC 0004, *Unsafe regions*).
   llvm::DenseSet<const clang::Stmt *> unsafeStmts;
   llvm::DenseMap<const clang::Expr *, Role> roles;
-  llvm::DenseSet<const clang::CallExpr *> assignedCalls;
   /// Parameters whose variable is assigned or address-taken in the body.
   std::vector<bool> paramReassigned;
+
+  // -- Liveness (RFC 0006, *Loans end at the last use of their holder*) -----
+
+  /// Index of every local variable (parameters included) in the liveness
+  /// bit vectors.
+  llvm::DenseMap<const clang::VarDecl *, unsigned> liveIndex;
+  /// Locals whose address is taken somewhere in the body: they may be read
+  /// through the pointer at any time, so they are treated as always live.
+  llvm::DenseSet<const clang::VarDecl *> addressTaken;
+  /// Per block, per element: the locals live *before* that element.
+  std::vector<std::vector<llvm::BitVector>> liveBefore;
   SignatureAnnotations signature;
   /// The whole body is an unsafe region (`WEAVEC_UNSAFE` on the function).
   bool unsafeBody;
@@ -135,22 +149,43 @@ private:
   /// parameter roots and for paths under reassigned parameters.
   std::map<core::SummaryPath, core::PlaceEffect> eventEffects;
 
+  /// The consumption a call in the block being transferred performed that
+  /// depends on its result (RFC 0006, *Pending outcomes*), until the result
+  /// is stored somewhere or tested directly by the block's terminator.
+  struct CallOutcome {
+    const clang::CallExpr *call = nullptr;
+    core::PendingOutcome pending;
+  };
+  std::optional<CallOutcome> lastCall;
+
   // -- Pre-passes -----------------------------------------------------------
 
   void collectScopes(const clang::Stmt *stmt, core::LifetimeId current);
   void classifyStmt(const clang::Stmt *stmt);
   void classifyExpr(const clang::Expr *expr, Role role);
   void markPathInterior(const clang::Expr &root);
-  void noteAssignedCall(const clang::Expr &rhs);
   void noteParamAccess(const clang::Expr &place, Role role);
   void collectUnsafe(const clang::Stmt &stmt);
   core::AnalysisState initialState();
+  /// Backward liveness of the function's locals over the CFG, filling
+  /// `liveBefore` (RFC 0006).
+  void computeLiveness();
 
   // -- Engine ---------------------------------------------------------------
 
   void transfer(const clang::CFGBlock &block, core::AnalysisState &state);
+  /// Drops the loans whose holder is a local that is dead before element
+  /// `index` of `block`.
+  void expireDeadLoans(const clang::CFGBlock &block, std::size_t index,
+                       core::AnalysisState &state);
   void applyEdge(const clang::CFGBlock &from, unsigned succIndex,
                  core::AnalysisState &state);
+  /// A test of a call result on a conditional edge (RFC 0006, *Outcome
+  /// tests*): the classes the edge selects for the pending outcome of the
+  /// tested operand.
+  void applyOutcomeTest(const clang::Expr &operand,
+                        const std::set<core::Outcome> &selected,
+                        core::AnalysisState &state);
   void flushDiagnostics();
   void dump(const core::AnalysisState *exitState);
 
@@ -168,21 +203,42 @@ private:
 
   void doRead(const PlaceRef &ref, const clang::Expr &at,
               core::AnalysisState &state, bool includeSelf);
-  /// Returns false if the place was already moved (reported, not re-marked).
-  bool doConsume(const PlaceRef &ref, core::MoveReason reason,
-                 const clang::Expr &at, core::AnalysisState &state);
+  /// Returns the places marked moved (the place, its mirrors and aliases);
+  /// empty if the place was already moved (reported, not re-marked).
+  std::vector<core::PlaceId> doConsume(const PlaceRef &ref,
+                                       core::MoveReason reason,
+                                       const clang::Expr &at,
+                                       core::AnalysisState &state);
   void doMutationCheck(core::PlaceId place, const clang::Expr &at,
                        core::AnalysisState &state);
-  void applyPointerAssign(core::PlaceId dest, const ValueOrigin &origin,
-                          const clang::Expr &at, bool constPointee,
-                          core::AnalysisState &state);
+  /// The variable `place` names (if it is a base place) was assigned or had
+  /// its address taken: element witnesses on it are no longer reliable
+  /// (RFC 0006, *Element witnesses*).
+  void noteVariableWrite(core::PlaceId place, core::AnalysisState &state);
+  /// `dest` (its element `element` when it is a summarised array place)
+  /// receives a pointer value of the given origin.
+  void applyPointerAssign(
+      core::PlaceId dest, const ValueOrigin &origin, const clang::Expr &at,
+      bool constPointee, core::AnalysisState &state,
+      core::ElementWitness element = core::ElementWitness::whole());
+  /// `dest` received the result of `call`; the call's pending outcome, if
+  /// any, now belongs to `dest` (RFC 0006, *Pending outcomes*).
+  void attachOutcome(core::PlaceId dest, const clang::Expr *init,
+                     core::AnalysisState &state);
   void applyBorrow(core::PlaceId dest, const PlaceRef &borrowed,
                    core::BorrowKind kind, const clang::Expr &at,
                    core::AnalysisState &state);
   void checkTemporaryBorrow(const PlaceRef &borrowed, core::BorrowKind kind,
                             const clang::Expr &at,
                             const core::AnalysisState &state);
-  void reinit(core::PlaceId place, core::AnalysisState &state);
+  /// Forgets every fact about `place` and the places below it. With a
+  /// non-whole `element`, a move record of another element of `place`
+  /// survives (an element write does not reinitialise its neighbours).
+  void reinit(core::PlaceId place, core::AnalysisState &state,
+              core::ElementWitness element = core::ElementWitness::whole());
+  /// Forgets every fact about the places strictly below `place` (the object
+  /// was overwritten; RFC 0006, *`written` forgets what lies below*).
+  void forgetBelow(core::PlaceId place, core::AnalysisState &state);
   /// Copies every fact about the objects below `*src` onto `*dest`.
   void mirrorSubtree(core::PlaceId src, core::PlaceId dest,
                      core::AnalysisState &state);
@@ -203,6 +259,13 @@ private:
   /// stores through arguments and into globals.
   void applySummary(const clang::CallExpr &call, const CallEffects &effects,
                     core::AnalysisState &state);
+  /// Records into `lastCall` the consumption `applySummary` performed for
+  /// `call` that the callee's outcomes make conditional on its result.
+  void notePendingOutcome(
+      const clang::CallExpr &call, const core::FunctionSummary &summary,
+      const std::vector<
+          std::pair<core::SummaryPath, std::vector<core::PlaceId>>>
+          &consumedTargets);
   /// Handles a call across the checking boundary (no summary): the RFC 0003
   /// warning by default, a raw operation under `--strict-externs` (RFC
   /// 0004, *Boundaries*).
@@ -257,8 +320,24 @@ private:
   /// written, when it names caller memory.
   void recordAccess(core::PlaceId place, bool write,
                     const core::AnalysisState &state);
-  /// Records a release/move of `target` as it happens.
-  void recordConsume(core::PlaceId target, core::MoveReason reason);
+  /// Records a release/move of `target` as it happens: in the state's
+  /// flow-sensitive `consumed` map (every phase) and in `eventEffects`
+  /// (final pass).
+  void recordConsume(core::PlaceId target, core::MoveReason reason,
+                     core::AnalysisState &state);
+  /// True if consumption of `path` is recorded as it happens rather than
+  /// read from the exit state (RFC 0003, *Deriving a summary*): parameter
+  /// roots and paths under reassigned parameters.
+  [[nodiscard]] bool isEventBased(const core::SummaryPath &path) const;
+  /// The consumption in force at `state`, by summary path: the event-based
+  /// paths from `state.consumed`, the rest from `state.moves` (RFC 0006,
+  /// *Outcome-conditional summaries*).
+  [[nodiscard]] core::OutcomeEffects
+  consumptionAt(const core::AnalysisState &state);
+  /// Records the outcome classes of `return value` and the consumption on
+  /// this path for each (final pass).
+  void recordOutcomes(const clang::Expr &value, const ValueOrigin &origin,
+                      const core::AnalysisState &state);
   /// Records a pointer value written into caller-visible memory.
   void recordStore(core::PlaceId dest, const core::ValueSource &value);
   /// Classifies a value the callee hands out (stores or returns).
@@ -297,6 +376,18 @@ private:
   /// definition.
   [[nodiscard]] std::vector<core::PlaceId>
   targets(core::PlaceId place, const core::AnalysisState &state);
+  /// The targets of a consume of element `element` of `place`, each with
+  /// the element witness the record on it gets (RFC 0006, *Element
+  /// witnesses*): the place and its mirrors keep `element`; an alias gets
+  /// the element of it the alias edge names, and is skipped when the edge
+  /// names another element of `place` than the access did.
+  struct ConsumeTarget {
+    core::PlaceId place;
+    core::ElementWitness element;
+  };
+  [[nodiscard]] std::vector<ConsumeTarget>
+  consumeTargets(core::PlaceId place, core::ElementWitness element,
+                 const core::AnalysisState &state);
   [[nodiscard]] std::vector<core::PlaceId>
   mirrors(core::PlaceId place, const core::AnalysisState &state);
   /// `place` together with its ancestors and descendants.
@@ -306,8 +397,11 @@ private:
     core::PlaceId target;
     core::MoveRecord record;
   };
+  /// The move record of `place` if it is moved and the record's element
+  /// witness matches the access's (`Whole` matches everything).
   [[nodiscard]] static std::optional<MovedHit>
-  findMoved(core::PlaceId place, const core::AnalysisState &state);
+  findMoved(core::PlaceId place, const core::AnalysisState &state,
+            core::ElementWitness element = core::ElementWitness::whole());
   [[nodiscard]] std::optional<core::Loan>
   findLoanConflict(core::PlaceId place, std::optional<core::BorrowKind> kind,
                    const core::AnalysisState &state);

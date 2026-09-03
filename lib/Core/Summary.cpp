@@ -175,12 +175,46 @@ OwnershipKind FunctionSummary::inferredReturnKind() const {
   return result == OwnershipKind::Raw ? OwnershipKind::Unknown : result;
 }
 
+void FunctionSummary::addOutcome(Outcome outcome, const SummaryPath &path,
+                                 PlaceEffect effect) {
+  OutcomeEffects &perClass = outcomes[outcome];
+  if (!effect.empty())
+    perClass[path].join(effect);
+}
+
+bool FunctionSummary::consumesUnconditionally(const SummaryPath &path) const {
+  if (outcomes.empty())
+    return true;
+  return std::ranges::all_of(outcomes, [&path](const auto &entry) {
+    const auto it = entry.second.find(path);
+    return it != entry.second.end() && it->second.consumed();
+  });
+}
+
 void FunctionSummary::join(const FunctionSummary &other) {
+  // The empty summary is the bottom of the lattice (a join of candidates
+  // starts from it): the other side's classes are the answer.
+  const bool wasEmpty = empty();
   for (const auto &[path, effect] : other.effects)
     addEffect(path, effect);
   stores.insert(other.stores.begin(), other.stores.end());
   returns.insert(other.returns.begin(), other.returns.end());
-  reallocLike = reallocLike || other.reallocLike;
+  if (wasEmpty) {
+    outcomes = other.outcomes;
+    return;
+  }
+  // Otherwise outcome knowledge is only as good as the least informed
+  // side: a side that knows nothing about outcomes may return any class
+  // with any of its effects, which the per-class maps cannot express.
+  if (outcomes.empty() || other.outcomes.empty()) {
+    outcomes.clear();
+    return;
+  }
+  for (const auto &[outcome, theirs] : other.outcomes) {
+    OutcomeEffects &mine = outcomes[outcome];
+    for (const auto &[path, effect] : theirs)
+      mine[path].join(effect);
+  }
 }
 
 FunctionSummary remapGlobals(const FunctionSummary &summary,
@@ -204,8 +238,10 @@ FunctionSummary remapGlobals(const FunctionSummary &summary,
     const std::optional<SummaryPath> path = remapPath(*source.path);
     if (!path)
       return ValueSource::unknown();
-    return source.kind == ValueSource::Kind::Copy ? ValueSource::copy(*path)
-                                                  : ValueSource::borrow(*path);
+    if (source.kind == ValueSource::Kind::Borrow)
+      return ValueSource::borrow(*path);
+    return source.interior ? ValueSource::interiorCopy(*path)
+                           : ValueSource::copy(*path);
   };
 
   FunctionSummary result;
@@ -219,8 +255,39 @@ FunctionSummary remapGlobals(const FunctionSummary &summary,
   }
   for (const ValueSource &source : summary.returns)
     result.addReturn(remapSource(source));
-  result.reallocLike = summary.reallocLike;
+  for (const auto &[outcome, effects] : summary.outcomes) {
+    result.addOutcome(outcome);
+    for (const auto &[path, effect] : effects) {
+      if (const auto mapped = remapPath(path))
+        result.addOutcome(outcome, *mapped, effect);
+    }
+  }
   return result;
+}
+
+std::string_view toString(Outcome outcome) noexcept {
+  switch (outcome) {
+  case Outcome::Null:
+    return "null";
+  case Outcome::NonNull:
+    return "nonnull";
+  case Outcome::Zero:
+    return "zero";
+  case Outcome::Positive:
+    return "positive";
+  case Outcome::Negative:
+    return "negative";
+  }
+  return "<invalid>";
+}
+
+std::optional<Outcome> parseOutcome(std::string_view text) noexcept {
+  for (const Outcome outcome : {Outcome::Null, Outcome::NonNull, Outcome::Zero,
+                                Outcome::Positive, Outcome::Negative}) {
+    if (toString(outcome) == text)
+      return outcome;
+  }
+  return std::nullopt;
 }
 
 std::string_view toString(ValueSource::Kind kind) noexcept {

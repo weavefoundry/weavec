@@ -109,8 +109,8 @@ Every WeaveC diagnostic ends with a stable identifier in brackets, e.g.
 | --------------------- | -------- | --------------------------------------------------------------------- |
 | `use-after-free`      | error    | A pointer (or any alias of it) is used after being passed to `free`. Note: `freed here` / `freed here (through '<q>')`. |
 | `double-free`         | error    | A pointer (or any alias of it) is passed to `free` twice without reassignment. Note: `previously freed here [(through '<q>')]`. |
-| `use-after-move`      | error    | A pointer is used after being passed to a `WEAVEC_OWNED` parameter or to `realloc` (without a null test). Note: `moved here`. |
-| `conflicting-borrow`  | error    | A borrow violates the aliasing rules: `cannot borrow '<x>' as mutable because it is already borrowed`, `... as shared because it is already mutably borrowed`, `cannot assign to '<x>' while it is borrowed`, `cannot free '<p>' while it is borrowed`, `cannot move '<p>' while it is borrowed`. Note names the other pointer. |
+| `use-after-move`      | error    | A pointer is used after being passed to a `WEAVEC_OWNED` parameter, to `realloc`, or to a function that moves it (on every path, or on the paths whose result the caller has not ruled out; [RFC 0006](rfcs/0006-precision.md)). Note: `moved here`. |
+| `conflicting-borrow`  | error    | An object is freed or moved while a live pointer into it exists: `cannot free '<p>' while it is borrowed`, `cannot move '<p>' while it is borrowed`. Note: `borrowed by '<q>' here`. A pointer is *live* until its last use ([RFC 0006](rfcs/0006-precision.md)). With `--exclusive-borrows` (`-fweavec-exclusive-borrows`), RFC 0001's exclusivity rules are enforced too: `cannot borrow '<x>' as mutable because it is already borrowed`, `... as shared because it is already mutably borrowed`, `cannot assign to '<x>' while it is borrowed`; the note names the other pointer. |
 | `lifetime-too-short`  | error    | A pointer may outlive what it points to: `'<p>' may outlive '<x>', which it points to` (stored into an outer scope, a global or through a parameter) or `returned pointer may outlive '<x>', which it points to`. Notes: where `<x>` is declared and where it goes out of scope. |
 | `unsafe-operation`    | error    | A raw operation outside a `WEAVEC_UNSAFE` region ([RFC 0004](rfcs/0004-unsafe-boundaries.md)): `dereference of raw pointer '<p>' outside an unsafe region`, `'<f>' dereferences raw pointer '<p>' ...` (also `releases`, `takes ownership of`), `raw pointer '<p>' is assigned to '<q>', which is declared WEAVEC_OWNED, outside an unsafe region` (any safe annotation), `raw pointer is returned from a function whose return type is annotated WEAVEC_OWNED outside an unsafe region`, and with `--strict-externs`, `unchecked call to '<f>' outside an unsafe region` / `unchecked call through '<fp>' ...`. Notes: why the pointer is raw (`'<p>' is raw: cast from an integer here`, `declared WEAVEC_RAW here`, `loaded through raw pointer '<q>' here`, `handed out by '<f>' here`, `returned by a call into unchecked code ('<f>') here`, each optionally `(through '<alias>')`) and `move this operation into a WEAVEC_UNSAFE block or function, or assert the pointer's ownership first`. |
 | `annotation-mismatch` | error    | A definition contradicts its own annotation: `'<p>' is annotated WEAVEC_BORROWED but is freed here` (also `WEAVEC_MUT`; also `moved`, `written through`; also `... but '<p>->f' is freed here` for a path under the parameter), `function returns a borrow but its return type is annotated WEAVEC_OWNED`, `function returns a fresh allocation but its return type is annotated WEAVEC_BORROWED` (or `WEAVEC_MUT`). Notes: `'<p>' is annotated here` / `annotated here`; `'<q>' is a copy of '<p>'` when through an alias. Callers keep trusting the annotation. |
@@ -121,8 +121,9 @@ The identifiers are defined in `include/weavec/Core/Diagnostic.h`
 (`weavec::core::diag`). Renaming one is a breaking change. The rules behind
 them are specified by [RFC 0001](rfcs/0001-ownership-model.md),
 [RFC 0002](rfcs/0002-intraprocedural-checking.md),
-[RFC 0003](rfcs/0003-signature-inference.md) and
-[RFC 0004](rfcs/0004-unsafe-boundaries.md).
+[RFC 0003](rfcs/0003-signature-inference.md),
+[RFC 0004](rfcs/0004-unsafe-boundaries.md) and
+[RFC 0006](rfcs/0006-precision.md).
 
 Fix-its are emitted through Clang, so `-fdiagnostics-parseable-fixits` and
 editor integrations that apply Clang fix-its work unchanged:
@@ -153,6 +154,19 @@ buffer.c:12:27: warning: pointer parameter 'b' of 'buffer_free' is inferred WEAV
   wrappers and through recursion). `realloc(p, n)` moves `p`; on the path
   where the result is tested null (`if (!q)`, `q == NULL`, ...), `p` is
   valid again.
+- **Outcome-conditional consumption** ([RFC 0006](rfcs/0006-precision.md)):
+  a callee that frees or moves its argument only on the paths that return
+  some class of value (`NULL` vs non-null, `0` vs positive vs negative) is
+  summarised per class, and a test of its result selects the class: after
+  `int rc = try_take(p);` the pointer `p` is gone where `rc == 0` and still
+  yours where `rc != 0`, if `try_take` frees only when it returns `0`.
+  Recognised tests: `x`, `!x`, `x == NULL`, `x != NULL`, `x == 0`, `x != 0`
+  and comparisons with an integer constant (`x < 0`, `x == -1`, `x >= 0`,
+  ...), on the call itself, on the variable its result was stored in, or
+  on an assignment inside the condition (`if ((rc = f(p)) < 0)`). Wrappers
+  (`char *q = realloc(p, n); if (!q) return NULL; return q;`) inherit the
+  conditional behaviour. Untested, a conditional free is a may-free and the
+  next use is reported.
 - **Calls through function pointers**: the callee's signature is taken from
   the annotations on the function-pointer type (typedef, field or parameter)
   when it has any; otherwise from the join of the summaries of every
@@ -177,16 +191,40 @@ buffer.c:12:27: warning: pointer parameter 'b' of 'buffer_free' is inferred WEAV
   alias or a borrow of that argument in the caller, so freeing the argument
   then using the result is reported.
 - **Aliases**: `q = p` makes `q` and `p` names for the same object, so a free
-  through either is a free of both. Reassigning a pointer separates it.
+  through either is a free of both. Reassigning a pointer separates it. So
+  does a test ([RFC 0006](rfcs/0006-precision.md)): on the edge where `p
+  != q` holds the two are distinct (`if (l == sentinel) return; free(l);
+  use(sentinel);` is clean), and on the edge where `p == q` holds they are
+  the same object. `!=` separates only pointers that hold the *same value*
+  (`q = p`); `q = p + 1` points into the same object and stays an alias.
 - **Borrows**: `&x`, `&s->f`, array decay and `&a[i]` create a loan held by
   the pointer being assigned (mutable unless the pointer's pointee type is
   `const`). Arguments to `WEAVEC_BORROWED`/`WEAVEC_MUT` parameters, and to
   parameters that a defined callee reads or writes through, borrow for the
-  duration of the call. A loan ends when its holder is reassigned or goes
-  out of scope. Copying a pointer that holds a loan into a longer-lived
-  pointer is checked like creating the loan there.
+  duration of the call. A loan ends when its holder is reassigned or is
+  *last used* ([RFC 0006](rfcs/0006-precision.md)): `int *a = &n->v; *a =
+  1; free(n);` is fine, `free(n); *a = 1;` is not. Loans held through a
+  pointer (`h->view = &n->v`), by a global, or by a local whose address is
+  taken last until the holder is reassigned. Copying a pointer that holds
+  a loan into a longer-lived pointer is checked like creating the loan
+  there. Two live pointers into one object, or writing an object another
+  pointer views, are accepted by default; `--exclusive-borrows` rejects
+  them as RFC 0001 does.
 - **Places**: `p`, `s.f`, `p->f`, `*pp`, `p->a->b`, file-scope variables;
-  all elements of an array share one place, written `a[*]` in diagnostics.
+  all elements of an array share one place, written `a[*]` in diagnostics
+  (`*a` for a pointer `a`). A free or move of an element remembers which
+  element was named ([RFC 0006](rfcs/0006-precision.md)): `free(a[i]);
+  a[i][0] = 0;` and `free(a[0]); free(a[0]);` are reported, while `for (i)
+  free(a[i]); free(a);`, `free(a[0]); use(a[1]);` and `free(a[i]); a[i] =
+  NULL;` are clean. Assigning, incrementing or taking the address of the
+  index variable makes the element unknown: it is then neither reported by
+  element accesses nor cleared by element writes. An access without a
+  subscript (`*a`, `free(a)` of the array's owner) matches every element.
+- **Overwrites**: a callee that writes an object wholesale (`memcpy(root,
+  &tmp, sizeof *root)`, or a defined function that writes through the
+  parameter) makes every fact about the object's fields stale, so
+  `free(root->string); memcpy(root, ...); use(root->string);` is clean
+  ([RFC 0006](rfcs/0006-precision.md)).
 - **Annotations are checked**: a body that frees a `WEAVEC_BORROWED`
   parameter is an `annotation-mismatch`; the annotation still governs what
   callers assume.
@@ -229,7 +267,8 @@ unit's exported summaries to `<object>.weavec` in the same text form.
 The soundness statement assumes default severities. `weavec-cc` additionally
 takes `-fno-weavec` (compile only), `-fweavec-strict` (`--strict-externs`),
 `-fweavec-report-unannotated`, `-fweavec-analyze-headers`,
-`-fweavec-dump-analysis` and `-fno-weavec-link` (skip the link-time
+`-fweavec-dump-analysis`, `-fweavec-exclusive-borrows`
+(`--exclusive-borrows`) and `-fno-weavec-link` (skip the link-time
 whole-program step).
 
 ## Compatibility with other annotation schemes

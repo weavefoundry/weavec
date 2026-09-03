@@ -76,7 +76,6 @@ TEST(Allocators, MallocProducesOwned) {
   ASSERT_TRUE(effects);
   EXPECT_EQ(effects->source, SummarySource::Builtin);
   EXPECT_TRUE(effects->producesOwned);
-  EXPECT_FALSE(effects->isRealloc);
   EXPECT_TRUE(effects->consumedArgs.empty());
 }
 
@@ -96,9 +95,12 @@ TEST(Allocators, ReallocConsumesAndProduces) {
   const auto effects = parsed.classify(1);
   ASSERT_TRUE(effects);
   EXPECT_TRUE(effects->producesOwned);
-  EXPECT_TRUE(effects->isRealloc);
   EXPECT_TRUE(effects->consumes(0));
   EXPECT_FALSE(effects->frees(0)) << "moved, not released";
+  // RFC 0006: the move is conditional on a non-null result.
+  EXPECT_FALSE(
+      effects->summary->consumesUnconditionally(core::SummaryPath::param(0)));
+  EXPECT_TRUE(effects->summary->outcomes.contains(core::Outcome::Null));
 }
 
 TEST(Allocators, AnnotatedParametersAreAuthoritative) {

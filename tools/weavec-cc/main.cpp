@@ -15,7 +15,8 @@
 //   CC=weavec-cc make
 //
 // WeaveC's flags: -fweavec / -fno-weavec, -fweavec-strict,
-// -fweavec-report-unannotated, -fweavec-analyze-headers,
+// -fweavec-exclusive-borrows, -fweavec-report-unannotated,
+// -fweavec-analyze-headers,
 // -fweavec-dump-analysis, -fno-weavec-link, -W[no-]weavec-<id>,
 // -W[no-]error=weavec[-<id>]. Everything else is Clang's.
 //

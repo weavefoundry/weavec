@@ -101,6 +101,22 @@ TEST_F(PlacePathTest, AncestorsAndDescendants) {
   EXPECT_TRUE(table.descendants(next).empty());
 }
 
+TEST_F(PlacePathTest, DescendantsAreInCreationOrderAndStayInTheSubtree) {
+  // Interleave creation under two roots: the walk must yield only `p`'s
+  // subtree, deep places included, ascending by id.
+  const PlaceId star = table.deref(p);
+  const PlaceId sf = table.field(s, "f");
+  const PlaceId next = table.field(star, "next");
+  const PlaceId sg = table.field(s, "g");
+  const PlaceId nextV = table.field(table.deref(next), "v");
+  const PlaceId data = table.field(star, "data");
+
+  EXPECT_EQ(table.descendants(p),
+            (std::vector<PlaceId>{star, next, table.deref(next), nextV, data}));
+  EXPECT_EQ(table.descendants(s), (std::vector<PlaceId>{sf, sg}));
+  EXPECT_TRUE(table.descendants(PlaceId{999}).empty());
+}
+
 TEST_F(PlacePathTest, TranslateRebuildsPathUnderNewPrefix) {
   const PlaceId q = table.create("q");
   const PlaceId pNext = table.field(table.deref(p), "next");

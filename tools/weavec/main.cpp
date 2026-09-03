@@ -61,6 +61,14 @@ cl::opt<bool> strictExterns(
              "WEAVEC_UNSAFE regions, and their pointer results are raw"),
     cl::init(false), cl::cat(weavecCategory));
 
+cl::opt<bool> exclusiveBorrows(
+    "exclusive-borrows",
+    cl::desc("Enforce Rust's exclusivity rule in full: a second mutable "
+             "borrow, a shared borrow of a mutably borrowed object or a write "
+             "to a borrowed object is a conflicting-borrow. By default only "
+             "freeing, moving or reallocating a borrowed object is"),
+    cl::init(false), cl::cat(weavecCategory));
+
 cl::opt<bool> analyzeHeaders(
     "analyze-headers",
     cl::desc("Also analyse function definitions found in included headers"),
@@ -215,6 +223,7 @@ int main(int argc, const char **argv) {
   weavec::frontend::FrontendOptions options;
   options.analysis.reportUnannotated = reportUnannotated;
   options.analysis.strictExterns = strictExterns;
+  options.analysis.exclusiveBorrows = exclusiveBorrows;
   if (dumpAnalysis)
     options.analysis.dumpStream = &llvm::outs();
   options.mainFileOnly = !analyzeHeaders;

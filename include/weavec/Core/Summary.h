@@ -145,21 +145,35 @@ struct ValueSource {
   Kind kind = Kind::Unknown;
   /// Set for `Copy` and `Borrow`.
   std::optional<SummaryPath> path;
+  /// `Copy` only: the value points into the object at `path` but not
+  /// necessarily at the same address (`strchr` returns into its argument;
+  /// `return p + 1`). A pointer comparison cannot refute an interior copy
+  /// (RFC 0006, *Alias exactness*).
+  bool interior = false;
 
   [[nodiscard]] static ValueSource fresh() {
-    return ValueSource{.kind = Kind::Fresh, .path = std::nullopt};
+    return ValueSource{
+        .kind = Kind::Fresh, .path = std::nullopt, .interior = false};
   }
   [[nodiscard]] static ValueSource raw() {
-    return ValueSource{.kind = Kind::Raw, .path = std::nullopt};
+    return ValueSource{
+        .kind = Kind::Raw, .path = std::nullopt, .interior = false};
   }
   [[nodiscard]] static ValueSource copy(SummaryPath of) {
-    return ValueSource{.kind = Kind::Copy, .path = std::move(of)};
+    return ValueSource{
+        .kind = Kind::Copy, .path = std::move(of), .interior = false};
+  }
+  [[nodiscard]] static ValueSource interiorCopy(SummaryPath of) {
+    return ValueSource{
+        .kind = Kind::Copy, .path = std::move(of), .interior = true};
   }
   [[nodiscard]] static ValueSource borrow(SummaryPath of) {
-    return ValueSource{.kind = Kind::Borrow, .path = std::move(of)};
+    return ValueSource{
+        .kind = Kind::Borrow, .path = std::move(of), .interior = false};
   }
   [[nodiscard]] static ValueSource null() {
-    return ValueSource{.kind = Kind::Null, .path = std::nullopt};
+    return ValueSource{
+        .kind = Kind::Null, .path = std::nullopt, .interior = false};
   }
   [[nodiscard]] static ValueSource unknown() { return ValueSource{}; }
 
@@ -178,19 +192,40 @@ struct Store {
                                           const Store &) = default;
 };
 
+/// A class of return value (RFC 0006, *Outcome-conditional summaries*).
+/// Pointer results are `Null` or `NonNull`; integer results are `Zero`,
+/// `Positive` or `Negative`.
+enum class Outcome : std::uint8_t {
+  Null,
+  NonNull,
+  Zero,
+  Positive,
+  Negative,
+};
+
+[[nodiscard]] std::string_view toString(Outcome outcome) noexcept;
+[[nodiscard]] std::optional<Outcome>
+parseOutcome(std::string_view text) noexcept;
+
+/// The consumption that holds on the paths returning one outcome class.
+using OutcomeEffects = std::map<SummaryPath, PlaceEffect>;
+
 /// The interface behaviour of one function (RFC 0003, *Summaries*).
 class FunctionSummary {
 public:
-  /// Effects per path; paths with an empty effect are not stored.
+  /// Effects per path; paths with an empty effect are not stored. These are
+  /// the *may* effects over every path through the callee.
   std::map<SummaryPath, PlaceEffect> effects;
   /// Pointer values written to caller-visible places.
   std::set<Store> stores;
   /// Alternatives for the pointer result; empty when nothing is known.
   std::set<ValueSource> returns;
-  /// `realloc`-shaped: consumes argument 0, returns a fresh allocation, and
-  /// the argument is reinstated on the null edge of a direct test of the
-  /// result (RFC 0002, *`realloc` and the null edge*).
-  bool reallocLike = false;
+  /// Per outcome class the callee may return, the consumption (`freed` /
+  /// `moved`) that holds on the paths returning it (RFC 0006). A class with
+  /// no entry is one the callee never returns as far as is known; an empty
+  /// map means nothing is known about outcomes. `effects` is always a
+  /// superset of every class.
+  std::map<Outcome, OutcomeEffects> outcomes;
 
   /// The effect recorded for `path`, or an empty one.
   [[nodiscard]] PlaceEffect effectOf(const SummaryPath &path) const;
@@ -199,6 +234,15 @@ public:
   void addEffect(const SummaryPath &path, PlaceEffect effect);
   void addStore(Store store) { stores.insert(std::move(store)); }
   void addReturn(ValueSource source) { returns.insert(std::move(source)); }
+  /// Records that `outcome` is possible, with `effect` on `path` (an empty
+  /// effect only records the class).
+  void addOutcome(Outcome outcome, const SummaryPath &path, PlaceEffect effect);
+  void addOutcome(Outcome outcome) { outcomes.try_emplace(outcome); }
+
+  /// True if `path` is consumed on every path returning an outcome in
+  /// `outcomes`, i.e. its consumption cannot be retracted by a test of the
+  /// result. Trivially true when nothing is known about outcomes.
+  [[nodiscard]] bool consumesUnconditionally(const SummaryPath &path) const;
 
   /// True if the callee releases or moves argument `param`.
   [[nodiscard]] bool consumes(std::uint32_t param) const;
@@ -222,7 +266,8 @@ public:
   [[nodiscard]] OwnershipKind inferredReturnKind() const;
 
   [[nodiscard]] bool empty() const noexcept {
-    return effects.empty() && stores.empty() && returns.empty() && !reallocLike;
+    return effects.empty() && stores.empty() && returns.empty() &&
+           outcomes.empty();
   }
 
   /// Component-wise set union.
@@ -238,8 +283,9 @@ public:
 using GlobalIdMap = std::function<std::optional<std::uint32_t>(std::uint32_t)>;
 
 /// Rewrites every global root of `summary` through `map` (RFC 0005, *The
-/// program database*): effects on and stores into a dropped root vanish; a
-/// `copy` or `borrow` of one becomes `unknown`. Parameter roots are kept.
+/// program database*): effects on and stores into a dropped root vanish
+/// (from the outcome classes too); a `copy` or `borrow` of one becomes
+/// `unknown`. Parameter roots are kept.
 [[nodiscard]] FunctionSummary remapGlobals(const FunctionSummary &summary,
                                            const GlobalIdMap &map);
 
