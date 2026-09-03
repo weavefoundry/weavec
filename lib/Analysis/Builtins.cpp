@@ -722,9 +722,13 @@ static llvm::StringMap<core::FunctionSummary> buildTable() {
   struct FamilyMember {
     llvm::StringLiteral member;
     llvm::StringLiteral family;
+
+    // As for `BuiltinSpec`: the constructor keeps the table terse.
+    constexpr FamilyMember(llvm::StringLiteral fn, llvm::StringLiteral of)
+        : member(fn), family(of) {}
   };
   // clang-format off
-  static constexpr FamilyMember Families[] = {
+  static constexpr auto Families = std::to_array<FamilyMember>({
       {"free", "free"},           {"malloc", "free"},
       {"calloc", "free"},         {"realloc", "free"},
       {"reallocarray", "free"},   {"aligned_alloc", "free"},
@@ -744,7 +748,7 @@ static llvm::StringMap<core::FunctionSummary> buildTable() {
       {"dlclose", "dlclose"},     {"dlopen", "dlclose"},
       {"iconv_close", "iconv_close"}, {"iconv_open", "iconv_close"},
       {"freelocale", "freelocale"}, {"newlocale", "freelocale"},
-  };
+  });
   // clang-format on
   const auto stamp = [&table](llvm::StringRef member, llvm::StringRef family) {
     const auto it = table.find(member);

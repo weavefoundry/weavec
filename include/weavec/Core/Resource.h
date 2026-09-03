@@ -54,6 +54,7 @@ struct ResourceRecord {
   SourceLocation location = {};
   /// The release family the resource must be released with; empty when
   /// unknown.
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
   std::string family = {};
   /// The resource was handed to code the checker cannot follow (an unknown
   /// callee, an integer cast, a raw destination): its holder's death is not

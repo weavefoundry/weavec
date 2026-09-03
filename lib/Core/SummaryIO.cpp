@@ -259,10 +259,11 @@ static bool parseSource(Tokens &tokens, const GlobalResolver &resolve,
   std::string_view family;
   if (!splitFamily(tokens.take(), kind, family))
     return false;
+  // Only `fresh` carries a family.
+  if (kind != "fresh" && !family.empty())
+    return false;
   if (kind == "fresh") {
     source = ValueSource::fresh(std::string(family));
-  } else if (!family.empty()) {
-    return false;
   } else if (kind == "null") {
     source = ValueSource::null();
   } else if (kind == "unknown") {

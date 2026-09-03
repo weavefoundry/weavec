@@ -111,6 +111,7 @@ struct PlaceEffect {
   /// The release family of the consume (RFC 0007): the canonical releaser
   /// the resource ends up with (`free`, `fclose`, ...); empty when unknown.
   /// Meaningful only when `freed` or `moved` is set.
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
   std::string family = {};
 
   [[nodiscard]] bool empty() const noexcept {
@@ -158,6 +159,7 @@ struct ValueSource {
   bool interior = false;
   /// `Fresh` only: the release family the receiver must use (RFC 0007);
   /// empty when unknown.
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
   std::string family = {};
 
   [[nodiscard]] static ValueSource fresh(std::string family = {}) {
@@ -167,24 +169,34 @@ struct ValueSource {
                        .family = std::move(family)};
   }
   [[nodiscard]] static ValueSource raw() {
-    return ValueSource{
-        .kind = Kind::Raw, .path = std::nullopt, .interior = false};
+    return ValueSource{.kind = Kind::Raw,
+                       .path = std::nullopt,
+                       .interior = false,
+                       .family = {}};
   }
   [[nodiscard]] static ValueSource copy(SummaryPath of) {
-    return ValueSource{
-        .kind = Kind::Copy, .path = std::move(of), .interior = false};
+    return ValueSource{.kind = Kind::Copy,
+                       .path = std::move(of),
+                       .interior = false,
+                       .family = {}};
   }
   [[nodiscard]] static ValueSource interiorCopy(SummaryPath of) {
-    return ValueSource{
-        .kind = Kind::Copy, .path = std::move(of), .interior = true};
+    return ValueSource{.kind = Kind::Copy,
+                       .path = std::move(of),
+                       .interior = true,
+                       .family = {}};
   }
   [[nodiscard]] static ValueSource borrow(SummaryPath of) {
-    return ValueSource{
-        .kind = Kind::Borrow, .path = std::move(of), .interior = false};
+    return ValueSource{.kind = Kind::Borrow,
+                       .path = std::move(of),
+                       .interior = false,
+                       .family = {}};
   }
   [[nodiscard]] static ValueSource null() {
-    return ValueSource{
-        .kind = Kind::Null, .path = std::nullopt, .interior = false};
+    return ValueSource{.kind = Kind::Null,
+                       .path = std::nullopt,
+                       .interior = false,
+                       .family = {}};
   }
   [[nodiscard]] static ValueSource unknown() { return ValueSource{}; }
 
@@ -251,12 +263,13 @@ public:
   [[nodiscard]] PlaceEffect effectOf(const SummaryPath &path) const;
 
   /// Merges `effect` into the record for `path`.
-  void addEffect(SummaryPath path, PlaceEffect effect);
+  void addEffect(SummaryPath path, const PlaceEffect &effect);
   void addStore(Store store) { stores.insert(std::move(store)); }
   void addReturn(ValueSource source) { returns.insert(std::move(source)); }
   /// Records that `outcome` is possible, with `effect` on `path` (an empty
   /// effect only records the class).
-  void addOutcome(Outcome outcome, const SummaryPath &path, PlaceEffect effect);
+  void addOutcome(Outcome outcome, const SummaryPath &path,
+                  const PlaceEffect &effect);
   void addOutcome(Outcome outcome) { outcomes.try_emplace(outcome); }
 
   /// True if `path` is consumed on every path returning an outcome in

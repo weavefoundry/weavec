@@ -48,10 +48,12 @@ struct PendingOutcome {
   /// reinstated on the non-null edge *is* the result: the holder of the
   /// result and the place are exact aliases there and the result owns
   /// nothing of its own (RFC 0007, *Acquiring and losing a resource*).
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
   std::vector<PlaceId> returned = {};
   /// Per class, the caller places the callee left null on every path
   /// returning it (RFC 0007, *Per-outcome null stores*): once the test has
   /// narrowed the classes, a place null in all of them is null.
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
   std::map<Outcome, std::vector<PlaceId>> nullOn = {};
 
   /// The places null in every class still possible; empty when no class is.

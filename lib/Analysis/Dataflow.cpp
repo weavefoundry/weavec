@@ -699,23 +699,20 @@ bool FunctionDataflow::resourceLost(
   // for `a[*]`), or handed to code nobody can see.
   if (record.escaped || state.moves.recordOf(place))
     return false;
-  for (const core::PlaceId alias : state.aliases.members(place)) {
-    if (alias == place)
-      continue;
-    if (state.resources.isEscaped(alias) || state.moves.recordOf(alias))
-      return false;
-    // Another name still reaches the resource. A stale may-alias from a
-    // join can only make this say "not lost".
-    if (!dying(alias))
-      return false;
-  }
-  return true;
+  // Every other name must be released, moved or dying too; a name that still
+  // reaches the resource keeps it. A stale may-alias from a join can only
+  // make this say "not lost".
+  return llvm::all_of(
+      state.aliases.members(place), [&](const core::PlaceId alias) {
+        return alias == place || state.resources.isEscaped(alias) ||
+               state.moves.recordOf(alias) || dying(alias);
+      });
 }
 
 void FunctionDataflow::reportLeak(core::PlaceId place,
                                   const core::ResourceRecord &record,
                                   std::string message,
-                                  core::SourceLocation at) {
+                                  const core::SourceLocation &at) {
   core::Diagnostic diagnostic{
       .severity = core::Severity::Warning,
       .id = core::diag::Leak,
@@ -741,7 +738,7 @@ void FunctionDataflow::reportLeak(core::PlaceId place,
 void FunctionDataflow::checkLeaks(
     const std::vector<core::PlaceId> &candidates,
     const std::function<bool(core::PlaceId)> &dying, LeakForm form,
-    core::SourceLocation at, core::AnalysisState &state,
+    const core::SourceLocation &at, core::AnalysisState &state,
     std::optional<core::PlaceId> container) {
   for (const core::PlaceId place : candidates) {
     const auto record = state.resources.recordOf(place);
@@ -939,7 +936,7 @@ void FunctionDataflow::checkBlockEndResources(const CFGBlock &block,
   // alone and call it lost. A local the last element wrote and nothing reads
   // was never live; it is lost here too.
   const std::optional<unsigned> justWritten =
-      block.size() != 0 ? localWrittenBy(block.back()) : std::nullopt;
+      !block.empty() ? localWrittenBy(block.back()) : std::nullopt;
   std::vector<core::PlaceId> candidates;
   std::vector<core::PlaceId> stale;
   for (const core::PlaceId holder : state.resources.holders()) {
@@ -1176,7 +1173,7 @@ void FunctionDataflow::run() {
       // does (RFC 0003, *What a summary describes*).
       if (const CFGBlock *succ = adjacent.getReachableBlock();
           succ != nullptr &&
-          !(succ == &cfg->getExit() && block->hasNoReturnElement()))
+          (succ != &cfg->getExit() || !block->hasNoReturnElement()))
         reachable.emplace_back(index, succ);
       ++index;
     }
@@ -2419,7 +2416,7 @@ void FunctionDataflow::handleReturn(const ReturnStmt &ret,
 }
 
 void FunctionDataflow::handleLifetimeEnd(const VarDecl &var,
-                                         core::SourceLocation at,
+                                         const core::SourceLocation &at,
                                          core::AnalysisState &state) {
   const auto place = builder.lookupVar(var);
   if (!place)
@@ -2955,11 +2952,9 @@ bool FunctionDataflow::isBelowOpaquePointer(core::PlaceId dest,
       state.kindOf(pointer) == core::OwnershipKind::Owned ||
       state.resources.recordOf(pointer) || !state.loans.heldBy(pointer).empty())
     return false;
-  for (const core::PlaceId alias : state.aliases.members(pointer)) {
-    if (alias != pointer)
-      return false;
-  }
-  return true;
+  return llvm::all_of(
+      state.aliases.members(pointer),
+      [pointer](const core::PlaceId alias) { return alias == pointer; });
 }
 
 bool FunctionDataflow::isBelowBorrowOfCallerMemory(
@@ -3152,15 +3147,14 @@ bool FunctionDataflow::knowsPlace(core::PlaceId place,
                                   const core::AnalysisState &state) {
   // A place only a summary has ever named (`o->child->child` while applying
   // a recursive destructor) has no alias to mark and no record to settle.
-  for (const ConsumeTarget &target : consumeTargets(place, element, state)) {
-    if (builder.declFor(target.place) != nullptr ||
-        !state.aliases.edgesFrom(target.place).empty() ||
-        state.resources.holds(target.place) ||
-        state.resources.isNull(target.place) ||
-        state.moves.recordOf(target.place))
-      return true;
-  }
-  return false;
+  return llvm::any_of(consumeTargets(place, element, state),
+                      [&](const ConsumeTarget &target) {
+                        return builder.declFor(target.place) != nullptr ||
+                               !state.aliases.edgesFrom(target.place).empty() ||
+                               state.resources.holds(target.place) ||
+                               state.resources.isNull(target.place) ||
+                               state.moves.recordOf(target.place);
+                      });
 }
 
 std::vector<core::PlaceId> FunctionDataflow::related(core::PlaceId place) {
@@ -3973,7 +3967,7 @@ void FunctionDataflow::recordOutcomes(const Expr &value,
     std::ranges::set_difference(heldHere, nullInClass,
                                 std::inserter(heldInClass, heldInClass.end()));
     const auto [it, first] = nullAtReturn.try_emplace(
-        outcome, NullAtReturn{nullInClass, heldInClass});
+        outcome, NullAtReturn{.null = nullInClass, .held = heldInClass});
     if (first)
       continue;
     std::set<core::SummaryPath> both;
@@ -3986,7 +3980,7 @@ void FunctionDataflow::recordOutcomes(const Expr &value,
 
 std::optional<core::SummaryPath>
 FunctionDataflow::callerVisiblePath(core::PlaceId place) {
-  const auto path = stableSummaryPathOf(place);
+  auto path = stableSummaryPathOf(place);
   if (!path || (path->isParam() && !path->hasDeref()))
     return std::nullopt;
   return path;

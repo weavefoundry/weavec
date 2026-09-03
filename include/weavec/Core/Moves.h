@@ -95,6 +95,7 @@ struct MoveRecord {
   ElementWitness element;
   /// The release family of the consume (RFC 0007), e.g. `free`; empty when
   /// unknown. Fed into the summary as the effect's family.
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
   std::string family = {};
 
   friend bool operator==(const MoveRecord &, const MoveRecord &) = default;

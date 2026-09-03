@@ -102,7 +102,7 @@ PlaceEffect FunctionSummary::effectOf(const SummaryPath &path) const {
   return it == effects.end() ? PlaceEffect{} : it->second;
 }
 
-void FunctionSummary::addEffect(SummaryPath path, PlaceEffect effect) {
+void FunctionSummary::addEffect(SummaryPath path, const PlaceEffect &effect) {
   if (effect.empty())
     return;
   effects[std::move(path)].join(effect);
@@ -214,7 +214,7 @@ void FunctionSummary::eraseFreshReturns() {
 }
 
 void FunctionSummary::addOutcome(Outcome outcome, const SummaryPath &path,
-                                 PlaceEffect effect) {
+                                 const PlaceEffect &effect) {
   OutcomeEffects &perClass = outcomes[outcome];
   if (!effect.empty())
     perClass[path].join(effect);

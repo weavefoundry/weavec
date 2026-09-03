@@ -84,7 +84,7 @@ std::vector<PlaceId> ResourceTracker::holders() const {
 }
 
 std::vector<PlaceId> ResourceTracker::nullPlaces() const {
-  return std::vector<PlaceId>(null.begin(), null.end());
+  return {null.begin(), null.end()};
 }
 
 std::string_view toString(ResourceOrigin origin) noexcept {

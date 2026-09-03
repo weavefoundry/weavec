@@ -247,14 +247,15 @@ private:
                         const std::set<core::Outcome> &selected,
                         core::AnalysisState &state);
   /// `place` and its exact copies hold null (RFC 0007, *Null*).
-  void markNullWithCopies(core::PlaceId place, core::AnalysisState &state);
+  static void markNullWithCopies(core::PlaceId place,
+                                 core::AnalysisState &state);
   /// Drops every fact below `place` and its exact copies on the edge where
   /// they are null: nothing lies below a null pointer (RFC 0006, *Null
   /// edges*).
   void forgetBelowNull(core::PlaceId place, core::AnalysisState &state);
   /// Marks null what `narrowed` says is null in every class still possible.
-  void markNullOutcomes(const core::PendingOutcome &narrowed,
-                        core::AnalysisState &state);
+  static void markNullOutcomes(const core::PendingOutcome &narrowed,
+                               core::AnalysisState &state);
   void flushDiagnostics();
   void dump(const core::AnalysisState *exitState);
 
@@ -266,7 +267,8 @@ private:
                     core::AnalysisState &state);
   void handleCall(const clang::CallExpr &call, core::AnalysisState &state);
   void handleReturn(const clang::ReturnStmt &ret, core::AnalysisState &state);
-  void handleLifetimeEnd(const clang::VarDecl &var, core::SourceLocation at,
+  void handleLifetimeEnd(const clang::VarDecl &var,
+                         const core::SourceLocation &at,
                          core::AnalysisState &state);
 
   // -- Resources (RFC 0007) -------------------------------------------------
@@ -294,7 +296,7 @@ private:
                    core::AnalysisState &state);
   /// True if the resource at `place` (with `record`) is lost when every
   /// place `dying` says so goes away: nothing else reaches it.
-  [[nodiscard]] bool
+  [[nodiscard]] static bool
   resourceLost(core::PlaceId place, const core::ResourceRecord &record,
                const std::function<bool(core::PlaceId)> &dying,
                const core::AnalysisState &state);
@@ -302,7 +304,7 @@ private:
   /// the places `dying` says so go away.
   void checkLeaks(const std::vector<core::PlaceId> &candidates,
                   const std::function<bool(core::PlaceId)> &dying,
-                  LeakForm form, core::SourceLocation at,
+                  LeakForm form, const core::SourceLocation &at,
                   core::AnalysisState &state,
                   std::optional<core::PlaceId> container = std::nullopt);
   /// A whole-place assignment to `dest`: what it held is lost unless
@@ -322,7 +324,7 @@ private:
                           const clang::Expr &at,
                           const core::AnalysisState &state);
   void reportLeak(core::PlaceId place, const core::ResourceRecord &record,
-                  std::string message, core::SourceLocation at);
+                  std::string message, const core::SourceLocation &at);
   /// The source location of element `index` of `block` (the statement, or
   /// the block's terminator / the function's end for anything else).
   [[nodiscard]] core::SourceLocation locateElement(const clang::CFGBlock &block,
