@@ -14,6 +14,7 @@
 #include "clang/AST/Decl.h"
 #include "clang/AST/DeclBase.h"
 #include "clang/AST/PrettyPrinter.h"
+#include "clang/Basic/Version.h"
 
 #include <string>
 #include <utility>
@@ -58,8 +59,12 @@ std::string functionTypeKey(QualType type, const ASTContext &context) {
     return {};
   PrintingPolicy policy(context.getLangOpts());
   policy.SuppressTagKeyword = false;
+#if CLANG_VERSION_MAJOR >= 23
   policy.AnonymousTagNameStyle =
       llvm::to_underlying(PrintingPolicy::AnonymousTagMode::SourceLocation);
+#else
+  policy.AnonymousTagLocations = true;
+#endif
   policy.SuppressScope = true;
   policy.Bool = false;
   std::string key = type.getCanonicalType().getAsString(policy);

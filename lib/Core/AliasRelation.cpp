@@ -21,19 +21,20 @@ static AliasEdge merge(const AliasEdge &lhs, const AliasEdge &rhs) {
                                   : ElementWitness::unknown()};
 }
 
-/// The element of `a` that an alias `x` of `b` holds, given that `a`'s
-/// element `elementA` is `b`'s element `elementB` and `x` holds `b`'s
-/// element `xOfB` (which matches `elementB`). When `a` covers all of `b`,
-/// `x` names the same element of `a` as of `b`; otherwise `x` is exactly the
-/// element of `a` that was copied.
-static ElementWitness through(ElementWitness elementA, ElementWitness elementB,
-                              ElementWitness xOfB) {
-  if (!elementB.isWhole())
-    return elementA;
-  if (elementA.isWhole())
-    return xOfB;
-  if (xOfB.isWhole())
-    return elementA;
+/// The element of a target place that an alias `x` of a source place holds,
+/// given that the target's element `ofTarget` is the source's element
+/// `ofSource` and `x` holds the source's element `xOfSource` (which matches
+/// `ofSource`). When the target covers all of the source, `x` names the same
+/// element of the target as of the source; otherwise `x` is exactly the
+/// element of the target that was copied.
+static ElementWitness through(ElementWitness ofTarget, ElementWitness ofSource,
+                              ElementWitness xOfSource) {
+  if (!ofSource.isWhole())
+    return ofTarget;
+  if (ofTarget.isWhole())
+    return xOfSource;
+  if (xOfSource.isWhole())
+    return ofTarget;
   return ElementWitness::unknown();
 }
 
@@ -63,7 +64,11 @@ void AliasRelation::unite(PlaceId a, PlaceId b, bool exact,
     std::vector<Neighbour> result;
     if (const auto it = adjacent.find(place); it != adjacent.end()) {
       for (const auto &[other, out] : it->second)
-        result.push_back({other, out, adjacent.find(other)->second.at(place)});
+        result.push_back(Neighbour{
+            .place = other,
+            .out = out,
+            .back = adjacent.find(other)->second.at(place),
+        });
     }
     return result;
   };

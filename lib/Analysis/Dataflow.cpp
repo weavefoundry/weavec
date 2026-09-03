@@ -44,10 +44,12 @@
 #include "clang/AST/OperationKinds.h"
 
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
+#include <array>
 #include <deque>
 #include <limits>
 #include <tuple>
@@ -593,28 +595,11 @@ void FunctionDataflow::run() {
     core::AnalysisState out = *entryStates[block->getBlockID()];
     transfer(*block, out);
 
-    // The last reachable successor takes the block's state itself; every
-    // earlier one gets a copy. States in a large function are big (the
-    // alias relation over a loop body is dense), so copies are the cost.
-    unsigned lastReachable = 0;
-    unsigned index = 0;
-    for (const CFGBlock::AdjacentBlock &adjacent : block->succs()) {
-      if (adjacent.getReachableBlock() != nullptr)
-        lastReachable = index;
-      ++index;
-    }
-    index = 0;
-    for (const CFGBlock::AdjacentBlock &adjacent : block->succs()) {
-      const unsigned succIndex = index++;
-      const CFGBlock *succ = adjacent.getReachableBlock();
-      if (succ == nullptr)
-        continue;
-      core::AnalysisState edgeState =
-          succIndex == lastReachable ? std::move(out) : out;
+    const auto propagate = [&](unsigned succIndex, const CFGBlock &succ,
+                               core::AnalysisState edgeState) {
       applyEdge(*block, succIndex, edgeState);
-
       std::optional<core::AnalysisState> &target =
-          entryStates[succ->getBlockID()];
+          entryStates[succ.getBlockID()];
       bool changed = false;
       if (!target) {
         target = std::move(edgeState);
@@ -622,11 +607,27 @@ void FunctionDataflow::run() {
       } else {
         changed = target->join(edgeState);
       }
-      if (changed && !queued[succ->getBlockID()]) {
-        queued[succ->getBlockID()] = true;
-        worklist.push_back(succ);
+      if (changed && !queued[succ.getBlockID()]) {
+        queued[succ.getBlockID()] = true;
+        worklist.push_back(&succ);
       }
+    };
+
+    // The last reachable successor takes the block's state itself; every
+    // earlier one gets a copy. States in a large function are big (the
+    // alias relation over a loop body is dense), so copies are the cost.
+    llvm::SmallVector<std::pair<unsigned, const CFGBlock *>, 4> reachable;
+    unsigned index = 0;
+    for (const CFGBlock::AdjacentBlock &adjacent : block->succs()) {
+      if (const CFGBlock *succ = adjacent.getReachableBlock())
+        reachable.emplace_back(index, succ);
+      ++index;
     }
+    if (reachable.empty())
+      continue;
+    for (const auto &[succIndex, succ] : llvm::drop_end(reachable))
+      propagate(succIndex, *succ, out);
+    propagate(reachable.back().first, *reachable.back().second, std::move(out));
   }
 
   // Final pass: once per reachable block, from its fixpoint entry state.
@@ -694,9 +695,11 @@ static std::set<core::Outcome> classesSatisfying(BinaryOperatorKind op,
     std::int64_t lo;
     std::int64_t hi;
   };
-  constexpr Range Ranges[] = {{core::Outcome::Negative, Min, -1},
-                              {core::Outcome::Zero, 0, 0},
-                              {core::Outcome::Positive, 1, Max}};
+  constexpr std::array<Range, 3> Ranges = {
+      Range{.outcome = core::Outcome::Negative, .lo = Min, .hi = -1},
+      Range{.outcome = core::Outcome::Zero, .lo = 0, .hi = 0},
+      Range{.outcome = core::Outcome::Positive, .lo = 1, .hi = Max},
+  };
   // `!(x OP k)` is `x OP' k` for the complementary comparison.
   if (!holds) {
     switch (op) {
@@ -742,7 +745,7 @@ static std::set<core::Outcome> classesSatisfying(BinaryOperatorKind op,
       possible = range.lo <= k && k <= range.hi;
       break;
     case BO_NE:
-      possible = !(range.lo == k && range.hi == k);
+      possible = range.lo != k || range.hi != k;
       break;
     default:
       break;
@@ -775,7 +778,7 @@ static bool isNullConstant(const Expr &expr, ASTContext &context) {
 }
 
 static std::optional<std::int64_t> integerConstant(const Expr &expr,
-                                                   ASTContext &context) {
+                                                   const ASTContext &context) {
   Expr::EvalResult result;
   if (expr.isValueDependent() || !expr.getType()->isIntegerType() ||
       !expr.EvaluateAsInt(result, context) || !result.Val.isInt() ||
@@ -827,15 +830,15 @@ void FunctionDataflow::applyEdge(const CFGBlock &from, unsigned succIndex,
       // `p == q`: on the equal edge the two places hold the same value; on
       // the other they do not, which refutes an exact alias. `(p = f()) ==
       // q` compares what was just stored in `p`.
-      const auto assigned = [](const Expr &operand) -> const Expr & {
+      const auto assigned = [](const Expr &operand) -> const Expr * {
         const Expr *stripped = operand.IgnoreParenCasts();
         if (const auto *assign = dyn_cast<BinaryOperator>(stripped);
             assign != nullptr && assign->getOpcode() == BO_Assign)
-          return *assign->getLHS();
-        return operand;
+          return assign->getLHS();
+        return &operand;
       };
-      const auto p = builder.resolvePointerValue(assigned(lhs));
-      const auto q = builder.resolvePointerValue(assigned(rhs));
+      const auto p = builder.resolvePointerValue(*assigned(lhs));
+      const auto q = builder.resolvePointerValue(*assigned(rhs));
       if (!p || !q || p->place == q->place)
         return;
       if ((op == BO_EQ) == holds)
@@ -886,7 +889,8 @@ void FunctionDataflow::applyOutcomeTest(const Expr &operand,
   // at `return` (RFC 0006, *Inference*), so a wrapper's own summary sees
   // the retraction. A place that was reassigned since the call keeps its
   // `consumed` entry: that consumption was real (RFC 0003).
-  const auto reinstate = [this, &state](std::vector<core::PlaceId> targets) {
+  const auto reinstate = [this,
+                          &state](const std::vector<core::PlaceId> &targets) {
     for (const core::PlaceId place : targets) {
       if (!state.moves.recordOf(place))
         continue;
