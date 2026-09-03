@@ -67,6 +67,21 @@ UnitRecord sample() {
                                                        .typeKey = "",
                                                        .external = false,
                                                        .addressTaken = true};
+
+  // RFC 0006: an outcome-conditional consumer and an interior copy.
+  FunctionSummary grow;
+  grow.addEffect(SummaryPath::param(0), PlaceEffect{.moved = true});
+  grow.addReturn(ValueSource::fresh());
+  grow.addReturn(ValueSource::null());
+  grow.addReturn(ValueSource::interiorCopy(SummaryPath::param(0)));
+  grow.addOutcome(core::Outcome::Null);
+  grow.addOutcome(core::Outcome::NonNull, SummaryPath::param(0),
+                  PlaceEffect{.moved = true});
+  exports.functions["grow"] =
+      analysis::ExportedFunction{.summary = grow,
+                                 .typeKey = "char *(char *, unsigned long)",
+                                 .external = true,
+                                 .addressTaken = false};
   return record;
 }
 
@@ -76,7 +91,7 @@ TEST(Sidecar, PathIsOutputPlusExtension) {
 
 TEST(Sidecar, PrintsStableText) {
   EXPECT_EQ(printUnitRecord(sample()),
-            "weavec-summaries 1\n"
+            "weavec-summaries 2\n"
             "source src/node.c\n"
             "cwd /work/build\n"
             "arg -triple\n"
@@ -93,6 +108,15 @@ TEST(Sidecar, PrintsStableText) {
             "unknown blob_open\n"
             "unknown-indirect int (struct opaque *)\n"
             "reported use-after-free 17 10 ../src/node.c\n"
+            "function grow external plain char *(char *, unsigned long)\n"
+            "summary\n"
+            "  effect param 0 moved\n"
+            "  return fresh\n"
+            "  return interior param 0\n"
+            "  return null\n"
+            "  outcome null\n"
+            "  outcome nonnull param 0 moved\n"
+            "end\n"
             "function node_free external address-taken void (struct node *)\n"
             "summary\n"
             "  effect param 0 freed\n"
@@ -123,7 +147,7 @@ TEST(Sidecar, RoundTrips) {
   EXPECT_EQ(parsed->exports.unknownIndirectTypes,
             original.exports.unknownIndirectTypes);
   EXPECT_EQ(parsed->reported, original.reported);
-  ASSERT_EQ(parsed->exports.functions.size(), 3U);
+  ASSERT_EQ(parsed->exports.functions.size(), 4U);
   for (const auto &[name, function] : original.exports.functions) {
     const auto it = parsed->exports.functions.find(name);
     ASSERT_NE(it, parsed->exports.functions.end()) << name;
@@ -140,29 +164,31 @@ TEST(Sidecar, RoundTrips) {
 
 TEST(Sidecar, RejectsOtherFormatsAndMalformedLines) {
   std::string error;
-  EXPECT_FALSE(parseUnitRecord("weavec-summaries 2\n", &error));
-  EXPECT_EQ(error, "unsupported format 2");
+  EXPECT_FALSE(parseUnitRecord("weavec-summaries 1\n", &error));
+  EXPECT_EQ(error, "unsupported format 1");
+  EXPECT_FALSE(parseUnitRecord("weavec-summaries 3\n", &error));
+  EXPECT_EQ(error, "unsupported format 3");
   EXPECT_FALSE(parseUnitRecord("ELF\x01\x02", &error));
   EXPECT_EQ(error, "not a weavec summary file");
   EXPECT_FALSE(parseUnitRecord("", &error));
   EXPECT_EQ(error, "empty file");
   EXPECT_FALSE(parseUnitRecord(
-      "weavec-summaries 1\nsummary\n  return fresh\nend\n", &error));
+      "weavec-summaries 2\nsummary\n  return fresh\nend\n", &error));
   EXPECT_EQ(error, "line 2: summary record without a function");
-  EXPECT_FALSE(parseUnitRecord("weavec-summaries 1\nfunction f\n", &error));
+  EXPECT_FALSE(parseUnitRecord("weavec-summaries 2\nfunction f\n", &error));
   EXPECT_EQ(error, "line 2: malformed 'function' line");
-  EXPECT_FALSE(parseUnitRecord("weavec-summaries 1\nfunction f external "
+  EXPECT_FALSE(parseUnitRecord("weavec-summaries 2\nfunction f external "
                                "plain\nsummary\n  return fresh\n",
                                &error));
   EXPECT_EQ(error, "line 4: summary record without 'end'");
-  EXPECT_FALSE(parseUnitRecord("weavec-summaries 1\nreported x y z\n", &error));
+  EXPECT_FALSE(parseUnitRecord("weavec-summaries 2\nreported x y z\n", &error));
   EXPECT_EQ(error, "line 2: malformed 'reported' line");
 }
 
 TEST(Sidecar, SkipsUnknownLinesAndBlankOnes) {
   std::string error;
   const std::optional<UnitRecord> parsed = parseUnitRecord(
-      "weavec-summaries 1\n\nfuture-thing 42\nsource a.c\n\n", &error);
+      "weavec-summaries 2\n\nfuture-thing 42\nsource a.c\n\n", &error);
   ASSERT_TRUE(parsed) << error;
   EXPECT_EQ(parsed->exports.source, "a.c");
   EXPECT_TRUE(parsed->exports.functions.empty());

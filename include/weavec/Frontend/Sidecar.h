@@ -10,7 +10,7 @@
 // next to the object it compiled, and reads those files back at link time
 // (RFC 0005, *`weavec-cc`*). The file is line oriented:
 //
-//   weavec-summaries 1
+//   weavec-summaries 2
 //   source <path>
 //   cwd <path>
 //   arg <one cc1 argument>              (repeated, in order)
@@ -42,7 +42,8 @@
 
 namespace weavec::frontend {
 
-inline constexpr unsigned SidecarFormatVersion = 1;
+/// Version 2 (RFC 0006): summaries in format 2 (`outcome`, `interior`).
+inline constexpr unsigned SidecarFormatVersion = 2;
 
 /// Everything the driver remembers about one compiled unit.
 struct UnitRecord {

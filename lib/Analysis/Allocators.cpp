@@ -45,7 +45,6 @@ std::optional<CallEffects> classifyCall(const CallExpr &call,
   CallEffects effects;
   effects.summary = resolved->summary;
   effects.source = resolved->source;
-  effects.isRealloc = effects.summary->reallocLike;
   effects.producesOwned =
       effects.summary->returns.contains(core::ValueSource::fresh());
 

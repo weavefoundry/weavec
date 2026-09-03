@@ -39,10 +39,6 @@ struct CallEffects {
   SummarySource source = SummarySource::Inferred;
   /// The call may return a fresh owned allocation.
   bool producesOwned = false;
-  /// The call is `realloc`-shaped: consumes argument 0 and produces a fresh
-  /// allocation that must be null-tested before the argument is dead for
-  /// certain.
-  bool isRealloc = false;
   /// Arguments whose ownership the callee takes (released or moved).
   std::vector<unsigned> consumedArgs;
   /// Arguments borrowed for the duration of the call, with the kind of

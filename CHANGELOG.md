@@ -179,8 +179,101 @@ follows [Semantic Versioning](https://semver.org/) once it reaches 1.0.
   program (`--local-whole-program` for `--local`); `cJSON-program` and
   `linenoise-program` added to the corpus, with triage in
   `scripts/corpus/README.md`.
+- Precision (RFC 0006). Loans end at the last use of their holder, not at
+  the end of its scope: a backward liveness pass over the CFG expires the
+  loans held by dead locals before each element, so `char *p = buf;
+  use(p); buf[0] = 0;` and `int *a = &n->v; *a = 1; free(n);` are clean
+  while `free(n); *a = 1;` is still `cannot free 'n' while it is borrowed`.
+  Loans held through a pointer, by a global or by an address-taken local
+  last until the holder is reassigned (`BorrowState::expireHolders`).
+- Condition facts on CFG edges (RFC 0006): `p == q` / `p != q` unite or
+  separate the two pointers on the edge where the test holds, so `if (l ==
+  sentinel) return; free(l); use(sentinel);` is clean; `!=` separates only
+  *exact* aliases. `AliasRelation` records per edge whether two places hold
+  the same value or point into the same object (`unite(a, b, exact)`,
+  `separateExact`, `isExact`, `edge`); pointer arithmetic makes a copy
+  interior (`ValueOrigin::interior`, `ValueSource::interiorCopy`, printed
+  `interior <path>`), and the libc table says which results are the
+  argument itself (`memcpy`, `strcpy`, `fgets`, `getcwd`, ...) and which
+  point into it (`strchr`, `strstr`, `strtok`, `bsearch`, `readdir`, the
+  `strto*` end pointers, ...).
+- Element witnesses (RFC 0006): `a[*]` is still one place, but a move
+  record remembers which element was named (`core::ElementWitness`: whole,
+  a constant, a variable, or unknown) and only an access with a matching
+  witness is a use of it. `free(a[i]); a[i][0] = 0;` and `free(a[0]);
+  free(a[0]);` are reported; `for (i) free(a[i]); free(a);`, `free(a[0]);
+  use(a[1]);`, `free(a[i]); a[i] = NULL;` and `free(a[i]); use(a[j]);` are
+  clean. Writing to, incrementing or taking the address of the index
+  variable makes its witnesses unknown (`MoveTracker::forgetWitness`).
+  `*a` on an array is `a[0]`.
+- Outcome-conditional summaries (RFC 0006): a callee that frees or moves an
+  argument only on the paths returning some class of value (`null` /
+  `nonnull`, `zero` / `positive` / `negative`) is summarised per class
+  (`core::Outcome`, `FunctionSummary::outcomes`, `addOutcome`,
+  `consumesUnconditionally`), and a caller's test of the result (`if (!q)`,
+  `q == NULL`, `rc != 0`, `rc < 0`, `rc == -1`, `(rc = f(p)) == 0`, ...)
+  retracts the consumption on the edge where it did not happen. `int rc =
+  try_take(p); if (rc != 0) free(p);` is clean and `if (rc == 0) use(p);`
+  is a `use-after-move`; wrappers around `realloc` (`if (!q) return NULL;
+  return q;`) and around error-returning functions inherit the conditional
+  behaviour, across units too. `realloc`'s null edge is now this mechanism
+  (`AnalysisState::pending`, `PendingOutcome`, `AnalysisState::consumed`;
+  `reallocLike`/`isRealloc` are gone). Summary text format version 2:
+  `outcome <class>`, `outcome <class> <path> <flags>`, `interior <path>`;
+  sidecar format version 2 (`weavec-summaries 2`); `--dump-analysis` prints
+  the classes (`outcome zero{n: freed} outcome negative{}`).
+- A callee's `written` effect forgets every fact below the written place
+  (RFC 0006), so `free(root->string); memcpy(root, &tmp, sizeof *root);
+  use(root->string);` is clean and the summary of such a body no longer
+  claims the field is freed. Fortified `__builtin___memcpy_chk`-style
+  variants of the `mem*`/`str*` copy functions share their entries.
+- `--exclusive-borrows` (`weavec`) / `-fweavec-exclusive-borrows`
+  (`weavec-cc`), `AnalysisOptions::exclusiveBorrows`: enforce RFC 0001's
+  exclusivity between borrows (see *Changed*).
+- zlib (15 units) and Lua (34 units) added to the corpus as whole programs.
+  zlib is clean apart from two callback boundaries; every Lua report is
+  triaged in `scripts/corpus/README.md`. The corpus baseline now has no
+  `use-after-free` outside Lua, no `conflicting-borrow` outside Lua and two
+  `double-free` outside Lua (down from 15, 4 and 10).
 
 ### Changed
+
+- A callee that consumes a path below an argument or a global and returns a
+  `copy` of it (`t->array = resizearray(L, t, ...)`) makes the result the
+  same resource, now owned by the result, as RFC 0003 already did for
+  consumed parameters (RFC 0006, *Interaction with existing RFCs*).
+- `(res = feed()) == sentinel` and `(p = f()) != q` are pointer-equality
+  condition facts about `res` / `p` (RFC 0006), so the "loop until the
+  reader returns something other than the sentinel" idiom is clean.
+- Analysis time on large functions and programs. A dead local's alias edges
+  are dropped with its loans (RFC 0006, *Performance*); `AnalysisState::join`
+  reports whether it changed instead of the engine copying and comparing
+  states; `PlaceTable::descendants` walks the subtree instead of the table;
+  `BorrowState` keeps its loans sorted; loan expiry runs only where a
+  variable dies; the whole-program database is rebuilt only after a unit's
+  exports changed. Lua's `lvm.c` went from 56 s to 3 s and the Lua program
+  from 23 minutes to under 6. No diagnostic changed.
+
+- `conflicting-borrow` no longer rejects two live borrows of one object or
+  a write to a borrowed object by default (RFC 0006, *Conflict rules*):
+  `int *a = &x; int *b = &x;`, `char *p = buf; snprintf(buf, ...); use(p);`
+  and `int *pa = &s->a; s->a = 2; use(pa);` are accepted. Freeing or moving
+  a borrowed object is still reported. `--exclusive-borrows` restores the
+  RFC 0001 rule with the messages unchanged.
+- `free(a[0]); use(a[1]);` and the loop-free idiom are no longer reported
+  (RFC 0006, *Element witnesses*); `free(a[i]); use(a[i]);` still is.
+- `if (free_if(p, c)) return; p[0] = 1;` is clean when `free_if` frees only
+  on the paths returning non-zero (RFC 0006); untested, the may-free is
+  still reported.
+- `ValueSource::copy` from `strchr`-like table entries is now
+  `interiorCopy`; `Store` values for `strto*` end pointers and `strtok_r`'s
+  save pointer likewise.
+- `SummaryFormatVersion` 1 → 2 and `SidecarFormatVersion` 1 → 2: version-1
+  sidecars are rejected by their header and the objects re-analysed.
+- `MoveTracker::markMoved`/`movedAt`/`reinitialize` take an
+  `ElementWitness`; `AliasRelation::unite` takes exactness and witnesses;
+  `FunctionSummary::reallocLike` and `CallEffects::isRealloc` are removed;
+  `AnalysisState::reallocs` is replaced by `pending`.
 
 - A whole-struct assignment or initialisation (`b = a`, `struct buf b = a;`,
   `*p = s`) copies the facts of every pointer-typed field (aliases, loans,

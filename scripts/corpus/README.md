@@ -89,3 +89,36 @@ it exposes:
 Analysis time for the two-file programs is about the sum of the two
 single-file runs plus one extra parse (discovery), as the RFC's cost model
 predicts.
+
+RFC 0006 (precision) removed every `use-after-free` and `conflicting-borrow`
+row above and all but one of the `double-free` rows, without adding any:
+
+| Was                                                            | Now                                                                                                                                                                                                     |
+| -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| linenoise `double-free` ×3 on `*lc->cvec`, `*history`          | Gone: element witnesses. `free(a[i])` in a loop frees element `i`, and the next iteration's `i` is a different (unknown) element.                                                                        |
+| linenoise `conflicting-borrow` ×2 at `freeCompletions(&ctable)`| Gone: the `lc != &ctable` guard is a pointer-equality condition fact, and a borrow held by a dead local no longer counts.                                                                                |
+| cJSON-program `use-after-free` + `double-free` on `object->string` | Gone: `written` on `*root` forgets what lies below it.                                                                                                                                              |
+| cJSON-program `double-free` on `object` ×2 at `apply_patch`    | **Stays.** The arms are separated by an integer `opcode` that has nothing to do with the pointers; condition facts do not cover it (RFC 0006, *Accepted false positives*).                                |
+| linenoise-program 14 `use-after-free` + 1 `double-free` on `line` | Gone: `(res = feed()) == sentinel` separates on the exit edge, so `linenoise()` returns `{fresh}` and `free(line)` frees only that.                                                                   |
+
+Two larger projects were added as precision canaries. zlib (15 units as one
+program) is clean apart from two boundary warnings for its `in`/`out`
+callbacks. Lua (34 units as one program, ~5 minutes) exercises the model
+harder than anything else here, and every one of its reports is a false
+positive of a kind an RFC already names:
+
+| Project | Diagnostic                                                                | Cause                                                                                                                                                                                                                                                                                         |
+| ------- | ------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| lua     | `lifetime-too-short` ×10 (`fs->bl = bl`, `ls->fs = new_fs`, `L->errorJmp = &lj`, `endptr`) | The linked-stack-of-locals idiom: a local's address is stored into a longer-lived struct and unlinked again before the local dies. RFC 0001's lifetime rule cannot see the unlink; RFC 0006 lists it under *Accepted false positives* for loans.                                    |
+| lua     | `use-after-free` ×5 (`oldstack`, `tb->hash`, `buff->b`)                   | `realloc` through `l_alloc`, which also does `if (nsize == 0) { free(ptr); return NULL; }`. Its null class therefore *may* free, and a `newp == NULL` test cannot retract (RFC 0006 tracks the result, not the size argument). `buff->b` adds a `?:` whose arms are separated by a pointer test on a different place. |
+| lua     | `double-free` ×4 (`block`, `dummy`, `stdin` ×2)                           | The same `l_alloc` shape (`firsttry` then `tryagain` on the same block), and `luaL_loadfilex` closing `stdin` only `if (filename)`: a correlation between a parameter and which global was used.                                                                                             |
+| lua     | `conflicting-borrow` at `luaM_free(L, l)` in `luaE_freethread`           | `l` is an interior pointer to `L1` (`fromstate`), and `L1->stack.p` was passed to a callee just before; the loan is held through the parameter and so does not end.                                                                                                                             |
+| lua     | `annotation-required` at `lua.c:498`                                      | `l_getenv` is a function-pointer variable set to `getenv` or `no_getenv`; neither is address-taken *as that type* in the program.                                                                                                                                                              |
+
+Lua also found three scalability problems that would have made the corpus
+run unusable, all fixed in the same change: `luaV_execute` (968 CFG blocks,
+80 block-scoped `StkId ra` locals whose scope ends never appear in the CFG
+under computed `goto`) grew a dense alias relation over dead variables,
+`PlaceTable::descendants` scanned the whole table at every call site, and
+`BorrowState` was an unsorted vector. The unit went from 56 s to 3 s; the
+whole program from 23 minutes to under 6.

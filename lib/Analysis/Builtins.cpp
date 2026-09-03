@@ -23,7 +23,10 @@
 //             'm'  moves the pointer to the callee (`realloc`'s argument)
 //             '.'  not a pointer, or no ownership effect
 //   result  'F'  fresh owned allocation
-//           '0'..'9'  a copy of that argument (`strchr` returns into `s`)
+//           '0'..'9'  a pointer *into* that argument (`strchr` returns into
+//                `s`): an interior copy, RFC 0006
+//           'A'..'J'  that argument itself (`memcpy` returns `dest`): an
+//                exact copy of argument 0..9
 //           '-'  not a pointer, or nothing known (`getenv` returns static
 //                storage, which this RFC spells as unknown)
 //
@@ -93,15 +96,15 @@ static constexpr auto Specs = std::to_array<BuiltinSpec>({
     {"qsort",         "w...",   '-'},
     {"bsearch",       "rr...",  '1'},
     // <string.h>
-    {"memcpy",        "wr.",    '0'},
-    {"memmove",       "wr.",    '0'},
-    {"memset",        "w..",    '0'},
+    {"memcpy",        "wr.",    'A'},
+    {"memmove",       "wr.",    'A'},
+    {"memset",        "w..",    'A'},
     {"memcmp",        "rr.",    '-'},
     {"memchr",        "r..",    '0'},
-    {"strcpy",        "wr",     '0'},
-    {"strncpy",       "wr.",    '0'},
-    {"strcat",        "wr",     '0'},
-    {"strncat",       "wr.",    '0'},
+    {"strcpy",        "wr",     'A'},
+    {"strncpy",       "wr.",    'A'},
+    {"strcat",        "wr",     'A'},
+    {"strncat",       "wr.",    'A'},
     {"strcmp",        "rr",     '-'},
     {"strncmp",       "rr.",    '-'},
     {"strcoll",       "rr",     '-'},
@@ -140,7 +143,7 @@ static constexpr auto Specs = std::to_array<BuiltinSpec>({
     {"fgetc",         "w",      '-'},
     {"getc",          "w",      '-'},
     {"ungetc",        ".w",     '-'},
-    {"fgets",         "w.w",    '0'},
+    {"fgets",         "w.w",    'A'},
     {"fread",         "w..w",   '-'},
     {"fwrite",        "r..w",   '-'},
     {"fseek",         "w..",    '-'},
@@ -174,9 +177,9 @@ static constexpr auto Specs = std::to_array<BuiltinSpec>({
     // <string.h>
     {"strerror_r",    ".w.",    '-'},
     // <stdio.h>
-    {"freopen",       "rrw",    '2'},
-    {"tmpnam",        "w",      '0'},
-    {"gets",          "w",      '0'},
+    {"freopen",       "rrw",    'C'},
+    {"tmpnam",        "w",      'A'},
+    {"gets",          "w",      'A'},
     {"getchar",       "",       '-'},
     {"putchar",       ".",      '-'},
     {"vscanf",        "r.",     '-'},
@@ -195,18 +198,18 @@ static constexpr auto Specs = std::to_array<BuiltinSpec>({
     {"timespec_get",  "w.",     '-'},
     // <wchar.h>
     {"wcslen",        "r",      '-'},
-    {"wcscpy",        "wr",     '0'},
-    {"wcsncpy",       "wr.",    '0'},
-    {"wcscat",        "wr",     '0'},
-    {"wcsncat",       "wr.",    '0'},
+    {"wcscpy",        "wr",     'A'},
+    {"wcsncpy",       "wr.",    'A'},
+    {"wcscat",        "wr",     'A'},
+    {"wcsncat",       "wr.",    'A'},
     {"wcscmp",        "rr",     '-'},
     {"wcsncmp",       "rr.",    '-'},
     {"wcschr",        "r.",     '0'},
     {"wcsrchr",       "r.",     '0'},
     {"wcsstr",        "rr",     '0'},
-    {"wmemcpy",       "wr.",    '0'},
-    {"wmemmove",      "wr.",    '0'},
-    {"wmemset",       "w..",    '0'},
+    {"wmemcpy",       "wr.",    'A'},
+    {"wmemmove",      "wr.",    'A'},
+    {"wmemset",       "w..",    'A'},
     {"wmemcmp",       "rr.",    '-'},
     {"wmemchr",       "r..",    '0'},
     {"wcstok",        "wrw",    '0'},
@@ -219,11 +222,11 @@ static constexpr auto Specs = std::to_array<BuiltinSpec>({
     // <stdlib.h> extensions
     {"posix_memalign", "w..",   '-'},
     {"reallocarray",  "m..",    'F'},
-    {"realpath",      "rw",     '1'},
+    {"realpath",      "rw",     'B'},
     {"mkstemp",       "w",      '-'},
     {"mkostemp",      "w.",     '-'},
-    {"mkdtemp",       "w",      '0'},
-    {"mktemp",        "w",      '0'},
+    {"mkdtemp",       "w",      'A'},
+    {"mktemp",        "w",      'A'},
     {"setenv",        "rr.",    '-'},
     {"unsetenv",      "r",      '-'},
     {"putenv",        "r",      '-'},
@@ -254,7 +257,7 @@ static constexpr auto Specs = std::to_array<BuiltinSpec>({
     {"fseeko",        "w..",    '-'},
     {"ftello",        "r",      '-'},
     {"fpurge",        "w",      '-'},
-    {"ctermid",       "w",      '0'},
+    {"ctermid",       "w",      'A'},
     {"tempnam",       "rr",     'F'},
     {"renameat",      ".r.r",   '-'},
     // <string.h> / <strings.h> extensions
@@ -300,7 +303,7 @@ static constexpr auto Specs = std::to_array<BuiltinSpec>({
     {"rmdir",         "r",      '-'},
     {"chdir",         "r",      '-'},
     {"fchdir",        ".",      '-'},
-    {"getcwd",        "w.",     '0'},
+    {"getcwd",        "w.",     'A'},
     {"readlink",      "rw.",    '-'},
     {"readlinkat",    ".rw.",   '-'},
     {"symlink",       "rr",     '-'},
@@ -380,10 +383,10 @@ static constexpr auto Specs = std::to_array<BuiltinSpec>({
     {"scandir",       "rw..",   '-'},
     {"alphasort",     "rr",     '-'},
     // <time.h> extensions
-    {"localtime_r",   "rw",     '1'},
-    {"gmtime_r",      "rw",     '1'},
-    {"asctime_r",     "rw",     '1'},
-    {"ctime_r",       "rw",     '1'},
+    {"localtime_r",   "rw",     'B'},
+    {"gmtime_r",      "rw",     'B'},
+    {"asctime_r",     "rw",     'B'},
+    {"ctime_r",       "rw",     'B'},
     {"strptime",      "rrw",    '-'},
     {"clock_gettime", ".w",     '-'},
     {"clock_getres",  ".w",     '-'},
@@ -484,7 +487,7 @@ static constexpr auto Specs = std::to_array<BuiltinSpec>({
     {"getservbyname", "rr",     '-'},
     {"getservbyport", ".r",     '-'},
     {"getprotobyname", "r",     '-'},
-    {"inet_ntop",     ".rw.",   '2'},
+    {"inet_ntop",     ".rw.",   'C'},
     {"inet_pton",     ".rw",    '-'},
     {"inet_addr",     "r",      '-'},
     {"inet_aton",     "rw",     '-'},
@@ -623,11 +626,15 @@ static core::FunctionSummary fromSpec(const BuiltinSpec &spec) {
       assert(false && "unknown builtin parameter spec");
     }
   }
-  if (spec.result == 'F')
+  if (spec.result == 'F') {
     summary.addReturn(core::ValueSource::fresh());
-  else if (spec.result >= '0' && spec.result <= '9')
-    summary.addReturn(core::ValueSource::copy(
+  } else if (spec.result >= '0' && spec.result <= '9') {
+    summary.addReturn(core::ValueSource::interiorCopy(
         core::SummaryPath::param(static_cast<unsigned>(spec.result - '0'))));
+  } else if (spec.result >= 'A' && spec.result <= 'J') {
+    summary.addReturn(core::ValueSource::copy(
+        core::SummaryPath::param(static_cast<unsigned>(spec.result - 'A'))));
+  }
   return summary;
 }
 
@@ -636,8 +643,32 @@ static llvm::StringMap<core::FunctionSummary> buildTable() {
   for (const BuiltinSpec &spec : Specs)
     table[spec.name] = fromSpec(spec);
 
-  table["realloc"].reallocLike = true;
-  table["reallocarray"].reallocLike = true;
+  // `realloc(p, n)` consumes `p` only when it succeeds (RFC 0006,
+  // *Outcome-conditional summaries*, replacing RFC 0002's `realloc-like`).
+  for (const llvm::StringLiteral name :
+       {llvm::StringLiteral("realloc"), llvm::StringLiteral("reallocarray")}) {
+    core::FunctionSummary &summary = table[name];
+    summary.addReturn(core::ValueSource::null());
+    summary.addOutcome(core::Outcome::Null);
+    summary.addOutcome(core::Outcome::NonNull, core::SummaryPath::param(0),
+                       core::PlaceEffect{.moved = true});
+  }
+
+  // `_FORTIFY_SOURCE` rewrites `memcpy(d, s, n)` into
+  // `__builtin___memcpy_chk(d, s, n, __builtin_object_size(d, 0))`; the
+  // checked form has the plain one's effects (the extra trailing argument
+  // is a size). The `*printf_chk` forms insert their extra arguments in
+  // the middle and are left to the intrinsic rule.
+  for (const llvm::StringLiteral name :
+       {llvm::StringLiteral("memcpy"), llvm::StringLiteral("memmove"),
+        llvm::StringLiteral("memset"), llvm::StringLiteral("strcpy"),
+        llvm::StringLiteral("strncpy"), llvm::StringLiteral("strcat"),
+        llvm::StringLiteral("strncat"), llvm::StringLiteral("stpcpy"),
+        llvm::StringLiteral("stpncpy"), llvm::StringLiteral("strlcpy"),
+        llvm::StringLiteral("strlcat")}) {
+    if (const auto it = table.find(name); it != table.end())
+      table[("__builtin___" + name + "_chk").str()] = it->second;
+  }
 
   // `strto*(s, &end, ...)` store a pointer into `s` through `end`.
   for (const llvm::StringLiteral name :
@@ -648,7 +679,7 @@ static llvm::StringMap<core::FunctionSummary> buildTable() {
         llvm::StringLiteral("strtoumax")}) {
     table[name].addStore(core::Store{
         .dest = core::SummaryPath::param(1).deref(),
-        .value = core::ValueSource::copy(core::SummaryPath::param(0))});
+        .value = core::ValueSource::interiorCopy(core::SummaryPath::param(0))});
   }
 
   // Out-parameters that receive a fresh allocation the caller must release
@@ -671,7 +702,7 @@ static llvm::StringMap<core::FunctionSummary> buildTable() {
   // `strtok_r(s, delim, &save)` parks a pointer into `s` in `*save`.
   table["strtok_r"].addStore(core::Store{
       .dest = core::SummaryPath::param(2).deref(),
-      .value = core::ValueSource::copy(core::SummaryPath::param(0))});
+      .value = core::ValueSource::interiorCopy(core::SummaryPath::param(0))});
   // The `_r` lookups store a borrow of the caller's record through `result`.
   for (const llvm::StringLiteral name :
        {llvm::StringLiteral("getpwnam_r"), llvm::StringLiteral("getpwuid_r"),

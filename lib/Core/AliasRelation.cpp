@@ -12,36 +12,125 @@
 
 namespace weavec::core {
 
-void AliasRelation::relate(PlaceId a, PlaceId b) {
-  if (a == b)
-    return;
-  adjacent[a].insert(b);
-  adjacent[b].insert(a);
+/// Two claims about one edge: exact only if both are, the witness only if
+/// they agree.
+static AliasEdge merge(const AliasEdge &lhs, const AliasEdge &rhs) {
+  return AliasEdge{.exact = lhs.exact && rhs.exact,
+                   .element = lhs.element == rhs.element
+                                  ? lhs.element
+                                  : ElementWitness::unknown()};
 }
 
-void AliasRelation::unite(PlaceId a, PlaceId b) {
+/// The element of `a` that an alias `x` of `b` holds, given that `a`'s
+/// element `elementA` is `b`'s element `elementB` and `x` holds `b`'s
+/// element `xOfB` (which matches `elementB`). When `a` covers all of `b`,
+/// `x` names the same element of `a` as of `b`; otherwise `x` is exactly the
+/// element of `a` that was copied.
+static ElementWitness through(ElementWitness elementA, ElementWitness elementB,
+                              ElementWitness xOfB) {
+  if (!elementB.isWhole())
+    return elementA;
+  if (elementA.isWhole())
+    return xOfB;
+  if (xOfB.isWhole())
+    return elementA;
+  return ElementWitness::unknown();
+}
+
+void AliasRelation::relate(PlaceId a, PlaceId b, AliasEdge toB, AliasEdge toA) {
   if (a == b)
     return;
-  // Snapshot first: relating mutates the sets being iterated.
-  const std::vector<PlaceId> aliasesOfA = members(a);
-  const std::vector<PlaceId> aliasesOfB = members(b);
-  for (const PlaceId other : aliasesOfB)
-    relate(a, other);
-  for (const PlaceId other : aliasesOfA)
-    relate(b, other);
+  auto [ab, insertedAb] = adjacent[a].try_emplace(b, toB);
+  if (!insertedAb)
+    ab->second = merge(ab->second, toB);
+  auto [ba, insertedBa] = adjacent[b].try_emplace(a, toA);
+  if (!insertedBa)
+    ba->second = merge(ba->second, toA);
+}
+
+void AliasRelation::unite(PlaceId a, PlaceId b, bool exact,
+                          ElementWitness elementA, ElementWitness elementB) {
+  if (a == b)
+    return;
+  // Snapshot first: relating mutates the maps being iterated. Each entry is
+  // `(x, edge from the snapshot's place to x, edge from x back)`.
+  struct Neighbour {
+    PlaceId place;
+    AliasEdge out;
+    AliasEdge back;
+  };
+  const auto neighboursOf = [this](PlaceId place) {
+    std::vector<Neighbour> result;
+    if (const auto it = adjacent.find(place); it != adjacent.end()) {
+      for (const auto &[other, out] : it->second)
+        result.push_back({other, out, adjacent.find(other)->second.at(place)});
+    }
+    return result;
+  };
+  const auto aliasesOfA = neighboursOf(a);
+  const auto aliasesOfB = neighboursOf(b);
+
+  relate(a, b, AliasEdge{.exact = exact, .element = elementB},
+         AliasEdge{.exact = exact, .element = elementA});
+  // `x` aliases element `x.back.element` of `b`; `a` aliases `elementB` of
+  // it. They are the same element or `x` is not related to `a`.
+  for (const Neighbour &x : aliasesOfB) {
+    if (x.place == a || !x.back.element.matches(elementB))
+      continue;
+    const bool exactAx = exact && x.out.exact;
+    relate(a, x.place, AliasEdge{.exact = exactAx, .element = x.out.element},
+           AliasEdge{.exact = exactAx,
+                     .element = through(elementA, elementB, x.back.element)});
+  }
+  for (const Neighbour &x : aliasesOfA) {
+    if (x.place == b || !x.back.element.matches(elementA))
+      continue;
+    const bool exactBx = exact && x.out.exact;
+    relate(b, x.place, AliasEdge{.exact = exactBx, .element = x.out.element},
+           AliasEdge{.exact = exactBx,
+                     .element = through(elementB, elementA, x.back.element)});
+  }
 }
 
 void AliasRelation::separate(PlaceId place) {
   const auto it = adjacent.find(place);
   if (it == adjacent.end())
     return;
-  for (const PlaceId other : it->second) {
+  for (const auto &[other, edge] : it->second) {
     const auto otherIt = adjacent.find(other);
     otherIt->second.erase(place);
     if (otherIt->second.empty())
       adjacent.erase(otherIt);
   }
   adjacent.erase(it);
+}
+
+void AliasRelation::separateIf(const std::function<bool(PlaceId)> &dead) {
+  std::vector<PlaceId> victims;
+  for (const auto &[place, aliases] : adjacent) {
+    if (dead(place))
+      victims.push_back(place);
+  }
+  for (const PlaceId place : victims)
+    separate(place);
+}
+
+void AliasRelation::separateExact(PlaceId a, PlaceId b) {
+  if (a == b)
+    return;
+  const auto ab = adjacent.find(a);
+  if (ab == adjacent.end())
+    return;
+  const auto edge = ab->second.find(b);
+  if (edge == ab->second.end() || !edge->second.exact)
+    return;
+  ab->second.erase(edge);
+  if (ab->second.empty())
+    adjacent.erase(ab);
+  const auto ba = adjacent.find(b);
+  ba->second.erase(a);
+  if (ba->second.empty())
+    adjacent.erase(ba);
 }
 
 bool AliasRelation::mayAlias(PlaceId a, PlaceId b) const noexcept {
@@ -51,25 +140,68 @@ bool AliasRelation::mayAlias(PlaceId a, PlaceId b) const noexcept {
   return it != adjacent.end() && it->second.contains(b);
 }
 
+bool AliasRelation::isExact(PlaceId a, PlaceId b) const noexcept {
+  if (a == b)
+    return true;
+  const auto found = edge(a, b);
+  return found && found->exact;
+}
+
+std::optional<AliasEdge> AliasRelation::edge(PlaceId a,
+                                             PlaceId b) const noexcept {
+  const auto it = adjacent.find(a);
+  if (it == adjacent.end())
+    return std::nullopt;
+  const auto found = it->second.find(b);
+  if (found == it->second.end())
+    return std::nullopt;
+  return found->second;
+}
+
 std::vector<PlaceId> AliasRelation::members(PlaceId place) const {
   std::vector<PlaceId> result{place};
-  if (const auto it = adjacent.find(place); it != adjacent.end())
-    result.insert(result.end(), it->second.begin(), it->second.end());
+  if (const auto it = adjacent.find(place); it != adjacent.end()) {
+    for (const auto &[other, edge] : it->second)
+      result.push_back(other);
+  }
   std::ranges::sort(result);
   return result;
 }
 
-void AliasRelation::join(const AliasRelation &other) {
+std::vector<std::pair<PlaceId, AliasEdge>>
+AliasRelation::edgesFrom(PlaceId place) const {
+  std::vector<std::pair<PlaceId, AliasEdge>> result;
+  if (const auto it = adjacent.find(place); it != adjacent.end())
+    result.assign(it->second.begin(), it->second.end());
+  return result;
+}
+
+bool AliasRelation::join(const AliasRelation &other) {
+  bool changed = false;
   for (const auto &[place, aliases] : other.adjacent) {
-    for (const PlaceId alias : aliases)
-      relate(place, alias);
+    auto &mine = adjacent[place];
+    for (const auto &[alias, edge] : aliases) {
+      // Both directions are visited by the outer loop; merge each on its
+      // own side.
+      auto [it, inserted] = mine.try_emplace(alias, edge);
+      if (inserted) {
+        changed = true;
+        continue;
+      }
+      const AliasEdge merged = merge(it->second, edge);
+      if (merged != it->second) {
+        it->second = merged;
+        changed = true;
+      }
+    }
   }
+  return changed;
 }
 
 std::vector<std::pair<PlaceId, PlaceId>> AliasRelation::pairs() const {
   std::vector<std::pair<PlaceId, PlaceId>> result;
   for (const auto &[place, aliases] : adjacent) {
-    for (const PlaceId alias : aliases) {
+    for (const auto &[alias, edge] : aliases) {
       if (place < alias)
         result.emplace_back(place, alias);
     }

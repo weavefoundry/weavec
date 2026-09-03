@@ -71,12 +71,40 @@ TEST(AliasRelation, JoinIsUnionOfPairs) {
   AliasRelation right;
   right.unite(R, P);
 
-  left.join(right);
+  EXPECT_TRUE(left.join(right));
   EXPECT_TRUE(left.mayAlias(P, Q));
   EXPECT_TRUE(left.mayAlias(P, R));
   // Not transitively closed: q and r were never copied from each other on
   // any single path.
   EXPECT_FALSE(left.mayAlias(Q, R));
+  EXPECT_FALSE(left.join(right)) << "nothing new: unchanged";
+  EXPECT_FALSE(left.join(AliasRelation{}));
+}
+
+TEST(AliasRelation, JoinReportsAnEdgeLosingExactness) {
+  AliasRelation exact;
+  exact.unite(Q, P);
+  AliasRelation interior;
+  interior.unite(Q, P, /*exact=*/false);
+  EXPECT_TRUE(exact.join(interior)) << "the edge changed: it is interior now";
+  EXPECT_FALSE(exact.isExact(P, Q));
+  EXPECT_FALSE(exact.join(interior));
+}
+
+// RFC 0006, *Loans end at the last use of their holder*: a dead local's
+// edges go; the places it was related to keep their own.
+TEST(AliasRelation, SeparateIfDropsEveryMatchingPlace) {
+  AliasRelation aliases;
+  aliases.unite(Q, P);
+  aliases.unite(R, P);
+  aliases.unite(S, R);
+  aliases.separateIf([](PlaceId place) { return place == Q || place == S; });
+  EXPECT_EQ(aliases.members(Q), Members{Q});
+  EXPECT_EQ(aliases.members(S), Members{S});
+  EXPECT_TRUE(aliases.mayAlias(P, R)) << "p and r were copied on one path";
+  EXPECT_EQ(aliases.members(P), (Members{P, R}));
+  aliases.separateIf([](PlaceId) { return true; });
+  EXPECT_EQ(aliases, AliasRelation{});
 }
 
 TEST(AliasRelation, JoinIsIdempotentAndCommutative) {
@@ -94,6 +122,76 @@ TEST(AliasRelation, JoinIsIdempotentAndCommutative) {
   AliasRelation again = ab;
   again.join(ab);
   EXPECT_EQ(again, ab);
+}
+
+// RFC 0006, *Alias exactness*.
+TEST(AliasRelation, ExactnessPropagatesAndRefutesOnlyExactEdges) {
+  AliasRelation aliases;
+  aliases.unite(Q, P);                  // q = p
+  aliases.unite(R, P, /*exact=*/false); // r = p + 1
+  EXPECT_TRUE(aliases.isExact(P, Q));
+  EXPECT_FALSE(aliases.isExact(P, R));
+  EXPECT_FALSE(aliases.isExact(Q, R)) << "interior through r";
+  EXPECT_TRUE(aliases.mayAlias(Q, R));
+
+  // `if (p != r)`: r still points into p's object.
+  aliases.separateExact(P, R);
+  EXPECT_TRUE(aliases.mayAlias(P, R));
+  // `if (p != q)`: refuted.
+  aliases.separateExact(P, Q);
+  EXPECT_FALSE(aliases.mayAlias(P, Q));
+  EXPECT_TRUE(aliases.mayAlias(Q, R)) << "only the p-q edge goes";
+  EXPECT_EQ(aliases.members(P), (Members{P, R}));
+
+  // Joining an exact and an interior claim about one edge is interior.
+  AliasRelation left;
+  left.unite(Q, P);
+  AliasRelation right;
+  right.unite(Q, P, /*exact=*/false);
+  left.join(right);
+  EXPECT_FALSE(left.isExact(P, Q));
+  EXPECT_TRUE(left.mayAlias(P, Q));
+  AliasRelation again = left;
+  again.join(right);
+  EXPECT_EQ(again, left);
+}
+
+// RFC 0006, *Element witnesses*: edges remember which element they name.
+TEST(AliasRelation, ElementWitnessesOnEdges) {
+  const ElementWitness zero = ElementWitness::ofConstant(0);
+  const ElementWitness one = ElementWitness::ofConstant(1);
+  AliasRelation aliases;
+  // q = a[0]; r = a[1]  (P stands for a[*]).
+  aliases.unite(Q, P, true, ElementWitness::whole(), zero);
+  aliases.unite(R, P, true, ElementWitness::whole(), one);
+  ASSERT_TRUE(aliases.edge(Q, P));
+  EXPECT_EQ(aliases.edge(Q, P)->element, zero) << "q holds element 0 of a";
+  EXPECT_TRUE(aliases.edge(P, Q)->element.isWhole()) << "a[0] holds all of q";
+  EXPECT_EQ(aliases.edge(R, P)->element, one);
+  EXPECT_FALSE(aliases.mayAlias(Q, R)) << "different elements: no alias";
+
+  // s = a[0]: the same element as q, so s and q alias.
+  aliases.unite(S, P, true, ElementWitness::whole(), zero);
+  EXPECT_TRUE(aliases.mayAlias(S, Q));
+  EXPECT_FALSE(aliases.mayAlias(S, R));
+  EXPECT_TRUE(aliases.edge(S, Q)->element.isWhole());
+
+  // A whole copy of the array pointer reaches every element's alias.
+  const PlaceId B{4};
+  aliases.unite(B, P);
+  EXPECT_TRUE(aliases.mayAlias(B, Q));
+  EXPECT_TRUE(aliases.mayAlias(B, R));
+  EXPECT_EQ(aliases.edge(Q, B)->element, zero)
+      << "q is element 0 of b as it is of a";
+
+  // Disagreeing witnesses on a join are unknown.
+  AliasRelation left;
+  left.unite(Q, P, true, ElementWitness::whole(), zero);
+  AliasRelation right;
+  right.unite(Q, P, true, ElementWitness::whole(), one);
+  left.join(right);
+  EXPECT_EQ(left.edge(Q, P)->element, ElementWitness::unknown());
+  EXPECT_EQ(aliases.edgesFrom(Q).size(), 3U);
 }
 
 TEST(AliasRelation, PairsAreOrdered) {

@@ -19,10 +19,12 @@
 #define WEAVEC_LIB_ANALYSIS_PLACEBUILDER_H
 
 #include "weavec/Analysis/Summaries.h"
+#include "weavec/Core/Moves.h"
 #include "weavec/Core/Place.h"
 #include "weavec/Core/Raw.h"
 #include "weavec/Core/Summary.h"
 
+#include "clang/AST/ASTContext.h"
 #include "clang/AST/Decl.h"
 #include "clang/AST/Expr.h"
 
@@ -45,10 +47,18 @@ struct PlaceRef {
   /// The expression naming each entry of `derefs` (parallel vector; entries
   /// may be null when the dereference was synthesised rather than written).
   std::vector<const clang::Expr *> derefExprs;
+  /// The witness in force for each entry of `derefs` (parallel vector): the
+  /// element the dereferenced pointer was read from (`a[i]` in `a[i]->x`).
+  std::vector<core::ElementWitness> derefElements;
+  /// Which element the access named: the nearest subscript on the path
+  /// (RFC 0006, *Element witnesses*), `Whole` when there is none, `Unknown`
+  /// when a second subscript follows it (`m[i][j]`).
+  core::ElementWitness element;
 
   void addDeref(core::PlaceId pointer, const clang::Expr *expr) {
     derefs.push_back(pointer);
     derefExprs.push_back(expr);
+    derefElements.push_back(element);
   }
 };
 
@@ -57,8 +67,6 @@ struct ValueOrigin {
   enum class Kind : std::uint8_t {
     /// A recognised allocation call: fresh owned resource.
     Alloc,
-    /// `realloc(p, n)`: consumes `place` (the argument) and allocates.
-    Realloc,
     /// A plain copy of the pointer stored in `place`.
     Copy,
     /// The address of `place` (`&x`, array decay, `&a[i]`, `&p->f`).
@@ -76,11 +84,15 @@ struct ValueOrigin {
   };
 
   Kind kind = Kind::Opaque;
-  /// Copy: the source pointer place. Borrow: the borrowed place. Realloc:
-  /// the consumed argument.
+  /// Copy: the source pointer place. Borrow: the borrowed place.
   std::optional<PlaceRef> place;
-  /// Alloc/Realloc/Raw (callee-produced): the call.
+  /// Alloc/Raw (callee-produced), or a value returned by a call whose
+  /// consumption depends on its result: the call.
   const clang::CallExpr *call = nullptr;
+  /// Copy: the value points into the same object as `place` but not
+  /// necessarily at the same address (`p + 1`, `strchr(s, c)`). RFC 0006,
+  /// *Alias exactness*.
+  bool interior = false;
   /// Raw (integer cast): the cast expression, where notes point.
   const clang::Expr *source = nullptr;
   /// Conditional: the two arms.
@@ -94,8 +106,9 @@ struct ValueOrigin {
 
 class PlaceBuilder {
 public:
-  PlaceBuilder(core::PlaceTable &table, SummaryStore &summaryStore)
-      : places(table), summaries(summaryStore) {}
+  PlaceBuilder(core::PlaceTable &table, SummaryStore &summaryStore,
+               const clang::ASTContext &astContext)
+      : places(table), summaries(summaryStore), context(astContext) {}
 
   /// The base place for `var`, created on first use.
   core::PlaceId placeForVar(const clang::VarDecl &var);
@@ -115,6 +128,10 @@ public:
   /// Resolves an lvalue expression to a place path, or `std::nullopt` if it
   /// is opaque or not a place at all.
   [[nodiscard]] std::optional<PlaceRef> resolve(const clang::Expr &expr);
+
+  /// The element witness of a subscript expression (RFC 0006): an integer
+  /// constant, a variable, or unknown.
+  [[nodiscard]] core::ElementWitness witnessOf(const clang::Expr &index);
 
   /// For a place expression that `resolve` cannot map because its
   /// dereferenced base is not a place (`((T *)(uintptr_t)x)->f`), the
@@ -193,6 +210,7 @@ public:
 private:
   core::PlaceTable &places;
   SummaryStore &summaries;
+  const clang::ASTContext &context;
   bool strictExterns = false;
   llvm::DenseMap<const clang::VarDecl *, core::PlaceId> varPlaces;
   llvm::DenseMap<std::uint32_t, const clang::VarDecl *> placeVars;

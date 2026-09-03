@@ -242,6 +242,12 @@ paths through different aliases of one resource resolve to the same place.
 summary. Paths are interned, so `PlaceId` stays a small integer and the state
 maps stay dense.
 
+> **Amended by [RFC 0006](0006-precision.md), *Element witnesses*.** `a[*]`
+> is still one place, but a move record on it carries the element that was
+> named (a constant, a variable, or unknown), and only an access with a
+> matching witness is a use of it: `free(a[0]); use(a[1]);` is no longer
+> reported.
+
 > **Superseded by [RFC 0004](0004-unsafe-boundaries.md), *Pointer
 > identity*.** Pointer arithmetic and every pointer-to-pointer cast now
 > preserve the place of their operand; only integer-to-pointer casts yield a
@@ -299,6 +305,13 @@ will introduce anyway; until then, `const` is the idiomatic C fix and
 improves the code regardless.
 
 ### `realloc` and the null edge
+
+> **Superseded by [RFC 0006](0006-precision.md), *Outcome-conditional
+> summaries*.** `realloc` is now an ordinary table entry whose summary says
+> it moves its argument only in the `nonnull` class; the null-edge rule
+> below is the general mechanism applied to it, and every function whose
+> body consumes conditionally gets the same treatment. `reallocs` is
+> replaced by `AnalysisState::pending`.
 
 `realloc` is the one place this RFC is path-sensitive, and deliberately only
 in the narrowest useful form. `q = realloc(p, n)` consumes `p`'s alias class
@@ -377,6 +390,13 @@ Before the dataflow runs, a pass over the CFG scopes allocates:
 - one per heap allocation *site* (not per iteration), unconstrained except
   `'static: alloc_site` so it is never trivially valid to keep;
 - parameters live for `fn`; globals are `'static`.
+
+> **Amended by [RFC 0006](0006-precision.md), *Loans end at the last use
+> of their holder*.** A loan held by a local ends at the holder's last use
+> (backward liveness over the CFG), not at the end of its scope; loans held
+> through a pointer, by a global or by an address-taken local still end
+> when the holder is reassigned. The lifetime constraints below are
+> unchanged.
 
 A loan created by `p = &x` in scope `S` has lifetime `S`. Storing it into a
 place whose own lifetime is `T` requires `S: T`; storing a loan on a local

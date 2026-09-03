@@ -76,6 +76,90 @@ TEST(MoveTracker, RecordsTheAliasTheMoveWentThrough) {
   EXPECT_EQ(tracker.movedAt(PlaceId{1})->via, PlaceId{0});
 }
 
+// RFC 0006, *Element witnesses*.
+TEST(ElementWitness, MatchingRules) {
+  const ElementWitness whole = ElementWitness::whole();
+  const ElementWitness zero = ElementWitness::ofConstant(0);
+  const ElementWitness one = ElementWitness::ofConstant(1);
+  const ElementWitness i = ElementWitness::ofVariable(PlaceId{7});
+  const ElementWitness j = ElementWitness::ofVariable(PlaceId{8});
+  const ElementWitness unknown = ElementWitness::unknown();
+
+  EXPECT_TRUE(whole.matches(zero));
+  EXPECT_TRUE(zero.matches(whole));
+  EXPECT_TRUE(whole.matches(unknown));
+  EXPECT_TRUE(unknown.matches(whole));
+  EXPECT_TRUE(zero.matches(zero));
+  EXPECT_FALSE(zero.matches(one));
+  EXPECT_TRUE(i.matches(i));
+  EXPECT_FALSE(i.matches(j));
+  EXPECT_FALSE(i.matches(zero));
+  EXPECT_FALSE(unknown.matches(unknown))
+      << "an unknown element is nothing in particular";
+  EXPECT_FALSE(unknown.matches(i));
+}
+
+TEST(MoveTracker, ElementWitnessesDistinguishElements) {
+  const PlaceId a{0};
+  const ElementWitness i = ElementWitness::ofVariable(PlaceId{5});
+  MoveTracker tracker;
+  // free(a[i])
+  EXPECT_FALSE(tracker.markMoved(a, MoveReason::Freed, at(1), {}, i));
+  EXPECT_TRUE(tracker.movedAt(a, i)) << "a[i] again: the same element";
+  EXPECT_TRUE(tracker.movedAt(a)) << "a whole access sees any record";
+  EXPECT_FALSE(tracker.movedAt(a, ElementWitness::ofConstant(0)))
+      << "a[0] is not known to be a[i]";
+  EXPECT_FALSE(tracker.movedAt(a, ElementWitness::ofVariable(PlaceId{6})));
+
+  // free(a[i]) again: a double free.
+  const auto again = tracker.markMoved(a, MoveReason::Freed, at(2), {}, i);
+  ASSERT_TRUE(again);
+  EXPECT_EQ(again->location.line, 1U);
+
+  // free(a[j]): another element replaces the record without complaint.
+  const ElementWitness j = ElementWitness::ofVariable(PlaceId{6});
+  EXPECT_FALSE(tracker.markMoved(a, MoveReason::Freed, at(3), {}, j));
+  EXPECT_EQ(tracker.recordOf(a)->element, j);
+  EXPECT_FALSE(tracker.movedAt(a, i));
+
+  // a[i] = NULL does not reinitialise a[j]; a[j] = NULL does.
+  tracker.reinitialize(a, i);
+  EXPECT_TRUE(tracker.movedAt(a, j));
+  tracker.reinitialize(a, j);
+  EXPECT_FALSE(tracker.isMoved(a));
+
+  // i++ turns a record witnessed by i into an unknown element.
+  EXPECT_FALSE(tracker.markMoved(a, MoveReason::Freed, at(4), {}, i));
+  tracker.forgetWitness(PlaceId{5});
+  EXPECT_EQ(tracker.recordOf(a)->element, ElementWitness::unknown());
+  EXPECT_FALSE(tracker.movedAt(a, i)) << "stale: the loop moved on";
+  EXPECT_TRUE(tracker.movedAt(a)) << "but some element is freed";
+  EXPECT_FALSE(tracker.markMoved(a, MoveReason::Freed, at(5), {}, i))
+      << "the next iteration's free is not a double free";
+}
+
+TEST(MoveTracker, JoinOfDifferentWitnesses) {
+  const PlaceId a{0};
+  const ElementWitness zero = ElementWitness::ofConstant(0);
+  const ElementWitness one = ElementWitness::ofConstant(1);
+  MoveTracker left;
+  MoveTracker right;
+  ASSERT_FALSE(left.markMoved(a, MoveReason::Freed, at(1), {}, zero));
+  ASSERT_FALSE(right.markMoved(a, MoveReason::Freed, at(2), {}, one));
+  left.join(right);
+  EXPECT_EQ(left.recordOf(a)->element, ElementWitness::unknown());
+
+  MoveTracker whole;
+  ASSERT_FALSE(whole.markMoved(a, MoveReason::Freed, at(3)));
+  MoveTracker joined = left;
+  joined.join(whole);
+  EXPECT_TRUE(joined.recordOf(a)->element.isWhole())
+      << "a whole-place move on either side covers every element";
+  MoveTracker same = left;
+  same.join(left);
+  EXPECT_EQ(same, left);
+}
+
 TEST(MoveTracker, EqualityAndOrderedListing) {
   MoveTracker a;
   MoveTracker b;

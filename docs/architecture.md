@@ -41,13 +41,13 @@ tools.
 | ------------------ | ---------------------------------------------------------------------------------------------- |
 | `Ownership.h`      | `OwnershipKind` lattice (`Unknown ⊑ {Owned, Shared, Mutable} ⊑ Raw`) and `join`. `Raw` is "no guarantee": tracked, but usable only inside an unsafe region. |
 | `Place.h`          | `PlaceId` and `PlaceTable`: structured places (`p`, `s.f`, `*p`, `p->f`, `a[*]`) with parent/descendant/translate queries. |
-| `AliasRelation.h`  | Symmetric may-alias graph over places; closed under copies, plain union at joins (deliberately not transitive). |
+| `AliasRelation.h`  | Symmetric may-alias graph over places; closed under copies, plain union at joins (deliberately not transitive). Each edge records whether the two places hold the same value (*exact*) or point into the same object (*interior*), and which element of the other end is meant (RFC 0006); `separateExact` refutes an exact edge on a `!=` edge. |
 | `Lifetime.h`       | `LifetimeId` and `LifetimeConstraints` (transitive `outlives` queries; `'static` is id 0).      |
-| `Borrow.h`         | `Loan` (place, kind, lifetime, holder) and `BorrowState`: may this borrow be created; may this place be moved or mutated. |
-| `Moves.h`          | `MoveTracker`: which places are currently moved-out/freed (and through which alias), with a conservative `join`. |
+| `Borrow.h`         | `Loan` (place, kind, lifetime, holder) and `BorrowState`: may this borrow be created; may this place be moved or mutated; `expireHolders` drops the loans of holders a predicate declares dead (RFC 0006 liveness). |
+| `Moves.h`          | `MoveTracker`: which places are currently moved-out/freed (and through which alias), each with an `ElementWitness` (whole / constant / variable / unknown) saying which element of an `a[*]` place was named (RFC 0006); a use is only reported when the witnesses match; conservative `join`. |
 | `Raw.h`            | `RawTracker`: which places currently hold a raw pointer, why (`RawReason`: integer cast, `WEAVEC_RAW` declaration, loaded through a raw pointer, callee result, unchecked callee) and through which alias; union at joins. |
-| `AnalysisState.h`  | The dataflow state: moves, loans, aliases, raw pointers, pending `realloc`s and inferred kinds, with component-wise `join`. |
-| `Summary.h`        | `FunctionSummary`: what a function does to its interface. `SummaryPath` (`param(i)`/`global(g)` plus deref/field/index steps), `PlaceEffect` (read/written/freed/moved), `Store` (value written into caller-visible memory), `ValueSource` (fresh/copy/borrow/null/raw/unknown), with `join`, `remapGlobals` and the derived `consumes`/`borrowKind`/`inferredKind` queries. |
+| `AnalysisState.h`  | The dataflow state: moves, loans, aliases, raw pointers, inferred kinds, the `PendingOutcome`s of calls whose consumption depends on a not-yet-tested result, and the flow-sensitive `consumed` record that feeds outcome classes at `return` (RFC 0006), with component-wise `join`. |
+| `Summary.h`        | `FunctionSummary`: what a function does to its interface. `SummaryPath` (`param(i)`/`global(g)` plus deref/field/index steps), `PlaceEffect` (read/written/freed/moved), `Store` (value written into caller-visible memory), `ValueSource` (fresh/copy/interior copy/borrow/null/raw/unknown), `outcomes` (per `Outcome` class — `Null`, `NonNull`, `Zero`, `Positive`, `Negative` — the consumption that holds on the paths returning it; RFC 0006), with `join`, `remapGlobals` and the derived `consumes`/`consumesUnconditionally`/`borrowKind`/`inferredKind` queries. |
 | `SummaryIO.h`      | The stable text form of a `FunctionSummary` (`summary` ... `end` records; RFC 0005): `printSummary`/`parseSummary` with callbacks that name and resolve globals, so the format is Clang-free and the on-disk sidecar format is defined here. |
 | `Scc.h`            | Tarjan's strongly connected components over an adjacency list, in reverse topological order; used for the call graph inside a unit and for the unit graph of a program. |
 | `Diagnostic.h`     | `Diagnostic`, stable ids in `diag::` (with `All`, `isKnown`, `isWarningByDefault`), `FixItHint`, `DiagnosticSink`, and an in-memory `DiagnosticCollector`. |
@@ -91,13 +91,21 @@ the frontend fills in so it can report at the exact original position.
 - runs a forward dataflow over `clang::CFG` for each function body
   (`lib/Analysis/Dataflow.h`, `FunctionDataflow`): a worklist to a fixpoint
   with `core::AnalysisState` as the lattice, then one reporting pass that
-  emits each diagnostic once. While running it applies callee summaries at
-  every call, records its own effects, stores and returns, checks them
+  emits each diagnostic once. A backward liveness pass over the same CFG
+  runs first; before each element the loans held by dead locals expire
+  (RFC 0006). On each edge out of a conditional, `applyEdge` refines the
+  state with what the condition says: pointer equality unites or separates
+  aliases, and a test on a call result selects outcome classes and
+  reinstates what the callee consumed only in the other classes. While
+  running it applies callee summaries at every call (element-aware, with
+  `written` effects forgetting the facts below the written place), records
+  its own effects, stores, returns and per-class consumption, checks them
   against the function's annotations, tracks raw pointers and reports raw
   operations, and produces the function's `FunctionSummary` at exit.
   `WEAVEC_UNSAFE` regions are analysed like any other code; the pass only
   suppresses what it would report inside them. `FunctionAnalysis.h` is the
-  per-function entry point;
+  per-function entry point; `AnalysisOptions::exclusiveBorrows` switches
+  RFC 0001's exclusivity rules back on;
 - drives a whole translation unit (`TranslationUnitAnalysis.h`,
   `TranslationUnitAnalyzer`): collects definitions and address-taken
   functions, builds the call graph (with an edge from every indirect call to
@@ -113,8 +121,10 @@ The model is specified by [RFC 0001](rfcs/0001-ownership-model.md), the
 dataflow by [RFC 0002](rfcs/0002-intraprocedural-checking.md), summaries by
 [RFC 0003](rfcs/0003-signature-inference.md), raw pointers, unsafe
 regions and indirect calls by
-[RFC 0004](rfcs/0004-unsafe-boundaries.md), and cross-unit analysis by
-[RFC 0005](rfcs/0005-whole-program-analysis.md); each RFC's
+[RFC 0004](rfcs/0004-unsafe-boundaries.md), cross-unit analysis by
+[RFC 0005](rfcs/0005-whole-program-analysis.md), and non-lexical loans,
+condition facts, element witnesses and outcome-conditional summaries by
+[RFC 0006](rfcs/0006-precision.md); each RFC's
 *Implementation notes* record where the code refines the design.
 
 ## `weavec::Frontend` — Clang integration
@@ -145,7 +155,7 @@ regions and indirect calls by
   `CompilationDatabaseUnit` parses from a compilation database.
 - `Sidecar.h` reads and writes `foo.o.weavec`: the unit's exports, the cc1
   command that produced it and the diagnostics already reported, in a
-  line-oriented text format versioned by its `weavec-summaries 1` header.
+  line-oriented text format versioned by its `weavec-summaries 2` header.
 - `Driver.h` is `weavec-cc`: Clang's `driver::Driver` plans the jobs, each
   `-cc1` job runs in-process with WeaveC's consumer multiplexed beside
   Clang's, the compile step writes the sidecar, and the link step runs
@@ -173,8 +183,9 @@ sidecars, re-analyses the units whose results depend on other units, reports
 what only the program could know, and refuses to link on an error. WeaveC's
 own flags are `-fweavec`/`-fno-weavec`, `-fweavec-strict`,
 `-fweavec-report-unannotated`, `-fweavec-analyze-headers`,
-`-fweavec-dump-analysis`, `-fweavec-link`/`-fno-weavec-link` and the `-W`
-spellings; everything else is Clang's. The design is
+`-fweavec-dump-analysis`, `-fweavec-exclusive-borrows`,
+`-fweavec-link`/`-fno-weavec-link` and the `-W` spellings; everything else
+is Clang's. The design is
 [RFC 0005](rfcs/0005-whole-program-analysis.md).
 
 ## Diagnostics contract

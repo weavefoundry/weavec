@@ -15,12 +15,18 @@
 //     effect <path> <flag>[,<flag>]*      flags: read written freed moved
 //     store <path> <source>
 //     return <source>
-//     realloc-like
+//     outcome <class>                      the class is a possible result
+//     outcome <class> <path> <flag>[,<flag>]*
 //   end
 //
 //   path   ::= param <i> [<steps>] | global <name> [<steps>]
 //   steps  ::= ( '*' | '.' <field> | '[]' )+        (one token)
-//   source ::= fresh | null | unknown | raw | copy <path> | borrow <path>
+//   source ::= fresh | null | unknown | raw | copy <path> | interior <path>
+//            | borrow <path>
+//   class  ::= null | nonnull | zero | positive | negative
+//
+// Version 2 (RFC 0006) added `outcome` and `interior` and dropped
+// `realloc-like`.
 //
 // Global roots are spelled by name; the caller supplies the mapping between
 // the summary's global ids and names in both directions, so this file stays
@@ -43,7 +49,7 @@ namespace weavec::core {
 
 /// Version of the record format; bumped when a record written by this
 /// version cannot be read by the previous one.
-inline constexpr unsigned SummaryFormatVersion = 1;
+inline constexpr unsigned SummaryFormatVersion = 2;
 
 /// The name to print for a global root id.
 using GlobalNamer = std::function<std::string(std::uint32_t)>;

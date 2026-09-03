@@ -133,6 +133,8 @@ private:
     std::optional<PlaceId> parent;
     PathStep step = PathStep::Field;
     std::string field;
+    /// Direct children, in creation order.
+    std::vector<PlaceId> children;
   };
 
   struct ChildKey {

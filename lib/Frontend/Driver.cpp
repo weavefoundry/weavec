@@ -77,9 +77,11 @@ bool DriverOptions::consume(llvm::StringRef arg, std::string &error) {
     llvm::StringLiteral name;
     bool DriverOptions::*member;
   };
-  static constexpr std::array<Flag, 6> Flags{{
+  static constexpr std::array<Flag, 7> Flags{{
       {.name = "weavec", .member = &DriverOptions::enabled},
       {.name = "weavec-strict", .member = &DriverOptions::strict},
+      {.name = "weavec-exclusive-borrows",
+       .member = &DriverOptions::exclusiveBorrows},
       {.name = "weavec-report-unannotated",
        .member = &DriverOptions::reportUnannotated},
       {.name = "weavec-analyze-headers",
@@ -103,6 +105,7 @@ bool DriverOptions::consume(llvm::StringRef arg, std::string &error) {
 FrontendOptions DriverOptions::toFrontendOptions() const {
   FrontendOptions options;
   options.analysis.strictExterns = strict;
+  options.analysis.exclusiveBorrows = exclusiveBorrows;
   options.analysis.reportUnannotated = reportUnannotated;
   options.analysis.dumpStream = dumpAnalysis ? &llvm::outs() : nullptr;
   options.mainFileOnly = !analyzeHeaders;

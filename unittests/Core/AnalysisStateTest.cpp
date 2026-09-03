@@ -50,20 +50,74 @@ TEST(AnalysisState, JoinUnionsMovesLoansAndAliases) {
   EXPECT_TRUE(left.raw.isRaw(Q)) << "raw on either path is may-raw";
 }
 
-TEST(AnalysisState, JoinKeepsOnlyAgreedReallocs) {
+// RFC 0006, *Pending outcomes*.
+TEST(AnalysisState, JoinKeepsOnlyAgreedPendingOutcomes) {
+  PendingOutcome realloc;
+  realloc.consumedBy[Outcome::Null] = {};
+  realloc.consumedBy[Outcome::NonNull] = {P};
+
   AnalysisState left;
-  left.reallocs[Q] = {P};
+  left.pending[Q] = realloc;
   AnalysisState right;
 
   AnalysisState joined = left;
   joined.join(right);
-  EXPECT_TRUE(joined.reallocs.empty())
-      << "a realloc pending on one path only cannot be undone";
+  EXPECT_TRUE(joined.pending.empty())
+      << "an outcome pending on one path only cannot be undone";
 
-  right.reallocs[Q] = {P};
+  right.pending[Q] = realloc;
   joined = left;
   joined.join(right);
-  EXPECT_EQ(joined.reallocs.at(Q), std::vector<PlaceId>{P});
+  EXPECT_EQ(joined.pending.at(Q), realloc);
+
+  right.pending[Q].consumedBy[Outcome::NonNull] = {X};
+  joined = left;
+  joined.join(right);
+  EXPECT_TRUE(joined.pending.empty()) << "the sides must agree exactly";
+}
+
+TEST(AnalysisState, JoinUnionsConsumed) {
+  const SummaryPath p = SummaryPath::param(0);
+  AnalysisState left;
+  left.consumed[p] = PlaceEffect{.freed = true};
+  AnalysisState right;
+  right.consumed[SummaryPath::param(1)] = PlaceEffect{.moved = true};
+  left.join(right);
+  EXPECT_EQ(left.consumed.size(), 2U);
+  EXPECT_TRUE(left.consumed.at(p).freed);
+}
+
+TEST(PendingOutcome, SelectReinstatesWhatTheSelectedClassesKeep) {
+  PendingOutcome pending;
+  pending.consumedBy[Outcome::Null] = {};
+  pending.consumedBy[Outcome::NonNull] = {P, Q};
+  EXPECT_EQ(pending.places(), (std::vector<PlaceId>{P, Q}));
+  EXPECT_FALSE(pending.settled());
+
+  PendingOutcome onNull = pending;
+  EXPECT_EQ(onNull.select({Outcome::Null}), (std::vector<PlaceId>{P, Q}))
+      << "realloc failed: the argument is still owned";
+  EXPECT_TRUE(onNull.settled());
+
+  PendingOutcome onNonNull = pending;
+  EXPECT_TRUE(onNonNull.select({Outcome::NonNull}).empty());
+  EXPECT_TRUE(onNonNull.settled()) << "one class left, everything consumed";
+
+  PendingOutcome infeasible = pending;
+  EXPECT_TRUE(infeasible.select({Outcome::Zero}).empty())
+      << "a class the callee never returns changes nothing";
+  EXPECT_EQ(infeasible, pending);
+
+  PendingOutcome status;
+  status.consumedBy[Outcome::Zero] = {P};
+  status.consumedBy[Outcome::Positive] = {P, Q};
+  status.consumedBy[Outcome::Negative] = {};
+  PendingOutcome nonNegative = status;
+  EXPECT_TRUE(nonNegative.select({Outcome::Zero, Outcome::Positive}).empty())
+      << "p is consumed in both selected classes; q only in one";
+  EXPECT_FALSE(nonNegative.settled()) << "q can still be retracted by rc == 0";
+  EXPECT_EQ(nonNegative.select({Outcome::Zero}), std::vector<PlaceId>{Q});
+  EXPECT_TRUE(nonNegative.settled());
 }
 
 TEST(AnalysisState, JoinLiftsKindsThroughTheLattice) {
@@ -87,8 +141,40 @@ TEST(AnalysisState, JoinReachesFixpoint) {
   a.kinds[P] = OwnershipKind::Owned;
 
   AnalysisState b = a;
-  b.join(a);
-  EXPECT_EQ(a, b) << "joining a state with itself changes nothing";
+  EXPECT_FALSE(b.join(a)) << "joining a state with itself changes nothing";
+  EXPECT_EQ(a, b);
+}
+
+TEST(AnalysisState, JoinReportsEveryKindOfChange) {
+  const auto changes = [](auto mutate) {
+    AnalysisState base;
+    base.kinds[P] = OwnershipKind::Owned;
+    base.consumed[SummaryPath::param(0)] = PlaceEffect{.freed = true};
+    base.pending[Q] = PendingOutcome{.consumedBy = {{Outcome::Null, {P}}}};
+    AnalysisState other = base;
+    mutate(other);
+    AnalysisState joined = base;
+    const bool changed = joined.join(other);
+    EXPECT_EQ(changed, joined != base);
+    return changed;
+  };
+  EXPECT_TRUE(changes([](AnalysisState &s) {
+    s.moves.markMoved(P, MoveReason::Freed, at(1));
+  }));
+  EXPECT_TRUE(changes([](AnalysisState &s) { s.aliases.unite(P, Q); }));
+  EXPECT_TRUE(changes(
+      [](AnalysisState &s) { s.loans.addLoanUnchecked(loanOn(X, Q)); }));
+  EXPECT_TRUE(changes([](AnalysisState &s) {
+    s.raw.markRaw(Q, RawReason::IntegerCast, at(2));
+  }));
+  EXPECT_TRUE(changes([](AnalysisState &s) { s.pending.erase(Q); }))
+      << "a pending outcome on one side only is dropped";
+  EXPECT_TRUE(changes([](AnalysisState &s) {
+    s.consumed[SummaryPath::param(0)].moved = true;
+  }));
+  EXPECT_TRUE(
+      changes([](AnalysisState &s) { s.kinds[P] = OwnershipKind::Shared; }));
+  EXPECT_FALSE(changes([](AnalysisState &) {}));
 }
 
 TEST(AnalysisState, ForgetClearsEveryFactAboutThePlace) {
@@ -97,7 +183,7 @@ TEST(AnalysisState, ForgetClearsEveryFactAboutThePlace) {
   state.aliases.unite(P, Q);
   state.loans.addLoanUnchecked(loanOn(X, P));
   state.loans.addLoanUnchecked(loanOn(P, Q));
-  state.reallocs[P] = {Q};
+  state.pending[P].consumedBy[Outcome::NonNull] = {Q};
   state.kinds[P] = OwnershipKind::Owned;
   state.raw.markRaw(P, RawReason::Declared, at(3));
 
@@ -107,7 +193,7 @@ TEST(AnalysisState, ForgetClearsEveryFactAboutThePlace) {
   EXPECT_FALSE(state.aliases.mayAlias(P, Q));
   EXPECT_TRUE(state.loans.heldBy(P).empty()) << "loans held by p dropped";
   EXPECT_FALSE(state.loans.hasLoans(P)) << "loans against p dropped";
-  EXPECT_TRUE(state.reallocs.empty());
+  EXPECT_TRUE(state.pending.empty());
   EXPECT_EQ(state.kindOf(P), OwnershipKind::Unknown);
 }
 

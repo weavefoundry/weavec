@@ -518,13 +518,20 @@ TEST(SignatureInference, ParameterReassignedInCallee) {
 }
 
 TEST(SignatureInference, ConditionalEffectsAreMayEffects) {
-  // RFC 0003, accepted false positive: freed on one path is freed.
+  // RFC 0003: freed on one path is freed, unless the caller tests the
+  // result that tells the paths apart (RFC 0006, *Outcome-conditional
+  // summaries*): `f` is clean, `untested` is not.
   const auto result = analyze(R"c(
     static int free_if(char *p, int c) { if (c) { free(p); return 1; } return 0; }
     static struct s *pick(struct s *a, struct s *b, int c) { return c ? a : b; }
     void f(void) {
       char *p = malloc(8);
       if (free_if(p, cond())) return;
+      p[0] = 1;
+    }
+    void untested(void) {
+      char *p = malloc(8);
+      free_if(p, cond());
       p[0] = 1;
     }
     void g(struct s *a, struct s *b) {
@@ -535,19 +542,30 @@ TEST(SignatureInference, ConditionalEffectsAreMayEffects) {
   )c");
   ASSERT_TRUE(result.ast);
   EXPECT_EQ(messages(result.diagnostics),
-            (Strings{"7: use of 'p' after it was freed",
-                     "12: use of 'p' after it was freed"}));
+            (Strings{"12: use of 'p' after it was freed",
+                     "17: use of 'p' after it was freed"}));
+  const core::FunctionSummary *summary = result.summary("free_if");
+  ASSERT_NE(summary, nullptr);
+  EXPECT_TRUE(summary->frees(0));
+  EXPECT_FALSE(summary->consumesUnconditionally(core::SummaryPath::param(0)));
+  EXPECT_TRUE(summary->outcomes.at(core::Outcome::Positive)
+                  .at(core::SummaryPath::param(0))
+                  .freed);
+  EXPECT_FALSE(summary->outcomes.at(core::Outcome::Zero)
+                   .contains(core::SummaryPath::param(0)));
+  EXPECT_FALSE(summary->outcomes.contains(core::Outcome::Negative));
 }
 
 TEST(SignatureInference, BorrowForTheCall) {
-  const auto result = analyze(std::string(Types) + R"c(
+  // Exclusivity between borrows is opt-in (RFC 0006, *Conflict rules*).
+  const std::string code = std::string(Types) + R"c(
     static int get(const struct node *n) { return n->v; }
     static void set(struct node *n) { n->v = 1; }
     void f(void) {
       struct node x;
       const struct node *r = &x;
       get(&x);          /* shared while shared: fine */
-      set(&x);          /* mutable while shared: conflict */
+      set(&x);          /* mutable while shared: conflict when exclusive */
       use(r);
     }
     void g(struct node *n) {
@@ -555,9 +573,14 @@ TEST(SignatureInference, BorrowForTheCall) {
       get(m);           /* passing the holder, not a new borrow: fine */
       set(n);
     }
-  )c");
-  ASSERT_TRUE(result.ast);
-  EXPECT_EQ(messages(result.diagnostics),
+  )c";
+  const auto lenient = analyze(code);
+  ASSERT_TRUE(lenient.ast);
+  EXPECT_TRUE(lenient.diagnostics.empty());
+
+  const auto exclusive = analyze(code, {.exclusiveBorrows = true});
+  ASSERT_TRUE(exclusive.ast);
+  EXPECT_EQ(messages(exclusive.diagnostics),
             (Strings{"8: cannot borrow 'x' as mutable because it is already "
                      "borrowed"}));
 }

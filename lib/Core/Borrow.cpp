@@ -9,6 +9,8 @@
 #include "weavec/Core/Borrow.h"
 
 #include <algorithm>
+#include <iterator>
+#include <tuple>
 #include <vector>
 
 namespace weavec::core {
@@ -48,9 +50,19 @@ std::optional<BorrowConflict> BorrowState::addLoan(const Loan &loan) {
   return std::nullopt;
 }
 
+bool BorrowState::before(const Loan &lhs, const Loan &rhs) noexcept {
+  const auto key = [](const Loan &loan) {
+    return std::tie(loan.place, loan.holder, loan.kind, loan.lifetime.value,
+                    loan.location.line, loan.location.column,
+                    loan.location.opaque, loan.location.file);
+  };
+  return key(lhs) < key(rhs);
+}
+
 void BorrowState::addLoanUnchecked(const Loan &loan) {
-  if (!contains(loan))
-    live.push_back(loan);
+  const auto at = std::ranges::lower_bound(live, loan, before);
+  if (at == live.end() || *at != loan)
+    live.insert(at, loan);
 }
 
 std::optional<BorrowConflict> BorrowState::checkMove(PlaceId place) const {
@@ -83,6 +95,10 @@ void BorrowState::dropHolder(PlaceId holder) {
                 [holder](const Loan &loan) { return loan.holder == holder; });
 }
 
+void BorrowState::expireHolders(const std::function<bool(PlaceId)> &dead) {
+  std::erase_if(live, [&dead](const Loan &loan) { return dead(loan.holder); });
+}
+
 void BorrowState::copyHolder(PlaceId from, PlaceId to) {
   if (from == to)
     return;
@@ -101,9 +117,23 @@ std::vector<Loan> BorrowState::heldBy(PlaceId holder) const {
   return result;
 }
 
-void BorrowState::join(const BorrowState &other) {
-  for (const Loan &loan : other.live)
-    addLoanUnchecked(loan);
+bool BorrowState::join(const BorrowState &other) {
+  if (other.live.empty())
+    return false;
+  if (live.empty()) {
+    live = other.live;
+    return true;
+  }
+  // At the fixpoint nothing is new; find that out without copying a loan
+  // (each carries a file name).
+  if (std::ranges::includes(live, other.live, before))
+    return false;
+  std::vector<Loan> merged;
+  merged.reserve(live.size() + other.live.size());
+  std::ranges::set_union(live, other.live, std::back_inserter(merged), before);
+  const bool changed = merged.size() != live.size();
+  live = std::move(merged);
+  return changed;
 }
 
 bool BorrowState::hasLoans(PlaceId place) const noexcept {
@@ -112,14 +142,11 @@ bool BorrowState::hasLoans(PlaceId place) const noexcept {
 }
 
 bool BorrowState::contains(const Loan &loan) const noexcept {
-  return std::ranges::find(live, loan) != live.end();
+  return std::ranges::binary_search(live, loan, before);
 }
 
 bool operator==(const BorrowState &lhs, const BorrowState &rhs) {
-  if (lhs.live.size() != rhs.live.size())
-    return false;
-  return std::ranges::all_of(
-      lhs.live, [&rhs](const Loan &loan) { return rhs.contains(loan); });
+  return lhs.live == rhs.live;
 }
 
 } // namespace weavec::core

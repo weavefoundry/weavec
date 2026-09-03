@@ -147,13 +147,21 @@ void ProgramAnalysis::analyzeCyclic(const std::vector<unsigned> &component,
   for (const unsigned member : component)
     current.push_back(skeleton(*units[member].exports));
 
+  // Each member sees the newest exports of every other member; the database
+  // is rebuilt only after some member's exports changed, which in the last
+  // round (and for most of the members of a large one) is never.
+  analysis::ProgramDatabase db = databaseFor(current);
+  bool stale = false;
   bool changed = true;
   for (unsigned round = 0; round < MaxRounds && changed; ++round) {
     changed = false;
     for (unsigned k = 0; k < component.size(); ++k) {
       if (broken[k])
         continue;
-      const analysis::ProgramDatabase db = databaseFor(current);
+      if (stale) {
+        db = databaseFor(current);
+        stale = false;
+      }
       FrontendOptions overrides;
       overrides.database = &db;
       overrides.silent = true;
@@ -166,6 +174,7 @@ void ProgramAnalysis::analyzeCyclic(const std::vector<unsigned> &component,
       }
       if (!run->exports.sameSummariesAs(current[k])) {
         changed = true;
+        stale = true;
         current[k] = run->exports;
       }
     }
@@ -178,7 +187,8 @@ void ProgramAnalysis::analyzeCyclic(const std::vector<unsigned> &component,
     result.nonConverging.push_back(std::move(names));
   }
 
-  const analysis::ProgramDatabase db = databaseFor(current);
+  if (stale)
+    db = databaseFor(current);
   for (unsigned k = 0; k < component.size(); ++k) {
     Unit &unit = units[component[k]];
     if (broken[k])

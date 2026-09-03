@@ -37,14 +37,17 @@ int deref_freed_object(struct outer *c) {
   return c->n;
 }
 
-// All elements of an array share one summary place.
+// All elements of an array share one summary place; the move record keeps
+// the element that was named, and only a matching access is a use of it
+// (RFC 0006, *Element witnesses*).
 void array_summary(void) {
   int *arr[4];
   arr[0] = malloc(4);
   arr[1] = malloc(4);
   free(arr[0]);
+  use(arr[1]); // another element: fine
   // CHECK: rfc0002-places.c:[[@LINE+1]]:7: error: use of 'arr[*]' after it was freed [weavec::use-after-free]
-  use(arr[1]);
+  use(arr[0]);
 }
 
 // Pointer arithmetic keeps the identity of the object (RFC 0004, *Pointer

@@ -420,8 +420,9 @@ TEST(Builtins, Entries) {
 
   const auto *strchrSummary = builtinSummary(*parsed.fn("strchr"));
   ASSERT_NE(strchrSummary, nullptr);
-  EXPECT_EQ(strchrSummary->returns,
-            std::set<ValueSource>{ValueSource::copy(SummaryPath::param(0))});
+  EXPECT_EQ(
+      strchrSummary->returns,
+      std::set<ValueSource>{ValueSource::interiorCopy(SummaryPath::param(0))});
   EXPECT_EQ(strchrSummary->borrowKind(0), core::BorrowKind::Shared);
 
   const auto *memcpySummary = builtinSummary(*parsed.fn("memcpy"));
@@ -437,7 +438,7 @@ TEST(Builtins, Entries) {
   ASSERT_EQ(strtolSummary->stores.size(), 1U);
   EXPECT_EQ(strtolSummary->stores.begin()->dest, SummaryPath::param(1).deref());
   EXPECT_EQ(strtolSummary->stores.begin()->value,
-            ValueSource::copy(SummaryPath::param(0)));
+            ValueSource::interiorCopy(SummaryPath::param(0)));
 
   const auto *strlenSummary = builtinSummary(*parsed.fn("strlen"));
   ASSERT_NE(strlenSummary, nullptr);
@@ -446,8 +447,9 @@ TEST(Builtins, Entries) {
 
   const auto *bsearchSummary = builtinSummary(*parsed.fn("bsearch"));
   ASSERT_NE(bsearchSummary, nullptr);
-  EXPECT_EQ(bsearchSummary->returns,
-            std::set<ValueSource>{ValueSource::copy(SummaryPath::param(1))});
+  EXPECT_EQ(
+      bsearchSummary->returns,
+      std::set<ValueSource>{ValueSource::interiorCopy(SummaryPath::param(1))});
 
   const auto *getenvSummary = builtinSummary(*parsed.fn("getenv"));
   ASSERT_NE(getenvSummary, nullptr);
@@ -554,8 +556,9 @@ TEST(Builtins, PosixEntries) {
   EXPECT_TRUE(builtinSummary(*parsed.fn("opendir"))
                   ->returns.contains(ValueSource::fresh()));
   EXPECT_TRUE(builtinSummary(*parsed.fn("closedir"))->frees(0));
-  EXPECT_EQ(builtinSummary(*parsed.fn("readdir"))->returns,
-            std::set<ValueSource>{ValueSource::copy(SummaryPath::param(0))})
+  EXPECT_EQ(
+      builtinSummary(*parsed.fn("readdir"))->returns,
+      std::set<ValueSource>{ValueSource::interiorCopy(SummaryPath::param(0))})
       << "the entry lives in the stream";
   EXPECT_TRUE(builtinSummary(*parsed.fn("mmap"))
                   ->returns.contains(ValueSource::fresh()));
@@ -568,10 +571,13 @@ TEST(Builtins, PosixEntries) {
   EXPECT_EQ(gaiSummary->stores.begin()->value, ValueSource::fresh());
   EXPECT_TRUE(builtinSummary(*parsed.fn("freeaddrinfo"))->frees(0));
 
+  // RFC 0006, *Alias exactness*: a pointer *into* the argument is an
+  // interior copy; the argument itself is an exact one.
   const auto *strtokSummary = builtinSummary(*parsed.fn("strtok_r"));
   ASSERT_NE(strtokSummary, nullptr);
-  EXPECT_EQ(strtokSummary->returns,
-            std::set<ValueSource>{ValueSource::copy(SummaryPath::param(0))});
+  EXPECT_EQ(
+      strtokSummary->returns,
+      std::set<ValueSource>{ValueSource::interiorCopy(SummaryPath::param(0))});
   EXPECT_EQ(strtokSummary->stores.begin()->dest, SummaryPath::param(2).deref());
 
   EXPECT_EQ(builtinSummary(*parsed.fn("localtime_r"))->returns,
@@ -579,10 +585,18 @@ TEST(Builtins, PosixEntries) {
   EXPECT_TRUE(builtinSummary(*parsed.fn("localtime"))->returns.empty())
       << "static storage: unknown";
 
+  // RFC 0006, *Outcome-conditional summaries*: `reallocarray` consumes its
+  // argument only when it returns non-null.
   const auto *reallocarraySummary = builtinSummary(*parsed.fn("reallocarray"));
   ASSERT_NE(reallocarraySummary, nullptr);
-  EXPECT_TRUE(reallocarraySummary->reallocLike);
   EXPECT_TRUE(reallocarraySummary->consumes(0));
+  EXPECT_FALSE(
+      reallocarraySummary->consumesUnconditionally(SummaryPath::param(0)));
+  EXPECT_TRUE(reallocarraySummary->outcomes.at(core::Outcome::NonNull)
+                  .at(SummaryPath::param(0))
+                  .moved);
+  EXPECT_TRUE(reallocarraySummary->outcomes.at(core::Outcome::Null).empty());
+  EXPECT_TRUE(reallocarraySummary->returns.contains(ValueSource::null()));
 
   const auto *createSummary = builtinSummary(*parsed.fn("pthread_create"));
   ASSERT_NE(createSummary, nullptr);

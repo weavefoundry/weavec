@@ -66,8 +66,9 @@ Design: [RFC 0003 — Signature inference](rfcs/0003-signature-inference.md)
       `<fcntl.h>`, `<dirent.h>`, `<sys/mman.h>`, `<netdb.h>`, `<pthread.h>`,
       `<time.h>`, `<pwd.h>`, `<regex.h>`, `<dlfcn.h>`, `asprintf`, `getline`,
       ...).
-- [ ] Follow-ups surfaced by the corpus: may-moves for `a[*]` element places
-      (`free(a[i])` in a loop), pointer-equality guards.
+- [x] Follow-ups surfaced by the corpus: may-moves for `a[*]` element places
+      (`free(a[i])` in a loop), pointer-equality guards (moved to RFC 0006,
+      Milestone 5).
 - [x] Function pointers stored in globals and returned from other TUs
       (RFC 0005: candidates are joined across the program).
 
@@ -106,6 +107,24 @@ Design: [RFC 0005 — Whole-program analysis](rfcs/0005-whole-program-analysis.m
       (`libz.weavec` next to `libz.a`, read like any sidecar).
 - [ ] AST caching in the sidecar so the link step loads rather than parses.
 - [ ] Incremental link steps (re-analyse only units whose imports changed).
+
+## Milestone 5 — Precision (in progress)
+
+Design: [RFC 0006 — Precision](rfcs/0006-precision.md) (Accepted).
+
+- [x] Loans end at the holder's last use (liveness over the CFG); by
+      default only invalidation (free, move, realloc) of a borrowed object
+      is a `conflicting-borrow`; Rust's exclusivity rule behind
+      `--exclusive-borrows` / `-fweavec-exclusive-borrows`.
+- [x] Condition facts on CFG edges: pointer equality unites/separates
+      aliases (with exact/interior alias edges); tests of a call result
+      select the callee's outcome classes.
+- [x] Element witnesses: `free(a[i])` remembers `i`; a later `a[i]` is a
+      use of the same element, `a[j]` or `a[i]` after `i++` is not.
+- [x] Outcome-conditional summaries (`outcome <class> <path> <flags>`),
+      subsuming the `realloc` null-edge rule; summary format v2, sidecar v2.
+- [x] `written` effects forget the facts below the written object.
+- [ ] Corpus: clean baseline on the tracked projects; zlib and Lua added.
 
 ## Ongoing
 

@@ -1,6 +1,10 @@
 // RFC 0002: taking an address creates a loan held by the pointer variable;
-// loans conflict per RFC 0001 and end when the holder dies or is reassigned.
-// RUN: not %weavec %s -- 2>&1 | FileCheck %s
+// loans end when the holder is last used (RFC 0006) or reassigned. Freeing
+// or moving a borrowed object is always a conflict; exclusivity between
+// borrows (RFC 0001) is opt-in under `--exclusive-borrows` (RFC 0006,
+// *Conflict rules*).
+// RUN: not %weavec %s -- 2>&1 | FileCheck --check-prefixes=CHECK,LAX %s
+// RUN: not %weavec --exclusive-borrows %s -- 2>&1 | FileCheck --check-prefixes=CHECK,EXCL %s
 #include "../Inputs/prelude.h"
 #include <weavec.h>
 
@@ -15,9 +19,9 @@ struct node {
 void two_mutable(void) {
   int x = 0;
   int *a = &x;
-  // CHECK: rfc0002-borrows.c:[[@LINE+1]]:12: error: cannot borrow 'x' as mutable because it is already borrowed [weavec::conflicting-borrow]
+  // EXCL: rfc0002-borrows.c:[[@LINE+1]]:12: error: cannot borrow 'x' as mutable because it is already borrowed [weavec::conflicting-borrow]
   int *b = &x;
-  // CHECK: rfc0002-borrows.c:[[@LINE-3]]:12: note: previous borrow of 'x' by 'a' here
+  // EXCL: rfc0002-borrows.c:[[@LINE-3]]:12: note: previous borrow of 'x' by 'a' here
   use(a);
   use(b);
 }
@@ -25,7 +29,7 @@ void two_mutable(void) {
 void shared_then_mutable(void) {
   int x = 0;
   const int *a = &x;
-  // CHECK: rfc0002-borrows.c:[[@LINE+1]]:12: error: cannot borrow 'x' as mutable because it is already borrowed [weavec::conflicting-borrow]
+  // EXCL: rfc0002-borrows.c:[[@LINE+1]]:12: error: cannot borrow 'x' as mutable because it is already borrowed [weavec::conflicting-borrow]
   int *b = &x;
   use((void *)a);
   use(b);
@@ -34,7 +38,7 @@ void shared_then_mutable(void) {
 void mutable_then_shared(void) {
   int x = 0;
   int *a = &x;
-  // CHECK: rfc0002-borrows.c:[[@LINE+1]]:18: error: cannot borrow 'x' as shared because it is already mutably borrowed [weavec::conflicting-borrow]
+  // EXCL: rfc0002-borrows.c:[[@LINE+1]]:18: error: cannot borrow 'x' as shared because it is already mutably borrowed [weavec::conflicting-borrow]
   const int *b = &x;
   use(a);
   use((void *)b);
@@ -43,9 +47,9 @@ void mutable_then_shared(void) {
 void write_while_borrowed(void) {
   int x = 0;
   int *a = &x;
-  // CHECK: rfc0002-borrows.c:[[@LINE+1]]:3: error: cannot assign to 'x' while it is borrowed [weavec::conflicting-borrow]
+  // EXCL: rfc0002-borrows.c:[[@LINE+1]]:3: error: cannot assign to 'x' while it is borrowed [weavec::conflicting-borrow]
   x = 1;
-  // CHECK: rfc0002-borrows.c:[[@LINE-3]]:12: note: borrowed by 'a' here
+  // EXCL: rfc0002-borrows.c:[[@LINE-3]]:12: note: borrowed by 'a' here
   use(a);
 }
 
@@ -69,7 +73,7 @@ void temporary_borrows(void) {
   peek(&x);
   poke(&x); // fine: the borrow for peek ended with the call
   int *a = &x;
-  // CHECK: rfc0002-borrows.c:[[@LINE+1]]:3: error: cannot borrow 'x' as mutable because it is already borrowed [weavec::conflicting-borrow]
+  // EXCL: rfc0002-borrows.c:[[@LINE+1]]:3: error: cannot borrow 'x' as mutable because it is already borrowed [weavec::conflicting-borrow]
   poke(&x);
   use(a);
 }
@@ -77,10 +81,19 @@ void temporary_borrows(void) {
 void array_decay(void) {
   int a[4];
   int *p = a;
-  // CHECK: rfc0002-borrows.c:[[@LINE+1]]:12: error: cannot borrow 'a[*]' as mutable because it is already borrowed [weavec::conflicting-borrow]
+  // EXCL: rfc0002-borrows.c:[[@LINE+1]]:12: error: cannot borrow 'a[*]' as mutable because it is already borrowed [weavec::conflicting-borrow]
   int *q = &a[1];
   use(p);
   use(q);
+}
+
+// A loan whose holder is still live when the object is freed conflicts in
+// both modes (RFC 0006, *Loans end at the last use of their holder*).
+void free_before_last_use(struct node *WEAVEC_OWNED n) {
+  int *a = &n->v;
+  // CHECK: rfc0002-borrows.c:[[@LINE+1]]:3: error: cannot free 'n' while it is borrowed [weavec::conflicting-borrow]
+  free(n);
+  *a = 1;
 }
 
 // Clean: shared borrows coexist, writes through the borrow are fine, and
@@ -125,4 +138,33 @@ void holder_per_iteration(int n) {
   }
 }
 
-// CHECK: 8 errors generated.
+// Clean in both modes: the loan ends at the holder's last use, not at the
+// end of its scope (RFC 0006).
+void holder_dead(void) {
+  int x = 0;
+  int *a = &x;
+  use(a);
+  int *b = &x; // `a` is dead: no conflict even when exclusive
+  use(b);
+  x = 1; // `b` is dead too
+}
+
+void free_after_last_use(struct node *WEAVEC_OWNED n) {
+  int *a = &n->v;
+  *a = 1;
+  free(n);
+}
+
+// Clean by default: a view of a buffer that another routine writes is the
+// ordinary shape of C string handling (RFC 0006, *Bugs deliberately not
+// caught*). Exclusivity rejects it.
+void view_then_write(void) {
+  int buf[8];
+  int *p = buf;
+  // EXCL: rfc0002-borrows.c:[[@LINE+1]]:3: error: cannot borrow 'buf[*]' as mutable because it is already borrowed [weavec::conflicting-borrow]
+  poke(buf);
+  use(p);
+}
+
+// LAX: 3 errors generated.
+// EXCL: 10 errors generated.

@@ -178,8 +178,16 @@ static void describe(llvm::raw_ostream &os,
     first = false;
   }
   os << "}";
-  if (summary.reallocLike)
-    os << " realloc-like";
+  for (const auto &[outcome, effects] : summary.outcomes) {
+    os << " outcome " << core::toString(outcome) << "{";
+    first = true;
+    for (const auto &[path, effect] : effects) {
+      os << (first ? "" : ", ") << core::printSummaryPath(path, namer) << ":"
+         << (effect.freed ? " freed" : "") << (effect.moved ? " moved" : "");
+      first = false;
+    }
+    os << "}";
+  }
   os << "\n";
 }
 
