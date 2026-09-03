@@ -21,12 +21,16 @@
       "cJSON": {
         "units": 1,
         "clang_errors": 0,
-        "by_id": {}
+        "by_id": {
+          "leak": 1
+        }
       },
       "jsmn": {
         "units": 2,
         "clang_errors": 0,
-        "by_id": {}
+        "by_id": {
+          "leak": 6
+        }
       },
       "log.c": {
         "units": 1,
@@ -54,14 +58,16 @@
         "units": 1,
         "clang_errors": 0,
         "by_id": {
-          "double-free": 2
+          "double-free": 2,
+          "leak": 1
         }
       },
       "zlib": {
         "units": 1,
         "clang_errors": 0,
         "by_id": {
-          "annotation-required": 2
+          "annotation-required": 2,
+          "leak": 4
         }
       },
       "lua": {
@@ -69,8 +75,9 @@
         "clang_errors": 0,
         "by_id": {
           "annotation-required": 1,
-          "conflicting-borrow": 1,
+          "conflicting-borrow": 4,
           "double-free": 4,
+          "leak": 5,
           "lifetime-too-short": 10,
           "use-after-free": 5
         }
@@ -79,14 +86,16 @@
         "units": 1,
         "clang_errors": 0,
         "by_id": {
-          "annotation-required": 1
+          "annotation-required": 1,
+          "leak": 1
         }
       }
     },
     "totals": {
       "annotation-required": 9,
-      "conflicting-borrow": 1,
+      "conflicting-borrow": 4,
       "double-free": 6,
+      "leak": 18,
       "lifetime-too-short": 10,
       "unsafe-operation": 1,
       "use-after-free": 5

@@ -13,6 +13,7 @@ weavec_add_library(
           Ownership.cpp
           Place.cpp
           Raw.cpp
+          Resource.cpp
           Scc.cpp
           SourceLocation.cpp
           Summary.cpp

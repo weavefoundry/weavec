@@ -18,6 +18,7 @@ void annotated(struct buffer *WEAVEC_OWNED owned,
   use(owned);
   use((void *)shared);
   use(exclusive);
+  free(owned); /* an owned parameter must be released (RFC 0007) */
 }
 
 // CHECK: ownership-annotations.c:[[@LINE+2]]:17: warning: pointer parameter 'p' of 'reads' is inferred WEAVEC_BORROWED; add the annotation to its declaration [weavec::annotation-required]

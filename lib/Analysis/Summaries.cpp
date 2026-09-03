@@ -17,6 +17,7 @@
 
 #include "llvm/ADT/STLExtras.h"
 
+#include <string>
 #include <utility>
 
 using namespace clang;
@@ -131,9 +132,12 @@ static void applyAnnotations(core::FunctionSummary &summary,
     const AnnotationSet &set = params[i];
     const core::SummaryPath root = core::SummaryPath::param(i);
     if (set.owned) {
-      // Whatever happens to a consumed object is the callee's business.
+      // Whatever happens to a consumed object is the callee's business. The
+      // body's release family survives so `xfree(fopen(...))` is reported.
+      const std::string family = summary.effectOf(root).family;
       eraseRoot(i, /*includeStores=*/true);
-      summary.addEffect(root, core::PlaceEffect{.moved = true});
+      summary.addEffect(root,
+                        core::PlaceEffect{.moved = true, .family = family});
     } else if (set.mutBorrowed) {
       eraseRoot(i, /*includeStores=*/false);
       summary.addEffect(root.deref(), core::PlaceEffect{.written = true});
@@ -150,13 +154,14 @@ static void applyAnnotations(core::FunctionSummary &summary,
   if (!shape.pointerResult)
     return;
   if (result.owned) {
+    const std::string family = summary.freshReturnFamily();
     summary.returns.clear();
-    summary.addReturn(core::ValueSource::fresh());
+    summary.addReturn(core::ValueSource::fresh(family));
   } else if (result.borrowed || result.mutBorrowed) {
     // The signature promises a borrow: a fresh allocation or a raw value
     // the body may return is a reported mismatch (or an assertion inside an
     // unsafe region), and callers must trust the annotation.
-    summary.returns.erase(core::ValueSource::fresh());
+    summary.eraseFreshReturns();
     summary.returns.erase(core::ValueSource::raw());
     if (summary.returns.empty())
       summary.addReturn(core::ValueSource::unknown());

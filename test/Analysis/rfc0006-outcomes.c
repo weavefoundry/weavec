@@ -19,7 +19,7 @@ static int try_take(struct node *n, int c) {
   return -1;
 }
 // DUMP: function 'try_take':
-// DUMP: summary: n: freed; stores{} returns{} outcome zero{n: freed} outcome negative{}
+// DUMP: summary: n: freed(free); stores{} returns{} outcome zero{n: freed(free)} outcome negative{}
 
 // Consumes `p` only when it returns non-null (a `realloc` wrapper).
 static char *grow(char *p, size_t n) {
@@ -29,9 +29,9 @@ static char *grow(char *p, size_t n) {
   return q;
 }
 // DUMP: function 'grow':
-// DUMP: summary: p: moved; stores{} returns{fresh, null} outcome null{} outcome nonnull{p: moved}
+// DUMP: summary: p: moved(free); stores{} returns{fresh(free), null} outcome null{} outcome nonnull{p: moved(free)}
 // DUMP: function 'guarded':
-// DUMP: summary: n: freed; stores{} returns{}
+// DUMP: summary: n: freed(free); stores{} returns{}
 
 // Clean: the test selects the class that did not consume.
 void guarded(struct node *n, int c) {
@@ -85,7 +85,7 @@ static char *resize(struct table *t, size_t n) {
   return realloc(t->array, n);
 }
 // DUMP: function 'resize':
-// DUMP: summary: t->array: read|moved; t->n: read; stores{} returns{fresh, copy t->array, null} outcome null{} outcome nonnull{t->array: moved}
+// DUMP: summary: t->array: read|moved(free); t->n: read; stores{} returns{fresh(free), copy t->array, null} outcome null{} outcome nonnull{t->array: moved(free)}
 
 void resized(struct table *t, size_t n) {
   char *na = resize(t, n);
@@ -113,15 +113,18 @@ void realloc_untested(char *p) {
   char *q = realloc(p, 16);
   // CHECK: rfc0006-outcomes.c:[[@LINE+1]]:3: error: use of 'p' after it was moved [weavec::use-after-move]
   free(p);
+  // CHECK: rfc0006-outcomes.c:[[@LINE+1]]:3: warning: 'q' is leaked [weavec::leak]
   use(q);
 }
 
 void result_overwritten(char *p) {
   char *q = realloc(p, 8);
+  // CHECK: rfc0006-outcomes.c:[[@LINE+1]]:3: warning: 'q' is leaked: it is overwritten without being released [weavec::leak]
   q = malloc(2);
+  // CHECK: rfc0006-outcomes.c:[[@LINE+1]]:3: warning: 'q' is leaked [weavec::leak]
   if (q == NULL)
     // CHECK: rfc0006-outcomes.c:[[@LINE+1]]:5: error: use of 'p' after it was moved [weavec::use-after-move]
     free(p);
 }
 
-// CHECK: 4 errors generated.
+// CHECK: 3 warnings and 4 errors generated.

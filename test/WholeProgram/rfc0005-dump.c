@@ -13,10 +13,10 @@
 // CHECK: function 'release':
 // CHECK-NEXT: places:
 // CHECK: program:
-// CHECK-NEXT: function 'node_free': param 0: freed; param 0 *.name: freed; stores{} returns{}
-// CHECK-NEXT: function 'node_new': stores{} returns{fresh}
+// CHECK-NEXT: function 'node_free': param 0: freed(free); param 0 *.name: freed(free); stores{} returns{}
+// CHECK-NEXT: function 'node_new': stores{} returns{fresh(free)}
 // CHECK-NEXT: function 'node_set_name': param 0 *.name: written; stores{param 0 *.name = copy param 1} returns{}
 // CHECK-NEXT: function 'node_vp': stores{} returns{borrow param 0 *.v}
-// CHECK-NEXT: function 'release': param 0: freed; stores{} returns{}
+// CHECK-NEXT: function 'release': param 0: freed(free); stores{} returns{}
 
 void release(struct node *n) { node_free(n); }

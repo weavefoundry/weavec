@@ -83,6 +83,6 @@ void nested(uintptr_t x) {
 // The dump shows the raw component of the state and a `raw` kind.
 // DUMP-LABEL: function 'whole_function' (unsafe):
 // DUMP-NEXT: places: r (param, raw)
-// DUMP: exit: moved{r@[[@LINE-60]]:3 freed} loans{} aliases{} raw{r@[[@LINE-62]]:{{[0-9]+}} declared}
+// DUMP: exit: moved{r@[[@LINE-60]]:3 freed(free)} loans{} aliases{} raw{r@[[@LINE-62]]:{{[0-9]+}} declared} owned{}
 // DUMP-LABEL: function 'raw_escapes':
 // DUMP-NEXT: places: x (param) n (local, raw)

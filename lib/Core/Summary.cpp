@@ -9,6 +9,9 @@
 #include "weavec/Core/Summary.h"
 
 #include <algorithm>
+#include <iterator>
+#include <map>
+#include <set>
 #include <utility>
 
 namespace weavec::core {
@@ -80,11 +83,18 @@ std::string SummaryPath::toString(std::string_view rootName) const {
   return name;
 }
 
-void PlaceEffect::join(const PlaceEffect &other) noexcept {
+void PlaceEffect::join(const PlaceEffect &other) {
+  const bool wasConsumed = consumed();
   read = read || other.read;
   written = written || other.written;
   freed = freed || other.freed;
   moved = moved || other.moved;
+  if (!other.consumed())
+    return;
+  if (!wasConsumed)
+    family = other.family;
+  else if (family != other.family)
+    family.clear();
 }
 
 PlaceEffect FunctionSummary::effectOf(const SummaryPath &path) const {
@@ -92,10 +102,10 @@ PlaceEffect FunctionSummary::effectOf(const SummaryPath &path) const {
   return it == effects.end() ? PlaceEffect{} : it->second;
 }
 
-void FunctionSummary::addEffect(const SummaryPath &path, PlaceEffect effect) {
+void FunctionSummary::addEffect(SummaryPath path, const PlaceEffect &effect) {
   if (effect.empty())
     return;
-  effects[path].join(effect);
+  effects[std::move(path)].join(effect);
 }
 
 bool FunctionSummary::consumes(std::uint32_t param) const {
@@ -175,8 +185,36 @@ OwnershipKind FunctionSummary::inferredReturnKind() const {
   return result == OwnershipKind::Raw ? OwnershipKind::Unknown : result;
 }
 
+bool FunctionSummary::returnsFresh() const noexcept {
+  return std::ranges::any_of(returns, &ValueSource::isFresh);
+}
+
+bool FunctionSummary::returnsOnlyFresh() const noexcept {
+  return returnsFresh() &&
+         std::ranges::all_of(returns, [](const ValueSource &source) {
+           return source.isFresh() || source.kind == ValueSource::Kind::Null;
+         });
+}
+
+std::string FunctionSummary::freshReturnFamily() const {
+  std::optional<std::string> family;
+  for (const ValueSource &source : returns) {
+    if (!source.isFresh())
+      continue;
+    if (family && *family != source.family)
+      return {};
+    family = source.family;
+  }
+  return family.value_or(std::string{});
+}
+
+void FunctionSummary::eraseFreshReturns() {
+  std::erase_if(returns,
+                [](const ValueSource &source) { return source.isFresh(); });
+}
+
 void FunctionSummary::addOutcome(Outcome outcome, const SummaryPath &path,
-                                 PlaceEffect effect) {
+                                 const PlaceEffect &effect) {
   OutcomeEffects &perClass = outcomes[outcome];
   if (!effect.empty())
     perClass[path].join(effect);
@@ -201,6 +239,7 @@ void FunctionSummary::join(const FunctionSummary &other) {
   returns.insert(other.returns.begin(), other.returns.end());
   if (wasEmpty) {
     outcomes = other.outcomes;
+    nullOn = other.nullOn;
     return;
   }
   // Otherwise outcome knowledge is only as good as the least informed
@@ -208,8 +247,33 @@ void FunctionSummary::join(const FunctionSummary &other) {
   // with any of its effects, which the per-class maps cannot express.
   if (outcomes.empty() || other.outcomes.empty()) {
     outcomes.clear();
+    nullOn.clear();
     return;
   }
+  // Null facts are must-facts: a class both sides may return keeps what
+  // both agree on; a class only one side returns keeps that side's.
+  std::map<Outcome, std::set<SummaryPath>> joinedNull;
+  for (const auto &[outcome, theirs] : other.outcomes) {
+    const auto theirNull = other.nullOn.find(outcome);
+    if (!outcomes.contains(outcome)) {
+      if (theirNull != other.nullOn.end())
+        joinedNull[outcome] = theirNull->second;
+      continue;
+    }
+    const auto mineNull = nullOn.find(outcome);
+    if (mineNull == nullOn.end() || theirNull == other.nullOn.end())
+      continue;
+    std::set<SummaryPath> both;
+    std::ranges::set_intersection(mineNull->second, theirNull->second,
+                                  std::inserter(both, both.end()));
+    if (!both.empty())
+      joinedNull[outcome] = std::move(both);
+  }
+  for (const auto &[outcome, paths] : nullOn) {
+    if (!other.outcomes.contains(outcome))
+      joinedNull[outcome] = paths;
+  }
+  nullOn = std::move(joinedNull);
   for (const auto &[outcome, theirs] : other.outcomes) {
     OutcomeEffects &mine = outcomes[outcome];
     for (const auto &[path, effect] : theirs)
@@ -260,6 +324,12 @@ FunctionSummary remapGlobals(const FunctionSummary &summary,
     for (const auto &[path, effect] : effects) {
       if (const auto mapped = remapPath(path))
         result.addOutcome(outcome, *mapped, effect);
+    }
+  }
+  for (const auto &[outcome, paths] : summary.nullOn) {
+    for (const SummaryPath &path : paths) {
+      if (const auto mapped = remapPath(path))
+        result.nullOn[outcome].insert(*mapped);
     }
   }
   return result;

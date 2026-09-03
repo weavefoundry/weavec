@@ -47,12 +47,21 @@ inline constexpr std::string_view UnsafeOperation = "unsafe-operation";
 inline constexpr std::string_view AnnotationRequired = "annotation-required";
 inline constexpr std::string_view AnnotationMismatch = "annotation-mismatch";
 inline constexpr std::string_view InvalidAnnotation = "invalid-annotation";
+/// RFC 0007: an owned resource whose every holder went out of reach without
+/// it being released, moved, stored, returned or handed to unknown code.
+inline constexpr std::string_view Leak = "leak";
+/// RFC 0007: a resource released (or moved into a consuming parameter) by a
+/// function of a different release family than the one that produced it.
+inline constexpr std::string_view MismatchedRelease = "mismatched-release";
 
 /// Every id, for validating user input (`-Wweavec-<id>`).
-inline constexpr std::array<std::string_view, 9> All{
-    UseAfterFree,       DoubleFree,         UseAfterMove,
-    ConflictingBorrow,  LifetimeTooShort,   UnsafeOperation,
-    AnnotationRequired, AnnotationMismatch, InvalidAnnotation,
+inline constexpr std::array<std::string_view, 11> All{
+    UseAfterFree,       DoubleFree,
+    UseAfterMove,       ConflictingBorrow,
+    LifetimeTooShort,   UnsafeOperation,
+    AnnotationRequired, AnnotationMismatch,
+    InvalidAnnotation,  Leak,
+    MismatchedRelease,
 };
 
 [[nodiscard]] constexpr bool isKnown(std::string_view id) noexcept {
@@ -61,10 +70,10 @@ inline constexpr std::array<std::string_view, 9> All{
 }
 
 /// The severity the checker emits `id` with unless the user overrides it
-/// (RFC 0005, *Flags*): `annotation-required` and `invalid-annotation` are
-/// warnings, everything else is an error.
+/// (RFC 0005, *Flags*): `annotation-required`, `invalid-annotation` and
+/// `leak` (RFC 0007) are warnings, everything else is an error.
 [[nodiscard]] constexpr bool isWarningByDefault(std::string_view id) noexcept {
-  return id == AnnotationRequired || id == InvalidAnnotation;
+  return id == AnnotationRequired || id == InvalidAnnotation || id == Leak;
 }
 } // namespace diag
 

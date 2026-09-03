@@ -44,6 +44,13 @@ struct CallEffects {
   /// Arguments borrowed for the duration of the call, with the kind of
   /// borrow. Consumed arguments are not listed.
   std::vector<std::pair<unsigned, core::BorrowKind>> borrowedArgs;
+  /// Every argument position whose declared parameter is a pointer, in
+  /// order (RFC 0007: one that is neither consumed nor borrowed may be
+  /// retained by a callee the checker cannot see into).
+  std::vector<unsigned> pointerArgs;
+  /// The number of declared parameters; arguments at or beyond it are
+  /// variadic and outside what a summary can describe.
+  unsigned declaredParams = 0;
 
   [[nodiscard]] bool consumes(unsigned arg) const noexcept;
   /// True if the consumed argument is *released* rather than moved to

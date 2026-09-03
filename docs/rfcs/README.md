@@ -52,6 +52,7 @@ decision is a new RFC that supersedes the relevant section.
 | [0003](0003-signature-inference.md)      | Signature inference                | Implemented |
 | [0004](0004-unsafe-boundaries.md)        | Unsafe boundaries: raw pointers, unsafe regions and indirect calls | Implemented |
 | [0005](0005-whole-program-analysis.md)   | Whole-program analysis: cross-TU summaries and the compiler driver | Implemented |
-| [0006](0006-precision.md)                | Precision: non-lexical loans, condition facts, element places and outcome-conditional summaries | Accepted |
+| [0006](0006-precision.md)                | Precision: non-lexical loans, condition facts, element places and outcome-conditional summaries | Implemented |
+| [0007](0007-resource-lifecycle.md)       | Resource lifecycle: leaks, release families and owned fields | Accepted |
 
 The [roadmap](../roadmap.md) links each milestone to the RFCs that define it.

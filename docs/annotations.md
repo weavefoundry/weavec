@@ -8,7 +8,7 @@ portable C.
 
 | Macro             | Applies to                     | Meaning                                                                  |
 | ----------------- | ------------------------------ | ------------------------------------------------------------------------ |
-| `WEAVEC_OWNED`    | pointer parameters, returns, variables, fields | The pointer uniquely owns its referent and must release it exactly once. |
+| `WEAVEC_OWNED`    | pointer parameters, returns, variables, fields | The pointer uniquely owns its referent and must release it exactly once. On a struct field: the field owns its referent whenever the struct is live, so freeing the struct without releasing, moving or nulling the field first is a `leak` ([RFC 0007](rfcs/0007-resource-lifecycle.md)). |
 | `WEAVEC_BORROWED` | pointer parameters, returns, variables, fields | Shared, read-only borrow. The referent outlives the borrow.              |
 | `WEAVEC_MUT`      | pointer parameters, returns, variables, fields | Exclusive, mutable borrow.                                               |
 | `WEAVEC_RAW`      | pointer parameters, returns, variables, fields, function-pointer types | No guarantee at all: the checker tracks the pointer but any dereference, release or transfer of ownership must happen inside a `WEAVEC_UNSAFE` region. |
@@ -113,6 +113,8 @@ Every WeaveC diagnostic ends with a stable identifier in brackets, e.g.
 | `conflicting-borrow`  | error    | An object is freed or moved while a live pointer into it exists: `cannot free '<p>' while it is borrowed`, `cannot move '<p>' while it is borrowed`. Note: `borrowed by '<q>' here`. A pointer is *live* until its last use ([RFC 0006](rfcs/0006-precision.md)). With `--exclusive-borrows` (`-fweavec-exclusive-borrows`), RFC 0001's exclusivity rules are enforced too: `cannot borrow '<x>' as mutable because it is already borrowed`, `... as shared because it is already mutably borrowed`, `cannot assign to '<x>' while it is borrowed`; the note names the other pointer. |
 | `lifetime-too-short`  | error    | A pointer may outlive what it points to: `'<p>' may outlive '<x>', which it points to` (stored into an outer scope, a global or through a parameter) or `returned pointer may outlive '<x>', which it points to`. Notes: where `<x>` is declared and where it goes out of scope. |
 | `unsafe-operation`    | error    | A raw operation outside a `WEAVEC_UNSAFE` region ([RFC 0004](rfcs/0004-unsafe-boundaries.md)): `dereference of raw pointer '<p>' outside an unsafe region`, `'<f>' dereferences raw pointer '<p>' ...` (also `releases`, `takes ownership of`), `raw pointer '<p>' is assigned to '<q>', which is declared WEAVEC_OWNED, outside an unsafe region` (any safe annotation), `raw pointer is returned from a function whose return type is annotated WEAVEC_OWNED outside an unsafe region`, and with `--strict-externs`, `unchecked call to '<f>' outside an unsafe region` / `unchecked call through '<fp>' ...`. Notes: why the pointer is raw (`'<p>' is raw: cast from an integer here`, `declared WEAVEC_RAW here`, `loaded through raw pointer '<q>' here`, `handed out by '<f>' here`, `returned by a call into unchecked code ('<f>') here`, each optionally `(through '<alias>')`) and `move this operation into a WEAVEC_UNSAFE block or function, or assert the pointer's ownership first`. |
+| `mismatched-release`  | error    | A resource is released (or moved into a consuming parameter) by a function of another release family ([RFC 0007](rfcs/0007-resource-lifecycle.md)): `'<p>' is released with 'free' but must be released with 'fclose'`. Both names are family names, the canonical releaser of the allocator (`malloc`/`strdup`/`realloc` → `free`, `fopen` → `fclose`, `opendir` → `closedir`, ...), even when the release went through a wrapper defined in the program. Note: `allocated here`. |
+| `leak`                | warning  | An owned resource is lost without being released, moved or stored where the caller can see it ([RFC 0007](rfcs/0007-resource-lifecycle.md)): `'<p>' is leaked` at the point its last holder goes out of reach (a `return`, a scope end, the statement after its last use); `'<p>' is leaked: it is overwritten without being released` at the assignment; `'<b>->p' is leaked when '<b>' is freed` (also `'*a' is leaked when 'a' is freed`) at the release of a container whose `WEAVEC_OWNED` field, or a field this function stored an owned value into, still owns something; `result of '<f>' is leaked` at a discarded allocating call. Notes: `allocated here`, or `'<p>' is declared WEAVEC_OWNED here` for a parameter or field. Not reported: pointers handed to callees the checker cannot follow or cast to integers (they are *escaped*), resources kept by globals or `static` locals when the function returns, blocks that end in a `noreturn` call, fields of an object this function allocated, and the old block after a failed in-place `realloc`. |
 | `annotation-mismatch` | error    | A definition contradicts its own annotation: `'<p>' is annotated WEAVEC_BORROWED but is freed here` (also `WEAVEC_MUT`; also `moved`, `written through`; also `... but '<p>->f' is freed here` for a path under the parameter), `function returns a borrow but its return type is annotated WEAVEC_OWNED`, `function returns a fresh allocation but its return type is annotated WEAVEC_BORROWED` (or `WEAVEC_MUT`). Notes: `'<p>' is annotated here` / `annotated here`; `'<q>' is a copy of '<p>'` when through an alias. Callers keep trusting the annotation. |
 | `annotation-required` | warning  | **On by default:** `call to '<f>' is not checked: it has no definition or ownership annotations here`, once per callee per program (RFC 0005: a definition in any unit analysed together with this one counts; alone, the unit is the program), for a callee with pointer parameters or a pointer result that has no body in the program, no annotations and no libc entry; callees from system headers are exempt. Notes: `'<f>' is declared here`, `annotate its pointer parameters with WEAVEC_OWNED, WEAVEC_BORROWED, WEAVEC_MUT or WEAVEC_RAW, or define it in this program`. Likewise `call through '<fp>' is not checked: its function type has no ownership annotations and no function of that type has its address taken in this program`, once per function-pointer type. With `--strict-externs` these calls are `unsafe-operation` errors instead (at every call site, including callees from system headers), and their pointer result is raw. **With `--report-unannotated`:** every exported (non-`static`) definition additionally gets `pointer parameter '<p>' of '<f>' is inferred WEAVEC_OWNED; add the annotation to its declaration` (or `WEAVEC_BORROWED` / `WEAVEC_MUT`; `return value of '<f>' is inferred ...`) with a fix-it that inserts the annotation, or `pointer parameter '<p>' has no inferable ownership; annotate it with WEAVEC_OWNED, WEAVEC_BORROWED or WEAVEC_MUT` when the body gives no evidence. |
 | `invalid-annotation`  | warning  | A `weavec.*` annotation WeaveC does not recognise.                    |
@@ -122,8 +124,9 @@ The identifiers are defined in `include/weavec/Core/Diagnostic.h`
 them are specified by [RFC 0001](rfcs/0001-ownership-model.md),
 [RFC 0002](rfcs/0002-intraprocedural-checking.md),
 [RFC 0003](rfcs/0003-signature-inference.md),
-[RFC 0004](rfcs/0004-unsafe-boundaries.md) and
-[RFC 0006](rfcs/0006-precision.md).
+[RFC 0004](rfcs/0004-unsafe-boundaries.md),
+[RFC 0006](rfcs/0006-precision.md) and
+[RFC 0007](rfcs/0007-resource-lifecycle.md).
 
 Fix-its are emitted through Clang, so `-fdiagnostics-parseable-fixits` and
 editor integrations that apply Clang fix-its work unchanged:
@@ -154,6 +157,23 @@ buffer.c:12:27: warning: pointer parameter 'b' of 'buffer_free' is inferred WEAV
   wrappers and through recursion). `realloc(p, n)` moves `p`; on the path
   where the result is tested null (`if (!q)`, `q == NULL`, ...), `p` is
   valid again.
+- **Resource lifecycle** ([RFC 0007](rfcs/0007-resource-lifecycle.md)):
+  every ownership source above puts a resource on the function's books,
+  with the *release family* of its allocator (`free`, `fclose`, `closedir`,
+  `freeaddrinfo`, `munmap`, `pclose`, `regfree`, `dlclose`, ...; a
+  `WEAVEC_OWNED` parameter's family is unknown). It leaves the books when
+  it is released by a function of the same family, moved into an owning
+  parameter, returned, stored into caller-visible memory (`*out`, `b->data`,
+  a global), copied into a struct that is returned or stored, handed to a
+  callee the checker cannot follow, or cast to an integer. A resource still
+  on the books when its last holder dies is a `leak`; a release by another
+  family is a `mismatched-release`. Copies share one record (`q = p; ...
+  use(q);` reports `q` once), a callee summarised from its body that keeps
+  nothing is trusted not to retain the argument, and the null edge of a
+  test of the holder (`if (!p) return -1;`) owns nothing. A constructor
+  that reports failure through its result (`int make(char **out) { *out =
+  malloc(n); return *out != NULL; }`) is summarised with the classes on
+  which `*out` is null, so `if (!make(&s)) return;` is clean.
 - **Outcome-conditional consumption** ([RFC 0006](rfcs/0006-precision.md)):
   a callee that frees or moves its argument only on the paths that return
   some class of value (`NULL` vs non-null, `0` vs positive vs negative) is
@@ -247,8 +267,9 @@ buffer.c:12:27: warning: pointer parameter 'b' of 'buffer_free' is inferred WEAV
   pointer result is raw.
 
 `weavec --dump-analysis file.c -- <flags>` prints the inferred places,
-lifetimes, exit state (including which places hold raw pointers, and why)
-and summary of every analysed function; with `--whole-program` it ends with
+lifetimes, exit state (including which places hold raw pointers, and why,
+and which hold an owned resource, with its release family) and summary of
+every analysed function; with `--whole-program` it ends with
 the program database (every exported summary). `weavec-cc` writes each
 unit's exported summaries to `<object>.weavec` in the same text form.
 
@@ -258,7 +279,7 @@ unit's exported summaries to `<object>.weavec` in the same text form.
 
 | Flag                          | Effect                                                                                            |
 | ----------------------------- | ------------------------------------------------------------------------------------------------- |
-| `-Wno-weavec-<id>`            | Disable a diagnostic whose default severity is *warning* (`annotation-required`, `invalid-annotation`). Refused for an error. |
+| `-Wno-weavec-<id>`            | Disable a diagnostic whose default severity is *warning* (`annotation-required`, `invalid-annotation`, `leak`). Refused for an error. |
 | `-Wweavec-<id>`               | Re-enable it.                                                                                     |
 | `-Wno-error=weavec-<id>`      | Report an error as a warning (the migration path for a codebase that wants to build while it works through the reports). |
 | `-Werror=weavec-<id>`         | Report a warning as an error.                                                                     |

@@ -46,8 +46,9 @@ tools.
 | `Borrow.h`         | `Loan` (place, kind, lifetime, holder) and `BorrowState`: may this borrow be created; may this place be moved or mutated; `expireHolders` drops the loans of holders a predicate declares dead (RFC 0006 liveness). |
 | `Moves.h`          | `MoveTracker`: which places are currently moved-out/freed (and through which alias), each with an `ElementWitness` (whole / constant / variable / unknown) saying which element of an `a[*]` place was named (RFC 0006); a use is only reported when the witnesses match; conservative `join`. |
 | `Raw.h`            | `RawTracker`: which places currently hold a raw pointer, why (`RawReason`: integer cast, `WEAVEC_RAW` declaration, loaded through a raw pointer, callee result, unchecked callee) and through which alias; union at joins. |
-| `AnalysisState.h`  | The dataflow state: moves, loans, aliases, raw pointers, inferred kinds, the `PendingOutcome`s of calls whose consumption depends on a not-yet-tested result, and the flow-sensitive `consumed` record that feeds outcome classes at `return` (RFC 0006), with component-wise `join`. |
-| `Summary.h`        | `FunctionSummary`: what a function does to its interface. `SummaryPath` (`param(i)`/`global(g)` plus deref/field/index steps), `PlaceEffect` (read/written/freed/moved), `Store` (value written into caller-visible memory), `ValueSource` (fresh/copy/interior copy/borrow/null/raw/unknown), `outcomes` (per `Outcome` class — `Null`, `NonNull`, `Zero`, `Positive`, `Negative` — the consumption that holds on the paths returning it; RFC 0006), with `join`, `remapGlobals` and the derived `consumes`/`consumesUnconditionally`/`borrowKind`/`inferredKind` queries. |
+| `Resource.h`       | `ResourceTracker`: which places hold an owned resource this function is responsible for (`ResourceRecord`: origin — allocated or declared `WEAVEC_OWNED` —, location, release family, escaped), plus the places known to hold null; records join by union, null facts by intersection (RFC 0007). |
+| `AnalysisState.h`  | The dataflow state: moves, loans, aliases, raw pointers, resources, inferred kinds, the `PendingOutcome`s of calls whose consumption (and whose null stores, RFC 0007) depend on a not-yet-tested result, and the flow-sensitive `consumed` record that feeds outcome classes at `return` (RFC 0006), with component-wise `join`. |
+| `Summary.h`        | `FunctionSummary`: what a function does to its interface. `SummaryPath` (`param(i)`/`global(g)` plus deref/field/index steps), `PlaceEffect` (read/written/freed/moved, with the release family of a consumption), `Store` (value written into caller-visible memory), `ValueSource` (fresh — with its release family —/copy/interior copy/borrow/null/raw/unknown), `outcomes` (per `Outcome` class — `Null`, `NonNull`, `Zero`, `Positive`, `Negative` — the consumption that holds on the paths returning it; RFC 0006), `nullOn` (per class, the caller places that are null; RFC 0007), with `join`, `remapGlobals` and the derived `consumes`/`consumesUnconditionally`/`borrowKind`/`inferredKind`/`freshReturnFamily` queries. |
 | `SummaryIO.h`      | The stable text form of a `FunctionSummary` (`summary` ... `end` records; RFC 0005): `printSummary`/`parseSummary` with callbacks that name and resolve globals, so the format is Clang-free and the on-disk sidecar format is defined here. |
 | `Scc.h`            | Tarjan's strongly connected components over an adjacency list, in reverse topological order; used for the call graph inside a unit and for the unit graph of a program. |
 | `Diagnostic.h`     | `Diagnostic`, stable ids in `diag::` (with `All`, `isKnown`, `isWarningByDefault`), `FixItHint`, `DiagnosticSink`, and an in-memory `DiagnosticCollector`. |
@@ -97,11 +98,15 @@ the frontend fills in so it can report at the exact original position.
   state with what the condition says: pointer equality unites or separates
   aliases, and a test on a call result selects outcome classes and
   reinstates what the callee consumed only in the other classes. While
-  running it applies callee summaries at every call (element-aware, with
-  `written` effects forgetting the facts below the written place), records
-  its own effects, stores, returns and per-class consumption, checks them
-  against the function's annotations, tracks raw pointers and reports raw
-  operations, and produces the function's `FunctionSummary` at exit.
+  running it applies callee summaries at every call (element-aware, deepest
+  consumed path first, with `written` effects forgetting the facts below
+  the written place), records its own effects, stores, returns and
+  per-class consumption, checks them against the function's annotations,
+  tracks raw pointers and reports raw operations, keeps the books of owned
+  resources (acquired at allocations and `WEAVEC_OWNED` declarations;
+  released, moved, escaped or lost — the leak and release-family checks of
+  RFC 0007 run where a holder dies, on each CFG edge, at overwrites and at
+  container frees), and produces the function's `FunctionSummary` at exit.
   `WEAVEC_UNSAFE` regions are analysed like any other code; the pass only
   suppresses what it would report inside them. `FunctionAnalysis.h` is the
   per-function entry point; `AnalysisOptions::exclusiveBorrows` switches
@@ -122,9 +127,10 @@ dataflow by [RFC 0002](rfcs/0002-intraprocedural-checking.md), summaries by
 [RFC 0003](rfcs/0003-signature-inference.md), raw pointers, unsafe
 regions and indirect calls by
 [RFC 0004](rfcs/0004-unsafe-boundaries.md), cross-unit analysis by
-[RFC 0005](rfcs/0005-whole-program-analysis.md), and non-lexical loans,
+[RFC 0005](rfcs/0005-whole-program-analysis.md), non-lexical loans,
 condition facts, element witnesses and outcome-conditional summaries by
-[RFC 0006](rfcs/0006-precision.md); each RFC's
+[RFC 0006](rfcs/0006-precision.md), and leaks, release families and owned
+fields by [RFC 0007](rfcs/0007-resource-lifecycle.md); each RFC's
 *Implementation notes* record where the code refines the design.
 
 ## `weavec::Frontend` — Clang integration
@@ -155,7 +161,7 @@ condition facts, element witnesses and outcome-conditional summaries by
   `CompilationDatabaseUnit` parses from a compilation database.
 - `Sidecar.h` reads and writes `foo.o.weavec`: the unit's exports, the cc1
   command that produced it and the diagnostics already reported, in a
-  line-oriented text format versioned by its `weavec-summaries 2` header.
+  line-oriented text format versioned by its `weavec-summaries 3` header.
 - `Driver.h` is `weavec-cc`: Clang's `driver::Driver` plans the jobs, each
   `-cc1` job runs in-process with WeaveC's consumer multiplexed beside
   Clang's, the compile step writes the sidecar, and the link step runs

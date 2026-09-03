@@ -28,6 +28,7 @@ void free_on_one_path_only(int c) {
     p = NULL;
   }
   use(p);
+  free(p); /* the other path's block; free(NULL) on the first (RFC 0007) */
 }
 
 void unrelated_pointers(int *a, int *b) {

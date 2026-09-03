@@ -157,17 +157,8 @@ static void describe(llvm::raw_ostream &os,
     return globals.nameOf(id).str();
   };
   for (const auto &[path, effect] : summary.effects) {
-    os << " " << core::printSummaryPath(path, namer) << ":";
-    const char *sep = " ";
-    for (const auto &[flag, label] :
-         {std::pair{effect.read, "read"}, std::pair{effect.written, "written"},
-          std::pair{effect.freed, "freed"}, std::pair{effect.moved, "moved"}}) {
-      if (!flag)
-        continue;
-      os << sep << label;
-      sep = ",";
-    }
-    os << ";";
+    os << " " << core::printSummaryPath(path, namer) << ": "
+       << core::printFlags(effect) << ";";
   }
   os << " stores{";
   bool first = true;
@@ -187,11 +178,21 @@ static void describe(llvm::raw_ostream &os,
     os << " outcome " << core::toString(outcome) << "{";
     first = true;
     for (const auto &[path, effect] : effects) {
-      os << (first ? "" : ", ") << core::printSummaryPath(path, namer) << ":"
-         << (effect.freed ? " freed" : "") << (effect.moved ? " moved" : "");
+      os << (first ? "" : ", ") << core::printSummaryPath(path, namer) << ": "
+         << core::printFlags(effect);
       first = false;
     }
     os << "}";
+    if (const auto nulls = summary.nullOn.find(outcome);
+        nulls != summary.nullOn.end()) {
+      os << " null{";
+      first = true;
+      for (const core::SummaryPath &path : nulls->second) {
+        os << (first ? "" : ", ") << core::printSummaryPath(path, namer);
+        first = false;
+      }
+      os << "}";
+    }
   }
   os << "\n";
 }

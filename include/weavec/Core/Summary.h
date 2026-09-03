@@ -108,6 +108,11 @@ struct PlaceEffect {
   bool freed = false;
   /// The owned resource at the path is moved to another owner.
   bool moved = false;
+  /// The release family of the consume (RFC 0007): the canonical releaser
+  /// the resource ends up with (`free`, `fclose`, ...); empty when unknown.
+  /// Meaningful only when `freed` or `moved` is set.
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
+  std::string family = {};
 
   [[nodiscard]] bool empty() const noexcept {
     return !read && !written && !freed && !moved;
@@ -118,8 +123,10 @@ struct PlaceEffect {
     return written || freed || moved;
   }
 
-  /// May-join: `or` of every flag.
-  void join(const PlaceEffect &other) noexcept;
+  /// May-join: `or` of every flag. The family survives only when both sides
+  /// agree (or only one consumes); a disagreement is "unknown", so joining
+  /// can only make the mismatch check report less.
+  void join(const PlaceEffect &other);
 
   friend bool operator==(const PlaceEffect &, const PlaceEffect &) = default;
 };
@@ -150,32 +157,50 @@ struct ValueSource {
   /// `return p + 1`). A pointer comparison cannot refute an interior copy
   /// (RFC 0006, *Alias exactness*).
   bool interior = false;
+  /// `Fresh` only: the release family the receiver must use (RFC 0007);
+  /// empty when unknown.
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
+  std::string family = {};
 
-  [[nodiscard]] static ValueSource fresh() {
-    return ValueSource{
-        .kind = Kind::Fresh, .path = std::nullopt, .interior = false};
+  [[nodiscard]] static ValueSource fresh(std::string family = {}) {
+    return ValueSource{.kind = Kind::Fresh,
+                       .path = std::nullopt,
+                       .interior = false,
+                       .family = std::move(family)};
   }
   [[nodiscard]] static ValueSource raw() {
-    return ValueSource{
-        .kind = Kind::Raw, .path = std::nullopt, .interior = false};
+    return ValueSource{.kind = Kind::Raw,
+                       .path = std::nullopt,
+                       .interior = false,
+                       .family = {}};
   }
   [[nodiscard]] static ValueSource copy(SummaryPath of) {
-    return ValueSource{
-        .kind = Kind::Copy, .path = std::move(of), .interior = false};
+    return ValueSource{.kind = Kind::Copy,
+                       .path = std::move(of),
+                       .interior = false,
+                       .family = {}};
   }
   [[nodiscard]] static ValueSource interiorCopy(SummaryPath of) {
-    return ValueSource{
-        .kind = Kind::Copy, .path = std::move(of), .interior = true};
+    return ValueSource{.kind = Kind::Copy,
+                       .path = std::move(of),
+                       .interior = true,
+                       .family = {}};
   }
   [[nodiscard]] static ValueSource borrow(SummaryPath of) {
-    return ValueSource{
-        .kind = Kind::Borrow, .path = std::move(of), .interior = false};
+    return ValueSource{.kind = Kind::Borrow,
+                       .path = std::move(of),
+                       .interior = false,
+                       .family = {}};
   }
   [[nodiscard]] static ValueSource null() {
-    return ValueSource{
-        .kind = Kind::Null, .path = std::nullopt, .interior = false};
+    return ValueSource{.kind = Kind::Null,
+                       .path = std::nullopt,
+                       .interior = false,
+                       .family = {}};
   }
   [[nodiscard]] static ValueSource unknown() { return ValueSource{}; }
+
+  [[nodiscard]] bool isFresh() const noexcept { return kind == Kind::Fresh; }
 
   friend bool operator==(const ValueSource &, const ValueSource &) = default;
   friend std::strong_ordering operator<=>(const ValueSource &,
@@ -226,17 +251,25 @@ public:
   /// map means nothing is known about outcomes. `effects` is always a
   /// superset of every class.
   std::map<Outcome, OutcomeEffects> outcomes;
+  /// Per outcome class, the caller places that on *every* path returning it
+  /// hold null or nothing this function stored there (RFC 0007,
+  /// *Per-outcome null stores*): `int make(char **out) { *out = malloc(n);
+  /// return *out != NULL; }` has `param 0 *` in class `zero`, and so does an
+  /// `init` whose `strm->state = fresh` store lies past its argument checks.
+  /// A class present here is also a key of `outcomes`.
+  std::map<Outcome, std::set<SummaryPath>> nullOn;
 
   /// The effect recorded for `path`, or an empty one.
   [[nodiscard]] PlaceEffect effectOf(const SummaryPath &path) const;
 
   /// Merges `effect` into the record for `path`.
-  void addEffect(const SummaryPath &path, PlaceEffect effect);
+  void addEffect(SummaryPath path, const PlaceEffect &effect);
   void addStore(Store store) { stores.insert(std::move(store)); }
   void addReturn(ValueSource source) { returns.insert(std::move(source)); }
   /// Records that `outcome` is possible, with `effect` on `path` (an empty
   /// effect only records the class).
-  void addOutcome(Outcome outcome, const SummaryPath &path, PlaceEffect effect);
+  void addOutcome(Outcome outcome, const SummaryPath &path,
+                  const PlaceEffect &effect);
   void addOutcome(Outcome outcome) { outcomes.try_emplace(outcome); }
 
   /// True if `path` is consumed on every path returning an outcome in
@@ -265,9 +298,21 @@ public:
   /// `Unknown`.
   [[nodiscard]] OwnershipKind inferredReturnKind() const;
 
+  /// True if some alternative of the result is a fresh allocation, of any
+  /// family (RFC 0007).
+  [[nodiscard]] bool returnsFresh() const noexcept;
+  /// True if every alternative of the result is fresh or null, and at least
+  /// one is fresh: the caller owns whatever non-null value it gets.
+  [[nodiscard]] bool returnsOnlyFresh() const noexcept;
+  /// The family every fresh alternative agrees on; empty when there is none
+  /// or they disagree.
+  [[nodiscard]] std::string freshReturnFamily() const;
+  /// Drops every fresh alternative, whatever its family.
+  void eraseFreshReturns();
+
   [[nodiscard]] bool empty() const noexcept {
     return effects.empty() && stores.empty() && returns.empty() &&
-           outcomes.empty();
+           outcomes.empty() && nullOn.empty();
   }
 
   /// Component-wise set union.

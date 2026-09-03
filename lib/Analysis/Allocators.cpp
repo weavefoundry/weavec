@@ -45,13 +45,14 @@ std::optional<CallEffects> classifyCall(const CallExpr &call,
   CallEffects effects;
   effects.summary = resolved->summary;
   effects.source = resolved->source;
-  effects.producesOwned =
-      effects.summary->returns.contains(core::ValueSource::fresh());
+  effects.producesOwned = effects.summary->returnsFresh();
 
   const auto params = static_cast<unsigned>(pointerParams.size());
+  effects.declaredParams = params;
   for (unsigned i = 0; i < params && i < call.getNumArgs(); ++i) {
     if (!pointerParams[i])
       continue;
+    effects.pointerArgs.push_back(i);
     if (effects.summary->consumes(i)) {
       effects.consumedArgs.push_back(i);
       continue;
@@ -64,8 +65,7 @@ std::optional<CallEffects> classifyCall(const CallExpr &call,
 
 bool isKnownAllocator(const FunctionDecl &function) {
   const core::FunctionSummary *builtin = builtinSummary(function);
-  return builtin != nullptr &&
-         builtin->returns.contains(core::ValueSource::fresh());
+  return builtin != nullptr && builtin->returnsFresh();
 }
 
 bool isKnownReleaser(const FunctionDecl &function) {

@@ -52,6 +52,8 @@ std::string printValueSource(const ValueSource &source,
   std::string text(source.kind == ValueSource::Kind::Copy && source.interior
                        ? std::string_view("interior")
                        : toString(source.kind));
+  if (source.kind == ValueSource::Kind::Fresh && !source.family.empty())
+    text += '(' + source.family + ')';
   if ((source.kind == ValueSource::Kind::Copy ||
        source.kind == ValueSource::Kind::Borrow) &&
       source.path) {
@@ -61,20 +63,40 @@ std::string printValueSource(const ValueSource &source,
   return text;
 }
 
-static std::string printFlags(const PlaceEffect &effect) {
+std::string printFlags(const PlaceEffect &effect) {
   std::string flags;
-  const auto add = [&flags](bool set, const char *name) {
+  const auto add = [&flags, &effect](bool set, const char *name,
+                                     bool withFamily) {
     if (!set)
       return;
     if (!flags.empty())
       flags += ',';
     flags += name;
+    if (withFamily && !effect.family.empty())
+      flags += '(' + effect.family + ')';
   };
-  add(effect.read, "read");
-  add(effect.written, "written");
-  add(effect.freed, "freed");
-  add(effect.moved, "moved");
+  add(effect.read, "read", false);
+  add(effect.written, "written", false);
+  add(effect.freed, "freed", true);
+  add(effect.moved, "moved", true);
   return flags;
+}
+
+/// Splits `name(family)` into its parts; `family` is left empty for a bare
+/// name. Returns false on a malformed spelling (`name(`, `name()x`).
+static bool splitFamily(std::string_view token, std::string_view &name,
+                        std::string_view &family) {
+  const std::size_t open = token.find('(');
+  if (open == std::string_view::npos) {
+    name = token;
+    family = {};
+    return true;
+  }
+  if (token.back() != ')' || open + 1 >= token.size() - 1)
+    return false;
+  name = token.substr(0, open);
+  family = token.substr(open + 1, token.size() - open - 2);
+  return family.find_first_of("(), \t") == std::string_view::npos;
 }
 
 std::string printSummary(const FunctionSummary &summary,
@@ -105,6 +127,12 @@ std::string printSummary(const FunctionSummary &summary,
     }
     if (!printed)
       text += "  outcome " + std::string(toString(outcome)) + '\n';
+  }
+  for (const auto &[outcome, paths] : summary.nullOn) {
+    for (const SummaryPath &path : paths) {
+      text += "  null " + std::string(toString(outcome)) + ' ' +
+              printSummaryPath(path, names) + '\n';
+    }
   }
   text += "end\n";
   return text;
@@ -227,9 +255,15 @@ static bool parsePath(Tokens &tokens, const GlobalResolver &resolve,
 /// Parses a value source. A declined global makes the source `unknown`.
 static bool parseSource(Tokens &tokens, const GlobalResolver &resolve,
                         ValueSource &source) {
-  const std::string_view kind = tokens.take();
+  std::string_view kind;
+  std::string_view family;
+  if (!splitFamily(tokens.take(), kind, family))
+    return false;
+  // Only `fresh` carries a family.
+  if (kind != "fresh" && !family.empty())
+    return false;
   if (kind == "fresh") {
-    source = ValueSource::fresh();
+    source = ValueSource::fresh(std::string(family));
   } else if (kind == "null") {
     source = ValueSource::null();
   } else if (kind == "unknown") {
@@ -258,9 +292,15 @@ static bool parseFlags(std::string_view text, PlaceEffect &effect) {
   std::size_t pos = 0;
   while (pos <= text.size()) {
     const std::size_t comma = text.find(',', pos);
-    const std::string_view flag = text.substr(
+    const std::string_view token = text.substr(
         pos,
         comma == std::string_view::npos ? std::string_view::npos : comma - pos);
+    std::string_view flag;
+    std::string_view family;
+    if (!splitFamily(token, flag, family))
+      return false;
+    if (!family.empty() && flag != "freed" && flag != "moved")
+      return false;
     if (flag == "read")
       effect.read = true;
     else if (flag == "written")
@@ -271,6 +311,14 @@ static bool parseFlags(std::string_view text, PlaceEffect &effect) {
       effect.moved = true;
     else
       return false;
+    if (!family.empty()) {
+      // `freed(free),moved(fclose)` cannot describe one consume; a
+      // disagreement is "unknown", as in `PlaceEffect::join`.
+      if (effect.family.empty())
+        effect.family = std::string(family);
+      else if (effect.family != family)
+        effect.family.clear();
+    }
     if (comma == std::string_view::npos)
       break;
     pos = comma + 1;
@@ -361,6 +409,14 @@ std::optional<FunctionSummary> parseSummary(std::string_view record,
         summary.addOutcome(*outcome);
         if (ok && path.path)
           summary.addOutcome(*outcome, *path.path, effect);
+      }
+    } else if (kind == "null") {
+      const std::optional<Outcome> outcome = parseOutcome(tokens.take());
+      ParsedPath path;
+      ok = outcome.has_value() && parsePath(tokens, resolve, path);
+      if (ok && path.path) {
+        summary.addOutcome(*outcome);
+        summary.nullOn[*outcome].insert(*path.path);
       }
     } else {
       // Unknown line kinds are skipped for forward compatibility.

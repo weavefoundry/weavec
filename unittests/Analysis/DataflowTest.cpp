@@ -86,7 +86,9 @@ TEST(Dataflow, SwitchFallthrough) {
     }
   )c");
   ASSERT_TRUE(result.ast);
-  EXPECT_EQ(messages(result.diagnostics), (Strings{"6: 'p' is freed twice"}));
+  // No default: `p` is lost on the edge that skips both cases (RFC 0007).
+  EXPECT_EQ(messages(result.diagnostics),
+            (Strings{"4: 'p' is leaked", "6: 'p' is freed twice"}));
 }
 
 TEST(Dataflow, ShortCircuitOperands) {
@@ -232,6 +234,40 @@ TEST(Dataflow, FreeingAnObjectKillsItsAliases) {
   ASSERT_TRUE(result.ast);
   EXPECT_EQ(messages(result.diagnostics),
             (Strings{"9: use of 'd' after it was freed"}));
+}
+
+TEST(Dataflow, WritingAFieldRefillsItUnderEveryName) {
+  // `L->twups ~ L`: `L->stack` and `L->twups->stack` are one cell. Freeing
+  // it under one name and storing a fresh block under the other leaves a
+  // live block, whichever name frees it next (RFC 0002, aliases).
+  const auto result = analyze(R"c(
+    struct th { struct th *twups; char *stack; };
+    void direct(struct th *L) {
+      L->twups = L;
+      free(L->stack);
+      L->stack = malloc(8);
+      free(L->twups->stack);
+    }
+    void through_other(struct th *L, struct th *M) {
+      M->twups = L;
+      free(M->twups->stack);
+      L->stack = malloc(8);
+      free(M->twups->stack);
+    }
+    static int grow(struct th *L, int n) {
+      char *ns = realloc(L->stack, n);
+      if (ns == NULL) return 0;
+      L->stack = ns;
+      return 1;
+    }
+    void twice(struct th *L) {
+      L->twups = L;
+      grow(L, 16);
+      grow(L, 32);
+    }
+  )c");
+  ASSERT_TRUE(result.ast);
+  EXPECT_TRUE(result.diagnostics.empty()) << messages(result.diagnostics)[0];
 }
 
 TEST(Dataflow, ReassigningAnAliasSeparatesIt) {
@@ -531,7 +567,10 @@ TEST(Dataflow, ReallocFailurePathKeepsOldPointerAlive) {
     }
   )c");
   ASSERT_TRUE(result.ast);
-  EXPECT_TRUE(result.diagnostics.empty()) << messages(result.diagnostics)[0];
+  // No use-after-move anywhere; `h` and `i` drop the grown block when
+  // `realloc` succeeds, which RFC 0007 reports where `q` dies.
+  EXPECT_EQ(messages(result.diagnostics),
+            (Strings{"21: 'q' is leaked", "26: 'q' is leaked"}));
 }
 
 TEST(Dataflow, ReallocArgumentIsMovedWithoutNullTest) {
@@ -545,9 +584,10 @@ TEST(Dataflow, ReallocArgumentIsMovedWithoutNullTest) {
   )c");
   ASSERT_TRUE(result.ast);
   EXPECT_EQ(ids(result.diagnostics),
-            (Strings{std::string(core::diag::UseAfterMove)}));
+            (Strings{std::string(core::diag::UseAfterMove),
+                     std::string(core::diag::Leak)}));
   EXPECT_EQ(messages(result.diagnostics),
-            (Strings{"4: use of 'p' after it was moved"}));
+            (Strings{"4: use of 'p' after it was moved", "6: 'q' is leaked"}));
 }
 
 TEST(Dataflow, ReallocPendingEntryDiesWithItsResult) {
@@ -559,8 +599,10 @@ TEST(Dataflow, ReallocPendingEntryDiesWithItsResult) {
     }
   )c");
   ASSERT_TRUE(result.ast);
-  EXPECT_EQ(messages(result.diagnostics),
-            (Strings{"5: use of 'p' after it was moved"}));
+  EXPECT_EQ(
+      messages(result.diagnostics),
+      (Strings{"4: 'q' is leaked: it is overwritten without being released",
+               "5: 'q' is leaked", "5: use of 'p' after it was moved"}));
 }
 
 TEST(Dataflow, ReallocIntoAliasSeparatesIt) {
@@ -709,6 +751,25 @@ TEST(Dataflow, FreeingABorrowedObjectConflicts) {
                      "12: cannot free 'r' while it is borrowed"}));
 }
 
+TEST(Dataflow, FreeingBelowABorrowedObjectIsNotAConflict) {
+  // The loan is on the struct; what is freed is what one of its fields
+  // points to, storage the loan never covered (RFC 0006, *Conflict rules*).
+  const auto result = analyze(R"c(
+    struct stream { char *window; int n; };
+    struct state { struct stream strm; int size; };
+    static void reset(struct stream *s) { free(s->window); s->window = 0; }
+    int f(struct state *st) {
+      struct stream *strm = &st->strm;
+      reset(&st->strm);
+      strm->n = 0;
+      free(st->strm.window);
+      return strm->n;
+    }
+  )c");
+  ASSERT_TRUE(result.ast);
+  EXPECT_TRUE(result.diagnostics.empty()) << messages(result.diagnostics)[0];
+}
+
 TEST(Dataflow, MovingABorrowedObjectConflicts) {
   const auto result = analyze(R"c(
     struct node { int v; };
@@ -845,11 +906,13 @@ TEST(Dataflow, LoansEndAtTheLastUseOfTheHolder) {
        {analysis::AnalysisOptions{}, Exclusive}) {
     const auto result = analyze(code, options);
     ASSERT_TRUE(result.ast);
+    // `in_loop` never frees `n` when the loop runs to completion (RFC 0007).
     EXPECT_EQ(messages(result.diagnostics),
               (Strings{"18: cannot free 'n' while it is borrowed",
                        "23: cannot free 'n' while it is borrowed",
                        "28: cannot free 'n' while it is borrowed",
-                       "34: cannot free 'n' while it is borrowed"}))
+                       "34: cannot free 'n' while it is borrowed",
+                       "36: 'n' is leaked"}))
         << "exclusive=" << options.exclusiveBorrows;
   }
 }
@@ -1372,7 +1435,7 @@ TEST(Dataflow, StructCopiesCopyTheirPointerFields) {
   ASSERT_TRUE(result.ast);
   EXPECT_EQ(messages(result.diagnostics),
             (Strings{"8: use of 'b.data' after it was freed",
-                     "14: 'a.data' is freed twice",
+                     "14: 'a.data' is freed twice", "21: 'p.tag' is leaked",
                      "21: use of 'p.b.data' after it was freed",
                      "27: use of 'a.data' after it was freed",
                      "32: use of 'p->data' after it was freed"}));
@@ -1446,8 +1509,10 @@ TEST(Dataflow, AssignmentInsideAPointerTestNamesItsLeftSide) {
     }
   )c");
   ASSERT_TRUE(result.ast);
+  // `taken` keeps the fresh line when the test fails (RFC 0007).
   EXPECT_EQ(messages(result.diagnostics),
-            (Strings{"23: use of 'sentinel' after it was freed"}));
+            (Strings{"21: 'res' is leaked",
+                     "23: use of 'sentinel' after it was freed"}));
   const core::FunctionSummary *feed = result.summary("feed");
   ASSERT_NE(feed, nullptr);
   EXPECT_EQ(feed->returns.size(), 2U) << "fresh or a copy of the global";
@@ -1588,6 +1653,43 @@ TEST(Dataflow, WrittenObjectsForgetTheirSubobjects) {
   const auto it = replace->effects.find(stringPath);
   EXPECT_TRUE(it == replace->effects.end() || !it->second.freed)
       << "the exit state no longer has the freed record";
+}
+
+// A summary's written paths are looked up in order, sharing roots and
+// prefixes; a `&x` argument roots its paths at `x` itself.
+TEST(Dataflow, WrittenPathsForgetOnlyWhatTheyName) {
+  const auto result = analyze(R"c(
+    void *memcpy(void *, const void *, size_t);
+    struct in { char *a; char *b; };
+    struct out { struct in i; struct in j; int n; };
+    struct in tmp;
+    static void touch(struct out *o, struct in *k) {
+      o->n = 1;
+      memcpy(&o->j, &tmp, sizeof tmp);
+      memcpy(k, &tmp, sizeof tmp);
+    }
+    void caller(struct out *o) {
+      struct in local;
+      local.a = malloc(1);
+      free(o->i.a);
+      free(o->j.a);
+      free(local.a);
+      touch(o, &local);
+      use(o->i.a);                        /* not overwritten: reported */
+      use(o->j.a);                        /* below o->j: clean */
+      use(local.a);                       /* below *k, which is local */
+    }
+  )c");
+  ASSERT_TRUE(result.ast);
+  EXPECT_EQ(messages(result.diagnostics),
+            (Strings{"18: use of 'o->i.a' after it was freed"}));
+  const core::FunctionSummary *touch = result.summary("touch");
+  ASSERT_NE(touch, nullptr);
+  EXPECT_TRUE(
+      touch->effectOf(core::SummaryPath::param(0).deref().field("j")).written);
+  EXPECT_TRUE(
+      touch->effectOf(core::SummaryPath::param(0).deref().field("n")).written);
+  EXPECT_TRUE(touch->effectOf(core::SummaryPath::param(1).deref()).written);
 }
 
 TEST(Dataflow, StructCopiesCarryLoansAndKinds) {

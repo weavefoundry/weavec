@@ -193,9 +193,14 @@ safe and why it matters.
 **Conflict rules.** `findLoanConflict` is queried from three places today:
 a new borrow (`applyBorrow`, `checkTemporaryBorrow`), a direct write
 (`doMutationCheck`) and a consume (`doConsume`). Under this RFC only the
-consume query is on by default: a live loan on the consumed place, an
-ancestor or a descendant of it is a `conflicting-borrow` (`cannot free
-'<p>' while it is borrowed`, `cannot move ...`). The two other queries run
+consume query is on by default: a live loan on the consumed place or a
+descendant of it is a `conflicting-borrow` (`cannot free '<p>' while it is
+borrowed`, `cannot move ...`). A loan on an *ancestor* of the consumed place
+is not invalidated and does not count: `z_streamp strm = &state->strm;
+inflateInit2(&state->strm, ...)`, where the callee frees
+`state->strm.state->window`, leaves `strm` pointing at storage nothing
+released (amended with RFC 0007, whose more precise summaries first made
+this case reachable). The two other queries run
 only under `AnalysisOptions::exclusiveBorrows` (`weavec
 --exclusive-borrows`, `weavec-cc -fweavec-exclusive-borrows`), reproducing
 RFC 0001's rule verbatim (messages unchanged). Loan *kinds* (shared /
@@ -394,6 +399,21 @@ on `param 0 *.string` (the exit state no longer has it) and a caller of
 
 This drops a fact that was *known* to be stale (the callee overwrote the
 storage); it never drops a fact about storage the callee did not write.
+
+**What a callee wrote, its caller wrote** (amended with RFC 0007). A call
+whose argument is mutably borrowed used to put `written` on the pointee
+itself into the caller's summary. Under the rule above that told *its*
+callers the whole object had been overwritten, and they forgot every fact
+below it: in Lua, every function that bumps `L->nci` wiped what its callers
+knew about `L`, and `close_state` lost the frees `freestack` reported to it.
+Now the callee's written paths below `param(i)*` are copied into the
+caller's summary under the pointee's own path (and the paths of its
+mirrors), by prefix substitution and bounded by the place depth limit;
+only a summary with no written path below the pointee — an annotation's —
+is replayed as `written` on the pointee itself. The summaries therefore
+name every written field transitively, which is what makes them long on a
+program that threads one state pointer through every call (RFC 0007,
+*Performance*).
 
 ### Interaction with existing RFCs
 

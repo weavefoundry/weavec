@@ -11,8 +11,8 @@ struct s {
 // CHECK-LABEL: function 'f':
 // CHECK-NEXT: places:{{.*}}p (param, unknown){{.*}}a (local, mutable)
 // CHECK-NEXT: lifetimes:{{.*}}caller
-// CHECK-NEXT: exit: moved{p->buf@[[@LINE+6]]:{{[0-9]+}} freed} loans{} aliases{} raw{}
-// CHECK-NEXT: summary: p->buf: freed; stores{} returns{}
+// CHECK-NEXT: exit: moved{p->buf@[[@LINE+6]]:{{[0-9]+}} freed(free)} loans{} aliases{} raw{} owned{}
+// CHECK-NEXT: summary: p->buf: freed(free); stores{} returns{}
 void f(struct s *p, int c) {
   int x = 0;
   int *a = &x;
@@ -22,13 +22,15 @@ void f(struct s *p, int c) {
 }
 
 // CHECK-LABEL: function 'g':
-// CHECK: exit: moved{} loans{} aliases{} raw{}
+// CHECK: exit: moved{} loans{} aliases{} raw{} owned{}
 // CHECK-NEXT: summary: stores{} returns{}
 void g(void) {}
 
-// The summary is the function's interface as inferred (RFC 0003).
+// The summary is the function's interface as inferred (RFC 0003); owned
+// resources and their release family show in the exit state (RFC 0007).
 // CHECK-LABEL: function 'h':
-// CHECK: summary: p->buf: read; stores{gp = fresh} returns{copy p->buf}
+// CHECK: exit: moved{} loans{} aliases{} raw{} owned{gp@[[@LINE+4]]:{{[0-9]+}} allocated free}
+// CHECK-NEXT: summary: p->buf: read; stores{gp = fresh(free)} returns{copy p->buf}
 static int *gp;
 int *h(struct s *p) {
   gp = malloc(4);
@@ -39,7 +41,7 @@ int *h(struct s *p) {
 // `raw` is a value source in the summary.
 // CHECK-LABEL: function 'launder':
 // CHECK-NEXT: places:{{.*}}r (param, raw)
-// CHECK: exit: moved{} loans{} aliases{} raw{r@[[@LINE+3]]:{{[0-9]+}} integer-cast}
+// CHECK: exit: moved{} loans{} aliases{} raw{r@[[@LINE+3]]:{{[0-9]+}} integer-cast} owned{}
 // CHECK-NEXT: summary: stores{} returns{raw}
 char *launder(char *r, unsigned long x) {
   r = (char *)x;

@@ -13,20 +13,26 @@
 //
 //   summary
 //     effect <path> <flag>[,<flag>]*      flags: read written freed moved
+//                                          freed(<family>) moved(<family>)
 //     store <path> <source>
 //     return <source>
 //     outcome <class>                      the class is a possible result
 //     outcome <class> <path> <flag>[,<flag>]*
+//     null <class> <path>                  the place is null on every path
+//                                          returning the class
 //   end
 //
 //   path   ::= param <i> [<steps>] | global <name> [<steps>]
 //   steps  ::= ( '*' | '.' <field> | '[]' )+        (one token)
-//   source ::= fresh | null | unknown | raw | copy <path> | interior <path>
-//            | borrow <path>
+//   source ::= fresh | fresh(<family>) | null | unknown | raw | copy <path>
+//            | interior <path> | borrow <path>
 //   class  ::= null | nonnull | zero | positive | negative
+//   family ::= an identifier naming the canonical releaser (free, fclose)
 //
 // Version 2 (RFC 0006) added `outcome` and `interior` and dropped
-// `realloc-like`.
+// `realloc-like`. Version 3 (RFC 0007) added the optional release family on
+// `fresh`, `freed` and `moved` (the bare spellings mean "unknown family")
+// and the `null` line.
 //
 // Global roots are spelled by name; the caller supplies the mapping between
 // the summary's global ids and names in both directions, so this file stays
@@ -49,7 +55,7 @@ namespace weavec::core {
 
 /// Version of the record format; bumped when a record written by this
 /// version cannot be read by the previous one.
-inline constexpr unsigned SummaryFormatVersion = 2;
+inline constexpr unsigned SummaryFormatVersion = 3;
 
 /// The name to print for a global root id.
 using GlobalNamer = std::function<std::string(std::uint32_t)>;
@@ -66,6 +72,9 @@ using GlobalResolver =
 /// Spells `source` as in the record format (`copy param 1`).
 [[nodiscard]] std::string printValueSource(const ValueSource &source,
                                            const GlobalNamer &names);
+
+/// Spells `effect`'s flags as in the record format (`read,freed(free)`).
+[[nodiscard]] std::string printFlags(const PlaceEffect &effect);
 
 /// Prints `summary` as one record, `summary\n ... end\n`, lines indented by
 /// two spaces and in a deterministic order.
