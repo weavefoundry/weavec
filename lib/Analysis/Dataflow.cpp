@@ -1661,7 +1661,7 @@ void FunctionDataflow::applySwitchEdge(const SwitchStmt &statement,
     if (!lo)
       return;
     if (caseLabel->getRHS() == nullptr) {
-      applyOutcomeTest(*scrutinee, {core::ValueFact::classOf(*lo)}, state, *lo);
+      applyOutcomeTest(*scrutinee, {core::ValueFact::classOf(*lo)}, state, lo);
       return;
     }
     const auto hi = labelValue(*caseLabel->getRHS());
