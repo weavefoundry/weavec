@@ -411,6 +411,76 @@ follows [Semantic Versioning](https://semver.org/) once it reaches 1.0.
     cJSON's `p.buffer` leak, zlib's `state->msg` leaks and the `noalloc`/
     `noreturn` correlations RFC 0006 and RFC 0008 listed under *Accepted
     false positives* are gone.
+- Shared ownership (RFC 0010). The one-owner model gains *shares*, so
+  reference-counted objects, the most common way C shares an object, are
+  checked instead of misreported:
+  - Reference counts are inferred from the bodies that keep them: a
+    function that increments an integer field of its argument's object
+    (`o->rc++`, `o->rc += 1`, `__atomic_fetch_add(&o->rc, 1, m)`,
+    `__sync_add_and_fetch(&o->rc, 1)`) *retains* it (`increment param 0
+    *.rc`); one that frees the object when a decrement of the field reaches
+    zero (`if (--o->rc == 0) free(o)`, `o->rc-- == 1`, the atomic and
+    `__sync_` forms, or a helper like `dec_and_test(&o->rc)`) *releases a
+    share* (`param 0 freed(free),share`, `count param 0 *.rc`). The
+    caller's `ResourceRecord` counts shares: `obj_ref(a)` adds one, a copy
+    of a holder with a surplus takes one (`b = obj_ref(a)` makes `b` its
+    own share, an alias of `a` for frees but not for releases), `obj_unref`
+    takes one and kills the name only when it was the last. A share
+    released on a name this function never retained (a parameter) is a
+    discipline: the name is dead, other shares live on. A plain `free`
+    still kills every alias.
+  - New messages on existing ids: `use of 'p' after its reference was
+    released` / `reference released here`, `'p' is released twice` /
+    `previously released here`, and the `leak` note `reference taken here`
+    for a share that is retained and dropped (`void f(struct obj *o) {
+    struct obj *p = o->next; obj_ref(p); }`). A leak of a share is reported
+    only through a *known count*: a field some function in the program
+    releases through, or one annotated `WEAVEC_REFCOUNT`; incrementing a
+    length is not a leak.
+  - Per-outcome stores: a callee that stores an argument only on some
+    outcome classes (`bag_put` returning `-1` when full) is summarised
+    `stored zero param 0 *.items[]` / `stored negative` and the caller
+    retracts the store on the classes it rules out, so `if (bag_put(b, s)
+    < 0) free(s);` is clean and the failure edge that drops `s` is a
+    `leak`.
+  - Per-outcome integer facts: what a callee left in the caller's integer
+    memory per class (`fact positive param 0 * =0` for `dec_and_test`,
+    `fact negative param 0 *.filled =0`) is known after the call on the
+    edge the caller takes.
+  - Annotations `WEAVEC_RETAINS` and `WEAVEC_RELEASES` (pointer
+    parameters: a library's `g_object_ref`/`g_object_unref` with no body in
+    view; a returning ref's result is a copy of its argument),
+    `WEAVEC_REFCOUNT` (an integer field is a count) and `WEAVEC_OWNED_BY(f)`
+    (the release family of a `WEAVEC_OWNED` result or parameter, closing
+    RFC 0007's open item); `weavec.h` 0.5. `WEAVEC_OWNED_BY` without
+    `WEAVEC_OWNED`, or `WEAVEC_RETAINS` with `WEAVEC_RELEASES` on one
+    declaration, is `invalid-annotation`.
+  - Stores out of sight: a callee that copies its argument into memory its
+    summary cannot name (`p->value = value` in a node it allocates and
+    links into the caller's table) says `param 1 escaped`, wrappers pass it
+    on (through `table_set_new(t, obj_ref(value))` too: a `param i` root
+    now resolves through a value that is a copy or null), and the caller
+    neither reports the argument leaked nor loses the share it just took.
+    Every container insert of an owned value (`table_set(t, o)` with `o`
+    from `malloc`) was a false `leak` before.
+  - Summary text format version 5 → 6: the `share` and `escaped` flags on
+    effects and the `increment`, `decrement`, `count`, `stored` and `fact`
+    lines; sidecar format version 6 (`weavec-summaries 6`) with
+    `count-field <key>` lines. `--dump-analysis` prints `shares` and the
+    count field on resources, `released` moves, `escaped` effects,
+    `increments{}`, `decrements{}`, `counts{}` and per-class `stored{}` /
+    `facts{}` in summaries, and `count-field` lines in the program
+    database.
+  - The whole-program fixpoint (RFC 0005) re-analyses a member of a cyclic
+    group only when the exports it imports changed since its last run.
+    Lua as one program (release build, same machine): 3 min 16 s before
+    this release, 2 min 16 s with shares and the fixpoint change, 3 min
+    22 s once `escaped` effects are applied at every call; the last figure
+    is the quietest of several runs on a machine that was otherwise busy.
+  - Corpus: jansson (reference-counted JSON, analysed as one program) joins
+    `scripts/corpus/projects.json`; `{support}` in a project's arguments
+    names `scripts/corpus/support/<project>`, for headers a checkout's
+    build would generate.
 
 ### Fixed
 

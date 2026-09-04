@@ -94,9 +94,13 @@ struct UnitExports {
   /// candidates: what `annotation-required` would have warned about.
   std::set<std::string> unknownCallees;
   std::set<std::string> unknownIndirectTypes;
+  /// RFC 0010, *Leaks of shares*: the count-field keys (`struct obj.rc`)
+  /// some function of the unit releases a share through, or that are
+  /// annotated `WEAVEC_REFCOUNT`. Sidecar line `count-field <key>`.
+  std::set<std::string> countFields;
 
-  /// True if the exported summaries are the same; the fixpoint test of RFC
-  /// 0005's whole-program algorithm.
+  /// True if the exported summaries (and count fields) are the same; the
+  /// fixpoint test of RFC 0005's whole-program algorithm.
   [[nodiscard]] bool sameSummariesAs(const UnitExports &other) const;
 };
 
@@ -105,6 +109,11 @@ struct UnitExports {
 /// anonymous record and so has no stable spelling.
 [[nodiscard]] std::string functionTypeKey(clang::QualType type,
                                           const clang::ASTContext &context);
+
+/// The same for a record type (`struct obj`), the first half of an RFC 0010
+/// count-field key; empty for a non-record or an anonymous one.
+[[nodiscard]] std::string recordTypeKey(clang::QualType type,
+                                        const clang::ASTContext &context);
 
 /// The exports of every unit of a program except the one being analysed.
 class ProgramDatabase {
@@ -140,6 +149,15 @@ public:
     return globalNames;
   }
 
+  /// RFC 0010: whether some unit lists `key` among its count fields.
+  [[nodiscard]] bool isKnownCount(llvm::StringRef key) const {
+    return countFields.contains(key);
+  }
+  [[nodiscard]] const std::set<std::string, std::less<>> &
+  knownCounts() const noexcept {
+    return countFields;
+  }
+
   /// Rewrites a database summary for use in the unit `context` describes:
   /// each global root becomes the unit's external-linkage variable of that
   /// name, interned in `table`, or is dropped if the unit declares none.
@@ -155,6 +173,7 @@ private:
   std::map<std::string, core::FunctionSummary, std::less<>> functions;
   std::map<std::string, core::FunctionSummary, std::less<>> candidateSummaries;
   GlobalNames globalNames;
+  std::set<std::string, std::less<>> countFields;
 };
 
 } // namespace weavec::analysis

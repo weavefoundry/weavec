@@ -221,6 +221,15 @@ void FunctionDataflow::classifyExpr(const Expr *expr, Role role) {
     return;
   }
 
+  // RFC 0010: an adjustment by one updates its operand's scalar fact itself,
+  // so the operand's read-write role must not forget it first.
+  const auto noteAdjusted = [this](const Expr &operand) {
+    const Expr &stripped = PlaceBuilder::stripTransparent(operand);
+    if (stripped.getType()->isIntegerType() &&
+        PlaceBuilder::isPlaceExpr(stripped))
+      adjustedOperands.insert(&stripped);
+  };
+
   if (const auto *unary = dyn_cast<UnaryOperator>(e)) {
     switch (unary->getOpcode()) {
     case UO_AddrOf:
@@ -230,6 +239,7 @@ void FunctionDataflow::classifyExpr(const Expr *expr, Role role) {
     case UO_PreDec:
     case UO_PostInc:
     case UO_PostDec:
+      noteAdjusted(*unary->getSubExpr());
       classifyExpr(unary->getSubExpr(), Role::ReadWrite);
       return;
     default:
@@ -245,6 +255,11 @@ void FunctionDataflow::classifyExpr(const Expr *expr, Role role) {
       return;
     }
     if (binary->isCompoundAssignmentOp()) {
+      if (const auto k = integerConstant(*binary->getRHS(), context);
+          k && (*k == 1 || *k == -1) &&
+          (binary->getOpcode() == BO_AddAssign ||
+           binary->getOpcode() == BO_SubAssign))
+        noteAdjusted(*binary->getLHS());
       classifyExpr(binary->getLHS(), Role::ReadWrite);
       classifyExpr(binary->getRHS(), Role::Read);
       return;
@@ -678,6 +693,23 @@ void FunctionDataflow::escape(core::PlaceId place, core::AnalysisState &state) {
     state.resources.escape(mirror);
 }
 
+void FunctionDataflow::escapeOutOfSight(core::PlaceId place,
+                                        core::AnalysisState &state) {
+  // RFC 0010, *Stores out of sight*: the callee kept a copy somewhere the
+  // summary cannot name. The value and what lies below it have a second
+  // home; a wrapper passes the fact on to its own caller.
+  escape(place, state);
+  if (const auto object = places.child(place, core::PathStep::Deref, {})) {
+    for (const core::PlaceId below : storageOf(*object))
+      escape(below, state);
+  }
+  if (recording()) {
+    // A parameter root included: the argument itself is what escaped.
+    if (const auto path = stableSummaryPathOf(place))
+      inferred.addEffect(*path, core::PlaceEffect{.escaped = true});
+  }
+}
+
 void FunctionDataflow::escapeValue(const ValueOrigin &origin, bool deep,
                                    core::AnalysisState &state) {
   switch (origin.kind) {
@@ -758,6 +790,11 @@ bool FunctionDataflow::resourceLost(
   // for `a[*]`), or handed to code nobody can see.
   if (record.escaped || state.moves.recordOf(place))
     return false;
+  // RFC 0010, *Retaining*: a retained share is the holder's own. An alias
+  // made before the increment holds the object, not this share; a copy made
+  // after it took the share away (the record is gone). So no alias keeps it.
+  if (record.origin == core::ResourceOrigin::Retained)
+    return true;
   // Every other name must be released, moved or dying too; a name that still
   // reaches the resource keeps it. A stale may-alias from a join can only
   // make this say "not lost". An escaped alias says the *resource* escaped
@@ -769,6 +806,10 @@ bool FunctionDataflow::resourceLost(
   return llvm::all_of(state.aliases.edgesFrom(place), [&](const auto &entry) {
     const auto &[alias, edge] = entry;
     if (alias == place)
+      return true;
+    // An alias holding its own share does not keep this one (RFC 0010,
+    // *Leaks of shares*).
+    if (!edge.sameShare)
       return true;
     if (state.resources.isEscaped(alias))
       return false;
@@ -798,6 +839,8 @@ void FunctionDataflow::reportLeak(core::PlaceId place,
         name = decl->getNameAsString();
       diagnostic.addNote("'" + name + "' is declared WEAVEC_OWNED here",
                          record.location);
+    } else if (record.origin == core::ResourceOrigin::Retained) {
+      diagnostic.addNote("reference taken here", record.location);
     } else {
       diagnostic.addNote("allocated here", record.location);
     }
@@ -814,6 +857,17 @@ void FunctionDataflow::checkLeaks(
     const auto record = state.resources.recordOf(place);
     if (!record || !resourceLost(place, *record, dying, state))
       continue;
+    // RFC 0010, *Leaks of shares*: a share taken through a field nobody in
+    // view releases through may be a length, not a count; the fact stays
+    // (for releases), the report is withheld. A share retained on a
+    // parameter or a global is the caller's: the summary's `increment`
+    // hands it over, and the caller's name is where it may leak.
+    if (record->origin == core::ResourceOrigin::Retained &&
+        (!isKnownCount(record->countField) ||
+         builder.summaryPathOf(place).has_value())) {
+      state.resources.clear(place);
+      continue;
+    }
     std::string message = "'" + nameOf(place) + "' is leaked";
     switch (form) {
     case LeakForm::Lost:
@@ -1843,26 +1897,11 @@ void FunctionDataflow::applyCondition(const Expr &condition, bool holds,
       const bool unsignedComparison = lhs.getType()->isUnsignedIntegerType();
       const unsigned width =
           std::clamp(context.getIntWidth(lhs.getType()), 1U, 64U);
-      const bool equal = (op == BO_EQ && holds) || (op == BO_NE && !holds);
-      const auto test = [&](const Expr &x, BinaryOperatorKind xOp,
-                            std::int64_t k) {
-        // The value is known exactly on the equal edge unless a negative
-        // `x` may have been converted to `k` (a signed operand of an
-        // unsigned comparison with `k` in the top half of the range).
-        const bool signedOperand =
-            !x.IgnoreParenImpCasts()->getType()->isUnsignedIntegerType();
-        const bool topHalf =
-            unsignedComparison &&
-            static_cast<std::uint64_t>(k) >= (std::uint64_t{1} << (width - 1));
-        const bool exact = equal && !(signedOperand && topHalf);
-        applyOutcomeTest(
-            x, classesSatisfying(xOp, k, holds, unsignedComparison, width),
-            state, exact ? std::optional(k) : std::nullopt);
-      };
       if (const auto k = integerConstant(rhs, context))
-        test(lhs, op, *k);
+        testInteger(lhs, op, *k, holds, unsignedComparison, width, state);
       else if (const auto flipped = integerConstant(lhs, context))
-        test(rhs, flipComparison(op), *flipped);
+        testInteger(rhs, flipComparison(op), *flipped, holds,
+                    unsignedComparison, width, state);
     }
     return;
   }
@@ -1873,13 +1912,43 @@ void FunctionDataflow::applyCondition(const Expr &condition, bool holds,
                      state);
   } else if (e->getType()->isIntegerType()) {
     // `!x` is `x == 0`: the zero class is one value, which the fact records
-    // so that `switch (x) case 0` and `if (!x)` agree.
-    if (holds)
-      applyOutcomeTest(*e, {core::Outcome::Positive, core::Outcome::Negative},
-                       state);
-    else
-      applyOutcomeTest(*e, {core::Outcome::Zero}, state, 0);
+    // so that `switch (x) case 0` and `if (!x)` agree. Spelled as the
+    // comparison `x != 0` so that `if (--x)` reads the adjusted place (RFC
+    // 0010).
+    testInteger(*e, BO_NE, 0, holds, e->getType()->isUnsignedIntegerType(),
+                std::clamp(context.getIntWidth(e->getType()), 1U, 64U), state);
   }
+}
+
+void FunctionDataflow::testInteger(const Expr &x, BinaryOperatorKind op,
+                                   std::int64_t k, bool holds,
+                                   bool unsignedComparison, unsigned width,
+                                   core::AnalysisState &state) {
+  // RFC 0010, *Recognising increments and decrements*: `--x == 0` and `x--
+  // == 1` test the adjusted place; the value is the place plus an offset,
+  // so `x + d OP k` is `x OP k - d`.
+  const PlaceBuilder::ScalarOperand read = builder.scalarOperand(x);
+  if (read.offset != 0) {
+    if (!read.place)
+      return;
+    k -= read.offset;
+    // A count below zero is not what an unsigned comparison meant.
+    if (unsignedComparison && k < 0)
+      return;
+  }
+  const bool equal = (op == BO_EQ && holds) || (op == BO_NE && !holds);
+  // The value is known exactly on the equal edge unless a negative `x` may
+  // have been converted to `k` (a signed operand of an unsigned comparison
+  // with `k` in the top half of the range).
+  const bool signedOperand =
+      !x.IgnoreParenImpCasts()->getType()->isUnsignedIntegerType();
+  const bool topHalf =
+      unsignedComparison &&
+      static_cast<std::uint64_t>(k) >= (std::uint64_t{1} << (width - 1));
+  const bool exact = equal && !(signedOperand && topHalf);
+  applyOutcomeTest(x,
+                   classesSatisfying(op, k, holds, unsignedComparison, width),
+                   state, exact ? std::optional(k) : std::nullopt);
 }
 
 void FunctionDataflow::markNullWithCopies(core::PlaceId place,
@@ -1948,6 +2017,32 @@ void FunctionDataflow::markNullOutcomes(const core::PendingOutcome &narrowed,
   }
 }
 
+void FunctionDataflow::applyOutcomeStores(core::PendingOutcome &narrowed,
+                                          core::AnalysisState &state) {
+  // RFC 0010, *Per-outcome stores*: a store on none of the remaining classes
+  // did not happen. Its destination is forgotten (what it held before the
+  // call is unknown again) and a copy's source is no longer escaped by it.
+  for (const core::PendingOutcome::PendingStore &store :
+       narrowed.retractStores()) {
+    reinit(store.dest, state);
+    if (!store.source || store.sourceEscapedBefore)
+      continue;
+    state.resources.unescape(*store.source);
+    for (const auto &[alias, edge] : state.aliases.edgesFrom(*store.source)) {
+      if (alias != *store.source && edge.exact && edge.sameShare)
+        state.resources.unescape(alias);
+    }
+  }
+  // RFC 0010, *Per-outcome integer facts*: what the callee wrote holds on
+  // every class still possible, and refutes the guards it contradicts.
+  for (const auto &[place, fact] : narrowed.factsInAll()) {
+    if (!tracksScalar(place))
+      continue;
+    state.scalars.set(place, fact);
+    learnFact(place, fact, state);
+  }
+}
+
 void FunctionDataflow::applyOutcomeTest(const Expr &operand,
                                         const std::set<core::Outcome> &selected,
                                         core::AnalysisState &state,
@@ -1994,7 +2089,10 @@ void FunctionDataflow::applyOutcomeTest(const Expr &operand,
     }
     learnFact(read.place->place, fact, state);
   };
-  if (!PlaceBuilder::isPlaceExpr(*e) && !isa<CallExpr>(e) &&
+  // A `__sync_*` builtin is an adjustment, not a call with outcomes (RFC
+  // 0010): its value is the count at an offset.
+  if (!PlaceBuilder::isPlaceExpr(*e) &&
+      (!isa<CallExpr>(e) || builder.adjustmentOf(*e)) &&
       e->getType()->isIntegerType()) {
     narrowScalar(builder.scalarOperand(*e));
     return;
@@ -2024,6 +2122,7 @@ void FunctionDataflow::applyOutcomeTest(const Expr &operand,
     core::PendingOutcome narrowed = lastCall->pending;
     reinstate(narrowed.select(selected));
     markNullOutcomes(narrowed, state);
+    applyOutcomeStores(narrowed, state);
     return;
   }
   if (!PlaceBuilder::isPlaceExpr(*e))
@@ -2082,6 +2181,7 @@ void FunctionDataflow::applyOutcomeTest(const Expr &operand,
   const std::vector<core::PlaceId> reinstated = entry->second.select(selected);
   reinstate(reinstated);
   markNullOutcomes(entry->second, state);
+  applyOutcomeStores(entry->second, state);
   // `q = try_ptr(p); if (q) ...`: on the non-null edge where `p` was not
   // consumed the callee returned `p` itself, so `q` is `p`, not a resource
   // of its own (RFC 0007).
@@ -2152,6 +2252,12 @@ FunctionDataflow::scalarFactOf(const Expr &expr,
   auto fact = state.scalars.factOf(operand.place->place);
   if (fact && operand.scaled)
     fact->constant.reset();
+  // RFC 0010: `x--` yields the old value, known only when the new one is.
+  if (fact && operand.offset != 0) {
+    if (!fact->constant)
+      return std::nullopt;
+    fact = core::ValueFact::ofConstant(*fact->constant + operand.offset);
+  }
   return fact;
 }
 
@@ -2335,8 +2441,9 @@ void FunctionDataflow::handleExpr(const Expr &expr,
       noteVariableWrite(ref->place, state);
       if (expr.getType()->isPointerType() && ref->element.isWhole())
         markInterior(ref->place, state);
-      // `n++`, `n += k`: whatever was known of `n` is gone (RFC 0009).
-      if (expr.getType()->isIntegerType())
+      // `n++`, `n += k`: whatever was known of `n` is gone (RFC 0009),
+      // unless the adjustment itself updates it (RFC 0010).
+      if (expr.getType()->isIntegerType() && !adjustedOperands.contains(&expr))
         forgetScalar(ref->place, state);
       break;
     case Role::Write:
@@ -2356,6 +2463,15 @@ void FunctionDataflow::handleExpr(const Expr &expr,
     return;
   }
 
+  // RFC 0010: `o->rc++`, `--o->rc`, `__atomic_fetch_sub(&o->rc, 1, m)`.
+  // The adjustment is the whole of what a `__sync_*` builtin call does; as
+  // a call it would only forget what it just learnt about the count.
+  if (const auto adjustment = builder.adjustmentOf(expr)) {
+    handleAdjustment(*adjustment, expr, state);
+    if (isa<CallExpr>(expr))
+      return;
+  }
+
   if (const auto *binary = dyn_cast<BinaryOperator>(&expr)) {
     if (binary->getOpcode() == BO_Assign)
       handleAssign(*binary, state);
@@ -2366,6 +2482,263 @@ void FunctionDataflow::handleExpr(const Expr &expr,
     if (dereferencedCalls.contains(call))
       checkResultDereference(*call, state);
   }
+}
+
+// -- Shares (RFC 0010) --------------------------------------------------------
+
+std::string
+FunctionDataflow::countKeyFor(QualType pointee,
+                              llvm::ArrayRef<core::PathElem> steps) const {
+  if (pointee.isNull())
+    return {};
+  return countFieldKey(pointee, steps, context);
+}
+
+std::optional<FunctionDataflow::CountedObject>
+FunctionDataflow::countedObjectOf(core::PlaceId count) {
+  // `o->rc`, `o->base.refs`: the nearest dereference below `count`, with
+  // only fields between (RFC 0010, *Assumptions*).
+  const auto deref = places.innermostDeref(count);
+  if (!deref)
+    return std::nullopt;
+  const auto pointer = places.parent(*deref);
+  if (!pointer)
+    return std::nullopt;
+  std::vector<core::PathElem> steps;
+  for (core::PlaceId cursor = count; cursor != *deref;
+       cursor = *places.parent(cursor)) {
+    if (places.step(cursor) != core::PathStep::Field)
+      return std::nullopt;
+    steps.push_back(
+        core::PathElem{.step = core::PathStep::Field,
+                       .field = std::string(places.fieldName(cursor))});
+  }
+  std::ranges::reverse(steps);
+  std::string key;
+  if (const auto *decl =
+          dyn_cast_if_present<ValueDecl>(builder.declFor(*pointer));
+      decl != nullptr && decl->getType()->isPointerType())
+    key = countKeyFor(decl->getType()->getPointeeType(), steps);
+  return CountedObject{.pointer = *pointer, .key = std::move(key)};
+}
+
+bool FunctionDataflow::isKnownCount(std::string_view key) const {
+  return !key.empty() && summaries.isKnownCount(llvm::StringRef(key));
+}
+
+void FunctionDataflow::retain(core::PlaceId pointer, std::string key,
+                              const core::SourceLocation &at,
+                              core::AnalysisState &state) {
+  // Only the pointer's own place: its aliases hold their own shares (RFC
+  // 0010, *Retaining*). A null pointer holds nothing to retain.
+  if (state.resources.isNull(pointer))
+    return;
+  state.resources.retain(pointer, std::move(key), at);
+}
+
+void FunctionDataflow::handleAdjustment(
+    const PlaceBuilder::Adjustment &adjustment, const Expr &at,
+    core::AnalysisState &state) {
+  const core::PlaceId place = adjustment.place.place;
+  const bool whole = adjustment.place.element.isWhole();
+  // The fact: an exact value moves by one; a positive count stays positive
+  // when incremented; anything else is unknown now (RFC 0009 forgot it).
+  std::optional<core::ValueFact> fact;
+  if (whole && tracksScalar(place)) {
+    if (const auto old = state.scalars.factOf(place)) {
+      if (old->constant) {
+        fact = core::ValueFact::ofConstant(*old->constant + adjustment.delta);
+      } else if (adjustment.delta > 0 &&
+                 !old->classes.contains(core::Outcome::Negative)) {
+        fact = core::ValueFact::of(core::Outcome::Positive);
+      }
+    }
+  }
+  std::vector<core::PlaceId> cells = mirrors(place, state);
+  if (!llvm::is_contained(cells, place))
+    cells.push_back(place);
+  for (const core::PlaceId image : borrowedImages(place, state)) {
+    if (!llvm::is_contained(cells, image))
+      cells.push_back(image);
+  }
+  for (const core::PlaceId cell : cells) {
+    state.dropGuardsOn(cell);
+    if (fact && tracksScalar(cell))
+      state.scalars.set(cell, *fact);
+    else
+      state.scalars.forget(cell);
+    if (const auto path = builder.summaryPathOf(cell))
+      writtenScalarPaths.insert(*path);
+  }
+  if (!whole)
+    return;
+
+  // The summary: caller-visible counts this function adjusts (RFC 0010,
+  // *Recognising increments and decrements*). The builtin forms take the
+  // count's address, so the read and the write are recorded here.
+  if (recording()) {
+    if (isa<AtomicExpr, CallExpr>(&at)) {
+      recordAccess(place, /*write=*/false, state);
+      recordAccess(place, /*write=*/true, state);
+    }
+    // Under every caller-visible name of the count (`p->refs` with `p =
+    // n->next` is `n->next->refs` to the caller).
+    for (const core::PlaceId cell : cells) {
+      if (const auto path = countPathFor(cell)) {
+        if (adjustment.delta > 0)
+          inferred.increments.insert(*path);
+        else
+          inferred.decrements.insert(*path);
+      }
+    }
+  }
+  const auto counted = countedObjectOf(place);
+  if (adjustment.delta < 0) {
+    decrementedPlaces.insert(place);
+    for (const core::PlaceId cell : cells)
+      decrementedPlaces.insert(cell);
+    return;
+  }
+  if (!counted)
+    return;
+  // `WEAVEC_REFCOUNT` on the field: its key is a known count from here on.
+  if (const auto *field =
+          dyn_cast_if_present<FieldDecl>(builder.declFor(place));
+      field != nullptr && !counted->key.empty() &&
+      getAnnotations(*field).refcount)
+    summaries.addKnownCount(counted->key);
+  // A read of the pointer on the way (`o->rc++` dereferences `o`) was
+  // reported by the operand; a moved or null pointer retains nothing.
+  if (findMoved(counted->pointer, state))
+    return;
+  retain(counted->pointer, counted->key, locate(at), state);
+}
+
+void FunctionDataflow::applyAdjustments(const CallExpr &call,
+                                        const core::FunctionSummary &summary,
+                                        core::AnalysisState &state) {
+  if (summary.increments.empty() && summary.decrements.empty())
+    return;
+  // The caller place of the count, and the pointer whose object it is a
+  // field of: the argument's place for `param i *...`, the global's for
+  // `global g *...`. The key comes from the argument's type, so an argument
+  // that is not a place still names the field.
+  struct Translated {
+    std::optional<PlaceRef> count;
+    std::optional<core::PlaceId> pointer;
+    std::string key;
+  };
+  const auto translate = [this, &call](const core::SummaryPath &path) {
+    Translated result;
+    if (path.steps.empty() || path.steps.front().step != core::PathStep::Deref)
+      return result;
+    result.count = builder.resolveSummaryPath(path, call);
+    QualType pointerType;
+    if (path.isParam()) {
+      if (path.index >= call.getNumArgs())
+        return result;
+      const Expr &arg = *call.getArg(path.index);
+      pointerType = arg.getType();
+      if (const auto ref = builder.resolvePointerValue(arg))
+        result.pointer = ref->place;
+      else if (const auto copied =
+                   PlaceBuilder::copyOrNull(builder.classifyValue(arg)))
+        result.pointer = copied->place;
+    } else if (path.isGlobal()) {
+      if (const auto ref = builder.resolveSummaryPath(path.rootPath(), call)) {
+        result.pointer = ref->place;
+        if (const auto *decl =
+                dyn_cast_if_present<ValueDecl>(builder.declFor(ref->place)))
+          pointerType = decl->getType();
+      }
+    }
+    if (!pointerType.isNull() && pointerType->isPointerType()) {
+      result.key = countKeyFor(pointerType->getPointeeType(),
+                               llvm::ArrayRef(path.steps).drop_front());
+    }
+    return result;
+  };
+  const core::SourceLocation here = locate(call);
+  for (const core::SummaryPath &path : summary.increments) {
+    const Translated translated = translate(path);
+    if (translated.count && recording()) {
+      if (const auto own = countPathFor(translated.count->place))
+        inferred.increments.insert(*own);
+    }
+    if (!translated.pointer || findMoved(*translated.pointer, state))
+      continue;
+    retain(*translated.pointer, translated.key, here, state);
+  }
+  for (const core::SummaryPath &path : summary.decrements) {
+    const Translated translated = translate(path);
+    if (!translated.count)
+      continue;
+    if (recording()) {
+      if (const auto own = countPathFor(translated.count->place))
+        inferred.decrements.insert(*own);
+    }
+    decrementedPlaces.insert(translated.count->place);
+  }
+}
+
+std::optional<core::SummaryPath>
+FunctionDataflow::countPathFor(core::PlaceId count) {
+  // A count reached through a recursive structure (`json_delete` releasing
+  // `a->table[i]`, which releases its own `table[i]`, ...) would otherwise
+  // grow a path per fixpoint round; the summary keeps what fits in a place.
+  auto path = callerVisiblePath(count);
+  if (path && path->steps.size() > MaxPlaceDepth)
+    return std::nullopt;
+  return path;
+}
+
+std::optional<core::PlaceId>
+FunctionDataflow::zeroCountBelow(core::PlaceId pointer,
+                                 const core::PlaceGuard &guard,
+                                 const core::AnalysisState &state) {
+  if (decrementedPlaces.empty())
+    return std::nullopt;
+  const auto object = places.child(pointer, core::PathStep::Deref, {});
+  if (!object)
+    return std::nullopt;
+  const auto zero = [&](core::PlaceId count) {
+    std::optional<core::ValueFact> fact = state.scalars.factOf(count);
+    if (const auto it = guard.conditions.find(count);
+        it != guard.conditions.end()) {
+      if (!fact)
+        fact = it->second;
+      else if (!fact->narrow(it->second))
+        return false;
+    }
+    return fact && !fact->classes.contains(core::Outcome::Positive) &&
+           !fact->classes.contains(core::Outcome::Negative);
+  };
+  for (const core::PlaceId count : decrementedPlaces) {
+    if (!places.isDescendantOf(count, *object))
+      continue;
+    const auto counted = countedObjectOf(count);
+    if (!counted || counted->pointer != pointer)
+      continue;
+    if (zero(count))
+      return count;
+  }
+  // The same cell under a mirror of the pointer (`free(q)` after `--p->rc`
+  // with `q = p`).
+  for (const core::PlaceId mirror : state.aliases.members(pointer)) {
+    if (mirror == pointer || !state.aliases.sameShare(pointer, mirror))
+      continue;
+    const auto mirrorObject = places.child(mirror, core::PathStep::Deref, {});
+    if (!mirrorObject)
+      continue;
+    for (const core::PlaceId count : decrementedPlaces) {
+      if (!places.isDescendantOf(count, *mirrorObject))
+        continue;
+      const auto counted = countedObjectOf(count);
+      if (counted && counted->pointer == mirror && zero(count))
+        return count;
+    }
+  }
+  return std::nullopt;
 }
 
 void FunctionDataflow::handleDecl(const DeclStmt &decl,
@@ -2468,9 +2841,11 @@ void FunctionDataflow::attachOutcome(core::PlaceId dest, const Expr *init,
   for (auto &[cls, consumed] : outcome.consumedBy)
     std::erase(consumed, dest);
   // Worth keeping while a class still has something to retract, or a null
-  // fact to apply (`err = init(&s); if (err != 0) return err;`).
+  // fact to apply (`err = init(&s); if (err != 0) return err;`), or a store
+  // or integer fact (RFC 0010).
   if (outcome.places().empty() && outcome.nullOn.empty() &&
-      outcome.nonNullOn.empty())
+      outcome.nonNullOn.empty() && outcome.stores.empty() &&
+      outcome.factOn.empty())
     return;
   state.pending[dest] = std::move(outcome);
 }
@@ -2788,16 +3163,54 @@ void FunctionDataflow::applySummary(const CallExpr &call,
       continue;
     escapeValue(builder.classifyValue(arg), /*deep=*/true, state);
   }
+  //    RFC 0010, *Per-outcome stores*: a store the callee performs on some
+  //    classes only may be retracted by an outcome test, which then undoes
+  //    the source's escape; what it was before the call is remembered here.
+  std::map<core::SummaryPath, std::pair<core::PlaceId, bool>> copySources;
   for (const core::Store &store : summary.stores) {
     if (store.value.kind != core::ValueSource::Kind::Copy || !store.value.path)
       continue;
-    if (const auto ref = builder.resolveSummaryPath(*store.value.path, call))
+    if (const auto ref = builder.resolveSummaryPath(*store.value.path, call)) {
+      if (!summary.storesOn.empty())
+        copySources.try_emplace(store.dest, ref->place,
+                                state.resources.isEscaped(ref->place));
       escape(ref->place, state);
+    }
   }
 
   //    Arguments the callee dereferences unconditionally must be non-null
   //    (RFC 0008, *Requirements*).
   checkRequiredArguments(call, summary, state);
+
+  //    RFC 0010, *Retaining*: the callee's count adjustments, before its
+  //    result or stores are assigned so a copy of the argument carries the
+  //    new share away.
+  applyAdjustments(call, summary, state);
+
+  //    RFC 0010, *Stores out of sight*: a value the callee copied into
+  //    memory its summary cannot name has a second home. After the
+  //    adjustments, so that a share the call gave the argument is what
+  //    escapes.
+  //    Only a place this function has named can hold a record to mark, so
+  //    paths below the arguments are looked up, not interned.
+  PlaceBuilder::PathLookupCache escapeLookups;
+  for (const auto &[path, effect] : summary.effects) {
+    if (!effect.escaped)
+      continue;
+    if (path.isParam() && !path.hasDeref()) {
+      if (path.index >= call.getNumArgs())
+        continue;
+      const ValueOrigin origin =
+          builder.classifyValue(*call.getArg(path.index));
+      if (const auto copied = PlaceBuilder::copyOrNull(origin))
+        escapeOutOfSight(copied->place, state);
+      else
+        escapeValue(origin, /*deep=*/true, state);
+    } else if (const auto place =
+                   builder.lookupSummaryPath(path, call, escapeLookups)) {
+      escapeOutOfSight(*place, state);
+    }
+  }
 
   // 1. Consumption: the arguments themselves, the caller's memory below them
   //    (`free(b->data)` in the callee) and globals, deepest path first so a
@@ -2808,6 +3221,7 @@ void FunctionDataflow::applySummary(const CallExpr &call,
     PlaceRef ref;
     bool freed;
     bool replaced;
+    bool share;
     std::string family;
     core::PlaceGuard guard;
   };
@@ -2855,6 +3269,7 @@ void FunctionDataflow::applySummary(const CallExpr &call,
                                   .ref = std::move(*ref),
                                   .freed = effect.freed,
                                   .replaced = effect.replaced,
+                                  .share = effect.share,
                                   .family = effect.family,
                                   .guard = std::move(guard)});
     }
@@ -2890,7 +3305,7 @@ void FunctionDataflow::applySummary(const CallExpr &call,
     std::vector<core::PlaceId> marked = doConsume(
         entry.ref,
         entry.freed ? core::MoveReason::Freed : core::MoveReason::Moved, call,
-        state, entry.family, library, entry.replaced, entry.guard);
+        state, entry.family, library, entry.replaced, entry.guard, entry.share);
     llvm::append_range(markedHere, marked);
     if (entry.replaced)
       markedHere.push_back(entry.ref.place);
@@ -3020,6 +3435,33 @@ void FunctionDataflow::applySummary(const CallExpr &call,
                             kept->element, kept->family, kept->ownValue,
                             kept->guard);
     }
+    //    RFC 0010, *Per-outcome stores*: a destination stored on some
+    //    classes only is pending until the result is tested.
+    if (summary.storesOn.empty() || !ref->element.isWhole())
+      continue;
+    core::OutcomeSet on;
+    for (const auto &[cls, classEffects] : summary.outcomes) {
+      if (summary.storesOnClass(cls).contains(dest))
+        on.insert(cls);
+    }
+    if (on.size() == summary.outcomes.size())
+      continue;
+    if (!lastCall || lastCall->call != &call) {
+      core::PendingOutcome fresh;
+      for (const auto &[cls, classEffects] : summary.outcomes)
+        fresh.consumedBy.try_emplace(cls);
+      fresh.callee = calleeName(call);
+      fresh.location = locate(call);
+      lastCall = CallOutcome{.call = &call, .pending = std::move(fresh)};
+    }
+    core::PendingOutcome::PendingStore store{
+        .dest = ref->place, .on = on, .source = std::nullopt};
+    if (const auto source = copySources.find(dest);
+        source != copySources.end()) {
+      store.source = source->second.first;
+      store.sourceEscapedBefore = source->second.second;
+    }
+    lastCall->pending.stores.push_back(store);
   }
 }
 
@@ -3092,6 +3534,19 @@ void FunctionDataflow::notePendingOutcome(
       for (const auto &[cls, effects] : summary.outcomes)
         conditional.consumedBy.try_emplace(cls);
       conditional.nonNullOn[outcome].push_back(ref->place);
+    }
+  }
+  // RFC 0010, *Per-outcome integer facts*: `if (dec_and_test(&o->rc))` learns
+  // `o->rc =0` on the true edge from the callee's `fact positive param 0 *
+  // =0`.
+  for (const auto &[outcome, facts] : summary.factOn) {
+    for (const auto &[path, fact] : facts) {
+      const auto ref = builder.resolveSummaryPath(path, call);
+      if (!ref || !ref->element.isWhole() || !tracksScalar(ref->place))
+        continue;
+      for (const auto &[cls, effects] : summary.outcomes)
+        conditional.consumedBy.try_emplace(cls);
+      conditional.factOn[outcome].emplace_back(ref->place, fact);
     }
   }
   if (conditional.consumedBy.empty())
@@ -3618,23 +4073,43 @@ std::vector<core::PlaceId>
 FunctionDataflow::doConsume(const PlaceRef &ref, core::MoveReason reason,
                             const Expr &at, core::AnalysisState &state,
                             std::string_view family, bool library,
-                            bool replaced, core::PlaceGuard guard) {
+                            bool replaced, core::PlaceGuard guard, bool share) {
   const core::PlaceId place = ref.place;
-  checkAnnotationOnConsume(ref, reason, at, state);
+  // RFC 0010, *Releasing a share*: a `free` on a path where a decremented
+  // count of the object is zero is the inline `Py_DECREF` shape.
+  if (!share && reason == core::MoveReason::Freed && ref.element.isWhole() &&
+      zeroCountBelow(place, guard, state))
+    share = true;
+  // What the share release does to the holder depends on what it owns.
+  const std::optional<core::ResourceRecord> record =
+      share ? state.resources.recordOf(place) : std::nullopt;
+  // A holder with no record releases the caller's share (case 3): that is
+  // the consume the annotation check is about. A holder releasing its own
+  // share touches nothing of the caller's.
+  if (!share || !record)
+    checkAnnotationOnConsume(ref, reason, at, state);
+  if (share)
+    reason = core::MoveReason::Released;
 
   if (const auto hit = findMoved(place, state, ref.element)) {
     const bool bothFreed = hit->record.reason == core::MoveReason::Freed &&
                            reason == core::MoveReason::Freed;
-    if (bothFreed) {
+    const bool bothReleased =
+        hit->record.reason == core::MoveReason::Released &&
+        reason == core::MoveReason::Released;
+    if (bothFreed || bothReleased) {
       core::Diagnostic diagnostic{
           .severity = core::Severity::Error,
           .id = core::diag::DoubleFree,
-          .message = "'" + nameOf(place) + "' is freed twice",
+          .message =
+              "'" + nameOf(place) +
+              (bothReleased ? "' is released twice" : "' is freed twice"),
           .location = locate(at),
           .notes = {},
           .fixits = {},
       };
-      std::string note = "previously freed here";
+      std::string note =
+          bothReleased ? "previously released here" : "previously freed here";
       const core::PlaceId via = hit->record.via.value_or(hit->target);
       if (via != place)
         note += " (through '" + nameOf(via) + "')";
@@ -3685,9 +4160,37 @@ FunctionDataflow::doConsume(const PlaceRef &ref, core::MoveReason reason,
     else
       releaseStorageBelow(place, state);
   }
+  // A share release: the object's contents are the object's business (RFC
+  // 0010, *Releasing a share*), never the container check.
+  if (share && ref.element.isWhole())
+    releaseStorageBelow(place, state);
 
   const core::SourceLocation here = locate(at);
   std::vector<core::PlaceId> marked;
+
+  if (share && record) {
+    // Case 1: a surplus share goes; the name and every other share stay.
+    if (record->shares > 1) {
+      state.resources.release(place);
+      return marked;
+    }
+    // Case 2: the last owned share goes, from the holder and the names that
+    // hold the same share.
+    state.resources.clear(place);
+    for (const auto &[alias, edge] : state.aliases.edgesFrom(place)) {
+      if (alias != place && edge.exact && edge.sameShare)
+        state.resources.clear(alias);
+    }
+    // A `Retained` holder stays valid: the caller's share underlies it, and
+    // nothing of the caller's was consumed.
+    if (record->origin == core::ResourceOrigin::Retained)
+      return marked;
+  }
+  // Case 3 (and the tail of case 2): the name is dead. Only the names that
+  // hold the *same* share go with it; a distinct-share alias keeps its own.
+  const auto ownShare = [&state, place](core::PlaceId other) {
+    return other == place || state.aliases.sameShare(place, other);
+  };
   // The consume happened on a path with these facts, under the callee's
   // condition if it had one (RFC 0009, *Deriving guards*): a later edge that
   // contradicts one of them reinstates the value.
@@ -3701,6 +4204,8 @@ FunctionDataflow::doConsume(const PlaceRef &ref, core::MoveReason reason,
     sameCell = mirrors(place, state);
   for (const ConsumeTarget &target :
        consumeTargets(place, ref.element, state)) {
+    if (share && !ownShare(target.place))
+      continue;
     const bool isCell =
         target.place == place || llvm::is_contained(sameCell, target.place);
     if (replaced && isCell) {
@@ -3857,7 +4362,7 @@ void FunctionDataflow::applyPointerAssign(core::PlaceId dest,
             state);
     if (recording()) {
       for (std::size_t i = 0; i < arms.size(); ++i)
-        recordStore(dest, core::ValueSource::raw());
+        recordStore(dest, core::ValueSource::raw(), state);
     }
     return;
   }
@@ -3942,11 +4447,26 @@ void FunctionDataflow::applyPointerAssign(core::PlaceId dest,
       // The copy holds the same resource; both names now account for it. A
       // copy through an interior edge (`p + 1`, `strchr(p, c)`) does not
       // point at the allocation's start (RFC 0008, *Invalid releases*).
+      //
+      // RFC 0010, *Copies split surplus shares*: a source with more shares
+      // than it needs to stay valid hands one to the copy, which then holds
+      // a share of its own (`q = obj_ref(p)`, `obj_ref(p); l->head = p;`).
+      bool split = false;
       if (source->resource) {
         core::ResourceRecord record = *source->resource;
         record.interior = record.interior || source->interior;
+        const bool surplus = record.shares >= 2 ||
+                             (record.shares == 1 &&
+                              record.origin == core::ResourceOrigin::Retained);
+        if (surplus && !source->interior && element.isWhole() &&
+            source->element.isWhole() && !source->belowDest) {
+          split = true;
+          record.shares = 1;
+        }
         state.resources.hold(dest, record);
       }
+      if (split)
+        state.resources.release(source->place);
       // An asserted raw source has the declared kind from here on.
       const core::OwnershipKind sourceKind =
           assertsKind && source->kind == core::OwnershipKind::Raw
@@ -3956,7 +4476,7 @@ void FunctionDataflow::applyPointerAssign(core::PlaceId dest,
       if (source->belowDest)
         break;
       state.aliases.unite(dest, source->place, !source->interior, element,
-                          source->element);
+                          source->element, /*sameShare=*/!split);
       state.loans.copyHolder(source->place, dest);
       mirrorSubtree(source->place, dest, state);
       // A copied loan must outlive its new holder (RFC 0001, *Lifetimes*),
@@ -4024,9 +4544,15 @@ void FunctionDataflow::applyPointerAssign(core::PlaceId dest,
     }
   }
 
+  // RFC 0010, *Per-outcome stores*: the path stored into on this path, for
+  // the classes of the returns it reaches. In the state so the fixpoint
+  // joins it. An element store is a store to the summary's `a[*]`.
+  if (const auto path = stableSummaryPathOf(dest);
+      path && (!path->isParam() || path->hasDeref()))
+    state.stored.insert(*path);
   if (recording()) {
     for (const Arm &arm : arms)
-      recordStore(dest, arm.summary);
+      recordStore(dest, arm.summary, state);
   }
 }
 
@@ -4414,16 +4940,27 @@ void FunctionDataflow::reportUseOfMoved(core::PlaceId used, const MovedHit &hit,
     return;
   }
   const bool freed = hit.record.reason == core::MoveReason::Freed;
+  // RFC 0010: a released share reads as a free of the name.
+  const bool released = hit.record.reason == core::MoveReason::Released;
+  std::string message = "use of '" + nameOf(used) + "' after ";
+  if (released)
+    message += "its reference was released";
+  else
+    message += std::string("it was ") + (freed ? "freed" : "moved");
   core::Diagnostic diagnostic{
       .severity = core::Severity::Error,
-      .id = freed ? core::diag::UseAfterFree : core::diag::UseAfterMove,
-      .message = "use of '" + nameOf(used) + "' after it was " +
-                 (freed ? "freed" : "moved"),
+      .id = freed || released ? core::diag::UseAfterFree
+                              : core::diag::UseAfterMove,
+      .message = std::move(message),
       .location = locate(at),
       .notes = {},
       .fixits = {},
   };
-  std::string note = freed ? "freed here" : "moved here";
+  std::string note = "moved here";
+  if (released)
+    note = "reference released here";
+  else if (freed)
+    note = "freed here";
   const core::PlaceId via = hit.record.via.value_or(hit.target);
   if (via != used)
     note += " (through '" + nameOf(via) + "')";
@@ -4484,14 +5021,14 @@ FunctionDataflow::declaredAnnotations(core::PlaceId place) const {
   if (decl == nullptr)
     return std::nullopt;
   if (const auto *field = dyn_cast<FieldDecl>(decl)) {
-    const AnnotationSet annotations = getAnnotations(*field);
+    AnnotationSet annotations = getAnnotations(*field);
     if (annotations.ownership())
       return annotations;
     return std::nullopt;
   }
   if (const auto *var = dyn_cast<VarDecl>(decl);
       var != nullptr && var->hasGlobalStorage()) {
-    const AnnotationSet annotations = getAnnotations(*var);
+    AnnotationSet annotations = getAnnotations(*var);
     if (annotations.ownership())
       return annotations;
   }
@@ -5107,6 +5644,11 @@ void FunctionDataflow::dump(const core::AnalysisState *exitState) {
       os << " " << core::toString(record->origin);
       if (!record->family.empty())
         os << " " << record->family;
+      // RFC 0010: the shares, when there is more than the usual one.
+      if (record->shares != 1)
+        os << " shares=" << record->shares;
+      if (!record->countField.empty())
+        os << " count(" << record->countField << ")";
       if (record->escaped)
         os << " escaped";
       if (record->interior)
@@ -5163,6 +5705,9 @@ void FunctionDataflow::dump(const core::AnalysisState *exitState) {
     std::string text(label);
     if (!effect.family.empty())
       text += "(" + effect.family + ")";
+    // RFC 0010: a share release.
+    if (effect.share)
+      text += ",share";
     return text;
   };
   for (const auto &[path, effect] : inferred.effects) {
@@ -5176,7 +5721,8 @@ void FunctionDataflow::dump(const core::AnalysisState *exitState) {
           std::pair{effect.consumed() && effect.replaced,
                     std::string("replaced")},
           std::pair{effect.consumed() && effect.element,
-                    std::string("element")}}) {
+                    std::string("element")},
+          std::pair{effect.escaped, std::string("escaped")}}) {
       if (flag) {
         os << sep << label;
         sep = "|";
@@ -5237,7 +5783,29 @@ void FunctionDataflow::dump(const core::AnalysisState *exitState) {
     if (const auto nonNulls = inferred.nonNullOn.find(outcome);
         nonNulls != inferred.nonNullOn.end())
       describePaths("notnull", nonNulls->second);
+    // RFC 0010: the stores of the class and the facts at its returns.
+    if (const auto stored = inferred.storesOn.find(outcome);
+        stored != inferred.storesOn.end())
+      describePaths("stored", stored->second);
+    if (const auto facts = inferred.factOn.find(outcome);
+        facts != inferred.factOn.end()) {
+      os << " facts{";
+      first = true;
+      for (const auto &[path, fact] : facts->second) {
+        os << (first ? "" : ", ") << summaryName(path) << " "
+           << fact.toString();
+        first = false;
+      }
+      os << "}";
+    }
   }
+  // RFC 0010: the counts this function adjusts and releases through.
+  if (!inferred.increments.empty())
+    describePaths("increments", inferred.increments);
+  if (!inferred.decrements.empty())
+    describePaths("decrements", inferred.decrements);
+  if (!inferred.counts.empty())
+    describePaths("counts", inferred.counts);
   os << "\n";
 }
 
@@ -5364,10 +5932,12 @@ static core::PlaceEffect effectOfMove(core::MoveReason reason,
                                       const core::ElementWitness &element,
                                       core::PathGuard when = {}) {
   core::PlaceEffect effect;
-  if (reason == core::MoveReason::Freed)
+  if (reason == core::MoveReason::Freed || reason == core::MoveReason::Released)
     effect.freed = true;
   else
     effect.moved = true;
+  // RFC 0010: a released share is `freed,share`.
+  effect.share = reason == core::MoveReason::Released;
   effect.family = std::string(family);
   effect.element = !element.isWhole();
   effect.when = std::move(when);
@@ -5585,8 +6155,11 @@ void FunctionDataflow::recordOutcomes(const Expr &value,
         tested.emplace(*path, test->second);
     }
   }
+  // RFC 0010: `return --*r == 0` says what `*r` is on each class.
+  const std::optional<ScalarReturnTest> scalarTest = scalarTestReturn(value);
 
   for (const core::Outcome outcome : classes) {
+    recordStoredAtReturn(outcome, state, scalarTest);
     core::OutcomeEffects effects = base;
     if (retractable != nullptr) {
       core::PendingOutcome narrowed = *retractable;
@@ -5641,6 +6214,143 @@ FunctionDataflow::callerVisiblePath(core::PlaceId place) {
   return path;
 }
 
+/// The integer classes a fact does not cover: the negation of `x OP k`.
+static core::ValueFact negatedFact(const core::ValueFact &fact) {
+  core::ValueFact result;
+  for (const core::Outcome outcome :
+       {core::Outcome::Negative, core::Outcome::Zero,
+        core::Outcome::Positive}) {
+    if (!fact.classes.contains(outcome))
+      result.classes.insert(outcome);
+  }
+  if (result.classes == core::OutcomeSet{core::Outcome::Zero})
+    result.constant = 0;
+  return result;
+}
+
+std::optional<FunctionDataflow::ScalarReturnTest>
+FunctionDataflow::scalarTestReturn(const Expr &value) {
+  if (!value.getType()->isIntegerType())
+    return std::nullopt;
+  // `!e` flips the classes; `!!e` is `e`.
+  bool negated = false;
+  const Expr *e = value.IgnoreParenImpCasts();
+  for (;;) {
+    const auto *unary = dyn_cast<UnaryOperator>(e);
+    if (unary == nullptr || unary->getOpcode() != UO_LNot)
+      break;
+    negated = !negated;
+    e = unary->getSubExpr()->IgnoreParenImpCasts();
+  }
+  const auto result = [negated](core::PlaceId place, core::ValueFact whenTrue) {
+    ScalarReturnTest test{.place = place, .factOn = {}};
+    const core::ValueFact whenFalse = negatedFact(whenTrue);
+    test.factOn[core::Outcome::Positive] = negated ? whenFalse : whenTrue;
+    test.factOn[core::Outcome::Zero] = negated ? whenTrue : whenFalse;
+    return test;
+  };
+  // `x OP k`, `k OP x` on an integer place (at an offset: `--*r == 0`).
+  if (const auto *binary = dyn_cast<BinaryOperator>(e);
+      binary != nullptr && binary->isComparisonOp() &&
+      binary->getLHS()->getType()->isIntegerType() &&
+      binary->getRHS()->getType()->isIntegerType()) {
+    const Expr *x = nullptr;
+    BinaryOperatorKind op = binary->getOpcode();
+    std::optional<std::int64_t> k = integerConstant(*binary->getRHS(), context);
+    if (k) {
+      x = binary->getLHS();
+    } else {
+      k = integerConstant(*binary->getLHS(), context);
+      if (!k)
+        return std::nullopt;
+      x = binary->getRHS();
+      op = flipComparison(op);
+    }
+    const PlaceBuilder::ScalarOperand read = builder.scalarOperand(*x);
+    if (!read.place || !read.place->element.isWhole() ||
+        !tracksScalar(read.place->place))
+      return std::nullopt;
+    // `x + d OP k` is `x OP k - d`.
+    const std::int64_t adjusted = *k - read.offset;
+    const bool unsignedComparison =
+        binary->getLHS()->getType()->isUnsignedIntegerType();
+    if (unsignedComparison && adjusted < 0)
+      return std::nullopt;
+    const unsigned width =
+        std::clamp(context.getIntWidth(binary->getLHS()->getType()), 1U, 64U);
+    core::ValueFact whenTrue;
+    for (const core::Outcome outcome :
+         classesSatisfying(op, adjusted, true, unsignedComparison, width))
+      whenTrue.classes.insert(outcome);
+    if (whenTrue.classes.empty())
+      return std::nullopt;
+    if ((op == BO_EQ) && !read.scaled)
+      whenTrue.constant = adjusted;
+    return result(read.place->place, whenTrue);
+  }
+  // `return *r;`, `return !*r;`: the value's own class.
+  const PlaceBuilder::ScalarOperand read = builder.scalarOperand(*e);
+  if (!read.place || !read.place->element.isWhole() ||
+      !tracksScalar(read.place->place) || read.offset != 0)
+    return std::nullopt;
+  if (negated)
+    return result(read.place->place, core::ValueFact::ofConstant(0));
+  ScalarReturnTest test{.place = read.place->place, .factOn = {}};
+  test.factOn[core::Outcome::Positive] =
+      core::ValueFact::of(core::Outcome::Positive);
+  test.factOn[core::Outcome::Zero] = core::ValueFact::ofConstant(0);
+  test.factOn[core::Outcome::Negative] =
+      core::ValueFact::of(core::Outcome::Negative);
+  return test;
+}
+
+void FunctionDataflow::recordStoredAtReturn(
+    core::Outcome outcome, const core::AnalysisState &state,
+    const std::optional<ScalarReturnTest> &tested) {
+  // The facts about the caller's integer memory this function wrote (a
+  // fact about memory it only read is the caller's to know), plus what the
+  // returned test says about its place.
+  std::map<core::SummaryPath, core::ValueFact> facts;
+  for (const auto &[place, fact] : state.scalars.all()) {
+    const auto path = callerVisiblePath(place);
+    if (!path || !writtenScalarPaths.contains(*path))
+      continue;
+    facts.emplace(*path, fact);
+  }
+  if (tested) {
+    if (const auto it = tested->factOn.find(outcome);
+        it != tested->factOn.end()) {
+      if (const auto path = callerVisiblePath(tested->place);
+          path && writtenScalarPaths.contains(*path)) {
+        auto [entry, inserted] = facts.try_emplace(*path, it->second);
+        if (!inserted && !entry->second.narrow(it->second))
+          facts.erase(entry);
+      }
+    }
+  }
+  auto [it, first] = storedAtReturn.try_emplace(outcome);
+  StoredAtReturn &entry = it->second;
+  entry.stored.insert(state.stored.begin(), state.stored.end());
+  if (!entry.anyReturn) {
+    entry.anyReturn = true;
+    entry.facts = std::move(facts);
+    return;
+  }
+  // A must-fact: joined over the returns of the class, dropped when absent.
+  for (auto current = entry.facts.begin(); current != entry.facts.end();) {
+    const auto here = facts.find(current->first);
+    if (here == facts.end()) {
+      current = entry.facts.erase(current);
+      continue;
+    }
+    current->second.join(here->second);
+    if (current->second.trivial())
+      current = entry.facts.erase(current);
+    else
+      ++current;
+  }
+}
+
 std::optional<std::pair<const Expr *, core::Outcome>>
 FunctionDataflow::nullTestReturn(const Expr &value) const {
   if (!value.getType()->isIntegerType())
@@ -5682,7 +6392,8 @@ FunctionDataflow::nullTestReturn(const Expr &value) const {
 }
 
 void FunctionDataflow::recordStore(core::PlaceId dest,
-                                   const core::ValueSource &value) {
+                                   const core::ValueSource &value,
+                                   const core::AnalysisState &state) {
   if (!recording())
     return;
   // Deliberately not mirrored onto the destination's aliases (`b = outer;
@@ -5693,9 +6404,33 @@ void FunctionDataflow::recordStore(core::PlaceId dest,
   const auto path = stableSummaryPathOf(dest);
   // Caller-visible destinations only: memory below a dereference, or a
   // global (including a `static` local, which outlives the call).
-  if (!path || (path->isParam() && !path->hasDeref()))
+  if (!path || (path->isParam() && !path->hasDeref())) {
+    if (!path)
+      recordStoreOutOfSight(dest, value, state);
     return;
+  }
   inferred.addStore(core::Store{.dest = *path, .value = value});
+}
+
+void FunctionDataflow::recordStoreOutOfSight(core::PlaceId dest,
+                                             const core::ValueSource &value,
+                                             const core::AnalysisState &state) {
+  // RFC 0010, *Stores out of sight*: `n->value = v` with `n` a local has no
+  // caller-visible destination, but when `n` is a node this function links
+  // into the caller's container the caller's `v` has a second home. A copy
+  // of a caller-visible value written below a dereference of a pointer that
+  // does not borrow a local's storage is recorded as `escaped`.
+  if (value.kind != core::ValueSource::Kind::Copy || !value.path)
+    return;
+  const auto deref = places.innermostDeref(dest);
+  if (!deref)
+    return;
+  const core::PlaceId pointer = *places.parent(*deref);
+  for (const core::Loan &loan : state.loans.heldBy(pointer)) {
+    if (isStorageOfVariable(loan.place))
+      return;
+  }
+  inferred.addEffect(*value.path, core::PlaceEffect{.escaped = true});
 }
 
 core::ValueSource FunctionDataflow::sourceOf(const ValueOrigin &origin,
@@ -5898,11 +6633,131 @@ void FunctionDataflow::finalizeSummary(const core::AnalysisState *exitState) {
       conditional = true;
     }
   }
+  // RFC 0010, *Per-outcome stores*: per class, the destinations stored on
+  // some path returning it, kept only when the classes differ. A `fresh`
+  // store not held at a class's returns was already a `nullOn` entry (RFC
+  // 0007); this covers the copies and borrows that rule cannot see.
+  if (!inferred.stores.empty() && storedAtReturn.size() > 1) {
+    const std::set<core::SummaryPath> dests = inferred.storeDestinations();
+    std::map<core::Outcome, std::set<core::SummaryPath>> perClass;
+    bool differs = false;
+    for (const auto &[outcome, entry] : storedAtReturn) {
+      std::set<core::SummaryPath> &on = perClass[outcome];
+      std::ranges::set_intersection(dests, entry.stored,
+                                    std::inserter(on, on.end()));
+      if (on.size() != dests.size())
+        differs = true;
+    }
+    if (differs) {
+      for (auto &[outcome, on] : perClass) {
+        inferred.addOutcome(outcome);
+        inferred.storesOn[outcome] = std::move(on);
+      }
+      conditional = true;
+    }
+  }
+  // RFC 0010, *Per-outcome integer facts*: what the caller's integer memory
+  // this function wrote satisfies at every return of a class.
+  for (const auto &[outcome, entry] : storedAtReturn) {
+    if (entry.facts.empty())
+      continue;
+    inferred.addOutcome(outcome);
+    inferred.factOn[outcome] = entry.facts;
+    conditional = true;
+  }
+  // RFC 0010, *Recognising an `unref` body*: a consume guarded by a zero
+  // count of the consumed object is a share release.
+  recogniseShareReleases();
   // Classes only matter when some consumption depends on them; a summary
   // without conditional consumption stays as small as an RFC 0003 one.
   if (!conditional)
     inferred.outcomes.clear();
+  inferred.normalizeStoresOn();
   dropUnstableGuards();
+}
+
+void FunctionDataflow::recogniseShareReleases() {
+  // `if (--o->rc == 0) free(o);`: the consume of `param 0` carries the
+  // conjunct `param 0 *.rc =0` (RFC 0009 derived it from the edge), and
+  // the body decremented that path. The consume becomes `freed,share` with
+  // no guard (every call releases one share), the count path is recorded,
+  // and the consumes of the object's contents under the same conjunct go:
+  // they happen when the object does, which is the object's business.
+  //
+  // A release already marked `share` (a callee's `WEAVEC_RELEASES`, or an
+  // inline free recognised by `zeroCountBelow`) records its count too.
+  std::set<core::SummaryPath> shareRoots;
+  for (auto &[path, effect] : inferred.effects) {
+    if (!effect.freed || !path.isParam() || !path.isRoot())
+      continue;
+    if (effect.share) {
+      shareRoots.insert(path);
+      continue;
+    }
+    std::optional<core::SummaryPath> count;
+    for (const auto &[key, fact] : effect.when.conditions) {
+      if (!path.isProperPrefixOf(key) || !inferred.decrements.contains(key))
+        continue;
+      if (fact.classes.contains(core::Outcome::Positive) ||
+          fact.classes.contains(core::Outcome::Negative))
+        continue;
+      count = key;
+      break;
+    }
+    if (!count)
+      continue;
+    effect.share = true;
+    effect.when.conditions.erase(*count);
+    inferred.counts.insert(*count);
+    shareRoots.insert(path);
+    for (auto &[outcome, effects] : inferred.outcomes) {
+      if (const auto it = effects.find(path); it != effects.end()) {
+        it->second.share = true;
+        it->second.when.conditions.erase(*count);
+      }
+    }
+  }
+  if (shareRoots.empty())
+    return;
+  // The count of a share release the body did not decrement itself (a
+  // callee did, or the count is unknown): the object stands for it.
+  for (const core::SummaryPath &root : shareRoots) {
+    const bool known = std::ranges::any_of(inferred.counts,
+                                           [&root](const core::SummaryPath &c) {
+                                             return root.isProperPrefixOf(c);
+                                           });
+    if (!known) {
+      std::optional<core::SummaryPath> decremented;
+      for (const core::SummaryPath &d : inferred.decrements) {
+        if (root.isProperPrefixOf(d)) {
+          decremented = d;
+          break;
+        }
+      }
+      inferred.counts.insert(decremented.value_or(root.deref()));
+    }
+  }
+  // Consumes below a released share are the object's business.
+  const auto belowShare = [&shareRoots](const core::SummaryPath &path) {
+    return std::ranges::any_of(shareRoots,
+                               [&path](const core::SummaryPath &root) {
+                                 return root.isProperPrefixOf(path);
+                               });
+  };
+  for (auto it = inferred.effects.begin(); it != inferred.effects.end();) {
+    if (it->second.consumed() && belowShare(it->first))
+      it = inferred.effects.erase(it);
+    else
+      ++it;
+  }
+  for (auto &[outcome, effects] : inferred.outcomes) {
+    for (auto it = effects.begin(); it != effects.end();) {
+      if (it->second.consumed() && belowShare(it->first))
+        it = effects.erase(it);
+      else
+        ++it;
+    }
+  }
 }
 
 void FunctionDataflow::dropUnstableGuards() {

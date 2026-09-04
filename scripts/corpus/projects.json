@@ -6,7 +6,9 @@
     "arguments passed after `--`. Keep this list short enough to run in a few",
     "minutes; add a project when an RFC defers a question to corpus testing that",
     "the current set cannot answer. `whole_program: true` analyses the files as one",
-    "program (weavec --whole-program, RFC 0005) instead of one at a time."
+    "program (weavec --whole-program, RFC 0005) instead of one at a time. `{support}`",
+    "in `args` expands to scripts/corpus/support/<name>, for headers a checkout's",
+    "build would generate."
   ],
   "projects": [
     {
@@ -82,7 +84,7 @@
       "files": ["l*.c"],
       "args": ["-std=c99", "-I.", "-DLUA_USE_POSIX"],
       "whole_program": true,
-      "notes": "A garbage-collected VM, about five minutes as one program. realloc through the l_alloc function pointer, a 968-block interpreter loop with computed goto (luaV_execute), linked stacks of locals in the parser. Stresses outcome-conditional summaries, dead-variable cleanup and analysis time; see the triage in README.md."
+      "notes": "A garbage-collected VM, a few minutes as one program with a release build (see the timings in README.md). realloc through the l_alloc function pointer, a 968-block interpreter loop with computed goto (luaV_execute), linked stacks of locals in the parser. Stresses outcome-conditional summaries, dead-variable cleanup and analysis time; see the triage in README.md."
     },
     {
       "name": "linenoise-program",
@@ -92,6 +94,15 @@
       "args": ["-std=c99", "-I.", "-D_GNU_SOURCE"],
       "whole_program": true,
       "notes": "example.c installs the completion and hints callbacks linenoise.c calls through pointers, and frees what linenoise() returns."
+    },
+    {
+      "name": "jansson",
+      "url": "https://github.com/akheron/jansson.git",
+      "ref": "master",
+      "files": ["src/dump.c", "src/error.c", "src/hashtable.c", "src/hashtable_seed.c", "src/load.c", "src/memory.c", "src/pack_unpack.c", "src/strbuffer.c", "src/strconv.c", "src/utf.c", "src/value.c", "src/version.c"],
+      "args": ["-std=c99", "-Isrc", "-I{support}", "-DHAVE_CONFIG_H"],
+      "whole_program": true,
+      "notes": "A reference-counted JSON library: json_incref/json_decref keep json_t::refcount with __atomic_add_fetch/__atomic_sub_fetch (inline in jansson.h), json_decref frees through json_delete in value.c, containers take a share of what is stored in them (json_object_set takes one, json_object_set_new does not). The corpus for RFC 0010: shares, releases, per-outcome stores. jansson_config.h is the configured header the build would generate; see support/jansson."
     }
   ]
 }

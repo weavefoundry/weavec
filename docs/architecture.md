@@ -178,7 +178,7 @@ argument-conditional summaries and inferred `noreturn` by
   `CompilationDatabaseUnit` parses from a compilation database.
 - `Sidecar.h` reads and writes `foo.o.weavec`: the unit's exports, the cc1
   command that produced it and the diagnostics already reported, in a
-  line-oriented text format versioned by its `weavec-summaries 5` header.
+  line-oriented text format versioned by its `weavec-summaries 6` header.
 - `Driver.h` is `weavec-cc`: Clang's `driver::Driver` plans the jobs, each
   `-cc1` job runs in-process with WeaveC's consumer multiplexed beside
   Clang's, the compile step writes the sidecar, and the link step runs

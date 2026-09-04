@@ -216,5 +216,96 @@ TEST(ResourceTracker, JoinAndDropWeakenGuards) {
   EXPECT_TRUE(left.holds(PlaceId{0}));
 }
 
+// RFC 0010, *Shares*: an increment on a holder adds a share; a release takes
+// one; the record goes with the last.
+TEST(ResourceTracker, RetainAndReleaseCountShares) {
+  ResourceTracker tracker;
+  tracker.hold(PlaceId{0}, allocated(3, "free"));
+  EXPECT_EQ(tracker.recordOf(PlaceId{0})->shares, 1U);
+  EXPECT_TRUE(tracker.recordOf(PlaceId{0})->countField.empty());
+
+  const ResourceRecord after =
+      tracker.retain(PlaceId{0}, "struct obj.rc", at(5));
+  EXPECT_EQ(after.shares, 2U);
+  EXPECT_EQ(after.origin, ResourceOrigin::Allocated) << "origin kept";
+  EXPECT_EQ(after.location.line, 3U) << "the allocation stays the location";
+  EXPECT_EQ(after.countField, "struct obj.rc");
+
+  EXPECT_EQ(tracker.release(PlaceId{0}), 1U);
+  EXPECT_TRUE(tracker.holds(PlaceId{0})) << "one share left";
+  EXPECT_EQ(tracker.release(PlaceId{0}), 0U);
+  EXPECT_FALSE(tracker.holds(PlaceId{0})) << "the last share ends the record";
+  EXPECT_EQ(tracker.release(PlaceId{0}), 0U) << "no record: no-op";
+}
+
+// RFC 0010, *Retaining*: an increment on a place without a record makes a
+// `Retained` one whose location is the increment.
+TEST(ResourceTracker, RetainWithoutARecordIsRetained) {
+  ResourceTracker tracker;
+  const ResourceRecord record =
+      tracker.retain(PlaceId{2}, "struct obj.rc", at(7));
+  EXPECT_EQ(record.origin, ResourceOrigin::Retained);
+  EXPECT_EQ(record.shares, 1U);
+  EXPECT_EQ(record.location.line, 7U);
+  EXPECT_EQ(record.countField, "struct obj.rc");
+  EXPECT_TRUE(record.family.empty());
+  ASSERT_TRUE(tracker.holds(PlaceId{2}));
+  EXPECT_EQ(*tracker.recordOf(PlaceId{2}), record);
+  EXPECT_EQ(toString(ResourceOrigin::Retained), "retained");
+}
+
+TEST(ResourceTracker, UnescapeRetractsAnEscape) {
+  ResourceTracker tracker;
+  tracker.unescape(PlaceId{1});
+  EXPECT_FALSE(tracker.holds(PlaceId{1})) << "no record: no-op";
+  tracker.hold(PlaceId{1}, allocated(1, "free"));
+  tracker.escape(PlaceId{1});
+  ASSERT_TRUE(tracker.isEscaped(PlaceId{1}));
+  tracker.unescape(PlaceId{1});
+  EXPECT_FALSE(tracker.isEscaped(PlaceId{1}));
+  EXPECT_TRUE(tracker.holds(PlaceId{1}));
+}
+
+// RFC 0010, *Joins*: the share count joins to the smaller (a share owned on
+// one path only may already be gone), the count field clears on
+// disagreement, and an allocation outranks a retained share.
+TEST(ResourceTracker, JoinTakesFewerSharesAndPrefersAllocated) {
+  ResourceTracker left;
+  left.hold(PlaceId{0}, allocated(3, "free"));
+  left.retain(PlaceId{0}, "struct obj.rc", at(4));
+  left.retain(PlaceId{0}, "struct obj.rc", at(5));
+  ASSERT_EQ(left.recordOf(PlaceId{0})->shares, 3U);
+
+  ResourceTracker right;
+  right.hold(PlaceId{0}, allocated(3, "free"));
+  right.retain(PlaceId{0}, "struct obj.users", at(6));
+  ASSERT_EQ(right.recordOf(PlaceId{0})->shares, 2U);
+
+  EXPECT_TRUE(left.join(right));
+  EXPECT_EQ(left.recordOf(PlaceId{0})->shares, 2U);
+  EXPECT_TRUE(left.recordOf(PlaceId{0})->countField.empty())
+      << "fields disagree";
+  EXPECT_EQ(left.recordOf(PlaceId{0})->family, "free");
+
+  ResourceTracker retained;
+  retained.retain(PlaceId{1}, "struct obj.rc", at(8));
+  ResourceTracker owned;
+  owned.hold(PlaceId{1}, allocated(2, "free"));
+  EXPECT_TRUE(retained.join(owned));
+  EXPECT_EQ(retained.recordOf(PlaceId{1})->origin, ResourceOrigin::Allocated);
+  EXPECT_EQ(retained.recordOf(PlaceId{1})->location.line, 2U);
+  EXPECT_EQ(retained.recordOf(PlaceId{1})->family, "free");
+  EXPECT_EQ(retained.recordOf(PlaceId{1})->shares, 1U);
+
+  // The same join the other way round lands on the same record.
+  ResourceTracker owned2;
+  owned2.hold(PlaceId{1}, allocated(2, "free"));
+  ResourceTracker retained2;
+  retained2.retain(PlaceId{1}, "struct obj.rc", at(8));
+  owned2.join(retained2);
+  EXPECT_EQ(owned2.recordOf(PlaceId{1})->origin, ResourceOrigin::Allocated);
+  EXPECT_EQ(owned2.recordOf(PlaceId{1})->shares, 1U);
+}
+
 } // namespace
 } // namespace weavec::core

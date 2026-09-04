@@ -91,6 +91,8 @@ std::string printFlags(const PlaceEffect &effect) {
   add(effect.moved, "moved", true);
   add(effect.consumed() && effect.replaced, "replaced", false);
   add(effect.consumed() && effect.element, "element", false);
+  add(effect.consumed() && effect.share, "share", false);
+  add(effect.escaped, "escaped", false);
   return flags;
 }
 
@@ -169,6 +171,32 @@ std::string printSummary(const FunctionSummary &summary,
   }
   for (const std::uint32_t param : summary.requiresNonNull)
     text += "  requires " + std::to_string(param) + '\n';
+  for (const SummaryPath &path : summary.increments)
+    text += "  increment " + printSummaryPath(path, names) + '\n';
+  for (const SummaryPath &path : summary.decrements)
+    text += "  decrement " + printSummaryPath(path, names) + '\n';
+  for (const SummaryPath &path : summary.counts)
+    text += "  count " + printSummaryPath(path, names) + '\n';
+  for (const auto &[outcome, paths] : summary.storesOn) {
+    // A class that stores nothing is a bare `outcome` line plus the absence
+    // of `stored` lines; it is distinguishable from "unconditional" only
+    // because some other class has a `stored` line. Print an explicit
+    // marker so an all-empty map survives the round trip.
+    if (paths.empty()) {
+      text += "  stored " + std::string(toString(outcome)) + '\n';
+      continue;
+    }
+    for (const SummaryPath &path : paths) {
+      text += "  stored " + std::string(toString(outcome)) + ' ' +
+              printSummaryPath(path, names) + '\n';
+    }
+  }
+  for (const auto &[outcome, facts] : summary.factOn) {
+    for (const auto &[path, fact] : facts) {
+      text += "  fact " + std::string(toString(outcome)) + ' ' +
+              printSummaryPath(path, names) + ' ' + fact.toString() + '\n';
+    }
+  }
   text += "end\n";
   return text;
 }
@@ -356,6 +384,10 @@ static bool parseFlags(std::string_view text, PlaceEffect &effect) {
       effect.replaced = true;
     else if (flag == "element")
       effect.element = true;
+    else if (flag == "share")
+      effect.share = true;
+    else if (flag == "escaped")
+      effect.escaped = true;
     else
       return false;
     if (!family.empty()) {
@@ -370,8 +402,9 @@ static bool parseFlags(std::string_view text, PlaceEffect &effect) {
       break;
     pos = comma + 1;
   }
-  // `replaced` and `element` qualify a consume; alone they describe nothing.
-  if ((effect.replaced || effect.element) && !effect.consumed())
+  // `replaced`, `element` and `share` qualify a consume; alone they describe
+  // nothing.
+  if ((effect.replaced || effect.element || effect.share) && !effect.consumed())
     return false;
   return !effect.empty();
 }
@@ -521,6 +554,43 @@ std::optional<FunctionSummary> parseSummary(std::string_view record,
            end == index.data() + index.size();
       if (ok)
         summary.requiresNonNull.insert(param);
+    } else if (kind == "increment" || kind == "decrement" || kind == "count") {
+      ParsedPath path;
+      ok = parsePath(tokens, resolve, path);
+      if (ok && path.path) {
+        if (kind == "increment")
+          summary.increments.insert(*path.path);
+        else if (kind == "decrement")
+          summary.decrements.insert(*path.path);
+        else
+          summary.counts.insert(*path.path);
+      }
+    } else if (kind == "stored") {
+      const std::optional<Outcome> outcome = parseOutcome(tokens.take());
+      ok = outcome.has_value();
+      if (ok) {
+        summary.addOutcome(*outcome);
+        std::set<SummaryPath> &paths = summary.storesOn[*outcome];
+        if (!tokens.empty()) {
+          ParsedPath path;
+          ok = parsePath(tokens, resolve, path);
+          if (ok && path.path)
+            paths.insert(*path.path);
+        }
+      }
+    } else if (kind == "fact") {
+      const std::optional<Outcome> outcome = parseOutcome(tokens.take());
+      ParsedPath path;
+      ok = outcome.has_value() && parsePath(tokens, resolve, path);
+      std::optional<ValueFact> fact;
+      if (ok) {
+        fact = ValueFact::parse(tokens.take());
+        ok = fact.has_value();
+      }
+      if (ok && path.path) {
+        summary.addOutcome(*outcome);
+        summary.factOn[*outcome].emplace(*path.path, *fact);
+      }
     } else {
       // Unknown line kinds are skipped for forward compatibility.
       continue;
@@ -533,6 +603,8 @@ std::optional<FunctionSummary> parseSummary(std::string_view record,
     return fail("empty record");
   if (!closed)
     return fail("missing 'end'");
+  // A `stored` class whose every path was a declined global says nothing.
+  summary.normalizeStoresOn();
   return summary;
 }
 

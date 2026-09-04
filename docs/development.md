@@ -129,7 +129,7 @@ editor integration.
 - `weavec-cc` runs its `-cc1` jobs in-process, so `lldb -- build/dev/bin/
   weavec-cc -c file.c` stops in the analysis directly; `weavec-cc -###
   file.c` prints the jobs Clang's driver planned. A unit's exports are in
-  `<object>.weavec` next to the object (`weavec-summaries 5` header; one
+  `<object>.weavec` next to the object (`weavec-summaries 6` header; one
   `function ... summary ... end` record per exported function); the link
   step re-runs the `arg` lines recorded there.
 - `weavec --whole-program --dump-analysis a.c b.c --` prints each unit's

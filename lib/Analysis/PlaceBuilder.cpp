@@ -16,6 +16,7 @@
 
 #include "llvm/ADT/APSInt.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/Support/Casting.h"
 
 using namespace clang;
@@ -145,6 +146,26 @@ PlaceBuilder::summaryPathOf(core::PlaceId place) {
   return path;
 }
 
+std::optional<PlaceRef> PlaceBuilder::copyOrNull(const ValueOrigin &origin) {
+  if (origin.kind == ValueOrigin::Kind::Copy)
+    return origin.place;
+  // `f(obj_ref(p))` where `obj_ref` returns `{copy param 0, null when[param
+  // 0 null]}`: the value is `p` wherever it is anything (RFC 0010, the
+  // returning-ref shape).
+  if (origin.kind != ValueOrigin::Kind::Conditional)
+    return std::nullopt;
+  std::optional<PlaceRef> copied;
+  for (const ValueOrigin &alternative : origin.alternatives) {
+    if (alternative.kind == ValueOrigin::Kind::Null)
+      continue;
+    const auto here = copyOrNull(alternative);
+    if (!here || (copied && copied->place != here->place))
+      return std::nullopt;
+    copied = here;
+  }
+  return copied;
+}
+
 std::optional<PlaceRef>
 PlaceBuilder::resolveSummaryPath(const core::SummaryPath &path,
                                  const CallExpr &call) {
@@ -157,8 +178,8 @@ PlaceBuilder::resolveSummaryPath(const core::SummaryPath &path,
       return std::nullopt;
     argExpr = call.getArg(path.index);
     const ValueOrigin origin = classifyValue(*argExpr);
-    if (origin.kind == ValueOrigin::Kind::Copy && origin.place) {
-      ref = *origin.place;
+    if (const auto copied = copyOrNull(origin)) {
+      ref = *copied;
     } else if (origin.kind == ValueOrigin::Kind::Borrow && origin.place) {
       // The argument is `&x`: there is no place holding the pointer, and
       // `param(i)*` is `x` itself.
@@ -243,8 +264,8 @@ PlaceBuilder::lookupSummaryRoot(const core::SummaryPath &path,
   if (path.index >= call.getNumArgs())
     return std::nullopt;
   const ValueOrigin origin = classifyValue(*call.getArg(path.index));
-  if (origin.kind == ValueOrigin::Kind::Copy && origin.place)
-    return std::pair{origin.place->place, std::size_t{0}};
+  if (const auto copied = copyOrNull(origin))
+    return std::pair{copied->place, std::size_t{0}};
   if (origin.kind == ValueOrigin::Kind::Borrow && origin.place) {
     if (path.steps.empty() || path.steps.front().step != core::PathStep::Deref)
       return std::nullopt;
@@ -443,6 +464,156 @@ std::optional<std::int64_t> integerConvertedTo(std::int64_t value,
   return mathematicalValue(converted);
 }
 
+/// An integer type, looking through `_Atomic` (RFC 0010: a count may be an
+/// atomic integer).
+static bool isIntegerLike(QualType type) {
+  if (type.isNull())
+    return false;
+  if (const auto *atomic = type->getAs<AtomicType>())
+    type = atomic->getValueType();
+  return type->isIntegerType();
+}
+
+/// The place the pointer argument of an adjusting builtin names: `&x` is
+/// `x`; any other pointer value is what it points to.
+static std::optional<PlaceRef> pointeeOfArgument(PlaceBuilder &builder,
+                                                 const Expr &argument) {
+  const Expr &stripped = PlaceBuilder::stripTransparent(argument);
+  if (const auto *addr = dyn_cast<UnaryOperator>(&stripped);
+      addr != nullptr && addr->getOpcode() == UO_AddrOf) {
+    const Expr &operand = PlaceBuilder::stripTransparent(*addr->getSubExpr());
+    if (!PlaceBuilder::isPlaceExpr(operand))
+      return std::nullopt;
+    return builder.resolve(operand);
+  }
+  auto pointer = builder.resolvePointerValue(stripped);
+  if (!pointer)
+    return std::nullopt;
+  pointer->addDeref(pointer->place, &stripped);
+  pointer->place = builder.table().deref(pointer->place);
+  return pointer;
+}
+
+std::optional<PlaceBuilder::Adjustment>
+PlaceBuilder::adjustmentOf(const Expr &expr) {
+  const Expr *e = expr.IgnoreParens();
+  // `++x`, `x++`, `--x`, `x--`.
+  if (const auto *unary = dyn_cast<UnaryOperator>(e);
+      unary != nullptr && unary->isIncrementDecrementOp()) {
+    const Expr &operand = stripTransparent(*unary->getSubExpr());
+    if (!isIntegerLike(operand.getType()) || !isPlaceExpr(operand))
+      return std::nullopt;
+    auto place = resolve(operand);
+    if (!place)
+      return std::nullopt;
+    const int delta = unary->isIncrementOp() ? 1 : -1;
+    return Adjustment{.place = std::move(*place),
+                      .delta = delta,
+                      .valueOffset = unary->isPostfix() ? -delta : 0,
+                      .operand = &operand};
+  }
+  // `x += 1`, `x -= 1`.
+  if (const auto *compound = dyn_cast<CompoundAssignOperator>(e);
+      compound != nullptr && (compound->getOpcode() == BO_AddAssign ||
+                              compound->getOpcode() == BO_SubAssign)) {
+    const Expr &operand = stripTransparent(*compound->getLHS());
+    if (!isIntegerLike(operand.getType()) || !isPlaceExpr(operand))
+      return std::nullopt;
+    const auto k = integerConstant(*compound->getRHS(), context);
+    if (!k || (*k != 1 && *k != -1))
+      return std::nullopt;
+    auto place = resolve(operand);
+    if (!place)
+      return std::nullopt;
+    const int delta =
+        static_cast<int>(compound->getOpcode() == BO_AddAssign ? *k : -*k);
+    return Adjustment{.place = std::move(*place),
+                      .delta = delta,
+                      .valueOffset = 0,
+                      .operand = &operand};
+  }
+  // `__atomic_*` and `__c11_atomic_*` are `AtomicExpr`s.
+  if (const auto *atomic = dyn_cast<AtomicExpr>(e)) {
+    bool add = false;
+    bool yieldsOld = false;
+    switch (atomic->getOp()) {
+    case AtomicExpr::AO__atomic_fetch_add:
+    case AtomicExpr::AO__c11_atomic_fetch_add:
+    case AtomicExpr::AO__scoped_atomic_fetch_add:
+      add = true;
+      yieldsOld = true;
+      break;
+    case AtomicExpr::AO__atomic_add_fetch:
+    case AtomicExpr::AO__scoped_atomic_add_fetch:
+      add = true;
+      break;
+    case AtomicExpr::AO__atomic_fetch_sub:
+    case AtomicExpr::AO__c11_atomic_fetch_sub:
+    case AtomicExpr::AO__scoped_atomic_fetch_sub:
+      yieldsOld = true;
+      break;
+    case AtomicExpr::AO__atomic_sub_fetch:
+    case AtomicExpr::AO__scoped_atomic_sub_fetch:
+      break;
+    default:
+      return std::nullopt;
+    }
+    const auto k = integerConstant(*atomic->getVal1(), context);
+    if (!k || *k != 1)
+      return std::nullopt;
+    auto place = pointeeOfArgument(*this, *atomic->getPtr());
+    if (!place || !isIntegerLike(atomic->getPtr()->getType()->getPointeeType()))
+      return std::nullopt;
+    const int delta = add ? 1 : -1;
+    return Adjustment{.place = std::move(*place),
+                      .delta = delta,
+                      .valueOffset = yieldsOld ? -delta : 0,
+                      .operand = atomic->getPtr()};
+  }
+  // `__sync_fetch_and_add(&x, 1)` and friends are calls to builtins, which
+  // Sema rewrites to the sized form (`__sync_fetch_and_add_4`).
+  if (const auto *call = dyn_cast<CallExpr>(e)) {
+    const FunctionDecl *callee = call->getDirectCallee();
+    if (callee == nullptr || callee->getBuiltinID() == 0 ||
+        call->getNumArgs() < 2)
+      return std::nullopt;
+    llvm::StringRef name = callee->getName();
+    if (!name.consume_front("__sync_"))
+      return std::nullopt;
+    bool add = false;
+    bool yieldsOld = false;
+    if (name.consume_front("fetch_and_add")) {
+      add = true;
+      yieldsOld = true;
+    } else if (name.consume_front("add_and_fetch")) {
+      add = true;
+    } else if (name.consume_front("fetch_and_sub")) {
+      yieldsOld = true;
+    } else if (!name.consume_front("sub_and_fetch")) {
+      return std::nullopt;
+    }
+    // Only the size suffix (`_4`) may follow.
+    if (!name.empty()) {
+      const bool sizeSuffix = name.consume_front("_") && !name.empty() &&
+                              llvm::all_of(name, llvm::isDigit);
+      if (!sizeSuffix)
+        return std::nullopt;
+    }
+    const auto k = integerConstant(*call->getArg(1), context);
+    if (!k || *k != 1)
+      return std::nullopt;
+    auto place = pointeeOfArgument(*this, *call->getArg(0));
+    if (!place || !isIntegerLike(call->getArg(0)->getType()->getPointeeType()))
+      return std::nullopt;
+    const int delta = add ? 1 : -1;
+    return Adjustment{.place = std::move(*place),
+                      .delta = delta,
+                      .valueOffset = yieldsOld ? -delta : 0,
+                      .operand = call->getArg(0)};
+  }
+  return std::nullopt;
+}
+
 PlaceBuilder::ScalarOperand PlaceBuilder::scalarOperand(const Expr &expr) {
   ScalarOperand operand;
   if (const auto value = integerConstant(expr, context)) {
@@ -452,6 +623,14 @@ PlaceBuilder::ScalarOperand PlaceBuilder::scalarOperand(const Expr &expr) {
   const Expr *e = &expr;
   for (;;) {
     e = e->IgnoreParens();
+    // RFC 0010: `--x == 0`, `x-- == 1`, `__atomic_fetch_sub(&x, 1, o) == 1`
+    // read the adjusted place, at an offset for the forms that yield the
+    // old value.
+    if (auto adjustment = adjustmentOf(*e)) {
+      operand.place = std::move(adjustment->place);
+      operand.offset = adjustment->valueOffset;
+      return operand;
+    }
     if (const auto *cast = dyn_cast<CastExpr>(e)) {
       // A conversion keeps zero-ness and, absent overflow, sign (RFC 0009,
       // *Assumptions*); a narrowing or sign-changing one loses the exact

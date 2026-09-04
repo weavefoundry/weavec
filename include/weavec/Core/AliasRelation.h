@@ -28,6 +28,12 @@
 // `a[*]`, so a release through `q` frees that element and not the whole
 // summary, and `r = a[j]` does not make `q` and `r` aliases of each other.
 //
+// A third attribute (RFC 0010, *Shares*) says whether the two ends hold the
+// *same share* of a reference-counted object. A copy that carries a surplus
+// share away (`q = obj_ref(p)`) relates `q` and `p` as distinct shares: the
+// two name one object, so facts below them are mirrored, but a release of
+// `q`'s share leaves `p` valid. Every other edge is same-share.
+//
 //===----------------------------------------------------------------------===//
 
 #ifndef WEAVEC_CORE_ALIASRELATION_H
@@ -50,6 +56,10 @@ struct AliasEdge {
   bool exact = true;
   /// The element of the place at the *other* end that this end aliases.
   ElementWitness element;
+  /// RFC 0010: the two ends hold the same share of the object. False only
+  /// for the edge a share-splitting copy made and for the edges derived
+  /// from it. Joins by disjunction (a release *may* reach the other end).
+  bool sameShare = true;
 
   friend bool operator==(const AliasEdge &, const AliasEdge &) = default;
 };
@@ -61,10 +71,13 @@ public:
   /// (`!exact`): relates each of them to the other and to the other's
   /// current aliases. An alias reached through an interior edge is interior;
   /// an alias of `b` that names a different element of `b` than `elementB`
-  /// is not related to `a` at all.
+  /// is not related to `a` at all. With `!sameShare` the new edge, and every
+  /// edge derived from it, relates distinct shares (RFC 0010); an alias
+  /// reached through a distinct-share edge holds a distinct share.
   void unite(PlaceId a, PlaceId b, bool exact = true,
              ElementWitness elementA = ElementWitness::whole(),
-             ElementWitness elementB = ElementWitness::whole());
+             ElementWitness elementB = ElementWitness::whole(),
+             bool sameShare = true);
 
   /// Forgets everything `place` may alias, e.g. because it was reassigned.
   void separate(PlaceId place);
@@ -88,6 +101,10 @@ public:
   /// place).
   [[nodiscard]] bool isExact(PlaceId a, PlaceId b) const noexcept;
 
+  /// True if `a` and `b` may hold the same share (or are the same place, or
+  /// are unrelated: only an explicit distinct-share edge says otherwise).
+  [[nodiscard]] bool sameShare(PlaceId a, PlaceId b) const noexcept;
+
   /// The edge from `a` to `b` (its `element` is `b`'s), if they are related.
   [[nodiscard]] std::optional<AliasEdge> edge(PlaceId a,
                                               PlaceId b) const noexcept;
@@ -102,8 +119,8 @@ public:
 
   /// Union of the two relations: "may alias on either incoming path". An
   /// edge is exact only if it is exact on every side that has it; its
-  /// witness is unknown if the sides disagree. Returns whether this relation
-  /// changed.
+  /// witness is unknown if the sides disagree; it is same-share if either
+  /// side says so. Returns whether this relation changed.
   bool join(const AliasRelation &other);
 
   /// Number of places related to at least one other place.

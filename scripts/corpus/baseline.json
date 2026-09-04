@@ -9,7 +9,8 @@
     "cJSON-program": "fb16e5c",
     "zlib": "da607da",
     "lua": "7579fc9",
-    "linenoise-program": "a473823"
+    "linenoise-program": "a473823",
+    "jansson": "851a214"
   },
   "summary": {
     "projects": {
@@ -86,7 +87,7 @@
           "leak": 1,
           "lifetime-too-short": 10,
           "null-dereference": 92,
-          "use-after-free": 407
+          "use-after-free": 408
         }
       },
       "linenoise-program": {
@@ -97,18 +98,31 @@
           "leak": 1,
           "null-dereference": 3
         }
+      },
+      "jansson": {
+        "units": 1,
+        "clang_errors": 0,
+        "by_id": {
+          "annotation-required": 2,
+          "double-free": 45,
+          "invalid-release": 1,
+          "leak": 10,
+          "lifetime-too-short": 8,
+          "null-dereference": 2,
+          "use-after-free": 31
+        }
       }
     },
     "totals": {
-      "annotation-required": 9,
+      "annotation-required": 11,
       "conflicting-borrow": 16,
-      "double-free": 36,
-      "invalid-release": 5,
-      "leak": 10,
-      "lifetime-too-short": 10,
-      "null-dereference": 187,
+      "double-free": 81,
+      "invalid-release": 6,
+      "leak": 20,
+      "lifetime-too-short": 18,
+      "null-dereference": 189,
       "unsafe-operation": 1,
-      "use-after-free": 407
+      "use-after-free": 439
     }
   }
 }

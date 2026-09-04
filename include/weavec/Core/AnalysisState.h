@@ -9,7 +9,7 @@
 // The dataflow state RFC 0002 carries through a function body:
 //
 //   State = { moves, loans, aliases, pending, consumed, kinds, raw,
-//             resources, nulls, overwritten, scalars }
+//             resources, nulls, overwritten, scalars, stored }
 //
 // Every component is a finite-height lattice whose `join` is monotone, so a
 // worklist iteration over the CFG terminates without widening. Lifetimes are
@@ -36,6 +36,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace weavec::core {
@@ -72,6 +73,30 @@ struct PendingOutcome {
   /// returning it (RFC 0008, *Per-outcome non-null facts*).
   // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
   std::map<Outcome, std::vector<PlaceId>> nonNullOn = {};
+  /// RFC 0010, *Per-outcome stores*: a store the callee performed on some
+  /// classes only. Once the test has narrowed the classes, a store on none
+  /// of the remaining ones is retracted: its destination is forgotten and,
+  /// for a copy, the source's escape is undone.
+  struct PendingStore {
+    PlaceId dest;
+    /// The classes on whose paths the store happens.
+    OutcomeSet on;
+    /// The caller place the stored pointer was copied from, if any.
+    std::optional<PlaceId> source;
+    /// Whether the source's resource was already escaped before the call
+    /// (so the retraction knows what to restore).
+    bool sourceEscapedBefore = false;
+
+    friend bool operator==(const PendingStore &,
+                           const PendingStore &) = default;
+  };
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
+  std::vector<PendingStore> stores = {};
+  /// RFC 0010, *Per-outcome integer facts*: per class, the caller's integer
+  /// places the callee wrote and the fact each satisfies on every path
+  /// returning the class.
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
+  std::map<Outcome, std::vector<std::pair<PlaceId, ValueFact>>> factOn = {};
   /// The callee as spelled in messages (`'make'`) and the call's location,
   /// for the note on a place `nullOn` makes null.
   // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
@@ -84,6 +109,10 @@ struct PendingOutcome {
   /// The places non-null in every class still possible; empty when no class
   /// is.
   [[nodiscard]] std::vector<PlaceId> nonNullInAll() const;
+  /// The integer places with a fact in every class still possible, each
+  /// with the join of those facts (dropped when trivial); empty when no
+  /// class is.
+  [[nodiscard]] std::vector<std::pair<PlaceId, ValueFact>> factsInAll() const;
 
   /// Every place mentioned in any class, ascending.
   [[nodiscard]] std::vector<PlaceId> places() const;
@@ -94,8 +123,13 @@ struct PendingOutcome {
   /// summary knows; nothing changes).
   std::vector<PlaceId> select(const std::set<Outcome> &selected);
 
+  /// The stores that happen on none of the remaining classes, removed from
+  /// `stores` (RFC 0010). Call after `select`.
+  std::vector<PendingStore> retractStores();
+
   /// True if no class could still retract anything: every place is consumed
-  /// in every remaining class.
+  /// in every remaining class and every store happens in every remaining
+  /// class.
   [[nodiscard]] bool settled() const;
 
   friend bool operator==(const PendingOutcome &,
@@ -135,6 +169,11 @@ struct AnalysisState {
   NullTracker nulls;
   /// What is known about the value of each integer place (RFC 0009).
   ScalarTracker scalars;
+  /// Caller-visible paths this function stored a pointer into on the
+  /// current path (RFC 0010, *Per-outcome stores*); read at each `return`
+  /// to record which stores hold on which outcome class. A may-fact: joins
+  /// by union.
+  std::set<SummaryPath> stored;
 
   /// Component-wise join with the state of another incoming edge. Returns
   /// whether this state changed, so the fixpoint engine need not copy and

@@ -11,6 +11,7 @@
 #include "clang/AST/TypeLoc.h"
 
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/Support/Casting.h"
 
 namespace weavec::analysis {
@@ -32,7 +33,29 @@ std::optional<Annotation> parseAnnotation(llvm::StringRef text) {
     return Annotation::Nullable;
   if (text == spelling::NonNull)
     return Annotation::NonNull;
+  if (text == spelling::Retains)
+    return Annotation::Retains;
+  if (text == spelling::Releases)
+    return Annotation::Releases;
+  if (text == spelling::Refcount)
+    return Annotation::Refcount;
+  if (text.starts_with(spelling::FamilyPrefix)) {
+    const llvm::StringRef family =
+        text.drop_front(spelling::FamilyPrefix.size());
+    // A family is an identifier: what `SummaryIO` accepts in `freed(f)`.
+    const bool wellFormed = !family.empty() && llvm::all_of(family, [](char c) {
+      return llvm::isAlnum(c) || c == '_';
+    });
+    return wellFormed ? Annotation::Family : Annotation::Invalid;
+  }
   return Annotation::Invalid;
+}
+
+/// The family `weavec.family.<f>` names, or empty for any other payload.
+static llvm::StringRef familyOf(llvm::StringRef text) {
+  if (!text.starts_with(spelling::FamilyPrefix))
+    return {};
+  return text.drop_front(spelling::FamilyPrefix.size());
 }
 
 static void apply(AnnotationSet &set, Annotation annotation) {
@@ -58,13 +81,35 @@ static void apply(AnnotationSet &set, Annotation annotation) {
   case Annotation::NonNull:
     set.nonNull = true;
     break;
+  case Annotation::Retains:
+    set.retains = true;
+    break;
+  case Annotation::Releases:
+    set.releases = true;
+    break;
+  case Annotation::Refcount:
+    set.refcount = true;
+    break;
+  case Annotation::Family:
+    // The name itself is applied by the caller, which has the payload.
+    break;
   case Annotation::Invalid:
     set.invalid = true;
     break;
   }
 }
 
-void AnnotationSet::merge(const AnnotationSet &other) noexcept {
+/// Sets the family, or marks the set invalid when two different ones meet.
+static void applyFamily(AnnotationSet &set, llvm::StringRef family) {
+  if (family.empty())
+    return;
+  if (set.family.empty())
+    set.family = family.str();
+  else if (set.family != family)
+    set.invalid = true;
+}
+
+void AnnotationSet::merge(const AnnotationSet &other) {
   owned = owned || other.owned;
   borrowed = borrowed || other.borrowed;
   mutBorrowed = mutBorrowed || other.mutBorrowed;
@@ -72,14 +117,22 @@ void AnnotationSet::merge(const AnnotationSet &other) noexcept {
   unsafe = unsafe || other.unsafe;
   nullable = nullable || other.nullable;
   nonNull = nonNull || other.nonNull;
+  retains = retains || other.retains;
+  releases = releases || other.releases;
+  refcount = refcount || other.refcount;
   invalid = invalid || other.invalid;
+  applyFamily(*this, other.family);
 }
 
 AnnotationSet getAnnotations(const clang::Decl &decl) {
   AnnotationSet set;
   for (const auto *attr : decl.specific_attrs<clang::AnnotateAttr>()) {
-    if (const auto parsed = parseAnnotation(attr->getAnnotation()))
-      apply(set, *parsed);
+    const auto parsed = parseAnnotation(attr->getAnnotation());
+    if (!parsed)
+      continue;
+    apply(set, *parsed);
+    if (*parsed == Annotation::Family)
+      applyFamily(set, familyOf(attr->getAnnotation()));
   }
   return set;
 }
@@ -104,6 +157,10 @@ const char *macroSpelling(const AnnotationSet &set) noexcept {
     return "WEAVEC_MUT";
   if (set.raw)
     return "WEAVEC_RAW";
+  if (set.retains)
+    return "WEAVEC_RETAINS";
+  if (set.releases)
+    return "WEAVEC_RELEASES";
   return nullptr;
 }
 

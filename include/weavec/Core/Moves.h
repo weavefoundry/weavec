@@ -44,9 +44,15 @@ enum class MoveReason : std::uint8_t {
   /// assigned to it yet (RFC 0008, *Uninitialised pointers*). Only locals
   /// carry this reason; it never reaches a summary.
   Uninitialized,
+  /// RFC 0010: the place's share of a reference-counted object was released
+  /// (`obj_unref(p)`); other shares, and the object, may live on. Reports as
+  /// `use-after-free` / `double-free` with reference wording and reaches a
+  /// summary as `freed,share`.
+  Released,
 };
 
-/// Stable spelling used in dumps: `moved`, `freed`, `uninitialized`.
+/// Stable spelling used in dumps: `moved`, `freed`, `uninitialized`,
+/// `released`.
 [[nodiscard]] std::string_view toString(MoveReason reason) noexcept;
 
 /// Which element of a summarised array place an access named.

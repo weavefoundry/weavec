@@ -30,6 +30,78 @@ TEST(ParseAnnotation, UnknownWeaveCAnnotationIsInvalid) {
   EXPECT_EQ(parseAnnotation("weavec."), Annotation::Invalid);
 }
 
+// RFC 0010, *Annotations*.
+TEST(ParseAnnotation, RecognisesShareSpellings) {
+  EXPECT_EQ(parseAnnotation("weavec.retains"), Annotation::Retains);
+  EXPECT_EQ(parseAnnotation("weavec.releases"), Annotation::Releases);
+  EXPECT_EQ(parseAnnotation("weavec.refcount"), Annotation::Refcount);
+  EXPECT_EQ(parseAnnotation("weavec.family.fclose"), Annotation::Family);
+  EXPECT_EQ(parseAnnotation("weavec.family.my_free2"), Annotation::Family);
+  EXPECT_EQ(parseAnnotation("weavec.family."), Annotation::Invalid);
+  EXPECT_EQ(parseAnnotation("weavec.family.not an id"), Annotation::Invalid);
+  EXPECT_EQ(parseAnnotation("weavec.family.a(b)"), Annotation::Invalid);
+}
+
+TEST(GetAnnotations, CollectsShareAnnotationsAndFamilies) {
+  auto ast = clang::tooling::buildASTFromCodeWithArgs(
+      R"c(
+      struct obj;
+      void f(struct obj *__attribute__((annotate("weavec.retains"))) a,
+             struct obj *__attribute__((annotate("weavec.releases"))) b,
+             struct obj *__attribute__((annotate("weavec.owned")))
+             __attribute__((annotate("weavec.family.obj_free"))) c,
+             struct obj *__attribute__((annotate("weavec.family.x")))
+             __attribute__((annotate("weavec.family.y"))) d);
+      struct obj { int __attribute__((annotate("weavec.refcount"))) rc; };
+      )c",
+      {"-x", "c"}, "input.c");
+  ASSERT_TRUE(ast);
+
+  const clang::FunctionDecl *f = nullptr;
+  const clang::RecordDecl *obj = nullptr;
+  for (const clang::Decl *d :
+       ast->getASTContext().getTranslationUnitDecl()->decls()) {
+    if (const auto *fn = llvm::dyn_cast<clang::FunctionDecl>(d))
+      f = fn;
+    if (const auto *record = llvm::dyn_cast<clang::RecordDecl>(d);
+        record != nullptr && record->isCompleteDefinition())
+      obj = record;
+  }
+  ASSERT_NE(f, nullptr);
+  ASSERT_NE(obj, nullptr);
+
+  const AnnotationSet a = getAnnotations(*f->getParamDecl(0));
+  EXPECT_TRUE(a.retains);
+  EXPECT_TRUE(a.ownership());
+  EXPECT_FALSE(a.owned);
+  const AnnotationSet b = getAnnotations(*f->getParamDecl(1));
+  EXPECT_TRUE(b.releases);
+  EXPECT_TRUE(b.ownership());
+  const AnnotationSet c = getAnnotations(*f->getParamDecl(2));
+  EXPECT_TRUE(c.owned);
+  EXPECT_EQ(c.family, "obj_free");
+  EXPECT_FALSE(c.invalid);
+  const AnnotationSet d = getAnnotations(*f->getParamDecl(3));
+  EXPECT_TRUE(d.invalid) << "two families contradict";
+
+  const clang::FieldDecl *rc = *obj->field_begin();
+  const AnnotationSet onField = getAnnotations(*rc);
+  EXPECT_TRUE(onField.refcount);
+  EXPECT_FALSE(onField.ownership()) << "a count is not an ownership kind";
+  EXPECT_TRUE(onField.any());
+
+  // Merging keeps the family and flags; a disagreement is invalid.
+  AnnotationSet merged = a;
+  merged.merge(c);
+  EXPECT_TRUE(merged.retains);
+  EXPECT_TRUE(merged.owned);
+  EXPECT_EQ(merged.family, "obj_free");
+  AnnotationSet other;
+  other.family = "elsewhere";
+  merged.merge(other);
+  EXPECT_TRUE(merged.invalid);
+}
+
 TEST(ParseAnnotation, ForeignAnnotationsAreIgnored) {
   EXPECT_FALSE(parseAnnotation("gsl.owner"));
   EXPECT_FALSE(parseAnnotation(""));

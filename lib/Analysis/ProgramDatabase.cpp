@@ -58,18 +58,16 @@ bool GlobalNames::extendTo(const GlobalNames &other) {
 // -- UnitExports --------------------------------------------------------------
 
 bool UnitExports::sameSummariesAs(const UnitExports &other) const {
-  return functions == other.functions && globals == other.globals;
+  return functions == other.functions && globals == other.globals &&
+         countFields == other.countFields;
 }
 
 // -- Type keys ----------------------------------------------------------------
 
-std::string functionTypeKey(QualType type, const ASTContext &context) {
-  if (type.isNull())
-    return {};
-  if (const auto *pointer = type->getAs<PointerType>())
-    type = pointer->getPointeeType();
-  if (!type->isFunctionType())
-    return {};
+/// The canonical spelling of `type`, or empty when an anonymous record is
+/// involved (spelled by its location, which no other unit shares: no stable
+/// key; RFC 0005, *Accepted false positives*).
+static std::string stableTypeKey(QualType type, const ASTContext &context) {
   PrintingPolicy policy(context.getLangOpts());
   policy.SuppressTagKeyword = false;
 #if CLANG_VERSION_MAJOR >= 23
@@ -81,13 +79,30 @@ std::string functionTypeKey(QualType type, const ASTContext &context) {
   policy.SuppressScope = true;
   policy.Bool = false;
   std::string key = type.getCanonicalType().getAsString(policy);
-  // An anonymous record is spelled by its location, which no other unit
-  // shares: no stable key (RFC 0005, *Accepted false positives*).
   for (const char *marker : {"(unnamed ", "(anonymous ", "<anonymous"}) {
     if (key.find(marker) != std::string::npos)
       return {};
   }
   return key;
+}
+
+std::string functionTypeKey(QualType type, const ASTContext &context) {
+  if (type.isNull())
+    return {};
+  if (const auto *pointer = type->getAs<PointerType>())
+    type = pointer->getPointeeType();
+  if (!type->isFunctionType())
+    return {};
+  return stableTypeKey(type, context);
+}
+
+std::string recordTypeKey(QualType type, const ASTContext &context) {
+  if (type.isNull())
+    return {};
+  const QualType canonical = type.getCanonicalType().getUnqualifiedType();
+  if (!canonical->isRecordType())
+    return {};
+  return stableTypeKey(canonical, context);
 }
 
 // -- ProgramDatabase ----------------------------------------------------------
@@ -131,6 +146,7 @@ void ProgramDatabase::add(const UnitExports &unit) {
         fold(it->second);
     }
   }
+  countFields.insert(unit.countFields.begin(), unit.countFields.end());
 }
 
 UnitExports ProgramDatabase::renumbered(const UnitExports &unit) {
@@ -147,6 +163,7 @@ void ProgramDatabase::clear() {
   functions.clear();
   candidateSummaries.clear();
   globalNames = GlobalNames{};
+  countFields.clear();
 }
 
 bool ProgramDatabase::defines(llvm::StringRef name) const {
@@ -248,7 +265,27 @@ static void describe(llvm::raw_ostream &os,
     if (const auto nonNulls = summary.nonNullOn.find(outcome);
         nonNulls != summary.nonNullOn.end())
       describePaths("notnull", nonNulls->second);
+    if (const auto stored = summary.storesOn.find(outcome);
+        stored != summary.storesOn.end())
+      describePaths("stored", stored->second);
+    if (const auto facts = summary.factOn.find(outcome);
+        facts != summary.factOn.end()) {
+      os << " facts{";
+      first = true;
+      for (const auto &[path, fact] : facts->second) {
+        os << (first ? "" : ", ") << core::printSummaryPath(path, namer) << " "
+           << fact.toString();
+        first = false;
+      }
+      os << "}";
+    }
   }
+  if (!summary.increments.empty())
+    describePaths("increments", summary.increments);
+  if (!summary.decrements.empty())
+    describePaths("decrements", summary.decrements);
+  if (!summary.counts.empty())
+    describePaths("counts", summary.counts);
   os << "\n";
 }
 
@@ -262,6 +299,8 @@ void ProgramDatabase::dump(llvm::raw_ostream &os) const {
     os << "  candidate '" << key << "':";
     describe(os, summary, globalNames);
   }
+  for (const std::string &key : countFields)
+    os << "  count-field '" << key << "'\n";
 }
 
 } // namespace weavec::analysis

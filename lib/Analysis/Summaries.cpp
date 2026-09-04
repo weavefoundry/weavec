@@ -73,31 +73,43 @@ bool hasOwnershipAnnotations(const FunctionDecl &function) {
 namespace {
 
 /// The shape of a signature the annotation rules need: which parameters and
-/// whether the result are pointers. Shared by function declarations and
-/// function-pointer types.
+/// whether the result are pointers, and which parameters have the result's
+/// type (the returning-ref shape, RFC 0010). Shared by function declarations
+/// and function-pointer types.
 struct SignatureShape {
   std::vector<bool> pointerParams;
+  std::vector<bool> resultTyped;
   bool pointerResult = false;
 };
 
 } // namespace
 
-static SignatureShape shapeOf(const FunctionDecl &function) {
+static SignatureShape shapeOf(llvm::ArrayRef<QualType> params,
+                              QualType result) {
   SignatureShape shape;
-  shape.pointerParams.reserve(function.getNumParams());
-  for (const ParmVarDecl *param : function.parameters())
-    shape.pointerParams.push_back(param->getType()->isPointerType());
-  shape.pointerResult = function.getReturnType()->isPointerType();
+  shape.pointerParams.reserve(params.size());
+  shape.resultTyped.reserve(params.size());
+  for (const QualType param : params) {
+    shape.pointerParams.push_back(param->isPointerType());
+    shape.resultTyped.push_back(
+        param->isPointerType() &&
+        param.getCanonicalType().getUnqualifiedType() ==
+            result.getCanonicalType().getUnqualifiedType());
+  }
+  shape.pointerResult = result->isPointerType();
   return shape;
 }
 
+static SignatureShape shapeOf(const FunctionDecl &function) {
+  std::vector<QualType> params;
+  params.reserve(function.getNumParams());
+  for (const ParmVarDecl *param : function.parameters())
+    params.push_back(param->getType());
+  return shapeOf(params, function.getReturnType());
+}
+
 static SignatureShape shapeOf(const FunctionProtoType &type) {
-  SignatureShape shape;
-  shape.pointerParams.reserve(type.getNumParams());
-  for (const QualType param : type.getParamTypes())
-    shape.pointerParams.push_back(param->isPointerType());
-  shape.pointerResult = type.getReturnType()->isPointerType();
-  return shape;
+  return shapeOf(type.getParamTypes(), type.getReturnType());
 }
 
 /// Replaces the inferred facts about every annotated root with what the
@@ -133,11 +145,28 @@ static void applyAnnotations(core::FunctionSummary &summary,
     const core::SummaryPath root = core::SummaryPath::param(i);
     if (set.owned) {
       // Whatever happens to a consumed object is the callee's business. The
-      // body's release family survives so `xfree(fopen(...))` is reported.
-      const std::string family = summary.effectOf(root).family;
+      // body's release family survives so `xfree(fopen(...))` is reported;
+      // `WEAVEC_OWNED_BY(f)` names it outright (RFC 0010).
+      const std::string family =
+          set.family.empty() ? summary.effectOf(root).family : set.family;
       eraseRoot(i, /*includeStores=*/true);
       summary.addEffect(root,
                         core::PlaceEffect{.moved = true, .family = family});
+    } else if (set.releases) {
+      // RFC 0010, *Annotations*: one share of the argument's object is
+      // released; the caller's name is dead, other shares live on. The
+      // count field is unknown, so the object path itself stands for it.
+      const std::string family = summary.effectOf(root).family;
+      eraseRoot(i, /*includeStores=*/true);
+      summary.addEffect(
+          root,
+          core::PlaceEffect{.freed = true, .share = true, .family = family});
+      summary.counts.insert(root.deref());
+    } else if (set.retains) {
+      // The callee takes a reference: the caller's place gains a share.
+      eraseRoot(i, /*includeStores=*/false);
+      summary.addEffect(root.deref(), core::PlaceEffect{.written = true});
+      summary.increments.insert(root.deref());
     } else if (set.mutBorrowed) {
       eraseRoot(i, /*includeStores=*/false);
       summary.addEffect(root.deref(), core::PlaceEffect{.written = true});
@@ -153,8 +182,27 @@ static void applyAnnotations(core::FunctionSummary &summary,
 
   if (!shape.pointerResult)
     return;
+  // RFC 0010, *Annotations*: a declaration with no body that returns the
+  // type of its one `WEAVEC_RETAINS` parameter and says nothing about the
+  // result is the returning-ref shape (`g_object_ref`): the result is a copy
+  // of that argument, so the caller's copy carries the share away.
+  if (!result.ownership() && summary.returns.empty()) {
+    std::optional<unsigned> retained;
+    for (unsigned i = 0; i < params.size() && i < shape.resultTyped.size();
+         ++i) {
+      if (!params[i].retains || !shape.resultTyped[i])
+        continue;
+      retained = retained ? std::optional<unsigned>() : std::optional(i);
+      if (!retained)
+        break;
+    }
+    if (retained)
+      summary.addReturn(
+          core::ValueSource::copy(core::SummaryPath::param(*retained)));
+  }
   if (result.owned) {
-    const std::string family = summary.freshReturnFamily();
+    const std::string family =
+        result.family.empty() ? summary.freshReturnFamily() : result.family;
     summary.returns.clear();
     summary.addReturn(core::ValueSource::fresh(family));
   } else if (result.borrowed || result.mutBorrowed) {
@@ -252,11 +300,127 @@ const Decl *indirectCalleeDecl(const CallExpr &call) {
 
 // -- SummaryStore -------------------------------------------------------------
 
+// -- Count fields (RFC 0010) --------------------------------------------------
+
+/// The record type a summary path's dereference steps land in, following
+/// `steps` from `type`: `struct obj *` with `*` is `struct obj`; `.base`
+/// then names the field's type. Null when a step does not fit the type.
+static QualType followSteps(QualType type, llvm::ArrayRef<core::PathElem> steps,
+                            const ASTContext &context) {
+  for (const core::PathElem &step : steps) {
+    if (type.isNull())
+      return {};
+    type = type.getCanonicalType();
+    switch (step.step) {
+    case core::PathStep::Deref:
+    case core::PathStep::Index:
+      if (const auto *pointer = type->getAs<PointerType>())
+        type = pointer->getPointeeType();
+      else if (const auto *array = context.getAsArrayType(type))
+        type = array->getElementType();
+      else
+        return {};
+      break;
+    case core::PathStep::Field: {
+      const RecordDecl *record = type->getAsRecordDecl();
+      if (record == nullptr)
+        return {};
+      const FieldDecl *found = nullptr;
+      for (const FieldDecl *field : record->fields()) {
+        if (field->getName() == step.field) {
+          found = field;
+          break;
+        }
+      }
+      if (found == nullptr)
+        return {};
+      type = found->getType();
+      break;
+    }
+    }
+  }
+  return type;
+}
+
+std::string countFieldKey(QualType object,
+                          llvm::ArrayRef<core::PathElem> fields,
+                          const ASTContext &context) {
+  std::string key = recordTypeKey(object, context);
+  if (key.empty())
+    return {};
+  // Every step is a field of a record reached without another dereference;
+  // the last one is the count itself (or none: the object stands for it).
+  for (const core::PathElem &step : fields) {
+    if (step.step != core::PathStep::Field)
+      return {};
+  }
+  if (followSteps(object.getCanonicalType(), fields, context).isNull())
+    return {};
+  for (const core::PathElem &step : fields) {
+    key += '.';
+    key += step.field;
+  }
+  return key;
+}
+
+std::optional<std::string>
+SummaryStore::countKeyOf(const FunctionDecl &function,
+                         const core::SummaryPath &path) const {
+  if (context == nullptr || path.steps.empty() ||
+      path.steps.front().step != core::PathStep::Deref)
+    return std::nullopt;
+  QualType pointer;
+  if (path.isParam()) {
+    if (path.index >= function.getNumParams())
+      return std::nullopt;
+    pointer = function.getParamDecl(path.index)->getType();
+  } else if (path.isGlobal()) {
+    const VarDecl *global = globalTable.declFor(path.index);
+    if (global == nullptr)
+      return std::nullopt;
+    pointer = global->getType();
+  } else {
+    return std::nullopt;
+  }
+  const QualType object =
+      followSteps(pointer, llvm::ArrayRef(path.steps).take_front(1), *context);
+  if (object.isNull())
+    return std::nullopt;
+  std::string key =
+      countFieldKey(object, llvm::ArrayRef(path.steps).drop_front(), *context);
+  if (key.empty())
+    return std::nullopt;
+  return key;
+}
+
+void SummaryStore::addKnownCount(std::string key) {
+  if (!key.empty())
+    knownCounts.insert(std::move(key));
+}
+
+bool SummaryStore::isKnownCount(llvm::StringRef key) const {
+  if (key.empty())
+    return false;
+  if (knownCounts.contains(key.str()))
+    return true;
+  return database != nullptr && database->isKnownCount(key);
+}
+
+const std::set<std::string> &SummaryStore::knownCountKeys() const noexcept {
+  return knownCounts;
+}
+
 bool SummaryStore::setInferred(const FunctionDecl &function,
                                core::FunctionSummary summary) {
   const FunctionDecl *canonical = key(function);
   merged.erase(canonical);
   mergedSource.erase(canonical);
+  // RFC 0010: the count fields this function releases through are known
+  // counts for every function of the unit (and, exported, of the program).
+  for (const core::SummaryPath &count : summary.counts) {
+    if (auto countKey = countKeyOf(function, count))
+      knownCounts.insert(std::move(*countKey));
+  }
   auto [it, inserted] = inferred.try_emplace(canonical, std::move(summary));
   if (inserted) {
     mergedIndirect.clear();

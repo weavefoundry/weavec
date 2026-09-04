@@ -23,6 +23,11 @@
 |*
 |*   typedef void (*dtor_t)(void *WEAVEC_OWNED);   // callbacks, too
 |*
+|*   struct obj { int WEAVEC_REFCOUNT rc; ... };   // reference counting
+|*   struct obj *obj_ref(struct obj *WEAVEC_RETAINS o);
+|*   void obj_unref(struct obj *WEAVEC_RELEASES o);
+|*   FILE *WEAVEC_OWNED WEAVEC_OWNED_BY(fclose) open_log(void);
+|*
 |*   WEAVEC_UNSAFE void poke(void) { ... }   // the body is an unsafe region
 |*   WEAVEC_UNSAFE { ... }                   // or just a block
 |*
@@ -32,7 +37,7 @@
 #define WEAVEC_H
 
 #define WEAVEC_H_VERSION_MAJOR 0
-#define WEAVEC_H_VERSION_MINOR 4
+#define WEAVEC_H_VERSION_MINOR 5
 
 #if defined(__has_attribute)
 #if __has_attribute(annotate)
@@ -91,6 +96,35 @@
  * variable or field, loads are never reported. Does not change ownership.
  */
 #define WEAVEC_NONNULL WEAVEC_ANNOTATE_("weavec.nonnull")
+
+/**
+ * On a pointer parameter: the callee takes a reference on the argument's
+ * object (increments its reference count). The caller's pointer gains a
+ * share, which the next copy of it carries away (`q = obj_ref(p)` leaves
+ * `p` and `q` each holding one). Does not consume the argument.
+ */
+#define WEAVEC_RETAINS WEAVEC_ANNOTATE_("weavec.retains")
+
+/**
+ * On a pointer parameter: the callee releases one reference on the
+ * argument's object. The argument's name is dead afterwards, as after
+ * `free`; other pointers holding their own reference are untouched.
+ */
+#define WEAVEC_RELEASES WEAVEC_ANNOTATE_("weavec.releases")
+
+/**
+ * On an integer struct field: the field is a reference count. A reference
+ * taken through it (`o->rc++`, a WEAVEC_RETAINS callee) and never released
+ * is reported as a leak, even when no releasing function is in view.
+ */
+#define WEAVEC_REFCOUNT WEAVEC_ANNOTATE_("weavec.refcount")
+
+/**
+ * Next to WEAVEC_OWNED on a parameter or return type: the referent must be
+ * released with `f` (`WEAVEC_OWNED WEAVEC_OWNED_BY(fclose)`), and releasing
+ * it with anything else is reported as a mismatched release.
+ */
+#define WEAVEC_OWNED_BY(f) WEAVEC_ANNOTATE_("weavec.family." #f)
 
 /** Non-zero when the translation unit is being processed by WeaveC. */
 #if defined(__WEAVEC__)
