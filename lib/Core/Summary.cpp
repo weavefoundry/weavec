@@ -89,12 +89,14 @@ void PlaceEffect::join(const PlaceEffect &other) {
   written = written || other.written;
   freed = freed || other.freed;
   moved = moved || other.moved;
+  escaped = escaped || other.escaped;
   if (!other.consumed())
     return;
   if (!wasConsumed) {
     family = other.family;
     replaced = other.replaced;
     element = other.element;
+    share = other.share;
     when = other.when;
     return;
   }
@@ -104,6 +106,9 @@ void PlaceEffect::join(const PlaceEffect &other) {
   // side that consumed the whole pointee makes every later access a use.
   replaced = replaced && other.replaced;
   element = element && other.element;
+  // A side that frees the object outright makes the join a plain free: the
+  // caller's other shares are then dead too (RFC 0010).
+  share = share && other.share;
   // The consume happens when either side's guard holds (RFC 0009).
   when.join(other.when);
 }
@@ -280,6 +285,43 @@ void FunctionSummary::addOutcome(Outcome outcome, const SummaryPath &path,
     perClass[path].join(effect);
 }
 
+std::set<SummaryPath> FunctionSummary::storeDestinations() const {
+  std::set<SummaryPath> result;
+  for (const Store &store : stores)
+    result.insert(store.dest);
+  return result;
+}
+
+std::set<SummaryPath> FunctionSummary::storesOnClass(Outcome outcome) const {
+  if (storesOn.empty() || !outcomes.contains(outcome))
+    return storeDestinations();
+  const auto it = storesOn.find(outcome);
+  return it == storesOn.end() ? std::set<SummaryPath>{} : it->second;
+}
+
+void FunctionSummary::normalizeStoresOn() {
+  if (storesOn.empty())
+    return;
+  if (outcomes.empty() || stores.empty()) {
+    storesOn.clear();
+    return;
+  }
+  const std::set<SummaryPath> all = storeDestinations();
+  const bool uniform = std::ranges::all_of(outcomes, [&](const auto &entry) {
+    const auto it = storesOn.find(entry.first);
+    return it != storesOn.end() && it->second == all;
+  });
+  if (uniform)
+    storesOn.clear();
+}
+
+bool FunctionSummary::retains(std::uint32_t param) const {
+  const SummaryPath pointee = SummaryPath::param(param).deref();
+  return std::ranges::any_of(increments, [&pointee](const SummaryPath &path) {
+    return path == pointee || pointee.isProperPrefixOf(path);
+  });
+}
+
 bool FunctionSummary::consumesUnconditionally(const SummaryPath &path) const {
   if (outcomes.empty())
     return true;
@@ -293,6 +335,11 @@ void FunctionSummary::join(const FunctionSummary &other) {
   // The empty summary is the bottom of the lattice (a join of candidates
   // starts from it): the other side's classes are the answer.
   const bool wasEmpty = empty();
+  // What this side stored per class, read before its stores absorb the
+  // other side's (RFC 0010, *Per-outcome stores*).
+  std::map<Outcome, std::set<SummaryPath>> mineStoresOn;
+  for (const auto &[outcome, perClass] : outcomes)
+    mineStoresOn[outcome] = storesOnClass(outcome);
   for (const auto &[path, effect] : other.effects)
     addEffect(path, effect);
   for (const Store &store : other.stores)
@@ -302,6 +349,10 @@ void FunctionSummary::join(const FunctionSummary &other) {
   // A parameter some candidate dereferences must not be null (RFC 0008).
   requiresNonNull.insert(other.requiresNonNull.begin(),
                          other.requiresNonNull.end());
+  // RFC 0010: retains, decrements and known counts are may-facts.
+  increments.insert(other.increments.begin(), other.increments.end());
+  decrements.insert(other.decrements.begin(), other.decrements.end());
+  counts.insert(other.counts.begin(), other.counts.end());
   // A path through either side that returns is a path that returns (RFC
   // 0009): the bit survives only when both sides have it.
   neverReturns =
@@ -310,6 +361,8 @@ void FunctionSummary::join(const FunctionSummary &other) {
     outcomes = other.outcomes;
     nullOn = other.nullOn;
     nonNullOn = other.nonNullOn;
+    storesOn = other.storesOn;
+    factOn = other.factOn;
     return;
   }
   // Otherwise outcome knowledge is only as good as the least informed
@@ -319,7 +372,54 @@ void FunctionSummary::join(const FunctionSummary &other) {
     outcomes.clear();
     nullOn.clear();
     nonNullOn.clear();
+    storesOn.clear();
+    factOn.clear();
     return;
+  }
+  // Per-class stores are may-facts per class (RFC 0010): a class either
+  // side may return stores to what that side stores on it. Computed against
+  // the classes before the merge, then normalised.
+  {
+    std::map<Outcome, std::set<SummaryPath>> joined = std::move(mineStoresOn);
+    for (const auto &[outcome, perClass] : other.outcomes) {
+      const std::set<SummaryPath> theirs = other.storesOnClass(outcome);
+      joined[outcome].insert(theirs.begin(), theirs.end());
+    }
+    storesOn = std::move(joined);
+  }
+  // Per-class integer facts are must-facts (RFC 0010): a class both sides
+  // may return keeps the paths both constrain, each fact joined; a class
+  // only one side returns keeps that side's.
+  {
+    std::map<Outcome, OutcomeFacts> joined;
+    for (const auto &[outcome, perClass] : other.outcomes) {
+      const auto theirs = other.factOn.find(outcome);
+      if (!outcomes.contains(outcome)) {
+        if (theirs != other.factOn.end())
+          joined[outcome] = theirs->second;
+        continue;
+      }
+      const auto mine = factOn.find(outcome);
+      if (mine == factOn.end() || theirs == other.factOn.end())
+        continue;
+      OutcomeFacts both;
+      for (const auto &[path, fact] : mine->second) {
+        const auto theirFact = theirs->second.find(path);
+        if (theirFact == theirs->second.end())
+          continue;
+        ValueFact joinedFact = fact;
+        joinedFact.join(theirFact->second);
+        if (!joinedFact.trivial())
+          both.emplace(path, joinedFact);
+      }
+      if (!both.empty())
+        joined[outcome] = std::move(both);
+    }
+    for (const auto &[outcome, facts] : factOn) {
+      if (!other.outcomes.contains(outcome))
+        joined[outcome] = facts;
+    }
+    factOn = std::move(joined);
   }
   // Null and non-null facts are must-facts: a class both sides may return
   // keeps what both agree on; a class only one side returns keeps that
@@ -357,6 +457,7 @@ void FunctionSummary::join(const FunctionSummary &other) {
     for (const auto &[path, effect] : theirs)
       mine[path].join(effect);
   }
+  normalizeStoresOn();
 }
 
 FunctionSummary remapGlobals(const FunctionSummary &summary,
@@ -434,8 +535,28 @@ FunctionSummary remapGlobals(const FunctionSummary &summary,
         result.nonNullOn[outcome].insert(*mapped);
     }
   }
+  const auto remapSet = [&remapPath](const std::set<SummaryPath> &paths) {
+    std::set<SummaryPath> mappedPaths;
+    for (const SummaryPath &path : paths) {
+      if (const auto mapped = remapPath(path))
+        mappedPaths.insert(*mapped);
+    }
+    return mappedPaths;
+  };
+  result.increments = remapSet(summary.increments);
+  result.decrements = remapSet(summary.decrements);
+  result.counts = remapSet(summary.counts);
+  for (const auto &[outcome, paths] : summary.storesOn)
+    result.storesOn[outcome] = remapSet(paths);
+  for (const auto &[outcome, facts] : summary.factOn) {
+    for (const auto &[path, fact] : facts) {
+      if (const auto mapped = remapPath(path))
+        result.factOn[outcome].emplace(*mapped, fact);
+    }
+  }
   result.requiresNonNull = summary.requiresNonNull;
   result.neverReturns = summary.neverReturns;
+  result.normalizeStoresOn();
   return result;
 }
 

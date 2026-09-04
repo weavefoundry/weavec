@@ -194,6 +194,48 @@ TEST(AliasRelation, ElementWitnessesOnEdges) {
   EXPECT_EQ(aliases.edgesFrom(Q).size(), 3U);
 }
 
+// RFC 0010, *Distinct shares*: a copy that takes a share of its own aliases
+// its source (a free through either kills both) without holding the same
+// share (a release through one leaves the other's).
+TEST(AliasRelation, DistinctShareEdges) {
+  AliasRelation aliases;
+  aliases.unite(Q, P);
+  EXPECT_TRUE(aliases.sameShare(P, Q)) << "a plain copy shares the share";
+  EXPECT_TRUE(aliases.sameShare(P, P));
+  EXPECT_TRUE(aliases.sameShare(P, R)) << "unrelated places: vacuously true";
+
+  aliases.unite(R, P, /*exact=*/true, ElementWitness::whole(),
+                ElementWitness::whole(), /*sameShare=*/false);
+  EXPECT_TRUE(aliases.mayAlias(R, P));
+  EXPECT_FALSE(aliases.sameShare(R, P));
+  EXPECT_FALSE(aliases.sameShare(P, R)) << "symmetric";
+  EXPECT_FALSE(aliases.sameShare(R, Q))
+      << "derived through p: r's share is not q's either";
+  EXPECT_TRUE(aliases.sameShare(P, Q)) << "the existing edge is untouched";
+
+  // s = r: a plain copy of r holds r's share, and so not p's.
+  aliases.unite(S, R);
+  EXPECT_TRUE(aliases.sameShare(S, R));
+  EXPECT_FALSE(aliases.sameShare(S, P));
+
+  // Joins: an edge that is the same share on either side may be.
+  AliasRelation left;
+  left.unite(Q, P, true, ElementWitness::whole(), ElementWitness::whole(),
+             false);
+  AliasRelation right;
+  right.unite(Q, P);
+  EXPECT_TRUE(left.join(right));
+  EXPECT_TRUE(left.sameShare(Q, P));
+  AliasRelation both;
+  both.unite(Q, P, true, ElementWitness::whole(), ElementWitness::whole(),
+             false);
+  AliasRelation same;
+  same.unite(Q, P, true, ElementWitness::whole(), ElementWitness::whole(),
+             false);
+  EXPECT_FALSE(both.join(same)) << "two distinct-share edges: unchanged";
+  EXPECT_FALSE(both.sameShare(Q, P));
+}
+
 TEST(AliasRelation, PairsAreOrdered) {
   AliasRelation aliases;
   aliases.unite(R, P);

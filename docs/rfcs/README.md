@@ -56,5 +56,6 @@ decision is a new RFC that supersedes the relevant section.
 | [0007](0007-resource-lifecycle.md)       | Resource lifecycle: leaks, release families and owned fields | Accepted |
 | [0008](0008-pointer-validity.md)         | Pointer validity: null dereferences, uninitialised pointers, invalid releases and replaced values | Accepted |
 | [0009](0009-value-conditional-behaviour.md) | Value-conditional behaviour: scalar facts, guarded effects and inferred `noreturn` | Accepted |
+| [0010](0010-shared-ownership.md)         | Shared ownership: reference counts, ownership by outcome and per-outcome facts | Accepted |
 
 The [roadmap](../roadmap.md) links each milestone to the RFCs that define it.

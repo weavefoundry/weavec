@@ -16,8 +16,8 @@
 //     effect <path> <flag>[,<flag>]* [<guard>]
 //                                          flags: read written freed moved
 //                                          freed(<family>) moved(<family>)
-//                                          replaced element (qualify a
-//                                          consume)
+//                                          replaced element share (qualify
+//                                          a consume)
 //     store <path> <source> [<guard>]
 //     return <source> [<guard>]
 //     outcome <class>                      the class is a possible result
@@ -27,6 +27,16 @@
 //     notnull <class> <path>               the place is non-null on every
 //                                          path returning the class
 //     requires <i>                         parameter <i> must not be null
+//     increment <path>                     the integer at the path is added
+//                                          one to (its object is retained)
+//     decrement <path>                     ... subtracted one from
+//     count <path>                         the count field of a share
+//                                          release
+//     stored <class> <path>                the path is stored to on some
+//                                          path returning the class
+//     fact <class> <path> <fact>           the integer at the path satisfies
+//                                          the fact on every path returning
+//                                          the class
 //   end
 //
 //   path   ::= param <i> [<steps>] | global <name> [<steps>]
@@ -46,7 +56,9 @@
 // `element` flags, the `notnull` and `requires` lines and the `result` root.
 // Version 5 (RFC 0009) added the `never-returns` line and the optional guard
 // on `effect`, `outcome`, `store` and `return` lines: the effect, store or
-// alternative holds only when every conjunct does.
+// alternative holds only when every conjunct does. Version 6 (RFC 0010)
+// added the `share` and `escaped` flags and the `increment`, `decrement`,
+// `count`, `stored` and `fact` lines.
 //
 // Global roots are spelled by name; the caller supplies the mapping between
 // the summary's global ids and names in both directions, so this file stays
@@ -69,7 +81,7 @@ namespace weavec::core {
 
 /// Version of the record format; bumped when a record written by this
 /// version cannot be read by the previous one.
-inline constexpr unsigned SummaryFormatVersion = 5;
+inline constexpr unsigned SummaryFormatVersion = 6;
 
 /// The name to print for a global root id.
 using GlobalNamer = std::function<std::string(std::uint32_t)>;

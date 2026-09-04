@@ -47,12 +47,29 @@ enum class ResourceOrigin : std::uint8_t {
   Allocated,
   /// A parameter or field declared `WEAVEC_OWNED`.
   Declared,
+  /// RFC 0010: a share taken by a reference-count increment on a value this
+  /// function does not otherwise own (a parameter, a global, a load through
+  /// one). Releasing the last owned share leaves the holder valid: the
+  /// caller's share underlies it.
+  Retained,
 };
 
 struct ResourceRecord {
   ResourceOrigin origin = ResourceOrigin::Allocated;
-  /// The allocating call, or the declaration for `Declared`.
+  /// The allocating call, the declaration for `Declared`, the increment for
+  /// `Retained`.
   SourceLocation location = {};
+  /// RFC 0010, *Shares*: how many shares of the object this function owns
+  /// through the holder. One for every record made by the RFC 0007 rules; a
+  /// count increment on the holder adds one; a copy of a holder with a
+  /// surplus takes one away. Joins to the smaller count.
+  std::uint32_t shares = 1;
+  /// RFC 0010: the count field the shares were taken through (the canonical
+  /// spelling of the record type and the field path, `struct obj .rc`);
+  /// empty when the record is not share-counted. A `Retained` record leaks
+  /// only when its field is a known count.
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
+  std::string countField = {};
   /// The release family the resource must be released with; empty when
   /// unknown.
   // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
@@ -93,10 +110,23 @@ public:
 
   /// Flags the resource at `place` as escaped; no-op without a record.
   void escape(PlaceId place);
+  /// RFC 0010, *Per-outcome stores*: the store that escaped the resource at
+  /// `place` was retracted; the flag is cleared. No-op without a record.
+  void unescape(PlaceId place);
   [[nodiscard]] bool isEscaped(PlaceId place) const;
 
   /// Forgets the resource at `place` (released, lost, reassigned).
   void clear(PlaceId place);
+
+  /// RFC 0010: `place` gains one share of the resource it holds, taken
+  /// through `countField`. Without a record, `place` gets a `Retained` one
+  /// with a single share at `location`. Returns the record afterwards.
+  ResourceRecord retain(PlaceId place, std::string countField,
+                        SourceLocation location);
+  /// RFC 0010: `place` gives up one share. Returns the shares left; the
+  /// record is cleared when none are (the caller decides whether the holder
+  /// is then dead). No-op returning 0 without a record.
+  std::uint32_t release(PlaceId place);
 
   /// `place` is known to hold a null pointer (an assignment of a null
   /// constant, or the edge on which its null test holds). Drops any record.
@@ -111,9 +141,10 @@ public:
 
   /// Records join by union (a place *may* hold a resource): for a place on
   /// both sides this side's record is kept, `escaped` and `interior` are
-  /// or-ed, the family cleared when the sides disagree and the guards joined
-  /// (RFC 0009). Null facts join by intersection (a place *must* be null).
-  /// Returns whether this tracker changed.
+  /// or-ed, the family and count field cleared when the sides disagree, the
+  /// share count is the smaller (RFC 0010) and the guards joined (RFC 0009).
+  /// Null facts join by intersection (a place *must* be null). Returns
+  /// whether this tracker changed.
   bool join(const ResourceTracker &other);
 
   /// `place` now satisfies `fact`: records whose guard is refuted are
@@ -139,7 +170,7 @@ private:
   std::set<PlaceId> null;
 };
 
-/// Stable spelling used in dumps: `allocated`, `declared`.
+/// Stable spelling used in dumps: `allocated`, `declared`, `retained`.
 [[nodiscard]] std::string_view toString(ResourceOrigin origin) noexcept;
 
 } // namespace weavec::core

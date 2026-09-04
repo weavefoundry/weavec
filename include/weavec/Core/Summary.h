@@ -144,6 +144,19 @@ struct PlaceEffect {
   /// A must-fact: joins by conjunction. Meaningful only when `freed` or
   /// `moved` is set.
   bool element = false;
+  /// RFC 0010, *Shares*: the consume releases one share of the object at
+  /// the path (a reference-count decrement whose zero test guards the free)
+  /// rather than the object. The caller's name is dead; other shares live
+  /// on. A must-fact: a plain free on one side makes the join a plain free.
+  /// Meaningful only when `freed` or `moved` is set.
+  bool share = false;
+  /// RFC 0010, *Stores out of sight*: the callee stored a copy of the value
+  /// at the path into memory its summary cannot name (a field of a node it
+  /// allocated and linked into the caller's container: `n->value = v;
+  /// t->first = n;`), so the value has a second home the caller cannot see.
+  /// The caller marks its argument escaped, as it does for a value a
+  /// `store` copies (RFC 0007, *Escape*). A may-fact: joins by disjunction.
+  bool escaped = false;
   /// The release family of the consume (RFC 0007): the canonical releaser
   /// the resource ends up with (`free`, `fclose`, ...); empty when unknown.
   /// Meaningful only when `freed` or `moved` is set.
@@ -157,7 +170,7 @@ struct PlaceEffect {
   PathGuard when = {};
 
   [[nodiscard]] bool empty() const noexcept {
-    return !read && !written && !freed && !moved;
+    return !read && !written && !freed && !moved && !escaped;
   }
   [[nodiscard]] bool consumed() const noexcept { return freed || moved; }
   /// Anything that changes the object: a caller must hold no loan on it.
@@ -165,9 +178,9 @@ struct PlaceEffect {
     return written || freed || moved;
   }
 
-  /// May-join: `or` of every flag but `replaced` and `element`, which hold
-  /// only if every consuming side says so. The family survives only when
-  /// both sides agree (or only one consumes); a disagreement is "unknown",
+  /// May-join: `or` of every flag but `replaced`, `element` and `share`,
+  /// which hold only if every consuming side says so. The family survives only
+  /// when both sides agree (or only one consumes); a disagreement is "unknown",
   /// so joining can only make the mismatch check report less. The guard is
   /// joined the same way: what both consuming sides require.
   void join(const PlaceEffect &other);
@@ -288,6 +301,10 @@ struct Store {
 /// The consumption that holds on the paths returning one outcome class.
 using OutcomeEffects = std::map<SummaryPath, PlaceEffect>;
 
+/// RFC 0010, *Per-outcome integer facts*: per integer path in caller memory
+/// the callee wrote, the fact that holds on every path returning one class.
+using OutcomeFacts = std::map<SummaryPath, ValueFact>;
+
 /// The interface behaviour of one function (RFC 0003, *Summaries*).
 class FunctionSummary {
 public:
@@ -326,6 +343,33 @@ public:
   /// conjunction (an empty summary, the identity of the join, contributes
   /// nothing).
   bool neverReturns = false;
+  /// RFC 0010, *Shares*: integer paths the callee adds one to (`param 0
+  /// *.rc` for `o->rc++`), directly or through a callee. The caller's
+  /// argument *retains* its object: its place gains a share. A may-fact:
+  /// joins by union.
+  std::set<SummaryPath> increments;
+  /// RFC 0010: integer paths the callee subtracts one from. Informational
+  /// (a decrement not followed by a zero-guarded release is not a share
+  /// release); joins by union.
+  std::set<SummaryPath> decrements;
+  /// RFC 0010: the count paths of the callee's share releases (`param 0
+  /// *.rc` for an `unref` of `param 0`), for the registry of known counts
+  /// that decides whether a retained share leaks. Joins by union.
+  std::set<SummaryPath> counts;
+  /// RFC 0010, *Per-outcome stores*: per outcome class, the store
+  /// destinations written on *some* path returning it (a may-fact per
+  /// class, joining by union). Empty when every class stores to every
+  /// destination (the common case; see `storesOnClass`). A caller that
+  /// narrows the classes retracts a destination stored in none of the
+  /// remaining ones. A class present here is also a key of `outcomes`.
+  std::map<Outcome, std::set<SummaryPath>> storesOn;
+  /// RFC 0010, *Per-outcome integer facts*: per outcome class, the facts
+  /// about integer paths in caller memory that hold on every path returning
+  /// it (`int dec_and_test(int *r) { return --*r == 0; }` has `param 0 *`
+  /// equal to zero in class `positive`). A must-fact: joins by intersection
+  /// of the paths, the facts joined. A class present here is also a key of
+  /// `outcomes`.
+  std::map<Outcome, OutcomeFacts> factOn;
 
   /// The effect recorded for `path`, or an empty one.
   [[nodiscard]] PlaceEffect effectOf(const SummaryPath &path) const;
@@ -398,11 +442,25 @@ public:
     return std::ranges::any_of(
         stores, [&path](const Store &store) { return store.dest == path; });
   }
+  /// Every store destination, ascending.
+  [[nodiscard]] std::set<SummaryPath> storeDestinations() const;
+  /// The destinations stored on some path returning `outcome` (RFC 0010):
+  /// its `storesOn` entry, or every destination when the map is empty (the
+  /// stores are unconditional) or the class is unknown to `outcomes`.
+  [[nodiscard]] std::set<SummaryPath> storesOnClass(Outcome outcome) const;
+  /// Drops `storesOn` when it says nothing: every class of `outcomes`
+  /// stores to every destination.
+  void normalizeStoresOn();
+  /// True if the callee retains argument `param` (some increment path lies
+  /// under `param(i)*`).
+  [[nodiscard]] bool retains(std::uint32_t param) const;
 
   [[nodiscard]] bool empty() const noexcept {
     return effects.empty() && stores.empty() && returns.empty() &&
            outcomes.empty() && nullOn.empty() && nonNullOn.empty() &&
-           requiresNonNull.empty() && !neverReturns;
+           requiresNonNull.empty() && !neverReturns && increments.empty() &&
+           decrements.empty() && counts.empty() && storesOn.empty() &&
+           factOn.empty();
   }
 
   /// Component-wise set union (conjunction for the must-facts).
@@ -419,8 +477,9 @@ using GlobalIdMap = std::function<std::optional<std::uint32_t>(std::uint32_t)>;
 
 /// Rewrites every global root of `summary` through `map` (RFC 0005, *The
 /// program database*): effects on and stores into a dropped root vanish
-/// (from the outcome classes too); a `copy` or `borrow` of one becomes
-/// `unknown`. Parameter and result roots are kept.
+/// (from the outcome classes too, and from the RFC 0010 count and per-class
+/// sets); a `copy` or `borrow` of one becomes `unknown`. Parameter and
+/// result roots are kept.
 [[nodiscard]] FunctionSummary remapGlobals(const FunctionSummary &summary,
                                            const GlobalIdMap &map);
 

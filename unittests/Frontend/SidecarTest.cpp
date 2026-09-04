@@ -37,6 +37,8 @@ UnitRecord sample() {
   exports.indirectTypes = {"void (void *)"};
   exports.unknownCallees = {"blob_open"};
   exports.unknownIndirectTypes = {"int (struct opaque *)"};
+  // RFC 0010: a count field some function of the unit releases through.
+  exports.countFields = {"struct node.rc"};
   record.reported.insert(ReportedDiagnostic{.id = "use-after-free",
                                             .file = "../src/node.c",
                                             .line = 17,
@@ -91,7 +93,7 @@ TEST(Sidecar, PathIsOutputPlusExtension) {
 
 TEST(Sidecar, PrintsStableText) {
   EXPECT_EQ(printUnitRecord(sample()),
-            "weavec-summaries 5\n"
+            "weavec-summaries 6\n"
             "source src/node.c\n"
             "cwd /work/build\n"
             "arg -triple\n"
@@ -107,6 +109,7 @@ TEST(Sidecar, PrintsStableText) {
             "indirect void (void *)\n"
             "unknown blob_open\n"
             "unknown-indirect int (struct opaque *)\n"
+            "count-field struct node.rc\n"
             "reported use-after-free 17 10 ../src/node.c\n"
             "function grow external plain char *(char *, unsigned long)\n"
             "summary\n"
@@ -166,29 +169,29 @@ TEST(Sidecar, RejectsOtherFormatsAndMalformedLines) {
   std::string error;
   EXPECT_FALSE(parseUnitRecord("weavec-summaries 1\n", &error));
   EXPECT_EQ(error, "unsupported format 1");
-  EXPECT_FALSE(parseUnitRecord("weavec-summaries 6\n", &error));
-  EXPECT_EQ(error, "unsupported format 6");
+  EXPECT_FALSE(parseUnitRecord("weavec-summaries 7\n", &error));
+  EXPECT_EQ(error, "unsupported format 7");
   EXPECT_FALSE(parseUnitRecord("ELF\x01\x02", &error));
   EXPECT_EQ(error, "not a weavec summary file");
   EXPECT_FALSE(parseUnitRecord("", &error));
   EXPECT_EQ(error, "empty file");
   EXPECT_FALSE(parseUnitRecord(
-      "weavec-summaries 5\nsummary\n  return fresh\nend\n", &error));
+      "weavec-summaries 6\nsummary\n  return fresh\nend\n", &error));
   EXPECT_EQ(error, "line 2: summary record without a function");
-  EXPECT_FALSE(parseUnitRecord("weavec-summaries 5\nfunction f\n", &error));
+  EXPECT_FALSE(parseUnitRecord("weavec-summaries 6\nfunction f\n", &error));
   EXPECT_EQ(error, "line 2: malformed 'function' line");
-  EXPECT_FALSE(parseUnitRecord("weavec-summaries 5\nfunction f external "
+  EXPECT_FALSE(parseUnitRecord("weavec-summaries 6\nfunction f external "
                                "plain\nsummary\n  return fresh\n",
                                &error));
   EXPECT_EQ(error, "line 4: summary record without 'end'");
-  EXPECT_FALSE(parseUnitRecord("weavec-summaries 5\nreported x y z\n", &error));
+  EXPECT_FALSE(parseUnitRecord("weavec-summaries 6\nreported x y z\n", &error));
   EXPECT_EQ(error, "line 2: malformed 'reported' line");
 }
 
 TEST(Sidecar, SkipsUnknownLinesAndBlankOnes) {
   std::string error;
   const std::optional<UnitRecord> parsed = parseUnitRecord(
-      "weavec-summaries 5\n\nfuture-thing 42\nsource a.c\n\n", &error);
+      "weavec-summaries 6\n\nfuture-thing 42\nsource a.c\n\n", &error);
   ASSERT_TRUE(parsed) << error;
   EXPECT_EQ(parsed->exports.source, "a.c");
   EXPECT_TRUE(parsed->exports.functions.empty());

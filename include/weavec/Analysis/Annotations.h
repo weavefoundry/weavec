@@ -27,6 +27,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <string>
 #include <vector>
 
 namespace weavec::analysis {
@@ -48,6 +49,18 @@ enum class Annotation : std::uint8_t {
   Nullable,
   /// `weavec.nonnull` -- the pointer is never null (RFC 0008).
   NonNull,
+  /// `weavec.retains` -- the callee takes a reference on the argument's
+  /// object: the caller's place gains a share (RFC 0010).
+  Retains,
+  /// `weavec.releases` -- the callee releases one reference: the argument's
+  /// name is dead afterwards, other shares are untouched (RFC 0010).
+  Releases,
+  /// `weavec.refcount` -- the integer field is a reference count (RFC 0010).
+  Refcount,
+  /// `weavec.family.<f>` -- the release family of a `WEAVEC_OWNED` pointer
+  /// (RFC 0010, closing RFC 0007's open item). The family is carried in
+  /// `AnnotationSet::family`.
+  Family,
   /// A `weavec.`-prefixed annotation WeaveC does not recognise.
   Invalid,
 };
@@ -62,11 +75,17 @@ inline constexpr llvm::StringLiteral Raw = "weavec.raw";
 inline constexpr llvm::StringLiteral Unsafe = "weavec.unsafe";
 inline constexpr llvm::StringLiteral Nullable = "weavec.nullable";
 inline constexpr llvm::StringLiteral NonNull = "weavec.nonnull";
+inline constexpr llvm::StringLiteral Retains = "weavec.retains";
+inline constexpr llvm::StringLiteral Releases = "weavec.releases";
+inline constexpr llvm::StringLiteral Refcount = "weavec.refcount";
+/// `weavec.family.<f>`: the prefix, followed by the family name.
+inline constexpr llvm::StringLiteral FamilyPrefix = "weavec.family.";
 } // namespace spelling
 
 /// Parses an `annotate` payload. Returns `std::nullopt` for annotations that
 /// do not belong to WeaveC (no `weavec.` prefix) and `Annotation::Invalid`
-/// for unknown WeaveC annotations.
+/// for unknown WeaveC annotations. A `weavec.family.<f>` payload with an
+/// empty or malformed `<f>` is `Invalid`.
 [[nodiscard]] std::optional<Annotation> parseAnnotation(llvm::StringRef text);
 
 /// The set of WeaveC annotations attached to a declaration.
@@ -78,18 +97,28 @@ struct AnnotationSet {
   bool unsafe = false;
   bool nullable = false;
   bool nonNull = false;
+  /// RFC 0010.
+  bool retains = false;
+  bool releases = false;
+  bool refcount = false;
   bool invalid = false;
+  /// RFC 0010: the release family `WEAVEC_OWNED_BY(f)` names; empty when
+  /// there is none. Two different families on one declaration are
+  /// `invalid`.
+  std::string family;
 
   [[nodiscard]] bool any() const noexcept {
     return owned || borrowed || mutBorrowed || raw || unsafe || nullable ||
-           nonNull || invalid;
+           nonNull || retains || releases || refcount || invalid ||
+           !family.empty();
   }
   /// True if the set says something about nullness (RFC 0008).
   [[nodiscard]] bool nullness() const noexcept { return nullable || nonNull; }
   /// True if the set says something about ownership (`owned`, `borrowed`,
-  /// `mutBorrowed` or `raw`), as opposed to `unsafe`/`invalid`.
+  /// `mutBorrowed`, `raw`, `retains` or `releases`), as opposed to
+  /// `unsafe`/`invalid`.
   [[nodiscard]] bool ownership() const noexcept {
-    return owned || borrowed || mutBorrowed || raw;
+    return owned || borrowed || mutBorrowed || raw || retains || releases;
   }
   /// The kind a raw pointer may be *asserted* into (RFC 0004, *Laundering*):
   /// the declared ownership kind, if it is anything but `raw`.
@@ -104,7 +133,7 @@ struct AnnotationSet {
   }
 
   /// Merges `other` into this set.
-  void merge(const AnnotationSet &other) noexcept;
+  void merge(const AnnotationSet &other);
 };
 
 /// Collects WeaveC annotations from `decl`.

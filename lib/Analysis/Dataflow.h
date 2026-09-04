@@ -35,6 +35,7 @@
 #include "clang/AST/Stmt.h"
 #include "clang/Analysis/CFG.h"
 
+#include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/BitVector.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
@@ -216,6 +217,75 @@ private:
   /// see, so it is dropped from the summary (RFC 0009, *Deriving guards*).
   std::set<core::SummaryPath> writtenScalarPaths;
 
+  // -- Shares (RFC 0010) ----------------------------------------------------
+
+  /// Operands of an adjustment (`x` in `x++`, `x += 1`): the adjustment
+  /// itself updates the scalar fact, so the operand's read-write role must
+  /// not forget it first.
+  llvm::DenseSet<const clang::Expr *> adjustedOperands;
+  /// Integer places this function subtracts one from, itself or through a
+  /// callee (flow insensitive): a `free` of the object such a place lies in,
+  /// on a path whose facts say it is zero, releases a share rather than the
+  /// object (RFC 0010, *Releasing a share*).
+  std::set<core::PlaceId> decrementedPlaces;
+  /// Per outcome class, the caller-visible stores and integer facts at the
+  /// returns of the class seen so far (RFC 0010, *Per-outcome stores* and
+  /// *Per-outcome integer facts*): stores are a may-fact per class (the
+  /// union over its returns), facts a must-fact (joined over its returns;
+  /// a path with a fact at only some returns is dropped).
+  struct StoredAtReturn {
+    std::set<core::SummaryPath> stored;
+    std::map<core::SummaryPath, core::ValueFact> facts;
+    bool anyReturn = false;
+  };
+  std::map<core::Outcome, StoredAtReturn> storedAtReturn;
+
+  /// RFC 0010, *Recognising increments and decrements*: `x` was adjusted by
+  /// `delta` at `at`. Updates the scalar fact, records the adjustment for
+  /// the summary and, for an increment of a field of `*o`, retains `o`.
+  void handleAdjustment(const PlaceBuilder::Adjustment &adjustment,
+                        const clang::Expr &at, core::AnalysisState &state);
+  /// The pointer whose object the integer place `count` is a field of
+  /// (`o` for `o->rc` and `o->base.refs`), if the steps from the dereference
+  /// down to `count` are all fields; with the count-field key of the field
+  /// (empty when the type has no stable spelling).
+  struct CountedObject {
+    core::PlaceId pointer;
+    std::string key;
+  };
+  [[nodiscard]] std::optional<CountedObject>
+  countedObjectOf(core::PlaceId count);
+  /// The count-field key for the field path `steps` of the object of type
+  /// `pointee`; `struct obj` alone when `steps` is empty.
+  [[nodiscard]] std::string
+  countKeyFor(clang::QualType pointee,
+              llvm::ArrayRef<core::PathElem> steps) const;
+  /// `pointer` retains its object through the count `key` at `at` (RFC 0010,
+  /// *Retaining*): its record gains a share or a `Retained` one is made.
+  static void retain(core::PlaceId pointer, std::string key,
+                     const core::SourceLocation &at,
+                     core::AnalysisState &state);
+  /// Applies the `increments` and `decrements` of a callee's summary at
+  /// `call`: the argument places are retained and the adjustments are this
+  /// function's too (wrappers compose).
+  void applyAdjustments(const clang::CallExpr &call,
+                        const core::FunctionSummary &summary,
+                        core::AnalysisState &state);
+  /// RFC 0010, *Releasing a share*: a `free` of `pointer` on a path whose
+  /// facts (and `guard`) say a decremented integer field of `*pointer` is
+  /// zero is a share release; returns the count place.
+  [[nodiscard]] std::optional<core::PlaceId>
+  zeroCountBelow(core::PlaceId pointer, const core::PlaceGuard &guard,
+                 const core::AnalysisState &state);
+  /// RFC 0010, *Recognising an `unref` body*: a consume of a parameter root
+  /// guarded by a decremented count of its object being zero is a share
+  /// release; marks it `share`, records the count path and drops the
+  /// consumes of the object's contents that carry the same conjunct.
+  void recogniseShareReleases();
+  /// Whether `key` is a known count (RFC 0010, *Leaks of shares*): a
+  /// `WEAVEC_REFCOUNT` field or one some analysed function releases through.
+  [[nodiscard]] bool isKnownCount(std::string_view key) const;
+
   // -- Pre-passes -----------------------------------------------------------
 
   void collectScopes(const clang::Stmt *stmt, core::LifetimeId current);
@@ -264,6 +334,12 @@ private:
   /// being on the operand Clang's short-circuit CFG evaluated last.
   void applyCondition(const clang::Expr &condition, bool holds, bool wrapped,
                       core::AnalysisState &state);
+  /// `x OP k` on an integer, decided in a type of `width` bits, on the edge
+  /// where it `holds` (RFC 0009); `x` may be an adjustment whose value is
+  /// the place at an offset (RFC 0010).
+  void testInteger(const clang::Expr &x, clang::BinaryOperatorKind op,
+                   std::int64_t k, bool holds, bool unsignedComparison,
+                   unsigned width, core::AnalysisState &state);
   /// The edge out of a `switch` into `to`: the scrutinee equals one of the
   /// block's `case` labels, or none of them on the `default` edge (RFC
   /// 0009, *Scalar facts in the state*).
@@ -339,6 +415,11 @@ private:
   /// and non-null what it says is non-null (RFC 0008).
   static void markNullOutcomes(const core::PendingOutcome &narrowed,
                                core::AnalysisState &state);
+  /// Retracts the stores `narrowed` says did not happen on the classes
+  /// still possible and applies the integer facts that hold on all of them
+  /// (RFC 0010, *Per-outcome stores* and *Per-outcome integer facts*).
+  void applyOutcomeStores(core::PendingOutcome &narrowed,
+                          core::AnalysisState &state);
   void flushDiagnostics();
   void dump(const core::AnalysisState *exitState);
 
@@ -384,6 +465,10 @@ private:
   [[nodiscard]] bool isCallerMemory(core::PlaceId place) const;
   /// The resource at `place` escapes the model: its loss is not a leak.
   void escape(core::PlaceId place, core::AnalysisState &state);
+  /// A callee kept a copy of the value at `place` out of the summary's sight
+  /// (RFC 0010, *Stores out of sight*): escapes it and its storage, and
+  /// records the same for this function's caller.
+  void escapeOutOfSight(core::PlaceId place, core::AnalysisState &state);
   /// Escapes the places a value names: the copied place of a copy (and the
   /// storage below it when `deep`), the storage of a borrowed object.
   void escapeValue(const ValueOrigin &origin, bool deep,
@@ -400,7 +485,8 @@ private:
                const std::function<bool(core::PlaceId)> &dying,
                const core::AnalysisState &state);
   /// Reports and forgets every resource among `candidates` that is lost when
-  /// the places `dying` says so go away.
+  /// the places `dying` says so go away. A `Retained` record (RFC 0010) is
+  /// reported only when its count field is a known count.
   void checkLeaks(const std::vector<core::PlaceId> &candidates,
                   const std::function<bool(core::PlaceId)> &dying,
                   LeakForm form, const core::SourceLocation &at,
@@ -455,11 +541,14 @@ private:
   /// `guard` is what a callee's argument-conditional effect requires of the
   /// caller's places, already translated and pruned (RFC 0009); the path's
   /// own facts are added to it.
+  /// With `share` (RFC 0010, *Releasing a share*) one share of the object
+  /// is released rather than the object: a holder with a surplus keeps its
+  /// name, a `Retained` holder stays valid, any other is `Released`.
   std::vector<core::PlaceId>
   doConsume(const PlaceRef &ref, core::MoveReason reason, const clang::Expr &at,
             core::AnalysisState &state, std::string_view family = {},
             bool library = false, bool replaced = false,
-            core::PlaceGuard guard = {});
+            core::PlaceGuard guard = {}, bool share = false);
   void doMutationCheck(core::PlaceId place, const clang::Expr &at,
                        core::AnalysisState &state);
   /// The variable `place` names (if it is a base place) was assigned or had
@@ -662,6 +751,22 @@ private:
                      std::string_view family,
                      const core::ElementWitness &element,
                      const core::PlaceGuard &guard, core::AnalysisState &state);
+  /// For `return --*r == 0`, `return !--*r`, `return *r`: the integer place
+  /// the result speaks about and, per integer class of the result, the fact
+  /// the place satisfies when the result is in it (RFC 0010, *Per-outcome
+  /// integer facts*).
+  struct ScalarReturnTest {
+    core::PlaceId place;
+    std::map<core::Outcome, core::ValueFact> factOn;
+  };
+  [[nodiscard]] std::optional<ScalarReturnTest>
+  scalarTestReturn(const clang::Expr &value);
+  /// Records into `storedAtReturn` what holds at a `return` of `outcome`:
+  /// the stores of the path and the facts about the caller's integer memory
+  /// this function wrote, plus what the returned test says (RFC 0010).
+  void recordStoredAtReturn(core::Outcome outcome,
+                            const core::AnalysisState &state,
+                            const std::optional<ScalarReturnTest> &tested);
   /// This function overwrote `place` outright on the current path: what the
   /// caller's memory held there on entry is gone (RFC 0008, *Replaced
   /// values*; `state.overwritten`).
@@ -689,12 +794,22 @@ private:
   /// dereference of a parameter, or a global).
   [[nodiscard]] std::optional<core::SummaryPath>
   callerVisiblePath(core::PlaceId place);
+  /// `callerVisiblePath` for a count this function adjusts, bounded to the
+  /// place depth the summary keeps (RFC 0010, *Recognising increments and
+  /// decrements*).
+  [[nodiscard]] std::optional<core::SummaryPath>
+  countPathFor(core::PlaceId count);
   /// For `return p != NULL`, `return !p` and their negations: the tested
   /// place and the integer class the function returns when it is null.
   [[nodiscard]] std::optional<std::pair<const clang::Expr *, core::Outcome>>
   nullTestReturn(const clang::Expr &value) const;
-  /// Records a pointer value written into caller-visible memory.
-  void recordStore(core::PlaceId dest, const core::ValueSource &value);
+  /// Records a pointer value written into caller-visible memory, or, for a
+  /// caller-visible value written below a pointer the summary cannot name,
+  /// that the value escaped (RFC 0010, *Stores out of sight*).
+  void recordStore(core::PlaceId dest, const core::ValueSource &value,
+                   const core::AnalysisState &state);
+  void recordStoreOutOfSight(core::PlaceId dest, const core::ValueSource &value,
+                             const core::AnalysisState &state);
   /// `return s` for a record: one `result`-rooted store per pointer field
   /// path of `s`'s storage with a known source (RFC 0008, *Struct-by-value
   /// results*).

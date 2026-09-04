@@ -146,9 +146,10 @@ Design: [RFC 0007 — Resource lifecycle](rfcs/0007-resource-lifecycle.md)
 - [x] Per-outcome null facts for out-parameter constructors
       (`null <class> <path>`): `if (mk(&x) != 0) return -1;` is clean when
       `mk`'s error returns leave `*out` null or untouched.
-- [ ] Per-outcome *stores* (which of several stores holds on which class).
-- [ ] A release family for `WEAVEC_OWNED` declarations (`WEAVEC_OWNED_BY(f)`
-      or a family attribute), so annotated APIs get the mismatch check too.
+- [x] Per-outcome *stores* (which of several stores holds on which class)
+      (RFC 0010).
+- [x] A release family for `WEAVEC_OWNED` declarations (`WEAVEC_OWNED_BY(f)`)
+      (RFC 0010).
 - [ ] Corpus triage of the new `leak` reports; leak rate as a tracked metric.
 
 ## Milestone 7 — Pointer validity (in progress)
@@ -203,6 +204,30 @@ Design: [RFC 0009 — Value-conditional behaviour](rfcs/0009-value-conditional-b
 - [ ] Argument-conditional termination (`never-returns when ...`).
 - [ ] Corpus: the `noreturn` group of Lua reports removed; time regression
       bounded.
+
+## Milestone 9 — Shared ownership (in progress)
+
+Design: [RFC 0010 — Shared ownership](rfcs/0010-shared-ownership.md)
+(Accepted).
+
+- [x] Shares on resource records: a count increment (`o->rc++`, the atomic
+      builtins, a callee's `increment` path) retains its object; copies of
+      a place with surplus shares carry one away (`sameShare` alias edges).
+- [x] Share releases: a decrement whose zero test guards the free is a
+      `freed,share` effect; the released name is dead (`use-after-free`,
+      `double-free` with reference wording), siblings live on; `count` paths
+      and the count-field registry for `leak` on retained shares.
+- [x] Per-outcome integer facts (`fact <class> <path> <fact>`) so
+      `dec_and_test` helpers compose with the release rule.
+- [x] Per-outcome stores (`stored <class> <path>`): a store the callee did
+      not perform on the selected class is retracted in the caller
+      (summary format v6, sidecar v6).
+- [x] `WEAVEC_RETAINS`, `WEAVEC_RELEASES`, `WEAVEC_REFCOUNT`,
+      `WEAVEC_OWNED_BY(f)` (closes the RFC 0007 item above).
+- [x] Whole-program fixpoint re-runs a cyclic group's member only when its
+      imports changed.
+- [ ] Corpus: a reference-counting project (jansson) added to the tracked
+      set; the Lua whole-program run time as a tracked metric.
 
 ## Ongoing
 

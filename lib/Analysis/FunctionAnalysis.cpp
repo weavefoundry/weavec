@@ -56,12 +56,54 @@ bool FunctionAnalyzer::analyze(const FunctionDecl &function,
           .fixits = {},
       });
     };
+    // RFC 0010, *Annotations*: `WEAVEC_OWNED_BY` says which family an owned
+    // pointer belongs to, so it needs `WEAVEC_OWNED`; retaining and
+    // releasing the same argument contradict each other.
+    const auto reportShareContradictions = [&](const NamedDecl &decl,
+                                               const AnnotationSet &set) {
+      if (set.retains && set.releases) {
+        sink.report(core::Diagnostic{
+            .severity = core::Severity::Warning,
+            .id = core::diag::InvalidAnnotation,
+            .message = "'" + decl.getNameAsString() +
+                       "' is declared both WEAVEC_RETAINS and WEAVEC_RELEASES",
+            .location = toCoreLocation(sm, decl.getLocation()),
+            .notes = {},
+            .fixits = {},
+        });
+      }
+      if (!set.family.empty() && !set.owned) {
+        sink.report(core::Diagnostic{
+            .severity = core::Severity::Warning,
+            .id = core::diag::InvalidAnnotation,
+            .message = "'" + decl.getNameAsString() +
+                       "' is declared WEAVEC_OWNED_BY(" + set.family +
+                       ") without WEAVEC_OWNED",
+            .location = toCoreLocation(sm, decl.getLocation()),
+            .notes = {},
+            .fixits = {},
+        });
+      }
+    };
     if (annotations.nullable && annotations.nonNull)
       reportContradiction(function);
+    reportShareContradictions(function, annotations);
     for (const ParmVarDecl *param : function.parameters()) {
       const AnnotationSet onParam = getAnnotations(*param);
       if (onParam.nullable && onParam.nonNull)
         reportContradiction(*param);
+      reportShareContradictions(*param, onParam);
+      if (onParam.invalid) {
+        sink.report(core::Diagnostic{
+            .severity = core::Severity::Warning,
+            .id = core::diag::InvalidAnnotation,
+            .message = "unrecognised weavec annotation on '" +
+                       param->getNameAsString() + "'",
+            .location = toCoreLocation(sm, param->getLocation()),
+            .notes = {},
+            .fixits = {},
+        });
+      }
     }
   }
   // A `WEAVEC_UNSAFE` function is analysed like any other so its callers see

@@ -214,7 +214,7 @@ void truncate_to(struct buf *b, unsigned n) {
 // DUMP: function 'open_node':
 // DUMP: summary: *out: read|written; stores{*out = fresh(free), *out = null} returns{} requires{out} outcome zero{} null{*out} outcome positive{} notnull{*out}
 // DUMP: function 'grow':
-// DUMP: summary: b->data: written|moved(free)|replaced; b->len: read|written; stores{b->data = fresh(free)} returns{} requires{b} outcome zero{b->data: moved(free) replaced} outcome negative{} null{b->data}
+// DUMP: summary: b->data: written|moved(free)|replaced; b->len: read|written; stores{b->data = fresh(free)} returns{} requires{b} outcome zero{b->data: moved(free) replaced} stored{b->data} outcome negative{} null{b->data} stored{}
 // DUMP: function 'truncate_to':
 // DUMP-NOT: maybe-null
 // DUMP: summary: b->data: read|written|moved(free)|replaced;

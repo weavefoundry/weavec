@@ -172,6 +172,124 @@ TEST(SummaryIO, PrintsAndParsesGuardsAndNeverReturns) {
   EXPECT_TRUE(reparsed->neverReturns);
 }
 
+// RFC 0010, *Summary text format (version 6)*: the `share` flag and the
+// `increment`, `decrement`, `count`, `stored` and `fact` lines.
+TEST(SummaryIO, PrintsAndParsesSharesAndPerOutcomeLines) {
+  EXPECT_EQ(SummaryFormatVersion, 6U);
+  const SummaryPath rc = SummaryPath::param(0).deref().field("rc");
+  FunctionSummary unref;
+  unref.addEffect(SummaryPath::param(0),
+                  PlaceEffect{.freed = true, .share = true, .family = "free"});
+  unref.decrements.insert(rc);
+  unref.counts.insert(rc);
+  EXPECT_EQ(printSummary(unref, Names), "summary\n"
+                                        "  effect param 0 freed(free),share\n"
+                                        "  decrement param 0 *.rc\n"
+                                        "  count param 0 *.rc\n"
+                                        "end\n");
+  std::string error;
+  auto parsed = parseSummary(printSummary(unref, Names), ResolveAll, &error);
+  ASSERT_TRUE(parsed) << error;
+  EXPECT_EQ(*parsed, unref);
+  EXPECT_TRUE(parsed->effectOf(SummaryPath::param(0)).share);
+
+  FunctionSummary ref;
+  ref.addEffect(rc, PlaceEffect{.read = true, .written = true});
+  ref.increments.insert(rc);
+  ref.addReturn(ValueSource::copy(SummaryPath::param(0)));
+  EXPECT_EQ(printSummary(ref, Names), "summary\n"
+                                      "  effect param 0 *.rc read,written\n"
+                                      "  return copy param 0\n"
+                                      "  increment param 0 *.rc\n"
+                                      "end\n");
+  parsed = parseSummary(printSummary(ref, Names), ResolveAll, &error);
+  ASSERT_TRUE(parsed) << error;
+  EXPECT_EQ(*parsed, ref);
+
+  const SummaryPath items = SummaryPath::param(0).deref().field("items");
+  const SummaryPath n = SummaryPath::param(0).deref().field("n");
+  FunctionSummary put;
+  put.addEffect(n, PlaceEffect{.read = true, .written = true});
+  put.addStore(Store{.dest = items.indexed(),
+                     .value = ValueSource::copy(SummaryPath::param(1))});
+  put.addOutcome(Outcome::Zero);
+  put.addOutcome(Outcome::Negative);
+  put.storesOn[Outcome::Zero] = {items.indexed()};
+  put.storesOn[Outcome::Negative] = {};
+  put.factOn[Outcome::Zero] = {{n, ValueFact::of(Outcome::Positive)}};
+  put.factOn[Outcome::Negative] = {{n, ValueFact::ofConstant(8)}};
+  EXPECT_EQ(printSummary(put, Names), "summary\n"
+                                      "  effect param 0 *.n read,written\n"
+                                      "  store param 0 *.items[] copy param 1\n"
+                                      "  outcome zero\n"
+                                      "  outcome negative\n"
+                                      "  stored zero param 0 *.items[]\n"
+                                      "  stored negative\n"
+                                      "  fact zero param 0 *.n positive\n"
+                                      "  fact negative param 0 *.n =8\n"
+                                      "end\n");
+  parsed = parseSummary(printSummary(put, Names), ResolveAll, &error);
+  ASSERT_TRUE(parsed) << error;
+  EXPECT_EQ(*parsed, put);
+  EXPECT_TRUE(parsed->storesOnClass(Outcome::Negative).empty());
+
+  // Global roots in the new lines go through the resolver too.
+  const auto declineAll = [](std::string_view) {
+    return std::optional<std::uint32_t>();
+  };
+  parsed = parseSummary("summary\n"
+                        "  increment global g_cache *.rc\n"
+                        "  stored zero global g_cache\n"
+                        "  fact zero global g_cache zero\n"
+                        "end\n",
+                        declineAll, &error);
+  ASSERT_TRUE(parsed) << error;
+  EXPECT_TRUE(parsed->increments.empty());
+  EXPECT_TRUE(parsed->factOn.empty() ||
+              parsed->factOn.at(Outcome::Zero).empty());
+}
+
+// RFC 0010, *Stores out of sight*: the `escaped` flag, alone or with others.
+TEST(SummaryIO, PrintsAndParsesEscaped) {
+  FunctionSummary set;
+  set.addEffect(SummaryPath::param(1), PlaceEffect{.escaped = true});
+  set.addEffect(SummaryPath::param(0).deref().field("first"),
+                PlaceEffect{.read = true, .written = true, .escaped = true});
+  EXPECT_EQ(printSummary(set, Names),
+            "summary\n"
+            "  effect param 0 *.first read,written,escaped\n"
+            "  effect param 1 escaped\n"
+            "end\n");
+  std::string error;
+  const auto parsed =
+      parseSummary(printSummary(set, Names), ResolveAll, &error);
+  ASSERT_TRUE(parsed) << error;
+  EXPECT_EQ(*parsed, set);
+  EXPECT_TRUE(parsed->effectOf(SummaryPath::param(1)).escaped);
+}
+
+TEST(SummaryIO, RejectsMalformedShareLines) {
+  for (const char *line : {
+           "  effect param 0 share",
+           "  effect param 0 read,share",
+           "  increment",
+           "  increment param",
+           "  decrement result x",
+           "  count global",
+           "  stored maybe param 0",
+           "  stored zero param",
+           "  fact zero param 0",
+           "  fact zero param 0 maybe",
+           "  fact param 0 zero",
+       }) {
+    std::string error;
+    EXPECT_FALSE(parseSummary(std::string("summary\n") + line + "\nend\n",
+                              ResolveAll, &error))
+        << line;
+    EXPECT_FALSE(error.empty()) << line;
+  }
+}
+
 TEST(SummaryIO, GuardsOnDeclinedGlobalsAreDropped) {
   const GlobalResolver declineAll = [](std::string_view) {
     return std::optional<std::uint32_t>();

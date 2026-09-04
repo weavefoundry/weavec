@@ -218,6 +218,8 @@ UnitExports TranslationUnitAnalyzer::exports() {
     result.unknownCallees.insert(std::move(name));
   for (std::string &key : store.unknownIndirectTypeKeys())
     result.unknownIndirectTypes.insert(std::move(key));
+  // RFC 0010: count fields are keyed by type spelling, so they travel as is.
+  result.countFields = store.knownCountKeys();
   return result;
 }
 

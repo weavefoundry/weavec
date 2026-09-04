@@ -155,13 +155,34 @@ void ProgramAnalysis::analyzeCyclic(const std::vector<unsigned> &component,
   analysis::ProgramDatabase db = databaseFor(current);
   for (analysis::UnitExports &member : current)
     member = db.renumbered(member);
+
+  // RFC 0010, *Whole-program fixpoint*: a member whose inputs did not change
+  // since it last ran produces the same exports, so only members with a
+  // changed dependency are re-run. The dependencies are the unit graph's
+  // edges restricted to the group (`imports` and `indirectTypes` against
+  // the members' definitions); a member with no known dependency inside the
+  // group runs once.
+  const std::vector<std::vector<unsigned>> adjacency = unitGraph();
+  std::map<unsigned, unsigned> position;
+  for (unsigned k = 0; k < component.size(); ++k)
+    position[component[k]] = k;
+  std::vector<std::vector<unsigned>> dependents(component.size());
+  for (unsigned k = 0; k < component.size(); ++k) {
+    for (const unsigned target : adjacency[component[k]]) {
+      if (const auto it = position.find(target); it != position.end())
+        dependents[it->second].push_back(k);
+    }
+  }
+  std::vector<bool> dirty(component.size(), true);
+
   bool stale = false;
   bool changed = true;
   for (unsigned round = 0; round < MaxRounds && changed; ++round) {
     changed = false;
     for (unsigned k = 0; k < component.size(); ++k) {
-      if (broken[k])
+      if (broken[k] || !dirty[k])
         continue;
+      dirty[k] = false;
       if (stale) {
         db = databaseFor(current);
         stale = false;
@@ -179,10 +200,12 @@ void ProgramAnalysis::analyzeCyclic(const std::vector<unsigned> &component,
       // Both sides are numbered by the database's table (`renumbered` only
       // ever appends to it), so the summaries alone decide the fixpoint.
       analysis::UnitExports exports = db.renumbered(run->exports);
-      if (exports.functions != current[k].functions) {
+      if (!exports.sameSummariesAs(current[k])) {
         changed = true;
         stale = true;
         current[k] = std::move(exports);
+        for (const unsigned dependent : dependents[k])
+          dirty[dependent] = true;
       }
     }
   }

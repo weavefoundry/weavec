@@ -164,6 +164,8 @@ std::string_view toString(MoveReason reason) noexcept {
     return "freed";
   case MoveReason::Uninitialized:
     return "uninitialized";
+  case MoveReason::Released:
+    return "released";
   }
   return "<invalid>";
 }

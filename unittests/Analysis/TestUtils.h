@@ -43,6 +43,10 @@ void free(void *);
 #define UNSAFE __attribute__((annotate("weavec.unsafe")))
 #define NULLABLE __attribute__((annotate("weavec.nullable")))
 #define NONNULL __attribute__((annotate("weavec.nonnull")))
+#define RETAINS __attribute__((annotate("weavec.retains")))
+#define RELEASES __attribute__((annotate("weavec.releases")))
+#define REFCOUNT __attribute__((annotate("weavec.refcount")))
+#define OWNED_BY(f) __attribute__((annotate("weavec.family." #f)))
 void use(const void *BORROWED);
 int cond(void);
 #define NULL ((void *)0)

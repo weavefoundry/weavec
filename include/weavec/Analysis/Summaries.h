@@ -26,6 +26,7 @@
 #include "clang/AST/Expr.h"
 #include "clang/AST/Type.h"
 
+#include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/StringRef.h"
@@ -33,6 +34,7 @@
 #include <cstdint>
 #include <map>
 #include <optional>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -130,6 +132,15 @@ builtinSummary(const clang::FunctionDecl &function);
 /// The names in the builtin table, for documentation and tests.
 [[nodiscard]] std::vector<llvm::StringRef> builtinNames();
 
+/// RFC 0010, *Retaining*: the key of a count field, the canonical spelling
+/// of the record type `object` followed by the field path (`struct obj.rc`,
+/// `struct obj.base.refs`; `struct obj` alone when `fields` is empty and the
+/// object stands for its own count). Empty when `object` is not a named
+/// record type or `fields` is not a chain of fields of it.
+[[nodiscard]] std::string countFieldKey(clang::QualType object,
+                                        llvm::ArrayRef<core::PathElem> fields,
+                                        const clang::ASTContext &context);
+
 /// Holds inferred summaries for one translation unit and answers callee
 /// lookups by combining them with annotations and the builtin table.
 class SummaryStore {
@@ -201,6 +212,22 @@ public:
   /// once per function type.
   bool noteUnknownIndirect(const clang::CallExpr &call);
 
+  // -- Count fields (RFC 0010, *Leaks of shares*) -----------------------------
+
+  /// The count-field key of the summary path `path` of `function` (`param 0
+  /// *.rc` with `struct obj *` as parameter 0 is `struct obj.rc`), if the
+  /// path is one dereference of a parameter or global followed by fields.
+  [[nodiscard]] std::optional<std::string>
+  countKeyOf(const clang::FunctionDecl &function,
+             const core::SummaryPath &path) const;
+  /// Records `key` as a known count (a `WEAVEC_REFCOUNT` field, or a field
+  /// some analysed function releases a share through).
+  void addKnownCount(std::string key);
+  /// Whether `key` is a known count here or in the program database.
+  [[nodiscard]] bool isKnownCount(llvm::StringRef key) const;
+  /// The keys known in this unit (for `UnitExports::countFields`).
+  [[nodiscard]] const std::set<std::string> &knownCountKeys() const noexcept;
+
 private:
   // Node-based maps: `lookup` hands out pointers into them that must stay
   // valid while further lookups insert.
@@ -219,6 +246,7 @@ private:
   GlobalTable globalTable;
   const ProgramDatabase *database = nullptr;
   const clang::ASTContext *context = nullptr;
+  std::set<std::string> knownCounts;
 
   /// The database summary for `callee`, imported into this unit, if the
   /// program defines it elsewhere.

@@ -31,6 +31,12 @@ void ResourceTracker::escape(PlaceId place) {
     it->second.escaped = true;
 }
 
+void ResourceTracker::unescape(PlaceId place) {
+  const auto it = owned.find(place);
+  if (it != owned.end())
+    it->second.escaped = false;
+}
+
 bool ResourceTracker::isEscaped(PlaceId place) const {
   const auto it = owned.find(place);
   return it != owned.end() && it->second.escaped;
@@ -38,6 +44,37 @@ bool ResourceTracker::isEscaped(PlaceId place) const {
 
 void ResourceTracker::clear(PlaceId place) {
   owned.erase(place);
+}
+
+ResourceRecord ResourceTracker::retain(PlaceId place, std::string countField,
+                                       SourceLocation location) {
+  null.erase(place);
+  const auto it = owned.find(place);
+  if (it == owned.end()) {
+    ResourceRecord record{.origin = ResourceOrigin::Retained,
+                          .location = std::move(location),
+                          .shares = 1,
+                          .countField = std::move(countField)};
+    owned.emplace(place, record);
+    return record;
+  }
+  ResourceRecord &record = it->second;
+  ++record.shares;
+  if (record.countField.empty())
+    record.countField = std::move(countField);
+  else if (record.countField != countField)
+    record.countField.clear();
+  return record;
+}
+
+std::uint32_t ResourceTracker::release(PlaceId place) {
+  const auto it = owned.find(place);
+  if (it == owned.end())
+    return 0;
+  if (it->second.shares > 1)
+    return --it->second.shares;
+  owned.erase(it);
+  return 0;
 }
 
 void ResourceTracker::markNull(PlaceId place) {
@@ -68,8 +105,39 @@ bool ResourceTracker::join(const ResourceTracker &other) {
       mine.interior = true;
       changed = true;
     }
-    if (mine.family != record.family && !mine.family.empty()) {
+    // A retained share has no family of its own (RFC 0010): it neither
+    // contradicts nor supplies one, except that the owned side's is kept.
+    const bool retainedVsOwned = mine.origin != record.origin &&
+                                 (mine.origin == ResourceOrigin::Retained ||
+                                  record.origin == ResourceOrigin::Retained);
+    if (retainedVsOwned) {
+      if (mine.origin == ResourceOrigin::Retained &&
+          mine.family != record.family) {
+        mine.family = record.family;
+        changed = true;
+      }
+    } else if (mine.family != record.family && !mine.family.empty()) {
       mine.family.clear();
+      changed = true;
+    }
+    // The smaller count: a release is then treated as the last one on the
+    // side with more, which reports a use after it rather than missing one
+    // (RFC 0010, *Bugs deliberately not caught*).
+    if (record.shares < mine.shares) {
+      mine.shares = record.shares;
+      changed = true;
+    }
+    if (mine.countField != record.countField && !mine.countField.empty()) {
+      mine.countField.clear();
+      changed = true;
+    }
+    // A retained share on one side and an owned resource on the other: the
+    // record is the owned one (releasing its last share kills the holder),
+    // the more reporting direction.
+    if (mine.origin == ResourceOrigin::Retained &&
+        record.origin != ResourceOrigin::Retained) {
+      mine.origin = record.origin;
+      mine.location = record.location;
       changed = true;
     }
     // Held when either side's guard holds.
@@ -119,6 +187,8 @@ std::string_view toString(ResourceOrigin origin) noexcept {
     return "allocated";
   case ResourceOrigin::Declared:
     return "declared";
+  case ResourceOrigin::Retained:
+    return "retained";
   }
   return "<invalid>";
 }

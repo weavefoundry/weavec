@@ -199,11 +199,17 @@ public:
   /// of argument `k` is a copy of that argument, and so on.
   [[nodiscard]] ValueOrigin classifyValue(const clang::Expr &expr);
 
+  /// The place a value is a copy of: a `Copy`'s place, or the one place the
+  /// non-null alternatives of a `Conditional` all copy (`obj_ref(p)`, whose
+  /// result is `p` or null; RFC 0010). `std::nullopt` otherwise.
+  [[nodiscard]] static std::optional<PlaceRef>
+  copyOrNull(const ValueOrigin &origin);
   /// The caller-side place a summary path denotes at `call` (RFC 0003,
   /// *Applying a summary at a call*): `param(i)` is the place holding the
-  /// `i`-th argument, `param(i)*` what it points to (or `x` itself when the
-  /// argument is `&x`), `global(g)` the global's place. `std::nullopt` when
-  /// the argument is not a place.
+  /// `i`-th argument (or the place it copies, `copyOrNull`), `param(i)*`
+  /// what it points to (or `x` itself when the argument is `&x`),
+  /// `global(g)` the global's place. `std::nullopt` when the argument is not
+  /// a place.
   [[nodiscard]] std::optional<PlaceRef>
   resolveSummaryPath(const core::SummaryPath &path,
                      const clang::CallExpr &call);
@@ -273,8 +279,32 @@ public:
     /// The value is the place's scaled or converted, not the place's own:
     /// an exact constant on the place says nothing exact about the value.
     bool scaled = false;
+    /// RFC 0010, *Recognising increments and decrements*: the value is the
+    /// place's *after* the expression plus this offset (`x--` yields the
+    /// old value, `x + 1`; `--x` yields `x`). Zero for a plain read.
+    std::int64_t offset = 0;
   };
   [[nodiscard]] ScalarOperand scalarOperand(const clang::Expr &expr);
+
+  /// RFC 0010, *Recognising increments and decrements*: an expression that
+  /// adds or subtracts exactly one from an integer place: `++x`, `x++`,
+  /// `--x`, `x--`, `x += 1`, `x -= 1`, and the adjusting builtins
+  /// (`__atomic_fetch_add(&x, 1, o)`, `__sync_sub_and_fetch(&x, 1)`, ...).
+  struct Adjustment {
+    /// The integer place adjusted.
+    PlaceRef place;
+    /// `+1` or `-1`.
+    int delta = 0;
+    /// The expression's value is the place's new value plus this offset:
+    /// `0` for the pre-forms and `*_fetch` builtins, `-delta` for the
+    /// post-forms and `fetch_*` builtins (which yield the old value).
+    std::int64_t valueOffset = 0;
+    /// The operand the place was reached through (`x` in `x++`, `&x` in the
+    /// builtins), for locating notes; null for a builtin whose pointer
+    /// argument is not an address-of.
+    const clang::Expr *operand = nullptr;
+  };
+  [[nodiscard]] std::optional<Adjustment> adjustmentOf(const clang::Expr &expr);
 
   /// The summary path of a place rooted at a parameter or a global of
   /// `function`, or `std::nullopt` for places rooted at locals.

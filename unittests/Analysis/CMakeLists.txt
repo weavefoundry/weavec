@@ -7,6 +7,7 @@ weavec_add_unittest(
           PointerValidityTest.cpp
           ProgramDatabaseTest.cpp
           ResourceLifecycleTest.cpp
+          SharedOwnershipTest.cpp
           SignatureInferenceTest.cpp
           SummariesTest.cpp
           ValueConditionalTest.cpp

@@ -38,6 +38,10 @@ from typing import Iterable
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_MANIFEST = ROOT / "scripts" / "corpus" / "projects.json"
 DEFAULT_WORKDIR = ROOT / "build" / "corpus"
+# Files a checkout needs that its build would generate (a configured header,
+# say), kept per project; `{support}` in a project's `args` expands to its
+# directory.
+SUPPORT_DIR = ROOT / "scripts" / "corpus" / "support"
 
 # `file:line:col: severity: message [weavec::id]` as printed by the tool.
 DIAG_RE = re.compile(
@@ -188,7 +192,8 @@ def run_units(weavec: str, project: Project, root: Path, files: list[Path], extr
     cmd.extend(str(f) for f in files)
     # Clang stops after 20 errors per unit by default; a tally that is capped
     # per unit cannot be compared between runs (Lua's lstrlib.c hits the cap).
-    cmd.extend(["--", "-ferror-limit=0", *project.args])
+    support = str(SUPPORT_DIR / project.name)
+    cmd.extend(["--", "-ferror-limit=0", *(a.replace("{support}", support) for a in project.args)])
     start = time.perf_counter()
     proc = subprocess.run(cmd, cwd=root, capture_output=True, text=True)
     seconds = time.perf_counter() - start

@@ -451,6 +451,178 @@ TEST(FunctionSummary, NeverReturnsJoinsByConjunction) {
   EXPECT_FALSE(other.neverReturns) << "order does not matter";
 }
 
+// RFC 0010, *Shares*: `share` qualifies a consume and is a must-fact.
+TEST(PlaceEffect, ShareJoinsByConjunction) {
+  PlaceEffect release{.freed = true, .share = true, .family = "free"};
+  PlaceEffect plain{.freed = true, .family = "free"};
+  PlaceEffect joined = release;
+  joined.join(plain);
+  EXPECT_TRUE(joined.freed);
+  EXPECT_FALSE(joined.share) << "a plain free on one path is a free";
+  PlaceEffect both = release;
+  both.join(release);
+  EXPECT_TRUE(both.share);
+}
+
+// RFC 0010, *Stores out of sight*: `escaped` is an effect of its own (an
+// `effects` entry with nothing else is kept) and a may-fact.
+TEST(PlaceEffect, EscapedIsAMayFact) {
+  PlaceEffect escaped{.escaped = true};
+  EXPECT_FALSE(escaped.empty());
+  EXPECT_FALSE(escaped.consumed());
+  PlaceEffect read{.read = true};
+  read.join(escaped);
+  EXPECT_TRUE(read.escaped);
+  EXPECT_TRUE(read.read);
+  PlaceEffect joined = escaped;
+  joined.join(PlaceEffect{.written = true});
+  EXPECT_TRUE(joined.escaped) << "the other side's silence does not undo it";
+
+  FunctionSummary summary;
+  summary.addEffect(SummaryPath::param(1), escaped);
+  EXPECT_TRUE(summary.effectOf(SummaryPath::param(1)).escaped);
+  EXPECT_FALSE(summary.consumes(1));
+  EXPECT_EQ(summary.inferredKind(1), OwnershipKind::Unknown)
+      << "escaping says nothing about ownership";
+}
+
+// RFC 0010: increments, decrements and counts are may-facts; `retains` asks
+// about a parameter's pointee.
+TEST(FunctionSummary, IncrementsJoinByUnionAndRetains) {
+  FunctionSummary ref;
+  ref.increments.insert(SummaryPath::param(0).deref().field("rc"));
+  EXPECT_TRUE(ref.retains(0));
+  EXPECT_FALSE(ref.retains(1));
+  EXPECT_FALSE(ref.empty());
+
+  FunctionSummary unref;
+  unref.decrements.insert(SummaryPath::param(1).deref().field("rc"));
+  unref.counts.insert(SummaryPath::param(1).deref().field("rc"));
+  unref.addEffect(SummaryPath::param(1),
+                  PlaceEffect{.freed = true, .share = true, .family = "free"});
+
+  FunctionSummary both = ref;
+  both.join(unref);
+  EXPECT_EQ(both.increments.size(), 1U);
+  EXPECT_EQ(both.decrements.size(), 1U);
+  EXPECT_EQ(both.counts.size(), 1U);
+  EXPECT_TRUE(both.retains(0));
+  EXPECT_TRUE(both.effectOf(SummaryPath::param(1)).freed);
+  EXPECT_TRUE(both.effectOf(SummaryPath::param(1)).share)
+      << "consumed on one side only: whenever it is, it is a share release";
+
+  FunctionSummary plain;
+  plain.addEffect(SummaryPath::param(1),
+                  PlaceEffect{.freed = true, .family = "free"});
+  FunctionSummary mixed = unref;
+  mixed.join(plain);
+  EXPECT_FALSE(mixed.effectOf(SummaryPath::param(1)).share)
+      << "a plain free on some path: the caller's other shares may be dead";
+}
+
+// RFC 0010, *Per-outcome stores*: a class stores what some path returning it
+// stores; a map that says every class stores everything is dropped.
+TEST(FunctionSummary, StoresOnClassAndNormalisation) {
+  const SummaryPath dest = SummaryPath::param(0).deref().field("items");
+  FunctionSummary put;
+  put.addStore(
+      Store{.dest = dest, .value = ValueSource::copy(SummaryPath::param(1))});
+  put.addOutcome(Outcome::Zero);
+  put.addOutcome(Outcome::Negative);
+  put.storesOn[Outcome::Zero] = {dest};
+  put.storesOn[Outcome::Negative] = {};
+
+  EXPECT_EQ(put.storesOnClass(Outcome::Zero), (std::set<SummaryPath>{dest}));
+  EXPECT_TRUE(put.storesOnClass(Outcome::Negative).empty());
+  EXPECT_EQ(put.storesOnClass(Outcome::Positive), (std::set<SummaryPath>{dest}))
+      << "an unknown class stores everything";
+  put.normalizeStoresOn();
+  EXPECT_EQ(put.storesOn.size(), 2U) << "the classes differ: kept";
+
+  FunctionSummary always;
+  always.addStore(Store{.dest = dest, .value = ValueSource::null()});
+  always.addOutcome(Outcome::Zero);
+  always.addOutcome(Outcome::Negative);
+  always.storesOn[Outcome::Zero] = {dest};
+  always.storesOn[Outcome::Negative] = {dest};
+  always.normalizeStoresOn();
+  EXPECT_TRUE(always.storesOn.empty()) << "uniform: says nothing";
+  EXPECT_EQ(always.storesOnClass(Outcome::Negative),
+            (std::set<SummaryPath>{dest}));
+
+  // The join is a per-class union: a path that stores on `negative` on the
+  // other side makes `negative` a storing class.
+  FunctionSummary joined = put;
+  joined.join(always);
+  EXPECT_TRUE(joined.storesOn.empty())
+      << "after the join every class stores to the only destination";
+
+  // A side without outcome knowledge wipes the per-class maps.
+  FunctionSummary unknown;
+  unknown.addStore(Store{.dest = dest, .value = ValueSource::null()});
+  FunctionSummary wiped = put;
+  wiped.join(unknown);
+  EXPECT_TRUE(wiped.storesOn.empty());
+  EXPECT_TRUE(wiped.outcomes.empty());
+}
+
+// RFC 0010, *Per-outcome integer facts*: a must-fact per class.
+TEST(FunctionSummary, FactsOnClassJoinByIntersection) {
+  const SummaryPath n = SummaryPath::param(0).deref().field("n");
+  const SummaryPath m = SummaryPath::param(0).deref().field("m");
+  FunctionSummary a;
+  a.addOutcome(Outcome::Zero);
+  a.addOutcome(Outcome::Negative);
+  a.factOn[Outcome::Zero] = {{n, ValueFact::of(Outcome::Positive)},
+                             {m, ValueFact::ofConstant(1)}};
+  a.factOn[Outcome::Negative] = {{n, ValueFact::of(Outcome::Zero)}};
+
+  FunctionSummary b;
+  b.addOutcome(Outcome::Zero);
+  b.addOutcome(Outcome::Positive);
+  b.factOn[Outcome::Zero] = {{n, ValueFact::ofConstant(2)}};
+  b.factOn[Outcome::Positive] = {{m, ValueFact::ofConstant(3)}};
+
+  FunctionSummary joined = a;
+  joined.join(b);
+  ASSERT_TRUE(joined.factOn.contains(Outcome::Zero));
+  EXPECT_EQ(joined.factOn[Outcome::Zero].size(), 1U) << "`m` on one side only";
+  EXPECT_EQ(joined.factOn[Outcome::Zero].at(n),
+            ValueFact::of(Outcome::Positive))
+      << "positive joined with the constant 2 is positive";
+  EXPECT_EQ(joined.factOn[Outcome::Negative].at(n),
+            ValueFact::of(Outcome::Zero))
+      << "a class only one side returns keeps that side's facts";
+  EXPECT_EQ(joined.factOn[Outcome::Positive].at(m), ValueFact::ofConstant(3));
+  EXPECT_FALSE(joined.empty());
+
+  // Remapping keeps the per-class facts and stores on kept roots.
+  FunctionSummary global;
+  global.addOutcome(Outcome::Zero);
+  global.addOutcome(Outcome::Positive);
+  global.factOn[Outcome::Zero] = {
+      {SummaryPath::global(4), ValueFact::ofConstant(0)}};
+  global.addStore(
+      Store{.dest = SummaryPath::global(4), .value = ValueSource::null()});
+  global.storesOn[Outcome::Zero] = {SummaryPath::global(4)};
+  global.storesOn[Outcome::Positive] = {};
+  global.increments.insert(SummaryPath::global(4).deref().field("rc"));
+  const FunctionSummary mapped = remapGlobals(global, [](std::uint32_t id) {
+    return std::optional<std::uint32_t>(id + 10);
+  });
+  EXPECT_TRUE(
+      mapped.factOn.at(Outcome::Zero).contains(SummaryPath::global(14)));
+  EXPECT_TRUE(
+      mapped.storesOn.at(Outcome::Zero).contains(SummaryPath::global(14)));
+  EXPECT_TRUE(
+      mapped.increments.contains(SummaryPath::global(14).deref().field("rc")));
+  const FunctionSummary dropped = remapGlobals(
+      global, [](std::uint32_t) { return std::optional<std::uint32_t>(); });
+  EXPECT_TRUE(dropped.factOn.empty());
+  EXPECT_TRUE(dropped.increments.empty());
+  EXPECT_TRUE(dropped.storesOn.empty()) << "no destinations left: uniform";
+}
+
 TEST(ValueSource, KindNames) {
   EXPECT_EQ(toString(ValueSource::Kind::Fresh), "fresh");
   EXPECT_EQ(toString(ValueSource::Kind::Copy), "copy");

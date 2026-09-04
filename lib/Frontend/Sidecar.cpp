@@ -46,6 +46,8 @@ std::string printUnitRecord(const UnitRecord &record) {
     os << "unknown " << name << '\n';
   for (const std::string &key : exports.unknownIndirectTypes)
     os << "unknown-indirect " << key << '\n';
+  for (const std::string &key : exports.countFields)
+    os << "count-field " << key << '\n';
   for (const ReportedDiagnostic &d : record.reported) {
     os << "reported " << d.id << ' ' << d.line << ' ' << d.column << ' '
        << d.file << '\n';
@@ -148,6 +150,8 @@ std::optional<UnitRecord> parseUnitRecord(llvm::StringRef text,
       exports.unknownCallees.insert(value.str());
     } else if (kind == "unknown-indirect") {
       exports.unknownIndirectTypes.insert(value.str());
+    } else if (kind == "count-field") {
+      exports.countFields.insert(value.str());
     } else if (kind == "reported") {
       // `<id> <line> <column> <file>`; the file may contain spaces.
       llvm::SmallVector<llvm::StringRef, 4> fields;

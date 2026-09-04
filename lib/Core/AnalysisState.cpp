@@ -79,13 +79,69 @@ std::vector<PlaceId> PendingOutcome::nonNullInAll() const {
   return inAllClasses(consumedBy, nonNullOn);
 }
 
+std::vector<std::pair<PlaceId, ValueFact>> PendingOutcome::factsInAll() const {
+  std::map<PlaceId, ValueFact> joined;
+  bool first = true;
+  for (const auto &[outcome, places] : consumedBy) {
+    const auto it = factOn.find(outcome);
+    if (it == factOn.end())
+      return {};
+    std::map<PlaceId, ValueFact> theirs(it->second.begin(), it->second.end());
+    if (first) {
+      joined = std::move(theirs);
+      first = false;
+      continue;
+    }
+    for (auto mine = joined.begin(); mine != joined.end();) {
+      const auto theirFact = theirs.find(mine->first);
+      if (theirFact == theirs.end()) {
+        mine = joined.erase(mine);
+        continue;
+      }
+      mine->second.join(theirFact->second);
+      ++mine;
+    }
+    if (joined.empty())
+      return {};
+  }
+  std::vector<std::pair<PlaceId, ValueFact>> result;
+  for (const auto &[place, fact] : joined) {
+    if (!fact.trivial())
+      result.emplace_back(place, fact);
+  }
+  return result;
+}
+
+std::vector<PendingOutcome::PendingStore> PendingOutcome::retractStores() {
+  OutcomeSet remaining;
+  for (const auto &[outcome, places] : consumedBy)
+    remaining.insert(outcome);
+  std::vector<PendingStore> retracted;
+  std::erase_if(stores, [&](const PendingStore &store) {
+    if (!(store.on & remaining).empty())
+      return false;
+    retracted.push_back(store);
+    return true;
+  });
+  return retracted;
+}
+
 bool PendingOutcome::settled() const {
   const std::vector<PlaceId> all = places();
-  return std::ranges::all_of(consumedBy, [&all](const auto &entry) {
-    return std::ranges::all_of(all, [&entry](PlaceId place) {
-      return std::ranges::find(entry.second, place) != entry.second.end();
-    });
-  });
+  OutcomeSet remaining;
+  for (const auto &[outcome, places] : consumedBy)
+    remaining.insert(outcome);
+  const bool storesSettled =
+      std::ranges::all_of(stores, [remaining](const PendingStore &store) {
+        return store.on.containsAll(remaining);
+      });
+  return storesSettled &&
+         std::ranges::all_of(consumedBy, [&all](const auto &entry) {
+           return std::ranges::all_of(all, [&entry](PlaceId place) {
+             return std::ranges::find(entry.second, place) !=
+                    entry.second.end();
+           });
+         });
 }
 
 bool AnalysisState::join(const AnalysisState &other) {
@@ -120,6 +176,10 @@ bool AnalysisState::join(const AnalysisState &other) {
     it->second.join(effect);
     changed |= it->second != before;
   }
+
+  // Stored on some path (RFC 0010).
+  for (const SummaryPath &path : other.stored)
+    changed |= stored.insert(path).second;
 
   // Overwritten on every path: what the other side did not overwrite goes.
   for (auto it = overwritten.begin(); it != overwritten.end();) {

@@ -90,7 +90,7 @@ int tidy(void) {
 // The summary vocabulary (RFC 0008, *Summary text format*): `replaced` among
 // the flags, `result` as a store root.
 // DUMP: function 'grow':
-// DUMP: summary: v->cap: read|written; v->items: written|moved(free)|replaced; stores{v->items = fresh(free)} returns{} requires{v} outcome zero{} null{v->items} outcome positive{v->items: moved(free) replaced} notnull{v->items}
+// DUMP: summary: v->cap: read|written; v->items: written|moved(free)|replaced; stores{v->items = fresh(free)} returns{} requires{v} outcome zero{} null{v->items} stored{} outcome positive{v->items: moved(free) replaced} notnull{v->items} stored{v->items}
 // DUMP: function 'reset':
 // DUMP: summary: v->items: written|freed(free)|replaced; stores{v->items = null} returns{} requires{v}
 // DUMP: function 'make':
