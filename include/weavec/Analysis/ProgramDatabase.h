@@ -46,6 +46,11 @@ public:
   [[nodiscard]] llvm::StringRef nameOf(std::uint32_t id) const;
   [[nodiscard]] std::size_t size() const noexcept { return names.size(); }
 
+  /// If one table is a prefix of the other (ids agree wherever both have
+  /// them), makes this the longer one and returns true; otherwise leaves it
+  /// unchanged and returns false.
+  bool extendTo(const GlobalNames &other);
+
   friend bool operator==(const GlobalNames &, const GlobalNames &) = default;
 
 private:
@@ -106,8 +111,16 @@ class ProgramDatabase {
 public:
   /// Adds a unit's exports. A name defined by more than one unit gets the
   /// join of the definitions' summaries (RFC 0005, *Accepted false
-  /// positives*).
+  /// positives*). Summaries numbered by a table this one extends, or that
+  /// extends this one (see `renumbered`), are copied rather than renumbered.
   void add(const UnitExports &unit);
+
+  /// `unit` with its summaries numbered by this database's table, which is
+  /// extended with any names it did not have; the result's `globals` is a
+  /// copy of `globals()`. Rebuilding a database from such exports is a copy
+  /// per summary instead of a renumbering, which is what the whole-program
+  /// fixpoint does once per changed member (RFC 0005, *Performance*).
+  [[nodiscard]] UnitExports renumbered(const UnitExports &unit);
   void clear();
   [[nodiscard]] bool empty() const noexcept { return functions.empty(); }
 

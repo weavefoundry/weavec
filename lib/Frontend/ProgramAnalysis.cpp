@@ -149,8 +149,12 @@ void ProgramAnalysis::analyzeCyclic(const std::vector<unsigned> &component,
 
   // Each member sees the newest exports of every other member; the database
   // is rebuilt only after some member's exports changed, which in the last
-  // round (and for most of the members of a large one) is never.
+  // round (and for most of the members of a large one) is never. Members
+  // are kept numbered by the database's own table, so a rebuild copies
+  // their summaries instead of renumbering each of them.
   analysis::ProgramDatabase db = databaseFor(current);
+  for (analysis::UnitExports &member : current)
+    member = db.renumbered(member);
   bool stale = false;
   bool changed = true;
   for (unsigned round = 0; round < MaxRounds && changed; ++round) {
@@ -172,10 +176,13 @@ void ProgramAnalysis::analyzeCyclic(const std::vector<unsigned> &component,
         result.failed.push_back(units[component[k]].unit->name());
         continue;
       }
-      if (!run->exports.sameSummariesAs(current[k])) {
+      // Both sides are numbered by the database's table (`renumbered` only
+      // ever appends to it), so the summaries alone decide the fixpoint.
+      analysis::UnitExports exports = db.renumbered(run->exports);
+      if (exports.functions != current[k].functions) {
         changed = true;
         stale = true;
-        current[k] = run->exports;
+        current[k] = std::move(exports);
       }
     }
   }

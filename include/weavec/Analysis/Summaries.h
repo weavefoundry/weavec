@@ -93,6 +93,9 @@ struct SignatureAnnotations {
   /// True if the result or any parameter carries an ownership annotation
   /// (`WEAVEC_OWNED`, `WEAVEC_BORROWED`, `WEAVEC_MUT` or `WEAVEC_RAW`).
   [[nodiscard]] bool anyOwnership() const noexcept;
+  /// True if the result or any parameter carries `WEAVEC_NULLABLE` or
+  /// `WEAVEC_NONNULL` (RFC 0008).
+  [[nodiscard]] bool anyNullness() const noexcept;
 };
 
 [[nodiscard]] SignatureAnnotations

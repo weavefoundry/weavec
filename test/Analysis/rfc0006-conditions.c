@@ -41,7 +41,7 @@ void unlink(struct list *head, struct list *victim) {
 int ready(void);
 static char *feed(void) { return ready() ? get() : sentinel_value; }
 // DUMP: function 'feed':
-// DUMP: summary: stores{} returns{fresh(free), copy sentinel_value}
+// DUMP: summary: stores{} returns{fresh(free), copy sentinel_value, null}
 char *read_line(void) {
   char *res;
   while ((res = feed()) == sentinel_value)
@@ -49,7 +49,7 @@ char *read_line(void) {
   return res;
 }
 // DUMP: function 'read_line':
-// DUMP: summary: stores{} returns{fresh(free)}
+// DUMP: summary: stores{} returns{fresh(free), null}
 void reader_loop(void) {
   for (;;) {
     char *line = read_line();

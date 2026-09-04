@@ -8,7 +8,8 @@
 //
 // The dataflow state RFC 0002 carries through a function body:
 //
-//   State = { moves, loans, aliases, pending, consumed, kinds, raw }
+//   State = { moves, loans, aliases, pending, consumed, kinds, raw,
+//             resources, nulls, overwritten }
 //
 // Every component is a finite-height lattice whose `join` is monotone, so a
 // worklist iteration over the CFG terminates without widening. Lifetimes are
@@ -23,6 +24,7 @@
 #include "weavec/Core/AliasRelation.h"
 #include "weavec/Core/Borrow.h"
 #include "weavec/Core/Moves.h"
+#include "weavec/Core/Nullness.h"
 #include "weavec/Core/Ownership.h"
 #include "weavec/Core/Place.h"
 #include "weavec/Core/Raw.h"
@@ -32,6 +34,7 @@
 #include <map>
 #include <optional>
 #include <set>
+#include <string>
 #include <vector>
 
 namespace weavec::core {
@@ -55,9 +58,31 @@ struct PendingOutcome {
   /// narrowed the classes, a place null in all of them is null.
   // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
   std::map<Outcome, std::vector<PlaceId>> nullOn = {};
+  /// The places in `nullOn` whose membership can only mean that the callee
+  /// stored nothing there on that class: RFC 0007 relaxes `nullOn` to the
+  /// destinations of a `fresh` store that hold nothing at any return of the
+  /// class, and a callee that never stores null into such a path cannot
+  /// have made it null. Selecting the class retracts the record the store
+  /// gave and says nothing about the value (RFC 0008, *Implementation
+  /// notes*).
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
+  std::vector<PlaceId> unheldOnly = {};
+  /// Per class, the caller places the callee left non-null on every path
+  /// returning it (RFC 0008, *Per-outcome non-null facts*).
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
+  std::map<Outcome, std::vector<PlaceId>> nonNullOn = {};
+  /// The callee as spelled in messages (`'make'`) and the call's location,
+  /// for the note on a place `nullOn` makes null.
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
+  std::string callee = {};
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
+  SourceLocation location = {};
 
   /// The places null in every class still possible; empty when no class is.
   [[nodiscard]] std::vector<PlaceId> nullInAll() const;
+  /// The places non-null in every class still possible; empty when no class
+  /// is.
+  [[nodiscard]] std::vector<PlaceId> nonNullInAll() const;
 
   /// Every place mentioned in any class, ascending.
   [[nodiscard]] std::vector<PlaceId> places() const;
@@ -91,6 +116,11 @@ struct AnalysisState {
   /// RFC 0003, paths under reassigned parameters) on the current path; the
   /// flow-sensitive record outcome classes are derived from (RFC 0006).
   std::map<SummaryPath, PlaceEffect> consumed;
+  /// Caller-visible paths whose value on entry has been replaced on *every*
+  /// path reaching here (RFC 0008, *Replaced values*): a release of what the
+  /// place holds now is not a release of the caller's value (`b->data =
+  /// malloc(n); free(b->data);`). A must-fact: joins by intersection.
+  std::set<SummaryPath> overwritten;
   /// Inferred ownership kind per pointer place.
   std::map<PlaceId, OwnershipKind> kinds;
   /// Pointer places holding a raw pointer (RFC 0004): dereferencing or
@@ -99,6 +129,9 @@ struct AnalysisState {
   /// Places holding an owned resource this function must account for, and
   /// places known to be null (RFC 0007).
   ResourceTracker resources;
+  /// What is known about the nullness of each pointer place's value (RFC
+  /// 0008): definitely null, possibly null, or non-null.
+  NullTracker nulls;
 
   /// Component-wise join with the state of another incoming edge. Returns
   /// whether this state changed, so the fixpoint engine need not copy and
@@ -108,9 +141,13 @@ struct AnalysisState {
   /// Ownership kind of `place`, `Unknown` if never assigned.
   [[nodiscard]] OwnershipKind kindOf(PlaceId place) const noexcept;
 
+  /// True if `path`, or an object containing it, is in `overwritten`: the
+  /// value the caller's memory held there on entry is gone on every path.
+  [[nodiscard]] bool isOverwritten(const SummaryPath &path) const;
+
   /// Forgets everything about `place` itself: its move record, its alias
   /// class membership, the loans it holds, the loans against it, its pending
-  /// outcome, its kind and its raw record. Used when the place is
+  /// outcome, its kind, its raw record and its nullness. Used when the place is
   /// (re)initialised or goes out of scope. Descendants are the caller's
   /// responsibility.
   void forget(PlaceId place);

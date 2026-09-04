@@ -91,7 +91,7 @@ TEST(Sidecar, PathIsOutputPlusExtension) {
 
 TEST(Sidecar, PrintsStableText) {
   EXPECT_EQ(printUnitRecord(sample()),
-            "weavec-summaries 3\n"
+            "weavec-summaries 4\n"
             "source src/node.c\n"
             "cwd /work/build\n"
             "arg -triple\n"
@@ -166,29 +166,29 @@ TEST(Sidecar, RejectsOtherFormatsAndMalformedLines) {
   std::string error;
   EXPECT_FALSE(parseUnitRecord("weavec-summaries 1\n", &error));
   EXPECT_EQ(error, "unsupported format 1");
-  EXPECT_FALSE(parseUnitRecord("weavec-summaries 4\n", &error));
-  EXPECT_EQ(error, "unsupported format 4");
+  EXPECT_FALSE(parseUnitRecord("weavec-summaries 5\n", &error));
+  EXPECT_EQ(error, "unsupported format 5");
   EXPECT_FALSE(parseUnitRecord("ELF\x01\x02", &error));
   EXPECT_EQ(error, "not a weavec summary file");
   EXPECT_FALSE(parseUnitRecord("", &error));
   EXPECT_EQ(error, "empty file");
   EXPECT_FALSE(parseUnitRecord(
-      "weavec-summaries 3\nsummary\n  return fresh\nend\n", &error));
+      "weavec-summaries 4\nsummary\n  return fresh\nend\n", &error));
   EXPECT_EQ(error, "line 2: summary record without a function");
-  EXPECT_FALSE(parseUnitRecord("weavec-summaries 3\nfunction f\n", &error));
+  EXPECT_FALSE(parseUnitRecord("weavec-summaries 4\nfunction f\n", &error));
   EXPECT_EQ(error, "line 2: malformed 'function' line");
-  EXPECT_FALSE(parseUnitRecord("weavec-summaries 3\nfunction f external "
+  EXPECT_FALSE(parseUnitRecord("weavec-summaries 4\nfunction f external "
                                "plain\nsummary\n  return fresh\n",
                                &error));
   EXPECT_EQ(error, "line 4: summary record without 'end'");
-  EXPECT_FALSE(parseUnitRecord("weavec-summaries 3\nreported x y z\n", &error));
+  EXPECT_FALSE(parseUnitRecord("weavec-summaries 4\nreported x y z\n", &error));
   EXPECT_EQ(error, "line 2: malformed 'reported' line");
 }
 
 TEST(Sidecar, SkipsUnknownLinesAndBlankOnes) {
   std::string error;
   const std::optional<UnitRecord> parsed = parseUnitRecord(
-      "weavec-summaries 3\n\nfuture-thing 42\nsource a.c\n\n", &error);
+      "weavec-summaries 4\n\nfuture-thing 42\nsource a.c\n\n", &error);
   ASSERT_TRUE(parsed) << error;
   EXPECT_EQ(parsed->exports.source, "a.c");
   EXPECT_TRUE(parsed->exports.functions.empty());

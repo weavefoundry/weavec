@@ -14,15 +14,21 @@
 //   summary
 //     effect <path> <flag>[,<flag>]*      flags: read written freed moved
 //                                          freed(<family>) moved(<family>)
+//                                          replaced element (qualify a
+//                                          consume)
 //     store <path> <source>
 //     return <source>
 //     outcome <class>                      the class is a possible result
 //     outcome <class> <path> <flag>[,<flag>]*
 //     null <class> <path>                  the place is null on every path
 //                                          returning the class
+//     notnull <class> <path>               the place is non-null on every
+//                                          path returning the class
+//     requires <i>                         parameter <i> must not be null
 //   end
 //
 //   path   ::= param <i> [<steps>] | global <name> [<steps>]
+//            | result [<steps>]
 //   steps  ::= ( '*' | '.' <field> | '[]' )+        (one token)
 //   source ::= fresh | fresh(<family>) | null | unknown | raw | copy <path>
 //            | interior <path> | borrow <path>
@@ -32,7 +38,8 @@
 // Version 2 (RFC 0006) added `outcome` and `interior` and dropped
 // `realloc-like`. Version 3 (RFC 0007) added the optional release family on
 // `fresh`, `freed` and `moved` (the bare spellings mean "unknown family")
-// and the `null` line.
+// and the `null` line. Version 4 (RFC 0008) added the `replaced` and
+// `element` flags, the `notnull` and `requires` lines and the `result` root.
 //
 // Global roots are spelled by name; the caller supplies the mapping between
 // the summary's global ids and names in both directions, so this file stays
@@ -55,7 +62,7 @@ namespace weavec::core {
 
 /// Version of the record format; bumped when a record written by this
 /// version cannot be read by the previous one.
-inline constexpr unsigned SummaryFormatVersion = 3;
+inline constexpr unsigned SummaryFormatVersion = 4;
 
 /// The name to print for a global root id.
 using GlobalNamer = std::function<std::string(std::uint32_t)>;

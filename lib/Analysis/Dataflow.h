@@ -124,6 +124,10 @@ private:
   /// Place expressions whose pointer value is converted to an integer: the
   /// resource escapes the model (RFC 0007, *Escape*).
   llvm::DenseSet<const clang::Expr *> escapingExprs;
+  /// Call expressions whose result is dereferenced on the spot (`f()->x`,
+  /// `*g()`, `h()[i]`): the value lives in no place, so its nullness is
+  /// checked as the call completes (RFC 0008, *Nullness*).
+  llvm::DenseSet<const clang::CallExpr *> dereferencedCalls;
 
   // -- Liveness (RFC 0006, *Loans end at the last use of their holder*) -----
 
@@ -169,9 +173,6 @@ private:
     std::vector<core::PlaceId> places;
   };
   llvm::DenseMap<const clang::CallExpr *, WrittenPlaces> writtenAt;
-  /// Consumption recorded as it happens, keyed by summary path; used for
-  /// parameter roots and for paths under reassigned parameters.
-  std::map<core::SummaryPath, core::PlaceEffect> eventEffects;
   /// Per outcome class (RFC 0007, *Per-outcome null stores*): the caller
   /// memory null at every `return` of that class seen so far, and the
   /// caller memory holding a resource at some return of it. A `fresh` store
@@ -180,6 +181,9 @@ private:
   struct NullAtReturn {
     std::set<core::SummaryPath> null;
     std::set<core::SummaryPath> held;
+    /// The caller memory known non-null at every return of the class (RFC
+    /// 0008, *Per-outcome non-null facts*).
+    std::set<core::SummaryPath> nonNull;
   };
   std::map<core::Outcome, NullAtReturn> nullAtReturn;
 
@@ -253,7 +257,8 @@ private:
   /// they are null: nothing lies below a null pointer (RFC 0006, *Null
   /// edges*).
   void forgetBelowNull(core::PlaceId place, core::AnalysisState &state);
-  /// Marks null what `narrowed` says is null in every class still possible.
+  /// Marks null what `narrowed` says is null in every class still possible,
+  /// and non-null what it says is non-null (RFC 0008).
   static void markNullOutcomes(const core::PendingOutcome &narrowed,
                                core::AnalysisState &state);
   void flushDiagnostics();
@@ -263,6 +268,17 @@ private:
 
   void handleExpr(const clang::Expr &expr, core::AnalysisState &state);
   void handleDecl(const clang::DeclStmt &decl, core::AnalysisState &state);
+  /// RFC 0008, *Uninitialised pointers*: a local declared without an
+  /// initialiser whose address is never taken in this body, so every write
+  /// to it is one this function sees.
+  [[nodiscard]] bool isUninitializedLocal(const clang::VarDecl &var) const;
+  /// Marks every pointer-typed field path of the record at `place`
+  /// (through nested records, not arrays, unions or pointers) as
+  /// uninitialised, `declared` being the declaration.
+  void markUninitializedFields(core::PlaceId place,
+                               const clang::RecordDecl &record,
+                               const core::SourceLocation &declared,
+                               core::AnalysisState &state);
   void handleAssign(const clang::BinaryOperator &assign,
                     core::AnalysisState &state);
   void handleCall(const clang::CallExpr &call, core::AnalysisState &state);
@@ -294,6 +310,11 @@ private:
   /// storage below it when `deep`), the storage of a borrowed object.
   void escapeValue(const ValueOrigin &origin, bool deep,
                    core::AnalysisState &state);
+  /// Drops the nullness facts unchecked code handed `origin` may have
+  /// changed: everything below a copied pointer, the borrowed object and
+  /// everything below it (RFC 0008, *Implementation notes*).
+  void forgetNullnessReachable(const ValueOrigin &origin,
+                               core::AnalysisState &state);
   /// True if the resource at `place` (with `record`) is lost when every
   /// place `dying` says so goes away: nothing else reaches it.
   [[nodiscard]] static bool
@@ -323,6 +344,21 @@ private:
   void checkReleaseFamily(core::PlaceId place, std::string_view family,
                           const clang::Expr &at,
                           const core::AnalysisState &state);
+  /// RFC 0008, *Invalid releases*: the value `argument` hands to a consuming
+  /// parameter of `call` (the place `ref`, when it is one) is known not to
+  /// be the start of a heap allocation: the storage of a variable, a string
+  /// literal, or an offset into an allocation.
+  void checkInvalidRelease(const clang::Expr &argument,
+                           const std::optional<PlaceRef> &ref,
+                           core::MoveReason reason, const clang::Expr &at,
+                           const core::AnalysisState &state);
+  /// `place` now points into what it owns rather than at its start
+  /// (`p++`, `p += k`).
+  static void markInterior(core::PlaceId place, core::AnalysisState &state);
+  /// True if `place` is the storage of a variable or the string-literal
+  /// place: its root is not dereferenced on the way (`x`, `x.d`, `buf[*]`,
+  /// but not `*p` or `p->f`).
+  [[nodiscard]] bool isStorageOfVariable(core::PlaceId place) const;
   void reportLeak(core::PlaceId place, const core::ResourceRecord &record,
                   std::string message, const core::SourceLocation &at);
   /// The source location of element `index` of `block` (the statement, or
@@ -335,11 +371,13 @@ private:
   void doRead(const PlaceRef &ref, const clang::Expr &at,
               core::AnalysisState &state, bool includeSelf);
   /// Returns the places marked moved (the place, its mirrors and aliases);
-  /// empty if the place was already moved (reported, not re-marked).
+  /// empty if the place was already moved (reported, not re-marked). With
+  /// `replaced` (RFC 0008, *Replaced values*) only the aliases are marked
+  /// and the place itself is reinitialised.
   std::vector<core::PlaceId>
   doConsume(const PlaceRef &ref, core::MoveReason reason, const clang::Expr &at,
             core::AnalysisState &state, std::string_view family = {},
-            bool library = false);
+            bool library = false, bool replaced = false);
   void doMutationCheck(core::PlaceId place, const clang::Expr &at,
                        core::AnalysisState &state);
   /// The variable `place` names (if it is a base place) was assigned or had
@@ -402,6 +440,11 @@ private:
   /// `dest = { ... }`: assigns each initialised field.
   void initRecord(core::PlaceId dest, const clang::InitListExpr &init,
                   core::AnalysisState &state);
+  /// `dest = f(...)` for a record: the callee's `result` stores become
+  /// assignments to the fields of `dest` (RFC 0008, *Struct-by-value
+  /// results*).
+  void applyResultStores(core::PlaceId dest, const clang::CallExpr &call,
+                         core::AnalysisState &state);
   void setKind(core::PlaceId place, core::OwnershipKind kind,
                core::AnalysisState &state);
 
@@ -464,6 +507,53 @@ private:
   [[nodiscard]] std::optional<std::string>
   pointerName(const clang::Expr &value);
 
+  // -- Nullness (RFC 0008) --------------------------------------------------
+
+  /// What `WEAVEC_NULLABLE` / `WEAVEC_NONNULL` on the variable, parameter or
+  /// field `place` names declares, if anything.
+  [[nodiscard]] std::optional<core::Nullness>
+  declaredNullness(core::PlaceId place) const;
+  /// The nullness fact for `place`: its record, or what its declaration
+  /// says when it has none.
+  [[nodiscard]] std::optional<core::NullRecord>
+  nullnessAt(core::PlaceId place, const core::AnalysisState &state) const;
+  /// The nullness a value with `origin` gives its destination, if any: a
+  /// null constant, a callee result or store with a `null` alternative, or a
+  /// copy of a place with a fact (RFC 0008, *Sources of facts*).
+  [[nodiscard]] std::optional<core::NullRecord>
+  nullnessOf(const ValueOrigin &origin, const clang::Expr &at,
+             const core::AnalysisState &state);
+  /// Records `record` for `place` and its exact copies.
+  static void setNullness(core::PlaceId place, const core::NullRecord &record,
+                          core::AnalysisState &state);
+  /// A callee's store into `dest` at `call` may have left it null: the
+  /// record says so in the callee's name (`CalleeStore`).
+  void noteCalleeStore(core::PlaceId dest, const clang::CallExpr &call,
+                       core::AnalysisState &state);
+  /// `pointer` is dereferenced at `at`: reports a null or possibly-null
+  /// pointer (once per path), and records the requirement when the pointer
+  /// is a parameter about which nothing is known.
+  void checkDereference(core::PlaceId pointer, const clang::Expr &at,
+                        core::AnalysisState &state);
+  /// `pointer` was dereferenced at `at` with nothing known about it: from
+  /// here on it is non-null.
+  void markDereferenced(core::PlaceId pointer, const clang::Expr &at,
+                        core::AnalysisState &state);
+  /// The result of `call` is dereferenced without being stored first.
+  void checkResultDereference(const clang::CallExpr &call,
+                              core::AnalysisState &state);
+  /// The arguments `summary.requiresNonNull` names must be non-null at
+  /// `call`.
+  void checkRequiredArguments(const clang::CallExpr &call,
+                              const core::FunctionSummary &summary,
+                              core::AnalysisState &state);
+  /// Records that this function requires `place` (a parameter root or an
+  /// exact copy of one) to be non-null.
+  void noteRequirement(core::PlaceId place, const core::AnalysisState &state);
+  /// `'p' may be null: it is the result of 'f' here`, for the note.
+  [[nodiscard]] static std::string nullNote(const core::NullRecord &record,
+                                            std::string_view name);
+
   // -- Summary recording (RFC 0003) -----------------------------------------
 
   [[nodiscard]] bool recording() const noexcept {
@@ -481,18 +571,30 @@ private:
                     std::uint32_t argument,
                     const core::FunctionSummary &summary,
                     const core::AnalysisState &state);
-  /// Records a release/move of `target` as it happens: in the state's
-  /// flow-sensitive `consumed` map (every phase) and in `eventEffects`
-  /// (final pass).
+  /// Records a release/move of `target` as it happens in the state's
+  /// flow-sensitive `consumed` map, which the outcome classes read at each
+  /// `return` and the unconditional effects at the exit.
   void recordConsume(core::PlaceId target, core::MoveReason reason,
-                     std::string_view family, core::AnalysisState &state);
-  /// True if consumption of `path` is recorded as it happens rather than
-  /// read from the exit state (RFC 0003, *Deriving a summary*): parameter
-  /// roots and paths under reassigned parameters.
+                     std::string_view family,
+                     const core::ElementWitness &element,
+                     core::AnalysisState &state);
+  /// This function overwrote `place` outright on the current path: what the
+  /// caller's memory held there on entry is gone (RFC 0008, *Replaced
+  /// values*; `state.overwritten`).
+  void noteOverwritten(core::PlaceId place, core::AnalysisState &state);
+  /// This function wrote `place` (any element) after consuming the caller's
+  /// value there on the current path: the consume is `replaced` on this
+  /// path (RFC 0008, *Replaced values*; `state.consumed[path].replaced`).
+  void noteRewritten(core::PlaceId place, core::AnalysisState &state);
+  /// True if `path` describes the callee's own copy of an argument rather
+  /// than the caller's memory (RFC 0003, *Deriving a summary*): parameter
+  /// roots and paths under reassigned parameters. Such a path is never
+  /// `replaced` (RFC 0008).
   [[nodiscard]] bool isEventBased(const core::SummaryPath &path) const;
-  /// The consumption in force at `state`, by summary path: the event-based
-  /// paths from `state.consumed`, the rest from `state.moves` (RFC 0006,
-  /// *Outcome-conditional summaries*).
+  /// The consumption in force at `state`, by summary path: the union of
+  /// `state.consumed` (as it happened) and `state.moves` (what the places
+  /// still hold); RFC 0006 *Outcome-conditional summaries*, RFC 0008
+  /// *Replaced values*.
   [[nodiscard]] core::OutcomeEffects
   consumptionAt(const core::AnalysisState &state);
   /// Records the outcome classes of `return value` and the consumption on
@@ -509,6 +611,11 @@ private:
   nullTestReturn(const clang::Expr &value) const;
   /// Records a pointer value written into caller-visible memory.
   void recordStore(core::PlaceId dest, const core::ValueSource &value);
+  /// `return s` for a record: one `result`-rooted store per pointer field
+  /// path of `s`'s storage with a known source (RFC 0008, *Struct-by-value
+  /// results*).
+  void recordResultStores(const PlaceRef &returned,
+                          const core::AnalysisState &state);
   /// Classifies a value the callee hands out (stores or returns).
   [[nodiscard]] core::ValueSource sourceOf(const ValueOrigin &origin,
                                            const core::AnalysisState &state);

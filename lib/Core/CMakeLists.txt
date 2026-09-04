@@ -10,6 +10,7 @@ weavec_add_library(
           Diagnostic.cpp
           Lifetime.cpp
           Moves.cpp
+          Nullness.cpp
           Ownership.cpp
           Place.cpp
           Raw.cpp

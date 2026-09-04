@@ -17,6 +17,8 @@ char *alias_from_strchr(void) {
 
 void end_pointer_from_strtol(const char *text) {
   char *copy = strdup(text);
+  if (!copy)
+    return;
   char *end;
   long v = strtol(copy, &end, 10);
   free(copy);

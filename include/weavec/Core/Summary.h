@@ -10,7 +10,7 @@
 // see from the outside (RFC 0003): its parameters and the globals it touches,
 // each addressed by a *summary path* spelled with the RFC 0002 place steps.
 //
-//   root ::= param(i) | global(g)
+//   root ::= param(i) | global(g) | result
 //   path ::= root ('*' | '.' field | '[*]')*
 //
 // Summaries are frontend-neutral: roots are integers, paths are step lists.
@@ -27,6 +27,7 @@
 #include "weavec/Core/Ownership.h"
 #include "weavec/Core/Place.h"
 
+#include <algorithm>
 #include <compare>
 #include <cstdint>
 #include <functional>
@@ -45,6 +46,10 @@ enum class SummaryRoot : std::uint8_t {
   Param,
   /// A global variable, identified by an id interned per translation unit.
   Global,
+  /// The object a function returning a record by value hands back (RFC
+  /// 0008, *Struct-by-value results*). Only stores are rooted here
+  /// (`result.data = fresh`); `index` is always 0.
+  Result,
 };
 
 /// One step below a summary root; mirrors `PathStep` with the field name.
@@ -70,6 +75,9 @@ struct SummaryPath {
   [[nodiscard]] static SummaryPath global(std::uint32_t id) {
     return SummaryPath{.root = SummaryRoot::Global, .index = id, .steps = {}};
   }
+  [[nodiscard]] static SummaryPath result() {
+    return SummaryPath{.root = SummaryRoot::Result, .index = 0, .steps = {}};
+  }
 
   [[nodiscard]] SummaryPath deref() const;
   [[nodiscard]] SummaryPath field(std::string_view name) const;
@@ -78,6 +86,12 @@ struct SummaryPath {
   [[nodiscard]] bool isRoot() const noexcept { return steps.empty(); }
   [[nodiscard]] bool isParam() const noexcept {
     return root == SummaryRoot::Param;
+  }
+  [[nodiscard]] bool isGlobal() const noexcept {
+    return root == SummaryRoot::Global;
+  }
+  [[nodiscard]] bool isResult() const noexcept {
+    return root == SummaryRoot::Result;
   }
   /// True if `this` is a proper prefix of `other` (same root, fewer steps).
   [[nodiscard]] bool isProperPrefixOf(const SummaryPath &other) const;
@@ -108,6 +122,21 @@ struct PlaceEffect {
   bool freed = false;
   /// The owned resource at the path is moved to another owner.
   bool moved = false;
+  /// RFC 0008, *Replaced values*: `freed`/`moved` describe the value the
+  /// caller's memory held at the path on entry, and on every path that
+  /// consumed it the callee stored something else there before returning
+  /// (`free(b->data); b->data = NULL;`). Only holders of the *old* value
+  /// are dead at the call; the place itself is not. A must-fact: joins by
+  /// conjunction. Meaningful only when `freed` or `moved` is set; never set
+  /// on a parameter root.
+  bool replaced = false;
+  /// RFC 0008, *Element consumes*: every consume of the path went through an
+  /// element access (`free(a[i])`), so which element of the caller's array
+  /// is gone is not known to the caller; it applies the consume with an
+  /// *unknown* witness (RFC 0006, *Element witnesses*) instead of *whole*.
+  /// A must-fact: joins by conjunction. Meaningful only when `freed` or
+  /// `moved` is set.
+  bool element = false;
   /// The release family of the consume (RFC 0007): the canonical releaser
   /// the resource ends up with (`free`, `fclose`, ...); empty when unknown.
   /// Meaningful only when `freed` or `moved` is set.
@@ -123,9 +152,10 @@ struct PlaceEffect {
     return written || freed || moved;
   }
 
-  /// May-join: `or` of every flag. The family survives only when both sides
-  /// agree (or only one consumes); a disagreement is "unknown", so joining
-  /// can only make the mismatch check report less.
+  /// May-join: `or` of every flag but `replaced` and `element`, which hold
+  /// only if every consuming side says so. The family survives only when
+  /// both sides agree (or only one consumes); a disagreement is "unknown",
+  /// so joining can only make the mismatch check report less.
   void join(const PlaceEffect &other);
 
   friend bool operator==(const PlaceEffect &, const PlaceEffect &) = default;
@@ -258,6 +288,16 @@ public:
   /// `init` whose `strm->state = fresh` store lies past its argument checks.
   /// A class present here is also a key of `outcomes`.
   std::map<Outcome, std::set<SummaryPath>> nullOn;
+  /// Per outcome class, the caller places that on *every* path returning it
+  /// hold a non-null pointer (RFC 0008, *Per-outcome non-null facts*): `int
+  /// make(char **out) { *out = malloc(n); return *out != NULL; }` has `param
+  /// 0 *` in class `positive`. A class present here is also a key of
+  /// `outcomes`. A must-fact: joins by intersection.
+  std::map<Outcome, std::set<SummaryPath>> nonNullOn;
+  /// Parameters the callee dereferences while nothing is known about their
+  /// nullness (RFC 0008, *Requirements*): a caller must not pass a pointer
+  /// that may be null. A may-fact: joins by union.
+  std::set<std::uint32_t> requiresNonNull;
 
   /// The effect recorded for `path`, or an empty one.
   [[nodiscard]] PlaceEffect effectOf(const SummaryPath &path) const;
@@ -310,9 +350,23 @@ public:
   /// Drops every fresh alternative, whatever its family.
   void eraseFreshReturns();
 
+  /// True if the callee may return a null pointer (`null` is among the
+  /// alternatives of the result).
+  [[nodiscard]] bool mayReturnNull() const noexcept;
+  /// True if argument `param` must not be null.
+  [[nodiscard]] bool requiresParam(std::uint32_t param) const {
+    return requiresNonNull.contains(param);
+  }
+  /// True if some store has `path` as its destination.
+  [[nodiscard]] bool storesTo(const SummaryPath &path) const {
+    return std::ranges::any_of(
+        stores, [&path](const Store &store) { return store.dest == path; });
+  }
+
   [[nodiscard]] bool empty() const noexcept {
     return effects.empty() && stores.empty() && returns.empty() &&
-           outcomes.empty() && nullOn.empty();
+           outcomes.empty() && nullOn.empty() && nonNullOn.empty() &&
+           requiresNonNull.empty();
   }
 
   /// Component-wise set union.
@@ -330,7 +384,7 @@ using GlobalIdMap = std::function<std::optional<std::uint32_t>(std::uint32_t)>;
 /// Rewrites every global root of `summary` through `map` (RFC 0005, *The
 /// program database*): effects on and stores into a dropped root vanish
 /// (from the outcome classes too); a `copy` or `borrow` of one becomes
-/// `unknown`. Parameter roots are kept.
+/// `unknown`. Parameter and result roots are kept.
 [[nodiscard]] FunctionSummary remapGlobals(const FunctionSummary &summary,
                                            const GlobalIdMap &map);
 

@@ -96,6 +96,10 @@ public:
   /// Drops every loan held by `holder`, e.g. because it was reassigned.
   void dropHolder(PlaceId holder);
 
+  /// Drops the loans `holder` holds against `place`: a test refuted that
+  /// `holder` points there (RFC 0008, *Invalid releases*).
+  void drop(PlaceId holder, PlaceId place);
+
   /// Drops every loan whose holder satisfies `dead`: the holder will not be
   /// read again (RFC 0006, *Loans end at the last use of their holder*).
   void expireHolders(const std::function<bool(PlaceId)> &dead);
@@ -115,12 +119,20 @@ public:
   [[nodiscard]] bool hasLoans(PlaceId place) const noexcept;
   [[nodiscard]] bool contains(const Loan &loan) const noexcept;
 
+  /// Whether two loans are the same borrow (place, holder, kind and
+  /// lifetime), whatever site each was recorded at.
+  [[nodiscard]] static bool sameBorrow(const Loan &lhs,
+                                       const Loan &rhs) noexcept;
+
   friend bool operator==(const BorrowState &lhs, const BorrowState &rhs);
 
 private:
   /// Kept sorted (see `before`) so membership is a binary search and `join`
   /// a merge: a large function holds hundreds of loans, and both run at
-  /// every CFG edge.
+  /// every CFG edge. One entry per borrow: the same borrow recorded at
+  /// several sites (a callee's store applied at each of a hundred call
+  /// sites, a loop) keeps the earliest site, which is the one a conflict
+  /// would have cited anyway.
   std::vector<Loan> live;
 
   [[nodiscard]] static bool before(const Loan &lhs, const Loan &rhs) noexcept;

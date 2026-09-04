@@ -120,6 +120,38 @@ TEST(PendingOutcome, SelectReinstatesWhatTheSelectedClassesKeep) {
   EXPECT_TRUE(nonNegative.settled());
 }
 
+// RFC 0008, *Per-outcome non-null facts*: `int make(T **out)` that stores a
+// fresh object and returns 1, or leaves `*out` null and returns 0.
+TEST(PendingOutcome, NonNullInAllFollowsTheSelectedClasses) {
+  PendingOutcome pending;
+  pending.consumedBy[Outcome::Zero] = {};
+  pending.consumedBy[Outcome::Positive] = {};
+  pending.nullOn[Outcome::Zero] = {P};
+  pending.nonNullOn[Outcome::Positive] = {P};
+  EXPECT_TRUE(pending.nullInAll().empty()) << "both classes still possible";
+  EXPECT_TRUE(pending.nonNullInAll().empty());
+
+  PendingOutcome success = pending;
+  success.select({Outcome::Positive});
+  EXPECT_EQ(success.nonNullInAll(), std::vector<PlaceId>{P});
+  EXPECT_TRUE(success.nullInAll().empty());
+
+  PendingOutcome failure = pending;
+  failure.select({Outcome::Zero});
+  EXPECT_EQ(failure.nullInAll(), std::vector<PlaceId>{P});
+  EXPECT_TRUE(failure.nonNullInAll().empty());
+
+  // Non-null in every class (an out-parameter always set): known without a
+  // test.
+  PendingOutcome always;
+  always.consumedBy[Outcome::Zero] = {};
+  always.consumedBy[Outcome::Negative] = {};
+  always.nonNullOn[Outcome::Zero] = {P, Q};
+  always.nonNullOn[Outcome::Negative] = {P};
+  EXPECT_EQ(always.nonNullInAll(), std::vector<PlaceId>{P});
+  EXPECT_TRUE(always.places().empty()) << "nothing consumed";
+}
+
 TEST(AnalysisState, JoinLiftsKindsThroughTheLattice) {
   AnalysisState left;
   left.kinds[P] = OwnershipKind::Owned;
@@ -151,6 +183,7 @@ TEST(AnalysisState, JoinReportsEveryKindOfChange) {
     base.kinds[P] = OwnershipKind::Owned;
     base.consumed[SummaryPath::param(0)] = PlaceEffect{.freed = true};
     base.pending[Q] = PendingOutcome{.consumedBy = {{Outcome::Null, {P}}}};
+    base.overwritten.insert(SummaryPath::param(1).deref());
     AnalysisState other = base;
     mutate(other);
     AnalysisState joined = base;
@@ -174,7 +207,62 @@ TEST(AnalysisState, JoinReportsEveryKindOfChange) {
   }));
   EXPECT_TRUE(
       changes([](AnalysisState &s) { s.kinds[P] = OwnershipKind::Shared; }));
+  EXPECT_TRUE(changes([](AnalysisState &s) {
+    s.nulls.set(P, NullRecord{.state = Nullness::Null,
+                              .location = at(2),
+                              .reason = NullReason::AssignedNull,
+                              .detail = {}});
+  }));
+  EXPECT_TRUE(changes([](AnalysisState &s) { s.overwritten.clear(); }))
+      << "overwritten on one side only is not overwritten";
+  EXPECT_FALSE(changes([](AnalysisState &s) {
+    s.overwritten.insert(SummaryPath::param(0).deref());
+  })) << "a path only the other side overwrote adds nothing";
   EXPECT_FALSE(changes([](AnalysisState &) {}));
+}
+
+// RFC 0008, *Nullness*: the null component joins per place.
+TEST(AnalysisState, JoinFoldsNullness) {
+  AnalysisState left;
+  left.nulls.set(P, NullRecord{.state = Nullness::NonNull,
+                               .location = at(1),
+                               .reason = NullReason::Tested,
+                               .detail = {}});
+  AnalysisState right;
+  right.nulls.set(P, NullRecord{.state = Nullness::Null,
+                                .location = at(2),
+                                .reason = NullReason::AssignedNull,
+                                .detail = {}});
+  EXPECT_TRUE(left.join(right));
+  EXPECT_EQ(left.nulls.stateOf(P), Nullness::MaybeNull);
+  EXPECT_EQ(left.nulls.recordOf(P)->location.line, 2U);
+}
+
+// RFC 0008, *Replaced values*: a caller-visible path counts as overwritten
+// only when every path reaching the point replaced it.
+TEST(AnalysisState, OverwrittenIsAMustFact) {
+  const SummaryPath items = SummaryPath::param(0).deref().field("items");
+  AnalysisState left;
+  left.overwritten.insert(items);
+  left.overwritten.insert(SummaryPath::param(1));
+  AnalysisState right;
+  right.overwritten.insert(items);
+
+  EXPECT_TRUE(left.isOverwritten(items));
+  EXPECT_TRUE(left.isOverwritten(SummaryPath::param(1)));
+  EXPECT_TRUE(left.join(right));
+  EXPECT_TRUE(left.isOverwritten(items));
+  EXPECT_FALSE(left.isOverwritten(SummaryPath::param(1)));
+
+  // Overwriting the struct overwrites its fields, but not what the fields
+  // pointed to: no dereference step may separate the prefix from the path.
+  AnalysisState whole;
+  whole.overwritten.insert(SummaryPath::param(0).deref());
+  EXPECT_TRUE(whole.isOverwritten(SummaryPath::param(0).deref()));
+  EXPECT_TRUE(whole.isOverwritten(items));
+  EXPECT_FALSE(whole.isOverwritten(items.deref()));
+  EXPECT_FALSE(whole.isOverwritten(SummaryPath::param(0)));
+  EXPECT_FALSE(whole.isOverwritten(SummaryPath::param(1).deref()));
 }
 
 TEST(AnalysisState, ForgetClearsEveryFactAboutThePlace) {
@@ -186,8 +274,13 @@ TEST(AnalysisState, ForgetClearsEveryFactAboutThePlace) {
   state.pending[P].consumedBy[Outcome::NonNull] = {Q};
   state.kinds[P] = OwnershipKind::Owned;
   state.raw.markRaw(P, RawReason::Declared, at(3));
+  state.nulls.set(P, NullRecord{.state = Nullness::Null,
+                                .location = at(3),
+                                .reason = NullReason::AssignedNull,
+                                .detail = {}});
 
   state.forget(P);
+  EXPECT_FALSE(state.nulls.stateOf(P));
   EXPECT_FALSE(state.raw.isRaw(P));
   EXPECT_FALSE(state.moves.isMoved(P));
   EXPECT_FALSE(state.aliases.mayAlias(P, Q));

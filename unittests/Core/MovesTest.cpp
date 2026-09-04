@@ -67,6 +67,37 @@ TEST(MoveTracker, JoinIsUnion) {
   EXPECT_FALSE(a.isMoved(PlaceId{2}));
 }
 
+TEST(MoveTracker, OwnValueIsAMustFactAcrossJoins) {
+  // RFC 0008, *Replaced values*: a record for the function's own value stays
+  // so only while every path agrees; a path where the record may be the
+  // caller's wins.
+  MoveTracker own;
+  ASSERT_FALSE(own.markMoved(PlaceId{0}, MoveReason::Freed, at(1), {},
+                             ElementWitness::whole(), "free",
+                             /*ownValue=*/true));
+  EXPECT_TRUE(own.movedAt(PlaceId{0})->ownValue);
+
+  MoveTracker alsoOwn = own;
+  EXPECT_FALSE(alsoOwn.join(own)) << "identical records: no change";
+  EXPECT_TRUE(alsoOwn.movedAt(PlaceId{0})->ownValue);
+
+  MoveTracker callers;
+  ASSERT_FALSE(callers.markMoved(PlaceId{0}, MoveReason::Freed, at(2)));
+  EXPECT_TRUE(own.join(callers));
+  EXPECT_FALSE(own.movedAt(PlaceId{0})->ownValue);
+
+  MoveTracker untouched;
+  MoveTracker ownAgain;
+  ASSERT_FALSE(ownAgain.markMoved(PlaceId{0}, MoveReason::Freed, at(1), {},
+                                  ElementWitness::whole(), "free",
+                                  /*ownValue=*/true));
+  EXPECT_TRUE(ownAgain.join(untouched) == false)
+      << "the other side has no record: nothing to learn";
+  EXPECT_TRUE(ownAgain.movedAt(PlaceId{0})->ownValue)
+      << "a path that never touched the place says nothing about whose "
+         "value was consumed";
+}
+
 TEST(MoveTracker, RecordsTheAliasTheMoveWentThrough) {
   MoveTracker tracker;
   ASSERT_FALSE(tracker.markMoved(PlaceId{0}, MoveReason::Freed, at(1)));
@@ -171,6 +202,28 @@ TEST(MoveTracker, EqualityAndOrderedListing) {
   ASSERT_FALSE(b.markMoved(PlaceId{2}, MoveReason::Freed, at(1)));
   EXPECT_EQ(a, b) << "insertion order is irrelevant";
   EXPECT_EQ(a.movedPlaces(), (std::vector<PlaceId>{PlaceId{0}, PlaceId{2}}));
+}
+
+// RFC 0008, *Uninitialised pointers*: a place that never held a value is a
+// moved place whose reason says so; the first write reinitialises it.
+TEST(MoveTracker, UninitializedIsAMoveReason) {
+  MoveTracker tracker;
+  ASSERT_FALSE(tracker.markMoved(PlaceId{0}, MoveReason::Uninitialized, at(4)));
+  EXPECT_TRUE(tracker.isMoved(PlaceId{0}));
+  EXPECT_EQ(tracker.movedAt(PlaceId{0})->reason, MoveReason::Uninitialized);
+  tracker.reinitialize(PlaceId{0});
+  EXPECT_FALSE(tracker.isMoved(PlaceId{0}));
+
+  // A join with a path that initialised it keeps the record: it may be
+  // uninitialised at the merge.
+  MoveTracker initialised;
+  ASSERT_FALSE(tracker.markMoved(PlaceId{1}, MoveReason::Uninitialized, at(4)));
+  tracker.join(initialised);
+  EXPECT_TRUE(tracker.isMoved(PlaceId{1}));
+
+  EXPECT_EQ(toString(MoveReason::Moved), "moved");
+  EXPECT_EQ(toString(MoveReason::Freed), "freed");
+  EXPECT_EQ(toString(MoveReason::Uninitialized), "uninitialized");
 }
 
 } // namespace

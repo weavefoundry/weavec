@@ -63,6 +63,11 @@ bool ResourceTracker::join(const ResourceTracker &other) {
       mine.escaped = true;
       changed = true;
     }
+    // A holder that may point into the resource may not release it.
+    if (record.interior && !mine.interior) {
+      mine.interior = true;
+      changed = true;
+    }
     if (mine.family != record.family && !mine.family.empty()) {
       mine.family.clear();
       changed = true;

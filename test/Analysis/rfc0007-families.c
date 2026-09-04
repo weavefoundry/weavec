@@ -70,7 +70,7 @@ void fine(const char *path) {
 // DUMP: function 'xfree':
 // DUMP: summary: p: freed(free); stores{} returns{}
 // DUMP: function 'opens':
-// DUMP: summary: *path: read; stores{} returns{fresh(fclose)}
+// DUMP: summary: *path: read; stores{} returns{fresh(fclose), null} requires{path}
 FILE *opens(const char *path) { return fopen(path, "r"); }
 
 // CHECK: 5 errors generated.

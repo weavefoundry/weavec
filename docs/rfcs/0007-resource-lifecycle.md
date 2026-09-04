@@ -166,7 +166,11 @@ argument. Every destructor in C has this shape.
   `free(b->data); b->data = NULL;` shows the caller only the store, and the
   two cannot be told apart. A summary store into a place that holds a record
   therefore escapes the old value. Reporting inside the callee would need
-  `WEAVEC_OWNED` on the field and is the previous item.
+  `WEAVEC_OWNED` on the field and is the previous item. *Partly superseded
+  by [RFC 0008](0008-pointer-validity.md), *Replaced values*: the two are
+  now told apart (`written,freed,replaced` versus a plain `written`), so the
+  caller's copies of the old value are checked; the overwrite itself is
+  still not reported.*
 - **Leaks of resources reached only through a struct passed by pointer to
   library code.** `memcpy(dst, &p, sizeof p)` copies the owned pointer `p`
   out through a read borrow of `p`'s storage; the shipped table does not say

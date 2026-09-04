@@ -278,6 +278,9 @@ void FunctionDataflow::markPathInterior(const Expr &root) {
       roles[&stripped] = Role::Ignore;
       markPathInterior(stripped);
     } else {
+      if (const auto *call = dyn_cast<CallExpr>(&stripped);
+          call != nullptr && call->getType()->isPointerType())
+        dereferencedCalls.insert(call);
       classifyExpr(&stripped, Role::Read);
     }
   };
@@ -691,6 +694,45 @@ void FunctionDataflow::escapeValue(const ValueOrigin &origin, bool deep,
   }
 }
 
+void FunctionDataflow::forgetNullnessReachable(const ValueOrigin &origin,
+                                               core::AnalysisState &state) {
+  // Both the RFC 0008 fact and the RFC 0007 must-null flag (which
+  // `nullnessAt` reads as `Null` too). A must-null place holds no resource
+  // record, so forgetting it in the resource tracker clears the flag alone.
+  const auto drop = [&state](core::PlaceId place) {
+    state.nulls.forget(place);
+    if (state.resources.isNull(place))
+      state.resources.forget(place);
+  };
+  const auto dropBelow = [this, &drop](core::PlaceId place) {
+    for (const core::PlaceId child : places.descendants(place))
+      drop(child);
+  };
+  switch (origin.kind) {
+  case ValueOrigin::Kind::Conditional:
+    for (const ValueOrigin &alternative : origin.alternatives)
+      forgetNullnessReachable(alternative, state);
+    break;
+  case ValueOrigin::Kind::Copy:
+    // `f(p)`: the callee holds a copy of the pointer, so `p` itself is what
+    // it was, but it may have written anything `p` reaches.
+    if (origin.place)
+      dropBelow(origin.place->place);
+    break;
+  case ValueOrigin::Kind::Borrow:
+    // `f(&s)`: `s` and everything below it may have been written
+    // (linenoise's `linenoiseCompletions lc = {0, NULL}; callback(buf,
+    // &lc); ... lc.cvec[i]`).
+    if (origin.place) {
+      drop(origin.place->place);
+      dropBelow(origin.place->place);
+    }
+    break;
+  default:
+    break;
+  }
+}
+
 bool FunctionDataflow::resourceLost(
     core::PlaceId place, const core::ResourceRecord &record,
     const std::function<bool(core::PlaceId)> &dying,
@@ -701,12 +743,23 @@ bool FunctionDataflow::resourceLost(
     return false;
   // Every other name must be released, moved or dying too; a name that still
   // reaches the resource keeps it. A stale may-alias from a join can only
-  // make this say "not lost".
-  return llvm::all_of(
-      state.aliases.members(place), [&](const core::PlaceId alias) {
-        return alias == place || state.resources.isEscaped(alias) ||
-               state.moves.recordOf(alias) || dying(alias);
-      });
+  // make this say "not lost". An escaped alias says the *resource* escaped
+  // (`s->next = s->out; keep(s->out); s->next = ...` hands the one
+  // allocation to `keep`), so nothing is lost. A move record on an `a[*]`
+  // alias releases the resource only if it names the element the alias does
+  // (`free(a[0]); a[1] = p;` leaves `a[1]` holding `p`; RFC 0006, *Element
+  // witnesses*).
+  return llvm::all_of(state.aliases.edgesFrom(place), [&](const auto &entry) {
+    const auto &[alias, edge] = entry;
+    if (alias == place)
+      return true;
+    if (state.resources.isEscaped(alias))
+      return false;
+    if (dying(alias))
+      return true;
+    const auto moved = state.moves.recordOf(alias);
+    return moved && moved->element.matches(edge.element);
+  });
 }
 
 void FunctionDataflow::reportLeak(core::PlaceId place,
@@ -1029,8 +1082,11 @@ void FunctionDataflow::checkContainerFree(core::PlaceId pointer, const Expr &at,
   // `free(b)` in a function that never names `b->p` has no place for the
   // field yet; the declared-owned ones must exist to be found below.
   if (!freshHere) {
+    // The freed expression need not have pointer type: `free(static_array)`
+    // decays an array (RFC 0008; reported as `invalid-release`).
     if (const auto *decl =
-            dyn_cast_or_null<ValueDecl>(builder.declFor(pointer))) {
+            dyn_cast_or_null<ValueDecl>(builder.declFor(pointer));
+        decl != nullptr && decl->getType()->isPointerType()) {
       if (const RecordDecl *record =
               decl->getType()->getPointeeType()->getAsRecordDecl()) {
         for (const FieldDecl *field : record->fields()) {
@@ -1104,6 +1160,121 @@ void FunctionDataflow::checkReleaseFamily(core::PlaceId place,
     report(std::move(diagnostic));
     return;
   }
+}
+
+bool FunctionDataflow::isStorageOfVariable(core::PlaceId place) const {
+  if (places.innermostDeref(place))
+    return false;
+  const core::PlaceId root = places.root(place);
+  return builder.varForPlace(root) != nullptr || builder.isLiteralPlace(root);
+}
+
+void FunctionDataflow::markInterior(core::PlaceId place,
+                                    core::AnalysisState &state) {
+  const auto record = state.resources.recordOf(place);
+  if (!record || record->interior)
+    return;
+  core::ResourceRecord updated = *record;
+  updated.interior = true;
+  state.resources.hold(place, updated);
+}
+
+void FunctionDataflow::checkInvalidRelease(const Expr &argument,
+                                           const std::optional<PlaceRef> &ref,
+                                           core::MoveReason reason,
+                                           const Expr &at,
+                                           const core::AnalysisState &state) {
+  if (!recording())
+    return;
+  const std::string verb =
+      reason == core::MoveReason::Freed ? "released" : "passed as owned";
+  // `buf[*]` from array decay is the array's storage: name the array.
+  const auto shownStorage = [this](core::PlaceId storage) {
+    return places.isBase(storage) ||
+                   places.step(storage) != core::PathStep::Index
+               ? storage
+               : *places.parent(storage);
+  };
+  const auto reportStorage = [&](const std::string &subject,
+                                 core::PlaceId storage) {
+    const core::PlaceId root = places.root(storage);
+    if (builder.isLiteralPlace(root)) {
+      report(makeError(core::diag::InvalidRelease,
+                       "'" + subject + "' is " + verb +
+                           " but points to a string literal",
+                       at));
+      return;
+    }
+    const std::string shown = nameOf(shownStorage(storage));
+    core::Diagnostic diagnostic =
+        makeError(core::diag::InvalidRelease,
+                  "'" + subject + "' is " + verb + " but points to '" + shown +
+                      "', which is not a heap object",
+                  at);
+    if (const VarDecl *var = builder.varForPlace(root))
+      diagnostic.addNote("'" + shown + "' is declared here",
+                         locate(var->getLocation()));
+    report(std::move(diagnostic));
+  };
+  const auto reportInterior = [&](const std::string &subject,
+                                  const core::ResourceRecord &record) {
+    core::Diagnostic diagnostic =
+        makeError(core::diag::InvalidRelease,
+                  "'" + subject + "' is " + verb +
+                      " but does not point to the start of its allocation",
+                  at);
+    if (record.location.isValid())
+      diagnostic.addNote("allocated here", record.location);
+    report(std::move(diagnostic));
+  };
+
+  const ValueOrigin origin = builder.classifyValue(argument);
+  // `free(buf)`, `free(&x)`, `free(&x.d)`, `free("abc")`: the argument is the
+  // storage itself.
+  if (origin.kind == ValueOrigin::Kind::Borrow && origin.place) {
+    const core::PlaceId storage = origin.place->place;
+    if (!isStorageOfVariable(storage))
+      return;
+    const core::PlaceId root = places.root(storage);
+    if (builder.isLiteralPlace(root)) {
+      report(makeError(core::diag::InvalidRelease,
+                       "a string literal is " + verb, at));
+      return;
+    }
+    const core::PlaceId shown = shownStorage(storage);
+    core::Diagnostic diagnostic = makeError(
+        core::diag::InvalidRelease,
+        "'" + nameOf(shown) + "' is " + verb + " but is not a heap object", at);
+    if (const VarDecl *var = builder.varForPlace(root))
+      diagnostic.addNote("'" + nameOf(shown) + "' is declared here",
+                         locate(var->getLocation()));
+    report(std::move(diagnostic));
+    return;
+  }
+  if (!ref || origin.kind != ValueOrigin::Kind::Copy || !origin.place)
+    return;
+  const core::PlaceId place = ref->place;
+  // A place already dead is reported as a double free or use-after-move.
+  if (findMoved(place, state, ref->element))
+    return;
+  // Annotated borrows are RFC 0003's `annotation-mismatch`.
+  if (borrowedParamFor(place, state))
+    return;
+  const std::string subject = nameOf(place);
+  // 1, 2: the place holds a loan on a variable's storage or a literal.
+  for (const core::Loan &loan : state.loans.heldBy(place)) {
+    if (isStorageOfVariable(loan.place)) {
+      reportStorage(subject, loan.place);
+      return;
+    }
+  }
+  // 3: an offset into an allocation this function knows. `free(s - k)`
+  // where `s` is itself interior is the idiom for reaching the start.
+  const auto record = state.resources.recordOf(place);
+  if (!record)
+    return;
+  if (origin.interior != record->interior)
+    reportInterior(subject, *record);
 }
 
 // -- Engine -------------------------------------------------------------------
@@ -1352,8 +1523,20 @@ static BinaryOperatorKind flipComparison(BinaryOperatorKind op) {
 }
 
 static bool isNullConstant(const Expr &expr, ASTContext &context) {
-  return expr.isNullPointerConstant(context, Expr::NPC_ValueDependentIsNull) !=
-         Expr::NPCK_NotNull;
+  if (expr.isNullPointerConstant(context, Expr::NPC_ValueDependentIsNull) !=
+      Expr::NPCK_NotNull)
+    return true;
+  // `(char *)0` is not a null pointer constant in ISO C's sense (only
+  // `(void *)0` is), but Clang converts it with a null-to-pointer cast all
+  // the same, and `classifyValue` already reads such a cast as `Null`
+  // (zlib's `buf != (charf *)0`).
+  for (const Expr *e = expr.IgnoreParens();
+       const auto *cast = dyn_cast<CastExpr>(e);
+       e = cast->getSubExpr()->IgnoreParens()) {
+    if (cast->getCastKind() == CK_NullToPointer)
+      return true;
+  }
+  return false;
 }
 
 static std::optional<std::int64_t> integerConstant(const Expr &expr,
@@ -1470,9 +1653,6 @@ void FunctionDataflow::applyCondition(const Expr &condition, bool holds,
       }
       if (nullLhs)
         return;
-      // `p == q`: on the equal edge the two places hold the same value; on
-      // the other they do not, which refutes an exact alias. `(p = f()) ==
-      // q` compares what was just stored in `p`.
       const auto assigned = [](const Expr &operand) -> const Expr * {
         const Expr *stripped = operand.IgnoreParenCasts();
         if (const auto *assign = dyn_cast<BinaryOperator>(stripped);
@@ -1480,6 +1660,29 @@ void FunctionDataflow::applyCondition(const Expr &condition, bool holds,
           return assign->getLHS();
         return &operand;
       };
+      // `buf != stack`, `p != &x`: on the unequal edge `buf` does not point
+      // at that storage, so releasing it there is not an invalid release
+      // (RFC 0008, *Invalid releases*: the stack-or-heap buffer idiom).
+      if ((op == BO_NE) == holds) {
+        const auto refute = [this, &state, &assigned](const Expr &pointer,
+                                                      const Expr &storage) {
+          const ValueOrigin borrow = builder.classifyValue(storage);
+          if (borrow.kind != ValueOrigin::Kind::Borrow || !borrow.place ||
+              !isStorageOfVariable(borrow.place->place))
+            return false;
+          const auto held = builder.resolvePointerValue(*assigned(pointer));
+          if (!held)
+            return true;
+          for (const core::PlaceId holder : mirrors(held->place, state))
+            state.loans.drop(holder, borrow.place->place);
+          return true;
+        };
+        if (refute(lhs, rhs) || refute(rhs, lhs))
+          return;
+      }
+      // `p == q`: on the equal edge the two places hold the same value; on
+      // the other they do not, which refutes an exact alias. `(p = f()) ==
+      // q` compares what was just stored in `p`.
       const auto p = builder.resolvePointerValue(*assigned(lhs));
       const auto q = builder.resolvePointerValue(*assigned(rhs));
       if (!p || !q || p->place == q->place)
@@ -1547,8 +1750,39 @@ void FunctionDataflow::forgetBelowNull(core::PlaceId place,
 
 void FunctionDataflow::markNullOutcomes(const core::PendingOutcome &narrowed,
                                         core::AnalysisState &state) {
-  for (const core::PlaceId place : narrowed.nullInAll())
+  for (const core::PlaceId place : narrowed.nullInAll()) {
+    // `if (grow(l, n) == -1)`: on the failing class the callee stored no
+    // buffer, and RFC 0007's relaxation says so through `nullOn`. That
+    // retracts the record the store gave; it is not a nullness fact (the
+    // place holds whatever it held before), and marking it must-null would
+    // make it `Null` for `nullnessAt` and a `null` source for `sourceOf`
+    // (RFC 0008, *Implementation notes*).
+    if (llvm::is_contained(narrowed.unheldOnly, place)) {
+      state.resources.forget(place);
+      for (const auto &[alias, edge] : state.aliases.edgesFrom(place)) {
+        if (edge.exact)
+          state.resources.forget(alias);
+      }
+      continue;
+    }
     markNullWithCopies(place, state);
+    setNullness(place,
+                core::NullRecord{.state = core::Nullness::Null,
+                                 .location = narrowed.location,
+                                 .reason = core::NullReason::CalleeStore,
+                                 .detail = narrowed.callee},
+                state);
+  }
+  // `if (!make(&p)) return -1; p[0]`: on the classes the caller kept, the
+  // callee left the place non-null (RFC 0008, *Per-outcome non-null facts*).
+  for (const core::PlaceId place : narrowed.nonNullInAll()) {
+    setNullness(place,
+                core::NullRecord{.state = core::Nullness::NonNull,
+                                 .location = narrowed.location,
+                                 .reason = core::NullReason::CalleeStore,
+                                 .detail = narrowed.callee},
+                state);
+  }
 }
 
 void FunctionDataflow::applyOutcomeTest(const Expr &operand,
@@ -1599,6 +1833,31 @@ void FunctionDataflow::applyOutcomeTest(const Expr &operand,
   if (selected == std::set<core::Outcome>{core::Outcome::Null}) {
     markNullWithCopies(ref->place, state);
     forgetBelowNull(ref->place, state);
+  }
+  // The test decides the pointer's nullness on each edge (RFC 0008,
+  // *Nullness*); after the edges merge again it may be null. A place already
+  // known non-null keeps that fact on the null edge: the edge is infeasible
+  // (`if (!b) return; while (b != NULL && b->n < k) ...`: cJSON's
+  // `can_access_at_index` retests on every use), and letting it say `Null`
+  // would make the pointer maybe-null once the edges merge (RFC 0008,
+  // *Implementation notes*).
+  if (ref->element.isWhole() &&
+      (selected == std::set<core::Outcome>{core::Outcome::Null} ||
+       selected == std::set<core::Outcome>{core::Outcome::NonNull})) {
+    const bool selectsNull = selected.contains(core::Outcome::Null);
+    const auto known = state.nulls.recordOf(ref->place);
+    const bool contradicted =
+        selectsNull && known && known->state == core::Nullness::NonNull;
+    if (!contradicted) {
+      setNullness(ref->place,
+                  core::NullRecord{.state = selectsNull
+                                                ? core::Nullness::Null
+                                                : core::Nullness::NonNull,
+                                   .location = locate(*e),
+                                   .reason = core::NullReason::Tested,
+                                   .detail = {}},
+                  state);
+    }
   }
   const auto entry = state.pending.find(ref->place);
   if (entry == state.pending.end())
@@ -1652,12 +1911,15 @@ void FunctionDataflow::handleExpr(const Expr &expr,
       break;
     case Role::ReadWrite:
       // `p++` keeps `p` on the same object (RFC 0004, *Pointer identity*),
-      // so nothing about it changes.
+      // so nothing about it changes, except that `p` no longer points at
+      // the start of what it owns (RFC 0008, *Invalid releases*).
       doRead(*ref, expr, state, /*includeSelf=*/true);
       doMutationCheck(ref->place, expr, state);
       checkAnnotationOnWrite(*ref, expr, state);
       recordAccess(ref->place, /*write=*/true, state);
       noteVariableWrite(ref->place, state);
+      if (expr.getType()->isPointerType() && ref->element.isWhole())
+        markInterior(ref->place, state);
       break;
     case Role::Write:
     case Role::AddressOf:
@@ -1678,8 +1940,11 @@ void FunctionDataflow::handleExpr(const Expr &expr,
       handleAssign(*binary, state);
     return;
   }
-  if (const auto *call = dyn_cast<CallExpr>(&expr))
+  if (const auto *call = dyn_cast<CallExpr>(&expr)) {
     handleCall(*call, state);
+    if (dereferencedCalls.contains(call))
+      checkResultDereference(*call, state);
+  }
 }
 
 void FunctionDataflow::handleDecl(const DeclStmt &decl,
@@ -1695,6 +1960,10 @@ void FunctionDataflow::handleDecl(const DeclStmt &decl,
     if (!var->getType()->isPointerType()) {
       if (init != nullptr && var->getType()->isRecordType())
         copyRecord(place, *init, state);
+      else if (init == nullptr && var->getType()->isRecordType() &&
+               isUninitializedLocal(*var))
+        markUninitializedFields(place, *var->getType()->getAsRecordDecl(),
+                                locate(var->getLocation()), state);
       else
         attachOutcome(place, init, state);
       continue;
@@ -1707,12 +1976,56 @@ void FunctionDataflow::handleDecl(const DeclStmt &decl,
               annotations.raw ? core::OwnershipKind::Raw
                               : core::OwnershipKind::Unknown,
               state);
+      // RFC 0008, *Uninitialised pointers*: the place holds garbage until an
+      // assignment reaches it, which the move machinery tracks.
+      if (isUninitializedLocal(*var))
+        state.moves.markMoved(place, core::MoveReason::Uninitialized,
+                              locate(var->getLocation()));
       continue;
     }
     applyPointerAssign(place, builder.classifyValue(*init), *init,
                        var->getType()->getPointeeType().isConstQualified(),
                        state);
     attachOutcome(place, init, state);
+  }
+}
+
+bool FunctionDataflow::isUninitializedLocal(const VarDecl &var) const {
+  if (!var.isLocalVarDecl() || var.isStaticLocal() ||
+      var.hasExternalStorage() || var.getInit() != nullptr)
+    return false;
+  // `va_list ap;` is a `char *` on some targets and is initialised by
+  // `va_start`/`va_copy`, which take it by value as far as the AST shows.
+  // Only the spelling tells it from a `char *`: walk the typedef chain.
+  for (QualType type = var.getType();;) {
+    const auto *typedefType = type->getAs<TypedefType>();
+    if (typedefType == nullptr)
+      break;
+    if (typedefType->getDecl()->getCanonicalDecl() ==
+        context.getBuiltinVaListDecl()->getCanonicalDecl())
+      return false;
+    type = typedefType->desugar();
+  }
+  // A local whose address is taken may be written through the pointer at
+  // any time (RFC 0008, *Deliberately not caught*).
+  return !addressTaken.contains(var.getCanonicalDecl());
+}
+
+void FunctionDataflow::markUninitializedFields(
+    core::PlaceId place, const RecordDecl &record,
+    const core::SourceLocation &declared, core::AnalysisState &state) {
+  if (record.isUnion() || !record.isCompleteDefinition() ||
+      places.depth(place) >= MaxPlaceDepth)
+    return;
+  for (const FieldDecl *field : record.fields()) {
+    const QualType type = field->getType();
+    const core::PlaceId fieldPlace = builder.fieldPlace(place, *field);
+    if (type->isPointerType()) {
+      state.moves.markMoved(fieldPlace, core::MoveReason::Uninitialized,
+                            declared);
+    } else if (const RecordDecl *nested = type->getAsRecordDecl()) {
+      markUninitializedFields(fieldPlace, *nested, declared, state);
+    }
   }
 }
 
@@ -1731,7 +2044,8 @@ void FunctionDataflow::attachOutcome(core::PlaceId dest, const Expr *init,
     std::erase(consumed, dest);
   // Worth keeping while a class still has something to retract, or a null
   // fact to apply (`err = init(&s); if (err != 0) return err;`).
-  if (outcome.places().empty() && outcome.nullOn.empty())
+  if (outcome.places().empty() && outcome.nullOn.empty() &&
+      outcome.nonNullOn.empty())
     return;
   state.pending[dest] = std::move(outcome);
 }
@@ -1759,8 +2073,19 @@ void FunctionDataflow::handleAssign(const BinaryOperator &assign,
 
   const QualType type = assign.getLHS()->getType();
   if (type->isPointerType()) {
-    applyPointerAssign(lhs->place, builder.classifyValue(*assign.getRHS()),
-                       assign, type->getPointeeType().isConstQualified(), state,
+    const ValueOrigin origin = builder.classifyValue(*assign.getRHS());
+    // This function's own whole write: the caller's value there is gone on
+    // this path (RFC 0008, *Replaced values*). Not `p = p + 1`, which keeps
+    // the value (RFC 0004, *Pointer identity*); and not a callee's store,
+    // which may have happened on some path only.
+    const bool sameValue = origin.kind == ValueOrigin::Kind::Copy &&
+                           origin.place && origin.place->place == lhs->place;
+    if (!sameValue)
+      noteRewritten(lhs->place, state);
+    if (lhs->element.isWhole() && !sameValue)
+      noteOverwritten(lhs->place, state);
+    applyPointerAssign(lhs->place, origin, assign,
+                       type->getPointeeType().isConstQualified(), state,
                        lhs->element);
     attachOutcome(lhs->place, assign.getRHS(), state);
     return;
@@ -1788,6 +2113,8 @@ void FunctionDataflow::copyRecord(core::PlaceId dest, const Expr &value,
         storage,
         [&going](core::PlaceId place) { return going.contains(place); },
         LeakForm::Overwritten, locate(value), state);
+    noteRewritten(dest, state);
+    noteOverwritten(dest, state);
   }
   if (const auto *init = dyn_cast<InitListExpr>(source)) {
     reinit(dest, state);
@@ -1799,8 +2126,12 @@ void FunctionDataflow::copyRecord(core::PlaceId dest, const Expr &value,
                                           : std::nullopt;
   if (!src) {
     // A struct produced by a call or some other opaque expression: every
-    // field is overwritten with values nothing is known about.
+    // field is overwritten with values nothing is known about, except what
+    // the callee's `result` stores say (RFC 0008, *Struct-by-value
+    // results*): each is an assignment to the corresponding field.
     reinit(dest, state);
+    if (const auto *call = dyn_cast<CallExpr>(source))
+      applyResultStores(dest, *call, state);
     return;
   }
   if (src->place == dest)
@@ -1886,6 +2217,37 @@ void FunctionDataflow::copyRecord(core::PlaceId dest, const Expr &value,
         loan.holder = field.to;
       state.loans.addLoanUnchecked(loan);
     }
+  }
+}
+
+void FunctionDataflow::applyResultStores(core::PlaceId dest,
+                                         const CallExpr &call,
+                                         core::AnalysisState &state) {
+  const auto effects = classifyCall(call, summaries);
+  if (!effects)
+    return;
+  const core::FunctionSummary &summary = *effects->summary;
+  std::map<core::SummaryPath, std::vector<core::ValueSource>> byDest;
+  for (const core::Store &store : summary.stores) {
+    if (store.dest.isResult())
+      byDest[store.dest].push_back(store.value);
+  }
+  for (const auto &[path, values] : byDest) {
+    const auto field = builder.resolveBelow(dest, path);
+    if (!field)
+      continue;
+    ValueOrigin origin;
+    if (values.size() == 1) {
+      origin = builder.originFromSource(values.front(), call, summary);
+    } else {
+      origin.kind = ValueOrigin::Kind::Conditional;
+      for (const core::ValueSource &value : values)
+        origin.alternatives.push_back(
+            builder.originFromSource(value, call, summary));
+    }
+    origin.call = &call;
+    applyPointerAssign(*field, origin, call, /*constPointee=*/false, state);
+    noteCalleeStore(*field, call, state);
   }
 }
 
@@ -1990,6 +2352,10 @@ void FunctionDataflow::applySummary(const CallExpr &call,
       escape(ref->place, state);
   }
 
+  //    Arguments the callee dereferences unconditionally must be non-null
+  //    (RFC 0008, *Requirements*).
+  checkRequiredArguments(call, summary, state);
+
   // 1. Consumption: the arguments themselves, the caller's memory below them
   //    (`free(b->data)` in the callee) and globals, deepest path first so a
   //    caller's copy of a freed field is marked before the object holding
@@ -1998,6 +2364,7 @@ void FunctionDataflow::applySummary(const CallExpr &call,
     core::SummaryPath path;
     PlaceRef ref;
     bool freed;
+    bool replaced;
     std::string family;
   };
   std::vector<Consumed> consumed;
@@ -2011,13 +2378,29 @@ void FunctionDataflow::applySummary(const CallExpr &call,
       checkRawArgument(call, path.index,
                        effect.freed ? "releases" : "takes ownership of", state);
       ref = builder.resolvePointerValue(*call.getArg(path.index));
+      // What is released, or handed to a parameter the table or an
+      // annotation declares owning, must be a heap allocation (RFC 0008,
+      // *Invalid releases*). A body that merely stores its argument is
+      // covered by `lifetime-too-short`.
+      if (effect.freed || !trustSilence)
+        checkInvalidRelease(*call.getArg(path.index), ref,
+                            effect.freed ? core::MoveReason::Freed
+                                         : core::MoveReason::Moved,
+                            call, state);
     } else {
       ref = builder.resolveSummaryPath(path, call);
+      // The callee freed some element of the caller's array (`free(a[i])`
+      // with its own `i`): a consume applied from a summary is *whole* (RFC
+      // 0006) unless the summary says which it is not (RFC 0008, *Element
+      // consumes*), so two calls in a loop are not a `double-free`.
+      if (ref && effect.element && ref->element.isWhole())
+        ref->element = core::ElementWitness::unknown();
     }
     if (ref) {
       consumed.push_back(Consumed{.path = path,
                                   .ref = std::move(*ref),
                                   .freed = effect.freed,
+                                  .replaced = effect.replaced,
                                   .family = effect.family});
     }
   }
@@ -2052,8 +2435,10 @@ void FunctionDataflow::applySummary(const CallExpr &call,
     std::vector<core::PlaceId> marked = doConsume(
         entry.ref,
         entry.freed ? core::MoveReason::Freed : core::MoveReason::Moved, call,
-        state, entry.family, library);
+        state, entry.family, library, entry.replaced);
     llvm::append_range(markedHere, marked);
+    if (entry.replaced)
+      markedHere.push_back(entry.ref.place);
     consumedTargets.emplace_back(entry.path, std::move(marked));
   }
   notePendingOutcome(call, summary, consumedTargets);
@@ -2141,18 +2526,44 @@ void FunctionDataflow::applySummary(const CallExpr &call,
     doMutationCheck(ref->place, call, state);
     checkAnnotationOnWrite(*ref, call, state);
     recordAccess(ref->place, /*write=*/true, state);
-    // What the caller held there is the callee's business now: RFC 0003
-    // reads a sub-path's consumption from the callee's exit state, so
-    // `free(b->data); b->data = NULL;` shows only the store (RFC 0007,
-    // *Deliberately not caught*).
+    // A resource the caller still holds there is the callee's business (RFC
+    // 0007, *Deliberately not caught*: a store without a release).
     if (state.resources.holds(ref->place)) {
       escape(ref->place, state);
       for (const core::PlaceId alias : state.aliases.members(ref->place))
         state.resources.escape(alias);
     }
+    // The callee released the value and may have left it there (`free(b->
+    // data); if (c) b->data = NULL;`): the store does not clear the record
+    // (RFC 0008, *Replaced values*).
+    std::optional<core::MoveRecord> kept;
+    if (const core::PlaceEffect effect = summary.effectOf(dest);
+        effect.consumed() && !effect.replaced)
+      kept = state.moves.recordOf(ref->place);
+    // A `null` among the stored values is the callee's doing (RFC 0008,
+    // *Nullness*: `CalleeStore`).
+    origin.call = &call;
     applyPointerAssign(ref->place, origin, call, /*constPointee=*/false, state,
                        ref->element);
+    noteCalleeStore(ref->place, call, state);
+    if (kept) {
+      state.moves.markMoved(ref->place, kept->reason, kept->location, kept->via,
+                            kept->element, kept->family);
+    }
   }
+}
+
+void FunctionDataflow::noteCalleeStore(core::PlaceId dest, const CallExpr &call,
+                                       core::AnalysisState &state) {
+  const auto record = state.nulls.recordOf(dest);
+  if (!record || !record->mayBeNull() ||
+      record->reason != core::NullReason::CalleeResult)
+    return;
+  core::NullRecord stored = *record;
+  stored.reason = core::NullReason::CalleeStore;
+  stored.location = locate(call);
+  stored.detail = calleeName(call);
+  setNullness(dest, stored, state);
 }
 
 void FunctionDataflow::notePendingOutcome(
@@ -2186,10 +2597,37 @@ void FunctionDataflow::notePendingOutcome(
       for (const auto &[cls, effects] : summary.outcomes)
         conditional.consumedBy.try_emplace(cls);
       conditional.nullOn[outcome].push_back(ref->place);
+      // A `fresh` store's destination the callee never stores null into is
+      // in `nullOn` only because the store did not happen on that class
+      // (RFC 0007, *Per-outcome null stores*): a record to retract, not a
+      // value that is null.
+      bool storesFresh = false;
+      bool storesNull = false;
+      for (const core::Store &store : summary.stores) {
+        if (store.dest != path)
+          continue;
+        storesFresh |= store.value.kind == core::ValueSource::Kind::Fresh;
+        storesNull |= store.value.kind == core::ValueSource::Kind::Null;
+      }
+      if (storesFresh && !storesNull &&
+          !llvm::is_contained(conditional.unheldOnly, ref->place))
+        conditional.unheldOnly.push_back(ref->place);
+    }
+  }
+  for (const auto &[outcome, paths] : summary.nonNullOn) {
+    for (const core::SummaryPath &path : paths) {
+      const auto ref = builder.resolveSummaryPath(path, call);
+      if (!ref || !ref->element.isWhole())
+        continue;
+      for (const auto &[cls, effects] : summary.outcomes)
+        conditional.consumedBy.try_emplace(cls);
+      conditional.nonNullOn[outcome].push_back(ref->place);
     }
   }
   if (conditional.consumedBy.empty())
     return;
+  conditional.callee = calleeName(call);
+  conditional.location = locate(call);
   // Which consumed arguments the callee may hand back as its result.
   for (const core::ValueSource &source : summary.returns) {
     if (source.kind != core::ValueSource::Kind::Copy || !source.path ||
@@ -2221,8 +2659,16 @@ bool FunctionDataflow::callInvolvesPointers(const CallExpr &call) {
 }
 
 std::string FunctionDataflow::calleeName(const CallExpr &call) {
-  if (const FunctionDecl *callee = call.getDirectCallee())
-    return "'" + callee->getNameAsString() + "'";
+  if (const FunctionDecl *callee = call.getDirectCallee()) {
+    // `_FORTIFY_SOURCE` spells `memset` as `__builtin___memset_chk`; the
+    // user wrote the former.
+    llvm::StringRef name = callee->getName();
+    if (name.consume_front("__builtin___"))
+      name.consume_back("_chk");
+    else
+      name = callee->getName();
+    return "'" + name.str() + "'";
+  }
   if (const auto ref = builder.resolvePointerValue(*call.getCallee()))
     return "'" + nameOf(ref->place) + "'";
   return "a function pointer";
@@ -2235,11 +2681,23 @@ void FunctionDataflow::handleUncheckedCall(const CallExpr &call,
     return;
   if (!callInvolvesPointers(call))
     return;
-  // Whatever the callee was handed may be kept (RFC 0007, *Escape*).
+  // Whatever the callee was handed may be kept (RFC 0007, *Escape*), and
+  // whatever it reaches through a pointer may have been written: the
+  // nullness facts there are gone (RFC 0008). Ownership facts stay: the
+  // boundary warning is what covers an unchecked callee's frees and moves
+  // (RFC 0003, *Boundaries*).
   for (const Expr *arg : call.arguments()) {
-    if (arg->getType()->isPointerType())
-      escapeValue(builder.classifyValue(*arg), /*deep=*/true, state);
+    if (!arg->getType()->isPointerType())
+      continue;
+    const ValueOrigin origin = builder.classifyValue(*arg);
+    escapeValue(origin, /*deep=*/true, state);
+    forgetNullnessReachable(origin, state);
   }
+  // Nullness annotations say nothing about ownership, so they do not make
+  // the callee checked; but what they do say holds (RFC 0008, *Annotation
+  // surface*): a `WEAVEC_NONNULL` parameter is a requirement on this call.
+  if (callee != nullptr && collectAnnotations(*callee).anyNullness())
+    checkRequiredArguments(call, summaryFromAnnotations(*callee), state);
 
   if (!options.strictExterns) {
     noteUnknownCallee(call);
@@ -2348,6 +2806,7 @@ void FunctionDataflow::handleReturn(const ReturnStmt &ret,
         value->getType()->isRecordType() &&
         PlaceBuilder::isPlaceExpr(stripped)) {
       if (const auto ref = builder.resolve(stripped)) {
+        recordResultStores(*ref, state);
         for (const core::PlaceId place : storageOf(ref->place))
           escape(place, state);
       }
@@ -2378,8 +2837,21 @@ void FunctionDataflow::handleReturn(const ReturnStmt &ret,
               name.value_or(""), *raw, *value);
         }
       }
-      if (recording())
-        inferred.addReturn(sourceOf(origin, state));
+      if (recording()) {
+        // A returned place that is null, or may be, is a `null` alternative
+        // for callers (RFC 0008, *Nullness*).
+        const std::optional<core::NullRecord> nullness =
+            origin.kind == ValueOrigin::Kind::Copy && origin.place
+                ? nullnessAt(origin.place->place, state)
+                : std::nullopt;
+        if (nullness && nullness->state == core::Nullness::Null) {
+          inferred.addReturn(core::ValueSource::null());
+        } else {
+          inferred.addReturn(sourceOf(origin, state));
+          if (nullness && nullness->state == core::Nullness::MaybeNull)
+            inferred.addReturn(core::ValueSource::null());
+        }
+      }
     }
     switch (origin.kind) {
     case ValueOrigin::Kind::Conditional:
@@ -2413,6 +2885,51 @@ void FunctionDataflow::handleReturn(const ReturnStmt &ret,
   // After the summary saw it as `fresh`: the caller owns it now, and nothing
   // that dies with this function's locals leaks (RFC 0007, *Escape*).
   escapeValue(returned, /*deep=*/false, state);
+}
+
+void FunctionDataflow::recordResultStores(const PlaceRef &returned,
+                                          const core::AnalysisState &state) {
+  if (!recording())
+    return;
+  // Every pointer field path of the returned record's own storage with a
+  // known source becomes a store rooted at `result` (RFC 0008,
+  // *Struct-by-value results*).
+  for (const core::PlaceId place : storageOf(returned.place)) {
+    if (place == returned.place)
+      continue;
+    const auto *field = dyn_cast_if_present<FieldDecl>(builder.declFor(place));
+    if (field == nullptr || !field->getType()->isPointerType())
+      continue;
+    // The path from the record to the field, spelled record-first.
+    core::SummaryPath path = core::SummaryPath::result();
+    std::vector<core::PlaceId> chain{place};
+    for (const core::PlaceId ancestor : places.ancestors(place)) {
+      if (ancestor == returned.place)
+        break;
+      chain.push_back(ancestor);
+    }
+    for (const core::PlaceId node : llvm::reverse(chain)) {
+      if (places.step(node) == core::PathStep::Index)
+        path = path.indexed();
+      else
+        path = path.field(places.fieldName(node));
+    }
+    ValueOrigin origin;
+    if (state.resources.isNull(place)) {
+      origin.kind = ValueOrigin::Kind::Null;
+    } else {
+      origin.kind = ValueOrigin::Kind::Copy;
+      origin.place = PlaceRef{.place = place,
+                              .derefs = {},
+                              .derefExprs = {},
+                              .derefElements = {},
+                              .element = {}};
+    }
+    const core::ValueSource source = sourceOf(origin, state);
+    if (source.kind == core::ValueSource::Kind::Unknown)
+      continue;
+    inferred.addStore(core::Store{.dest = path, .value = source});
+  }
 }
 
 void FunctionDataflow::handleLifetimeEnd(const VarDecl &var,
@@ -2453,7 +2970,8 @@ void FunctionDataflow::reinit(core::PlaceId place, core::AnalysisState &state,
   state.forget(place);
   if (survivor) {
     state.moves.markMoved(place, survivor->reason, survivor->location,
-                          survivor->via, survivor->element, survivor->family);
+                          survivor->via, survivor->element, survivor->family,
+                          survivor->ownValue);
   }
   for (const core::PlaceId child : places.descendants(place))
     state.forget(child);
@@ -2533,6 +3051,7 @@ void FunctionDataflow::forgetBelow(core::PlaceId place,
     state.kinds.erase(child);
     state.raw.clear(child);
     state.resources.forget(child);
+    state.nulls.forget(child);
   }
 }
 
@@ -2569,6 +3088,8 @@ void FunctionDataflow::mirrorSubtree(core::PlaceId src, core::PlaceId dest,
       state.kinds[mirror] = it->second;
     if (const auto record = state.raw.rawAt(place))
       state.raw.markRaw(mirror, *record);
+    if (const auto record = state.nulls.recordOf(place))
+      state.nulls.set(mirror, *record);
   }
 }
 
@@ -2599,6 +3120,8 @@ void FunctionDataflow::doRead(const PlaceRef &ref, const Expr &at,
                          name, *raw, where != nullptr ? *where : at);
       return;
     }
+    // Dereferencing a pointer that may be null (RFC 0008, *Nullness*).
+    checkDereference(ref.derefs[i], where != nullptr ? *where : at, state);
   }
   if (!includeSelf)
     return;
@@ -2610,7 +3133,8 @@ void FunctionDataflow::doRead(const PlaceRef &ref, const Expr &at,
 std::vector<core::PlaceId>
 FunctionDataflow::doConsume(const PlaceRef &ref, core::MoveReason reason,
                             const Expr &at, core::AnalysisState &state,
-                            std::string_view family, bool library) {
+                            std::string_view family, bool library,
+                            bool replaced) {
   const core::PlaceId place = ref.place;
   checkAnnotationOnConsume(ref, reason, at, state);
 
@@ -2673,15 +3197,38 @@ FunctionDataflow::doConsume(const PlaceRef &ref, core::MoveReason reason,
 
   const core::SourceLocation here = locate(at);
   std::vector<core::PlaceId> marked;
+  // A callee that released the value and reinitialised the place (RFC 0008,
+  // *Replaced values*) leaves the place and its mirrors (the same cell) live
+  // and every other name for the old value dead.
+  std::vector<core::PlaceId> sameCell;
+  if (replaced)
+    sameCell = mirrors(place, state);
   for (const ConsumeTarget &target :
        consumeTargets(place, ref.element, state)) {
+    const bool isCell =
+        target.place == place || llvm::is_contained(sameCell, target.place);
+    if (replaced && isCell) {
+      // Still this function's consumption of the caller's value.
+      recordConsume(target.place, reason, family, target.element, state);
+      continue;
+    }
     std::optional<core::PlaceId> via;
     if (target.place != place)
       via = place;
+    // A place this function has overwritten on every path holds its own
+    // value: the record must not reach the summary through the exit state
+    // either, however the paths join later (RFC 0008, *Replaced values*).
+    const auto path = builder.summaryPathOf(target.place);
+    const bool ownValue = path && state.isOverwritten(*path);
     state.moves.markMoved(target.place, reason, here, via, target.element,
-                          std::string(family));
-    recordConsume(target.place, reason, family, state);
+                          std::string(family), ownValue);
+    recordConsume(target.place, reason, family, target.element, state);
     marked.push_back(target.place);
+  }
+  if (replaced) {
+    // The cell holds a new value (the callee's store says which, or an
+    // unknown one): nothing known about the old one applies to it.
+    reinit(place, state, ref.element);
   }
   return marked;
 }
@@ -2767,8 +3314,13 @@ void FunctionDataflow::applyPointerAssign(core::PlaceId dest,
   // fact about it (aliases, loans, move and raw records) stays. RFC 0004,
   // *Pointer identity*, makes `p = p + 1` mean the same as `p += 1`.
   if (arms.size() == 1 && arms[0].origin->kind == ValueOrigin::Kind::Copy &&
-      arms[0].origin->place && arms[0].origin->place->place == dest)
+      arms[0].origin->place && arms[0].origin->place->place == dest) {
+    // Except that after `p += 1` the place no longer points at the start
+    // of what it owns (RFC 0008, *Invalid releases*).
+    if (arms[0].origin->interior && element.isWhole())
+      markInterior(dest, state);
     return;
+  }
 
   // RFC 0004, *Raw pointers*: a `WEAVEC_RAW` destination takes the value out
   // of the model, whatever it was; a destination declared with a safe kind
@@ -2813,6 +3365,12 @@ void FunctionDataflow::applyPointerAssign(core::PlaceId dest,
       arm.raw.reset();
     }
   }
+
+  // What the value says about its own nullness, before the destination's
+  // facts (which the value may have been read from) are reset (RFC 0008,
+  // *Nullness*).
+  const std::optional<core::NullRecord> nullness =
+      nullnessOf(origin, at, state);
 
   // An element write does not overwrite the summary place's other elements
   // (RFC 0007, *Death points*).
@@ -2859,9 +3417,14 @@ void FunctionDataflow::applyPointerAssign(core::PlaceId dest,
     case ValueOrigin::Kind::Copy: {
       if (!source)
         break;
-      // The copy holds the same resource; both names now account for it.
-      if (source->resource)
-        state.resources.hold(dest, *source->resource);
+      // The copy holds the same resource; both names now account for it. A
+      // copy through an interior edge (`p + 1`, `strchr(p, c)`) does not
+      // point at the allocation's start (RFC 0008, *Invalid releases*).
+      if (source->resource) {
+        core::ResourceRecord record = *source->resource;
+        record.interior = record.interior || source->interior;
+        state.resources.hold(dest, record);
+      }
       // An asserted raw source has the declared kind from here on.
       const core::OwnershipKind sourceKind =
           assertsKind && source->kind == core::OwnershipKind::Raw
@@ -2891,9 +3454,12 @@ void FunctionDataflow::applyPointerAssign(core::PlaceId dest,
           break;
         }
       }
-      if (source->moved) {
+      if (source->moved &&
+          source->moved->record.reason != core::MoveReason::Uninitialized) {
         // The read itself was reported at the load; keep the copy moved so
-        // uses through it do not cascade into a second report per alias.
+        // uses through it do not cascade into a second report per alias. A
+        // copy of an uninitialised pointer is reported once, at the copy:
+        // the destination itself is initialised now (RFC 0008).
         state.moves.markMoved(
             dest, source->moved->record.reason, source->moved->record.location,
             source->moved->record.via.value_or(source->moved->target), element,
@@ -2919,6 +3485,8 @@ void FunctionDataflow::applyPointerAssign(core::PlaceId dest,
   }
   if (allNull && element.isWhole())
     state.resources.markNull(dest);
+  if (nullness && element.isWhole())
+    setNullness(dest, *nullness, state);
   // `box->buf = p` where `box` came from code nobody here can follow: the
   // object belongs to whoever handed the pointer out, so what is stored in
   // it is reachable from there. Likewise `tb = &L->strt; tb->hash = p`: the
@@ -3203,8 +3771,11 @@ std::optional<core::Loan> FunctionDataflow::findLoanConflict(
 core::LifetimeId FunctionDataflow::rootLifetime(core::PlaceId place) {
   const core::PlaceId root = places.root(place);
   const VarDecl *var = builder.varForPlace(root);
-  if (var == nullptr)
-    return fnLifetime;
+  if (var == nullptr) {
+    // String literals live for the whole program (RFC 0008).
+    return builder.isLiteralPlace(root) ? core::LifetimeId::staticLifetime()
+                                        : fnLifetime;
+  }
   if (var->hasGlobalStorage())
     return core::LifetimeId::staticLifetime();
   const auto it = varLifetimes.find(var->getCanonicalDecl());
@@ -3307,6 +3878,18 @@ void FunctionDataflow::flushDiagnostics() {
 
 void FunctionDataflow::reportUseOfMoved(core::PlaceId used, const MovedHit &hit,
                                         const Expr &at) {
+  if (hit.record.reason == core::MoveReason::Uninitialized) {
+    // RFC 0008, *Uninitialised pointers*: the record was made at the
+    // declaration, which is where the note points.
+    core::Diagnostic diagnostic = makeError(
+        core::diag::UseOfUninitialized,
+        "use of '" + nameOf(used) + "' before it was initialized", at);
+    const core::PlaceId declared = places.root(hit.target);
+    diagnostic.addNote("'" + nameOf(declared) + "' is declared here",
+                       hit.record.location);
+    report(std::move(diagnostic));
+    return;
+  }
   const bool freed = hit.record.reason == core::MoveReason::Freed;
   core::Diagnostic diagnostic{
       .severity = core::Severity::Error,
@@ -3390,6 +3973,339 @@ FunctionDataflow::declaredAnnotations(core::PlaceId place) const {
       return annotations;
   }
   return std::nullopt;
+}
+
+// -- Nullness (RFC 0008) ------------------------------------------------------
+
+std::optional<core::Nullness>
+FunctionDataflow::declaredNullness(core::PlaceId place) const {
+  const NamedDecl *decl = builder.declFor(place);
+  if (decl == nullptr)
+    return std::nullopt;
+  AnnotationSet set = getAnnotations(*decl);
+  if (const auto *param = dyn_cast<ParmVarDecl>(decl)) {
+    const unsigned index = param->getFunctionScopeIndex();
+    if (index < signature.params.size())
+      set.merge(signature.params[index]);
+  }
+  if (set.nonNull)
+    return core::Nullness::NonNull;
+  if (set.nullable)
+    return core::Nullness::MaybeNull;
+  return std::nullopt;
+}
+
+std::optional<core::NullRecord>
+FunctionDataflow::nullnessAt(core::PlaceId place,
+                             const core::AnalysisState &state) const {
+  if (const auto record = state.nulls.recordOf(place))
+    return record;
+  if (state.resources.isNull(place)) {
+    return core::NullRecord{.state = core::Nullness::Null,
+                            .location = {},
+                            .reason = core::NullReason::AssignedNull,
+                            .detail = {}};
+  }
+  const auto declared = declaredNullness(place);
+  if (!declared)
+    return std::nullopt;
+  core::SourceLocation where;
+  if (const NamedDecl *decl = builder.declFor(place))
+    where = locate(decl->getLocation());
+  return core::NullRecord{.state = *declared,
+                          .location = where,
+                          .reason = core::NullReason::Declared,
+                          .detail = {}};
+}
+
+std::optional<core::NullRecord>
+FunctionDataflow::nullnessOf(const ValueOrigin &origin, const Expr &at,
+                             const core::AnalysisState &state) {
+  // Flatten the alternatives, remembering the call each came from: the
+  // `null` arm of a callee's `returns{fresh, null}` is the callee's doing.
+  struct Leaf {
+    const ValueOrigin *origin;
+    const CallExpr *call;
+  };
+  std::vector<Leaf> leaves;
+  std::vector<Leaf> work{Leaf{.origin = &origin, .call = origin.call}};
+  while (!work.empty()) {
+    const Leaf leaf = work.back();
+    work.pop_back();
+    if (leaf.origin->kind == ValueOrigin::Kind::Conditional) {
+      for (const ValueOrigin &alternative : leaf.origin->alternatives)
+        work.push_back(Leaf{.origin = &alternative,
+                            .call = alternative.call != nullptr
+                                        ? alternative.call
+                                        : leaf.call});
+      continue;
+    }
+    leaves.push_back(leaf);
+  }
+  if (leaves.empty())
+    return std::nullopt;
+
+  std::optional<core::NullRecord> nullSide;
+  bool allNull = true;
+  bool allNonNull = true;
+  bool anyUnknown = false;
+  for (const Leaf &leaf : leaves) {
+    std::optional<core::NullRecord> record;
+    switch (leaf.origin->kind) {
+    case ValueOrigin::Kind::Null:
+      if (leaf.call != nullptr) {
+        record = core::NullRecord{.state = core::Nullness::Null,
+                                  .location = locate(*leaf.call),
+                                  .reason = core::NullReason::CalleeResult,
+                                  .detail = calleeName(*leaf.call)};
+      } else {
+        record = core::NullRecord{.state = core::Nullness::Null,
+                                  .location = locate(at),
+                                  .reason = core::NullReason::AssignedNull,
+                                  .detail = {}};
+      }
+      break;
+    case ValueOrigin::Kind::Copy:
+      if (leaf.origin->place)
+        record = nullnessAt(leaf.origin->place->place, state);
+      break;
+    case ValueOrigin::Kind::Alloc:
+    case ValueOrigin::Kind::Borrow:
+      // A fresh block or an address: never null on this arm.
+      record = core::NullRecord{.state = core::Nullness::NonNull,
+                                .location = locate(at),
+                                .reason = core::NullReason::AssignedNull,
+                                .detail = {}};
+      break;
+    case ValueOrigin::Kind::Opaque:
+      // The result of an unchecked callee: what its declaration says about
+      // nullness still holds (RFC 0008, *Annotation surface*).
+      if (const FunctionDecl *decl =
+              leaf.call != nullptr ? leaf.call->getDirectCallee() : nullptr) {
+        const AnnotationSet result = collectAnnotations(*decl).result;
+        if (result.nullable || result.nonNull) {
+          record = core::NullRecord{.state = result.nonNull
+                                                 ? core::Nullness::NonNull
+                                                 : core::Nullness::MaybeNull,
+                                    .location = locate(decl->getLocation()),
+                                    .reason = core::NullReason::Declared,
+                                    .detail = decl->getNameAsString()};
+        }
+      }
+      break;
+    case ValueOrigin::Kind::Raw:
+    case ValueOrigin::Kind::Conditional:
+      break;
+    }
+    if (!record) {
+      anyUnknown = true;
+      allNull = false;
+      allNonNull = false;
+      continue;
+    }
+    if (record->state != core::Nullness::Null)
+      allNull = false;
+    if (record->state != core::Nullness::NonNull)
+      allNonNull = false;
+    if (record->mayBeNull() && !nullSide)
+      nullSide = record;
+  }
+  if (allNull && nullSide)
+    return nullSide;
+  if (nullSide) {
+    nullSide->state = core::Nullness::MaybeNull;
+    return nullSide;
+  }
+  if (allNonNull && !anyUnknown)
+    return core::NullRecord{.state = core::Nullness::NonNull,
+                            .location = locate(at),
+                            .reason = core::NullReason::AssignedNull,
+                            .detail = {}};
+  return std::nullopt;
+}
+
+void FunctionDataflow::setNullness(core::PlaceId place,
+                                   const core::NullRecord &record,
+                                   core::AnalysisState &state) {
+  state.nulls.set(place, record);
+  for (const auto &[alias, edge] : state.aliases.edgesFrom(place)) {
+    if (edge.exact)
+      state.nulls.set(alias, record);
+  }
+}
+
+std::string FunctionDataflow::nullNote(const core::NullRecord &record,
+                                       std::string_view name) {
+  const std::string subject = "'" + std::string(name) + "'";
+  switch (record.reason) {
+  case core::NullReason::AssignedNull:
+    return subject + " is assigned NULL here";
+  case core::NullReason::CalleeResult:
+    return subject + " may be null: it is the result of " + record.detail +
+           " here";
+  case core::NullReason::CalleeStore:
+    return subject + " may be null: it is set by " + record.detail + " here";
+  case core::NullReason::Tested:
+    return subject + " may be null: it is compared with NULL here";
+  case core::NullReason::Declared:
+    if (!record.detail.empty())
+      return subject + " may be null: the result of '" + record.detail +
+             "' is declared WEAVEC_NULLABLE here";
+    return subject + " is declared WEAVEC_NULLABLE here";
+  case core::NullReason::Dereferenced:
+    break; // never `MaybeNull`, never reported
+  }
+  return subject + " may be null";
+}
+
+void FunctionDataflow::noteRequirement(core::PlaceId place,
+                                       const core::AnalysisState &state) {
+  if (!recording())
+    return;
+  const auto require = [this](core::PlaceId candidate) {
+    const auto path = stableSummaryPathOf(candidate);
+    if (!path || !path->isParam() || !path->isRoot())
+      return false;
+    // The body of a `WEAVEC_NULLABLE` parameter is checked instead.
+    if (declaredNullness(candidate) == core::Nullness::MaybeNull)
+      return false;
+    inferred.requiresNonNull.insert(path->index);
+    return true;
+  };
+  if (require(place))
+    return;
+  for (const auto &[alias, edge] : state.aliases.edgesFrom(place)) {
+    if (edge.exact && require(alias))
+      return;
+  }
+}
+
+void FunctionDataflow::checkDereference(core::PlaceId pointer, const Expr &at,
+                                        core::AnalysisState &state) {
+  const auto record = nullnessAt(pointer, state);
+  if (!record) {
+    noteRequirement(pointer, state);
+    markDereferenced(pointer, at, state);
+    return;
+  }
+  if (!record->mayBeNull())
+    return;
+  const std::string name = nameOf(pointer);
+  core::Diagnostic diagnostic = makeError(
+      core::diag::NullDereference,
+      "dereference of '" + name + "', which " +
+          (record->state == core::Nullness::Null ? "is null" : "may be null"),
+      at);
+  if (record->location.isValid())
+    diagnostic.addNote(nullNote(*record, name), record->location);
+  report(std::move(diagnostic));
+  // One bad pointer reports once: from here on nothing is known about it
+  // (in both phases, so the fixpoint is the same).
+  state.nulls.forget(pointer);
+  if (record->reason == core::NullReason::Declared) {
+    // Nothing to forget for a declared place; a positive fact silences it.
+    state.nulls.set(pointer,
+                    core::NullRecord{.state = core::Nullness::NonNull,
+                                     .location = locate(at),
+                                     .reason = core::NullReason::Tested,
+                                     .detail = {}});
+  }
+}
+
+void FunctionDataflow::markDereferenced(core::PlaceId pointer, const Expr &at,
+                                        core::AnalysisState &state) {
+  // The path continued past a dereference with nothing known about the
+  // pointer: it was non-null, and stays so until reassigned (RFC 0008,
+  // *Implementation notes*). This is what makes cJSON's `if
+  // (cannot_access_at_index(input_buffer, 0)) input_buffer->offset--;`
+  // clean after `buffer_at_offset(input_buffer)` at the top of the function:
+  // the retest's null edge cannot make it maybe-null.
+  setNullness(pointer,
+              core::NullRecord{.state = core::Nullness::NonNull,
+                               .location = locate(at),
+                               .reason = core::NullReason::Dereferenced,
+                               .detail = {}},
+              state);
+}
+
+void FunctionDataflow::checkResultDereference(const CallExpr &call,
+                                              core::AnalysisState &state) {
+  if (!recording() || !emitDiagnostics || inUnsafe)
+    return;
+  const auto record = nullnessOf(builder.classifyValue(call), call, state);
+  if (!record || !record->mayBeNull())
+    return;
+  const std::string callee = calleeName(call);
+  core::Diagnostic diagnostic = makeError(
+      core::diag::NullDereference,
+      "dereference of the result of " + callee + ", which " +
+          (record->state == core::Nullness::Null ? "is null" : "may be null"),
+      call);
+  if (record->reason == core::NullReason::Declared &&
+      record->location.isValid())
+    diagnostic.addNote("the result of " + callee +
+                           " is declared WEAVEC_NULLABLE here",
+                       record->location);
+  report(std::move(diagnostic));
+}
+
+void FunctionDataflow::checkRequiredArguments(
+    const CallExpr &call, const core::FunctionSummary &summary,
+    core::AnalysisState &state) {
+  for (const std::uint32_t index : summary.requiresNonNull) {
+    if (index >= call.getNumArgs())
+      continue;
+    const Expr &arg = *call.getArg(index);
+    if (!arg.getType()->isPointerType())
+      continue;
+    const ValueOrigin origin = builder.classifyValue(arg);
+    std::optional<core::PlaceId> place;
+    if (origin.kind == ValueOrigin::Kind::Copy && origin.place)
+      place = origin.place->place;
+    const auto record = nullnessOf(origin, arg, state);
+    if (!record) {
+      // `size_t len(const char *s) { return strlen(s); }` requires `s`.
+      if (place) {
+        noteRequirement(*place, state);
+        markDereferenced(*place, arg, state);
+      }
+      continue;
+    }
+    if (!record->mayBeNull())
+      continue;
+    const std::string callee = calleeName(call);
+    const std::string which =
+        record->state == core::Nullness::Null ? "is null" : "may be null";
+    std::string message;
+    if (place) {
+      message = "'" + nameOf(*place) + "', which ";
+      message += which;
+      message += ", is passed to ";
+    } else {
+      message = "a null pointer is passed to ";
+    }
+    message += callee;
+    message += ", which dereferences it";
+    core::Diagnostic diagnostic =
+        makeError(core::diag::NullDereference, message, arg);
+    if (place && record->location.isValid())
+      diagnostic.addNote(nullNote(*record, nameOf(*place)), record->location);
+    // (Not for an implicitly declared builtin: its "declaration" is here.)
+    if (const FunctionDecl *decl = call.getDirectCallee();
+        decl != nullptr && !decl->isImplicit())
+      diagnostic.addNote(callee + " is declared here",
+                         locate(decl->getLocation()));
+    report(std::move(diagnostic));
+    if (place) {
+      state.nulls.forget(*place);
+      if (record->reason == core::NullReason::Declared)
+        state.nulls.set(*place,
+                        core::NullRecord{.state = core::Nullness::NonNull,
+                                         .location = locate(arg),
+                                         .reason = core::NullReason::Tested,
+                                         .detail = {}});
+    }
+  }
 }
 
 std::optional<core::RawRecord>
@@ -3577,7 +4493,7 @@ void FunctionDataflow::dump(const core::AnalysisState *exitState) {
       const auto record = exitState->moves.movedAt(place);
       os << (first ? "" : ", ") << places.name(place) << "@"
          << record->location.line << ":" << record->location.column << " "
-         << (record->reason == core::MoveReason::Freed ? "freed" : "moved");
+         << core::toString(record->reason);
       if (!record->family.empty())
         os << "(" << record->family << ")";
       first = false;
@@ -3618,6 +4534,18 @@ void FunctionDataflow::dump(const core::AnalysisState *exitState) {
         os << " " << record->family;
       if (record->escaped)
         os << " escaped";
+      if (record->interior)
+        os << " interior";
+      first = false;
+    }
+    os << "} nulls{";
+    first = true;
+    for (const core::PlaceId place : exitState->nulls.places()) {
+      const auto record = exitState->nulls.recordOf(place);
+      os << (first ? "" : ", ") << places.name(place);
+      if (record->location.isValid())
+        os << "@" << record->location.line << ":" << record->location.column;
+      os << " " << core::toString(record->state);
       first = false;
     }
     os << "}\n";
@@ -3649,7 +4577,11 @@ void FunctionDataflow::dump(const core::AnalysisState *exitState) {
          {std::pair{effect.read, std::string("read")},
           std::pair{effect.written, std::string("written")},
           std::pair{effect.freed, describeConsume(effect, "freed")},
-          std::pair{effect.moved, describeConsume(effect, "moved")}}) {
+          std::pair{effect.moved, describeConsume(effect, "moved")},
+          std::pair{effect.consumed() && effect.replaced,
+                    std::string("replaced")},
+          std::pair{effect.consumed() && effect.element,
+                    std::string("element")}}) {
       if (flag) {
         os << sep << label;
         sep = "|";
@@ -3671,26 +4603,44 @@ void FunctionDataflow::dump(const core::AnalysisState *exitState) {
     first = false;
   }
   os << "}";
+  if (!inferred.requiresNonNull.empty()) {
+    os << " requires{";
+    first = true;
+    for (const std::uint32_t param : inferred.requiresNonNull) {
+      os << (first ? "" : ", ") << summaryName(core::SummaryPath::param(param));
+      first = false;
+    }
+    os << "}";
+  }
+  const auto describePaths =
+      [this, &os, &first](const char *label,
+                          const std::set<core::SummaryPath> &paths) {
+        os << " " << label << "{";
+        first = true;
+        for (const core::SummaryPath &path : paths) {
+          os << (first ? "" : ", ") << summaryName(path);
+          first = false;
+        }
+        os << "}";
+      };
   for (const auto &[outcome, effects] : inferred.outcomes) {
     os << " outcome " << core::toString(outcome) << "{";
     first = true;
     for (const auto &[path, effect] : effects) {
       os << (first ? "" : ", ") << summaryName(path) << ":"
          << (effect.freed ? " " + describeConsume(effect, "freed") : "")
-         << (effect.moved ? " " + describeConsume(effect, "moved") : "");
+         << (effect.moved ? " " + describeConsume(effect, "moved") : "")
+         << (effect.consumed() && effect.replaced ? " replaced" : "")
+         << (effect.consumed() && effect.element ? " element" : "");
       first = false;
     }
     os << "}";
     if (const auto nulls = inferred.nullOn.find(outcome);
-        nulls != inferred.nullOn.end()) {
-      os << " null{";
-      first = true;
-      for (const core::SummaryPath &path : nulls->second) {
-        os << (first ? "" : ", ") << summaryName(path);
-        first = false;
-      }
-      os << "}";
-    }
+        nulls != inferred.nullOn.end())
+      describePaths("null", nulls->second);
+    if (const auto nonNulls = inferred.nonNullOn.find(outcome);
+        nonNulls != inferred.nonNullOn.end())
+      describePaths("notnull", nonNulls->second);
   }
   os << "\n";
 }
@@ -3703,8 +4653,10 @@ std::string FunctionDataflow::summaryName(const core::SummaryPath &path) const {
                : "param" + std::to_string(path.index);
     if (root.empty())
       root = "param" + std::to_string(path.index);
-  } else {
+  } else if (path.isGlobal()) {
     root = summaries.globals().nameOf(path.index).str();
+  } else {
+    root = "result";
   }
   return path.toString(root);
 }
@@ -3802,43 +4754,103 @@ bool FunctionDataflow::isEventBased(const core::SummaryPath &path) const {
           (path.index < paramReassigned.size() && paramReassigned[path.index]));
 }
 
-/// The summary effect a move record stands for.
+/// The summary effect a move record stands for. A consume through an
+/// element access is one of an element the caller cannot identify (RFC
+/// 0008, *Element consumes*).
 static core::PlaceEffect effectOfMove(core::MoveReason reason,
-                                      std::string_view family) {
+                                      std::string_view family,
+                                      const core::ElementWitness &element) {
   core::PlaceEffect effect;
   if (reason == core::MoveReason::Freed)
     effect.freed = true;
   else
     effect.moved = true;
   effect.family = std::string(family);
+  effect.element = !element.isWhole();
   return effect;
 }
 
 void FunctionDataflow::recordConsume(core::PlaceId target,
                                      core::MoveReason reason,
                                      std::string_view family,
+                                     const core::ElementWitness &element,
                                      core::AnalysisState &state) {
+  // Only locals can be uninitialised; the record never reaches a summary
+  // (RFC 0008, *Uninitialised pointers*).
+  if (reason == core::MoveReason::Uninitialized)
+    return;
   const auto path = builder.summaryPathOf(target);
   if (!path)
     return;
-  const core::PlaceEffect effect = effectOfMove(reason, family);
-  // The flow-sensitive record feeds the outcome classes at each `return`
-  // (RFC 0006); it is part of the state so the fixpoint sees it.
-  if (isEventBased(*path))
-    state.consumed[*path].join(effect);
-  if (recording())
-    eventEffects[*path].join(effect);
+  // A place this function has already overwritten on every path holds its
+  // own value, not the caller's: releasing it is not the caller's business
+  // (RFC 0008, *Replaced values*: consumption is of the value on entry).
+  if (state.isOverwritten(*path))
+    return;
+  const core::PlaceEffect effect = effectOfMove(reason, family, element);
+  // Every caller-visible consume is recorded as it happens (RFC 0008,
+  // *Replaced values*). The flow-sensitive record feeds the outcome classes
+  // at each `return` (RFC 0006) and, at the exit, the unconditional
+  // effects; it is part of the state so the fixpoint sees it and so a path
+  // that never returns contributes nothing.
+  state.consumed[*path].join(effect);
+}
+
+void FunctionDataflow::noteRewritten(core::PlaceId place,
+                                     core::AnalysisState &state) {
+  // A write to a place after this function consumed the caller's value there
+  // reinitialises it on this path (RFC 0008, *Replaced values*). Any element
+  // counts (`free(a[i]); a[i] = strdup(s);` with an index the witnesses
+  // cannot follow): RFC 0006 already treats element writes as may-writes of
+  // the freed element. Writing an object rewrites its fields, not what its
+  // pointers point to.
+  const auto path = builder.summaryPathOf(place);
+  if (!path)
+    return;
+  for (auto &[consumedPath, effect] : state.consumed) {
+    // A parameter variable, and what lies under a reassigned one, is the
+    // callee's private copy: writing it replaces nothing of the caller's
+    // (`free(p); p = NULL;` frees the argument for good; RFC 0003).
+    if (!effect.consumed() || effect.replaced || isEventBased(consumedPath))
+      continue;
+    if (consumedPath == *path) {
+      effect.replaced = true;
+      continue;
+    }
+    if (!path->isProperPrefixOf(consumedPath))
+      continue;
+    const bool throughPointer =
+        std::any_of(std::next(consumedPath.steps.begin(),
+                              static_cast<std::ptrdiff_t>(path->steps.size())),
+                    consumedPath.steps.end(), [](const core::PathElem &elem) {
+                      return elem.step == core::PathStep::Deref;
+                    });
+    if (!throughPointer)
+      effect.replaced = true;
+  }
+}
+
+void FunctionDataflow::noteOverwritten(core::PlaceId place,
+                                       core::AnalysisState &state) {
+  if (const auto path = builder.summaryPathOf(place))
+    state.overwritten.insert(*path);
 }
 
 core::OutcomeEffects
 FunctionDataflow::consumptionAt(const core::AnalysisState &state) {
+  // The union of what happened on this path and what the places still hold
+  // (RFC 0008, *Replaced values*: event and exit consumption). A record on
+  // a place overwritten since entry is about this function's own value.
   core::OutcomeEffects result = state.consumed;
   for (const core::PlaceId place : state.moves.movedPlaces()) {
-    const auto path = builder.summaryPathOf(place);
-    if (!path || isEventBased(*path))
-      continue;
     const auto record = state.moves.recordOf(place);
-    result[*path].join(effectOfMove(record->reason, record->family));
+    if (record->reason == core::MoveReason::Uninitialized || record->ownValue)
+      continue;
+    const auto path = builder.summaryPathOf(place);
+    if (!path || state.isOverwritten(*path))
+      continue;
+    result[*path].join(
+        effectOfMove(record->reason, record->family, record->element));
   }
   return result;
 }
@@ -3936,6 +4948,15 @@ void FunctionDataflow::recordOutcomes(const Expr &value,
     if (const auto path = callerVisiblePath(place))
       heldHere.insert(*path);
   }
+  // The caller memory known non-null here (RFC 0008, *Per-outcome non-null
+  // facts*).
+  std::set<core::SummaryPath> nonNullHere;
+  for (const core::PlaceId place : state.nulls.places()) {
+    if (!state.nulls.isNonNull(place))
+      continue;
+    if (const auto path = callerVisiblePath(place))
+      nonNullHere.insert(*path);
+  }
   std::optional<std::pair<core::SummaryPath, core::Outcome>> tested;
   if (const auto test = nullTestReturn(value)) {
     if (const auto ref = builder.resolve(*test->first);
@@ -3966,8 +4987,17 @@ void FunctionDataflow::recordOutcomes(const Expr &value,
     std::set<core::SummaryPath> heldInClass;
     std::ranges::set_difference(heldHere, nullInClass,
                                 std::inserter(heldInClass, heldInClass.end()));
+    // `return *out != NULL`: on every class but the one that means null, the
+    // tested place is non-null.
+    std::set<core::SummaryPath> nonNullInClass = nonNullHere;
+    if (tested && tested->second != outcome)
+      nonNullInClass.insert(tested->first);
+    for (const core::SummaryPath &path : nullInClass)
+      nonNullInClass.erase(path);
     const auto [it, first] = nullAtReturn.try_emplace(
-        outcome, NullAtReturn{.null = nullInClass, .held = heldInClass});
+        outcome, NullAtReturn{.null = nullInClass,
+                              .held = heldInClass,
+                              .nonNull = nonNullInClass});
     if (first)
       continue;
     std::set<core::SummaryPath> both;
@@ -3975,6 +5005,11 @@ void FunctionDataflow::recordOutcomes(const Expr &value,
                                   std::inserter(both, both.end()));
     it->second.null = std::move(both);
     it->second.held.insert(heldInClass.begin(), heldInClass.end());
+    std::set<core::SummaryPath> bothNonNull;
+    std::ranges::set_intersection(
+        it->second.nonNull, nonNullInClass,
+        std::inserter(bothNonNull, bothNonNull.end()));
+    it->second.nonNull = std::move(bothNonNull);
   }
 }
 
@@ -4105,20 +5140,30 @@ core::ValueSource FunctionDataflow::sourceOf(const ValueOrigin &origin,
 }
 
 void FunctionDataflow::finalizeSummary(const core::AnalysisState *exitState) {
-  // Parameter roots, and everything under a reassigned parameter, take their
-  // consumption from the events; everything else from the exit state (RFC
-  // 0003, *Deriving a summary*).
-  for (const auto &[path, effect] : eventEffects) {
-    if (isEventBased(path))
-      inferred.addEffect(path, effect);
-  }
+  // Consumption is recorded as it happens for every caller-visible path
+  // (RFC 0008, *Replaced values*, amending RFC 0003), but only what reaches
+  // a return is the caller's business: a block that ends in `exit()` never
+  // hands control back (RFC 0003, *What a summary describes*), and a null
+  // edge retracts the consumption below the pointer (RFC 0007). Lua's
+  // `os_exit` does `lua_close(L); exit(status);` and must not tell every
+  // caller of a `lua_CFunction` that `L->l_G` is gone. The exit state adds
+  // records that reached a place by propagation (a copy of a moved value).
+  std::set<core::SummaryPath> movedAtExit;
   if (exitState != nullptr) {
+    for (const auto &[path, effect] : exitState->consumed) {
+      if (effect.consumed())
+        inferred.addEffect(path, effect);
+    }
     for (const core::PlaceId place : exitState->moves.movedPlaces()) {
-      const auto path = builder.summaryPathOf(place);
-      if (!path)
-        continue;
       const auto record = exitState->moves.recordOf(place);
-      inferred.addEffect(*path, effectOfMove(record->reason, record->family));
+      if (record->reason == core::MoveReason::Uninitialized || record->ownValue)
+        continue;
+      const auto path = builder.summaryPathOf(place);
+      if (!path || exitState->isOverwritten(*path))
+        continue;
+      inferred.addEffect(
+          *path, effectOfMove(record->reason, record->family, record->element));
+      movedAtExit.insert(*path);
     }
   }
   // Every class's consumption is part of the unconditional effects; a
@@ -4131,6 +5176,31 @@ void FunctionDataflow::finalizeSummary(const core::AnalysisState *exitState) {
       inferred.addEffect(path, effect);
       if (effect.consumed() && !inferred.consumesUnconditionally(path))
         conditional = true;
+    }
+  }
+  // A path consumed on some path through the body but holding the consumed
+  // value at no return was reinitialised before returning: the caller's
+  // place is replaced, only its other names for the old value are dead (RFC
+  // 0008, *Replaced values*). So was a path every consuming path wrote to
+  // afterwards (`noteRewritten`), even when an element record the witnesses
+  // could not match survives to the exit. Parameter roots and paths under a
+  // reassigned parameter describe the callee's private copy, never the
+  // argument.
+  if (exitState != nullptr) {
+    for (auto &[path, effect] : inferred.effects) {
+      if (!effect.consumed() || isEventBased(path))
+        continue;
+      const auto consumed = exitState->consumed.find(path);
+      const bool rewritten = consumed != exitState->consumed.end() &&
+                             consumed->second.consumed() &&
+                             consumed->second.replaced;
+      if (movedAtExit.contains(path) && !rewritten)
+        continue;
+      effect.replaced = true;
+      for (auto &[outcome, effects] : inferred.outcomes) {
+        if (const auto it = effects.find(path); it != effects.end())
+          it->second.replaced = true;
+      }
     }
   }
   // A class on whose every return some caller memory is null, or holds no
@@ -4147,11 +5217,24 @@ void FunctionDataflow::finalizeSummary(const core::AnalysisState *exitState) {
       if (!nulls.held.contains(dest))
         paths.insert(dest);
     }
-    if (paths.empty())
-      continue;
-    inferred.addOutcome(outcome);
-    inferred.nullOn[outcome] = std::move(paths);
-    conditional = true;
+    if (!paths.empty()) {
+      inferred.addOutcome(outcome);
+      inferred.nullOn[outcome] = std::move(paths);
+      conditional = true;
+    }
+    // Non-null facts are worth a class only for caller memory the callee
+    // wrote (RFC 0008, *Per-outcome non-null facts*): a parameter the
+    // callee merely tested is the caller's to know about.
+    std::set<core::SummaryPath> nonNull;
+    for (const core::SummaryPath &path : nulls.nonNull) {
+      if (inferred.storesTo(path))
+        nonNull.insert(path);
+    }
+    if (!nonNull.empty()) {
+      inferred.addOutcome(outcome);
+      inferred.nonNullOn[outcome] = std::move(nonNull);
+      conditional = true;
+    }
   }
   // Classes only matter when some consumption depends on them; a summary
   // without conditional consumption stays as small as an RFC 0003 one.

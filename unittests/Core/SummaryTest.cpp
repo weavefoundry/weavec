@@ -68,6 +68,126 @@ TEST(PlaceEffect, JoinIsOr) {
   EXPECT_TRUE(PlaceEffect{}.empty());
 }
 
+// RFC 0008, *Replaced values*: `replaced` is a must-fact about a consume.
+TEST(PlaceEffect, ReplacedIsAMustFactOfTheConsume) {
+  // Both sides consume and replace: replaced.
+  PlaceEffect both{.freed = true, .replaced = true};
+  both.join(PlaceEffect{.moved = true, .replaced = true});
+  EXPECT_TRUE(both.replaced);
+  EXPECT_TRUE(both.consumed());
+
+  // One side may leave the consumed value in place: not replaced.
+  PlaceEffect mixed{.freed = true, .replaced = true};
+  mixed.join(PlaceEffect{.freed = true});
+  EXPECT_FALSE(mixed.replaced);
+
+  // The other way round too.
+  PlaceEffect mixed2{.freed = true};
+  mixed2.join(PlaceEffect{.freed = true, .replaced = true});
+  EXPECT_FALSE(mixed2.replaced);
+
+  // A side that does not consume says nothing about replacement.
+  PlaceEffect written{.written = true};
+  written.join(PlaceEffect{.freed = true, .replaced = true});
+  EXPECT_TRUE(written.replaced);
+  EXPECT_TRUE(written.written);
+  PlaceEffect consumed{.freed = true, .replaced = true};
+  consumed.join(PlaceEffect{.read = true});
+  EXPECT_TRUE(consumed.replaced);
+}
+
+// RFC 0008, *Element consumes*: `element` holds only if every consuming
+// side went through an element access; a whole consume on either side wins.
+TEST(PlaceEffect, ElementIsAMustFactOfTheConsume) {
+  PlaceEffect both{.freed = true, .element = true};
+  both.join(PlaceEffect{.freed = true, .element = true});
+  EXPECT_TRUE(both.element);
+
+  PlaceEffect mixed{.freed = true, .element = true};
+  mixed.join(PlaceEffect{.freed = true});
+  EXPECT_FALSE(mixed.element);
+
+  PlaceEffect mixed2{.moved = true};
+  mixed2.join(PlaceEffect{.freed = true, .element = true});
+  EXPECT_FALSE(mixed2.element);
+
+  // A side that does not consume says nothing about elements.
+  PlaceEffect written{.written = true};
+  written.join(PlaceEffect{.freed = true, .element = true});
+  EXPECT_TRUE(written.element);
+  PlaceEffect consumed{.freed = true, .element = true};
+  consumed.join(PlaceEffect{.read = true});
+  EXPECT_TRUE(consumed.element);
+}
+
+// RFC 0008, *Nullness*: `requires` unions, `notnull` intersects per class,
+// and a `null` return alternative is what `mayReturnNull` reports.
+TEST(FunctionSummary, NullnessFactsJoin) {
+  FunctionSummary a;
+  a.requiresNonNull.insert(0);
+  a.addReturn(ValueSource::fresh("free"));
+  a.addOutcome(Outcome::Zero);
+  a.addOutcome(Outcome::Negative);
+  a.nonNullOn[Outcome::Zero].insert(SummaryPath::param(1).deref());
+  a.nonNullOn[Outcome::Zero].insert(SummaryPath::param(2).deref());
+  a.nonNullOn[Outcome::Negative].insert(SummaryPath::param(1).deref());
+  EXPECT_FALSE(a.mayReturnNull());
+  EXPECT_TRUE(a.requiresParam(0));
+  EXPECT_FALSE(a.requiresParam(1));
+
+  FunctionSummary b;
+  b.requiresNonNull.insert(1);
+  b.addReturn(ValueSource::null());
+  b.addOutcome(Outcome::Zero);
+  b.addOutcome(Outcome::Positive);
+  b.nonNullOn[Outcome::Zero].insert(SummaryPath::param(1).deref());
+  b.nonNullOn[Outcome::Positive].insert(SummaryPath::param(3).deref());
+
+  a.join(b);
+  EXPECT_TRUE(a.mayReturnNull());
+  EXPECT_EQ(a.requiresNonNull, (std::set<std::uint32_t>{0, 1}))
+      << "a parameter either side dereferences";
+  // Zero: both may return it, keep what both guarantee.
+  EXPECT_EQ(a.nonNullOn.at(Outcome::Zero),
+            std::set<SummaryPath>{SummaryPath::param(1).deref()});
+  // Negative / Positive: only one side returns it, its facts hold there.
+  EXPECT_EQ(a.nonNullOn.at(Outcome::Negative),
+            std::set<SummaryPath>{SummaryPath::param(1).deref()});
+  EXPECT_EQ(a.nonNullOn.at(Outcome::Positive),
+            std::set<SummaryPath>{SummaryPath::param(3).deref()});
+
+  // A side without outcome knowledge drops every class fact.
+  FunctionSummary c;
+  c.addReturn(ValueSource::fresh("free"));
+  a.join(c);
+  EXPECT_TRUE(a.nonNullOn.empty());
+  EXPECT_TRUE(a.outcomes.empty());
+  EXPECT_EQ(a.requiresNonNull, (std::set<std::uint32_t>{0, 1}));
+}
+
+TEST(FunctionSummary, ResultRootedStoresSurviveRemapping) {
+  // `result .p` names a field of a struct returned by value (RFC 0008,
+  // *Struct-by-value results*); it is not a global and is not renumbered.
+  FunctionSummary s;
+  s.addStore(Store{.dest = SummaryPath::result().field("p"),
+                   .value = ValueSource::fresh("free")});
+  s.addStore(Store{.dest = SummaryPath::global(4),
+                   .value = ValueSource::copy(SummaryPath::param(0))});
+  s.requiresNonNull.insert(0);
+  s.addOutcome(Outcome::Zero);
+  s.nonNullOn[Outcome::Zero].insert(SummaryPath::param(1).deref());
+  const FunctionSummary remapped =
+      remapGlobals(s, [](std::uint32_t) -> std::optional<std::uint32_t> {
+        return std::nullopt;
+      });
+  EXPECT_TRUE(remapped.storesTo(SummaryPath::result().field("p")));
+  EXPECT_FALSE(remapped.storesTo(SummaryPath::global(4)))
+      << "a declined global is dropped";
+  EXPECT_TRUE(remapped.requiresParam(0));
+  EXPECT_EQ(remapped.nonNullOn.at(Outcome::Zero),
+            std::set<SummaryPath>{SummaryPath::param(1).deref()});
+}
+
 TEST(FunctionSummary, EmptyEffectsAreNotStored) {
   FunctionSummary s;
   s.addEffect(SummaryPath::param(0), PlaceEffect{});

@@ -302,8 +302,10 @@ void TranslationUnitAnalyzer::reportUnannotatedInterface(
 
   for (unsigned i = 0; i < function.getNumParams(); ++i) {
     const ParmVarDecl *param = function.getParamDecl(i);
+    // A nullness annotation alone says nothing about ownership (RFC 0008).
     if (!param->getType()->isPointerType() ||
-        (i < annotations.params.size() && annotations.params[i].any()))
+        (i < annotations.params.size() &&
+         (annotations.params[i].ownership() || annotations.params[i].invalid)))
       continue;
     const std::string paramName = param->getNameAsString();
     const core::SourceLocation at = toCoreLocation(sm, param->getLocation());
@@ -337,7 +339,9 @@ void TranslationUnitAnalyzer::reportUnannotatedInterface(
     });
   }
 
-  if (!function.getReturnType()->isPointerType() || annotations.result.any())
+  if (!function.getReturnType()->isPointerType() ||
+      annotations.result.ownership() || annotations.result.invalid ||
+      annotations.result.unsafe)
     return;
   const char *macro = macroFor(summary->inferredReturnKind());
   if (macro == nullptr)

@@ -50,19 +50,41 @@ std::optional<BorrowConflict> BorrowState::addLoan(const Loan &loan) {
   return std::nullopt;
 }
 
+/// The borrow itself: what is borrowed, by whom, how, for how long. Two
+/// loans with the same key are the same borrow recorded at different sites.
+static auto borrowKey(const Loan &loan) noexcept {
+  return std::tie(loan.place, loan.holder, loan.kind, loan.lifetime.value);
+}
+
+static auto locationKey(const Loan &loan) noexcept {
+  return std::tie(loan.location.line, loan.location.column,
+                  loan.location.opaque, loan.location.file);
+}
+
+bool BorrowState::sameBorrow(const Loan &lhs, const Loan &rhs) noexcept {
+  return borrowKey(lhs) == borrowKey(rhs);
+}
+
 bool BorrowState::before(const Loan &lhs, const Loan &rhs) noexcept {
-  const auto key = [](const Loan &loan) {
-    return std::tie(loan.place, loan.holder, loan.kind, loan.lifetime.value,
-                    loan.location.line, loan.location.column,
-                    loan.location.opaque, loan.location.file);
-  };
-  return key(lhs) < key(rhs);
+  const auto l = borrowKey(lhs);
+  const auto r = borrowKey(rhs);
+  if (l != r)
+    return l < r;
+  return locationKey(lhs) < locationKey(rhs);
 }
 
 void BorrowState::addLoanUnchecked(const Loan &loan) {
-  const auto at = std::ranges::lower_bound(live, loan, before);
-  if (at == live.end() || *at != loan)
+  const auto at = std::ranges::lower_bound(
+      live, loan, [](const Loan &lhs, const Loan &rhs) {
+        return borrowKey(lhs) < borrowKey(rhs);
+      });
+  if (at == live.end() || !sameBorrow(*at, loan)) {
     live.insert(at, loan);
+    return;
+  }
+  // The same borrow from another site: one record, the earliest site.
+  if (locationKey(loan) < locationKey(*at))
+    *at = loan;
 }
 
 std::optional<BorrowConflict> BorrowState::checkMove(PlaceId place) const {
@@ -95,6 +117,12 @@ void BorrowState::dropHolder(PlaceId holder) {
                 [holder](const Loan &loan) { return loan.holder == holder; });
 }
 
+void BorrowState::drop(PlaceId holder, PlaceId place) {
+  std::erase_if(live, [holder, place](const Loan &loan) {
+    return loan.holder == holder && loan.place == place;
+  });
+}
+
 void BorrowState::expireHolders(const std::function<bool(PlaceId)> &dead) {
   std::erase_if(live, [&dead](const Loan &loan) { return dead(loan.holder); });
 }
@@ -124,16 +152,47 @@ bool BorrowState::join(const BorrowState &other) {
     live = other.live;
     return true;
   }
-  // At the fixpoint nothing is new; find that out without copying a loan
-  // (each carries a file name).
-  if (std::ranges::includes(live, other.live, before))
-    return false;
+  // Both sides hold one loan per borrow, sorted by borrow then site. The
+  // union keeps one per borrow, at the earliest site. At the fixpoint
+  // nothing is new; find that out first, without copying a loan (each
+  // carries a file name).
+  const auto absorbs = [](const Loan &mine, const Loan &theirs) {
+    return sameBorrow(mine, theirs) && locationKey(mine) <= locationKey(theirs);
+  };
+  {
+    auto mine = live.begin();
+    bool covered = true;
+    for (const Loan &theirs : other.live) {
+      while (mine != live.end() && borrowKey(*mine) < borrowKey(theirs))
+        ++mine;
+      if (mine == live.end() || !absorbs(*mine, theirs)) {
+        covered = false;
+        break;
+      }
+    }
+    if (covered)
+      return false;
+  }
   std::vector<Loan> merged;
   merged.reserve(live.size() + other.live.size());
-  std::ranges::set_union(live, other.live, std::back_inserter(merged), before);
-  const bool changed = merged.size() != live.size();
+  auto mine = live.begin();
+  auto theirs = other.live.begin();
+  while (mine != live.end() && theirs != other.live.end()) {
+    if (sameBorrow(*mine, *theirs)) {
+      merged.push_back(locationKey(*mine) <= locationKey(*theirs) ? *mine
+                                                                  : *theirs);
+      ++mine;
+      ++theirs;
+    } else if (borrowKey(*mine) < borrowKey(*theirs)) {
+      merged.push_back(*mine++);
+    } else {
+      merged.push_back(*theirs++);
+    }
+  }
+  merged.insert(merged.end(), mine, live.end());
+  merged.insert(merged.end(), theirs, other.live.end());
   live = std::move(merged);
-  return changed;
+  return true;
 }
 
 bool BorrowState::hasLoans(PlaceId place) const noexcept {

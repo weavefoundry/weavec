@@ -171,11 +171,47 @@ static void applyAnnotations(core::FunctionSummary &summary,
   }
 }
 
+/// RFC 0008, *Annotation surface*: `WEAVEC_NONNULL` on a parameter is a
+/// requirement on callers, `WEAVEC_NULLABLE` lifts one the body implied; on
+/// the result they add or remove the `null` alternative. Neither changes
+/// ownership, so they layer on whatever else the summary says.
+static void applyNullnessAnnotations(core::FunctionSummary &summary,
+                                     const SignatureShape &shape,
+                                     const AnnotationSet &result,
+                                     const std::vector<AnnotationSet> &params) {
+  for (unsigned i = 0; i < params.size() && i < shape.pointerParams.size();
+       ++i) {
+    if (!shape.pointerParams[i])
+      continue;
+    if (params[i].nonNull)
+      summary.requiresNonNull.insert(i);
+    else if (params[i].nullable)
+      summary.requiresNonNull.erase(i);
+  }
+  if (!shape.pointerResult)
+    return;
+  if (result.nonNull) {
+    summary.returns.erase(core::ValueSource::null());
+    if (summary.returns.empty())
+      summary.addReturn(core::ValueSource::unknown());
+  } else if (result.nullable) {
+    summary.addReturn(core::ValueSource::null());
+  }
+}
+
+bool SignatureAnnotations::anyNullness() const noexcept {
+  return result.nullness() || llvm::any_of(params, [](const AnnotationSet &s) {
+           return s.nullness();
+         });
+}
+
 core::FunctionSummary summaryFromAnnotations(const FunctionDecl &function) {
   core::FunctionSummary summary;
   const SignatureAnnotations annotations = collectAnnotations(function);
   applyAnnotations(summary, shapeOf(function), annotations.result,
                    annotations.params);
+  applyNullnessAnnotations(summary, shapeOf(function), annotations.result,
+                           annotations.params);
   return summary;
 }
 
@@ -267,12 +303,25 @@ SummaryStore::lookup(const FunctionDecl &callee) {
   const bool haveBody = inferredBody != nullptr || programBody.has_value();
   const bool annotated =
       annotations.anyOwnership() || (annotations.unsafe && !haveBody);
+  // Nullness annotations say nothing about ownership: alone they neither
+  // make an unknown callee checked nor change where its summary comes from
+  // (RFC 0008, *Annotation surface*); they layer on the table's entry.
+  const bool nullness = annotations.anyNullness();
 
   if (!haveBody && !annotated) {
-    if (const core::FunctionSummary *builtin = builtinSummary(callee))
+    const core::FunctionSummary *builtin = builtinSummary(callee);
+    if (builtin == nullptr)
+      return std::nullopt;
+    if (!nullness)
       return ResolvedSummary{.summary = builtin,
                              .source = SummarySource::Builtin};
-    return std::nullopt;
+    core::FunctionSummary adjusted = *builtin;
+    applyNullnessAnnotations(adjusted, shapeOf(callee), annotations.result,
+                             annotations.params);
+    const auto it = merged.try_emplace(canonical, std::move(adjusted)).first;
+    mergedSource[canonical] = SummarySource::Builtin;
+    return ResolvedSummary{.summary = &it->second,
+                           .source = SummarySource::Builtin};
   }
 
   core::FunctionSummary result;
@@ -288,6 +337,9 @@ SummaryStore::lookup(const FunctionDecl &callee) {
                      annotations.params);
     source = SummarySource::Annotation;
   }
+  if (nullness)
+    applyNullnessAnnotations(result, shapeOf(callee), annotations.result,
+                             annotations.params);
   const auto it = merged.try_emplace(canonical, std::move(result)).first;
   mergedSource[canonical] = source;
   return ResolvedSummary{.summary = &it->second, .source = source};

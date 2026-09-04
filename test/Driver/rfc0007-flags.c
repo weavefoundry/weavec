@@ -21,6 +21,8 @@ void mismatch(const char *path) {
 #else
 void leak(void) {
   char *p = malloc(8);
+  if (!p)
+    return;
   // DEFAULT: rfc0007-flags.c:[[@LINE+2]]:3: warning: 'p' is leaked [weavec::leak]
   // RAISED: rfc0007-flags.c:[[@LINE+1]]:3: error: 'p' is leaked [weavec::leak]
   p[0] = 0;

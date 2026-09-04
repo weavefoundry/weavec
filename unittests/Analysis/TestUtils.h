@@ -41,6 +41,8 @@ void free(void *);
 #define MUT __attribute__((annotate("weavec.mut_borrowed")))
 #define RAW __attribute__((annotate("weavec.raw")))
 #define UNSAFE __attribute__((annotate("weavec.unsafe")))
+#define NULLABLE __attribute__((annotate("weavec.nullable")))
+#define NONNULL __attribute__((annotate("weavec.nonnull")))
 void use(const void *BORROWED);
 int cond(void);
 #define NULL ((void *)0)

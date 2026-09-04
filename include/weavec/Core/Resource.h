@@ -60,6 +60,10 @@ struct ResourceRecord {
   /// callee, an integer cast, a raw destination): its holder's death is not
   /// a leak.
   bool escaped = false;
+  /// The holder points *into* the resource rather than at its start (`q = p
+  /// + 1`, `q = strchr(p, c)`; RFC 0008, *Invalid releases*): releasing
+  /// through it is invalid. Cleared by a fresh allocation.
+  bool interior = false;
 
   friend bool operator==(const ResourceRecord &,
                          const ResourceRecord &) = default;
@@ -99,8 +103,9 @@ public:
   void forget(PlaceId place);
 
   /// Records join by union (a place *may* hold a resource): for a place on
-  /// both sides this side's record is kept, `escaped` is or-ed and the
-  /// family cleared when the sides disagree. Null facts join by intersection
+  /// both sides this side's record is kept, `escaped` and `interior` are
+  /// or-ed and the family cleared when the sides disagree. Null facts join by
+  /// intersection
   /// (a place *must* be null). Returns whether this tracker changed.
   bool join(const ResourceTracker &other);
 

@@ -21,6 +21,7 @@
 #include "weavec/Core/Diagnostic.h" // IWYU pragma: export
 #include "weavec/Core/Lifetime.h"   // IWYU pragma: export
 #include "weavec/Core/Moves.h"      // IWYU pragma: export
+#include "weavec/Core/Nullness.h"   // IWYU pragma: export
 #include "weavec/Core/Ownership.h"  // IWYU pragma: export
 #include "weavec/Core/Place.h"      // IWYU pragma: export
 #include "weavec/Core/Summary.h"    // IWYU pragma: export

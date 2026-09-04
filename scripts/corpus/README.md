@@ -103,9 +103,10 @@ row above and all but one of the `double-free` rows, without adding any:
 
 Two larger projects were added as precision canaries. zlib (15 units as one
 program) is clean apart from two boundary warnings for its `in`/`out`
-callbacks. Lua (34 units as one program, ~12 minutes since RFC 0007, ~6
-before; see below) exercises the model harder than anything else here, and
-every one of its reports is a false positive of a kind an RFC already names:
+callbacks. Lua (34 units as one program, ~6 minutes before RFC 0007, ~12
+after it, ~29 since RFC 0008; see below) exercises the model harder than
+anything else here, and every one of its reports is a false positive of a
+kind an RFC already names:
 
 | Project | Diagnostic                                                                | Cause                                                                                                                                                                                                                                                                                         |
 | ------- | ------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -146,3 +147,58 @@ caller knew below `L` (the `close_state` row above). Lua threads one state
 pointer through every call, so its summaries carry an order of magnitude
 more written paths and every call applies them; RFC 0007's *Performance*
 section records what was done about it and what is left.
+
+### RFC 0008: pointer validity
+
+RFC 0008 adds 266 `null-dereference`, 4 `invalid-release` and no
+`use-of-uninitialized` across the ten projects, and it moves Lua's
+ownership rows. The RFC predicted that unchecked allocations would
+"dominate the corpus delta until triaged"; they do not. Three shapes the
+RFC lists under *Accepted false positives* account for almost everything,
+and each project's rows are one of them:
+
+| Project             | Diagnostic                                                                   | Cause                                                                                                                                                                                                                                                                                                                                                                                           |
+| ------------------- | ---------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| sds                 | `null-dereference` ×12 on `s` in `sdscatfmt`, `sdscatrepr`, `vector` in `sdssplitargs` | **Genuine on allocation failure.** `s = sdsMakeRoomFor(s, 1)` may return `NULL` (sds documents this) and the next line dereferences it; `vector = s_realloc(...)` likewise. This is the *unchecked `malloc`* shape, and here the library's own contract says the check was owed.                                                                                                       |
+| printf              | `null-dereference` ×18 on `buffer` in `_vsnprintf`                            | `if (!buffer) out = _out_null;` then `out(c, buffer, ...)`: the null buffer is only ever handed to the one callback that ignores it, but the per-type join over `_out_*` includes `_out_buffer`, which writes through it. A correlation between a null test and a function-pointer value (RFC 0006, *Accepted false positives*).                                                                  |
+| cJSON, cJSON-program | `null-dereference` ×7 / ×24 (`current_item`, `p` at `suffix_object`, `buffer->buffer`) | *Tested-then-merged*: `cJSON_CreateIntArray` tests `n == NULL` and `goto fail`, but the earlier `p = n` on the previous iteration carries the `MaybeNull` fact into the next `suffix_object(p, n)`. `print_number` tests `output_pointer == NULL` and returns, and the remaining path is joined with the untested one. The program view adds `cJSON_Utils.c`'s callers of the same functions. |
+| linenoise, linenoise-program | `null-dereference` ×3 (`ab.b` at `write`, `line` ×2)                          | `abAppend` does `if (new == NULL) return;` and leaves `ab->b` may-null for the caller's `write(fd, ab.b, ab.len)` (the summary's null class cannot say "unchanged"); `linenoiseEditFeed` returns `{fresh, null}` and `example.c` dereferences `line` after the `linenoiseEditMore` test, which is an equality with a different pointer. Both *tested-then-merged*.                                        |
+| zlib                | `null-dereference` ×25 (`s->gzhead`, `state->x.next`, `state->in`, `next`, `_tr_stored_block(s, (char*)0, ...)`) | `s->gzhead != Z_NULL` is tested in the caller's `switch` arm and dereferenced in the next state's arm: a state machine over an integer (`s->status`) separates them. `state->in`/`state->x.next` are set by `gz_init` behind a `state->size == 0` test. `_tr_stored_block(s, (char*)0, 0L, last)` is a **genuine** report against the table's `requires` for `memcpy`'s source when the length is zero; the RFC defers whether zero-length calls should be exempt. |
+| lua                 | `null-dereference` ×174                                                        | One shape: `luaL_checklstring` and its relatives do `if (!s) tag_error(L, arg, t); return s;`, and `tag_error` → `luaL_typeerror` → `luaL_argerror` → `luaL_error` are declared `int`, not `l_noret`, so the failing arm rejoins and every `luaL_check*`/`luaL_opt*` result is may-null. *Tested-then-merged* with an unannotated `noreturn`, exactly the RFC's first accepted false positive; `luaD_throw` *is* `l_noret`, and the paths through it are clean. |
+| lua                 | `invalid-release` ×4 (`func` in `luaD_precall` ×3, `b` in `pushline`)           | `lua_readline` returns either the dlsym'd `readline`'s result or the caller's automatic `buffer` (via `fgets`), and `lua_freeline` frees only when `l_readline != NULL`: the two arms are separated by a global the model does not correlate (*May-consume of a may-borrow*). `func` is a `StkId` into `L->stack`, whose reallocation goes through `l_alloc` and its `nsize == 0` arm; the interior pointer reaching that release is the RFC's *start of its allocation* rule applied to the same `l_alloc` shape as the rows below. |
+| lua                 | `double-free` 4 → 26, `use-after-free` 5 → 37, `conflicting-borrow` 4 → 10       | The single root cause the `use-after-free` row above already names: `l_alloc`'s `nsize == 0` arm frees, so every `luaM_realloc`-family callee *may* free its argument. RFC 0007 read the callee's `written` effect as a reinitialisation and silently dropped the record; *Replaced values* keeps it unless the callee reinitialised on every freeing path, which `realloc`-on-failure does not. These are the reports that closing that soundness hole costs, and the RFC accepts them (*Replaced values are may-consumed*). |
+| lua                 | `lifetime-too-short` 10 → 4, `leak` 5 → 4                                        | Improvements from the same change: `L->errorJmp = lj.previous` and `ls->fs = fs->prev` are now stores that replace the loan (the unlink the RFC 0006 row said the lifetime rule could not see), and `luaZ_freebuffer`'s result store is no longer a leak once its `l_alloc` result is `replaced`.                                                                                                    |
+
+So the corpus answers RFC 0008's deferred questions as follows. The
+unchecked-`malloc` share of the delta is the sds rows, and they are real:
+nothing beyond the inferred `returns{fresh}` for an aborting wrapper is
+needed, because no project here has one. The zero-length `memcpy` question
+is one report (zlib) and stays open. Per-element nullness would change
+nothing above. The two largest rows, printf and Lua, are both the
+`noreturn`/correlation heuristic the RFC shares with Clang's analyzer, and
+both have the fix the RFC names: `l_noret` on Lua's error helpers, and a
+`WEAVEC_NONNULL`-free `_out_null` path (or `WEAVEC_UNSAFE`) in printf.
+
+Four false-positive shapes found here were fixed before the baseline was
+taken, each recorded under *Implementation notes* in the RFC: a redundant
+retest (`if (buf != NULL)` inside cJSON's `can_access_at_index` macro on a
+pointer already known non-null) no longer weakens the fact; `(char *)0` is
+a null constant (zlib's `buf != (char*)0` guards); a call into unchecked
+code forgets the nullness of everything reachable through its pointer
+arguments (linenoise's `completionCallback(buf, &lc)` fills `lc.cvec`); and
+a callee's failing outcome class no longer says a place is null when the
+`null{...}` entry only records a `fresh` store that did not happen
+(linenoise's `linenoiseEditGrow`, cJSON's `ensure`, zlib's `gz_init`: the
+buffer the caller then uses is the old one).
+
+RFC 0008 also made Lua slower again, from ~12 minutes to ~29 on the same
+machine and build, and the whole of it is `luaV_execute`: its ~130 calls
+into the `luaM_realloc` family used to have their `moved` effect on
+`L->stack` masked by the callee's `written` (the RFC 0007 reading), and
+*Replaced values* keeps it, so each call now consumes the path, its mirrors
+through `L->twups ~ L` and their aliases. Two costs found on the way were
+removed before this baseline was taken (the whole-program database was
+renumbered from scratch at every changed member, and `BorrowState` kept one
+loan per borrow *site*, 1,173 of them per state in `luaV_execute`, where it
+now keeps one per borrow); RFC 0008's *Performance* note records what is
+left.

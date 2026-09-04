@@ -186,6 +186,41 @@ TEST_F(BorrowStateTest, LoansAreKeptSortedByPlaceThenHolder) {
   EXPECT_FALSE(state.contains(absent));
 }
 
+TEST_F(BorrowStateTest, OneRecordPerBorrowAtTheEarliestSite) {
+  Loan first = makeLoan(p, BorrowKind::Shared, l1);
+  first.location = SourceLocation{.file = "a.c", .line = 3, .column = 5};
+  Loan again = first;
+  again.location = SourceLocation{.file = "a.c", .line = 9, .column = 1};
+  Loan other = first;
+  other.holder = PlaceId{101};
+
+  // Adding the same borrow from a later site changes nothing; from an
+  // earlier site it moves the record there.
+  state.addLoanUnchecked(again);
+  state.addLoanUnchecked(first);
+  state.addLoanUnchecked(again);
+  state.addLoanUnchecked(other);
+  ASSERT_EQ(state.loans().size(), 2U);
+  EXPECT_EQ(state.loans()[0], first);
+  EXPECT_EQ(state.loans()[1], other);
+  EXPECT_TRUE(BorrowState::sameBorrow(first, again));
+  EXPECT_FALSE(BorrowState::sameBorrow(first, other));
+
+  // The join keeps one per borrow too, at the earliest site of either side.
+  BorrowState later;
+  later.addLoanUnchecked(again);
+  EXPECT_FALSE(state.join(later)) << "a later site of a known borrow is old";
+  BorrowState earlier;
+  Loan earliest = first;
+  earliest.location.line = 1;
+  earlier.addLoanUnchecked(earliest);
+  EXPECT_TRUE(state.join(earlier));
+  ASSERT_EQ(state.loans().size(), 2U);
+  EXPECT_EQ(state.loans()[0], earliest);
+  EXPECT_TRUE(later.join(state));
+  EXPECT_EQ(later, state);
+}
+
 TEST(BorrowKind, ToString) {
   EXPECT_EQ(toString(BorrowKind::Shared), "shared");
   EXPECT_EQ(toString(BorrowKind::Mutable), "mutable");

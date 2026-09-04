@@ -403,7 +403,12 @@ twice.
   freed, but stored-`Null`, which is right. If the parameter variable was
   reassigned anywhere in the body, paths under it fall back to
   as-they-happen recording (the exit state no longer describes the argument),
-  which is the conservative direction noted under *Soundness*.
+  which is the conservative direction noted under *Soundness*. *Amended by
+  [RFC 0008](0008-pointer-validity.md), *Replaced values*: consumption of
+  every caller-visible path is now recorded as it happens and the exit
+  state only adds to it; `free(b->data); b->data = NULL;` is
+  `written,freed,replaced`, which leaves the caller's place usable but
+  kills the caller's copies of the old value.*
 - **Stores** are recorded as they happen when the destination is under a
   dereference of a root or is a global. The stored value is classified
   from the RFC 0002 origin: an allocation is `Fresh`; a copy of a

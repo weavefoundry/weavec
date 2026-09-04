@@ -28,6 +28,10 @@ std::optional<Annotation> parseAnnotation(llvm::StringRef text) {
     return Annotation::Raw;
   if (text == spelling::Unsafe)
     return Annotation::Unsafe;
+  if (text == spelling::Nullable)
+    return Annotation::Nullable;
+  if (text == spelling::NonNull)
+    return Annotation::NonNull;
   return Annotation::Invalid;
 }
 
@@ -48,6 +52,12 @@ static void apply(AnnotationSet &set, Annotation annotation) {
   case Annotation::Unsafe:
     set.unsafe = true;
     break;
+  case Annotation::Nullable:
+    set.nullable = true;
+    break;
+  case Annotation::NonNull:
+    set.nonNull = true;
+    break;
   case Annotation::Invalid:
     set.invalid = true;
     break;
@@ -60,6 +70,8 @@ void AnnotationSet::merge(const AnnotationSet &other) noexcept {
   mutBorrowed = mutBorrowed || other.mutBorrowed;
   raw = raw || other.raw;
   unsafe = unsafe || other.unsafe;
+  nullable = nullable || other.nullable;
+  nonNull = nonNull || other.nonNull;
   invalid = invalid || other.invalid;
 }
 

@@ -28,6 +28,7 @@
 #include <map>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace weavec::core {
@@ -38,7 +39,14 @@ enum class MoveReason : std::uint8_t {
   Moved,
   /// The resource was released (e.g. `free`).
   Freed,
+  /// The place was declared without an initialiser and nothing has been
+  /// assigned to it yet (RFC 0008, *Uninitialised pointers*). Only locals
+  /// carry this reason; it never reaches a summary.
+  Uninitialized,
 };
+
+/// Stable spelling used in dumps: `moved`, `freed`, `uninitialized`.
+[[nodiscard]] std::string_view toString(MoveReason reason) noexcept;
 
 /// Which element of a summarised array place an access named.
 struct ElementWitness {
@@ -97,6 +105,12 @@ struct MoveRecord {
   /// unknown. Fed into the summary as the effect's family.
   // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
   std::string family = {};
+  /// The consumed value was one this function had itself stored in the
+  /// place on every path since entry (the place was *overwritten*), so the
+  /// record says nothing about the caller's value and never reaches a
+  /// summary (RFC 0008, *Replaced values*). A join with a record that may be
+  /// the caller's clears it.
+  bool ownValue = false;
 
   friend bool operator==(const MoveRecord &, const MoveRecord &) = default;
 };
@@ -114,7 +128,7 @@ public:
   markMoved(PlaceId place, MoveReason reason, SourceLocation location,
             std::optional<PlaceId> via = {},
             ElementWitness element = ElementWitness::whole(),
-            std::string family = {});
+            std::string family = {}, bool ownValue = false);
 
   /// Reinitializes `place`, e.g. after assignment of a fresh value. With a
   /// witness, only a record whose witness matches is erased (an element

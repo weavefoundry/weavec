@@ -18,6 +18,8 @@ void (*get_handler(void))(void *);
 
 int run(void) {
   char *buf = malloc(4);
+  if (!buf)
+    return 0;
   void (*h)(void *) = get_handler();
   h(buf);
   // CHECK: rfc0005-callbacks.c:[[@LINE+1]]:10: error: use of 'buf' after it was freed [weavec::use-after-free]

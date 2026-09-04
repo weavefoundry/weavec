@@ -16,6 +16,8 @@
 #include "clang/AST/PrettyPrinter.h"
 #include "clang/Basic/Version.h"
 
+#include <algorithm>
+#include <optional>
 #include <string>
 #include <utility>
 
@@ -40,6 +42,17 @@ std::optional<std::uint32_t> GlobalNames::find(llvm::StringRef name) const {
 
 llvm::StringRef GlobalNames::nameOf(std::uint32_t id) const {
   return id < names.size() ? llvm::StringRef(names[id]) : "<global>";
+}
+
+bool GlobalNames::extendTo(const GlobalNames &other) {
+  const std::size_t common = std::min(names.size(), other.names.size());
+  if (!std::equal(names.begin(),
+                  names.begin() + static_cast<std::ptrdiff_t>(common),
+                  other.names.begin()))
+    return false;
+  for (std::size_t i = names.size(); i < other.names.size(); ++i)
+    (void)idFor(other.names[i]);
+  return true;
 }
 
 // -- UnitExports --------------------------------------------------------------
@@ -88,9 +101,16 @@ static core::FunctionSummary renumber(const core::FunctionSummary &summary,
 }
 
 void ProgramDatabase::add(const UnitExports &unit) {
+  // Exports already numbered by (a prefix or an extension of) this table
+  // mean the same thing verbatim; renumbering them would rebuild every
+  // summary's maps for nothing.
+  const bool sameNumbering = globalNames.extendTo(unit.globals);
   for (const auto &[name, function] : unit.functions) {
-    const core::FunctionSummary summary =
-        renumber(function.summary, unit.globals, globalNames);
+    std::optional<core::FunctionSummary> renumbered;
+    const core::FunctionSummary &summary =
+        sameNumbering ? function.summary
+                      : renumbered.emplace(renumber(function.summary,
+                                                    unit.globals, globalNames));
     if (function.external) {
       auto [it, inserted] = functions.try_emplace(name, summary);
       if (!inserted)
@@ -103,6 +123,16 @@ void ProgramDatabase::add(const UnitExports &unit) {
         it->second.join(summary);
     }
   }
+}
+
+UnitExports ProgramDatabase::renumbered(const UnitExports &unit) {
+  UnitExports result = unit;
+  if (!globalNames.extendTo(unit.globals)) {
+    for (auto &[name, function] : result.functions)
+      function.summary = renumber(function.summary, unit.globals, globalNames);
+  }
+  result.globals = globalNames;
+  return result;
 }
 
 void ProgramDatabase::clear() {
@@ -174,6 +204,27 @@ static void describe(llvm::raw_ostream &os,
     first = false;
   }
   os << "}";
+  if (!summary.requiresNonNull.empty()) {
+    os << " requires{";
+    first = true;
+    for (const std::uint32_t param : summary.requiresNonNull) {
+      os << (first ? "" : ", ")
+         << core::printSummaryPath(core::SummaryPath::param(param), namer);
+      first = false;
+    }
+    os << "}";
+  }
+  const auto describePaths =
+      [&os, &namer, &first](const char *label,
+                            const std::set<core::SummaryPath> &paths) {
+        os << " " << label << "{";
+        first = true;
+        for (const core::SummaryPath &path : paths) {
+          os << (first ? "" : ", ") << core::printSummaryPath(path, namer);
+          first = false;
+        }
+        os << "}";
+      };
   for (const auto &[outcome, effects] : summary.outcomes) {
     os << " outcome " << core::toString(outcome) << "{";
     first = true;
@@ -184,15 +235,11 @@ static void describe(llvm::raw_ostream &os,
     }
     os << "}";
     if (const auto nulls = summary.nullOn.find(outcome);
-        nulls != summary.nullOn.end()) {
-      os << " null{";
-      first = true;
-      for (const core::SummaryPath &path : nulls->second) {
-        os << (first ? "" : ", ") << core::printSummaryPath(path, namer);
-        first = false;
-      }
-      os << "}";
-    }
+        nulls != summary.nullOn.end())
+      describePaths("null", nulls->second);
+    if (const auto nonNulls = summary.nonNullOn.find(outcome);
+        nonNulls != summary.nonNullOn.end())
+      describePaths("notnull", nonNulls->second);
   }
   os << "\n";
 }

@@ -13,6 +13,8 @@ portable C.
 | `WEAVEC_MUT`      | pointer parameters, returns, variables, fields | Exclusive, mutable borrow.                                               |
 | `WEAVEC_RAW`      | pointer parameters, returns, variables, fields, function-pointer types | No guarantee at all: the checker tracks the pointer but any dereference, release or transfer of ownership must happen inside a `WEAVEC_UNSAFE` region. |
 | `WEAVEC_UNSAFE`   | function declarations, compound statements     | An *unsafe region*: raw operations are permitted and nothing inside is reported, but ownership still flows through it and out of it. |
+| `WEAVEC_NULLABLE` | pointer parameters, returns, variables, fields | The pointer may be null ([RFC 0008](rfcs/0008-pointer-validity.md)). On a parameter: the body must test it before dereferencing it, and callers may pass null. On a return type: callers must test the result. On a variable or field: every load is treated as maybe-null until it is tested. Says nothing about ownership; combine with `WEAVEC_OWNED`/`WEAVEC_BORROWED`/`WEAVEC_MUT` as needed. |
+| `WEAVEC_NONNULL`  | pointer parameters, returns, variables, fields | The pointer is never null ([RFC 0008](rfcs/0008-pointer-validity.md)). On a parameter: callers must pass a pointer the checker knows is non-null, even if the body never dereferences it. On a return type: callers need not test the result. On a variable or field: it is never reported as null. Says nothing about ownership. |
 | `WEAVEC_ENABLED`  | (macro, not an attribute)      | `1` when the TU is being processed by `weavec`, else `0`.                |
 
 Annotations on a function-pointer type describe whatever is called through it
@@ -43,6 +45,9 @@ size_t buffer_len(const struct buffer *WEAVEC_BORROWED b);  /* borrows b    */
 void buffer_push(struct buffer *WEAVEC_MUT b, int v);       /* mutably      */
 
 int *WEAVEC_OWNED p = malloc(sizeof *p);
+
+struct node *WEAVEC_BORROWED WEAVEC_NULLABLE find(int key); /* may return NULL */
+int node_value(const struct node *WEAVEC_BORROWED WEAVEC_NONNULL n);
 ```
 
 For functions, `WEAVEC_UNSAFE` goes before the declaration:
@@ -115,9 +120,12 @@ Every WeaveC diagnostic ends with a stable identifier in brackets, e.g.
 | `unsafe-operation`    | error    | A raw operation outside a `WEAVEC_UNSAFE` region ([RFC 0004](rfcs/0004-unsafe-boundaries.md)): `dereference of raw pointer '<p>' outside an unsafe region`, `'<f>' dereferences raw pointer '<p>' ...` (also `releases`, `takes ownership of`), `raw pointer '<p>' is assigned to '<q>', which is declared WEAVEC_OWNED, outside an unsafe region` (any safe annotation), `raw pointer is returned from a function whose return type is annotated WEAVEC_OWNED outside an unsafe region`, and with `--strict-externs`, `unchecked call to '<f>' outside an unsafe region` / `unchecked call through '<fp>' ...`. Notes: why the pointer is raw (`'<p>' is raw: cast from an integer here`, `declared WEAVEC_RAW here`, `loaded through raw pointer '<q>' here`, `handed out by '<f>' here`, `returned by a call into unchecked code ('<f>') here`, each optionally `(through '<alias>')`) and `move this operation into a WEAVEC_UNSAFE block or function, or assert the pointer's ownership first`. |
 | `mismatched-release`  | error    | A resource is released (or moved into a consuming parameter) by a function of another release family ([RFC 0007](rfcs/0007-resource-lifecycle.md)): `'<p>' is released with 'free' but must be released with 'fclose'`. Both names are family names, the canonical releaser of the allocator (`malloc`/`strdup`/`realloc` → `free`, `fopen` → `fclose`, `opendir` → `closedir`, ...), even when the release went through a wrapper defined in the program. Note: `allocated here`. |
 | `leak`                | warning  | An owned resource is lost without being released, moved or stored where the caller can see it ([RFC 0007](rfcs/0007-resource-lifecycle.md)): `'<p>' is leaked` at the point its last holder goes out of reach (a `return`, a scope end, the statement after its last use); `'<p>' is leaked: it is overwritten without being released` at the assignment; `'<b>->p' is leaked when '<b>' is freed` (also `'*a' is leaked when 'a' is freed`) at the release of a container whose `WEAVEC_OWNED` field, or a field this function stored an owned value into, still owns something; `result of '<f>' is leaked` at a discarded allocating call. Notes: `allocated here`, or `'<p>' is declared WEAVEC_OWNED here` for a parameter or field. Not reported: pointers handed to callees the checker cannot follow or cast to integers (they are *escaped*), resources kept by globals or `static` locals when the function returns, blocks that end in a `noreturn` call, fields of an object this function allocated, and the old block after a failed in-place `realloc`. |
+| `null-dereference`    | error    | A pointer that is null, or may be null, on some path reaching here is dereferenced ([RFC 0008](rfcs/0008-pointer-validity.md)): `dereference of '<p>', which may be null` / `dereference of '<p>', which is null`; or passed to a callee that dereferences its parameter without testing it (a `requires` fact in the callee's summary, or `WEAVEC_NONNULL` on its declaration): `'<p>', which may be null, is passed to '<f>', which dereferences it` (also `which is null`, `a null pointer is passed to '<f>' ...`). The note says why: `'<p>' may be null: it is the result of '<f>' here` (every allocator in the shipped table, every searching function and every function the program defines whose body can return null), `'<p>' may be null: it is set by '<f>' here` (a callee's store), `'<p>' is assigned NULL here`, `'<p>' may be null: it is compared with NULL here` (tested, and the null edge merged back), `'<p>' is declared WEAVEC_NULLABLE here` / `the result of '<f>' is declared WEAVEC_NULLABLE here`; for a call, also `'<f>' is declared here`. Not reported: pointers with no fact (parameters, loaded fields, results of unchecked code), dereferences inside an unsafe region, and a second dereference of the same pointer. |
+| `use-of-uninitialized`| error    | A pointer variable, or a pointer field of a record variable, declared without an initialiser is read, dereferenced, copied or released before it is assigned ([RFC 0008](rfcs/0008-pointer-validity.md)): `use of '<p>' before it was initialized` (also `'<s>.f'`). Note: `'<p>' is declared here`. Any assignment, a callee's store (`init(&p)`), a mutable borrow for a call, `memset` or a whole-object write initialises it; `static` and address-taken variables are not tracked. |
+| `invalid-release`     | error    | A releaser (or a consuming parameter) is handed a pointer that is not the start of a heap allocation ([RFC 0008](rfcs/0008-pointer-validity.md)): `'<p>' is released but points to '<x>', which is not a heap object` (a stack or static variable, an array, a field of one; `'<x>' is released but is not a heap object` when `<p>` is `<x>` itself), `'<p>' is released but points to a string literal`, `'<p>' is released but does not point to the start of its allocation` (`p + 1`, `strchr(p, c)`, `p++`). Notes: `'<x>' is declared here` / `allocated here`. |
 | `annotation-mismatch` | error    | A definition contradicts its own annotation: `'<p>' is annotated WEAVEC_BORROWED but is freed here` (also `WEAVEC_MUT`; also `moved`, `written through`; also `... but '<p>->f' is freed here` for a path under the parameter), `function returns a borrow but its return type is annotated WEAVEC_OWNED`, `function returns a fresh allocation but its return type is annotated WEAVEC_BORROWED` (or `WEAVEC_MUT`). Notes: `'<p>' is annotated here` / `annotated here`; `'<q>' is a copy of '<p>'` when through an alias. Callers keep trusting the annotation. |
 | `annotation-required` | warning  | **On by default:** `call to '<f>' is not checked: it has no definition or ownership annotations here`, once per callee per program (RFC 0005: a definition in any unit analysed together with this one counts; alone, the unit is the program), for a callee with pointer parameters or a pointer result that has no body in the program, no annotations and no libc entry; callees from system headers are exempt. Notes: `'<f>' is declared here`, `annotate its pointer parameters with WEAVEC_OWNED, WEAVEC_BORROWED, WEAVEC_MUT or WEAVEC_RAW, or define it in this program`. Likewise `call through '<fp>' is not checked: its function type has no ownership annotations and no function of that type has its address taken in this program`, once per function-pointer type. With `--strict-externs` these calls are `unsafe-operation` errors instead (at every call site, including callees from system headers), and their pointer result is raw. **With `--report-unannotated`:** every exported (non-`static`) definition additionally gets `pointer parameter '<p>' of '<f>' is inferred WEAVEC_OWNED; add the annotation to its declaration` (or `WEAVEC_BORROWED` / `WEAVEC_MUT`; `return value of '<f>' is inferred ...`) with a fix-it that inserts the annotation, or `pointer parameter '<p>' has no inferable ownership; annotate it with WEAVEC_OWNED, WEAVEC_BORROWED or WEAVEC_MUT` when the body gives no evidence. |
-| `invalid-annotation`  | warning  | A `weavec.*` annotation WeaveC does not recognise.                    |
+| `invalid-annotation`  | warning  | A `weavec.*` annotation WeaveC does not recognise, or `WEAVEC_NULLABLE` and `WEAVEC_NONNULL` on the same declaration. |
 
 The identifiers are defined in `include/weavec/Core/Diagnostic.h`
 (`weavec::core::diag`). Renaming one is a breaking change. The rules behind
@@ -125,8 +133,9 @@ them are specified by [RFC 0001](rfcs/0001-ownership-model.md),
 [RFC 0002](rfcs/0002-intraprocedural-checking.md),
 [RFC 0003](rfcs/0003-signature-inference.md),
 [RFC 0004](rfcs/0004-unsafe-boundaries.md),
-[RFC 0006](rfcs/0006-precision.md) and
-[RFC 0007](rfcs/0007-resource-lifecycle.md).
+[RFC 0006](rfcs/0006-precision.md),
+[RFC 0007](rfcs/0007-resource-lifecycle.md) and
+[RFC 0008](rfcs/0008-pointer-validity.md).
 
 Fix-its are emitted through Clang, so `-fdiagnostics-parseable-fixits` and
 editor integrations that apply Clang fix-its work unchanged:
@@ -203,9 +212,42 @@ buffer.c:12:27: warning: pointer parameter 'b' of 'buffer_free' is inferred WEAV
   free(a.data); b.data[0]` is a use after free.
 - **Effects through parameters**: a callee that frees `b->data`, writes
   `*out`, or stores a fresh allocation into `*out` or a global has that
-  effect at the call site. A callee that re-nulls what it freed
-  (`free(b->data); b->data = NULL;`) leaves the field usable, because the
-  caller's memory is described by the callee's exit state.
+  effect at the call site. A callee that releases a value and then
+  reinitialises the place (`free(b->data); b->data = NULL;`, `v->items =
+  realloc(v->items, n)`) is summarised as `freed,replaced` ([RFC
+  0008](rfcs/0008-pointer-validity.md), *Replaced values*): the place
+  itself is usable afterwards, but every copy of the *old* value the caller
+  kept (`int *old = v->items; grow(v); old[0]`) is dead. Only what happens
+  on a path that returns counts (`free(g); exit(1);` is no effect), and a
+  callee that frees *an element* (`free(history[len])`) says so
+  (`freed,element`): which element is not the caller's to know, so calling
+  it twice is not a `double-free`.
+- **Struct-by-value results** ([RFC 0008](rfcs/0008-pointer-validity.md)):
+  a function that returns a record hands the caller its pointer fields
+  (`stores{result.data = fresh(free)}`), so `struct buf b = make(); ...`
+  owns `b.data` and must release it.
+- **Nullness** ([RFC 0008](rfcs/0008-pointer-validity.md)): the checker
+  knows when a pointer is null (`p = NULL`) or may be null (the result of
+  `malloc`, `strchr`, `fopen`, `getenv`, ... or of any function in the
+  program that can return null; a pointer compared with null whose null
+  edge merged back). Dereferencing it, or passing it to a callee whose body
+  dereferences the parameter without testing it, is a `null-dereference`.
+  Every test idiom clears the fact on the non-null edge (`if (!p) return;`,
+  `if (p && p->x)`, `p ? p->x : 0`, `while ((q = f()) != NULL)`,
+  `__builtin_expect`), for the pointer and its copies; a callee's outcome
+  does too (`if (!make(&p)) return -1; p[0]` is clean when `make` returns
+  `*out != NULL`). Pointers the checker knows nothing about (parameters,
+  loaded fields, results of unchecked code) are trusted; `WEAVEC_NULLABLE`
+  and `WEAVEC_NONNULL` say otherwise. Summaries record which parameters a
+  function requires non-null (`requires{s}`) and the classes on which an
+  out-parameter is non-null (`notnull{*out}`).
+- **Uninitialised pointers** ([RFC 0008](rfcs/0008-pointer-validity.md)):
+  `char *p;` and the pointer fields of `struct buf b;` hold nothing until
+  they are assigned; using them first is a `use-of-uninitialized`.
+- **Invalid releases** ([RFC 0008](rfcs/0008-pointer-validity.md)):
+  `free` (or any releaser, or a consuming parameter) of a pointer to a
+  stack or static object, a string literal, or the middle of an allocation
+  (`p + 1`, the result of `strchr`) is an `invalid-release`.
 - **Result provenance**: a callee that returns one of its arguments or a
   pointer into one (`strchr`, `next_of(n)`, `&n->v`) makes the result an
   alias or a borrow of that argument in the caller, so freeing the argument
@@ -268,8 +310,8 @@ buffer.c:12:27: warning: pointer parameter 'b' of 'buffer_free' is inferred WEAV
 
 `weavec --dump-analysis file.c -- <flags>` prints the inferred places,
 lifetimes, exit state (including which places hold raw pointers, and why,
-and which hold an owned resource, with its release family) and summary of
-every analysed function; with `--whole-program` it ends with
+which hold an owned resource, with its release family, and which are null,
+maybe-null or known non-null) and summary of every analysed function; with `--whole-program` it ends with
 the program database (every exported summary). `weavec-cc` writes each
 unit's exported summaries to `<object>.weavec` in the same text form.
 
@@ -279,7 +321,7 @@ unit's exported summaries to `<object>.weavec` in the same text form.
 
 | Flag                          | Effect                                                                                            |
 | ----------------------------- | ------------------------------------------------------------------------------------------------- |
-| `-Wno-weavec-<id>`            | Disable a diagnostic whose default severity is *warning* (`annotation-required`, `invalid-annotation`, `leak`). Refused for an error. |
+| `-Wno-weavec-<id>`            | Disable a diagnostic whose default severity is *warning* (`annotation-required`, `invalid-annotation`, `leak`). Refused for an error (including `null-dereference`, `use-of-uninitialized` and `invalid-release`; lower those with `-Wno-error=`). |
 | `-Wweavec-<id>`               | Re-enable it.                                                                                     |
 | `-Wno-error=weavec-<id>`      | Report an error as a warning (the migration path for a codebase that wants to build while it works through the reports). |
 | `-Werror=weavec-<id>`         | Report a warning as an error.                                                                     |
