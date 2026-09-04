@@ -53,15 +53,26 @@ inline constexpr std::string_view Leak = "leak";
 /// RFC 0007: a resource released (or moved into a consuming parameter) by a
 /// function of a different release family than the one that produced it.
 inline constexpr std::string_view MismatchedRelease = "mismatched-release";
+/// RFC 0008: a dereference of a pointer that is, or may be, null; or such a
+/// pointer passed to a callee that dereferences its parameter.
+inline constexpr std::string_view NullDereference = "null-dereference";
+/// RFC 0008: a read of a pointer variable or a pointer field of a local
+/// record before any assignment reaches it.
+inline constexpr std::string_view UseOfUninitialized = "use-of-uninitialized";
+/// RFC 0008: a release (or a move into an owning parameter) of a value that
+/// is not the start of a heap allocation: borrowed storage, a string
+/// literal, an interior pointer.
+inline constexpr std::string_view InvalidRelease = "invalid-release";
 
 /// Every id, for validating user input (`-Wweavec-<id>`).
-inline constexpr std::array<std::string_view, 11> All{
+inline constexpr std::array<std::string_view, 14> All{
     UseAfterFree,       DoubleFree,
     UseAfterMove,       ConflictingBorrow,
     LifetimeTooShort,   UnsafeOperation,
     AnnotationRequired, AnnotationMismatch,
     InvalidAnnotation,  Leak,
-    MismatchedRelease,
+    MismatchedRelease,  NullDereference,
+    UseOfUninitialized, InvalidRelease,
 };
 
 [[nodiscard]] constexpr bool isKnown(std::string_view id) noexcept {

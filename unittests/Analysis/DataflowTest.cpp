@@ -223,7 +223,7 @@ TEST(Dataflow, FreeingAnObjectKillsItsAliases) {
   const auto result = analyze(R"c(
     struct ctx { char *buf; int n; };
     void f(void) {
-      struct ctx *c = malloc(sizeof *c);
+      struct ctx *c = malloc(sizeof *c); if (!c) return;
       c->buf = malloc(4);
       struct ctx *d = c;
       free(d->buf);
@@ -733,7 +733,7 @@ TEST(Dataflow, FreeingABorrowedObjectConflicts) {
   const auto result = analyze(R"c(
     struct node { int v; };
     void f(void) {
-      struct node *n = malloc(sizeof *n);
+      struct node *n = malloc(sizeof *n); if (!n) return;
       int *a = &n->v;
       free(n);
       use(a);
@@ -1076,8 +1076,12 @@ TEST(Dataflow, PointerArithmeticPreservesIdentity) {
     }
   )c");
   ASSERT_TRUE(result.ast);
+  // After `p++`, `p` no longer names the start of the block (RFC 0008,
+  // *Invalid releases*).
   EXPECT_EQ(messages(result.diagnostics),
-            Strings{"6: use of 'q' after it was freed"});
+            (Strings{"6: use of 'q' after it was freed",
+                     "11: 'p' is released but does not point to the start of "
+                     "its allocation"}));
   EXPECT_EQ(notes(result.diagnostics, 0), Strings{"freed here (through 'p')"});
 }
 
@@ -1112,13 +1116,17 @@ TEST(Dataflow, SelfAssignmentKeepsEveryFact) {
     }
   )c");
   ASSERT_TRUE(result.ast);
+  // `cur = cur + 1` also makes `cur` interior to the block it owns (RFC
+  // 0008, *Invalid releases*).
   EXPECT_EQ(
       messages(result.diagnostics),
-      (Strings{"7: use of 'head' after it was freed",
+      (Strings{"6: 'cur' is released but does not point to the start of its "
+               "allocation",
+               "7: use of 'head' after it was freed",
                "13: use of 'head' after it was freed",
                "19: use of 'head' after it was freed",
                "24: dereference of raw pointer 'r' outside an unsafe region"}));
-  EXPECT_EQ(notes(result.diagnostics, 3)[0],
+  EXPECT_EQ(notes(result.diagnostics, 4)[0],
             "'r' is raw: cast from an integer here");
 }
 
@@ -1515,7 +1523,8 @@ TEST(Dataflow, AssignmentInsideAPointerTestNamesItsLeftSide) {
                      "23: use of 'sentinel' after it was freed"}));
   const core::FunctionSummary *feed = result.summary("feed");
   ASSERT_NE(feed, nullptr);
-  EXPECT_EQ(feed->returns.size(), 2U) << "fresh or a copy of the global";
+  EXPECT_EQ(feed->returns.size(), 3U)
+      << "fresh, null (malloc may fail) or a copy of the global";
 }
 
 TEST(Dataflow, OutcomeTestsSelectClasses) {
@@ -1646,13 +1655,16 @@ TEST(Dataflow, WrittenObjectsForgetTheirSubobjects) {
   ASSERT_TRUE(result.ast);
   EXPECT_EQ(messages(result.diagnostics),
             (Strings{"19: use of 'root->string' after it was freed"}));
+  // RFC 0008, *Replaced values*: the release happened, and the object was
+  // overwritten afterwards on every path, so the caller's own field is
+  // `replaced` (only its other names for the old value are dead).
   const core::FunctionSummary *replace = result.summary("replace");
   ASSERT_NE(replace, nullptr);
   const core::SummaryPath stringPath =
       core::SummaryPath::param(0).deref().field("string");
-  const auto it = replace->effects.find(stringPath);
-  EXPECT_TRUE(it == replace->effects.end() || !it->second.freed)
-      << "the exit state no longer has the freed record";
+  const core::PlaceEffect effect = replace->effectOf(stringPath);
+  EXPECT_TRUE(effect.freed);
+  EXPECT_TRUE(effect.replaced);
 }
 
 // A summary's written paths are looked up in order, sharing roots and

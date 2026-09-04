@@ -418,12 +418,16 @@ TEST(Builtins, Entries) {
   ASSERT_NE(fcloseSummary, nullptr);
   EXPECT_TRUE(fcloseSummary->frees(0));
 
+  // RFC 0008, *Nullness*: a pointer into an argument may also be null (not
+  // found); a whole-argument copy (`memcpy`) is exactly the argument.
   const auto *strchrSummary = builtinSummary(*parsed.fn("strchr"));
   ASSERT_NE(strchrSummary, nullptr);
   EXPECT_EQ(
       strchrSummary->returns,
-      std::set<ValueSource>{ValueSource::interiorCopy(SummaryPath::param(0))});
+      (std::set<ValueSource>{ValueSource::interiorCopy(SummaryPath::param(0)),
+                             ValueSource::null()}));
   EXPECT_EQ(strchrSummary->borrowKind(0), core::BorrowKind::Shared);
+  EXPECT_TRUE(strchrSummary->requiresParam(0)) << "reads through it";
 
   const auto *memcpySummary = builtinSummary(*parsed.fn("memcpy"));
   ASSERT_NE(memcpySummary, nullptr);
@@ -439,6 +443,8 @@ TEST(Builtins, Entries) {
   EXPECT_EQ(strtolSummary->stores.begin()->dest, SummaryPath::param(1).deref());
   EXPECT_EQ(strtolSummary->stores.begin()->value,
             ValueSource::interiorCopy(SummaryPath::param(0)));
+  EXPECT_TRUE(strtolSummary->requiresParam(0));
+  EXPECT_FALSE(strtolSummary->requiresParam(1)) << "`endptr` may be null";
 
   const auto *strlenSummary = builtinSummary(*parsed.fn("strlen"));
   ASSERT_NE(strlenSummary, nullptr);
@@ -449,7 +455,8 @@ TEST(Builtins, Entries) {
   ASSERT_NE(bsearchSummary, nullptr);
   EXPECT_EQ(
       bsearchSummary->returns,
-      std::set<ValueSource>{ValueSource::interiorCopy(SummaryPath::param(1))});
+      (std::set<ValueSource>{ValueSource::interiorCopy(SummaryPath::param(1)),
+                             ValueSource::null()}));
 
   const auto *getenvSummary = builtinSummary(*parsed.fn("getenv"));
   ASSERT_NE(getenvSummary, nullptr);
@@ -558,8 +565,9 @@ TEST(Builtins, PosixEntries) {
   EXPECT_TRUE(builtinSummary(*parsed.fn("closedir"))->frees(0));
   EXPECT_EQ(
       builtinSummary(*parsed.fn("readdir"))->returns,
-      std::set<ValueSource>{ValueSource::interiorCopy(SummaryPath::param(0))})
-      << "the entry lives in the stream";
+      (std::set<ValueSource>{ValueSource::interiorCopy(SummaryPath::param(0)),
+                             ValueSource::null()}))
+      << "the entry lives in the stream; null at the end";
   EXPECT_TRUE(builtinSummary(*parsed.fn("mmap"))
                   ->returns.contains(ValueSource::fresh("munmap")));
   EXPECT_TRUE(builtinSummary(*parsed.fn("munmap"))->frees(0));
@@ -578,11 +586,17 @@ TEST(Builtins, PosixEntries) {
   ASSERT_NE(strtokSummary, nullptr);
   EXPECT_EQ(
       strtokSummary->returns,
-      std::set<ValueSource>{ValueSource::interiorCopy(SummaryPath::param(0))});
+      (std::set<ValueSource>{ValueSource::interiorCopy(SummaryPath::param(0)),
+                             ValueSource::null()}));
   EXPECT_EQ(strtokSummary->stores.begin()->dest, SummaryPath::param(2).deref());
+  EXPECT_FALSE(strtokSummary->requiresParam(0))
+      << "a null first argument continues the previous string";
 
+  // Returns its buffer argument, or null on failure (RFC 0008, table
+  // nullability).
   EXPECT_EQ(builtinSummary(*parsed.fn("localtime_r"))->returns,
-            std::set<ValueSource>{ValueSource::copy(SummaryPath::param(1))});
+            (std::set<ValueSource>{ValueSource::copy(SummaryPath::param(1)),
+                                   ValueSource::null()}));
   EXPECT_TRUE(builtinSummary(*parsed.fn("localtime"))->returns.empty())
       << "static storage: unknown";
 

@@ -4,6 +4,8 @@
 
 void alloc_use_free(void) {
   int *p = malloc(sizeof(int));
+  if (!p)
+    return;
   *p = 1;
   use(p);
   free(p);

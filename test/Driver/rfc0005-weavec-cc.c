@@ -33,7 +33,7 @@
 #include "../Inputs/prelude.h"
 #include "node.h"
 
-// SIDECAR: weavec-summaries 3
+// SIDECAR: weavec-summaries 4
 // SIDECAR: source {{.*}}node.c
 // SIDECAR: cwd {{.+}}
 // SIDECAR: arg -triple
@@ -48,15 +48,18 @@
 // SIDECAR: function node_new external plain struct node *(void)
 // SIDECAR-NEXT: summary
 // SIDECAR-NEXT:   return fresh(free)
+// SIDECAR-NEXT:   return null
 // SIDECAR-NEXT: end
 // SIDECAR: function node_set_name external plain void (struct node *, char *)
 // SIDECAR-NEXT: summary
-// SIDECAR-NEXT:   effect param 0 *.name written
+// SIDECAR-NEXT:   effect param 0 *.name written,freed(free),replaced
 // SIDECAR-NEXT:   store param 0 *.name copy param 1
+// SIDECAR-NEXT:   requires 0
 // SIDECAR-NEXT: end
 // SIDECAR: function node_vp external plain int *(struct node *)
 // SIDECAR-NEXT: summary
 // SIDECAR-NEXT:   return borrow param 0 *.v
+// SIDECAR-NEXT:   requires 0
 // SIDECAR-NEXT: end
 
 // MAIN: import node_free
@@ -85,6 +88,8 @@ int main(void) {
 #else
 int main(void) {
   struct node *n = node_new();
+  if (!n)
+    return 1;
   int *p = node_vp(n);
   // LINK: rfc0005-weavec-cc.c:[[@LINE+1]]:3: error: cannot free 'n' while it is borrowed [weavec::conflicting-borrow]
   node_free(n);

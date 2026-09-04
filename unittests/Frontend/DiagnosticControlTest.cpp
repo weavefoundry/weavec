@@ -221,7 +221,14 @@ TEST(DiagnosticIds, DefaultSeverities) {
   EXPECT_FALSE(core::diag::isWarningByDefault(core::diag::MismatchedRelease));
   EXPECT_TRUE(core::diag::isKnown("leak"));
   EXPECT_TRUE(core::diag::isKnown("mismatched-release"));
-  EXPECT_EQ(core::diag::All.size(), 11U);
+  // RFC 0008: all three pointer-validity ids are errors.
+  EXPECT_FALSE(core::diag::isWarningByDefault(core::diag::NullDereference));
+  EXPECT_FALSE(core::diag::isWarningByDefault(core::diag::UseOfUninitialized));
+  EXPECT_FALSE(core::diag::isWarningByDefault(core::diag::InvalidRelease));
+  EXPECT_TRUE(core::diag::isKnown("null-dereference"));
+  EXPECT_TRUE(core::diag::isKnown("use-of-uninitialized"));
+  EXPECT_TRUE(core::diag::isKnown("invalid-release"));
+  EXPECT_EQ(core::diag::All.size(), 14U);
 }
 
 } // namespace

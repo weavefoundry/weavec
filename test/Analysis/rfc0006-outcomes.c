@@ -85,7 +85,7 @@ static char *resize(struct table *t, size_t n) {
   return realloc(t->array, n);
 }
 // DUMP: function 'resize':
-// DUMP: summary: t->array: read|moved(free); t->n: read; stores{} returns{fresh(free), copy t->array, null} outcome null{} outcome nonnull{t->array: moved(free)}
+// DUMP: summary: t->array: read|moved(free); t->n: read; stores{} returns{fresh(free), copy t->array, null} requires{t} outcome null{} outcome nonnull{t->array: moved(free)}
 
 void resized(struct table *t, size_t n) {
   char *na = resize(t, n);

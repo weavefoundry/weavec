@@ -55,6 +55,8 @@ void write_while_borrowed(void) {
 
 void free_while_borrowed(void) {
   struct node *n = malloc(sizeof *n);
+  if (!n)
+    return;
   int *a = &n->v;
   // CHECK: rfc0002-borrows.c:[[@LINE+1]]:3: error: cannot free 'n' while it is borrowed [weavec::conflicting-borrow]
   free(n);

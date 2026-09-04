@@ -585,7 +585,7 @@ TEST(ResourceLifecycle, ListBuildingLoopIsClean) {
       for (i = 0; a && i < count; i++) {
         n = create();
         if (!n) return a;
-        if (!i) a->child = n; else link(p, n);
+        if (!p) a->child = n; else link(p, n);
         p = n;
       }
       return a;
@@ -595,6 +595,54 @@ TEST(ResourceLifecycle, ListBuildingLoopIsClean) {
   // Path-insensitively `a->child = n` runs every iteration; the previous
   // node is still referenced from the list, through a pointer the analysis
   // has since forgotten (RFC 0007, *Escape*).
+  EXPECT_TRUE(result.diagnostics.empty()) << messages(result.diagnostics)[0];
+}
+
+TEST(ResourceLifecycle, AnEscapedAliasMeansTheResourceEscaped) {
+  // zlib's `gz_fetch`: `state->x.next = state->out` is done again after a
+  // callee nobody can see took `state->out`. The one allocation escaped
+  // through the alias; overwriting the other name loses nothing (RFC 0007,
+  // *Escape*).
+  const auto result = analyze(R"c(
+    struct st { char *out; char *next; };
+    void keep(char *p);
+    void g(struct st *s, int c) {
+      s->out = malloc(8);
+      s->next = s->out;
+      if (c) keep(s->out);
+      s->next = s->out;
+    }
+  )c");
+  ASSERT_TRUE(result.ast);
+  EXPECT_EQ(messages(result.diagnostics),
+            (Strings{"7: call to 'keep' is not checked: it has no definition "
+                     "or ownership annotations here"}));
+}
+
+TEST(ResourceLifecycle, AFreedElementDoesNotReleaseWhatAnotherElementHolds) {
+  // linenoise's history: `free(history[0])` leaves a record on `*history`
+  // witnessed by element 0; the store to `history[len]` is a different
+  // element, so the alias keeps `linecopy` (RFC 0006, *Element witnesses*).
+  const auto result = analyze(R"c(
+    static char **history;
+    static int history_len;
+    int add(const char *line) {
+      char *linecopy = strdup(line);
+      if (!linecopy) return 0;
+      free(history[0]);
+      history[history_len] = linecopy;
+      history_len++;
+      return 1;
+    }
+    int add_first(const char *line) {
+      char *linecopy = strdup(line);
+      if (!linecopy) return 0;
+      free(history[0]);
+      history[0] = linecopy;
+      return 1;
+    }
+  )c");
+  ASSERT_TRUE(result.ast);
   EXPECT_TRUE(result.diagnostics.empty()) << messages(result.diagnostics)[0];
 }
 

@@ -42,6 +42,28 @@ bool FunctionAnalyzer::analyze(const FunctionDecl &function,
         .fixits = {},
     });
   }
+  // `WEAVEC_NULLABLE` and `WEAVEC_NONNULL` on one declaration contradict
+  // each other (RFC 0008, *Annotation surface*).
+  if (emitDiagnostics) {
+    const auto reportContradiction = [&](const NamedDecl &decl) {
+      sink.report(core::Diagnostic{
+          .severity = core::Severity::Warning,
+          .id = core::diag::InvalidAnnotation,
+          .message = "'" + decl.getNameAsString() +
+                     "' is declared both WEAVEC_NULLABLE and WEAVEC_NONNULL",
+          .location = toCoreLocation(sm, decl.getLocation()),
+          .notes = {},
+          .fixits = {},
+      });
+    };
+    if (annotations.nullable && annotations.nonNull)
+      reportContradiction(function);
+    for (const ParmVarDecl *param : function.parameters()) {
+      const AnnotationSet onParam = getAnnotations(*param);
+      if (onParam.nullable && onParam.nonNull)
+        reportContradiction(*param);
+    }
+  }
   // A `WEAVEC_UNSAFE` function is analysed like any other so its callers see
   // what it does; the dataflow itself suppresses reports inside it (RFC
   // 0004, *Unsafe regions*).

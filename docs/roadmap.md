@@ -151,6 +151,36 @@ Design: [RFC 0007 — Resource lifecycle](rfcs/0007-resource-lifecycle.md)
       or a family attribute), so annotated APIs get the mismatch check too.
 - [ ] Corpus triage of the new `leak` reports; leak rate as a tracked metric.
 
+## Milestone 7 — Pointer validity (in progress)
+
+Design: [RFC 0008 — Pointer validity](rfcs/0008-pointer-validity.md)
+(Accepted).
+
+- [x] Replaced values: consumption of a caller-visible path is recorded as
+      it happens (`freed,replaced`), so a caller's copy of a value the callee
+      released and reinitialised is dead (the `vec_grow` hole).
+- [x] Struct-by-value results: the `result` summary root carries the pointer
+      fields of a returned record to the caller.
+- [x] `NullTracker` in the state; `null-dereference` (error) for
+      dereferences and for arguments to callees that require non-null;
+      `requires{...}` and `notnull{...}` in summaries; nullability of every
+      shipped table entry; `WEAVEC_NULLABLE` / `WEAVEC_NONNULL` (summary
+      format v4, sidecar v4).
+- [x] `use-of-uninitialized` (error) for pointer locals and the pointer
+      fields of record locals.
+- [x] `invalid-release` (error) for stack and static objects, string
+      literals and interior pointers.
+- [ ] Nullness through struct fields across calls (a callee that nulls
+      `b->data` and a caller that dereferences it) beyond the per-outcome
+      `null{...}`/`notnull{...}` facts.
+- [ ] Integer-correlated tests (`if (n > 0) p = malloc(n); ... if (n > 0)
+      *p`): currently a `null-dereference`, by design.
+- [ ] Corpus triage of the new reports; null-dereference rate as a tracked
+      metric.
+- [ ] The consume fan-out at calls (`doConsume` over a path, its mirrors and
+      their aliases, once per call site) that dominates Lua's `luaV_execute`
+      since *Replaced values* (RFC 0008, *Performance*).
+
 ## Ongoing
 
 - Corpus testing against real C projects (`scripts/corpus.py`; false-positive

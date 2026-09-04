@@ -276,6 +276,103 @@ TEST(SummaryIO, SkipsUnknownLinesAndBlankLines) {
   EXPECT_TRUE(parsed->frees(0));
 }
 
+// RFC 0008, *Summary text format* (version 4): the `replaced` flag, the
+// `result` root, `notnull <class> <path>` and `requires <index>`.
+TEST(SummaryIO, PrintsAndParsesPointerValidityFacts) {
+  FunctionSummary s;
+  s.addEffect(
+      SummaryPath::param(0).deref().field("buf"),
+      PlaceEffect{
+          .written = true, .freed = true, .replaced = true, .family = "free"});
+  s.addEffect(SummaryPath::global(0).deref(),
+              PlaceEffect{.freed = true, .element = true, .family = "free"});
+  s.addStore(Store{.dest = SummaryPath::param(0).deref().field("buf"),
+                   .value = ValueSource::fresh("free")});
+  s.addStore(Store{.dest = SummaryPath::result().field("name"),
+                   .value = ValueSource::copy(SummaryPath::param(1))});
+  s.addOutcome(Outcome::Zero);
+  s.addOutcome(Outcome::Negative);
+  s.nonNullOn[Outcome::Zero].insert(SummaryPath::param(2).deref());
+  s.requiresNonNull.insert(0);
+  s.requiresNonNull.insert(2);
+
+  const std::string text = printSummary(s, Names);
+  EXPECT_EQ(text, "summary\n"
+                  "  effect param 0 *.buf written,freed(free),replaced\n"
+                  "  effect global g_buf * freed(free),element\n"
+                  "  store param 0 *.buf fresh(free)\n"
+                  "  store result .name copy param 1\n"
+                  "  outcome zero\n"
+                  "  outcome negative\n"
+                  "  notnull zero param 2 *\n"
+                  "  requires 0\n"
+                  "  requires 2\n"
+                  "end\n");
+  std::string error;
+  const auto parsed = parseSummary(text, ResolveAll, &error);
+  ASSERT_TRUE(parsed) << error;
+  EXPECT_EQ(*parsed, s);
+  EXPECT_TRUE(parsed->requiresParam(0));
+  EXPECT_FALSE(parsed->requiresParam(1));
+  EXPECT_TRUE(parsed->requiresParam(2));
+  EXPECT_TRUE(
+      parsed->effectOf(SummaryPath::param(0).deref().field("buf")).replaced);
+  EXPECT_TRUE(parsed->effectOf(SummaryPath::global(0).deref()).element);
+  EXPECT_TRUE(parsed->storesTo(SummaryPath::result().field("name")));
+}
+
+TEST(SummaryIO, SpellsTheResultRoot) {
+  EXPECT_EQ(printSummaryPath(SummaryPath::result(), Names), "result");
+  EXPECT_EQ(printSummaryPath(SummaryPath::result().field("p").deref(), Names),
+            "result .p*");
+  EXPECT_TRUE(SummaryPath::result().isResult());
+  EXPECT_FALSE(SummaryPath::result().isParam());
+  EXPECT_FALSE(SummaryPath::result().isGlobal());
+  EXPECT_FALSE(SummaryPath::param(0).isResult());
+}
+
+TEST(SummaryIO, ReplacedQualifiesAConsumeOnly) {
+  std::string error;
+  EXPECT_FALSE(parseSummary("summary\n  effect param 0 replaced\nend\n",
+                            ResolveAll, &error))
+      << "alone it describes nothing";
+  EXPECT_FALSE(parseSummary("summary\n  effect param 0 written,replaced\nend\n",
+                            ResolveAll, &error));
+  const auto moved = parseSummary(
+      "summary\n  effect param 0 moved(free),replaced\nend\n", ResolveAll);
+  ASSERT_TRUE(moved);
+  EXPECT_TRUE(moved->effectOf(SummaryPath::param(0)).replaced);
+  // A version-3 record without the flag: not replaced.
+  const auto plain =
+      parseSummary("summary\n  effect param 0 freed(free)\nend\n", ResolveAll);
+  ASSERT_TRUE(plain);
+  EXPECT_FALSE(plain->effectOf(SummaryPath::param(0)).replaced);
+  // So does `element` (RFC 0008, *Element consumes*).
+  EXPECT_FALSE(parseSummary("summary\n  effect global g_buf * element\nend\n",
+                            ResolveAll, &error));
+  EXPECT_FALSE(
+      parseSummary("summary\n  effect global g_buf * read,element\nend\n",
+                   ResolveAll, &error));
+  const auto element = parseSummary(
+      "summary\n  effect global g_buf * freed,element\nend\n", ResolveAll);
+  ASSERT_TRUE(element);
+  EXPECT_TRUE(element->effectOf(SummaryPath::global(0).deref()).element);
+  EXPECT_FALSE(plain->effectOf(SummaryPath::param(0)).element);
+}
+
+TEST(SummaryIO, RejectsMalformedPointerValidityLines) {
+  std::string error;
+  EXPECT_FALSE(parseSummary("summary\n  requires\nend\n", ResolveAll, &error));
+  EXPECT_FALSE(
+      parseSummary("summary\n  requires x\nend\n", ResolveAll, &error));
+  EXPECT_FALSE(
+      parseSummary("summary\n  requires 1x\nend\n", ResolveAll, &error));
+  EXPECT_FALSE(parseSummary("summary\n  notnull maybe param 0\nend\n",
+                            ResolveAll, &error));
+  EXPECT_FALSE(
+      parseSummary("summary\n  notnull zero\nend\n", ResolveAll, &error));
+}
+
 TEST(SummaryIO, RejectsMalformedRecords) {
   std::string error;
   EXPECT_FALSE(parseSummary("", ResolveAll, &error));

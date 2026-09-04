@@ -4,6 +4,7 @@ weavec_add_unittest(
           AnnotationsTest.cpp
           DataflowTest.cpp
           FunctionAnalysisTest.cpp
+          PointerValidityTest.cpp
           ProgramDatabaseTest.cpp
           ResourceLifecycleTest.cpp
           SignatureInferenceTest.cpp

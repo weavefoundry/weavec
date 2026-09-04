@@ -12,7 +12,7 @@
 #include "handle.h"
 
 // DUMP: function 'log_close': param 0: freed(fclose); stores{} returns{}
-// DUMP: function 'log_open': param 0 *: read; stores{} returns{fresh(fclose)}
+// DUMP: function 'log_open': param 0 *: read; stores{} returns{fresh(fclose), null} requires{param 0}
 // DUMP: function 'xfree': param 0: freed(free); stores{} returns{}
 
 void wrong_family(const char *path) {

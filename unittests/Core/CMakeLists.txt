@@ -6,6 +6,7 @@ weavec_add_unittest(
           DiagnosticTest.cpp
           LifetimeTest.cpp
           MovesTest.cpp
+          NullnessTest.cpp
           OwnershipTest.cpp
           PlaceTest.cpp
           RawTest.cpp

@@ -67,7 +67,11 @@ TEST(SignatureInference, AllocatingWrapperReturnsFresh) {
   ASSERT_TRUE(result.ast);
   const core::FunctionSummary *s = result.summary("node_new");
   ASSERT_NE(s, nullptr);
-  EXPECT_EQ(s->returns, std::set<ValueSource>{ValueSource::fresh("free")});
+  // `malloc` may fail and the null path merges back before the return, so
+  // the wrapper may return null too (RFC 0008, *Nullness*).
+  EXPECT_EQ(s->returns, (std::set<ValueSource>{ValueSource::fresh("free"),
+                                               ValueSource::null()}));
+  EXPECT_TRUE(s->mayReturnNull());
   EXPECT_EQ(s->inferredReturnKind(), core::OwnershipKind::Owned);
 
   const core::FunctionSummary *m = result.summary("maybe");
@@ -113,9 +117,12 @@ TEST(SignatureInference, StoresThroughParameters) {
 
   const core::FunctionSummary *init = result.summary("buf_init");
   ASSERT_NE(init, nullptr);
-  EXPECT_EQ(init->stores, (std::set<core::Store>{core::Store{
-                              .dest = b.deref().field("data"),
-                              .value = ValueSource::fresh("free")}}));
+  // An unchecked `malloc` result: the store may be fresh or null (RFC 0008).
+  EXPECT_EQ(init->stores, (std::set<core::Store>{
+                              core::Store{.dest = b.deref().field("data"),
+                                          .value = ValueSource::fresh("free")},
+                              core::Store{.dest = b.deref().field("data"),
+                                          .value = ValueSource::null()}}));
   EXPECT_EQ(init->borrowKind(0), core::BorrowKind::Mutable);
   EXPECT_TRUE(init->effectOf(b.deref().field("len")).written);
 
@@ -150,8 +157,9 @@ TEST(SignatureInference, EscapesIntoGlobals) {
 
   const core::FunctionSummary *keepAlloc = result.summary("keep_alloc");
   ASSERT_NE(keepAlloc, nullptr);
-  ASSERT_EQ(keepAlloc->stores.size(), 1U);
+  ASSERT_EQ(keepAlloc->stores.size(), 2U) << "fresh, or null when malloc fails";
   EXPECT_EQ(keepAlloc->stores.begin()->value, ValueSource::fresh("free"));
+  EXPECT_EQ(std::next(keepAlloc->stores.begin())->value, ValueSource::null());
 
   const core::FunctionSummary *drop = result.summary("drop");
   ASSERT_NE(drop, nullptr);
@@ -159,10 +167,13 @@ TEST(SignatureInference, EscapesIntoGlobals) {
   EXPECT_EQ(drop->effects.begin()->first.root, core::SummaryRoot::Global);
   EXPECT_TRUE(drop->effects.begin()->second.freed);
 
-  // Re-nulling a global is visible to the caller: not freed at exit.
+  // Re-nulling a global: the caller's copies of the old value are dead, the
+  // global itself holds the stored null (RFC 0008, *Replaced values*).
   const core::FunctionSummary *dropNull = result.summary("drop_null");
   ASSERT_NE(dropNull, nullptr);
-  EXPECT_TRUE(dropNull->effects.empty());
+  ASSERT_EQ(dropNull->effects.size(), 1U);
+  EXPECT_TRUE(dropNull->effects.begin()->second.freed);
+  EXPECT_TRUE(dropNull->effects.begin()->second.replaced);
   ASSERT_EQ(dropNull->stores.size(), 1U);
   EXPECT_EQ(dropNull->stores.begin()->value, ValueSource::null());
 }
@@ -171,25 +182,41 @@ TEST(SignatureInference, ExitStateVersusEvents) {
   const auto result = analyze(std::string(Types) + R"c(
     static void destroy(struct buf *b) { free(b->data); b->data = NULL; }
     static void destroy_raw(struct buf *b) { free(b->data); }
+    static void destroy_maybe(struct buf *b, int c) {
+      free(b->data);
+      if (c) b->data = NULL;
+    }
+    static void own_then_free(struct buf *b) { b->data = malloc(8); free(b->data); }
     static void free_and_null(char *p) { free(p); p = NULL; }
     static void repoint(struct node *p) { p = p->next; free(p->next); }
   )c");
   ASSERT_TRUE(result.ast);
   const SummaryPath data = SummaryPath::param(0).deref().field("data");
 
-  // Caller memory: the exit state governs, so the re-nulled field is stored,
-  // not freed.
+  // Caller memory (RFC 0008, *Replaced values*): the release is recorded as
+  // it happened; the re-nulled field is `replaced`, since at no return does
+  // it still hold the freed value.
   const core::FunctionSummary *destroy = result.summary("destroy");
   ASSERT_NE(destroy, nullptr);
-  EXPECT_FALSE(destroy->effectOf(data).freed);
+  EXPECT_TRUE(destroy->effectOf(data).freed);
+  EXPECT_TRUE(destroy->effectOf(data).replaced);
   EXPECT_TRUE(destroy->stores.contains(
       core::Store{.dest = data, .value = ValueSource::null()}));
   EXPECT_TRUE(result.summary("destroy_raw")->effectOf(data).freed);
+  EXPECT_FALSE(result.summary("destroy_raw")->effectOf(data).replaced);
+  // Re-nulled on one path only: the caller's place may still hold it.
+  EXPECT_TRUE(result.summary("destroy_maybe")->effectOf(data).freed);
+  EXPECT_FALSE(result.summary("destroy_maybe")->effectOf(data).replaced);
+  // A value this function stored there itself is not the caller's.
+  EXPECT_FALSE(result.summary("own_then_free")->effectOf(data).consumed());
+  EXPECT_TRUE(result.summary("own_then_free")->effectOf(data).written);
 
-  // The parameter variable is the callee's own: events govern.
+  // The parameter variable is the callee's own: events govern, and the
+  // reassignment is never `replaced`.
   const core::FunctionSummary *fan = result.summary("free_and_null");
   ASSERT_NE(fan, nullptr);
   EXPECT_TRUE(fan->frees(0));
+  EXPECT_FALSE(fan->effectOf(SummaryPath::param(0)).replaced);
 
   // A re-pointed parameter falls back to events for its sub-paths.
   const core::FunctionSummary *repoint = result.summary("repoint");
@@ -223,8 +250,10 @@ TEST(SignatureInference, ReturnSources) {
                                    ValueSource::copy(SummaryPath::param(1))}));
   EXPECT_EQ(result.summary("local_alias")->returns,
             std::set<ValueSource>{ValueSource::copy(n)});
-  EXPECT_EQ(result.summary("owned_local")->returns,
-            std::set<ValueSource>{ValueSource::fresh("free")});
+  EXPECT_EQ(
+      result.summary("owned_local")->returns,
+      (std::set<ValueSource>{ValueSource::fresh("free"), ValueSource::null()}))
+      << "an unchecked malloc result may be null (RFC 0008)";
   // An integer cast yields a raw pointer (RFC 0004), and the summary says so.
   EXPECT_EQ(result.summary("from_int")->returns,
             std::set<ValueSource>{ValueSource::raw()});
@@ -388,7 +417,7 @@ TEST(SignatureInference, OutParameters) {
     }
     long strtol(const char *, char **, int);
     void i(void) {
-      char *text = malloc(8);
+      char *text = malloc(8); if (!text) return;
       char *end;
       strtol(text, &end, 10);
       free(text);
@@ -526,12 +555,12 @@ TEST(SignatureInference, ConditionalEffectsAreMayEffects) {
     static int free_if(char *p, int c) { if (c) { free(p); return 1; } return 0; }
     static struct s *pick(struct s *a, struct s *b, int c) { return c ? a : b; }
     void f(void) {
-      char *p = malloc(8);
+      char *p = malloc(8); if (!p) return;
       if (free_if(p, cond())) return;
       p[0] = 1;
     }
     void untested(void) {
-      char *p = malloc(8);
+      char *p = malloc(8); if (!p) return;
       free_if(p, cond());
       p[0] = 1;
     }
@@ -859,8 +888,8 @@ TEST(SignatureInference, DumpIncludesTheSummary) {
   )c",
                               options);
   ASSERT_TRUE(result.ast);
-  EXPECT_NE(dump.find("summary: b->data: written; stores{b->data = null} "
-                      "returns{}"),
+  EXPECT_NE(dump.find("summary: b->data: written|freed(free)|replaced; "
+                      "stores{b->data = null} returns{}"),
             std::string::npos)
       << dump;
   EXPECT_NE(dump.find("summary: stores{g = copy p} returns{copy p}"),

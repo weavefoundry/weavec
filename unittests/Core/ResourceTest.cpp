@@ -131,6 +131,26 @@ TEST(ResourceTracker, JoinKeepsThisSideOrsEscapeAndClearsDisagreeingFamily) {
   EXPECT_EQ(differ->family, "") << "an unknown family is never reported";
 }
 
+// RFC 0008, *Invalid releases*: a holder that may point into the middle of
+// its resource on some path may not release it.
+TEST(ResourceTracker, JoinOrsInterior) {
+  ResourceTracker a;
+  ResourceTracker b;
+  a.hold(PlaceId{0}, allocated(1, "free"));
+  ResourceRecord offset = allocated(1, "free");
+  offset.interior = true;
+  b.hold(PlaceId{0}, offset);
+  EXPECT_FALSE(a.recordOf(PlaceId{0})->interior);
+
+  EXPECT_TRUE(a.join(b));
+  EXPECT_TRUE(a.recordOf(PlaceId{0})->interior);
+  EXPECT_FALSE(a.join(b)) << "fixpoint";
+
+  // The other way round: already interior stays interior.
+  EXPECT_FALSE(b.join(a));
+  EXPECT_TRUE(b.recordOf(PlaceId{0})->interior);
+}
+
 TEST(ResourceTracker, ListsHoldersAndNullsInOrder) {
   ResourceTracker tracker;
   tracker.hold(PlaceId{9}, allocated(1, "free"));

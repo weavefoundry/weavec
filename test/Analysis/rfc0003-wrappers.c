@@ -89,6 +89,8 @@ void maybe(int c) {
 // the path that did not free (RFC 0006, *Outcome-conditional summaries*).
 void tested(int c) {
   struct node *n = node_new();
+  if (!n)
+    return;
   if (free_if(n, c))
     return;
   n->v = 1;

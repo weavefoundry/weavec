@@ -126,8 +126,19 @@ public:
   [[nodiscard]] core::PlaceId fieldPlace(core::PlaceId parent,
                                          const clang::ValueDecl &member);
 
-  /// The variable a base place stands for.
+  /// The variable a base place stands for; null for the string-literal
+  /// place.
   [[nodiscard]] const clang::VarDecl *varForPlace(core::PlaceId place) const;
+
+  /// The synthetic place standing for every string literal in the function
+  /// (RFC 0008, *Invalid releases*): storage with static lifetime that is
+  /// not a heap object. Created on first use.
+  [[nodiscard]] core::PlaceId literalPlace();
+
+  /// True if `place` is the string-literal place.
+  [[nodiscard]] bool isLiteralPlace(core::PlaceId place) const noexcept {
+    return literal && *literal == place;
+  }
 
   /// Resolves an lvalue expression to a place path, or `std::nullopt` if it
   /// is opaque or not a place at all.
@@ -174,6 +185,12 @@ public:
   [[nodiscard]] std::optional<PlaceRef>
   resolveSummaryPath(const core::SummaryPath &path,
                      const clang::CallExpr &call);
+
+  /// The place `path`'s steps reach from `base` (the record a `result` path
+  /// was assigned to, RFC 0008, *Struct-by-value results*). Fields and
+  /// indices only; a path with a dereference is `std::nullopt`.
+  [[nodiscard]] std::optional<core::PlaceId>
+  resolveBelow(core::PlaceId base, const core::SummaryPath &path);
 
   /// Like `resolveSummaryPath`, but only finds a place this function has
   /// already named: nothing is interned, and a path below an unknown place
@@ -247,6 +264,7 @@ private:
   llvm::DenseMap<std::uint32_t, const clang::VarDecl *> placeVars;
   llvm::DenseMap<std::uint32_t, const clang::FieldDecl *> placeFields;
   std::vector<const clang::VarDecl *> order;
+  std::optional<core::PlaceId> literal;
 };
 
 } // namespace weavec::analysis

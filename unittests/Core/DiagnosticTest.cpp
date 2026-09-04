@@ -68,6 +68,17 @@ TEST(DiagnosticCollector, CountsBySeverity) {
   EXPECT_TRUE(collector.empty());
 }
 
+TEST(DiagnosticIds, PointerValidityIdsAreKnown) {
+  // RFC 0008, *Diagnostics*.
+  EXPECT_EQ(diag::NullDereference, "null-dereference");
+  EXPECT_EQ(diag::UseOfUninitialized, "use-of-uninitialized");
+  EXPECT_EQ(diag::InvalidRelease, "invalid-release");
+  for (const std::string_view id :
+       {diag::NullDereference, diag::UseOfUninitialized, diag::InvalidRelease})
+    EXPECT_TRUE(diag::isKnown(id)) << id;
+  EXPECT_EQ(diag::All.size(), 14U);
+}
+
 TEST(Severity, ToString) {
   EXPECT_EQ(toString(Severity::Note), "note");
   EXPECT_EQ(toString(Severity::Warning), "warning");

@@ -32,12 +32,14 @@ bool ElementWitness::matches(const ElementWitness &other) const noexcept {
 std::optional<MoveRecord>
 MoveTracker::markMoved(PlaceId place, MoveReason reason,
                        SourceLocation location, std::optional<PlaceId> via,
-                       ElementWitness element, std::string family) {
+                       ElementWitness element, std::string family,
+                       bool ownValue) {
   MoveRecord record{.reason = reason,
                     .location = std::move(location),
                     .via = via,
                     .element = element,
-                    .family = std::move(family)};
+                    .family = std::move(family),
+                    .ownValue = ownValue};
   auto [it, inserted] = moved.try_emplace(place, record);
   if (inserted)
     return std::nullopt;
@@ -91,6 +93,12 @@ bool MoveTracker::join(const MoveTracker &other) {
       changed = true;
       continue;
     }
+    // A record that may be the caller's value on either path is the
+    // caller's after the join (RFC 0008, *Replaced values*).
+    if (it->second.ownValue && !record.ownValue) {
+      it->second.ownValue = false;
+      changed = true;
+    }
     if (it->second.element == record.element)
       continue;
     // Both paths moved the place but not the same element. A whole-place
@@ -115,6 +123,18 @@ std::vector<PlaceId> MoveTracker::movedPlaces() const {
   for (const auto &[place, record] : moved)
     result.push_back(place);
   return result;
+}
+
+std::string_view toString(MoveReason reason) noexcept {
+  switch (reason) {
+  case MoveReason::Moved:
+    return "moved";
+  case MoveReason::Freed:
+    return "freed";
+  case MoveReason::Uninitialized:
+    return "uninitialized";
+  }
+  return "<invalid>";
 }
 
 } // namespace weavec::core

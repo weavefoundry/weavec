@@ -44,6 +44,10 @@ enum class Annotation : std::uint8_t {
   Raw,
   /// `weavec.unsafe` -- the function body or block is an unsafe region.
   Unsafe,
+  /// `weavec.nullable` -- the pointer may be null (RFC 0008).
+  Nullable,
+  /// `weavec.nonnull` -- the pointer is never null (RFC 0008).
+  NonNull,
   /// A `weavec.`-prefixed annotation WeaveC does not recognise.
   Invalid,
 };
@@ -56,6 +60,8 @@ inline constexpr llvm::StringLiteral Borrowed = "weavec.borrowed";
 inline constexpr llvm::StringLiteral MutBorrowed = "weavec.mut_borrowed";
 inline constexpr llvm::StringLiteral Raw = "weavec.raw";
 inline constexpr llvm::StringLiteral Unsafe = "weavec.unsafe";
+inline constexpr llvm::StringLiteral Nullable = "weavec.nullable";
+inline constexpr llvm::StringLiteral NonNull = "weavec.nonnull";
 } // namespace spelling
 
 /// Parses an `annotate` payload. Returns `std::nullopt` for annotations that
@@ -70,11 +76,16 @@ struct AnnotationSet {
   bool mutBorrowed = false;
   bool raw = false;
   bool unsafe = false;
+  bool nullable = false;
+  bool nonNull = false;
   bool invalid = false;
 
   [[nodiscard]] bool any() const noexcept {
-    return owned || borrowed || mutBorrowed || raw || unsafe || invalid;
+    return owned || borrowed || mutBorrowed || raw || unsafe || nullable ||
+           nonNull || invalid;
   }
+  /// True if the set says something about nullness (RFC 0008).
+  [[nodiscard]] bool nullness() const noexcept { return nullable || nonNull; }
   /// True if the set says something about ownership (`owned`, `borrowed`,
   /// `mutBorrowed` or `raw`), as opposed to `unsafe`/`invalid`.
   [[nodiscard]] bool ownership() const noexcept {

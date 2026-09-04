@@ -45,12 +45,15 @@ std::vector<PlaceId> PendingOutcome::select(const std::set<Outcome> &selected) {
   return reinstated;
 }
 
-std::vector<PlaceId> PendingOutcome::nullInAll() const {
+/// The places in `facts` for every class of `consumedBy`.
+static std::vector<PlaceId>
+inAllClasses(const std::map<Outcome, std::vector<PlaceId>> &consumedBy,
+             const std::map<Outcome, std::vector<PlaceId>> &facts) {
   std::vector<PlaceId> result;
   bool first = true;
   for (const auto &[outcome, places] : consumedBy) {
-    const auto it = nullOn.find(outcome);
-    if (it == nullOn.end())
+    const auto it = facts.find(outcome);
+    if (it == facts.end())
       return {};
     std::vector<PlaceId> theirs = it->second;
     std::ranges::sort(theirs);
@@ -66,6 +69,14 @@ std::vector<PlaceId> PendingOutcome::nullInAll() const {
       return {};
   }
   return result;
+}
+
+std::vector<PlaceId> PendingOutcome::nullInAll() const {
+  return inAllClasses(consumedBy, nullOn);
+}
+
+std::vector<PlaceId> PendingOutcome::nonNullInAll() const {
+  return inAllClasses(consumedBy, nonNullOn);
 }
 
 bool PendingOutcome::settled() const {
@@ -84,6 +95,7 @@ bool AnalysisState::join(const AnalysisState &other) {
   changed |= aliases.join(other.aliases);
   changed |= raw.join(other.raw);
   changed |= resources.join(other.resources);
+  changed |= nulls.join(other.nulls);
 
   // A pending outcome that is only pending on one incoming path cannot be
   // safely undone, so keep only entries both sides agree on.
@@ -108,6 +120,16 @@ bool AnalysisState::join(const AnalysisState &other) {
     changed |= it->second != before;
   }
 
+  // Overwritten on every path: what the other side did not overwrite goes.
+  for (auto it = overwritten.begin(); it != overwritten.end();) {
+    if (!other.overwritten.contains(*it)) {
+      it = overwritten.erase(it);
+      changed = true;
+    } else {
+      ++it;
+    }
+  }
+
   for (const auto &[place, kind] : other.kinds) {
     auto [it, inserted] = kinds.try_emplace(place, kind);
     if (inserted) {
@@ -128,6 +150,23 @@ OwnershipKind AnalysisState::kindOf(PlaceId place) const noexcept {
   return it == kinds.end() ? OwnershipKind::Unknown : it->second;
 }
 
+bool AnalysisState::isOverwritten(const SummaryPath &path) const {
+  return std::ranges::any_of(overwritten, [&path](const SummaryPath &other) {
+    if (other == path)
+      return true;
+    if (!other.isProperPrefixOf(path))
+      return false;
+    // Overwriting an object overwrites its fields, not what its pointers
+    // point to: `*b = t` replaces `b->data`, `p = q` replaces nothing below
+    // `*p`.
+    return std::none_of(
+        std::next(path.steps.begin(),
+                  static_cast<std::ptrdiff_t>(other.steps.size())),
+        path.steps.end(),
+        [](const PathElem &elem) { return elem.step == PathStep::Deref; });
+  });
+}
+
 void AnalysisState::forget(PlaceId place) {
   moves.reinitialize(place);
   aliases.separate(place);
@@ -137,6 +176,7 @@ void AnalysisState::forget(PlaceId place) {
   kinds.erase(place);
   raw.clear(place);
   resources.forget(place);
+  nulls.forget(place);
 }
 
 } // namespace weavec::core

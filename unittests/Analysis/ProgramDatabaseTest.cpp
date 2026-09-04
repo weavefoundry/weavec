@@ -307,6 +307,75 @@ TEST(ProgramDatabase, GlobalsAreMatchedByNameOrDropped) {
   EXPECT_TRUE(resolved->summary->stores.empty());
 }
 
+TEST(GlobalNames, ExtendToAcceptsPrefixesOnly) {
+  GlobalNames a;
+  (void)a.idFor("x");
+  (void)a.idFor("y");
+  GlobalNames b = a;
+  (void)b.idFor("z");
+  GlobalNames c;
+  (void)c.idFor("y");
+
+  EXPECT_TRUE(a.extendTo(b));
+  EXPECT_EQ(a, b);
+  EXPECT_TRUE(b.extendTo(a));
+  EXPECT_EQ(b.size(), 3U);
+  EXPECT_FALSE(b.extendTo(c));
+  EXPECT_EQ(b.size(), 3U);
+  EXPECT_EQ(b.nameOf(1), "y");
+  GlobalNames empty;
+  EXPECT_TRUE(empty.extendTo(c));
+  EXPECT_EQ(empty, c);
+}
+
+TEST(ProgramDatabase, RenumberedExportsMeanTheSameVerbatim) {
+  // The two units number the shared globals in opposite orders.
+  const auto a = analyze(R"c(
+    char *g_a; char *g_b;
+    void fa(void) { free(g_a); free(g_b); }
+  )c");
+  const auto b = analyze(R"c(
+    char *g_b; char *g_a;
+    void fb(void) { free(g_b); free(g_a); }
+  )c");
+  ASSERT_TRUE(a.ast && b.ast);
+  const UnitExports ea = a.analyzer->exports();
+  const UnitExports eb = b.analyzer->exports();
+  ASSERT_EQ(ea.globals.nameOf(0), "g_a");
+  ASSERT_EQ(eb.globals.nameOf(0), "g_b");
+
+  ProgramDatabase direct;
+  direct.add(ea);
+  direct.add(eb);
+
+  ProgramDatabase rebuilt;
+  rebuilt.add(ea);
+  const UnitExports renumbered = rebuilt.renumbered(eb);
+  EXPECT_EQ(renumbered.globals, rebuilt.globals());
+  EXPECT_FALSE(renumbered.sameSummariesAs(eb));
+  rebuilt.add(renumbered);
+
+  EXPECT_EQ(direct.globals(), rebuilt.globals());
+  ASSERT_TRUE(direct.find("fb") && rebuilt.find("fb"));
+  EXPECT_TRUE(*direct.find("fb") == *rebuilt.find("fb"));
+  for (const ProgramDatabase *db : {&direct, &rebuilt}) {
+    const core::FunctionSummary &fb = *db->find("fb");
+    ASSERT_EQ(fb.effects.size(), 2U);
+    for (const auto &[path, effect] : fb.effects) {
+      EXPECT_TRUE(path.isGlobal());
+      EXPECT_TRUE(effect.freed);
+    }
+    EXPECT_TRUE(
+        fb.effectOf(SummaryPath::global(*db->globals().find("g_a"))).freed);
+    EXPECT_TRUE(
+        fb.effectOf(SummaryPath::global(*db->globals().find("g_b"))).freed);
+  }
+
+  // Exports the database already numbers are taken as they are.
+  const UnitExports again = rebuilt.renumbered(renumbered);
+  EXPECT_TRUE(again.sameSummariesAs(renumbered));
+}
+
 TEST(ProgramDatabase, ProgramDefinitionOutranksTheLibraryTable) {
   const auto lib = analyze(R"c(
     char *strdup(const char *s) { return (char *)s; }
@@ -318,10 +387,11 @@ TEST(ProgramDatabase, ProgramDefinitionOutranksTheLibraryTable) {
   const std::string code = R"c(
     char *strdup(const char *s);
     int f(void) {
-      char *s = malloc(4);
+      char *s = malloc(4); if (!s) return 0;
       char *c = strdup(s);
       free(s);
-      return c[0];
+      use(c);
+      return 0;
     }
   )c";
   const auto alone = analyze(code);
@@ -423,7 +493,7 @@ TEST(ProgramDatabase, DumpListsFunctionsAndCandidates) {
                       "stores{} returns{}\n"),
             std::string::npos);
   EXPECT_NE(text.find("  function 'node_vp': stores{} "
-                      "returns{borrow param 0 *.v}\n"),
+                      "returns{borrow param 0 *.v} requires{param 0}\n"),
             std::string::npos)
       << text;
   EXPECT_NE(

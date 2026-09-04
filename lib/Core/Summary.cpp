@@ -91,10 +91,18 @@ void PlaceEffect::join(const PlaceEffect &other) {
   moved = moved || other.moved;
   if (!other.consumed())
     return;
-  if (!wasConsumed)
+  if (!wasConsumed) {
     family = other.family;
-  else if (family != other.family)
+    replaced = other.replaced;
+    element = other.element;
+    return;
+  }
+  if (family != other.family)
     family.clear();
+  // A side that may leave the consumed value in place makes the join so; a
+  // side that consumed the whole pointee makes every later access a use.
+  replaced = replaced && other.replaced;
+  element = element && other.element;
 }
 
 PlaceEffect FunctionSummary::effectOf(const SummaryPath &path) const {
@@ -213,6 +221,10 @@ void FunctionSummary::eraseFreshReturns() {
                 [](const ValueSource &source) { return source.isFresh(); });
 }
 
+bool FunctionSummary::mayReturnNull() const noexcept {
+  return returns.contains(ValueSource::null());
+}
+
 void FunctionSummary::addOutcome(Outcome outcome, const SummaryPath &path,
                                  const PlaceEffect &effect) {
   OutcomeEffects &perClass = outcomes[outcome];
@@ -237,9 +249,13 @@ void FunctionSummary::join(const FunctionSummary &other) {
     addEffect(path, effect);
   stores.insert(other.stores.begin(), other.stores.end());
   returns.insert(other.returns.begin(), other.returns.end());
+  // A parameter some candidate dereferences must not be null (RFC 0008).
+  requiresNonNull.insert(other.requiresNonNull.begin(),
+                         other.requiresNonNull.end());
   if (wasEmpty) {
     outcomes = other.outcomes;
     nullOn = other.nullOn;
+    nonNullOn = other.nonNullOn;
     return;
   }
   // Otherwise outcome knowledge is only as good as the least informed
@@ -248,32 +264,40 @@ void FunctionSummary::join(const FunctionSummary &other) {
   if (outcomes.empty() || other.outcomes.empty()) {
     outcomes.clear();
     nullOn.clear();
+    nonNullOn.clear();
     return;
   }
-  // Null facts are must-facts: a class both sides may return keeps what
-  // both agree on; a class only one side returns keeps that side's.
-  std::map<Outcome, std::set<SummaryPath>> joinedNull;
-  for (const auto &[outcome, theirs] : other.outcomes) {
-    const auto theirNull = other.nullOn.find(outcome);
-    if (!outcomes.contains(outcome)) {
-      if (theirNull != other.nullOn.end())
-        joinedNull[outcome] = theirNull->second;
-      continue;
-    }
-    const auto mineNull = nullOn.find(outcome);
-    if (mineNull == nullOn.end() || theirNull == other.nullOn.end())
-      continue;
-    std::set<SummaryPath> both;
-    std::ranges::set_intersection(mineNull->second, theirNull->second,
-                                  std::inserter(both, both.end()));
-    if (!both.empty())
-      joinedNull[outcome] = std::move(both);
-  }
-  for (const auto &[outcome, paths] : nullOn) {
-    if (!other.outcomes.contains(outcome))
-      joinedNull[outcome] = paths;
-  }
-  nullOn = std::move(joinedNull);
+  // Null and non-null facts are must-facts: a class both sides may return
+  // keeps what both agree on; a class only one side returns keeps that
+  // side's.
+  const auto joinMust =
+      [this, &other](const std::map<Outcome, std::set<SummaryPath>> &mine,
+                     const std::map<Outcome, std::set<SummaryPath>> &theirs) {
+        std::map<Outcome, std::set<SummaryPath>> joined;
+        for (const auto &[outcome, perClass] : other.outcomes) {
+          const auto theirPaths = theirs.find(outcome);
+          if (!outcomes.contains(outcome)) {
+            if (theirPaths != theirs.end())
+              joined[outcome] = theirPaths->second;
+            continue;
+          }
+          const auto minePaths = mine.find(outcome);
+          if (minePaths == mine.end() || theirPaths == theirs.end())
+            continue;
+          std::set<SummaryPath> both;
+          std::ranges::set_intersection(minePaths->second, theirPaths->second,
+                                        std::inserter(both, both.end()));
+          if (!both.empty())
+            joined[outcome] = std::move(both);
+        }
+        for (const auto &[outcome, paths] : mine) {
+          if (!other.outcomes.contains(outcome))
+            joined[outcome] = paths;
+        }
+        return joined;
+      };
+  nullOn = joinMust(nullOn, other.nullOn);
+  nonNullOn = joinMust(nonNullOn, other.nonNullOn);
   for (const auto &[outcome, theirs] : other.outcomes) {
     OutcomeEffects &mine = outcomes[outcome];
     for (const auto &[path, effect] : theirs)
@@ -285,7 +309,7 @@ FunctionSummary remapGlobals(const FunctionSummary &summary,
                              const GlobalIdMap &map) {
   const auto remapPath =
       [&map](const SummaryPath &path) -> std::optional<SummaryPath> {
-    if (path.isParam())
+    if (!path.isGlobal())
       return path;
     const std::optional<std::uint32_t> id = map(path.index);
     if (!id)
@@ -332,6 +356,13 @@ FunctionSummary remapGlobals(const FunctionSummary &summary,
         result.nullOn[outcome].insert(*mapped);
     }
   }
+  for (const auto &[outcome, paths] : summary.nonNullOn) {
+    for (const SummaryPath &path : paths) {
+      if (const auto mapped = remapPath(path))
+        result.nonNullOn[outcome].insert(*mapped);
+    }
+  }
+  result.requiresNonNull = summary.requiresNonNull;
   return result;
 }
 

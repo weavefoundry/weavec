@@ -38,8 +38,18 @@ static std::string printSteps(const SummaryPath &path) {
 
 std::string printSummaryPath(const SummaryPath &path,
                              const GlobalNamer &names) {
-  std::string text = path.isParam() ? "param " + std::to_string(path.index)
-                                    : "global " + names(path.index);
+  std::string text;
+  switch (path.root) {
+  case SummaryRoot::Param:
+    text = "param " + std::to_string(path.index);
+    break;
+  case SummaryRoot::Global:
+    text = "global " + names(path.index);
+    break;
+  case SummaryRoot::Result:
+    text = "result";
+    break;
+  }
   if (!path.steps.empty()) {
     text += ' ';
     text += printSteps(path);
@@ -79,6 +89,8 @@ std::string printFlags(const PlaceEffect &effect) {
   add(effect.written, "written", false);
   add(effect.freed, "freed", true);
   add(effect.moved, "moved", true);
+  add(effect.consumed() && effect.replaced, "replaced", false);
+  add(effect.consumed() && effect.element, "element", false);
   return flags;
 }
 
@@ -134,6 +146,14 @@ std::string printSummary(const FunctionSummary &summary,
               printSummaryPath(path, names) + '\n';
     }
   }
+  for (const auto &[outcome, paths] : summary.nonNullOn) {
+    for (const SummaryPath &path : paths) {
+      text += "  notnull " + std::string(toString(outcome)) + ' ' +
+              printSummaryPath(path, names) + '\n';
+    }
+  }
+  for (const std::uint32_t param : summary.requiresNonNull)
+    text += "  requires " + std::to_string(param) + '\n';
   text += "end\n";
   return text;
 }
@@ -220,16 +240,24 @@ static bool looksLikeSteps(std::string_view token) noexcept {
          (token[0] == '*' || token[0] == '.' || token[0] == '[');
 }
 
-/// Parses `param N [steps]` or `global NAME [steps]`. Returns false on a
-/// malformed path; a declined global yields `result.path == nullopt`.
+/// Parses `param N [steps]`, `global NAME [steps]` or `result [steps]`.
+/// Returns false on a malformed path; a declined global yields `result.path
+/// == nullopt`.
 static bool parsePath(Tokens &tokens, const GlobalResolver &resolve,
                       ParsedPath &result) {
   const std::string_view root = tokens.take();
+  SummaryPath path;
+  bool declined = false;
+  if (root == "result") {
+    path = SummaryPath::result();
+    if (looksLikeSteps(tokens.peek()) && !parseSteps(tokens.take(), path))
+      return false;
+    result.path = std::move(path);
+    return true;
+  }
   const std::string_view name = tokens.take();
   if (name.empty())
     return false;
-  SummaryPath path;
-  bool declined = false;
   if (root == "param") {
     std::uint32_t index = 0;
     const auto [end, ec] =
@@ -309,6 +337,10 @@ static bool parseFlags(std::string_view text, PlaceEffect &effect) {
       effect.freed = true;
     else if (flag == "moved")
       effect.moved = true;
+    else if (flag == "replaced")
+      effect.replaced = true;
+    else if (flag == "element")
+      effect.element = true;
     else
       return false;
     if (!family.empty()) {
@@ -323,6 +355,9 @@ static bool parseFlags(std::string_view text, PlaceEffect &effect) {
       break;
     pos = comma + 1;
   }
+  // `replaced` and `element` qualify a consume; alone they describe nothing.
+  if ((effect.replaced || effect.element) && !effect.consumed())
+    return false;
   return !effect.empty();
 }
 
@@ -418,6 +453,23 @@ std::optional<FunctionSummary> parseSummary(std::string_view record,
         summary.addOutcome(*outcome);
         summary.nullOn[*outcome].insert(*path.path);
       }
+    } else if (kind == "notnull") {
+      const std::optional<Outcome> outcome = parseOutcome(tokens.take());
+      ParsedPath path;
+      ok = outcome.has_value() && parsePath(tokens, resolve, path);
+      if (ok && path.path) {
+        summary.addOutcome(*outcome);
+        summary.nonNullOn[*outcome].insert(*path.path);
+      }
+    } else if (kind == "requires") {
+      const std::string_view index = tokens.take();
+      std::uint32_t param = 0;
+      const auto [end, ec] =
+          std::from_chars(index.data(), index.data() + index.size(), param);
+      ok = !index.empty() && ec == std::errc() &&
+           end == index.data() + index.size();
+      if (ok)
+        summary.requiresNonNull.insert(param);
     } else {
       // Unknown line kinds are skipped for forward compatibility.
       continue;

@@ -611,6 +611,74 @@ static constexpr auto Specs = std::to_array<BuiltinSpec>({
 });
 // clang-format on
 
+// Nullness (RFC 0008, *Nullness*). Every allocator may fail and every search
+// may miss, so `F` and `0`..`9` results carry a `null` alternative unless
+// listed here; an `A`..`J` result is the argument itself, non-null, unless
+// listed here. `mmap` and `iconv_open` fail with `MAP_FAILED` / `(iconv_t)-1`,
+// not null.
+// clang-format off
+static constexpr auto NeverNullResults = std::to_array<llvm::StringLiteral>({
+    "mmap", "iconv_open", "stpcpy", "stpncpy", "strchrnul", "mempcpy",
+    "wmempcpy", "rawmemchr",
+});
+static constexpr auto MayBeNullResults = std::to_array<llvm::StringLiteral>({
+    "fgets", "gets", "realpath", "getcwd", "tmpnam", "mkdtemp", "freopen",
+    "localtime_r", "gmtime_r", "asctime_r", "ctime_r", "inet_ntop",
+    "fgetws", "getwd", "strerror_r",
+});
+// clang-format on
+
+/// Reading (`r`) or writing (`w`) through a pointer requires it to be
+/// non-null, as does releasing it with anything but `free`/`realloc` (ISO C
+/// defines those on null). The functions below are documented to accept
+/// null for the listed parameter.
+namespace {
+struct NullAccepted {
+  llvm::StringLiteral name;
+  unsigned param;
+
+  constexpr NullAccepted(llvm::StringLiteral fn, unsigned index)
+      : name(fn), param(index) {}
+};
+} // namespace
+// clang-format off
+static constexpr auto NullAcceptedParams = std::to_array<NullAccepted>({
+    {"strtok", 0},       {"wcstok", 0},        {"strtok_r", 0},
+    {"strtol", 1},       {"strtoll", 1},       {"strtoul", 1},
+    {"strtoull", 1},     {"strtod", 1},        {"strtof", 1},
+    {"strtold", 1},      {"strtoimax", 1},     {"strtoumax", 1},
+    {"wcstol", 1},       {"wcstoll", 1},       {"wcstoul", 1},
+    {"wcstoull", 1},     {"wcstod", 1},        {"wcstof", 1},
+    {"wcstold", 1},
+    {"time", 0},         {"fflush", 0},        {"setlocale", 1},
+    {"perror", 0},       {"setbuf", 1},        {"setvbuf", 1},
+    {"snprintf", 0},     {"vsnprintf", 0},     {"swprintf", 0},
+    {"mbstowcs", 0},     {"wcstombs", 0},      {"mbsrtowcs", 0},
+    {"wcsrtombs", 0},    {"mbrtowc", 0},       {"mbrtowc", 3},
+    {"wcrtomb", 0},      {"wcrtomb", 2},       {"mbrlen", 2},
+    {"mbsinit", 0},      {"tmpnam", 0},        {"freopen", 0},
+    {"ctermid", 0},      {"mmap", 0},          {"getcwd", 0},
+    {"realpath", 1},     {"select", 1},        {"select", 2},
+    {"select", 3},       {"select", 4},        {"pselect", 1},
+    {"pselect", 2},      {"pselect", 3},       {"pselect", 4},
+    {"pselect", 5},      {"pthread_create", 1},{"pthread_join", 1},
+    {"pthread_mutex_init", 1}, {"pthread_cond_init", 1},
+    {"pthread_rwlock_init", 1}, {"pthread_attr_init", 0},
+    {"sigaction", 1},    {"sigaction", 2},     {"sigprocmask", 1},
+    {"sigprocmask", 2},  {"pthread_sigmask", 1}, {"pthread_sigmask", 2},
+    {"sigaltstack", 0},  {"sigaltstack", 1},   {"nanosleep", 1},
+    {"clock_nanosleep", 3}, {"waitpid", 1},    {"wait", 0},
+    {"accept", 1},       {"accept", 2},        {"recvfrom", 4},
+    {"recvfrom", 5},     {"getnameinfo", 2},   {"getnameinfo", 4},
+    {"getaddrinfo", 0},  {"getaddrinfo", 1},   {"getaddrinfo", 2},
+    {"gettimeofday", 1}, {"setitimer", 2},     {"utime", 1},
+    {"utimes", 1},       {"regexec", 3},       {"dlopen", 0},
+    {"dlsym", 0},        {"iconv", 1},         {"iconv", 2},
+    {"execve", 2},       {"uselocale", 0},     {"openlog", 0},
+    {"getopt_long", 3},  {"getopt_long", 4},
+});
+// clang-format on
+
 static core::FunctionSummary fromSpec(const BuiltinSpec &spec) {
   core::FunctionSummary summary;
   for (unsigned i = 0; i < spec.params.size(); ++i) {
@@ -618,15 +686,19 @@ static core::FunctionSummary fromSpec(const BuiltinSpec &spec) {
     switch (spec.params[i]) {
     case 'r':
       summary.addEffect(root.deref(), core::PlaceEffect{.read = true});
+      summary.requiresNonNull.insert(i);
       break;
     case 'w':
       summary.addEffect(root.deref(), core::PlaceEffect{.written = true});
+      summary.requiresNonNull.insert(i);
       break;
     case 'f':
       summary.addEffect(root, core::PlaceEffect{.freed = true});
+      summary.requiresNonNull.insert(i);
       break;
     case 'm':
       summary.addEffect(root, core::PlaceEffect{.moved = true});
+      summary.requiresNonNull.insert(i);
       break;
     case '.':
       break;
@@ -634,14 +706,25 @@ static core::FunctionSummary fromSpec(const BuiltinSpec &spec) {
       assert(false && "unknown builtin parameter spec");
     }
   }
+  const bool neverNull = llvm::is_contained(NeverNullResults, spec.name);
   if (spec.result == 'F') {
     summary.addReturn(core::ValueSource::fresh());
+    if (!neverNull)
+      summary.addReturn(core::ValueSource::null());
   } else if (spec.result >= '0' && spec.result <= '9') {
     summary.addReturn(core::ValueSource::interiorCopy(
         core::SummaryPath::param(static_cast<unsigned>(spec.result - '0'))));
+    if (!neverNull)
+      summary.addReturn(core::ValueSource::null());
   } else if (spec.result >= 'A' && spec.result <= 'J') {
     summary.addReturn(core::ValueSource::copy(
         core::SummaryPath::param(static_cast<unsigned>(spec.result - 'A'))));
+    if (llvm::is_contained(MayBeNullResults, spec.name))
+      summary.addReturn(core::ValueSource::null());
+  }
+  for (const NullAccepted &accepted : NullAcceptedParams) {
+    if (accepted.name == spec.name)
+      summary.requiresNonNull.erase(accepted.param);
   }
   return summary;
 }
@@ -710,10 +793,11 @@ static llvm::StringMap<core::FunctionSummary> buildTable() {
   // `getline`/`getdelim` reallocate the buffer they are given: the old
   // `*lineptr` is consumed before the fresh one is stored, so reusing the
   // buffer across iterations is not a leak (RFC 0007, *The library table*).
+  // The place holds the new buffer afterwards: `replaced` (RFC 0008).
   for (const llvm::StringLiteral name :
        {llvm::StringLiteral("getline"), llvm::StringLiteral("getdelim")}) {
     table[name].addEffect(core::SummaryPath::param(0).deref(),
-                          core::PlaceEffect{.moved = true});
+                          core::PlaceEffect{.moved = true, .replaced = true});
   }
 
   // Release families (RFC 0007): every allocator, releaser and consuming
@@ -754,9 +838,14 @@ static llvm::StringMap<core::FunctionSummary> buildTable() {
     const auto it = table.find(member);
     assert(it != table.end() && "family member missing from the table");
     core::FunctionSummary &summary = it->second;
-    for (auto &[path, effect] : summary.effects)
-      if (effect.consumed())
-        effect.family = family.str();
+    for (auto &[path, effect] : summary.effects) {
+      if (!effect.consumed())
+        continue;
+      effect.family = family.str();
+      // `free(NULL)` and `realloc(NULL, n)` are defined (RFC 0008).
+      if (family == "free" && path.isParam() && path.isRoot())
+        summary.requiresNonNull.erase(path.index);
+    }
     for (auto &[outcome, effects] : summary.outcomes)
       for (auto &[path, effect] : effects)
         if (effect.consumed())

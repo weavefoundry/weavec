@@ -286,8 +286,91 @@ follows [Semantic Versioning](https://semver.org/) once it reaches 1.0.
     version 3 (`weavec-summaries 3`). `--dump-analysis` prints the exit
     state's resources (`owned{p@3:14 allocated free}`) and the families in
     summaries; the program dump uses the same spellings.
+- Pointer validity (RFC 0008). Three new diagnostics, all **errors** by
+  default (lower with `-Wno-error=weavec-<id>`; they cannot be disabled):
+  - `null-dereference`: a pointer that is null or may be null on some path is
+    dereferenced (`dereference of '<p>', which may be null` / `which is
+    null`), or passed to a callee that dereferences its parameter without
+    testing it (`'<p>', which may be null, is passed to '<f>', which
+    dereferences it`). The new `core::NullTracker` (`AnalysisState::nulls`)
+    knows null constants, the results of every allocator and searching
+    function in the shipped table (`malloc`, `strchr`, `fopen`, `getenv`,
+    `fgets`, `realpath`, ...), the results and out-parameter stores of every
+    function in the program whose body can produce null, declared
+    `WEAVEC_NULLABLE` places, and pointers whose null test merged back. Every
+    test idiom (`if (!p)`, `p == NULL`, `&&`/`||`/`?:`, `while ((q = f()))`,
+    `__builtin_expect`) clears the fact on the non-null edge for the pointer
+    and its copies; a callee's outcome does too (`if (!make(&p)) return -1;
+    p[0]` is clean when `make` returns `*out != NULL`). Pointers the checker
+    knows nothing about are trusted, a redundant retest of a pointer already
+    known non-null does not make it maybe-null (cJSON's
+    `can_access_at_index`), `(T *)0` is a null constant like `NULL` (zlib's
+    `Z_NULL` casts), and a call into unchecked code forgets what it knew
+    about the storage it was handed by address (a callback filling
+    `linenoiseCompletions lc = { 0, NULL }`). A callee's failing outcome class
+    makes a place null only when the callee can have left null there: the
+    RFC 0007 `null{...}` entry for a `fresh` store that did not happen on
+    that class (`if (grow(b, n) == -1)`) still drops the caller's resource
+    record but no longer says the buffer is null (linenoise's
+    `linenoiseEditGrow`, cJSON's `ensure`, zlib's `gz_init`). Summaries carry `requires{s}` (the
+    parameters a function dereferences untested; every `r`/`w` parameter of
+    the shipped table except those documented to accept `NULL`) and
+    `notnull{*out}` per outcome class; `returns{...}` lists `null`.
+  - `use-of-uninitialized`: a pointer variable, or a pointer field of a
+    record variable, declared without an initialiser is read, dereferenced,
+    copied or released before it is assigned (`use of '<p>' before it was
+    initialized`). `core::MoveReason::Uninitialized`; any assignment, a
+    callee's store, a mutable borrow for a call or `memset` initialises it.
+  - `invalid-release`: `free` (or any releaser, or a consuming parameter) of
+    a pointer to a stack or static object (`'<p>' is released but points to
+    '<x>', which is not a heap object`), to a string literal, or into the
+    middle of an allocation (`p + 1`, `strchr(p, c)`: `'<p>' is released but
+    does not point to the start of its allocation`; `ResourceRecord::
+    interior`). String literals are borrows of a static synthetic place.
+  - `WEAVEC_NULLABLE` and `WEAVEC_NONNULL` (`weavec.h` header version 0.3 →
+    0.4): on parameters, return types, variables and fields; neither says
+    anything about ownership. Both on one declaration is
+    `invalid-annotation`.
+  - Replaced values: a callee that releases a caller-visible value and then
+    reinitialises the place (`free(b->data); b->data = NULL;`, `v->items =
+    realloc(v->items, n)`) now records the consume (`freed,replaced` /
+    `moved,replaced`), so a caller's copy of the old value (`int *old =
+    v->items; grow(v); old[0]`) is a `use-after-free` / `use-after-move`
+    while the place itself stays usable (RFC 0008, *Replaced values*). This
+    closes the soundness hole RFC 0003's exit-state rule left open and
+    replaces RFC 0007's *Deliberately not caught* entry for it. Only
+    consumption on a path that returns counts: `lua_close(L); exit(1);` does
+    not free `L->l_G` as far as callers are concerned.
+  - Element consumes: a callee that frees an element (`free(history[len])`)
+    says so (`freed,element`), and the caller applies the consume with an
+    unknown element witness (RFC 0006), so two such calls in a loop are not
+    a `double-free` of `*history`.
+  - Struct-by-value results: a function returning a record hands the caller
+    its pointer fields through the new `result` summary root
+    (`stores{result.data = fresh(free)}`), so `struct buf b = make();` owns
+    `b.data` and its leak is reported.
+  - Summary text format version 3 → 4: the `replaced` and `element` flags, `requires N`,
+    `notnull <class> <path>` and the `result` root; sidecar format version 4
+    (`weavec-summaries 4`). `--dump-analysis` prints `nulls{p@3:14
+    maybe-null, q nonnull}` in the exit state, `uninitialized` moves,
+    `interior` resources, and the new summary words.
 
 ### Fixed
+
+- `free(static_array)` and `free(local_array)` crashed the checker
+  (`getPointeeType` on an array declaration in `checkContainerFree`); they
+  are now `invalid-release` reports (RFC 0008).
+- The whole-program fixpoint (RFC 0005) rebuilt its database by renumbering
+  every member's summaries each time one member's exports changed, which on
+  Lua (34 units in one cycle) was most of the run once RFC 0008 made the
+  summaries larger. Members are now kept numbered by the database's own
+  table (`ProgramDatabase::renumbered`, `GlobalNames::extendTo`) and a
+  rebuild copies them.
+- `BorrowState` kept one loan per *site* of a borrow, so a callee's store
+  applied at a hundred call sites was a hundred loans copied at every block
+  visit and merged at every join (1,173 per state in Lua's `luaV_execute`).
+  It keeps one per borrow at the earliest site, which is the one a conflict
+  cited anyway (`BorrowState::sameBorrow`).
 
 - Applying a callee's summary consumed shallower paths before deeper ones,
   so `static void both(struct box *b) { free(b->p); free(b); }` followed by
@@ -347,6 +430,12 @@ follows [Semantic Versioning](https://semver.org/) once it reaches 1.0.
 
 ### Changed
 
+- Dereferencing an allocator's result without testing it (`p = malloc(n);
+  p->x = 1;`) is now a `null-dereference` error (RFC 0008). The existing
+  unit-test and lit snippets that did this gained an `if (!p) return;`; the
+  inferred summaries of functions that return or store an untested
+  allocation gained `null` among their returns / stores, and functions
+  that dereference a parameter gained `requires{...}`.
 - The RFC 0007 leak check found real leaks in the existing unit-test
   snippets (`realloc` success paths, an `OWNED` parameter that was only
   looked at, a `switch` without `default`, a loop whose `free` is behind

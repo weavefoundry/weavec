@@ -16,13 +16,16 @@
       "sds": {
         "units": 1,
         "clang_errors": 0,
-        "by_id": {}
+        "by_id": {
+          "null-dereference": 12
+        }
       },
       "cJSON": {
         "units": 1,
         "clang_errors": 0,
         "by_id": {
-          "leak": 1
+          "leak": 1,
+          "null-dereference": 7
         }
       },
       "jsmn": {
@@ -44,6 +47,7 @@
         "clang_errors": 0,
         "by_id": {
           "annotation-required": 1,
+          "null-dereference": 18,
           "unsafe-operation": 1
         }
       },
@@ -51,7 +55,8 @@
         "units": 1,
         "clang_errors": 0,
         "by_id": {
-          "annotation-required": 3
+          "annotation-required": 3,
+          "null-dereference": 3
         }
       },
       "cJSON-program": {
@@ -59,7 +64,8 @@
         "clang_errors": 0,
         "by_id": {
           "double-free": 2,
-          "leak": 1
+          "leak": 1,
+          "null-dereference": 24
         }
       },
       "zlib": {
@@ -67,7 +73,8 @@
         "clang_errors": 0,
         "by_id": {
           "annotation-required": 2,
-          "leak": 4
+          "leak": 4,
+          "null-dereference": 25
         }
       },
       "lua": {
@@ -75,11 +82,13 @@
         "clang_errors": 0,
         "by_id": {
           "annotation-required": 1,
-          "conflicting-borrow": 4,
-          "double-free": 4,
-          "leak": 5,
-          "lifetime-too-short": 10,
-          "use-after-free": 5
+          "conflicting-borrow": 10,
+          "double-free": 26,
+          "invalid-release": 4,
+          "leak": 4,
+          "lifetime-too-short": 4,
+          "null-dereference": 174,
+          "use-after-free": 37
         }
       },
       "linenoise-program": {
@@ -87,18 +96,21 @@
         "clang_errors": 0,
         "by_id": {
           "annotation-required": 1,
-          "leak": 1
+          "leak": 1,
+          "null-dereference": 3
         }
       }
     },
     "totals": {
       "annotation-required": 9,
-      "conflicting-borrow": 4,
-      "double-free": 6,
-      "leak": 18,
-      "lifetime-too-short": 10,
+      "conflicting-borrow": 10,
+      "double-free": 28,
+      "invalid-release": 4,
+      "leak": 17,
+      "lifetime-too-short": 4,
+      "null-dereference": 266,
       "unsafe-operation": 1,
-      "use-after-free": 5
+      "use-after-free": 37
     }
   }
 }

@@ -18,6 +18,8 @@
 |*   size_t buffer_len(const struct buffer *WEAVEC_BORROWED b);
 |*   void buffer_push(struct buffer *WEAVEC_MUT b, int v);
 |*   void *WEAVEC_RAW map_pages(size_t n);   // no ownership guarantee
+|*   struct node *WEAVEC_NULLABLE find(struct tree *t, int key);
+|*   void log_line(const char *WEAVEC_NONNULL msg);
 |*
 |*   typedef void (*dtor_t)(void *WEAVEC_OWNED);   // callbacks, too
 |*
@@ -30,7 +32,7 @@
 #define WEAVEC_H
 
 #define WEAVEC_H_VERSION_MAJOR 0
-#define WEAVEC_H_VERSION_MINOR 3
+#define WEAVEC_H_VERSION_MINOR 4
 
 #if defined(__has_attribute)
 #if __has_attribute(annotate)
@@ -73,6 +75,22 @@
  * and document the invariant that makes the code sound.
  */
 #define WEAVEC_UNSAFE WEAVEC_ANNOTATE_("weavec.unsafe")
+
+/**
+ * The pointer may be null. On a parameter, the body is checked (a
+ * dereference without a preceding null test is reported) and callers may
+ * pass null; on a return type, callers must test the result before
+ * dereferencing it; on a variable or field, every load is treated as
+ * possibly null. Does not change ownership.
+ */
+#define WEAVEC_NULLABLE WEAVEC_ANNOTATE_("weavec.nullable")
+
+/**
+ * The pointer is never null. On a parameter, passing a possibly-null value
+ * is reported at the call; on a return type, the result needs no test; on a
+ * variable or field, loads are never reported. Does not change ownership.
+ */
+#define WEAVEC_NONNULL WEAVEC_ANNOTATE_("weavec.nonnull")
 
 /** Non-zero when the translation unit is being processed by WeaveC. */
 #if defined(__WEAVEC__)

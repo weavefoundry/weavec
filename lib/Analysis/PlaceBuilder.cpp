@@ -82,6 +82,12 @@ const VarDecl *PlaceBuilder::varForPlace(core::PlaceId place) const {
   return it == placeVars.end() ? nullptr : it->second;
 }
 
+core::PlaceId PlaceBuilder::literalPlace() {
+  if (!literal)
+    literal = places.create("<string literal>");
+  return *literal;
+}
+
 core::PlaceId PlaceBuilder::fieldPlace(core::PlaceId parent,
                                        const ValueDecl &member) {
   const core::PlaceId id = places.field(parent, member.getNameAsString());
@@ -163,7 +169,7 @@ PlaceBuilder::resolveSummaryPath(const core::SummaryPath &path,
     } else {
       return std::nullopt;
     }
-  } else {
+  } else if (path.isGlobal()) {
     const VarDecl *global = summaries.globals().declFor(path.index);
     if (global == nullptr)
       return std::nullopt;
@@ -172,6 +178,10 @@ PlaceBuilder::resolveSummaryPath(const core::SummaryPath &path,
                    .derefExprs = {},
                    .derefElements = {},
                    .element = {}};
+  } else {
+    // A `result` root names the returned record (RFC 0008, *Struct-by-value
+    // results*): no caller place until it is assigned; see `resolveBelow`.
+    return std::nullopt;
   }
 
   for (std::size_t i = firstStep; i < path.steps.size(); ++i) {
@@ -197,13 +207,33 @@ PlaceBuilder::resolveSummaryPath(const core::SummaryPath &path,
   return ref;
 }
 
+std::optional<core::PlaceId>
+PlaceBuilder::resolveBelow(core::PlaceId base, const core::SummaryPath &path) {
+  core::PlaceId place = base;
+  for (const core::PathElem &elem : path.steps) {
+    switch (elem.step) {
+    case core::PathStep::Deref:
+      return std::nullopt;
+    case core::PathStep::Field:
+      place = places.field(place, elem.field);
+      break;
+    case core::PathStep::Index:
+      place = places.index(place);
+      break;
+    }
+  }
+  return place;
+}
+
 /// The caller-side place a summary path's root denotes at `call`, and the
 /// index of the first step still to apply: `1` when the argument is `&x`
 /// and the path's first step is the dereference `x` already is.
 std::optional<std::pair<core::PlaceId, std::size_t>>
 PlaceBuilder::lookupSummaryRoot(const core::SummaryPath &path,
                                 const CallExpr &call) {
-  if (!path.isParam()) {
+  if (path.isResult())
+    return std::nullopt;
+  if (path.isGlobal()) {
     const VarDecl *global = summaries.globals().declFor(path.index);
     if (global == nullptr)
       return std::nullopt;
@@ -326,9 +356,13 @@ ValueOrigin PlaceBuilder::originFromSource(const core::ValueSource &source,
     // (`state->x.next = state->out` in a body whose error path frees
     // `state->out`) is nobody's new resource, and a test of the result
     // (`== -1`) cannot retract the class: the value is not tracked (RFC
-    // 0007, *Applying a summary: deepest paths first*).
+    // 0007, *Applying a summary: deepest paths first*). A path the callee
+    // consumed *and replaced* (`p->buffer = realloc(p->buffer, n); return
+    // p->buffer + p->offset;`, cJSON's `ensure`) holds the new value, and
+    // the copy is of that: an ordinary copy of the caller's place (RFC
+    // 0008, *Replaced values*).
     if (const core::PlaceEffect effect = of.effectOf(*source.path);
-        effect.consumed()) {
+        effect.consumed() && !effect.replaced) {
       if (effect.moved || of.consumesUnconditionally(*source.path))
         return fresh(effect.family);
       return ValueOrigin{};
@@ -585,6 +619,18 @@ ValueOrigin PlaceBuilder::classifyValue(const Expr &expr) {
       // Provenance is lost on the way through the integer (RFC 0004).
       return makeRaw(core::RawReason::IntegerCast, nullptr, cast);
     case CK_ArrayToPointerDecay: {
+      // A string literal (or `__func__`) is a borrow of static storage that
+      // is not a heap object (RFC 0008, *Invalid releases*).
+      if (isa<StringLiteral, PredefinedExpr>(
+              cast->getSubExpr()->IgnoreParens())) {
+        return makeOrigin(ValueOrigin::Kind::Borrow,
+                          PlaceRef{.place = literalPlace(),
+                                   .derefs = {},
+                                   .derefExprs = {},
+                                   .derefElements = {},
+                                   .element = {}},
+                          nullptr, /*constObject=*/true);
+      }
       auto ref = resolve(*cast->getSubExpr());
       if (!ref)
         return ValueOrigin{};
@@ -621,9 +667,13 @@ ValueOrigin PlaceBuilder::classifyValue(const Expr &expr) {
     const auto effects = classifyCall(*call, summaries);
     if (!effects) {
       // Unchecked code: under strict mode its result is raw (RFC 0004,
-      // *Boundaries*); by default nothing is known about it.
-      return strictExterns ? makeRaw(core::RawReason::UnknownCallee, call)
-                           : ValueOrigin{};
+      // *Boundaries*); by default nothing is known about it beyond what its
+      // declaration says about nullness (RFC 0008), hence the call.
+      if (strictExterns)
+        return makeRaw(core::RawReason::UnknownCallee, call);
+      ValueOrigin opaque;
+      opaque.call = call;
+      return opaque;
     }
     const core::FunctionSummary &summary = *effects->summary;
     if (summary.returns.empty())
@@ -685,9 +735,15 @@ ValueOrigin PlaceBuilder::classifyValue(const Expr &expr) {
       return classifyValue(*binary->getRHS());
     // `p + k` refers to the same object as `p` (RFC 0004, *Pointer
     // identity*) but not to the same address (RFC 0006, *Alias exactness*);
-    // whether it stays in bounds is outside the model.
-    if (const Expr *pointer = pointerOperandOfArithmetic(*binary))
+    // whether it stays in bounds is outside the model. `p + 0` is `p`.
+    if (const Expr *pointer = pointerOperandOfArithmetic(*binary)) {
+      const Expr *offset =
+          pointer == binary->getLHS() ? binary->getRHS() : binary->getLHS();
+      if (const auto value = offset->getIntegerConstantExpr(context);
+          value && value->isZero())
+        return classifyValue(*pointer);
       return asInterior(classifyValue(*pointer));
+    }
     return ValueOrigin{};
   }
 

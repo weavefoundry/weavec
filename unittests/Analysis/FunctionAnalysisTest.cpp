@@ -34,13 +34,14 @@ TEST(FunctionAnalyzer, CleanCodeProducesNoDiagnostics) {
   const auto result = analyze(R"c(
     void f(void) {
       int *p = malloc(sizeof(int));
+      if (!p) return;
       *p = 1;
       use(p);
       free(p);
     }
   )c");
   ASSERT_TRUE(result.ast);
-  EXPECT_TRUE(result.diagnostics.empty());
+  EXPECT_TRUE(result.diagnostics.empty()) << messages(result.diagnostics)[0];
 }
 
 TEST(FunctionAnalyzer, DetectsUseAfterFree) {
