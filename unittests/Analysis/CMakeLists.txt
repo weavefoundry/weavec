@@ -9,4 +9,5 @@ weavec_add_unittest(
           ResourceLifecycleTest.cpp
           SignatureInferenceTest.cpp
           SummariesTest.cpp
+          ValueConditionalTest.cpp
   DEPS weavec::Analysis weavec::Frontend)

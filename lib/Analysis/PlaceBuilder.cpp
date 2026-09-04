@@ -14,6 +14,7 @@
 #include "clang/AST/ExprCXX.h"
 #include "clang/AST/OperationKinds.h"
 
+#include "llvm/ADT/APSInt.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Casting.h"
 
@@ -322,9 +323,24 @@ PlaceBuilder::lookupSummaryPath(const core::SummaryPath &path,
   return cache.chain.back();
 }
 
-ValueOrigin PlaceBuilder::originFromSource(const core::ValueSource &source,
-                                           const CallExpr &call,
-                                           const core::FunctionSummary &of) {
+std::optional<ValueOrigin>
+PlaceBuilder::originFromSource(const core::ValueSource &source,
+                               const CallExpr &call,
+                               const core::FunctionSummary &of) {
+  // The guard first: an alternative the arguments rule out is no
+  // alternative (RFC 0009).
+  std::optional<core::PlaceGuard> guard = translateGuard(source.when, call);
+  if (!guard)
+    return std::nullopt;
+  ValueOrigin origin = originFromUnguardedSource(source, call, of);
+  origin.guard = std::move(*guard);
+  return origin;
+}
+
+ValueOrigin
+PlaceBuilder::originFromUnguardedSource(const core::ValueSource &source,
+                                        const CallExpr &call,
+                                        const core::FunctionSummary &of) {
   const auto fresh = [&call](std::string family) {
     ValueOrigin origin =
         makeOrigin(ValueOrigin::Kind::Alloc, std::nullopt, &call);
@@ -390,6 +406,143 @@ ValueOrigin PlaceBuilder::originFromSource(const core::ValueSource &source,
     return ValueOrigin{};
   }
   return ValueOrigin{};
+}
+
+/// The mathematical value of `value`, read with its own signedness.
+static std::optional<std::int64_t>
+mathematicalValue(const llvm::APSInt &value) {
+  if (value.isSigned()) {
+    if (value.getSignificantBits() > 64)
+      return std::nullopt;
+    return value.getSExtValue();
+  }
+  if (value.getActiveBits() > 63)
+    return std::nullopt;
+  return static_cast<std::int64_t>(value.getZExtValue());
+}
+
+std::optional<std::int64_t> integerConstant(const Expr &expr,
+                                            const ASTContext &context) {
+  Expr::EvalResult result;
+  if (expr.isValueDependent() || !expr.getType()->isIntegerType() ||
+      !expr.EvaluateAsInt(result, context) || !result.Val.isInt())
+    return std::nullopt;
+  return mathematicalValue(result.Val.getInt());
+}
+
+std::optional<std::int64_t> integerConvertedTo(std::int64_t value,
+                                               QualType type,
+                                               const ASTContext &context) {
+  if (!type->isIntegerType())
+    return std::nullopt;
+  llvm::APSInt converted(
+      llvm::APInt(64, static_cast<std::uint64_t>(value), /*isSigned=*/true),
+      /*isUnsigned=*/false);
+  converted = converted.extOrTrunc(context.getIntWidth(type));
+  converted.setIsUnsigned(type->isUnsignedIntegerType());
+  return mathematicalValue(converted);
+}
+
+PlaceBuilder::ScalarOperand PlaceBuilder::scalarOperand(const Expr &expr) {
+  ScalarOperand operand;
+  if (const auto value = integerConstant(expr, context)) {
+    operand.constant = core::ValueFact::ofConstant(*value);
+    return operand;
+  }
+  const Expr *e = &expr;
+  for (;;) {
+    e = e->IgnoreParens();
+    if (const auto *cast = dyn_cast<CastExpr>(e)) {
+      // A conversion keeps zero-ness and, absent overflow, sign (RFC 0009,
+      // *Assumptions*); a narrowing or sign-changing one loses the exact
+      // constant.
+      switch (cast->getCastKind()) {
+      case CK_LValueToRValue:
+      case CK_NoOp:
+        break;
+      case CK_IntegralCast:
+        if (!cast->getSubExpr()->getType()->isIntegerType())
+          return operand;
+        operand.scaled = true;
+        break;
+      default:
+        return operand;
+      }
+      e = cast->getSubExpr();
+      continue;
+    }
+    // `n * 8`, `8 * n`: zero exactly when `n` is, same sign as `n`.
+    if (const auto *binary = dyn_cast<BinaryOperator>(e);
+        binary != nullptr && binary->getOpcode() == BO_Mul) {
+      const auto lhs = integerConstant(*binary->getLHS(), context);
+      const auto rhs = integerConstant(*binary->getRHS(), context);
+      if (rhs && *rhs > 0) {
+        operand.scaled = true;
+        e = binary->getLHS();
+        continue;
+      }
+      if (lhs && *lhs > 0) {
+        operand.scaled = true;
+        e = binary->getRHS();
+        continue;
+      }
+      return operand;
+    }
+    break;
+  }
+  if (!e->getType()->isIntegerType() || !isPlaceExpr(*e))
+    return operand;
+  operand.place = resolve(*e);
+  return operand;
+}
+
+std::optional<core::PlaceGuard>
+PlaceBuilder::translateGuard(const core::PathGuard &guard,
+                             const CallExpr &call) {
+  core::PlaceGuard translated;
+  for (const auto &[path, fact] : guard.conditions) {
+    if (path.isParam() && path.isRoot()) {
+      if (path.index >= call.getNumArgs())
+        continue;
+      const Expr &arg = *call.getArg(path.index);
+      if (arg.getType()->isPointerType()) {
+        // A null constant or an address decides a pointer conjunct on the
+        // spot.
+        const ValueOrigin value = classifyValue(arg);
+        if (value.kind == ValueOrigin::Kind::Null ||
+            value.kind == ValueOrigin::Kind::Borrow) {
+          const core::Outcome actual = value.kind == ValueOrigin::Kind::Null
+                                           ? core::Outcome::Null
+                                           : core::Outcome::NonNull;
+          if (fact.disjointFrom(core::ValueFact::of(actual)))
+            return std::nullopt;
+          continue;
+        }
+        if (const auto ref = resolvePointerValue(arg))
+          translated.require(ref->place, fact);
+        continue;
+      }
+      if (!arg.getType()->isIntegerType())
+        continue;
+      const ScalarOperand operand = scalarOperand(arg);
+      if (operand.constant) {
+        if (operand.constant->disjointFrom(fact))
+          return std::nullopt;
+        // Satisfied by the constant: nothing left to check later.
+        continue;
+      }
+      if (!operand.place)
+        continue;
+      core::ValueFact onPlace = fact;
+      if (operand.scaled)
+        onPlace.constant.reset();
+      translated.require(operand.place->place, onPlace);
+      continue;
+    }
+    if (const auto ref = resolveSummaryPath(path, call))
+      translated.require(ref->place, fact);
+  }
+  return translated;
 }
 
 bool PlaceBuilder::isTransparentCast(QualType from, QualType to) {
@@ -678,17 +831,28 @@ ValueOrigin PlaceBuilder::classifyValue(const Expr &expr) {
     const core::FunctionSummary &summary = *effects->summary;
     if (summary.returns.empty())
       return ValueOrigin{};
-    if (summary.returns.size() == 1) {
-      ValueOrigin origin =
-          originFromSource(*summary.returns.begin(), *call, summary);
+    // The alternatives the arguments do not rule out (RFC 0009). None left
+    // means the summary's guards were too specific for what is known here:
+    // the callee returned something, of unknown origin.
+    std::vector<ValueOrigin> alternatives;
+    for (const core::ValueSource &source : summary.returns) {
+      if (auto origin = originFromSource(source, *call, summary))
+        alternatives.push_back(std::move(*origin));
+    }
+    if (alternatives.empty()) {
+      ValueOrigin opaque;
+      opaque.call = call;
+      return opaque;
+    }
+    if (alternatives.size() == 1) {
+      ValueOrigin origin = std::move(alternatives.front());
       if (origin.call == nullptr)
         origin.call = call;
       return origin;
     }
     ValueOrigin origin = makeOrigin(ValueOrigin::Kind::Conditional);
     origin.call = call;
-    for (const core::ValueSource &source : summary.returns)
-      origin.alternatives.push_back(originFromSource(source, *call, summary));
+    origin.alternatives = std::move(alternatives);
     return origin;
   }
 

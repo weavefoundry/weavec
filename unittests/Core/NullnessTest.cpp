@@ -183,6 +183,101 @@ TEST(NullTracker, JoinIsIdempotentAndReachesAFixpoint) {
   EXPECT_FALSE(a.join(a));
 }
 
+// -- Guards (RFC 0009) --------------------------------------------------------
+
+static PlaceGuard when(PlaceId key, const ValueFact &fact) {
+  PlaceGuard guard;
+  guard.require(key, fact);
+  return guard;
+}
+
+constexpr PlaceId C{3};
+
+TEST(NullTracker, NullJoinedWithNonNullIsNullExactlyUnderItsGuard) {
+  // `if (c) p = NULL; else p = &x;`: null when `c` is non-zero, non-null
+  // otherwise. The `!c` edge makes the record `NonNull` again.
+  NullTracker a;
+  NullTracker b;
+  NullRecord null = record(Nullness::Null, 2);
+  null.guard = when(C, ValueFact::nonZero());
+  a.set(P, null);
+  b.set(P, record(Nullness::NonNull, 4));
+  EXPECT_TRUE(a.join(b));
+  ASSERT_TRUE(a.recordOf(P));
+  EXPECT_EQ(a.recordOf(P)->state, Nullness::MaybeNull);
+  EXPECT_TRUE(a.recordOf(P)->otherwiseNonNull);
+  EXPECT_EQ(a.recordOf(P)->guard, when(C, ValueFact::nonZero()));
+
+  EXPECT_EQ(a.learn(C, ValueFact::of(Outcome::Zero)),
+            (std::vector<PlaceId>{P}));
+  EXPECT_EQ(a.stateOf(P), Nullness::NonNull);
+  EXPECT_TRUE(a.recordOf(P)->guard.trivial());
+  EXPECT_FALSE(a.recordOf(P)->otherwiseNonNull);
+}
+
+TEST(NullTracker, NullJoinedWithNothingMakesNoPromise) {
+  // The other path knew nothing about `p`: refuting the guard says nothing
+  // about what it holds, so the record simply goes.
+  NullTracker a;
+  NullTracker b;
+  NullRecord null = record(Nullness::Null, 2);
+  null.guard = when(C, ValueFact::nonZero());
+  a.set(P, null);
+  EXPECT_TRUE(a.join(b));
+  EXPECT_EQ(a.stateOf(P), Nullness::MaybeNull);
+  EXPECT_FALSE(a.recordOf(P)->otherwiseNonNull);
+
+  EXPECT_EQ(a.learn(C, ValueFact::of(Outcome::Zero)),
+            (std::vector<PlaceId>{P}));
+  EXPECT_FALSE(a.stateOf(P));
+}
+
+TEST(NullTracker, PromiseSurvivesOnlyWhenEverySideMadeIt) {
+  NullRecord promised = record(Nullness::MaybeNull, 2);
+  promised.guard = when(C, ValueFact::of(Outcome::Positive));
+  promised.otherwiseNonNull = true;
+  NullRecord unpromised = record(Nullness::MaybeNull, 5);
+  unpromised.guard = when(C, ValueFact::of(Outcome::Negative));
+
+  NullTracker a;
+  a.set(P, promised);
+  NullTracker b;
+  b.set(P, unpromised);
+  EXPECT_TRUE(a.join(b));
+  EXPECT_EQ(a.recordOf(P)->guard, when(C, ValueFact::nonZero()));
+  EXPECT_FALSE(a.recordOf(P)->otherwiseNonNull);
+
+  // Two promising sides keep it; a `Null` side has no non-null paths and
+  // keeps the other's promise.
+  NullTracker c;
+  c.set(P, promised);
+  NullTracker d;
+  NullRecord null = record(Nullness::Null, 7);
+  null.guard = when(C, ValueFact::of(Outcome::Negative));
+  d.set(P, null);
+  EXPECT_TRUE(c.join(d));
+  EXPECT_EQ(c.stateOf(P), Nullness::MaybeNull);
+  EXPECT_TRUE(c.recordOf(P)->otherwiseNonNull);
+}
+
+TEST(NullTracker, LearnLeavesNonNullAloneAndDropWeakens) {
+  NullTracker tracker;
+  tracker.set(P, record(Nullness::NonNull, 1, NullReason::Tested));
+  NullRecord null = record(Nullness::Null, 2);
+  null.guard = when(C, ValueFact::nonZero());
+  tracker.set(Q, null);
+
+  // A compatible fact narrows the guard; `NonNull` records carry none.
+  EXPECT_TRUE(tracker.learn(C, ValueFact::of(Outcome::Positive)).empty());
+  EXPECT_TRUE(tracker.recordOf(P)->guard.trivial());
+  EXPECT_EQ(tracker.recordOf(Q)->guard,
+            when(C, ValueFact::of(Outcome::Positive)));
+
+  tracker.dropGuardsOn(C);
+  EXPECT_TRUE(tracker.recordOf(Q)->guard.trivial());
+  EXPECT_EQ(tracker.stateOf(Q), Nullness::Null);
+}
+
 TEST(NullTracker, Names) {
   EXPECT_EQ(toString(Nullness::Null), "null");
   EXPECT_EQ(toString(Nullness::MaybeNull), "maybe-null");

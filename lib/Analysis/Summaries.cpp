@@ -162,7 +162,7 @@ static void applyAnnotations(core::FunctionSummary &summary,
     // the body may return is a reported mismatch (or an assertion inside an
     // unsafe region), and callers must trust the annotation.
     summary.eraseFreshReturns();
-    summary.returns.erase(core::ValueSource::raw());
+    summary.eraseReturns(core::ValueSource::Kind::Raw);
     if (summary.returns.empty())
       summary.addReturn(core::ValueSource::unknown());
   } else if (result.raw) {
@@ -191,7 +191,7 @@ static void applyNullnessAnnotations(core::FunctionSummary &summary,
   if (!shape.pointerResult)
     return;
   if (result.nonNull) {
-    summary.returns.erase(core::ValueSource::null());
+    summary.eraseReturns(core::ValueSource::Kind::Null);
     if (summary.returns.empty())
       summary.addReturn(core::ValueSource::unknown());
   } else if (result.nullable) {
@@ -212,6 +212,10 @@ core::FunctionSummary summaryFromAnnotations(const FunctionDecl &function) {
                    annotations.params);
   applyNullnessAnnotations(summary, shapeOf(function), annotations.result,
                            annotations.params);
+  // A declared `noreturn` is the strongest statement there is about the
+  // exit; the inferred bit agrees with it (RFC 0009, *Inferred `noreturn`*).
+  if (function.isNoReturn())
+    summary.neverReturns = true;
   return summary;
 }
 
@@ -396,11 +400,16 @@ SummaryStore::lookupIndirect(const CallExpr &call) {
   core::FunctionSummary joined;
   bool anyCandidate = false;
   bool anyLocal = false;
+  // RFC 0009: the call never returns only if no candidate does. The join
+  // cannot tell a candidate that does nothing from the empty summary it
+  // starts from, so the bit is settled here.
+  bool anyReturns = false;
   for (const FunctionDecl *candidate : candidatesFor(call)) {
     const auto resolved = lookup(*candidate);
     if (!resolved)
       continue;
     joined.join(*resolved->summary);
+    anyReturns = anyReturns || !resolved->summary->neverReturns;
     anyCandidate = true;
     anyLocal = true;
   }
@@ -410,11 +419,14 @@ SummaryStore::lookupIndirect(const CallExpr &call) {
     if (const core::FunctionSummary *program =
             typeKey.empty() ? nullptr : database->candidates(typeKey)) {
       joined.join(database->importInto(*program, *context, globalTable));
+      anyReturns = anyReturns || !program->neverReturns;
       anyCandidate = true;
     }
   }
   if (!annotated && !anyCandidate)
     return std::nullopt;
+  if (anyReturns)
+    joined.neverReturns = false;
 
   SummarySource source =
       anyLocal ? SummarySource::Inferred : SummarySource::Program;

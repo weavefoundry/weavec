@@ -39,6 +39,23 @@ namespace weavec::analysis {
 
 struct CallEffects;
 
+/// The mathematical value of an integer constant expression, if it has one
+/// that an `int64_t` holds: a signed constant as itself, an unsigned one only
+/// when it is below 2^63 (`ULONG_MAX` and `(size_t)-1` have none). This is
+/// the value RFC 0009's classes are of (*Assumptions*: "an integer's class is
+/// that of its mathematical value"); reading an unsigned constant's bits as
+/// signed would make `SIZE_MAX` negative.
+[[nodiscard]] std::optional<std::int64_t>
+integerConstant(const clang::Expr &expr, const clang::ASTContext &context);
+
+/// The mathematical value `value` has once converted to the integer type
+/// `type` (C's usual arithmetic conversions: modulo 2^N for an unsigned
+/// type, two's-complement truncation for a signed one), if an `int64_t` holds
+/// it. `case -1:` on an `unsigned` scrutinee selects `UINT_MAX`.
+[[nodiscard]] std::optional<std::int64_t>
+integerConvertedTo(std::int64_t value, clang::QualType type,
+                   const clang::ASTContext &context);
+
 /// A place denoted by an lvalue expression together with the pointer places
 /// that had to be dereferenced to reach it (each of those is *read* by the
 /// access, so a moved one is a use-after-free).
@@ -106,6 +123,11 @@ struct ValueOrigin {
   /// Alloc: the release family of the allocation (RFC 0007); empty when
   /// unknown.
   std::string family;
+  /// RFC 0009: the value has this origin only when the guard holds (a
+  /// callee's argument-conditional return or store, translated to the
+  /// caller's places). Trivial for anything else. A refuted alternative is
+  /// dropped by the dataflow before the value is applied.
+  core::PlaceGuard guard;
 };
 
 class PlaceBuilder {
@@ -218,10 +240,41 @@ public:
 
   /// Translates a summary value source at `call` into a caller value
   /// origin. A copy of an argument the callee consumed is reported as a
-  /// fresh allocation: ownership went in and came back out.
-  [[nodiscard]] ValueOrigin originFromSource(const core::ValueSource &source,
-                                             const clang::CallExpr &call,
-                                             const core::FunctionSummary &of);
+  /// fresh allocation: ownership went in and came back out. The source's
+  /// guard becomes the origin's (RFC 0009); a source whose guard the
+  /// arguments refute outright is `std::nullopt`.
+  [[nodiscard]] std::optional<ValueOrigin>
+  originFromSource(const core::ValueSource &source, const clang::CallExpr &call,
+                   const core::FunctionSummary &of);
+  /// `originFromSource` without the guard.
+  [[nodiscard]] ValueOrigin
+  originFromUnguardedSource(const core::ValueSource &source,
+                            const clang::CallExpr &call,
+                            const core::FunctionSummary &of);
+
+  /// Translates a callee's guard to the caller's places at `call` (RFC 0009,
+  /// *Deriving guards, at a call*): `param i` is the class of a constant
+  /// argument (decided on the spot) or the caller place that holds the
+  /// argument, through casts and multiplication by a positive constant;
+  /// paths below an argument and globals resolve as `resolveSummaryPath`
+  /// does. A conjunct with no caller place is dropped. `std::nullopt` when a
+  /// constant argument refutes a conjunct: the guarded effect does not
+  /// happen at this call.
+  [[nodiscard]] std::optional<core::PlaceGuard>
+  translateGuard(const core::PathGuard &guard, const clang::CallExpr &call);
+
+  /// The integer place an integer-valued expression reads, looking through
+  /// parentheses, casts and multiplication by a positive constant (whose
+  /// zero-ness and sign it shares), if it reads one; and the fact the
+  /// expression itself establishes when it is a constant.
+  struct ScalarOperand {
+    std::optional<PlaceRef> place;
+    std::optional<core::ValueFact> constant;
+    /// The value is the place's scaled or converted, not the place's own:
+    /// an exact constant on the place says nothing exact about the value.
+    bool scaled = false;
+  };
+  [[nodiscard]] ScalarOperand scalarOperand(const clang::Expr &expr);
 
   /// The summary path of a place rooted at a parameter or a global of
   /// `function`, or `std::nullopt` for places rooted at locals.

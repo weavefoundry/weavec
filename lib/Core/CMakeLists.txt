@@ -15,6 +15,7 @@ weavec_add_library(
           Place.cpp
           Raw.cpp
           Resource.cpp
+          Scalar.cpp
           Scc.cpp
           SourceLocation.cpp
           Summary.cpp

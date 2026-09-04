@@ -96,6 +96,7 @@ bool AnalysisState::join(const AnalysisState &other) {
   changed |= raw.join(other.raw);
   changed |= resources.join(other.resources);
   changed |= nulls.join(other.nulls);
+  changed |= scalars.join(other.scalars);
 
   // A pending outcome that is only pending on one incoming path cannot be
   // safely undone, so keep only entries both sides agree on.
@@ -167,6 +168,60 @@ bool AnalysisState::isOverwritten(const SummaryPath &path) const {
   });
 }
 
+std::optional<ValueFact> AnalysisState::factOf(PlaceId place) const {
+  if (const auto fact = scalars.factOf(place))
+    return fact;
+  const auto nullness = nulls.stateOf(place);
+  if (!nullness)
+    return std::nullopt;
+  switch (*nullness) {
+  case Nullness::Null:
+    return ValueFact::of(Outcome::Null);
+  case Nullness::NonNull:
+    return ValueFact::of(Outcome::NonNull);
+  case Nullness::MaybeNull:
+    return std::nullopt;
+  }
+  return std::nullopt;
+}
+
+PlaceGuard AnalysisState::pathGuard() const {
+  PlaceGuard guard;
+  for (const auto &[place, fact] : scalars.all()) {
+    if (guard.conditions.size() >= MaxGuardConjuncts)
+      return guard;
+    guard.conditions.emplace(place, fact);
+  }
+  // A definite null, however learnt, and a non-null established by a test
+  // are what a later test can contradict; a non-null from a dereference is
+  // rarely tested again and would crowd the guard out.
+  for (const auto &[place, record] : nulls.all()) {
+    if (guard.conditions.size() >= MaxGuardConjuncts)
+      return guard;
+    if (record.state == Nullness::Null)
+      guard.conditions.emplace(place, ValueFact::of(Outcome::Null));
+    else if (record.state == Nullness::NonNull &&
+             record.reason == NullReason::Tested)
+      guard.conditions.emplace(place, ValueFact::of(Outcome::NonNull));
+  }
+  return guard;
+}
+
+AnalysisState::Learned AnalysisState::learn(PlaceId place,
+                                            const ValueFact &fact) {
+  Learned learned;
+  learned.reinstated = moves.learn(place, fact);
+  learned.cleared = resources.learn(place, fact);
+  learned.nullChanged = nulls.learn(place, fact);
+  return learned;
+}
+
+void AnalysisState::dropGuardsOn(PlaceId place) {
+  moves.dropGuardsOn(place);
+  resources.dropGuardsOn(place);
+  nulls.dropGuardsOn(place);
+}
+
 void AnalysisState::forget(PlaceId place) {
   moves.reinitialize(place);
   aliases.separate(place);
@@ -177,6 +232,8 @@ void AnalysisState::forget(PlaceId place) {
   raw.clear(place);
   resources.forget(place);
   nulls.forget(place);
+  scalars.forget(place);
+  dropGuardsOn(place);
 }
 
 } // namespace weavec::core

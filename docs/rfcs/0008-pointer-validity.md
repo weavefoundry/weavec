@@ -180,6 +180,10 @@ char *q = strchr(p, 'x'); free(q);         // an interior copy of an owned place
   when `warn` never returns in practice (an unannotated `noreturn` or a
   `longjmp`). Declare the function `noreturn` or restructure. This is the
   same heuristic Clang's static analyzer and `-Wnull-dereference` use.
+  *Superseded by [RFC 0009](0009-value-conditional-behaviour.md), which
+  infers `never-returns` from `warn`'s body, in the same unit or across the
+  program; the false positive remains only for a callee the checker cannot
+  see (a library function without the attribute).*
 - **Unchecked `malloc`.** `p = malloc(n); memset(p, 0, n)` is reported.
   Code that considers allocation failure unrecoverable should wrap the
   allocator in an `xmalloc` that aborts; its inferred summary then returns

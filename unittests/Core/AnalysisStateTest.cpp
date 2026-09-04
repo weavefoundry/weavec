@@ -279,6 +279,12 @@ TEST(AnalysisState, ForgetClearsEveryFactAboutThePlace) {
                                 .reason = NullReason::AssignedNull,
                                 .detail = {}});
 
+  state.scalars.set(P, ValueFact::ofConstant(0));
+  PlaceGuard aboutP;
+  aboutP.require(P, ValueFact::of(Outcome::Null));
+  state.moves.markMoved(Q, MoveReason::Freed, at(4), {},
+                        ElementWitness::whole(), "free", false, aboutP);
+
   state.forget(P);
   EXPECT_FALSE(state.nulls.stateOf(P));
   EXPECT_FALSE(state.raw.isRaw(P));
@@ -288,6 +294,114 @@ TEST(AnalysisState, ForgetClearsEveryFactAboutThePlace) {
   EXPECT_FALSE(state.loans.hasLoans(P)) << "loans against p dropped";
   EXPECT_TRUE(state.pending.empty());
   EXPECT_EQ(state.kindOf(P), OwnershipKind::Unknown);
+  EXPECT_FALSE(state.scalars.factOf(P)) << "scalar fact dropped (RFC 0009)";
+  EXPECT_TRUE(state.moves.recordOf(Q)->guard.trivial())
+      << "guards about p dropped, the record kept";
+}
+
+// -- RFC 0009: scalar facts and guards ----------------------------------------
+
+TEST(AnalysisState, FactOfReadsScalarsThenDefiniteNullness) {
+  AnalysisState state;
+  EXPECT_FALSE(state.factOf(P));
+  state.scalars.set(P, ValueFact::ofConstant(3));
+  EXPECT_EQ(state.factOf(P), ValueFact::ofConstant(3));
+
+  state.nulls.set(Q, NullRecord{.state = Nullness::Null,
+                                .location = at(1),
+                                .reason = NullReason::AssignedNull,
+                                .detail = {}});
+  EXPECT_EQ(state.factOf(Q), ValueFact::of(Outcome::Null));
+  state.nulls.set(Q, NullRecord{.state = Nullness::NonNull,
+                                .location = at(1),
+                                .reason = NullReason::Dereferenced,
+                                .detail = {}});
+  EXPECT_EQ(state.factOf(Q), ValueFact::of(Outcome::NonNull));
+  state.nulls.set(Q, NullRecord{.state = Nullness::MaybeNull,
+                                .location = at(1),
+                                .reason = NullReason::CalleeResult,
+                                .detail = {}});
+  EXPECT_FALSE(state.factOf(Q)) << "maybe-null is no fact";
+}
+
+TEST(AnalysisState, PathGuardIsTheScalarFactsAndTestedNullness) {
+  AnalysisState state;
+  EXPECT_TRUE(state.pathGuard().trivial());
+  state.scalars.set(P, ValueFact::nonZero());
+  state.nulls.set(Q, NullRecord{.state = Nullness::Null,
+                                .location = at(1),
+                                .reason = NullReason::AssignedNull,
+                                .detail = {}});
+  state.nulls.set(X, NullRecord{.state = Nullness::NonNull,
+                                .location = at(1),
+                                .reason = NullReason::Dereferenced,
+                                .detail = {}});
+  PlaceGuard expected;
+  expected.require(P, ValueFact::nonZero());
+  expected.require(Q, ValueFact::of(Outcome::Null));
+  EXPECT_EQ(state.pathGuard(), expected)
+      << "a non-null from a dereference is not a condition a test made";
+
+  state.nulls.set(X, NullRecord{.state = Nullness::NonNull,
+                                .location = at(1),
+                                .reason = NullReason::Tested,
+                                .detail = {}});
+  expected.require(X, ValueFact::of(Outcome::NonNull));
+  EXPECT_EQ(state.pathGuard(), expected);
+}
+
+TEST(AnalysisState, JoinJoinsScalarsAndLearnRefutesAcrossTrackers) {
+  // `if (c) { free(p); q = malloc(8); }` merged with the other arm.
+  AnalysisState arm;
+  arm.scalars.set(X, ValueFact::nonZero());
+  arm.moves.markMoved(P, MoveReason::Freed, at(3), {}, ElementWitness::whole(),
+                      "free", false, arm.pathGuard());
+  arm.resources.hold(Q, ResourceRecord{.origin = ResourceOrigin::Allocated,
+                                       .location = at(4),
+                                       .family = "free",
+                                       .escaped = false,
+                                       .guard = arm.pathGuard()});
+  AnalysisState other;
+  other.scalars.set(X, ValueFact::of(Outcome::Zero));
+
+  EXPECT_TRUE(arm.join(other));
+  EXPECT_FALSE(arm.scalars.factOf(X)) << "zero or non-zero: nothing";
+  EXPECT_TRUE(arm.moves.isMoved(P));
+  EXPECT_TRUE(arm.resources.holds(Q));
+
+  // The edge `!c`.
+  const AnalysisState::Learned learned =
+      arm.learn(X, ValueFact::of(Outcome::Zero));
+  EXPECT_EQ(learned.reinstated, (std::vector<PlaceId>{P}));
+  EXPECT_EQ(learned.cleared, (std::vector<PlaceId>{Q}));
+  EXPECT_TRUE(learned.nullChanged.empty());
+  EXPECT_FALSE(arm.moves.isMoved(P));
+  EXPECT_FALSE(arm.resources.holds(Q));
+}
+
+TEST(AnalysisState, DropGuardsOnReachesEveryTracker) {
+  AnalysisState state;
+  PlaceGuard aboutX;
+  aboutX.require(X, ValueFact::nonZero());
+  state.moves.markMoved(P, MoveReason::Freed, at(3), {},
+                        ElementWitness::whole(), "free", false, aboutX);
+  state.resources.hold(Q, ResourceRecord{.origin = ResourceOrigin::Allocated,
+                                         .location = at(4),
+                                         .family = "free",
+                                         .escaped = false,
+                                         .guard = aboutX});
+  state.nulls.set(Q, NullRecord{.state = Nullness::Null,
+                                .location = at(5),
+                                .reason = NullReason::AssignedNull,
+                                .detail = {},
+                                .guard = aboutX});
+  state.dropGuardsOn(X);
+  EXPECT_TRUE(state.moves.recordOf(P)->guard.trivial());
+  EXPECT_TRUE(state.resources.recordOf(Q)->guard.trivial());
+  EXPECT_TRUE(state.nulls.recordOf(Q)->guard.trivial());
+  // Nothing was refuted; the records are all still there.
+  EXPECT_TRUE(state.learn(X, ValueFact::of(Outcome::Zero)).reinstated.empty());
+  EXPECT_TRUE(state.moves.isMoved(P));
 }
 
 } // namespace

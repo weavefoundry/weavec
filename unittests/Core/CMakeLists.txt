@@ -11,6 +11,7 @@ weavec_add_unittest(
           PlaceTest.cpp
           RawTest.cpp
           ResourceTest.cpp
+          ScalarTest.cpp
           SummaryIOTest.cpp
           SummaryTest.cpp
   DEPS weavec::Core)

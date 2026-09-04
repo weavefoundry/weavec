@@ -173,13 +173,36 @@ Design: [RFC 0008 — Pointer validity](rfcs/0008-pointer-validity.md)
 - [ ] Nullness through struct fields across calls (a callee that nulls
       `b->data` and a caller that dereferences it) beyond the per-outcome
       `null{...}`/`notnull{...}` facts.
-- [ ] Integer-correlated tests (`if (n > 0) p = malloc(n); ... if (n > 0)
-      *p`): currently a `null-dereference`, by design.
+- [x] Integer-correlated tests (`if (n > 0) p = xmalloc(n); ... if (n > 0)
+      *p`): the null record is guarded by `n zero|negative` and otherwise
+      non-null, so the second test clears it (RFC 0009). With a plain
+      `malloc` the report stays and is the unchecked-allocation one.
 - [ ] Corpus triage of the new reports; null-dereference rate as a tracked
       metric.
 - [ ] The consume fan-out at calls (`doConsume` over a path, its mirrors and
       their aliases, once per call site) that dominates Lua's `luaV_execute`
       since *Replaced values* (RFC 0008, *Performance*).
+
+## Milestone 8 — Value-conditional behaviour (in progress)
+
+Design: [RFC 0009 — Value-conditional behaviour](rfcs/0009-value-conditional-behaviour.md)
+(Accepted).
+
+- [x] `ScalarTracker` in the state: the class (`zero`, `positive`,
+      `negative`) and known constant of integer places, refined by condition
+      edges and `switch` cases, joined at merges.
+- [x] Guards on moves, held resources and null records: each carries the
+      facts of the path that created it and a later test that contradicts
+      them drops it: `if (c) free(p); ... if (!c) use(p);` is clean.
+- [x] Argument-conditional summaries: `when` guards on consumes, stores and
+      return alternatives, translated to the arguments at the call and pruned
+      against the caller's facts (summary format v5, sidecar v5).
+- [x] Inferred `never-returns` for functions whose exit is unreachable,
+      transitively through wrappers and across units; a call to one ends the
+      path like a declared `noreturn`.
+- [ ] Argument-conditional termination (`never-returns when ...`).
+- [ ] Corpus: the `noreturn` group of Lua reports removed; time regression
+      bounded.
 
 ## Ongoing
 

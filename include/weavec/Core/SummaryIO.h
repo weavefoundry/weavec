@@ -12,14 +12,16 @@
 // line-oriented record:
 //
 //   summary
-//     effect <path> <flag>[,<flag>]*      flags: read written freed moved
+//     never-returns                        no path reaches the exit
+//     effect <path> <flag>[,<flag>]* [<guard>]
+//                                          flags: read written freed moved
 //                                          freed(<family>) moved(<family>)
 //                                          replaced element (qualify a
 //                                          consume)
-//     store <path> <source>
-//     return <source>
+//     store <path> <source> [<guard>]
+//     return <source> [<guard>]
 //     outcome <class>                      the class is a possible result
-//     outcome <class> <path> <flag>[,<flag>]*
+//     outcome <class> <path> <flag>[,<flag>]* [<guard>]
 //     null <class> <path>                  the place is null on every path
 //                                          returning the class
 //     notnull <class> <path>               the place is non-null on every
@@ -34,12 +36,17 @@
 //            | interior <path> | borrow <path>
 //   class  ::= null | nonnull | zero | positive | negative
 //   family ::= an identifier naming the canonical releaser (free, fclose)
+//   guard  ::= when <path> <fact> ( and <path> <fact> )*
+//   fact   ::= =<integer> | <class> ( '|' <class> )*
 //
 // Version 2 (RFC 0006) added `outcome` and `interior` and dropped
 // `realloc-like`. Version 3 (RFC 0007) added the optional release family on
 // `fresh`, `freed` and `moved` (the bare spellings mean "unknown family")
 // and the `null` line. Version 4 (RFC 0008) added the `replaced` and
 // `element` flags, the `notnull` and `requires` lines and the `result` root.
+// Version 5 (RFC 0009) added the `never-returns` line and the optional guard
+// on `effect`, `outcome`, `store` and `return` lines: the effect, store or
+// alternative holds only when every conjunct does.
 //
 // Global roots are spelled by name; the caller supplies the mapping between
 // the summary's global ids and names in both directions, so this file stays
@@ -62,7 +69,7 @@ namespace weavec::core {
 
 /// Version of the record format; bumped when a record written by this
 /// version cannot be read by the previous one.
-inline constexpr unsigned SummaryFormatVersion = 4;
+inline constexpr unsigned SummaryFormatVersion = 5;
 
 /// The name to print for a global root id.
 using GlobalNamer = std::function<std::string(std::uint32_t)>;
@@ -82,6 +89,11 @@ using GlobalResolver =
 
 /// Spells `effect`'s flags as in the record format (`read,freed(free)`).
 [[nodiscard]] std::string printFlags(const PlaceEffect &effect);
+
+/// Spells `guard` as in the record format, with a leading space (` when
+/// param 3 zero and param 2 nonnull`); empty for a trivial guard.
+[[nodiscard]] std::string printGuard(const PathGuard &guard,
+                                     const GlobalNamer &names);
 
 /// Prints `summary` as one record, `summary\n ... end\n`, lines indented by
 /// two spaces and in a deterministic order.

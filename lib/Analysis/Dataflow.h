@@ -196,6 +196,26 @@ private:
   };
   std::optional<CallOutcome> lastCall;
 
+  /// The block being transferred called a function that never returns (RFC
+  /// 0009, *Inferred `noreturn`*): the rest of the block is dead and its
+  /// state reaches no successor.
+  bool blockTerminated = false;
+  /// Some block hit `MaxVisitsPerBlock`: the exit state is not a fixpoint,
+  /// so an unreachable exit proves nothing about termination.
+  bool convergenceFailed = false;
+  /// The edge being applied contradicts a must-fact of the state (`if (c)`
+  /// with `c` known zero): no real path takes it, so its state reaches
+  /// nobody and nothing dies on it (RFC 0009, *Scalar facts in the state*).
+  bool edgeInfeasible = false;
+  /// Per block: whether it calls a function that never returns, declared
+  /// (`hasNoReturnElement`) or inferred (RFC 0009); computed on first use.
+  std::vector<std::optional<bool>> neverReturnsCache;
+  [[nodiscard]] bool blockNeverReturns(const clang::CFGBlock &block);
+  /// Caller-visible integer paths this function writes anywhere (flow
+  /// insensitive): a guard on one speaks about a value the caller cannot
+  /// see, so it is dropped from the summary (RFC 0009, *Deriving guards*).
+  std::set<core::SummaryPath> writtenScalarPaths;
+
   // -- Pre-passes -----------------------------------------------------------
 
   void collectScopes(const clang::Stmt *stmt, core::LifetimeId current);
@@ -244,12 +264,70 @@ private:
   /// being on the operand Clang's short-circuit CFG evaluated last.
   void applyCondition(const clang::Expr &condition, bool holds, bool wrapped,
                       core::AnalysisState &state);
+  /// The edge out of a `switch` into `to`: the scrutinee equals one of the
+  /// block's `case` labels, or none of them on the `default` edge (RFC
+  /// 0009, *Scalar facts in the state*).
+  void applySwitchEdge(const clang::SwitchStmt &statement,
+                       const clang::CFGBlock &to, core::AnalysisState &state);
   /// A test of a call result on a conditional edge (RFC 0006, *Outcome
   /// tests*): the classes the edge selects for the pending outcome of the
-  /// tested operand.
+  /// tested operand. For an integer operand the edge also narrows its
+  /// scalar fact, to `constant` when the test is an equality that holds
+  /// (RFC 0009), and every fact learnt refutes the guards it contradicts.
   void applyOutcomeTest(const clang::Expr &operand,
                         const std::set<core::Outcome> &selected,
-                        core::AnalysisState &state);
+                        core::AnalysisState &state,
+                        std::optional<std::int64_t> constant = std::nullopt);
+
+  // -- Scalar facts and guards (RFC 0009) -----------------------------------
+
+  /// `place` (and its exact copies) satisfies `fact` from here on: every
+  /// guarded record learns it, and the moves whose guard is refuted are
+  /// reinstated, with the flow-sensitive consumption they fed.
+  void learnFact(core::PlaceId place, const core::ValueFact &fact,
+                 core::AnalysisState &state);
+  /// The integer place `place` takes the value of `value` (unknown when
+  /// null): its fact is replaced and the guards that spoke about its old
+  /// value drop that conjunct.
+  void assignScalar(core::PlaceId place, const clang::Expr *value,
+                    core::AnalysisState &state);
+  /// The integer place `place` was written in a way the model does not
+  /// follow (`n++`, `n += k`, through its address).
+  void forgetScalar(core::PlaceId place, core::AnalysisState &state);
+  /// What is known of the integer rvalue `expr`: a constant, the fact of the
+  /// place it reads (its class only through a scale), or nothing.
+  [[nodiscard]] std::optional<core::ValueFact>
+  scalarFactOf(const clang::Expr &expr, const core::AnalysisState &state);
+  /// True if a fact about the integer place `place` is worth keeping: the
+  /// storage of a local or parameter, or memory behind a pointer; not a
+  /// global (any callee may write it) or an array element.
+  [[nodiscard]] bool tracksScalar(core::PlaceId place) const;
+  /// The storage a write to `place` lands in when `place` is below a
+  /// pointer that borrows a local (`q->n` with `q = &s` is `s.n`).
+  [[nodiscard]] std::vector<core::PlaceId>
+  borrowedImages(core::PlaceId place, const core::AnalysisState &state);
+  /// The facts of the current path as the guard of a record created here
+  /// (RFC 0009, *Deriving guards*), less any conjunct on `exclude` or its
+  /// exact copies (the record is about that place's new value).
+  [[nodiscard]] static core::PlaceGuard
+  guardHere(const core::AnalysisState &state,
+            std::optional<core::PlaceId> exclude = std::nullopt);
+  /// `guard` translated to this function's summary paths for a `when`
+  /// clause: conjuncts on places with no stable path are dropped, which only
+  /// weakens the guard (RFC 0009, *Deriving guards*).
+  [[nodiscard]] core::PathGuard summaryGuardOf(const core::PlaceGuard &guard);
+  /// `guard` with what the current facts decide taken out: false if some
+  /// conjunct is refuted (what it protects does not happen here).
+  [[nodiscard]] static bool pruneGuard(core::PlaceGuard &guard,
+                                       const core::AnalysisState &state);
+  /// Drops the alternatives of `origin` whose guard the facts refute and
+  /// collapses a single survivor; `origin.guard` itself is pruned too.
+  /// Returns false if nothing survives.
+  [[nodiscard]] bool pruneOrigin(ValueOrigin &origin,
+                                 const core::AnalysisState &state);
+  /// Drops, from every guard in `inferred`, the conjuncts on paths this
+  /// function writes: they spoke about a value the caller never saw.
+  void dropUnstableGuards();
   /// `place` and its exact copies hold null (RFC 0007, *Null*).
   static void markNullWithCopies(core::PlaceId place,
                                  core::AnalysisState &state);
@@ -374,10 +452,14 @@ private:
   /// empty if the place was already moved (reported, not re-marked). With
   /// `replaced` (RFC 0008, *Replaced values*) only the aliases are marked
   /// and the place itself is reinitialised.
+  /// `guard` is what a callee's argument-conditional effect requires of the
+  /// caller's places, already translated and pruned (RFC 0009); the path's
+  /// own facts are added to it.
   std::vector<core::PlaceId>
   doConsume(const PlaceRef &ref, core::MoveReason reason, const clang::Expr &at,
             core::AnalysisState &state, std::string_view family = {},
-            bool library = false, bool replaced = false);
+            bool library = false, bool replaced = false,
+            core::PlaceGuard guard = {});
   void doMutationCheck(core::PlaceId place, const clang::Expr &at,
                        core::AnalysisState &state);
   /// The variable `place` names (if it is a base place) was assigned or had
@@ -387,7 +469,7 @@ private:
   /// `dest` (its element `element` when it is a summarised array place)
   /// receives a pointer value of the given origin.
   void applyPointerAssign(
-      core::PlaceId dest, const ValueOrigin &origin, const clang::Expr &at,
+      core::PlaceId dest, const ValueOrigin &given, const clang::Expr &at,
       bool constPointee, core::AnalysisState &state,
       core::ElementWitness element = core::ElementWitness::whole());
   /// `dest` received the result of `call`; the call's pending outcome, if
@@ -523,7 +605,9 @@ private:
   [[nodiscard]] std::optional<core::NullRecord>
   nullnessOf(const ValueOrigin &origin, const clang::Expr &at,
              const core::AnalysisState &state);
-  /// Records `record` for `place` and its exact copies.
+  /// Records `record` for `place` and its exact copies. A record that may be
+  /// null and carries no guard of its own gets the path's facts as one (RFC
+  /// 0009, *Deriving guards*).
   static void setNullness(core::PlaceId place, const core::NullRecord &record,
                           core::AnalysisState &state);
   /// A callee's store into `dest` at `call` may have left it null: the
@@ -577,7 +661,7 @@ private:
   void recordConsume(core::PlaceId target, core::MoveReason reason,
                      std::string_view family,
                      const core::ElementWitness &element,
-                     core::AnalysisState &state);
+                     const core::PlaceGuard &guard, core::AnalysisState &state);
   /// This function overwrote `place` outright on the current path: what the
   /// caller's memory held there on entry is gone (RFC 0008, *Replaced
   /// values*; `state.overwritten`).
@@ -616,9 +700,13 @@ private:
   /// results*).
   void recordResultStores(const PlaceRef &returned,
                           const core::AnalysisState &state);
-  /// Classifies a value the callee hands out (stores or returns).
+  /// Classifies a value the callee hands out (stores or returns), guarded by
+  /// the path's facts and the origin's own (RFC 0009).
   [[nodiscard]] core::ValueSource sourceOf(const ValueOrigin &origin,
                                            const core::AnalysisState &state);
+  /// `sourceOf` without the guard.
+  [[nodiscard]] core::ValueSource
+  sourceValueOf(const ValueOrigin &origin, const core::AnalysisState &state);
   /// Summary path for `place`, ignoring parameters that were reassigned
   /// (their variable no longer holds the argument).
   [[nodiscard]] std::optional<core::SummaryPath>

@@ -136,7 +136,9 @@ change makes the checker less sound in some corner, the corner is named.
 
 - Merge-point conservatism (RFC 0002) remains: `if (c) free(p); if (!c)
   use(p);` is still reported. Condition facts are about pointer values and
-  call results, not arbitrary booleans.
+  call results, not arbitrary booleans. *Superseded by [RFC
+  0009](0009-value-conditional-behaviour.md), which extends condition
+  facts to integer places and guards the move by them.*
 - Loans held by *fields* of a local struct end with the last use of the
   struct variable, not of the field.
 - A loan whose holder's address is taken (`&a` for `int *a`) lasts to the

@@ -72,12 +72,33 @@ bool ResourceTracker::join(const ResourceTracker &other) {
       mine.family.clear();
       changed = true;
     }
+    // Held when either side's guard holds.
+    changed |= mine.guard.join(record.guard);
   }
   const std::size_t before = null.size();
   std::erase_if(
       null, [&other](PlaceId place) { return !other.null.contains(place); });
   changed |= null.size() != before;
   return changed;
+}
+
+std::vector<PlaceId> ResourceTracker::learn(PlaceId place,
+                                            const ValueFact &fact) {
+  std::vector<PlaceId> refuted;
+  for (auto it = owned.begin(); it != owned.end();) {
+    if (it->second.guard.learn(place, fact) == GuardRefinement::Refuted) {
+      refuted.push_back(it->first);
+      it = owned.erase(it);
+      continue;
+    }
+    ++it;
+  }
+  return refuted;
+}
+
+void ResourceTracker::dropGuardsOn(PlaceId place) {
+  for (auto &[holder, record] : owned)
+    record.guard.drop(place);
 }
 
 std::vector<PlaceId> ResourceTracker::holders() const {

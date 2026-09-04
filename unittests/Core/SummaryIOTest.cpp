@@ -113,6 +113,101 @@ TEST(SummaryIO, PrintsAndParsesOutcomes) {
                             ResolveAll, &error));
 }
 
+// RFC 0009, *Summary text format (version 5)*: `when` guards and
+// `never-returns`.
+TEST(SummaryIO, PrintsAndParsesGuardsAndNeverReturns) {
+  const auto when =
+      [](std::initializer_list<std::pair<SummaryPath, ValueFact>> conjuncts) {
+        PathGuard guard;
+        for (const auto &[path, fact] : conjuncts)
+          guard.require(path, fact);
+        return guard;
+      };
+  FunctionSummary alloc;
+  alloc.addEffect(SummaryPath::param(1),
+                  PlaceEffect{.freed = true,
+                              .family = "free",
+                              .when = when({{SummaryPath::param(3),
+                                             ValueFact::of(Outcome::Zero)}})});
+  alloc.addOutcome(Outcome::Null, SummaryPath::param(1),
+                   PlaceEffect{.freed = true,
+                               .family = "free",
+                               .when = when({{SummaryPath::param(3),
+                                              ValueFact::of(Outcome::Zero)}})});
+  ValueSource fresh = ValueSource::fresh("free");
+  fresh.when = when({{SummaryPath::param(3), ValueFact::nonZero()}});
+  alloc.addReturn(fresh);
+  alloc.addReturn(ValueSource::null());
+  ValueSource copy = ValueSource::copy(SummaryPath::param(2));
+  copy.when = when(
+      {{SummaryPath::param(2), ValueFact::of(Outcome::NonNull)},
+       {SummaryPath::param(0).deref().field("n"), ValueFact::ofConstant(-3)}});
+  alloc.addStore(
+      Store{.dest = SummaryPath::param(0).deref().field("msg"), .value = copy});
+
+  const std::string text = printSummary(alloc, Names);
+  EXPECT_EQ(text, "summary\n"
+                  "  effect param 1 freed(free) when param 3 zero\n"
+                  "  store param 0 *.msg copy param 2 when param 0 *.n =-3 "
+                  "and param 2 nonnull\n"
+                  "  return fresh(free) when param 3 positive|negative\n"
+                  "  return null\n"
+                  "  outcome null param 1 freed(free) when param 3 zero\n"
+                  "end\n");
+  std::string error;
+  const auto parsed = parseSummary(text, ResolveAll, &error);
+  ASSERT_TRUE(parsed) << error;
+  EXPECT_EQ(*parsed, alloc);
+
+  FunctionSummary dies;
+  dies.neverReturns = true;
+  dies.addEffect(SummaryPath::param(0).deref(), PlaceEffect{.read = true});
+  EXPECT_EQ(printSummary(dies, Names), "summary\n"
+                                       "  never-returns\n"
+                                       "  effect param 0 * read\n"
+                                       "end\n");
+  const auto reparsed = parseSummary(printSummary(dies, Names), ResolveAll);
+  ASSERT_TRUE(reparsed);
+  EXPECT_EQ(*reparsed, dies);
+  EXPECT_TRUE(reparsed->neverReturns);
+}
+
+TEST(SummaryIO, GuardsOnDeclinedGlobalsAreDropped) {
+  const GlobalResolver declineAll = [](std::string_view) {
+    return std::optional<std::uint32_t>();
+  };
+  const auto parsed =
+      parseSummary("summary\n"
+                   "  effect param 0 freed when global g1 zero and param 1 "
+                   "positive\n"
+                   "end\n",
+                   declineAll);
+  ASSERT_TRUE(parsed);
+  PathGuard expected;
+  expected.require(SummaryPath::param(1), ValueFact::of(Outcome::Positive));
+  EXPECT_EQ(parsed->effectOf(SummaryPath::param(0)).when, expected);
+}
+
+TEST(SummaryIO, RejectsMalformedGuards) {
+  for (const char *line : {
+           "  effect param 0 freed when",
+           "  effect param 0 freed when param 3",
+           "  effect param 0 freed when param 3 maybe",
+           "  effect param 0 freed when param 3 zero param 2 zero",
+           "  effect param 0 freed when param 3 zero and",
+           "  effect param 0 freed if param 3 zero",
+           "  effect param 0 read when param 3 zero",
+           "  return null when param 1",
+           "  store param 0 * fresh when =3",
+       }) {
+    std::string error;
+    EXPECT_FALSE(parseSummary(std::string("summary\n") + line + "\nend\n",
+                              ResolveAll, &error))
+        << line;
+    EXPECT_FALSE(error.empty()) << line;
+  }
+}
+
 TEST(SummaryIO, InteriorCopiesRoundTrip) {
   FunctionSummary s;
   s.addReturn(ValueSource::interiorCopy(SummaryPath::param(0)));

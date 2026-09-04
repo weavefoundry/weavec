@@ -348,6 +348,109 @@ TEST(FunctionSummary, OutcomesJoinPerClassAndDecideConditionality) {
   EXPECT_FALSE(parseOutcome("maybe"));
 }
 
+// RFC 0009, *Argument-conditional summaries*.
+TEST(FunctionSummary, GuardedAlternativesMergeByJoiningTheirGuards) {
+  const auto when = [](const SummaryPath &path, const ValueFact &fact) {
+    PathGuard guard;
+    guard.require(path, fact);
+    return guard;
+  };
+  const SummaryPath n = SummaryPath::param(3);
+
+  // `if (nsize == 0) return NULL; ... return NULL;`: one `null` alternative
+  // whose guard is what the two agree on (nothing).
+  FunctionSummary s;
+  ValueSource nullWhenZero = ValueSource::null();
+  nullWhenZero.when = when(n, ValueFact::of(Outcome::Zero));
+  s.addReturn(nullWhenZero);
+  EXPECT_EQ(s.returns.size(), 1U);
+  EXPECT_EQ(s.returns.begin()->when, when(n, ValueFact::of(Outcome::Zero)));
+  ValueSource nullWhenPositive = ValueSource::null();
+  nullWhenPositive.when = when(n, ValueFact::of(Outcome::Positive));
+  s.addReturn(nullWhenPositive);
+  EXPECT_EQ(s.returns.size(), 1U);
+  EXPECT_EQ(s.returns.begin()->when,
+            when(n, ValueFact::of({Outcome::Zero, Outcome::Positive})));
+  s.addReturn(ValueSource::null());
+  EXPECT_EQ(s.returns.size(), 1U);
+  EXPECT_TRUE(s.returns.begin()->when.trivial());
+
+  // A different kind is a different alternative, guard and all.
+  ValueSource fresh = ValueSource::fresh("free");
+  fresh.when = when(n, ValueFact::nonZero());
+  s.addReturn(fresh);
+  EXPECT_EQ(s.returns.size(), 2U);
+  EXPECT_TRUE(s.returnsOnlyFresh());
+
+  // Stores to one destination behave the same way.
+  ValueSource copy = ValueSource::copy(SummaryPath::param(2));
+  copy.when = when(SummaryPath::param(2), ValueFact::of(Outcome::NonNull));
+  const SummaryPath dest = SummaryPath::param(0).deref().field("msg");
+  s.addStore(Store{.dest = dest, .value = copy});
+  s.addStore(Store{.dest = dest, .value = copy});
+  EXPECT_EQ(s.stores.size(), 1U);
+  EXPECT_EQ(s.stores.begin()->value.when, copy.when);
+  s.addStore(
+      Store{.dest = dest, .value = ValueSource::copy(SummaryPath::param(2))});
+  EXPECT_EQ(s.stores.size(), 1U);
+  EXPECT_TRUE(s.stores.begin()->value.when.trivial());
+
+  // Effects: a consume guarded on both sides keeps the common conjuncts; a
+  // side that consumes unconditionally makes the join unconditional.
+  FunctionSummary a;
+  a.addEffect(SummaryPath::param(1),
+              PlaceEffect{.freed = true,
+                          .family = "free",
+                          .when = when(n, ValueFact::of(Outcome::Zero))});
+  FunctionSummary b;
+  b.addEffect(SummaryPath::param(1),
+              PlaceEffect{.freed = true,
+                          .family = "free",
+                          .when = when(n, ValueFact::of(Outcome::Negative))});
+  FunctionSummary joined = a;
+  joined.join(b);
+  EXPECT_EQ(joined.effectOf(SummaryPath::param(1)).when,
+            when(n, ValueFact::of({Outcome::Zero, Outcome::Negative})));
+  FunctionSummary c;
+  c.addEffect(SummaryPath::param(1),
+              PlaceEffect{.freed = true, .family = "free"});
+  joined.join(c);
+  EXPECT_TRUE(joined.effectOf(SummaryPath::param(1)).when.trivial());
+  // A read merged into a guarded consume leaves the consume's guard alone:
+  // the guard qualifies the consume only.
+  a.addEffect(SummaryPath::param(1), PlaceEffect{.read = true});
+  EXPECT_EQ(a.effectOf(SummaryPath::param(1)).when,
+            when(n, ValueFact::of(Outcome::Zero)));
+  EXPECT_TRUE(a.effectOf(SummaryPath::param(1)).read);
+}
+
+// RFC 0009, *Inferred `noreturn`*: the bit joins by conjunction, from the
+// first candidate when the join starts empty.
+TEST(FunctionSummary, NeverReturnsJoinsByConjunction) {
+  FunctionSummary dies;
+  dies.neverReturns = true;
+  FunctionSummary returns;
+  returns.addReturn(ValueSource::null());
+
+  FunctionSummary both = dies;
+  both.join(dies);
+  EXPECT_TRUE(both.neverReturns);
+  both.join(returns);
+  EXPECT_FALSE(both.neverReturns);
+
+  FunctionSummary fromBottom;
+  fromBottom.join(dies);
+  EXPECT_TRUE(fromBottom.neverReturns)
+      << "the empty summary is bottom, not a candidate that returns";
+  fromBottom.join(returns);
+  EXPECT_FALSE(fromBottom.neverReturns);
+
+  FunctionSummary other;
+  other.join(returns);
+  other.join(dies);
+  EXPECT_FALSE(other.neverReturns) << "order does not matter";
+}
+
 TEST(ValueSource, KindNames) {
   EXPECT_EQ(toString(ValueSource::Kind::Fresh), "fresh");
   EXPECT_EQ(toString(ValueSource::Kind::Copy), "copy");

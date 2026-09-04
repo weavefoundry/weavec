@@ -22,6 +22,7 @@
 #define WEAVEC_CORE_MOVES_H
 
 #include "weavec/Core/Place.h"
+#include "weavec/Core/Scalar.h"
 #include "weavec/Core/SourceLocation.h"
 
 #include <cstdint>
@@ -111,6 +112,12 @@ struct MoveRecord {
   /// summary (RFC 0008, *Replaced values*). A join with a record that may be
   /// the caller's clears it.
   bool ownValue = false;
+  /// RFC 0009: the move happened only when the guard holds: the facts that
+  /// held on the path that consumed the place, and the callee's
+  /// argument-conditional effect when a call did. Refuted by a later test,
+  /// the record is gone.
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
+  PlaceGuard guard = {};
 
   friend bool operator==(const MoveRecord &, const MoveRecord &) = default;
 };
@@ -128,7 +135,8 @@ public:
   markMoved(PlaceId place, MoveReason reason, SourceLocation location,
             std::optional<PlaceId> via = {},
             ElementWitness element = ElementWitness::whole(),
-            std::string family = {}, bool ownValue = false);
+            std::string family = {}, bool ownValue = false,
+            PlaceGuard guard = {});
 
   /// Reinitializes `place`, e.g. after assignment of a fresh value. With a
   /// witness, only a record whose witness matches is erased (an element
@@ -157,9 +165,22 @@ public:
   /// This is the conservative "may be moved" join used at CFG merge points.
   /// Where both sides moved the same place, this side's record is kept, so
   /// the result does not depend on evaluation order; if the witnesses differ
-  /// the kept record's witness becomes `Unknown`. Returns whether this
-  /// tracker changed.
+  /// the kept record's witness becomes `Unknown`. A record on both sides is
+  /// guarded by what its two guards agree on; one on one side keeps its own
+  /// (RFC 0009). Returns whether this tracker changed.
   bool join(const MoveTracker &other);
+
+  /// `place` now satisfies `fact` (a condition edge): every record's guard
+  /// learns it; the records whose guard is refuted are erased and returned
+  /// (RFC 0009, *Refuting guards*).
+  std::vector<PlaceId> learn(PlaceId place, const ValueFact &fact);
+
+  /// `place` was overwritten: no guard may speak about it any more.
+  void dropGuardsOn(PlaceId place);
+
+  /// The record for `place` is now guarded by `guard` (used after a pending
+  /// outcome narrowed the classes a guarded consume was attached to).
+  void setGuard(PlaceId place, PlaceGuard guard);
 
   /// Moved places in ascending order (for dumps).
   [[nodiscard]] std::vector<PlaceId> movedPlaces() const;
