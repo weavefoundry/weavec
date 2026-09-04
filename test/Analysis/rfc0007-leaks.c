@@ -75,17 +75,17 @@ void field_overwrite(struct buf *b) {
   b->data = malloc(16);
 }
 
-// Merge-point conservatism (accepted false positive): `p` may own at the
-// second `if` and is released on no path through the early return.
+// Once a merge-point false positive: `p` may own at the second `if`, but the
+// resource is held under the guard `c != 0`, which the early return's edge
+// refutes (RFC 0009, *Refuting guards in the state*).
 int merged(int c) {
   char *p = NULL;
   if (c)
     p = malloc(8);
   if (!c)
-    // CHECK: rfc0007-leaks.c:[[@LINE+1]]:5: warning: 'p' is leaked [weavec::leak]
     return -1;
   free(p);
   return 0;
 }
 
-// CHECK: 9 warnings generated.
+// CHECK: 8 warnings generated.

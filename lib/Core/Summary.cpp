@@ -95,6 +95,7 @@ void PlaceEffect::join(const PlaceEffect &other) {
     family = other.family;
     replaced = other.replaced;
     element = other.element;
+    when = other.when;
     return;
   }
   if (family != other.family)
@@ -103,6 +104,8 @@ void PlaceEffect::join(const PlaceEffect &other) {
   // side that consumed the whole pointee makes every later access a use.
   replaced = replaced && other.replaced;
   element = element && other.element;
+  // The consume happens when either side's guard holds (RFC 0009).
+  when.join(other.when);
 }
 
 PlaceEffect FunctionSummary::effectOf(const SummaryPath &path) const {
@@ -114,6 +117,51 @@ void FunctionSummary::addEffect(SummaryPath path, const PlaceEffect &effect) {
   if (effect.empty())
     return;
   effects[std::move(path)].join(effect);
+}
+
+void FunctionSummary::addStore(Store store) {
+  const auto same = std::ranges::find_if(stores, [&store](const Store &s) {
+    return s.dest == store.dest && s.value.sameValueAs(store.value);
+  });
+  if (same == stores.end()) {
+    stores.insert(std::move(store));
+    return;
+  }
+  if (same->value.when == store.value.when)
+    return;
+  Store joined = *same;
+  joined.value.when.join(store.value.when);
+  stores.erase(same);
+  stores.insert(std::move(joined));
+}
+
+void FunctionSummary::addReturn(ValueSource source) {
+  const auto same =
+      std::ranges::find_if(returns, [&source](const ValueSource &s) {
+        return s.sameValueAs(source);
+      });
+  if (same == returns.end()) {
+    returns.insert(std::move(source));
+    return;
+  }
+  if (same->when == source.when)
+    return;
+  ValueSource joined = *same;
+  joined.when.join(source.when);
+  returns.erase(same);
+  returns.insert(std::move(joined));
+}
+
+bool FunctionSummary::returnsKind(ValueSource::Kind kind) const noexcept {
+  return std::ranges::any_of(returns, [kind](const ValueSource &source) {
+    return source.kind == kind;
+  });
+}
+
+void FunctionSummary::eraseReturns(ValueSource::Kind kind) {
+  std::erase_if(returns, [kind](const ValueSource &source) {
+    return source.kind == kind;
+  });
 }
 
 bool FunctionSummary::consumes(std::uint32_t param) const {
@@ -168,7 +216,7 @@ OwnershipKind FunctionSummary::inferredKind(std::uint32_t param) const {
 }
 
 OwnershipKind FunctionSummary::inferredReturnKind() const {
-  if (returns.contains(ValueSource::raw()))
+  if (returnsKind(ValueSource::Kind::Raw))
     return OwnershipKind::Raw;
   OwnershipKind result = OwnershipKind::Unknown;
   for (const ValueSource &source : returns) {
@@ -222,7 +270,7 @@ void FunctionSummary::eraseFreshReturns() {
 }
 
 bool FunctionSummary::mayReturnNull() const noexcept {
-  return returns.contains(ValueSource::null());
+  return returnsKind(ValueSource::Kind::Null);
 }
 
 void FunctionSummary::addOutcome(Outcome outcome, const SummaryPath &path,
@@ -247,11 +295,17 @@ void FunctionSummary::join(const FunctionSummary &other) {
   const bool wasEmpty = empty();
   for (const auto &[path, effect] : other.effects)
     addEffect(path, effect);
-  stores.insert(other.stores.begin(), other.stores.end());
-  returns.insert(other.returns.begin(), other.returns.end());
+  for (const Store &store : other.stores)
+    addStore(store);
+  for (const ValueSource &source : other.returns)
+    addReturn(source);
   // A parameter some candidate dereferences must not be null (RFC 0008).
   requiresNonNull.insert(other.requiresNonNull.begin(),
                          other.requiresNonNull.end());
+  // A path through either side that returns is a path that returns (RFC
+  // 0009): the bit survives only when both sides have it.
+  neverReturns =
+      wasEmpty ? other.neverReturns : (neverReturns && other.neverReturns);
   if (wasEmpty) {
     outcomes = other.outcomes;
     nullOn = other.nullOn;
@@ -318,24 +372,42 @@ FunctionSummary remapGlobals(const FunctionSummary &summary,
     result.index = *id;
     return result;
   };
-  const auto remapSource = [&remapPath](const ValueSource &source) {
+  // A conjunct on a dropped root is dropped: the guard weakens (RFC 0009).
+  const auto remapGuard = [&remapPath](const PathGuard &guard) {
+    PathGuard result;
+    for (const auto &[path, fact] : guard.conditions) {
+      if (const auto mapped = remapPath(path))
+        result.conditions.emplace(*mapped, fact);
+    }
+    return result;
+  };
+  const auto remapEffect = [&remapGuard](const PlaceEffect &effect) {
+    PlaceEffect result = effect;
+    result.when = remapGuard(effect.when);
+    return result;
+  };
+  const auto remapSource = [&remapPath,
+                            &remapGuard](const ValueSource &source) {
+    ValueSource result = source;
+    result.when = remapGuard(source.when);
     if ((source.kind != ValueSource::Kind::Copy &&
          source.kind != ValueSource::Kind::Borrow) ||
         !source.path)
-      return source;
+      return result;
     const std::optional<SummaryPath> path = remapPath(*source.path);
-    if (!path)
-      return ValueSource::unknown();
-    if (source.kind == ValueSource::Kind::Borrow)
-      return ValueSource::borrow(*path);
-    return source.interior ? ValueSource::interiorCopy(*path)
-                           : ValueSource::copy(*path);
+    if (!path) {
+      ValueSource unknown = ValueSource::unknown();
+      unknown.when = result.when;
+      return unknown;
+    }
+    result.path = *path;
+    return result;
   };
 
   FunctionSummary result;
   for (const auto &[path, effect] : summary.effects) {
     if (const auto mapped = remapPath(path))
-      result.addEffect(*mapped, effect);
+      result.addEffect(*mapped, remapEffect(effect));
   }
   for (const Store &store : summary.stores) {
     if (const auto dest = remapPath(store.dest))
@@ -347,7 +419,7 @@ FunctionSummary remapGlobals(const FunctionSummary &summary,
     result.addOutcome(outcome);
     for (const auto &[path, effect] : effects) {
       if (const auto mapped = remapPath(path))
-        result.addOutcome(outcome, *mapped, effect);
+        result.addOutcome(outcome, *mapped, remapEffect(effect));
     }
   }
   for (const auto &[outcome, paths] : summary.nullOn) {
@@ -363,32 +435,8 @@ FunctionSummary remapGlobals(const FunctionSummary &summary,
     }
   }
   result.requiresNonNull = summary.requiresNonNull;
+  result.neverReturns = summary.neverReturns;
   return result;
-}
-
-std::string_view toString(Outcome outcome) noexcept {
-  switch (outcome) {
-  case Outcome::Null:
-    return "null";
-  case Outcome::NonNull:
-    return "nonnull";
-  case Outcome::Zero:
-    return "zero";
-  case Outcome::Positive:
-    return "positive";
-  case Outcome::Negative:
-    return "negative";
-  }
-  return "<invalid>";
-}
-
-std::optional<Outcome> parseOutcome(std::string_view text) noexcept {
-  for (const Outcome outcome : {Outcome::Null, Outcome::NonNull, Outcome::Zero,
-                                Outcome::Positive, Outcome::Negative}) {
-    if (toString(outcome) == text)
-      return outcome;
-  }
-  return std::nullopt;
 }
 
 std::string_view toString(ValueSource::Kind kind) noexcept {

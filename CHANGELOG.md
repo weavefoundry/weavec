@@ -353,10 +353,89 @@ follows [Semantic Versioning](https://semver.org/) once it reaches 1.0.
     `notnull <class> <path>` and the `result` root; sidecar format version 4
     (`weavec-summaries 4`). `--dump-analysis` prints `nulls{p@3:14
     maybe-null, q nonnull}` in the exit state, `uninitialized` moves,
-    `interior` resources, and the new summary words.
+    `    interior` resources, and the new summary words.
+- Value-conditional behaviour (RFC 0009). No new diagnostic; three sources
+  of false positives that every real code base hits are closed:
+  - Integer facts and guards: the new `core::ScalarTracker`
+    (`AnalysisState::scalars`) knows the class (`zero`, `positive`,
+    `negative`) and, when it can, the exact value of an integer local,
+    parameter or field, from constants assigned to it, from the edges of
+    every comparison with an integer constant (`n == 0`, `n > 0`, `!c`, `n
+    != 3`) and from `switch` cases. Every move, held resource and null record
+    carries the `PlaceGuard` of the path that created it, and a later test
+    that contradicts the guard drops the record on that edge: `if (c)
+    free(p); ... if (!c) use(p);`, a second `switch` on the same `opcode`,
+    and `char *p = NULL; if (n > 0) p = malloc(n); if (n <= 0) return -1;
+    ... free(p);`
+    are clean; `int c = 0; if (c) free(p);` does not take the branch at
+    all. Writing the integer forgets the fact and weakens every guard that
+    named it; a fact about memory behind a pointer never prunes an edge
+    (aliasing), only the guards.
+  - Argument-conditional summaries: a consume, store or return alternative
+    that happens only under a fact about the callee's entry values is
+    summarised with a `when` guard (`param 1 freed(free) when param 3 zero`,
+    `return fresh(free) when param 3 positive|negative`, `store param 0
+    *.msg = copy param 2 when param 2 nonnull`; at most
+    `MaxGuardConjuncts` conjuncts, never on a path the callee wrote). At the
+    call the guard is translated to the arguments — a constant or `NULL`
+    argument decides it, a variable is looked up in the caller's facts — and
+    the effect applies only when it is not refuted; what survives stays on
+    the record in the caller. `l_alloc(ud, p, 8, 0)` frees `p` and returns
+    null, `l_alloc(ud, p, 8, 16)` returns a fresh block and keeps `p`;
+    `release(&b)` with `b.noalloc = 1` frees nothing; `gz_error(s, err,
+    NULL)` stores nothing. `SummaryStore` keeps `neverReturns` and guards
+    across the per-type join and the program database. A value gone at the
+    callee's exit only under a guard (`if (b == NULL) finish(L); else
+    append(L, b);`) is an unreplaced consume *under that guard*, not an
+    unconditional one, so a caller whose argument refutes it is not told
+    its stack was freed (Lua's `str_writer` under `dumpBlock`).
+  - Inferred `noreturn`: a function whose every path ends in `abort`,
+    `exit`, `longjmp`, a declared `noreturn`/`_Noreturn` callee, an infinite
+    loop or another such function is summarised `never-returns`, in the
+    same unit and across the program; a call to one ends the block (the
+    liveness pass agrees, so nothing is leaked at the end of a block that
+    is never left) and code after it is dead. A function that returns on
+    some path returns; a call through a function pointer never returns only
+    if every candidate never returns.
+  - Summary text format version 4 → 5: the `never-returns` line and the
+    optional `when <path> <fact> [and ...]` guard on `effect`, `outcome`,
+    `store` and `return` lines (`fact ::= =<integer> | <class>[|<class>]*`);
+    sidecar format version 5 (`weavec-summaries 5`). `--dump-analysis`
+    prints `scalars{n =0, m positive|negative}` in the exit state, `when[c
+    =0]` on guarded moves, resources and nulls (`otherwise-nonnull` on a
+    null record that is non-null when its guard fails), `never-returns` and
+    the `when[...]` clauses in summaries.
+  - Corpus (`scripts/corpus/README.md`): the `l_alloc` family of Lua reports
+    (`double-free`, `use-after-free`, `conflicting-borrow`, `invalid-release`
+    and the function-pointer `leak`s), the `luaL_error` `null-dereference`s,
+    cJSON's `p.buffer` leak, zlib's `state->msg` leaks and the `noalloc`/
+    `noreturn` correlations RFC 0006 and RFC 0008 listed under *Accepted
+    false positives* are gone.
 
 ### Fixed
 
+- An integer constant was read as its two's-complement bits rather than
+  its value, and every comparison as signed: `ULONG_MAX` was `-1`, so for
+  `index = 0` the edge on which `if (index > ULONG_MAX)` fails was
+  infeasible and everything after it unchecked (a `null-dereference` in
+  cJSON's `create_patches` went unreported). A constant is now its
+  mathematical value in its own type (`unsigned x = -1` is `UINT_MAX`;
+  `SIZE_MAX` is no constant the checker holds and decides nothing), an
+  unsigned comparison is decided in unsigned order (a negative signed
+  operand converted up ranks above every non-negative value) and a `case`
+  label is converted to the scrutinee's type (RFC 0009, *Assumptions*).
+- A callee that released a value the caller had already released and left
+  a new one in its place (`replaced`, RFC 0008) was reported once and then
+  again at every later call, because the stale record survived when no
+  store named the place in the caller's terms (the callee reached it
+  through an alias of its own). The place now holds the new value after the
+  one report.
+- A callee whose only effect below a pointer argument was a consume
+  (`free(L->stack)`) was replayed into its caller's summary as having
+  overwritten the whole object (`*L: written`), which made the caller's
+  callers forget everything below `L`, including that `L->stack` was gone.
+  Only a summary with no effect at all below the pointee is that coarse
+  (RFC 0006, *`written` forgets what lies below*).
 - `free(static_array)` and `free(local_array)` crashed the checker
   (`getPointeeType` on an array declaration in `checkContainerFree`); they
   are now `invalid-release` reports (RFC 0008).

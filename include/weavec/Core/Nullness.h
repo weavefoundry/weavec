@@ -22,6 +22,7 @@
 #define WEAVEC_CORE_NULLNESS_H
 
 #include "weavec/Core/Place.h"
+#include "weavec/Core/Scalar.h"
 #include "weavec/Core/SourceLocation.h"
 
 #include <cstdint>
@@ -70,6 +71,15 @@ struct NullRecord {
   /// messages (`'malloc'`). Otherwise empty.
   // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
   std::string detail = {};
+  /// RFC 0009: the paths on which the place is null all satisfy the guard
+  /// (the facts on the path that made it null). Trivial for `NonNull`.
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
+  PlaceGuard guard = {};
+  /// `MaybeNull` only: on every path where the guard does not hold the place
+  /// is non-null, so refuting the guard makes the record `NonNull` rather
+  /// than unknown (`p = NULL; if (n > 0) { p = malloc(n); if (!p) return; }
+  /// if (n > 0) *p;`).
+  bool otherwiseNonNull = false;
 
   [[nodiscard]] bool mayBeNull() const noexcept {
     return state != Nullness::NonNull;
@@ -104,11 +114,25 @@ public:
   /// Per place (RFC 0008, *Nullness*, the join table): `MaybeNull` absorbs
   /// everything; `Null` with anything else is `MaybeNull`; `NonNull` with
   /// no fact is no fact. The record kept for a `MaybeNull` result is the one
-  /// that said null (this side first). Returns whether this tracker changed.
+  /// that said null (this side first); its guard is what the null sides'
+  /// guards agree on, and it is `otherwiseNonNull` when every side that was
+  /// not null was `NonNull` (RFC 0009). Returns whether this tracker changed.
   bool join(const NullTracker &other);
+
+  /// `place` now satisfies `fact` (a condition edge): every null record's
+  /// guard learns it. A `Null` record whose guard is refuted is erased (the
+  /// path knows nothing); a `MaybeNull` one becomes `NonNull` if it was
+  /// `otherwiseNonNull`, else is erased. Returns the places whose record
+  /// changed state or vanished.
+  std::vector<PlaceId> learn(PlaceId place, const ValueFact &fact);
+  /// `place` was overwritten: no guard may speak about it any more.
+  void dropGuardsOn(PlaceId place);
 
   /// Places with a record, ascending (for dumps).
   [[nodiscard]] std::vector<PlaceId> places() const;
+  [[nodiscard]] const std::map<PlaceId, NullRecord> &all() const noexcept {
+    return records;
+  }
 
   [[nodiscard]] bool empty() const noexcept { return records.empty(); }
 

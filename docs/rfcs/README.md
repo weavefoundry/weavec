@@ -55,5 +55,6 @@ decision is a new RFC that supersedes the relevant section.
 | [0006](0006-precision.md)                | Precision: non-lexical loans, condition facts, element places and outcome-conditional summaries | Implemented |
 | [0007](0007-resource-lifecycle.md)       | Resource lifecycle: leaks, release families and owned fields | Accepted |
 | [0008](0008-pointer-validity.md)         | Pointer validity: null dereferences, uninitialised pointers, invalid releases and replaced values | Accepted |
+| [0009](0009-value-conditional-behaviour.md) | Value-conditional behaviour: scalar facts, guarded effects and inferred `noreturn` | Accepted |
 
 The [roadmap](../roadmap.md) links each milestone to the RFCs that define it.

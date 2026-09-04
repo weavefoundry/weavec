@@ -19,7 +19,8 @@ static int try_take(struct node *n, int c) {
   return -1;
 }
 // DUMP: function 'try_take':
-// DUMP: summary: n: freed(free); stores{} returns{} outcome zero{n: freed(free)} outcome negative{}
+// The release happens only when `c` is non-zero: RFC 0009 records the guard.
+// DUMP: summary: n: freed(free) when[c positive|negative]; stores{} returns{} outcome zero{n: freed(free) when[c positive|negative]} outcome negative{}
 
 // Consumes `p` only when it returns non-null (a `realloc` wrapper).
 static char *grow(char *p, size_t n) {

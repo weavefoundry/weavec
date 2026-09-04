@@ -183,7 +183,10 @@ argument. Every destructor in C has this shape.
   NULL; if (c) p = malloc(8); if (!c) return; free(p);` reports a leak at
   the return, because `p` may own at the merge and is released on no path
   reaching it. Condition facts are about pointers and call results, not
-  arbitrary booleans.
+  arbitrary booleans. *Superseded by [RFC
+  0009](0009-value-conditional-behaviour.md): the resource is held under
+  the guard `c positive|negative`, which the `!c` edge refutes, and the
+  program is clean.*
 - **Out-parameter constructors whose error class may hold.** `if (mk(&x)
   != 0) return -1;` is clean when every error return of `mk` leaves `*out`
   null or untouched (*Per-outcome null stores*). It is a leak when some

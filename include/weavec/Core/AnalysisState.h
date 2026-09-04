@@ -9,7 +9,7 @@
 // The dataflow state RFC 0002 carries through a function body:
 //
 //   State = { moves, loans, aliases, pending, consumed, kinds, raw,
-//             resources, nulls, overwritten }
+//             resources, nulls, overwritten, scalars }
 //
 // Every component is a finite-height lattice whose `join` is monotone, so a
 // worklist iteration over the CFG terminates without widening. Lifetimes are
@@ -29,6 +29,7 @@
 #include "weavec/Core/Place.h"
 #include "weavec/Core/Raw.h"
 #include "weavec/Core/Resource.h"
+#include "weavec/Core/Scalar.h"
 #include "weavec/Core/Summary.h"
 
 #include <map>
@@ -132,6 +133,8 @@ struct AnalysisState {
   /// What is known about the nullness of each pointer place's value (RFC
   /// 0008): definitely null, possibly null, or non-null.
   NullTracker nulls;
+  /// What is known about the value of each integer place (RFC 0009).
+  ScalarTracker scalars;
 
   /// Component-wise join with the state of another incoming edge. Returns
   /// whether this state changed, so the fixpoint engine need not copy and
@@ -141,15 +144,41 @@ struct AnalysisState {
   /// Ownership kind of `place`, `Unknown` if never assigned.
   [[nodiscard]] OwnershipKind kindOf(PlaceId place) const noexcept;
 
+  /// The fact known about `place`'s value, from `scalars` for an integer
+  /// place and from `nulls` for a pointer place; nothing when unknown.
+  [[nodiscard]] std::optional<ValueFact> factOf(PlaceId place) const;
+
+  /// The facts on the current path, as the guard of a record created here
+  /// (RFC 0009, *Deriving guards*): every scalar fact, then every definite
+  /// nullness fact, up to `MaxGuardConjuncts`.
+  [[nodiscard]] PlaceGuard pathGuard() const;
+
+  /// What learning a fact on a condition edge did to the guarded records.
+  struct Learned {
+    /// Moves whose guard the fact refuted; they are reinstated.
+    std::vector<PlaceId> reinstated;
+    /// Held resources whose guard the fact refuted; they are cleared.
+    std::vector<PlaceId> cleared;
+    /// Null records that changed state or vanished.
+    std::vector<PlaceId> nullChanged;
+  };
+  /// `place` satisfies `fact` on this edge: every guarded record learns it
+  /// (RFC 0009, *Refuting guards in the state*). Does not touch `scalars`
+  /// or the null record of `place` itself.
+  Learned learn(PlaceId place, const ValueFact &fact);
+
+  /// `place` was written: no guard speaks about its old value any more.
+  void dropGuardsOn(PlaceId place);
+
   /// True if `path`, or an object containing it, is in `overwritten`: the
   /// value the caller's memory held there on entry is gone on every path.
   [[nodiscard]] bool isOverwritten(const SummaryPath &path) const;
 
   /// Forgets everything about `place` itself: its move record, its alias
   /// class membership, the loans it holds, the loans against it, its pending
-  /// outcome, its kind, its raw record and its nullness. Used when the place is
-  /// (re)initialised or goes out of scope. Descendants are the caller's
-  /// responsibility.
+  /// outcome, its kind, its raw record, its nullness, its scalar fact and
+  /// every guard conjunct about it. Used when the place is (re)initialised
+  /// or goes out of scope. Descendants are the caller's responsibility.
   void forget(PlaceId place);
 
   friend bool operator==(const AnalysisState &,

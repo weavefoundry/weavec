@@ -28,6 +28,7 @@
 #define WEAVEC_CORE_RESOURCE_H
 
 #include "weavec/Core/Place.h"
+#include "weavec/Core/Scalar.h"
 #include "weavec/Core/SourceLocation.h"
 
 #include <cstdint>
@@ -64,6 +65,12 @@ struct ResourceRecord {
   /// + 1`, `q = strchr(p, c)`; RFC 0008, *Invalid releases*): releasing
   /// through it is invalid. Cleared by a fresh allocation.
   bool interior = false;
+  /// RFC 0009: the place holds the resource only when the guard holds (the
+  /// facts on the path that acquired it, and the callee's guard on a
+  /// conditional `fresh` result). Refuted by a later test, the record is
+  /// gone and its holder's death is not a leak.
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
+  PlaceGuard guard = {};
 
   friend bool operator==(const ResourceRecord &,
                          const ResourceRecord &) = default;
@@ -104,10 +111,16 @@ public:
 
   /// Records join by union (a place *may* hold a resource): for a place on
   /// both sides this side's record is kept, `escaped` and `interior` are
-  /// or-ed and the family cleared when the sides disagree. Null facts join by
-  /// intersection
-  /// (a place *must* be null). Returns whether this tracker changed.
+  /// or-ed, the family cleared when the sides disagree and the guards joined
+  /// (RFC 0009). Null facts join by intersection (a place *must* be null).
+  /// Returns whether this tracker changed.
   bool join(const ResourceTracker &other);
+
+  /// `place` now satisfies `fact`: records whose guard is refuted are
+  /// cleared and returned (RFC 0009, *Refuting guards*).
+  std::vector<PlaceId> learn(PlaceId place, const ValueFact &fact);
+  /// `place` was overwritten: no guard may speak about it any more.
+  void dropGuardsOn(PlaceId place);
 
   /// Holders in ascending order (for dumps and the leak scan).
   [[nodiscard]] std::vector<PlaceId> holders() const;

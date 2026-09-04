@@ -111,16 +111,24 @@ void ProgramDatabase::add(const UnitExports &unit) {
         sameNumbering ? function.summary
                       : renumbered.emplace(renumber(function.summary,
                                                     unit.globals, globalNames));
+    // RFC 0009: a definition that returns makes the join return. Settled
+    // here because the join cannot tell a definition that does nothing
+    // from the empty summary it treats as bottom.
+    const auto fold = [&summary](core::FunctionSummary &into) {
+      const bool bothNeverReturn = into.neverReturns && summary.neverReturns;
+      into.join(summary);
+      into.neverReturns = bothNeverReturn;
+    };
     if (function.external) {
       auto [it, inserted] = functions.try_emplace(name, summary);
       if (!inserted)
-        it->second.join(summary);
+        fold(it->second);
     }
     if (function.addressTaken && !function.typeKey.empty()) {
       auto [it, inserted] =
           candidateSummaries.try_emplace(function.typeKey, summary);
       if (!inserted)
-        it->second.join(summary);
+        fold(it->second);
     }
   }
 }

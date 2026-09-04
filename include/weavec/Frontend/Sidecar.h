@@ -46,7 +46,8 @@ namespace weavec::frontend {
 /// Version 3 (RFC 0007): summaries in format 3 (release families).
 /// Version 4 (RFC 0008): summaries in format 4 (`replaced`, `notnull`,
 /// `requires`, `result`).
-inline constexpr unsigned SidecarFormatVersion = 4;
+/// Version 5 (RFC 0009): summaries in format 5 (`never-returns`, guards).
+inline constexpr unsigned SidecarFormatVersion = 5;
 
 /// Everything the driver remembers about one compiled unit.
 struct UnitRecord {

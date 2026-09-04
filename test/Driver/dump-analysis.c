@@ -8,11 +8,13 @@ struct s {
   int *buf;
 };
 
+// The release under `if (c)` is guarded by `c` being non-zero, in the state
+// and in the summary's `when` clause (RFC 0009).
 // CHECK-LABEL: function 'f':
 // CHECK-NEXT: places:{{.*}}p (param, unknown){{.*}}a (local, mutable)
 // CHECK-NEXT: lifetimes:{{.*}}caller
-// CHECK-NEXT: exit: moved{p->buf@[[@LINE+6]]:{{[0-9]+}} freed(free)} loans{} aliases{} raw{} owned{}
-// CHECK-NEXT: summary: p->buf: freed(free); stores{} returns{}
+// CHECK-NEXT: exit: moved{p->buf@[[@LINE+6]]:{{[0-9]+}} freed(free) when[c positive|negative]} loans{} aliases{} raw{} owned{}
+// CHECK-NEXT: summary: p->buf: freed(free) when[c positive|negative]; stores{} returns{}
 void f(struct s *p, int c) {
   int x = 0;
   int *a = &x;

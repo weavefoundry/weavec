@@ -226,5 +226,107 @@ TEST(MoveTracker, UninitializedIsAMoveReason) {
   EXPECT_EQ(toString(MoveReason::Uninitialized), "uninitialized");
 }
 
+// -- Guards (RFC 0009, *Refuting guards in the state*) ------------------------
+
+static PlaceGuard when(PlaceId key, const ValueFact &fact) {
+  PlaceGuard guard;
+  guard.require(key, fact);
+  return guard;
+}
+
+TEST(MoveTracker, GuardedMoveIsReinstatedWhenRefuted) {
+  MoveTracker tracker;
+  // `if (c) free(p);` recorded on the arm where `c` is non-zero.
+  ASSERT_FALSE(tracker.markMoved(PlaceId{0}, MoveReason::Freed, at(3), {},
+                                 ElementWitness::whole(), "free", false,
+                                 when(PlaceId{1}, ValueFact::nonZero())));
+  EXPECT_TRUE(tracker.isMoved(PlaceId{0}));
+  EXPECT_EQ(tracker.recordOf(PlaceId{0})->guard,
+            when(PlaceId{1}, ValueFact::nonZero()));
+
+  // A fact about another place narrows nothing and refutes nothing.
+  EXPECT_TRUE(tracker.learn(PlaceId{7}, ValueFact::of(Outcome::Zero)).empty());
+  EXPECT_TRUE(tracker.isMoved(PlaceId{0}));
+  // The edge `!c`: `c` is zero, disjoint from the guard; the move is gone.
+  EXPECT_EQ(tracker.learn(PlaceId{1}, ValueFact::of(Outcome::Zero)),
+            (std::vector<PlaceId>{PlaceId{0}}));
+  EXPECT_FALSE(tracker.isMoved(PlaceId{0}));
+}
+
+TEST(MoveTracker, LearnRecordsThePathFactOnEveryGuard) {
+  // The guard is the path's facts whichever came first: a move made before
+  // `if (c)` is, on the `c` arm, a move "when c is non-zero", so that a
+  // merge with a path that reinitialised the place (the `!c` arm) keeps a
+  // guard the later test `!c` can refute.
+  MoveTracker tracker;
+  ASSERT_FALSE(tracker.markMoved(PlaceId{0}, MoveReason::Freed, at(3)));
+  EXPECT_TRUE(tracker.learn(PlaceId{1}, ValueFact::nonZero()).empty());
+  EXPECT_EQ(tracker.recordOf(PlaceId{0})->guard,
+            when(PlaceId{1}, ValueFact::nonZero()));
+  // The same fact again narrows nothing.
+  EXPECT_TRUE(tracker.learn(PlaceId{1}, ValueFact::nonZero()).empty());
+  EXPECT_EQ(tracker.recordOf(PlaceId{0})->guard,
+            when(PlaceId{1}, ValueFact::nonZero()));
+}
+
+TEST(MoveTracker, JoinWeakensGuardsToWhatBothSidesAgreeOn) {
+  MoveTracker left;
+  ASSERT_FALSE(left.markMoved(PlaceId{0}, MoveReason::Freed, at(3), {},
+                              ElementWitness::whole(), "free", false,
+                              when(PlaceId{1}, ValueFact::ofConstant(1))));
+  MoveTracker right;
+  ASSERT_FALSE(right.markMoved(PlaceId{0}, MoveReason::Freed, at(3), {},
+                               ElementWitness::whole(), "free", false,
+                               when(PlaceId{1}, ValueFact::ofConstant(2))));
+  EXPECT_TRUE(left.join(right));
+  // Moved when `c` is 1 or 2: `positive`, the constant lost.
+  EXPECT_EQ(left.recordOf(PlaceId{0})->guard,
+            when(PlaceId{1}, ValueFact::of(Outcome::Positive)));
+
+  // Present on one side only: the record keeps its own guard.
+  MoveTracker none;
+  EXPECT_FALSE(left.join(none));
+  EXPECT_EQ(left.recordOf(PlaceId{0})->guard,
+            when(PlaceId{1}, ValueFact::of(Outcome::Positive)));
+  MoveTracker other = none;
+  EXPECT_TRUE(other.join(left));
+  EXPECT_EQ(other.recordOf(PlaceId{0})->guard,
+            when(PlaceId{1}, ValueFact::of(Outcome::Positive)));
+}
+
+TEST(MoveTracker, WritingTheGuardsPlaceDropsTheConjunct) {
+  MoveTracker tracker;
+  PlaceGuard guard = when(PlaceId{1}, ValueFact::nonZero());
+  guard.require(PlaceId{2}, ValueFact::of(Outcome::Null));
+  ASSERT_FALSE(tracker.markMoved(PlaceId{0}, MoveReason::Freed, at(3), {},
+                                 ElementWitness::whole(), "free", false,
+                                 guard));
+  tracker.dropGuardsOn(PlaceId{1});
+  EXPECT_EQ(tracker.recordOf(PlaceId{0})->guard,
+            when(PlaceId{2}, ValueFact::of(Outcome::Null)));
+  // The record itself stays: the move is now unconditional as far as the
+  // checker knows.
+  tracker.dropGuardsOn(PlaceId{2});
+  EXPECT_TRUE(tracker.isMoved(PlaceId{0}));
+  EXPECT_TRUE(tracker.recordOf(PlaceId{0})->guard.trivial());
+  EXPECT_TRUE(tracker.learn(PlaceId{1}, ValueFact::of(Outcome::Zero)).empty());
+}
+
+TEST(MoveTracker, SecondMoveUnderAGuardIsStillADoubleMove) {
+  MoveTracker tracker;
+  ASSERT_FALSE(tracker.markMoved(PlaceId{0}, MoveReason::Freed, at(3)));
+  const auto previous = tracker.markMoved(
+      PlaceId{0}, MoveReason::Freed, at(5), {}, ElementWitness::whole(), "free",
+      false, when(PlaceId{1}, ValueFact::nonZero()));
+  ASSERT_TRUE(previous);
+  EXPECT_EQ(previous->location.line, 3U);
+  EXPECT_TRUE(tracker.recordOf(PlaceId{0})->guard.trivial())
+      << "an unconditional first move stays unconditional";
+
+  tracker.setGuard(PlaceId{0}, when(PlaceId{1}, ValueFact::nonZero()));
+  EXPECT_EQ(tracker.recordOf(PlaceId{0})->guard,
+            when(PlaceId{1}, ValueFact::nonZero()));
+}
+
 } // namespace
 } // namespace weavec::core

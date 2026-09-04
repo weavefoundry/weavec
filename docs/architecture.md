@@ -44,12 +44,13 @@ tools.
 | `AliasRelation.h`  | Symmetric may-alias graph over places; closed under copies, plain union at joins (deliberately not transitive). Each edge records whether the two places hold the same value (*exact*) or point into the same object (*interior*), and which element of the other end is meant (RFC 0006); `separateExact` refutes an exact edge on a `!=` edge. |
 | `Lifetime.h`       | `LifetimeId` and `LifetimeConstraints` (transitive `outlives` queries; `'static` is id 0).      |
 | `Borrow.h`         | `Loan` (place, kind, lifetime, holder) and `BorrowState`: may this borrow be created; may this place be moved or mutated; `expireHolders` drops the loans of holders a predicate declares dead (RFC 0006 liveness). |
-| `Moves.h`          | `MoveTracker`: which places are currently moved-out/freed (and through which alias), each with an `ElementWitness` (whole / constant / variable / unknown) saying which element of an `a[*]` place was named (RFC 0006); a use is only reported when the witnesses match; conservative `join`. `MoveReason::Uninitialized` marks a local pointer place that has never been assigned (RFC 0008). |
+| `Scalar.h`         | `ValueFact` (a set of RFC 0006 outcome classes — `zero`/`positive`/`negative` or `null`/`nonnull` — plus an optional exact constant; `join`, `narrow`, `disjointFrom`, `implies`), `GuardOn<Key>` (a conjunction of facts about places — `PlaceGuard` — or summary paths — `PathGuard` — under which alone a record or effect holds; `require`, `learn`, `refine`, `join`, `drop`, bounded by `MaxGuardConjuncts`) and `ScalarTracker` (per integer place, what is known about its value; RFC 0009). |
+| `Moves.h`          | `MoveTracker`: which places are currently moved-out/freed (and through which alias), each with an `ElementWitness` (whole / constant / variable / unknown) saying which element of an `a[*]` place was named (RFC 0006); a use is only reported when the witnesses match; conservative `join`. `MoveReason::Uninitialized` marks a local pointer place that has never been assigned (RFC 0008). Each record carries a `PlaceGuard` (RFC 0009): `learn` refutes and erases the records a condition edge contradicts, `dropGuardsOn` weakens the guards that name a written place. |
 | `Raw.h`            | `RawTracker`: which places currently hold a raw pointer, why (`RawReason`: integer cast, `WEAVEC_RAW` declaration, loaded through a raw pointer, callee result, unchecked callee) and through which alias; union at joins. |
-| `Resource.h`       | `ResourceTracker`: which places hold an owned resource this function is responsible for (`ResourceRecord`: origin — allocated or declared `WEAVEC_OWNED` —, location, release family, escaped, and whether the place holds an *interior* pointer into it, RFC 0008), plus the places known to hold null; records join by union, null facts by intersection (RFC 0007). |
-| `Nullness.h`       | `NullTracker`: per place, whether the pointer it holds is `Null`, `MaybeNull` or `NonNull` (`NullRecord`: state, where the fact comes from and why — assigned null, a callee's result or store, a merged null test, a `WEAVEC_NULLABLE` declaration); no record is *unknown* and trusted. Joins by the RFC 0008 table (`MaybeNull` absorbs, `Null` with anything else is `MaybeNull`, `NonNull` with no fact is no fact). |
-| `AnalysisState.h`  | The dataflow state: moves, loans, aliases, raw pointers, resources, nullness, inferred kinds, the `PendingOutcome`s of calls whose consumption (and whose null and non-null stores, RFC 0007/0008) depend on a not-yet-tested result, the flow-sensitive `consumed` record that feeds outcome classes at `return` (RFC 0006), and the `overwritten` caller-visible paths whose entry value has been replaced on every path (RFC 0008), with component-wise `join`. |
-| `Summary.h`        | `FunctionSummary`: what a function does to its interface. `SummaryPath` (`param(i)`/`global(g)`/`result` plus deref/field/index steps), `PlaceEffect` (read/written/freed/moved, with the release family of a consumption, `replaced` when every consuming path reinitialised the place, and `element` when every consume went through an element access; RFC 0008), `Store` (value written into caller-visible memory), `ValueSource` (fresh — with its release family —/copy/interior copy/borrow/null/raw/unknown), `outcomes` (per `Outcome` class — `Null`, `NonNull`, `Zero`, `Positive`, `Negative` — the consumption that holds on the paths returning it; RFC 0006), `nullOn` (per class, the caller places that are null; RFC 0007), `nonNullOn` and `requiresNonNull` (per class, the caller places that are non-null; the parameters the function dereferences untested; RFC 0008), with `join`, `remapGlobals` and the derived `consumes`/`consumesUnconditionally`/`borrowKind`/`inferredKind`/`freshReturnFamily` queries. |
+| `Resource.h`       | `ResourceTracker`: which places hold an owned resource this function is responsible for (`ResourceRecord`: origin — allocated or declared `WEAVEC_OWNED` —, location, release family, escaped, and whether the place holds an *interior* pointer into it, RFC 0008), plus the places known to hold null; records join by union, null facts by intersection (RFC 0007). Each record carries a `PlaceGuard` (RFC 0009): a resource held only under a fact is cleared, not leaked, on the edge that refutes it. |
+| `Nullness.h`       | `NullTracker`: per place, whether the pointer it holds is `Null`, `MaybeNull` or `NonNull` (`NullRecord`: state, where the fact comes from and why — assigned null, a callee's result or store, a merged null test, a `WEAVEC_NULLABLE` declaration); no record is *unknown* and trusted. Joins by the RFC 0008 table (`MaybeNull` absorbs, `Null` with anything else is `MaybeNull`, `NonNull` with no fact is no fact). A `Null`/`MaybeNull` record carries the `PlaceGuard` of the paths that made it null and, when every other path was non-null, `otherwiseNonNull`, so refuting the guard makes the record `NonNull` (RFC 0009). |
+| `AnalysisState.h`  | The dataflow state: moves, loans, aliases, raw pointers, resources, nullness, scalar facts (RFC 0009), inferred kinds, the `PendingOutcome`s of calls whose consumption (and whose null and non-null stores, RFC 0007/0008) depend on a not-yet-tested result, the flow-sensitive `consumed` record that feeds outcome classes at `return` (RFC 0006), and the `overwritten` caller-visible paths whose entry value has been replaced on every path (RFC 0008), with component-wise `join`. `pathGuard()` is the facts of the current path as the guard of a record created here; `learn` propagates a condition edge's fact to every guarded record; `factOf` reads scalar and definite nullness facts through one interface. |
+| `Summary.h`        | `FunctionSummary`: what a function does to its interface. `SummaryPath` (`param(i)`/`global(g)`/`result` plus deref/field/index steps), `PlaceEffect` (read/written/freed/moved, with the release family of a consumption, `replaced` when every consuming path reinitialised the place, `element` when every consume went through an element access — RFC 0008 — and `when`, the `PathGuard` under which alone the consume happens — RFC 0009), `Store` (value written into caller-visible memory), `ValueSource` (fresh — with its release family —/copy/interior copy/borrow/null/raw/unknown, each with a `when` guard; alternatives that differ only in their guard are merged by `addReturn`/`addStore`), `neverReturns` (the exit is unreachable; joins by conjunction, RFC 0009), `outcomes` (per `Outcome` class — `Null`, `NonNull`, `Zero`, `Positive`, `Negative` — the consumption that holds on the paths returning it; RFC 0006), `nullOn` (per class, the caller places that are null; RFC 0007), `nonNullOn` and `requiresNonNull` (per class, the caller places that are non-null; the parameters the function dereferences untested; RFC 0008), with `join`, `remapGlobals` and the derived `consumes`/`consumesUnconditionally`/`borrowKind`/`inferredKind`/`freshReturnFamily` queries. |
 | `SummaryIO.h`      | The stable text form of a `FunctionSummary` (`summary` ... `end` records; RFC 0005): `printSummary`/`parseSummary` with callbacks that name and resolve globals, so the format is Clang-free and the on-disk sidecar format is defined here. |
 | `Scc.h`            | Tarjan's strongly connected components over an adjacency list, in reverse topological order; used for the call graph inside a unit and for the unit graph of a program. |
 | `Diagnostic.h`     | `Diagnostic`, stable ids in `diag::` (with `All`, `isKnown`, `isWarningByDefault`), `FixItHint`, `DiagnosticSink`, and an in-memory `DiagnosticCollector`. |
@@ -110,8 +111,15 @@ the frontend fills in so it can report at the exact original position.
   container frees), tracks what is known about each pointer's nullness and
   reports dereferences and calls that need more (RFC 0008; the null test
   idioms are the RFC 0006 condition facts), marks uninitialised locals and
-  checks what a releaser is handed, and produces the function's
-  `FunctionSummary` at exit.
+  checks what a releaser is handed, tracks what is known about each
+  integer's value (constants assigned, `==`/`!=`/`<`/... against a
+  constant, truthiness, `switch` cases) and attaches the facts of the
+  current path as a *guard* to every move, held resource and null record
+  it creates so that a later test can refute them, translates a callee's
+  `when` guards to the arguments and prunes them against its own facts,
+  ends the block at a call to a callee inferred `never-returns` (RFC
+  0009), and produces the function's `FunctionSummary` at exit (with
+  `neverReturns` when the exit was never reached).
   `WEAVEC_UNSAFE` regions are analysed like any other code; the pass only
   suppresses what it would report inside them. `FunctionAnalysis.h` is the
   per-function entry point; `AnalysisOptions::exclusiveBorrows` switches
@@ -135,9 +143,11 @@ regions and indirect calls by
 [RFC 0005](rfcs/0005-whole-program-analysis.md), non-lexical loans,
 condition facts, element witnesses and outcome-conditional summaries by
 [RFC 0006](rfcs/0006-precision.md), leaks, release families and owned
-fields by [RFC 0007](rfcs/0007-resource-lifecycle.md), and nullness,
+fields by [RFC 0007](rfcs/0007-resource-lifecycle.md), nullness,
 uninitialised pointers, invalid releases and replaced values by
-[RFC 0008](rfcs/0008-pointer-validity.md); each RFC's
+[RFC 0008](rfcs/0008-pointer-validity.md), and scalar facts, guards,
+argument-conditional summaries and inferred `noreturn` by
+[RFC 0009](rfcs/0009-value-conditional-behaviour.md); each RFC's
 *Implementation notes* record where the code refines the design.
 
 ## `weavec::Frontend` — Clang integration
@@ -168,7 +178,7 @@ uninitialised pointers, invalid releases and replaced values by
   `CompilationDatabaseUnit` parses from a compilation database.
 - `Sidecar.h` reads and writes `foo.o.weavec`: the unit's exports, the cc1
   command that produced it and the diagnostics already reported, in a
-  line-oriented text format versioned by its `weavec-summaries 4` header.
+  line-oriented text format versioned by its `weavec-summaries 5` header.
 - `Driver.h` is `weavec-cc`: Clang's `driver::Driver` plans the jobs, each
   `-cc1` job runs in-process with WeaveC's consumer multiplexed beside
   Clang's, the compile step writes the sidecar, and the link step runs

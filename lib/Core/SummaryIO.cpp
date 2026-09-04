@@ -111,21 +111,35 @@ static bool splitFamily(std::string_view token, std::string_view &name,
   return family.find_first_of("(), \t") == std::string_view::npos;
 }
 
+std::string printGuard(const PathGuard &guard, const GlobalNamer &names) {
+  std::string text;
+  for (const auto &[path, fact] : guard.conditions) {
+    text += text.empty() ? " when " : " and ";
+    text += printSummaryPath(path, names) + ' ' + fact.toString();
+  }
+  return text;
+}
+
 std::string printSummary(const FunctionSummary &summary,
                          const GlobalNamer &names) {
   std::string text = "summary\n";
+  if (summary.neverReturns)
+    text += "  never-returns\n";
   for (const auto &[path, effect] : summary.effects) {
     if (effect.empty())
       continue;
     text += "  effect " + printSummaryPath(path, names) + ' ' +
-            printFlags(effect) + '\n';
+            printFlags(effect) + printGuard(effect.when, names) + '\n';
   }
   for (const Store &store : summary.stores) {
     text += "  store " + printSummaryPath(store.dest, names) + ' ' +
-            printValueSource(store.value, names) + '\n';
+            printValueSource(store.value, names) +
+            printGuard(store.value.when, names) + '\n';
   }
-  for (const ValueSource &source : summary.returns)
-    text += "  return " + printValueSource(source, names) + '\n';
+  for (const ValueSource &source : summary.returns) {
+    text += "  return " + printValueSource(source, names) +
+            printGuard(source.when, names) + '\n';
+  }
   for (const auto &[outcome, effects] : summary.outcomes) {
     // A class with effects is implied by its effect lines; a bare line
     // records a class that is possible but consumes nothing.
@@ -134,7 +148,8 @@ std::string printSummary(const FunctionSummary &summary,
       if (effect.empty())
         continue;
       text += "  outcome " + std::string(toString(outcome)) + ' ' +
-              printSummaryPath(path, names) + ' ' + printFlags(effect) + '\n';
+              printSummaryPath(path, names) + ' ' + printFlags(effect) +
+              printGuard(effect.when, names) + '\n';
       printed = true;
     }
     if (!printed)
@@ -361,6 +376,31 @@ static bool parseFlags(std::string_view text, PlaceEffect &effect) {
   return !effect.empty();
 }
 
+/// Parses an optional trailing `when <path> <fact> [and <path> <fact>]...`
+/// (RFC 0009). A conjunct on a declined global is dropped (the guard
+/// weakens).
+static bool parseGuard(Tokens &tokens, const GlobalResolver &resolve,
+                       PathGuard &guard) {
+  if (tokens.empty())
+    return true;
+  if (tokens.take() != "when")
+    return false;
+  while (true) {
+    ParsedPath path;
+    if (!parsePath(tokens, resolve, path))
+      return false;
+    const std::optional<ValueFact> fact = ValueFact::parse(tokens.take());
+    if (!fact)
+      return false;
+    if (path.path)
+      guard.require(*path.path, *fact);
+    if (tokens.empty())
+      return true;
+    if (tokens.take() != "and")
+      return false;
+  }
+}
+
 static std::string_view trim(std::string_view text) noexcept {
   while (!text.empty() &&
          (text.front() == ' ' || text.front() == '\t' || text.front() == '\r'))
@@ -411,23 +451,31 @@ std::optional<FunctionSummary> parseSummary(std::string_view record,
       continue;
     }
     bool ok = true;
-    if (kind == "effect") {
+    if (kind == "never-returns") {
+      summary.neverReturns = true;
+    } else if (kind == "effect") {
       ParsedPath path;
       PlaceEffect effect;
-      ok =
-          parsePath(tokens, resolve, path) && parseFlags(tokens.take(), effect);
+      ok = parsePath(tokens, resolve, path) &&
+           parseFlags(tokens.take(), effect) &&
+           parseGuard(tokens, resolve, effect.when);
+      // A guard qualifies a consume; it says nothing about a read.
+      if (ok && !effect.when.trivial() && !effect.consumed())
+        ok = false;
       if (ok && path.path)
         summary.addEffect(*path.path, effect);
     } else if (kind == "store") {
       ParsedPath dest;
       ValueSource value;
       ok = parsePath(tokens, resolve, dest) &&
-           parseSource(tokens, resolve, value);
+           parseSource(tokens, resolve, value) &&
+           parseGuard(tokens, resolve, value.when);
       if (ok && dest.path)
         summary.addStore(Store{.dest = std::move(*dest.path), .value = value});
     } else if (kind == "return") {
       ValueSource value;
-      ok = parseSource(tokens, resolve, value);
+      ok = parseSource(tokens, resolve, value) &&
+           parseGuard(tokens, resolve, value.when);
       if (ok)
         summary.addReturn(value);
     } else if (kind == "outcome") {
@@ -440,7 +488,10 @@ std::optional<FunctionSummary> parseSummary(std::string_view record,
         ParsedPath path;
         PlaceEffect effect;
         ok = parsePath(tokens, resolve, path) &&
-             parseFlags(tokens.take(), effect);
+             parseFlags(tokens.take(), effect) &&
+             parseGuard(tokens, resolve, effect.when);
+        if (ok && !effect.when.trivial() && !effect.consumed())
+          ok = false;
         summary.addOutcome(*outcome);
         if (ok && path.path)
           summary.addOutcome(*outcome, *path.path, effect);

@@ -167,5 +167,54 @@ TEST(ResourceOrigin, SpellsStably) {
   EXPECT_EQ(toString(ResourceOrigin::Declared), "declared");
 }
 
+// -- Guards (RFC 0009, *Refuting guards in the state*) ------------------------
+
+static PlaceGuard when(PlaceId key, const ValueFact &fact) {
+  PlaceGuard guard;
+  guard.require(key, fact);
+  return guard;
+}
+
+TEST(ResourceTracker, GuardedResourceIsClearedWhenRefuted) {
+  ResourceTracker tracker;
+  // `if (c) p = malloc(8);`: held on the arm where `c` is non-zero.
+  ResourceRecord record = allocated(3, "free");
+  record.guard = when(PlaceId{1}, ValueFact::nonZero());
+  tracker.hold(PlaceId{0}, record);
+  EXPECT_TRUE(tracker.holds(PlaceId{0}));
+
+  EXPECT_TRUE(
+      tracker.learn(PlaceId{1}, ValueFact::of(Outcome::Positive)).empty());
+  EXPECT_EQ(tracker.recordOf(PlaceId{0})->guard,
+            when(PlaceId{1}, ValueFact::of(Outcome::Positive)))
+      << "narrowed by a compatible fact";
+  // `if (!c) return;`: on that edge the place never held the resource, so
+  // there is nothing to leak.
+  EXPECT_EQ(tracker.learn(PlaceId{1}, ValueFact::of(Outcome::Zero)),
+            (std::vector<PlaceId>{PlaceId{0}}));
+  EXPECT_FALSE(tracker.holds(PlaceId{0}));
+}
+
+TEST(ResourceTracker, JoinAndDropWeakenGuards) {
+  ResourceTracker left;
+  ResourceRecord mine = allocated(3, "free");
+  mine.guard = when(PlaceId{1}, ValueFact::of(Outcome::Positive));
+  mine.guard.require(PlaceId{2}, ValueFact::of(Outcome::Null));
+  left.hold(PlaceId{0}, mine);
+
+  ResourceTracker right;
+  ResourceRecord theirs = allocated(3, "free");
+  theirs.guard = when(PlaceId{1}, ValueFact::of(Outcome::Negative));
+  right.hold(PlaceId{0}, theirs);
+
+  EXPECT_TRUE(left.join(right));
+  EXPECT_EQ(left.recordOf(PlaceId{0})->guard,
+            when(PlaceId{1}, ValueFact::nonZero()));
+
+  left.dropGuardsOn(PlaceId{1});
+  EXPECT_TRUE(left.recordOf(PlaceId{0})->guard.trivial());
+  EXPECT_TRUE(left.holds(PlaceId{0}));
+}
+
 } // namespace
 } // namespace weavec::core

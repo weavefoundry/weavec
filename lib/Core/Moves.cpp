@@ -33,19 +33,24 @@ std::optional<MoveRecord>
 MoveTracker::markMoved(PlaceId place, MoveReason reason,
                        SourceLocation location, std::optional<PlaceId> via,
                        ElementWitness element, std::string family,
-                       bool ownValue) {
+                       bool ownValue, PlaceGuard guard) {
   MoveRecord record{.reason = reason,
                     .location = std::move(location),
                     .via = via,
                     .element = element,
                     .family = std::move(family),
-                    .ownValue = ownValue};
+                    .ownValue = ownValue,
+                    .guard = std::move(guard)};
   auto [it, inserted] = moved.try_emplace(place, record);
   if (inserted)
     return std::nullopt;
   if (it->second.element.matches(element)) {
     // Already moved: report the earlier move but keep the original record so
-    // later diagnostics point at the first offending site.
+    // later diagnostics point at the first offending site. A second consume
+    // under a guard the first did not have is still a second consume; the
+    // place is now moved whenever either happened.
+    if (!it->second.guard.trivial())
+      it->second.guard.join(record.guard);
     return it->second;
   }
   // Another element of the same summarised place: the most recent one is
@@ -93,6 +98,8 @@ bool MoveTracker::join(const MoveTracker &other) {
       changed = true;
       continue;
     }
+    // Both sides moved the place: it is moved when either guard holds.
+    changed |= it->second.guard.join(record.guard);
     // A record that may be the caller's value on either path is the
     // caller's after the join (RFC 0008, *Replaced values*).
     if (it->second.ownValue && !record.ownValue) {
@@ -115,6 +122,30 @@ bool MoveTracker::join(const MoveTracker &other) {
     }
   }
   return changed;
+}
+
+std::vector<PlaceId> MoveTracker::learn(PlaceId place, const ValueFact &fact) {
+  std::vector<PlaceId> refuted;
+  for (auto it = moved.begin(); it != moved.end();) {
+    if (it->second.guard.learn(place, fact) == GuardRefinement::Refuted) {
+      refuted.push_back(it->first);
+      it = moved.erase(it);
+      continue;
+    }
+    ++it;
+  }
+  return refuted;
+}
+
+void MoveTracker::dropGuardsOn(PlaceId place) {
+  for (auto &[movedPlace, record] : moved)
+    record.guard.drop(place);
+}
+
+void MoveTracker::setGuard(PlaceId place, PlaceGuard guard) {
+  const auto it = moved.find(place);
+  if (it != moved.end())
+    it->second.guard = std::move(guard);
 }
 
 std::vector<PlaceId> MoveTracker::movedPlaces() const {

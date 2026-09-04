@@ -134,8 +134,10 @@ them are specified by [RFC 0001](rfcs/0001-ownership-model.md),
 [RFC 0003](rfcs/0003-signature-inference.md),
 [RFC 0004](rfcs/0004-unsafe-boundaries.md),
 [RFC 0006](rfcs/0006-precision.md),
-[RFC 0007](rfcs/0007-resource-lifecycle.md) and
-[RFC 0008](rfcs/0008-pointer-validity.md).
+[RFC 0007](rfcs/0007-resource-lifecycle.md),
+[RFC 0008](rfcs/0008-pointer-validity.md) and
+[RFC 0009](rfcs/0009-value-conditional-behaviour.md) (which adds no
+diagnostic; it shrinks the set of programs that trigger the existing ones).
 
 Fix-its are emitted through Clang, so `-fdiagnostics-parseable-fixits` and
 editor integrations that apply Clang fix-its work unchanged:
@@ -248,6 +250,52 @@ buffer.c:12:27: warning: pointer parameter 'b' of 'buffer_free' is inferred WEAV
   `free` (or any releaser, or a consuming parameter) of a pointer to a
   stack or static object, a string literal, or the middle of an allocation
   (`p + 1`, the result of `strchr`) is an `invalid-release`.
+- **Integer facts and guards** ([RFC
+  0009](rfcs/0009-value-conditional-behaviour.md)): the checker knows the
+  class (`zero`, `positive`, `negative`) and, when it can, the exact value
+  of an integer local, parameter or field: from a constant assigned to it,
+  from the edges of `if (n == 0)`, `if (n > 0)`, `if (!c)`, `if (n != 3)`
+  and every comparison with an integer constant, and from the `case`
+  labels of a `switch`. A free, a move, a held resource or a null pointer
+  established while such a fact holds is remembered *under* it, and the
+  edge of a later test that contradicts the fact drops it: `if (c) free(p);
+  ... if (!c) use(p);`, `switch (n) { case 0: free(p); } ... switch (n) {
+  case 1: use(p); }` and `char *p = NULL; if (n > 0) p = malloc(n); if (n
+  <= 0) return -1; ... free(p);` are clean. A branch whose condition the facts contradict
+  (`int c = 0; if (c) free(p);`) is not taken. Reassigning the integer from
+  an unknown value forgets the fact and weakens every guard that named it;
+  two integers related by arithmetic, or a computed test (`(n & 1) == 0`),
+  are not related. Values are mathematical, read in their own type:
+  `unsigned x = -1` is `UINT_MAX` (`positive`), an unsigned comparison is
+  decided in unsigned order, and a constant no `int64_t` holds (`SIZE_MAX`,
+  `ULONG_MAX`) is not one the checker knows, so `if (i > ULONG_MAX)`
+  decides nothing and both of its edges stay live.
+- **Argument-conditional summaries** ([RFC
+  0009](rfcs/0009-value-conditional-behaviour.md)): a callee whose free,
+  move, store or returned value depends on a fact about its parameters is
+  summarised with a `when` guard (`param 1 freed(free) when param 3 zero`,
+  `store param 0 *.msg = copy param 2 when param 2 nonnull`, `return
+  fresh(free) when param 3 positive|negative`), on a parameter, a field or
+  dereference below one, or a global. At the call the guard is translated
+  to the arguments (a constant or `NULL` argument decides it on the spot; a
+  variable, a cast of one or `n * 8` is looked up in the caller's facts)
+  and the effect is applied only when it is not refuted: `l_alloc(ud, p,
+  8, 0)` frees `p` and returns null, `l_alloc(ud, p, 8, 16)` does not free
+  and returns a fresh block, `b.noalloc = 1; release(&b); use(b.data)` is
+  clean when `release` frees only `if (!b->noalloc)`, and `gz_error(s, err,
+  NULL)` stores nothing. What survives translation stays attached to the
+  record in the caller, where a later test may still refute it.
+- **Inferred `noreturn`** ([RFC
+  0009](rfcs/0009-value-conditional-behaviour.md)): a function whose every
+  path ends in `abort`, `exit`, `longjmp`, a function declared `noreturn`
+  or `_Noreturn`, an infinite loop, or a call to another such function is
+  summarised `never-returns`, in the same file or across the program, and
+  a call to it ends the path: `if (bad) die("..."); use(p);` is analysed on
+  the good path only, nothing is leaked at the end of a block that is never
+  left, and code after the call is dead. A function that returns on *some*
+  path (`void check(int ok) { if (!ok) die(); }`) returns as far as the
+  checker knows, and a call through a function pointer never returns only
+  if every candidate never returns. No annotation is needed or added.
 - **Result provenance**: a callee that returns one of its arguments or a
   pointer into one (`strchr`, `next_of(n)`, `&n->v`) makes the result an
   alias or a borrow of that argument in the caller, so freeing the argument

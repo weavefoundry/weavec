@@ -26,6 +26,10 @@ scripts/corpus.py --weavec build/dev/bin/weavec --local ~/src/foo --local-args -
   reviewed change. Because the projects track branches, the resolved commits
   are recorded so a change in the numbers can be attributed to them.
 - `--json out.json` writes every diagnostic with its location for triage.
+- Every run passes `-ferror-limit=0`: Clang's default stops after 20 errors
+  per unit, and a tally capped per unit cannot be compared between runs
+  (Lua's `lstrlib.c` and `lauxlib.c` hit the cap). Baselines taken before
+  this flag was added undercount those units.
 - The `clang` column counts Clang's own errors (missing headers, wrong
   `-std`); it should be zero, otherwise the numbers for that project are not
   meaningful.
@@ -202,3 +206,42 @@ renumbered from scratch at every changed member, and `BorrowState` kept one
 loan per borrow *site*, 1,173 of them per state in `luaV_execute`, where it
 now keeps one per borrow); RFC 0008's *Performance* note records what is
 left.
+
+### RFC 0009: value-conditional behaviour
+
+RFC 0009 adds no diagnostic and removes 140 reports across the ten
+projects (Lua 697 → 566, cJSON 8 → 5 and 35 → 32, zlib 31 → 28); no project reports anything it did not report before (one Lua
+`double-free` moved from `ldump.c:301` to `ldump.c:303`, the next call on the
+same `D.L->tbclist.p`). The baseline it replaces was taken with Clang's
+default `-ferror-limit`, which capped Lua's `lstrlib.c`, `lauxlib.c` and
+`lvm.c`, and cJSON-program's `cJSON.c`, at 20 errors each; the numbers below
+compare two runs made with the cap lifted (the pre-RFC binary, then this
+one), so the "before" figures are larger than the previous baseline's (Lua's
+`use-after-free` 37 there is 405 uncapped; cJSON-program's
+`null-dereference` 24 is 32).
+
+| Project              | Change                                                                                     | Cause                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| -------------------- | ------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| lua                  | `null-dereference` 215 → 92                                                                | `luaL_error`, `luaL_argerror`, `luaL_typeerror`, `tag_error` and `lua_error` are inferred `never-returns` (`luaD_throw` is `l_noret`; every path through them ends there), so the failing arm of `luaL_checklstring` and its relatives no longer rejoins the succeeding one and their results are non-null.                                                                                                                                                            |
+| lua                  | `leak` 5 → 1                                                                               | `luaL_alloc` is summarised `ptr: freed\|moved; returns{fresh when[nsize positive\|negative], null}`: called through `g->frealloc` with `nsize` 0 (`callfrealloc(g, block, osize, 0)` in `lmem.c`, the `(*g->frealloc)(..., 0)` in `lstate.c`, `lstring.c`, `lgc.c`) nothing fresh comes back, so "result of a function pointer is leaked" is gone.                                                                                                                              |
+| lua                  | `double-free` 35 → 34, `invalid-release` 6 → 5, `conflicting-borrow` 18 → 16              | Guards on a *global*: `lua_freeline` frees its line `when[l_readline nonnull]` and `lua_readline` returns the caller's stack `buffer` `when[l_readline null]`, two guards that cannot both hold, so `lua.c`'s `pushline` no longer releases `buffer`. `luaL_loadfilex` closes `stdin` `when[filename nonnull]`, and `dofile(L, NULL)` passes null. The two `conflicting-borrow`s (`L->top.p` at `luaC_checkfinalizer` in `lapi.c`) were not traced to one summary; they are reallocation shapes downstream of `luaL_alloc`. A third, `newt.node` at `freehash` in `ltable.c`, had gone too, and came back with the unsigned-comparison fix below: it was a false negative, not a gain. |
+| lua                  | `use-after-free` 405 → 405, `lifetime-too-short` 10 → 10                                   | Unchanged. 383 of the `use-after-free`s are one shape in `luaV_execute`: `ra`, `base` and `ci->func.p` are interior pointers into `L->stack`, which every `Protect`ed call may reallocate; the code re-derives `base` from `ci->func.p` afterwards (`updatebase`), and the model has no notion of an interior pointer being *rebased*. RFC 0008's *Replaced values* row above.                                                                                                       |
+| cJSON, cJSON-program | `null-dereference` 7 → 5 / 32 → 30, `leak` 1 → 0 / 1 → 0                                  | `parse_array`, `parse_object`: `current_item` is null only `when[head null]` after the first iteration, and `if (head == NULL) ... else current_item->next = ...` refutes it. `ensure` stores a fresh `p->buffer` `when[p->noalloc =0]`; `cJSON_PrintPreallocated` sets `p.noalloc = true`, so `p.buffer` (the caller's) is not an owned value it leaks. `cJSON_Utils.c:1189` stays: `if (index > ULONG_MAX)` briefly hid it (see below).                                            |
+| zlib                 | `leak` 4 → 2, `null-dereference` 25 → 24                                                   | `gz_error` frees and nulls `state->msg` `when[state->msg nonnull]` and allocates a new one `when[msg nonnull]`; after `gz_error(state, Z_OK, NULL)` the field is null on every path, so `free(state)` in `gzclose_r`/`gzclose_w` leaks nothing. `inflateCopy`: `window` is null `when[state->window null]` and otherwise non-null, so `if (window != Z_NULL)` learns `state->window` non-null before the `zmemcpy`.                                                                   |
+
+The wall-clock cost is recorded in the RFC's *Performance* note: Lua as
+one program went from 26.0 to 33.0–34.5 minutes on the same machine (two
+runs; +27–33%), of which the per-unit overhead is about 14%; the rest is
+the whole-program fixpoint.
+
+Three checker bugs were found by this triage and fixed before the baseline
+was taken; the RFC's *Deriving guards* and *Assumptions* record them. A
+value gone at a callee's exit only under a guard was summarised as an
+unconditional unreplaced consume (Lua's `str_writer` under `dumpBlock`
+reported 19 `double-free`s in `ldump.c`); a replaced consume that found the
+value already gone kept the stale record, so every later call reported
+again; and an integer constant was read as its two's-complement bits rather
+than its value, so `ULONG_MAX` was `-1` and the edge on which
+`if (index > ULONG_MAX)` fails was infeasible for `index = 0`, which
+silently dropped a `null-dereference` in `cJSON_Utils.c` (a false
+negative, the kind of error this corpus exists to catch).

@@ -26,6 +26,7 @@
 #include "weavec/Core/Borrow.h"
 #include "weavec/Core/Ownership.h"
 #include "weavec/Core/Place.h"
+#include "weavec/Core/Scalar.h"
 
 #include <algorithm>
 #include <compare>
@@ -112,6 +113,12 @@ struct SummaryPath {
                                           const SummaryPath &) = default;
 };
 
+/// A guard over summary paths (RFC 0009, *Guards*): the conjunction of facts
+/// about the callee's interface under which alone an effect, a store or a
+/// return alternative holds. The caller translates it to its own places at
+/// the call and prunes it against what it knows about the arguments.
+using PathGuard = GuardOn<SummaryPath>;
+
 /// What the callee may do to the object at a summary path.
 struct PlaceEffect {
   /// The object is loaded from (through a dereference of the root).
@@ -142,6 +149,12 @@ struct PlaceEffect {
   /// Meaningful only when `freed` or `moved` is set.
   // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
   std::string family = {};
+  /// RFC 0009: the consume (`freed`/`moved`) happens only when the guard
+  /// holds; trivial when it happens on some path whatever the arguments.
+  /// Meaningful only when `freed` or `moved` is set. Joins like a guard:
+  /// the conjuncts every consuming side agrees on.
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
+  PathGuard when = {};
 
   [[nodiscard]] bool empty() const noexcept {
     return !read && !written && !freed && !moved;
@@ -155,7 +168,8 @@ struct PlaceEffect {
   /// May-join: `or` of every flag but `replaced` and `element`, which hold
   /// only if every consuming side says so. The family survives only when
   /// both sides agree (or only one consumes); a disagreement is "unknown",
-  /// so joining can only make the mismatch check report less.
+  /// so joining can only make the mismatch check report less. The guard is
+  /// joined the same way: what both consuming sides require.
   void join(const PlaceEffect &other);
 
   friend bool operator==(const PlaceEffect &, const PlaceEffect &) = default;
@@ -191,46 +205,70 @@ struct ValueSource {
   /// empty when unknown.
   // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
   std::string family = {};
+  /// RFC 0009: the value is stored or returned only when the guard holds.
+  /// Two sources that differ only in their guard are one alternative whose
+  /// guard is the join (`addReturn`, `addStore`).
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
+  PathGuard when = {};
 
   [[nodiscard]] static ValueSource fresh(std::string family = {}) {
     return ValueSource{.kind = Kind::Fresh,
                        .path = std::nullopt,
                        .interior = false,
-                       .family = std::move(family)};
+                       .family = std::move(family),
+                       .when = {}};
   }
   [[nodiscard]] static ValueSource raw() {
     return ValueSource{.kind = Kind::Raw,
                        .path = std::nullopt,
                        .interior = false,
-                       .family = {}};
+                       .family = {},
+                       .when = {}};
   }
   [[nodiscard]] static ValueSource copy(SummaryPath of) {
     return ValueSource{.kind = Kind::Copy,
                        .path = std::move(of),
                        .interior = false,
-                       .family = {}};
+                       .family = {},
+                       .when = {}};
   }
   [[nodiscard]] static ValueSource interiorCopy(SummaryPath of) {
     return ValueSource{.kind = Kind::Copy,
                        .path = std::move(of),
                        .interior = true,
-                       .family = {}};
+                       .family = {},
+                       .when = {}};
   }
   [[nodiscard]] static ValueSource borrow(SummaryPath of) {
     return ValueSource{.kind = Kind::Borrow,
                        .path = std::move(of),
                        .interior = false,
-                       .family = {}};
+                       .family = {},
+                       .when = {}};
   }
   [[nodiscard]] static ValueSource null() {
     return ValueSource{.kind = Kind::Null,
                        .path = std::nullopt,
                        .interior = false,
-                       .family = {}};
+                       .family = {},
+                       .when = {}};
   }
   [[nodiscard]] static ValueSource unknown() { return ValueSource{}; }
 
   [[nodiscard]] bool isFresh() const noexcept { return kind == Kind::Fresh; }
+  [[nodiscard]] bool isNull() const noexcept { return kind == Kind::Null; }
+
+  /// The same source with a trivial guard.
+  [[nodiscard]] ValueSource unguarded() const {
+    ValueSource result = *this;
+    result.when.conditions.clear();
+    return result;
+  }
+  /// True if `other` is this alternative up to its guard.
+  [[nodiscard]] bool sameValueAs(const ValueSource &other) const {
+    return kind == other.kind && path == other.path &&
+           interior == other.interior && family == other.family;
+  }
 
   friend bool operator==(const ValueSource &, const ValueSource &) = default;
   friend std::strong_ordering operator<=>(const ValueSource &,
@@ -246,21 +284,6 @@ struct Store {
   friend std::strong_ordering operator<=>(const Store &,
                                           const Store &) = default;
 };
-
-/// A class of return value (RFC 0006, *Outcome-conditional summaries*).
-/// Pointer results are `Null` or `NonNull`; integer results are `Zero`,
-/// `Positive` or `Negative`.
-enum class Outcome : std::uint8_t {
-  Null,
-  NonNull,
-  Zero,
-  Positive,
-  Negative,
-};
-
-[[nodiscard]] std::string_view toString(Outcome outcome) noexcept;
-[[nodiscard]] std::optional<Outcome>
-parseOutcome(std::string_view text) noexcept;
 
 /// The consumption that holds on the paths returning one outcome class.
 using OutcomeEffects = std::map<SummaryPath, PlaceEffect>;
@@ -298,14 +321,27 @@ public:
   /// nullness (RFC 0008, *Requirements*): a caller must not pass a pointer
   /// that may be null. A may-fact: joins by union.
   std::set<std::uint32_t> requiresNonNull;
+  /// RFC 0009, *Inferred `noreturn`*: no path through the callee reaches
+  /// its exit; a call to it ends the caller's path. A must-fact: joins by
+  /// conjunction (an empty summary, the identity of the join, contributes
+  /// nothing).
+  bool neverReturns = false;
 
   /// The effect recorded for `path`, or an empty one.
   [[nodiscard]] PlaceEffect effectOf(const SummaryPath &path) const;
 
   /// Merges `effect` into the record for `path`.
   void addEffect(SummaryPath path, const PlaceEffect &effect);
-  void addStore(Store store) { stores.insert(std::move(store)); }
-  void addReturn(ValueSource source) { returns.insert(std::move(source)); }
+  /// Adds a store; one to the same destination of the same value under
+  /// another guard is merged, the guards joined.
+  void addStore(Store store);
+  /// Adds a return alternative; the same value under another guard is
+  /// merged, the guards joined.
+  void addReturn(ValueSource source);
+  /// True if some alternative of the result has `kind`, under any guard.
+  [[nodiscard]] bool returnsKind(ValueSource::Kind kind) const noexcept;
+  /// Drops every alternative of `kind`, whatever its guard.
+  void eraseReturns(ValueSource::Kind kind);
   /// Records that `outcome` is possible, with `effect` on `path` (an empty
   /// effect only records the class).
   void addOutcome(Outcome outcome, const SummaryPath &path,
@@ -366,10 +402,10 @@ public:
   [[nodiscard]] bool empty() const noexcept {
     return effects.empty() && stores.empty() && returns.empty() &&
            outcomes.empty() && nullOn.empty() && nonNullOn.empty() &&
-           requiresNonNull.empty();
+           requiresNonNull.empty() && !neverReturns;
   }
 
-  /// Component-wise set union.
+  /// Component-wise set union (conjunction for the must-facts).
   void join(const FunctionSummary &other);
 
   friend bool operator==(const FunctionSummary &,
