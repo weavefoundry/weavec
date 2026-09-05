@@ -228,7 +228,10 @@ TEST(DiagnosticIds, DefaultSeverities) {
   EXPECT_TRUE(core::diag::isKnown("null-dereference"));
   EXPECT_TRUE(core::diag::isKnown("use-of-uninitialized"));
   EXPECT_TRUE(core::diag::isKnown("invalid-release"));
-  EXPECT_EQ(core::diag::All.size(), 14U);
+  // RFC 0011: out-of-bounds is an error.
+  EXPECT_FALSE(core::diag::isWarningByDefault(core::diag::OutOfBounds));
+  EXPECT_TRUE(core::diag::isKnown("out-of-bounds"));
+  EXPECT_EQ(core::diag::All.size(), 15U);
 }
 
 } // namespace

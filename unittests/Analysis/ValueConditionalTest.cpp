@@ -383,6 +383,83 @@ TEST(ValueConditional, CallersSelectEffectsByArgument) {
             }));
 }
 
+// -- Guarded outcome classes (RFC 0009, *Guards*) -----------------------------
+
+TEST(ValueConditional, OutcomeClassesKeepTheirGuards) {
+  // `l_alloc` frees `ptr` on its null class only for a zero size and moves
+  // it on the non-null class; both classes consume `ptr`, but not whatever
+  // the arguments are, so the classes are kept with their guards.
+  const auto result = analyze(std::string(Alloc) + R"c(
+    void *wrap(void *ud, void *block, size_t nsize) {
+      void *nb = l_alloc(ud, block, 8, nsize);
+      if (nb == NULL) return NULL;
+      return nb;
+    }
+    void *wrap_and(void *ud, void *block, size_t nsize) {
+      void *nb = l_alloc(ud, block, 8, nsize);
+      if (nb == NULL && nsize > 0) return NULL;
+      return nb;
+    }
+    struct table { void **hash; int size; };
+    void resize(void *ud, struct table *t, int nsize) {
+      void **nv = l_alloc(ud, t->hash, 8, nsize * sizeof(void *));
+      if (nv == NULL) { /* leave the table as it was */ }
+      else { t->hash = nv; t->size = nsize; }
+    }
+    void grow_fails_keeps(void *ud, struct table *t) {
+      if (t->size == 0) return;
+      void **nv = l_alloc(ud, t->hash, 8, t->size * 2 * sizeof(void *));
+      if (nv == NULL) return;
+      t->hash = nv;
+    }
+  )c");
+  ASSERT_TRUE(result.ast);
+  EXPECT_EQ(messages(result.diagnostics), Strings{});
+
+  const SummaryPath ptr = SummaryPath::param(1);
+  const core::FunctionSummary *alloc = result.summary("l_alloc");
+  ASSERT_NE(alloc, nullptr);
+  EXPECT_FALSE(alloc->consumesUnconditionally(ptr));
+  EXPECT_EQ(alloc->outcomes.at(Outcome::Null).at(ptr).when,
+            when(SummaryPath::param(3), ValueFact::ofConstant(0)));
+  EXPECT_TRUE(alloc->outcomes.at(Outcome::Null).at(ptr).freed);
+  EXPECT_TRUE(alloc->outcomes.at(Outcome::NonNull).at(ptr).moved);
+  EXPECT_EQ(alloc->outcomes.at(Outcome::NonNull).at(ptr).when,
+            when(SummaryPath::param(3), ValueFact::nonZero()));
+
+  // The wrapper's null edge keeps the guard: on it `block` is gone only
+  // when `nsize` is zero. Merging that edge with the non-null one keeps the
+  // recording's classes (the two narrowings are one outcome).
+  for (const char *name : {"wrap", "wrap_and"}) {
+    const core::FunctionSummary *wrap = result.summary(name);
+    ASSERT_NE(wrap, nullptr) << name;
+    EXPECT_FALSE(wrap->consumesUnconditionally(ptr)) << name;
+    EXPECT_EQ(wrap->outcomes.at(Outcome::Null).at(ptr).when,
+              when(SummaryPath::param(2), ValueFact::ofConstant(0)))
+        << name;
+    EXPECT_TRUE(wrap->outcomes.at(Outcome::NonNull).contains(ptr)) << name;
+  }
+
+  // The failure path leaves `t->hash` freed only when the size was zero
+  // (`nsize * sizeof` is zero exactly when `nsize` is, though the scaling
+  // keeps only the class); the success path replaces it.
+  const core::FunctionSummary *resize = result.summary("resize");
+  ASSERT_NE(resize, nullptr);
+  const SummaryPath hash = SummaryPath::param(1).deref().field("hash");
+  EXPECT_TRUE(resize->effectOf(hash).freed);
+  EXPECT_FALSE(resize->effectOf(hash).replaced);
+  EXPECT_EQ(resize->effectOf(hash).when,
+            when(SummaryPath::param(2), ValueFact::of(Outcome::Zero)));
+
+  // A caller that knows the size is non-zero refutes the guard on the null
+  // edge: the block is still owned there, so returning is not a leak and
+  // the value is not freed.
+  const core::FunctionSummary *keeps = result.summary("grow_fails_keeps");
+  ASSERT_NE(keeps, nullptr);
+  EXPECT_TRUE(keeps->effectOf(hash).replaced)
+      << "only the success path consumes, and it replaces";
+}
+
 // -- Replaced values under a guard (RFC 0009, *Deriving guards*) --------------
 
 constexpr const char *Writer = R"c(

@@ -57,5 +57,6 @@ decision is a new RFC that supersedes the relevant section.
 | [0008](0008-pointer-validity.md)         | Pointer validity: null dereferences, uninitialised pointers, invalid releases and replaced values | Accepted |
 | [0009](0009-value-conditional-behaviour.md) | Value-conditional behaviour: scalar facts, guarded effects and inferred `noreturn` | Accepted |
 | [0010](0010-shared-ownership.md)         | Shared ownership: reference counts, ownership by outcome and per-outcome facts | Accepted |
+| [0011](0011-spatial-safety.md)           | Spatial safety: derived pointers, extents and bounds | Accepted |
 
 The [roadmap](../roadmap.md) links each milestone to the RFCs that define it.

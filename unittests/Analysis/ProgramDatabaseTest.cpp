@@ -74,13 +74,16 @@ TEST(UnitExports, ExportsExternalAndAddressTakenDefinitions) {
   EXPECT_EQ(drop.typeKey, "void (void *)");
   EXPECT_TRUE(drop.summary.frees(0));
 
-  EXPECT_TRUE(exports.functions.at("node_new")
-                  .summary.returns.contains(ValueSource::fresh("free")));
+  EXPECT_TRUE(llvm::any_of(exports.functions.at("node_new").summary.returns,
+                           [](const ValueSource &source) {
+                             return source.isFresh() && source.family == "free";
+                           }));
   EXPECT_TRUE(exports.functions.at("node_name")
                   .summary.returns.contains(ValueSource::copy(
                       SummaryPath::param(0).deref().field("name"))));
   EXPECT_TRUE(exports.functions.at("node_vp").summary.returns.contains(
-      ValueSource::borrow(SummaryPath::param(0).deref().field("v"))));
+      ValueSource::copyAt(SummaryPath::param(0),
+                          core::PointerOffset::ofField("struct node.v"))));
 
   // Globals travel by name; the static one is dropped.
   const core::FunctionSummary &reset =
@@ -201,13 +204,15 @@ TEST(ProgramDatabase, CalleeDefinedInAnotherUnitIsChecked) {
   )c",
                                        &program.db);
   ASSERT_TRUE(client.ast);
+  // `node_vp` returns a copy of `n` at the field `v` (RFC 0011): freeing `n`
+  // frees what `p` points to, reported at the use.
   EXPECT_EQ(ids(client.diagnostics),
             (std::vector<std::string>{"use-after-free", "double-free",
-                                      "conflicting-borrow"}));
+                                      "use-after-free"}));
   EXPECT_EQ(messages(client.diagnostics)[0],
             "14: use of 'n' after it was freed");
   EXPECT_EQ(messages(client.diagnostics)[2],
-            "25: cannot free 'n' while it is borrowed")
+            "26: use of 'p' after it was freed")
       << "`s` in copied_out was copied out before the free: no report";
 
   const auto resolved =
@@ -492,9 +497,10 @@ TEST(ProgramDatabase, DumpListsFunctionsAndCandidates) {
   EXPECT_NE(text.find("  function 'reset_caches': global g_cache: freed(free); "
                       "stores{} returns{}\n"),
             std::string::npos);
-  EXPECT_NE(text.find("  function 'node_vp': stores{} "
-                      "returns{borrow param 0 *.v} requires{param 0}\n"),
-            std::string::npos)
+  EXPECT_NE(
+      text.find("  function 'node_vp': stores{} "
+                "returns{copy param 0 @+struct~node.v} requires{param 0}\n"),
+      std::string::npos)
       << text;
   EXPECT_NE(
       text.find("  candidate 'void (void *)': param 0: freed(free); stores{} "

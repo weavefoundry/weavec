@@ -37,7 +37,7 @@
 #define WEAVEC_H
 
 #define WEAVEC_H_VERSION_MAJOR 0
-#define WEAVEC_H_VERSION_MINOR 5
+#define WEAVEC_H_VERSION_MINOR 6
 
 #if defined(__has_attribute)
 #if __has_attribute(annotate)
@@ -125,6 +125,15 @@
  * it with anything else is reported as a mismatched release.
  */
 #define WEAVEC_OWNED_BY(f) WEAVEC_ANNOTATE_("weavec.family." #f)
+
+/**
+ * On a pointer parameter: the caller passes at least `n` elements (bytes
+ * for `void *`) behind it, `n` being another parameter of the same function
+ * by name (`void fill(char *WEAVEC_SIZED_BY(len) buf, size_t len)`). The
+ * body may access that many without a report; a caller passing a smaller
+ * object is reported at the call.
+ */
+#define WEAVEC_SIZED_BY(n) WEAVEC_ANNOTATE_("weavec.sized_by." #n)
 
 /** Non-zero when the translation unit is being processed by WeaveC. */
 #if defined(__WEAVEC__)

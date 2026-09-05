@@ -208,13 +208,13 @@ void truncate_to(struct buf *b, unsigned n) {
 // DUMP: function 'value_of':
 // DUMP: summary: n->value: read; stores{} returns{} requires{n}
 // DUMP: function 'make':
-// DUMP: summary: stores{} returns{fresh(free), null}
+// DUMP: summary: stores{} returns{fresh(free) extent=16, null}
 // DUMP: function 'redundant_tests':
 // DUMP: summary: n->next: read; n->next->value: read; n->value: read|written; stores{} returns{}
 // DUMP: function 'open_node':
-// DUMP: summary: *out: read|written; stores{*out = fresh(free), *out = null} returns{} requires{out} outcome zero{} null{*out} outcome positive{} notnull{*out}
+// DUMP: summary: *out: read|written; stores{*out = fresh(free) extent=16, *out = null} returns{} requires{out} outcome zero{} null{*out} outcome positive{} notnull{*out}
 // DUMP: function 'grow':
-// DUMP: summary: b->data: written|moved(free)|replaced; b->len: read|written; stores{b->data = fresh(free)} returns{} requires{b} outcome zero{b->data: moved(free) replaced} stored{b->data} outcome negative{} null{b->data} stored{}
+// DUMP: summary: b->data: written|moved(free)|replaced; b->len: read|written; stores{b->data = fresh(free) extent=n} returns{} requires{b} outcome zero{b->data: moved(free) replaced} stored{b->data} outcome negative{} null{b->data} stored{}
 // DUMP: function 'truncate_to':
 // DUMP-NOT: maybe-null
 // DUMP: summary: b->data: read|written|moved(free)|replaced;

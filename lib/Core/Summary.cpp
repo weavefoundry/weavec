@@ -98,10 +98,13 @@ void PlaceEffect::join(const PlaceEffect &other) {
     element = other.element;
     share = other.share;
     when = other.when;
+    at = other.at;
     return;
   }
   if (family != other.family)
     family.clear();
+  // Released at two different offsets: the caller cannot compose either.
+  at.join(other.at);
   // A side that may leave the consumed value in place makes the join so; a
   // side that consumed the whole pointee makes every later access a use.
   replaced = replaced && other.replaced;
@@ -157,6 +160,25 @@ void FunctionSummary::addReturn(ValueSource source) {
   returns.insert(std::move(joined));
 }
 
+void FunctionSummary::addRequirement(std::uint32_t param,
+                                     ExtentRequirement requirement) {
+  std::set<ExtentRequirement> &mine = requiresExtent[param];
+  const auto same =
+      std::ranges::find_if(mine, [&requirement](const ExtentRequirement &r) {
+        return r.need == requirement.need;
+      });
+  if (same == mine.end()) {
+    mine.insert(std::move(requirement));
+    return;
+  }
+  if (same->when == requirement.when)
+    return;
+  ExtentRequirement joined = *same;
+  joined.when.join(requirement.when);
+  mine.erase(same);
+  mine.insert(std::move(joined));
+}
+
 bool FunctionSummary::returnsKind(ValueSource::Kind kind) const noexcept {
   return std::ranges::any_of(returns, [kind](const ValueSource &source) {
     return source.kind == kind;
@@ -189,12 +211,19 @@ FunctionSummary::borrowKind(std::uint32_t param) const {
     }
   }
   // Handing out a pointer into the pointee (returned or stored elsewhere) is a
-  // shared use of it even when nothing was read through it.
+  // shared use of it even when nothing was read through it. A copy of the
+  // parameter at a field offset (`&n->v`, RFC 0011) points into the pointee
+  // as much as a borrow of `param i *.v` did.
   const auto usesPointee = [&](const ValueSource &value) {
-    return (value.kind == ValueSource::Kind::Copy ||
-            value.kind == ValueSource::Kind::Borrow) &&
-           value.path &&
-           (*value.path == pointee || pointee.isProperPrefixOf(*value.path));
+    if (value.kind != ValueSource::Kind::Copy &&
+        value.kind != ValueSource::Kind::Borrow)
+      return false;
+    if (!value.path)
+      return false;
+    if (*value.path == pointee || pointee.isProperPrefixOf(*value.path))
+      return true;
+    return value.kind == ValueSource::Kind::Copy &&
+           *value.path == SummaryPath::param(param) && value.offset.isField();
   };
   for (const Store &store : stores) {
     if (store.dest == pointee || pointee.isProperPrefixOf(store.dest))
@@ -323,11 +352,16 @@ bool FunctionSummary::retains(std::uint32_t param) const {
 }
 
 bool FunctionSummary::consumesUnconditionally(const SummaryPath &path) const {
-  if (outcomes.empty())
-    return true;
+  // Without classes the one effect speaks: a consume under a guard (RFC
+  // 0009) happens only for some arguments, and is not unconditional.
+  if (outcomes.empty()) {
+    const auto it = effects.find(path);
+    return it == effects.end() || it->second.when.trivial();
+  }
   return std::ranges::all_of(outcomes, [&path](const auto &entry) {
     const auto it = entry.second.find(path);
-    return it != entry.second.end() && it->second.consumed();
+    return it != entry.second.end() && it->second.consumed() &&
+           it->second.when.trivial();
   });
 }
 
@@ -353,6 +387,11 @@ void FunctionSummary::join(const FunctionSummary &other) {
   increments.insert(other.increments.begin(), other.increments.end());
   decrements.insert(other.decrements.begin(), other.decrements.end());
   counts.insert(other.counts.begin(), other.counts.end());
+  // RFC 0011: a requirement of either side is a requirement.
+  for (const auto &[param, requirements] : other.requiresExtent) {
+    for (const ExtentRequirement &requirement : requirements)
+      addRequirement(param, requirement);
+  }
   // A path through either side that returns is a path that returns (RFC
   // 0009): the bit survives only when both sides have it.
   neverReturns =
@@ -487,10 +526,24 @@ FunctionSummary remapGlobals(const FunctionSummary &summary,
     result.when = remapGuard(effect.when);
     return result;
   };
-  const auto remapSource = [&remapPath,
-                            &remapGuard](const ValueSource &source) {
+  // RFC 0011: an extent in a dropped global is unknown.
+  const auto remapAffine =
+      [&remapPath](const PathAffine &affine) -> std::optional<PathAffine> {
+    if (!affine.path)
+      return affine;
+    const std::optional<SummaryPath> path = remapPath(*affine.path);
+    if (!path)
+      return std::nullopt;
+    PathAffine result = affine;
+    result.path = *path;
+    return result;
+  };
+  const auto remapSource = [&remapPath, &remapGuard,
+                            &remapAffine](const ValueSource &source) {
     ValueSource result = source;
     result.when = remapGuard(source.when);
+    if (source.extent)
+      result.extent = remapAffine(*source.extent);
     if ((source.kind != ValueSource::Kind::Copy &&
          source.kind != ValueSource::Kind::Borrow) ||
         !source.path)
@@ -555,6 +608,14 @@ FunctionSummary remapGlobals(const FunctionSummary &summary,
     }
   }
   result.requiresNonNull = summary.requiresNonNull;
+  for (const auto &[param, requirements] : summary.requiresExtent) {
+    for (const ExtentRequirement &requirement : requirements) {
+      if (const auto need = remapAffine(requirement.need))
+        result.addRequirement(
+            param, ExtentRequirement{.need = *need,
+                                     .when = remapGuard(requirement.when)});
+    }
+  }
   result.neverReturns = summary.neverReturns;
   result.normalizeStoresOn();
   return result;

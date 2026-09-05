@@ -33,7 +33,7 @@ struct table {
 // `p->value = value` has no caller-visible destination; `value` escapes, and
 // so does the old head, which lives on in the new node's `next`.
 // DUMP-LABEL: function 'table_set':
-// DUMP: summary: t->first: read|written|escaped; value: escaped; stores{t->first = fresh(free)}
+// DUMP: summary: t->first: read|written|escaped; value: escaped; stores{t->first = fresh(free) extent=16}
 static int table_set(struct table *t, struct obj *value) {
   struct pair *p = malloc(sizeof *p);
   if (!p)

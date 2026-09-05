@@ -31,8 +31,10 @@ int double_release(void) {
 int dangling_field_pointer(void) {
   struct node *n = node_new();
   int *p = node_vp(n);
-  // CHECK: rfc0005-cross-unit.c:[[@LINE+1]]:3: error: cannot free 'n' while it is borrowed [weavec::conflicting-borrow]
   node_free(n);
+  // `node_vp` returns a copy of `n` at the field `v` (RFC 0011): the
+  // dangling read is the report.
+  // CHECK: rfc0005-cross-unit.c:[[@LINE+1]]:11: error: use of 'p' after it was freed [weavec::use-after-free]
   return *p;
 }
 

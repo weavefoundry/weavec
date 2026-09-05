@@ -28,7 +28,7 @@ static void append(struct L *L, const char *b) {
 // anything else appends (the stack is freed and replaced). The consume the
 // caller sees is guarded on the null; the store keeps its own guard.
 // DUMP-LABEL: function 'writer':
-// DUMP: summary: L->stack: written|freed(free) when[b null]; *b: read; stores{L->stack = fresh(free) when[b nonnull], L->stack = null when[b nonnull]} returns{} requires{L}
+// DUMP: summary: L->stack: written|freed(free) when[b null]; *b: read; stores{L->stack = fresh(free) extent=8 when[b nonnull], L->stack = null when[b nonnull]} returns{} requires{L}
 void writer(struct L *L, const char *b) {
   if (b == NULL)
     finish(L);

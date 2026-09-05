@@ -58,15 +58,16 @@ void free_while_borrowed(void) {
   if (!n)
     return;
   int *a = &n->v;
-  // CHECK: rfc0002-borrows.c:[[@LINE+1]]:3: error: cannot free 'n' while it is borrowed [weavec::conflicting-borrow]
   free(n);
+  // `&n->v` is a derived copy of `n` (RFC 0011): the use is the report.
+  // CHECK: rfc0002-borrows.c:[[@LINE+1]]:7: error: use of 'a' after it was freed [weavec::use-after-free]
   use(a);
 }
 
 void move_while_borrowed(struct node *WEAVEC_OWNED n) {
   int *a = &n->v;
-  // CHECK: rfc0002-borrows.c:[[@LINE+1]]:3: error: cannot move 'n' while it is borrowed [weavec::conflicting-borrow]
   take(n);
+  // CHECK: rfc0002-borrows.c:[[@LINE+1]]:7: error: use of 'a' after it was moved [weavec::use-after-move]
   use(a);
 }
 
@@ -93,8 +94,8 @@ void array_decay(void) {
 // both modes (RFC 0006, *Loans end at the last use of their holder*).
 void free_before_last_use(struct node *WEAVEC_OWNED n) {
   int *a = &n->v;
-  // CHECK: rfc0002-borrows.c:[[@LINE+1]]:3: error: cannot free 'n' while it is borrowed [weavec::conflicting-borrow]
   free(n);
+  // CHECK: rfc0002-borrows.c:[[@LINE+1]]:4: error: use of 'a' after it was freed [weavec::use-after-free]
   *a = 1;
 }
 

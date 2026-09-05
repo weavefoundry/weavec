@@ -13,6 +13,8 @@ test/
   WholeProgram/  several files analysed as one program (RFC 0005), with
                  their shared sources under WholeProgram/Inputs/
   Inputs/        shared headers/fixtures (not run as tests)
+  recall/        Juliet-style recall cases per CWE (RFC 0011), run by
+                 scripts/recall.py rather than lit; see recall/README.md
 ```
 
 Run everything with `ninja check-weavec-lit` (or `ctest -L integration`), or a
@@ -26,3 +28,8 @@ Use `not %weavec ...` when the run is expected to fail and `... | count 0`
 to assert that nothing was printed.
 
 Unit tests for individual components live in `unittests/` instead.
+
+The recall set is the one directory lit does not run: `ctest -R recall` (or
+`python3 scripts/recall.py --weavec build/dev/bin/weavec`) analyses every
+`test/recall/CWE-*/*.c`, checks that each `// RECALL:` pin is reported and
+that no `good` function is, and prints recall per CWE.

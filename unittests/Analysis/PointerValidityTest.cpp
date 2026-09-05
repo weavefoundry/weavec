@@ -667,15 +667,15 @@ TEST(InvalidRelease, InteriorPointers) {
   ASSERT_TRUE(result.ast);
   EXPECT_EQ(
       messages(result.diagnostics),
-      (Strings{"3: 'p' is released but does not point to the start of its "
+      (Strings{"3: 'p' is released but points 1 element past the start of its "
                "allocation",
-               "4: 'q' is released but does not point to the start of its "
+               "4: 'q' is released but points 1 element past the start of its "
                "allocation",
-               "5: 'p' is released but does not point to the start of its "
+               "5: 'p' is released but points 1 element past the start of its "
                "allocation",
                "10: 'q' is released but does not point to the start of its "
                "allocation"}))
-      << "`p + 0` is `p`";
+      << "`p + 0` is `p`; a known offset is named (RFC 0011)";
   EXPECT_EQ(notes(result.diagnostics), (Strings{"allocated here"}));
 }
 
@@ -967,9 +967,10 @@ TEST(ResultStores, FieldsOfAReturnedStructAreTracked) {
   const core::FunctionSummary *make = result.summary("make");
   ASSERT_NE(make, nullptr);
   EXPECT_TRUE(make->storesTo(SummaryPath::result().field("a")));
-  EXPECT_TRUE(make->stores.contains(
-      core::Store{.dest = SummaryPath::result().field("a"),
-                  .value = ValueSource::fresh("free")}));
+  EXPECT_TRUE(make->stores.contains(core::Store{
+      .dest = SummaryPath::result().field("a"),
+      .value =
+          ValueSource::freshAt("free", {}, core::PathAffine::ofConstant(4))}));
   EXPECT_TRUE(make->stores.contains(
       core::Store{.dest = SummaryPath::result().field("b"),
                   .value = ValueSource::copy(SummaryPath::param(0))}));

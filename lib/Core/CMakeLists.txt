@@ -11,12 +11,15 @@ weavec_add_library(
           Lifetime.cpp
           Moves.cpp
           Nullness.cpp
+          Offset.cpp
           Ownership.cpp
           Place.cpp
           Raw.cpp
+          Relation.cpp
           Resource.cpp
           Scalar.cpp
           Scc.cpp
           SourceLocation.cpp
+          Spatial.cpp
           Summary.cpp
           SummaryIO.cpp)

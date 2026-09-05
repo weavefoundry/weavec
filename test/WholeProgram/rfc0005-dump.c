@@ -14,9 +14,9 @@
 // CHECK-NEXT: places:
 // CHECK: program:
 // CHECK-NEXT: function 'node_free': param 0: freed(free); param 0 *.name: freed(free); stores{} returns{}
-// CHECK-NEXT: function 'node_new': stores{} returns{fresh(free), null}
+// CHECK-NEXT: function 'node_new': stores{} returns{fresh(free) extent 16, null}
 // CHECK-NEXT: function 'node_set_name': param 0 *.name: written,freed(free),replaced; stores{param 0 *.name = copy param 1} returns{} requires{param 0}
-// CHECK-NEXT: function 'node_vp': stores{} returns{borrow param 0 *.v} requires{param 0}
+// CHECK-NEXT: function 'node_vp': stores{} returns{copy param 0 @+struct~node.v} requires{param 0}
 // CHECK-NEXT: function 'release': param 0: freed(free); stores{} returns{}
 
 void release(struct node *n) { node_free(n); }

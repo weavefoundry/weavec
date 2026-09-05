@@ -136,6 +136,17 @@ void ProgramAnalysis::analyzeAcyclic(unsigned index, Result &result) {
   settled.add(run->exports);
 }
 
+void ProgramAnalysis::widen(analysis::UnitExports &exports,
+                            const analysis::UnitExports &previous) {
+  for (auto &[name, function] : exports.functions) {
+    const auto before = previous.functions.find(name);
+    if (before != previous.functions.end())
+      function.summary.join(before->second.summary);
+  }
+  exports.countFields.insert(previous.countFields.begin(),
+                             previous.countFields.end());
+}
+
 void ProgramAnalysis::analyzeCyclic(const std::vector<unsigned> &component,
                                     Result &result) {
   // Every member starts at the bottom and the group is iterated silently
@@ -200,6 +211,11 @@ void ProgramAnalysis::analyzeCyclic(const std::vector<unsigned> &component,
       // Both sides are numbered by the database's table (`renumbered` only
       // ever appends to it), so the summaries alone decide the fixpoint.
       analysis::UnitExports exports = db.renumbered(run->exports);
+      // RFC 0011, *Whole-program widening*: a group that oscillates (a
+      // must-fact one member drops makes another add one back) is joined
+      // towards what every round agreed on; `join` only ever weakens.
+      if (round >= WidenAfter)
+        widen(exports, current[k]);
       if (!exports.sameSummariesAs(current[k])) {
         changed = true;
         stale = true;

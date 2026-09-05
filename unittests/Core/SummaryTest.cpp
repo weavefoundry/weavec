@@ -324,9 +324,24 @@ TEST(FunctionSummary, OutcomesJoinPerClassAndDecideConditionality) {
       << "every class frees p once the negative path does too";
   EXPECT_EQ(joined.outcomes.size(), 2U);
 
+  // RFC 0009, *Guards*: a class that frees p only under a guard on the
+  // arguments does not free it whatever they are.
+  FunctionSummary guarded = joined;
+  PathGuard whenZero;
+  whenZero.require(SummaryPath::param(1), ValueFact::of(Outcome::Zero));
+  guarded.outcomes[Outcome::Zero][p].when = whenZero;
+  EXPECT_FALSE(guarded.consumesUnconditionally(p))
+      << "on the zero class p is freed only when the second argument is 0";
+
   FunctionSummary nothingKnown;
   nothingKnown.addEffect(p, PlaceEffect{.freed = true});
   EXPECT_TRUE(nothingKnown.consumesUnconditionally(p));
+  // Without classes, the effect's own guard decides (Lua's `moveresults`
+  // frees the stack `res` points into only for some `fwanted`): a copy of
+  // `res` is not the callee's resource handed back.
+  FunctionSummary guardedOnly;
+  guardedOnly.addEffect(p, PlaceEffect{.freed = true, .when = whenZero});
+  EXPECT_FALSE(guardedOnly.consumesUnconditionally(p));
   FunctionSummary mixed = a;
   mixed.join(nothingKnown);
   EXPECT_TRUE(mixed.outcomes.empty())
@@ -462,6 +477,55 @@ TEST(PlaceEffect, ShareJoinsByConjunction) {
   PlaceEffect both = release;
   both.join(release);
   EXPECT_TRUE(both.share);
+}
+
+// RFC 0011, *Derived pointers*: a consume records the offset it happened at
+// (`free(container_of(p))` frees at `-struct outer.in`); a field offset and
+// the start join to somewhere inside, and a side that did not consume takes
+// the other's offset.
+TEST(PlaceEffect, ConsumeOffsetsJoin) {
+  const PointerOffset inner = PointerOffset::ofField("struct outer.in");
+  PlaceEffect atInner{.freed = true, .family = "free", .at = inner.negated()};
+  PlaceEffect atStart{.freed = true, .family = "free"};
+  PlaceEffect joined = atInner;
+  joined.join(atInner);
+  EXPECT_EQ(joined.at, inner.negated());
+  joined.join(atStart);
+  EXPECT_TRUE(joined.at.isInside());
+  PlaceEffect untouched{.read = true};
+  untouched.join(atInner);
+  EXPECT_EQ(untouched.at, inner.negated());
+}
+
+// RFC 0011, *Extents in summaries*: a requirement of either side is a
+// requirement; the same need under two guards is one requirement under the
+// joined guard; remapping globals carries the affine's path.
+TEST(FunctionSummary, ExtentRequirementsJoinByUnion) {
+  const PathAffine eight = PathAffine::ofConstant(8);
+  const PathAffine n = PathAffine::ofPath(SummaryPath::param(1), 4, 0);
+  FunctionSummary a;
+  a.addRequirement(0, ExtentRequirement{.need = eight, .when = {}});
+  FunctionSummary b;
+  ExtentRequirement guarded{.need = n, .when = {}};
+  guarded.when.require(SummaryPath::param(1), ValueFact::of(Outcome::Positive));
+  b.addRequirement(0, guarded);
+  a.join(b);
+  ASSERT_EQ(a.requiresExtent.at(0).size(), 2U);
+  EXPECT_TRUE(a.requiresExtent.at(0).contains(
+      ExtentRequirement{.need = eight, .when = {}}));
+  EXPECT_TRUE(a.requiresExtent.at(0).contains(guarded));
+
+  FunctionSummary c;
+  c.addRequirement(0, guarded);
+  ExtentRequirement otherwise{.need = n, .when = {}};
+  otherwise.when.require(SummaryPath::param(1), ValueFact::of(Outcome::Zero));
+  c.addRequirement(0, otherwise);
+  ASSERT_EQ(c.requiresExtent.at(0).size(), 1U);
+  EXPECT_EQ(c.requiresExtent.at(0).begin()->need, n);
+  const PathGuard &when = c.requiresExtent.at(0).begin()->when;
+  ASSERT_EQ(when.conditions.size(), 1U);
+  EXPECT_EQ(when.conditions.at(SummaryPath::param(1)).classes,
+            (OutcomeSet{Outcome::Positive, Outcome::Zero}));
 }
 
 // RFC 0010, *Stores out of sight*: `escaped` is an effect of its own (an

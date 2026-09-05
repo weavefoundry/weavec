@@ -36,6 +36,20 @@ add_custom_target(
   USES_TERMINAL)
 add_dependencies(check-weavec check-weavec-unit)
 
+# The recall set (RFC 0011, *Recall check*): Juliet-shaped cases under
+# test/recall/, one bug each, run by scripts/recall.py. Needs only Python.
+find_package(Python3 COMPONENTS Interpreter)
+if(Python3_Interpreter_FOUND)
+  add_test(
+    NAME recall
+    COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/recall.py"
+            --weavec "$<TARGET_FILE:weavec>")
+  set_tests_properties(recall PROPERTIES LABELS "integration")
+else()
+  message(
+    WARNING "Python 3 not found; the recall set (test/recall) is disabled.")
+endif()
+
 if(NOT WEAVEC_LIT
    OR NOT WEAVEC_FILECHECK
    OR NOT WEAVEC_NOT

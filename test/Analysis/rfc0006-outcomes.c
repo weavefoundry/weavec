@@ -30,7 +30,7 @@ static char *grow(char *p, size_t n) {
   return q;
 }
 // DUMP: function 'grow':
-// DUMP: summary: p: moved(free); stores{} returns{fresh(free), null} outcome null{} outcome nonnull{p: moved(free)}
+// DUMP: summary: p: moved(free); stores{} returns{fresh(free) extent=n, null} outcome null{} outcome nonnull{p: moved(free)}
 // DUMP: function 'guarded':
 // DUMP: summary: n: freed(free); stores{} returns{}
 
@@ -86,7 +86,7 @@ static char *resize(struct table *t, size_t n) {
   return realloc(t->array, n);
 }
 // DUMP: function 'resize':
-// DUMP: summary: t->array: read|moved(free); t->n: read; stores{} returns{fresh(free), copy t->array, null} requires{t} outcome null{} outcome nonnull{t->array: moved(free)}
+// DUMP: summary: t->array: read|moved(free); t->n: read; stores{} returns{fresh(free) extent=n, copy t->array, null} requires{t} outcome null{} outcome nonnull{t->array: moved(free)}
 
 void resized(struct table *t, size_t n) {
   char *na = resize(t, n);

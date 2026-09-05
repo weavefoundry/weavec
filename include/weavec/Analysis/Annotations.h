@@ -61,6 +61,10 @@ enum class Annotation : std::uint8_t {
   /// (RFC 0010, closing RFC 0007's open item). The family is carried in
   /// `AnnotationSet::family`.
   Family,
+  /// `weavec.sized_by.<n>` -- the pointer parameter has at least `n`
+  /// elements behind it, `n` another parameter of the same function (RFC
+  /// 0011). The name is carried in `AnnotationSet::sizedBy`.
+  SizedBy,
   /// A `weavec.`-prefixed annotation WeaveC does not recognise.
   Invalid,
 };
@@ -80,6 +84,8 @@ inline constexpr llvm::StringLiteral Releases = "weavec.releases";
 inline constexpr llvm::StringLiteral Refcount = "weavec.refcount";
 /// `weavec.family.<f>`: the prefix, followed by the family name.
 inline constexpr llvm::StringLiteral FamilyPrefix = "weavec.family.";
+/// `weavec.sized_by.<n>`: the prefix, followed by the parameter name.
+inline constexpr llvm::StringLiteral SizedByPrefix = "weavec.sized_by.";
 } // namespace spelling
 
 /// Parses an `annotate` payload. Returns `std::nullopt` for annotations that
@@ -106,11 +112,14 @@ struct AnnotationSet {
   /// there is none. Two different families on one declaration are
   /// `invalid`.
   std::string family;
+  /// RFC 0011: the parameter `WEAVEC_SIZED_BY(n)` names; empty when there
+  /// is none. Two different names on one declaration are `invalid`.
+  std::string sizedBy;
 
   [[nodiscard]] bool any() const noexcept {
     return owned || borrowed || mutBorrowed || raw || unsafe || nullable ||
            nonNull || retains || releases || refcount || invalid ||
-           !family.empty();
+           !family.empty() || !sizedBy.empty();
   }
   /// True if the set says something about nullness (RFC 0008).
   [[nodiscard]] bool nullness() const noexcept { return nullable || nonNull; }

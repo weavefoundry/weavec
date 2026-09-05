@@ -865,6 +865,73 @@ static llvm::StringMap<core::FunctionSummary> buildTable() {
   for (const FamilyMember &entry : Families)
     stamp(entry.member, entry.family);
 
+  // RFC 0011, *Extents in summaries*: the allocators whose size is one
+  // argument return that many bytes (`calloc`'s product is read by the
+  // caller, `PlaceBuilder::productExtentOf`; `strdup`'s length is unknown).
+  const auto sizedBy = [&table](llvm::StringRef name, unsigned param) {
+    core::FunctionSummary &summary = table[name];
+    std::string family;
+    for (const core::ValueSource &source : summary.returns)
+      if (source.isFresh())
+        family = source.family;
+    summary.eraseFreshReturns();
+    summary.addReturn(core::ValueSource::freshAt(
+        family, core::PointerOffset::zero(),
+        core::PathAffine::ofPath(core::SummaryPath::param(param))));
+  };
+  sizedBy("malloc", 0);
+  sizedBy("realloc", 1);
+  sizedBy("aligned_alloc", 1);
+
+  // RFC 0011, *Bounds checks*: the buffer/length pairs of the library. The
+  // callee accesses `length` bytes behind `buffer`; the caller's object must
+  // have that many. (`wmemcpy` and the other wide forms count `wchar_t`s,
+  // whose size is the target's: not in the table.)
+  struct BufferLength {
+    llvm::StringLiteral name;
+    unsigned buffer;
+    unsigned length;
+    std::int64_t unit;
+
+    // As for `BuiltinSpec`: the constructor keeps the table terse.
+    constexpr BufferLength(llvm::StringLiteral fn, unsigned buf, unsigned len,
+                           std::int64_t bytes = 1)
+        : name(fn), buffer(buf), length(len), unit(bytes) {}
+  };
+  // clang-format off
+  static constexpr auto BufferLengths = std::to_array<BufferLength>({
+      {"memcpy", 0, 2},        {"memcpy", 1, 2},
+      {"memmove", 0, 2},       {"memmove", 1, 2},
+      {"memcmp", 0, 2},        {"memcmp", 1, 2},
+      {"memset", 0, 2},        {"memchr", 0, 2},
+      {"strncpy", 0, 2},       {"fgets", 0, 1},
+      {"snprintf", 0, 1},      {"vsnprintf", 0, 1},
+      {"strlcpy", 0, 2},       {"strlcat", 0, 2},
+      {"bzero", 0, 1},         {"explicit_bzero", 0, 1},
+      {"read", 1, 2},          {"pread", 1, 2},
+      {"recv", 1, 2},          {"write", 1, 2},
+      {"send", 1, 2},          {"getcwd", 0, 1},
+      {"strnlen", 0, 1},       {"readlink", 1, 2},
+  });
+  // clang-format on
+  for (const BufferLength &pair : BufferLengths) {
+    const auto it = table.find(pair.name);
+    if (it == table.end())
+      continue;
+    it->second.addRequirement(
+        pair.buffer, core::ExtentRequirement{
+                         .need = core::PathAffine::ofPath(
+                             core::SummaryPath::param(pair.length), pair.unit),
+                         .when = {}});
+  }
+  for (const llvm::StringLiteral name :
+       {llvm::StringLiteral("memcpy"), llvm::StringLiteral("memmove"),
+        llvm::StringLiteral("memset"), llvm::StringLiteral("strncpy")}) {
+    if (const auto it = table.find(name); it != table.end())
+      table[("__builtin___" + name + "_chk").str()].requiresExtent =
+          it->second.requiresExtent;
+  }
+
   // `strtok_r(s, delim, &save)` parks a pointer into `s` in `*save`.
   table["strtok_r"].addStore(core::Store{
       .dest = core::SummaryPath::param(2).deref(),

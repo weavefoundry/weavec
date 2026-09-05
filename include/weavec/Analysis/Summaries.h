@@ -98,7 +98,27 @@ struct SignatureAnnotations {
   /// True if the result or any parameter carries `WEAVEC_NULLABLE` or
   /// `WEAVEC_NONNULL` (RFC 0008).
   [[nodiscard]] bool anyNullness() const noexcept;
+  /// True if any parameter carries `WEAVEC_SIZED_BY` (RFC 0011).
+  [[nodiscard]] bool anySizedBy() const noexcept;
 };
+
+/// RFC 0011, *Annotation surface*: what `WEAVEC_SIZED_BY(n)` on parameter
+/// `param` of `function` resolves to: the integer parameter `n` names and
+/// the bytes per element of the pointer (1 for `void *` and incomplete
+/// pointees). Nothing when the parameter is not annotated, or the annotation
+/// is malformed (`n` is not an integer parameter, `param` not a pointer):
+/// `FunctionAnalyzer` reports that as `invalid-annotation`.
+struct SizedBy {
+  const clang::ParmVarDecl *count = nullptr;
+  std::int64_t unit = 1;
+};
+[[nodiscard]] std::optional<SizedBy>
+sizedByOf(const clang::FunctionDecl &function, unsigned param);
+
+/// Sets `summary.requiresExtent` from the `WEAVEC_SIZED_BY` annotations on
+/// `function`'s parameters (authoritative per parameter).
+void applySizedByAnnotations(core::FunctionSummary &summary,
+                             const clang::FunctionDecl &function);
 
 [[nodiscard]] SignatureAnnotations
 collectAnnotations(const clang::FunctionDecl &function);

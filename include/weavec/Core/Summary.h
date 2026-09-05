@@ -24,6 +24,7 @@
 #define WEAVEC_CORE_SUMMARY_H
 
 #include "weavec/Core/Borrow.h"
+#include "weavec/Core/Offset.h"
 #include "weavec/Core/Ownership.h"
 #include "weavec/Core/Place.h"
 #include "weavec/Core/Scalar.h"
@@ -119,6 +120,44 @@ struct SummaryPath {
 /// the call and prunes it against what it knows about the arguments.
 using PathGuard = GuardOn<SummaryPath>;
 
+/// RFC 0011: an extent expressed against the callee's interface: `scale *
+/// path + constant` bytes, or `constant` alone. `xmalloc(n)` returns an
+/// object of `param 0 * 1 + 0` bytes; `make_node()` one of `sizeof(struct
+/// node)`.
+struct PathAffine {
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
+  std::optional<SummaryPath> path = {};
+  std::int64_t scale = 1;
+  std::int64_t constant = 0;
+
+  [[nodiscard]] static PathAffine ofConstant(std::int64_t constant) {
+    return PathAffine{.path = std::nullopt, .scale = 1, .constant = constant};
+  }
+  [[nodiscard]] static PathAffine
+  ofPath(SummaryPath path, std::int64_t scale = 1, std::int64_t constant = 0) {
+    return PathAffine{
+        .path = std::move(path), .scale = scale, .constant = constant};
+  }
+  [[nodiscard]] bool isConstant() const noexcept { return !path; }
+
+  friend bool operator==(const PathAffine &, const PathAffine &) = default;
+  friend std::strong_ordering operator<=>(const PathAffine &,
+                                          const PathAffine &) = default;
+};
+
+/// RFC 0011, *Extents in summaries*: what a callee needs of the object
+/// behind a pointer parameter, in bytes, on the paths where `when` holds.
+struct ExtentRequirement {
+  PathAffine need;
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
+  PathGuard when = {};
+
+  friend bool operator==(const ExtentRequirement &,
+                         const ExtentRequirement &) = default;
+  friend std::strong_ordering operator<=>(const ExtentRequirement &,
+                                          const ExtentRequirement &) = default;
+};
+
 /// What the callee may do to the object at a summary path.
 struct PlaceEffect {
   /// The object is loaded from (through a dereference of the root).
@@ -168,6 +207,15 @@ struct PlaceEffect {
   /// the conjuncts every consuming side agrees on.
   // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
   PathGuard when = {};
+  /// RFC 0011, *Derived pointers*: where, relative to the value at the
+  /// path, the pointer the callee released points (`free(container_of(i,
+  /// T, f))` releases `param 0` at `-T.f`). The caller composes it with the
+  /// offset it passed: an argument derived at `+f` handed to such a callee
+  /// releases the start of its object. Meaningful only when `freed` or
+  /// `moved` is set; a must-fact: consuming sides that disagree make it
+  /// unknown.
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
+  PointerOffset at = {};
 
   [[nodiscard]] bool empty() const noexcept {
     return !read && !written && !freed && !moved && !escaped;
@@ -209,11 +257,18 @@ struct ValueSource {
   Kind kind = Kind::Unknown;
   /// Set for `Copy` and `Borrow`.
   std::optional<SummaryPath> path;
-  /// `Copy` only: the value points into the object at `path` but not
-  /// necessarily at the same address (`strchr` returns into its argument;
-  /// `return p + 1`). A pointer comparison cannot refute an interior copy
-  /// (RFC 0006, *Alias exactness*).
-  bool interior = false;
+  /// `Copy` and `Fresh` (RFC 0011): where in its object the value points.
+  /// A copy at a non-zero offset points into the object at `path` but not
+  /// at the same address (`strchr` returns into its argument; `return p +
+  /// 1`); a pointer comparison cannot refute it (RFC 0006, *Alias
+  /// exactness*). A fresh value at a non-zero offset is an allocation the
+  /// receiver gets a derived pointer to (`return &o->in`).
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
+  PointerOffset offset = {};
+  /// `Fresh` only (RFC 0011): the extent of the allocation, when the callee
+  /// knows it against its interface.
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
+  std::optional<PathAffine> extent = {};
   /// `Fresh` only: the release family the receiver must use (RFC 0007);
   /// empty when unknown.
   // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
@@ -227,42 +282,67 @@ struct ValueSource {
   [[nodiscard]] static ValueSource fresh(std::string family = {}) {
     return ValueSource{.kind = Kind::Fresh,
                        .path = std::nullopt,
-                       .interior = false,
+                       .offset = {},
+                       .extent = std::nullopt,
+                       .family = std::move(family),
+                       .when = {}};
+  }
+  /// RFC 0011: a fresh allocation of `extent` bytes the receiver gets at
+  /// `offset`.
+  [[nodiscard]] static ValueSource freshAt(std::string family,
+                                           PointerOffset offset,
+                                           std::optional<PathAffine> extent) {
+    return ValueSource{.kind = Kind::Fresh,
+                       .path = std::nullopt,
+                       .offset = std::move(offset),
+                       .extent = std::move(extent),
                        .family = std::move(family),
                        .when = {}};
   }
   [[nodiscard]] static ValueSource raw() {
     return ValueSource{.kind = Kind::Raw,
                        .path = std::nullopt,
-                       .interior = false,
+                       .offset = {},
+                       .extent = std::nullopt,
                        .family = {},
                        .when = {}};
   }
   [[nodiscard]] static ValueSource copy(SummaryPath of) {
     return ValueSource{.kind = Kind::Copy,
                        .path = std::move(of),
-                       .interior = false,
+                       .offset = {},
+                       .extent = std::nullopt,
                        .family = {},
                        .when = {}};
   }
-  [[nodiscard]] static ValueSource interiorCopy(SummaryPath of) {
+  /// RFC 0011: a copy of the pointer at `of`, stepped by `offset`.
+  [[nodiscard]] static ValueSource copyAt(SummaryPath of,
+                                          PointerOffset offset) {
     return ValueSource{.kind = Kind::Copy,
                        .path = std::move(of),
-                       .interior = true,
+                       .offset = std::move(offset),
+                       .extent = std::nullopt,
                        .family = {},
                        .when = {}};
+  }
+  /// A copy somewhere into the object at `of` (`strchr`): the offset is
+  /// unknown.
+  [[nodiscard]] static ValueSource interiorCopy(SummaryPath of) {
+    return copyAt(std::move(of), PointerOffset::unknown());
   }
   [[nodiscard]] static ValueSource borrow(SummaryPath of) {
     return ValueSource{.kind = Kind::Borrow,
                        .path = std::move(of),
-                       .interior = false,
+                       .offset = {},
+                       .extent = std::nullopt,
                        .family = {},
                        .when = {}};
   }
   [[nodiscard]] static ValueSource null() {
     return ValueSource{.kind = Kind::Null,
                        .path = std::nullopt,
-                       .interior = false,
+                       .offset = {},
+                       .extent = std::nullopt,
                        .family = {},
                        .when = {}};
   }
@@ -270,6 +350,10 @@ struct ValueSource {
 
   [[nodiscard]] bool isFresh() const noexcept { return kind == Kind::Fresh; }
   [[nodiscard]] bool isNull() const noexcept { return kind == Kind::Null; }
+  /// A copy that does not necessarily hold the same address as its source.
+  [[nodiscard]] bool isInterior() const noexcept {
+    return kind == Kind::Copy && !offset.isZero();
+  }
 
   /// The same source with a trivial guard.
   [[nodiscard]] ValueSource unguarded() const {
@@ -279,8 +363,8 @@ struct ValueSource {
   }
   /// True if `other` is this alternative up to its guard.
   [[nodiscard]] bool sameValueAs(const ValueSource &other) const {
-    return kind == other.kind && path == other.path &&
-           interior == other.interior && family == other.family;
+    return kind == other.kind && path == other.path && offset == other.offset &&
+           extent == other.extent && family == other.family;
   }
 
   friend bool operator==(const ValueSource &, const ValueSource &) = default;
@@ -370,6 +454,12 @@ public:
   /// of the paths, the facts joined. A class present here is also a key of
   /// `outcomes`.
   std::map<Outcome, OutcomeFacts> factOn;
+  /// RFC 0011, *Extents in summaries*: per pointer parameter, what the
+  /// callee requires of the extent of the object behind it (from a
+  /// `WEAVEC_SIZED_BY` annotation, or inferred from its accesses). A
+  /// may-fact: joins by union; a caller whose argument is known to be
+  /// smaller is reported at the call.
+  std::map<std::uint32_t, std::set<ExtentRequirement>> requiresExtent;
 
   /// The effect recorded for `path`, or an empty one.
   [[nodiscard]] PlaceEffect effectOf(const SummaryPath &path) const;
@@ -391,10 +481,15 @@ public:
   void addOutcome(Outcome outcome, const SummaryPath &path,
                   const PlaceEffect &effect);
   void addOutcome(Outcome outcome) { outcomes.try_emplace(outcome); }
+  /// RFC 0011: adds a requirement on parameter `param`; the same need under
+  /// another guard is merged, the guards joined.
+  void addRequirement(std::uint32_t param, ExtentRequirement requirement);
 
   /// True if `path` is consumed on every path returning an outcome in
-  /// `outcomes`, i.e. its consumption cannot be retracted by a test of the
-  /// result. Trivially true when nothing is known about outcomes.
+  /// `outcomes`, whatever the arguments (RFC 0009: no class consumes it
+  /// under a guard), i.e. its consumption cannot be retracted by a test of
+  /// the result. Without classes, true unless the effect itself carries a
+  /// guard.
   [[nodiscard]] bool consumesUnconditionally(const SummaryPath &path) const;
 
   /// True if the callee releases or moves argument `param`.
@@ -460,7 +555,7 @@ public:
            outcomes.empty() && nullOn.empty() && nonNullOn.empty() &&
            requiresNonNull.empty() && !neverReturns && increments.empty() &&
            decrements.empty() && counts.empty() && storesOn.empty() &&
-           factOn.empty();
+           factOn.empty() && requiresExtent.empty();
   }
 
   /// Component-wise set union (conjunction for the must-facts).

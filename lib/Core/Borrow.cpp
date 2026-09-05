@@ -127,11 +127,14 @@ void BorrowState::expireHolders(const std::function<bool(PlaceId)> &dead) {
   std::erase_if(live, [&dead](const Loan &loan) { return dead(loan.holder); });
 }
 
-void BorrowState::copyHolder(PlaceId from, PlaceId to) {
+void BorrowState::copyHolder(PlaceId from, PlaceId to,
+                             std::optional<SourceLocation> at) {
   if (from == to)
     return;
   for (Loan loan : heldBy(from)) {
     loan.holder = to;
+    if (at)
+      loan.location = *at;
     addLoanUnchecked(loan);
   }
 }

@@ -69,15 +69,22 @@ TEST(SignatureInference, AllocatingWrapperReturnsFresh) {
   ASSERT_NE(s, nullptr);
   // `malloc` may fail and the null path merges back before the return, so
   // the wrapper may return null too (RFC 0008, *Nullness*).
-  EXPECT_EQ(s->returns, (std::set<ValueSource>{ValueSource::fresh("free"),
-                                               ValueSource::null()}));
+  // The allocation carries its extent, `sizeof(struct node)` (RFC 0011).
+  EXPECT_EQ(
+      s->returns,
+      (std::set<ValueSource>{
+          ValueSource::freshAt("free", {}, core::PathAffine::ofConstant(16)),
+          ValueSource::null()}));
   EXPECT_TRUE(s->mayReturnNull());
   EXPECT_EQ(s->inferredReturnKind(), core::OwnershipKind::Owned);
 
   const core::FunctionSummary *m = result.summary("maybe");
   ASSERT_NE(m, nullptr);
-  EXPECT_EQ(m->returns, (std::set<ValueSource>{ValueSource::fresh("free"),
-                                               ValueSource::null()}));
+  EXPECT_EQ(
+      m->returns,
+      (std::set<ValueSource>{
+          ValueSource::freshAt("free", {}, core::PathAffine::ofConstant(8)),
+          ValueSource::null()}));
   EXPECT_EQ(m->inferredReturnKind(), core::OwnershipKind::Owned);
 }
 
@@ -117,19 +124,25 @@ TEST(SignatureInference, StoresThroughParameters) {
 
   const core::FunctionSummary *init = result.summary("buf_init");
   ASSERT_NE(init, nullptr);
-  // An unchecked `malloc` result: the store may be fresh or null (RFC 0008).
-  EXPECT_EQ(init->stores, (std::set<core::Store>{
-                              core::Store{.dest = b.deref().field("data"),
-                                          .value = ValueSource::fresh("free")},
-                              core::Store{.dest = b.deref().field("data"),
-                                          .value = ValueSource::null()}}));
+  // An unchecked `malloc` result: the store may be fresh or null (RFC 0008);
+  // the fresh object is `n` bytes (RFC 0011).
+  EXPECT_EQ(init->stores,
+            (std::set<core::Store>{core::Store{.dest = b.deref().field("data"),
+                                               .value = ValueSource::freshAt(
+                                                   "free", {},
+                                                   core::PathAffine::ofPath(
+                                                       SummaryPath::param(1)))},
+                                   core::Store{.dest = b.deref().field("data"),
+                                               .value = ValueSource::null()}}));
   EXPECT_EQ(init->borrowKind(0), core::BorrowKind::Mutable);
   EXPECT_TRUE(init->effectOf(b.deref().field("len")).written);
 
   const core::FunctionSummary *make = result.summary("make");
   ASSERT_NE(make, nullptr);
-  EXPECT_TRUE(make->stores.contains(
-      core::Store{.dest = b.deref(), .value = ValueSource::fresh("free")}));
+  EXPECT_TRUE(make->stores.contains(core::Store{
+      .dest = b.deref(),
+      .value =
+          ValueSource::freshAt("free", {}, core::PathAffine::ofConstant(8))}));
 
   const core::FunctionSummary *link = result.summary("link");
   ASSERT_NE(link, nullptr);
@@ -158,7 +171,9 @@ TEST(SignatureInference, EscapesIntoGlobals) {
   const core::FunctionSummary *keepAlloc = result.summary("keep_alloc");
   ASSERT_NE(keepAlloc, nullptr);
   ASSERT_EQ(keepAlloc->stores.size(), 2U) << "fresh, or null when malloc fails";
-  EXPECT_EQ(keepAlloc->stores.begin()->value, ValueSource::fresh("free"));
+  // RFC 0011: the allocation carries its extent.
+  EXPECT_EQ(keepAlloc->stores.begin()->value,
+            ValueSource::freshAt("free", {}, core::PathAffine::ofConstant(8)));
   EXPECT_EQ(std::next(keepAlloc->stores.begin())->value, ValueSource::null());
 
   const core::FunctionSummary *drop = result.summary("drop");
@@ -241,8 +256,10 @@ TEST(SignatureInference, ReturnSources) {
             std::set<ValueSource>{ValueSource::copy(n)});
   EXPECT_EQ(result.summary("next_of")->returns,
             std::set<ValueSource>{ValueSource::copy(n.deref().field("next"))});
+  // `&n->v` is a copy of `n` at the field `v` (RFC 0011, *Derived pointers*).
   EXPECT_EQ(result.summary("field_of")->returns,
-            std::set<ValueSource>{ValueSource::borrow(n.deref().field("v"))});
+            std::set<ValueSource>{ValueSource::copyAt(
+                n, core::PointerOffset::ofField("struct node.v"))});
   EXPECT_EQ(result.summary("field_of")->inferredReturnKind(),
             core::OwnershipKind::Shared);
   EXPECT_EQ(result.summary("pick")->returns,
@@ -252,7 +269,9 @@ TEST(SignatureInference, ReturnSources) {
             std::set<ValueSource>{ValueSource::copy(n)});
   EXPECT_EQ(
       result.summary("owned_local")->returns,
-      (std::set<ValueSource>{ValueSource::fresh("free"), ValueSource::null()}))
+      (std::set<ValueSource>{
+          ValueSource::freshAt("free", {}, core::PathAffine::ofConstant(4)),
+          ValueSource::null()}))
       << "an unchecked malloc result may be null (RFC 0008)";
   // An integer cast yields a raw pointer (RFC 0004), and the summary says so.
   EXPECT_EQ(result.summary("from_int")->returns,

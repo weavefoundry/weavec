@@ -49,7 +49,9 @@ namespace weavec::frontend {
 /// Version 5 (RFC 0009): summaries in format 5 (`never-returns`, guards).
 /// Version 6 (RFC 0010): summaries in format 6 (shares, per-outcome stores
 /// and facts) and the `count-field` line.
-inline constexpr unsigned SidecarFormatVersion = 6;
+/// Version 7 (RFC 0011): summaries in format 7 (offsets, extents,
+/// `requires-extent`).
+inline constexpr unsigned SidecarFormatVersion = 7;
 
 /// Everything the driver remembers about one compiled unit.
 struct UnitRecord {

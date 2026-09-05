@@ -9,6 +9,7 @@ weavec_add_unittest(
           ResourceLifecycleTest.cpp
           SharedOwnershipTest.cpp
           SignatureInferenceTest.cpp
+          SpatialSafetyTest.cpp
           SummariesTest.cpp
           ValueConditionalTest.cpp
   DEPS weavec::Analysis weavec::Frontend)

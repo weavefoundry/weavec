@@ -76,7 +76,14 @@ TEST(DiagnosticIds, PointerValidityIdsAreKnown) {
   for (const std::string_view id :
        {diag::NullDereference, diag::UseOfUninitialized, diag::InvalidRelease})
     EXPECT_TRUE(diag::isKnown(id)) << id;
-  EXPECT_EQ(diag::All.size(), 14U);
+  EXPECT_EQ(diag::All.size(), 15U);
+}
+
+TEST(DiagnosticIds, SpatialSafetyIdIsKnown) {
+  // RFC 0011, *Diagnostics*.
+  EXPECT_EQ(diag::OutOfBounds, "out-of-bounds");
+  EXPECT_TRUE(diag::isKnown(diag::OutOfBounds));
+  EXPECT_FALSE(diag::isWarningByDefault(diag::OutOfBounds));
 }
 
 TEST(Severity, ToString) {

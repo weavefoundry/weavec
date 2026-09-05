@@ -351,7 +351,10 @@ leak logic; a place marked null there is also `Null` here.
   `__builtin_expect` as RFC 0006): on the null edge `Null` (`Tested`), on
   the non-null edge `NonNull` (and the exact copies of `p` likewise). After
   the merge of the two edges the place is `MaybeNull` with the `Tested`
-  record.
+  record. RFC 0011 (*Deriving a pointer*) narrows the copy rule: a `Null`
+  or `MaybeNull` record travels along an exact alias edge only to a copy
+  whose own record still equals `p`'s, because the edge may hold on some
+  paths only; `NonNull` travels along every exact edge.
 - Tests of a call result select outcome classes (RFC 0006); a class the
   callee marks in `nonNullOn` (below) sets the corresponding caller places
   `NonNull` on that edge, the way `nullOn` sets them null.

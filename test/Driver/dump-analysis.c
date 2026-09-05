@@ -35,7 +35,7 @@ void g(void) {}
 // `p->buf` requires `p` (and proves it non-null from there on).
 // CHECK-LABEL: function 'h':
 // CHECK: exit: moved{} loans{} aliases{} raw{} owned{gp@[[@LINE+4]]:{{[0-9]+}} allocated free} nulls{p@[[@LINE+5]]:{{[0-9]+}} nonnull, gp@[[@LINE+4]]:{{[0-9]+}} maybe-null}
-// CHECK-NEXT: summary: p->buf: read; stores{gp = fresh(free), gp = null} returns{copy p->buf} requires{p}
+// CHECK-NEXT: summary: p->buf: read; stores{gp = fresh(free) extent=4, gp = null} returns{copy p->buf} requires{p}
 static int *gp;
 int *h(struct s *p) {
   gp = malloc(4);
