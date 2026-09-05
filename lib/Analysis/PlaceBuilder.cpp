@@ -35,14 +35,29 @@ static ValueOrigin makeOrigin(ValueOrigin::Kind kind,
   return origin;
 }
 
-/// Marks a copy as pointing *into* its source's object rather than at the
-/// same address (RFC 0006, *Alias exactness*); other origins are unchanged.
-static ValueOrigin asInterior(ValueOrigin origin) {
-  if (origin.kind == ValueOrigin::Kind::Copy)
-    origin.interior = true;
+/// Steps a value's offset within its object (RFC 0011, *Derived pointers*):
+/// a copy, an allocation or a borrow moved by `step` points that much
+/// further into what it pointed into; the alternatives of a conditional are
+/// stepped one by one; other origins are unchanged.
+static ValueOrigin withOffset(ValueOrigin origin,
+                              const core::PointerOffset &step) {
+  if (origin.kind == ValueOrigin::Kind::Copy ||
+      origin.kind == ValueOrigin::Kind::Alloc ||
+      origin.kind == ValueOrigin::Kind::Borrow)
+    origin.offset = origin.offset.plus(step);
   for (ValueOrigin &alternative : origin.alternatives)
-    alternative = asInterior(std::move(alternative));
+    alternative = withOffset(std::move(alternative), step);
   return origin;
+}
+
+/// The size in bytes of a complete object type, else nothing (`void`, an
+/// incomplete record, a function).
+static std::optional<std::int64_t> sizeOfType(QualType type,
+                                              const ASTContext &context) {
+  if (type.isNull() || type->isIncompleteType() || type->isFunctionType())
+    return std::nullopt;
+  return static_cast<std::int64_t>(
+      context.getTypeSizeInChars(type).getQuantity());
 }
 
 /// Records the subscript an access was spelled with. A second subscript on
@@ -128,6 +143,8 @@ PlaceBuilder::summaryPathOf(core::PlaceId place) {
   // Ancestors come nearest-first; the path is spelled root-first.
   std::vector<core::PlaceId> chain{place};
   llvm::append_range(chain, places.ancestors(place));
+  if (chain.size() - 1 > MaxPlaceDepth)
+    return std::nullopt;
   for (const core::PlaceId node : llvm::reverse(chain)) {
     if (node == root)
       continue;
@@ -177,15 +194,20 @@ PlaceBuilder::resolveSummaryPath(const core::SummaryPath &path,
     if (path.index >= call.getNumArgs())
       return std::nullopt;
     argExpr = call.getArg(path.index);
+    // The argument is `&x` (or `&p->f`, RFC 0011: a derived copy of `p`,
+    // but `param(i)*` is still `p->f` itself): there is no place holding
+    // the pointer, and `param(i)*` is `x`.
+    const bool derefFirst =
+        !path.steps.empty() && path.steps.front().step == core::PathStep::Deref;
+    const auto addressed = addressedPlace(*argExpr);
     const ValueOrigin origin = classifyValue(*argExpr);
-    if (const auto copied = copyOrNull(origin)) {
+    if (addressed && derefFirst) {
+      ref = *addressed;
+      firstStep = 1;
+    } else if (const auto copied = copyOrNull(origin)) {
       ref = *copied;
-    } else if (origin.kind == ValueOrigin::Kind::Borrow && origin.place) {
-      // The argument is `&x`: there is no place holding the pointer, and
-      // `param(i)*` is `x` itself.
-      if (path.steps.empty() ||
-          path.steps.front().step != core::PathStep::Deref)
-        return std::nullopt;
+    } else if (origin.kind == ValueOrigin::Kind::Borrow && origin.place &&
+               derefFirst) {
       ref = *origin.place;
       firstStep = 1;
     } else {
@@ -263,13 +285,53 @@ PlaceBuilder::lookupSummaryRoot(const core::SummaryPath &path,
   }
   if (path.index >= call.getNumArgs())
     return std::nullopt;
-  const ValueOrigin origin = classifyValue(*call.getArg(path.index));
+  const Expr &argExpr = *call.getArg(path.index);
+  const bool derefFirst =
+      !path.steps.empty() && path.steps.front().step == core::PathStep::Deref;
+  if (const auto addressed = addressedPlace(argExpr); addressed && derefFirst)
+    return std::pair{addressed->place, std::size_t{1}};
+  const ValueOrigin origin = classifyValue(argExpr);
   if (const auto copied = copyOrNull(origin))
     return std::pair{copied->place, std::size_t{0}};
-  if (origin.kind == ValueOrigin::Kind::Borrow && origin.place) {
-    if (path.steps.empty() || path.steps.front().step != core::PathStep::Deref)
-      return std::nullopt;
+  if (origin.kind == ValueOrigin::Kind::Borrow && origin.place && derefFirst)
     return std::pair{origin.place->place, std::size_t{1}};
+  return std::nullopt;
+}
+
+std::optional<PlaceRef> PlaceBuilder::addressedPlace(const Expr &expr) {
+  const Expr &stripped = stripTransparent(expr);
+  if (const auto *unary = dyn_cast<UnaryOperator>(&stripped);
+      unary != nullptr && unary->getOpcode() == UO_AddrOf) {
+    // `&p->f` names the sub-object the derived pointer points to, spelled as
+    // the pointer's dereference plus the offset's fields: through a union
+    // member that is `*p` itself, not `(*p).m` (RFC 0011, *Deriving a
+    // pointer*), so writes through the derived pointer and through the
+    // argument agree on the place. Elsewhere the two spellings coincide and
+    // the lvalue's own resolution keeps the dereference expressions.
+    auto resolved = resolve(*unary->getSubExpr());
+    if (const auto derivation = derivationOf(*unary->getSubExpr());
+        derivation &&
+        (derivation->offset.isZero() ||
+         derivation->offset.kind == core::PointerOffset::Kind::Field)) {
+      ValueOrigin origin =
+          makeOrigin(ValueOrigin::Kind::Copy, derivation->pointer);
+      origin.offset = derivation->offset;
+      if (auto pointee = pointeeOf(origin);
+          pointee && (!resolved || pointee->place != resolved->place))
+        return pointee;
+    }
+    return resolved;
+  }
+  // Array decay: `buf` passed where a pointer is expected is `&buf[0]`, and
+  // `param(i)*` is the array's elements.
+  if (const auto *cast = dyn_cast<CastExpr>(stripped.IgnoreParens());
+      cast != nullptr && cast->getCastKind() == CK_ArrayToPointerDecay &&
+      !isa<StringLiteral, PredefinedExpr>(cast->getSubExpr()->IgnoreParens())) {
+    auto ref = resolve(*cast->getSubExpr());
+    if (!ref)
+      return std::nullopt;
+    ref->place = places.index(ref->place);
+    return ref;
   }
   return std::nullopt;
 }
@@ -369,8 +431,15 @@ PlaceBuilder::originFromUnguardedSource(const core::ValueSource &source,
     return origin;
   };
   switch (source.kind) {
-  case core::ValueSource::Kind::Fresh:
-    return fresh(source.family);
+  case core::ValueSource::Kind::Fresh: {
+    ValueOrigin origin = fresh(source.family);
+    origin.offset = source.offset;
+    if (source.extent)
+      origin.extent = affineFromPath(*source.extent, call);
+    else
+      origin.extent = productExtentOf(call);
+    return origin;
+  }
   case core::ValueSource::Kind::Copy: {
     if (!source.path)
       return ValueOrigin{};
@@ -384,7 +453,7 @@ PlaceBuilder::originFromUnguardedSource(const core::ValueSource &source,
       // The argument value itself, whatever it was: `&x` stays a borrow of
       // `x`, `malloc(n)` stays an allocation, `p` is a copy of `p`.
       ValueOrigin origin = classifyValue(*call.getArg(source.path->index));
-      return source.interior ? asInterior(std::move(origin)) : origin;
+      return withOffset(std::move(origin), source.offset);
     }
     // The same for a path below an argument or a global (`t->array =
     // resizearray(L, t, ...)` in Lua): a copy of a resource the callee
@@ -408,7 +477,7 @@ PlaceBuilder::originFromUnguardedSource(const core::ValueSource &source,
     if (!ref)
       return ValueOrigin{};
     ValueOrigin origin = makeOrigin(ValueOrigin::Kind::Copy, std::move(ref));
-    origin.interior = source.interior;
+    origin.offset = source.offset;
     return origin;
   }
   case core::ValueSource::Kind::Borrow: {
@@ -472,6 +541,13 @@ static bool isIntegerLike(QualType type) {
   if (const auto *atomic = type->getAs<AtomicType>())
     type = atomic->getValueType();
   return type->isIntegerType();
+}
+
+/// A member of a union (RFC 0011: all of them start at the union's address).
+static bool isUnionMember(const ValueDecl &member) {
+  const auto *field = dyn_cast<FieldDecl>(&member);
+  return field != nullptr && field->getParent() != nullptr &&
+         field->getParent()->isUnion();
 }
 
 /// The place the pointer argument of an adjusting builtin names: `&x` is
@@ -763,8 +839,7 @@ bool PlaceBuilder::isPlaceExpr(const Expr &expr) {
   return false;
 }
 
-/// `*(p + k)` and `*(k + p)` denote an element of whatever `p` points to.
-static const Expr *pointerOperandOfArithmetic(const Expr &expr) {
+const Expr *PlaceBuilder::pointerOperandOfArithmetic(const Expr &expr) {
   const auto *binary = dyn_cast<BinaryOperator>(&expr);
   if (binary == nullptr)
     return nullptr;
@@ -786,7 +861,28 @@ std::optional<PlaceRef> PlaceBuilder::resolvePointerValue(const Expr &expr) {
     return resolvePointerValue(*pointer);
   if (!isPlaceExpr(stripped))
     return std::nullopt;
+  // `o->payload` decaying is `&o->payload[0]`: the value is `o` stepped to
+  // the field (RFC 0011, *Deriving a pointer*), not the array place. A
+  // variable's own array (`buf`) stays its storage.
+  if (stripped.getType()->isArrayType()) {
+    if (auto derivation = derivationOf(stripped))
+      return std::move(derivation->pointer);
+  }
   return resolve(stripped);
+}
+
+std::optional<PlaceRef> PlaceBuilder::resolveConsumedValue(const Expr &expr) {
+  if (auto ref = resolvePointerValue(expr))
+    return ref;
+  // `free(&o->in)`, `take(&p[i])`: a derived pointer names the object of
+  // the pointer it derives from (RFC 0011, *Deriving a pointer*).
+  const Expr &stripped = stripTransparent(expr);
+  if (const auto *unary = dyn_cast<UnaryOperator>(&stripped);
+      unary != nullptr && unary->getOpcode() == UO_AddrOf) {
+    if (auto derivation = derivationOf(*unary->getSubExpr()))
+      return std::move(derivation->pointer);
+  }
+  return std::nullopt;
 }
 
 std::optional<PlaceRef> PlaceBuilder::resolve(const Expr &expr) {
@@ -955,13 +1051,29 @@ ValueOrigin PlaceBuilder::classifyValue(const Expr &expr) {
       // is not a heap object (RFC 0008, *Invalid releases*).
       if (isa<StringLiteral, PredefinedExpr>(
               cast->getSubExpr()->IgnoreParens())) {
-        return makeOrigin(ValueOrigin::Kind::Borrow,
-                          PlaceRef{.place = literalPlace(),
-                                   .derefs = {},
-                                   .derefExprs = {},
-                                   .derefElements = {},
-                                   .element = {}},
-                          nullptr, /*constObject=*/true);
+        auto origin = makeOrigin(ValueOrigin::Kind::Borrow,
+                                 PlaceRef{.place = literalPlace(),
+                                          .derefs = {},
+                                          .derefExprs = {},
+                                          .derefElements = {},
+                                          .element = {}},
+                                 nullptr, /*constObject=*/true);
+        // RFC 0011, *Extents*: a literal's extent is its length plus the
+        // terminator, in elements.
+        if (const auto *text =
+                dyn_cast<StringLiteral>(cast->getSubExpr()->IgnoreParens()))
+          origin.extent = core::Affine::ofConstant(
+              static_cast<std::int64_t>(text->getLength()) + 1);
+        return origin;
+      }
+      // `p->a` decaying is `&p->a[0]`: a copy of `p` stepped to the field
+      // (RFC 0011, *Deriving a pointer*), so that a release through it
+      // reaches `p`'s object and its extent bounds the elements.
+      if (auto derived = derivationOf(*cast->getSubExpr())) {
+        ValueOrigin origin =
+            makeOrigin(ValueOrigin::Kind::Copy, std::move(derived->pointer));
+        origin.offset = std::move(derived->offset);
+        return origin;
       }
       auto ref = resolve(*cast->getSubExpr());
       if (!ref)
@@ -1038,22 +1150,45 @@ ValueOrigin PlaceBuilder::classifyValue(const Expr &expr) {
   if (const auto *unary = dyn_cast<UnaryOperator>(e)) {
     switch (unary->getOpcode()) {
     case UO_AddrOf: {
+      // `&p->f`, `&p[i]`, `&*p`: a copy of `p` stepped into its object (RFC
+      // 0011, *Deriving a pointer*), not a borrow of what `p` points to.
+      if (auto derived = derivationOf(*unary->getSubExpr())) {
+        ValueOrigin origin =
+            makeOrigin(ValueOrigin::Kind::Copy, std::move(derived->pointer));
+        origin.offset = std::move(derived->offset);
+        return origin;
+      }
       auto ref = resolve(*unary->getSubExpr());
       if (!ref)
         return ValueOrigin{};
-      return makeOrigin(ValueOrigin::Kind::Borrow, std::move(ref), nullptr,
-                        unary->getSubExpr()->getType().isConstQualified());
+      // `&a[3]` is the storage of `a` at `+3`.
+      core::PointerOffset offset;
+      if (!ref->element.isWhole()) {
+        offset = ref->element.kind == core::ElementWitness::Kind::Constant
+                     ? core::PointerOffset::ofElements(ref->element.constant)
+                     : core::PointerOffset::unknown();
+      }
+      ValueOrigin origin =
+          makeOrigin(ValueOrigin::Kind::Borrow, std::move(ref), nullptr,
+                     unary->getSubExpr()->getType().isConstQualified());
+      origin.offset = std::move(offset);
+      return origin;
     }
     case UO_PreInc:
     case UO_PreDec:
     case UO_PostInc:
     case UO_PostDec: {
-      // `p++` as a value: an interior pointer into the same object (RFC
-      // 0004, *Pointer identity*).
+      // `p++` as a value: the same object (RFC 0004, *Pointer identity*),
+      // one element before where `p` now points (RFC 0011); `++p` is `p`.
       auto ref = resolve(*unary->getSubExpr());
       if (!ref)
         return ValueOrigin{};
-      return asInterior(makeOrigin(ValueOrigin::Kind::Copy, std::move(ref)));
+      ValueOrigin origin = makeOrigin(ValueOrigin::Kind::Copy, std::move(ref));
+      if (unary->getOpcode() == UO_PostInc)
+        origin.offset = core::PointerOffset::ofElements(-1);
+      else if (unary->getOpcode() == UO_PostDec)
+        origin.offset = core::PointerOffset::ofElements(1);
+      return origin;
     }
     default:
       return ValueOrigin{};
@@ -1068,25 +1203,20 @@ ValueOrigin PlaceBuilder::classifyValue(const Expr &expr) {
       return makeOrigin(ValueOrigin::Kind::Copy, std::move(ref));
     }
     if (binary->isCompoundAssignmentOp()) {
+      // `p += k` as a value is `p` after the step (RFC 0011).
       auto ref = resolve(*binary->getLHS());
       if (!ref)
         return ValueOrigin{};
-      // `p += k` as a value is interior like `p + k`.
-      return asInterior(makeOrigin(ValueOrigin::Kind::Copy, std::move(ref)));
+      return makeOrigin(ValueOrigin::Kind::Copy, std::move(ref));
     }
     if (binary->getOpcode() == BO_Comma)
       return classifyValue(*binary->getRHS());
     // `p + k` refers to the same object as `p` (RFC 0004, *Pointer
-    // identity*) but not to the same address (RFC 0006, *Alias exactness*);
-    // whether it stays in bounds is outside the model. `p + 0` is `p`.
-    if (const Expr *pointer = pointerOperandOfArithmetic(*binary)) {
-      const Expr *offset =
-          pointer == binary->getLHS() ? binary->getRHS() : binary->getLHS();
-      if (const auto value = offset->getIntegerConstantExpr(context);
-          value && value->isZero())
-        return classifyValue(*pointer);
-      return asInterior(classifyValue(*pointer));
-    }
+    // identity*) at another offset (RFC 0011, *Derived pointers*); whether
+    // the offset stays in bounds is the spatial record's business.
+    if (const Expr *pointer = pointerOperandOfArithmetic(*binary))
+      return withOffset(classifyValue(*pointer),
+                        arithmeticStepOf(*binary, *pointer));
     return ValueOrigin{};
   }
 
@@ -1107,6 +1237,389 @@ ValueOrigin PlaceBuilder::classifyValue(const Expr &expr) {
   }
 
   return ValueOrigin{};
+}
+
+// -- Derived pointers and extents (RFC 0011) ----------------------------------
+
+std::optional<core::Affine> PlaceBuilder::affineOf(const Expr &expr) {
+  if (const auto value = integerConstant(expr, context))
+    return core::Affine::ofConstant(*value);
+  const Expr *e = expr.IgnoreParens();
+  if (const auto *cast = dyn_cast<CastExpr>(e)) {
+    switch (cast->getCastKind()) {
+    case CK_LValueToRValue:
+    case CK_NoOp:
+    case CK_IntegralCast:
+      // A conversion keeps the value absent overflow (RFC 0009,
+      // *Assumptions*).
+      if (!cast->getSubExpr()->getType()->isIntegerType())
+        return std::nullopt;
+      return affineOf(*cast->getSubExpr());
+    default:
+      return std::nullopt;
+    }
+  }
+  if (const auto *binary = dyn_cast<BinaryOperator>(e)) {
+    const auto lhs = integerConstant(*binary->getLHS(), context);
+    const auto rhs = integerConstant(*binary->getRHS(), context);
+    switch (binary->getOpcode()) {
+    case BO_Add:
+      if (rhs)
+        if (const auto base = affineOf(*binary->getLHS()))
+          return base->shifted(*rhs);
+      if (lhs)
+        if (const auto base = affineOf(*binary->getRHS()))
+          return base->shifted(*lhs);
+      return std::nullopt;
+    case BO_Sub:
+      if (rhs && *rhs != INT64_MIN)
+        if (const auto base = affineOf(*binary->getLHS()))
+          return base->shifted(-*rhs);
+      return std::nullopt;
+    case BO_Mul:
+      if (rhs && *rhs > 0)
+        if (const auto base = affineOf(*binary->getLHS()))
+          return base->times(*rhs);
+      if (lhs && *lhs > 0)
+        if (const auto base = affineOf(*binary->getRHS()))
+          return base->times(*lhs);
+      return std::nullopt;
+    default:
+      return std::nullopt;
+    }
+  }
+  if (!e->getType()->isIntegerType() || !isPlaceExpr(*e))
+    return std::nullopt;
+  const auto ref = resolve(*e);
+  if (!ref)
+    return std::nullopt;
+  return core::Affine::ofPlace(ref->place);
+}
+
+std::string
+PlaceBuilder::fieldKeyFor(QualType record,
+                          llvm::ArrayRef<core::PathElem> fields) const {
+  if (record.isNull() || fields.empty())
+    return {};
+  return countFieldKey(record, fields, context);
+}
+
+std::optional<PlaceBuilder::Derivation>
+PlaceBuilder::derivationOf(const Expr &lvalue) {
+  // Walk the lvalue outside-in, collecting the field path below the
+  // dereference that ends it. An index step after a field, or a second
+  // dereference's worth of arithmetic, makes the offset unknown.
+  std::vector<core::PathElem> fields;
+  bool unknown = false;
+  const Expr *e = &stripTransparent(lvalue);
+  const Expr *pointerExpr = nullptr;
+  core::PointerOffset offset;
+  QualType record;
+  // The record the collected fields are looked up in when a union member
+  // was crossed: the member's own type, not the pointee's.
+  QualType fieldsRecord;
+  for (;;) {
+    if (const auto *member = dyn_cast<MemberExpr>(e)) {
+      // Every member of a union starts where the union does: `&u->m` is `u`
+      // (RFC 0011, *Deriving a pointer*), so the step adds nothing to the
+      // offset. `(&cast_u(o))->th` is `o` itself, `&cast_u(o)->th.stack` is
+      // `o` at `lua_State.stack`.
+      const ValueDecl &decl = *member->getMemberDecl();
+      if (isUnionMember(decl)) {
+        if (!fields.empty() && fieldsRecord.isNull())
+          fieldsRecord = decl.getType();
+      } else if (!fieldsRecord.isNull()) {
+        // Fields on both sides of a union member: two records, one key
+        // cannot spell it.
+        unknown = true;
+      } else {
+        fields.insert(fields.begin(),
+                      core::PathElem{.step = core::PathStep::Field,
+                                     .field = decl.getNameAsString()});
+      }
+      const Expr &base = stripTransparent(*member->getBase());
+      if (!member->isArrow()) {
+        e = &base;
+        continue;
+      }
+      // `(&s)->f` is `s.f`: a variable's storage.
+      if (const auto *addr = dyn_cast<UnaryOperator>(&base);
+          addr != nullptr && addr->getOpcode() == UO_AddrOf)
+        return std::nullopt;
+      if (base.getType()->isArrayType())
+        return std::nullopt;
+      pointerExpr = &base;
+      // The record is the type the member was looked up in: `(&cast_u(o))->th`
+      // reads `o` through a union, so the field path belongs to the union, not
+      // to the (transparent) cast's operand.
+      record = member->getBase()->getType()->getPointeeType();
+      break;
+    }
+    if (const auto *subscript = dyn_cast<ArraySubscriptExpr>(e)) {
+      const Expr &base = stripTransparent(*subscript->getBase());
+      if (base.getType()->isArrayType()) {
+        // `p->a[3]`: an index below a field (unknown, RFC 0011, *Deriving a
+        // pointer*), except `p->a[0]`, which is the field itself; `s.a[3]`:
+        // storage.
+        const core::ElementWitness witness = witnessOf(*subscript->getIdx());
+        if (witness.kind != core::ElementWitness::Kind::Constant ||
+            witness.constant != 0)
+          unknown = true;
+        e = &base;
+        continue;
+      }
+      pointerExpr = &base;
+      if (fields.empty() && !unknown) {
+        const core::ElementWitness witness = witnessOf(*subscript->getIdx());
+        offset = witness.kind == core::ElementWitness::Kind::Constant
+                     ? core::PointerOffset::ofElements(witness.constant)
+                     : core::PointerOffset::unknown();
+      } else {
+        unknown = true;
+      }
+      break;
+    }
+    if (const auto *unary = dyn_cast<UnaryOperator>(e);
+        unary != nullptr && unary->getOpcode() == UO_Deref) {
+      const Expr &operand = stripTransparent(*unary->getSubExpr());
+      if (const auto *addr = dyn_cast<UnaryOperator>(&operand);
+          addr != nullptr && addr->getOpcode() == UO_AddrOf)
+        return std::nullopt;
+      if (operand.getType()->isArrayType())
+        return std::nullopt;
+      // `*(p + k)`: an element step, composed with the fields.
+      if (const Expr *pointer = pointerOperandOfArithmetic(operand)) {
+        const auto *binary = cast<BinaryOperator>(&operand);
+        pointerExpr = pointer;
+        if (fields.empty())
+          offset = arithmeticStepOf(*binary, *pointer);
+        else
+          unknown = true;
+      } else {
+        pointerExpr = &operand;
+      }
+      // As above: the type the dereference produced, casts included.
+      record = unary->getType();
+      break;
+    }
+    // A variable, a call, anything else: not reached through a pointer.
+    return std::nullopt;
+  }
+  if (pointerExpr == nullptr || !pointerExpr->getType()->isPointerType())
+    return std::nullopt;
+  // The pointer itself must be a place (or arithmetic on one, which
+  // `resolvePointerValue` looks through: then the offset is unknown).
+  const Expr &pointerStripped = stripTransparent(*pointerExpr);
+  if (pointerOperandOfArithmetic(pointerStripped) != nullptr)
+    unknown = true;
+  auto pointer = resolvePointerValue(*pointerExpr);
+  if (!pointer)
+    return std::nullopt;
+  if (!unknown && !fields.empty()) {
+    const std::string key =
+        fieldKeyFor(fieldsRecord.isNull() ? record : fieldsRecord, fields);
+    if (key.empty())
+      unknown = true;
+    else
+      offset = core::PointerOffset::ofField(key);
+  }
+  // A sub-object the offset rules cannot spell (an index below a field, two
+  // field paths, a field the key cannot name): inside the object, in no
+  // known relation to `*p`.
+  if (unknown)
+    offset = core::PointerOffset::inside();
+  return Derivation{.pointer = std::move(*pointer),
+                    .offset = std::move(offset)};
+}
+
+std::vector<std::string>
+PlaceBuilder::fieldsOfOffset(const core::PointerOffset &offset) {
+  std::vector<std::string> fields;
+  if (offset.kind != core::PointerOffset::Kind::Field)
+    return fields;
+  // `countFieldKey`: the record's type key (which contains no `.`), then one
+  // `.field` per step.
+  llvm::StringRef rest(offset.field);
+  const auto dot = rest.find('.');
+  if (dot == llvm::StringRef::npos)
+    return fields;
+  rest = rest.drop_front(dot + 1);
+  while (!rest.empty()) {
+    const auto [head, tail] = rest.split('.');
+    fields.emplace_back(head.str());
+    rest = tail;
+  }
+  return fields;
+}
+
+std::optional<PlaceRef> PlaceBuilder::pointeeOf(const ValueOrigin &origin) {
+  if (!origin.place)
+    return std::nullopt;
+  if (origin.kind == ValueOrigin::Kind::Borrow)
+    return *origin.place;
+  if (origin.kind != ValueOrigin::Kind::Copy)
+    return std::nullopt;
+  // `*p` stands for every element of `p`'s array, so an element offset
+  // (known or not) still points into it; a sub-object at an unspellable
+  // offset does not.
+  if (origin.offset.isInside())
+    return std::nullopt;
+  PlaceRef pointee = *origin.place;
+  pointee.addDeref(pointee.place, nullptr);
+  pointee.place = places.deref(pointee.place);
+  for (const std::string &field : fieldsOfOffset(origin.offset))
+    pointee.place = places.field(pointee.place, field);
+  return pointee;
+}
+
+std::optional<core::PointerOffset>
+PlaceBuilder::pointerStepOf(const Expr &expr) {
+  const Expr *e = expr.IgnoreParens();
+  if (!e->getType()->isPointerType())
+    return std::nullopt;
+  if (const auto *unary = dyn_cast<UnaryOperator>(e)) {
+    switch (unary->getOpcode()) {
+    case UO_PreInc:
+    case UO_PostInc:
+      return core::PointerOffset::ofElements(1);
+    case UO_PreDec:
+    case UO_PostDec:
+      return core::PointerOffset::ofElements(-1);
+    default:
+      return std::nullopt;
+    }
+  }
+  if (const auto *binary = dyn_cast<CompoundAssignOperator>(e)) {
+    if (binary->getOpcode() != BO_AddAssign &&
+        binary->getOpcode() != BO_SubAssign)
+      return std::nullopt;
+    const auto k = integerConstant(*binary->getRHS(), context);
+    if (!k || *k == INT64_MIN)
+      return core::PointerOffset::unknown();
+    return core::PointerOffset::ofElements(
+        binary->getOpcode() == BO_AddAssign ? *k : -*k);
+  }
+  return std::nullopt;
+}
+
+core::PointerOffset PlaceBuilder::arithmeticStepOf(const BinaryOperator &binary,
+                                                   const Expr &pointer) {
+  const Expr *offsetExpr =
+      &pointer == binary.getLHS() ? binary.getRHS() : binary.getLHS();
+  const bool subtract = binary.getOpcode() == BO_Sub;
+  const QualType pointee = pointer.getType()->getPointeeType();
+  const std::optional<std::int64_t> pointeeSize = sizeOfType(pointee, context);
+  // `(char *)p + k`: `k` is in bytes of `char`, not elements of what `p`
+  // really points to. Compare the arithmetic's element size with the
+  // underlying place's.
+  const Expr &underlying = stripTransparent(pointer);
+  std::optional<std::int64_t> underlyingSize;
+  if (underlying.getType()->isPointerType())
+    underlyingSize =
+        sizeOfType(underlying.getType()->getPointeeType(), context);
+  else if (const ArrayType *array =
+               underlying.getType()->getAsArrayTypeUnsafe())
+    // `buf + k` on an array: the decay is transparent, the element is the
+    // array's.
+    underlyingSize = sizeOfType(array->getElementType(), context);
+  const bool sameUnits = pointeeSize && underlyingSize &&
+                         *pointeeSize == *underlyingSize && *pointeeSize > 0;
+  // `(char *)q - offsetof(T, f)`: the field `f` of `T`, subtracted. Before
+  // the constant case: `offsetof` is an integer constant expression too, and
+  // its value (0 for a first field) is not what it means (RFC 0011,
+  // *Assumptions*: the field path is matched, never the number).
+  if (const auto *offsetOf =
+          dyn_cast<OffsetOfExpr>(offsetExpr->IgnoreParenImpCasts());
+      offsetOf != nullptr && pointeeSize && *pointeeSize == 1) {
+    std::vector<core::PathElem> fields;
+    QualType record = offsetOf->getTypeSourceInfo()->getType();
+    for (unsigned i = 0; i < offsetOf->getNumComponents(); ++i) {
+      const OffsetOfNode &node = offsetOf->getComponent(i);
+      if (node.getKind() != OffsetOfNode::Field)
+        return core::PointerOffset::inside();
+      const FieldDecl &field = *node.getField();
+      // A union member adds nothing (`derivationOf` spells `&u->m` as `u`);
+      // the members below it are looked up in its own type.
+      if (isUnionMember(field)) {
+        if (!fields.empty())
+          return core::PointerOffset::inside();
+        record = field.getType();
+        continue;
+      }
+      fields.push_back(core::PathElem{.step = core::PathStep::Field,
+                                      .field = field.getNameAsString()});
+    }
+    if (fields.empty())
+      return core::PointerOffset::zero();
+    const std::string key = fieldKeyFor(record, fields);
+    if (key.empty())
+      return core::PointerOffset::inside();
+    return core::PointerOffset::ofField(key, subtract);
+  }
+  // Arithmetic in another unit than the object's elements (`(char *)p + k`
+  // for a non-`char` `p`) lands somewhere inside; in the object's own
+  // elements it is a number of them the checker may not know.
+  if (const auto k = integerConstant(*offsetExpr, context)) {
+    if (*k == 0)
+      return core::PointerOffset::zero();
+    if (!sameUnits)
+      return core::PointerOffset::inside();
+    if (*k == INT64_MIN)
+      return core::PointerOffset::unknown();
+    return core::PointerOffset::ofElements(subtract ? -*k : *k);
+  }
+  return sameUnits ? core::PointerOffset::unknown()
+                   : core::PointerOffset::inside();
+}
+
+std::optional<core::Affine>
+PlaceBuilder::affineFromPath(const core::PathAffine &affine,
+                             const CallExpr &call) {
+  if (!affine.path)
+    return core::Affine::ofConstant(affine.constant);
+  std::optional<core::Affine> base;
+  if (affine.path->isParam() && affine.path->isRoot()) {
+    if (affine.path->index >= call.getNumArgs())
+      return std::nullopt;
+    base = affineOf(*call.getArg(affine.path->index));
+  } else if (const auto ref = resolveSummaryPath(*affine.path, call)) {
+    base = core::Affine::ofPlace(ref->place);
+  }
+  if (!base)
+    return std::nullopt;
+  const auto scaled = base->times(affine.scale);
+  if (!scaled)
+    return std::nullopt;
+  return scaled->shifted(affine.constant);
+}
+
+std::optional<core::Affine>
+PlaceBuilder::productExtentOf(const CallExpr &call) {
+  // `calloc(n, size)` and `reallocarray(p, n, size)` allocate a product the
+  // summary format cannot spell; it is affine when one factor is constant.
+  const FunctionDecl *callee = call.getDirectCallee();
+  if (callee == nullptr || !callee->isGlobal() ||
+      callee->getIdentifier() == nullptr)
+    return std::nullopt;
+  const llvm::StringRef name = callee->getName();
+  unsigned first = 0;
+  if (name == "calloc")
+    first = 0;
+  else if (name == "reallocarray")
+    first = 1;
+  else
+    return std::nullopt;
+  if (call.getNumArgs() < first + 2)
+    return std::nullopt;
+  const auto lhs = affineOf(*call.getArg(first));
+  const auto rhs = affineOf(*call.getArg(first + 1));
+  if (!lhs || !rhs)
+    return std::nullopt;
+  if (rhs->isConstant() && rhs->constant > 0)
+    return lhs->times(rhs->constant);
+  if (lhs->isConstant() && lhs->constant > 0)
+    return rhs->times(lhs->constant);
+  return std::nullopt;
 }
 
 } // namespace weavec::analysis

@@ -730,6 +730,9 @@ TEST(Dataflow, MutationWhileViewedIsTheDefaultIdiom) {
 }
 
 TEST(Dataflow, FreeingABorrowedObjectConflicts) {
+  // `&n->v` is a derived copy of `n`, not a loan on `n->v` (RFC 0011,
+  // *Derived pointers*): freeing `n` frees what `a` points to, and the use
+  // is reported through the alias rather than the free as a conflict.
   const auto result = analyze(R"c(
     struct node { int v; };
     void f(void) {
@@ -747,8 +750,8 @@ TEST(Dataflow, FreeingABorrowedObjectConflicts) {
   )c");
   ASSERT_TRUE(result.ast);
   EXPECT_EQ(messages(result.diagnostics),
-            (Strings{"6: cannot free 'n' while it is borrowed",
-                     "12: cannot free 'r' while it is borrowed"}));
+            (Strings{"7: use of 'a' after it was freed",
+                     "13: use of 'a' after it was freed"}));
 }
 
 TEST(Dataflow, FreeingBelowABorrowedObjectIsNotAConflict) {
@@ -781,7 +784,7 @@ TEST(Dataflow, MovingABorrowedObjectConflicts) {
   )c");
   ASSERT_TRUE(result.ast);
   EXPECT_EQ(messages(result.diagnostics),
-            (Strings{"5: cannot move 'n' while it is borrowed"}));
+            (Strings{"6: use of 'a' after it was moved"}));
 }
 
 TEST(Dataflow, BorrowsEndWhenTheHolderDiesOrIsReassigned) {
@@ -876,8 +879,8 @@ TEST(Dataflow, LoansEndAtTheLastUseOfTheHolder) {
     }
     void still_live(struct node *OWNED n) {
       int *a = &n->v;
-      free(n);                    /* conflict: `a` is used below */
-      *a = 1;
+      free(n);
+      *a = 1;                     /* use after free through the copy */
     }
     void through_pointer(struct node *OWNED n, int **out) {
       *out = &n->v;
@@ -892,9 +895,9 @@ TEST(Dataflow, LoansEndAtTheLastUseOfTheHolder) {
     void in_loop(struct node *OWNED n, int k) {
       int *a = &n->v;
       for (int i = 0; i < k; i++) {
-        if (i == 5) { free(n); break; }   /* conflict: `a` is used below */
+        if (i == 5) { free(n); break; }
       }
-      *a = 1;
+      *a = 1;                     /* use after free through the copy */
     }
     void loop_done(struct node *OWNED n, int k) {
       int *a = &n->v;
@@ -906,13 +909,16 @@ TEST(Dataflow, LoansEndAtTheLastUseOfTheHolder) {
        {analysis::AnalysisOptions{}, Exclusive}) {
     const auto result = analyze(code, options);
     ASSERT_TRUE(result.ast);
-    // `in_loop` never frees `n` when the loop runs to completion (RFC 0007).
+    // `&n->v` is a derived copy of `n` that also lends `n->v` (RFC 0011,
+    // *Derived pointers*): a plain local holder's use after the free is the
+    // `use-after-free` through the copy; a holder liveness cannot retire
+    // makes the free a conflict, as before. `in_loop` never frees `n` when
+    // the loop runs to completion (RFC 0007).
     EXPECT_EQ(messages(result.diagnostics),
-              (Strings{"18: cannot free 'n' while it is borrowed",
+              (Strings{"19: use of 'a' after it was freed",
                        "23: cannot free 'n' while it is borrowed",
                        "28: cannot free 'n' while it is borrowed",
-                       "34: cannot free 'n' while it is borrowed",
-                       "36: 'n' is leaked"}))
+                       "36: use of 'a' after it was freed"}))
         << "exclusive=" << options.exclusiveBorrows;
   }
 }
@@ -1077,11 +1083,11 @@ TEST(Dataflow, PointerArithmeticPreservesIdentity) {
   )c");
   ASSERT_TRUE(result.ast);
   // After `p++`, `p` no longer names the start of the block (RFC 0008,
-  // *Invalid releases*).
+  // *Invalid releases*); the offset is known (RFC 0011, *Derived pointers*).
   EXPECT_EQ(messages(result.diagnostics),
             (Strings{"6: use of 'q' after it was freed",
-                     "11: 'p' is released but does not point to the start of "
-                     "its allocation"}));
+                     "11: 'p' is released but points 1 element past the start "
+                     "of its allocation"}));
   EXPECT_EQ(notes(result.diagnostics, 0), Strings{"freed here (through 'p')"});
 }
 
@@ -1117,11 +1123,11 @@ TEST(Dataflow, SelfAssignmentKeepsEveryFact) {
   )c");
   ASSERT_TRUE(result.ast);
   // `cur = cur + 1` also makes `cur` interior to the block it owns (RFC
-  // 0008, *Invalid releases*).
+  // 0008, *Invalid releases*; the offset is known, RFC 0011).
   EXPECT_EQ(
       messages(result.diagnostics),
-      (Strings{"6: 'cur' is released but does not point to the start of its "
-               "allocation",
+      (Strings{"6: 'cur' is released but points 1 element past the start of "
+               "its allocation",
                "7: use of 'head' after it was freed",
                "13: use of 'head' after it was freed",
                "19: use of 'head' after it was freed",

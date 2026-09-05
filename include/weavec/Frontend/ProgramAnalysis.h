@@ -94,7 +94,16 @@ public:
   }
 
   /// Upper bound on fixpoint rounds for a cyclic component.
-  static constexpr unsigned MaxRounds = 8;
+  static constexpr unsigned MaxRounds = 16;
+  /// RFC 0011, *Whole-program widening*: from this round on a member's new
+  /// exports are joined with its previous ones before comparison, so the
+  /// sequence is monotone in the finite summary lattice and settles.
+  static constexpr unsigned WidenAfter = 6;
+  /// The widening step: joins each of `exports`' function summaries with
+  /// the same function's summary in a member's `previous` exports (both
+  /// numbered by one database), and unions the count fields.
+  static void widen(analysis::UnitExports &exports,
+                    const analysis::UnitExports &previous);
 
 private:
   struct Unit {

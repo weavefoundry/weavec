@@ -481,9 +481,116 @@ follows [Semantic Versioning](https://semver.org/) once it reaches 1.0.
     `scripts/corpus/projects.json`; `{support}` in a project's arguments
     names `scripts/corpus/support/<project>`, for headers a checkout's
     build would generate.
+- Spatial safety (RFC 0011). A pointer is now an object *and an offset
+  into it*, objects have a size, and accesses are checked against it:
+  - Derived pointers: `&p->f`, `&p[3]`, `p + 4`, `p->payload` (an array
+    member decaying) and `(char *)p - offsetof(struct outer, in)` are the
+    same object at a known offset (`core::PointerOffset`: zero, a constant
+    number of elements, a field, or unknown), replacing the boolean
+    `interior` flag on alias edges and resources. `container_of` round
+    trips (`free(container_of(i, struct outer, in))` frees `i`'s object,
+    `release(&o->in)` on a wrapper that does so is a `double-free` of `o`),
+    `q != p` separates two derived pointers, and a field pointer kept
+    across `free(p)` is a `use-after-free` on its next use (it was a
+    `conflicting-borrow` at the free). `invalid-release` names the offset
+    (`points 4 elements past the start` / `points to field 'in'`).
+    Summaries record the offset a parameter was consumed at (`param 0
+    freed(free) @-struct outer.in`) and the offset of a returned copy
+    (`return copy param 0 @+struct list.next`).
+  - Extents: `malloc(n)`, `calloc(n, sz)`, `realloc(p, n)` and every
+    function in the program that returns a fresh allocation (`return fresh
+    extent=n`), locals, arrays and array members of declared size, string
+    literals and `WEAVEC_SIZED_BY(n)` parameters carry a size
+    (`core::Affine`: a constant, or `scale * place + constant`), kept by
+    `core::SpatialTracker` beside the resource books.
+  - Relations: `core::RelationTracker` records `i < n`, `i <= n`, `i >= n`,
+    `i == n` between integer places from condition edges (through one copy
+    `j = i`), and a constant upper bound (`i < 8`); a write to either side
+    forgets them.
+  - New diagnostic `out-of-bounds` (error): `p[i]`, `*(p + i)`, `(p + i)->f`
+    and the buffer/length pairs of the shipped table (`memcpy`, `memmove`,
+    `memcmp`, `memset`, `memchr`, `strncpy`, `strnlen`, `fgets`,
+    `snprintf`, `vsnprintf`, `strlcpy`, `strlcat`, `bzero`, `read`,
+    `pread`, `recv`, `write`, `send`, `getcwd`, `readlink`) are checked
+    against the object's extent: constant against constant, a symbolic
+    index through the same counter (`p[n]` on `malloc(n)`), a relation
+    (`'i' may equal 'n'` under `i <= n`, `'i' is at least 'n'` under `i >=
+    n`), or a constant bound (`'i' may be 7 in an object of 4 bytes` under
+    `i < 8`); the pointer's own offset is added (`p = buf + 4; p[4]`);
+    accesses before the start are reported too. Nothing is reported when
+    the checker cannot relate the index to the extent.
+  - Extent requirements in summaries: a callee that accesses more of a
+    parameter than its type promises (`b[7]`, `for (i = 0; i < n; i++)
+    b[i]`, `memset(b, 0, n)`) is summarised `requires-extent{b: 8}` /
+    `{b: n*4}` and checked at every call (`'put7' requires 8 bytes behind
+    'small', which has 4 bytes`), through wrappers and across units; a need
+    under a condition a summary cannot spell (`min(n, 16)`, `if (n > 4)
+    b[4]`) is not exported.
+  - `WEAVEC_SIZED_BY(n)` (pointer parameters: at least `n` elements behind
+    the pointer, bytes for `void *`): checked inside the body and at every
+    call; `invalid-annotation` on a non-pointer or naming no integer
+    parameter. `weavec.h` 0.6.
+  - `lifetime-too-short` is decided when the pointee dies rather than at
+    the store: a store undone before then (`ls->fs = fs.prev`), or into a
+    holder that is dead by then, is not reported. The `L->fs = &fs; ...
+    L->fs = fs.prev` idiom that produced every Lua `lifetime-too-short`
+    is clean.
+  - The whole-program fixpoint (RFC 0005) *widens* a cyclic group after a
+    fixed number of rounds (each member's exports are joined with the
+    previous round's) so it converges on every input; the round cap is a
+    safety net rather than the usual exit.
+  - Summary text format version 6 → 7: `@<offset>` on effects and copies,
+    `extent=` on fresh sources, and `requires-extent` lines; sidecar
+    format version 7. `--dump-analysis` prints offsets on alias edges
+    (`q~p@+4`), `spatial{}` (extents and offsets) and `relations{}` in
+    states, and `requires-extent{}` in summaries and in the program
+    database dump.
+  - Recall check: `test/recall/CWE-*/*.c` are Juliet-style cases (a `bad`
+    function with a `// RECALL: <id> @<line>` pin and `good` functions
+    that must be clean) for CWE-121, 122, 124, 126, 127 (buffer
+    overflows, underwrites and over-reads), 401 (leak), 415 (double free),
+    416 (use after free), 457 (uninitialised) and 476 (null dereference);
+    `scripts/recall.py` runs them, prints recall per CWE and fails on any
+    missed pin or any report in a `good` function. Wired into `ctest`
+    (`recall`) and CI.
+- Outcome classes keep their guards (RFC 0009, *Guards*). `if (nsize == 0)
+  { free(ptr); return NULL; } return realloc(ptr, nsize);` (Lua's
+  `l_alloc`) is summarised `outcome null{ptr: freed when nsize =0} outcome
+  nonnull{ptr: moved}` instead of an unconditional free; a caller that
+  tests the result and knows the size is non-zero still owns the block on
+  the failure path, and the classes and their guards survive wrappers
+  (`if (nb == NULL && nsize > 0)`, `if (nv == NULL) { /* keep */ } else
+  t->hash = nv;`). Two narrowings of one call's outcome that meet at a
+  join are one outcome again rather than being forgotten.
 
 ### Fixed
 
+- A null test of a pointer made every exact alias of it definitely null,
+  including aliases the relation only holds on some path (two pointers
+  into the same object at the same field on one loop iteration): Lua's
+  `if ((newci = luaD_precall(L, ra, n)) == NULL) updatetrap(ci);` made
+  `ci` null and every later `ci->` a `null-dereference`. A null claim now
+  travels only to a copy whose own record still agrees with the tested
+  place's; `NonNull` travels as before (RFC 0011, *Deriving a pointer*).
+- A returned local that aliased both a caller's place (`ci = L->ci`) and
+  the base of a derived pointer (`L` at `+base_ci`) could be summarised
+  by the derived name; the exact alias is preferred (`return copy L->ci`).
+- Freeing an object reported a `conflicting-borrow` for a borrow of an
+  object the freed one merely pointed at (`*parents->buckets->last`, a
+  pair jansson's intrusive list owns, when `hashtable_do_rehash` frees the
+  bucket array). The check now looks only at loans on the released storage
+  (the object and its fields, without crossing another dereference); what
+  the object's pointers own is released by a consume of its own, with its
+  own check (RFC 0011, *Deriving a pointer*).
+- `f = fs->f; f->upvalues = grow(...); return &f->upvalues[n]` (Lua's
+  `allocupvalue`) was summarised as returning a fresh allocation, so every
+  caller leaked the pointer it got back (`'up' is leaked`); it is a copy of
+  the caller's own `fs->f->upvalues` (RFC 0011, *Deriving a pointer*).
+- A `void` callee that frees what an argument points into only under a
+  guard (`moveresults`: `res: freed when[fwanted positive|negative]`) had
+  every copy of that argument read as a fresh block handed back;
+  `consumesUnconditionally` now honours the effect's own guard when there
+  are no outcome classes (RFC 0009, *Outcome classes*).
 - An integer constant was read as its two's-complement bits rather than
   its value, and every comparison as signed: `ULONG_MAX` was `-1`, so for
   `index = 0` the edge on which `if (index > ULONG_MAX)` fails was
@@ -579,6 +686,14 @@ follows [Semantic Versioning](https://semver.org/) once it reaches 1.0.
 
 ### Changed
 
+- The corpus baseline (`scripts/corpus/baseline.json`) is refreshed for RFC
+  0011: `conflicting-borrow` 16 → 2, `lifetime-too-short` 18 → 4,
+  `null-dereference` 189 → 171, `leak` 20 → 17, `invalid-release` 6 → 5,
+  `double-free` 81 → 82, `use-after-free` 439 → 663 (the last two Lua's
+  `luaV_execute` family, larger now that `ci->func.p` and `ci->top.p` are
+  named as pointers into the stack), `out-of-bounds` 0; whole corpus 105 s
+  (Lua from 3 min 22 s to 1 min 46 s). The per-project triage is in
+  `scripts/corpus/README.md`.
 - Dereferencing an allocator's result without testing it (`p = malloc(n);
   p->x = 1;`) is now a `null-dereference` error (RFC 0008). The existing
   unit-test and lit snippets that did this gained an `if (!p) return;`; the

@@ -42,7 +42,7 @@ void interior(void) {
   if (!p)
     return;
   char *q = p + 1;
-  // CHECK: rfc0008-release.c:[[@LINE+2]]:3: error: 'q' is released but does not point to the start of its allocation [weavec::invalid-release]
+  // CHECK: rfc0008-release.c:[[@LINE+2]]:3: error: 'q' is released but points 1 element past the start of its allocation [weavec::invalid-release]
   // CHECK: rfc0008-release.c:[[@LINE-5]]:13: note: allocated here
   free(q);
 }
@@ -65,7 +65,7 @@ void arithmetic(void) {
   char *p = malloc(8);
   if (!p)
     return;
-  // CHECK: rfc0008-release.c:[[@LINE+2]]:3: error: 'p' is released but does not point to the start of its allocation [weavec::invalid-release]
+  // CHECK: rfc0008-release.c:[[@LINE+2]]:3: error: 'p' is released but points 1 element past the start of its allocation [weavec::invalid-release]
   // CHECK: rfc0008-release.c:[[@LINE-4]]:13: note: allocated here
   free(p + 1);
 }

@@ -253,6 +253,54 @@ bool SignatureAnnotations::anyNullness() const noexcept {
          });
 }
 
+bool SignatureAnnotations::anySizedBy() const noexcept {
+  return llvm::any_of(
+      params, [](const AnnotationSet &s) { return !s.sizedBy.empty(); });
+}
+
+std::optional<SizedBy> sizedByOf(const FunctionDecl &function, unsigned param) {
+  if (param >= function.getNumParams())
+    return std::nullopt;
+  const SignatureAnnotations annotations = collectAnnotations(function);
+  if (param >= annotations.params.size() ||
+      annotations.params[param].sizedBy.empty())
+    return std::nullopt;
+  const ParmVarDecl &pointer = *function.getParamDecl(param);
+  if (!pointer.getType()->isPointerType())
+    return std::nullopt;
+  const ParmVarDecl *count = nullptr;
+  for (const ParmVarDecl *candidate : function.parameters()) {
+    if (candidate->getName() == annotations.params[param].sizedBy) {
+      count = candidate;
+      break;
+    }
+  }
+  if (count == nullptr || !count->getType()->isIntegerType())
+    return std::nullopt;
+  std::int64_t unit = 1;
+  const QualType pointee = pointer.getType()->getPointeeType();
+  if (!pointee->isIncompleteType() && !pointee->isFunctionType()) {
+    const CharUnits size = function.getASTContext().getTypeSizeInChars(pointee);
+    if (!size.isZero())
+      unit = size.getQuantity();
+  }
+  return SizedBy{.count = count, .unit = unit};
+}
+
+void applySizedByAnnotations(core::FunctionSummary &summary,
+                             const FunctionDecl &function) {
+  for (unsigned i = 0; i < function.getNumParams(); ++i) {
+    const auto sized = sizedByOf(function, i);
+    if (!sized)
+      continue;
+    summary.requiresExtent[i] = {core::ExtentRequirement{
+        .need = core::PathAffine::ofPath(
+            core::SummaryPath::param(sized->count->getFunctionScopeIndex()),
+            sized->unit),
+        .when = {}}};
+  }
+}
+
 core::FunctionSummary summaryFromAnnotations(const FunctionDecl &function) {
   core::FunctionSummary summary;
   const SignatureAnnotations annotations = collectAnnotations(function);
@@ -260,6 +308,8 @@ core::FunctionSummary summaryFromAnnotations(const FunctionDecl &function) {
                    annotations.params);
   applyNullnessAnnotations(summary, shapeOf(function), annotations.result,
                            annotations.params);
+  if (annotations.anySizedBy())
+    applySizedByAnnotations(summary, function);
   // A declared `noreturn` is the strongest statement there is about the
   // exit; the inferred bit agrees with it (RFC 0009, *Inferred `noreturn`*).
   if (function.isNoReturn())
@@ -473,19 +523,23 @@ SummaryStore::lookup(const FunctionDecl &callee) {
       annotations.anyOwnership() || (annotations.unsafe && !haveBody);
   // Nullness annotations say nothing about ownership: alone they neither
   // make an unknown callee checked nor change where its summary comes from
-  // (RFC 0008, *Annotation surface*); they layer on the table's entry.
+  // (RFC 0008, *Annotation surface*); they layer on the table's entry. So
+  // does `WEAVEC_SIZED_BY` (RFC 0011).
   const bool nullness = annotations.anyNullness();
+  const bool sized = annotations.anySizedBy();
 
   if (!haveBody && !annotated) {
     const core::FunctionSummary *builtin = builtinSummary(callee);
     if (builtin == nullptr)
       return std::nullopt;
-    if (!nullness)
+    if (!nullness && !sized)
       return ResolvedSummary{.summary = builtin,
                              .source = SummarySource::Builtin};
     core::FunctionSummary adjusted = *builtin;
     applyNullnessAnnotations(adjusted, shapeOf(callee), annotations.result,
                              annotations.params);
+    if (sized)
+      applySizedByAnnotations(adjusted, callee);
     const auto it = merged.try_emplace(canonical, std::move(adjusted)).first;
     mergedSource[canonical] = SummarySource::Builtin;
     return ResolvedSummary{.summary = &it->second,
@@ -508,6 +562,8 @@ SummaryStore::lookup(const FunctionDecl &callee) {
   if (nullness)
     applyNullnessAnnotations(result, shapeOf(callee), annotations.result,
                              annotations.params);
+  if (sized)
+    applySizedByAnnotations(result, callee);
   const auto it = merged.try_emplace(canonical, std::move(result)).first;
   mergedSource[canonical] = source;
   return ResolvedSummary{.summary = &it->second, .source = source};

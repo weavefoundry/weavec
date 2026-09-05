@@ -93,7 +93,7 @@ TEST(Sidecar, PathIsOutputPlusExtension) {
 
 TEST(Sidecar, PrintsStableText) {
   EXPECT_EQ(printUnitRecord(sample()),
-            "weavec-summaries 6\n"
+            "weavec-summaries 7\n"
             "source src/node.c\n"
             "cwd /work/build\n"
             "arg -triple\n"
@@ -115,7 +115,7 @@ TEST(Sidecar, PrintsStableText) {
             "summary\n"
             "  effect param 0 moved\n"
             "  return fresh\n"
-            "  return interior param 0\n"
+            "  return copy param 0 @?\n"
             "  return null\n"
             "  outcome null\n"
             "  outcome nonnull param 0 moved\n"
@@ -169,29 +169,29 @@ TEST(Sidecar, RejectsOtherFormatsAndMalformedLines) {
   std::string error;
   EXPECT_FALSE(parseUnitRecord("weavec-summaries 1\n", &error));
   EXPECT_EQ(error, "unsupported format 1");
-  EXPECT_FALSE(parseUnitRecord("weavec-summaries 7\n", &error));
-  EXPECT_EQ(error, "unsupported format 7");
+  EXPECT_FALSE(parseUnitRecord("weavec-summaries 8\n", &error));
+  EXPECT_EQ(error, "unsupported format 8");
   EXPECT_FALSE(parseUnitRecord("ELF\x01\x02", &error));
   EXPECT_EQ(error, "not a weavec summary file");
   EXPECT_FALSE(parseUnitRecord("", &error));
   EXPECT_EQ(error, "empty file");
   EXPECT_FALSE(parseUnitRecord(
-      "weavec-summaries 6\nsummary\n  return fresh\nend\n", &error));
+      "weavec-summaries 7\nsummary\n  return fresh\nend\n", &error));
   EXPECT_EQ(error, "line 2: summary record without a function");
-  EXPECT_FALSE(parseUnitRecord("weavec-summaries 6\nfunction f\n", &error));
+  EXPECT_FALSE(parseUnitRecord("weavec-summaries 7\nfunction f\n", &error));
   EXPECT_EQ(error, "line 2: malformed 'function' line");
-  EXPECT_FALSE(parseUnitRecord("weavec-summaries 6\nfunction f external "
+  EXPECT_FALSE(parseUnitRecord("weavec-summaries 7\nfunction f external "
                                "plain\nsummary\n  return fresh\n",
                                &error));
   EXPECT_EQ(error, "line 4: summary record without 'end'");
-  EXPECT_FALSE(parseUnitRecord("weavec-summaries 6\nreported x y z\n", &error));
+  EXPECT_FALSE(parseUnitRecord("weavec-summaries 7\nreported x y z\n", &error));
   EXPECT_EQ(error, "line 2: malformed 'reported' line");
 }
 
 TEST(Sidecar, SkipsUnknownLinesAndBlankOnes) {
   std::string error;
   const std::optional<UnitRecord> parsed = parseUnitRecord(
-      "weavec-summaries 6\n\nfuture-thing 42\nsource a.c\n\n", &error);
+      "weavec-summaries 7\n\nfuture-thing 42\nsource a.c\n\n", &error);
   ASSERT_TRUE(parsed) << error;
   EXPECT_EQ(parsed->exports.source, "a.c");
   EXPECT_TRUE(parsed->exports.functions.empty());

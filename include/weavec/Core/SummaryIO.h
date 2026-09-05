@@ -37,13 +37,21 @@
 //     fact <class> <path> <fact>           the integer at the path satisfies
 //                                          the fact on every path returning
 //                                          the class
+//     requires-extent <i> <extent> [<guard>]
+//                                          the object behind parameter <i>
+//                                          has at least <extent> bytes
 //   end
 //
 //   path   ::= param <i> [<steps>] | global <name> [<steps>]
 //            | result [<steps>]
 //   steps  ::= ( '*' | '.' <field> | '[]' )+        (one token)
-//   source ::= fresh | fresh(<family>) | null | unknown | raw | copy <path>
+//   source ::= fresh[(<family>)] [<offset>] [extent <extent>]
+//            | null | unknown | raw | copy <path> [<offset>]
 //            | interior <path> | borrow <path>
+//   offset ::= '@' ( 0 | '?' | [+-]<integer> | [+-]<field-key> )
+//                                          (one token; spaces in a field key
+//                                          are spelled '~')
+//   extent ::= <integer> | <path> scale <integer> plus <integer>
 //   class  ::= null | nonnull | zero | positive | negative
 //   family ::= an identifier naming the canonical releaser (free, fclose)
 //   guard  ::= when <path> <fact> ( and <path> <fact> )*
@@ -58,7 +66,10 @@
 // on `effect`, `outcome`, `store` and `return` lines: the effect, store or
 // alternative holds only when every conjunct does. Version 6 (RFC 0010)
 // added the `share` and `escaped` flags and the `increment`, `decrement`,
-// `count`, `stored` and `fact` lines.
+// `count`, `stored` and `fact` lines. Version 7 (RFC 0011) added the offset
+// on `copy` and `fresh` sources (`interior <path>` is still read, as a copy
+// at an unknown offset), the extent on `fresh` and the `requires-extent`
+// line.
 //
 // Global roots are spelled by name; the caller supplies the mapping between
 // the summary's global ids and names in both directions, so this file stays
@@ -81,7 +92,7 @@ namespace weavec::core {
 
 /// Version of the record format; bumped when a record written by this
 /// version cannot be read by the previous one.
-inline constexpr unsigned SummaryFormatVersion = 6;
+inline constexpr unsigned SummaryFormatVersion = 7;
 
 /// The name to print for a global root id.
 using GlobalNamer = std::function<std::string(std::uint32_t)>;
@@ -101,6 +112,11 @@ using GlobalResolver =
 
 /// Spells `effect`'s flags as in the record format (`read,freed(free)`).
 [[nodiscard]] std::string printFlags(const PlaceEffect &effect);
+
+/// Spells `affine` as in the record format (`param 1 scale 4 plus 0`, or a
+/// bare constant).
+[[nodiscard]] std::string printAffine(const PathAffine &affine,
+                                      const GlobalNamer &names);
 
 /// Spells `guard` as in the record format, with a leading space (` when
 /// param 3 zero and param 2 nonnull`); empty for a trivial guard.

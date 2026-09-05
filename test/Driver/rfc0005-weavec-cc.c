@@ -33,7 +33,7 @@
 #include "../Inputs/prelude.h"
 #include "node.h"
 
-// SIDECAR: weavec-summaries 6
+// SIDECAR: weavec-summaries 7
 // SIDECAR: source {{.*}}node.c
 // SIDECAR: cwd {{.+}}
 // SIDECAR: arg -triple
@@ -58,7 +58,7 @@
 // SIDECAR-NEXT: end
 // SIDECAR: function node_vp external plain int *(struct node *)
 // SIDECAR-NEXT: summary
-// SIDECAR-NEXT:   return borrow param 0 *.v
+// SIDECAR-NEXT:   return copy param 0 @+struct~node.v
 // SIDECAR-NEXT:   requires 0
 // SIDECAR-NEXT: end
 
@@ -91,10 +91,11 @@ int main(void) {
   if (!n)
     return 1;
   int *p = node_vp(n);
-  // LINK: rfc0005-weavec-cc.c:[[@LINE+1]]:3: error: cannot free 'n' while it is borrowed [weavec::conflicting-borrow]
   node_free(n);
   // LINK: rfc0005-weavec-cc.c:[[@LINE+1]]:3: error: 'n' is freed twice [weavec::double-free]
   node_free(n);
+  // `node_vp` returns a copy of `n` at the field `v` (RFC 0011).
+  // LINK: rfc0005-weavec-cc.c:[[@LINE+1]]:11: error: use of 'p' after it was freed [weavec::use-after-free]
   return *p;
 }
 #endif

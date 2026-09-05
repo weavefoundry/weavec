@@ -20,8 +20,10 @@
 
 #include "weavec/Analysis/Summaries.h"
 #include "weavec/Core/Moves.h"
+#include "weavec/Core/Offset.h"
 #include "weavec/Core/Place.h"
 #include "weavec/Core/Raw.h"
+#include "weavec/Core/Spatial.h"
 #include "weavec/Core/Summary.h"
 
 #include "clang/AST/ASTContext.h"
@@ -107,10 +109,16 @@ struct ValueOrigin {
   /// Alloc/Raw (callee-produced), or a value returned by a call whose
   /// consumption depends on its result: the call.
   const clang::CallExpr *call = nullptr;
-  /// Copy: the value points into the same object as `place` but not
-  /// necessarily at the same address (`p + 1`, `strchr(s, c)`). RFC 0006,
-  /// *Alias exactness*.
-  bool interior = false;
+  /// Copy, Alloc, Borrow (RFC 0011, *Derived pointers*): where in its
+  /// object the value points. `p + 1` is one element past `p`; `&p->in` is
+  /// the field `in`; `container_of(q, T, in)` is that field subtracted;
+  /// `strchr(s, c)` is somewhere unknown. A copy at a non-zero offset points
+  /// into the same object as `place` but not at the same address (RFC 0006,
+  /// *Alias exactness*).
+  core::PointerOffset offset;
+  /// Alloc (RFC 0011): the extent of the allocation in bytes, when the size
+  /// argument or the callee's summary says.
+  std::optional<core::Affine> extent;
   /// Raw (integer cast): the cast expression, where notes point.
   const clang::Expr *source = nullptr;
   /// Conditional: the two arms.
@@ -286,6 +294,64 @@ public:
   };
   [[nodiscard]] ScalarOperand scalarOperand(const clang::Expr &expr);
 
+  /// RFC 0011: the value of an integer expression as `scale * place +
+  /// constant`: a constant, an integer place, `x + k`, `x - k`, `k * x`,
+  /// through parentheses and integral casts. Nothing for any other shape.
+  [[nodiscard]] std::optional<core::Affine> affineOf(const clang::Expr &expr);
+
+  /// RFC 0011: the key of the field path `fields` below the record type
+  /// `record`, spelled as RFC 0010 spells count fields (`struct outer.in`);
+  /// empty when the path does not name fields of the record.
+  [[nodiscard]] std::string
+  fieldKeyFor(clang::QualType record,
+              llvm::ArrayRef<core::PathElem> fields) const;
+
+  /// RFC 0011, *Deriving a pointer*: `E` in `&E` reached through a pointer
+  /// place with only field and index steps below the dereference. `&p->in`
+  /// derives `p` at the field `in`; `&p[3]` derives `p` at `+3`; `&*p` is
+  /// `p`. `std::nullopt` when `E` is a variable's own storage (a borrow).
+  struct Derivation {
+    PlaceRef pointer;
+    core::PointerOffset offset;
+  };
+  [[nodiscard]] std::optional<Derivation>
+  derivationOf(const clang::Expr &lvalue);
+
+  /// RFC 0011: the object a pointer value refers to, as a place: the
+  /// borrowed place of a borrow; for a copy of `p`, `*p` translated through
+  /// the copy's offset (`&p->in` refers to `(*p).in`; an element offset
+  /// refers to `*p`, the element summary; an unknown one to `*p` too).
+  /// Nothing for any other origin.
+  [[nodiscard]] std::optional<PlaceRef> pointeeOf(const ValueOrigin &origin);
+
+  /// The place whose object a consumed argument (`free(E)`, an owned
+  /// parameter) names: `resolvePointerValue`, or for `&p->f` / `&p[i]` the
+  /// pointer the address derives from (RFC 0011, *Deriving a pointer*).
+  [[nodiscard]] std::optional<PlaceRef>
+  resolveConsumedValue(const clang::Expr &expr);
+
+  /// RFC 0011: the field steps a `Field` offset spells, outermost first
+  /// (`in`, `buf` for `&p->in.buf`); empty for any other offset.
+  [[nodiscard]] static std::vector<std::string>
+  fieldsOfOffset(const core::PointerOffset &offset);
+
+  /// RFC 0011: the offset a pointer place's own value moves by in `++p`,
+  /// `p--`, `p += k`, `p -= k`; nothing for any other expression.
+  [[nodiscard]] std::optional<core::PointerOffset>
+  pointerStepOf(const clang::Expr &expr);
+
+  /// RFC 0011: the offset `p + k` / `p - k` / `(char *)p - offsetof(T, f)`
+  /// steps `pointer` by; `pointer` is the pointer operand of `binary`.
+  [[nodiscard]] core::PointerOffset
+  arithmeticStepOf(const clang::BinaryOperator &binary,
+                   const clang::Expr &pointer);
+
+  /// RFC 0011: the extent, in the caller's places, of a callee's `PathAffine`
+  /// at `call`: a `param i` root is the argument (`affineOf`, scaled), a
+  /// path below one or a global is the caller place it names.
+  [[nodiscard]] std::optional<core::Affine>
+  affineFromPath(const core::PathAffine &affine, const clang::CallExpr &call);
+
   /// RFC 0010, *Recognising increments and decrements*: an expression that
   /// adds or subtracts exactly one from an integer place: `++x`, `x++`,
   /// `--x`, `x--`, `x += 1`, `x -= 1`, and the adjusting builtins
@@ -306,8 +372,18 @@ public:
   };
   [[nodiscard]] std::optional<Adjustment> adjustmentOf(const clang::Expr &expr);
 
+  /// Longest place path a summary spells, and the longest the checker
+  /// synthesises when mirroring facts between aliases. Paths written in the
+  /// source are never truncated; a summary keeps what fits in a place, so a
+  /// recursive structure walked across a call cycle (`L->l_G->gray->l_G->
+  /// gray->...`, one more hop per fixpoint round) stops growing and the
+  /// whole-program fixpoint is over a finite lattice (RFC 0011,
+  /// *Whole-program widening*).
+  static constexpr std::size_t MaxPlaceDepth = 8;
+
   /// The summary path of a place rooted at a parameter or a global of
-  /// `function`, or `std::nullopt` for places rooted at locals.
+  /// `function`, or `std::nullopt` for places rooted at locals or deeper
+  /// than `MaxPlaceDepth`.
   [[nodiscard]] std::optional<core::SummaryPath>
   summaryPathOf(core::PlaceId place);
 
@@ -316,6 +392,11 @@ public:
   /// True if `expr` is an lvalue expression whose shape the builder
   /// understands (a variable, member, subscript or dereference).
   [[nodiscard]] static bool isPlaceExpr(const clang::Expr &expr);
+
+  /// The pointer operand of `p + k`, `k + p` or `p - k` (the value denotes
+  /// an element of whatever `p` points to), or null for any other shape.
+  [[nodiscard]] static const clang::Expr *
+  pointerOperandOfArithmetic(const clang::Expr &expr);
 
   /// True if a cast between these two types preserves place identity: every
   /// pointer-to-pointer cast does (RFC 0004, *Pointer identity*); a cast
@@ -338,6 +419,12 @@ public:
 private:
   [[nodiscard]] std::optional<std::pair<core::PlaceId, std::size_t>>
   lookupSummaryRoot(const core::SummaryPath &path, const clang::CallExpr &call);
+  /// The place `&x` (or a decayed array) names when `expr` is one; the
+  /// argument shape for which `param(i)*` is `x` itself.
+  [[nodiscard]] std::optional<PlaceRef> addressedPlace(const clang::Expr &expr);
+  /// RFC 0011: the extent of `calloc(n, size)`-shaped calls.
+  [[nodiscard]] std::optional<core::Affine>
+  productExtentOf(const clang::CallExpr &call);
 
   core::PlaceTable &places;
   SummaryStore &summaries;

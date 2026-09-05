@@ -64,7 +64,7 @@
         "clang_errors": 0,
         "by_id": {
           "double-free": 2,
-          "null-dereference": 30
+          "null-dereference": 28
         }
       },
       "zlib": {
@@ -73,7 +73,7 @@
         "by_id": {
           "annotation-required": 2,
           "leak": 2,
-          "null-dereference": 24
+          "null-dereference": 21
         }
       },
       "lua": {
@@ -81,13 +81,13 @@
         "clang_errors": 0,
         "by_id": {
           "annotation-required": 1,
-          "conflicting-borrow": 16,
-          "double-free": 34,
-          "invalid-release": 5,
-          "leak": 1,
-          "lifetime-too-short": 10,
-          "null-dereference": 92,
-          "use-after-free": 408
+          "conflicting-borrow": 2,
+          "double-free": 35,
+          "invalid-release": 4,
+          "leak": 4,
+          "lifetime-too-short": 4,
+          "null-dereference": 79,
+          "use-after-free": 632
         }
       },
       "linenoise-program": {
@@ -106,8 +106,7 @@
           "annotation-required": 2,
           "double-free": 45,
           "invalid-release": 1,
-          "leak": 10,
-          "lifetime-too-short": 8,
+          "leak": 4,
           "null-dereference": 2,
           "use-after-free": 31
         }
@@ -115,14 +114,14 @@
     },
     "totals": {
       "annotation-required": 11,
-      "conflicting-borrow": 16,
-      "double-free": 81,
-      "invalid-release": 6,
-      "leak": 20,
-      "lifetime-too-short": 18,
-      "null-dereference": 189,
+      "conflicting-borrow": 2,
+      "double-free": 82,
+      "invalid-release": 5,
+      "leak": 17,
+      "lifetime-too-short": 4,
+      "null-dereference": 171,
       "unsafe-operation": 1,
-      "use-after-free": 439
+      "use-after-free": 663
     }
   }
 }

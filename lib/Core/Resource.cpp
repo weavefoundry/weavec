@@ -100,11 +100,6 @@ bool ResourceTracker::join(const ResourceTracker &other) {
       mine.escaped = true;
       changed = true;
     }
-    // A holder that may point into the resource may not release it.
-    if (record.interior && !mine.interior) {
-      mine.interior = true;
-      changed = true;
-    }
     // A retained share has no family of its own (RFC 0010): it neither
     // contradicts nor supplies one, except that the owned side's is kept.
     const bool retainedVsOwned = mine.origin != record.origin &&

@@ -286,6 +286,20 @@ static void describe(llvm::raw_ostream &os,
     describePaths("decrements", summary.decrements);
   if (!summary.counts.empty())
     describePaths("counts", summary.counts);
+  if (!summary.requiresExtent.empty()) {
+    os << " requires-extent{";
+    first = true;
+    for (const auto &[param, requirements] : summary.requiresExtent) {
+      for (const core::ExtentRequirement &requirement : requirements) {
+        os << (first ? "" : ", ")
+           << core::printSummaryPath(core::SummaryPath::param(param), namer)
+           << ": " << core::printAffine(requirement.need, namer)
+           << core::printGuard(requirement.when, namer);
+        first = false;
+      }
+    }
+    os << "}";
+  }
   os << "\n";
 }
 

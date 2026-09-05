@@ -125,6 +125,12 @@ private:
   /// Place expressions whose pointer value is converted to an integer: the
   /// resource escapes the model (RFC 0007, *Escape*).
   llvm::DenseSet<const clang::Expr *> escapingExprs;
+  /// Lvalues whose address (or decayed array) is passed to a consuming
+  /// parameter: `release(&o->in)`, `release(o->payload)`. The pointer they
+  /// derive from is what is consumed (RFC 0011, *Deriving a pointer*), so
+  /// walking through it is not a separate use: a second release is one
+  /// `double-free`, not that and a `use-after-free`.
+  llvm::DenseSet<const clang::Expr *> consumedDerivations;
   /// Call expressions whose result is dereferenced on the spot (`f()->x`,
   /// `*g()`, `h()[i]`): the value lives in no place, so its nullness is
   /// checked as the call completes (RFC 0008, *Nullness*).
@@ -172,6 +178,10 @@ private:
   struct WrittenPlaces {
     std::optional<std::size_t> placesSeen;
     std::vector<core::PlaceId> places;
+    /// Those of `places` the callee wrote without a store saying what it
+    /// left there: a pointer among them holds a value the caller cannot
+    /// name, and no longer the one it held on entry.
+    std::vector<core::PlaceId> unnamedValue;
   };
   llvm::DenseMap<const clang::CallExpr *, WrittenPlaces> writtenAt;
   /// Per outcome class (RFC 0007, *Per-outcome null stores*): the caller
@@ -223,6 +233,9 @@ private:
   /// itself updates the scalar fact, so the operand's read-write role must
   /// not forget it first.
   llvm::DenseSet<const clang::Expr *> adjustedOperands;
+  /// RFC 0011: pointer operands of `++p`, `p--`, `p += k`, with the offset
+  /// the expression moves them by.
+  llvm::DenseMap<const clang::Expr *, core::PointerOffset> pointerSteps;
   /// Integer places this function subtracts one from, itself or through a
   /// callee (flow insensitive): a `free` of the object such a place lies in,
   /// on a path whose facts say it is zero, releases a share rather than the
@@ -415,6 +428,12 @@ private:
   /// and non-null what it says is non-null (RFC 0008).
   static void markNullOutcomes(const core::PendingOutcome &narrowed,
                                core::AnalysisState &state);
+  /// RFC 0009, *Guards*: a place the classes still possible consume only
+  /// under a guard on the arguments keeps that guard on its move record, or
+  /// is reinstated (through `reinstate`) where the facts here refute it.
+  void applyOutcomeGuards(
+      const core::PendingOutcome &narrowed, core::AnalysisState &state,
+      const std::function<void(const std::vector<core::PlaceId> &)> &reinstate);
   /// Retracts the stores `narrowed` says did not happen on the classes
   /// still possible and applies the integer facts that hold on all of them
   /// (RFC 0010, *Per-outcome stores* and *Per-outcome integer facts*).
@@ -512,13 +531,36 @@ private:
   /// parameter of `call` (the place `ref`, when it is one) is known not to
   /// be the start of a heap allocation: the storage of a variable, a string
   /// literal, or an offset into an allocation.
+  /// `calleeOffset` (RFC 0011) is where the callee releases relative to
+  /// what it is passed (`free_container(&o->in)`: `-outer.in`, composing
+  /// with the argument's `+outer.in` to the start).
   void checkInvalidRelease(const clang::Expr &argument,
                            const std::optional<PlaceRef> &ref,
                            core::MoveReason reason, const clang::Expr &at,
-                           const core::AnalysisState &state);
-  /// `place` now points into what it owns rather than at its start
-  /// (`p++`, `p += k`).
-  static void markInterior(core::PlaceId place, core::AnalysisState &state);
+                           const core::AnalysisState &state,
+                           const core::PointerOffset &calleeOffset = {});
+  /// RFC 0011: `place`'s own value moved by `step` (`p++`, `p += k`, `p = p
+  /// + k`): its spatial record and its alias edges follow.
+  static void stepPointer(core::PlaceId place, const core::PointerOffset &step,
+                          core::AnalysisState &state);
+  /// RFC 0011: the spatial record of a borrow of `storage` at `offset`: the
+  /// size of the variable, array or field borrowed, when it is complete.
+  [[nodiscard]] std::optional<core::SpatialRecord>
+  storageRecordOf(const PlaceRef &storage, const core::PointerOffset &offset);
+  /// True if `place` is the storage of a local variable or parameter (not
+  /// memory behind a pointer, a global or the literal place): what RFC
+  /// 0011's deferred lifetime check watches die.
+  [[nodiscard]] bool isLocalStorage(core::PlaceId place) const;
+  /// RFC 0011: an extent over this function's places as one over its
+  /// interface, when its place has a stable summary path.
+  [[nodiscard]] std::optional<core::PathAffine>
+  summaryAffineOf(const std::optional<core::Affine> &affine);
+  /// RFC 0011, *Deferred lifetime checks*: the storage of `dying` locals is
+  /// going; every loan on it whose holder survives it and whose holder's
+  /// lifetime the loan does not outlive is `lifetime-too-short`, reported at
+  /// the store that created it.
+  void checkOutlivedLoans(const std::function<bool(core::PlaceId)> &dying,
+                          const core::AnalysisState &state);
   /// True if `place` is the storage of a variable or the string-literal
   /// place: its root is not dereferenced on the way (`x`, `x.d`, `buf[*]`,
   /// but not `*p` or `p->f`).
@@ -532,8 +574,11 @@ private:
 
   // -- Semantic actions -----------------------------------------------------
 
+  /// With `reportMoved` off, a pointer walked through that was freed is not
+  /// a use (the consume that walks it reports the double free).
   void doRead(const PlaceRef &ref, const clang::Expr &at,
-              core::AnalysisState &state, bool includeSelf);
+              core::AnalysisState &state, bool includeSelf,
+              bool reportMoved = true);
   /// Returns the places marked moved (the place, its mirrors and aliases);
   /// empty if the place was already moved (reported, not re-marked). With
   /// `replaced` (RFC 0008, *Replaced values*) only the aliases are marked
@@ -544,11 +589,14 @@ private:
   /// With `share` (RFC 0010, *Releasing a share*) one share of the object
   /// is released rather than the object: a holder with a surplus keeps its
   /// name, a `Retained` holder stays valid, any other is `Released`.
+  /// `offset` (RFC 0011) is where the released pointer points relative to
+  /// the value at `ref`: what the summary records as the consume's `at`.
   std::vector<core::PlaceId>
   doConsume(const PlaceRef &ref, core::MoveReason reason, const clang::Expr &at,
             core::AnalysisState &state, std::string_view family = {},
             bool library = false, bool replaced = false,
-            core::PlaceGuard guard = {}, bool share = false);
+            core::PlaceGuard guard = {}, bool share = false,
+            const core::PointerOffset &offset = {});
   void doMutationCheck(core::PlaceId place, const clang::Expr &at,
                        core::AnalysisState &state);
   /// The variable `place` names (if it is a base place) was assigned or had
@@ -568,6 +616,16 @@ private:
   void applyBorrow(core::PlaceId dest, const PlaceRef &borrowed,
                    core::BorrowKind kind, const clang::Expr &at,
                    core::AnalysisState &state);
+  /// The loan part of `applyBorrow`: the exclusivity check (opt-in) and the
+  /// loans on `target` (and its mirrors) held by `dest` (and its mirrors).
+  /// Also what a derived copy `&p->f` gives its holder on `(*p).f` (RFC
+  /// 0011, *Derived pointers*).
+  void lend(core::PlaceId dest, core::PlaceId target, core::BorrowKind kind,
+            core::LifetimeId loanLifetime, const clang::Expr &at,
+            core::AnalysisState &state);
+  /// True if `holder` is a plain local whose loans liveness retires (RFC
+  /// 0006): not address-taken, not memory behind a pointer, not a global.
+  [[nodiscard]] bool isLivenessTracked(core::PlaceId holder) const;
   void checkTemporaryBorrow(const PlaceRef &borrowed, core::BorrowKind kind,
                             const clang::Expr &at,
                             const core::AnalysisState &state);
@@ -602,6 +660,7 @@ private:
                               const core::AnalysisState &state);
   /// Copies every fact about the objects below `*src` onto `*dest`.
   void mirrorSubtree(core::PlaceId src, core::PlaceId dest,
+                     const core::PointerOffset &offset,
                      core::AnalysisState &state);
   /// `dest = value` for a record: field-wise pointer copies when `value` is
   /// a place, field-wise assignments when it is an initializer list, and a
@@ -727,6 +786,79 @@ private:
   [[nodiscard]] static std::string nullNote(const core::NullRecord &record,
                                             std::string_view name);
 
+  // -- Bounds (RFC 0011, *Bounds checks*) -----------------------------------
+
+  /// What an lvalue expression touches: the bytes from `start` to `end`
+  /// past the value of `base` (a pointer-valued expression, or null for the
+  /// storage of variable `storage`), each affine in one integer place at
+  /// most. `index` is the subscript or arithmetic operand spelled, for the
+  /// message.
+  struct Access {
+    const clang::Expr *base = nullptr;
+    const clang::VarDecl *storage = nullptr;
+    core::Affine start;
+    core::Affine end;
+    const clang::Expr *index = nullptr;
+  };
+  /// The access `lvalue` makes (`p[i]`, `*(p + i)`, `p->f`, `s.a[i]`,
+  /// `q->buf[i]`), or nothing when its shape is not one the check reads.
+  [[nodiscard]] std::optional<Access> accessOf(const clang::Expr &lvalue);
+  /// Reports `out-of-bounds` when the object `lvalue` reads or writes is
+  /// known to be too small (RFC 0011, *Bounds checks*), and records the
+  /// requirement when it is a parameter's of unknown extent.
+  void checkBounds(const clang::Expr &lvalue, core::AnalysisState &state);
+  /// The extent and its origin the object behind `base` has, if known:
+  /// the spatial record of the pointer's place, or a variable's size.
+  struct KnownExtent {
+    core::Affine have;
+    core::SourceLocation origin;
+    /// The pointer place the record belongs to, when there is one.
+    std::optional<core::PlaceId> pointer;
+    /// The pointer's offset from the start, in elements of `unit` bytes.
+    core::PointerOffset offset;
+    /// The size of what the base pointer points to, set by the caller.
+    std::optional<std::int64_t> unit;
+    /// Whether `origin` is a declaration (a variable, a `WEAVEC_SIZED_BY`
+    /// parameter) rather than an allocation, for the note.
+    bool declared = false;
+  };
+  [[nodiscard]] std::optional<KnownExtent>
+  knownExtentOf(const Access &access, const core::AnalysisState &state);
+  /// `affine` with a constant the facts know substituted for its place.
+  [[nodiscard]] static core::Affine
+  foldAffine(const core::Affine &affine, const core::AnalysisState &state);
+  /// Compares `need` against `known.have` under the facts and reports with
+  /// `subject` (`'p[i]'`, `'memcpy' accesses`) when they decide against it.
+  /// Returns whether something was reported.
+  bool reportBounds(const core::Affine &need, const KnownExtent &known,
+                    const clang::Expr &at, std::string_view subject,
+                    std::string_view accessed, const clang::Expr *index,
+                    const clang::CallExpr *call,
+                    const core::AnalysisState &state);
+  /// `need` in a local index that a relation puts at or below a parameter
+  /// (`i < n`), restated at the boundary in that parameter; nothing when no
+  /// such relation holds.
+  [[nodiscard]] std::optional<core::PathAffine>
+  boundaryRequirement(const core::Affine &need,
+                      const core::AnalysisState &state);
+  /// Records that this function requires `need` bytes behind `pointer`
+  /// when it is a parameter root (RFC 0011, *Extents in summaries*).
+  void noteExtentRequirement(core::PlaceId pointer, const core::Affine &need,
+                             const core::AnalysisState &state);
+  /// The arguments `summary.requiresExtent` names must be large enough.
+  void checkRequiredExtents(const clang::CallExpr &call,
+                            const core::FunctionSummary &summary,
+                            const core::AnalysisState &state);
+  /// Learns `lhs OP rhs` (`holds` says which edge) about two integer places
+  /// (RFC 0011, *Relations*).
+  void learnRelation(const clang::Expr &lhs, clang::BinaryOperatorKind op,
+                     const clang::Expr &rhs, bool holds,
+                     core::AnalysisState &state);
+  /// The name of an integer place for a bounds message: the variable, or
+  /// the expression as written.
+  [[nodiscard]] std::string spellIndex(const clang::Expr *index,
+                                       const core::Affine &affine);
+
   // -- Summary recording (RFC 0003) -----------------------------------------
 
   [[nodiscard]] bool recording() const noexcept {
@@ -750,7 +882,15 @@ private:
   void recordConsume(core::PlaceId target, core::MoveReason reason,
                      std::string_view family,
                      const core::ElementWitness &element,
-                     const core::PlaceGuard &guard, core::AnalysisState &state);
+                     const core::PlaceGuard &guard,
+                     const core::PointerOffset &offset,
+                     core::AnalysisState &state);
+  /// RFC 0011: where the pointer value of `argument` points relative to the
+  /// start of the object `ref` names: the holder's own offset composed with
+  /// the argument's derivation (`free(p + 1)` with `p` at `+2` is `+3`).
+  [[nodiscard]] core::PointerOffset
+  valueOffsetOf(const clang::Expr &argument, const PlaceRef &ref,
+                const core::AnalysisState &state);
   /// For `return --*r == 0`, `return !--*r`, `return *r`: the integer place
   /// the result speaks about and, per integer class of the result, the fact
   /// the place satisfies when the result is in it (RFC 0010, *Per-outcome
@@ -775,6 +915,8 @@ private:
   /// value there on the current path: the consume is `replaced` on this
   /// path (RFC 0008, *Replaced values*; `state.consumed[path].replaced`).
   void noteRewritten(core::PlaceId place, core::AnalysisState &state);
+  /// `noteRewritten` for one name of the written cell.
+  void noteRewrittenAt(core::PlaceId place, core::AnalysisState &state);
   /// True if `path` describes the callee's own copy of an argument rather
   /// than the caller's memory (RFC 0003, *Deriving a summary*): parameter
   /// roots and paths under reassigned parameters. Such a path is never
@@ -891,9 +1033,19 @@ private:
   /// unset) or with a new borrow of it. Loans on the place's ancestors count
   /// unless `ancestors` is false: freeing what `s.buf` points to leaves a
   /// borrow of `s` intact.
+  /// Loans whose holder `ignoreHolder` accepts do not count.
+  /// With `storageOnly`, only loans on `place`'s own storage and its
+  /// object's (`storageOf`) count: freeing an object releases that, not the
+  /// objects the pointers stored in it refer to (RFC 0011, *Derived
+  /// pointers*: jansson's `parents->buckets->last` points at a pair the
+  /// intrusive list owns; freeing the bucket array is no conflict with a
+  /// borrow of the pair). What the object's pointers own is released by a
+  /// consume of its own, with its own check.
   [[nodiscard]] std::optional<core::Loan>
   findLoanConflict(core::PlaceId place, std::optional<core::BorrowKind> kind,
-                   const core::AnalysisState &state, bool ancestors = true);
+                   const core::AnalysisState &state, bool ancestors = true,
+                   const std::function<bool(core::PlaceId)> &ignoreHolder = {},
+                   bool storageOnly = false);
 
   [[nodiscard]] std::vector<core::LifetimeId>
   lifetimesOfPlace(core::PlaceId place, const core::AnalysisState &state);
@@ -909,6 +1061,8 @@ private:
                         const clang::Expr &at);
   void reportLifetimeTooShort(core::PlaceId holder, core::PlaceId borrowed,
                               const clang::Expr &at, bool returned);
+  void reportLifetimeTooShort(core::PlaceId holder, core::PlaceId borrowed,
+                              const core::SourceLocation &at, bool returned);
   [[nodiscard]] std::string nameOf(core::PlaceId place) const;
   [[nodiscard]] std::string summaryName(const core::SummaryPath &path) const;
   [[nodiscard]] core::Diagnostic makeError(std::string_view id,

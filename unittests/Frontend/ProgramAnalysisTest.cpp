@@ -334,5 +334,40 @@ int main(void) {
   EXPECT_TRUE(program.recorder.lines.empty());
 }
 
+// RFC 0011, *Whole-program widening*: the step joins a member's new exports
+// with its previous ones, keeping only what both rounds agreed on.
+TEST(ProgramAnalysis, WideningJoinsWithThePreviousRound) {
+  static_assert(ProgramAnalysis::WidenAfter < ProgramAnalysis::MaxRounds);
+  analysis::UnitExports previous;
+  previous.functions["f"].summary.neverReturns = true;
+  previous.functions["f"].summary.effects[core::SummaryPath::param(0)] =
+      core::PlaceEffect{.freed = true};
+  previous.functions["g"].summary.neverReturns = true;
+  previous.countFields = {"struct a.rc"};
+
+  analysis::UnitExports current;
+  current.functions["f"].summary.neverReturns = false;
+  current.functions["f"].summary.effects[core::SummaryPath::param(0)] =
+      core::PlaceEffect{.read = true, .freed = true};
+  current.functions["h"].summary.neverReturns = true;
+  current.countFields = {"struct b.rc"};
+
+  ProgramAnalysis::widen(current, previous);
+  // The must-fact only one round had is dropped; the shared one stays.
+  EXPECT_FALSE(current.functions.at("f").summary.neverReturns);
+  EXPECT_TRUE(current.functions.at("f")
+                  .summary.effects.at(core::SummaryPath::param(0))
+                  .freed);
+  // Functions only the new round exports are kept as they are.
+  EXPECT_TRUE(current.functions.at("h").summary.neverReturns);
+  EXPECT_FALSE(current.functions.contains("g"));
+  EXPECT_EQ(current.countFields,
+            (std::set<std::string>{"struct a.rc", "struct b.rc"}));
+  // Widening is idempotent: joining again changes nothing.
+  const analysis::UnitExports widened = current;
+  ProgramAnalysis::widen(current, previous);
+  EXPECT_TRUE(current.sameSummariesAs(widened));
+}
+
 } // namespace
 } // namespace weavec::frontend

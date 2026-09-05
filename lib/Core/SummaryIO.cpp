@@ -9,6 +9,7 @@
 #include "weavec/Core/SummaryIO.h"
 
 #include <charconv>
+#include <cstdint>
 #include <string>
 #include <utility>
 #include <vector>
@@ -57,11 +58,39 @@ std::string printSummaryPath(const SummaryPath &path,
   return text;
 }
 
+/// RFC 0011: an offset as one token. Field keys contain spaces (`struct
+/// outer .in`), which the tokenizer would split; they are spelled `~`.
+static std::string printOffset(const PointerOffset &offset) {
+  std::string text = "@" + offset.toString();
+  for (char &c : text) {
+    if (c == ' ')
+      c = '~';
+  }
+  return text;
+}
+
+static std::optional<PointerOffset> parseOffset(std::string_view token) {
+  if (token.size() < 2 || token.front() != '@')
+    return std::nullopt;
+  std::string text(token.substr(1));
+  for (char &c : text) {
+    if (c == '~')
+      c = ' ';
+  }
+  return PointerOffset::parse(text);
+}
+
+std::string printAffine(const PathAffine &affine, const GlobalNamer &names) {
+  if (!affine.path)
+    return std::to_string(affine.constant);
+  return printSummaryPath(*affine.path, names) + " scale " +
+         std::to_string(affine.scale) + " plus " +
+         std::to_string(affine.constant);
+}
+
 std::string printValueSource(const ValueSource &source,
                              const GlobalNamer &names) {
-  std::string text(source.kind == ValueSource::Kind::Copy && source.interior
-                       ? std::string_view("interior")
-                       : toString(source.kind));
+  std::string text(toString(source.kind));
   if (source.kind == ValueSource::Kind::Fresh && !source.family.empty())
     text += '(' + source.family + ')';
   if ((source.kind == ValueSource::Kind::Copy ||
@@ -70,6 +99,12 @@ std::string printValueSource(const ValueSource &source,
     text += ' ';
     text += printSummaryPath(*source.path, names);
   }
+  if ((source.kind == ValueSource::Kind::Copy ||
+       source.kind == ValueSource::Kind::Fresh) &&
+      !source.offset.isZero())
+    text += ' ' + printOffset(source.offset);
+  if (source.kind == ValueSource::Kind::Fresh && source.extent)
+    text += " extent " + printAffine(*source.extent, names);
   return text;
 }
 
@@ -93,6 +128,12 @@ std::string printFlags(const PlaceEffect &effect) {
   add(effect.consumed() && effect.element, "element", false);
   add(effect.consumed() && effect.share, "share", false);
   add(effect.escaped, "escaped", false);
+  // RFC 0011: the offset at which the value was released, when not zero.
+  if (effect.consumed() && !effect.at.isZero()) {
+    if (!flags.empty())
+      flags += ',';
+    flags += "at(" + printOffset(effect.at).substr(1) + ')';
+  }
   return flags;
 }
 
@@ -195,6 +236,13 @@ std::string printSummary(const FunctionSummary &summary,
     for (const auto &[path, fact] : facts) {
       text += "  fact " + std::string(toString(outcome)) + ' ' +
               printSummaryPath(path, names) + ' ' + fact.toString() + '\n';
+    }
+  }
+  for (const auto &[param, requirements] : summary.requiresExtent) {
+    for (const ExtentRequirement &requirement : requirements) {
+      text += "  requires-extent " + std::to_string(param) + ' ' +
+              printAffine(requirement.need, names) +
+              printGuard(requirement.when, names) + '\n';
     }
   }
   text += "end\n";
@@ -323,6 +371,38 @@ static bool parsePath(Tokens &tokens, const GlobalResolver &resolve,
   return true;
 }
 
+static bool parseInteger(std::string_view token, std::int64_t &value) {
+  if (token.empty())
+    return false;
+  const auto [end, ec] =
+      std::from_chars(token.data(), token.data() + token.size(), value);
+  return ec == std::errc() && end == token.data() + token.size();
+}
+
+/// Parses `<integer>` or `<path> scale <integer> plus <integer>` (RFC
+/// 0011). A declined global yields `nullopt` in `affine` with `true`.
+static bool parseAffine(Tokens &tokens, const GlobalResolver &resolve,
+                        std::optional<PathAffine> &affine) {
+  std::int64_t constant = 0;
+  if (parseInteger(tokens.peek(), constant)) {
+    tokens.take();
+    affine = PathAffine::ofConstant(constant);
+    return true;
+  }
+  ParsedPath path;
+  if (!parsePath(tokens, resolve, path))
+    return false;
+  std::int64_t scale = 1;
+  if (tokens.take() != "scale" || !parseInteger(tokens.take(), scale) ||
+      tokens.take() != "plus" || !parseInteger(tokens.take(), constant))
+    return false;
+  if (path.path)
+    affine = PathAffine::ofPath(std::move(*path.path), scale, constant);
+  else
+    affine = std::nullopt;
+  return true;
+}
+
 /// Parses a value source. A declined global makes the source `unknown`.
 static bool parseSource(Tokens &tokens, const GlobalResolver &resolve,
                         ValueSource &source) {
@@ -335,6 +415,19 @@ static bool parseSource(Tokens &tokens, const GlobalResolver &resolve,
     return false;
   if (kind == "fresh") {
     source = ValueSource::fresh(std::string(family));
+    if (!tokens.peek().empty() && tokens.peek().front() == '@') {
+      const std::optional<PointerOffset> offset = parseOffset(tokens.take());
+      // A fresh value is handed out at the start or into it, never before.
+      if (!offset || (offset->isField() && offset->negative) ||
+          (offset->isElements() && offset->elements < 0))
+        return false;
+      source.offset = *offset;
+    }
+    if (tokens.peek() == "extent") {
+      tokens.take();
+      if (!parseAffine(tokens, resolve, source.extent))
+        return false;
+    }
   } else if (kind == "null") {
     source = ValueSource::null();
   } else if (kind == "unknown") {
@@ -345,10 +438,18 @@ static bool parseSource(Tokens &tokens, const GlobalResolver &resolve,
     ParsedPath path;
     if (!parsePath(tokens, resolve, path))
       return false;
+    std::optional<PointerOffset> offset;
+    if (kind == "copy" && !tokens.peek().empty() &&
+        tokens.peek().front() == '@') {
+      offset = parseOffset(tokens.take());
+      if (!offset)
+        return false;
+    }
     if (!path.path)
       source = ValueSource::unknown();
     else if (kind == "copy")
-      source = ValueSource::copy(std::move(*path.path));
+      source = ValueSource::copyAt(std::move(*path.path),
+                                   offset.value_or(PointerOffset::zero()));
     else if (kind == "interior")
       source = ValueSource::interiorCopy(std::move(*path.path));
     else
@@ -370,9 +471,19 @@ static bool parseFlags(std::string_view text, PlaceEffect &effect) {
     std::string_view family;
     if (!splitFamily(token, flag, family))
       return false;
-    if (!family.empty() && flag != "freed" && flag != "moved")
+    if (flag == "at") {
+      // RFC 0011: `at(<offset>)`, the offset the value was released at.
+      const auto offset = parseOffset("@" + std::string(family));
+      if (!offset)
+        return false;
+      effect.at = *offset;
+      family = {};
+    } else if (!family.empty() && flag != "freed" && flag != "moved") {
       return false;
-    if (flag == "read")
+    }
+    if (flag == "at")
+      ;
+    else if (flag == "read")
       effect.read = true;
     else if (flag == "written")
       effect.written = true;
@@ -402,9 +513,11 @@ static bool parseFlags(std::string_view text, PlaceEffect &effect) {
       break;
     pos = comma + 1;
   }
-  // `replaced`, `element` and `share` qualify a consume; alone they describe
-  // nothing.
-  if ((effect.replaced || effect.element || effect.share) && !effect.consumed())
+  // `replaced`, `element`, `share` and `at` qualify a consume; alone they
+  // describe nothing.
+  if ((effect.replaced || effect.element || effect.share ||
+       !effect.at.isZero()) &&
+      !effect.consumed())
     return false;
   return !effect.empty();
 }
@@ -554,6 +667,19 @@ std::optional<FunctionSummary> parseSummary(std::string_view record,
            end == index.data() + index.size();
       if (ok)
         summary.requiresNonNull.insert(param);
+    } else if (kind == "requires-extent") {
+      std::int64_t param = 0;
+      std::optional<PathAffine> need;
+      ExtentRequirement requirement;
+      ok = parseInteger(tokens.take(), param) &&
+           std::in_range<std::uint32_t>(param) &&
+           parseAffine(tokens, resolve, need) &&
+           parseGuard(tokens, resolve, requirement.when);
+      if (ok && need) {
+        requirement.need = *need;
+        summary.addRequirement(static_cast<std::uint32_t>(param),
+                               std::move(requirement));
+      }
     } else if (kind == "increment" || kind == "decrement" || kind == "count") {
       ParsedPath path;
       ok = parsePath(tokens, resolve, path);

@@ -20,11 +20,14 @@
 // idiom (`victim = cur; cur = cur->next; free(victim)`) into a stream of
 // false positives.
 //
-// Each edge carries two attributes (RFC 0006). It is *exact* (the two places
-// hold the same pointer value) or *interior* (they point into the same
-// object, possibly at different offsets: `q = p + 1`); a pointer comparison
-// refutes only exact aliases. And each end carries the *element witness* of
-// the access that created it: after `q = a[i]`, `q` aliases element `i` of
+// Each edge carries two attributes (RFC 0006, RFC 0011). It records the
+// *offset* of the far end from this end: zero when the two places hold the
+// same pointer value (an *exact* alias), `+1` after `q = p + 1`, a field
+// after `q = &p->in`, unknown when they point into the same object at an
+// offset the checker cannot name. A pointer comparison refutes only exact
+// aliases; derivations compose along edges, so `container_of(&p->in)` is
+// exact with `p` again. And each end carries the *element witness* of the
+// access that created it: after `q = a[i]`, `q` aliases element `i` of
 // `a[*]`, so a release through `q` frees that element and not the whole
 // summary, and `r = a[j]` does not make `q` and `r` aliases of each other.
 //
@@ -40,6 +43,7 @@
 #define WEAVEC_CORE_ALIASRELATION_H
 
 #include "weavec/Core/Moves.h"
+#include "weavec/Core/Offset.h"
 #include "weavec/Core/Place.h"
 
 #include <cstddef>
@@ -53,7 +57,9 @@ namespace weavec::core {
 
 /// The attributes of one alias edge as seen from one of its ends.
 struct AliasEdge {
-  bool exact = true;
+  /// RFC 0011: where the *other* end points relative to this one. Zero for
+  /// an exact alias.
+  PointerOffset offset;
   /// The element of the place at the *other* end that this end aliases.
   ElementWitness element;
   /// RFC 0010: the two ends hold the same share of the object. False only
@@ -61,23 +67,34 @@ struct AliasEdge {
   /// from it. Joins by disjunction (a release *may* reach the other end).
   bool sameShare = true;
 
+  /// The two ends hold the same pointer value.
+  [[nodiscard]] bool exact() const noexcept { return offset.isZero(); }
+
   friend bool operator==(const AliasEdge &, const AliasEdge &) = default;
 };
 
 class AliasRelation {
 public:
-  /// Records that `a` (its element `elementA`) and `b` (its element
-  /// `elementB`) hold the same value (`exact`) or point into the same object
-  /// (`!exact`): relates each of them to the other and to the other's
-  /// current aliases. An alias reached through an interior edge is interior;
-  /// an alias of `b` that names a different element of `b` than `elementB`
-  /// is not related to `a` at all. With `!sameShare` the new edge, and every
-  /// edge derived from it, relates distinct shares (RFC 0010); an alias
-  /// reached through a distinct-share edge holds a distinct share.
-  void unite(PlaceId a, PlaceId b, bool exact = true,
+  /// Records that `a` (its element `elementA`) holds `b` (its element
+  /// `elementB`) plus `offset`: the same value when the offset is zero, a
+  /// pointer into the same object otherwise. Relates each of them to the
+  /// other and to the other's current aliases, composing offsets along the
+  /// way (RFC 0011); an alias of `b` that names a different element of `b`
+  /// than `elementB` is not related to `a` at all. With `!sameShare` the new
+  /// edge, and every edge derived from it, relates distinct shares (RFC
+  /// 0010); an alias reached through a distinct-share edge holds a distinct
+  /// share.
+  ///
+  /// With `alternative`, `a` holds `b` on only *one* of several paths that
+  /// meet at this assignment (`a = c ? b : d`, a callee that returns one of
+  /// several values): `a` is related to `b` and to `b`'s aliases, but `a`'s
+  /// other aliases (the other arms) are not related to `b`. The result is
+  /// the join of the per-arm relations, as the header says a join must be,
+  /// not their composition: `b` and `d` never held the same value.
+  void unite(PlaceId a, PlaceId b, PointerOffset offset = PointerOffset::zero(),
              ElementWitness elementA = ElementWitness::whole(),
              ElementWitness elementB = ElementWitness::whole(),
-             bool sameShare = true);
+             bool sameShare = true, bool alternative = false);
 
   /// Forgets everything `place` may alias, e.g. because it was reassigned.
   void separate(PlaceId place);
@@ -87,6 +104,10 @@ public:
   /// Facts are propagated to every alias when they are made, so no other
   /// place loses anything.
   void separateIf(const std::function<bool(PlaceId)> &dead);
+
+  /// RFC 0011: `place`'s own value moved by `step` (`p++`, `p += k`): every
+  /// alias now lies `step` further back from it.
+  void shift(PlaceId place, const PointerOffset &step);
 
   /// `a != b` was established: drops the edge between `a` and `b` if it is
   /// exact. An interior edge stays (the values differ, the object may not),
@@ -100,6 +121,11 @@ public:
   /// True if `a` and `b` are related by an exact edge (or are the same
   /// place).
   [[nodiscard]] bool isExact(PlaceId a, PlaceId b) const noexcept;
+
+  /// Where `b` points relative to `a`, if they are related (zero for the
+  /// same place).
+  [[nodiscard]] std::optional<PointerOffset> offsetOf(PlaceId a,
+                                                      PlaceId b) const;
 
   /// True if `a` and `b` may hold the same share (or are the same place, or
   /// are unrelated: only an explicit distinct-share edge says otherwise).
@@ -118,9 +144,9 @@ public:
   edgesFrom(PlaceId place) const;
 
   /// Union of the two relations: "may alias on either incoming path". An
-  /// edge is exact only if it is exact on every side that has it; its
-  /// witness is unknown if the sides disagree; it is same-share if either
-  /// side says so. Returns whether this relation changed.
+  /// edge's offset is unknown if the sides disagree; its witness is unknown
+  /// if the sides disagree; it is same-share if either side says so. Returns
+  /// whether this relation changed.
   bool join(const AliasRelation &other);
 
   /// Number of places related to at least one other place.

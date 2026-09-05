@@ -12,11 +12,13 @@
 
 namespace weavec::core {
 
-/// Two claims about one edge: exact only if both are, the witness only if
-/// they agree, same-share if either is (a release may then reach the other
-/// end; RFC 0010).
+/// Two claims about one edge: the offset only if they agree, the witness
+/// only if they agree, same-share if either is (a release may then reach the
+/// other end; RFC 0010).
 static AliasEdge merge(const AliasEdge &lhs, const AliasEdge &rhs) {
-  return AliasEdge{.exact = lhs.exact && rhs.exact,
+  PointerOffset offset = lhs.offset;
+  offset.join(rhs.offset);
+  return AliasEdge{.offset = std::move(offset),
                    .element = lhs.element == rhs.element
                                   ? lhs.element
                                   : ElementWitness::unknown(),
@@ -51,9 +53,9 @@ void AliasRelation::relate(PlaceId a, PlaceId b, AliasEdge toB, AliasEdge toA) {
     ba->second = merge(ba->second, toA);
 }
 
-void AliasRelation::unite(PlaceId a, PlaceId b, bool exact,
+void AliasRelation::unite(PlaceId a, PlaceId b, PointerOffset offset,
                           ElementWitness elementA, ElementWitness elementB,
-                          bool sameShare) {
+                          bool sameShare, bool alternative) {
   if (a == b)
     return;
   // Snapshot first: relating mutates the maps being iterated. Each entry is
@@ -78,37 +80,58 @@ void AliasRelation::unite(PlaceId a, PlaceId b, bool exact,
   const auto aliasesOfA = neighboursOf(a);
   const auto aliasesOfB = neighboursOf(b);
 
+  // `a = b + offset`: from `a`, `b` is at `-offset`; from `b`, `a` is at
+  // `+offset`.
   relate(
       a, b,
-      AliasEdge{.exact = exact, .element = elementB, .sameShare = sameShare},
-      AliasEdge{.exact = exact, .element = elementA, .sameShare = sameShare});
+      AliasEdge{.offset = offset.negated(),
+                .element = elementB,
+                .sameShare = sameShare},
+      AliasEdge{.offset = offset, .element = elementA, .sameShare = sameShare});
   // `x` aliases element `x.back.element` of `b`; `a` aliases `elementB` of
   // it. They are the same element or `x` is not related to `a`.
   for (const Neighbour &x : aliasesOfB) {
     if (x.place == a || !x.back.element.matches(elementB))
       continue;
-    const bool exactAx = exact && x.out.exact;
+    // `x = b + x.out.offset` and `a = b + offset`: `x = a + (x.out - offset)`.
+    const PointerOffset toX = offset.negated().plus(x.out.offset);
     const bool shareAx = sameShare && x.out.sameShare;
     relate(a, x.place,
-           AliasEdge{.exact = exactAx,
-                     .element = x.out.element,
-                     .sameShare = shareAx},
-           AliasEdge{.exact = exactAx,
+           AliasEdge{
+               .offset = toX, .element = x.out.element, .sameShare = shareAx},
+           AliasEdge{.offset = toX.negated(),
                      .element = through(elementA, elementB, x.back.element),
                      .sameShare = shareAx});
   }
+  // One arm of several: what `a` holds on the other arms is not `b`.
+  if (alternative)
+    return;
   for (const Neighbour &x : aliasesOfA) {
     if (x.place == b || !x.back.element.matches(elementA))
       continue;
-    const bool exactBx = exact && x.out.exact;
+    // `x = a + x.out.offset` and `b = a - offset`: `x = b + (offset + x.out)`.
+    const PointerOffset toX = offset.plus(x.out.offset);
     const bool shareBx = sameShare && x.out.sameShare;
     relate(b, x.place,
-           AliasEdge{.exact = exactBx,
-                     .element = x.out.element,
-                     .sameShare = shareBx},
-           AliasEdge{.exact = exactBx,
+           AliasEdge{
+               .offset = toX, .element = x.out.element, .sameShare = shareBx},
+           AliasEdge{.offset = toX.negated(),
                      .element = through(elementB, elementA, x.back.element),
                      .sameShare = shareBx});
+  }
+}
+
+void AliasRelation::shift(PlaceId place, const PointerOffset &step) {
+  if (step.isZero())
+    return;
+  const auto it = adjacent.find(place);
+  if (it == adjacent.end())
+    return;
+  // `x = place_old + o`, `place_new = place_old + step`: `x = place_new + (o
+  // - step)`, and from `x`, `place_new = x + (step - o)`.
+  for (auto &[other, edge] : it->second) {
+    edge.offset = step.negated().plus(edge.offset);
+    adjacent.find(other)->second.at(place).offset = edge.offset.negated();
   }
 }
 
@@ -142,7 +165,7 @@ void AliasRelation::separateExact(PlaceId a, PlaceId b) {
   if (ab == adjacent.end())
     return;
   const auto edge = ab->second.find(b);
-  if (edge == ab->second.end() || !edge->second.exact)
+  if (edge == ab->second.end() || !edge->second.exact())
     return;
   ab->second.erase(edge);
   if (ab->second.empty())
@@ -164,7 +187,17 @@ bool AliasRelation::isExact(PlaceId a, PlaceId b) const noexcept {
   if (a == b)
     return true;
   const auto found = edge(a, b);
-  return found && found->exact;
+  return found && found->exact();
+}
+
+std::optional<PointerOffset> AliasRelation::offsetOf(PlaceId a,
+                                                     PlaceId b) const {
+  if (a == b)
+    return PointerOffset::zero();
+  const auto found = edge(a, b);
+  if (!found)
+    return std::nullopt;
+  return found->offset;
 }
 
 bool AliasRelation::sameShare(PlaceId a, PlaceId b) const noexcept {

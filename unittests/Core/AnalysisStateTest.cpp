@@ -76,6 +76,73 @@ TEST(AnalysisState, JoinKeepsOnlyAgreedPendingOutcomes) {
   EXPECT_TRUE(joined.pending.empty()) << "the sides must agree exactly";
 }
 
+// RFC 0006, *Pending outcomes*; RFC 0009, *Guards*: `q = f(p); if (q ==
+// NULL) { ... } return q;` merges the null edge's narrowing with the
+// non-null edge's. They are one outcome, narrowed differently.
+TEST(AnalysisState, JoinUnitesNarrowingsOfOneOutcome) {
+  PendingOutcome pending;
+  pending.consumedBy[Outcome::Null] = {P};
+  pending.consumedBy[Outcome::NonNull] = {P, Q};
+  PlaceGuard whenZero;
+  whenZero.require(X, ValueFact::of(Outcome::Zero));
+  pending.guardedBy[Outcome::Null] = {{P, whenZero}};
+  pending.callee = "f";
+  pending.location = at(7);
+
+  PendingOutcome onNull = pending;
+  EXPECT_EQ(onNull.select({Outcome::Null}), std::vector<PlaceId>{Q});
+  PendingOutcome onNonNull = pending;
+  EXPECT_TRUE(onNonNull.select({Outcome::NonNull}).empty());
+
+  AnalysisState left;
+  left.pending[Q] = onNull;
+  AnalysisState right;
+  right.pending[Q] = onNonNull;
+  AnalysisState joined = left;
+  EXPECT_TRUE(joined.join(right));
+  EXPECT_EQ(joined.pending.at(Q), pending)
+      << "the union of the classes each side kept is the recording";
+
+  // Two different calls' outcomes on one holder are not one outcome.
+  PendingOutcome other = onNonNull;
+  other.location = at(9);
+  right.pending[Q] = other;
+  joined = left;
+  joined.join(right);
+  EXPECT_TRUE(joined.pending.empty());
+}
+
+// RFC 0009, *Guards*: a class that consumes a place only under a guard on
+// the arguments (`if (n == 0) { free(p); return NULL; } return realloc(p,
+// n);` frees `p` on the null class only when `n` is zero).
+TEST(PendingOutcome, GuardOfJoinsTheRemainingClassesGuards) {
+  PendingOutcome pending;
+  pending.consumedBy[Outcome::Null] = {P};
+  pending.consumedBy[Outcome::NonNull] = {P};
+  PlaceGuard whenZero;
+  whenZero.require(X, ValueFact::of(Outcome::Zero));
+  PlaceGuard whenNonZero;
+  whenNonZero.require(X, ValueFact::nonZero());
+  pending.guardedBy[Outcome::Null] = {{P, whenZero}};
+  pending.guardedBy[Outcome::NonNull] = {{P, whenNonZero}};
+
+  EXPECT_FALSE(pending.guardOf(P).has_value())
+      << "both classes together consume p whatever n is";
+  EXPECT_FALSE(pending.guardOf(Q).has_value()) << "q is not consumed at all";
+
+  PendingOutcome onNull = pending;
+  EXPECT_TRUE(onNull.select({Outcome::Null}).empty());
+  ASSERT_TRUE(onNull.guardOf(P).has_value());
+  EXPECT_EQ(*onNull.guardOf(P), whenZero);
+  EXPECT_FALSE(onNull.guardedBy.contains(Outcome::NonNull))
+      << "select drops the guards of the classes it drops";
+
+  // A class that consumes the place unguarded makes the consume certain.
+  PendingOutcome unguarded = pending;
+  unguarded.guardedBy.erase(Outcome::NonNull);
+  EXPECT_FALSE(unguarded.guardOf(P).has_value());
+}
+
 TEST(AnalysisState, JoinUnionsConsumed) {
   const SummaryPath p = SummaryPath::param(0);
   AnalysisState left;

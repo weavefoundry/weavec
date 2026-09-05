@@ -35,12 +35,13 @@ void loop_then_free(struct node *WEAVEC_OWNED n, int k) {
   free(n);
 }
 
-// Reported: the holder is used after the object is freed.
+// Reported: the holder is used after the object is freed. `&n->v` is a
+// derived copy of `n` (RFC 0011), so the use through it is the report.
 void still_live(struct node *WEAVEC_OWNED n) {
   int *a = &n->v;
-  // CHECK: rfc0006-nll.c:[[@LINE+1]]:3: error: cannot free 'n' while it is borrowed [weavec::conflicting-borrow]
   free(n);
-  // CHECK: rfc0006-nll.c:[[@LINE-3]]:12: note: borrowed by 'a' here
+  // CHECK: rfc0006-nll.c:[[@LINE+2]]:4: error: use of 'a' after it was freed [weavec::use-after-free]
+  // CHECK: rfc0006-nll.c:[[@LINE-2]]:3: note: freed here (through 'n')
   *a = 1;
 }
 
@@ -48,15 +49,17 @@ void live_around_loop(struct node *WEAVEC_OWNED n, int k) {
   int *a = &n->v;
   for (int i = 0; i < k; i++) {
     if (i == 5) {
-      // CHECK: rfc0006-nll.c:[[@LINE+1]]:7: error: cannot free 'n' while it is borrowed [weavec::conflicting-borrow]
       free(n);
       break;
     }
   }
+  // CHECK: rfc0006-nll.c:[[@LINE+1]]:4: error: use of 'a' after it was freed [weavec::use-after-free]
   *a = 1;
 }
 
-// A holder that is not a plain local never expires on liveness.
+// A holder that is not a plain local never expires on liveness, and the
+// loan a derived copy carries (RFC 0011, *Derived pointers*) is what
+// reports the free: nothing in this function reads the copy again.
 void through_pointer(struct node *WEAVEC_OWNED n, int **out) {
   *out = &n->v;
   // CHECK: rfc0006-nll.c:[[@LINE+1]]:3: error: cannot free 'n' while it is borrowed [weavec::conflicting-borrow]

@@ -9,7 +9,8 @@
 // The dataflow state RFC 0002 carries through a function body:
 //
 //   State = { moves, loans, aliases, pending, consumed, kinds, raw,
-//             resources, nulls, overwritten, scalars, stored }
+//             resources, nulls, overwritten, scalars, stored, spatial,
+//             relations }
 //
 // Every component is a finite-height lattice whose `join` is monotone, so a
 // worklist iteration over the CFG terminates without widening. Lifetimes are
@@ -28,8 +29,10 @@
 #include "weavec/Core/Ownership.h"
 #include "weavec/Core/Place.h"
 #include "weavec/Core/Raw.h"
+#include "weavec/Core/Relation.h"
 #include "weavec/Core/Resource.h"
 #include "weavec/Core/Scalar.h"
+#include "weavec/Core/Spatial.h"
 #include "weavec/Core/Summary.h"
 
 #include <map>
@@ -48,6 +51,13 @@ namespace weavec::core {
 /// reinstated on that edge.
 struct PendingOutcome {
   std::map<Outcome, std::vector<PlaceId>> consumedBy;
+  /// RFC 0009, *Guards*: per class, the consumes of `consumedBy` that the
+  /// callee performs only under a guard on the caller's places (`if (n ==
+  /// 0) { free(p); return NULL; }` frees `p` on the null class only when
+  /// `n` is zero). A place in `consumedBy` without an entry here is consumed
+  /// on the class whatever the arguments.
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
+  std::map<Outcome, std::vector<std::pair<PlaceId, PlaceGuard>>> guardedBy = {};
   /// Places whose value the callee may return as its non-null result
   /// (`if (c) { free(p); return NULL; } return p;`). One of them that is
   /// reinstated on the non-null edge *is* the result: the holder of the
@@ -123,6 +133,18 @@ struct PendingOutcome {
   /// summary knows; nothing changes).
   std::vector<PlaceId> select(const std::set<Outcome> &selected);
 
+  /// The guard under which the remaining classes consume `place`: the join
+  /// of the guards of the classes that consume it (RFC 0009, *Guards*).
+  /// Nothing when some remaining class consumes it whatever the arguments,
+  /// or none consumes it at all. Call after `select`.
+  [[nodiscard]] std::optional<PlaceGuard> guardOf(PlaceId place) const;
+
+  /// Joins in `other`, another narrowing of the same call's outcome (same
+  /// callee and location): the classes either side kept, each with what it
+  /// recorded. False, and `this` unchanged, if the two are not narrowings
+  /// of one outcome (a class both kept disagrees, or the calls differ).
+  bool unite(const PendingOutcome &other);
+
   /// The stores that happen on none of the remaining classes, removed from
   /// `stores` (RFC 0010). Call after `select`.
   std::vector<PendingStore> retractStores();
@@ -174,6 +196,11 @@ struct AnalysisState {
   /// to record which stores hold on which outcome class. A may-fact: joins
   /// by union.
   std::set<SummaryPath> stored;
+  /// RFC 0011: the extent of the object each pointer place points into and
+  /// where in it the pointer points.
+  SpatialTracker spatial;
+  /// RFC 0011: order relations between integer places the path established.
+  RelationTracker relations;
 
   /// Component-wise join with the state of another incoming edge. Returns
   /// whether this state changed, so the fixpoint engine need not copy and

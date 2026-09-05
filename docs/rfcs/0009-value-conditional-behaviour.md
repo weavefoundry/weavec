@@ -404,6 +404,36 @@ is attached to the record the effect creates (the move for a consume, the
 held resource for a `fresh` return, the origin for a copy) and lives on in
 the caller's state, where a later test may still refute it.
 
+**Outcome classes.** A class's effects carry the guard their paths held
+(`l_alloc`, above: `outcome null{ptr: freed when nsize =0}`, `outcome
+nonnull{ptr: moved when nsize positive|negative}`). The classes are kept
+in the summary whenever they *differ* in what they consume, including
+differing only in the guard: `FunctionSummary::consumesUnconditionally`
+is "every class consumes the path under no guard", so a path every class
+consumes but one of them only under a guard is *not* unconditional, and
+RFC 0006's rule that a summary without conditional consumption drops its
+classes does not fire. A summary without classes (a `void` callee) is read
+the same way: its one effect is unconditional only if its own guard is
+trivial. This matters for RFC 0006's "a copy of a consumed argument is the
+callee's resource handed back": Lua's `moveresults` frees the stack `res`
+points into only `when[fwanted positive|negative]`, and its store
+`L->top.p = copy res` is an ordinary copy in the caller, not a fresh
+block for `adjustresults` to leak. At a call the per-class guards are translated as
+above and recorded on the pending outcome (`PendingOutcome::guardedBy`;
+a class whose guard the arguments refute does not consume the place at
+this call). When a test of the result selects classes, a place the
+remaining classes consume only under guards has their join
+(`guardOf`) conjoined onto its move record and its `consumed` entry, or
+is reinstated where the caller's facts already refute it: Lua's
+`luaM_realloc_` tests `newblock == NULL && nsize > 0`, and on that edge
+`block`'s move is `when nsize =0` after the first conjunct and reinstated
+by the second. A `return` of the result narrows each class the same way,
+so the guard reaches the caller's caller. Two narrowings of one call's
+outcome that meet at a join (`if (q == NULL) {…} return q;`) are one
+outcome with the classes each side kept, class by class (`unite`); two
+different calls' outcomes on one holder are still dropped, as RFC 0006
+says.
+
 **Return alternatives.** `originFromSource` attaches the translated guard
 to each alternative; an alternative whose guard is refuted is dropped;
 a conditional value with a single surviving alternative is that

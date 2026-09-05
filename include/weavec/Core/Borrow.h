@@ -104,8 +104,11 @@ public:
   /// read again (RFC 0006, *Loans end at the last use of their holder*).
   void expireHolders(const std::function<bool(PlaceId)> &dead);
 
-  /// Gives `to` a copy of every loan held by `from`.
-  void copyHolder(PlaceId from, PlaceId to);
+  /// Gives `to` a copy of every loan held by `from`, recorded at `at` when
+  /// given (the copy site: where RFC 0011's deferred lifetime check reports)
+  /// and at the original site otherwise.
+  void copyHolder(PlaceId from, PlaceId to,
+                  std::optional<SourceLocation> at = std::nullopt);
 
   /// Loans held by `holder`.
   [[nodiscard]] std::vector<Loan> heldBy(PlaceId holder) const;

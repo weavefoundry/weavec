@@ -229,6 +229,36 @@ Design: [RFC 0010 — Shared ownership](rfcs/0010-shared-ownership.md)
 - [ ] Corpus: a reference-counting project (jansson) added to the tracked
       set; the Lua whole-program run time as a tracked metric.
 
+## Milestone 10 — Spatial safety (in progress)
+
+Design: [RFC 0011 — Spatial safety](rfcs/0011-spatial-safety.md)
+(Accepted).
+
+- [x] Derived pointers: an offset (`core::PointerOffset`) on alias edges,
+      resources, summary effects and returned copies replaces the boolean
+      `interior` flag; `container_of` round trips; `!=` separates derived
+      pointers; a field pointer kept across a free is a `use-after-free`.
+- [x] `lifetime-too-short` decided at the pointee's death rather than at
+      the store (the `L->fs = &fs; ... L->fs = fs.prev` idiom is clean).
+- [x] Whole-program fixpoint widening after a fixed number of rounds, so
+      cyclic groups converge on every input.
+- [x] Extents (`core::SpatialTracker`, `core::Affine`) from allocations,
+      wrappers (`return fresh extent=n`), declared sizes, string literals
+      and `WEAVEC_SIZED_BY`; relations between integer places
+      (`core::RelationTracker`) from condition edges.
+- [x] `out-of-bounds` (error) for subscripts, pointer dereferences and the
+      buffer/length pairs of the shipped table; `requires-extent` in
+      summaries, checked at every call and across units (summary format
+      v7, sidecar v7).
+- [x] Recall check: Juliet-style cases under `test/recall/CWE-*`, run by
+      `scripts/recall.py` in `ctest` and CI.
+- [ ] Extents through struct fields (`b->len` as the extent of `b->data`)
+      and across stores (a callee that sets `*out` and `*len`).
+- [ ] Requirements that depend on two parameters (`min(n, cap)`), and
+      requirements on `WEAVEC_SIZED_BY` parameters re-exported to callers.
+- [ ] Corpus: `out-of-bounds` rate as a tracked metric; the Juliet test
+      suite proper (CWE-121/122/124/126/127) as a recall baseline.
+
 ## Ongoing
 
 - Corpus testing against real C projects (`scripts/corpus.py`; false-positive

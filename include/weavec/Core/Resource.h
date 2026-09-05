@@ -78,10 +78,6 @@ struct ResourceRecord {
   /// callee, an integer cast, a raw destination): its holder's death is not
   /// a leak.
   bool escaped = false;
-  /// The holder points *into* the resource rather than at its start (`q = p
-  /// + 1`, `q = strchr(p, c)`; RFC 0008, *Invalid releases*): releasing
-  /// through it is invalid. Cleared by a fresh allocation.
-  bool interior = false;
   /// RFC 0009: the place holds the resource only when the guard holds (the
   /// facts on the path that acquired it, and the callee's guard on a
   /// conditional `fresh` result). Refuted by a later test, the record is
@@ -140,11 +136,11 @@ public:
   void forget(PlaceId place);
 
   /// Records join by union (a place *may* hold a resource): for a place on
-  /// both sides this side's record is kept, `escaped` and `interior` are
-  /// or-ed, the family and count field cleared when the sides disagree, the
-  /// share count is the smaller (RFC 0010) and the guards joined (RFC 0009).
-  /// Null facts join by intersection (a place *must* be null). Returns
-  /// whether this tracker changed.
+  /// both sides this side's record is kept, `escaped` is or-ed, the family and
+  /// count field cleared when the sides disagree, the share count is the
+  /// smaller (RFC 0010) and the guards joined (RFC 0009). Null facts join by
+  /// intersection (a place *must* be null). Returns whether this tracker
+  /// changed.
   bool join(const ResourceTracker &other);
 
   /// `place` now satisfies `fact`: records whose guard is refuted are

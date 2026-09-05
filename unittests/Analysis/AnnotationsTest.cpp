@@ -42,6 +42,41 @@ TEST(ParseAnnotation, RecognisesShareSpellings) {
   EXPECT_EQ(parseAnnotation("weavec.family.a(b)"), Annotation::Invalid);
 }
 
+// RFC 0011, *Annotations*: `WEAVEC_SIZED_BY(n)`.
+TEST(ParseAnnotation, RecognisesSizedBy) {
+  EXPECT_EQ(parseAnnotation("weavec.sized_by.n"), Annotation::SizedBy);
+  EXPECT_EQ(parseAnnotation("weavec.sized_by.count_2"), Annotation::SizedBy);
+  EXPECT_EQ(parseAnnotation("weavec.sized_by."), Annotation::Invalid);
+  EXPECT_EQ(parseAnnotation("weavec.sized_by.n + 1"), Annotation::Invalid);
+}
+
+TEST(GetAnnotations, CollectsSizedBy) {
+  auto ast = clang::tooling::buildASTFromCodeWithArgs(
+      R"c(
+      void f(char *__attribute__((annotate("weavec.sized_by.n"))) p,
+             unsigned long n,
+             char *__attribute__((annotate("weavec.sized_by.n")))
+             __attribute__((annotate("weavec.sized_by.m"))) q,
+             unsigned long m);
+      )c",
+      {"-x", "c"}, "input.c");
+  ASSERT_TRUE(ast);
+  const clang::FunctionDecl *f = nullptr;
+  for (const clang::Decl *d :
+       ast->getASTContext().getTranslationUnitDecl()->decls())
+    if (const auto *fn = llvm::dyn_cast<clang::FunctionDecl>(d))
+      f = fn;
+  ASSERT_NE(f, nullptr);
+  const AnnotationSet p = getAnnotations(*f->getParamDecl(0));
+  EXPECT_EQ(p.sizedBy, "n");
+  EXPECT_TRUE(p.any());
+  EXPECT_FALSE(p.ownership()) << "an extent is not an ownership kind";
+  EXPECT_FALSE(p.invalid);
+  EXPECT_TRUE(getAnnotations(*f->getParamDecl(1)).sizedBy.empty());
+  EXPECT_TRUE(getAnnotations(*f->getParamDecl(2)).invalid)
+      << "two counters contradict";
+}
+
 TEST(GetAnnotations, CollectsShareAnnotationsAndFamilies) {
   auto ast = clang::tooling::buildASTFromCodeWithArgs(
       R"c(

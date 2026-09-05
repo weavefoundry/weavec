@@ -48,6 +48,14 @@ std::optional<Annotation> parseAnnotation(llvm::StringRef text) {
     });
     return wellFormed ? Annotation::Family : Annotation::Invalid;
   }
+  if (text.starts_with(spelling::SizedByPrefix)) {
+    const llvm::StringRef name =
+        text.drop_front(spelling::SizedByPrefix.size());
+    const bool wellFormed =
+        !name.empty() && !llvm::isDigit(name.front()) &&
+        llvm::all_of(name, [](char c) { return llvm::isAlnum(c) || c == '_'; });
+    return wellFormed ? Annotation::SizedBy : Annotation::Invalid;
+  }
   return Annotation::Invalid;
 }
 
@@ -56,6 +64,13 @@ static llvm::StringRef familyOf(llvm::StringRef text) {
   if (!text.starts_with(spelling::FamilyPrefix))
     return {};
   return text.drop_front(spelling::FamilyPrefix.size());
+}
+
+/// The parameter `weavec.sized_by.<n>` names, or empty for any other payload.
+static llvm::StringRef sizedByOf(llvm::StringRef text) {
+  if (!text.starts_with(spelling::SizedByPrefix))
+    return {};
+  return text.drop_front(spelling::SizedByPrefix.size());
 }
 
 static void apply(AnnotationSet &set, Annotation annotation) {
@@ -91,6 +106,7 @@ static void apply(AnnotationSet &set, Annotation annotation) {
     set.refcount = true;
     break;
   case Annotation::Family:
+  case Annotation::SizedBy:
     // The name itself is applied by the caller, which has the payload.
     break;
   case Annotation::Invalid:
@@ -109,6 +125,16 @@ static void applyFamily(AnnotationSet &set, llvm::StringRef family) {
     set.invalid = true;
 }
 
+/// Sets the size parameter, or marks the set invalid when two differ.
+static void applySizedBy(AnnotationSet &set, llvm::StringRef name) {
+  if (name.empty())
+    return;
+  if (set.sizedBy.empty())
+    set.sizedBy = name.str();
+  else if (set.sizedBy != name)
+    set.invalid = true;
+}
+
 void AnnotationSet::merge(const AnnotationSet &other) {
   owned = owned || other.owned;
   borrowed = borrowed || other.borrowed;
@@ -122,6 +148,7 @@ void AnnotationSet::merge(const AnnotationSet &other) {
   refcount = refcount || other.refcount;
   invalid = invalid || other.invalid;
   applyFamily(*this, other.family);
+  applySizedBy(*this, other.sizedBy);
 }
 
 AnnotationSet getAnnotations(const clang::Decl &decl) {
@@ -133,6 +160,8 @@ AnnotationSet getAnnotations(const clang::Decl &decl) {
     apply(set, *parsed);
     if (*parsed == Annotation::Family)
       applyFamily(set, familyOf(attr->getAnnotation()));
+    if (*parsed == Annotation::SizedBy)
+      applySizedBy(set, sizedByOf(attr->getAnnotation()));
   }
   return set;
 }

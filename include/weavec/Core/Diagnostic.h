@@ -63,9 +63,14 @@ inline constexpr std::string_view UseOfUninitialized = "use-of-uninitialized";
 /// is not the start of a heap allocation: borrowed storage, a string
 /// literal, an interior pointer.
 inline constexpr std::string_view InvalidRelease = "invalid-release";
+/// RFC 0011: an access through a pointer, or a library call over a buffer,
+/// that reaches past the extent of the object the pointer points into on
+/// every value the facts allow (or, with `may` wording, on a boundary value
+/// a relation permits).
+inline constexpr std::string_view OutOfBounds = "out-of-bounds";
 
 /// Every id, for validating user input (`-Wweavec-<id>`).
-inline constexpr std::array<std::string_view, 14> All{
+inline constexpr std::array<std::string_view, 15> All{
     UseAfterFree,       DoubleFree,
     UseAfterMove,       ConflictingBorrow,
     LifetimeTooShort,   UnsafeOperation,
@@ -73,6 +78,7 @@ inline constexpr std::array<std::string_view, 14> All{
     InvalidAnnotation,  Leak,
     MismatchedRelease,  NullDereference,
     UseOfUninitialized, InvalidRelease,
+    OutOfBounds,
 };
 
 [[nodiscard]] constexpr bool isKnown(std::string_view id) noexcept {

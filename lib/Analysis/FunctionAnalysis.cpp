@@ -11,6 +11,7 @@
 #include "Dataflow.h"
 #include "weavec/Analysis/Annotations.h"
 #include "weavec/Analysis/ClangLocation.h"
+#include "weavec/Analysis/Summaries.h"
 
 #include <string>
 
@@ -93,6 +94,25 @@ bool FunctionAnalyzer::analyze(const FunctionDecl &function,
       if (onParam.nullable && onParam.nonNull)
         reportContradiction(*param);
       reportShareContradictions(*param, onParam);
+      // RFC 0011, *Annotation surface*: `WEAVEC_SIZED_BY(n)` goes on a
+      // pointer parameter and names an integer parameter.
+      if (!onParam.sizedBy.empty() &&
+          !sizedByOf(function, param->getFunctionScopeIndex())) {
+        sink.report(core::Diagnostic{
+            .severity = core::Severity::Warning,
+            .id = core::diag::InvalidAnnotation,
+            .message = "'" + param->getNameAsString() +
+                       "' is declared WEAVEC_SIZED_BY(" + onParam.sizedBy +
+                       ")" +
+                       (param->getType()->isPointerType()
+                            ? " but '" + onParam.sizedBy +
+                                  "' is not an integer parameter"
+                            : " but is not a pointer"),
+            .location = toCoreLocation(sm, param->getLocation()),
+            .notes = {},
+            .fixits = {},
+        });
+      }
       if (onParam.invalid) {
         sink.report(core::Diagnostic{
             .severity = core::Severity::Warning,

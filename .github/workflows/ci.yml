@@ -114,6 +114,11 @@ jobs:
           UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
         run: ctest --preset "${{ matrix.preset }}"
 
+      # ctest already ran the recall set; run it once more here so the
+      # per-CWE table is in the log (RFC 0011, *Recall check*).
+      - name: Recall
+        run: python3 scripts/recall.py --weavec "build/${{ matrix.preset }}/bin/weavec"
+
       - name: Smoke-test install
         run: |
           cmake --install "build/${{ matrix.preset }}" --prefix "$RUNNER_TEMP/weavec-install"

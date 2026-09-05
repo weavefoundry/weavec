@@ -287,3 +287,49 @@ is the quietest of several runs taken while the machine was busy with other
 work, so it is an upper bound. jansson as one program: 0.9 s. Debug builds
 are roughly ten times slower on Lua; the 33 minutes in the RFC 0009 note
 above was one.
+
+### RFC 0011: spatial safety
+
+RFC 0011 (derived pointers, extents, bounds) adds one diagnostic,
+`out-of-bounds`, and reports none of it on the corpus once one false
+positive found here was fixed (a call whose inferred requirement folds to
+zero bytes, `tablerehash(tb->hash, 0, n)` in Lua's `luaS_init`, was read as
+an access before the start). Release build, same machine; pre-RFC binary →
+this one, whole corpus 109 s (Lua 106 s, down from 3 min 22 s: the widened
+whole-program fixpoint converges on Lua where the round cap used to stop
+it, and a summary path is capped at `MaxPlaceDepth` steps).
+
+| Project              | Change                                                                                   | Cause                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| -------------------- | ---------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| lua                  | `lifetime-too-short` 10 → 4                                                              | *Deferred lifetime checks*: `L->fs = &fs; … L->fs = fs.prev` in `lparser.c`, `L->errorJmp = &lj; … L->errorJmp = lj.previous` in `ldo.c` are stores undone before the local dies. The four left (`endptr` in `l_str2int`, `fs->bl = bl`, `ls->fs = new_fs`, `p->buff`) are stores the summary of a callee can see but whose undoing it cannot.                                                                                                                                                                  |
+| lua                  | `conflicting-borrow` 16 → 2                                                              | A field pointer is a derived copy, not a loan: `s2v(L->top.p)`, `&g->mainth.l`, `newt.lastfree` no longer hold loans on the object they point into, so freeing or moving that object is not a conflict (the use after it, where it happens, is a `use-after-free`). The two left are `L->l_G` in `close_state`, a borrow through a `lua_State *` the summary names outright.                                                                                                                                       |
+| lua                  | `null-dereference` 92 → 79                                                               | Two rules on derived pointers (RFC 0011, *Deriving a pointer*): the null check of `p->f` when `&p->f` is formed is at the arrow, not at every later use of the derived pointer; and a null test travels along an exact alias edge only to a copy whose own record agrees, so `if ((newci = luaD_precall(L, ra, n)) == NULL) updatetrap(ci)` in `luaV_execute` no longer makes `ci` null.                                                                                                                              |
+| lua                  | `use-after-free` 408 → 632, `double-free` 34 → 35, `invalid-release` 5 → 4, `leak` 1 → 4 | The `luaV_execute` family, larger: `correctstack`'s `ci->func.p = restorestack(L, ci->func.offset)` now names `ci->func.p` and `ci->top.p` as pointers into `L->stack.p` (121 of the new reports), and `base` re-derived from `ci->func.p` inherits the stack's fate where before it was an untracked borrow; 527 of the 632 are in `lvm.c`. The three new `leak`s are the same pointers from the other side: the call graph's one big component says `L->ci->top.p = fresh` (a stack pointer copied out of a callee that freed the stack it pointed into), and `adjustresults` overwrites it. RFC 0011, *What the corpus taught about Lua*: the two invariants (the running thread is never collected; `trap` is set whenever the stack moves) are not ones the model proves. |
+| cJSON-program        | `null-dereference` 30 → 28                                                               | `sort_list` in `cJSON_Utils.c`: `first = first->next` and `second = second->next` after `if (first == smaller)`, where `smaller` was assigned one of them on each arm. The null test on `smaller`'s aliases no longer makes `first` and `second` null (the alias holds on one arm each).                                                                                                                                                                                                                                  |
+| zlib                 | `null-dereference` 24 → 21                                                               | `state->x.next = state->out + (state->size << 1) - 1; state->x.next[0] = c` (`gzungetc`), `memcpy(state->in + have, …)` and `next = state->in + …; next[…]` (`gzwrite.c`): a pointer derived at a non-zero offset from a possibly-null base has no nullness of its own (RFC 0011, *Deriving a pointer*); the base's nullness is the base's report, and `state->out`/`state->in` are may-null only through the unchecked-`malloc` shape RFC 0008 accepts.                                                                       |
+| jansson              | `lifetime-too-short` 8 → 0, `leak` 10 → 4                                                | `parents_set.buckets->last` "may outlive `parents_set`" at every `hashtable_init(&parents_set)`: the store is into the local's own heap array, freed with it by `hashtable_close`, and the deferred check sees the holder gone when the local dies. The `leak` change came with the RFC 0010 baseline refresh, not with this RFC. `double-free` 45 and `use-after-free` 31 are the rows above.                                                                                                                             |
+| sds, cJSON, others   | unchanged                                                                                | sds, cJSON, jsmn, log.c, printf, linenoise report exactly what they did.                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+
+Three checker fixes came out of this triage. Two are recorded in RFC 0009
+(*Guards*, *Outcome classes*): an outcome class keeps the guard its paths
+held, so `l_alloc`'s null class frees `ptr` only `when nsize =0` and a
+caller that tests the result while knowing the size is non-zero keeps the
+block on the failure edge; and two narrowings of one call's outcome that
+meet at a join are one outcome again instead of being forgotten. The third
+is RFC 0011's: freeing an object conflicts with borrows of its storage,
+not of the objects the pointers stored in it refer to (jansson's
+`hashtable_do_rehash` frees the bucket array while `bucket->last` points
+at a pair the intrusive list owns; 7 `conflicting-borrow` appeared and
+went), and a returned pointer into caller memory reached through a local
+(`f = fs->f; … return &f->upvalues[n]`, Lua's `allocupvalue`) is a copy of
+the caller's place, not a second handing-out of the block (`up` and `env`
+were leaked in every caller). On Lua's `luaS_resize` shape
+(`luaM_reallocvector` on `tb->hash`, "leave table as it was" on failure)
+the guard is on a size the callee itself overwrites (`tb->size = nsize`),
+so RFC 0009's rule that a written place drops its guard makes the free
+unconditional again, and that shape is the one new `double-free` and the
+`use-after-free`s outside `lvm.c`. The 13-unit subset used during
+development (`lapi lauxlib ldebug ldo lfunc lgc lmem lobject lstate
+lstring ltable ltm lvm`) reports 290 `double-free` on `L->l_G->strt.hash`
+for the same reason — a whole-program count depends on which units are
+present, as the RFC 0010 row above already noted.

@@ -8,7 +8,7 @@
 char *grow(char *p, size_t n);
 int try_take(char *p, int c);
 
-// DUMP: function 'grow': param 0: moved(free); stores{} returns{fresh(free), null} outcome null{} outcome nonnull{param 0: moved(free)}
+// DUMP: function 'grow': param 0: moved(free); stores{} returns{fresh(free) extent param 1 scale 1 plus 0, null} outcome null{} outcome nonnull{param 0: moved(free)}
 // DUMP: function 'try_take': param 0: freed(free); stores{} returns{} outcome zero{param 0: freed(free)} outcome negative{}
 
 // Clean: the tests select the classes that did not consume.

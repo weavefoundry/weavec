@@ -18,9 +18,12 @@ struct state {
 };
 
 // Lua's `l_alloc`: both arms consume `ptr` (`free` or `realloc`), so that
-// effect is unconditional; only a non-zero size yields a fresh block.
+// effect is unconditional; only a non-zero size yields a fresh block. Each
+// outcome class keeps its guard (RFC 0009, *Guards*): the null class frees
+// `ptr` only for a zero size, so a caller that tests the result and knows
+// the size is non-zero still owns the block.
 // DUMP-LABEL: function 'l_alloc':
-// DUMP: summary: ptr: freed(free)|moved(free); stores{} returns{fresh(free) when[nsize positive|negative], null}
+// DUMP: summary: ptr: freed(free)|moved(free); stores{} returns{fresh(free) extent=nsize when[nsize positive|negative], null} outcome null{ptr: freed(free) when[nsize =0]} outcome nonnull{ptr: moved(free) when[nsize positive|negative]}
 void *l_alloc(void *ud, void *ptr, size_t osize, size_t nsize) {
   (void)ud;
   (void)osize;
@@ -29,6 +32,24 @@ void *l_alloc(void *ud, void *ptr, size_t osize, size_t nsize) {
     return NULL;
   }
   return realloc(ptr, nsize);
+}
+
+// Lua's `luaS_resize` shape: on failure the table is left as it was, which
+// is a dangling `hash` only when the size was zero (the block was freed).
+// DUMP-LABEL: function 'resize_table':
+// DUMP: summary: t->hash: written|freed(free) when[nsize zero]; t->size: written; stores{t->hash = fresh(free) extent=nsize*8} returns{} requires{t}
+struct table {
+  void **hash;
+  int size;
+};
+void resize_table(void *ud, struct table *t, int nsize) {
+  void **nv = l_alloc(ud, t->hash, 8, nsize * sizeof(void *));
+  if (nv == NULL) {
+    /* leave the table as it was */
+  } else {
+    t->hash = nv;
+    t->size = nsize;
+  }
 }
 
 // cJSON's `printbuffer` shape: the free depends on a flag in the object.
@@ -74,6 +95,17 @@ void scaled_size(void *ud, int count) {
   } else {
     free(p);
   }
+}
+
+// The null edge frees `t->hash` only for a zero size, which this caller
+// refuted: returning is neither a leak nor leaves a freed value behind.
+void grow_or_keep(void *ud, struct table *t) {
+  if (t->size == 0)
+    return;
+  void **nv = l_alloc(ud, t->hash, 8, t->size * 2 * sizeof(void *));
+  if (nv == NULL)
+    return;
+  t->hash = nv;
 }
 
 void keep_static(void) {

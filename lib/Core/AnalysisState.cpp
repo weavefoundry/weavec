@@ -35,6 +35,7 @@ std::vector<PlaceId> PendingOutcome::select(const std::set<Outcome> &selected) {
   std::vector<PlaceId> reinstated = places();
   for (auto it = consumedBy.begin(); it != consumedBy.end();) {
     if (!selected.contains(it->first)) {
+      guardedBy.erase(it->first);
       it = consumedBy.erase(it);
       continue;
     }
@@ -43,6 +44,31 @@ std::vector<PlaceId> PendingOutcome::select(const std::set<Outcome> &selected) {
     ++it;
   }
   return reinstated;
+}
+
+std::optional<PlaceGuard> PendingOutcome::guardOf(PlaceId place) const {
+  std::optional<PlaceGuard> joined;
+  for (const auto &[outcome, places] : consumedBy) {
+    if (std::ranges::find(places, place) == places.end())
+      continue;
+    const PlaceGuard *guard = nullptr;
+    if (const auto guards = guardedBy.find(outcome);
+        guards != guardedBy.end()) {
+      for (const auto &[guarded, when] : guards->second) {
+        if (guarded == place)
+          guard = &when;
+      }
+    }
+    if (guard == nullptr || guard->trivial())
+      return std::nullopt;
+    if (!joined)
+      joined = *guard;
+    else
+      joined->join(*guard);
+    if (joined->trivial())
+      return std::nullopt;
+  }
+  return joined;
 }
 
 /// The places in `facts` for every class of `consumedBy`.
@@ -112,6 +138,42 @@ std::vector<std::pair<PlaceId, ValueFact>> PendingOutcome::factsInAll() const {
   return result;
 }
 
+bool PendingOutcome::unite(const PendingOutcome &other) {
+  if (location != other.location || callee != other.callee ||
+      returned != other.returned || unheldOnly != other.unheldOnly)
+    return false;
+  // A class both sides kept was narrowed from the same recording: it must
+  // say the same on both.
+  const auto agrees = [](const auto &mine, const auto &theirs) {
+    for (const auto &[outcome, entry] : theirs) {
+      const auto it = mine.find(outcome);
+      if (it != mine.end() && it->second != entry)
+        return false;
+    }
+    return true;
+  };
+  if (!agrees(consumedBy, other.consumedBy) ||
+      !agrees(guardedBy, other.guardedBy) || !agrees(nullOn, other.nullOn) ||
+      !agrees(nonNullOn, other.nonNullOn) || !agrees(factOn, other.factOn))
+    return false;
+  const auto merge = [](auto &mine, const auto &theirs) {
+    for (const auto &[outcome, entry] : theirs)
+      mine.try_emplace(outcome, entry);
+  };
+  merge(consumedBy, other.consumedBy);
+  merge(guardedBy, other.guardedBy);
+  merge(nullOn, other.nullOn);
+  merge(nonNullOn, other.nonNullOn);
+  merge(factOn, other.factOn);
+  // A store one side retracted (on none of its classes) is back with the
+  // classes it happens on.
+  for (const PendingStore &store : other.stores) {
+    if (std::ranges::find(stores, store) == stores.end())
+      stores.push_back(store);
+  }
+  return true;
+}
+
 std::vector<PendingOutcome::PendingStore> PendingOutcome::retractStores() {
   OutcomeSet remaining;
   for (const auto &[outcome, places] : consumedBy)
@@ -153,17 +215,33 @@ bool AnalysisState::join(const AnalysisState &other) {
   changed |= resources.join(other.resources);
   changed |= nulls.join(other.nulls);
   changed |= scalars.join(other.scalars);
+  changed |= spatial.join(other.spatial);
+  changed |= relations.join(other.relations);
 
   // A pending outcome that is only pending on one incoming path cannot be
-  // safely undone, so keep only entries both sides agree on.
+  // safely undone, so keep only entries both sides agree on. Two narrowings
+  // of one call's outcome (`if (q == NULL) { ... } ... return q;` merges the
+  // null edge with the non-null one) are the same outcome with the classes
+  // each side kept: their union, class by class (RFC 0006, *Pending
+  // outcomes*; RFC 0009, *Guards*).
   for (auto it = pending.begin(); it != pending.end();) {
     const auto theirs = other.pending.find(it->first);
-    if (theirs == other.pending.end() || theirs->second != it->second) {
+    if (theirs == other.pending.end()) {
       it = pending.erase(it);
       changed = true;
-    } else {
-      ++it;
+      continue;
     }
+    if (theirs->second == it->second) {
+      ++it;
+      continue;
+    }
+    if (!it->second.unite(theirs->second)) {
+      it = pending.erase(it);
+      changed = true;
+      continue;
+    }
+    changed = true;
+    ++it;
   }
 
   for (const auto &[path, effect] : other.consumed) {
@@ -293,6 +371,8 @@ void AnalysisState::forget(PlaceId place) {
   resources.forget(place);
   nulls.forget(place);
   scalars.forget(place);
+  spatial.forget(place);
+  relations.forget(place);
   dropGuardsOn(place);
 }
 

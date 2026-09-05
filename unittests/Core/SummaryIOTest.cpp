@@ -175,7 +175,7 @@ TEST(SummaryIO, PrintsAndParsesGuardsAndNeverReturns) {
 // RFC 0010, *Summary text format (version 6)*: the `share` flag and the
 // `increment`, `decrement`, `count`, `stored` and `fact` lines.
 TEST(SummaryIO, PrintsAndParsesSharesAndPerOutcomeLines) {
-  EXPECT_EQ(SummaryFormatVersion, 6U);
+  EXPECT_EQ(SummaryFormatVersion, 7U);
   const SummaryPath rc = SummaryPath::param(0).deref().field("rc");
   FunctionSummary unref;
   unref.addEffect(SummaryPath::param(0),
@@ -332,13 +332,69 @@ TEST(SummaryIO, InteriorCopiesRoundTrip) {
   s.addStore(Store{.dest = SummaryPath::param(1).deref(),
                    .value = ValueSource::copy(SummaryPath::param(0))});
   const std::string text = printSummary(s, Names);
-  EXPECT_NE(text.find("  return interior param 0\n"), std::string::npos);
+  EXPECT_NE(text.find("  return copy param 0 @?\n"), std::string::npos);
   EXPECT_NE(text.find("  store param 1 * copy param 0\n"), std::string::npos);
   const auto parsed = parseSummary(text, ResolveAll);
   ASSERT_TRUE(parsed);
   EXPECT_EQ(*parsed, s);
   EXPECT_NE(ValueSource::interiorCopy(SummaryPath::param(0)),
             ValueSource::copy(SummaryPath::param(0)));
+  // The version 6 spelling is still read.
+  const auto old =
+      parseSummary("summary\n  return interior param 0\nend\n", ResolveAll);
+  ASSERT_TRUE(old);
+  EXPECT_EQ(old->returns, s.returns);
+}
+
+// RFC 0011, *Summary and sidecar format*: offsets, extents and extent
+// requirements round-trip.
+TEST(SummaryIO, OffsetsExtentsAndRequirementsRoundTrip) {
+  FunctionSummary s;
+  s.addReturn(
+      ValueSource::copyAt(SummaryPath::param(0), PointerOffset::ofElements(4)));
+  s.addReturn(ValueSource::freshAt("free",
+                                   PointerOffset::ofField("struct outer .in"),
+                                   PathAffine::ofConstant(24)));
+  s.addStore(Store{.dest = SummaryPath::param(1).deref(),
+                   .value = ValueSource::freshAt(
+                       "", PointerOffset::zero(),
+                       PathAffine::ofPath(SummaryPath::param(2), 4, 8))});
+  ExtentRequirement guarded{
+      .need = PathAffine::ofPath(SummaryPath::param(1), 1, 0), .when = {}};
+  guarded.when.require(SummaryPath::param(1), ValueFact::of(Outcome::Positive));
+  s.addRequirement(0, guarded);
+  s.addRequirement(
+      0, ExtentRequirement{.need = PathAffine::ofConstant(8), .when = {}});
+  const std::string text = printSummary(s, Names);
+  EXPECT_NE(text.find("  return copy param 0 @+4\n"), std::string::npos);
+  EXPECT_NE(text.find("  return fresh(free) @+struct~outer~.in extent 24\n"),
+            std::string::npos);
+  EXPECT_NE(
+      text.find("  store param 1 * fresh extent param 2 scale 4 plus 8\n"),
+      std::string::npos);
+  EXPECT_NE(text.find("  requires-extent 0 8\n"), std::string::npos);
+  EXPECT_NE(text.find("  requires-extent 0 param 1 scale 1 plus 0 when param "
+                      "1 positive\n"),
+            std::string::npos);
+  const auto parsed = parseSummary(text, ResolveAll);
+  ASSERT_TRUE(parsed);
+  EXPECT_EQ(*parsed, s);
+
+  // A fresh value handed out before its start is malformed.
+  std::string error;
+  EXPECT_FALSE(parseSummary("summary\n  return fresh @-struct~o~.f\nend\n",
+                            ResolveAll, &error));
+  EXPECT_FALSE(
+      parseSummary("summary\n  return fresh @-1\nend\n", ResolveAll, &error));
+  EXPECT_FALSE(
+      parseSummary("summary\n  requires-extent 0 param 1 scale x\nend\n",
+                   ResolveAll, &error));
+  // The same need under two guards is one requirement with the join.
+  FunctionSummary twice;
+  twice.addRequirement(0, guarded);
+  twice.addRequirement(0, ExtentRequirement{.need = guarded.need, .when = {}});
+  ASSERT_EQ(twice.requiresExtent.at(0).size(), 1U);
+  EXPECT_TRUE(twice.requiresExtent.at(0).begin()->when.trivial());
 }
 
 TEST(SummaryIO, SpellsPathsAndSources) {
@@ -352,7 +408,7 @@ TEST(SummaryIO, SpellsPathsAndSources) {
             "copy global g_buf");
   EXPECT_EQ(
       printValueSource(ValueSource::interiorCopy(SummaryPath::param(2)), Names),
-      "interior param 2");
+      "copy param 2 @?");
 }
 
 TEST(SummaryIO, DeclinedGlobalsAreDropped) {
