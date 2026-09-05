@@ -1456,7 +1456,7 @@ std::optional<PlaceRef> PlaceBuilder::pointeeOf(const ValueOrigin &origin) {
   if (!origin.place)
     return std::nullopt;
   if (origin.kind == ValueOrigin::Kind::Borrow)
-    return *origin.place;
+    return origin.place;
   if (origin.kind != ValueOrigin::Kind::Copy)
     return std::nullopt;
   // `*p` stands for every element of `p`'s array, so an element offset

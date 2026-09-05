@@ -6266,14 +6266,13 @@ bool FunctionDataflow::reportBounds(const core::Affine &need,
     if (verdict->kind == core::BoundsVerdict::Kind::MayBeOutOfBounds)
       return clause +
              (verdict->boundary == 0 ? " may equal " : " may reach one below ");
-    switch (*between) {
-    case core::Relation::Equal:
+    // Without a relation between the two the verdict came from their
+    // constant bounds (`atMost`), and "at least" is all that is known.
+    if (between == core::Relation::Equal)
       return clause + " equals ";
-    case core::Relation::Greater:
+    if (between == core::Relation::Greater)
       return clause + " is above ";
-    default:
-      return clause + " is at least ";
-    }
+    return clause + " is at least ";
   }();
 
   std::string message;
