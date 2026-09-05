@@ -4,7 +4,7 @@
 // the start is a release of the start; anything else is `invalid-release`
 // with the offset named.
 // RUN: not %weavec %s -- 2>&1 | FileCheck %s
-// RUN: not %weavec --dump-analysis %s -- 2>&1 | FileCheck --check-prefix=DUMP %s
+// RUN: not %weavec --dump-analysis %s -- 2>/dev/null | FileCheck --check-prefix=DUMP %s
 #include "../Inputs/prelude.h"
 #include <weavec.h>
 

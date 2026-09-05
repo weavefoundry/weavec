@@ -53,7 +53,7 @@ void AliasRelation::relate(PlaceId a, PlaceId b, AliasEdge toB, AliasEdge toA) {
     ba->second = merge(ba->second, toA);
 }
 
-void AliasRelation::unite(PlaceId a, PlaceId b, PointerOffset offset,
+void AliasRelation::unite(PlaceId a, PlaceId b, const PointerOffset &offset,
                           ElementWitness elementA, ElementWitness elementB,
                           bool sameShare, bool alternative) {
   if (a == b)

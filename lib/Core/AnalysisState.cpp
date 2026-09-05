@@ -145,12 +145,10 @@ bool PendingOutcome::unite(const PendingOutcome &other) {
   // A class both sides kept was narrowed from the same recording: it must
   // say the same on both.
   const auto agrees = [](const auto &mine, const auto &theirs) {
-    for (const auto &[outcome, entry] : theirs) {
-      const auto it = mine.find(outcome);
-      if (it != mine.end() && it->second != entry)
-        return false;
-    }
-    return true;
+    return std::ranges::all_of(theirs, [&mine](const auto &entry) {
+      const auto it = mine.find(entry.first);
+      return it == mine.end() || it->second == entry.second;
+    });
   };
   if (!agrees(consumedBy, other.consumedBy) ||
       !agrees(guardedBy, other.guardedBy) || !agrees(nullOn, other.nullOn) ||

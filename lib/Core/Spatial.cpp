@@ -8,22 +8,18 @@
 
 #include "weavec/Core/Spatial.h"
 
-#include <limits>
-
 namespace weavec::core {
 
+// Signed overflow is undefined, so the check cannot be done on the wrapped
+// result (an optimising build folds it away); the builtins report it.
 static bool mulOverflows(std::int64_t a, std::int64_t b) {
-  if (a == 0 || b == 0)
-    return false;
-  const std::int64_t product = a * b;
-  return product / b != a ||
-         (a == -1 && b == std::numeric_limits<std::int64_t>::min()) ||
-         (b == -1 && a == std::numeric_limits<std::int64_t>::min());
+  std::int64_t product = 0;
+  return __builtin_mul_overflow(a, b, &product);
 }
 
 static bool addOverflows(std::int64_t a, std::int64_t b) {
-  return (b > 0 && a > std::numeric_limits<std::int64_t>::max() - b) ||
-         (b < 0 && a < std::numeric_limits<std::int64_t>::min() - b);
+  std::int64_t sum = 0;
+  return __builtin_add_overflow(a, b, &sum);
 }
 
 std::optional<Affine> Affine::times(std::int64_t factor) const {

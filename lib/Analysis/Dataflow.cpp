@@ -4402,7 +4402,9 @@ void FunctionDataflow::mirrorSubtree(core::PlaceId src, core::PlaceId dest,
       state.scalars.set(mirror, *fact);
     if (const auto record = state.resources.recordOf(place))
       state.resources.hold(mirror, *record);
-    for (core::Loan loan : state.loans.loans()) {
+    // Over a snapshot: adding a loan reallocates the vector being walked.
+    const std::vector<core::Loan> loans = state.loans.loans();
+    for (core::Loan loan : loans) {
       if (loan.place == place) {
         // Not the loan `dest` itself just took on the object (RFC 0011's
         // derived copy): a holder never borrows from itself.

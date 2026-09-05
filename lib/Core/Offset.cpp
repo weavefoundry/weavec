@@ -27,11 +27,13 @@ PointerOffset PointerOffset::plus(const PointerOffset &other) const {
     return unknown();
   if (isElements() && other.isElements()) {
     // Saturate rather than wrap: an offset past what an int64 holds is
-    // unknown, not negative.
-    const std::int64_t sum = elements + other.elements;
-    const bool overflow = (other.elements > 0 && sum < elements) ||
-                          (other.elements < 0 && sum > elements);
-    return overflow ? unknown() : ofElements(sum);
+    // unknown, not negative. (Signed overflow is undefined, so the builtin
+    // rather than a test on the wrapped sum, which an optimising build
+    // folds away.)
+    std::int64_t sum = 0;
+    if (__builtin_add_overflow(elements, other.elements, &sum))
+      return unknown();
+    return ofElements(sum);
   }
   if (isField() && other.isField() && field == other.field &&
       negative != other.negative)

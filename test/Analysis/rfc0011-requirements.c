@@ -4,7 +4,7 @@
 // parameter's type promises is a requirement in its summary, checked at
 // every call; requirements compose through wrappers.
 // RUN: not %weavec %s -- -ferror-limit=0 2>&1 | FileCheck %s
-// RUN: not %weavec --dump-analysis %s -- 2>&1 | FileCheck --check-prefix=DUMP %s
+// RUN: not %weavec --dump-analysis %s -- 2>/dev/null | FileCheck --check-prefix=DUMP %s
 #include "../Inputs/prelude.h"
 #include <weavec.h>
 

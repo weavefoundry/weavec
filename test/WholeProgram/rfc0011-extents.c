@@ -3,7 +3,7 @@
 // all cross translation units, in-process and through the sidecar.
 //
 // RUN: not %weavec --whole-program %s %S/Inputs/buffers.c -- -I%S/Inputs 2>&1 | FileCheck %s
-// RUN: not %weavec --whole-program --dump-analysis %s %S/Inputs/buffers.c -- -I%S/Inputs 2>&1 | FileCheck --check-prefix=DUMP %s
+// RUN: not %weavec --whole-program --dump-analysis %s %S/Inputs/buffers.c -- -I%S/Inputs 2>/dev/null | FileCheck --check-prefix=DUMP %s
 //
 // Alone, the calls are unchecked boundaries: nothing is reported.
 // RUN: %weavec %s -- -I%S/Inputs 2>&1 | FileCheck --check-prefix=ALONE %s

@@ -91,7 +91,8 @@ public:
   /// other aliases (the other arms) are not related to `b`. The result is
   /// the join of the per-arm relations, as the header says a join must be,
   /// not their composition: `b` and `d` never held the same value.
-  void unite(PlaceId a, PlaceId b, PointerOffset offset = PointerOffset::zero(),
+  void unite(PlaceId a, PlaceId b,
+             const PointerOffset &offset = PointerOffset::zero(),
              ElementWitness elementA = ElementWitness::whole(),
              ElementWitness elementB = ElementWitness::whole(),
              bool sameShare = true, bool alternative = false);

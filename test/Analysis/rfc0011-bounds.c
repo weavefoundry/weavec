@@ -3,7 +3,7 @@
 // the extent cannot hold is `out-of-bounds`, with the index as written and
 // the object's origin in a note.
 // RUN: not %weavec %s -- -ferror-limit=0 2>&1 | FileCheck %s
-// RUN: not %weavec --dump-analysis %s -- 2>&1 | FileCheck --check-prefix=DUMP %s
+// RUN: not %weavec --dump-analysis %s -- 2>/dev/null | FileCheck --check-prefix=DUMP %s
 #include "../Inputs/prelude.h"
 #include <weavec.h>
 

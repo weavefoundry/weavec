@@ -2,7 +2,7 @@
 // gives it `n` elements inside the body and requires that many of every
 // caller; a malformed one is `invalid-annotation`.
 // RUN: not %weavec %s -- 2>&1 | FileCheck %s
-// RUN: not %weavec --dump-analysis %s -- 2>&1 | FileCheck --check-prefix=DUMP %s
+// RUN: not %weavec --dump-analysis %s -- 2>/dev/null | FileCheck --check-prefix=DUMP %s
 #include "../Inputs/prelude.h"
 #include <weavec.h>
 
