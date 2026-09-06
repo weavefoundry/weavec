@@ -573,7 +573,7 @@ void FunctionDataflow::applyStringEffects(const CallExpr &call,
         }
       }
       setStringFact(destSubject->key,
-                    core::StringFact{.length = *length,
+                    core::StringFact{.length = length,
                                      .unterminated = false,
                                      .location = locate(call)},
                     state);
@@ -705,7 +705,7 @@ FunctionDataflow::duplicatedStringOf(const CallExpr &call,
   const auto extent = length->shifted(1);
   if (!extent)
     return std::nullopt;
-  return std::make_pair(*extent, core::StringFact{.length = *length,
+  return std::make_pair(*extent, core::StringFact{.length = length,
                                                   .unterminated = false,
                                                   .location = locate(call)});
 }
@@ -883,7 +883,7 @@ void FunctionDataflow::noteByteStore(const Expr &lvalue, const Expr *value,
       length = at;
     if (length) {
       setStringFact(subject->key,
-                    core::StringFact{.length = *length,
+                    core::StringFact{.length = length,
                                      .unterminated = false,
                                      .location = locate(lvalue)},
                     state);
@@ -956,7 +956,7 @@ void FunctionDataflow::initStringStorage(core::PlaceId storage,
   if (!fact)
     return;
   fact->location = locate(var.getLocation());
-  state.spatial.setString(storage, std::move(*fact));
+  state.spatial.setString(storage, std::move(fact));
 }
 
 } // namespace weavec::analysis
