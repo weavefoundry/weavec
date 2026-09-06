@@ -33,6 +33,7 @@
 #include "llvm/ADT/DenseMap.h"
 
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <string>
 #include <vector>
@@ -119,6 +120,9 @@ struct ValueOrigin {
   /// Alloc (RFC 0011): the extent of the allocation in bytes, when the size
   /// argument or the callee's summary says.
   std::optional<core::Affine> extent;
+  /// RFC 0013: string postconditions of a summarized object.
+  std::optional<core::Affine> stringLength;
+  bool unterminated = false;
   /// Borrow of a string literal (RFC 0012, *Sources of string facts*): the
   /// bytes before its first NUL.
   std::optional<std::int64_t> literalLength;
@@ -233,6 +237,12 @@ public:
   /// Under `--strict-externs`, a call into code with no summary yields a raw
   /// result rather than an unknown one (RFC 0004, *Boundaries*).
   void setStrictExterns(bool strict) noexcept { strictExterns = strict; }
+  /// RFC 0013: an incoming value returned after its interface cell changed.
+  using IncomingLookup = std::function<std::optional<core::PlaceId>(
+      const clang::CallExpr &, const core::SummaryPath &)>;
+  void setIncomingLookup(IncomingLookup lookup) {
+    incomingLookup = std::move(lookup);
+  }
 
   /// Resolves an expression yielding a pointer *value* to the place that
   /// pointer is stored in (`p`, `s.p`, `q->next`), looking through parens
@@ -294,15 +304,16 @@ public:
   /// origin. A copy of an argument the callee consumed is reported as a
   /// fresh allocation: ownership went in and came back out. The source's
   /// guard becomes the origin's (RFC 0009); a source whose guard the
-  /// arguments refute outright is `std::nullopt`.
+  /// arguments refute outright is `std::nullopt`. RFC 0013 heap sources
+  /// set `entryValue`: a freed input remains freed; only an ownership move
+  /// transfers a live value to the output.
   [[nodiscard]] std::optional<ValueOrigin>
   originFromSource(const core::ValueSource &source, const clang::CallExpr &call,
-                   const core::FunctionSummary &of);
+                   const core::FunctionSummary &of, bool entryValue = false);
   /// `originFromSource` without the guard.
-  [[nodiscard]] ValueOrigin
-  originFromUnguardedSource(const core::ValueSource &source,
-                            const clang::CallExpr &call,
-                            const core::FunctionSummary &of);
+  [[nodiscard]] ValueOrigin originFromUnguardedSource(
+      const core::ValueSource &source, const clang::CallExpr &call,
+      const core::FunctionSummary &of, bool entryValue = false);
 
   /// Translates a callee's guard to the caller's places at `call` (RFC 0009,
   /// *Deriving guards, at a call*): `param i` is the class of a constant
@@ -468,6 +479,7 @@ private:
   SummaryStore &summaries;
   const clang::ASTContext &context;
   bool strictExterns = false;
+  IncomingLookup incomingLookup;
   llvm::DenseMap<const clang::VarDecl *, core::PlaceId> varPlaces;
   llvm::DenseMap<std::uint32_t, const clang::VarDecl *> placeVars;
   llvm::DenseMap<std::uint32_t, const clang::FieldDecl *> placeFields;

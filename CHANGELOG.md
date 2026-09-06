@@ -8,6 +8,28 @@ follows [Semantic Versioning](https://semver.org/) once it reaches 1.0.
 
 ### Added
 
+- Interprocedural heap postconditions (RFC 0013): constructors preserve owned
+  children, argument aliases, shared children, self-links, bounds, null/raw
+  fields and string facts through pointer returns, record returns and
+  out-parameters. The same facts cross translation units and compiler
+  sidecars; freeing a returned container now reports its unreleased children.
+- Allocation-time size identities: reassignment of a size variable no longer
+  erases a known constant extent; bounded symbolic snapshots preserve useful
+  relations to copies of the original count.
+- Final output values are distinguished from intermediate stores and incoming
+  pointer values. Replacement invalidates old aliases, failed replacements
+  restore the incoming pointer and its bounds, and pointer extraction retains
+  the removed value. Lazy initialization preserves an existing object's state.
+- A fixed evaluation set, including known misses, with separate counts for
+  detected bugs, clean programs, unexpected reports, parse failures, tool
+  failures and timeouts (`scripts/evaluate.py`, part of CTest).
+- Heap coverage in `--dump-analysis`: descriptions have explicit depth and
+  alternative limits; truncated descriptions are printed as `incomplete`.
+  Summary and sidecar formats are version 9; rebuild older object sidecars.
+- Reviewed corpus measurements for RFC 0013, including the substantial
+  increase in false positives on Lua's GC and broad callback candidate sets.
+  The corpus notes record the precision cost alongside the new capabilities.
+
 - Initial project scaffolding: CMake build with presets, LLVM/Clang discovery,
   strict warnings, sanitizer and LTO options, install/export rules and CPack.
 - `weavec::Core`: Clang-independent ownership lattice (`OwnershipKind`),

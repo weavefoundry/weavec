@@ -19,6 +19,8 @@
 //                                          replaced element share (qualify
 //                                          a consume)
 //     store <path> <source> [<guard>]
+//     heap <output-path> complete|incomplete
+//     heap-field <output-path> at <result-path> <source> [<guard>]
 //     return <source> [<guard>]
 //     outcome <class>                      the class is a possible result
 //     outcome <class> <path> <flag>[,<flag>]* [<guard>]
@@ -47,7 +49,8 @@
 //   steps  ::= ( '*' | '.' <field> | '[]' )+        (one token)
 //   source ::= fresh[(<family>)] [<offset>] [extent <extent>]
 //            | null | unknown | raw | copy <path> [<offset>]
-//            | interior <path> | borrow <path>
+//            | copy-post <path> [<offset>] | interior <path> | borrow <path>
+//            followed optionally by length <extent> or unterminated
 //   offset ::= '@' ( 0 | '?' | [+-]<integer> | [+-]<field-key> )
 //                                          (one token; spaces in a field key
 //                                          are spelled '~')
@@ -69,7 +72,8 @@
 // `count`, `stored` and `fact` lines. Version 7 (RFC 0011) added the offset
 // on `copy` and `fresh` sources (`interior <path>` is still read, as a copy
 // at an unknown offset), the extent on `fresh` and the `requires-extent`
-// line.
+// line. Version 9 (RFC 0013) adds heap postconditions, copy-post output
+// references and string metadata. Version 8 was a sidecar-only change.
 //
 // Global roots are spelled by name; the caller supplies the mapping between
 // the summary's global ids and names in both directions, so this file stays
@@ -92,7 +96,7 @@ namespace weavec::core {
 
 /// Version of the record format; bumped when a record written by this
 /// version cannot be read by the previous one.
-inline constexpr unsigned SummaryFormatVersion = 7;
+inline constexpr unsigned SummaryFormatVersion = 9;
 
 /// The name to print for a global root id.
 using GlobalNamer = std::function<std::string(std::uint32_t)>;

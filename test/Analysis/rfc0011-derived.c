@@ -179,7 +179,7 @@ startfunc:
 // A local that equals a caller's place is named by it, not by the derived
 // name it may also carry (Lua's `ci = L->ci = next_ci(L)`).
 // DUMP-LABEL: function 'next_frame':
-// DUMP: summary: L->base_ci.next: read; L->ci: read|written; L->ci->next: read; stores{L->ci = copy L @+struct state.base_ci when[c positive|negative], L->ci = copy L->ci->next} returns{copy L->ci} requires{L}
+// DUMP: summary: L->base_ci.next: read; L->ci: read|written; L->ci->next: read; stores{L->ci = copy L @+struct state.base_ci when[c positive|negative], L->ci = copy L->ci->next} returns{copy-post L->ci} requires{L}
 frame *next_frame(state *L, int c) {
   if (c)
     L->ci = &L->base_ci;

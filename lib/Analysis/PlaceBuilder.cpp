@@ -345,7 +345,8 @@ PlaceBuilder::resolveBelow(core::PlaceId base, const core::SummaryPath &path) {
   for (const core::PathElem &elem : path.steps) {
     switch (elem.step) {
     case core::PathStep::Deref:
-      return std::nullopt;
+      place = places.deref(place);
+      break;
     case core::PathStep::Field:
       place = places.field(place, elem.field);
       break;
@@ -494,24 +495,25 @@ PlaceBuilder::lookupSummaryPath(const core::SummaryPath &path,
   return cache.chain.back();
 }
 
-std::optional<ValueOrigin>
-PlaceBuilder::originFromSource(const core::ValueSource &source,
-                               const CallExpr &call,
-                               const core::FunctionSummary &of) {
+std::optional<ValueOrigin> PlaceBuilder::originFromSource(
+    const core::ValueSource &source, const CallExpr &call,
+    const core::FunctionSummary &of, bool entryValue) {
   // The guard first: an alternative the arguments rule out is no
   // alternative (RFC 0009).
   std::optional<core::PlaceGuard> guard = translateGuard(source.when, call);
   if (!guard)
     return std::nullopt;
-  ValueOrigin origin = originFromUnguardedSource(source, call, of);
+  ValueOrigin origin = originFromUnguardedSource(source, call, of, entryValue);
   origin.guard = std::move(*guard);
+  if (source.stringLength)
+    origin.stringLength = affineFromPath(*source.stringLength, call);
+  origin.unterminated = source.unterminated;
   return origin;
 }
 
-ValueOrigin
-PlaceBuilder::originFromUnguardedSource(const core::ValueSource &source,
-                                        const CallExpr &call,
-                                        const core::FunctionSummary &of) {
+ValueOrigin PlaceBuilder::originFromUnguardedSource(
+    const core::ValueSource &source, const CallExpr &call,
+    const core::FunctionSummary &of, bool entryValue) {
   const auto fresh = [&call](std::string family) {
     ValueOrigin origin =
         makeOrigin(ValueOrigin::Kind::Alloc, std::nullopt, &call);
@@ -531,12 +533,21 @@ PlaceBuilder::originFromUnguardedSource(const core::ValueSource &source,
   case core::ValueSource::Kind::Copy: {
     if (!source.path)
       return ValueOrigin{};
+    if (source.post) {
+      ValueOrigin origin;
+      origin.kind = ValueOrigin::Kind::Copy;
+      origin.place = resolveSummaryPath(*source.path, call);
+      origin.offset = source.offset;
+      return origin;
+    }
     // `T *f(T *WEAVEC_OWNED p) { ...; return p; }`: the caller's pointer is
     // dead and the result is the same resource, now owned by the result.
     if (source.path->isParam() && source.path->isRoot()) {
       if (source.path->index >= call.getNumArgs())
         return ValueOrigin{};
-      if (of.consumes(source.path->index))
+      const auto effect = of.effectOf(*source.path);
+      if (of.consumes(source.path->index) &&
+          (!entryValue || (effect.moved && !effect.freed)))
         return fresh(of.effectOf(*source.path).family);
       // The argument value itself, whatever it was: `&x` stays a borrow of
       // `x`, `malloc(n)` stays an allocation, `p` is a copy of `p`.
@@ -556,7 +567,8 @@ PlaceBuilder::originFromUnguardedSource(const core::ValueSource &source,
     // the copy is of that: an ordinary copy of the caller's place (RFC
     // 0008, *Replaced values*).
     if (const core::PlaceEffect effect = of.effectOf(*source.path);
-        effect.consumed() && !effect.replaced) {
+        effect.consumed() && !effect.replaced &&
+        (!entryValue || (effect.moved && !effect.freed))) {
       if (effect.moved || of.consumesUnconditionally(*source.path))
         return fresh(effect.family);
       return ValueOrigin{};
@@ -1236,9 +1248,41 @@ ValueOrigin PlaceBuilder::classifyValue(const Expr &expr) {
     // means the summary's guards were too specific for what is known here:
     // the callee returned something, of unknown origin.
     std::vector<ValueOrigin> alternatives;
+    const auto returned = [&](ValueOrigin origin,
+                              const core::ValueSource &source) {
+      if (incomingLookup) {
+        for (const auto &[path, fact] : source.when.conditions) {
+          if (const auto input = incomingLookup(*call, path)) {
+            if (const auto ref = resolveSummaryPath(path, *call)) {
+              origin.guard.conditions.erase(ref->place);
+              origin.guard.require(*input, fact);
+            }
+          }
+        }
+      }
+      return origin;
+    };
     for (const core::ValueSource &source : summary.returns) {
+      if (incomingLookup && source.kind == core::ValueSource::Kind::Copy &&
+          source.path && !source.post) {
+        if (const auto input = incomingLookup(*call, *source.path)) {
+          if (const auto guard = translateGuard(source.when, *call)) {
+            ValueOrigin origin;
+            origin.kind = ValueOrigin::Kind::Copy;
+            origin.place = PlaceRef{.place = *input,
+                                    .derefs = {},
+                                    .derefExprs = {},
+                                    .derefElements = {},
+                                    .element = {}};
+            origin.offset = source.offset;
+            origin.guard = *guard;
+            alternatives.push_back(returned(std::move(origin), source));
+          }
+          continue;
+        }
+      }
       if (auto origin = originFromSource(source, *call, summary))
-        alternatives.push_back(std::move(*origin));
+        alternatives.push_back(returned(std::move(*origin), source));
     }
     if (alternatives.empty()) {
       ValueOrigin opaque;

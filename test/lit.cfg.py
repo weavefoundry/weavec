@@ -18,7 +18,7 @@ config.name = "WeaveC"
 config.test_format = lit.formats.ShTest(execute_external=False)
 config.suffixes = [".c"]
 # `recall/` is the recall set, run by scripts/recall.py (RFC 0011), not lit.
-config.excludes = ["Inputs", "recall", "CMakeLists.txt", "README.md"]
+config.excludes = ["Inputs", "recall", "evaluation", "CMakeLists.txt", "README.md"]
 
 config.test_source_root = os.path.dirname(__file__)
 config.test_exec_root = os.path.join(config.weavec_obj_root, "test")

@@ -91,6 +91,8 @@ std::string printAffine(const PathAffine &affine, const GlobalNamer &names) {
 std::string printValueSource(const ValueSource &source,
                              const GlobalNamer &names) {
   std::string text(toString(source.kind));
+  if (source.post)
+    text += "-post";
   if (source.kind == ValueSource::Kind::Fresh && !source.family.empty())
     text += '(' + source.family + ')';
   if ((source.kind == ValueSource::Kind::Copy ||
@@ -105,6 +107,10 @@ std::string printValueSource(const ValueSource &source,
     text += ' ' + printOffset(source.offset);
   if (source.kind == ValueSource::Kind::Fresh && source.extent)
     text += " extent " + printAffine(*source.extent, names);
+  if (source.stringLength)
+    text += " length " + printAffine(*source.stringLength, names);
+  if (source.unterminated)
+    text += " unterminated";
   return text;
 }
 
@@ -178,6 +184,16 @@ std::string printSummary(const FunctionSummary &summary,
     text += "  store " + printSummaryPath(store.dest, names) + ' ' +
             printValueSource(store.value, names) +
             printGuard(store.value.when, names) + '\n';
+  }
+  for (const auto &[root, graph] : summary.heap) {
+    text += "  heap " + printSummaryPath(root, names) +
+            (graph.incomplete ? " incomplete\n" : " complete\n");
+    for (const Store &field : graph.fields) {
+      text += "  heap-field " + printSummaryPath(root, names) + " at " +
+              printSummaryPath(field.dest, names) + ' ' +
+              printValueSource(field.value, names) +
+              printGuard(field.value.when, names) + '\n';
+    }
   }
   for (const ValueSource &source : summary.returns) {
     text += "  return " + printValueSource(source, names) +
@@ -410,6 +426,9 @@ static bool parseSource(Tokens &tokens, const GlobalResolver &resolve,
   std::string_view family;
   if (!splitFamily(tokens.take(), kind, family))
     return false;
+  const bool post = kind == "copy-post";
+  if (post)
+    kind = "copy";
   // Only `fresh` carries a family.
   if (kind != "fresh" && !family.empty())
     return false;
@@ -456,6 +475,18 @@ static bool parseSource(Tokens &tokens, const GlobalResolver &resolve,
       source = ValueSource::borrow(std::move(*path.path));
   } else {
     return false;
+  }
+  source.post = post;
+  if (tokens.peek() == "length") {
+    tokens.take();
+    if (!parseAffine(tokens, resolve, source.stringLength))
+      return false;
+  }
+  if (tokens.peek() == "unterminated") {
+    tokens.take();
+    if (source.stringLength)
+      return false;
+    source.unterminated = true;
   }
   return true;
 }
@@ -610,18 +641,45 @@ std::optional<FunctionSummary> parseSummary(std::string_view record,
         ok = false;
       if (ok && path.path)
         summary.addEffect(*path.path, effect);
+    } else if (kind == "heap") {
+      ParsedPath root;
+      ok = parsePath(tokens, resolve, root);
+      const std::string_view coverage = tokens.take();
+      ok &= coverage == "complete" || coverage == "incomplete";
+      if (ok && root.path)
+        summary.heap[*root.path].incomplete |= coverage == "incomplete";
+    } else if (kind == "heap-field") {
+      ParsedPath root;
+      ParsedPath dest;
+      ValueSource value;
+      ok = parsePath(tokens, resolve, root) && tokens.take() == "at" &&
+           parsePath(tokens, resolve, dest) &&
+           parseSource(tokens, resolve, value) &&
+           parseGuard(tokens, resolve, value.when);
+      if (ok && root.path && dest.path) {
+        ok = summary.heap.contains(*root.path) &&
+             dest.path->steps.size() <= MaxHeapPathDepth;
+        if (ok && summary.heap[*root.path].fields.size() >= MaxHeapFields)
+          ok = false;
+        if (ok)
+          summary.heap[*root.path].fields.insert(
+              Store{.dest = *dest.path, .value = value});
+      }
     } else if (kind == "store") {
       ParsedPath dest;
       ValueSource value;
       ok = parsePath(tokens, resolve, dest) &&
            parseSource(tokens, resolve, value) &&
            parseGuard(tokens, resolve, value.when);
+      ok &= !value.post;
       if (ok && dest.path)
         summary.addStore(Store{.dest = std::move(*dest.path), .value = value});
     } else if (kind == "return") {
       ValueSource value;
       ok = parseSource(tokens, resolve, value) &&
            parseGuard(tokens, resolve, value.when);
+      ok &= !value.post || (value.path && !value.path->isResult() &&
+                            (!value.path->isParam() || value.path->hasDeref()));
       if (ok)
         summary.addReturn(value);
     } else if (kind == "outcome") {
@@ -729,6 +787,36 @@ std::optional<FunctionSummary> parseSummary(std::string_view record,
     return fail("empty record");
   if (!closed)
     return fail("missing 'end'");
+  std::set<SummaryPath> outputNodes;
+  for (const auto &[root, graph] : summary.heap) {
+    if (root.isResult())
+      continue;
+    for (const Store &field : graph.fields) {
+      if (field.value.post)
+        continue;
+      auto absolute = root;
+      absolute.steps.insert(absolute.steps.end(), field.dest.steps.begin(),
+                            field.dest.steps.end());
+      outputNodes.insert(std::move(absolute));
+    }
+  }
+  const auto validOutputReference = [&](const ValueSource &value) {
+    return !value.post || !value.path || value.path->isResult() ||
+           outputNodes.contains(*value.path);
+  };
+  for (const auto &value : summary.returns) {
+    if (!validOutputReference(value))
+      return fail("unresolved output reference");
+  }
+  for (const auto &[root, graph] : summary.heap) {
+    for (const Store &field : graph.fields) {
+      if (!validOutputReference(field.value))
+        return fail("unresolved output reference");
+    }
+    if (root.steps.size() > MaxHeapPathDepth ||
+        (root.isParam() && !root.hasDeref()) || !graph.valid())
+      return fail("invalid heap description");
+  }
   // A `stored` class whose every path was a declined global says nothing.
   summary.normalizeStoresOn();
   return summary;

@@ -142,6 +142,8 @@ int plain_free_kills_shares(void) {
   if (!a)
     return -1;
   struct obj *b = obj_ref(a);
+  // RFC 0013: obj_new's owned name is visible through the result.
+  // CHECK: rfc0010-refcount.c:[[@LINE+1]]:3: warning: 'a->name' is leaked when 'a' is freed [weavec::leak]
   free(a);
   // CHECK: rfc0010-refcount.c:[[@LINE+1]]:10: error: use of 'b' after it was freed [weavec::use-after-free]
   return b->rc;
@@ -180,4 +182,4 @@ void not_a_count(struct sized *s) {
   t->len++;
 }
 
-// CHECK: 2 warnings and 4 errors generated.
+// CHECK: 3 warnings and 4 errors generated.

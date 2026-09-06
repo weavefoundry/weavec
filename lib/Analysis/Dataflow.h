@@ -165,8 +165,65 @@ private:
   std::vector<std::optional<core::AnalysisState>> entryStates;
 
   Phase phase = Phase::Fixpoint;
+  /// RFC 0013: final reachable heap state and caller materialization.
+  bool materializingHeap = false;
   std::vector<core::Diagnostic> pending;
   std::map<core::PlaceId, core::OwnershipKind> summaryKinds;
+
+  void mirrorHeapWrite(core::PlaceId place, core::AnalysisState &state);
+  [[nodiscard]] core::PathGuard
+  heapEntryGuard(const core::PlaceGuard &guard,
+                 const core::AnalysisState &state);
+  [[nodiscard]] core::PathGuard
+  heapWriteGuard(core::PlaceId place, const core::AnalysisState &state);
+  std::map<core::PlaceId, core::SummaryPath> snapshotInputPaths;
+  [[nodiscard]] std::vector<core::PlaceId>
+  definiteMirrors(core::PlaceId place, const core::AnalysisState &state);
+  std::map<std::pair<const clang::CallExpr *, core::SummaryPath>, core::PlaceId>
+      heapInputs;
+  std::map<std::pair<const clang::CallExpr *, core::SummaryPath>, bool>
+      heapInputEscaped;
+  std::set<core::PlaceId> pointerSnapshots;
+  std::set<core::PlaceId> resultHeapInputs;
+  void retireHeapInputs(core::AnalysisState &state);
+  void restoreHeapInput(const core::PendingOutcome::PendingStore &store,
+                        core::AnalysisState &state);
+  void copyHeapValue(core::PlaceId source, core::PlaceId target,
+                     core::AnalysisState &state);
+  void captureHeapInputs(const clang::CallExpr &call,
+                         const core::FunctionSummary &summary,
+                         core::AnalysisState &state);
+  [[nodiscard]] std::optional<ValueOrigin>
+  heapOrigin(const core::ValueSource &value, const clang::CallExpr &call,
+             const core::FunctionSummary &summary);
+  [[nodiscard]] core::HeapDescription
+  describeHeap(core::PlaceId root, bool pointer,
+               const core::AnalysisState &state, const clang::Expr *at);
+  void recordHeapResult(const ValueOrigin &origin, const clang::Expr &at,
+                        const core::AnalysisState &state);
+  void recordHeapOutputs(const core::AnalysisState &state);
+  [[nodiscard]] bool isHeapOutputPath(const core::SummaryPath &path) const;
+  void applyHeap(core::PlaceId dest, const core::HeapDescription &graph,
+                 const clang::CallExpr &call,
+                 const core::FunctionSummary &summary,
+                 core::AnalysisState &state);
+  void applyHeapValue(core::PlaceId dest, const ValueOrigin &origin,
+                      core::AnalysisState &state);
+  void applyHeapResult(core::PlaceId dest, const clang::CallExpr &call,
+                       core::AnalysisState &state);
+  void applyHeapOutputs(const clang::CallExpr &call,
+                        const core::FunctionSummary &summary,
+                        core::AnalysisState &state);
+
+  /// RFC 0013: bounded names for integer values before a write.
+  std::map<std::pair<core::PlaceId, const clang::Expr *>, core::PlaceId>
+      valueSnapshots;
+  std::set<core::PlaceId> snapshotPlaces;
+  [[nodiscard]] std::optional<core::Affine>
+  foldAffine(std::optional<core::Affine> value,
+             const core::AnalysisState &state);
+  void snapshotScalar(core::PlaceId place, const clang::Expr *at,
+                      core::AnalysisState &state);
 
   /// The summary under construction (final pass only).
   core::FunctionSummary inferred;
@@ -550,7 +607,7 @@ private:
                                core::AnalysisState &state);
   /// True if the resource at `place` (with `record`) is lost when every
   /// place `dying` says so goes away: nothing else reaches it.
-  [[nodiscard]] static bool
+  [[nodiscard]] bool
   resourceLost(core::PlaceId place, const core::ResourceRecord &record,
                const std::function<bool(core::PlaceId)> &dying,
                const core::AnalysisState &state);
@@ -1139,11 +1196,15 @@ private:
                           const core::AnalysisState &state);
   /// Classifies a value the callee hands out (stores or returns), guarded by
   /// the path's facts and the origin's own (RFC 0009).
+  /// Entry identities are used for final heap/return facts. Historical
+  /// stores retain their interface-cell interpretation (RFC 0013).
   [[nodiscard]] core::ValueSource sourceOf(const ValueOrigin &origin,
-                                           const core::AnalysisState &state);
+                                           const core::AnalysisState &state,
+                                           bool entryValue = false);
   /// `sourceOf` without the guard.
   [[nodiscard]] core::ValueSource
-  sourceValueOf(const ValueOrigin &origin, const core::AnalysisState &state);
+  sourceValueOf(const ValueOrigin &origin, const core::AnalysisState &state,
+                bool entryValue = false);
   /// Summary path for `place`, ignoring parameters that were reassigned
   /// (their variable no longer holds the argument).
   [[nodiscard]] std::optional<core::SummaryPath>

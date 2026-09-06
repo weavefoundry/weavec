@@ -355,3 +355,38 @@ to back: Lua as one program 2 min 10 s → 2 min 9 s; whole corpus 2 min 12 s.
 | ------------- | ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | cJSON-program | `null-dereference` 28 → 31   | Not a string report. macOS's `_FORTIFY_SOURCE` rewrites `sprintf(d, …)` into `__builtin___sprintf_chk(d, flag, size, …)`; the string checks need that form's arguments in their shifted positions, so it now has its own table row, and the row carries `sprintf`'s "dereferences its destination". `full_pointer`, `full_path` and `new_path` in `cJSON_Utils.c` are unchecked `cJSON_malloc` results (RFC 0008's accepted shape) and the report moves to the `sprintf` from the `create_patches` call two lines down (−2, +5). Linux builds, which do not fortify, reported these already. |
 | others        | unchanged                    | `snprintf`/`vsnprintf` accept a null destination (`vsnprintf(NULL, 0, fmt, ap)` measures the output; jansson's `json_vsprintf`), and their `_chk` rows do too, so Lua's `l_sprintf(buff, MAX_ITEM, …)` on a may-null `luaL_prepbuffsize` result stays quiet as it was.                                                                                                                                                                                                                                       |
+
+
+### RFC 0013: heap state and allocation-time values
+
+The source revisions are unchanged from the preceding baseline. LLVM/Clang
+23.1, release build on macOS: about **64 seconds** for the whole corpus,
+including **62 seconds** for Lua. A pre-change run on these revisions took
+209 seconds for Lua; machine load differed, so this is an observed timing,
+not a controlled speedup claim. All projects have zero Clang errors.
+
+The new baseline contains **2,744 reports, up from 959**. This milestone
+preserves checks across constructors and helpers; it is **not a precision
+improvement on Lua**. Counts are measurements of checker behavior, not a
+count of real defects. The fixed feature evaluation separately detects
+14/16 seeded bugs and accepts 4/4 clean programs.
+
+| Project | Before → after | Triage |
+| --- | --- | --- |
+| Lua | double-free 35 → 1,563; use-after-free 632 → 846 | New incoming and output identities connect GC effects to the running state. `luaC_fullgc` now conservatively consumes `L`, and `luaM_realloc_` inherits that effect when `nsize` is nonzero. Of the double-free reports, 776 name `L`; most others name the same state through `ls->L`, `fs->ls->L`, `S->Z->L`, and similar paths. The running thread is not collected, and stack-rebase/trap invariants remain outside the model. These are false positives, not newly discovered Lua bugs. |
+| Lua | leak 4 → 26 | Twenty-four reports name parser fields (`buff.buffer`, `dyd.actvar.arr`, `dyd.gt.arr`, `dyd.label.arr`) on unrelated userdata objects at `lapi.c:1116`, `ldo.c:999/1069/1075`, `lobject.c:658`, and `lstring.c:337`. The broad `Pfunc` callback pool applies parser effects to those other records. One remaining report is the known parser buffer cleanup shape; another is a derived `node->lastfree` pointer at `lvm.c:1427`. |
+| Lua | null-dereference 79 → 105; invalid-release 4 → 3; lifetime-too-short 4 → 3; conflicting-borrow 2 → 2 | New field/null alternatives expose unchecked allocation and callback failure paths. The remaining invalid releases at `lstate.c:387/389/399` are interior `lua_State` pointers in the same GC overapproximation. Borrow and lifetime reports remain the linked-local-stack and internal-state alias shapes; unchanged totals can hide changed locations. |
+| linenoise, linenoise-program | double-free 0 → 2 each | Calls at `linenoise.c:2113` and `2371` repeatedly remove or replace history entries. The summary retains an element consume, but output snapshots lose the relation between the released entry and the next populated entry. These remain false positives. |
+| zlib | conflicting-borrow 0 → 1; leak 2 → 3 | `inflate.c:208` frees constructor storage after an error return while a conditional interior `codes` borrow remains. `gzwrite.c:698` treats the derived `strm.next_out` value as an independent obligation even after the backing `out`/`in` buffers are released. These are false positives. The earlier 16 spurious child double-frees were fixed by distinguishing newly allocated objects from entry objects. |
+| cJSON-program | double-free 2 → 0; null-dereference 31 → 30 | The prior `object` reports in `apply_patch` at `cJSON_Utils.c:1056/1085` and `path` at `962` disappear with final output values and replacement handling. No out-of-bounds reports are added. |
+| Jansson | leak 4 → 0; use-after-free 31 → 28; null-dereference 2 → 3 | Spurious `value` fields on dump callback userdata at `dump.c:455/457/465/477` disappear. Replaced `array->table` uses at `value.c:550/580/637` remain live. The new null report at `pack_unpack.c:209` is the existing buffer-construction/success correlation before `utf8_check_string`. |
+| sds, cJSON, jsmn, log.c, printf | unchanged | The six known jsmn example leaks and existing boundary/null diagnostics remain. |
+
+The Lua regression is deliberately recorded rather than hidden by a global
+warning suppression or removal of evaluation cases. More precise callback
+candidate sets, field-layout compatibility and GC invariants are follow-up
+work. A clean current-mode run still does not certify arbitrary C code.
+
+For diagnostic triage, capture `--dump-analysis` stdout and diagnostic stderr
+into different files. Combining them can interleave a long summary with a
+diagnostic header; never use such a combined dump as a corpus baseline.

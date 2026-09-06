@@ -100,7 +100,7 @@ TEST(Sidecar, PathIsOutputPlusExtension) {
 
 TEST(Sidecar, PrintsStableText) {
   EXPECT_EQ(printUnitRecord(sample()),
-            "weavec-summaries 8\n"
+            "weavec-summaries 9\n"
             "source src/node.c\n"
             "cwd /work/build\n"
             "arg -triple\n"
@@ -146,6 +146,26 @@ TEST(Sidecar, PrintsStableText) {
             "end\n");
 }
 
+TEST(Sidecar, HeapPostconditionsRoundTripWithStringsAndAliases) {
+  auto original = sample();
+  auto &summary = original.exports.functions.at("node_new").summary;
+  auto &graph = summary.heap[SummaryPath::result()];
+  auto child =
+      ValueSource::freshAt("free", {}, core::PathAffine::ofConstant(4));
+  child.stringLength = core::PathAffine::ofConstant(3);
+  graph.addField(core::Store{.dest = SummaryPath::result().deref().field("a"),
+                             .value = child});
+  auto shared = ValueSource::copy(SummaryPath::result().deref().field("a"));
+  shared.post = true;
+  graph.addField(core::Store{.dest = SummaryPath::result().deref().field("b"),
+                             .value = shared});
+  graph.incomplete = true;
+  std::string error;
+  const auto decoded = parseUnitRecord(printUnitRecord(original), &error);
+  ASSERT_TRUE(decoded) << error;
+  EXPECT_EQ(decoded->exports.functions.at("node_new").summary, summary);
+}
+
 TEST(Sidecar, RoundTrips) {
   const UnitRecord original = sample();
   std::string error;
@@ -183,8 +203,8 @@ TEST(Sidecar, RejectsOtherFormatsAndMalformedLines) {
   std::string error;
   EXPECT_FALSE(parseUnitRecord("weavec-summaries 1\n", &error));
   EXPECT_EQ(error, "unsupported format 1");
-  EXPECT_FALSE(parseUnitRecord("weavec-summaries 9\n", &error));
-  EXPECT_EQ(error, "unsupported format 9");
+  EXPECT_FALSE(parseUnitRecord("weavec-summaries 10\n", &error));
+  EXPECT_EQ(error, "unsupported format 10");
   EXPECT_FALSE(parseUnitRecord("weavec-summaries 7\n", &error));
   EXPECT_EQ(error, "unsupported format 7");
   EXPECT_FALSE(parseUnitRecord("ELF\x01\x02", &error));
@@ -192,32 +212,32 @@ TEST(Sidecar, RejectsOtherFormatsAndMalformedLines) {
   EXPECT_FALSE(parseUnitRecord("", &error));
   EXPECT_EQ(error, "empty file");
   EXPECT_FALSE(parseUnitRecord(
-      "weavec-summaries 8\nsummary\n  return fresh\nend\n", &error));
+      "weavec-summaries 9\nsummary\n  return fresh\nend\n", &error));
   EXPECT_EQ(error, "line 2: summary record without a function");
-  EXPECT_FALSE(parseUnitRecord("weavec-summaries 8\nfunction f\n", &error));
+  EXPECT_FALSE(parseUnitRecord("weavec-summaries 9\nfunction f\n", &error));
   EXPECT_EQ(error, "line 2: malformed 'function' line");
-  EXPECT_FALSE(parseUnitRecord("weavec-summaries 8\nfunction f external "
+  EXPECT_FALSE(parseUnitRecord("weavec-summaries 9\nfunction f external "
                                "plain\nsummary\n  return fresh\n",
                                &error));
   EXPECT_EQ(error, "line 4: summary record without 'end'");
-  EXPECT_FALSE(parseUnitRecord("weavec-summaries 8\nreported x y z\n", &error));
+  EXPECT_FALSE(parseUnitRecord("weavec-summaries 9\nreported x y z\n", &error));
   EXPECT_EQ(error, "line 2: malformed 'reported' line");
   // RFC 0012.
   EXPECT_FALSE(
-      parseUnitRecord("weavec-summaries 8\nsized-field a b\n", &error));
+      parseUnitRecord("weavec-summaries 9\nsized-field a b\n", &error));
   EXPECT_EQ(error, "line 2: malformed 'sized-field' line");
   EXPECT_FALSE(
-      parseUnitRecord("weavec-summaries 8\nsized-field a b c\n", &error));
+      parseUnitRecord("weavec-summaries 9\nsized-field a b c\n", &error));
   EXPECT_EQ(error, "line 2: malformed 'sized-field' line");
   EXPECT_FALSE(
-      parseUnitRecord("weavec-summaries 8\nunsized-field a b c\n", &error));
+      parseUnitRecord("weavec-summaries 9\nunsized-field a b c\n", &error));
   EXPECT_EQ(error, "line 2: malformed 'unsized-field' line");
 }
 
 TEST(Sidecar, SkipsUnknownLinesAndBlankOnes) {
   std::string error;
   const std::optional<UnitRecord> parsed = parseUnitRecord(
-      "weavec-summaries 8\n\nfuture-thing 42\nsource a.c\n\n", &error);
+      "weavec-summaries 9\n\nfuture-thing 42\nsource a.c\n\n", &error);
   ASSERT_TRUE(parsed) << error;
   EXPECT_EQ(parsed->exports.source, "a.c");
   EXPECT_TRUE(parsed->exports.functions.empty());

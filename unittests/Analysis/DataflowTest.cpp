@@ -1452,7 +1452,8 @@ TEST(Dataflow, StructCopiesCopyTheirPointerFields) {
                      "14: 'a.data' is freed twice", "21: 'p.tag' is leaked",
                      "21: use of 'p.b.data' after it was freed",
                      "27: use of 'a.data' after it was freed",
-                     "32: use of 'p->data' after it was freed"}));
+                     "32: use of 'p->data' after it was freed",
+                     "37: dereference of 'b.data', which may be null"}));
 }
 
 // -- Condition facts (RFC 0006) -----------------------------------------------

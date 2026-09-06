@@ -220,8 +220,10 @@ TEST(SharedOwnership, APlainFreeKillsEveryShare) {
   )c");
   ASSERT_TRUE(result.ast);
   EXPECT_EQ(messages(result.diagnostics),
-            (Strings{"7: use of 'b' after it was freed"}));
-  EXPECT_EQ(notes(result.diagnostics, 0),
+            (Strings{"6: 'a->name' is leaked when 'a' is freed",
+                     "7: use of 'b' after it was freed"}));
+  // RFC 0013 also exposes the owned name lost by the plain free.
+  EXPECT_EQ(notes(result.diagnostics, 1),
             (Strings{"freed here (through 'a')"}));
 }
 

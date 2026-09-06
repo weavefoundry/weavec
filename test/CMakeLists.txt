@@ -45,6 +45,16 @@ if(Python3_Interpreter_FOUND)
     COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/recall.py"
             --weavec "$<TARGET_FILE:weavec>")
   set_tests_properties(recall PROPERTIES LABELS "integration")
+  # RFC 0013: fixed-denominator evaluation, including known misses.
+  add_test(
+    NAME evaluation
+    COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/evaluate.py"
+            --weavec "$<TARGET_FILE:weavec>")
+  set_tests_properties(evaluation PROPERTIES LABELS "integration" TIMEOUT 180)
+  add_test(NAME evaluation-harness
+           COMMAND "${Python3_EXECUTABLE}"
+                   "${PROJECT_SOURCE_DIR}/scripts/test_evaluate.py")
+  set_tests_properties(evaluation-harness PROPERTIES LABELS "unit")
 else()
   message(
     WARNING "Python 3 not found; the recall set (test/recall) is disabled.")

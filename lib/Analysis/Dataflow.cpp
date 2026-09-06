@@ -51,6 +51,7 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <deque>
 #include <iterator>
 #include <limits>
@@ -106,6 +107,13 @@ FunctionDataflow::FunctionDataflow(ASTContext &ctx, const FunctionDecl &fn,
       inUnsafe(unsafeBody) {
   lifetimes.addOutlives(callerLifetime, fnLifetime);
   builder.setStrictExterns(options.strictExterns);
+  builder.setIncomingLookup(
+      [this](const clang::CallExpr &call,
+             const core::SummaryPath &path) -> std::optional<core::PlaceId> {
+        const auto it = heapInputs.find(std::pair{&call, path});
+        return it == heapInputs.end() ? std::nullopt
+                                      : std::optional(it->second);
+      });
 }
 
 // -- Pre-passes ---------------------------------------------------------------
@@ -718,6 +726,7 @@ void FunctionDataflow::expireDeadLoans(const CFGBlock &block, std::size_t index,
   for (const core::PlaceId root : deadRoots)
     loseTrackBelow(root, state);
   state.aliases.separateIf(dying);
+  state.definiteAliases.separateIf(dying);
 }
 
 // -- Resources (RFC 0007) -----------------------------------------------------
@@ -853,7 +862,7 @@ bool FunctionDataflow::resourceLost(
   // witnesses*).
   return llvm::all_of(state.aliases.edgesFrom(place), [&](const auto &entry) {
     const auto &[alias, edge] = entry;
-    if (alias == place)
+    if (alias == place || pointerSnapshots.contains(places.root(alias)))
       return true;
     // An alias holding its own share does not keep this one (RFC 0010,
     // *Leaks of shares*).
@@ -1067,6 +1076,8 @@ void FunctionDataflow::checkDeadResources(const CFGBlock &block,
 void FunctionDataflow::checkBlockEndResources(const CFGBlock &block,
                                               const CFGBlock *successor,
                                               core::AnalysisState &state) {
+  if (recording() && !state.returned && successor == &cfg->getExit())
+    recordHeapOutputs(state);
   // The exit block's predecessors have checked already; what reaches it
   // through a `noreturn` call never leaks (RFC 0007), nor does what dies on
   // the edge into the block that makes that call (`if (!p) fatal("...")`).
@@ -1300,6 +1311,10 @@ void FunctionDataflow::stepPointer(core::PlaceId place,
           .extent = std::nullopt, .offset = {}, .location = {}});
   state.spatial.set(place, record.derived(step));
   state.aliases.shift(place, step);
+  state.definiteAliases.shift(place, step);
+  if (const auto input = state.incoming.find(place);
+      input != state.incoming.end())
+    input->second.offset = input->second.offset.plus(step);
 }
 
 bool FunctionDataflow::isLocalStorage(core::PlaceId place) const {
@@ -1574,7 +1589,7 @@ void FunctionDataflow::run() {
         target = std::move(edgeState);
         changed = true;
       } else {
-        changed = target->join(edgeState);
+        changed = target->join(edgeState, &places);
       }
       if (changed && !queued[succ.getBlockID()]) {
         queued[succ.getBlockID()] = true;
@@ -1616,7 +1631,11 @@ void FunctionDataflow::run() {
     // What dies at the block's end is checked per edge; the edge that
     // exits the function sees the report of everything left (RFC 0007). A
     // block that never hands control back has no edges to check.
-    if (blockTerminated || state.resources.empty())
+    // RFC 0013: a swap or extraction can publish only incoming pointers,
+    // with no locally allocated resource. Its fallthrough still needs a
+    // final heap snapshot before the parameter/local names are retired.
+    if (blockTerminated ||
+        (state.resources.empty() && (state.returned || state.stored.empty())))
       continue;
     unsigned index = 0;
     for (const CFGBlock::AdjacentBlock &adjacent : block->succs()) {
@@ -1639,6 +1658,7 @@ void FunctionDataflow::run() {
 void FunctionDataflow::transfer(const CFGBlock &block,
                                 core::AnalysisState &state) {
   lastCall.reset();
+  retireHeapInputs(state);
   blockTerminated = false;
   for (std::size_t index = 0; index < block.size() && !blockTerminated;
        ++index) {
@@ -1669,6 +1689,7 @@ void FunctionDataflow::transfer(const CFGBlock &block,
         handleLifetimeEnd(*var, locateElement(block, index), state);
     }
   }
+  retireHeapInputs(state);
 }
 
 bool FunctionDataflow::blockNeverReturns(const CFGBlock &block) {
@@ -2276,6 +2297,7 @@ void FunctionDataflow::applyOutcomeStores(core::PendingOutcome &narrowed,
   for (const core::PendingOutcome::PendingStore &store :
        narrowed.retractStores()) {
     reinit(store.dest, state);
+    restoreHeapInput(store, state);
     if (!store.source || store.sourceEscapedBefore)
       continue;
     state.resources.unescape(*store.source);
@@ -2474,7 +2496,7 @@ bool FunctionDataflow::tracksScalar(core::PlaceId place) const {
   const core::PlaceId root = places.root(place);
   // RFC 0012: a length place is written by nobody; the string tracker
   // forgets it when the string changes.
-  if (builder.isLengthPlace(root))
+  if (builder.isLengthPlace(root) || snapshotPlaces.contains(root))
     return true;
   const VarDecl *var = builder.varForPlace(root);
   return var != nullptr && !var->hasGlobalStorage();
@@ -2561,8 +2583,8 @@ void FunctionDataflow::assignScalar(core::PlaceId place, const Expr *value,
   }
   for (const core::PlaceId cell : cells) {
     state.dropGuardsOn(cell);
+    snapshotScalar(cell, at, state);
     state.relations.forget(cell);
-    state.spatial.dropExtentsOn(cell);
     if (fact && tracksScalar(cell))
       state.scalars.set(cell, *fact);
     else
@@ -2871,8 +2893,8 @@ void FunctionDataflow::handleAdjustment(
   for (const core::PlaceId cell : cells) {
     state.dropGuardsOn(cell);
     // RFC 0011: `i++` after `i < n` says nothing about `i` and `n`.
+    snapshotScalar(cell, &at, state);
     state.relations.forget(cell);
-    state.spatial.dropExtentsOn(cell);
     if (fact && tracksScalar(cell))
       state.scalars.set(cell, *fact);
     else
@@ -3100,6 +3122,7 @@ void FunctionDataflow::handleDecl(const DeclStmt &decl,
     applyPointerAssign(place, builder.classifyValue(*init), *init,
                        var->getType()->getPointeeType().isConstQualified(),
                        state);
+    applyHeapValue(place, builder.classifyValue(*init), state);
     attachOutcome(place, init, state);
   }
 }
@@ -3203,6 +3226,7 @@ void FunctionDataflow::handleAssign(const BinaryOperator &assign,
     applyPointerAssign(lhs->place, origin, assign,
                        type->getPointeeType().isConstQualified(), state,
                        lhs->element);
+    applyHeapValue(lhs->place, origin, state);
     attachOutcome(lhs->place, assign.getRHS(), state);
     return;
   }
@@ -3274,6 +3298,13 @@ void FunctionDataflow::copyRecord(core::PlaceId dest, const Expr &value,
     std::optional<core::OwnershipKind> kind;
     std::optional<core::ResourceRecord> resource;
     std::vector<core::Loan> loans;
+    std::optional<core::SpatialRecord> spatial;
+    std::optional<core::NullRecord> null;
+    std::optional<core::ValueSource> incoming;
+    std::optional<core::PathGuard> writeGuard;
+    bool definitelyWritten;
+    bool localObject;
+    bool incomplete;
   };
   std::vector<FieldFacts> facts;
   const std::size_t srcDepth = places.depth(src->place);
@@ -3298,6 +3329,17 @@ void FunctionDataflow::copyRecord(core::PlaceId dest, const Expr &value,
         .kind = std::nullopt,
         .resource = std::nullopt,
         .loans = {},
+        .spatial = state.spatial.recordOf(place),
+        .null = state.nulls.recordOf(place),
+        .incoming = state.incoming.contains(place)
+                        ? std::optional(state.incoming.at(place))
+                        : std::nullopt,
+        .writeGuard = state.heapWriteGuards.contains(place)
+                          ? std::optional(state.heapWriteGuards.at(place))
+                          : std::nullopt,
+        .definitelyWritten = state.definiteHeapWrites.contains(place),
+        .localObject = state.heapLocalObjects.contains(place),
+        .incomplete = state.incompleteHeap.contains(place),
     };
     if (const auto record = state.moves.recordOf(place))
       field.moved = *record;
@@ -3314,6 +3356,7 @@ void FunctionDataflow::copyRecord(core::PlaceId dest, const Expr &value,
     facts.push_back(std::move(field));
   }
 
+  const auto identities = state.definiteAliases;
   reinit(dest, state);
   for (const FieldFacts &field : facts) {
     if (field.kind)
@@ -3328,7 +3371,22 @@ void FunctionDataflow::copyRecord(core::PlaceId dest, const Expr &value,
       state.raw.markRaw(field.to, *field.raw);
     if (field.resource)
       state.resources.hold(field.to, *field.resource);
+    if (field.spatial)
+      state.spatial.set(field.to, *field.spatial);
+    if (field.null)
+      state.nulls.set(field.to, *field.null);
+    if (field.incoming)
+      state.incoming[field.to] = *field.incoming;
+    if (field.writeGuard)
+      state.heapWriteGuards[field.to] = *field.writeGuard;
+    if (field.definitelyWritten)
+      state.definiteHeapWrites.insert(field.to);
+    if (field.localObject)
+      state.heapLocalObjects.insert(field.to);
+    if (field.incomplete)
+      state.incompleteHeap.insert(field.to);
     if (!field.belowPointer) {
+      state.definiteAliases.unite(field.to, field.from);
       state.aliases.unite(field.to, field.from);
       state.loans.copyHolder(field.from, field.to);
       continue;
@@ -3341,6 +3399,16 @@ void FunctionDataflow::copyRecord(core::PlaceId dest, const Expr &value,
       state.loans.addLoanUnchecked(loan);
     }
   }
+  std::map<core::PlaceId, core::PlaceId> copied;
+  for (const FieldFacts &field : facts)
+    copied.emplace(field.from, field.to);
+  for (const auto &[a, b] : identities.pairs()) {
+    if (copied.contains(a) && copied.contains(b)) {
+      const auto offset = *identities.offsetOf(b, a);
+      state.definiteAliases.unite(copied.at(a), copied.at(b), offset);
+      state.aliases.unite(copied.at(a), copied.at(b), offset);
+    }
+  }
 }
 
 void FunctionDataflow::applyResultStores(core::PlaceId dest,
@@ -3350,6 +3418,10 @@ void FunctionDataflow::applyResultStores(core::PlaceId dest,
   if (!effects)
     return;
   const core::FunctionSummary &summary = *effects->summary;
+  if (summary.heap.contains(core::SummaryPath::result())) {
+    applyHeapResult(dest, call, state);
+    return;
+  }
   std::map<core::SummaryPath, std::vector<core::ValueSource>> byDest;
   for (const core::Store &store : summary.stores) {
     if (store.dest.isResult())
@@ -3377,6 +3449,7 @@ void FunctionDataflow::applyResultStores(core::PlaceId dest,
     applyPointerAssign(*field, origin, call, /*constPointee=*/false, state);
     noteCalleeStore(*field, call, state);
   }
+  applyHeapResult(dest, call, state);
 }
 
 void FunctionDataflow::initRecord(core::PlaceId dest, const InitListExpr &init,
@@ -3395,6 +3468,7 @@ void FunctionDataflow::initRecord(core::PlaceId dest, const InitListExpr &init,
     if (type->isPointerType()) {
       applyPointerAssign(place, builder.classifyValue(value), value,
                          type->getPointeeType().isConstQualified(), state);
+      applyHeapValue(place, builder.classifyValue(value), state);
     } else if (type->isRecordType()) {
       copyRecord(place, value, state);
     }
@@ -3424,6 +3498,7 @@ void FunctionDataflow::initRecord(core::PlaceId dest, const InitListExpr &init,
 void FunctionDataflow::handleCall(const CallExpr &call,
                                   core::AnalysisState &state) {
   lastCall.reset();
+  retireHeapInputs(state);
   // RFC 0012, *`WEAVEC_ASSUME`*: the argument holds from here on, as on the
   // true edge of `if (arg)`; an assumption the facts contradict ends the
   // path, as an infeasible edge does. The callee itself does nothing.
@@ -3472,6 +3547,18 @@ void FunctionDataflow::applySummary(const CallExpr &call,
                                     core::AnalysisState &state) {
   const core::FunctionSummary &summary = *effects.summary;
   const bool library = effects.source == SummarySource::Builtin;
+  // Project historical stores from entry-state values exactly once. Final
+  // heap materialization below must not replace this projection with a
+  // different sequence of writes in the next summary iteration (RFC 0013).
+  if (recording()) {
+    for (const auto &store : summary.stores) {
+      const auto dest = builder.resolveSummaryPath(store.dest, call);
+      auto value = builder.originFromSource(store.value, call, summary);
+      if (dest && value && pruneOrigin(*value, state))
+        recordStore(dest->place, sourceOf(*value, state), state);
+    }
+  }
+  captureHeapInputs(call, summary, state);
 
   // 0. Escapes (RFC 0007, *Escape*): an argument the summary says nothing
   //    about may be retained when the summary is an annotation or the
@@ -3803,8 +3890,46 @@ void FunctionDataflow::applySummary(const CallExpr &call,
   // 3. Stores through arguments and into globals. Several stores to one
   //    destination form one conditional assignment.
   std::map<core::SummaryPath, std::vector<core::ValueSource>> byDest;
+  std::set<core::SummaryPath> finalRoots;
+  std::map<core::SummaryPath, std::vector<core::ValueSource>> possibleCopies;
   for (const core::Store &store : summary.stores)
     byDest[store.dest].push_back(store.value);
+  for (const auto &[root, graph] : summary.heap) {
+    if (root.isResult())
+      continue;
+    std::vector<core::ValueSource> finalValues;
+    for (const core::Store &field : graph.fields) {
+      if (field.dest.isRoot())
+        finalValues.push_back(field.value);
+    }
+    if (!finalValues.empty()) {
+      if (std::ranges::any_of(finalValues, [](const core::ValueSource &value) {
+            return value.kind == core::ValueSource::Kind::Unknown;
+          })) {
+        for (const auto &value : byDest[root]) {
+          if (value.kind == core::ValueSource::Kind::Copy)
+            possibleCopies[root].push_back(value);
+        }
+      }
+      byDest[root] = std::move(finalValues);
+      finalRoots.insert(root);
+    }
+  }
+  // A graph's child assignment is materialized once by applyHeapOutputs.
+  // The may-store and a separately rooted child description may name that
+  // same cell; replaying all three would introduce duplicate allocations.
+  for (const auto &[root, graph] : summary.heap) {
+    if (root.isResult())
+      continue;
+    for (const auto &field : graph.fields) {
+      if (field.dest.isRoot())
+        continue;
+      auto absolute = root;
+      absolute.steps.insert(absolute.steps.end(), field.dest.steps.begin(),
+                            field.dest.steps.end());
+      byDest.erase(absolute);
+    }
+  }
   for (const auto &[dest, values] : byDest) {
     if (dest.isParam() && summary.consumes(dest.index))
       continue;
@@ -3815,7 +3940,10 @@ void FunctionDataflow::applySummary(const CallExpr &call,
     //    0009); with none left the destination keeps what it held.
     std::vector<ValueOrigin> alternatives;
     for (const core::ValueSource &value : values) {
-      if (auto alternative = builder.originFromSource(value, call, summary))
+      if (auto alternative =
+              finalRoots.contains(dest)
+                  ? heapOrigin(value, call, summary)
+                  : builder.originFromSource(value, call, summary))
         alternatives.push_back(std::move(*alternative));
     }
     if (alternatives.empty())
@@ -3827,6 +3955,24 @@ void FunctionDataflow::applySummary(const CallExpr &call,
       origin.kind = ValueOrigin::Kind::Conditional;
       origin.alternatives = std::move(alternatives);
     }
+    const bool knownFinal = [&] {
+      if (!finalRoots.contains(dest))
+        return false;
+      auto postcondition = origin;
+      if (!pruneOrigin(postcondition, state) || !postcondition.guard.trivial())
+        return false;
+      if (postcondition.kind != ValueOrigin::Kind::Conditional)
+        return postcondition.kind != ValueOrigin::Kind::Opaque;
+      return std::ranges::none_of(postcondition.alternatives,
+                                  [](const ValueOrigin &value) {
+                                    return value.kind ==
+                                           ValueOrigin::Kind::Opaque;
+                                  }) &&
+             std::ranges::any_of(postcondition.alternatives,
+                                 [](const ValueOrigin &value) {
+                                   return value.guard.trivial();
+                                 });
+    }();
     doMutationCheck(ref->place, call, state);
     checkAnnotationOnWrite(*ref, call, state);
     recordAccess(ref->place, /*write=*/true, state);
@@ -3839,16 +3985,57 @@ void FunctionDataflow::applySummary(const CallExpr &call,
     }
     // The callee released the value and may have left it there (`free(b->
     // data); if (c) b->data = NULL;`): the store does not clear the record
-    // (RFC 0008, *Replaced values*).
+    // (RFC 0008, *Replaced values*). A known final heap value supersedes
+    // that historical uncertainty: copies inherit their source's moved
+    // state, while fresh/null replacements are live. Unknown descriptions
+    // retain the old conservative record (RFC 0013).
     std::optional<core::MoveRecord> kept;
     if (const core::PlaceEffect effect = summary.effectOf(dest);
-        effect.consumed() && !effect.replaced)
+        effect.consumed() && !effect.replaced && !knownFinal)
       kept = state.moves.recordOf(ref->place);
     // A `null` among the stored values is the callee's doing (RFC 0008,
     // *Nullness*: `CalleeStore`).
     origin.call = &call;
+    auto applicable = origin;
+    const bool wrote = pruneOrigin(applicable, state);
+    std::vector<ValueOrigin> aliases;
+    if (const auto copies = possibleCopies.find(dest);
+        copies != possibleCopies.end()) {
+      for (const auto &copy : copies->second) {
+        auto value = builder.originFromSource(copy, call, summary);
+        if (value && value->kind == ValueOrigin::Kind::Copy && value->place &&
+            pruneOrigin(*value, state))
+          aliases.push_back(std::move(*value));
+      }
+    }
+    const bool wasMaterializing = materializingHeap;
+    materializingHeap = true;
     applyPointerAssign(ref->place, origin, call, /*constPointee=*/false, state,
                        ref->element);
+    materializingHeap = wasMaterializing;
+    // Unknown postconditions carry no new extent, ownership or definite
+    // identity. They also cannot prove that historical copy alternatives
+    // are disjoint: preserve only their may-alias edges and held loans.
+    for (const auto &alias : aliases) {
+      if (!wrote)
+        break;
+      state.aliases.unite(ref->place, alias.place->place, alias.offset,
+                          ref->element, alias.place->element,
+                          /*sameShare=*/true, /*alternative=*/true);
+      state.loans.copyHolder(alias.place->place, ref->place, locate(call));
+    }
+    if (wrote && !wasMaterializing) {
+      if (const auto path = stableSummaryPathOf(ref->place);
+          path && (!path->isParam() || path->hasDeref())) {
+        state.stored.insert(*path);
+      } else if (!path && ref->element.isWhole()) {
+        for (const auto mirror : definiteMirrors(ref->place, state)) {
+          if (const auto mirrored = stableSummaryPathOf(mirror);
+              mirrored && (!mirrored->isParam() || mirrored->hasDeref()))
+            state.stored.insert(*mirrored);
+        }
+      }
+    }
     noteCalleeStore(ref->place, call, state);
     if (kept) {
       state.moves.markMoved(ref->place, kept->reason, kept->location, kept->via,
@@ -3881,8 +4068,14 @@ void FunctionDataflow::applySummary(const CallExpr &call,
       store.source = source->second.first;
       store.sourceEscapedBefore = source->second.second;
     }
+    const auto old = heapInputs.find(std::pair{&call, dest});
+    if (old != heapInputs.end()) {
+      store.oldValue = old->second;
+      store.oldValueEscaped = heapInputEscaped[std::pair{&call, dest}];
+    }
     lastCall->pending.stores.push_back(store);
   }
+  applyHeapOutputs(call, summary, state);
 }
 
 void FunctionDataflow::noteCalleeStore(core::PlaceId dest, const CallExpr &call,
@@ -4165,6 +4358,9 @@ void FunctionDataflow::noteUnknownCallee(const CallExpr &call) {
 
 void FunctionDataflow::handleReturn(const ReturnStmt &ret,
                                     core::AnalysisState &state) {
+  if (recording())
+    recordHeapOutputs(state);
+  state.returned = true;
   const Expr *value = ret.getRetValue();
   if (value == nullptr)
     return;
@@ -4178,8 +4374,21 @@ void FunctionDataflow::handleReturn(const ReturnStmt &ret,
         PlaceBuilder::isPlaceExpr(stripped)) {
       if (const auto ref = builder.resolve(stripped)) {
         recordResultStores(*ref, state);
+        if (recording()) {
+          auto graph = describeHeap(ref->place, false, state, value);
+          const auto [it, added] =
+              inferred.heap.try_emplace(core::SummaryPath::result(), graph);
+          if (!added)
+            it->second.join(graph);
+        }
         for (const core::PlaceId place : storageOf(ref->place))
           escape(place, state);
+      }
+    } else if (value->getType()->isRecordType() && recording()) {
+      if (const auto *call = dyn_cast<CallExpr>(&stripped)) {
+        ValueOrigin forwarded;
+        forwarded.call = call;
+        recordHeapResult(forwarded, *value, state);
       }
     }
     return;
@@ -4192,6 +4401,8 @@ void FunctionDataflow::handleReturn(const ReturnStmt &ret,
     const ValueOrigin origin = std::move(origins.back());
     origins.pop_back();
     if (origin.kind != ValueOrigin::Kind::Conditional) {
+      if (recording())
+        recordHeapResult(origin, *value, state);
       checkAnnotationOnReturn(origin, *value, state);
       // Returning a raw value from a function whose signature promises a
       // safe kind asserts that kind (RFC 0004, *Raw pointers*, rule 4).
@@ -4222,13 +4433,47 @@ void FunctionDataflow::handleReturn(const ReturnStmt &ret,
           for (const auto &[key, fact] : nullness->guard.conditions)
             guard.require(key, fact);
           core::ValueSource source = core::ValueSource::null();
-          source.when = summaryGuardOf(guard);
+          source.when = heapEntryGuard(guard, state);
           return source;
         };
         if (nullness && nullness->state == core::Nullness::Null) {
           inferred.addReturn(nullReturn());
         } else {
-          inferred.addReturn(sourceOf(origin, state));
+          core::ValueSource returnedSource = sourceOf(origin, state, true);
+          const auto directPath = origin.place
+                                      ? stableSummaryPathOf(origin.place->place)
+                                      : std::nullopt;
+          if (origin.kind == ValueOrigin::Kind::Copy && origin.place &&
+              directPath && state.stored.contains(*directPath) &&
+              isHeapOutputPath(*directPath)) {
+            returnedSource =
+                core::ValueSource::copyAt(*directPath, origin.offset);
+            returnedSource.post = true;
+          } else if (origin.kind == ValueOrigin::Kind::Copy && origin.place &&
+                     (!directPath || state.stored.contains(*directPath) ||
+                      state.isOverwritten(*directPath))) {
+            for (const auto &[alias, edge] :
+                 state.definiteAliases.edgesFrom(origin.place->place)) {
+              const auto path = stableSummaryPathOf(alias);
+              if (edge.exact() && path && state.stored.contains(*path) &&
+                  isHeapOutputPath(*path)) {
+                returnedSource =
+                    core::ValueSource::copyAt(*path, origin.offset);
+                returnedSource.post = true;
+                break;
+              }
+            }
+          }
+          if (returnedSource.kind == core::ValueSource::Kind::Copy &&
+              returnedSource.path && !returnedSource.post && origin.place &&
+              !state.incoming.contains(origin.place->place) &&
+              isHeapOutputPath(*returnedSource.path))
+            returnedSource.post = true;
+          core::PlaceGuard returnGuard = guardHere(state);
+          for (const auto &[key, fact] : origin.guard.conditions)
+            returnGuard.require(key, fact);
+          returnedSource.when = heapEntryGuard(returnGuard, state);
+          inferred.addReturn(std::move(returnedSource));
           if (nullness && nullness->state == core::Nullness::MaybeNull)
             inferred.addReturn(nullReturn());
         }
@@ -4449,6 +4694,7 @@ void FunctionDataflow::forgetBelow(core::PlaceId place,
   for (const core::PlaceId child : places.descendants(place)) {
     state.moves.reinitialize(child);
     state.aliases.separate(child);
+    state.definiteAliases.separate(child);
     state.loans.dropHolder(child);
     state.pending.erase(child);
     state.kinds.erase(child);
@@ -4456,6 +4702,12 @@ void FunctionDataflow::forgetBelow(core::PlaceId place,
     state.resources.forget(child);
     state.nulls.forget(child);
     state.scalars.forget(child);
+    state.spatial.forget(child);
+    state.incoming.erase(child);
+    state.heapWriteGuards.erase(child);
+    state.heapInputEscapes.erase(child);
+    state.definiteHeapWrites.erase(child);
+    state.incompleteHeap.erase(child);
     state.dropGuardsOn(child);
   }
 }
@@ -4471,6 +4723,8 @@ void FunctionDataflow::mirrorSubtree(core::PlaceId src, core::PlaceId dest,
   // offsets stay within the element summary. A copy somewhere `Inside` the
   // object points at another sub-object: nothing below `*src` is below
   // `*dest` (the alias edge alone carries the shared object).
+  if (state.incompleteHeap.contains(src))
+    state.incompleteHeap.insert(dest);
   if (offset.isInside())
     return;
   core::PlaceId from = places.deref(src);
@@ -4480,6 +4734,7 @@ void FunctionDataflow::mirrorSubtree(core::PlaceId src, core::PlaceId dest,
     for (const std::string &field : PlaceBuilder::fieldsOfOffset(offset))
       deeper = places.field(deeper, field);
   }
+  const auto identities = state.definiteAliases;
   std::vector<core::PlaceId> below{from};
   llvm::append_range(below, places.descendants(from));
   const std::ptrdiff_t extraDepth =
@@ -4487,8 +4742,10 @@ void FunctionDataflow::mirrorSubtree(core::PlaceId src, core::PlaceId dest,
       static_cast<std::ptrdiff_t>(places.depth(from));
   for (const core::PlaceId place : below) {
     if (static_cast<std::ptrdiff_t>(places.depth(place)) + extraDepth >
-        static_cast<std::ptrdiff_t>(MaxPlaceDepth))
+        static_cast<std::ptrdiff_t>(MaxPlaceDepth)) {
+      state.incompleteHeap.insert(dest);
       continue;
+    }
     const core::PlaceId mirror = places.translate(place, from, to);
     if (const auto record = state.moves.recordOf(place)) {
       state.moves.markMoved(mirror, record->reason, record->location,
@@ -4520,9 +4777,36 @@ void FunctionDataflow::mirrorSubtree(core::PlaceId src, core::PlaceId dest,
       state.raw.markRaw(mirror, *record);
     if (const auto record = state.nulls.recordOf(place))
       state.nulls.set(mirror, *record);
+    if (const auto input = state.incoming.find(place);
+        input != state.incoming.end())
+      state.incoming[mirror] = input->second;
+    if (const auto when = state.heapWriteGuards.find(place);
+        when != state.heapWriteGuards.end())
+      state.heapWriteGuards[mirror] = when->second;
+    if (state.definiteHeapWrites.contains(place))
+      state.definiteHeapWrites.insert(mirror);
+    if (state.heapLocalObjects.contains(place))
+      state.heapLocalObjects.insert(mirror);
+    if (state.incompleteHeap.contains(place))
+      state.incompleteHeap.insert(mirror);
     // RFC 0011: the same cell holds the same pointer, into the same object.
     if (const auto record = state.spatial.recordOf(place))
       state.spatial.set(mirror, *record);
+  }
+  // Preserve shared children after the original spelling is retired by
+  // liveness. Project equality within the copied object (RFC 0013).
+  for (const auto &[a, b] : identities.pairs()) {
+    if (!places.isDescendantOf(a, from) || !places.isDescendantOf(b, from) ||
+        static_cast<std::ptrdiff_t>(places.depth(a)) + extraDepth >
+            static_cast<std::ptrdiff_t>(MaxPlaceDepth) ||
+        static_cast<std::ptrdiff_t>(places.depth(b)) + extraDepth >
+            static_cast<std::ptrdiff_t>(MaxPlaceDepth))
+      continue;
+    const auto left = places.translate(a, from, to);
+    const auto right = places.translate(b, from, to);
+    const auto relative = *identities.offsetOf(b, a);
+    state.definiteAliases.unite(left, right, relative);
+    state.aliases.unite(left, right, relative);
   }
 }
 
@@ -4639,8 +4923,19 @@ FunctionDataflow::doConsume(const PlaceRef &ref, core::MoveReason reason,
   if (const auto conflict = findLoanConflict(
           place, std::nullopt, state, /*ancestors=*/false,
           [this, place, &state](core::PlaceId holder) {
-            return isLivenessTracked(holder) &&
-                   state.aliases.mayAlias(holder, place);
+            if (isLivenessTracked(holder) &&
+                state.aliases.mayAlias(holder, place))
+              return true;
+            // A self-borrow held inside the released allocation dies with
+            // its storage (RFC 0013). The nearest dereference identifies
+            // the holder's container; another pointee is not that storage.
+            for (auto current = holder;
+                 const auto parent = places.parent(current);
+                 current = *parent) {
+              if (places.step(current) == core::PathStep::Deref)
+                return state.definiteAliases.mayAlias(*parent, place);
+            }
+            return false;
           },
           /*storageOnly=*/true)) {
     const bool freeing = reason == core::MoveReason::Freed;
@@ -4802,6 +5097,7 @@ void FunctionDataflow::applyPointerAssign(core::PlaceId dest,
     chosen = &pruned;
   }
   const ValueOrigin &origin = *chosen;
+  const auto writeGuard = heapWriteGuard(dest, state);
   // Facts about the source must be captured before the destination is reset:
   // `p = p->next` copies from a place below `p` that `reinit` forgets.
   struct CopySource {
@@ -4821,6 +5117,7 @@ void FunctionDataflow::applyPointerAssign(core::PlaceId dest,
     std::optional<CopySource> source;
     std::optional<core::RawRecord> raw;
     core::ValueSource summary;
+    core::ValueSource storeSummary;
   };
   std::vector<Arm> arms;
   std::vector<const ValueOrigin *> pendingOrigins{&origin};
@@ -4846,13 +5143,27 @@ void FunctionDataflow::applyPointerAssign(core::PlaceId dest,
           .loans = state.loans.heldBy(src),
           .belowDest = src == dest || places.isDescendantOf(src, dest),
       };
+      if (source->resource) {
+        if (const auto entry = state.heapInputEscapes.find(src);
+            entry != state.heapInputEscapes.end())
+          source->resource->escaped = entry->second;
+      }
     }
-    arms.push_back(Arm{.origin = current,
-                       .source = std::move(source),
-                       .raw = rawRecordOf(*current, at, state),
-                       .summary = recording() ? sourceOf(*current, state)
-                                              : core::ValueSource::unknown()});
+    arms.push_back(
+        Arm{.origin = current,
+            .source = std::move(source),
+            .raw = rawRecordOf(*current, at, state),
+            .summary = recording() ? sourceOf(*current, state, true)
+                                   : sourceValueOf(*current, state, true),
+            .storeSummary = recording() ? sourceOf(*current, state)
+                                        : core::ValueSource::unknown()});
   }
+
+  const bool localObject = std::ranges::all_of(arms, [&](const Arm &arm) {
+    return arm.origin->kind == ValueOrigin::Kind::Null ||
+           arm.origin->kind == ValueOrigin::Kind::Alloc ||
+           (arm.source && state.heapLocalObjects.contains(arm.source->place));
+  });
 
   // `p = p + k`, `p = (T *)p`, `p = p`: the value is the place's own, so every
   // fact about it (aliases, loans, move and raw records) stays. RFC 0004,
@@ -4967,7 +5278,7 @@ void FunctionDataflow::applyPointerAssign(core::PlaceId dest,
       // RFC 0011: the allocation's extent and where in it the value points.
       if (element.isWhole()) {
         core::SpatialRecord record{
-            .extent = arm->extent,
+            .extent = foldAffine(arm->extent, state),
             .offset = arm->offset,
             .location = locate(arm->call != nullptr
                                    ? static_cast<const Stmt &>(*arm->call)
@@ -5036,6 +5347,9 @@ void FunctionDataflow::applyPointerAssign(core::PlaceId dest,
       state.aliases.unite(dest, source->place, source->offset, element,
                           source->element, /*sameShare=*/!split,
                           /*alternative=*/arms.size() > 1);
+      if (arms.size() == 1 && element.isWhole() && source->element.isWhole())
+        state.definiteAliases.unite(dest, source->place, source->offset,
+                                    element, source->element, !split);
       // RFC 0011, *Derived pointers*: `&p->f` also borrows `(*p).f`, so a
       // holder liveness cannot retire (the caller's memory, a global, an
       // address-taken local) still makes `free(p)` a conflict. A plain local
@@ -5056,6 +5370,8 @@ void FunctionDataflow::applyPointerAssign(core::PlaceId dest,
       // checks*); the copy records this store as where to report.
       state.loans.copyHolder(source->place, dest, locate(at));
       mirrorSubtree(source->place, dest, source->offset, state);
+      if (state.incompleteHeap.contains(source->place))
+        state.incompleteHeap.insert(dest);
       if (source->moved &&
           source->moved->record.reason != core::MoveReason::Uninitialized) {
         // The read itself was reported at the load; keep the copy moved so
@@ -5082,7 +5398,7 @@ void FunctionDataflow::applyPointerAssign(core::PlaceId dest,
       // storage's when its own record says.
       if (element.isWhole()) {
         if (arm->extent) {
-          core::SpatialRecord record{.extent = arm->extent,
+          core::SpatialRecord record{.extent = foldAffine(arm->extent, state),
                                      .offset = arm->offset,
                                      .location = locate(at)};
           if (arm->literalLength) {
@@ -5111,6 +5427,28 @@ void FunctionDataflow::applyPointerAssign(core::PlaceId dest,
       break;
     }
   }
+  // RFC 0013: explicit string postconditions supersede incidental call
+  // recognition. They are common facts, so alternatives must agree.
+  std::optional<core::StringFact> stringFact;
+  bool stringUnknown = false;
+  for (const Arm &arm : arms) {
+    if (arm.origin->kind == ValueOrigin::Kind::Null)
+      continue;
+    if (!arm.origin->stringLength && !arm.origin->unterminated) {
+      stringUnknown = true;
+      break;
+    }
+    core::StringFact fact{.length = foldAffine(arm.origin->stringLength, state),
+                          .unterminated = arm.origin->unterminated,
+                          .location = locate(at)};
+    if (stringFact && *stringFact != fact) {
+      stringUnknown = true;
+      break;
+    }
+    stringFact = std::move(fact);
+  }
+  if (!stringUnknown && stringFact && element.isWhole())
+    state.spatial.setString(dest, stringFact);
   if (allNull && element.isWhole())
     state.resources.markNull(dest);
   if (nullness && element.isWhole())
@@ -5137,12 +5475,68 @@ void FunctionDataflow::applyPointerAssign(core::PlaceId dest,
   // RFC 0010, *Per-outcome stores*: the path stored into on this path, for
   // the classes of the returns it reaches. In the state so the fixpoint
   // joins it. An element store is a store to the summary's `a[*]`.
-  if (const auto path = stableSummaryPathOf(dest);
-      path && (!path->isParam() || path->hasDeref()))
-    state.stored.insert(*path);
-  if (recording()) {
-    for (const Arm &arm : arms)
-      recordStore(dest, arm.summary, state);
+  // A heap postcondition supplies facts about the final object. Replaying
+  // it must not manufacture another historical store (and hence another
+  // write effect in the next interprocedural iteration).
+  if (!materializingHeap) {
+    if (const auto path = stableSummaryPathOf(dest);
+        path && (!path->isParam() || path->hasDeref()))
+      state.stored.insert(*path);
+    if (recording()) {
+      for (const Arm &arm : arms)
+        recordStore(dest, arm.storeSummary, state);
+    }
+  }
+  if (element.isWhole()) {
+    state.incoming.erase(dest);
+    if (localObject)
+      state.heapLocalObjects.insert(dest);
+    else
+      state.heapLocalObjects.erase(dest);
+    if (arms.size() == 1 &&
+        (arms.front().summary.kind == core::ValueSource::Kind::Copy ||
+         arms.front().summary.kind == core::ValueSource::Kind::Borrow) &&
+        arms.front().summary.path && !arms.front().summary.post &&
+        ((arms.front().source &&
+          state.incoming.contains(arms.front().source->place)) ||
+         (!std::ranges::any_of(state.stored,
+                               [&](const core::SummaryPath &written) {
+                                 return written == *arms.front().summary.path ||
+                                        written.isProperPrefixOf(
+                                            *arms.front().summary.path);
+                               }) &&
+          !state.isOverwritten(*arms.front().summary.path))))
+      state.incoming.emplace(dest, arms.front().summary.unguarded());
+  }
+  core::PathGuard storedGuard = writeGuard;
+  std::optional<core::PathGuard> alternativesGuard;
+  bool definiteWrite = false;
+  for (const auto &arm : arms) {
+    const auto when = heapEntryGuard(arm.origin->guard, state);
+    if (alternativesGuard)
+      alternativesGuard->join(when);
+    else
+      alternativesGuard = when;
+    definiteWrite |= arm.origin->guard.trivial();
+  }
+  if (alternativesGuard)
+    for (const auto &[path, fact] : alternativesGuard->conditions)
+      storedGuard.require(path, fact);
+  state.heapWriteGuards[dest] = std::move(storedGuard);
+  if (definiteWrite)
+    state.definiteHeapWrites.insert(dest);
+  if (element.isWhole()) {
+    mirrorHeapWrite(dest, state);
+    // Final heap outputs include real writes through a definite local
+    // alias, including `b = &outer->box; b->data = p`. Historical may-store
+    // recording remains unmirrored; materialized children add no writes.
+    if (!materializingHeap && !stableSummaryPathOf(dest)) {
+      for (const auto mirror : definiteMirrors(dest, state)) {
+        if (const auto path = stableSummaryPathOf(mirror);
+            path && (!path->isParam() || path->hasDeref()))
+          state.stored.insert(*path);
+      }
+    }
   }
 }
 
@@ -7259,8 +7653,11 @@ void FunctionDataflow::dump(const core::AnalysisState *exitState) {
   if (inferred.neverReturns)
     os << " never-returns;";
   const auto describeSource = [this, &describePathGuard](
-                                  const core::ValueSource &source) {
+                                  const core::ValueSource &source,
+                                  bool strings = false) {
     std::string text(core::toString(source.kind));
+    if (source.post)
+      text += "-post";
     if (source.isFresh() && !source.family.empty())
       text += "(" + source.family + ")";
     if (source.path)
@@ -7273,6 +7670,15 @@ void FunctionDataflow::dump(const core::AnalysisState *exitState) {
                               ? std::optional(summaryName(*source.extent->path))
                               : std::nullopt,
                           source.extent->scale, source.extent->constant);
+    if (strings && source.stringLength)
+      text += " length=" +
+              spellAffine(
+                  source.stringLength->path
+                      ? std::optional(summaryName(*source.stringLength->path))
+                      : std::nullopt,
+                  source.stringLength->scale, source.stringLength->constant);
+    if (strings && source.unterminated)
+      text += " unterminated";
     return text + describePathGuard(source.when);
   };
   const auto describeConsume = [](const core::PlaceEffect &effect,
@@ -7403,6 +7809,17 @@ void FunctionDataflow::dump(const core::AnalysisState *exitState) {
   if (!inferred.counts.empty())
     describePaths("counts", inferred.counts);
   os << "\n";
+  for (const auto &[root, graph] : inferred.heap) {
+    os << "  heap " << summaryName(root)
+       << (graph.incomplete ? " incomplete{" : " complete{");
+    bool firstField = true;
+    for (const core::Store &field : graph.fields) {
+      os << (firstField ? "" : ", ") << summaryName(field.dest) << " = "
+         << describeSource(field.value, true);
+      firstField = false;
+    }
+    os << "}\n";
+  }
 }
 
 std::string FunctionDataflow::summaryName(const core::SummaryPath &path) const {
@@ -7540,6 +7957,18 @@ static core::PlaceEffect effectOfMove(core::MoveReason reason,
   return effect;
 }
 
+static bool isBelowLocalHeap(core::PlaceId place,
+                             const core::PlaceTable &places,
+                             const core::AnalysisState &state) {
+  while (const auto parent = places.parent(place)) {
+    if (places.step(place) == core::PathStep::Deref &&
+        state.heapLocalObjects.contains(*parent))
+      return true;
+    place = *parent;
+  }
+  return false;
+}
+
 void FunctionDataflow::recordConsume(
     core::PlaceId target, core::MoveReason reason, std::string_view family,
     const core::ElementWitness &element, const core::PlaceGuard &guard,
@@ -7548,13 +7977,23 @@ void FunctionDataflow::recordConsume(
   // (RFC 0008, *Uninitialised pointers*).
   if (reason == core::MoveReason::Uninitialized)
     return;
-  const auto path = builder.summaryPathOf(target);
+  auto path = builder.summaryPathOf(target);
+  const auto entry = state.incoming.find(target);
+  const bool savedInput = entry != state.incoming.end() &&
+                          entry->second.kind == core::ValueSource::Kind::Copy &&
+                          entry->second.path;
+  if (savedInput)
+    path = entry->second.path;
   if (!path)
     return;
   // A place this function has already overwritten on every path holds its
   // own value, not the caller's: releasing it is not the caller's business
   // (RFC 0008, *Replaced values*: consumption is of the value on entry).
-  if (state.isOverwritten(*path))
+  // RFC 0013: a saved old value can be released after its interface cell
+  // was replaced. The consume belongs to that entry value, even when the
+  // live alias edge to the cell is gone (swap, then free the old field).
+  if (!savedInput &&
+      (state.isOverwritten(*path) || isBelowLocalHeap(target, places, state)))
     return;
   core::PlaceEffect effect =
       effectOfMove(reason, family, element, summaryGuardOf(guard));
@@ -7632,7 +8071,15 @@ FunctionDataflow::consumptionAt(const core::AnalysisState &state) {
     if (record->reason == core::MoveReason::Uninitialized || record->ownValue)
       continue;
     const auto path = builder.summaryPathOf(place);
-    if (!path || state.isOverwritten(*path))
+    if (!path || state.isOverwritten(*path) ||
+        isBelowLocalHeap(place, places, state))
+      continue;
+    // A copied entry value belongs to its source's interface cell. Its
+    // move cannot consume the value this destination held before the copy
+    // (RFC 0013). The consume event already records the source identity.
+    if (const auto input = state.incoming.find(place);
+        input != state.incoming.end() && input->second.path &&
+        input->second.path != path)
       continue;
     core::PlaceEffect effect =
         effectOfMove(record->reason, record->family, record->element,
@@ -8063,8 +8510,19 @@ void FunctionDataflow::recordStoreOutOfSight(core::PlaceId dest,
 }
 
 core::ValueSource FunctionDataflow::sourceOf(const ValueOrigin &origin,
-                                             const core::AnalysisState &state) {
-  core::ValueSource source = sourceValueOf(origin, state);
+                                             const core::AnalysisState &state,
+                                             bool entryValue) {
+  core::ValueSource source = sourceValueOf(origin, state, entryValue);
+  source.stringLength = summaryAffineOf(foldAffine(origin.stringLength, state));
+  source.unterminated = origin.unterminated;
+  if (origin.kind == ValueOrigin::Kind::Copy && origin.place) {
+    if (const auto spatial = state.spatial.recordOf(origin.place->place);
+        spatial && spatial->string) {
+      source.stringLength =
+          summaryAffineOf(foldAffine(spatial->string->length, state));
+      source.unterminated = spatial->string->unterminated;
+    }
+  }
   // The value is handed out on a path with these facts, from an origin
   // that itself came with a condition (RFC 0009, *Deriving guards*):
   // `if (n == 0) return NULL;` is `returns{null when n =0, ...}`.
@@ -8077,11 +8535,13 @@ core::ValueSource FunctionDataflow::sourceOf(const ValueOrigin &origin,
 
 core::ValueSource
 FunctionDataflow::sourceValueOf(const ValueOrigin &origin,
-                                const core::AnalysisState &state) {
+                                const core::AnalysisState &state,
+                                bool entryValue) {
   switch (origin.kind) {
   case ValueOrigin::Kind::Alloc:
-    return core::ValueSource::freshAt(origin.family, origin.offset,
-                                      summaryAffineOf(origin.extent));
+    return core::ValueSource::freshAt(
+        origin.family, origin.offset,
+        summaryAffineOf(foldAffine(origin.extent, state)));
   case ValueOrigin::Kind::Null:
     return core::ValueSource::null();
   case ValueOrigin::Kind::Borrow:
@@ -8100,11 +8560,25 @@ FunctionDataflow::sourceValueOf(const ValueOrigin &origin,
     // parameter or field, or anything made raw on the way.
     if (state.raw.isRaw(src) || builder.isDeclaredRaw(src))
       return core::ValueSource::raw();
+    if (const auto entry = state.incoming.find(src);
+        entryValue && entry != state.incoming.end()) {
+      core::ValueSource value = entry->second;
+      value.offset = value.offset.plus(origin.offset);
+      return value;
+    }
     // `p + 1` is a copy into the argument's object, not of its value (RFC
     // 0006, *Alias exactness*; RFC 0011 says by how much); so is a local
     // that aliases the argument at an offset.
     if (const auto path = stableSummaryPathOf(src))
       return core::ValueSource::copyAt(*path, origin.offset);
+    if (entryValue && !places.isBase(src)) {
+      // A field read through a definite local alias still names the
+      // caller's incoming cell, even before ownership is known.
+      for (const auto mirror : definiteMirrors(src, state)) {
+        if (const auto path = stableSummaryPathOf(mirror))
+          return core::ValueSource::copyAt(*path, origin.offset);
+      }
+    }
     // A local: resolve through what it aliases, then what it borrows, then
     // what it owns. Among its aliases the one it equals outright is the best
     // name for it (`ci = L->ci = next_ci(L)` is `copy L->ci`, not a copy into
@@ -8112,7 +8586,9 @@ FunctionDataflow::sourceValueOf(const ValueOrigin &origin,
     // derived name (RFC 0011) is the fallback.
     {
       std::optional<core::ValueSource> derived;
-      for (const auto &[alias, edge] : state.aliases.edgesFrom(src)) {
+      const auto &identities =
+          entryValue ? state.definiteAliases : state.aliases;
+      for (const auto &[alias, edge] : identities.edgesFrom(src)) {
         const auto path = stableSummaryPathOf(alias);
         if (!path)
           continue;
@@ -8139,7 +8615,9 @@ FunctionDataflow::sourceValueOf(const ValueOrigin &origin,
       // `up` would otherwise be leaked by every caller).
       if (!places.isBase(src)) {
         const core::PlaceId base = places.root(src);
-        for (const auto &[alias, edge] : state.aliases.edgesFrom(base)) {
+        const auto &identities =
+            entryValue ? state.definiteAliases : state.aliases;
+        for (const auto &[alias, edge] : identities.edgesFrom(base)) {
           if (!edge.exact() || !stableSummaryPathOf(alias))
             continue;
           if (const auto path =
@@ -8155,7 +8633,8 @@ FunctionDataflow::sourceValueOf(const ValueOrigin &origin,
           (spatial ? spatial->offset : core::PointerOffset::zero())
               .plus(origin.offset);
       const std::optional<core::PathAffine> extent =
-          spatial ? summaryAffineOf(spatial->extent) : std::nullopt;
+          spatial ? summaryAffineOf(foldAffine(spatial->extent, state))
+                  : std::nullopt;
       if (const auto record = state.resources.recordOf(src)) {
         if (record->escaped)
           return core::ValueSource::unknown();
@@ -8198,7 +8677,12 @@ void FunctionDataflow::finalizeSummary(const core::AnalysisState *exitState) {
       if (record->reason == core::MoveReason::Uninitialized || record->ownValue)
         continue;
       const auto path = builder.summaryPathOf(place);
-      if (!path || exitState->isOverwritten(*path))
+      if (!path || exitState->isOverwritten(*path) ||
+          isBelowLocalHeap(place, places, *exitState))
+        continue;
+      if (const auto input = exitState->incoming.find(place);
+          input != exitState->incoming.end() && input->second.path &&
+          input->second.path != path)
         continue;
       core::PathGuard guard = summaryGuardOf(record->guard);
       core::PlaceEffect effect =
@@ -8344,6 +8828,11 @@ void FunctionDataflow::finalizeSummary(const core::AnalysisState *exitState) {
     inferred.outcomes.clear();
   inferred.normalizeStoresOn();
   dropUnstableGuards();
+  // Empty descriptions contribute while joining returns, but carry no
+  // facts once the function's final snapshot has been formed.
+  std::erase_if(inferred.heap, [](const auto &entry) {
+    return entry.second.fields.empty() && !entry.second.incomplete;
+  });
 }
 
 void FunctionDataflow::recogniseShareReleases() {
@@ -8465,12 +8954,8 @@ void FunctionDataflow::dropUnstableGuards() {
     clean(store.value.when);
     inferred.addStore(std::move(store));
   }
-  std::set<core::ValueSource> returns = std::move(inferred.returns);
-  inferred.returns.clear();
-  for (core::ValueSource source : returns) {
-    clean(source.when);
-    inferred.addReturn(std::move(source));
-  }
+  // RFC 0013: pointer returns are captured with immutable entry guards.
+  // Later writes do not invalidate the condition on an extracted value.
 }
 
 // -- Reconciliation (RFC 0003) ------------------------------------------------

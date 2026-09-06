@@ -254,7 +254,8 @@ Design: [RFC 0011 — Spatial safety](rfcs/0011-spatial-safety.md)
       `scripts/recall.py` in `ctest` and CI.
 - [x] Extents through struct fields (`b->len` as the extent of `b->data`):
       RFC 0012's sized fields, below.
-- [ ] Extents across stores (a callee that sets `*out` and `*len`).
+- [x] Constant extents across stores (a callee that sets `*out` and `*len`),
+      plus stable allocation-time size identities (RFC 0013).
 - [ ] Requirements that depend on two parameters (`min(n, cap)`), and
       requirements on `WEAVEC_SIZED_BY` parameters re-exported to callers.
 - [ ] Corpus: `out-of-bounds` rate as a tracked metric; the Juliet test
@@ -288,14 +289,36 @@ Design: [RFC 0012 — Spatial safety II](rfcs/0012-spatial-safety-strings-and-fi
       through them.
 - [x] `WEAVEC_ASSUME(expr)`: the condition holds from the call on.
       `weavec.h` 0.7.
-- [ ] Lengths through stores and summaries (a callee that leaves `*out`
-      terminated, or returns a string of a known length other than
-      `strdup`'s).
+- [x] Known lengths through returned pointers, stored pointers and reachable
+      fields, including constructors other than `strdup` (RFC 0013).
+- [ ] String postconditions for in-place writes to an incoming buffer when
+      no pointer value is stored or returned.
 - [ ] Sized fields with a byte count on a non-`char` pointer, and counts
       one field-hop away (`b->hdr.len`).
 - [ ] Corpus: the CWE-170 shape (`strncpy` without a terminator) as a
       tracked recall class; false-positive review of the string checks on
       the tracked projects.
+
+## Milestone 12 — Interprocedural heap state and value identity
+
+Design: [RFC 0013](rfcs/0013-interprocedural-heap-state.md).
+
+- [x] Final heap postconditions through pointer and record returns,
+      out-parameters, local aliases and whole-program summaries.
+- [x] Child ownership, release families, argument aliases, shared children,
+      self-links, null/raw values, bounds and known string facts.
+- [x] Entry pointer identity separated from replacement output values,
+      including failed replacement retaining the incoming value.
+- [x] Allocation-time constant folding and bounded symbolic size snapshots.
+- [x] Bounded graph projection with explicit incomplete coverage in dumps;
+      summary and sidecar format 9.
+- [x] A fixed good/bad evaluation matrix with known misses and independent
+      execution-failure accounting, beside the existing recall regression set.
+
+Remaining richer arithmetic, arbitrary element identities, callback target
+precision and a verification mode that rejects incomplete coverage need
+separate designs. This milestone does not make Lua's GC or stack-rebasing
+invariants inferable.
 
 ## Ongoing
 

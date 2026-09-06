@@ -351,6 +351,18 @@ static void describe(llvm::raw_ostream &os,
     os << "}";
   }
   os << "\n";
+  for (const auto &[root, graph] : summary.heap) {
+    os << "    heap " << core::printSummaryPath(root, namer)
+       << (graph.incomplete ? " incomplete{" : " complete{");
+    bool firstField = true;
+    for (const core::Store &field : graph.fields) {
+      os << (firstField ? "" : ", ")
+         << core::printSummaryPath(field.dest, namer) << " = "
+         << core::printValueSource(field.value, namer);
+      firstField = false;
+    }
+    os << "}\n";
+  }
 }
 
 void ProgramDatabase::dump(llvm::raw_ostream &os) const {

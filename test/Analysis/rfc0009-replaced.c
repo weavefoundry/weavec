@@ -75,7 +75,9 @@ static void via(struct L *L) {
 // One report, at the first call after the free; the calls after it use the
 // value `via` left.
 // DUMP-LABEL: function 'cascade':
+// RFC 0013: the final allocation written through the local alias reaches callers.
 // DUMP: summary: L->stack: written|freed(free)|replaced; stores{} returns{} requires{L}
+// DUMP-NEXT: heap L->stack complete{result = fresh(free) extent=8, result = null}
 void cascade(struct L *L) {
   free(L->stack);
   // CHECK: [[@LINE+1]]:3: error: 'L->stack' is freed twice [weavec::double-free]

@@ -59,5 +59,6 @@ decision is a new RFC that supersedes the relevant section.
 | [0010](0010-shared-ownership.md)         | Shared ownership: reference counts, ownership by outcome and per-outcome facts | Accepted |
 | [0011](0011-spatial-safety.md)           | Spatial safety: derived pointers, extents and bounds | Accepted |
 | [0012](0012-spatial-safety-strings-and-fields.md) | Spatial safety II: strings, sized fields, offset relations and assumptions | Accepted |
+| [0013](0013-interprocedural-heap-state.md) | Interprocedural heap state and value identity | Accepted |
 
 The [roadmap](../roadmap.md) links each milestone to the RFCs that define it.
