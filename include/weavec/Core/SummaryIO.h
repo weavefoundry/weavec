@@ -96,7 +96,14 @@ namespace weavec::core {
 
 /// Version of the record format; bumped when a record written by this
 /// version cannot be read by the previous one.
-inline constexpr unsigned SummaryFormatVersion = 9;
+inline constexpr unsigned SummaryFormatVersion = 10;
+
+// RFC 0014: deterministic, single-token callback contexts. Bindings name
+// parameter paths; globals retain their ordinary exported value sources.
+[[nodiscard]] std::string
+printCallbackBindings(const CallbackBindings &bindings);
+[[nodiscard]] std::optional<CallbackBindings>
+parseCallbackBindings(std::string_view text);
 
 /// The name to print for a global root id.
 using GlobalNamer = std::function<std::string(std::uint32_t)>;

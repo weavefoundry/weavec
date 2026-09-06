@@ -321,8 +321,61 @@ private:
 template <typename Key>
 struct GuardOn {
   FlatMap<Key, ValueFact> conditions;
+  /// RFC 0014: canonical address comparisons, true for equality.
+  FlatMap<std::pair<Key, Key>, bool> pointers;
 
-  [[nodiscard]] bool trivial() const noexcept { return conditions.empty(); }
+  [[nodiscard]] bool trivial() const noexcept {
+    return conditions.empty() && pointers.empty();
+  }
+  void clear() {
+    conditions.clear();
+    pointers.clear();
+  }
+  [[nodiscard]] std::size_t size() const noexcept {
+    return conditions.size() + pointers.size();
+  }
+  [[nodiscard]] std::optional<bool> pointerFact(Key a, Key b) const {
+    if (a == b)
+      return true;
+    if (b < a)
+      std::swap(a, b);
+    const auto it = pointers.find({a, b});
+    return it == pointers.end() ? std::nullopt : std::optional(it->second);
+  }
+  bool requirePointer(Key a, Key b, bool equal) {
+    if (a == b)
+      return false;
+    if (b < a)
+      std::swap(a, b);
+    const auto it = pointers.find({a, b});
+    if (it != pointers.end()) {
+      if (it->second == equal)
+        return false;
+      pointers.erase(it); // contradictory conjunction: weaken, never refute
+      return true;
+    }
+    if (size() >= MaxGuardConjuncts)
+      return false;
+    pointers.emplace({a, b}, equal);
+    return true;
+  }
+  /// Preserve a known comparison under a definite whole-pointer copy.
+  void copyPointer(const Key &from, const Key &to) {
+    const auto before = pointers;
+    for (const auto &[pair, equal] : before) {
+      if (pair.first == from)
+        requirePointer(to, pair.second, equal);
+      if (pair.second == from)
+        requirePointer(pair.first, to, equal);
+    }
+  }
+
+  void conjoin(const GuardOn &other) {
+    for (const auto &[key, fact] : other.conditions)
+      require(key, fact);
+    for (const auto &[pair, equal] : other.pointers)
+      requirePointer(pair.first, pair.second, equal);
+  }
 
   /// Conjoins "`key` satisfies `fact`". An existing conjunct on the key is
   /// narrowed; a contradiction (the guard already excludes every value of
@@ -334,7 +387,7 @@ struct GuardOn {
       return false;
     const auto it = conditions.find(key);
     if (it == conditions.end()) {
-      if (conditions.size() >= MaxGuardConjuncts)
+      if (size() >= MaxGuardConjuncts)
         return false;
       conditions.emplace(key, fact);
       return true;
@@ -365,6 +418,15 @@ struct GuardOn {
   /// is dropped. Returns whether `this` changed.
   bool join(const GuardOn &other) {
     bool changed = false;
+    for (auto it = pointers.begin(); it != pointers.end();) {
+      const auto theirs = other.pointers.find(it->first);
+      if (theirs == other.pointers.end() || theirs->second != it->second) {
+        it = pointers.erase(it);
+        changed = true;
+      } else {
+        ++it;
+      }
+    }
     for (auto it = conditions.begin(); it != conditions.end();) {
       const auto theirs = other.conditions.find(it->first);
       if (theirs == other.conditions.end()) {
@@ -402,7 +464,18 @@ struct GuardOn {
 
   /// Drops the conjunct on `key` (the key's value is no longer the one the
   /// guard spoke about). Returns whether there was one.
-  bool drop(const Key &key) { return conditions.erase(key) > 0; }
+  bool drop(const Key &key) {
+    bool changed = conditions.erase(key) > 0;
+    for (auto it = pointers.begin(); it != pointers.end();) {
+      if (it->first.first == key || it->first.second == key) {
+        it = pointers.erase(it);
+        changed = true;
+      } else {
+        ++it;
+      }
+    }
+    return changed;
+  }
 
   friend bool operator==(const GuardOn &, const GuardOn &) = default;
   friend std::strong_ordering operator<=>(const GuardOn &,

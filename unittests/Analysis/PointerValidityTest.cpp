@@ -894,7 +894,8 @@ TEST(ReplacedValues, ElementConsumesApplyWithAnUnknownWitness) {
   // callee freed is not the caller's to know, so the second call is not a
   // `double-free` (RFC 0008, *Element consumes*; RFC 0006, *Element
   // witnesses*). A callee that frees the whole pointee still is.
-  const auto result = analyze(R"c(
+  const auto result =
+      analyze(std::string("char *strdup(const char *);\n#line 1\n") + R"c(
     static char **history;
     static int history_len;
     static char *more;

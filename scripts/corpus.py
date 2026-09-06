@@ -29,6 +29,7 @@ import glob
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 import time
@@ -101,6 +102,8 @@ class UnitResult:
     exit_code: int
     diagnostics: list[Diagnostic]
     clang_errors: int
+    failure: str = ""
+    peak_rss_bytes: int | None = None
 
 
 def log(msg: str) -> None:
@@ -116,6 +119,8 @@ def checkout(project: Project, workdir: Path, refresh: bool) -> Path:
     assert project.url is not None
     dest = workdir / project.name
     if dest.exists() and not refresh:
+        if re.fullmatch(r"[0-9a-f]{7,40}", project.ref) and not resolved_commit(dest).startswith(project.ref):
+            raise ValueError(f"{project.name}: checkout does not match pinned revision {project.ref}")
         return dest
     if dest.exists():
         subprocess.run(["git", "-C", str(dest), "fetch", "--depth", "1", "origin", project.ref], check=True)
@@ -123,17 +128,23 @@ def checkout(project: Project, workdir: Path, refresh: bool) -> Path:
         return dest
     dest.parent.mkdir(parents=True, exist_ok=True)
     log(f"[{project.name}] cloning {project.url} @ {project.ref}")
-    subprocess.run(
-        ["git", "clone", "--quiet", "--depth", "1", "--branch", project.ref, project.url, str(dest)],
-        check=True,
-    )
+    if re.fullmatch(r"[0-9a-f]{40}", project.ref):
+        subprocess.run(["git", "init", "--quiet", str(dest)], check=True)
+        subprocess.run(["git", "-C", str(dest), "remote", "add", "origin", project.url], check=True)
+        subprocess.run(["git", "-C", str(dest), "fetch", "--depth", "1", "origin", project.ref], check=True)
+        subprocess.run(["git", "-C", str(dest), "checkout", "--detach", "FETCH_HEAD"], check=True)
+    else:
+        subprocess.run(
+            ["git", "clone", "--quiet", "--depth", "1", "--branch", project.ref, project.url, str(dest)],
+            check=True,
+        )
     return dest
 
 
 def resolved_commit(path: Path) -> str:
     try:
         out = subprocess.run(
-            ["git", "-C", str(path), "rev-parse", "--short", "HEAD"],
+            ["git", "-C", str(path), "rev-parse", "HEAD"],
             check=True,
             capture_output=True,
             text=True,
@@ -184,7 +195,8 @@ def parse_output(project: str, root: Path, text: str) -> tuple[list[Diagnostic],
     return diagnostics, clang_errors
 
 
-def run_units(weavec: str, project: Project, root: Path, files: list[Path], extra: list[str]) -> UnitResult:
+def run_units(weavec: str, project: Project, root: Path, files: list[Path], extra: list[str],
+              timeout: float = 600, measure_memory: bool = False) -> UnitResult:
     """Run weavec once over `files`: one unit, or a whole program."""
     cmd = [weavec, *extra]
     if project.whole_program:
@@ -194,17 +206,58 @@ def run_units(weavec: str, project: Project, root: Path, files: list[Path], extr
     # per unit cannot be compared between runs (Lua's lstrlib.c hits the cap).
     support = str(SUPPORT_DIR / project.name)
     cmd.extend(["--", "-ferror-limit=0", *(a.replace("{support}", support) for a in project.args)])
+    if measure_memory:
+        if sys.platform != "darwin" and not sys.platform.startswith("linux"):
+            raise ValueError("memory measurement requires macOS or Linux resource accounting")
+        cmd = [sys.executable, str(Path(__file__).resolve()), "--measure-child", *cmd]
     start = time.perf_counter()
-    proc = subprocess.run(cmd, cwd=root, capture_output=True, text=True)
+    failure = ""
+    output = ""
+    peak_rss = None
+    try:
+        with subprocess.Popen(cmd, cwd=root, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                              text=True, start_new_session=True) as proc:
+            try:
+                stdout, stderr = proc.communicate(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                failure = f"timeout after {timeout:g} seconds"
+                os.killpg(proc.pid, signal.SIGKILL)
+                stdout, stderr = proc.communicate()
+            output = stderr + stdout
+            exit_code = proc.returncode
+    except OSError as exc:
+        failure = str(exc)
+        exit_code = 127
     seconds = time.perf_counter() - start
-    diagnostics, clang_errors = parse_output(project.name, root, proc.stderr + proc.stdout)
+    diagnostics, clang_errors = parse_output(project.name, root, output)
+    if not failure:
+        if clang_errors:
+            failure = f"{clang_errors} Clang parse error(s)"
+        elif exit_code < 0 or exit_code > 1:
+            failure = f"checker exited with status {exit_code}"
+        elif exit_code and not any(d.severity == "error" for d in diagnostics):
+            failure = f"checker failed without a WeaveC error (status {exit_code})"
+        elif "non-converg" in output or "failed to converge" in output or "did not converge" in output:
+            failure = "program analysis did not converge"
+        elif any(d.id == "analysis-incomplete" and "iteration limit reached" in d.message
+                 for d in diagnostics):
+            failure = "analysis reached an iteration limit"
+    if measure_memory:
+        match = re.search(r"^weavec-corpus-rss-bytes: (\d+)$", output, re.MULTILINE)
+        if match:
+            peak_rss = int(match[1])
+        if peak_rss is None and not failure:
+            failure = "peak memory was requested but not reported"
+
     return UnitResult(
         project=project.name,
         file=" ".join(str(f.relative_to(root)) for f in files),
         seconds=seconds,
-        exit_code=proc.returncode,
+        exit_code=exit_code,
         diagnostics=diagnostics,
         clang_errors=clang_errors,
+        failure=failure,
+        peak_rss_bytes=peak_rss,
     )
 
 
@@ -217,11 +270,14 @@ def summarise(results: list[UnitResult]) -> dict:
     for r in results:
         entry = per_project.setdefault(
             r.project,
-            {"units": 0, "seconds": 0.0, "clang_errors": 0, "by_id": collections.Counter()},
+            {"units": 0, "seconds": 0.0, "clang_errors": 0, "failures": 0, "peak_rss_bytes": None, "by_id": collections.Counter()},
         )
         entry["units"] += 1
         entry["seconds"] += r.seconds
         entry["clang_errors"] += r.clang_errors
+        entry["failures"] += bool(r.failure)
+        if r.peak_rss_bytes is not None:
+            entry["peak_rss_bytes"] = max(entry["peak_rss_bytes"] or 0, r.peak_rss_bytes)
         for d in r.diagnostics:
             entry["by_id"][d.id] += 1
             totals[d.id] += 1
@@ -240,7 +296,7 @@ def print_table(summary: dict, commits: dict[str, str]) -> None:
     for name, entry in summary["projects"].items():
         cells = "  ".join(f"{entry['by_id'].get(i, 0):>{len(i)}}" for i in ids)
         print(
-            f"{name:<{name_w}}  {commits.get(name, '-'):<8} {entry['units']:>5} "
+            f"{name:<{name_w}}  {commits.get(name, '-')[:8]:<8} {entry['units']:>5} "
             f"{entry['seconds']:>6.2f}s {entry['clang_errors']:>5}  {cells}"
         )
     print("-" * len(header))
@@ -254,6 +310,20 @@ def print_table(summary: dict, commits: dict[str, str]) -> None:
 def compare_to_baseline(summary: dict, baseline: dict) -> int:
     """Print per-id deltas; return 1 if any id grew (or a project vanished)."""
     regressed = 0
+    base_projects = baseline.get("summary", baseline).get("projects", {})
+    for project, before in base_projects.items():
+        now = summary["projects"].get(project)
+        if now is None or now["units"] != before["units"]:
+            print(f"  {project}: project missing or unit count changed")
+            regressed = 1
+        elif any(now["by_id"].get(id_, 0) > count for id_, count in before.get("by_id", {}).items()) or any(
+            count > before.get("by_id", {}).get(id_, 0) for id_, count in now["by_id"].items()
+        ):
+            print(f"  {project}: one or more diagnostic counts grew")
+            regressed = 1
+    if any(entry.get("failures", 0) for entry in summary["projects"].values()):
+        print("  analysis failures prevent a clean comparison")
+        regressed = 1
     base_totals = baseline.get("summary", baseline).get("totals", {})
     all_ids = sorted(set(summary["totals"]) | set(base_totals))
     print()
@@ -280,6 +350,8 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST, help="projects.json")
     ap.add_argument("--workdir", type=Path, default=DEFAULT_WORKDIR, help="where projects are cloned")
     ap.add_argument("--only", action="append", default=[], help="run only this project (repeatable)")
+    ap.add_argument("--timeout", type=float, default=600, help="seconds allowed per checker process")
+    ap.add_argument("--measure-memory", action="store_true", help="record per-process peak RSS via child resource accounting")
     ap.add_argument("--refresh", action="store_true", help="re-fetch already cloned projects")
     ap.add_argument("--local", type=Path, help="analyse a local directory instead of the manifest")
     ap.add_argument("--local-files", default="**/*.c", help="glob for --local (default: **/*.c)")
@@ -324,17 +396,22 @@ def main(argv: list[str]) -> int:
     for project in projects:
         try:
             root = checkout(project, args.workdir, args.refresh)
-        except subprocess.CalledProcessError as e:
+        except (subprocess.CalledProcessError, ValueError) as e:
             log(f"[{project.name}] checkout failed: {e}")
             return 2
         commits[project.name] = resolved_commit(root)
         files = expand_files(root, project.files)
+        if not files:
+            log(f"[{project.name}] no translation units matched; refusing an empty result")
+            return 2
         mode = "as one program" if project.whole_program else "one at a time"
         log(f"[{project.name}] {len(files)} translation unit(s), {mode}")
         groups = [files] if project.whole_program and files else [[f] for f in files]
         for group in groups:
-            unit = run_units(args.weavec, project, root, group, args.weavec_arg)
+            unit = run_units(args.weavec, project, root, group, args.weavec_arg, args.timeout, args.measure_memory)
             results.append(unit)
+            if unit.failure:
+                log(f"[{project.name}] {unit.file}: {unit.failure}")
             if unit.clang_errors:
                 log(f"[{project.name}] {unit.file}: {unit.clang_errors} clang error(s); check args")
 
@@ -360,6 +437,8 @@ def main(argv: list[str]) -> int:
                 "seconds": round(r.seconds, 3),
                 "exit_code": r.exit_code,
                 "clang_errors": r.clang_errors,
+                "failure": r.failure,
+                "peak_rss_bytes": r.peak_rss_bytes,
                 "diagnostics": [dataclasses.asdict(d) for d in r.diagnostics],
             }
             for r in results
@@ -370,10 +449,15 @@ def main(argv: list[str]) -> int:
         args.json.write_text(json.dumps(payload, indent=2) + "\n")
         log(f"wrote {args.json}")
 
-    status = 0
+    status = 2 if any(r.failure for r in results) else 0
     if args.baseline and args.baseline.exists() and not args.update_baseline:
-        status = compare_to_baseline(summary, json.loads(args.baseline.read_text()))
-    if args.baseline and args.update_baseline:
+        baseline = json.loads(args.baseline.read_text())
+        for project, commit in baseline.get("commits", {}).items():
+            if project not in commits or not commits[project].startswith(commit):
+                log(f"error: {project}: source revision differs from baseline")
+                status = 2
+        status = max(status, compare_to_baseline(summary, baseline))
+    if args.baseline and args.update_baseline and status == 0:
         # Timings are not part of the contract; keep the baseline diff-stable.
         stable = json.loads(json.dumps(summary))
         for entry in stable["projects"].values():
@@ -384,5 +468,27 @@ def main(argv: list[str]) -> int:
     return status
 
 
+def measured_child(command: list[str]) -> int:
+    """Account for one checker in a fresh process, excluding previous units.
+
+    The checker inherits the wrapper's process group, so timeout cancellation
+    still kills both. Unlike macOS time(1), getrusage needs no sysctl access.
+    """
+    import resource
+
+    try:
+        status = subprocess.call(command)
+    except OSError as exc:
+        log(str(exc))
+        return 127
+    peak = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
+    if sys.platform != "darwin":
+        peak *= 1024
+    log(f"weavec-corpus-rss-bytes: {int(peak)}")
+    return 128 - status if status < 0 else status
+
+
 if __name__ == "__main__":
+    if len(sys.argv) > 2 and sys.argv[1] == "--measure-child":
+        sys.exit(measured_child(sys.argv[2:]))
     sys.exit(main(sys.argv[1:]))

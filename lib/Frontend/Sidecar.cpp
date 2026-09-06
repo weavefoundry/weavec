@@ -53,6 +53,15 @@ std::string printUnitRecord(const UnitRecord &record) {
     os << "cwd " << record.workingDirectory << '\n';
   for (const std::string &arg : record.command)
     os << "arg " << arg << '\n';
+  for (const auto &[name, targets] : exports.callbackGlobals)
+    os << "callback-global " << core::CallTargets::function(name).toString()
+       << ' ' << targets.toString() << '\n';
+  for (const auto &[symbol, requests] : exports.callbackRequests) {
+    for (const auto &bindings : requests)
+      os << "callback-request "
+         << core::CallTargets::function(symbol).toString() << ' '
+         << core::printCallbackBindings(bindings) << '\n';
+  }
   for (const std::string &name : exports.imports)
     os << "import " << name << '\n';
   for (const std::string &key : exports.indirectTypes)
@@ -92,7 +101,13 @@ std::string printUnitRecord(const UnitRecord &record) {
     if (!function.typeKey.empty())
       os << ' ' << function.typeKey;
     os << '\n';
+    if (function.acceptsCallbacks)
+      os << "accepts-callbacks\n";
     os << core::printSummary(function.summary, names);
+    for (const auto &[bindings, summary] : function.specializations) {
+      os << "specialization " << core::printCallbackBindings(bindings) << '\n';
+      os << core::printSummary(summary, names);
+    }
   }
   return text;
 }
@@ -115,6 +130,7 @@ std::optional<UnitRecord> parseUnitRecord(llvm::StringRef text,
   unsigned lineNumber = 0;
   bool haveHeader = false;
   analysis::ExportedFunction *current = nullptr;
+  std::optional<core::CallbackBindings> specialized;
   while (!rest.empty()) {
     llvm::StringRef line;
     std::tie(line, rest) = rest.split('\n');
@@ -160,13 +176,50 @@ std::optional<UnitRecord> parseUnitRecord(llvm::StringRef text,
       const auto summary = core::parseSummary(block, resolve, &summaryError);
       if (!summary)
         return fail("line " + std::to_string(lineNumber) + ": " + summaryError);
-      current->summary = *summary;
+      if (specialized) {
+        if (!current->specializations.emplace(*specialized, *summary).second)
+          return fail("duplicate callback specialization");
+        specialized.reset();
+      } else {
+        current->summary = *summary;
+      }
       continue;
     }
 
     const auto [kind, rawValue] = line.split(' ');
     const llvm::StringRef value = rawValue.trim();
-    if (kind == "source") {
+    if (kind == "accepts-callbacks") {
+      if (!current || !value.empty())
+        return fail("invalid callback interface");
+      current->acceptsCallbacks = true;
+    } else if (kind == "callback-global") {
+      const auto [nameText, targetsText] = value.split(' ');
+      const auto name = core::CallTargets::parse(nameText.str());
+      const auto targets = core::CallTargets::parse(targetsText.str());
+      if (!name || !name->resolved() || name->functions.size() != 1 ||
+          !targets ||
+          !exports.callbackGlobals.emplace(*name->functions.begin(), *targets)
+               .second)
+        return fail("invalid callback global");
+    } else if (kind == "callback-request") {
+      const auto [symbolText, bindingText] = value.split(' ');
+      const auto symbol = core::CallTargets::parse(symbolText.str());
+      const auto bindings = core::parseCallbackBindings(bindingText.str());
+      if (!symbol || !symbol->resolved() || symbol->functions.size() != 1 ||
+          !bindings)
+        return fail("invalid callback request");
+      auto &requests = exports.callbackRequests[*symbol->functions.begin()];
+      requests.insert(*bindings);
+      if (requests.size() > core::MaxCallbackContexts)
+        return fail("too many callback requests");
+    } else if (kind == "specialization") {
+      if (!current || specialized ||
+          current->specializations.size() >= core::MaxCallbackContexts)
+        return fail("invalid specialization record");
+      specialized = core::parseCallbackBindings(value.str());
+      if (!specialized)
+        return fail("invalid callback bindings");
+    } else if (kind == "source") {
       exports.source = value.str();
     } else if (kind == "cwd") {
       record.workingDirectory = value.str();
@@ -234,6 +287,8 @@ std::optional<UnitRecord> parseUnitRecord(llvm::StringRef text,
           (fields[2] != "address-taken" && fields[2] != "plain"))
         return fail("line " + std::to_string(lineNumber) +
                     ": malformed 'function' line");
+      if (specialized)
+        return fail("specialization without summary");
       current = &exports.functions[fields[0].str()];
       current->external = fields[1] == "external";
       current->addressTaken = fields[2] == "address-taken";
@@ -241,6 +296,8 @@ std::optional<UnitRecord> parseUnitRecord(llvm::StringRef text,
     }
     // Unknown line kinds are skipped for forward compatibility.
   }
+  if (specialized)
+    return fail("specialization without summary");
   if (!haveHeader)
     return fail("empty file");
   return record;

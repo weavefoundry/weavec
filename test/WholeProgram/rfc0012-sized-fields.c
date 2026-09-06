@@ -25,7 +25,7 @@
 // DUMP-NEXT: sized-field 'struct view.raw' by 'struct view.len' * 4
 // DUMP-NEXT: unsized-field 'struct view.raw'
 
-// SIDECAR: weavec-summaries 9
+// SIDECAR: weavec-summaries 10
 // SIDECAR-DAG: sized-field struct~vec.items struct~vec.cap 4
 // SIDECAR-DAG: sized-field struct~view.raw struct~view.len 4
 // SIDECAR-DAG: unsized-field struct~view.raw

@@ -55,7 +55,7 @@ namespace weavec::frontend {
 /// `loads-field` lines.
 /// Version 9 (RFC 0013): summaries in format 9 (heap postconditions,
 /// output references and string facts).
-inline constexpr unsigned SidecarFormatVersion = 9;
+inline constexpr unsigned SidecarFormatVersion = 10;
 
 /// Everything the driver remembers about one compiled unit.
 struct UnitRecord {

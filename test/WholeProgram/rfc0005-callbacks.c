@@ -13,7 +13,7 @@
 void (*get_handler(void))(void *);
 
 // ALONE: warning: call to 'get_handler' is not checked
-// ALONE: warning: call through 'h' is not checked: its function type has no ownership annotations and no function of that type has its address taken in this program [weavec::annotation-required]
+// ALONE: warning: call through 'h' is not checked: its function type has no ownership annotations and its target is unknown [weavec::annotation-required]
 // ALONE-NOT: error:
 
 int run(void) {

@@ -335,17 +335,11 @@ TEST(Summaries, IndirectLookupOrder) {
   EXPECT_TRUE(viaType->summary->consumes(0));
   EXPECT_FALSE(viaType->summary->frees(0)) << "moved, per the annotation";
 
-  // 2. The join of address-taken functions of the type: `node_free` (in an
-  //    initialiser) and `node_peek` (as a discarded value).
+  // RFC 0014: type candidates order inference, while effects require a
+  // concrete function-pointer value at the call site.
   EXPECT_EQ(store.candidatesFor(*calls[1]).size(), 2U);
-  const auto viaJoin = store.lookupIndirect(*calls[1]);
-  ASSERT_TRUE(viaJoin);
-  EXPECT_EQ(viaJoin->source, SummarySource::Inferred);
-  EXPECT_TRUE(viaJoin->summary->frees(0)) << "may free";
-  EXPECT_EQ(viaJoin->summary->effectOf(SummaryPath::param(0).deref()).read,
-            true)
-      << "may read";
-  EXPECT_TRUE(store.lookupIndirect(*calls[2]));
+  EXPECT_FALSE(store.lookupIndirect(*calls[1]));
+  EXPECT_FALSE(store.lookupIndirect(*calls[2]));
 
   // 3. Nothing for `cmp`; the boundary is noted once per type.
   EXPECT_TRUE(store.candidatesFor(*calls[3]).empty());
@@ -631,7 +625,7 @@ TEST(Builtins, PosixEntries) {
 TEST(Builtins, FortifiedPrintfRowsMatchThePlainOnes) {
   const auto parsed = parse(R"c(
     typedef __builtin_va_list va_list;
-    void use(char *d, unsigned long n, va_list ap) {
+    void format_all(char *d, unsigned long n, va_list ap) {
       __builtin___sprintf_chk(d, 0, n, "%d", 1);
       __builtin___snprintf_chk(d, n, 0, n, "%d", 1);
       __builtin___vsnprintf_chk(d, n, 0, n, "%d", ap);

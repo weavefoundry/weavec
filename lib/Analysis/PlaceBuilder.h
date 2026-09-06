@@ -105,6 +105,8 @@ struct ValueOrigin {
   };
 
   Kind kind = Kind::Opaque;
+  /// RFC 0014: function identities on an otherwise opaque value.
+  core::CallTargets targets;
   /// Copy: the source pointer place. Borrow: the borrowed place.
   std::optional<PlaceRef> place;
   /// Alloc/Raw (callee-produced), or a value returned by a call whose
@@ -147,6 +149,11 @@ struct ValueOrigin {
 
 class PlaceBuilder {
 public:
+  std::map<core::SummaryPath, std::string> objectViews;
+  std::function<bool(const core::SummaryPath &, const clang::CallExpr &)>
+      validatePath;
+
+  [[nodiscard]] std::optional<PlaceRef> addressedPlace(const clang::Expr &expr);
   PlaceBuilder(core::PlaceTable &table, SummaryStore &summaryStore,
                const clang::ASTContext &astContext)
       : places(table), summaries(summaryStore), context(astContext) {}
@@ -470,7 +477,7 @@ private:
   lookupSummaryRoot(const core::SummaryPath &path, const clang::CallExpr &call);
   /// The place `&x` (or a decayed array) names when `expr` is one; the
   /// argument shape for which `param(i)*` is `x` itself.
-  [[nodiscard]] std::optional<PlaceRef> addressedPlace(const clang::Expr &expr);
+
   /// RFC 0011: the extent of `calloc(n, size)`-shaped calls.
   [[nodiscard]] std::optional<core::Affine>
   productExtentOf(const clang::CallExpr &call);

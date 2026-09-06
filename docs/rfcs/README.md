@@ -61,4 +61,6 @@ decision is a new RFC that supersedes the relevant section.
 | [0012](0012-spatial-safety-strings-and-fields.md) | Spatial safety II: strings, sized fields, offset relations and assumptions | Accepted |
 | [0013](0013-interprocedural-heap-state.md) | Interprocedural heap state and value identity | Accepted |
 
+| [0014](0014-pointer-identity-and-call-effects.md) | Pointer identity and precise call effects | Implemented |
+
 The [roadmap](../roadmap.md) links each milestone to the RFCs that define it.

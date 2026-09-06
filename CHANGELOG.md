@@ -8,6 +8,29 @@ follows [Semantic Versioning](https://semver.org/) once it reaches 1.0.
 
 ### Added
 
+- Pointer identity and precise call effects (RFC 0014): bounded sets of actual
+  callback targets flow through assignments, fields, copies, returns and
+  out-parameters. Callback helpers are specialized with their actual targets
+  while retaining the body's userdata associations and statement ordering.
+  Unknown callbacks remain checking boundaries even when unrelated functions
+  of the same type exist in the program.
+- Pointer equality and inequality predicates on ownership effects, including
+  argument snapshots and cross-file summaries.
+- Complete pointer and compatible record copies through `memcpy` and
+  `memmove`, including pointer aliases, callback targets and reachable state.
+- Record-layout metadata on summary paths and a stable `analysis-incomplete`
+  warning for unsupported memory copies, incompatible views and exhausted
+  analysis limits. Dumps show callback targets, binding contexts and coverage.
+- Summary and sidecar format 10, including callback contexts and global target
+  values. Rebuild object files carrying older sidecars.
+- Paired RFC 0014 evaluation cases and a pinned corpus subset. The corpus
+  runner records process failures, timeouts and optional peak memory, rejects
+  empty runs and source-revision mismatches, and does not update a baseline
+  from a failed analysis.
+- Analysis unit-test fixtures now reject Clang parse errors. Invalid existing
+  fixtures were corrected; macOS SDK discovery no longer leaks Xcode startup
+  messages into checker output.
+
 - Interprocedural heap postconditions (RFC 0013): constructors preserve owned
   children, argument aliases, shared children, self-links, bounds, null/raw
   fields and string facts through pointer returns, record returns and
@@ -25,7 +48,7 @@ follows [Semantic Versioning](https://semver.org/) once it reaches 1.0.
   failures and timeouts (`scripts/evaluate.py`, part of CTest).
 - Heap coverage in `--dump-analysis`: descriptions have explicit depth and
   alternative limits; truncated descriptions are printed as `incomplete`.
-  Summary and sidecar formats are version 9; rebuild older object sidecars.
+  These fields were introduced in format 9; format 10 is now required.
 - Reviewed corpus measurements for RFC 0013, including the substantial
   increase in false positives on Lua's GC and broad callback candidate sets.
   The corpus notes record the precision cost alongside the new capabilities.

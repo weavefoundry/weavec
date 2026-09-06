@@ -24,6 +24,7 @@
 #define WEAVEC_CORE_SUMMARY_H
 
 #include "weavec/Core/Borrow.h"
+#include "weavec/Core/CallTargets.h"
 #include "weavec/Core/Offset.h"
 #include "weavec/Core/Ownership.h"
 #include "weavec/Core/Place.h"
@@ -112,6 +113,8 @@ struct SummaryPath {
   friend std::strong_ordering operator<=>(const SummaryPath &,
                                           const SummaryPath &) = default;
 };
+
+using CallbackBindings = std::map<SummaryPath, CallTargets>;
 
 /// A guard over summary paths (RFC 0009, *Guards*): the conjunction of facts
 /// about the callee's interface under which alone an effect, a store or a
@@ -240,6 +243,8 @@ struct ValueSource {
   enum class Kind : std::uint8_t {
     /// A fresh allocation the receiver now owns.
     Fresh,
+    /// RFC 0014: function pointer values have no ownership obligation.
+    Function,
     /// A copy of the pointer stored at `path` (an argument or a global).
     Copy,
     /// The address of the object at `path`.
@@ -254,6 +259,7 @@ struct ValueSource {
   };
 
   Kind kind = Kind::Unknown;
+  CallTargets targets = {};
   /// Set for `Copy` and `Borrow`.
   std::optional<SummaryPath> path;
   /// `Copy` and `Fresh` (RFC 0011): where in its object the value points.
@@ -304,6 +310,12 @@ struct ValueSource {
                        .extent = std::move(extent),
                        .family = std::move(family),
                        .when = {}};
+  }
+  [[nodiscard]] static ValueSource function(CallTargets targets) {
+    ValueSource result;
+    result.kind = Kind::Function;
+    result.targets = std::move(targets);
+    return result;
   }
   [[nodiscard]] static ValueSource raw() {
     return ValueSource{.kind = Kind::Raw,
@@ -364,12 +376,13 @@ struct ValueSource {
   /// The same source with a trivial guard.
   [[nodiscard]] ValueSource unguarded() const {
     ValueSource result = *this;
-    result.when.conditions.clear();
+    result.when.clear();
     return result;
   }
   /// True if `other` is this alternative up to its guard.
   [[nodiscard]] bool sameValueAs(const ValueSource &other) const {
-    return kind == other.kind && path == other.path && offset == other.offset &&
+    return kind == other.kind && targets == other.targets &&
+           path == other.path && offset == other.offset &&
            extent == other.extent && family == other.family &&
            post == other.post && stringLength == other.stringLength &&
            unterminated == other.unterminated;
@@ -425,6 +438,11 @@ using OutcomeFacts = std::map<SummaryPath, ValueFact>;
 /// The interface behaviour of one function (RFC 0003, *Summaries*).
 class FunctionSummary {
 public:
+  /// RFC 0014: explicit reasons why this summary is incomplete.
+  std::set<std::string> incomplete;
+  /// RFC 0014: interface paths whose function values specialize this body.
+  std::set<SummaryPath> callbackInputs;
+  std::map<SummaryPath, std::string> objectViews;
   /// Effects per path; paths with an empty effect are not stored. These are
   /// the *may* effects over every path through the callee.
   std::map<SummaryPath, PlaceEffect> effects;
@@ -586,11 +604,13 @@ public:
   [[nodiscard]] bool retains(std::uint32_t param) const;
 
   [[nodiscard]] bool empty() const noexcept {
-    return effects.empty() && stores.empty() && returns.empty() &&
-           outcomes.empty() && nullOn.empty() && nonNullOn.empty() &&
-           requiresNonNull.empty() && !neverReturns && increments.empty() &&
-           decrements.empty() && counts.empty() && storesOn.empty() &&
-           factOn.empty() && requiresExtent.empty() && heap.empty();
+    return objectViews.empty() && incomplete.empty() &&
+           callbackInputs.empty() && effects.empty() && stores.empty() &&
+           returns.empty() && outcomes.empty() && nullOn.empty() &&
+           nonNullOn.empty() && requiresNonNull.empty() && !neverReturns &&
+           increments.empty() && decrements.empty() && counts.empty() &&
+           storesOn.empty() && factOn.empty() && requiresExtent.empty() &&
+           heap.empty();
   }
 
   /// Component-wise set union (conjunction for the must-facts).

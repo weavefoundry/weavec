@@ -4,8 +4,10 @@
 // what needs two files, and refuses to link on an error.
 //
 // RUN: rm -rf %t && mkdir -p %t
-// RUN: %weavec_cc -c %S/../WholeProgram/Inputs/node.c -o %t/node.o -I%S/../WholeProgram/Inputs 2>&1 | count 0
-// RUN: %weavec_cc -c %s -o %t/main.o -I%S/../WholeProgram/Inputs 2>&1 | count 0
+// RUN: %weavec_cc -c %S/../WholeProgram/Inputs/node.c -o %t/node.o -I%S/../WholeProgram/Inputs > %t/compile.log 2>&1
+// RUN: count 0 < %t/compile.log
+// RUN: %weavec_cc -c %s -o %t/main.o -I%S/../WholeProgram/Inputs > %t/compile.log 2>&1
+// RUN: count 0 < %t/compile.log
 // RUN: FileCheck --check-prefix=SIDECAR %s < %t/node.o.weavec
 // RUN: FileCheck --check-prefix=MAIN %s < %t/main.o.weavec
 // RUN: not %weavec_cc %t/node.o %t/main.o -o %t/prog 2>&1 | FileCheck --check-prefix=LINK %s
@@ -33,7 +35,7 @@
 #include "../Inputs/prelude.h"
 #include "node.h"
 
-// SIDECAR: weavec-summaries 9
+// SIDECAR: weavec-summaries 10
 // SIDECAR: source {{.*}}node.c
 // SIDECAR: cwd {{.+}}
 // SIDECAR: arg -triple
@@ -42,6 +44,7 @@
 // SIDECAR: import malloc
 // SIDECAR: function node_free external plain void (struct node *)
 // SIDECAR-NEXT: summary
+// SIDECAR-NEXT:   object-view param 0 *
 // SIDECAR-NEXT:   effect param 0 freed(free)
 // SIDECAR-NEXT:   effect param 0 *.name freed(free)
 // SIDECAR-NEXT: end
@@ -52,12 +55,14 @@
 // SIDECAR-NEXT: end
 // SIDECAR: function node_set_name external plain void (struct node *, char *)
 // SIDECAR-NEXT: summary
+// SIDECAR-NEXT:   object-view param 0 *
 // SIDECAR-NEXT:   effect param 0 *.name written,freed(free),replaced
 // SIDECAR-NEXT:   store param 0 *.name copy param 1
 // SIDECAR:   requires 0
 // SIDECAR-NEXT: end
 // SIDECAR: function node_vp external plain int *(struct node *)
 // SIDECAR-NEXT: summary
+// SIDECAR-NEXT:   object-view param 0 *
 // SIDECAR-NEXT:   return copy param 0 @+struct~node.v
 // SIDECAR:   requires 0
 // SIDECAR-NEXT: end

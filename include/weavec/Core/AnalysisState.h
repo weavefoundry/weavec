@@ -209,6 +209,11 @@ struct AnalysisState {
   SpatialTracker spatial;
   /// RFC 0011: order relations between integer places the path established.
   RelationTracker relations;
+  /// RFC 0014: address comparisons true on every incoming path.
+  PlaceGuard pointerFacts;
+  /// RFC 0014: function values, distinct from data ownership.
+  std::map<PlaceId, CallTargets> callTargets;
+  std::map<PlaceId, std::string> objectViews;
   /// RFC 0013: definite entry-value identities retained by local copies.
   /// A cell can change while a copy still refers to its incoming value.
   /// These must-facts join by agreement, independently of live alias edges.

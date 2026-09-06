@@ -231,6 +231,82 @@
       "sources": [
         "snapshot-good.c"
       ]
+    },
+    {
+      "name": "rfc0014-callback-bug",
+      "sources": [
+        "rfc0014-callback-bug.c"
+      ],
+      "bugs": [
+        {
+          "marker": "callback",
+          "diagnostic": "use-after-free"
+        }
+      ]
+    },
+    {
+      "name": "rfc0014-callback-good",
+      "sources": [
+        "rfc0014-callback-good.c"
+      ]
+    },
+    {
+      "name": "rfc0014-copied-pointer-bug",
+      "sources": [
+        "rfc0014-copied-pointer-bug.c"
+      ],
+      "bugs": [
+        {
+          "marker": "copied-pointer",
+          "diagnostic": "use-after-free"
+        }
+      ]
+    },
+    {
+      "name": "rfc0014-copied-pointer-good",
+      "sources": [
+        "rfc0014-copied-pointer-good.c"
+      ]
+    },
+    {
+      "name": "rfc0014-pointer-guard-bug",
+      "sources": [
+        "rfc0014-pointer-guard-bug.c"
+      ],
+      "bugs": [
+        {
+          "marker": "pointer-guard",
+          "diagnostic": "use-after-free"
+        }
+      ]
+    },
+    {
+      "name": "rfc0014-pointer-guard-good",
+      "sources": [
+        "rfc0014-pointer-guard-good.c"
+      ]
+    },
+    {
+      "name": "rfc0014-whole-callback-bug",
+      "sources": [
+        "rfc0014-whole-callback-bug.c",
+        "Inputs/rfc0014-callback.c"
+      ],
+      "whole_program": true,
+      "bugs": [
+        {
+          "marker": "whole-callback",
+          "diagnostic": "use-after-free"
+        }
+      ]
+    },
+    {
+      "name": "rfc0014-whole-callback-good",
+      "sources": [
+        "rfc0014-whole-callback-good.c",
+        "Inputs/rfc0014-callback.c"
+      ],
+      "whole_program": true
     }
   ]
 }

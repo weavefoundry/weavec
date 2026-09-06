@@ -6,6 +6,7 @@ weavec_add_unittest(
           FunctionAnalysisTest.cpp
           HeapStateTest.cpp
           PointerValidityTest.cpp
+          PointerIdentityTest.cpp
           ProgramDatabaseTest.cpp
           ResourceLifecycleTest.cpp
           SharedOwnershipTest.cpp

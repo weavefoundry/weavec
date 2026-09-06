@@ -28,12 +28,12 @@ std::optional<CallEffects> classifyCall(const CallExpr &call,
   std::optional<ResolvedSummary> resolved;
   std::vector<bool> pointerParams;
   if (callee != nullptr) {
-    resolved = summaries.lookup(*callee);
+    resolved = summaries.lookupCall(call);
     for (const ParmVarDecl *param : callee->parameters())
       pointerParams.push_back(param->getType()->isPointerType());
   } else {
     // A call through a function pointer (RFC 0004, *Boundaries*).
-    resolved = summaries.lookupIndirect(call);
+    resolved = summaries.lookupCall(call);
     if (const FunctionProtoType *type = indirectCalleeType(call)) {
       for (const QualType param : type->getParamTypes())
         pointerParams.push_back(param->isPointerType());

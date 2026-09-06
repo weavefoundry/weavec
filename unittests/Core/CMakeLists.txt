@@ -1,6 +1,7 @@
 weavec_add_unittest(
   WeaveCCoreTests
-  SOURCES AliasRelationTest.cpp
+  SOURCES CallTargetsTest.cpp
+          AliasRelationTest.cpp
           AnalysisStateTest.cpp
           BorrowTest.cpp
           DiagnosticTest.cpp

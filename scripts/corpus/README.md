@@ -38,7 +38,35 @@ The CI workflow `corpus.yml` runs the comparison weekly and on demand; it is
 deliberately not part of the pull-request gate because the projects are
 moving targets.
 
-## Triage of the current baseline
+## Pinned pull-request corpus (RFC 0014)
+
+`rfc0014.json` fixes log.c, cJSON-program, linenoise-program and Jansson to
+full commit IDs. Both release CI jobs run it and upload diagnostic, timing
+and peak-memory results. Use:
+
+```sh
+python3 scripts/corpus.py --weavec build/rel/bin/weavec \
+  --manifest scripts/corpus/rfc0014.json --timeout 120 \
+  --measure-memory --json /tmp/corpus-rfc0014.json
+```
+
+`--measure-memory` measures the checker's peak resident set with per-child
+resource accounting in a fresh wrapper process on macOS and Linux; it
+excludes earlier units. Time includes checker startup and the wrapper.
+`--timeout` defaults to 600 seconds and kills the complete process group.
+A missing executable, parse error, abnormal exit, silent failure,
+nonconvergence, missing memory result or empty file selection fails the run.
+None is counted as a clean analysis. Pinned cached checkouts must match the
+requested commit. Baseline comparisons reject missing projects, changed
+unit counts and revisions, per-project diagnostic growth, and failed runs;
+failed runs cannot refresh a baseline.
+
+CI gates execution validity here. It preserves counts for review instead of
+assuming counts match across different SDKs. The fixed bug/clean evaluation
+separately gates detections and precision; a lower corpus count alone is
+never evidence that analysis improved.
+
+## Historical baseline triage
 
 Every diagnostic in the baseline has been looked at. They are all false
 positives, and each one is an instance of a limitation an RFC already names:
@@ -390,3 +418,23 @@ work. A clean current-mode run still does not certify arbitrary C code.
 For diagnostic triage, capture `--dump-analysis` stdout and diagnostic stderr
 into different files. Combining them can interleave a long summary with a
 diagnostic header; never use such a combined dump as a corpus baseline.
+
+
+### RFC 0014: actual callbacks and explicit coverage
+
+The [validation report](../../docs/validation-rfc0014.md) and
+[full results](rfc0014-results.json) preserve the same 11 source revisions used
+for RFC 0013. The whole corpus has 2,744 → 982 reports, including 682 new
+`analysis-incomplete` warnings. Its runtime is 62.85 → 145.11 seconds on this
+machine. Lua alone is 60.03 → 139.51 seconds and 336.7 → 557.7 MiB peak RSS.
+All executions completed without parse errors, crashes, timeouts or convergence
+failures. The fixed evaluation separately detects 18/20 bugs and accepts 8/8
+good programs; known misses remain counted.
+
+Actual callback bindings remove the invented parser fields on unrelated Lua
+userdata. Configurable hooks now stay boundaries, and incompatible or unknown
+record views expose missing coverage. The lower safety-report count does not
+prove these unsupported operations safe. The pinned subset adds eight callback
+boundaries and nine incomplete-copy/view warnings while retaining its prior
+ownership and validity detections. The historical baseline is preserved so
+these changes remain explicit, including the increased analysis cost.

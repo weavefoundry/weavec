@@ -36,6 +36,7 @@ typedef unsigned long size_t;
 void *malloc(size_t);
 void *realloc(void *, size_t);
 void free(void *);
+void exit(int) __attribute__((noreturn));
 #define OWNED __attribute__((annotate("weavec.owned")))
 #define BORROWED __attribute__((annotate("weavec.borrowed")))
 #define MUT __attribute__((annotate("weavec.mut_borrowed")))
@@ -100,6 +101,10 @@ analyzeInProgram(const std::string &code,
       std::string(Prelude) + code, {"-std=c17", "-x", "c", "-w"}, fileName);
   if (!result.ast)
     return result;
+  if (result.ast->getDiagnostics().hasErrorOccurred()) {
+    result.ast.reset();
+    return result;
+  }
 
   clang::ASTContext &context = result.ast->getASTContext();
   result.analyzer = std::make_unique<analysis::TranslationUnitAnalyzer>(

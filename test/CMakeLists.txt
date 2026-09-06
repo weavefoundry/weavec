@@ -55,6 +55,10 @@ if(Python3_Interpreter_FOUND)
            COMMAND "${Python3_EXECUTABLE}"
                    "${PROJECT_SOURCE_DIR}/scripts/test_evaluate.py")
   set_tests_properties(evaluation-harness PROPERTIES LABELS "unit")
+  add_test(NAME corpus-harness
+           COMMAND "${Python3_EXECUTABLE}"
+                   "${PROJECT_SOURCE_DIR}/scripts/test_corpus.py")
+  set_tests_properties(corpus-harness PROPERTIES LABELS "unit")
 else()
   message(
     WARNING "Python 3 not found; the recall set (test/recall) is disabled.")

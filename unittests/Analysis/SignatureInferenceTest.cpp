@@ -654,13 +654,12 @@ TEST(SignatureInference, UnresolvableArgumentsAreDropped) {
   // once per function type (RFC 0004, *Boundaries*); nothing is an error.
   EXPECT_EQ(ids(result.diagnostics),
             (Strings{"annotation-required", "annotation-required"}));
-  EXPECT_EQ(messages(result.diagnostics),
-            (Strings{"8: call through 'make' is not checked: its function type "
-                     "has no ownership annotations and no function of that "
-                     "type has its address taken in this program",
-                     "9: call through 'drop' is not checked: its function "
-                     "type has no ownership annotations and no function of "
-                     "that type has its address taken in this program"}));
+  EXPECT_EQ(
+      messages(result.diagnostics),
+      (Strings{"8: call through 'make' is not checked: its function type "
+               "has no ownership annotations and its target is unknown",
+               "9: call through 'drop' is not checked: its function "
+               "type has no ownership annotations and its target is unknown"}));
 }
 
 TEST(SignatureInference, CopiedLoansAreLifetimeChecked) {

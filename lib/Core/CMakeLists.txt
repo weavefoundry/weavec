@@ -7,6 +7,7 @@ weavec_add_library(
   SOURCES AliasRelation.cpp
           AnalysisState.cpp
           Borrow.cpp
+          CallTargets.cpp
           Diagnostic.cpp
           Lifetime.cpp
           Moves.cpp

@@ -7,6 +7,10 @@ weavec_add_library(
           ClangLocation.cpp
           Dataflow.cpp
           DataflowHeap.cpp
+          DataflowMemory.cpp
+          DataflowViews.cpp
+          DataflowCallbacks.cpp
+          CallbackSummaries.cpp
           DataflowValues.cpp
           DataflowSizedFields.cpp
           DataflowStrings.cpp

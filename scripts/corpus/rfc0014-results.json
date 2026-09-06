@@ -1,0 +1,341 @@
+{
+  "date": "2026-09-06",
+  "baseline_revision": "1815b67d651428f12165af916b5c06d62d9a3c49",
+  "implementation": "RFC 0014 working tree",
+  "environment": "macOS arm64; LLVM/Clang 23.1.0; CMake Release (-O3 -DNDEBUG)",
+  "measurement": "Sequential full-corpus runs on the same clean source revisions. Per-checker child resource accounting; no concurrent builds or tests in the reported final run. Single observations, not statistical performance guarantees.",
+  "tests": {
+    "ctest_debug": 637,
+    "ctest_asan_ubsan": 637,
+    "recall_bugs_detected": 67,
+    "recall_bugs_total": 67,
+    "recall_good_accepted": 33,
+    "recall_good_total": 33,
+    "evaluation_bugs_detected": 18,
+    "evaluation_bugs_total": 20,
+    "evaluation_good_accepted": 8,
+    "evaluation_good_total": 8,
+    "evaluation_known_misses_retained": 2
+  },
+  "projects": {
+    "sds": {
+      "revision": "5347739b1581fcba74fd5cab1fc21d2aef317d71",
+      "before": {
+        "units": 1,
+        "seconds": 0.162,
+        "clang_errors": 0,
+        "failures": 0,
+        "peak_rss_bytes": 51167232,
+        "by_id": {
+          "null-dereference": 12
+        }
+      },
+      "after": {
+        "units": 1,
+        "seconds": 0.115,
+        "clang_errors": 0,
+        "failures": 0,
+        "peak_rss_bytes": 51429376,
+        "by_id": {
+          "null-dereference": 12
+        }
+      }
+    },
+    "cJSON": {
+      "revision": "fb16e5cf358798aabb049655975cde8427101056",
+      "before": {
+        "units": 1,
+        "seconds": 0.316,
+        "clang_errors": 0,
+        "failures": 0,
+        "peak_rss_bytes": 54493184,
+        "by_id": {
+          "null-dereference": 5
+        }
+      },
+      "after": {
+        "units": 1,
+        "seconds": 0.296,
+        "clang_errors": 0,
+        "failures": 0,
+        "peak_rss_bytes": 54018048,
+        "by_id": {
+          "annotation-required": 3,
+          "null-dereference": 5
+        }
+      }
+    },
+    "jsmn": {
+      "revision": "25647e692c7906b96ffd2b05ca54c097948e879c",
+      "before": {
+        "units": 2,
+        "seconds": 0.239,
+        "clang_errors": 0,
+        "failures": 0,
+        "peak_rss_bytes": 50446336,
+        "by_id": {
+          "leak": 6
+        }
+      },
+      "after": {
+        "units": 2,
+        "seconds": 0.171,
+        "clang_errors": 0,
+        "failures": 0,
+        "peak_rss_bytes": 50823168,
+        "by_id": {
+          "leak": 6
+        }
+      }
+    },
+    "log.c": {
+      "revision": "f9ea34994bd58ed342d2245cd4110bb5c6790153",
+      "before": {
+        "units": 1,
+        "seconds": 0.075,
+        "clang_errors": 0,
+        "failures": 0,
+        "peak_rss_bytes": 48611328,
+        "by_id": {
+          "annotation-required": 1
+        }
+      },
+      "after": {
+        "units": 1,
+        "seconds": 0.079,
+        "clang_errors": 0,
+        "failures": 0,
+        "peak_rss_bytes": 48889856,
+        "by_id": {
+          "annotation-required": 2
+        }
+      }
+    },
+    "printf": {
+      "revision": "d3b984684bb8a8bdc48cc7a1abecb93ce59bbe3e",
+      "before": {
+        "units": 1,
+        "seconds": 0.081,
+        "clang_errors": 0,
+        "failures": 0,
+        "peak_rss_bytes": 47808512,
+        "by_id": {
+          "annotation-required": 1,
+          "null-dereference": 18,
+          "unsafe-operation": 1
+        }
+      },
+      "after": {
+        "units": 1,
+        "seconds": 0.085,
+        "clang_errors": 0,
+        "failures": 0,
+        "peak_rss_bytes": 48332800,
+        "by_id": {
+          "annotation-required": 1
+        }
+      }
+    },
+    "linenoise": {
+      "revision": "a473823d74b93eab2ba83480df16ed37617493f2",
+      "before": {
+        "units": 1,
+        "seconds": 0.099,
+        "clang_errors": 0,
+        "failures": 0,
+        "peak_rss_bytes": 52658176,
+        "by_id": {
+          "annotation-required": 3,
+          "double-free": 2,
+          "null-dereference": 3
+        }
+      },
+      "after": {
+        "units": 1,
+        "seconds": 0.14,
+        "clang_errors": 0,
+        "failures": 0,
+        "peak_rss_bytes": 53215232,
+        "by_id": {
+          "analysis-incomplete": 2,
+          "annotation-required": 3,
+          "double-free": 2,
+          "null-dereference": 3
+        }
+      }
+    },
+    "cJSON-program": {
+      "revision": "fb16e5cf358798aabb049655975cde8427101056",
+      "before": {
+        "units": 1,
+        "seconds": 0.319,
+        "clang_errors": 0,
+        "failures": 0,
+        "peak_rss_bytes": 56180736,
+        "by_id": {
+          "null-dereference": 30
+        }
+      },
+      "after": {
+        "units": 1,
+        "seconds": 0.447,
+        "clang_errors": 0,
+        "failures": 0,
+        "peak_rss_bytes": 56393728,
+        "by_id": {
+          "annotation-required": 3,
+          "null-dereference": 30
+        }
+      }
+    },
+    "zlib": {
+      "revision": "da607da739fa6047df13e66a2af6b8bec7c2a498",
+      "before": {
+        "units": 1,
+        "seconds": 0.698,
+        "clang_errors": 0,
+        "failures": 0,
+        "peak_rss_bytes": 70615040,
+        "by_id": {
+          "annotation-required": 2,
+          "conflicting-borrow": 1,
+          "leak": 3,
+          "null-dereference": 21
+        }
+      },
+      "after": {
+        "units": 1,
+        "seconds": 2.519,
+        "clang_errors": 0,
+        "failures": 0,
+        "peak_rss_bytes": 84885504,
+        "by_id": {
+          "analysis-incomplete": 27,
+          "annotation-required": 3,
+          "leak": 3,
+          "null-dereference": 21
+        }
+      }
+    },
+    "lua": {
+      "revision": "7579fc9d7ed90240487251dfb69168f8e64e9294",
+      "before": {
+        "units": 1,
+        "seconds": 60.035,
+        "clang_errors": 0,
+        "failures": 0,
+        "peak_rss_bytes": 353042432,
+        "by_id": {
+          "annotation-required": 1,
+          "conflicting-borrow": 2,
+          "double-free": 1563,
+          "invalid-release": 3,
+          "leak": 26,
+          "lifetime-too-short": 3,
+          "null-dereference": 105,
+          "use-after-free": 846
+        }
+      },
+      "after": {
+        "units": 1,
+        "seconds": 139.508,
+        "clang_errors": 0,
+        "failures": 0,
+        "peak_rss_bytes": 584826880,
+        "by_id": {
+          "analysis-incomplete": 644,
+          "annotation-required": 5,
+          "double-free": 1,
+          "invalid-release": 1,
+          "lifetime-too-short": 2,
+          "null-dereference": 104
+        }
+      }
+    },
+    "linenoise-program": {
+      "revision": "a473823d74b93eab2ba83480df16ed37617493f2",
+      "before": {
+        "units": 1,
+        "seconds": 0.211,
+        "clang_errors": 0,
+        "failures": 0,
+        "peak_rss_bytes": 53493760,
+        "by_id": {
+          "annotation-required": 1,
+          "double-free": 2,
+          "leak": 1,
+          "null-dereference": 3
+        }
+      },
+      "after": {
+        "units": 1,
+        "seconds": 0.472,
+        "clang_errors": 0,
+        "failures": 0,
+        "peak_rss_bytes": 54411264,
+        "by_id": {
+          "analysis-incomplete": 2,
+          "annotation-required": 3,
+          "double-free": 2,
+          "leak": 1,
+          "null-dereference": 3
+        }
+      }
+    },
+    "jansson": {
+      "revision": "851a2145e3256f2e67e5dfe24b0e456bf198b741",
+      "before": {
+        "units": 1,
+        "seconds": 0.611,
+        "clang_errors": 0,
+        "failures": 0,
+        "peak_rss_bytes": 56066048,
+        "by_id": {
+          "annotation-required": 2,
+          "double-free": 45,
+          "invalid-release": 1,
+          "null-dereference": 3,
+          "use-after-free": 28
+        }
+      },
+      "after": {
+        "units": 1,
+        "seconds": 1.281,
+        "clang_errors": 0,
+        "failures": 0,
+        "peak_rss_bytes": 57573376,
+        "by_id": {
+          "analysis-incomplete": 7,
+          "annotation-required": 4,
+          "double-free": 45,
+          "invalid-release": 1,
+          "null-dereference": 3,
+          "use-after-free": 28
+        }
+      }
+    }
+  },
+  "totals": {
+    "before": {
+      "annotation-required": 11,
+      "conflicting-borrow": 3,
+      "double-free": 1612,
+      "invalid-release": 4,
+      "leak": 36,
+      "lifetime-too-short": 3,
+      "null-dereference": 200,
+      "unsafe-operation": 1,
+      "use-after-free": 874
+    },
+    "after": {
+      "analysis-incomplete": 682,
+      "annotation-required": 27,
+      "double-free": 50,
+      "invalid-release": 2,
+      "leak": 10,
+      "lifetime-too-short": 2,
+      "null-dereference": 181,
+      "use-after-free": 28
+    }
+  }
+}
