@@ -33,7 +33,7 @@
 #include "../Inputs/prelude.h"
 #include "node.h"
 
-// SIDECAR: weavec-summaries 8
+// SIDECAR: weavec-summaries 9
 // SIDECAR: source {{.*}}node.c
 // SIDECAR: cwd {{.+}}
 // SIDECAR: arg -triple
@@ -47,19 +47,19 @@
 // SIDECAR-NEXT: end
 // SIDECAR: function node_new external plain struct node *(void)
 // SIDECAR-NEXT: summary
-// SIDECAR-NEXT:   return fresh(free)
+// SIDECAR:   return fresh(free)
 // SIDECAR-NEXT:   return null
 // SIDECAR-NEXT: end
 // SIDECAR: function node_set_name external plain void (struct node *, char *)
 // SIDECAR-NEXT: summary
 // SIDECAR-NEXT:   effect param 0 *.name written,freed(free),replaced
 // SIDECAR-NEXT:   store param 0 *.name copy param 1
-// SIDECAR-NEXT:   requires 0
+// SIDECAR:   requires 0
 // SIDECAR-NEXT: end
 // SIDECAR: function node_vp external plain int *(struct node *)
 // SIDECAR-NEXT: summary
 // SIDECAR-NEXT:   return copy param 0 @+struct~node.v
-// SIDECAR-NEXT:   requires 0
+// SIDECAR:   requires 0
 // SIDECAR-NEXT: end
 
 // MAIN: import node_free

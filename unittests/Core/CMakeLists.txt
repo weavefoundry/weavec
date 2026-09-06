@@ -4,6 +4,7 @@ weavec_add_unittest(
           AnalysisStateTest.cpp
           BorrowTest.cpp
           DiagnosticTest.cpp
+          HeapSummaryTest.cpp
           LifetimeTest.cpp
           MovesTest.cpp
           NullnessTest.cpp

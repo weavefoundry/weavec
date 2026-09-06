@@ -204,17 +204,108 @@ bool PendingOutcome::settled() const {
          });
 }
 
-bool AnalysisState::join(const AnalysisState &other) {
-  bool changed = false;
+bool AnalysisState::join(const AnalysisState &other, const PlaceTable *places) {
+  const auto isNull = [](PlaceId place, const AnalysisState &state) {
+    const auto record = state.nulls.recordOf(place);
+    return state.resources.isNull(place) ||
+           (record && record->state == Nullness::Null);
+  };
+  auto localObjects = heapLocalObjects;
+  std::erase_if(localObjects, [&](PlaceId place) {
+    return !other.heapLocalObjects.contains(place) && !isNull(place, other);
+  });
+  for (const auto place : other.heapLocalObjects) {
+    if (isNull(place, *this))
+      localObjects.insert(place);
+  }
+  const bool localObjectsChanged = localObjects != heapLocalObjects;
+  heapLocalObjects = std::move(localObjects);
+  bool spatialChanged = false;
+  if (places != nullptr) {
+    // RFC 0013: the null branch has no object whose missing spatial fact
+    // could contradict the non-null branch. Unknown pointers still weaken.
+    const auto absent = [places](PlaceId cell, const AnalysisState &state) {
+      const auto isNull = [&state](PlaceId pointer) {
+        const auto null = state.nulls.recordOf(pointer);
+        return state.resources.isNull(pointer) ||
+               (null && null->state == Nullness::Null);
+      };
+      if (isNull(cell))
+        return true;
+      while (const auto parent = places->parent(cell)) {
+        if (places->step(cell) == PathStep::Deref && isNull(*parent))
+          return true;
+        cell = *parent;
+      }
+      return false;
+    };
+    auto left = spatial;
+    auto right = other.spatial;
+    for (const auto &[cell, fact] : spatial.all()) {
+      if (!right.has(cell) && absent(cell, other))
+        right.set(cell, fact);
+    }
+    for (const auto &[cell, fact] : other.spatial.all()) {
+      if (!left.has(cell) && absent(cell, *this))
+        left.set(cell, fact);
+    }
+    left.join(right);
+    spatialChanged = spatial != left;
+    spatial = std::move(left);
+  } else {
+    spatialChanged = spatial.join(other.spatial);
+  }
+  bool changed =
+      spatialChanged || localObjectsChanged || (returned && !other.returned);
+  returned = returned && other.returned;
   changed |= moves.join(other.moves);
   changed |= loans.join(other.loans);
   changed |= aliases.join(other.aliases);
+  changed |= definiteAliases.intersect(other.definiteAliases);
   changed |= raw.join(other.raw);
   changed |= resources.join(other.resources);
   changed |= nulls.join(other.nulls);
   changed |= scalars.join(other.scalars);
-  changed |= spatial.join(other.spatial);
   changed |= relations.join(other.relations);
+  for (const PlaceId root : other.incompleteHeap)
+    changed |= incompleteHeap.insert(root).second;
+  for (auto it = incoming.begin(); it != incoming.end();) {
+    const auto theirs = other.incoming.find(it->first);
+    if (theirs == other.incoming.end() || theirs->second != it->second) {
+      it = incoming.erase(it);
+      changed = true;
+    } else {
+      ++it;
+    }
+  }
+
+  for (auto it = definiteHeapWrites.begin(); it != definiteHeapWrites.end();) {
+    if (!other.definiteHeapWrites.contains(*it)) {
+      it = definiteHeapWrites.erase(it);
+      changed = true;
+    } else {
+      ++it;
+    }
+  }
+  for (const auto &[place, escaped] : other.heapInputEscapes) {
+    const auto [it, added] = heapInputEscapes.try_emplace(place, escaped);
+    if (added)
+      changed = true;
+    else if (escaped && !it->second) {
+      it->second = true;
+      changed = true;
+    }
+  }
+  for (const auto &[place, guard] : other.heapWriteGuards) {
+    const auto [it, added] = heapWriteGuards.try_emplace(place, guard);
+    if (added) {
+      changed = true;
+    } else {
+      const auto before = it->second;
+      it->second.join(guard);
+      changed |= before != it->second;
+    }
+  }
 
   // A pending outcome that is only pending on one incoming path cannot be
   // safely undone, so keep only entries both sides agree on. Two narrowings
@@ -361,6 +452,7 @@ void AnalysisState::dropGuardsOn(PlaceId place) {
 void AnalysisState::forget(PlaceId place) {
   moves.reinitialize(place);
   aliases.separate(place);
+  definiteAliases.separate(place);
   loans.dropHolder(place);
   loans.release(place);
   pending.erase(place);
@@ -371,6 +463,12 @@ void AnalysisState::forget(PlaceId place) {
   scalars.forget(place);
   spatial.forget(place);
   relations.forget(place);
+  incoming.erase(place);
+  heapWriteGuards.erase(place);
+  heapInputEscapes.erase(place);
+  definiteHeapWrites.erase(place);
+  heapLocalObjects.erase(place);
+  incompleteHeap.erase(place);
   dropGuardsOn(place);
 }
 

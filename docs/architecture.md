@@ -226,6 +226,45 @@ own flags are `-fweavec`/`-fno-weavec`, `-fweavec-strict`,
 is Clang's. The design is
 [RFC 0005](rfcs/0005-whole-program-analysis.md).
 
+## Heap postconditions and value snapshots
+
+[RFC 0013](rfcs/0013-interprocedural-heap-state.md) adds
+`FunctionSummary::heap`, a map from an output path to a `HeapDescription`.
+Each description uses result-relative pointer cells and the existing value
+sources. `copy-post` names an already represented output object; ordinary
+`copy` names an incoming value. This makes shared children and cycles finite
+and keeps final output values separate from historical `stores`. Core owns
+bounds, joins, validation and serialization, without Clang dependencies.
+
+`Analysis/DataflowHeap.cpp` captures final reachable facts, resolves incoming
+values before a call replaces them, and materializes the graph into the
+normal state trackers. A definite alias relation intersects at joins and
+supports strong updates through local aliases; the existing may-alias
+relation still governs possible consumes. Copies preserve identity when
+liveness retires the original local. Failure outcomes restore captured input
+facts. Projection is limited to eight path steps, 128 field alternatives per
+description and eight alternatives per cell; lost coverage remains visible.
+Materialized children remain in their containing graph instead of becoming
+additional historical stores on the next summary iteration.
+
+Output writes and pointer returns retain conditions on immutable entry
+values. A call snapshots any guard operand or returned input pointer it
+can overwrite. This preserves extraction (`p = *slot; *slot = NULL; return p`)
+and lazy publication without treating a test of the new cell as a test of
+its old value. Definite publication guards apply to initialized children;
+an unconditional later write remains unconditional after a join.
+
+`Analysis/DataflowValues.cpp` folds allocation sizes using current scalar
+facts. Before overwriting a scalar used by an extent or string length, it
+redirects the dependency to an interned allocation-time snapshot. Reusing a
+snapshot site invalidates the old generation's dependent facts. The domain
+remains bounded and uses the existing affine and relation operations.
+
+Summary and sidecar version 9 serialize heap descriptions, post references
+and string metadata. `ProgramDatabase` remaps global references and compares
+these descriptions as part of normal dependency invalidation. The compiler
+and tooling whole-program modes share this implementation.
+
 ## Diagnostics contract
 
 Every diagnostic carries a stable identifier from `weavec::core::diag`
@@ -252,3 +291,16 @@ scripts and editors may filter on it, so renaming one is a breaking change.
 (`"whole_program": true`), and compares diagnostic counts with
 `scripts/corpus/baseline.json`; see `scripts/corpus/README.md`. It is the
 empirical check on the RFCs' precision claims and runs weekly in CI.
+
+The fixed evaluation suite (`scripts/evaluate.py`, `test/evaluation/`) is
+separate from corpus counts and recall regression pins. It retains known
+misses in its denominator and rejects parse errors, crashes, timeouts and
+unexpected diagnostics. Both it and its harness unit tests run under CTest.
+
+
+RFC 0013 also keeps a must-fact for objects allocated within the current
+function. Cleanup below those objects does not become consumption of entry
+fields merely because the object was published through an interface path.
+Copies and record copies preserve the fact; unknown non-null alternatives
+drop it at joins. Input guard snapshots carry scalar/null facts alone,
+while pointer-value snapshots retain the required reachable state.

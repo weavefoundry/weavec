@@ -56,6 +56,7 @@
         "clang_errors": 0,
         "by_id": {
           "annotation-required": 3,
+          "double-free": 2,
           "null-dereference": 3
         }
       },
@@ -63,8 +64,7 @@
         "units": 1,
         "clang_errors": 0,
         "by_id": {
-          "double-free": 2,
-          "null-dereference": 31
+          "null-dereference": 30
         }
       },
       "zlib": {
@@ -72,7 +72,8 @@
         "clang_errors": 0,
         "by_id": {
           "annotation-required": 2,
-          "leak": 2,
+          "conflicting-borrow": 1,
+          "leak": 3,
           "null-dereference": 21
         }
       },
@@ -82,12 +83,12 @@
         "by_id": {
           "annotation-required": 1,
           "conflicting-borrow": 2,
-          "double-free": 35,
-          "invalid-release": 4,
-          "leak": 4,
-          "lifetime-too-short": 4,
-          "null-dereference": 79,
-          "use-after-free": 632
+          "double-free": 1563,
+          "invalid-release": 3,
+          "leak": 26,
+          "lifetime-too-short": 3,
+          "null-dereference": 105,
+          "use-after-free": 846
         }
       },
       "linenoise-program": {
@@ -95,6 +96,7 @@
         "clang_errors": 0,
         "by_id": {
           "annotation-required": 1,
+          "double-free": 2,
           "leak": 1,
           "null-dereference": 3
         }
@@ -106,22 +108,21 @@
           "annotation-required": 2,
           "double-free": 45,
           "invalid-release": 1,
-          "leak": 4,
-          "null-dereference": 2,
-          "use-after-free": 31
+          "null-dereference": 3,
+          "use-after-free": 28
         }
       }
     },
     "totals": {
       "annotation-required": 11,
-      "conflicting-borrow": 2,
-      "double-free": 82,
-      "invalid-release": 5,
-      "leak": 17,
-      "lifetime-too-short": 4,
-      "null-dereference": 174,
+      "conflicting-borrow": 3,
+      "double-free": 1612,
+      "invalid-release": 4,
+      "leak": 36,
+      "lifetime-too-short": 3,
+      "null-dereference": 200,
       "unsafe-operation": 1,
-      "use-after-free": 663
+      "use-after-free": 874
     }
   }
 }

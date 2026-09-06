@@ -1,0 +1,236 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "name": "inline-overflow",
+      "sources": [
+        "inline-overflow.c"
+      ],
+      "bugs": [
+        {
+          "marker": "overflow",
+          "diagnostic": "out-of-bounds"
+        }
+      ]
+    },
+    {
+      "name": "inline-leak",
+      "sources": [
+        "inline-leak.c"
+      ],
+      "bugs": [
+        {
+          "marker": "leak",
+          "diagnostic": "leak"
+        }
+      ]
+    },
+    {
+      "name": "inline-alias",
+      "sources": [
+        "inline-alias.c"
+      ],
+      "bugs": [
+        {
+          "marker": "alias",
+          "diagnostic": "use-after-free"
+        }
+      ]
+    },
+    {
+      "name": "inline-good",
+      "sources": [
+        "inline-good.c"
+      ]
+    },
+    {
+      "name": "helper-overflow",
+      "sources": [
+        "helper-overflow.c"
+      ],
+      "bugs": [
+        {
+          "marker": "overflow",
+          "diagnostic": "out-of-bounds"
+        }
+      ]
+    },
+    {
+      "name": "helper-leak",
+      "sources": [
+        "helper-leak.c"
+      ],
+      "bugs": [
+        {
+          "marker": "leak",
+          "diagnostic": "leak"
+        }
+      ]
+    },
+    {
+      "name": "helper-alias",
+      "sources": [
+        "helper-alias.c"
+      ],
+      "bugs": [
+        {
+          "marker": "alias",
+          "diagnostic": "use-after-free"
+        }
+      ]
+    },
+    {
+      "name": "helper-good",
+      "sources": [
+        "helper-good.c"
+      ]
+    },
+    {
+      "name": "whole-program-overflow",
+      "sources": [
+        "whole-program-overflow.c",
+        "Inputs/heap.c"
+      ],
+      "whole_program": true,
+      "bugs": [
+        {
+          "marker": "overflow",
+          "diagnostic": "out-of-bounds"
+        }
+      ]
+    },
+    {
+      "name": "whole-program-leak",
+      "sources": [
+        "whole-program-leak.c",
+        "Inputs/heap.c"
+      ],
+      "whole_program": true,
+      "bugs": [
+        {
+          "marker": "leak",
+          "diagnostic": "leak"
+        }
+      ]
+    },
+    {
+      "name": "whole-program-alias",
+      "sources": [
+        "whole-program-alias.c",
+        "Inputs/heap.c"
+      ],
+      "whole_program": true,
+      "bugs": [
+        {
+          "marker": "alias",
+          "diagnostic": "use-after-free"
+        }
+      ]
+    },
+    {
+      "name": "whole-program-good",
+      "sources": [
+        "whole-program-good.c",
+        "Inputs/heap.c"
+      ],
+      "whole_program": true
+    },
+    {
+      "name": "value-snapshot",
+      "sources": [
+        "value-snapshot.c"
+      ],
+      "bugs": [
+        {
+          "marker": "value-snapshot",
+          "diagnostic": "out-of-bounds",
+          "required": true
+        }
+      ]
+    },
+    {
+      "name": "symbolic-snapshot",
+      "sources": [
+        "symbolic-snapshot.c"
+      ],
+      "bugs": [
+        {
+          "marker": "symbolic-snapshot",
+          "diagnostic": "out-of-bounds",
+          "required": true
+        }
+      ]
+    },
+    {
+      "name": "output-size",
+      "sources": [
+        "output-size.c"
+      ],
+      "bugs": [
+        {
+          "marker": "output-size",
+          "diagnostic": "out-of-bounds",
+          "required": true
+        }
+      ]
+    },
+    {
+      "name": "shared-child",
+      "sources": [
+        "shared-child.c"
+      ],
+      "bugs": [
+        {
+          "marker": "shared-child",
+          "diagnostic": "use-after-free",
+          "required": true
+        }
+      ]
+    },
+    {
+      "name": "string-field",
+      "sources": [
+        "string-field.c"
+      ],
+      "bugs": [
+        {
+          "marker": "string-field",
+          "diagnostic": "out-of-bounds",
+          "required": true
+        }
+      ]
+    },
+    {
+      "name": "product-known-miss",
+      "sources": [
+        "product-known-miss.c"
+      ],
+      "bugs": [
+        {
+          "marker": "product-known-miss",
+          "diagnostic": "out-of-bounds",
+          "required": false
+        }
+      ]
+    },
+    {
+      "name": "vla-known-miss",
+      "sources": [
+        "vla-known-miss.c"
+      ],
+      "bugs": [
+        {
+          "marker": "vla-known-miss",
+          "diagnostic": "out-of-bounds",
+          "required": false
+        }
+      ]
+    },
+    {
+      "name": "snapshot-good",
+      "sources": [
+        "snapshot-good.c"
+      ]
+    }
+  ]
+}

@@ -53,7 +53,9 @@ namespace weavec::frontend {
 /// `requires-extent`).
 /// Version 8 (RFC 0012): the `sized-field`, `unsized-field` and
 /// `loads-field` lines.
-inline constexpr unsigned SidecarFormatVersion = 8;
+/// Version 9 (RFC 0013): summaries in format 9 (heap postconditions,
+/// output references and string facts).
+inline constexpr unsigned SidecarFormatVersion = 9;
 
 /// Everything the driver remembers about one compiled unit.
 struct UnitRecord {

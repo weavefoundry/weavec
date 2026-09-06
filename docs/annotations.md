@@ -479,6 +479,39 @@ maybe-null or known non-null) and summary of every analysed function; with `--wh
 the program database (every exported summary). `weavec-cc` writes each
 unit's exported summaries to `<object>.weavec` in the same text form.
 
+### Constructors, returned fields and allocation-time sizes
+
+[RFC 0013](rfcs/0013-interprocedural-heap-state.md) requires no new
+annotations. An inferred constructor describes the pointer fields of its
+returned or published object, including owned children, aliases of arguments,
+shared children and self-links. These facts also cross record returns and
+translation units. Existing diagnostics apply to them: a child access can
+be `out-of-bounds`, releasing its container can lose a child (`leak`), and
+using a field after releasing its referent is `use-after-free`. Known null,
+raw, borrowed, release-family and string facts retain their usual checks.
+
+For example, after a helper returns a box whose `data` was allocated with
+`malloc(4)`, the caller's `box->data[4]` is out of bounds and
+`free(box->data); free(box);` releases both resources. Two fields initialized
+from the same allocation remain aliases; two constructor call sites create
+independent objects. Final values govern outputs: a field reset to null does
+not still hold its earlier allocation. A helper that fails without replacing
+an output leaves the caller's incoming value and bounds intact.
+
+An allocation uses the size's value at allocation time. With
+`size_t n = 4; char *p = malloc(n); n = 8;`, a non-null `p` still has four
+bytes. Symbolic sizes can retain their relationship to an unchanged count
+copy after reassignment. Snapshot reuse in loops can lose precision, but
+cannot resize an older object to a later count.
+
+`--dump-analysis` prints each heap description as `complete` or `incomplete`.
+These labels describe whether the bounded projection was truncated. A
+`complete` description is not a proof of safety: fields and extents can
+still be unknown. Projection follows at most eight steps and 128 field
+alternatives; more than eight alternatives for one cell widen it to unknown.
+The [evaluation suite](../test/evaluation/README.md) records supported cases
+and known arithmetic/layout misses separately.
+
 ## Controlling diagnostics
 
 `weavec` and `weavec-cc` accept Clang-style warning flags for WeaveC's ids:

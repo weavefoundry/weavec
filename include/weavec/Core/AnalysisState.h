@@ -96,6 +96,11 @@ struct PendingOutcome {
     /// Whether the source's resource was already escaped before the call
     /// (so the retraction knows what to restore).
     bool sourceEscapedBefore = false;
+    /// RFC 0013: the incoming value to restore if this store did not happen.
+    // NOLINTNEXTLINE(readability-redundant-member-init): designated-init
+    // default
+    std::optional<PlaceId> oldValue = {};
+    bool oldValueEscaped = false;
 
     friend bool operator==(const PendingStore &,
                            const PendingStore &) = default;
@@ -165,6 +170,9 @@ struct AnalysisState {
   BorrowState loans;
   /// Pointer places that may hold the same value.
   AliasRelation aliases;
+  /// RFC 0013: whole-pointer identities and offsets true on every incoming
+  /// path.
+  AliasRelation definiteAliases;
   /// Calls whose consumption depends on their result, keyed by the place
   /// the result was stored in (RFC 0006). Entries are dropped on any
   /// reassignment of the result.
@@ -201,11 +209,30 @@ struct AnalysisState {
   SpatialTracker spatial;
   /// RFC 0011: order relations between integer places the path established.
   RelationTracker relations;
+  /// RFC 0013: definite entry-value identities retained by local copies.
+  /// A cell can change while a copy still refers to its incoming value.
+  /// These must-facts join by agreement, independently of live alias edges.
+  std::map<PlaceId, ValueSource> incoming;
+  /// RFC 0013: this path's outputs were captured at its explicit return.
+  /// Used to avoid recapturing a weaker state after local lifetime cleanup.
+  bool returned = false;
+  /// RFC 0013: immutable entry conditions on output writes, and writes
+  /// performed on every predecessor (used to project publication guards).
+  std::map<PlaceId, PathGuard> heapWriteGuards;
+  /// Entry ownership before a call temporarily escapes an overwritten cell.
+  std::map<PlaceId, bool> heapInputEscapes;
+  std::set<PlaceId> definiteHeapWrites;
+  /// RFC 0013: every non-null alternative points into an allocation made
+  /// in this function. Cleanup below it is not consumption of entry fields.
+  std::set<PlaceId> heapLocalObjects;
+  /// RFC 0013: roots whose heap projection lost facts at a bound.
+  std::set<PlaceId> incompleteHeap;
 
   /// Component-wise join with the state of another incoming edge. Returns
   /// whether this state changed, so the fixpoint engine need not copy and
-  /// compare whole states.
-  bool join(const AnalysisState &other);
+  /// compare whole states. With place topology, a null pointer has no
+  /// object whose missing spatial facts weaken a non-null predecessor.
+  bool join(const AnalysisState &other, const PlaceTable *places = nullptr);
 
   /// Ownership kind of `place`, `Unknown` if never assigned.
   [[nodiscard]] OwnershipKind kindOf(PlaceId place) const noexcept;

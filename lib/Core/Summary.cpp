@@ -365,10 +365,187 @@ bool FunctionSummary::consumesUnconditionally(const SummaryPath &path) const {
   });
 }
 
+void HeapDescription::addField(Store field) {
+  if (field.dest.steps.size() > MaxHeapPathDepth) {
+    incomplete = true;
+    return;
+  }
+  if (incomplete && field.value.kind == ValueSource::Kind::Unknown) {
+    std::erase_if(fields, [&field](const Store &existing) {
+      return existing.dest == field.dest;
+    });
+  }
+  std::size_t alternatives = 0;
+  for (const Store &existing : fields) {
+    if (existing.dest != field.dest)
+      continue;
+    if (incomplete && existing.value.kind == ValueSource::Kind::Unknown)
+      return;
+    if (existing.value.sameValueAs(field.value))
+      break;
+    ++alternatives;
+  }
+  if (alternatives >= MaxHeapAlternatives) {
+    std::erase_if(fields, [&field](const Store &existing) {
+      return existing.dest == field.dest;
+    });
+    field.value = ValueSource::unknown();
+    incomplete = true;
+  }
+  if (fields.size() >= MaxHeapFields &&
+      !std::ranges::any_of(fields, [&field](const Store &existing) {
+        return existing.dest == field.dest &&
+               existing.value.sameValueAs(field.value);
+      })) {
+    incomplete = true;
+    if (field.value.kind == ValueSource::Kind::Unknown && alternatives != 0) {
+      std::erase_if(fields, [&field](const Store &existing) {
+        return existing.dest == field.dest;
+      });
+      fields.insert(std::move(field));
+    }
+    return;
+  }
+  for (auto it = fields.begin(); it != fields.end(); ++it) {
+    if (it->dest == field.dest && it->value.sameValueAs(field.value)) {
+      field.value.when.join(it->value.when);
+      fields.erase(it);
+      break;
+    }
+  }
+  fields.insert(std::move(field));
+}
+
+void HeapDescription::normalize() {
+  if (incomplete) {
+    std::set<SummaryPath> unknownCells;
+    for (const Store &field : fields) {
+      if (field.value.kind == ValueSource::Kind::Unknown)
+        unknownCells.insert(field.dest);
+    }
+    std::erase_if(fields, [&](const Store &field) {
+      return unknownCells.contains(field.dest) &&
+             field.value.kind != ValueSource::Kind::Unknown;
+    });
+  }
+  std::set<SummaryPath> nodes{SummaryPath::result()};
+  for (const Store &field : fields) {
+    if (!field.value.post)
+      nodes.insert(field.dest);
+  }
+  std::vector<Store> unknown;
+  for (auto it = fields.begin(); it != fields.end();) {
+    if (it->value.post && it->value.path && it->value.path->isResult() &&
+        !nodes.contains(*it->value.path)) {
+      unknown.push_back(
+          Store{.dest = it->dest, .value = ValueSource::unknown()});
+      it = fields.erase(it);
+      incomplete = true;
+    } else {
+      ++it;
+    }
+  }
+  for (Store &field : unknown)
+    addField(std::move(field));
+}
+
+void HeapDescription::join(const HeapDescription &other) {
+  if (this == &other)
+    return;
+  const auto nullRoot = [](const HeapDescription &graph) {
+    bool sawRoot = false;
+    for (const Store &field : graph.fields) {
+      if (!field.dest.isRoot())
+        continue;
+      sawRoot = true;
+      if (!field.value.isNull())
+        return false;
+    }
+    return sawRoot;
+  };
+  const bool mineNull = nullRoot(*this);
+  const bool theirsNull = nullRoot(other);
+  std::set<SummaryPath> mine;
+  std::set<SummaryPath> theirs;
+  for (const Store &field : fields)
+    mine.insert(field.dest);
+  for (const Store &field : other.fields)
+    theirs.insert(field.dest);
+  for (const Store &field : other.fields)
+    addField(field);
+  for (const SummaryPath &path : mine) {
+    if (!theirs.contains(path) && !(theirsNull && !path.isRoot()))
+      addField(Store{.dest = path, .value = ValueSource::unknown()});
+  }
+  for (const SummaryPath &path : theirs) {
+    if (!mine.contains(path) && !(mineNull && !path.isRoot()))
+      addField(Store{.dest = path, .value = ValueSource::unknown()});
+  }
+  incomplete |= other.incomplete;
+  normalize();
+}
+
+bool HeapDescription::valid() const {
+  if (fields.size() > MaxHeapFields)
+    return false;
+  for (const Store &field : fields) {
+    if (field.dest.steps.size() > MaxHeapPathDepth || !field.dest.isResult())
+      return false;
+    const ValueSource &value = field.value;
+    if ((value.stringLength && value.unterminated) ||
+        (value.path && value.path->steps.size() > MaxHeapPathDepth) ||
+        (value.extent && value.extent->path &&
+         value.extent->path->steps.size() > MaxHeapPathDepth) ||
+        (value.stringLength && value.stringLength->path &&
+         value.stringLength->path->steps.size() > MaxHeapPathDepth))
+      return false;
+    if (std::ranges::count_if(fields, [&](const Store &other) {
+          return other.dest == field.dest;
+        }) > static_cast<std::ptrdiff_t>(MaxHeapAlternatives))
+      return false;
+    if (!value.post)
+      continue;
+    if (value.kind != ValueSource::Kind::Copy || !value.path ||
+        (value.path->isParam() && !value.path->hasDeref()))
+      return false;
+    if (value.path->isResult() && !value.path->isRoot() &&
+        !std::ranges::any_of(fields, [&value](const Store &candidate) {
+          return candidate.dest == *value.path && !candidate.value.post;
+        }))
+      return false;
+  }
+  return true;
+}
+
 void FunctionSummary::join(const FunctionSummary &other) {
   // The empty summary is the bottom of the lattice (a join of candidates
   // starts from it): the other side's classes are the answer.
   const bool wasEmpty = empty();
+  // A missing graph on a non-null returning candidate contributes unknown
+  // fields. A null pointer result has no pointee to describe (RFC 0013).
+  const auto nullOnly = [](const FunctionSummary &value) {
+    return !value.returns.empty() &&
+           std::ranges::all_of(value.returns, &ValueSource::isNull);
+  };
+  if (wasEmpty) {
+    heap = other.heap;
+  } else if (!other.empty()) {
+    for (auto &[root, graph] : heap) {
+      const auto it = other.heap.find(root);
+      if (it != other.heap.end())
+        graph.join(it->second);
+      else if (!(root.isResult() && nullOnly(other)))
+        graph.join(HeapDescription{});
+    }
+    for (const auto &[root, graph] : other.heap) {
+      if (heap.contains(root))
+        continue;
+      HeapDescription added = graph;
+      if (!(root.isResult() && nullOnly(*this)))
+        added.join(HeapDescription{});
+      heap.emplace(root, std::move(added));
+    }
+  }
   // What this side stored per class, read before its stores absorb the
   // other side's (RFC 0010, *Per-outcome stores*).
   std::map<Outcome, std::set<SummaryPath>> mineStoresOn;
@@ -544,6 +721,8 @@ FunctionSummary remapGlobals(const FunctionSummary &summary,
     result.when = remapGuard(source.when);
     if (source.extent)
       result.extent = remapAffine(*source.extent);
+    if (source.stringLength)
+      result.stringLength = remapAffine(*source.stringLength);
     if ((source.kind != ValueSource::Kind::Copy &&
          source.kind != ValueSource::Kind::Borrow) ||
         !source.path)
@@ -559,6 +738,15 @@ FunctionSummary remapGlobals(const FunctionSummary &summary,
   };
 
   FunctionSummary result;
+  for (const auto &[root, graph] : summary.heap) {
+    if (const auto mapped = remapPath(root)) {
+      HeapDescription &out = result.heap[*mapped];
+      out.incomplete = graph.incomplete;
+      for (const Store &field : graph.fields)
+        out.addField(
+            Store{.dest = field.dest, .value = remapSource(field.value)});
+    }
+  }
   for (const auto &[path, effect] : summary.effects) {
     if (const auto mapped = remapPath(path))
       result.addEffect(*mapped, remapEffect(effect));

@@ -12,8 +12,8 @@
 
 // DUMP: program:
 // DUMP: function 'counted_new': stores{} returns{fresh(free) extent 16, null}
-// DUMP-NEXT: function 'counted_ref': param 0 *.rc: read,written; stores{} returns{copy param 0} requires{param 0} increments{param 0 *.rc}
-// DUMP-NEXT: function 'counted_unref': param 0: freed(free),share; param 0 *.rc: read,written; stores{} returns{} requires{param 0} decrements{param 0 *.rc} counts{param 0 *.rc}
+// DUMP: function 'counted_ref': param 0 *.rc: read,written; stores{} returns{copy param 0} requires{param 0} increments{param 0 *.rc}
+// DUMP: function 'counted_unref': param 0: freed(free),share; param 0 *.rc: read,written; stores{} returns{} requires{param 0} decrements{param 0 *.rc} counts{param 0 *.rc}
 // DUMP: count-field 'struct counted.rc'
 
 // Clean: a share taken and given back.

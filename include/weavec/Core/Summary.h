@@ -48,9 +48,8 @@ enum class SummaryRoot : std::uint8_t {
   Param,
   /// A global variable, identified by an id interned per translation unit.
   Global,
-  /// The object a function returning a record by value hands back (RFC
-  /// 0008, *Struct-by-value results*). Only stores are rooted here
-  /// (`result.data = fresh`); `index` is always 0.
+  /// The returned value (RFCs 0008 and 0013). Record fields use `.field`;
+  /// pointer-result heap fields use `*.field`. `index` is always zero.
   Result,
 };
 
@@ -279,6 +278,13 @@ struct ValueSource {
   // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
   PathGuard when = {};
 
+  /// RFC 0013: a graph reference reads the post-state of this heap
+  /// description, rather than an incoming argument value.
+  bool post = false;
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
+  std::optional<PathAffine> stringLength = {};
+  bool unterminated = false;
+
   [[nodiscard]] static ValueSource fresh(std::string family = {}) {
     return ValueSource{.kind = Kind::Fresh,
                        .path = std::nullopt,
@@ -364,7 +370,9 @@ struct ValueSource {
   /// True if `other` is this alternative up to its guard.
   [[nodiscard]] bool sameValueAs(const ValueSource &other) const {
     return kind == other.kind && path == other.path && offset == other.offset &&
-           extent == other.extent && family == other.family;
+           extent == other.extent && family == other.family &&
+           post == other.post && stringLength == other.stringLength &&
+           unterminated == other.unterminated;
   }
 
   friend bool operator==(const ValueSource &, const ValueSource &) = default;
@@ -382,6 +390,31 @@ struct Store {
                                           const Store &) = default;
 };
 
+/// RFC 0013: deterministic projection limits, shared by import validation
+/// and the checker. Exceeding either limit marks coverage incomplete.
+inline constexpr std::size_t MaxHeapPathDepth = 8;
+inline constexpr std::size_t MaxHeapFields = 128;
+inline constexpr std::size_t MaxHeapAlternatives = 8;
+
+/// RFC 0013: a finite graph of the final pointer cells reachable from an
+/// output. Destinations and post references are relative to `result`, which
+/// denotes this description's root. A fresh value introduces an object; a
+/// post copy names that same object. Missing fields join with unknown.
+struct HeapDescription {
+  std::set<Store> fields;
+  bool incomplete = false;
+
+  void addField(Store field);
+  /// Weakens references lost at a projection limit to unknown.
+  void normalize();
+  void join(const HeapDescription &other);
+  /// Checks graph structure independently of frontend types.
+  [[nodiscard]] bool valid() const;
+
+  friend bool operator==(const HeapDescription &,
+                         const HeapDescription &) = default;
+};
+
 /// The consumption that holds on the paths returning one outcome class.
 using OutcomeEffects = std::map<SummaryPath, PlaceEffect>;
 
@@ -397,6 +430,8 @@ public:
   std::map<SummaryPath, PlaceEffect> effects;
   /// Pointer values written to caller-visible places.
   std::set<Store> stores;
+  /// RFC 0013: final heap state, keyed by the output root.
+  std::map<SummaryPath, HeapDescription> heap;
   /// Alternatives for the pointer result; empty when nothing is known.
   std::set<ValueSource> returns;
   /// Per outcome class the callee may return, the consumption (`freed` /
@@ -555,7 +590,7 @@ public:
            outcomes.empty() && nullOn.empty() && nonNullOn.empty() &&
            requiresNonNull.empty() && !neverReturns && increments.empty() &&
            decrements.empty() && counts.empty() && storesOn.empty() &&
-           factOn.empty() && requiresExtent.empty();
+           factOn.empty() && requiresExtent.empty() && heap.empty();
   }
 
   /// Component-wise set union (conjunction for the must-facts).

@@ -149,6 +149,9 @@ public:
   /// if the sides disagree; it is same-share if either side says so. Returns
   /// whether this relation changed.
   bool join(const AliasRelation &other);
+  /// RFC 0013: intersection for definite pointer equality. Only identical
+  /// edges on both paths survive.
+  bool intersect(const AliasRelation &other);
 
   /// Number of places related to at least one other place.
   [[nodiscard]] std::size_t size() const noexcept { return adjacent.size(); }

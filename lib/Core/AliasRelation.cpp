@@ -236,6 +236,25 @@ AliasRelation::edgesFrom(PlaceId place) const {
   return result;
 }
 
+bool AliasRelation::intersect(const AliasRelation &other) {
+  bool changed = false;
+  for (auto place = adjacent.begin(); place != adjacent.end();) {
+    for (auto edge = place->second.begin(); edge != place->second.end();) {
+      if (other.edge(place->first, edge->first) != edge->second) {
+        edge = place->second.erase(edge);
+        changed = true;
+      } else {
+        ++edge;
+      }
+    }
+    if (place->second.empty())
+      place = adjacent.erase(place);
+    else
+      ++place;
+  }
+  return changed;
+}
+
 bool AliasRelation::join(const AliasRelation &other) {
   bool changed = false;
   for (const auto &[place, aliases] : other.adjacent) {
