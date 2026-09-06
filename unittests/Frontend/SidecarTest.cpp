@@ -39,6 +39,13 @@ UnitRecord sample() {
   exports.unknownIndirectTypes = {"int (struct opaque *)"};
   // RFC 0010: a count field some function of the unit releases through.
   exports.countFields = {"struct node.rc"};
+  // RFC 0012: a sized-field witness and two refutations.
+  exports.sizedFields.witnesses = {analysis::SizedFieldWitness{
+      .field = "struct vec.items", .count = "struct vec.cap", .scale = 4}};
+  exports.sizedFields.unsizedFields = {"struct node.next"};
+  exports.sizedFields.unsizedPairs = {analysis::UnsizedPair{
+      .field = "struct vec.items", .count = "struct vec.n"}};
+  exports.sizedFieldLoads = {"struct node.children"};
   record.reported.insert(ReportedDiagnostic{.id = "use-after-free",
                                             .file = "../src/node.c",
                                             .line = 17,
@@ -93,7 +100,7 @@ TEST(Sidecar, PathIsOutputPlusExtension) {
 
 TEST(Sidecar, PrintsStableText) {
   EXPECT_EQ(printUnitRecord(sample()),
-            "weavec-summaries 7\n"
+            "weavec-summaries 8\n"
             "source src/node.c\n"
             "cwd /work/build\n"
             "arg -triple\n"
@@ -110,6 +117,10 @@ TEST(Sidecar, PrintsStableText) {
             "unknown blob_open\n"
             "unknown-indirect int (struct opaque *)\n"
             "count-field struct node.rc\n"
+            "sized-field struct~vec.items struct~vec.cap 4\n"
+            "unsized-field struct~node.next\n"
+            "unsized-field struct~vec.items struct~vec.n\n"
+            "loads-field struct~node.children\n"
             "reported use-after-free 17 10 ../src/node.c\n"
             "function grow external plain char *(char *, unsigned long)\n"
             "summary\n"
@@ -150,6 +161,9 @@ TEST(Sidecar, RoundTrips) {
   EXPECT_EQ(parsed->exports.unknownIndirectTypes,
             original.exports.unknownIndirectTypes);
   EXPECT_EQ(parsed->reported, original.reported);
+  EXPECT_EQ(parsed->exports.countFields, original.exports.countFields);
+  EXPECT_EQ(parsed->exports.sizedFields, original.exports.sizedFields);
+  EXPECT_EQ(parsed->exports.sizedFieldLoads, original.exports.sizedFieldLoads);
   ASSERT_EQ(parsed->exports.functions.size(), 4U);
   for (const auto &[name, function] : original.exports.functions) {
     const auto it = parsed->exports.functions.find(name);
@@ -169,29 +183,41 @@ TEST(Sidecar, RejectsOtherFormatsAndMalformedLines) {
   std::string error;
   EXPECT_FALSE(parseUnitRecord("weavec-summaries 1\n", &error));
   EXPECT_EQ(error, "unsupported format 1");
-  EXPECT_FALSE(parseUnitRecord("weavec-summaries 8\n", &error));
-  EXPECT_EQ(error, "unsupported format 8");
+  EXPECT_FALSE(parseUnitRecord("weavec-summaries 9\n", &error));
+  EXPECT_EQ(error, "unsupported format 9");
+  EXPECT_FALSE(parseUnitRecord("weavec-summaries 7\n", &error));
+  EXPECT_EQ(error, "unsupported format 7");
   EXPECT_FALSE(parseUnitRecord("ELF\x01\x02", &error));
   EXPECT_EQ(error, "not a weavec summary file");
   EXPECT_FALSE(parseUnitRecord("", &error));
   EXPECT_EQ(error, "empty file");
   EXPECT_FALSE(parseUnitRecord(
-      "weavec-summaries 7\nsummary\n  return fresh\nend\n", &error));
+      "weavec-summaries 8\nsummary\n  return fresh\nend\n", &error));
   EXPECT_EQ(error, "line 2: summary record without a function");
-  EXPECT_FALSE(parseUnitRecord("weavec-summaries 7\nfunction f\n", &error));
+  EXPECT_FALSE(parseUnitRecord("weavec-summaries 8\nfunction f\n", &error));
   EXPECT_EQ(error, "line 2: malformed 'function' line");
-  EXPECT_FALSE(parseUnitRecord("weavec-summaries 7\nfunction f external "
+  EXPECT_FALSE(parseUnitRecord("weavec-summaries 8\nfunction f external "
                                "plain\nsummary\n  return fresh\n",
                                &error));
   EXPECT_EQ(error, "line 4: summary record without 'end'");
-  EXPECT_FALSE(parseUnitRecord("weavec-summaries 7\nreported x y z\n", &error));
+  EXPECT_FALSE(parseUnitRecord("weavec-summaries 8\nreported x y z\n", &error));
   EXPECT_EQ(error, "line 2: malformed 'reported' line");
+  // RFC 0012.
+  EXPECT_FALSE(
+      parseUnitRecord("weavec-summaries 8\nsized-field a b\n", &error));
+  EXPECT_EQ(error, "line 2: malformed 'sized-field' line");
+  EXPECT_FALSE(
+      parseUnitRecord("weavec-summaries 8\nsized-field a b c\n", &error));
+  EXPECT_EQ(error, "line 2: malformed 'sized-field' line");
+  EXPECT_FALSE(
+      parseUnitRecord("weavec-summaries 8\nunsized-field a b c\n", &error));
+  EXPECT_EQ(error, "line 2: malformed 'unsized-field' line");
 }
 
 TEST(Sidecar, SkipsUnknownLinesAndBlankOnes) {
   std::string error;
   const std::optional<UnitRecord> parsed = parseUnitRecord(
-      "weavec-summaries 7\n\nfuture-thing 42\nsource a.c\n\n", &error);
+      "weavec-summaries 8\n\nfuture-thing 42\nsource a.c\n\n", &error);
   ASSERT_TRUE(parsed) << error;
   EXPECT_EQ(parsed->exports.source, "a.c");
   EXPECT_TRUE(parsed->exports.functions.empty());

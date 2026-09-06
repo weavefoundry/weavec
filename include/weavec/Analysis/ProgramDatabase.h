@@ -76,6 +76,52 @@ struct ExportedFunction {
                          const ExportedFunction &) = default;
 };
 
+/// RFC 0012, *Sized fields*: one function's evidence that the pointer field
+/// `field` (a count-field key, `struct buf.data`) is as long as the sibling
+/// integer field `count` says, in units of `scale` bytes.
+struct SizedFieldWitness {
+  std::string field;
+  std::string count;
+  std::int64_t scale = 1;
+
+  friend auto operator<=>(const SizedFieldWitness &,
+                          const SizedFieldWitness &) = default;
+};
+
+/// RFC 0012: a `(field, count)` pair some function's writes contradict.
+struct UnsizedPair {
+  std::string field;
+  std::string count;
+
+  friend auto operator<=>(const UnsizedPair &, const UnsizedPair &) = default;
+};
+
+/// RFC 0012, *Sized fields*: what a unit (or the database) knows about
+/// which pointer fields are counted by which sibling fields.
+struct SizedFieldFacts {
+  std::set<SizedFieldWitness> witnesses;
+  /// Pointer fields some function stores a value into whose extent is no
+  /// sibling's value: never sized.
+  std::set<std::string> unsizedFields;
+  /// Pairs whose count is written without the pointer being stored.
+  std::set<UnsizedPair> unsizedPairs;
+
+  void merge(const SizedFieldFacts &other);
+  void clear();
+  [[nodiscard]] bool empty() const noexcept {
+    return witnesses.empty() && unsizedFields.empty() && unsizedPairs.empty();
+  }
+  /// The count and scale `field` is confirmed sized by: its witnesses are
+  /// exactly one `(count, scale)`, and no refutation names it.
+  [[nodiscard]] std::optional<std::pair<std::string, std::int64_t>>
+  confirmed(std::string_view field) const;
+  /// Every confirmed pair, as witnesses.
+  [[nodiscard]] std::set<SizedFieldWitness> confirmedPairs() const;
+
+  friend bool operator==(const SizedFieldFacts &,
+                         const SizedFieldFacts &) = default;
+};
+
 /// Everything one translation unit contributes to, and needs from, the
 /// program.
 struct UnitExports {
@@ -98,9 +144,19 @@ struct UnitExports {
   /// some function of the unit releases a share through, or that are
   /// annotated `WEAVEC_REFCOUNT`. Sidecar line `count-field <key>`.
   std::set<std::string> countFields;
+  /// RFC 0012, *Sized fields*: the unit's witnesses and refutations.
+  /// Sidecar lines `sized-field <f> <g> <scale>` and `unsized-field <f>
+  /// [<g>]`.
+  SizedFieldFacts sizedFields;
+  /// RFC 0012, *Sized fields*: the keys of the unannotated pointer fields
+  /// some bounds check of the unit looked up the extent of. A pair the
+  /// program later confirms for one of them means the unit is analysed once
+  /// more. Sidecar line `loads-field <key>`.
+  std::set<std::string> sizedFieldLoads;
 
-  /// True if the exported summaries (and count fields) are the same; the
-  /// fixpoint test of RFC 0005's whole-program algorithm.
+  /// True if the exported summaries (and count fields, and sized-field
+  /// facts) are the same; the fixpoint test of RFC 0005's whole-program
+  /// algorithm.
   [[nodiscard]] bool sameSummariesAs(const UnitExports &other) const;
 };
 
@@ -158,6 +214,11 @@ public:
     return countFields;
   }
 
+  /// RFC 0012: the sized-field facts of every unit, unioned.
+  [[nodiscard]] const SizedFieldFacts &sizedFieldFacts() const noexcept {
+    return sizedFields;
+  }
+
   /// Rewrites a database summary for use in the unit `context` describes:
   /// each global root becomes the unit's external-linkage variable of that
   /// name, interned in `table`, or is dropped if the unit declares none.
@@ -174,6 +235,7 @@ private:
   std::map<std::string, core::FunctionSummary, std::less<>> candidateSummaries;
   GlobalNames globalNames;
   std::set<std::string, std::less<>> countFields;
+  SizedFieldFacts sizedFields;
 };
 
 } // namespace weavec::analysis

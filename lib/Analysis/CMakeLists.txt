@@ -6,6 +6,8 @@ weavec_add_library(
           Builtins.cpp
           ClangLocation.cpp
           Dataflow.cpp
+          DataflowSizedFields.cpp
+          DataflowStrings.cpp
           FunctionAnalysis.cpp
           PlaceBuilder.cpp
           ProgramDatabase.cpp

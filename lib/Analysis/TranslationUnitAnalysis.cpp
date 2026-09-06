@@ -220,6 +220,9 @@ UnitExports TranslationUnitAnalyzer::exports() {
     result.unknownIndirectTypes.insert(std::move(key));
   // RFC 0010: count fields are keyed by type spelling, so they travel as is.
   result.countFields = store.knownCountKeys();
+  // RFC 0012: so are sized-field witnesses and refutations.
+  result.sizedFields = store.sizedFieldFacts();
+  result.sizedFieldLoads = store.sizedFieldLoads();
   return result;
 }
 
@@ -231,12 +234,127 @@ void TranslationUnitAnalyzer::run(
   const std::vector<std::vector<unsigned>> components =
       core::stronglyConnectedComponents(adjacency);
 
-  FunctionAnalyzer analyzer(context, sink, options);
+  // RFC 0012, *Sized fields*, "Two passes in a unit": the first pass takes
+  // inferred sized fields from the program database only; every report is
+  // remembered so the second pass emits only what is new.
+  RememberingSink remembered(sink);
+  store.setUnitSizedFactsInForce(false);
+  FunctionAnalyzer analyzer(context, remembered, options);
+  std::vector<const FunctionDecl *> reported;
   for (const std::vector<unsigned> &component : components) {
     const bool recursive =
         component.size() > 1 ||
         llvm::is_contained(adjacency[component.front()], component.front());
     analyzeComponent(component, recursive, analyzer, shouldReport);
+    for (const unsigned member : component) {
+      if (shouldReport(*definitions[member]))
+        reported.push_back(definitions[member]);
+    }
+  }
+  reportConfirmedSizedFields(reported, remembered.seen());
+}
+
+void TranslationUnitAnalyzer::RememberingSink::report(
+    const core::Diagnostic &diagnostic) {
+  keys.insert(keyOf(diagnostic));
+  inner.report(diagnostic);
+}
+
+TranslationUnitAnalyzer::DiagnosticKey
+TranslationUnitAnalyzer::RememberingSink::keyOf(
+    const core::Diagnostic &diagnostic) {
+  return DiagnosticKey{std::string(diagnostic.id), diagnostic.location.file,
+                       diagnostic.location.line, diagnostic.location.column,
+                       diagnostic.message};
+}
+
+namespace {
+
+/// Whether a function body names any of a set of fields.
+class FieldUseFinder : public RecursiveASTVisitor<FieldUseFinder> {
+public:
+  explicit FieldUseFinder(const llvm::DenseSet<const FieldDecl *> &of)
+      : fields(of) {}
+  bool found = false;
+
+  // NOLINTNEXTLINE(readability-identifier-naming,bugprone-derived-method-shadowing-base-method)
+  bool VisitMemberExpr(MemberExpr *member) {
+    if (const auto *field = dyn_cast<FieldDecl>(member->getMemberDecl());
+        field != nullptr && fields.contains(field->getCanonicalDecl()))
+      found = true;
+    return !found;
+  }
+
+private:
+  const llvm::DenseSet<const FieldDecl *> &fields;
+};
+
+/// Every field of a named record declared in the unit whose key is one of
+/// `keys`.
+class FieldsByKeyCollector : public RecursiveASTVisitor<FieldsByKeyCollector> {
+public:
+  FieldsByKeyCollector(const std::set<std::string> &wanted,
+                       const ASTContext &ctx)
+      : keys(wanted), context(ctx) {}
+  llvm::DenseSet<const FieldDecl *> fields;
+
+  // NOLINTNEXTLINE(readability-identifier-naming,bugprone-derived-method-shadowing-base-method)
+  bool VisitFieldDecl(FieldDecl *field) {
+    if (field->getType()->isPointerType() &&
+        keys.contains(fieldKeyOf(*field, context)))
+      fields.insert(field->getCanonicalDecl());
+    return true;
+  }
+
+private:
+  const std::set<std::string> &keys;
+  const ASTContext &context;
+};
+
+} // namespace
+
+void TranslationUnitAnalyzer::reportConfirmedSizedFields(
+    llvm::ArrayRef<const FunctionDecl *> reported,
+    const std::set<DiagnosticKey> &alreadyReported) {
+  // The fields the unit's own witnesses confirm that the database alone
+  // did not (RFC 0012, *Sized fields*, "Two passes in a unit").
+  const SizedFieldFacts &unit = store.sizedFieldFacts();
+  if (unit.witnesses.empty() || reported.empty())
+    return;
+  std::set<std::string> newlyConfirmed;
+  for (const SizedFieldWitness &witness : unit.witnesses) {
+    if (store.confirmedSizedBy(witness.field))
+      continue;
+    store.setUnitSizedFactsInForce(true);
+    const bool confirmed = store.confirmedSizedBy(witness.field).has_value();
+    store.setUnitSizedFactsInForce(false);
+    if (confirmed)
+      newlyConfirmed.insert(witness.field);
+  }
+  if (newlyConfirmed.empty())
+    return;
+  FieldsByKeyCollector collector(newlyConfirmed, context);
+  collector.TraverseDecl(context.getTranslationUnitDecl());
+  if (collector.fields.empty())
+    return;
+
+  // Only a load of a confirmed field can change anything, and only into an
+  // `out-of-bounds` report; nothing else of the second run is emitted.
+  store.setUnitSizedFactsInForce(true);
+  core::DiagnosticCollector collected;
+  FunctionAnalyzer analyzer(context, collected, options);
+  for (const FunctionDecl *function : reported) {
+    FieldUseFinder finder(collector.fields);
+    finder.TraverseStmt(function->getBody());
+    if (!finder.found)
+      continue;
+    analyzer.analyze(*function, store, /*emitDiagnostics=*/true);
+  }
+  for (const core::Diagnostic &diagnostic : collected.diagnostics()) {
+    if (diagnostic.id != core::diag::OutOfBounds ||
+        alreadyReported.contains(RememberingSink::keyOf(diagnostic)))
+      continue;
+    sink.report(diagnostic);
   }
 }
 

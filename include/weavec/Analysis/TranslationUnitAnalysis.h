@@ -25,10 +25,12 @@
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/Decl.h"
 
+#include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/STLFunctionalExtras.h"
 
 #include <set>
 #include <string>
+#include <tuple>
 #include <vector>
 
 namespace weavec::analysis {
@@ -104,6 +106,33 @@ private:
       FunctionAnalyzer &analyzer,
       llvm::function_ref<bool(const clang::FunctionDecl &)> shouldReport);
   void reportUnannotatedInterface(const clang::FunctionDecl &function);
+
+  // -- Sized fields (RFC 0012, *Two passes in a unit*) ------------------------
+
+  /// A diagnostic by id, location and message: what "the same report"
+  /// means between the two passes.
+  using DiagnosticKey =
+      std::tuple<std::string, std::string, unsigned, unsigned, std::string>;
+  /// Forwards to the unit's sink and remembers what went through.
+  class RememberingSink final : public core::DiagnosticSink {
+  public:
+    explicit RememberingSink(core::DiagnosticSink &sink) : inner(sink) {}
+    void report(const core::Diagnostic &diagnostic) override;
+    [[nodiscard]] const std::set<DiagnosticKey> &seen() const noexcept {
+      return keys;
+    }
+    [[nodiscard]] static DiagnosticKey keyOf(const core::Diagnostic &);
+
+  private:
+    core::DiagnosticSink &inner;
+    std::set<DiagnosticKey> keys;
+  };
+  /// Re-analyses the reported functions that load a field the unit's own
+  /// witnesses confirmed, emitting the `out-of-bounds` reports the first
+  /// pass did not produce.
+  void reportConfirmedSizedFields(
+      llvm::ArrayRef<const clang::FunctionDecl *> reported,
+      const std::set<DiagnosticKey> &alreadyReported);
 };
 
 } // namespace weavec::analysis

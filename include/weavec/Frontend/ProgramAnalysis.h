@@ -110,6 +110,9 @@ private:
     std::unique_ptr<ProgramUnit> unit;
     std::optional<analysis::UnitExports> exports;
     std::set<ReportedDiagnostic> reported;
+    /// RFC 0012, *Sized fields*: the pairs the database confirmed when the
+    /// unit was last reported on; more at the end means another pass.
+    std::set<analysis::SizedFieldWitness> sizedPairsSeen;
   };
 
   FrontendOptions options;
@@ -125,6 +128,14 @@ private:
   [[nodiscard]] std::vector<std::vector<unsigned>> unitGraph() const;
   void analyzeAcyclic(unsigned index, Result &result);
   void analyzeCyclic(const std::vector<unsigned> &component, Result &result);
+  /// Records what a reporting run of `unit` against `db` produced: its
+  /// exports, the diagnostics shown, the sized-field pairs in force.
+  static void settle(Unit &unit, const analysis::ProgramDatabase &db,
+                     const UnitResult &run);
+  /// RFC 0012, *Sized fields*, "Inference": one more reporting pass over
+  /// every unit analysed before the program confirmed a pair it may load;
+  /// only what is new is shown.
+  void reportConfirmedSizedFields(Result &result);
   /// `settled` plus the exports of a cyclic component's members.
   [[nodiscard]] analysis::ProgramDatabase
   databaseFor(const std::vector<analysis::UnitExports> &members) const;

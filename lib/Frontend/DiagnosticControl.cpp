@@ -130,6 +130,8 @@ void FilteringSink::report(const core::Diagnostic &diagnostic) {
   const std::optional<core::Diagnostic> adjusted = table.apply(diagnostic);
   if (!adjusted)
     return;
+  if (only != nullptr && !only->contains(adjusted->id))
+    return;
   const ReportedDiagnostic key = ReportedDiagnostic::of(*adjusted);
   if (skip != nullptr && skip->contains(key))
     return;

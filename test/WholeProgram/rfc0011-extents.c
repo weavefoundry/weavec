@@ -8,7 +8,7 @@
 // Alone, the calls are unchecked boundaries: nothing is reported.
 // RUN: %weavec %s -- -I%S/Inputs 2>&1 | FileCheck --check-prefix=ALONE %s
 //
-// The same through weavec-cc: the sidecar carries all three (format 7).
+// The same through weavec-cc: the sidecar carries all three (format 8).
 // RUN: rm -rf %t && mkdir -p %t
 // RUN: %weavec_cc -c %S/Inputs/buffers.c -o %t/buffers.o -I%S/Inputs 2>&1 | count 0
 // RUN: %weavec_cc -c %s -o %t/main.o -I%S/Inputs 2>&1 | count 0
@@ -23,7 +23,7 @@
 // DUMP-NEXT: function 'buffer_put8': param 0 *: written; stores{} returns{} requires{param 0} requires-extent{param 0: 8}
 // DUMP: function 'wrapped_release': param 0: freed(free),at(-struct~wrapped.payload); stores{} returns{}
 
-// SIDECAR: weavec-summaries 7
+// SIDECAR: weavec-summaries 8
 // SIDECAR: function buffer_fill
 // SIDECAR: requires-extent 0 param 1 scale 1 plus 0
 // SIDECAR: function buffer_new

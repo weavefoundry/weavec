@@ -20,6 +20,7 @@
 #define WEAVEC_ANALYSIS_SUMMARIES_H
 
 #include "weavec/Analysis/Annotations.h"
+#include "weavec/Analysis/ProgramDatabase.h"
 #include "weavec/Core/Summary.h"
 
 #include "clang/AST/Decl.h"
@@ -36,6 +37,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -114,6 +116,24 @@ struct SizedBy {
 };
 [[nodiscard]] std::optional<SizedBy>
 sizedByOf(const clang::FunctionDecl &function, unsigned param);
+
+/// RFC 0012, *Sized fields*: what `WEAVEC_SIZED_BY(g)` on the pointer field
+/// `field` resolves to: the sibling integer field `g` names and the bytes
+/// per element of the pointer (1 for `void *` and incomplete pointees).
+/// Nothing when the field is not annotated or the annotation is malformed
+/// (`g` not an integer field of the same record, `field` not a pointer):
+/// the checker reports that as `invalid-annotation`.
+struct SizedField {
+  const clang::FieldDecl *count = nullptr;
+  std::int64_t unit = 1;
+};
+[[nodiscard]] std::optional<SizedField>
+sizedFieldOf(const clang::FieldDecl &field);
+
+/// RFC 0012: the count-field key (`struct buf.data`) of `field`, or empty
+/// when its record has no stable spelling.
+[[nodiscard]] std::string fieldKeyOf(const clang::FieldDecl &field,
+                                     const clang::ASTContext &context);
 
 /// Sets `summary.requiresExtent` from the `WEAVEC_SIZED_BY` annotations on
 /// `function`'s parameters (authoritative per parameter).
@@ -248,6 +268,34 @@ public:
   /// The keys known in this unit (for `UnitExports::countFields`).
   [[nodiscard]] const std::set<std::string> &knownCountKeys() const noexcept;
 
+  // -- Sized fields (RFC 0012, *Sized fields*) --------------------------------
+
+  /// Records what one function's exit state says about the pointer field
+  /// `field`: it holds an object of `count * scale` bytes (`addSizedWitness`),
+  /// or something no sibling counts (`refuteSizedField`), or its `count`
+  /// sibling changed while it did not (`refuteSizedPair`).
+  void addSizedWitness(std::string field, std::string count,
+                       std::int64_t scale);
+  void refuteSizedField(std::string field);
+  void refuteSizedPair(std::string field, std::string count);
+  /// The unit's own witnesses and refutations (for `UnitExports`).
+  [[nodiscard]] const SizedFieldFacts &sizedFieldFacts() const noexcept;
+  /// Records that a bounds check looked up the extent of the unannotated
+  /// pointer field `key`; the keys so far (for `UnitExports`).
+  void noteSizedFieldLoad(std::string key);
+  [[nodiscard]] const std::set<std::string> &sizedFieldLoads() const noexcept;
+  /// Whether `confirmedSizedBy` reads the unit's own facts as well as the
+  /// database's (RFC 0012, *Two passes in a unit*: off during the first
+  /// pass, on for the second).
+  void setUnitSizedFactsInForce(bool inForce) noexcept;
+  /// The count key and scale `field` is confirmed sized by, from the
+  /// database's facts and, when in force, the unit's; nothing otherwise.
+  [[nodiscard]] std::optional<std::pair<std::string, std::int64_t>>
+  confirmedSizedBy(std::string_view field) const;
+  /// Records that `invalid-annotation` was reported for `field`; returns
+  /// true the first time (the report is once per unit).
+  bool noteInvalidSizedField(const clang::FieldDecl &field);
+
 private:
   // Node-based maps: `lookup` hands out pointers into them that must stay
   // valid while further lookups insert.
@@ -267,6 +315,10 @@ private:
   const ProgramDatabase *database = nullptr;
   const clang::ASTContext *context = nullptr;
   std::set<std::string> knownCounts;
+  SizedFieldFacts sizedFields;
+  std::set<std::string> sizedLoads;
+  bool unitSizedFactsInForce = false;
+  llvm::DenseSet<const clang::FieldDecl *> invalidSizedFields;
 
   /// The database summary for `callee`, imported into this unit, if the
   /// program defines it elsewhere.

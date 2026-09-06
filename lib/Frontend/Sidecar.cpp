@@ -16,6 +16,8 @@
 #include "llvm/Support/Path.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <algorithm>
+#include <cstdint>
 #include <string>
 #include <system_error>
 #include <tuple>
@@ -25,6 +27,19 @@ namespace weavec::frontend {
 
 std::string sidecarPathFor(llvm::StringRef output) {
   return output.str() + ".weavec";
+}
+
+/// A field key with its spaces as `~`, and back.
+static std::string withoutSpaces(llvm::StringRef key) {
+  std::string result = key.str();
+  std::ranges::replace(result, ' ', '~');
+  return result;
+}
+
+static std::string withSpaces(llvm::StringRef key) {
+  std::string result = key.str();
+  std::ranges::replace(result, '~', ' ');
+  return result;
 }
 
 std::string printUnitRecord(const UnitRecord &record) {
@@ -48,6 +63,21 @@ std::string printUnitRecord(const UnitRecord &record) {
     os << "unknown-indirect " << key << '\n';
   for (const std::string &key : exports.countFields)
     os << "count-field " << key << '\n';
+  // RFC 0012, *Sized fields*: several keys on one line, so the spaces in a
+  // key (`struct buf.data`) are spelled `~`, as RFC 0011 spells field keys
+  // in offsets.
+  for (const analysis::SizedFieldWitness &w : exports.sizedFields.witnesses) {
+    os << "sized-field " << withoutSpaces(w.field) << ' '
+       << withoutSpaces(w.count) << ' ' << w.scale << '\n';
+  }
+  for (const std::string &field : exports.sizedFields.unsizedFields)
+    os << "unsized-field " << withoutSpaces(field) << '\n';
+  for (const analysis::UnsizedPair &pair : exports.sizedFields.unsizedPairs) {
+    os << "unsized-field " << withoutSpaces(pair.field) << ' '
+       << withoutSpaces(pair.count) << '\n';
+  }
+  for (const std::string &field : exports.sizedFieldLoads)
+    os << "loads-field " << withoutSpaces(field) << '\n';
   for (const ReportedDiagnostic &d : record.reported) {
     os << "reported " << d.id << ' ' << d.line << ' ' << d.column << ' '
        << d.file << '\n';
@@ -152,6 +182,34 @@ std::optional<UnitRecord> parseUnitRecord(llvm::StringRef text,
       exports.unknownIndirectTypes.insert(value.str());
     } else if (kind == "count-field") {
       exports.countFields.insert(value.str());
+    } else if (kind == "loads-field") {
+      exports.sizedFieldLoads.insert(withSpaces(value));
+    } else if (kind == "sized-field") {
+      // `<field> <count> <scale>`, keys without spaces.
+      llvm::SmallVector<llvm::StringRef, 3> fields;
+      value.split(fields, ' ');
+      std::int64_t scale = 0;
+      if (fields.size() != 3 || fields[0].empty() || fields[1].empty() ||
+          fields[2].getAsInteger(10, scale))
+        return fail("line " + std::to_string(lineNumber) +
+                    ": malformed 'sized-field' line");
+      exports.sizedFields.witnesses.insert(
+          analysis::SizedFieldWitness{.field = withSpaces(fields[0]),
+                                      .count = withSpaces(fields[1]),
+                                      .scale = scale});
+    } else if (kind == "unsized-field") {
+      // `<field>` or `<field> <count>`.
+      llvm::SmallVector<llvm::StringRef, 2> fields;
+      value.split(fields, ' ');
+      if (fields.empty() || fields.size() > 2 || fields[0].empty())
+        return fail("line " + std::to_string(lineNumber) +
+                    ": malformed 'unsized-field' line");
+      if (fields.size() == 1) {
+        exports.sizedFields.unsizedFields.insert(withSpaces(fields[0]));
+      } else {
+        exports.sizedFields.unsizedPairs.insert(analysis::UnsizedPair{
+            .field = withSpaces(fields[0]), .count = withSpaces(fields[1])});
+      }
     } else if (kind == "reported") {
       // `<id> <line> <column> <file>`; the file may contain spaces.
       llvm::SmallVector<llvm::StringRef, 4> fields;

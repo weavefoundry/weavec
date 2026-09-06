@@ -377,6 +377,15 @@ static bool runLinkStep(const clang::driver::Command &link,
         candidates[function.typeKey].push_back(i);
     }
   }
+  // RFC 0012, *Sized fields*: the fields some unit's stores witness as
+  // counted, by the unit. A unit that checks an access through one of them
+  // has something to learn from the rest of the program.
+  std::map<std::string, std::vector<unsigned>, std::less<>> witnessed;
+  for (unsigned i = 0; i < inputs.size(); ++i) {
+    for (const analysis::SizedFieldWitness &witness :
+         inputs[i].record.exports.sizedFields.witnesses)
+      witnessed[witness.field].push_back(i);
+  }
 
   ProgramAnalysis program(weavec.toFrontendOptions());
   for (unsigned i = 0; i < inputs.size(); ++i) {
@@ -393,6 +402,13 @@ static bool runLinkStep(const clang::driver::Command &link,
         llvm::any_of(exports.indirectTypes, [&](const std::string &key) {
           const auto it = candidates.find(key);
           return it != candidates.end() &&
+                 llvm::any_of(it->second, [i](unsigned u) { return u != i; });
+        });
+    needsAnalysis =
+        needsAnalysis ||
+        llvm::any_of(exports.sizedFieldLoads, [&](const std::string &key) {
+          const auto it = witnessed.find(key);
+          return it != witnessed.end() &&
                  llvm::any_of(it->second, [i](unsigned u) { return u != i; });
         });
 

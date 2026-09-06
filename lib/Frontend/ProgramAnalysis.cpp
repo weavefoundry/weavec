@@ -8,12 +8,16 @@
 
 #include "weavec/Frontend/ProgramAnalysis.h"
 
+#include "weavec/Core/Diagnostic.h"
 #include "weavec/Core/Scc.h"
 
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
 #include <map>
+#include <set>
+#include <string_view>
 #include <utility>
 
 namespace weavec::frontend {
@@ -26,7 +30,8 @@ void ProgramAnalysis::addUnit(std::unique_ptr<ProgramUnit> unit,
                               std::set<ReportedDiagnostic> reported) {
   units.push_back(Unit{.unit = std::move(unit),
                        .exports = std::move(known),
-                       .reported = std::move(reported)});
+                       .reported = std::move(reported),
+                       .sizedPairsSeen = {}});
 }
 
 void ProgramAnalysis::addExports(analysis::UnitExports exports) {
@@ -38,6 +43,7 @@ ProgramAnalysis::runUnit(ProgramUnit &unit, const FrontendOptions &overrides) {
   FrontendOptions run = options;
   run.database = overrides.database;
   run.alreadyReported = overrides.alreadyReported;
+  run.onlyIds = overrides.onlyIds;
   run.silent = overrides.silent;
   run.discoverOnly = overrides.discoverOnly;
   run.boundaryOnce = &boundaryOnce;
@@ -132,8 +138,57 @@ void ProgramAnalysis::analyzeAcyclic(unsigned index, Result &result) {
   }
   result.errors += run->errors;
   result.warnings += run->warnings;
-  unit.exports = run->exports;
   settled.add(run->exports);
+  settle(unit, settled, *run);
+}
+
+void ProgramAnalysis::settle(Unit &unit, const analysis::ProgramDatabase &db,
+                             const UnitResult &run) {
+  unit.exports = run.exports;
+  unit.reported.insert(run.reported.begin(), run.reported.end());
+  unit.sizedPairsSeen = db.sizedFieldFacts().confirmedPairs();
+}
+
+void ProgramAnalysis::reportConfirmedSizedFields(Result &result) {
+  // A unit reported on before the program confirmed a pair (the witnesses
+  // came from units it does not call, so the unit order did not put them
+  // first), and that looked up the extent of the pair's field, is analysed
+  // once more against the whole program and shows what it did not show
+  // before. The pass is one: a witness the pass itself adds can only widen
+  // the next program's view (RFC 0012, *Sized fields*, "Inference").
+  const std::set<analysis::SizedFieldWitness> confirmed =
+      settled.sizedFieldFacts().confirmedPairs();
+  if (confirmed.empty())
+    return;
+  // A synthesised extent enables bounds reports and nothing else; the run
+  // is against a fuller database than the first, which is not this pass's
+  // business to report on (RFC 0012, *Two passes in a unit*).
+  static const std::set<std::string_view> OnlyBounds{core::diag::OutOfBounds};
+  for (Unit &unit : units) {
+    if (!unit.exports)
+      continue;
+    const bool more = llvm::any_of(
+        confirmed, [&unit](const analysis::SizedFieldWitness &pair) {
+          return !unit.sizedPairsSeen.contains(pair) &&
+                 unit.exports->sizedFieldLoads.contains(pair.field);
+        });
+    if (!more)
+      continue;
+    announce(options.analysis.dumpStream, *unit.unit);
+    FrontendOptions overrides;
+    overrides.database = &settled;
+    overrides.alreadyReported = &unit.reported;
+    overrides.onlyIds = &OnlyBounds;
+    const std::optional<UnitResult> run = runUnit(*unit.unit, overrides);
+    if (!run) {
+      result.failed.push_back(unit.unit->name());
+      continue;
+    }
+    result.errors += run->errors;
+    result.warnings += run->warnings;
+    settled.add(run->exports);
+    settle(unit, settled, *run);
+  }
 }
 
 void ProgramAnalysis::widen(analysis::UnitExports &exports,
@@ -145,6 +200,9 @@ void ProgramAnalysis::widen(analysis::UnitExports &exports,
   }
   exports.countFields.insert(previous.countFields.begin(),
                              previous.countFields.end());
+  // RFC 0012: sized-field facts widen the same way; a refutation once
+  // seen stays.
+  exports.sizedFields.merge(previous.sizedFields);
 }
 
 void ProgramAnalysis::analyzeCyclic(const std::vector<unsigned> &component,
@@ -252,6 +310,7 @@ void ProgramAnalysis::analyzeCyclic(const std::vector<unsigned> &component,
     result.errors += run->errors;
     result.warnings += run->warnings;
     current[k] = run->exports;
+    settle(unit, db, *run);
   }
   for (unsigned k = 0; k < component.size(); ++k) {
     units[component[k]].exports = current[k];
@@ -292,6 +351,7 @@ ProgramAnalysis::Result ProgramAnalysis::run() {
     }
     analyzeCyclic(component, result);
   }
+  reportConfirmedSizedFields(result);
 
   if (llvm::raw_ostream *dump = options.analysis.dumpStream)
     settled.dump(*dump);

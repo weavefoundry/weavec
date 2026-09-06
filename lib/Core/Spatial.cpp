@@ -63,15 +63,22 @@ static std::optional<std::int64_t> valueAt(const Affine &affine,
   return total;
 }
 
-std::optional<BoundsVerdict>
-boundsVerdict(const Affine &need, const Affine &have,
-              std::optional<Relation> between,
-              std::optional<std::int64_t> needAtMost,
-              std::optional<std::int64_t> haveAtMost) {
+std::optional<BoundsVerdict> boundsVerdict(const Affine &need,
+                                           const Affine &have,
+                                           std::optional<Relation> between,
+                                           const KnownBounds &bounds) {
   // 5: a constant access that ends at or before the start began before it
   // (the need counts the bytes of the element itself).
   if (need.isConstant() && need.constant <= 0)
     return BoundsVerdict{.kind = BoundsVerdict::Kind::BeforeStart};
+  // 5' (RFC 0012): an index bounded above so that the access ends at or
+  // before the start on every value allowed (`i <= -1` then `p[i]`).
+  if (!need.isConstant() && bounds.needAtMost && need.scale > 0) {
+    const auto largest = valueAt(need, *bounds.needAtMost);
+    if (largest && *largest <= 0)
+      return BoundsVerdict{.kind = BoundsVerdict::Kind::BeforeStart,
+                           .boundary = *bounds.needAtMost};
+  }
   // 1: two constants.
   if (need.isConstant() && have.isConstant()) {
     if (need.constant > have.constant)
@@ -81,18 +88,28 @@ boundsVerdict(const Affine &need, const Affine &have,
   // 6: a constant on one side against a place bounded above on the other.
   // An object of at most `U` bytes cannot hold a constant access past `U`;
   // an index that may reach `U` may reach past an object of constant size.
+  // 3' (RFC 0012): an index bounded *below* by `L` whose smallest access is
+  // already past an object of constant size is out of bounds outright.
   if (need.isConstant() != have.isConstant()) {
-    if (need.isConstant() && haveAtMost && have.scale > 0) {
-      const auto largest = valueAt(have, *haveAtMost);
+    if (need.isConstant() && bounds.haveAtMost && have.scale > 0) {
+      const auto largest = valueAt(have, *bounds.haveAtMost);
       if (largest && need.constant > *largest)
         return BoundsVerdict{.kind = BoundsVerdict::Kind::OutOfBounds};
       return std::nullopt;
     }
-    if (have.isConstant() && needAtMost && need.scale > 0) {
-      const auto largest = valueAt(need, *needAtMost);
-      if (largest && *largest > have.constant)
-        return BoundsVerdict{.kind = BoundsVerdict::Kind::MayReachPastEnd,
-                             .boundary = *needAtMost};
+    if (have.isConstant() && need.scale > 0) {
+      if (bounds.needAtLeast) {
+        const auto smallest = valueAt(need, *bounds.needAtLeast);
+        if (smallest && *smallest > have.constant)
+          return BoundsVerdict{.kind = BoundsVerdict::Kind::AtLeastPastEnd,
+                               .boundary = *bounds.needAtLeast};
+      }
+      if (bounds.needAtMost) {
+        const auto largest = valueAt(need, *bounds.needAtMost);
+        if (largest && *largest > have.constant)
+          return BoundsVerdict{.kind = BoundsVerdict::Kind::MayReachPastEnd,
+                               .boundary = *bounds.needAtMost};
+      }
       return std::nullopt;
     }
     return std::nullopt;
@@ -152,7 +169,51 @@ void SpatialTracker::dropExtentsOn(PlaceId counter) {
   for (auto &[place, record] : records) {
     if (record.extent && record.extent->place == counter)
       record.extent.reset();
+    if (record.string && record.string->length &&
+        record.string->length->place == counter) {
+      record.string.reset();
+      if (record.empty())
+        record.location = {};
+    }
   }
+}
+
+void SpatialTracker::setString(PlaceId place, std::optional<StringFact> fact) {
+  if (fact && fact->empty())
+    fact.reset();
+  const auto it = records.find(place);
+  if (it == records.end()) {
+    if (!fact)
+      return;
+    records.emplace(place, SpatialRecord{.string = std::move(fact)});
+    return;
+  }
+  it->second.string = std::move(fact);
+}
+
+void SpatialTracker::dropStringFacts(PlaceId place) {
+  const auto it = records.find(place);
+  if (it == records.end())
+    return;
+  it->second.string.reset();
+}
+
+/// The string fact both paths agree on: the same fact, or `unterminated`
+/// when both say so (the locations may differ; the first is kept), or a
+/// length both know equal. Anything else is unknown.
+static bool joinString(std::optional<StringFact> &mine,
+                       const std::optional<StringFact> &theirs) {
+  if (mine == theirs || !mine)
+    return false;
+  if (theirs) {
+    if (mine->unterminated && theirs->unterminated)
+      return false;
+    if (mine->length && mine->length == theirs->length && !mine->unterminated &&
+        !theirs->unterminated)
+      return false;
+  }
+  mine.reset();
+  return true;
 }
 
 bool SpatialTracker::join(const SpatialTracker &other) {
@@ -172,7 +233,8 @@ bool SpatialTracker::join(const SpatialTracker &other) {
       changed = true;
     }
     changed |= mine.offset.join(theirs.offset);
-    if (mine == Absent) {
+    changed |= joinString(mine.string, theirs.string);
+    if (mine.empty()) {
       it = records.erase(it);
       continue;
     }

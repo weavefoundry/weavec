@@ -51,7 +51,9 @@ namespace weavec::frontend {
 /// and facts) and the `count-field` line.
 /// Version 7 (RFC 0011): summaries in format 7 (offsets, extents,
 /// `requires-extent`).
-inline constexpr unsigned SidecarFormatVersion = 7;
+/// Version 8 (RFC 0012): the `sized-field`, `unsized-field` and
+/// `loads-field` lines.
+inline constexpr unsigned SidecarFormatVersion = 8;
 
 /// Everything the driver remembers about one compiled unit.
 struct UnitRecord {

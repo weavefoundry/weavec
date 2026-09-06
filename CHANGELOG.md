@@ -553,6 +553,71 @@ follows [Semantic Versioning](https://semver.org/) once it reaches 1.0.
     `scripts/recall.py` runs them, prints recall per CWE and fails on any
     missed pin or any report in a `good` function. Wired into `ctest`
     (`recall`) and CI.
+- Spatial safety II (RFC 0012): strings, sized fields, offset relations
+  and assumptions.
+  - String facts: beside its extent an object carries the length of the
+    string it holds (a constant, `strlen(s)` as a *length place*, or a
+    variable equal to one) or the fact that it has no terminator, on the
+    object and every exact alias of it. Sources: literals and
+    initialisers; `strcpy`, `stpcpy`, `strcat`, `sprintf`, `strdup`,
+    `fgets`, `snprintf`; `strncpy` with a source at least as long as the
+    count, `memset` with a non-zero byte and `memcpy` from an
+    unterminated source over the whole object (no terminator); a NUL
+    store; every other write forgets.
+  - `out-of-bounds` for the string copies against the destination's
+    extent: `'strcpy' accesses 6 bytes of 'buf', which has 4 bytes`,
+    `'strcpy' accesses 'strlen(s)' + 1 bytes of 'd', which has 'strlen(s)'
+    bytes` (`malloc(strlen(s))`, also through `n = strlen(s)`), `'strcat'
+    accesses 5 bytes of 'buf', which has 4 bytes` (counting what `buf`
+    holds), `'sprintf' accesses at least 5 bytes of 'buf', which has 4
+    bytes` (the format's minimum); and for terminator-seeking reads
+    (`strlen`, `strcpy`'s and `strcat`'s source, `puts`, `printf("%s")`)
+    of an object known to have none: `'strlen' reads past the end of
+    'name', which is not NUL-terminated`, note `'name' is left without a
+    terminator here`. A copy that overflowed leaves the string unknown, so
+    it is reported once. The `_FORTIFY_SOURCE` forms of the `printf`
+    family (`__builtin___sprintf_chk` and friends, which put a flag and a
+    size before the format) have their own library-table rows, so the
+    checks see them too; on macOS this also means an unchecked `malloc`
+    result passed to `sprintf` is a `null-dereference` there as it already
+    was on Linux (`snprintf`'s forms keep accepting a null destination).
+  - `WEAVEC_SIZED_BY(g)` on pointer fields (`struct buf { char
+    *WEAVEC_SIZED_BY(cap) data; size_t cap; }`): every load of the field
+    has `cap` elements of extent (`'b->data[b->cap]' is out of bounds:
+    'b->cap' is the number of elements of 'b->data'`), and a store of a
+    smaller object is an `annotation-mismatch` (`'b->data' is declared
+    WEAVEC_SIZED_BY(cap) but is given 4 bytes where 'b->cap' says 8`, at
+    the store or at the count's write, whichever is second).
+    `invalid-annotation` on a non-pointer field or one naming no integer
+    sibling, once per unit.
+  - Inferred sized fields: every store into a pointer field of a named
+    record is a witness (`v->items = malloc(n * sizeof *v->items); v->cap =
+    n;`) or a refutation (a store of an object no sibling counts; a write
+    to a count with no store into the pointer); a pair witnessed with one
+    count and scale and refuted nowhere in the program is in force for
+    every load. Within a unit the readers of a newly confirmed field are
+    analysed once more and only their new reports shown; across units the
+    whole-program driver does the same for units that looked the field up
+    before the program confirmed it, and `weavec-cc`'s link step
+    re-analyses an object whose sidecar says it did.
+  - Offset relations and lower bounds: `i <= n - 1` is `i < n`, `j = i +
+    1` carries into `a[j]` (`'a[i + 1]' may be out of bounds: 'i' may
+    reach one below 'n', and 'a' has 'n' * 4 bytes`), and a constant lower
+    bound decides outright (`'buf[i]' is out of bounds: 'i' is at least 8
+    in an object of 8 bytes`).
+  - `WEAVEC_ASSUME(expr)`: `expr` holds from the call on, as on the true
+    edge of `if (expr)`; a contradicted assumption ends the path;
+    `weavec.assume` on any other function is `invalid-annotation`.
+    `weavec.h` 0.7.
+  - Sidecar format version 8: `sized-field <f> <g> <scale>`,
+    `unsized-field <f> [<g>]` and `loads-field <f>` lines (summary text
+    format unchanged at 7). `--dump-analysis` prints string facts in
+    `spatial{}` (`s string=len(strlen(s))`), `i >= 8` in `relations{}`,
+    and the program's sized-field facts after `count-field`.
+  - Recall: CWE-170 (improper null termination) joins the set; CWE-121,
+    122 and 126 gain the string shapes (`strcpy` of a literal, `strcat`,
+    `sprintf`, `malloc(strlen(s))`, `strdup` indexed past its end,
+    `strlen` of an unterminated array) and CWE-122 the sized-field ones.
 - Outcome classes keep their guards (RFC 0009, *Guards*). `if (nsize == 0)
   { free(ptr); return NULL; } return realloc(ptr, nsize);` (Lua's
   `l_alloc`) is summarised `outcome null{ptr: freed when nsize =0} outcome
