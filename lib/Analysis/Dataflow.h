@@ -165,11 +165,11 @@ private:
   std::vector<std::optional<core::AnalysisState>> entryStates;
 
   Phase phase = Phase::Fixpoint;
+  /// RFC 0013: final reachable heap state and caller materialization.
+  bool materializingHeap = false;
   std::vector<core::Diagnostic> pending;
   std::map<core::PlaceId, core::OwnershipKind> summaryKinds;
 
-  /// RFC 0013: final reachable heap state and caller materialization.
-  bool materializingHeap = false;
   void mirrorHeapWrite(core::PlaceId place, core::AnalysisState &state);
   [[nodiscard]] core::PathGuard
   heapEntryGuard(const core::PlaceGuard &guard,

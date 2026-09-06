@@ -97,8 +97,8 @@ struct PendingOutcome {
     /// (so the retraction knows what to restore).
     bool sourceEscapedBefore = false;
     /// RFC 0013: the incoming value to restore if this store did not happen.
-    // NOLINTNEXTLINE(readability-redundant-member-init): designated-init
-    // default
+    // Default for designated initializers.
+    // NOLINTNEXTLINE(readability-redundant-member-init)
     std::optional<PlaceId> oldValue = {};
     bool oldValueEscaped = false;
 

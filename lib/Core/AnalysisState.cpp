@@ -289,9 +289,9 @@ bool AnalysisState::join(const AnalysisState &other, const PlaceTable *places) {
   }
   for (const auto &[place, escaped] : other.heapInputEscapes) {
     const auto [it, added] = heapInputEscapes.try_emplace(place, escaped);
-    if (added)
+    if (added) {
       changed = true;
-    else if (escaped && !it->second) {
+    } else if (escaped && !it->second) {
       it->second = true;
       changed = true;
     }

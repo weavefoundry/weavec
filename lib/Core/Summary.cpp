@@ -474,11 +474,11 @@ void HeapDescription::join(const HeapDescription &other) {
   for (const Store &field : other.fields)
     addField(field);
   for (const SummaryPath &path : mine) {
-    if (!theirs.contains(path) && !(theirsNull && !path.isRoot()))
+    if (!theirs.contains(path) && (!theirsNull || path.isRoot()))
       addField(Store{.dest = path, .value = ValueSource::unknown()});
   }
   for (const SummaryPath &path : theirs) {
-    if (!mine.contains(path) && !(mineNull && !path.isRoot()))
+    if (!mine.contains(path) && (!mineNull || path.isRoot()))
       addField(Store{.dest = path, .value = ValueSource::unknown()});
   }
   incomplete |= other.incomplete;

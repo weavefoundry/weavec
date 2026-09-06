@@ -897,9 +897,9 @@ void FunctionDataflow::applyHeap(core::PlaceId dest,
       if (alternatives.empty())
         continue;
       ValueOrigin origin;
-      if (alternatives.size() == 1)
+      if (alternatives.size() == 1) {
         origin = std::move(alternatives.front());
-      else {
+      } else {
         origin.kind = ValueOrigin::Kind::Conditional;
         origin.alternatives = std::move(alternatives);
       }
