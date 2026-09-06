@@ -625,5 +625,39 @@ TEST(Builtins, PosixEntries) {
             core::BorrowKind::Shared);
 }
 
+// RFC 0012: the `_FORTIFY_SOURCE` forms of the `printf` family have their
+// own rows (the flag and size sit before the format), and the sized ones
+// accept a null destination as `snprintf(NULL, 0, ...)` does.
+TEST(Builtins, FortifiedPrintfRowsMatchThePlainOnes) {
+  const auto parsed = parse(R"c(
+    typedef __builtin_va_list va_list;
+    void use(char *d, unsigned long n, va_list ap) {
+      __builtin___sprintf_chk(d, 0, n, "%d", 1);
+      __builtin___snprintf_chk(d, n, 0, n, "%d", 1);
+      __builtin___vsnprintf_chk(d, n, 0, n, "%d", ap);
+    }
+  )c");
+  ASSERT_TRUE(parsed.ast);
+
+  const auto *sprintfChk =
+      builtinSummary(*parsed.fn("__builtin___sprintf_chk"));
+  ASSERT_NE(sprintfChk, nullptr);
+  EXPECT_TRUE(sprintfChk->requiresParam(0)) << "sprintf writes through it";
+  EXPECT_TRUE(sprintfChk->requiresParam(3)) << "the format, shifted";
+
+  const auto *snprintfChk =
+      builtinSummary(*parsed.fn("__builtin___snprintf_chk"));
+  ASSERT_NE(snprintfChk, nullptr);
+  EXPECT_FALSE(snprintfChk->requiresParam(0))
+      << "a null destination with a zero size measures the output";
+  EXPECT_TRUE(snprintfChk->requiresParam(4));
+
+  const auto *vsnprintfChk =
+      builtinSummary(*parsed.fn("__builtin___vsnprintf_chk"));
+  ASSERT_NE(vsnprintfChk, nullptr);
+  EXPECT_FALSE(vsnprintfChk->requiresParam(0));
+  EXPECT_TRUE(vsnprintfChk->requiresParam(4));
+}
+
 } // namespace
 } // namespace weavec::analysis

@@ -39,6 +39,8 @@ std::optional<Annotation> parseAnnotation(llvm::StringRef text) {
     return Annotation::Releases;
   if (text == spelling::Refcount)
     return Annotation::Refcount;
+  if (text == spelling::Assume)
+    return Annotation::Assume;
   if (text.starts_with(spelling::FamilyPrefix)) {
     const llvm::StringRef family =
         text.drop_front(spelling::FamilyPrefix.size());
@@ -105,6 +107,9 @@ static void apply(AnnotationSet &set, Annotation annotation) {
   case Annotation::Refcount:
     set.refcount = true;
     break;
+  case Annotation::Assume:
+    set.assume = true;
+    break;
   case Annotation::Family:
   case Annotation::SizedBy:
     // The name itself is applied by the caller, which has the payload.
@@ -146,6 +151,7 @@ void AnnotationSet::merge(const AnnotationSet &other) {
   retains = retains || other.retains;
   releases = releases || other.releases;
   refcount = refcount || other.refcount;
+  assume = assume || other.assume;
   invalid = invalid || other.invalid;
   applyFamily(*this, other.family);
   applySizedBy(*this, other.sizedBy);

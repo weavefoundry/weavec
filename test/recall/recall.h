@@ -16,6 +16,14 @@ char *fgets(char *buf, int n, void *stream);
 int printf(const char *fmt, ...);
 int puts(const char *s);
 int rand(void);
+/* RFC 0012: the string functions. */
+size_t strlen(const char *s);
+char *strcpy(char *dst, const char *src);
+char *strncpy(char *dst, const char *src, size_t n);
+char *strcat(char *dst, const char *src);
+char *strdup(const char *s);
+int sprintf(char *buf, const char *fmt, ...);
+int snprintf(char *buf, size_t n, const char *fmt, ...);
 
 /* Sinks that look at a value without owning it. */
 void print_int(int value);

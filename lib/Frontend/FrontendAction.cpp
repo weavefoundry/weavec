@@ -31,7 +31,8 @@ class WeaveCConsumer final : public clang::ASTConsumer {
 public:
   WeaveCConsumer(clang::CompilerInstance &compiler, FrontendOptions opts)
       : clangSink(compiler.getDiagnostics()),
-        sink(clangSink, opts.control, opts.alreadyReported, opts.boundaryOnce),
+        sink(clangSink, opts.control, opts.alreadyReported, opts.boundaryOnce,
+             opts.onlyIds),
         options(std::move(opts)) {}
 
   void HandleTranslationUnit(clang::ASTContext &context) override {

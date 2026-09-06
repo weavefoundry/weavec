@@ -10,6 +10,7 @@ weavec_add_unittest(
           SharedOwnershipTest.cpp
           SignatureInferenceTest.cpp
           SpatialSafetyTest.cpp
+          StringsAndFieldsTest.cpp
           SummariesTest.cpp
           ValueConditionalTest.cpp
   DEPS weavec::Analysis weavec::Frontend)

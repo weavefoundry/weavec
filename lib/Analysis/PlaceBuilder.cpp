@@ -105,6 +105,94 @@ core::PlaceId PlaceBuilder::literalPlace() {
   return *literal;
 }
 
+core::PlaceId PlaceBuilder::lengthPlace(core::PlaceId string) {
+  if (const auto it = lengthPlaces.find(string.value); it != lengthPlaces.end())
+    return it->second;
+  const core::PlaceId id =
+      places.create("strlen(" + std::string(places.name(string)) + ")");
+  lengthPlaces.try_emplace(string.value, id);
+  lengthOwners.try_emplace(id.value, string);
+  return id;
+}
+
+std::optional<core::PlaceId>
+PlaceBuilder::stringOfLengthPlace(core::PlaceId place) const {
+  const auto it = lengthOwners.find(place.value);
+  if (it == lengthOwners.end())
+    return std::nullopt;
+  return it->second;
+}
+
+std::optional<core::PlaceId> PlaceBuilder::stringPlaceOf(const Expr &expr) {
+  const Expr &e = *expr.IgnoreParens();
+  if (const auto *cast = dyn_cast<CastExpr>(&e)) {
+    switch (cast->getCastKind()) {
+    case CK_ArrayToPointerDecay: {
+      // `buf`, `s.name`: the array's own storage. Not `p->name`, which is a
+      // pointer stepped to a field (RFC 0011, *Deriving a pointer*), nor a
+      // literal.
+      const Expr &array = stripTransparent(*cast->getSubExpr());
+      if (isa<StringLiteral, PredefinedExpr>(array) || !isPlaceExpr(array))
+        return std::nullopt;
+      if (derivationOf(array))
+        return std::nullopt;
+      const auto ref = resolve(array);
+      if (!ref || !ref->element.isWhole())
+        return std::nullopt;
+      return ref->place;
+    }
+    case CK_NoOp:
+    case CK_LValueToRValue:
+      return stringPlaceOf(*cast->getSubExpr());
+    case CK_BitCast:
+      if (isTransparentCast(cast->getSubExpr()->getType(), cast->getType()))
+        return stringPlaceOf(*cast->getSubExpr());
+      return std::nullopt;
+    default:
+      return std::nullopt;
+    }
+  }
+  if (!e.getType()->isPointerType() || !isPlaceExpr(e))
+    return std::nullopt;
+  const auto ref = resolve(e);
+  if (!ref || !ref->element.isWhole())
+    return std::nullopt;
+  return ref->place;
+}
+
+const Expr *PlaceBuilder::strlenArgumentOf(const Expr &expr) {
+  const Expr *e = expr.IgnoreParens();
+  while (const auto *cast = dyn_cast<CastExpr>(e)) {
+    if (cast->getCastKind() != CK_IntegralCast &&
+        cast->getCastKind() != CK_NoOp)
+      return nullptr;
+    e = cast->getSubExpr()->IgnoreParens();
+  }
+  const auto *call = dyn_cast<CallExpr>(e);
+  if (call == nullptr || call->getNumArgs() != 1)
+    return nullptr;
+  const FunctionDecl *callee = call->getDirectCallee();
+  if (callee == nullptr || !callee->isGlobal())
+    return nullptr;
+  const IdentifierInfo *ident = callee->getIdentifier();
+  if (ident == nullptr)
+    return nullptr;
+  const llvm::StringRef name = ident->getName();
+  if (name != "strlen" && name != "__builtin_strlen")
+    return nullptr;
+  return call->getArg(0);
+}
+
+/// RFC 0012: the bytes before the first NUL of a narrow string literal.
+static std::optional<std::int64_t> literalLengthOf(const StringLiteral &text) {
+  if (text.getCharByteWidth() != 1)
+    return std::nullopt;
+  const llvm::StringRef bytes = text.getString();
+  const std::size_t nul = bytes.find('\0');
+  return static_cast<std::int64_t>(nul == llvm::StringRef::npos ? bytes.size()
+                                                                : nul);
+}
+
 core::PlaceId PlaceBuilder::fieldPlace(core::PlaceId parent,
                                        const ValueDecl &member) {
   const core::PlaceId id = places.field(parent, member.getNameAsString());
@@ -745,6 +833,24 @@ PlaceBuilder::ScalarOperand PlaceBuilder::scalarOperand(const Expr &expr) {
     }
     break;
   }
+  // RFC 0012, *Length places*: `strlen(s)` reads the length of `s`'s
+  // string; `strlen("abc")` is the constant 3.
+  if (const Expr *string = strlenArgumentOf(*e)) {
+    if (const auto *text =
+            dyn_cast<StringLiteral>(string->IgnoreParenImpCasts())) {
+      if (const auto length = literalLengthOf(*text))
+        operand.constant = core::ValueFact::ofConstant(*length);
+      return operand;
+    }
+    if (const auto place = stringPlaceOf(*string)) {
+      operand.place = PlaceRef{.place = lengthPlace(*place),
+                               .derefs = {},
+                               .derefExprs = {},
+                               .derefElements = {},
+                               .element = {}};
+    }
+    return operand;
+  }
   if (!e->getType()->isIntegerType() || !isPlaceExpr(*e))
     return operand;
   operand.place = resolve(*e);
@@ -1061,9 +1167,13 @@ ValueOrigin PlaceBuilder::classifyValue(const Expr &expr) {
         // RFC 0011, *Extents*: a literal's extent is its length plus the
         // terminator, in elements.
         if (const auto *text =
-                dyn_cast<StringLiteral>(cast->getSubExpr()->IgnoreParens()))
+                dyn_cast<StringLiteral>(cast->getSubExpr()->IgnoreParens())) {
           origin.extent = core::Affine::ofConstant(
               static_cast<std::int64_t>(text->getLength()) + 1);
+          // RFC 0012: and its string is as long as the bytes before its
+          // first NUL.
+          origin.literalLength = literalLengthOf(*text);
+        }
         return origin;
       }
       // `p->a` decaying is `&p->a[0]`: a copy of `p` stepped to the field
@@ -1287,6 +1397,19 @@ std::optional<core::Affine> PlaceBuilder::affineOf(const Expr &expr) {
     default:
       return std::nullopt;
     }
+  }
+  // RFC 0012, *Length places*: `malloc(strlen(s) + 1)` is `strlen(s)` + 1
+  // in the length place of `s`'s string.
+  if (const Expr *string = strlenArgumentOf(*e)) {
+    if (const auto *text =
+            dyn_cast<StringLiteral>(string->IgnoreParenImpCasts())) {
+      if (const auto length = literalLengthOf(*text))
+        return core::Affine::ofConstant(*length);
+      return std::nullopt;
+    }
+    if (const auto place = stringPlaceOf(*string))
+      return core::Affine::ofPlace(lengthPlace(*place));
+    return std::nullopt;
   }
   if (!e->getType()->isIntegerType() || !isPlaceExpr(*e))
     return std::nullopt;

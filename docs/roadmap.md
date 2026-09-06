@@ -252,12 +252,50 @@ Design: [RFC 0011 — Spatial safety](rfcs/0011-spatial-safety.md)
       v7, sidecar v7).
 - [x] Recall check: Juliet-style cases under `test/recall/CWE-*`, run by
       `scripts/recall.py` in `ctest` and CI.
-- [ ] Extents through struct fields (`b->len` as the extent of `b->data`)
-      and across stores (a callee that sets `*out` and `*len`).
+- [x] Extents through struct fields (`b->len` as the extent of `b->data`):
+      RFC 0012's sized fields, below.
+- [ ] Extents across stores (a callee that sets `*out` and `*len`).
 - [ ] Requirements that depend on two parameters (`min(n, cap)`), and
       requirements on `WEAVEC_SIZED_BY` parameters re-exported to callers.
 - [ ] Corpus: `out-of-bounds` rate as a tracked metric; the Juliet test
       suite proper (CWE-121/122/124/126/127) as a recall baseline.
+
+## Milestone 11 — Spatial safety II: strings and fields (in progress)
+
+Design: [RFC 0012 — Spatial safety II](rfcs/0012-spatial-safety-strings-and-fields.md)
+(Accepted).
+
+- [x] String facts on spatial records (`core::StringFact`: the length as
+      an `Affine`, or *unterminated*), on the object and every exact alias
+      of it; `strlen(s)` as a *length place*; sources: literals and
+      initialisers, `strcpy`/`stpcpy`/`strcat`/`sprintf`/`strdup`,
+      `strncpy`/`memset`/`memcpy` that leave no terminator, NUL stores,
+      `fgets`/`snprintf`; every other write drops them.
+- [x] `out-of-bounds` for `strcpy`, `stpcpy`, `strcat` and `sprintf`
+      against the destination's extent (`malloc(strlen(s))` is one short),
+      and for terminator-seeking reads (`strlen`, `strcpy` source, `puts`,
+      `%s`) of an object with no terminator.
+- [x] `WEAVEC_SIZED_BY(g)` on pointer fields: loads get the count's extent,
+      stores are checked (`annotation-mismatch`); malformed annotations are
+      `invalid-annotation`.
+- [x] Inferred sized fields: witnesses and refutations from every store in
+      the program, confirmed when the program agrees; a second pass in the
+      unit and a cross-unit pass in the whole-program driver report what
+      the confirmation decides (sidecar v8: `sized-field`,
+      `unsized-field`, `loads-field`).
+- [x] Offset relations (`i <= n - 1`, `j = i + 1`) and constant lower
+      bounds (`i >= 8`) in `core::RelationTracker`; `boundsVerdict` decides
+      through them.
+- [x] `WEAVEC_ASSUME(expr)`: the condition holds from the call on.
+      `weavec.h` 0.7.
+- [ ] Lengths through stores and summaries (a callee that leaves `*out`
+      terminated, or returns a string of a known length other than
+      `strdup`'s).
+- [ ] Sized fields with a byte count on a non-`char` pointer, and counts
+      one field-hop away (`b->hdr.len`).
+- [ ] Corpus: the CWE-170 shape (`strncpy` without a terminator) as a
+      tracked recall class; false-positive review of the string checks on
+      the tracked projects.
 
 ## Ongoing
 

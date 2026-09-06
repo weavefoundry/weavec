@@ -89,6 +89,19 @@ bool FunctionAnalyzer::analyze(const FunctionDecl &function,
     if (annotations.nullable && annotations.nonNull)
       reportContradiction(function);
     reportShareContradictions(function, annotations);
+    // RFC 0012, *`WEAVEC_ASSUME`*: `weavec.assume` belongs to the header's
+    // `weavec_assume_` alone.
+    if (annotations.assume && function.getName() != "weavec_assume_") {
+      sink.report(core::Diagnostic{
+          .severity = core::Severity::Warning,
+          .id = core::diag::InvalidAnnotation,
+          .message = "'weavec.assume' is not an annotation for '" +
+                     function.getNameAsString() + "'",
+          .location = toCoreLocation(sm, function.getLocation()),
+          .notes = {},
+          .fixits = {},
+      });
+    }
     for (const ParmVarDecl *param : function.parameters()) {
       const AnnotationSet onParam = getAnnotations(*param);
       if (onParam.nullable && onParam.nonNull)

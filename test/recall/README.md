@@ -16,6 +16,7 @@ test/recall/
   CWE-124/*.c           buffer underwrite
   CWE-126/*.c           buffer over-read
   CWE-127/*.c           buffer under-read
+  CWE-170/*.c           improper null termination
   CWE-401/*.c           memory leak
   CWE-415/*.c           double free
   CWE-416/*.c           use after free
@@ -62,5 +63,5 @@ Keep to one bug class per file and one bug per `bad_*` function, in the
 smallest shape that shows it; name the file after the shape
 (`loop_off_by_one.c`, `memcpy_too_much.c`). A shape WeaveC does not catch
 yet does not belong here until it does: the set states what is caught, and
-CI holds it there. Open an RFC (or amend RFC 0011) for the rule that would
-catch it.
+CI holds it there. Open an RFC (or amend RFC 0011 or 0012) for the rule
+that would catch it.

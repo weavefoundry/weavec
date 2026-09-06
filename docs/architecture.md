@@ -46,8 +46,8 @@ tools.
 | `Borrow.h`         | `Loan` (place, kind, lifetime, holder) and `BorrowState`: may this borrow be created; may this place be moved or mutated; `expireHolders` drops the loans of holders a predicate declares dead (RFC 0006 liveness). |
 | `Scalar.h`         | `ValueFact` (a set of RFC 0006 outcome classes — `zero`/`positive`/`negative` or `null`/`nonnull` — plus an optional exact constant; `join`, `narrow`, `disjointFrom`, `implies`), `GuardOn<Key>` (a conjunction of facts about places — `PlaceGuard` — or summary paths — `PathGuard` — under which alone a record or effect holds; `require`, `learn`, `refine`, `join`, `drop`, bounded by `MaxGuardConjuncts`) and `ScalarTracker` (per integer place, what is known about its value; RFC 0009). |
 | `Offset.h`         | `PointerOffset`: where inside its object a pointer points — `Zero`, `Elements(k)`, `Field(key)`, `Unknown` — with `plus`, `negated`, `toString`/`parse` (RFC 0011). |
-| `Spatial.h`        | `Affine` (an extent: a constant, or `scale * place + constant`), `SpatialRecord` (a place's extent and offset), `SpatialTracker` (per place, joined by agreement) and `boundsVerdict`, the pure decision of RFC 0011's bounds rules (`OutOfBounds`, `MayBeOutOfBounds`, `MayReachPastEnd`, `BeforeStart`). |
-| `Relation.h`       | `RelationTracker`: what the path knows of one integer place against another (`Less`, `LessEqual`, `Equal`, `GreaterEqual`, `Greater`, learnt from condition edges, through one equality hop) and against a constant (`learnAtMost`/`atMost`); `forget` on a write, `join` by agreement (RFC 0011). |
+| `Spatial.h`        | `Affine` (an extent: a constant, or `scale * place + constant`), `SpatialRecord` (a place's extent and offset, and its `StringFact` — the length of the string the object holds, or that it has no terminator — RFC 0012), `SpatialTracker` (per place, joined by agreement) and `boundsVerdict`, the pure decision of RFC 0011's bounds rules (`OutOfBounds`, `MayBeOutOfBounds`, `MayReachPastEnd`, `BeforeStart`, and RFC 0012's `AtLeastPastEnd` from a lower bound) over `KnownBounds` (constant upper and lower bounds on either side). |
+| `Relation.h`       | `RelationTracker`: what the path knows of one integer place against another (`Less`, `LessEqual`, `Equal`, `GreaterEqual`, `Greater`, learnt from condition edges, through one equality hop, each with an *offset*: `i < n + k`, RFC 0012) and against a constant (`learnAtMost`/`atMost`, `learnAtLeast`/`atLeast`); `forget` on a write, `join` by agreement (RFC 0011). |
 | `Moves.h`          | `MoveTracker`: which places are currently moved-out/freed (and through which alias), each with an `ElementWitness` (whole / constant / variable / unknown) saying which element of an `a[*]` place was named (RFC 0006); a use is only reported when the witnesses match; conservative `join`. `MoveReason::Uninitialized` marks a local pointer place that has never been assigned (RFC 0008). Each record carries a `PlaceGuard` (RFC 0009): `learn` refutes and erases the records a condition edge contradicts, `dropGuardsOn` weakens the guards that name a written place. |
 | `Raw.h`            | `RawTracker`: which places currently hold a raw pointer, why (`RawReason`: integer cast, `WEAVEC_RAW` declaration, loaded through a raw pointer, callee result, unchecked callee) and through which alias; union at joins. |
 | `Resource.h`       | `ResourceTracker`: which places hold an owned resource this function is responsible for (`ResourceRecord`: origin — allocated or declared `WEAVEC_OWNED` —, location, release family, escaped, and the number of shares — RFC 0010; the offset a place points at is on its alias edges and in the `SpatialTracker`, RFC 0011), plus the places known to hold null; records join by union, null facts by intersection (RFC 0007). Each record carries a `PlaceGuard` (RFC 0009): a resource held only under a fact is cleared, not leaked, on the edge that refutes it. |
@@ -121,8 +121,14 @@ the frontend fills in so it can report at the exact original position.
   it creates so that a later test can refute them, translates a callee's
   `when` guards to the arguments and prunes them against its own facts,
   ends the block at a call to a callee inferred `never-returns` (RFC
-  0009), and produces the function's `FunctionSummary` at exit (with
-  `neverReturns` when the exit was never reached).
+  0009), keeps what is known of the string each object holds and checks
+  the string copies and terminator-seeking reads of the shipped table
+  against it (`DataflowStrings.cpp`, RFC 0012), gives a `WEAVEC_SIZED_BY`
+  or inferred sized field the extent its count says and records what
+  every store into a field says about the pair (`DataflowSizedFields.cpp`,
+  RFC 0012), applies `WEAVEC_ASSUME` as a condition edge, and produces the
+  function's `FunctionSummary` at exit (with `neverReturns` when the exit
+  was never reached).
   `WEAVEC_UNSAFE` regions are analysed like any other code; the pass only
   suppresses what it would report inside them. `FunctionAnalysis.h` is the
   per-function entry point; `AnalysisOptions::exclusiveBorrows` switches
@@ -132,11 +138,14 @@ the frontend fills in so it can report at the exact original position.
   functions, builds the call graph (with an edge from every indirect call to
   each candidate of its type), and analyses strongly connected components in
   reverse topological order (callees first), iterating recursive components
-  to a fixpoint on their summaries before the final reporting pass. With a
-  `ProgramDatabase` attached, callers see callees from other units;
-  `discover()` returns the unit's exports without analysing it (what it
-  defines and imports, for ordering units) and `exports()` returns them
-  with summaries after `run()`.
+  to a fixpoint on their summaries before the final reporting pass. When the
+  unit's own stores confirm a sized-field pair (RFC 0012) the functions that
+  read the field are analysed once more with it in force and only their new
+  reports are shown. With a `ProgramDatabase` attached, callers see callees
+  from other units; `discover()` returns the unit's exports without
+  analysing it (what it defines and imports, for ordering units) and
+  `exports()` returns them with summaries, sized-field witnesses and
+  refutations, and the fields it looked up, after `run()`.
 
 The model is specified by [RFC 0001](rfcs/0001-ownership-model.md), the
 dataflow by [RFC 0002](rfcs/0002-intraprocedural-checking.md), summaries by
@@ -177,11 +186,14 @@ argument-conditional summaries and inferred `noreturn` by
   it): discover every unit's exports, build the unit graph (who imports
   whose definitions, who calls through a type someone else has a candidate
   for), analyse acyclic units once and cyclic groups to a fixpoint, each
-  against the database of what has been analysed so far.
-  `CompilationDatabaseUnit` parses from a compilation database.
+  against the database of what has been analysed so far, then one more
+  reporting pass over the units that looked up a sized field the program
+  confirmed after they were analysed (RFC 0012; a fact about a type, which
+  the call graph's order does not carry). `CompilationDatabaseUnit` parses
+  from a compilation database.
 - `Sidecar.h` reads and writes `foo.o.weavec`: the unit's exports, the cc1
   command that produced it and the diagnostics already reported, in a
-  line-oriented text format versioned by its `weavec-summaries 7` header.
+  line-oriented text format versioned by its `weavec-summaries 8` header.
 - `Driver.h` is `weavec-cc`: Clang's `driver::Driver` plans the jobs, each
   `-cc1` job runs in-process with WeaveC's consumer multiplexed beside
   Clang's, the compile step writes the sidecar, and the link step runs

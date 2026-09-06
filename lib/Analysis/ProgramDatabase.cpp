@@ -17,6 +17,7 @@
 #include "clang/Basic/Version.h"
 
 #include <algorithm>
+#include <limits>
 #include <optional>
 #include <string>
 #include <utility>
@@ -59,7 +60,54 @@ bool GlobalNames::extendTo(const GlobalNames &other) {
 
 bool UnitExports::sameSummariesAs(const UnitExports &other) const {
   return functions == other.functions && globals == other.globals &&
-         countFields == other.countFields;
+         countFields == other.countFields && sizedFields == other.sizedFields;
+}
+
+// -- SizedFieldFacts ----------------------------------------------------------
+
+void SizedFieldFacts::merge(const SizedFieldFacts &other) {
+  witnesses.insert(other.witnesses.begin(), other.witnesses.end());
+  unsizedFields.insert(other.unsizedFields.begin(), other.unsizedFields.end());
+  unsizedPairs.insert(other.unsizedPairs.begin(), other.unsizedPairs.end());
+}
+
+void SizedFieldFacts::clear() {
+  witnesses.clear();
+  unsizedFields.clear();
+  unsizedPairs.clear();
+}
+
+std::optional<std::pair<std::string, std::int64_t>>
+SizedFieldFacts::confirmed(std::string_view field) const {
+  // RFC 0012, *Sized fields*, "Inference": exactly one `(count, scale)`
+  // witnessed, the field in no refutation, the pair in none.
+  if (unsizedFields.contains(std::string(field)))
+    return std::nullopt;
+  std::optional<std::pair<std::string, std::int64_t>> found;
+  for (auto it = witnesses.lower_bound(SizedFieldWitness{
+           .field = std::string(field),
+           .count = {},
+           .scale = std::numeric_limits<std::int64_t>::min()});
+       it != witnesses.end() && it->field == field; ++it) {
+    if (found)
+      return std::nullopt;
+    found.emplace(it->count, it->scale);
+  }
+  if (!found || unsizedPairs.contains(UnsizedPair{.field = std::string(field),
+                                                  .count = found->first}))
+    return std::nullopt;
+  return found;
+}
+
+std::set<SizedFieldWitness> SizedFieldFacts::confirmedPairs() const {
+  std::set<SizedFieldWitness> result;
+  for (const SizedFieldWitness &witness : witnesses) {
+    if (const auto pair = confirmed(witness.field)) {
+      result.insert(SizedFieldWitness{
+          .field = witness.field, .count = pair->first, .scale = pair->second});
+    }
+  }
+  return result;
 }
 
 // -- Type keys ----------------------------------------------------------------
@@ -147,6 +195,7 @@ void ProgramDatabase::add(const UnitExports &unit) {
     }
   }
   countFields.insert(unit.countFields.begin(), unit.countFields.end());
+  sizedFields.merge(unit.sizedFields);
 }
 
 UnitExports ProgramDatabase::renumbered(const UnitExports &unit) {
@@ -164,6 +213,7 @@ void ProgramDatabase::clear() {
   candidateSummaries.clear();
   globalNames = GlobalNames{};
   countFields.clear();
+  sizedFields.clear();
 }
 
 bool ProgramDatabase::defines(llvm::StringRef name) const {
@@ -315,6 +365,16 @@ void ProgramDatabase::dump(llvm::raw_ostream &os) const {
   }
   for (const std::string &key : countFields)
     os << "  count-field '" << key << "'\n";
+  // RFC 0012, *Sized fields*.
+  for (const SizedFieldWitness &witness : sizedFields.witnesses) {
+    os << "  sized-field '" << witness.field << "' by '" << witness.count
+       << "' * " << witness.scale << '\n';
+  }
+  for (const std::string &field : sizedFields.unsizedFields)
+    os << "  unsized-field '" << field << "'\n";
+  for (const UnsizedPair &pair : sizedFields.unsizedPairs) {
+    os << "  unsized-field '" << pair.field << "' by '" << pair.count << "'\n";
+  }
 }
 
 } // namespace weavec::analysis

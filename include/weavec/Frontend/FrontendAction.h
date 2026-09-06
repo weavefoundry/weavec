@@ -57,6 +57,10 @@ struct FrontendOptions {
   const analysis::ProgramDatabase *database = nullptr;
   /// Diagnostics not to show again (already printed by an earlier step).
   const std::set<ReportedDiagnostic> *alreadyReported = nullptr;
+  /// When set, only diagnostics with these ids are shown (RFC 0012: the
+  /// pass that re-analyses a unit for a sized field the program confirmed
+  /// shows only what the field's extent can change).
+  const std::set<std::string_view> *onlyIds = nullptr;
   /// Messages of `annotation-required` reports already made for the
   /// program, so each boundary is reported once per program. Updated.
   std::set<std::string> *boundaryOnce = nullptr;

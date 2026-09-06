@@ -37,7 +37,7 @@
 #define WEAVEC_H
 
 #define WEAVEC_H_VERSION_MAJOR 0
-#define WEAVEC_H_VERSION_MINOR 6
+#define WEAVEC_H_VERSION_MINOR 7
 
 #if defined(__has_attribute)
 #if __has_attribute(annotate)
@@ -132,6 +132,12 @@
  * by name (`void fill(char *WEAVEC_SIZED_BY(len) buf, size_t len)`). The
  * body may access that many without a report; a caller passing a smaller
  * object is reported at the call.
+ *
+ * On a pointer field: the object holds at least `n` elements behind it, `n`
+ * being another integer field of the same struct by name (`struct buf {
+ * char *WEAVEC_SIZED_BY(cap) data; size_t cap; }`). Accesses through the
+ * field are checked against the count; a store into the field of an object
+ * the count says is too small is reported as a mismatch.
  */
 #define WEAVEC_SIZED_BY(n) WEAVEC_ANNOTATE_("weavec.sized_by." #n)
 
@@ -140,6 +146,24 @@
 #define WEAVEC_ENABLED 1
 #else
 #define WEAVEC_ENABLED 0
+#endif
+
+/**
+ * States that `expr` holds here, as if the code below were inside
+ * `if (expr)`: `WEAVEC_ASSUME(len <= cap)` lets the checker prove an access
+ * in bounds when the invariant that makes it so is not visible in the
+ * function. Trusted like every annotation. `expr` must be side-effect free;
+ * it is evaluated under WeaveC and is not compiled at all elsewhere.
+ */
+#if WEAVEC_ENABLED
+WEAVEC_ANNOTATE_("weavec.assume")
+static inline void weavec_assume_(int condition) {
+  (void)condition;
+}
+#define WEAVEC_ASSUME(expr) weavec_assume_((expr) != 0)
+#else
+/* Unevaluated, so `expr` is neither run nor an unused-variable warning. */
+#define WEAVEC_ASSUME(expr) ((void)sizeof((expr) != 0))
 #endif
 
 #endif /* WEAVEC_H */

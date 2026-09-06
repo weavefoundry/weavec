@@ -227,6 +227,55 @@ private:
   /// see, so it is dropped from the summary (RFC 0009, *Deriving guards*).
   std::set<core::SummaryPath> writtenScalarPaths;
 
+  // -- Sized fields (RFC 0012) ----------------------------------------------
+
+  /// A place that is a field of a named record: the place of the object it
+  /// belongs to, the field, and the field's count-field key (`struct
+  /// buf.data`; empty when the record has no stable spelling).
+  struct FieldPlace {
+    core::PlaceId object;
+    const clang::FieldDecl *field = nullptr;
+    std::string key;
+  };
+  /// One store of a pointer into a field of a named record (`o->f = v`),
+  /// flow insensitive, and what it says for the inference: a null store
+  /// says nothing; a store whose extent some sibling count is (or comes
+  /// to be, at that count's write) equal to witnesses that pair; any other
+  /// store refutes the field (RFC 0012, *Sized fields*, "Inference").
+  struct FieldPointerStore {
+    core::PlaceId place;
+    FieldPlace field;
+    core::SourceLocation location;
+    bool null = false;
+    /// The stored value's extent, when it is `{X, s, 0}` for a place `X`.
+    std::optional<core::Affine> extent;
+    /// The sibling count's key and the scale, when the store itself decided
+    /// it (the count was already equal to `X`).
+    std::optional<std::pair<std::string, std::int64_t>> witnessed;
+  };
+  std::vector<FieldPointerStore> fieldPointerStores;
+  /// A write of a count `o->g` that found the pointer sibling `o->f`
+  /// holding an object of `{X, s, 0}` bytes with `X` now equal to the count:
+  /// the store of that object into `o->f` is witnessed by `g`.
+  struct CountWitness {
+    core::PlaceId pointer;
+    core::Affine extent;
+    std::string count;
+  };
+  std::vector<CountWitness> countWitnesses;
+  /// Integer fields of named records this function writes (`o->g = e`,
+  /// `o->g++`), with the object's place: a pointer sibling not stored here
+  /// is not counted by them.
+  struct FieldScalarWrite {
+    core::PlaceId place;
+    FieldPlace field;
+    core::SourceLocation location;
+  };
+  std::vector<FieldScalarWrite> fieldScalarWrites;
+  /// Whether the two are being recorded (the final pass only: the
+  /// fixpoint's passes would record every store several times).
+  [[nodiscard]] bool recordsSizedFields() const noexcept;
+
   // -- Shares (RFC 0010) ----------------------------------------------------
 
   /// Operands of an adjustment (`x` in `x++`, `x += 1`): the adjustment
@@ -379,10 +428,12 @@ private:
   /// null): its fact is replaced and the guards that spoke about its old
   /// value drop that conjunct.
   void assignScalar(core::PlaceId place, const clang::Expr *value,
-                    core::AnalysisState &state);
+                    core::AnalysisState &state,
+                    const clang::Expr *at = nullptr);
   /// The integer place `place` was written in a way the model does not
   /// follow (`n++`, `n += k`, through its address).
-  void forgetScalar(core::PlaceId place, core::AnalysisState &state);
+  void forgetScalar(core::PlaceId place, core::AnalysisState &state,
+                    const clang::Expr *at = nullptr);
   /// What is known of the integer rvalue `expr`: a constant, the fact of the
   /// place it reads (its class only through a scale), or nothing.
   [[nodiscard]] std::optional<core::ValueFact>
@@ -834,7 +885,7 @@ private:
                     const clang::Expr &at, std::string_view subject,
                     std::string_view accessed, const clang::Expr *index,
                     const clang::CallExpr *call,
-                    const core::AnalysisState &state);
+                    const core::AnalysisState &state, bool lowerBound = false);
   /// `need` in a local index that a relation puts at or below a parameter
   /// (`i < n`), restated at the boundary in that parameter; nothing when no
   /// such relation holds.
@@ -858,6 +909,135 @@ private:
   /// the expression as written.
   [[nodiscard]] std::string spellIndex(const clang::Expr *index,
                                        const core::Affine &affine);
+
+  // -- Sized fields (RFC 0012, *Sized fields*) --------------------------------
+  // Implemented in DataflowSizedFields.cpp.
+
+  /// The `FieldPlace` `place` is, if it is a field of a named record.
+  [[nodiscard]] std::optional<FieldPlace> fieldPlaceOf(core::PlaceId place);
+  /// What counts the pointer field `place`: the place of the sibling count
+  /// (`o->cap` for `o->data`), the bytes per element, and whether it comes
+  /// from `WEAVEC_SIZED_BY` (else from a confirmed inference). Nothing for
+  /// a field nothing counts. A malformed annotation is reported here, once
+  /// per unit.
+  struct SizedFieldPlace {
+    core::PlaceId count;
+    std::int64_t unit = 1;
+    bool annotated = false;
+  };
+  [[nodiscard]] std::optional<SizedFieldPlace>
+  sizedFieldPlaceOf(core::PlaceId place);
+  /// The spatial record of `place`: the state's, or, for a sized field with
+  /// none, the record its count implies (RFC 0012, *Sized fields*, "Loads").
+  [[nodiscard]] std::optional<core::SpatialRecord>
+  spatialRecordAt(core::PlaceId place, const core::AnalysisState &state);
+  /// `o->f = v` with `f` a pointer field of a named record: remembers the
+  /// store for the inference and, for an annotated field, checks the
+  /// value's extent against the count when it is decided here ("Stores").
+  void noteFieldPointerStore(core::PlaceId dest, const clang::Expr &at,
+                             const core::AnalysisState &state);
+  /// `o->g = e` with `g` an integer field: remembers the write for the
+  /// inference, decides the pending stores of the sibling pointer fields
+  /// whose extent the new value now counts, and checks the annotated ones.
+  void noteFieldScalarWrite(core::PlaceId place, const clang::Expr *at,
+                            const core::AnalysisState &state);
+  /// At the end of the analysis: the witnesses and refutations of RFC
+  /// 0012's inference, from the stores and writes remembered.
+  void finalizeSizedFields(const core::AnalysisState *exitState);
+  /// `'b->data' is declared WEAVEC_SIZED_BY(cap) but is given 4 bytes where
+  /// 'b->cap' says 8` when `have` (the stored value's extent) is decided
+  /// smaller than the count's; returns whether it reported.
+  bool checkSizedFieldStore(core::PlaceId dest, const SizedFieldPlace &sized,
+                            const core::SpatialRecord &record,
+                            const core::SourceLocation &at,
+                            const core::AnalysisState &state);
+  /// `8 bytes`, `'n' bytes`, `'n' * 4 + 4 bytes`.
+  [[nodiscard]] std::string spellBytes(const core::Affine &amount);
+
+  // -- Strings (RFC 0012, *String facts*) -----------------------------------
+  // Implemented in DataflowStrings.cpp.
+
+  /// The object a `char *` argument points into, as the string tracker sees
+  /// it: the place whose spatial record carries the object's string fact,
+  /// the argument's byte offset into it, and what is known of its extent.
+  struct StringSubject {
+    /// The pointer place, or an array's storage place.
+    core::PlaceId key;
+    /// Bytes from the object's start to where the argument points.
+    std::int64_t offset = 0;
+    /// The object's extent in bytes, when known, and its origin (for
+    /// `reportBounds`).
+    std::optional<KnownExtent> extent;
+    /// The name of the object for a message (`buf`, `p`).
+    std::string name;
+  };
+  /// `stringSubjectOf(E)` for a pointer-valued expression at an element
+  /// offset the tracker follows (zero or a constant number of bytes);
+  /// nothing for a literal, a field offset, or an unknown one.
+  [[nodiscard]] std::optional<StringSubject>
+  stringSubjectOf(const clang::Expr &arg, const core::AnalysisState &state);
+  /// The bytes before the terminator of the string `arg` points at, when
+  /// known: a literal's, or the subject's length seen from its offset.
+  [[nodiscard]] std::optional<core::Affine>
+  stringLengthOf(const clang::Expr &arg, const core::AnalysisState &state);
+  /// True if the object `arg` points into is known to hold no terminator.
+  [[nodiscard]] std::optional<core::StringFact>
+  stringFactOf(const clang::Expr &arg, const core::AnalysisState &state);
+  /// Every name of the object behind `key` the fact is set on: the place,
+  /// its exact aliases, the storage it borrows, and the holders of loans on
+  /// that storage.
+  [[nodiscard]] std::vector<core::PlaceId>
+  stringTargets(core::PlaceId key, const core::AnalysisState &state);
+  /// Sets (or, with nothing, drops) the string fact of the object behind
+  /// `key` under every name.
+  void setStringFact(core::PlaceId key,
+                     const std::optional<core::StringFact> &fact,
+                     core::AnalysisState &state);
+  /// `s`'s string changed in a way the tracker does not follow: its length
+  /// place (if any) is forgotten with it.
+  void dropStringFact(core::PlaceId key, core::AnalysisState &state);
+  /// RFC 0012, *Sources of string facts*: what a library call establishes
+  /// about the strings behind its arguments, applied after the call's other
+  /// effects (`strcpy`, `strcat`, `sprintf`, `strncpy`, `memset`, `strlen`,
+  /// ...); every `w` argument not listed loses its facts.
+  void applyStringEffects(const clang::CallExpr &call,
+                          const core::FunctionSummary &summary,
+                          core::AnalysisState &state);
+  /// RFC 0012, *String checks*: the needs of `strcpy`, `strcat` and
+  /// `sprintf` against the destination's extent, and terminator-seeking
+  /// reads of an unterminated object.
+  void checkStringArguments(const clang::CallExpr &call,
+                            const core::FunctionSummary &summary,
+                            const core::AnalysisState &state);
+  /// `d[i] = c`: a byte store into an object the tracker follows.
+  void noteByteStore(const clang::Expr &lvalue, const clang::Expr *value,
+                     core::AnalysisState &state);
+  /// `char a[N] = "..."`, `char a[] = {...}`: the initialiser's string.
+  void initStringStorage(core::PlaceId storage, const clang::VarDecl &var,
+                         core::AnalysisState &state);
+  /// RFC 0012: `strdup(s)`'s result has `s`'s length and one more byte, when
+  /// the length is known; the extent and string fact of the fresh object.
+  [[nodiscard]] std::optional<std::pair<core::Affine, core::StringFact>>
+  duplicatedStringOf(const clang::CallExpr &call,
+                     const core::AnalysisState &state);
+  /// Whether `a >= b` is decided by the facts (true, false, or nothing):
+  /// constants, one place against a bound, two places against a relation.
+  [[nodiscard]] static std::optional<bool>
+  decideAtLeast(const core::Affine &a, const core::Affine &b,
+                const core::AnalysisState &state);
+  /// What a `printf` format, with the arguments it is given, is known to
+  /// produce: at least `lower` bytes (exactly, when `exact`), and which
+  /// arguments `%s` reads to their terminators.
+  struct FormatNeed {
+    core::Affine lower = core::Affine::ofConstant(0);
+    bool exact = true;
+    std::vector<unsigned> stringArguments;
+  };
+  /// Reads the literal format at `formatIndex` of `call`; nothing when it
+  /// is not a literal.
+  [[nodiscard]] std::optional<FormatNeed>
+  formatNeedOf(const clang::CallExpr &call, unsigned formatIndex,
+               const core::AnalysisState &state);
 
   // -- Summary recording (RFC 0003) -----------------------------------------
 

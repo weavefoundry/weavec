@@ -196,15 +196,15 @@ TEST(BoundsVerdict, ConstantUpperBounds) {
   const Affine four = Affine::ofConstant(4);
   const Affine i1plus1 = Affine::ofPlace(I, 1, 1); // `buf[i]` on bytes
   // `for (i = 0; i < 8; i++) buf[i]` on 4 bytes: `i` may be 7, past the end.
-  EXPECT_EQ(boundsVerdict(i1plus1, four, std::nullopt, /*needAtMost=*/7),
+  EXPECT_EQ(boundsVerdict(i1plus1, four, std::nullopt, {.needAtMost = 7}),
             (BoundsVerdict{.kind = Kind::MayReachPastEnd, .boundary = 7}));
   // `i < 4`: `i` is at most 3, in bounds.
-  EXPECT_FALSE(boundsVerdict(i1plus1, four, std::nullopt, /*needAtMost=*/3));
+  EXPECT_FALSE(boundsVerdict(i1plus1, four, std::nullopt, {.needAtMost = 3}));
   // Scaled: `ints[i]` with `i <= 1` on 8 bytes fits; `i <= 2` does not.
   EXPECT_FALSE(boundsVerdict(Affine::ofPlace(I, 4, 4), Affine::ofConstant(8),
-                             std::nullopt, /*needAtMost=*/1));
+                             std::nullopt, {.needAtMost = 1}));
   EXPECT_EQ(boundsVerdict(Affine::ofPlace(I, 4, 4), Affine::ofConstant(8),
-                          std::nullopt, /*needAtMost=*/2),
+                          std::nullopt, {.needAtMost = 2}),
             (BoundsVerdict{.kind = Kind::MayReachPastEnd, .boundary = 2}));
   // No bound: nothing is said.
   EXPECT_FALSE(boundsVerdict(i1plus1, four, std::nullopt));
@@ -212,13 +212,108 @@ TEST(BoundsVerdict, ConstantUpperBounds) {
   // `if (n > 4) return; p = malloc(n); p[6]`: the object has at most 4
   // bytes, so a constant access at 7 is out on every path.
   EXPECT_EQ(boundsVerdict(Affine::ofConstant(7), Affine::ofPlace(N),
-                          std::nullopt, std::nullopt, /*haveAtMost=*/4),
+                          std::nullopt, {.haveAtMost = 4}),
             (BoundsVerdict{.kind = Kind::OutOfBounds}));
   EXPECT_FALSE(boundsVerdict(Affine::ofConstant(4), Affine::ofPlace(N),
-                             std::nullopt, std::nullopt, /*haveAtMost=*/4));
+                             std::nullopt, {.haveAtMost = 4}));
   // A bound on the extent's place says nothing about a symbolic need.
   EXPECT_FALSE(boundsVerdict(i1plus1, Affine::ofPlace(N), std::nullopt,
-                             std::nullopt, /*haveAtMost=*/4));
+                             {.haveAtMost = 4}));
+}
+
+// RFC 0012, *Lower bounds*: `if (i >= 8) buf[i]` on 8 bytes is out on every
+// value `i` may take; `if (i <= -1) buf[i]` is before the start on every
+// value.
+TEST(BoundsVerdict, ConstantLowerBounds) {
+  using Kind = BoundsVerdict::Kind;
+  constexpr PlaceId I{3};
+  const Affine eight = Affine::ofConstant(8);
+  const Affine i1plus1 = Affine::ofPlace(I, 1, 1);
+  EXPECT_EQ(boundsVerdict(i1plus1, eight, std::nullopt, {.needAtLeast = 8}),
+            (BoundsVerdict{.kind = Kind::AtLeastPastEnd, .boundary = 8}));
+  // `i >= 7`: the smallest value fits; nothing more is known.
+  EXPECT_FALSE(boundsVerdict(i1plus1, eight, std::nullopt, {.needAtLeast = 7}));
+  // Both bounds: the lower decides first (`8 <= i <= 12` is out outright).
+  EXPECT_EQ(boundsVerdict(i1plus1, eight, std::nullopt,
+                          {.needAtMost = 12, .needAtLeast = 8}),
+            (BoundsVerdict{.kind = Kind::AtLeastPastEnd, .boundary = 8}));
+  // `2 <= i <= 12`: the upper says "may reach".
+  EXPECT_EQ(boundsVerdict(i1plus1, eight, std::nullopt,
+                          {.needAtMost = 12, .needAtLeast = 2}),
+            (BoundsVerdict{.kind = Kind::MayReachPastEnd, .boundary = 12}));
+  // Scaled: `ints[i]` with `i >= 2` on 8 bytes needs at least 12.
+  EXPECT_EQ(boundsVerdict(Affine::ofPlace(I, 4, 4), eight, std::nullopt,
+                          {.needAtLeast = 2}),
+            (BoundsVerdict{.kind = Kind::AtLeastPastEnd, .boundary = 2}));
+  // `i <= -1`: `buf[i]` ends at or before the start on every value.
+  EXPECT_EQ(boundsVerdict(i1plus1, eight, std::nullopt, {.needAtMost = -1}),
+            (BoundsVerdict{.kind = Kind::BeforeStart, .boundary = -1}));
+  EXPECT_EQ(boundsVerdict(i1plus1, Affine::ofPlace(N), std::nullopt,
+                          {.needAtMost = -1}),
+            (BoundsVerdict{.kind = Kind::BeforeStart, .boundary = -1}))
+      << "whatever the extent";
+  // A lower bound on the extent's place says nothing about a constant
+  // need: the object may be larger.
+  EXPECT_FALSE(boundsVerdict(Affine::ofConstant(7), Affine::ofPlace(N),
+                             std::nullopt, {.haveAtLeast = 4}));
+}
+
+// RFC 0012, *String facts*: a record carries what is known about the string
+// the object holds; a write to the length's counter drops it; the join
+// keeps only what both paths agree on.
+TEST(SpatialTracker, StringFactsFollowExtents) {
+  SpatialTracker t;
+  // A fact on a place with no record makes one.
+  t.setString(P, StringFact{.length = Affine::ofConstant(5)});
+  ASSERT_TRUE(t.recordOf(P));
+  EXPECT_FALSE(t.recordOf(P)->extent);
+  EXPECT_EQ(t.recordOf(P)->string->length, Affine::ofConstant(5));
+  // An empty fact is no fact.
+  t.setString(P, StringFact{});
+  EXPECT_FALSE(t.recordOf(P)->string);
+  // Beside an extent.
+  t.set(P, SpatialRecord{.extent = Affine::ofPlace(N), .offset = {}});
+  t.setString(P, StringFact{.length = Affine::ofPlace(N, 1, -1)});
+  EXPECT_TRUE(t.recordOf(P)->string);
+  t.dropStringFacts(P);
+  EXPECT_FALSE(t.recordOf(P)->string);
+  EXPECT_TRUE(t.recordOf(P)->extent) << "the extent stays";
+  // The length's counter written: the length is gone, the extent (in
+  // another counter) stays.
+  constexpr PlaceId M{9};
+  t.setString(P, StringFact{.length = Affine::ofPlace(M)});
+  t.dropExtentsOn(M);
+  EXPECT_FALSE(t.recordOf(P)->string);
+  EXPECT_TRUE(t.recordOf(P)->extent);
+  // A derived pointer carries the object's string fact.
+  t.setString(P, StringFact{.unterminated = true});
+  const SpatialRecord stepped =
+      t.recordOf(P)->derived(PointerOffset::ofElements(2));
+  EXPECT_TRUE(stepped.string->unterminated);
+
+  // Join: the same fact stays; `unterminated` on both stays; a length only
+  // one side knows, or two different lengths, is unknown.
+  SpatialTracker a;
+  SpatialTracker b;
+  a.setString(P, StringFact{.length = Affine::ofConstant(5)});
+  b.setString(P, StringFact{.length = Affine::ofConstant(5)});
+  EXPECT_FALSE(a.join(b));
+  EXPECT_EQ(a.recordOf(P)->string->length, Affine::ofConstant(5));
+  b.setString(P, StringFact{.length = Affine::ofConstant(6)});
+  EXPECT_TRUE(a.join(b));
+  EXPECT_FALSE(a.recordOf(P)) << "nothing left: the record is gone";
+
+  SpatialTracker c;
+  SpatialTracker d;
+  c.setString(P, StringFact{.unterminated = true, .location = {}});
+  d.setString(P,
+              StringFact{.unterminated = true,
+                         .location = SourceLocation{.file = "a.c", .line = 3}});
+  EXPECT_FALSE(c.join(d)) << "the first location is kept";
+  EXPECT_TRUE(c.recordOf(P)->string->unterminated);
+  SpatialTracker e;
+  EXPECT_TRUE(c.join(e));
+  EXPECT_FALSE(c.recordOf(P)) << "unknown on one path: unknown";
 }
 
 } // namespace

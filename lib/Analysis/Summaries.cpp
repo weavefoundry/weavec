@@ -287,6 +287,43 @@ std::optional<SizedBy> sizedByOf(const FunctionDecl &function, unsigned param) {
   return SizedBy{.count = count, .unit = unit};
 }
 
+std::optional<SizedField> sizedFieldOf(const FieldDecl &field) {
+  // RFC 0012, *Sized fields*, "Annotation": a pointer field naming a
+  // sibling integer field of the same record.
+  const AnnotationSet annotations = getAnnotations(field);
+  if (annotations.sizedBy.empty() || !field.getType()->isPointerType())
+    return std::nullopt;
+  const RecordDecl *record = field.getParent();
+  if (record == nullptr)
+    return std::nullopt;
+  const FieldDecl *count = nullptr;
+  for (const FieldDecl *candidate : record->fields()) {
+    if (candidate->getName() == annotations.sizedBy) {
+      count = candidate;
+      break;
+    }
+  }
+  if (count == nullptr || count == &field || !count->getType()->isIntegerType())
+    return std::nullopt;
+  std::int64_t unit = 1;
+  const QualType pointee = field.getType()->getPointeeType();
+  if (!pointee->isIncompleteType() && !pointee->isFunctionType()) {
+    const CharUnits size = field.getASTContext().getTypeSizeInChars(pointee);
+    if (!size.isZero())
+      unit = size.getQuantity();
+  }
+  return SizedField{.count = count, .unit = unit};
+}
+
+std::string fieldKeyOf(const FieldDecl &field, const ASTContext &context) {
+  const RecordDecl *record = field.getParent();
+  if (record == nullptr || field.getName().empty())
+    return {};
+  const core::PathElem step{.step = core::PathStep::Field,
+                            .field = field.getNameAsString()};
+  return countFieldKey(context.getCanonicalTagType(record), {step}, context);
+}
+
 void applySizedByAnnotations(core::FunctionSummary &summary,
                              const FunctionDecl &function) {
   for (unsigned i = 0; i < function.getNumParams(); ++i) {
@@ -454,6 +491,59 @@ bool SummaryStore::isKnownCount(llvm::StringRef key) const {
   if (knownCounts.contains(key.str()))
     return true;
   return database != nullptr && database->isKnownCount(key);
+}
+
+// -- Sized fields (RFC 0012)
+// ----------------------------------------------------
+
+void SummaryStore::addSizedWitness(std::string field, std::string count,
+                                   std::int64_t scale) {
+  sizedFields.witnesses.insert(SizedFieldWitness{
+      .field = std::move(field), .count = std::move(count), .scale = scale});
+}
+
+void SummaryStore::refuteSizedField(std::string field) {
+  sizedFields.unsizedFields.insert(std::move(field));
+}
+
+void SummaryStore::refuteSizedPair(std::string field, std::string count) {
+  sizedFields.unsizedPairs.insert(
+      UnsizedPair{.field = std::move(field), .count = std::move(count)});
+}
+
+const SizedFieldFacts &SummaryStore::sizedFieldFacts() const noexcept {
+  return sizedFields;
+}
+
+void SummaryStore::noteSizedFieldLoad(std::string key) {
+  sizedLoads.insert(std::move(key));
+}
+
+const std::set<std::string> &SummaryStore::sizedFieldLoads() const noexcept {
+  return sizedLoads;
+}
+
+void SummaryStore::setUnitSizedFactsInForce(bool inForce) noexcept {
+  unitSizedFactsInForce = inForce;
+}
+
+std::optional<std::pair<std::string, std::int64_t>>
+SummaryStore::confirmedSizedBy(std::string_view field) const {
+  if (field.empty())
+    return std::nullopt;
+  const SizedFieldFacts *program =
+      database != nullptr ? &database->sizedFieldFacts() : nullptr;
+  if (!unitSizedFactsInForce)
+    return program != nullptr ? program->confirmed(field) : std::nullopt;
+  if (program == nullptr || program->empty())
+    return sizedFields.confirmed(field);
+  SizedFieldFacts both = sizedFields;
+  both.merge(*program);
+  return both.confirmed(field);
+}
+
+bool SummaryStore::noteInvalidSizedField(const FieldDecl &field) {
+  return invalidSizedFields.insert(field.getCanonicalDecl()).second;
 }
 
 const std::set<std::string> &SummaryStore::knownCountKeys() const noexcept {

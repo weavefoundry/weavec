@@ -35,6 +35,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <string_view>
 
 namespace weavec::frontend {
 
@@ -95,14 +96,17 @@ struct ReportedDiagnostic {
 /// `alreadyReported`, remembers what it forwarded, and forwards the rest.
 /// With `boundaryOnce`, an `annotation-required` whose message is already in
 /// the set is dropped too: a boundary is reported once per program (RFC
-/// 0005), not once per unit that calls it.
+/// 0005), not once per unit that calls it. With `onlyIds`, every diagnostic
+/// whose id is not in the set is dropped (RFC 0012: a unit analysed once
+/// more for its sized fields shows only what they can change).
 class FilteringSink final : public core::DiagnosticSink {
 public:
   FilteringSink(core::DiagnosticSink &next, DiagnosticControl control,
                 const std::set<ReportedDiagnostic> *alreadyReported = nullptr,
-                std::set<std::string> *boundaryOnce = nullptr)
+                std::set<std::string> *boundaryOnce = nullptr,
+                const std::set<std::string_view> *onlyIds = nullptr)
       : downstream(next), table(std::move(control)), skip(alreadyReported),
-        once(boundaryOnce) {}
+        once(boundaryOnce), only(onlyIds) {}
 
   void report(const core::Diagnostic &diagnostic) override;
 
@@ -118,6 +122,7 @@ private:
   DiagnosticControl table;
   const std::set<ReportedDiagnostic> *skip;
   std::set<std::string> *once;
+  const std::set<std::string_view> *only;
   std::set<ReportedDiagnostic> forwarded;
   std::size_t errorCount = 0;
   std::size_t warningCount = 0;

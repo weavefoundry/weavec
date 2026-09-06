@@ -653,6 +653,8 @@ static constexpr auto NullAcceptedParams = std::to_array<NullAccepted>({
     {"time", 0},         {"fflush", 0},        {"setlocale", 1},
     {"perror", 0},       {"setbuf", 1},        {"setvbuf", 1},
     {"snprintf", 0},     {"vsnprintf", 0},     {"swprintf", 0},
+    // The `_FORTIFY_SOURCE` forms of the two above (their own rows below).
+    {"__builtin___snprintf_chk", 0}, {"__builtin___vsnprintf_chk", 0},
     {"mbstowcs", 0},     {"wcstombs", 0},      {"mbsrtowcs", 0},
     {"wcsrtombs", 0},    {"mbrtowc", 0},       {"mbrtowc", 3},
     {"wcrtomb", 0},      {"wcrtomb", 2},       {"mbrlen", 2},
@@ -748,8 +750,18 @@ static llvm::StringMap<core::FunctionSummary> buildTable() {
   // `_FORTIFY_SOURCE` rewrites `memcpy(d, s, n)` into
   // `__builtin___memcpy_chk(d, s, n, __builtin_object_size(d, 0))`; the
   // checked form has the plain one's effects (the extra trailing argument
-  // is a size). The `*printf_chk` forms insert their extra arguments in
-  // the middle and are left to the intrinsic rule.
+  // is a size). The `*printf_chk` forms insert their extra arguments (a
+  // flag and the size) before the format: RFC 0012's string checks read
+  // them with the arguments shifted, so they are given their own rows here
+  // rather than left to the intrinsic rule.
+  table["__builtin___sprintf_chk"] =
+      fromSpec(BuiltinSpec("__builtin___sprintf_chk", "w..r", '-'));
+  table["__builtin___vsprintf_chk"] =
+      fromSpec(BuiltinSpec("__builtin___vsprintf_chk", "w..r.", '-'));
+  table["__builtin___snprintf_chk"] =
+      fromSpec(BuiltinSpec("__builtin___snprintf_chk", "w...r", '-'));
+  table["__builtin___vsnprintf_chk"] =
+      fromSpec(BuiltinSpec("__builtin___vsnprintf_chk", "w...r.", '-'));
   for (const llvm::StringLiteral name :
        {llvm::StringLiteral("memcpy"), llvm::StringLiteral("memmove"),
         llvm::StringLiteral("memset"), llvm::StringLiteral("strcpy"),
@@ -926,7 +938,8 @@ static llvm::StringMap<core::FunctionSummary> buildTable() {
   }
   for (const llvm::StringLiteral name :
        {llvm::StringLiteral("memcpy"), llvm::StringLiteral("memmove"),
-        llvm::StringLiteral("memset"), llvm::StringLiteral("strncpy")}) {
+        llvm::StringLiteral("memset"), llvm::StringLiteral("strncpy"),
+        llvm::StringLiteral("snprintf"), llvm::StringLiteral("vsnprintf")}) {
     if (const auto it = table.find(name); it != table.end())
       table[("__builtin___" + name + "_chk").str()].requiresExtent =
           it->second.requiresExtent;

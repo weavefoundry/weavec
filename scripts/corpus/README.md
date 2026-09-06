@@ -333,3 +333,25 @@ development (`lapi lauxlib ldebug ldo lfunc lgc lmem lobject lstate
 lstring ltable ltm lvm`) reports 290 `double-free` on `L->l_G->strt.hash`
 for the same reason — a whole-program count depends on which units are
 present, as the RFC 0010 row above already noted.
+
+### RFC 0012: strings, sized fields, offset relations
+
+RFC 0012 (string lengths and terminators, `WEAVEC_SIZED_BY` on fields and
+its inference, `lhs REL rhs + k` relations, `WEAVEC_ASSUME`) reports no
+`out-of-bounds` on the corpus and changes no `out-of-bounds` count: the
+`strcpy`/`strcat`/`sprintf` sites here either copy into a buffer sized
+from the same `strlen` (`sds`, cJSON's `cJSON_strdup`) or into one whose
+extent the checker does not know (jansson copies with `memcpy` and a
+length, which RFC 0011 already checked). Sized
+field inference is as cautious as the RFC says: `--dump-analysis` on the
+program shows jansson's `strbuffer_t.value` by `size` confirmed and indexed
+within it, while cJSON's `printbuffer.buffer` by `length` and jansson's
+`json_array_t.table` by `size` are witnessed in one function and refuted
+in another (a count written without the pointer, or the reverse), so they
+stay unsized. Release build, same machine, pre-RFC binary → this one, back
+to back: Lua as one program 2 min 10 s → 2 min 9 s; whole corpus 2 min 12 s.
+
+| Project       | Change                       | Cause                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| ------------- | ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| cJSON-program | `null-dereference` 28 → 31   | Not a string report. macOS's `_FORTIFY_SOURCE` rewrites `sprintf(d, …)` into `__builtin___sprintf_chk(d, flag, size, …)`; the string checks need that form's arguments in their shifted positions, so it now has its own table row, and the row carries `sprintf`'s "dereferences its destination". `full_pointer`, `full_path` and `new_path` in `cJSON_Utils.c` are unchecked `cJSON_malloc` results (RFC 0008's accepted shape) and the report moves to the `sprintf` from the `create_patches` call two lines down (−2, +5). Linux builds, which do not fortify, reported these already. |
+| others        | unchanged                    | `snprintf`/`vsnprintf` accept a null destination (`vsnprintf(NULL, 0, fmt, ap)` measures the output; jansson's `json_vsprintf`), and their `_chk` rows do too, so Lua's `l_sprintf(buff, MAX_ITEM, …)` on a may-null `luaL_prepbuffsize` result stays quiet as it was.                                                                                                                                                                                                                                       |

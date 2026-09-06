@@ -119,6 +119,9 @@ struct ValueOrigin {
   /// Alloc (RFC 0011): the extent of the allocation in bytes, when the size
   /// argument or the callee's summary says.
   std::optional<core::Affine> extent;
+  /// Borrow of a string literal (RFC 0012, *Sources of string facts*): the
+  /// bytes before its first NUL.
+  std::optional<std::int64_t> literalLength;
   /// Raw (integer cast): the cast expression, where notes point.
   const clang::Expr *source = nullptr;
   /// Conditional: the two arms.
@@ -169,6 +172,41 @@ public:
   [[nodiscard]] bool isLiteralPlace(core::PlaceId place) const noexcept {
     return literal && *literal == place;
   }
+
+  /// RFC 0012, *Length places*: the synthetic integer place `strlen(<name
+  /// of string>)` standing for the length of the string the object behind
+  /// `string` (a pointer place, or an array's storage) holds. Created on
+  /// first use; never written by the program, and with no variable behind
+  /// it, so it appears in no summary.
+  [[nodiscard]] core::PlaceId lengthPlace(core::PlaceId string);
+  /// The length place of `string`, if one has been made.
+  [[nodiscard]] std::optional<core::PlaceId>
+  lookupLengthPlace(core::PlaceId string) const {
+    const auto it = lengthPlaces.find(string.value);
+    if (it == lengthPlaces.end())
+      return std::nullopt;
+    return it->second;
+  }
+  /// The string place a length place was made for, if `place` is one.
+  [[nodiscard]] std::optional<core::PlaceId>
+  stringOfLengthPlace(core::PlaceId place) const;
+  [[nodiscard]] bool isLengthPlace(core::PlaceId place) const {
+    return lengthOwners.contains(place.value);
+  }
+
+  /// RFC 0012: the place whose spatial record carries the string facts of
+  /// the object `expr` (a pointer value) points at, when `expr` points at
+  /// its start: a pointer place's own value (`p`, `s->name` as a pointer), or
+  /// the storage of an array (`buf`, `s.name` decayed). Nothing for a
+  /// literal, an offset pointer, or anything else.
+  [[nodiscard]] std::optional<core::PlaceId>
+  stringPlaceOf(const clang::Expr &expr);
+
+  /// RFC 0012: the argument of `strlen(E)` (or `__builtin_strlen`) when
+  /// `expr` is such a call through parentheses and integral casts; null
+  /// otherwise.
+  [[nodiscard]] static const clang::Expr *
+  strlenArgumentOf(const clang::Expr &expr);
 
   /// Resolves an lvalue expression to a place path, or `std::nullopt` if it
   /// is opaque or not a place at all.
@@ -435,6 +473,9 @@ private:
   llvm::DenseMap<std::uint32_t, const clang::FieldDecl *> placeFields;
   std::vector<const clang::VarDecl *> order;
   std::optional<core::PlaceId> literal;
+  /// RFC 0012: string place -> its length place, and back.
+  llvm::DenseMap<std::uint32_t, core::PlaceId> lengthPlaces;
+  llvm::DenseMap<std::uint32_t, core::PlaceId> lengthOwners;
 };
 
 } // namespace weavec::analysis
