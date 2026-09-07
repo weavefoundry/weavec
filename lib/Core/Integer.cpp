@@ -680,10 +680,11 @@ IntegerRangeEvaluation evaluateInteger(IntegerOp op, const IntegerRange &lhs,
     // Scale each modular interval before taking a hull. A signed-to-unsigned
     // conversion can produce two separated intervals; collapsing them first
     // would invent zero in a nonzero converted count times a small constant.
-    if (!type.isSigned && (lhs.constant() || rhs.constant())) {
-      const auto factor =
-          lhs.constant() ? lhs.constant()->bits : rhs.constant()->bits;
-      const auto &input = lhs.constant() ? rhs : lhs;
+    const auto lhsConstant = lhs.constant();
+    const auto rhsConstant = rhs.constant();
+    if (!type.isSigned && (lhsConstant || rhsConstant)) {
+      const auto factor = lhsConstant ? lhsConstant->bits : rhsConstant->bits;
+      const auto &input = lhsConstant ? rhs : lhs;
       if (factor == 0)
         return {.values =
                     IntegerRange::singleton(IntegerValue::ofBits(type, 0))};

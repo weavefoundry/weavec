@@ -555,9 +555,7 @@ private:
     /// The sibling count's key and the scale, when the store itself decided
     /// it (the count was already equal to `X`).
     std::optional<std::pair<std::string, std::int64_t>> witnessed;
-    // NOLINTNEXTLINE(readability-redundant-member-init): designated-init
-    // default
-    std::optional<core::IntegerType> productType = {};
+    std::optional<core::IntegerType> productType = std::nullopt;
   };
   std::vector<FieldPointerStore> fieldPointerStores;
   /// A write of a count `o->g` that found the pointer sibling `o->f`
@@ -567,9 +565,7 @@ private:
     core::PlaceId pointer;
     core::Affine extent;
     std::string count;
-    // NOLINTNEXTLINE(readability-redundant-member-init): designated-init
-    // default
-    std::optional<core::IntegerType> productType = {};
+    std::optional<core::IntegerType> productType = std::nullopt;
   };
   std::vector<CountWitness> countWitnesses;
   /// Integer fields of named records this function writes (`o->g = e`,
@@ -1272,9 +1268,7 @@ private:
     core::PlaceId count;
     std::int64_t unit = 1;
     bool annotated = false;
-    // NOLINTNEXTLINE(readability-redundant-member-init): designated-init
-    // default
-    std::optional<core::IntegerType> productType = {};
+    std::optional<core::IntegerType> productType = std::nullopt;
   };
   [[nodiscard]] std::optional<SizedFieldPlace>
   sizedFieldPlaceOf(core::PlaceId place);

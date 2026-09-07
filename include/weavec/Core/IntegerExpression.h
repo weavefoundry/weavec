@@ -424,11 +424,11 @@ public:
         } else {
           auto lhs = stack.back();
           stack.pop_back();
-          const auto operation =
-              node.kind == IntegerNodeKind::Overflow
-                  ? "overflow-" + std::string(core::toString(node.op)) + "-" +
-                        node.checkedType->toString()
-                  : std::string(core::toString(node.op));
+          auto operation = node.kind == IntegerNodeKind::Overflow
+                               ? "overflow-" +
+                                     std::string(core::toString(node.op)) +
+                                     "-" + node.checkedType->toString()
+                               : std::string(core::toString(node.op));
           if (node.kind == IntegerNodeKind::Operation &&
               node.op == IntegerOp::Add) {
             if (!lhs.empty() && lhs.front() >= '0' && lhs.front() <= '9')
@@ -444,7 +444,12 @@ public:
             lhs += ')';
             stack.push_back(std::move(lhs));
           } else {
-            stack.push_back(operation + "(" + lhs + ", " + rhs + ")");
+            operation += '(';
+            operation += lhs;
+            operation += ", ";
+            operation += rhs;
+            operation += ')';
+            stack.push_back(std::move(operation));
           }
         }
       }

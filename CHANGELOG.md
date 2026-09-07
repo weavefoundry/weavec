@@ -746,6 +746,12 @@ follows [Semantic Versioning](https://semver.org/) once it reaches 1.0.
 
 ### Fixed
 
+- Cache constant operands during modular range multiplication so clang-tidy
+  checks the same optional values it later reads, avoiding a Linux CI
+  uninitialized-value false positive. Retain coverage for both operand orders.
+  Use explicit empty defaults for optional product types and append expression
+  descriptions without temporary string concatenations to satisfy header checks.
+
 - A null test of a pointer made every exact alias of it definitely null,
   including aliases the relation only holds on some path (two pointers
   into the same object at the same field on one loop iteration): Lua's

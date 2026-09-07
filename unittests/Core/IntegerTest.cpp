@@ -463,6 +463,8 @@ TEST(IntegerRanges, ModularScalingPreservesSeparatedConvertedIntervals) {
         const auto lhs = IntegerRange::fromRanks(
             type, {{.lower = begin, .upper = type.mask()}});
         const auto product = evaluateInteger(IntegerOp::Multiply, lhs, rhs);
+        const auto reversed = evaluateInteger(IntegerOp::Multiply, rhs, lhs);
+        ASSERT_EQ(product.values, reversed.values);
         for (unsigned value = begin; value <= type.mask(); ++value)
           ASSERT_TRUE(product.values.contains(IntegerValue::ofBits(
               type, static_cast<std::uint64_t>(value) * factor)));
