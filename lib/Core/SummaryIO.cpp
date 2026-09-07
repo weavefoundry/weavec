@@ -93,6 +93,8 @@ std::string printValueSource(const ValueSource &source,
   std::string text(toString(source.kind));
   if (source.post)
     text += "-post";
+  if (source.kind == ValueSource::Kind::Function)
+    text += " " + source.targets.toString();
   if (source.kind == ValueSource::Kind::Fresh && !source.family.empty())
     text += '(' + source.family + ')';
   if ((source.kind == ValueSource::Kind::Copy ||
@@ -166,12 +168,25 @@ std::string printGuard(const PathGuard &guard, const GlobalNamer &names) {
     text += text.empty() ? " when " : " and ";
     text += printSummaryPath(path, names) + ' ' + fact.toString();
   }
+  for (const auto &[pair, equal] : guard.pointers) {
+    text += text.empty() ? " when " : " and ";
+    text += printSummaryPath(pair.first, names) +
+            (equal ? " same " : " different ") +
+            printSummaryPath(pair.second, names);
+  }
   return text;
 }
 
 std::string printSummary(const FunctionSummary &summary,
                          const GlobalNamer &names) {
   std::string text = "summary\n";
+  for (const auto &[path, view] : summary.objectViews)
+    text +=
+        "  object-view " + printSummaryPath(path, names) + " " + view + "\n";
+  for (const auto &path : summary.callbackInputs)
+    text += "callback-input " + printSummaryPath(path, names) + "\n";
+  for (const auto &reason : summary.incomplete)
+    text += "  incomplete " + reason + '\n';
   if (summary.neverReturns)
     text += "  never-returns\n";
   for (const auto &[path, effect] : summary.effects) {
@@ -447,6 +462,11 @@ static bool parseSource(Tokens &tokens, const GlobalResolver &resolve,
       if (!parseAffine(tokens, resolve, source.extent))
         return false;
     }
+  } else if (kind == "function") {
+    const auto targets = CallTargets::parse(tokens.take());
+    if (!targets)
+      return false;
+    source = ValueSource::function(*targets);
   } else if (kind == "null") {
     source = ValueSource::null();
   } else if (kind == "unknown") {
@@ -489,6 +509,56 @@ static bool parseSource(Tokens &tokens, const GlobalResolver &resolve,
     source.unterminated = true;
   }
   return true;
+}
+
+std::string printCallbackBindings(const CallbackBindings &bindings) {
+  std::string result;
+  for (const auto &[path, targets] : bindings) {
+    if (!result.empty())
+      result += ';';
+    std::string token =
+        printSummaryPath(path, [](std::uint32_t) { return std::string{}; });
+    for (char &c : token)
+      if (c == ' ')
+        c = '~';
+    result += token + '=' + targets.toString();
+  }
+  return result;
+}
+
+std::optional<CallbackBindings> parseCallbackBindings(std::string_view text) {
+  CallbackBindings result;
+  while (!text.empty()) {
+    const auto end = text.find(';');
+    const auto token = text.substr(0, end);
+    const auto equal = token.find('=');
+    if (equal == std::string_view::npos)
+      return std::nullopt;
+    std::string pathText(token.substr(0, equal));
+    for (char &c : pathText)
+      if (c == '~')
+        c = ' ';
+    Tokens tokens(pathText);
+    ParsedPath path;
+    const auto targets = CallTargets::parse(token.substr(equal + 1));
+    if (!targets ||
+        !parsePath(
+            tokens,
+            [](std::string_view) { return std::optional<std::uint32_t>{}; },
+            path) ||
+        !path.path || !tokens.empty() ||
+        path.path->root != SummaryRoot::Param ||
+        path.path->steps.size() > MaxHeapPathDepth ||
+        !result.emplace(*path.path, *targets).second ||
+        result.size() > MaxCallbackContexts)
+      return std::nullopt;
+    if (end == std::string_view::npos)
+      break;
+    text.remove_prefix(end + 1);
+    if (text.empty())
+      return std::nullopt;
+  }
+  return result.empty() ? std::nullopt : std::optional(result);
 }
 
 static bool parseFlags(std::string_view text, PlaceEffect &effect) {
@@ -566,11 +636,20 @@ static bool parseGuard(Tokens &tokens, const GlobalResolver &resolve,
     ParsedPath path;
     if (!parsePath(tokens, resolve, path))
       return false;
-    const std::optional<ValueFact> fact = ValueFact::parse(tokens.take());
-    if (!fact)
-      return false;
-    if (path.path)
-      guard.require(*path.path, *fact);
+    const std::string_view word = tokens.take();
+    if (word == "same" || word == "different") {
+      ParsedPath other;
+      if (!parsePath(tokens, resolve, other))
+        return false;
+      if (path.path && other.path)
+        guard.requirePointer(*path.path, *other.path, word == "same");
+    } else {
+      const std::optional<ValueFact> fact = ValueFact::parse(word);
+      if (!fact)
+        return false;
+      if (path.path)
+        guard.require(*path.path, *fact);
+    }
     if (tokens.empty())
       return true;
     if (tokens.take() != "and")
@@ -621,6 +700,34 @@ std::optional<FunctionSummary> parseSummary(std::string_view record,
         return fail("line " + std::to_string(lineNumber) +
                     ": expected 'summary'");
       open = true;
+      continue;
+    }
+    if (kind == "object-view") {
+      ParsedPath path;
+      if (!parsePath(tokens, resolve, path) || !path.path || tokens.empty())
+        return fail("invalid object view");
+      const std::string view(tokens.take());
+      if (!tokens.empty() ||
+          !summary.objectViews.emplace(*path.path, view).second)
+        return fail("invalid object view");
+      continue;
+    }
+    if (kind == "callback-input") {
+      ParsedPath path;
+      if (!parsePath(tokens, resolve, path) || !path.path || !tokens.empty())
+        return fail("invalid callback input");
+      summary.callbackInputs.insert(*path.path);
+      continue;
+    }
+    if (kind == "incomplete") {
+      if (tokens.empty())
+        return fail("empty incomplete reason");
+      std::string reason(tokens.take());
+      while (!tokens.empty()) {
+        reason += ' ';
+        reason += tokens.take();
+      }
+      summary.incomplete.insert(std::move(reason));
       continue;
     }
     if (kind == "end") {

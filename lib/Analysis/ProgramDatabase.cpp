@@ -14,6 +14,7 @@
 #include "clang/AST/Decl.h"
 #include "clang/AST/DeclBase.h"
 #include "clang/AST/PrettyPrinter.h"
+#include "clang/AST/RecordLayout.h"
 #include "clang/Basic/Version.h"
 
 #include <algorithm>
@@ -59,6 +60,9 @@ bool GlobalNames::extendTo(const GlobalNames &other) {
 // -- UnitExports --------------------------------------------------------------
 
 bool UnitExports::sameSummariesAs(const UnitExports &other) const {
+  if (callbackGlobals != other.callbackGlobals ||
+      callbackRequests != other.callbackRequests)
+    return false;
   return functions == other.functions && globals == other.globals &&
          countFields == other.countFields && sizedFields == other.sizedFields;
 }
@@ -153,6 +157,25 @@ std::string recordTypeKey(QualType type, const ASTContext &context) {
   return stableTypeKey(canonical, context);
 }
 
+std::string recordLayoutKey(QualType type, const ASTContext &context) {
+  if (type.isNull() || !type->isRecordType() || type->isIncompleteType())
+    return {};
+  const auto *record = type->getAsRecordDecl();
+  const auto &layout = context.getASTRecordLayout(record);
+  // Top-level cv-qualification changes access, not the object layout.
+  std::string shape = stableTypeKey(type.getUnqualifiedType(), context);
+  if (shape.empty())
+    shape = record->isUnion() ? "union" : "struct";
+  shape += ":" + std::to_string(layout.getSize().getQuantity()) + ":" +
+           std::to_string(layout.getAlignment().getQuantity());
+  for (const auto *field : record->fields()) {
+    shape += ":" + field->getNameAsString() + ":" +
+             std::to_string(layout.getFieldOffset(field->getFieldIndex())) +
+             ":" + stableTypeKey(field->getType(), context);
+  }
+  return core::CallTargets::function(std::move(shape)).toString();
+}
+
 // -- ProgramDatabase ----------------------------------------------------------
 
 static core::FunctionSummary renumber(const core::FunctionSummary &summary,
@@ -164,6 +187,7 @@ static core::FunctionSummary renumber(const core::FunctionSummary &summary,
 }
 
 void ProgramDatabase::add(const UnitExports &unit) {
+  addCallbackInformation(unit);
   // Exports already numbered by (a prefix or an extension of) this table
   // mean the same thing verbatim; renumbering them would rebuild every
   // summary's maps for nothing.
@@ -201,15 +225,55 @@ void ProgramDatabase::add(const UnitExports &unit) {
 UnitExports ProgramDatabase::renumbered(const UnitExports &unit) {
   UnitExports result = unit;
   if (!globalNames.extendTo(unit.globals)) {
-    for (auto &[name, function] : result.functions)
+    for (auto &[name, function] : result.functions) {
       function.summary = renumber(function.summary, unit.globals, globalNames);
+      for (auto &[bindings, summary] : function.specializations)
+        summary = renumber(summary, unit.globals, globalNames);
+    }
   }
   result.globals = globalNames;
   return result;
 }
 
+void ProgramDatabase::addCallbackInformation(const UnitExports &unit) {
+  for (const auto &[name, targets] : unit.callbackGlobals)
+    callbackGlobals[name].join(targets);
+  for (const auto &[symbol, requests] : unit.callbackRequests)
+    callbackRequests[symbol].insert(requests.begin(), requests.end());
+  for (const auto &[name, function] : unit.functions) {
+    const std::string symbol =
+        function.external ? name : unit.source + "#" + name;
+    callableSummaries[symbol] =
+        renumber(function.summary, unit.globals, globalNames);
+    for (const auto &[bindings, summary] : function.specializations)
+      contextSummaries[{symbol, bindings}] =
+          renumber(summary, unit.globals, globalNames);
+  }
+}
+
+const core::FunctionSummary *
+ProgramDatabase::findCallable(std::string_view symbol) const {
+  const auto it = callableSummaries.find(symbol);
+  return it == callableSummaries.end() ? nullptr : &it->second;
+}
+const core::FunctionSummary *ProgramDatabase::findSpecialization(
+    std::string_view symbol, const core::CallbackBindings &bindings) const {
+  const auto it = contextSummaries.find({std::string(symbol), bindings});
+  return it == contextSummaries.end() ? nullptr : &it->second;
+}
+const std::set<core::CallbackBindings> &
+ProgramDatabase::requestsFor(std::string_view symbol) const {
+  static const std::set<core::CallbackBindings> Empty;
+  const auto it = callbackRequests.find(symbol);
+  return it == callbackRequests.end() ? Empty : it->second;
+}
+
 void ProgramDatabase::clear() {
   functions.clear();
+  callableSummaries.clear();
+  contextSummaries.clear();
+  callbackRequests.clear();
+  callbackGlobals.clear();
   candidateSummaries.clear();
   globalNames = GlobalNames{};
   countFields.clear();

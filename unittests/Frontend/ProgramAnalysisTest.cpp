@@ -296,6 +296,7 @@ int main(void) {
                         core::PlaceEffect{.freed = true});
   node.functions["node_free"] =
       analysis::ExportedFunction{.summary = freeSummary,
+                                 .specializations = {},
                                  .typeKey = "void (void *)",
                                  .external = true,
                                  .addressTaken = false};
@@ -367,6 +368,132 @@ TEST(ProgramAnalysis, WideningJoinsWithThePreviousRound) {
   const analysis::UnitExports widened = current;
   ProgramAnalysis::widen(current, previous);
   EXPECT_TRUE(current.sameSummariesAs(widened));
+}
+
+TEST(ProgramAnalysis, CallbackContextsFlowBackToTheDefiningUnit) {
+  Program program;
+  program.header(
+      "callback.h",
+      "typedef void (*Callback)(void *); void invoke(Callback, void *);\n");
+  program.add("caller.c", R"c(
+#include "callback.h"
+static void keep(void *p) { (void)p; }
+static void drop(void *p) { free(p); }
+void clean(int *p) { invoke(keep, p); *p = 1; free(p); }
+void bad(int *p) { invoke(drop, p); *p = 1; }
+)c");
+  program.add("helper.c", R"c(
+#include "callback.h"
+void invoke(Callback callback, void *userdata) { callback(userdata); }
+)c");
+  const auto result = program.run();
+  EXPECT_TRUE(result.failed.empty());
+  EXPECT_TRUE(result.nonConverging.empty());
+  EXPECT_EQ(result.errors, 1U);
+  EXPECT_EQ(result.warnings, 0U);
+  ASSERT_EQ(program.recorder.lines.size(), 1U);
+  EXPECT_NE(program.recorder.lines[0].find("use of 'p' after it was freed"),
+            std::string::npos);
+}
+
+TEST(ProgramAnalysis, InternalCallbackNamesRemainDistinctAcrossUnits) {
+  Program program;
+  program.header("callback.h",
+                 "typedef void (*Callback)(void *); Callback "
+                 "keep_callback(void); Callback drop_callback(void);\n");
+  program.add("keep.c", R"c(
+#include "callback.h"
+static void callback(void *p) { (void)p; }
+Callback keep_callback(void) { return callback; }
+)c");
+  program.add("drop.c", R"c(
+#include "callback.h"
+static void callback(void *p) { free(p); }
+Callback drop_callback(void) { return callback; }
+)c");
+  program.add("caller.c", R"c(
+#include "callback.h"
+void clean(int *p) { keep_callback()(p); *p = 1; free(p); }
+void bad(int *p) { drop_callback()(p); *p = 1; }
+)c");
+  const auto result = program.run();
+  EXPECT_TRUE(result.failed.empty());
+  EXPECT_TRUE(result.nonConverging.empty());
+  EXPECT_EQ(result.errors, 1U);
+  EXPECT_EQ(result.warnings, 0U);
+}
+
+TEST(ProgramAnalysis, PointerComparisonGuardsCrossUnits) {
+  Program program;
+  program.add("helper.c",
+              "void release_same(int *p, int *q) { if (p == q) free(p); }\n");
+  program.add("caller.c", R"c(
+void release_same(int *, int *);
+void clean(int *p, int *q) { if (p != q) { release_same(p, q); *p = 1; free(p); } }
+void bad(int *p) { release_same(p, p); *p = 1; }
+)c");
+  const auto result = program.run();
+  EXPECT_TRUE(result.failed.empty());
+  EXPECT_TRUE(result.nonConverging.empty());
+  EXPECT_EQ(result.errors, 1U);
+  EXPECT_EQ(result.warnings, 0U);
+}
+
+TEST(ProgramAnalysis,
+     AReferencedCallbackDefinitionIsADependencyWithoutADirectCall) {
+  Program program;
+  program.add("caller.c", R"c(
+void (*get(void))(void *);
+void bad(int *p) { get()(p); *p = 1; }
+)c");
+  program.add("factory.c", R"c(
+void release(void *);
+void (*get(void))(void *) { return release; }
+)c");
+  program.add("release.c", "void release(void *p) { free(p); }\n");
+  const auto result = program.run();
+  EXPECT_EQ(result.errors, 1U);
+  EXPECT_EQ(result.warnings, 0U);
+  EXPECT_TRUE(result.failed.empty());
+  EXPECT_TRUE(result.nonConverging.empty());
+}
+
+TEST(ProgramAnalysis, ExternGlobalCallbackStoresReachOtherUnits) {
+  Program program;
+  program.add("caller.c", R"c(
+static void keep(void *p) { (void)p; }
+void (*hook)(void *) = keep;
+void bad(int *p) { hook(p); *p = 1; }
+)c");
+  program.add("setter.c", R"c(
+extern void (*hook)(void *);
+static void drop(void *p) { free(p); }
+void set_hook(void) { hook = drop; }
+)c");
+  const auto result = program.run();
+  EXPECT_EQ(result.errors, 1U);
+  EXPECT_EQ(result.warnings, 0U);
+  EXPECT_TRUE(result.failed.empty());
+  EXPECT_TRUE(result.nonConverging.empty());
+}
+
+TEST(ProgramAnalysis, PointerCopiesThroughAnotherUnitPreserveIdentity) {
+  Program program;
+  program.add("caller.c", R"c(
+void copy_pointer(int **, int **);
+void bad(int *p) { int *q; copy_pointer(&q, &p); free(p); *q = 1; }
+)c");
+  program.add("copy.c", R"c(
+void *memcpy(void *, const void *, size_t);
+void copy_pointer(int **dest, int **source) {
+  memcpy(dest, source, sizeof *source);
+}
+)c");
+  const auto result = program.run();
+  EXPECT_EQ(result.errors, 1U);
+  EXPECT_EQ(result.warnings, 0U);
+  EXPECT_TRUE(result.failed.empty());
+  EXPECT_TRUE(result.nonConverging.empty());
 }
 
 } // namespace

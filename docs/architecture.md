@@ -77,10 +77,10 @@ the frontend fills in so it can report at the exact original position.
   this TU, the program database (a definition in another unit of the
   program), the shipped libc/POSIX table (`Builtins.cpp`), and finally a
   documented default that also records the callee as an unknown boundary.
-  For a call through a function pointer (`lookupIndirect`) the order is:
-  annotations on the pointer's type, else the join of the summaries of every
-  address-taken function of that type in the TU and in the program
-  database, else the same default;
+  For a call through a function pointer (`lookupCall`), annotations on the
+  pointer's type remain authoritative; otherwise the current function-value
+  targets select the summaries. Unknown alternatives retain the boundary
+  behavior (RFC 0014). `lookupIndirect` supplies only an explicit type contract;
 - holds what other units export (`ProgramDatabase.h`): `UnitExports` (the
   functions a unit defines with their summaries, linkage, canonical type key
   and address-taken flag; the names it imports; the indirect-call type keys
@@ -260,7 +260,7 @@ redirects the dependency to an interned allocation-time snapshot. Reusing a
 snapshot site invalidates the old generation's dependent facts. The domain
 remains bounded and uses the existing affine and relation operations.
 
-Summary and sidecar version 9 serialize heap descriptions, post references
+Summary and sidecar version 10 serialize heap descriptions, post references
 and string metadata. `ProgramDatabase` remaps global references and compares
 these descriptions as part of normal dependency invalidation. The compiler
 and tooling whole-program modes share this implementation.
@@ -291,6 +291,7 @@ scripts and editors may filter on it, so renaming one is a breaking change.
 (`"whole_program": true`), and compares diagnostic counts with
 `scripts/corpus/baseline.json`; see `scripts/corpus/README.md`. It is the
 empirical check on the RFCs' precision claims and runs weekly in CI.
+RFC 0014 also pins a smaller subset for both release pull-request jobs.
 
 The fixed evaluation suite (`scripts/evaluate.py`, `test/evaluation/`) is
 separate from corpus counts and recall regression pins. It retains known
@@ -302,5 +303,39 @@ RFC 0013 also keeps a must-fact for objects allocated within the current
 function. Cleanup below those objects does not become consumption of entry
 fields merely because the object was published through an interface path.
 Copies and record copies preserve the fact; unknown non-null alternatives
-drop it at joins. Input guard snapshots carry scalar/null facts alone,
-while pointer-value snapshots retain the required reachable state.
+drop it at joins. Scalar guard snapshots carry scalar/null facts; RFC 0014
+also preserves pointer predicates through input identities. Pointer-value
+snapshots retain the required reachable state.
+
+## Pointer identity and contextual call effects (RFC 0014)
+
+`Core/CallTargets` stores bounded symbol sets with independent unknown and
+null alternatives. `AnalysisState` carries these values through pointer and
+record operations. Summary value sources can carry function values; pointer
+comparison predicates share the existing bounded guard representation.
+
+`DataflowCallbacks.cpp` resolves each call against its current state.
+`CallbackSummaries.cpp` specializes ordinary `FunctionDataflow` analyses under
+callback bindings. Contexts are bounded and cached, and active recursive
+contexts remain explicit incomplete boundaries. Generic summaries record the
+parameter paths used as callbacks. A caller binds those paths; the callee body
+keeps the associated userdata and operation ordering. Declarations retain
+authority over the specialized summary.
+
+`UnitExports` carries callback requests, specialized summaries and global
+function values. Interfaces capable of accepting callbacks introduce reverse
+scheduling dependencies, allowing requests and their answers to settle in the
+existing program SCC fixpoint before reporting. Function references also
+introduce dependencies, including references in global initializers. Extra
+type-compatible edges order inference but do not contribute effects.
+
+`DataflowMemory.cpp` snapshots complete pointer or compatible record copies
+before writing their destination. Existing ownership, heap and alias transfer
+machinery applies the snapshot. Partial or unsupported pointer-containing
+copies discard affected must-facts and record incomplete coverage.
+`DataflowViews.cpp` validates the record views attached to summary paths;
+Analysis supplies layout keys and Core remains independent of Clang.
+
+Summary and sidecar format 10 serialize these values, pointer predicates,
+record views and incomplete reasons. All representations use deterministic
+ordering, and sidecar readers reject malformed or oversized contexts.

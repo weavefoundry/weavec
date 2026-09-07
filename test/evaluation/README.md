@@ -1,6 +1,7 @@
 # Fixed evaluation set
 
-This suite measures RFC 0013's constructor and allocation-time value cases.
+This suite measures RFC 0013's constructor and allocation-time value cases
+and RFC 0014's callback, pointer-guard and complete-copy cases.
 Every independently identified bug is listed in `manifest.json`, including
 bugs the checker does not yet catch. It complements `test/recall/`, which
 pins existing detections against regression, and `scripts/corpus/`, which
@@ -13,8 +14,8 @@ python3 scripts/test_evaluate.py
 ctest --test-dir build/dev -R '^(evaluation|evaluation-harness)$' --output-on-failure
 ```
 
-The checked-in set contains 20 programs: 16 bugs and four clean counterparts.
-RFC 0013 detects **14/16 bugs**, accepts **4/4 clean programs**, and has no
+The checked-in set contains 28 programs: 20 bugs and eight clean counterparts.
+RFC 0014 detects **18/20 bugs**, accepts **8/8 clean programs**, and has no
 unexpected reports, parse failures, tool failures or timeouts. The remaining
 two bugs exercise a product of two symbolic sizes and a variable-length array;
 both are outside the current affine/layout domain. This small, selected set
@@ -34,6 +35,11 @@ through out-parameters, shared children, returned string facts and a clean
 loop using a preserved count. Core, Analysis and lit tests additionally cover
 nested graphs, self-links, record returns, replacement, failure restoration,
 raw/borrowed fields, release families, projection limits and driver sidecars.
+
+RFC 0014 adds four bug/clean pairs: an actual callback target, a callback
+forwarded through another translation unit, a pointer equality guarded
+release, and a complete pointer copy. The original two known misses remain
+in the denominator.
 
 ## Adding cases
 

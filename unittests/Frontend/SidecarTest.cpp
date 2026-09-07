@@ -57,6 +57,7 @@ UnitRecord sample() {
   freeSummary.addEffect(SummaryPath::global(cache), PlaceEffect{.freed = true});
   exports.functions["node_free"] =
       analysis::ExportedFunction{.summary = freeSummary,
+                                 .specializations = {},
                                  .typeKey = "void (struct node *)",
                                  .external = true,
                                  .addressTaken = true};
@@ -65,6 +66,7 @@ UnitRecord sample() {
   newSummary.addReturn(ValueSource::fresh());
   exports.functions["node_new"] =
       analysis::ExportedFunction{.summary = newSummary,
+                                 .specializations = {},
                                  .typeKey = "struct node *(void)",
                                  .external = true,
                                  .addressTaken = false};
@@ -73,6 +75,7 @@ UnitRecord sample() {
   helper.addReturn(
       ValueSource::borrow(SummaryPath::param(0).deref().field("v")));
   exports.functions["vp"] = analysis::ExportedFunction{.summary = helper,
+                                                       .specializations = {},
                                                        .typeKey = "",
                                                        .external = false,
                                                        .addressTaken = true};
@@ -88,6 +91,7 @@ UnitRecord sample() {
                   PlaceEffect{.moved = true});
   exports.functions["grow"] =
       analysis::ExportedFunction{.summary = grow,
+                                 .specializations = {},
                                  .typeKey = "char *(char *, unsigned long)",
                                  .external = true,
                                  .addressTaken = false};
@@ -100,7 +104,7 @@ TEST(Sidecar, PathIsOutputPlusExtension) {
 
 TEST(Sidecar, PrintsStableText) {
   EXPECT_EQ(printUnitRecord(sample()),
-            "weavec-summaries 9\n"
+            "weavec-summaries 10\n"
             "source src/node.c\n"
             "cwd /work/build\n"
             "arg -triple\n"
@@ -203,8 +207,8 @@ TEST(Sidecar, RejectsOtherFormatsAndMalformedLines) {
   std::string error;
   EXPECT_FALSE(parseUnitRecord("weavec-summaries 1\n", &error));
   EXPECT_EQ(error, "unsupported format 1");
-  EXPECT_FALSE(parseUnitRecord("weavec-summaries 10\n", &error));
-  EXPECT_EQ(error, "unsupported format 10");
+  EXPECT_FALSE(parseUnitRecord("weavec-summaries 11\n", &error));
+  EXPECT_EQ(error, "unsupported format 11");
   EXPECT_FALSE(parseUnitRecord("weavec-summaries 7\n", &error));
   EXPECT_EQ(error, "unsupported format 7");
   EXPECT_FALSE(parseUnitRecord("ELF\x01\x02", &error));
@@ -212,32 +216,33 @@ TEST(Sidecar, RejectsOtherFormatsAndMalformedLines) {
   EXPECT_FALSE(parseUnitRecord("", &error));
   EXPECT_EQ(error, "empty file");
   EXPECT_FALSE(parseUnitRecord(
-      "weavec-summaries 9\nsummary\n  return fresh\nend\n", &error));
+      "weavec-summaries 10\nsummary\n  return fresh\nend\n", &error));
   EXPECT_EQ(error, "line 2: summary record without a function");
-  EXPECT_FALSE(parseUnitRecord("weavec-summaries 9\nfunction f\n", &error));
+  EXPECT_FALSE(parseUnitRecord("weavec-summaries 10\nfunction f\n", &error));
   EXPECT_EQ(error, "line 2: malformed 'function' line");
-  EXPECT_FALSE(parseUnitRecord("weavec-summaries 9\nfunction f external "
+  EXPECT_FALSE(parseUnitRecord("weavec-summaries 10\nfunction f external "
                                "plain\nsummary\n  return fresh\n",
                                &error));
   EXPECT_EQ(error, "line 4: summary record without 'end'");
-  EXPECT_FALSE(parseUnitRecord("weavec-summaries 9\nreported x y z\n", &error));
+  EXPECT_FALSE(
+      parseUnitRecord("weavec-summaries 10\nreported x y z\n", &error));
   EXPECT_EQ(error, "line 2: malformed 'reported' line");
   // RFC 0012.
   EXPECT_FALSE(
-      parseUnitRecord("weavec-summaries 9\nsized-field a b\n", &error));
+      parseUnitRecord("weavec-summaries 10\nsized-field a b\n", &error));
   EXPECT_EQ(error, "line 2: malformed 'sized-field' line");
   EXPECT_FALSE(
-      parseUnitRecord("weavec-summaries 9\nsized-field a b c\n", &error));
+      parseUnitRecord("weavec-summaries 10\nsized-field a b c\n", &error));
   EXPECT_EQ(error, "line 2: malformed 'sized-field' line");
   EXPECT_FALSE(
-      parseUnitRecord("weavec-summaries 9\nunsized-field a b c\n", &error));
+      parseUnitRecord("weavec-summaries 10\nunsized-field a b c\n", &error));
   EXPECT_EQ(error, "line 2: malformed 'unsized-field' line");
 }
 
 TEST(Sidecar, SkipsUnknownLinesAndBlankOnes) {
   std::string error;
   const std::optional<UnitRecord> parsed = parseUnitRecord(
-      "weavec-summaries 9\n\nfuture-thing 42\nsource a.c\n\n", &error);
+      "weavec-summaries 10\n\nfuture-thing 42\nsource a.c\n\n", &error);
   ASSERT_TRUE(parsed) << error;
   EXPECT_EQ(parsed->exports.source, "a.c");
   EXPECT_TRUE(parsed->exports.functions.empty());
@@ -263,6 +268,38 @@ TEST(Sidecar, WritesAndReadsFiles) {
 
   (void)llvm::sys::fs::remove(path);
   (void)llvm::sys::fs::remove(dir);
+}
+
+TEST(Sidecar, CallbackContextsAndTargetSymbolsRoundTrip) {
+  UnitRecord record = sample();
+  const core::CallbackBindings bindings{
+      {SummaryPath::param(0),
+       core::CallTargets::function("src/a dir/helper.c#drop")}};
+  record.exports.callbackRequests["invoke"].insert(bindings);
+  record.exports.callbackGlobals["global.drop"] =
+      core::CallTargets::function("drop");
+  auto &function = record.exports.functions["invoke"];
+  function.summary.callbackInputs.insert(SummaryPath::param(0));
+  function.specializations[bindings].addEffect(SummaryPath::param(1),
+                                               PlaceEffect{.freed = true});
+  function.specializations[bindings].incomplete.insert("example reason");
+  const auto printed = printUnitRecord(record);
+  std::string error;
+  const auto parsed = parseUnitRecord(printed, &error);
+  ASSERT_TRUE(parsed) << error;
+  EXPECT_TRUE(parsed->exports.sameSummariesAs(record.exports));
+  EXPECT_EQ(printUnitRecord(*parsed), printed);
+}
+
+TEST(Sidecar, MalformedCallbackRecordsAreRejected) {
+  const std::string header =
+      "weavec-summaries " + std::to_string(SidecarFormatVersion) + "\n";
+  for (const auto *record :
+       {"callback-request -:61 invalid\n", "callback-global -:61 -:gg\n",
+        "specialization param~0=-:61\n",
+        "function f external plain\nspecialization param~0=-:61\n"})
+    EXPECT_FALSE(parseUnitRecord(header + record)) << record;
+  EXPECT_FALSE(parseUnitRecord("weavec-summaries 9\n"));
 }
 
 } // namespace

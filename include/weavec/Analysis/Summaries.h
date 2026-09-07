@@ -10,9 +10,9 @@
 // translation-unit driver*), in this order: annotations on the declaration,
 // the summary inferred from its body in this TU, the shipped table for the
 // C standard library, or nothing (an unannotated external function). For a
-// call through a function pointer (RFC 0004, *Boundaries*): annotations on
-// the function-pointer type, then the join of every function of that type
-// whose address is taken in the TU, or nothing.
+// call through a function pointer (RFC 0014): a type contract, otherwise the
+// actual target values supplied by dataflow. Type-wide candidates schedule
+// inference but never determine a call's effects.
 //
 //===----------------------------------------------------------------------===//
 
@@ -21,6 +21,7 @@
 
 #include "weavec/Analysis/Annotations.h"
 #include "weavec/Analysis/ProgramDatabase.h"
+#include "weavec/Core/Diagnostic.h"
 #include "weavec/Core/Summary.h"
 
 #include "clang/AST/Decl.h"
@@ -33,6 +34,7 @@
 #include "llvm/ADT/StringRef.h"
 
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <optional>
 #include <set>
@@ -42,6 +44,9 @@
 #include <vector>
 
 namespace weavec::analysis {
+
+struct AnalysisOptions;
+[[nodiscard]] std::string callableSymbol(const clang::FunctionDecl &function);
 
 /// Interns the globals that appear as summary roots in one translation unit,
 /// so a summary can name a global by a small integer (Core is Clang-free).
@@ -185,6 +190,43 @@ builtinSummary(const clang::FunctionDecl &function);
 /// lookups by combining them with annotations and the builtin table.
 class SummaryStore {
 public:
+  // RFC 0014: resolving a call is state dependent. Nested specialization
+  // temporarily installs its own resolver and restores its caller's.
+  using CallResolver =
+      std::function<std::optional<ResolvedSummary>(const clang::CallExpr &)>;
+  CallResolver callResolver;
+  [[nodiscard]] core::CallTargets
+  targetsForGlobal(const core::SummaryPath &path) const;
+  std::set<const clang::FunctionDecl *> incompleteFunctions;
+  [[nodiscard]] core::CallTargets staticTargets(const clang::Expr &expr,
+                                                unsigned depth = 0);
+  [[nodiscard]] const std::map<std::string, core::CallTargets> &
+  exportedCallbackGlobals() const;
+  [[nodiscard]] std::optional<ResolvedSummary>
+  lookupCall(const clang::CallExpr &call);
+  void registerCallable(const clang::FunctionDecl &function);
+  static void applyContract(const clang::FunctionDecl &function,
+                            core::FunctionSummary &summary);
+  [[nodiscard]] const clang::FunctionDecl *
+  callable(std::string_view symbol) const;
+  [[nodiscard]] std::optional<ResolvedSummary>
+  lookupSymbol(std::string_view symbol);
+  [[nodiscard]] std::optional<ResolvedSummary>
+  specialize(const clang::FunctionDecl &function,
+             const core::CallbackBindings &bindings,
+             const AnalysisOptions &options,
+             core::DiagnosticSink *sink = nullptr);
+  using ContextKey = std::pair<std::string, core::CallbackBindings>;
+  std::map<std::string, std::set<core::CallbackBindings>> callbackRequests;
+  std::map<ContextKey, core::FunctionSummary> specialized;
+  std::map<ContextKey, std::vector<core::Diagnostic>> specializedDiagnostics;
+  std::set<ContextKey> activeContexts;
+  std::set<ContextKey> reportedContexts;
+  std::map<std::string, const clang::FunctionDecl *> callables;
+  std::map<std::string, core::FunctionSummary> importedCallables;
+  mutable std::optional<std::map<std::string, core::CallTargets>>
+      callbackGlobalCache;
+
   /// Records the summary inferred for `function`'s body, replacing any
   /// previous one. Returns true if the summary changed.
   bool setInferred(const clang::FunctionDecl &function,
@@ -194,16 +236,18 @@ public:
   [[nodiscard]] const core::FunctionSummary *
   inferredFor(const clang::FunctionDecl &function) const;
 
+  /// Immutable Clang record layouts, cached for this AST's lifetime.
+  [[nodiscard]] std::string_view objectView(clang::QualType type);
+
   /// Resolves `callee` (RFC 0003 order). Returns an empty optional for a
   /// callee nothing is known about: no annotations, no body analysed here,
   /// not in the builtin table.
   [[nodiscard]] std::optional<ResolvedSummary>
   lookup(const clang::FunctionDecl &callee);
 
-  /// Resolves the callee of an indirect `call` (RFC 0004, *Signatures for
-  /// function pointers*): annotations on the function-pointer type, else
-  /// the join of the summaries of every address-taken function of that
-  /// type. Returns an empty optional when neither applies.
+  /// Resolves an explicit function-pointer type contract. RFC 0014's actual
+  /// target effects are resolved by lookupCall through the active dataflow;
+  /// this returns empty when the type has no contract.
   [[nodiscard]] std::optional<ResolvedSummary>
   lookupIndirect(const clang::CallExpr &call);
 
@@ -214,13 +258,15 @@ public:
   /// Whether `addAddressTaken` was called for `function`.
   [[nodiscard]] bool isAddressTaken(const clang::FunctionDecl &function) const;
 
-  /// The address-taken functions whose type matches `call`'s callee type.
+  /// Type-compatible scheduling candidates, never evidence of value flow.
   [[nodiscard]] std::vector<const clang::FunctionDecl *>
   candidatesFor(const clang::CallExpr &call) const;
 
   /// The unit being analysed; needed to spell type keys and to name the
   /// unit's globals when importing program summaries.
   void setContext(const clang::ASTContext *unitContext) noexcept {
+    if (context != unitContext)
+      objectViewCache.clear();
     context = unitContext;
   }
 
@@ -314,6 +360,7 @@ private:
   GlobalTable globalTable;
   const ProgramDatabase *database = nullptr;
   const clang::ASTContext *context = nullptr;
+  std::map<const clang::RecordDecl *, std::string> objectViewCache;
   std::set<std::string> knownCounts;
   SizedFieldFacts sizedFields;
   std::set<std::string> sizedLoads;

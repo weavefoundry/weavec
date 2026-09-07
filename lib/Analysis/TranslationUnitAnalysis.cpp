@@ -41,6 +41,12 @@ public:
   // RecursiveASTVisitor's CRTP hooks are found by name; both checks are
   // wrong about it.
   // NOLINTNEXTLINE(readability-identifier-naming,bugprone-derived-method-shadowing-base-method)
+  bool VisitDeclRefExpr(DeclRefExpr *ref) {
+    if (const auto *function = dyn_cast<FunctionDecl>(ref->getDecl()))
+      callees.insert(function->getCanonicalDecl());
+    return true;
+  }
+  // NOLINTNEXTLINE(readability-identifier-naming,bugprone-derived-method-shadowing-base-method)
   bool VisitCallExpr(CallExpr *call) {
     if (const FunctionDecl *callee = call->getDirectCallee())
       callees.insert(callee->getCanonicalDecl());
@@ -155,6 +161,13 @@ std::vector<std::vector<unsigned>> TranslationUnitAnalyzer::buildCallGraph() {
     adjacency[i].erase(std::ranges::unique(adjacency[i]).begin(),
                        adjacency[i].end());
   }
+  // A global initializer may refer to an external callback without a call
+  // expression in this unit. Its defining unit is still a dependency.
+  for (const auto &[symbol, function] : store.callables) {
+    if (!function->getDefinition() && function->isExternallyVisible() &&
+        store.isAddressTaken(*function) && seenExternal.insert(function).second)
+      externalCallees.push_back(function);
+  }
   return adjacency;
 }
 
@@ -162,6 +175,25 @@ void TranslationUnitAnalyzer::prepare() {
   definitions.clear();
   collectDefinitions(*context.getTranslationUnitDecl());
   collectAddressTaken();
+  for (const FunctionDecl *function : definitions)
+    store.registerCallable(*function);
+}
+
+static bool containsCallback(QualType type, unsigned depth = 0) {
+  if (type.isNull() || depth > core::MaxHeapPathDepth)
+    return false;
+  if (type->isFunctionPointerType())
+    return true;
+  if (type->isPointerType())
+    return containsCallback(type->getPointeeType(), depth + 1);
+  if (const auto *array = type->getAsArrayTypeUnsafe())
+    return containsCallback(array->getElementType(), depth + 1);
+  if (const auto *record = type->getAsRecordDecl();
+      record && record->isCompleteDefinition())
+    for (const auto *field : record->fields())
+      if (containsCallback(field->getType(), depth + 1))
+        return true;
+  return false;
 }
 
 UnitExports TranslationUnitAnalyzer::skeletonExports() const {
@@ -175,18 +207,28 @@ UnitExports TranslationUnitAnalyzer::skeletonExports() const {
       continue;
     const bool external = function->isExternallyVisible();
     const bool addressTaken = store.isAddressTaken(*function);
-    if (!external && !addressTaken)
+    const auto requests =
+        store.callbackRequests.find(callableSymbol(*function));
+    if (!external && !addressTaken &&
+        (requests == store.callbackRequests.end() || requests->second.empty()))
       continue;
     result.functions[function->getNameAsString()] = ExportedFunction{
         .summary = {},
+        .specializations = {},
         .typeKey = functionTypeKey(function->getType(), context),
         .external = external,
         .addressTaken = addressTaken,
+        .acceptsCallbacks =
+            std::ranges::any_of(function->parameters(),
+                                [](const ParmVarDecl *param) {
+                                  return containsCallback(param->getType());
+                                }),
     };
   }
   for (const FunctionDecl *callee : externalCallees)
     result.imports.insert(callee->getNameAsString());
   result.indirectTypes = indirectTypeKeys;
+  result.callbackGlobals = store.exportedCallbackGlobals();
   return result;
 }
 
@@ -219,6 +261,16 @@ UnitExports TranslationUnitAnalyzer::exports() {
   for (std::string &key : store.unknownIndirectTypeKeys())
     result.unknownIndirectTypes.insert(std::move(key));
   // RFC 0010: count fields are keyed by type spelling, so they travel as is.
+  result.callbackRequests = store.callbackRequests;
+  for (const auto &[key, summary] : store.specialized) {
+    const auto *function = store.callable(key.first);
+    if (!function || !function->getDefinition())
+      continue;
+    const auto it = result.functions.find(function->getNameAsString());
+    if (it != result.functions.end())
+      it->second.specializations[key.second] =
+          core::remapGlobals(summary, byName);
+  }
   result.countFields = store.knownCountKeys();
   // RFC 0012: so are sized-field witnesses and refutations.
   result.sizedFields = store.sizedFieldFacts();
@@ -241,15 +293,46 @@ void TranslationUnitAnalyzer::run(
   store.setUnitSizedFactsInForce(false);
   FunctionAnalyzer analyzer(context, remembered, options);
   std::vector<const FunctionDecl *> reported;
-  for (const std::vector<unsigned> &component : components) {
-    const bool recursive =
-        component.size() > 1 ||
-        llvm::is_contained(adjacency[component.front()], component.front());
-    analyzeComponent(component, recursive, analyzer, shouldReport);
-    for (const unsigned member : component) {
-      if (shouldReport(*definitions[member]))
-        reported.push_back(definitions[member]);
+  for (const auto *function : definitions)
+    if (shouldReport(*function))
+      reported.push_back(function);
+  // RFC 0014: stores in a later function can change the target of a global
+  // used by an earlier helper. Settle these entry values before reporting.
+  for (unsigned round = 0; round < MaxFixpointRounds; ++round) {
+    const auto globalsBefore = store.exportedCallbackGlobals();
+    for (const std::vector<unsigned> &component : components) {
+      const bool recursive =
+          component.size() > 1 ||
+          llvm::is_contained(adjacency[component.front()], component.front());
+      analyzeComponent(component, recursive, analyzer,
+                       [](const FunctionDecl &) { return false; });
     }
+    if (globalsBefore == store.exportedCallbackGlobals())
+      break;
+    if (round + 1 == MaxFixpointRounds)
+      for (const auto *function : definitions)
+        store.incompleteFunctions.insert(function->getCanonicalDecl());
+  }
+  for (const FunctionDecl *function : definitions) {
+    const std::string symbol = callableSymbol(*function);
+    if (const auto *program = store.programDatabase()) {
+      const auto &requests = program->requestsFor(symbol);
+      store.callbackRequests[symbol].insert(requests.begin(), requests.end());
+    }
+    const auto requests = store.callbackRequests[symbol];
+    for (const auto &bindings : requests)
+      (void)store.specialize(*function, bindings, options, nullptr);
+  }
+  for (const FunctionDecl *function : reported) {
+    const auto requests = store.callbackRequests[callableSymbol(*function)];
+    if (requests.empty()) {
+      analyzer.analyze(*function, store, true);
+    } else {
+      for (const auto &bindings : requests)
+        (void)store.specialize(*function, bindings, options, &remembered);
+    }
+    if (options.reportUnannotated)
+      reportUnannotatedInterface(*function);
   }
   reportConfirmedSizedFields(reported, remembered.seen());
 }
@@ -376,6 +459,10 @@ void TranslationUnitAnalyzer::analyzeComponent(
       }
       if (!changed)
         break;
+      if (round + 1 == MaxFixpointRounds)
+        for (const unsigned member : component)
+          store.incompleteFunctions.insert(
+              definitions[member]->getCanonicalDecl());
     }
   }
 

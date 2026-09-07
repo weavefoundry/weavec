@@ -267,6 +267,27 @@ bool AnalysisState::join(const AnalysisState &other, const PlaceTable *places) {
   changed |= nulls.join(other.nulls);
   changed |= scalars.join(other.scalars);
   changed |= relations.join(other.relations);
+  changed |= pointerFacts.join(other.pointerFacts);
+  for (auto it = objectViews.begin(); it != objectViews.end();) {
+    const auto found = other.objectViews.find(it->first);
+    if (found == other.objectViews.end() || found->second != it->second)
+      it = objectViews.erase(it);
+    else
+      ++it;
+  }
+  for (auto &[place, targets] : callTargets) {
+    const auto it = other.callTargets.find(place);
+    changed |= targets.join(it == other.callTargets.end() ? CallTargets::any()
+                                                          : it->second);
+  }
+  for (const auto &[place, targets] : other.callTargets) {
+    if (!callTargets.contains(place)) {
+      auto joined = targets;
+      joined.unknown = true;
+      callTargets.emplace(place, std::move(joined));
+      changed = true;
+    }
+  }
   for (const PlaceId root : other.incompleteHeap)
     changed |= incompleteHeap.insert(root).second;
   for (auto it = incoming.begin(); it != incoming.end();) {
@@ -413,9 +434,9 @@ std::optional<ValueFact> AnalysisState::factOf(PlaceId place) const {
 }
 
 PlaceGuard AnalysisState::pathGuard() const {
-  PlaceGuard guard;
+  PlaceGuard guard = pointerFacts;
   for (const auto &[place, fact] : scalars.all()) {
-    if (guard.conditions.size() >= MaxGuardConjuncts)
+    if (guard.size() >= MaxGuardConjuncts)
       return guard;
     guard.conditions.emplace(place, fact);
   }
@@ -423,7 +444,7 @@ PlaceGuard AnalysisState::pathGuard() const {
   // are what a later test can contradict; a non-null from a dereference is
   // rarely tested again and would crowd the guard out.
   for (const auto &[place, record] : nulls.all()) {
-    if (guard.conditions.size() >= MaxGuardConjuncts)
+    if (guard.size() >= MaxGuardConjuncts)
       return guard;
     if (record.state == Nullness::Null)
       guard.conditions.emplace(place, ValueFact::of(Outcome::Null));
@@ -444,6 +465,7 @@ AnalysisState::Learned AnalysisState::learn(PlaceId place,
 }
 
 void AnalysisState::dropGuardsOn(PlaceId place) {
+  pointerFacts.drop(place);
   moves.dropGuardsOn(place);
   resources.dropGuardsOn(place);
   nulls.dropGuardsOn(place);
@@ -463,6 +485,8 @@ void AnalysisState::forget(PlaceId place) {
   scalars.forget(place);
   spatial.forget(place);
   relations.forget(place);
+  callTargets.erase(place);
+  objectViews.erase(place);
   incoming.erase(place);
   heapWriteGuards.erase(place);
   heapInputEscapes.erase(place);

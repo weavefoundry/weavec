@@ -67,6 +67,7 @@ public:
   /// Runs the analysis over `fn`'s body, reports diagnostics to the sink
   /// (if enabled) and computes the summary.
   void run();
+  core::CallbackBindings callbackBindings;
 
   /// The summary inferred by `run` (RFC 0003, *Deriving a summary*).
   [[nodiscard]] const core::FunctionSummary &summary() const noexcept {
@@ -104,6 +105,21 @@ private:
   SummaryStore &summaries;
   const bool emitDiagnostics;
 
+  core::AnalysisState *currentState = nullptr;
+  std::map<const clang::CallExpr *, std::optional<core::FunctionSummary>>
+      callSummaries;
+  std::map<const clang::CallExpr *, SummarySource> callSources;
+  std::map<const clang::CallExpr *, core::CallTargets> callTargetsSeen;
+  std::map<const clang::CallExpr *, core::CallbackBindings> callbackContexts;
+  [[nodiscard]] core::CallTargets functionTargets(const clang::Expr &expr,
+                                                  core::AnalysisState &state,
+                                                  unsigned depth = 0);
+  [[nodiscard]] core::CallTargets
+  originTargets(const ValueOrigin &origin, const core::AnalysisState &state);
+  [[nodiscard]] std::optional<ResolvedSummary>
+  resolveCall(const clang::CallExpr &call);
+  [[nodiscard]] bool validateObjectPath(const core::SummaryPath &path,
+                                        const clang::CallExpr &call);
   core::PlaceTable places;
   PlaceBuilder builder;
 
@@ -117,6 +133,8 @@ private:
   /// Statements inside a `WEAVEC_UNSAFE` block (RFC 0004, *Unsafe regions*).
   llvm::DenseSet<const clang::Stmt *> unsafeStmts;
   llvm::DenseMap<const clang::Expr *, Role> roles;
+  std::map<const clang::Expr *, std::pair<const clang::CallExpr *, unsigned>>
+      dynamicArguments;
   /// Parameters whose variable is assigned or address-taken in the body.
   std::vector<bool> paramReassigned;
   /// Calls whose result is discarded (a statement expression): a fresh
@@ -773,6 +791,14 @@ private:
   /// `dest = value` for a record: field-wise pointer copies when `value` is
   /// a place, field-wise assignments when it is an initializer list, and a
   /// reset otherwise (RFC 0005, *Struct copies*).
+  void copyRecordPlaces(core::PlaceId dest, core::PlaceId source,
+                        core::AnalysisState &state);
+  bool handleMemoryCopy(const clang::CallExpr &call, const CallEffects &effects,
+                        core::AnalysisState &state);
+  void reportIncomplete(const std::string &reason, const clang::Stmt &at);
+  std::map<const clang::CallExpr *, core::PlaceId> memorySnapshots;
+  std::set<std::pair<const clang::Stmt *, std::string>> incompleteReports;
+
   void copyRecord(core::PlaceId dest, const clang::Expr &value,
                   core::AnalysisState &state);
   /// `dest = { ... }`: assigns each initialised field.

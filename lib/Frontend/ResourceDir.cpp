@@ -106,8 +106,10 @@ static std::string findAppleSdk() {
     return {};
   llvm::FileRemover remover(outputPath);
 
+  // SDK discovery is a probe. Xcode startup chatter must not become
+  // compiler diagnostics; a missing SDK is handled by the caller.
   const std::array<std::optional<llvm::StringRef>, 3> redirects = {
-      std::nullopt, llvm::StringRef(outputPath), std::nullopt};
+      std::nullopt, llvm::StringRef(outputPath), llvm::StringRef()};
   const int rc = llvm::sys::ExecuteAndWait(*xcrun, {"xcrun", "--show-sdk-path"},
                                            /*Env=*/std::nullopt, redirects);
   if (rc != 0)

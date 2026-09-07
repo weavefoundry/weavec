@@ -21,6 +21,20 @@ namespace weavec::analysis {
 /// are reconstructed when the graph is materialized.
 static void keepInputGuard(core::ValueSource &value,
                            const core::AnalysisState &state) {
+  const auto replaced = [&](const core::SummaryPath &path) {
+    return state.isOverwritten(path) ||
+           std::ranges::any_of(
+               state.stored, [&path](const core::SummaryPath &stored) {
+                 return stored == path || stored.isProperPrefixOf(path);
+               });
+  };
+  for (auto it = value.when.pointers.begin();
+       it != value.when.pointers.end();) {
+    if (replaced(it->first.first) || replaced(it->first.second))
+      it = value.when.pointers.erase(it);
+    else
+      ++it;
+  }
   for (auto it = value.when.conditions.begin();
        it != value.when.conditions.end();) {
     const auto &path = it->first;
@@ -39,6 +53,25 @@ core::PathGuard
 FunctionDataflow::heapEntryGuard(const core::PlaceGuard &guard,
                                  const core::AnalysisState &state) {
   core::PathGuard result;
+  const auto inputPath =
+      [&](core::PlaceId place) -> std::optional<core::SummaryPath> {
+    if (const auto it = snapshotInputPaths.find(place);
+        it != snapshotInputPaths.end())
+      return it->second;
+    if (const auto it = state.incoming.find(place);
+        it != state.incoming.end() &&
+        it->second.kind == core::ValueSource::Kind::Copy &&
+        it->second.offset.isZero())
+      return it->second.path;
+    const auto path = stableSummaryPathOf(place);
+    return path && !state.isOverwritten(*path) ? path : std::nullopt;
+  };
+  for (const auto &[pair, equal] : guard.pointers) {
+    const auto a = inputPath(pair.first);
+    const auto b = inputPath(pair.second);
+    if (a && b)
+      result.requirePointer(*a, *b, equal);
+  }
   for (const auto &[place, fact] : guard.conditions) {
     if (const auto input = snapshotInputPaths.find(place);
         input != snapshotInputPaths.end()) {
@@ -79,8 +112,7 @@ FunctionDataflow::heapWriteGuard(core::PlaceId place,
     if (it == state.heapWriteGuards.end())
       continue;
     // A predecessor that did not publish the object drops this must-fact.
-    for (const auto &[path, fact] : it->second.conditions)
-      value.when.require(path, fact);
+    value.when.conjoin(it->second);
   }
   return value.when;
 }
@@ -128,6 +160,12 @@ static void copyHeapCell(core::PlaceId source, core::PlaceId target,
     return;
   state.forget(target);
   state.kinds[target] = state.kindOf(source);
+  if (const auto it = state.objectViews.find(source);
+      it != state.objectViews.end())
+    state.objectViews[target] = it->second;
+  if (const auto it = state.callTargets.find(source);
+      it != state.callTargets.end())
+    state.callTargets[target] = it->second;
   if (const auto it = state.heapWriteGuards.find(source);
       it != state.heapWriteGuards.end())
     state.heapWriteGuards[target] = it->second;
@@ -152,6 +190,7 @@ static void copyHeapCell(core::PlaceId source, core::PlaceId target,
   if (const auto input = state.incoming.find(source);
       input != state.incoming.end())
     state.incoming[target] = input->second;
+  state.pointerFacts.copyPointer(source, target);
   state.loans.copyHolder(source, target);
   if (const auto moved = state.moves.recordOf(source))
     state.moves.markMoved(target, moved->reason, moved->location,
@@ -629,8 +668,28 @@ void FunctionDataflow::captureHeapInputs(const clang::CallExpr &call,
     inputs.insert(path);
     values.insert(path);
   };
+  const auto capturePointers = [&](const core::PathGuard &guard) {
+    for (const auto &[pair, equal] : guard.pointers) {
+      (void)equal;
+      // Capture both sides together to retain their relation after writes.
+      if (mayWrite(pair.first) || mayWrite(pair.second)) {
+        captureValue(pair.first);
+        captureValue(pair.second);
+      }
+    }
+  };
+  for (const auto &[path, effect] : summary.effects)
+    capturePointers(effect.when);
+  for (const auto &[outcome, effects] : summary.outcomes)
+    for (const auto &[path, effect] : effects)
+      capturePointers(effect.when);
+  for (const auto &store : summary.stores)
+    capturePointers(store.value.when);
+  for (const auto &value : summary.returns)
+    capturePointers(value.when);
   for (const auto &[root, graph] : summary.heap) {
     for (const core::Store &field : graph.fields) {
+      capturePointers(field.value.when);
       const auto &value = field.value;
       for (const auto &[path, fact] : value.when.conditions) {
         if (mayWrite(path))

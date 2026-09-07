@@ -1376,7 +1376,8 @@ TEST(Dataflow, IndirectCallsUseTypeAnnotationsOrAddressTakenJoin) {
             (Strings{"8: use of 'n' after it was moved",
                      "9: use of 'n' after it was freed",
                      "10: use of 'n' after it was freed",
-                     "11: use of 'n' after it was freed"}))
+                     "11: call through 'cb' is not checked: its function type "
+                     "has no ownership annotations and its target is unknown"}))
       << "`cmp` has no pointer parameters: not even a boundary warning";
 }
 
@@ -1387,7 +1388,7 @@ TEST(Dataflow, CallbacksAreAnalysedBeforeTheirCallers) {
   const auto result = analyze(R"c(
     struct node { int v; };
     static void node_free(struct node *n);
-    void f(void (*cb)(struct node *), struct node *n) { cb(n); use(n); }
+    void f(struct node *n) { void (*cb)(struct node *) = node_free; cb(n); use(n); }
     static void (*registered)(struct node *) = node_free;
     static void node_free(struct node *n) { free(n); }
   )c");

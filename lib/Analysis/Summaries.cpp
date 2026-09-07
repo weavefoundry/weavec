@@ -564,11 +564,17 @@ bool SummaryStore::setInferred(const FunctionDecl &function,
   auto [it, inserted] = inferred.try_emplace(canonical, std::move(summary));
   if (inserted) {
     mergedIndirect.clear();
+    callbackGlobalCache.reset();
+    specialized.clear();
+    specializedDiagnostics.clear();
     return true;
   }
   if (it->second == summary)
     return false;
   it->second = std::move(summary);
+  callbackGlobalCache.reset();
+  specialized.clear();
+  specializedDiagnostics.clear();
   // Any indirect join may have included this function.
   mergedIndirect.clear();
   return true;
@@ -589,6 +595,17 @@ SummaryStore::programSummaryFor(const FunctionDecl &callee) {
   if (exported == nullptr)
     return std::nullopt;
   return database->importInto(*exported, *context, globalTable);
+}
+
+void SummaryStore::applyContract(const FunctionDecl &function,
+                                 core::FunctionSummary &summary) {
+  const auto annotations = collectAnnotations(function);
+  if (annotations.anyOwnership())
+    applyAnnotations(summary, shapeOf(function), annotations.result,
+                     annotations.params);
+  applyNullnessAnnotations(summary, shapeOf(function), annotations.result,
+                           annotations.params);
+  applySizedByAnnotations(summary, function);
 }
 
 std::optional<ResolvedSummary>
@@ -660,6 +677,7 @@ SummaryStore::lookup(const FunctionDecl &callee) {
 }
 
 void SummaryStore::addAddressTaken(const FunctionDecl &function) {
+  registerCallable(function);
   const FunctionDecl *canonical = key(function);
   if (addressTakenSet.insert(canonical).second) {
     addressTaken.push_back(canonical);
@@ -707,39 +725,10 @@ SummaryStore::lookupIndirect(const CallExpr &call) {
                                                : SummarySource::Inferred};
   }
 
-  core::FunctionSummary joined;
-  bool anyCandidate = false;
-  bool anyLocal = false;
-  // RFC 0009: the call never returns only if no candidate does. The join
-  // cannot tell a candidate that does nothing from the empty summary it
-  // starts from, so the bit is settled here.
-  bool anyReturns = false;
-  for (const FunctionDecl *candidate : candidatesFor(call)) {
-    const auto resolved = lookup(*candidate);
-    if (!resolved)
-      continue;
-    joined.join(*resolved->summary);
-    anyReturns = anyReturns || !resolved->summary->neverReturns;
-    anyCandidate = true;
-    anyLocal = true;
-  }
-  // RFC 0005: address-taken functions of the type anywhere in the program.
-  if (database != nullptr && context != nullptr) {
-    const std::string typeKey = functionTypeKey(QualType(type, 0), *context);
-    if (const core::FunctionSummary *program =
-            typeKey.empty() ? nullptr : database->candidates(typeKey)) {
-      joined.join(database->importInto(*program, *context, globalTable));
-      anyReturns = anyReturns || !program->neverReturns;
-      anyCandidate = true;
-    }
-  }
-  if (!annotated && !anyCandidate)
+  if (!annotated)
     return std::nullopt;
-  if (anyReturns)
-    joined.neverReturns = false;
-
-  SummarySource source =
-      anyLocal ? SummarySource::Inferred : SummarySource::Program;
+  core::FunctionSummary joined;
+  SummarySource source = SummarySource::Annotation;
   if (annotated) {
     applyAnnotations(joined, shapeOf(*type), annotations.result,
                      annotations.params);

@@ -46,6 +46,7 @@
 #include "clang/Lex/Lexer.h"
 
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/raw_ostream.h"
@@ -105,6 +106,10 @@ FunctionDataflow::FunctionDataflow(ASTContext &ctx, const FunctionDecl &fn,
       paramReassigned(fn.getNumParams(), false),
       signature(collectAnnotations(fn)), unsafeBody(signature.unsafe),
       inUnsafe(unsafeBody) {
+  builder.validatePath = [this](const core::SummaryPath &path,
+                                const CallExpr &call) {
+    return validateObjectPath(path, call);
+  };
   lifetimes.addOutlives(callerLifetime, fnLifetime);
   builder.setStrictExterns(options.strictExterns);
   builder.setIncomingLookup(
@@ -324,6 +329,9 @@ void FunctionDataflow::classifyExpr(const Expr *expr, Role role) {
         if (lvalue != nullptr && builder.derivationOf(*lvalue))
           consumedDerivations.insert(lvalue);
       }
+      if (!call->getDirectCallee())
+        dynamicArguments[&PlaceBuilder::stripTransparent(*call->getArg(i))] = {
+            call, i};
       classifyExpr(call->getArg(i), consumed ? Role::Consume : Role::Read);
     }
     return;
@@ -478,6 +486,27 @@ core::AnalysisState FunctionDataflow::initialState() {
                      .offset = core::PointerOffset::zero(),
                      .location = locate(param->getLocation()),
                      .declared = true});
+  }
+  for (const auto &[path, targets] : callbackBindings) {
+    if (path.root != core::SummaryRoot::Param ||
+        path.index >= function.getNumParams())
+      continue;
+    core::PlaceId place =
+        builder.placeForVar(*function.getParamDecl(path.index));
+    for (const auto &step : path.steps) {
+      switch (step.step) {
+      case core::PathStep::Deref:
+        place = places.deref(place);
+        break;
+      case core::PathStep::Field:
+        place = places.field(place, step.field);
+        break;
+      case core::PathStep::Index:
+        place = places.index(place);
+        break;
+      }
+    }
+    state.callTargets[place] = targets;
   }
   return state;
 }
@@ -1535,6 +1564,12 @@ void FunctionDataflow::checkInvalidRelease(
 // -- Engine -------------------------------------------------------------------
 
 void FunctionDataflow::run() {
+  auto previousResolver = std::move(summaries.callResolver);
+  summaries.callResolver = [this](const CallExpr &call) {
+    return resolveCall(call);
+  };
+  const auto restoreResolver = llvm::scope_exit(
+      [&] { summaries.callResolver = std::move(previousResolver); });
   Stmt *body = function.getBody();
   if (body == nullptr)
     return;
@@ -1657,6 +1692,8 @@ void FunctionDataflow::run() {
 
 void FunctionDataflow::transfer(const CFGBlock &block,
                                 core::AnalysisState &state) {
+  currentState = &state;
+  const auto resetState = llvm::scope_exit([&] { currentState = nullptr; });
   lastCall.reset();
   retireHeapInputs(state);
   blockTerminated = false;
@@ -2078,7 +2115,30 @@ void FunctionDataflow::applyCondition(const Expr &condition, bool holds,
       const auto q = builder.resolvePointerValue(*assigned(rhs));
       if (!p || !q || p->place == q->place)
         return;
-      if ((op == BO_EQ) == holds)
+      const bool same = (op == BO_EQ) == holds;
+      if (const auto known = state.pointerFacts.pointerFact(p->place, q->place);
+          known && *known != same) {
+        edgeInfeasible = true;
+        return;
+      }
+      state.pointerFacts.requirePointer(p->place, q->place, same);
+      for (const auto &[alias, edge] :
+           state.definiteAliases.edgesFrom(p->place))
+        if (edge.exact() && edge.offset.isZero())
+          state.pointerFacts.copyPointer(p->place, alias);
+      for (const auto &[alias, edge] :
+           state.definiteAliases.edgesFrom(q->place))
+        if (edge.exact() && edge.offset.isZero())
+          state.pointerFacts.copyPointer(q->place, alias);
+      for (const auto moved : state.moves.movedPlaces()) {
+        auto guard = state.moves.recordOf(moved)->guard;
+        if (!pruneGuard(guard, state)) {
+          state.moves.reinitialize(moved);
+          if (const auto path = builder.summaryPathOf(moved))
+            state.consumed.erase(*path);
+        }
+      }
+      if (same)
         state.aliases.unite(p->place, q->place);
       else
         state.aliases.separateExact(p->place, q->place);
@@ -2272,16 +2332,14 @@ void FunctionDataflow::applyOutcomeGuards(
       continue;
     }
     core::PlaceGuard combined = record->guard;
-    for (const auto &[key, fact] : guard->conditions)
-      combined.require(key, fact);
+    combined.conjoin(*guard);
     state.moves.setGuard(place, std::move(combined));
     // The flow-sensitive record that feeds the classes at `return` and the
     // exit effects (RFC 0008, *Replaced values*) is under the same guard.
     if (const auto path = builder.summaryPathOf(place)) {
       if (const auto event = state.consumed.find(*path);
           event != state.consumed.end()) {
-        for (const auto &[key, fact] : summaryGuardOf(*guard).conditions)
-          event->second.when.require(key, fact);
+        event->second.when.conjoin(summaryGuardOf(*guard));
       }
     }
   }
@@ -2653,10 +2711,10 @@ FunctionDataflow::guardHere(const core::AnalysisState &state,
   core::PlaceGuard guard = state.pathGuard();
   if (!exclude)
     return guard;
-  guard.drop(*exclude);
+  guard.conditions.erase(*exclude);
   for (const auto &[alias, edge] : state.aliases.edgesFrom(*exclude)) {
     if (edge.exact())
-      guard.drop(alias);
+      guard.conditions.erase(alias);
   }
   return guard;
 }
@@ -2664,6 +2722,12 @@ FunctionDataflow::guardHere(const core::AnalysisState &state,
 core::PathGuard
 FunctionDataflow::summaryGuardOf(const core::PlaceGuard &guard) {
   core::PathGuard result;
+  for (const auto &[pair, equal] : guard.pointers) {
+    const auto a = stableSummaryPathOf(pair.first);
+    const auto b = stableSummaryPathOf(pair.second);
+    if (a && b)
+      result.requirePointer(*a, *b, equal);
+  }
   for (const auto &[place, fact] : guard.conditions) {
     // A parameter variable that is reassigned no longer holds the argument
     // (`stableSummaryPathOf`); a local names nothing the caller knows.
@@ -2675,6 +2739,23 @@ FunctionDataflow::summaryGuardOf(const core::PlaceGuard &guard) {
 
 bool FunctionDataflow::pruneGuard(core::PlaceGuard &guard,
                                   const core::AnalysisState &state) {
+  for (auto it = guard.pointers.begin(); it != guard.pointers.end();) {
+    auto known =
+        state.pointerFacts.pointerFact(it->first.first, it->first.second);
+    if (!known) {
+      const auto offset =
+          state.definiteAliases.offsetOf(it->first.first, it->first.second);
+      if (offset && offset->isZero())
+        known = true;
+    }
+    if (!known) {
+      ++it;
+      continue;
+    }
+    if (*known != it->second)
+      return false;
+    it = guard.pointers.erase(it);
+  }
   for (auto it = guard.conditions.begin(); it != guard.conditions.end();) {
     const auto known = state.factOf(it->first);
     if (!known) {
@@ -2708,8 +2789,7 @@ bool FunctionDataflow::pruneOrigin(ValueOrigin &origin,
     ValueOrigin survivor = std::move(origin.alternatives.front());
     if (survivor.call == nullptr)
       survivor.call = origin.call;
-    for (const auto &[key, fact] : origin.guard.conditions)
-      survivor.guard.require(key, fact);
+    survivor.guard.conjoin(origin.guard);
     origin = std::move(survivor);
   }
   return true;
@@ -2721,7 +2801,15 @@ void FunctionDataflow::handleExpr(const Expr &expr,
                                   core::AnalysisState &state) {
   if (PlaceBuilder::isPlaceExpr(expr)) {
     const auto it = roles.find(&expr);
-    const Role role = it == roles.end() ? Role::Read : it->second;
+    Role role = it == roles.end() ? Role::Read : it->second;
+    if (role == Role::Read) {
+      if (const auto argument = dynamicArguments.find(&expr);
+          argument != dynamicArguments.end()) {
+        const auto effects = classifyCall(*argument->second.first, summaries);
+        if (effects && effects->consumes(argument->second.second))
+          role = Role::Consume;
+      }
+    }
     if (role == Role::Ignore)
       return;
     const auto ref = builder.resolve(expr);
@@ -3281,7 +3369,13 @@ void FunctionDataflow::copyRecord(core::PlaceId dest, const Expr &value,
       applyResultStores(dest, *call, state);
     return;
   }
-  if (src->place == dest)
+  copyRecordPlaces(dest, src->place, state);
+}
+
+void FunctionDataflow::copyRecordPlaces(core::PlaceId dest,
+                                        core::PlaceId source,
+                                        core::AnalysisState &state) {
+  if (source == dest)
     return;
 
   // `b = a` is `b.f = a.f` for every field path `f` known under `a`: the
@@ -3290,6 +3384,8 @@ void FunctionDataflow::copyRecord(core::PlaceId dest, const Expr &value,
   // their facts are mirrored as `mirrorSubtree` does for a pointer copy.
   // Facts are captured first because `a` may lie below `b` (`*n = *n->next`).
   struct FieldFacts {
+    core::CallTargets targets;
+    std::string objectView;
     core::PlaceId from;
     core::PlaceId to;
     bool belowPointer;
@@ -3307,13 +3403,13 @@ void FunctionDataflow::copyRecord(core::PlaceId dest, const Expr &value,
     bool incomplete;
   };
   std::vector<FieldFacts> facts;
-  const std::size_t srcDepth = places.depth(src->place);
+  const std::size_t srcDepth = places.depth(source);
   const std::size_t destDepth = places.depth(dest);
-  for (const core::PlaceId place : places.descendants(src->place)) {
+  for (const core::PlaceId place : places.descendants(source)) {
     if (places.depth(place) - srcDepth + destDepth > MaxPlaceDepth)
       continue;
     bool belowPointer = false;
-    for (core::PlaceId cursor = place; cursor != src->place;
+    for (core::PlaceId cursor = place; cursor != source;
          cursor = *places.parent(cursor)) {
       if (places.step(cursor) == core::PathStep::Deref) {
         belowPointer = true;
@@ -3321,8 +3417,14 @@ void FunctionDataflow::copyRecord(core::PlaceId dest, const Expr &value,
       }
     }
     FieldFacts field{
+        .targets = state.callTargets.contains(place)
+                       ? state.callTargets.at(place)
+                       : core::CallTargets{},
+        .objectView = state.objectViews.contains(place)
+                          ? state.objectViews.at(place)
+                          : std::string{},
         .from = place,
-        .to = places.translate(place, src->place, dest),
+        .to = places.translate(place, source, dest),
         .belowPointer = belowPointer,
         .moved = std::nullopt,
         .raw = std::nullopt,
@@ -3359,13 +3461,17 @@ void FunctionDataflow::copyRecord(core::PlaceId dest, const Expr &value,
   const auto identities = state.definiteAliases;
   reinit(dest, state);
   for (const FieldFacts &field : facts) {
+    if (!field.targets.empty())
+      state.callTargets[field.to] = field.targets;
+    if (!field.objectView.empty())
+      state.objectViews[field.to] = field.objectView;
     if (field.kind)
       setKind(field.to, *field.kind, state);
     if (field.moved) {
-      state.moves.markMoved(field.to, field.moved->reason,
-                            field.moved->location,
-                            field.moved->via.value_or(field.from),
-                            field.moved->element, field.moved->family);
+      state.moves.markMoved(
+          field.to, field.moved->reason, field.moved->location,
+          field.moved->via.value_or(field.from), field.moved->element,
+          field.moved->family, field.moved->ownValue, field.moved->guard);
     }
     if (field.raw)
       state.raw.markRaw(field.to, *field.raw);
@@ -3388,6 +3494,7 @@ void FunctionDataflow::copyRecord(core::PlaceId dest, const Expr &value,
     if (!field.belowPointer) {
       state.definiteAliases.unite(field.to, field.from);
       state.aliases.unite(field.to, field.from);
+      state.pointerFacts.copyPointer(field.from, field.to);
       state.loans.copyHolder(field.from, field.to);
       continue;
     }
@@ -3512,12 +3619,21 @@ void FunctionDataflow::handleCall(const CallExpr &call,
     edgeInfeasible = false;
     return;
   }
+  callSummaries.erase(&call);
+  if (!call.getDirectCallee()) {
+    if (const auto pointer = builder.resolvePointerValue(*call.getCallee()))
+      checkDereference(pointer->place, call, state);
+  }
   const auto effects = classifyCall(call, summaries);
   if (!effects) {
     handleUncheckedCall(call, state);
     return;
   }
-  applySummary(call, *effects, state);
+  if (recording())
+    inferred.incomplete.insert(effects->summary->incomplete.begin(),
+                               effects->summary->incomplete.end());
+  if (!handleMemoryCopy(call, *effects, state))
+    applySummary(call, *effects, state);
   // RFC 0009, *Inferred `noreturn`*: the callee never hands control back,
   // so nothing after it in this block runs and its state reaches nobody.
   // Its effects were still applied: they are what happens before the exit.
@@ -4290,8 +4406,8 @@ void FunctionDataflow::handleUncheckedCall(const CallExpr &call,
         locate(callee->getLocation()));
   } else {
     diagnostic.addNote(
-        "annotate the parameters of its function type, take the address of "
-        "a function of that type in this program, or move the call "
+        "annotate the parameters of its function type, pass a known "
+        "function pointer, or move the call "
         "into a WEAVEC_UNSAFE region",
         locate(call));
   }
@@ -4305,23 +4421,26 @@ void FunctionDataflow::noteUnknownCallee(const CallExpr &call) {
   if (callee == nullptr) {
     // A call through a function pointer with no signature: once per
     // function type (RFC 0004, *Boundaries*).
-    if (!summaries.noteUnknownIndirect(call) || options.deferBoundary)
+    const bool first = summaries.noteUnknownIndirect(call);
+    // A specialization collects diagnostics before its caller is reported.
+    // Rebuilding that cache must not lose a boundary merely because another
+    // speculative context registered the same function type already.
+    if ((!first && callbackBindings.empty()) || options.deferBoundary)
       return;
     core::Diagnostic diagnostic{
         .severity = core::Severity::Warning,
         .id = core::diag::AnnotationRequired,
         .message = "call through " + calleeName(call) +
                    " is not checked: its function type has no ownership "
-                   "annotations and no function of that type has its address "
-                   "taken in this program",
+                   "annotations and its target is unknown",
         .location = locate(call),
         .notes = {},
         .fixits = {},
     };
     diagnostic.addNote(
         "annotate the parameters of its function type with WEAVEC_OWNED, "
-        "WEAVEC_BORROWED, WEAVEC_MUT or WEAVEC_RAW, or take the address of a "
-        "function of that type in this program",
+        "WEAVEC_BORROWED, WEAVEC_MUT or WEAVEC_RAW, or pass a known "
+        "function pointer",
         locate(call));
     report(std::move(diagnostic));
     return;
@@ -4333,7 +4452,8 @@ void FunctionDataflow::noteUnknownCallee(const CallExpr &call) {
   // RFC 0005: in the compile step of the driver the boundary is recorded
   // for the exports and the link step reports it if the program has no
   // definition either.
-  if (!summaries.noteUnknownCallee(*callee) || options.deferBoundary)
+  const bool first = summaries.noteUnknownCallee(*callee);
+  if ((!first && callbackBindings.empty()) || options.deferBoundary)
     return;
 
   const std::string name = callee->getNameAsString();
@@ -4430,8 +4550,7 @@ void FunctionDataflow::handleReturn(const ReturnStmt &ret,
         // record's own guard (RFC 0009).
         const auto nullReturn = [this, &nullness, &state] {
           core::PlaceGuard guard = guardHere(state);
-          for (const auto &[key, fact] : nullness->guard.conditions)
-            guard.require(key, fact);
+          guard.conjoin(nullness->guard);
           core::ValueSource source = core::ValueSource::null();
           source.when = heapEntryGuard(guard, state);
           return source;
@@ -4470,8 +4589,7 @@ void FunctionDataflow::handleReturn(const ReturnStmt &ret,
               isHeapOutputPath(*returnedSource.path))
             returnedSource.post = true;
           core::PlaceGuard returnGuard = guardHere(state);
-          for (const auto &[key, fact] : origin.guard.conditions)
-            returnGuard.require(key, fact);
+          returnGuard.conjoin(origin.guard);
           returnedSource.when = heapEntryGuard(returnGuard, state);
           inferred.addReturn(std::move(returnedSource));
           if (nullness && nullness->state == core::Nullness::MaybeNull)
@@ -4996,8 +5114,7 @@ FunctionDataflow::doConsume(const PlaceRef &ref, core::MoveReason reason,
   // The consume happened on a path with these facts, under the callee's
   // condition if it had one (RFC 0009, *Deriving guards*): a later edge that
   // contradicts one of them reinstates the value.
-  for (const auto &[key, fact] : guardHere(state, place).conditions)
-    guard.require(key, fact);
+  guard.conjoin(guardHere(state, place));
   // A callee that released the value and reinitialised the place (RFC 0008,
   // *Replaced values*) leaves the place and its mirrors (the same cell) live
   // and every other name for the old value dead.
@@ -5084,6 +5201,34 @@ void FunctionDataflow::applyPointerAssign(core::PlaceId dest,
   // this path can receive (`p = f(n)` after `if (n == 0) return;` with `f`
   // returning null exactly when `n` is zero). A value with nothing left is
   // one the callee never produces here: the destination keeps what it held.
+  core::CallTargets targets;
+  bool commitTargets = false;
+  std::string objectView;
+  const Expr *rhs = &at;
+  if (const auto *assign = dyn_cast<BinaryOperator>(rhs);
+      assign && assign->isAssignmentOp())
+    rhs = assign->getRHS();
+  QualType valueType = rhs->IgnoreParenCasts()->getType();
+  if (valueType->isPointerType())
+    objectView = summaries.objectView(valueType->getPointeeType());
+  if (objectView.empty() && given.place) {
+    const auto it = state.objectViews.find(given.place->place);
+    if (it != state.objectViews.end())
+      objectView = it->second;
+  }
+
+  const auto restoreTargets = llvm::scope_exit([&] {
+    if (!commitTargets)
+      return;
+    if (!targets.empty())
+      state.callTargets[dest] = targets;
+    else
+      state.callTargets.erase(dest);
+    if (objectView.empty())
+      state.objectViews.erase(dest);
+    else
+      state.objectViews[dest] = objectView;
+  });
   ValueOrigin pruned;
   const ValueOrigin *chosen = &given;
   if (!given.guard.trivial() ||
@@ -5097,6 +5242,15 @@ void FunctionDataflow::applyPointerAssign(core::PlaceId dest,
     chosen = &pruned;
   }
   const ValueOrigin &origin = *chosen;
+  targets = originTargets(origin, state);
+  if (const auto *decl = dyn_cast_or_null<ValueDecl>(builder.declFor(dest));
+      decl && decl->getType()->isFunctionPointerType() && targets.empty()) {
+    if (origin.kind == ValueOrigin::Kind::Null)
+      targets.null = true;
+    else
+      targets.unknown = true;
+  }
+  commitTargets = true;
   const auto writeGuard = heapWriteGuard(dest, state);
   // Facts about the source must be captured before the destination is reset:
   // `p = p->next` copies from a place below `p` that `reinit` forgets.
@@ -5263,8 +5417,7 @@ void FunctionDataflow::applyPointerAssign(core::PlaceId dest,
       // conditional result, when its guard does (RFC 0009): `if (n > 0) p =
       // malloc(n); ... if (n > 0) free(p);` leaks nothing on the other edge.
       core::PlaceGuard guard = guardHere(state, dest);
-      for (const auto &[key, fact] : arm->guard.conditions)
-        guard.require(key, fact);
+      guard.conjoin(arm->guard);
       state.resources.hold(
           dest,
           core::ResourceRecord{
@@ -5347,9 +5500,12 @@ void FunctionDataflow::applyPointerAssign(core::PlaceId dest,
       state.aliases.unite(dest, source->place, source->offset, element,
                           source->element, /*sameShare=*/!split,
                           /*alternative=*/arms.size() > 1);
-      if (arms.size() == 1 && element.isWhole() && source->element.isWhole())
+      if (arms.size() == 1 && element.isWhole() && source->element.isWhole()) {
         state.definiteAliases.unite(dest, source->place, source->offset,
                                     element, source->element, !split);
+        if (source->offset.isZero())
+          state.pointerFacts.copyPointer(source->place, dest);
+      }
       // RFC 0011, *Derived pointers*: `&p->f` also borrows `(*p).f`, so a
       // holder liveness cannot retire (the caller's memory, a global, an
       // address-taken local) still makes `free(p)` a conflict. A plain local
@@ -5520,8 +5676,7 @@ void FunctionDataflow::applyPointerAssign(core::PlaceId dest,
     definiteWrite |= arm.origin->guard.trivial();
   }
   if (alternativesGuard)
-    for (const auto &[path, fact] : alternativesGuard->conditions)
-      storedGuard.require(path, fact);
+    storedGuard.conjoin(*alternativesGuard);
   state.heapWriteGuards[dest] = std::move(storedGuard);
   if (definiteWrite)
     state.definiteHeapWrites.insert(dest);
@@ -5727,7 +5882,11 @@ FunctionDataflow::mirrors(core::PlaceId place,
         add(places.deref(alias));
       }
     } else if (step == core::PathStep::Field) {
-      add(places.field(parentMirror, places.fieldName(place)));
+      if (const auto *field =
+              dyn_cast_or_null<FieldDecl>(builder.declFor(place)))
+        add(builder.fieldPlace(parentMirror, *field));
+      else
+        add(places.field(parentMirror, places.fieldName(place)));
     } else {
       add(places.index(parentMirror));
     }
@@ -6234,8 +6393,7 @@ FunctionDataflow::nullnessOf(const ValueOrigin &origin, const Expr &at,
     if (record->mayBeNull()) {
       // The arm's own guard, and the copied record's.
       core::PlaceGuard armGuard = record->guard;
-      for (const auto &[key, fact] : leaf.origin->guard.conditions)
-        armGuard.require(key, fact);
+      armGuard.conjoin(leaf.origin->guard);
       if (!nullGuard)
         nullGuard = std::move(armGuard);
       else
@@ -6274,8 +6432,7 @@ void FunctionDataflow::setNullness(core::PlaceId place,
   // `NonNull` fact is dropped by the join whenever the other side lacks it,
   // so it needs no guard.
   if (guarded.state != core::Nullness::NonNull) {
-    for (const auto &[key, fact] : guardHere(state, place).conditions)
-      guarded.guard.require(key, fact);
+    guarded.guard.conjoin(guardHere(state, place));
   }
   // Exact copies hold the same value (RFC 0008, *Nullness*). The alias
   // relation is a may-relation once paths have joined (RFC 0006), and RFC
@@ -7457,6 +7614,36 @@ void FunctionDataflow::dump(const core::AnalysisState *exitState) {
   os << "function '" << function.getNameAsString() << "'"
      << (unsafeBody ? " (unsafe)" : "") << ":\n";
 
+  const auto printTargets = [&os](const core::CallTargets &targets) {
+    bool first = true;
+    for (const auto &symbol : targets.functions) {
+      os << (first ? "" : ", ") << symbol;
+      first = false;
+    }
+    if (targets.unknown) {
+      os << (first ? "" : ", ") << "unknown";
+      first = false;
+    }
+    if (targets.null)
+      os << (first ? "" : ", ") << "null";
+  };
+  for (const auto &[call, targets] : callTargetsSeen) {
+    os << "  call " << calleeName(*call) << " targets{";
+    printTargets(targets);
+    os << "}\n";
+  }
+  for (const auto &[call, bindings] : callbackContexts) {
+    os << "  call " << calleeName(*call) << " bindings{";
+    bool first = true;
+    for (const auto &[path, targets] : bindings) {
+      os << (first ? "" : "; ")
+         << path.toString("param " + std::to_string(path.index)) << " = ";
+      printTargets(targets);
+      first = false;
+    }
+    os << "}\n";
+  }
+
   os << "  places:";
   for (const VarDecl *var : builder.variables()) {
     const auto place = builder.lookupVar(*var);
@@ -7490,6 +7677,11 @@ void FunctionDataflow::dump(const core::AnalysisState *exitState) {
       text += text.empty() ? " when[" : ", ";
       text += std::string(places.name(place)) + " " + fact.toString();
     }
+    for (const auto &[pair, equal] : guard.pointers) {
+      text += text.empty() ? " when[" : ", ";
+      text +=
+          nameOf(pair.first) + (equal ? " == " : " != ") + nameOf(pair.second);
+    }
     return text.empty() ? text : text + "]";
   };
   const auto describePathGuard = [this](const core::PathGuard &guard) {
@@ -7498,8 +7690,15 @@ void FunctionDataflow::dump(const core::AnalysisState *exitState) {
       text += text.empty() ? " when[" : ", ";
       text += summaryName(path) + " " + fact.toString();
     }
+    for (const auto &[pair, equal] : guard.pointers) {
+      text += text.empty() ? " when[" : ", ";
+      text += summaryName(pair.first) + (equal ? " == " : " != ") +
+              summaryName(pair.second);
+    }
     return text.empty() ? text : text + "]";
   };
+  for (const auto &reason : inferred.incomplete)
+    os << "  incomplete: " << reason << '\n';
 
   os << "  exit:";
   if (exitState == nullptr) {
@@ -8239,8 +8438,7 @@ void FunctionDataflow::recordOutcomes(const Expr &value,
             effects.erase(it);
             continue;
           }
-          for (const auto &[key, fact] : summaryGuardOf(*guard).conditions)
-            it->second.when.require(key, fact);
+          it->second.when.conjoin(summaryGuardOf(*guard));
         }
       }
     }
@@ -8527,8 +8725,7 @@ core::ValueSource FunctionDataflow::sourceOf(const ValueOrigin &origin,
   // that itself came with a condition (RFC 0009, *Deriving guards*):
   // `if (n == 0) return NULL;` is `returns{null when n =0, ...}`.
   core::PlaceGuard guard = guardHere(state);
-  for (const auto &[key, fact] : origin.guard.conditions)
-    guard.require(key, fact);
+  guard.conjoin(origin.guard);
   source.when = summaryGuardOf(guard);
   return source;
 }
@@ -8537,6 +8734,15 @@ core::ValueSource
 FunctionDataflow::sourceValueOf(const ValueOrigin &origin,
                                 const core::AnalysisState &state,
                                 bool entryValue) {
+  const auto callable = originTargets(origin, state);
+  if (!callable.functions.empty() || callable.null)
+    return core::ValueSource::function(callable);
+  if (origin.place) {
+    const auto it = state.callTargets.find(origin.place->place);
+    if (it != state.callTargets.end() &&
+        (!it->second.functions.empty() || it->second.null))
+      return core::ValueSource::function(it->second);
+  }
   switch (origin.kind) {
   case ValueOrigin::Kind::Alloc:
     return core::ValueSource::freshAt(
@@ -8652,6 +8858,13 @@ FunctionDataflow::sourceValueOf(const ValueOrigin &origin,
 }
 
 void FunctionDataflow::finalizeSummary(const core::AnalysisState *exitState) {
+  const auto captureViews =
+      llvm::scope_exit([&] { inferred.objectViews = builder.objectViews; });
+  if (summaries.incompleteFunctions.contains(function.getCanonicalDecl()))
+    reportIncomplete("summary iteration limit reached", *function.getBody());
+  if (convergenceFailed)
+    reportIncomplete("function dataflow iteration limit reached",
+                     *function.getBody());
   // RFC 0012, *Sized fields*: what this function's stores say.
   finalizeSizedFields(exitState);
   // Consumption is recorded as it happens for every caller-visible path
@@ -8743,8 +8956,7 @@ void FunctionDataflow::finalizeSummary(const core::AnalysisState *exitState) {
                              consumed->second.replaced;
       if (const auto moved = movedAtExit.find(path);
           moved != movedAtExit.end() && !rewritten) {
-        for (const auto &[key, fact] : moved->second.conditions)
-          effect.when.require(key, fact);
+        effect.when.conjoin(moved->second);
         continue;
       }
       effect.replaced = true;
@@ -8935,6 +9147,12 @@ void FunctionDataflow::dropUnstableGuards() {
     });
   };
   const auto clean = [&unstable](core::PathGuard &guard) {
+    for (auto it = guard.pointers.begin(); it != guard.pointers.end();) {
+      if (unstable(it->first.first) || unstable(it->first.second))
+        it = guard.pointers.erase(it);
+      else
+        ++it;
+    }
     for (auto it = guard.conditions.begin(); it != guard.conditions.end();) {
       if (unstable(it->first))
         it = guard.conditions.erase(it);

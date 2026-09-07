@@ -62,8 +62,8 @@ void through_table(struct node *n) {
 }
 void register_peek(struct hooks *h) { h->on_drop = node_peek; }
 void through_callback(void (*cb)(struct node *), struct node *n) {
-  cb(n); /* may be node_free or node_peek: the join frees */
-  // CHECK: rfc0004-function-pointers.c:[[@LINE+1]]:7: error: use of 'n' after it was freed [weavec::use-after-free]
+  // CHECK: warning: call through 'cb' is not checked: its function type has no ownership annotations and its target is unknown [weavec::annotation-required]
+  cb(n); /* RFC 0014: a type match alone does not identify this value. */
   use(n);
 }
 
@@ -73,11 +73,11 @@ int calls_directly(int x) { return helper(x); }
 
 // 3. Otherwise a boundary: once per function type by default.
 void boundary(int (*cmp)(const void *, const void *), char *a, char *b) {
-  // CHECK: rfc0004-function-pointers.c:[[@LINE+1]]:3: warning: call through 'cmp' is not checked: its function type has no ownership annotations and no function of that type has its address taken in this program [weavec::annotation-required]
+  // CHECK: rfc0004-function-pointers.c:[[@LINE+1]]:3: warning: call through 'cmp' is not checked: its function type has no ownership annotations and its target is unknown [weavec::annotation-required]
   cmp(a, b);
   // CHECK-NEXT: {{.*}}cmp(a, b);
   // CHECK-NEXT: {{.*}}^
-  // CHECK-NEXT: rfc0004-function-pointers.c:[[@LINE-3]]:3: note: annotate the parameters of its function type with WEAVEC_OWNED, WEAVEC_BORROWED, WEAVEC_MUT or WEAVEC_RAW, or take the address of a function of that type in this program
+  // CHECK-NEXT: rfc0004-function-pointers.c:[[@LINE-3]]:3: note: annotate the parameters of its function type with WEAVEC_OWNED, WEAVEC_BORROWED, WEAVEC_MUT or WEAVEC_RAW, or pass a known function pointer
   cmp(b, a);
   // STRICT: rfc0004-function-pointers.c:[[@LINE-5]]:3: error: unchecked call through 'cmp' outside an unsafe region [weavec::unsafe-operation]
   // STRICT: rfc0004-function-pointers.c:[[@LINE-2]]:3: error: unchecked call through 'cmp' outside an unsafe region [weavec::unsafe-operation]
@@ -93,4 +93,4 @@ void boundary_without_place(void) {
   // STRICT: rfc0004-function-pointers.c:[[@LINE-2]]:20: error: unchecked call through a function pointer outside an unsafe region [weavec::unsafe-operation]
 }
 
-// CHECK: 2 warnings and 6 errors generated.
+// CHECK: 3 warnings and 5 errors generated.

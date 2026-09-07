@@ -58,8 +58,8 @@ Design: [RFC 0003 — Signature inference](rfcs/0003-signature-inference.md)
       outside `WEAVEC_UNSAFE`; unsafe regions are analysed with reports
       suppressed, so ownership flows through them; laundering by assertion.
 - [x] Calls through function pointers (RFC 0004): annotations on the
-      function-pointer type, else the join of the address-taken functions of
-      that type; indirect edges in the call graph.
+      function-pointer type, else actual reaching function values (refined by
+      RFC 0014); conservative indirect edges in the call graph.
 - [x] Pointer arithmetic and pointer casts preserve identity (RFC 0004).
 - [x] `--strict-externs` makes unchecked calls raw operations (RFC 0004).
 - [x] POSIX / common GNU-BSD coverage in the shipped table (`<unistd.h>`,
@@ -70,7 +70,7 @@ Design: [RFC 0003 — Signature inference](rfcs/0003-signature-inference.md)
       (`free(a[i])` in a loop), pointer-equality guards (moved to RFC 0006,
       Milestone 5).
 - [x] Function pointers stored in globals and returned from other TUs
-      (RFC 0005: candidates are joined across the program).
+      (RFC 0005 / RFC 0014: actual targets and contexts cross the program).
 
 ## Milestone 3 — Compiler driver (done)
 
@@ -315,10 +315,29 @@ Design: [RFC 0013](rfcs/0013-interprocedural-heap-state.md).
 - [x] A fixed good/bad evaluation matrix with known misses and independent
       execution-failure accounting, beside the existing recall regression set.
 
-Remaining richer arithmetic, arbitrary element identities, callback target
-precision and a verification mode that rejects incomplete coverage need
-separate designs. This milestone does not make Lua's GC or stack-rebasing
+Richer arithmetic, arbitrary element identities and a verification mode that
+rejects incomplete coverage need separate designs. Callback target precision
+is addressed by the following milestone. This milestone does not make Lua's GC or stack-rebasing
 invariants inferable.
+
+## Milestone 13 — Pointer identity and precise call effects
+
+Design: [RFC 0014](rfcs/0014-pointer-identity-and-call-effects.md).
+
+- [x] Actual function-value target sets, preserving unknown and null alternatives.
+- [x] Bounded callback helper specialization, including userdata associations,
+      local forwarding and requests across translation units.
+- [x] Equality/inequality guards on ownership effects and entry pointer snapshots.
+- [x] Complete pointer and compatible record copies through `memcpy`/`memmove`.
+- [x] Record-view validation for summary paths and explicit incomplete coverage.
+- [x] Version 10 summaries and sidecars, callback dependencies and diagnostic controls.
+- [x] Regression and evaluation pairs, strict C fixture validation, and pinned
+      corpus tooling with process-failure and optional memory accounting.
+
+Arbitrary byte fragments, unrestricted element identities, general callback
+relational reasoning and GC/region invariants remain outside this milestone.
+Recursive callback contexts that cannot be resolved within the bounds report
+incomplete coverage. Runtime enforcement and verification mode remain separate.
 
 ## Ongoing
 

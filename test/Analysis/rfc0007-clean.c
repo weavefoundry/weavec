@@ -3,7 +3,8 @@
 // the caller or to a struct, unknown callees, `getline`, loops over arrays,
 // nulled and conditionally-freed fields, wrappers, `goto` cleanup, `exit`,
 // by-value struct returns, and pointers laundered through integers.
-// RUN: %weavec -Wno-weavec-annotation-required %s -- 2>&1 | count 0
+// RUN: %weavec -Wno-weavec-annotation-required %s -- > %t.out 2>&1
+// RUN: count 0 < %t.out
 // RUN: %weavec -Wno-weavec-leak %s -- 2>&1 | FileCheck --check-prefix=BOUNDARY %s
 #include <stdint.h>
 #include <stdio.h>

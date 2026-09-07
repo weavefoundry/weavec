@@ -121,6 +121,24 @@ jobs:
       - name: Recall
         run: python3 scripts/recall.py --weavec "build/${{ matrix.preset }}/bin/weavec"
 
+      # RFC 0014: fixed source revisions exercise real callback-heavy code.
+      # Counts are retained for review; parse errors, crashes, timeouts and
+      # nonconvergence fail the gate on both release platforms.
+      - name: Pinned corpus
+        if: matrix.preset == 'ci-release'
+        run: |
+          python3 scripts/corpus.py --weavec "build/${{ matrix.preset }}/bin/weavec" \
+            --manifest scripts/corpus/rfc0014.json --timeout 120 \
+            --measure-memory --json corpus-rfc0014.json
+
+      - name: Upload pinned corpus results
+        if: always() && matrix.preset == 'ci-release'
+        uses: actions/upload-artifact@v7
+        with:
+          name: corpus-rfc0014-${{ matrix.os }}
+          path: corpus-rfc0014.json
+          if-no-files-found: ignore
+
       - name: Smoke-test install
         run: |
           cmake --install "build/${{ matrix.preset }}" --prefix "$RUNNER_TEMP/weavec-install"

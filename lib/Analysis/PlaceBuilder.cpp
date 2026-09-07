@@ -241,6 +241,12 @@ PlaceBuilder::summaryPathOf(core::PlaceId place) {
       path = path.deref();
       break;
     case core::PathStep::Field:
+      if (const auto *field = dyn_cast_or_null<FieldDecl>(declFor(node))) {
+        const auto view = summaries.objectView(
+            context.getCanonicalTypeDeclType(field->getParent()));
+        if (!view.empty())
+          objectViews[path] = view;
+      }
       path = path.field(places.fieldName(node));
       break;
     case core::PathStep::Index:
@@ -274,6 +280,8 @@ std::optional<PlaceRef> PlaceBuilder::copyOrNull(const ValueOrigin &origin) {
 std::optional<PlaceRef>
 PlaceBuilder::resolveSummaryPath(const core::SummaryPath &path,
                                  const CallExpr &call) {
+  if (validatePath && !validatePath(path, call))
+    return std::nullopt;
   PlaceRef ref;
   std::size_t firstStep = 0;
   const Expr *argExpr = nullptr;
@@ -364,6 +372,8 @@ PlaceBuilder::resolveBelow(core::PlaceId base, const core::SummaryPath &path) {
 std::optional<std::pair<core::PlaceId, std::size_t>>
 PlaceBuilder::lookupSummaryRoot(const core::SummaryPath &path,
                                 const CallExpr &call) {
+  if (validatePath && !validatePath(path, call))
+    return std::nullopt;
   if (path.isResult())
     return std::nullopt;
   if (path.isGlobal()) {
@@ -521,6 +531,11 @@ ValueOrigin PlaceBuilder::originFromUnguardedSource(
     return origin;
   };
   switch (source.kind) {
+  case core::ValueSource::Kind::Function: {
+    ValueOrigin origin;
+    origin.targets = source.targets;
+    return origin;
+  }
   case core::ValueSource::Kind::Fresh: {
     ValueOrigin origin = fresh(source.family);
     origin.offset = source.offset;
@@ -873,6 +888,27 @@ std::optional<core::PlaceGuard>
 PlaceBuilder::translateGuard(const core::PathGuard &guard,
                              const CallExpr &call) {
   core::PlaceGuard translated;
+  for (const auto &[pair, equal] : guard.pointers) {
+    const auto resolveInput =
+        [&](const core::SummaryPath &path) -> std::optional<core::PlaceId> {
+      if (incomingLookup) {
+        if (const auto input = incomingLookup(call, path))
+          return input;
+      }
+      const auto ref = resolveSummaryPath(path, call);
+      return ref ? std::optional(ref->place) : std::nullopt;
+    };
+    const auto a = resolveInput(pair.first);
+    const auto b = resolveInput(pair.second);
+    if (!a || !b)
+      continue;
+    if (*a == *b) {
+      if (!equal)
+        return std::nullopt;
+    } else {
+      translated.requirePointer(*a, *b, equal);
+    }
+  }
   for (const auto &[path, fact] : guard.conditions) {
     if (path.isParam() && path.isRoot()) {
       if (path.index >= call.getNumArgs())
@@ -1156,6 +1192,18 @@ std::optional<ValueOrigin> PlaceBuilder::rawBaseOf(const Expr &placeExpr) {
 
 ValueOrigin PlaceBuilder::classifyValue(const Expr &expr) {
   const Expr *e = expr.IgnoreParens();
+  const Expr *designator = e->IgnoreParenImpCasts();
+  if (const auto *address = dyn_cast<UnaryOperator>(designator);
+      address && address->getOpcode() == UO_AddrOf)
+    designator = address->getSubExpr()->IgnoreParenImpCasts();
+  if (const auto *ref = dyn_cast<DeclRefExpr>(designator)) {
+    if (const auto *function = dyn_cast<FunctionDecl>(ref->getDecl())) {
+      summaries.registerCallable(*function);
+      ValueOrigin result;
+      result.targets = core::CallTargets::function(callableSymbol(*function));
+      return result;
+    }
+  }
 
   if (const auto *cast = dyn_cast<CastExpr>(e)) {
     switch (cast->getCastKind()) {

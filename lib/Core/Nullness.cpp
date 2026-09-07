@@ -133,7 +133,7 @@ std::vector<PlaceId> NullTracker::learn(PlaceId place, const ValueFact &fact) {
     changed.push_back(it->first);
     if (record.state == Nullness::MaybeNull && record.otherwiseNonNull) {
       record.state = Nullness::NonNull;
-      record.guard.conditions.clear();
+      record.guard.clear();
       record.otherwiseNonNull = false;
       ++it;
       continue;

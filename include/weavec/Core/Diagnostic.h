@@ -68,9 +68,11 @@ inline constexpr std::string_view InvalidRelease = "invalid-release";
 /// every value the facts allow (or, with `may` wording, on a boundary value
 /// a relation permits).
 inline constexpr std::string_view OutOfBounds = "out-of-bounds";
+/// RFC 0014: an operation lost analysis coverage.
+inline constexpr std::string_view AnalysisIncomplete = "analysis-incomplete";
 
 /// Every id, for validating user input (`-Wweavec-<id>`).
-inline constexpr std::array<std::string_view, 15> All{
+inline constexpr std::array<std::string_view, 16> All{
     UseAfterFree,       DoubleFree,
     UseAfterMove,       ConflictingBorrow,
     LifetimeTooShort,   UnsafeOperation,
@@ -78,7 +80,7 @@ inline constexpr std::array<std::string_view, 15> All{
     InvalidAnnotation,  Leak,
     MismatchedRelease,  NullDereference,
     UseOfUninitialized, InvalidRelease,
-    OutOfBounds,
+    OutOfBounds,        AnalysisIncomplete,
 };
 
 [[nodiscard]] constexpr bool isKnown(std::string_view id) noexcept {
@@ -90,7 +92,8 @@ inline constexpr std::array<std::string_view, 15> All{
 /// (RFC 0005, *Flags*): `annotation-required`, `invalid-annotation` and
 /// `leak` (RFC 0007) are warnings, everything else is an error.
 [[nodiscard]] constexpr bool isWarningByDefault(std::string_view id) noexcept {
-  return id == AnnotationRequired || id == InvalidAnnotation || id == Leak;
+  return id == AnnotationRequired || id == InvalidAnnotation || id == Leak ||
+         id == AnalysisIncomplete;
 }
 } // namespace diag
 

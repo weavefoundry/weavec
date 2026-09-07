@@ -623,7 +623,8 @@ TEST(ResourceLifecycle, AFreedElementDoesNotReleaseWhatAnotherElementHolds) {
   // linenoise's history: `free(history[0])` leaves a record on `*history`
   // witnessed by element 0; the store to `history[len]` is a different
   // element, so the alias keeps `linecopy` (RFC 0006, *Element witnesses*).
-  const auto result = analyze(R"c(
+  const auto result =
+      analyze(std::string("char *strdup(const char *);\n#line 1\n") + R"c(
     static char **history;
     static int history_len;
     int add(const char *line) {

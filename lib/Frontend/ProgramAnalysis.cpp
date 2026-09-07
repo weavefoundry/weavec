@@ -94,8 +94,14 @@ std::vector<std::vector<unsigned>> ProgramAnalysis::unitGraph() const {
       continue;
     std::vector<unsigned> &edges = adjacency[i];
     for (const std::string &name : units[i].exports->imports) {
-      if (const auto it = definers.find(name); it != definers.end())
+      if (const auto it = definers.find(name); it != definers.end()) {
         edges.insert(edges.end(), it->second.begin(), it->second.end());
+        // RFC 0014: callback contexts travel from caller to definer, so
+        // these two units converge together before either is reported.
+        for (const unsigned definer : it->second)
+          if (units[definer].exports->functions.at(name).acceptsCallbacks)
+            adjacency[definer].push_back(i);
+      }
     }
     for (const std::string &key : units[i].exports->indirectTypes) {
       if (const auto it = candidates.find(key); it != candidates.end())

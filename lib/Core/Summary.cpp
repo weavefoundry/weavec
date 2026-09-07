@@ -256,6 +256,7 @@ OwnershipKind FunctionSummary::inferredReturnKind() const {
   for (const ValueSource &source : returns) {
     switch (source.kind) {
     case ValueSource::Kind::Raw:
+    case ValueSource::Kind::Function:
       break;
     case ValueSource::Kind::Fresh:
       result = core::join(result, OwnershipKind::Owned);
@@ -521,6 +522,14 @@ void FunctionSummary::join(const FunctionSummary &other) {
   // The empty summary is the bottom of the lattice (a join of candidates
   // starts from it): the other side's classes are the answer.
   const bool wasEmpty = empty();
+  incomplete.insert(other.incomplete.begin(), other.incomplete.end());
+  callbackInputs.insert(other.callbackInputs.begin(),
+                        other.callbackInputs.end());
+  for (const auto &[path, view] : other.objectViews) {
+    const auto [it, inserted] = objectViews.emplace(path, view);
+    if (!inserted && it->second != view)
+      it->second = "?";
+  }
   // A missing graph on a non-null returning candidate contributes unknown
   // fields. A null pointer result has no pointee to describe (RFC 0013).
   const auto nullOnly = [](const FunctionSummary &value) {
@@ -696,6 +705,12 @@ FunctionSummary remapGlobals(const FunctionSummary &summary,
       if (const auto mapped = remapPath(path))
         result.conditions.emplace(*mapped, fact);
     }
+    for (const auto &[pair, equal] : guard.pointers) {
+      const auto a = remapPath(pair.first);
+      const auto b = remapPath(pair.second);
+      if (a && b)
+        result.requirePointer(*a, *b, equal);
+    }
     return result;
   };
   const auto remapEffect = [&remapGuard](const PlaceEffect &effect) {
@@ -738,6 +753,13 @@ FunctionSummary remapGlobals(const FunctionSummary &summary,
   };
 
   FunctionSummary result;
+  result.incomplete = summary.incomplete;
+  for (const auto &[path, view] : summary.objectViews)
+    if (const auto mapped = remapPath(path))
+      result.objectViews[*mapped] = view;
+  for (const auto &path : summary.callbackInputs)
+    if (const auto mapped = remapPath(path))
+      result.callbackInputs.insert(*mapped);
   for (const auto &[root, graph] : summary.heap) {
     if (const auto mapped = remapPath(root)) {
       HeapDescription &out = result.heap[*mapped];
@@ -811,6 +833,8 @@ FunctionSummary remapGlobals(const FunctionSummary &summary,
 
 std::string_view toString(ValueSource::Kind kind) noexcept {
   switch (kind) {
+  case ValueSource::Kind::Function:
+    return "function";
   case ValueSource::Kind::Fresh:
     return "fresh";
   case ValueSource::Kind::Copy:

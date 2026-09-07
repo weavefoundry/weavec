@@ -231,7 +231,8 @@ TEST(DiagnosticIds, DefaultSeverities) {
   // RFC 0011: out-of-bounds is an error.
   EXPECT_FALSE(core::diag::isWarningByDefault(core::diag::OutOfBounds));
   EXPECT_TRUE(core::diag::isKnown("out-of-bounds"));
-  EXPECT_EQ(core::diag::All.size(), 15U);
+  EXPECT_TRUE(core::diag::isWarningByDefault(core::diag::AnalysisIncomplete));
+  EXPECT_EQ(core::diag::All.size(), 16U);
 }
 
 } // namespace

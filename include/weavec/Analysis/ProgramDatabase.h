@@ -63,6 +63,7 @@ struct ExportedFunction {
   /// The summary a caller in the exporting unit would see (annotations
   /// applied), with globals numbered by the unit's `GlobalNames`.
   core::FunctionSummary summary;
+  std::map<core::CallbackBindings, core::FunctionSummary> specializations;
   /// `functionTypeKey` of the definition; empty if the type has no stable
   /// spelling (an anonymous record is involved).
   std::string typeKey;
@@ -71,6 +72,7 @@ struct ExportedFunction {
   /// Its address is taken somewhere in the unit: reachable through a
   /// pointer of its type from another unit.
   bool addressTaken = false;
+  bool acceptsCallbacks = false;
 
   friend bool operator==(const ExportedFunction &,
                          const ExportedFunction &) = default;
@@ -127,6 +129,8 @@ struct SizedFieldFacts {
 struct UnitExports {
   /// The main source file, for messages and the dump.
   std::string source;
+  std::map<std::string, std::set<core::CallbackBindings>> callbackRequests;
+  std::map<std::string, core::CallTargets> callbackGlobals;
   /// Exported definitions by linkage name.
   std::map<std::string, ExportedFunction> functions;
   /// Names the summaries above use for global roots.
@@ -168,6 +172,9 @@ struct UnitExports {
 
 /// The same for a record type (`struct obj`), the first half of an RFC 0010
 /// count-field key; empty for a non-record or an anonymous one.
+[[nodiscard]] std::string recordLayoutKey(clang::QualType type,
+                                          const clang::ASTContext &context);
+
 [[nodiscard]] std::string recordTypeKey(clang::QualType type,
                                         const clang::ASTContext &context);
 
@@ -179,6 +186,15 @@ public:
   /// positives*). Summaries numbered by a table this one extends, or that
   /// extends this one (see `renumbered`), are copied rather than renumbered.
   void add(const UnitExports &unit);
+  void addCallbackInformation(const UnitExports &unit);
+  std::map<std::string, core::CallTargets> callbackGlobals;
+  [[nodiscard]] const core::FunctionSummary *
+  findCallable(std::string_view symbol) const;
+  [[nodiscard]] const core::FunctionSummary *
+  findSpecialization(std::string_view symbol,
+                     const core::CallbackBindings &bindings) const;
+  [[nodiscard]] const std::set<core::CallbackBindings> &
+  requestsFor(std::string_view symbol) const;
 
   /// `unit` with its summaries numbered by this database's table, which is
   /// extended with any names it did not have; the result's `globals` is a
@@ -232,6 +248,13 @@ public:
 
 private:
   std::map<std::string, core::FunctionSummary, std::less<>> functions;
+  std::map<std::string, core::FunctionSummary, std::less<>> callableSummaries;
+  std::map<std::pair<std::string, core::CallbackBindings>,
+           core::FunctionSummary>
+      contextSummaries;
+  std::map<std::string, std::set<core::CallbackBindings>, std::less<>>
+      callbackRequests;
+
   std::map<std::string, core::FunctionSummary, std::less<>> candidateSummaries;
   GlobalNames globalNames;
   std::set<std::string, std::less<>> countFields;
