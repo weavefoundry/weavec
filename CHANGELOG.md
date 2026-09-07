@@ -8,6 +8,21 @@ follows [Semantic Versioning](https://semver.org/) once it reaches 1.0.
 
 ### Added
 
+- Array and container ownership (RFC 0015): selected pointer/record cells,
+  stable scalar index snapshots, independent initialization and nullness,
+  nested arrays, callback cells and retained-share copies.
+- Simultaneous complete array copies and overlapping moves, sparse symbolic
+  range snapshots, final range summaries and returned containers. Reallocation
+  preserves child pointer values while invalidating the original storage.
+- Proved contiguous cleanup and simple fill loops, with bounded initialization
+  and release intervals. Unsupported selections and range compositions expose
+  `analysis-incomplete` without discarding known release history.
+- Summary and sidecar format 11 for selected paths, range copies, fills and
+  releases. Rebuild objects carrying earlier sidecars.
+- Twelve additional fixed bug/clean pairs, exact array diagnostics, whole-program
+  and compiler-sidecar integration tests, and a corpus manifest with pinned Lua,
+  Jansson, linenoise, cJSON and log.c revisions.
+
 - Pointer identity and precise call effects (RFC 0014): bounded sets of actual
   callback targets flow through assignments, fields, copies, returns and
   out-parameters. Callback helpers are specialized with their actual targets

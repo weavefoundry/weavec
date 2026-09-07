@@ -23,7 +23,7 @@
 // DUMP: function 'buffer_put8': param 0 *: written; stores{} returns{} requires{param 0} requires-extent{param 0: 8}
 // DUMP: function 'wrapped_release': param 0: freed(free),at(-struct~wrapped.payload); stores{} returns{}
 
-// SIDECAR: weavec-summaries 10
+// SIDECAR: weavec-summaries 11
 // SIDECAR: function buffer_fill
 // SIDECAR: requires-extent 0 param 1 scale 1 plus 0
 // SIDECAR: function buffer_new

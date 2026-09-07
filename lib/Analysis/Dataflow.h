@@ -75,6 +75,125 @@ public:
   }
 
 private:
+  // RFC 0015: complete array cells share the ordinary pointer/heap domains.
+  [[nodiscard]] std::optional<core::PlaceId>
+  boundedArrayCell(core::PlaceId storage, const core::ArrayIndex &index,
+                   const clang::Expr &at, core::AnalysisState &state);
+  [[nodiscard]] PlaceRef selectArrayElement(PlaceRef storage,
+                                            std::optional<core::Affine> index,
+                                            clang::QualType type,
+                                            const clang::Expr &at);
+  [[nodiscard]] std::optional<std::string>
+  summaryArrayIndex(std::string_view selector);
+  void snapshotArrayIndex(core::PlaceId place, const clang::Expr *at,
+                          core::AnalysisState &state);
+  void initializeArray(core::PlaceId storage, clang::QualType type,
+                       const clang::Expr *init, const clang::VarDecl &decl,
+                       core::AnalysisState &state, bool zeroInitialize = false);
+  void initializeArrayValue(core::PlaceId cell, clang::QualType type,
+                            const clang::Expr *value,
+                            const clang::VarDecl &decl,
+                            core::AnalysisState &state, bool zeroInitialize);
+  std::map<core::PlaceId, clang::QualType> arrayTypes;
+  std::map<std::pair<core::PlaceId, const clang::Expr *>, core::PlaceId>
+      arrayIndexSnapshots;
+  struct ArrayBuffer {
+    core::PlaceId storage;
+    clang::QualType element;
+    core::Affine start;
+    bool explicitArray = false;
+  };
+  [[nodiscard]] std::optional<ArrayBuffer>
+  arrayBuffer(const clang::Expr &expr, core::AnalysisState &state);
+  [[nodiscard]] bool handleArrayCopy(const clang::CallExpr &call,
+                                     const CallEffects &effects,
+                                     core::AnalysisState &state);
+  void copyArrayCell(core::PlaceId dest, core::PlaceId source,
+                     clang::QualType type, const clang::CallExpr &at,
+                     core::AnalysisState &state);
+  std::map<std::pair<const clang::CallExpr *, std::int64_t>, core::PlaceId>
+      arrayCopySnapshots;
+  void materializeArrayCell(core::PlaceId storage, core::PlaceId cell,
+                            const core::ArrayIndex &index, clang::QualType type,
+                            const clang::Expr &at, core::AnalysisState &state);
+  bool installArrayRange(const ArrayBuffer &dest, const ArrayBuffer &source,
+                         core::Affine count, const clang::CallExpr &call,
+                         core::AnalysisState &state, std::size_t ordinal = 0,
+                         bool definite = true);
+  void applyArrayRanges(const clang::CallExpr &call,
+                        const core::FunctionSummary &summary,
+                        core::AnalysisState &state);
+  void recordArrayOutputs(const core::AnalysisState &state);
+  void recordArrayResult(core::PlaceId result,
+                         const core::AnalysisState &state);
+  void applyArrayResult(core::PlaceId result, const clang::CallExpr &call,
+                        core::AnalysisState &state);
+  std::map<const clang::CallExpr *, std::map<core::SummaryPath, core::PlaceId>>
+      arrayResultOutputs;
+  [[nodiscard]] clang::QualType arrayElementType(core::PlaceId storage);
+  std::map<std::pair<const clang::CallExpr *, std::size_t>, core::PlaceId>
+      arrayRangeSnapshots;
+  std::map<core::PlaceId, const clang::CallExpr *> arrayRangeSites;
+  void snapshotArrayCell(core::PlaceId source, core::PlaceId target,
+                         clang::QualType type, core::AnalysisState &state);
+  void captureArrayReallocation(const clang::CallExpr &call,
+                                const CallEffects &effects,
+                                core::AnalysisState &state);
+  void applyArrayReallocation(core::PlaceId dest, const clang::CallExpr &call,
+                              core::AnalysisState &state);
+  std::map<const clang::CallExpr *, core::PlaceId> arrayReallocInputs;
+  struct ArrayCleanupLoop {
+    const clang::CallExpr *release;
+    const clang::ArraySubscriptExpr *element;
+    const clang::Expr *count;
+    bool cleared;
+  };
+  std::map<const clang::ForStmt *, ArrayCleanupLoop> arrayCleanupLoops;
+  struct ArrayFillLoop {
+    const clang::BinaryOperator *assignment = nullptr;
+    const clang::ArraySubscriptExpr *element = nullptr;
+    const clang::Expr *count = nullptr;
+    std::optional<std::int64_t> bytes;
+  };
+  std::map<const clang::ForStmt *, ArrayFillLoop> arrayFillLoops;
+  std::map<std::pair<const clang::Expr *, std::size_t>, core::PlaceId>
+      arrayFillSites;
+  std::map<core::PlaceId, const clang::Expr *> arrayFillExpressions;
+  void fillArrayRange(core::PlaceId storage, core::Affine count,
+                      std::optional<std::int64_t> bytes, const clang::Expr &at,
+                      core::AnalysisState &state, std::size_t ordinal = 0,
+                      bool definite = true);
+  void materializeArrayFill(core::PlaceId storage, core::PlaceId cell,
+                            const core::ArrayIndex &index,
+                            const clang::Expr &at, core::AnalysisState &state);
+  void applyArrayFills(const clang::CallExpr &call,
+                       const core::FunctionSummary &summary,
+                       core::AnalysisState &state);
+  std::set<const clang::CallExpr *> arrayCleanupCalls;
+  std::set<const clang::BinaryOperator *> arrayCleanupStores;
+  std::map<std::pair<const clang::Expr *, std::size_t>, core::PlaceId>
+      arrayReleaseSites;
+  std::map<core::PlaceId, const clang::Expr *> arrayReleaseExpressions;
+  void collectArrayCleanupLoops(const clang::Stmt *stmt);
+  void completeArrayCleanupLoop(const clang::CFGBlock &from, unsigned succIndex,
+                                core::AnalysisState &state);
+  void releaseArrayRange(core::PlaceId storage, core::ArraySpan span,
+                         bool cleared, const clang::Expr &at,
+                         core::AnalysisState &state, std::size_t ordinal = 0);
+  void materializeArrayRelease(core::PlaceId storage, core::PlaceId cell,
+                               const core::ArrayIndex &index,
+                               const clang::Expr &at,
+                               core::AnalysisState &state);
+  void applyArrayReleases(const clang::CallExpr &call,
+                          const core::FunctionSummary &summary,
+                          core::AnalysisState &state);
+  void weakenOverlappingArrayWrites(core::PlaceId dest,
+                                    const ValueOrigin &origin,
+                                    const clang::Expr &at, bool constPointee,
+                                    core::AnalysisState &state);
+  void forgetArrayStorage(core::PlaceId place, core::AnalysisState &state);
+  void checkArrayTraversal(core::PlaceId storage, const core::Affine &count,
+                           const clang::Expr &at, core::AnalysisState &state);
   /// How a place expression is used at its position in the tree, decided by
   /// a pre-pass over the AST so that each CFG element can be handled locally.
   enum class Role : std::uint8_t {
@@ -103,6 +222,9 @@ private:
   core::DiagnosticSink &sink;
   const AnalysisOptions &options;
   SummaryStore &summaries;
+  bool materializingArray = false;
+  bool materializingArrayFill = false;
+  bool materializingArrayRelease = false;
   const bool emitDiagnostics;
 
   core::AnalysisState *currentState = nullptr;
@@ -1293,7 +1415,7 @@ private:
   };
   /// The move record of `place` if it is moved and the record's element
   /// witness matches the access's (`Whole` matches everything).
-  [[nodiscard]] static std::optional<MovedHit>
+  [[nodiscard]] std::optional<MovedHit>
   findMoved(core::PlaceId place, const core::AnalysisState &state,
             core::ElementWitness element = core::ElementWitness::whole());
   /// A loan that conflicts with a move or mutation of `place` (`kind`

@@ -398,6 +398,8 @@ static QualType followSteps(QualType type, llvm::ArrayRef<core::PathElem> steps,
     if (type.isNull())
       return {};
     type = type.getCanonicalType();
+    if (step.step == core::PathStep::Index && !step.field.empty())
+      continue;
     switch (step.step) {
     case core::PathStep::Deref:
     case core::PathStep::Index:

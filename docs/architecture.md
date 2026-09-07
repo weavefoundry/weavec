@@ -40,7 +40,8 @@ tools.
 | Header             | Purpose                                                                                        |
 | ------------------ | ---------------------------------------------------------------------------------------------- |
 | `Ownership.h`      | `OwnershipKind` lattice (`Unknown ⊑ {Owned, Shared, Mutable} ⊑ Raw`) and `join`. `Raw` is "no guarantee": tracked, but usable only inside an unsafe region. |
-| `Place.h`          | `PlaceId` and `PlaceTable`: structured places (`p`, `s.f`, `*p`, `p->f`, `a[*]`) with parent/descendant/translate queries. |
+| `Place.h`          | `PlaceId` and `PlaceTable`: structured places (`p`, `s.f`, `*p`, `p->f`, `a[*]`, `a[0]`) with parent/descendant/translate queries. |
+| `Array.h`          | Bounded constant/symbolic selectors, half-open intervals, sparse spans and evidence-based membership/disjointness queries (RFC 0015). |
 | `AliasRelation.h`  | Symmetric may-alias graph over places; closed under copies, plain union at joins (deliberately not transitive). Each edge records the `PointerOffset` between the two places — the same value (`Zero`), a constant number of elements, a field, or `Unknown` — so a pointer derived from another is a name for the same object at a known distance (RFC 0011), and which element of the other end is meant (RFC 0006); `separateExact` refutes a zero-offset edge on a `!=` edge. |
 | `Lifetime.h`       | `LifetimeId` and `LifetimeConstraints` (transitive `outlives` queries; `'static` is id 0).      |
 | `Borrow.h`         | `Loan` (place, kind, lifetime, holder) and `BorrowState`: may this borrow be created; may this place be moved or mutated; `expireHolders` drops the loans of holders a predicate declares dead (RFC 0006 liveness). |
@@ -193,7 +194,7 @@ argument-conditional summaries and inferred `noreturn` by
   from a compilation database.
 - `Sidecar.h` reads and writes `foo.o.weavec`: the unit's exports, the cc1
   command that produced it and the diagnostics already reported, in a
-  line-oriented text format versioned by its `weavec-summaries 8` header.
+  line-oriented text format versioned by its `weavec-summaries 11` header.
 - `Driver.h` is `weavec-cc`: Clang's `driver::Driver` plans the jobs, each
   `-cc1` job runs in-process with WeaveC's consumer multiplexed beside
   Clang's, the compile step writes the sidecar, and the link step runs
@@ -260,10 +261,38 @@ redirects the dependency to an interned allocation-time snapshot. Reusing a
 snapshot site invalidates the old generation's dependent facts. The domain
 remains bounded and uses the existing affine and relation operations.
 
-Summary and sidecar version 10 serialize heap descriptions, post references
+Summary and sidecar version 11 serialize heap descriptions, post references
 and string metadata. `ProgramDatabase` remaps global references and compares
 these descriptions as part of normal dependency invalidation. The compiler
 and tooling whole-program modes share this implementation.
+
+## Arrays and containers (RFC 0015)
+
+`Core/Array` represents a selector as a constant or an immutable scalar plus
+an offset. Selected `Index` places live below array storage; the empty `Index`
+remains an unknown-element summary. Nested selections preserve each dimension.
+Moves, aliases, ownership, loans, nullness, callbacks and heap children use
+those ordinary places. `AnalysisState` adds sparse range-copy, fill and release
+facts, with must-facts weakened at joins. Limits are 32 selected cells and 32
+range facts per storage object, independent of a program's array length.
+
+The Analysis implementation is split by operation: `DataflowArrays.cpp`
+resolves selectors and initializes cells, `DataflowArrayMemory.cpp` handles
+simultaneous copies and reallocations, `DataflowArrayRanges.cpp` retains copy
+snapshots, and the cleanup/fill files recognize and apply complete traversals.
+Scalar writes freeze index/count dependencies under bounded source-site
+identities. Unsupported generations and compositions retain explicit coverage
+information. Snapshots are analysis temporaries, not extra resource owners.
+
+Summary paths encode selected constants and entry-parameter selectors. Final
+`array-copy` records carry storage paths, offsets, count, element size/view
+and guards; ordinary final cell postconditions take precedence. `array-fill`
+and `array-release` encode proved zero-based initialization and contiguous
+cleanup. Formats are deterministic and validated in Core, and global remapping
+visits every path, affine operand and guard. Returned ranges are captured
+before call effects and attached when the result obtains its destination.
+The normal function/program fixpoints compare these facts with the rest of
+the summary; compiler sidecars use the same format and inference.
 
 ## Diagnostics contract
 

@@ -23,6 +23,7 @@
 #define WEAVEC_CORE_ANALYSISSTATE_H
 
 #include "weavec/Core/AliasRelation.h"
+#include "weavec/Core/Array.h"
 #include "weavec/Core/Borrow.h"
 #include "weavec/Core/Moves.h"
 #include "weavec/Core/Nullness.h"
@@ -43,6 +44,43 @@
 #include <vector>
 
 namespace weavec::core {
+
+/// RFC 0015: sparse, simultaneous range contents. Snapshots use ordinary
+/// places and all their state domains. Captured and materialized sets are
+/// must-facts; joins retain possible temporal evidence in those places.
+struct ArrayRange {
+  PlaceId destination;
+  PlaceId source;
+  PlaceId snapshot;
+  ArraySpan span;
+  ArrayIndex sourceBegin;
+  std::set<ArrayIndex> captured;
+  std::set<ArrayIndex> materialized;
+  std::optional<ArrayCopy> exported;
+  bool definite = true;
+  bool sourceLive = true;
+  friend bool operator==(const ArrayRange &, const ArrayRange &) = default;
+};
+
+struct ReleasedArrayRange {
+  PlaceId storage;
+  ArraySpan span;
+  std::set<ArrayIndex> materialized;
+  bool cleared = false;
+  bool definite = true;
+  friend bool operator==(const ReleasedArrayRange &,
+                         const ReleasedArrayRange &) = default;
+};
+
+struct FilledArrayRange {
+  PlaceId storage;
+  Affine count;
+  std::optional<std::int64_t> bytes;
+  std::set<ArrayIndex> materialized;
+  bool definite = true;
+  friend bool operator==(const FilledArrayRange &,
+                         const FilledArrayRange &) = default;
+};
 
 /// The consumption a call performed that depends on its result (RFC 0006,
 /// *Pending outcomes*): for each outcome class the callee may produce, the
@@ -232,6 +270,9 @@ struct AnalysisState {
   std::set<PlaceId> heapLocalObjects;
   /// RFC 0013: roots whose heap projection lost facts at a bound.
   std::set<PlaceId> incompleteHeap;
+  std::map<PlaceId, ArrayRange> arrayRanges;
+  std::map<PlaceId, ReleasedArrayRange> releasedArrayRanges;
+  std::map<PlaceId, FilledArrayRange> filledArrayRanges;
 
   /// Component-wise join with the state of another incoming edge. Returns
   /// whether this state changed, so the fixpoint engine need not copy and

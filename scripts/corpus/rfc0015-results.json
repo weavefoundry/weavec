@@ -1,0 +1,2987 @@
+{
+  "date": "2026-09-07",
+  "baseline_revision": "cafee09054b59b8549b4fb49150715cd6b4d899e",
+  "implementation": "RFC 0015 working tree",
+  "environment": "macOS arm64; LLVM/Clang 23.1.0; CMake Release (-O3 -DNDEBUG)",
+  "measurement": "Sequential before/after runs at identical pinned revisions, after builds and test suites completed. 600-second limit for both revisions. Per-checker child resource accounting. Single observations, not statistical performance guarantees.",
+  "tests": {
+    "ctest_debug": 699,
+    "ctest_asan_ubsan": 699,
+    "lit": 89,
+    "new_array_analysis_tests": 49,
+    "new_array_core_tests": 12,
+    "new_sidecar_tests": 1,
+    "recall_detected": 67,
+    "recall_bugs": 67,
+    "recall_sources": 33,
+    "recall_unexpected_reports": 0
+  },
+  "evaluation": {
+    "before": {
+      "filtered": null,
+      "summary": {
+        "cases": 52,
+        "bugs": 32,
+        "detected": 18,
+        "missed": 14,
+        "required_misses": 12,
+        "unexpected_reports": 20,
+        "parse_failures": 0,
+        "tool_failures": 0,
+        "timeouts": 0,
+        "clean_good_cases": 14,
+        "good_cases": 20
+      },
+      "cases": [
+        {
+          "name": "inline-overflow",
+          "bugs": 1,
+          "detected": [
+            "overflow"
+          ],
+          "missed": [],
+          "required_misses": [],
+          "unexpected": [],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 1,
+          "ok": true,
+          "seconds": 0.0869
+        },
+        {
+          "name": "inline-leak",
+          "bugs": 1,
+          "detected": [
+            "leak"
+          ],
+          "missed": [],
+          "required_misses": [],
+          "unexpected": [],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 0,
+          "ok": true,
+          "seconds": 0.0754
+        },
+        {
+          "name": "inline-alias",
+          "bugs": 1,
+          "detected": [
+            "alias"
+          ],
+          "missed": [],
+          "required_misses": [],
+          "unexpected": [],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 1,
+          "ok": true,
+          "seconds": 0.0774
+        },
+        {
+          "name": "inline-good",
+          "bugs": 0,
+          "detected": [],
+          "missed": [],
+          "required_misses": [],
+          "unexpected": [],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 0,
+          "ok": true,
+          "seconds": 0.0693
+        },
+        {
+          "name": "helper-overflow",
+          "bugs": 1,
+          "detected": [
+            "overflow"
+          ],
+          "missed": [],
+          "required_misses": [],
+          "unexpected": [],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 1,
+          "ok": true,
+          "seconds": 0.0694
+        },
+        {
+          "name": "helper-leak",
+          "bugs": 1,
+          "detected": [
+            "leak"
+          ],
+          "missed": [],
+          "required_misses": [],
+          "unexpected": [],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 0,
+          "ok": true,
+          "seconds": 0.0714
+        },
+        {
+          "name": "helper-alias",
+          "bugs": 1,
+          "detected": [
+            "alias"
+          ],
+          "missed": [],
+          "required_misses": [],
+          "unexpected": [],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 1,
+          "ok": true,
+          "seconds": 0.0663
+        },
+        {
+          "name": "helper-good",
+          "bugs": 0,
+          "detected": [],
+          "missed": [],
+          "required_misses": [],
+          "unexpected": [],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 0,
+          "ok": true,
+          "seconds": 0.0704
+        },
+        {
+          "name": "whole-program-overflow",
+          "bugs": 1,
+          "detected": [
+            "overflow"
+          ],
+          "missed": [],
+          "required_misses": [],
+          "unexpected": [],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 1,
+          "ok": true,
+          "seconds": 0.0802
+        },
+        {
+          "name": "whole-program-leak",
+          "bugs": 1,
+          "detected": [
+            "leak"
+          ],
+          "missed": [],
+          "required_misses": [],
+          "unexpected": [],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 0,
+          "ok": true,
+          "seconds": 0.0778
+        },
+        {
+          "name": "whole-program-alias",
+          "bugs": 1,
+          "detected": [
+            "alias"
+          ],
+          "missed": [],
+          "required_misses": [],
+          "unexpected": [],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 1,
+          "ok": true,
+          "seconds": 0.0744
+        },
+        {
+          "name": "whole-program-good",
+          "bugs": 0,
+          "detected": [],
+          "missed": [],
+          "required_misses": [],
+          "unexpected": [],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 0,
+          "ok": true,
+          "seconds": 0.079
+        },
+        {
+          "name": "value-snapshot",
+          "bugs": 1,
+          "detected": [
+            "value-snapshot"
+          ],
+          "missed": [],
+          "required_misses": [],
+          "unexpected": [],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 1,
+          "ok": true,
+          "seconds": 0.0707
+        },
+        {
+          "name": "symbolic-snapshot",
+          "bugs": 1,
+          "detected": [
+            "symbolic-snapshot"
+          ],
+          "missed": [],
+          "required_misses": [],
+          "unexpected": [],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 1,
+          "ok": true,
+          "seconds": 0.0702
+        },
+        {
+          "name": "output-size",
+          "bugs": 1,
+          "detected": [
+            "output-size"
+          ],
+          "missed": [],
+          "required_misses": [],
+          "unexpected": [],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 1,
+          "ok": true,
+          "seconds": 0.0744
+        },
+        {
+          "name": "shared-child",
+          "bugs": 1,
+          "detected": [
+            "shared-child"
+          ],
+          "missed": [],
+          "required_misses": [],
+          "unexpected": [],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 1,
+          "ok": true,
+          "seconds": 0.0809
+        },
+        {
+          "name": "string-field",
+          "bugs": 1,
+          "detected": [
+            "string-field"
+          ],
+          "missed": [],
+          "required_misses": [],
+          "unexpected": [],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 1,
+          "ok": true,
+          "seconds": 0.0792
+        },
+        {
+          "name": "product-known-miss",
+          "bugs": 1,
+          "detected": [],
+          "missed": [
+            "product-known-miss"
+          ],
+          "required_misses": [],
+          "unexpected": [],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 0,
+          "ok": true,
+          "seconds": 0.0688
+        },
+        {
+          "name": "vla-known-miss",
+          "bugs": 1,
+          "detected": [],
+          "missed": [
+            "vla-known-miss"
+          ],
+          "required_misses": [],
+          "unexpected": [],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 0,
+          "ok": true,
+          "seconds": 0.0706
+        },
+        {
+          "name": "snapshot-good",
+          "bugs": 0,
+          "detected": [],
+          "missed": [],
+          "required_misses": [],
+          "unexpected": [],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 0,
+          "ok": true,
+          "seconds": 0.0723
+        },
+        {
+          "name": "rfc0014-callback-bug",
+          "bugs": 1,
+          "detected": [
+            "callback"
+          ],
+          "missed": [],
+          "required_misses": [],
+          "unexpected": [],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 1,
+          "ok": true,
+          "seconds": 0.0826
+        },
+        {
+          "name": "rfc0014-callback-good",
+          "bugs": 0,
+          "detected": [],
+          "missed": [],
+          "required_misses": [],
+          "unexpected": [],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 0,
+          "ok": true,
+          "seconds": 0.0827
+        },
+        {
+          "name": "rfc0014-copied-pointer-bug",
+          "bugs": 1,
+          "detected": [
+            "copied-pointer"
+          ],
+          "missed": [],
+          "required_misses": [],
+          "unexpected": [],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 1,
+          "ok": true,
+          "seconds": 0.0896
+        },
+        {
+          "name": "rfc0014-copied-pointer-good",
+          "bugs": 0,
+          "detected": [],
+          "missed": [],
+          "required_misses": [],
+          "unexpected": [],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 0,
+          "ok": true,
+          "seconds": 0.0807
+        },
+        {
+          "name": "rfc0014-pointer-guard-bug",
+          "bugs": 1,
+          "detected": [
+            "pointer-guard"
+          ],
+          "missed": [],
+          "required_misses": [],
+          "unexpected": [],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 1,
+          "ok": true,
+          "seconds": 0.0905
+        },
+        {
+          "name": "rfc0014-pointer-guard-good",
+          "bugs": 0,
+          "detected": [],
+          "missed": [],
+          "required_misses": [],
+          "unexpected": [],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 0,
+          "ok": true,
+          "seconds": 0.0837
+        },
+        {
+          "name": "rfc0014-whole-callback-bug",
+          "bugs": 1,
+          "detected": [
+            "whole-callback"
+          ],
+          "missed": [],
+          "required_misses": [],
+          "unexpected": [],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 1,
+          "ok": true,
+          "seconds": 0.1569
+        },
+        {
+          "name": "rfc0014-whole-callback-good",
+          "bugs": 0,
+          "detected": [],
+          "missed": [],
+          "required_misses": [],
+          "unexpected": [],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 0,
+          "ok": true,
+          "seconds": 0.1491
+        },
+        {
+          "name": "array-history-bug",
+          "bugs": 1,
+          "detected": [],
+          "missed": [
+            "array-history"
+          ],
+          "required_misses": [
+            "array-history"
+          ],
+          "unexpected": [],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 0,
+          "ok": false,
+          "seconds": 0.07
+        },
+        {
+          "name": "array-history-good",
+          "bugs": 0,
+          "detected": [],
+          "missed": [],
+          "required_misses": [],
+          "unexpected": [],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 0,
+          "ok": true,
+          "seconds": 0.0675
+        },
+        {
+          "name": "array-index-bug",
+          "bugs": 1,
+          "detected": [],
+          "missed": [
+            "array-index"
+          ],
+          "required_misses": [
+            "array-index"
+          ],
+          "unexpected": [],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 0,
+          "ok": false,
+          "seconds": 0.0752
+        },
+        {
+          "name": "array-index-good",
+          "bugs": 0,
+          "detected": [],
+          "missed": [],
+          "required_misses": [],
+          "unexpected": [],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 0,
+          "ok": true,
+          "seconds": 0.071
+        },
+        {
+          "name": "array-copy-bug",
+          "bugs": 1,
+          "detected": [],
+          "missed": [
+            "array-copy"
+          ],
+          "required_misses": [
+            "array-copy"
+          ],
+          "unexpected": [
+            {
+              "file": "test/evaluation/rfc0015-array-copy-bug.c",
+              "line": 5,
+              "column": 34,
+              "severity": "warning",
+              "diagnostic": "analysis-incomplete",
+              "message": "analysis is incomplete: unsupported memory copy of pointer-containing storage"
+            }
+          ],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 0,
+          "ok": false,
+          "seconds": 0.0774
+        },
+        {
+          "name": "array-copy-good",
+          "bugs": 0,
+          "detected": [],
+          "missed": [],
+          "required_misses": [],
+          "unexpected": [
+            {
+              "file": "test/evaluation/rfc0015-array-copy-good.c",
+              "line": 5,
+              "column": 34,
+              "severity": "warning",
+              "diagnostic": "analysis-incomplete",
+              "message": "analysis is incomplete: unsupported memory copy of pointer-containing storage"
+            }
+          ],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 0,
+          "ok": false,
+          "seconds": 0.0713
+        },
+        {
+          "name": "array-symbolic-bug",
+          "bugs": 1,
+          "detected": [],
+          "missed": [
+            "array-symbolic"
+          ],
+          "required_misses": [
+            "array-symbolic"
+          ],
+          "unexpected": [
+            {
+              "file": "test/evaluation/rfc0015-array-symbolic-bug.c",
+              "line": 5,
+              "column": 58,
+              "severity": "warning",
+              "diagnostic": "analysis-incomplete",
+              "message": "analysis is incomplete: unsupported memory copy of pointer-containing storage"
+            }
+          ],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 0,
+          "ok": false,
+          "seconds": 0.0724
+        },
+        {
+          "name": "array-symbolic-good",
+          "bugs": 0,
+          "detected": [],
+          "missed": [],
+          "required_misses": [],
+          "unexpected": [
+            {
+              "file": "test/evaluation/rfc0015-array-symbolic-good.c",
+              "line": 5,
+              "column": 58,
+              "severity": "warning",
+              "diagnostic": "analysis-incomplete",
+              "message": "analysis is incomplete: unsupported memory copy of pointer-containing storage"
+            }
+          ],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 0,
+          "ok": false,
+          "seconds": 0.0739
+        },
+        {
+          "name": "array-memmove-bug",
+          "bugs": 1,
+          "detected": [],
+          "missed": [
+            "array-memmove"
+          ],
+          "required_misses": [
+            "array-memmove"
+          ],
+          "unexpected": [
+            {
+              "file": "test/evaluation/rfc0015-array-memmove-bug.c",
+              "line": 5,
+              "column": 38,
+              "severity": "warning",
+              "diagnostic": "analysis-incomplete",
+              "message": "analysis is incomplete: unsupported memory copy of pointer-containing storage"
+            }
+          ],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 0,
+          "ok": false,
+          "seconds": 0.0732
+        },
+        {
+          "name": "array-memmove-good",
+          "bugs": 0,
+          "detected": [],
+          "missed": [],
+          "required_misses": [],
+          "unexpected": [
+            {
+              "file": "test/evaluation/rfc0015-array-memmove-good.c",
+              "line": 5,
+              "column": 38,
+              "severity": "warning",
+              "diagnostic": "analysis-incomplete",
+              "message": "analysis is incomplete: unsupported memory copy of pointer-containing storage"
+            }
+          ],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 0,
+          "ok": false,
+          "seconds": 0.0743
+        },
+        {
+          "name": "array-record-bug",
+          "bugs": 1,
+          "detected": [],
+          "missed": [
+            "array-record"
+          ],
+          "required_misses": [
+            "array-record"
+          ],
+          "unexpected": [
+            {
+              "file": "test/evaluation/rfc0015-array-record-bug.c",
+              "line": 6,
+              "column": 44,
+              "severity": "warning",
+              "diagnostic": "analysis-incomplete",
+              "message": "analysis is incomplete: unsupported memory copy of pointer-containing storage"
+            }
+          ],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 0,
+          "ok": false,
+          "seconds": 0.0703
+        },
+        {
+          "name": "array-record-good",
+          "bugs": 0,
+          "detected": [],
+          "missed": [],
+          "required_misses": [],
+          "unexpected": [
+            {
+              "file": "test/evaluation/rfc0015-array-record-good.c",
+              "line": 6,
+              "column": 44,
+              "severity": "warning",
+              "diagnostic": "analysis-incomplete",
+              "message": "analysis is incomplete: unsupported memory copy of pointer-containing storage"
+            }
+          ],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 0,
+          "ok": false,
+          "seconds": 0.0714
+        },
+        {
+          "name": "array-cleanup-bug",
+          "bugs": 1,
+          "detected": [],
+          "missed": [
+            "array-cleanup"
+          ],
+          "required_misses": [
+            "array-cleanup"
+          ],
+          "unexpected": [],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 0,
+          "ok": false,
+          "seconds": 0.0691
+        },
+        {
+          "name": "array-cleanup-good",
+          "bugs": 0,
+          "detected": [],
+          "missed": [],
+          "required_misses": [],
+          "unexpected": [],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 0,
+          "ok": true,
+          "seconds": 0.0714
+        },
+        {
+          "name": "array-fill-bug",
+          "bugs": 1,
+          "detected": [],
+          "missed": [
+            "array-fill"
+          ],
+          "required_misses": [
+            "array-fill"
+          ],
+          "unexpected": [],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 0,
+          "ok": false,
+          "seconds": 0.0708
+        },
+        {
+          "name": "array-fill-good",
+          "bugs": 0,
+          "detected": [],
+          "missed": [],
+          "required_misses": [],
+          "unexpected": [],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 0,
+          "ok": true,
+          "seconds": 0.0687
+        },
+        {
+          "name": "array-initialization-bug",
+          "bugs": 1,
+          "detected": [],
+          "missed": [
+            "array-initialization"
+          ],
+          "required_misses": [
+            "array-initialization"
+          ],
+          "unexpected": [],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 0,
+          "ok": false,
+          "seconds": 0.0678
+        },
+        {
+          "name": "array-initialization-good",
+          "bugs": 0,
+          "detected": [],
+          "missed": [],
+          "required_misses": [],
+          "unexpected": [],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 0,
+          "ok": true,
+          "seconds": 0.0721
+        },
+        {
+          "name": "array-returned-bug",
+          "bugs": 1,
+          "detected": [],
+          "missed": [
+            "array-returned"
+          ],
+          "required_misses": [
+            "array-returned"
+          ],
+          "unexpected": [
+            {
+              "file": "test/WholeProgram/Inputs/array15.c",
+              "line": 6,
+              "column": 51,
+              "severity": "warning",
+              "diagnostic": "analysis-incomplete",
+              "message": "analysis is incomplete: unsupported memory copy of pointer-containing storage"
+            },
+            {
+              "file": "test/WholeProgram/Inputs/array15.c",
+              "line": 7,
+              "column": 34,
+              "severity": "warning",
+              "diagnostic": "analysis-incomplete",
+              "message": "analysis is incomplete: unsupported memory copy of pointer-containing storage"
+            },
+            {
+              "file": "test/WholeProgram/Inputs/array15.c",
+              "line": 10,
+              "column": 3,
+              "severity": "warning",
+              "diagnostic": "analysis-incomplete",
+              "message": "analysis is incomplete: unsupported memory copy of pointer-containing storage"
+            }
+          ],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 0,
+          "ok": false,
+          "seconds": 0.0827
+        },
+        {
+          "name": "array-returned-good",
+          "bugs": 0,
+          "detected": [],
+          "missed": [],
+          "required_misses": [],
+          "unexpected": [
+            {
+              "file": "test/WholeProgram/Inputs/array15.c",
+              "line": 6,
+              "column": 51,
+              "severity": "warning",
+              "diagnostic": "analysis-incomplete",
+              "message": "analysis is incomplete: unsupported memory copy of pointer-containing storage"
+            },
+            {
+              "file": "test/WholeProgram/Inputs/array15.c",
+              "line": 7,
+              "column": 34,
+              "severity": "warning",
+              "diagnostic": "analysis-incomplete",
+              "message": "analysis is incomplete: unsupported memory copy of pointer-containing storage"
+            },
+            {
+              "file": "test/WholeProgram/Inputs/array15.c",
+              "line": 10,
+              "column": 3,
+              "severity": "warning",
+              "diagnostic": "analysis-incomplete",
+              "message": "analysis is incomplete: unsupported memory copy of pointer-containing storage"
+            }
+          ],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 0,
+          "ok": false,
+          "seconds": 0.0796
+        },
+        {
+          "name": "array-compacted-bug",
+          "bugs": 1,
+          "detected": [],
+          "missed": [
+            "array-compacted"
+          ],
+          "required_misses": [
+            "array-compacted"
+          ],
+          "unexpected": [
+            {
+              "file": "test/WholeProgram/Inputs/array15.c",
+              "line": 6,
+              "column": 51,
+              "severity": "warning",
+              "diagnostic": "analysis-incomplete",
+              "message": "analysis is incomplete: unsupported memory copy of pointer-containing storage"
+            },
+            {
+              "file": "test/WholeProgram/Inputs/array15.c",
+              "line": 7,
+              "column": 34,
+              "severity": "warning",
+              "diagnostic": "analysis-incomplete",
+              "message": "analysis is incomplete: unsupported memory copy of pointer-containing storage"
+            },
+            {
+              "file": "test/WholeProgram/Inputs/array15.c",
+              "line": 10,
+              "column": 3,
+              "severity": "warning",
+              "diagnostic": "analysis-incomplete",
+              "message": "analysis is incomplete: unsupported memory copy of pointer-containing storage"
+            }
+          ],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 0,
+          "ok": false,
+          "seconds": 0.0832
+        },
+        {
+          "name": "array-compacted-good",
+          "bugs": 0,
+          "detected": [],
+          "missed": [],
+          "required_misses": [],
+          "unexpected": [
+            {
+              "file": "test/WholeProgram/Inputs/array15.c",
+              "line": 6,
+              "column": 51,
+              "severity": "warning",
+              "diagnostic": "analysis-incomplete",
+              "message": "analysis is incomplete: unsupported memory copy of pointer-containing storage"
+            },
+            {
+              "file": "test/WholeProgram/Inputs/array15.c",
+              "line": 7,
+              "column": 34,
+              "severity": "warning",
+              "diagnostic": "analysis-incomplete",
+              "message": "analysis is incomplete: unsupported memory copy of pointer-containing storage"
+            },
+            {
+              "file": "test/WholeProgram/Inputs/array15.c",
+              "line": 10,
+              "column": 3,
+              "severity": "warning",
+              "diagnostic": "analysis-incomplete",
+              "message": "analysis is incomplete: unsupported memory copy of pointer-containing storage"
+            }
+          ],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 0,
+          "ok": false,
+          "seconds": 0.0812
+        },
+        {
+          "name": "array-resized-bug",
+          "bugs": 1,
+          "detected": [],
+          "missed": [
+            "array-resized"
+          ],
+          "required_misses": [
+            "array-resized"
+          ],
+          "unexpected": [],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 0,
+          "ok": false,
+          "seconds": 0.0706
+        },
+        {
+          "name": "array-resized-good",
+          "bugs": 0,
+          "detected": [],
+          "missed": [],
+          "required_misses": [],
+          "unexpected": [],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 0,
+          "ok": true,
+          "seconds": 0.0731
+        }
+      ]
+    },
+    "after": {
+      "filtered": null,
+      "summary": {
+        "cases": 52,
+        "bugs": 32,
+        "detected": 30,
+        "missed": 2,
+        "required_misses": 0,
+        "unexpected_reports": 0,
+        "parse_failures": 0,
+        "tool_failures": 0,
+        "timeouts": 0,
+        "clean_good_cases": 20,
+        "good_cases": 20
+      },
+      "cases": [
+        {
+          "name": "inline-overflow",
+          "bugs": 1,
+          "detected": [
+            "overflow"
+          ],
+          "missed": [],
+          "required_misses": [],
+          "unexpected": [],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 1,
+          "ok": true,
+          "seconds": 0.4602
+        },
+        {
+          "name": "inline-leak",
+          "bugs": 1,
+          "detected": [
+            "leak"
+          ],
+          "missed": [],
+          "required_misses": [],
+          "unexpected": [],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 0,
+          "ok": true,
+          "seconds": 0.1148
+        },
+        {
+          "name": "inline-alias",
+          "bugs": 1,
+          "detected": [
+            "alias"
+          ],
+          "missed": [],
+          "required_misses": [],
+          "unexpected": [],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 1,
+          "ok": true,
+          "seconds": 0.1452
+        },
+        {
+          "name": "inline-good",
+          "bugs": 0,
+          "detected": [],
+          "missed": [],
+          "required_misses": [],
+          "unexpected": [],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 0,
+          "ok": true,
+          "seconds": 0.0812
+        },
+        {
+          "name": "helper-overflow",
+          "bugs": 1,
+          "detected": [
+            "overflow"
+          ],
+          "missed": [],
+          "required_misses": [],
+          "unexpected": [],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 1,
+          "ok": true,
+          "seconds": 0.0936
+        },
+        {
+          "name": "helper-leak",
+          "bugs": 1,
+          "detected": [
+            "leak"
+          ],
+          "missed": [],
+          "required_misses": [],
+          "unexpected": [],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 0,
+          "ok": true,
+          "seconds": 0.1404
+        },
+        {
+          "name": "helper-alias",
+          "bugs": 1,
+          "detected": [
+            "alias"
+          ],
+          "missed": [],
+          "required_misses": [],
+          "unexpected": [],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 1,
+          "ok": true,
+          "seconds": 0.1015
+        },
+        {
+          "name": "helper-good",
+          "bugs": 0,
+          "detected": [],
+          "missed": [],
+          "required_misses": [],
+          "unexpected": [],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 0,
+          "ok": true,
+          "seconds": 0.1614
+        },
+        {
+          "name": "whole-program-overflow",
+          "bugs": 1,
+          "detected": [
+            "overflow"
+          ],
+          "missed": [],
+          "required_misses": [],
+          "unexpected": [],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 1,
+          "ok": true,
+          "seconds": 0.0769
+        },
+        {
+          "name": "whole-program-leak",
+          "bugs": 1,
+          "detected": [
+            "leak"
+          ],
+          "missed": [],
+          "required_misses": [],
+          "unexpected": [],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 0,
+          "ok": true,
+          "seconds": 0.0882
+        },
+        {
+          "name": "whole-program-alias",
+          "bugs": 1,
+          "detected": [
+            "alias"
+          ],
+          "missed": [],
+          "required_misses": [],
+          "unexpected": [],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 1,
+          "ok": true,
+          "seconds": 0.1363
+        },
+        {
+          "name": "whole-program-good",
+          "bugs": 0,
+          "detected": [],
+          "missed": [],
+          "required_misses": [],
+          "unexpected": [],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 0,
+          "ok": true,
+          "seconds": 0.0888
+        },
+        {
+          "name": "value-snapshot",
+          "bugs": 1,
+          "detected": [
+            "value-snapshot"
+          ],
+          "missed": [],
+          "required_misses": [],
+          "unexpected": [],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 1,
+          "ok": true,
+          "seconds": 0.0688
+        },
+        {
+          "name": "symbolic-snapshot",
+          "bugs": 1,
+          "detected": [
+            "symbolic-snapshot"
+          ],
+          "missed": [],
+          "required_misses": [],
+          "unexpected": [],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 1,
+          "ok": true,
+          "seconds": 0.1347
+        },
+        {
+          "name": "output-size",
+          "bugs": 1,
+          "detected": [
+            "output-size"
+          ],
+          "missed": [],
+          "required_misses": [],
+          "unexpected": [],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 1,
+          "ok": true,
+          "seconds": 0.1383
+        },
+        {
+          "name": "shared-child",
+          "bugs": 1,
+          "detected": [
+            "shared-child"
+          ],
+          "missed": [],
+          "required_misses": [],
+          "unexpected": [],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 1,
+          "ok": true,
+          "seconds": 0.0877
+        },
+        {
+          "name": "string-field",
+          "bugs": 1,
+          "detected": [
+            "string-field"
+          ],
+          "missed": [],
+          "required_misses": [],
+          "unexpected": [],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 1,
+          "ok": true,
+          "seconds": 0.1082
+        },
+        {
+          "name": "product-known-miss",
+          "bugs": 1,
+          "detected": [],
+          "missed": [
+            "product-known-miss"
+          ],
+          "required_misses": [],
+          "unexpected": [],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 0,
+          "ok": true,
+          "seconds": 0.1295
+        },
+        {
+          "name": "vla-known-miss",
+          "bugs": 1,
+          "detected": [],
+          "missed": [
+            "vla-known-miss"
+          ],
+          "required_misses": [],
+          "unexpected": [],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 0,
+          "ok": true,
+          "seconds": 0.096
+        },
+        {
+          "name": "snapshot-good",
+          "bugs": 0,
+          "detected": [],
+          "missed": [],
+          "required_misses": [],
+          "unexpected": [],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 0,
+          "ok": true,
+          "seconds": 0.0671
+        },
+        {
+          "name": "rfc0014-callback-bug",
+          "bugs": 1,
+          "detected": [
+            "callback"
+          ],
+          "missed": [],
+          "required_misses": [],
+          "unexpected": [],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 1,
+          "ok": true,
+          "seconds": 0.1574
+        },
+        {
+          "name": "rfc0014-callback-good",
+          "bugs": 0,
+          "detected": [],
+          "missed": [],
+          "required_misses": [],
+          "unexpected": [],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 0,
+          "ok": true,
+          "seconds": 0.169
+        },
+        {
+          "name": "rfc0014-copied-pointer-bug",
+          "bugs": 1,
+          "detected": [
+            "copied-pointer"
+          ],
+          "missed": [],
+          "required_misses": [],
+          "unexpected": [],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 1,
+          "ok": true,
+          "seconds": 0.1504
+        },
+        {
+          "name": "rfc0014-copied-pointer-good",
+          "bugs": 0,
+          "detected": [],
+          "missed": [],
+          "required_misses": [],
+          "unexpected": [],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 0,
+          "ok": true,
+          "seconds": 0.1145
+        },
+        {
+          "name": "rfc0014-pointer-guard-bug",
+          "bugs": 1,
+          "detected": [
+            "pointer-guard"
+          ],
+          "missed": [],
+          "required_misses": [],
+          "unexpected": [],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 1,
+          "ok": true,
+          "seconds": 0.1818
+        },
+        {
+          "name": "rfc0014-pointer-guard-good",
+          "bugs": 0,
+          "detected": [],
+          "missed": [],
+          "required_misses": [],
+          "unexpected": [],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 0,
+          "ok": true,
+          "seconds": 0.0788
+        },
+        {
+          "name": "rfc0014-whole-callback-bug",
+          "bugs": 1,
+          "detected": [
+            "whole-callback"
+          ],
+          "missed": [],
+          "required_misses": [],
+          "unexpected": [],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 1,
+          "ok": true,
+          "seconds": 0.2295
+        },
+        {
+          "name": "rfc0014-whole-callback-good",
+          "bugs": 0,
+          "detected": [],
+          "missed": [],
+          "required_misses": [],
+          "unexpected": [],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 0,
+          "ok": true,
+          "seconds": 0.2013
+        },
+        {
+          "name": "array-history-bug",
+          "bugs": 1,
+          "detected": [
+            "array-history"
+          ],
+          "missed": [],
+          "required_misses": [],
+          "unexpected": [],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 1,
+          "ok": true,
+          "seconds": 0.0974
+        },
+        {
+          "name": "array-history-good",
+          "bugs": 0,
+          "detected": [],
+          "missed": [],
+          "required_misses": [],
+          "unexpected": [],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 0,
+          "ok": true,
+          "seconds": 0.0786
+        },
+        {
+          "name": "array-index-bug",
+          "bugs": 1,
+          "detected": [
+            "array-index"
+          ],
+          "missed": [],
+          "required_misses": [],
+          "unexpected": [],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 1,
+          "ok": true,
+          "seconds": 0.146
+        },
+        {
+          "name": "array-index-good",
+          "bugs": 0,
+          "detected": [],
+          "missed": [],
+          "required_misses": [],
+          "unexpected": [],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 0,
+          "ok": true,
+          "seconds": 0.0882
+        },
+        {
+          "name": "array-copy-bug",
+          "bugs": 1,
+          "detected": [
+            "array-copy"
+          ],
+          "missed": [],
+          "required_misses": [],
+          "unexpected": [],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 1,
+          "ok": true,
+          "seconds": 0.0921
+        },
+        {
+          "name": "array-copy-good",
+          "bugs": 0,
+          "detected": [],
+          "missed": [],
+          "required_misses": [],
+          "unexpected": [],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 0,
+          "ok": true,
+          "seconds": 0.116
+        },
+        {
+          "name": "array-symbolic-bug",
+          "bugs": 1,
+          "detected": [
+            "array-symbolic"
+          ],
+          "missed": [],
+          "required_misses": [],
+          "unexpected": [],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 1,
+          "ok": true,
+          "seconds": 0.0605
+        },
+        {
+          "name": "array-symbolic-good",
+          "bugs": 0,
+          "detected": [],
+          "missed": [],
+          "required_misses": [],
+          "unexpected": [],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 0,
+          "ok": true,
+          "seconds": 0.0859
+        },
+        {
+          "name": "array-memmove-bug",
+          "bugs": 1,
+          "detected": [
+            "array-memmove"
+          ],
+          "missed": [],
+          "required_misses": [],
+          "unexpected": [],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 1,
+          "ok": true,
+          "seconds": 0.1111
+        },
+        {
+          "name": "array-memmove-good",
+          "bugs": 0,
+          "detected": [],
+          "missed": [],
+          "required_misses": [],
+          "unexpected": [],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 0,
+          "ok": true,
+          "seconds": 0.1401
+        },
+        {
+          "name": "array-record-bug",
+          "bugs": 1,
+          "detected": [
+            "array-record"
+          ],
+          "missed": [],
+          "required_misses": [],
+          "unexpected": [],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 1,
+          "ok": true,
+          "seconds": 0.0979
+        },
+        {
+          "name": "array-record-good",
+          "bugs": 0,
+          "detected": [],
+          "missed": [],
+          "required_misses": [],
+          "unexpected": [],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 0,
+          "ok": true,
+          "seconds": 0.0669
+        },
+        {
+          "name": "array-cleanup-bug",
+          "bugs": 1,
+          "detected": [
+            "array-cleanup"
+          ],
+          "missed": [],
+          "required_misses": [],
+          "unexpected": [],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 1,
+          "ok": true,
+          "seconds": 0.1129
+        },
+        {
+          "name": "array-cleanup-good",
+          "bugs": 0,
+          "detected": [],
+          "missed": [],
+          "required_misses": [],
+          "unexpected": [],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 0,
+          "ok": true,
+          "seconds": 0.0859
+        },
+        {
+          "name": "array-fill-bug",
+          "bugs": 1,
+          "detected": [
+            "array-fill"
+          ],
+          "missed": [],
+          "required_misses": [],
+          "unexpected": [],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 1,
+          "ok": true,
+          "seconds": 0.0639
+        },
+        {
+          "name": "array-fill-good",
+          "bugs": 0,
+          "detected": [],
+          "missed": [],
+          "required_misses": [],
+          "unexpected": [],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 0,
+          "ok": true,
+          "seconds": 0.1052
+        },
+        {
+          "name": "array-initialization-bug",
+          "bugs": 1,
+          "detected": [
+            "array-initialization"
+          ],
+          "missed": [],
+          "required_misses": [],
+          "unexpected": [],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 1,
+          "ok": true,
+          "seconds": 0.1139
+        },
+        {
+          "name": "array-initialization-good",
+          "bugs": 0,
+          "detected": [],
+          "missed": [],
+          "required_misses": [],
+          "unexpected": [],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 0,
+          "ok": true,
+          "seconds": 0.0987
+        },
+        {
+          "name": "array-returned-bug",
+          "bugs": 1,
+          "detected": [
+            "array-returned"
+          ],
+          "missed": [],
+          "required_misses": [],
+          "unexpected": [],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 1,
+          "ok": true,
+          "seconds": 0.1021
+        },
+        {
+          "name": "array-returned-good",
+          "bugs": 0,
+          "detected": [],
+          "missed": [],
+          "required_misses": [],
+          "unexpected": [],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 0,
+          "ok": true,
+          "seconds": 0.0908
+        },
+        {
+          "name": "array-compacted-bug",
+          "bugs": 1,
+          "detected": [
+            "array-compacted"
+          ],
+          "missed": [],
+          "required_misses": [],
+          "unexpected": [],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 1,
+          "ok": true,
+          "seconds": 0.0795
+        },
+        {
+          "name": "array-compacted-good",
+          "bugs": 0,
+          "detected": [],
+          "missed": [],
+          "required_misses": [],
+          "unexpected": [],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 0,
+          "ok": true,
+          "seconds": 0.0762
+        },
+        {
+          "name": "array-resized-bug",
+          "bugs": 1,
+          "detected": [
+            "array-resized"
+          ],
+          "missed": [],
+          "required_misses": [],
+          "unexpected": [],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 1,
+          "ok": true,
+          "seconds": 0.0866
+        },
+        {
+          "name": "array-resized-good",
+          "bugs": 0,
+          "detected": [],
+          "missed": [],
+          "required_misses": [],
+          "unexpected": [],
+          "parse_errors": [],
+          "tool_failure": false,
+          "timeout": false,
+          "returncode": 0,
+          "ok": true,
+          "seconds": 0.1077
+        }
+      ]
+    }
+  },
+  "projects": {
+    "log.c": {
+      "revision": "f9ea34994bd58ed342d2245cd4110bb5c6790153",
+      "before": {
+        "units": 1,
+        "seconds": 0.095,
+        "clang_errors": 0,
+        "failures": 0,
+        "peak_rss_bytes": 49037312,
+        "by_id": {
+          "annotation-required": 2
+        }
+      },
+      "after": {
+        "units": 1,
+        "seconds": 0.091,
+        "clang_errors": 0,
+        "failures": 0,
+        "peak_rss_bytes": 49020928,
+        "by_id": {
+          "annotation-required": 2
+        }
+      },
+      "diagnostic_changes": {
+        "removed": [],
+        "added": []
+      }
+    },
+    "cJSON-program": {
+      "revision": "fb16e5cf358798aabb049655975cde8427101056",
+      "before": {
+        "units": 1,
+        "seconds": 0.449,
+        "clang_errors": 0,
+        "failures": 0,
+        "peak_rss_bytes": 56360960,
+        "by_id": {
+          "annotation-required": 3,
+          "null-dereference": 30
+        }
+      },
+      "after": {
+        "units": 1,
+        "seconds": 0.521,
+        "clang_errors": 0,
+        "failures": 0,
+        "peak_rss_bytes": 56524800,
+        "by_id": {
+          "annotation-required": 3,
+          "null-dereference": 29
+        }
+      },
+      "diagnostic_changes": {
+        "removed": [
+          {
+            "id": "null-dereference",
+            "severity": "error",
+            "message": "'buffer[*].buffer', which may be null, is passed to 'memcpy', which dereferences it",
+            "count": 1,
+            "locations": {
+              "cJSON.c:1280:9": 1
+            }
+          }
+        ],
+        "added": []
+      }
+    },
+    "linenoise-program": {
+      "revision": "a473823d74b93eab2ba83480df16ed37617493f2",
+      "before": {
+        "units": 1,
+        "seconds": 0.285,
+        "clang_errors": 0,
+        "failures": 0,
+        "peak_rss_bytes": 54394880,
+        "by_id": {
+          "analysis-incomplete": 2,
+          "annotation-required": 3,
+          "double-free": 2,
+          "leak": 1,
+          "null-dereference": 3
+        }
+      },
+      "after": {
+        "units": 1,
+        "seconds": 0.334,
+        "clang_errors": 0,
+        "failures": 0,
+        "peak_rss_bytes": 54722560,
+        "by_id": {
+          "analysis-incomplete": 8,
+          "annotation-required": 3,
+          "double-free": 1,
+          "leak": 1,
+          "null-dereference": 3
+        }
+      },
+      "diagnostic_changes": {
+        "removed": [
+          {
+            "id": "analysis-incomplete",
+            "severity": "warning",
+            "message": "analysis is incomplete: unsupported memory copy of pointer-containing storage",
+            "count": 1,
+            "locations": {
+              "linenoise.c:2287:9": 1
+            }
+          },
+          {
+            "id": "double-free",
+            "severity": "error",
+            "message": "'*history' is freed twice",
+            "count": 2,
+            "locations": {
+              "linenoise.c:2113:18": 1,
+              "linenoise.c:2371:9": 1
+            }
+          }
+        ],
+        "added": [
+          {
+            "id": "analysis-incomplete",
+            "severity": "warning",
+            "message": "analysis is incomplete: array range membership is unresolved",
+            "count": 3,
+            "locations": {
+              "linenoise.c:1720:5": 1,
+              "linenoise.c:2290:5": 1,
+              "linenoise.c:2371:9": 1
+            }
+          },
+          {
+            "id": "analysis-incomplete",
+            "severity": "warning",
+            "message": "analysis is incomplete: unresolved array element selection",
+            "count": 3,
+            "locations": {
+              "linenoise.c:1583:14": 1,
+              "linenoise.c:1584:9": 1,
+              "linenoise.c:1597:15": 1
+            }
+          },
+          {
+            "id": "analysis-incomplete",
+            "severity": "warning",
+            "message": "analysis is incomplete: unresolved array element update",
+            "count": 1,
+            "locations": {
+              "linenoise.c:1584:9": 1
+            }
+          },
+          {
+            "id": "double-free",
+            "severity": "error",
+            "message": "'history[j]' is freed twice",
+            "count": 1,
+            "locations": {
+              "linenoise.c:2313:46": 1
+            }
+          }
+        ]
+      }
+    },
+    "jansson": {
+      "revision": "851a2145e3256f2e67e5dfe24b0e456bf198b741",
+      "before": {
+        "units": 1,
+        "seconds": 0.781,
+        "clang_errors": 0,
+        "failures": 0,
+        "peak_rss_bytes": 57737216,
+        "by_id": {
+          "analysis-incomplete": 7,
+          "annotation-required": 4,
+          "double-free": 45,
+          "invalid-release": 1,
+          "null-dereference": 3,
+          "use-after-free": 28
+        }
+      },
+      "after": {
+        "units": 1,
+        "seconds": 0.94,
+        "clang_errors": 0,
+        "failures": 0,
+        "peak_rss_bytes": 58753024,
+        "by_id": {
+          "analysis-incomplete": 9,
+          "annotation-required": 4,
+          "double-free": 47,
+          "invalid-release": 1,
+          "null-dereference": 3,
+          "use-after-free": 28
+        }
+      },
+      "diagnostic_changes": {
+        "removed": [
+          {
+            "id": "analysis-incomplete",
+            "severity": "warning",
+            "message": "analysis is incomplete: unsupported memory copy of pointer-containing storage",
+            "count": 2,
+            "locations": {
+              "src/value.c:504:5": 1,
+              "src/value.c:509:5": 1
+            }
+          }
+        ],
+        "added": [
+          {
+            "id": "analysis-incomplete",
+            "severity": "warning",
+            "message": "analysis is incomplete: unresolved array element selection",
+            "count": 2,
+            "locations": {
+              "src/hashtable.c:266:15": 1,
+              "src/hashtable.c:304:15": 1
+            }
+          },
+          {
+            "id": "analysis-incomplete",
+            "severity": "warning",
+            "message": "analysis is incomplete: unresolved array range at call",
+            "count": 2,
+            "locations": {
+              "src/value.c:578:9": 1,
+              "src/value.c:600:9": 1
+            }
+          },
+          {
+            "id": "double-free",
+            "severity": "error",
+            "message": "'array->table[i]' is released twice",
+            "count": 2,
+            "locations": {
+              "src/value.c:455:9": 1,
+              "src/value.c:616:9": 1
+            }
+          }
+        ]
+      }
+    },
+    "lua": {
+      "revision": "7579fc9d7ed90240487251dfb69168f8e64e9294",
+      "before": {
+        "units": 1,
+        "seconds": 111.781,
+        "clang_errors": 0,
+        "failures": 0,
+        "peak_rss_bytes": 587759616,
+        "by_id": {
+          "analysis-incomplete": 644,
+          "annotation-required": 5,
+          "double-free": 1,
+          "invalid-release": 1,
+          "lifetime-too-short": 2,
+          "null-dereference": 104
+        }
+      },
+      "after": {
+        "units": 1,
+        "seconds": 163.671,
+        "clang_errors": 0,
+        "failures": 0,
+        "peak_rss_bytes": 609042432,
+        "by_id": {
+          "analysis-incomplete": 1418,
+          "annotation-required": 5,
+          "double-free": 1,
+          "invalid-release": 1,
+          "lifetime-too-short": 2,
+          "null-dereference": 106
+        }
+      },
+      "diagnostic_changes": {
+        "removed": [
+          {
+            "id": "analysis-incomplete",
+            "severity": "warning",
+            "message": "analysis is incomplete: incompatible or unknown object view at call",
+            "count": 1,
+            "locations": {
+              "lgc.c:736:29": 1
+            }
+          },
+          {
+            "id": "null-dereference",
+            "severity": "error",
+            "message": "dereference of 'f->p', which may be null",
+            "count": 1,
+            "locations": {
+              "lundump.c:253:5": 1
+            }
+          }
+        ],
+        "added": [
+          {
+            "id": "analysis-incomplete",
+            "severity": "warning",
+            "message": "analysis is incomplete: array initializer exceeds element limit",
+            "count": 1,
+            "locations": {
+              "ljumptab.h:19:49": 1
+            }
+          },
+          {
+            "id": "analysis-incomplete",
+            "severity": "warning",
+            "message": "analysis is incomplete: incompatible or unknown object view at call",
+            "count": 4,
+            "locations": {
+              "lcorolib.c:82:7": 1,
+              "ldo.c:1146:10": 1,
+              "ltablib.c:376:5": 1,
+              "lua.c:786:3": 1
+            }
+          },
+          {
+            "id": "analysis-incomplete",
+            "severity": "warning",
+            "message": "analysis is incomplete: unresolved array element selection",
+            "count": 769,
+            "locations": {
+              "lapi.c:212:11": 1,
+              "lapi.c:358:26": 1,
+              "lapi.c:359:26": 1,
+              "lapi.c:360:26": 1,
+              "lapi.c:425:5": 1,
+              "lapi.c:426:5": 1,
+              "lapi.c:546:21": 1,
+              "lapi.c:546:39": 1,
+              "lapi.c:549:3": 1,
+              "lapi.c:561:8": 2,
+              "lapi.c:564:3": 2,
+              "lapi.c:576:10": 1,
+              "lapi.c:592:3": 1,
+              "lapi.c:603:3": 1,
+              "lapi.c:672:18": 1,
+              "lapi.c:679:11": 1,
+              "lapi.c:703:10": 1,
+              "lapi.c:715:11": 1,
+              "lapi.c:723:10": 1,
+              "lapi.c:732:3": 1,
+              "lapi.c:777:3": 1,
+              "lapi.c:795:7": 1,
+              "lapi.c:799:5": 1,
+              "lapi.c:819:12": 1,
+              "lapi.c:861:18": 1,
+              "lapi.c:871:5": 1,
+              "lapi.c:882:3": 1,
+              "lapi.c:896:5": 1,
+              "lapi.c:904:3": 1,
+              "lapi.c:914:3": 1,
+              "lapi.c:920:5": 1,
+              "lapi.c:932:3": 1,
+              "lapi.c:957:3": 1,
+              "lapi.c:981:9": 1,
+              "lapi.c:989:9": 1,
+              "lapi.c:994:7": 1,
+              "lapi.c:1050:5": 1,
+              "lapi.c:1053:5": 1,
+              "lapi.c:1071:3": 1,
+              "lapi.c:1097:14": 1,
+              "lapi.c:1125:3": 1,
+              "lapi.c:1128:12": 1,
+              "lapi.c:1156:12": 1,
+              "lapi.c:1215:7": 1,
+              "lapi.c:1267:5": 1,
+              "lapi.c:1279:10": 1,
+              "lapi.c:1294:3": 1,
+              "lapi.c:1305:5": 1,
+              "lapi.c:1308:5": 1,
+              "lapi.c:1319:3": 1,
+              "lapi.c:1366:3": 1,
+              "lauxlib.c:101:12": 1,
+              "lauxlib.c:175:12": 1,
+              "lauxlib.c:184:16": 1,
+              "lauxlib.c:389:7": 1,
+              "lauxlib.c:523:5": 1,
+              "lauxlib.c:534:3": 1,
+              "lauxlib.c:562:12": 1,
+              "lauxlib.c:590:7": 1,
+              "lauxlib.c:835:30": 1,
+              "lauxlib.c:890:10": 1,
+              "lauxlib.c:929:5": 1,
+              "lauxlib.c:939:7": 1,
+              "lauxlib.c:1210:5": 1,
+              "lbaselib.c:231:14": 1,
+              "lbaselib.c:234:14": 1,
+              "lbaselib.c:356:16": 1,
+              "lbaselib.c:385:5": 1,
+              "lbaselib.c:398:14": 1,
+              "lbaselib.c:421:7": 1,
+              "lbaselib.c:436:12": 1,
+              "lbaselib.c:543:3": 1,
+              "lcode.c:335:5": 1,
+              "lcode.c:342:3": 1,
+              "lcode.c:387:3": 1,
+              "lcode.c:549:3": 1,
+              "lcode.c:580:5": 1,
+              "lcorolib.c:58:19": 1,
+              "lcorolib.c:60:7": 1,
+              "lcorolib.c:76:11": 1,
+              "lcorolib.c:107:3": 1,
+              "lcorolib.c:151:19": 1,
+              "lcorolib.c:152:21": 1,
+              "lcorolib.c:158:34": 1,
+              "lcorolib.c:163:19": 1,
+              "lcorolib.c:177:19": 1,
+              "lcorolib.c:193:14": 1,
+              "lcorolib.c:197:16": 1,
+              "lcorolib.c:222:3": 1,
+              "ldblib.c:38:5": 1,
+              "ldblib.c:155:3": 1,
+              "ldblib.c:174:5": 1,
+              "ldblib.c:175:5": 1,
+              "ldblib.c:176:5": 1,
+              "ldblib.c:177:5": 1,
+              "ldblib.c:180:5": 1,
+              "ldblib.c:182:5": 1,
+              "ldblib.c:183:5": 1,
+              "ldblib.c:184:5": 1,
+              "ldblib.c:187:5": 1,
+              "ldblib.c:188:5": 1,
+              "ldblib.c:191:5": 1,
+              "ldblib.c:192:5": 1,
+              "ldblib.c:195:5": 1,
+              "ldblib.c:196:5": 1,
+              "ldblib.c:199:5": 1,
+              "ldblib.c:221:5": 1,
+              "ldblib.c:248:3": 1,
+              "ldblib.c:389:3": 1,
+              "ldblib.c:412:5": 1,
+              "ldblib.c:446:5": 1,
+              "ldblib.c:474:3": 1,
+              "ldebug.c:300:16": 1,
+              "ldebug.c:524:17": 1,
+              "ldebug.c:720:12": 1,
+              "ldebug.c:748:19": 1,
+              "ldebug.c:749:3": 1,
+              "ldebug.c:758:3": 1,
+              "ldebug.c:758:23": 1,
+              "ldebug.c:771:30": 1,
+              "ldebug.c:771:61": 1,
+              "ldebug.c:772:3": 1,
+              "ldebug.c:777:3": 1,
+              "ldebug.c:778:26": 1,
+              "ldebug.c:784:3": 1,
+              "ldebug.c:792:3": 1,
+              "ldebug.c:803:3": 1,
+              "ldebug.c:803:62": 1,
+              "ldebug.c:808:20": 1,
+              "ldebug.c:809:20": 1,
+              "ldebug.c:811:5": 1,
+              "ldebug.c:813:5": 1,
+              "ldebug.c:821:3": 1,
+              "ldebug.c:829:12": 1,
+              "ldebug.c:847:5": 1,
+              "ldebug.c:851:5": 1,
+              "ldebug.c:861:3": 1,
+              "ldebug.c:865:5": 1,
+              "ldebug.c:869:3": 1,
+              "ldebug.c:918:7": 1,
+              "ldo.c:166:3": 8,
+              "ldo.c:216:18": 1,
+              "ldo.c:339:14": 1,
+              "ldo.c:369:7": 1,
+              "ldo.c:386:5": 1,
+              "ldo.c:530:5": 1,
+              "ldo.c:536:5": 1,
+              "ldo.c:584:15": 1,
+              "ldo.c:588:11": 1,
+              "ldo.c:610:5": 1,
+              "ldo.c:649:16": 1,
+              "ldo.c:660:3": 1,
+              "ldo.c:677:14": 1,
+              "ldo.c:679:14": 1,
+              "ldo.c:685:7": 1,
+              "ldo.c:723:7": 1,
+              "ldo.c:726:7": 1,
+              "ldo.c:735:20": 1,
+              "ldo.c:764:5": 1,
+              "ldo.c:766:13": 1,
+              "ldo.c:778:3": 1,
+              "ldo.c:786:3": 1,
+              "ldo.c:813:12": 1,
+              "ldo.c:815:5": 1,
+              "ldo.c:852:16": 1,
+              "ldo.c:873:7": 1,
+              "ldo.c:875:7": 1,
+              "ldo.c:876:7": 1,
+              "ldo.c:904:3": 1,
+              "ldo.c:923:5": 1,
+              "ldo.c:933:7": 1,
+              "ldo.c:942:7": 1,
+              "ldo.c:974:14": 1,
+              "ldo.c:976:14": 1,
+              "ldo.c:979:12": 1,
+              "ldo.c:982:12": 1,
+              "ldo.c:986:12": 1,
+              "ldo.c:1017:7": 1,
+              "ldo.c:1019:7": 1,
+              "ldo.c:1053:3": 1,
+              "ldo.c:1090:12": 3,
+              "ldo.c:1096:5": 3,
+              "ldo.c:1118:5": 1,
+              "ldo.c:1137:12": 1,
+              "ldo.c:1145:7": 1,
+              "ldo.c:1146:10": 1,
+              "ldo.c:1149:5": 1,
+              "ldo.c:1150:10": 1,
+              "ldo.c:1166:3": 1,
+              "ldo.c:1183:12": 1,
+              "ldo.c:1184:3": 1,
+              "ldump.c:164:7": 1,
+              "ldump.c:291:9": 1,
+              "lfunc.c:117:5": 1,
+              "lfunc.c:133:5": 1,
+              "lfunc.c:176:3": 1,
+              "lfunc.c:236:5": 1,
+              "lgc.c:488:21": 1,
+              "lgc.c:550:21": 1,
+              "lgc.c:577:21": 1,
+              "lgc.c:710:7": 1,
+              "lgc.c:737:30": 1,
+              "lgc.c:792:19": 1,
+              "lgc.c:811:23": 1,
+              "lgc.c:856:7": 1,
+              "lgc.c:938:7": 1,
+              "lgc.c:964:3": 1,
+              "lgc.c:984:14": 1,
+              "lgc.c:1079:22": 1,
+              "lgc.c:1143:7": 1,
+              "lgc.c:1294:3": 1,
+              "lgc.c:1296:48": 1,
+              "lgc.c:1311:3": 1,
+              "lgc.c:1352:15": 1,
+              "lgc.c:1354:3": 1,
+              "lgc.c:1361:15": 1,
+              "lgc.c:1363:3": 1,
+              "lgc.c:1368:3": 1,
+              "lgc.c:1375:5": 1,
+              "lgc.c:1379:5": 1,
+              "lgc.c:1393:3": 1,
+              "lgc.c:1399:3": 1,
+              "lgc.c:1402:3": 1,
+              "lgc.c:1407:3": 1,
+              "lgc.c:1432:3": 1,
+              "lgc.c:1446:7": 1,
+              "lgc.c:1449:7": 1,
+              "lgc.c:1459:3": 1,
+              "lgc.c:1460:3": 1,
+              "lgc.c:1478:7": 1,
+              "lgc.c:1508:16": 1,
+              "lgc.c:1535:3": 1,
+              "lgc.c:1536:3": 1,
+              "lgc.c:1538:3": 1,
+              "lgc.c:1591:18": 1,
+              "lgc.c:1640:11": 1,
+              "lgc.c:1643:9": 1,
+              "lgc.c:1649:7": 1,
+              "lgc.c:1654:7": 1,
+              "lgc.c:1659:7": 1,
+              "lgc.c:1664:7": 1,
+              "lgc.c:1670:44": 1,
+              "lgc.c:1672:9": 1,
+              "lgc.c:1751:9": 1,
+              "lgc.c:1754:9": 1,
+              "lgc.c:1772:5": 1,
+              "lgc.c:1791:24": 1,
+              "lgc.c:1792:19": 1,
+              "lgc.c:1795:7": 1,
+              "linit.c:52:7": 1,
+              "liolib.c:189:5": 1,
+              "liolib.c:203:3": 1,
+              "liolib.c:222:3": 1,
+              "liolib.c:223:10": 1,
+              "liolib.c:248:10": 1,
+              "liolib.c:253:16": 1,
+              "liolib.c:261:16": 1,
+              "liolib.c:264:5": 1,
+              "liolib.c:271:16": 1,
+              "liolib.c:286:10": 1,
+              "liolib.c:293:16": 1,
+              "liolib.c:303:16": 1,
+              "liolib.c:315:5": 1,
+              "liolib.c:324:7": 1,
+              "liolib.c:326:7": 1,
+              "liolib.c:338:10": 1,
+              "liolib.c:343:10": 1,
+              "liolib.c:377:3": 1,
+              "liolib.c:394:5": 1,
+              "liolib.c:399:5": 1,
+              "liolib.c:620:10": 1,
+              "liolib.c:620:20": 1,
+              "liolib.c:625:10": 1,
+              "liolib.c:625:20": 1,
+              "liolib.c:637:12": 1,
+              "liolib.c:642:7": 1,
+              "liolib.c:649:14": 1,
+              "liolib.c:691:10": 1,
+              "liolib.c:691:21": 1,
+              "liolib.c:696:13": 1,
+              "liolib.c:698:10": 1,
+              "liolib.c:705:13": 1,
+              "liolib.c:725:13": 1,
+              "liolib.c:731:10": 1,
+              "liolib.c:737:10": 1,
+              "liolib.c:742:10": 1,
+              "liolib.c:742:23": 1,
+              "liolib.c:747:10": 1,
+              "liolib.c:747:23": 1,
+              "liolib.c:798:3": 1,
+              "liolib.c:799:3": 1,
+              "liolib.c:801:3": 1,
+              "liolib.c:821:16": 1,
+              "liolib.c:833:3": 1,
+              "liolib.c:834:3": 1,
+              "liolib.c:836:3": 1,
+              "liolib.c:837:3": 1,
+              "liolib.c:838:3": 1,
+              "llex.c:69:5": 1,
+              "llex.c:77:16": 1,
+              "llex.c:80:19": 1,
+              "llex.c:90:14": 1,
+              "llex.c:92:14": 1,
+              "llex.c:109:14": 1,
+              "llex.c:117:9": 1,
+              "llex.c:119:5": 1,
+              "llex.c:144:5": 1,
+              "llex.c:157:24": 1,
+              "llex.c:189:14": 1,
+              "llex.c:190:14": 1,
+              "llex.c:193:14": 1,
+              "llex.c:196:3": 1,
+              "llex.c:306:27": 1,
+              "llex.c:568:16": 1,
+              "lmathlib.c:606:21": 1,
+              "lmathlib.c:661:3": 1,
+              "lmathlib.c:753:3": 1,
+              "lmathlib.c:762:3": 1,
+              "lmem.c:105:7": 1,
+              "lmem.c:115:14": 1,
+              "lmem.c:134:14": 1,
+              "lmem.c:143:3": 1,
+              "lmem.c:182:16": 1,
+              "lmem.c:194:20": 1,
+              "lmem.c:208:18": 1,
+              "loadlib.c:282:23": 1,
+              "loadlib.c:363:3": 1,
+              "loadlib.c:385:15": 1,
+              "loadlib.c:387:11": 1,
+              "loadlib.c:389:5": 1,
+              "loadlib.c:396:23": 1,
+              "loadlib.c:408:14": 1,
+              "loadlib.c:485:12": 1,
+              "loadlib.c:503:19": 1,
+              "loadlib.c:523:5": 1,
+              "loadlib.c:524:10": 1,
+              "loadlib.c:534:12": 1,
+              "loadlib.c:542:14": 1,
+              "loadlib.c:544:24": 1,
+              "loadlib.c:559:13": 1,
+              "loadlib.c:565:12": 1,
+              "loadlib.c:576:26": 1,
+              "loadlib.c:578:10": 1,
+              "loadlib.c:578:24": 1,
+              "loadlib.c:589:14": 1,
+              "loadlib.c:591:15": 1,
+              "loadlib.c:624:5": 1,
+              "loadlib.c:659:3": 1,
+              "loadlib.c:727:3": 1,
+              "loadlib.c:728:3": 1,
+              "loadlib.c:730:3": 1,
+              "loadlib.c:731:3": 1,
+              "loadlib.c:744:3": 1,
+              "lobject.c:192:5": 1,
+              "lobject.c:467:3": 1,
+              "lobject.c:528:21": 1,
+              "lobject.c:539:7": 1,
+              "lobject.c:564:11": 1,
+              "lobject.c:565:11": 1,
+              "loslib.c:160:10": 1,
+              "loslib.c:168:10": 1,
+              "loslib.c:177:12": 1,
+              "loslib.c:234:3": 1,
+              "loslib.c:235:3": 1,
+              "loslib.c:236:3": 1,
+              "loslib.c:237:3": 1,
+              "loslib.c:238:3": 1,
+              "loslib.c:239:3": 1,
+              "loslib.c:240:3": 1,
+              "loslib.c:241:3": 1,
+              "loslib.c:242:3": 1,
+              "loslib.c:260:14": 1,
+              "loslib.c:318:12": 1,
+              "loslib.c:322:5": 1,
+              "loslib.c:356:18": 1,
+              "loslib.c:357:17": 1,
+              "loslib.c:358:18": 1,
+              "loslib.c:359:18": 1,
+              "loslib.c:360:17": 1,
+              "loslib.c:361:17": 1,
+              "loslib.c:362:19": 1,
+              "loslib.c:364:5": 1,
+              "loslib.c:429:3": 1,
+              "lparser.c:70:7": 1,
+              "lparser.c:80:25": 1,
+              "lparser.c:81:9": 1,
+              "lparser.c:135:28": 1,
+              "lparser.c:179:3": 1,
+              "lparser.c:199:3": 1,
+              "lparser.c:227:11": 1,
+              "lparser.c:374:3": 1,
+              "lparser.c:643:3": 1,
+              "lparser.c:775:5": 1,
+              "lparser.c:823:16": 1,
+              "lparser.c:824:3": 1,
+              "lparser.c:838:3": 1,
+              "lparser.c:839:3": 1,
+              "lparser.c:840:3": 1,
+              "lparser.c:842:3": 1,
+              "lparser.c:843:3": 1,
+              "lparser.c:844:3": 1,
+              "lparser.c:845:3": 1,
+              "lparser.c:848:3": 1,
+              "lparser.c:1380:3": 1,
+              "lparser.c:1511:5": 1,
+              "lparser.c:1909:5": 1,
+              "lparser.c:2054:3": 1,
+              "lparser.c:2178:3": 1,
+              "lparser.c:2179:25": 1,
+              "lparser.c:2181:25": 1,
+              "lparser.c:2186:3": 1,
+              "lstate.c:73:8": 1,
+              "lstate.c:138:5": 1,
+              "lstate.c:140:5": 1,
+              "lstate.c:147:5": 1,
+              "lstate.c:194:21": 1,
+              "lstate.c:196:3": 1,
+              "lstate.c:199:3": 1,
+              "lstate.c:202:3": 1,
+              "lstate.c:204:3": 1,
+              "lstate.c:205:3": 1,
+              "lstate.c:215:3": 1,
+              "lstate.c:216:3": 1,
+              "lstate.c:217:3": 1,
+              "lstate.c:218:3": 1,
+              "lstate.c:219:3": 1,
+              "lstate.c:263:5": 1,
+              "lstate.c:268:5": 1,
+              "lstate.c:283:3": 1,
+              "lstate.c:299:3": 1,
+              "lstate.c:387:7": 1,
+              "lstate.c:389:5": 1,
+              "lstate.c:399:3": 1,
+              "lstring.c:101:13": 1,
+              "lstring.c:141:18": 1,
+              "lstring.c:192:18": 1,
+              "lstring.c:207:5": 1,
+              "lstring.c:219:21": 1,
+              "lstring.c:232:5": 1,
+              "lstring.c:233:13": 1,
+              "lstring.c:251:12": 1,
+              "lstring.c:255:7": 1,
+              "lstring.c:291:5": 1,
+              "lstring.c:323:5": 2,
+              "lstring.c:327:9": 2,
+              "lstring.c:350:12": 1,
+              "lstrlib.c:148:12": 1,
+              "lstrlib.c:175:12": 1,
+              "lstrlib.c:283:5": 1,
+              "lstrlib.c:294:5": 1,
+              "lstrlib.c:401:10": 1,
+              "lstrlib.c:409:9": 1,
+              "lstrlib.c:491:5": 1,
+              "lstrlib.c:540:33": 1,
+              "lstrlib.c:574:5": 1,
+              "lstrlib.c:608:15": 1,
+              "lstrlib.c:708:7": 1,
+              "lstrlib.c:716:7": 1,
+              "lstrlib.c:942:12": 1,
+              "lstrlib.c:1247:5": 1,
+              "lstrlib.c:1262:5": 1,
+              "lstrlib.c:1307:11": 1,
+              "lstrlib.c:1321:11": 1,
+              "lstrlib.c:1327:11": 1,
+              "lstrlib.c:1338:11": 1,
+              "lstrlib.c:1345:11": 1,
+              "lstrlib.c:1355:20": 1,
+              "lstrlib.c:1356:11": 1,
+              "lstrlib.c:1479:12": 1,
+              "lstrlib.c:1536:14": 1,
+              "lstrlib.c:1881:3": 1,
+              "lstrlib.c:1896:3": 1,
+              "lstrlib.c:1897:3": 1,
+              "ltable.c:148:12": 1,
+              "ltable.c:150:12": 1,
+              "ltable.c:196:14": 1,
+              "ltable.c:200:14": 1,
+              "ltable.c:204:14": 1,
+              "ltable.c:207:14": 1,
+              "ltable.c:209:14": 1,
+              "ltable.c:212:14": 1,
+              "ltable.c:216:14": 1,
+              "ltable.c:220:14": 1,
+              "ltable.c:353:7": 1,
+              "ltable.c:363:20": 1,
+              "ltable.c:368:7": 1,
+              "ltable.c:575:17": 1,
+              "ltable.c:612:7": 1,
+              "ltable.c:615:17": 1,
+              "ltable.c:683:7": 1,
+              "ltable.c:721:5": 1,
+              "ltable.c:724:3": 1,
+              "ltable.c:732:14": 1,
+              "ltable.c:752:3": 1,
+              "ltable.c:790:3": 1,
+              "ltable.c:805:3": 1,
+              "ltable.c:823:3": 1,
+              "ltable.c:904:5": 1,
+              "ltable.c:918:7": 1,
+              "ltable.c:963:7": 1,
+              "ltable.c:975:13": 1,
+              "ltable.c:1084:3": 1,
+              "ltable.c:1160:7": 1,
+              "ltable.c:1169:9": 1,
+              "ltable.c:1173:21": 1,
+              "ltable.c:1175:7": 1,
+              "ltable.c:1179:5": 1,
+              "ltable.c:1186:5": 1,
+              "ltable.c:1198:5": 1,
+              "ltable.c:1209:5": 1,
+              "ltable.c:1215:7": 1,
+              "ltablib.c:52:29": 1,
+              "ltablib.c:53:29": 1,
+              "ltablib.c:55:35": 1,
+              "ltablib.c:96:14": 1,
+              "ltablib.c:163:5": 1,
+              "ltablib.c:178:5": 1,
+              "ltablib.c:182:5": 1,
+              "ltablib.c:312:9": 1,
+              "ltablib.c:426:3": 1,
+              "ltm.c:50:23": 1,
+              "ltm.c:81:12": 1,
+              "ltm.c:95:48": 1,
+              "ltm.c:99:10": 1,
+              "ltm.c:113:5": 1,
+              "ltm.c:129:5": 1,
+              "ltm.c:131:5": 1,
+              "ltm.c:146:12": 1,
+              "ltm.c:152:7": 1,
+              "ltm.c:159:11": 1,
+              "ltm.c:163:9": 1,
+              "ltm.c:175:7": 1,
+              "ltm.c:176:5": 1,
+              "ltm.c:183:5": 1,
+              "ltm.c:193:3": 1,
+              "ltm.c:202:13": 1,
+              "ltm.c:205:3": 1,
+              "ltm.c:223:10": 1,
+              "ltm.c:234:14": 1,
+              "ltm.c:237:3": 1,
+              "ltm.c:238:3": 1,
+              "ltm.c:242:3": 1,
+              "ltm.c:244:5": 1,
+              "ltm.c:278:5": 1,
+              "ltm.c:284:5": 1,
+              "ltm.c:326:29": 1,
+              "ltm.c:328:7": 1,
+              "ltm.c:341:15": 1,
+              "lua.c:73:3": 1,
+              "lua.c:210:10": 1,
+              "lua.c:210:21": 1,
+              "lua.c:215:10": 1,
+              "lua.c:215:21": 1,
+              "lua.c:236:3": 1,
+              "lua.c:253:7": 1,
+              "lua.c:254:5": 1,
+              "lua.c:269:12": 1,
+              "lua.c:271:13": 1,
+              "lua.c:401:12": 1,
+              "lua.c:555:7": 1,
+              "lua.c:612:16": 1,
+              "lua.c:643:18": 1,
+              "lua.c:667:17": 1,
+              "lua.c:668:14": 1,
+              "lua.c:685:5": 1,
+              "lua.c:703:20": 1,
+              "lua.c:737:3": 1,
+              "lua.c:752:3": 1,
+              "lua.c:755:7": 1,
+              "lua.c:757:8": 1,
+              "lua.c:760:9": 1,
+              "lua.c:764:5": 1,
+              "lua.c:768:7": 1,
+              "lundump.c:46:3": 1,
+              "lundump.c:166:16": 1,
+              "lundump.c:171:16": 1,
+              "lundump.c:195:15": 1,
+              "lundump.c:208:10": 1,
+              "lundump.c:250:10": 1,
+              "lundump.c:255:15": 1,
+              "lundump.c:271:17": 1,
+              "lundump.c:303:24": 1,
+              "lundump.c:309:16": 1,
+              "lundump.c:354:21": 1,
+              "lundump.c:411:8": 1,
+              "lundump.c:412:3": 1,
+              "lundump.c:413:11": 1,
+              "lutf8lib.c:132:12": 1,
+              "lutf8lib.c:195:14": 1,
+              "lutf8lib.c:289:3": 1,
+              "lvm.c:187:7": 1,
+              "lvm.c:223:7": 1,
+              "lvm.c:247:7": 1,
+              "lvm.c:249:7": 1,
+              "lvm.c:251:7": 1,
+              "lvm.c:253:7": 1,
+              "lvm.c:300:9": 1,
+              "lvm.c:312:13": 1,
+              "lvm.c:321:3": 1,
+              "lvm.c:345:9": 1,
+              "lvm.c:356:9": 1,
+              "lvm.c:360:7": 1,
+              "lvm.c:377:3": 1,
+              "lvm.c:548:12": 1,
+              "lvm.c:558:15": 1,
+              "lvm.c:570:12": 1,
+              "lvm.c:580:15": 1,
+              "lvm.c:655:17": 1,
+              "lvm.c:697:10": 1,
+              "lvm.c:698:7": 1,
+              "lvm.c:700:7": 1,
+              "lvm.c:709:32": 1,
+              "lvm.c:713:11": 1,
+              "lvm.c:720:14": 1,
+              "lvm.c:758:9": 1,
+              "lvm.c:775:7": 1,
+              "lvm.c:795:7": 1,
+              "lvm.c:850:24": 1,
+              "lvm.c:1220:12": 1,
+              "lvm.c:1225:5": 1,
+              "lvm.c:1238:5": 1,
+              "lvm.c:1242:9": 1,
+              "lvm.c:1248:9": 1,
+              "lvm.c:1254:9": 1,
+              "lvm.c:1260:9": 1,
+              "lvm.c:1267:9": 1,
+              "lvm.c:1272:9": 1,
+              "lvm.c:1278:9": 1,
+              "lvm.c:1283:9": 1,
+              "lvm.c:1291:9": 1,
+              "lvm.c:1297:9": 1,
+              "lvm.c:1301:21": 1,
+              "lvm.c:1304:9": 1,
+              "lvm.c:1308:25": 1,
+              "lvm.c:1314:11": 1,
+              "lvm.c:1315:9": 1,
+              "lvm.c:1323:11": 1,
+              "lvm.c:1328:11": 1,
+              "lvm.c:1329:9": 1,
+              "lvm.c:1336:9": 1,
+              "lvm.c:1340:11": 1,
+              "lvm.c:1342:9": 1,
+              "lvm.c:1352:11": 1,
+              "lvm.c:1353:9": 1,
+              "lvm.c:1357:25": 1,
+              "lvm.c:1365:11": 1,
+              "lvm.c:1366:9": 1,
+              "lvm.c:1374:11": 1,
+              "lvm.c:1382:11": 1,
+              "lvm.c:1383:9": 1,
+              "lvm.c:1390:9": 1,
+              "lvm.c:1396:11": 1,
+              "lvm.c:1398:9": 1,
+              "lvm.c:1410:11": 1,
+              "lvm.c:1411:9": 1,
+              "lvm.c:1427:13": 1,
+              "lvm.c:1430:11": 1,
+              "lvm.c:1431:9": 1,
+              "lvm.c:1432:9": 1,
+              "lvm.c:1443:11": 1,
+              "lvm.c:1444:9": 1,
+              "lvm.c:1448:9": 1,
+              "lvm.c:1452:9": 1,
+              "lvm.c:1456:9": 1,
+              "lvm.c:1460:9": 1,
+              "lvm.c:1465:9": 1,
+              "lvm.c:1469:9": 1,
+              "lvm.c:1473:9": 1,
+              "lvm.c:1478:9": 1,
+              "lvm.c:1482:9": 1,
+              "lvm.c:1486:9": 1,
+              "lvm.c:1490:9": 1,
+              "lvm.c:1500:9": 1,
+              "lvm.c:1510:9": 1,
+              "lvm.c:1514:9": 1,
+              "lvm.c:1518:9": 1,
+              "lvm.c:1522:9": 1,
+              "lvm.c:1527:9": 1,
+              "lvm.c:1531:9": 1,
+              "lvm.c:1535:9": 1,
+              "lvm.c:1540:9": 1,
+              "lvm.c:1544:9": 1,
+              "lvm.c:1548:9": 1,
+              "lvm.c:1552:9": 1,
+              "lvm.c:1556:9": 1,
+              "lvm.c:1560:9": 1,
+              "lvm.c:1569:9": 1,
+              "lvm.c:1570:9": 1,
+              "lvm.c:1579:9": 1,
+              "lvm.c:1580:9": 1,
+              "lvm.c:1589:9": 1,
+              "lvm.c:1590:9": 1,
+              "lvm.c:1604:11": 1,
+              "lvm.c:1605:9": 1,
+              "lvm.c:1615:11": 1,
+              "lvm.c:1616:9": 1,
+              "lvm.c:1625:9": 1,
+              "lvm.c:1629:9": 1,
+              "lvm.c:1630:9": 1,
+              "lvm.c:1637:9": 1,
+              "lvm.c:1638:9": 1,
+              "lvm.c:1643:9": 1,
+              "lvm.c:1644:9": 1,
+              "lvm.c:1649:9": 1,
+              "lvm.c:1650:9": 1,
+              "lvm.c:1654:9": 1,
+              "lvm.c:1660:9": 1,
+              "lvm.c:1662:9": 1,
+              "lvm.c:1665:9": 1,
+              "lvm.c:1666:9": 1,
+              "lvm.c:1669:9": 1,
+              "lvm.c:1670:9": 1,
+              "lvm.c:1678:9": 1,
+              "lvm.c:1691:9": 1,
+              "lvm.c:1694:9": 1,
+              "lvm.c:1695:9": 1,
+              "lvm.c:1698:9": 1,
+              "lvm.c:1699:9": 1,
+              "lvm.c:1702:9": 1,
+              "lvm.c:1703:9": 1,
+              "lvm.c:1706:9": 1,
+              "lvm.c:1707:9": 1,
+              "lvm.c:1713:9": 1,
+              "lvm.c:1724:9": 1,
+              "lvm.c:1735:22": 1,
+              "lvm.c:1741:9": 1,
+              "lvm.c:1760:18": 1,
+              "lvm.c:1764:11": 1,
+              "lvm.c:1780:11": 1,
+              "lvm.c:1787:9": 1,
+              "lvm.c:1796:11": 1,
+              "lvm.c:1813:11": 1,
+              "lvm.c:1853:9": 1,
+              "lvm.c:1858:13": 1,
+              "lvm.c:1860:9": 1,
+              "lvm.c:1875:9": 1,
+              "lvm.c:1894:9": 1,
+              "lvm.c:1905:9": 1,
+              "lvm.c:1925:11": 1,
+              "lvm.c:1929:11": 1,
+              "lvm.c:1933:9": 1,
+              "lvm.c:1937:20": 1,
+              "lvm.c:1938:9": 1,
+              "lvm.c:1939:9": 1,
+              "lvm.c:1940:9": 1,
+              "lvm.c:1946:9": 1,
+              "lvm.c:1947:9": 1,
+              "lvm.c:1953:9": 1,
+              "lvm.c:1958:11": 1,
+              "lvm.c:1959:9": 1,
+              "lvm.c:1962:9": 1,
+              "lvm.c:1964:11": 1,
+              "lvm.c:1968:9": 1,
+              "lvm.c:1972:9": 1
+            }
+          },
+          {
+            "id": "analysis-incomplete",
+            "severity": "warning",
+            "message": "analysis is incomplete: unresolved array element update",
+            "count": 1,
+            "locations": {
+              "lapi.c:994:7": 1
+            }
+          },
+          {
+            "id": "null-dereference",
+            "severity": "error",
+            "message": "'f->p[i]', which is null, is passed to 'loadFunction', which dereferences it",
+            "count": 1,
+            "locations": {
+              "lundump.c:257:21": 1
+            }
+          },
+          {
+            "id": "null-dereference",
+            "severity": "error",
+            "message": "'f->p[i]', which is null, is passed to 'luaC_barrier_', which dereferences it",
+            "count": 1,
+            "locations": {
+              "lundump.c:256:5": 1
+            }
+          },
+          {
+            "id": "null-dereference",
+            "severity": "error",
+            "message": "dereference of 'f->p[i]', which is null",
+            "count": 1,
+            "locations": {
+              "lundump.c:256:5": 1
+            }
+          }
+        ]
+      }
+    }
+  },
+  "totals": {
+    "before": {
+      "analysis-incomplete": 653,
+      "annotation-required": 17,
+      "double-free": 48,
+      "invalid-release": 2,
+      "leak": 1,
+      "lifetime-too-short": 2,
+      "null-dereference": 140,
+      "use-after-free": 28
+    },
+    "after": {
+      "analysis-incomplete": 1435,
+      "annotation-required": 17,
+      "double-free": 49,
+      "invalid-release": 2,
+      "leak": 1,
+      "lifetime-too-short": 2,
+      "null-dereference": 141,
+      "use-after-free": 28
+    }
+  },
+  "exploratory_runs": [
+    {
+      "implementation": "RFC 0015 before final hardening",
+      "project": "lua",
+      "timeout_seconds": 180,
+      "outcome": "timeout",
+      "partial_diagnostics_used_as_final_evidence": false
+    }
+  ]
+}

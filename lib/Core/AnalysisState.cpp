@@ -268,6 +268,120 @@ bool AnalysisState::join(const AnalysisState &other, const PlaceTable *places) {
   changed |= scalars.join(other.scalars);
   changed |= relations.join(other.relations);
   changed |= pointerFacts.join(other.pointerFacts);
+  for (auto &[key, range] : filledArrayRanges) {
+    const auto found = other.filledArrayRanges.find(key);
+    if (found == other.filledArrayRanges.end() ||
+        found->second.count != range.count ||
+        found->second.storage != range.storage ||
+        found->second.bytes != range.bytes || !found->second.definite) {
+      changed |= range.definite;
+      range.definite = false;
+    }
+    for (auto it = range.materialized.begin();
+         it != range.materialized.end();) {
+      if (found == other.filledArrayRanges.end() ||
+          !found->second.materialized.contains(*it)) {
+        it = range.materialized.erase(it);
+        changed = true;
+      } else {
+        ++it;
+      }
+    }
+  }
+  for (const auto &[key, range] : other.filledArrayRanges) {
+    if (filledArrayRanges.contains(key))
+      continue;
+    auto copy = range;
+    copy.definite = false;
+    filledArrayRanges.emplace(key, std::move(copy));
+    changed = true;
+  }
+  for (auto &[key, range] : releasedArrayRanges) {
+    const auto found = other.releasedArrayRanges.find(key);
+    if (found == other.releasedArrayRanges.end() ||
+        found->second.span != range.span ||
+        found->second.storage != range.storage) {
+      // A range exists only on one path; existing moved cells retain may
+      // evidence, but an unvisited cell has no definite traversal proof.
+      changed |= range.definite;
+      range.definite = false;
+      continue;
+    }
+    if (!found->second.definite && range.definite) {
+      range.definite = false;
+      changed = true;
+    }
+    for (auto it = range.materialized.begin();
+         it != range.materialized.end();) {
+      if (!found->second.materialized.contains(*it)) {
+        it = range.materialized.erase(it);
+        changed = true;
+      } else {
+        ++it;
+      }
+    }
+  }
+  for (const auto &[key, range] : other.releasedArrayRanges) {
+    if (releasedArrayRanges.contains(key))
+      continue;
+    auto copy = range;
+    copy.definite = false;
+    releasedArrayRanges.emplace(key, std::move(copy));
+    changed = true;
+  }
+  for (auto &[key, range] : arrayRanges) {
+    const auto found = other.arrayRanges.find(key);
+    if (found == other.arrayRanges.end() ||
+        range.destination != found->second.destination ||
+        range.source != found->second.source ||
+        range.span != found->second.span ||
+        range.sourceBegin != found->second.sourceBegin) {
+      changed |= range.definite || !range.materialized.empty() ||
+                 !range.captured.empty();
+      range.definite = false;
+      range.materialized.clear();
+      range.captured.clear();
+      changed |= incompleteHeap.insert(range.destination).second;
+      continue;
+    }
+    const auto &theirs = found->second;
+    if (!theirs.definite && range.definite) {
+      range.definite = false;
+      changed = true;
+    }
+    if (!theirs.sourceLive && range.sourceLive) {
+      range.sourceLive = false;
+      changed = true;
+    }
+    for (auto it = range.captured.begin(); it != range.captured.end();) {
+      if (!theirs.captured.contains(*it)) {
+        it = range.captured.erase(it);
+        changed = true;
+      } else {
+        ++it;
+      }
+    }
+    for (auto it = range.materialized.begin();
+         it != range.materialized.end();) {
+      if (!theirs.materialized.contains(*it)) {
+        it = range.materialized.erase(it);
+        changed = true;
+      } else {
+        ++it;
+      }
+    }
+  }
+  for (const auto &[key, range] : other.arrayRanges) {
+    if (arrayRanges.contains(key))
+      continue;
+    auto copy = range;
+    copy.definite = false;
+    copy.captured.clear();
+    copy.materialized.clear();
+    arrayRanges.emplace(key, std::move(copy));
+    incompleteHeap.insert(range.destination);
+    changed = true;
+  }
   for (auto it = objectViews.begin(); it != objectViews.end();) {
     const auto found = other.objectViews.find(it->first);
     if (found == other.objectViews.end() || found->second != it->second)

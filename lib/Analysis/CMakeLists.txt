@@ -6,6 +6,11 @@ weavec_add_library(
           Builtins.cpp
           ClangLocation.cpp
           Dataflow.cpp
+          DataflowArrays.cpp
+          DataflowArrayMemory.cpp
+          DataflowArrayRanges.cpp
+          DataflowArrayCleanup.cpp
+          DataflowArrayFill.cpp
           DataflowHeap.cpp
           DataflowMemory.cpp
           DataflowViews.cpp

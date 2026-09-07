@@ -130,7 +130,9 @@ FunctionDataflow::definiteMirrors(core::PlaceId place,
       result.insert(places.field(base, places.fieldName(place)));
       break;
     case core::PathStep::Index:
-      result.insert(places.index(base));
+      result.insert(places.isElement(place)
+                        ? places.element(base, places.fieldName(place))
+                        : places.index(base));
       break;
     case core::PathStep::Deref:
       result.insert(places.deref(base));
@@ -313,7 +315,17 @@ FunctionDataflow::describeHeap(core::PlaceId root, bool pointer,
             path = path.field(places.fieldName(step));
             break;
           case core::PathStep::Index:
-            path = path.indexed();
+            if (places.isElement(step)) {
+              const auto selector = summaryArrayIndex(places.fieldName(step));
+              if (!selector) {
+                graph.incomplete = true;
+                path = path.indexed();
+              } else {
+                path = path.indexed(*selector);
+              }
+            } else {
+              path = path.indexed();
+            }
             break;
           }
         }
@@ -449,6 +461,7 @@ void FunctionDataflow::recordHeapResult(const ValueOrigin &origin,
     return;
   core::HeapDescription graph;
   if (origin.place) {
+    recordArrayResult(origin.place->place, state);
     if (const auto null = nullnessAt(origin.place->place, state);
         null && null->state == core::Nullness::Null)
       return;
@@ -503,6 +516,7 @@ bool FunctionDataflow::isHeapOutputPath(const core::SummaryPath &path) const {
 }
 
 void FunctionDataflow::recordHeapOutputs(const core::AnalysisState &state) {
+  recordArrayOutputs(state);
   std::map<core::PlaceId, core::ValueSource> outputObjects;
   std::map<core::SummaryPath, core::PlaceId> outputPlaces;
   for (std::size_t i = 0; i < places.size(); ++i) {
@@ -618,6 +632,7 @@ void FunctionDataflow::copyHeapValue(core::PlaceId source, core::PlaceId target,
         !state.resources.holds(child) && !state.nulls.recordOf(child) &&
         !state.spatial.has(child) && !state.scalars.factOf(child) &&
         !state.raw.isRaw(child) && !state.moves.recordOf(child) &&
+        !state.callTargets.contains(child) && !state.incoming.contains(child) &&
         state.loans.heldBy(child).empty())
       continue;
     if (copied.size() > core::MaxHeapFields) {
@@ -803,7 +818,8 @@ void FunctionDataflow::retireHeapInputs(core::AnalysisState &state) {
   // owners. Keeping settled calls' aliases alive would form a clique of all
   // old outputs in a loop (RFC 0013, Boundedness and performance).
   for (const auto input : pointerSnapshots) {
-    if (live.contains(input) || !state.kinds.contains(input))
+    if (live.contains(input) || state.arrayRanges.contains(input) ||
+        !state.kinds.contains(input))
       continue;
     forgetBelow(input, state);
     state.forget(input);
@@ -890,7 +906,7 @@ void FunctionDataflow::applyHeap(core::PlaceId dest,
         state.incompleteHeap.insert(dest);
         continue;
       }
-      const auto field = builder.resolveBelow(dest, path);
+      const auto field = builder.resolveBelow(dest, path, &call);
       if (!field)
         continue;
       std::vector<ValueOrigin> alternatives;
@@ -900,7 +916,8 @@ void FunctionDataflow::applyHeap(core::PlaceId dest,
       for (const core::ValueSource &value : values) {
         std::optional<ValueOrigin> origin;
         if (value.post && value.path && value.path->isResult()) {
-          if (const auto target = builder.resolveBelow(dest, *value.path)) {
+          if (const auto target =
+                  builder.resolveBelow(dest, *value.path, &call)) {
             origin = ValueOrigin{};
             origin->kind = ValueOrigin::Kind::Copy;
             origin->place = PlaceRef{.place = *target,
@@ -1006,6 +1023,7 @@ void FunctionDataflow::applyHeapResult(core::PlaceId dest,
                                        core::AnalysisState &state) {
   if (materializingHeap)
     return;
+  applyArrayReallocation(dest, call, state);
   const auto effects = classifyCall(call, summaries);
   if (!effects)
     return;
@@ -1019,6 +1037,7 @@ void FunctionDataflow::applyHeapResult(core::PlaceId dest,
   const auto it = effects->summary->heap.find(core::SummaryPath::result());
   if (it != effects->summary->heap.end())
     applyHeap(dest, it->second, call, *effects->summary, state);
+  applyArrayResult(dest, call, state);
 }
 
 void FunctionDataflow::applyHeapOutputs(const clang::CallExpr &call,

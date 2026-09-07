@@ -149,6 +149,11 @@ struct ValueOrigin {
 
 class PlaceBuilder {
 public:
+  /// RFC 0015: select a complete element in the current dataflow state.
+  std::function<PlaceRef(PlaceRef, std::optional<core::Affine>, clang::QualType,
+                         const clang::Expr &)>
+      selectArray;
+  std::function<std::optional<std::string>(std::string_view)> summaryIndex;
   std::map<core::SummaryPath, std::string> objectViews;
   std::function<bool(const core::SummaryPath &, const clang::CallExpr &)>
       validatePath;
@@ -274,17 +279,19 @@ public:
   /// `global(g)` the global's place. `std::nullopt` when the argument is not
   /// a place.
   [[nodiscard]] std::optional<PlaceRef>
-  resolveSummaryPath(const core::SummaryPath &path,
-                     const clang::CallExpr &call);
+  resolveSummaryPath(const core::SummaryPath &path, const clang::CallExpr &call,
+                     bool arrayStorage = false);
 
   /// The place `path`'s steps reach from `base` (the record a `result` path
   /// was assigned to, RFC 0008, *Struct-by-value results*). Fields and
   /// indices only; a path with a dereference is `std::nullopt`.
   [[nodiscard]] std::optional<core::PlaceId>
-  resolveBelow(core::PlaceId base, const core::SummaryPath &path);
+  resolveBelow(core::PlaceId base, const core::SummaryPath &path,
+               const clang::CallExpr *call = nullptr);
 
   /// Like `resolveSummaryPath`, but only finds a place this function has
-  /// already named: nothing is interned, and a path below an unknown place
+  /// already named. Selected array paths may materialize a bounded cell;
+  /// ordinary paths intern nothing, and a path below an unknown place
   /// is `std::nullopt`. For effects that touch only what is known (a
   /// callee's writes forgetting the facts below a place).
   [[nodiscard]] std::optional<core::PlaceId>

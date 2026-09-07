@@ -38,24 +38,31 @@ static std::string globalSymbol(const VarDecl &var) {
   return unit + "#" + var.getNameAsString();
 }
 
-static std::string globalTargetKey(const Expr &expr) {
+static std::string globalTargetKey(const Expr &expr, const ASTContext *ctx) {
   const Expr *e = expr.IgnoreParenImpCasts();
   if (const auto *ref = dyn_cast<DeclRefExpr>(e)) {
     const auto *var = dyn_cast<VarDecl>(ref->getDecl());
     return var && var->hasGlobalStorage() ? globalSymbol(*var) : std::string{};
   }
   if (const auto *member = dyn_cast<MemberExpr>(e)) {
-    std::string base = globalTargetKey(*member->getBase());
+    std::string base = globalTargetKey(*member->getBase(), ctx);
     return base.empty()
                ? base
                : base + "." + member->getMemberDecl()->getNameAsString();
   }
   if (const auto *index = dyn_cast<ArraySubscriptExpr>(e)) {
-    std::string base = globalTargetKey(*index->getBase());
-    return base.empty() ? base : base + "[]";
+    std::string base = globalTargetKey(*index->getBase(), ctx);
+    if (base.empty())
+      return base;
+    Expr::EvalResult value;
+    if (ctx && index->getIdx()->EvaluateAsInt(value, *ctx) &&
+        value.Val.getInt().isSignedIntN(64))
+      return base + "[][" + std::to_string(value.Val.getInt().getSExtValue()) +
+             "]";
+    return base + "[]";
   }
   if (const auto *unary = dyn_cast<UnaryOperator>(e))
-    return globalTargetKey(*unary->getSubExpr());
+    return globalTargetKey(*unary->getSubExpr(), ctx);
   return {};
 }
 
@@ -84,6 +91,8 @@ static core::CallTargets constantTargets(const Expr &expr, unsigned depth = 0) {
   if (depth > core::MaxHeapPathDepth)
     return core::CallTargets::any();
   const Expr *e = expr.IgnoreParens();
+  if (isa<ImplicitValueInitExpr>(e))
+    return {.functions = {}, .unknown = false, .null = true};
   if (const auto *cast = dyn_cast<CastExpr>(e)) {
     if (cast->getCastKind() == CK_NullToPointer)
       return {.functions = {}, .unknown = false, .null = true};
@@ -137,7 +146,7 @@ SummaryStore::targetsForGlobal(const core::SummaryPath &path) const {
     if (step.step == core::PathStep::Field)
       name += "." + step.field;
     else if (step.step == core::PathStep::Index)
-      name += "[]";
+      name += "[" + step.field + "]";
     else
       return {};
   }
@@ -155,7 +164,7 @@ SummaryStore::targetsForGlobal(const core::SummaryPath &path) const {
 
 core::CallTargets SummaryStore::staticTargets(const Expr &expr,
                                               unsigned depth) {
-  const auto key = globalTargetKey(expr);
+  const auto key = globalTargetKey(expr, context);
   core::CallTargets result;
   if (!key.empty()) {
     const auto &local = exportedCallbackGlobals();
@@ -198,11 +207,18 @@ SummaryStore::exportedCallbackGlobals() const {
     const auto *init =
         value ? dyn_cast<InitListExpr>(value->IgnoreParenImpCasts()) : nullptr;
     if (const auto *array = type->getAsArrayTypeUnsafe()) {
-      if (init)
-        for (const auto *item : init->inits())
+      if (init) {
+        unsigned index = 0;
+        for (const auto *item : init->inits()) {
           visit(array->getElementType(), item, name + "[]", depth + 1);
-      else
+          if (index < core::MaxArrayCells)
+            visit(array->getElementType(), item,
+                  name + "[][" + std::to_string(index) + "]", depth + 1);
+          ++index;
+        }
+      } else {
         visit(array->getElementType(), nullptr, name + "[]", depth + 1);
+      }
     } else if (const auto *record = type->getAsRecordDecl()) {
       for (const auto *field : record->fields()) {
         if (!init || field->getFieldIndex() < init->getNumInits())
@@ -241,7 +257,9 @@ SummaryStore::exportedCallbackGlobals() const {
                 break;
               }
         } else if (step.step == core::PathStep::Index) {
-          name += "[]";
+          name += "[" + step.field + "]";
+          if (!step.field.empty())
+            continue;
           const auto *array = type->getAsArrayTypeUnsafe();
           type = array ? array->getElementType() : QualType{};
         } else {

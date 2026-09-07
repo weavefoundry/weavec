@@ -34,7 +34,7 @@ void inferred(struct buf *b) {
 
 void elements(char **a, int n) {
   a[0] = strdup("x");
-  // CHECK: rfc0007-owned-fields.c:[[@LINE+1]]:3: warning: '*a' is leaked when 'a' is freed [weavec::leak]
+  // CHECK: rfc0007-owned-fields.c:[[@LINE+1]]:3: warning: 'a[0]' is leaked when 'a' is freed [weavec::leak]
   free(a);
 }
 

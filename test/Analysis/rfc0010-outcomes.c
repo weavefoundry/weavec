@@ -17,7 +17,7 @@ struct bag {
 // The store happens on the zero class only; the negative class leaves the
 // caller's memory alone and carries the test that failed.
 // DUMP-LABEL: function 'bag_put':
-// DUMP: summary: b->items[*]: written; b->n: read|written; stores{b->items[*] = copy s} returns{} requires{b} outcome zero{} stored{b->items[*]} outcome negative{} stored{} facts{b->n =8} increments{b->n}
+// DUMP: summary: b->items[*]: written; b->n: read|written; stores{b->items[*] = copy s} returns{} requires{b} requires-extent{b: b->n*8} outcome zero{} stored{b->items[*]} outcome negative{} stored{} facts{b->n =8} increments{b->n}
 static int bag_put(struct bag *b, char *s) {
   if (b->n == 8)
     return -1;

@@ -63,6 +63,10 @@ bool FunctionDataflow::validateObjectPath(const core::SummaryPath &path,
       }
       break;
     case core::PathStep::Index:
+      // A selected cell is below storage whose dereference/array-summary
+      // step already selected its element type (RFC 0015).
+      if (!step.field.empty())
+        break;
       if (!type.isNull()) {
         if (const auto *array = type->getAsArrayTypeUnsafe())
           type = array->getElementType();

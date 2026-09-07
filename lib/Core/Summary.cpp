@@ -29,14 +29,16 @@ SummaryPath SummaryPath::field(std::string_view name) const {
   return result;
 }
 
-SummaryPath SummaryPath::indexed() const {
+SummaryPath SummaryPath::indexed(std::string_view selector) const {
   // Mirrors `PlaceTable::index`: indexing an index or a dereference
   // collapses onto it.
-  if (!steps.empty() && (steps.back().step == PathStep::Index ||
-                         steps.back().step == PathStep::Deref))
+  if (selector.empty() && !steps.empty() &&
+      ((steps.back().step == PathStep::Index && steps.back().field.empty()) ||
+       steps.back().step == PathStep::Deref))
     return *this;
   SummaryPath result = *this;
-  result.steps.push_back(PathElem{.step = PathStep::Index, .field = {}});
+  result.steps.push_back(
+      PathElem{.step = PathStep::Index, .field = std::string(selector)});
   return result;
 }
 
@@ -62,6 +64,12 @@ std::string SummaryPath::toString(std::string_view rootName) const {
   while (i < steps.size()) {
     switch (steps[i].step) {
     case PathStep::Deref:
+      if (i + 1 < steps.size() && steps[i + 1].step == PathStep::Index &&
+          !steps[i + 1].field.empty()) {
+        name += "[" + steps[i + 1].field + "]";
+        i += 2;
+        continue;
+      }
       // `(*p).f` is spelled `p->f`; a trailing or non-field-followed deref
       // is spelled `*p`.
       if (i + 1 < steps.size() && steps[i + 1].step == PathStep::Field) {
@@ -75,7 +83,7 @@ std::string SummaryPath::toString(std::string_view rootName) const {
       name += "." + steps[i].field;
       break;
     case PathStep::Index:
-      name += "[*]";
+      name += "[" + (steps[i].field.empty() ? "*" : steps[i].field) + "]";
       break;
     }
     ++i;
@@ -518,10 +526,51 @@ bool HeapDescription::valid() const {
   return true;
 }
 
+template <typename Range>
+static void joinArrayFacts(std::set<Range> &mine, const std::set<Range> &theirs,
+                           bool wasEmpty, bool otherEmpty) {
+  if (wasEmpty) {
+    mine = theirs;
+    return;
+  }
+  if (otherEmpty)
+    return;
+  std::set<Range> joined;
+  for (auto range : mine) {
+    if (!theirs.contains(range))
+      range.definite = false;
+    joined.insert(std::move(range));
+  }
+  for (auto range : theirs) {
+    if (!mine.contains(range))
+      range.definite = false;
+    joined.insert(std::move(range));
+  }
+  mine = std::move(joined);
+}
+
 void FunctionSummary::join(const FunctionSummary &other) {
   // The empty summary is the bottom of the lattice (a join of candidates
   // starts from it): the other side's classes are the answer.
   const bool wasEmpty = empty();
+  joinArrayFacts(arrayReleases, other.arrayReleases, wasEmpty, other.empty());
+  joinArrayFacts(arrayFills, other.arrayFills, wasEmpty, other.empty());
+  if (wasEmpty) {
+    arrayCopies = other.arrayCopies;
+  } else if (!other.empty()) {
+    std::set<ArrayCopy> joined;
+    for (auto copy : arrayCopies) {
+      if (!other.arrayCopies.contains(copy))
+        copy.definite = false;
+      joined.insert(std::move(copy));
+    }
+    for (auto copy : other.arrayCopies) {
+      if (!arrayCopies.contains(copy))
+        copy.definite = false;
+      joined.insert(std::move(copy));
+    }
+    arrayCopies = std::move(joined);
+  }
   incomplete.insert(other.incomplete.begin(), other.incomplete.end());
   callbackInputs.insert(other.callbackInputs.begin(),
                         other.callbackInputs.end());
@@ -754,6 +803,59 @@ FunctionSummary remapGlobals(const FunctionSummary &summary,
 
   FunctionSummary result;
   result.incomplete = summary.incomplete;
+  const auto mapArrayGuard = [&](PathGuard &guard, bool &definite) {
+    auto mapped = remapGuard(guard);
+    if (mapped.conditions.size() != guard.conditions.size() ||
+        mapped.pointers.size() != guard.pointers.size()) {
+      definite = false;
+      result.incomplete.insert("array range guard lost in program interface");
+    }
+    guard = std::move(mapped);
+  };
+  for (auto fill : summary.arrayFills) {
+    const auto storage = remapPath(fill.storage);
+    const auto count = remapAffine(fill.count);
+    if (storage && count) {
+      fill.storage = *storage;
+      fill.count = *count;
+      mapArrayGuard(fill.when, fill.definite);
+      result.arrayFills.insert(std::move(fill));
+    } else {
+      result.incomplete.insert("unresolved array fill in program interface");
+    }
+  }
+  for (auto release : summary.arrayReleases) {
+    const auto storage = remapPath(release.storage);
+    const auto begin = remapAffine(release.begin);
+    const auto count = remapAffine(release.count);
+    if (storage && begin && count) {
+      release.storage = *storage;
+      release.begin = *begin;
+      release.count = *count;
+      mapArrayGuard(release.when, release.definite);
+      result.arrayReleases.insert(std::move(release));
+    } else {
+      result.incomplete.insert("unresolved array release in program interface");
+    }
+  }
+  for (auto copy : summary.arrayCopies) {
+    const auto dest = remapPath(copy.dest);
+    const auto source = remapPath(copy.source);
+    const auto destBegin = remapAffine(copy.destBegin);
+    const auto sourceBegin = remapAffine(copy.sourceBegin);
+    const auto count = remapAffine(copy.count);
+    if (!dest || !source || !destBegin || !sourceBegin || !count) {
+      result.incomplete.insert("unresolved array range in program interface");
+      continue;
+    }
+    copy.dest = *dest;
+    copy.source = *source;
+    copy.destBegin = *destBegin;
+    copy.sourceBegin = *sourceBegin;
+    copy.count = *count;
+    mapArrayGuard(copy.when, copy.definite);
+    result.arrayCopies.insert(std::move(copy));
+  }
   for (const auto &[path, view] : summary.objectViews)
     if (const auto mapped = remapPath(path))
       result.objectViews[*mapped] = view;

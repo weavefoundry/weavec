@@ -1,7 +1,8 @@
 # Fixed evaluation set
 
-This suite measures RFC 0013's constructor and allocation-time value cases
-and RFC 0014's callback, pointer-guard and complete-copy cases.
+This suite measures RFC 0013's constructor and allocation-time value cases,
+RFC 0014's callback, pointer-guard and complete-copy cases, and RFC 0015's
+array/container ownership cases.
 Every independently identified bug is listed in `manifest.json`, including
 bugs the checker does not yet catch. It complements `test/recall/`, which
 pins existing detections against regression, and `scripts/corpus/`, which
@@ -14,8 +15,8 @@ python3 scripts/test_evaluate.py
 ctest --test-dir build/dev -R '^(evaluation|evaluation-harness)$' --output-on-failure
 ```
 
-The checked-in set contains 28 programs: 20 bugs and eight clean counterparts.
-RFC 0014 detects **18/20 bugs**, accepts **8/8 clean programs**, and has no
+The checked-in set contains 52 programs: 32 bugs and 20 clean counterparts.
+RFC 0015 detects **30/32 bugs**, accepts **20/20 clean programs**, and has no
 unexpected reports, parse failures, tool failures or timeouts. The remaining
 two bugs exercise a product of two symbolic sizes and a variable-length array;
 both are outside the current affine/layout domain. This small, selected set
@@ -40,6 +41,15 @@ RFC 0014 adds four bug/clean pairs: an actual callback target, a callback
 forwarded through another translation unit, a pointer equality guarded
 release, and a complete pointer copy. The original two known misses remain
 in the denominator.
+
+RFC 0015 adds twelve bug/clean pairs covering release history, rewritten
+indices, pointer/record copies, overlapping moves, immutable symbolic counts,
+initialization, fill and cleanup helpers, returned arrays across translation
+units, compaction and reallocation. The compaction pair reduces linenoise's
+history-table movement; the resize pair reduces the pointer preservation needed
+by Jansson-style table growth. Core/Analysis/lit tests additionally cover weak
+updates, bounds, nullable storage, selected callbacks, reference-counted shares,
+range limits, malformed interfaces and compiler sidecars.
 
 ## Adding cases
 

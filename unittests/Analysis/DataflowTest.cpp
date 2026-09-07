@@ -400,10 +400,9 @@ TEST(Dataflow, FreedObjectCannotBeDereferenced) {
             (Strings{"5: use of 'c' after it was freed"}));
 }
 
-TEST(Dataflow, ArrayElementsAreOnePlaceWithWitnesses) {
-  // `arr[*]` is one place (RFC 0002); the move record remembers which
-  // element was named and only a matching access is a use (RFC 0006,
-  // *Element witnesses*).
+TEST(Dataflow, SelectedArrayElementsKeepIndependentHistory) {
+  // RFC 0015 amends RFC 0006: selected cells retain separate history;
+  // two unresolved scalar indices may still name the same cell.
   const auto result = analyze(R"c(
     void constants(void) {
       int *arr[4];
@@ -415,7 +414,7 @@ TEST(Dataflow, ArrayElementsAreOnePlaceWithWitnesses) {
     }
     void variables(int **a, int i, int j) {
       free(a[i]);
-      use(a[j]);        /* different variable: clean */
+      use(a[j]);        /* may select the released element */
       use(a[i]);        /* same variable: use-after-free */
     }
     void whole(int **a, int i) {
@@ -435,18 +434,18 @@ TEST(Dataflow, ArrayElementsAreOnePlaceWithWitnesses) {
     }
   )c");
   ASSERT_TRUE(result.ast);
-  EXPECT_EQ(messages(result.diagnostics),
-            (Strings{"8: use of 'arr[*]' after it was freed",
-                     "13: use of '*a' after it was freed",
-                     "17: use of '*a' after it was freed",
-                     "24: use of 'arr[*]' after it was freed",
-                     "28: '*a' is freed twice"}));
+  EXPECT_EQ(
+      messages(result.diagnostics),
+      (Strings{"8: 'arr[1]' is leaked", "8: use of 'arr[0]' after it was freed",
+               "12: use of 'a[j]' after it was freed",
+               "13: use of 'a[i]' after it was freed",
+               "17: use of 'a[0]' after it was freed",
+               "24: use of 'arr[0]' after it was freed",
+               "28: 'a[0]' is freed twice"}));
 }
 
-TEST(Dataflow, ElementWitnessesGoStaleWithTheirVariable) {
-  // A write to, increment of, or address-of the index variable turns the
-  // witness unknown: it then matches nothing but a whole access (RFC 0006,
-  // *Element witnesses*).
+TEST(Dataflow, ArrayIndicesSurviveChangesToTheirVariables) {
+  // RFC 0015 keeps the old index value and recognizes affine selectors.
   const auto result = analyze(R"c(
     void loop_free(char **a, int n) {
       for (int i = 0; i < n; i++) free(a[i]);
@@ -464,18 +463,23 @@ TEST(Dataflow, ElementWitnessesGoStaleWithTheirVariable) {
     void reassigned(char **a, int i, int j) {
       free(a[i]);
       i = j;
-      use(a[i]);        /* clean */
+      use(a[i]);        /* j may equal the old i */
     }
     void unknown_index(char **a, int i) {
       free(a[i + 1]);
-      use(a[i + 1]);    /* not a recognised witness: clean */
+      use(a[i + 1]);    /* affine selector retains the release */
     }
   )c");
   ASSERT_TRUE(result.ast);
-  EXPECT_TRUE(result.diagnostics.empty()) << messages(result.diagnostics)[0];
+  EXPECT_EQ(
+      messages(result.diagnostics),
+      (Strings{
+          "8: analysis is incomplete: array cleanup membership is unresolved",
+          "18: use of 'a[i]' after it was freed",
+          "22: use of 'a[i+1]' after it was freed"}));
 }
 
-TEST(Dataflow, ElementWitnessesSurviveJoinsOnlyWhenTheyAgree) {
+TEST(Dataflow, ArrayConsumptionSurvivesDifferentSelectionsAtJoins) {
   const auto result = analyze(R"c(
     void agree(char **a, int i) {
       if (cond()) free(a[i]); else free(a[i]);
@@ -483,7 +487,7 @@ TEST(Dataflow, ElementWitnessesSurviveJoinsOnlyWhenTheyAgree) {
     }
     void disagree(char **a, int i, int j) {
       if (cond()) free(a[i]); else free(a[j]);
-      use(a[i]);        /* witness unknown: clean */
+      use(a[i]);        /* possibly consumed on either path */
       use(a[0]);        /* clean */
     }
     void one_side_whole(char **a, int i) {
@@ -493,8 +497,10 @@ TEST(Dataflow, ElementWitnessesSurviveJoinsOnlyWhenTheyAgree) {
   )c");
   ASSERT_TRUE(result.ast);
   EXPECT_EQ(messages(result.diagnostics),
-            (Strings{"4: use of '*a' after it was freed",
-                     "13: use of '*a' after it was freed"}));
+            (Strings{"4: use of 'a[i]' after it was freed",
+                     "8: use of 'a[i]' after it was freed",
+                     "9: use of 'a[0]' after it was freed",
+                     "13: use of 'a[i]' after it was freed"}));
 }
 
 // -- Moves --------------------------------------------------------------------

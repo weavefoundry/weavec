@@ -438,3 +438,29 @@ prove these unsupported operations safe. The pinned subset adds eight callback
 boundaries and nine incomplete-copy/view warnings while retaining its prior
 ownership and validity detections. The historical baseline is preserved so
 these changes remain explicit, including the increased analysis cost.
+
+### RFC 0015: array and container ownership
+
+The [validation report](../../docs/validation-rfc0015.md) and
+[machine-readable comparison](rfc0015-results.json) use the four pinned
+RFC 0014 subset configurations plus Lua, all at the same revisions before
+and after the change. This is a five-project subset, not a replacement for
+the historical eleven-configuration baseline.
+
+The final runs complete without parse errors, crashes, timeouts or convergence
+failures. Runtime is **113.39 → 165.56 seconds**; Lua accounts for
+**111.78 → 163.67 seconds** and **560.5 → 580.8 MiB** peak RSS. Total reports
+are **891 → 1,675**, including **653 → 1,435** incomplete-coverage warnings.
+An earlier 180-second Lua run timed out; its partial results are excluded
+from the final comparison, which uses a common 600-second timeout.
+
+Selected history values remove linenoise's two old double-free reports,
+and complete pointer-table operations remove three unsupported-copy warnings
+across linenoise and Jansson. More complex index expressions, range arguments
+and reference-counted loops remain boundaries or false positives. Lua gains
+selected-cell null false positives in `loadProtos` as well as coverage warnings
+through stack/tag/GC helpers. The report preserves every changed location
+and explains the limitations; lower counts at individual sites do not certify
+the complete libraries. The fixed evaluation separately improves from
+**18/32 to 30/32 detected bugs** and **14/20 to 20/20 clean programs** on the
+same expanded set, retaining both known size-analysis misses.

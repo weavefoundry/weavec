@@ -460,7 +460,7 @@ TEST(ResourceLifecycle, OwnedFieldsAreLostWithTheirContainer) {
   EXPECT_EQ(messages(result.diagnostics),
             (Strings{"4: 'b->p' is leaked when 'b' is freed",
                      "5: 'b->data' is leaked when 'b' is freed",
-                     "6: '*a' is leaked when 'a' is freed",
+                     "6: 'a[0]' is leaked when 'a' is freed",
                      "13: 'b->data' is leaked: it is overwritten without "
                      "being released"}));
   EXPECT_EQ(notes(result.diagnostics, 0),

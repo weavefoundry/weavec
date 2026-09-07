@@ -43,7 +43,14 @@ PlaceId PlaceTable::intern(PlaceId parent, PathStep step, std::string field) {
     displayName = "*" + parentEntry.name;
     break;
   case PathStep::Index:
-    displayName = parentEntry.name + "[*]";
+    if (field.empty())
+      displayName = parentEntry.name + "[*]";
+    else if (parentEntry.parent && (parentEntry.step == PathStep::Deref ||
+                                    (parentEntry.step == PathStep::Index &&
+                                     parentEntry.field.empty())))
+      displayName = std::string(name(*parentEntry.parent)) + "[" + field + "]";
+    else
+      displayName = parentEntry.name + "[" + field + "]";
     break;
   }
 
@@ -71,22 +78,28 @@ PlaceId PlaceTable::deref(PlaceId parent) {
 PlaceId PlaceTable::index(PlaceId parent) {
   assert(parent.value < entries.size() && "unknown parent place");
   const Entry &entry = entries[parent.value];
-  if (entry.parent &&
-      (entry.step == PathStep::Index || entry.step == PathStep::Deref))
+  if (entry.parent && ((entry.step == PathStep::Index && entry.field.empty()) ||
+                       entry.step == PathStep::Deref))
     return parent;
   return intern(parent, PathStep::Index, {});
+}
+
+PlaceId PlaceTable::element(PlaceId parent, std::string_view selector) {
+  assert(!selector.empty() && "a selected element needs an index");
+  return intern(parent, PathStep::Index, std::string(selector));
 }
 
 std::optional<PlaceId> PlaceTable::child(PlaceId parent, PathStep step,
                                          std::string_view field) const {
   assert(parent.value < entries.size() && "unknown parent place");
   const Entry &entry = entries[parent.value];
-  if (step == PathStep::Index && entry.parent &&
-      (entry.step == PathStep::Index || entry.step == PathStep::Deref))
+  if (step == PathStep::Index && field.empty() && entry.parent &&
+      ((entry.step == PathStep::Index && entry.field.empty()) ||
+       entry.step == PathStep::Deref))
     return parent;
   ChildKey key{.parent = parent.value,
                .step = step,
-               .field = step == PathStep::Field ? std::string(field)
+               .field = step != PathStep::Deref ? std::string(field)
                                                 : std::string()};
   if (const auto it = children.find(key); it != children.end())
     return it->second;
@@ -178,7 +191,8 @@ PlaceId PlaceTable::translate(PlaceId id, PlaceId from, PlaceId to) {
   case PathStep::Deref:
     return deref(newParent);
   case PathStep::Index:
-    return index(newParent);
+    return entry.field.empty() ? index(newParent)
+                               : element(newParent, entry.field);
   }
   return to;
 }
