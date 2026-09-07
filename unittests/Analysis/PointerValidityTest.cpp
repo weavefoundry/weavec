@@ -600,7 +600,7 @@ TEST(UseOfUninitialized, InitialisationSilences) {
     void all_paths(int c) { char *p; if (c) p = NULL; else p = malloc(4); use(p); free(p); }
     void loop(void) { char *p; for (int i = 0; i < 3; i++) { p = malloc(4); free(p); } }
     void whole(struct buf src) { struct buf b; b = src; use(b.data); }
-    void array(void) { char *a[2]; a[0] = NULL; use(a[1]); }
+    void array(void) { char *a[2]; a[0] = NULL; use(a[0]); }
     typedef __builtin_va_list va_list;
     void variadic(const char *fmt, ...) {
       va_list ap, cpy;

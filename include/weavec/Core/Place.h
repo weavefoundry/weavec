@@ -9,12 +9,13 @@
 // A "place" is an abstract, frontend-neutral handle for a storage location.
 // Places are structured (RFC 0002): a *base* (a variable, parameter or
 // global) followed by a path of field selections, dereferences and a
-// collapsing array summary:
+// array selections (RFC 0015):
 //
-//   place ::= base ('.' field | '*' | '[*]')*
+//   place ::= base ('.' field | '*' | '[*]' | '[' selector ']')*
 //
-// `p->next` is `(*p).next`, `a[i]` and `a[0]` are both `a[*]`, and `p[i]` or
-// `*(p + k)` are `*p`. The Clang integration layer maps `clang::ValueDecl`s
+// `p->next` is `(*p).next`. Selected cells live below array storage; the empty
+// Index retains the collapsing unknown-element summary. The Clang integration
+// layer maps `clang::ValueDecl`s
 // and expressions onto places; the core model only ever reasons about
 // `PlaceId`s and the parent/child structure recorded here.
 //
@@ -56,7 +57,7 @@ enum class PathStep : std::uint8_t {
   Field,
   /// `*parent`: the object the pointer stored in `parent` refers to.
   Deref,
-  /// `parent[*]`: the summary of every element of the array `parent`.
+  /// An array summary (empty key) or a selected cell (ArrayIndex key).
   Index,
 };
 
@@ -77,13 +78,20 @@ public:
   /// The object `parent` points to.
   [[nodiscard]] PlaceId deref(PlaceId parent);
 
-  /// The element summary of the array `parent`. Indexing an index or a
+  /// The element summary of the array `parent`. Indexing a summary or a
   /// dereference collapses (`a[*][*]` is `a[*]`, `(*p)[*]` is `*p`), which is
-  /// what makes the set of places finite for any given function.
+  /// the legacy unknown-element fallback. A selected cell keeps dimensions.
   [[nodiscard]] PlaceId index(PlaceId parent);
 
+  /// RFC 0015: a selected cell below an array's summary storage. The key
+  /// is the canonical ArrayIndex spelling; unlike index(), it never collapses.
+  [[nodiscard]] PlaceId element(PlaceId parent, std::string_view selector);
+  [[nodiscard]] bool isElement(PlaceId id) const noexcept {
+    return step(id) == PathStep::Index && !fieldName(id).empty();
+  }
+
   /// The child `field`/`deref`/`index` would return, if it already exists;
-  /// nothing is interned. `field` is ignored unless `step` is `Field`.
+  /// nothing is interned. `field` is a field name or an Index selector key.
   [[nodiscard]] std::optional<PlaceId> child(PlaceId parent, PathStep step,
                                              std::string_view field) const;
 
@@ -96,7 +104,7 @@ public:
   /// The step that produced `id` from its parent; meaningless for bases.
   [[nodiscard]] PathStep step(PlaceId id) const noexcept;
 
-  /// The field name for a `PathStep::Field` place; empty otherwise.
+  /// The field name or selected Index key; empty for other places.
   [[nodiscard]] std::string_view fieldName(PlaceId id) const noexcept;
 
   [[nodiscard]] bool isBase(PlaceId id) const noexcept {

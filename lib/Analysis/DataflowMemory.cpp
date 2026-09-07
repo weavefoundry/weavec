@@ -67,6 +67,9 @@ bool FunctionDataflow::handleMemoryCopy(const CallExpr &call,
   if (name != "memcpy" && name != "memmove")
     return false;
 
+  if (handleArrayCopy(call, effects, state))
+    return true;
+
   const Expr &destExpr = *call.getArg(0)->IgnoreParenImpCasts();
   const Expr &sourceExpr = *call.getArg(1)->IgnoreParenImpCasts();
   const auto objectType = [](const Expr &expr) -> QualType {

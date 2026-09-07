@@ -17,14 +17,13 @@
 #include <string>
 
 namespace weavec::frontend {
-namespace {
 
 using core::FunctionSummary;
 using core::PlaceEffect;
 using core::SummaryPath;
 using core::ValueSource;
 
-UnitRecord sample() {
+static UnitRecord sample() {
   UnitRecord record;
   analysis::UnitExports &exports = record.exports;
   exports.source = "src/node.c";
@@ -104,7 +103,7 @@ TEST(Sidecar, PathIsOutputPlusExtension) {
 
 TEST(Sidecar, PrintsStableText) {
   EXPECT_EQ(printUnitRecord(sample()),
-            "weavec-summaries 10\n"
+            "weavec-summaries 11\n"
             "source src/node.c\n"
             "cwd /work/build\n"
             "arg -triple\n"
@@ -207,8 +206,8 @@ TEST(Sidecar, RejectsOtherFormatsAndMalformedLines) {
   std::string error;
   EXPECT_FALSE(parseUnitRecord("weavec-summaries 1\n", &error));
   EXPECT_EQ(error, "unsupported format 1");
-  EXPECT_FALSE(parseUnitRecord("weavec-summaries 11\n", &error));
-  EXPECT_EQ(error, "unsupported format 11");
+  EXPECT_FALSE(parseUnitRecord("weavec-summaries 10\n", &error));
+  EXPECT_EQ(error, "unsupported format 10");
   EXPECT_FALSE(parseUnitRecord("weavec-summaries 7\n", &error));
   EXPECT_EQ(error, "unsupported format 7");
   EXPECT_FALSE(parseUnitRecord("ELF\x01\x02", &error));
@@ -216,33 +215,33 @@ TEST(Sidecar, RejectsOtherFormatsAndMalformedLines) {
   EXPECT_FALSE(parseUnitRecord("", &error));
   EXPECT_EQ(error, "empty file");
   EXPECT_FALSE(parseUnitRecord(
-      "weavec-summaries 10\nsummary\n  return fresh\nend\n", &error));
+      "weavec-summaries 11\nsummary\n  return fresh\nend\n", &error));
   EXPECT_EQ(error, "line 2: summary record without a function");
-  EXPECT_FALSE(parseUnitRecord("weavec-summaries 10\nfunction f\n", &error));
+  EXPECT_FALSE(parseUnitRecord("weavec-summaries 11\nfunction f\n", &error));
   EXPECT_EQ(error, "line 2: malformed 'function' line");
-  EXPECT_FALSE(parseUnitRecord("weavec-summaries 10\nfunction f external "
+  EXPECT_FALSE(parseUnitRecord("weavec-summaries 11\nfunction f external "
                                "plain\nsummary\n  return fresh\n",
                                &error));
   EXPECT_EQ(error, "line 4: summary record without 'end'");
   EXPECT_FALSE(
-      parseUnitRecord("weavec-summaries 10\nreported x y z\n", &error));
+      parseUnitRecord("weavec-summaries 11\nreported x y z\n", &error));
   EXPECT_EQ(error, "line 2: malformed 'reported' line");
   // RFC 0012.
   EXPECT_FALSE(
-      parseUnitRecord("weavec-summaries 10\nsized-field a b\n", &error));
+      parseUnitRecord("weavec-summaries 11\nsized-field a b\n", &error));
   EXPECT_EQ(error, "line 2: malformed 'sized-field' line");
   EXPECT_FALSE(
-      parseUnitRecord("weavec-summaries 10\nsized-field a b c\n", &error));
+      parseUnitRecord("weavec-summaries 11\nsized-field a b c\n", &error));
   EXPECT_EQ(error, "line 2: malformed 'sized-field' line");
   EXPECT_FALSE(
-      parseUnitRecord("weavec-summaries 10\nunsized-field a b c\n", &error));
+      parseUnitRecord("weavec-summaries 11\nunsized-field a b c\n", &error));
   EXPECT_EQ(error, "line 2: malformed 'unsized-field' line");
 }
 
 TEST(Sidecar, SkipsUnknownLinesAndBlankOnes) {
   std::string error;
   const std::optional<UnitRecord> parsed = parseUnitRecord(
-      "weavec-summaries 10\n\nfuture-thing 42\nsource a.c\n\n", &error);
+      "weavec-summaries 11\n\nfuture-thing 42\nsource a.c\n\n", &error);
   ASSERT_TRUE(parsed) << error;
   EXPECT_EQ(parsed->exports.source, "a.c");
   EXPECT_TRUE(parsed->exports.functions.empty());
@@ -266,8 +265,8 @@ TEST(Sidecar, WritesAndReadsFiles) {
   EXPECT_FALSE(readSidecar(missing, &error));
   EXPECT_FALSE(error.empty());
 
-  (void)llvm::sys::fs::remove(path);
-  (void)llvm::sys::fs::remove(dir);
+  EXPECT_FALSE(llvm::sys::fs::remove(path));
+  EXPECT_FALSE(llvm::sys::fs::remove(dir));
 }
 
 TEST(Sidecar, CallbackContextsAndTargetSymbolsRoundTrip) {
@@ -302,5 +301,38 @@ TEST(Sidecar, MalformedCallbackRecordsAreRejected) {
   EXPECT_FALSE(parseUnitRecord("weavec-summaries 9\n"));
 }
 
-} // namespace
+TEST(Sidecar, SelectedArrayPathsAndAllRangeKindsRoundTrip) {
+  auto original = sample();
+  auto &summary = original.exports.functions.at("node_new").summary;
+  summary.arrayCopies.insert(
+      {.dest = SummaryPath::result().deref(),
+       .source = SummaryPath::param(0).deref(),
+       .destBegin = core::PathAffine::ofConstant(0),
+       .sourceBegin = core::PathAffine::ofConstant(1),
+       .count = core::PathAffine::ofPath(SummaryPath::param(1)),
+       .elementBytes = 8,
+       .view = {},
+       .when = {},
+       .definite = false});
+  summary.arrayFills.insert({.storage = SummaryPath::result().deref(),
+                             .count = core::PathAffine::ofConstant(3),
+                             .bytes = 4,
+                             .when = {},
+                             .definite = false});
+  summary.arrayReleases.insert({.storage = SummaryPath::param(0).deref(),
+                                .begin = core::PathAffine::ofConstant(0),
+                                .count = core::PathAffine::ofConstant(3),
+                                .when = {},
+                                .cleared = true,
+                                .definite = false});
+  summary.addEffect(SummaryPath::param(0).deref().indexed("$1+2"),
+                    PlaceEffect{.read = true});
+  std::string error;
+  const auto encoded = printUnitRecord(original);
+  const auto decoded = parseUnitRecord(encoded, &error);
+  ASSERT_TRUE(decoded) << error;
+  EXPECT_EQ(decoded->exports.functions.at("node_new").summary, summary);
+  EXPECT_EQ(printUnitRecord(*decoded), encoded);
+}
+
 } // namespace weavec::frontend

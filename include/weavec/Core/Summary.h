@@ -83,7 +83,7 @@ struct SummaryPath {
 
   [[nodiscard]] SummaryPath deref() const;
   [[nodiscard]] SummaryPath field(std::string_view name) const;
-  [[nodiscard]] SummaryPath indexed() const;
+  [[nodiscard]] SummaryPath indexed(std::string_view selector = {}) const;
 
   [[nodiscard]] bool isRoot() const noexcept { return steps.empty(); }
   [[nodiscard]] bool isParam() const noexcept {
@@ -435,6 +435,45 @@ using OutcomeEffects = std::map<SummaryPath, PlaceEffect>;
 /// the callee wrote, the fact that holds on every path returning one class.
 using OutcomeFacts = std::map<SummaryPath, ValueFact>;
 
+/// RFC 0015: a final contiguous copy from entry contents. Explicit final
+/// cell postconditions override this range. A non-definite effect carries
+/// possible contents only and never justifies a strong replacement.
+struct ArrayCopy {
+  SummaryPath dest;
+  SummaryPath source;
+  PathAffine destBegin;
+  PathAffine sourceBegin;
+  PathAffine count;
+  std::int64_t elementBytes = 0;
+  std::string view;
+  PathGuard when;
+  bool definite = true;
+  friend auto operator<=>(const ArrayCopy &, const ArrayCopy &) = default;
+};
+
+/// RFC 0015: a proved zero-based fill. Missing bytes means null; otherwise
+/// each element receives a distinct malloc result of that constant extent.
+struct ArrayFill {
+  SummaryPath storage;
+  PathAffine count;
+  std::optional<std::int64_t> bytes;
+  PathGuard when;
+  bool definite = true;
+  friend auto operator<=>(const ArrayFill &, const ArrayFill &) = default;
+};
+
+/// RFC 0015: a proved complete traversal releases every pointer cell in a
+/// contiguous interval. Clearing a slot does not release its aliases again.
+struct ArrayRelease {
+  SummaryPath storage;
+  PathAffine begin;
+  PathAffine count;
+  PathGuard when;
+  bool cleared = false;
+  bool definite = true;
+  friend auto operator<=>(const ArrayRelease &, const ArrayRelease &) = default;
+};
+
 /// The interface behaviour of one function (RFC 0003, *Summaries*).
 class FunctionSummary {
 public:
@@ -450,6 +489,9 @@ public:
   std::set<Store> stores;
   /// RFC 0013: final heap state, keyed by the output root.
   std::map<SummaryPath, HeapDescription> heap;
+  std::set<ArrayCopy> arrayCopies;
+  std::set<ArrayFill> arrayFills;
+  std::set<ArrayRelease> arrayReleases;
   /// Alternatives for the pointer result; empty when nothing is known.
   std::set<ValueSource> returns;
   /// Per outcome class the callee may return, the consumption (`freed` /
@@ -610,7 +652,8 @@ public:
            nonNullOn.empty() && requiresNonNull.empty() && !neverReturns &&
            increments.empty() && decrements.empty() && counts.empty() &&
            storesOn.empty() && factOn.empty() && requiresExtent.empty() &&
-           heap.empty();
+           heap.empty() && arrayCopies.empty() && arrayReleases.empty() &&
+           arrayFills.empty();
   }
 
   /// Component-wise set union (conjunction for the must-facts).

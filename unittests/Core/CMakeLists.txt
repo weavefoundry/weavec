@@ -3,6 +3,7 @@ weavec_add_unittest(
   SOURCES CallTargetsTest.cpp
           AliasRelationTest.cpp
           AnalysisStateTest.cpp
+          ArrayTest.cpp
           BorrowTest.cpp
           DiagnosticTest.cpp
           HeapSummaryTest.cpp

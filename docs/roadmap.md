@@ -339,6 +339,25 @@ relational reasoning and GC/region invariants remain outside this milestone.
 Recursive callback contexts that cannot be resolved within the bounds report
 incomplete coverage. Runtime enforcement and verification mode remain separate.
 
+## Milestone 14 — Array and container ownership
+
+Design: [RFC 0015](rfcs/0015-array-and-container-ownership.md).
+
+- [x] Independent selected cells, nested arrays and scalar index snapshots.
+- [x] Per-cell ownership, initialization, nullness, callbacks and heap state.
+- [x] Simultaneous complete pointer/record array copies and overlapping moves.
+- [x] Sparse symbolic range snapshots and final helper/returned-container summaries.
+- [x] Proved contiguous fill/cleanup loops and reallocation child preservation.
+- [x] Format 11 summaries/sidecars, bounded import validation and global remapping.
+- [x] Unit, integration and fixed evaluation pairs, including compiler link tests.
+- [x] Pinned before/after corpus counts, location-level triage and measured
+      performance in the [validation report](validation-rfc0015.md).
+
+Unknown overlap can still produce conservative temporal reports. Arbitrary
+strides, partial pointer representations, compositions that require retaining
+unbounded range history and general loop invariants remain incomplete boundaries.
+This milestone does not introduce verification mode or a tracing collector model.
+
 ## Ongoing
 
 - Corpus testing against real C projects (`scripts/corpus.py`; false-positive

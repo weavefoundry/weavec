@@ -6,6 +6,7 @@ weavec_add_library(
   Core
   SOURCES AliasRelation.cpp
           AnalysisState.cpp
+          Array.cpp
           Borrow.cpp
           CallTargets.cpp
           Diagnostic.cpp

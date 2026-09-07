@@ -307,6 +307,230 @@
         "Inputs/rfc0014-callback.c"
       ],
       "whole_program": true
+    },
+    {
+      "name": "array-history-bug",
+      "sources": [
+        "rfc0015-array-history-bug.c"
+      ],
+      "bugs": [
+        {
+          "marker": "array-history",
+          "diagnostic": "use-after-free"
+        }
+      ]
+    },
+    {
+      "name": "array-history-good",
+      "sources": [
+        "rfc0015-array-history-good.c"
+      ]
+    },
+    {
+      "name": "array-index-bug",
+      "sources": [
+        "rfc0015-array-index-bug.c"
+      ],
+      "bugs": [
+        {
+          "marker": "array-index",
+          "diagnostic": "use-after-free"
+        }
+      ]
+    },
+    {
+      "name": "array-index-good",
+      "sources": [
+        "rfc0015-array-index-good.c"
+      ]
+    },
+    {
+      "name": "array-copy-bug",
+      "sources": [
+        "rfc0015-array-copy-bug.c"
+      ],
+      "bugs": [
+        {
+          "marker": "array-copy",
+          "diagnostic": "use-after-free"
+        }
+      ]
+    },
+    {
+      "name": "array-copy-good",
+      "sources": [
+        "rfc0015-array-copy-good.c"
+      ]
+    },
+    {
+      "name": "array-symbolic-bug",
+      "sources": [
+        "rfc0015-array-symbolic-bug.c"
+      ],
+      "bugs": [
+        {
+          "marker": "array-symbolic",
+          "diagnostic": "use-after-free"
+        }
+      ]
+    },
+    {
+      "name": "array-symbolic-good",
+      "sources": [
+        "rfc0015-array-symbolic-good.c"
+      ]
+    },
+    {
+      "name": "array-memmove-bug",
+      "sources": [
+        "rfc0015-array-memmove-bug.c"
+      ],
+      "bugs": [
+        {
+          "marker": "array-memmove",
+          "diagnostic": "use-after-free"
+        }
+      ]
+    },
+    {
+      "name": "array-memmove-good",
+      "sources": [
+        "rfc0015-array-memmove-good.c"
+      ]
+    },
+    {
+      "name": "array-record-bug",
+      "sources": [
+        "rfc0015-array-record-bug.c"
+      ],
+      "bugs": [
+        {
+          "marker": "array-record",
+          "diagnostic": "use-after-free"
+        }
+      ]
+    },
+    {
+      "name": "array-record-good",
+      "sources": [
+        "rfc0015-array-record-good.c"
+      ]
+    },
+    {
+      "name": "array-cleanup-bug",
+      "sources": [
+        "rfc0015-array-cleanup-bug.c"
+      ],
+      "bugs": [
+        {
+          "marker": "array-cleanup",
+          "diagnostic": "use-after-free"
+        }
+      ]
+    },
+    {
+      "name": "array-cleanup-good",
+      "sources": [
+        "rfc0015-array-cleanup-good.c"
+      ]
+    },
+    {
+      "name": "array-fill-bug",
+      "sources": [
+        "rfc0015-array-fill-bug.c"
+      ],
+      "bugs": [
+        {
+          "marker": "array-fill",
+          "diagnostic": "use-after-free"
+        }
+      ]
+    },
+    {
+      "name": "array-fill-good",
+      "sources": [
+        "rfc0015-array-fill-good.c"
+      ]
+    },
+    {
+      "name": "array-initialization-bug",
+      "sources": [
+        "rfc0015-array-initialization-bug.c"
+      ],
+      "bugs": [
+        {
+          "marker": "array-initialization",
+          "diagnostic": "use-of-uninitialized"
+        }
+      ]
+    },
+    {
+      "name": "array-initialization-good",
+      "sources": [
+        "rfc0015-array-initialization-good.c"
+      ]
+    },
+    {
+      "name": "array-returned-bug",
+      "sources": [
+        "rfc0015-array-returned-bug.c",
+        "../WholeProgram/Inputs/array15.c"
+      ],
+      "whole_program": true,
+      "bugs": [
+        {
+          "marker": "array-returned",
+          "diagnostic": "use-after-free"
+        }
+      ]
+    },
+    {
+      "name": "array-returned-good",
+      "sources": [
+        "rfc0015-array-returned-good.c",
+        "../WholeProgram/Inputs/array15.c"
+      ],
+      "whole_program": true
+    },
+    {
+      "name": "array-compacted-bug",
+      "sources": [
+        "rfc0015-array-compacted-bug.c",
+        "../WholeProgram/Inputs/array15.c"
+      ],
+      "whole_program": true,
+      "bugs": [
+        {
+          "marker": "array-compacted",
+          "diagnostic": "use-after-free"
+        }
+      ]
+    },
+    {
+      "name": "array-compacted-good",
+      "sources": [
+        "rfc0015-array-compacted-good.c",
+        "../WholeProgram/Inputs/array15.c"
+      ],
+      "whole_program": true
+    },
+    {
+      "name": "array-resized-bug",
+      "sources": [
+        "rfc0015-array-resized-bug.c"
+      ],
+      "bugs": [
+        {
+          "marker": "array-resized",
+          "diagnostic": "use-after-free"
+        }
+      ]
+    },
+    {
+      "name": "array-resized-good",
+      "sources": [
+        "rfc0015-array-resized-good.c"
+      ]
     }
   ]
 }

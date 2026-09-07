@@ -1,0 +1,91 @@
+{
+  "projects": [
+    {
+      "name": "log.c",
+      "url": "https://github.com/rxi/log.c.git",
+      "ref": "f9ea34994bd58ed342d2245cd4110bb5c6790153",
+      "files": [
+        "src/log.c"
+      ],
+      "args": [
+        "-std=c99",
+        "-Isrc",
+        "-DLOG_USE_COLOR"
+      ],
+      "notes": "Callbacks stored in a global table; FILE* borrowed across calls."
+    },
+    {
+      "name": "cJSON-program",
+      "url": "https://github.com/DaveGamble/cJSON.git",
+      "ref": "fb16e5cf358798aabb049655975cde8427101056",
+      "files": [
+        "cJSON.c",
+        "cJSON_Utils.c"
+      ],
+      "args": [
+        "-std=c89",
+        "-I."
+      ],
+      "whole_program": true,
+      "notes": "cJSON_Utils.c calls into cJSON.c (cJSON_free, cJSON_Delete, cJSON_Duplicate, ...): every one of its 20 single-unit boundary warnings resolves to a summary."
+    },
+    {
+      "name": "linenoise-program",
+      "url": "https://github.com/antirez/linenoise.git",
+      "ref": "a473823d74b93eab2ba83480df16ed37617493f2",
+      "files": [
+        "linenoise.c",
+        "example.c"
+      ],
+      "args": [
+        "-std=c99",
+        "-I.",
+        "-D_GNU_SOURCE"
+      ],
+      "whole_program": true,
+      "notes": "example.c installs the completion and hints callbacks linenoise.c calls through pointers, and frees what linenoise() returns."
+    },
+    {
+      "name": "jansson",
+      "url": "https://github.com/akheron/jansson.git",
+      "ref": "851a2145e3256f2e67e5dfe24b0e456bf198b741",
+      "files": [
+        "src/dump.c",
+        "src/error.c",
+        "src/hashtable.c",
+        "src/hashtable_seed.c",
+        "src/load.c",
+        "src/memory.c",
+        "src/pack_unpack.c",
+        "src/strbuffer.c",
+        "src/strconv.c",
+        "src/utf.c",
+        "src/value.c",
+        "src/version.c"
+      ],
+      "args": [
+        "-std=c99",
+        "-Isrc",
+        "-I{support}",
+        "-DHAVE_CONFIG_H"
+      ],
+      "whole_program": true,
+      "notes": "A reference-counted JSON library: json_incref/json_decref keep json_t::refcount with __atomic_add_fetch/__atomic_sub_fetch (inline in jansson.h), json_decref frees through json_delete in value.c, containers take a share of what is stored in them (json_object_set takes one, json_object_set_new does not). The corpus for RFC 0010: shares, releases, per-outcome stores. jansson_config.h is the configured header the build would generate; see support/jansson."
+    },
+    {
+      "name": "lua",
+      "url": "https://github.com/lua/lua.git",
+      "ref": "7579fc9d7ed90240487251dfb69168f8e64e9294",
+      "files": [
+        "l*.c"
+      ],
+      "args": [
+        "-std=c99",
+        "-I.",
+        "-DLUA_USE_POSIX"
+      ],
+      "whole_program": true,
+      "notes": "A garbage-collected VM, a few minutes as one program with a release build (see the timings in README.md). realloc through the l_alloc function pointer, a 968-block interpreter loop with computed goto (luaV_execute), linked stacks of locals in the parser. Stresses outcome-conditional summaries, dead-variable cleanup and analysis time; see the triage in README.md."
+    }
+  ]
+}

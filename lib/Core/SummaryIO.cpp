@@ -8,6 +8,8 @@
 
 #include "weavec/Core/SummaryIO.h"
 
+#include "weavec/Core/Array.h"
+
 #include <charconv>
 #include <cstdint>
 #include <string>
@@ -30,7 +32,7 @@ static std::string printSteps(const SummaryPath &path) {
       steps += elem.field;
       break;
     case PathStep::Index:
-      steps += "[]";
+      steps += "[" + elem.field + "]";
       break;
     }
   }
@@ -180,6 +182,29 @@ std::string printGuard(const PathGuard &guard, const GlobalNamer &names) {
 std::string printSummary(const FunctionSummary &summary,
                          const GlobalNamer &names) {
   std::string text = "summary\n";
+  for (const auto &fill : summary.arrayFills)
+    text += "  array-fill " + printSummaryPath(fill.storage, names) +
+            " count " + printAffine(fill.count, names) +
+            (fill.bytes ? " malloc " + std::to_string(*fill.bytes) : " null") +
+            (fill.definite ? " definite" : " possible") +
+            printGuard(fill.when, names) + "\n";
+  for (const auto &release : summary.arrayReleases)
+    text += "  array-release " + printSummaryPath(release.storage, names) +
+            " begin " + printAffine(release.begin, names) + " count " +
+            printAffine(release.count, names) +
+            (release.cleared ? " cleared" : " retained") +
+            (release.definite ? " definite" : " possible") +
+            printGuard(release.when, names) + "\n";
+  for (const auto &copy : summary.arrayCopies)
+    text += "  array-copy " + printSummaryPath(copy.dest, names) + " from " +
+            printSummaryPath(copy.source, names) + " dest-begin " +
+            printAffine(copy.destBegin, names) + " source-begin " +
+            printAffine(copy.sourceBegin, names) + " count " +
+            printAffine(copy.count, names) + " bytes " +
+            std::to_string(copy.elementBytes) + " view " +
+            (copy.view.empty() ? "pointer" : copy.view) +
+            (copy.definite ? " definite" : " possible") +
+            printGuard(copy.when, names) + "\n";
   for (const auto &[path, view] : summary.objectViews)
     text +=
         "  object-view " + printSummaryPath(path, names) + " " + view + "\n";
@@ -332,12 +357,19 @@ static bool parseSteps(std::string_view text, SummaryPath &path) {
       path.steps.push_back(PathElem{.step = PathStep::Deref, .field = {}});
       ++pos;
       break;
-    case '[':
-      if (pos + 1 >= text.size() || text[pos + 1] != ']')
+    case '[': {
+      const auto end = text.find(']', pos + 1);
+      if (end == std::string_view::npos)
         return false;
-      path.steps.push_back(PathElem{.step = PathStep::Index, .field = {}});
-      pos += 2;
+      const auto selector = text.substr(pos + 1, end - pos - 1);
+      const auto index = ArrayIndex::parse(selector);
+      if (!selector.empty() && !index)
+        return false;
+      path.steps.push_back(PathElem{.step = PathStep::Index,
+                                    .field = index ? index->toString() : ""});
+      pos = end + 1;
       break;
+    }
     case '.': {
       const std::size_t start = ++pos;
       while (pos < text.size() && text[pos] != '*' && text[pos] != '.' &&
@@ -735,7 +767,115 @@ std::optional<FunctionSummary> parseSummary(std::string_view record,
       continue;
     }
     bool ok = true;
-    if (kind == "never-returns") {
+    if (kind == "array-fill") {
+      ParsedPath storage;
+      std::optional<PathAffine> count;
+      std::int64_t bytes = 0;
+      ok = parsePath(tokens, resolve, storage) && tokens.take() == "count" &&
+           parseAffine(tokens, resolve, count);
+      const auto mode = tokens.take();
+      PathGuard when;
+      ok = ok && (mode == "null" ||
+                  (mode == "malloc" && parseInteger(tokens.take(), bytes) &&
+                   bytes >= 0));
+      const auto strength = tokens.take();
+      ok = ok && (strength == "definite" || strength == "possible") &&
+           parseGuard(tokens, resolve, when);
+      if (ok && storage.path && count) {
+        ok = (storage.path->hasDeref() || storage.path->isGlobal()) &&
+             (count->path ? count->scale == 1 : count->constant >= 0) &&
+             storage.path->steps.size() <= MaxHeapPathDepth &&
+             summary.arrayFills.size() < MaxArrayRanges;
+        if (ok)
+          summary.arrayFills.insert(
+              {.storage = *storage.path,
+               .count = *count,
+               .bytes = mode == "malloc" ? std::optional(bytes) : std::nullopt,
+               .when = std::move(when),
+               .definite = strength == "definite"});
+      } else if (ok) {
+        summary.incomplete.insert("unresolved array fill in program interface");
+      }
+    } else if (kind == "array-release") {
+      ParsedPath storage;
+      std::optional<PathAffine> begin;
+      std::optional<PathAffine> count;
+      ok = parsePath(tokens, resolve, storage) && tokens.take() == "begin" &&
+           parseAffine(tokens, resolve, begin) && tokens.take() == "count" &&
+           parseAffine(tokens, resolve, count);
+      const auto mode = tokens.take();
+      const auto strength = tokens.take();
+      PathGuard when;
+      ok = ok && (mode == "cleared" || mode == "retained") &&
+           (strength == "definite" || strength == "possible") &&
+           parseGuard(tokens, resolve, when);
+      if (ok && storage.path && begin && count) {
+        ok = !storage.path->isResult() &&
+             (storage.path->hasDeref() || storage.path->isGlobal()) &&
+             (!begin->path || begin->scale == 1) &&
+             (count->path ? count->scale == 1 : count->constant >= 0) &&
+             storage.path->steps.size() <= MaxHeapPathDepth &&
+             summary.arrayReleases.size() < MaxArrayRanges;
+        if (ok)
+          summary.arrayReleases.insert({.storage = *storage.path,
+                                        .begin = *begin,
+                                        .count = *count,
+                                        .when = std::move(when),
+                                        .cleared = mode == "cleared",
+                                        .definite = strength == "definite"});
+      } else if (ok) {
+        summary.incomplete.insert(
+            "unresolved array release in program interface");
+      }
+    } else if (kind == "array-copy") {
+      ParsedPath dest;
+      ParsedPath source;
+      std::optional<PathAffine> destBegin;
+      std::optional<PathAffine> sourceBegin;
+      std::optional<PathAffine> count;
+      std::int64_t bytes = 0;
+      ok = parsePath(tokens, resolve, dest) && tokens.take() == "from" &&
+           parsePath(tokens, resolve, source) &&
+           tokens.take() == "dest-begin" &&
+           parseAffine(tokens, resolve, destBegin) &&
+           tokens.take() == "source-begin" &&
+           parseAffine(tokens, resolve, sourceBegin) &&
+           tokens.take() == "count" && parseAffine(tokens, resolve, count) &&
+           tokens.take() == "bytes" && parseInteger(tokens.take(), bytes) &&
+           bytes > 0 && tokens.take() == "view";
+      const std::string view(tokens.take());
+      const auto mode = tokens.take();
+      PathGuard when;
+      ok = ok && !view.empty() && (mode == "definite" || mode == "possible") &&
+           parseGuard(tokens, resolve, when);
+      if (ok && dest.path && source.path && destBegin && sourceBegin && count) {
+        ok = !source.path->isResult() &&
+             (dest.path->isGlobal() || dest.path->hasDeref()) &&
+             (source.path->isGlobal() || source.path->hasDeref()) &&
+             (!destBegin->path || destBegin->scale == 1) &&
+             (!sourceBegin->path || sourceBegin->scale == 1) &&
+             (count->path ? count->scale == 1 : count->constant >= 0) &&
+             dest.path->steps.size() <= MaxHeapPathDepth &&
+             source.path->steps.size() <= MaxHeapPathDepth &&
+             std::ranges::count_if(
+                 summary.arrayCopies, [&](const ArrayCopy &copy) {
+                   return copy.dest == *dest.path;
+                 }) < static_cast<std::ptrdiff_t>(MaxArrayRanges);
+        if (ok)
+          summary.arrayCopies.insert({.dest = *dest.path,
+                                      .source = *source.path,
+                                      .destBegin = *destBegin,
+                                      .sourceBegin = *sourceBegin,
+                                      .count = *count,
+                                      .elementBytes = bytes,
+                                      .view = view == "pointer" ? "" : view,
+                                      .when = std::move(when),
+                                      .definite = mode == "definite"});
+      } else if (ok) {
+        summary.incomplete.insert(
+            "unresolved array range in program interface");
+      }
+    } else if (kind == "never-returns") {
       summary.neverReturns = true;
     } else if (kind == "effect") {
       ParsedPath path;

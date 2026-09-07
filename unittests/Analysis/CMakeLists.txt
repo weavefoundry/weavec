@@ -2,6 +2,7 @@ weavec_add_unittest(
   WeaveCAnalysisTests
   SOURCES AllocatorsTest.cpp
           AnnotationsTest.cpp
+          ArrayOwnershipTest.cpp
           DataflowTest.cpp
           FunctionAnalysisTest.cpp
           HeapStateTest.cpp

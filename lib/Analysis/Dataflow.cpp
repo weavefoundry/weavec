@@ -106,6 +106,14 @@ FunctionDataflow::FunctionDataflow(ASTContext &ctx, const FunctionDecl &fn,
       paramReassigned(fn.getNumParams(), false),
       signature(collectAnnotations(fn)), unsafeBody(signature.unsafe),
       inUnsafe(unsafeBody) {
+  builder.selectArray = [this](PlaceRef storage,
+                               std::optional<core::Affine> index, QualType type,
+                               const Expr &at) {
+    return selectArrayElement(std::move(storage), index, type, at);
+  };
+  builder.summaryIndex = [this](std::string_view selector) {
+    return summaryArrayIndex(selector);
+  };
   builder.validatePath = [this](const core::SummaryPath &path,
                                 const CallExpr &call) {
     return validateObjectPath(path, call);
@@ -502,7 +510,8 @@ core::AnalysisState FunctionDataflow::initialState() {
         place = places.field(place, step.field);
         break;
       case core::PathStep::Index:
-        place = places.index(place);
+        place = step.field.empty() ? places.index(place)
+                                   : places.element(place, step.field);
         break;
       }
     }
@@ -1583,6 +1592,7 @@ void FunctionDataflow::run() {
 
   collectScopes(body, fnLifetime);
   classifyStmt(body);
+  collectArrayCleanupLoops(body);
   collectDiscardedCalls(body);
   computeLiveness();
 
@@ -1670,7 +1680,15 @@ void FunctionDataflow::run() {
     // with no locally allocated resource. Its fallthrough still needs a
     // final heap snapshot before the parameter/local names are retired.
     if (blockTerminated ||
-        (state.resources.empty() && (state.returned || state.stored.empty())))
+        (state.resources.empty() &&
+         !arrayCleanupLoops.contains(
+             dyn_cast_or_null<ForStmt>(block->getTerminatorStmt())) &&
+         !arrayFillLoops.contains(
+             dyn_cast_or_null<ForStmt>(block->getTerminatorStmt())) &&
+         (state.returned ||
+          (state.stored.empty() && state.arrayRanges.empty() &&
+           state.releasedArrayRanges.empty() &&
+           state.filledArrayRanges.empty()))))
       continue;
     unsigned index = 0;
     for (const CFGBlock::AdjacentBlock &adjacent : block->succs()) {
@@ -1759,6 +1777,8 @@ bool FunctionDataflow::blockNeverReturns(const CFGBlock &block) {
 
 void FunctionDataflow::leaveBlock(const CFGBlock &from, unsigned succIndex,
                                   core::AnalysisState &state) {
+  currentState = &state;
+  const auto resetState = llvm::scope_exit([&] { currentState = nullptr; });
   // The condition first: on the null edge of `if (q)` the result owns
   // nothing, and on the other a retracted consumption may hand it back to
   // the argument (RFC 0007, *Acquiring and losing a resource*).
@@ -1766,6 +1786,7 @@ void FunctionDataflow::leaveBlock(const CFGBlock &from, unsigned succIndex,
   // No real path takes an edge the facts contradict: nothing dies on it.
   if (edgeInfeasible)
     return;
+  completeArrayCleanupLoop(from, succIndex, state);
   const CFGBlock *successor = nullptr;
   if (succIndex < from.succ_size())
     successor = (*std::next(from.succ_begin(), succIndex)).getReachableBlock();
@@ -2539,7 +2560,7 @@ bool FunctionDataflow::tracksScalar(core::PlaceId place) const {
       break;
     const core::PathStep step = places.step(*current);
     if (step == core::PathStep::Index)
-      return false;
+      return places.isElement(*current);
     // Below a dereference: caller memory or a heap object, written only
     // through pointers the model follows (`written` effects forget it).
     if (step == core::PathStep::Deref)
@@ -2640,6 +2661,7 @@ void FunctionDataflow::assignScalar(core::PlaceId place, const Expr *value,
     }
   }
   for (const core::PlaceId cell : cells) {
+    snapshotArrayIndex(cell, at, state);
     state.dropGuardsOn(cell);
     snapshotScalar(cell, at, state);
     state.relations.forget(cell);
@@ -2692,7 +2714,9 @@ FunctionDataflow::borrowedImages(core::PlaceId place,
         image = places.field(image, places.fieldName(step));
         break;
       case core::PathStep::Index:
-        image = places.index(image);
+        image = places.isElement(step)
+                    ? places.element(image, places.fieldName(step))
+                    : places.index(image);
         break;
       case core::PathStep::Deref:
         image = places.deref(image);
@@ -2979,6 +3003,7 @@ void FunctionDataflow::handleAdjustment(
       cells.push_back(image);
   }
   for (const core::PlaceId cell : cells) {
+    snapshotArrayIndex(cell, &at, state);
     state.dropGuardsOn(cell);
     // RFC 0011: `i++` after `i < n` says nothing about `i` and `n`.
     snapshotScalar(cell, &at, state);
@@ -2987,6 +3012,10 @@ void FunctionDataflow::handleAdjustment(
       state.scalars.set(cell, *fact);
     else
       state.scalars.forget(cell);
+    if (const auto snapshot = arrayIndexSnapshots.find({cell, &at});
+        snapshot != arrayIndexSnapshots.end())
+      state.relations.learn(cell, core::Relation::Equal, snapshot->second,
+                            adjustment.delta);
     if (const auto path = builder.summaryPathOf(cell))
       writtenScalarPaths.insert(*path);
   }
@@ -3174,6 +3203,8 @@ void FunctionDataflow::handleDecl(const DeclStmt &decl,
     reinit(place, state);
     noteVariableWrite(place, state);
     const Expr *init = var->getInit();
+    if (var->getType()->isArrayType())
+      initializeArray(place, var->getType(), init, *var, state);
     if (!var->getType()->isPointerType()) {
       if (init != nullptr && var->getType()->isRecordType()) {
         copyRecord(place, *init, state);
@@ -3285,6 +3316,8 @@ void FunctionDataflow::noteVariableWrite(core::PlaceId place,
 
 void FunctionDataflow::handleAssign(const BinaryOperator &assign,
                                     core::AnalysisState &state) {
+  if (arrayCleanupStores.contains(&assign))
+    return;
   const auto lhs = builder.resolve(*assign.getLHS());
   if (!lhs) {
     // `*slot() = p`: the value went somewhere the model cannot name (RFC
@@ -3301,6 +3334,33 @@ void FunctionDataflow::handleAssign(const BinaryOperator &assign,
   const QualType type = assign.getLHS()->getType();
   if (type->isPointerType()) {
     const ValueOrigin origin = builder.classifyValue(*assign.getRHS());
+    if (lhs->element.isWhole())
+      weakenOverlappingArrayWrites(lhs->place, origin, assign,
+                                   type->getPointeeType().isConstQualified(),
+                                   state);
+    if (!lhs->element.isWhole() && arrayTypes.contains(lhs->place)) {
+      // RFC 0015: an unresolved update may replace any represented cell.
+      // Every alternative joins with its old value; in particular a live
+      // RHS cannot erase an earlier free through a different holder.
+      const auto before = state;
+      for (auto &[id, range] : state.arrayRanges) {
+        (void)id;
+        if (range.source == lhs->place)
+          range.sourceLive = false;
+        if (range.destination == lhs->place)
+          range.definite = false;
+      }
+      for (const auto cell : places.descendants(lhs->place)) {
+        if (places.parent(cell) != lhs->place || !places.isElement(cell))
+          continue;
+        applyPointerAssign(cell, origin, assign,
+                           type->getPointeeType().isConstQualified(), state);
+      }
+      state.join(before, &places);
+      state.incompleteHeap.insert(lhs->place);
+      reportIncomplete("unresolved array element update", assign);
+      return;
+    }
     // This function's own whole write: the caller's value there is gone on
     // this path (RFC 0008, *Replaced values*). Not `p = p + 1`, which keeps
     // the value (RFC 0004, *Pointer identity*); and not a callee's store,
@@ -3396,6 +3456,7 @@ void FunctionDataflow::copyRecordPlaces(core::PlaceId dest,
     std::vector<core::Loan> loans;
     std::optional<core::SpatialRecord> spatial;
     std::optional<core::NullRecord> null;
+    std::optional<core::ValueFact> scalar;
     std::optional<core::ValueSource> incoming;
     std::optional<core::PathGuard> writeGuard;
     bool definitelyWritten;
@@ -3433,6 +3494,7 @@ void FunctionDataflow::copyRecordPlaces(core::PlaceId dest,
         .loans = {},
         .spatial = state.spatial.recordOf(place),
         .null = state.nulls.recordOf(place),
+        .scalar = state.scalars.factOf(place),
         .incoming = state.incoming.contains(place)
                         ? std::optional(state.incoming.at(place))
                         : std::nullopt,
@@ -3481,6 +3543,10 @@ void FunctionDataflow::copyRecordPlaces(core::PlaceId dest,
       state.spatial.set(field.to, *field.spatial);
     if (field.null)
       state.nulls.set(field.to, *field.null);
+    if (field.scalar) {
+      state.scalars.set(field.to, *field.scalar);
+      state.relations.learn(field.to, core::Relation::Equal, field.from);
+    }
     if (field.incoming)
       state.incoming[field.to] = *field.incoming;
     if (field.writeGuard)
@@ -3535,7 +3601,7 @@ void FunctionDataflow::applyResultStores(core::PlaceId dest,
       byDest[store.dest].push_back(store.value);
   }
   for (const auto &[path, values] : byDest) {
-    const auto field = builder.resolveBelow(dest, path);
+    const auto field = builder.resolveBelow(dest, path, &call);
     if (!field)
       continue;
     std::vector<ValueOrigin> alternatives;
@@ -3604,6 +3670,8 @@ void FunctionDataflow::initRecord(core::PlaceId dest, const InitListExpr &init,
 
 void FunctionDataflow::handleCall(const CallExpr &call,
                                   core::AnalysisState &state) {
+  if (arrayCleanupCalls.contains(&call))
+    return;
   lastCall.reset();
   retireHeapInputs(state);
   // RFC 0012, *`WEAVEC_ASSUME`*: the argument holds from here on, as on the
@@ -3632,6 +3700,7 @@ void FunctionDataflow::handleCall(const CallExpr &call,
   if (recording())
     inferred.incomplete.insert(effects->summary->incomplete.begin(),
                                effects->summary->incomplete.end());
+  captureArrayReallocation(call, *effects, state);
   if (!handleMemoryCopy(call, *effects, state))
     applySummary(call, *effects, state);
   // RFC 0009, *Inferred `noreturn`*: the callee never hands control back,
@@ -3675,6 +3744,8 @@ void FunctionDataflow::applySummary(const CallExpr &call,
     }
   }
   captureHeapInputs(call, summary, state);
+  applyArrayRanges(call, summary, state);
+  applyArrayFills(call, summary, state);
 
   // 0. Escapes (RFC 0007, *Escape*): an argument the summary says nothing
   //    about may be retained when the summary is an annotation or the
@@ -3890,6 +3961,7 @@ void FunctionDataflow::applySummary(const CallExpr &call,
     consumedTargets.emplace_back(entry.path, std::move(marked));
   }
   notePendingOutcome(call, summary, consumedTargets);
+  applyArrayReleases(call, summary, state);
 
   //    A callee that overwrote an object (`memcpy(root, &tmp, n)`) leaves
   //    nothing known about what lies below it (RFC 0006, *`written` forgets
@@ -4653,10 +4725,12 @@ void FunctionDataflow::recordResultStores(const PlaceRef &returned,
       chain.push_back(ancestor);
     }
     for (const core::PlaceId node : llvm::reverse(chain)) {
-      if (places.step(node) == core::PathStep::Index)
-        path = path.indexed();
-      else
+      if (places.step(node) == core::PathStep::Index) {
+        const auto selector = summaryArrayIndex(places.fieldName(node));
+        path = selector ? path.indexed(*selector) : path.indexed();
+      } else {
         path = path.field(places.fieldName(node));
+      }
     }
     ValueOrigin origin;
     if (state.resources.isNull(place)) {
@@ -4714,6 +4788,7 @@ void FunctionDataflow::reinit(core::PlaceId place, core::AnalysisState &state,
         record && !record->element.matches(element))
       survivor = record;
   } else {
+    forgetArrayStorage(place, state);
     loseTrackBelow(place, state);
     reinitMirrors(place, state);
   }
@@ -5888,7 +5963,9 @@ FunctionDataflow::mirrors(core::PlaceId place,
       else
         add(places.field(parentMirror, places.fieldName(place)));
     } else {
-      add(places.index(parentMirror));
+      add(places.isElement(place)
+              ? places.element(parentMirror, places.fieldName(place))
+              : places.index(parentMirror));
     }
   }
   return result;
@@ -5978,6 +6055,35 @@ FunctionDataflow::findMoved(core::PlaceId place,
   // and the live one, but only the freed node carries a move record.
   if (const auto record = state.moves.movedAt(place, element))
     return MovedHit{.target = place, .record = *record};
+  std::optional<core::PlaceId> selected = place;
+  while (selected && !places.isElement(*selected))
+    selected = places.parent(*selected);
+  auto array = selected ? places.parent(*selected) : std::nullopt;
+  if (!selected && arrayTypes.contains(place))
+    array = place;
+  if (array && *array != place)
+    if (const auto record = state.moves.movedAt(*array))
+      return MovedHit{.target = *array, .record = *record};
+  const auto index = selected
+                         ? core::ArrayIndex::parse(places.fieldName(*selected))
+                         : std::nullopt;
+  if (array)
+    for (const auto other : places.descendants(*array)) {
+      if (places.parent(other) != *array || !places.isElement(other) ||
+          other == selected)
+        continue;
+      const auto otherIndex = core::ArrayIndex::parse(places.fieldName(other));
+      if (index && otherIndex &&
+          core::arrayIndicesDisjoint(*index, *otherIndex, state.scalars,
+                                     state.relations))
+        continue;
+      const auto target = selected
+                              ? places.lookupTranslated(place, *selected, other)
+                              : std::optional(other);
+      if (target)
+        if (const auto record = state.moves.movedAt(*target))
+          return MovedHit{.target = *target, .record = *record};
+    }
   return std::nullopt;
 }
 
@@ -6100,7 +6206,26 @@ core::SourceLocation FunctionDataflow::locate(clang::SourceLocation loc) const {
 }
 
 std::string FunctionDataflow::nameOf(core::PlaceId place) const {
-  return std::string(places.name(place));
+  std::string text(places.name(place));
+  std::size_t pos = 0;
+  while ((pos = text.find("[$", pos)) != std::string::npos) {
+    const auto end = text.find(']', pos + 2);
+    if (end == std::string::npos)
+      break;
+    const auto index = core::ArrayIndex::parse(
+        std::string_view(text).substr(pos + 1, end - pos - 1));
+    if (!index || !index->symbol) {
+      pos = end + 1;
+      continue;
+    }
+    std::string selector(places.name(core::PlaceId{*index->symbol}));
+    if (index->offset)
+      selector +=
+          (index->offset > 0 ? "+" : "") + std::to_string(index->offset);
+    text.replace(pos + 1, end - pos - 1, selector);
+    pos += selector.size() + 2;
+  }
+  return text;
 }
 
 void FunctionDataflow::report(core::Diagnostic diagnostic) {
@@ -8196,6 +8321,11 @@ void FunctionDataflow::recordConsume(
     return;
   core::PlaceEffect effect =
       effectOfMove(reason, family, element, summaryGuardOf(guard));
+  for (auto current = std::optional(target); current;
+       current = places.parent(*current))
+    if (places.isElement(*current) &&
+        !summaryArrayIndex(places.fieldName(*current)))
+      effect.element = true;
   effect.at = offset;
   // Every caller-visible consume is recorded as it happens (RFC 0008,
   // *Replaced values*). The flow-sensitive record feeds the outcome classes
@@ -8284,8 +8414,11 @@ FunctionDataflow::consumptionAt(const core::AnalysisState &state) {
         effectOfMove(record->reason, record->family, record->element,
                      summaryGuardOf(record->guard));
     // The offset the consume happened at is on the event record (RFC 0011).
-    if (const auto it = state.consumed.find(*path); it != state.consumed.end())
+    if (const auto it = state.consumed.find(*path);
+        it != state.consumed.end()) {
       effect.at = it->second.at;
+      effect.element |= it->second.element;
+    }
     result[*path].join(effect);
   }
   return result;
@@ -8901,8 +9034,10 @@ void FunctionDataflow::finalizeSummary(const core::AnalysisState *exitState) {
       core::PlaceEffect effect =
           effectOfMove(record->reason, record->family, record->element, guard);
       if (const auto it = exitState->consumed.find(*path);
-          it != exitState->consumed.end())
+          it != exitState->consumed.end()) {
         effect.at = it->second.at;
+        effect.element |= it->second.element;
+      }
       inferred.addEffect(*path, effect);
       // Two places with one summary path (an alias and its mirror): the
       // value is gone when either record says so.

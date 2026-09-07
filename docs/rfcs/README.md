@@ -60,7 +60,7 @@ decision is a new RFC that supersedes the relevant section.
 | [0011](0011-spatial-safety.md)           | Spatial safety: derived pointers, extents and bounds | Accepted |
 | [0012](0012-spatial-safety-strings-and-fields.md) | Spatial safety II: strings, sized fields, offset relations and assumptions | Accepted |
 | [0013](0013-interprocedural-heap-state.md) | Interprocedural heap state and value identity | Accepted |
-
 | [0014](0014-pointer-identity-and-call-effects.md) | Pointer identity and precise call effects | Implemented |
+| [0015](0015-array-and-container-ownership.md) | Array elements, range operations, and container ownership | Implemented |
 
 The [roadmap](../roadmap.md) links each milestone to the RFCs that define it.

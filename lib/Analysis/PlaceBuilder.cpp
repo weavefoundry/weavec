@@ -9,6 +9,7 @@
 #include "PlaceBuilder.h"
 
 #include "weavec/Analysis/Allocators.h"
+#include "weavec/Core/Array.h"
 
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/ExprCXX.h"
@@ -250,7 +251,14 @@ PlaceBuilder::summaryPathOf(core::PlaceId place) {
       path = path.field(places.fieldName(node));
       break;
     case core::PathStep::Index:
-      path = path.indexed();
+      if (places.isElement(node)) {
+        const auto selector = summaryIndex
+                                  ? summaryIndex(places.fieldName(node))
+                                  : std::optional<std::string>{};
+        path = selector ? path.indexed(*selector) : path.indexed();
+      } else {
+        path = path.indexed();
+      }
       break;
     }
   }
@@ -279,7 +287,7 @@ std::optional<PlaceRef> PlaceBuilder::copyOrNull(const ValueOrigin &origin) {
 
 std::optional<PlaceRef>
 PlaceBuilder::resolveSummaryPath(const core::SummaryPath &path,
-                                 const CallExpr &call) {
+                                 const CallExpr &call, bool arrayStorage) {
   if (validatePath && !validatePath(path, call))
     return std::nullopt;
   PlaceRef ref;
@@ -324,6 +332,17 @@ PlaceBuilder::resolveSummaryPath(const core::SummaryPath &path,
     return std::nullopt;
   }
 
+  // A scalar pointee contract applied to a decayed array names element
+  // zero. Explicit selected paths and range roots already name storage.
+  if (!arrayStorage && firstStep == 1 && argExpr && selectArray &&
+      (firstStep == path.steps.size() ||
+       path.steps[firstStep].step != core::PathStep::Index)) {
+    const auto *array =
+        argExpr->IgnoreParenImpCasts()->getType()->getAsArrayTypeUnsafe();
+    if (array)
+      ref = selectArray(ref, core::Affine::ofConstant(0),
+                        array->getElementType(), call);
+  }
   for (std::size_t i = firstStep; i < path.steps.size(); ++i) {
     switch (path.steps[i].step) {
     case core::PathStep::Deref:
@@ -336,6 +355,27 @@ PlaceBuilder::resolveSummaryPath(const core::SummaryPath &path,
       ref.place = places.field(ref.place, path.steps[i].field);
       break;
     case core::PathStep::Index:
+      if (!path.steps[i].field.empty()) {
+        auto selector = core::ArrayIndex::parse(path.steps[i].field);
+        if (!selector)
+          return std::nullopt;
+        std::optional<core::Affine> index =
+            core::Affine::ofConstant(selector->offset);
+        if (selector->symbol) {
+          index =
+              affineFromPath(core::PathAffine::ofPath(
+                                 core::SummaryPath::param(*selector->symbol), 1,
+                                 selector->offset),
+                             call);
+        }
+        if (selectArray)
+          ref = selectArray(ref, index, QualType{}, call);
+        else if (!selector->symbol)
+          ref.place = places.element(ref.place, selector->toString());
+        else
+          return std::nullopt;
+        break;
+      }
       // The callee's subscript is not visible here: the effect applies to
       // every element (RFC 0006, *Element witnesses*), and to an unknown
       // one if the argument itself was an element.
@@ -348,7 +388,8 @@ PlaceBuilder::resolveSummaryPath(const core::SummaryPath &path,
 }
 
 std::optional<core::PlaceId>
-PlaceBuilder::resolveBelow(core::PlaceId base, const core::SummaryPath &path) {
+PlaceBuilder::resolveBelow(core::PlaceId base, const core::SummaryPath &path,
+                           const CallExpr *call) {
   core::PlaceId place = base;
   for (const core::PathElem &elem : path.steps) {
     switch (elem.step) {
@@ -359,7 +400,28 @@ PlaceBuilder::resolveBelow(core::PlaceId base, const core::SummaryPath &path) {
       place = places.field(place, elem.field);
       break;
     case core::PathStep::Index:
-      place = places.index(place);
+      if (!elem.field.empty() && call && selectArray) {
+        const auto selector = core::ArrayIndex::parse(elem.field);
+        if (!selector)
+          return std::nullopt;
+        const auto index =
+            selector->symbol
+                ? affineFromPath(
+                      core::PathAffine::ofPath(
+                          core::SummaryPath::param(*selector->symbol), 1,
+                          selector->offset),
+                      *call)
+                : std::optional(core::Affine::ofConstant(selector->offset));
+        PlaceRef ref{.place = place,
+                     .derefs = {},
+                     .derefExprs = {},
+                     .derefElements = {},
+                     .element = {}};
+        place = selectArray(ref, index, QualType{}, *call).place;
+        break;
+      }
+      place = elem.field.empty() ? places.index(place)
+                                 : places.element(place, elem.field);
       break;
     }
   }
@@ -387,6 +449,12 @@ PlaceBuilder::lookupSummaryRoot(const core::SummaryPath &path,
   const Expr &argExpr = *call.getArg(path.index);
   const bool derefFirst =
       !path.steps.empty() && path.steps.front().step == core::PathStep::Deref;
+  if (derefFirst && argExpr.IgnoreParenImpCasts()->getType()->isArrayType() &&
+      (path.steps.size() == 1 || path.steps[1].step != core::PathStep::Index)) {
+    const auto root = resolveSummaryPath(path.rootPath().deref(), call);
+    return root ? std::optional(std::pair{root->place, std::size_t{1}})
+                : std::nullopt;
+  }
   if (const auto addressed = addressedPlace(argExpr); addressed && derefFirst)
     return std::pair{addressed->place, std::size_t{1}};
   const ValueOrigin origin = classifyValue(argExpr);
@@ -416,7 +484,8 @@ std::optional<PlaceRef> PlaceBuilder::addressedPlace(const Expr &expr) {
           makeOrigin(ValueOrigin::Kind::Copy, derivation->pointer);
       origin.offset = derivation->offset;
       if (auto pointee = pointeeOf(origin);
-          pointee && (!resolved || pointee->place != resolved->place))
+          pointee && (!resolved || (!places.isElement(resolved->place) &&
+                                    pointee->place != resolved->place)))
         return pointee;
     }
     return resolved;
@@ -438,6 +507,12 @@ std::optional<PlaceRef> PlaceBuilder::addressedPlace(const Expr &expr) {
 std::optional<core::PlaceId>
 PlaceBuilder::lookupSummaryPath(const core::SummaryPath &path,
                                 const CallExpr &call) {
+  if (std::ranges::any_of(path.steps, [](const core::PathElem &step) {
+        return step.step == core::PathStep::Index && !step.field.empty();
+      })) {
+    const auto ref = resolveSummaryPath(path, call);
+    return ref ? std::optional(ref->place) : std::nullopt;
+  }
   const auto root = lookupSummaryRoot(path, call);
   if (!root)
     return std::nullopt;
@@ -455,6 +530,10 @@ PlaceBuilder::lookupSummaryPath(const core::SummaryPath &path,
 std::optional<core::PlaceId>
 PlaceBuilder::lookupSummaryPath(const core::SummaryPath &path,
                                 const CallExpr &call, PathLookupCache &cache) {
+  if (std::ranges::any_of(path.steps, [](const core::PathElem &step) {
+        return step.step == core::PathStep::Index && !step.field.empty();
+      }))
+    return lookupSummaryPath(path, call);
   // A `&x` argument makes `firstStep` depend on the path's first step, so a
   // root is shared only between paths that agree on it; a root that found
   // nothing is looked up again (the failure may have been the path's shape).
@@ -1099,6 +1178,9 @@ std::optional<PlaceRef> PlaceBuilder::resolve(const Expr &expr) {
         return std::nullopt;
       ref->place = places.index(ref->place);
       setWitness(*ref, witness);
+      if (selectArray)
+        *ref =
+            selectArray(*ref, affineOf(*subscript->getIdx()), e.getType(), e);
       return ref;
     }
     auto pointer = resolvePointerValue(base);
@@ -1107,6 +1189,9 @@ std::optional<PlaceRef> PlaceBuilder::resolve(const Expr &expr) {
     pointer->addDeref(pointer->place, &base);
     pointer->place = places.deref(pointer->place);
     setWitness(*pointer, witness);
+    if (selectArray)
+      *pointer =
+          selectArray(*pointer, affineOf(*subscript->getIdx()), e.getType(), e);
     return pointer;
   }
 
@@ -1124,6 +1209,8 @@ std::optional<PlaceRef> PlaceBuilder::resolve(const Expr &expr) {
         return std::nullopt;
       ref->place = places.index(ref->place);
       setWitness(*ref, core::ElementWitness::ofConstant(0));
+      if (selectArray)
+        *ref = selectArray(*ref, core::Affine::ofConstant(0), e.getType(), e);
       return ref;
     }
     const Expr *pointerExpr = pointerOperandOfArithmetic(operand);
@@ -1142,6 +1229,14 @@ std::optional<PlaceRef> PlaceBuilder::resolve(const Expr &expr) {
     pointer->place = places.deref(pointer->place);
     if (indexExpr != nullptr)
       setWitness(*pointer, witnessOf(*indexExpr));
+    if (selectArray) {
+      auto index = indexExpr ? affineOf(*indexExpr)
+                             : std::optional(core::Affine::ofConstant(0));
+      if (const auto *binary = dyn_cast<BinaryOperator>(&operand);
+          binary && binary->getOpcode() == BO_Sub && index)
+        index = index->times(-1);
+      *pointer = selectArray(*pointer, index, e.getType(), e);
+    }
     return pointer;
   }
 
@@ -1447,6 +1542,16 @@ std::optional<core::Affine> PlaceBuilder::affineOf(const Expr &expr) {
   if (const auto value = integerConstant(expr, context))
     return core::Affine::ofConstant(*value);
   const Expr *e = expr.IgnoreParens();
+  if (const auto *unary = dyn_cast<UnaryOperator>(e);
+      unary && unary->isIncrementDecrementOp()) {
+    const auto ref = resolve(*unary->getSubExpr());
+    if (!ref)
+      return std::nullopt;
+    std::int64_t offset = 0;
+    if (unary->isPostfix())
+      offset = unary->isIncrementOp() ? -1 : 1;
+    return core::Affine::ofPlace(ref->place, 1, offset);
+  }
   if (const auto *cast = dyn_cast<CastExpr>(e)) {
     switch (cast->getCastKind()) {
     case CK_LValueToRValue:
