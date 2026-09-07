@@ -746,6 +746,9 @@ follows [Semantic Versioning](https://semver.org/) once it reaches 1.0.
 
 ### Fixed
 
+- Pass optional access starts directly through bounds checking and requirement
+  propagation, avoiding unwrap-and-rewrap conversions rejected by clang-tidy.
+
 - Cache constant operands during modular range multiplication so clang-tidy
   checks the same optional values it later reads, avoiding a Linux CI
   uninitialized-value false positive. Retain coverage for both operand orders.

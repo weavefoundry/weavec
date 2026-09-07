@@ -7908,7 +7908,7 @@ void FunctionDataflow::checkRequiredExtents(
           if (const auto ref = builder.resolvePointerValue(*pointed->base);
               ref && ref->element.isWhole())
             noteExtentRequirement(ref->place, *total, state, &*condition,
-                                  *start);
+                                  start);
         }
         if (!known)
           continue;
@@ -7926,7 +7926,7 @@ void FunctionDataflow::checkRequiredExtents(
                                        ? nameOf(*known->pointer)
                                        : pointed->storage->getNameAsString();
       if (reportBounds(*total, *known, arg, {}, accessed, nullptr, &call, state,
-                       false, *start))
+                       false, start))
         break;
     }
   }
