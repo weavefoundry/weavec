@@ -25,6 +25,7 @@
 
 #include "weavec/Core/Borrow.h"
 #include "weavec/Core/CallTargets.h"
+#include "weavec/Core/IntegerExpression.h"
 #include "weavec/Core/Offset.h"
 #include "weavec/Core/Ownership.h"
 #include "weavec/Core/Place.h"
@@ -132,6 +133,16 @@ struct PathAffine {
   std::int64_t scale = 1;
   std::int64_t constant = 0;
 
+  // RFC 0017: an actual C value, followed by mathematical byte scaling.
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
+  std::optional<IntegerExpression<SummaryPath>> expression = {};
+
+  [[nodiscard]] static PathAffine
+  ofExpression(IntegerExpression<SummaryPath> value, std::int64_t scale = 1,
+               std::int64_t constant = 0) {
+    return {
+        .scale = scale, .constant = constant, .expression = std::move(value)};
+  }
   [[nodiscard]] static PathAffine ofConstant(std::int64_t constant) {
     return PathAffine{.path = std::nullopt, .scale = 1, .constant = constant};
   }
@@ -140,12 +151,26 @@ struct PathAffine {
     return PathAffine{
         .path = std::move(path), .scale = scale, .constant = constant};
   }
-  [[nodiscard]] bool isConstant() const noexcept { return !path; }
+  [[nodiscard]] bool isConstant() const noexcept {
+    return !path && !expression;
+  }
 
   friend bool operator==(const PathAffine &, const PathAffine &) = default;
   friend std::strong_ordering operator<=>(const PathAffine &,
                                           const PathAffine &) = default;
 };
+
+/// RFC 0017: a possible numeric output under an interface guard. An absent
+/// expression explicitly denotes unknown; it is never dropped from a union.
+struct NumericOutput {
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
+  std::optional<IntegerExpression<SummaryPath>> value = {};
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
+  PathGuard when = {};
+  friend auto operator<=>(const NumericOutput &,
+                          const NumericOutput &) = default;
+};
+inline constexpr std::size_t MaxNumericOutputAlternatives = 8;
 
 /// RFC 0011, *Extents in summaries*: what a callee needs of the object
 /// behind a pointer parameter, in bytes, on the paths where `when` holds.
@@ -153,6 +178,10 @@ struct ExtentRequirement {
   PathAffine need;
   // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
   PathGuard when = {};
+  /// RFC 0017: first accessed byte; absent means a possibly empty range
+  /// starting at zero. A negative element access is never an empty call.
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
+  std::optional<PathAffine> start = {};
 
   friend bool operator==(const ExtentRequirement &,
                          const ExtentRequirement &) = default;
@@ -290,6 +319,8 @@ struct ValueSource {
   // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
   std::optional<PathAffine> stringLength = {};
   bool unterminated = false;
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
+  std::optional<PointerOffset> boundsOffset = {};
 
   [[nodiscard]] static ValueSource fresh(std::string family = {}) {
     return ValueSource{.kind = Kind::Fresh,
@@ -301,15 +332,17 @@ struct ValueSource {
   }
   /// RFC 0011: a fresh allocation of `extent` bytes the receiver gets at
   /// `offset`.
-  [[nodiscard]] static ValueSource freshAt(std::string family,
-                                           PointerOffset offset,
-                                           std::optional<PathAffine> extent) {
+  [[nodiscard]] static ValueSource
+  freshAt(std::string family, PointerOffset offset,
+          std::optional<PathAffine> extent,
+          std::optional<PointerOffset> boundsOffset = {}) {
     return ValueSource{.kind = Kind::Fresh,
                        .path = std::nullopt,
                        .offset = std::move(offset),
                        .extent = std::move(extent),
                        .family = std::move(family),
-                       .when = {}};
+                       .when = {},
+                       .boundsOffset = std::move(boundsOffset)};
   }
   [[nodiscard]] static ValueSource function(CallTargets targets) {
     ValueSource result;
@@ -549,6 +582,8 @@ public:
   /// of the paths, the facts joined. A class present here is also a key of
   /// `outcomes`.
   std::map<Outcome, OutcomeFacts> factOn;
+  std::map<SummaryPath, std::set<NumericOutput>> numericOutputs;
+  void addNumericOutput(const SummaryPath &path, NumericOutput output);
   /// RFC 0011, *Extents in summaries*: per pointer parameter, what the
   /// callee requires of the extent of the object behind it (from a
   /// `WEAVEC_SIZED_BY` annotation, or inferred from its accesses). A
@@ -651,9 +686,9 @@ public:
            returns.empty() && outcomes.empty() && nullOn.empty() &&
            nonNullOn.empty() && requiresNonNull.empty() && !neverReturns &&
            increments.empty() && decrements.empty() && counts.empty() &&
-           storesOn.empty() && factOn.empty() && requiresExtent.empty() &&
-           heap.empty() && arrayCopies.empty() && arrayReleases.empty() &&
-           arrayFills.empty();
+           storesOn.empty() && factOn.empty() && numericOutputs.empty() &&
+           requiresExtent.empty() && heap.empty() && arrayCopies.empty() &&
+           arrayReleases.empty() && arrayFills.empty();
   }
 
   /// Component-wise set union (conjunction for the must-facts).

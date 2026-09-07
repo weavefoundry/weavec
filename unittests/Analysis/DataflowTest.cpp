@@ -1639,7 +1639,15 @@ TEST(Dataflow, ACopyOfAConsumedPathIsTheResultsOwnResource) {
   const core::SummaryPath array =
       core::SummaryPath::param(0).deref().field("array");
   EXPECT_TRUE(resize->effectOf(array).moved);
-  EXPECT_TRUE(resize->returns.contains(core::ValueSource::copy(array)));
+  auto unchanged = core::ValueSource::copy(array);
+  using Expression = core::IntegerExpression<core::SummaryPath>;
+  constexpr core::IntegerType SizeType{.width = 64, .isSigned = false};
+  unchanged.when.requireInteger(
+      {.lhs = Expression::input(core::SummaryPath::param(1), SizeType),
+       .op = core::IntegerOp::Equal,
+       .rhs = Expression::input(core::SummaryPath::param(0).deref().field("n"),
+                                SizeType)});
+  EXPECT_TRUE(resize->returns.contains(unchanged));
 }
 
 // -- `written` forgets what lies below (RFC 0006) -----------------------------

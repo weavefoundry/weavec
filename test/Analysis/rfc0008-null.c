@@ -214,7 +214,9 @@ void truncate_to(struct buf *b, unsigned n) {
 // DUMP: function 'open_node':
 // DUMP: summary: *out: read|written; stores{*out = fresh(free) extent=16, *out = null} returns{} requires{out} outcome zero{} null{*out} outcome positive{} notnull{*out}
 // DUMP: function 'grow':
-// DUMP: summary: b->data: written|moved(free)|replaced; b->len: read|written; stores{b->data = fresh(free) extent=n} returns{} requires{b} outcome zero{b->data: moved(free) replaced} stored{b->data} outcome negative{} null{b->data} stored{}
+// DUMP: summary: b->data: written|moved(free)|replaced when[n positive|negative]; b->len: read|written; stores{b->data = fresh(free) extent=n when[n positive|negative]} returns{} requires{b} outcome zero{b->data: moved(free) replaced when[n positive|negative]} stored{b->data} outcome negative{} null{b->data} stored{} facts{b->len range(u32:0-4294967294)}
+// RFC 0017: n > b->len excludes zero; assigning len does not resize the snapshot.
+// DUMP-NEXT: heap b->data complete{result = fresh(free) extent=n when[n positive|negative, n gt b->len]}
 // DUMP: function 'truncate_to':
 // DUMP-NOT: maybe-null
 // DUMP: summary: b->data: read|written|moved(free)|replaced;

@@ -50,6 +50,34 @@ detections and the cost and coverage warnings on real code. Calls without
 established interacting identities still use generic summaries; a quiet run
 does not establish that arbitrary inputs are disjoint.
 
+The current integer and spatial milestone
+([RFC 0017](docs/rfcs/0017-c-integer-semantics-and-spatial-safety.md)) uses
+the target's integer widths, promotions and conversions when checking paths,
+ownership effects and buffer sizes. Narrowing, `_Bool`, mixed signedness and
+unsigned wrap retain their C meaning; a definitely invalid supported operation
+reports `invalid-integer-operation`. Bounded symbolic products, minimum bounds,
+numeric returns and out-parameters carry sizes and conditional access
+requirements through helpers and separate compiler objects. Supported
+variable-length arrays retain their declaration-time bounds. Side-effecting
+dimensions such as `char a[n++]` conservatively lose their captured bounds
+and warn with `analysis-incomplete`; their extent and `sizeof` are not treated
+as proved. Flexible-array tails use the backing allocation and target field
+layout.
+
+`--dump-analysis` distinguishes spatial checks that are `proven`, a `violation`
+or `unresolved`. Unknown bounds, unsupported expressions and exhausted limits
+remain coverage gaps; general nonlinear and loop reasoning are outside the
+model. Early-exit and other unsupported loops do not produce inferred
+must-requirements on callers. Existing annotations remain trusted contracts.
+There is no runtime instrumentation or whole-program verification certificate.
+Summary and sidecar format **13** require rebuilding objects carrying older
+sidecars. The [validation report](docs/validation-rfc0017.md) records
+**900/900 tests passing**, including under ASan/UBSan, **44/44 original bugs
+detected and 32/32 clean cases**, plus twelve separate bug/clean regression
+pairs. Three repeated corpus runs show the cost: median analysis time grew
+from 141 to 336 seconds and peak memory grew 19%, exceeding the RFC targets.
+Three new Jansson false positives and remaining coverage gaps are documented.
+
 ## Quick look
 
 ```c

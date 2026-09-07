@@ -232,7 +232,7 @@ TEST(DiagnosticIds, DefaultSeverities) {
   EXPECT_FALSE(core::diag::isWarningByDefault(core::diag::OutOfBounds));
   EXPECT_TRUE(core::diag::isKnown("out-of-bounds"));
   EXPECT_TRUE(core::diag::isWarningByDefault(core::diag::AnalysisIncomplete));
-  EXPECT_EQ(core::diag::All.size(), 16U);
+  EXPECT_EQ(core::diag::All.size(), 17U);
 }
 
 } // namespace

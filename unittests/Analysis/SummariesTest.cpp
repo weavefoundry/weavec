@@ -653,5 +653,35 @@ TEST(Builtins, FortifiedPrintfRowsMatchThePlainOnes) {
   EXPECT_TRUE(vsnprintfChk->requiresParam(4));
 }
 
+TEST(Summaries, RecursiveApproximationsRetainEarlierGuardedEffects) {
+  const auto parsed = parse("void recursive(void *p, int depth, int kind);");
+  ASSERT_TRUE(parsed.ast);
+  const auto *function = parsed.fn("recursive");
+  ASSERT_TRUE(function);
+  SummaryStore store;
+  core::PathGuard depth;
+  depth.require(SummaryPath::param(1), core::ValueFact::nonZero());
+  auto narrower = depth;
+  narrower.require(SummaryPath::param(2), core::ValueFact::ofConstant(1));
+  const auto make = [](const core::PathGuard &guard) {
+    core::FunctionSummary summary;
+    const PlaceEffect effect{.freed = true, .when = guard};
+    summary.addEffect(SummaryPath::param(0), effect);
+    summary.outcomes[core::Outcome::Zero][SummaryPath::param(0)] = effect;
+    return summary;
+  };
+  EXPECT_TRUE(store.setInferred(*function, make(narrower), true));
+  EXPECT_TRUE(store.setInferred(*function, make(depth), true));
+  for (unsigned round = 0; round < 20; ++round)
+    EXPECT_FALSE(
+        store.setInferred(*function, make(round % 2 ? depth : narrower), true));
+  const auto *summary = store.inferredFor(*function);
+  ASSERT_TRUE(summary);
+  EXPECT_EQ(*summary, make(depth));
+  // A fresh component can still reset to bottom before iteration starts.
+  EXPECT_TRUE(store.setInferred(*function, {}));
+  EXPECT_TRUE(store.inferredFor(*function)->empty());
+}
+
 } // namespace
 } // namespace weavec::analysis

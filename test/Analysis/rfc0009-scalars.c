@@ -143,10 +143,9 @@ int leaked(int c) {
   return 0;
 }
 
-// A class is that of the mathematical value and a comparison is decided in
-// its operands' type (RFC 0009, *Assumptions*): `ULONG_MAX` is not `-1`, so
-// the edge on which `i > ULONG_MAX` fails stays live, and `(size_t)-1` is a
-// constant the checker does not hold, so a test against it decides nothing.
+// RFC 0017: comparisons use the operands' C types, including full-width
+// unsigned constants. `ULONG_MAX` is not signed `-1`, so `i > ULONG_MAX`
+// fails; `(size_t)-1` is exactly SIZE_MAX, so the sentinel test succeeds.
 static void touch(char *p) { p[0] = 1; }
 
 int above_max(void) {
@@ -163,7 +162,7 @@ int sentinel(void) {
   size_t n = (size_t)-1;
   char *p = malloc(4);
   if (n == (size_t)-1) { free(p); return 1; }
-  // CHECK: rfc0009-scalars.c:[[@LINE+1]]:9: error: 'p', which may be null, is passed to 'touch', which dereferences it [weavec::null-dereference]
+  // Clean: the exact sentinel comparison makes this dereference unreachable.
   touch(p);
   free(p);
   return 0;
@@ -196,4 +195,4 @@ void dead(void) {
   free(p);
 }
 
-// CHECK: 1 warning and 7 errors generated.
+// CHECK: 1 warning and 6 errors generated.

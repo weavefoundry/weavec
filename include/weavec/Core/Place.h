@@ -51,6 +51,22 @@ struct PlaceIdHash {
   }
 };
 
+/// A monotone set of dense, analysis-local place identifiers. RFC 0017's
+/// overwritten-entry facts occur in every CFG state; packed words avoid a
+/// separate tree allocation per place when copying and joining those states.
+class PlaceSet {
+public:
+  bool insert(PlaceId place);
+  [[nodiscard]] bool contains(PlaceId place) const noexcept;
+  /// Union another set into this one; return whether any bit changed.
+  bool join(const PlaceSet &other);
+  [[nodiscard]] std::size_t size() const noexcept;
+  friend bool operator==(const PlaceSet &, const PlaceSet &) = default;
+
+private:
+  std::vector<std::uint64_t> words;
+};
+
 /// One step of a place path below its base.
 enum class PathStep : std::uint8_t {
   /// `parent.field` (or `parent->field` when the parent is a dereference).

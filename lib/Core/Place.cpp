@@ -9,10 +9,46 @@
 #include "weavec/Core/Place.h"
 
 #include <algorithm>
+#include <bit>
 #include <cassert>
 #include <utility>
 
 namespace weavec::core {
+
+bool PlaceSet::insert(PlaceId place) {
+  const std::size_t word = place.value / 64U;
+  const std::uint64_t bit = UINT64_C(1) << (place.value % 64U);
+  if (word >= words.size())
+    words.resize(word + 1);
+  const bool changed = (words[word] & bit) == 0;
+  words[word] |= bit;
+  return changed;
+}
+
+bool PlaceSet::contains(PlaceId place) const noexcept {
+  const std::size_t word = place.value / 64U;
+  return word < words.size() &&
+         (words[word] & (UINT64_C(1) << (place.value % 64U))) != 0;
+}
+
+bool PlaceSet::join(const PlaceSet &other) {
+  if (words.size() < other.words.size())
+    words.resize(other.words.size());
+  bool changed = false;
+  for (std::size_t i = 0; i < other.words.size(); ++i) {
+    const auto joined = words[i] | other.words[i];
+    changed |= joined != words[i];
+    words[i] = joined;
+  }
+  return changed;
+}
+
+std::size_t PlaceSet::size() const noexcept {
+  std::size_t count = 0;
+  for (const auto word : words)
+    count += static_cast<std::size_t>(std::popcount(word));
+  return count;
+}
 
 PlaceId PlaceTable::create(std::string displayName) {
   const auto id = static_cast<std::uint32_t>(entries.size());

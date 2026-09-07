@@ -62,7 +62,9 @@ struct RelationEdge {
   std::int64_t offset = 0;
 
   /// The edge stated from the other side: `rhs FLIP lhs - offset`.
-  [[nodiscard]] RelationEdge flipped() const noexcept {
+  [[nodiscard]] std::optional<RelationEdge> flipped() const noexcept {
+    if (offset == INT64_MIN)
+      return std::nullopt;
     return RelationEdge{.relation = core::flipped(relation), .offset = -offset};
   }
 
@@ -71,6 +73,15 @@ struct RelationEdge {
 
 class RelationTracker {
 public:
+  /// RFC 0017: modular adjustments can establish difference without an
+  /// ordering or a mathematical affine equality.
+  void requireDifferent(PlaceId a, PlaceId b);
+  [[nodiscard]] bool different(PlaceId a, PlaceId b) const;
+  [[nodiscard]] const std::set<std::pair<PlaceId, PlaceId>> &
+  allDifferent() const {
+    return distinct;
+  }
+
   /// `lhs REL rhs + offset` holds from here on; narrows any relation already
   /// known about the pair. When the two contradict (`i < n` then `i > n`)
   /// the pair is forgotten rather than made infeasible: the second fact
@@ -130,7 +141,8 @@ public:
   bool join(const RelationTracker &other);
 
   [[nodiscard]] bool empty() const noexcept {
-    return pairs.empty() && bounded.empty() && upper.empty() && lower.empty();
+    return pairs.empty() && distinct.empty() && bounded.empty() &&
+           upper.empty() && lower.empty();
   }
   /// Every pair known, as `(min, max) -> min REL max + offset`.
   [[nodiscard]] const std::map<std::pair<PlaceId, PlaceId>, RelationEdge> &
@@ -162,6 +174,7 @@ private:
 
   // Keyed on `(min, max)`; the edge is stated `min REL max + offset`.
   std::map<std::pair<PlaceId, PlaceId>, RelationEdge> pairs;
+  std::set<std::pair<PlaceId, PlaceId>> distinct;
   std::set<PlaceId> bounded;
   /// `place <= upper[place]`.
   std::map<PlaceId, std::int64_t> upper;

@@ -78,10 +78,11 @@ class Outcome:
     missed: list[Pin]
     unexpected: list[Diagnostic]
     clang_errors: list[str]
+    process_failures: list[str]
 
     @property
     def ok(self) -> bool:
-        return not self.missed and not self.unexpected and not self.clang_errors
+        return not self.missed and not self.unexpected and not self.clang_errors and not self.process_failures
 
 
 def pins_of(source: Path) -> list[Pin]:
@@ -93,7 +94,9 @@ def pins_of(source: Path) -> list[Pin]:
     return pins
 
 
-def run_case(weavec: Path, source: Path, extra_args: list[str]) -> tuple[list[Diagnostic], list[str]]:
+def run_case(
+    weavec: Path, source: Path, extra_args: list[str], timeout: float = 30.0
+) -> tuple[list[Diagnostic], list[str], list[str]]:
     command = [
         str(weavec),
         str(source),
@@ -103,12 +106,19 @@ def run_case(weavec: Path, source: Path, extra_args: list[str]) -> tuple[list[Di
         "-ferror-limit=0",
         *extra_args,
     ]
-    completed = subprocess.run(command, capture_output=True, text=True, check=False)
+    try:
+        completed = subprocess.run(command, capture_output=True, text=True, check=False, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return [], [], [f"analysis timed out after {timeout:g} seconds"]
+    except OSError as error:
+        return [], [], [f"could not run analyzer: {error}"]
     diagnostics: list[Diagnostic] = []
     clang_errors: list[str] = []
     for text in (completed.stdout + completed.stderr).splitlines():
         if match := DIAG_RE.match(text):
-            if Path(match.group("file")).name != source.name:
+            if Path(match.group("file")).resolve() != source.resolve():
+                if match.group("severity") == "error":
+                    clang_errors.append(f"diagnostic outside the case: {text}")
                 continue
             diagnostics.append(
                 Diagnostic(
@@ -120,18 +130,31 @@ def run_case(weavec: Path, source: Path, extra_args: list[str]) -> tuple[list[Di
             )
         elif match := CLANG_ERROR_RE.match(text):
             clang_errors.append(match.group("message"))
-    return diagnostics, clang_errors
+    failures: list[str] = []
+    has_errors = bool(clang_errors) or any(d.severity == "error" for d in diagnostics)
+    if completed.returncode not in (0, 1):
+        failures.append(f"analyzer exited abnormally with status {completed.returncode}")
+    elif completed.returncode == 1 and not has_errors:
+        failures.append("analyzer failed without an error diagnostic")
+    elif completed.returncode == 0 and has_errors:
+        failures.append("analyzer returned success after an error diagnostic")
+    return diagnostics, clang_errors, failures
 
 
-def judge(source: Path, diagnostics: list[Diagnostic], clang_errors: list[str]) -> Outcome:
+def judge(
+    source: Path, diagnostics: list[Diagnostic], clang_errors: list[str],
+    process_failures: list[str] | None = None,
+) -> Outcome:
     pins = pins_of(source)
-    reported = {(d.id, d.line) for d in diagnostics}
+    process_failures = process_failures or []
+    # Partial output from a crashing/failed run is not a detected case.
+    reported = set() if process_failures else {(d.id, d.line) for d in diagnostics}
     caught = [pin for pin in pins if (pin.id, pin.line) in reported]
     missed = [pin for pin in pins if (pin.id, pin.line) not in reported]
-    pinned_lines = {pin.line for pin in pins}
-    # An error on a line the case did not pin is a false positive. Warnings
+    pinned = {(pin.id, pin.line) for pin in pins}
+    # An error whose id and line the case did not pin is a false positive. Warnings
     # are not counted: a leak on the path a bug diverts is the bug's shadow.
-    unexpected = [d for d in diagnostics if d.severity == "error" and d.line not in pinned_lines]
+    unexpected = [d for d in diagnostics if d.severity == "error" and (d.id, d.line) not in pinned]
     return Outcome(
         case=source,
         cwe=source.parent.name,
@@ -140,6 +163,7 @@ def judge(source: Path, diagnostics: list[Diagnostic], clang_errors: list[str]) 
         missed=missed,
         unexpected=unexpected,
         clang_errors=clang_errors,
+        process_failures=process_failures,
     )
 
 
@@ -149,9 +173,12 @@ def main() -> int:
     parser.add_argument("--cases", type=Path, default=DEFAULT_CASES, help="directory of CWE-*/ case directories")
     parser.add_argument("--only", action="append", default=[], help="run only cases whose path contains this (repeatable)")
     parser.add_argument("--verbose", "-v", action="store_true", help="list every case, not just the failures")
+    parser.add_argument("--timeout", type=float, default=30.0, help="maximum seconds per case (default: 30)")
     parser.add_argument("extra", nargs="*", help="extra compiler arguments (after --)")
     args = parser.parse_args()
 
+    if not 0 < args.timeout < float("inf"):
+        parser.error("--timeout must be finite and positive")
     if not args.weavec.exists():
         print(f"error: weavec not found at {args.weavec}", file=sys.stderr)
         return 2
@@ -163,7 +190,7 @@ def main() -> int:
         print(f"error: no cases under {args.cases}", file=sys.stderr)
         return 2
 
-    outcomes = [judge(s, *run_case(args.weavec, s, args.extra)) for s in sources]
+    outcomes = [judge(s, *run_case(args.weavec, s, args.extra, args.timeout)) for s in sources]
 
     per_cwe: dict[str, list[Outcome]] = collections.defaultdict(list)
     for outcome in outcomes:
@@ -201,6 +228,8 @@ def main() -> int:
             print(f"  EXTRA   {d.id} @{d.line}: {d.message}")
         for message in outcome.clang_errors:
             print(f"  CLANG   {message}")
+        for message in outcome.process_failures:
+            print(f"  PROCESS {message}")
     if failed:
         print(f"\n{len(failed)} of {len(outcomes)} cases failed", file=sys.stderr)
         return 1

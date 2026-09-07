@@ -126,14 +126,18 @@ void walked(void) {
 
 // -- Symbolic extents ---------------------------------------------------------
 
+// RFC 0017 keeps the conversion to size_t in allocation summaries. Callers
+// below guard positive counts so their examples retain mathematical extents.
 // DUMP-LABEL: function 'ints':
-// DUMP: summary: stores{} returns{fresh(free) extent=n*4, null}
+// DUMP: summary: stores{} returns{fresh(free) extent=mul(4, u64(n)), null}
 static int *ints(int n) { return malloc(n * sizeof(int)); }
 // DUMP-LABEL: function 'zeroed':
-// DUMP: summary: stores{} returns{fresh(free) extent=n*4, null}
+// DUMP: summary: stores{} returns{fresh(free) extent=mul(4, u64(n)) when[overflow-mul-u64(4, u64(n)) eq 0], null}
 static int *zeroed(int n) { return calloc(n, sizeof(int)); }
 
 void at_n(int n) {
+  if (n <= 0)
+    return;
   int *p = ints(n);
   if (!p)
     return;
@@ -144,6 +148,9 @@ void at_n(int n) {
 }
 
 void bytes(size_t n) {
+  // Leave room for the terminator without wrapping the allocation size.
+  if (n == (size_t)-1)
+    return;
   char *p = malloc(n + 1);
   if (!p)
     return;
@@ -166,6 +173,8 @@ void counter_moves(int n) {
 // The flexible-array idiom: `sizeof *f + n` bytes hold `data[0..n-1]`, and
 // one more is the classic off-by-one.
 void flexible(int n) {
+  if (n <= 0)
+    return;
   struct flex *f = malloc(sizeof *f + n);
   if (!f)
     return;
@@ -178,6 +187,9 @@ void flexible(int n) {
 // -- Relations ----------------------------------------------------------------
 
 void loops(int n) {
+  // The inclusive loop must also be able to increment at its boundary.
+  if (n <= 0 || n == __INT_MAX__)
+    return;
   int *p = ints(n);
   if (!p)
     return;
@@ -195,6 +207,8 @@ void loops(int n) {
 }
 
 void guards(int i, int n) {
+  if (i < 0 || n <= 0)
+    return;
   int *p = ints(n);
   if (!p)
     return;
@@ -214,11 +228,13 @@ void guards(int i, int n) {
 
 // A copy of the index carries the relation; a write to it drops it.
 void copies(int i, int n) {
+  if (i < 0 || n <= 0)
+    return;
   int *p = ints(n);
   if (!p)
     return;
   int j = i;
-  // CHECK: rfc0011-bounds.c:[[@LINE+2]]:5: error: 'p[i]' is out of bounds: 'i' is at least 'n', the number of elements of 'p' [weavec::out-of-bounds]
+  // CHECK: rfc0011-bounds.c:[[@LINE+2]]:5: error: 'p[i]' is out of bounds: 'entry(i)' is at least 'n', the number of elements of 'p' [weavec::out-of-bounds]
   if (j >= n)
     p[i] = 1;
   if (i >= n) {
@@ -231,6 +247,8 @@ void copies(int i, int n) {
 // -- Library calls ------------------------------------------------------------
 
 void clears(size_t n) {
+  if (n == (size_t)-1)
+    return;
   char *p = malloc(n);
   if (!p)
     return;
@@ -268,7 +286,7 @@ void guarded(int i) {
 
 // An object of at most `n <= 4` bytes cannot hold a constant access past 4.
 void small_object(int n) {
-  if (n > 4)
+  if (n < 0 || n > 4)
     return;
   char *p = malloc(n);
   if (!p)

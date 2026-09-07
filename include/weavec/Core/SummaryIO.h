@@ -96,7 +96,7 @@ namespace weavec::core {
 
 /// Version of the record format; bumped when a record written by this
 /// version cannot be read by the previous one.
-inline constexpr unsigned SummaryFormatVersion = 12;
+inline constexpr unsigned SummaryFormatVersion = 13;
 
 // RFC 0014: deterministic, single-token callback contexts. Bindings name
 // parameter paths; globals retain their ordinary exported value sources.

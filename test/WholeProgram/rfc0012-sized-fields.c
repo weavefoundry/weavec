@@ -10,7 +10,7 @@
 // RUN: %weavec %s -- -I%S/Inputs 2>&1 | FileCheck --allow-empty --check-prefix=ALONE %s
 //
 // The same through weavec-cc: the sidecar carries the witnesses and the
-// refutations (format 8).
+// refutations, including the multiplication type (RFC 0017, format 13).
 // RUN: rm -rf %t && mkdir -p %t
 // RUN: %weavec_cc -c %S/Inputs/vec.c -o %t/vec.o -I%S/Inputs 2>&1 | count 0
 // RUN: %weavec_cc -c %s -o %t/main.o -I%S/Inputs 2>&1 | count 0
@@ -21,13 +21,13 @@
 #include "vec.h"
 
 // DUMP: program:
-// DUMP: sized-field 'struct vec.items' by 'struct vec.cap' * 4
-// DUMP-NEXT: sized-field 'struct view.raw' by 'struct view.len' * 4
+// DUMP: sized-field 'struct vec.items' by 'struct vec.cap' * 4 in u64
+// DUMP-NEXT: sized-field 'struct view.raw' by 'struct view.len' * 4 in u64
 // DUMP-NEXT: unsized-field 'struct view.raw'
 
-// SIDECAR: weavec-summaries 12
-// SIDECAR-DAG: sized-field struct~vec.items struct~vec.cap 4
-// SIDECAR-DAG: sized-field struct~view.raw struct~view.len 4
+// SIDECAR: weavec-summaries 13
+// SIDECAR-DAG: sized-field struct~vec.items struct~vec.cap 4 u64
+// SIDECAR-DAG: sized-field struct~view.raw struct~view.len 4 u64
 // SIDECAR-DAG: unsized-field struct~view.raw
 
 // This unit looked the fields up without deciding anything: the link step
@@ -52,7 +52,7 @@ int sum(struct vec *v) {
 // undecided (`n <= cap` is not known here).
 int last(struct vec *v) {
   int x = v->items[v->n];
-  // CHECK: rfc0012-sized-fields.c:[[@LINE+1]]:10: error: 'v->items[v->cap]' is out of bounds: 'v->cap' is the number of elements of 'v->items' [weavec::out-of-bounds]
+  // CHECK: rfc0012-sized-fields.c:[[@LINE+1]]:10: error: 'v->items[v->cap]' is out of bounds: the access exceeds the allocation's converted size [weavec::out-of-bounds]
   return v->items[v->cap] + x;
   // CHECK: vec.h:9:8: note: 'v->items' is declared here
 }
@@ -60,7 +60,7 @@ int last(struct vec *v) {
 // A loop to the count inclusive.
 void zero(struct vec *v) {
   for (size_t i = 0; i <= v->cap; i++)
-    // CHECK: rfc0012-sized-fields.c:[[@LINE+1]]:5: error: 'v->items[i]' may be out of bounds: 'i' may equal 'v->cap', the number of elements of 'v->items' [weavec::out-of-bounds]
+    // CHECK: rfc0012-sized-fields.c:[[@LINE+1]]:5: error: 'v->items[i]' may be out of bounds: the access exceeds the allocation's converted size [weavec::out-of-bounds]
     v->items[i] = 0;
 }
 

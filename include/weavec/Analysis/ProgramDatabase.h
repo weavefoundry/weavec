@@ -89,6 +89,9 @@ struct SizedFieldWitness {
   std::string field;
   std::string count;
   std::int64_t scale = 1;
+  // RFC 0017: an inferred count may be multiplied in a target C type.
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
+  std::optional<core::IntegerType> productType = {};
 
   friend auto operator<=>(const SizedFieldWitness &,
                           const SizedFieldWitness &) = default;
@@ -121,6 +124,8 @@ struct SizedFieldFacts {
   /// exactly one `(count, scale)`, and no refutation names it.
   [[nodiscard]] std::optional<std::pair<std::string, std::int64_t>>
   confirmed(std::string_view field) const;
+  [[nodiscard]] std::optional<SizedFieldWitness>
+  confirmedWitness(std::string_view field) const;
   /// Every confirmed pair, as witnesses.
   [[nodiscard]] std::set<SizedFieldWitness> confirmedPairs() const;
 

@@ -171,20 +171,22 @@ void FunctionSummary::addReturn(ValueSource source) {
 void FunctionSummary::addRequirement(std::uint32_t param,
                                      ExtentRequirement requirement) {
   std::set<ExtentRequirement> &mine = requiresExtent[param];
-  const auto same =
-      std::ranges::find_if(mine, [&requirement](const ExtentRequirement &r) {
-        return r.need == requirement.need;
-      });
-  if (same == mine.end()) {
+  if (std::ranges::any_of(mine, [&](const auto &existing) {
+        return existing.need == requirement.need &&
+               existing.start == requirement.start && existing.when.trivial();
+      }))
+    return;
+  if (requirement.when.trivial())
+    std::erase_if(mine, [&](const auto &existing) {
+      return existing.need == requirement.need &&
+             existing.start == requirement.start;
+    });
+  // Requirements are conditional obligations. The common conjuncts of
+  // two guards are not their disjunction (RFC 0017).
+  if (mine.size() < 16 || mine.contains(requirement))
     mine.insert(std::move(requirement));
-    return;
-  }
-  if (same->when == requirement.when)
-    return;
-  ExtentRequirement joined = *same;
-  joined.when.join(requirement.when);
-  mine.erase(same);
-  mine.insert(std::move(joined));
+  else
+    incomplete.insert("extent requirement alternatives exceeded");
 }
 
 bool FunctionSummary::returnsKind(ValueSource::Kind kind) const noexcept {
@@ -549,10 +551,56 @@ static void joinArrayFacts(std::set<Range> &mine, const std::set<Range> &theirs,
   mine = std::move(joined);
 }
 
+void FunctionSummary::addNumericOutput(const SummaryPath &path,
+                                       NumericOutput output) {
+  auto &alternatives = numericOutputs[path];
+  for (const auto &existing : alternatives)
+    if (!existing.value && existing.when.trivial())
+      return;
+  if (!output.value && output.when.trivial()) {
+    alternatives.clear();
+    alternatives.insert(std::move(output));
+    return;
+  }
+  for (auto it = alternatives.begin(); it != alternatives.end(); ++it) {
+    if (it->value != output.value)
+      continue;
+    output.when.join(it->when);
+    alternatives.erase(it);
+    break;
+  }
+  // Joining guarded unknowns can make the result unconditional. RFC 0017:
+  // unknown absorbs every possible value, regardless of insertion order.
+  if (!output.value && output.when.trivial())
+    alternatives.clear();
+  alternatives.insert(std::move(output));
+  if (alternatives.size() > MaxNumericOutputAlternatives) {
+    alternatives.clear();
+    alternatives.insert(NumericOutput{});
+    incomplete.insert("numeric output alternative limit reached");
+  }
+}
+
 void FunctionSummary::join(const FunctionSummary &other) {
+  // In particular, numeric output insertion can erase an existing alternative.
+  if (this == &other)
+    return;
   // The empty summary is the bottom of the lattice (a join of candidates
   // starts from it): the other side's classes are the answer.
   const bool wasEmpty = empty();
+  const bool otherEmpty = other.empty();
+  const auto beforeNumeric = numericOutputs;
+  for (const auto &[path, outputs] : other.numericOutputs) {
+    if (!wasEmpty && !beforeNumeric.contains(path))
+      addNumericOutput(path, NumericOutput{});
+    for (const auto &output : outputs)
+      addNumericOutput(path, output);
+  }
+  if (!otherEmpty)
+    for (const auto &[path, outputs] : beforeNumeric)
+      if (!other.numericOutputs.contains(path))
+        addNumericOutput(path, NumericOutput{});
+
   joinArrayFacts(arrayReleases, other.arrayReleases, wasEmpty, other.empty());
   joinArrayFacts(arrayFills, other.arrayFills, wasEmpty, other.empty());
   if (wasEmpty) {
@@ -748,7 +796,9 @@ FunctionSummary remapGlobals(const FunctionSummary &summary,
     return result;
   };
   // A conjunct on a dropped root is dropped: the guard weakens (RFC 0009).
-  const auto remapGuard = [&remapPath](const PathGuard &guard) {
+  bool droppedNumericGuard = false;
+  const auto remapGuard = [&remapPath,
+                           &droppedNumericGuard](const PathGuard &guard) {
     PathGuard result;
     for (const auto &[path, fact] : guard.conditions) {
       if (const auto mapped = remapPath(path))
@@ -760,6 +810,20 @@ FunctionSummary remapGlobals(const FunctionSummary &summary,
       if (a && b)
         result.requirePointer(*a, *b, equal);
     }
+    for (const auto &predicate : guard.integers) {
+      const auto mapped = predicate.substitute<SummaryPath>(
+          [&](const SummaryPath &leaf, IntegerType type)
+              -> std::optional<IntegerExpression<SummaryPath>> {
+            const auto input = remapPath(leaf);
+            return input ? std::optional(IntegerExpression<SummaryPath>::input(
+                               *input, type))
+                         : std::nullopt;
+          });
+      if (mapped)
+        result.requireInteger(*mapped);
+      else
+        droppedNumericGuard = true;
+    }
     return result;
   };
   const auto remapEffect = [&remapGuard](const PlaceEffect &effect) {
@@ -770,6 +834,19 @@ FunctionSummary remapGlobals(const FunctionSummary &summary,
   // RFC 0011: an extent in a dropped global is unknown.
   const auto remapAffine =
       [&remapPath](const PathAffine &affine) -> std::optional<PathAffine> {
+    if (affine.expression) {
+      const auto mapped = affine.expression->substitute<SummaryPath>(
+          [&remapPath](const SummaryPath &leaf, IntegerType type)
+              -> std::optional<IntegerExpression<SummaryPath>> {
+            const auto path = remapPath(leaf);
+            if (!path)
+              return std::nullopt;
+            return IntegerExpression<SummaryPath>::input(*path, type);
+          });
+      return mapped ? std::optional(PathAffine::ofExpression(
+                          *mapped, affine.scale, affine.constant))
+                    : std::nullopt;
+    }
     if (!affine.path)
       return affine;
     const std::optional<SummaryPath> path = remapPath(*affine.path);
@@ -805,8 +882,7 @@ FunctionSummary remapGlobals(const FunctionSummary &summary,
   result.incomplete = summary.incomplete;
   const auto mapArrayGuard = [&](PathGuard &guard, bool &definite) {
     auto mapped = remapGuard(guard);
-    if (mapped.conditions.size() != guard.conditions.size() ||
-        mapped.pointers.size() != guard.pointers.size()) {
+    if (mapped.size() != guard.size()) {
       definite = false;
       result.incomplete.insert("array range guard lost in program interface");
     }
@@ -913,6 +989,38 @@ FunctionSummary remapGlobals(const FunctionSummary &summary,
   result.counts = remapSet(summary.counts);
   for (const auto &[outcome, paths] : summary.storesOn)
     result.storesOn[outcome] = remapSet(paths);
+  for (const auto &[path, outputs] : summary.numericOutputs) {
+    const auto destination = remapPath(path);
+    if (!destination) {
+      result.incomplete.insert("numeric output global is unavailable");
+      continue;
+    }
+    for (const auto &output : outputs) {
+      NumericOutput mapped;
+      mapped.when = remapGuard(output.when);
+      if (mapped.when.size() != output.when.size()) {
+        result.addNumericOutput(*destination, NumericOutput{});
+        result.incomplete.insert(
+            "numeric output condition global is unavailable");
+        continue;
+      }
+      if (output.value) {
+        mapped.value = output.value->substitute<SummaryPath>(
+            [&remapPath](const SummaryPath &leaf, IntegerType type)
+                -> std::optional<IntegerExpression<SummaryPath>> {
+              const auto input = remapPath(leaf);
+              return input
+                         ? std::optional(IntegerExpression<SummaryPath>::input(
+                               *input, type))
+                         : std::nullopt;
+            });
+        if (!mapped.value)
+          result.incomplete.insert(
+              "numeric output dependency global is unavailable");
+      }
+      result.addNumericOutput(*destination, std::move(mapped));
+    }
+  }
   for (const auto &[outcome, facts] : summary.factOn) {
     for (const auto &[path, fact] : facts) {
       if (const auto mapped = remapPath(path))
@@ -922,14 +1030,24 @@ FunctionSummary remapGlobals(const FunctionSummary &summary,
   result.requiresNonNull = summary.requiresNonNull;
   for (const auto &[param, requirements] : summary.requiresExtent) {
     for (const ExtentRequirement &requirement : requirements) {
-      if (const auto need = remapAffine(requirement.need))
+      const auto need = remapAffine(requirement.need);
+      const auto when = remapGuard(requirement.when);
+      const auto start =
+          requirement.start ? remapAffine(*requirement.start) : std::nullopt;
+      if (need && (!requirement.start || start) &&
+          when.size() == requirement.when.size())
         result.addRequirement(
-            param, ExtentRequirement{.need = *need,
-                                     .when = remapGuard(requirement.when)});
+            param,
+            ExtentRequirement{.need = *need, .when = when, .start = start});
+      else
+        result.incomplete.insert(
+            "extent requirement dependency global is unavailable");
     }
   }
   result.neverReturns = summary.neverReturns;
   result.normalizeStoresOn();
+  if (droppedNumericGuard)
+    result.incomplete.insert("numeric condition global is unavailable");
   return result;
 }
 

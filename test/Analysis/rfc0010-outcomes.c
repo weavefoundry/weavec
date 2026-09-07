@@ -16,8 +16,10 @@ struct bag {
 
 // The store happens on the zero class only; the negative class leaves the
 // caller's memory alone and carries the test that failed.
+// RFC 0017: the requirement uses entry n, before the postfix increment. The
+// eight-byte slot starts at n*8 and ends at n*8+8; the typed guard excludes 8.
 // DUMP-LABEL: function 'bag_put':
-// DUMP: summary: b->items[*]: written; b->n: read|written; stores{b->items[*] = copy s} returns{} requires{b} requires-extent{b: b->n*8} outcome zero{} stored{b->items[*]} outcome negative{} stored{} facts{b->n =8} increments{b->n}
+// DUMP: summary: b->items[*]: written; b->n: read|written; stores{b->items[*] = copy s} returns{} requires{b} requires-extent{b: b->n*8+8 start b->n*8 when[b->n in i32:0-2147483655,2147483657-4294967295]} outcome zero{} stored{b->items[*]} outcome negative{} stored{} facts{b->n =8} increments{b->n}
 static int bag_put(struct bag *b, char *s) {
   if (b->n == 8)
     return -1;

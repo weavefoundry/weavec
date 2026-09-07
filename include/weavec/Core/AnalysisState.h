@@ -240,6 +240,14 @@ struct AnalysisState {
   NullTracker nulls;
   /// What is known about the value of each integer place (RFC 0009).
   ScalarTracker scalars;
+  /// RFC 0017: must-value expressions, captured before their dependencies
+  /// change. A join keeps only identical expressions on both paths.
+  std::map<PlaceId, IntegerExpression<PlaceId>> numericValues;
+  /// Places whose current scalar value may differ from its entry value.
+  /// This is path state, not a function-wide syntactic write set.
+  PlaceSet numericWrites;
+  PlaceGuard numericConditions;
+  bool numericConditionsIncomplete = false;
   /// Caller-visible paths this function stored a pointer into on the
   /// current path (RFC 0010, *Per-outcome stores*); read at each `return`
   /// to record which stores hold on which outcome class. A may-fact: joins

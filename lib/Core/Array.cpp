@@ -205,6 +205,9 @@ bool arrayIndicesDisjoint(const ArrayIndex &a, const ArrayIndex &b,
     return true;
   if (!a.symbol || !b.symbol)
     return false;
+  if (a.offset == b.offset &&
+      relations.different(PlaceId{*a.symbol}, PlaceId{*b.symbol}))
+    return true;
   const auto edge =
       relations.edgeBetween(PlaceId{*a.symbol}, PlaceId{*b.symbol});
   if (!edge)

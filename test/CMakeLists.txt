@@ -51,6 +51,19 @@ if(Python3_Interpreter_FOUND)
     COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/evaluate.py"
             --weavec "$<TARGET_FILE:weavec>")
   set_tests_properties(evaluation PROPERTIES LABELS "integration" TIMEOUT 180)
+  # RFC 0017 regression pairs are a separate, fixed population.
+  add_test(
+    NAME evaluation-rfc0017
+    COMMAND
+      "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/evaluate.py"
+      --weavec "$<TARGET_FILE:weavec>" --manifest
+      "${PROJECT_SOURCE_DIR}/test/evaluation/rfc0017/manifest.json")
+  set_tests_properties(evaluation-rfc0017 PROPERTIES LABELS "integration"
+                                                     TIMEOUT 180)
+  add_test(NAME recall-harness
+           COMMAND "${Python3_EXECUTABLE}"
+                   "${PROJECT_SOURCE_DIR}/scripts/test_recall.py")
+  set_tests_properties(recall-harness PROPERTIES LABELS "unit")
   add_test(NAME evaluation-harness
            COMMAND "${Python3_EXECUTABLE}"
                    "${PROJECT_SOURCE_DIR}/scripts/test_evaluate.py")

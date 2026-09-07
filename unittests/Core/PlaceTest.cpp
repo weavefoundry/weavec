@@ -140,5 +140,33 @@ TEST_F(PlacePathTest, InnermostDeref) {
   EXPECT_FALSE(table.innermostDeref(p));
 }
 
+TEST(PlaceSet, DenseWordsJoinWithoutChangingExistingEntryFacts) {
+  PlaceSet a;
+  PlaceSet b;
+  for (std::uint32_t i = 0; i < 4097; ++i) {
+    if (i % 3 == 0)
+      EXPECT_TRUE(a.insert(PlaceId{i}));
+    if (i % 5 == 0)
+      EXPECT_TRUE(b.insert(PlaceId{i}));
+  }
+  const auto before = a;
+  EXPECT_TRUE(a.join(b));
+  EXPECT_FALSE(a.join(b));
+  EXPECT_FALSE(a.join(a));
+  std::size_t count = 0;
+  for (std::uint32_t i = 0; i < 4200; ++i) {
+    const bool expected = i < 4097 && (i % 3 == 0 || i % 5 == 0);
+    EXPECT_EQ(a.contains(PlaceId{i}), expected) << i;
+    EXPECT_EQ(before.contains(PlaceId{i}), i < 4097 && i % 3 == 0) << i;
+    count += expected ? 1U : 0U;
+  }
+  EXPECT_EQ(a.size(), count);
+  EXPECT_FALSE(a.insert(PlaceId{4095}));
+  PlaceSet empty;
+  EXPECT_FALSE(a.join(empty));
+  EXPECT_TRUE(empty.join(a));
+  EXPECT_EQ(empty, a);
+}
+
 } // namespace
 } // namespace weavec::core

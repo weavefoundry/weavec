@@ -84,11 +84,18 @@ void SizedFieldFacts::clear() {
 
 std::optional<std::pair<std::string, std::int64_t>>
 SizedFieldFacts::confirmed(std::string_view field) const {
+  const auto witness = confirmedWitness(field);
+  return witness ? std::optional(std::pair{witness->count, witness->scale})
+                 : std::nullopt;
+}
+
+std::optional<SizedFieldWitness>
+SizedFieldFacts::confirmedWitness(std::string_view field) const {
   // RFC 0012, *Sized fields*, "Inference": exactly one `(count, scale)`
   // witnessed, the field in no refutation, the pair in none.
   if (unsizedFields.contains(std::string(field)))
     return std::nullopt;
-  std::optional<std::pair<std::string, std::int64_t>> found;
+  std::optional<SizedFieldWitness> found;
   for (auto it = witnesses.lower_bound(SizedFieldWitness{
            .field = std::string(field),
            .count = {},
@@ -96,10 +103,10 @@ SizedFieldFacts::confirmed(std::string_view field) const {
        it != witnesses.end() && it->field == field; ++it) {
     if (found)
       return std::nullopt;
-    found.emplace(it->count, it->scale);
+    found = *it;
   }
   if (!found || unsizedPairs.contains(UnsizedPair{.field = std::string(field),
-                                                  .count = found->first}))
+                                                  .count = found->count}))
     return std::nullopt;
   return found;
 }
@@ -107,10 +114,8 @@ SizedFieldFacts::confirmed(std::string_view field) const {
 std::set<SizedFieldWitness> SizedFieldFacts::confirmedPairs() const {
   std::set<SizedFieldWitness> result;
   for (const SizedFieldWitness &witness : witnesses) {
-    if (const auto pair = confirmed(witness.field)) {
-      result.insert(SizedFieldWitness{
-          .field = witness.field, .count = pair->first, .scale = pair->second});
-    }
+    if (const auto pair = confirmedWitness(witness.field))
+      result.insert(*pair);
   }
   return result;
 }
@@ -480,8 +485,10 @@ static void describe(llvm::raw_ostream &os,
       for (const core::ExtentRequirement &requirement : requirements) {
         os << (first ? "" : ", ")
            << core::printSummaryPath(core::SummaryPath::param(param), namer)
-           << ": " << core::printAffine(requirement.need, namer)
-           << core::printGuard(requirement.when, namer);
+           << ": " << core::printAffine(requirement.need, namer);
+        if (requirement.start)
+          os << " start " << core::printAffine(*requirement.start, namer);
+        os << core::printGuard(requirement.when, namer);
         first = false;
       }
     }
@@ -517,7 +524,10 @@ void ProgramDatabase::dump(llvm::raw_ostream &os) const {
   // RFC 0012, *Sized fields*.
   for (const SizedFieldWitness &witness : sizedFields.witnesses) {
     os << "  sized-field '" << witness.field << "' by '" << witness.count
-       << "' * " << witness.scale << '\n';
+       << "' * " << witness.scale;
+    if (witness.productType)
+      os << " in " << witness.productType->toString();
+    os << '\n';
   }
   for (const std::string &field : sizedFields.unsizedFields)
     os << "  unsized-field '" << field << "'\n";

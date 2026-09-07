@@ -11,11 +11,11 @@
 #endif
 
 // Inside the body the extent is `n` bytes; the access at `n` is one past.
-// The requirement comes from the annotation, so the inferred summary shows
-// none of its own (the loop is proved against the declared extent).
+// RFC 0017 retains body requirements for callers and wrappers, even when
+// the loop was proved against the annotated extent inside this function.
 // DUMP-LABEL: function 'fill':
-// DUMP: summary: *p: written; stores{} returns{} requires{p}
-// DUMP-NOT: requires-extent
+// DUMP: spatial: proven=1 violation=1 unresolved=0
+// DUMP-NEXT: summary: *p: written; stores{} returns{} requires{p} requires-extent{p: n when[n positive|negative], p: n+1 start n}
 void fill(char *WEAVEC_SIZED_BY(n) p, size_t n) {
   for (size_t i = 0; i < n; i++)
     p[i] = 0;
@@ -26,8 +26,7 @@ void fill(char *WEAVEC_SIZED_BY(n) p, size_t n) {
 
 // Elements, not bytes: `n` ints.
 // DUMP-LABEL: function 'ints':
-// DUMP: summary: *p: written; stores{} returns{} requires{p}
-// DUMP-NOT: requires-extent
+// DUMP: summary: *p: written; stores{} returns{} requires{p} requires-extent{p: (n-1)*4+4 start (n-1)*4}
 void ints(int *WEAVEC_SIZED_BY(n) p, int n) { p[n - 1] = 0; }
 
 // The annotation is authoritative for a prototype with no body in view; it

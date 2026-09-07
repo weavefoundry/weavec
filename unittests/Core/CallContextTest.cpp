@@ -265,6 +265,29 @@ TEST(CallContext, ObjectSeparationIsNotJustPointerInequality) {
   EXPECT_FALSE(input.valid());
 }
 
+TEST(CallContext, NumericContractsIncludeEveryInputDependency) {
+  using Expression = IntegerExpression<SummaryPath>;
+  constexpr IntegerType Type{.width = 32, .isSigned = false};
+  const auto field = SummaryPath::global(0).deref().field("count");
+  const auto result = SummaryPath::param(0).deref();
+  const auto argument = SummaryPath::param(1);
+  FunctionSummary summary;
+  NumericOutput output{.value = Expression::input(field, Type)};
+  output.when.requireInteger({.lhs = Expression::input(argument, Type),
+                              .op = IntegerOp::Less,
+                              .rhs = Expression::input(field, Type)});
+  summary.addNumericOutput(result, output);
+  summary.addRequirement(
+      0, {.need = PathAffine::ofExpression(Expression::input(argument, Type)),
+          .start = PathAffine::ofExpression(Expression::input(field, Type))});
+  const auto footprint = callMemoryFootprint(summary);
+  EXPECT_TRUE(footprint.contains(result));
+  EXPECT_TRUE(footprint.contains(SummaryPath::param(0)));
+  EXPECT_TRUE(footprint.contains(argument));
+  EXPECT_TRUE(footprint.contains(field));
+  EXPECT_TRUE(footprint.contains(SummaryPath::global(0)));
+}
+
 TEST(CallContext, GlobalSeparationPremisesCannotBeDropped) {
   CallContext input;
   input.separations.emplace(SummaryPath::param(0), SummaryPath::global(0));

@@ -474,11 +474,29 @@ TEST(Extents, AllocationsCarryTheirExtent) {
     return std::optional<PathAffine>{};
   };
   EXPECT_EQ(extentOf("sixteen"), PathAffine::ofConstant(16));
-  EXPECT_EQ(extentOf("ints"), PathAffine::ofPath(SummaryPath::param(0), 4, 0));
-  EXPECT_EQ(extentOf("zeroed"),
-            PathAffine::ofPath(SummaryPath::param(0), 4, 0));
+  // RFC 0017: these are actual C products, including the conversion of
+  // a negative int. Neither is an unbounded mathematical n*4 expression.
+  for (const auto *name : {"ints", "zeroed"}) {
+    const auto extent = extentOf(name);
+    ASSERT_TRUE(extent && extent->expression) << name;
+    const auto range = extent->expression->evaluate([](const auto &,
+                                                       core::IntegerType type) {
+      return core::IntegerRange::singleton(
+          core::IntegerValue::ofBits({32, true}, UINT32_MAX).converted(type));
+    });
+    ASSERT_TRUE(range.values.constant());
+    EXPECT_EQ(range.values.constant()->bits, UINT64_MAX - 3);
+  }
   EXPECT_EQ(extentOf("one"), PathAffine::ofConstant(16));
-  EXPECT_EQ(extentOf("grown"), PathAffine::ofPath(SummaryPath::param(1), 1, 1));
+  const auto grown = extentOf("grown");
+  ASSERT_TRUE(grown && grown->expression);
+  const auto wrapped =
+      grown->expression->evaluate([](const auto &, core::IntegerType type) {
+        return core::IntegerRange::singleton(
+            core::IntegerValue::ofBits(type, UINT64_MAX));
+      });
+  ASSERT_TRUE(wrapped.values.constant());
+  EXPECT_EQ(wrapped.values.constant()->bits, 0U);
 }
 
 // -- Bounds checks (RFC 0011, *Bounds checks*) --------------------------------
@@ -593,21 +611,21 @@ TEST(Bounds, TheOffsetOfADerivedPointerCounts) {
 
 TEST(Bounds, SymbolicIndexAgainstTheSameCounter) {
   const auto result = analyze(std::string(Types) + R"c(
-    void at_n(int n) {
+    void at_n(int n) { if (n <= 0) return;
       int *p = malloc(n * sizeof *p);
       if (!p) return;
       p[n - 1] = 0;
       p[n] = 0;
       free(p);
     }
-    void bytes(size_t n) {
+    void bytes(size_t n) { if (n == (size_t)-1) return;
       char *p = malloc(n + 1);
       if (!p) return;
       p[n] = 0;
       p[n + 1] = 0;
       free(p);
     }
-    void copy_n(size_t n) {
+    void copy_n(size_t n) { if (n == (size_t)-1) return;
       char *p = malloc(n);
       if (!p) return;
       memset(p, 0, n);
@@ -630,7 +648,7 @@ TEST(Bounds, SymbolicIndexAgainstTheSameCounter) {
 // `i <= n` may be past the end, `i >= n` is past the end.
 TEST(Bounds, RelationsFromConditions) {
   const auto result = analyze(std::string(Types) + R"c(
-    void loops(int n) {
+    void loops(int n) { if (n <= 0 || n == 2147483647) return;
       int *p = malloc(n * sizeof *p);
       if (!p) return;
       for (int i = 0; i < n; i++) p[i] = 0;
@@ -639,7 +657,7 @@ TEST(Bounds, RelationsFromConditions) {
       for (int i = 0; i < n - 1; i++) p[i + 1] = 0;
       free(p);
     }
-    void guards(int i, int n) {
+    void guards(int i, int n) { if (n < 0) return;
       int *p = malloc(n * sizeof *p);
       if (!p) return;
       if (i < n) p[i] = 1;
@@ -647,7 +665,7 @@ TEST(Bounds, RelationsFromConditions) {
       if (i > n) p[i] = 1;
       free(p);
     }
-    void reversed(int i, int n) {
+    void reversed(int i, int n) { if (n < 0) return;
       int *p = malloc(n * sizeof *p);
       if (!p) return;
       if (n > i) p[i] = 1;
@@ -699,7 +717,7 @@ TEST(Bounds, ConstantUpperBounds) {
       for (int i = 0; i < 5; i++) ints[i] = 0;
     }
     void small_object(int n) {
-      if (n > 4) return;
+      if (n < 0 || n > 4) return;
       char *p = malloc(n);
       if (!p) return;
       p[3] = 0;
@@ -750,7 +768,7 @@ TEST(Bounds, WritesForgetRelationsAndExtents) {
       }
       free(p);
     }
-    void copied_index(int i, int n) {
+    void copied_index(int i, int n) { if (n < 0) return;
       int *p = malloc(n * sizeof *p);
       if (!p) return;
       int j = i;
@@ -822,23 +840,30 @@ TEST(ExtentRequirements, InferredFromUnconditionalAccesses) {
       return std::set<core::ExtentRequirement>{};
     return s->requiresExtent.at(0);
   };
-  EXPECT_EQ(requirements("put7"),
-            (std::set<core::ExtentRequirement>{
-                {.need = PathAffine::ofConstant(8), .when = {}}}));
+  EXPECT_EQ(requirements("put7"), (std::set<core::ExtentRequirement>{
+                                      {.need = PathAffine::ofConstant(8),
+                                       .when = {},
+                                       .start = PathAffine::ofConstant(7)}}));
   EXPECT_EQ(requirements("put_n"),
             (std::set<core::ExtentRequirement>{
                 {.need = PathAffine::ofPath(SummaryPath::param(1), 1, 1),
-                 .when = {}}}));
-  EXPECT_EQ(requirements("fill"),
-            (std::set<core::ExtentRequirement>{
-                {.need = PathAffine::ofPath(SummaryPath::param(1), 4, 0),
-                 .when = {}}}))
-      << "`b[i]` under `i < n` needs `n` elements at the boundary";
+                 .when = {},
+                 .start = PathAffine::ofPath(SummaryPath::param(1))}}));
+  ASSERT_EQ(requirements("fill").size(), 1U);
+  const auto fill = *requirements("fill").begin();
+  EXPECT_EQ(fill.need, PathAffine::ofPath(SummaryPath::param(1), 4, 0));
+  EXPECT_EQ(fill.when.conditions.at(SummaryPath::param(1)),
+            core::ValueFact::of(core::Outcome::Positive));
   EXPECT_EQ(requirements("first"), std::set<core::ExtentRequirement>{})
       << "the type promises `sizeof(struct outer)`";
-  EXPECT_EQ(requirements("guarded"), std::set<core::ExtentRequirement>{})
-      << "no guard spells `n > 4`";
-  core::ExtentRequirement onZero{.need = PathAffine::ofConstant(8), .when = {}};
+  ASSERT_EQ(requirements("guarded").size(), 1U);
+  const auto guarded = *requirements("guarded").begin();
+  EXPECT_EQ(guarded.need, PathAffine::ofConstant(5));
+  EXPECT_EQ(guarded.start, PathAffine::ofConstant(4));
+  EXPECT_FALSE(guarded.when.trivial());
+  core::ExtentRequirement onZero{.need = PathAffine::ofConstant(8),
+                                 .when = {},
+                                 .start = PathAffine::ofConstant(7)};
   onZero.when.require(SummaryPath::param(1), core::ValueFact::ofConstant(0));
   EXPECT_EQ(requirements("on_zero"),
             (std::set<core::ExtentRequirement>{onZero}));
@@ -853,8 +878,19 @@ TEST(ExtentRequirements, InferredFromUnconditionalAccesses) {
   EXPECT_EQ(requirements("put_le8"),
             (std::set<core::ExtentRequirement>{
                 {.need = PathAffine::ofConstant(9), .when = {}}}));
-  EXPECT_EQ(requirements("either"), std::set<core::ExtentRequirement>{})
-      << "the smaller of `n` and 16 is not something a summary spells";
+  ASSERT_EQ(requirements("either").size(), 1U);
+  const auto either = *requirements("either").begin();
+  ASSERT_TRUE(either.need.expression);
+  EXPECT_EQ(either.need.scale, 4);
+  for (const auto n : {1U, 8U, 16U, 20U}) {
+    const auto evaluated = either.need.expression->evaluate(
+        [n](const auto &, core::IntegerType type) {
+          return core::IntegerRange::singleton(
+              core::IntegerValue::ofBits(type, n));
+        });
+    ASSERT_TRUE(evaluated.values.constant());
+    EXPECT_EQ(evaluated.values.constant()->bits, std::min(n, 16U));
+  }
 }
 
 // A requirement is checked at the call against what the argument has.

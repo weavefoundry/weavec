@@ -175,7 +175,7 @@ TEST(SummaryIO, PrintsAndParsesGuardsAndNeverReturns) {
 // RFC 0010, *Summary text format (version 6)*: the `share` flag and the
 // `increment`, `decrement`, `count`, `stored` and `fact` lines.
 TEST(SummaryIO, PrintsAndParsesSharesAndPerOutcomeLines) {
-  EXPECT_EQ(SummaryFormatVersion, 12U);
+  EXPECT_EQ(SummaryFormatVersion, 13U);
   const SummaryPath rc = SummaryPath::param(0).deref().field("rc");
   FunctionSummary unref;
   unref.addEffect(SummaryPath::param(0),
@@ -668,4 +668,96 @@ TEST(SummaryIO, RejectsMalformedRecords) {
 }
 
 } // namespace
+} // namespace weavec::core
+
+namespace weavec::core {
+
+TEST(NumericSummary, ValuesExpressionsAndPredicatesRoundTrip) {
+  using Expr = IntegerExpression<SummaryPath>;
+  const IntegerType type{32, false};
+  const auto n = Expr::input(SummaryPath::param(1), type);
+  const auto m = Expr::input(SummaryPath::global(0), type);
+  const auto product = Expr::operation(IntegerOp::Multiply, n, m).value();
+  PathGuard guard;
+  guard.requireInteger({n, IntegerOp::Less, m});
+  FunctionSummary summary;
+  summary.addNumericOutput(SummaryPath::result(),
+                           {.value = product, .when = guard});
+  summary.addNumericOutput(SummaryPath::param(0).deref(),
+                           {.value = n.converted({8, false})});
+  summary.addRequirement(
+      0, {.need = PathAffine::ofExpression(product, 4, 4), .when = guard});
+  summary.addReturn(
+      ValueSource::freshAt("free", PointerOffset::ofField("struct v .a"),
+                           PathAffine::ofConstant(8), PointerOffset::zero()));
+  const auto names = [](std::uint32_t) { return std::string("count"); };
+  const auto resolve =
+      [](std::string_view name) -> std::optional<std::uint32_t> {
+    return name == "count" ? std::optional(0U) : std::nullopt;
+  };
+  const auto text = printSummary(summary, names);
+  EXPECT_NE(text.find("numeric result value"), std::string::npos);
+  EXPECT_NE(text.find("bounds-offset @0"), std::string::npos);
+  EXPECT_EQ(parseSummary(text, resolve), summary);
+  const auto mapped =
+      remapGlobals(summary, [](std::uint32_t) { return std::optional(7U); });
+  ASSERT_EQ(mapped.numericOutputs.at(SummaryPath::result()).size(), 1U);
+  EXPECT_TRUE(mapped.numericOutputs.at(SummaryPath::result())
+                  .begin()
+                  ->value->dependsOn(SummaryPath::global(7)));
+  const auto missing =
+      remapGlobals(summary, [](std::uint32_t) -> std::optional<std::uint32_t> {
+        return std::nullopt;
+      });
+  EXPECT_TRUE(missing.requiresExtent.empty());
+  EXPECT_FALSE(missing.incomplete.empty());
+  EXPECT_FALSE(missing.numericOutputs.at(SummaryPath::result()).begin()->value);
+}
+
+TEST(NumericSummary, NarrowedExpressionRangeIsAnExactCondition) {
+  using Expr = IntegerExpression<SummaryPath>;
+  const IntegerType type{8, false};
+  const auto n =
+      Expr::input(SummaryPath::param(0), {32, false}).converted(type).value();
+  PathGuard guard;
+  guard.requireInteger(
+      {n, IntegerOp::Equal, Expr::constant(IntegerValue::ofBits(type, 0)),
+       IntegerRange::singleton(IntegerValue::ofBits(type, 0))});
+  FunctionSummary summary;
+  summary.addEffect(SummaryPath::param(1), {.freed = true, .when = guard});
+  const auto names = [](std::uint32_t) { return std::string("g"); };
+  const auto resolve = [](std::string_view) { return std::optional(0U); };
+  EXPECT_EQ(parseSummary(printSummary(summary, names), resolve), summary);
+  auto refuted = guard;
+  EXPECT_EQ(refuted.refine(SummaryPath::param(0), ValueFact::ofConstant(257)),
+            GuardRefinement::Refuted);
+  auto discharged = guard;
+  EXPECT_EQ(
+      discharged.refine(SummaryPath::param(0), ValueFact::ofConstant(256)),
+      GuardRefinement::Discharged);
+  EXPECT_TRUE(discharged.trivial());
+}
+
+TEST(NumericSummary, AnUnknownAlternativeSurvivesJoinsAndLimits) {
+  using Expr = IntegerExpression<SummaryPath>;
+  FunctionSummary exact;
+  exact.addNumericOutput(
+      SummaryPath::result(),
+      {.value = Expr::constant(IntegerValue::ofBits({32, true}, 3))});
+  FunctionSummary unknown;
+  unknown.addNumericOutput(SummaryPath::result(), {});
+  exact.join(unknown);
+  EXPECT_EQ(exact.numericOutputs.at(SummaryPath::result()),
+            (std::set<NumericOutput>{NumericOutput{}}));
+  for (unsigned i = 0; i < MaxNumericOutputAlternatives + 1; ++i)
+    unknown.addNumericOutput(
+        SummaryPath::param(0).deref(),
+        {.value = Expr::constant(IntegerValue::ofBits({32, true}, i))});
+  EXPECT_EQ(unknown.numericOutputs.at(SummaryPath::param(0).deref()).size(),
+            1U);
+  EXPECT_FALSE(
+      unknown.numericOutputs.at(SummaryPath::param(0).deref()).begin()->value);
+  EXPECT_FALSE(unknown.incomplete.empty());
+}
+
 } // namespace weavec::core

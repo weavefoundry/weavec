@@ -520,12 +520,9 @@ TEST(FunctionSummary, ExtentRequirementsJoinByUnion) {
   ExtentRequirement otherwise{.need = n, .when = {}};
   otherwise.when.require(SummaryPath::param(1), ValueFact::of(Outcome::Zero));
   c.addRequirement(0, otherwise);
-  ASSERT_EQ(c.requiresExtent.at(0).size(), 1U);
-  EXPECT_EQ(c.requiresExtent.at(0).begin()->need, n);
-  const PathGuard &when = c.requiresExtent.at(0).begin()->when;
-  ASSERT_EQ(when.conditions.size(), 1U);
-  EXPECT_EQ(when.conditions.at(SummaryPath::param(1)).classes,
-            (OutcomeSet{Outcome::Positive, Outcome::Zero}));
+  ASSERT_EQ(c.requiresExtent.at(0).size(), 2U);
+  EXPECT_TRUE(c.requiresExtent.at(0).contains(guarded));
+  EXPECT_TRUE(c.requiresExtent.at(0).contains(otherwise));
 }
 
 // RFC 0010, *Stores out of sight*: `escaped` is an effect of its own (an

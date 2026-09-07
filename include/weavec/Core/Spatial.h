@@ -100,10 +100,17 @@ struct SpatialRecord {
   // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
   std::optional<StringFact> string = {};
 
+  /// RFC 0017: bounds may be relative to a subobject while `offset` keeps
+  /// the enclosing allocation's lifetime/release identity.
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
+  std::optional<PointerOffset> boundsOffset = {};
+
   /// The record of a copy at `step` from this pointer.
   [[nodiscard]] SpatialRecord derived(const PointerOffset &step) const {
     SpatialRecord result = *this;
     result.offset = offset.plus(step);
+    if (boundsOffset)
+      result.boundsOffset = boundsOffset->plus(step);
     return result;
   }
 
@@ -158,6 +165,8 @@ struct KnownBounds {
   std::optional<std::int64_t> needAtLeast = {};
   // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
   std::optional<std::int64_t> haveAtLeast = {};
+  /// RFC 0017: an abstract type/range endpoint is not a reachable witness.
+  bool needBoundaryWitness = true;
 };
 
 /// Compares an access needing `need` bytes past the start of an object of
@@ -166,10 +175,38 @@ struct KnownBounds {
 /// place on both sides is `Equal`. `bounds` carries the constant bounds
 /// known on the two places. Nothing when the facts do not decide (an
 /// access proved in bounds and one about which nothing is known are the
-/// same: no report).
+/// same: no report). Use checkSpatialBounds when proof coverage matters.
 [[nodiscard]] std::optional<BoundsVerdict>
 boundsVerdict(const Affine &need, const Affine &have,
               std::optional<Relation> between, const KnownBounds &bounds = {});
+
+/// RFC 0017: absence of a violation does not establish bounds safety.
+enum class SpatialOutcome : std::uint8_t { Proven, Violation, Unresolved };
+enum class SpatialReason : std::uint8_t {
+  None,
+  UnknownExtent,
+  UnknownOffset,
+  UnknownIndex,
+  Arithmetic,
+  UnsupportedExpression,
+  InterfaceRequirement
+};
+[[nodiscard]] std::string_view toString(SpatialOutcome outcome) noexcept;
+[[nodiscard]] std::string_view toString(SpatialReason reason) noexcept;
+struct SpatialCheck {
+  SpatialOutcome outcome = SpatialOutcome::Unresolved;
+  SpatialReason reason = SpatialReason::UnknownIndex;
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
+  std::optional<BoundsVerdict> violation = {};
+  friend bool operator==(const SpatialCheck &, const SpatialCheck &) = default;
+};
+/// `start` is the first accessed byte, `need` the exclusive end. Quantities
+/// here are mathematical bytes, never target-width modular operations.
+[[nodiscard]] SpatialCheck
+checkSpatialBounds(const Affine &start, const Affine &need, const Affine &have,
+                   std::optional<Relation> between,
+                   const KnownBounds &bounds = {},
+                   std::optional<std::int64_t> startAtLeast = {});
 
 /// Flow-sensitive map from pointer places to their spatial records; cloned
 /// and joined per CFG block like every other component of the state.

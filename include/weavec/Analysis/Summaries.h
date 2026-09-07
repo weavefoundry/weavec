@@ -236,9 +236,10 @@ public:
       callbackGlobalCache;
 
   /// Records the summary inferred for `function`'s body, replacing any
-  /// previous one. Returns true if the summary changed.
+  /// previous one, or joining the previous approximation when `widen` is
+  /// requested by a recursive component (RFC 0017). Returns whether changed.
   bool setInferred(const clang::FunctionDecl &function,
-                   core::FunctionSummary summary);
+                   core::FunctionSummary summary, bool widen = false);
 
   /// The inferred summary for `function`, or null if none was recorded.
   [[nodiscard]] const core::FunctionSummary *
@@ -328,8 +329,9 @@ public:
   /// `field`: it holds an object of `count * scale` bytes (`addSizedWitness`),
   /// or something no sibling counts (`refuteSizedField`), or its `count`
   /// sibling changed while it did not (`refuteSizedPair`).
-  void addSizedWitness(std::string field, std::string count,
-                       std::int64_t scale);
+  void
+  addSizedWitness(std::string field, std::string count, std::int64_t scale,
+                  std::optional<core::IntegerType> productType = std::nullopt);
   void refuteSizedField(std::string field);
   void refuteSizedPair(std::string field, std::string count);
   /// The unit's own witnesses and refutations (for `UnitExports`).
@@ -346,6 +348,8 @@ public:
   /// database's facts and, when in force, the unit's; nothing otherwise.
   [[nodiscard]] std::optional<std::pair<std::string, std::int64_t>>
   confirmedSizedBy(std::string_view field) const;
+  [[nodiscard]] std::optional<SizedFieldWitness>
+  confirmedSizedWitness(std::string_view field) const;
   /// Records that `invalid-annotation` was reported for `field`; returns
   /// true the first time (the report is once per unit).
   bool noteInvalidSizedField(const clang::FieldDecl &field);

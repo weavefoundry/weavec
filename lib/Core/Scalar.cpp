@@ -39,8 +39,52 @@ std::optional<Outcome> parseOutcome(std::string_view text) noexcept {
   return std::nullopt;
 }
 
-bool ValueFact::trivial() const noexcept {
+ValueFact ValueFact::ofInteger(const IntegerRange &range) {
+  ValueFact result;
+  if (range.empty())
+    return result;
+  if (const auto value = range.constant()) {
+    if (const auto exact = value->signedValue())
+      return ofConstant(*exact);
+  }
+  // A type's full domain is not an additional path condition. The AST or
+  // expression leaf supplies that type whenever the fact is read again.
+  if (range.isFull())
+    return anyInteger();
+  if (!range.type.isSigned && range.minimum()->bits == 1 &&
+      range.maximum()->bits == range.type.mask() && range.all().size() == 1)
+    return nonZero();
+  const auto zero = IntegerValue::ofBits(range.type, 0);
+  if (range.contains(zero))
+    result.classes.insert(Outcome::Zero);
+  if (range.minimum()->negative())
+    result.classes.insert(Outcome::Negative);
+  if (!range.maximum()->negative() && range.maximum()->bits != 0)
+    result.classes.insert(Outcome::Positive);
+  if (result.inType(range.type) != range)
+    result.integer = range;
+  return result;
+}
+
+IntegerRange ValueFact::inType(IntegerType type) const {
+  if (integer)
+    return integer->converted(type);
   if (constant)
+    return IntegerRange::singleton(
+        IntegerValue::ofBits(type, static_cast<std::uint64_t>(*constant)));
+  std::vector<IntegerInterval> ranges;
+  const auto zero = type.rank(0);
+  if (classes.contains(Outcome::Negative) && type.isSigned)
+    ranges.push_back({.lower = 0, .upper = zero - 1});
+  if (classes.contains(Outcome::Zero))
+    ranges.push_back({.lower = zero, .upper = zero});
+  if (classes.contains(Outcome::Positive) && zero < type.mask())
+    ranges.push_back({.lower = zero + 1, .upper = type.mask()});
+  return IntegerRange::fromRanks(type, std::move(ranges));
+}
+
+bool ValueFact::trivial() const noexcept {
+  if (constant || integer)
     return false;
   if (isPointer())
     return classes.contains(Outcome::Null) &&
@@ -50,19 +94,32 @@ bool ValueFact::trivial() const noexcept {
          classes.contains(Outcome::Negative);
 }
 
-bool ValueFact::disjointFrom(const ValueFact &other) const noexcept {
+bool ValueFact::disjointFrom(const ValueFact &other) const {
+  if (integer || other.integer) {
+    const auto type = integer ? integer->type : other.integer->type;
+    if (inType(type).disjoint(other.inType(type)))
+      return true;
+  }
   if (constant && other.constant)
     return *constant != *other.constant;
   return (classes & other.classes).empty();
 }
 
-bool ValueFact::implies(const ValueFact &other) const noexcept {
+bool ValueFact::implies(const ValueFact &other) const {
+  if (other.integer && !other.integer->contains(inType(other.integer->type)))
+    return false;
   if (other.constant)
     return constant == other.constant;
   return other.classes.containsAll(classes);
 }
 
 void ValueFact::join(const ValueFact &other) {
+  if (integer || other.integer) {
+    const auto type = integer ? integer->type : other.integer->type;
+    const auto joined = inType(type).united(other.inType(type));
+    *this = ofInteger(joined);
+    return;
+  }
   classes = classes | other.classes;
   if (constant != other.constant)
     constant.reset();
@@ -71,6 +128,11 @@ void ValueFact::join(const ValueFact &other) {
 bool ValueFact::narrow(const ValueFact &other) {
   if (disjointFrom(other))
     return false;
+  if (integer || other.integer) {
+    const auto type = integer ? integer->type : other.integer->type;
+    *this = ofInteger(inType(type).intersect(other.inType(type)));
+    return true;
+  }
   classes = classes & other.classes;
   if (!constant)
     constant = other.constant;
@@ -78,6 +140,8 @@ bool ValueFact::narrow(const ValueFact &other) {
 }
 
 std::string ValueFact::toString() const {
+  if (integer)
+    return "range(" + integer->toString() + ")";
   if (constant)
     return "=" + std::to_string(*constant);
   std::string text;
@@ -92,6 +156,12 @@ std::string ValueFact::toString() const {
 std::optional<ValueFact> ValueFact::parse(std::string_view text) {
   if (text.empty())
     return std::nullopt;
+  if (text.starts_with("range(") && text.ends_with(')')) {
+    const auto range = IntegerRange::parse(text.substr(6, text.size() - 7));
+    if (!range || range->empty())
+      return std::nullopt;
+    return ofInteger(*range);
+  }
   if (text.front() == '=') {
     std::int64_t value = 0;
     const std::string_view digits = text.substr(1);
@@ -168,7 +238,14 @@ bool ScalarTracker::join(const ScalarTracker &other) {
       continue;
     }
     const ValueFact before = it->second;
-    it->second.join(theirs->second);
+    if (it->second.integer || theirs->second.integer) {
+      const auto type = it->second.integer ? it->second.integer->type
+                                           : theirs->second.integer->type;
+      it->second = ValueFact::ofInteger(
+          it->second.inType(type).widened(theirs->second.inType(type)));
+    } else {
+      it->second.join(theirs->second);
+    }
     if (it->second.trivial()) {
       it = facts.erase(it);
       changed = true;

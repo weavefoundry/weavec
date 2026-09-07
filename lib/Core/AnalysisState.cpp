@@ -269,6 +269,15 @@ bool AnalysisState::join(const AnalysisState &other, const PlaceTable *places) {
   changed |= resources.join(other.resources);
   changed |= nulls.join(other.nulls);
   changed |= scalars.join(other.scalars);
+  changed |= numericWrites.join(other.numericWrites);
+  changed |= numericConditions.join(other.numericConditions);
+  changed |= !numericConditionsIncomplete && other.numericConditionsIncomplete;
+  numericConditionsIncomplete |= other.numericConditionsIncomplete;
+  changed |= std::erase_if(numericValues, [&](const auto &entry) {
+               const auto found = other.numericValues.find(entry.first);
+               return found == other.numericValues.end() ||
+                      found->second != entry.second;
+             }) != 0;
   changed |= relations.join(other.relations);
   changed |= pointerFacts.join(other.pointerFacts);
   for (auto &[key, range] : filledArrayRanges) {
@@ -554,15 +563,23 @@ PlaceGuard AnalysisState::pathGuard() const {
   PlaceGuard guard = pointerFacts;
   for (const auto &[place, fact] : scalars.all()) {
     if (guard.size() >= MaxGuardConjuncts)
-      return guard;
+      break;
     guard.conditions.emplace(place, fact);
   }
-  // A definite null, however learnt, and a non-null established by a test
-  // are what a later test can contradict; a non-null from a dereference is
-  // rarely tested again and would crowd the guard out.
+  for (const auto &predicate : numericConditions.integers) {
+    const auto implied =
+        predicate.evaluate([&](PlaceId place, IntegerType type) {
+          const auto fact = scalars.factOf(place);
+          return fact ? fact->inType(type) : IntegerRange::full(type);
+        });
+    if (!implied || !*implied)
+      guard.requireInteger(predicate);
+  }
+  // A dereference-established non-null fact is rarely tested again and
+  // would crowd the interface guard out.
   for (const auto &[place, record] : nulls.all()) {
     if (guard.size() >= MaxGuardConjuncts)
-      return guard;
+      break;
     if (record.state == Nullness::Null)
       guard.conditions.emplace(place, ValueFact::of(Outcome::Null));
     else if (record.state == Nullness::NonNull &&
@@ -582,6 +599,10 @@ AnalysisState::Learned AnalysisState::learn(PlaceId place,
 }
 
 void AnalysisState::dropGuardsOn(PlaceId place) {
+  numericConditions.drop(place);
+  std::erase_if(numericValues, [place](const auto &entry) {
+    return entry.first == place || entry.second.dependsOn(place);
+  });
   pointerFacts.drop(place);
   moves.dropGuardsOn(place);
   resources.dropGuardsOn(place);
@@ -589,6 +610,7 @@ void AnalysisState::dropGuardsOn(PlaceId place) {
 }
 
 void AnalysisState::forget(PlaceId place) {
+  numericWrites.insert(place);
   moves.reinitialize(place);
   aliases.separate(place);
   definiteAliases.separate(place);

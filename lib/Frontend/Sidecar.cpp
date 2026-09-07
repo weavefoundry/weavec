@@ -84,7 +84,10 @@ std::string printUnitRecord(const UnitRecord &record) {
   // in offsets.
   for (const analysis::SizedFieldWitness &w : exports.sizedFields.witnesses) {
     os << "sized-field " << withoutSpaces(w.field) << ' '
-       << withoutSpaces(w.count) << ' ' << w.scale << '\n';
+       << withoutSpaces(w.count) << ' ' << w.scale;
+    if (w.productType)
+      os << ' ' << w.productType->toString();
+    os << '\n';
   }
   for (const std::string &field : exports.sizedFields.unsizedFields)
     os << "unsized-field " << withoutSpaces(field) << '\n';
@@ -285,14 +288,22 @@ std::optional<UnitRecord> parseUnitRecord(llvm::StringRef text,
       llvm::SmallVector<llvm::StringRef, 3> fields;
       value.split(fields, ' ');
       std::int64_t scale = 0;
-      if (fields.size() != 3 || fields[0].empty() || fields[1].empty() ||
-          fields[2].getAsInteger(10, scale))
+      const auto productType = fields.size() == 4
+                                   ? core::IntegerType::parse(fields[3].str())
+                                   : std::nullopt;
+      if ((fields.size() != 3 && fields.size() != 4) || fields[0].empty() ||
+          fields[1].empty() || fields[2].getAsInteger(10, scale) ||
+          scale <= 0 ||
+          (fields.size() == 4 &&
+           (!productType || productType->isSigned || productType->isBoolean ||
+            static_cast<std::uint64_t>(scale) > productType->mask())))
         return fail("line " + std::to_string(lineNumber) +
                     ": malformed 'sized-field' line");
       exports.sizedFields.witnesses.insert(
           analysis::SizedFieldWitness{.field = withSpaces(fields[0]),
                                       .count = withSpaces(fields[1]),
-                                      .scale = scale});
+                                      .scale = scale,
+                                      .productType = productType});
     } else if (kind == "unsized-field") {
       // `<field>` or `<field> <count>`.
       llvm::SmallVector<llvm::StringRef, 2> fields;

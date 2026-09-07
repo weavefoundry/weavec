@@ -192,8 +192,34 @@ std::set<SummaryPath> callMemoryFootprint(const FunctionSummary &summary) {
     if (value)
       result.insert(path);
   };
+  const auto expression = [&visit](const auto &value) {
+    for (const auto &node : value.all())
+      if (node.key)
+        visit(*node.key, true);
+  };
+  const auto numericGuard = [&expression](const PathGuard &guard) {
+    for (const auto &predicate : guard.integers) {
+      expression(predicate.lhs);
+      expression(predicate.rhs);
+    }
+  };
+  const auto affine = [&expression, &visit](const PathAffine &value) {
+    if (value.expression)
+      expression(*value.expression);
+    else if (value.path)
+      visit(*value.path, true);
+  };
+  const auto numericSource = [&numericGuard,
+                              &affine](const ValueSource &value) {
+    numericGuard(value.when);
+    if (value.extent)
+      affine(*value.extent);
+    if (value.stringLength)
+      affine(*value.stringLength);
+  };
   for (const auto &[path, effect] : summary.effects) {
     visit(path, effect.consumed() || effect.read);
+    numericGuard(effect.when);
     for (const auto &[condition, fact] : effect.when.conditions) {
       (void)fact;
       visit(condition, true);
@@ -208,7 +234,28 @@ std::set<SummaryPath> callMemoryFootprint(const FunctionSummary &summary) {
     visit(store.dest, false);
     if (store.value.path)
       visit(*store.value.path, true);
+    numericSource(store.value);
   }
+  for (const auto &value : summary.returns)
+    numericSource(value);
+  for (const auto &[root, graph] : summary.heap)
+    for (const auto &field : graph.fields)
+      numericSource(field.value);
+  for (const auto &[path, outputs] : summary.numericOutputs) {
+    visit(path, true);
+    for (const auto &output : outputs) {
+      numericGuard(output.when);
+      if (output.value)
+        expression(*output.value);
+    }
+  }
+  for (const auto &[param, requirements] : summary.requiresExtent)
+    for (const auto &requirement : requirements) {
+      numericGuard(requirement.when);
+      affine(requirement.need);
+      if (requirement.start)
+        affine(*requirement.start);
+    }
   return result;
 }
 

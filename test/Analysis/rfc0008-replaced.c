@@ -90,7 +90,9 @@ int tidy(void) {
 // The summary vocabulary (RFC 0008, *Summary text format*): `replaced` among
 // the flags, `result` as a store root.
 // DUMP: function 'grow':
-// DUMP: summary: v->cap: read|written; v->items: written|moved(free)|replaced; stores{v->items = fresh(free) extent=v->cap*4+32} returns{} requires{v} outcome zero{} null{v->items} stored{} outcome positive{v->items: moved(free) replaced} notnull{v->items} stored{v->items}
+// DUMP: summary: v->cap: read|written; v->items: written|moved(free)|replaced; stores{v->items = fresh(free) extent=mul(u64(v->cap+8), 4)} returns{} requires{v} outcome zero{} null{v->items} stored{} outcome positive{v->items: moved(free) replaced} notnull{v->items} stored{v->items}
+// RFC 0017: cap names the entry value in the allocation snapshot, before += 8.
+// DUMP-NEXT: heap v->items complete{result = fresh(free) extent=mul(u64(v->cap+8), 4)}
 // DUMP: function 'reset':
 // DUMP: summary: v->items: written|freed(free)|replaced; stores{v->items = null} returns{} requires{v}
 // DUMP: function 'make':

@@ -318,3 +318,86 @@ TEST(SpatialTracker, StringFactsFollowExtents) {
 
 } // namespace
 } // namespace weavec::core
+
+namespace weavec::core {
+
+// RFC 0017: no diagnostic and a proof are distinct results.
+TEST(SpatialCoverage, UnknownIndexIsNotAProof) {
+  const PlaceId i{1};
+  const auto check =
+      checkSpatialBounds(Affine::ofPlace(i), Affine::ofPlace(i, 1, 1),
+                         Affine::ofConstant(8), std::nullopt);
+  EXPECT_EQ(check.outcome, SpatialOutcome::Unresolved);
+  EXPECT_EQ(check.reason, SpatialReason::UnknownIndex);
+}
+
+TEST(SpatialCoverage, BothEndsMustBeEstablished) {
+  const PlaceId i{1};
+  const auto start = Affine::ofPlace(i);
+  const auto end = Affine::ofPlace(i, 1, 1);
+  const auto have = Affine::ofConstant(8);
+  EXPECT_EQ(
+      checkSpatialBounds(start, end, have, std::nullopt, {.needAtMost = 7}, 0)
+          .outcome,
+      SpatialOutcome::Proven);
+  EXPECT_EQ(
+      checkSpatialBounds(start, end, have, std::nullopt, {.needAtMost = 7})
+          .outcome,
+      SpatialOutcome::Unresolved);
+  EXPECT_EQ(
+      checkSpatialBounds(start, end, have, std::nullopt, {.needAtLeast = 8}, 8)
+          .outcome,
+      SpatialOutcome::Violation);
+  EXPECT_EQ(checkSpatialBounds(Affine::ofConstant(-1), Affine::ofConstant(1),
+                               have, std::nullopt)
+                .outcome,
+            SpatialOutcome::Violation);
+}
+
+TEST(SpatialCoverage, RelativeUpperBoundStillNeedsANonnegativeStart) {
+  const PlaceId i{1}, n{2};
+  const auto start = Affine::ofPlace(i, 4);
+  const auto end = Affine::ofPlace(i, 4, 4);
+  const auto have = Affine::ofPlace(n, 4);
+  EXPECT_EQ(checkSpatialBounds(start, end, have, Relation::Less, {}, 0).outcome,
+            SpatialOutcome::Proven);
+  EXPECT_EQ(checkSpatialBounds(start, end, have, Relation::Less).outcome,
+            SpatialOutcome::Unresolved);
+  EXPECT_EQ(
+      checkSpatialBounds(start, end, have, Relation::LessEqual, {}, 0).outcome,
+      SpatialOutcome::Violation);
+}
+
+} // namespace weavec::core
+
+TEST(Spatial, AnalyzerArithmeticDoesNotWrapAtSignedLimits) {
+  using namespace weavec::core;
+  const Affine need = Affine::ofPlace(PlaceId{0}, INT64_MAX, INT64_MAX);
+  const Affine have = Affine::ofPlace(PlaceId{1}, INT64_MAX, INT64_MAX);
+  EXPECT_FALSE(boundsVerdict(need, have, Relation::Greater, {}));
+  EXPECT_FALSE(boundsVerdict(Affine::ofPlace(PlaceId{0}, 1, INT64_MIN),
+                             Affine::ofPlace(PlaceId{1}, 1, 0), Relation::Less,
+                             {}));
+  const RelationEdge edge{.relation = Relation::Equal, .offset = INT64_MIN};
+  EXPECT_FALSE(edge.flipped());
+}
+
+TEST(SpatialChecks, AbstractUpperBoundsProveSafetyButNotReachability) {
+  using namespace weavec::core;
+  const PlaceId i{0};
+  const auto start = Affine::ofPlace(i);
+  const auto end = Affine::ofPlace(i, 1, 1);
+  const KnownBounds abstract{.needAtMost = 127, .needBoundaryWitness = false};
+  EXPECT_EQ(checkSpatialBounds(start, end, Affine::ofConstant(8), std::nullopt,
+                               abstract, 0)
+                .outcome,
+            SpatialOutcome::Unresolved);
+  EXPECT_EQ(checkSpatialBounds(start, end, Affine::ofConstant(128),
+                               std::nullopt, abstract, 0)
+                .outcome,
+            SpatialOutcome::Proven);
+  EXPECT_EQ(checkSpatialBounds(start, end, Affine::ofConstant(8), std::nullopt,
+                               {.needAtMost = 127}, 0)
+                .outcome,
+            SpatialOutcome::Violation);
+}

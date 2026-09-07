@@ -197,15 +197,15 @@ TEST(ValueConditional, UnsignedComparisonsAreDecidedInTheirType) {
     }
   )c");
   ASSERT_TRUE(result.ast);
-  // Every `touch` but `dead`'s is on a live edge.
+  // RFC 0017: `dead` and unsigned comparison with zero both have dead edges.
   const auto mayBeNull = [](const char *line) {
     return std::string(line) +
            ": 'p', which may be null, is passed to 'touch', which "
            "dereferences it";
   };
   EXPECT_EQ(messages(result.diagnostics),
-            (Strings{mayBeNull("7"), mayBeNull("14"), mayBeNull("20"),
-                     mayBeNull("26"), mayBeNull("32"), mayBeNull("38")}));
+            (Strings{mayBeNull("7"), mayBeNull("20"), mayBeNull("26"),
+                     mayBeNull("32"), mayBeNull("38")}));
 }
 
 TEST(ValueConditional, GuardedResourcesAreNotLeakedOnRefutedEdges) {
@@ -407,7 +407,7 @@ TEST(ValueConditional, OutcomeClassesKeepTheirGuards) {
       else { t->hash = nv; t->size = nsize; }
     }
     void grow_fails_keeps(void *ud, struct table *t) {
-      if (t->size == 0) return;
+      if (t->size <= 0 || t->size > 2147483647 / 2) return;
       void **nv = l_alloc(ud, t->hash, 8, t->size * 2 * sizeof(void *));
       if (nv == NULL) return;
       t->hash = nv;
@@ -448,8 +448,23 @@ TEST(ValueConditional, OutcomeClassesKeepTheirGuards) {
   const SummaryPath hash = SummaryPath::param(1).deref().field("hash");
   EXPECT_TRUE(resize->effectOf(hash).freed);
   EXPECT_FALSE(resize->effectOf(hash).replaced);
-  EXPECT_EQ(resize->effectOf(hash).when,
-            when(SummaryPath::param(2), ValueFact::of(Outcome::Zero)));
+  const auto resizeGuard = resize->effectOf(hash).when;
+  ASSERT_FALSE(resizeGuard.integers.empty());
+  for (const auto n : {0, 1, -1, 2147483647}) {
+    bool selected = true;
+    for (const auto &predicate : resizeGuard.integers) {
+      const auto holds =
+          predicate.evaluate([n](const auto &, core::IntegerType type) {
+            return core::IntegerRange::singleton(
+                core::IntegerValue::ofBits({32, true},
+                                           static_cast<std::uint64_t>(n))
+                    .converted(type));
+          });
+      ASSERT_TRUE(holds.has_value());
+      selected &= *holds;
+    }
+    EXPECT_EQ(selected, n == 0);
+  }
 
   // A caller that knows the size is non-zero refutes the guard on the null
   // edge: the block is still owned there, so returning is not a leak and
