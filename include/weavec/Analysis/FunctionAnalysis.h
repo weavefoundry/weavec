@@ -72,8 +72,11 @@ public:
   /// Analyzes `function`, which must have a body, resolving callees from
   /// `summaries` and recording the inferred summary into it. Diagnostics
   /// are emitted only if `emitDiagnostics`. Functions annotated
-  /// `weavec.unsafe` are skipped entirely (their signature is their
-  /// summary). Returns true if the recorded summary changed.
+  /// `weavec.unsafe` are analyzed with body reports suppressed. Returns true if
+  /// the recorded summary changed. Validate declaration annotations
+  /// independently of body specialization.
+  void validate(const clang::FunctionDecl &function);
+
   bool analyze(const clang::FunctionDecl &function, SummaryStore &summaries,
                bool emitDiagnostics = true);
 

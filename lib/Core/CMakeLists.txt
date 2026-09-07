@@ -8,6 +8,7 @@ weavec_add_library(
           AnalysisState.cpp
           Array.cpp
           Borrow.cpp
+          CallContext.cpp
           CallTargets.cpp
           Diagnostic.cpp
           Lifetime.cpp

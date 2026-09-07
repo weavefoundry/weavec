@@ -67,8 +67,10 @@ ProgramAnalysis::runUnit(ProgramUnit &unit, const FrontendOptions &overrides) {
 /// Exports with every summary at the bottom: the start of a fixpoint.
 static analysis::UnitExports skeleton(const analysis::UnitExports &exports) {
   analysis::UnitExports result = exports;
-  for (auto &[name, function] : result.functions)
+  for (auto &[name, function] : result.functions) {
     function.summary = core::FunctionSummary{};
+    function.memorySpecializations.clear();
+  }
   result.unknownCallees.clear();
   result.unknownIndirectTypes.clear();
   return result;
@@ -96,16 +98,20 @@ std::vector<std::vector<unsigned>> ProgramAnalysis::unitGraph() const {
     for (const std::string &name : units[i].exports->imports) {
       if (const auto it = definers.find(name); it != definers.end()) {
         edges.insert(edges.end(), it->second.begin(), it->second.end());
-        // RFC 0014: callback contexts travel from caller to definer, so
-        // these two units converge together before either is reported.
+        // RFC 0014/0016: callback and memory contexts travel from caller to
+        // definer, so these units converge together before either is reported.
         for (const unsigned definer : it->second)
-          if (units[definer].exports->functions.at(name).acceptsCallbacks)
+          if (units[definer].exports->functions.at(name).acceptsCallbacks ||
+              units[definer].exports->functions.at(name).acceptsMemoryContexts)
             adjacency[definer].push_back(i);
       }
     }
     for (const std::string &key : units[i].exports->indirectTypes) {
-      if (const auto it = candidates.find(key); it != candidates.end())
+      if (const auto it = candidates.find(key); it != candidates.end()) {
         edges.insert(edges.end(), it->second.begin(), it->second.end());
+        for (const unsigned definer : it->second)
+          adjacency[definer].push_back(i);
+      }
     }
     std::erase(edges, i);
     std::ranges::sort(edges);
@@ -201,9 +207,18 @@ void ProgramAnalysis::widen(analysis::UnitExports &exports,
                             const analysis::UnitExports &previous) {
   for (auto &[name, function] : exports.functions) {
     const auto before = previous.functions.find(name);
-    if (before != previous.functions.end())
+    if (before != previous.functions.end()) {
       function.summary.join(before->second.summary);
+      for (const auto &[input, summary] : before->second.memorySpecializations)
+        if (function.memorySpecializations.contains(input) ||
+            function.memorySpecializations.size() < core::MaxMemoryContexts)
+          function.memorySpecializations[input].join(summary);
+    }
   }
+  for (const auto &[symbol, requests] : previous.memoryRequests)
+    for (const auto &input : requests)
+      if (exports.memoryRequests[symbol].size() < core::MaxMemoryContexts)
+        exports.memoryRequests[symbol].insert(input);
   exports.countFields.insert(previous.countFields.begin(),
                              previous.countFields.end());
   // RFC 0012: sized-field facts widen the same way; a refutation once

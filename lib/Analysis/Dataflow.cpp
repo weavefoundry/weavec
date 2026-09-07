@@ -517,6 +517,7 @@ core::AnalysisState FunctionDataflow::initialState() {
     }
     state.callTargets[place] = targets;
   }
+  initializeCallContext(state);
   return state;
 }
 
@@ -1710,6 +1711,7 @@ void FunctionDataflow::run() {
 
 void FunctionDataflow::transfer(const CFGBlock &block,
                                 core::AnalysisState &state) {
+  callSummaries.clear();
   currentState = &state;
   const auto resetState = llvm::scope_exit([&] { currentState = nullptr; });
   lastCall.reset();
@@ -2435,7 +2437,7 @@ void FunctionDataflow::applyOutcomeTest(const Expr &operand,
     // deliberately not caught*), so such an edge keeps flowing.
     if (state.scalars.narrow(read.place->place, fact) ==
         core::GuardRefinement::Refuted) {
-      if (!places.innermostDeref(read.place->place))
+      if (!places.innermostDeref(read.place->place) || !memoryContext.empty())
         edgeInfeasible = true;
       return;
     }
@@ -3634,7 +3636,7 @@ void FunctionDataflow::initRecord(core::PlaceId dest, const InitListExpr &init,
     return;
 
   const auto assignField = [&](const FieldDecl &field, const Expr &value) {
-    if (isa<ImplicitValueInitExpr>(&value))
+    if (isa<ImplicitValueInitExpr>(&value) && !field.getType()->isIntegerType())
       return;
     const core::PlaceId place = builder.fieldPlace(dest, field);
     const QualType type = field.getType();
@@ -3644,6 +3646,11 @@ void FunctionDataflow::initRecord(core::PlaceId dest, const InitListExpr &init,
       applyHeapValue(place, builder.classifyValue(value), state);
     } else if (type->isRecordType()) {
       copyRecord(place, value, state);
+    } else if (type->isIntegerType()) {
+      if (isa<ImplicitValueInitExpr>(&value))
+        state.scalars.set(place, core::ValueFact::ofConstant(0));
+      else
+        assignScalar(place, &value, state);
     }
   };
 
@@ -3688,6 +3695,10 @@ void FunctionDataflow::handleCall(const CallExpr &call,
     return;
   }
   callSummaries.erase(&call);
+  if (callbackContexts.contains(&call) || memoryContexts.contains(&call))
+    writtenAt.erase(&call);
+  callbackContexts.erase(&call);
+  memoryContexts.erase(&call);
   if (!call.getDirectCallee()) {
     if (const auto pointer = builder.resolvePointerValue(*call.getCallee()))
       checkDereference(pointer->place, call, state);
@@ -4497,7 +4508,8 @@ void FunctionDataflow::noteUnknownCallee(const CallExpr &call) {
     // A specialization collects diagnostics before its caller is reported.
     // Rebuilding that cache must not lose a boundary merely because another
     // speculative context registered the same function type already.
-    if ((!first && callbackBindings.empty()) || options.deferBoundary)
+    if ((!first && callbackBindings.empty() && memoryContext.empty()) ||
+        options.deferBoundary)
       return;
     core::Diagnostic diagnostic{
         .severity = core::Severity::Warning,
@@ -4525,7 +4537,8 @@ void FunctionDataflow::noteUnknownCallee(const CallExpr &call) {
   // for the exports and the link step reports it if the program has no
   // definition either.
   const bool first = summaries.noteUnknownCallee(*callee);
-  if ((!first && callbackBindings.empty()) || options.deferBoundary)
+  if ((!first && callbackBindings.empty() && memoryContext.empty()) ||
+      options.deferBoundary)
     return;
 
   const std::string name = callee->getNameAsString();
@@ -4888,6 +4901,9 @@ void FunctionDataflow::forgetBelow(core::PlaceId place,
     state.moves.reinitialize(child);
     state.aliases.separate(child);
     state.definiteAliases.separate(child);
+    std::erase_if(state.distinctObjects, [child](const auto &pair) {
+      return pair.first == child || pair.second == child;
+    });
     state.loans.dropHolder(child);
     state.pending.erase(child);
     state.kinds.erase(child);
@@ -5204,7 +5220,9 @@ FunctionDataflow::doConsume(const PlaceRef &ref, core::MoveReason reason,
         target.place == place || llvm::is_contained(sameCell, target.place);
     if (replaced && isCell) {
       // Still this function's consumption of the caller's value.
-      recordConsume(target.place, reason, family, target.element, guard, offset,
+      recordConsume(target.place, reason, family, target.element, guard,
+                    offset.plus(contextOffsetOf(place, state))
+                        .plus(contextOffsetOf(target.place, state).negated()),
                     state);
       continue;
     }
@@ -5221,8 +5239,11 @@ FunctionDataflow::doConsume(const PlaceRef &ref, core::MoveReason reason,
     // `offset` is where the released value lies in its object, counted from
     // the start every caller-visible path stood at on entry (the spatial
     // records already carry each alias's own step: `q = p + 1; free(q - 1)`
-    // releases at zero), so it is the same for every name of the object.
-    recordConsume(target.place, reason, family, target.element, guard, offset,
+    // releases at zero). RFC 0016 contexts can relate input paths that began
+    // at different offsets; translate into each path's own entry frame.
+    recordConsume(target.place, reason, family, target.element, guard,
+                  offset.plus(contextOffsetOf(place, state))
+                      .plus(contextOffsetOf(target.place, state).negated()),
                   state);
     marked.push_back(target.place);
   }

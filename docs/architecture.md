@@ -194,7 +194,7 @@ argument-conditional summaries and inferred `noreturn` by
   from a compilation database.
 - `Sidecar.h` reads and writes `foo.o.weavec`: the unit's exports, the cc1
   command that produced it and the diagnostics already reported, in a
-  line-oriented text format versioned by its `weavec-summaries 11` header.
+  line-oriented text format versioned by its `weavec-summaries 12` header.
 - `Driver.h` is `weavec-cc`: Clang's `driver::Driver` plans the jobs, each
   `-cc1` job runs in-process with WeaveC's consumer multiplexed beside
   Clang's, the compile step writes the sidecar, and the link step runs
@@ -266,7 +266,53 @@ and string metadata. `ProgramDatabase` remaps global references and compares
 these descriptions as part of normal dependency invalidation. The compiler
 and tooling whole-program modes share this implementation.
 
+## Compositional calls (RFC 0016)
+
+`Core/CallContext.h` describes entry relationships independently of a final
+summary: parameter/global paths, may or definite aliases, relative offsets,
+same-share identity, proven distinct objects, scalar/null facts and callback
+bindings. Canonicalization and strict parsing reject contradictory premises.
+Global remapping is all-or-nothing: losing an entry fact cannot leave a
+specialized result available under a weaker context.
+
+`Analysis/DataflowCallContext.cpp` projects the caller state through the
+callee's relevant input footprint and installs a validated context at the
+callee's entry. `CallContextSummaries.cpp` reuses `FunctionDataflow` to check
+the body in source order and obtain its final summary. This distinguishes
+multiple operations from one operation exported under several aliases,
+without adding another interpreter for call effects. Entry-relative release
+offsets preserve the different starting positions of interior-pointer inputs.
+
+The normal scalar and alias trackers govern writes after entry. Distinct-object
+facts intersect at joins and expire with their input values. A per-call cache
+is invalidated when its CFG state changes; specialized summaries are invalidated
+when generic dependencies change. Pending contexts are separate from completed
+results. Contexts bound pointer paths at 32, relationships/facts at 64, distinct
+contexts per callable at 32 and nested specialization at eight levels.
+
+`TranslationUnitAnalysis` infers generic effects for every definition and checks
+requested memory contexts in its final reporting pass. Definitions without
+contexts retain ordinary reporting, and failed checked contexts retain ordinary
+body errors. Annotation validation remains independent. Requests carry whether
+their originating call permits diagnostics, so unsafe calls still receive
+effects without producing delayed errors in another unit. Nested calls retain
+source notes, and the final sink deduplicates reports of the same operation.
+
+`ProgramDatabase` maps requests and completed results through global names.
+`ProgramAnalysis` adds caller-to-definer and definer-to-caller dependencies and
+converges their context information before reporting. The compiler replay
+planner includes definitions that can receive requests from another object,
+even if their generic summaries were already locally complete. Format 12
+sidecars serialize `accepts-memory-contexts`, `memory-request` and
+`memory-specialization` records alongside existing callback records.
+
+Unsupported projections retain generic call effects and expose missing
+coverage. Calls with no established interacting identity remain generic; they
+are not treated as proofs of disjoint inputs. `--dump-analysis` shows aliases,
+distinct objects, entry facts and final summaries for requested contexts.
+
 ## Arrays and containers (RFC 0015)
+
 
 `Core/Array` represents a selector as a constant or an immutable scalar plus
 an offset. Selected `Index` places live below array storage; the empty `Index`

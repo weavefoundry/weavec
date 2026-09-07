@@ -358,6 +358,29 @@ strides, partial pointer representations, compositions that require retaining
 unbounded range history and general loop invariants remain incomplete boundaries.
 This milestone does not introduce verification mode or a tracing collector model.
 
+## Milestone 15 — Compositional call checking
+
+Design: [RFC 0016](rfcs/0016-compositional-call-checking.md).
+
+- [x] Bounded caller contexts for aliases, storage identity, relative offsets,
+      reference shares, distinct objects and scalar/null entry facts.
+- [x] Reuse the callee CFG to preserve statement order, guards, replacement
+      and saved incoming values under those relationships.
+- [x] Combined callback and data contexts, with diagnostic call notes and
+      unsafe-reporting state preserved through nested requests.
+- [x] Cross-unit request/result convergence, strict global remapping and
+      format 12 sidecars; compiler replay includes locally complete definers.
+- [x] Inline/helper/cross-file evaluation pairs, compiler link tests,
+      malformed-context and resource-limit regression coverage.
+- [x] Published validation and pinned corpus changes, including precision
+      limits and analysis cost in [the report](validation-rfc0016.md).
+
+Calls with no established interacting relationship retain generic checking.
+An absent alias edge does not prove disjointness. Enumerating arbitrary input
+alias partitions, unrestricted heap invariants and enforcing complete coverage
+belong to a separate verification milestone. The existing machine-width and
+non-affine size-analysis gaps also remain.
+
 ## Ongoing
 
 - Corpus testing against real C projects (`scripts/corpus.py`; false-positive

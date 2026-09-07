@@ -29,10 +29,22 @@ bool FunctionAnalyzer::analyze(const FunctionDecl &function,
   if (!function.doesThisDeclarationHaveABody())
     return false;
 
+  if (emitDiagnostics)
+    validate(function);
+  // A `WEAVEC_UNSAFE` function is analysed like any other so its callers see
+  // what it does; the dataflow itself suppresses reports inside it (RFC
+  // 0004, *Unsafe regions*).
+  FunctionDataflow dataflow(context, function, sink, options, summaries,
+                            emitDiagnostics);
+  dataflow.run();
+  return summaries.setInferred(function, dataflow.summary());
+}
+
+void FunctionAnalyzer::validate(const FunctionDecl &function) {
   const SourceManager &sm = context.getSourceManager();
 
   const AnnotationSet annotations = getAnnotations(function);
-  if (annotations.invalid && emitDiagnostics) {
+  if (annotations.invalid) {
     sink.report(core::Diagnostic{
         .severity = core::Severity::Warning,
         .id = core::diag::InvalidAnnotation,
@@ -45,7 +57,7 @@ bool FunctionAnalyzer::analyze(const FunctionDecl &function,
   }
   // `WEAVEC_NULLABLE` and `WEAVEC_NONNULL` on one declaration contradict
   // each other (RFC 0008, *Annotation surface*).
-  if (emitDiagnostics) {
+  {
     const auto reportContradiction = [&](const NamedDecl &decl) {
       sink.report(core::Diagnostic{
           .severity = core::Severity::Warning,
@@ -139,13 +151,6 @@ bool FunctionAnalyzer::analyze(const FunctionDecl &function,
       }
     }
   }
-  // A `WEAVEC_UNSAFE` function is analysed like any other so its callers see
-  // what it does; the dataflow itself suppresses reports inside it (RFC
-  // 0004, *Unsafe regions*).
-  FunctionDataflow dataflow(context, function, sink, options, summaries,
-                            emitDiagnostics);
-  dataflow.run();
-  return summaries.setInferred(function, dataflow.summary());
 }
 
 } // namespace weavec::analysis

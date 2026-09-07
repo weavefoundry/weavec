@@ -68,6 +68,8 @@ public:
   /// (if enabled) and computes the summary.
   void run();
   core::CallbackBindings callbackBindings;
+  core::CallContext memoryContext;
+  bool validMemoryContext = true;
 
   /// The summary inferred by `run` (RFC 0003, *Deriving a summary*).
   [[nodiscard]] const core::FunctionSummary &summary() const noexcept {
@@ -75,6 +77,17 @@ public:
   }
 
 private:
+  [[nodiscard]] std::optional<core::CallContext>
+  captureCallContext(const clang::CallExpr &call,
+                     const core::FunctionSummary &summary,
+                     core::AnalysisState &state);
+  void initializeCallContext(core::AnalysisState &state);
+  [[nodiscard]] std::optional<std::pair<core::PlaceId, clang::QualType>>
+  contextPlace(const core::SummaryPath &path, core::AnalysisState &state);
+  std::map<const clang::CallExpr *, core::CallContext> memoryContexts;
+  std::map<core::SummaryPath, core::PointerOffset> contextEntryOffsets;
+  core::PointerOffset contextOffsetOf(core::PlaceId place,
+                                      const core::AnalysisState &state);
   // RFC 0015: complete array cells share the ordinary pointer/heap domains.
   [[nodiscard]] std::optional<core::PlaceId>
   boundedArrayCell(core::PlaceId storage, const core::ArrayIndex &index,

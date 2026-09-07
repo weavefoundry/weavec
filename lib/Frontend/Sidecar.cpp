@@ -46,6 +46,9 @@ std::string printUnitRecord(const UnitRecord &record) {
   std::string text;
   llvm::raw_string_ostream os(text);
   const analysis::UnitExports &exports = record.exports;
+  const core::GlobalNamer names = [&exports](std::uint32_t id) {
+    return exports.globals.nameOf(id).str();
+  };
   os << "weavec-summaries " << SidecarFormatVersion << '\n';
   if (!exports.source.empty())
     os << "source " << exports.source << '\n';
@@ -62,6 +65,10 @@ std::string printUnitRecord(const UnitRecord &record) {
          << core::CallTargets::function(symbol).toString() << ' '
          << core::printCallbackBindings(bindings) << '\n';
   }
+  for (const auto &[symbol, requests] : exports.memoryRequests)
+    for (const auto &input : requests)
+      os << "memory-request " << core::CallTargets::function(symbol).toString()
+         << ' ' << core::printCallContext(input, names) << '\n';
   for (const std::string &name : exports.imports)
     os << "import " << name << '\n';
   for (const std::string &key : exports.indirectTypes)
@@ -91,9 +98,6 @@ std::string printUnitRecord(const UnitRecord &record) {
     os << "reported " << d.id << ' ' << d.line << ' ' << d.column << ' '
        << d.file << '\n';
   }
-  const core::GlobalNamer names = [&exports](std::uint32_t id) {
-    return exports.globals.nameOf(id).str();
-  };
   for (const auto &[name, function] : exports.functions) {
     os << "function " << name << ' '
        << (function.external ? "external" : "internal") << ' '
@@ -103,7 +107,14 @@ std::string printUnitRecord(const UnitRecord &record) {
     os << '\n';
     if (function.acceptsCallbacks)
       os << "accepts-callbacks\n";
+    if (function.acceptsMemoryContexts)
+      os << "accepts-memory-contexts\n";
     os << core::printSummary(function.summary, names);
+    for (const auto &[input, summary] : function.memorySpecializations) {
+      os << "memory-specialization " << core::printCallContext(input, names)
+         << '\n';
+      os << core::printSummary(summary, names);
+    }
     for (const auto &[bindings, summary] : function.specializations) {
       os << "specialization " << core::printCallbackBindings(bindings) << '\n';
       os << core::printSummary(summary, names);
@@ -131,6 +142,7 @@ std::optional<UnitRecord> parseUnitRecord(llvm::StringRef text,
   bool haveHeader = false;
   analysis::ExportedFunction *current = nullptr;
   std::optional<core::CallbackBindings> specialized;
+  std::optional<core::CallContext> memorySpecialized;
   while (!rest.empty()) {
     llvm::StringRef line;
     std::tie(line, rest) = rest.split('\n');
@@ -176,7 +188,13 @@ std::optional<UnitRecord> parseUnitRecord(llvm::StringRef text,
       const auto summary = core::parseSummary(block, resolve, &summaryError);
       if (!summary)
         return fail("line " + std::to_string(lineNumber) + ": " + summaryError);
-      if (specialized) {
+      if (memorySpecialized) {
+        if (!current->memorySpecializations
+                 .emplace(*memorySpecialized, *summary)
+                 .second)
+          return fail("duplicate memory specialization");
+        memorySpecialized.reset();
+      } else if (specialized) {
         if (!current->specializations.emplace(*specialized, *summary).second)
           return fail("duplicate callback specialization");
         specialized.reset();
@@ -188,7 +206,32 @@ std::optional<UnitRecord> parseUnitRecord(llvm::StringRef text,
 
     const auto [kind, rawValue] = line.split(' ');
     const llvm::StringRef value = rawValue.trim();
-    if (kind == "accepts-callbacks") {
+    if ((memorySpecialized || specialized) && kind != "summary")
+      return fail("specialization without summary");
+    if (kind == "accepts-memory-contexts") {
+      if (!current || !value.empty())
+        return fail("invalid memory interface");
+      current->acceptsMemoryContexts = true;
+    } else if (kind == "memory-request") {
+      const auto [symbolText, inputText] = value.split(' ');
+      const auto symbol = core::CallTargets::parse(symbolText.str());
+      const auto input = core::parseCallContext(inputText.str(), resolve);
+      if (!symbol || !symbol->resolved() || symbol->functions.size() != 1 ||
+          !input)
+        return fail("invalid memory request");
+      auto &requests = exports.memoryRequests[*symbol->functions.begin()];
+      if (!requests.insert(*input).second)
+        return fail("duplicate memory request");
+      if (requests.size() > core::MaxMemoryContexts)
+        return fail("too many memory requests");
+    } else if (kind == "memory-specialization") {
+      if (!current || specialized || memorySpecialized ||
+          current->memorySpecializations.size() >= core::MaxMemoryContexts)
+        return fail("invalid memory specialization record");
+      memorySpecialized = core::parseCallContext(value.str(), resolve);
+      if (!memorySpecialized)
+        return fail("invalid memory context");
+    } else if (kind == "accepts-callbacks") {
       if (!current || !value.empty())
         return fail("invalid callback interface");
       current->acceptsCallbacks = true;
@@ -296,7 +339,7 @@ std::optional<UnitRecord> parseUnitRecord(llvm::StringRef text,
     }
     // Unknown line kinds are skipped for forward compatibility.
   }
-  if (specialized)
+  if (specialized || memorySpecialized)
     return fail("specialization without summary");
   if (!haveHeader)
     return fail("empty file");

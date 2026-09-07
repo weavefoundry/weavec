@@ -412,6 +412,26 @@ static bool runLinkStep(const clang::driver::Command &link,
                  llvm::any_of(it->second, [i](unsigned u) { return u != i; });
         });
 
+    // RFC 0016: a locally complete definition can acquire new contextual
+    // obligations from another object. Keep its source available for replay.
+    needsAnalysis =
+        needsAnalysis ||
+        llvm::any_of(exports.functions, [&](const auto &entry) {
+          const auto &[symbol, function] = entry;
+          if (!function.acceptsMemoryContexts && !function.acceptsCallbacks)
+            return false;
+          for (unsigned other = 0; other < inputs.size(); ++other) {
+            if (other == i)
+              continue;
+            const auto &caller = inputs[other].record.exports;
+            if ((function.external && caller.imports.contains(symbol)) ||
+                (function.addressTaken && !function.typeKey.empty() &&
+                 caller.indirectTypes.contains(function.typeKey)))
+              return true;
+          }
+          return false;
+        });
+
     const std::string name =
         exports.source.empty() ? inputs[i].object : exports.source;
     if (needsAnalysis && !record.command.empty()) {

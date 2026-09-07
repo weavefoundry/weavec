@@ -464,3 +464,28 @@ and explains the limitations; lower counts at individual sites do not certify
 the complete libraries. The fixed evaluation separately improves from
 **18/32 to 30/32 detected bugs** and **14/20 to 20/20 clean programs** on the
 same expanded set, retaining both known size-analysis misses.
+
+### RFC 0016: compositional call checking
+
+The [validation report](../../docs/validation-rfc0016.md) and
+[machine-readable comparison](rfc0016-results.json) retain the same pinned
+five-project manifest as RFC 0015. Both revisions run successfully without
+parse errors, crashes, timeouts or convergence failures. Sequential Release
+runs take **125.11 → 139.36 seconds**, about **11.4% longer**. Lua accounts
+for **123.55 → 136.33 seconds** and **566.9 → 556.1 MiB** peak RSS; these are
+single observations on macOS arm64.
+
+Total reports increase **1,675 → 3,832**, chiefly incomplete-coverage warnings
+(**1,435 → 3,590**). Lua's broad stack/GC interfaces exceed the bounded input
+footprint or require unrepresentable context paths. Existing non-coverage
+Lua reports are unchanged. Jansson adds two false positives where an intrusive
+list cleanup summary loses the sentinel exclusion and projects a release onto
+the table, including a stack `key_set`. The report preserves every changed
+location, warning reason and multiplicity; these are coverage and precision
+costs, not confirmed corpus bugs. log.c and linenoise remain unchanged.
+
+On the same expanded 76-program fixed evaluation, detected bugs improve
+**32/44 → 42/44**, clean programs improve **31/32 → 32/32**, and unexpected
+reports fall **1 → 0**. The two known size-analysis misses remain counted.
+Contextual checking preserves order through related pointer arguments and
+outputs; it does not establish arbitrary heap or traversal invariants.

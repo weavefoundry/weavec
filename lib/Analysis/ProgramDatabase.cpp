@@ -61,7 +61,8 @@ bool GlobalNames::extendTo(const GlobalNames &other) {
 
 bool UnitExports::sameSummariesAs(const UnitExports &other) const {
   if (callbackGlobals != other.callbackGlobals ||
-      callbackRequests != other.callbackRequests)
+      callbackRequests != other.callbackRequests ||
+      memoryRequests != other.memoryRequests)
     return false;
   return functions == other.functions && globals == other.globals &&
          countFields == other.countFields && sizedFields == other.sizedFields;
@@ -229,7 +230,31 @@ UnitExports ProgramDatabase::renumbered(const UnitExports &unit) {
       function.summary = renumber(function.summary, unit.globals, globalNames);
       for (auto &[bindings, summary] : function.specializations)
         summary = renumber(summary, unit.globals, globalNames);
+      decltype(function.memorySpecializations) contexts;
+      for (const auto &[input, summary] : function.memorySpecializations) {
+        const auto mapped =
+            core::remapCallContext(input, [&](std::uint32_t id) {
+              return id < unit.globals.size() ? std::optional(globalNames.idFor(
+                                                    unit.globals.nameOf(id)))
+                                              : std::nullopt;
+            });
+        if (mapped)
+          contexts.emplace(*mapped,
+                           renumber(summary, unit.globals, globalNames));
+      }
+      function.memorySpecializations = std::move(contexts);
     }
+    result.memoryRequests.clear();
+    for (const auto &[symbol, requests] : unit.memoryRequests)
+      for (const auto &input : requests)
+        if (const auto mapped =
+                core::remapCallContext(input, [&](std::uint32_t id) {
+                  return id < unit.globals.size()
+                             ? std::optional(
+                                   globalNames.idFor(unit.globals.nameOf(id)))
+                             : std::nullopt;
+                }))
+          result.memoryRequests[symbol].insert(*mapped);
   }
   result.globals = globalNames;
   return result;
@@ -240,6 +265,15 @@ void ProgramDatabase::addCallbackInformation(const UnitExports &unit) {
     callbackGlobals[name].join(targets);
   for (const auto &[symbol, requests] : unit.callbackRequests)
     callbackRequests[symbol].insert(requests.begin(), requests.end());
+  const core::GlobalIdMap map = [&](std::uint32_t id) {
+    return id < unit.globals.size()
+               ? std::optional(globalNames.idFor(unit.globals.nameOf(id)))
+               : std::nullopt;
+  };
+  for (const auto &[symbol, requests] : unit.memoryRequests)
+    for (const auto &input : requests)
+      if (const auto mapped = core::remapCallContext(input, map))
+        memoryRequests[symbol].insert(*mapped);
   for (const auto &[name, function] : unit.functions) {
     const std::string symbol =
         function.external ? name : unit.source + "#" + name;
@@ -248,6 +282,10 @@ void ProgramDatabase::addCallbackInformation(const UnitExports &unit) {
     for (const auto &[bindings, summary] : function.specializations)
       contextSummaries[{symbol, bindings}] =
           renumber(summary, unit.globals, globalNames);
+    for (const auto &[input, summary] : function.memorySpecializations)
+      if (const auto mapped = core::remapCallContext(input, map))
+        memorySummaries[{symbol, *mapped}].join(
+            renumber(summary, unit.globals, globalNames));
   }
 }
 
@@ -269,6 +307,8 @@ ProgramDatabase::requestsFor(std::string_view symbol) const {
 }
 
 void ProgramDatabase::clear() {
+  memorySummaries.clear();
+  memoryRequests.clear();
   functions.clear();
   callableSummaries.clear();
   contextSummaries.clear();
@@ -316,6 +356,39 @@ ProgramDatabase::importInto(const core::FunctionSummary &summary,
   return core::remapGlobals(summary, [&](std::uint32_t id) {
     const VarDecl *var = externalVariable(globalNames.nameOf(id), context);
     return var == nullptr ? std::nullopt : std::optional(table.idFor(*var));
+  });
+}
+
+const core::FunctionSummary *ProgramDatabase::findMemorySpecialization(
+    std::string_view symbol, const core::CallContext &context) const {
+  const auto it = memorySummaries.find({std::string(symbol), context});
+  return it == memorySummaries.end() ? nullptr : &it->second;
+}
+
+const std::set<core::CallContext> &
+ProgramDatabase::memoryRequestsFor(std::string_view symbol) const {
+  static const std::set<core::CallContext> Empty;
+  const auto it = memoryRequests.find(symbol);
+  return it == memoryRequests.end() ? Empty : it->second;
+}
+
+std::optional<core::CallContext>
+ProgramDatabase::importContext(const core::CallContext &input,
+                               const ASTContext &context,
+                               GlobalTable &table) const {
+  return core::remapCallContext(input, [&](std::uint32_t id) {
+    const auto *var = externalVariable(globalNames.nameOf(id), context);
+    return var ? std::optional(table.idFor(*var)) : std::nullopt;
+  });
+}
+
+std::optional<core::CallContext>
+ProgramDatabase::exportContext(const core::CallContext &input,
+                               const GlobalTable &table) const {
+  return core::remapCallContext(input, [&](std::uint32_t id) {
+    const auto *var = table.declFor(id);
+    return var && var->isExternallyVisible() ? globalNames.find(var->getName())
+                                             : std::nullopt;
   });
 }
 

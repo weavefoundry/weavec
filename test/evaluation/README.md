@@ -1,8 +1,8 @@
 # Fixed evaluation set
 
 This suite measures RFC 0013's constructor and allocation-time value cases,
-RFC 0014's callback, pointer-guard and complete-copy cases, and RFC 0015's
-array/container ownership cases.
+RFC 0014's callback, pointer-guard and complete-copy cases, RFC 0015's
+array/container ownership cases, and RFC 0016's compositional call checking.
 Every independently identified bug is listed in `manifest.json`, including
 bugs the checker does not yet catch. It complements `test/recall/`, which
 pins existing detections against regression, and `scripts/corpus/`, which
@@ -15,8 +15,8 @@ python3 scripts/test_evaluate.py
 ctest --test-dir build/dev -R '^(evaluation|evaluation-harness)$' --output-on-failure
 ```
 
-The checked-in set contains 52 programs: 32 bugs and 20 clean counterparts.
-RFC 0015 detects **30/32 bugs**, accepts **20/20 clean programs**, and has no
+The checked-in set contains 76 programs: 44 bugs and 32 clean counterparts.
+RFC 0016 detects **42/44 bugs**, accepts **32/32 clean programs**, and has no
 unexpected reports, parse failures, tool failures or timeouts. The remaining
 two bugs exercise a product of two symbolic sizes and a variable-length array;
 both are outside the current affine/layout domain. This small, selected set
@@ -50,6 +50,12 @@ history-table movement; the resize pair reduces the pointer preservation needed
 by Jansson-style table growth. Core/Analysis/lit tests additionally cover weak
 updates, bounds, nullable storage, selected callbacks, reference-counted shares,
 range limits, malformed interfaces and compiler sidecars.
+
+RFC 0016 adds twelve bug/clean pairs covering operation order, two releases,
+output aliases, replacement and saved values, entry guards, callback targets,
+selected elements, interior pointers, globals and nested forwarding. Inline
+and cross-file variants pin composition behavior. The same expanded manifest
+is run against the previous revision; the two known size misses remain.
 
 ## Adding cases
 

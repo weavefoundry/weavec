@@ -3,6 +3,7 @@ weavec_add_unittest(
   SOURCES AllocatorsTest.cpp
           AnnotationsTest.cpp
           ArrayOwnershipTest.cpp
+          CallContextTest.cpp
           DataflowTest.cpp
           FunctionAnalysisTest.cpp
           HeapStateTest.cpp

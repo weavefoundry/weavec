@@ -209,8 +209,11 @@ UnitExports TranslationUnitAnalyzer::skeletonExports() const {
     const bool addressTaken = store.isAddressTaken(*function);
     const auto requests =
         store.callbackRequests.find(callableSymbol(*function));
+    const auto memory = store.memoryRequests.find(callableSymbol(*function));
     if (!external && !addressTaken &&
-        (requests == store.callbackRequests.end() || requests->second.empty()))
+        (requests == store.callbackRequests.end() ||
+         requests->second.empty()) &&
+        (memory == store.memoryRequests.end() || memory->second.empty()))
       continue;
     result.functions[function->getNameAsString()] = ExportedFunction{
         .summary = {},
@@ -223,6 +226,7 @@ UnitExports TranslationUnitAnalyzer::skeletonExports() const {
                                 [](const ParmVarDecl *param) {
                                   return containsCallback(param->getType());
                                 }),
+        .acceptsMemoryContexts = true,
     };
   }
   for (const FunctionDecl *callee : externalCallees)
@@ -261,7 +265,23 @@ UnitExports TranslationUnitAnalyzer::exports() {
   for (std::string &key : store.unknownIndirectTypeKeys())
     result.unknownIndirectTypes.insert(std::move(key));
   // RFC 0010: count fields are keyed by type spelling, so they travel as is.
-  result.callbackRequests = store.callbackRequests;
+  for (const auto &[symbol, requests] : store.callbackRequests)
+    if (!requests.empty())
+      result.callbackRequests[symbol] = requests;
+  for (const auto &[symbol, requests] : store.memoryRequests)
+    for (const auto &input : requests)
+      if (const auto mapped = core::remapCallContext(input, byName))
+        result.memoryRequests[symbol].insert(*mapped);
+  for (const auto &[key, summary] : store.memorySpecialized) {
+    const auto *function = store.callable(key.first);
+    if (!function || !function->getDefinition())
+      continue;
+    const auto it = result.functions.find(function->getNameAsString());
+    const auto mapped = core::remapCallContext(key.second, byName);
+    if (it != result.functions.end() && mapped)
+      it->second.memorySpecializations[*mapped] =
+          core::remapGlobals(summary, byName);
+  }
   for (const auto &[key, summary] : store.specialized) {
     const auto *function = store.callable(key.first);
     if (!function || !function->getDefinition())
@@ -318,29 +338,101 @@ void TranslationUnitAnalyzer::run(
     if (const auto *program = store.programDatabase()) {
       const auto &requests = program->requestsFor(symbol);
       store.callbackRequests[symbol].insert(requests.begin(), requests.end());
+      for (const auto &input : program->memoryRequestsFor(symbol)) {
+        const auto mapped =
+            program->importContext(input, context, store.globals());
+        auto &memory = store.memoryRequests[symbol];
+        if (mapped && (memory.contains(*mapped) ||
+                       memory.size() < core::MaxMemoryContexts))
+          memory.insert(*mapped);
+      }
     }
     const auto requests = store.callbackRequests[symbol];
     for (const auto &bindings : requests)
       (void)store.specialize(*function, bindings, options, nullptr);
+    const auto memory = store.memoryRequests[symbol];
+    for (const auto &input : memory)
+      (void)store.specializeMemory(symbol, input, options, nullptr);
   }
   for (const FunctionDecl *function : reported) {
-    const auto requests = store.callbackRequests[callableSymbol(*function)];
-    if (requests.empty()) {
+    const std::string symbol = callableSymbol(*function);
+    const auto requests = store.callbackRequests[symbol];
+    const auto memory = store.memoryRequests[symbol];
+    if (!memory.empty()) {
+      if (options.dumpStream) {
+        core::DiagnosticCollector ignored;
+        FunctionAnalyzer describe(context, ignored, options);
+        describe.analyze(*function, store, true);
+        for (const auto &input : memory) {
+          *options.dumpStream
+              << "  call-context " << symbol
+              << (input.reportDiagnostics ? " checked" : " unsafe") << "\n";
+          const core::GlobalNamer names = [&](std::uint32_t id) {
+            const auto *global = store.globals().declFor(id);
+            return global ? global->getNameAsString() : "<unmapped>";
+          };
+          for (const auto &alias : input.aliases)
+            *options.dumpStream
+                << "    " << core::printSummaryPath(alias.first, names) << " = "
+                << core::printSummaryPath(alias.second, names) << " @"
+                << alias.offset.toString()
+                << (alias.definite ? " definite" : " possible")
+                << (alias.sameShare ? " same-share" : " distinct-shares")
+                << "\n";
+          for (const auto &[first, second] : input.separations)
+            *options.dumpStream
+                << "    " << core::printSummaryPath(first, names)
+                << " distinct-object " << core::printSummaryPath(second, names)
+                << "\n";
+          for (const auto &[path, fact] : input.facts)
+            *options.dumpStream << "    " << core::printSummaryPath(path, names)
+                                << " " << fact.toString() << "\n";
+          if (const auto selected =
+                  store.specializeMemory(symbol, input, options, nullptr))
+            *options.dumpStream
+                << core::printSummary(*selected->summary, names);
+        }
+      }
+      analyzer.validate(*function);
+      bool needsGenericCheck = false;
+      for (const auto &input : memory)
+        if (!store.specializeMemory(symbol, input, options, &remembered) &&
+            input.reportDiagnostics)
+          needsGenericCheck = true;
+      if (needsGenericCheck)
+        analyzer.analyze(*function, store, true);
+      for (const auto &bindings : requests)
+        if (std::ranges::none_of(memory, [&](const auto &input) {
+              return input.callbacks == bindings;
+            }))
+          (void)store.specialize(*function, bindings, options, &remembered);
+    } else if (requests.empty()) {
       analyzer.analyze(*function, store, true);
     } else {
+      analyzer.validate(*function);
       for (const auto &bindings : requests)
         (void)store.specialize(*function, bindings, options, &remembered);
     }
     if (options.reportUnannotated)
       reportUnannotatedInterface(*function);
   }
+  // Reporting can refine generic imports. Rebuild every requested result
+  // against the final store before exporting it, including nested requests.
+  for (unsigned round = 0; round < core::MaxCallContextDepth; ++round) {
+    const auto requests = store.memoryRequests;
+    for (const auto &[symbol, contexts] : requests)
+      for (const auto &input : contexts)
+        (void)store.specializeMemory(symbol, input, options, nullptr);
+    if (requests == store.memoryRequests)
+      break;
+  }
   reportConfirmedSizedFields(reported, remembered.seen());
 }
 
 void TranslationUnitAnalyzer::RememberingSink::report(
     const core::Diagnostic &diagnostic) {
-  keys.insert(keyOf(diagnostic));
-  inner.report(diagnostic);
+  if (keys.insert(keyOf(diagnostic)).second)
+    inner.report(diagnostic);
 }
 
 TranslationUnitAnalyzer::DiagnosticKey

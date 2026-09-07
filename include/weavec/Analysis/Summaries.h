@@ -216,12 +216,20 @@ public:
              const core::CallbackBindings &bindings,
              const AnalysisOptions &options,
              core::DiagnosticSink *sink = nullptr);
+  [[nodiscard]] std::optional<ResolvedSummary>
+  specializeMemory(std::string_view symbol, const core::CallContext &bindings,
+                   const AnalysisOptions &options,
+                   core::DiagnosticSink *sink = nullptr);
+  using MemoryContextKey = std::pair<std::string, core::CallContext>;
+  std::map<std::string, std::set<core::CallContext>> memoryRequests;
+  std::map<MemoryContextKey, core::FunctionSummary> memorySpecialized;
+  std::map<MemoryContextKey, std::vector<core::Diagnostic>> memoryDiagnostics;
+  std::set<MemoryContextKey> activeMemoryContexts;
   using ContextKey = std::pair<std::string, core::CallbackBindings>;
   std::map<std::string, std::set<core::CallbackBindings>> callbackRequests;
   std::map<ContextKey, core::FunctionSummary> specialized;
   std::map<ContextKey, std::vector<core::Diagnostic>> specializedDiagnostics;
   std::set<ContextKey> activeContexts;
-  std::set<ContextKey> reportedContexts;
   std::map<std::string, const clang::FunctionDecl *> callables;
   std::map<std::string, core::FunctionSummary> importedCallables;
   mutable std::optional<std::map<std::string, core::CallTargets>>
