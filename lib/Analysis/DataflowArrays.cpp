@@ -534,7 +534,7 @@ void FunctionDataflow::checkArrayTraversal(core::PlaceId storage,
         spatial && spatial->extent)
       known = KnownExtent{.have = *spatial->extent,
                           .origin = spatial->location,
-                          .pointer = *parent,
+                          .pointer = parent,
                           .offset = spatial->offset,
                           .unit = size,
                           .declared = spatial->declared};

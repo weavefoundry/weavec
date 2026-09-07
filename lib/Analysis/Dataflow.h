@@ -150,9 +150,9 @@ private:
   };
   std::map<const clang::ForStmt *, ArrayCleanupLoop> arrayCleanupLoops;
   struct ArrayFillLoop {
-    const clang::BinaryOperator *assignment;
-    const clang::ArraySubscriptExpr *element;
-    const clang::Expr *count;
+    const clang::BinaryOperator *assignment = nullptr;
+    const clang::ArraySubscriptExpr *element = nullptr;
+    const clang::Expr *count = nullptr;
     std::optional<std::int64_t> bytes;
   };
   std::map<const clang::ForStmt *, ArrayFillLoop> arrayFillLoops;
