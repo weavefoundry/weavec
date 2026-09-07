@@ -8,6 +8,22 @@ follows [Semantic Versioning](https://semver.org/) once it reaches 1.0.
 
 ### Added
 
+- Compositional call checking (RFC 0016): helpers are checked under the
+  caller's pointer, storage and reference-share relationships, retaining
+  statement order through aliased parameters, fields, globals and selected
+  elements. Release-before-use and repeated releases are diagnosed inside
+  the helper; write-before-release and supported replacement remain clean.
+- Bounded memory contexts combined with actual callback targets, entry facts,
+  final summaries, nested call notes and unsafe-reporting state. Contexts
+  travel across translation units and compiler link analysis, including
+  annotated definitions and locally complete object files.
+- Summary and sidecar format 12, with strict context validation and global
+  remapping. Rebuild objects carrying earlier sidecars. Unsupported context
+  projections and exhausted limits expose `analysis-incomplete` coverage.
+- Twelve additional fixed bug/clean pairs and Core, checker, whole-program
+  and compiler regression tests. The RFC 0016 validation report records the
+  fixed evaluation and the full diagnostic changes on the pinned corpus.
+
 - Array and container ownership (RFC 0015): selected pointer/record cells,
   stable scalar index snapshots, independent initialization and nullness,
   nested arrays, callback cells and retained-share copies.

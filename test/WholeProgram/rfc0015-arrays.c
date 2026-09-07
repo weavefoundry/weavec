@@ -7,7 +7,7 @@
 // RUN: not %weavec_cc %t/library.o %t/caller.o -o %t/program 2>&1 | FileCheck %s
 #include "Inputs/array15.h"
 
-// SIDECAR: weavec-summaries 11
+// SIDECAR: weavec-summaries 12
 // SIDECAR-DAG: array-copy param 0 * from param 1 * dest-begin 0 source-begin 0 count param 2 scale 1 plus 0 bytes 8 view pointer definite
 // SIDECAR-DAG: array-copy result * from param 0 * dest-begin 0 source-begin 0 count param 1 scale 1 plus 0 bytes 8 view pointer definite
 // SIDECAR-DAG: array-release param 0 * begin 0 count param 1 scale 1 plus 0 cleared

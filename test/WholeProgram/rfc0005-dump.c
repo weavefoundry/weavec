@@ -1,5 +1,5 @@
 // RFC 0005, *Debug output*: in whole-program mode --dump-analysis prints
-// each unit's dump in analysis order (dependencies first), prefixed with the
+// each unit's dump in analysis order, prefixed with the
 // unit, then the program database. The format is a debugging aid; this pins
 // only its shape.
 //
@@ -7,11 +7,12 @@
 #include "../Inputs/prelude.h"
 #include "node.h"
 
-// CHECK: unit '{{.*}}node.c':
-// CHECK: function 'node_free':
+// RFC 0016 puts caller and definer in one context-request component.
 // CHECK: unit '{{.*}}rfc0005-dump.c':
 // CHECK: function 'release':
 // CHECK-NEXT: places:
+// CHECK: unit '{{.*}}node.c':
+// CHECK: function 'node_free':
 // CHECK: program:
 // CHECK: function 'node_free': param 0: freed(free); param 0 *.name: freed(free); stores{} returns{}
 // CHECK: function 'node_new': stores{} returns{fresh(free) extent 16, null}

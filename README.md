@@ -38,6 +38,18 @@ corpus coverage changes and increased whole-program analysis cost.
 
 Arrays and containers now use selected element identities ([RFC 0015](docs/rfcs/0015-array-and-container-ownership.md)). Releasing `a[1]` preserves an earlier release of `a[0]`; initialization, nullness, callback targets and ownership belong to individual pointer or record cells. Complete array `memcpy`/`memmove` operations preserve pointee identity, including overlapping moves and bounded symbolic ranges. Selected effects, range copies, returned containers and proved fill/cleanup loops compose through summaries and compiler sidecars. The representation tracks up to 32 cells and 32 range facts per storage object; unresolved selections, unsupported compositions and exhausted limits report incomplete coverage. The [validation report](docs/validation-rfc0015.md) records the improved fixed evaluation alongside corpus false positives and increased analysis cost. This remains an early static checker with explicit coverage limits.
 
+Helpers now preserve the safety meaning of related pointer arguments
+([RFC 0016](docs/rfcs/0016-compositional-call-checking.md)). Given
+`release_then_write(p, p)`, the checker follows the callee's statement order
+and reports its use-after-free. Reversing the operations remains clean.
+The same checking covers aliased output storage, shared record children,
+selected elements, callbacks and separate compiler objects. Contexts retain
+bounded caller facts; unavailable projections report incomplete coverage.
+The [validation report](docs/validation-rfc0016.md) records both the added
+detections and the cost and coverage warnings on real code. Calls without
+established interacting identities still use generic summaries; a quiet run
+does not establish that arbitrary inputs are disjoint.
+
 ## Quick look
 
 ```c

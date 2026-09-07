@@ -434,6 +434,15 @@ static bool parsePath(Tokens &tokens, const GlobalResolver &resolve,
   return true;
 }
 
+std::optional<SummaryPath> parseSummaryPath(std::string_view text,
+                                            const GlobalResolver &resolve) {
+  Tokens tokens(text);
+  ParsedPath result;
+  if (!parsePath(tokens, resolve, result) || !tokens.empty())
+    return std::nullopt;
+  return result.path;
+}
+
 static bool parseInteger(std::string_view token, std::int64_t &value) {
   if (token.empty())
     return false;

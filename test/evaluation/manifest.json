@@ -531,6 +531,226 @@
       "sources": [
         "rfc0015-array-resized-good.c"
       ]
+    },
+    {
+      "name": "rfc0016-order-bad",
+      "sources": [
+        "rfc0016-order-bad.c"
+      ],
+      "bugs": [
+        {
+          "marker": "order",
+          "diagnostic": "use-after-free"
+        }
+      ]
+    },
+    {
+      "name": "rfc0016-order-good",
+      "sources": [
+        "rfc0016-order-good.c"
+      ]
+    },
+    {
+      "name": "rfc0016-double-bad",
+      "sources": [
+        "rfc0016-double-bad.c"
+      ],
+      "bugs": [
+        {
+          "marker": "double",
+          "diagnostic": "double-free"
+        }
+      ]
+    },
+    {
+      "name": "rfc0016-double-good",
+      "sources": [
+        "rfc0016-double-good.c"
+      ]
+    },
+    {
+      "name": "rfc0016-outputs-bad",
+      "sources": [
+        "rfc0016-outputs-bad.c"
+      ],
+      "bugs": [
+        {
+          "marker": "outputs",
+          "diagnostic": "use-after-free"
+        }
+      ]
+    },
+    {
+      "name": "rfc0016-outputs-good",
+      "sources": [
+        "rfc0016-outputs-good.c"
+      ]
+    },
+    {
+      "name": "rfc0016-replacement-bad",
+      "sources": [
+        "rfc0016-replacement-bad.c"
+      ],
+      "bugs": [
+        {
+          "marker": "replacement",
+          "diagnostic": "use-after-free"
+        }
+      ]
+    },
+    {
+      "name": "rfc0016-replacement-good",
+      "sources": [
+        "rfc0016-replacement-good.c"
+      ]
+    },
+    {
+      "name": "rfc0016-guard-bad",
+      "sources": [
+        "rfc0016-guard-bad.c"
+      ],
+      "bugs": [
+        {
+          "marker": "guard",
+          "diagnostic": "use-after-free"
+        }
+      ]
+    },
+    {
+      "name": "rfc0016-guard-good",
+      "sources": [
+        "rfc0016-guard-good.c"
+      ]
+    },
+    {
+      "name": "rfc0016-callback-bad",
+      "sources": [
+        "rfc0016-callback-bad.c"
+      ],
+      "bugs": [
+        {
+          "marker": "callback",
+          "diagnostic": "use-after-free"
+        }
+      ]
+    },
+    {
+      "name": "rfc0016-callback-good",
+      "sources": [
+        "rfc0016-callback-good.c"
+      ]
+    },
+    {
+      "name": "rfc0016-array-bad",
+      "sources": [
+        "rfc0016-array-bad.c"
+      ],
+      "bugs": [
+        {
+          "marker": "array",
+          "diagnostic": "use-after-free"
+        }
+      ]
+    },
+    {
+      "name": "rfc0016-array-good",
+      "sources": [
+        "rfc0016-array-good.c"
+      ]
+    },
+    {
+      "name": "rfc0016-interior-bad",
+      "sources": [
+        "rfc0016-interior-bad.c"
+      ],
+      "bugs": [
+        {
+          "marker": "interior",
+          "diagnostic": "use-after-free"
+        }
+      ]
+    },
+    {
+      "name": "rfc0016-interior-good",
+      "sources": [
+        "rfc0016-interior-good.c"
+      ]
+    },
+    {
+      "name": "rfc0016-global-bad",
+      "sources": [
+        "rfc0016-global-bad.c"
+      ],
+      "bugs": [
+        {
+          "marker": "global",
+          "diagnostic": "use-after-free"
+        }
+      ]
+    },
+    {
+      "name": "rfc0016-global-good",
+      "sources": [
+        "rfc0016-global-good.c"
+      ]
+    },
+    {
+      "name": "rfc0016-nested-bad",
+      "sources": [
+        "rfc0016-nested-bad.c"
+      ],
+      "bugs": [
+        {
+          "marker": "nested",
+          "diagnostic": "use-after-free"
+        }
+      ]
+    },
+    {
+      "name": "rfc0016-nested-good",
+      "sources": [
+        "rfc0016-nested-good.c"
+      ]
+    },
+    {
+      "name": "rfc0016-inline-bad",
+      "sources": [
+        "rfc0016-inline-bad.c"
+      ],
+      "bugs": [
+        {
+          "marker": "inline",
+          "diagnostic": "use-after-free"
+        }
+      ]
+    },
+    {
+      "name": "rfc0016-inline-good",
+      "sources": [
+        "rfc0016-inline-good.c"
+      ]
+    },
+    {
+      "name": "rfc0016-cross-bad",
+      "sources": [
+        "rfc0016-cross-bad.c",
+        "Inputs/rfc0016-cross-bad.c"
+      ],
+      "whole_program": true,
+      "bugs": [
+        {
+          "marker": "cross",
+          "diagnostic": "use-after-free"
+        }
+      ]
+    },
+    {
+      "name": "rfc0016-cross-good",
+      "sources": [
+        "rfc0016-cross-good.c",
+        "Inputs/rfc0016-cross-good.c"
+      ],
+      "whole_program": true
     }
   ]
 }

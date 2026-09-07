@@ -35,7 +35,7 @@
 #include "../Inputs/prelude.h"
 #include "node.h"
 
-// SIDECAR: weavec-summaries 11
+// SIDECAR: weavec-summaries 12
 // SIDECAR: source {{.*}}node.c
 // SIDECAR: cwd {{.+}}
 // SIDECAR: arg -triple
@@ -43,17 +43,20 @@
 // SIDECAR: import free
 // SIDECAR: import malloc
 // SIDECAR: function node_free external plain void (struct node *)
+// SIDECAR-NEXT: accepts-memory-contexts
 // SIDECAR-NEXT: summary
 // SIDECAR-NEXT:   object-view param 0 *
 // SIDECAR-NEXT:   effect param 0 freed(free)
 // SIDECAR-NEXT:   effect param 0 *.name freed(free)
 // SIDECAR-NEXT: end
 // SIDECAR: function node_new external plain struct node *(void)
+// SIDECAR-NEXT: accepts-memory-contexts
 // SIDECAR-NEXT: summary
 // SIDECAR:   return fresh(free)
 // SIDECAR-NEXT:   return null
 // SIDECAR-NEXT: end
 // SIDECAR: function node_set_name external plain void (struct node *, char *)
+// SIDECAR-NEXT: accepts-memory-contexts
 // SIDECAR-NEXT: summary
 // SIDECAR-NEXT:   object-view param 0 *
 // SIDECAR-NEXT:   effect param 0 *.name written,freed(free),replaced
@@ -61,6 +64,7 @@
 // SIDECAR:   requires 0
 // SIDECAR-NEXT: end
 // SIDECAR: function node_vp external plain int *(struct node *)
+// SIDECAR-NEXT: accepts-memory-contexts
 // SIDECAR-NEXT: summary
 // SIDECAR-NEXT:   object-view param 0 *
 // SIDECAR-NEXT:   return copy param 0 @+struct~node.v

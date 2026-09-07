@@ -96,7 +96,7 @@ namespace weavec::core {
 
 /// Version of the record format; bumped when a record written by this
 /// version cannot be read by the previous one.
-inline constexpr unsigned SummaryFormatVersion = 11;
+inline constexpr unsigned SummaryFormatVersion = 12;
 
 // RFC 0014: deterministic, single-token callback contexts. Bindings name
 // parameter paths; globals retain their ordinary exported value sources.
@@ -116,6 +116,10 @@ using GlobalResolver =
 /// Spells `path` as in the record format (`param 0 *.data`).
 [[nodiscard]] std::string printSummaryPath(const SummaryPath &path,
                                            const GlobalNamer &names);
+
+/// Parse exactly one path; missing global mappings and trailing tokens fail.
+[[nodiscard]] std::optional<SummaryPath>
+parseSummaryPath(std::string_view text, const GlobalResolver &resolve);
 
 /// Spells `source` as in the record format (`copy param 1`).
 [[nodiscard]] std::string printValueSource(const ValueSource &source,

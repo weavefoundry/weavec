@@ -262,6 +262,9 @@ bool AnalysisState::join(const AnalysisState &other, const PlaceTable *places) {
   changed |= loans.join(other.loans);
   changed |= aliases.join(other.aliases);
   changed |= definiteAliases.intersect(other.definiteAliases);
+  changed |= std::erase_if(distinctObjects, [&](const auto &pair) {
+               return !other.distinctObjects.contains(pair);
+             }) != 0;
   changed |= raw.join(other.raw);
   changed |= resources.join(other.resources);
   changed |= nulls.join(other.nulls);
@@ -589,6 +592,9 @@ void AnalysisState::forget(PlaceId place) {
   moves.reinitialize(place);
   aliases.separate(place);
   definiteAliases.separate(place);
+  std::erase_if(distinctObjects, [place](const auto &pair) {
+    return pair.first == place || pair.second == place;
+  });
   loans.dropHolder(place);
   loans.release(place);
   pending.erase(place);

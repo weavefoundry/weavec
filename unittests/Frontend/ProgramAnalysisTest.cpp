@@ -245,7 +245,7 @@ int run(void) {
 TEST(ProgramAnalysis, UnparsableUnitsAreReportedNotFatal) {
   Program program;
   program.add("ok.c", "void f(void) {}\n");
-  program.files.push_back("/src/missing.c");
+  program.files.emplace_back("/src/missing.c");
   const ProgramAnalysis::Result result = program.run();
   EXPECT_EQ(result.failed, (std::vector<std::string>{"/src/missing.c"}));
   EXPECT_FALSE(result.ok());
@@ -494,6 +494,195 @@ void copy_pointer(int **dest, int **source) {
   EXPECT_EQ(result.warnings, 0U);
   EXPECT_TRUE(result.failed.empty());
   EXPECT_TRUE(result.nonConverging.empty());
+}
+
+// RFC 0016: requests flow upstream even through an acyclic direct-call graph.
+TEST(ProgramAnalysis, AliasedArgumentsAreCheckedInsideTheOtherUnit) {
+  for (const auto *operation : {"*b = 1;", "free(b);"}) {
+    Program program;
+    program.add("callee.c",
+                std::string("void zap(char *a, char *b) { free(a); ") +
+                    operation + " }");
+    program.add("caller.c", R"c(
+void zap(char *, char *);
+void test(void) { char *p = malloc(4); if (p) zap(p, p); }
+)c");
+    const auto result = program.run();
+    EXPECT_TRUE(result.failed.empty());
+    EXPECT_TRUE(result.nonConverging.empty());
+    EXPECT_EQ(result.errors, 1U)
+        << ::testing::PrintToString(program.recorder.lines);
+    EXPECT_EQ(result.warnings, 0U)
+        << ::testing::PrintToString(program.recorder.lines);
+    EXPECT_FALSE(program.analysis->database().memoryRequestsFor("zap").empty());
+  }
+}
+
+TEST(ProgramAnalysis, ContextRequestsTraverseTwoForwardingUnits) {
+  Program program;
+  program.add("caller.c", R"c(
+void outer(char *, char *);
+void test(void) { char *p = malloc(4); if (p) outer(p, p); }
+)c");
+  program.add("outer.c", "void middle(char *, char *); void outer(char *a, "
+                         "char *b) { middle(a, b); }");
+  program.add(
+      "middle.c",
+      "void zap(char *, char *); void middle(char *a, char *b) { zap(a, b); }");
+  program.add("callee.c", "void zap(char *a, char *b) { free(a); *b = 1; }");
+  const auto result = program.run();
+  EXPECT_TRUE(result.failed.empty());
+  EXPECT_TRUE(result.nonConverging.empty());
+  EXPECT_EQ(result.errors, 1U)
+      << ::testing::PrintToString(program.recorder.lines);
+  EXPECT_EQ(result.warnings, 0U)
+      << ::testing::PrintToString(program.recorder.lines);
+}
+
+TEST(ProgramAnalysis, CrossUnitWriteBeforeReleaseAndIndependentInputsAreClean) {
+  Program program;
+  program.add("callee.c", R"c(
+void before(char *a, char *b) { *b = 1; free(a); }
+void after(char *a, char *b) { free(a); *b = 1; }
+)c");
+  program.add("caller.c", R"c(
+void before(char *, char *); void after(char *, char *);
+void test(void) {
+  char *p = malloc(4); if (!p) return; before(p, p);
+  p = malloc(4); char *q = malloc(4);
+  if (!p || !q) { free(p); free(q); return; }
+  after(p, q); free(q);
+}
+)c");
+  const auto result = program.run();
+  EXPECT_TRUE(result.failed.empty());
+  EXPECT_TRUE(result.nonConverging.empty());
+  EXPECT_EQ(result.errors, 0U)
+      << ::testing::PrintToString(program.recorder.lines);
+  EXPECT_EQ(result.warnings, 0U)
+      << ::testing::PrintToString(program.recorder.lines);
+}
+
+TEST(ProgramAnalysis, ReplacedOutputStorageComposesAcrossUnits) {
+  Program program;
+  program.add("callee.c", R"c(
+void reset(char **a, char **b) { free(*a); *a = malloc(4); if (*b) **b = 1; }
+)c");
+  program.add("caller.c", R"c(
+void reset(char **, char **);
+void test(void) {
+  char *p = malloc(4); if (!p) return;
+  reset(&p, &p); if (p) *p = 2; free(p);
+}
+)c");
+  const auto result = program.run();
+  EXPECT_TRUE(result.failed.empty());
+  EXPECT_TRUE(result.nonConverging.empty());
+  EXPECT_EQ(result.errors, 0U)
+      << ::testing::PrintToString(program.recorder.lines);
+  EXPECT_EQ(result.warnings, 0U)
+      << ::testing::PrintToString(program.recorder.lines);
+}
+
+TEST(ProgramAnalysis, GlobalContextPathsAreRemappedByName) {
+  Program program;
+  program.add("callee.c", R"c(
+char *other; char *shared;
+void zap(char *a) { free(a); *shared = 1; }
+)c");
+  program.add("caller.c", R"c(
+extern char *shared; extern char *other; void zap(char *);
+void test(void) { char *p = malloc(4); if (!p) return; shared = p; zap(p); }
+)c");
+  const auto result = program.run();
+  EXPECT_TRUE(result.failed.empty());
+  EXPECT_TRUE(result.nonConverging.empty());
+  EXPECT_EQ(result.errors, 1U)
+      << ::testing::PrintToString(program.recorder.lines);
+  EXPECT_EQ(result.warnings, 0U)
+      << ::testing::PrintToString(program.recorder.lines);
+}
+
+TEST(ProgramAnalysis, InternalFunctionsWithTheSameNameKeepSeparateContexts) {
+  Program program;
+  program.add("safe.c", R"c(
+static void zap(char *a, char *b) { *b = 1; free(a); }
+void safe(char *p) { zap(p, p); }
+)c");
+  program.add("bad.c", R"c(
+static void zap(char *a, char *b) { free(a); *b = 1; }
+void bad(char *p) { zap(p, p); }
+)c");
+  program.add("caller.c", R"c(
+void safe(char *); void bad(char *);
+void test(void) { char *p = malloc(4); if (p) safe(p); p = malloc(4); if (p) bad(p); }
+)c");
+  const auto result = program.run();
+  EXPECT_TRUE(result.failed.empty());
+  EXPECT_TRUE(result.nonConverging.empty());
+  EXPECT_EQ(result.errors, 1U)
+      << ::testing::PrintToString(program.recorder.lines);
+  EXPECT_EQ(result.warnings, 0U)
+      << ::testing::PrintToString(program.recorder.lines);
+}
+
+TEST(ProgramAnalysis, UnsafeCrossUnitRequestsDoNotProduceDelayedReports) {
+  Program program;
+  program.add("callee.c", "void zap(char *a, char *b) { free(a); *b = 1; }");
+  program.add("caller.c", R"c(
+void zap(char *, char *);
+void test(void) {
+  char *p = malloc(4); if (!p) return;
+  __attribute__((annotate("weavec.unsafe"))) { zap(p, p); }
+}
+)c");
+  const auto result = program.run();
+  EXPECT_TRUE(result.failed.empty());
+  EXPECT_TRUE(result.nonConverging.empty());
+  EXPECT_EQ(result.errors, 0U)
+      << ::testing::PrintToString(program.recorder.lines);
+  EXPECT_EQ(result.warnings, 0U)
+      << ::testing::PrintToString(program.recorder.lines);
+}
+
+TEST(ProgramAnalysis,
+     KnownIndirectTargetsCarryMemoryRequestsBackToTheirDefiner) {
+  Program program;
+  program.add("callee.c", R"c(
+void zap(char *a, char *b) { free(a); *b = 1; }
+void (*callback)(char *, char *) = zap;
+)c");
+  program.add("caller.c", R"c(
+extern void (*callback)(char *, char *);
+void test(void) { char *p = malloc(4); if (p) callback(p, p); }
+)c");
+  const auto result = program.run();
+  EXPECT_TRUE(result.failed.empty());
+  EXPECT_TRUE(result.nonConverging.empty());
+  EXPECT_EQ(result.errors, 1U)
+      << ::testing::PrintToString(program.recorder.lines);
+  EXPECT_EQ(result.warnings, 0U)
+      << ::testing::PrintToString(program.recorder.lines);
+}
+
+TEST(ProgramAnalysis, AnnotatedDefinitionsStillReceiveMemoryRequests) {
+  Program program;
+  program.add("callee.c", R"c(
+void zap(char *__attribute__((annotate("weavec.owned"))) a, char *b) {
+  free(a); *b = 1;
+}
+)c");
+  program.add("caller.c", R"c(
+void zap(char *__attribute__((annotate("weavec.owned"))), char *);
+void test(void) { char *p = malloc(4); if (p) zap(p, p); }
+)c");
+  const auto result = program.run();
+  EXPECT_TRUE(result.failed.empty());
+  EXPECT_TRUE(result.nonConverging.empty());
+  EXPECT_EQ(result.errors, 1U)
+      << ::testing::PrintToString(program.recorder.lines);
+  EXPECT_EQ(result.warnings, 0U)
+      << ::testing::PrintToString(program.recorder.lines);
 }
 
 } // namespace

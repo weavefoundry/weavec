@@ -62,5 +62,6 @@ decision is a new RFC that supersedes the relevant section.
 | [0013](0013-interprocedural-heap-state.md) | Interprocedural heap state and value identity | Accepted |
 | [0014](0014-pointer-identity-and-call-effects.md) | Pointer identity and precise call effects | Implemented |
 | [0015](0015-array-and-container-ownership.md) | Array elements, range operations, and container ownership | Implemented |
+| [0016](0016-compositional-call-checking.md) | Compositional call checking under caller alias relationships | Implemented |
 
 The [roadmap](../roadmap.md) links each milestone to the RFCs that define it.

@@ -103,7 +103,7 @@ TEST(Sidecar, PathIsOutputPlusExtension) {
 
 TEST(Sidecar, PrintsStableText) {
   EXPECT_EQ(printUnitRecord(sample()),
-            "weavec-summaries 11\n"
+            "weavec-summaries 12\n"
             "source src/node.c\n"
             "cwd /work/build\n"
             "arg -triple\n"
@@ -215,33 +215,33 @@ TEST(Sidecar, RejectsOtherFormatsAndMalformedLines) {
   EXPECT_FALSE(parseUnitRecord("", &error));
   EXPECT_EQ(error, "empty file");
   EXPECT_FALSE(parseUnitRecord(
-      "weavec-summaries 11\nsummary\n  return fresh\nend\n", &error));
+      "weavec-summaries 12\nsummary\n  return fresh\nend\n", &error));
   EXPECT_EQ(error, "line 2: summary record without a function");
-  EXPECT_FALSE(parseUnitRecord("weavec-summaries 11\nfunction f\n", &error));
+  EXPECT_FALSE(parseUnitRecord("weavec-summaries 12\nfunction f\n", &error));
   EXPECT_EQ(error, "line 2: malformed 'function' line");
-  EXPECT_FALSE(parseUnitRecord("weavec-summaries 11\nfunction f external "
+  EXPECT_FALSE(parseUnitRecord("weavec-summaries 12\nfunction f external "
                                "plain\nsummary\n  return fresh\n",
                                &error));
   EXPECT_EQ(error, "line 4: summary record without 'end'");
   EXPECT_FALSE(
-      parseUnitRecord("weavec-summaries 11\nreported x y z\n", &error));
+      parseUnitRecord("weavec-summaries 12\nreported x y z\n", &error));
   EXPECT_EQ(error, "line 2: malformed 'reported' line");
   // RFC 0012.
   EXPECT_FALSE(
-      parseUnitRecord("weavec-summaries 11\nsized-field a b\n", &error));
+      parseUnitRecord("weavec-summaries 12\nsized-field a b\n", &error));
   EXPECT_EQ(error, "line 2: malformed 'sized-field' line");
   EXPECT_FALSE(
-      parseUnitRecord("weavec-summaries 11\nsized-field a b c\n", &error));
+      parseUnitRecord("weavec-summaries 12\nsized-field a b c\n", &error));
   EXPECT_EQ(error, "line 2: malformed 'sized-field' line");
   EXPECT_FALSE(
-      parseUnitRecord("weavec-summaries 11\nunsized-field a b c\n", &error));
+      parseUnitRecord("weavec-summaries 12\nunsized-field a b c\n", &error));
   EXPECT_EQ(error, "line 2: malformed 'unsized-field' line");
 }
 
 TEST(Sidecar, SkipsUnknownLinesAndBlankOnes) {
   std::string error;
   const std::optional<UnitRecord> parsed = parseUnitRecord(
-      "weavec-summaries 11\n\nfuture-thing 42\nsource a.c\n\n", &error);
+      "weavec-summaries 12\n\nfuture-thing 42\nsource a.c\n\n", &error);
   ASSERT_TRUE(parsed) << error;
   EXPECT_EQ(parsed->exports.source, "a.c");
   EXPECT_TRUE(parsed->exports.functions.empty());
@@ -333,6 +333,95 @@ TEST(Sidecar, SelectedArrayPathsAndAllRangeKindsRoundTrip) {
   ASSERT_TRUE(decoded) << error;
   EXPECT_EQ(decoded->exports.functions.at("node_new").summary, summary);
   EXPECT_EQ(printUnitRecord(*decoded), encoded);
+}
+
+static core::CallContext sidecarMemoryContext() {
+  core::CallContext input;
+  input.addAlias({.first = core::SummaryPath::param(0),
+                  .second = core::SummaryPath::param(1),
+                  .offset = {}});
+  input.facts[core::SummaryPath::global(0)] = core::ValueFact::ofConstant(7);
+  return input;
+}
+
+TEST(Sidecar, MemoryContextsKeepRequestsResultsGlobalsAndUnsafeState) {
+  UnitRecord record;
+  record.exports.source = "src/memory.c";
+  ASSERT_EQ(record.exports.globals.idFor("global"), 0U);
+  auto input = sidecarMemoryContext();
+  input.reportDiagnostics = false;
+  input.callbacks[core::SummaryPath::param(2)] =
+      core::CallTargets::function("src/callback.c#drop");
+  record.exports.memoryRequests["zap"].insert(input);
+  auto &function = record.exports.functions["zap"];
+  function.acceptsMemoryContexts = true;
+  function.summary.addEffect(core::SummaryPath::param(0), {.freed = true});
+  function.memorySpecializations[input] = function.summary;
+  const auto text = printUnitRecord(record);
+  EXPECT_NE(text.find("memory-request "), std::string::npos);
+  EXPECT_NE(text.find("memory-specialization "), std::string::npos);
+  EXPECT_NE(text.find("accepts-memory-contexts\n"), std::string::npos);
+  const auto parsed = parseUnitRecord(text);
+  ASSERT_TRUE(parsed);
+  EXPECT_TRUE(record.exports.sameSummariesAs(parsed->exports));
+  EXPECT_EQ(printUnitRecord(*parsed), text);
+}
+
+TEST(Sidecar, MalformedMemoryMetadataCannotBecomeAGenericSummary) {
+  const std::string prefix =
+      "weavec-summaries " + std::to_string(SidecarFormatVersion) + "\n";
+  const auto input =
+      core::printCallContext(sidecarMemoryContext(), [](std::uint32_t) {
+        return std::string("global");
+      });
+  const auto symbol = core::CallTargets::function("zap").toString();
+  const std::string function = "function zap external plain\n";
+  const std::string specialization = "memory-specialization " + input + "\n";
+  const std::string request = std::string("memory-request ")
+                                  .append(symbol)
+                                  .append(" ")
+                                  .append(input)
+                                  .append("\n");
+  for (const auto &body :
+       {specialization + "summary\nend\n", function + specialization,
+        (function + specialization).append("future-line\nsummary\nend\n"),
+        function + "memory-specialization bad\nsummary\nend\n",
+        (function + specialization)
+            .append("summary\nend\n")
+            .append(specialization)
+            .append("summary\nend\n"),
+        request + request, function + "accepts-memory-contexts extra\n"}) {
+    std::string error;
+    EXPECT_FALSE(parseUnitRecord(prefix + body, &error)) << body;
+    EXPECT_FALSE(error.empty());
+  }
+  EXPECT_FALSE(parseUnitRecord("weavec-summaries 11\n"));
+}
+
+TEST(Sidecar, MemoryRequestAndResultCountsAreBounded) {
+  const std::string prefix =
+      "weavec-summaries " + std::to_string(SidecarFormatVersion) + "\n";
+  const auto symbol = core::CallTargets::function("zap").toString();
+  std::string requests;
+  std::string results = "function zap external plain\n";
+  for (unsigned i = 0; i <= core::MaxMemoryContexts; ++i) {
+    auto input = sidecarMemoryContext();
+    input.facts[core::SummaryPath::param(3)] = core::ValueFact::ofConstant(i);
+    const auto text = core::printCallContext(
+        input, [](std::uint32_t) { return std::string("global"); });
+    requests.append("memory-request ")
+        .append(symbol)
+        .append(" ")
+        .append(text)
+        .append("\n");
+    results += "memory-specialization " + text + "\nsummary\nend\n";
+    if (i + 1 == core::MaxMemoryContexts) {
+      EXPECT_TRUE(parseUnitRecord(prefix + requests));
+      EXPECT_TRUE(parseUnitRecord(prefix + results));
+    }
+  }
+  EXPECT_FALSE(parseUnitRecord(prefix + requests));
+  EXPECT_FALSE(parseUnitRecord(prefix + results));
 }
 
 } // namespace weavec::frontend

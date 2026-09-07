@@ -211,6 +211,9 @@ struct AnalysisState {
   /// RFC 0013: whole-pointer identities and offsets true on every incoming
   /// path.
   AliasRelation definiteAliases;
+  /// RFC 0016: entry pointer values known to designate distinct objects.
+  /// Unequal addresses alone do not establish this relation.
+  std::set<std::pair<PlaceId, PlaceId>> distinctObjects;
   /// Calls whose consumption depends on their result, keyed by the place
   /// the result was stored in (RFC 0006). Entries are dropped on any
   /// reassignment of the result.

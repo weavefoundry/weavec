@@ -146,6 +146,34 @@ FunctionDataflow::resolveCall(const CallExpr &call) {
   core::AnalysisState &state = *currentState;
   std::optional<core::FunctionSummary> result;
   SummarySource source = SummarySource::Inferred;
+  const auto contextualize = [&](std::string_view symbol,
+                                 const core::FunctionSummary &base)
+      -> std::optional<core::FunctionSummary> {
+    // Path resolution validates this target's object views before using
+    // its footprint. The final contextual result replaces this below.
+    callSummaries[&call] = base;
+    auto bindings = captureCallContext(call, base, state);
+    if (!bindings)
+      return std::nullopt;
+    if (const auto callbacks = callbackContexts.find(&call);
+        callbacks != callbackContexts.end())
+      bindings->callbacks = callbacks->second;
+    memoryContexts[&call] = *bindings;
+    core::DiagnosticCollector collected;
+    const auto specialized = summaries.specializeMemory(
+        symbol, *bindings, options,
+        recording() && emitDiagnostics && !inUnsafe ? &collected : nullptr);
+    for (auto diagnostic : collected.diagnostics()) {
+      diagnostic.addNote("called here with related pointer arguments",
+                         locate(call));
+      report(std::move(diagnostic));
+    }
+    if (!specialized) {
+      reportIncomplete("call context unavailable or limit reached", call);
+      return std::nullopt;
+    }
+    return *specialized->summary;
+  };
   if (direct) {
     if (const auto base = summaries.lookup(*direct)) {
       result = *base->summary;
@@ -171,9 +199,8 @@ FunctionDataflow::resolveCall(const CallExpr &call) {
             });
         if (known) {
           callbackContexts[&call] = bindings;
-          if (const auto specialized = summaries.specialize(
-                  *direct, bindings, options,
-                  recording() && emitDiagnostics ? &sink : nullptr)) {
+          if (const auto specialized =
+                  summaries.specialize(*direct, bindings, options, nullptr)) {
             result = *specialized->summary;
           } else {
             reportIncomplete("callback context unavailable or limit reached",
@@ -181,6 +208,23 @@ FunctionDataflow::resolveCall(const CallExpr &call) {
           }
         }
       }
+      const bool knownBody =
+          direct->getDefinition() != nullptr ||
+          (summaries.programDatabase() != nullptr &&
+           summaries.programDatabase()->defines(direct->getName()));
+      if (source == SummarySource::Inferred ||
+          source == SummarySource::Program ||
+          (source == SummarySource::Annotation && knownBody)) {
+        summaries.registerCallable(*direct);
+        if (const auto specialized =
+                contextualize(callableSymbol(*direct), *result))
+          result = *specialized;
+      }
+      if (!memoryContexts.contains(&call) && callbackContexts.contains(&call) &&
+          recording() && emitDiagnostics && !inUnsafe &&
+          memoryContext.reportDiagnostics)
+        (void)summaries.specialize(*direct, callbackContexts.at(&call), options,
+                                   &sink);
     }
   } else {
     auto targets = functionTargets(*call.getCallee(), state);
@@ -201,11 +245,13 @@ FunctionDataflow::resolveCall(const CallExpr &call) {
           targets.unknown = true;
           continue;
         }
+        const auto specialized = contextualize(symbol, *target->summary);
+        const auto &actual = specialized ? *specialized : *target->summary;
         if (!result)
-          result = *target->summary;
+          result = actual;
         else
-          result->join(*target->summary);
-        returns |= !target->summary->neverReturns;
+          result->join(actual);
+        returns |= !actual.neverReturns;
       }
       if (result)
         result->neverReturns = !returns && !targets.unknown;

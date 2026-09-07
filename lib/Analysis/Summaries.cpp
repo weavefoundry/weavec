@@ -569,6 +569,8 @@ bool SummaryStore::setInferred(const FunctionDecl &function,
     callbackGlobalCache.reset();
     specialized.clear();
     specializedDiagnostics.clear();
+    memorySpecialized.clear();
+    memoryDiagnostics.clear();
     return true;
   }
   if (it->second == summary)
@@ -577,6 +579,8 @@ bool SummaryStore::setInferred(const FunctionDecl &function,
   callbackGlobalCache.reset();
   specialized.clear();
   specializedDiagnostics.clear();
+  memorySpecialized.clear();
+  memoryDiagnostics.clear();
   // Any indirect join may have included this function.
   mergedIndirect.clear();
   return true;

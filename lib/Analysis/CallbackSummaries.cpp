@@ -367,7 +367,7 @@ std::optional<ResolvedSummary> SummaryStore::specialize(
     applyContract(function, specialized[contextKey]);
     specializedDiagnostics[contextKey] = collected.diagnostics();
   }
-  if (sink && reportedContexts.insert(contextKey).second) {
+  if (sink) {
     for (const auto &diagnostic : specializedDiagnostics[contextKey])
       sink->report(diagnostic);
   }

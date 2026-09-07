@@ -17,6 +17,7 @@
 #ifndef WEAVEC_ANALYSIS_PROGRAMDATABASE_H
 #define WEAVEC_ANALYSIS_PROGRAMDATABASE_H
 
+#include "weavec/Core/CallContext.h"
 #include "weavec/Core/Summary.h"
 
 #include "clang/AST/ASTContext.h"
@@ -73,6 +74,9 @@ struct ExportedFunction {
   /// pointer of its type from another unit.
   bool addressTaken = false;
   bool acceptsCallbacks = false;
+  bool acceptsMemoryContexts = false;
+  // NOLINTNEXTLINE(readability-redundant-member-init)
+  std::map<core::CallContext, core::FunctionSummary> memorySpecializations = {};
 
   friend bool operator==(const ExportedFunction &,
                          const ExportedFunction &) = default;
@@ -129,6 +133,7 @@ struct SizedFieldFacts {
 struct UnitExports {
   /// The main source file, for messages and the dump.
   std::string source;
+  std::map<std::string, std::set<core::CallContext>> memoryRequests;
   std::map<std::string, std::set<core::CallbackBindings>> callbackRequests;
   std::map<std::string, core::CallTargets> callbackGlobals;
   /// Exported definitions by linkage name.
@@ -187,6 +192,16 @@ public:
   /// extends this one (see `renumbered`), are copied rather than renumbered.
   void add(const UnitExports &unit);
   void addCallbackInformation(const UnitExports &unit);
+  [[nodiscard]] const core::FunctionSummary *
+  findMemorySpecialization(std::string_view symbol,
+                           const core::CallContext &context) const;
+  [[nodiscard]] const std::set<core::CallContext> &
+  memoryRequestsFor(std::string_view symbol) const;
+  [[nodiscard]] std::optional<core::CallContext>
+  importContext(const core::CallContext &input,
+                const clang::ASTContext &context, GlobalTable &table) const;
+  [[nodiscard]] std::optional<core::CallContext>
+  exportContext(const core::CallContext &input, const GlobalTable &table) const;
   std::map<std::string, core::CallTargets> callbackGlobals;
   [[nodiscard]] const core::FunctionSummary *
   findCallable(std::string_view symbol) const;
@@ -247,6 +262,10 @@ public:
   void dump(llvm::raw_ostream &os) const;
 
 private:
+  std::map<std::pair<std::string, core::CallContext>, core::FunctionSummary>
+      memorySummaries;
+  std::map<std::string, std::set<core::CallContext>, std::less<>>
+      memoryRequests;
   std::map<std::string, core::FunctionSummary, std::less<>> functions;
   std::map<std::string, core::FunctionSummary, std::less<>> callableSummaries;
   std::map<std::pair<std::string, core::CallbackBindings>,
