@@ -795,7 +795,7 @@ private:
                         core::AnalysisState &state);
   bool handleMemoryCopy(const clang::CallExpr &call, const CallEffects &effects,
                         core::AnalysisState &state);
-  void reportIncomplete(std::string reason, const clang::Stmt &at);
+  void reportIncomplete(const std::string &reason, const clang::Stmt &at);
   std::map<const clang::CallExpr *, core::PlaceId> memorySnapshots;
   std::set<std::pair<const clang::Stmt *, std::string>> incompleteReports;
 

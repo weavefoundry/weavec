@@ -17,7 +17,8 @@ using namespace clang;
 
 namespace weavec::analysis {
 
-void FunctionDataflow::reportIncomplete(std::string reason, const Stmt &at) {
+void FunctionDataflow::reportIncomplete(const std::string &reason,
+                                        const Stmt &at) {
   if (!recording())
     return;
   inferred.incomplete.insert(reason);
