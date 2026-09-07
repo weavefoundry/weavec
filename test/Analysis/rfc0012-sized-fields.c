@@ -90,6 +90,9 @@ struct hack {
 };
 
 void flexible(size_t n) {
+  // RFC 0017: both n - 1 and the allocation's header addition must fit.
+  if (n == 0 || n > (size_t)-1 - sizeof(struct hack))
+    return;
   struct hack *h = malloc(sizeof *h + n);
   if (!h)
     return;
@@ -122,8 +125,8 @@ void push(struct vec *v, int x) {
     v->items[v->n++] = x;
 }
 
-// CHECK: rfc0012-sized-fields.c:[[@LINE+1]]:34: error: 'v->items[v->cap]' is out of bounds: 'v->cap' is the number of elements of 'v->items' [weavec::out-of-bounds]
+// CHECK: rfc0012-sized-fields.c:[[@LINE+1]]:34: error: 'v->items[v->cap]' is out of bounds: the access exceeds the allocation's converted size [weavec::out-of-bounds]
 int last(struct vec *v) { return v->items[v->cap]; }
-// CHECK: rfc0012-sized-fields.c:105:8: note: 'v->items' is declared here
+// CHECK: rfc0012-sized-fields.c:108:8: note: 'v->items' is declared here
 
 int last_n(struct vec *v) { return v->items[v->n]; }

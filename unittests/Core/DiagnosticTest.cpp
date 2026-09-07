@@ -76,7 +76,7 @@ TEST(DiagnosticIds, PointerValidityIdsAreKnown) {
   for (const std::string_view id :
        {diag::NullDereference, diag::UseOfUninitialized, diag::InvalidRelease})
     EXPECT_TRUE(diag::isKnown(id)) << id;
-  EXPECT_EQ(diag::All.size(), 16U);
+  EXPECT_EQ(diag::All.size(), 17U);
 }
 
 TEST(DiagnosticIds, SpatialSafetyIdIsKnown) {

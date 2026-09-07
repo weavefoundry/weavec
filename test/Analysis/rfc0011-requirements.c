@@ -58,17 +58,17 @@ void clear(char *WEAVEC_SIZED_BY(n) p, size_t n, size_t m) {
 
 // A constant access past the pointee's size.
 // DUMP-LABEL: function 'put7':
-// DUMP: summary: *b: written; stores{} returns{} requires{b} requires-extent{b: 8}
+// DUMP: summary: *b: written; stores{} returns{} requires{b} requires-extent{b: 8 start 7}
 static void put7(char *b) { b[7] = 0; }
 
 // A symbolic one, in the parameter that indexes it.
 // DUMP-LABEL: function 'put_n':
-// DUMP: summary: *b: written; stores{} returns{} requires{b} requires-extent{b: n+1}
+// DUMP: summary: *b: written; stores{} returns{} requires{b} requires-extent{b: n+1 start n}
 static void put_n(char *b, size_t n) { b[n] = 0; }
 
 // A loop below a parameter: the boundary is the requirement.
 // DUMP-LABEL: function 'fill':
-// DUMP: summary: *b: written; stores{} returns{} requires{b} requires-extent{b: n*4}
+// DUMP: summary: *b: written; stores{} returns{} requires{b} requires-extent{b: n*4 when[n positive]}
 static void fill(int *b, int n) {
   for (int i = 0; i < n; i++)
     b[i] = 0;
@@ -79,16 +79,16 @@ static void fill(int *b, int n) {
 // DUMP: summary: o->k: written; stores{} returns{} requires{o}
 static void first(struct outer *o) { o->k = 1; }
 
-// An access under a class guard keeps the guard; one under an ordering
-// against a constant is not exported (no guard spells it).
+// RFC 0017: requirements keep both class guards and typed ordering guards,
+// and record the first byte accessed as well as the end of the access.
 // DUMP-LABEL: function 'on_zero':
-// DUMP: summary: *b: written; stores{} returns{} requires{b} requires-extent{b: 8 when[n =0]}
+// DUMP: summary: *b: written; stores{} returns{} requires{b} requires-extent{b: 8 start 7 when[n =0]}
 static void on_zero(char *b, int n) {
   if (n == 0)
     b[7] = 0;
 }
 // DUMP-LABEL: function 'guarded':
-// DUMP: summary: *b: written; stores{} returns{} requires{b}
+// DUMP: summary: *b: written; stores{} returns{} requires{b} requires-extent{b: 5 start 4 when[n range(i32:2147483653-4294967295)]}
 static void guarded(char *b, int n) {
   if (n > 4)
     b[4] = 0;
@@ -99,9 +99,8 @@ static void guarded(char *b, int n) {
 // DUMP: summary: *b: written; stores{} returns{} requires{b} requires-extent{b: n}
 static void clears(void *b, size_t n) { memset(b, 0, n); }
 
-// A local index bounded above by a constant needs the boundary; one bounded
-// both by a constant and by a parameter is the smaller of the two, which no
-// summary spells, so nothing is required.
+// A local index bounded above by a constant needs the boundary. RFC 0017
+// represents a loop bounded by both a constant and a parameter with min.
 // DUMP-LABEL: function 'put8':
 // DUMP: summary: *b: written; stores{} returns{} requires{b} requires-extent{b: 8}
 static void put8(char *b) {
@@ -115,8 +114,7 @@ static void put_le8(char *b) {
     b[i] = 0;
 }
 // DUMP-LABEL: function 'either':
-// DUMP: summary: *b: written; stores{} returns{} requires{b}
-// DUMP-NOT: requires-extent
+// DUMP: summary: *b: written; stores{} returns{} requires{b} requires-extent{b: min(16, u64(n))*4 when[n positive]}
 static void either(int *b, int n) {
   for (int i = 0; i < n && i < 16; i++)
     b[i] = 0;
@@ -137,6 +135,7 @@ void calls(void) {
   put_le8(big);
   int four[4];
   either(four, 4);
+  // CHECK: rfc0011-requirements.c:[[@LINE+1]]:10: error: 'either' requires 64 bytes behind 'four', which has 16 bytes [weavec::out-of-bounds]
   either(four, 100);
   char *heap = malloc(4);
   if (!heap)
@@ -184,7 +183,7 @@ static char *xmalloc(size_t n) {
 // A callee's requirement on what this function passes through is this
 // function's requirement.
 // DUMP-LABEL: function 'deeper':
-// DUMP: summary: *b: written; stores{} returns{} requires{b} requires-extent{b: 8}
+// DUMP: summary: *b: written; stores{} returns{} requires{b} requires-extent{b: 8 start 7}
 static void deeper(char *b) { put7(b); }
 
 void via_wrappers(void) {

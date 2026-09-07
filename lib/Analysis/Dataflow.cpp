@@ -37,6 +37,7 @@
 #include "Dataflow.h"
 
 #include "AffineSupport.h"
+#include "IntegerSupport.h"
 #include "weavec/Analysis/Annotations.h"
 #include "weavec/Analysis/ClangLocation.h"
 #include "weavec/Core/Ownership.h"
@@ -106,6 +107,28 @@ FunctionDataflow::FunctionDataflow(ASTContext &ctx, const FunctionDecl &fn,
       paramReassigned(fn.getNumParams(), false),
       signature(collectAnnotations(fn)), unsafeBody(signature.unsafe),
       inUnsafe(unsafeBody) {
+  builder.integerGuard = [this](const core::PathGuard &guard,
+                                const CallExpr &call) {
+    return currentState ? translateIntegerGuard(guard, call, *currentState)
+                        : std::optional(core::PlaceGuard{});
+  };
+  builder.integerAffine = [this](const Expr &expr) {
+    return currentState ? integerAffineOf(expr, *currentState)
+                        : builder.legacyAffineOf(expr);
+  };
+  builder.expressionFromPath = [this](const core::PathAffine &value,
+                                      const CallExpr &call) {
+    return currentState
+               ? instantiateIntegerExpression(value, call, *currentState)
+               : std::nullopt;
+  };
+  builder.preservesInteger = [this](const Expr &expr) {
+    return currentState && preservesInteger(expr, *currentState);
+  };
+  builder.integerFact =
+      [this](const Expr &expr) -> std::optional<core::ValueFact> {
+    return currentState ? scalarFactOf(expr, *currentState) : std::nullopt;
+  };
   builder.selectArray = [this](PlaceRef storage,
                                std::optional<core::Affine> index, QualType type,
                                const Expr &at) {
@@ -304,11 +327,7 @@ void FunctionDataflow::classifyExpr(const Expr *expr, Role role) {
       return;
     }
     if (binary->isCompoundAssignmentOp()) {
-      if (const auto k = integerConstant(*binary->getRHS(), context);
-          k && (*k == 1 || *k == -1) &&
-          (binary->getOpcode() == BO_AddAssign ||
-           binary->getOpcode() == BO_SubAssign))
-        noteAdjusted(*binary->getLHS());
+      noteAdjusted(*binary->getLHS());
       noteStepped(*binary->getLHS());
       classifyExpr(binary->getLHS(), Role::ReadWrite);
       classifyExpr(binary->getRHS(), Role::Read);
@@ -320,6 +339,17 @@ void FunctionDataflow::classifyExpr(const Expr *expr, Role role) {
   }
 
   if (const auto *call = dyn_cast<CallExpr>(e)) {
+    if (checkedIntegerOp(*call)) {
+      classifyExpr(call->getArg(0), Role::Read);
+      classifyExpr(call->getArg(1), Role::Read);
+      const auto *address =
+          dyn_cast<UnaryOperator>(call->getArg(2)->IgnoreParenImpCasts());
+      if (address && address->getOpcode() == UO_AddrOf)
+        classifyExpr(address->getSubExpr(), Role::Write);
+      else
+        classifyExpr(call->getArg(2), Role::Read);
+      return;
+    }
     classifyExpr(call->getCallee(), Role::Read);
     const auto effects = classifyCall(*call, summaries);
     for (unsigned i = 0; i < call->getNumArgs(); ++i) {
@@ -452,8 +482,22 @@ core::AnalysisState FunctionDataflow::initialState() {
   for (const ParmVarDecl *param : function.parameters()) {
     const core::PlaceId place = builder.placeForVar(*param);
     varLifetimes[param->getCanonicalDecl()] = fnLifetime;
-    if (!param->getType()->isPointerType())
+    if (!param->getType()->isPointerType()) {
+      const auto type = integerTypeOf(param->getType(), context);
+      if (type && paramReassigned[param->getFunctionScopeIndex()]) {
+        const auto saved = places.create("entry(" + nameOf(place) + ")");
+        numericEntryValues.emplace(place, saved);
+        snapshotPlaces.insert(saved);
+        numericSnapshotExpressions.emplace(
+            saved, core::IntegerExpression<core::SummaryPath>::input(
+                       core::SummaryPath::param(param->getFunctionScopeIndex()),
+                       *type));
+        state.numericValues.emplace(place,
+                                    NumericExpression::input(saved, *type));
+        state.relations.learn(place, core::Relation::Equal, saved);
+      }
       continue;
+    }
     const AnnotationSet annotations = getAnnotations(*param);
     core::OwnershipKind kind = core::OwnershipKind::Unknown;
     if (annotations.owned)
@@ -518,6 +562,9 @@ core::AnalysisState FunctionDataflow::initialState() {
     state.callTargets[place] = targets;
   }
   initializeCallContext(state);
+  for (const auto *param : function.parameters())
+    if (param->getType()->isVariablyModifiedType())
+      captureVariableArray(builder.placeForVar(*param), *param, state);
   return state;
 }
 
@@ -843,7 +890,11 @@ void FunctionDataflow::forgetNullnessReachable(const ValueOrigin &origin,
   // Both the RFC 0008 fact and the RFC 0007 must-null flag (which
   // `nullnessAt` reads as `Null` too). A must-null place holds no resource
   // record, so forgetting it in the resource tracker clears the flag alone.
-  const auto drop = [&state](core::PlaceId place) {
+  const auto drop = [this, &state](core::PlaceId place) {
+    snapshotIntegerDependencies(place, nullptr, state);
+    snapshotScalar(place, nullptr, state);
+    state.numericWrites.insert(place);
+    state.relations.forget(place);
     state.nulls.forget(place);
     if (state.resources.isNull(place))
       state.resources.forget(place);
@@ -1115,8 +1166,10 @@ void FunctionDataflow::checkDeadResources(const CFGBlock &block,
 void FunctionDataflow::checkBlockEndResources(const CFGBlock &block,
                                               const CFGBlock *successor,
                                               core::AnalysisState &state) {
-  if (recording() && !state.returned && successor == &cfg->getExit())
+  if (recording() && !state.returned && successor == &cfg->getExit()) {
     recordHeapOutputs(state);
+    recordNumericOutputs(nullptr, state);
+  }
   // The exit block's predecessors have checked already; what reaches it
   // through a `noreturn` call never leaks (RFC 0007), nor does what dies on
   // the edge into the block that makes that call (`if (!p) fatal("...")`).
@@ -1369,6 +1422,17 @@ FunctionDataflow::summaryAffineOf(const std::optional<core::Affine> &affine) {
     return std::nullopt;
   if (!affine->place)
     return core::PathAffine::ofConstant(affine->constant);
+  if (const auto saved = numericSnapshotExpressions.find(*affine->place);
+      saved != numericSnapshotExpressions.end())
+    return core::PathAffine::ofExpression(saved->second, affine->scale,
+                                          affine->constant);
+  if (const auto symbolic = numericExpressions.find(*affine->place);
+      symbolic != numericExpressions.end()) {
+    const auto projected = summaryIntegerExpression(symbolic->second);
+    return projected ? std::optional(core::PathAffine::ofExpression(
+                           *projected, affine->scale, affine->constant))
+                     : std::nullopt;
+  }
   const auto path = stableSummaryPathOf(*affine->place);
   if (!path)
     return std::nullopt;
@@ -1417,6 +1481,11 @@ FunctionDataflow::storageRecordOf(const PlaceRef &storage,
   if (decl == nullptr)
     return std::nullopt;
   const QualType type = decl->getType();
+  if (type->isVariableArrayType()) {
+    const auto record =
+        currentState ? currentState->spatial.recordOf(place) : std::nullopt;
+    return record ? std::optional(record->derived(offset)) : std::nullopt;
+  }
   if (type.isNull() || type->isIncompleteType() || type->isFunctionType())
     return std::nullopt;
   return core::SpatialRecord{
@@ -1482,10 +1551,11 @@ void FunctionDataflow::checkInvalidRelease(
     // RFC 0011: say where the pointer points when the offset is known.
     std::string where = "does not point to the start of its allocation";
     if (offset.isElements()) {
-      where = "points " + std::to_string(std::llabs(offset.elements)) +
-              (std::llabs(offset.elements) == 1 ? " element" : " elements") +
-              (offset.elements > 0 ? " past" : " before") +
-              " the start of its allocation";
+      where =
+          "points " + std::to_string(unsignedMagnitude(offset.elements)) +
+          (unsignedMagnitude(offset.elements) == 1 ? " element" : " elements") +
+          (offset.elements > 0 ? " past" : " before") +
+          " the start of its allocation";
     } else if (offset.isField()) {
       const std::size_t dot = offset.field.rfind('.');
       where = "points to field '" +
@@ -1689,7 +1759,7 @@ void FunctionDataflow::run() {
          (state.returned ||
           (state.stored.empty() && state.arrayRanges.empty() &&
            state.releasedArrayRanges.empty() &&
-           state.filledArrayRanges.empty()))))
+           state.filledArrayRanges.empty() && writtenScalarPaths.empty()))))
       continue;
     unsigned index = 0;
     for (const CFGBlock::AdjacentBlock &adjacent : block->succs()) {
@@ -1946,72 +2016,6 @@ void FunctionDataflow::applyEdge(const CFGBlock &from, unsigned succIndex,
   applyCondition(*condition, succIndex == 0, /*wrapped=*/false, state);
 }
 
-void FunctionDataflow::applySwitchEdge(const SwitchStmt &statement,
-                                       const CFGBlock &to,
-                                       core::AnalysisState &state) {
-  const Expr *scrutinee = statement.getCond();
-  if (scrutinee == nullptr || !scrutinee->getType()->isIntegerType())
-    return;
-  // Each `case` label heads a block of its own (an empty one falls through
-  // to the next), so the edge into `to` selects the label it carries; the
-  // `default` edge, or the one out of a switch without one, says the value
-  // is none of the labels.
-  // A label is converted to the scrutinee's promoted type (`case -1:` on an
-  // `unsigned` selects `UINT_MAX`); one that type does not hold within an
-  // `int64_t` decides nothing.
-  const auto labelValue =
-      [&](const Expr &label) -> std::optional<std::int64_t> {
-    const auto value = integerConstant(label, context);
-    if (!value)
-      return std::nullopt;
-    return integerConvertedTo(*value, scrutinee->getType(), context);
-  };
-  const Stmt *label = to.getLabel();
-  if (const auto *caseLabel = dyn_cast_or_null<CaseStmt>(label)) {
-    const auto lo = labelValue(*caseLabel->getLHS());
-    if (!lo)
-      return;
-    if (caseLabel->getRHS() == nullptr) {
-      applyOutcomeTest(*scrutinee, {core::ValueFact::classOf(*lo)}, state, lo);
-      return;
-    }
-    const auto hi = labelValue(*caseLabel->getRHS());
-    if (!hi || *hi < *lo)
-      return;
-    std::set<core::Outcome> classes;
-    if (*lo < 0)
-      classes.insert(core::Outcome::Negative);
-    if (*lo <= 0 && 0 <= *hi)
-      classes.insert(core::Outcome::Zero);
-    if (*hi > 0)
-      classes.insert(core::Outcome::Positive);
-    applyOutcomeTest(*scrutinee, classes, state);
-    return;
-  }
-  if (label != nullptr && !isa<DefaultStmt>(label))
-    return;
-  // Only the zero class can be covered by labels: `case 0:` somewhere means
-  // the default edge carries a non-zero value.
-  for (const SwitchCase *sc = statement.getSwitchCaseList(); sc != nullptr;
-       sc = sc->getNextSwitchCase()) {
-    const auto *caseLabel = dyn_cast<CaseStmt>(sc);
-    if (caseLabel == nullptr)
-      continue;
-    const auto lo = labelValue(*caseLabel->getLHS());
-    if (!lo)
-      continue;
-    std::optional<std::int64_t> hi = lo;
-    if (caseLabel->getRHS() != nullptr)
-      hi = labelValue(*caseLabel->getRHS());
-    if (hi && *lo <= 0 && 0 <= *hi) {
-      applyOutcomeTest(*scrutinee,
-                       {core::Outcome::Positive, core::Outcome::Negative},
-                       state);
-      return;
-    }
-  }
-}
-
 void FunctionDataflow::applyCondition(const Expr &condition, bool holds,
                                       bool wrapped,
                                       core::AnalysisState &state) {
@@ -2171,6 +2175,9 @@ void FunctionDataflow::applyCondition(const Expr &condition, bool holds,
     // `x OP k`, `k OP x` on an integer result. The edge on which `x == k`
     // holds (or `x != k` fails) knows the value exactly (RFC 0009).
     if (lhs.getType()->isIntegerType() && rhs.getType()->isIntegerType()) {
+      refineIntegerComparison(lhs, op, rhs, holds, state);
+      if (edgeInfeasible)
+        return;
       // Both operands have the comparison's type (the usual arithmetic
       // conversions); `k` is read in it, so `x > ULONG_MAX` has no `k` and
       // decides nothing, and `-1u` is `UINT_MAX`.
@@ -2211,10 +2218,30 @@ void FunctionDataflow::testInteger(const Expr &x, BinaryOperatorKind op,
   // == 1` test the adjusted place; the value is the place plus an offset,
   // so `x + d OP k` is `x OP k - d`.
   const PlaceBuilder::ScalarOperand read = builder.scalarOperand(x);
+  if (!read.place || read.scaled || read.offset != 0) {
+    const auto expression = integerExpressionOf(x, state);
+    const auto operation = integerOpOf(op);
+    if (expression && operation) {
+      const core::IntegerPredicate<core::PlaceId> predicate{
+          .lhs = *expression,
+          .op = holds ? *operation : core::negateComparison(*operation),
+          .rhs = NumericExpression::constant(core::IntegerValue::ofBits(
+              expression->type(), static_cast<std::uint64_t>(k)))};
+      state.numericConditions.requireInteger(predicate);
+    } else {
+      state.numericConditionsIncomplete = true;
+    }
+  }
+  if (read.scaled) {
+    applyOutcomeTest(
+        x, classesSatisfying(op, k, holds, unsignedComparison, width), state);
+    return;
+  }
   if (read.offset != 0) {
     if (!read.place)
       return;
-    k -= read.offset;
+    if (__builtin_sub_overflow(k, read.offset, &k))
+      return;
     // A count below zero is not what an unsigned comparison meant.
     if (unsignedComparison && k < 0)
       return;
@@ -2237,7 +2264,7 @@ void FunctionDataflow::testInteger(const Expr &x, BinaryOperatorKind op,
     const bool strictlyBelow = holds ? op == BO_LT : op == BO_GE;
     const bool atOrBelow = holds ? op == BO_LE : op == BO_GT;
     std::optional<std::int64_t> atMost;
-    if (strictlyBelow)
+    if (strictlyBelow && k > INT64_MIN)
       atMost = k - 1;
     else if (atOrBelow)
       atMost = k;
@@ -2250,7 +2277,7 @@ void FunctionDataflow::testInteger(const Expr &x, BinaryOperatorKind op,
     std::optional<std::int64_t> atLeast;
     if (atOrAbove)
       atLeast = k;
-    else if (strictlyAbove)
+    else if (strictlyAbove && k < INT64_MAX)
       atLeast = k + 1;
     if (atLeast && !topHalf && k < INT64_MAX)
       state.relations.learnAtLeast(read.place->place, *atLeast);
@@ -2403,6 +2430,33 @@ void FunctionDataflow::applyOutcomeTest(const Expr &operand,
                                         std::optional<std::int64_t> constant) {
   if (selected.empty())
     return;
+  if (operand.getType()->isIntegerType()) {
+    if (const auto actual = scalarFactOf(operand, state)) {
+      core::ValueFact wanted;
+      for (const auto outcome : selected)
+        wanted.classes.insert(outcome);
+      wanted.constant = constant;
+      if (actual->disjointFrom(wanted)) {
+        // Heap facts retain the pre-existing trust boundary.
+        const auto read = builder.scalarOperand(operand);
+        if (!read.place || !places.innermostDeref(read.place->place) ||
+            !memoryContext.empty())
+          edgeInfeasible = true;
+        return;
+      }
+    }
+    const auto safeRead = builder.scalarOperand(operand);
+    const Expr *tested = operand.IgnoreParens();
+    while (const auto *cast = dyn_cast<CastExpr>(tested)) {
+      if (!preservesInteger(*cast, state))
+        return;
+      tested = cast->getSubExpr()->IgnoreParens();
+    }
+    const auto *assigned = dyn_cast<BinaryOperator>(tested);
+    if (!safeRead.place && !isa<CallExpr>(tested) &&
+        (!assigned || assigned->getOpcode() != BO_Assign))
+      return;
+  }
   const Expr *e = operand.IgnoreParenCasts();
   // `(r = f(p)) < 0` tests what was just stored in `r`.
   if (const auto *assign = dyn_cast<BinaryOperator>(e);
@@ -2488,6 +2542,21 @@ void FunctionDataflow::applyOutcomeTest(const Expr &operand,
   if (e->getType()->isIntegerType()) {
     narrowScalar(PlaceBuilder::ScalarOperand{
         .place = ref, .constant = std::nullopt, .scaled = false});
+  }
+  // RFC 0017: a checked allocation may be known to fail. Testing its local
+  // null result cannot enter the success arm (heap facts retain their usual
+  // trust boundary).
+  if (ref->element.isWhole() &&
+      selected == std::set<core::Outcome>{core::Outcome::NonNull} &&
+      (!places.innermostDeref(ref->place) || !memoryContext.empty())) {
+    const auto known = nullnessAt(ref->place, state);
+    if (known && known->state == core::Nullness::Null) {
+      auto guard = known->guard;
+      if (pruneGuard(guard, state) && guard.trivial()) {
+        edgeInfeasible = true;
+        return;
+      }
+    }
   }
   // On the edge where the holder is null it owns nothing (RFC 0007, *Null*):
   // `p = malloc(n); if (!p) return -1;` is not a leak. Exact copies hold the
@@ -2577,7 +2646,8 @@ bool FunctionDataflow::tracksScalar(core::PlaceId place) const {
   const core::PlaceId root = places.root(place);
   // RFC 0012: a length place is written by nobody; the string tracker
   // forgets it when the string changes.
-  if (builder.isLengthPlace(root) || snapshotPlaces.contains(root))
+  if (builder.isLengthPlace(root) || snapshotPlaces.contains(root) ||
+      numericExpressions.contains(root))
     return true;
   const VarDecl *var = builder.varForPlace(root);
   return var != nullptr && !var->hasGlobalStorage();
@@ -2605,21 +2675,11 @@ void FunctionDataflow::learnFact(core::PlaceId place,
 std::optional<core::ValueFact>
 FunctionDataflow::scalarFactOf(const Expr &expr,
                                const core::AnalysisState &state) {
-  const PlaceBuilder::ScalarOperand operand = builder.scalarOperand(expr);
-  if (operand.constant)
-    return operand.constant;
-  if (!operand.place || !operand.place->element.isWhole())
+  const auto evaluated = integerRangeOf(expr, state);
+  if (!evaluated || evaluated->mayBeInvalid || evaluated->values.empty())
     return std::nullopt;
-  auto fact = state.scalars.factOf(operand.place->place);
-  if (fact && operand.scaled)
-    fact->constant.reset();
-  // RFC 0010: `x--` yields the old value, known only when the new one is.
-  if (fact && operand.offset != 0) {
-    if (!fact->constant)
-      return std::nullopt;
-    fact = core::ValueFact::ofConstant(*fact->constant + operand.offset);
-  }
-  return fact;
+  const auto fact = core::ValueFact::ofInteger(evaluated->values);
+  return fact.trivial() ? std::nullopt : std::optional(fact);
 }
 
 void FunctionDataflow::assignScalar(core::PlaceId place, const Expr *value,
@@ -2639,8 +2699,20 @@ void FunctionDataflow::assignScalar(core::PlaceId place, const Expr *value,
       cells.push_back(image);
   }
   std::optional<core::ValueFact> fact;
-  if (value != nullptr && tracksScalar(place))
+  std::optional<NumericExpression> numeric;
+  if (value != nullptr && tracksScalar(place)) {
     fact = scalarFactOf(*value, state);
+    numeric = integerExpressionOf(*value, state);
+    const auto *decl = dyn_cast_or_null<ValueDecl>(builder.declFor(place));
+    if (decl) {
+      if (const auto storage = integerTypeOf(*decl, context)) {
+        if (fact)
+          fact = core::ValueFact::ofInteger(fact->inType(*storage));
+        if (numeric)
+          numeric = numeric->converted(*storage);
+      }
+    }
+  }
   // RFC 0011: `n = m` relates the two (RFC 0012: `n = m + 1` too, as `n ==
   // m + 1`); any other write to `n` says nothing about it against anything,
   // and no extent counted in it holds.
@@ -2662,17 +2734,27 @@ void FunctionDataflow::assignScalar(core::PlaceId place, const Expr *value,
       }
     }
   }
+  if (numeric)
+    if (const auto input = numeric->inputKey();
+        input && !llvm::is_contained(cells, *input)) {
+      same = input;
+      sameOffset = 0;
+    }
   for (const core::PlaceId cell : cells) {
     snapshotArrayIndex(cell, at, state);
-    state.dropGuardsOn(cell);
+    snapshotIntegerDependencies(cell, at, state);
     snapshotScalar(cell, at, state);
+    state.dropGuardsOn(cell);
     state.relations.forget(cell);
+    if (numeric && !numeric->dependsOn(cell) && tracksScalar(cell))
+      state.numericValues.insert_or_assign(cell, *numeric);
     if (fact && tracksScalar(cell))
       state.scalars.set(cell, *fact);
     else
       state.scalars.forget(cell);
     if (same && tracksScalar(cell))
       state.relations.learn(cell, core::Relation::Equal, *same, sameOffset);
+    state.numericWrites.insert(cell);
     if (const auto path = builder.summaryPathOf(cell))
       writtenScalarPaths.insert(*path);
   }
@@ -2738,6 +2820,10 @@ FunctionDataflow::guardHere(const core::AnalysisState &state,
   if (!exclude)
     return guard;
   guard.conditions.erase(*exclude);
+  std::erase_if(guard.integers, [&](const auto &predicate) {
+    return predicate.lhs.dependsOn(*exclude) ||
+           predicate.rhs.dependsOn(*exclude);
+  });
   for (const auto &[alias, edge] : state.aliases.edgesFrom(*exclude)) {
     if (edge.exact())
       guard.conditions.erase(alias);
@@ -2757,14 +2843,64 @@ FunctionDataflow::summaryGuardOf(const core::PlaceGuard &guard) {
   for (const auto &[place, fact] : guard.conditions) {
     // A parameter variable that is reassigned no longer holds the argument
     // (`stableSummaryPathOf`); a local names nothing the caller knows.
-    if (const auto path = stableSummaryPathOf(place))
+    if (const auto path = stableSummaryPathOf(place);
+        path && !writtenScalarPaths.contains(*path)) {
       result.require(*path, fact);
+      continue;
+    }
+    if (fact.isPointer())
+      continue;
+    std::optional<NumericExpression> expression;
+    if (const auto symbolic = numericExpressions.find(place);
+        symbolic != numericExpressions.end())
+      expression = symbolic->second;
+    else if (currentState)
+      if (const auto stored = currentState->numericValues.find(place);
+          stored != currentState->numericValues.end())
+        expression = stored->second;
+    auto projected =
+        expression ? summaryIntegerExpression(*expression) : std::nullopt;
+    // A frozen cell can have a range and an entry projection without a
+    // current-value expression. Its branch premise still names that entry
+    // value after the source was incremented (RFC 0017, snapshots).
+    if (!projected)
+      if (const auto saved = numericSnapshotExpressions.find(place);
+          saved != numericSnapshotExpressions.end())
+        projected = saved->second;
+    if (projected)
+      result.requireInteger(
+          {.lhs = *projected,
+           .op = core::IntegerOp::Equal,
+           .rhs = core::IntegerExpression<core::SummaryPath>::constant(
+               core::IntegerValue::ofBits(projected->type(), 0)),
+           .range = fact.inType(projected->type())});
+  }
+  for (const auto &predicate : guard.integers) {
+    const auto lhs = summaryIntegerExpression(predicate.lhs);
+    const auto rhs = summaryIntegerExpression(predicate.rhs);
+    if (lhs && rhs)
+      result.requireInteger({.lhs = *lhs,
+                             .op = predicate.op,
+                             .rhs = *rhs,
+                             .range = predicate.range});
   }
   return result;
 }
 
 bool FunctionDataflow::pruneGuard(core::PlaceGuard &guard,
                                   const core::AnalysisState &state) {
+  for (auto it = guard.integers.begin(); it != guard.integers.end();) {
+    const auto known =
+        it->evaluate([&](core::PlaceId place, core::IntegerType type) {
+          return integerRangeAt(place, type, state);
+        });
+    if (known && !*known)
+      return false;
+    if (known)
+      it = guard.integers.erase(it);
+    else
+      ++it;
+  }
   for (auto it = guard.pointers.begin(); it != guard.pointers.end();) {
     auto known =
         state.pointerFacts.pointerFact(it->first.first, it->first.second);
@@ -2825,6 +2961,7 @@ bool FunctionDataflow::pruneOrigin(ValueOrigin &origin,
 
 void FunctionDataflow::handleExpr(const Expr &expr,
                                   core::AnalysisState &state) {
+  checkIntegerOperation(expr, state);
   if (PlaceBuilder::isPlaceExpr(expr)) {
     const auto it = roles.find(&expr);
     Role role = it == roles.end() ? Role::Read : it->second;
@@ -2889,12 +3026,9 @@ void FunctionDataflow::handleExpr(const Expr &expr,
       doRead(*ref, expr, state, /*includeSelf=*/false,
              /*reportMoved=*/!consumedDerivations.contains(&expr));
       noteVariableWrite(ref->place, state);
-      // `&n`: written through the pointer from now on, unseen (RFC 0009).
-      if (role == Role::AddressOf && expr.getType()->isIntegerType()) {
-        forgetScalar(ref->place, state);
-        // RFC 0012: `&d[i]` hands out a byte of the string.
-        noteByteStore(expr, nullptr, state);
-      }
+      // Taking an address does not write the cell. Preserve its value for
+      // call-entry snapshots; an actual local, summarized or unknown write
+      // invalidates it through the normal transfer (RFCs 0009/0017).
       break;
     case Role::Consume:
       doRead(*ref, expr, state, /*includeSelf=*/false,
@@ -2918,6 +3052,9 @@ void FunctionDataflow::handleExpr(const Expr &expr,
   if (const auto *binary = dyn_cast<BinaryOperator>(&expr)) {
     if (binary->getOpcode() == BO_Assign)
       handleAssign(*binary, state);
+    else if (const auto *compound = dyn_cast<CompoundAssignOperator>(binary);
+             compound && !builder.adjustmentOf(expr))
+      handleIntegerCompound(*compound, state);
     return;
   }
   if (const auto *call = dyn_cast<CallExpr>(&expr)) {
@@ -2984,17 +3121,69 @@ void FunctionDataflow::handleAdjustment(
     core::AnalysisState &state) {
   const core::PlaceId place = adjustment.place.place;
   const bool whole = adjustment.place.element.isWhole();
-  // The fact: an exact value moves by one; a positive count stays positive
-  // when incremented; anything else is unknown now (RFC 0009 forgot it).
+  // RFC 0017: evaluate in the promoted computation type, then convert to
+  // the counter's storage type. Atomic fetch arithmetic wraps as specified
+  // for those builtins; ordinary signed arithmetic does not.
   std::optional<core::ValueFact> fact;
-  if (whole && tracksScalar(place)) {
-    if (const auto old = state.scalars.factOf(place)) {
-      if (old->constant) {
-        fact = core::ValueFact::ofConstant(*old->constant + adjustment.delta);
-      } else if (adjustment.delta > 0 &&
-                 !old->classes.contains(core::Outcome::Negative)) {
-        fact = core::ValueFact::of(core::Outcome::Positive);
-      }
+  bool preserves = false;
+  bool differs = false;
+  const auto *decl = dyn_cast_or_null<ValueDecl>(builder.declFor(place));
+  auto storage =
+      decl ? integerTypeOf(*decl, context) : std::optional<core::IntegerType>();
+  if (!storage && adjustment.operand) {
+    auto type = adjustment.operand->getType();
+    if (type->isPointerType())
+      type = type->getPointeeType();
+    storage = integerTypeOf(type, context);
+  }
+  std::optional<core::PlaceId> oldValue;
+  if (whole && tracksScalar(place) && storage) {
+    // Preserve the value actually read by a postfix expression and the entry
+    // identity used by a numeric output. The write below freezes the slot's
+    // dependencies through the ordinary allocation-time snapshot mechanism.
+    auto &saved = integerStatementResults[&at];
+    if (!saved) {
+      saved =
+          places.create("adjustment-input@" + std::to_string(locate(at).line));
+      snapshotPlaces.insert(*saved);
+    }
+    oldValue = saved;
+    snapshotIntegerDependencies(*saved, &at, state);
+    snapshotScalar(*saved, &at, state);
+    state.dropGuardsOn(*saved);
+    const auto stored = state.numericValues.find(place);
+    state.numericValues.insert_or_assign(
+        *saved, stored == state.numericValues.end()
+                    ? NumericExpression::input(place, *storage)
+                    : stored->second);
+    state.scalars.set(*saved, core::ValueFact::ofInteger(
+                                  integerRangeAt(place, *storage, state)));
+    const bool atomic = isa<AtomicExpr, CallExpr>(&at);
+    const auto intType = integerTypeOf(context.IntTy, context).value();
+    const auto computation =
+        !atomic && storage->width < intType.width ? intType : *storage;
+    const auto old =
+        integerRangeAt(place, *storage, state).converted(computation);
+    const auto one = core::IntegerRange::singleton(
+        core::IntegerValue::ofBits(computation, 1));
+    const auto op =
+        adjustment.delta > 0 ? core::IntegerOp::Add : core::IntegerOp::Subtract;
+    const auto result = core::evaluateInteger(
+        op, old, one,
+        atomic || context.getLangOpts().isSignedOverflowDefined());
+    differs = !result.alwaysInvalid && !storage->isBoolean;
+    if (result.alwaysInvalid)
+      report(makeError(core::diag::InvalidIntegerOperation,
+                       "invalid integer operation: " +
+                           std::string(core::toString(result.error)),
+                       at));
+    if (!result.mayBeInvalid) {
+      fact = core::ValueFact::ofInteger(result.values.converted(*storage));
+      preserves = conversionPreserves(result.values, *storage);
+      if (!computation.isSigned)
+        preserves &= adjustment.delta > 0
+                         ? old.maximum()->bits < computation.mask()
+                         : old.minimum()->bits > 0;
     }
   }
   std::vector<core::PlaceId> cells = mirrors(place, state);
@@ -3006,20 +3195,50 @@ void FunctionDataflow::handleAdjustment(
   }
   for (const core::PlaceId cell : cells) {
     snapshotArrayIndex(cell, &at, state);
-    state.dropGuardsOn(cell);
     // RFC 0011: `i++` after `i < n` says nothing about `i` and `n`.
+    snapshotIntegerDependencies(cell, &at, state);
     snapshotScalar(cell, &at, state);
+    state.dropGuardsOn(cell);
     state.relations.forget(cell);
     if (fact && tracksScalar(cell))
       state.scalars.set(cell, *fact);
     else
       state.scalars.forget(cell);
     if (const auto snapshot = arrayIndexSnapshots.find({cell, &at});
-        snapshot != arrayIndexSnapshots.end())
+        snapshot != arrayIndexSnapshots.end() && preserves)
       state.relations.learn(cell, core::Relation::Equal, snapshot->second,
                             adjustment.delta);
+    if (const auto snapshot = arrayIndexSnapshots.find({cell, &at});
+        snapshot != arrayIndexSnapshots.end() && differs)
+      state.relations.requireDifferent(cell, snapshot->second);
+    state.numericWrites.insert(cell);
     if (const auto path = builder.summaryPathOf(cell))
       writtenScalarPaths.insert(*path);
+  }
+  if (oldValue && storage) {
+    const auto old = state.numericValues.find(*oldValue);
+    if (old != state.numericValues.end()) {
+      const bool atomic = isa<AtomicExpr, CallExpr>(&at);
+      const auto intType = integerTypeOf(context.IntTy, context).value();
+      const auto computation =
+          !atomic && storage->width < intType.width ? intType : *storage;
+      const auto input = old->second.converted(computation);
+      const auto changed =
+          input ? NumericExpression::operation(
+                      adjustment.delta > 0 ? core::IntegerOp::Add
+                                           : core::IntegerOp::Subtract,
+                      *input,
+                      NumericExpression::constant(
+                          core::IntegerValue::ofBits(computation, 1)),
+                      atomic || context.getLangOpts().isSignedOverflowDefined())
+                : std::nullopt;
+      const auto converted =
+          changed ? changed->converted(*storage) : std::nullopt;
+      if (converted)
+        for (const auto cell : cells)
+          if (!converted->dependsOn(cell))
+            state.numericValues.insert_or_assign(cell, *converted);
+    }
   }
   // RFC 0012, *Sized fields*: `v->n++` beside `v->items`.
   for (const core::PlaceId cell : cells)
@@ -3198,6 +3417,10 @@ FunctionDataflow::zeroCountBelow(core::PlaceId pointer,
 void FunctionDataflow::handleDecl(const DeclStmt &decl,
                                   core::AnalysisState &state) {
   for (const Decl *d : decl.decls()) {
+    if (const auto *alias = dyn_cast<TypedefNameDecl>(d)) {
+      captureVariableArrayType(alias->getTypeSourceInfo(), state);
+      continue;
+    }
     const auto *var = dyn_cast<VarDecl>(d);
     if (var == nullptr)
       continue;
@@ -3205,8 +3428,10 @@ void FunctionDataflow::handleDecl(const DeclStmt &decl,
     reinit(place, state);
     noteVariableWrite(place, state);
     const Expr *init = var->getInit();
-    if (var->getType()->isArrayType())
+    if (var->getType()->isArrayType()) {
       initializeArray(place, var->getType(), init, *var, state);
+    }
+    captureVariableArray(place, *var, state);
     if (!var->getType()->isPointerType()) {
       if (init != nullptr && var->getType()->isRecordType()) {
         copyRecord(place, *init, state);
@@ -3439,6 +3664,10 @@ void FunctionDataflow::copyRecordPlaces(core::PlaceId dest,
                                         core::AnalysisState &state) {
   if (source == dest)
     return;
+  for (const auto cell : places.descendants(dest)) {
+    snapshotIntegerDependencies(cell, nullptr, state);
+    snapshotScalar(cell, nullptr, state);
+  }
 
   // `b = a` is `b.f = a.f` for every field path `f` known under `a`: the
   // fields themselves become aliases carrying the same loans, moves and raw
@@ -3459,6 +3688,7 @@ void FunctionDataflow::copyRecordPlaces(core::PlaceId dest,
     std::optional<core::SpatialRecord> spatial;
     std::optional<core::NullRecord> null;
     std::optional<core::ValueFact> scalar;
+    std::optional<NumericExpression> numeric;
     std::optional<core::ValueSource> incoming;
     std::optional<core::PathGuard> writeGuard;
     bool definitelyWritten;
@@ -3497,6 +3727,9 @@ void FunctionDataflow::copyRecordPlaces(core::PlaceId dest,
         .spatial = state.spatial.recordOf(place),
         .null = state.nulls.recordOf(place),
         .scalar = state.scalars.factOf(place),
+        .numeric = state.numericValues.contains(place)
+                       ? std::optional(state.numericValues.at(place))
+                       : std::nullopt,
         .incoming = state.incoming.contains(place)
                         ? std::optional(state.incoming.at(place))
                         : std::nullopt,
@@ -3549,6 +3782,8 @@ void FunctionDataflow::copyRecordPlaces(core::PlaceId dest,
       state.scalars.set(field.to, *field.scalar);
       state.relations.learn(field.to, core::Relation::Equal, field.from);
     }
+    if (field.numeric && !field.numeric->dependsOn(field.to))
+      state.numericValues.insert_or_assign(field.to, *field.numeric);
     if (field.incoming)
       state.incoming[field.to] = *field.incoming;
     if (field.writeGuard)
@@ -3679,7 +3914,10 @@ void FunctionDataflow::handleCall(const CallExpr &call,
                                   core::AnalysisState &state) {
   if (arrayCleanupCalls.contains(&call))
     return;
+  numericInputsReady.erase(&call);
   lastCall.reset();
+  if (handleCheckedIntegerCall(call, state))
+    return;
   retireHeapInputs(state);
   // RFC 0012, *`WEAVEC_ASSUME`*: the argument holds from here on, as on the
   // true edge of `if (arg)`; an assumption the facts contradict ends the
@@ -3705,12 +3943,16 @@ void FunctionDataflow::handleCall(const CallExpr &call,
   }
   const auto effects = classifyCall(call, summaries);
   if (!effects) {
+    prepareNumericCall(call, core::FunctionSummary{}, state);
     handleUncheckedCall(call, state);
     return;
   }
   if (recording())
     inferred.incomplete.insert(effects->summary->incomplete.begin(),
                                effects->summary->incomplete.end());
+  prepareNumericCall(call, *effects->summary, state);
+  const auto completeNumeric =
+      llvm::scope_exit([&] { finishNumericCall(call, state); });
   captureArrayReallocation(call, *effects, state);
   if (!handleMemoryCopy(call, *effects, state))
     applySummary(call, *effects, state);
@@ -4567,6 +4809,7 @@ void FunctionDataflow::handleReturn(const ReturnStmt &ret,
     recordHeapOutputs(state);
   state.returned = true;
   const Expr *value = ret.getRetValue();
+  recordNumericOutputs(value, state);
   if (value == nullptr)
     return;
   if (!value->getType()->isPointerType()) {
@@ -4675,6 +4918,10 @@ void FunctionDataflow::handleReturn(const ReturnStmt &ret,
             returnedSource.post = true;
           core::PlaceGuard returnGuard = guardHere(state);
           returnGuard.conjoin(origin.guard);
+          if (origin.place)
+            if (const auto resource =
+                    state.resources.recordOf(origin.place->place))
+              returnGuard.conjoin(resource->guard);
           returnedSource.when = heapEntryGuard(returnGuard, state);
           inferred.addReturn(std::move(returnedSource));
           if (nullness && nullness->state == core::Nullness::MaybeNull)
@@ -5532,6 +5779,7 @@ void FunctionDataflow::applyPointerAssign(core::PlaceId dest,
             .location = locate(arm->call != nullptr
                                    ? static_cast<const Stmt &>(*arm->call)
                                    : static_cast<const Stmt &>(at))};
+        record.boundsOffset = arm->boundsOffset;
         // RFC 0012: `strdup(s)` is as long as `s`'s string, plus one.
         if (arm->call != nullptr) {
           if (const auto duplicated = duplicatedStringOf(*arm->call, state)) {
@@ -5570,12 +5818,19 @@ void FunctionDataflow::applyPointerAssign(core::PlaceId dest,
       // A source with no record (a parameter, memory behind a pointer)
       // stands at the start of whatever it points into, as RFC 0008 has it.
       if (element.isWhole()) {
-        if (source->spatial)
-          state.spatial.set(dest, source->spatial->derived(source->offset));
-        else if (!source->offset.isZero())
+        if (source->spatial) {
+          auto record = *source->spatial;
+          if (arm->spatialSteps.empty())
+            record = subobjectRecord(record, source->place, source->offset);
+          else
+            for (const auto &step : arm->spatialSteps)
+              record = subobjectRecord(record, source->place, step);
+          state.spatial.set(dest, std::move(record));
+        } else if (!source->offset.isZero()) {
           state.spatial.set(dest, core::SpatialRecord{.extent = std::nullopt,
                                                       .offset = source->offset,
                                                       .location = {}});
+        }
       }
       if (split)
         state.resources.release(source->place);
@@ -6943,6 +7198,18 @@ FunctionDataflow::knownExtentOf(const Access &access,
     // pointer (its size is the pointer's, and says nothing).
     if (isa<ParmVarDecl>(access.storage))
       return std::nullopt;
+    if (access.storage->getType()->isVariableArrayType()) {
+      const auto record =
+          state.spatial.recordOf(builder.placeForVar(*access.storage));
+      if (!record || !record->extent)
+        return std::nullopt;
+      return KnownExtent{.have = *record->extent,
+                         .origin = record->location,
+                         .pointer = std::nullopt,
+                         .offset = {},
+                         .unit = std::nullopt,
+                         .declared = true};
+    }
     const auto size = byteSizeOf(access.storage->getType(), context);
     if (!size)
       return std::nullopt;
@@ -6966,7 +7233,7 @@ FunctionDataflow::knownExtentOf(const Access &access,
   return KnownExtent{.have = *record->extent,
                      .origin = record->location,
                      .pointer = ref->place,
-                     .offset = record->offset,
+                     .offset = record->boundsOffset.value_or(record->offset),
                      .unit = std::nullopt,
                      .declared = record->declared};
 }
@@ -6990,16 +7257,25 @@ std::string FunctionDataflow::spellIndex(const Expr *index,
 bool FunctionDataflow::reportBounds(
     const core::Affine &need, const KnownExtent &known, const Expr &at,
     std::string_view subject, std::string_view accessed, const Expr *index,
-    const CallExpr *call, const core::AnalysisState &state, bool lowerBound) {
+    const CallExpr *call, const core::AnalysisState &state, bool lowerBound,
+    std::optional<core::Affine> accessStart) {
+  const Expr &site = call ? static_cast<const Expr &>(*call) : at;
+  recordSpatialCheck(site, {.reason = core::SpatialReason::UnknownExtent});
   // A call that needs no bytes at all (`tablerehash(tb->hash, 0, n)` with
   // `requires-extent{vect: osize*8}`) is satisfied by any object; only an
   // element access counts its own bytes, so only there does a need at or
   // below zero mean "before the start".
   if (call != nullptr) {
-    if (const core::Affine folded = foldAffine(need, state);
-        folded.isConstant() && folded.constant <= 0)
+    const auto start =
+        foldAffine(accessStart.value_or(core::Affine::ofConstant(0)), state);
+    if (foldAffine(need, state) == start) {
+      recordSpatialCheck(site, {.outcome = core::SpatialOutcome::Proven,
+                                .reason = core::SpatialReason::None});
       return false;
+    }
   }
+  if (call && !accessStart)
+    accessStart = core::Affine::ofConstant(0);
   // The pointer's own offset from the start, in elements of what it points
   // to (a field or unknown offset takes the access out of the check).
   core::Affine total = need;
@@ -7013,13 +7289,30 @@ bool FunctionDataflow::reportBounds(
     if (!shifted)
       return false;
     total = *shifted;
+    if (accessStart) {
+      accessStart = accessStart->shifted(shift);
+      if (!accessStart)
+        return false;
+    }
   } else if (!known.offset.isZero()) {
     return false;
   }
-  core::Affine n = foldAffine(total, state);
+  core::Affine n = foldAffine(std::optional(total), state).value_or(total);
   // The need as written, for the message.
   const core::Affine spelled = n;
-  const core::Affine h = foldAffine(known.have, state);
+  core::Affine h =
+      foldAffine(std::optional(known.have), state).value_or(known.have);
+  bool convertedUpperBound = false;
+  if (h.place && h.scale > 0)
+    if (const auto symbolic = numericExpressions.find(*h.place);
+        symbolic != numericExpressions.end())
+      if (const auto upper =
+              linearIntegerExpression(symbolic->second, state, true))
+        if (const auto scaled = upper->times(h.scale))
+          if (const auto shifted = scaled->shifted(h.constant)) {
+            h = *shifted;
+            convertedUpperBound = true;
+          }
   std::optional<core::Relation> between;
   // RFC 0012, *Offset relations*: under `i REL n + k` the need `s*i + c` is
   // `s*(i - k) + c + s*k` for a value `i - k REL n`: the verdict is taken on
@@ -7039,20 +7332,41 @@ bool FunctionDataflow::reportBounds(
       }
     }
   }
-  const auto atMost = [&state](const core::Affine &affine) {
-    return affine.place ? state.relations.atMost(*affine.place)
+  const auto atMost = [this, &state](const core::Affine &affine) {
+    return affine.place ? integerBounds(*affine.place, state).second
                         : std::optional<std::int64_t>();
   };
-  const auto atLeast = [&state](const core::Affine &affine) {
-    return affine.place ? state.relations.atLeast(*affine.place)
+  const auto atLeast = [this, &state](const core::Affine &affine) {
+    return affine.place ? integerBounds(*affine.place, state).first
                         : std::optional<std::int64_t>();
   };
-  const auto verdict =
-      core::boundsVerdict(n, h, between,
-                          core::KnownBounds{.needAtMost = atMost(n),
-                                            .haveAtMost = atMost(h),
-                                            .needAtLeast = atLeast(n),
-                                            .haveAtLeast = atLeast(h)});
+  const core::KnownBounds bounds{
+      .needAtMost = atMost(n),
+      .haveAtMost = atMost(h),
+      .needAtLeast = atLeast(n),
+      .haveAtLeast = atLeast(h),
+      .needBoundaryWitness =
+          n.place && state.relations.atMost(*n.place).has_value()};
+  auto verdict = core::boundsVerdict(n, h, between, bounds);
+  core::SpatialCheck check;
+  if (!convertedUpperBound) {
+    const auto bytes = byteSizeOf(at.getType(), context);
+    auto start = bytes ? total.shifted(-*bytes) : std::nullopt;
+    if (call)
+      start = accessStart.value_or(core::Affine::ofConstant(0));
+    if (start) {
+      *start = foldAffine(*start, state);
+      check = core::checkSpatialBounds(*start, n, h, between, bounds,
+                                       atLeast(*start));
+      if (check.violation)
+        verdict = check.violation;
+    }
+  }
+  if (verdict)
+    check = {.outcome = core::SpatialOutcome::Violation,
+             .reason = core::SpatialReason::None,
+             .violation = verdict};
+  recordSpatialCheck(site, check);
   if (!verdict)
     return false;
 
@@ -7079,13 +7393,16 @@ bool FunctionDataflow::reportBounds(
     if (verdict->kind == core::BoundsVerdict::Kind::MayBeOutOfBounds) {
       // The boundary against the count as written: `i - k` at `b` from
       // the count is `i` at `b + k` (RFC 0012).
-      const std::int64_t d = verdict->boundary + relationOffset;
+      std::int64_t d = 0;
+      if (__builtin_add_overflow(verdict->boundary, relationOffset, &d))
+        return clause + " may reach the boundary of ";
       if (d == 0)
         return clause + " may equal ";
       if (d == -1)
         return clause + " may reach one below ";
       if (d < 0)
-        return clause + " may reach " + std::to_string(-d) + " below ";
+        return clause + " may reach " + std::to_string(unsignedMagnitude(d)) +
+               " below ";
       return clause + " may reach " + std::to_string(d) + " above ";
     }
     // Without a relation between the two the verdict came from their
@@ -7095,8 +7412,8 @@ bool FunctionDataflow::reportBounds(
     if (between == core::Relation::Greater && relationOffset >= 0)
       return clause + " is above ";
     if (relationOffset < 0)
-      return clause + " is at least " + std::to_string(-relationOffset) +
-             " below ";
+      return clause + " is at least " +
+             std::to_string(unsignedMagnitude(relationOffset)) + " below ";
     if (relationOffset > 0)
       return clause + " is at least " + std::to_string(relationOffset) +
              " above ";
@@ -7104,7 +7421,14 @@ bool FunctionDataflow::reportBounds(
   }();
 
   std::string message;
-  if (call != nullptr) {
+  if (convertedUpperBound) {
+    const bool may =
+        verdict->kind == core::BoundsVerdict::Kind::MayBeOutOfBounds ||
+        verdict->kind == core::BoundsVerdict::Kind::MayReachPastEnd;
+    message = std::string(subject) +
+              (may ? " may be out of bounds" : " is out of bounds") +
+              ": the access exceeds the allocation's converted size";
+  } else if (call != nullptr) {
     // `'memcpy' accesses 16 bytes of 'p', which has 8 bytes` for the
     // library; `'put7' requires 8 bytes behind 'p', which has 4 bytes` for
     // a callee whose requirement was inferred or declared.
@@ -7238,6 +7562,27 @@ void FunctionDataflow::checkBounds(const Expr &lvalue,
   if (!isa<MemberExpr, ArraySubscriptExpr>(e) &&
       (unary == nullptr || unary->getOpcode() != UO_Deref))
     return;
+  recordSpatialCheck(e, {.reason = core::SpatialReason::UnsupportedExpression});
+  if (const auto *subscript = dyn_cast<ArraySubscriptExpr>(&e)) {
+    const auto type = integerTypeOf(context.getSizeType(), context);
+    const auto bytes = byteSizeOf(e.getType(), context);
+    const auto index = integerRangeOf(*subscript->getIdx(), state);
+    if (type && bytes && *bytes > 0 && index && !index->mayBeInvalid &&
+        !index->values.empty() && !index->values.minimum()->negative()) {
+      const auto unit = static_cast<std::uint64_t>(*bytes);
+      if (unit <= type->mask() &&
+          index->values.minimum()->bits > (type->mask() - unit) / unit) {
+        recordSpatialCheck(e, {.outcome = core::SpatialOutcome::Violation,
+                               .reason = core::SpatialReason::None});
+        report(makeError(
+            core::diag::OutOfBounds,
+            "array index exceeds the maximum object size for the target", e));
+        return;
+      }
+    }
+  }
+  if (checkVariableArray(e, state))
+    return;
   auto access = accessOf(e);
   if (!access)
     return;
@@ -7281,13 +7626,18 @@ void FunctionDataflow::checkBounds(const Expr &lvalue,
   }
   auto known = knownExtentOf(*access, state);
   if (!known) {
+    recordSpatialCheck(e, {.reason = core::SpatialReason::UnknownExtent});
     if (access->base != nullptr) {
       if (const auto ref = builder.resolvePointerValue(*access->base);
           ref && ref->element.isWhole())
-        noteExtentRequirement(ref->place, access->end, state);
+        noteExtentRequirement(ref->place, access->end, state, nullptr,
+                              access->start);
     }
     return;
   }
+  if (known->pointer && known->declared)
+    noteExtentRequirement(*known->pointer, access->end, state, nullptr,
+                          access->start);
   known->unit = byteSizeOf(access->base != nullptr
                                ? access->base->getType()->getPointeeType()
                                : QualType(),
@@ -7302,70 +7652,105 @@ void FunctionDataflow::checkBounds(const Expr &lvalue,
 std::optional<core::PathAffine>
 FunctionDataflow::boundaryRequirement(const core::Affine &need,
                                       const core::AnalysisState &state) {
-  if (!need.place)
+  if (!loopBoundaryEligible(need))
     return std::nullopt;
-  // `for (i = 0; i < 8; i++) b[i]`: the need at the boundary is a constant.
-  std::optional<core::PathAffine> byConstant;
-  if (const auto atMost = state.relations.atMost(*need.place);
-      atMost && need.scale > 0) {
-    std::int64_t largest = 0;
-    if (__builtin_mul_overflow(need.scale, *atMost, &largest) ||
-        __builtin_add_overflow(largest, need.constant, &largest))
+  if (!need.place || need.scale <= 0)
+    return std::nullopt;
+  struct Bound {
+    core::PathAffine quantity;
+    std::optional<core::PlaceId> input;
+  };
+  std::vector<Bound> bounds;
+  if (const auto upper = state.relations.atMost(*need.place)) {
+    const auto value = core::Affine::ofConstant(*upper).times(need.scale);
+    const auto largest = value ? value->shifted(need.constant) : std::nullopt;
+    if (!largest)
       return std::nullopt;
-    byConstant = core::PathAffine::ofConstant(largest);
+    bounds.push_back(
+        {.quantity = core::PathAffine::ofConstant(largest->constant),
+         .input = std::nullopt});
   }
-  // `for (i = 0; i < n; i++) b[i]`: the need at the boundary is `n`'s.
-  std::optional<core::PathAffine> byParameter;
   for (const auto &[pair, edge] : state.relations.all()) {
-    std::optional<core::PlaceId> bound;
-    core::RelationEdge oriented = edge;
+    std::optional<core::PlaceId> input;
+    auto oriented = edge;
     if (pair.first == *need.place) {
-      bound = pair.second;
+      input = pair.second;
     } else if (pair.second == *need.place) {
-      bound = pair.first;
-      oriented = edge.flipped();
+      input = pair.first;
+      const auto reversed = edge.flipped();
+      if (!reversed)
+        continue;
+      oriented = *reversed;
     }
-    if (!bound || state.relations.isBounded(*bound))
+    if (!input)
       continue;
-    const auto boundPath = stableSummaryPathOf(*bound);
-    if (!boundPath)
-      continue;
-    // `i REL bound + k` (RFC 0012): the boundary is `bound + k` under `<=`
-    // and `bound + k - 1` under `<`; the need there is `scale * boundary +
-    // c`.
     std::int64_t shift = oriented.offset;
-    switch (oriented.relation) {
-    case core::Relation::Less:
+    if (oriented.relation == core::Relation::Less) {
       if (__builtin_sub_overflow(shift, 1, &shift))
         return std::nullopt;
-      break;
-    case core::Relation::LessEqual:
-    case core::Relation::Equal:
-      break;
-    case core::Relation::Greater:
-    case core::Relation::GreaterEqual:
-      // No upper bound: nothing finite to require.
+    } else if (oriented.relation != core::Relation::LessEqual &&
+               oriented.relation != core::Relation::Equal) {
       continue;
     }
-    std::int64_t constant = need.constant;
-    std::int64_t scaledShift = 0;
-    if (__builtin_mul_overflow(need.scale, shift, &scaledShift) ||
-        __builtin_add_overflow(constant, scaledShift, &constant))
-      return std::nullopt;
-    byParameter = core::PathAffine::ofPath(*boundPath, need.scale, constant);
-    break;
+    const auto value =
+        core::Affine::ofPlace(*input, 1, shift).times(need.scale);
+    const auto quantity = value ? value->shifted(need.constant) : std::nullopt;
+    const auto projected = quantity ? summaryAffineOf(quantity) : std::nullopt;
+    if (projected)
+      bounds.push_back({.quantity = *projected, .input = input});
   }
-  // Both (`i < n && i < 16`): the need is the smaller of the two, which no
-  // summary spells; either alone would blame a caller that satisfies the
-  // other, so nothing is required.
-  if (byConstant && byParameter)
+  if (bounds.empty())
     return std::nullopt;
-  return byConstant ? byConstant : byParameter;
+  if (bounds.size() == 1)
+    return bounds.front().quantity;
+  // Canonical loops with several upper bounds require their minimum. Keep
+  // the mathematical element-byte multiplier outside the C value expression.
+  using Expression = core::IntegerExpression<core::SummaryPath>;
+  constexpr core::IntegerType CountType{.width = 64, .isSigned = false};
+  std::optional<Expression> minimum;
+  for (const auto &bound : bounds) {
+    std::optional<Expression> count;
+    if (bound.quantity.isConstant()) {
+      if (bound.quantity.constant < 0 ||
+          bound.quantity.constant % need.scale != 0)
+        return std::nullopt;
+      count = Expression::constant(core::IntegerValue::ofBits(
+          CountType,
+          static_cast<std::uint64_t>(bound.quantity.constant / need.scale)));
+    } else {
+      if (bound.quantity.scale != need.scale || bound.quantity.constant != 0 ||
+          !bound.input)
+        return std::nullopt;
+      const auto limits = integerBounds(*bound.input, state);
+      if (!limits.first || *limits.first < 0)
+        return std::nullopt;
+      if (bound.quantity.expression) {
+        count = bound.quantity.expression->converted(CountType);
+      } else {
+        const auto *decl =
+            dyn_cast_or_null<ValueDecl>(builder.declFor(*bound.input));
+        const auto type = decl ? integerTypeOf(*decl, context) : std::nullopt;
+        if (!type || !bound.quantity.path)
+          return std::nullopt;
+        count =
+            Expression::input(*bound.quantity.path, *type).converted(CountType);
+      }
+    }
+    if (!count)
+      return std::nullopt;
+    minimum = minimum ? Expression::operation(core::IntegerOp::Minimum,
+                                              *minimum, *count)
+                      : count;
+    if (!minimum)
+      return std::nullopt;
+  }
+  return core::PathAffine::ofExpression(*minimum, need.scale);
 }
 
-void FunctionDataflow::noteExtentRequirement(core::PlaceId pointer,
-                                             const core::Affine &need,
-                                             const core::AnalysisState &state) {
+void FunctionDataflow::noteExtentRequirement(
+    core::PlaceId pointer, const core::Affine &need,
+    const core::AnalysisState &state, const core::PlaceGuard *extra,
+    std::optional<core::Affine> start) {
   if (!recording())
     return;
   const auto path = stableSummaryPathOf(pointer);
@@ -7380,45 +7765,77 @@ void FunctionDataflow::noteExtentRequirement(core::PlaceId pointer,
     if (!pointee.isNull() && !pointee->isVoidType() &&
         !pointee->isIncompleteType() && !pointee->isFunctionType()) {
       const auto size = byteSizeOf(pointee, context);
-      if (size && need.constant <= *size)
+      if (size && need.constant > 0 && need.constant <= *size &&
+          (!start || (start->isConstant() && start->constant >= 0)))
         return;
     }
   }
-  // Guards spell classes and constants, not orderings: an access under `if
-  // (n > 4)` is not exported, since a caller could not be told when it
-  // happens (RFC 0011, *Extents in summaries*).
-  core::PathAffine translated;
-  if (need.place) {
-    if (const auto needPath = stableSummaryPathOf(*need.place)) {
-      if (state.relations.isBounded(*need.place))
-        return;
-      translated =
-          core::PathAffine::ofPath(*needPath, need.scale, need.constant);
-    } else {
-      // A local index below a bound (`for (i = 0; i < n; i++) b[i]`, `i <
-      // 8`): the need is largest at the boundary, so that is what the
-      // caller must provide: `n` elements under `i < n`, `n + 1` under `i
-      // <= n`, `8` under `i < 8`.
-      const auto boundary = boundaryRequirement(need, state);
-      if (!boundary)
-        return;
-      translated = *boundary;
-    }
-  } else {
-    translated = core::PathAffine::ofConstant(need.constant);
-  }
-  // The index's own class (`i` is `zero|positive` inside the loop) is
-  // already accounted for by the relation that placed it below the bound.
-  const core::PlaceGuard guard = guardHere(state, need.place);
-  for (const auto &[place, fact] : guard.conditions) {
-    if (state.relations.isBounded(place))
-      return;
-  }
-  const core::PathGuard when = summaryGuardOf(guard);
-  if (when.conditions.size() != guard.conditions.size())
+  // RFC 0017: ranges and typed comparisons retain the access's condition.
+  // Only a local loop index is excluded after its boundary is quantified.
+  std::optional<core::PathAffine> translated = summaryAffineOf(need);
+  const bool boundary = !translated;
+  if (boundary)
+    translated = boundaryRequirement(need, state);
+  if (!translated) {
+    inferred.incomplete.insert("unsupported extent requirement projection");
     return;
-  inferred.addRequirement(
-      path->index, core::ExtentRequirement{.need = translated, .when = when});
+  }
+  auto guard = guardHere(state, boundary ? need.place : std::nullopt);
+  if (extra) {
+    // A must-requirement cannot discard a premise at the guard limit.
+    const auto before = guard;
+    guard.conjoin(*extra);
+    const auto includes = [&guard](const core::PlaceGuard &part) {
+      for (const auto &predicate : part.integers)
+        if (!std::ranges::binary_search(guard.integers, predicate))
+          return false;
+      for (const auto &[key, fact] : part.conditions) {
+        const auto found = guard.conditions.find(key);
+        if (found == guard.conditions.end() || !found->second.implies(fact))
+          return false;
+      }
+      return std::ranges::all_of(part.pointers, [&guard](const auto &entry) {
+        return guard.pointerFact(entry.first.first, entry.first.second) ==
+               entry.second;
+      });
+    };
+    if (!includes(before) || !includes(*extra)) {
+      inferred.incomplete.insert("extent requirement condition limit");
+      return;
+    }
+  }
+  const auto when = summaryGuardOf(guard);
+  if (!summaryGuardComplete(guard, when) ||
+      !integerGuardComplete(guard, state,
+                            boundary ? need.place : std::nullopt)) {
+    inferred.incomplete.insert("unsupported extent requirement condition");
+    return;
+  }
+
+  std::optional<core::PathAffine> projectedStart;
+  if (start) {
+    projectedStart = summaryAffineOf(start);
+    if (!projectedStart && boundary && start->place && start->scale >= 0) {
+      const auto lower = integerBounds(*start->place, state).first;
+      const auto minimum =
+          lower ? core::Affine::ofConstant(*lower).times(start->scale)
+                : std::nullopt;
+      const auto first =
+          minimum ? minimum->shifted(start->constant) : std::nullopt;
+      if (first && first->constant >= 0)
+        projectedStart = core::PathAffine::ofConstant(0);
+    }
+    if (!projectedStart) {
+      inferred.incomplete.insert("unsupported extent lower bound projection");
+      return;
+    }
+    if (projectedStart->isConstant() && projectedStart->constant == 0)
+      projectedStart.reset();
+  }
+  inferred.addRequirement(path->index,
+                          core::ExtentRequirement{.need = *translated,
+                                                  .when = when,
+                                                  .start = projectedStart});
 }
 
 void FunctionDataflow::checkRequiredExtents(
@@ -7471,24 +7888,34 @@ void FunctionDataflow::checkRequiredExtents(
     for (const core::ExtentRequirement &requirement : requirements) {
       // The requirement's guard, on the arguments, decided by what is
       // passed and known here (RFC 0009, *Applying a guarded summary*).
-      if (!requirement.when.trivial()) {
-        auto translated = builder.translateGuard(requirement.when, call);
-        if (!translated || !pruneGuard(*translated, state) ||
-            !translated->trivial())
-          continue;
-      }
+      auto condition = builder.translateGuard(requirement.when, call);
+      if (!condition || !pruneGuard(*condition, state))
+        continue;
       const auto need = builder.affineFromPath(requirement.need, call);
       if (!need)
         continue;
       const auto total = sumOf(pointed->start, *need);
-      if (!total)
+      const auto first = requirement.start
+                             ? builder.affineFromPath(*requirement.start, call)
+                             : std::optional(core::Affine::ofConstant(0));
+      const auto start = first ? sumOf(pointed->start, *first) : std::nullopt;
+      if (!total || !start) {
+        reportIncomplete("unsupported extent interval projection", call);
         continue;
-      if (!known) {
+      }
+      if (!known || known->declared) {
         if (pointed->base != nullptr) {
           if (const auto ref = builder.resolvePointerValue(*pointed->base);
               ref && ref->element.isWhole())
-            noteExtentRequirement(ref->place, *total, state);
+            noteExtentRequirement(ref->place, *total, state, &*condition,
+                                  *start);
         }
+        if (!known)
+          continue;
+      }
+      if (!condition->trivial()) {
+        recordSpatialCheck(
+            call, {.reason = core::SpatialReason::InterfaceRequirement});
         continue;
       }
       known->unit = byteSizeOf(pointed->base != nullptr
@@ -7498,8 +7925,8 @@ void FunctionDataflow::checkRequiredExtents(
       const std::string accessed = known->pointer
                                        ? nameOf(*known->pointer)
                                        : pointed->storage->getNameAsString();
-      if (reportBounds(*total, *known, arg, {}, accessed, nullptr, &call,
-                       state))
+      if (reportBounds(*total, *known, arg, {}, accessed, nullptr, &call, state,
+                       false, *start))
         break;
     }
   }
@@ -7841,6 +8268,17 @@ void FunctionDataflow::dump(const core::AnalysisState *exitState) {
       text += summaryName(pair.first) + (equal ? " == " : " != ") +
               summaryName(pair.second);
     }
+    for (const auto &predicate : guard.integers) {
+      const auto name = [this](const core::SummaryPath &path) {
+        return summaryName(path);
+      };
+      text += text.empty() ? " when[" : ", ";
+      text += predicate.lhs.describe(name);
+      text += predicate.range
+                  ? " in " + predicate.range->toString()
+                  : " " + std::string(core::toString(predicate.op)) + " " +
+                        predicate.rhs.describe(name);
+    }
     return text.empty() ? text : text + "]";
   };
   for (const auto &reason : inferred.incomplete)
@@ -7978,7 +8416,8 @@ void FunctionDataflow::dump(const core::AnalysisState *exitState) {
            << core::spelling(edge.relation) << " " << places.name(pair.second);
         // RFC 0012: `i < n - 1`.
         if (edge.offset != 0)
-          os << (edge.offset > 0 ? " + " : " - ") << std::abs(edge.offset);
+          os << (edge.offset > 0 ? " + " : " - ")
+             << unsignedMagnitude(edge.offset);
         first = false;
       }
       for (const auto &[place, bound] : exitState->relations.allAtMost()) {
@@ -7994,12 +8433,37 @@ void FunctionDataflow::dump(const core::AnalysisState *exitState) {
     os << "\n";
   }
 
+  if (!spatialChecks.empty()) {
+    std::map<core::SpatialOutcome, unsigned> counts;
+    std::map<core::SpatialReason, unsigned> reasons;
+    for (const auto &[at, check] : spatialChecks) {
+      ++counts[check.outcome];
+      if (check.outcome == core::SpatialOutcome::Unresolved)
+        ++reasons[check.reason];
+    }
+    os << "  spatial: proven=" << counts[core::SpatialOutcome::Proven]
+       << " violation=" << counts[core::SpatialOutcome::Violation]
+       << " unresolved=" << counts[core::SpatialOutcome::Unresolved];
+    for (const auto &[reason, count] : reasons)
+      os << " [" << core::toString(reason) << ": " << count << "]";
+    os << "\n";
+  }
+
   os << "  summary:";
   if (inferred.neverReturns)
     os << " never-returns;";
-  const auto describeSource = [this, &describePathGuard](
-                                  const core::ValueSource &source,
-                                  bool strings = false) {
+  const auto describeAffine = [this](const core::PathAffine &value) {
+    std::optional<std::string> name;
+    if (value.path)
+      name = summaryName(*value.path);
+    else if (value.expression)
+      name = value.expression->describe(
+          [this](const core::SummaryPath &leaf) { return summaryName(leaf); });
+    return spellAffine(name, value.scale, value.constant);
+  };
+  const auto describeSource = [this, &describePathGuard,
+                               &describeAffine](const core::ValueSource &source,
+                                                bool strings = false) {
     std::string text(core::toString(source.kind));
     if (source.post)
       text += "-post";
@@ -8010,18 +8474,9 @@ void FunctionDataflow::dump(const core::AnalysisState *exitState) {
     if (!source.offset.isZero())
       text += " @" + source.offset.toString();
     if (source.extent)
-      text += " extent=" +
-              spellAffine(source.extent->path
-                              ? std::optional(summaryName(*source.extent->path))
-                              : std::nullopt,
-                          source.extent->scale, source.extent->constant);
+      text += " extent=" + describeAffine(*source.extent);
     if (strings && source.stringLength)
-      text += " length=" +
-              spellAffine(
-                  source.stringLength->path
-                      ? std::optional(summaryName(*source.stringLength->path))
-                      : std::nullopt,
-                  source.stringLength->scale, source.stringLength->constant);
+      text += " length=" + describeAffine(*source.stringLength);
     if (strings && source.unterminated)
       text += " unterminated";
     return text + describePathGuard(source.when);
@@ -8090,11 +8545,10 @@ void FunctionDataflow::dump(const core::AnalysisState *exitState) {
       for (const core::ExtentRequirement &requirement : requirements) {
         os << (first ? "" : ", ")
            << summaryName(core::SummaryPath::param(param)) << ": ";
-        os << spellAffine(requirement.need.path ? std::optional(summaryName(
-                                                      *requirement.need.path))
-                                                : std::nullopt,
-                          requirement.need.scale, requirement.need.constant)
-           << describePathGuard(requirement.when);
+        os << describeAffine(requirement.need);
+        if (requirement.start)
+          os << " start " << describeAffine(*requirement.start);
+        os << describePathGuard(requirement.when);
         first = false;
       }
     }
@@ -8153,6 +8607,21 @@ void FunctionDataflow::dump(const core::AnalysisState *exitState) {
     describePaths("decrements", inferred.decrements);
   if (!inferred.counts.empty())
     describePaths("counts", inferred.counts);
+  if (!inferred.numericOutputs.empty()) {
+    os << " numeric{";
+    first = true;
+    for (const auto &[path, outputs] : inferred.numericOutputs)
+      for (const auto &output : outputs) {
+        os << (first ? "" : ", ") << summaryName(path) << " = ";
+        os << (output.value ? output.value->describe([this](const auto &leaf) {
+          return summaryName(leaf);
+        })
+                            : "unknown");
+        os << describePathGuard(output.when);
+        first = false;
+      }
+    os << "}";
+  }
   os << "\n";
   for (const auto &[root, graph] : inferred.heap) {
     os << "  heap " << summaryName(root)
@@ -8670,7 +9139,8 @@ FunctionDataflow::scalarTestReturn(const Expr &value) {
     negated = !negated;
     e = unary->getSubExpr()->IgnoreParenImpCasts();
   }
-  const auto result = [negated](core::PlaceId place, core::ValueFact whenTrue) {
+  const auto result = [negated](core::PlaceId place,
+                                const core::ValueFact &whenTrue) {
     ScalarReturnTest test{.place = place, .factOn = {}};
     const core::ValueFact whenFalse = negatedFact(whenTrue);
     test.factOn[core::Outcome::Positive] = negated ? whenFalse : whenTrue;
@@ -8699,7 +9169,9 @@ FunctionDataflow::scalarTestReturn(const Expr &value) {
         !tracksScalar(read.place->place))
       return std::nullopt;
     // `x + d OP k` is `x OP k - d`.
-    const std::int64_t adjusted = *k - read.offset;
+    std::int64_t adjusted = 0;
+    if (__builtin_sub_overflow(*k, read.offset, &adjusted))
+      return std::nullopt;
     const bool unsignedComparison =
         binary->getLHS()->getType()->isUnsignedIntegerType();
     if (unsignedComparison && adjusted < 0)
@@ -8901,7 +9373,7 @@ FunctionDataflow::sourceValueOf(const ValueOrigin &origin,
   case ValueOrigin::Kind::Alloc:
     return core::ValueSource::freshAt(
         origin.family, origin.offset,
-        summaryAffineOf(foldAffine(origin.extent, state)));
+        summaryAffineOf(foldAffine(origin.extent, state)), origin.boundsOffset);
   case ValueOrigin::Kind::Null:
     return core::ValueSource::null();
   case ValueOrigin::Kind::Borrow:
@@ -8988,19 +9460,27 @@ FunctionDataflow::sourceValueOf(const ValueOrigin &origin,
       // An owned local that also went to code nobody can see is not the
       // caller's alone (RFC 0007, *Inference*). RFC 0011: the caller gets
       // the allocation at the value's offset, with its extent.
-      const auto spatial = state.spatial.recordOf(src);
+      auto spatial = state.spatial.recordOf(src);
+      if (spatial) {
+        if (origin.spatialSteps.empty())
+          *spatial = subobjectRecord(*spatial, src, origin.offset);
+        else
+          for (const auto &step : origin.spatialSteps)
+            *spatial = subobjectRecord(*spatial, src, step);
+      }
       const core::PointerOffset offset =
-          (spatial ? spatial->offset : core::PointerOffset::zero())
-              .plus(origin.offset);
+          spatial ? spatial->offset : origin.offset;
       const std::optional<core::PathAffine> extent =
           spatial ? summaryAffineOf(foldAffine(spatial->extent, state))
                   : std::nullopt;
+      const auto boundsOffset = spatial ? spatial->boundsOffset : std::nullopt;
       if (const auto record = state.resources.recordOf(src)) {
         if (record->escaped)
           return core::ValueSource::unknown();
-        return core::ValueSource::freshAt(record->family, offset, extent);
+        return core::ValueSource::freshAt(record->family, offset, extent,
+                                          boundsOffset);
       }
-      return core::ValueSource::freshAt({}, offset, extent);
+      return core::ValueSource::freshAt({}, offset, extent, boundsOffset);
     }
     return core::ValueSource::unknown();
   }
@@ -9303,6 +9783,14 @@ void FunctionDataflow::dropUnstableGuards() {
     });
   };
   const auto clean = [&unstable](core::PathGuard &guard) {
+    std::erase_if(guard.integers, [&](const auto &predicate) {
+      const auto hasUnstable = [&](const auto &expression) {
+        return std::ranges::any_of(expression.all(), [&](const auto &node) {
+          return node.key && unstable(*node.key);
+        });
+      };
+      return hasUnstable(predicate.lhs) || hasUnstable(predicate.rhs);
+    });
     for (auto it = guard.pointers.begin(); it != guard.pointers.end();) {
       if (unstable(it->first.first) || unstable(it->first.second))
         it = guard.pointers.erase(it);

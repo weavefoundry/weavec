@@ -18,14 +18,14 @@
 #include "buffers.h"
 
 // DUMP: program:
-// DUMP: function 'buffer_fill': param 0 *: written; stores{} returns{} requires{param 0} requires-extent{param 0: param 1 scale 1 plus 0}
+// DUMP: function 'buffer_fill': param 0 *: written; stores{} returns{} requires{param 0} requires-extent{param 0: param 1 scale 1 plus 0 when param 1 positive|negative}
 // DUMP: function 'buffer_new': stores{} returns{fresh(free) extent param 0 scale 1 plus 0, null}
 // DUMP: function 'buffer_put8': param 0 *: written; stores{} returns{} requires{param 0} requires-extent{param 0: 8}
 // DUMP: function 'wrapped_release': param 0: freed(free),at(-struct~wrapped.payload); stores{} returns{}
 
-// SIDECAR: weavec-summaries 12
+// SIDECAR: weavec-summaries 13
 // SIDECAR: function buffer_fill
-// SIDECAR: requires-extent 0 param 1 scale 1 plus 0
+// SIDECAR: requires-extent 0 param 1 scale 1 plus 0 when param 1 positive|negative
 // SIDECAR: function buffer_new
 // SIDECAR: return fresh(free) extent param 0 scale 1 plus 0
 // SIDECAR: function buffer_put8

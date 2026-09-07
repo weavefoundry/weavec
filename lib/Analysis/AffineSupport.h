@@ -30,7 +30,7 @@ namespace weavec::analysis {
 [[nodiscard]] inline std::optional<std::int64_t>
 byteSizeOf(clang::QualType type, const clang::ASTContext &context) {
   if (type.isNull() || type->isIncompleteType() || type->isFunctionType() ||
-      type->isDependentType())
+      type->isDependentType() || type->isVariableArrayType())
     return std::nullopt;
   const clang::CharUnits size = context.getTypeSizeInChars(type);
   if (size.isZero())

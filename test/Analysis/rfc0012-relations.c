@@ -8,6 +8,9 @@
 // -- Offsets ------------------------------------------------------------------
 
 void offsets(size_t n, size_t i) {
+  // RFC 0017: keep n - 1 and the allocation's byte product from wrapping.
+  if (n == 0 || n > (size_t)-1 / sizeof(int))
+    return;
   int *a = malloc(n * sizeof *a);
   if (!a)
     return;
@@ -23,6 +26,9 @@ void offsets(size_t n, size_t i) {
 
 // A copy with an offset: `j == i + 1`.
 void copies(size_t n, size_t i) {
+  // The copied i + 1 is an affine equality only when it cannot wrap.
+  if (n == 0 || n > (size_t)-1 / sizeof(int) || i == (size_t)-1)
+    return;
   int *a = malloc(n * sizeof *a);
   if (!a)
     return;

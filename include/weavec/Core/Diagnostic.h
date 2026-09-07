@@ -68,19 +68,31 @@ inline constexpr std::string_view InvalidRelease = "invalid-release";
 /// every value the facts allow (or, with `may` wording, on a boundary value
 /// a relation permits).
 inline constexpr std::string_view OutOfBounds = "out-of-bounds";
+/// RFC 0017: a definitely invalid operation in the target integer type.
+inline constexpr std::string_view InvalidIntegerOperation =
+    "invalid-integer-operation";
 /// RFC 0014: an operation lost analysis coverage.
 inline constexpr std::string_view AnalysisIncomplete = "analysis-incomplete";
 
 /// Every id, for validating user input (`-Wweavec-<id>`).
-inline constexpr std::array<std::string_view, 16> All{
-    UseAfterFree,       DoubleFree,
-    UseAfterMove,       ConflictingBorrow,
-    LifetimeTooShort,   UnsafeOperation,
-    AnnotationRequired, AnnotationMismatch,
-    InvalidAnnotation,  Leak,
-    MismatchedRelease,  NullDereference,
-    UseOfUninitialized, InvalidRelease,
-    OutOfBounds,        AnalysisIncomplete,
+inline constexpr std::array<std::string_view, 17> All{
+    UseAfterFree,
+    DoubleFree,
+    UseAfterMove,
+    ConflictingBorrow,
+    LifetimeTooShort,
+    UnsafeOperation,
+    AnnotationRequired,
+    AnnotationMismatch,
+    InvalidAnnotation,
+    Leak,
+    MismatchedRelease,
+    NullDereference,
+    UseOfUninitialized,
+    InvalidRelease,
+    OutOfBounds,
+    AnalysisIncomplete,
+    InvalidIntegerOperation,
 };
 
 [[nodiscard]] constexpr bool isKnown(std::string_view id) noexcept {

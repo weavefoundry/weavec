@@ -8,9 +8,12 @@ weavec_add_unittest(
           BorrowTest.cpp
           DiagnosticTest.cpp
           HeapSummaryTest.cpp
+          IntegerTest.cpp
+          IntegerExpressionTest.cpp
           LifetimeTest.cpp
           MovesTest.cpp
           NullnessTest.cpp
+          NumericContractsTest.cpp
           OffsetTest.cpp
           OwnershipTest.cpp
           PlaceTest.cpp

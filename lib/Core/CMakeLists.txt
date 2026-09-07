@@ -11,6 +11,8 @@ weavec_add_library(
           CallContext.cpp
           CallTargets.cpp
           Diagnostic.cpp
+          Integer.cpp
+          CheckedInteger.cpp
           Lifetime.cpp
           Moves.cpp
           Nullness.cpp

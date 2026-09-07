@@ -30,6 +30,8 @@
 #ifndef WEAVEC_CORE_SCALAR_H
 #define WEAVEC_CORE_SCALAR_H
 
+#include "weavec/Core/Integer.h"
+#include "weavec/Core/IntegerExpression.h"
 #include "weavec/Core/Place.h"
 
 #include <algorithm>
@@ -172,6 +174,9 @@ private:
 struct ValueFact {
   OutcomeSet classes;
   std::optional<std::int64_t> constant;
+  /// RFC 0017: additional target-range information, including uint64 values.
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
+  std::optional<IntegerRange> integer = {};
 
   [[nodiscard]] static Outcome classOf(std::int64_t value) noexcept {
     if (value == 0)
@@ -200,6 +205,9 @@ struct ValueFact {
     return of({Outcome::Null, Outcome::NonNull});
   }
 
+  [[nodiscard]] static ValueFact ofInteger(const IntegerRange &range);
+  [[nodiscard]] IntegerRange inType(IntegerType type) const;
+
   /// True if the fact excludes nothing: every integer class, or both
   /// pointer classes, without a constant.
   [[nodiscard]] bool trivial() const noexcept;
@@ -208,9 +216,9 @@ struct ValueFact {
     return !classes.empty() && (classes.contains(Outcome::Null) ||
                                 classes.contains(Outcome::NonNull));
   }
-  [[nodiscard]] bool disjointFrom(const ValueFact &other) const noexcept;
+  [[nodiscard]] bool disjointFrom(const ValueFact &other) const;
   /// True if every value satisfying `this` satisfies `other`.
-  [[nodiscard]] bool implies(const ValueFact &other) const noexcept;
+  [[nodiscard]] bool implies(const ValueFact &other) const;
 
   /// Union of the classes; the constant survives only when both agree.
   void join(const ValueFact &other);
@@ -323,16 +331,29 @@ struct GuardOn {
   FlatMap<Key, ValueFact> conditions;
   /// RFC 0014: canonical address comparisons, true for equality.
   FlatMap<std::pair<Key, Key>, bool> pointers;
+  /// RFC 0017: comparisons of actual typed values, including narrowing.
+  std::vector<IntegerPredicate<Key>> integers;
 
+  bool requireInteger(IntegerPredicate<Key> predicate) {
+    const auto found =
+        std::lower_bound(integers.begin(), integers.end(), predicate);
+    if (found != integers.end() && *found == predicate)
+      return false;
+    if (size() >= MaxGuardConjuncts)
+      return false;
+    integers.insert(found, std::move(predicate));
+    return true;
+  }
   [[nodiscard]] bool trivial() const noexcept {
-    return conditions.empty() && pointers.empty();
+    return conditions.empty() && pointers.empty() && integers.empty();
   }
   void clear() {
     conditions.clear();
     pointers.clear();
+    integers.clear();
   }
   [[nodiscard]] std::size_t size() const noexcept {
-    return conditions.size() + pointers.size();
+    return conditions.size() + pointers.size() + integers.size();
   }
   [[nodiscard]] std::optional<bool> pointerFact(Key a, Key b) const {
     if (a == b)
@@ -371,6 +392,8 @@ struct GuardOn {
   }
 
   void conjoin(const GuardOn &other) {
+    for (const auto &predicate : other.integers)
+      requireInteger(predicate);
     for (const auto &[key, fact] : other.conditions)
       require(key, fact);
     for (const auto &[pair, equal] : other.pointers)
@@ -417,7 +440,11 @@ struct GuardOn {
   /// both sides constrain, each joined; a joined fact that excludes nothing
   /// is dropped. Returns whether `this` changed.
   bool join(const GuardOn &other) {
-    bool changed = false;
+    bool changed =
+        std::erase_if(integers, [&](const auto &predicate) {
+          return !std::binary_search(other.integers.begin(),
+                                     other.integers.end(), predicate);
+        }) != 0;
     for (auto it = pointers.begin(); it != pointers.end();) {
       const auto theirs = other.pointers.find(it->first);
       if (theirs == other.pointers.end() || theirs->second != it->second) {
@@ -448,9 +475,26 @@ struct GuardOn {
   }
 
   [[nodiscard]] GuardRefinement refine(const Key &key, const ValueFact &fact) {
+    bool discharged = false;
+    for (auto predicate = integers.begin(); predicate != integers.end();) {
+      const auto result =
+          predicate->evaluate([&](const Key &input, IntegerType type) {
+            return input == key && !fact.isPointer() ? fact.inType(type)
+                                                     : IntegerRange::full(type);
+          });
+      if (result && !*result)
+        return GuardRefinement::Refuted;
+      if (result) {
+        predicate = integers.erase(predicate);
+        discharged = true;
+      } else {
+        ++predicate;
+      }
+    }
     const auto it = conditions.find(key);
     if (it == conditions.end())
-      return GuardRefinement::Unchanged;
+      return discharged ? GuardRefinement::Discharged
+                        : GuardRefinement::Unchanged;
     if (fact.disjointFrom(it->second))
       return GuardRefinement::Refuted;
     if (fact.implies(it->second)) {
@@ -466,6 +510,9 @@ struct GuardOn {
   /// guard spoke about). Returns whether there was one.
   bool drop(const Key &key) {
     bool changed = conditions.erase(key) > 0;
+    changed |= std::erase_if(integers, [&](const auto &predicate) {
+                 return predicate.dependsOn(key);
+               }) != 0;
     for (auto it = pointers.begin(); it != pointers.end();) {
       if (it->first.first == key || it->first.second == key) {
         it = pointers.erase(it);

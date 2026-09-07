@@ -121,7 +121,10 @@ callee that reads or writes through it is a *raw operation*.
 ## Diagnostics
 
 Every WeaveC diagnostic ends with a stable identifier in brackets, e.g.
-`[weavec::use-after-free]`. The current identifiers are:
+`[weavec::use-after-free]`. The IDs are defined in
+`include/weavec/Core/Diagnostic.h`; RFC 0017 adds
+`weavec::core::diag::InvalidIntegerOperation`, spelled
+`invalid-integer-operation`, with error severity.
 
 | Identifier            | Severity | Emitted when                                                          |
 | --------------------- | -------- | --------------------------------------------------------------------- |
@@ -136,8 +139,9 @@ Every WeaveC diagnostic ends with a stable identifier in brackets, e.g.
 | `null-dereference`    | error    | A pointer that is null, or may be null, on some path reaching here is dereferenced ([RFC 0008](rfcs/0008-pointer-validity.md)): `dereference of '<p>', which may be null` / `dereference of '<p>', which is null`; or passed to a callee that dereferences its parameter without testing it (a `requires` fact in the callee's summary, or `WEAVEC_NONNULL` on its declaration): `'<p>', which may be null, is passed to '<f>', which dereferences it` (also `which is null`, `a null pointer is passed to '<f>' ...`). The note says why: `'<p>' may be null: it is the result of '<f>' here` (every allocator in the shipped table, every searching function and every function the program defines whose body can return null), `'<p>' may be null: it is set by '<f>' here` (a callee's store), `'<p>' is assigned NULL here`, `'<p>' may be null: it is compared with NULL here` (tested, and the null edge merged back), `'<p>' is declared WEAVEC_NULLABLE here` / `the result of '<f>' is declared WEAVEC_NULLABLE here`; for a call, also `'<f>' is declared here`. Not reported: pointers with no fact (parameters, loaded fields, results of unchecked code), dereferences inside an unsafe region, and a second dereference of the same pointer. |
 | `use-of-uninitialized`| error    | A pointer variable, or a pointer field of a record variable, declared without an initialiser is read, dereferenced, copied or released before it is assigned ([RFC 0008](rfcs/0008-pointer-validity.md)): `use of '<p>' before it was initialized` (also `'<s>.f'`). Note: `'<p>' is declared here`. Any assignment, a callee's store (`init(&p)`), a mutable borrow for a call, `memset` or a whole-object write initialises it; `static` and address-taken variables are not tracked. |
 | `invalid-release`     | error    | A releaser (or a consuming parameter) is handed a pointer that is not the start of a heap allocation ([RFC 0008](rfcs/0008-pointer-validity.md)): `'<p>' is released but points to '<x>', which is not a heap object` (a stack or static variable, an array, a field of one; `'<x>' is released but is not a heap object` when `<p>` is `<x>` itself), `'<p>' is released but points to a string literal`, `'<p>' is released but points 4 elements past the start of its allocation` / `points to field 'in' of its allocation` / `does not point to the start of its allocation` (`p + 1`, `strchr(p, c)`, `p++`, `&o->in`; the offset is named when the checker knows it, [RFC 0011](rfcs/0011-spatial-safety.md)). Notes: `'<x>' is declared here` / `allocated here`. |
-| `out-of-bounds`       | error    | An access reaches past the object it is in, or before its start ([RFC 0011](rfcs/0011-spatial-safety.md)). Direct accesses: `'<p>[<i>]' is out of bounds: index <k> of an object of <n> bytes` (both constant; the index is spelled as written, with its folded value in parentheses when that differs), `'<p>[<i>]' is out of bounds: '<i>' is the number of elements of '<p>'` / `'<i>' is at least '<n>', the number of elements of '<p>'` / `'<i>' is above '<n>', ...` (the index related to the count by a condition), `'<p>[<i>]' may be out of bounds: '<i>' may equal '<n>', the number of elements of '<p>'` (`i <= n`: the boundary is one past) / `'<i>' may reach one below '<n>', and '<p>' has <n> * 4 bytes` (`p[i + 1]` under `i < n`), `'<p>[<i>]' may be out of bounds: '<i>' may be 7 in an object of 4 bytes` (the index bounded above by a constant: `for (i = 0; i < 8; i++)`), `'<p>[<i>]' is out of bounds: index <k> is before the start of '<p>'`. Library calls with a buffer and a length (`memcpy`, `memmove`, `memset`, `memcmp`, `fgets`, `snprintf`, `read`, `write`, `strncpy`, ...): `'memcpy' accesses 16 bytes of '<p>', which has 8 bytes` and the relational forms (`'memset' accesses 'm' bytes of 'p', which has 'n' bytes ('m' is above 'n')`, `'memset' may access past the end of 'buf': 'n' may be 8, and 'buf' has 4 bytes`). A callee's requirement at the call: `'put7' requires 8 bytes behind '<p>', which has 4 bytes`. Notes: `'<p>' is allocated here` / `'<p>' is declared here` / `the object behind '<p>' is declared here`. Extents come from allocations (`malloc(n)`, `calloc(n, sz)`, `realloc(p, n)`, and every function in the program that returns one: `xmalloc(n)` returns `fresh extent=n`), from the declared size of a variable, an array or an array member, from string literals, from `WEAVEC_SIZED_BY` on a parameter, and from the count of a sized field ([RFC 0012](rfcs/0012-spatial-safety-strings-and-fields.md)), declared or inferred (`'b->data[b->cap]' is out of bounds: 'b->cap' is the number of elements of 'b->data'`, note `'b->data' is declared here`). Strings (RFC 0012): a copy that needs the length plus the terminator is checked like a length (`'strcpy' accesses 6 bytes of 'buf', which has 4 bytes`, `'strcpy' accesses 'strlen(s)' + 1 bytes of 'd', which has 'strlen(s)' bytes` on `malloc(strlen(s))`, `'strcat' accesses 5 bytes of 'buf', which has 4 bytes` counting what `buf` already holds, `'sprintf' accesses at least 5 bytes of 'buf', which has 4 bytes` from the format's minimum), and a terminator-seeking read (`strlen`, `strcpy`'s source, `strcat`'s, `puts`, `printf("%s")`) of an object the checker knows has no terminator (`strncpy` that filled it, `char a[4] = "abcd"`, `memset(a, 'x', sizeof a)`) is `'strlen' reads past the end of 'name', which is not NUL-terminated`, note `'name' is left without a terminator here`. Relations one step further (RFC 0012): `'a[i + 1]' may be out of bounds: 'i' may reach one below 'n', and 'a' has 'n' * 4 bytes` under `i <= n - 1`, `'buf[i]' is out of bounds: 'i' is at least 8 in an object of 8 bytes` under `i >= 8`. Not reported: an access whose index the checker cannot relate to the extent (nothing is proved safe either), a pointer at a field or unknown offset into its object, an object of unknown size, and a copy from a string of unknown length. |
-| `analysis-incomplete` | warning | An operation could not be modeled completely ([RFC 0014](rfcs/0014-pointer-identity-and-call-effects.md)). Message: `analysis is incomplete: <reason>`. Reasons identify unsupported copies of pointer-containing storage, incompatible or unknown object views, unavailable callback contexts, and exhausted function or summary iterations. [RFC 0015](rfcs/0015-array-and-container-ownership.md) adds unresolved array selections/updates, incomplete symbolic composition, unavailable source snapshots, uncertain range membership and element/range limits. [RFC 0016](rfcs/0016-compositional-call-checking.md) adds `unresolved call alias relationship`, `unrepresentable call context input path`, `call context input path limit reached`, `call context relationship limit reached`, and `call context unavailable or limit reached`. Known effects still apply; this warning describes missing coverage, rather than proving that the operation itself is invalid. |
+| `out-of-bounds`       | error    | An access reaches past the object it is in, or before its start ([RFC 0011](rfcs/0011-spatial-safety.md)). Direct accesses: `'<p>[<i>]' is out of bounds: index <k> of an object of <n> bytes` (both constant; the index is spelled as written, with its folded value in parentheses when that differs), `'<p>[<i>]' is out of bounds: '<i>' is the number of elements of '<p>'` / `'<i>' is at least '<n>', the number of elements of '<p>'` / `'<i>' is above '<n>', ...` (the index related to the count by a condition), `'<p>[<i>]' may be out of bounds: '<i>' may equal '<n>', the number of elements of '<p>'` (`i <= n`: the boundary is one past) / `'<i>' may reach one below '<n>', and '<p>' has <n> * 4 bytes` (`p[i + 1]` under `i < n`), `'<p>[<i>]' may be out of bounds: '<i>' may be 7 in an object of 4 bytes` (the index bounded above by a constant: `for (i = 0; i < 8; i++)`), `'<p>[<i>]' is out of bounds: index <k> is before the start of '<p>'`. Library calls with a buffer and a length (`memcpy`, `memmove`, `memset`, `memcmp`, `fgets`, `snprintf`, `read`, `write`, `strncpy`, ...): `'memcpy' accesses 16 bytes of '<p>', which has 8 bytes` and the relational forms (`'memset' accesses 'm' bytes of 'p', which has 'n' bytes ('m' is above 'n')`, `'memset' may access past the end of 'buf': 'n' may be 8, and 'buf' has 4 bytes`). A callee's requirement at the call: `'put7' requires 8 bytes behind '<p>', which has 4 bytes`. Notes: `'<p>' is allocated here` / `'<p>' is declared here` / `the object behind '<p>' is declared here`. Extents come from allocations (`malloc(n)`, `calloc(n, sz)`, `realloc(p, n)`, and every function in the program that returns one: `xmalloc(n)` returns `fresh extent=n`), from the declared size of a variable, an array or an array member, from string literals, from `WEAVEC_SIZED_BY` on a parameter, and from the count of a sized field ([RFC 0012](rfcs/0012-spatial-safety-strings-and-fields.md)), declared or inferred (`'b->data[b->cap]' is out of bounds: 'b->cap' is the number of elements of 'b->data'`, note `'b->data' is declared here`). Strings (RFC 0012): a copy that needs the length plus the terminator is checked like a length (`'strcpy' accesses 6 bytes of 'buf', which has 4 bytes`, `'strcpy' accesses 'strlen(s)' + 1 bytes of 'd', which has 'strlen(s)' bytes` on `malloc(strlen(s))`, `'strcat' accesses 5 bytes of 'buf', which has 4 bytes` counting what `buf` already holds, `'sprintf' accesses at least 5 bytes of 'buf', which has 4 bytes` from the format's minimum), and a terminator-seeking read (`strlen`, `strcpy`'s source, `strcat`'s, `puts`, `printf("%s")`) of an object the checker knows has no terminator (`strncpy` that filled it, `char a[4] = "abcd"`, `memset(a, 'x', sizeof a)`) is `'strlen' reads past the end of 'name', which is not NUL-terminated`, note `'name' is left without a terminator here`. Relations one step further (RFC 0012): `'a[i + 1]' may be out of bounds: 'i' may reach one below 'n', and 'a' has 'n' * 4 bytes` under `i <= n - 1`, `'buf[i]' is out of bounds: 'i' is at least 8 in an object of 8 bytes` under `i >= 8`. RFC 0017 also checks actual converted or wrapped allocation sizes, represented products, VLA dimensions and allocated flexible-array tails; a dimension violation can say `'<access>' is out of bounds for its variable array dimension`, and a caller interval can say `'<callee>' requires '<p>' before its start`. Unresolved indices, unknown sizes or offsets, unsupported field layouts and unknown string lengths do not by themselves produce this error or establish safety. |
+| `invalid-integer-operation` | error | A definitely invalid supported integer operation ([RFC 0017](rfcs/0017-c-integer-semantics-and-spatial-safety.md)). Message: `invalid integer operation: <reason>`, at the source operation. Reasons: `signed integer overflow`, `division by zero`, `signed division overflow`, `invalid shift count`, `invalid signed left shift`, and `nonpositive variable array dimension`. Possibly invalid arithmetic is conservative, without a definite-error claim or using undefined behavior to discard a reachable path. |
+| `analysis-incomplete` | warning | An operation could not be modeled completely ([RFC 0014](rfcs/0014-pointer-identity-and-call-effects.md)). Message: `analysis is incomplete: <reason>`. Reasons identify unsupported copies of pointer-containing storage, incompatible or unknown object views, unavailable callback contexts, and exhausted function or summary iterations. [RFC 0015](rfcs/0015-array-and-container-ownership.md) adds unresolved array selections/updates, incomplete symbolic composition, unavailable source snapshots, uncertain range membership and element/range limits. [RFC 0016](rfcs/0016-compositional-call-checking.md) adds `unresolved call alias relationship`, `unrepresentable call context input path`, `call context input path limit reached`, `call context relationship limit reached`, and `call context unavailable or limit reached`. [RFC 0017](rfcs/0017-c-integer-semantics-and-spatial-safety.md) adds unsupported numeric widths, expressions, conditions, outputs and extent projections; examples include `unsupported integer width greater than 64 bits`, `unsupported numeric output projection`, `unsupported numeric condition projection`, `unsupported extent requirement condition` and `unrepresentable variable array byte extent`. A represented symbolic array copy can join copied and untouched contents without warning solely because membership is undecided. Known effects still apply; this warning describes missing coverage, rather than proving that the operation itself is invalid. |
 | `annotation-mismatch` | error    | A definition contradicts its own annotation: `'<p>' is annotated WEAVEC_BORROWED but is freed here` (also `WEAVEC_MUT`; also `moved`, `written through`; also `... but '<p>->f' is freed here` for a path under the parameter), `function returns a borrow but its return type is annotated WEAVEC_OWNED`, `function returns a fresh allocation but its return type is annotated WEAVEC_BORROWED` (or `WEAVEC_MUT`). Notes: `'<p>' is annotated here` / `annotated here`; `'<q>' is a copy of '<p>'` when through an alias. Callers keep trusting the annotation. A store into a `WEAVEC_SIZED_BY(g)` field of an object smaller than `g` says ([RFC 0012](rfcs/0012-spatial-safety-strings-and-fields.md)): `'b->data' is declared WEAVEC_SIZED_BY(cap) but is given 4 bytes where 'b->cap' says 8` (at the store, or at the write to the count when that comes second; `says at least 8` under a lower bound, `says 'n' elements of 4 bytes` for a non-byte element), note `'b->data' is declared here`. An object of unknown size, a larger one, or null is not reported. |
 | `annotation-required` | warning  | **On by default:** `call to '<f>' is not checked: it has no definition or ownership annotations here`, once per callee per program (RFC 0005: a definition in any unit analysed together with this one counts; alone, the unit is the program), for a callee with pointer parameters or a pointer result that has no body in the program, no annotations and no libc entry; callees from system headers are exempt. Notes: `'<f>' is declared here`, `annotate its pointer parameters with WEAVEC_OWNED, WEAVEC_BORROWED, WEAVEC_MUT or WEAVEC_RAW, or define it in this program`. Likewise `call through '<fp>' is not checked: its function type has no ownership annotations and no function of that type has its address taken in this program`, once per function-pointer type. With `--strict-externs` these calls are `unsafe-operation` errors instead (at every call site, including callees from system headers), and their pointer result is raw. **With `--report-unannotated`:** every exported (non-`static`) definition additionally gets `pointer parameter '<p>' of '<f>' is inferred WEAVEC_OWNED; add the annotation to its declaration` (or `WEAVEC_BORROWED` / `WEAVEC_MUT`; `return value of '<f>' is inferred ...`) with a fix-it that inserts the annotation, or `pointer parameter '<p>' has no inferable ownership; annotate it with WEAVEC_OWNED, WEAVEC_BORROWED or WEAVEC_MUT` when the body gives no evidence. |
 | `invalid-annotation`  | warning  | A `weavec.*` annotation WeaveC does not recognise, `WEAVEC_NULLABLE` and `WEAVEC_NONNULL` on the same declaration, `WEAVEC_RETAINS` and `WEAVEC_RELEASES` on the same declaration, `WEAVEC_OWNED_BY(f)` without `WEAVEC_OWNED` ([RFC 0010](rfcs/0010-shared-ownership.md)), `WEAVEC_SIZED_BY(n)` on a non-pointer or naming no integer parameter (`'<p>' is declared WEAVEC_SIZED_BY(n) but is not a pointer` / `... but 'n' is not an integer parameter`, [RFC 0011](rfcs/0011-spatial-safety.md)), `WEAVEC_SIZED_BY(g)` on a field that is not a pointer or whose `g` is no integer field of the record (`field 'data' is declared WEAVEC_SIZED_BY(cap) but 'cap' is not an integer field of 'struct buf'` / `field 'n' is declared WEAVEC_SIZED_BY(cap) but is not a pointer`, once per unit, when the field is first used), or `weavec.assume` on any function but `weavec.h`'s (`'weavec.assume' is not an annotation for 'f'`, [RFC 0012](rfcs/0012-spatial-safety-strings-and-fields.md)). Reported on definitions. |
@@ -279,12 +283,14 @@ buffer.c:12:27: warning: pointer parameter 'b' of 'buffer_free' is inferred WEAV
   <= 0) return -1; ... free(p);` are clean. A branch whose condition the facts contradict
   (`int c = 0; if (c) free(p);`) is not taken. Reassigning the integer from
   an unknown value forgets the fact and weakens every guard that named it;
-  two integers related by arithmetic, or a computed test (`(n & 1) == 0`),
-  are not related. Values are mathematical, read in their own type:
-  `unsigned x = -1` is `UINT_MAX` (`positive`), an unsigned comparison is
-  decided in unsigned order, and a constant no `int64_t` holds (`SIZE_MAX`,
-  `ULONG_MAX`) is not one the checker knows, so `if (i > ULONG_MAX)`
-  decides nothing and both of its edges stay live.
+  supported arithmetic and computed tests also use typed ranges and bounded
+  expressions ([RFC 0017](rfcs/0017-c-integer-semantics-and-spatial-safety.md)).
+  Promotions, narrowing, `_Bool` conversion and mixed-sign comparisons follow
+  the target's C types. Full-width unsigned constants through 64 bits remain
+  representable: `unsigned x = -1` is `UINT_MAX`, and converting 256 to an
+  eight-bit `unsigned char` produces zero. A fact about a converted expression
+  is transferred to its source only when the transformation preserves it.
+  Unknown or possibly invalid arithmetic cannot justify pruning a path.
 - **Argument-conditional summaries** ([RFC
   0009](rfcs/0009-value-conditional-behaviour.md)): a callee whose free,
   move, store or returned value depends on a fact about its parameters is
@@ -377,9 +383,11 @@ buffer.c:12:27: warning: pointer parameter 'b' of 'buffer_free' is inferred WEAV
   `for (i = 0; i < n; i++) b[i]`, `for (i = 0; i < 8; i++) b[i]`,
   `memset(b, 0, n)`) is summarised with a *requirement* on that parameter's
   extent (`requires-extent{b: 8}`, `{b: n*4}`), checked at every call
-  against what the argument has and passed on through wrappers; an access
-  under a condition a summary cannot spell (`if (n > 4) b[4]`) is not
-  exported.
+  against what the argument has and passed on through wrappers. RFC 0017
+  retains representable numeric conditions such as `if (n > 4) b[4]`, the
+  first accessed byte, and bounded product or minimum expressions. An
+  unsupported condition makes coverage incomplete; dropping it cannot create
+  an unconditional caller error.
 - **Strings** ([RFC 0012](rfcs/0012-spatial-safety-strings-and-fields.md)):
   beside its extent an object carries what is known of the string it
   holds — its length (a constant, or `strlen(s)` as a place of its own, or
@@ -517,8 +525,10 @@ These labels describe whether the bounded projection was truncated. A
 `complete` description is not a proof of safety: fields and extents can
 still be unknown. Projection follows at most eight steps and 128 field
 alternatives; more than eight alternatives for one cell widen it to unknown.
-The [evaluation suite](../test/evaluation/README.md) records supported cases
-and known arithmetic/layout misses separately.
+The [evaluation suite](../test/evaluation/README.md) retains the original bug
+and clean populations; the [RFC 0017 report](validation-rfc0017.md)
+records detection of both retained product and VLA cases, with 44/44 original
+bugs detected and 32/32 original clean cases.
 
 ## Related pointer arguments
 
@@ -557,8 +567,100 @@ bound reports `analysis-incomplete` and retains ordinary call effects.
 Calls whose inputs have no established interacting relationship still use
 generic summaries; silence does not prove arbitrary pointers disjoint.
 The [validation report](validation-rfc0016.md) records the supported matrix
-and remaining coverage limits. Format 12 sidecars require rebuilding older
-objects before link analysis.
+and remaining coverage limits. These context records are retained in the
+current format 13 sidecars; rebuild older objects before link analysis.
+
+## C integers and dynamic bounds
+
+[RFC 0017](rfcs/0017-c-integer-semantics-and-spatial-safety.md) adds no
+annotation spellings. `WEAVEC_SIZED_BY(n)` still counts elements (`void *`
+counts bytes), and `WEAVEC_ASSUME` still supplies a trusted invariant. Both
+use the expressions' actual C types. Neither contract changes an allocation's
+size or establishes whole-program verification.
+
+Integer interpretation now affects temporal checks as well as bounds. On an
+eight-bit-char target, this narrowing cannot hide the use-after-free:
+
+```c
+#include <stdlib.h>
+
+void example(unsigned n) {
+  if (n != 256) return;
+  unsigned char k = n;       // k is zero
+  char *p = malloc(1);
+  if (!p) return;
+  free(p);
+  if (k == 0) *p = 1;       // use-after-free
+}
+```
+
+For supported types through 64 bits, promotions and storage conversions apply
+to assignments, compound assignments, comparisons, switches, selected indices
+and count adjustments. Unsigned arithmetic wraps modulo its width. Signed
+arithmetic retains its validity rules, with wrapping arithmetic honored where
+the compilation mode defines it. The checker reports definitely invalid
+operations it visits; it is not a general integer lint for all expressions.
+
+Allocation extents use the value actually passed: `malloc((unsigned char)n)`
+on that target receives zero when `n == 256`. A repeated symbolic byte product
+can expose `p[rows * cols]` as one past `malloc(rows * cols)`, even when the
+unsigned product wraps. The byte interval of an access is then calculated
+mathematically, without wrapping its end back into the allocation. Supported
+`__builtin_add_overflow`, `__builtin_sub_overflow` and
+`__builtin_mul_overflow` calls retain their output and success/failure facts;
+a matching nonzero-divisor and `SIZE_MAX / count` guard can establish that a
+product fits. `calloc` and `reallocarray` use checked products: overflow cannot
+create a small successful allocation, and failed `reallocarray` retains its
+input object.
+
+Numeric returns and out-parameters retain representable expressions and guards
+through helpers, translation units and compiler sidecars. Access requirements
+retain lower bounds and numeric conditions. A supported zero-based unit-stride
+loop with `i < n && i < cap` can require `min(n, cap)` elements; equivalent
+explicit minimum expressions also compose. Early-exit and other unsupported
+loops do not produce inferred must-requirements: a bound that the loop might
+reach cannot be treated as storage every caller must provide. Reassigning a
+size operand does not resize an earlier allocation or output snapshot.
+
+VLA dimensions are captured at declaration time, including supported nested
+dimensions and subsequent `sizeof` of that array. A later write to the bound
+variable does not change the existing array. A definitely nonpositive dimension
+is `invalid-integer-operation`; an unrepresentable byte extent remains
+incomplete. Flexible-array member bounds come from the backing allocation minus
+the target's field offset, with the member's element size. A sibling count
+cannot invent tail storage. Tail pointers preserve the enclosing allocation's
+lifetime and release identity, while fixed-array subobjects retain their own
+bounds. Inferred sized fields preserve the C type of count multiplication,
+including its possible wrap.
+
+The dump reports `spatial: proven=<n> violation=<n> unresolved=<n>` per
+function, with unresolved reason counts. `proven` covers the full represented
+access, including its lower bound; `violation` follows the existing definite
+or supported reachable-boundary policy; `unresolved` means the check was not
+decided. Reasons include `unknown extent`, `unknown pointer offset`,
+`unknown index bounds`, `unrepresentable byte arithmetic`,
+`unsupported numeric expression` and `caller requirement`. A requirement still
+needs its callers checked. Counts are independent of diagnostic suppression:
+`WEAVEC_UNSAFE` retains numeric effects and spatial outcomes while suppressing
+reports, and changing warning severity does not turn an unresolved access into
+a proof.
+
+Ranges retain at most two intervals; symbolic expressions have at most 64
+nodes and depth 12, and guards at most eight conjuncts including numeric
+predicates. Numeric outputs retain at most eight alternatives. Unsupported
+projection or exhausted bounds can report `analysis-incomplete`; an arbitrary
+unknown index alone remains unresolved without a new bounds error. General
+nonlinear inequalities, arbitrary induction/strides, integers wider than 64
+bits, unsupported union/type-punning and pointer-provenance operations,
+unrestricted aliases, byte-encoded pointers, GC invariants and concurrency
+remain outside the supported model.
+
+Summary and sidecar format **13** require rebuilding objects carrying earlier
+sidecars. The [RFC 0017 validation report](validation-rfc0017.md) records
+passing regression and sanitizer suites, corpus coverage, performance costs
+and remaining false positives.
+No runtime instrumentation, `--verify` flag or verification certificate is
+introduced.
 
 ## Controlling diagnostics
 
@@ -566,7 +668,7 @@ objects before link analysis.
 
 | Flag                          | Effect                                                                                            |
 | ----------------------------- | ------------------------------------------------------------------------------------------------- |
-| `-Wno-weavec-<id>`            | Disable a diagnostic whose default severity is *warning* (`annotation-required`, `invalid-annotation`, `leak`, `analysis-incomplete`). Refused for an error (including `null-dereference`, `use-of-uninitialized`, `invalid-release` and `out-of-bounds`; lower those with `-Wno-error=`). |
+| `-Wno-weavec-<id>`            | Disable a diagnostic whose default severity is *warning* (`annotation-required`, `invalid-annotation`, `leak`, `analysis-incomplete`). Refused for an error (including `null-dereference`, `use-of-uninitialized`, `invalid-release`, `out-of-bounds` and `invalid-integer-operation`; lower those with `-Wno-error=`). |
 | `-Wweavec-<id>`               | Re-enable it.                                                                                     |
 | `-Wno-error=weavec-<id>`      | Report an error as a warning (the migration path for a codebase that wants to build while it works through the reports). |
 | `-Werror=weavec-<id>`         | Report a warning as an error.                                                                     |

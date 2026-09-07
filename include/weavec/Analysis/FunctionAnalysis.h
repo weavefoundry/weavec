@@ -78,7 +78,7 @@ public:
   void validate(const clang::FunctionDecl &function);
 
   bool analyze(const clang::FunctionDecl &function, SummaryStore &summaries,
-               bool emitDiagnostics = true);
+               bool emitDiagnostics = true, bool widenSummary = false);
 
 private:
   clang::ASTContext &context;

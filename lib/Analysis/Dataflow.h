@@ -240,6 +240,99 @@ private:
   bool materializingArrayRelease = false;
   const bool emitDiagnostics;
 
+  [[nodiscard]] std::optional<core::PlaceGuard>
+  translateIntegerGuard(const core::PathGuard &guard,
+                        const clang::CallExpr &call,
+                        const core::AnalysisState &state);
+  void recordIntegerCondition(const clang::Expr &lhs, core::IntegerOp op,
+                              const clang::Expr &rhs,
+                              core::AnalysisState &state);
+  void handleIntegerCompound(const clang::CompoundAssignOperator &expr,
+                             core::AnalysisState &state);
+  void specializeIntegerBuiltin(const clang::CallExpr &call,
+                                core::FunctionSummary &summary,
+                                core::AnalysisState &state);
+  bool handleCheckedIntegerCall(const clang::CallExpr &call,
+                                core::AnalysisState &state);
+  void applyIntegerRange(const clang::Expr &expr,
+                         const core::IntegerRange &allowed,
+                         core::AnalysisState &state);
+  std::map<const clang::Expr *, std::optional<core::PlaceId>>
+      integerStatementResults;
+  void recordNumericOutputs(const clang::Expr *value,
+                            const core::AnalysisState &state);
+  void prepareNumericCall(const clang::CallExpr &call,
+                          const core::FunctionSummary &summary,
+                          core::AnalysisState &state);
+  void finishNumericCall(const clang::CallExpr &call,
+                         core::AnalysisState &state);
+  std::map<const clang::CallExpr *, std::map<core::SummaryPath, core::PlaceId>>
+      numericCallOutputs;
+  [[nodiscard]] std::optional<core::PlaceId>
+  numericCallResult(const clang::CallExpr &call) const;
+  [[nodiscard]] core::SpatialRecord
+  subobjectRecord(const core::SpatialRecord &record, core::PlaceId source,
+                  const core::PointerOffset &step);
+  void captureVariableArray(core::PlaceId place, const clang::VarDecl &var,
+                            core::AnalysisState &state);
+  void captureVariableArrayType(clang::TypeSourceInfo *info,
+                                core::AnalysisState &state,
+                                const clang::Expr *initializer = nullptr);
+  std::map<const clang::VariableArrayType *, core::PlaceId> variableArrayCounts;
+  bool checkVariableArray(const clang::Expr &expr, core::AnalysisState &state);
+  [[nodiscard]] std::optional<core::IntegerExpression<core::PlaceId>>
+  variableArraySize(clang::QualType type, const core::AnalysisState &state);
+  std::map<const clang::Expr *, core::SpatialCheck> spatialChecks;
+  void recordSpatialCheck(const clang::Expr &at, core::SpatialCheck check);
+  [[nodiscard]] std::pair<std::optional<std::int64_t>,
+                          std::optional<std::int64_t>>
+  integerBounds(core::PlaceId place, const core::AnalysisState &state);
+  using NumericExpression = core::IntegerExpression<core::PlaceId>;
+  // RFC 0017: values read at call entry, independent of the post-state
+  // paths. Slots are bounded by call site, interface path and integer type.
+  using NumericInputKey = std::pair<core::SummaryPath, core::IntegerType>;
+  std::map<const clang::CallExpr *, std::map<NumericInputKey, core::PlaceId>>
+      numericInputs;
+  std::set<const clang::CallExpr *> numericInputsReady;
+  void captureNumericInputs(const clang::CallExpr &call,
+                            const core::FunctionSummary &summary,
+                            core::AnalysisState &state);
+  [[nodiscard]] std::optional<NumericExpression>
+  numericInput(const clang::CallExpr &call, const core::SummaryPath &path,
+               core::IntegerType type, const core::AnalysisState &state);
+  std::map<core::PlaceId, NumericExpression> numericExpressions;
+  std::map<NumericExpression, core::PlaceId> expressionPlaces;
+  std::map<core::PlaceId, core::PlaceId> numericEntryValues;
+  [[nodiscard]] core::IntegerRangeEvaluation
+  evaluateNumericExpression(const NumericExpression &expression,
+                            const core::AnalysisState &state);
+  [[nodiscard]] bool operationDoesNotOverflow(core::IntegerOp op,
+                                              const NumericExpression &lhs,
+                                              const NumericExpression &rhs,
+                                              core::IntegerType type,
+                                              const core::AnalysisState &state);
+  std::map<core::PlaceId, core::IntegerExpression<core::SummaryPath>>
+      numericSnapshotExpressions;
+  [[nodiscard]] std::optional<NumericExpression>
+  integerExpressionOf(const clang::Expr &expr, const core::AnalysisState &state,
+                      unsigned depth = 0);
+  [[nodiscard]] std::optional<core::Affine>
+  integerAffineOf(const clang::Expr &expr, core::AnalysisState &state);
+  [[nodiscard]] std::optional<core::Affine>
+  linearIntegerExpression(const NumericExpression &expression,
+                          const core::AnalysisState &state,
+                          bool upperEnvelope = false);
+  [[nodiscard]] core::Affine
+  internIntegerExpression(const NumericExpression &expression,
+                          core::AnalysisState &state);
+  [[nodiscard]] std::optional<core::Affine>
+  instantiateIntegerExpression(const core::PathAffine &value,
+                               const clang::CallExpr &call,
+                               core::AnalysisState &state);
+  [[nodiscard]] std::optional<core::IntegerExpression<core::SummaryPath>>
+  summaryIntegerExpression(const NumericExpression &expression);
+  void snapshotIntegerDependencies(core::PlaceId place, const clang::Expr *at,
+                                   core::AnalysisState &state);
   core::AnalysisState *currentState = nullptr;
   std::map<const clang::CallExpr *, std::optional<core::FunctionSummary>>
       callSummaries;
@@ -462,6 +555,9 @@ private:
     /// The sibling count's key and the scale, when the store itself decided
     /// it (the count was already equal to `X`).
     std::optional<std::pair<std::string, std::int64_t>> witnessed;
+    // NOLINTNEXTLINE(readability-redundant-member-init): designated-init
+    // default
+    std::optional<core::IntegerType> productType = {};
   };
   std::vector<FieldPointerStore> fieldPointerStores;
   /// A write of a count `o->g` that found the pointer sibling `o->f`
@@ -471,6 +567,9 @@ private:
     core::PlaceId pointer;
     core::Affine extent;
     std::string count;
+    // NOLINTNEXTLINE(readability-redundant-member-init): designated-init
+    // default
+    std::optional<core::IntegerType> productType = {};
   };
   std::vector<CountWitness> countWitnesses;
   /// Integer fields of named records this function writes (`o->g = e`,
@@ -648,6 +747,21 @@ private:
   /// place it reads (its class only through a scale), or nothing.
   [[nodiscard]] std::optional<core::ValueFact>
   scalarFactOf(const clang::Expr &expr, const core::AnalysisState &state);
+  [[nodiscard]] std::optional<core::IntegerRangeEvaluation>
+  integerRangeOf(const clang::Expr &expr, const core::AnalysisState &state,
+                 unsigned depth = 0);
+  [[nodiscard]] core::IntegerRange
+  integerRangeAt(core::PlaceId place, core::IntegerType type,
+                 const core::AnalysisState &state);
+  [[nodiscard]] bool preservesInteger(const clang::Expr &expr,
+                                      const core::AnalysisState &state);
+  void checkIntegerOperation(const clang::Expr &expr,
+                             core::AnalysisState &state);
+  bool refineIntegerComparison(const clang::Expr &lhs,
+                               clang::BinaryOperatorKind op,
+                               const clang::Expr &rhs, bool holds,
+                               core::AnalysisState &state);
+
   /// True if a fact about the integer place `place` is worth keeping: the
   /// storage of a local or parameter, or memory behind a pointer; not a
   /// global (any callee may write it) or an array element.
@@ -662,14 +776,23 @@ private:
   [[nodiscard]] static core::PlaceGuard
   guardHere(const core::AnalysisState &state,
             std::optional<core::PlaceId> exclude = std::nullopt);
+  /// RFC 0017: every numeric premise must survive the combined guard limit
+  /// or follow from scalar facts retained in the guard itself.
+  [[nodiscard]] static bool
+  integerGuardComplete(const core::PlaceGuard &guard,
+                       const core::AnalysisState &state,
+                       std::optional<core::PlaceId> exclude = std::nullopt);
   /// `guard` translated to this function's summary paths for a `when`
   /// clause: conjuncts on places with no stable path are dropped, which only
   /// weakens the guard (RFC 0009, *Deriving guards*).
+  [[nodiscard]] bool
+  summaryGuardComplete(const core::PlaceGuard &guard,
+                       const core::PathGuard &projectedGuard);
   [[nodiscard]] core::PathGuard summaryGuardOf(const core::PlaceGuard &guard);
   /// `guard` with what the current facts decide taken out: false if some
   /// conjunct is refuted (what it protects does not happen here).
-  [[nodiscard]] static bool pruneGuard(core::PlaceGuard &guard,
-                                       const core::AnalysisState &state);
+  [[nodiscard]] bool pruneGuard(core::PlaceGuard &guard,
+                                const core::AnalysisState &state);
   /// Drops the alternatives of `origin` whose guard the facts refute and
   /// collapses a single survivor; `origin.guard` itself is pruned too.
   /// Returns false if nothing survives.
@@ -1103,17 +1226,24 @@ private:
                     const clang::Expr &at, std::string_view subject,
                     std::string_view accessed, const clang::Expr *index,
                     const clang::CallExpr *call,
-                    const core::AnalysisState &state, bool lowerBound = false);
+                    const core::AnalysisState &state, bool lowerBound = false,
+                    std::optional<core::Affine> accessStart = std::nullopt);
   /// `need` in a local index that a relation puts at or below a parameter
   /// (`i < n`), restated at the boundary in that parameter; nothing when no
   /// such relation holds.
   [[nodiscard]] std::optional<core::PathAffine>
   boundaryRequirement(const core::Affine &need,
                       const core::AnalysisState &state);
+  /// RFC 0017: only canonical loops that reach their boundary can project a
+  /// local index into a caller requirement. Cached independently of CFG facts.
+  [[nodiscard]] bool loopBoundaryEligible(const core::Affine &need);
+  std::map<const clang::VarDecl *, bool> loopBoundaryEligibility;
   /// Records that this function requires `need` bytes behind `pointer`
   /// when it is a parameter root (RFC 0011, *Extents in summaries*).
   void noteExtentRequirement(core::PlaceId pointer, const core::Affine &need,
-                             const core::AnalysisState &state);
+                             const core::AnalysisState &state,
+                             const core::PlaceGuard *extra = nullptr,
+                             std::optional<core::Affine> start = std::nullopt);
   /// The arguments `summary.requiresExtent` names must be large enough.
   void checkRequiredExtents(const clang::CallExpr &call,
                             const core::FunctionSummary &summary,
@@ -1142,9 +1272,16 @@ private:
     core::PlaceId count;
     std::int64_t unit = 1;
     bool annotated = false;
+    // NOLINTNEXTLINE(readability-redundant-member-init): designated-init
+    // default
+    std::optional<core::IntegerType> productType = {};
   };
   [[nodiscard]] std::optional<SizedFieldPlace>
   sizedFieldPlaceOf(core::PlaceId place);
+  [[nodiscard]] std::pair<std::optional<core::Affine>,
+                          std::optional<core::IntegerType>>
+  sizedFieldExtent(const core::Affine &extent,
+                   const core::AnalysisState &state);
   /// The spatial record of `place`: the state's, or, for a sized field with
   /// none, the record its count implies (RFC 0012, *Sized fields*, "Loads").
   [[nodiscard]] std::optional<core::SpatialRecord>

@@ -287,7 +287,9 @@ void bad(char **a, int i, char *p) {
 )c");
   ASSERT_TRUE(result.ast);
   EXPECT_EQ(countId(result, core::diag::UseAfterFree), 1U);
-  EXPECT_GE(countId(result, core::diag::AnalysisIncomplete), 1U);
+  // RFC 0017 represents the product selector; joining the old and new
+  // cells is complete even when their membership is undecided.
+  EXPECT_EQ(countId(result, core::diag::AnalysisIncomplete), 0U);
 }
 
 TEST(ArrayOwnership, PartialInitializationIncludesRecordFields) {
@@ -570,11 +572,11 @@ TEST(ArrayOwnership,
      SymbolicOverlapFreezesDestinationsBeforeTheyBecomeSources) {
   const auto result = test::analyze(std::string(Memory) + R"c(
 void bad(char **a, size_t n) {
-  if (n<3) return; char *old=a[1];
+  if (n<3 || n>(size_t)-1/sizeof *a) return; char *old=a[1];
   memmove(a+1,a,n*sizeof *a); a[1][0]=1; free(old); a[2][0]=1;
 }
 void clean(char **a, size_t n) {
-  if (n<3) return; char *old=a[1];
+  if (n<3 || n>(size_t)-1/sizeof *a) return; char *old=a[1];
   memmove(a+1,a,n*sizeof *a); free(old); a[1][0]=1;
 }
 )c");

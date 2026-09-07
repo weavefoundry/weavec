@@ -362,7 +362,9 @@ void TranslationUnitAnalyzer::run(
       if (options.dumpStream) {
         core::DiagnosticCollector ignored;
         FunctionAnalyzer describe(context, ignored, options);
-        describe.analyze(*function, store, true);
+        describe.analyze(
+            *function, store, true,
+            recursiveFunctions.contains(function->getCanonicalDecl()));
         for (const auto &input : memory) {
           *options.dumpStream
               << "  call-context " << symbol
@@ -400,14 +402,18 @@ void TranslationUnitAnalyzer::run(
             input.reportDiagnostics)
           needsGenericCheck = true;
       if (needsGenericCheck)
-        analyzer.analyze(*function, store, true);
+        analyzer.analyze(
+            *function, store, true,
+            recursiveFunctions.contains(function->getCanonicalDecl()));
       for (const auto &bindings : requests)
         if (std::ranges::none_of(memory, [&](const auto &input) {
               return input.callbacks == bindings;
             }))
           (void)store.specialize(*function, bindings, options, &remembered);
     } else if (requests.empty()) {
-      analyzer.analyze(*function, store, true);
+      analyzer.analyze(
+          *function, store, true,
+          recursiveFunctions.contains(function->getCanonicalDecl()));
     } else {
       analyzer.validate(*function);
       for (const auto &bindings : requests)
@@ -523,7 +529,8 @@ void TranslationUnitAnalyzer::reportConfirmedSizedFields(
     finder.TraverseStmt(function->getBody());
     if (!finder.found)
       continue;
-    analyzer.analyze(*function, store, /*emitDiagnostics=*/true);
+    analyzer.analyze(*function, store, /*emitDiagnostics=*/true,
+                     recursiveFunctions.contains(function->getCanonicalDecl()));
   }
   for (const core::Diagnostic &diagnostic : collected.diagnostics()) {
     if (diagnostic.id != core::diag::OutOfBounds ||
@@ -538,6 +545,8 @@ void TranslationUnitAnalyzer::analyzeComponent(
     FunctionAnalyzer &analyzer,
     llvm::function_ref<bool(const FunctionDecl &)> shouldReport) {
   if (recursive) {
+    for (const unsigned member : component)
+      recursiveFunctions.insert(definitions[member]->getCanonicalDecl());
     // Start every member at the bottom summary and iterate silently until
     // nothing changes; the final, reporting run then sees the fixpoint.
     for (const unsigned member : component)
@@ -546,7 +555,8 @@ void TranslationUnitAnalyzer::analyzeComponent(
       bool changed = false;
       for (const unsigned member : component) {
         changed = analyzer.analyze(*definitions[member], store,
-                                   /*emitDiagnostics=*/false) ||
+                                   /*emitDiagnostics=*/false,
+                                   /*widenSummary=*/true) ||
                   changed;
       }
       if (!changed)
@@ -561,7 +571,7 @@ void TranslationUnitAnalyzer::analyzeComponent(
   for (const unsigned member : component) {
     const FunctionDecl &function = *definitions[member];
     const bool report = shouldReport(function);
-    analyzer.analyze(function, store, report);
+    analyzer.analyze(function, store, report, /*widenSummary=*/recursive);
     if (report && options.reportUnannotated)
       reportUnannotatedInterface(function);
   }

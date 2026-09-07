@@ -57,6 +57,60 @@ selected elements, interior pointers, globals and nested forwarding. Inline
 and cross-file variants pin composition behavior. The same expanded manifest
 is run against the previous revision; the two known size misses remain.
 
+## RFC 0017 added regression population
+
+[`rfc0017/manifest.json`](rfc0017/manifest.json) is a separate population of
+**12 bug/clean pairs: 24 cases, 12 required bugs and 12 clean counterparts**.
+It exercises the current
+[RFC 0017 integer and spatial features](../../docs/rfcs/0017-c-integer-semantics-and-spatial-safety.md).
+These cases were added during implementation as regression coverage. They are
+not an independently collected pre-implementation benchmark, and their results
+must not be combined with the original manifest's 44-bug/32-clean denominator.
+The original `manifest.json` and its population are unchanged; the RFC 0016
+figures above describe that milestone's historical result.
+
+```sh
+python3 scripts/evaluate.py --weavec build/dev/bin/weavec --manifest test/evaluation/rfc0017/manifest.json
+python3 scripts/evaluate.py --weavec build/dev/bin/weavec --manifest test/evaluation/rfc0017/manifest.json --json /tmp/rfc0017-regressions.json
+```
+
+| Pair | Bug | Clean distinction |
+| --- | --- | --- |
+| `narrowing` | Converting 256 to an eight-bit `unsigned char` makes a post-release access reachable. | The opposite test on the narrowed zero keeps the access unreachable. |
+| `bool` | Converting 256 to `_Bool` yields one, reaching a post-release access. | Testing for zero is false; boolean conversion does not truncate to the low bit. |
+| `mixed-signed` | Comparing signed -1 with unsigned 1 converts -1 to `UINT_MAX`, reaching the `>` branch after release. | The `<` branch remains unreachable under the same converted comparison. |
+| `unsigned-wrap` | `UINT_MAX + 2u` allocates one byte; index 1 is outside it. | Index 0 fits the same wrapped allocation. |
+| `product` | Indexing at the repeated symbolic `rows * cols` value reaches one past its allocation. | Subtracting one fits after excluding a zero product. |
+| `vla-snapshot` | After a VLA bound changes from 4 to 8, `malloc(sizeof array)` still allocates four bytes; index 4 overflows. | Index 3 fits the captured declaration-time size. |
+| `fam` | A flexible tail allocated using the target field offset has only two `int` elements; index 2 overflows despite a sibling count of 10. | Index 1 fits, and cleanup releases the enclosing allocation. |
+| `helper-return` | A helper in another translation unit narrows 257 to a returned byte count of one; index 1 overflows. | Index 0 fits the returned size. |
+| `outparam` | A separate helper writes a narrowed count of one through a `size_t` output cell; index 1 overflows. | Index 0 fits the published size. |
+| `min-bound` | A helper loop bounded by 5 and 9 requires five bytes from a four-byte allocation. | Bounds 9 and 4 require only four bytes. |
+| `checked-builtin` | A separate helper's checked `SIZE_MAX * 2` reports overflow and stores `SIZE_MAX - 1`, making a post-release access reachable. | The opposite test on the overflow flag or stored full-width value stays unreachable. |
+| `memcpy-wrapped-zero` | A byte-count product wraps to zero, so `memcpy` leaves a destination pointer intact and its use after release is invalid. | A complete pointer copy installs null, so the guarded access remains unreachable. |
+
+The fixtures use the existing minimal `test/Inputs/prelude.h`, with C11
+selected by each manifest entry. They target the ordinary eight-bit-char
+platforms used by the tests; the wrapped-copy case assumes the pointer size
+divides the `size_t` modulus. Every case obtains its own allocation, checks
+for allocation failure and releases it once on all paths that acquire it.
+The temporal pairs deliberately access after release only on their marked bug
+path. The VLA pair derives its fresh allocation size from the captured VLA;
+no test relies on an unexplained incoming pointer or an unrelated leak.
+
+Four small functions in `rfc0017/numeric-helpers.c` are shared by the return,
+out-parameter, minimum-bound and checked-builtin pairs. Those eight cases use
+`whole_program: true` to check the caller and helper translation units
+together. Each bug is required at its marked source line and stable diagnostic
+ID; no warning is suppressed or counted as a substitute for the intended bug.
+
+Final unfiltered Release evaluation and Debug/ASan/UBSan CTest runs on
+2026-09-07 detected **12/12 bugs**, accepted **12/12 clean cases**, and recorded
+**zero unexpected reports, parse failures, tool failures and timeouts**.
+CTest runs this manifest as `evaluation-rfc0017`, separately from the original
+fixed population. The [validation report](../../docs/validation-rfc0017.md)
+also records the original population, corpus measurements and remaining limits.
+
 ## Adding cases
 
 1. Add a small C program, with `// BUG: unique-name` on each intended bug's

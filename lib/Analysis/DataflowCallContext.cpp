@@ -168,6 +168,9 @@ FunctionDataflow::captureCallContext(const CallExpr &call,
                                      core::AnalysisState &state) {
   const bool changesMemory =
       !summary.stores.empty() ||
+      std::ranges::any_of(
+          summary.numericOutputs,
+          [](const auto &entry) { return !entry.first.isResult(); }) ||
       std::ranges::any_of(summary.effects, [](const auto &entry) {
         return entry.second.consumed();
       });

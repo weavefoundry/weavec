@@ -104,7 +104,7 @@ std::optional<BoundsVerdict> boundsVerdict(const Affine &need,
           return BoundsVerdict{.kind = BoundsVerdict::Kind::AtLeastPastEnd,
                                .boundary = *bounds.needAtLeast};
       }
-      if (bounds.needAtMost) {
+      if (bounds.needAtMost && bounds.needBoundaryWitness) {
         const auto largest = valueAt(need, *bounds.needAtMost);
         if (largest && *largest > have.constant)
           return BoundsVerdict{.kind = BoundsVerdict::Kind::MayReachPastEnd,
@@ -131,7 +131,8 @@ std::optional<BoundsVerdict> boundsVerdict(const Affine &need,
     return std::nullopt;
   case Relation::Greater:
     // 3: `i >= n + 1`.
-    if (need.constant + need.scale > have.constant)
+    if (const auto next = need.shifted(need.scale);
+        next && next->constant > have.constant)
       return BoundsVerdict{.kind = BoundsVerdict::Kind::OutOfBounds};
     return std::nullopt;
   case Relation::LessEqual:
@@ -142,12 +143,93 @@ std::optional<BoundsVerdict> boundsVerdict(const Affine &need,
     return std::nullopt;
   case Relation::Less:
     // 4: `i = n - 1` is allowed and is past the end (`p[i + 1]`).
-    if (need.constant - need.scale > have.constant)
+    if (const auto previous = need.shifted(-need.scale);
+        previous && previous->constant > have.constant)
       return BoundsVerdict{.kind = BoundsVerdict::Kind::MayBeOutOfBounds,
                            .boundary = -1};
     return std::nullopt;
   }
   return std::nullopt;
+}
+
+std::string_view toString(SpatialOutcome outcome) noexcept {
+  switch (outcome) {
+  case SpatialOutcome::Proven:
+    return "proven";
+  case SpatialOutcome::Violation:
+    return "violation";
+  case SpatialOutcome::Unresolved:
+    return "unresolved";
+  }
+  return "unresolved";
+}
+std::string_view toString(SpatialReason reason) noexcept {
+  switch (reason) {
+  case SpatialReason::None:
+    return "none";
+  case SpatialReason::UnknownExtent:
+    return "unknown extent";
+  case SpatialReason::UnknownOffset:
+    return "unknown pointer offset";
+  case SpatialReason::UnknownIndex:
+    return "unknown index bounds";
+  case SpatialReason::Arithmetic:
+    return "unrepresentable byte arithmetic";
+  case SpatialReason::UnsupportedExpression:
+    return "unsupported numeric expression";
+  case SpatialReason::InterfaceRequirement:
+    return "caller requirement";
+  }
+  return "unsupported numeric expression";
+}
+SpatialCheck checkSpatialBounds(const Affine &start, const Affine &need,
+                                const Affine &have,
+                                std::optional<Relation> between,
+                                const KnownBounds &bounds,
+                                std::optional<std::int64_t> startAtLeast) {
+  std::optional<std::int64_t> lower;
+  if (start.isConstant())
+    lower = start.constant;
+  else if (startAtLeast && start.scale >= 0)
+    lower = valueAt(start, *startAtLeast);
+  const auto violation = boundsVerdict(need, have, between, bounds);
+  if (violation)
+    return {.outcome = SpatialOutcome::Violation,
+            .reason = SpatialReason::None,
+            .violation = violation};
+  // A negative first byte is invalid even if the access straddles zero.
+  if (start.isConstant() && start.constant < 0)
+    return {.outcome = SpatialOutcome::Violation,
+            .reason = SpatialReason::None,
+            .violation =
+                BoundsVerdict{.kind = BoundsVerdict::Kind::BeforeStart}};
+  if (!lower || *lower < 0)
+    return {};
+  std::optional<std::int64_t> largest;
+  if (need.isConstant())
+    largest = need.constant;
+  else if (bounds.needAtMost && need.scale >= 0)
+    largest = valueAt(need, *bounds.needAtMost);
+  std::optional<std::int64_t> smallest;
+  if (have.isConstant())
+    smallest = have.constant;
+  else if (bounds.haveAtLeast && have.scale >= 0)
+    smallest = valueAt(have, *bounds.haveAtLeast);
+  bool safe = largest && smallest && *largest <= *smallest;
+  if (need.place && have.place && need.scale == have.scale && need.scale > 0) {
+    if (need.place == have.place)
+      between = Relation::Equal;
+    if (between == Relation::Equal || between == Relation::LessEqual)
+      safe |= need.constant <= have.constant;
+    if (between == Relation::Less) {
+      std::int64_t delta = 0;
+      if (!__builtin_sub_overflow(need.constant, need.scale, &delta))
+        safe |= delta <= have.constant;
+    }
+  }
+  return safe ? SpatialCheck{.outcome = SpatialOutcome::Proven,
+                             .reason = SpatialReason::None}
+              : SpatialCheck{};
 }
 
 void SpatialTracker::set(PlaceId place, SpatialRecord record) {
@@ -231,6 +313,14 @@ bool SpatialTracker::join(const SpatialTracker &other) {
     if (mine.extent != theirs.extent && mine.extent) {
       mine.extent.reset();
       changed = true;
+    }
+    if (mine.boundsOffset != theirs.boundsOffset) {
+      if (mine.boundsOffset && theirs.boundsOffset) {
+        changed |= mine.boundsOffset->join(*theirs.boundsOffset);
+      } else if (mine.boundsOffset) {
+        mine.boundsOffset.reset();
+        changed = true;
+      }
     }
     changed |= mine.offset.join(theirs.offset);
     changed |= joinString(mine.string, theirs.string);

@@ -31,8 +31,8 @@ layer to what it may depend on.
 
 ## `weavec::Core` — the model
 
-`lib/Core` contains everything that is *about* ownership and nothing that is
-about C or Clang. It depends only on the C++ standard library. This is the
+`lib/Core` contains the ownership, integer and spatial domains without AST or
+Clang dependencies. It depends only on the C++ standard library. This is the
 piece the README asks to keep "as modular as possible": it can be unit-tested
 without parsing any code, reused by a different frontend, or embedded in other
 tools.
@@ -45,6 +45,8 @@ tools.
 | `AliasRelation.h`  | Symmetric may-alias graph over places; closed under copies, plain union at joins (deliberately not transitive). Each edge records the `PointerOffset` between the two places — the same value (`Zero`), a constant number of elements, a field, or `Unknown` — so a pointer derived from another is a name for the same object at a known distance (RFC 0011), and which element of the other end is meant (RFC 0006); `separateExact` refutes a zero-offset edge on a `!=` edge. |
 | `Lifetime.h`       | `LifetimeId` and `LifetimeConstraints` (transitive `outlives` queries; `'static` is id 0).      |
 | `Borrow.h`         | `Loan` (place, kind, lifetime, holder) and `BorrowState`: may this borrow be created; may this place be moved or mutated; `expireHolders` drops the loans of holders a predicate declares dead (RFC 0006 liveness). |
+| `Integer.h`        | Target integer types, masked bit-pattern values, bounded modular ranges, concrete/abstract arithmetic, conversion and checked-overflow results (RFC 0017). Implementations are `Integer.cpp` and `CheckedInteger.cpp`; neither uses host signed overflow to model target arithmetic. |
+| `IntegerExpression.h` | Bounded typed expressions and predicates over local places or stable summary paths: constants, inputs, casts, arithmetic, min/max and overflow tests, with validation, substitution and canonical serialization (RFC 0017). |
 | `Scalar.h`         | `ValueFact` (a set of RFC 0006 outcome classes — `zero`/`positive`/`negative` or `null`/`nonnull` — plus an optional exact constant; `join`, `narrow`, `disjointFrom`, `implies`), `GuardOn<Key>` (a conjunction of facts about places — `PlaceGuard` — or summary paths — `PathGuard` — under which alone a record or effect holds; `require`, `learn`, `refine`, `join`, `drop`, bounded by `MaxGuardConjuncts`) and `ScalarTracker` (per integer place, what is known about its value; RFC 0009). |
 | `Offset.h`         | `PointerOffset`: where inside its object a pointer points — `Zero`, `Elements(k)`, `Field(key)`, `Unknown` — with `plus`, `negated`, `toString`/`parse` (RFC 0011). |
 | `Spatial.h`        | `Affine` (an extent: a constant, or `scale * place + constant`), `SpatialRecord` (a place's extent and offset, and its `StringFact` — the length of the string the object holds, or that it has no terminator — RFC 0012), `SpatialTracker` (per place, joined by agreement) and `boundsVerdict`, the pure decision of RFC 0011's bounds rules (`OutOfBounds`, `MayBeOutOfBounds`, `MayReachPastEnd`, `BeforeStart`, and RFC 0012's `AtLeastPastEnd` from a lower bound) over `KnownBounds` (constant upper and lower bounds on either side). |
@@ -63,6 +65,12 @@ tools.
 The core never sees a `clang::VarDecl`; it sees a `PlaceId`. It never sees a
 `clang::SourceLocation`; it sees a `core::SourceLocation` whose `opaque` field
 the frontend fills in so it can report at the exact original position.
+RFC 0017 extends `ValueFact` with typed integer ranges and `GuardOn` with
+integer predicates. `AnalysisState` retains numeric expressions, conditions
+and writes; `FunctionSummary::numericOutputs` and expression-bearing
+`PathAffine` values extend the earlier scalar and affine interfaces. Spatial
+requirements also retain the first accessed byte, so a negative start cannot
+be mistaken for an empty access.
 
 ## `weavec::Analysis` — the bridge
 
@@ -194,7 +202,7 @@ argument-conditional summaries and inferred `noreturn` by
   from a compilation database.
 - `Sidecar.h` reads and writes `foo.o.weavec`: the unit's exports, the cc1
   command that produced it and the diagnostics already reported, in a
-  line-oriented text format versioned by its `weavec-summaries 12` header.
+  line-oriented text format versioned by its `weavec-summaries 13` header.
 - `Driver.h` is `weavec-cc`: Clang's `driver::Driver` plans the jobs, each
   `-cc1` job runs in-process with WeaveC's consumer multiplexed beside
   Clang's, the compile step writes the sidecar, and the link step runs
@@ -259,12 +267,13 @@ an unconditional later write remains unconditional after a join.
 facts. Before overwriting a scalar used by an extent or string length, it
 redirects the dependency to an interned allocation-time snapshot. Reusing a
 snapshot site invalidates the old generation's dependent facts. The domain
-remains bounded and uses the existing affine and relation operations.
+remains bounded; RFC 0017 extends these snapshots to every dependency of a
+typed symbolic expression while retaining affine and relation fast paths.
 
-Summary and sidecar version 11 serialize heap descriptions, post references
-and string metadata. `ProgramDatabase` remaps global references and compares
-these descriptions as part of normal dependency invalidation. The compiler
-and tooling whole-program modes share this implementation.
+The current summary and sidecar version 13 retain heap descriptions, post
+references and string metadata. `ProgramDatabase` remaps global references
+and compares these descriptions as part of normal dependency invalidation.
+The compiler and tooling whole-program modes share this implementation.
 
 ## Compositional calls (RFC 0016)
 
@@ -302,9 +311,10 @@ source notes, and the final sink deduplicates reports of the same operation.
 `ProgramAnalysis` adds caller-to-definer and definer-to-caller dependencies and
 converges their context information before reporting. The compiler replay
 planner includes definitions that can receive requests from another object,
-even if their generic summaries were already locally complete. Format 12
-sidecars serialize `accepts-memory-contexts`, `memory-request` and
-`memory-specialization` records alongside existing callback records.
+even if their generic summaries were already locally complete. Introduced in
+format 12 and retained in format 13, sidecars serialize
+`accepts-memory-contexts`, `memory-request` and `memory-specialization`
+records alongside existing callback records.
 
 Unsupported projections retain generic call effects and expose missing
 coverage. Calls with no established interacting identity remain generic; they
@@ -339,6 +349,110 @@ visits every path, affine operand and guard. Returned ranges are captured
 before call effects and attached when the result obtains its destination.
 The normal function/program fixpoints compare these facts with the rest of
 the summary; compiler sidecars use the same format and inference.
+
+## Target integers and compositional bounds (RFC 0017)
+
+[RFC 0017](rfcs/0017-c-integer-semantics-and-spatial-safety.md) specifies
+the target-integer and spatial model. The
+[validation report](validation-rfc0017.md) records correctness checks,
+corpus diagnostics, performance measurements and supported boundaries.
+
+Core represents types from one through 64 bits, signedness and boolean
+conversion behavior. `IntegerValue` stores an unsigned bit pattern;
+`IntegerRange` keeps at most two intervals in numeric order. Transfers model
+unsigned wrap, signed validity, comparisons and conversion before projecting
+legacy constants or sign classes. `_Bool` converts any nonzero value to one.
+An invalid operation supplies no invented value; possibly invalid operations
+cannot establish a branch fact. Changing loop ranges widen to type endpoints.
+
+`IntegerExpression<Key>` holds canonical typed operations over inputs, including
+products, min/max and checked-overflow predicates. Expressions are limited to
+64 nodes, depth 12 and 32,768 serialized characters. Guards admit at most eight
+conjuncts, including numeric predicates; numeric outputs keep at most eight
+alternatives. Exceeding representational limits loses precision or records
+incomplete coverage. These bounds do not limit source allocation sizes.
+
+The Analysis implementation separates the following responsibilities:
+
+| File in `lib/Analysis` | Responsibility |
+| --- | --- |
+| `IntegerSupport.h` | Read Clang target widths, signedness, bit-field storage widths and operators; recognize checked builtins and value-preserving conversions. |
+| `DataflowIntegers.cpp` | Evaluate typed AST ranges without discarding implicit casts, refine comparisons, translate numeric guards, diagnose definite invalid operations and record spatial outcomes. |
+| `DataflowIntegerExpressions.cpp` | Lower and intern bounded expressions, use affine forms only where justified, substitute interface inputs and snapshot expression dependencies. |
+| `DataflowIntegerStatements.cpp` | Compute compound assignments in their promoted type before storage conversion; refine converted switch values and case ranges. |
+| `DataflowCheckedIntegers.cpp` | Apply overflow builtins and their output writes; specialize checked-product `calloc`/`reallocarray` success and failure. |
+| `DataflowIntegerProofs.cpp` | Use range bounds, overflow-success predicates and matching `MAX / count` guards to establish non-overflow. |
+| `DataflowNumericOutputs.cpp` | Capture guarded numeric returns and caller-visible writes, snapshot inputs before call effects, and install final output facts afterward. |
+| `DataflowNumericInputs.cpp` | Capture every numeric contract dependency before the callee writes its input storage; retire prior snapshot generations. |
+| `DataflowGuardCompleteness.cpp` | Require each must-contract premise to survive projection, accepting equivalent predicates that deduplicate. |
+| `DataflowLoopRequirements.cpp` | Recognize eligible unit-stride loops with stable bounds; exclude early exits and unsupported induction from minimum requirements. |
+| `DataflowDynamicExtents.cpp` | Capture VLA dimensions and `sizeof`, check dimension bounds, and derive array-subobject extents from target record layout. |
+
+`Dataflow.cpp` connects these transfers to ordinary scalar state, ownership
+guards, reference-count adjustments and spatial requirements. Array, string,
+heap and sized-field code use the same numeric facts. Numeric writes and
+may-alias writes invalidate dependencies; allocation, output and VLA snapshots
+retain earlier values under bounded source-site identities. Reusing a snapshot
+site invalidates stale dependencies. Inferred pointer/count field witnesses
+carry the C multiplication type through `ProgramDatabase` and sidecars.
+
+The monotone set of overwritten numeric inputs uses packed `PlaceSet` words;
+copying a large CFG state does not allocate a tree node for every written
+place. Recursive function components join fresh summaries into the previous
+approximation, including reporting passes. May-effect guards weaken, must
+postconditions retain agreement, and separately guarded requirements keep
+their premises. This prevents alternating numeric/temporal guard projections
+from cycling while retaining the existing convergence failure limit.
+
+An abstract range endpoint can prove an access safe or establish a definite
+violation, but cannot alone witness the possible-boundary diagnostic. Source
+constraints such as `i <= 8` provide that witness; a type-derived upper bound
+such as `INT_MAX - 1` under `i < unknown_count` does not.
+
+C values and byte intervals are distinct. `malloc(n * sizeof(T))` receives
+the actual C multiplication result, including unsigned wrap. An access first
+evaluates its index in C, then computes its first byte and exclusive end using
+checked mathematical byte arithmetic. A wrapped product's mathematical upper
+bound may establish a violation, but cannot establish that an access fits.
+Repeated expression identity supports one-past-product checks without general
+nonlinear solving. VLA extents use captured positive dimensions where the byte
+product is representable. Flexible tails use allocation bytes minus the target
+field offset, retaining the enclosing object's lifetime and release identity;
+fixed-array subobjects keep their own bounds.
+
+`PathAffine` can carry a typed expression followed by mathematical byte scaling.
+`ExtentRequirement` carries its guard, exclusive end and optional start.
+Supported zero-based, unit-stride loops with two upper bounds export a minimum
+bound. Early-exit and other unsupported loops do not produce inferred
+must-requirements: a possible access alone cannot establish a required bound
+for every caller. Arbitrary strides and induction remain outside this inference.
+Caller arguments are converted to the interface types before substitution.
+Unresolved requirements can pass through wrappers, while an unsupported
+condition is never deleted to create an unconditional caller error.
+
+`SpatialCheck` records `Proven`, `Violation` or `Unresolved`. Proving an access
+requires both lower and upper bounds; violations retain the existing definite
+or supported reachable-boundary policy. The final reporting pass aggregates
+checks by source operation. `--dump-analysis` prints
+`spatial: proven=<n> violation=<n> unresolved=<n>` and unresolved reason counts.
+These counts are independent of unsafe-region reporting and warning controls.
+A caller requirement is an obligation, not a proof that all callers satisfy it.
+
+`SummaryFormatVersion` and `SidecarFormatVersion` are both **13**. Numeric
+outputs use `numeric <path> value ...` records; `requires-extent` retains
+optional `start` intervals and typed guards. Core validates types, operators,
+paths, shapes and limits. Comparison, global remapping and dependency
+invalidation visit expression leaves and conditions; losing a required global
+invalidates the dependent expression or premise. Frontend transports these
+facts through the existing whole-program engine. Rebuild older object sidecars.
+
+Unknown arbitrary indices remain unresolved without automatically producing
+`out-of-bounds`. Unsupported numeric projections use `analysis-incomplete`.
+Integers wider than 64 bits, general nonlinear inequalities, arbitrary loop
+invariants, unrestricted alias/provenance models, unions and type punning,
+byte-encoded pointers, GC invariants and concurrency remain outside the model.
+Trusted annotations and `WEAVEC_ASSUME` do not widen actual allocations. There
+is no runtime instrumentation, `--verify` flag or whole-program certificate.
 
 ## Diagnostics contract
 

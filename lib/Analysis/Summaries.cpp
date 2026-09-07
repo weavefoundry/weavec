@@ -498,10 +498,13 @@ bool SummaryStore::isKnownCount(llvm::StringRef key) const {
 // -- Sized fields (RFC 0012)
 // ----------------------------------------------------
 
-void SummaryStore::addSizedWitness(std::string field, std::string count,
-                                   std::int64_t scale) {
-  sizedFields.witnesses.insert(SizedFieldWitness{
-      .field = std::move(field), .count = std::move(count), .scale = scale});
+void SummaryStore::addSizedWitness(
+    std::string field, std::string count, std::int64_t scale,
+    std::optional<core::IntegerType> productType) {
+  sizedFields.witnesses.insert(SizedFieldWitness{.field = std::move(field),
+                                                 .count = std::move(count),
+                                                 .scale = scale,
+                                                 .productType = productType});
 }
 
 void SummaryStore::refuteSizedField(std::string field) {
@@ -531,17 +534,23 @@ void SummaryStore::setUnitSizedFactsInForce(bool inForce) noexcept {
 
 std::optional<std::pair<std::string, std::int64_t>>
 SummaryStore::confirmedSizedBy(std::string_view field) const {
+  const auto witness = confirmedSizedWitness(field);
+  return witness ? std::optional(std::pair{witness->count, witness->scale})
+                 : std::nullopt;
+}
+std::optional<SizedFieldWitness>
+SummaryStore::confirmedSizedWitness(std::string_view field) const {
   if (field.empty())
     return std::nullopt;
   const SizedFieldFacts *program =
       database != nullptr ? &database->sizedFieldFacts() : nullptr;
   if (!unitSizedFactsInForce)
-    return program != nullptr ? program->confirmed(field) : std::nullopt;
+    return program != nullptr ? program->confirmedWitness(field) : std::nullopt;
   if (program == nullptr || program->empty())
-    return sizedFields.confirmed(field);
+    return sizedFields.confirmedWitness(field);
   SizedFieldFacts both = sizedFields;
   both.merge(*program);
-  return both.confirmed(field);
+  return both.confirmedWitness(field);
 }
 
 bool SummaryStore::noteInvalidSizedField(const FieldDecl &field) {
@@ -553,7 +562,7 @@ const std::set<std::string> &SummaryStore::knownCountKeys() const noexcept {
 }
 
 bool SummaryStore::setInferred(const FunctionDecl &function,
-                               core::FunctionSummary summary) {
+                               core::FunctionSummary summary, bool widen) {
   const FunctionDecl *canonical = key(function);
   merged.erase(canonical);
   mergedSource.erase(canonical);
@@ -572,6 +581,13 @@ bool SummaryStore::setInferred(const FunctionDecl &function,
     memorySpecialized.clear();
     memoryDiagnostics.clear();
     return true;
+  }
+  if (widen) {
+    // RFC 0017: recursive approximation must retain earlier possibilities.
+    // Replacement can cycle as numeric and temporal guards project together.
+    auto joined = it->second;
+    joined.join(summary);
+    summary = std::move(joined);
   }
   if (it->second == summary)
     return false;

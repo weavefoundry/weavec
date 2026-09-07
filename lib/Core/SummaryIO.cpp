@@ -83,6 +83,12 @@ static std::optional<PointerOffset> parseOffset(std::string_view token) {
 }
 
 std::string printAffine(const PathAffine &affine, const GlobalNamer &names) {
+  if (affine.expression)
+    return "expr " + affine.expression->toString([&](const SummaryPath &path) {
+      return printSummaryPath(path, names);
+    }) + " scale " +
+           std::to_string(affine.scale) + " plus " +
+           std::to_string(affine.constant);
   if (!affine.path)
     return std::to_string(affine.constant);
   return printSummaryPath(*affine.path, names) + " scale " +
@@ -111,6 +117,8 @@ std::string printValueSource(const ValueSource &source,
     text += ' ' + printOffset(source.offset);
   if (source.kind == ValueSource::Kind::Fresh && source.extent)
     text += " extent " + printAffine(*source.extent, names);
+  if (source.boundsOffset)
+    text += " bounds-offset " + printOffset(*source.boundsOffset);
   if (source.stringLength)
     text += " length " + printAffine(*source.stringLength, names);
   if (source.unterminated)
@@ -175,6 +183,16 @@ std::string printGuard(const PathGuard &guard, const GlobalNamer &names) {
     text += printSummaryPath(pair.first, names) +
             (equal ? " same " : " different ") +
             printSummaryPath(pair.second, names);
+  }
+  for (const auto &predicate : guard.integers) {
+    const auto print = [&](const SummaryPath &path) {
+      return printSummaryPath(path, names);
+    };
+    text += text.empty() ? " when " : " and ";
+    text += "cmp " + predicate.lhs.toString(print) + " ";
+    text += predicate.range ? "in " + predicate.range->toString()
+                            : std::string(toString(predicate.op)) + " " +
+                                  predicate.rhs.toString(print);
   }
   return text;
 }
@@ -288,6 +306,17 @@ std::string printSummary(const FunctionSummary &summary,
               printSummaryPath(path, names) + '\n';
     }
   }
+  for (const auto &[path, outputs] : summary.numericOutputs) {
+    for (const auto &output : outputs) {
+      text += "  numeric " + printSummaryPath(path, names) + " value ";
+      text += output.value
+                  ? output.value->toString([&](const SummaryPath &leaf) {
+                      return printSummaryPath(leaf, names);
+                    })
+                  : "unknown";
+      text += printGuard(output.when, names) + '\n';
+    }
+  }
   for (const auto &[outcome, facts] : summary.factOn) {
     for (const auto &[path, fact] : facts) {
       text += "  fact " + std::string(toString(outcome)) + ' ' +
@@ -298,6 +327,9 @@ std::string printSummary(const FunctionSummary &summary,
     for (const ExtentRequirement &requirement : requirements) {
       text += "  requires-extent " + std::to_string(param) + ' ' +
               printAffine(requirement.need, names) +
+              (requirement.start
+                   ? " start " + printAffine(*requirement.start, names)
+                   : "") +
               printGuard(requirement.when, names) + '\n';
     }
   }
@@ -456,6 +488,19 @@ static bool parseInteger(std::string_view token, std::int64_t &value) {
 static bool parseAffine(Tokens &tokens, const GlobalResolver &resolve,
                         std::optional<PathAffine> &affine) {
   std::int64_t constant = 0;
+  if (tokens.peek() == "expr") {
+    tokens.take();
+    const auto expression = IntegerExpression<SummaryPath>::parse(
+        tokens.take(),
+        [&](std::string_view leaf) { return parseSummaryPath(leaf, resolve); });
+    std::int64_t scale = 1;
+    if (!expression || tokens.take() != "scale" ||
+        !parseInteger(tokens.take(), scale) || tokens.take() != "plus" ||
+        !parseInteger(tokens.take(), constant))
+      return false;
+    affine = PathAffine::ofExpression(*expression, scale, constant);
+    return true;
+  }
   if (parseInteger(tokens.peek(), constant)) {
     tokens.take();
     affine = PathAffine::ofConstant(constant);
@@ -538,6 +583,13 @@ static bool parseSource(Tokens &tokens, const GlobalResolver &resolve,
     return false;
   }
   source.post = post;
+  if (tokens.peek() == "bounds-offset") {
+    tokens.take();
+    source.boundsOffset = parseOffset(tokens.take());
+    if (!source.boundsOffset || source.kind != ValueSource::Kind::Fresh ||
+        !source.extent)
+      return false;
+  }
   if (tokens.peek() == "length") {
     tokens.take();
     if (!parseAffine(tokens, resolve, source.stringLength))
@@ -664,32 +716,88 @@ static bool parseFlags(std::string_view text, PlaceEffect &effect) {
   return !effect.empty();
 }
 
-/// Parses an optional trailing `when <path> <fact> [and <path> <fact>]...`
-/// (RFC 0009). A conjunct on a declined global is dropped (the guard
-/// weakens).
+/// Preserve syntax/type validation even when a dependency is unavailable.
+/// The placeholder is never exported: callers must discard the dependent
+/// expression or contract whenever `unavailable` is set (RFC 0017).
+static GlobalResolver resolveForValidation(const GlobalResolver &resolve,
+                                           bool &unavailable) {
+  return [&resolve, &unavailable](std::string_view name) {
+    const auto id = resolve(name);
+    unavailable |= !id.has_value();
+    return std::optional(id.value_or(0U));
+  };
+}
+
+/// A may-effect can weaken when a premise is lost (RFC 0009). Must-facts and
+/// requirements must inspect `lostPremise` before retaining the parsed guard.
 static bool parseGuard(Tokens &tokens, const GlobalResolver &resolve,
-                       PathGuard &guard) {
+                       PathGuard &guard, bool *lostPremise = nullptr) {
+  const auto losePremise = [lostPremise] {
+    if (lostPremise != nullptr)
+      *lostPremise = true;
+  };
   if (tokens.empty())
     return true;
   if (tokens.take() != "when")
     return false;
+  std::size_t count = 0;
   while (true) {
-    ParsedPath path;
-    if (!parsePath(tokens, resolve, path))
+    if (++count > MaxGuardConjuncts)
       return false;
-    const std::string_view word = tokens.take();
-    if (word == "same" || word == "different") {
-      ParsedPath other;
-      if (!parsePath(tokens, resolve, other))
-        return false;
-      if (path.path && other.path)
-        guard.requirePointer(*path.path, *other.path, word == "same");
+    if (tokens.peek() == "cmp") {
+      tokens.take();
+      bool unavailable = false;
+      const auto resolveExpression = resolveForValidation(resolve, unavailable);
+      const auto parse = [&](std::string_view leaf) {
+        return parseSummaryPath(leaf, resolveExpression);
+      };
+      const auto lhs =
+          IntegerExpression<SummaryPath>::parse(tokens.take(), parse);
+      const auto operation = tokens.take();
+      if (operation == "in") {
+        const auto range = IntegerRange::parse(tokens.take());
+        if (!lhs || !range || range->empty() || lhs->type() != range->type)
+          return false;
+        if (!unavailable)
+          guard.requireInteger({.lhs = *lhs,
+                                .op = IntegerOp::Equal,
+                                .rhs = IntegerExpression<SummaryPath>::constant(
+                                    IntegerValue::ofBits(lhs->type(), 0)),
+                                .range = range});
+      } else {
+        const auto op = parseIntegerOp(operation);
+        const auto rhs =
+            IntegerExpression<SummaryPath>::parse(tokens.take(), parse);
+        if (!lhs || !op || !rhs || !isComparison(*op) ||
+            lhs->type() != rhs->type())
+          return false;
+        if (!unavailable)
+          guard.requireInteger({.lhs = *lhs, .op = *op, .rhs = *rhs});
+      }
+      if (unavailable)
+        losePremise();
     } else {
-      const std::optional<ValueFact> fact = ValueFact::parse(word);
-      if (!fact)
+      ParsedPath path;
+      if (!parsePath(tokens, resolve, path))
         return false;
-      if (path.path)
-        guard.require(*path.path, *fact);
+      const std::string_view word = tokens.take();
+      if (word == "same" || word == "different") {
+        ParsedPath other;
+        if (!parsePath(tokens, resolve, other))
+          return false;
+        if (path.path && other.path)
+          guard.requirePointer(*path.path, *other.path, word == "same");
+        else
+          losePremise();
+      } else {
+        const std::optional<ValueFact> fact = ValueFact::parse(word);
+        if (!fact)
+          return false;
+        if (path.path)
+          guard.require(*path.path, *fact);
+        else
+          losePremise();
+      }
     }
     if (tokens.empty())
       return true;
@@ -784,12 +892,16 @@ std::optional<FunctionSummary> parseSummary(std::string_view record,
            parseAffine(tokens, resolve, count);
       const auto mode = tokens.take();
       PathGuard when;
+      bool lostGuard = false;
       ok = ok && (mode == "null" ||
                   (mode == "malloc" && parseInteger(tokens.take(), bytes) &&
                    bytes >= 0));
       const auto strength = tokens.take();
       ok = ok && (strength == "definite" || strength == "possible") &&
-           parseGuard(tokens, resolve, when);
+           parseGuard(tokens, resolve, when, &lostGuard);
+      if (ok && lostGuard)
+        summary.incomplete.insert(
+            "array range guard lost in program interface");
       if (ok && storage.path && count) {
         ok = (storage.path->hasDeref() || storage.path->isGlobal()) &&
              (count->path ? count->scale == 1 : count->constant >= 0) &&
@@ -801,7 +913,7 @@ std::optional<FunctionSummary> parseSummary(std::string_view record,
                .count = *count,
                .bytes = mode == "malloc" ? std::optional(bytes) : std::nullopt,
                .when = std::move(when),
-               .definite = strength == "definite"});
+               .definite = strength == "definite" && !lostGuard});
       } else if (ok) {
         summary.incomplete.insert("unresolved array fill in program interface");
       }
@@ -815,9 +927,13 @@ std::optional<FunctionSummary> parseSummary(std::string_view record,
       const auto mode = tokens.take();
       const auto strength = tokens.take();
       PathGuard when;
+      bool lostGuard = false;
       ok = ok && (mode == "cleared" || mode == "retained") &&
            (strength == "definite" || strength == "possible") &&
-           parseGuard(tokens, resolve, when);
+           parseGuard(tokens, resolve, when, &lostGuard);
+      if (ok && lostGuard)
+        summary.incomplete.insert(
+            "array range guard lost in program interface");
       if (ok && storage.path && begin && count) {
         ok = !storage.path->isResult() &&
              (storage.path->hasDeref() || storage.path->isGlobal()) &&
@@ -826,12 +942,13 @@ std::optional<FunctionSummary> parseSummary(std::string_view record,
              storage.path->steps.size() <= MaxHeapPathDepth &&
              summary.arrayReleases.size() < MaxArrayRanges;
         if (ok)
-          summary.arrayReleases.insert({.storage = *storage.path,
-                                        .begin = *begin,
-                                        .count = *count,
-                                        .when = std::move(when),
-                                        .cleared = mode == "cleared",
-                                        .definite = strength == "definite"});
+          summary.arrayReleases.insert(
+              {.storage = *storage.path,
+               .begin = *begin,
+               .count = *count,
+               .when = std::move(when),
+               .cleared = mode == "cleared",
+               .definite = strength == "definite" && !lostGuard});
       } else if (ok) {
         summary.incomplete.insert(
             "unresolved array release in program interface");
@@ -855,8 +972,12 @@ std::optional<FunctionSummary> parseSummary(std::string_view record,
       const std::string view(tokens.take());
       const auto mode = tokens.take();
       PathGuard when;
+      bool lostGuard = false;
       ok = ok && !view.empty() && (mode == "definite" || mode == "possible") &&
-           parseGuard(tokens, resolve, when);
+           parseGuard(tokens, resolve, when, &lostGuard);
+      if (ok && lostGuard)
+        summary.incomplete.insert(
+            "array range guard lost in program interface");
       if (ok && dest.path && source.path && destBegin && sourceBegin && count) {
         ok = !source.path->isResult() &&
              (dest.path->isGlobal() || dest.path->hasDeref()) &&
@@ -871,15 +992,16 @@ std::optional<FunctionSummary> parseSummary(std::string_view record,
                    return copy.dest == *dest.path;
                  }) < static_cast<std::ptrdiff_t>(MaxArrayRanges);
         if (ok)
-          summary.arrayCopies.insert({.dest = *dest.path,
-                                      .source = *source.path,
-                                      .destBegin = *destBegin,
-                                      .sourceBegin = *sourceBegin,
-                                      .count = *count,
-                                      .elementBytes = bytes,
-                                      .view = view == "pointer" ? "" : view,
-                                      .when = std::move(when),
-                                      .definite = mode == "definite"});
+          summary.arrayCopies.insert(
+              {.dest = *dest.path,
+               .source = *source.path,
+               .destBegin = *destBegin,
+               .sourceBegin = *sourceBegin,
+               .count = *count,
+               .elementBytes = bytes,
+               .view = view == "pointer" ? "" : view,
+               .when = std::move(when),
+               .definite = mode == "definite" && !lostGuard});
       } else if (ok) {
         summary.incomplete.insert(
             "unresolved array range in program interface");
@@ -985,11 +1107,22 @@ std::optional<FunctionSummary> parseSummary(std::string_view record,
       std::int64_t param = 0;
       std::optional<PathAffine> need;
       ExtentRequirement requirement;
+      bool unavailable = false;
+      const auto resolveRequirement =
+          resolveForValidation(resolve, unavailable);
       ok = parseInteger(tokens.take(), param) &&
            std::in_range<std::uint32_t>(param) &&
-           parseAffine(tokens, resolve, need) &&
-           parseGuard(tokens, resolve, requirement.when);
-      if (ok && need) {
+           parseAffine(tokens, resolveRequirement, need);
+      if (ok && tokens.peek() == "start") {
+        tokens.take();
+        ok = parseAffine(tokens, resolveRequirement, requirement.start) &&
+             requirement.start.has_value();
+      }
+      ok = ok && parseGuard(tokens, resolve, requirement.when, &unavailable);
+      if (ok && unavailable) {
+        summary.incomplete.insert(
+            "extent requirement dependency global is unavailable");
+      } else if (ok && need) {
         requirement.need = *need;
         summary.addRequirement(static_cast<std::uint32_t>(param),
                                std::move(requirement));
@@ -1017,6 +1150,38 @@ std::optional<FunctionSummary> parseSummary(std::string_view record,
           if (ok && path.path)
             paths.insert(*path.path);
         }
+      }
+    } else if (kind == "numeric") {
+      ParsedPath path;
+      NumericOutput output;
+      bool unavailableValue = false;
+      bool unavailableGuard = false;
+      const auto resolveValue = resolveForValidation(resolve, unavailableValue);
+      ok = parsePath(tokens, resolve, path) && tokens.take() == "value";
+      if (ok) {
+        const auto token = tokens.take();
+        if (token != "unknown") {
+          output.value = IntegerExpression<SummaryPath>::parse(
+              token, [&](std::string_view leaf) {
+                return parseSummaryPath(leaf, resolveValue);
+              });
+          ok = output.value.has_value();
+        }
+        ok = ok && parseGuard(tokens, resolve, output.when, &unavailableGuard);
+      }
+      if (ok && !path.path) {
+        summary.incomplete.insert("numeric output global is unavailable");
+      } else if (ok) {
+        if (unavailableGuard) {
+          output = NumericOutput{};
+          summary.incomplete.insert(
+              "numeric output condition global is unavailable");
+        } else if (unavailableValue) {
+          output.value.reset();
+          summary.incomplete.insert(
+              "numeric output dependency global is unavailable");
+        }
+        summary.addNumericOutput(*path.path, std::move(output));
       }
     } else if (kind == "fact") {
       const std::optional<Outcome> outcome = parseOutcome(tokens.take());

@@ -7,11 +7,12 @@
 // RUN: not %weavec_cc %t/library.o %t/caller.o -o %t/program 2>&1 | FileCheck %s
 #include "Inputs/array15.h"
 
-// SIDECAR: weavec-summaries 12
-// SIDECAR-DAG: array-copy param 0 * from param 1 * dest-begin 0 source-begin 0 count param 2 scale 1 plus 0 bytes 8 view pointer definite
-// SIDECAR-DAG: array-copy result * from param 0 * dest-begin 0 source-begin 0 count param 1 scale 1 plus 0 bytes 8 view pointer definite
-// SIDECAR-DAG: array-release param 0 * begin 0 count param 1 scale 1 plus 0 cleared
-// SIDECAR-DAG: array-fill param 0 * count param 1 scale 1 plus 0 malloc 4
+// SIDECAR: weavec-summaries 13
+// RFC 0017: memcpy's element count is the wrapped byte product divided by 8.
+// SIDECAR-DAG: array-copy param 0 * from param 1 * dest-begin 0 source-begin 0 count expr u64,c,8;u64,v,706172616d2032;u64,mul;u64,c,8;u64,div scale 1 plus 0 bytes 8 view pointer definite when cmp u64,c,8;u64,v,706172616d2032;u64,mul;u64,c,8;u64,div in u64:0-2305843009213693951
+// SIDECAR-DAG: array-copy result * from param 0 * dest-begin 0 source-begin 0 count expr u64,c,8;u64,v,706172616d2031;u64,mul;u64,c,8;u64,div scale 1 plus 0 bytes 8 view pointer definite when cmp u64,c,8;u64,v,706172616d2031;u64,mul;u64,c,8;u64,div in u64:0-2305843009213693951
+// SIDECAR-DAG: array-release param 0 * begin 0 count param 1 scale 1 plus 0 cleared definite
+// SIDECAR-DAG: array-fill param 0 * count param 1 scale 1 plus 0 malloc 4 definite
 
 void selected(char **a) {
   array15_drop(a,0); array15_drop(a,1);

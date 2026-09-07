@@ -152,9 +152,18 @@ void FunctionDataflow::materializeArrayCell(core::PlaceId storage,
     copyArrayCell(cell, input, type, *site->second, state);
     range.materialized.insert(index);
     if (before) {
+      // RFC 0017: a supported actual numeric count describes both the
+      // copied and untouched alternatives. The join covers both; unknown
+      // membership alone is not a missing transfer in that representation.
+      const bool numericCount =
+          range.span.count.place &&
+          (numericExpressions.contains(*range.span.count.place) ||
+           numericSnapshotExpressions.contains(*range.span.count.place));
       state.join(*before, &places);
-      state.incompleteHeap.insert(storage);
-      reportIncomplete("array range membership is unresolved", at);
+      if (!numericCount) {
+        state.incompleteHeap.insert(storage);
+        reportIncomplete("array range membership is unresolved", at);
+      }
       // join may invalidate references into a map when future domains grow;
       // no access through `range` follows the join.
     }

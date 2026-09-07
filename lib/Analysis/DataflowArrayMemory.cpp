@@ -182,13 +182,29 @@ bool FunctionDataflow::handleArrayCopy(const CallExpr &call,
   if (!size ||
       !ASTContext::hasSameUnqualifiedType(dest->element, source->element))
     return false;
-  if (!bytes || bytes->constant % *size != 0 ||
-      (bytes->place && bytes->scale % *size != 0))
+  if (!bytes)
     return false;
   core::Affine elements = *bytes;
-  elements.constant /= *size;
-  if (elements.place)
-    elements.scale /= *size;
+  if (bytes->constant % *size != 0 ||
+      (bytes->place && bytes->scale % *size != 0)) {
+    // A modular size product still copies an integral number of cells when
+    // their size divides the target modulus. Retain the actual quotient.
+    const auto expression = integerExpressionOf(*call.getArg(2), state);
+    if (!expression ||
+        !expression->divisibleBy(static_cast<std::uint64_t>(*size)))
+      return false;
+    const auto quotient = NumericExpression::operation(
+        core::IntegerOp::Divide, *expression,
+        NumericExpression::constant(core::IntegerValue::ofBits(
+            expression->type(), static_cast<std::uint64_t>(*size))));
+    if (!quotient)
+      return false;
+    elements = internIntegerExpression(*quotient, state);
+  } else {
+    elements.constant /= *size;
+    if (elements.place)
+      elements.scale /= *size;
+  }
   if (!bytes->isConstant() || !source->start.isConstant() ||
       !dest->start.isConstant() ||
       std::cmp_greater(elements.constant, core::MaxArrayCells)) {

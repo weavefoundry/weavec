@@ -11,6 +11,14 @@ weavec_add_library(
           DataflowArrayRanges.cpp
           DataflowArrayCleanup.cpp
           DataflowArrayFill.cpp
+          DataflowIntegers.cpp
+          DataflowIntegerExpressions.cpp
+          DataflowIntegerStatements.cpp
+          DataflowCheckedIntegers.cpp
+          DataflowIntegerProofs.cpp
+          DataflowNumericOutputs.cpp
+          DataflowNumericInputs.cpp
+          DataflowDynamicExtents.cpp
           DataflowHeap.cpp
           DataflowMemory.cpp
           DataflowViews.cpp
@@ -26,6 +34,8 @@ weavec_add_library(
           ProgramDatabase.cpp
           Summaries.cpp
           TranslationUnitAnalysis.cpp
+          DataflowLoopRequirements.cpp
+          DataflowGuardCompleteness.cpp
   PUBLIC_DEPS weavec::Core
   USES_LLVM)
 

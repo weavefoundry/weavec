@@ -5,8 +5,11 @@ weavec_add_unittest(
           ArrayOwnershipTest.cpp
           CallContextTest.cpp
           DataflowTest.cpp
+          DynamicExtentsTest.cpp
           FunctionAnalysisTest.cpp
           HeapStateTest.cpp
+          IntegerSemanticsTest.cpp
+          NumericInputsTest.cpp
           PointerValidityTest.cpp
           PointerIdentityTest.cpp
           ProgramDatabaseTest.cpp
@@ -17,4 +20,6 @@ weavec_add_unittest(
           StringsAndFieldsTest.cpp
           SummariesTest.cpp
           ValueConditionalTest.cpp
+          LoopRequirementsTest.cpp
+          GuardCompletenessTest.cpp
   DEPS weavec::Analysis weavec::Frontend)

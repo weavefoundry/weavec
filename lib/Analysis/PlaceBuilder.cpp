@@ -8,6 +8,7 @@
 
 #include "PlaceBuilder.h"
 
+#include "IntegerSupport.h"
 #include "weavec/Analysis/Allocators.h"
 #include "weavec/Core/Array.h"
 
@@ -44,8 +45,17 @@ static ValueOrigin withOffset(ValueOrigin origin,
                               const core::PointerOffset &step) {
   if (origin.kind == ValueOrigin::Kind::Copy ||
       origin.kind == ValueOrigin::Kind::Alloc ||
-      origin.kind == ValueOrigin::Kind::Borrow)
+      origin.kind == ValueOrigin::Kind::Borrow) {
+    if (origin.spatialSteps.empty() && !origin.offset.isZero())
+      origin.spatialSteps.push_back(origin.offset);
+    if (origin.spatialSteps.size() < 8)
+      origin.spatialSteps.push_back(step);
+    else
+      origin.spatialSteps = {core::PointerOffset::inside()};
     origin.offset = origin.offset.plus(step);
+    if (origin.boundsOffset)
+      origin.boundsOffset = origin.boundsOffset->plus(step);
+  }
   for (ValueOrigin &alternative : origin.alternatives)
     alternative = withOffset(std::move(alternative), step);
   return origin;
@@ -618,6 +628,7 @@ ValueOrigin PlaceBuilder::originFromUnguardedSource(
   case core::ValueSource::Kind::Fresh: {
     ValueOrigin origin = fresh(source.family);
     origin.offset = source.offset;
+    origin.boundsOffset = source.boundsOffset;
     if (source.extent)
       origin.extent = affineFromPath(*source.extent, call);
     else
@@ -902,9 +913,8 @@ PlaceBuilder::ScalarOperand PlaceBuilder::scalarOperand(const Expr &expr) {
       return operand;
     }
     if (const auto *cast = dyn_cast<CastExpr>(e)) {
-      // A conversion keeps zero-ness and, absent overflow, sign (RFC 0009,
-      // *Assumptions*); a narrowing or sign-changing one loses the exact
-      // constant.
+      // RFC 0017: converted zero/sign facts belong to the result. Only
+      // a value-preserving conversion can retain the source identity.
       switch (cast->getCastKind()) {
       case CK_LValueToRValue:
       case CK_NoOp:
@@ -912,7 +922,17 @@ PlaceBuilder::ScalarOperand PlaceBuilder::scalarOperand(const Expr &expr) {
       case CK_IntegralCast:
         if (!cast->getSubExpr()->getType()->isIntegerType())
           return operand;
-        operand.scaled = true;
+        if (preservesInteger) {
+          if (!preservesInteger(*cast))
+            return operand;
+        } else {
+          const auto from =
+              integerTypeOf(cast->getSubExpr()->getType(), context);
+          const auto to = integerTypeOf(cast->getType(), context);
+          if (!from || !to ||
+              !conversionPreserves(core::IntegerRange::full(*from), *to))
+            return operand;
+        }
         break;
       default:
         return operand;
@@ -920,9 +940,11 @@ PlaceBuilder::ScalarOperand PlaceBuilder::scalarOperand(const Expr &expr) {
       e = cast->getSubExpr();
       continue;
     }
-    // `n * 8`, `8 * n`: zero exactly when `n` is, same sign as `n`.
+    // A positive scale preserves sign/zero only if it cannot wrap.
     if (const auto *binary = dyn_cast<BinaryOperator>(e);
         binary != nullptr && binary->getOpcode() == BO_Mul) {
+      if (!preservesInteger || !preservesInteger(*binary))
+        return operand;
       const auto lhs = integerConstant(*binary->getLHS(), context);
       const auto rhs = integerConstant(*binary->getRHS(), context);
       if (rhs && *rhs > 0) {
@@ -1012,11 +1034,37 @@ PlaceBuilder::translateGuard(const core::PathGuard &guard,
       }
       if (!arg.getType()->isIntegerType())
         continue;
+      if (integerFact) {
+        if (const auto actual = integerFact(arg)) {
+          if (actual->disjointFrom(fact))
+            return std::nullopt;
+          if (actual->implies(fact))
+            continue;
+        }
+      }
       const ScalarOperand operand = scalarOperand(arg);
       if (operand.constant) {
         if (operand.constant->disjointFrom(fact))
           return std::nullopt;
         // Satisfied by the constant: nothing left to check later.
+        continue;
+      }
+      if ((!operand.place || operand.scaled || operand.offset != 0) &&
+          integerGuard) {
+        const auto type = integerTypeOf(arg.getType(), context);
+        if (type) {
+          using Expression = core::IntegerExpression<core::SummaryPath>;
+          core::PathGuard condition;
+          condition.requireInteger({.lhs = Expression::input(path, *type),
+                                    .op = core::IntegerOp::Equal,
+                                    .rhs = Expression::constant(
+                                        core::IntegerValue::ofBits(*type, 0)),
+                                    .range = fact.inType(*type)});
+          const auto mapped = integerGuard(condition, call);
+          if (!mapped)
+            return std::nullopt;
+          translated.conjoin(*mapped);
+        }
         continue;
       }
       if (!operand.place)
@@ -1029,6 +1077,12 @@ PlaceBuilder::translateGuard(const core::PathGuard &guard,
     }
     if (const auto ref = resolveSummaryPath(path, call))
       translated.require(ref->place, fact);
+  }
+  if (!guard.integers.empty() && integerGuard) {
+    const auto numeric = integerGuard(guard, call);
+    if (!numeric)
+      return std::nullopt;
+    translated.conjoin(*numeric);
   }
   return translated;
 }
@@ -1539,6 +1593,10 @@ ValueOrigin PlaceBuilder::classifyValue(const Expr &expr) {
 // -- Derived pointers and extents (RFC 0011) ----------------------------------
 
 std::optional<core::Affine> PlaceBuilder::affineOf(const Expr &expr) {
+  return integerAffine ? integerAffine(expr) : legacyAffineOf(expr);
+}
+
+std::optional<core::Affine> PlaceBuilder::legacyAffineOf(const Expr &expr) {
   if (const auto value = integerConstant(expr, context))
     return core::Affine::ofConstant(*value);
   const Expr *e = expr.IgnoreParens();
@@ -1895,6 +1953,8 @@ core::PointerOffset PlaceBuilder::arithmeticStepOf(const BinaryOperator &binary,
 std::optional<core::Affine>
 PlaceBuilder::affineFromPath(const core::PathAffine &affine,
                              const CallExpr &call) {
+  if (affine.expression)
+    return expressionFromPath ? expressionFromPath(affine, call) : std::nullopt;
   if (!affine.path)
     return core::Affine::ofConstant(affine.constant);
   std::optional<core::Affine> base;

@@ -25,7 +25,8 @@ FunctionAnalyzer::FunctionAnalyzer(ASTContext &ctx,
     : context(ctx), sink(diagSink), options(analysisOptions) {}
 
 bool FunctionAnalyzer::analyze(const FunctionDecl &function,
-                               SummaryStore &summaries, bool emitDiagnostics) {
+                               SummaryStore &summaries, bool emitDiagnostics,
+                               bool widenSummary) {
   if (!function.doesThisDeclarationHaveABody())
     return false;
 
@@ -37,7 +38,7 @@ bool FunctionAnalyzer::analyze(const FunctionDecl &function,
   FunctionDataflow dataflow(context, function, sink, options, summaries,
                             emitDiagnostics);
   dataflow.run();
-  return summaries.setInferred(function, dataflow.summary());
+  return summaries.setInferred(function, dataflow.summary(), widenSummary);
 }
 
 void FunctionAnalyzer::validate(const FunctionDecl &function) {

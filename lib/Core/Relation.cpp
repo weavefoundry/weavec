@@ -164,6 +164,30 @@ static std::optional<RelationEdge> normalised(const RelationEdge &edge) {
   return edgeOf(*difference);
 }
 
+void RelationTracker::requireDifferent(PlaceId a, PlaceId b) {
+  if (a == b)
+    return;
+  if (b < a)
+    std::swap(a, b);
+  distinct.emplace(a, b);
+}
+bool RelationTracker::different(PlaceId a, PlaceId b) const {
+  if (b < a)
+    std::swap(a, b);
+  if (distinct.contains({a, b}))
+    return true;
+  for (const auto &[same, offset] : equalsOf(a)) {
+    if (offset != 0)
+      continue;
+    const auto pair = std::minmax(same, b);
+    if (distinct.contains(pair))
+      return true;
+  }
+  return std::ranges::any_of(equalsOf(b), [&](const auto &entry) {
+    return entry.second == 0 && distinct.contains(std::minmax(entry.first, a));
+  });
+}
+
 void RelationTracker::learn(PlaceId lhs, Relation relation, PlaceId rhs,
                             std::int64_t offset) {
   if (lhs == rhs)
@@ -171,7 +195,10 @@ void RelationTracker::learn(PlaceId lhs, Relation relation, PlaceId rhs,
   RelationEdge edge{.relation = relation, .offset = offset};
   if (rhs < lhs) {
     std::swap(lhs, rhs);
-    edge = edge.flipped();
+    const auto reversed = edge.flipped();
+    if (!reversed)
+      return;
+    edge = *reversed;
   }
   const auto canonical = normalised(edge);
   if (!canonical)
@@ -336,6 +363,9 @@ bool RelationTracker::conditions(PlaceId place) const {
 }
 
 void RelationTracker::forget(PlaceId place) {
+  std::erase_if(distinct, [place](const auto &pair) {
+    return pair.first == place || pair.second == place;
+  });
   bounded.erase(place);
   upper.erase(place);
   lower.erase(place);
@@ -348,7 +378,9 @@ void RelationTracker::forget(PlaceId place) {
 }
 
 bool RelationTracker::join(const RelationTracker &other) {
-  bool changed = false;
+  bool changed = std::erase_if(distinct, [&](const auto &pair) {
+                   return !other.different(pair.first, pair.second);
+                 }) != 0;
   for (auto it = pairs.begin(); it != pairs.end();) {
     const auto theirs = other.pairs.find(it->first);
     std::optional<RelationEdge> joined;

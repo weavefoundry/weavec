@@ -18,6 +18,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "Dataflow.h"
+#include "IntegerSupport.h"
 #include "weavec/Core/Diagnostic.h"
 #include "weavec/Core/Spatial.h"
 
@@ -116,16 +117,17 @@ FunctionDataflow::sizedFieldPlaceOf(core::PlaceId place) {
     return std::nullopt;
   }
   // Else what the program's stores agree on (RFC 0012, "Inference").
-  const auto confirmed = summaries.confirmedSizedBy(field->key);
+  const auto confirmed = summaries.confirmedSizedWitness(field->key);
   if (!confirmed || decl.getParent() == nullptr)
     return std::nullopt;
   const FieldDecl *count =
-      fieldWithKey(*decl.getParent(), confirmed->first, context);
+      fieldWithKey(*decl.getParent(), confirmed->count, context);
   if (count == nullptr || !count->getType()->isIntegerType())
     return std::nullopt;
   return SizedFieldPlace{.count = builder.fieldPlace(field->object, *count),
-                         .unit = confirmed->second,
-                         .annotated = false};
+                         .unit = confirmed->scale,
+                         .annotated = false,
+                         .productType = confirmed->productType};
 }
 
 std::optional<core::SpatialRecord>
@@ -145,11 +147,58 @@ FunctionDataflow::spatialRecordAt(core::PlaceId place,
   const auto sized = sizedFieldPlaceOf(place);
   if (!sized)
     return std::nullopt;
-  return core::SpatialRecord{
-      .extent = core::Affine::ofPlace(sized->count, sized->unit),
-      .offset = {},
-      .location = locate(field->field->getLocation()),
-      .declared = true};
+  auto extent = core::Affine::ofPlace(sized->count, sized->unit);
+  if (sized->productType) {
+    const auto *count =
+        dyn_cast_or_null<ValueDecl>(builder.declFor(sized->count));
+    const auto type = count ? integerTypeOf(*count, context) : std::nullopt;
+    if (!type)
+      return std::nullopt;
+    const auto input = NumericExpression::input(sized->count, *type)
+                           .converted(*sized->productType);
+    const auto expression =
+        input ? NumericExpression::operation(
+                    core::IntegerOp::Multiply, *input,
+                    NumericExpression::constant(core::IntegerValue::ofBits(
+                        *sized->productType,
+                        static_cast<std::uint64_t>(sized->unit))))
+              : std::nullopt;
+    if (!expression)
+      return std::nullopt;
+    // Registration names the expression only. The immutable state supplied
+    // by the caller is evaluated when the spatial check consumes this record.
+    auto found = expressionPlaces.find(*expression);
+    if (found == expressionPlaces.end()) {
+      const auto id = places.create(expression->describe(
+          [&](core::PlaceId input) { return nameOf(input); }));
+      found = expressionPlaces.emplace(*expression, id).first;
+      numericExpressions.emplace(id, *expression);
+    }
+    extent = core::Affine::ofPlace(found->second);
+  }
+  return core::SpatialRecord{.extent = extent,
+                             .offset = {},
+                             .location = locate(field->field->getLocation()),
+                             .declared = true};
+}
+
+std::pair<std::optional<core::Affine>, std::optional<core::IntegerType>>
+FunctionDataflow::sizedFieldExtent(const core::Affine &extent,
+                                   const core::AnalysisState &state) {
+  if (!extent.place || extent.constant != 0)
+    return {std::nullopt, std::nullopt};
+  const auto expression = numericExpressions.find(*extent.place);
+  if (expression == numericExpressions.end())
+    return {extent, std::nullopt};
+  const auto &node = expression->second.all().back();
+  if (node.kind != core::IntegerNodeKind::Operation ||
+      node.op != core::IntegerOp::Multiply || node.type.isSigned ||
+      extent.scale != 1)
+    return {std::nullopt, std::nullopt};
+  const auto linear = linearIntegerExpression(expression->second, state, true);
+  if (!linear || !linear->place || linear->constant != 0 || linear->scale <= 0)
+    return {std::nullopt, std::nullopt};
+  return {linear, node.type};
 }
 
 std::string FunctionDataflow::spellBytes(const core::Affine &amount) {
@@ -160,7 +209,7 @@ std::string FunctionDataflow::spellBytes(const core::Affine &amount) {
     text += " * " + std::to_string(amount.scale);
   if (amount.constant != 0)
     text += (amount.constant > 0 ? " + " : " - ") +
-            std::to_string(std::abs(amount.constant));
+            std::to_string(unsignedMagnitude(amount.constant));
   return text + " bytes";
 }
 
@@ -249,8 +298,11 @@ void FunctionDataflow::noteFieldPointerStore(core::PlaceId dest, const Expr &at,
                           .witnessed = std::nullopt};
   if (record && record->extent && record->offset.isZero() &&
       record->extent->place && record->extent->constant == 0) {
-    store.extent = *record->extent;
-    const core::PlaceId counted = *record->extent->place;
+    const auto [extent, productType] = sizedFieldExtent(*record->extent, state);
+    store.extent = extent;
+    store.productType = productType;
+    const core::PlaceId counted =
+        extent ? *extent->place : *record->extent->place;
     for (const FieldDecl *sibling : field->field->getParent()->fields()) {
       if (sibling == field->field || !sibling->getType()->isIntegerType())
         continue;
@@ -258,11 +310,10 @@ void FunctionDataflow::noteFieldPointerStore(core::PlaceId dest, const Expr &at,
                                           sibling->getName());
       if (!candidate)
         continue;
-      if (*candidate == counted ||
-          state.relations.between(counted, *candidate) ==
-              core::Relation::Equal) {
-        store.witnessed.emplace(fieldKeyOf(*sibling, context),
-                                record->extent->scale);
+      if (extent && (*candidate == counted ||
+                     state.relations.between(counted, *candidate) ==
+                         core::Relation::Equal)) {
+        store.witnessed.emplace(fieldKeyOf(*sibling, context), extent->scale);
         break;
       }
     }
@@ -298,13 +349,17 @@ void FunctionDataflow::noteFieldScalarWrite(core::PlaceId place, const Expr *at,
     if (!recordsSizedFields() || !held->offset.isZero() ||
         !held->extent->place || held->extent->constant != 0)
       continue;
-    const core::PlaceId counted = *held->extent->place;
+    const auto [extent, productType] = sizedFieldExtent(*held->extent, state);
+    if (!extent)
+      continue;
+    const core::PlaceId counted = *extent->place;
     if (counted == place ||
         state.relations.between(counted, place) == core::Relation::Equal) {
       countWitnesses.push_back(
           CountWitness{.pointer = *pointer,
-                       .extent = *held->extent,
-                       .count = fieldKeyOf(*field->field, context)});
+                       .extent = *extent,
+                       .count = fieldKeyOf(*field->field, context),
+                       .productType = productType});
     }
   }
   if (recordsSizedFields() && !field->key.empty()) {
@@ -328,7 +383,8 @@ void FunctionDataflow::finalizeSizedFields(
       for (const CountWitness &witness : countWitnesses) {
         if (witness.pointer == store.place &&
             witness.extent.place == store.extent->place &&
-            witness.extent.scale == store.extent->scale) {
+            witness.extent.scale == store.extent->scale &&
+            witness.productType == store.productType) {
           witnessed.emplace(witness.count, witness.extent.scale);
           break;
         }
@@ -336,7 +392,7 @@ void FunctionDataflow::finalizeSizedFields(
     }
     if (witnessed && !witnessed->first.empty())
       summaries.addSizedWitness(store.field.key, witnessed->first,
-                                witnessed->second);
+                                witnessed->second, store.productType);
     else
       summaries.refuteSizedField(store.field.key);
   }

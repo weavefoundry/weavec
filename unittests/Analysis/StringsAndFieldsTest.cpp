@@ -346,14 +346,16 @@ TEST(SizedFields, InferredWithinAUnit) {
   )c");
   ASSERT_TRUE(result.ast);
   EXPECT_EQ(messages(result.diagnostics),
-            (Strings{"1: 'v->items[v->cap]' is out of bounds: 'v->cap' is the "
-                     "number of elements of 'v->items'"}));
+            (Strings{"1: 'v->items[v->cap]' is out of bounds: the access "
+                     "exceeds the allocation's converted size"}));
   EXPECT_EQ(notes(result.diagnostics), Strings{"'v->items' is declared here"});
   const SizedFieldFacts &facts = result.analyzer->exports().sizedFields;
-  EXPECT_EQ(facts.witnesses, (std::set<SizedFieldWitness>{
-                                 SizedFieldWitness{.field = "struct vec.items",
-                                                   .count = "struct vec.cap",
-                                                   .scale = 4}}));
+  EXPECT_EQ(facts.witnesses,
+            (std::set<SizedFieldWitness>{SizedFieldWitness{
+                .field = "struct vec.items",
+                .count = "struct vec.cap",
+                .scale = 4,
+                .productType = core::IntegerType{64, false}}}));
   EXPECT_TRUE(facts.unsizedFields.empty());
   EXPECT_EQ(facts.unsizedPairs,
             (std::set<UnsizedPair>{UnsizedPair{.field = "struct vec.items",
@@ -433,7 +435,7 @@ TEST(SizedFields, InferredThroughTheDatabase) {
 // `j = i + 1` carries the offset; a lower bound decides a constant extent.
 TEST(Relations, OffsetsAndLowerBounds) {
   const auto result = analyze(std::string(Types) + R"c(
-    void offsets(size_t n, size_t i) {
+    void offsets(size_t n, size_t i) { if (!n || n > (size_t)-1 / 4 || i == (size_t)-1) return;
       int *a = malloc(n * sizeof *a);
       if (!a) return;
       if (i <= n - 1) a[i] = 0;

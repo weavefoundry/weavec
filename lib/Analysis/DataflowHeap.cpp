@@ -95,6 +95,18 @@ FunctionDataflow::heapEntryGuard(const core::PlaceGuard &guard,
       continue;
     result.require(*path, fact);
   }
+  // Typed predicates already project through immutable numeric snapshots.
+  // Omitting them here would lose checked-allocation success conditions when
+  // a fresh pointer is returned through a helper (RFC 0017).
+  for (const auto &predicate : guard.integers) {
+    const auto lhs = summaryIntegerExpression(predicate.lhs);
+    const auto rhs = summaryIntegerExpression(predicate.rhs);
+    if (lhs && rhs)
+      result.requireInteger({.lhs = *lhs,
+                             .op = predicate.op,
+                             .rhs = *rhs,
+                             .range = predicate.range});
+  }
   return result;
 }
 
@@ -160,7 +172,12 @@ static void copyHeapCell(core::PlaceId source, core::PlaceId target,
                          core::AnalysisState &state) {
   if (source == target)
     return;
+  const auto numeric = state.numericValues.contains(source)
+                           ? std::optional(state.numericValues.at(source))
+                           : std::nullopt;
   state.forget(target);
+  if (numeric && !numeric->dependsOn(target))
+    state.numericValues.insert_or_assign(target, *numeric);
   state.kinds[target] = state.kindOf(source);
   if (const auto it = state.objectViews.find(source);
       it != state.objectViews.end())

@@ -1,0 +1,309 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "name": "rfc0017-narrowing-bug",
+      "sources": [
+        "narrowing-bug.c"
+      ],
+      "arguments": [
+        "-std=c11"
+      ],
+      "bugs": [
+        {
+          "marker": "narrowing",
+          "diagnostic": "use-after-free"
+        }
+      ]
+    },
+    {
+      "name": "rfc0017-narrowing-good",
+      "sources": [
+        "narrowing-good.c"
+      ],
+      "arguments": [
+        "-std=c11"
+      ]
+    },
+    {
+      "name": "rfc0017-bool-bug",
+      "sources": [
+        "bool-bug.c"
+      ],
+      "arguments": [
+        "-std=c11"
+      ],
+      "bugs": [
+        {
+          "marker": "bool",
+          "diagnostic": "use-after-free"
+        }
+      ]
+    },
+    {
+      "name": "rfc0017-bool-good",
+      "sources": [
+        "bool-good.c"
+      ],
+      "arguments": [
+        "-std=c11"
+      ]
+    },
+    {
+      "name": "rfc0017-mixed-signed-bug",
+      "sources": [
+        "mixed-signed-bug.c"
+      ],
+      "arguments": [
+        "-std=c11"
+      ],
+      "bugs": [
+        {
+          "marker": "mixed-signed",
+          "diagnostic": "use-after-free"
+        }
+      ]
+    },
+    {
+      "name": "rfc0017-mixed-signed-good",
+      "sources": [
+        "mixed-signed-good.c"
+      ],
+      "arguments": [
+        "-std=c11"
+      ]
+    },
+    {
+      "name": "rfc0017-unsigned-wrap-bug",
+      "sources": [
+        "unsigned-wrap-bug.c"
+      ],
+      "arguments": [
+        "-std=c11"
+      ],
+      "bugs": [
+        {
+          "marker": "unsigned-wrap",
+          "diagnostic": "out-of-bounds"
+        }
+      ]
+    },
+    {
+      "name": "rfc0017-unsigned-wrap-good",
+      "sources": [
+        "unsigned-wrap-good.c"
+      ],
+      "arguments": [
+        "-std=c11"
+      ]
+    },
+    {
+      "name": "rfc0017-product-bug",
+      "sources": [
+        "product-bug.c"
+      ],
+      "arguments": [
+        "-std=c11"
+      ],
+      "bugs": [
+        {
+          "marker": "product",
+          "diagnostic": "out-of-bounds"
+        }
+      ]
+    },
+    {
+      "name": "rfc0017-product-good",
+      "sources": [
+        "product-good.c"
+      ],
+      "arguments": [
+        "-std=c11"
+      ]
+    },
+    {
+      "name": "rfc0017-vla-snapshot-bug",
+      "sources": [
+        "vla-snapshot-bug.c"
+      ],
+      "arguments": [
+        "-std=c11"
+      ],
+      "bugs": [
+        {
+          "marker": "vla-snapshot",
+          "diagnostic": "out-of-bounds"
+        }
+      ]
+    },
+    {
+      "name": "rfc0017-vla-snapshot-good",
+      "sources": [
+        "vla-snapshot-good.c"
+      ],
+      "arguments": [
+        "-std=c11"
+      ]
+    },
+    {
+      "name": "rfc0017-fam-bug",
+      "sources": [
+        "fam-bug.c"
+      ],
+      "arguments": [
+        "-std=c11"
+      ],
+      "bugs": [
+        {
+          "marker": "fam",
+          "diagnostic": "out-of-bounds"
+        }
+      ]
+    },
+    {
+      "name": "rfc0017-fam-good",
+      "sources": [
+        "fam-good.c"
+      ],
+      "arguments": [
+        "-std=c11"
+      ]
+    },
+    {
+      "name": "rfc0017-helper-return-bug",
+      "sources": [
+        "helper-return-bug.c",
+        "numeric-helpers.c"
+      ],
+      "whole_program": true,
+      "arguments": [
+        "-std=c11"
+      ],
+      "bugs": [
+        {
+          "marker": "helper-return",
+          "diagnostic": "out-of-bounds"
+        }
+      ]
+    },
+    {
+      "name": "rfc0017-helper-return-good",
+      "sources": [
+        "helper-return-good.c",
+        "numeric-helpers.c"
+      ],
+      "whole_program": true,
+      "arguments": [
+        "-std=c11"
+      ]
+    },
+    {
+      "name": "rfc0017-outparam-bug",
+      "sources": [
+        "outparam-bug.c",
+        "numeric-helpers.c"
+      ],
+      "whole_program": true,
+      "arguments": [
+        "-std=c11"
+      ],
+      "bugs": [
+        {
+          "marker": "outparam",
+          "diagnostic": "out-of-bounds"
+        }
+      ]
+    },
+    {
+      "name": "rfc0017-outparam-good",
+      "sources": [
+        "outparam-good.c",
+        "numeric-helpers.c"
+      ],
+      "whole_program": true,
+      "arguments": [
+        "-std=c11"
+      ]
+    },
+    {
+      "name": "rfc0017-min-bound-bug",
+      "sources": [
+        "min-bound-bug.c",
+        "numeric-helpers.c"
+      ],
+      "whole_program": true,
+      "arguments": [
+        "-std=c11"
+      ],
+      "bugs": [
+        {
+          "marker": "min-bound",
+          "diagnostic": "out-of-bounds"
+        }
+      ]
+    },
+    {
+      "name": "rfc0017-min-bound-good",
+      "sources": [
+        "min-bound-good.c",
+        "numeric-helpers.c"
+      ],
+      "whole_program": true,
+      "arguments": [
+        "-std=c11"
+      ]
+    },
+    {
+      "name": "rfc0017-checked-builtin-bug",
+      "sources": [
+        "checked-builtin-bug.c",
+        "numeric-helpers.c"
+      ],
+      "whole_program": true,
+      "arguments": [
+        "-std=c11"
+      ],
+      "bugs": [
+        {
+          "marker": "checked-builtin",
+          "diagnostic": "use-after-free"
+        }
+      ]
+    },
+    {
+      "name": "rfc0017-checked-builtin-good",
+      "sources": [
+        "checked-builtin-good.c",
+        "numeric-helpers.c"
+      ],
+      "whole_program": true,
+      "arguments": [
+        "-std=c11"
+      ]
+    },
+    {
+      "name": "rfc0017-memcpy-wrapped-zero-bug",
+      "sources": [
+        "memcpy-wrapped-zero-bug.c"
+      ],
+      "arguments": [
+        "-std=c11"
+      ],
+      "bugs": [
+        {
+          "marker": "memcpy-wrapped-zero",
+          "diagnostic": "use-after-free"
+        }
+      ]
+    },
+    {
+      "name": "rfc0017-memcpy-wrapped-zero-good",
+      "sources": [
+        "memcpy-wrapped-zero-good.c"
+      ],
+      "arguments": [
+        "-std=c11"
+      ]
+    }
+  ]
+}

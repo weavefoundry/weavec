@@ -37,7 +37,7 @@ void *l_alloc(void *ud, void *ptr, size_t osize, size_t nsize) {
 // Lua's `luaS_resize` shape: on failure the table is left as it was, which
 // is a dangling `hash` only when the size was zero (the block was freed).
 // DUMP-LABEL: function 'resize_table':
-// DUMP: summary: t->hash: written|freed(free) when[nsize zero]; t->size: written; stores{t->hash = fresh(free) extent=nsize*8} returns{} requires{t}
+// DUMP: summary: t->hash: written|freed(free) when[mul(8, u64(nsize)) in u64:0-0, mul(8, u64(nsize)) in u64:0-17179869176,18446744056529682432-18446744073709551608]; t->size: written; stores{t->hash = fresh(free) extent=mul(8, u64(nsize)) when[mul(8, u64(nsize)) in u64:0-17179869176,18446744056529682432-18446744073709551608]} returns{} requires{t}
 struct table {
   void **hash;
   int size;

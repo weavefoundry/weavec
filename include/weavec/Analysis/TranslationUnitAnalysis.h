@@ -85,6 +85,8 @@ private:
 
   /// Function definitions in source order.
   std::vector<const clang::FunctionDecl *> definitions;
+  /// RFC 0017: reporting retains the recursive fixpoint's approximation.
+  std::set<const clang::FunctionDecl *> recursiveFunctions;
   /// Direct callees with no definition in the unit and the type keys of the
   /// indirect calls, collected by `buildCallGraph` for the exports.
   std::vector<const clang::FunctionDecl *> externalCallees;

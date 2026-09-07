@@ -489,3 +489,29 @@ On the same expanded 76-program fixed evaluation, detected bugs improve
 reports fall **1 → 0**. The two known size-analysis misses remain counted.
 Contextual checking preserves order through related pointer arguments and
 outputs; it does not establish arbitrary heap or traversal invariants.
+
+### RFC 0017: C integer semantics and spatial checking
+
+The [validation report](../../docs/validation-rfc0017.md) and
+[machine-readable comparison](rfc0017-results.json) retain three full Release
+runs per binary on the same pinned five-project manifest. Every run completes
+without parse, process, timeout or convergence failures. Diagnostic multisets
+are identical across repetitions on each side. Median total time increases
+**140.915 → 336.161 seconds** and maximum checker peak RSS increases
+**552.48 → 657.98 MiB**. The **138.6% runtime** and **19.1% memory** increases
+exceed the RFC's 20% and 15% targets; the report describes the investigation
+and remaining cost. Development previews are excluded from these measurements.
+
+Reports increase **3,832 → 4,069**, including **3,590 → 3,828** incomplete
+warnings. Every one of the 369 added and 132 removed diagnostic occurrences
+is retained with its location, exact message, multiplicity and triage category.
+Newly represented linenoise history selectors expose a source-confirmed
+unchecked-allocation failure path; three new Jansson table replacement
+use-after-free reports are false positives. Five old false positives disappear.
+Expanded numeric call footprints and bounded Lua instruction selectors account
+for most coverage changes. These counts do not certify the libraries.
+
+The original evaluation population is unchanged: **42/44 → 44/44 detected
+bugs**, retaining **32/32 clean programs**. Both product and VLA misses are
+now detected. Twelve additional bug/clean pairs are measured separately,
+with 12/12 detections and 12/12 clean cases.

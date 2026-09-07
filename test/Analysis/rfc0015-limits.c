@@ -41,8 +41,9 @@ void bounded(char **a) {
 }
 void weak(char **a, char *p, int i, int j) {
   char *old=a[0]; free(a[0]);
-  // CHECK: warning: analysis is incomplete: unresolved array element selection [weavec::analysis-incomplete]
-  // CHECK: warning: analysis is incomplete: unresolved array element update [weavec::analysis-incomplete]
+  // RFC 0017 represents this typed product as a symbolic selector. The
+  // possible update must still preserve the old pointer's release evidence.
+  // CHECK-NOT: analysis is incomplete
   a[i*j]=p;
   // CHECK: rfc0015-limits.c:[[@LINE+1]]:3: error: use of 'old' after it was freed [weavec::use-after-free]
   old[0]=1;

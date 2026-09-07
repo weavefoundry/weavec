@@ -11,7 +11,9 @@
 // DUMP: function 'find': param 0 *: read; stores{} returns{copy param 0 @?, null} requires{param 0}
 // DUMP: function 'node_open': param 0 *: read,written; stores{param 0 * = fresh(free) extent 4, param 0 * = null} returns{} requires{param 0} outcome zero{} null{param 0 *} outcome positive{} notnull{param 0 *}
 // DUMP: function 'node_value': param 0 *.value: read; stores{} returns{} requires{param 0}
-// DUMP: function 'vec_grow': param 0 *.cap: read,written; param 0 *.items: written,moved(free),replaced; stores{param 0 *.items = fresh(free) extent param 0 *.cap scale 4 plus 32} returns{} requires{param 0} outcome zero{} null{param 0 *.items} stored{} outcome positive{param 0 *.items: moved(free),replaced} notnull{param 0 *.items} stored{param 0 *.items}
+// DUMP: function 'vec_grow': param 0 *.cap: read,written; param 0 *.items: written,moved(free),replaced; stores{param 0 *.items = fresh(free) extent expr i32,c,8;i32,v,706172616d2030202a2e636170;i32,add;u64,cast;u64,c,4;u64,mul scale 1 plus 0} returns{} requires{param 0} outcome zero{} null{param 0 *.items} stored{} outcome positive{param 0 *.items: moved(free),replaced} notnull{param 0 *.items} stored{param 0 *.items}
+// RFC 0017: the expression uses entry cap, before vec_grow updates the field.
+// DUMP-NEXT: heap param 0 *.items complete{result = fresh(free) extent expr i32,c,8;i32,v,706172616d2030202a2e636170;i32,add;u64,cast;u64,c,4;u64,mul scale 1 plus 0}
 // DUMP: function 'vec_reset': param 0 *.items: written,freed(free),replaced; stores{param 0 *.items = null} returns{} requires{param 0}
 
 int replaced_copy(struct vec *v) {

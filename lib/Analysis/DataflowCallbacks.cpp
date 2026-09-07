@@ -266,6 +266,8 @@ FunctionDataflow::resolveCall(const CallExpr &call) {
       }
     }
   }
+  if (result && source == SummarySource::Builtin)
+    specializeIntegerBuiltin(call, *result, state);
   callSources[&call] = source;
   auto &cached = callSummaries[&call];
   cached = std::move(result);

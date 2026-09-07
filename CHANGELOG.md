@@ -8,6 +8,46 @@ follows [Semantic Versioning](https://semver.org/) once it reaches 1.0.
 
 ### Added
 
+- C integer semantics and compositional spatial checking (RFC 0017): target
+  widths through 64 bits, promotions,
+  narrowing and `_Bool` conversions, full-width unsigned values, mixed-sign
+  comparisons and modular unsigned arithmetic feed scalar guards, ownership
+  effects, selected elements and sizes.
+- `invalid-integer-operation` (error) for definitely invalid supported
+  arithmetic and nonpositive VLA dimensions. Possibly invalid arithmetic
+  retains conservative facts; it cannot justify discarding a reachable path.
+- Bounded symbolic size expressions, allocation-time operand snapshots,
+  checked add/subtract/multiply builtins and guarded multiplication, numeric
+  returns and output values, and conditional access intervals through
+  summaries. Supported unit-stride loops can export `min(n, cap)` bounds;
+  early-exit and other unsupported loops do not infer must-requirements.
+- Call-entry numeric snapshots preserve allocation sizes and typed guards
+  when a callee overwrites their input counts, including out-parameters and
+  global fields. Integer dereferences and address-taking retain stored numeric
+  values. Numeric output paths that alias the same caller cell are joined;
+  contextual summaries retain the callee's write order.
+- VLA declaration-time dimensions and `sizeof` values, allocated flexible-array
+  tail extents, and counted-field inference that retains the C multiplication
+  type. `calloc` and `reallocarray` retain checked-product failure semantics.
+- Spatial `proven`, `violation` and `unresolved` counts and unresolved reasons
+  in `--dump-analysis`, independent of diagnostic suppression. Unsupported
+  numeric representations and interface projections expose incomplete coverage.
+- Summary and sidecar format 13 for typed facts, expressions, numeric outputs
+  and guarded access intervals. Rebuild objects carrying older sidecars. No new
+  annotation spellings or verification mode are introduced.
+- Twelve separate bug/clean regression pairs and a hardened recall runner
+  that rejects process failures even after expected reports were printed.
+- An [RFC 0017 validation report](docs/validation-rfc0017.md) and reproducible
+  corpus results: 900/900 tests pass normally and under ASan/UBSan, original
+  fixed detection improves from 42/44 to 44/44 with 32/32 clean cases, and
+  recall remains 67/67. Three runs per binary show median corpus time growing
+  from 141 to 336 seconds and peak memory growing 19%, beyond the RFC targets.
+  Three new Jansson false positives and incomplete coverage are documented.
+- Monotone recursive summary joins prevent typed guard projection from
+  oscillating between summaries. Packed numeric-write sets retain the same
+  facts with less state-copy overhead. Abstract range endpoints alone no
+  longer fabricate reachable out-of-bounds witnesses.
+
 - Compositional call checking (RFC 0016): helpers are checked under the
   caller's pointer, storage and reference-share relationships, retaining
   statement order through aliased parameters, fields, globals and selected
@@ -79,7 +119,7 @@ follows [Semantic Versioning](https://semver.org/) once it reaches 1.0.
   failures and timeouts (`scripts/evaluate.py`, part of CTest).
 - Heap coverage in `--dump-analysis`: descriptions have explicit depth and
   alternative limits; truncated descriptions are printed as `incomplete`.
-  These fields were introduced in format 9; format 10 is now required.
+  These fields were introduced in format 9; the current format is 13.
 - Reviewed corpus measurements for RFC 0013, including the substantial
   increase in false positives on Lua's GC and broad callback candidate sets.
   The corpus notes record the precision cost alongside the new capabilities.

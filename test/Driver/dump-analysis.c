@@ -34,7 +34,8 @@ void g(void) {}
 // `malloc` result may be null, so the store may be null too, and reading
 // `p->buf` requires `p` (and proves it non-null from there on).
 // CHECK-LABEL: function 'h':
-// CHECK: exit: moved{} loans{} aliases{} raw{} owned{gp@[[@LINE+4]]:{{[0-9]+}} allocated free} nulls{p@[[@LINE+5]]:{{[0-9]+}} nonnull, gp@[[@LINE+4]]:{{[0-9]+}} maybe-null}
+// CHECK: exit: moved{} loans{} aliases{} raw{} owned{gp@[[@LINE+5]]:{{[0-9]+}} allocated free} nulls{p@[[@LINE+6]]:{{[0-9]+}} nonnull, gp@[[@LINE+5]]:{{[0-9]+}} maybe-null}
+// CHECK-NEXT: spatial: proven=0 violation=0 unresolved=1 [unknown extent: 1]
 // CHECK-NEXT: summary: p->buf: read; stores{gp = fresh(free) extent=4, gp = null} returns{copy p->buf} requires{p}
 static int *gp;
 int *h(struct s *p) {

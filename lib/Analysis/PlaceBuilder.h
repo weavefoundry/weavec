@@ -119,9 +119,13 @@ struct ValueOrigin {
   /// into the same object as `place` but not at the same address (RFC 0006,
   /// *Alias exactness*).
   core::PointerOffset offset;
+  /// Preserve a bounded field-then-element derivation for spatial bounds
+  /// even when the ownership offset cannot express the composition.
+  std::vector<core::PointerOffset> spatialSteps;
   /// Alloc (RFC 0011): the extent of the allocation in bytes, when the size
   /// argument or the callee's summary says.
   std::optional<core::Affine> extent;
+  std::optional<core::PointerOffset> boundsOffset;
   /// RFC 0013: string postconditions of a summarized object.
   std::optional<core::Affine> stringLength;
   bool unterminated = false;
@@ -155,6 +159,19 @@ public:
       selectArray;
   std::function<std::optional<std::string>(std::string_view)> summaryIndex;
   std::map<core::SummaryPath, std::string> objectViews;
+  /// RFC 0017: only value-preserving conversions/scales admit old facts.
+  std::function<bool(const clang::Expr &)> preservesInteger;
+  std::function<std::optional<core::PlaceGuard>(const core::PathGuard &,
+                                                const clang::CallExpr &)>
+      integerGuard;
+  std::function<std::optional<core::Affine>(const clang::Expr &)> integerAffine;
+  std::function<std::optional<core::Affine>(const core::PathAffine &,
+                                            const clang::CallExpr &)>
+      expressionFromPath;
+  [[nodiscard]] std::optional<core::Affine>
+  legacyAffineOf(const clang::Expr &expr);
+  std::function<std::optional<core::ValueFact>(const clang::Expr &)>
+      integerFact;
   std::function<bool(const core::SummaryPath &, const clang::CallExpr &)>
       validatePath;
 
