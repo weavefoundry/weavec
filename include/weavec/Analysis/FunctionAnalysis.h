@@ -23,10 +23,20 @@
 
 #include "llvm/Support/raw_ostream.h"
 
+#include <set>
+#include <string>
+
 namespace weavec::analysis {
 
 /// Tunables for the analyses.
 struct AnalysisOptions {
+  /// RFC 0018: compute contracts; select all reported or named definitions.
+  bool checkContracts = false;
+  bool checked = false;
+  bool checkedMainFileOnly = true;
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
+  std::set<std::string> checkedFunctions = {};
+  bool deferCheckedCalls = false;
   /// `--report-unannotated` (RFC 0003): for every exported function
   /// definition, report pointer parameters and results without an
   /// annotation, offering the inferred one as a fix-it; and include callees

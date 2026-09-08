@@ -14,6 +14,7 @@
 #include "weavec/Analysis/Summaries.h"
 
 #include <string>
+#include <utility>
 
 using namespace clang;
 
@@ -22,7 +23,7 @@ namespace weavec::analysis {
 FunctionAnalyzer::FunctionAnalyzer(ASTContext &ctx,
                                    core::DiagnosticSink &diagSink,
                                    AnalysisOptions analysisOptions)
-    : context(ctx), sink(diagSink), options(analysisOptions) {}
+    : context(ctx), sink(diagSink), options(std::move(analysisOptions)) {}
 
 bool FunctionAnalyzer::analyze(const FunctionDecl &function,
                                SummaryStore &summaries, bool emitDiagnostics,
@@ -30,20 +31,68 @@ bool FunctionAnalyzer::analyze(const FunctionDecl &function,
   if (!function.doesThisDeclarationHaveABody())
     return false;
 
-  if (emitDiagnostics)
+  core::DiagnosticCollector validation;
+  if (options.checkContracts) {
+    FunctionAnalyzer validator(context, validation, options);
+    validator.validate(function);
+    if (emitDiagnostics)
+      for (const auto &diagnostic : validation.diagnostics())
+        sink.report(diagnostic);
+  } else if (emitDiagnostics) {
     validate(function);
+  }
   // A `WEAVEC_UNSAFE` function is analysed like any other so its callers see
   // what it does; the dataflow itself suppresses reports inside it (RFC
   // 0004, *Unsafe regions*).
   FunctionDataflow dataflow(context, function, sink, options, summaries,
                             emitDiagnostics);
   dataflow.run();
-  return summaries.setInferred(function, dataflow.summary(), widenSummary);
+  if (!options.checkContracts)
+    return summaries.setInferred(function, dataflow.summary(), widenSummary);
+  auto summary = dataflow.summary();
+  if (options.checkContracts)
+    for (const auto &diagnostic : validation.diagnostics())
+      if (diagnostic.severity == core::Severity::Error ||
+          diagnostic.id == core::diag::InvalidAnnotation)
+        summary.checked.obligations.add(
+            {.property = core::SafetyProperty::Semantics,
+             .outcome = core::SafetyOutcome::Violation,
+             .location = diagnostic.location,
+             .function = function.getNameAsString(),
+             .subject = std::string(diagnostic.id),
+             .reason = diagnostic.message,
+             .calls = {}});
+  return summaries.setInferred(function, summary, widenSummary);
 }
 
 void FunctionAnalyzer::validate(const FunctionDecl &function) {
   const SourceManager &sm = context.getSourceManager();
 
+  const auto invalidChecked = [&](const NamedDecl &decl) {
+    if (!getAnnotations(decl).checked)
+      return;
+    sink.report(core::Diagnostic{
+        .severity = core::Severity::Error,
+        .id = core::diag::InvalidAnnotation,
+        .message = "WEAVEC_CHECKED requires a function declaration",
+        .location = toCoreLocation(sm, decl.getLocation()),
+        .notes = {},
+        .fixits = {}});
+  };
+  for (const auto *param : function.parameters())
+    invalidChecked(*param);
+  std::vector<const Stmt *> declarations{function.getBody()};
+  for (std::size_t i = 0;
+       i < declarations.size() && declarations.size() < 65536; ++i) {
+    if (!declarations[i])
+      continue;
+    if (const auto *statement = dyn_cast<DeclStmt>(declarations[i]))
+      for (const auto *decl : statement->decls())
+        if (const auto *named = dyn_cast<NamedDecl>(decl))
+          invalidChecked(*named);
+    for (const auto *child : declarations[i]->children())
+      declarations.push_back(child);
+  }
   const AnnotationSet annotations = getAnnotations(function);
   if (annotations.invalid) {
     sink.report(core::Diagnostic{

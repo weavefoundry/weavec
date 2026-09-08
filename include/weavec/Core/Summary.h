@@ -29,6 +29,7 @@
 #include "weavec/Core/Offset.h"
 #include "weavec/Core/Ownership.h"
 #include "weavec/Core/Place.h"
+#include "weavec/Core/Safety.h"
 #include "weavec/Core/Scalar.h"
 
 #include <algorithm>
@@ -188,6 +189,49 @@ struct ExtentRequirement {
   friend std::strong_ordering operator<=>(const ExtentRequirement &,
                                           const ExtentRequirement &) = default;
 };
+
+/// RFC 0018: sufficient conditions, separate from reachable bug witnesses.
+enum class CheckedRequirementKind : std::uint8_t {
+  Valid,
+  Extent,
+  Initialized,
+  Release,
+  Separated,
+  Writable
+};
+struct CheckedRequirement {
+  CheckedRequirementKind kind = CheckedRequirementKind::Valid;
+  SummaryPath path;
+  SummaryPath other;
+  PathAffine begin = PathAffine::ofConstant(0);
+  PathAffine end = PathAffine::ofConstant(0);
+  std::string family;
+  friend auto operator<=>(const CheckedRequirement &,
+                          const CheckedRequirement &) = default;
+};
+struct CheckedContract {
+  /// Frontend canonical C function type. Empty only for synthetic Core values.
+  std::string signature;
+  bool computed = false;
+  bool selected = false;
+  bool deferred = false;
+  bool limited = false;
+  std::set<CheckedRequirement> requirements;
+  std::set<CheckedRequirement> establishes;
+  SafetyLedger obligations;
+
+  void require(CheckedRequirement requirement);
+  void establish(CheckedRequirement requirement);
+  void join(const CheckedContract &other);
+  [[nodiscard]] bool complete() const {
+    return computed && !limited && !deferred && obligations.complete();
+  }
+  friend bool operator==(const CheckedContract &,
+                         const CheckedContract &) = default;
+};
+[[nodiscard]] std::string_view toString(CheckedRequirementKind value) noexcept;
+[[nodiscard]] std::optional<CheckedRequirementKind>
+parseCheckedRequirementKind(std::string_view value);
 
 /// What the callee may do to the object at a summary path.
 struct PlaceEffect {
@@ -510,6 +554,7 @@ struct ArrayRelease {
 /// The interface behaviour of one function (RFC 0003, *Summaries*).
 class FunctionSummary {
 public:
+  CheckedContract checked;
   /// RFC 0014: explicit reasons why this summary is incomplete.
   std::set<std::string> incomplete;
   /// RFC 0014: interface paths whose function values specialize this body.

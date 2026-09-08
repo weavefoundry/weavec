@@ -14,17 +14,16 @@
 #include <string>
 
 namespace weavec::core {
-namespace {
 
-const GlobalNamer Names = [](std::uint32_t id) {
+static constexpr auto Names = [](std::uint32_t id) {
   return id == 0 ? std::string("g_buf") : "g" + std::to_string(id);
 };
 
-const GlobalResolver ResolveAll = [](std::string_view name) {
+static constexpr auto ResolveAll = [](std::string_view name) {
   return std::optional<std::uint32_t>(name == "g_buf" ? 0U : 7U);
 };
 
-FunctionSummary sample() {
+static FunctionSummary sample() {
   FunctionSummary s;
   s.addEffect(SummaryPath::param(0), PlaceEffect{.freed = true});
   s.addEffect(SummaryPath::param(1).deref().field("data"),
@@ -175,7 +174,7 @@ TEST(SummaryIO, PrintsAndParsesGuardsAndNeverReturns) {
 // RFC 0010, *Summary text format (version 6)*: the `share` flag and the
 // `increment`, `decrement`, `count`, `stored` and `fact` lines.
 TEST(SummaryIO, PrintsAndParsesSharesAndPerOutcomeLines) {
-  EXPECT_EQ(SummaryFormatVersion, 13U);
+  EXPECT_EQ(SummaryFormatVersion, 14U);
   const SummaryPath rc = SummaryPath::param(0).deref().field("rc");
   FunctionSummary unref;
   unref.addEffect(SummaryPath::param(0),
@@ -667,24 +666,24 @@ TEST(SummaryIO, RejectsMalformedRecords) {
   EXPECT_NE(error.find("after 'end'"), std::string::npos);
 }
 
-} // namespace
 } // namespace weavec::core
 
 namespace weavec::core {
 
 TEST(NumericSummary, ValuesExpressionsAndPredicatesRoundTrip) {
   using Expr = IntegerExpression<SummaryPath>;
-  const IntegerType type{32, false};
+  const IntegerType type{.width = 32, .isSigned = false};
   const auto n = Expr::input(SummaryPath::param(1), type);
   const auto m = Expr::input(SummaryPath::global(0), type);
   const auto product = Expr::operation(IntegerOp::Multiply, n, m).value();
   PathGuard guard;
-  guard.requireInteger({n, IntegerOp::Less, m});
+  guard.requireInteger({.lhs = n, .op = IntegerOp::Less, .rhs = m});
   FunctionSummary summary;
   summary.addNumericOutput(SummaryPath::result(),
                            {.value = product, .when = guard});
-  summary.addNumericOutput(SummaryPath::param(0).deref(),
-                           {.value = n.converted({8, false})});
+  summary.addNumericOutput(
+      SummaryPath::param(0).deref(),
+      {.value = n.converted({.width = 8, .isSigned = false})});
   summary.addRequirement(
       0, {.need = PathAffine::ofExpression(product, 4, 4), .when = guard});
   summary.addReturn(
@@ -716,13 +715,17 @@ TEST(NumericSummary, ValuesExpressionsAndPredicatesRoundTrip) {
 
 TEST(NumericSummary, NarrowedExpressionRangeIsAnExactCondition) {
   using Expr = IntegerExpression<SummaryPath>;
-  const IntegerType type{8, false};
+  const IntegerType type{.width = 8, .isSigned = false};
   const auto n =
-      Expr::input(SummaryPath::param(0), {32, false}).converted(type).value();
+      Expr::input(SummaryPath::param(0), {.width = 32, .isSigned = false})
+          .converted(type)
+          .value();
   PathGuard guard;
   guard.requireInteger(
-      {n, IntegerOp::Equal, Expr::constant(IntegerValue::ofBits(type, 0)),
-       IntegerRange::singleton(IntegerValue::ofBits(type, 0))});
+      {.lhs = n,
+       .op = IntegerOp::Equal,
+       .rhs = Expr::constant(IntegerValue::ofBits(type, 0)),
+       .range = IntegerRange::singleton(IntegerValue::ofBits(type, 0))});
   FunctionSummary summary;
   summary.addEffect(SummaryPath::param(1), {.freed = true, .when = guard});
   const auto names = [](std::uint32_t) { return std::string("g"); };
@@ -741,18 +744,18 @@ TEST(NumericSummary, NarrowedExpressionRangeIsAnExactCondition) {
 TEST(NumericSummary, AnUnknownAlternativeSurvivesJoinsAndLimits) {
   using Expr = IntegerExpression<SummaryPath>;
   FunctionSummary exact;
-  exact.addNumericOutput(
-      SummaryPath::result(),
-      {.value = Expr::constant(IntegerValue::ofBits({32, true}, 3))});
+  exact.addNumericOutput(SummaryPath::result(),
+                         {.value = Expr::constant(IntegerValue::ofBits(
+                              {.width = 32, .isSigned = true}, 3))});
   FunctionSummary unknown;
   unknown.addNumericOutput(SummaryPath::result(), {});
   exact.join(unknown);
   EXPECT_EQ(exact.numericOutputs.at(SummaryPath::result()),
             (std::set<NumericOutput>{NumericOutput{}}));
   for (unsigned i = 0; i < MaxNumericOutputAlternatives + 1; ++i)
-    unknown.addNumericOutput(
-        SummaryPath::param(0).deref(),
-        {.value = Expr::constant(IntegerValue::ofBits({32, true}, i))});
+    unknown.addNumericOutput(SummaryPath::param(0).deref(),
+                             {.value = Expr::constant(IntegerValue::ofBits(
+                                  {.width = 32, .isSigned = true}, i))});
   EXPECT_EQ(unknown.numericOutputs.at(SummaryPath::param(0).deref()).size(),
             1U);
   EXPECT_FALSE(

@@ -1,0 +1,153 @@
+{
+  "version": 1,
+  "baseline_revision": "fb90a22",
+  "description": "Frozen before RFC 0018 implementation. Rejection includes unresolved obligations; it is not a concrete bug-detection score.",
+  "cases": [
+    {
+      "name": "index-bad",
+      "source": "index-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "purpose": "bounds",
+      "flags": []
+    },
+    {
+      "name": "index-good",
+      "source": "index-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "purpose": "guarded local array",
+      "flags": []
+    },
+    {
+      "name": "early-bad",
+      "source": "early-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "purpose": "callee interval",
+      "flags": []
+    },
+    {
+      "name": "early-good",
+      "source": "early-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "purpose": "sufficient early-exit contract",
+      "flags": []
+    },
+    {
+      "name": "union-bad",
+      "source": "union-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "purpose": "unsupported union identity",
+      "flags": []
+    },
+    {
+      "name": "scalar-bad",
+      "source": "scalar-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "purpose": "local initialization",
+      "flags": []
+    },
+    {
+      "name": "scalar-good",
+      "source": "scalar-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "purpose": "local initialization",
+      "flags": []
+    },
+    {
+      "name": "heap-bad",
+      "source": "heap-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "purpose": "memory initialization",
+      "flags": []
+    },
+    {
+      "name": "heap-good",
+      "source": "heap-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "purpose": "memory initialization",
+      "flags": []
+    },
+    {
+      "name": "alias-bad",
+      "source": "alias-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "purpose": "interacting aliases",
+      "flags": []
+    },
+    {
+      "name": "alias-good",
+      "source": "alias-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "purpose": "separate allocations",
+      "flags": []
+    },
+    {
+      "name": "external-bad",
+      "source": "external-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "purpose": "unavailable contract",
+      "flags": []
+    },
+    {
+      "name": "unsafe-good",
+      "source": "unsafe-good.c",
+      "function": "access",
+      "expect": "accepted",
+      "purpose": "recorded unsafe trust",
+      "flags": []
+    },
+    {
+      "name": "assume-good",
+      "source": "assume-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "purpose": "recorded assertion trust",
+      "flags": []
+    },
+    {
+      "name": "family-bad",
+      "source": "family-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "purpose": "release family",
+      "flags": []
+    },
+    {
+      "name": "copy-good",
+      "source": "copy-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "purpose": "complete initialized copy",
+      "flags": []
+    },
+    {
+      "name": "copy-bad",
+      "source": "copy-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "purpose": "incomplete initialization copy",
+      "flags": []
+    },
+    {
+      "name": "demotion-bad",
+      "source": "demotion-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "purpose": "severity independent enforcement",
+      "flags": [
+        "-Wno-error=weavec"
+      ]
+    }
+  ]
+}

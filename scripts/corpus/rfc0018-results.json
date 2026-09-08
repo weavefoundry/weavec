@@ -1,0 +1,1641 @@
+{
+  "version": 1,
+  "rfc": "0018",
+  "baseline_commit": "fb90a229a0b1d8c46426bc0622943bf0199b53c3",
+  "binaries": {
+    "before": {
+      "path": "/tmp/weavec-rfc18-before",
+      "sha256": "7305f897ab322572d8d1d53d6f09c6f0ae21ad77a8f59bf478f30e82b8cb7c31"
+    },
+    "after": {
+      "path": "/Users/owencarey/Documents/weavefoundry/weavec/build/rfc16-rel/bin/weavec",
+      "sha256": "18f9d28ab490f38454bbb5d1d56dc57c2b90c1751fe7cfa315982615aa23ac5c"
+    }
+  },
+  "manifest": "scripts/corpus/rfc0015.json",
+  "commits": {
+    "log.c": "f9ea34994bd58ed342d2245cd4110bb5c6790153",
+    "cJSON-program": "fb16e5cf358798aabb049655975cde8427101056",
+    "linenoise-program": "a473823d74b93eab2ba83480df16ed37617493f2",
+    "jansson": "851a2145e3256f2e67e5dfe24b0e456bf198b741",
+    "lua": "7579fc9d7ed90240487251dfb69168f8e64e9294"
+  },
+  "timeout_seconds": 600,
+  "order": [
+    "before-1",
+    "before-2",
+    "before-3"
+  ],
+  "build_activity": {},
+  "toolchain": {
+    "llvm": "23.1.0",
+    "target": "macOS arm64",
+    "optimization": "Release",
+    "lto": false,
+    "warnings_as_errors": true
+  },
+  "ordinary": {
+    "status": "pending",
+    "remaining": "Three uncontended observations of the final binary are required. Competing Cargo builds and benchmark/test workloads prevented performance signoff.",
+    "observations": [
+      {
+        "label": "before-1",
+        "seconds": 289.71299999999997,
+        "peak_rss_bytes": 684556288,
+        "projects": {
+          "log.c": {
+            "units": 1,
+            "seconds": 0.475,
+            "clang_errors": 0,
+            "failures": 0,
+            "peak_rss_bytes": 49758208,
+            "by_id": {
+              "annotation-required": 2
+            }
+          },
+          "cJSON-program": {
+            "units": 1,
+            "seconds": 1.71,
+            "clang_errors": 0,
+            "failures": 0,
+            "peak_rss_bytes": 61587456,
+            "by_id": {
+              "analysis-incomplete": 3,
+              "annotation-required": 3,
+              "null-dereference": 26
+            }
+          },
+          "linenoise-program": {
+            "units": 1,
+            "seconds": 0.639,
+            "clang_errors": 0,
+            "failures": 0,
+            "peak_rss_bytes": 56442880,
+            "by_id": {
+              "analysis-incomplete": 17,
+              "annotation-required": 3,
+              "double-free": 1,
+              "leak": 1,
+              "null-dereference": 4
+            }
+          },
+          "jansson": {
+            "units": 1,
+            "seconds": 3.367,
+            "clang_errors": 0,
+            "failures": 0,
+            "peak_rss_bytes": 63242240,
+            "by_id": {
+              "analysis-incomplete": 53,
+              "annotation-required": 4,
+              "double-free": 47,
+              "invalid-release": 2,
+              "null-dereference": 3,
+              "use-after-free": 32
+            }
+          },
+          "lua": {
+            "units": 1,
+            "seconds": 283.522,
+            "clang_errors": 0,
+            "failures": 0,
+            "peak_rss_bytes": 684556288,
+            "by_id": {
+              "analysis-incomplete": 3755,
+              "annotation-required": 5,
+              "invalid-release": 1,
+              "lifetime-too-short": 2,
+              "null-dereference": 105
+            }
+          }
+        },
+        "diagnostic_totals": {
+          "analysis-incomplete": 3828,
+          "annotation-required": 17,
+          "double-free": 48,
+          "invalid-release": 3,
+          "leak": 1,
+          "lifetime-too-short": 2,
+          "null-dereference": 138,
+          "use-after-free": 32
+        },
+        "raw_sha256": "3d5671ed9487f9c1ee7054af5feddd4bb8c1183091d673a487f90c90b5fb69c5",
+        "timing_eligible": true
+      },
+      {
+        "label": "before-2",
+        "seconds": 322.15900000000005,
+        "peak_rss_bytes": 686522368,
+        "projects": {
+          "log.c": {
+            "units": 1,
+            "seconds": 0.087,
+            "clang_errors": 0,
+            "failures": 0,
+            "peak_rss_bytes": 49790976,
+            "by_id": {
+              "annotation-required": 2
+            }
+          },
+          "cJSON-program": {
+            "units": 1,
+            "seconds": 1.817,
+            "clang_errors": 0,
+            "failures": 0,
+            "peak_rss_bytes": 61718528,
+            "by_id": {
+              "analysis-incomplete": 3,
+              "annotation-required": 3,
+              "null-dereference": 26
+            }
+          },
+          "linenoise-program": {
+            "units": 1,
+            "seconds": 0.658,
+            "clang_errors": 0,
+            "failures": 0,
+            "peak_rss_bytes": 56606720,
+            "by_id": {
+              "analysis-incomplete": 17,
+              "annotation-required": 3,
+              "double-free": 1,
+              "leak": 1,
+              "null-dereference": 4
+            }
+          },
+          "jansson": {
+            "units": 1,
+            "seconds": 3.557,
+            "clang_errors": 0,
+            "failures": 0,
+            "peak_rss_bytes": 62783488,
+            "by_id": {
+              "analysis-incomplete": 53,
+              "annotation-required": 4,
+              "double-free": 47,
+              "invalid-release": 2,
+              "null-dereference": 3,
+              "use-after-free": 32
+            }
+          },
+          "lua": {
+            "units": 1,
+            "seconds": 316.04,
+            "clang_errors": 0,
+            "failures": 0,
+            "peak_rss_bytes": 686522368,
+            "by_id": {
+              "analysis-incomplete": 3755,
+              "annotation-required": 5,
+              "invalid-release": 1,
+              "lifetime-too-short": 2,
+              "null-dereference": 105
+            }
+          }
+        },
+        "diagnostic_totals": {
+          "analysis-incomplete": 3828,
+          "annotation-required": 17,
+          "double-free": 48,
+          "invalid-release": 3,
+          "leak": 1,
+          "lifetime-too-short": 2,
+          "null-dereference": 138,
+          "use-after-free": 32
+        },
+        "raw_sha256": "e953eb3ce07d76ee26d8e2297eb9e00062faad2d8d3892199acacca63879caf8",
+        "timing_eligible": true
+      },
+      {
+        "label": "before-3",
+        "seconds": 320.591,
+        "peak_rss_bytes": 686669824,
+        "projects": {
+          "log.c": {
+            "units": 1,
+            "seconds": 0.086,
+            "clang_errors": 0,
+            "failures": 0,
+            "peak_rss_bytes": 49659904,
+            "by_id": {
+              "annotation-required": 2
+            }
+          },
+          "cJSON-program": {
+            "units": 1,
+            "seconds": 1.827,
+            "clang_errors": 0,
+            "failures": 0,
+            "peak_rss_bytes": 61587456,
+            "by_id": {
+              "analysis-incomplete": 3,
+              "annotation-required": 3,
+              "null-dereference": 26
+            }
+          },
+          "linenoise-program": {
+            "units": 1,
+            "seconds": 0.668,
+            "clang_errors": 0,
+            "failures": 0,
+            "peak_rss_bytes": 56410112,
+            "by_id": {
+              "analysis-incomplete": 17,
+              "annotation-required": 3,
+              "double-free": 1,
+              "leak": 1,
+              "null-dereference": 4
+            }
+          },
+          "jansson": {
+            "units": 1,
+            "seconds": 3.554,
+            "clang_errors": 0,
+            "failures": 0,
+            "peak_rss_bytes": 62865408,
+            "by_id": {
+              "analysis-incomplete": 53,
+              "annotation-required": 4,
+              "double-free": 47,
+              "invalid-release": 2,
+              "null-dereference": 3,
+              "use-after-free": 32
+            }
+          },
+          "lua": {
+            "units": 1,
+            "seconds": 314.456,
+            "clang_errors": 0,
+            "failures": 0,
+            "peak_rss_bytes": 686669824,
+            "by_id": {
+              "analysis-incomplete": 3755,
+              "annotation-required": 5,
+              "invalid-release": 1,
+              "lifetime-too-short": 2,
+              "null-dereference": 105
+            }
+          }
+        },
+        "diagnostic_totals": {
+          "analysis-incomplete": 3828,
+          "annotation-required": 17,
+          "double-free": 48,
+          "invalid-release": 3,
+          "leak": 1,
+          "lifetime-too-short": 2,
+          "null-dereference": 138,
+          "use-after-free": 32
+        },
+        "raw_sha256": "85635dca242ac51de16c16b7021d166d9e1536b92c9316601768c2160b578e81",
+        "timing_eligible": true
+      }
+    ],
+    "comparison": {},
+    "diagnostic_changes": [],
+    "diagnostics_stable_across_available_observations": true,
+    "excluded_final_observation": {
+      "observation": {
+        "projects": {
+          "log.c": {
+            "units": 1,
+            "seconds": 0.157,
+            "clang_errors": 0,
+            "failures": 0,
+            "peak_rss_bytes": 49922048,
+            "by_id": {
+              "annotation-required": 2
+            }
+          },
+          "cJSON-program": {
+            "units": 1,
+            "seconds": 2.829,
+            "clang_errors": 0,
+            "failures": 0,
+            "peak_rss_bytes": 61931520,
+            "by_id": {
+              "analysis-incomplete": 3,
+              "annotation-required": 3,
+              "null-dereference": 26
+            }
+          },
+          "linenoise-program": {
+            "units": 1,
+            "seconds": 0.987,
+            "clang_errors": 0,
+            "failures": 0,
+            "peak_rss_bytes": 56819712,
+            "by_id": {
+              "analysis-incomplete": 17,
+              "annotation-required": 3,
+              "double-free": 1,
+              "leak": 1,
+              "null-dereference": 4
+            }
+          },
+          "jansson": {
+            "units": 1,
+            "seconds": 5.524,
+            "clang_errors": 0,
+            "failures": 0,
+            "peak_rss_bytes": 63930368,
+            "by_id": {
+              "analysis-incomplete": 53,
+              "annotation-required": 4,
+              "double-free": 47,
+              "invalid-release": 2,
+              "null-dereference": 3,
+              "use-after-free": 32
+            }
+          },
+          "lua": {
+            "units": 1,
+            "seconds": 497.697,
+            "clang_errors": 0,
+            "failures": 0,
+            "peak_rss_bytes": 693829632,
+            "by_id": {
+              "analysis-incomplete": 3755,
+              "annotation-required": 5,
+              "invalid-release": 1,
+              "lifetime-too-short": 2,
+              "null-dereference": 105
+            }
+          }
+        },
+        "totals": {
+          "analysis-incomplete": 3828,
+          "annotation-required": 17,
+          "double-free": 48,
+          "invalid-release": 3,
+          "leak": 1,
+          "lifetime-too-short": 2,
+          "null-dereference": 138,
+          "use-after-free": 32
+        }
+      },
+      "raw_sha256": "355ac39abdf49a179ae2945ae46d3acc6457384321c4dd3a91103d6bc2b0709b",
+      "reason": "A separate benchmark/test workload and heavy system background activity were observed during the run. Compiler-only monitoring missed the external workload; a manual monitoring-log annotation also caused a bookkeeping parse error after the corpus completed.",
+      "timing_eligible": false,
+      "diagnostics_identical_to_baseline": true
+    }
+  },
+  "checked": [
+    {
+      "project": "log.c",
+      "measurement": {
+        "units": 1,
+        "seconds": 0.464,
+        "clang_errors": 0,
+        "failures": 0,
+        "peak_rss_bytes": 51363840,
+        "by_id": {
+          "annotation-required": 2,
+          "checking-incomplete": 72
+        }
+      },
+      "diagnostic_totals": {
+        "annotation-required": 2,
+        "checking-incomplete": 72
+      },
+      "failures": [],
+      "raw_sha256": "8c53212c6750a15a050833d8ba7522456b2bdc26f2e74b07b98367be9405df34",
+      "invocation_ok": false,
+      "all_statuses": {
+        "incomplete": 10,
+        "proven": 3
+      },
+      "selected_statuses": {
+        "incomplete": 9,
+        "proven": 3
+      },
+      "totals": {
+        "functions": 13,
+        "selected": 12,
+        "complete": 3,
+        "trusted_complete": 0,
+        "incomplete": 10,
+        "deferred": 0
+      },
+      "selected_obligation_outcomes": {
+        "unresolved": 88,
+        "proven": 66,
+        "required": 72
+      },
+      "selected_obligation_properties": {
+        "bounds": 54,
+        "validity": 39,
+        "initialization": 72,
+        "call": 47,
+        "semantics": 12,
+        "aliasing": 2
+      },
+      "top_unresolved_reasons": [
+        [
+          "callee has no complete checked contract",
+          30
+        ],
+        [
+          "read interval must be initialized",
+          27
+        ],
+        [
+          "unsupported checked C construct or storage type",
+          12
+        ],
+        [
+          "access interval must fit its object",
+          10
+        ],
+        [
+          "call through 'L.lock' is not checked: its function type has no ownership annotations and its target is unknown",
+          2
+        ],
+        [
+          "callee requires separated input objects",
+          2
+        ],
+        [
+          "callee safety precondition must hold",
+          2
+        ],
+        [
+          "memory location is not represented",
+          2
+        ],
+        [
+          "call through 'cb->fn' is not checked: its function type has no ownership annotations and its target is unknown",
+          1
+        ]
+      ],
+      "report_sha256": "1da7f028f68d79287c4c95391bf684f49138a80a59f5f1f9bd8b44f07d384a9e"
+    },
+    {
+      "project": "cJSON-program",
+      "measurement": {
+        "units": 1,
+        "seconds": 20.506,
+        "clang_errors": 0,
+        "failures": 1,
+        "peak_rss_bytes": 332169216,
+        "by_id": {
+          "analysis-incomplete": 11,
+          "annotation-required": 3,
+          "checking-failed": 26,
+          "checking-incomplete": 4464,
+          "null-dereference": 26
+        }
+      },
+      "diagnostic_totals": {
+        "analysis-incomplete": 11,
+        "annotation-required": 3,
+        "checking-failed": 26,
+        "checking-incomplete": 4464,
+        "null-dereference": 26
+      },
+      "failures": [
+        "analysis reached an iteration limit"
+      ],
+      "raw_sha256": "7e916291712f2e7a0809fe3ee00b9078234097c0666561fa5849ffe36f5a7b5e",
+      "invocation_ok": false,
+      "all_statuses": {
+        "proven": 14,
+        "incomplete": 221,
+        "conditional": 14
+      },
+      "selected_statuses": {
+        "incomplete": 135,
+        "conditional": 14,
+        "proven": 2
+      },
+      "totals": {
+        "functions": 249,
+        "selected": 151,
+        "complete": 28,
+        "trusted_complete": 0,
+        "incomplete": 221,
+        "deferred": 0
+      },
+      "selected_obligation_outcomes": {
+        "proven": 1644,
+        "required": 1572,
+        "unresolved": 20293,
+        "violation": 26
+      },
+      "selected_obligation_properties": {
+        "initialization": 2018,
+        "bounds": 1100,
+        "validity": 1467,
+        "aliasing": 109,
+        "call": 18544,
+        "semantics": 295,
+        "arithmetic": 2
+      },
+      "top_unresolved_reasons": [
+        [
+          "access interval must fit its object",
+          4091
+        ],
+        [
+          "read interval must be initialized",
+          3014
+        ],
+        [
+          "pointer must identify live non-null storage",
+          2965
+        ],
+        [
+          "write interval must be writable",
+          1682
+        ],
+        [
+          "callee has no complete checked contract",
+          1563
+        ],
+        [
+          "formed pointer must remain within its object or one past it",
+          1092
+        ],
+        [
+          "callee safety precondition must hold",
+          846
+        ],
+        [
+          "call requires live non-null storage",
+          788
+        ],
+        [
+          "pointer arithmetic requires live non-null storage",
+          688
+        ],
+        [
+          "unsupported checked C construct or storage type",
+          679
+        ]
+      ],
+      "report_sha256": "354c6e68b920c8541377fc7992d9fadc7afda6f75aca97a23174bd7300376be9"
+    },
+    {
+      "project": "linenoise-program",
+      "measurement": {
+        "units": 1,
+        "seconds": 3.41,
+        "clang_errors": 0,
+        "failures": 0,
+        "peak_rss_bytes": 280756224,
+        "by_id": {
+          "analysis-incomplete": 17,
+          "annotation-required": 3,
+          "checking-failed": 8,
+          "checking-incomplete": 2538,
+          "double-free": 3,
+          "leak": 1,
+          "null-dereference": 4
+        }
+      },
+      "diagnostic_totals": {
+        "analysis-incomplete": 17,
+        "annotation-required": 3,
+        "checking-failed": 8,
+        "checking-incomplete": 2538,
+        "double-free": 3,
+        "leak": 1,
+        "null-dereference": 4
+      },
+      "failures": [],
+      "raw_sha256": "82cd9c7ef890d47d22f40c5f1e261f4b388ab7af0d032f87a4d60f67519b1e36",
+      "invocation_ok": false,
+      "all_statuses": {
+        "proven": 18,
+        "incomplete": 108,
+        "conditional": 4
+      },
+      "selected_statuses": {
+        "incomplete": 70,
+        "conditional": 4,
+        "proven": 14
+      },
+      "totals": {
+        "functions": 130,
+        "selected": 88,
+        "complete": 22,
+        "trusted_complete": 0,
+        "incomplete": 108,
+        "deferred": 0
+      },
+      "selected_obligation_outcomes": {
+        "proven": 1231,
+        "unresolved": 15107,
+        "required": 1191,
+        "trusted": 99,
+        "violation": 8
+      },
+      "selected_obligation_properties": {
+        "initialization": 1385,
+        "aliasing": 59,
+        "bounds": 615,
+        "call": 14636,
+        "validity": 808,
+        "arithmetic": 41,
+        "release": 24,
+        "semantics": 68
+      },
+      "top_unresolved_reasons": [
+        [
+          "local value must be initialized",
+          2344
+        ],
+        [
+          "access interval must fit its object",
+          2073
+        ],
+        [
+          "read interval must be initialized",
+          2050
+        ],
+        [
+          "callee has no complete checked contract",
+          1469
+        ],
+        [
+          "callee safety precondition must hold",
+          961
+        ],
+        [
+          "integer operation may be invalid",
+          936
+        ],
+        [
+          "formed pointer must remain within its object or one past it",
+          854
+        ],
+        [
+          "callee requires separated input objects",
+          796
+        ],
+        [
+          "memory location is not represented",
+          440
+        ],
+        [
+          "pointer arithmetic requires live non-null storage",
+          405
+        ]
+      ],
+      "report_sha256": "8d4817d35a1a5c4f46dfbc0bf35695f542f2170750ed2883267dd9a6b6f360eb"
+    },
+    {
+      "project": "jansson",
+      "measurement": {
+        "units": 1,
+        "seconds": 132.337,
+        "clang_errors": 0,
+        "failures": 1,
+        "peak_rss_bytes": 1112457216,
+        "by_id": {
+          "analysis-incomplete": 55,
+          "annotation-required": 4,
+          "checking-failed": 82,
+          "checking-incomplete": 7784,
+          "double-free": 47,
+          "invalid-release": 2,
+          "null-dereference": 3,
+          "use-after-free": 32
+        }
+      },
+      "diagnostic_totals": {
+        "analysis-incomplete": 55,
+        "annotation-required": 4,
+        "checking-failed": 82,
+        "checking-incomplete": 7784,
+        "double-free": 47,
+        "invalid-release": 2,
+        "null-dereference": 3,
+        "use-after-free": 32
+      },
+      "failures": [
+        "analysis reached an iteration limit"
+      ],
+      "raw_sha256": "6f8a74a484503499fba95417a81574d99c65560083ed25871e5c3234d4d64513",
+      "invocation_ok": false,
+      "all_statuses": {
+        "proven": 21,
+        "incomplete": 434,
+        "conditional": 20
+      },
+      "selected_statuses": {
+        "incomplete": 198,
+        "conditional": 9,
+        "proven": 4
+      },
+      "totals": {
+        "functions": 475,
+        "selected": 211,
+        "complete": 41,
+        "trusted_complete": 0,
+        "incomplete": 434,
+        "deferred": 0
+      },
+      "selected_obligation_outcomes": {
+        "proven": 2218,
+        "unresolved": 45804,
+        "required": 2608,
+        "violation": 81
+      },
+      "selected_obligation_properties": {
+        "initialization": 2674,
+        "semantics": 698,
+        "bounds": 1181,
+        "validity": 1696,
+        "call": 44178,
+        "arithmetic": 58,
+        "aliasing": 224,
+        "release": 2
+      },
+      "top_unresolved_reasons": [
+        [
+          "access interval must fit its object",
+          5585
+        ],
+        [
+          "unsupported checked C construct or storage type",
+          4812
+        ],
+        [
+          "read interval must be initialized",
+          4238
+        ],
+        [
+          "pointer must identify live non-null storage",
+          3616
+        ],
+        [
+          "callee has no complete checked contract",
+          3501
+        ],
+        [
+          "memory location is not represented",
+          2877
+        ],
+        [
+          "indirect call has an unresolved target",
+          2779
+        ],
+        [
+          "formed pointer must remain within its object or one past it",
+          2341
+        ],
+        [
+          "checked requirement interval cannot be instantiated",
+          2001
+        ],
+        [
+          "callee requires separated input objects",
+          1741
+        ]
+      ],
+      "report_sha256": "ccde7b5e990da329f35946f2daa0dc5ada388f935a929583a4fd166d5b40fabc"
+    },
+    {
+      "project": "lua",
+      "measurement": {
+        "units": 1,
+        "seconds": 600.395,
+        "clang_errors": 0,
+        "failures": 1,
+        "peak_rss_bytes": null,
+        "by_id": {}
+      },
+      "diagnostic_totals": {},
+      "failures": [
+        "timeout after 600 seconds"
+      ],
+      "raw_sha256": "3069e803d3842553934ebb85f0a2cb3519a0f36427503fc53fc16464888b30c8",
+      "report_available": false
+    }
+  ],
+  "correctness": {
+    "debug_ctest": {
+      "passed": 939,
+      "total": 939
+    },
+    "asan_ubsan_ctest": {
+      "passed": 939,
+      "total": 939
+    },
+    "lit": {
+      "passed": 102,
+      "total": 102
+    },
+    "fixed_bugs": {
+      "detected": 44,
+      "total": 44
+    },
+    "fixed_clean": {
+      "passed": 32,
+      "total": 32
+    },
+    "rfc0017_pairs": {
+      "bugs": 12,
+      "clean": 12,
+      "passed": 24
+    },
+    "recall": {
+      "detected": 67,
+      "total": 67,
+      "unexpected": 0
+    },
+    "frozen_checked": {
+      "passed": 18,
+      "total": 18
+    },
+    "additional_probes": [
+      {
+        "name": "uninitialized-condition",
+        "expected_acceptance": false,
+        "returncode": 1,
+        "passed": true
+      },
+      {
+        "name": "unsafe-output-invalidation",
+        "expected_acceptance": false,
+        "returncode": 1,
+        "passed": true
+      },
+      {
+        "name": "one-past-formation",
+        "expected_acceptance": true,
+        "returncode": 0,
+        "passed": true
+      },
+      {
+        "name": "guarded-scalar",
+        "expected_acceptance": true,
+        "returncode": 0,
+        "passed": true
+      }
+    ]
+  },
+  "preliminary": {
+    "after_binary_sha256": "1b00c9fc3375078dfc097b73730e40d47d63c65fc9a71cc78c98b0d6120a044b",
+    "observation": {
+      "projects": {
+        "log.c": {
+          "units": 1,
+          "seconds": 0.52,
+          "clang_errors": 0,
+          "failures": 0,
+          "peak_rss_bytes": 50135040,
+          "by_id": {
+            "annotation-required": 2
+          }
+        },
+        "cJSON-program": {
+          "units": 1,
+          "seconds": 1.787,
+          "clang_errors": 0,
+          "failures": 0,
+          "peak_rss_bytes": 62390272,
+          "by_id": {
+            "analysis-incomplete": 3,
+            "annotation-required": 3,
+            "null-dereference": 26
+          }
+        },
+        "linenoise-program": {
+          "units": 1,
+          "seconds": 0.655,
+          "clang_errors": 0,
+          "failures": 0,
+          "peak_rss_bytes": 56901632,
+          "by_id": {
+            "analysis-incomplete": 17,
+            "annotation-required": 3,
+            "double-free": 1,
+            "leak": 1,
+            "null-dereference": 4
+          }
+        },
+        "jansson": {
+          "units": 1,
+          "seconds": 3.428,
+          "clang_errors": 0,
+          "failures": 0,
+          "peak_rss_bytes": 63782912,
+          "by_id": {
+            "analysis-incomplete": 53,
+            "annotation-required": 4,
+            "double-free": 47,
+            "invalid-release": 2,
+            "null-dereference": 3,
+            "use-after-free": 32
+          }
+        },
+        "lua": {
+          "units": 1,
+          "seconds": 362.067,
+          "clang_errors": 0,
+          "failures": 0,
+          "peak_rss_bytes": 687603712,
+          "by_id": {
+            "analysis-incomplete": 3755,
+            "annotation-required": 5,
+            "invalid-release": 1,
+            "lifetime-too-short": 2,
+            "null-dereference": 105
+          }
+        }
+      },
+      "totals": {
+        "analysis-incomplete": 3828,
+        "annotation-required": 17,
+        "double-free": 48,
+        "invalid-release": 3,
+        "leak": 1,
+        "lifetime-too-short": 2,
+        "null-dereference": 138,
+        "use-after-free": 32
+      }
+    },
+    "baseline_observation": "before-1",
+    "resolution": "Proof-state containers made optional; benchmark repeated for final binary.",
+    "interrupted_observations": [
+      {
+        "label": "before-2 initial attempt",
+        "complete": false,
+        "reason": "Interrupted to investigate the runtime regression."
+      },
+      {
+        "label": "after-2 optional-state attempt",
+        "complete": false,
+        "reason": "Interrupted to complete header-selection reporting."
+      }
+    ],
+    "optional_state": {
+      "after_binary_sha256": "57670c54e586cad4db2249406bf67b24fd0e7f59f67ab092d2a8254804a4af8b",
+      "observation": {
+        "projects": {
+          "log.c": {
+            "units": 1,
+            "seconds": 0.46,
+            "clang_errors": 0,
+            "failures": 0,
+            "peak_rss_bytes": 50020352,
+            "by_id": {
+              "annotation-required": 2
+            }
+          },
+          "cJSON-program": {
+            "units": 1,
+            "seconds": 1.767,
+            "clang_errors": 0,
+            "failures": 0,
+            "peak_rss_bytes": 62013440,
+            "by_id": {
+              "analysis-incomplete": 3,
+              "annotation-required": 3,
+              "null-dereference": 26
+            }
+          },
+          "linenoise-program": {
+            "units": 1,
+            "seconds": 0.653,
+            "clang_errors": 0,
+            "failures": 0,
+            "peak_rss_bytes": 56639488,
+            "by_id": {
+              "analysis-incomplete": 17,
+              "annotation-required": 3,
+              "double-free": 1,
+              "leak": 1,
+              "null-dereference": 4
+            }
+          },
+          "jansson": {
+            "units": 1,
+            "seconds": 3.411,
+            "clang_errors": 0,
+            "failures": 0,
+            "peak_rss_bytes": 63340544,
+            "by_id": {
+              "analysis-incomplete": 53,
+              "annotation-required": 4,
+              "double-free": 47,
+              "invalid-release": 2,
+              "null-dereference": 3,
+              "use-after-free": 32
+            }
+          },
+          "lua": {
+            "units": 1,
+            "seconds": 311.263,
+            "clang_errors": 0,
+            "failures": 0,
+            "peak_rss_bytes": 689143808,
+            "by_id": {
+              "analysis-incomplete": 3755,
+              "annotation-required": 5,
+              "invalid-release": 1,
+              "lifetime-too-short": 2,
+              "null-dereference": 105
+            }
+          }
+        },
+        "totals": {
+          "analysis-incomplete": 3828,
+          "annotation-required": 17,
+          "double-free": 48,
+          "invalid-release": 3,
+          "leak": 1,
+          "lifetime-too-short": 2,
+          "null-dereference": 138,
+          "use-after-free": 32
+        }
+      },
+      "resolution": "Header selection diagnostics completed; final binary measured separately."
+    },
+    "pre_writable": {
+      "after_binary_sha256": "faf89b41029c4ed731a53935eaf43c67888c35aee2b76f4f9a23987386ab2842",
+      "observations": {
+        "after-1": {
+          "projects": {
+            "log.c": {
+              "units": 1,
+              "seconds": 0.471,
+              "clang_errors": 0,
+              "failures": 0,
+              "peak_rss_bytes": 49971200,
+              "by_id": {
+                "annotation-required": 2
+              }
+            },
+            "cJSON-program": {
+              "units": 1,
+              "seconds": 2.614,
+              "clang_errors": 0,
+              "failures": 0,
+              "peak_rss_bytes": 62226432,
+              "by_id": {
+                "analysis-incomplete": 3,
+                "annotation-required": 3,
+                "null-dereference": 26
+              }
+            },
+            "linenoise-program": {
+              "units": 1,
+              "seconds": 0.932,
+              "clang_errors": 0,
+              "failures": 0,
+              "peak_rss_bytes": 56737792,
+              "by_id": {
+                "analysis-incomplete": 17,
+                "annotation-required": 3,
+                "double-free": 1,
+                "leak": 1,
+                "null-dereference": 4
+              }
+            },
+            "jansson": {
+              "units": 1,
+              "seconds": 5.002,
+              "clang_errors": 0,
+              "failures": 0,
+              "peak_rss_bytes": 63799296,
+              "by_id": {
+                "analysis-incomplete": 53,
+                "annotation-required": 4,
+                "double-free": 47,
+                "invalid-release": 2,
+                "null-dereference": 3,
+                "use-after-free": 32
+              }
+            },
+            "lua": {
+              "units": 1,
+              "seconds": 327.307,
+              "clang_errors": 0,
+              "failures": 0,
+              "peak_rss_bytes": 689569792,
+              "by_id": {
+                "analysis-incomplete": 3755,
+                "annotation-required": 5,
+                "invalid-release": 1,
+                "lifetime-too-short": 2,
+                "null-dereference": 105
+              }
+            }
+          },
+          "totals": {
+            "analysis-incomplete": 3828,
+            "annotation-required": 17,
+            "double-free": 48,
+            "invalid-release": 3,
+            "leak": 1,
+            "lifetime-too-short": 2,
+            "null-dereference": 138,
+            "use-after-free": 32
+          }
+        },
+        "after-2": {
+          "projects": {
+            "log.c": {
+              "units": 1,
+              "seconds": 0.085,
+              "clang_errors": 0,
+              "failures": 0,
+              "peak_rss_bytes": 49954816,
+              "by_id": {
+                "annotation-required": 2
+              }
+            },
+            "cJSON-program": {
+              "units": 1,
+              "seconds": 1.811,
+              "clang_errors": 0,
+              "failures": 0,
+              "peak_rss_bytes": 62078976,
+              "by_id": {
+                "analysis-incomplete": 3,
+                "annotation-required": 3,
+                "null-dereference": 26
+              }
+            },
+            "linenoise-program": {
+              "units": 1,
+              "seconds": 0.675,
+              "clang_errors": 0,
+              "failures": 0,
+              "peak_rss_bytes": 56492032,
+              "by_id": {
+                "analysis-incomplete": 17,
+                "annotation-required": 3,
+                "double-free": 1,
+                "leak": 1,
+                "null-dereference": 4
+              }
+            },
+            "jansson": {
+              "units": 1,
+              "seconds": 3.545,
+              "clang_errors": 0,
+              "failures": 0,
+              "peak_rss_bytes": 63356928,
+              "by_id": {
+                "analysis-incomplete": 53,
+                "annotation-required": 4,
+                "double-free": 47,
+                "invalid-release": 2,
+                "null-dereference": 3,
+                "use-after-free": 32
+              }
+            },
+            "lua": {
+              "units": 1,
+              "seconds": 330.994,
+              "clang_errors": 0,
+              "failures": 0,
+              "peak_rss_bytes": 697942016,
+              "by_id": {
+                "analysis-incomplete": 3755,
+                "annotation-required": 5,
+                "invalid-release": 1,
+                "lifetime-too-short": 2,
+                "null-dereference": 105
+              }
+            }
+          },
+          "totals": {
+            "analysis-incomplete": 3828,
+            "annotation-required": 17,
+            "double-free": 48,
+            "invalid-release": 3,
+            "leak": 1,
+            "lifetime-too-short": 2,
+            "null-dereference": 138,
+            "use-after-free": 32
+          }
+        },
+        "after-3": {
+          "projects": {
+            "log.c": {
+              "units": 1,
+              "seconds": 0.103,
+              "clang_errors": 0,
+              "failures": 0,
+              "peak_rss_bytes": 49954816,
+              "by_id": {
+                "annotation-required": 2
+              }
+            },
+            "cJSON-program": {
+              "units": 1,
+              "seconds": 1.83,
+              "clang_errors": 0,
+              "failures": 0,
+              "peak_rss_bytes": 61767680,
+              "by_id": {
+                "analysis-incomplete": 3,
+                "annotation-required": 3,
+                "null-dereference": 26
+              }
+            },
+            "linenoise-program": {
+              "units": 1,
+              "seconds": 0.685,
+              "clang_errors": 0,
+              "failures": 0,
+              "peak_rss_bytes": 56606720,
+              "by_id": {
+                "analysis-incomplete": 17,
+                "annotation-required": 3,
+                "double-free": 1,
+                "leak": 1,
+                "null-dereference": 4
+              }
+            },
+            "jansson": {
+              "units": 1,
+              "seconds": 3.565,
+              "clang_errors": 0,
+              "failures": 0,
+              "peak_rss_bytes": 63586304,
+              "by_id": {
+                "analysis-incomplete": 53,
+                "annotation-required": 4,
+                "double-free": 47,
+                "invalid-release": 2,
+                "null-dereference": 3,
+                "use-after-free": 32
+              }
+            },
+            "lua": {
+              "units": 1,
+              "seconds": 332.104,
+              "clang_errors": 0,
+              "failures": 0,
+              "peak_rss_bytes": 688979968,
+              "by_id": {
+                "analysis-incomplete": 3755,
+                "annotation-required": 5,
+                "invalid-release": 1,
+                "lifetime-too-short": 2,
+                "null-dereference": 105
+              }
+            }
+          },
+          "totals": {
+            "analysis-incomplete": 3828,
+            "annotation-required": 17,
+            "double-free": 48,
+            "invalid-release": 3,
+            "leak": 1,
+            "lifetime-too-short": 2,
+            "null-dereference": 138,
+            "use-after-free": 32
+          }
+        }
+      },
+      "resolution": "Added positive write permission and serialized writable intervals after audit found acceptance of writes to string literals and cast-away const storage; all final implementation measurements repeated."
+    },
+    "interference": {
+      "observation": {
+        "projects": {
+          "log.c": {
+            "units": 1,
+            "seconds": 0.435,
+            "clang_errors": 0,
+            "failures": 0,
+            "peak_rss_bytes": 50102272,
+            "by_id": {
+              "annotation-required": 2
+            }
+          },
+          "cJSON-program": {
+            "units": 1,
+            "seconds": 1.775,
+            "clang_errors": 0,
+            "failures": 0,
+            "peak_rss_bytes": 62177280,
+            "by_id": {
+              "analysis-incomplete": 3,
+              "annotation-required": 3,
+              "null-dereference": 26
+            }
+          },
+          "linenoise-program": {
+            "units": 1,
+            "seconds": 0.68,
+            "clang_errors": 0,
+            "failures": 0,
+            "peak_rss_bytes": 56754176,
+            "by_id": {
+              "analysis-incomplete": 17,
+              "annotation-required": 3,
+              "double-free": 1,
+              "leak": 1,
+              "null-dereference": 4
+            }
+          },
+          "jansson": {
+            "units": 1,
+            "seconds": 3.774,
+            "clang_errors": 0,
+            "failures": 0,
+            "peak_rss_bytes": 61652992,
+            "by_id": {
+              "analysis-incomplete": 53,
+              "annotation-required": 4,
+              "double-free": 47,
+              "invalid-release": 2,
+              "null-dereference": 3,
+              "use-after-free": 32
+            }
+          },
+          "lua": {
+            "units": 1,
+            "seconds": 459.147,
+            "clang_errors": 0,
+            "failures": 0,
+            "peak_rss_bytes": 670908416,
+            "by_id": {
+              "analysis-incomplete": 3755,
+              "annotation-required": 5,
+              "invalid-release": 1,
+              "lifetime-too-short": 2,
+              "null-dereference": 105
+            }
+          }
+        },
+        "totals": {
+          "analysis-incomplete": 3828,
+          "annotation-required": 17,
+          "double-free": 48,
+          "invalid-release": 3,
+          "leak": 1,
+          "lifetime-too-short": 2,
+          "null-dereference": 138,
+          "use-after-free": 32
+        }
+      },
+      "valid_comparison": false,
+      "reason": "An orphaned analyzer from the interrupted checked Jansson run was active. Its identified processes were terminated, absence of analyzer/build processes was verified, and all three final measurements restarted.",
+      "interrupted_next_observation": true
+    },
+    "competing_build": {
+      "observation": {
+        "projects": {
+          "log.c": {
+            "units": 1,
+            "seconds": 0.079,
+            "clang_errors": 0,
+            "failures": 0,
+            "peak_rss_bytes": 49987584,
+            "by_id": {
+              "annotation-required": 2
+            }
+          },
+          "cJSON-program": {
+            "units": 1,
+            "seconds": 1.758,
+            "clang_errors": 0,
+            "failures": 0,
+            "peak_rss_bytes": 62160896,
+            "by_id": {
+              "analysis-incomplete": 3,
+              "annotation-required": 3,
+              "null-dereference": 26
+            }
+          },
+          "linenoise-program": {
+            "units": 1,
+            "seconds": 0.686,
+            "clang_errors": 0,
+            "failures": 0,
+            "peak_rss_bytes": 56623104,
+            "by_id": {
+              "analysis-incomplete": 17,
+              "annotation-required": 3,
+              "double-free": 1,
+              "leak": 1,
+              "null-dereference": 4
+            }
+          },
+          "jansson": {
+            "units": 1,
+            "seconds": 3.631,
+            "clang_errors": 0,
+            "failures": 0,
+            "peak_rss_bytes": 63668224,
+            "by_id": {
+              "analysis-incomplete": 53,
+              "annotation-required": 4,
+              "double-free": 47,
+              "invalid-release": 2,
+              "null-dereference": 3,
+              "use-after-free": 32
+            }
+          },
+          "lua": {
+            "units": 1,
+            "seconds": 568.123,
+            "clang_errors": 0,
+            "failures": 0,
+            "peak_rss_bytes": 685735936,
+            "by_id": {
+              "analysis-incomplete": 3755,
+              "annotation-required": 5,
+              "invalid-release": 1,
+              "lifetime-too-short": 2,
+              "null-dereference": 105
+            }
+          }
+        },
+        "totals": {
+          "analysis-incomplete": 3828,
+          "annotation-required": 17,
+          "double-free": 48,
+          "invalid-release": 3,
+          "leak": 1,
+          "lifetime-too-short": 2,
+          "null-dereference": 138,
+          "use-after-free": 32
+        }
+      },
+      "valid_comparison": false,
+      "reason": "A separate Cargo/rustc build repeatedly consumed several CPU cores. This complete repetition and the interrupted following repetition are excluded from the isolated ordinary-mode comparison.",
+      "interrupted_next_observation": true
+    },
+    "recursive_provenance": {
+      "after_binary_sha256": "50bd07e8d71748c0898b5698057b8260d3a1218ef43b1bff7950d5a0a8c9eabb",
+      "ordinary_observation": {
+        "projects": {
+          "log.c": {
+            "units": 1,
+            "seconds": 0.103,
+            "clang_errors": 0,
+            "failures": 0,
+            "peak_rss_bytes": 50102272,
+            "by_id": {
+              "annotation-required": 2
+            }
+          },
+          "cJSON-program": {
+            "units": 1,
+            "seconds": 1.74,
+            "clang_errors": 0,
+            "failures": 0,
+            "peak_rss_bytes": 62095360,
+            "by_id": {
+              "analysis-incomplete": 3,
+              "annotation-required": 3,
+              "null-dereference": 26
+            }
+          },
+          "linenoise-program": {
+            "units": 1,
+            "seconds": 0.654,
+            "clang_errors": 0,
+            "failures": 0,
+            "peak_rss_bytes": 56606720,
+            "by_id": {
+              "analysis-incomplete": 17,
+              "annotation-required": 3,
+              "double-free": 1,
+              "leak": 1,
+              "null-dereference": 4
+            }
+          },
+          "jansson": {
+            "units": 1,
+            "seconds": 3.402,
+            "clang_errors": 0,
+            "failures": 0,
+            "peak_rss_bytes": 63602688,
+            "by_id": {
+              "analysis-incomplete": 53,
+              "annotation-required": 4,
+              "double-free": 47,
+              "invalid-release": 2,
+              "null-dereference": 3,
+              "use-after-free": 32
+            }
+          },
+          "lua": {
+            "units": 1,
+            "seconds": 356.154,
+            "clang_errors": 0,
+            "failures": 0,
+            "peak_rss_bytes": 692273152,
+            "by_id": {
+              "analysis-incomplete": 3755,
+              "annotation-required": 5,
+              "invalid-release": 1,
+              "lifetime-too-short": 2,
+              "null-dereference": 105
+            }
+          }
+        },
+        "totals": {
+          "analysis-incomplete": 3828,
+          "annotation-required": 17,
+          "double-free": 48,
+          "invalid-release": 3,
+          "leak": 1,
+          "lifetime-too-short": 2,
+          "null-dereference": 138,
+          "use-after-free": 32
+        }
+      },
+      "checked_observations": {
+        "log.c": {
+          "projects": {
+            "log.c": {
+              "units": 1,
+              "seconds": 0.141,
+              "clang_errors": 0,
+              "failures": 0,
+              "peak_rss_bytes": 51167232,
+              "by_id": {
+                "annotation-required": 2,
+                "checking-incomplete": 72
+              }
+            }
+          },
+          "totals": {
+            "annotation-required": 2,
+            "checking-incomplete": 72
+          }
+        },
+        "cJSON-program": {
+          "projects": {
+            "cJSON-program": {
+              "units": 1,
+              "seconds": 492.365,
+              "clang_errors": 0,
+              "failures": 1,
+              "peak_rss_bytes": 6302859264,
+              "by_id": {
+                "analysis-incomplete": 5,
+                "annotation-required": 3,
+                "checking-failed": 14,
+                "checking-incomplete": 3158,
+                "null-dereference": 26
+              }
+            }
+          },
+          "totals": {
+            "analysis-incomplete": 5,
+            "annotation-required": 3,
+            "checking-failed": 14,
+            "checking-incomplete": 3158,
+            "null-dereference": 26
+          }
+        },
+        "linenoise-program": {
+          "projects": {
+            "linenoise-program": {
+              "units": 1,
+              "seconds": 24.585,
+              "clang_errors": 0,
+              "failures": 0,
+              "peak_rss_bytes": 1660305408,
+              "by_id": {
+                "analysis-incomplete": 17,
+                "annotation-required": 3,
+                "checking-failed": 7,
+                "checking-incomplete": 1992,
+                "double-free": 3,
+                "leak": 1,
+                "null-dereference": 4
+              }
+            }
+          },
+          "totals": {
+            "analysis-incomplete": 17,
+            "annotation-required": 3,
+            "checking-failed": 7,
+            "checking-incomplete": 1992,
+            "double-free": 3,
+            "leak": 1,
+            "null-dereference": 4
+          }
+        },
+        "jansson": {
+          "projects": {
+            "jansson": {
+              "units": 1,
+              "seconds": 600.685,
+              "clang_errors": 0,
+              "failures": 1,
+              "peak_rss_bytes": null,
+              "by_id": {}
+            }
+          },
+          "totals": {}
+        }
+      },
+      "resolution": "Replace recursively escaped propagated call identities with flat source-location/reason identities; preserve weakest outcomes and bounded call chains. Deep unresolved/trusted chains tested; all measurements repeated for the final binary.",
+      "lua_interrupted": true
+    }
+  }
+}

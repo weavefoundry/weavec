@@ -22,6 +22,7 @@
 
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace weavec::test {
@@ -93,7 +94,7 @@ struct AnalysisResult {
 inline AnalysisResult
 analyzeInProgram(const std::string &code,
                  const analysis::ProgramDatabase *database,
-                 analysis::AnalysisOptions options = {},
+                 const analysis::AnalysisOptions &options = {},
                  const std::string &fileName = "input.c") {
   AnalysisResult result;
   // `-w`: Clang's own warnings (e.g. -Wreturn-stack-address) are noise here.
@@ -116,7 +117,7 @@ analyzeInProgram(const std::string &code,
 }
 
 inline AnalysisResult analyze(const std::string &code,
-                              analysis::AnalysisOptions options = {}) {
+                              const analysis::AnalysisOptions &options = {}) {
   return analyzeInProgram(code, nullptr, options);
 }
 

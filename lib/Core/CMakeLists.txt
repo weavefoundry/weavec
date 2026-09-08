@@ -22,6 +22,9 @@ weavec_add_library(
           Raw.cpp
           Relation.cpp
           Resource.cpp
+          Safety.cpp
+          CheckedContract.cpp
+          CheckedIO.cpp
           Scalar.cpp
           Scc.cpp
           SourceLocation.cpp

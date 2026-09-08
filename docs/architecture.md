@@ -528,3 +528,28 @@ Analysis supplies layout keys and Core remains independent of Clang.
 Summary and sidecar format 10 serialize these values, pointer predicates,
 record views and incomplete reasons. All representations use deterministic
 ordering, and sidecar readers reject malformed or oversized contexts.
+
+## Checked contracts (RFC 0018)
+
+`Core/Safety` owns the obligation ledger and bounded initialized ranges.
+`Core/CheckedContract` implements sufficient precondition union and
+postcondition intersection; `Core/CheckedIO` provides bounded portable
+serialization. `FunctionSummary::checked` is deliberately separate from
+witness-based `requiresExtent`, and survives global remapping and joins.
+
+The Analysis layer attaches operation accounting to the existing CFG transfer
+and reporting passes. `DataflowSafety` inventories supported semantics,
+initialization and diagnostics; `DataflowSafetyMemory` resolves byte intervals
+and entry requirements; `DataflowSafetyCalls` discharges requirements and applies
+postconditions; `DataflowSafetyLoops` projects sufficient counted-loop bounds.
+The additional state is enabled by checked selection or a report request.
+`AnalysisState` stores it in an optional domain, so ordinary analysis skips
+constructing, copying and joining the proof containers.
+
+Every computed definition, including `main` and private helpers, has a record
+in `UnitExports::checkedDefinitions`. This does not change externally visible
+function lookup. `Frontend/CheckedReport` collects reporting passes and writes
+JSON atomically. `Frontend/CheckedArtifacts` fingerprints build inputs and
+objects for compiler-sidecar validation before replay. Compilation may defer
+an unavailable external contract; the link pass must resolve it. Checked
+failure reaches Clang independently of the diagnostic filtering policy.

@@ -176,6 +176,13 @@ static void copyHeapCell(core::PlaceId source, core::PlaceId target,
                            ? std::optional(state.numericValues.at(source))
                            : std::nullopt;
   state.forget(target);
+  if (state.safety) {
+    if (state.safety->initialized.contains(source))
+      state.safety->initialized.insert(target);
+    if (state.safety->pointers.contains(source))
+      state.safety->pointers.insert(target);
+    state.safety->copyMemory(source, target);
+  }
   if (numeric && !numeric->dependsOn(target))
     state.numericValues.insert_or_assign(target, *numeric);
   state.kinds[target] = state.kindOf(source);

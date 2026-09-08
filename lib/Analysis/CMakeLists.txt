@@ -6,6 +6,10 @@ weavec_add_library(
           Builtins.cpp
           ClangLocation.cpp
           Dataflow.cpp
+          DataflowSafety.cpp
+          DataflowSafetyMemory.cpp
+          DataflowSafetyCalls.cpp
+          DataflowSafetyLoops.cpp
           DataflowArrays.cpp
           DataflowArrayMemory.cpp
           DataflowArrayRanges.cpp

@@ -18,6 +18,7 @@
 
 #include "weavec/Analysis/FunctionAnalysis.h"
 #include "weavec/Analysis/ProgramDatabase.h"
+#include "weavec/Frontend/CheckedReport.h"
 #include "weavec/Frontend/DiagnosticControl.h"
 
 #include "clang/AST/ASTConsumer.h"
@@ -45,8 +46,11 @@ struct UnitResult {
 /// User-configurable behaviour of the frontend action.
 struct FrontendOptions {
   analysis::AnalysisOptions analysis;
+  std::shared_ptr<CheckedReport> checkedReport =
+      std::make_shared<CheckedReport>();
   /// Only analyse declarations in the main file (not in included headers).
   bool mainFileOnly = true;
+  bool bindCheckedInputs = false;
   /// `-W` overrides applied before a diagnostic reaches Clang.
   DiagnosticControl control;
 

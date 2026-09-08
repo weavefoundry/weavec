@@ -37,7 +37,7 @@
 #define WEAVEC_H
 
 #define WEAVEC_H_VERSION_MAJOR 0
-#define WEAVEC_H_VERSION_MINOR 7
+#define WEAVEC_H_VERSION_MINOR 8
 
 #if defined(__has_attribute)
 #if __has_attribute(annotate)
@@ -80,6 +80,9 @@
  * and document the invariant that makes the code sound.
  */
 #define WEAVEC_UNSAFE WEAVEC_ANNOTATE_("weavec.unsafe")
+
+/** Request conditional safety checking of a function body (RFC 0018). */
+#define WEAVEC_CHECKED WEAVEC_ANNOTATE_("weavec.checked")
 
 /**
  * The pointer may be null. On a parameter, the body is checked (a

@@ -55,11 +55,16 @@ namespace weavec::frontend {
 /// `loads-field` lines.
 /// Version 9 (RFC 0013): summaries in format 9 (heap postconditions,
 /// output references and string facts).
-inline constexpr unsigned SidecarFormatVersion = 13;
+/// Version 14 (RFC 0018): safety contracts and checked build input bindings.
+inline constexpr unsigned SidecarFormatVersion = 14;
 
 /// Everything the driver remembers about one compiled unit.
 struct UnitRecord {
   analysis::UnitExports exports;
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
+  std::string objectDigest = {};
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
+  std::string commandDigest = {};
   /// The `-cc1` command line (without `-cc1`) that produced the unit, so the
   /// link step can analyse it again.
   std::vector<std::string> command;

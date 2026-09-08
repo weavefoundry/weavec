@@ -75,7 +75,12 @@ inline constexpr std::string_view InvalidIntegerOperation =
 inline constexpr std::string_view AnalysisIncomplete = "analysis-incomplete";
 
 /// Every id, for validating user input (`-Wweavec-<id>`).
-inline constexpr std::array<std::string_view, 17> All{
+inline constexpr std::string_view CheckingIncomplete = "checking-incomplete";
+inline constexpr std::string_view CheckingFailed = "checking-failed";
+
+inline constexpr std::array<std::string_view, 19> All{
+    CheckingIncomplete,
+    CheckingFailed,
     UseAfterFree,
     DoubleFree,
     UseAfterMove,

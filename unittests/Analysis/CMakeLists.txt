@@ -1,6 +1,7 @@
 weavec_add_unittest(
   WeaveCAnalysisTests
-  SOURCES AllocatorsTest.cpp
+  SOURCES CheckedCodeTest.cpp
+          AllocatorsTest.cpp
           AnnotationsTest.cpp
           ArrayOwnershipTest.cpp
           CallContextTest.cpp

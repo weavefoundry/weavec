@@ -15,29 +15,32 @@
 #include <vector>
 
 namespace weavec::frontend {
-namespace {
 
 using core::Severity;
 using core::diag::AnnotationRequired;
 using core::diag::UseAfterFree;
 
-core::Diagnostic make(std::string_view id, Severity severity,
-                      std::string message = "m", std::uint32_t line = 1) {
+static core::Diagnostic make(std::string_view id, Severity severity,
+                             std::string message = "m",
+                             std::uint32_t line = 1) {
   return core::Diagnostic{
       .severity = severity,
       .id = id,
       .message = std::move(message),
-      .location = core::SourceLocation{"a.c", line, 3},
+      .location =
+          core::SourceLocation{.file = "a.c", .line = line, .column = 3},
       .notes = {},
       .fixits = {},
   };
 }
 
+namespace {
 class Recorder final : public core::DiagnosticSink {
 public:
   void report(const core::Diagnostic &d) override { seen.push_back(d); }
   std::vector<core::Diagnostic> seen;
 };
+} // namespace
 
 using Level = DiagnosticControl::Level;
 
@@ -232,8 +235,7 @@ TEST(DiagnosticIds, DefaultSeverities) {
   EXPECT_FALSE(core::diag::isWarningByDefault(core::diag::OutOfBounds));
   EXPECT_TRUE(core::diag::isKnown("out-of-bounds"));
   EXPECT_TRUE(core::diag::isWarningByDefault(core::diag::AnalysisIncomplete));
-  EXPECT_EQ(core::diag::All.size(), 17U);
+  EXPECT_EQ(core::diag::All.size(), 19U);
 }
 
-} // namespace
 } // namespace weavec::frontend

@@ -479,9 +479,16 @@ void FunctionDataflow::collectDiscardedCalls(const Stmt *stmt) {
 
 core::AnalysisState FunctionDataflow::initialState() {
   core::AnalysisState state;
+  if (options.checkContracts)
+    state.safety.emplace();
   for (const ParmVarDecl *param : function.parameters()) {
     const core::PlaceId place = builder.placeForVar(*param);
     varLifetimes[param->getCanonicalDecl()] = fnLifetime;
+    if (options.checkContracts) {
+      state.safety->initialized.insert(place);
+      if (param->getType()->isPointerType())
+        state.safety->pointers.insert(place);
+    }
     if (!param->getType()->isPointerType()) {
       const auto type = integerTypeOf(param->getType(), context);
       if (type && paramReassigned[param->getFunctionScopeIndex()]) {
@@ -1658,11 +1665,22 @@ void FunctionDataflow::run() {
   buildOptions.AddLifetime = true;
   buildOptions.setAllAlwaysAdd();
   cfg = CFG::buildCFG(&function, body, &context, buildOptions);
-  if (!cfg)
+  if (!cfg) {
+    if (options.checkContracts) {
+      inferred.checked.computed = true;
+      inferred.checked.selected =
+          options.checked ||
+          options.checkedFunctions.contains(function.getNameAsString()) ||
+          getAnnotations(function).checked;
+      inferred.checked.limited = true;
+    }
     return;
+  }
 
   collectScopes(body, fnLifetime);
   classifyStmt(body);
+  if (options.checkContracts)
+    initializeChecked();
   collectArrayCleanupLoops(body);
   collectDiscardedCalls(body);
   computeLiveness();
@@ -1772,6 +1790,8 @@ void FunctionDataflow::run() {
   }
   const auto &exitState = entryStates[cfg->getExit().getBlockID()];
   finalizeSummary(exitState ? &*exitState : nullptr);
+  if (options.checkContracts)
+    checkedFinish(exitState ? &*exitState : nullptr);
   phase = Phase::Fixpoint;
   flushDiagnostics();
 
@@ -1797,12 +1817,16 @@ void FunctionDataflow::transfer(const CFGBlock &block,
       if (stmt == nullptr)
         continue;
       inUnsafe = unsafeBody || unsafeStmts.contains(stmt);
+      if (options.checkContracts)
+        checkedBefore(*stmt, state);
       if (const auto *expr = dyn_cast<Expr>(stmt))
         handleExpr(*expr, state);
       else if (const auto *decl = dyn_cast<DeclStmt>(stmt))
         handleDecl(*decl, state);
       else if (const auto *ret = dyn_cast<ReturnStmt>(stmt))
         handleReturn(*ret, state);
+      if (options.checkContracts)
+        checkedAfter(*stmt, state);
       inUnsafe = unsafeBody;
       continue;
     }
@@ -2977,6 +3001,10 @@ void FunctionDataflow::handleExpr(const Expr &expr,
       return;
     const auto ref = builder.resolve(expr);
     if (!ref) {
+      if (options.checkContracts)
+        safetyObligation(core::SafetyProperty::Semantics,
+                         core::SafetyOutcome::Unresolved, expr, "access",
+                         "unrepresentable memory access");
       // `((T *)(uintptr_t)x)->f`: a dereference of a raw value that lives
       // in no place (RFC 0004, *Raw pointers*, rule 1).
       if (const auto raw = builder.rawBaseOf(expr)) {
@@ -2991,6 +3019,8 @@ void FunctionDataflow::handleExpr(const Expr &expr,
     // enough for the access.
     if (role == Role::Read || role == Role::Write || role == Role::ReadWrite)
       checkBounds(expr, state);
+    if (options.checkContracts)
+      checkedAccess(expr, *ref, role, state);
     switch (role) {
     case Role::Read:
       doRead(*ref, expr, state, /*includeSelf=*/true);
@@ -3912,12 +3942,22 @@ void FunctionDataflow::initRecord(core::PlaceId dest, const InitListExpr &init,
 
 void FunctionDataflow::handleCall(const CallExpr &call,
                                   core::AnalysisState &state) {
-  if (arrayCleanupCalls.contains(&call))
+  if (arrayCleanupCalls.contains(&call)) {
+    if (options.checkContracts)
+      safetyObligation(core::SafetyProperty::Call,
+                       core::SafetyOutcome::Unresolved, call, "cleanup",
+                       "range cleanup has no checked contract");
     return;
+  }
   numericInputsReady.erase(&call);
   lastCall.reset();
-  if (handleCheckedIntegerCall(call, state))
+  if (handleCheckedIntegerCall(call, state)) {
+    if (options.checkContracts)
+      safetyObligation(core::SafetyProperty::Call,
+                       core::SafetyOutcome::Unresolved, call, "checked-integer",
+                       "checked integer output initialization is unresolved");
     return;
+  }
   retireHeapInputs(state);
   // RFC 0012, *`WEAVEC_ASSUME`*: the argument holds from here on, as on the
   // true edge of `if (arg)`; an assumption the facts contradict ends the
@@ -3925,6 +3965,10 @@ void FunctionDataflow::handleCall(const CallExpr &call,
   if (const FunctionDecl *callee = call.getDirectCallee();
       callee != nullptr && call.getNumArgs() == 1 &&
       getAnnotations(*callee).assume) {
+    if (options.checkContracts)
+      safetyObligation(core::SafetyProperty::Semantics,
+                       core::SafetyOutcome::Trusted, call, "assume",
+                       "WEAVEC_ASSUME assertion");
     edgeInfeasible = false;
     applyCondition(*call.getArg(0), /*holds=*/true, /*wrapped=*/true, state);
     if (edgeInfeasible)
@@ -3944,13 +3988,23 @@ void FunctionDataflow::handleCall(const CallExpr &call,
   const auto effects = classifyCall(call, summaries);
   if (!effects) {
     prepareNumericCall(call, core::FunctionSummary{}, state);
+    if (options.checkContracts)
+      checkedCall(call, nullptr, state);
     handleUncheckedCall(call, state);
+    if (options.checkContracts)
+      checkedCallAfter(call, nullptr, state);
     return;
   }
   if (recording())
     inferred.incomplete.insert(effects->summary->incomplete.begin(),
                                effects->summary->incomplete.end());
   prepareNumericCall(call, *effects->summary, state);
+  if (options.checkContracts)
+    checkedCall(call, &*effects, state);
+  const auto checkedComplete = llvm::scope_exit([&] {
+    if (options.checkContracts)
+      checkedCallAfter(call, &*effects, state);
+  });
   const auto completeNumeric =
       llvm::scope_exit([&] { finishNumericCall(call, state); });
   captureArrayReallocation(call, *effects, state);
@@ -5540,6 +5594,13 @@ void FunctionDataflow::applyPointerAssign(core::PlaceId dest,
                                           const Expr &at, bool constPointee,
                                           core::AnalysisState &state,
                                           core::ElementWitness element) {
+  const auto checkedValue = options.checkContracts
+                                ? captureCheckedPointer(given, state)
+                                : CheckedPointer{};
+  const auto checkedAssignment = llvm::scope_exit([&] {
+    if (options.checkContracts && element.isWhole())
+      installCheckedPointer(dest, checkedValue, state);
+  });
   // RFC 0009: an alternative whose guard the facts refute is not a value
   // this path can receive (`p = f(n)` after `if (n == 0) return;` with `f`
   // returning null exactly when `n` is zero). A value with nothing left is
@@ -6505,6 +6566,8 @@ std::string FunctionDataflow::nameOf(core::PlaceId place) const {
 }
 
 void FunctionDataflow::report(core::Diagnostic diagnostic) {
+  if (options.checkContracts && recording())
+    safetyDiagnostic(diagnostic);
   // Nothing is reported for code inside an unsafe region (RFC 0004, *Unsafe
   // regions*); the region is still analysed so its effects reach the code
   // around it, where they are checked.
