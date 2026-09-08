@@ -3,7 +3,8 @@
 // summary cannot name; the callee says `escaped`, wrappers pass it on, and
 // the caller reports neither the value nor the share it just took as leaked.
 // RUN: %weavec %s -- 2>&1 | FileCheck %s
-// RUN: %weavec --dump-analysis %s -- 2>&1 | FileCheck --check-prefix=DUMP %s
+// Keep diagnostics separate so buffered stdout cannot split a dump label.
+// RUN: %weavec --dump-analysis %s -- 2>%t.dump.err | FileCheck --check-prefix=DUMP %s
 #include "../Inputs/prelude.h"
 #include <weavec.h>
 

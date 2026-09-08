@@ -6,6 +6,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 
 
@@ -75,6 +76,7 @@ def main():
                                             accepted=False, passed=False, reason='C syntax failure',
                                             stderr=syntax.stderr))
                         print('FAIL ' + case['name'] + ': C syntax failure', flush=True)
+                        print(syntax.stderr, file=sys.stderr, end='', flush=True)
                         continue
                 run = subprocess.run(command, capture_output=True, text=True,
                                      timeout=args.timeout)
