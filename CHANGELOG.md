@@ -6,6 +6,29 @@ follows [Semantic Versioning](https://semver.org/) once it reaches 1.0.
 
 ## [Unreleased]
 
+### Practical checked memory contracts (RFC 0019)
+
+- Infer initialized output intervals through nested fields, returned heap
+  objects and output parameters, qualified by guards and returning outcomes.
+  Preserve call-entry numeric values and initialization when helpers overwrite
+  inputs; discard pending facts when their dependencies change.
+- Prove complete supported fill/copy loops and disjoint slices of one object.
+  Keep pointer holders separate from pointee storage and retain unaffected
+  evidence across complete helper calls.
+- Add checked string and positive-size reallocation models, initialized-prefix
+  preservation, and zero-byte termination witnesses. Library trust remains
+  explicit; allocation growth does not initialize the added tail.
+- Reuse bounded caller contexts for exact checked scalar inputs and fields.
+  Keep recursive explanations stable without raising semantic analysis limits.
+- Transport conditional contracts and numeric outputs in summary/sidecar
+  format 15 and checked JSON version 2. Rebuild objects with older sidecars.
+- Keep optional private-global output facts inside their translation unit,
+  while rejecting lost entry requirements or premises of public outputs.
+- Add 32 frozen source cases, ten whole-program and compiler-object cases,
+  and pinned Jansson buffer/UTF interface evaluations with adversarial callers.
+- Publish the [validation report](docs/validation-rfc0019.md) with repeated
+  ordinary cost measurements and remaining whole-project checked limitations.
+
 ### Checked code (RFC 0018)
 
 - Keep propagated call provenance bounded without recursively escaping identities.

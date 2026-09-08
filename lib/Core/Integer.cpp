@@ -778,8 +778,15 @@ IntegerRangeEvaluation evaluateInteger(IntegerOp op, const IntegerRange &lhs,
                         .upper = type.mask() - interval.lower});
     return {.values = IntegerRange::fromRanks(type, std::move(ranges))};
   }
-  if (op == IntegerOp::BitAnd && !type.isSigned) {
-    const auto upper = std::min(aMax.bits, bMax.bits);
+  if (op == IntegerOp::BitAnd && (!aMin.negative() || !bMin.negative())) {
+    // RFC 0017/0019: a nonnegative mask clears the sign bit even if the
+    // other operand is signed or crosses zero. Only nonnegative operands
+    // supply numeric upper bounds on the resulting bit pattern.
+    auto upper = type.mask();
+    if (!aMin.negative())
+      upper = std::min(upper, aMax.bits);
+    if (!bMin.negative())
+      upper = std::min(upper, bMax.bits);
     return {.values = IntegerRange::between(IntegerValue::ofBits(type, 0),
                                             IntegerValue::ofBits(type, upper))};
   }

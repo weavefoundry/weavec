@@ -1,0 +1,176 @@
+{
+  "version": 2,
+  "rfc": "0019",
+  "cases": [
+    {
+      "name": "cross-constructor-good",
+      "sources": [
+        "transport/constructor-good-helper.c",
+        "transport/constructor-good-main.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "accepted",
+      "reason": null,
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe boundary",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "cross-constructor-bad",
+      "sources": [
+        "transport/constructor-bad-helper.c",
+        "transport/constructor-bad-main.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "reason": "initializ",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe boundary",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "cross-outparam-good",
+      "sources": [
+        "transport/outparam-good-helper.c",
+        "transport/outparam-good-main.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "accepted",
+      "reason": null,
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe boundary",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "cross-outparam-bad",
+      "sources": [
+        "transport/outparam-bad-helper.c",
+        "transport/outparam-bad-main.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "reason": "initializ",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe boundary",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "cross-fill-helper-good",
+      "sources": [
+        "transport/fill-helper-good-helper.c",
+        "transport/fill-helper-good-main.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "accepted",
+      "reason": null,
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe boundary",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "cross-fill-helper-bad",
+      "sources": [
+        "transport/fill-helper-bad-helper.c",
+        "transport/fill-helper-bad-main.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "reason": "initializ",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe boundary",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "cross-copy-loop-good",
+      "sources": [
+        "transport/copy-loop-good-helper.c",
+        "transport/copy-loop-good-main.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "accepted",
+      "reason": null,
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe boundary",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "cross-copy-loop-bad",
+      "sources": [
+        "transport/copy-loop-bad-helper.c",
+        "transport/copy-loop-bad-main.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "reason": "initializ",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe boundary",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "cross-nested-good",
+      "sources": [
+        "transport/nested-good-helper.c",
+        "transport/nested-good-main.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "accepted",
+      "reason": null,
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe boundary",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "cross-nested-bad",
+      "sources": [
+        "transport/nested-bad-helper.c",
+        "transport/nested-bad-main.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "reason": "initializ",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe boundary",
+        "annotation assumptions"
+      ]
+    }
+  ]
+}

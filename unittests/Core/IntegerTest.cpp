@@ -463,6 +463,7 @@ TEST(IntegerRanges, ModularScalingPreservesSeparatedConvertedIntervals) {
         const auto lhs = IntegerRange::fromRanks(
             type, {{.lower = begin, .upper = type.mask()}});
         const auto product = evaluateInteger(IntegerOp::Multiply, lhs, rhs);
+        // NOLINTNEXTLINE(readability-suspicious-call-argument): commutativity
         const auto reversed = evaluateInteger(IntegerOp::Multiply, rhs, lhs);
         ASSERT_EQ(product.values, reversed.values);
         for (unsigned value = begin; value <= type.mask(); ++value)
@@ -656,6 +657,24 @@ TEST(TargetInteger, MalformedAndOversizedTypesDoNotBecomeSupportedWidths) {
     EXPECT_FALSE(evaluateCheckedInteger(IntegerOp::Add, integer(U8, 0),
                                         integer(U8, 0), type));
   }
+}
+
+TEST(IntegerRange, SignedMaskClearsSignBitAndBoundsUtfPayload) {
+  const auto mask = IntegerRange::singleton(integer(I32, 63));
+  const auto bounded =
+      evaluateInteger(IntegerOp::BitAnd, IntegerRange::full(I32), mask);
+  EXPECT_FALSE(bounded.mayBeInvalid);
+  EXPECT_EQ(bounded.values,
+            IntegerRange::between(integer(I32, 0), integer(I32, 63)));
+  const auto reverse =
+      evaluateInteger(IntegerOp::BitAnd, mask, IntegerRange::full(I32));
+  EXPECT_EQ(reverse.values, bounded.values);
+  const auto encoded =
+      evaluateInteger(IntegerOp::Add, bounded.values,
+                      IntegerRange::singleton(integer(I32, 128)));
+  EXPECT_FALSE(encoded.mayBeInvalid);
+  EXPECT_EQ(encoded.values,
+            IntegerRange::between(integer(I32, 128), integer(I32, 191)));
 }
 
 } // namespace weavec::core

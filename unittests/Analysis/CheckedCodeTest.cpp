@@ -21,6 +21,57 @@ static core::CheckedContract check(const std::string &code,
   }
   return result.summary(name)->checked;
 }
+// RFC 0019: private output storage is not part of the program namespace.
+TEST(CheckedCode, PrivateOutputFactsDoNotInvalidateAnExportedSetter) {
+  AnalysisOptions options;
+  options.checked = true;
+  const auto unit =
+      test::analyze("static struct {int level; _Bool quiet;} settings;"
+                    "void set_level(int level){settings.level=level;}"
+                    "void set_quiet(_Bool quiet){settings.quiet=quiet;}",
+                    options);
+  ASSERT_TRUE(unit.ast);
+  const auto exports = unit.analyzer->exports();
+  for (const auto *name : {"set_level", "set_quiet"}) {
+    ASSERT_NE(unit.summary(name), nullptr);
+    EXPECT_TRUE(unit.summary(name)->checked.complete());
+    EXPECT_FALSE(unit.summary(name)->checked.establishes.empty());
+    const auto &contract = exports.checkedDefinitions.at(name);
+    EXPECT_TRUE(contract.complete());
+    EXPECT_TRUE(contract.establishes.empty());
+    EXPECT_TRUE(exports.functions.at(name).summary.checked.complete());
+  }
+}
+
+TEST(CheckedCode, PrivatePremiseOfAPublicOutputStillFailsExport) {
+  AnalysisOptions options;
+  options.checked = true;
+  const auto unit =
+      test::analyze("static int ready; void f(char *p){p[0]=1;}", options);
+  ASSERT_TRUE(unit.ast);
+  ASSERT_NE(unit.summary("f"), nullptr);
+  EXPECT_TRUE(unit.summary("f")->checked.complete());
+  EXPECT_FALSE(unit.summary("f")->checked.establishes.empty());
+  auto &store = unit.analyzer->summaries();
+  const auto &context = unit.ast->getASTContext();
+  const auto declarations =
+      context.getTranslationUnitDecl()->lookup(&context.Idents.get("ready"));
+  ASSERT_FALSE(declarations.empty());
+  const auto *ready = clang::cast<clang::VarDecl>(*declarations.begin());
+  const auto id = store.globals().idFor(*ready);
+  // Exercise the portable-contract boundary independently of which guarded
+  // outputs the current CFG projection can infer from this source spelling.
+  auto summary = *unit.summary("f");
+  auto post = *summary.checked.establishes.begin();
+  post.when.require(core::SummaryPath::global(id),
+                    core::ValueFact::of(core::Outcome::Positive));
+  summary.checked.establishes = {post};
+  store.setInferred(*unit.function("f"), std::move(summary));
+  const auto exports = unit.analyzer->exports();
+  EXPECT_TRUE(exports.checkedDefinitions.at("f").limited);
+  EXPECT_FALSE(exports.checkedDefinitions.at("f").complete());
+}
+
 TEST(CheckedCode, UnknownIndexFailsAndGuardProvesIt) {
   EXPECT_FALSE(check("int f(int i) { int a[4]={0}; return a[i]; }").complete());
   EXPECT_TRUE(

@@ -7,6 +7,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "AffineSupport.h"
 #include "Dataflow.h"
 #include "IntegerSupport.h"
 
@@ -207,6 +208,70 @@ std::optional<core::PathAffine> FunctionDataflow::checkedLoopRequirement(
     return std::nullopt;
   const auto end = scaled ? scaled->shifted(shift) : std::nullopt;
   return summaryAffineOf(end);
+}
+
+// RFC 0019: only the normal exit of an unconditional, unit-stride store
+// establishes a prefix. The sufficient-requirement recognizer alone is not a
+// must-write proof: break/continue and conditional stores are rejected here.
+void FunctionDataflow::checkedLoopExit(const ForStmt &loop,
+                                       core::AnalysisState &state) {
+  const Expr *initial = nullptr;
+  const auto *index = loopRequirementIndex(loop, initial);
+  const auto *condition =
+      loop.getCond() ? dyn_cast<BinaryOperator>(loop.getCond()->IgnoreParens())
+                     : nullptr;
+  if (!index || !condition || condition->getOpcode() != BO_LT ||
+      loopRequirementVariable(condition->getLHS()) != index)
+    return;
+  std::vector<const Stmt *> statements;
+  if (!collectLoopRequirementStatements(loop.getBody(), statements))
+    return;
+  const BinaryOperator *store = nullptr;
+  for (const auto *stmt : statements) {
+    if (isa<IfStmt, SwitchStmt, BreakStmt, ContinueStmt, ReturnStmt, GotoStmt,
+            IndirectGotoStmt, ConditionalOperator, CallExpr, ForStmt, WhileStmt,
+            DoStmt, AsmStmt>(stmt))
+      return;
+    if (const auto *unary = dyn_cast<UnaryOperator>(stmt);
+        unary && unary->isIncrementDecrementOp())
+      return;
+    if (const auto *binary = dyn_cast<BinaryOperator>(stmt)) {
+      if (binary->isLogicalOp())
+        return;
+      if (binary->isAssignmentOp()) {
+        if (store || binary->getOpcode() != BO_Assign)
+          return;
+        store = binary;
+      }
+    }
+  }
+  const auto *subscript =
+      store
+          ? dyn_cast<ArraySubscriptExpr>(store->getLHS()->IgnoreParenImpCasts())
+          : nullptr;
+  if (!subscript || loopRequirementVariable(subscript->getIdx()) != index)
+    return;
+  const auto unit = byteSizeOf(subscript->getType(), context);
+  // Keep the stable bound's identity across every visit, including the
+  // zero-iteration exit. Flow simplification can otherwise substitute the
+  // loop index, whose lifetime ends immediately after this edge.
+  std::optional<core::Affine> bound;
+  if (const auto constant = integerConstant(*condition->getRHS(), context))
+    bound = core::Affine::ofConstant(*constant);
+  else if (const auto *variable = loopRequirementVariable(condition->getRHS()))
+    bound = core::Affine::ofPlace(builder.placeForVar(*variable));
+  const auto end = unit && bound ? bound->times(*unit) : std::nullopt;
+  if (!end)
+    return;
+  const auto next = core::Affine{
+      .place = builder.placeForVar(*index), .scale = *unit, .constant = *unit};
+  if (!checkedLoopRequirement(next, *subscript, state))
+    return;
+  if (const auto memory =
+          checkedMemory(*subscript->getBase(), {}, *end, state)) {
+    state.safety->initialize(memory->storage,
+                             {.begin = memory->begin, .end = memory->end});
+  }
 }
 
 } // namespace weavec::analysis

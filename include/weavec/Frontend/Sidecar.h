@@ -56,7 +56,7 @@ namespace weavec::frontend {
 /// Version 9 (RFC 0013): summaries in format 9 (heap postconditions,
 /// output references and string facts).
 /// Version 14 (RFC 0018): safety contracts and checked build input bindings.
-inline constexpr unsigned SidecarFormatVersion = 14;
+inline constexpr unsigned SidecarFormatVersion = 15;
 
 /// Everything the driver remembers about one compiled unit.
 struct UnitRecord {

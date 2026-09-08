@@ -35,7 +35,7 @@
 #include "../Inputs/prelude.h"
 #include "node.h"
 
-// SIDECAR: weavec-summaries 14
+// SIDECAR: weavec-summaries 15
 // SIDECAR: source {{.*}}node.c
 // SIDECAR: cwd {{.+}}
 // SIDECAR: arg -triple

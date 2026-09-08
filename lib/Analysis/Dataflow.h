@@ -71,6 +71,8 @@ public:
   core::CallContext memoryContext;
   bool validMemoryContext = true;
   bool checkedOutputSeen = false;
+  std::map<std::optional<core::Outcome>, std::set<core::CheckedRequirement>>
+      checkedOutputClasses;
 
   /// The summary inferred by `run` (RFC 0003, *Deriving a summary*).
   [[nodiscard]] const core::FunctionSummary &summary() const noexcept {
@@ -84,7 +86,7 @@ private:
                      core::AnalysisState &state);
   void initializeCallContext(core::AnalysisState &state);
   [[nodiscard]] std::optional<std::pair<core::PlaceId, clang::QualType>>
-  contextPlace(const core::SummaryPath &path, core::AnalysisState &state);
+  contextPlace(const core::SummaryPath &path, const core::AnalysisState &state);
   std::map<const clang::CallExpr *, core::CallContext> memoryContexts;
   std::map<core::SummaryPath, core::PointerOffset> contextEntryOffsets;
   core::PointerOffset contextOffsetOf(core::PlaceId place,
@@ -239,11 +241,16 @@ private:
     std::optional<core::Affine> extent;
     std::optional<core::SummaryPath> input;
     const clang::Expr *pointer = nullptr;
+    // NOLINTNEXTLINE(readability-redundant-member-init): aggregate default
+    std::optional<core::PlaceId> holder = {};
   };
   struct CheckedPointer {
     bool known = false;
     bool zeroed = false;
+    bool fresh = false;
+    bool deferred = false;
     std::vector<core::InitializedRange> initialized;
+    std::optional<core::PlaceId> storage;
   };
   void initializeChecked();
   void checkedBefore(const clang::Stmt &stmt, core::AnalysisState &state);
@@ -259,20 +266,32 @@ private:
   void checkedCallAfter(const clang::CallExpr &call, const CallEffects *effects,
                         core::AnalysisState &state);
   void checkedFinish(const core::AnalysisState *exitState);
-  void checkedOutputs(const core::AnalysisState &state);
+  void checkedOutputs(const core::AnalysisState &incoming,
+                      const clang::Expr *value = nullptr);
   void safetyObligation(core::SafetyProperty property,
                         core::SafetyOutcome outcome, const clang::Stmt &at,
                         std::string subject, std::string reason,
                         std::vector<core::SourceLocation> calls = {});
   void safetyDiagnostic(const core::Diagnostic &diagnostic);
   [[nodiscard]] CheckedPointer
-  captureCheckedPointer(const ValueOrigin &given, core::AnalysisState &state);
-  static void installCheckedPointer(core::PlaceId dest,
-                                    const CheckedPointer &value,
-                                    core::AnalysisState &state);
+  captureCheckedPointer(core::PlaceId dest, const ValueOrigin &given,
+                        core::AnalysisState &state);
+  void installCheckedPointer(core::PlaceId dest, const CheckedPointer &value,
+                             core::AnalysisState &state);
   [[nodiscard]] std::optional<CheckedMemory>
   checkedMemory(const clang::Expr &pointer, const core::Affine &begin,
                 const core::Affine &end, const core::AnalysisState &state);
+  [[nodiscard]] std::optional<CheckedMemory>
+  checkedMemoryAt(core::PlaceId holder, const core::Affine &begin,
+                  const core::Affine &end, const core::AnalysisState &state);
+  [[nodiscard]] std::optional<CheckedMemory>
+  checkedPathMemory(const core::SummaryPath &path, const clang::CallExpr &call,
+                    const core::Affine &begin, const core::Affine &end,
+                    const core::AnalysisState &state);
+  [[nodiscard]] bool checkedValid(const CheckedMemory &memory,
+                                  const core::AnalysisState &state);
+  [[nodiscard]] bool checkedTerminated(const CheckedMemory &memory,
+                                       const core::AnalysisState &state);
   [[nodiscard]] std::optional<CheckedMemory>
   checkedLvalue(const clang::Expr &expr, const core::AnalysisState &state);
   [[nodiscard]] bool checkedInterval(const core::Affine &begin,
@@ -292,8 +311,36 @@ private:
   [[nodiscard]] std::optional<core::PathAffine>
   checkedLoopRequirement(const core::Affine &need, const clang::Stmt &at,
                          core::AnalysisState &state);
+  void checkedLoopExit(const clang::ForStmt &loop, core::AnalysisState &state);
   std::map<const clang::Stmt *, const clang::ForStmt *> checkedLoops;
   std::map<const clang::CallExpr *, std::vector<CheckedMemory>> checkedWrites;
+  std::map<std::pair<const clang::CallExpr *, core::PlaceId>, core::PlaceId>
+      checkedObjects;
+  std::map<core::PlaceId, core::PlaceId> checkedInputObjects;
+  std::set<const clang::CallExpr *> checkedDeferredCalls;
+  std::map<const clang::CallExpr *, core::PlaceId> checkedReturnPlaces;
+  [[nodiscard]] std::vector<core::InitializedRange>
+  checkedCopyRanges(const CheckedMemory &source, const core::Affine &begin,
+                    const core::Affine &end, const core::AnalysisState &state);
+  struct CheckedPost {
+    core::SummaryPath path;
+    core::InitializedRange range;
+    std::optional<core::Outcome> on;
+  };
+  std::map<const clang::CallExpr *, std::vector<CheckedPost>> checkedPosts;
+  std::map<const clang::CallExpr *, std::map<core::PlaceId, core::PlaceId>>
+      checkedSnapshots;
+  [[nodiscard]] std::optional<core::PlaceGuard>
+  checkedGuard(const core::PathGuard &when, const clang::CallExpr &call,
+               const core::AnalysisState &state);
+  void captureCheckedPosts(const clang::CallExpr &call,
+                           const core::CheckedContract &contract,
+                           core::AnalysisState &state);
+  void applyCheckedResult(core::PlaceId dest, const clang::CallExpr &call,
+                          core::AnalysisState &state);
+  void applyCheckedPosts(const clang::CallExpr &call,
+                         const core::FunctionSummary &summary,
+                         core::AnalysisState &state);
   std::set<const clang::Stmt *> checkedUnsupported;
 
   clang::ASTContext &context;
@@ -332,10 +379,20 @@ private:
                           core::AnalysisState &state);
   void finishNumericCall(const clang::CallExpr &call,
                          core::AnalysisState &state);
+  std::map<
+      const clang::CallExpr *,
+      std::map<core::SummaryPath, std::map<core::Outcome, core::ValueFact>>>
+      numericCallOutcomeFacts;
   std::map<const clang::CallExpr *, std::map<core::SummaryPath, core::PlaceId>>
       numericCallOutputs;
   [[nodiscard]] std::optional<core::PlaceId>
   numericCallResult(const clang::CallExpr &call) const;
+  [[nodiscard]] std::optional<core::Affine>
+  checkedByteSum(const core::Affine &lhs, const core::Affine &rhs,
+                 const core::AnalysisState &state, const clang::Stmt &at);
+  [[nodiscard]] std::optional<core::IntegerExpression<core::PlaceId>>
+  checkedByteExpression(const core::Affine &value,
+                        const core::AnalysisState &state);
   [[nodiscard]] core::SpatialRecord
   subobjectRecord(const core::SpatialRecord &record, core::PlaceId source,
                   const core::PointerOffset &step);

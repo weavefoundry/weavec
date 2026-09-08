@@ -9,6 +9,7 @@ weavec_add_library(
           DataflowSafety.cpp
           DataflowSafetyMemory.cpp
           DataflowSafetyCalls.cpp
+          DataflowSafetyContracts.cpp
           DataflowSafetyLoops.cpp
           DataflowArrays.cpp
           DataflowArrayMemory.cpp

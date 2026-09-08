@@ -60,8 +60,8 @@ TEST(SafetyLedger, LimitsFailClosed) {
   entry.calls.resize(MaxSafetyCallDepth + 1);
   SafetyLedger chain;
   chain.add(entry);
-  EXPECT_TRUE(chain.limited());
-  EXPECT_FALSE(chain.complete());
+  EXPECT_FALSE(chain.limited());
+  EXPECT_TRUE(chain.complete());
 }
 TEST(SafetyLedger, FrontendHandlesDoNotAffectIdentity) {
   auto entry = obligation(SafetyOutcome::Proven);
@@ -181,4 +181,268 @@ TEST(SafetyJson, EscapesControlsAndPreservesUnicode) {
   EXPECT_EQ(safetyJsonString("a\n\"\\"), "\"a\\u000a\\\"\\\\\"");
   EXPECT_EQ(safetyJsonString("é"), "\"é\"");
 }
+// RFC 0019: conditional must-facts may survive a merge only when the other
+// edge excludes their premise. A subsequent assignment destroys the evidence.
+TEST(SafetyState, ConditionalInitializationExcludesTheOtherEdge) {
+  const PlaceId bytes{1};
+  const PlaceId flag{2};
+  PlaceGuard yes;
+  PlaceGuard no;
+  yes.require(flag, ValueFact::of(Outcome::Positive));
+  no.require(flag, ValueFact::of(Outcome::Zero));
+  SafetyState written;
+  written.initialize(bytes, {.begin = {}, .end = Affine::ofConstant(4)});
+  const auto before = written;
+  SafetyState empty;
+  EXPECT_TRUE(written.join(empty, yes, no));
+  ASSERT_EQ(written.memory.at(bytes).size(), 1U);
+  EXPECT_EQ(written.memory.at(bytes).front().when, yes);
+  auto reverse = empty;
+  reverse.join(before, no, yes);
+  EXPECT_EQ(written, reverse);
+  EXPECT_FALSE(written.join(empty, yes, no));
+  written.forgetDependency(flag);
+  EXPECT_TRUE(written.memory.at(bytes).empty());
+}
+
+TEST(SafetyState, MissingBranchEvidenceCannotCreateConditionalFacts) {
+  const PlaceId bytes{1};
+  const PlaceId flag{2};
+  PlaceGuard yes;
+  yes.require(flag, ValueFact::of(Outcome::Positive));
+  SafetyState a;
+  a.initialize(bytes, {.begin = {}, .end = Affine::ofConstant(4)});
+  a.join(SafetyState{}, yes, {});
+  EXPECT_TRUE(a.memory.empty());
+}
+
+TEST(SafetyState, GuardLimitCannotWeakenMustFactPremises) {
+  const PlaceId bytes{1};
+  PlaceGuard branch;
+  for (unsigned i = 0; i < MaxGuardConjuncts; ++i)
+    branch.require(PlaceId{10 + i}, ValueFact::of(Outcome::Positive));
+  PlaceGuard original;
+  original.require(PlaceId{30}, ValueFact::of(Outcome::Positive));
+  PlaceGuard other;
+  other.require(PlaceId{10}, ValueFact::of(Outcome::Zero));
+  SafetyState a;
+  a.initialize(bytes,
+               {.begin = {}, .end = Affine::ofConstant(4), .when = original});
+  a.join(SafetyState{}, branch, other);
+  EXPECT_TRUE(a.memory.empty());
+}
+
+TEST(SafetyState, ReplacingHolderDoesNotReplaceItsFormerObject) {
+  SafetyState state;
+  const PlaceId holder{1};
+  const PlaceId copy{2};
+  const PlaceId object{3};
+  state.objects[holder] = object;
+  state.objects[copy] = object;
+  state.initialize(object, {.begin = {}, .end = Affine::ofConstant(4)});
+  state.forget(holder);
+  EXPECT_FALSE(state.objects.contains(holder));
+  EXPECT_EQ(state.objects.at(copy), object);
+  EXPECT_TRUE(state.memory.contains(object));
+  auto unknown = state;
+  unknown.objects.erase(copy);
+  state.join(unknown);
+  EXPECT_FALSE(state.objects.contains(copy));
+}
+
+TEST(PendingOutcome, InitializationRequiresEverySelectedReturnClass) {
+  const PlaceId object{1};
+  const InitializedRange bytes{.begin = {}, .end = Affine::ofConstant(4)};
+  PendingOutcome call;
+  call.consumedBy.try_emplace(Outcome::Zero);
+  call.consumedBy.try_emplace(Outcome::Positive);
+  call.initializedOn[Outcome::Positive].emplace_back(object, bytes);
+  EXPECT_TRUE(call.initializedInAll().empty());
+  auto success = call;
+  success.select({Outcome::Positive});
+  ASSERT_EQ(success.initializedInAll().size(), 1U);
+  auto failure = call;
+  failure.select({Outcome::Zero});
+  EXPECT_TRUE(failure.initializedInAll().empty());
+  EXPECT_TRUE(success.unite(failure));
+  EXPECT_TRUE(success.initializedInAll().empty());
+  auto changed = call;
+  changed.initializedOn.clear();
+  EXPECT_FALSE(call.unite(changed));
+}
+
+TEST(PendingOutcome, ReassignmentDropsPendingInitializationDependencies) {
+  AnalysisState state;
+  state.safety.emplace();
+  const PlaceId result{1};
+  const PlaceId object{2};
+  const PlaceId length{3};
+  auto &call = state.pending[result];
+  call.consumedBy.try_emplace(Outcome::Positive);
+  call.initializedOn[Outcome::Positive].push_back(
+      {object, {.begin = {}, .end = Affine::ofPlace(length)}});
+  state.dropGuardsOn(length);
+  EXPECT_TRUE(call.initializedInAll().empty());
+}
+
+TEST(CheckedIO, ConditionalNestedAndResultInitializationRoundTrip) {
+  CheckedContract contract;
+  contract.computed = true;
+  contract.signature = "ptr(ptr,i32)";
+  auto post = extent(0);
+  post.kind = CheckedRequirementKind::Initialized;
+  post.path = SummaryPath::result();
+  post.on = Outcome::NonNull;
+  post.when.require(SummaryPath::param(1), ValueFact::of(Outcome::Positive));
+  contract.establish(post);
+  post.kind = CheckedRequirementKind::Terminated;
+  post.path = SummaryPath::param(0);
+  post.on.reset();
+  contract.require(post);
+  const GlobalNamer names = [](std::uint32_t) { return std::string("global"); };
+  const GlobalResolver resolve = [](std::string_view) {
+    return std::optional<std::uint32_t>{1};
+  };
+  const auto encoded = printCheckedContract(contract, names);
+  ASSERT_FALSE(encoded.empty());
+  const auto decoded = parseCheckedContract(encoded, resolve);
+  ASSERT_TRUE(decoded);
+  EXPECT_EQ(*decoded, contract);
+}
+
+TEST(PendingOutcome, OverwritingOutputDiscardsNumericPostcondition) {
+  AnalysisState state;
+  const PlaceId result{1};
+  const PlaceId output{2};
+  auto &call = state.pending[result];
+  call.consumedBy.try_emplace(Outcome::Zero);
+  call.factOn[Outcome::Zero].emplace_back(output, ValueFact::ofConstant(16));
+  ASSERT_EQ(call.factsInAll().size(), 1U);
+  state.dropGuardsOn(output);
+  EXPECT_TRUE(call.factsInAll().empty());
+}
+
+TEST(SafetyState, CopiedIncomingEvidenceIsNotAnInitializedRange) {
+  const PlaceId object{1};
+  const PlaceId source{2};
+  SafetyState copied;
+  copied.initialize(
+      object, {.begin = {}, .end = Affine::ofConstant(16), .source = source});
+  copied.initialize(object, {.begin = {}, .end = Affine::ofConstant(4)});
+  ASSERT_EQ(copied.memory.at(object).size(), 2U);
+  auto empty = copied;
+  empty.memory.clear();
+  copied.join(empty);
+  EXPECT_TRUE(copied.memory.empty());
+}
+
+TEST(CheckedIO, RejectsOutputFactsInAnInputContract) {
+  const auto names = [](std::uint32_t) { return std::string("global"); };
+  const auto resolve = [](std::string_view) { return std::optional(1U); };
+  CheckedContract contract;
+  contract.computed = true;
+  auto requirement = extent(0);
+  requirement.kind = CheckedRequirementKind::Copied;
+  contract.require(requirement);
+  EXPECT_FALSE(
+      parseCheckedContract(printCheckedContract(contract, names), resolve));
+  contract.requirements.clear();
+  requirement.kind = CheckedRequirementKind::Initialized;
+  requirement.on = Outcome::Zero;
+  contract.require(requirement);
+  EXPECT_FALSE(
+      parseCheckedContract(printCheckedContract(contract, names), resolve));
+}
+
+TEST(CheckedIO, MissingOutputGuardGlobalsInvalidateProof) {
+  FunctionSummary summary;
+  summary.checked.computed = true;
+  auto post = extent(0);
+  post.kind = CheckedRequirementKind::Initialized;
+  post.path = SummaryPath::result().field("bytes");
+  post.on = Outcome::NonNull;
+  post.when.require(SummaryPath::global(1), ValueFact::of(Outcome::Positive));
+  summary.checked.establish(post);
+  const auto names = [](std::uint32_t) { return std::string("flag"); };
+  const auto missing = [](std::string_view) {
+    return std::optional<std::uint32_t>{};
+  };
+  EXPECT_FALSE(parseCheckedContract(
+      printCheckedContract(summary.checked, names), missing));
+  const auto remapped = remapGlobals(
+      summary, [](std::uint32_t) { return std::optional<std::uint32_t>{}; });
+  EXPECT_TRUE(remapped.checked.limited);
+  EXPECT_FALSE(remapped.checked.complete());
+  EXPECT_TRUE(remapped.checked.establishes.empty());
+}
+
+TEST(CheckedIO, BytePreservationAndZeroesCannotBecomeInputAssumptions) {
+  const auto names = [](std::uint32_t) { return std::string("global"); };
+  const auto resolve = [](std::string_view) { return std::optional(1U); };
+  for (const auto kind :
+       {CheckedRequirementKind::Copied, CheckedRequirementKind::Zeroed}) {
+    CheckedContract contract;
+    contract.computed = true;
+    auto post = extent(0);
+    post.kind = kind;
+    post.path = SummaryPath::result();
+    post.on = Outcome::NonNull;
+    contract.establish(post);
+    const auto encoded = printCheckedContract(contract, names);
+    EXPECT_EQ(parseCheckedContract(encoded, resolve), contract);
+    for (std::size_t i = 0; i < encoded.size(); ++i)
+      EXPECT_FALSE(parseCheckedContract(encoded.substr(0, i), resolve));
+    contract.establishes.clear();
+    post.path = SummaryPath::param(0);
+    post.on.reset();
+    contract.require(post);
+    EXPECT_FALSE(
+        parseCheckedContract(printCheckedContract(contract, names), resolve));
+  }
+}
+
+TEST(SafetyState, ZeroBytesImplyInitializationAndAreInvalidatedByWrites) {
+  const PlaceId bytes{1};
+  SafetyState state;
+  state.initialize(bytes,
+                   {.begin = {}, .end = Affine::ofConstant(4), .zeroed = true});
+  ASSERT_EQ(state.memory.at(bytes).size(), 2U);
+  const auto initialized = std::ranges::find_if(
+      state.memory.at(bytes), [](const auto &range) { return !range.zeroed; });
+  ASSERT_NE(initialized, state.memory.at(bytes).end());
+  auto other = state;
+  other.forgetZeros();
+  ASSERT_EQ(other.memory.at(bytes).size(), 1U);
+  state.join(other);
+  EXPECT_EQ(state, other);
+}
+
+TEST(PendingOutcome, AWriteCannotReapplyAnEarlierTerminatorFact) {
+  AnalysisState state;
+  state.safety.emplace();
+  const PlaceId result{1};
+  auto &call = state.pending[result];
+  call.consumedBy.try_emplace(Outcome::Zero);
+  call.initializedOn[Outcome::Zero].push_back(
+      {PlaceId{2},
+       {.begin = {}, .end = Affine::ofConstant(1), .zeroed = true}});
+  state.forgetZeroedMemory();
+  EXPECT_TRUE(call.initializedInAll().empty());
+}
+
+TEST(SafetyState, HeapCellSnapshotsKeepTheReferentIdentity) {
+  SafetyState state;
+  const PlaceId holder{1};
+  const PlaceId saved{2};
+  const PlaceId object{3};
+  state.objects[holder] = object;
+  state.initialize(object, {.begin = {}, .end = Affine::ofConstant(4)});
+  state.copyMemory(holder, saved);
+  state.forget(holder);
+  ASSERT_TRUE(state.objects.contains(saved));
+  EXPECT_EQ(state.objects.at(saved), object);
+  ASSERT_TRUE(state.memory.contains(object));
+  EXPECT_EQ(state.memory.at(object).front().end, Affine::ofConstant(4));
+}
+
 } // namespace weavec::core

@@ -8,6 +8,7 @@
 
 #include "Dataflow.h"
 
+#include "llvm/ADT/ScopeExit.h"
 #include "llvm/Support/Casting.h"
 
 #include <algorithm>
@@ -1047,6 +1048,10 @@ void FunctionDataflow::applyHeapResult(core::PlaceId dest,
                                        core::AnalysisState &state) {
   if (materializingHeap)
     return;
+  const auto checkedResult = llvm::scope_exit([&] {
+    if (options.checkContracts)
+      applyCheckedResult(dest, call, state);
+  });
   applyArrayReallocation(dest, call, state);
   const auto effects = classifyCall(call, summaries);
   if (!effects)

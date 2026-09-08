@@ -84,17 +84,45 @@ another cell. At branch joins, initialization is retained only where every
 incoming path establishes it. Supported complete copies establish the copied
 range. Complete helper contracts can export initialization postconditions.
 
+For example, a complete fill establishes the bytes that a later read needs:
+
+```c
+static void fill(char *bytes, unsigned size) {
+  for (unsigned i = 0; i < size; ++i) bytes[i] = 1;
+}
+int main(void) {
+  char bytes[8];
+  fill(bytes, 8);
+  return bytes[7];
+}
+```
+
+Skipping a store or exiting the loop early cannot establish that full interval.
+The same output facts can cross nested buffer fields, allocation-returning
+constructors and successful output parameters. A status test selects only
+facts guaranteed for that outcome; overwriting an output or its length retires
+the earlier facts. A saved alias of a released object remains invalid after
+a helper installs a replacement.
+
+`memcpy` checks disjoint intervals, including slices of the same object.
+`memmove` uses the source's initialization before the move. Positive-size
+`realloc` preserves initialized bytes within the old and new extents on
+success; its grown tail needs writes. Failure retains the incoming storage.
+String models check accessible initialized data through a terminator.
+A known zero byte can witness termination without inventing an exact length.
+
 ## Read a report
 
 `--checked-report=path` computes contracts and writes JSON without selecting
 additional functions. Compiler spelling: `-fweavec-checked-report=path`.
 
-Version 1 contains the invocation result, tool/model versions, totals and
+Version 2 contains the invocation result, tool/model versions, totals and
 units with source, target and function records. Each function records:
 
 - `selected`, `complete`, `deferred`, and `limited` flags;
 - `status`: proven, conditional, trusted, or incomplete;
-- sufficient `requirements` and initialization `establishes`;
+- sufficient `requirements` and guaranteed `establishes`, including `when`
+  input guards and optional `on` returning outcomes;
 - `obligations` with property, outcome, source location, reason and call origins.
 
 Obligation outcomes distinguish proven facts, entry requirements, explicit
@@ -112,6 +140,14 @@ Reports are deterministic for identical inputs and are replaced atomically.
 They are also written on checked failures. A report output error fails the
 invocation instead of leaving a successful status without the requested result.
 
+Memory contracts can name dereferenced parameters, record fields, selected
+elements, globals and result paths. Requirements distinguish validity, extent,
+initialization, writability, release family, separation, string termination and
+nonoverflowing byte sums. `initialized` and `zeroed` postconditions establish
+byte intervals; `copied` preserves only the input bytes already initialized
+within an interval. It does not claim that unused input capacity was initialized
+or that the bytes retain a particular value.
+
 ## Current limits
 
 The model is bounded, single-threaded C. Unsupported unions, assembly,
@@ -123,8 +159,11 @@ facts from their existing models; otherwise the result stays unresolved.
 Pointer differences, ordered pointer comparisons and floating-to-integer
 conversions currently require an unsafe boundary. Conservative rejection of valid C is expected.
 
-The initial library proof models cover allocation/release and bounded memory
-operations. An entry in the broader ordinary ownership table does not by
+Library proof models cover allocation/release, bounded memory operations,
+positive-size `realloc`, `strlen`, `strnlen`, `strcpy`, `stpcpy`, `strcat`,
+`strdup`, `strndup` and `strncpy`, including supported compiler/fortified
+spellings. Unknown string lengths or unproved arithmetic can still prevent
+checking a modeled call. An entry in the broader ordinary ownership table does not by
 itself establish a complete safety contract. Keep unmodeled dependencies
 outside selected scope or mark an intentional trust boundary explicitly.
 
@@ -133,4 +172,5 @@ violation. Lowering their diagnostic severity does not discharge the underlying
 obligation. The compiler still fails selected checking.
 
 The authoritative design and acceptance criteria are in
-[RFC 0018](rfcs/0018-checked-code-and-safety-contracts.md).
+[RFC 0018](rfcs/0018-checked-code-and-safety-contracts.md) and
+[RFC 0019](rfcs/0019-practical-checked-memory-contracts.md).

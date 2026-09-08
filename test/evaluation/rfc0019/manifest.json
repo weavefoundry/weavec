@@ -1,0 +1,520 @@
+{
+  "version": 2,
+  "rfc": "0019",
+  "baseline_revision": "ed3f712",
+  "description": "Frozen before implementation. Positive proofs and intended missing properties are distinct from concrete bugs.",
+  "cases": [
+    {
+      "name": "nested-good",
+      "sources": [
+        "nested-good.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "accepted",
+      "reason": null,
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe boundary",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "nested-bad",
+      "sources": [
+        "nested-bad.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "reason": "initializ",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe boundary",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "constructor-good",
+      "sources": [
+        "constructor-good.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "accepted",
+      "reason": null,
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe boundary",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "constructor-bad",
+      "sources": [
+        "constructor-bad.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "reason": "initializ",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe boundary",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "outparam-good",
+      "sources": [
+        "outparam-good.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "accepted",
+      "reason": null,
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe boundary",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "outparam-bad",
+      "sources": [
+        "outparam-bad.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "reason": "initializ",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe boundary",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "fill-good",
+      "sources": [
+        "fill-good.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "accepted",
+      "reason": null,
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe boundary",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "fill-bad",
+      "sources": [
+        "fill-bad.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "reason": "initializ",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe boundary",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "fill-helper-good",
+      "sources": [
+        "fill-helper-good.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "accepted",
+      "reason": null,
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe boundary",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "fill-helper-bad",
+      "sources": [
+        "fill-helper-bad.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "reason": "initializ",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe boundary",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "copy-loop-good",
+      "sources": [
+        "copy-loop-good.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "accepted",
+      "reason": null,
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe boundary",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "copy-loop-bad",
+      "sources": [
+        "copy-loop-bad.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "reason": "initializ",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe boundary",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "copy-slices-good",
+      "sources": [
+        "copy-slices-good.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "accepted",
+      "reason": null,
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe boundary",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "copy-slices-bad",
+      "sources": [
+        "copy-slices-bad.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "reason": "overlap|disjoint",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe boundary",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "move-slices-good",
+      "sources": [
+        "move-slices-good.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "accepted",
+      "reason": null,
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe boundary",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "move-slices-bad",
+      "sources": [
+        "move-slices-bad.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "reason": "initializ",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe boundary",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "strlen-good",
+      "sources": [
+        "strlen-good.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "accepted",
+      "reason": null,
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe boundary",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "strlen-bad",
+      "sources": [
+        "strlen-bad.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "reason": "terminat|bounds",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe boundary",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "strcpy-good",
+      "sources": [
+        "strcpy-good.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "accepted",
+      "reason": null,
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe boundary",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "strcpy-bad",
+      "sources": [
+        "strcpy-bad.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "reason": "fit|bounds|small",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe boundary",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "strcat-good",
+      "sources": [
+        "strcat-good.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "accepted",
+      "reason": null,
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe boundary",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "strcat-bad",
+      "sources": [
+        "strcat-bad.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "reason": "fit|bounds|small",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe boundary",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "strncpy-good",
+      "sources": [
+        "strncpy-good.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "accepted",
+      "reason": null,
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe boundary",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "strncpy-bad",
+      "sources": [
+        "strncpy-bad.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "reason": "terminat|bounds",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe boundary",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "strdup-good",
+      "sources": [
+        "strdup-good.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "accepted",
+      "reason": null,
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe boundary",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "strdup-bad",
+      "sources": [
+        "strdup-bad.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "reason": "fit|bounds",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe boundary",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "realloc-good",
+      "sources": [
+        "realloc-good.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "accepted",
+      "reason": null,
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe boundary",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "realloc-bad",
+      "sources": [
+        "realloc-bad.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "reason": "initializ",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe boundary",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "realloc-alias-good",
+      "sources": [
+        "realloc-alias-good.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "accepted",
+      "reason": null,
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe boundary",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "realloc-alias-bad",
+      "sources": [
+        "realloc-alias-bad.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "reason": "freed|live",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe boundary",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "frame-good",
+      "sources": [
+        "frame-good.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "accepted",
+      "reason": null,
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe boundary",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "frame-bad",
+      "sources": [
+        "frame-bad.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "reason": "initializ",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe boundary",
+        "annotation assumptions"
+      ]
+    }
+  ]
+}

@@ -105,6 +105,27 @@ std::vector<PlaceId> PendingOutcome::nonNullInAll() const {
   return inAllClasses(consumedBy, nonNullOn);
 }
 
+std::vector<std::pair<PlaceId, InitializedRange>>
+PendingOutcome::initializedInAll() const {
+  std::vector<std::pair<PlaceId, InitializedRange>> result;
+  bool first = true;
+  for (const auto &[outcome, consumed] : consumedBy) {
+    (void)consumed;
+    const auto found = initializedOn.find(outcome);
+    if (found == initializedOn.end())
+      return {};
+    if (first) {
+      result = found->second;
+      first = false;
+    } else {
+      std::erase_if(result, [&](const auto &fact) {
+        return std::ranges::find(found->second, fact) == found->second.end();
+      });
+    }
+  }
+  return result;
+}
+
 std::vector<std::pair<PlaceId, ValueFact>> PendingOutcome::factsInAll() const {
   std::map<PlaceId, ValueFact> joined;
   bool first = true;
@@ -142,6 +163,17 @@ bool PendingOutcome::unite(const PendingOutcome &other) {
   if (location != other.location || callee != other.callee ||
       returned != other.returned || unheldOnly != other.unheldOnly)
     return false;
+  for (const auto &[outcome, consumed] : consumedBy) {
+    (void)consumed;
+    if (!other.consumedBy.contains(outcome))
+      continue;
+    const auto ours = initializedOn.find(outcome);
+    const auto theirs = other.initializedOn.find(outcome);
+    if ((ours == initializedOn.end()) !=
+            (theirs == other.initializedOn.end()) ||
+        (ours != initializedOn.end() && ours->second != theirs->second))
+      return false;
+  }
   // A class both sides kept was narrowed from the same recording: it must
   // say the same on both.
   const auto agrees = [](const auto &mine, const auto &theirs) {
@@ -163,6 +195,7 @@ bool PendingOutcome::unite(const PendingOutcome &other) {
   merge(nullOn, other.nullOn);
   merge(nonNullOn, other.nonNullOn);
   merge(factOn, other.factOn);
+  merge(initializedOn, other.initializedOn);
   // A store one side retracted (on none of its classes) is back with the
   // classes it happens on.
   for (const PendingStore &store : other.stores) {
@@ -205,6 +238,8 @@ bool PendingOutcome::settled() const {
 }
 
 bool AnalysisState::join(const AnalysisState &other, const PlaceTable *places) {
+  const auto leftSafetyGuard = safety ? pathGuard() : PlaceGuard{};
+  const auto rightSafetyGuard = other.safety ? other.pathGuard() : PlaceGuard{};
   const auto isNull = [](PlaceId place, const AnalysisState &state) {
     const auto record = state.nulls.recordOf(place);
     return state.resources.isNull(place) ||
@@ -518,7 +553,7 @@ bool AnalysisState::join(const AnalysisState &other, const PlaceTable *places) {
     }
   }
   if (safety && other.safety) {
-    changed |= safety->join(*other.safety);
+    changed |= safety->join(*other.safety, leftSafetyGuard, rightSafetyGuard);
   } else if (safety) {
     changed |= safety->join(SafetyState{});
   } else if (other.safety) {
@@ -608,16 +643,30 @@ AnalysisState::Learned AnalysisState::learn(PlaceId place,
 }
 
 void AnalysisState::dropGuardsOn(PlaceId place) {
-  // RFC 0018: a write cannot reinterpret an earlier initialized interval
-  // using the new value of its index or count (including callee outputs).
-  if (safety) {
-    for (auto &[storage, ranges] : safety->memory) {
-      (void)storage;
-      std::erase_if(ranges, [place](const auto &range) {
-        return range.begin.place == place || range.end.place == place;
-      });
+  for (auto &[result, outcome] : pending) {
+    (void)result;
+    for (auto &[cls, facts] : outcome.factOn) {
+      (void)cls;
+      std::erase_if(facts,
+                    [place](const auto &fact) { return fact.first == place; });
     }
   }
+  if (safety)
+    for (auto &[result, outcome] : pending) {
+      (void)result;
+      for (auto &[cls, facts] : outcome.initializedOn) {
+        (void)cls;
+        std::erase_if(facts, [&](const auto &fact) {
+          auto condition = fact.second.when;
+          return fact.first == place || fact.second.begin.place == place ||
+                 fact.second.end.place == place || condition.drop(place);
+        });
+      }
+    }
+  // RFC 0018: a write cannot reinterpret an earlier initialized interval
+  // using the new value of its index or count (including callee outputs).
+  if (safety)
+    safety->forgetDependency(place);
   numericConditions.drop(place);
   std::erase_if(numericValues, [place](const auto &entry) {
     return entry.first == place || entry.second.dependsOn(place);
@@ -626,6 +675,19 @@ void AnalysisState::dropGuardsOn(PlaceId place) {
   moves.dropGuardsOn(place);
   resources.dropGuardsOn(place);
   nulls.dropGuardsOn(place);
+}
+
+void AnalysisState::forgetZeroedMemory() {
+  if (!safety)
+    return;
+  safety->forgetZeros();
+  for (auto &[result, outcome] : pending) {
+    (void)result;
+    for (auto &[cls, facts] : outcome.initializedOn) {
+      (void)cls;
+      std::erase_if(facts, [](const auto &fact) { return fact.second.zeroed; });
+    }
+  }
 }
 
 void AnalysisState::forget(PlaceId place) {

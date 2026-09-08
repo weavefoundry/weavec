@@ -133,6 +133,18 @@ void FunctionDataflow::captureNumericInputs(
     affine(release.begin);
     affine(release.count);
   }
+  if (options.checkContracts) {
+    for (const auto &requirement : summary.checked.requirements) {
+      guard(requirement.when);
+      affine(requirement.begin);
+      affine(requirement.end);
+    }
+    for (const auto &post : summary.checked.establishes) {
+      guard(post.when);
+      affine(post.begin);
+      affine(post.end);
+    }
+  }
 
   auto &inputs = numericInputs[&call];
   // Retire every previous slot, including dependencies that a contextual

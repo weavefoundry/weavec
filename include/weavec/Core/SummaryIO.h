@@ -97,7 +97,7 @@ namespace weavec::core {
 /// Version of the record format; bumped when a record written by this
 /// version cannot be read by the previous one.
 // Version 14 (RFC 0018) adds bounded sufficient safety contracts.
-inline constexpr unsigned SummaryFormatVersion = 14;
+inline constexpr unsigned SummaryFormatVersion = 15;
 
 // RFC 0014: deterministic, single-token callback contexts. Bindings name
 // parameter paths; globals retain their ordinary exported value sources.
@@ -138,6 +138,9 @@ parseSummaryPath(std::string_view text, const GlobalResolver &resolve);
 /// param 3 zero and param 2 nonnull`); empty for a trivial guard.
 [[nodiscard]] std::string printGuard(const PathGuard &guard,
                                      const GlobalNamer &names);
+/// RFC 0019: must-contract parsing rejects every unavailable premise.
+[[nodiscard]] std::optional<PathGuard>
+parseSummaryGuard(std::string_view text, const GlobalResolver &resolve);
 
 /// Prints `summary` as one record, `summary\n ... end\n`, lines indented by
 /// two spaces and in a deterministic order.

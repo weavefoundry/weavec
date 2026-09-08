@@ -61,6 +61,22 @@ requested commit. Baseline comparisons reject missing projects, changed
 unit counts and revisions, per-project diagnostic growth, and failed runs;
 failed runs cannot refresh a baseline.
 
+RFC 0019 additionally checks pinned Jansson buffer and UTF encoding interfaces
+with positive and adversarial callers:
+
+```sh
+python3 scripts/checked-memory-corpus.py --weavec build/rel/bin/weavec \
+  --output build/rfc0019-real
+```
+
+The selected definitions and allocator boundary are frozen in
+`test/evaluation/rfc0019/real-modules.json`. The runner checks upstream source
+identity and records scope, entry requirements, trust, timing and report size.
+These selected results are separate from whole-project checked coverage;
+unselected definitions and timeouts do not count as successful proofs.
+The [RFC 0019 validation report](../../docs/validation-rfc0019.md) and
+[results artifact](rfc0019-results.json) record the final measurements.
+
 CI gates execution validity here. It preserves counts for review instead of
 assuming counts match across different SDKs. The fixed bug/clean evaluation
 separately gates detections and precision; a lower corpus count alone is

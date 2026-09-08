@@ -23,16 +23,89 @@ void FunctionDataflow::recordNumericOutputs(const Expr *value,
   const auto projectedGuard = summaryGuardOf(guard);
   const bool guardComplete = integerGuardComplete(guard, state) &&
                              summaryGuardComplete(guard, projectedGuard);
+  const auto *returnedCall =
+      value ? dyn_cast<CallExpr>(value->IgnoreParenImpCasts()) : nullptr;
+  if (returnedCall &&
+      !ASTContext::hasSameType(value->getType(), returnedCall->getType()))
+    returnedCall = nullptr;
+  std::set<std::optional<core::Outcome>> classes{std::nullopt};
+  if (options.checkContracts && value && value->getType()->isIntegerType()) {
+    classes.clear();
+    if (const auto fact = scalarFactOf(*value, state))
+      for (const auto outcome : fact->classes)
+        classes.insert(outcome);
+    if (classes.empty()) {
+      classes = {core::Outcome::Zero, core::Outcome::Positive};
+      if (value->getType()->isSignedIntegerType())
+        classes.insert(core::Outcome::Negative);
+    }
+  }
   const auto record = [&](const core::SummaryPath &path,
                           const std::optional<NumericExpression> &expression) {
     core::NumericOutput output;
     if (guardComplete)
       output.when = projectedGuard;
-    if (expression && guardComplete)
+    // RFC 0019: forgetting an unexportable guard may add return cases. A
+    // constant remains a sound possible value on the widened cases; an
+    // expression whose evaluation depends on that guard does not.
+    const bool total =
+        options.checkContracts && expression &&
+        !expression
+             ->evaluate([](core::PlaceId, core::IntegerType type) {
+               return core::IntegerRange::full(type);
+             })
+             .mayBeInvalid;
+    if (expression && (guardComplete || total))
       output.value = summaryIntegerExpression(*expression);
+    if (total)
+      for (const auto &store : inferred.stores)
+        output.when.drop(store.dest);
     if (expression && !output.value)
       inferred.incomplete.insert("unsupported numeric output projection");
-    inferred.addNumericOutput(path, std::move(output));
+    for (const auto outcome : classes) {
+      auto selected = output;
+      selected.on = outcome;
+      std::optional<core::ValueFact> fact;
+      if (outcome && returnedCall && lastCall &&
+          lastCall->call == returnedCall) {
+        if (path.isResult()) {
+          if (const auto site = numericCallOutcomeFacts.find(returnedCall);
+              site != numericCallOutcomeFacts.end())
+            if (const auto result =
+                    site->second.find(core::SummaryPath::result());
+                result != site->second.end())
+              if (const auto entry = result->second.find(*outcome);
+                  entry != result->second.end())
+                fact = entry->second;
+        } else {
+          auto narrowed = lastCall->pending;
+          narrowed.select({*outcome});
+          for (const auto &[place, established] : narrowed.factsInAll())
+            if (callerVisiblePath(place) == path)
+              fact = established;
+        }
+      }
+      if (fact && fact->constant) {
+        std::optional<core::IntegerType> type;
+        if (path.isResult() && value)
+          type = integerTypeOf(value->getType(), context);
+        else if (const auto target = contextPlace(path, state))
+          type = integerTypeOf(target->second, context);
+        if (type) {
+          selected.value = core::IntegerExpression<core::SummaryPath>::constant(
+              core::IntegerValue::ofBits(
+                  *type, static_cast<std::uint64_t>(*fact->constant)));
+          selected.when = {};
+        }
+      }
+      if (fact && fact->integer)
+        if (const auto exact = fact->integer->constant()) {
+          selected.value =
+              core::IntegerExpression<core::SummaryPath>::constant(*exact);
+          selected.when = {};
+        }
+      inferred.addNumericOutput(path, std::move(selected));
+    }
   };
   if (value && value->getType()->isIntegerType()) {
     auto expression = integerExpressionOf(*value, state);
@@ -49,11 +122,16 @@ void FunctionDataflow::recordNumericOutputs(const Expr *value,
     if (!path || !writtenScalarPaths.contains(*path) || !tracksScalar(place))
       continue;
     const auto *decl = dyn_cast_or_null<ValueDecl>(builder.declFor(place));
-    const auto type = decl ? integerTypeOf(*decl, context) : std::nullopt;
+    auto type = decl ? integerTypeOf(*decl, context) : std::nullopt;
     std::optional<NumericExpression> expression;
     if (const auto stored = state.numericValues.find(place);
         stored != state.numericValues.end())
       expression = stored->second;
+    if (!type && expression)
+      type = expression->type();
+    if (!type)
+      if (const auto fact = state.scalars.factOf(place); fact && fact->integer)
+        type = fact->integer->type;
     if (type)
       if (const auto fact = state.scalars.factOf(place))
         if (const auto exact = fact->inType(*type).constant())
@@ -76,6 +154,7 @@ void FunctionDataflow::prepareNumericCall(const CallExpr &call,
                                           const core::FunctionSummary &summary,
                                           core::AnalysisState &state) {
   captureNumericInputs(call, summary, state);
+  numericCallOutcomeFacts.erase(&call);
   if (const auto old = numericCallOutputs.find(&call);
       old != numericCallOutputs.end())
     for (const auto &[path, place] : old->second) {
@@ -128,13 +207,31 @@ void FunctionDataflow::prepareNumericCall(const CallExpr &call,
     bool allSame = true;
     std::optional<NumericExpression> same;
     core::IntegerRange range(*type);
+    std::map<core::Outcome, core::IntegerRange> byOutcome;
+    std::set<core::Outcome> unknownOutcomes;
+    std::set<core::Outcome> outcomes;
+    if (options.checkContracts)
+      for (const auto &[outcome, effects] : summary.outcomes) {
+        (void)effects;
+        outcomes.insert(outcome);
+      }
+    for (const auto &output : outputs)
+      if (output.on)
+        outcomes.insert(*output.on);
     for (const auto &output : outputs) {
       auto guard = builder.translateGuard(output.when, call);
       if (!guard || !pruneGuard(*guard, state))
         continue;
       any = true;
+      const auto unknownHere = [&] {
+        if (output.on)
+          unknownOutcomes.insert(*output.on);
+        else
+          unknownOutcomes.insert(outcomes.begin(), outcomes.end());
+      };
       if (!output.value) {
         unknown = true;
+        unknownHere();
         continue;
       }
       const auto expression = output.value->substitute<core::PlaceId>(
@@ -144,18 +241,32 @@ void FunctionDataflow::prepareNumericCall(const CallExpr &call,
           });
       if (!expression) {
         unknown = true;
+        unknownHere();
         continue;
       }
       const auto actual = evaluateNumericExpression(*expression, state);
-      if (actual.mayBeInvalid)
+      if (actual.mayBeInvalid) {
         unknown = true;
-      else
+        unknownHere();
+      } else {
         range = range.united(actual.values.converted(*type));
+        for (const auto outcome : outcomes) {
+          if (output.on && output.on != outcome)
+            continue;
+          auto [entry, inserted] = byOutcome.try_emplace(outcome, *type);
+          (void)inserted;
+          entry->second = entry->second.united(actual.values.converted(*type));
+        }
+      }
       if (same && *same != *expression)
         allSame = false;
       if (!same)
         same = expression;
     }
+    for (const auto &[outcome, values] : byOutcome)
+      if (!unknownOutcomes.contains(outcome) && !values.empty())
+        numericCallOutcomeFacts[&call][path].emplace(
+            outcome, core::ValueFact::ofInteger(values));
     if (!any || unknown) {
       state.scalars.forget(saved->second);
       state.numericValues.erase(saved->second);
@@ -226,6 +337,11 @@ void FunctionDataflow::finishNumericCall(const CallExpr &call,
   bool conflict = false;
   for (const auto &[cell, output] : outputs) {
     conflict |= output.conflict;
+    snapshotIntegerDependencies(cell, &call, state);
+    snapshotScalar(cell, &call, state);
+    state.dropGuardsOn(cell);
+    state.relations.forget(cell);
+    state.spatial.dropExtentsOn(cell);
     state.numericWrites.insert(cell);
     state.scalars.forget(cell);
     state.numericValues.erase(cell);
@@ -238,6 +354,37 @@ void FunctionDataflow::finishNumericCall(const CallExpr &call,
   }
   if (conflict)
     reportIncomplete("conflicting numeric outputs for aliased storage", call);
+  const auto conditional = numericCallOutcomeFacts.find(&call);
+  if (!conflict && conditional != numericCallOutcomeFacts.end()) {
+    if (!lastCall || lastCall->call != &call) {
+      core::PendingOutcome callOutcome;
+      callOutcome.callee = calleeName(call);
+      callOutcome.location = locate(call);
+      lastCall = CallOutcome{.call = &call, .pending = std::move(callOutcome)};
+    }
+    const auto type = integerTypeOf(call.getType(), context);
+    if (type && lastCall->pending.consumedBy.empty()) {
+      lastCall->pending.consumedBy.try_emplace(core::Outcome::Zero);
+      lastCall->pending.consumedBy.try_emplace(core::Outcome::Positive);
+      if (type->isSigned)
+        lastCall->pending.consumedBy.try_emplace(core::Outcome::Negative);
+    }
+    for (const auto &[path, facts] : conditional->second) {
+      if (path.isResult())
+        continue;
+      const auto dest = builder.resolveSummaryPath(path, call);
+      if (!dest)
+        continue;
+      for (const auto &[outcome, fact] : facts) {
+        lastCall->pending.consumedBy.try_emplace(outcome);
+        auto &established = lastCall->pending.factOn[outcome];
+        std::erase_if(established, [&](const auto &entry) {
+          return entry.first == dest->place;
+        });
+        established.emplace_back(dest->place, fact);
+      }
+    }
+  }
 }
 
 } // namespace weavec::analysis

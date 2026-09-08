@@ -56,7 +56,7 @@ static std::string checkedLocation(const core::SourceLocation &location) {
 std::string CheckedReport::json(bool invocationOK) const {
   std::ostringstream out;
   const auto quote = core::safetyJsonString;
-  out << R"({"version":1,"invocation_ok":)" << (invocationOK ? "true" : "false")
+  out << R"({"version":2,"invocation_ok":)" << (invocationOK ? "true" : "false")
       << ",\"guarantee\":\"conditional safety of selected source "
          "functions\",\"units\":[";
   std::size_t total = 0;
@@ -115,7 +115,10 @@ std::string CheckedReport::json(bool invocationOK) const {
               << quote(core::printSummaryPath(entry.other, names))
               << ",\"begin\":" << quote(core::printAffine(entry.begin, names))
               << ",\"end\":" << quote(core::printAffine(entry.end, names))
-              << ",\"family\":" << quote(entry.family) << '}';
+              << ",\"family\":" << quote(entry.family)
+              << ",\"when\":" << quote(core::printGuard(entry.when, names))
+              << ",\"on\":"
+              << (entry.on ? quote(core::toString(*entry.on)) : "null") << '}';
         }
         out << ']';
       };

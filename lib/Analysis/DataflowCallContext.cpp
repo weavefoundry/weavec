@@ -33,7 +33,7 @@ static QualType contextStepType(QualType type, const core::PathElem &step) {
 
 std::optional<std::pair<core::PlaceId, QualType>>
 FunctionDataflow::contextPlace(const core::SummaryPath &path,
-                               core::AnalysisState &state) {
+                               const core::AnalysisState &state) {
   const VarDecl *root = nullptr;
   if (path.isParam() && path.index < function.getNumParams())
     root = function.getParamDecl(path.index);
@@ -176,7 +176,11 @@ FunctionDataflow::captureCallContext(const CallExpr &call,
       });
   if (!changesMemory)
     return std::nullopt;
-  const auto footprint = core::callMemoryFootprint(summary);
+  auto footprint = core::callMemoryFootprint(summary);
+  if (options.checkContracts && summary.checked.computed)
+    for (const auto &[path, effect] : summary.effects)
+      if (effect.written && !path.isResult())
+        footprint.insert(path);
   if (footprint.size() > core::MaxCallContextFacts) {
     reportIncomplete("call context input path limit reached", call);
     return std::nullopt;
@@ -342,14 +346,19 @@ FunctionDataflow::captureCallContext(const CallExpr &call,
           return step.step == core::PathStep::Index && !step.field.empty();
         });
       });
-  if (result.aliases.empty() &&
-      (!selectedInputs || inputs.size() < 2 || unresolved || unrepresentable))
-    return std::nullopt;
-  if (unresolved || unrepresentable) {
-    reportIncomplete(unrepresentable ? "unrepresentable call context input path"
-                                     : "unresolved call alias relationship",
-                     call);
-    return std::nullopt;
+  // Ordinary calls without a usable memory relationship need no scalar
+  // capture. RFC 0019's scalar-only specialization is checked-mode work.
+  if (!options.checkContracts) {
+    if (result.aliases.empty() &&
+        (!selectedInputs || inputs.size() < 2 || unresolved || unrepresentable))
+      return std::nullopt;
+    if (unresolved || unrepresentable) {
+      reportIncomplete(unrepresentable
+                           ? "unrepresentable call context input path"
+                           : "unresolved call alias relationship",
+                       call);
+      return std::nullopt;
+    }
   }
   // Constants and sign/null classes bound branch specialization. The value
   // domain and conversion assumptions are the same as ordinary CFG checking.
@@ -372,6 +381,20 @@ FunctionDataflow::captureCallContext(const CallExpr &call,
     if (const auto ref = builder.resolveSummaryPath(path, call))
       if (const auto fact = state.factOf(ref->place); fact && !fact->trivial())
         result.facts[path] = *fact;
+  }
+  const bool checkedScalars =
+      options.checkContracts && summary.checked.computed &&
+      std::ranges::any_of(result.facts, [](const auto &entry) {
+        return !entry.second.isPointer() && entry.second.constant.has_value();
+      });
+  if (result.aliases.empty() && !checkedScalars &&
+      (!selectedInputs || inputs.size() < 2 || unresolved || unrepresentable))
+    return std::nullopt;
+  if ((unresolved || unrepresentable) && !checkedScalars) {
+    reportIncomplete(unrepresentable ? "unrepresentable call context input path"
+                                     : "unresolved call alias relationship",
+                     call);
+    return std::nullopt;
   }
   if (result.empty())
     return std::nullopt;
