@@ -174,7 +174,7 @@ TEST(SummaryIO, PrintsAndParsesGuardsAndNeverReturns) {
 // RFC 0010, *Summary text format (version 6)*: the `share` flag and the
 // `increment`, `decrement`, `count`, `stored` and `fact` lines.
 TEST(SummaryIO, PrintsAndParsesSharesAndPerOutcomeLines) {
-  EXPECT_EQ(SummaryFormatVersion, 14U);
+  EXPECT_EQ(SummaryFormatVersion, 15U);
   const SummaryPath rc = SummaryPath::param(0).deref().field("rc");
   FunctionSummary unref;
   unref.addEffect(SummaryPath::param(0),
@@ -323,6 +323,24 @@ TEST(SummaryIO, RejectsMalformedGuards) {
         << line;
     EXPECT_FALSE(error.empty()) << line;
   }
+}
+
+// RFC 0019: a must-fact parser cannot forget an unavailable or excess premise.
+TEST(SummaryIO, StrictGuardsRejectLostAndContradictoryPremises) {
+  EXPECT_TRUE(parseSummaryGuard("", ResolveAll));
+  EXPECT_FALSE(
+      parseSummaryGuard("when param 0 zero and param 0 positive", ResolveAll));
+  EXPECT_FALSE(
+      parseSummaryGuard("when global absent zero", [](std::string_view) {
+        return std::optional<std::uint32_t>{};
+      }));
+  std::string excessive = "when ";
+  for (std::size_t i = 0; i <= MaxGuardConjuncts; ++i) {
+    if (i != 0)
+      excessive += " and ";
+    excessive += "param " + std::to_string(i) + " positive";
+  }
+  EXPECT_FALSE(parseSummaryGuard(excessive, ResolveAll));
 }
 
 TEST(SummaryIO, InteriorCopiesRoundTrip) {
@@ -761,6 +779,26 @@ TEST(NumericSummary, AnUnknownAlternativeSurvivesJoinsAndLimits) {
   EXPECT_FALSE(
       unknown.numericOutputs.at(SummaryPath::param(0).deref()).begin()->value);
   EXPECT_FALSE(unknown.incomplete.empty());
+}
+
+TEST(NumericSummary, UnknownIsScopedToItsReturningOutcome) {
+  using Expr = IntegerExpression<SummaryPath>;
+  const auto path = SummaryPath::param(0).deref();
+  const auto value = Expr::constant(
+      IntegerValue::ofBits({.width = 64, .isSigned = false}, 16));
+  FunctionSummary summary;
+  summary.addNumericOutput(path, {.value = value, .on = Outcome::Zero});
+  summary.addNumericOutput(path, {.on = Outcome::Negative});
+  summary.addNumericOutput(path, {.value = value, .on = Outcome::Negative});
+  ASSERT_EQ(summary.numericOutputs.at(path).size(), 2U);
+  const auto encoded = printSummary(
+      summary, [](std::uint32_t) { return std::string("global"); });
+  EXPECT_EQ(parseSummary(encoded, ResolveAll), summary);
+  const auto mapped = remapGlobals(
+      summary, [](std::uint32_t value) { return std::optional(value); });
+  EXPECT_EQ(mapped.numericOutputs, summary.numericOutputs);
+  summary.addNumericOutput(path, {});
+  EXPECT_EQ(summary.numericOutputs.at(path), (std::set<NumericOutput>{{}}));
 }
 
 } // namespace weavec::core

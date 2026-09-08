@@ -13,8 +13,9 @@
 
 namespace weavec::core {
 
-static constexpr std::array<std::string_view, 6> Kinds{
-    "valid", "extent", "initialized", "release", "separated", "writable"};
+static constexpr std::array<std::string_view, 10> Kinds{
+    "valid",    "extent",     "initialized", "release",  "separated",
+    "writable", "terminated", "copied",      "sum-fits", "zeroed"};
 
 std::string_view toString(CheckedRequirementKind value) noexcept {
   const auto index = static_cast<std::size_t>(value);

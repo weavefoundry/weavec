@@ -1,0 +1,5263 @@
+{
+  "version": 1,
+  "rfc": "0019",
+  "baseline_revision": "ed3f712112b6c9ef2f890002f05aa7c81409928f",
+  "benchmark": {
+    "manifest_sha256": "879b548e563af06033ac6ca1ecb66ad691cfc0cfa8ce4048a0c1fdf5e8de9f1e",
+    "binaries": {
+      "before": "18f9d28ab490f38454bbb5d1d56dc57c2b90c1751fe7cfa315982615aa23ac5c",
+      "after": "c667451d6f75cecb5ad83e76389af17075e91052649c01d266e906c611a37e4d",
+      "before_private_output_fix": "cb142e25258206e4a50430740d5ee17882d807d57f54f195b078aa97baf3e605"
+    },
+    "observations": [
+      {
+        "name": "baseline-1",
+        "command": [
+          "python3",
+          "scripts/corpus.py",
+          "--weavec",
+          "build/rfc19-validation/weavec-before",
+          "--manifest",
+          "scripts/corpus/rfc0015.json",
+          "--timeout",
+          "600",
+          "--measure-memory",
+          "--json",
+          "build/rfc19-validation/baseline-1.json"
+        ],
+        "started": "2026-09-08T08:52:33.421055+00:00",
+        "returncode": 0,
+        "finished": "2026-09-08T08:58:12.766441+00:00"
+      },
+      {
+        "name": "baseline-2",
+        "command": [
+          "python3",
+          "scripts/corpus.py",
+          "--weavec",
+          "build/rfc19-validation/weavec-before",
+          "--manifest",
+          "scripts/corpus/rfc0015.json",
+          "--timeout",
+          "600",
+          "--measure-memory",
+          "--json",
+          "build/rfc19-validation/baseline-2.json"
+        ],
+        "started": "2026-09-08T08:58:12.766872+00:00",
+        "returncode": 0,
+        "finished": "2026-09-08T09:03:57.583442+00:00"
+      },
+      {
+        "name": "baseline-3",
+        "command": [
+          "python3",
+          "scripts/corpus.py",
+          "--weavec",
+          "build/rfc19-validation/weavec-before",
+          "--manifest",
+          "scripts/corpus/rfc0015.json",
+          "--timeout",
+          "600",
+          "--measure-memory",
+          "--json",
+          "build/rfc19-validation/baseline-3.json"
+        ],
+        "started": "2026-09-08T09:03:57.584095+00:00",
+        "returncode": 0,
+        "finished": "2026-09-08T09:09:37.860793+00:00"
+      },
+      {
+        "name": "final-1",
+        "command": [
+          "python3",
+          "scripts/corpus.py",
+          "--weavec",
+          "build/rfc19-validation/weavec-after",
+          "--manifest",
+          "scripts/corpus/rfc0015.json",
+          "--timeout",
+          "600",
+          "--measure-memory",
+          "--json",
+          "build/rfc19-validation/final-1.json"
+        ],
+        "started": "2026-09-08T09:09:37.861500+00:00",
+        "returncode": 0,
+        "finished": "2026-09-08T09:15:17.786850+00:00"
+      },
+      {
+        "name": "final-2",
+        "command": [
+          "python3",
+          "scripts/corpus.py",
+          "--weavec",
+          "build/rfc19-validation/weavec-after",
+          "--manifest",
+          "scripts/corpus/rfc0015.json",
+          "--timeout",
+          "600",
+          "--measure-memory",
+          "--json",
+          "build/rfc19-validation/final-2.json"
+        ],
+        "started": "2026-09-08T09:15:17.787422+00:00",
+        "returncode": 0,
+        "finished": "2026-09-08T09:20:33.623182+00:00"
+      },
+      {
+        "name": "final-3",
+        "command": [
+          "python3",
+          "scripts/corpus.py",
+          "--weavec",
+          "build/rfc19-validation/weavec-after",
+          "--manifest",
+          "scripts/corpus/rfc0015.json",
+          "--timeout",
+          "600",
+          "--measure-memory",
+          "--json",
+          "build/rfc19-validation/final-3.json"
+        ],
+        "started": "2026-09-08T09:20:33.623886+00:00",
+        "returncode": 0,
+        "finished": "2026-09-08T09:25:30.162208+00:00"
+      },
+      {
+        "name": "checked-log.c",
+        "command": [
+          "python3",
+          "scripts/corpus.py",
+          "--weavec",
+          "build/rfc19-validation/weavec-after",
+          "--manifest",
+          "scripts/corpus/rfc0015.json",
+          "--timeout",
+          "600",
+          "--measure-memory",
+          "--json",
+          "build/rfc19-validation/checked-log.c.json",
+          "--only",
+          "log.c",
+          "--weavec-arg=--checked",
+          "--weavec-arg=--checked-report=build/rfc19-validation/checked-log.c-report.json"
+        ],
+        "started": "2026-09-08T09:25:30.163045+00:00",
+        "returncode": 0,
+        "finished": "2026-09-08T09:25:30.333317+00:00"
+      },
+      {
+        "name": "checked-cJSON-program",
+        "command": [
+          "python3",
+          "scripts/corpus.py",
+          "--weavec",
+          "build/rfc19-validation/weavec-after",
+          "--manifest",
+          "scripts/corpus/rfc0015.json",
+          "--timeout",
+          "600",
+          "--measure-memory",
+          "--json",
+          "build/rfc19-validation/checked-cJSON-program.json",
+          "--only",
+          "cJSON-program",
+          "--weavec-arg=--checked",
+          "--weavec-arg=--checked-report=build/rfc19-validation/checked-cJSON-program-report.json"
+        ],
+        "started": "2026-09-08T09:25:30.333640+00:00",
+        "returncode": 0,
+        "finished": "2026-09-08T09:26:11.796769+00:00"
+      },
+      {
+        "name": "checked-linenoise-program",
+        "command": [
+          "python3",
+          "scripts/corpus.py",
+          "--weavec",
+          "build/rfc19-validation/weavec-after",
+          "--manifest",
+          "scripts/corpus/rfc0015.json",
+          "--timeout",
+          "600",
+          "--measure-memory",
+          "--json",
+          "build/rfc19-validation/checked-linenoise-program.json",
+          "--only",
+          "linenoise-program",
+          "--weavec-arg=--checked",
+          "--weavec-arg=--checked-report=build/rfc19-validation/checked-linenoise-program-report.json"
+        ],
+        "started": "2026-09-08T09:26:11.797474+00:00",
+        "returncode": 0,
+        "finished": "2026-09-08T09:26:30.792806+00:00"
+      },
+      {
+        "name": "corrected-final-1",
+        "command": [
+          "python3",
+          "scripts/corpus.py",
+          "--weavec",
+          "build/rfc19-validation/weavec-after",
+          "--manifest",
+          "scripts/corpus/rfc0015.json",
+          "--timeout",
+          "600",
+          "--measure-memory",
+          "--json",
+          "build/rfc19-validation/corrected-final-1.json"
+        ],
+        "started": "2026-09-08T09:42:52.849542+00:00",
+        "returncode": 0,
+        "finished": "2026-09-08T09:48:12.957164+00:00"
+      },
+      {
+        "name": "corrected-final-2",
+        "command": [
+          "python3",
+          "scripts/corpus.py",
+          "--weavec",
+          "build/rfc19-validation/weavec-after",
+          "--manifest",
+          "scripts/corpus/rfc0015.json",
+          "--timeout",
+          "600",
+          "--measure-memory",
+          "--json",
+          "build/rfc19-validation/corrected-final-2.json"
+        ],
+        "started": "2026-09-08T09:48:12.958004+00:00",
+        "returncode": 0,
+        "finished": "2026-09-08T09:53:52.554996+00:00"
+      },
+      {
+        "name": "corrected-final-3",
+        "command": [
+          "python3",
+          "scripts/corpus.py",
+          "--weavec",
+          "build/rfc19-validation/weavec-after",
+          "--manifest",
+          "scripts/corpus/rfc0015.json",
+          "--timeout",
+          "600",
+          "--measure-memory",
+          "--json",
+          "build/rfc19-validation/corrected-final-3.json"
+        ],
+        "started": "2026-09-08T09:53:52.555834+00:00",
+        "returncode": 0,
+        "finished": "2026-09-08T09:59:26.278110+00:00"
+      },
+      {
+        "name": "corrected-checked-log.c",
+        "command": [
+          "python3",
+          "scripts/corpus.py",
+          "--weavec",
+          "build/rfc19-validation/weavec-after",
+          "--manifest",
+          "scripts/corpus/rfc0015.json",
+          "--timeout",
+          "600",
+          "--measure-memory",
+          "--json",
+          "build/rfc19-validation/corrected-checked-log.c.json",
+          "--only",
+          "log.c",
+          "--weavec-arg=--checked",
+          "--weavec-arg=--checked-report=build/rfc19-validation/corrected-checked-log.c-report.json"
+        ],
+        "started": "2026-09-08T09:59:26.279167+00:00",
+        "returncode": 0,
+        "finished": "2026-09-08T09:59:26.478881+00:00"
+      },
+      {
+        "name": "corrected-checked-cJSON-program",
+        "command": [
+          "python3",
+          "scripts/corpus.py",
+          "--weavec",
+          "build/rfc19-validation/weavec-after",
+          "--manifest",
+          "scripts/corpus/rfc0015.json",
+          "--timeout",
+          "600",
+          "--measure-memory",
+          "--json",
+          "build/rfc19-validation/corrected-checked-cJSON-program.json",
+          "--only",
+          "cJSON-program",
+          "--weavec-arg=--checked",
+          "--weavec-arg=--checked-report=build/rfc19-validation/corrected-checked-cJSON-program-report.json"
+        ],
+        "started": "2026-09-08T09:59:26.479291+00:00",
+        "returncode": 0,
+        "finished": "2026-09-08T10:00:11.961327+00:00"
+      },
+      {
+        "name": "corrected-checked-linenoise-program",
+        "command": [
+          "python3",
+          "scripts/corpus.py",
+          "--weavec",
+          "build/rfc19-validation/weavec-after",
+          "--manifest",
+          "scripts/corpus/rfc0015.json",
+          "--timeout",
+          "600",
+          "--measure-memory",
+          "--json",
+          "build/rfc19-validation/corrected-checked-linenoise-program.json",
+          "--only",
+          "linenoise-program",
+          "--weavec-arg=--checked",
+          "--weavec-arg=--checked-report=build/rfc19-validation/corrected-checked-linenoise-program-report.json"
+        ],
+        "started": "2026-09-08T10:00:11.962113+00:00",
+        "returncode": 0,
+        "finished": "2026-09-08T10:00:33.102129+00:00"
+      },
+      {
+        "name": "corrected-checked-jansson",
+        "command": [
+          "python3",
+          "scripts/corpus.py",
+          "--weavec",
+          "build/rfc19-validation/weavec-after",
+          "--manifest",
+          "scripts/corpus/rfc0015.json",
+          "--timeout",
+          "600",
+          "--measure-memory",
+          "--json",
+          "build/rfc19-validation/corrected-checked-jansson.json",
+          "--only",
+          "jansson",
+          "--weavec-arg=--checked",
+          "--weavec-arg=--checked-report=build/rfc19-validation/corrected-checked-jansson-report.json"
+        ],
+        "started": "2026-09-08T10:00:33.103036+00:00",
+        "returncode": 2,
+        "finished": "2026-09-08T10:10:33.676114+00:00"
+      },
+      {
+        "name": "corrected-checked-lua",
+        "command": [
+          "python3",
+          "scripts/corpus.py",
+          "--weavec",
+          "build/rfc19-validation/weavec-after",
+          "--manifest",
+          "scripts/corpus/rfc0015.json",
+          "--timeout",
+          "600",
+          "--measure-memory",
+          "--json",
+          "build/rfc19-validation/corrected-checked-lua.json",
+          "--only",
+          "lua",
+          "--weavec-arg=--checked",
+          "--weavec-arg=--checked-report=build/rfc19-validation/corrected-checked-lua-report.json"
+        ],
+        "started": "2026-09-08T10:10:33.677057+00:00",
+        "returncode": 2,
+        "finished": "2026-09-08T10:20:35.083516+00:00"
+      }
+    ],
+    "interrupted": {
+      "at": "2026-09-08T09:33:59.952554+00:00",
+      "phase": "checked-jansson",
+      "reason": "Superseded by private-output transport correction; no final coverage claim from this interrupted process."
+    }
+  },
+  "test_results": {
+    "debug_ctest": 963,
+    "sanitized_ctest": 963,
+    "changed_tidy_units": 26
+  },
+  "ordinary_observations": [
+    {
+      "name": "before-1",
+      "commits": {
+        "log.c": "f9ea34994bd58ed342d2245cd4110bb5c6790153",
+        "cJSON-program": "fb16e5cf358798aabb049655975cde8427101056",
+        "linenoise-program": "a473823d74b93eab2ba83480df16ed37617493f2",
+        "jansson": "851a2145e3256f2e67e5dfe24b0e456bf198b741",
+        "lua": "7579fc9d7ed90240487251dfb69168f8e64e9294"
+      },
+      "binary_sha256": "18f9d28ab490f38454bbb5d1d56dc57c2b90c1751fe7cfa315982615aa23ac5c",
+      "total_seconds": 483.99,
+      "peak_rss_bytes": 693551104,
+      "valid": true,
+      "projects": {
+        "log.c": {
+          "units": 1,
+          "seconds": 0.821,
+          "clang_errors": 0,
+          "failures": 0,
+          "peak_rss_bytes": 50036736,
+          "by_id": {
+            "annotation-required": 2
+          }
+        },
+        "cJSON-program": {
+          "units": 1,
+          "seconds": 1.896,
+          "clang_errors": 0,
+          "failures": 0,
+          "peak_rss_bytes": 62439424,
+          "by_id": {
+            "analysis-incomplete": 3,
+            "annotation-required": 3,
+            "null-dereference": 26
+          }
+        },
+        "linenoise-program": {
+          "units": 1,
+          "seconds": 0.724,
+          "clang_errors": 0,
+          "failures": 0,
+          "peak_rss_bytes": 56967168,
+          "by_id": {
+            "analysis-incomplete": 17,
+            "annotation-required": 3,
+            "double-free": 1,
+            "leak": 1,
+            "null-dereference": 4
+          }
+        },
+        "jansson": {
+          "units": 1,
+          "seconds": 3.716,
+          "clang_errors": 0,
+          "failures": 0,
+          "peak_rss_bytes": 64225280,
+          "by_id": {
+            "analysis-incomplete": 53,
+            "annotation-required": 4,
+            "double-free": 47,
+            "invalid-release": 2,
+            "null-dereference": 3,
+            "use-after-free": 32
+          }
+        },
+        "lua": {
+          "units": 1,
+          "seconds": 476.833,
+          "clang_errors": 0,
+          "failures": 0,
+          "peak_rss_bytes": 693551104,
+          "by_id": {
+            "analysis-incomplete": 3755,
+            "annotation-required": 5,
+            "invalid-release": 1,
+            "lifetime-too-short": 2,
+            "null-dereference": 105
+          }
+        }
+      },
+      "failures": [],
+      "raw_sha256": "30074e12dc83143869ac6f4846612623aca82dea8251a110f19537f503557eec"
+    },
+    {
+      "name": "before-2",
+      "commits": {
+        "log.c": "f9ea34994bd58ed342d2245cd4110bb5c6790153",
+        "cJSON-program": "fb16e5cf358798aabb049655975cde8427101056",
+        "linenoise-program": "a473823d74b93eab2ba83480df16ed37617493f2",
+        "jansson": "851a2145e3256f2e67e5dfe24b0e456bf198b741",
+        "lua": "7579fc9d7ed90240487251dfb69168f8e64e9294"
+      },
+      "binary_sha256": "18f9d28ab490f38454bbb5d1d56dc57c2b90c1751fe7cfa315982615aa23ac5c",
+      "total_seconds": 607.314,
+      "peak_rss_bytes": 63717376,
+      "valid": false,
+      "projects": {
+        "log.c": {
+          "units": 1,
+          "seconds": 0.123,
+          "clang_errors": 0,
+          "failures": 0,
+          "peak_rss_bytes": 50085888,
+          "by_id": {
+            "annotation-required": 2
+          }
+        },
+        "cJSON-program": {
+          "units": 1,
+          "seconds": 2.139,
+          "clang_errors": 0,
+          "failures": 0,
+          "peak_rss_bytes": 62373888,
+          "by_id": {
+            "analysis-incomplete": 3,
+            "annotation-required": 3,
+            "null-dereference": 26
+          }
+        },
+        "linenoise-program": {
+          "units": 1,
+          "seconds": 0.821,
+          "clang_errors": 0,
+          "failures": 0,
+          "peak_rss_bytes": 56819712,
+          "by_id": {
+            "analysis-incomplete": 17,
+            "annotation-required": 3,
+            "double-free": 1,
+            "leak": 1,
+            "null-dereference": 4
+          }
+        },
+        "jansson": {
+          "units": 1,
+          "seconds": 4.205,
+          "clang_errors": 0,
+          "failures": 0,
+          "peak_rss_bytes": 63717376,
+          "by_id": {
+            "analysis-incomplete": 53,
+            "annotation-required": 4,
+            "double-free": 47,
+            "invalid-release": 2,
+            "null-dereference": 3,
+            "use-after-free": 32
+          }
+        },
+        "lua": {
+          "units": 1,
+          "seconds": 600.026,
+          "clang_errors": 0,
+          "failures": 1,
+          "peak_rss_bytes": null,
+          "by_id": {
+            "analysis-incomplete": 3399,
+            "annotation-required": 4,
+            "invalid-release": 1,
+            "lifetime-too-short": 2,
+            "null-dereference": 104
+          }
+        }
+      },
+      "failures": [
+        {
+          "project": "lua",
+          "file": "lapi.c lauxlib.c lbaselib.c lcode.c lcorolib.c lctype.c ldblib.c ldebug.c ldo.c ldump.c lfunc.c lgc.c linit.c liolib.c llex.c lmathlib.c lmem.c loadlib.c lobject.c lopcodes.c loslib.c lparser.c lstate.c lstring.c lstrlib.c ltable.c ltablib.c ltests.c ltm.c lua.c lundump.c lutf8lib.c lvm.c lzio.c",
+          "seconds": 600.026,
+          "exit_code": -9,
+          "clang_errors": 0,
+          "failure": "timeout after 600 seconds",
+          "peak_rss_bytes": null
+        }
+      ],
+      "raw_sha256": "ac212f137e3239ddf75d045758ff7787d165b91609507cf8cdf3a44ceda998a4"
+    },
+    {
+      "name": "baseline-1",
+      "commits": {
+        "log.c": "f9ea34994bd58ed342d2245cd4110bb5c6790153",
+        "cJSON-program": "fb16e5cf358798aabb049655975cde8427101056",
+        "linenoise-program": "a473823d74b93eab2ba83480df16ed37617493f2",
+        "jansson": "851a2145e3256f2e67e5dfe24b0e456bf198b741",
+        "lua": "7579fc9d7ed90240487251dfb69168f8e64e9294"
+      },
+      "binary_sha256": "18f9d28ab490f38454bbb5d1d56dc57c2b90c1751fe7cfa315982615aa23ac5c",
+      "total_seconds": 338.973,
+      "peak_rss_bytes": 694550528,
+      "valid": true,
+      "projects": {
+        "log.c": {
+          "units": 1,
+          "seconds": 0.095,
+          "clang_errors": 0,
+          "failures": 0,
+          "peak_rss_bytes": 50036736,
+          "by_id": {
+            "annotation-required": 2
+          }
+        },
+        "cJSON-program": {
+          "units": 1,
+          "seconds": 1.818,
+          "clang_errors": 0,
+          "failures": 0,
+          "peak_rss_bytes": 62291968,
+          "by_id": {
+            "analysis-incomplete": 3,
+            "annotation-required": 3,
+            "null-dereference": 26
+          }
+        },
+        "linenoise-program": {
+          "units": 1,
+          "seconds": 0.683,
+          "clang_errors": 0,
+          "failures": 0,
+          "peak_rss_bytes": 56737792,
+          "by_id": {
+            "analysis-incomplete": 17,
+            "annotation-required": 3,
+            "double-free": 1,
+            "leak": 1,
+            "null-dereference": 4
+          }
+        },
+        "jansson": {
+          "units": 1,
+          "seconds": 3.507,
+          "clang_errors": 0,
+          "failures": 0,
+          "peak_rss_bytes": 63586304,
+          "by_id": {
+            "analysis-incomplete": 53,
+            "annotation-required": 4,
+            "double-free": 47,
+            "invalid-release": 2,
+            "null-dereference": 3,
+            "use-after-free": 32
+          }
+        },
+        "lua": {
+          "units": 1,
+          "seconds": 332.87,
+          "clang_errors": 0,
+          "failures": 0,
+          "peak_rss_bytes": 694550528,
+          "by_id": {
+            "analysis-incomplete": 3755,
+            "annotation-required": 5,
+            "invalid-release": 1,
+            "lifetime-too-short": 2,
+            "null-dereference": 105
+          }
+        }
+      },
+      "failures": [],
+      "raw_sha256": "47d6c0e3ba45e0461081d3a91e719130a9a08414dec6d8c7ca6ce6170700226f"
+    },
+    {
+      "name": "baseline-2",
+      "commits": {
+        "log.c": "f9ea34994bd58ed342d2245cd4110bb5c6790153",
+        "cJSON-program": "fb16e5cf358798aabb049655975cde8427101056",
+        "linenoise-program": "a473823d74b93eab2ba83480df16ed37617493f2",
+        "jansson": "851a2145e3256f2e67e5dfe24b0e456bf198b741",
+        "lua": "7579fc9d7ed90240487251dfb69168f8e64e9294"
+      },
+      "binary_sha256": "18f9d28ab490f38454bbb5d1d56dc57c2b90c1751fe7cfa315982615aa23ac5c",
+      "total_seconds": 344.423,
+      "peak_rss_bytes": 688750592,
+      "valid": true,
+      "projects": {
+        "log.c": {
+          "units": 1,
+          "seconds": 0.099,
+          "clang_errors": 0,
+          "failures": 0,
+          "peak_rss_bytes": 50069504,
+          "by_id": {
+            "annotation-required": 2
+          }
+        },
+        "cJSON-program": {
+          "units": 1,
+          "seconds": 1.989,
+          "clang_errors": 0,
+          "failures": 0,
+          "peak_rss_bytes": 62210048,
+          "by_id": {
+            "analysis-incomplete": 3,
+            "annotation-required": 3,
+            "null-dereference": 26
+          }
+        },
+        "linenoise-program": {
+          "units": 1,
+          "seconds": 0.745,
+          "clang_errors": 0,
+          "failures": 0,
+          "peak_rss_bytes": 56655872,
+          "by_id": {
+            "analysis-incomplete": 17,
+            "annotation-required": 3,
+            "double-free": 1,
+            "leak": 1,
+            "null-dereference": 4
+          }
+        },
+        "jansson": {
+          "units": 1,
+          "seconds": 3.997,
+          "clang_errors": 0,
+          "failures": 0,
+          "peak_rss_bytes": 63717376,
+          "by_id": {
+            "analysis-incomplete": 53,
+            "annotation-required": 4,
+            "double-free": 47,
+            "invalid-release": 2,
+            "null-dereference": 3,
+            "use-after-free": 32
+          }
+        },
+        "lua": {
+          "units": 1,
+          "seconds": 337.593,
+          "clang_errors": 0,
+          "failures": 0,
+          "peak_rss_bytes": 688750592,
+          "by_id": {
+            "analysis-incomplete": 3755,
+            "annotation-required": 5,
+            "invalid-release": 1,
+            "lifetime-too-short": 2,
+            "null-dereference": 105
+          }
+        }
+      },
+      "failures": [],
+      "raw_sha256": "c1a6906eaa18ecb05969bc22b4bae673d5bd91e7aeb79dd464d750e95164ec18"
+    },
+    {
+      "name": "baseline-3",
+      "commits": {
+        "log.c": "f9ea34994bd58ed342d2245cd4110bb5c6790153",
+        "cJSON-program": "fb16e5cf358798aabb049655975cde8427101056",
+        "linenoise-program": "a473823d74b93eab2ba83480df16ed37617493f2",
+        "jansson": "851a2145e3256f2e67e5dfe24b0e456bf198b741",
+        "lua": "7579fc9d7ed90240487251dfb69168f8e64e9294"
+      },
+      "binary_sha256": "18f9d28ab490f38454bbb5d1d56dc57c2b90c1751fe7cfa315982615aa23ac5c",
+      "total_seconds": 339.899,
+      "peak_rss_bytes": 692862976,
+      "valid": true,
+      "projects": {
+        "log.c": {
+          "units": 1,
+          "seconds": 0.092,
+          "clang_errors": 0,
+          "failures": 0,
+          "peak_rss_bytes": 50053120,
+          "by_id": {
+            "annotation-required": 2
+          }
+        },
+        "cJSON-program": {
+          "units": 1,
+          "seconds": 1.932,
+          "clang_errors": 0,
+          "failures": 0,
+          "peak_rss_bytes": 61915136,
+          "by_id": {
+            "analysis-incomplete": 3,
+            "annotation-required": 3,
+            "null-dereference": 26
+          }
+        },
+        "linenoise-program": {
+          "units": 1,
+          "seconds": 0.737,
+          "clang_errors": 0,
+          "failures": 0,
+          "peak_rss_bytes": 56852480,
+          "by_id": {
+            "analysis-incomplete": 17,
+            "annotation-required": 3,
+            "double-free": 1,
+            "leak": 1,
+            "null-dereference": 4
+          }
+        },
+        "jansson": {
+          "units": 1,
+          "seconds": 3.817,
+          "clang_errors": 0,
+          "failures": 0,
+          "peak_rss_bytes": 63553536,
+          "by_id": {
+            "analysis-incomplete": 53,
+            "annotation-required": 4,
+            "double-free": 47,
+            "invalid-release": 2,
+            "null-dereference": 3,
+            "use-after-free": 32
+          }
+        },
+        "lua": {
+          "units": 1,
+          "seconds": 333.321,
+          "clang_errors": 0,
+          "failures": 0,
+          "peak_rss_bytes": 692862976,
+          "by_id": {
+            "analysis-incomplete": 3755,
+            "annotation-required": 5,
+            "invalid-release": 1,
+            "lifetime-too-short": 2,
+            "null-dereference": 105
+          }
+        }
+      },
+      "failures": [],
+      "raw_sha256": "9f3b9afcf283dc03f20e97bc0c4bf23f735d7fc50c2751f5afd645fa41d0f108"
+    },
+    {
+      "name": "final-1",
+      "commits": {
+        "log.c": "f9ea34994bd58ed342d2245cd4110bb5c6790153",
+        "cJSON-program": "fb16e5cf358798aabb049655975cde8427101056",
+        "linenoise-program": "a473823d74b93eab2ba83480df16ed37617493f2",
+        "jansson": "851a2145e3256f2e67e5dfe24b0e456bf198b741",
+        "lua": "7579fc9d7ed90240487251dfb69168f8e64e9294"
+      },
+      "binary_sha256": "cb142e25258206e4a50430740d5ee17882d807d57f54f195b078aa97baf3e605",
+      "total_seconds": 339.56600000000003,
+      "peak_rss_bytes": 692289536,
+      "valid": true,
+      "projects": {
+        "log.c": {
+          "units": 1,
+          "seconds": 0.093,
+          "clang_errors": 0,
+          "failures": 0,
+          "peak_rss_bytes": 49971200,
+          "by_id": {
+            "annotation-required": 2
+          }
+        },
+        "cJSON-program": {
+          "units": 1,
+          "seconds": 1.929,
+          "clang_errors": 0,
+          "failures": 0,
+          "peak_rss_bytes": 62029824,
+          "by_id": {
+            "analysis-incomplete": 3,
+            "annotation-required": 3,
+            "null-dereference": 26
+          }
+        },
+        "linenoise-program": {
+          "units": 1,
+          "seconds": 0.742,
+          "clang_errors": 0,
+          "failures": 0,
+          "peak_rss_bytes": 56770560,
+          "by_id": {
+            "analysis-incomplete": 17,
+            "annotation-required": 3,
+            "double-free": 1,
+            "leak": 1,
+            "null-dereference": 4
+          }
+        },
+        "jansson": {
+          "units": 1,
+          "seconds": 3.844,
+          "clang_errors": 0,
+          "failures": 0,
+          "peak_rss_bytes": 63799296,
+          "by_id": {
+            "analysis-incomplete": 53,
+            "annotation-required": 4,
+            "double-free": 47,
+            "invalid-release": 2,
+            "null-dereference": 3,
+            "use-after-free": 32
+          }
+        },
+        "lua": {
+          "units": 1,
+          "seconds": 332.958,
+          "clang_errors": 0,
+          "failures": 0,
+          "peak_rss_bytes": 692289536,
+          "by_id": {
+            "analysis-incomplete": 3755,
+            "annotation-required": 5,
+            "invalid-release": 1,
+            "lifetime-too-short": 2,
+            "null-dereference": 104
+          }
+        }
+      },
+      "failures": [],
+      "raw_sha256": "2b912144c5d0470e722857b44d6730e49470f95eebf3b3c0526d4520e6b02c43"
+    },
+    {
+      "name": "final-2",
+      "commits": {
+        "log.c": "f9ea34994bd58ed342d2245cd4110bb5c6790153",
+        "cJSON-program": "fb16e5cf358798aabb049655975cde8427101056",
+        "linenoise-program": "a473823d74b93eab2ba83480df16ed37617493f2",
+        "jansson": "851a2145e3256f2e67e5dfe24b0e456bf198b741",
+        "lua": "7579fc9d7ed90240487251dfb69168f8e64e9294"
+      },
+      "binary_sha256": "cb142e25258206e4a50430740d5ee17882d807d57f54f195b078aa97baf3e605",
+      "total_seconds": 315.491,
+      "peak_rss_bytes": 694239232,
+      "valid": true,
+      "projects": {
+        "log.c": {
+          "units": 1,
+          "seconds": 0.089,
+          "clang_errors": 0,
+          "failures": 0,
+          "peak_rss_bytes": 50085888,
+          "by_id": {
+            "annotation-required": 2
+          }
+        },
+        "cJSON-program": {
+          "units": 1,
+          "seconds": 1.953,
+          "clang_errors": 0,
+          "failures": 0,
+          "peak_rss_bytes": 62046208,
+          "by_id": {
+            "analysis-incomplete": 3,
+            "annotation-required": 3,
+            "null-dereference": 26
+          }
+        },
+        "linenoise-program": {
+          "units": 1,
+          "seconds": 0.726,
+          "clang_errors": 0,
+          "failures": 0,
+          "peak_rss_bytes": 56590336,
+          "by_id": {
+            "analysis-incomplete": 17,
+            "annotation-required": 3,
+            "double-free": 1,
+            "leak": 1,
+            "null-dereference": 4
+          }
+        },
+        "jansson": {
+          "units": 1,
+          "seconds": 3.725,
+          "clang_errors": 0,
+          "failures": 0,
+          "peak_rss_bytes": 63717376,
+          "by_id": {
+            "analysis-incomplete": 53,
+            "annotation-required": 4,
+            "double-free": 47,
+            "invalid-release": 2,
+            "null-dereference": 3,
+            "use-after-free": 32
+          }
+        },
+        "lua": {
+          "units": 1,
+          "seconds": 308.998,
+          "clang_errors": 0,
+          "failures": 0,
+          "peak_rss_bytes": 694239232,
+          "by_id": {
+            "analysis-incomplete": 3755,
+            "annotation-required": 5,
+            "invalid-release": 1,
+            "lifetime-too-short": 2,
+            "null-dereference": 104
+          }
+        }
+      },
+      "failures": [],
+      "raw_sha256": "8f4bec56f828d1da9d91813941055194ce837307498e9f2ab81cf8a2023571f4"
+    },
+    {
+      "name": "final-3",
+      "commits": {
+        "log.c": "f9ea34994bd58ed342d2245cd4110bb5c6790153",
+        "cJSON-program": "fb16e5cf358798aabb049655975cde8427101056",
+        "linenoise-program": "a473823d74b93eab2ba83480df16ed37617493f2",
+        "jansson": "851a2145e3256f2e67e5dfe24b0e456bf198b741",
+        "lua": "7579fc9d7ed90240487251dfb69168f8e64e9294"
+      },
+      "binary_sha256": "cb142e25258206e4a50430740d5ee17882d807d57f54f195b078aa97baf3e605",
+      "total_seconds": 296.22200000000004,
+      "peak_rss_bytes": 695975936,
+      "valid": true,
+      "projects": {
+        "log.c": {
+          "units": 1,
+          "seconds": 0.079,
+          "clang_errors": 0,
+          "failures": 0,
+          "peak_rss_bytes": 50118656,
+          "by_id": {
+            "annotation-required": 2
+          }
+        },
+        "cJSON-program": {
+          "units": 1,
+          "seconds": 1.78,
+          "clang_errors": 0,
+          "failures": 0,
+          "peak_rss_bytes": 62341120,
+          "by_id": {
+            "analysis-incomplete": 3,
+            "annotation-required": 3,
+            "null-dereference": 26
+          }
+        },
+        "linenoise-program": {
+          "units": 1,
+          "seconds": 0.663,
+          "clang_errors": 0,
+          "failures": 0,
+          "peak_rss_bytes": 56836096,
+          "by_id": {
+            "analysis-incomplete": 17,
+            "annotation-required": 3,
+            "double-free": 1,
+            "leak": 1,
+            "null-dereference": 4
+          }
+        },
+        "jansson": {
+          "units": 1,
+          "seconds": 3.417,
+          "clang_errors": 0,
+          "failures": 0,
+          "peak_rss_bytes": 63602688,
+          "by_id": {
+            "analysis-incomplete": 53,
+            "annotation-required": 4,
+            "double-free": 47,
+            "invalid-release": 2,
+            "null-dereference": 3,
+            "use-after-free": 32
+          }
+        },
+        "lua": {
+          "units": 1,
+          "seconds": 290.283,
+          "clang_errors": 0,
+          "failures": 0,
+          "peak_rss_bytes": 695975936,
+          "by_id": {
+            "analysis-incomplete": 3755,
+            "annotation-required": 5,
+            "invalid-release": 1,
+            "lifetime-too-short": 2,
+            "null-dereference": 104
+          }
+        }
+      },
+      "failures": [],
+      "raw_sha256": "aabd9fdc2f301da50311bf38364a4c59d493e62f0214fefb0c1ec56b7aa67e45"
+    },
+    {
+      "name": "corrected-final-1",
+      "commits": {
+        "log.c": "f9ea34994bd58ed342d2245cd4110bb5c6790153",
+        "cJSON-program": "fb16e5cf358798aabb049655975cde8427101056",
+        "linenoise-program": "a473823d74b93eab2ba83480df16ed37617493f2",
+        "jansson": "851a2145e3256f2e67e5dfe24b0e456bf198b741",
+        "lua": "7579fc9d7ed90240487251dfb69168f8e64e9294"
+      },
+      "binary_sha256": "c667451d6f75cecb5ad83e76389af17075e91052649c01d266e906c611a37e4d",
+      "total_seconds": 319.743,
+      "peak_rss_bytes": 695730176,
+      "valid": true,
+      "projects": {
+        "log.c": {
+          "units": 1,
+          "seconds": 0.096,
+          "clang_errors": 0,
+          "failures": 0,
+          "peak_rss_bytes": 50151424,
+          "by_id": {
+            "annotation-required": 2
+          }
+        },
+        "cJSON-program": {
+          "units": 1,
+          "seconds": 1.84,
+          "clang_errors": 0,
+          "failures": 0,
+          "peak_rss_bytes": 62291968,
+          "by_id": {
+            "analysis-incomplete": 3,
+            "annotation-required": 3,
+            "null-dereference": 26
+          }
+        },
+        "linenoise-program": {
+          "units": 1,
+          "seconds": 0.691,
+          "clang_errors": 0,
+          "failures": 0,
+          "peak_rss_bytes": 56737792,
+          "by_id": {
+            "analysis-incomplete": 17,
+            "annotation-required": 3,
+            "double-free": 1,
+            "leak": 1,
+            "null-dereference": 4
+          }
+        },
+        "jansson": {
+          "units": 1,
+          "seconds": 3.531,
+          "clang_errors": 0,
+          "failures": 0,
+          "peak_rss_bytes": 63782912,
+          "by_id": {
+            "analysis-incomplete": 53,
+            "annotation-required": 4,
+            "double-free": 47,
+            "invalid-release": 2,
+            "null-dereference": 3,
+            "use-after-free": 32
+          }
+        },
+        "lua": {
+          "units": 1,
+          "seconds": 313.585,
+          "clang_errors": 0,
+          "failures": 0,
+          "peak_rss_bytes": 695730176,
+          "by_id": {
+            "analysis-incomplete": 3755,
+            "annotation-required": 5,
+            "invalid-release": 1,
+            "lifetime-too-short": 2,
+            "null-dereference": 104
+          }
+        }
+      },
+      "failures": [],
+      "raw_sha256": "92f368ef964657685ce69bfa9724a212338914fdef6f53c4cff1a530764ae654"
+    },
+    {
+      "name": "corrected-final-2",
+      "commits": {
+        "log.c": "f9ea34994bd58ed342d2245cd4110bb5c6790153",
+        "cJSON-program": "fb16e5cf358798aabb049655975cde8427101056",
+        "linenoise-program": "a473823d74b93eab2ba83480df16ed37617493f2",
+        "jansson": "851a2145e3256f2e67e5dfe24b0e456bf198b741",
+        "lua": "7579fc9d7ed90240487251dfb69168f8e64e9294"
+      },
+      "binary_sha256": "c667451d6f75cecb5ad83e76389af17075e91052649c01d266e906c611a37e4d",
+      "total_seconds": 339.24,
+      "peak_rss_bytes": 695861248,
+      "valid": true,
+      "projects": {
+        "log.c": {
+          "units": 1,
+          "seconds": 0.092,
+          "clang_errors": 0,
+          "failures": 0,
+          "peak_rss_bytes": 50266112,
+          "by_id": {
+            "annotation-required": 2
+          }
+        },
+        "cJSON-program": {
+          "units": 1,
+          "seconds": 1.907,
+          "clang_errors": 0,
+          "failures": 0,
+          "peak_rss_bytes": 62160896,
+          "by_id": {
+            "analysis-incomplete": 3,
+            "annotation-required": 3,
+            "null-dereference": 26
+          }
+        },
+        "linenoise-program": {
+          "units": 1,
+          "seconds": 0.736,
+          "clang_errors": 0,
+          "failures": 0,
+          "peak_rss_bytes": 56803328,
+          "by_id": {
+            "analysis-incomplete": 17,
+            "annotation-required": 3,
+            "double-free": 1,
+            "leak": 1,
+            "null-dereference": 4
+          }
+        },
+        "jansson": {
+          "units": 1,
+          "seconds": 3.681,
+          "clang_errors": 0,
+          "failures": 0,
+          "peak_rss_bytes": 63651840,
+          "by_id": {
+            "analysis-incomplete": 53,
+            "annotation-required": 4,
+            "double-free": 47,
+            "invalid-release": 2,
+            "null-dereference": 3,
+            "use-after-free": 32
+          }
+        },
+        "lua": {
+          "units": 1,
+          "seconds": 332.824,
+          "clang_errors": 0,
+          "failures": 0,
+          "peak_rss_bytes": 695861248,
+          "by_id": {
+            "analysis-incomplete": 3755,
+            "annotation-required": 5,
+            "invalid-release": 1,
+            "lifetime-too-short": 2,
+            "null-dereference": 104
+          }
+        }
+      },
+      "failures": [],
+      "raw_sha256": "beb3d5d553e7e9c04e2dc0de49ca2dae69421fe99467d6bdd8ddeccdea841d81"
+    },
+    {
+      "name": "corrected-final-3",
+      "commits": {
+        "log.c": "f9ea34994bd58ed342d2245cd4110bb5c6790153",
+        "cJSON-program": "fb16e5cf358798aabb049655975cde8427101056",
+        "linenoise-program": "a473823d74b93eab2ba83480df16ed37617493f2",
+        "jansson": "851a2145e3256f2e67e5dfe24b0e456bf198b741",
+        "lua": "7579fc9d7ed90240487251dfb69168f8e64e9294"
+      },
+      "binary_sha256": "c667451d6f75cecb5ad83e76389af17075e91052649c01d266e906c611a37e4d",
+      "total_seconds": 333.351,
+      "peak_rss_bytes": 696631296,
+      "valid": true,
+      "projects": {
+        "log.c": {
+          "units": 1,
+          "seconds": 0.097,
+          "clang_errors": 0,
+          "failures": 0,
+          "peak_rss_bytes": 50036736,
+          "by_id": {
+            "annotation-required": 2
+          }
+        },
+        "cJSON-program": {
+          "units": 1,
+          "seconds": 2.009,
+          "clang_errors": 0,
+          "failures": 0,
+          "peak_rss_bytes": 62291968,
+          "by_id": {
+            "analysis-incomplete": 3,
+            "annotation-required": 3,
+            "null-dereference": 26
+          }
+        },
+        "linenoise-program": {
+          "units": 1,
+          "seconds": 0.752,
+          "clang_errors": 0,
+          "failures": 0,
+          "peak_rss_bytes": 56623104,
+          "by_id": {
+            "analysis-incomplete": 17,
+            "annotation-required": 3,
+            "double-free": 1,
+            "leak": 1,
+            "null-dereference": 4
+          }
+        },
+        "jansson": {
+          "units": 1,
+          "seconds": 3.796,
+          "clang_errors": 0,
+          "failures": 0,
+          "peak_rss_bytes": 63684608,
+          "by_id": {
+            "analysis-incomplete": 53,
+            "annotation-required": 4,
+            "double-free": 47,
+            "invalid-release": 2,
+            "null-dereference": 3,
+            "use-after-free": 32
+          }
+        },
+        "lua": {
+          "units": 1,
+          "seconds": 326.697,
+          "clang_errors": 0,
+          "failures": 0,
+          "peak_rss_bytes": 696631296,
+          "by_id": {
+            "analysis-incomplete": 3755,
+            "annotation-required": 5,
+            "invalid-release": 1,
+            "lifetime-too-short": 2,
+            "null-dereference": 104
+          }
+        }
+      },
+      "failures": [],
+      "raw_sha256": "27e966f9e5725fd15b163094939c3053dd6cd49249105a1b51cac1109d1a6f86"
+    }
+  ],
+  "frozen_cases": {
+    "frozen-before": [
+      {
+        "name": "nested-good",
+        "expected": "accepted",
+        "accepted": false,
+        "passed": false,
+        "returncode": 1,
+        "reason": "unexpected proof outcome"
+      },
+      {
+        "name": "nested-bad",
+        "expected": "rejected",
+        "accepted": false,
+        "passed": true,
+        "returncode": 1,
+        "reason": ""
+      },
+      {
+        "name": "constructor-good",
+        "expected": "accepted",
+        "accepted": false,
+        "passed": false,
+        "returncode": 1,
+        "reason": "unexpected proof outcome"
+      },
+      {
+        "name": "constructor-bad",
+        "expected": "rejected",
+        "accepted": false,
+        "passed": true,
+        "returncode": 1,
+        "reason": ""
+      },
+      {
+        "name": "outparam-good",
+        "expected": "accepted",
+        "accepted": false,
+        "passed": false,
+        "returncode": 1,
+        "reason": "unexpected proof outcome"
+      },
+      {
+        "name": "outparam-bad",
+        "expected": "rejected",
+        "accepted": false,
+        "passed": true,
+        "returncode": 1,
+        "reason": ""
+      },
+      {
+        "name": "fill-good",
+        "expected": "accepted",
+        "accepted": false,
+        "passed": false,
+        "returncode": 1,
+        "reason": "unexpected proof outcome"
+      },
+      {
+        "name": "fill-bad",
+        "expected": "rejected",
+        "accepted": false,
+        "passed": true,
+        "returncode": 1,
+        "reason": ""
+      },
+      {
+        "name": "fill-helper-good",
+        "expected": "accepted",
+        "accepted": false,
+        "passed": false,
+        "returncode": 1,
+        "reason": "unexpected proof outcome"
+      },
+      {
+        "name": "fill-helper-bad",
+        "expected": "rejected",
+        "accepted": false,
+        "passed": true,
+        "returncode": 1,
+        "reason": ""
+      },
+      {
+        "name": "copy-loop-good",
+        "expected": "accepted",
+        "accepted": false,
+        "passed": false,
+        "returncode": 1,
+        "reason": "unexpected proof outcome"
+      },
+      {
+        "name": "copy-loop-bad",
+        "expected": "rejected",
+        "accepted": false,
+        "passed": true,
+        "returncode": 1,
+        "reason": ""
+      },
+      {
+        "name": "copy-slices-good",
+        "expected": "accepted",
+        "accepted": false,
+        "passed": false,
+        "returncode": 1,
+        "reason": "unexpected proof outcome"
+      },
+      {
+        "name": "copy-slices-bad",
+        "expected": "rejected",
+        "accepted": false,
+        "passed": true,
+        "returncode": 1,
+        "reason": ""
+      },
+      {
+        "name": "move-slices-good",
+        "expected": "accepted",
+        "accepted": false,
+        "passed": false,
+        "returncode": 1,
+        "reason": "unexpected proof outcome"
+      },
+      {
+        "name": "move-slices-bad",
+        "expected": "rejected",
+        "accepted": false,
+        "passed": true,
+        "returncode": 1,
+        "reason": ""
+      },
+      {
+        "name": "strlen-good",
+        "expected": "accepted",
+        "accepted": false,
+        "passed": false,
+        "returncode": 1,
+        "reason": "unexpected proof outcome"
+      },
+      {
+        "name": "strlen-bad",
+        "expected": "rejected",
+        "accepted": false,
+        "passed": true,
+        "returncode": 1,
+        "reason": ""
+      },
+      {
+        "name": "strcpy-good",
+        "expected": "accepted",
+        "accepted": false,
+        "passed": false,
+        "returncode": 1,
+        "reason": "unexpected proof outcome"
+      },
+      {
+        "name": "strcpy-bad",
+        "expected": "rejected",
+        "accepted": false,
+        "passed": false,
+        "returncode": 1,
+        "reason": "intended missing property was not reported"
+      },
+      {
+        "name": "strcat-good",
+        "expected": "accepted",
+        "accepted": false,
+        "passed": false,
+        "returncode": 1,
+        "reason": "unexpected proof outcome"
+      },
+      {
+        "name": "strcat-bad",
+        "expected": "rejected",
+        "accepted": false,
+        "passed": false,
+        "returncode": 1,
+        "reason": "intended missing property was not reported"
+      },
+      {
+        "name": "strncpy-good",
+        "expected": "accepted",
+        "accepted": false,
+        "passed": false,
+        "returncode": 1,
+        "reason": "unexpected proof outcome"
+      },
+      {
+        "name": "strncpy-bad",
+        "expected": "rejected",
+        "accepted": false,
+        "passed": true,
+        "returncode": 1,
+        "reason": ""
+      },
+      {
+        "name": "strdup-good",
+        "expected": "accepted",
+        "accepted": false,
+        "passed": false,
+        "returncode": 1,
+        "reason": "unexpected proof outcome"
+      },
+      {
+        "name": "strdup-bad",
+        "expected": "rejected",
+        "accepted": false,
+        "passed": true,
+        "returncode": 1,
+        "reason": ""
+      },
+      {
+        "name": "realloc-good",
+        "expected": "accepted",
+        "accepted": false,
+        "passed": false,
+        "returncode": 1,
+        "reason": "unexpected proof outcome"
+      },
+      {
+        "name": "realloc-bad",
+        "expected": "rejected",
+        "accepted": false,
+        "passed": true,
+        "returncode": 1,
+        "reason": ""
+      },
+      {
+        "name": "realloc-alias-good",
+        "expected": "accepted",
+        "accepted": false,
+        "passed": false,
+        "returncode": 1,
+        "reason": "unexpected proof outcome"
+      },
+      {
+        "name": "realloc-alias-bad",
+        "expected": "rejected",
+        "accepted": false,
+        "passed": true,
+        "returncode": 1,
+        "reason": ""
+      },
+      {
+        "name": "frame-good",
+        "expected": "accepted",
+        "accepted": true,
+        "passed": true,
+        "returncode": 0,
+        "reason": ""
+      },
+      {
+        "name": "frame-bad",
+        "expected": "rejected",
+        "accepted": false,
+        "passed": true,
+        "returncode": 1,
+        "reason": ""
+      }
+    ],
+    "frozen-final": [
+      {
+        "name": "nested-good",
+        "expected": "accepted",
+        "accepted": true,
+        "passed": true,
+        "returncode": 0,
+        "reason": ""
+      },
+      {
+        "name": "nested-bad",
+        "expected": "rejected",
+        "accepted": false,
+        "passed": true,
+        "returncode": 1,
+        "reason": ""
+      },
+      {
+        "name": "constructor-good",
+        "expected": "accepted",
+        "accepted": true,
+        "passed": true,
+        "returncode": 0,
+        "reason": ""
+      },
+      {
+        "name": "constructor-bad",
+        "expected": "rejected",
+        "accepted": false,
+        "passed": true,
+        "returncode": 1,
+        "reason": ""
+      },
+      {
+        "name": "outparam-good",
+        "expected": "accepted",
+        "accepted": true,
+        "passed": true,
+        "returncode": 0,
+        "reason": ""
+      },
+      {
+        "name": "outparam-bad",
+        "expected": "rejected",
+        "accepted": false,
+        "passed": true,
+        "returncode": 1,
+        "reason": ""
+      },
+      {
+        "name": "fill-good",
+        "expected": "accepted",
+        "accepted": true,
+        "passed": true,
+        "returncode": 0,
+        "reason": ""
+      },
+      {
+        "name": "fill-bad",
+        "expected": "rejected",
+        "accepted": false,
+        "passed": true,
+        "returncode": 1,
+        "reason": ""
+      },
+      {
+        "name": "fill-helper-good",
+        "expected": "accepted",
+        "accepted": true,
+        "passed": true,
+        "returncode": 0,
+        "reason": ""
+      },
+      {
+        "name": "fill-helper-bad",
+        "expected": "rejected",
+        "accepted": false,
+        "passed": true,
+        "returncode": 1,
+        "reason": ""
+      },
+      {
+        "name": "copy-loop-good",
+        "expected": "accepted",
+        "accepted": true,
+        "passed": true,
+        "returncode": 0,
+        "reason": ""
+      },
+      {
+        "name": "copy-loop-bad",
+        "expected": "rejected",
+        "accepted": false,
+        "passed": true,
+        "returncode": 1,
+        "reason": ""
+      },
+      {
+        "name": "copy-slices-good",
+        "expected": "accepted",
+        "accepted": true,
+        "passed": true,
+        "returncode": 0,
+        "reason": ""
+      },
+      {
+        "name": "copy-slices-bad",
+        "expected": "rejected",
+        "accepted": false,
+        "passed": true,
+        "returncode": 1,
+        "reason": ""
+      },
+      {
+        "name": "move-slices-good",
+        "expected": "accepted",
+        "accepted": true,
+        "passed": true,
+        "returncode": 0,
+        "reason": ""
+      },
+      {
+        "name": "move-slices-bad",
+        "expected": "rejected",
+        "accepted": false,
+        "passed": true,
+        "returncode": 1,
+        "reason": ""
+      },
+      {
+        "name": "strlen-good",
+        "expected": "accepted",
+        "accepted": true,
+        "passed": true,
+        "returncode": 0,
+        "reason": ""
+      },
+      {
+        "name": "strlen-bad",
+        "expected": "rejected",
+        "accepted": false,
+        "passed": true,
+        "returncode": 1,
+        "reason": ""
+      },
+      {
+        "name": "strcpy-good",
+        "expected": "accepted",
+        "accepted": true,
+        "passed": true,
+        "returncode": 0,
+        "reason": ""
+      },
+      {
+        "name": "strcpy-bad",
+        "expected": "rejected",
+        "accepted": false,
+        "passed": true,
+        "returncode": 1,
+        "reason": ""
+      },
+      {
+        "name": "strcat-good",
+        "expected": "accepted",
+        "accepted": true,
+        "passed": true,
+        "returncode": 0,
+        "reason": ""
+      },
+      {
+        "name": "strcat-bad",
+        "expected": "rejected",
+        "accepted": false,
+        "passed": true,
+        "returncode": 1,
+        "reason": ""
+      },
+      {
+        "name": "strncpy-good",
+        "expected": "accepted",
+        "accepted": true,
+        "passed": true,
+        "returncode": 0,
+        "reason": ""
+      },
+      {
+        "name": "strncpy-bad",
+        "expected": "rejected",
+        "accepted": false,
+        "passed": true,
+        "returncode": 1,
+        "reason": ""
+      },
+      {
+        "name": "strdup-good",
+        "expected": "accepted",
+        "accepted": true,
+        "passed": true,
+        "returncode": 0,
+        "reason": ""
+      },
+      {
+        "name": "strdup-bad",
+        "expected": "rejected",
+        "accepted": false,
+        "passed": true,
+        "returncode": 1,
+        "reason": ""
+      },
+      {
+        "name": "realloc-good",
+        "expected": "accepted",
+        "accepted": true,
+        "passed": true,
+        "returncode": 0,
+        "reason": ""
+      },
+      {
+        "name": "realloc-bad",
+        "expected": "rejected",
+        "accepted": false,
+        "passed": true,
+        "returncode": 1,
+        "reason": ""
+      },
+      {
+        "name": "realloc-alias-good",
+        "expected": "accepted",
+        "accepted": true,
+        "passed": true,
+        "returncode": 0,
+        "reason": ""
+      },
+      {
+        "name": "realloc-alias-bad",
+        "expected": "rejected",
+        "accepted": false,
+        "passed": true,
+        "returncode": 1,
+        "reason": ""
+      },
+      {
+        "name": "frame-good",
+        "expected": "accepted",
+        "accepted": true,
+        "passed": true,
+        "returncode": 0,
+        "reason": ""
+      },
+      {
+        "name": "frame-bad",
+        "expected": "rejected",
+        "accepted": false,
+        "passed": true,
+        "returncode": 1,
+        "reason": ""
+      }
+    ],
+    "transport-final": [
+      {
+        "name": "cross-constructor-good",
+        "expected": "accepted",
+        "accepted": true,
+        "passed": true,
+        "returncode": 0,
+        "reason": ""
+      },
+      {
+        "name": "cross-constructor-bad",
+        "expected": "rejected",
+        "accepted": false,
+        "passed": true,
+        "returncode": 1,
+        "reason": ""
+      },
+      {
+        "name": "cross-outparam-good",
+        "expected": "accepted",
+        "accepted": true,
+        "passed": true,
+        "returncode": 0,
+        "reason": ""
+      },
+      {
+        "name": "cross-outparam-bad",
+        "expected": "rejected",
+        "accepted": false,
+        "passed": true,
+        "returncode": 1,
+        "reason": ""
+      },
+      {
+        "name": "cross-fill-helper-good",
+        "expected": "accepted",
+        "accepted": true,
+        "passed": true,
+        "returncode": 0,
+        "reason": ""
+      },
+      {
+        "name": "cross-fill-helper-bad",
+        "expected": "rejected",
+        "accepted": false,
+        "passed": true,
+        "returncode": 1,
+        "reason": ""
+      },
+      {
+        "name": "cross-copy-loop-good",
+        "expected": "accepted",
+        "accepted": true,
+        "passed": true,
+        "returncode": 0,
+        "reason": ""
+      },
+      {
+        "name": "cross-copy-loop-bad",
+        "expected": "rejected",
+        "accepted": false,
+        "passed": true,
+        "returncode": 1,
+        "reason": ""
+      },
+      {
+        "name": "cross-nested-good",
+        "expected": "accepted",
+        "accepted": true,
+        "passed": true,
+        "returncode": 0,
+        "reason": ""
+      },
+      {
+        "name": "cross-nested-bad",
+        "expected": "rejected",
+        "accepted": false,
+        "passed": true,
+        "returncode": 1,
+        "reason": ""
+      }
+    ],
+    "objects-final": [
+      {
+        "name": "cross-constructor-good",
+        "expected": "accepted",
+        "passed": true,
+        "reason": "",
+        "returncode": 0
+      },
+      {
+        "name": "cross-constructor-bad",
+        "expected": "rejected",
+        "passed": true,
+        "reason": "",
+        "returncode": 1
+      },
+      {
+        "name": "cross-outparam-good",
+        "expected": "accepted",
+        "passed": true,
+        "reason": "",
+        "returncode": 0
+      },
+      {
+        "name": "cross-outparam-bad",
+        "expected": "rejected",
+        "passed": true,
+        "reason": "",
+        "returncode": 1
+      },
+      {
+        "name": "cross-fill-helper-good",
+        "expected": "accepted",
+        "passed": true,
+        "reason": "",
+        "returncode": 0
+      },
+      {
+        "name": "cross-fill-helper-bad",
+        "expected": "rejected",
+        "passed": true,
+        "reason": "",
+        "returncode": 1
+      },
+      {
+        "name": "cross-copy-loop-good",
+        "expected": "accepted",
+        "passed": true,
+        "reason": "",
+        "returncode": 0
+      },
+      {
+        "name": "cross-copy-loop-bad",
+        "expected": "rejected",
+        "passed": true,
+        "reason": "",
+        "returncode": 1
+      },
+      {
+        "name": "cross-nested-good",
+        "expected": "accepted",
+        "passed": true,
+        "reason": "",
+        "returncode": 0
+      },
+      {
+        "name": "cross-nested-bad",
+        "expected": "rejected",
+        "passed": true,
+        "reason": "",
+        "returncode": 1
+      }
+    ]
+  },
+  "real_interfaces": [
+    {
+      "selection": "strbuffer-lifecycle",
+      "source": "build/corpus/jansson/src/strbuffer.c",
+      "name": "strbuffer_append_byte",
+      "complete": true,
+      "requirements": [
+        {
+          "kind": "valid",
+          "path": "param 0",
+          "other": "param 0",
+          "begin": "0",
+          "end": "0",
+          "family": "",
+          "when": "",
+          "on": null
+        },
+        {
+          "kind": "valid",
+          "path": "param 0 *.value",
+          "other": "param 0",
+          "begin": "0",
+          "end": "0",
+          "family": "",
+          "when": "",
+          "on": null
+        },
+        {
+          "kind": "extent",
+          "path": "param 0",
+          "other": "param 0",
+          "begin": "0",
+          "end": "8",
+          "family": "",
+          "when": "",
+          "on": null
+        },
+        {
+          "kind": "extent",
+          "path": "param 0",
+          "other": "param 0",
+          "begin": "8",
+          "end": "16",
+          "family": "",
+          "when": "",
+          "on": null
+        },
+        {
+          "kind": "extent",
+          "path": "param 0",
+          "other": "param 0",
+          "begin": "16",
+          "end": "24",
+          "family": "",
+          "when": "",
+          "on": null
+        },
+        {
+          "kind": "extent",
+          "path": "param 0 *.value",
+          "other": "param 0",
+          "begin": "param 0 *.length scale 1 plus 0",
+          "end": "param 0 *.length scale 1 plus 0",
+          "family": "",
+          "when": "",
+          "on": null
+        },
+        {
+          "kind": "extent",
+          "path": "param 0 *.value",
+          "other": "param 0",
+          "begin": "param 0 *.length scale 1 plus 0",
+          "end": "param 0 *.length scale 1 plus 1",
+          "family": "",
+          "when": "",
+          "on": null
+        },
+        {
+          "kind": "initialized",
+          "path": "param 0",
+          "other": "param 0",
+          "begin": "0",
+          "end": "8",
+          "family": "",
+          "when": "",
+          "on": null
+        },
+        {
+          "kind": "initialized",
+          "path": "param 0",
+          "other": "param 0",
+          "begin": "8",
+          "end": "16",
+          "family": "",
+          "when": "",
+          "on": null
+        },
+        {
+          "kind": "initialized",
+          "path": "param 0",
+          "other": "param 0",
+          "begin": "16",
+          "end": "24",
+          "family": "",
+          "when": "",
+          "on": null
+        },
+        {
+          "kind": "release",
+          "path": "param 0 *.value",
+          "other": "param 0",
+          "begin": "0",
+          "end": "0",
+          "family": "free",
+          "when": "",
+          "on": null
+        },
+        {
+          "kind": "writable",
+          "path": "param 0",
+          "other": "param 0",
+          "begin": "0",
+          "end": "8",
+          "family": "",
+          "when": "",
+          "on": null
+        },
+        {
+          "kind": "writable",
+          "path": "param 0",
+          "other": "param 0",
+          "begin": "8",
+          "end": "16",
+          "family": "",
+          "when": "",
+          "on": null
+        },
+        {
+          "kind": "writable",
+          "path": "param 0",
+          "other": "param 0",
+          "begin": "16",
+          "end": "24",
+          "family": "",
+          "when": "",
+          "on": null
+        },
+        {
+          "kind": "writable",
+          "path": "param 0 *.value",
+          "other": "param 0",
+          "begin": "param 0 *.length scale 1 plus 0",
+          "end": "param 0 *.length scale 1 plus 1",
+          "family": "",
+          "when": "",
+          "on": null
+        }
+      ],
+      "establishes": [
+        {
+          "kind": "initialized",
+          "path": "param 0",
+          "other": "param 0",
+          "begin": "8",
+          "end": "16",
+          "family": "",
+          "when": "",
+          "on": "zero"
+        }
+      ],
+      "trust": [
+        {
+          "property": "call",
+          "outcome": "trusted",
+          "location": {
+            "file": "build/corpus/jansson/src/strbuffer.c",
+            "line": 57,
+            "column": 12
+          },
+          "subject": "\"build/corpus/jansson/src/strbuffer.c\":81:5:\"strbuffer_append_bytes\":call:\"modeled C library contract\"",
+          "reason": "modeled C library contract",
+          "calls": [
+            {
+              "file": "build/corpus/jansson/src/strbuffer.c",
+              "line": 81,
+              "column": 5
+            }
+          ]
+        },
+        {
+          "property": "call",
+          "outcome": "trusted",
+          "location": {
+            "file": "build/corpus/jansson/src/strbuffer.c",
+            "line": 57,
+            "column": 12
+          },
+          "subject": "\"test/evaluation/rfc0019/real/allocators.c\":11:5:\"strbuffer_append_bytes\":call:\"modeled C library contract\"",
+          "reason": "modeled C library contract",
+          "calls": [
+            {
+              "file": "build/corpus/jansson/src/strbuffer.c",
+              "line": 73,
+              "column": 21
+            },
+            {
+              "file": "test/evaluation/rfc0019/real/allocators.c",
+              "line": 11,
+              "column": 5
+            }
+          ]
+        },
+        {
+          "property": "call",
+          "outcome": "trusted",
+          "location": {
+            "file": "build/corpus/jansson/src/strbuffer.c",
+            "line": 57,
+            "column": 12
+          },
+          "subject": "\"test/evaluation/rfc0019/real/allocators.c\":14:10:\"strbuffer_append_bytes\":call:\"modeled C library contract\"",
+          "reason": "modeled C library contract",
+          "calls": [
+            {
+              "file": "build/corpus/jansson/src/strbuffer.c",
+              "line": 73,
+              "column": 21
+            },
+            {
+              "file": "test/evaluation/rfc0019/real/allocators.c",
+              "line": 14,
+              "column": 10
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "selection": "strbuffer-lifecycle",
+      "source": "build/corpus/jansson/src/strbuffer.c",
+      "name": "strbuffer_append_bytes",
+      "complete": true,
+      "requirements": [
+        {
+          "kind": "valid",
+          "path": "param 0",
+          "other": "param 0",
+          "begin": "0",
+          "end": "0",
+          "family": "",
+          "when": "",
+          "on": null
+        },
+        {
+          "kind": "valid",
+          "path": "param 0 *.value",
+          "other": "param 0",
+          "begin": "0",
+          "end": "0",
+          "family": "",
+          "when": "",
+          "on": null
+        },
+        {
+          "kind": "valid",
+          "path": "param 1",
+          "other": "param 0",
+          "begin": "0",
+          "end": "0",
+          "family": "",
+          "when": "",
+          "on": null
+        },
+        {
+          "kind": "extent",
+          "path": "param 0",
+          "other": "param 0",
+          "begin": "0",
+          "end": "8",
+          "family": "",
+          "when": "",
+          "on": null
+        },
+        {
+          "kind": "extent",
+          "path": "param 0",
+          "other": "param 0",
+          "begin": "8",
+          "end": "16",
+          "family": "",
+          "when": "",
+          "on": null
+        },
+        {
+          "kind": "extent",
+          "path": "param 0",
+          "other": "param 0",
+          "begin": "16",
+          "end": "24",
+          "family": "",
+          "when": "",
+          "on": null
+        },
+        {
+          "kind": "extent",
+          "path": "param 0 *.value",
+          "other": "param 0",
+          "begin": "param 0 *.length scale 1 plus 0",
+          "end": "expr u64,v,706172616d2030202a2e6c656e677468;u64,v,706172616d2032;u64,add scale 1 plus 0",
+          "family": "",
+          "when": "",
+          "on": null
+        },
+        {
+          "kind": "extent",
+          "path": "param 0 *.value",
+          "other": "param 0",
+          "begin": "param 0 *.length scale 1 plus 0",
+          "end": "param 0 *.length scale 1 plus 0",
+          "family": "",
+          "when": "",
+          "on": null
+        },
+        {
+          "kind": "extent",
+          "path": "param 0 *.value",
+          "other": "param 0",
+          "begin": "param 0 *.length scale 1 plus 0",
+          "end": "param 0 *.length scale 1 plus 1",
+          "family": "",
+          "when": "",
+          "on": null
+        },
+        {
+          "kind": "extent",
+          "path": "param 1",
+          "other": "param 0",
+          "begin": "0",
+          "end": "param 2 scale 1 plus 0",
+          "family": "",
+          "when": "",
+          "on": null
+        },
+        {
+          "kind": "initialized",
+          "path": "param 0",
+          "other": "param 0",
+          "begin": "0",
+          "end": "8",
+          "family": "",
+          "when": "",
+          "on": null
+        },
+        {
+          "kind": "initialized",
+          "path": "param 0",
+          "other": "param 0",
+          "begin": "8",
+          "end": "16",
+          "family": "",
+          "when": "",
+          "on": null
+        },
+        {
+          "kind": "initialized",
+          "path": "param 0",
+          "other": "param 0",
+          "begin": "16",
+          "end": "24",
+          "family": "",
+          "when": "",
+          "on": null
+        },
+        {
+          "kind": "initialized",
+          "path": "param 1",
+          "other": "param 0",
+          "begin": "0",
+          "end": "param 2 scale 1 plus 0",
+          "family": "",
+          "when": "",
+          "on": null
+        },
+        {
+          "kind": "release",
+          "path": "param 0 *.value",
+          "other": "param 0",
+          "begin": "0",
+          "end": "0",
+          "family": "free",
+          "when": "",
+          "on": null
+        },
+        {
+          "kind": "separated",
+          "path": "param 0",
+          "other": "param 1",
+          "begin": "0",
+          "end": "0",
+          "family": "",
+          "when": "",
+          "on": null
+        },
+        {
+          "kind": "separated",
+          "path": "param 0 *.value",
+          "other": "param 1",
+          "begin": "0",
+          "end": "0",
+          "family": "",
+          "when": "",
+          "on": null
+        },
+        {
+          "kind": "writable",
+          "path": "param 0",
+          "other": "param 0",
+          "begin": "0",
+          "end": "8",
+          "family": "",
+          "when": "",
+          "on": null
+        },
+        {
+          "kind": "writable",
+          "path": "param 0",
+          "other": "param 0",
+          "begin": "8",
+          "end": "16",
+          "family": "",
+          "when": "",
+          "on": null
+        },
+        {
+          "kind": "writable",
+          "path": "param 0",
+          "other": "param 0",
+          "begin": "16",
+          "end": "24",
+          "family": "",
+          "when": "",
+          "on": null
+        },
+        {
+          "kind": "writable",
+          "path": "param 0 *.value",
+          "other": "param 0",
+          "begin": "param 0 *.length scale 1 plus 0",
+          "end": "expr u64,v,706172616d2030202a2e6c656e677468;u64,v,706172616d2032;u64,add scale 1 plus 0",
+          "family": "",
+          "when": "",
+          "on": null
+        },
+        {
+          "kind": "writable",
+          "path": "param 0 *.value",
+          "other": "param 0",
+          "begin": "param 0 *.length scale 1 plus 0",
+          "end": "param 0 *.length scale 1 plus 1",
+          "family": "",
+          "when": "",
+          "on": null
+        },
+        {
+          "kind": "sum-fits",
+          "path": "param 0",
+          "other": "param 0",
+          "begin": "param 0 *.length scale 1 plus 0",
+          "end": "param 2 scale 1 plus 0",
+          "family": "",
+          "when": "",
+          "on": null
+        },
+        {
+          "kind": "sum-fits",
+          "path": "param 0",
+          "other": "param 0",
+          "begin": "param 2 scale 1 plus 0",
+          "end": "param 0 *.length scale 1 plus 0",
+          "family": "",
+          "when": "",
+          "on": null
+        }
+      ],
+      "establishes": [
+        {
+          "kind": "initialized",
+          "path": "param 0",
+          "other": "param 0",
+          "begin": "8",
+          "end": "16",
+          "family": "",
+          "when": "",
+          "on": "zero"
+        },
+        {
+          "kind": "initialized",
+          "path": "param 0 *.value",
+          "other": "param 0",
+          "begin": "param 0 *.length scale 1 plus 0",
+          "end": "param 0 *.length scale 1 plus 1",
+          "family": "",
+          "when": "",
+          "on": "zero"
+        },
+        {
+          "kind": "zeroed",
+          "path": "param 0 *.value",
+          "other": "param 0",
+          "begin": "param 0 *.length scale 1 plus 0",
+          "end": "param 0 *.length scale 1 plus 1",
+          "family": "",
+          "when": "",
+          "on": "zero"
+        }
+      ],
+      "trust": [
+        {
+          "property": "call",
+          "outcome": "trusted",
+          "location": {
+            "file": "build/corpus/jansson/src/strbuffer.c",
+            "line": 73,
+            "column": 21
+          },
+          "subject": "\"test/evaluation/rfc0019/real/allocators.c\":11:5:\"jsonp_realloc\":call:\"modeled C library contract\"",
+          "reason": "modeled C library contract",
+          "calls": [
+            {
+              "file": "test/evaluation/rfc0019/real/allocators.c",
+              "line": 11,
+              "column": 5
+            }
+          ]
+        },
+        {
+          "property": "call",
+          "outcome": "trusted",
+          "location": {
+            "file": "build/corpus/jansson/src/strbuffer.c",
+            "line": 73,
+            "column": 21
+          },
+          "subject": "\"test/evaluation/rfc0019/real/allocators.c\":14:10:\"jsonp_realloc\":call:\"modeled C library contract\"",
+          "reason": "modeled C library contract",
+          "calls": [
+            {
+              "file": "test/evaluation/rfc0019/real/allocators.c",
+              "line": 14,
+              "column": 10
+            }
+          ]
+        },
+        {
+          "property": "call",
+          "outcome": "trusted",
+          "location": {
+            "file": "build/corpus/jansson/src/strbuffer.c",
+            "line": 81,
+            "column": 5
+          },
+          "subject": "memcpy",
+          "reason": "modeled C library contract",
+          "calls": []
+        }
+      ]
+    },
+    {
+      "selection": "strbuffer-lifecycle",
+      "source": "build/corpus/jansson/src/strbuffer.c",
+      "name": "strbuffer_clear",
+      "complete": true,
+      "requirements": [
+        {
+          "kind": "valid",
+          "path": "param 0",
+          "other": "param 0",
+          "begin": "0",
+          "end": "0",
+          "family": "",
+          "when": "",
+          "on": null
+        },
+        {
+          "kind": "valid",
+          "path": "param 0 *.value",
+          "other": "param 0",
+          "begin": "0",
+          "end": "0",
+          "family": "",
+          "when": "",
+          "on": null
+        },
+        {
+          "kind": "extent",
+          "path": "param 0",
+          "other": "param 0",
+          "begin": "8",
+          "end": "16",
+          "family": "",
+          "when": "",
+          "on": null
+        },
+        {
+          "kind": "extent",
+          "path": "param 0 *.value",
+          "other": "param 0",
+          "begin": "0",
+          "end": "1",
+          "family": "",
+          "when": "",
+          "on": null
+        },
+        {
+          "kind": "writable",
+          "path": "param 0",
+          "other": "param 0",
+          "begin": "8",
+          "end": "16",
+          "family": "",
+          "when": "",
+          "on": null
+        },
+        {
+          "kind": "writable",
+          "path": "param 0 *.value",
+          "other": "param 0",
+          "begin": "0",
+          "end": "1",
+          "family": "",
+          "when": "",
+          "on": null
+        }
+      ],
+      "establishes": [
+        {
+          "kind": "initialized",
+          "path": "param 0",
+          "other": "param 0",
+          "begin": "8",
+          "end": "16",
+          "family": "",
+          "when": "",
+          "on": null
+        },
+        {
+          "kind": "initialized",
+          "path": "param 0 *.value",
+          "other": "param 0",
+          "begin": "0",
+          "end": "1",
+          "family": "",
+          "when": "",
+          "on": null
+        },
+        {
+          "kind": "zeroed",
+          "path": "param 0 *.value",
+          "other": "param 0",
+          "begin": "0",
+          "end": "1",
+          "family": "",
+          "when": "",
+          "on": null
+        }
+      ],
+      "trust": []
+    },
+    {
+      "selection": "strbuffer-lifecycle",
+      "source": "build/corpus/jansson/src/strbuffer.c",
+      "name": "strbuffer_close",
+      "complete": true,
+      "requirements": [
+        {
+          "kind": "valid",
+          "path": "param 0",
+          "other": "param 0",
+          "begin": "0",
+          "end": "0",
+          "family": "",
+          "when": "",
+          "on": null
+        },
+        {
+          "kind": "extent",
+          "path": "param 0",
+          "other": "param 0",
+          "begin": "0",
+          "end": "8",
+          "family": "",
+          "when": "",
+          "on": null
+        },
+        {
+          "kind": "extent",
+          "path": "param 0",
+          "other": "param 0",
+          "begin": "8",
+          "end": "16",
+          "family": "",
+          "when": "",
+          "on": null
+        },
+        {
+          "kind": "extent",
+          "path": "param 0",
+          "other": "param 0",
+          "begin": "16",
+          "end": "24",
+          "family": "",
+          "when": "",
+          "on": null
+        },
+        {
+          "kind": "initialized",
+          "path": "param 0",
+          "other": "param 0",
+          "begin": "0",
+          "end": "8",
+          "family": "",
+          "when": "",
+          "on": null
+        },
+        {
+          "kind": "release",
+          "path": "param 0 *.value",
+          "other": "param 0",
+          "begin": "0",
+          "end": "0",
+          "family": "free",
+          "when": "",
+          "on": null
+        },
+        {
+          "kind": "writable",
+          "path": "param 0",
+          "other": "param 0",
+          "begin": "0",
+          "end": "8",
+          "family": "",
+          "when": "",
+          "on": null
+        },
+        {
+          "kind": "writable",
+          "path": "param 0",
+          "other": "param 0",
+          "begin": "8",
+          "end": "16",
+          "family": "",
+          "when": "",
+          "on": null
+        },
+        {
+          "kind": "writable",
+          "path": "param 0",
+          "other": "param 0",
+          "begin": "16",
+          "end": "24",
+          "family": "",
+          "when": "",
+          "on": null
+        }
+      ],
+      "establishes": [
+        {
+          "kind": "initialized",
+          "path": "param 0",
+          "other": "param 0",
+          "begin": "0",
+          "end": "24",
+          "family": "",
+          "when": "",
+          "on": null
+        }
+      ],
+      "trust": [
+        {
+          "property": "call",
+          "outcome": "trusted",
+          "location": {
+            "file": "build/corpus/jansson/src/strbuffer.c",
+            "line": 36,
+            "column": 9
+          },
+          "subject": "\"test/evaluation/rfc0019/real/allocators.c\":7:34:\"jsonp_free\":call:\"modeled C library contract\"",
+          "reason": "modeled C library contract",
+          "calls": [
+            {
+              "file": "test/evaluation/rfc0019/real/allocators.c",
+              "line": 7,
+              "column": 34
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "selection": "strbuffer-lifecycle",
+      "source": "build/corpus/jansson/src/strbuffer.c",
+      "name": "strbuffer_init",
+      "complete": true,
+      "requirements": [
+        {
+          "kind": "valid",
+          "path": "param 0",
+          "other": "param 0",
+          "begin": "0",
+          "end": "0",
+          "family": "",
+          "when": "",
+          "on": null
+        },
+        {
+          "kind": "extent",
+          "path": "param 0",
+          "other": "param 0",
+          "begin": "0",
+          "end": "8",
+          "family": "",
+          "when": "",
+          "on": null
+        },
+        {
+          "kind": "extent",
+          "path": "param 0",
+          "other": "param 0",
+          "begin": "8",
+          "end": "16",
+          "family": "",
+          "when": "",
+          "on": null
+        },
+        {
+          "kind": "extent",
+          "path": "param 0",
+          "other": "param 0",
+          "begin": "16",
+          "end": "24",
+          "family": "",
+          "when": "",
+          "on": null
+        },
+        {
+          "kind": "writable",
+          "path": "param 0",
+          "other": "param 0",
+          "begin": "0",
+          "end": "8",
+          "family": "",
+          "when": "",
+          "on": null
+        },
+        {
+          "kind": "writable",
+          "path": "param 0",
+          "other": "param 0",
+          "begin": "8",
+          "end": "16",
+          "family": "",
+          "when": "",
+          "on": null
+        },
+        {
+          "kind": "writable",
+          "path": "param 0",
+          "other": "param 0",
+          "begin": "16",
+          "end": "24",
+          "family": "",
+          "when": "",
+          "on": null
+        }
+      ],
+      "establishes": [
+        {
+          "kind": "initialized",
+          "path": "param 0",
+          "other": "param 0",
+          "begin": "0",
+          "end": "24",
+          "family": "",
+          "when": "",
+          "on": "zero"
+        },
+        {
+          "kind": "initialized",
+          "path": "param 0",
+          "other": "param 0",
+          "begin": "0",
+          "end": "24",
+          "family": "",
+          "when": "",
+          "on": "negative"
+        },
+        {
+          "kind": "initialized",
+          "path": "param 0 *.value",
+          "other": "param 0",
+          "begin": "0",
+          "end": "1",
+          "family": "",
+          "when": "",
+          "on": "zero"
+        },
+        {
+          "kind": "zeroed",
+          "path": "param 0 *.value",
+          "other": "param 0",
+          "begin": "0",
+          "end": "1",
+          "family": "",
+          "when": "",
+          "on": "zero"
+        }
+      ],
+      "trust": [
+        {
+          "property": "call",
+          "outcome": "trusted",
+          "location": {
+            "file": "build/corpus/jansson/src/strbuffer.c",
+            "line": 25,
+            "column": 22
+          },
+          "subject": "\"test/evaluation/rfc0019/real/allocators.c\":6:42:\"jsonp_malloc\":call:\"modeled C library contract\"",
+          "reason": "modeled C library contract",
+          "calls": [
+            {
+              "file": "test/evaluation/rfc0019/real/allocators.c",
+              "line": 6,
+              "column": 42
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "selection": "strbuffer-lifecycle",
+      "source": "build/corpus/jansson/src/strbuffer.c",
+      "name": "strbuffer_pop",
+      "complete": true,
+      "requirements": [
+        {
+          "kind": "valid",
+          "path": "param 0",
+          "other": "param 0",
+          "begin": "0",
+          "end": "0",
+          "family": "",
+          "when": "",
+          "on": null
+        },
+        {
+          "kind": "valid",
+          "path": "param 0 *.value",
+          "other": "param 0",
+          "begin": "0",
+          "end": "0",
+          "family": "",
+          "when": "",
+          "on": null
+        },
+        {
+          "kind": "extent",
+          "path": "param 0",
+          "other": "param 0",
+          "begin": "8",
+          "end": "16",
+          "family": "",
+          "when": "",
+          "on": null
+        },
+        {
+          "kind": "extent",
+          "path": "param 0 *.value",
+          "other": "param 0",
+          "begin": "expr u64,v,706172616d2030202a2e6c656e677468;u64,c,1;u64,sub scale 1 plus 0",
+          "end": "expr u64,v,706172616d2030202a2e6c656e677468;u64,c,1;u64,sub scale 1 plus 1",
+          "family": "",
+          "when": "",
+          "on": null
+        },
+        {
+          "kind": "extent",
+          "path": "param 0 *.value",
+          "other": "param 0",
+          "begin": "param 0 *.length scale 1 plus 0",
+          "end": "param 0 *.length scale 1 plus 1",
+          "family": "",
+          "when": "",
+          "on": null
+        },
+        {
+          "kind": "initialized",
+          "path": "param 0",
+          "other": "param 0",
+          "begin": "8",
+          "end": "16",
+          "family": "",
+          "when": "",
+          "on": null
+        },
+        {
+          "kind": "initialized",
+          "path": "param 0 *.value",
+          "other": "param 0",
+          "begin": "expr u64,v,706172616d2030202a2e6c656e677468;u64,c,1;u64,sub scale 1 plus 0",
+          "end": "expr u64,v,706172616d2030202a2e6c656e677468;u64,c,1;u64,sub scale 1 plus 1",
+          "family": "",
+          "when": "",
+          "on": null
+        },
+        {
+          "kind": "writable",
+          "path": "param 0",
+          "other": "param 0",
+          "begin": "8",
+          "end": "16",
+          "family": "",
+          "when": "",
+          "on": null
+        },
+        {
+          "kind": "writable",
+          "path": "param 0 *.value",
+          "other": "param 0",
+          "begin": "param 0 *.length scale 1 plus 0",
+          "end": "param 0 *.length scale 1 plus 1",
+          "family": "",
+          "when": "",
+          "on": null
+        }
+      ],
+      "establishes": [
+        {
+          "kind": "initialized",
+          "path": "param 0",
+          "other": "param 0",
+          "begin": "8",
+          "end": "16",
+          "family": "",
+          "when": "",
+          "on": "positive"
+        },
+        {
+          "kind": "initialized",
+          "path": "param 0",
+          "other": "param 0",
+          "begin": "8",
+          "end": "16",
+          "family": "",
+          "when": "",
+          "on": "negative"
+        },
+        {
+          "kind": "initialized",
+          "path": "param 0 *.value",
+          "other": "param 0",
+          "begin": "param 0 *.length scale 1 plus 0",
+          "end": "param 0 *.length scale 1 plus 1",
+          "family": "",
+          "when": "",
+          "on": "positive"
+        },
+        {
+          "kind": "initialized",
+          "path": "param 0 *.value",
+          "other": "param 0",
+          "begin": "param 0 *.length scale 1 plus 0",
+          "end": "param 0 *.length scale 1 plus 1",
+          "family": "",
+          "when": "",
+          "on": "negative"
+        },
+        {
+          "kind": "zeroed",
+          "path": "param 0 *.value",
+          "other": "param 0",
+          "begin": "param 0 *.length scale 1 plus 0",
+          "end": "param 0 *.length scale 1 plus 1",
+          "family": "",
+          "when": "",
+          "on": "positive"
+        },
+        {
+          "kind": "zeroed",
+          "path": "param 0 *.value",
+          "other": "param 0",
+          "begin": "param 0 *.length scale 1 plus 0",
+          "end": "param 0 *.length scale 1 plus 1",
+          "family": "",
+          "when": "",
+          "on": "negative"
+        }
+      ],
+      "trust": []
+    },
+    {
+      "selection": "strbuffer-lifecycle",
+      "source": "build/corpus/jansson/src/strbuffer.c",
+      "name": "strbuffer_steal_value",
+      "complete": true,
+      "requirements": [
+        {
+          "kind": "valid",
+          "path": "param 0",
+          "other": "param 0",
+          "begin": "0",
+          "end": "0",
+          "family": "",
+          "when": "",
+          "on": null
+        },
+        {
+          "kind": "extent",
+          "path": "param 0",
+          "other": "param 0",
+          "begin": "0",
+          "end": "8",
+          "family": "",
+          "when": "",
+          "on": null
+        },
+        {
+          "kind": "initialized",
+          "path": "param 0",
+          "other": "param 0",
+          "begin": "0",
+          "end": "8",
+          "family": "",
+          "when": "",
+          "on": null
+        },
+        {
+          "kind": "writable",
+          "path": "param 0",
+          "other": "param 0",
+          "begin": "0",
+          "end": "8",
+          "family": "",
+          "when": "",
+          "on": null
+        }
+      ],
+      "establishes": [
+        {
+          "kind": "initialized",
+          "path": "param 0",
+          "other": "param 0",
+          "begin": "0",
+          "end": "8",
+          "family": "",
+          "when": "",
+          "on": "null"
+        },
+        {
+          "kind": "initialized",
+          "path": "param 0",
+          "other": "param 0",
+          "begin": "0",
+          "end": "8",
+          "family": "",
+          "when": "",
+          "on": "nonnull"
+        }
+      ],
+      "trust": []
+    },
+    {
+      "selection": "strbuffer-lifecycle",
+      "source": "build/corpus/jansson/src/strbuffer.c",
+      "name": "strbuffer_value",
+      "complete": true,
+      "requirements": [
+        {
+          "kind": "valid",
+          "path": "param 0",
+          "other": "param 0",
+          "begin": "0",
+          "end": "0",
+          "family": "",
+          "when": "",
+          "on": null
+        },
+        {
+          "kind": "extent",
+          "path": "param 0",
+          "other": "param 0",
+          "begin": "0",
+          "end": "8",
+          "family": "",
+          "when": "",
+          "on": null
+        },
+        {
+          "kind": "initialized",
+          "path": "param 0",
+          "other": "param 0",
+          "begin": "0",
+          "end": "8",
+          "family": "",
+          "when": "",
+          "on": null
+        }
+      ],
+      "establishes": [],
+      "trust": []
+    },
+    {
+      "selection": "strbuffer-lifecycle",
+      "source": "test/evaluation/rfc0019/real/strbuffer-lifecycle.c",
+      "name": "main",
+      "complete": true,
+      "requirements": [],
+      "establishes": [],
+      "trust": [
+        {
+          "property": "call",
+          "outcome": "trusted",
+          "location": {
+            "file": "test/evaluation/rfc0019/real/strbuffer-lifecycle.c",
+            "line": 11,
+            "column": 7
+          },
+          "subject": "\"build/corpus/jansson/src/strbuffer.c\":81:5:\"strbuffer_append_bytes\":call:\"modeled C library contract\"",
+          "reason": "modeled C library contract",
+          "calls": [
+            {
+              "file": "build/corpus/jansson/src/strbuffer.c",
+              "line": 81,
+              "column": 5
+            }
+          ]
+        },
+        {
+          "property": "call",
+          "outcome": "trusted",
+          "location": {
+            "file": "test/evaluation/rfc0019/real/strbuffer-lifecycle.c",
+            "line": 11,
+            "column": 7
+          },
+          "subject": "\"test/evaluation/rfc0019/real/allocators.c\":14:10:\"strbuffer_append_bytes\":call:\"modeled C library contract\"",
+          "reason": "modeled C library contract",
+          "calls": [
+            {
+              "file": "build/corpus/jansson/src/strbuffer.c",
+              "line": 73,
+              "column": 21
+            },
+            {
+              "file": "test/evaluation/rfc0019/real/allocators.c",
+              "line": 14,
+              "column": 10
+            }
+          ]
+        },
+        {
+          "property": "call",
+          "outcome": "trusted",
+          "location": {
+            "file": "test/evaluation/rfc0019/real/strbuffer-lifecycle.c",
+            "line": 12,
+            "column": 5
+          },
+          "subject": "\"test/evaluation/rfc0019/real/allocators.c\":7:34:\"strbuffer_close\":call:\"modeled C library contract\"",
+          "reason": "modeled C library contract",
+          "calls": [
+            {
+              "file": "build/corpus/jansson/src/strbuffer.c",
+              "line": 36,
+              "column": 9
+            },
+            {
+              "file": "test/evaluation/rfc0019/real/allocators.c",
+              "line": 7,
+              "column": 34
+            }
+          ]
+        },
+        {
+          "property": "call",
+          "outcome": "trusted",
+          "location": {
+            "file": "test/evaluation/rfc0019/real/strbuffer-lifecycle.c",
+            "line": 15,
+            "column": 7
+          },
+          "subject": "\"build/corpus/jansson/src/strbuffer.c\":81:5:\"strbuffer_append_byte\":call:\"modeled C library contract\"",
+          "reason": "modeled C library contract",
+          "calls": [
+            {
+              "file": "build/corpus/jansson/src/strbuffer.c",
+              "line": 57,
+              "column": 12
+            },
+            {
+              "file": "build/corpus/jansson/src/strbuffer.c",
+              "line": 81,
+              "column": 5
+            }
+          ]
+        },
+        {
+          "property": "call",
+          "outcome": "trusted",
+          "location": {
+            "file": "test/evaluation/rfc0019/real/strbuffer-lifecycle.c",
+            "line": 21,
+            "column": 30
+          },
+          "subject": "strlen",
+          "reason": "modeled C library contract",
+          "calls": []
+        },
+        {
+          "property": "call",
+          "outcome": "trusted",
+          "location": {
+            "file": "test/evaluation/rfc0019/real/strbuffer-lifecycle.c",
+            "line": 25,
+            "column": 3
+          },
+          "subject": "free",
+          "reason": "modeled C library contract",
+          "calls": []
+        },
+        {
+          "property": "call",
+          "outcome": "trusted",
+          "location": {
+            "file": "test/evaluation/rfc0019/real/strbuffer-lifecycle.c",
+            "line": 9,
+            "column": 7
+          },
+          "subject": "\"test/evaluation/rfc0019/real/allocators.c\":6:42:\"strbuffer_init\":call:\"modeled C library contract\"",
+          "reason": "modeled C library contract",
+          "calls": [
+            {
+              "file": "build/corpus/jansson/src/strbuffer.c",
+              "line": 25,
+              "column": 22
+            },
+            {
+              "file": "test/evaluation/rfc0019/real/allocators.c",
+              "line": 6,
+              "column": 42
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "selection": "utf-encode",
+      "source": "build/corpus/jansson/src/utf.c",
+      "name": "utf8_check_first",
+      "complete": true,
+      "requirements": [],
+      "establishes": [],
+      "trust": []
+    },
+    {
+      "selection": "utf-encode",
+      "source": "build/corpus/jansson/src/utf.c",
+      "name": "utf8_encode",
+      "complete": true,
+      "requirements": [
+        {
+          "kind": "valid",
+          "path": "param 1",
+          "other": "param 0",
+          "begin": "0",
+          "end": "0",
+          "family": "",
+          "when": "",
+          "on": null
+        },
+        {
+          "kind": "valid",
+          "path": "param 2",
+          "other": "param 0",
+          "begin": "0",
+          "end": "0",
+          "family": "",
+          "when": "",
+          "on": null
+        },
+        {
+          "kind": "extent",
+          "path": "param 1",
+          "other": "param 0",
+          "begin": "0",
+          "end": "1",
+          "family": "",
+          "when": "",
+          "on": null
+        },
+        {
+          "kind": "extent",
+          "path": "param 1",
+          "other": "param 0",
+          "begin": "1",
+          "end": "2",
+          "family": "",
+          "when": "",
+          "on": null
+        },
+        {
+          "kind": "extent",
+          "path": "param 1",
+          "other": "param 0",
+          "begin": "2",
+          "end": "3",
+          "family": "",
+          "when": "",
+          "on": null
+        },
+        {
+          "kind": "extent",
+          "path": "param 1",
+          "other": "param 0",
+          "begin": "3",
+          "end": "4",
+          "family": "",
+          "when": "",
+          "on": null
+        },
+        {
+          "kind": "extent",
+          "path": "param 2",
+          "other": "param 0",
+          "begin": "0",
+          "end": "8",
+          "family": "",
+          "when": "",
+          "on": null
+        },
+        {
+          "kind": "separated",
+          "path": "param 1",
+          "other": "param 2",
+          "begin": "0",
+          "end": "0",
+          "family": "",
+          "when": "",
+          "on": null
+        },
+        {
+          "kind": "writable",
+          "path": "param 1",
+          "other": "param 0",
+          "begin": "0",
+          "end": "1",
+          "family": "",
+          "when": "",
+          "on": null
+        },
+        {
+          "kind": "writable",
+          "path": "param 1",
+          "other": "param 0",
+          "begin": "1",
+          "end": "2",
+          "family": "",
+          "when": "",
+          "on": null
+        },
+        {
+          "kind": "writable",
+          "path": "param 1",
+          "other": "param 0",
+          "begin": "2",
+          "end": "3",
+          "family": "",
+          "when": "",
+          "on": null
+        },
+        {
+          "kind": "writable",
+          "path": "param 1",
+          "other": "param 0",
+          "begin": "3",
+          "end": "4",
+          "family": "",
+          "when": "",
+          "on": null
+        },
+        {
+          "kind": "writable",
+          "path": "param 2",
+          "other": "param 0",
+          "begin": "0",
+          "end": "8",
+          "family": "",
+          "when": "",
+          "on": null
+        }
+      ],
+      "establishes": [
+        {
+          "kind": "initialized",
+          "path": "param 1",
+          "other": "param 0",
+          "begin": "0",
+          "end": "1",
+          "family": "",
+          "when": "",
+          "on": "zero"
+        },
+        {
+          "kind": "initialized",
+          "path": "param 1",
+          "other": "param 0",
+          "begin": "0",
+          "end": "1",
+          "family": "",
+          "when": " when param 0 range(i32:2147483776-2147485695)",
+          "on": "zero"
+        },
+        {
+          "kind": "initialized",
+          "path": "param 1",
+          "other": "param 0",
+          "begin": "0",
+          "end": "1",
+          "family": "",
+          "when": " when param 0 range(i32:2147485696-2147549183)",
+          "on": "zero"
+        },
+        {
+          "kind": "initialized",
+          "path": "param 1",
+          "other": "param 0",
+          "begin": "0",
+          "end": "1",
+          "family": "",
+          "when": " when param 0 range(i32:2147483648-2147483775)",
+          "on": "zero"
+        },
+        {
+          "kind": "initialized",
+          "path": "param 1",
+          "other": "param 0",
+          "begin": "0",
+          "end": "2",
+          "family": "",
+          "when": " when param 0 range(i32:2147483776-2147485695)",
+          "on": "zero"
+        },
+        {
+          "kind": "initialized",
+          "path": "param 1",
+          "other": "param 0",
+          "begin": "0",
+          "end": "3",
+          "family": "",
+          "when": " when param 0 range(i32:2147485696-2147549183)",
+          "on": "zero"
+        },
+        {
+          "kind": "initialized",
+          "path": "param 1",
+          "other": "param 0",
+          "begin": "0",
+          "end": "4",
+          "family": "",
+          "when": " when param 0 range(i32:2147549184-2148597759)",
+          "on": "zero"
+        },
+        {
+          "kind": "initialized",
+          "path": "param 2",
+          "other": "param 0",
+          "begin": "0",
+          "end": "8",
+          "family": "",
+          "when": "",
+          "on": "zero"
+        },
+        {
+          "kind": "initialized",
+          "path": "param 2",
+          "other": "param 0",
+          "begin": "0",
+          "end": "8",
+          "family": "",
+          "when": " when param 0 range(i32:2147483776-2147485695)",
+          "on": "zero"
+        },
+        {
+          "kind": "initialized",
+          "path": "param 2",
+          "other": "param 0",
+          "begin": "0",
+          "end": "8",
+          "family": "",
+          "when": " when param 0 range(i32:2147485696-2147549183)",
+          "on": "zero"
+        },
+        {
+          "kind": "initialized",
+          "path": "param 2",
+          "other": "param 0",
+          "begin": "0",
+          "end": "8",
+          "family": "",
+          "when": " when param 0 range(i32:2147549184-2148597759)",
+          "on": "zero"
+        },
+        {
+          "kind": "initialized",
+          "path": "param 2",
+          "other": "param 0",
+          "begin": "0",
+          "end": "8",
+          "family": "",
+          "when": " when param 0 range(i32:2147483648-2147483775)",
+          "on": "zero"
+        }
+      ],
+      "trust": []
+    },
+    {
+      "selection": "utf-encode",
+      "source": "test/evaluation/rfc0019/real/utf-encode.c",
+      "name": "main",
+      "complete": true,
+      "requirements": [],
+      "establishes": [],
+      "trust": []
+    }
+  ],
+  "checked_projects": [
+    {
+      "name": "log.c",
+      "summary": {
+        "projects": {
+          "log.c": {
+            "units": 1,
+            "seconds": 0.111,
+            "clang_errors": 0,
+            "failures": 0,
+            "peak_rss_bytes": 51658752,
+            "by_id": {
+              "annotation-required": 2,
+              "checking-incomplete": 73
+            }
+          }
+        },
+        "totals": {
+          "annotation-required": 2,
+          "checking-incomplete": 73
+        }
+      },
+      "failures": [],
+      "raw_sha256": "d911e64ccc80062dacd33036fc1b9667816b0e63ddc2503c6d53058a26c4c24f",
+      "report_bytes": 78829,
+      "invocation_ok": false,
+      "report_totals": {
+        "functions": 13,
+        "selected": 12,
+        "complete": 3,
+        "trusted_complete": 0,
+        "incomplete": 10,
+        "deferred": 0
+      },
+      "selected": 12,
+      "complete": 3,
+      "limited": 0,
+      "incomplete_functions": [
+        {
+          "name": "file_callback",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "init_event",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "lock",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "log_add_callback",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "log_add_fp",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "log_level_string",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "log_log",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "stdout_callback",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "unlock",
+          "limited": false,
+          "deferred": false
+        }
+      ]
+    },
+    {
+      "name": "cJSON-program",
+      "summary": {
+        "projects": {
+          "cJSON-program": {
+            "units": 1,
+            "seconds": 45.18,
+            "clang_errors": 0,
+            "failures": 0,
+            "peak_rss_bytes": 669859840,
+            "by_id": {
+              "analysis-incomplete": 23,
+              "annotation-required": 7,
+              "checking-failed": 28,
+              "checking-incomplete": 4378,
+              "null-dereference": 26
+            }
+          }
+        },
+        "totals": {
+          "analysis-incomplete": 23,
+          "annotation-required": 7,
+          "checking-failed": 28,
+          "checking-incomplete": 4378,
+          "null-dereference": 26
+        }
+      },
+      "failures": [],
+      "raw_sha256": "1a2accca262a73403a920f1733b89d19ae910c76abc681056e927fafd4c7fe5f",
+      "report_bytes": 13545724,
+      "invocation_ok": false,
+      "report_totals": {
+        "functions": 249,
+        "selected": 151,
+        "complete": 30,
+        "trusted_complete": 0,
+        "incomplete": 219,
+        "deferred": 0
+      },
+      "selected": 151,
+      "complete": 18,
+      "limited": 2,
+      "incomplete_functions": [
+        {
+          "name": "add_item_to_array",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "add_item_to_object",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "cJSON_AddArrayToObject",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "cJSON_AddBoolToObject",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "cJSON_AddFalseToObject",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "cJSON_AddItemReferenceToArray",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "cJSON_AddItemReferenceToObject",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "cJSON_AddItemToArray",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "cJSON_AddItemToObject",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "cJSON_AddItemToObjectCS",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "cJSON_AddNullToObject",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "cJSON_AddNumberToObject",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "cJSON_AddObjectToObject",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "cJSON_AddRawToObject",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "cJSON_AddStringToObject",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "cJSON_AddTrueToObject",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "cJSON_Compare",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "cJSON_CreateArray",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "cJSON_CreateArrayReference",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "cJSON_CreateBool",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "cJSON_CreateDoubleArray",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "cJSON_CreateFalse",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "cJSON_CreateFloatArray",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "cJSON_CreateIntArray",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "cJSON_CreateNull",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "cJSON_CreateNumber",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "cJSON_CreateObject",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "cJSON_CreateObjectReference",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "cJSON_CreateRaw",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "cJSON_CreateString",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "cJSON_CreateStringArray",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "cJSON_CreateStringReference",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "cJSON_CreateTrue",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "cJSON_Delete",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "cJSON_DeleteItemFromArray",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "cJSON_DeleteItemFromObject",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "cJSON_DeleteItemFromObjectCaseSensitive",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "cJSON_DetachItemFromArray",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "cJSON_DetachItemFromObject",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "cJSON_DetachItemFromObjectCaseSensitive",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "cJSON_Duplicate",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "cJSON_Duplicate_rec",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "cJSON_GetArrayItem",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "cJSON_GetArraySize",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "cJSON_GetErrorPtr",
+          "limited": true,
+          "deferred": false
+        },
+        {
+          "name": "cJSON_GetNumberValue",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "cJSON_GetObjectItem",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "cJSON_GetObjectItemCaseSensitive",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "cJSON_HasObjectItem",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "cJSON_InsertItemInArray",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "cJSON_Minify",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "cJSON_New_Item",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "cJSON_Parse",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "cJSON_ParseWithLength",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "cJSON_ParseWithLengthOpts",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "cJSON_ParseWithOpts",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "cJSON_Print",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "cJSON_PrintBuffered",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "cJSON_PrintPreallocated",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "cJSON_PrintUnformatted",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "cJSON_ReplaceItemInArray",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "cJSON_ReplaceItemInObject",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "cJSON_ReplaceItemInObjectCaseSensitive",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "cJSON_ReplaceItemViaPointer",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "cJSON_SetNumberHelper",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "cJSON_SetValuestring",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "cJSON_Version",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "cJSON_free",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "cJSON_malloc",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "cJSON_strdup",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "case_insensitive_strcmp",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "compare_double",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "create_reference",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "ensure",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "get_array_item",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "get_object_item",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "minify_string",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "parse_array",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "parse_number",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "parse_object",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "parse_string",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "parse_value",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "print",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "print_array",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "print_number",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "print_object",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "print_string",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "print_string_ptr",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "print_value",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "replace_item_in_object",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "skip_multiline_comment",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "skip_oneline_comment",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "skip_utf8_bom",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "update_offset",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "utf16_literal_to_utf8",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "apply_patch",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "cJSONUtils_AddPatchToArray",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "cJSONUtils_ApplyPatches",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "cJSONUtils_ApplyPatchesCaseSensitive",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "cJSONUtils_FindPointerFromObjectTo",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "cJSONUtils_GenerateMergePatch",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "cJSONUtils_GenerateMergePatchCaseSensitive",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "cJSONUtils_GeneratePatches",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "cJSONUtils_GeneratePatchesCaseSensitive",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "cJSONUtils_GetPointer",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "cJSONUtils_GetPointerCaseSensitive",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "cJSONUtils_MergePatch",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "cJSONUtils_MergePatchCaseSensitive",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "cJSONUtils_SortObject",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "cJSONUtils_SortObjectCaseSensitive",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "cJSONUtils_strdup",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "compare_double",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "compare_json",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "compare_pointers",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "compare_strings",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "compose_patch",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "create_patches",
+          "limited": true,
+          "deferred": false
+        },
+        {
+          "name": "decode_array_index_from_pointer",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "decode_patch_operation",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "decode_pointer_inplace",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "detach_item_from_array",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "detach_path",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "encode_string_as_pointer",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "generate_merge_patch",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "get_array_item",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "get_item_from_pointer",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "get_object_item",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "insert_item_in_array",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "merge_patch",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "overwrite_item",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "pointer_encoded_length",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "sort_list",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "sort_object",
+          "limited": false,
+          "deferred": false
+        }
+      ]
+    },
+    {
+      "name": "linenoise-program",
+      "summary": {
+        "projects": {
+          "linenoise-program": {
+            "units": 1,
+            "seconds": 20.953,
+            "clang_errors": 0,
+            "failures": 0,
+            "peak_rss_bytes": 505069568,
+            "by_id": {
+              "analysis-incomplete": 5,
+              "annotation-required": 3,
+              "checking-failed": 5,
+              "checking-incomplete": 1794,
+              "double-free": 3,
+              "null-dereference": 2
+            }
+          }
+        },
+        "totals": {
+          "analysis-incomplete": 5,
+          "annotation-required": 3,
+          "checking-failed": 5,
+          "checking-incomplete": 1794,
+          "double-free": 3,
+          "null-dereference": 2
+        }
+      },
+      "failures": [],
+      "raw_sha256": "f0a07aff26d66fed363a4cf4247e128b79ff83014d276569e86ede6ec6a94772",
+      "report_bytes": 11808782,
+      "invocation_ok": false,
+      "report_totals": {
+        "functions": 130,
+        "selected": 88,
+        "complete": 24,
+        "trusted_complete": 3,
+        "incomplete": 106,
+        "deferred": 0
+      },
+      "selected": 88,
+      "complete": 20,
+      "limited": 11,
+      "incomplete_functions": [
+        {
+          "name": "completion",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "hints",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "main",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "abAppend",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "ansiEscapeLen",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "completeLine",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "disableRawMode",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "enableRawMode",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "foldSetRenderedText",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "freeCompletions",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "freeHistory",
+          "limited": true,
+          "deferred": false
+        },
+        {
+          "name": "getColumns",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "getCursorPosition",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "isUnsupportedTerm",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "linenoise",
+          "limited": true,
+          "deferred": false
+        },
+        {
+          "name": "linenoiseAddCompletion",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "linenoiseAdjustFoldsAfterDelete",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "linenoiseAdjustFoldsAfterInsert",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "linenoiseAtExit",
+          "limited": true,
+          "deferred": false
+        },
+        {
+          "name": "linenoiseBeep",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "linenoiseBlockingEdit",
+          "limited": true,
+          "deferred": false
+        },
+        {
+          "name": "linenoiseBuildHistoryFold",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "linenoiseClearScreen",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "linenoiseEditBackspace",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "linenoiseEditDelete",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "linenoiseEditDeletePrevWord",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "linenoiseEditFeed",
+          "limited": true,
+          "deferred": false
+        },
+        {
+          "name": "linenoiseEditHistoryNext",
+          "limited": true,
+          "deferred": false
+        },
+        {
+          "name": "linenoiseEditInsert",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "linenoiseEditInsertNoRefresh",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "linenoiseEditMoveEnd",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "linenoiseEditMoveHome",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "linenoiseEditMoveLeft",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "linenoiseEditMoveRight",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "linenoiseEditNextLen",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "linenoiseEditPaste",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "linenoiseEditPrevLen",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "linenoiseEditStart",
+          "limited": true,
+          "deferred": false
+        },
+        {
+          "name": "linenoiseEditStop",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "linenoiseFoldAdd",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "linenoiseFoldRemove",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "linenoiseGetRenderFolds",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "linenoiseHide",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "linenoiseHistoryAdd",
+          "limited": true,
+          "deferred": false
+        },
+        {
+          "name": "linenoiseHistoryLoad",
+          "limited": true,
+          "deferred": false
+        },
+        {
+          "name": "linenoiseHistorySave",
+          "limited": true,
+          "deferred": false
+        },
+        {
+          "name": "linenoiseHistorySetMaxLen",
+          "limited": true,
+          "deferred": false
+        },
+        {
+          "name": "linenoiseNoTTY",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "linenoisePrintKeyCodes",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "linenoiseRangeOverlapsFold",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "linenoiseReadLine",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "linenoiseRenderBuffer",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "linenoiseShow",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "pasteBufferAppend",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "pasteBufferReserve",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "refreshLine",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "refreshLineWithCompletion",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "refreshLineWithFlags",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "refreshMultiLine",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "refreshShowHints",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "refreshSingleLine",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "shouldFoldText",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "utf8DecodeChar",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "utf8DecodePrev",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "utf8NextCharLen",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "utf8PrevCharLen",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "utf8SingleCharWidth",
+          "limited": false,
+          "deferred": false
+        },
+        {
+          "name": "utf8StrWidth",
+          "limited": false,
+          "deferred": false
+        }
+      ]
+    },
+    {
+      "name": "jansson",
+      "summary": {
+        "projects": {
+          "jansson": {
+            "units": 1,
+            "seconds": 600.08,
+            "clang_errors": 0,
+            "failures": 1,
+            "peak_rss_bytes": null,
+            "by_id": {
+              "analysis-incomplete": 118,
+              "annotation-required": 5,
+              "checking-failed": 70,
+              "checking-incomplete": 7139,
+              "double-free": 38,
+              "invalid-release": 1,
+              "leak": 5,
+              "null-dereference": 3,
+              "use-after-free": 24
+            }
+          }
+        },
+        "totals": {
+          "analysis-incomplete": 118,
+          "annotation-required": 5,
+          "checking-failed": 70,
+          "checking-incomplete": 7139,
+          "double-free": 38,
+          "invalid-release": 1,
+          "leak": 5,
+          "null-dereference": 3,
+          "use-after-free": 24
+        }
+      },
+      "failures": [
+        {
+          "project": "jansson",
+          "file": "src/dump.c src/error.c src/hashtable.c src/hashtable_seed.c src/load.c src/memory.c src/pack_unpack.c src/strbuffer.c src/strconv.c src/utf.c src/value.c src/version.c",
+          "seconds": 600.08,
+          "exit_code": -9,
+          "clang_errors": 0,
+          "failure": "timeout after 600 seconds",
+          "peak_rss_bytes": null
+        }
+      ],
+      "raw_sha256": "6655bfaecda8dfc8df1274fa1e8144b68cfbd5e283b8d655d5223d8a3f7b1f73",
+      "report_bytes": 0,
+      "invocation_ok": false,
+      "report_totals": null,
+      "selected": null,
+      "complete": null,
+      "limited": null,
+      "incomplete_functions": []
+    },
+    {
+      "name": "lua",
+      "summary": {
+        "projects": {
+          "lua": {
+            "units": 1,
+            "seconds": 601.264,
+            "clang_errors": 0,
+            "failures": 1,
+            "peak_rss_bytes": null,
+            "by_id": {}
+          }
+        },
+        "totals": {}
+      },
+      "failures": [
+        {
+          "project": "lua",
+          "file": "lapi.c lauxlib.c lbaselib.c lcode.c lcorolib.c lctype.c ldblib.c ldebug.c ldo.c ldump.c lfunc.c lgc.c linit.c liolib.c llex.c lmathlib.c lmem.c loadlib.c lobject.c lopcodes.c loslib.c lparser.c lstate.c lstring.c lstrlib.c ltable.c ltablib.c ltests.c ltm.c lua.c lundump.c lutf8lib.c lvm.c lzio.c",
+          "seconds": 601.264,
+          "exit_code": -9,
+          "clang_errors": 0,
+          "failure": "timeout after 600 seconds",
+          "peak_rss_bytes": null
+        }
+      ],
+      "raw_sha256": "c3606560a0c9db22d15cacd88a2ce57ed8710e3af837aeee86dadbb875e4b3ce",
+      "report_bytes": 0,
+      "invocation_ok": false,
+      "report_totals": null,
+      "selected": null,
+      "complete": null,
+      "limited": null,
+      "incomplete_functions": []
+    }
+  ],
+  "medians": {
+    "baseline": {
+      "valid": true,
+      "total_seconds": 339.899,
+      "peak_rss_bytes": 692862976
+    },
+    "final": {
+      "valid": true,
+      "total_seconds": 333.351,
+      "peak_rss_bytes": 695861248
+    }
+  },
+  "real_cases": {
+    "version": 1,
+    "revision": "851a2145e3256f2e67e5dfe24b0e456bf198b741",
+    "selections": [
+      {
+        "source": "src/strbuffer.c",
+        "functions": [
+          "strbuffer_init",
+          "strbuffer_close",
+          "strbuffer_clear",
+          "strbuffer_value",
+          "strbuffer_steal_value",
+          "strbuffer_append_byte",
+          "strbuffer_append_bytes",
+          "strbuffer_pop"
+        ],
+        "boundary": "libc-compatible allocator adapters; no configurable hooks"
+      },
+      {
+        "source": "src/utf.c",
+        "functions": [
+          "utf8_encode",
+          "utf8_check_first"
+        ],
+        "boundary": "encoding interface only; decoding/traversal definitions remain unselected"
+      }
+    ],
+    "cases": [
+      {
+        "name": "utf-encode",
+        "expected": "accepted",
+        "passed": true,
+        "returncode": 0,
+        "accepted": true,
+        "selected": [
+          "utf8_encode",
+          "utf8_check_first",
+          "main"
+        ],
+        "report": "build/rfc19-validation/real-release/utf-encode.json",
+        "log": "build/rfc19-validation/real-release/utf-encode.log",
+        "report_bytes": 50933,
+        "seconds": 0.4065905829993426,
+        "inputs": [
+          {
+            "path": "build/corpus/jansson/src/utf.c",
+            "sha256": "a281664866713de4c8199e03fd34b69a9ff4388a65c4e17af42d0d0463fb4851"
+          },
+          {
+            "path": "test/evaluation/rfc0019/real/utf-encode.c",
+            "sha256": "728fc06cbf693ab2cfe7020fd5041250b010507d77f048e9cbd6d97d1fe3e903"
+          }
+        ]
+      },
+      {
+        "name": "utf-short",
+        "expected": "rejected",
+        "passed": true,
+        "returncode": 1,
+        "accepted": false,
+        "selected": [
+          "main"
+        ],
+        "report": "build/rfc19-validation/real-release/utf-short.json",
+        "log": "build/rfc19-validation/real-release/utf-short.log",
+        "report_bytes": 49820,
+        "seconds": 0.4059847919997992,
+        "inputs": [
+          {
+            "path": "build/corpus/jansson/src/utf.c",
+            "sha256": "a281664866713de4c8199e03fd34b69a9ff4388a65c4e17af42d0d0463fb4851"
+          },
+          {
+            "path": "test/evaluation/rfc0019/real/utf-short.c",
+            "sha256": "8c6c0c6a3145c91d9a369707f8edcaec45420fca203e5873fdb3172225e3fff3"
+          }
+        ]
+      },
+      {
+        "name": "utf-failure",
+        "expected": "rejected",
+        "passed": true,
+        "returncode": 1,
+        "accepted": false,
+        "selected": [
+          "main"
+        ],
+        "report": "build/rfc19-validation/real-release/utf-failure.json",
+        "log": "build/rfc19-validation/real-release/utf-failure.log",
+        "report_bytes": 49159,
+        "seconds": 0.4206393749991548,
+        "inputs": [
+          {
+            "path": "build/corpus/jansson/src/utf.c",
+            "sha256": "a281664866713de4c8199e03fd34b69a9ff4388a65c4e17af42d0d0463fb4851"
+          },
+          {
+            "path": "test/evaluation/rfc0019/real/utf-failure.c",
+            "sha256": "b2b93c7854b4bf9789cd08b990fa25fa1058e52312c22b13782c9767d176b1ed"
+          }
+        ]
+      },
+      {
+        "name": "strbuffer-lifecycle",
+        "expected": "accepted",
+        "passed": true,
+        "returncode": 0,
+        "accepted": true,
+        "selected": [
+          "strbuffer_init",
+          "strbuffer_close",
+          "strbuffer_clear",
+          "strbuffer_value",
+          "strbuffer_steal_value",
+          "strbuffer_append_byte",
+          "strbuffer_append_bytes",
+          "strbuffer_pop",
+          "main"
+        ],
+        "report": "build/rfc19-validation/real-release/strbuffer-lifecycle.json",
+        "log": "build/rfc19-validation/real-release/strbuffer-lifecycle.log",
+        "report_bytes": 211400,
+        "seconds": 0.9035156660029315,
+        "inputs": [
+          {
+            "path": "build/corpus/jansson/src/strbuffer.c",
+            "sha256": "c7b37475f5af2b908cb6236a3384bad5ab96a809e8926bd237d8d4c17ff5dff8"
+          },
+          {
+            "path": "test/evaluation/rfc0019/real/strbuffer-lifecycle.c",
+            "sha256": "086569b554bf9c044e7ac1830a116633c04f9bad42d2961cb4fbc9af3bf73851"
+          },
+          {
+            "path": "test/evaluation/rfc0019/real/allocators.c",
+            "sha256": "e1a27427a0a913e715c73464e5ca3ec66d6a0bbb7ab77bf6c1960087b42272a1"
+          }
+        ]
+      },
+      {
+        "name": "strbuffer-short",
+        "expected": "rejected",
+        "passed": true,
+        "returncode": 1,
+        "accepted": false,
+        "selected": [
+          "main"
+        ],
+        "report": "build/rfc19-validation/real-release/strbuffer-short.json",
+        "log": "build/rfc19-validation/real-release/strbuffer-short.log",
+        "report_bytes": 198140,
+        "seconds": 0.4358164170043892,
+        "inputs": [
+          {
+            "path": "build/corpus/jansson/src/strbuffer.c",
+            "sha256": "c7b37475f5af2b908cb6236a3384bad5ab96a809e8926bd237d8d4c17ff5dff8"
+          },
+          {
+            "path": "test/evaluation/rfc0019/real/strbuffer-short.c",
+            "sha256": "bfb4f98db2ccf4780d87067157143d20281cbc49b5694b06679b55471ab63504"
+          },
+          {
+            "path": "test/evaluation/rfc0019/real/allocators.c",
+            "sha256": "e1a27427a0a913e715c73464e5ca3ec66d6a0bbb7ab77bf6c1960087b42272a1"
+          }
+        ]
+      },
+      {
+        "name": "strbuffer-failure",
+        "expected": "rejected",
+        "passed": true,
+        "returncode": 1,
+        "accepted": false,
+        "selected": [
+          "main"
+        ],
+        "report": "build/rfc19-validation/real-release/strbuffer-failure.json",
+        "log": "build/rfc19-validation/real-release/strbuffer-failure.log",
+        "report_bytes": 198284,
+        "seconds": 0.4983629589987686,
+        "inputs": [
+          {
+            "path": "build/corpus/jansson/src/strbuffer.c",
+            "sha256": "c7b37475f5af2b908cb6236a3384bad5ab96a809e8926bd237d8d4c17ff5dff8"
+          },
+          {
+            "path": "test/evaluation/rfc0019/real/strbuffer-failure.c",
+            "sha256": "457b6dfcda3a4f7dfac4559a288450b2bea567d8603ceb8f40d87517509db960"
+          },
+          {
+            "path": "test/evaluation/rfc0019/real/allocators.c",
+            "sha256": "e1a27427a0a913e715c73464e5ca3ec66d6a0bbb7ab77bf6c1960087b42272a1"
+          }
+        ]
+      },
+      {
+        "name": "strbuffer-partial",
+        "expected": "rejected",
+        "passed": true,
+        "returncode": 1,
+        "accepted": false,
+        "selected": [
+          "main"
+        ],
+        "report": "build/rfc19-validation/real-release/strbuffer-partial.json",
+        "log": "build/rfc19-validation/real-release/strbuffer-partial.log",
+        "report_bytes": 197781,
+        "seconds": 0.36698033299762756,
+        "inputs": [
+          {
+            "path": "build/corpus/jansson/src/strbuffer.c",
+            "sha256": "c7b37475f5af2b908cb6236a3384bad5ab96a809e8926bd237d8d4c17ff5dff8"
+          },
+          {
+            "path": "test/evaluation/rfc0019/real/strbuffer-partial.c",
+            "sha256": "fe29aa049373c2917e6dbf5cf212168cb878555c90bc603869984ef885f99ac8"
+          },
+          {
+            "path": "test/evaluation/rfc0019/real/allocators.c",
+            "sha256": "e1a27427a0a913e715c73464e5ca3ec66d6a0bbb7ab77bf6c1960087b42272a1"
+          }
+        ]
+      },
+      {
+        "name": "strbuffer-stale",
+        "expected": "rejected",
+        "passed": true,
+        "returncode": 1,
+        "accepted": false,
+        "selected": [
+          "main"
+        ],
+        "report": "build/rfc19-validation/real-release/strbuffer-stale.json",
+        "log": "build/rfc19-validation/real-release/strbuffer-stale.log",
+        "report_bytes": 199487,
+        "seconds": 0.35256266700162087,
+        "inputs": [
+          {
+            "path": "build/corpus/jansson/src/strbuffer.c",
+            "sha256": "c7b37475f5af2b908cb6236a3384bad5ab96a809e8926bd237d8d4c17ff5dff8"
+          },
+          {
+            "path": "test/evaluation/rfc0019/real/strbuffer-stale.c",
+            "sha256": "66e290978a9793d1a23190a4d63199359c0d3ab873859ce07c8857d8c04dee6f"
+          },
+          {
+            "path": "test/evaluation/rfc0019/real/allocators.c",
+            "sha256": "e1a27427a0a913e715c73464e5ca3ec66d6a0bbb7ab77bf6c1960087b42272a1"
+          }
+        ]
+      }
+    ]
+  },
+  "jansson_configuration": [
+    {
+      "path": "scripts/corpus/support/jansson/jansson_config.h",
+      "sha256": "a3fefb898bc82273081b8c0b26af551779d048fb68150079231929d65d8cf8b0"
+    },
+    {
+      "path": "scripts/corpus/support/jansson/jansson_private_config.h",
+      "sha256": "0dbbffda6c5c44777d648240c9fbefd852affd0d69266e43861d9b6d56b94278"
+    }
+  ],
+  "diagnostic_changes": {
+    "added": [],
+    "removed": [
+      {
+        "col": 17,
+        "file": "ltable.c",
+        "id": "null-dereference",
+        "line": 625,
+        "message": "dereference of 't->node', which may be null",
+        "project": "lua",
+        "severity": "error"
+      }
+    ]
+  },
+  "superseded_checked_projects": [
+    {
+      "name": "log.c",
+      "summary": {
+        "projects": {
+          "log.c": {
+            "units": 1,
+            "seconds": 0.094,
+            "clang_errors": 0,
+            "failures": 0,
+            "peak_rss_bytes": 51527680,
+            "by_id": {
+              "annotation-required": 2,
+              "checking-incomplete": 73
+            }
+          }
+        },
+        "totals": {
+          "annotation-required": 2,
+          "checking-incomplete": 73
+        }
+      },
+      "selected": 12,
+      "complete": 0,
+      "report_bytes": 78841
+    },
+    {
+      "name": "cJSON-program",
+      "summary": {
+        "projects": {
+          "cJSON-program": {
+            "units": 1,
+            "seconds": 41.193,
+            "clang_errors": 0,
+            "failures": 0,
+            "peak_rss_bytes": 668073984,
+            "by_id": {
+              "analysis-incomplete": 23,
+              "annotation-required": 7,
+              "checking-failed": 28,
+              "checking-incomplete": 4378,
+              "null-dereference": 26
+            }
+          }
+        },
+        "totals": {
+          "analysis-incomplete": 23,
+          "annotation-required": 7,
+          "checking-failed": 28,
+          "checking-incomplete": 4378,
+          "null-dereference": 26
+        }
+      },
+      "selected": 151,
+      "complete": 17,
+      "report_bytes": 13545721
+    },
+    {
+      "name": "linenoise-program",
+      "summary": {
+        "projects": {
+          "linenoise-program": {
+            "units": 1,
+            "seconds": 18.826,
+            "clang_errors": 0,
+            "failures": 0,
+            "peak_rss_bytes": 503726080,
+            "by_id": {
+              "analysis-incomplete": 5,
+              "annotation-required": 3,
+              "checking-failed": 5,
+              "checking-incomplete": 1799,
+              "double-free": 3,
+              "null-dereference": 2
+            }
+          }
+        },
+        "totals": {
+          "analysis-incomplete": 5,
+          "annotation-required": 3,
+          "checking-failed": 5,
+          "checking-incomplete": 1799,
+          "double-free": 3,
+          "null-dereference": 2
+        }
+      },
+      "selected": 88,
+      "complete": 14,
+      "report_bytes": 11808818
+    }
+  ]
+}

@@ -317,6 +317,8 @@ std::string printSummary(const FunctionSummary &summary,
                       return printSummaryPath(leaf, names);
                     })
                   : "unknown";
+      if (output.on)
+        text += " on " + std::string(toString(*output.on));
       text += printGuard(output.when, names) + '\n';
     }
   }
@@ -788,18 +790,27 @@ static bool parseGuard(Tokens &tokens, const GlobalResolver &resolve,
         ParsedPath other;
         if (!parsePath(tokens, resolve, other))
           return false;
-        if (path.path && other.path)
+        if (path.path && other.path) {
+          if (lostPremise != nullptr)
+            if (const auto known = guard.pointerFact(*path.path, *other.path);
+                known && *known != (word == "same"))
+              return false;
           guard.requirePointer(*path.path, *other.path, word == "same");
-        else
+        } else {
           losePremise();
+        }
       } else {
         const std::optional<ValueFact> fact = ValueFact::parse(word);
         if (!fact)
           return false;
-        if (path.path)
+        if (path.path) {
+          if (lostPremise != nullptr &&
+              guard.learn(*path.path, *fact) == GuardRefinement::Refuted)
+            return false;
           guard.require(*path.path, *fact);
-        else
+        } else {
           losePremise();
+        }
       }
     }
     if (tokens.empty())
@@ -807,6 +818,16 @@ static bool parseGuard(Tokens &tokens, const GlobalResolver &resolve,
     if (tokens.take() != "and")
       return false;
   }
+}
+
+std::optional<PathGuard> parseSummaryGuard(std::string_view text,
+                                           const GlobalResolver &resolve) {
+  Tokens tokens(text);
+  PathGuard guard;
+  bool lost = false;
+  if (!parseGuard(tokens, resolve, guard, &lost) || lost || !tokens.empty())
+    return std::nullopt;
+  return guard;
 }
 
 static std::string_view trim(std::string_view text) noexcept {
@@ -1178,6 +1199,11 @@ std::optional<FunctionSummary> parseSummary(std::string_view record,
                 return parseSummaryPath(leaf, resolveValue);
               });
           ok = output.value.has_value();
+        }
+        if (ok && tokens.peek() == "on") {
+          tokens.take();
+          output.on = parseOutcome(tokens.take());
+          ok = output.on.has_value();
         }
         ok = ok && parseGuard(tokens, resolve, output.when, &unavailableGuard);
       }

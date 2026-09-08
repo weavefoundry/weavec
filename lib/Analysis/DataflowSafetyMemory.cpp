@@ -8,10 +8,185 @@
 
 #include "AffineSupport.h"
 #include "Dataflow.h"
+#include "IntegerSupport.h"
 
 using namespace clang;
 
 namespace weavec::analysis {
+
+std::optional<FunctionDataflow::NumericExpression>
+FunctionDataflow::checkedByteExpression(const core::Affine &value,
+                                        const core::AnalysisState &state) {
+  const core::IntegerType bytes{.width = 64, .isSigned = false};
+  if (value.scale < 0 || value.constant < 0)
+    return std::nullopt;
+  if (!value.place)
+    return NumericExpression::constant(core::IntegerValue::ofBits(
+        bytes, static_cast<std::uint64_t>(value.constant)));
+  std::optional<NumericExpression> expression;
+  if (const auto symbolic = numericExpressions.find(*value.place);
+      symbolic != numericExpressions.end()) {
+    expression = symbolic->second;
+  } else if (const auto stored = state.numericValues.find(*value.place);
+             stored != state.numericValues.end()) {
+    expression = stored->second;
+  } else {
+    const auto *decl =
+        dyn_cast_or_null<ValueDecl>(builder.declFor(*value.place));
+    auto type = decl ? integerTypeOf(*decl, context) : std::nullopt;
+    if (!type)
+      if (const auto fact = state.scalars.factOf(*value.place);
+          fact && fact->integer)
+        type = fact->integer->type;
+    if (type)
+      expression = NumericExpression::input(*value.place, *type);
+  }
+  if (!expression)
+    return std::nullopt;
+  const auto evaluated = evaluateNumericExpression(*expression, state);
+  if (evaluated.mayBeInvalid || evaluated.values.empty() ||
+      evaluated.values.minimum()->negative())
+    return std::nullopt;
+  expression = expression->converted(bytes);
+  if (value.scale != 1) {
+    const auto factor = NumericExpression::constant(core::IntegerValue::ofBits(
+        bytes, static_cast<std::uint64_t>(value.scale)));
+    if (!operationDoesNotOverflow(core::IntegerOp::Multiply, *expression,
+                                  factor, bytes, state))
+      return std::nullopt;
+    expression = NumericExpression::operation(core::IntegerOp::Multiply,
+                                              *expression, factor);
+  }
+  if (expression && value.constant != 0) {
+    const auto shift = NumericExpression::constant(core::IntegerValue::ofBits(
+        bytes, static_cast<std::uint64_t>(value.constant)));
+    if (!operationDoesNotOverflow(core::IntegerOp::Add, *expression, shift,
+                                  bytes, state))
+      return std::nullopt;
+    expression =
+        NumericExpression::operation(core::IntegerOp::Add, *expression, shift);
+  }
+  return expression;
+}
+
+std::optional<core::Affine> FunctionDataflow::checkedByteSum(
+    const core::Affine &lhs, const core::Affine &rhs,
+    const core::AnalysisState &state, const Stmt &at) {
+  if (const auto linear = sumOf(lhs, rhs))
+    return linear;
+  const auto a = checkedByteExpression(lhs, state);
+  const auto b = checkedByteExpression(rhs, state);
+  if (!a || !b)
+    return std::nullopt;
+  const auto sum = NumericExpression::operation(core::IntegerOp::Add, *a, *b);
+  if (!sum)
+    return std::nullopt;
+  const bool proved =
+      operationDoesNotOverflow(core::IntegerOp::Add, *a, *b, a->type(), state);
+  bool required = false;
+  if (!proved && options.checkContracts) {
+    const auto first = summaryAffineOf(lhs);
+    const auto last = summaryAffineOf(rhs);
+    required = first && last;
+    if (required && recording())
+      inferred.checked.require({.kind = core::CheckedRequirementKind::SumFits,
+                                .path = {},
+                                .other = {},
+                                .begin = *first,
+                                .end = *last,
+                                .family = {}});
+  }
+  if (!proved && !required)
+    return std::nullopt;
+  safetyObligation(core::SafetyProperty::Arithmetic,
+                   core::safetyOutcome(proved, required), at, "byte sum",
+                   "byte interval sum must not overflow");
+  auto saved = expressionPlaces.find(*sum);
+  if (saved == expressionPlaces.end()) {
+    const auto place = places.create("checked byte sum");
+    saved = expressionPlaces.emplace(*sum, place).first;
+    numericExpressions.emplace(place, *sum);
+  }
+  return core::Affine::ofPlace(saved->second);
+}
+
+std::optional<FunctionDataflow::CheckedMemory>
+FunctionDataflow::checkedMemoryAt(core::PlaceId holder,
+                                  const core::Affine &begin,
+                                  const core::Affine &end,
+                                  const core::AnalysisState &state) {
+  CheckedMemory result{.storage = holder,
+                       .begin = begin,
+                       .end = end,
+                       .extent = {},
+                       .input = stableSummaryPathOf(holder),
+                       .pointer = nullptr,
+                       .holder = holder};
+  const auto input = places.deref(holder);
+  checkedInputObjects[holder] = input;
+  result.storage = input;
+  if (const auto object = state.safety->objects.find(holder);
+      object != state.safety->objects.end()) {
+    result.storage = object->second;
+  } else {
+    const auto loans = state.loans.heldBy(holder);
+    if (loans.size() == 1)
+      result.storage = loans.front().place;
+    else if (!loans.empty())
+      return std::nullopt;
+  }
+  if (const auto spatial = spatialRecordAt(holder, state)) {
+    result.extent = spatial->extent;
+    const auto offset = spatial->boundsOffset.value_or(spatial->offset);
+    if (!offset.isZero()) {
+      const auto *decl = dyn_cast_or_null<ValueDecl>(builder.declFor(holder));
+      const auto unit =
+          decl && decl->getType()->isPointerType()
+              ? byteSizeOf(decl->getType()->getPointeeType(), context)
+              : std::nullopt;
+      std::int64_t bytes = 0;
+      if (!unit || !offset.isElements() ||
+          __builtin_mul_overflow(offset.elements, *unit, &bytes))
+        return std::nullopt;
+      const auto first = begin.shifted(bytes);
+      const auto last = end.shifted(bytes);
+      if (!first || !last)
+        return std::nullopt;
+      result.begin = *first;
+      result.end = *last;
+    }
+  }
+  if (result.storage != input)
+    result.input.reset();
+  return result;
+}
+
+std::optional<FunctionDataflow::CheckedMemory>
+FunctionDataflow::checkedPathMemory(const core::SummaryPath &path,
+                                    const CallExpr &call,
+                                    const core::Affine &begin,
+                                    const core::Affine &end,
+                                    const core::AnalysisState &state) {
+  if (path.isParam() && path.isRoot() && path.index < call.getNumArgs())
+    return checkedMemory(*call.getArg(path.index), begin, end, state);
+  const auto place = builder.resolveSummaryPath(path, call, true);
+  return place && place->element.isWhole()
+             ? checkedMemoryAt(place->place, begin, end, state)
+             : std::nullopt;
+}
+
+bool FunctionDataflow::checkedValid(const CheckedMemory &memory,
+                                    const core::AnalysisState &state) {
+  if (!memory.holder)
+    return (memory.pointer == nullptr) ||
+           builder.classifyValue(*memory.pointer).kind ==
+               ValueOrigin::Kind::Borrow;
+  const auto place = *memory.holder;
+  const auto nullness = nullnessAt(place, state);
+  return state.safety->pointers.contains(place) &&
+         !state.moves.recordOf(place) && !state.resources.isEscaped(place) &&
+         nullness && nullness->state == core::Nullness::NonNull;
+}
 
 void FunctionDataflow::checkedPointerFormation(
     const Expr &at, const Expr &pointer,
@@ -28,15 +203,7 @@ void FunctionDataflow::checkedPointerFormation(
       core::SafetyProperty::Bounds, core::safetyOutcome(bounds, required), at,
       "pointer formation",
       "formed pointer must remain within its object or one past it");
-  const auto origin = builder.classifyValue(pointer);
-  bool valid = origin.kind == ValueOrigin::Kind::Borrow;
-  if (origin.kind == ValueOrigin::Kind::Copy && origin.place) {
-    const auto place = origin.place->place;
-    const auto nullness = nullnessAt(place, state);
-    valid = state.safety->pointers.contains(place) &&
-            !state.moves.recordOf(place) && !state.resources.isEscaped(place) &&
-            nullness && nullness->state == core::Nullness::NonNull;
-  }
+  const bool valid = memory && checkedValid(*memory, state);
   const bool input =
       memory && memory->input &&
       checkedRequire(core::CheckedRequirementKind::Valid, *memory, at, state);
@@ -52,6 +219,9 @@ bool FunctionDataflow::checkedInterval(const core::Affine &begin,
   const auto first = foldAffine(begin, state);
   const auto last = foldAffine(end, state);
   const auto size = foldAffine(extent, state);
+  if (first.isConstant() && last.isConstant() && size.isConstant())
+    return first.constant >= 0 && first.constant <= last.constant &&
+           last.constant <= size.constant;
   const auto lower = [&](const core::Affine &value) {
     return value.place ? integerBounds(*value.place, state).first
                        : std::optional<std::int64_t>{};
@@ -77,7 +247,40 @@ std::optional<FunctionDataflow::CheckedMemory>
 FunctionDataflow::checkedMemory(const Expr &pointer, const core::Affine &begin,
                                 const core::Affine &end,
                                 const core::AnalysisState &state) {
+  const Expr *value = pointer.IgnoreParenImpCasts();
+  // Preserve the evaluated C index, then scale in mathematical byte units.
+  if (const auto *binary = dyn_cast<BinaryOperator>(value);
+      binary &&
+      (binary->getOpcode() == BO_Add || binary->getOpcode() == BO_Sub)) {
+    const Expr *base = binary->getLHS();
+    const Expr *index = binary->getRHS();
+    if (binary->getOpcode() == BO_Add && index->getType()->isPointerType())
+      std::swap(base, index);
+    if (base->getType()->isPointerType() && index->getType()->isIntegerType()) {
+      const auto unit = byteSizeOf(base->getType()->getPointeeType(), context);
+      const auto count = builder.affineOf(*index);
+      const auto shift =
+          unit && count
+              ? count->times(binary->getOpcode() == BO_Sub ? -*unit : *unit)
+              : std::nullopt;
+      const auto first =
+          shift
+              ? checkedByteSum(begin, foldAffine(*shift, state), state, pointer)
+              : std::nullopt;
+      const auto last =
+          shift ? checkedByteSum(end, foldAffine(*shift, state), state, pointer)
+                : std::nullopt;
+      return first && last ? checkedMemory(*base, *first, *last, state)
+                           : std::nullopt;
+    }
+  }
   auto origin = builder.classifyValue(pointer);
+  if (origin.kind == ValueOrigin::Kind::Opaque &&
+      pointer.getType()->isPointerType() && PlaceBuilder::isPlaceExpr(pointer))
+    if (const auto ref = builder.resolvePointerValue(pointer)) {
+      origin.kind = ValueOrigin::Kind::Copy;
+      origin.place = *ref;
+    }
   CheckedMemory result{.storage = {},
                        .begin = begin,
                        .end = end,
@@ -87,6 +290,13 @@ FunctionDataflow::checkedMemory(const Expr &pointer, const core::Affine &begin,
   if (!origin.place)
     return std::nullopt;
   result.storage = origin.place->place;
+  if (origin.kind == ValueOrigin::Kind::Copy) {
+    auto memory = checkedMemoryAt(result.storage, begin, end, state);
+    if (!memory || !origin.offset.isZero())
+      return std::nullopt;
+    memory->pointer = &pointer;
+    return memory;
+  }
   if (origin.kind == ValueOrigin::Kind::Borrow &&
       places.step(result.storage) == core::PathStep::Index)
     if (const auto parent = places.parent(result.storage))
@@ -102,6 +312,7 @@ FunctionDataflow::checkedMemory(const Expr &pointer, const core::Affine &begin,
                 .end = end,
                 .index = nullptr};
   const auto known = knownExtentOf(access, state);
+  result.extent = origin.extent;
   core::PointerOffset offset = origin.offset;
   if (known) {
     result.extent = known->have;
@@ -133,7 +344,7 @@ FunctionDataflow::checkedMemory(const Expr &pointer, const core::Affine &begin,
     else
       result.input = stableSummaryPathOf(result.storage);
   }
-  if (result.input && (!result.input->isParam() || !result.input->isRoot()))
+  if (result.input && !result.input->isParam() && !result.input->isGlobal())
     result.input.reset();
   return result;
 }
@@ -205,6 +416,11 @@ FunctionDataflow::checkedWritePermission(const CheckedMemory &memory,
           return false;
         if (isa<VarDecl>(decl) && !type->isPointerType())
           mutableObject = true;
+        if (place == memory.storage && memory.pointer && !memory.holder &&
+            builder.classifyValue(*memory.pointer).kind ==
+                ValueOrigin::Kind::Borrow &&
+            !decl->getType().isConstQualified())
+          mutableObject = true;
       }
       const auto parent = places.parent(place);
       if (!parent)
@@ -216,7 +432,8 @@ FunctionDataflow::checkedWritePermission(const CheckedMemory &memory,
   }
   // A const pointer holder does not make its malloc allocation const. Other
   // external allocation families do not imply write permission.
-  const auto resource = state.resources.recordOf(memory.storage);
+  const auto resource =
+      state.resources.recordOf(memory.holder.value_or(memory.storage));
   if (resource && resource->origin == core::ResourceOrigin::Allocated &&
       resource->family == "free")
     return true;
@@ -241,10 +458,30 @@ bool FunctionDataflow::checkedWrite(const CheckedMemory &memory, const Stmt &at,
 
 bool FunctionDataflow::checkedInitialized(const CheckedMemory &memory,
                                           const core::AnalysisState &state) {
+  if (foldAffine(memory.begin, state) == foldAffine(memory.end, state))
+    return true;
+  if (builder.isLiteralPlace(memory.storage) && memory.extent)
+    return checkedInterval(memory.begin, memory.end, *memory.extent, state);
+  // This is the object's own value (including a by-value parameter), not
+  // the referent of an initialized pointer holder.
+  if (state.safety->initialized.contains(memory.storage) &&
+      isLocalStorage(memory.storage))
+    if (const auto *decl =
+            dyn_cast_or_null<ValueDecl>(builder.declFor(memory.storage));
+        decl && !decl->getType()->isRecordType())
+      if (const auto bytes = byteSizeOf(decl->getType(), context))
+        if (checkedInterval(memory.begin, memory.end,
+                            core::Affine::ofConstant(*bytes), state))
+          return true;
   const auto found = state.safety->memory.find(memory.storage);
   if (found == state.safety->memory.end())
     return false;
   return std::ranges::any_of(found->second, [&](const auto &range) {
+    if (range.source)
+      return false;
+    auto condition = range.when;
+    if (!pruneGuard(condition, state) || !condition.trivial())
+      return false;
     if (range.begin == memory.begin && range.end == memory.end)
       return true;
     // Offset the interval against its represented lower bound. An affine
@@ -257,13 +494,43 @@ bool FunctionDataflow::checkedInitialized(const CheckedMemory &memory,
   });
 }
 
+bool FunctionDataflow::checkedTerminated(const CheckedMemory &memory,
+                                         const core::AnalysisState &state) {
+  if (!memory.extent || !checkedValid(memory, state))
+    return false;
+  const auto found = state.safety->memory.find(memory.storage);
+  if (found == state.safety->memory.end())
+    return false;
+  for (const auto &range : found->second) {
+    if (!range.zeroed || range.source)
+      continue;
+    auto when = range.when;
+    if (!pruneGuard(when, state) || !when.trivial())
+      continue;
+    auto point = foldAffine(range.begin, state);
+    const auto first = foldAffine(memory.begin, state);
+    if (point.isConstant() && first.isConstant())
+      point.constant = std::max(point.constant, first.constant);
+    const auto through = point.shifted(1);
+    if (!through || !checkedInterval(point, *through, range.end, state) ||
+        !checkedInterval(first, *through, *memory.extent, state))
+      continue;
+    auto prefix = memory;
+    prefix.end = *through;
+    if (checkedInitialized(prefix, state))
+      return true;
+  }
+  return false;
+}
+
 bool FunctionDataflow::checkedRequire(core::CheckedRequirementKind kind,
                                       const CheckedMemory &memory,
                                       const Stmt &at,
                                       core::AnalysisState &state,
                                       std::string family) {
   if (options.deferCheckedCalls &&
-      state.safety->deferred.contains(memory.storage)) {
+      (state.safety->deferred.contains(memory.storage) ||
+       (memory.holder && state.safety->deferred.contains(*memory.holder)))) {
     if (recording())
       inferred.checked.deferred = true;
     return true;
@@ -304,14 +571,19 @@ void FunctionDataflow::checkedAccess(const Expr &expr, const PlaceRef &ref,
     if (!var || var->getType()->isArrayType() || role == Role::AddressOf)
       return;
     const auto storage = checkedLvalue(expr, state);
-    if (reads)
+    if (reads) {
+      const bool deferred = options.deferCheckedCalls &&
+                            state.safety->deferred.contains(ref.place);
+      if (deferred && recording())
+        inferred.checked.deferred = true;
       safetyObligation(core::SafetyProperty::Initialization,
                        var->hasGlobalStorage() ||
                                state.safety->initialized.contains(ref.place) ||
                                (storage && checkedInitialized(*storage, state))
                            ? core::SafetyOutcome::Proven
-                           : core::SafetyOutcome::Unresolved,
+                           : core::safetyOutcome(false, deferred),
                        expr, "value", "local value must be initialized");
+    }
     return;
   }
   const auto memory = checkedLvalue(expr, state);
@@ -323,21 +595,11 @@ void FunctionDataflow::checkedAccess(const Expr &expr, const PlaceRef &ref,
   }
   if (role == Role::Write || role == Role::ReadWrite)
     checkedWrite(*memory, expr, state);
-  if (memory->pointer) {
-    const auto origin = builder.classifyValue(*memory->pointer);
-    bool valid = origin.kind == ValueOrigin::Kind::Borrow;
-    if (origin.kind == ValueOrigin::Kind::Copy && origin.place) {
-      const auto place = origin.place->place;
-      const auto nullness = nullnessAt(place, state);
-      valid = state.safety->pointers.contains(place) &&
-              !state.moves.recordOf(place) &&
-              !state.resources.isEscaped(place) && nullness &&
-              nullness->state == core::Nullness::NonNull;
-    }
-    const bool required =
-        (memory->input || state.safety->deferred.contains(memory->storage)) &&
-        checkedRequire(core::CheckedRequirementKind::Valid, *memory, expr,
-                       state);
+  if (memory->pointer || memory->holder) {
+    const bool valid = checkedValid(*memory, state);
+    const bool required = (!valid || memory->input) &&
+                          checkedRequire(core::CheckedRequirementKind::Valid,
+                                         *memory, expr, state);
     safetyObligation(core::SafetyProperty::Validity,
                      core::safetyOutcome(valid, required), expr, "pointer",
                      "pointer must identify live non-null storage");

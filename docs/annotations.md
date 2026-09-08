@@ -570,7 +570,9 @@ Calls whose inputs have no established interacting relationship still use
 generic summaries; silence does not prove arbitrary pointers disjoint.
 The [validation report](validation-rfc0016.md) records the supported matrix
 and remaining coverage limits. These context records are retained in the
-current format 13 sidecars; rebuild older objects before link analysis.
+current format 15 sidecars; rebuild older objects before link analysis. Checked
+mode also specializes exact scalar inputs and fields under the same context
+limits (RFC 0019).
 
 ## C integers and dynamic bounds
 
@@ -657,8 +659,8 @@ bits, unsupported union/type-punning and pointer-provenance operations,
 unrestricted aliases, byte-encoded pointers, GC invariants and concurrency
 remain outside the supported model.
 
-Summary and sidecar format **13** require rebuilding objects carrying earlier
-sidecars. The [RFC 0017 validation report](validation-rfc0017.md) records
+RFC 0017 introduced summary and sidecar format **13**; current format **15**
+requires rebuilding older objects. The [RFC 0017 validation report](validation-rfc0017.md) records
 passing regression and sanitizer suites, corpus coverage, performance costs
 and remaining false positives.
 No runtime instrumentation, `--verify` flag or verification certificate is
@@ -702,3 +704,12 @@ without selecting additional functions. See [checked code](checked-code.md).
 The two checking diagnostics are errors by default and support the same
 `-W` controls as other IDs. Selected checking still fails when a diagnostic
 is demoted or suppressed: the proof status is independent of presentation.
+
+RFC 0019 extends inferred memory contracts without adding annotations or
+diagnostic IDs. `checking-incomplete` reasons include `read interval must be
+initialized`, `access interval must fit its object`, `callee initialized safety
+precondition must hold`, and `memcpy intervals must be disjoint`. String calls
+also require a represented initialized terminator. Missing evidence remains
+distinct from a concrete `checking-failed` violation. Conditional memory and
+numeric output facts use summary/sidecar format 15 and checked JSON version 2;
+rebuild older objects before link analysis.

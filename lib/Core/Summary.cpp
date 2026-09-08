@@ -555,15 +555,18 @@ void FunctionSummary::addNumericOutput(const SummaryPath &path,
                                        NumericOutput output) {
   auto &alternatives = numericOutputs[path];
   for (const auto &existing : alternatives)
-    if (!existing.value && existing.when.trivial())
+    if (!existing.value && existing.when.trivial() &&
+        (!existing.on || existing.on == output.on))
       return;
   if (!output.value && output.when.trivial()) {
-    alternatives.clear();
+    std::erase_if(alternatives, [&](const auto &existing) {
+      return !output.on || existing.on == output.on;
+    });
     alternatives.insert(std::move(output));
     return;
   }
   for (auto it = alternatives.begin(); it != alternatives.end(); ++it) {
-    if (it->value != output.value)
+    if (it->value != output.value || it->on != output.on)
       continue;
     output.when.join(it->when);
     alternatives.erase(it);
@@ -572,7 +575,9 @@ void FunctionSummary::addNumericOutput(const SummaryPath &path,
   // Joining guarded unknowns can make the result unconditional. RFC 0017:
   // unknown absorbs every possible value, regardless of insertion order.
   if (!output.value && output.when.trivial())
-    alternatives.clear();
+    std::erase_if(alternatives, [&](const auto &existing) {
+      return !output.on || existing.on == output.on;
+    });
   alternatives.insert(std::move(output));
   if (alternatives.size() > MaxNumericOutputAlternatives) {
     alternatives.clear();
@@ -888,7 +893,9 @@ FunctionSummary remapGlobals(const FunctionSummary &summary,
       const auto other = remapPath(requirement.other);
       const auto begin = remapAffine(requirement.begin);
       const auto end = remapAffine(requirement.end);
-      if (!path || !other || !begin || !end) {
+      const auto when = remapGuard(requirement.when);
+      if (!path || !other || !begin || !end ||
+          when.size() != requirement.when.size()) {
         result.checked.limited = true;
         continue;
       }
@@ -896,6 +903,7 @@ FunctionSummary remapGlobals(const FunctionSummary &summary,
       requirement.other = *other;
       requirement.begin = *begin;
       requirement.end = *end;
+      requirement.when = when;
       mapped.insert(std::move(requirement));
     }
     requirements = std::move(mapped);
@@ -1020,6 +1028,7 @@ FunctionSummary remapGlobals(const FunctionSummary &summary,
     }
     for (const auto &output : outputs) {
       NumericOutput mapped;
+      mapped.on = output.on;
       mapped.when = remapGuard(output.when);
       if (mapped.when.size() != output.when.size()) {
         result.addNumericOutput(*destination, NumericOutput{});

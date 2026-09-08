@@ -13,8 +13,9 @@
 
 namespace weavec::core {
 
-/// Single-token hex encoding of length-delimited fields, format 14. The
-/// source strings are opaque data; no field is executed or reparsed as code.
+/// Single-token hex encoding of length-delimited fields, checked encoding 2
+/// (summary format 15). The source strings are opaque data; no field is
+/// executed or reparsed as code.
 [[nodiscard]] std::string printCheckedContract(const CheckedContract &contract,
                                                const GlobalNamer &names);
 [[nodiscard]] std::optional<CheckedContract>

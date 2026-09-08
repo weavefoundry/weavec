@@ -76,6 +76,36 @@ if(Python3_Interpreter_FOUND)
       "$<TARGET_FILE:weavec>")
   set_tests_properties(checked-evaluation PROPERTIES LABELS "integration"
                                                      TIMEOUT 180)
+  add_test(
+    NAME checked-evaluation-rfc0019
+    COMMAND
+      "${Python3_EXECUTABLE}"
+      "${PROJECT_SOURCE_DIR}/scripts/checked-evaluation.py" --weavec
+      "$<TARGET_FILE:weavec>" --manifest
+      "${PROJECT_SOURCE_DIR}/test/evaluation/rfc0019/manifest.json")
+  set_tests_properties(checked-evaluation-rfc0019
+                       PROPERTIES LABELS "integration" TIMEOUT 300)
+  add_test(
+    NAME checked-transport-rfc0019
+    COMMAND
+      "${Python3_EXECUTABLE}"
+      "${PROJECT_SOURCE_DIR}/scripts/checked-evaluation.py" --weavec
+      "$<TARGET_FILE:weavec>" --manifest
+      "${PROJECT_SOURCE_DIR}/test/evaluation/rfc0019/transport-manifest.json")
+  set_tests_properties(checked-transport-rfc0019
+                       PROPERTIES LABELS "integration" TIMEOUT 300)
+  add_test(
+    NAME checked-objects-rfc0019
+    COMMAND
+      "${Python3_EXECUTABLE}"
+      "${PROJECT_SOURCE_DIR}/scripts/checked-memory-build.py" --cc
+      "$<TARGET_FILE:weavec-cc>")
+  set_tests_properties(checked-objects-rfc0019 PROPERTIES LABELS "integration"
+                                                          TIMEOUT 300)
+  add_test(NAME checked-evaluation-harness
+           COMMAND "${Python3_EXECUTABLE}"
+                   "${PROJECT_SOURCE_DIR}/scripts/test_checked_evaluation.py")
+  set_tests_properties(checked-evaluation-harness PROPERTIES LABELS "unit")
   add_test(NAME recall-harness
            COMMAND "${Python3_EXECUTABLE}"
                    "${PROJECT_SOURCE_DIR}/scripts/test_recall.py")

@@ -150,6 +150,13 @@ struct PendingOutcome {
   /// returning the class.
   // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
   std::map<Outcome, std::vector<std::pair<PlaceId, ValueFact>>> factOn = {};
+  /// RFC 0019: must-initialized storage on every return of a class.
+  // NOLINTBEGIN(readability-redundant-member-init): aggregate default
+  std::map<Outcome, std::vector<std::pair<PlaceId, InitializedRange>>>
+      initializedOn = {};
+  // NOLINTEND(readability-redundant-member-init)
+  [[nodiscard]] std::vector<std::pair<PlaceId, InitializedRange>>
+  initializedInAll() const;
   /// The callee as spelled in messages (`'make'`) and the call's location,
   /// for the note on a place `nullOn` makes null.
   // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
@@ -322,6 +329,7 @@ struct AnalysisState {
 
   /// `place` was written: no guard speaks about its old value any more.
   void dropGuardsOn(PlaceId place);
+  void forgetZeroedMemory();
 
   /// True if `path`, or an object containing it, is in `overwritten`: the
   /// value the caller's memory held there on entry is gone on every path.

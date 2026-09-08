@@ -10,6 +10,7 @@
 #define WEAVEC_CORE_SAFETY_H
 
 #include "weavec/Core/Place.h"
+#include "weavec/Core/Scalar.h"
 #include "weavec/Core/SourceLocation.h"
 #include "weavec/Core/Spatial.h"
 
@@ -100,6 +101,14 @@ private:
 struct InitializedRange {
   Affine begin = Affine::ofConstant(0);
   Affine end = Affine::ofConstant(0);
+  /// RFC 0019: a must-fact conditional on unchanged place values.
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
+  PlaceGuard when = {};
+  /// RFC 0019: preserve initialization from this function-entry object.
+  /// A relational fact, not unconditional initialized bytes.
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
+  std::optional<PlaceId> source = {};
+  bool zeroed = false;
   friend auto operator<=>(const InitializedRange &,
                           const InitializedRange &) = default;
 };
@@ -111,11 +120,20 @@ struct SafetyState {
   /// May-fact: these objects require unresolved external effects at link time.
   std::set<PlaceId> deferred;
   std::map<PlaceId, std::vector<InitializedRange>> memory;
+  /// RFC 0019: pointer holders name storage, independently of their own bytes.
+  std::map<PlaceId, PlaceId> objects;
+  /// A bounded disjunction of incoming path conditions. Empty means unknown.
+  std::vector<PlaceGuard> paths;
+  bool havoc = false;
+  void refinePaths(const PlaceGuard &guard);
 
   void initialize(PlaceId storage, InitializedRange range);
+  void forgetZeros();
   void copyMemory(PlaceId source, PlaceId destination);
   void forget(PlaceId place);
-  bool join(const SafetyState &other);
+  void forgetDependency(PlaceId place);
+  bool join(const SafetyState &other, const PlaceGuard &left = {},
+            const PlaceGuard &right = {});
   friend bool operator==(const SafetyState &, const SafetyState &) = default;
 };
 

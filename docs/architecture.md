@@ -312,7 +312,7 @@ source notes, and the final sink deduplicates reports of the same operation.
 converges their context information before reporting. The compiler replay
 planner includes definitions that can receive requests from another object,
 even if their generic summaries were already locally complete. Introduced in
-format 12 and retained in format 13, sidecars serialize
+format 12 and retained in format 15, sidecars serialize
 `accepts-memory-contexts`, `memory-request` and `memory-specialization`
 records alongside existing callback records.
 
@@ -529,9 +529,11 @@ Summary and sidecar format 10 serialize these values, pointer predicates,
 record views and incomplete reasons. All representations use deterministic
 ordering, and sidecar readers reject malformed or oversized contexts.
 
-## Checked contracts (RFC 0018)
+## Checked contracts (RFCs 0018–0019)
 
-`Core/Safety` owns the obligation ledger and bounded initialized ranges.
+`Core/Safety` owns the obligation ledger, object identities, guarded initialized
+and zeroed ranges, and bounded branch premises. Pointer holders and pointee
+storage have separate identities; initialization cannot establish provenance.
 `Core/CheckedContract` implements sufficient precondition union and
 postcondition intersection; `Core/CheckedIO` provides bounded portable
 serialization. `FunctionSummary::checked` is deliberately separate from
@@ -540,8 +542,12 @@ witness-based `requiresExtent`, and survives global remapping and joins.
 The Analysis layer attaches operation accounting to the existing CFG transfer
 and reporting passes. `DataflowSafety` inventories supported semantics,
 initialization and diagnostics; `DataflowSafetyMemory` resolves byte intervals
-and entry requirements; `DataflowSafetyCalls` discharges requirements and applies
-postconditions; `DataflowSafetyLoops` projects sufficient counted-loop bounds.
+and entry requirements; `DataflowSafetyCalls` discharges requirements and models
+library effects; `DataflowSafetyContracts` captures call-entry dependencies and
+applies conditional output facts; `DataflowSafetyLoops` projects sufficient
+counted-loop bounds and proves complete supported fills/copies on normal exits.
+`PendingOutcome` carries memory and numeric output facts until an outcome is
+selected, with invalidation when output storage or dependencies change.
 The additional state is enabled by checked selection or a report request.
 `AnalysisState` stores it in an optional domain, so ordinary analysis skips
 constructing, copying and joining the proof containers.
@@ -553,3 +559,15 @@ JSON atomically. `Frontend/CheckedArtifacts` fingerprints build inputs and
 objects for compiler-sidecar validation before replay. Compilation may defer
 an unavailable external contract; the link pass must resolve it. Checked
 failure reaches Clang independently of the diagnostic filtering policy.
+
+Summary and sidecar format 15 carry guarded/outcome-qualified contracts and
+numeric outputs. Checked record encoding and report JSON use version 2.
+Strict parsing and global remapping reject missing premises. Explanation depth
+is bounded independently of semantic contract limits; truncating a call chain
+does not change the obligation it explains.
+
+The unit exporter omits optional postconditions rooted wholly in private
+globals, following RFC 0005's namespace boundary. Local callers still see
+those facts. Entry requirements and private premises of public/result output
+facts retain strict remapping; exporting a contract cannot silently forget
+something its proof needs.

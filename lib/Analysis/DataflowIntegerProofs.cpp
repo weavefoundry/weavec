@@ -33,6 +33,38 @@ bool FunctionDataflow::operationDoesNotOverflow(
     return true;
   const auto overflowExpression =
       NumericExpression::overflow(op, lhs, rhs, type);
+  // RFC 0019: `a <= MAX - b - k` proves the nonnegative sum a+b+k.
+  // Match the evaluated expressions, preserving the target type and every
+  // subtraction's no-underflow premise. This also handles a trailing +1
+  // for a buffer's terminator without interpreting a wrapped sum as bytes.
+  std::vector<NumericExpression> summands;
+  std::uint64_t constant = 0;
+  bool simpleSum = op == core::IntegerOp::Add && !type.isSigned;
+  const std::function<void(const NumericExpression &)> flatten =
+      [&](const NumericExpression &value) {
+        if (!simpleSum || value.type() != type) {
+          simpleSum = false;
+          return;
+        }
+        if (const auto exact = value.constantValue()) {
+          if (__builtin_add_overflow(constant, exact->bits, &constant))
+            simpleSum = false;
+          return;
+        }
+        const auto &node = value.all().back();
+        if (node.kind == core::IntegerNodeKind::Operation &&
+            node.op == core::IntegerOp::Add) {
+          for (const auto &operand : value.operands())
+            flatten(operand);
+        } else {
+          summands.push_back(value);
+        }
+      };
+  if (simpleSum) {
+    flatten(lhs);
+    flatten(rhs);
+    simpleSum &= summands.size() == 2;
+  }
   for (const auto &predicate : state.numericConditions.integers) {
     auto tested = predicate.lhs;
     auto limit = predicate.rhs;
@@ -65,6 +97,36 @@ bool FunctionDataflow::operationDoesNotOverflow(
                     zero->bits == 1));
     if (isZero && overflowExpression && tested == *overflowExpression)
       return true;
+    if (simpleSum && !predicate.range) {
+      auto smaller = predicate.lhs;
+      auto room = predicate.rhs;
+      auto relation = predicate.op;
+      if (relation == core::IntegerOp::Greater ||
+          relation == core::IntegerOp::GreaterEqual) {
+        std::swap(smaller, room);
+        relation = core::reverseComparison(relation);
+      }
+      const auto parts = room.operands();
+      if ((relation == core::IntegerOp::Less ||
+           relation == core::IntegerOp::LessEqual) &&
+          smaller.type() == type && room.type() == type && parts.size() == 2 &&
+          room.all().back().kind == core::IntegerNodeKind::Operation &&
+          room.all().back().op == core::IntegerOp::Subtract) {
+        const auto maximum = parts.front().constantValue();
+        const auto subtracted = parts.back().evaluate(read);
+        const bool matched =
+            (smaller == summands.front() && parts.back() == summands.back()) ||
+            (smaller == summands.back() && parts.back() == summands.front());
+        if (maximum && matched && !subtracted.mayBeInvalid &&
+            !subtracted.values.empty() &&
+            subtracted.values.maximum()->bits <= maximum->bits) {
+          const auto slack = type.mask() - maximum->bits;
+          if (constant <= slack ||
+              (relation == core::IntegerOp::Less && constant - slack == 1))
+            return true;
+        }
+      }
+    }
     if (op != core::IntegerOp::Multiply || predicate.range)
       continue;
     // `n <= MAX / m`, with n >= 0 and m > 0, is a mathematical
@@ -141,16 +203,23 @@ FunctionDataflow::evaluateNumericExpression(const NumericExpression &expression,
     // overflow alternatives. Nonnegative products/sums cannot become
     // negative on the checked-success edge.
     result = core::evaluateInteger(root.op, lhs.values, rhs.values, true);
-    if (root.type.isSigned &&
-        (root.op == core::IntegerOp::Add ||
+    if ((root.op == core::IntegerOp::Add ||
          root.op == core::IntegerOp::Multiply) &&
         !lhs.values.empty() && !rhs.values.empty() &&
         !lhs.values.minimum()->negative() &&
         !rhs.values.minimum()->negative()) {
-      const auto zero = core::IntegerRange::singleton(
-          core::IntegerValue::ofBits(root.type, 0));
-      result.values =
-          result.values.satisfying(core::IntegerOp::GreaterEqual, zero);
+      const auto minimum = core::evaluateCheckedInteger(
+          root.op, core::IntegerRange::singleton(*lhs.values.minimum()),
+          core::IntegerRange::singleton(*rhs.values.minimum()), root.type);
+      if (const auto overflow = minimum.overflow.constant();
+          overflow && overflow->bits == 0) {
+        const auto floor = core::evaluateInteger(root.op, *lhs.values.minimum(),
+                                                 *rhs.values.minimum());
+        if (floor.value)
+          result.values = result.values.satisfying(
+              core::IntegerOp::GreaterEqual,
+              core::IntegerRange::singleton(*floor.value));
+      }
     }
     result.mayBeInvalid = false;
     result.alwaysInvalid = false;

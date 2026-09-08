@@ -259,16 +259,31 @@ UnitExports TranslationUnitAnalyzer::exports() {
       return std::optional<std::uint32_t>();
     return std::optional(result.globals.idFor(var->getName()));
   };
+  const auto exportSummary = [&](const core::FunctionSummary &summary) {
+    if (!summary.checked.computed)
+      return core::remapGlobals(summary, byName);
+    auto portable = summary;
+    // RFC 0019: a private output fact has no cross-unit consumer. Omit the
+    // entire fact, retaining strict remapping of every requirement and every
+    // premise attached to a public or result output.
+    std::erase_if(portable.checked.establishes, [&](const auto &post) {
+      if (!post.path.isGlobal())
+        return false;
+      const auto *global = table.declFor(post.path.index);
+      return global != nullptr && !global->isExternallyVisible();
+    });
+    return core::remapGlobals(portable, byName);
+  };
   for (const FunctionDecl *function : definitions) {
     if (const auto resolved = store.lookup(*function);
         resolved && resolved->summary->checked.computed)
       result.checkedDefinitions[function->getNameAsString()] =
-          core::remapGlobals(*resolved->summary, byName).checked;
+          exportSummary(*resolved->summary).checked;
     const auto it = result.functions.find(function->getNameAsString());
     if (it == result.functions.end())
       continue;
     if (const auto resolved = store.lookup(*function))
-      it->second.summary = core::remapGlobals(*resolved->summary, byName);
+      it->second.summary = exportSummary(*resolved->summary);
   }
   for (std::string &name : store.unknownCalleeNames())
     result.unknownCallees.insert(std::move(name));
@@ -289,8 +304,7 @@ UnitExports TranslationUnitAnalyzer::exports() {
     const auto it = result.functions.find(function->getNameAsString());
     const auto mapped = core::remapCallContext(key.second, byName);
     if (it != result.functions.end() && mapped)
-      it->second.memorySpecializations[*mapped] =
-          core::remapGlobals(summary, byName);
+      it->second.memorySpecializations[*mapped] = exportSummary(summary);
   }
   for (const auto &[key, summary] : store.specialized) {
     const auto *function = store.callable(key.first);
@@ -298,8 +312,7 @@ UnitExports TranslationUnitAnalyzer::exports() {
       continue;
     const auto it = result.functions.find(function->getNameAsString());
     if (it != result.functions.end())
-      it->second.specializations[key.second] =
-          core::remapGlobals(summary, byName);
+      it->second.specializations[key.second] = exportSummary(summary);
   }
   result.countFields = store.knownCountKeys();
   // RFC 0012: so are sized-field witnesses and refutations.
@@ -586,8 +599,18 @@ void TranslationUnitAnalyzer::analyzeComponent(
       recursiveFunctions.insert(definitions[member]->getCanonicalDecl());
     // Start every member at the bottom summary and iterate silently until
     // nothing changes; the final, reporting run then sees the fixpoint.
-    for (const unsigned member : component)
-      store.setInferred(*definitions[member], core::FunctionSummary{});
+    for (const unsigned member : component) {
+      core::FunctionSummary initial;
+      if (options.checkContracts) {
+        // RFC 0019: recursive call obligations start optimistically and grow
+        // with local obligations and input requirements. No recursive memory
+        // postcondition is assumed: establishes remains empty.
+        initial.checked.computed = true;
+        initial.checked.signature =
+            functionTypeKey(definitions[member]->getType(), context);
+      }
+      store.setInferred(*definitions[member], std::move(initial));
+    }
     for (unsigned round = 0; round < MaxFixpointRounds; ++round) {
       bool changed = false;
       for (const unsigned member : component) {

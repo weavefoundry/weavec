@@ -168,6 +168,8 @@ struct NumericOutput {
   std::optional<IntegerExpression<SummaryPath>> value = {};
   // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
   PathGuard when = {};
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
+  std::optional<Outcome> on = {};
   friend auto operator<=>(const NumericOutput &,
                           const NumericOutput &) = default;
 };
@@ -197,7 +199,11 @@ enum class CheckedRequirementKind : std::uint8_t {
   Initialized,
   Release,
   Separated,
-  Writable
+  Writable,
+  Terminated,
+  Copied,
+  SumFits,
+  Zeroed
 };
 struct CheckedRequirement {
   CheckedRequirementKind kind = CheckedRequirementKind::Valid;
@@ -206,6 +212,12 @@ struct CheckedRequirement {
   PathAffine begin = PathAffine::ofConstant(0);
   PathAffine end = PathAffine::ofConstant(0);
   std::string family;
+  /// RFC 0019: sufficient input implication or established output condition.
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
+  PathGuard when = {};
+  /// Only output facts may be restricted to a returning outcome.
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
+  std::optional<Outcome> on = {};
   friend auto operator<=>(const CheckedRequirement &,
                           const CheckedRequirement &) = default;
 };

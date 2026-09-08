@@ -1174,6 +1174,8 @@ void FunctionDataflow::checkBlockEndResources(const CFGBlock &block,
                                               const CFGBlock *successor,
                                               core::AnalysisState &state) {
   if (recording() && !state.returned && successor == &cfg->getExit()) {
+    if (options.checkContracts)
+      checkedOutputs(state);
     recordHeapOutputs(state);
     recordNumericOutputs(nullptr, state);
   }
@@ -1769,7 +1771,7 @@ void FunctionDataflow::run() {
     // with no locally allocated resource. Its fallthrough still needs a
     // final heap snapshot before the parameter/local names are retired.
     if (blockTerminated ||
-        (state.resources.empty() &&
+        (!options.checkContracts && state.resources.empty() &&
          !arrayCleanupLoops.contains(
              dyn_cast_or_null<ForStmt>(block->getTerminatorStmt())) &&
          !arrayFillLoops.contains(
@@ -2038,11 +2040,18 @@ void FunctionDataflow::applyEdge(const CFGBlock &from, unsigned succIndex,
 
   // Successor 0 is the edge taken when the condition holds.
   applyCondition(*condition, succIndex == 0, /*wrapped=*/false, state);
+  if (options.checkContracts && succIndex == 1 && !edgeInfeasible)
+    if (const auto *loop = dyn_cast_or_null<ForStmt>(from.getTerminatorStmt()))
+      checkedLoopExit(*loop, state);
 }
 
 void FunctionDataflow::applyCondition(const Expr &condition, bool holds,
                                       bool wrapped,
                                       core::AnalysisState &state) {
+  const auto checkedCondition = llvm::scope_exit([&] {
+    if (state.safety && !edgeInfeasible)
+      state.safety->refinePaths(state.pathGuard());
+  });
   const Expr *e = condition.IgnoreParenImpCasts();
   for (;;) {
     // `!c` flips the edge.
@@ -2351,6 +2360,9 @@ void FunctionDataflow::forgetBelowNull(core::PlaceId place,
 
 void FunctionDataflow::markNullOutcomes(const core::PendingOutcome &narrowed,
                                         core::AnalysisState &state) {
+  if (state.safety)
+    for (const auto &[storage, range] : narrowed.initializedInAll())
+      state.safety->initialize(storage, range);
   for (const core::PlaceId place : narrowed.nullInAll()) {
     // `if (grow(l, n) == -1)`: on the failing class the callee stored no
     // buffer, and RFC 0007's relaxation says so through `nullOn`. That
@@ -3560,7 +3572,7 @@ void FunctionDataflow::attachOutcome(core::PlaceId dest, const Expr *init,
   // or integer fact (RFC 0010).
   if (outcome.places().empty() && outcome.nullOn.empty() &&
       outcome.nonNullOn.empty() && outcome.stores.empty() &&
-      outcome.factOn.empty())
+      outcome.factOn.empty() && outcome.initializedOn.empty())
     return;
   state.pending[dest] = std::move(outcome);
 }
@@ -5595,7 +5607,7 @@ void FunctionDataflow::applyPointerAssign(core::PlaceId dest,
                                           core::AnalysisState &state,
                                           core::ElementWitness element) {
   const auto checkedValue = options.checkContracts
-                                ? captureCheckedPointer(given, state)
+                                ? captureCheckedPointer(dest, given, state)
                                 : CheckedPointer{};
   const auto checkedAssignment = llvm::scope_exit([&] {
     if (options.checkContracts && element.isWhole())
@@ -7957,11 +7969,13 @@ void FunctionDataflow::checkRequiredExtents(
       const auto need = builder.affineFromPath(requirement.need, call);
       if (!need)
         continue;
-      const auto total = sumOf(pointed->start, *need);
+      const auto total = checkedByteSum(pointed->start, *need, state, call);
       const auto first = requirement.start
                              ? builder.affineFromPath(*requirement.start, call)
                              : std::optional(core::Affine::ofConstant(0));
-      const auto start = first ? sumOf(pointed->start, *first) : std::nullopt;
+      const auto start =
+          first ? checkedByteSum(pointed->start, *first, state, call)
+                : std::nullopt;
       if (!total || !start) {
         reportIncomplete("unsupported extent interval projection", call);
         continue;

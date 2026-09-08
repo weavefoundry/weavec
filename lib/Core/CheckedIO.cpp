@@ -54,6 +54,8 @@ public:
     affine(value.begin, names);
     affine(value.end, names);
     text(value.family);
+    text(printGuard(value.when, names));
+    text(value.on ? toString(*value.on) : "");
   }
   [[nodiscard]] bool good() const { return valid; }
   [[nodiscard]] std::string finish() const {
@@ -181,6 +183,15 @@ public:
     result.begin = affine(resolve);
     result.end = affine(resolve);
     result.family = text();
+    const auto guard = parseSummaryGuard(text(), resolve);
+    valid &= guard.has_value();
+    if (guard)
+      result.when = *guard;
+    const auto outcome = text();
+    if (!outcome.empty()) {
+      result.on = parseOutcome(outcome);
+      valid &= result.on.has_value();
+    }
     return result;
   }
   [[nodiscard]] bool good() const { return valid; }
@@ -197,7 +208,7 @@ private:
 std::string printCheckedContract(const CheckedContract &contract,
                                  const GlobalNamer &names) {
   CheckedWriter out;
-  out.text("1");
+  out.text("2");
   out.text(contract.signature);
   out.number(contract.computed);
   out.number(contract.selected);
@@ -236,7 +247,7 @@ std::string printCheckedContract(const CheckedContract &contract,
 std::optional<CheckedContract>
 parseCheckedContract(std::string_view record, const GlobalResolver &resolve) {
   CheckedReader in(record);
-  if (in.text() != "1")
+  if (in.text() != "2")
     return std::nullopt;
   CheckedContract result;
   result.signature = in.text();
@@ -258,6 +269,16 @@ parseCheckedContract(std::string_view record, const GlobalResolver &resolve) {
   if (!readRequirements(result.requirements) ||
       !readRequirements(result.establishes))
     return std::nullopt;
+  for (const auto &requirement : result.requirements)
+    if (requirement.path.isResult() || requirement.on ||
+        requirement.kind == CheckedRequirementKind::Copied ||
+        requirement.kind == CheckedRequirementKind::Zeroed)
+      return std::nullopt;
+  for (const auto &post : result.establishes)
+    if ((post.kind == CheckedRequirementKind::Copied &&
+         post.other.isResult()) ||
+        post.kind == CheckedRequirementKind::SumFits)
+      return std::nullopt;
   const auto count = in.number<std::size_t>();
   if (!in.good() || count > MaxSafetyObligations)
     return std::nullopt;
