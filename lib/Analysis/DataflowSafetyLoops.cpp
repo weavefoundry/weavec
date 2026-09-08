@@ -206,7 +206,7 @@ std::optional<core::PathAffine> FunctionDataflow::checkedLoopRequirement(
   if (__builtin_sub_overflow(need.constant, need.scale, &shift))
     return std::nullopt;
   const auto end = scaled ? scaled->shifted(shift) : std::nullopt;
-  return end ? summaryAffineOf(*end) : std::nullopt;
+  return summaryAffineOf(end);
 }
 
 } // namespace weavec::analysis
