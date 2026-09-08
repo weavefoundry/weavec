@@ -11,7 +11,7 @@ int main(void) {
   char *p = malloc(4); if (p) release_then_write(p, p);
   return 0;
 }
-// FORMAT: weavec-summaries 13
+// FORMAT: weavec-summaries 14
 // FORMAT: accepts-memory-contexts
 // LINK: rfc0016-callee.c:4:4: error: use of 'b' after it was freed [weavec::use-after-free]
 // LINK: 1 error generated.

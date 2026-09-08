@@ -64,7 +64,8 @@ bool UnitExports::sameSummariesAs(const UnitExports &other) const {
       callbackRequests != other.callbackRequests ||
       memoryRequests != other.memoryRequests)
     return false;
-  return functions == other.functions && globals == other.globals &&
+  return checkedDefinitions == other.checkedDefinitions &&
+         functions == other.functions && globals == other.globals &&
          countFields == other.countFields && sizedFields == other.sizedFields;
 }
 
@@ -231,6 +232,12 @@ void ProgramDatabase::add(const UnitExports &unit) {
 UnitExports ProgramDatabase::renumbered(const UnitExports &unit) {
   UnitExports result = unit;
   if (!globalNames.extendTo(unit.globals)) {
+    for (auto &[name, contract] : result.checkedDefinitions) {
+      (void)name;
+      core::FunctionSummary wrapper;
+      wrapper.checked = contract;
+      contract = renumber(wrapper, unit.globals, globalNames).checked;
+    }
     for (auto &[name, function] : result.functions) {
       function.summary = renumber(function.summary, unit.globals, globalNames);
       for (auto &[bindings, summary] : function.specializations)

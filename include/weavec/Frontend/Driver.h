@@ -40,6 +40,13 @@ struct DriverOptions {
   bool enabled = true;
   /// `-fweavec-strict`: `--strict-externs`.
   bool strict = false;
+  bool checked = false;
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
+  std::set<std::string> checkedFunctions = {};
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
+  std::string checkedReportPath = {};
+  std::shared_ptr<CheckedReport> checkedReport =
+      std::make_shared<CheckedReport>();
   /// `-fweavec-exclusive-borrows`: `--exclusive-borrows` (RFC 0006).
   bool exclusiveBorrows = false;
   /// `-fweavec-report-unannotated`.

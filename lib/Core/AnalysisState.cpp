@@ -517,6 +517,15 @@ bool AnalysisState::join(const AnalysisState &other, const PlaceTable *places) {
       changed = true;
     }
   }
+  if (safety && other.safety) {
+    changed |= safety->join(*other.safety);
+  } else if (safety) {
+    changed |= safety->join(SafetyState{});
+  } else if (other.safety) {
+    safety.emplace();
+    safety->join(*other.safety);
+    changed = true;
+  }
   return changed;
 }
 
@@ -599,6 +608,16 @@ AnalysisState::Learned AnalysisState::learn(PlaceId place,
 }
 
 void AnalysisState::dropGuardsOn(PlaceId place) {
+  // RFC 0018: a write cannot reinterpret an earlier initialized interval
+  // using the new value of its index or count (including callee outputs).
+  if (safety) {
+    for (auto &[storage, ranges] : safety->memory) {
+      (void)storage;
+      std::erase_if(ranges, [place](const auto &range) {
+        return range.begin.place == place || range.end.place == place;
+      });
+    }
+  }
   numericConditions.drop(place);
   std::erase_if(numericValues, [place](const auto &entry) {
     return entry.first == place || entry.second.dependsOn(place);
@@ -610,6 +629,8 @@ void AnalysisState::dropGuardsOn(PlaceId place) {
 }
 
 void AnalysisState::forget(PlaceId place) {
+  if (safety)
+    safety->forget(place);
   numericWrites.insert(place);
   moves.reinitialize(place);
   aliases.separate(place);

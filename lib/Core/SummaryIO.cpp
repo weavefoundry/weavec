@@ -9,6 +9,7 @@
 #include "weavec/Core/SummaryIO.h"
 
 #include "weavec/Core/Array.h"
+#include "weavec/Core/CheckedIO.h"
 
 #include <charconv>
 #include <cstdint>
@@ -200,6 +201,8 @@ std::string printGuard(const PathGuard &guard, const GlobalNamer &names) {
 std::string printSummary(const FunctionSummary &summary,
                          const GlobalNamer &names) {
   std::string text = "summary\n";
+  if (summary.checked.computed)
+    text += "  checked " + printCheckedContract(summary.checked, names) + "\n";
   for (const auto &fill : summary.arrayFills)
     text += "  array-fill " + printSummaryPath(fill.storage, names) +
             " count " + printAffine(fill.count, names) +
@@ -859,6 +862,15 @@ std::optional<FunctionSummary> parseSummary(std::string_view record,
       if (!tokens.empty() ||
           !summary.objectViews.emplace(*path.path, view).second)
         return fail("invalid object view");
+      continue;
+    }
+    if (kind == "checked") {
+      if (summary.checked.computed)
+        return fail("duplicate checked contract");
+      const auto contract = parseCheckedContract(tokens.take(), resolve);
+      if (!contract || !tokens.empty())
+        return fail("invalid checked contract");
+      summary.checked = *contract;
       continue;
     }
     if (kind == "callback-input") {

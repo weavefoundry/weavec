@@ -70,6 +70,7 @@ public:
   core::CallbackBindings callbackBindings;
   core::CallContext memoryContext;
   bool validMemoryContext = true;
+  bool checkedOutputSeen = false;
 
   /// The summary inferred by `run` (RFC 0003, *Deriving a summary*).
   [[nodiscard]] const core::FunctionSummary &summary() const noexcept {
@@ -229,6 +230,71 @@ private:
   /// The worklist iteration computes states silently; the final pass, run
   /// once per block from the fixpoint states, reports and records.
   enum class Phase : std::uint8_t { Fixpoint, Final };
+
+  // RFC 0018: accounting shares the CFG and existing numeric/alias domains.
+  struct CheckedMemory {
+    core::PlaceId storage;
+    core::Affine begin;
+    core::Affine end;
+    std::optional<core::Affine> extent;
+    std::optional<core::SummaryPath> input;
+    const clang::Expr *pointer = nullptr;
+  };
+  struct CheckedPointer {
+    bool known = false;
+    bool zeroed = false;
+    std::vector<core::InitializedRange> initialized;
+  };
+  void initializeChecked();
+  void checkedBefore(const clang::Stmt &stmt, core::AnalysisState &state);
+  void checkedAfter(const clang::Stmt &stmt, core::AnalysisState &state);
+  void checkedPointerFormation(const clang::Expr &at,
+                               const clang::Expr &pointer,
+                               const std::optional<core::Affine> &shift,
+                               core::AnalysisState &state);
+  void checkedAccess(const clang::Expr &expr, const PlaceRef &ref, Role role,
+                     core::AnalysisState &state);
+  void checkedCall(const clang::CallExpr &call, const CallEffects *effects,
+                   core::AnalysisState &state);
+  void checkedCallAfter(const clang::CallExpr &call, const CallEffects *effects,
+                        core::AnalysisState &state);
+  void checkedFinish(const core::AnalysisState *exitState);
+  void checkedOutputs(const core::AnalysisState &state);
+  void safetyObligation(core::SafetyProperty property,
+                        core::SafetyOutcome outcome, const clang::Stmt &at,
+                        std::string subject, std::string reason,
+                        std::vector<core::SourceLocation> calls = {});
+  void safetyDiagnostic(const core::Diagnostic &diagnostic);
+  [[nodiscard]] CheckedPointer
+  captureCheckedPointer(const ValueOrigin &given, core::AnalysisState &state);
+  static void installCheckedPointer(core::PlaceId dest,
+                                    const CheckedPointer &value,
+                                    core::AnalysisState &state);
+  [[nodiscard]] std::optional<CheckedMemory>
+  checkedMemory(const clang::Expr &pointer, const core::Affine &begin,
+                const core::Affine &end, const core::AnalysisState &state);
+  [[nodiscard]] std::optional<CheckedMemory>
+  checkedLvalue(const clang::Expr &expr, const core::AnalysisState &state);
+  [[nodiscard]] bool checkedInterval(const core::Affine &begin,
+                                     const core::Affine &end,
+                                     const core::Affine &extent,
+                                     const core::AnalysisState &state);
+  [[nodiscard]] std::optional<bool>
+  checkedWritePermission(const CheckedMemory &memory,
+                         const core::AnalysisState &state);
+  bool checkedWrite(const CheckedMemory &memory, const clang::Stmt &at,
+                    core::AnalysisState &state);
+  [[nodiscard]] bool checkedInitialized(const CheckedMemory &memory,
+                                        const core::AnalysisState &state);
+  bool checkedRequire(core::CheckedRequirementKind kind,
+                      const CheckedMemory &memory, const clang::Stmt &at,
+                      core::AnalysisState &state, std::string family = {});
+  [[nodiscard]] std::optional<core::PathAffine>
+  checkedLoopRequirement(const core::Affine &need, const clang::Stmt &at,
+                         core::AnalysisState &state);
+  std::map<const clang::Stmt *, const clang::ForStmt *> checkedLoops;
+  std::map<const clang::CallExpr *, std::vector<CheckedMemory>> checkedWrites;
+  std::set<const clang::Stmt *> checkedUnsupported;
 
   clang::ASTContext &context;
   const clang::FunctionDecl &function;

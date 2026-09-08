@@ -202,6 +202,9 @@ struct PendingOutcome {
 };
 
 struct AnalysisState {
+  /// RFC 0018: optional positive evidence for checked code.
+  /// RFC 0018: ordinary analysis never constructs the optional proof domain.
+  std::optional<SafetyState> safety;
   /// Places whose resource has been released or moved out.
   MoveTracker moves;
   /// Live borrows.

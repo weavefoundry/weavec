@@ -27,6 +27,8 @@ std::optional<Annotation> parseAnnotation(llvm::StringRef text) {
     return Annotation::MutBorrowed;
   if (text == spelling::Raw)
     return Annotation::Raw;
+  if (text == spelling::Checked)
+    return Annotation::Checked;
   if (text == spelling::Unsafe)
     return Annotation::Unsafe;
   if (text == spelling::Nullable)
@@ -89,6 +91,9 @@ static void apply(AnnotationSet &set, Annotation annotation) {
   case Annotation::Raw:
     set.raw = true;
     break;
+  case Annotation::Checked:
+    set.checked = true;
+    break;
   case Annotation::Unsafe:
     set.unsafe = true;
     break;
@@ -146,6 +151,7 @@ void AnnotationSet::merge(const AnnotationSet &other) {
   mutBorrowed = mutBorrowed || other.mutBorrowed;
   raw = raw || other.raw;
   unsafe = unsafe || other.unsafe;
+  checked = checked || other.checked;
   nullable = nullable || other.nullable;
   nonNull = nonNull || other.nonNull;
   retains = retains || other.retains;

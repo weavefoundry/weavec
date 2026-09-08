@@ -128,6 +128,8 @@ Every WeaveC diagnostic ends with a stable identifier in brackets, e.g.
 
 | Identifier            | Severity | Emitted when                                                          |
 | --------------------- | -------- | --------------------------------------------------------------------- |
+| `checking-incomplete` | error | A selected function has an unresolved safety obligation: `cannot establish checked safety: <reason>`. |
+| `checking-failed` | error | A selected function contains a demonstrated violation: `checked safety failed: <reason>`. |
 | `use-after-free`      | error    | A pointer (or any alias of it) is used after being passed to `free`. Note: `freed here` / `freed here (through '<q>')`. After a share release ([RFC 0010](rfcs/0010-shared-ownership.md)): `use of '<p>' after its reference was released`, note `reference released here`. |
 | `double-free`         | error    | A pointer (or any alias of it) is passed to `free` twice without reassignment. Note: `previously freed here [(through '<q>')]`. Two share releases of one name ([RFC 0010](rfcs/0010-shared-ownership.md)): `'<p>' is released twice`, note `previously released here`. |
 | `use-after-move`      | error    | A pointer is used after being passed to a `WEAVEC_OWNED` parameter, to `realloc`, or to a function that moves it (on every path, or on the paths whose result the caller has not ruled out; [RFC 0006](rfcs/0006-precision.md)). Note: `moved here`. |
@@ -686,3 +688,17 @@ whole-program step).
 `annotate` payloads that do not start with `weavec.` are ignored, so WeaveC
 coexists with GSL (`gsl::owner`), Clang's own attributes, and project-specific
 annotations.
+
+## Checked selection (RFC 0018)
+
+`WEAVEC_CHECKED` attaches to a function declaration or definition and requests
+checking of its body. It supplies no trusted contract for an external body.
+`weavec --checked` selects input definitions; `--checked-function=name` can
+be repeated. The compiler equivalents are `-fweavec-checked` and
+`-fweavec-checked-function=name`. `--checked-report=path` (or the compiler's
+`-fweavec-checked-report=path`) writes versioned JSON and computes contracts
+without selecting additional functions. See [checked code](checked-code.md).
+
+The two checking diagnostics are errors by default and support the same
+`-W` controls as other IDs. Selected checking still fails when a diagnostic
+is demoted or suppressed: the proof status is independent of presentation.

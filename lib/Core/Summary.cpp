@@ -589,6 +589,7 @@ void FunctionSummary::join(const FunctionSummary &other) {
   // starts from it): the other side's classes are the answer.
   const bool wasEmpty = empty();
   const bool otherEmpty = other.empty();
+  checked.join(other.checked);
   const auto beforeNumeric = numericOutputs;
   for (const auto &[path, outputs] : other.numericOutputs) {
     if (!wasEmpty && !beforeNumeric.contains(path))
@@ -879,6 +880,28 @@ FunctionSummary remapGlobals(const FunctionSummary &summary,
   };
 
   FunctionSummary result;
+  result.checked = summary.checked;
+  const auto remapChecked = [&](auto &requirements) {
+    std::set<CheckedRequirement> mapped;
+    for (auto requirement : requirements) {
+      const auto path = remapPath(requirement.path);
+      const auto other = remapPath(requirement.other);
+      const auto begin = remapAffine(requirement.begin);
+      const auto end = remapAffine(requirement.end);
+      if (!path || !other || !begin || !end) {
+        result.checked.limited = true;
+        continue;
+      }
+      requirement.path = *path;
+      requirement.other = *other;
+      requirement.begin = *begin;
+      requirement.end = *end;
+      mapped.insert(std::move(requirement));
+    }
+    requirements = std::move(mapped);
+  };
+  remapChecked(result.checked.requirements);
+  remapChecked(result.checked.establishes);
   result.incomplete = summary.incomplete;
   const auto mapArrayGuard = [&](PathGuard &guard, bool &definite) {
     auto mapped = remapGuard(guard);

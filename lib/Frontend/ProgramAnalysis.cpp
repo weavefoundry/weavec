@@ -205,6 +205,10 @@ void ProgramAnalysis::reportConfirmedSizedFields(Result &result) {
 
 void ProgramAnalysis::widen(analysis::UnitExports &exports,
                             const analysis::UnitExports &previous) {
+  for (auto &[name, contract] : exports.checkedDefinitions)
+    if (const auto before = previous.checkedDefinitions.find(name);
+        before != previous.checkedDefinitions.end())
+      contract.join(before->second);
   for (auto &[name, function] : exports.functions) {
     const auto before = previous.functions.find(name);
     if (before != previous.functions.end()) {
@@ -252,6 +256,9 @@ void ProgramAnalysis::analyzeCyclic(const std::vector<unsigned> &component,
   // edges restricted to the group (`imports` and `indirectTypes` against
   // the members' definitions); a member with no known dependency inside the
   // group runs once.
+  for (const auto &unit : units)
+    if (unit.exports && !unit.exports->checkedDefinitions.empty())
+      options.analysis.checkContracts = true;
   const std::vector<std::vector<unsigned>> adjacency = unitGraph();
   std::map<unsigned, unsigned> position;
   for (unsigned k = 0; k < component.size(); ++k)
@@ -373,6 +380,9 @@ ProgramAnalysis::Result ProgramAnalysis::run() {
     analyzeCyclic(component, result);
   }
   reportConfirmedSizedFields(result);
+  if (!result.failed.empty() || !result.nonConverging.empty())
+    options.checkedReport->invalidate(
+        "whole-program inputs did not produce settled checked contracts");
 
   if (llvm::raw_ostream *dump = options.analysis.dumpStream)
     settled.dump(*dump);

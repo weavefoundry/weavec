@@ -103,7 +103,7 @@ TEST(Sidecar, PathIsOutputPlusExtension) {
 
 TEST(Sidecar, PrintsStableText) {
   EXPECT_EQ(printUnitRecord(sample()),
-            "weavec-summaries 13\n"
+            "weavec-summaries 14\n"
             "source src/node.c\n"
             "cwd /work/build\n"
             "arg -triple\n"
@@ -215,33 +215,33 @@ TEST(Sidecar, RejectsOtherFormatsAndMalformedLines) {
   EXPECT_FALSE(parseUnitRecord("", &error));
   EXPECT_EQ(error, "empty file");
   EXPECT_FALSE(parseUnitRecord(
-      "weavec-summaries 13\nsummary\n  return fresh\nend\n", &error));
+      "weavec-summaries 14\nsummary\n  return fresh\nend\n", &error));
   EXPECT_EQ(error, "line 2: summary record without a function");
-  EXPECT_FALSE(parseUnitRecord("weavec-summaries 13\nfunction f\n", &error));
+  EXPECT_FALSE(parseUnitRecord("weavec-summaries 14\nfunction f\n", &error));
   EXPECT_EQ(error, "line 2: malformed 'function' line");
-  EXPECT_FALSE(parseUnitRecord("weavec-summaries 13\nfunction f external "
+  EXPECT_FALSE(parseUnitRecord("weavec-summaries 14\nfunction f external "
                                "plain\nsummary\n  return fresh\n",
                                &error));
   EXPECT_EQ(error, "line 4: summary record without 'end'");
   EXPECT_FALSE(
-      parseUnitRecord("weavec-summaries 13\nreported x y z\n", &error));
+      parseUnitRecord("weavec-summaries 14\nreported x y z\n", &error));
   EXPECT_EQ(error, "line 2: malformed 'reported' line");
   // RFC 0012.
   EXPECT_FALSE(
-      parseUnitRecord("weavec-summaries 13\nsized-field a b\n", &error));
+      parseUnitRecord("weavec-summaries 14\nsized-field a b\n", &error));
   EXPECT_EQ(error, "line 2: malformed 'sized-field' line");
   EXPECT_FALSE(
-      parseUnitRecord("weavec-summaries 13\nsized-field a b c\n", &error));
+      parseUnitRecord("weavec-summaries 14\nsized-field a b c\n", &error));
   EXPECT_EQ(error, "line 2: malformed 'sized-field' line");
   EXPECT_FALSE(
-      parseUnitRecord("weavec-summaries 13\nunsized-field a b c\n", &error));
+      parseUnitRecord("weavec-summaries 14\nunsized-field a b c\n", &error));
   EXPECT_EQ(error, "line 2: malformed 'unsized-field' line");
 }
 
 TEST(Sidecar, SkipsUnknownLinesAndBlankOnes) {
   std::string error;
   const std::optional<UnitRecord> parsed = parseUnitRecord(
-      "weavec-summaries 13\n\nfuture-thing 42\nsource a.c\n\n", &error);
+      "weavec-summaries 14\n\nfuture-thing 42\nsource a.c\n\n", &error);
   ASSERT_TRUE(parsed) << error;
   EXPECT_EQ(parsed->exports.source, "a.c");
   EXPECT_TRUE(parsed->exports.functions.empty());
@@ -430,15 +430,16 @@ namespace weavec::frontend {
 TEST(Sidecar, TypedCountsAndNumericInterfacesRoundTrip) {
   auto record = sample();
   record.exports.sizedFields.witnesses.clear();
-  record.exports.sizedFields.witnesses.insert(
-      analysis::SizedFieldWitness{.field = "struct vec.items",
-                                  .count = "struct vec.cap",
-                                  .scale = 4,
-                                  .productType = core::IntegerType{64, false}});
+  record.exports.sizedFields.witnesses.insert(analysis::SizedFieldWitness{
+      .field = "struct vec.items",
+      .count = "struct vec.cap",
+      .scale = 4,
+      .productType = core::IntegerType{.width = 64, .isSigned = false}});
   using Expression = core::IntegerExpression<SummaryPath>;
   auto &summary = record.exports.functions.at("node_new").summary;
-  const auto value = Expression::input(SummaryPath::param(0), {32, false})
-                         .converted({8, false});
+  const auto value =
+      Expression::input(SummaryPath::param(0), {.width = 32, .isSigned = false})
+          .converted({.width = 8, .isSigned = false});
   ASSERT_TRUE(value);
   summary.addNumericOutput(SummaryPath::result(), {.value = value});
   summary.addRequirement(0, {.need = core::PathAffine::ofConstant(0),
@@ -457,7 +458,7 @@ TEST(Sidecar, MalformedTypedCountsAreRejected) {
         "a b 256 u8", "a b 4 u64 extra"}) {
     std::string error;
     EXPECT_FALSE(parseUnitRecord(
-        std::string("weavec-summaries 13\nsized-field ") + line + "\n", &error))
+        std::string("weavec-summaries 14\nsized-field ") + line + "\n", &error))
         << line;
     EXPECT_FALSE(error.empty());
   }

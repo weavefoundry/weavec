@@ -45,6 +45,7 @@ enum class Annotation : std::uint8_t {
   Raw,
   /// `weavec.unsafe` -- the function body or block is an unsafe region.
   Unsafe,
+  Checked,
   /// `weavec.nullable` -- the pointer may be null (RFC 0008).
   Nullable,
   /// `weavec.nonnull` -- the pointer is never null (RFC 0008).
@@ -91,6 +92,7 @@ inline constexpr llvm::StringLiteral FamilyPrefix = "weavec.family.";
 inline constexpr llvm::StringLiteral SizedByPrefix = "weavec.sized_by.";
 /// RFC 0012: the annotation on `weavec_assume_`, `WEAVEC_ASSUME`'s callee.
 inline constexpr llvm::StringLiteral Assume = "weavec.assume";
+inline constexpr llvm::StringLiteral Checked = "weavec.checked";
 } // namespace spelling
 
 /// Parses an `annotate` payload. Returns `std::nullopt` for annotations that
@@ -106,6 +108,7 @@ struct AnnotationSet {
   bool mutBorrowed = false;
   bool raw = false;
   bool unsafe = false;
+  bool checked = false;
   bool nullable = false;
   bool nonNull = false;
   /// RFC 0010.
@@ -124,9 +127,9 @@ struct AnnotationSet {
   std::string sizedBy;
 
   [[nodiscard]] bool any() const noexcept {
-    return owned || borrowed || mutBorrowed || raw || unsafe || nullable ||
-           nonNull || retains || releases || refcount || assume || invalid ||
-           !family.empty() || !sizedBy.empty();
+    return owned || borrowed || mutBorrowed || raw || unsafe || checked ||
+           nullable || nonNull || retains || releases || refcount || assume ||
+           invalid || !family.empty() || !sizedBy.empty();
   }
   /// True if the set says something about nullness (RFC 0008).
   [[nodiscard]] bool nullness() const noexcept { return nullable || nonNull; }

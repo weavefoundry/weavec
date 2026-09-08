@@ -54,6 +54,18 @@ cl::opt<bool> reportUnannotated(
              "headers"),
     cl::init(false), cl::cat(weavecCategory));
 
+cl::opt<bool>
+    checked("checked",
+            cl::desc("Require complete safety contracts for input definitions"),
+            cl::cat(weavecCategory));
+cl::list<std::string>
+    checkedFunctions("checked-function",
+                     cl::desc("Select a function for checked safety"),
+                     cl::cat(weavecCategory));
+cl::opt<std::string> checkedReportPath("checked-report",
+                                       cl::desc("Write checked safety JSON"),
+                                       cl::cat(weavecCategory));
+
 cl::opt<bool> strictExterns(
     "strict-externs",
     cl::desc("Treat calls into unchecked code (no definition, annotation or "
@@ -221,6 +233,11 @@ int main(int argc, const char **argv) {
   }
 
   weavec::frontend::FrontendOptions options;
+  options.analysis.checked = checked;
+  options.analysis.checkedFunctions.insert(checkedFunctions.begin(),
+                                           checkedFunctions.end());
+  options.analysis.checkContracts =
+      checked || !checkedFunctions.empty() || !checkedReportPath.empty();
   options.analysis.reportUnannotated = reportUnannotated;
   options.analysis.strictExterns = strictExterns;
   options.analysis.exclusiveBorrows = exclusiveBorrows;
@@ -249,11 +266,17 @@ int main(int argc, const char **argv) {
       });
       llvm::errs() << " did not converge\n";
     }
-    return result.ok() ? 0 : 1;
+    const bool reportOK = options.checkedReport->finish(
+        checkedReportPath, options.analysis.checkedFunctions, result.ok());
+    return result.ok() && reportOK ? 0 : 1;
   }
 
   clang::tooling::ClangTool tool(compilations, sources);
   for (const clang::tooling::ArgumentsAdjuster &adjuster : adjusters)
     tool.appendArgumentsAdjuster(adjuster);
-  return tool.run(weavec::frontend::createWeaveCActionFactory(options).get());
+  const int status =
+      tool.run(weavec::frontend::createWeaveCActionFactory(options).get());
+  const bool reportOK = options.checkedReport->finish(
+      checkedReportPath, options.analysis.checkedFunctions, status == 0);
+  return status == 0 && reportOK ? 0 : 1;
 }

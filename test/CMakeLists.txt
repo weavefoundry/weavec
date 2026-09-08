@@ -60,6 +60,22 @@ if(Python3_Interpreter_FOUND)
       "${PROJECT_SOURCE_DIR}/test/evaluation/rfc0017/manifest.json")
   set_tests_properties(evaluation-rfc0017 PROPERTIES LABELS "integration"
                                                      TIMEOUT 180)
+  add_test(
+    NAME checked-build-evaluation
+    COMMAND
+      "${Python3_EXECUTABLE}"
+      "${PROJECT_SOURCE_DIR}/scripts/checked-build-evaluation.py" --weavec
+      "$<TARGET_FILE:weavec>" --cc "$<TARGET_FILE:weavec-cc>")
+  set_tests_properties(checked-build-evaluation PROPERTIES LABELS "integration"
+                                                           TIMEOUT 300)
+  add_test(
+    NAME checked-evaluation
+    COMMAND
+      "${Python3_EXECUTABLE}"
+      "${PROJECT_SOURCE_DIR}/scripts/checked-evaluation.py" --weavec
+      "$<TARGET_FILE:weavec>")
+  set_tests_properties(checked-evaluation PROPERTIES LABELS "integration"
+                                                     TIMEOUT 180)
   add_test(NAME recall-harness
            COMMAND "${Python3_EXECUTABLE}"
                    "${PROJECT_SOURCE_DIR}/scripts/test_recall.py")

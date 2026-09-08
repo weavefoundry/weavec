@@ -6,6 +6,24 @@ follows [Semantic Versioning](https://semver.org/) once it reaches 1.0.
 
 ## [Unreleased]
 
+### Checked code (RFC 0018)
+
+- Keep propagated call provenance bounded without recursively escaping identities.
+- Require writable storage for direct and composed writes, rejecting writes to
+  literals and cast-away `const` objects.
+- Add opt-in function and module selection, separate sufficient safety
+  contracts, per-operation proof accounting and must-initialized memory facts.
+- Enforce callee contracts, including possible accesses in counted loops with
+  early exits. Keep unknown bounds, uninitialized reads and unsupported
+  semantics visible as checked failures.
+- Add `WEAVEC_CHECKED`, `--checked`, `--checked-function`, `--checked-report`,
+  and corresponding `-fweavec-*` compiler options. Diagnostic demotion does
+  not change checked acceptance. JSON reports record selection, requirements,
+  unresolved operations, and transitive trust.
+- Transport checked contracts in summary/sidecar format 14. Bind compiler
+  sidecars to object contents, source/header inputs and recorded commands;
+  replay deferred external dependencies before linking.
+
 ### Added
 
 - C integer semantics and compositional spatial checking (RFC 0017): target

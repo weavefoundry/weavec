@@ -14,6 +14,7 @@
 #include "weavec/Core/Scc.h"
 
 #include "clang/AST/RecursiveASTVisitor.h"
+#include "clang/Basic/TargetInfo.h"
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
@@ -93,7 +94,7 @@ private:
 TranslationUnitAnalyzer::TranslationUnitAnalyzer(
     ASTContext &ctx, core::DiagnosticSink &diagSink,
     AnalysisOptions analysisOptions)
-    : context(ctx), sink(diagSink), options(analysisOptions) {
+    : context(ctx), sink(diagSink), options(std::move(analysisOptions)) {
   store.setContext(&context);
 }
 
@@ -203,6 +204,10 @@ UnitExports TranslationUnitAnalyzer::skeletonExports() const {
     result.source = entry->getName().str();
 
   for (const FunctionDecl *function : definitions) {
+    if (getAnnotations(*function).checked) {
+      auto &contract = result.checkedDefinitions[function->getNameAsString()];
+      contract.selected = true;
+    }
     if (function->isMain() || function->getIdentifier() == nullptr)
       continue;
     const bool external = function->isExternallyVisible();
@@ -244,6 +249,7 @@ UnitExports TranslationUnitAnalyzer::discover() {
 
 UnitExports TranslationUnitAnalyzer::exports() {
   UnitExports result = skeletonExports();
+  result.checkedTarget = context.getTargetInfo().getTriple().str();
   const GlobalTable &table = store.globals();
   // Globals travel by name; a `static` one means nothing elsewhere and is
   // dropped (RFC 0005, *The program database*).
@@ -254,6 +260,10 @@ UnitExports TranslationUnitAnalyzer::exports() {
     return std::optional(result.globals.idFor(var->getName()));
   };
   for (const FunctionDecl *function : definitions) {
+    if (const auto resolved = store.lookup(*function);
+        resolved && resolved->summary->checked.computed)
+      result.checkedDefinitions[function->getNameAsString()] =
+          core::remapGlobals(*resolved->summary, byName).checked;
     const auto it = result.functions.find(function->getNameAsString());
     if (it == result.functions.end())
       continue;
@@ -298,9 +308,36 @@ UnitExports TranslationUnitAnalyzer::exports() {
   return result;
 }
 
+static void validateCheckedDeclarations(const DeclContext &dc,
+                                        ASTContext &context,
+                                        core::DiagnosticSink &sink) {
+  for (const Decl *decl : dc.decls()) {
+    if (isa<FunctionDecl>(decl))
+      continue; // FunctionAnalyzer checks parameters and local declarations.
+    if (const auto *named = dyn_cast<NamedDecl>(decl);
+        named && getAnnotations(*named).checked)
+      sink.report({.severity = core::Severity::Error,
+                   .id = core::diag::InvalidAnnotation,
+                   .message = "WEAVEC_CHECKED requires a function declaration",
+                   .location = toCoreLocation(context.getSourceManager(),
+                                              named->getLocation()),
+                   .notes = {},
+                   .fixits = {}});
+    if (const auto *nested = dyn_cast<DeclContext>(decl))
+      validateCheckedDeclarations(*nested, context, sink);
+  }
+}
+
 void TranslationUnitAnalyzer::run(
     llvm::function_ref<bool(const FunctionDecl &)> shouldReport) {
   prepare();
+  validateCheckedDeclarations(*context.getTranslationUnitDecl(), context, sink);
+  options.checkContracts =
+      options.checkContracts || options.checked ||
+      !options.checkedFunctions.empty() ||
+      std::ranges::any_of(definitions, [](const FunctionDecl *fn) {
+        return getAnnotations(*fn).checked;
+      });
 
   const std::vector<std::vector<unsigned>> adjacency = buildCallGraph();
   const std::vector<std::vector<unsigned>> components =

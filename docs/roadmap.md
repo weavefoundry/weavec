@@ -381,6 +381,35 @@ alias partitions, unrestricted heap invariants and enforcing complete coverage
 belong to a separate verification milestone. The existing machine-width and
 non-affine size-analysis gaps also remain.
 
+## Milestone 16 — C integer semantics and spatial checking
+
+Design: [RFC 0017](rfcs/0017-c-integer-semantics-and-spatial-safety.md).
+
+- [x] Target-width conversions, unsigned wrap, guarded arithmetic and checked
+      products in spatial requirements and helper contracts.
+- [x] Numeric outputs, format 13 summaries/sidecars and fixed regression pairs.
+- [x] Published [validation](validation-rfc0017.md) with preserved evaluations.
+
+## Milestone 17 — Compositional safety contracts and checked code
+
+Design: [RFC 0018](rfcs/0018-checked-code-and-safety-contracts.md).
+
+- [x] Opt-in function/module selection and per-operation proof accounting.
+- [x] Sufficient bounds, validity, writable-storage, initialization, release and
+      separation requirements, plus complete initialization postconditions.
+- [x] Caller discharge, counted-loop requirements and explicit trust provenance.
+- [x] Deterministic JSON reports and checked failure independent of warning controls.
+- [x] Format 14 summaries/sidecars, input/object binding and deferred link checks.
+- [x] Frozen checked cases and compiler integration alongside unchanged
+      ordinary evaluations.
+- [ ] Final ordinary-mode performance signoff; see the
+      [validation report](validation-rfc0018.md) for the completed correctness
+      checks, coverage results and pending quiet measurement window.
+
+The [checked-code guide](checked-code.md) describes the supported conditional
+source guarantee. Unsupported semantics remain incomplete; general recursive
+heap invariants, archive packaging and runtime enforcement remain future work.
+
 ## Ongoing
 
 - Corpus testing against real C projects (`scripts/corpus.py`; false-positive

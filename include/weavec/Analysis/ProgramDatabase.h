@@ -138,6 +138,12 @@ struct SizedFieldFacts {
 struct UnitExports {
   /// The main source file, for messages and the dump.
   std::string source;
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
+  std::string checkedTarget = {};
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
+  std::map<std::string, std::string> checkedInputs = {};
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
+  std::map<std::string, core::CheckedContract> checkedDefinitions = {};
   std::map<std::string, std::set<core::CallContext>> memoryRequests;
   std::map<std::string, std::set<core::CallbackBindings>> callbackRequests;
   std::map<std::string, core::CallTargets> callbackGlobals;
