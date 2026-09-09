@@ -260,7 +260,7 @@ int main(int argc, const char **argv) {
   weavec::core::AnalysisStats stats;
   weavec::frontend::FrontendOptions options;
   options.analysis.stats = analysisStatsPath.empty() ? nullptr : &stats;
-  options.analysisStatsPath = analysisStatsPath;
+  options.analysisStatsPath = analysisStatsPath.getValue();
   options.analysisCache = dumpAnalysis || reportUnannotated
                               ? std::string{}
                               : analysisCachePath.getValue();
