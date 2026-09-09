@@ -16,21 +16,6 @@ using namespace clang;
 
 namespace weavec::analysis {
 
-// RFC 0018: derive a flat source key rather than recursively escaping the
-// previous caller's identity. Repeated source obligations still join by their
-// weakest outcome, while the separate call chain retains bounded provenance.
-static std::string checkedCallSubject(const std::string &callee,
-                                      const core::SafetyObligation &entry) {
-  const core::SafetyObligation origin{
-      .property = core::SafetyProperty::Call,
-      .location = entry.calls.empty() ? entry.location : entry.calls.back(),
-      .function = callee,
-      .subject = entry.reason,
-      .reason = {},
-      .calls = {}};
-  return origin.identity();
-}
-
 void FunctionDataflow::checkedCall(const CallExpr &call,
                                    const CallEffects *effects,
                                    core::AnalysisState &state) {
@@ -397,35 +382,27 @@ void FunctionDataflow::checkedCall(const CallExpr &call,
       contract->obligations.complete() && !contract->limited;
   if (pendingExternal && recording())
     inferred.checked.deferred = true;
-  if (!contract->complete() && !pendingExternal) {
-    bool explained = false;
-    for (const auto &[key, entry] : contract->obligations.entries()) {
-      (void)key;
-      if (entry.outcome < core::SafetyOutcome::Unresolved)
-        continue;
-      auto calls = entry.calls;
-      calls.insert(calls.begin(), entry.location);
-      safetyObligation(
-          core::SafetyProperty::Call, core::SafetyOutcome::Unresolved, call,
-          checkedCallSubject(name, entry), entry.reason, std::move(calls));
-      explained = true;
+  // RFC 0020: propagation only writes the final explanation ledger. During
+  // transfer iterations safetyObligation is a no-op; avoid constructing and
+  // escaping thousands of discarded call paths on those iterations.
+  if (recording()) {
+    const auto &origins = contract->obligations.propagation();
+    const auto location = locate(call);
+    const auto caller = function.getNameAsString();
+    const auto propagate = [&](bool trusted) {
+      inferred.checked.obligations.addCalls(contract->obligations, trusted,
+                                            location, caller, name, inUnsafe);
+    };
+    if (!contract->complete() && !pendingExternal) {
+      propagate(false);
+      if (origins.unresolved.empty())
+        obligation(core::SafetyProperty::Call, false, false,
+                   "callee checked contract is incomplete");
+    } else {
+      obligation(core::SafetyProperty::Call, true, false,
+                 "callee has a complete checked contract");
     }
-    if (!explained)
-      obligation(core::SafetyProperty::Call, false, false,
-                 "callee checked contract is incomplete");
-  } else {
-    obligation(core::SafetyProperty::Call, true, false,
-               "callee has a complete checked contract");
-  }
-  for (const auto &[key, entry] : contract->obligations.entries()) {
-    (void)key;
-    if (entry.outcome == core::SafetyOutcome::Trusted) {
-      auto calls = entry.calls;
-      calls.insert(calls.begin(), entry.location);
-      safetyObligation(core::SafetyProperty::Call, core::SafetyOutcome::Trusted,
-                       call, checkedCallSubject(name, entry), entry.reason,
-                       std::move(calls));
-    }
+    propagate(true);
   }
   for (const auto &requirement : contract->requirements) {
     if (requirement.kind == core::CheckedRequirementKind::SumFits) {
@@ -572,6 +549,7 @@ void FunctionDataflow::checkedCallAfter(const CallExpr &call,
       (!effects->summary->checked.computed &&
        effects->source != SummarySource::Builtin) ||
       (effects->source != SummarySource::Builtin &&
+       effects->summary->checked.obligations.trusted() &&
        std::ranges::any_of(
            effects->summary->checked.obligations.entries(),
            [](const auto &entry) {

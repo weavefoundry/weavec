@@ -78,6 +78,7 @@ TEST(CheckedSidecar, ContractsAndBindingsRoundTrip) {
   record.exports.source = "source.c";
   record.command = {"-x", "c", "source.c"};
   record.commandDigest = checkedCommandDigest(record.command);
+  record.preprocessingDigest = checkedDigest("preprocessed source");
   record.objectDigest = checkedDigest("object bytes");
   record.exports.checkedInputs["path with spaces/é.h"] =
       checkedDigest("header bytes");
@@ -88,6 +89,7 @@ TEST(CheckedSidecar, ContractsAndBindingsRoundTrip) {
   EXPECT_EQ(parsed->exports.checkedInputs, record.exports.checkedInputs);
   EXPECT_EQ(parsed->objectDigest, record.objectDigest);
   EXPECT_EQ(parsed->commandDigest, record.commandDigest);
+  EXPECT_EQ(parsed->preprocessingDigest, record.preprocessingDigest);
   EXPECT_EQ(parsed->exports.checkedTarget, record.exports.checkedTarget);
 }
 TEST(CheckedSidecar, DuplicateOrMalformedBindingsAreRejected) {
@@ -98,6 +100,12 @@ TEST(CheckedSidecar, DuplicateOrMalformedBindingsAreRejected) {
   EXPECT_FALSE(
       parseUnitRecord(text + "checked-object " + record.objectDigest + "\n"));
   EXPECT_FALSE(parseUnitRecord(text + "checked-input 00 nope\n"));
+  EXPECT_FALSE(parseUnitRecord(text + "checked-preprocessing nope\n"));
+  const auto bound =
+      text + "checked-preprocessing " + checkedDigest("pp") + "\n";
+  EXPECT_TRUE(parseUnitRecord(bound));
+  EXPECT_FALSE(parseUnitRecord(bound + "checked-preprocessing " +
+                               checkedDigest("pp") + "\n"));
   EXPECT_FALSE(parseUnitRecord(text + "checked-definition nope nope\n"));
   EXPECT_FALSE(parseUnitRecord(text + "checked-target other\n"));
 }
@@ -110,4 +118,24 @@ TEST(CheckedArtifact, MissingBindingIsNotEvidence) {
   EXPECT_NE(checkedCommandDigest({"a", "bc"}),
             checkedCommandDigest({"ab", "c"}));
 }
+TEST(CheckedReport, CompactStringsOwnTheirStorageAfterObligationsAreReplaced) {
+  CheckedReport report;
+  report.compact = true;
+  report.record(checkedUnit());
+  const auto first = report.json();
+  EXPECT_EQ(first, report.json());
+  auto parsed = llvm::json::parse(first);
+  ASSERT_TRUE(parsed);
+  auto *root = parsed->getAsObject();
+  ASSERT_NE(root, nullptr);
+  EXPECT_EQ(root->getInteger("version"), 3);
+  ASSERT_NE(root->getArray("strings"), nullptr);
+  bool found = false;
+  for (const auto &value : *root->getArray("strings"))
+    found |= value.getAsString() == "guard\nproved";
+  EXPECT_TRUE(found);
+  ASSERT_NE(root->getArray("obligation_records"), nullptr);
+  EXPECT_EQ(root->getArray("obligation_records")->size(), 1U);
+}
+
 } // namespace weavec::frontend

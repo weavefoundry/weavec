@@ -1,0 +1,4110 @@
+{
+  "version": 1,
+  "rfc": "0020",
+  "status": "Implemented",
+  "baseline_revision": "b5805f5abbbfd6dd98ea7e0fe38f3eabfe5601fa",
+  "environment": {
+    "os": "macOS 26.6.2",
+    "architecture": "arm64",
+    "logical_cpus": 8,
+    "physical_memory_bytes": 25769803776,
+    "llvm": "23.1.0",
+    "build": "Release, warnings as errors",
+    "measurement": "Sequential child wall time and peak RSS; builds/tests/profiling stopped; sleep prevented."
+  },
+  "binaries": {
+    "baseline": "c667451d6f75cecb5ad83e76389af17075e91052649c01d266e906c611a37e4d",
+    "final": "bb36714315dafd91508366ed04a3e3c5e5149a21e93b0f8941d599c027c031ce",
+    "cold_before_cache_key_encoding": "9c33eda5da7272462bb84f67f0eb3502deaa50aea977fcc70c1d50413d424561"
+  },
+  "manifests": {
+    "corpus": {
+      "path": "scripts/corpus/rfc0015.json",
+      "sha256": "879b548e563af06033ac6ca1ecb66ad691cfc0cfa8ce4048a0c1fdf5e8de9f1e"
+    },
+    "incremental": {
+      "path": "test/evaluation/rfc0020/manifest.json",
+      "sha256": "42384fb09aedc7549157e91ed5d5cf7681027679d777f95ec7ee055ffbee14ce"
+    }
+  },
+  "correctness": {
+    "debug_ctest": {
+      "passed": 1029,
+      "total": 1029,
+      "seconds": 46.64
+    },
+    "asan_ubsan_ctest": {
+      "passed": 1029,
+      "total": 1029,
+      "seconds": 101.87
+    },
+    "lit": {
+      "passed": 111,
+      "total": 111
+    },
+    "original_fixed_evaluation": {
+      "bugs_detected": 44,
+      "bugs": 44,
+      "clean_accepted": 32,
+      "clean": 32
+    },
+    "incremental": {
+      "passed": 17,
+      "total": 17
+    },
+    "jansson_interfaces": {
+      "passed": 8,
+      "total": 8
+    },
+    "strict_clang_tidy": "passed",
+    "clang_format": "passed",
+    "cmake_format": "passed",
+    "core_include_boundary": "passed",
+    "whitespace": "passed",
+    "exact_analysis_dumps": {
+      "passed": 22,
+      "total": 22
+    }
+  },
+  "cold_checked_before_cache_key_encoding": {
+    "observations": [
+      {
+        "name": "checked-cold",
+        "binary_sha256": "9c33eda5da7272462bb84f67f0eb3502deaa50aea977fcc70c1d50413d424561",
+        "projects": [
+          {
+            "project": "log.c",
+            "commit": "f9ea34994bd58ed342d2245cd4110bb5c6790153",
+            "measurement": {
+              "units": 1,
+              "seconds": 0.11,
+              "clang_errors": 0,
+              "failures": 0,
+              "peak_rss_bytes": 51314688,
+              "by_id": {
+                "annotation-required": 2,
+                "checking-incomplete": 73
+              }
+            },
+            "returncode": 0,
+            "started": "2026-09-09T11:32:25.758448+00:00",
+            "command": [
+              "python3",
+              "scripts/corpus.py",
+              "--weavec",
+              "build/rfc20-release/bin/weavec",
+              "--manifest",
+              "scripts/corpus/rfc0015.json",
+              "--only",
+              "log.c",
+              "--timeout",
+              "600.0",
+              "--measure-memory",
+              "--json",
+              "build/rfc20-validation/must-null-checked/checked-cold/log.c.corpus.json",
+              "--weavec-arg=--checked",
+              "--weavec-arg=--checked-report=/Users/owencarey/Documents/weavefoundry/weavec/build/rfc20-validation/must-null-checked/checked-cold/log.c.report.json",
+              "--weavec-arg=--analysis-stats=/Users/owencarey/Documents/weavefoundry/weavec/build/rfc20-validation/must-null-checked/checked-cold/log.c.stats.json"
+            ],
+            "valid_checked_coverage": true,
+            "within_600_seconds": true,
+            "report": {
+              "present": true,
+              "bytes": 78829,
+              "version": 2,
+              "sha256": "ba7f0de49b836db2a1ec715e1c5e19747fa5fc52c68c77e11ff272b08a3d3778",
+              "semantic_hash_format": "ordered-function-sha256-v1",
+              "semantic_sha256": "42291f89987e1d9f875997b0b16c634945078bb22859819a413300383cad93a8",
+              "selected": 12,
+              "complete_selected": 3,
+              "totals": {
+                "functions": 13,
+                "selected": 12,
+                "complete": 3,
+                "trusted_complete": 0,
+                "incomplete": 10,
+                "deferred": 0
+              },
+              "complete_functions": [
+                [
+                  "build/corpus/log.c/src/log.c",
+                  "log_set_level"
+                ],
+                [
+                  "build/corpus/log.c/src/log.c",
+                  "log_set_lock"
+                ],
+                [
+                  "build/corpus/log.c/src/log.c",
+                  "log_set_quiet"
+                ]
+              ],
+              "limited_functions": 0,
+              "limited_functions_marked_complete": 0,
+              "complete_with_iteration_limit": []
+            },
+            "work_counts": {
+              "block_transfers": 245,
+              "cfg_builds": 13,
+              "cfg_order_builds": 13,
+              "cfg_order_reuses": 25,
+              "cfg_reuses": 25,
+              "explanation_call_hits": 12,
+              "explanation_call_misses": 6,
+              "explanation_call_rejections": 0,
+              "explanation_call_resets": 0,
+              "explanation_entry_hits": 477,
+              "explanation_entry_misses": 253,
+              "explanation_pool_resets": 0,
+              "explanation_snapshot_hits": 23,
+              "explanation_snapshot_misses": 15,
+              "explanation_snapshot_resets": 0,
+              "function_analyses": 38,
+              "liveness_builds": 13,
+              "liveness_reuses": 25,
+              "state_joins": 132,
+              "summary_changes": 15,
+              "summary_publications": 15,
+              "summary_shared_uses": 114,
+              "unit_fixpoint_rounds": 2,
+              "unit_parses": 1
+            }
+          },
+          {
+            "project": "cJSON-program",
+            "commit": "fb16e5cf358798aabb049655975cde8427101056",
+            "measurement": {
+              "units": 1,
+              "seconds": 6.817,
+              "clang_errors": 0,
+              "failures": 0,
+              "peak_rss_bytes": 186580992,
+              "by_id": {
+                "analysis-incomplete": 23,
+                "annotation-required": 7,
+                "checking-failed": 32,
+                "checking-incomplete": 4441,
+                "null-dereference": 30
+              }
+            },
+            "returncode": 0,
+            "started": "2026-09-09T11:32:26.000409+00:00",
+            "command": [
+              "python3",
+              "scripts/corpus.py",
+              "--weavec",
+              "build/rfc20-release/bin/weavec",
+              "--manifest",
+              "scripts/corpus/rfc0015.json",
+              "--only",
+              "cJSON-program",
+              "--timeout",
+              "600.0",
+              "--measure-memory",
+              "--json",
+              "build/rfc20-validation/must-null-checked/checked-cold/cJSON-program.corpus.json",
+              "--weavec-arg=--checked",
+              "--weavec-arg=--checked-report=/Users/owencarey/Documents/weavefoundry/weavec/build/rfc20-validation/must-null-checked/checked-cold/cJSON-program.report.json",
+              "--weavec-arg=--analysis-stats=/Users/owencarey/Documents/weavefoundry/weavec/build/rfc20-validation/must-null-checked/checked-cold/cJSON-program.stats.json"
+            ],
+            "valid_checked_coverage": true,
+            "within_600_seconds": true,
+            "report": {
+              "present": true,
+              "bytes": 13662852,
+              "version": 2,
+              "sha256": "ed4fc83b654d93c9c6c7d1aa536a385304587b466684c3945cd21f2fb92d34bc",
+              "semantic_hash_format": "ordered-function-sha256-v1",
+              "semantic_sha256": "32cf76451b953a9e1f8cd623e345e8dd6ac9a0f35317013ac03fe43b3d06da2c",
+              "selected": 151,
+              "complete_selected": 18,
+              "totals": {
+                "functions": 249,
+                "selected": 151,
+                "complete": 30,
+                "trusted_complete": 0,
+                "incomplete": 219,
+                "deferred": 0
+              },
+              "complete_functions": [
+                [
+                  "build/corpus/cJSON-program/cJSON.c",
+                  "buffer_skip_whitespace"
+                ],
+                [
+                  "build/corpus/cJSON-program/cJSON.c",
+                  "cJSON_DetachItemViaPointer"
+                ],
+                [
+                  "build/corpus/cJSON-program/cJSON.c",
+                  "cJSON_GetStringValue"
+                ],
+                [
+                  "build/corpus/cJSON-program/cJSON.c",
+                  "cJSON_InitHooks"
+                ],
+                [
+                  "build/corpus/cJSON-program/cJSON.c",
+                  "cJSON_IsArray"
+                ],
+                [
+                  "build/corpus/cJSON-program/cJSON.c",
+                  "cJSON_IsBool"
+                ],
+                [
+                  "build/corpus/cJSON-program/cJSON.c",
+                  "cJSON_IsFalse"
+                ],
+                [
+                  "build/corpus/cJSON-program/cJSON.c",
+                  "cJSON_IsInvalid"
+                ],
+                [
+                  "build/corpus/cJSON-program/cJSON.c",
+                  "cJSON_IsNull"
+                ],
+                [
+                  "build/corpus/cJSON-program/cJSON.c",
+                  "cJSON_IsNumber"
+                ],
+                [
+                  "build/corpus/cJSON-program/cJSON.c",
+                  "cJSON_IsObject"
+                ],
+                [
+                  "build/corpus/cJSON-program/cJSON.c",
+                  "cJSON_IsRaw"
+                ],
+                [
+                  "build/corpus/cJSON-program/cJSON.c",
+                  "cJSON_IsString"
+                ],
+                [
+                  "build/corpus/cJSON-program/cJSON.c",
+                  "cJSON_IsTrue"
+                ],
+                [
+                  "build/corpus/cJSON-program/cJSON.c",
+                  "cast_away_const"
+                ],
+                [
+                  "build/corpus/cJSON-program/cJSON.c",
+                  "get_decimal_point"
+                ],
+                [
+                  "build/corpus/cJSON-program/cJSON.c",
+                  "parse_hex4"
+                ],
+                [
+                  "build/corpus/cJSON-program/cJSON.c",
+                  "suffix_object"
+                ]
+              ],
+              "limited_functions": 2,
+              "limited_functions_marked_complete": 0,
+              "complete_with_iteration_limit": []
+            },
+            "work_counts": {
+              "block_transfers": 83630,
+              "cfg_builds": 249,
+              "cfg_order_builds": 249,
+              "cfg_order_reuses": 2018,
+              "cfg_reuses": 2018,
+              "explanation_call_hits": 12136,
+              "explanation_call_misses": 637,
+              "explanation_call_rejections": 0,
+              "explanation_call_resets": 0,
+              "explanation_entry_hits": 491627,
+              "explanation_entry_misses": 41439,
+              "explanation_pool_resets": 0,
+              "explanation_snapshot_hits": 1662,
+              "explanation_snapshot_misses": 598,
+              "explanation_snapshot_resets": 0,
+              "function_analyses": 2267,
+              "function_fixpoint_rounds": 174,
+              "liveness_builds": 249,
+              "liveness_reuses": 2018,
+              "program_fixpoint_rounds": 2,
+              "silent_function_reuses": 86,
+              "specialization_hits": 4738,
+              "specialization_invalidations": 438,
+              "specialization_misses": 788,
+              "state_joins": 75307,
+              "summary_changes": 919,
+              "summary_publications": 1747,
+              "summary_shared_uses": 33602,
+              "unit_fixpoint_rounds": 8,
+              "unit_parses": 2,
+              "unit_reuses": 5
+            }
+          },
+          {
+            "project": "linenoise-program",
+            "commit": "a473823d74b93eab2ba83480df16ed37617493f2",
+            "measurement": {
+              "units": 1,
+              "seconds": 2.673,
+              "clang_errors": 0,
+              "failures": 0,
+              "peak_rss_bytes": 141000704,
+              "by_id": {
+                "analysis-incomplete": 5,
+                "annotation-required": 3,
+                "checking-failed": 5,
+                "checking-incomplete": 1716,
+                "double-free": 3,
+                "null-dereference": 2
+              }
+            },
+            "returncode": 0,
+            "started": "2026-09-09T11:32:33.276333+00:00",
+            "command": [
+              "python3",
+              "scripts/corpus.py",
+              "--weavec",
+              "build/rfc20-release/bin/weavec",
+              "--manifest",
+              "scripts/corpus/rfc0015.json",
+              "--only",
+              "linenoise-program",
+              "--timeout",
+              "600.0",
+              "--measure-memory",
+              "--json",
+              "build/rfc20-validation/must-null-checked/checked-cold/linenoise-program.corpus.json",
+              "--weavec-arg=--checked",
+              "--weavec-arg=--checked-report=/Users/owencarey/Documents/weavefoundry/weavec/build/rfc20-validation/must-null-checked/checked-cold/linenoise-program.report.json",
+              "--weavec-arg=--analysis-stats=/Users/owencarey/Documents/weavefoundry/weavec/build/rfc20-validation/must-null-checked/checked-cold/linenoise-program.stats.json"
+            ],
+            "valid_checked_coverage": true,
+            "within_600_seconds": true,
+            "report": {
+              "present": true,
+              "bytes": 11805201,
+              "version": 2,
+              "sha256": "cd92f9698565a58473a7de77bd5594e4c0fc3cced21c4b40a547452feb9b6776",
+              "semantic_hash_format": "ordered-function-sha256-v1",
+              "semantic_sha256": "7bb71f1adfa3070249f1e4b51c30feeefec24ae1ffab916f389d3031b49b81de",
+              "selected": 88,
+              "complete_selected": 20,
+              "totals": {
+                "functions": 130,
+                "selected": 88,
+                "complete": 24,
+                "trusted_complete": 3,
+                "incomplete": 106,
+                "deferred": 0
+              },
+              "complete_functions": [
+                [
+                  "build/corpus/linenoise-program/linenoise.c",
+                  "abFree"
+                ],
+                [
+                  "build/corpus/linenoise-program/linenoise.c",
+                  "abInit"
+                ],
+                [
+                  "build/corpus/linenoise-program/linenoise.c",
+                  "foldCountLines"
+                ],
+                [
+                  "build/corpus/linenoise-program/linenoise.c",
+                  "isCombiningMark"
+                ],
+                [
+                  "build/corpus/linenoise-program/linenoise.c",
+                  "isGraphemeExtend"
+                ],
+                [
+                  "build/corpus/linenoise-program/linenoise.c",
+                  "isRegionalIndicator"
+                ],
+                [
+                  "build/corpus/linenoise-program/linenoise.c",
+                  "isSkinToneModifier"
+                ],
+                [
+                  "build/corpus/linenoise-program/linenoise.c",
+                  "isVariationSelector"
+                ],
+                [
+                  "build/corpus/linenoise-program/linenoise.c",
+                  "isZWJ"
+                ],
+                [
+                  "build/corpus/linenoise-program/linenoise.c",
+                  "linenoiseEditGrow"
+                ],
+                [
+                  "build/corpus/linenoise-program/linenoise.c",
+                  "linenoiseFoldClear"
+                ],
+                [
+                  "build/corpus/linenoise-program/linenoise.c",
+                  "linenoiseFree"
+                ],
+                [
+                  "build/corpus/linenoise-program/linenoise.c",
+                  "linenoiseMaskModeDisable"
+                ],
+                [
+                  "build/corpus/linenoise-program/linenoise.c",
+                  "linenoiseMaskModeEnable"
+                ],
+                [
+                  "build/corpus/linenoise-program/linenoise.c",
+                  "linenoiseSetCompletionCallback"
+                ],
+                [
+                  "build/corpus/linenoise-program/linenoise.c",
+                  "linenoiseSetFreeHintsCallback"
+                ],
+                [
+                  "build/corpus/linenoise-program/linenoise.c",
+                  "linenoiseSetHintsCallback"
+                ],
+                [
+                  "build/corpus/linenoise-program/linenoise.c",
+                  "linenoiseSetMultiLine"
+                ],
+                [
+                  "build/corpus/linenoise-program/linenoise.c",
+                  "utf8ByteLen"
+                ],
+                [
+                  "build/corpus/linenoise-program/linenoise.c",
+                  "utf8CharWidth"
+                ]
+              ],
+              "limited_functions": 11,
+              "limited_functions_marked_complete": 0,
+              "complete_with_iteration_limit": []
+            },
+            "work_counts": {
+              "block_transfers": 28099,
+              "cfg_builds": 130,
+              "cfg_order_builds": 130,
+              "cfg_order_reuses": 1345,
+              "cfg_reuses": 1345,
+              "explanation_call_hits": 4942,
+              "explanation_call_misses": 225,
+              "explanation_call_rejections": 0,
+              "explanation_call_resets": 0,
+              "explanation_entry_hits": 310514,
+              "explanation_entry_misses": 22250,
+              "explanation_pool_resets": 0,
+              "explanation_snapshot_hits": 1256,
+              "explanation_snapshot_misses": 201,
+              "explanation_snapshot_resets": 0,
+              "function_analyses": 1475,
+              "liveness_builds": 130,
+              "liveness_reuses": 1345,
+              "program_fixpoint_rounds": 4,
+              "program_import_hits": 47,
+              "program_import_misses": 13,
+              "specialization_hits": 3841,
+              "specialization_invalidations": 104,
+              "specialization_misses": 420,
+              "state_joins": 19605,
+              "summary_changes": 528,
+              "summary_publications": 1029,
+              "summary_shared_uses": 20215,
+              "unit_fixpoint_rounds": 12,
+              "unit_invalidation_skips": 1,
+              "unit_parses": 2,
+              "unit_reuses": 8
+            }
+          },
+          {
+            "project": "jansson",
+            "commit": "851a2145e3256f2e67e5dfe24b0e456bf198b741",
+            "measurement": {
+              "units": 1,
+              "seconds": 44.013,
+              "clang_errors": 0,
+              "failures": 0,
+              "peak_rss_bytes": 626900992,
+              "by_id": {
+                "analysis-incomplete": 103,
+                "annotation-required": 5,
+                "checking-failed": 75,
+                "checking-incomplete": 7061,
+                "double-free": 43,
+                "invalid-release": 1,
+                "leak": 5,
+                "null-dereference": 3,
+                "use-after-free": 24
+              }
+            },
+            "returncode": 0,
+            "started": "2026-09-09T11:32:36.255458+00:00",
+            "command": [
+              "python3",
+              "scripts/corpus.py",
+              "--weavec",
+              "build/rfc20-release/bin/weavec",
+              "--manifest",
+              "scripts/corpus/rfc0015.json",
+              "--only",
+              "jansson",
+              "--timeout",
+              "600.0",
+              "--measure-memory",
+              "--json",
+              "build/rfc20-validation/must-null-checked/checked-cold/jansson.corpus.json",
+              "--weavec-arg=--checked",
+              "--weavec-arg=--checked-report=/Users/owencarey/Documents/weavefoundry/weavec/build/rfc20-validation/must-null-checked/checked-cold/jansson.report.json",
+              "--weavec-arg=--analysis-stats=/Users/owencarey/Documents/weavefoundry/weavec/build/rfc20-validation/must-null-checked/checked-cold/jansson.stats.json"
+            ],
+            "valid_checked_coverage": true,
+            "within_600_seconds": true,
+            "report": {
+              "present": true,
+              "bytes": 43551873,
+              "version": 2,
+              "sha256": "07032aa0a5a22bb13eef1e3a4c514da697b09c6a3050a658c90935c1ef29c258",
+              "semantic_hash_format": "ordered-function-sha256-v1",
+              "semantic_sha256": "8e54165bc94c5b7f4663b6c0d574b732d8c92b2264e9027f22afe715590e03f6",
+              "selected": 211,
+              "complete_selected": 18,
+              "totals": {
+                "functions": 475,
+                "selected": 211,
+                "complete": 46,
+                "trusted_complete": 0,
+                "incomplete": 429,
+                "deferred": 0
+              },
+              "complete_functions": [
+                [
+                  "build/corpus/jansson/src/hashtable.c",
+                  "bucket_is_empty"
+                ],
+                [
+                  "build/corpus/jansson/src/hashtable.c",
+                  "list_init"
+                ],
+                [
+                  "build/corpus/jansson/src/hashtable.c",
+                  "list_insert"
+                ],
+                [
+                  "build/corpus/jansson/src/hashtable.c",
+                  "list_remove"
+                ],
+                [
+                  "build/corpus/jansson/src/hashtable_seed.c",
+                  "buf_to_uint32"
+                ],
+                [
+                  "build/corpus/jansson/src/load.c",
+                  "stream_init"
+                ],
+                [
+                  "build/corpus/jansson/src/memory.c",
+                  "json_get_alloc_funcs"
+                ],
+                [
+                  "build/corpus/jansson/src/memory.c",
+                  "json_get_alloc_funcs2"
+                ],
+                [
+                  "build/corpus/jansson/src/memory.c",
+                  "json_set_alloc_funcs"
+                ],
+                [
+                  "build/corpus/jansson/src/memory.c",
+                  "json_set_alloc_funcs2"
+                ],
+                [
+                  "build/corpus/jansson/src/pack_unpack.c",
+                  "prev_token"
+                ],
+                [
+                  "build/corpus/jansson/src/strbuffer.c",
+                  "strbuffer_clear"
+                ],
+                [
+                  "build/corpus/jansson/src/strbuffer.c",
+                  "strbuffer_pop"
+                ],
+                [
+                  "build/corpus/jansson/src/strbuffer.c",
+                  "strbuffer_steal_value"
+                ],
+                [
+                  "build/corpus/jansson/src/strbuffer.c",
+                  "strbuffer_value"
+                ],
+                [
+                  "build/corpus/jansson/src/utf.c",
+                  "utf8_check_first"
+                ],
+                [
+                  "build/corpus/jansson/src/utf.c",
+                  "utf8_encode"
+                ],
+                [
+                  "build/corpus/jansson/src/version.c",
+                  "jansson_version_str"
+                ]
+              ],
+              "limited_functions": 1,
+              "limited_functions_marked_complete": 0,
+              "complete_with_iteration_limit": []
+            },
+            "work_counts": {
+              "block_transfers": 273824,
+              "cfg_builds": 475,
+              "cfg_order_builds": 475,
+              "cfg_order_reuses": 9275,
+              "cfg_reuses": 9275,
+              "explanation_call_hits": 82610,
+              "explanation_call_misses": 3009,
+              "explanation_call_rejections": 0,
+              "explanation_call_resets": 2,
+              "explanation_entry_hits": 3983035,
+              "explanation_entry_misses": 81213,
+              "explanation_pool_resets": 0,
+              "explanation_snapshot_hits": 7767,
+              "explanation_snapshot_misses": 1978,
+              "explanation_snapshot_resets": 0,
+              "function_analyses": 9750,
+              "function_fixpoint_rounds": 257,
+              "liveness_builds": 475,
+              "liveness_reuses": 9275,
+              "program_fixpoint_rounds": 9,
+              "program_import_hits": 5807,
+              "program_import_misses": 402,
+              "silent_function_reuses": 190,
+              "specialization_hits": 32934,
+              "specialization_invalidations": 646,
+              "specialization_misses": 5442,
+              "state_joins": 213760,
+              "summary_changes": 4033,
+              "summary_publications": 11657,
+              "summary_shared_uses": 223686,
+              "unit_fixpoint_rounds": 84,
+              "unit_invalidation_skips": 148,
+              "unit_parses": 12,
+              "unit_reuses": 78
+            }
+          },
+          {
+            "project": "lua",
+            "commit": "7579fc9d7ed90240487251dfb69168f8e64e9294",
+            "measurement": {
+              "units": 1,
+              "seconds": 356.686,
+              "clang_errors": 0,
+              "failures": 1,
+              "peak_rss_bytes": 7617724416,
+              "by_id": {
+                "analysis-incomplete": 4162,
+                "annotation-required": 5,
+                "checking-failed": 33,
+                "checking-incomplete": 56926,
+                "invalid-release": 1,
+                "lifetime-too-short": 2,
+                "null-dereference": 100
+              }
+            },
+            "returncode": 2,
+            "started": "2026-09-09T11:33:21.152191+00:00",
+            "command": [
+              "python3",
+              "scripts/corpus.py",
+              "--weavec",
+              "build/rfc20-release/bin/weavec",
+              "--manifest",
+              "scripts/corpus/rfc0015.json",
+              "--only",
+              "lua",
+              "--timeout",
+              "600.0",
+              "--measure-memory",
+              "--json",
+              "build/rfc20-validation/must-null-checked/checked-cold/lua.corpus.json",
+              "--weavec-arg=--checked",
+              "--weavec-arg=--checked-report=/Users/owencarey/Documents/weavefoundry/weavec/build/rfc20-validation/must-null-checked/checked-cold/lua.report.json",
+              "--weavec-arg=--analysis-stats=/Users/owencarey/Documents/weavefoundry/weavec/build/rfc20-validation/must-null-checked/checked-cold/lua.stats.json"
+            ],
+            "valid_checked_coverage": true,
+            "within_600_seconds": true,
+            "report": {
+              "present": true,
+              "bytes": 2754090574,
+              "version": 2,
+              "sha256": "d0818f80802a87ff91e7562b226a3c83579d83a83bdef5394218317fad1433b5",
+              "semantic_hash_format": "ordered-function-sha256-v1",
+              "semantic_sha256": "7956e96c115e85b57eef66766ccf16ab7c5c8a703ebaa1a8b830bdfa7b405f0e",
+              "selected": 1157,
+              "complete_selected": 40,
+              "totals": {
+                "functions": 1364,
+                "selected": 1157,
+                "complete": 64,
+                "trusted_complete": 2,
+                "incomplete": 1300,
+                "deferred": 0
+              },
+              "complete_functions": [
+                [
+                  "build/corpus/lua/lapi.c",
+                  "lua_atpanic"
+                ],
+                [
+                  "build/corpus/lua/lapi.c",
+                  "lua_getallocf"
+                ],
+                [
+                  "build/corpus/lua/lapi.c",
+                  "lua_setallocf"
+                ],
+                [
+                  "build/corpus/lua/lapi.c",
+                  "lua_setwarnf"
+                ],
+                [
+                  "build/corpus/lua/lapi.c",
+                  "lua_status"
+                ],
+                [
+                  "build/corpus/lua/lapi.c",
+                  "lua_version"
+                ],
+                [
+                  "build/corpus/lua/lauxlib.c",
+                  "luaL_alloc"
+                ],
+                [
+                  "build/corpus/lua/lbaselib.c",
+                  "pairscont"
+                ],
+                [
+                  "build/corpus/lua/lcode.c",
+                  "fitsBx"
+                ],
+                [
+                  "build/corpus/lua/lcode.c",
+                  "fitsC"
+                ],
+                [
+                  "build/corpus/lua/lcode.c",
+                  "isKint"
+                ],
+                [
+                  "build/corpus/lua/lcode.c",
+                  "luaK_getlabel"
+                ],
+                [
+                  "build/corpus/lua/lcode.c",
+                  "luaK_vapar2local"
+                ],
+                [
+                  "build/corpus/lua/lcode.c",
+                  "previousinstruction"
+                ],
+                [
+                  "build/corpus/lua/ldebug.c",
+                  "filterpc"
+                ],
+                [
+                  "build/corpus/lua/ldebug.c",
+                  "lua_gethookcount"
+                ],
+                [
+                  "build/corpus/lua/ldo.c",
+                  "lua_isyieldable"
+                ],
+                [
+                  "build/corpus/lua/lfunc.c",
+                  "luaF_protosize"
+                ],
+                [
+                  "build/corpus/lua/lgc.c",
+                  "checkpointer"
+                ],
+                [
+                  "build/corpus/lua/lgc.c",
+                  "cleargraylists"
+                ],
+                [
+                  "build/corpus/lua/lgc.c",
+                  "linkgclist_"
+                ],
+                [
+                  "build/corpus/lua/lmathlib.c",
+                  "I2d"
+                ],
+                [
+                  "build/corpus/lua/loadlib.c",
+                  "freelib"
+                ],
+                [
+                  "build/corpus/lua/loadlib.c",
+                  "lsys_unloadlib"
+                ],
+                [
+                  "build/corpus/lua/lobject.c",
+                  "initbuff"
+                ],
+                [
+                  "build/corpus/lua/lparser.c",
+                  "enterblock"
+                ],
+                [
+                  "build/corpus/lua/lparser.c",
+                  "getunopr"
+                ],
+                [
+                  "build/corpus/lua/lparser.c",
+                  "maxtostore"
+                ],
+                [
+                  "build/corpus/lua/lstrlib.c",
+                  "digit"
+                ],
+                [
+                  "build/corpus/lua/lstrlib.c",
+                  "prepstate"
+                ],
+                [
+                  "build/corpus/lua/lstrlib.c",
+                  "reprepstate"
+                ],
+                [
+                  "build/corpus/lua/ltable.c",
+                  "arraykeyisempty"
+                ],
+                [
+                  "build/corpus/lua/ltable.c",
+                  "checkrange"
+                ],
+                [
+                  "build/corpus/lua/ltable.c",
+                  "concretesize"
+                ],
+                [
+                  "build/corpus/lua/ltable.c",
+                  "exchangehashpart"
+                ],
+                [
+                  "build/corpus/lua/lua.c",
+                  "handle_luainit"
+                ],
+                [
+                  "build/corpus/lua/lua.c",
+                  "lua_freeline"
+                ],
+                [
+                  "build/corpus/lua/lua.c",
+                  "no_getenv"
+                ],
+                [
+                  "build/corpus/lua/lvm.c",
+                  "luaV_shiftl"
+                ],
+                [
+                  "build/corpus/lua/lzio.c",
+                  "luaZ_init"
+                ]
+              ],
+              "limited_functions": 635,
+              "limited_functions_marked_complete": 0,
+              "complete_with_iteration_limit": []
+            },
+            "work_counts": {
+              "block_transfers": 447032,
+              "cfg_builds": 1364,
+              "cfg_order_builds": 1364,
+              "cfg_order_reuses": 28082,
+              "cfg_reuses": 28082,
+              "explanation_call_hits": 108377,
+              "explanation_call_misses": 40836,
+              "explanation_call_rejections": 0,
+              "explanation_call_resets": 233,
+              "explanation_entry_hits": 17751001,
+              "explanation_entry_misses": 20671423,
+              "explanation_pool_resets": 73,
+              "explanation_snapshot_hits": 16083,
+              "explanation_snapshot_misses": 13363,
+              "explanation_snapshot_resets": 1,
+              "function_analyses": 29446,
+              "function_fixpoint_rounds": 539,
+              "liveness_builds": 1364,
+              "liveness_reuses": 28082,
+              "program_fixpoint_rounds": 12,
+              "program_import_hits": 6527,
+              "program_import_misses": 1413,
+              "silent_function_reuses": 1543,
+              "specialization_hits": 16497,
+              "specialization_invalidations": 272,
+              "specialization_misses": 9923,
+              "state_joins": 443936,
+              "summary_changes": 18427,
+              "summary_publications": 39380,
+              "summary_shared_uses": 263445,
+              "unit_fixpoint_rounds": 394,
+              "unit_invalidation_skips": 1504,
+              "unit_parses": 34,
+              "unit_reuses": 370
+            }
+          }
+        ]
+      }
+    ],
+    "passed": true
+  },
+  "final_cold_warm_checked": {
+    "observations": [
+      {
+        "name": "cache-cold",
+        "binary_sha256": "bb36714315dafd91508366ed04a3e3c5e5149a21e93b0f8941d599c027c031ce",
+        "projects": [
+          {
+            "project": "log.c",
+            "commit": "f9ea34994bd58ed342d2245cd4110bb5c6790153",
+            "measurement": {
+              "units": 1,
+              "seconds": 0.135,
+              "clang_errors": 0,
+              "failures": 0,
+              "peak_rss_bytes": 56279040,
+              "by_id": {
+                "annotation-required": 2,
+                "checking-incomplete": 73
+              }
+            },
+            "returncode": 0,
+            "started": "2026-09-09T14:06:35.013034+00:00",
+            "command": [
+              "python3",
+              "scripts/corpus.py",
+              "--weavec",
+              "build/rfc20-release/bin/weavec",
+              "--manifest",
+              "scripts/corpus/rfc0015.json",
+              "--only",
+              "log.c",
+              "--timeout",
+              "600.0",
+              "--measure-memory",
+              "--json",
+              "build/rfc20-validation/database-release-cache/cache-cold/log.c.corpus.json",
+              "--weavec-arg=--checked",
+              "--weavec-arg=--checked-report=/Users/owencarey/Documents/weavefoundry/weavec/build/rfc20-validation/database-release-cache/cache-cold/log.c.report.json",
+              "--weavec-arg=--analysis-stats=/Users/owencarey/Documents/weavefoundry/weavec/build/rfc20-validation/database-release-cache/cache-cold/log.c.stats.json",
+              "--weavec-arg=--analysis-cache=/Users/owencarey/Documents/weavefoundry/weavec/build/rfc20-validation/database-release-cache/cache/log.c"
+            ],
+            "valid_checked_coverage": true,
+            "within_600_seconds": true,
+            "report": {
+              "present": true,
+              "bytes": 78829,
+              "version": 2,
+              "sha256": "ba7f0de49b836db2a1ec715e1c5e19747fa5fc52c68c77e11ff272b08a3d3778",
+              "semantic_hash_format": "ordered-function-sha256-v1",
+              "semantic_sha256": "42291f89987e1d9f875997b0b16c634945078bb22859819a413300383cad93a8",
+              "selected": 12,
+              "complete_selected": 3,
+              "totals": {
+                "functions": 13,
+                "selected": 12,
+                "complete": 3,
+                "trusted_complete": 0,
+                "incomplete": 10,
+                "deferred": 0
+              },
+              "complete_functions": [
+                [
+                  "build/corpus/log.c/src/log.c",
+                  "log_set_level"
+                ],
+                [
+                  "build/corpus/log.c/src/log.c",
+                  "log_set_lock"
+                ],
+                [
+                  "build/corpus/log.c/src/log.c",
+                  "log_set_quiet"
+                ]
+              ],
+              "limited_functions": 0,
+              "limited_functions_marked_complete": 0,
+              "complete_with_iteration_limit": []
+            },
+            "work_counts": {
+              "block_transfers": 245,
+              "cache_bytes_written": 70406,
+              "cache_input_validations": 2,
+              "cache_misses": 1,
+              "cache_uncompressed_bytes": 70341,
+              "cache_writes": 1,
+              "cfg_builds": 13,
+              "cfg_order_builds": 13,
+              "cfg_order_reuses": 25,
+              "cfg_reuses": 25,
+              "cfg_rpo_analyses": 38,
+              "explanation_call_hits": 12,
+              "explanation_call_misses": 6,
+              "explanation_call_rejections": 0,
+              "explanation_call_resets": 0,
+              "explanation_entry_hits": 477,
+              "explanation_entry_misses": 253,
+              "explanation_pool_resets": 0,
+              "explanation_snapshot_hits": 23,
+              "explanation_snapshot_misses": 15,
+              "explanation_snapshot_resets": 0,
+              "function_analyses": 38,
+              "liveness_builds": 13,
+              "liveness_reuses": 25,
+              "state_joins": 132,
+              "summary_changes": 15,
+              "summary_publications": 15,
+              "summary_shared_uses": 114,
+              "unit_fixpoint_rounds": 2,
+              "unit_parses": 1,
+              "unit_reuses": 1
+            }
+          },
+          {
+            "project": "cJSON-program",
+            "commit": "fb16e5cf358798aabb049655975cde8427101056",
+            "measurement": {
+              "units": 1,
+              "seconds": 6.95,
+              "clang_errors": 0,
+              "failures": 0,
+              "peak_rss_bytes": 250920960,
+              "by_id": {
+                "analysis-incomplete": 23,
+                "annotation-required": 7,
+                "checking-failed": 32,
+                "checking-incomplete": 4441,
+                "null-dereference": 30
+              }
+            },
+            "returncode": 0,
+            "started": "2026-09-09T14:06:35.270787+00:00",
+            "command": [
+              "python3",
+              "scripts/corpus.py",
+              "--weavec",
+              "build/rfc20-release/bin/weavec",
+              "--manifest",
+              "scripts/corpus/rfc0015.json",
+              "--only",
+              "cJSON-program",
+              "--timeout",
+              "600.0",
+              "--measure-memory",
+              "--json",
+              "build/rfc20-validation/database-release-cache/cache-cold/cJSON-program.corpus.json",
+              "--weavec-arg=--checked",
+              "--weavec-arg=--checked-report=/Users/owencarey/Documents/weavefoundry/weavec/build/rfc20-validation/database-release-cache/cache-cold/cJSON-program.report.json",
+              "--weavec-arg=--analysis-stats=/Users/owencarey/Documents/weavefoundry/weavec/build/rfc20-validation/database-release-cache/cache-cold/cJSON-program.stats.json",
+              "--weavec-arg=--analysis-cache=/Users/owencarey/Documents/weavefoundry/weavec/build/rfc20-validation/database-release-cache/cache/cJSON-program"
+            ],
+            "valid_checked_coverage": true,
+            "within_600_seconds": true,
+            "report": {
+              "present": true,
+              "bytes": 13662852,
+              "version": 2,
+              "sha256": "ed4fc83b654d93c9c6c7d1aa536a385304587b466684c3945cd21f2fb92d34bc",
+              "semantic_hash_format": "ordered-function-sha256-v1",
+              "semantic_sha256": "32cf76451b953a9e1f8cd623e345e8dd6ac9a0f35317013ac03fe43b3d06da2c",
+              "selected": 151,
+              "complete_selected": 18,
+              "totals": {
+                "functions": 249,
+                "selected": 151,
+                "complete": 30,
+                "trusted_complete": 0,
+                "incomplete": 219,
+                "deferred": 0
+              },
+              "complete_functions": [
+                [
+                  "build/corpus/cJSON-program/cJSON.c",
+                  "buffer_skip_whitespace"
+                ],
+                [
+                  "build/corpus/cJSON-program/cJSON.c",
+                  "cJSON_DetachItemViaPointer"
+                ],
+                [
+                  "build/corpus/cJSON-program/cJSON.c",
+                  "cJSON_GetStringValue"
+                ],
+                [
+                  "build/corpus/cJSON-program/cJSON.c",
+                  "cJSON_InitHooks"
+                ],
+                [
+                  "build/corpus/cJSON-program/cJSON.c",
+                  "cJSON_IsArray"
+                ],
+                [
+                  "build/corpus/cJSON-program/cJSON.c",
+                  "cJSON_IsBool"
+                ],
+                [
+                  "build/corpus/cJSON-program/cJSON.c",
+                  "cJSON_IsFalse"
+                ],
+                [
+                  "build/corpus/cJSON-program/cJSON.c",
+                  "cJSON_IsInvalid"
+                ],
+                [
+                  "build/corpus/cJSON-program/cJSON.c",
+                  "cJSON_IsNull"
+                ],
+                [
+                  "build/corpus/cJSON-program/cJSON.c",
+                  "cJSON_IsNumber"
+                ],
+                [
+                  "build/corpus/cJSON-program/cJSON.c",
+                  "cJSON_IsObject"
+                ],
+                [
+                  "build/corpus/cJSON-program/cJSON.c",
+                  "cJSON_IsRaw"
+                ],
+                [
+                  "build/corpus/cJSON-program/cJSON.c",
+                  "cJSON_IsString"
+                ],
+                [
+                  "build/corpus/cJSON-program/cJSON.c",
+                  "cJSON_IsTrue"
+                ],
+                [
+                  "build/corpus/cJSON-program/cJSON.c",
+                  "cast_away_const"
+                ],
+                [
+                  "build/corpus/cJSON-program/cJSON.c",
+                  "get_decimal_point"
+                ],
+                [
+                  "build/corpus/cJSON-program/cJSON.c",
+                  "parse_hex4"
+                ],
+                [
+                  "build/corpus/cJSON-program/cJSON.c",
+                  "suffix_object"
+                ]
+              ],
+              "limited_functions": 2,
+              "limited_functions_marked_complete": 0,
+              "complete_with_iteration_limit": []
+            },
+            "work_counts": {
+              "block_transfers": 83630,
+              "cache_bytes_written": 277571,
+              "cache_input_validations": 4,
+              "cache_misses": 2,
+              "cache_uncompressed_bytes": 5584492,
+              "cache_writes": 1,
+              "cfg_builds": 249,
+              "cfg_order_builds": 249,
+              "cfg_order_reuses": 2018,
+              "cfg_reuses": 2018,
+              "cfg_rpo_analyses": 2267,
+              "explanation_call_hits": 12136,
+              "explanation_call_misses": 637,
+              "explanation_call_rejections": 0,
+              "explanation_call_resets": 0,
+              "explanation_entry_hits": 491627,
+              "explanation_entry_misses": 41439,
+              "explanation_pool_resets": 0,
+              "explanation_snapshot_hits": 1662,
+              "explanation_snapshot_misses": 598,
+              "explanation_snapshot_resets": 0,
+              "function_analyses": 2267,
+              "function_fixpoint_rounds": 174,
+              "liveness_builds": 249,
+              "liveness_reuses": 2018,
+              "program_fixpoint_rounds": 2,
+              "silent_function_reuses": 86,
+              "specialization_hits": 4738,
+              "specialization_invalidations": 438,
+              "specialization_misses": 788,
+              "state_joins": 75307,
+              "summary_changes": 919,
+              "summary_publications": 1747,
+              "summary_shared_uses": 33602,
+              "unit_fixpoint_rounds": 8,
+              "unit_parses": 2,
+              "unit_reuses": 5
+            }
+          },
+          {
+            "project": "linenoise-program",
+            "commit": "a473823d74b93eab2ba83480df16ed37617493f2",
+            "measurement": {
+              "units": 1,
+              "seconds": 2.839,
+              "clang_errors": 0,
+              "failures": 0,
+              "peak_rss_bytes": 190611456,
+              "by_id": {
+                "analysis-incomplete": 5,
+                "annotation-required": 3,
+                "checking-failed": 5,
+                "checking-incomplete": 1716,
+                "double-free": 3,
+                "null-dereference": 2
+              }
+            },
+            "returncode": 0,
+            "started": "2026-09-09T14:06:42.689879+00:00",
+            "command": [
+              "python3",
+              "scripts/corpus.py",
+              "--weavec",
+              "build/rfc20-release/bin/weavec",
+              "--manifest",
+              "scripts/corpus/rfc0015.json",
+              "--only",
+              "linenoise-program",
+              "--timeout",
+              "600.0",
+              "--measure-memory",
+              "--json",
+              "build/rfc20-validation/database-release-cache/cache-cold/linenoise-program.corpus.json",
+              "--weavec-arg=--checked",
+              "--weavec-arg=--checked-report=/Users/owencarey/Documents/weavefoundry/weavec/build/rfc20-validation/database-release-cache/cache-cold/linenoise-program.report.json",
+              "--weavec-arg=--analysis-stats=/Users/owencarey/Documents/weavefoundry/weavec/build/rfc20-validation/database-release-cache/cache-cold/linenoise-program.stats.json",
+              "--weavec-arg=--analysis-cache=/Users/owencarey/Documents/weavefoundry/weavec/build/rfc20-validation/database-release-cache/cache/linenoise-program"
+            ],
+            "valid_checked_coverage": true,
+            "within_600_seconds": true,
+            "report": {
+              "present": true,
+              "bytes": 11805201,
+              "version": 2,
+              "sha256": "cd92f9698565a58473a7de77bd5594e4c0fc3cced21c4b40a547452feb9b6776",
+              "semantic_hash_format": "ordered-function-sha256-v1",
+              "semantic_sha256": "7bb71f1adfa3070249f1e4b51c30feeefec24ae1ffab916f389d3031b49b81de",
+              "selected": 88,
+              "complete_selected": 20,
+              "totals": {
+                "functions": 130,
+                "selected": 88,
+                "complete": 24,
+                "trusted_complete": 3,
+                "incomplete": 106,
+                "deferred": 0
+              },
+              "complete_functions": [
+                [
+                  "build/corpus/linenoise-program/linenoise.c",
+                  "abFree"
+                ],
+                [
+                  "build/corpus/linenoise-program/linenoise.c",
+                  "abInit"
+                ],
+                [
+                  "build/corpus/linenoise-program/linenoise.c",
+                  "foldCountLines"
+                ],
+                [
+                  "build/corpus/linenoise-program/linenoise.c",
+                  "isCombiningMark"
+                ],
+                [
+                  "build/corpus/linenoise-program/linenoise.c",
+                  "isGraphemeExtend"
+                ],
+                [
+                  "build/corpus/linenoise-program/linenoise.c",
+                  "isRegionalIndicator"
+                ],
+                [
+                  "build/corpus/linenoise-program/linenoise.c",
+                  "isSkinToneModifier"
+                ],
+                [
+                  "build/corpus/linenoise-program/linenoise.c",
+                  "isVariationSelector"
+                ],
+                [
+                  "build/corpus/linenoise-program/linenoise.c",
+                  "isZWJ"
+                ],
+                [
+                  "build/corpus/linenoise-program/linenoise.c",
+                  "linenoiseEditGrow"
+                ],
+                [
+                  "build/corpus/linenoise-program/linenoise.c",
+                  "linenoiseFoldClear"
+                ],
+                [
+                  "build/corpus/linenoise-program/linenoise.c",
+                  "linenoiseFree"
+                ],
+                [
+                  "build/corpus/linenoise-program/linenoise.c",
+                  "linenoiseMaskModeDisable"
+                ],
+                [
+                  "build/corpus/linenoise-program/linenoise.c",
+                  "linenoiseMaskModeEnable"
+                ],
+                [
+                  "build/corpus/linenoise-program/linenoise.c",
+                  "linenoiseSetCompletionCallback"
+                ],
+                [
+                  "build/corpus/linenoise-program/linenoise.c",
+                  "linenoiseSetFreeHintsCallback"
+                ],
+                [
+                  "build/corpus/linenoise-program/linenoise.c",
+                  "linenoiseSetHintsCallback"
+                ],
+                [
+                  "build/corpus/linenoise-program/linenoise.c",
+                  "linenoiseSetMultiLine"
+                ],
+                [
+                  "build/corpus/linenoise-program/linenoise.c",
+                  "utf8ByteLen"
+                ],
+                [
+                  "build/corpus/linenoise-program/linenoise.c",
+                  "utf8CharWidth"
+                ]
+              ],
+              "limited_functions": 11,
+              "limited_functions_marked_complete": 0,
+              "complete_with_iteration_limit": []
+            },
+            "work_counts": {
+              "block_transfers": 28099,
+              "cache_bytes_written": 226697,
+              "cache_input_validations": 4,
+              "cache_misses": 2,
+              "cache_uncompressed_bytes": 3842489,
+              "cache_writes": 1,
+              "cfg_builds": 130,
+              "cfg_order_builds": 130,
+              "cfg_order_reuses": 1345,
+              "cfg_reuses": 1345,
+              "cfg_rpo_analyses": 1475,
+              "explanation_call_hits": 4942,
+              "explanation_call_misses": 225,
+              "explanation_call_rejections": 0,
+              "explanation_call_resets": 0,
+              "explanation_entry_hits": 310514,
+              "explanation_entry_misses": 22250,
+              "explanation_pool_resets": 0,
+              "explanation_snapshot_hits": 1256,
+              "explanation_snapshot_misses": 201,
+              "explanation_snapshot_resets": 0,
+              "function_analyses": 1475,
+              "liveness_builds": 130,
+              "liveness_reuses": 1345,
+              "program_fixpoint_rounds": 4,
+              "program_import_hits": 47,
+              "program_import_misses": 13,
+              "specialization_hits": 3841,
+              "specialization_invalidations": 104,
+              "specialization_misses": 420,
+              "state_joins": 19605,
+              "summary_changes": 528,
+              "summary_publications": 1029,
+              "summary_shared_uses": 20215,
+              "unit_fixpoint_rounds": 12,
+              "unit_invalidation_skips": 1,
+              "unit_parses": 2,
+              "unit_reuses": 8
+            }
+          },
+          {
+            "project": "jansson",
+            "commit": "851a2145e3256f2e67e5dfe24b0e456bf198b741",
+            "measurement": {
+              "units": 1,
+              "seconds": 45.002,
+              "clang_errors": 0,
+              "failures": 0,
+              "peak_rss_bytes": 865337344,
+              "by_id": {
+                "analysis-incomplete": 103,
+                "annotation-required": 5,
+                "checking-failed": 75,
+                "checking-incomplete": 7061,
+                "double-free": 43,
+                "invalid-release": 1,
+                "leak": 5,
+                "null-dereference": 3,
+                "use-after-free": 24
+              }
+            },
+            "returncode": 0,
+            "started": "2026-09-09T14:06:45.863207+00:00",
+            "command": [
+              "python3",
+              "scripts/corpus.py",
+              "--weavec",
+              "build/rfc20-release/bin/weavec",
+              "--manifest",
+              "scripts/corpus/rfc0015.json",
+              "--only",
+              "jansson",
+              "--timeout",
+              "600.0",
+              "--measure-memory",
+              "--json",
+              "build/rfc20-validation/database-release-cache/cache-cold/jansson.corpus.json",
+              "--weavec-arg=--checked",
+              "--weavec-arg=--checked-report=/Users/owencarey/Documents/weavefoundry/weavec/build/rfc20-validation/database-release-cache/cache-cold/jansson.report.json",
+              "--weavec-arg=--analysis-stats=/Users/owencarey/Documents/weavefoundry/weavec/build/rfc20-validation/database-release-cache/cache-cold/jansson.stats.json",
+              "--weavec-arg=--analysis-cache=/Users/owencarey/Documents/weavefoundry/weavec/build/rfc20-validation/database-release-cache/cache/jansson"
+            ],
+            "valid_checked_coverage": true,
+            "within_600_seconds": true,
+            "report": {
+              "present": true,
+              "bytes": 43551873,
+              "version": 2,
+              "sha256": "07032aa0a5a22bb13eef1e3a4c514da697b09c6a3050a658c90935c1ef29c258",
+              "semantic_hash_format": "ordered-function-sha256-v1",
+              "semantic_sha256": "8e54165bc94c5b7f4663b6c0d574b732d8c92b2264e9027f22afe715590e03f6",
+              "selected": 211,
+              "complete_selected": 18,
+              "totals": {
+                "functions": 475,
+                "selected": 211,
+                "complete": 46,
+                "trusted_complete": 0,
+                "incomplete": 429,
+                "deferred": 0
+              },
+              "complete_functions": [
+                [
+                  "build/corpus/jansson/src/hashtable.c",
+                  "bucket_is_empty"
+                ],
+                [
+                  "build/corpus/jansson/src/hashtable.c",
+                  "list_init"
+                ],
+                [
+                  "build/corpus/jansson/src/hashtable.c",
+                  "list_insert"
+                ],
+                [
+                  "build/corpus/jansson/src/hashtable.c",
+                  "list_remove"
+                ],
+                [
+                  "build/corpus/jansson/src/hashtable_seed.c",
+                  "buf_to_uint32"
+                ],
+                [
+                  "build/corpus/jansson/src/load.c",
+                  "stream_init"
+                ],
+                [
+                  "build/corpus/jansson/src/memory.c",
+                  "json_get_alloc_funcs"
+                ],
+                [
+                  "build/corpus/jansson/src/memory.c",
+                  "json_get_alloc_funcs2"
+                ],
+                [
+                  "build/corpus/jansson/src/memory.c",
+                  "json_set_alloc_funcs"
+                ],
+                [
+                  "build/corpus/jansson/src/memory.c",
+                  "json_set_alloc_funcs2"
+                ],
+                [
+                  "build/corpus/jansson/src/pack_unpack.c",
+                  "prev_token"
+                ],
+                [
+                  "build/corpus/jansson/src/strbuffer.c",
+                  "strbuffer_clear"
+                ],
+                [
+                  "build/corpus/jansson/src/strbuffer.c",
+                  "strbuffer_pop"
+                ],
+                [
+                  "build/corpus/jansson/src/strbuffer.c",
+                  "strbuffer_steal_value"
+                ],
+                [
+                  "build/corpus/jansson/src/strbuffer.c",
+                  "strbuffer_value"
+                ],
+                [
+                  "build/corpus/jansson/src/utf.c",
+                  "utf8_check_first"
+                ],
+                [
+                  "build/corpus/jansson/src/utf.c",
+                  "utf8_encode"
+                ],
+                [
+                  "build/corpus/jansson/src/version.c",
+                  "jansson_version_str"
+                ]
+              ],
+              "limited_functions": 1,
+              "limited_functions_marked_complete": 0,
+              "complete_with_iteration_limit": []
+            },
+            "work_counts": {
+              "block_transfers": 273824,
+              "cache_bytes_written": 762739,
+              "cache_input_validations": 24,
+              "cache_misses": 12,
+              "cache_uncompressed_bytes": 19634665,
+              "cache_writes": 1,
+              "cfg_builds": 475,
+              "cfg_order_builds": 475,
+              "cfg_order_reuses": 9275,
+              "cfg_reuses": 9275,
+              "cfg_rpo_analyses": 9750,
+              "explanation_call_hits": 82610,
+              "explanation_call_misses": 3009,
+              "explanation_call_rejections": 0,
+              "explanation_call_resets": 2,
+              "explanation_entry_hits": 3983035,
+              "explanation_entry_misses": 81213,
+              "explanation_pool_resets": 0,
+              "explanation_snapshot_hits": 7767,
+              "explanation_snapshot_misses": 1978,
+              "explanation_snapshot_resets": 0,
+              "function_analyses": 9750,
+              "function_fixpoint_rounds": 257,
+              "liveness_builds": 475,
+              "liveness_reuses": 9275,
+              "program_fixpoint_rounds": 9,
+              "program_import_hits": 5807,
+              "program_import_misses": 402,
+              "silent_function_reuses": 190,
+              "specialization_hits": 32934,
+              "specialization_invalidations": 646,
+              "specialization_misses": 5442,
+              "state_joins": 213760,
+              "summary_changes": 4033,
+              "summary_publications": 11657,
+              "summary_shared_uses": 223686,
+              "unit_fixpoint_rounds": 84,
+              "unit_invalidation_skips": 148,
+              "unit_parses": 12,
+              "unit_reuses": 78
+            }
+          },
+          {
+            "project": "lua",
+            "commit": "7579fc9d7ed90240487251dfb69168f8e64e9294",
+            "measurement": {
+              "units": 1,
+              "seconds": 367.665,
+              "clang_errors": 0,
+              "failures": 1,
+              "peak_rss_bytes": 7550795776,
+              "by_id": {
+                "analysis-incomplete": 4162,
+                "annotation-required": 5,
+                "checking-failed": 33,
+                "checking-incomplete": 56926,
+                "invalid-release": 1,
+                "lifetime-too-short": 2,
+                "null-dereference": 100
+              }
+            },
+            "returncode": 2,
+            "started": "2026-09-09T14:07:31.827936+00:00",
+            "command": [
+              "python3",
+              "scripts/corpus.py",
+              "--weavec",
+              "build/rfc20-release/bin/weavec",
+              "--manifest",
+              "scripts/corpus/rfc0015.json",
+              "--only",
+              "lua",
+              "--timeout",
+              "600.0",
+              "--measure-memory",
+              "--json",
+              "build/rfc20-validation/database-release-cache/cache-cold/lua.corpus.json",
+              "--weavec-arg=--checked",
+              "--weavec-arg=--checked-report=/Users/owencarey/Documents/weavefoundry/weavec/build/rfc20-validation/database-release-cache/cache-cold/lua.report.json",
+              "--weavec-arg=--analysis-stats=/Users/owencarey/Documents/weavefoundry/weavec/build/rfc20-validation/database-release-cache/cache-cold/lua.stats.json",
+              "--weavec-arg=--analysis-cache=/Users/owencarey/Documents/weavefoundry/weavec/build/rfc20-validation/database-release-cache/cache/lua"
+            ],
+            "valid_checked_coverage": true,
+            "within_600_seconds": true,
+            "report": {
+              "present": true,
+              "bytes": 2754090574,
+              "version": 2,
+              "sha256": "d0818f80802a87ff91e7562b226a3c83579d83a83bdef5394218317fad1433b5",
+              "semantic_hash_format": "ordered-function-sha256-v1",
+              "semantic_sha256": "7956e96c115e85b57eef66766ccf16ab7c5c8a703ebaa1a8b830bdfa7b405f0e",
+              "selected": 1157,
+              "complete_selected": 40,
+              "totals": {
+                "functions": 1364,
+                "selected": 1157,
+                "complete": 64,
+                "trusted_complete": 2,
+                "incomplete": 1300,
+                "deferred": 0
+              },
+              "complete_functions": [
+                [
+                  "build/corpus/lua/lapi.c",
+                  "lua_atpanic"
+                ],
+                [
+                  "build/corpus/lua/lapi.c",
+                  "lua_getallocf"
+                ],
+                [
+                  "build/corpus/lua/lapi.c",
+                  "lua_setallocf"
+                ],
+                [
+                  "build/corpus/lua/lapi.c",
+                  "lua_setwarnf"
+                ],
+                [
+                  "build/corpus/lua/lapi.c",
+                  "lua_status"
+                ],
+                [
+                  "build/corpus/lua/lapi.c",
+                  "lua_version"
+                ],
+                [
+                  "build/corpus/lua/lauxlib.c",
+                  "luaL_alloc"
+                ],
+                [
+                  "build/corpus/lua/lbaselib.c",
+                  "pairscont"
+                ],
+                [
+                  "build/corpus/lua/lcode.c",
+                  "fitsBx"
+                ],
+                [
+                  "build/corpus/lua/lcode.c",
+                  "fitsC"
+                ],
+                [
+                  "build/corpus/lua/lcode.c",
+                  "isKint"
+                ],
+                [
+                  "build/corpus/lua/lcode.c",
+                  "luaK_getlabel"
+                ],
+                [
+                  "build/corpus/lua/lcode.c",
+                  "luaK_vapar2local"
+                ],
+                [
+                  "build/corpus/lua/lcode.c",
+                  "previousinstruction"
+                ],
+                [
+                  "build/corpus/lua/ldebug.c",
+                  "filterpc"
+                ],
+                [
+                  "build/corpus/lua/ldebug.c",
+                  "lua_gethookcount"
+                ],
+                [
+                  "build/corpus/lua/ldo.c",
+                  "lua_isyieldable"
+                ],
+                [
+                  "build/corpus/lua/lfunc.c",
+                  "luaF_protosize"
+                ],
+                [
+                  "build/corpus/lua/lgc.c",
+                  "checkpointer"
+                ],
+                [
+                  "build/corpus/lua/lgc.c",
+                  "cleargraylists"
+                ],
+                [
+                  "build/corpus/lua/lgc.c",
+                  "linkgclist_"
+                ],
+                [
+                  "build/corpus/lua/lmathlib.c",
+                  "I2d"
+                ],
+                [
+                  "build/corpus/lua/loadlib.c",
+                  "freelib"
+                ],
+                [
+                  "build/corpus/lua/loadlib.c",
+                  "lsys_unloadlib"
+                ],
+                [
+                  "build/corpus/lua/lobject.c",
+                  "initbuff"
+                ],
+                [
+                  "build/corpus/lua/lparser.c",
+                  "enterblock"
+                ],
+                [
+                  "build/corpus/lua/lparser.c",
+                  "getunopr"
+                ],
+                [
+                  "build/corpus/lua/lparser.c",
+                  "maxtostore"
+                ],
+                [
+                  "build/corpus/lua/lstrlib.c",
+                  "digit"
+                ],
+                [
+                  "build/corpus/lua/lstrlib.c",
+                  "prepstate"
+                ],
+                [
+                  "build/corpus/lua/lstrlib.c",
+                  "reprepstate"
+                ],
+                [
+                  "build/corpus/lua/ltable.c",
+                  "arraykeyisempty"
+                ],
+                [
+                  "build/corpus/lua/ltable.c",
+                  "checkrange"
+                ],
+                [
+                  "build/corpus/lua/ltable.c",
+                  "concretesize"
+                ],
+                [
+                  "build/corpus/lua/ltable.c",
+                  "exchangehashpart"
+                ],
+                [
+                  "build/corpus/lua/lua.c",
+                  "handle_luainit"
+                ],
+                [
+                  "build/corpus/lua/lua.c",
+                  "lua_freeline"
+                ],
+                [
+                  "build/corpus/lua/lua.c",
+                  "no_getenv"
+                ],
+                [
+                  "build/corpus/lua/lvm.c",
+                  "luaV_shiftl"
+                ],
+                [
+                  "build/corpus/lua/lzio.c",
+                  "luaZ_init"
+                ]
+              ],
+              "limited_functions": 635,
+              "limited_functions_marked_complete": 0,
+              "complete_with_iteration_limit": []
+            },
+            "work_counts": {
+              "block_transfers": 447032,
+              "cache_bytes_written": 16788496,
+              "cache_input_validations": 68,
+              "cache_misses": 34,
+              "cache_uncompressed_bytes": 365930255,
+              "cache_writes": 3,
+              "cfg_builds": 1364,
+              "cfg_order_builds": 1364,
+              "cfg_order_reuses": 28082,
+              "cfg_reuses": 28082,
+              "cfg_rpo_analyses": 29446,
+              "explanation_call_hits": 108377,
+              "explanation_call_misses": 40836,
+              "explanation_call_rejections": 0,
+              "explanation_call_resets": 233,
+              "explanation_entry_hits": 17751001,
+              "explanation_entry_misses": 20671423,
+              "explanation_pool_resets": 73,
+              "explanation_snapshot_hits": 16083,
+              "explanation_snapshot_misses": 13363,
+              "explanation_snapshot_resets": 1,
+              "function_analyses": 29446,
+              "function_fixpoint_rounds": 539,
+              "liveness_builds": 1364,
+              "liveness_reuses": 28082,
+              "program_fixpoint_rounds": 12,
+              "program_import_hits": 6527,
+              "program_import_misses": 1413,
+              "silent_function_reuses": 1543,
+              "specialization_hits": 16497,
+              "specialization_invalidations": 272,
+              "specialization_misses": 9923,
+              "state_joins": 443936,
+              "summary_changes": 18427,
+              "summary_publications": 39380,
+              "summary_shared_uses": 263445,
+              "unit_fixpoint_rounds": 394,
+              "unit_invalidation_skips": 1504,
+              "unit_parses": 34,
+              "unit_reuses": 370
+            }
+          }
+        ]
+      },
+      {
+        "name": "cache-warm",
+        "binary_sha256": "bb36714315dafd91508366ed04a3e3c5e5149a21e93b0f8941d599c027c031ce",
+        "projects": [
+          {
+            "project": "log.c",
+            "commit": "f9ea34994bd58ed342d2245cd4110bb5c6790153",
+            "measurement": {
+              "units": 1,
+              "seconds": 0.141,
+              "clang_errors": 0,
+              "failures": 0,
+              "peak_rss_bytes": 55394304,
+              "by_id": {
+                "annotation-required": 2,
+                "checking-incomplete": 73
+              }
+            },
+            "returncode": 0,
+            "started": "2026-09-09T14:14:27.033453+00:00",
+            "command": [
+              "python3",
+              "scripts/corpus.py",
+              "--weavec",
+              "build/rfc20-release/bin/weavec",
+              "--manifest",
+              "scripts/corpus/rfc0015.json",
+              "--only",
+              "log.c",
+              "--timeout",
+              "600.0",
+              "--measure-memory",
+              "--json",
+              "build/rfc20-validation/database-release-cache/cache-warm/log.c.corpus.json",
+              "--weavec-arg=--checked",
+              "--weavec-arg=--checked-report=/Users/owencarey/Documents/weavefoundry/weavec/build/rfc20-validation/database-release-cache/cache-warm/log.c.report.json",
+              "--weavec-arg=--analysis-stats=/Users/owencarey/Documents/weavefoundry/weavec/build/rfc20-validation/database-release-cache/cache-warm/log.c.stats.json",
+              "--weavec-arg=--checked-report-format=compact",
+              "--weavec-arg=--analysis-cache=/Users/owencarey/Documents/weavefoundry/weavec/build/rfc20-validation/database-release-cache/cache/log.c"
+            ],
+            "valid_checked_coverage": true,
+            "within_600_seconds": true,
+            "report": {
+              "present": true,
+              "bytes": 20408,
+              "version": 3,
+              "sha256": "e67f3a83d8cb4c433505499cffa53f45a6db868ef9869e5eb1dddcabd7194a33",
+              "semantic_hash_format": "ordered-function-sha256-v1",
+              "semantic_sha256": "42291f89987e1d9f875997b0b16c634945078bb22859819a413300383cad93a8",
+              "selected": 12,
+              "complete_selected": 3,
+              "totals": {
+                "functions": 13,
+                "selected": 12,
+                "complete": 3,
+                "trusted_complete": 0,
+                "incomplete": 10,
+                "deferred": 0
+              },
+              "complete_functions": [
+                [
+                  "build/corpus/log.c/src/log.c",
+                  "log_set_level"
+                ],
+                [
+                  "build/corpus/log.c/src/log.c",
+                  "log_set_lock"
+                ],
+                [
+                  "build/corpus/log.c/src/log.c",
+                  "log_set_quiet"
+                ]
+              ],
+              "limited_functions": 0,
+              "limited_functions_marked_complete": 0,
+              "complete_with_iteration_limit": []
+            },
+            "work_counts": {
+              "cache_hits": 1,
+              "cache_input_validations": 2,
+              "explanation_call_hits": 0,
+              "explanation_call_misses": 0,
+              "explanation_call_rejections": 0,
+              "explanation_call_resets": 0,
+              "explanation_entry_hits": 0,
+              "explanation_entry_misses": 253,
+              "explanation_pool_resets": 0,
+              "explanation_snapshot_hits": 0,
+              "explanation_snapshot_misses": 13,
+              "explanation_snapshot_resets": 0,
+              "unit_parses": 1
+            }
+          },
+          {
+            "project": "cJSON-program",
+            "commit": "fb16e5cf358798aabb049655975cde8427101056",
+            "measurement": {
+              "units": 1,
+              "seconds": 0.807,
+              "clang_errors": 0,
+              "failures": 0,
+              "peak_rss_bytes": 191660032,
+              "by_id": {
+                "analysis-incomplete": 23,
+                "annotation-required": 7,
+                "checking-failed": 32,
+                "checking-incomplete": 4441,
+                "null-dereference": 30
+              }
+            },
+            "returncode": 0,
+            "started": "2026-09-09T14:14:27.276609+00:00",
+            "command": [
+              "python3",
+              "scripts/corpus.py",
+              "--weavec",
+              "build/rfc20-release/bin/weavec",
+              "--manifest",
+              "scripts/corpus/rfc0015.json",
+              "--only",
+              "cJSON-program",
+              "--timeout",
+              "600.0",
+              "--measure-memory",
+              "--json",
+              "build/rfc20-validation/database-release-cache/cache-warm/cJSON-program.corpus.json",
+              "--weavec-arg=--checked",
+              "--weavec-arg=--checked-report=/Users/owencarey/Documents/weavefoundry/weavec/build/rfc20-validation/database-release-cache/cache-warm/cJSON-program.report.json",
+              "--weavec-arg=--analysis-stats=/Users/owencarey/Documents/weavefoundry/weavec/build/rfc20-validation/database-release-cache/cache-warm/cJSON-program.stats.json",
+              "--weavec-arg=--checked-report-format=compact",
+              "--weavec-arg=--analysis-cache=/Users/owencarey/Documents/weavefoundry/weavec/build/rfc20-validation/database-release-cache/cache/cJSON-program"
+            ],
+            "valid_checked_coverage": true,
+            "within_600_seconds": true,
+            "report": {
+              "present": true,
+              "bytes": 2053842,
+              "version": 3,
+              "sha256": "d561cc1208b14d55fa2ee53fb168d813a1ce9698718a06bcec526efe71bdef10",
+              "semantic_hash_format": "ordered-function-sha256-v1",
+              "semantic_sha256": "32cf76451b953a9e1f8cd623e345e8dd6ac9a0f35317013ac03fe43b3d06da2c",
+              "selected": 151,
+              "complete_selected": 18,
+              "totals": {
+                "functions": 249,
+                "selected": 151,
+                "complete": 30,
+                "trusted_complete": 0,
+                "incomplete": 219,
+                "deferred": 0
+              },
+              "complete_functions": [
+                [
+                  "build/corpus/cJSON-program/cJSON.c",
+                  "buffer_skip_whitespace"
+                ],
+                [
+                  "build/corpus/cJSON-program/cJSON.c",
+                  "cJSON_DetachItemViaPointer"
+                ],
+                [
+                  "build/corpus/cJSON-program/cJSON.c",
+                  "cJSON_GetStringValue"
+                ],
+                [
+                  "build/corpus/cJSON-program/cJSON.c",
+                  "cJSON_InitHooks"
+                ],
+                [
+                  "build/corpus/cJSON-program/cJSON.c",
+                  "cJSON_IsArray"
+                ],
+                [
+                  "build/corpus/cJSON-program/cJSON.c",
+                  "cJSON_IsBool"
+                ],
+                [
+                  "build/corpus/cJSON-program/cJSON.c",
+                  "cJSON_IsFalse"
+                ],
+                [
+                  "build/corpus/cJSON-program/cJSON.c",
+                  "cJSON_IsInvalid"
+                ],
+                [
+                  "build/corpus/cJSON-program/cJSON.c",
+                  "cJSON_IsNull"
+                ],
+                [
+                  "build/corpus/cJSON-program/cJSON.c",
+                  "cJSON_IsNumber"
+                ],
+                [
+                  "build/corpus/cJSON-program/cJSON.c",
+                  "cJSON_IsObject"
+                ],
+                [
+                  "build/corpus/cJSON-program/cJSON.c",
+                  "cJSON_IsRaw"
+                ],
+                [
+                  "build/corpus/cJSON-program/cJSON.c",
+                  "cJSON_IsString"
+                ],
+                [
+                  "build/corpus/cJSON-program/cJSON.c",
+                  "cJSON_IsTrue"
+                ],
+                [
+                  "build/corpus/cJSON-program/cJSON.c",
+                  "cast_away_const"
+                ],
+                [
+                  "build/corpus/cJSON-program/cJSON.c",
+                  "get_decimal_point"
+                ],
+                [
+                  "build/corpus/cJSON-program/cJSON.c",
+                  "parse_hex4"
+                ],
+                [
+                  "build/corpus/cJSON-program/cJSON.c",
+                  "suffix_object"
+                ]
+              ],
+              "limited_functions": 2,
+              "limited_functions_marked_complete": 0,
+              "complete_with_iteration_limit": []
+            },
+            "work_counts": {
+              "cache_hits": 2,
+              "cache_input_validations": 4,
+              "explanation_call_hits": 0,
+              "explanation_call_misses": 0,
+              "explanation_call_rejections": 0,
+              "explanation_call_resets": 0,
+              "explanation_entry_hits": 0,
+              "explanation_entry_misses": 23040,
+              "explanation_pool_resets": 0,
+              "explanation_snapshot_hits": 0,
+              "explanation_snapshot_misses": 208,
+              "explanation_snapshot_resets": 0,
+              "unit_parses": 2
+            }
+          },
+          {
+            "project": "linenoise-program",
+            "commit": "a473823d74b93eab2ba83480df16ed37617493f2",
+            "measurement": {
+              "units": 1,
+              "seconds": 0.495,
+              "clang_errors": 0,
+              "failures": 0,
+              "peak_rss_bytes": 147472384,
+              "by_id": {
+                "analysis-incomplete": 5,
+                "annotation-required": 3,
+                "checking-failed": 5,
+                "checking-incomplete": 1716,
+                "double-free": 3,
+                "null-dereference": 2
+              }
+            },
+            "returncode": 0,
+            "started": "2026-09-09T14:14:28.594124+00:00",
+            "command": [
+              "python3",
+              "scripts/corpus.py",
+              "--weavec",
+              "build/rfc20-release/bin/weavec",
+              "--manifest",
+              "scripts/corpus/rfc0015.json",
+              "--only",
+              "linenoise-program",
+              "--timeout",
+              "600.0",
+              "--measure-memory",
+              "--json",
+              "build/rfc20-validation/database-release-cache/cache-warm/linenoise-program.corpus.json",
+              "--weavec-arg=--checked",
+              "--weavec-arg=--checked-report=/Users/owencarey/Documents/weavefoundry/weavec/build/rfc20-validation/database-release-cache/cache-warm/linenoise-program.report.json",
+              "--weavec-arg=--analysis-stats=/Users/owencarey/Documents/weavefoundry/weavec/build/rfc20-validation/database-release-cache/cache-warm/linenoise-program.stats.json",
+              "--weavec-arg=--checked-report-format=compact",
+              "--weavec-arg=--analysis-cache=/Users/owencarey/Documents/weavefoundry/weavec/build/rfc20-validation/database-release-cache/cache/linenoise-program"
+            ],
+            "valid_checked_coverage": true,
+            "within_600_seconds": true,
+            "report": {
+              "present": true,
+              "bytes": 1568769,
+              "version": 3,
+              "sha256": "65ce5ed9679a239edc6c97a463d1cb39247a8dcd8d7432faa850a715899b1cce",
+              "semantic_hash_format": "ordered-function-sha256-v1",
+              "semantic_sha256": "7bb71f1adfa3070249f1e4b51c30feeefec24ae1ffab916f389d3031b49b81de",
+              "selected": 88,
+              "complete_selected": 20,
+              "totals": {
+                "functions": 130,
+                "selected": 88,
+                "complete": 24,
+                "trusted_complete": 3,
+                "incomplete": 106,
+                "deferred": 0
+              },
+              "complete_functions": [
+                [
+                  "build/corpus/linenoise-program/linenoise.c",
+                  "abFree"
+                ],
+                [
+                  "build/corpus/linenoise-program/linenoise.c",
+                  "abInit"
+                ],
+                [
+                  "build/corpus/linenoise-program/linenoise.c",
+                  "foldCountLines"
+                ],
+                [
+                  "build/corpus/linenoise-program/linenoise.c",
+                  "isCombiningMark"
+                ],
+                [
+                  "build/corpus/linenoise-program/linenoise.c",
+                  "isGraphemeExtend"
+                ],
+                [
+                  "build/corpus/linenoise-program/linenoise.c",
+                  "isRegionalIndicator"
+                ],
+                [
+                  "build/corpus/linenoise-program/linenoise.c",
+                  "isSkinToneModifier"
+                ],
+                [
+                  "build/corpus/linenoise-program/linenoise.c",
+                  "isVariationSelector"
+                ],
+                [
+                  "build/corpus/linenoise-program/linenoise.c",
+                  "isZWJ"
+                ],
+                [
+                  "build/corpus/linenoise-program/linenoise.c",
+                  "linenoiseEditGrow"
+                ],
+                [
+                  "build/corpus/linenoise-program/linenoise.c",
+                  "linenoiseFoldClear"
+                ],
+                [
+                  "build/corpus/linenoise-program/linenoise.c",
+                  "linenoiseFree"
+                ],
+                [
+                  "build/corpus/linenoise-program/linenoise.c",
+                  "linenoiseMaskModeDisable"
+                ],
+                [
+                  "build/corpus/linenoise-program/linenoise.c",
+                  "linenoiseMaskModeEnable"
+                ],
+                [
+                  "build/corpus/linenoise-program/linenoise.c",
+                  "linenoiseSetCompletionCallback"
+                ],
+                [
+                  "build/corpus/linenoise-program/linenoise.c",
+                  "linenoiseSetFreeHintsCallback"
+                ],
+                [
+                  "build/corpus/linenoise-program/linenoise.c",
+                  "linenoiseSetHintsCallback"
+                ],
+                [
+                  "build/corpus/linenoise-program/linenoise.c",
+                  "linenoiseSetMultiLine"
+                ],
+                [
+                  "build/corpus/linenoise-program/linenoise.c",
+                  "utf8ByteLen"
+                ],
+                [
+                  "build/corpus/linenoise-program/linenoise.c",
+                  "utf8CharWidth"
+                ]
+              ],
+              "limited_functions": 11,
+              "limited_functions_marked_complete": 0,
+              "complete_with_iteration_limit": []
+            },
+            "work_counts": {
+              "cache_hits": 2,
+              "cache_input_validations": 4,
+              "explanation_call_hits": 0,
+              "explanation_call_misses": 0,
+              "explanation_call_rejections": 0,
+              "explanation_call_resets": 0,
+              "explanation_entry_hits": 0,
+              "explanation_entry_misses": 17172,
+              "explanation_pool_resets": 0,
+              "explanation_snapshot_hits": 0,
+              "explanation_snapshot_misses": 158,
+              "explanation_snapshot_resets": 0,
+              "unit_parses": 2
+            }
+          },
+          {
+            "project": "jansson",
+            "commit": "851a2145e3256f2e67e5dfe24b0e456bf198b741",
+            "measurement": {
+              "units": 1,
+              "seconds": 2.382,
+              "clang_errors": 0,
+              "failures": 0,
+              "peak_rss_bytes": 565280768,
+              "by_id": {
+                "analysis-incomplete": 103,
+                "annotation-required": 5,
+                "checking-failed": 75,
+                "checking-incomplete": 7061,
+                "double-free": 43,
+                "invalid-release": 1,
+                "leak": 5,
+                "null-dereference": 3,
+                "use-after-free": 24
+              }
+            },
+            "returncode": 0,
+            "started": "2026-09-09T14:14:29.424740+00:00",
+            "command": [
+              "python3",
+              "scripts/corpus.py",
+              "--weavec",
+              "build/rfc20-release/bin/weavec",
+              "--manifest",
+              "scripts/corpus/rfc0015.json",
+              "--only",
+              "jansson",
+              "--timeout",
+              "600.0",
+              "--measure-memory",
+              "--json",
+              "build/rfc20-validation/database-release-cache/cache-warm/jansson.corpus.json",
+              "--weavec-arg=--checked",
+              "--weavec-arg=--checked-report=/Users/owencarey/Documents/weavefoundry/weavec/build/rfc20-validation/database-release-cache/cache-warm/jansson.report.json",
+              "--weavec-arg=--analysis-stats=/Users/owencarey/Documents/weavefoundry/weavec/build/rfc20-validation/database-release-cache/cache-warm/jansson.stats.json",
+              "--weavec-arg=--checked-report-format=compact",
+              "--weavec-arg=--analysis-cache=/Users/owencarey/Documents/weavefoundry/weavec/build/rfc20-validation/database-release-cache/cache/jansson"
+            ],
+            "valid_checked_coverage": true,
+            "within_600_seconds": true,
+            "report": {
+              "present": true,
+              "bytes": 4298804,
+              "version": 3,
+              "sha256": "fd0cdb0907ed738e5c64840fad8bb3faaa7fc446b049b19d97aa1f440930d762",
+              "semantic_hash_format": "ordered-function-sha256-v1",
+              "semantic_sha256": "8e54165bc94c5b7f4663b6c0d574b732d8c92b2264e9027f22afe715590e03f6",
+              "selected": 211,
+              "complete_selected": 18,
+              "totals": {
+                "functions": 475,
+                "selected": 211,
+                "complete": 46,
+                "trusted_complete": 0,
+                "incomplete": 429,
+                "deferred": 0
+              },
+              "complete_functions": [
+                [
+                  "build/corpus/jansson/src/hashtable.c",
+                  "bucket_is_empty"
+                ],
+                [
+                  "build/corpus/jansson/src/hashtable.c",
+                  "list_init"
+                ],
+                [
+                  "build/corpus/jansson/src/hashtable.c",
+                  "list_insert"
+                ],
+                [
+                  "build/corpus/jansson/src/hashtable.c",
+                  "list_remove"
+                ],
+                [
+                  "build/corpus/jansson/src/hashtable_seed.c",
+                  "buf_to_uint32"
+                ],
+                [
+                  "build/corpus/jansson/src/load.c",
+                  "stream_init"
+                ],
+                [
+                  "build/corpus/jansson/src/memory.c",
+                  "json_get_alloc_funcs"
+                ],
+                [
+                  "build/corpus/jansson/src/memory.c",
+                  "json_get_alloc_funcs2"
+                ],
+                [
+                  "build/corpus/jansson/src/memory.c",
+                  "json_set_alloc_funcs"
+                ],
+                [
+                  "build/corpus/jansson/src/memory.c",
+                  "json_set_alloc_funcs2"
+                ],
+                [
+                  "build/corpus/jansson/src/pack_unpack.c",
+                  "prev_token"
+                ],
+                [
+                  "build/corpus/jansson/src/strbuffer.c",
+                  "strbuffer_clear"
+                ],
+                [
+                  "build/corpus/jansson/src/strbuffer.c",
+                  "strbuffer_pop"
+                ],
+                [
+                  "build/corpus/jansson/src/strbuffer.c",
+                  "strbuffer_steal_value"
+                ],
+                [
+                  "build/corpus/jansson/src/strbuffer.c",
+                  "strbuffer_value"
+                ],
+                [
+                  "build/corpus/jansson/src/utf.c",
+                  "utf8_check_first"
+                ],
+                [
+                  "build/corpus/jansson/src/utf.c",
+                  "utf8_encode"
+                ],
+                [
+                  "build/corpus/jansson/src/version.c",
+                  "jansson_version_str"
+                ]
+              ],
+              "limited_functions": 1,
+              "limited_functions_marked_complete": 0,
+              "complete_with_iteration_limit": []
+            },
+            "work_counts": {
+              "cache_hits": 12,
+              "cache_input_validations": 24,
+              "explanation_call_hits": 0,
+              "explanation_call_misses": 0,
+              "explanation_call_rejections": 0,
+              "explanation_call_resets": 0,
+              "explanation_entry_hits": 0,
+              "explanation_entry_misses": 44809,
+              "explanation_pool_resets": 0,
+              "explanation_snapshot_hits": 0,
+              "explanation_snapshot_misses": 459,
+              "explanation_snapshot_resets": 0,
+              "unit_parses": 12
+            }
+          },
+          {
+            "project": "lua",
+            "commit": "7579fc9d7ed90240487251dfb69168f8e64e9294",
+            "measurement": {
+              "units": 1,
+              "seconds": 35.268,
+              "clang_errors": 0,
+              "failures": 1,
+              "peak_rss_bytes": 7069548544,
+              "by_id": {
+                "analysis-incomplete": 4162,
+                "annotation-required": 5,
+                "checking-failed": 33,
+                "checking-incomplete": 56926,
+                "invalid-release": 1,
+                "lifetime-too-short": 2,
+                "null-dereference": 100
+              }
+            },
+            "returncode": 2,
+            "started": "2026-09-09T14:14:32.676741+00:00",
+            "command": [
+              "python3",
+              "scripts/corpus.py",
+              "--weavec",
+              "build/rfc20-release/bin/weavec",
+              "--manifest",
+              "scripts/corpus/rfc0015.json",
+              "--only",
+              "lua",
+              "--timeout",
+              "600.0",
+              "--measure-memory",
+              "--json",
+              "build/rfc20-validation/database-release-cache/cache-warm/lua.corpus.json",
+              "--weavec-arg=--checked",
+              "--weavec-arg=--checked-report=/Users/owencarey/Documents/weavefoundry/weavec/build/rfc20-validation/database-release-cache/cache-warm/lua.report.json",
+              "--weavec-arg=--analysis-stats=/Users/owencarey/Documents/weavefoundry/weavec/build/rfc20-validation/database-release-cache/cache-warm/lua.stats.json",
+              "--weavec-arg=--checked-report-format=compact",
+              "--weavec-arg=--analysis-cache=/Users/owencarey/Documents/weavefoundry/weavec/build/rfc20-validation/database-release-cache/cache/lua"
+            ],
+            "valid_checked_coverage": true,
+            "within_600_seconds": true,
+            "report": {
+              "present": true,
+              "bytes": 179775110,
+              "version": 3,
+              "sha256": "637b6f59787b7940ff4fc0d0dddf99e567996c26c5fbfbd1fddd220173ecf31a",
+              "semantic_hash_format": "ordered-function-sha256-v1",
+              "semantic_sha256": "7956e96c115e85b57eef66766ccf16ab7c5c8a703ebaa1a8b830bdfa7b405f0e",
+              "selected": 1157,
+              "complete_selected": 40,
+              "totals": {
+                "functions": 1364,
+                "selected": 1157,
+                "complete": 64,
+                "trusted_complete": 2,
+                "incomplete": 1300,
+                "deferred": 0
+              },
+              "complete_functions": [
+                [
+                  "build/corpus/lua/lapi.c",
+                  "lua_atpanic"
+                ],
+                [
+                  "build/corpus/lua/lapi.c",
+                  "lua_getallocf"
+                ],
+                [
+                  "build/corpus/lua/lapi.c",
+                  "lua_setallocf"
+                ],
+                [
+                  "build/corpus/lua/lapi.c",
+                  "lua_setwarnf"
+                ],
+                [
+                  "build/corpus/lua/lapi.c",
+                  "lua_status"
+                ],
+                [
+                  "build/corpus/lua/lapi.c",
+                  "lua_version"
+                ],
+                [
+                  "build/corpus/lua/lauxlib.c",
+                  "luaL_alloc"
+                ],
+                [
+                  "build/corpus/lua/lbaselib.c",
+                  "pairscont"
+                ],
+                [
+                  "build/corpus/lua/lcode.c",
+                  "fitsBx"
+                ],
+                [
+                  "build/corpus/lua/lcode.c",
+                  "fitsC"
+                ],
+                [
+                  "build/corpus/lua/lcode.c",
+                  "isKint"
+                ],
+                [
+                  "build/corpus/lua/lcode.c",
+                  "luaK_getlabel"
+                ],
+                [
+                  "build/corpus/lua/lcode.c",
+                  "luaK_vapar2local"
+                ],
+                [
+                  "build/corpus/lua/lcode.c",
+                  "previousinstruction"
+                ],
+                [
+                  "build/corpus/lua/ldebug.c",
+                  "filterpc"
+                ],
+                [
+                  "build/corpus/lua/ldebug.c",
+                  "lua_gethookcount"
+                ],
+                [
+                  "build/corpus/lua/ldo.c",
+                  "lua_isyieldable"
+                ],
+                [
+                  "build/corpus/lua/lfunc.c",
+                  "luaF_protosize"
+                ],
+                [
+                  "build/corpus/lua/lgc.c",
+                  "checkpointer"
+                ],
+                [
+                  "build/corpus/lua/lgc.c",
+                  "cleargraylists"
+                ],
+                [
+                  "build/corpus/lua/lgc.c",
+                  "linkgclist_"
+                ],
+                [
+                  "build/corpus/lua/lmathlib.c",
+                  "I2d"
+                ],
+                [
+                  "build/corpus/lua/loadlib.c",
+                  "freelib"
+                ],
+                [
+                  "build/corpus/lua/loadlib.c",
+                  "lsys_unloadlib"
+                ],
+                [
+                  "build/corpus/lua/lobject.c",
+                  "initbuff"
+                ],
+                [
+                  "build/corpus/lua/lparser.c",
+                  "enterblock"
+                ],
+                [
+                  "build/corpus/lua/lparser.c",
+                  "getunopr"
+                ],
+                [
+                  "build/corpus/lua/lparser.c",
+                  "maxtostore"
+                ],
+                [
+                  "build/corpus/lua/lstrlib.c",
+                  "digit"
+                ],
+                [
+                  "build/corpus/lua/lstrlib.c",
+                  "prepstate"
+                ],
+                [
+                  "build/corpus/lua/lstrlib.c",
+                  "reprepstate"
+                ],
+                [
+                  "build/corpus/lua/ltable.c",
+                  "arraykeyisempty"
+                ],
+                [
+                  "build/corpus/lua/ltable.c",
+                  "checkrange"
+                ],
+                [
+                  "build/corpus/lua/ltable.c",
+                  "concretesize"
+                ],
+                [
+                  "build/corpus/lua/ltable.c",
+                  "exchangehashpart"
+                ],
+                [
+                  "build/corpus/lua/lua.c",
+                  "handle_luainit"
+                ],
+                [
+                  "build/corpus/lua/lua.c",
+                  "lua_freeline"
+                ],
+                [
+                  "build/corpus/lua/lua.c",
+                  "no_getenv"
+                ],
+                [
+                  "build/corpus/lua/lvm.c",
+                  "luaV_shiftl"
+                ],
+                [
+                  "build/corpus/lua/lzio.c",
+                  "luaZ_init"
+                ]
+              ],
+              "limited_functions": 635,
+              "limited_functions_marked_complete": 0,
+              "complete_with_iteration_limit": []
+            },
+            "work_counts": {
+              "cache_hits": 34,
+              "cache_input_validations": 68,
+              "explanation_call_hits": 0,
+              "explanation_call_misses": 0,
+              "explanation_call_rejections": 0,
+              "explanation_call_resets": 0,
+              "explanation_entry_hits": 0,
+              "explanation_entry_misses": 1652449,
+              "explanation_pool_resets": 6,
+              "explanation_snapshot_hits": 2,
+              "explanation_snapshot_misses": 1413,
+              "explanation_snapshot_resets": 0,
+              "unit_parses": 34
+            }
+          }
+        ]
+      }
+    ],
+    "checks": [
+      {
+        "project": "log.c",
+        "equivalent": true,
+        "report_reduction": 3.8626519012152096,
+        "function_analyses": 0,
+        "cache_hits": 1,
+        "passed": true
+      },
+      {
+        "project": "cJSON-program",
+        "equivalent": true,
+        "report_reduction": 6.652338397987771,
+        "function_analyses": 0,
+        "cache_hits": 2,
+        "passed": true
+      },
+      {
+        "project": "linenoise-program",
+        "equivalent": true,
+        "report_reduction": 7.5251365879871415,
+        "function_analyses": 0,
+        "cache_hits": 2,
+        "passed": true
+      },
+      {
+        "project": "jansson",
+        "equivalent": true,
+        "report_reduction": 10.131160434390589,
+        "function_analyses": 0,
+        "cache_hits": 12,
+        "passed": true
+      },
+      {
+        "project": "lua",
+        "equivalent": true,
+        "report_reduction": 15.319643381110989,
+        "function_analyses": 0,
+        "cache_hits": 34,
+        "passed": true
+      }
+    ],
+    "passed": true
+  },
+  "ordinary": {
+    "baseline": {
+      "valid": true,
+      "seconds": [
+        298.163,
+        297.995,
+        297.545
+      ],
+      "peak_rss_bytes": [
+        698433536,
+        698122240,
+        698105856
+      ],
+      "median_seconds": 297.995,
+      "median_peak_rss_bytes": 698122240
+    },
+    "final": {
+      "valid": true,
+      "seconds": [
+        169.643,
+        170.077,
+        169.563
+      ],
+      "peak_rss_bytes": [
+        664109056,
+        661946368,
+        670826496
+      ],
+      "median_seconds": 169.643,
+      "median_peak_rss_bytes": 664109056
+    },
+    "time_ratio": 0.5692813637812715,
+    "memory_ratio": 0.9512790424782914,
+    "passed": true,
+    "observations": [
+      {
+        "name": "baseline-1",
+        "binary_sha256": "c667451d6f75cecb5ad83e76389af17075e91052649c01d266e906c611a37e4d",
+        "projects": [
+          {
+            "project": "log.c",
+            "commit": "f9ea34994bd58ed342d2245cd4110bb5c6790153",
+            "measurement": {
+              "units": 1,
+              "seconds": 0.504,
+              "clang_errors": 0,
+              "failures": 0,
+              "peak_rss_bytes": 50085888,
+              "by_id": {
+                "annotation-required": 2
+              }
+            },
+            "returncode": 0,
+            "started": "2026-09-09T12:14:51.162481+00:00",
+            "command": [
+              "python3",
+              "scripts/corpus.py",
+              "--weavec",
+              "build/rfc20-validation/weavec-before",
+              "--manifest",
+              "scripts/corpus/rfc0015.json",
+              "--only",
+              "log.c",
+              "--timeout",
+              "600.0",
+              "--measure-memory",
+              "--json",
+              "build/rfc20-validation/import-keys-ordinary/baseline-1/log.c.corpus.json"
+            ]
+          },
+          {
+            "project": "cJSON-program",
+            "commit": "fb16e5cf358798aabb049655975cde8427101056",
+            "measurement": {
+              "units": 1,
+              "seconds": 1.872,
+              "clang_errors": 0,
+              "failures": 0,
+              "peak_rss_bytes": 62767104,
+              "by_id": {
+                "analysis-incomplete": 3,
+                "annotation-required": 3,
+                "null-dereference": 26
+              }
+            },
+            "returncode": 0,
+            "started": "2026-09-09T12:14:51.777618+00:00",
+            "command": [
+              "python3",
+              "scripts/corpus.py",
+              "--weavec",
+              "build/rfc20-validation/weavec-before",
+              "--manifest",
+              "scripts/corpus/rfc0015.json",
+              "--only",
+              "cJSON-program",
+              "--timeout",
+              "600.0",
+              "--measure-memory",
+              "--json",
+              "build/rfc20-validation/import-keys-ordinary/baseline-1/cJSON-program.corpus.json"
+            ]
+          },
+          {
+            "project": "linenoise-program",
+            "commit": "a473823d74b93eab2ba83480df16ed37617493f2",
+            "measurement": {
+              "units": 1,
+              "seconds": 0.7,
+              "clang_errors": 0,
+              "failures": 0,
+              "peak_rss_bytes": 56999936,
+              "by_id": {
+                "analysis-incomplete": 17,
+                "annotation-required": 3,
+                "double-free": 1,
+                "leak": 1,
+                "null-dereference": 4
+              }
+            },
+            "returncode": 0,
+            "started": "2026-09-09T12:14:53.751670+00:00",
+            "command": [
+              "python3",
+              "scripts/corpus.py",
+              "--weavec",
+              "build/rfc20-validation/weavec-before",
+              "--manifest",
+              "scripts/corpus/rfc0015.json",
+              "--only",
+              "linenoise-program",
+              "--timeout",
+              "600.0",
+              "--measure-memory",
+              "--json",
+              "build/rfc20-validation/import-keys-ordinary/baseline-1/linenoise-program.corpus.json"
+            ]
+          },
+          {
+            "project": "jansson",
+            "commit": "851a2145e3256f2e67e5dfe24b0e456bf198b741",
+            "measurement": {
+              "units": 1,
+              "seconds": 3.547,
+              "clang_errors": 0,
+              "failures": 0,
+              "peak_rss_bytes": 63815680,
+              "by_id": {
+                "analysis-incomplete": 53,
+                "annotation-required": 4,
+                "double-free": 47,
+                "invalid-release": 2,
+                "null-dereference": 3,
+                "use-after-free": 32
+              }
+            },
+            "returncode": 0,
+            "started": "2026-09-09T12:14:54.575253+00:00",
+            "command": [
+              "python3",
+              "scripts/corpus.py",
+              "--weavec",
+              "build/rfc20-validation/weavec-before",
+              "--manifest",
+              "scripts/corpus/rfc0015.json",
+              "--only",
+              "jansson",
+              "--timeout",
+              "600.0",
+              "--measure-memory",
+              "--json",
+              "build/rfc20-validation/import-keys-ordinary/baseline-1/jansson.corpus.json"
+            ]
+          },
+          {
+            "project": "lua",
+            "commit": "7579fc9d7ed90240487251dfb69168f8e64e9294",
+            "measurement": {
+              "units": 1,
+              "seconds": 291.54,
+              "clang_errors": 0,
+              "failures": 0,
+              "peak_rss_bytes": 698433536,
+              "by_id": {
+                "analysis-incomplete": 3755,
+                "annotation-required": 5,
+                "invalid-release": 1,
+                "lifetime-too-short": 2,
+                "null-dereference": 104
+              }
+            },
+            "returncode": 0,
+            "started": "2026-09-09T12:14:58.227450+00:00",
+            "command": [
+              "python3",
+              "scripts/corpus.py",
+              "--weavec",
+              "build/rfc20-validation/weavec-before",
+              "--manifest",
+              "scripts/corpus/rfc0015.json",
+              "--only",
+              "lua",
+              "--timeout",
+              "600.0",
+              "--measure-memory",
+              "--json",
+              "build/rfc20-validation/import-keys-ordinary/baseline-1/lua.corpus.json"
+            ]
+          }
+        ]
+      },
+      {
+        "name": "baseline-2",
+        "binary_sha256": "c667451d6f75cecb5ad83e76389af17075e91052649c01d266e906c611a37e4d",
+        "projects": [
+          {
+            "project": "log.c",
+            "commit": "f9ea34994bd58ed342d2245cd4110bb5c6790153",
+            "measurement": {
+              "units": 1,
+              "seconds": 0.084,
+              "clang_errors": 0,
+              "failures": 0,
+              "peak_rss_bytes": 50151424,
+              "by_id": {
+                "annotation-required": 2
+              }
+            },
+            "returncode": 0,
+            "started": "2026-09-09T12:19:50.052005+00:00",
+            "command": [
+              "python3",
+              "scripts/corpus.py",
+              "--weavec",
+              "build/rfc20-validation/weavec-before",
+              "--manifest",
+              "scripts/corpus/rfc0015.json",
+              "--only",
+              "log.c",
+              "--timeout",
+              "600.0",
+              "--measure-memory",
+              "--json",
+              "build/rfc20-validation/import-keys-ordinary/baseline-2/log.c.corpus.json"
+            ]
+          },
+          {
+            "project": "cJSON-program",
+            "commit": "fb16e5cf358798aabb049655975cde8427101056",
+            "measurement": {
+              "units": 1,
+              "seconds": 1.968,
+              "clang_errors": 0,
+              "failures": 0,
+              "peak_rss_bytes": 62390272,
+              "by_id": {
+                "analysis-incomplete": 3,
+                "annotation-required": 3,
+                "null-dereference": 26
+              }
+            },
+            "returncode": 0,
+            "started": "2026-09-09T12:19:50.243880+00:00",
+            "command": [
+              "python3",
+              "scripts/corpus.py",
+              "--weavec",
+              "build/rfc20-validation/weavec-before",
+              "--manifest",
+              "scripts/corpus/rfc0015.json",
+              "--only",
+              "cJSON-program",
+              "--timeout",
+              "600.0",
+              "--measure-memory",
+              "--json",
+              "build/rfc20-validation/import-keys-ordinary/baseline-2/cJSON-program.corpus.json"
+            ]
+          },
+          {
+            "project": "linenoise-program",
+            "commit": "a473823d74b93eab2ba83480df16ed37617493f2",
+            "measurement": {
+              "units": 1,
+              "seconds": 0.682,
+              "clang_errors": 0,
+              "failures": 0,
+              "peak_rss_bytes": 56721408,
+              "by_id": {
+                "analysis-incomplete": 17,
+                "annotation-required": 3,
+                "double-free": 1,
+                "leak": 1,
+                "null-dereference": 4
+              }
+            },
+            "returncode": 0,
+            "started": "2026-09-09T12:19:52.322919+00:00",
+            "command": [
+              "python3",
+              "scripts/corpus.py",
+              "--weavec",
+              "build/rfc20-validation/weavec-before",
+              "--manifest",
+              "scripts/corpus/rfc0015.json",
+              "--only",
+              "linenoise-program",
+              "--timeout",
+              "600.0",
+              "--measure-memory",
+              "--json",
+              "build/rfc20-validation/import-keys-ordinary/baseline-2/linenoise-program.corpus.json"
+            ]
+          },
+          {
+            "project": "jansson",
+            "commit": "851a2145e3256f2e67e5dfe24b0e456bf198b741",
+            "measurement": {
+              "units": 1,
+              "seconds": 3.535,
+              "clang_errors": 0,
+              "failures": 0,
+              "peak_rss_bytes": 63700992,
+              "by_id": {
+                "analysis-incomplete": 53,
+                "annotation-required": 4,
+                "double-free": 47,
+                "invalid-release": 2,
+                "null-dereference": 3,
+                "use-after-free": 32
+              }
+            },
+            "returncode": 0,
+            "started": "2026-09-09T12:19:53.112662+00:00",
+            "command": [
+              "python3",
+              "scripts/corpus.py",
+              "--weavec",
+              "build/rfc20-validation/weavec-before",
+              "--manifest",
+              "scripts/corpus/rfc0015.json",
+              "--only",
+              "jansson",
+              "--timeout",
+              "600.0",
+              "--measure-memory",
+              "--json",
+              "build/rfc20-validation/import-keys-ordinary/baseline-2/jansson.corpus.json"
+            ]
+          },
+          {
+            "project": "lua",
+            "commit": "7579fc9d7ed90240487251dfb69168f8e64e9294",
+            "measurement": {
+              "units": 1,
+              "seconds": 291.726,
+              "clang_errors": 0,
+              "failures": 0,
+              "peak_rss_bytes": 698122240,
+              "by_id": {
+                "analysis-incomplete": 3755,
+                "annotation-required": 5,
+                "invalid-release": 1,
+                "lifetime-too-short": 2,
+                "null-dereference": 104
+              }
+            },
+            "returncode": 0,
+            "started": "2026-09-09T12:19:56.747455+00:00",
+            "command": [
+              "python3",
+              "scripts/corpus.py",
+              "--weavec",
+              "build/rfc20-validation/weavec-before",
+              "--manifest",
+              "scripts/corpus/rfc0015.json",
+              "--only",
+              "lua",
+              "--timeout",
+              "600.0",
+              "--measure-memory",
+              "--json",
+              "build/rfc20-validation/import-keys-ordinary/baseline-2/lua.corpus.json"
+            ]
+          }
+        ]
+      },
+      {
+        "name": "baseline-3",
+        "binary_sha256": "c667451d6f75cecb5ad83e76389af17075e91052649c01d266e906c611a37e4d",
+        "projects": [
+          {
+            "project": "log.c",
+            "commit": "f9ea34994bd58ed342d2245cd4110bb5c6790153",
+            "measurement": {
+              "units": 1,
+              "seconds": 0.085,
+              "clang_errors": 0,
+              "failures": 0,
+              "peak_rss_bytes": 50102272,
+              "by_id": {
+                "annotation-required": 2
+              }
+            },
+            "returncode": 0,
+            "started": "2026-09-09T12:24:48.770080+00:00",
+            "command": [
+              "python3",
+              "scripts/corpus.py",
+              "--weavec",
+              "build/rfc20-validation/weavec-before",
+              "--manifest",
+              "scripts/corpus/rfc0015.json",
+              "--only",
+              "log.c",
+              "--timeout",
+              "600.0",
+              "--measure-memory",
+              "--json",
+              "build/rfc20-validation/import-keys-ordinary/baseline-3/log.c.corpus.json"
+            ]
+          },
+          {
+            "project": "cJSON-program",
+            "commit": "fb16e5cf358798aabb049655975cde8427101056",
+            "measurement": {
+              "units": 1,
+              "seconds": 1.814,
+              "clang_errors": 0,
+              "failures": 0,
+              "peak_rss_bytes": 62423040,
+              "by_id": {
+                "analysis-incomplete": 3,
+                "annotation-required": 3,
+                "null-dereference": 26
+              }
+            },
+            "returncode": 0,
+            "started": "2026-09-09T12:24:48.977335+00:00",
+            "command": [
+              "python3",
+              "scripts/corpus.py",
+              "--weavec",
+              "build/rfc20-validation/weavec-before",
+              "--manifest",
+              "scripts/corpus/rfc0015.json",
+              "--only",
+              "cJSON-program",
+              "--timeout",
+              "600.0",
+              "--measure-memory",
+              "--json",
+              "build/rfc20-validation/import-keys-ordinary/baseline-3/cJSON-program.corpus.json"
+            ]
+          },
+          {
+            "project": "linenoise-program",
+            "commit": "a473823d74b93eab2ba83480df16ed37617493f2",
+            "measurement": {
+              "units": 1,
+              "seconds": 0.681,
+              "clang_errors": 0,
+              "failures": 0,
+              "peak_rss_bytes": 56721408,
+              "by_id": {
+                "analysis-incomplete": 17,
+                "annotation-required": 3,
+                "double-free": 1,
+                "leak": 1,
+                "null-dereference": 4
+              }
+            },
+            "returncode": 0,
+            "started": "2026-09-09T12:24:50.889108+00:00",
+            "command": [
+              "python3",
+              "scripts/corpus.py",
+              "--weavec",
+              "build/rfc20-validation/weavec-before",
+              "--manifest",
+              "scripts/corpus/rfc0015.json",
+              "--only",
+              "linenoise-program",
+              "--timeout",
+              "600.0",
+              "--measure-memory",
+              "--json",
+              "build/rfc20-validation/import-keys-ordinary/baseline-3/linenoise-program.corpus.json"
+            ]
+          },
+          {
+            "project": "jansson",
+            "commit": "851a2145e3256f2e67e5dfe24b0e456bf198b741",
+            "measurement": {
+              "units": 1,
+              "seconds": 3.501,
+              "clang_errors": 0,
+              "failures": 0,
+              "peak_rss_bytes": 63602688,
+              "by_id": {
+                "analysis-incomplete": 53,
+                "annotation-required": 4,
+                "double-free": 47,
+                "invalid-release": 2,
+                "null-dereference": 3,
+                "use-after-free": 32
+              }
+            },
+            "returncode": 0,
+            "started": "2026-09-09T12:24:51.653169+00:00",
+            "command": [
+              "python3",
+              "scripts/corpus.py",
+              "--weavec",
+              "build/rfc20-validation/weavec-before",
+              "--manifest",
+              "scripts/corpus/rfc0015.json",
+              "--only",
+              "jansson",
+              "--timeout",
+              "600.0",
+              "--measure-memory",
+              "--json",
+              "build/rfc20-validation/import-keys-ordinary/baseline-3/jansson.corpus.json"
+            ]
+          },
+          {
+            "project": "lua",
+            "commit": "7579fc9d7ed90240487251dfb69168f8e64e9294",
+            "measurement": {
+              "units": 1,
+              "seconds": 291.464,
+              "clang_errors": 0,
+              "failures": 0,
+              "peak_rss_bytes": 698105856,
+              "by_id": {
+                "analysis-incomplete": 3755,
+                "annotation-required": 5,
+                "invalid-release": 1,
+                "lifetime-too-short": 2,
+                "null-dereference": 104
+              }
+            },
+            "returncode": 0,
+            "started": "2026-09-09T12:24:55.284980+00:00",
+            "command": [
+              "python3",
+              "scripts/corpus.py",
+              "--weavec",
+              "build/rfc20-validation/weavec-before",
+              "--manifest",
+              "scripts/corpus/rfc0015.json",
+              "--only",
+              "lua",
+              "--timeout",
+              "600.0",
+              "--measure-memory",
+              "--json",
+              "build/rfc20-validation/import-keys-ordinary/baseline-3/lua.corpus.json"
+            ]
+          }
+        ]
+      },
+      {
+        "name": "final-1",
+        "binary_sha256": "bb36714315dafd91508366ed04a3e3c5e5149a21e93b0f8941d599c027c031ce",
+        "projects": [
+          {
+            "project": "log.c",
+            "commit": "f9ea34994bd58ed342d2245cd4110bb5c6790153",
+            "measurement": {
+              "units": 1,
+              "seconds": 0.101,
+              "clang_errors": 0,
+              "failures": 0,
+              "peak_rss_bytes": 50528256,
+              "by_id": {
+                "annotation-required": 2
+              }
+            },
+            "returncode": 0,
+            "started": "2026-09-09T13:56:51.399163+00:00",
+            "command": [
+              "python3",
+              "scripts/corpus.py",
+              "--weavec",
+              "build/rfc20-release/bin/weavec",
+              "--manifest",
+              "scripts/corpus/rfc0015.json",
+              "--only",
+              "log.c",
+              "--timeout",
+              "600",
+              "--measure-memory",
+              "--json",
+              "build/rfc20-validation/database-release-final/final-1/log.c.corpus.json"
+            ]
+          },
+          {
+            "project": "cJSON-program",
+            "commit": "fb16e5cf358798aabb049655975cde8427101056",
+            "measurement": {
+              "units": 1,
+              "seconds": 1.335,
+              "clang_errors": 0,
+              "failures": 0,
+              "peak_rss_bytes": 71516160,
+              "by_id": {
+                "analysis-incomplete": 3,
+                "annotation-required": 3,
+                "null-dereference": 26
+              }
+            },
+            "returncode": 0,
+            "started": "2026-09-09T13:56:51.593436+00:00",
+            "command": [
+              "python3",
+              "scripts/corpus.py",
+              "--weavec",
+              "build/rfc20-release/bin/weavec",
+              "--manifest",
+              "scripts/corpus/rfc0015.json",
+              "--only",
+              "cJSON-program",
+              "--timeout",
+              "600",
+              "--measure-memory",
+              "--json",
+              "build/rfc20-validation/database-release-final/final-1/cJSON-program.corpus.json"
+            ]
+          },
+          {
+            "project": "linenoise-program",
+            "commit": "a473823d74b93eab2ba83480df16ed37617493f2",
+            "measurement": {
+              "units": 1,
+              "seconds": 0.639,
+              "clang_errors": 0,
+              "failures": 0,
+              "peak_rss_bytes": 64536576,
+              "by_id": {
+                "analysis-incomplete": 17,
+                "annotation-required": 3,
+                "double-free": 1,
+                "leak": 1,
+                "null-dereference": 4
+              }
+            },
+            "returncode": 0,
+            "started": "2026-09-09T13:56:53.045272+00:00",
+            "command": [
+              "python3",
+              "scripts/corpus.py",
+              "--weavec",
+              "build/rfc20-release/bin/weavec",
+              "--manifest",
+              "scripts/corpus/rfc0015.json",
+              "--only",
+              "linenoise-program",
+              "--timeout",
+              "600",
+              "--measure-memory",
+              "--json",
+              "build/rfc20-validation/database-release-final/final-1/linenoise-program.corpus.json"
+            ]
+          },
+          {
+            "project": "jansson",
+            "commit": "851a2145e3256f2e67e5dfe24b0e456bf198b741",
+            "measurement": {
+              "units": 1,
+              "seconds": 2.396,
+              "clang_errors": 0,
+              "failures": 0,
+              "peak_rss_bytes": 112427008,
+              "by_id": {
+                "analysis-incomplete": 53,
+                "annotation-required": 4,
+                "double-free": 47,
+                "invalid-release": 2,
+                "null-dereference": 3,
+                "use-after-free": 32
+              }
+            },
+            "returncode": 0,
+            "started": "2026-09-09T13:56:53.774925+00:00",
+            "command": [
+              "python3",
+              "scripts/corpus.py",
+              "--weavec",
+              "build/rfc20-release/bin/weavec",
+              "--manifest",
+              "scripts/corpus/rfc0015.json",
+              "--only",
+              "jansson",
+              "--timeout",
+              "600",
+              "--measure-memory",
+              "--json",
+              "build/rfc20-validation/database-release-final/final-1/jansson.corpus.json"
+            ]
+          },
+          {
+            "project": "lua",
+            "commit": "7579fc9d7ed90240487251dfb69168f8e64e9294",
+            "measurement": {
+              "units": 1,
+              "seconds": 165.172,
+              "clang_errors": 0,
+              "failures": 0,
+              "peak_rss_bytes": 664109056,
+              "by_id": {
+                "analysis-incomplete": 3755,
+                "annotation-required": 5,
+                "invalid-release": 1,
+                "lifetime-too-short": 2,
+                "null-dereference": 104
+              }
+            },
+            "returncode": 0,
+            "started": "2026-09-09T13:56:56.271253+00:00",
+            "command": [
+              "python3",
+              "scripts/corpus.py",
+              "--weavec",
+              "build/rfc20-release/bin/weavec",
+              "--manifest",
+              "scripts/corpus/rfc0015.json",
+              "--only",
+              "lua",
+              "--timeout",
+              "600",
+              "--measure-memory",
+              "--json",
+              "build/rfc20-validation/database-release-final/final-1/lua.corpus.json"
+            ]
+          }
+        ]
+      },
+      {
+        "name": "final-2",
+        "binary_sha256": "bb36714315dafd91508366ed04a3e3c5e5149a21e93b0f8941d599c027c031ce",
+        "projects": [
+          {
+            "project": "log.c",
+            "commit": "f9ea34994bd58ed342d2245cd4110bb5c6790153",
+            "measurement": {
+              "units": 1,
+              "seconds": 0.083,
+              "clang_errors": 0,
+              "failures": 0,
+              "peak_rss_bytes": 50397184,
+              "by_id": {
+                "annotation-required": 2
+              }
+            },
+            "returncode": 0,
+            "started": "2026-09-09T13:59:41.697814+00:00",
+            "command": [
+              "python3",
+              "scripts/corpus.py",
+              "--weavec",
+              "build/rfc20-release/bin/weavec",
+              "--manifest",
+              "scripts/corpus/rfc0015.json",
+              "--only",
+              "log.c",
+              "--timeout",
+              "600",
+              "--measure-memory",
+              "--json",
+              "build/rfc20-validation/database-release-final/final-2/log.c.corpus.json"
+            ]
+          },
+          {
+            "project": "cJSON-program",
+            "commit": "fb16e5cf358798aabb049655975cde8427101056",
+            "measurement": {
+              "units": 1,
+              "seconds": 1.314,
+              "clang_errors": 0,
+              "failures": 0,
+              "peak_rss_bytes": 71385088,
+              "by_id": {
+                "analysis-incomplete": 3,
+                "annotation-required": 3,
+                "null-dereference": 26
+              }
+            },
+            "returncode": 0,
+            "started": "2026-09-09T13:59:41.888482+00:00",
+            "command": [
+              "python3",
+              "scripts/corpus.py",
+              "--weavec",
+              "build/rfc20-release/bin/weavec",
+              "--manifest",
+              "scripts/corpus/rfc0015.json",
+              "--only",
+              "cJSON-program",
+              "--timeout",
+              "600",
+              "--measure-memory",
+              "--json",
+              "build/rfc20-validation/database-release-final/final-2/cJSON-program.corpus.json"
+            ]
+          },
+          {
+            "project": "linenoise-program",
+            "commit": "a473823d74b93eab2ba83480df16ed37617493f2",
+            "measurement": {
+              "units": 1,
+              "seconds": 0.627,
+              "clang_errors": 0,
+              "failures": 0,
+              "peak_rss_bytes": 64471040,
+              "by_id": {
+                "analysis-incomplete": 17,
+                "annotation-required": 3,
+                "double-free": 1,
+                "leak": 1,
+                "null-dereference": 4
+              }
+            },
+            "returncode": 0,
+            "started": "2026-09-09T13:59:43.283044+00:00",
+            "command": [
+              "python3",
+              "scripts/corpus.py",
+              "--weavec",
+              "build/rfc20-release/bin/weavec",
+              "--manifest",
+              "scripts/corpus/rfc0015.json",
+              "--only",
+              "linenoise-program",
+              "--timeout",
+              "600",
+              "--measure-memory",
+              "--json",
+              "build/rfc20-validation/database-release-final/final-2/linenoise-program.corpus.json"
+            ]
+          },
+          {
+            "project": "jansson",
+            "commit": "851a2145e3256f2e67e5dfe24b0e456bf198b741",
+            "measurement": {
+              "units": 1,
+              "seconds": 2.392,
+              "clang_errors": 0,
+              "failures": 0,
+              "peak_rss_bytes": 112181248,
+              "by_id": {
+                "analysis-incomplete": 53,
+                "annotation-required": 4,
+                "double-free": 47,
+                "invalid-release": 2,
+                "null-dereference": 3,
+                "use-after-free": 32
+              }
+            },
+            "returncode": 0,
+            "started": "2026-09-09T13:59:43.987226+00:00",
+            "command": [
+              "python3",
+              "scripts/corpus.py",
+              "--weavec",
+              "build/rfc20-release/bin/weavec",
+              "--manifest",
+              "scripts/corpus/rfc0015.json",
+              "--only",
+              "jansson",
+              "--timeout",
+              "600",
+              "--measure-memory",
+              "--json",
+              "build/rfc20-validation/database-release-final/final-2/jansson.corpus.json"
+            ]
+          },
+          {
+            "project": "lua",
+            "commit": "7579fc9d7ed90240487251dfb69168f8e64e9294",
+            "measurement": {
+              "units": 1,
+              "seconds": 165.661,
+              "clang_errors": 0,
+              "failures": 0,
+              "peak_rss_bytes": 661946368,
+              "by_id": {
+                "analysis-incomplete": 3755,
+                "annotation-required": 5,
+                "invalid-release": 1,
+                "lifetime-too-short": 2,
+                "null-dereference": 104
+              }
+            },
+            "returncode": 0,
+            "started": "2026-09-09T13:59:46.506405+00:00",
+            "command": [
+              "python3",
+              "scripts/corpus.py",
+              "--weavec",
+              "build/rfc20-release/bin/weavec",
+              "--manifest",
+              "scripts/corpus/rfc0015.json",
+              "--only",
+              "lua",
+              "--timeout",
+              "600",
+              "--measure-memory",
+              "--json",
+              "build/rfc20-validation/database-release-final/final-2/lua.corpus.json"
+            ]
+          }
+        ]
+      },
+      {
+        "name": "final-3",
+        "binary_sha256": "bb36714315dafd91508366ed04a3e3c5e5149a21e93b0f8941d599c027c031ce",
+        "projects": [
+          {
+            "project": "log.c",
+            "commit": "f9ea34994bd58ed342d2245cd4110bb5c6790153",
+            "measurement": {
+              "units": 1,
+              "seconds": 0.083,
+              "clang_errors": 0,
+              "failures": 0,
+              "peak_rss_bytes": 50495488,
+              "by_id": {
+                "annotation-required": 2
+              }
+            },
+            "returncode": 0,
+            "started": "2026-09-09T14:02:32.435933+00:00",
+            "command": [
+              "python3",
+              "scripts/corpus.py",
+              "--weavec",
+              "build/rfc20-release/bin/weavec",
+              "--manifest",
+              "scripts/corpus/rfc0015.json",
+              "--only",
+              "log.c",
+              "--timeout",
+              "600",
+              "--measure-memory",
+              "--json",
+              "build/rfc20-validation/database-release-final/final-3/log.c.corpus.json"
+            ]
+          },
+          {
+            "project": "cJSON-program",
+            "commit": "fb16e5cf358798aabb049655975cde8427101056",
+            "measurement": {
+              "units": 1,
+              "seconds": 1.311,
+              "clang_errors": 0,
+              "failures": 0,
+              "peak_rss_bytes": 71319552,
+              "by_id": {
+                "analysis-incomplete": 3,
+                "annotation-required": 3,
+                "null-dereference": 26
+              }
+            },
+            "returncode": 0,
+            "started": "2026-09-09T14:02:32.638156+00:00",
+            "command": [
+              "python3",
+              "scripts/corpus.py",
+              "--weavec",
+              "build/rfc20-release/bin/weavec",
+              "--manifest",
+              "scripts/corpus/rfc0015.json",
+              "--only",
+              "cJSON-program",
+              "--timeout",
+              "600",
+              "--measure-memory",
+              "--json",
+              "build/rfc20-validation/database-release-final/final-3/cJSON-program.corpus.json"
+            ]
+          },
+          {
+            "project": "linenoise-program",
+            "commit": "a473823d74b93eab2ba83480df16ed37617493f2",
+            "measurement": {
+              "units": 1,
+              "seconds": 0.629,
+              "clang_errors": 0,
+              "failures": 0,
+              "peak_rss_bytes": 64389120,
+              "by_id": {
+                "analysis-incomplete": 17,
+                "annotation-required": 3,
+                "double-free": 1,
+                "leak": 1,
+                "null-dereference": 4
+              }
+            },
+            "returncode": 0,
+            "started": "2026-09-09T14:02:34.072237+00:00",
+            "command": [
+              "python3",
+              "scripts/corpus.py",
+              "--weavec",
+              "build/rfc20-release/bin/weavec",
+              "--manifest",
+              "scripts/corpus/rfc0015.json",
+              "--only",
+              "linenoise-program",
+              "--timeout",
+              "600",
+              "--measure-memory",
+              "--json",
+              "build/rfc20-validation/database-release-final/final-3/linenoise-program.corpus.json"
+            ]
+          },
+          {
+            "project": "jansson",
+            "commit": "851a2145e3256f2e67e5dfe24b0e456bf198b741",
+            "measurement": {
+              "units": 1,
+              "seconds": 2.379,
+              "clang_errors": 0,
+              "failures": 0,
+              "peak_rss_bytes": 112214016,
+              "by_id": {
+                "analysis-incomplete": 53,
+                "annotation-required": 4,
+                "double-free": 47,
+                "invalid-release": 2,
+                "null-dereference": 3,
+                "use-after-free": 32
+              }
+            },
+            "returncode": 0,
+            "started": "2026-09-09T14:02:34.792237+00:00",
+            "command": [
+              "python3",
+              "scripts/corpus.py",
+              "--weavec",
+              "build/rfc20-release/bin/weavec",
+              "--manifest",
+              "scripts/corpus/rfc0015.json",
+              "--only",
+              "jansson",
+              "--timeout",
+              "600",
+              "--measure-memory",
+              "--json",
+              "build/rfc20-validation/database-release-final/final-3/jansson.corpus.json"
+            ]
+          },
+          {
+            "project": "lua",
+            "commit": "7579fc9d7ed90240487251dfb69168f8e64e9294",
+            "measurement": {
+              "units": 1,
+              "seconds": 165.161,
+              "clang_errors": 0,
+              "failures": 0,
+              "peak_rss_bytes": 670826496,
+              "by_id": {
+                "analysis-incomplete": 3755,
+                "annotation-required": 5,
+                "invalid-release": 1,
+                "lifetime-too-short": 2,
+                "null-dereference": 104
+              }
+            },
+            "returncode": 0,
+            "started": "2026-09-09T14:02:37.302262+00:00",
+            "command": [
+              "python3",
+              "scripts/corpus.py",
+              "--weavec",
+              "build/rfc20-release/bin/weavec",
+              "--manifest",
+              "scripts/corpus/rfc0015.json",
+              "--only",
+              "lua",
+              "--timeout",
+              "600",
+              "--measure-memory",
+              "--json",
+              "build/rfc20-validation/database-release-final/final-3/lua.corpus.json"
+            ]
+          }
+        ]
+      }
+    ],
+    "baseline_observations_source": "build/rfc20-validation/import-keys-ordinary/ordinary-results.json",
+    "baseline_observations_retained": "All three clean observations of the unchanged preserved baseline binary, measured sequentially after builds/tests finished. Failed final-binary observations are excluded because the implementation changed.",
+    "fresh_baseline_audit": {
+      "name": "baseline-1",
+      "binary_sha256": "c667451d6f75cecb5ad83e76389af17075e91052649c01d266e906c611a37e4d",
+      "projects": [
+        {
+          "project": "log.c",
+          "commit": "f9ea34994bd58ed342d2245cd4110bb5c6790153",
+          "measurement": {
+            "units": 1,
+            "seconds": 0.103,
+            "clang_errors": 0,
+            "failures": 0,
+            "peak_rss_bytes": 50184192,
+            "by_id": {
+              "annotation-required": 2
+            }
+          },
+          "returncode": 0,
+          "started": "2026-09-09T13:37:00.106440+00:00",
+          "command": [
+            "python3",
+            "scripts/corpus.py",
+            "--weavec",
+            "build/rfc20-validation/weavec-before",
+            "--manifest",
+            "scripts/corpus/rfc0015.json",
+            "--only",
+            "log.c",
+            "--timeout",
+            "600.0",
+            "--measure-memory",
+            "--json",
+            "build/rfc20-validation/fresh-paired-ordinary/baseline-1/log.c.corpus.json"
+          ]
+        },
+        {
+          "project": "cJSON-program",
+          "commit": "fb16e5cf358798aabb049655975cde8427101056",
+          "measurement": {
+            "units": 1,
+            "seconds": 1.802,
+            "clang_errors": 0,
+            "failures": 0,
+            "peak_rss_bytes": 62423040,
+            "by_id": {
+              "analysis-incomplete": 3,
+              "annotation-required": 3,
+              "null-dereference": 26
+            }
+          },
+          "returncode": 0,
+          "started": "2026-09-09T13:37:00.308130+00:00",
+          "command": [
+            "python3",
+            "scripts/corpus.py",
+            "--weavec",
+            "build/rfc20-validation/weavec-before",
+            "--manifest",
+            "scripts/corpus/rfc0015.json",
+            "--only",
+            "cJSON-program",
+            "--timeout",
+            "600.0",
+            "--measure-memory",
+            "--json",
+            "build/rfc20-validation/fresh-paired-ordinary/baseline-1/cJSON-program.corpus.json"
+          ]
+        },
+        {
+          "project": "linenoise-program",
+          "commit": "a473823d74b93eab2ba83480df16ed37617493f2",
+          "measurement": {
+            "units": 1,
+            "seconds": 0.679,
+            "clang_errors": 0,
+            "failures": 0,
+            "peak_rss_bytes": 56836096,
+            "by_id": {
+              "analysis-incomplete": 17,
+              "annotation-required": 3,
+              "double-free": 1,
+              "leak": 1,
+              "null-dereference": 4
+            }
+          },
+          "returncode": 0,
+          "started": "2026-09-09T13:37:02.234608+00:00",
+          "command": [
+            "python3",
+            "scripts/corpus.py",
+            "--weavec",
+            "build/rfc20-validation/weavec-before",
+            "--manifest",
+            "scripts/corpus/rfc0015.json",
+            "--only",
+            "linenoise-program",
+            "--timeout",
+            "600.0",
+            "--measure-memory",
+            "--json",
+            "build/rfc20-validation/fresh-paired-ordinary/baseline-1/linenoise-program.corpus.json"
+          ]
+        },
+        {
+          "project": "jansson",
+          "commit": "851a2145e3256f2e67e5dfe24b0e456bf198b741",
+          "measurement": {
+            "units": 1,
+            "seconds": 3.519,
+            "clang_errors": 0,
+            "failures": 0,
+            "peak_rss_bytes": 63799296,
+            "by_id": {
+              "analysis-incomplete": 53,
+              "annotation-required": 4,
+              "double-free": 47,
+              "invalid-release": 2,
+              "null-dereference": 3,
+              "use-after-free": 32
+            }
+          },
+          "returncode": 0,
+          "started": "2026-09-09T13:37:03.004074+00:00",
+          "command": [
+            "python3",
+            "scripts/corpus.py",
+            "--weavec",
+            "build/rfc20-validation/weavec-before",
+            "--manifest",
+            "scripts/corpus/rfc0015.json",
+            "--only",
+            "jansson",
+            "--timeout",
+            "600.0",
+            "--measure-memory",
+            "--json",
+            "build/rfc20-validation/fresh-paired-ordinary/baseline-1/jansson.corpus.json"
+          ]
+        },
+        {
+          "project": "lua",
+          "commit": "7579fc9d7ed90240487251dfb69168f8e64e9294",
+          "measurement": {
+            "units": 1,
+            "seconds": 291.967,
+            "clang_errors": 0,
+            "failures": 0,
+            "peak_rss_bytes": 699744256,
+            "by_id": {
+              "analysis-incomplete": 3755,
+              "annotation-required": 5,
+              "invalid-release": 1,
+              "lifetime-too-short": 2,
+              "null-dereference": 104
+            }
+          },
+          "returncode": 0,
+          "started": "2026-09-09T13:37:06.617172+00:00",
+          "command": [
+            "python3",
+            "scripts/corpus.py",
+            "--weavec",
+            "build/rfc20-validation/weavec-before",
+            "--manifest",
+            "scripts/corpus/rfc0015.json",
+            "--only",
+            "lua",
+            "--timeout",
+            "600.0",
+            "--measure-memory",
+            "--json",
+            "build/rfc20-validation/fresh-paired-ordinary/baseline-1/lua.corpus.json"
+          ]
+        }
+      ]
+    },
+    "baseline_audit_note": "A subsequent fresh baseline observation reproduced the retained baseline cost (699744256 bytes Lua peak RSS); all three original valid baseline observations remain included. A historical 274 candidate memory probe did not reproduce and is not acceptance evidence."
+  },
+  "report_review": {
+    "selected_completion_sets_unchanged": true,
+    "newly_complete_functions": 0,
+    "no_longer_complete_functions": 0,
+    "cjson_lost_direct_operations": 0,
+    "linenoise_obligations_unchanged": true,
+    "jansson_removed_arithmetic_operations": 5,
+    "jansson_arithmetic_reason": "Decimal-point clamp retains the range [-3,16]; safe subtractions need no unresolved arithmetic obligation. Reachable-arm regression remains failing.",
+    "lua_lost_direct_row_identities": 16,
+    "lua_lost_direct_rows_only_in_functions_capped_before_and_after": true,
+    "semantic_obligation_cap": 2048,
+    "limited_functions_remain_incomplete": true,
+    "notes": [
+      "A fast/slow cursor reproducer exposed may-alias null propagation pruning a reachable failure; checked facts now require proven aliases.",
+      "Changed Jansson call/context-limit explanations retain unresolved call evidence.",
+      "Cold/warm canonical expanded report digests cover every ordered function and all metadata.",
+      "Lua reports a function iteration-limit failure; its complete report is valid coverage, not a whole-program safety success."
+    ],
+    "ordinary_scheduling": "The universal reverse-postorder attempt introduced a Lua VM iteration-limit failure and was rejected. Ordinary analysis retains FIFO throughout; checked analysis uses reverse postorder, with the same visit limits. Mixed ordinary scheduling also exceeded the memory gate. Releasing completed working databases before rebuilding and avoiding duplicate reported exports resolved the ordinary memory regression."
+  },
+  "acceptance": {
+    "correctness": true,
+    "all_five_final_cold_reports_within_600_seconds": true,
+    "exact_cold_warm_reports": true,
+    "all_warm_function_analyses_zero": true,
+    "positive_warm_cache_hits": true,
+    "cjson_and_linenoise_compact_reduction_at_least_5": true,
+    "ordinary_median_time_growth_at_most_10_percent": true,
+    "ordinary_median_peak_rss_growth_at_most_10_percent": true,
+    "all_mandatory_gates_passed": true
+  },
+  "raw_artifacts": {
+    "directory": "build/rfc20-validation/",
+    "cold": "must-null-checked/checked-results.json",
+    "cache": "database-release-cache/cache-results.json",
+    "ordinary": "database-release-final/ordinary-results.json",
+    "lua_expanded_report_archive": {
+      "archive": "build/rfc20-validation/must-null-checked/checked-cold/lua.report.json.gz",
+      "expanded_bytes": 2754090574,
+      "expanded_sha256": "d0818f80802a87ff91e7562b226a3c83579d83a83bdef5394218317fad1433b5",
+      "decompressed_sha256_verified": true
+    },
+    "final_lua_duplicate_archive": {
+      "archive": "build/rfc20-validation/must-null-checked/checked-cold/lua.report.json.gz",
+      "expanded_bytes": 2754090574,
+      "expanded_sha256": "d0818f80802a87ff91e7562b226a3c83579d83a83bdef5394218317fad1433b5",
+      "decompressed_sha256_verified": true,
+      "source": "build/rfc20-validation/database-release-cache/cache-cold/lua.report.json",
+      "final_expanded_sha256_verified": true
+    }
+  },
+  "ordinary_diagnostic_review": [
+    {
+      "project": "log.c",
+      "baseline_count": 2,
+      "final_count": 2,
+      "baseline_sha256": "a4099259d4ea749913e219cc3bad0dd5709fe5194d2125fcba550ae0f811e07d",
+      "final_sha256": "a4099259d4ea749913e219cc3bad0dd5709fe5194d2125fcba550ae0f811e07d",
+      "repeatable": true,
+      "removed": [],
+      "added": []
+    },
+    {
+      "project": "cJSON-program",
+      "baseline_count": 32,
+      "final_count": 32,
+      "baseline_sha256": "48a90e244d077991d2bf6438cb7bad2d62279e03bfedd0867994053d4ab10a92",
+      "final_sha256": "48a90e244d077991d2bf6438cb7bad2d62279e03bfedd0867994053d4ab10a92",
+      "repeatable": true,
+      "removed": [],
+      "added": []
+    },
+    {
+      "project": "linenoise-program",
+      "baseline_count": 26,
+      "final_count": 26,
+      "baseline_sha256": "cea70783783a9bc294e422a2639954cf59ec9e8b3921e4b6b1e375c191a3a7a7",
+      "final_sha256": "cea70783783a9bc294e422a2639954cf59ec9e8b3921e4b6b1e375c191a3a7a7",
+      "repeatable": true,
+      "removed": [],
+      "added": []
+    },
+    {
+      "project": "jansson",
+      "baseline_count": 141,
+      "final_count": 141,
+      "baseline_sha256": "9d3cb9a3c7851435a5b8d98e0bc4a5048d7afe467f5d00db9f7f2532987d2cbb",
+      "final_sha256": "9d3cb9a3c7851435a5b8d98e0bc4a5048d7afe467f5d00db9f7f2532987d2cbb",
+      "repeatable": true,
+      "removed": [],
+      "added": []
+    },
+    {
+      "project": "lua",
+      "baseline_count": 3867,
+      "final_count": 3867,
+      "baseline_sha256": "6085567bf8ae0269614794cc99539a3fd80c33cd6c99632c05574f063cc50dd2",
+      "final_sha256": "6085567bf8ae0269614794cc99539a3fd80c33cd6c99632c05574f063cc50dd2",
+      "repeatable": true,
+      "removed": [],
+      "added": []
+    }
+  ]
+}

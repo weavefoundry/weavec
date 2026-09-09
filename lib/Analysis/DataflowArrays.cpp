@@ -230,16 +230,21 @@ void FunctionDataflow::snapshotArrayIndex(core::PlaceId place, const Expr *at,
            state.incoming.contains(cell) || state.nulls.recordOf(cell) ||
            state.callTargets.contains(cell);
   };
-  for (std::uint32_t id = 0; id < places.size(); ++id) {
-    const core::PlaceId cell{id};
+  for (; indexedArrayPlaces < places.size(); ++indexedArrayPlaces) {
+    const core::PlaceId cell{static_cast<std::uint32_t>(indexedArrayPlaces)};
     if (!places.isElement(cell))
       continue;
     const auto index = core::ArrayIndex::parse(places.fieldName(cell));
-    if (index && index->symbol == place.value &&
-        (tracked(cell) ||
-         std::ranges::any_of(places.descendants(cell), tracked)))
-      cells.emplace_back(cell, *index);
+    if (index && index->symbol)
+      arrayCellsByIndex[core::PlaceId{*index->symbol}].emplace_back(cell,
+                                                                    *index);
   }
+  if (const auto selected = arrayCellsByIndex.find(place);
+      selected != arrayCellsByIndex.end())
+    for (const auto &[cell, index] : selected->second)
+      if (tracked(cell) ||
+          std::ranges::any_of(places.descendants(cell), tracked))
+        cells.emplace_back(cell, index);
   const bool usedByRange =
       std::ranges::any_of(state.arrayRanges, [place](const auto &entry) {
         const auto &range = entry.second;

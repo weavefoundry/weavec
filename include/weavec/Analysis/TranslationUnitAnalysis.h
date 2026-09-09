@@ -82,6 +82,13 @@ private:
   core::DiagnosticSink &sink;
   AnalysisOptions options;
   SummaryStore store;
+  struct SilentAnalysis {
+    bool widen;
+    SummaryStore::DependencyVersions dependencies;
+  };
+  std::map<const clang::FunctionDecl *, SilentAnalysis> silentAnalyses;
+  bool analyzeSilently(const clang::FunctionDecl &function,
+                       FunctionAnalyzer &analyzer, bool widen);
 
   /// Function definitions in source order.
   std::vector<const clang::FunctionDecl *> definitions;

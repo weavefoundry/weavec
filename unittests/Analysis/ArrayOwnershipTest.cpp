@@ -64,6 +64,23 @@ void clean(char **a, int i) { free(a[i]); a[i+1][0] = 1; }
   EXPECT_EQ(countId(result, core::diag::UseAfterFree), 1U);
 }
 
+// RFC 0020: the selector index must discover cells created after an earlier
+// snapshot, and still consult descendants in the current flow state.
+TEST(ArrayOwnership, LateSelectorsAndTrackedChildrenRemainVisible) {
+  const auto result = test::analyze(R"c(
+struct Cell { char *value; };
+void late(char **a, char **b, int i, int j) {
+  free(a[i]); i = 9;
+  int old = j; free(b[j]); j = 10; b[old][0] = 1;
+}
+void child(struct Cell *a, int i) {
+  int old = i; free(a[i].value); i = 9; a[old].value[0] = 1;
+}
+)c");
+  ASSERT_TRUE(result.ast);
+  EXPECT_EQ(countId(result, core::diag::UseAfterFree), 2U);
+}
+
 TEST(ArrayOwnership, ReplacingAReleasedSlotDoesNotReviveAnOldAlias) {
   const auto result = test::analyze(R"c(
 void bad(char **a, char *replacement) {

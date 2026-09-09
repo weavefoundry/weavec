@@ -38,6 +38,7 @@ weavec_add_library(
           PlaceBuilder.cpp
           ProgramDatabase.cpp
           Summaries.cpp
+          SummaryDependencies.cpp
           TranslationUnitAnalysis.cpp
           DataflowLoopRequirements.cpp
           DataflowGuardCompleteness.cpp

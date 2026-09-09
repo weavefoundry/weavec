@@ -24,6 +24,10 @@ jobs:
 
       - name: Install LLVM
         run: |
+          # Chrome is unused; its preinstalled apt source can fail with hash
+          # mismatches and block LLVM installation during repository updates.
+          sudo rm -f /etc/apt/sources.list.d/google-chrome.list \
+            /etc/apt/sources.list.d/google-chrome.sources
           wget -qO- https://apt.llvm.org/llvm.sh | sudo bash -s -- "$LLVM_VERSION" all
           sudo apt-get install -y ninja-build ccache
           echo "WEAVEC_LLVM_PREFIX=/usr/lib/llvm-$LLVM_VERSION" >> "$GITHUB_ENV"

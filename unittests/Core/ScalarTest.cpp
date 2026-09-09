@@ -184,6 +184,23 @@ TEST(Guard, DropRemovesOneConjunct) {
   EXPECT_EQ(guard.conditions.size(), 1U);
 }
 
+TEST(Guard, DependencyQueryMatchesDroppingEveryPredicateKind) {
+  PlaceGuard guard;
+  guard.require(PlaceId{1}, ValueFact::nonZero());
+  guard.requirePointer(PlaceId{2}, PlaceId{3}, false);
+  using Expression = IntegerExpression<PlaceId>;
+  const IntegerType type{.width = 32, .isSigned = true};
+  guard.requireInteger({.lhs = Expression::input(PlaceId{4}, type),
+                        .op = IntegerOp::Less,
+                        .rhs = Expression::input(PlaceId{5}, type)});
+  for (std::uint32_t id = 0; id < 7; ++id) {
+    auto copy = guard;
+    EXPECT_EQ(guard.dependsOn(PlaceId{id}), copy.drop(PlaceId{id}));
+    EXPECT_FALSE(copy.dependsOn(PlaceId{id}));
+  }
+  EXPECT_EQ(guard.size(), 3U);
+}
+
 TEST(Guard, IsBounded) {
   PlaceGuard guard;
   for (std::uint32_t i = 0; i < MaxGuardConjuncts + 4; ++i)

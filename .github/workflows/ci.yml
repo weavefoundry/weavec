@@ -32,6 +32,10 @@ jobs:
 
       - name: Install clang-format
         run: |
+          # Chrome is unused; its preinstalled apt source can fail with hash
+          # mismatches and block LLVM installation during repository updates.
+          sudo rm -f /etc/apt/sources.list.d/google-chrome.list \
+            /etc/apt/sources.list.d/google-chrome.sources
           wget --tries=5 --waitretry=10 --retry-on-http-error=429,500,502,503,504 -qO llvm.sh https://apt.llvm.org/llvm.sh
           sudo bash llvm.sh "$LLVM_VERSION"
           sudo apt-get install -y "clang-format-$LLVM_VERSION"
@@ -74,6 +78,10 @@ jobs:
       - name: Install LLVM (Linux)
         if: runner.os == 'Linux'
         run: |
+          # Chrome is unused; its preinstalled apt source can fail with hash
+          # mismatches and block LLVM installation during repository updates.
+          sudo rm -f /etc/apt/sources.list.d/google-chrome.list \
+            /etc/apt/sources.list.d/google-chrome.sources
           wget --tries=5 --waitretry=10 --retry-on-http-error=429,500,502,503,504 -qO llvm.sh https://apt.llvm.org/llvm.sh
           sudo bash llvm.sh "$LLVM_VERSION" all
           sudo apt-get install -y ninja-build ccache
@@ -170,6 +178,10 @@ jobs:
 
       - name: Install LLVM
         run: |
+          # Chrome is unused; its preinstalled apt source can fail with hash
+          # mismatches and block LLVM installation during repository updates.
+          sudo rm -f /etc/apt/sources.list.d/google-chrome.list \
+            /etc/apt/sources.list.d/google-chrome.sources
           wget --tries=5 --waitretry=10 --retry-on-http-error=429,500,502,503,504 -qO llvm.sh https://apt.llvm.org/llvm.sh
           sudo bash llvm.sh "$LLVM_VERSION" all
           sudo apt-get install -y ninja-build

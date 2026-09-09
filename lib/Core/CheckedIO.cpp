@@ -298,13 +298,14 @@ parseCheckedContract(std::string_view record, const GlobalResolver &resolve) {
     if (!in.good() || calls > MaxSafetyCallDepth)
       return std::nullopt;
     for (std::size_t c = 0; c < calls; ++c)
-      obligation.calls.push_back(in.location());
+      obligation.calls.pushBack(in.location());
     if (result.obligations.entries().contains(obligation.identity()))
       return std::nullopt;
     result.obligations.add(std::move(obligation));
   }
   if (!in.finished() || !result.computed)
     return std::nullopt;
+  result.obligations.shareSnapshot();
   return result;
 }
 

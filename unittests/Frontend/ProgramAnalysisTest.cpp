@@ -372,6 +372,8 @@ TEST(ProgramAnalysis, WideningJoinsWithThePreviousRound) {
 
 TEST(ProgramAnalysis, CallbackContextsFlowBackToTheDefiningUnit) {
   Program program;
+  core::AnalysisStats stats;
+  program.options.analysis.stats = &stats;
   program.header(
       "callback.h",
       "typedef void (*Callback)(void *); void invoke(Callback, void *);\n");
@@ -394,6 +396,7 @@ void invoke(Callback callback, void *userdata) { callback(userdata); }
   ASSERT_EQ(program.recorder.lines.size(), 1U);
   EXPECT_NE(program.recorder.lines[0].find("use of 'p' after it was freed"),
             std::string::npos);
+  EXPECT_GT(stats.count("unit_invalidation_skips"), 0U);
 }
 
 TEST(ProgramAnalysis, InternalCallbackNamesRemainDistinctAcrossUnits) {

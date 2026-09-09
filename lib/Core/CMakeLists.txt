@@ -23,6 +23,8 @@ weavec_add_library(
           Relation.cpp
           Resource.cpp
           Safety.cpp
+          SafetyCallPath.cpp
+          SafetyEntryPool.cpp
           CheckedContract.cpp
           CheckedIO.cpp
           Scalar.cpp

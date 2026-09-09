@@ -183,6 +183,7 @@ core::CallTargets SummaryStore::staticTargets(const Expr &expr,
 
 const std::map<std::string, core::CallTargets> &
 SummaryStore::exportedCallbackGlobals() const {
+  noteDependency("@callback-globals");
   if (callbackGlobalCache)
     return *callbackGlobalCache;
   std::map<std::string, core::CallTargets> result;
@@ -235,7 +236,7 @@ SummaryStore::exportedCallbackGlobals() const {
       visit(var->getType(), var->getInit(), globalSymbol(*var), 0);
   }
   for (const auto &[function, summary] : inferred) {
-    for (const auto &store : summary.stores) {
+    for (const auto &store : summary->stores) {
       if (!store.dest.isGlobal())
         continue;
       const auto *global = globalTable.declFor(store.dest.index);
@@ -303,6 +304,7 @@ const FunctionDecl *SummaryStore::callable(std::string_view symbol) const {
 
 std::optional<ResolvedSummary>
 SummaryStore::lookupSymbol(std::string_view symbol) {
+  noteDependency(symbol);
   if (const auto *function = callable(symbol))
     return lookup(*function);
   if (!database || !context)
@@ -310,9 +312,7 @@ SummaryStore::lookupSymbol(std::string_view symbol) {
   const auto *summary = database->findCallable(symbol);
   if (!summary)
     return std::nullopt;
-  auto &imported = importedCallables[std::string(symbol)];
-  imported = database->importInto(*summary, *context, globalTable);
-  return ResolvedSummary{.summary = &imported,
+  return ResolvedSummary{.summary = importSummary(*summary),
                          .source = SummarySource::Program};
 }
 
@@ -330,6 +330,7 @@ std::optional<ResolvedSummary> SummaryStore::specialize(
   if (bindings.empty())
     return lookup(function);
   const std::string symbol = callableSymbol(function);
+  noteDependency(symbol);
   const ContextKey contextKey{symbol, bindings};
   auto &requests = callbackRequests[symbol];
   if (!requests.contains(bindings) &&
@@ -345,14 +346,22 @@ std::optional<ResolvedSummary> SummaryStore::specialize(
     const auto *summary = database->findSpecialization(symbol, bindings);
     if (!summary)
       return std::nullopt;
-    specialized[contextKey] =
-        database->importInto(*summary, *context, globalTable);
-    return ResolvedSummary{.summary = &specialized.at(contextKey),
+    return ResolvedSummary{.summary = importSummary(*summary),
                            .source = SummarySource::Program};
   }
   if (activeContexts.contains(contextKey))
     return std::nullopt;
-  if (!specialized.contains(contextKey)) {
+  discardStaleContexts();
+  if (!specialized.contains(contextKey) || !specialized.at(contextKey)) {
+    if (options.stats)
+      options.stats->add("specialization_misses");
+    std::optional<core::AnalysisTimer> invocationTimer;
+    if (options.stats)
+      invocationTimer.emplace(options.stats, "callback:" + symbol);
+    Dependencies dependencies{symbol};
+    beginDependencies(dependencies);
+    const auto finishDependencies =
+        llvm::scope_exit([&] { endDependencies(); });
     activeContexts.insert(contextKey);
     const auto release =
         llvm::scope_exit([&] { activeContexts.erase(contextKey); });
@@ -363,15 +372,23 @@ std::optional<ResolvedSummary> SummaryStore::specialize(
                               nestedOptions, *this, true);
     analysis.callbackBindings = bindings;
     analysis.run();
-    specialized[contextKey] = analysis.summary();
-    applyContract(function, specialized[contextKey]);
+    auto summary = analysis.summary();
+    applyContract(function, summary);
+    specialized[contextKey] = publishSummary(std::move(summary));
     specializedDiagnostics[contextKey] = collected.diagnostics();
+    callbackDependencies[contextKey] = std::move(dependencies);
+    callbackVersions[contextKey] = dependencySnapshot();
+    contextsNeedValidation = true;
+  } else {
+    if (options.stats)
+      options.stats->add("specialization_hits");
+    inheritDependencies(callbackDependencies[contextKey]);
   }
   if (sink) {
     for (const auto &diagnostic : specializedDiagnostics[contextKey])
       sink->report(diagnostic);
   }
-  return ResolvedSummary{.summary = &specialized.at(contextKey),
+  return ResolvedSummary{.summary = specialized.at(contextKey),
                          .source = SummarySource::Inferred};
 }
 

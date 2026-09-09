@@ -479,11 +479,13 @@ TEST(Extents, AllocationsCarryTheirExtent) {
   for (const auto *name : {"ints", "zeroed"}) {
     const auto extent = extentOf(name);
     ASSERT_TRUE(extent && extent->expression) << name;
-    const auto range = extent->expression->evaluate([](const auto &,
-                                                       core::IntegerType type) {
-      return core::IntegerRange::singleton(
-          core::IntegerValue::ofBits({32, true}, UINT32_MAX).converted(type));
-    });
+    const auto range =
+        extent->expression->evaluate([](const auto &, core::IntegerType type) {
+          return core::IntegerRange::singleton(
+              core::IntegerValue::ofBits({.width = 32, .isSigned = true},
+                                         UINT32_MAX)
+                  .converted(type));
+        });
     ASSERT_TRUE(range.values.constant());
     EXPECT_EQ(range.values.constant()->bits, UINT64_MAX - 3);
   }
@@ -544,12 +546,15 @@ TEST(Bounds, ConstantIndexAgainstAConstantExtent) {
           "4: 'buf[10]' is out of bounds: index 10 of an object of 10 bytes",
           "7: 'a[4]' is out of bounds: index 4 of an object of 16 bytes",
           "13: 'p[8]' is out of bounds: index 8 of an object of 8 bytes",
-          "19: 'buffer[data]' is out of bounds: index 'data' (10) of an "
-          "object of 40 bytes",
-          "25: '*(q + 2)' is out of bounds: index 2 of an object of 8 "
-          "bytes",
-          "31: 'o->k' is out of bounds: it reaches 12 bytes into 'o', "
-          "which has 8 bytes"}));
+          std::string{
+              "19: 'buffer[data]' is out of bounds: index 'data' (10) of an "
+              "object of 40 bytes"},
+          std::string{
+              "25: '*(q + 2)' is out of bounds: index 2 of an object of 8 "
+              "bytes"},
+          std::string{
+              "31: 'o->k' is out of bounds: it reaches 12 bytes into 'o', "
+              "which has 8 bytes"}}));
   for (const std::string &id : ids(result.diagnostics))
     EXPECT_EQ(id, "out-of-bounds");
   EXPECT_EQ(notes(result.diagnostics, 0), Strings{"'buf' is declared here"});
@@ -676,16 +681,22 @@ TEST(Bounds, RelationsFromConditions) {
   ASSERT_TRUE(result.ast);
   EXPECT_EQ(
       messages(result.diagnostics),
-      (Strings{"5: 'p[i]' may be out of bounds: 'i' may equal 'n', the number "
-               "of elements of 'p'",
-               "6: 'p[i + 1]' may be out of bounds: 'i' may reach one below "
-               "'n', and 'p' has 'n' * 4 bytes",
-               "14: 'p[i]' is out of bounds: 'i' is at least 'n', the number "
-               "of elements of 'p'",
-               "15: 'p[i]' is out of bounds: 'i' is above 'n', the number of "
-               "elements of 'p'",
-               "22: 'p[i]' is out of bounds: 'i' is at least 'n', the number "
-               "of elements of 'p'"}));
+      (Strings{
+          std::string{
+              "5: 'p[i]' may be out of bounds: 'i' may equal 'n', the number "
+              "of elements of 'p'"},
+          std::string{
+              "6: 'p[i + 1]' may be out of bounds: 'i' may reach one below "
+              "'n', and 'p' has 'n' * 4 bytes"},
+          std::string{
+              "14: 'p[i]' is out of bounds: 'i' is at least 'n', the number "
+              "of elements of 'p'"},
+          std::string{
+              "15: 'p[i]' is out of bounds: 'i' is above 'n', the number of "
+              "elements of 'p'"},
+          std::string{
+              "22: 'p[i]' is out of bounds: 'i' is at least 'n', the number "
+              "of elements of 'p'"}}));
 }
 
 // An index compared with a constant is bounded above by it (RFC 0011,
@@ -733,20 +744,28 @@ TEST(Bounds, ConstantUpperBounds) {
   ASSERT_TRUE(result.ast);
   EXPECT_EQ(
       messages(result.diagnostics),
-      (Strings{"3: 'buf[i]' may be out of bounds: 'i' may be 7 in an object "
-               "of 4 bytes",
-               "5: 'buf[i]' may be out of bounds: 'i' may be 4 in an object "
-               "of 4 bytes",
-               "10: 'buf[i]' may be out of bounds: 'i' may be 8 in an object "
-               "of 8 bytes",
-               "16: 'buf[j]' may be out of bounds: 'j' may be 7 in an object "
-               "of 4 bytes",
-               "20: 'ints[i]' may be out of bounds: 'i' may be 4 in an object "
-               "of 16 bytes",
-               "27: 'p[4]' is out of bounds: index 4 of an object of 'n' "
-               "bytes",
-               "32: 'memset' may access past the end of 'buf': 'n' may be 8, "
-               "and 'buf' has 4 bytes"}));
+      (Strings{
+          std::string{
+              "3: 'buf[i]' may be out of bounds: 'i' may be 7 in an object "
+              "of 4 bytes"},
+          std::string{
+              "5: 'buf[i]' may be out of bounds: 'i' may be 4 in an object "
+              "of 4 bytes"},
+          std::string{
+              "10: 'buf[i]' may be out of bounds: 'i' may be 8 in an object "
+              "of 8 bytes"},
+          std::string{
+              "16: 'buf[j]' may be out of bounds: 'j' may be 7 in an object "
+              "of 4 bytes"},
+          std::string{
+              "20: 'ints[i]' may be out of bounds: 'i' may be 4 in an object "
+              "of 16 bytes"},
+          std::string{
+              "27: 'p[4]' is out of bounds: index 4 of an object of 'n' "
+              "bytes"},
+          std::string{
+              "32: 'memset' may access past the end of 'buf': 'n' may be 8, "
+              "and 'buf' has 4 bytes"}}));
 }
 
 // A write to the counter or the index forgets what was known about them.
@@ -963,12 +982,12 @@ TEST(SizedBy, GivesAParameterAnExtentAndARequirement) {
     const auto found = result.analyzer->summaries().lookup(*fn);
     return found ? found->summary : nullptr;
   };
-  const core::FunctionSummary *fill = resolved("fill");
+  const auto fill = resolved("fill");
   ASSERT_NE(fill, nullptr);
   ASSERT_TRUE(fill->requiresExtent.contains(0));
   EXPECT_TRUE(fill->requiresExtent.at(0).contains(core::ExtentRequirement{
       .need = PathAffine::ofPath(SummaryPath::param(1), 1, 0), .when = {}}));
-  const core::FunctionSummary *ints = resolved("ints");
+  const auto ints = resolved("ints");
   ASSERT_NE(ints, nullptr);
   ASSERT_TRUE(ints->requiresExtent.contains(0));
   EXPECT_TRUE(ints->requiresExtent.at(0).contains(core::ExtentRequirement{

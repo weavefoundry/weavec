@@ -75,6 +75,8 @@ struct AliasEdge {
 
 class AliasRelation {
 public:
+  using Edges = std::map<PlaceId, AliasEdge>;
+
   /// Records that `a` (its element `elementA`) holds `b` (its element
   /// `elementB`) plus `offset`: the same value when the offset is zero, a
   /// pointer into the same object otherwise. Relates each of them to the
@@ -144,6 +146,10 @@ public:
   [[nodiscard]] std::vector<std::pair<PlaceId, AliasEdge>>
   edgesFrom(PlaceId place) const;
 
+  /// RFC 0020: a borrowed ordered view, valid only until this relation is
+  /// modified or destroyed. Use edgesFrom when an owned snapshot is needed.
+  [[nodiscard]] const Edges &viewEdgesFrom(PlaceId place) const noexcept;
+
   /// Union of the two relations: "may alias on either incoming path". An
   /// edge's offset is unknown if the sides disagree; its witness is unknown
   /// if the sides disagree; it is same-share if either side says so. Returns
@@ -165,11 +171,11 @@ public:
 private:
   // place -> the places it may alias (never itself; never empty), with the
   // edge as seen from `place`. Stored on both ends.
-  std::map<PlaceId, std::map<PlaceId, AliasEdge>> adjacent;
+  std::map<PlaceId, Edges> adjacent;
 
   /// Stores `toB` on `a`'s side and `toA` on `b`'s side, merging with any
   /// existing edge.
-  void relate(PlaceId a, PlaceId b, AliasEdge toB, AliasEdge toA);
+  void relate(PlaceId a, PlaceId b, const AliasEdge &toB, const AliasEdge &toA);
 };
 
 } // namespace weavec::core

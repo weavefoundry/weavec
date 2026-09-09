@@ -10,15 +10,20 @@
 #define WEAVEC_CORE_SAFETY_H
 
 #include "weavec/Core/Place.h"
+#include "weavec/Core/SafetyCallPath.h"
 #include "weavec/Core/Scalar.h"
 #include "weavec/Core/SourceLocation.h"
 #include "weavec/Core/Spatial.h"
 
+#include <iterator>
 #include <map>
+#include <memory>
 #include <optional>
 #include <set>
+#include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace weavec::core {
@@ -70,7 +75,7 @@ struct SafetyObligation {
   std::string function;
   std::string subject;
   std::string reason;
-  std::vector<SourceLocation> calls;
+  SafetyCallPath calls;
 
   /// Does not contain frontend handles, outcomes or unstable place numbers.
   [[nodiscard]] std::string identity() const;
@@ -78,23 +83,135 @@ struct SafetyObligation {
                          const SafetyObligation &) = default;
 };
 
+/// RFC 0020: canonical originating explanations, shared by ledger snapshots.
+/// Paths already contain the callee's originating operation. Caller identity
+/// and unsafe conversion are attached when applying this projection.
+struct SafetyPropagation {
+  std::vector<SafetyObligation> unresolved;
+  std::vector<SafetyObligation> trusted;
+};
+
+/// An ordered read-only view of immutable, individually shared ledger rows.
+/// RFC 0020: detaching the index never copies explanation strings or paths.
+class SafetyEntries {
+public:
+  using Row = std::pair<const std::string, SafetyObligation>;
+
+private:
+  // Every key view points into the Row owned by the same map entry. Copying
+  // the map preserves that owner, and replacement updates both together.
+  using Index = std::map<std::string_view, std::shared_ptr<const Row>>;
+  Index index;
+  void set(std::string key, SafetyObligation obligation);
+  void set(std::shared_ptr<const Row> row);
+  void set(std::shared_ptr<const Row> row, Index::const_iterator position);
+  friend class SafetyLedger;
+
+public:
+  class ConstIterator {
+  public:
+    // These spellings are required by std::iterator_traits and C++20 ranges.
+    // NOLINTBEGIN(readability-identifier-naming)
+    using iterator_category = std::forward_iterator_tag;
+    using iterator_concept = std::forward_iterator_tag;
+    using value_type = Row;
+    using difference_type = std::ptrdiff_t;
+    using pointer = const Row *;
+    using reference = const Row &;
+    // NOLINTEND(readability-identifier-naming)
+    ConstIterator() = default;
+    reference operator*() const { return *current->second; }
+    pointer operator->() const { return current->second.get(); }
+    ConstIterator &operator++() {
+      ++current;
+      return *this;
+    }
+    ConstIterator operator++(int) {
+      auto previous = *this;
+      ++*this;
+      return previous;
+    }
+    friend bool operator==(const ConstIterator &,
+                           const ConstIterator &) = default;
+
+  private:
+    explicit ConstIterator(Index::const_iterator current) : current(current) {}
+    Index::const_iterator current;
+    friend class SafetyEntries;
+    friend class SafetyLedger;
+  };
+
+  [[nodiscard]] ConstIterator begin() const {
+    return ConstIterator(index.begin());
+  }
+  [[nodiscard]] ConstIterator end() const { return ConstIterator(index.end()); }
+  [[nodiscard]] ConstIterator find(std::string_view key) const {
+    return ConstIterator(index.find(key));
+  }
+  [[nodiscard]] bool contains(std::string_view key) const {
+    return index.contains(key);
+  }
+  [[nodiscard]] bool empty() const { return index.empty(); }
+  [[nodiscard]] std::size_t size() const { return index.size(); }
+  friend bool operator==(const SafetyEntries &, const SafetyEntries &);
+};
+
 class SafetyLedger {
 public:
+  SafetyLedger() = default;
+  ~SafetyLedger() = default;
+  SafetyLedger(const SafetyLedger &) = default;
+  SafetyLedger &operator=(const SafetyLedger &) = default;
+  SafetyLedger(SafetyLedger &&other) noexcept { *this = std::move(other); }
+  SafetyLedger &operator=(SafetyLedger &&other) noexcept {
+    if (this != &other) {
+      obligations = std::move(other.obligations);
+      weakest = std::exchange(other.weakest, SafetyOutcome::Proven);
+      trustedEntries = std::exchange(other.trustedEntries, 0);
+      exhausted = std::exchange(other.exhausted, false);
+    }
+    return *this;
+  }
   /// Same operation on several paths retains the weakest proof outcome.
   void add(SafetyObligation obligation);
+  /// RFC 0020: apply a canonical call-origin projection without copying paths
+  /// that cannot change this ledger. Equivalent to ordinary call insertion.
+  void addCalls(std::span<const SafetyObligation> origins,
+                const SourceLocation &location, std::string_view function,
+                std::string_view callee, bool unsafe);
+  /// Reuse callee-specific explanation preparation from an immutable ledger.
+  void addCalls(const SafetyLedger &source, bool trusted,
+                const SourceLocation &location, std::string_view function,
+                std::string_view callee, bool unsafe);
   void join(const SafetyLedger &other);
   [[nodiscard]] bool complete() const;
   [[nodiscard]] bool violated() const;
   [[nodiscard]] bool trusted() const;
   [[nodiscard]] bool limited() const { return exhausted; }
   void markLimited() { exhausted = true; }
-  [[nodiscard]] const std::map<std::string, SafetyObligation> &entries() const {
-    return obligations;
+  [[nodiscard]] const SafetyEntries &entries() const;
+  [[nodiscard]] const SafetyPropagation &propagation() const;
+  /// RFC 0020: weakly intern a completed immutable snapshot when a pool exists.
+  void shareSnapshot();
+  /// RFC 0020: convergence compares proof outcomes, not explanation routes.
+  friend bool operator==(const SafetyLedger &, const SafetyLedger &);
+  [[nodiscard]] bool sameExplanationsAs(const SafetyLedger &other) const {
+    return exhausted == other.exhausted && entries() == other.entries();
   }
-  friend bool operator==(const SafetyLedger &, const SafetyLedger &) = default;
 
 private:
-  std::map<std::string, SafetyObligation> obligations;
+  bool rejects(SafetyEntries::ConstIterator found, SafetyOutcome outcome,
+               std::string_view reason);
+  void addPrepared(std::string key, SafetyObligation obligation,
+                   SafetyEntries::ConstIterator found);
+  /// Immutable across copies; mutation detaches only when necessary.
+  struct Storage;
+  friend class SafetyEntryPool;
+  std::shared_ptr<Storage> obligations;
+  // Derived from the map: repeated completeness queries must not rescan every
+  // propagated explanation. Outcomes only weaken; trust can be replaced.
+  SafetyOutcome weakest = SafetyOutcome::Proven;
+  std::size_t trustedEntries = 0;
   bool exhausted = false;
 };
 

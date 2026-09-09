@@ -56,6 +56,8 @@ std::string printUnitRecord(const UnitRecord &record) {
     os << "checked-object " << record.objectDigest << '\n';
   if (!record.commandDigest.empty())
     os << "checked-command " << record.commandDigest << '\n';
+  if (!record.preprocessingDigest.empty())
+    os << "checked-preprocessing " << record.preprocessingDigest << '\n';
   for (const auto &[path, digest] : exports.checkedInputs)
     os << "checked-input " << llvm::toHex(path, true) << ' ' << digest << '\n';
   if (!exports.checkedTarget.empty())
@@ -229,12 +231,16 @@ std::optional<UnitRecord> parseUnitRecord(llvm::StringRef text,
                return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
              });
     };
-    if (kind == "checked-object" || kind == "checked-command") {
-      auto &digest =
-          kind == "checked-object" ? record.objectDigest : record.commandDigest;
-      if (!digest.empty() || !digestValid(value))
+    if (kind == "checked-object" || kind == "checked-command" ||
+        kind == "checked-preprocessing") {
+      auto *digest = &record.preprocessingDigest;
+      if (kind == "checked-object")
+        digest = &record.objectDigest;
+      else if (kind == "checked-command")
+        digest = &record.commandDigest;
+      if (!digest->empty() || !digestValid(value))
         return fail("invalid checked digest");
-      digest = value.str();
+      *digest = value.str();
     } else if (kind == "checked-input") {
       const auto [path, digest] = value.split(' ');
       if (path.empty() || path.size() > 131072 || path.size() % 2 != 0 ||

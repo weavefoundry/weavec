@@ -21,6 +21,7 @@
 
 #include "weavec/Analysis/Annotations.h"
 #include "weavec/Analysis/ProgramDatabase.h"
+#include "weavec/Core/AnalysisStats.h"
 #include "weavec/Core/Diagnostic.h"
 #include "weavec/Core/Summary.h"
 
@@ -36,6 +37,7 @@
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <memory>
 #include <optional>
 #include <set>
 #include <string>
@@ -46,6 +48,11 @@
 namespace weavec::analysis {
 
 struct AnalysisOptions;
+struct FunctionPreparation;
+struct FunctionPreparationCache {
+  std::map<const clang::FunctionDecl *, std::shared_ptr<FunctionPreparation>>
+      functions;
+};
 [[nodiscard]] std::string callableSymbol(const clang::FunctionDecl &function);
 
 /// Interns the globals that appear as summary roots in one translation unit,
@@ -85,9 +92,11 @@ enum class SummarySource : std::uint8_t {
 
 class ProgramDatabase;
 
-/// A summary together with its provenance.
+using SummarySnapshot = std::shared_ptr<const core::FunctionSummary>;
+
+/// A retained immutable summary together with its provenance.
 struct ResolvedSummary {
-  const core::FunctionSummary *summary = nullptr;
+  SummarySnapshot summary;
   SummarySource source = SummarySource::Inferred;
 };
 
@@ -190,6 +199,27 @@ builtinSummary(const clang::FunctionDecl &function);
 /// lookups by combining them with annotations and the builtin table.
 class SummaryStore {
 public:
+  /// RFC 0020: immutable preparation is owned by this AST's store.
+  std::shared_ptr<FunctionPreparationCache> prepared =
+      std::make_shared<FunctionPreparationCache>();
+  core::AnalysisStats *stats = nullptr;
+  using Dependencies = std::set<std::string>;
+  using DependencyVersions = std::map<std::string, std::uint64_t>;
+  [[nodiscard]] DependencyVersions dependencySnapshot() const;
+  [[nodiscard]] bool
+  dependenciesCurrent(const DependencyVersions &snapshot) const;
+  void discardStaleContexts();
+  void noteDependency(std::string_view name) const;
+  void inheritDependencies(const Dependencies &dependencies) const;
+  void beginDependencies(Dependencies &dependencies);
+  void endDependencies();
+  void invalidateDependency(std::string_view name);
+  void markIncomplete(const clang::FunctionDecl &function);
+  void beginAnalysis() { ++analysisDepth; }
+  void endAnalysis();
+  /// RFC 0020: retain the published contract without making another copy.
+  [[nodiscard]] SummarySnapshot
+  retainSummary(const ResolvedSummary &summary) const;
   // RFC 0014: resolving a call is state dependent. Nested specialization
   // temporarily installs its own resolver and restores its caller's.
   using CallResolver =
@@ -222,16 +252,17 @@ public:
                    core::DiagnosticSink *sink = nullptr);
   using MemoryContextKey = std::pair<std::string, core::CallContext>;
   std::map<std::string, std::set<core::CallContext>> memoryRequests;
-  std::map<MemoryContextKey, core::FunctionSummary> memorySpecialized;
+  std::map<MemoryContextKey, SummarySnapshot> memorySpecialized;
   std::map<MemoryContextKey, std::vector<core::Diagnostic>> memoryDiagnostics;
   std::set<MemoryContextKey> activeMemoryContexts;
   using ContextKey = std::pair<std::string, core::CallbackBindings>;
+  std::map<MemoryContextKey, Dependencies> memoryDependencies;
+  std::map<ContextKey, Dependencies> callbackDependencies;
   std::map<std::string, std::set<core::CallbackBindings>> callbackRequests;
-  std::map<ContextKey, core::FunctionSummary> specialized;
+  std::map<ContextKey, SummarySnapshot> specialized;
   std::map<ContextKey, std::vector<core::Diagnostic>> specializedDiagnostics;
   std::set<ContextKey> activeContexts;
   std::map<std::string, const clang::FunctionDecl *> callables;
-  std::map<std::string, core::FunctionSummary> importedCallables;
   mutable std::optional<std::map<std::string, core::CallTargets>>
       callbackGlobalCache;
 
@@ -241,7 +272,8 @@ public:
   bool setInferred(const clang::FunctionDecl &function,
                    core::FunctionSummary summary, bool widen = false);
 
-  /// The inferred summary for `function`, or null if none was recorded.
+  /// The current inferred summary, or null. This raw observer lasts until
+  /// that function's next setInferred; resolved calls retain their version.
   [[nodiscard]] const core::FunctionSummary *
   inferredFor(const clang::FunctionDecl &function) const;
 
@@ -355,15 +387,33 @@ public:
   bool noteInvalidSizedField(const clang::FieldDecl &field);
 
 private:
+  [[nodiscard]] SummarySnapshot
+  publishSummary(core::FunctionSummary summary) const;
+  // RFC 0020: preserve imported pointers across database replacements. A
+  // generation owns no database data; it only prevents identity reuse.
+  std::map<std::shared_ptr<const char>,
+           std::map<const clang::ASTContext *,
+                    std::map<const core::FunctionSummary *, SummarySnapshot>>>
+      importedSummaries;
+  [[nodiscard]] SummarySnapshot
+  importSummary(const core::FunctionSummary &summary);
+  mutable std::vector<Dependencies *> dependencyFrames;
+  mutable std::vector<DependencyVersions> dependencySnapshots;
+  DependencyVersions revisions;
+  bool contextsNeedValidation = false;
+  std::map<MemoryContextKey, DependencyVersions> memoryVersions;
+  std::map<ContextKey, DependencyVersions> callbackVersions;
+  unsigned analysisDepth = 0;
+  std::vector<decltype(memorySpecialized)::node_type> retiredMemory;
+  std::vector<decltype(specialized)::node_type> retiredCallbacks;
   // Node-based maps: `lookup` hands out pointers into them that must stay
   // valid while further lookups insert.
-  std::map<const clang::FunctionDecl *, core::FunctionSummary> inferred;
-  std::map<const clang::FunctionDecl *, core::FunctionSummary> merged;
+  std::map<const clang::FunctionDecl *, SummarySnapshot> inferred;
+  std::map<const clang::FunctionDecl *, SummarySnapshot> merged;
   std::map<const clang::FunctionDecl *, SummarySource> mergedSource;
   /// Indirect summaries, keyed by the canonical function type and the
   /// declaration whose annotations were applied (null if none).
-  std::map<std::pair<const clang::Type *, const clang::Decl *>,
-           core::FunctionSummary>
+  std::map<std::pair<const clang::Type *, const clang::Decl *>, SummarySnapshot>
       mergedIndirect;
   std::vector<const clang::FunctionDecl *> addressTaken;
   llvm::DenseSet<const clang::FunctionDecl *> addressTakenSet;

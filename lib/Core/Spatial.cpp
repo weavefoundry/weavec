@@ -298,6 +298,25 @@ static bool joinString(std::optional<StringFact> &mine,
   return true;
 }
 
+static bool joinRecord(SpatialRecord &mine, const SpatialRecord &theirs) {
+  bool changed = false;
+  if (mine.extent != theirs.extent && mine.extent) {
+    mine.extent.reset();
+    changed = true;
+  }
+  if (mine.boundsOffset != theirs.boundsOffset) {
+    if (mine.boundsOffset && theirs.boundsOffset) {
+      changed |= mine.boundsOffset->join(*theirs.boundsOffset);
+    } else if (mine.boundsOffset) {
+      mine.boundsOffset.reset();
+      changed = true;
+    }
+  }
+  changed |= mine.offset.join(theirs.offset);
+  changed |= joinString(mine.string, theirs.string);
+  return changed;
+}
+
 bool SpatialTracker::join(const SpatialTracker &other) {
   // A place without a record stands at the start of an object of unknown
   // extent: joining with one that has a record keeps the offset's join (a
@@ -310,20 +329,7 @@ bool SpatialTracker::join(const SpatialTracker &other) {
     const SpatialRecord &theirs =
         found == other.records.end() ? Absent : found->second;
     SpatialRecord &mine = it->second;
-    if (mine.extent != theirs.extent && mine.extent) {
-      mine.extent.reset();
-      changed = true;
-    }
-    if (mine.boundsOffset != theirs.boundsOffset) {
-      if (mine.boundsOffset && theirs.boundsOffset) {
-        changed |= mine.boundsOffset->join(*theirs.boundsOffset);
-      } else if (mine.boundsOffset) {
-        mine.boundsOffset.reset();
-        changed = true;
-      }
-    }
-    changed |= mine.offset.join(theirs.offset);
-    changed |= joinString(mine.string, theirs.string);
+    changed |= joinRecord(mine, theirs);
     if (mine.empty()) {
       it = records.erase(it);
       continue;
@@ -339,6 +345,56 @@ bool SpatialTracker::join(const SpatialTracker &other) {
       continue;
     records.emplace(place, std::move(mine));
     changed = true;
+  }
+  return changed;
+}
+
+bool SpatialTracker::joinWithAbsentObjects(
+    const SpatialTracker &other, const std::function<bool(PlaceId)> &absentHere,
+    const std::function<bool(PlaceId)> &absentThere) {
+  if (this == &other)
+    return std::erase_if(records, [](const auto &entry) {
+             return entry.second.empty();
+           }) != 0;
+  static const SpatialRecord Absent{};
+  bool changed = false;
+  auto mine = records.begin();
+  auto theirs = other.records.begin();
+  while (mine != records.end() || theirs != other.records.end()) {
+    if (theirs == other.records.end() ||
+        (mine != records.end() && mine->first < theirs->first)) {
+      if (!absentThere(mine->first))
+        changed |= joinRecord(mine->second, Absent);
+      if (mine->second.empty()) {
+        mine = records.erase(mine);
+        changed = true;
+      } else {
+        ++mine;
+      }
+      continue;
+    }
+    if (mine == records.end() || theirs->first < mine->first) {
+      SpatialRecord record;
+      if (absentHere(theirs->first)) {
+        record = theirs->second;
+      } else {
+        record.offset.join(theirs->second.offset);
+      }
+      if (!record.empty()) {
+        records.emplace_hint(mine, theirs->first, std::move(record));
+        changed = true;
+      }
+      ++theirs;
+      continue;
+    }
+    changed |= joinRecord(mine->second, theirs->second);
+    if (mine->second.empty()) {
+      mine = records.erase(mine);
+      changed = true;
+    } else {
+      ++mine;
+    }
+    ++theirs;
   }
   return changed;
 }

@@ -19,6 +19,7 @@ namespace weavec::frontend {
 
 class CheckedReport {
 public:
+  bool compact = false;
   /// Prevent provisional contracts from being published as settled proofs.
   void invalidate(std::string_view reason);
   void record(const analysis::UnitExports &unit);
@@ -31,6 +32,7 @@ public:
               bool invocationOK = true) const;
 
 private:
+  void write(llvm::raw_ostream &out, bool invocationOK) const;
   std::map<std::string, analysis::UnitExports> units;
 };
 

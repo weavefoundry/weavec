@@ -16,6 +16,7 @@
 #define WEAVEC_ANALYSIS_FUNCTIONANALYSIS_H
 
 #include "weavec/Analysis/Summaries.h"
+#include "weavec/Core/AnalysisStats.h"
 #include "weavec/Core/Diagnostic.h"
 
 #include "clang/AST/ASTContext.h"
@@ -64,6 +65,11 @@ struct AnalysisOptions {
   /// at function exit. Intended for debugging and lit tests; the format is
   /// not stable.
   llvm::raw_ostream *dumpStream = nullptr;
+  /// RFC 0020: optional invocation-owned work accounting.
+  core::AnalysisStats *stats = nullptr;
+  /// Optional immutable preparation owned by the current retained AST.
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
+  std::shared_ptr<FunctionPreparationCache> preparation = {};
 };
 
 /// Runs every WeaveC check over a single function definition.

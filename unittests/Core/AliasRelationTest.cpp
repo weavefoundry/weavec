@@ -11,7 +11,6 @@
 #include <gtest/gtest.h>
 
 namespace weavec::core {
-namespace {
 
 using Members = std::vector<PlaceId>;
 
@@ -19,6 +18,148 @@ constexpr PlaceId P{0};
 constexpr PlaceId Q{1};
 constexpr PlaceId R{2};
 constexpr PlaceId S{3};
+
+// RFC 0020: independent edge maps pin copy isolation and the algebra of
+// ordered row joins. Both edge directions carry their own element witness.
+using EdgeModel = std::map<std::pair<PlaceId, PlaceId>, AliasEdge>;
+
+static EdgeModel edgeModel(const AliasRelation &relation) {
+  EdgeModel result;
+  // Fixtures use places 0..7. Intersection compares directional witnesses
+  // independently, so a surviving edge need not have a surviving reverse.
+  for (std::uint32_t place = 0; place < 8; ++place) {
+    for (const auto &[to, edge] : relation.viewEdgesFrom(PlaceId{place}))
+      result[{PlaceId{place}, to}] = edge;
+  }
+  return result;
+}
+
+static AliasRelation rowFixture(std::uint32_t seed) {
+  AliasRelation result;
+  for (std::uint32_t i = 0; i < 8; ++i) {
+    if ((seed + i) % 3 == 0)
+      continue;
+    const PlaceId a{i};
+    const PlaceId b{(i + seed + 1) % 8};
+    const auto offset = (seed + i) % 2 == 0
+                            ? PointerOffset::ofField("struct container .field")
+                            : PointerOffset::ofElements(seed % 3);
+    result.unite(a, b, offset, ElementWitness::ofConstant(i % 2),
+                 ElementWitness::whole(), (seed + i) % 2 == 0,
+                 (seed + i) % 4 == 0);
+  }
+  return result;
+}
+
+TEST(AliasRelation, LinearRowsMatchIndependentJoinAndIntersectionModels) {
+  for (std::uint32_t a = 0; a < 16; ++a) {
+    for (std::uint32_t b = 0; b < 16; ++b) {
+      SCOPED_TRACE(::testing::Message() << a << "," << b);
+      const auto first = rowFixture(a);
+      const auto second = rowFixture(b);
+      const auto original = edgeModel(first);
+      const auto incoming = edgeModel(second);
+      auto united = original;
+      for (const auto &[key, edge] : incoming) {
+        auto [found, inserted] = united.try_emplace(key, edge);
+        if (inserted)
+          continue;
+        auto &mine = found->second;
+        mine.offset.join(edge.offset);
+        if (mine.element != edge.element)
+          mine.element = ElementWitness::unknown();
+        mine.sameShare |= edge.sameShare;
+      }
+      auto intersection = original;
+      std::erase_if(intersection, [&](const auto &entry) {
+        const auto found = incoming.find(entry.first);
+        return found == incoming.end() || found->second != entry.second;
+      });
+      auto joined = first;
+      EXPECT_EQ(joined.join(second), united != original);
+      EXPECT_EQ(edgeModel(joined), united);
+      EXPECT_FALSE(joined.join(second));
+      EXPECT_FALSE(joined.join(joined));
+      auto intersected = first;
+      EXPECT_EQ(intersected.intersect(second), intersection != original);
+      EXPECT_EQ(edgeModel(intersected), intersection);
+      EXPECT_FALSE(intersected.intersect(second));
+      EXPECT_FALSE(intersected.intersect(intersected));
+      EXPECT_EQ(edgeModel(first), original);
+      EXPECT_EQ(edgeModel(second), incoming);
+    }
+  }
+}
+
+TEST(AliasRelation, CopiesRemainIndependentUnderEveryMutation) {
+  const auto extra = rowFixture(9);
+  const std::vector<std::function<void(AliasRelation &)>> mutations{
+      [](AliasRelation &r) { r.unite(P, Q); },
+      [](AliasRelation &r) {
+        r.unite(P, S, PointerOffset::ofElements(2),
+                ElementWitness::ofVariable(R), ElementWitness::whole(), false,
+                true);
+      },
+      [](AliasRelation &r) { r.shift(P, PointerOffset::ofElements(1)); },
+      [](AliasRelation &r) { r.separate(P); },
+      [](AliasRelation &r) {
+        r.separateIf([](PlaceId p) { return p.value % 2 == 0; });
+      },
+      [](AliasRelation &r) { r.separateExact(P, Q); },
+      [&](AliasRelation &r) { r.join(extra); },
+      [&](AliasRelation &r) { r.intersect(extra); }};
+  for (std::uint32_t seed = 0; seed < 16; ++seed) {
+    for (const auto &mutate : mutations) {
+      auto source = rowFixture(seed);
+      source.unite(P, Q);
+      const auto original = edgeModel(source);
+      auto survivor = source;
+      auto sibling = source;
+      mutate(source);
+      const auto changed = edgeModel(source);
+      EXPECT_EQ(edgeModel(survivor), original);
+      EXPECT_EQ(edgeModel(sibling), original);
+      mutate(sibling);
+      EXPECT_EQ(edgeModel(sibling), changed);
+      EXPECT_EQ(edgeModel(source), changed);
+      source = {};
+      sibling = {};
+      EXPECT_EQ(edgeModel(survivor), original);
+      mutate(survivor);
+      EXPECT_EQ(edgeModel(survivor), changed);
+    }
+  }
+}
+
+TEST(AliasRelation, BorrowedRowsAndOwnedSnapshotsKeepOrderedEdges) {
+  AliasRelation survivor;
+  EdgeModel expected;
+  std::vector<std::pair<PlaceId, AliasEdge>> owned;
+  {
+    auto source = rowFixture(3);
+    source.unite(P, Q);
+    survivor.join(source);
+    expected = edgeModel(source);
+    owned = source.edgesFrom(P);
+    const auto &borrowed = source.viewEdgesFrom(P);
+    EXPECT_EQ((std::vector<std::pair<PlaceId, AliasEdge>>(borrowed.begin(),
+                                                          borrowed.end())),
+              owned);
+    survivor.separate(P);
+    EXPECT_EQ((std::vector<std::pair<PlaceId, AliasEdge>>(borrowed.begin(),
+                                                          borrowed.end())),
+              owned);
+    survivor = source;
+    source.separate(P);
+    EXPECT_EQ(edgeModel(survivor), expected);
+  }
+  EXPECT_EQ(edgeModel(survivor), expected);
+  EXPECT_EQ(survivor.edgesFrom(P), owned);
+  EXPECT_TRUE(survivor.viewEdgesFrom(PlaceId{1000}).empty());
+  survivor.separate(P);
+  EXPECT_TRUE(survivor.viewEdgesFrom(P).empty());
+  EXPECT_FALSE(owned.empty());
+}
 
 TEST(AliasRelation, EveryPlaceAliasesItself) {
   const AliasRelation aliases;
@@ -218,11 +359,11 @@ TEST(AliasRelation, ElementWitnessesOnEdges) {
   EXPECT_TRUE(aliases.edge(S, Q)->element.isWhole());
 
   // A whole copy of the array pointer reaches every element's alias.
-  const PlaceId B{4};
-  aliases.unite(B, P);
-  EXPECT_TRUE(aliases.mayAlias(B, Q));
-  EXPECT_TRUE(aliases.mayAlias(B, R));
-  EXPECT_EQ(aliases.edge(Q, B)->element, zero)
+  const PlaceId b{4};
+  aliases.unite(b, P);
+  EXPECT_TRUE(aliases.mayAlias(b, Q));
+  EXPECT_TRUE(aliases.mayAlias(b, R));
+  EXPECT_EQ(aliases.edge(Q, b)->element, zero)
       << "q is element 0 of b as it is of a";
 
   // Disagreeing witnesses on a join are unknown.
@@ -313,5 +454,4 @@ TEST(AliasRelation, PairsAreOrdered) {
   EXPECT_EQ(aliases.pairs(), (std::vector<Pair>{{P, Q}, {P, R}, {Q, R}}));
 }
 
-} // namespace
 } // namespace weavec::core

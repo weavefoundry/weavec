@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 #include "weavec/Frontend/CheckedReport.h"
 
+#include "CompactReport.h"
 #include "weavec/Config/Version.h"
 #include "weavec/Core/SummaryIO.h"
 
@@ -14,7 +15,7 @@
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/raw_ostream.h"
 
-#include <sstream>
+#include <memory>
 
 namespace weavec::frontend {
 
@@ -54,9 +55,17 @@ static std::string checkedLocation(const core::SourceLocation &location) {
 }
 
 std::string CheckedReport::json(bool invocationOK) const {
-  std::ostringstream out;
+  std::string result;
+  llvm::raw_string_ostream out(result);
+  write(out, invocationOK);
+  return result;
+}
+
+void CheckedReport::write(llvm::raw_ostream &out, bool invocationOK) const {
+  const auto shared = compact ? std::make_unique<CompactReport>() : nullptr;
   const auto quote = core::safetyJsonString;
-  out << R"({"version":2,"invocation_ok":)" << (invocationOK ? "true" : "false")
+  out << "{\"version\":" << (compact ? 3 : 2)
+      << ",\"invocation_ok\":" << (invocationOK ? "true" : "false")
       << ",\"guarantee\":\"conditional safety of selected source "
          "functions\",\"units\":[";
   std::size_t total = 0;
@@ -131,6 +140,10 @@ std::string CheckedReport::json(bool invocationOK) const {
         if (!first)
           out << ',';
         first = false;
+        if (shared) {
+          out << shared->obligation(entry);
+          continue;
+        }
         out << "{\"property\":" << quote(core::toString(entry.property))
             << ",\"outcome\":" << quote(core::toString(entry.outcome))
             << ",\"location\":" << checkedLocation(entry.location)
@@ -154,8 +167,10 @@ std::string CheckedReport::json(bool invocationOK) const {
       << R"(,"totals":{"functions":)" << total << ",\"selected\":" << selected
       << ",\"complete\":" << complete << ",\"trusted_complete\":" << trusted
       << ",\"incomplete\":" << total - complete << ",\"deferred\":" << deferred
-      << "}}\n";
-  return out.str();
+      << '}';
+  if (shared)
+    shared->writeTables(out);
+  out << "}\n";
 }
 
 bool CheckedReport::finish(std::string_view path,
@@ -182,10 +197,12 @@ bool CheckedReport::finish(std::string_view path,
       std::string(path) + ".tmp-%%%%%%", descriptor, temporary);
   if (!error) {
     llvm::raw_fd_ostream stream(descriptor, true);
-    stream << json(invocationOK && complete);
+    write(stream, invocationOK && complete);
     stream.close();
-    if (stream.has_error())
+    if (stream.has_error()) {
       error = stream.error();
+      stream.clear_error();
+    }
     if (!error)
       error = llvm::sys::fs::rename(temporary, path);
   }

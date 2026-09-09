@@ -36,6 +36,9 @@ namespace weavec::frontend {
 
 /// WeaveC's own command-line flags, split from Clang's.
 struct DriverOptions {
+  std::string analysisStatsPath;
+  std::string analysisCache;
+  std::shared_ptr<core::AnalysisStats> stats;
   /// `-fweavec` / `-fno-weavec`: analyse at all.
   bool enabled = true;
   /// `-fweavec-strict`: `--strict-externs`.

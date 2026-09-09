@@ -24,6 +24,7 @@
 #include "weavec/Core/SourceLocation.h"
 
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <optional>
 #include <string>
@@ -235,6 +236,13 @@ public:
   /// agree and joins the offsets; a record on one side only is dropped (a
   /// bounds fact must hold on every path in). Returns whether this changed.
   bool join(const SpatialTracker &other);
+
+  /// RFC 0020: equivalent to padding each missing record from the other
+  /// tracker when its object is absent, then joining. Predicates must read
+  /// only the incoming non-spatial domains. Reports exact map changes.
+  bool joinWithAbsentObjects(const SpatialTracker &other,
+                             const std::function<bool(PlaceId)> &absentHere,
+                             const std::function<bool(PlaceId)> &absentThere);
 
   [[nodiscard]] const std::map<PlaceId, SpatialRecord> &all() const noexcept {
     return records;

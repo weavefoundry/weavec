@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "baseline": "b5805f5",
+  "cases": [
+    {"name": "unchanged", "expected": "reuse", "description": "A second identical invocation preserves diagnostics and checked obligations with zero function analyses."},
+    {"name": "unrelated", "expected": "reuse", "description": "An unrelated inferred function update preserves a contextual result and its nested dependencies."},
+    {"name": "callee-release", "expected": "reject", "description": "Changing a read-only helper to release its argument invalidates callers using the old summary."},
+    {"name": "callee-initialization", "expected": "reject", "description": "Removing a callee output write invalidates callers depending on its initialized postcondition."},
+    {"name": "missing-definition", "expected": "invalidate", "description": "A missing direct or indirect definition becoming available invalidates the old boundary."},
+    {"name": "callback", "expected": "invalidate", "description": "Changing a callback global target invalidates its readers and nested contextual callers."},
+    {"name": "global-facts", "expected": "invalidate", "description": "Count and sized-field witnesses or refutations invalidate dependent contexts."},
+    {"name": "header", "expected": "invalidate", "description": "Changed header contents with restored timestamps invalidate persistent reuse."},
+    {"name": "conditional-include", "expected": "invalidate", "description": "A newly available __has_include target changes the preprocessing identity even without inclusion."},
+    {"name": "options", "expected": "invalidate", "description": "Selection, macro, target, diagnostic and compiler option changes do not reuse incompatible results."},
+    {"name": "cache-corruption", "expected": "miss", "description": "Truncated or corrupt persistent records cannot produce successful checking."},
+    {"name": "cache-unavailable", "expected": "equivalent", "description": "An unavailable cache directory preserves uncached checking behavior."},
+    {"name": "stale-object", "expected": "reject", "description": "A warm link cache cannot establish a stale compiler object after its source changes."},
+    {"name": "explanations", "expected": "equivalent", "description": "Compact and expanded reports retain every distinct source obligation, trust and selected outcome."},
+    {"name": "recursive", "expected": "equivalent", "description": "Repeated call provenance cannot establish new facts or turn a limit into success."},
+    {"name": "transport", "expected": "equivalent", "description": "Inline, helper, whole-program and compiler-object cases preserve positive and negative results."},
+    {"name": "leaf-edit", "expected": "reuse-unaffected", "description": "A changed leaf unit invalidates dependent results while an independent unit remains reusable."}
+  ],
+  "performance": {
+    "manifest": "scripts/corpus/rfc0015.json",
+    "checked_timeout_seconds": 600,
+    "jansson_target_seconds": 180,
+    "cjson_target_seconds": 22.59,
+    "linenoise_target_seconds": 10.4765,
+    "ordinary_max_time_ratio": 1.1,
+    "ordinary_max_memory_ratio": 1.1,
+    "compact_min_reduction": 5
+  }
+}

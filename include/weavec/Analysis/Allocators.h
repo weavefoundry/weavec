@@ -34,7 +34,7 @@ namespace weavec::analysis {
 struct CallEffects {
   /// The callee's summary; never null. Sub-path effects, stores and return
   /// alternatives are read from here.
-  const core::FunctionSummary *summary = nullptr;
+  SummarySnapshot summary;
   /// Where the summary came from.
   SummarySource source = SummarySource::Inferred;
   /// The call may return a fresh owned allocation.

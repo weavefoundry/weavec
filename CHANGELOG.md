@@ -6,6 +6,43 @@ follows [Semantic Versioning](https://semver.org/) once it reaches 1.0.
 
 ## [Unreleased]
 
+### Scalable checked analysis (RFC 0020)
+
+- Reuse context summaries according to observed function and global-fact
+  dependencies, including missing callees and nested cache hits.
+- Retain parsed translation units and reusable CFG, scope and liveness data
+  during whole-program analysis and compiler source replay.
+  Bound ordinary runs without persistent reuse to one retained AST, and
+  share owned call snapshots across CFG transfers.
+  Release stale working databases and duplicate completed exports before
+  constructing their replacements.
+  Join spatial and alias facts directly and consume settled diagnostic-pass
+  states while preserving the final exit state and analysis dumps.
+  Schedule checked CFG work in reverse postorder with a reusable block order;
+  preserve FIFO convergence and resource use throughout ordinary analysis.
+- Share immutable checked obligation entries and ledger snapshots on copy
+  and across identical completed contexts through bounded weak indexes;
+  separate semantic convergence from explanation wording and call routes.
+- Add optional `--analysis-cache` and `--analysis-stats` options, with matching
+  compiler spellings. Settled checkpoints validate preprocessing, input bytes,
+  commands, tool identity and imported facts before replaying diagnostics.
+  Shared checkpoint tables preserve contracts too large for expanded transport;
+  per-function statistics and partial snapshots expose unfinished work.
+- Add optional compact checked report version 3 and a compatible expansion
+  script. Expanded version 2 remains the default.
+- Bind compiler objects to their preprocessing outcomes in sidecar format 16,
+  closing stale-object validation when conditional includes become available.
+  Rebuild older sidecars; Core summary format 15 remains unchanged.
+- Add frozen cache equivalence, invalidation, corruption, compiler-object and
+  compact-explanation regression cases.
+- Fix summary parsing of widened `Inside` offsets (`@~`) in stores, returned
+  values and heap descriptions, preserving facts in large checkpoints.
+- Preserve reachable checks after diverging loop cursors: checked nullness
+  and branch facts require proven aliases, rather than possible equality
+  on an earlier iteration.
+- Encode imported-fact keys losslessly, including spaced function-pointer
+  type spellings and source paths, so independent units remain cacheable.
+
 ### Practical checked memory contracts (RFC 0019)
 
 - Infer initialized output intervals through nested fields, returned heap
