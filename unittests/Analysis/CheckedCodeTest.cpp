@@ -79,6 +79,53 @@ TEST(CheckedCode, UnknownIndexFailsAndGuardProvesIt) {
           "int f(int i) { int a[4]={0}; if(i<0||i>=4)return 0; return a[i]; }")
           .complete());
 }
+// RFC 0020: equality on an earlier iteration cannot prune a reachable tail.
+TEST(CheckedCode, DivergingLoopCursorsRetainReachableFailures) {
+  const auto contract = check(R"c(
+    struct node { struct node *next; struct node *prev; };
+    void f(struct node *list) {
+      struct node *slow = list;
+      struct node *fast = list;
+      if (!list || !list->next) return;
+      while (fast) {
+        slow = slow->next;
+        fast = fast->next;
+        if (fast) fast = fast->next;
+      }
+      if (slow && slow->prev) {
+        int *bad = 0;
+        *bad = 42;
+        slow->prev->next = 0;
+      }
+    }
+  )c");
+  EXPECT_FALSE(contract.complete());
+  EXPECT_TRUE(
+      std::ranges::any_of(contract.obligations.entries(), [](const auto &item) {
+        return item.second.outcome == core::SafetyOutcome::Violation &&
+               item.second.reason == "dereference of 'bad', which is null";
+      }));
+  EXPECT_TRUE(
+      std::ranges::any_of(contract.obligations.entries(), [](const auto &item) {
+        return item.second.property == core::SafetyProperty::Bounds &&
+               item.second.location.line == 15;
+      }));
+}
+TEST(CheckedCode, AcyclicRangeJoinsKeepTheirReachableArms) {
+  // RFC 0020: the Jansson decimal-point clamp bounds n to [-3, 16].
+  // Safe integer operations need no unresolved arithmetic obligation, but
+  // the non-positive arm is still reachable and must retain its failure.
+  const auto prefix =
+      std::string{"int f(int n) { if(n<=-4 || n>16)n=1; int v=n<=0?n-1:0;"};
+  EXPECT_TRUE(check(prefix + "return 0-v;}").complete());
+  const auto contract =
+      check(prefix + "if(n<=0){int *bad=0;return *bad;}return 0-v;}");
+  EXPECT_TRUE(
+      std::ranges::any_of(contract.obligations.entries(), [](const auto &item) {
+        return item.second.outcome == core::SafetyOutcome::Violation &&
+               item.second.reason == "dereference of 'bad', which is null";
+      }));
+}
 TEST(CheckedCode, MustInitializationAcrossBranches) {
   EXPECT_FALSE(check("int f(int b) { int x; if(b)x=1; return x; }").complete());
   EXPECT_TRUE(

@@ -61,6 +61,15 @@ if(Python3_Interpreter_FOUND)
   set_tests_properties(evaluation-rfc0017 PROPERTIES LABELS "integration"
                                                      TIMEOUT 180)
   add_test(
+    NAME incremental-evaluation-rfc0020
+    COMMAND
+      "${Python3_EXECUTABLE}"
+      "${PROJECT_SOURCE_DIR}/scripts/incremental-evaluation.py" --weavec
+      "$<TARGET_FILE:weavec>" --cc "$<TARGET_FILE:weavec-cc>")
+  set_tests_properties(incremental-evaluation-rfc0020
+                       PROPERTIES LABELS "integration" TIMEOUT 180)
+
+  add_test(
     NAME checked-build-evaluation
     COMMAND
       "${Python3_EXECUTABLE}"

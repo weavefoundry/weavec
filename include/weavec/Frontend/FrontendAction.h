@@ -22,6 +22,7 @@
 #include "weavec/Frontend/DiagnosticControl.h"
 
 #include "clang/AST/ASTConsumer.h"
+#include "clang/Frontend/ASTUnit.h"
 #include "clang/Frontend/CompilerInstance.h"
 #include "clang/Frontend/FrontendAction.h"
 #include "clang/Tooling/Tooling.h"
@@ -37,15 +38,36 @@ namespace weavec::frontend {
 /// What one run of the consumer over a unit produced (RFC 0005).
 struct UnitResult {
   analysis::UnitExports exports;
+  /// RFC 0020: unfiltered diagnostics for faithful checkpoint replay.
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
+  std::vector<core::Diagnostic> diagnostics = {};
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
+  std::set<std::string> dependencies = {};
   /// The diagnostics shown for the unit in this run.
   std::set<ReportedDiagnostic> reported;
   std::size_t errors = 0;
   std::size_t warnings = 0;
 };
 
+struct FrontendOptions;
+UnitResult analyzeTranslationUnit(clang::ASTContext &context,
+                                  clang::DiagnosticsEngine &diagnostics,
+                                  const FrontendOptions &options);
+UnitResult replayUnitResult(UnitResult result,
+                            clang::DiagnosticsEngine &diagnostics,
+                            const FrontendOptions &options);
+/// Runs against an ASTUnit with a fresh diagnostic consumer and counters.
+UnitResult analyzeRetainedUnit(clang::ASTUnit &ast,
+                               const FrontendOptions &options,
+                               const UnitResult *checkpoint = nullptr);
+
 /// User-configurable behaviour of the frontend action.
 struct FrontendOptions {
   analysis::AnalysisOptions analysis;
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
+  std::string analysisCache = {};
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
+  std::string analysisStatsPath = {};
   std::shared_ptr<CheckedReport> checkedReport =
       std::make_shared<CheckedReport>();
   /// Only analyse declarations in the main file (not in included headers).

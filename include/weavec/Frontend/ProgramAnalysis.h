@@ -26,6 +26,7 @@
 #include "weavec/Frontend/DiagnosticControl.h"
 #include "weavec/Frontend/FrontendAction.h"
 
+#include "clang/Frontend/ASTUnit.h"
 #include "clang/Tooling/Tooling.h"
 
 #include <cstddef>
@@ -49,6 +50,20 @@ public:
   /// if the unit could not be processed (the reason has been printed).
   /// Diagnostics the action emits do not make this false.
   virtual bool run(clang::tooling::FrontendActionFactory &factory) = 0;
+  /// RFC 0020: production units retain their AST; synthetic units may use
+  /// the original action interface.
+  virtual bool analyze(const FrontendOptions &options) {
+    const auto factory = createWeaveCActionFactory(options);
+    return run(*factory);
+  }
+  /// Empty when this input cannot be validated for persistent reuse.
+  virtual std::string inputIdentity(const FrontendOptions &) { return {}; }
+  virtual bool replay(const UnitResult &, const FrontendOptions &) {
+    return false;
+  }
+  /// Release preparation and its AST after analysis returns. The orchestrator
+  /// only requests this for ordinary runs without bindings or checkpoints.
+  virtual bool releaseAST() { return false; }
 };
 
 /// The whole-program algorithm over an arbitrary set of units.
@@ -113,6 +128,10 @@ private:
     /// RFC 0012, *Sized fields*: the pairs the database confirmed when the
     /// unit was last reported on; more at the end means another pass.
     std::set<analysis::SizedFieldWitness> sizedPairsSeen;
+    std::optional<UnitResult> checkpoint = std::nullopt;
+    // Default for designated initialization.
+    // NOLINTNEXTLINE(readability-redundant-member-init)
+    std::set<std::string> dependencies = {};
   };
 
   FrontendOptions options;
@@ -120,6 +139,10 @@ private:
   std::vector<analysis::UnitExports> fixed;
   analysis::ProgramDatabase settled;
   std::set<std::string> boundaryOnce;
+  bool boundedRetention = false;
+  std::vector<ProgramUnit *> retainedUnits;
+  void touchRetainedUnit(ProgramUnit &unit);
+  void trimRetainedUnits();
 
   /// Runs `unit` with `options` completed by `overrides`; the result of the
   /// consumer, or `nullopt` if the unit could not be processed.
@@ -128,10 +151,11 @@ private:
   [[nodiscard]] std::vector<std::vector<unsigned>> unitGraph() const;
   void analyzeAcyclic(unsigned index, Result &result);
   void analyzeCyclic(const std::vector<unsigned> &component, Result &result);
+  void analyzeComponent(const std::vector<unsigned> &component, Result &result);
   /// Records what a reporting run of `unit` against `db` produced: its
   /// exports, the diagnostics shown, the sized-field pairs in force.
-  static void settle(Unit &unit, const analysis::ProgramDatabase &db,
-                     const UnitResult &run);
+  void settle(Unit &unit, const analysis::ProgramDatabase &db,
+              const UnitResult &run) const;
   /// RFC 0012, *Sized fields*, "Inference": one more reporting pass over
   /// every unit analysed before the program confirmed a pair it may load;
   /// only what is new is shown.
@@ -154,11 +178,23 @@ public:
 
   [[nodiscard]] std::string name() const override { return source; }
   bool run(clang::tooling::FrontendActionFactory &factory) override;
+  bool analyze(const FrontendOptions &options) override;
+  std::string inputIdentity(const FrontendOptions &options) override;
+  bool replay(const UnitResult &result,
+              const FrontendOptions &options) override;
+  bool releaseAST() override;
 
 private:
   const clang::tooling::CompilationDatabase &compilations;
+  std::string preprocessingInput(const FrontendOptions &options);
   std::string source;
   std::vector<clang::tooling::ArgumentsAdjuster> adjusters;
+  std::vector<std::unique_ptr<clang::ASTUnit>> asts;
+  bool attemptedParse = false;
+  bool multipleCommands = false;
+  std::optional<std::string> identity;
+  std::shared_ptr<analysis::FunctionPreparationCache> preparation =
+      std::make_shared<analysis::FunctionPreparationCache>();
 };
 
 } // namespace weavec::frontend

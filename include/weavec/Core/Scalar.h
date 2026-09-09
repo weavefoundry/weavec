@@ -506,6 +506,19 @@ struct GuardOn {
     return GuardRefinement::Narrowed;
   }
 
+  /// RFC 0020: the read-only counterpart of drop, for invalidating facts
+  /// without allocating a temporary guard.
+  [[nodiscard]] bool dependsOn(const Key &key) const {
+    return conditions.contains(key) ||
+           std::ranges::any_of(integers,
+                               [&](const auto &predicate) {
+                                 return predicate.dependsOn(key);
+                               }) ||
+           std::ranges::any_of(pointers, [&](const auto &entry) {
+             return entry.first.first == key || entry.first.second == key;
+           });
+  }
+
   /// Drops the conjunct on `key` (the key's value is no longer the one the
   /// guard spoke about). Returns whether there was one.
   bool drop(const Key &key) {

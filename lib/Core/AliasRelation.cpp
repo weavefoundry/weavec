@@ -42,15 +42,21 @@ static ElementWitness through(ElementWitness ofTarget, ElementWitness ofSource,
   return ElementWitness::unknown();
 }
 
-void AliasRelation::relate(PlaceId a, PlaceId b, AliasEdge toB, AliasEdge toA) {
+void AliasRelation::relate(PlaceId a, PlaceId b, const AliasEdge &toB,
+                           const AliasEdge &toA) {
   if (a == b)
     return;
-  auto [ab, insertedAb] = adjacent[a].try_emplace(b, toB);
-  if (!insertedAb)
-    ab->second = merge(ab->second, toB);
-  auto [ba, insertedBa] = adjacent[b].try_emplace(a, toA);
-  if (!insertedBa)
-    ba->second = merge(ba->second, toA);
+  const auto add = [this](PlaceId from, PlaceId to, const AliasEdge &edge) {
+    Edges &row = adjacent[from];
+    const auto found = row.find(to);
+    if (found != row.end() && found->second == edge)
+      return;
+    AliasEdge combined = found == row.end() ? edge : merge(found->second, edge);
+    if (found == row.end() || found->second != combined)
+      row.insert_or_assign(to, std::move(combined));
+  };
+  add(a, b, toB);
+  add(b, a, toA);
 }
 
 void AliasRelation::unite(PlaceId a, PlaceId b, const PointerOffset &offset,
@@ -167,7 +173,7 @@ void AliasRelation::separateExact(PlaceId a, PlaceId b) {
   const auto edge = ab->second.find(b);
   if (edge == ab->second.end() || !edge->second.exact())
     return;
-  ab->second.erase(edge);
+  ab->second.erase(b);
   if (ab->second.empty())
     adjacent.erase(ab);
   const auto ba = adjacent.find(b);
@@ -186,8 +192,9 @@ bool AliasRelation::mayAlias(PlaceId a, PlaceId b) const noexcept {
 bool AliasRelation::isExact(PlaceId a, PlaceId b) const noexcept {
   if (a == b)
     return true;
-  const auto found = edge(a, b);
-  return found && found->exact();
+  const auto &edges = viewEdgesFrom(a);
+  const auto found = edges.find(b);
+  return found != edges.end() && found->second.exact();
 }
 
 std::optional<PointerOffset> AliasRelation::offsetOf(PlaceId a,
@@ -203,8 +210,9 @@ std::optional<PointerOffset> AliasRelation::offsetOf(PlaceId a,
 bool AliasRelation::sameShare(PlaceId a, PlaceId b) const noexcept {
   if (a == b)
     return true;
-  const auto found = edge(a, b);
-  return !found || found->sameShare;
+  const auto &edges = viewEdgesFrom(a);
+  const auto found = edges.find(b);
+  return found == edges.end() || found->second.sameShare;
 }
 
 std::optional<AliasEdge> AliasRelation::edge(PlaceId a,
@@ -236,18 +244,40 @@ AliasRelation::edgesFrom(PlaceId place) const {
   return result;
 }
 
+const AliasRelation::Edges &
+AliasRelation::viewEdgesFrom(PlaceId place) const noexcept {
+  static const Edges Empty;
+  const auto found = adjacent.find(place);
+  return found == adjacent.end() ? Empty : found->second;
+}
+
 bool AliasRelation::intersect(const AliasRelation &other) {
+  if (this == &other)
+    return false;
   bool changed = false;
   for (auto place = adjacent.begin(); place != adjacent.end();) {
-    for (auto edge = place->second.begin(); edge != place->second.end();) {
-      if (other.edge(place->first, edge->first) != edge->second) {
-        edge = place->second.erase(edge);
-        changed = true;
-      } else {
-        ++edge;
-      }
+    const auto found = other.adjacent.find(place->first);
+    if (found == other.adjacent.end()) {
+      place = adjacent.erase(place);
+      changed = true;
+      continue;
     }
-    if (place->second.empty())
+    Edges &row = place->second;
+    const auto &incoming = found->second;
+    auto theirs = incoming.begin();
+    auto edge = row.begin();
+    while (edge != row.end()) {
+      while (theirs != incoming.end() && theirs->first < edge->first)
+        ++theirs;
+      if (theirs != incoming.end() && theirs->first == edge->first &&
+          theirs->second == edge->second) {
+        ++edge;
+        continue;
+      }
+      edge = row.erase(edge);
+      changed = true;
+    }
+    if (row.empty())
       place = adjacent.erase(place);
     else
       ++place;
@@ -256,22 +286,29 @@ bool AliasRelation::intersect(const AliasRelation &other) {
 }
 
 bool AliasRelation::join(const AliasRelation &other) {
+  if (this == &other)
+    return false;
   bool changed = false;
-  for (const auto &[place, aliases] : other.adjacent) {
-    auto &mine = adjacent[place];
-    for (const auto &[alias, edge] : aliases) {
-      // Both directions are visited by the outer loop; merge each on its
-      // own side.
-      auto [it, inserted] = mine.try_emplace(alias, edge);
-      if (inserted) {
-        changed = true;
+  for (const auto &[place, source] : other.adjacent) {
+    auto [found, inserted] = adjacent.try_emplace(place, source);
+    if (inserted) {
+      changed = true;
+      continue;
+    }
+    Edges &row = found->second;
+    auto cursor = row.begin();
+    for (const auto &[alias, edge] : source) {
+      while (cursor != row.end() && cursor->first < alias)
+        ++cursor;
+      const bool present = cursor != row.end() && cursor->first == alias;
+      if (present && cursor->second == edge)
         continue;
-      }
-      const AliasEdge merged = merge(it->second, edge);
-      if (merged != it->second) {
-        it->second = merged;
-        changed = true;
-      }
+      AliasEdge merged = present ? merge(cursor->second, edge) : edge;
+      if (present && merged == cursor->second)
+        continue;
+      cursor = row.insert_or_assign(cursor, alias, std::move(merged));
+      ++cursor;
+      changed = true;
     }
   }
   return changed;

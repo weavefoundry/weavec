@@ -31,7 +31,7 @@ void FunctionDataflow::safetyObligation(
        .function = function.getNameAsString(),
        .subject = std::move(subject),
        .reason = inUnsafe ? "unsafe boundary: " + reason : std::move(reason),
-       .calls = std::move(calls)});
+       .calls = core::SafetyCallPath(std::move(calls))});
 }
 
 void FunctionDataflow::safetyDiagnostic(const core::Diagnostic &diagnostic) {
@@ -59,7 +59,7 @@ void FunctionDataflow::safetyDiagnostic(const core::Diagnostic &diagnostic) {
       .calls = {}};
   for (const auto &note : diagnostic.notes)
     if (obligation.calls.size() < core::MaxSafetyCallDepth)
-      obligation.calls.push_back(note.location);
+      obligation.calls.pushBack(note.location);
   inferred.checked.obligations.add(std::move(obligation));
 }
 
@@ -689,10 +689,22 @@ void FunctionDataflow::checkedFinish(const core::AnalysisState *exitState) {
                      "unsafe-function", "unsafe function contract");
   if (inferred.checked.selected && emitDiagnostics &&
       (!inferred.checked.obligations.complete() || inferred.checked.limited)) {
+    // RFC 0020: flushDiagnostics keeps the first equal rendered diagnostic.
+    // Borrow immutable ledger strings to reject duplicates before allocating
+    // their messages and call notes; report entries remain independent.
+    using DiagnosticKey =
+        std::tuple<std::string_view, std::uint32_t, std::uint32_t,
+                   core::SafetyOutcome, std::string_view>;
+    std::set<DiagnosticKey> seen;
     for (const auto &[key, obligation] :
          inferred.checked.obligations.entries()) {
       (void)key;
       if (obligation.outcome < core::SafetyOutcome::Unresolved)
+        continue;
+      if (!seen.emplace(obligation.location.file, obligation.location.line,
+                        obligation.location.column, obligation.outcome,
+                        obligation.reason)
+               .second)
         continue;
       core::Diagnostic diagnostic{
           .severity = core::Severity::Error,

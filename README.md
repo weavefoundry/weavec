@@ -80,13 +80,27 @@ remain coverage gaps; general nonlinear and loop reasoning are outside the
 model. Early-exit and other unsupported loops do not produce inferred
 must-requirements on callers. Existing annotations remain trusted contracts.
 There is no runtime instrumentation or whole-program verification certificate.
-Summary and sidecar format **13** require rebuilding objects carrying older
+Core summary format is **15**; sidecar format **16** requires rebuilding objects carrying older
 sidecars. The [validation report](docs/validation-rfc0017.md) records
 **900/900 tests passing**, including under ASan/UBSan, **44/44 original bugs
 detected and 32/32 clean cases**, plus twelve separate bug/clean regression
 pairs. Three repeated corpus runs show the cost: median analysis time grew
 from 141 to 336 seconds and peak memory grew 19%, exceeding the RFC targets.
 Three new Jansson false positives and remaining coverage gaps are documented.
+
+Analysis can retain parsed units and immutable function preparation, reuse
+specializations according to their dependencies, and share checked explanations
+([RFC 0020](docs/rfcs/0020-scalable-modular-checked-analysis.md)). Optional
+`--analysis-cache` checkpoints avoid function dataflow for unchanged reusable
+units; `--analysis-stats` makes that work visible. Compact checked reports keep
+source obligations and call routes in shared tables. See the
+[incremental analysis guide](docs/incremental-analysis.md) for both command-line
+spellings, input validation, report decoding and conservative cache misses.
+The [RFC 0020 validation](docs/validation-rfc0020.md) records 1,029/1,029 tests
+passing in Debug and ASan/UBSan, 43% less ordinary analysis time and 5% less
+peak memory. All five checked corpus reports finish within 600 seconds; warm
+runs reuse every unit with zero function analyses and equivalent reports.
+Incomplete functions and existing checking limits remain visible.
 
 ## Quick look
 

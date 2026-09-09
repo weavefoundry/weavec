@@ -20,6 +20,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "weavec/Config/Version.h"
+#include "weavec/Frontend/AnalysisStats.h"
 #include "weavec/Frontend/DiagnosticControl.h"
 #include "weavec/Frontend/FrontendAction.h"
 #include "weavec/Frontend/ProgramAnalysis.h"
@@ -65,6 +66,19 @@ cl::list<std::string>
 cl::opt<std::string> checkedReportPath("checked-report",
                                        cl::desc("Write checked safety JSON"),
                                        cl::cat(weavecCategory));
+
+cl::opt<std::string>
+    analysisStatsPath("analysis-stats",
+                      cl::desc("Write analysis work statistics JSON"),
+                      cl::cat(weavecCategory));
+cl::opt<std::string> analysisCachePath(
+    "analysis-cache",
+    cl::desc("Reuse validated translation-unit analysis in this directory"),
+    cl::cat(weavecCategory));
+cl::opt<std::string>
+    checkedReportFormat("checked-report-format",
+                        cl::desc("Checked report format: expanded or compact"),
+                        cl::init("expanded"), cl::cat(weavecCategory));
 
 cl::opt<bool> strictExterns(
     "strict-externs",
@@ -232,7 +246,25 @@ int main(int argc, const char **argv) {
     }
   }
 
+  if ((analysisStatsPath.getNumOccurrences() && analysisStatsPath.empty()) ||
+      (analysisCachePath.getNumOccurrences() && analysisCachePath.empty())) {
+    llvm::errs() << "weavec: error: analysis statistics and cache options "
+                    "require a path\n";
+    return 1;
+  }
+  if (checkedReportFormat != "expanded" && checkedReportFormat != "compact") {
+    llvm::errs()
+        << "weavec: error: checked report format must be expanded or compact\n";
+    return 1;
+  }
+  weavec::core::AnalysisStats stats;
   weavec::frontend::FrontendOptions options;
+  options.analysis.stats = analysisStatsPath.empty() ? nullptr : &stats;
+  options.analysisStatsPath = analysisStatsPath;
+  options.analysisCache = dumpAnalysis || reportUnannotated
+                              ? std::string{}
+                              : analysisCachePath.getValue();
+  options.checkedReport->compact = checkedReportFormat == "compact";
   options.analysis.checked = checked;
   options.analysis.checkedFunctions.insert(checkedFunctions.begin(),
                                            checkedFunctions.end());
@@ -268,7 +300,29 @@ int main(int argc, const char **argv) {
     }
     const bool reportOK = options.checkedReport->finish(
         checkedReportPath, options.analysis.checkedFunctions, result.ok());
-    return result.ok() && reportOK ? 0 : 1;
+    const bool statsOK = weavec::frontend::writeAnalysisStats(
+        analysisStatsPath, options.analysis.stats);
+    return result.ok() && reportOK && statsOK ? 0 : 1;
+  }
+
+  if (!options.analysisCache.empty()) {
+    bool ok = true;
+    // Without --whole-program each source retains its independent boundary.
+    for (const auto &source : sources) {
+      weavec::frontend::ProgramAnalysis program(options);
+      program.addUnit(
+          std::make_unique<weavec::frontend::CompilationDatabaseUnit>(
+              compilations, source, adjusters));
+      const auto result = program.run();
+      ok &= result.ok();
+      for (const auto &failed : result.failed)
+        llvm::errs() << "weavec: error: cannot analyse '" << failed << "'\n";
+    }
+    const bool reportOK = options.checkedReport->finish(
+        checkedReportPath, options.analysis.checkedFunctions, ok);
+    const bool statsOK = weavec::frontend::writeAnalysisStats(
+        analysisStatsPath, options.analysis.stats);
+    return ok && reportOK && statsOK ? 0 : 1;
   }
 
   clang::tooling::ClangTool tool(compilations, sources);
@@ -278,5 +332,7 @@ int main(int argc, const char **argv) {
       tool.run(weavec::frontend::createWeaveCActionFactory(options).get());
   const bool reportOK = options.checkedReport->finish(
       checkedReportPath, options.analysis.checkedFunctions, status == 0);
-  return status == 0 && reportOK ? 0 : 1;
+  const bool statsOK = weavec::frontend::writeAnalysisStats(
+      analysisStatsPath, options.analysis.stats);
+  return status == 0 && reportOK && statsOK ? 0 : 1;
 }

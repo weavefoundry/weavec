@@ -137,46 +137,47 @@ FunctionDataflow::resolveCall(const CallExpr &call) {
       cached != callSummaries.end()) {
     if (!cached->second)
       return std::nullopt;
-    return ResolvedSummary{.summary = &*cached->second,
+    return ResolvedSummary{.summary = cached->second,
                            .source = callSources.at(&call)};
   }
   const FunctionDecl *direct = call.getDirectCallee();
   if (!currentState)
     return direct ? summaries.lookup(*direct) : summaries.lookupIndirect(call);
   core::AnalysisState &state = *currentState;
-  std::optional<core::FunctionSummary> result;
+  std::shared_ptr<const core::FunctionSummary> result;
   SummarySource source = SummarySource::Inferred;
-  const auto contextualize = [&](std::string_view symbol,
-                                 const core::FunctionSummary &base)
-      -> std::optional<core::FunctionSummary> {
-    // Path resolution validates this target's object views before using
-    // its footprint. The final contextual result replaces this below.
-    callSummaries[&call] = base;
-    auto bindings = captureCallContext(call, base, state);
-    if (!bindings)
-      return std::nullopt;
-    if (const auto callbacks = callbackContexts.find(&call);
-        callbacks != callbackContexts.end())
-      bindings->callbacks = callbacks->second;
-    memoryContexts[&call] = *bindings;
-    core::DiagnosticCollector collected;
-    const auto specialized = summaries.specializeMemory(
-        symbol, *bindings, options,
-        recording() && emitDiagnostics && !inUnsafe ? &collected : nullptr);
-    for (auto diagnostic : collected.diagnostics()) {
-      diagnostic.addNote("called here with related pointer arguments",
-                         locate(call));
-      report(std::move(diagnostic));
-    }
-    if (!specialized) {
-      reportIncomplete("call context unavailable or limit reached", call);
-      return std::nullopt;
-    }
-    return *specialized->summary;
-  };
+  const auto contextualize =
+      [&](std::string_view symbol,
+          std::shared_ptr<const core::FunctionSummary> base) {
+        // Path resolution validates this target's object views before using
+        // its footprint. The final contextual result replaces this below.
+        auto &snapshot = callSummaries[&call];
+        snapshot = std::move(base);
+        auto bindings = captureCallContext(call, *snapshot, state);
+        if (!bindings)
+          return snapshot;
+        if (const auto callbacks = callbackContexts.find(&call);
+            callbacks != callbackContexts.end())
+          bindings->callbacks = callbacks->second;
+        memoryContexts[&call] = *bindings;
+        core::DiagnosticCollector collected;
+        const auto specialized = summaries.specializeMemory(
+            symbol, *bindings, options,
+            recording() && emitDiagnostics && !inUnsafe ? &collected : nullptr);
+        for (auto diagnostic : collected.diagnostics()) {
+          diagnostic.addNote("called here with related pointer arguments",
+                             locate(call));
+          report(std::move(diagnostic));
+        }
+        if (!specialized) {
+          reportIncomplete("call context unavailable or limit reached", call);
+          return snapshot;
+        }
+        return summaries.retainSummary(*specialized);
+      };
   if (direct) {
     if (const auto base = summaries.lookup(*direct)) {
-      result = *base->summary;
+      result = summaries.retainSummary(*base);
       source = base->source;
       if (!result->callbackInputs.empty()) {
         core::CallbackBindings bindings;
@@ -201,7 +202,7 @@ FunctionDataflow::resolveCall(const CallExpr &call) {
           callbackContexts[&call] = bindings;
           if (const auto specialized =
                   summaries.specialize(*direct, bindings, options, nullptr)) {
-            result = *specialized->summary;
+            result = summaries.retainSummary(*specialized);
           } else {
             reportIncomplete("callback context unavailable or limit reached",
                              call);
@@ -216,9 +217,7 @@ FunctionDataflow::resolveCall(const CallExpr &call) {
           source == SummarySource::Program ||
           (source == SummarySource::Annotation && knownBody)) {
         summaries.registerCallable(*direct);
-        if (const auto specialized =
-                contextualize(callableSymbol(*direct), *result))
-          result = *specialized;
+        result = contextualize(callableSymbol(*direct), std::move(result));
       }
       if (!memoryContexts.contains(&call) && callbackContexts.contains(&call) &&
           recording() && emitDiagnostics && !inUnsafe &&
@@ -235,26 +234,34 @@ FunctionDataflow::resolveCall(const CallExpr &call) {
     // An explicit type contract can cover an unresolved target. Known
     // targets still supply their actual effects when there is no contract.
     if (const auto contract = summaries.lookupIndirect(call)) {
-      result = *contract->summary;
+      result = summaries.retainSummary(*contract);
       source = contract->source;
     } else {
       bool returns = false;
+      std::shared_ptr<core::FunctionSummary> joined;
       for (const auto &symbol : targets.functions) {
         const auto target = summaries.lookupSymbol(symbol);
         if (!target) {
           targets.unknown = true;
           continue;
         }
-        const auto specialized = contextualize(symbol, *target->summary);
-        const auto &actual = specialized ? *specialized : *target->summary;
-        if (!result)
-          result = actual;
-        else
-          result->join(actual);
-        returns |= !actual.neverReturns;
+        auto actual = contextualize(symbol, summaries.retainSummary(*target));
+        returns |= !actual->neverReturns;
+        if (!result) {
+          result = std::move(actual);
+        } else {
+          if (!joined)
+            joined = std::make_shared<core::FunctionSummary>(*result);
+          joined->join(*actual);
+          result = joined;
+        }
       }
-      if (result)
-        result->neverReturns = !returns && !targets.unknown;
+      if (result && result->neverReturns != (!returns && !targets.unknown)) {
+        if (!joined)
+          joined = std::make_shared<core::FunctionSummary>(*result);
+        joined->neverReturns = !returns && !targets.unknown;
+        result = joined;
+      }
       if (targets.unknown || targets.null || targets.functions.empty()) {
         if (result) {
           if (recording())
@@ -266,14 +273,17 @@ FunctionDataflow::resolveCall(const CallExpr &call) {
       }
     }
   }
-  if (result && source == SummarySource::Builtin)
-    specializeIntegerBuiltin(call, *result, state);
+  if (result && source == SummarySource::Builtin) {
+    auto specialized = std::make_shared<core::FunctionSummary>(*result);
+    specializeIntegerBuiltin(call, *specialized, state);
+    result = std::move(specialized);
+  }
   callSources[&call] = source;
   auto &cached = callSummaries[&call];
   cached = std::move(result);
   if (!cached)
     return std::nullopt;
-  return ResolvedSummary{.summary = &*cached, .source = source};
+  return ResolvedSummary{.summary = cached, .source = source};
 }
 
 } // namespace weavec::analysis

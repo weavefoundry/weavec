@@ -241,9 +241,8 @@ bool AnalysisState::join(const AnalysisState &other, const PlaceTable *places) {
   const auto leftSafetyGuard = safety ? pathGuard() : PlaceGuard{};
   const auto rightSafetyGuard = other.safety ? other.pathGuard() : PlaceGuard{};
   const auto isNull = [](PlaceId place, const AnalysisState &state) {
-    const auto record = state.nulls.recordOf(place);
     return state.resources.isNull(place) ||
-           (record && record->state == Nullness::Null);
+           state.nulls.stateOf(place) == Nullness::Null;
   };
   auto localObjects = heapLocalObjects;
   std::erase_if(localObjects, [&](PlaceId place) {
@@ -261,9 +260,8 @@ bool AnalysisState::join(const AnalysisState &other, const PlaceTable *places) {
     // could contradict the non-null branch. Unknown pointers still weaken.
     const auto absent = [places](PlaceId cell, const AnalysisState &state) {
       const auto isNull = [&state](PlaceId pointer) {
-        const auto null = state.nulls.recordOf(pointer);
         return state.resources.isNull(pointer) ||
-               (null && null->state == Nullness::Null);
+               state.nulls.stateOf(pointer) == Nullness::Null;
       };
       if (isNull(cell))
         return true;
@@ -274,19 +272,9 @@ bool AnalysisState::join(const AnalysisState &other, const PlaceTable *places) {
       }
       return false;
     };
-    auto left = spatial;
-    auto right = other.spatial;
-    for (const auto &[cell, fact] : spatial.all()) {
-      if (!right.has(cell) && absent(cell, other))
-        right.set(cell, fact);
-    }
-    for (const auto &[cell, fact] : other.spatial.all()) {
-      if (!left.has(cell) && absent(cell, *this))
-        left.set(cell, fact);
-    }
-    left.join(right);
-    spatialChanged = spatial != left;
-    spatial = std::move(left);
+    spatialChanged = spatial.joinWithAbsentObjects(
+        other.spatial, [&](PlaceId cell) { return absent(cell, *this); },
+        [&](PlaceId cell) { return absent(cell, other); });
   } else {
     spatialChanged = spatial.join(other.spatial);
   }
@@ -642,8 +630,8 @@ AnalysisState::Learned AnalysisState::learn(PlaceId place,
   return learned;
 }
 
-void AnalysisState::dropGuardsOn(PlaceId place) {
-  for (auto &[result, outcome] : pending) {
+static void dropOtherGuardsOn(AnalysisState &state, PlaceId place) {
+  for (auto &[result, outcome] : state.pending) {
     (void)result;
     for (auto &[cls, facts] : outcome.factOn) {
       (void)cls;
@@ -651,30 +639,34 @@ void AnalysisState::dropGuardsOn(PlaceId place) {
                     [place](const auto &fact) { return fact.first == place; });
     }
   }
-  if (safety)
-    for (auto &[result, outcome] : pending) {
+  if (state.safety)
+    for (auto &[result, outcome] : state.pending) {
       (void)result;
       for (auto &[cls, facts] : outcome.initializedOn) {
         (void)cls;
         std::erase_if(facts, [&](const auto &fact) {
-          auto condition = fact.second.when;
           return fact.first == place || fact.second.begin.place == place ||
-                 fact.second.end.place == place || condition.drop(place);
+                 fact.second.end.place == place ||
+                 fact.second.when.dependsOn(place);
         });
       }
     }
+  state.numericConditions.drop(place);
+  std::erase_if(state.numericValues, [place](const auto &entry) {
+    return entry.first == place || entry.second.dependsOn(place);
+  });
+  state.pointerFacts.drop(place);
+  state.moves.dropGuardsOn(place);
+  state.resources.dropGuardsOn(place);
+  state.nulls.dropGuardsOn(place);
+}
+
+void AnalysisState::dropGuardsOn(PlaceId place) {
   // RFC 0018: a write cannot reinterpret an earlier initialized interval
   // using the new value of its index or count (including callee outputs).
   if (safety)
     safety->forgetDependency(place);
-  numericConditions.drop(place);
-  std::erase_if(numericValues, [place](const auto &entry) {
-    return entry.first == place || entry.second.dependsOn(place);
-  });
-  pointerFacts.drop(place);
-  moves.dropGuardsOn(place);
-  resources.dropGuardsOn(place);
-  nulls.dropGuardsOn(place);
+  dropOtherGuardsOn(*this, place);
 }
 
 void AnalysisState::forgetZeroedMemory() {
@@ -718,7 +710,9 @@ void AnalysisState::forget(PlaceId place) {
   definiteHeapWrites.erase(place);
   heapLocalObjects.erase(place);
   incompleteHeap.erase(place);
-  dropGuardsOn(place);
+  // RFC 0020: safety->forget above already invalidated safety dependencies.
+  // Pending outputs and the remaining guarded domains still need a scan.
+  dropOtherGuardsOn(*this, place);
 }
 
 } // namespace weavec::core

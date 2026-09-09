@@ -10,12 +10,15 @@
 
 #include "weavec/Analysis/Annotations.h"
 #include "weavec/Analysis/TranslationUnitAnalysis.h"
+#include "weavec/Core/SafetyEntryPool.h"
 #include "weavec/Frontend/CheckedArtifacts.h"
 #include "weavec/Frontend/ClangDiagnosticSink.h"
 
 #include "clang/AST/ASTConsumer.h"
 #include "clang/AST/ASTContext.h"
+#include "clang/Frontend/ASTUnit.h"
 #include "clang/Frontend/CompilerInstance.h"
+#include "clang/Frontend/TextDiagnosticPrinter.h"
 
 #include "llvm/ADT/SmallString.h"
 #include "llvm/Support/FileSystem.h"
@@ -24,87 +27,133 @@
 
 namespace weavec::frontend {
 
+UnitResult replayUnitResult(UnitResult result,
+                            clang::DiagnosticsEngine &diagnostics,
+                            const FrontendOptions &options) {
+  ClangDiagnosticSink clangSink(diagnostics);
+  FilteringSink sink(clangSink, options.control, options.alreadyReported,
+                     options.boundaryOnce, options.onlyIds);
+  if (!options.silent)
+    for (const auto &diagnostic : result.diagnostics)
+      sink.report(diagnostic);
+  const bool failure =
+      !options.silent &&
+      CheckedReport::failed(result.exports, options.analysis.deferCheckedCalls);
+  if (!options.silent && options.checkedReport)
+    options.checkedReport->record(result.exports);
+  if (failure)
+    diagnostics.Report(diagnostics.getCustomDiagID(
+        clang::DiagnosticsEngine::Error,
+        "checked safety requirements were not established"));
+  result.reported = sink.reported();
+  result.errors = sink.errors() + (failure ? 1 : 0);
+  result.warnings = sink.warnings();
+  return result;
+}
+
+UnitResult analyzeTranslationUnit(clang::ASTContext &context,
+                                  clang::DiagnosticsEngine &diagnostics,
+                                  const FrontendOptions &options) {
+  core::SafetyEntryPool explanations(options.analysis.stats);
+  analysis::AnalysisOptions analysisOptions = options.analysis;
+  analysisOptions.checkedMainFileOnly = options.mainFileOnly;
+  if (options.silent)
+    analysisOptions.dumpStream = nullptr;
+  core::DiagnosticCollector collected;
+  analysis::TranslationUnitAnalyzer analyzer(context, collected,
+                                             analysisOptions);
+  analyzer.setDatabase(options.database);
+  UnitResult result;
+  const bool trackImports =
+      options.database != nullptr || !options.analysisCache.empty();
+  if (trackImports)
+    analyzer.summaries().beginDependencies(result.dependencies);
+  if (options.discoverOnly) {
+    result.exports = analyzer.discover();
+    if (trackImports)
+      analyzer.summaries().endDependencies();
+    return result;
+  }
+  const clang::SourceManager &sm = context.getSourceManager();
+  analyzer.run([&](const clang::FunctionDecl &function) {
+    return !options.silent &&
+           (!options.mainFileOnly || sm.isInMainFile(function.getLocation()) ||
+            options.analysis.checkedFunctions.contains(
+                function.getNameAsString()) ||
+            analysis::getAnnotations(function).checked);
+  });
+  result.exports = analyzer.exports();
+  if (options.bindCheckedInputs || !result.exports.checkedDefinitions.empty() ||
+      !options.analysisCache.empty()) {
+    for (auto file = sm.fileinfo_begin(); file != sm.fileinfo_end(); ++file) {
+      const auto buffer = file->second->getBufferIfLoaded();
+      if (!buffer)
+        continue;
+      llvm::SmallString<256> absolute;
+      const auto name = file->first.getName();
+      if (llvm::sys::fs::real_path(name, absolute))
+        absolute = name;
+      result.exports.checkedInputs[absolute.str().str()] =
+          checkedDigest(buffer->getBuffer());
+    }
+  }
+  result.diagnostics = collected.diagnostics();
+  if (trackImports)
+    analyzer.summaries().endDependencies();
+  return replayUnitResult(std::move(result), diagnostics, options);
+}
+
+UnitResult analyzeRetainedUnit(clang::ASTUnit &ast,
+                               const FrontendOptions &options,
+                               const UnitResult *checkpoint) {
+  auto &diagnostics = ast.getDiagnostics();
+  auto *previous = diagnostics.getClient();
+  auto owned = diagnostics.takeClient();
+  clang::TextDiagnosticPrinter printer(llvm::errs(),
+                                       diagnostics.getDiagnosticOptions());
+  diagnostics.setClient(&printer, false);
+  diagnostics.Reset(true);
+  printer.BeginSourceFile(ast.getLangOpts(), &ast.getPreprocessor());
+  auto result = checkpoint ? replayUnitResult(*checkpoint, diagnostics, options)
+                           : analyzeTranslationUnit(ast.getASTContext(),
+                                                    diagnostics, options);
+  if (diagnostics.hasErrorOccurred() && result.errors == 0)
+    result.errors = 1;
+  printer.EndSourceFile();
+  const auto warnings = printer.getNumWarnings();
+  const auto errors = printer.getNumErrors();
+  if (warnings || errors) {
+    if (warnings)
+      llvm::errs() << warnings << " warning" << (warnings == 1 ? "" : "s");
+    if (warnings && errors)
+      llvm::errs() << " and ";
+    if (errors)
+      llvm::errs() << errors << " error" << (errors == 1 ? "" : "s");
+    llvm::errs() << " generated.\n";
+  }
+  const bool owns = static_cast<bool>(owned);
+  diagnostics.setClient(owns ? owned.release() : previous, owns);
+  return result;
+}
+
 namespace {
 
-/// Hands the whole translation unit to the analysis driver, which orders
-/// functions callees-first (RFC 0003). Every definition contributes a
-/// summary; only those in the main file are reported unless
-/// `--analyze-headers`. In a program (RFC 0005) the other units' exports
-/// come in through `options.database` and this unit's go out through
-/// `options.onResult`.
 class WeaveCConsumer final : public clang::ASTConsumer {
 public:
   WeaveCConsumer(clang::CompilerInstance &compiler, FrontendOptions opts)
-      : compiler(compiler), clangSink(compiler.getDiagnostics()),
-        sink(clangSink, opts.control, opts.alreadyReported, opts.boundaryOnce,
-             opts.onlyIds),
-        options(std::move(opts)) {}
-
+      : compiler(compiler), options(std::move(opts)) {
+    if (options.analysis.stats)
+      options.analysis.stats->add("unit_parses");
+  }
   void HandleTranslationUnit(clang::ASTContext &context) override {
-    analysis::AnalysisOptions analysisOptions = options.analysis;
-    analysisOptions.checkedMainFileOnly = options.mainFileOnly;
-    if (options.silent)
-      analysisOptions.dumpStream = nullptr;
-    analysis::TranslationUnitAnalyzer analyzer(context, sink, analysisOptions);
-    analyzer.setDatabase(options.database);
-
-    if (options.discoverOnly) {
-      if (options.onResult) {
-        UnitResult result;
-        result.exports = analyzer.discover();
-        options.onResult(std::move(result));
-      }
-      return;
-    }
-
-    const clang::SourceManager &sm = context.getSourceManager();
-    analyzer.run([this, &sm](const clang::FunctionDecl &function) {
-      return !options.silent && (!options.mainFileOnly ||
-                                 sm.isInMainFile(function.getLocation()) ||
-                                 options.analysis.checkedFunctions.contains(
-                                     function.getNameAsString()) ||
-                                 analysis::getAnnotations(function).checked);
-    });
-
-    auto exports = analyzer.exports();
-    if (options.bindCheckedInputs || !exports.checkedDefinitions.empty()) {
-      for (auto file = sm.fileinfo_begin(); file != sm.fileinfo_end(); ++file) {
-        const auto buffer = file->second->getBufferIfLoaded();
-        if (!buffer)
-          continue;
-        llvm::SmallString<256> absolute;
-        const auto name = file->first.getName();
-        if (llvm::sys::fs::real_path(name, absolute))
-          absolute = name;
-        exports.checkedInputs[absolute.str().str()] =
-            checkedDigest(buffer->getBuffer());
-      }
-    }
-    const bool checkedFailure =
-        !options.silent &&
-        CheckedReport::failed(exports, analysisOptions.deferCheckedCalls);
-    if (!options.silent && options.checkedReport)
-      options.checkedReport->record(exports);
-    if (checkedFailure) {
-      auto &diagnostics = compiler.getDiagnostics();
-      diagnostics.Report(diagnostics.getCustomDiagID(
-          clang::DiagnosticsEngine::Error,
-          "checked safety requirements were not established"));
-    }
-    if (options.onResult) {
-      UnitResult result;
-      result.exports = std::move(exports);
-      result.reported = sink.reported();
-      result.errors = sink.errors() + (checkedFailure ? 1 : 0);
-      result.warnings = sink.warnings();
+    auto result =
+        analyzeTranslationUnit(context, compiler.getDiagnostics(), options);
+    if (options.onResult)
       options.onResult(std::move(result));
-    }
   }
 
 private:
   clang::CompilerInstance &compiler;
-  ClangDiagnosticSink clangSink;
-  FilteringSink sink;
   FrontendOptions options;
 };
 

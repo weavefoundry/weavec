@@ -31,6 +31,10 @@ bool FunctionAnalyzer::analyze(const FunctionDecl &function,
   if (!function.doesThisDeclarationHaveABody())
     return false;
 
+  std::optional<core::AnalysisTimer> invocationTimer;
+  if (options.stats)
+    invocationTimer.emplace(options.stats,
+                            "generic:" + callableSymbol(function));
   core::DiagnosticCollector validation;
   if (options.checkContracts) {
     FunctionAnalyzer validator(context, validation, options);

@@ -37,6 +37,7 @@
 #include "Dataflow.h"
 
 #include "AffineSupport.h"
+#include "FunctionPreparation.h"
 #include "IntegerSupport.h"
 #include "weavec/Analysis/Annotations.h"
 #include "weavec/Analysis/ClangLocation.h"
@@ -44,6 +45,7 @@
 
 #include "clang/AST/ExprCXX.h"
 #include "clang/AST/OperationKinds.h"
+#include "clang/Analysis/FlowSensitive/DataflowWorklist.h"
 #include "clang/Lex/Lexer.h"
 
 #include "llvm/ADT/STLExtras.h"
@@ -1652,7 +1654,26 @@ void FunctionDataflow::checkInvalidRelease(
 
 // -- Engine -------------------------------------------------------------------
 
+static std::string functionWorkKey(const FunctionDecl &function) {
+  const auto &sources = function.getASTContext().getSourceManager();
+  const auto file = sources.getFileEntryRefForID(sources.getMainFileID());
+  return (file ? file->getName().str() : "<memory>") + "#" +
+         function.getNameAsString();
+}
+
 void FunctionDataflow::run() {
+  std::optional<core::AnalysisTimer> functionTimer;
+  if (options.stats) {
+    const auto key = "function:" + functionWorkKey(function);
+    options.stats->add(key);
+    functionTimer.emplace(options.stats, key);
+  }
+  summaries.stats = options.stats;
+  summaries.beginAnalysis();
+  const auto finishAnalysis =
+      llvm::scope_exit([&] { summaries.endAnalysis(); });
+  if (options.stats)
+    options.stats->add("function_analyses");
   auto previousResolver = std::move(summaries.callResolver);
   summaries.callResolver = [this](const CallExpr &call) {
     return resolveCall(call);
@@ -1666,7 +1687,28 @@ void FunctionDataflow::run() {
   CFG::BuildOptions buildOptions;
   buildOptions.AddLifetime = true;
   buildOptions.setAllAlwaysAdd();
-  cfg = CFG::buildCFG(&function, body, &context, buildOptions);
+  auto &preparation =
+      summaries.prepared->functions[function.getCanonicalDecl()];
+  const bool reuse = static_cast<bool>(preparation);
+  {
+    core::AnalysisTimer timer(options.stats, "preparation");
+    if (reuse) {
+      cfg = preparation->cfg;
+      lifetimes = preparation->lifetimes;
+      varLifetimes = preparation->varLifetimes;
+      scopeEnds = preparation->scopeEnds;
+    } else {
+      cfg = CFG::buildCFG(&function, body, &context, buildOptions);
+      collectScopes(body, fnLifetime);
+      preparation = std::make_shared<FunctionPreparation>();
+      preparation->cfg = cfg;
+      preparation->lifetimes = lifetimes;
+      preparation->varLifetimes = varLifetimes;
+      preparation->scopeEnds = scopeEnds;
+    }
+  }
+  if (options.stats)
+    options.stats->add(reuse ? "cfg_reuses" : "cfg_builds");
   if (!cfg) {
     if (options.checkContracts) {
       inferred.checked.computed = true;
@@ -1679,33 +1721,98 @@ void FunctionDataflow::run() {
     return;
   }
 
-  collectScopes(body, fnLifetime);
   classifyStmt(body);
   if (options.checkContracts)
     initializeChecked();
   collectArrayCleanupLoops(body);
   collectDiscardedCalls(body);
-  computeLiveness();
+  {
+    core::AnalysisTimer timer(options.stats, "liveness");
+    // Liveness depends on inferred termination. Re-read that dependency
+    // even on a hit, and reuse only an identical termination projection.
+    std::vector<bool> noReturnBlocks(cfg->getNumBlockIDs());
+    for (const auto *block : *cfg)
+      if (block)
+        noReturnBlocks[block->getBlockID()] = blockNeverReturns(*block);
+    if (preparation->hasLiveness &&
+        preparation->noReturnBlocks == noReturnBlocks) {
+      liveIndex = preparation->liveIndex;
+      addressTaken = preparation->addressTaken;
+      liveBefore = preparation->liveBefore;
+      liveOut = preparation->liveOut;
+      liveIn = preparation->liveIn;
+      if (options.stats)
+        options.stats->add("liveness_reuses");
+    } else {
+      computeLiveness();
+      preparation->liveIndex = liveIndex;
+      preparation->addressTaken = addressTaken;
+      preparation->liveBefore = liveBefore;
+      preparation->liveOut = liveOut;
+      preparation->liveIn = liveIn;
+      preparation->noReturnBlocks = std::move(noReturnBlocks);
+      preparation->hasLiveness = true;
+      if (options.stats)
+        options.stats->add("liveness_builds");
+    }
+  }
+
+  core::AnalysisTimer dataflowTimer(options.stats, "dataflow");
 
   entryStates.assign(cfg->getNumBlockIDs(), std::nullopt);
   std::vector<unsigned> visits(cfg->getNumBlockIDs(), 0);
-  std::vector<bool> queued(cfg->getNumBlockIDs(), false);
+
+  // RFC 0020: checked runs process predecessors before acyclic joins.
+  // Ordinary heuristic domains retain their established FIFO work order.
+  if (options.checkContracts) {
+    if (options.stats)
+      options.stats->add(preparation->order ? "cfg_order_reuses"
+                                            : "cfg_order_builds");
+    if (!preparation->order)
+      preparation->order = std::make_unique<PostOrderCFGView>(cfg.get());
+  }
 
   const CFGBlock &entry = cfg->getEntry();
   entryStates[entry.getBlockID()] = initialState();
 
-  std::deque<const CFGBlock *> worklist{&entry};
-  queued[entry.getBlockID()] = true;
-  while (!worklist.empty()) {
-    const CFGBlock *block = worklist.front();
-    worklist.pop_front();
+  const bool ordered = options.checkContracts;
+  if (options.stats)
+    options.stats->add(ordered ? "cfg_rpo_analyses" : "cfg_fifo_analyses");
+  std::optional<ForwardDataflowWorklist> worklist;
+  std::optional<std::deque<const CFGBlock *>> fifo;
+  std::vector<bool> queued(ordered ? 0 : cfg->getNumBlockIDs(), false);
+  if (ordered)
+    worklist.emplace(*cfg, preparation->order.get());
+  else
+    fifo.emplace();
+  const auto enqueue = [&](const CFGBlock *block) {
+    if (worklist) {
+      worklist->enqueueBlock(block);
+    } else if (!queued[block->getBlockID()]) {
+      queued[block->getBlockID()] = true;
+      fifo->push_back(block);
+    }
+  };
+  const auto dequeue = [&]() -> const CFGBlock * {
+    if (worklist)
+      return worklist->dequeue();
+    if (fifo->empty())
+      return nullptr;
+    const auto *block = fifo->front();
+    fifo->pop_front();
     queued[block->getBlockID()] = false;
+    return block;
+  };
+  enqueue(&entry);
+  while (const CFGBlock *block = dequeue()) {
     if (++visits[block->getBlockID()] > MaxVisitsPerBlock) {
       convergenceFailed = true;
       continue;
     }
 
     core::AnalysisState out = *entryStates[block->getBlockID()];
+    if (options.stats)
+      options.stats->add("block_transfers");
     transfer(*block, out);
     // A call to a function that never returns ends the path here (RFC 0009,
     // *Inferred `noreturn`*), as a declared `noreturn` does through the CFG.
@@ -1725,12 +1832,12 @@ void FunctionDataflow::run() {
         target = std::move(edgeState);
         changed = true;
       } else {
+        if (options.stats)
+          options.stats->add("state_joins");
         changed = target->join(edgeState, &places);
       }
-      if (changed && !queued[succ.getBlockID()]) {
-        queued[succ.getBlockID()] = true;
-        worklist.push_back(&succ);
-      }
+      if (changed)
+        enqueue(&succ);
     };
 
     // The last reachable successor takes the block's state itself; every
@@ -1762,7 +1869,11 @@ void FunctionDataflow::run() {
   for (const CFGBlock *block : *cfg) {
     if (block == nullptr || !entryStates[block->getBlockID()])
       continue;
-    core::AnalysisState state = *entryStates[block->getBlockID()];
+    // RFC 0020: no later block reads this settled entry. Keep the exit
+    // entry intact for finalization and the optional dump below.
+    auto &blockEntry = *entryStates[block->getBlockID()];
+    core::AnalysisState state =
+        block == &cfg->getExit() ? blockEntry : std::move(blockEntry);
     transfer(*block, state);
     // What dies at the block's end is checked per edge; the edge that
     // exits the function sees the report of everything left (RFC 0007). A
@@ -1781,14 +1892,20 @@ void FunctionDataflow::run() {
            state.releasedArrayRanges.empty() &&
            state.filledArrayRanges.empty() && writtenScalarPaths.empty()))))
       continue;
+    llvm::SmallVector<unsigned, 4> reachable;
     unsigned index = 0;
     for (const CFGBlock::AdjacentBlock &adjacent : block->succs()) {
-      if (adjacent.getReachableBlock() != nullptr) {
-        core::AnalysisState edgeState = state;
-        leaveBlock(*block, index, edgeState);
-      }
+      if (adjacent.getReachableBlock() != nullptr)
+        reachable.push_back(index);
       ++index;
     }
+    if (reachable.empty())
+      continue;
+    for (const auto succIndex : llvm::drop_end(reachable)) {
+      core::AnalysisState edgeState = state;
+      leaveBlock(*block, succIndex, edgeState);
+    }
+    leaveBlock(*block, reachable.back(), state);
   }
   const auto &exitState = entryStates[cfg->getExit().getBlockID()];
   finalizeSummary(exitState ? &*exitState : nullptr);
@@ -1796,6 +1913,7 @@ void FunctionDataflow::run() {
     checkedFinish(exitState ? &*exitState : nullptr);
   phase = Phase::Fixpoint;
   flushDiagnostics();
+  inferred.checked.obligations.shareSnapshot();
 
   if (options.dumpStream != nullptr && emitDiagnostics)
     dump(exitState ? &*exitState : nullptr);
@@ -2332,7 +2450,8 @@ void FunctionDataflow::testInteger(const Expr &x, BinaryOperatorKind op,
 void FunctionDataflow::markNullWithCopies(core::PlaceId place,
                                           core::AnalysisState &state) {
   state.resources.markNull(place);
-  for (const auto &[alias, edge] : state.aliases.edgesFrom(place)) {
+  const auto &copies = state.safety ? state.definiteAliases : state.aliases;
+  for (const auto &[alias, edge] : copies.edgesFrom(place)) {
     if (edge.exact())
       state.resources.markNull(alias);
   }
@@ -2352,7 +2471,8 @@ void FunctionDataflow::forgetBelowNull(core::PlaceId place,
     forgetBelow(pointer, state);
   };
   drop(place);
-  for (const auto &[alias, edge] : state.aliases.edgesFrom(place)) {
+  const auto &copies = state.safety ? state.definiteAliases : state.aliases;
+  for (const auto &[alias, edge] : copies.edgesFrom(place)) {
     if (edge.exact())
       drop(alias);
   }
@@ -2693,7 +2813,8 @@ void FunctionDataflow::learnFact(core::PlaceId place,
                                  const core::ValueFact &fact,
                                  core::AnalysisState &state) {
   std::vector<core::PlaceId> holders{place};
-  for (const auto &[alias, edge] : state.aliases.edgesFrom(place)) {
+  const auto &copies = state.safety ? state.definiteAliases : state.aliases;
+  for (const auto &[alias, edge] : copies.edgesFrom(place)) {
     if (edge.exact())
       holders.push_back(alias);
   }
@@ -6278,7 +6399,8 @@ FunctionDataflow::mirrors(core::PlaceId place,
       // the mirror deeper than the original and the expansion unbounded, so
       // they are skipped along with anything past the depth limit.
       add(places.deref(parentMirror));
-      for (const auto &[alias, edge] : state.aliases.edgesFrom(parentMirror)) {
+      for (const auto &[alias, edge] :
+           state.aliases.viewEdgesFrom(parentMirror)) {
         if (places.isDescendantOf(alias, parentMirror) ||
             places.depth(alias) >= MaxPlaceDepth)
           continue;
@@ -6921,10 +7043,13 @@ void FunctionDataflow::setNullness(core::PlaceId place,
   // copy rule, and two whose records drifted apart were not.
   const auto before = state.nulls.recordOf(place);
   state.nulls.set(place, guarded);
-  for (const auto &[alias, edge] : state.aliases.edgesFrom(place)) {
+  // RFC 0020: checked branch facts require must-alias identity. Equal
+  // abstract records do not prove that two loop cursors hold the same value.
+  const auto &copies = state.safety ? state.definiteAliases : state.aliases;
+  for (const auto &[alias, edge] : copies.edgesFrom(place)) {
     if (!edge.exact())
       continue;
-    if (guarded.state != core::Nullness::NonNull &&
+    if (!state.safety && guarded.state != core::Nullness::NonNull &&
         state.nulls.recordOf(alias) != before)
       continue;
     state.nulls.set(alias, guarded);
@@ -9569,6 +9694,9 @@ FunctionDataflow::sourceValueOf(const ValueOrigin &origin,
 }
 
 void FunctionDataflow::finalizeSummary(const core::AnalysisState *exitState) {
+  std::optional<core::AnalysisTimer> summaryTimer;
+  if (options.stats)
+    summaryTimer.emplace(options.stats, "summary:" + functionWorkKey(function));
   const auto captureViews =
       llvm::scope_exit([&] { inferred.objectViews = builder.objectViews; });
   if (summaries.incompleteFunctions.contains(function.getCanonicalDecl()))

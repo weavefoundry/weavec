@@ -16,6 +16,8 @@
 
 #include "TestUtils.h"
 
+#include "clang/Analysis/CFG.h"
+
 #include <gtest/gtest.h>
 
 namespace weavec::analysis {
@@ -29,6 +31,64 @@ using weavec::test::notes;
 using Strings = std::vector<std::string>;
 
 // -- Path sensitivity (RFC 0002, "Soundness examples") ------------------------
+
+// RFC 0020: unequal predecessor paths must not repeatedly transfer an
+// acyclic join. The bound counts all analyses of this single definition.
+TEST(Dataflow, AcyclicJoinsTransferAtMostOncePerAnalysis) {
+  core::AnalysisStats stats;
+  const auto result = analyze(R"c(
+    int f(int a, int b, int c, int d, int e, int f, int g, int h) {
+      int value;
+      if (a) value = 1;
+      else if (b) value = 2;
+      else if (c) value = 3;
+      else if (d) value = 4;
+      else if (e) value = 5;
+      else if (f) value = 6;
+      else if (g) value = 7;
+      else if (h) value = 8;
+      else value = 9;
+      return value;
+    }
+  )c",
+                              {.checked = true, .stats = &stats});
+  ASSERT_TRUE(result.ast);
+  EXPECT_TRUE(result.diagnostics.empty());
+  const auto *function = result.function("f");
+  ASSERT_NE(function, nullptr);
+  clang::CFG::BuildOptions options;
+  options.AddLifetime = true;
+  options.setAllAlwaysAdd();
+  const auto cfg = clang::CFG::buildCFG(function, function->getBody(),
+                                        &result.ast->getASTContext(), options);
+  ASSERT_TRUE(cfg);
+  EXPECT_GT(stats.count("function_analyses"), 0U);
+  EXPECT_LE(stats.count("block_transfers"),
+            stats.count("function_analyses") * cfg->getNumBlockIDs());
+  EXPECT_EQ(stats.count("cfg_order_builds"), 1U);
+  EXPECT_GT(stats.count("cfg_order_reuses"), 0U);
+}
+
+TEST(Dataflow, OrdinaryRunsRetainFifoWhileCheckedRunsUseOrderedWork) {
+  for (const bool checked : {false, true}) {
+    for (const auto *code :
+         {"void f(int n){while(n>0)--n;}", "void f(int n){if(n>0)--n;}"}) {
+      core::AnalysisStats stats;
+      AnalysisOptions options;
+      options.checked = checked;
+      options.stats = &stats;
+      const auto result = analyze(code, options);
+      ASSERT_TRUE(result.ast);
+      EXPECT_TRUE(result.diagnostics.empty());
+      EXPECT_GT(stats.count("function_analyses"), 0U);
+      EXPECT_EQ(stats.count(checked ? "cfg_rpo_analyses" : "cfg_fifo_analyses"),
+                stats.count("function_analyses"));
+      EXPECT_EQ(stats.count(checked ? "cfg_fifo_analyses" : "cfg_rpo_analyses"),
+                0U);
+      EXPECT_EQ(stats.count("cfg_order_builds"), checked ? 1U : 0U);
+    }
+  }
+}
 
 TEST(Dataflow, LoopBackEdgeExposesUseAndDoubleFree) {
   const auto result = analyze(R"c(
@@ -1132,12 +1192,14 @@ TEST(Dataflow, SelfAssignmentKeepsEveryFact) {
   // 0008, *Invalid releases*; the offset is known, RFC 0011).
   EXPECT_EQ(
       messages(result.diagnostics),
-      (Strings{"6: 'cur' is released but points 1 element past the start of "
-               "its allocation",
-               "7: use of 'head' after it was freed",
-               "13: use of 'head' after it was freed",
-               "19: use of 'head' after it was freed",
-               "24: dereference of raw pointer 'r' outside an unsafe region"}));
+      (Strings{
+          std::string{
+              "6: 'cur' is released but points 1 element past the start of "
+              "its allocation"},
+          "7: use of 'head' after it was freed",
+          "13: use of 'head' after it was freed",
+          "19: use of 'head' after it was freed",
+          "24: dereference of raw pointer 'r' outside an unsafe region"}));
   EXPECT_EQ(notes(result.diagnostics, 4)[0],
             "'r' is raw: cast from an integer here");
 }

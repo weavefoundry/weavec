@@ -1,8 +1,13 @@
 # weavec::Frontend -- Clang FrontendAction / libTooling integration.
 weavec_add_library(
   Frontend
-  SOURCES CheckedArtifacts.cpp
+  SOURCES AnalysisCache.cpp
+          InputIdentity.cpp
+          AnalysisStats.cpp
+          CheckedArtifacts.cpp
           CheckedReport.cpp
+          CompactReport.cpp
+          CheckpointExplanations.cpp
           ClangDiagnosticSink.cpp
           DiagnosticControl.cpp
           Driver.cpp

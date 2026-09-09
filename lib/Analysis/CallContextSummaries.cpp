@@ -18,6 +18,7 @@ std::optional<ResolvedSummary> SummaryStore::specializeMemory(
   if (!bindings.valid())
     return std::nullopt;
   const MemoryContextKey key{std::string(symbol), bindings};
+  noteDependency(symbol);
   auto &requests = memoryRequests[key.first];
   if (!requests.contains(bindings) &&
       requests.size() >= core::MaxMemoryContexts)
@@ -36,16 +37,24 @@ std::optional<ResolvedSummary> SummaryStore::specializeMemory(
     const auto *summary = database->findMemorySpecialization(symbol, *exported);
     if (!summary)
       return std::nullopt;
-    memorySpecialized[key] =
-        database->importInto(*summary, *context, globalTable);
-    return ResolvedSummary{.summary = &memorySpecialized.at(key),
+    return ResolvedSummary{.summary = importSummary(*summary),
                            .source = SummarySource::Program};
   }
   if (activeMemoryContexts.contains(key) ||
       activeMemoryContexts.size() + activeContexts.size() >=
           core::MaxCallContextDepth)
     return std::nullopt;
-  if (!memorySpecialized.contains(key)) {
+  discardStaleContexts();
+  if (!memorySpecialized.contains(key) || !memorySpecialized.at(key)) {
+    if (options.stats)
+      options.stats->add("specialization_misses");
+    std::optional<core::AnalysisTimer> invocationTimer;
+    if (options.stats)
+      invocationTimer.emplace(options.stats, "memory:" + std::string(symbol));
+    Dependencies dependencies{std::string(symbol)};
+    beginDependencies(dependencies);
+    const auto finishDependencies =
+        llvm::scope_exit([&] { endDependencies(); });
     activeMemoryContexts.insert(key);
     const auto release =
         llvm::scope_exit([&] { activeMemoryContexts.erase(key); });
@@ -59,14 +68,22 @@ std::optional<ResolvedSummary> SummaryStore::specializeMemory(
     analysis.run();
     if (!analysis.validMemoryContext)
       return std::nullopt;
-    memorySpecialized[key] = analysis.summary();
-    applyContract(*function, memorySpecialized[key]);
+    auto summary = analysis.summary();
+    applyContract(*function, summary);
+    memorySpecialized[key] = publishSummary(std::move(summary));
     memoryDiagnostics[key] = collected.diagnostics();
+    memoryDependencies[key] = std::move(dependencies);
+    memoryVersions[key] = dependencySnapshot();
+    contextsNeedValidation = true;
+  } else {
+    if (options.stats)
+      options.stats->add("specialization_hits");
+    inheritDependencies(memoryDependencies[key]);
   }
   if (sink && bindings.reportDiagnostics)
     for (const auto &diagnostic : memoryDiagnostics[key])
       sink->report(diagnostic);
-  return ResolvedSummary{.summary = &memorySpecialized.at(key),
+  return ResolvedSummary{.summary = memorySpecialized.at(key),
                          .source = SummarySource::Inferred};
 }
 

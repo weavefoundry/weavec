@@ -56,6 +56,7 @@ TEST(UnitExports, ExportsExternalAndAddressTakenDefinitions) {
 
   EXPECT_EQ(exports.source, "input.c");
   std::vector<std::string> names;
+  names.reserve(exports.functions.size());
   for (const auto &[name, function] : exports.functions)
     names.push_back(name);
   EXPECT_EQ(names,
@@ -381,6 +382,42 @@ TEST(ProgramDatabase, RenumberedExportsMeanTheSameVerbatim) {
   EXPECT_TRUE(again.sameSummariesAs(renumbered));
 }
 
+// RFC 0020: rebuilding already-numbered contexts preserves all their facts.
+TEST(ProgramDatabase, ContextRebuildAgreesWithGlobalRenumbering) {
+  UnitExports prefix;
+  (void)prefix.globals.idFor("a");
+  (void)prefix.globals.idFor("b");
+  UnitExports unit;
+  (void)unit.globals.idFor("b");
+  (void)unit.globals.idFor("a");
+  auto &function = unit.functions["helper"];
+  function.summary.addEffect(SummaryPath::global(0),
+                             PlaceEffect{.freed = true});
+  core::CallContext input;
+  input.facts[SummaryPath::global(0)] =
+      core::ValueFact::of(core::Outcome::NonNull);
+  unit.memoryRequests["helper"].insert(input);
+  function.memorySpecializations[input] = function.summary;
+  core::CallbackBindings callbacks;
+  callbacks[SummaryPath::param(0)] = core::CallTargets::function("release");
+  function.specializations[callbacks] = function.summary;
+  ProgramDatabase direct;
+  direct.add(prefix);
+  direct.add(unit);
+  ProgramDatabase rebuilt;
+  rebuilt.add(prefix);
+  const auto numbered = rebuilt.renumbered(unit);
+  rebuilt.add(numbered);
+  EXPECT_TRUE(direct.checkpointInputs({"helper"})
+                  .sameSummariesAs(rebuilt.checkpointInputs({"helper"})));
+  const auto &mapped = *rebuilt.memoryRequestsFor("helper").begin();
+  EXPECT_TRUE(mapped.facts.contains(SummaryPath::global(1)));
+  ASSERT_NE(rebuilt.findMemorySpecialization("helper", mapped), nullptr);
+  EXPECT_TRUE(rebuilt.findMemorySpecialization("helper", mapped)
+                  ->effectOf(SummaryPath::global(1))
+                  .freed);
+}
+
 TEST(ProgramDatabase, ProgramDefinitionOutranksTheLibraryTable) {
   const auto lib = analyze(R"c(
     char *strdup(const char *s) { return (char *)s; }
@@ -469,7 +506,7 @@ TEST(ProgramDatabase, TypeKeysIgnoreTypedefsAndRejectAnonymousRecords) {
     void (*bp)(int *) = b;
   )c");
   ASSERT_TRUE(unit.ast);
-  clang::ASTContext &ctx = unit.ast->getASTContext();
+  const clang::ASTContext &ctx = unit.ast->getASTContext();
   EXPECT_EQ(functionTypeKey(unit.function("a")->getType(), ctx),
             "void (struct node *, const char *)");
   EXPECT_EQ(functionTypeKey(unit.function("b")->getType(), ctx),

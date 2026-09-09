@@ -82,6 +82,29 @@ assuming counts match across different SDKs. The fixed bug/clean evaluation
 separately gates detections and precision; a lower corpus count alone is
 never evidence that analysis improved.
 
+## Scalability acceptance (RFC 0020)
+
+Run quiet Release measurements after builds and tests finish. Preserve the
+baseline executable before rebuilding, and use a fresh output directory:
+
+```sh
+python3 scripts/scalability-evaluation.py \
+  --weavec build/rel/bin/weavec --baseline build/weavec-before \
+  --output build/rfc0020-measurements --phase all --repetitions 3 --timeout 600
+```
+
+The runner measures all five pinned projects in `rfc0015.json`, sequentially.
+It compares three ordinary baseline/final runs, requires completed cold checked
+reports within the timeout, and checks exact expanded cold/warm report content,
+positive persistent hits and zero warm function analyses. Compact reports must
+be at least five times smaller for cJSON and linenoise. `--phase ordinary`,
+`checked` and `cache` run the respective gates separately; `--only` selects a
+project for investigation, without replacing the full acceptance population.
+Explicit function-limit incompleteness remains visible in reports and raw
+corpus failures; a timeout or missing report never counts as valid coverage.
+See the [validation report](../../docs/validation-rfc0020.md) and
+[results artifact](rfc0020-results.json) for the measured acceptance results.
+
 ## Historical baseline triage
 
 Every diagnostic in the baseline has been looked at. They are all false

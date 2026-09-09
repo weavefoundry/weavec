@@ -46,6 +46,22 @@ llvm::StringRef GlobalTable::nameOf(std::uint32_t id) const {
 
 // -- Annotations --------------------------------------------------------------
 
+SummarySnapshot
+SummaryStore::importSummary(const core::FunctionSummary &summary) {
+  auto &imports = importedSummaries[database->importGeneration()][context];
+  if (const auto found = imports.find(&summary); found != imports.end()) {
+    if (stats)
+      stats->add("program_import_hits");
+    return found->second;
+  }
+  if (stats)
+    stats->add("program_import_misses");
+  return imports
+      .emplace(&summary, publishSummary(database->importInto(summary, *context,
+                                                             globalTable)))
+      .first->second;
+}
+
 bool SignatureAnnotations::anyOwnership() const noexcept {
   return result.ownership() || llvm::any_of(params, [](const AnnotationSet &s) {
            return s.ownership();
@@ -483,11 +499,12 @@ SummaryStore::countKeyOf(const FunctionDecl &function,
 }
 
 void SummaryStore::addKnownCount(std::string key) {
-  if (!key.empty())
-    knownCounts.insert(std::move(key));
+  if (!key.empty() && knownCounts.insert(std::move(key)).second)
+    invalidateDependency("@counts");
 }
 
 bool SummaryStore::isKnownCount(llvm::StringRef key) const {
+  noteDependency("@counts");
   if (key.empty())
     return false;
   if (knownCounts.contains(key.str()))
@@ -501,19 +518,30 @@ bool SummaryStore::isKnownCount(llvm::StringRef key) const {
 void SummaryStore::addSizedWitness(
     std::string field, std::string count, std::int64_t scale,
     std::optional<core::IntegerType> productType) {
-  sizedFields.witnesses.insert(SizedFieldWitness{.field = std::move(field),
-                                                 .count = std::move(count),
-                                                 .scale = scale,
-                                                 .productType = productType});
+  const bool changed =
+      sizedFields.witnesses
+          .insert(SizedFieldWitness{.field = std::move(field),
+                                    .count = std::move(count),
+                                    .scale = scale,
+                                    .productType = productType})
+          .second;
+  if (changed && unitSizedFactsInForce)
+    invalidateDependency("@sized");
 }
 
 void SummaryStore::refuteSizedField(std::string field) {
-  sizedFields.unsizedFields.insert(std::move(field));
+  if (sizedFields.unsizedFields.insert(std::move(field)).second &&
+      unitSizedFactsInForce)
+    invalidateDependency("@sized");
 }
 
 void SummaryStore::refuteSizedPair(std::string field, std::string count) {
-  sizedFields.unsizedPairs.insert(
-      UnsizedPair{.field = std::move(field), .count = std::move(count)});
+  if (sizedFields.unsizedPairs
+          .insert(
+              UnsizedPair{.field = std::move(field), .count = std::move(count)})
+          .second &&
+      unitSizedFactsInForce)
+    invalidateDependency("@sized");
 }
 
 const SizedFieldFacts &SummaryStore::sizedFieldFacts() const noexcept {
@@ -529,6 +557,8 @@ const std::set<std::string> &SummaryStore::sizedFieldLoads() const noexcept {
 }
 
 void SummaryStore::setUnitSizedFactsInForce(bool inForce) noexcept {
+  if (unitSizedFactsInForce != inForce)
+    invalidateDependency("@sized");
   unitSizedFactsInForce = inForce;
 }
 
@@ -540,6 +570,7 @@ SummaryStore::confirmedSizedBy(std::string_view field) const {
 }
 std::optional<SizedFieldWitness>
 SummaryStore::confirmedSizedWitness(std::string_view field) const {
+  noteDependency("@sized");
   if (field.empty())
     return std::nullopt;
   const SizedFieldFacts *program =
@@ -570,33 +601,49 @@ bool SummaryStore::setInferred(const FunctionDecl &function,
   // counts for every function of the unit (and, exported, of the program).
   for (const core::SummaryPath &count : summary.counts) {
     if (auto countKey = countKeyOf(function, count))
-      knownCounts.insert(std::move(*countKey));
+      addKnownCount(std::move(*countKey));
   }
-  auto [it, inserted] = inferred.try_emplace(canonical, std::move(summary));
-  if (inserted) {
+  const auto previous = inferred.find(canonical);
+  const auto globalStores = [](const core::FunctionSummary &value) {
+    std::vector<core::Store> result;
+    for (const auto &store : value.stores)
+      if (store.dest.isGlobal())
+        result.push_back(store);
+    return result;
+  };
+  const bool globalsChanged =
+      previous == inferred.end()
+          ? !globalStores(summary).empty()
+          : globalStores(*previous->second) != globalStores(summary);
+  if (previous == inferred.end()) {
+    inferred.emplace(canonical, publishSummary(std::move(summary)));
     mergedIndirect.clear();
-    callbackGlobalCache.reset();
-    specialized.clear();
-    specializedDiagnostics.clear();
-    memorySpecialized.clear();
-    memoryDiagnostics.clear();
+    if (globalsChanged) {
+      callbackGlobalCache.reset();
+      invalidateDependency("@callback-globals");
+    }
+    invalidateDependency(callableSymbol(function));
+    if (stats)
+      stats->add("summary_changes");
     return true;
   }
   if (widen) {
     // RFC 0017: recursive approximation must retain earlier possibilities.
     // Replacement can cycle as numeric and temporal guards project together.
-    auto joined = it->second;
+    auto joined = *previous->second;
     joined.join(summary);
     summary = std::move(joined);
   }
-  if (it->second == summary)
+  if (*previous->second == summary)
     return false;
-  it->second = std::move(summary);
-  callbackGlobalCache.reset();
-  specialized.clear();
-  specializedDiagnostics.clear();
-  memorySpecialized.clear();
-  memoryDiagnostics.clear();
+  previous->second = publishSummary(std::move(summary));
+  if (globalsChanged) {
+    callbackGlobalCache.reset();
+    invalidateDependency("@callback-globals");
+  }
+  invalidateDependency(callableSymbol(function));
+  if (stats)
+    stats->add("summary_changes");
   // Any indirect join may have included this function.
   mergedIndirect.clear();
   return true;
@@ -605,7 +652,7 @@ bool SummaryStore::setInferred(const FunctionDecl &function,
 const core::FunctionSummary *
 SummaryStore::inferredFor(const FunctionDecl &function) const {
   const auto it = inferred.find(key(function));
-  return it == inferred.end() ? nullptr : &it->second;
+  return it == inferred.end() ? nullptr : it->second.get();
 }
 
 std::optional<core::FunctionSummary>
@@ -632,16 +679,17 @@ void SummaryStore::applyContract(const FunctionDecl &function,
 
 std::optional<ResolvedSummary>
 SummaryStore::lookup(const FunctionDecl &callee) {
+  noteDependency(callableSymbol(callee));
   const FunctionDecl *canonical = key(callee);
   if (const auto it = merged.find(canonical); it != merged.end())
-    return ResolvedSummary{.summary = &it->second,
+    return ResolvedSummary{.summary = it->second,
                            .source = mergedSource.at(canonical)};
 
   const SignatureAnnotations annotations = collectAnnotations(callee);
   const core::FunctionSummary *inferredBody = inferredFor(callee);
   // RFC 0005: a body in another unit of the program, below this unit's own
   // inference and above the library table.
-  const std::optional<core::FunctionSummary> programBody =
+  std::optional<core::FunctionSummary> programBody =
       inferredBody == nullptr ? programSummaryFor(callee) : std::nullopt;
   // `WEAVEC_UNSAFE` on a declaration with no analysed body is an explicit
   // opt-out: the user asked for the empty summary rather than a warning. A
@@ -657,21 +705,35 @@ SummaryStore::lookup(const FunctionDecl &callee) {
   const bool nullness = annotations.anyNullness();
   const bool sized = annotations.anySizedBy();
 
+  if (inferredBody && !annotated && !nullness && !sized) {
+    // An unadjusted body is already an immutable published contract.
+    const auto snapshot = inferred.at(canonical);
+    merged.emplace(canonical, snapshot);
+    mergedSource[canonical] = SummarySource::Inferred;
+    return ResolvedSummary{.summary = snapshot,
+                           .source = SummarySource::Inferred};
+  }
+
   if (!haveBody && !annotated) {
     const core::FunctionSummary *builtin = builtinSummary(callee);
     if (builtin == nullptr)
       return std::nullopt;
     if (!nullness && !sized)
-      return ResolvedSummary{.summary = builtin,
+      // The library table has process lifetime; this alias needs no control
+      // block.
+      return ResolvedSummary{.summary =
+                                 SummarySnapshot{SummarySnapshot{}, builtin},
                              .source = SummarySource::Builtin};
     core::FunctionSummary adjusted = *builtin;
     applyNullnessAnnotations(adjusted, shapeOf(callee), annotations.result,
                              annotations.params);
     if (sized)
       applySizedByAnnotations(adjusted, callee);
-    const auto it = merged.try_emplace(canonical, std::move(adjusted)).first;
+    const auto it =
+        merged.try_emplace(canonical, publishSummary(std::move(adjusted)))
+            .first;
     mergedSource[canonical] = SummarySource::Builtin;
-    return ResolvedSummary{.summary = &it->second,
+    return ResolvedSummary{.summary = it->second,
                            .source = SummarySource::Builtin};
   }
 
@@ -681,7 +743,7 @@ SummaryStore::lookup(const FunctionDecl &callee) {
     result = *inferredBody;
     source = SummarySource::Inferred;
   } else if (programBody) {
-    result = *programBody;
+    result = std::move(*programBody);
   }
   if (annotated) {
     applyAnnotations(result, shapeOf(callee), annotations.result,
@@ -693,9 +755,10 @@ SummaryStore::lookup(const FunctionDecl &callee) {
                              annotations.params);
   if (sized)
     applySizedByAnnotations(result, callee);
-  const auto it = merged.try_emplace(canonical, std::move(result)).first;
+  const auto it =
+      merged.try_emplace(canonical, publishSummary(std::move(result))).first;
   mergedSource[canonical] = source;
-  return ResolvedSummary{.summary = &it->second, .source = source};
+  return ResolvedSummary{.summary = it->second, .source = source};
 }
 
 void SummaryStore::addAddressTaken(const FunctionDecl &function) {
@@ -742,7 +805,7 @@ SummaryStore::lookupIndirect(const CallExpr &call) {
       annotated ? declaration : nullptr};
   if (const auto it = mergedIndirect.find(cacheKey);
       it != mergedIndirect.end()) {
-    return ResolvedSummary{.summary = &it->second,
+    return ResolvedSummary{.summary = it->second,
                            .source = annotated ? SummarySource::Annotation
                                                : SummarySource::Inferred};
   }
@@ -756,8 +819,10 @@ SummaryStore::lookupIndirect(const CallExpr &call) {
                      annotations.params);
     source = SummarySource::Annotation;
   }
-  const auto it = mergedIndirect.try_emplace(cacheKey, std::move(joined)).first;
-  return ResolvedSummary{.summary = &it->second, .source = source};
+  const auto it =
+      mergedIndirect.try_emplace(cacheKey, publishSummary(std::move(joined)))
+          .first;
+  return ResolvedSummary{.summary = it->second, .source = source};
 }
 
 std::vector<std::string> SummaryStore::unknownCalleeNames() const {

@@ -428,6 +428,32 @@ TEST(SummaryIO, SpellsPathsAndSources) {
       "copy param 2 @?");
 }
 
+// RFC 0020 exposed this RFC 0011 transport bug on widened real-code summaries.
+TEST(SummaryIO, InsideOffsetsRoundTripWithoutBecomingFieldNameSpaces) {
+  FunctionSummary summary;
+  const auto inside = PointerOffset::inside();
+  auto fresh = ValueSource::freshAt("free", inside, PathAffine::ofConstant(24));
+  fresh.boundsOffset = inside;
+  summary.addReturn(fresh);
+  const auto copy = ValueSource::copyAt(SummaryPath::param(0).deref(), inside);
+  summary.addStore({.dest = SummaryPath::param(1).deref(), .value = copy});
+  auto post = copy;
+  post.post = true;
+  summary.heap[SummaryPath::param(0).deref()].fields.insert(
+      {.dest = SummaryPath::result(), .value = fresh});
+  summary.heap[SummaryPath::result()].fields.insert(
+      {.dest = SummaryPath::result().field("value"), .value = post});
+  summary.addEffect(SummaryPath::param(0),
+                    PlaceEffect{.freed = true, .at = inside});
+  const auto text = printSummary(summary, Names);
+  EXPECT_NE(text.find("bounds-offset @~"), std::string::npos);
+  std::string error;
+  const auto parsed = parseSummary(text, ResolveAll, &error);
+  ASSERT_TRUE(parsed) << error;
+  EXPECT_EQ(*parsed, summary);
+  EXPECT_EQ(printSummary(*parsed, Names), text);
+}
+
 TEST(SummaryIO, DeclinedGlobalsAreDropped) {
   const GlobalResolver declineAll = [](std::string_view) {
     return std::optional<std::uint32_t>();

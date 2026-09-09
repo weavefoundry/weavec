@@ -36,7 +36,8 @@ std::string checkedCommandDigest(const std::vector<std::string> &command) {
   return checkedDigest(bytes);
 }
 bool validateCheckedArtifact(const UnitRecord &record, std::string_view object,
-                             std::string &error) {
+                             std::string &error,
+                             std::string_view preprocessing) {
   const auto fail = [&](const std::string &reason) {
     error = "checked artifact '" + std::string(object) + "': " + reason;
     return false;
@@ -55,6 +56,11 @@ bool validateCheckedArtifact(const UnitRecord &record, std::string_view object,
     if (checkedFileDigest(path.string()) != digest)
       return fail("source input changed or is unavailable: " + file);
   }
+  if (record.preprocessingDigest.empty() || preprocessing.empty())
+    return fail("missing or unverifiable preprocessing binding; rebuild with "
+                "supported inputs");
+  if (record.preprocessingDigest != preprocessing)
+    return fail("preprocessing changed; rebuild the object");
   return true;
 }
 } // namespace weavec::frontend

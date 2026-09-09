@@ -75,6 +75,11 @@ static std::string printOffset(const PointerOffset &offset) {
 static std::optional<PointerOffset> parseOffset(std::string_view token) {
   if (token.size() < 2 || token.front() != '@')
     return std::nullopt;
+  // RFC 0011's standalone Inside marker is not an escaped field-name space.
+  // RFC 0020 checkpoints must round-trip the same widened offset as the
+  // existing summary writer, including in stores and heap descriptions.
+  if (token == "@~")
+    return PointerOffset::inside();
   std::string text(token.substr(1));
   for (char &c : text) {
     if (c == '~')

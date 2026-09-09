@@ -105,7 +105,9 @@ Design: [RFC 0005 — Whole-program analysis](rfcs/0005-whole-program-analysis.m
 - [x] Whole-struct copies carry the facts of their pointer fields.
 - [ ] Summaries for common libraries beyond libc shipped with WeaveC
       (`libz.weavec` next to `libz.a`, read like any sidecar).
-- [ ] AST caching in the sidecar so the link step loads rather than parses.
+- [x] Retain parsed units within link analysis and optionally reuse settled unit
+      checkpoints after input validation (RFC 0020).
+- [ ] Persist serialized Clang ASTs so warm validation can avoid parsing.
 - [ ] Incremental link steps (re-analyse only units whose imports changed).
 
 ## Milestone 5 — Precision (in progress)
@@ -409,6 +411,20 @@ Design: [RFC 0018](rfcs/0018-checked-code-and-safety-contracts.md).
 The [checked-code guide](checked-code.md) describes the supported conditional
 source guarantee. Unsupported semantics remain incomplete; general recursive
 heap invariants, archive packaging and runtime enforcement remain future work.
+
+## Milestone 19 — Scalable checked analysis (complete)
+
+Design: [RFC 0020](rfcs/0020-scalable-modular-checked-analysis.md).
+
+- [x] Invocation work counts and timings with atomic explicit output.
+- [x] Context dependency tracking and revision-based invalidation.
+- [x] Retained translation units and immutable function preparation.
+- [x] Shared obligation storage and separate semantic/explanation equality.
+- [x] Compact report version 3 with a version 2 decoder.
+- [x] Optional validated translation-unit checkpoints and diagnostic replay.
+- [x] Sidecar format 16 preprocessing bindings for checked object validation.
+- [x] Complete the frozen evaluation and publish measured cold/warm corpus gates
+      ([validation](validation-rfc0020.md), [results](../scripts/corpus/rfc0020-results.json)).
 
 ## Ongoing
 

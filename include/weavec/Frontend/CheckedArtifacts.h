@@ -21,6 +21,7 @@ checkedFileDigest(std::string_view path);
 checkedCommandDigest(const std::vector<std::string> &command);
 [[nodiscard]] bool validateCheckedArtifact(const UnitRecord &record,
                                            std::string_view object,
-                                           std::string &error);
+                                           std::string &error,
+                                           std::string_view preprocessing = {});
 } // namespace weavec::frontend
 #endif // WEAVEC_FRONTEND_CHECKEDARTIFACTS_H

@@ -17,6 +17,8 @@
 #include "clang/AST/RecordLayout.h"
 #include "clang/Basic/Version.h"
 
+#include "llvm/ADT/StringExtras.h"
+
 #include <algorithm>
 #include <limits>
 #include <optional>
@@ -26,6 +28,47 @@
 using namespace clang;
 
 namespace weavec::analysis {
+
+UnitExports ProgramDatabase::checkpointInputs(
+    const std::set<std::string> &dependencies) const {
+  // RFC 0020: synthetic names travel through function-name metadata. Type
+  // spellings and source-qualified symbols can contain whitespace; encode
+  // their bytes without conflating the three lookup namespaces.
+  const auto encodedName = [](llvm::StringRef kind, llvm::StringRef name) {
+    return kind.str() + ':' + llvm::toHex(name);
+  };
+  UnitExports result;
+  result.globals = globalNames;
+  result.countFields.insert(countFields.begin(), countFields.end());
+  result.sizedFields = sizedFields;
+  result.callbackGlobals = callbackGlobals;
+  for (const auto &[symbol, requests] : callbackRequests)
+    result.callbackRequests[symbol] = requests;
+  for (const auto &[symbol, requests] : memoryRequests)
+    result.memoryRequests[symbol] = requests;
+  for (const auto &symbol : dependencies) {
+    if (symbol.starts_with('@'))
+      continue;
+    result.imports.insert(symbol);
+    const auto callable = encodedName("callable", symbol);
+    if (const auto *summary = findCallable(symbol))
+      result.functions[callable].summary = *summary;
+    // External and callable lookup tables need not contain the same join.
+    if (const auto *summary = find(symbol))
+      result.functions[encodedName("external", symbol)].summary = *summary;
+    for (const auto &[key, summary] : contextSummaries)
+      if (key.first == symbol)
+        result.functions[callable].specializations[key.second] = summary;
+    for (const auto &[key, summary] : memorySummaries)
+      if (key.first == symbol)
+        result.functions[callable].memorySpecializations[key.second] = summary;
+  }
+  // Candidate-set changes can introduce a dependency that did not previously
+  // exist. Conservatively retain every type bucket in the identity.
+  for (const auto &[type, summary] : candidateSummaries)
+    result.functions[encodedName("indirect", type)].summary = summary;
+  return result;
+}
 
 // -- GlobalNames --------------------------------------------------------------
 
@@ -230,6 +273,7 @@ void ProgramDatabase::add(const UnitExports &unit) {
 }
 
 UnitExports ProgramDatabase::renumbered(const UnitExports &unit) {
+  generation = std::make_shared<const char>(0);
   UnitExports result = unit;
   if (!globalNames.extendTo(unit.globals)) {
     for (auto &[name, contract] : result.checkedDefinitions) {
@@ -273,6 +317,11 @@ UnitExports ProgramDatabase::renumbered(const UnitExports &unit) {
 }
 
 void ProgramDatabase::addCallbackInformation(const UnitExports &unit) {
+  generation = std::make_shared<const char>(0);
+  // RFC 0020: the whole-program fixed point already numbers its member
+  // exports with this table. Preserve that representation for contexts too;
+  // remapping every unchanged context used to dominate large components.
+  const bool sameNumbering = globalNames.extendTo(unit.globals);
   for (const auto &[name, targets] : unit.callbackGlobals)
     callbackGlobals[name].join(targets);
   for (const auto &[symbol, requests] : unit.callbackRequests)
@@ -290,14 +339,20 @@ void ProgramDatabase::addCallbackInformation(const UnitExports &unit) {
     const std::string symbol =
         function.external ? name : unit.source + "#" + name;
     callableSummaries[symbol] =
-        renumber(function.summary, unit.globals, globalNames);
+        sameNumbering ? function.summary
+                      : renumber(function.summary, unit.globals, globalNames);
     for (const auto &[bindings, summary] : function.specializations)
       contextSummaries[{symbol, bindings}] =
-          renumber(summary, unit.globals, globalNames);
+          sameNumbering ? summary
+                        : renumber(summary, unit.globals, globalNames);
     for (const auto &[input, summary] : function.memorySpecializations)
-      if (const auto mapped = core::remapCallContext(input, map))
-        memorySummaries[{symbol, *mapped}].join(
-            renumber(summary, unit.globals, globalNames));
+      if (const auto mapped = core::remapCallContext(input, map)) {
+        if (sameNumbering)
+          memorySummaries[{symbol, *mapped}].join(summary);
+        else
+          memorySummaries[{symbol, *mapped}].join(
+              renumber(summary, unit.globals, globalNames));
+      }
   }
 }
 
@@ -319,6 +374,7 @@ ProgramDatabase::requestsFor(std::string_view symbol) const {
 }
 
 void ProgramDatabase::clear() {
+  generation = std::make_shared<const char>(0);
   memorySummaries.clear();
   memoryRequests.clear();
   functions.clear();

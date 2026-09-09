@@ -113,6 +113,11 @@ private:
   std::map<core::PlaceId, clang::QualType> arrayTypes;
   std::map<std::pair<core::PlaceId, const clang::Expr *>, core::PlaceId>
       arrayIndexSnapshots;
+  // RFC 0020: places are append-only within this run; parse each selector once.
+  std::size_t indexedArrayPlaces = 0;
+  std::map<core::PlaceId,
+           std::vector<std::pair<core::PlaceId, core::ArrayIndex>>>
+      arrayCellsByIndex;
   struct ArrayBuffer {
     core::PlaceId storage;
     clang::QualType element;
@@ -457,7 +462,8 @@ private:
   void snapshotIntegerDependencies(core::PlaceId place, const clang::Expr *at,
                                    core::AnalysisState &state);
   core::AnalysisState *currentState = nullptr;
-  std::map<const clang::CallExpr *, std::optional<core::FunctionSummary>>
+  std::map<const clang::CallExpr *,
+           std::shared_ptr<const core::FunctionSummary>>
       callSummaries;
   std::map<const clang::CallExpr *, SummarySource> callSources;
   std::map<const clang::CallExpr *, core::CallTargets> callTargetsSeen;
@@ -530,7 +536,7 @@ private:
   /// rule (RFC 0004, *Laundering*).
   std::map<core::PlaceId, AnnotationSet> declaredKinds;
 
-  std::unique_ptr<clang::CFG> cfg;
+  std::shared_ptr<clang::CFG> cfg;
   std::vector<std::optional<core::AnalysisState>> entryStates;
 
   Phase phase = Phase::Fixpoint;

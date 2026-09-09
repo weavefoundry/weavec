@@ -96,6 +96,9 @@ TranslationUnitAnalyzer::TranslationUnitAnalyzer(
     AnalysisOptions analysisOptions)
     : context(ctx), sink(diagSink), options(std::move(analysisOptions)) {
   store.setContext(&context);
+  if (options.preparation)
+    store.prepared = options.preparation;
+  store.stats = options.stats;
 }
 
 void TranslationUnitAnalyzer::collectDefinitions(const DeclContext &dc) {
@@ -260,30 +263,36 @@ UnitExports TranslationUnitAnalyzer::exports() {
     return std::optional(result.globals.idFor(var->getName()));
   };
   const auto exportSummary = [&](const core::FunctionSummary &summary) {
-    if (!summary.checked.computed)
-      return core::remapGlobals(summary, byName);
-    auto portable = summary;
     // RFC 0019: a private output fact has no cross-unit consumer. Omit the
     // entire fact, retaining strict remapping of every requirement and every
     // premise attached to a public or result output.
-    std::erase_if(portable.checked.establishes, [&](const auto &post) {
+    const auto privateOutput = [&](const auto &post) {
       if (!post.path.isGlobal())
         return false;
       const auto *global = table.declFor(post.path.index);
       return global != nullptr && !global->isExternallyVisible();
-    });
+    };
+    if (!summary.checked.computed ||
+        !std::ranges::any_of(summary.checked.establishes, privateOutput))
+      return core::remapGlobals(summary, byName);
+    auto portable = summary;
+    std::erase_if(portable.checked.establishes, privateOutput);
     return core::remapGlobals(portable, byName);
   };
   for (const FunctionDecl *function : definitions) {
-    if (const auto resolved = store.lookup(*function);
-        resolved && resolved->summary->checked.computed)
-      result.checkedDefinitions[function->getNameAsString()] =
-          exportSummary(*resolved->summary).checked;
-    const auto it = result.functions.find(function->getNameAsString());
-    if (it == result.functions.end())
+    const auto resolved = store.lookup(*function);
+    if (!resolved)
       continue;
-    if (const auto resolved = store.lookup(*function))
-      it->second.summary = exportSummary(*resolved->summary);
+    const auto it = result.functions.find(function->getNameAsString());
+    if (it == result.functions.end() && !resolved->summary->checked.computed)
+      continue;
+    // RFC 0020: the checked definition and exported summary use the same
+    // portable result. A second remap discovers no additional global names.
+    auto portable = exportSummary(*resolved->summary);
+    if (portable.checked.computed)
+      result.checkedDefinitions[function->getNameAsString()] = portable.checked;
+    if (it != result.functions.end())
+      it->second.summary = std::move(portable);
   }
   for (std::string &name : store.unknownCalleeNames())
     result.unknownCallees.insert(std::move(name));
@@ -303,16 +312,16 @@ UnitExports TranslationUnitAnalyzer::exports() {
       continue;
     const auto it = result.functions.find(function->getNameAsString());
     const auto mapped = core::remapCallContext(key.second, byName);
-    if (it != result.functions.end() && mapped)
-      it->second.memorySpecializations[*mapped] = exportSummary(summary);
+    if (it != result.functions.end() && mapped && summary)
+      it->second.memorySpecializations[*mapped] = exportSummary(*summary);
   }
   for (const auto &[key, summary] : store.specialized) {
     const auto *function = store.callable(key.first);
     if (!function || !function->getDefinition())
       continue;
     const auto it = result.functions.find(function->getNameAsString());
-    if (it != result.functions.end())
-      it->second.specializations[key.second] = exportSummary(summary);
+    if (it != result.functions.end() && summary)
+      it->second.specializations[key.second] = exportSummary(*summary);
   }
   result.countFields = store.knownCountKeys();
   // RFC 0012: so are sized-field witnesses and refutations.
@@ -369,6 +378,8 @@ void TranslationUnitAnalyzer::run(
   // RFC 0014: stores in a later function can change the target of a global
   // used by an earlier helper. Settle these entry values before reporting.
   for (unsigned round = 0; round < MaxFixpointRounds; ++round) {
+    if (options.stats)
+      options.stats->add("unit_fixpoint_rounds");
     const auto globalsBefore = store.exportedCallbackGlobals();
     for (const std::vector<unsigned> &component : components) {
       const bool recursive =
@@ -381,7 +392,7 @@ void TranslationUnitAnalyzer::run(
       break;
     if (round + 1 == MaxFixpointRounds)
       for (const auto *function : definitions)
-        store.incompleteFunctions.insert(function->getCanonicalDecl());
+        store.markIncomplete(*function);
   }
   for (const FunctionDecl *function : definitions) {
     const std::string symbol = callableSymbol(*function);
@@ -590,6 +601,36 @@ void TranslationUnitAnalyzer::reportConfirmedSizedFields(
   }
 }
 
+bool TranslationUnitAnalyzer::analyzeSilently(const FunctionDecl &function,
+                                              FunctionAnalyzer &analyzer,
+                                              bool widen) {
+  const auto *key = function.getCanonicalDecl();
+  if (!options.dumpStream) {
+    const auto found = silentAnalyses.find(key);
+    if (found != silentAnalyses.end() && found->second.widen == widen &&
+        store.dependenciesCurrent(found->second.dependencies)) {
+      if (options.stats)
+        options.stats->add("silent_function_reuses");
+      for (const auto &[dependency, revision] : found->second.dependencies) {
+        (void)revision;
+        store.noteDependency(dependency);
+      }
+      return false;
+    }
+  }
+  SummaryStore::Dependencies dependencies;
+  store.beginDependencies(dependencies);
+  // Capture before analysis: a recursive read must see the newly computed
+  // summary again if this run changes it (RFC 0020).
+  store.noteDependency(callableSymbol(function));
+  const bool changed = analyzer.analyze(function, store, false, widen);
+  auto snapshot = store.dependencySnapshot();
+  store.endDependencies();
+  silentAnalyses.insert_or_assign(
+      key, SilentAnalysis{.widen = widen, .dependencies = std::move(snapshot)});
+  return changed;
+}
+
 void TranslationUnitAnalyzer::analyzeComponent(
     const std::vector<unsigned> &component, bool recursive,
     FunctionAnalyzer &analyzer,
@@ -612,26 +653,28 @@ void TranslationUnitAnalyzer::analyzeComponent(
       store.setInferred(*definitions[member], std::move(initial));
     }
     for (unsigned round = 0; round < MaxFixpointRounds; ++round) {
+      if (options.stats)
+        options.stats->add("function_fixpoint_rounds");
       bool changed = false;
       for (const unsigned member : component) {
-        changed = analyzer.analyze(*definitions[member], store,
-                                   /*emitDiagnostics=*/false,
-                                   /*widenSummary=*/true) ||
-                  changed;
+        changed =
+            analyzeSilently(*definitions[member], analyzer, true) || changed;
       }
       if (!changed)
         break;
       if (round + 1 == MaxFixpointRounds)
         for (const unsigned member : component)
-          store.incompleteFunctions.insert(
-              definitions[member]->getCanonicalDecl());
+          store.markIncomplete(*definitions[member]);
     }
   }
 
   for (const unsigned member : component) {
     const FunctionDecl &function = *definitions[member];
     const bool report = shouldReport(function);
-    analyzer.analyze(function, store, report, /*widenSummary=*/recursive);
+    if (report)
+      analyzer.analyze(function, store, true, /*widenSummary=*/recursive);
+    else
+      analyzeSilently(function, analyzer, recursive);
     if (report && options.reportUnannotated)
       reportUnannotatedInterface(function);
   }

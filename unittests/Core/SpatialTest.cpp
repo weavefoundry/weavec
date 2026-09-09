@@ -92,6 +92,78 @@ TEST(SpatialTracker, JoinKeepsWhatBothSidesAgreeOn) {
   EXPECT_FALSE(same.join(other));
 }
 
+// RFC 0020: the optimized join must preserve the former pad-then-join
+// operation, including its witnesses and exact change detection.
+TEST(SpatialTracker, AbsentObjectJoinMatchesPaddingReference) {
+  const std::vector<std::optional<SpatialRecord>> variants{
+      std::nullopt,
+      SpatialRecord{},
+      SpatialRecord{.extent = Affine::ofConstant(8),
+                    .location = {.file = "first.c", .line = 3},
+                    .declared = true},
+      SpatialRecord{.extent = Affine::ofConstant(16),
+                    .offset = PointerOffset::ofElements(2),
+                    .boundsOffset = PointerOffset::ofElements(1)},
+      SpatialRecord{.extent = Affine::ofPlace(N),
+                    .offset = PointerOffset::unknown()},
+      SpatialRecord{.string = StringFact{.length = Affine::ofConstant(4)}},
+      SpatialRecord{.string = StringFact{.unterminated = true,
+                                         .location = {.file = "first.c"}}},
+      SpatialRecord{.string = StringFact{.unterminated = true,
+                                         .location = {.file = "second.c"}}},
+      SpatialRecord{.boundsOffset = PointerOffset::ofElements(1)}};
+  const auto check = [](const SpatialTracker &first,
+                        const SpatialTracker &second, unsigned mask) {
+    const auto absentHere = [mask](PlaceId place) {
+      return ((mask + place.value) & 1U) != 0;
+    };
+    const auto absentThere = [mask](PlaceId place) {
+      return ((mask + place.value) & 2U) != 0;
+    };
+    auto expected = first;
+    auto paddedRight = second;
+    for (const auto &[place, record] : first.all()) {
+      if (!paddedRight.has(place) && absentThere(place))
+        paddedRight.set(place, record);
+    }
+    for (const auto &[place, record] : second.all()) {
+      if (!expected.has(place) && absentHere(place))
+        expected.set(place, record);
+    }
+    expected.join(paddedRight);
+    auto actual = first;
+    EXPECT_EQ(actual.joinWithAbsentObjects(second, absentHere, absentThere),
+              expected != first);
+    EXPECT_EQ(actual, expected);
+    auto self = actual;
+    auto expectedSelf = actual;
+    expectedSelf.join(actual);
+    EXPECT_EQ(self.joinWithAbsentObjects(self, absentHere, absentThere),
+              expectedSelf != actual);
+    EXPECT_EQ(self, expectedSelf);
+  };
+  for (std::size_t i = 0; i < variants.size(); ++i) {
+    for (std::size_t j = 0; j < variants.size(); ++j) {
+      SpatialTracker left;
+      SpatialTracker right;
+      for (std::uint32_t cell = 0; cell < 5; ++cell) {
+        const auto &a = variants[(i + cell) % variants.size()];
+        const auto &b =
+            variants[(j + (std::size_t{cell} * 2)) % variants.size()];
+        if (a)
+          left.set(PlaceId{cell}, *a);
+        if (b)
+          right.set(PlaceId{cell}, *b);
+      }
+      for (unsigned mask = 0; mask < 4; ++mask) {
+        SCOPED_TRACE(::testing::Message() << i << "," << j << "," << mask);
+        check(left, right, mask);
+        check(right, left, mask);
+      }
+    }
+  }
+}
+
 TEST(SpatialTracker, AbsentRecordsStandAtTheStart) {
   // `if (c) p++;`: one path stepped `p`, the other never gave it a record.
   // The join says "may not point to the start", whichever side is missing.
@@ -355,7 +427,8 @@ TEST(SpatialCoverage, BothEndsMustBeEstablished) {
 }
 
 TEST(SpatialCoverage, RelativeUpperBoundStillNeedsANonnegativeStart) {
-  const PlaceId i{1}, n{2};
+  const PlaceId i{1};
+  const PlaceId n{2};
   const auto start = Affine::ofPlace(i, 4);
   const auto end = Affine::ofPlace(i, 4, 4);
   const auto have = Affine::ofPlace(n, 4);

@@ -1,0 +1,887 @@
+{
+  "functions": [
+    {
+      "name": "diamond",
+      "signature": "int (int)",
+      "selected": true,
+      "status": "incomplete",
+      "complete": false,
+      "deferred": false,
+      "limited": false,
+      "requirements": [],
+      "establishes": [],
+      "obligations": [
+        {
+          "property": "arithmetic",
+          "outcome": "unresolved",
+          "location": {
+            "file": "$ROOT/test/evaluation/rfc0020/projection.c",
+            "line": 10,
+            "column": 36
+          },
+          "subject": "operation",
+          "reason": "integer operation may be invalid",
+          "calls": []
+        },
+        {
+          "property": "call",
+          "outcome": "unresolved",
+          "location": {
+            "file": "$ROOT/test/evaluation/rfc0020/projection.c",
+            "line": 10,
+            "column": 36
+          },
+          "subject": "\"$ROOT/test/evaluation/rfc0020/projection.c\":4:40:\"middle\":call:\"local value must be initialized\"",
+          "reason": "local value must be initialized",
+          "calls": [
+            {
+              "file": "$ROOT/test/evaluation/rfc0020/projection.c",
+              "line": 7,
+              "column": 17
+            },
+            {
+              "file": "$ROOT/test/evaluation/rfc0020/projection.c",
+              "line": 4,
+              "column": 40
+            }
+          ]
+        },
+        {
+          "property": "call",
+          "outcome": "unresolved",
+          "location": {
+            "file": "$ROOT/test/evaluation/rfc0020/projection.c",
+            "line": 10,
+            "column": 36
+          },
+          "subject": "\"$ROOT/test/evaluation/rfc0020/projection.c\":5:41:\"middle\":call:\"local value must be initialized\"",
+          "reason": "local value must be initialized",
+          "calls": [
+            {
+              "file": "$ROOT/test/evaluation/rfc0020/projection.c",
+              "line": 7,
+              "column": 27
+            },
+            {
+              "file": "$ROOT/test/evaluation/rfc0020/projection.c",
+              "line": 5,
+              "column": 41
+            }
+          ]
+        },
+        {
+          "property": "call",
+          "outcome": "unresolved",
+          "location": {
+            "file": "$ROOT/test/evaluation/rfc0020/projection.c",
+            "line": 10,
+            "column": 36
+          },
+          "subject": "\"$ROOT/test/evaluation/rfc0020/projection.c\":7:17:\"middle\":call:\"integer operation may be invalid\"",
+          "reason": "integer operation may be invalid",
+          "calls": [
+            {
+              "file": "$ROOT/test/evaluation/rfc0020/projection.c",
+              "line": 7,
+              "column": 17
+            }
+          ]
+        },
+        {
+          "property": "call",
+          "outcome": "unresolved",
+          "location": {
+            "file": "$ROOT/test/evaluation/rfc0020/projection.c",
+            "line": 10,
+            "column": 36
+          },
+          "subject": "\"$ROOT/test/evaluation/rfc0020/projection.c\":8:10:\"middle\":call:\"integer operation may be invalid\"",
+          "reason": "integer operation may be invalid",
+          "calls": [
+            {
+              "file": "$ROOT/test/evaluation/rfc0020/projection.c",
+              "line": 8,
+              "column": 10
+            }
+          ]
+        },
+        {
+          "property": "initialization",
+          "outcome": "proven",
+          "location": {
+            "file": "$ROOT/test/evaluation/rfc0020/projection.c",
+            "line": 10,
+            "column": 43
+          },
+          "subject": "value",
+          "reason": "local value must be initialized",
+          "calls": []
+        },
+        {
+          "property": "call",
+          "outcome": "unresolved",
+          "location": {
+            "file": "$ROOT/test/evaluation/rfc0020/projection.c",
+            "line": 10,
+            "column": 48
+          },
+          "subject": "\"$ROOT/test/evaluation/rfc0020/projection.c\":4:40:\"middle\":call:\"local value must be initialized\"",
+          "reason": "local value must be initialized",
+          "calls": [
+            {
+              "file": "$ROOT/test/evaluation/rfc0020/projection.c",
+              "line": 7,
+              "column": 17
+            },
+            {
+              "file": "$ROOT/test/evaluation/rfc0020/projection.c",
+              "line": 4,
+              "column": 40
+            }
+          ]
+        },
+        {
+          "property": "call",
+          "outcome": "unresolved",
+          "location": {
+            "file": "$ROOT/test/evaluation/rfc0020/projection.c",
+            "line": 10,
+            "column": 48
+          },
+          "subject": "\"$ROOT/test/evaluation/rfc0020/projection.c\":5:41:\"middle\":call:\"local value must be initialized\"",
+          "reason": "local value must be initialized",
+          "calls": [
+            {
+              "file": "$ROOT/test/evaluation/rfc0020/projection.c",
+              "line": 7,
+              "column": 27
+            },
+            {
+              "file": "$ROOT/test/evaluation/rfc0020/projection.c",
+              "line": 5,
+              "column": 41
+            }
+          ]
+        },
+        {
+          "property": "call",
+          "outcome": "unresolved",
+          "location": {
+            "file": "$ROOT/test/evaluation/rfc0020/projection.c",
+            "line": 10,
+            "column": 48
+          },
+          "subject": "\"$ROOT/test/evaluation/rfc0020/projection.c\":7:17:\"middle\":call:\"integer operation may be invalid\"",
+          "reason": "integer operation may be invalid",
+          "calls": [
+            {
+              "file": "$ROOT/test/evaluation/rfc0020/projection.c",
+              "line": 7,
+              "column": 17
+            }
+          ]
+        },
+        {
+          "property": "call",
+          "outcome": "unresolved",
+          "location": {
+            "file": "$ROOT/test/evaluation/rfc0020/projection.c",
+            "line": 10,
+            "column": 48
+          },
+          "subject": "\"$ROOT/test/evaluation/rfc0020/projection.c\":8:10:\"middle\":call:\"integer operation may be invalid\"",
+          "reason": "integer operation may be invalid",
+          "calls": [
+            {
+              "file": "$ROOT/test/evaluation/rfc0020/projection.c",
+              "line": 8,
+              "column": 10
+            }
+          ]
+        },
+        {
+          "property": "initialization",
+          "outcome": "proven",
+          "location": {
+            "file": "$ROOT/test/evaluation/rfc0020/projection.c",
+            "line": 10,
+            "column": 56
+          },
+          "subject": "value",
+          "reason": "local value must be initialized",
+          "calls": []
+        }
+      ]
+    },
+    {
+      "name": "first",
+      "signature": "int (void)",
+      "selected": true,
+      "status": "incomplete",
+      "complete": false,
+      "deferred": false,
+      "limited": false,
+      "requirements": [],
+      "establishes": [],
+      "obligations": [
+        {
+          "property": "initialization",
+          "outcome": "unresolved",
+          "location": {
+            "file": "$ROOT/test/evaluation/rfc0020/projection.c",
+            "line": 4,
+            "column": 40
+          },
+          "subject": "value",
+          "reason": "local value must be initialized",
+          "calls": []
+        }
+      ]
+    },
+    {
+      "name": "main",
+      "signature": "int (void)",
+      "selected": true,
+      "status": "incomplete",
+      "complete": false,
+      "deferred": false,
+      "limited": false,
+      "requirements": [],
+      "establishes": [],
+      "obligations": [
+        {
+          "property": "arithmetic",
+          "outcome": "unresolved",
+          "location": {
+            "file": "$ROOT/test/evaluation/rfc0020/projection.c",
+            "line": 14,
+            "column": 25
+          },
+          "subject": "operation",
+          "reason": "integer operation may be invalid",
+          "calls": []
+        },
+        {
+          "property": "call",
+          "outcome": "unresolved",
+          "location": {
+            "file": "$ROOT/test/evaluation/rfc0020/projection.c",
+            "line": 14,
+            "column": 25
+          },
+          "subject": "\"$ROOT/test/evaluation/rfc0020/projection.c\":10:36:\"diamond\":call:\"integer operation may be invalid\"",
+          "reason": "integer operation may be invalid",
+          "calls": [
+            {
+              "file": "$ROOT/test/evaluation/rfc0020/projection.c",
+              "line": 10,
+              "column": 36
+            }
+          ]
+        },
+        {
+          "property": "call",
+          "outcome": "unresolved",
+          "location": {
+            "file": "$ROOT/test/evaluation/rfc0020/projection.c",
+            "line": 14,
+            "column": 25
+          },
+          "subject": "\"$ROOT/test/evaluation/rfc0020/projection.c\":4:40:\"diamond\":call:\"local value must be initialized\"",
+          "reason": "local value must be initialized",
+          "calls": [
+            {
+              "file": "$ROOT/test/evaluation/rfc0020/projection.c",
+              "line": 10,
+              "column": 36
+            },
+            {
+              "file": "$ROOT/test/evaluation/rfc0020/projection.c",
+              "line": 7,
+              "column": 17
+            },
+            {
+              "file": "$ROOT/test/evaluation/rfc0020/projection.c",
+              "line": 4,
+              "column": 40
+            }
+          ]
+        },
+        {
+          "property": "call",
+          "outcome": "unresolved",
+          "location": {
+            "file": "$ROOT/test/evaluation/rfc0020/projection.c",
+            "line": 14,
+            "column": 25
+          },
+          "subject": "\"$ROOT/test/evaluation/rfc0020/projection.c\":5:41:\"diamond\":call:\"local value must be initialized\"",
+          "reason": "local value must be initialized",
+          "calls": [
+            {
+              "file": "$ROOT/test/evaluation/rfc0020/projection.c",
+              "line": 10,
+              "column": 36
+            },
+            {
+              "file": "$ROOT/test/evaluation/rfc0020/projection.c",
+              "line": 7,
+              "column": 27
+            },
+            {
+              "file": "$ROOT/test/evaluation/rfc0020/projection.c",
+              "line": 5,
+              "column": 41
+            }
+          ]
+        },
+        {
+          "property": "call",
+          "outcome": "unresolved",
+          "location": {
+            "file": "$ROOT/test/evaluation/rfc0020/projection.c",
+            "line": 14,
+            "column": 25
+          },
+          "subject": "\"$ROOT/test/evaluation/rfc0020/projection.c\":7:17:\"diamond\":call:\"integer operation may be invalid\"",
+          "reason": "integer operation may be invalid",
+          "calls": [
+            {
+              "file": "$ROOT/test/evaluation/rfc0020/projection.c",
+              "line": 10,
+              "column": 36
+            },
+            {
+              "file": "$ROOT/test/evaluation/rfc0020/projection.c",
+              "line": 7,
+              "column": 17
+            }
+          ]
+        },
+        {
+          "property": "call",
+          "outcome": "unresolved",
+          "location": {
+            "file": "$ROOT/test/evaluation/rfc0020/projection.c",
+            "line": 14,
+            "column": 25
+          },
+          "subject": "\"$ROOT/test/evaluation/rfc0020/projection.c\":8:10:\"diamond\":call:\"integer operation may be invalid\"",
+          "reason": "integer operation may be invalid",
+          "calls": [
+            {
+              "file": "$ROOT/test/evaluation/rfc0020/projection.c",
+              "line": 10,
+              "column": 36
+            },
+            {
+              "file": "$ROOT/test/evaluation/rfc0020/projection.c",
+              "line": 8,
+              "column": 10
+            }
+          ]
+        },
+        {
+          "property": "call",
+          "outcome": "trusted",
+          "location": {
+            "file": "$ROOT/test/evaluation/rfc0020/projection.c",
+            "line": 14,
+            "column": 38
+          },
+          "subject": "\"$ROOT/test/evaluation/rfc0020/projection.c\":10:36:\"trusted\":call:\"unsafe boundary: integer operation may be invalid\"",
+          "reason": "unsafe boundary: integer operation may be invalid",
+          "calls": [
+            {
+              "file": "$ROOT/test/evaluation/rfc0020/projection.c",
+              "line": 12,
+              "column": 26
+            },
+            {
+              "file": "$ROOT/test/evaluation/rfc0020/projection.c",
+              "line": 10,
+              "column": 36
+            }
+          ]
+        },
+        {
+          "property": "call",
+          "outcome": "trusted",
+          "location": {
+            "file": "$ROOT/test/evaluation/rfc0020/projection.c",
+            "line": 14,
+            "column": 38
+          },
+          "subject": "\"$ROOT/test/evaluation/rfc0020/projection.c\":12:34:\"trusted\":call:\"unsafe boundary: local value must be initialized\"",
+          "reason": "unsafe boundary: local value must be initialized",
+          "calls": [
+            {
+              "file": "$ROOT/test/evaluation/rfc0020/projection.c",
+              "line": 12,
+              "column": 34
+            }
+          ]
+        },
+        {
+          "property": "call",
+          "outcome": "trusted",
+          "location": {
+            "file": "$ROOT/test/evaluation/rfc0020/projection.c",
+            "line": 14,
+            "column": 38
+          },
+          "subject": "\"$ROOT/test/evaluation/rfc0020/projection.c\":4:40:\"trusted\":call:\"unsafe boundary: local value must be initialized\"",
+          "reason": "unsafe boundary: local value must be initialized",
+          "calls": [
+            {
+              "file": "$ROOT/test/evaluation/rfc0020/projection.c",
+              "line": 12,
+              "column": 26
+            },
+            {
+              "file": "$ROOT/test/evaluation/rfc0020/projection.c",
+              "line": 10,
+              "column": 36
+            },
+            {
+              "file": "$ROOT/test/evaluation/rfc0020/projection.c",
+              "line": 7,
+              "column": 17
+            },
+            {
+              "file": "$ROOT/test/evaluation/rfc0020/projection.c",
+              "line": 4,
+              "column": 40
+            }
+          ]
+        },
+        {
+          "property": "call",
+          "outcome": "trusted",
+          "location": {
+            "file": "$ROOT/test/evaluation/rfc0020/projection.c",
+            "line": 14,
+            "column": 38
+          },
+          "subject": "\"$ROOT/test/evaluation/rfc0020/projection.c\":5:41:\"trusted\":call:\"unsafe boundary: local value must be initialized\"",
+          "reason": "unsafe boundary: local value must be initialized",
+          "calls": [
+            {
+              "file": "$ROOT/test/evaluation/rfc0020/projection.c",
+              "line": 12,
+              "column": 26
+            },
+            {
+              "file": "$ROOT/test/evaluation/rfc0020/projection.c",
+              "line": 10,
+              "column": 36
+            },
+            {
+              "file": "$ROOT/test/evaluation/rfc0020/projection.c",
+              "line": 7,
+              "column": 27
+            },
+            {
+              "file": "$ROOT/test/evaluation/rfc0020/projection.c",
+              "line": 5,
+              "column": 41
+            }
+          ]
+        },
+        {
+          "property": "call",
+          "outcome": "trusted",
+          "location": {
+            "file": "$ROOT/test/evaluation/rfc0020/projection.c",
+            "line": 14,
+            "column": 38
+          },
+          "subject": "\"$ROOT/test/evaluation/rfc0020/projection.c\":7:17:\"trusted\":call:\"unsafe boundary: integer operation may be invalid\"",
+          "reason": "unsafe boundary: integer operation may be invalid",
+          "calls": [
+            {
+              "file": "$ROOT/test/evaluation/rfc0020/projection.c",
+              "line": 12,
+              "column": 26
+            },
+            {
+              "file": "$ROOT/test/evaluation/rfc0020/projection.c",
+              "line": 10,
+              "column": 36
+            },
+            {
+              "file": "$ROOT/test/evaluation/rfc0020/projection.c",
+              "line": 7,
+              "column": 17
+            }
+          ]
+        },
+        {
+          "property": "call",
+          "outcome": "trusted",
+          "location": {
+            "file": "$ROOT/test/evaluation/rfc0020/projection.c",
+            "line": 14,
+            "column": 38
+          },
+          "subject": "\"$ROOT/test/evaluation/rfc0020/projection.c\":8:10:\"trusted\":call:\"unsafe boundary: integer operation may be invalid\"",
+          "reason": "unsafe boundary: integer operation may be invalid",
+          "calls": [
+            {
+              "file": "$ROOT/test/evaluation/rfc0020/projection.c",
+              "line": 12,
+              "column": 26
+            },
+            {
+              "file": "$ROOT/test/evaluation/rfc0020/projection.c",
+              "line": 10,
+              "column": 36
+            },
+            {
+              "file": "$ROOT/test/evaluation/rfc0020/projection.c",
+              "line": 8,
+              "column": 10
+            }
+          ]
+        },
+        {
+          "property": "call",
+          "outcome": "proven",
+          "location": {
+            "file": "$ROOT/test/evaluation/rfc0020/projection.c",
+            "line": 14,
+            "column": 38
+          },
+          "subject": "trusted",
+          "reason": "callee has a complete checked contract",
+          "calls": []
+        }
+      ]
+    },
+    {
+      "name": "middle",
+      "signature": "int (int)",
+      "selected": true,
+      "status": "incomplete",
+      "complete": false,
+      "deferred": false,
+      "limited": false,
+      "requirements": [],
+      "establishes": [],
+      "obligations": [
+        {
+          "property": "arithmetic",
+          "outcome": "unresolved",
+          "location": {
+            "file": "$ROOT/test/evaluation/rfc0020/projection.c",
+            "line": 7,
+            "column": 17
+          },
+          "subject": "operation",
+          "reason": "integer operation may be invalid",
+          "calls": []
+        },
+        {
+          "property": "call",
+          "outcome": "unresolved",
+          "location": {
+            "file": "$ROOT/test/evaluation/rfc0020/projection.c",
+            "line": 7,
+            "column": 17
+          },
+          "subject": "\"$ROOT/test/evaluation/rfc0020/projection.c\":4:40:\"first\":call:\"local value must be initialized\"",
+          "reason": "local value must be initialized",
+          "calls": [
+            {
+              "file": "$ROOT/test/evaluation/rfc0020/projection.c",
+              "line": 4,
+              "column": 40
+            }
+          ]
+        },
+        {
+          "property": "call",
+          "outcome": "unresolved",
+          "location": {
+            "file": "$ROOT/test/evaluation/rfc0020/projection.c",
+            "line": 7,
+            "column": 27
+          },
+          "subject": "\"$ROOT/test/evaluation/rfc0020/projection.c\":5:41:\"second\":call:\"local value must be initialized\"",
+          "reason": "local value must be initialized",
+          "calls": [
+            {
+              "file": "$ROOT/test/evaluation/rfc0020/projection.c",
+              "line": 5,
+              "column": 41
+            }
+          ]
+        },
+        {
+          "property": "initialization",
+          "outcome": "proven",
+          "location": {
+            "file": "$ROOT/test/evaluation/rfc0020/projection.c",
+            "line": 7,
+            "column": 7
+          },
+          "subject": "value",
+          "reason": "local value must be initialized",
+          "calls": []
+        },
+        {
+          "property": "arithmetic",
+          "outcome": "unresolved",
+          "location": {
+            "file": "$ROOT/test/evaluation/rfc0020/projection.c",
+            "line": 8,
+            "column": 10
+          },
+          "subject": "operation",
+          "reason": "integer operation may be invalid",
+          "calls": []
+        },
+        {
+          "property": "call",
+          "outcome": "unresolved",
+          "location": {
+            "file": "$ROOT/test/evaluation/rfc0020/projection.c",
+            "line": 8,
+            "column": 10
+          },
+          "subject": "\"$ROOT/test/evaluation/rfc0020/projection.c\":5:41:\"second\":call:\"local value must be initialized\"",
+          "reason": "local value must be initialized",
+          "calls": [
+            {
+              "file": "$ROOT/test/evaluation/rfc0020/projection.c",
+              "line": 5,
+              "column": 41
+            }
+          ]
+        },
+        {
+          "property": "call",
+          "outcome": "unresolved",
+          "location": {
+            "file": "$ROOT/test/evaluation/rfc0020/projection.c",
+            "line": 8,
+            "column": 21
+          },
+          "subject": "\"$ROOT/test/evaluation/rfc0020/projection.c\":4:40:\"first\":call:\"local value must be initialized\"",
+          "reason": "local value must be initialized",
+          "calls": [
+            {
+              "file": "$ROOT/test/evaluation/rfc0020/projection.c",
+              "line": 4,
+              "column": 40
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "second",
+      "signature": "int (void)",
+      "selected": true,
+      "status": "incomplete",
+      "complete": false,
+      "deferred": false,
+      "limited": false,
+      "requirements": [],
+      "establishes": [],
+      "obligations": [
+        {
+          "property": "initialization",
+          "outcome": "unresolved",
+          "location": {
+            "file": "$ROOT/test/evaluation/rfc0020/projection.c",
+            "line": 5,
+            "column": 41
+          },
+          "subject": "value",
+          "reason": "local value must be initialized",
+          "calls": []
+        }
+      ]
+    },
+    {
+      "name": "trusted",
+      "signature": "int (int)",
+      "selected": true,
+      "status": "trusted",
+      "complete": true,
+      "deferred": false,
+      "limited": false,
+      "requirements": [],
+      "establishes": [],
+      "obligations": [
+        {
+          "property": "call",
+          "outcome": "trusted",
+          "location": {
+            "file": "$ROOT/test/evaluation/rfc0020/projection.c",
+            "line": 12,
+            "column": 26
+          },
+          "subject": "\"$ROOT/test/evaluation/rfc0020/projection.c\":10:36:\"diamond\":call:\"integer operation may be invalid\"",
+          "reason": "unsafe boundary: integer operation may be invalid",
+          "calls": [
+            {
+              "file": "$ROOT/test/evaluation/rfc0020/projection.c",
+              "line": 10,
+              "column": 36
+            }
+          ]
+        },
+        {
+          "property": "call",
+          "outcome": "trusted",
+          "location": {
+            "file": "$ROOT/test/evaluation/rfc0020/projection.c",
+            "line": 12,
+            "column": 26
+          },
+          "subject": "\"$ROOT/test/evaluation/rfc0020/projection.c\":4:40:\"diamond\":call:\"local value must be initialized\"",
+          "reason": "unsafe boundary: local value must be initialized",
+          "calls": [
+            {
+              "file": "$ROOT/test/evaluation/rfc0020/projection.c",
+              "line": 10,
+              "column": 36
+            },
+            {
+              "file": "$ROOT/test/evaluation/rfc0020/projection.c",
+              "line": 7,
+              "column": 17
+            },
+            {
+              "file": "$ROOT/test/evaluation/rfc0020/projection.c",
+              "line": 4,
+              "column": 40
+            }
+          ]
+        },
+        {
+          "property": "call",
+          "outcome": "trusted",
+          "location": {
+            "file": "$ROOT/test/evaluation/rfc0020/projection.c",
+            "line": 12,
+            "column": 26
+          },
+          "subject": "\"$ROOT/test/evaluation/rfc0020/projection.c\":5:41:\"diamond\":call:\"local value must be initialized\"",
+          "reason": "unsafe boundary: local value must be initialized",
+          "calls": [
+            {
+              "file": "$ROOT/test/evaluation/rfc0020/projection.c",
+              "line": 10,
+              "column": 36
+            },
+            {
+              "file": "$ROOT/test/evaluation/rfc0020/projection.c",
+              "line": 7,
+              "column": 27
+            },
+            {
+              "file": "$ROOT/test/evaluation/rfc0020/projection.c",
+              "line": 5,
+              "column": 41
+            }
+          ]
+        },
+        {
+          "property": "call",
+          "outcome": "trusted",
+          "location": {
+            "file": "$ROOT/test/evaluation/rfc0020/projection.c",
+            "line": 12,
+            "column": 26
+          },
+          "subject": "\"$ROOT/test/evaluation/rfc0020/projection.c\":7:17:\"diamond\":call:\"integer operation may be invalid\"",
+          "reason": "unsafe boundary: integer operation may be invalid",
+          "calls": [
+            {
+              "file": "$ROOT/test/evaluation/rfc0020/projection.c",
+              "line": 10,
+              "column": 36
+            },
+            {
+              "file": "$ROOT/test/evaluation/rfc0020/projection.c",
+              "line": 7,
+              "column": 17
+            }
+          ]
+        },
+        {
+          "property": "call",
+          "outcome": "trusted",
+          "location": {
+            "file": "$ROOT/test/evaluation/rfc0020/projection.c",
+            "line": 12,
+            "column": 26
+          },
+          "subject": "\"$ROOT/test/evaluation/rfc0020/projection.c\":8:10:\"diamond\":call:\"integer operation may be invalid\"",
+          "reason": "unsafe boundary: integer operation may be invalid",
+          "calls": [
+            {
+              "file": "$ROOT/test/evaluation/rfc0020/projection.c",
+              "line": 10,
+              "column": 36
+            },
+            {
+              "file": "$ROOT/test/evaluation/rfc0020/projection.c",
+              "line": 8,
+              "column": 10
+            }
+          ]
+        },
+        {
+          "property": "initialization",
+          "outcome": "trusted",
+          "location": {
+            "file": "$ROOT/test/evaluation/rfc0020/projection.c",
+            "line": 12,
+            "column": 34
+          },
+          "subject": "value",
+          "reason": "unsafe boundary: local value must be initialized",
+          "calls": []
+        }
+      ]
+    },
+    {
+      "name": "weavec_assume_",
+      "signature": "void (int)",
+      "selected": false,
+      "status": "proven",
+      "complete": true,
+      "deferred": false,
+      "limited": false,
+      "requirements": [],
+      "establishes": [],
+      "obligations": [
+        {
+          "property": "initialization",
+          "outcome": "proven",
+          "location": {
+            "file": "$ROOT/resources/include/weavec.h",
+            "line": 164,
+            "column": 9
+          },
+          "subject": "value",
+          "reason": "local value must be initialized",
+          "calls": []
+        }
+      ]
+    }
+  ],
+  "totals": {
+    "functions": 7,
+    "selected": 6,
+    "complete": 2,
+    "trusted_complete": 1,
+    "incomplete": 5,
+    "deferred": 0
+  },
+  "invocation_ok": false
+}

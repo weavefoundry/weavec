@@ -202,7 +202,7 @@ argument-conditional summaries and inferred `noreturn` by
   from a compilation database.
 - `Sidecar.h` reads and writes `foo.o.weavec`: the unit's exports, the cc1
   command that produced it and the diagnostics already reported, in a
-  line-oriented text format versioned by its `weavec-summaries 13` header.
+  line-oriented text format versioned by its `weavec-summaries 16` header.
 - `Driver.h` is `weavec-cc`: Clang's `driver::Driver` plans the jobs, each
   `-cc1` job runs in-process with WeaveC's consumer multiplexed beside
   Clang's, the compile step writes the sidecar, and the link step runs
@@ -270,7 +270,7 @@ snapshot site invalidates the old generation's dependent facts. The domain
 remains bounded; RFC 0017 extends these snapshots to every dependency of a
 typed symbolic expression while retaining affine and relation fast paths.
 
-The current summary and sidecar version 13 retain heap descriptions, post
+The current summary version 15 and sidecar version 16 retain heap descriptions, post
 references and string metadata. `ProgramDatabase` remaps global references
 and compares these descriptions as part of normal dependency invalidation.
 The compiler and tooling whole-program modes share this implementation.
@@ -438,7 +438,7 @@ checks by source operation. `--dump-analysis` prints
 These counts are independent of unsafe-region reporting and warning controls.
 A caller requirement is an obligation, not a proof that all callers satisfy it.
 
-`SummaryFormatVersion` and `SidecarFormatVersion` are both **13**. Numeric
+`SummaryFormatVersion` is **15** and `SidecarFormatVersion` is **16**. Numeric
 outputs use `numeric <path> value ...` records; `requires-extent` retains
 optional `start` intervals and typed guards. Core validates types, operators,
 paths, shapes and limits. Comparison, global remapping and dependency
@@ -560,7 +560,7 @@ objects for compiler-sidecar validation before replay. Compilation may defer
 an unavailable external contract; the link pass must resolve it. Checked
 failure reaches Clang independently of the diagnostic filtering policy.
 
-Summary and sidecar format 15 carry guarded/outcome-qualified contracts and
+Summary format 15 and sidecar format 16 carry guarded/outcome-qualified contracts and
 numeric outputs. Checked record encoding and report JSON use version 2.
 Strict parsing and global remapping reject missing premises. Explanation depth
 is bounded independently of semantic contract limits; truncating a call chain
@@ -571,3 +571,41 @@ globals, following RFC 0005's namespace boundary. Local callers still see
 those facts. Entry requirements and private premises of public/result output
 facts retain strict remapping; exporting a contract cannot silently forget
 something its proof needs.
+
+## Reuse and work accounting (RFC 0020)
+
+`AnalysisStats` is a Clang-free invocation-owned counter/timer sink. The frontend
+shares it with function and context analyses and writes the explicit JSON output
+atomically. No counter affects the model's joins or coverage decisions.
+
+`SummaryStore` records dependencies in every active analysis frame. Context hits
+inherit their dependencies into callers. Function and global-fact updates remove
+only affected contexts; revision snapshots also detect changes during a context's
+own computation. Invalidated nodes remain alive until the outermost applying
+analysis finishes. A preparation cache is owned by the retained AST and contains
+CFGs, lexical lifetimes and liveness with its nonreturning-block assumptions.
+Place IDs, initial states, call effects and diagnostics are per-run data.
+
+`CompilationDatabaseUnit` and the compiler's `Cc1Unit` retain an AST during
+whole-program iteration. The frontend's common analysis/replay path attaches a
+fresh reporting consumer, the current program database and warning controls.
+`SafetyLedger` copies share storage until mutation. Semantic equality compares
+operation identity, outcome and exhaustion; diagnostic wording and route choice
+have a separate equality operation.
+
+`AnalysisCache` stores complete unit results only after their program component
+settles. Private format 2 separates shared obligation/path/ledger tables from
+canonical sidecar records carrying the remaining export metadata. It checks
+producer round trips in the same global namespace and validates all table
+references before restoring contracts. Diagnostics and dependencies use bounded
+JSON records. The cache format is independent of sidecar format 16. Input validation preprocesses an effective
+invocation; imported validation projects observed symbols plus conservative
+global facts and requests. The [guide](incremental-analysis.md) describes cache
+misses and compact report version 3.
+
+Sidecar format 16 additionally records `checked-preprocessing`. The compiler
+computes it from the effective preprocessor invocation before compiling, then
+recomputes it from the recorded command before validating any checked link
+input. This catches new conditional-include targets as well as changed loaded
+files. Unsupported or unverifiable preprocessing cannot substantiate checked
+object replay. Core summary format 15 is unchanged.

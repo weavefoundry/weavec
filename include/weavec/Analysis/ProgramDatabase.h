@@ -28,6 +28,7 @@
 
 #include <cstdint>
 #include <map>
+#include <memory>
 #include <optional>
 #include <set>
 #include <string>
@@ -197,6 +198,11 @@ struct UnitExports {
 /// The exports of every unit of a program except the one being analysed.
 class ProgramDatabase {
 public:
+  /// RFC 0020: identity of the summaries and global numbering used by
+  /// importInto. Copies share it until a mutating operation starts.
+  [[nodiscard]] const std::shared_ptr<const char> &importGeneration() const {
+    return generation;
+  }
   /// Adds a unit's exports. A name defined by more than one unit gets the
   /// join of the definitions' summaries (RFC 0005, *Accepted false
   /// positives*). Summaries numbered by a table this one extends, or that
@@ -272,7 +278,14 @@ public:
   /// candidates, in the RFC 0003 dump spelling (for `--dump-analysis`).
   void dump(llvm::raw_ostream &os) const;
 
+  /// RFC 0020: canonicalizable projection of imported facts consulted by a
+  /// component. Global facts and context requests are conservative shared
+  /// dependencies; function lookups include absence as well as presence.
+  [[nodiscard]] UnitExports
+  checkpointInputs(const std::set<std::string> &dependencies) const;
+
 private:
+  std::shared_ptr<const char> generation = std::make_shared<const char>(0);
   std::map<std::pair<std::string, core::CallContext>, core::FunctionSummary>
       memorySummaries;
   std::map<std::string, std::set<core::CallContext>, std::less<>>
