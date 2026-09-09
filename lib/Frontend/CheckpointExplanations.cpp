@@ -97,8 +97,9 @@ CheckpointExplanations::decode(const llvm::json::Object &object) {
   const auto index = [](const llvm::json::Value &value,
                         std::size_t bound) -> std::optional<std::size_t> {
     const auto number = value.getAsUINT64();
-    return number && *number < bound ? std::optional<std::size_t>(*number)
-                                     : std::nullopt;
+    if (!number || *number >= bound)
+      return std::nullopt;
+    return number;
   };
   const auto string =
       [&](const llvm::json::Value &value) -> std::optional<llvm::StringRef> {
