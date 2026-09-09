@@ -22,6 +22,18 @@ env:
   CCACHE_MAXSIZE: 500M
 
 jobs:
+  release-checks:
+    name: Release tooling
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -r .github/release-requirements.txt
+      - run: python scripts/test-release.py
+
   # ---------------------------------------------------------------------------
   format:
     name: Formatting
@@ -200,7 +212,7 @@ jobs:
   ci-ok:
     name: CI passed
     if: always()
-    needs: [format, build-test, tidy]
+    needs: [format, build-test, tidy, release-checks]
     runs-on: ubuntu-24.04
     steps:
       - name: Check results
@@ -208,6 +220,20 @@ jobs:
           echo "format: ${{ needs.format.result }}"
           echo "build-test: ${{ needs.build-test.result }}"
           echo "tidy: ${{ needs.tidy.result }}"
+          echo "release-checks: ${{ needs.release-checks.result }}"
           [ "${{ needs.format.result }}" = "success" ] &&
           [ "${{ needs.build-test.result }}" = "success" ] &&
-          [ "${{ needs.tidy.result }}" = "success" ]
+          [ "${{ needs.tidy.result }}" = "success" ] &&
+          [ "${{ needs.release-checks.result }}" = "success" ]
+
+  release:
+    name: Release
+    needs: ci-ok
+    if: >-
+      github.repository == 'weavefoundry/weavec' &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    permissions:
+      contents: write
+    uses: ./.github/workflows/release.yml
+    secrets: inherit

@@ -1,0 +1,35 @@
+# Python Semantic Release is only release tooling; WeaveC remains a CMake project.
+[semantic_release]
+allow_zero_version = true
+major_on_zero = false
+tag_format = "v{version}"
+commit_message = "chore(release): v{version}"
+commit_author = "github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>"
+version_variables = ["CMakeLists.txt:VERSION"]
+assets = ["CHANGELOG.md"]
+# Keep the hand-written RFC and migration notes. The workflow uses --no-changelog.
+build_command = "python scripts/prepare-release.py"
+
+[semantic_release.branches.main]
+match = "main"
+prerelease = false
+
+[semantic_release.changelog]
+exclude_commit_patterns = ["^chore\\(release\\):"]
+
+[semantic_release.changelog.default_templates]
+mask_initial_release = false
+
+[semantic_release.commit_parser_options]
+allowed_tags = [
+    "build", "chore", "ci", "docs", "feat", "fix",
+    "perf", "refactor", "revert", "style", "test",
+]
+minor_tags = ["feat"]
+patch_tags = ["fix", "perf"]
+parse_squash_commits = true
+ignore_merge_commits = true
+
+[semantic_release.publish]
+# The workflow packages the release tag, then publishes through the GitHub CLI.
+upload_to_vcs_release = false

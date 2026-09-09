@@ -6,6 +6,12 @@ follows [Semantic Versioning](https://semver.org/) once it reaches 1.0.
 
 ## [Unreleased]
 
+### Release automation
+
+- Publish versioned source archives and SHA-256 checksums to GitHub Releases
+  after main passes CI. Conventional Commits select 0.x versions, stamp the
+  CMake version and retain the hand-written changelog and migration notes.
+
 ### Scalable checked analysis (RFC 0020)
 
 - Reuse context summaries according to observed function and global-fact
