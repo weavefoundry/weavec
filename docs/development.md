@@ -154,7 +154,8 @@ registry credentials involved. The first feature release is `0.1.0`;
 `fix`/`perf` increment the patch. Other commit types do not normally release.
 Keep squash-merge titles in Conventional Commit form and describe user-visible
 changes in the relevant guides and commit/PR descriptions. `CHANGELOG.md` is
-generated solely by semantic-release; do not edit it manually. The earlier
+created on the first release and regenerated solely by semantic-release;
+do not edit it manually. The earlier
 hand-written implementation and migration notes are archived in
 [development-history.md](development-history.md).
 

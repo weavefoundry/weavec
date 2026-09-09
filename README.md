@@ -213,7 +213,8 @@ distribution channel for WeaveC. Initial 0.x releases provide
 with the coverage limits described above; APIs and on-disk formats can change
 between minor versions.
 
-The pipeline generates [CHANGELOG.md](CHANGELOG.md) from Conventional Commits.
+The first release creates `CHANGELOG.md` from Conventional Commits; later
+releases regenerate it from the commit history.
 The earlier hand-written implementation and migration notes are preserved in
 [the development history](docs/development-history.md).
 

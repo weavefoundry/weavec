@@ -23,7 +23,7 @@ class ReleaseTest(unittest.TestCase):
         # Do not let PSR write into the parent CI step's outputs or use its token.
         for key in ("GITHUB_OUTPUT", "GH_TOKEN", "GITHUB_TOKEN", "GITHUB_ACTIONS"):
             self.env.pop(key, None)
-        for name in (".releaserc.toml", "scripts/package-source.py", "CHANGELOG.md"):
+        for name in (".releaserc.toml", "scripts/package-source.py"):
             destination = self.repo / name
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(ROOT / name, destination)
@@ -66,6 +66,7 @@ class ReleaseTest(unittest.TestCase):
                                 "--output-dir", "dist")
 
     def test_versions_archives_and_retry(self):
+        self.assertFalse((self.repo / "CHANGELOG.md").exists())
         self.release()
         self.assertEqual(self.run_command("git", "describe", "--exact-match").stdout.strip(), "v0.1.0")
         changelog = (self.repo / "CHANGELOG.md").read_text()
@@ -118,10 +119,12 @@ class ReleaseTest(unittest.TestCase):
         self.assertEqual((self.repo / "docs/development-history.md").read_text(), self.original_note)
 
     def test_reject_mismatched_tag(self):
+        self.release()
         self.run_command("git", "tag", "v9.9.9")
         result = self.run_command(sys.executable, "scripts/package-source.py", "v9.9.9",
                                   "--output-dir", "dist", check=False)
         self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Tagged CMake version does not match the release tag", result.stdout)
         self.assertFalse((self.repo / "dist/SHA256SUMS").exists())
 
     def test_long_initial_history(self):
