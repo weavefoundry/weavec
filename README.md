@@ -205,6 +205,40 @@ ctest --preset dev          # run unit + integration tests
 
 Other presets: `dev-asan`, `dev-tidy`, `release`, `relwithdebinfo`. The full list is in [`CMakePresets.json`](CMakePresets.json); the developer guide is [docs/development.md](docs/development.md).
 
+## Releases
+
+[GitHub Releases](https://github.com/weavefoundry/weavec/releases) is the
+distribution channel for WeaveC. Initial 0.x releases provide
+`weavec-X.Y.Z-source.tar.gz` and `SHA256SUMS`. They are early checker releases
+with the coverage limits described above; APIs and on-disk formats can change
+between minor versions.
+
+The first release creates `CHANGELOG.md` from Conventional Commits; later
+releases regenerate it from the commit history.
+The earlier hand-written implementation and migration notes are preserved in
+[the development history](docs/development-history.md).
+
+Download both files into the same directory and verify the archive with
+`shasum -a 256 -c SHA256SUMS` (or `sha256sum -c SHA256SUMS` on Linux).
+Install the build requirements above, extract the archive, and run from its
+`weavec-X.Y.Z` directory:
+
+```sh
+cmake --preset release -DWEAVEC_VERSION_SUFFIX=""
+cmake --build --preset release
+ctest --preset release
+cmake --install build/release --prefix "$HOME/.local"
+export PATH="$HOME/.local/bin:$PATH"
+weavec --version
+weavec-cc --version
+```
+
+Keep the LLVM/Clang installation used for the build available at runtime.
+Prebuilt portable binaries and package-manager distribution are future work;
+the current compiler records LLVM resource and executable paths at configure
+time. The [release workflow](docs/development.md#releasing) describes version
+selection, publication and retries.
+
 ## Repository layout
 
 ```

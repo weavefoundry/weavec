@@ -19,7 +19,7 @@ Write an RFC when a change would:
 Do **not** write an RFC for driver plumbing, CLI flags, diagnostics
 rendering, build or CI changes, documentation, or bug fixes that bring the
 implementation in line with an already-accepted RFC. Those go through normal
-pull requests and `CHANGELOG.md`.
+pull requests; release-worthy changes appear in the generated `CHANGELOG.md`.
 
 ## Process
 

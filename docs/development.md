@@ -137,10 +137,69 @@ editor integration.
 - For lit failures, `lit -a` prints the full command and output; the test's
   working files are under `build/<preset>/test/<suite>/Output/`.
 
-## Release checklist
+## Releasing
 
-1. Update `CHANGELOG.md` and move `[Unreleased]` to the new version.
-2. Set `project(... VERSION x.y.z)` in `CMakeLists.txt` and configure with
-   `-DWEAVEC_VERSION_SUFFIX=""`.
-3. Tag `vX.Y.Z`; CI builds the release presets. `cpack -G TGZ` in the build
-   directory produces a tarball.
+WeaveC publishes source releases to
+[GitHub Releases](https://github.com/weavefoundry/weavec/releases).
+`.github/workflows/ci.yml` calls the reusable `release.yml` workflow only
+after `CI passed` succeeds on a push to `main` or a manual CI run on `main`.
+PRs, merge-queue runs and forks do not publish. The release job skips a tested
+commit if `main` has already advanced; the new commit must pass its own CI.
+
+[Python Semantic Release](https://python-semantic-release.readthedocs.io/)
+is pinned in `.github/release-requirements.txt` and configured in
+`.releaserc.toml`. It is release tooling only, with no Python package or
+registry credentials involved. The first feature release is `0.1.0`;
+`feat` and breaking changes increment the minor while below 1.0, and
+`fix`/`perf` increment the patch. Other commit types do not normally release.
+Keep squash-merge titles in Conventional Commit form and describe user-visible
+changes in the relevant guides and commit/PR descriptions. `CHANGELOG.md` is
+created on the first release and regenerated solely by semantic-release;
+do not edit it manually. The earlier
+hand-written implementation and migration notes are archived in
+[development-history.md](development-history.md).
+
+The workflow first prepares everything locally: it stamps
+`project(... VERSION ...)` in `CMakeLists.txt`, regenerates `CHANGELOG.md` from
+the Conventional Commit history, and creates a release commit and `vX.Y.Z`
+tag. It packages that exact
+tag using `git archive` and verifies the version, changelog and required
+source files. Build directories and other untracked files are excluded.
+The commit and tag are pushed atomically, so a concurrent update or rejected
+push cannot publish just one of them. A GitHub draft receives the source
+archive and `SHA256SUMS` before it is made public. Release notes link to the
+versioned generated changelog and include its entry inline when it fits GitHub's
+body limit. The archived hand-written history is linked separately and included
+in every source archive.
+
+Repository setup: Actions needs permission to write repository contents,
+and the release identity needs to be allowed to push its release commit to
+`main` and create `v*` tags under your branch/tag rules. The workflow uses
+the built-in `GITHUB_TOKEN`; it cannot bypass repository rules that reject
+that identity. Such rules must be configured by a repository administrator
+before enabling automatic publication. No PyPI, Cargo or npm token is needed.
+Keep `CI passed` as the required branch-protection check.
+
+For a local preview, install the pinned tooling into a virtual environment
+and run this on `main` with all tags fetched:
+
+```sh
+semantic-release -c .releaserc.toml --noop version --no-push --no-vcs-release
+```
+
+For a full rehearsal, use a disposable clone and omit `--noop`. This makes
+local commits and tags but does not push or publish. Then run
+`python scripts/package-source.py vX.Y.Z --output-dir dist`, extract the
+archive, and follow the README's build/install instructions. Release builds
+must configure with `-DWEAVEC_VERSION_SUFFIX=""` to omit the development
+suffix. `cpack -G TGZ` still produces a local binary installation archive;
+it is not the source archive published by this workflow.
+
+If publication fails after the atomic push, manually run the **CI** workflow
+on `main` while its tip is the release commit. It reruns validation, recognizes
+the existing tag, reconstructs the archive, and finishes a missing or draft
+GitHub Release. Already public releases are left unchanged. If `main` has
+advanced, recover the existing release from a checkout of its tag using
+`scripts/package-source.py` and the GitHub release UI/CLI; do not move a
+published tag. Release commits pushed with `GITHUB_TOKEN` do not trigger
+another CI run, preventing a release loop.

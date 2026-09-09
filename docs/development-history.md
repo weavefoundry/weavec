@@ -1,10 +1,21 @@
-# Changelog
+# Development history before 0.1.0
+
+This historical snapshot preserves the hand-written notes from before the
+first public release, including implementation details and migration notes.
+It is not maintained for subsequent releases. Python Semantic Release creates
+`CHANGELOG.md` on the first public release and regenerates it thereafter.
 
 All notable changes to WeaveC are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project
 follows [Semantic Versioning](https://semver.org/) once it reaches 1.0.
 
 ## [Unreleased]
+
+### Release automation
+
+- Publish versioned source archives and SHA-256 checksums to GitHub Releases
+  after main passes CI. Conventional Commits select 0.x versions, stamp the
+  CMake version and retain the hand-written changelog and migration notes.
 
 ### Scalable checked analysis (RFC 0020)
 
@@ -63,7 +74,7 @@ follows [Semantic Versioning](https://semver.org/) once it reaches 1.0.
   while rejecting lost entry requirements or premises of public outputs.
 - Add 32 frozen source cases, ten whole-program and compiler-object cases,
   and pinned Jansson buffer/UTF interface evaluations with adversarial callers.
-- Publish the [validation report](docs/validation-rfc0019.md) with repeated
+- Publish the [validation report](validation-rfc0019.md) with repeated
   ordinary cost measurements and remaining whole-project checked limitations.
 
 ### Checked code (RFC 0018)
@@ -115,7 +126,7 @@ follows [Semantic Versioning](https://semver.org/) once it reaches 1.0.
   annotation spellings or verification mode are introduced.
 - Twelve separate bug/clean regression pairs and a hardened recall runner
   that rejects process failures even after expected reports were printed.
-- An [RFC 0017 validation report](docs/validation-rfc0017.md) and reproducible
+- An [RFC 0017 validation report](validation-rfc0017.md) and reproducible
   corpus results: 900/900 tests pass normally and under ASan/UBSan, original
   fixed detection improves from 42/44 to 44/44 with 32/32 clean cases, and
   recall remains 67/67. Three runs per binary show median corpus time growing

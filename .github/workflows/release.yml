@@ -1,0 +1,100 @@
+name: Release
+
+# Called only after the CI aggregate succeeds on main. Keeping publication in
+# this run also avoids relying on tags pushed by GITHUB_TOKEN triggering CI.
+on:
+  workflow_call:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Semantic Release
+    if: github.repository == 'weavefoundry/weavec'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Check that main still matches the tested commit
+        id: current
+        env:
+          TESTED_SHA: ${{ github.sha }}
+        run: |
+          if [ "$(git rev-parse HEAD)" = "$TESTED_SHA" ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Main has advanced; its own CI run will handle the release."
+          fi
+
+      - uses: actions/setup-python@v7
+        if: steps.current.outputs.ready == 'true'
+        with:
+          python-version: "3.12"
+
+      - name: Install release tooling
+        if: steps.current.outputs.ready == 'true'
+        run: python -m pip install -r .github/release-requirements.txt
+
+      - name: Prepare version, changelog, commit and tag locally
+        if: steps.current.outputs.ready == 'true'
+        id: version
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          semantic-release -c .releaserc.toml version \
+            --no-push --no-vcs-release
+
+      - name: Select the release tag
+        if: steps.current.outputs.ready == 'true'
+        id: target
+        env:
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          # Also retry publication when CI is manually rerun on a release commit.
+          # Ordinary docs/CI-only commits after a release have no tag at HEAD.
+          if [ -n "$RELEASE_TAG" ] &&
+             [ "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" = "$(git rev-parse HEAD)" ]; then
+            echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Package and verify the tagged source
+        if: steps.target.outputs.tag != ''
+        env:
+          RELEASE_TAG: ${{ steps.target.outputs.tag }}
+        run: python scripts/package-source.py "$RELEASE_TAG" --output-dir dist
+
+      - name: Push the release commit and tag together
+        if: steps.version.outputs.released == 'true'
+        env:
+          RELEASE_TAG: ${{ steps.target.outputs.tag }}
+        run: git push --atomic origin HEAD:refs/heads/main "refs/tags/$RELEASE_TAG"
+
+      - name: Publish GitHub Release and source downloads
+        if: steps.target.outputs.tag != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ steps.target.outputs.tag }}
+        run: |
+          # Build a draft with all assets before making the release public.
+          # A retry repairs a draft; an already published release is left alone.
+          if gh release view "$RELEASE_TAG" --json isDraft > "$RUNNER_TEMP/release.json"; then
+            if jq -e '.isDraft == false' "$RUNNER_TEMP/release.json" >/dev/null; then
+              echo "$RELEASE_TAG is already published."
+              exit 0
+            fi
+            gh release upload "$RELEASE_TAG" dist/*.tar.gz dist/SHA256SUMS --clobber
+          else
+            gh release create "$RELEASE_TAG" dist/*.tar.gz dist/SHA256SUMS \
+              --verify-tag --draft --title "WeaveC $RELEASE_TAG" \
+              --notes-file dist/release-notes.md
+          fi
+          gh release edit "$RELEASE_TAG" --draft=false --latest

@@ -4,6 +4,7 @@
 /out/
 /cmake-build-*/
 /install/
+/dist/
 
 # CMake
 CMakeCache.txt

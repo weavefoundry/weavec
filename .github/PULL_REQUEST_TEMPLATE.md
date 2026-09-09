@@ -29,5 +29,5 @@ Delete this section if not applicable.
 
 - [ ] Code is formatted (`scripts/format.sh`) and passes clang-tidy
 - [ ] Public headers and behaviour changes are documented
-- [ ] `CHANGELOG.md` updated for user-visible changes
+- [ ] Conventional Commit PR title and user-visible changes documented (changelog is generated)
 - [ ] No new dependencies on Clang/LLVM introduced into `lib/Core`
