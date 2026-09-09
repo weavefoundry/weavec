@@ -46,7 +46,7 @@ def main():
     digest = hashlib.sha256(archive.read_bytes()).hexdigest()
     (args.output_dir / "SHA256SUMS").write_text(f"{digest}  {archive.name}\n")
     notes = (
-        f"# WeaveC {args.tag}\n\n"
+        f"# {args.tag}\n\n"
         "An early C ownership and memory-safety checker with documented coverage limits.\n\n"
         "Download the source archive and SHA256SUMS below. Build with LLVM/Clang "
         "and CMake, configuring with `-DWEAVEC_VERSION_SUFFIX=\"\"`. "
