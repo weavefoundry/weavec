@@ -82,6 +82,14 @@ class ReleaseTest(unittest.TestCase):
         (self.repo / "build/secret.txt").write_text("Do not distribute\n")
         (self.repo / "README.md").write_text("Uncommitted change\n")
         self.package("v0.1.0")
+        notes = (self.repo / "dist/release-notes.md").read_text()
+        self.assertTrue(notes.startswith("## v0.1.0 ("))
+        self.assertIn("initial checker", notes.lower())
+        self.assertNotIn("Detailed Changes", notes)
+        self.assertNotIn("An early C ownership", notes)
+        self.assertNotIn("Download the source archive", notes)
+        self.assertNotIn("Generated changelog", notes)
+        self.assertNotIn("development-history.md", notes)
         checksum = (self.repo / "dist/SHA256SUMS").read_bytes()
         with tarfile.open(self.repo / "dist/weavec-0.1.0-source.tar.gz") as archive:
             self.assertNotIn("weavec-0.1.0/build/secret.txt", archive.getnames())
@@ -99,6 +107,7 @@ class ReleaseTest(unittest.TestCase):
         self.package("v0.1.0")
         self.assertEqual((self.repo / "dist/SHA256SUMS").read_bytes(), checksum)
 
+        previous_version = "0.1.0"
         for message, version in (("fix: handle null", "0.1.1"),
                                  ("perf: reuse summaries", "0.1.2"),
                                  ("feat: add contracts", "0.2.0"),
@@ -112,6 +121,13 @@ class ReleaseTest(unittest.TestCase):
                 changelog = (self.repo / "CHANGELOG.md").read_text()
                 self.assertIn(f"## v{version} (", changelog)
                 self.assertIn("initial checker", changelog.lower())
+                self.package("v" + version)
+                notes = (self.repo / "dist/release-notes.md").read_text()
+                self.assertTrue(notes.startswith(f"## v{version} ("))
+                self.assertIn(message.split(": ", 1)[1], notes.lower())
+                self.assertNotIn("initial checker", notes.lower())
+                self.assertIn(f"/compare/v{previous_version}...v{version}", notes)
+                previous_version = version
         self.commit("docs: explain installation")
         head = self.run_command("git", "rev-parse", "HEAD").stdout
         self.release()
@@ -136,8 +152,10 @@ class ReleaseTest(unittest.TestCase):
         self.package("v0.1.0")
         notes = (self.repo / "dist/release-notes.md").read_text()
         self.assertLess(len(notes.encode()), 60000)
-        self.assertIn("blob/v0.1.0/CHANGELOG.md", notes)
-        self.assertIn("blob/v0.1.0/docs/development-history.md", notes)
+        self.assertTrue(notes.startswith("## v0.1.0 ("))
+        self.assertIn("initial checker", notes.lower())
+        self.assertNotIn("development-history.md", notes)
+        self.assertNotIn(self.original_note, notes)
         self.assertGreater(len(path.read_bytes()), 60000)
         self.assertLess(len((self.repo / "CHANGELOG.md").read_bytes()), 60000)
         self.assertNotIn(self.original_note, (self.repo / "CHANGELOG.md").read_text())
