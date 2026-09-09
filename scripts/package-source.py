@@ -45,23 +45,23 @@ def main():
         raise SystemExit("Tagged changelog has no entry for this release")
     digest = hashlib.sha256(archive.read_bytes()).hexdigest()
     (args.output_dir / "SHA256SUMS").write_text(f"{digest}  {archive.name}\n")
-    notes = (
-        f"# WeaveC {args.tag}\n\n"
-        "An early C ownership and memory-safety checker with documented coverage limits.\n\n"
-        "Download the source archive and SHA256SUMS below. Build with LLVM/Clang "
-        "and CMake, configuring with `-DWEAVEC_VERSION_SUFFIX=\"\"`. "
-        f"See the [build and install instructions](https://github.com/weavefoundry/weavec/"
-        f"blob/{args.tag}/README.md#releases).\n\n"
-        f"[Generated changelog](https://github.com/weavefoundry/weavec/"
-        f"blob/{args.tag}/CHANGELOG.md) · "
-        f"[Earlier development and migration notes](https://github.com/weavefoundry/weavec/"
-        f"blob/{args.tag}/docs/development-history.md)\n\n"
-    )
-    # Large commit histories can exceed GitHub's release-body limit. Keep the
-    # full generated entry in the tagged changelog and link to it above.
-    changes = section.group(1).strip()
-    if len((notes + changes).encode()) <= 60000:
-        notes += changes + "\n"
+    notes = section.group(0).strip() + "\n"
+    # The generated changelog lists releases newest first.
+    previous = re.search(r"^## (v\d+\.\d+\.\d+) \(", changelog[section.end():], re.MULTILINE)
+    if previous:
+        comparison = f"{previous.group(1)}...{args.tag}"
+        notes += (
+            f"\n---\n\n**Detailed Changes**: [{comparison}]"
+            f"(https://github.com/weavefoundry/weavec/compare/{comparison})\n"
+        )
+    # Fall back to the complete tagged changelog only if the generated entry
+    # would exceed GitHub's release-body limit.
+    if len(notes.encode()) > 60000:
+        notes = (
+            section.group(0).splitlines()[0] + "\n\n"
+            f"[Full changelog](https://github.com/weavefoundry/weavec/"
+            f"blob/{args.tag}/CHANGELOG.md)\n"
+        )
     (args.output_dir / "release-notes.md").write_text(notes)
     print(f"Verified {archive} (SHA-256 {digest})")
 
