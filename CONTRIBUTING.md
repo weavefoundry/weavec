@@ -101,11 +101,11 @@ Additional rules:
 
 ## Commit messages
 
-Use the imperative mood with an area prefix, and explain *why* in the body when
-it is not obvious:
+Use Conventional Commits for commits and squash-merge PR titles, with an
+optional area scope. Explain *why* in the body when it is not obvious:
 
 ```
-[Analysis] Treat realloc as a move of its first argument
+fix(analysis): treat realloc as a move of its first argument
 
 realloc may free the original allocation, so subsequent uses of the old
 pointer must be flagged the same way as after free().
@@ -113,8 +113,16 @@ pointer must be flagged the same way as after free().
 Fixes #42.
 ```
 
-Common prefixes: `[Core]`, `[Analysis]`, `[Frontend]`, `[Driver]`, `[Test]`,
-`[CMake]`, `[CI]`, `[Docs]`.
+Use `feat` for new behavior, `fix` for bug fixes, and `perf` for performance
+improvements. These trigger releases. Use `!` or a `BREAKING CHANGE:` footer
+for incompatible changes. `docs`, `ci`, `build`, `test`, `refactor`, `style`
+and `chore` normally do not trigger a release. Optional scopes include `core`,
+`analysis`, `frontend`, `driver` and `cmake`.
+
+Python Semantic Release generates `CHANGELOG.md` from the commit history;
+do not edit it manually. Document behavior and migration guidance in the
+relevant guides and commit/PR descriptions. The earlier hand-written notes
+are preserved in [the development history](docs/development-history.md).
 
 ## Reporting bugs
 

@@ -29,7 +29,7 @@ def main():
     )
     with tarfile.open(archive) as source:
         for name in ("CMakeLists.txt", "CMakePresets.json", "README.md", "LICENSE",
-                     "resources/include/weavec.h", "CHANGELOG.md"):
+                     "resources/include/weavec.h", "CHANGELOG.md", "docs/development-history.md"):
             if not source.getmember(prefix + name).isfile():
                 raise SystemExit(f"Missing source file: {name}")
         cmake = source.extractfile(prefix + "CMakeLists.txt").read().decode()
@@ -37,7 +37,7 @@ def main():
     if not re.search(rf"^  VERSION {re.escape(version)}$", cmake, re.MULTILINE):
         raise SystemExit("Tagged CMake version does not match the release tag")
     section = re.search(
-        rf"^## \[{re.escape(version)}\][^\n]*\n(.*?)(?=^## \[|^\[Unreleased\]:|\Z)",
+        rf"^## v{re.escape(version)} \([^\n]+\)\n(.*?)(?=^## |\Z)",
         changelog,
         re.MULTILINE | re.DOTALL,
     )
@@ -52,11 +52,13 @@ def main():
         "and CMake, configuring with `-DWEAVEC_VERSION_SUFFIX=\"\"`. "
         f"See the [build and install instructions](https://github.com/weavefoundry/weavec/"
         f"blob/{args.tag}/README.md#releases).\n\n"
-        f"[Full changelog and migration notes](https://github.com/weavefoundry/weavec/"
-        f"blob/{args.tag}/CHANGELOG.md)\n\n"
+        f"[Generated changelog](https://github.com/weavefoundry/weavec/"
+        f"blob/{args.tag}/CHANGELOG.md) · "
+        f"[Earlier development and migration notes](https://github.com/weavefoundry/weavec/"
+        f"blob/{args.tag}/docs/development-history.md)\n\n"
     )
-    # The initial hand-written history exceeds GitHub's release-body limit.
-    # Keep it in the tagged changelog; shorter later entries can appear inline.
+    # Large commit histories can exceed GitHub's release-body limit. Keep the
+    # full generated entry in the tagged changelog and link to it above.
     changes = section.group(1).strip()
     if len((notes + changes).encode()) <= 60000:
         notes += changes + "\n"

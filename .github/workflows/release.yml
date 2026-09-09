@@ -51,7 +51,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           semantic-release -c .releaserc.toml version \
-            --no-changelog --no-push --no-vcs-release
+            --no-push --no-vcs-release
 
       - name: Select the release tag
         if: steps.current.outputs.ready == 'true'

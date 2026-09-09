@@ -6,18 +6,18 @@ tag_format = "v{version}"
 commit_message = "chore(release): v{version}"
 commit_author = "github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>"
 version_variables = ["CMakeLists.txt:VERSION"]
-assets = ["CHANGELOG.md"]
-# Keep the hand-written RFC and migration notes. The workflow uses --no-changelog.
-build_command = "python scripts/prepare-release.py"
 
 [semantic_release.branches.main]
 match = "main"
 prerelease = false
 
 [semantic_release.changelog]
+# Regenerate the release history from commits, as in Fugacio's v10 setup.
+mode = "init"
 exclude_commit_patterns = ["^chore\\(release\\):"]
 
 [semantic_release.changelog.default_templates]
+changelog_file = "CHANGELOG.md"
 mask_initial_release = false
 
 [semantic_release.commit_parser_options]

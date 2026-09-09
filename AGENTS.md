@@ -55,7 +55,10 @@ cmake --preset dev && cmake --build --preset dev && ctest --preset dev
 5. Follow the existing file header block and naming (`CamelCase` types and
    constants, `camelBack` functions/variables, `static` free functions rather
    than anonymous namespaces); `.clang-tidy` enforces it.
-6. Update `CHANGELOG.md` under `[Unreleased]` for user-visible changes.
+6. Use Conventional Commit PR titles and document user-visible changes in the
+   relevant guides. `CHANGELOG.md` is generated solely by semantic-release;
+   do not edit it manually. Pre-0.1.0 notes are archived in
+   `docs/development-history.md`.
 7. Do not commit generated files (`build/`, `compile_commands.json`).
 8. Changes to `Core`, checker rules, annotations or diagnostic ids reference
    the RFC that specifies them (in the PR and, for lit tests, in the

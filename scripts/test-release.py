@@ -23,7 +23,7 @@ class ReleaseTest(unittest.TestCase):
         # Do not let PSR write into the parent CI step's outputs or use its token.
         for key in ("GITHUB_OUTPUT", "GH_TOKEN", "GITHUB_TOKEN", "GITHUB_ACTIONS"):
             self.env.pop(key, None)
-        for name in (".releaserc.toml", "scripts/prepare-release.py", "scripts/package-source.py"):
+        for name in (".releaserc.toml", "scripts/package-source.py", "CHANGELOG.md"):
             destination = self.repo / name
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(ROOT / name, destination)
@@ -32,10 +32,8 @@ class ReleaseTest(unittest.TestCase):
             "project(WeaveC\n  VERSION 0.1.0\n  LANGUAGES C CXX)\n"
         )
         self.original_note = "### Added\n\n- A checker with documented limits.\n"
-        (self.repo / "CHANGELOG.md").write_text(
-            "# Changelog\n\n## [Unreleased]\n\n" + self.original_note + "\n"
-            "[Unreleased]: https://github.com/weavefoundry/weavec/commits/main\n"
-        )
+        (self.repo / "docs").mkdir()
+        (self.repo / "docs/development-history.md").write_text(self.original_note)
         for name in ("CMakePresets.json", "README.md", "LICENSE", "resources/include/weavec.h"):
             path = self.repo / name
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -60,7 +58,7 @@ class ReleaseTest(unittest.TestCase):
     def release(self):
         return self.run_command(
             "semantic-release", "-c", ".releaserc.toml", "version",
-            "--no-changelog", "--no-push", "--no-vcs-release",
+            "--no-push", "--no-vcs-release",
         )
 
     def package(self, tag):
@@ -71,9 +69,10 @@ class ReleaseTest(unittest.TestCase):
         self.release()
         self.assertEqual(self.run_command("git", "describe", "--exact-match").stdout.strip(), "v0.1.0")
         changelog = (self.repo / "CHANGELOG.md").read_text()
-        self.assertIn(self.original_note, changelog)
-        self.assertEqual(changelog.count("## [Unreleased]"), 1)
-        self.assertIn("## [0.1.0] - ", changelog)
+        self.assertIn("initial checker", changelog.lower())
+        self.assertNotIn(self.original_note, changelog)
+        self.assertIn("## v0.1.0 (", changelog)
+        self.assertEqual((self.repo / "docs/development-history.md").read_text(), self.original_note)
         self.assertIn("cmake_minimum_required(VERSION 3.24...3.31)",
                       (self.repo / "CMakeLists.txt").read_text())
 
@@ -86,6 +85,8 @@ class ReleaseTest(unittest.TestCase):
         with tarfile.open(self.repo / "dist/weavec-0.1.0-source.tar.gz") as archive:
             self.assertNotIn("weavec-0.1.0/build/secret.txt", archive.getnames())
             self.assertEqual(archive.extractfile("weavec-0.1.0/README.md").read(), b"Source fixture\n")
+            self.assertEqual(archive.extractfile("weavec-0.1.0/docs/development-history.md").read(),
+                             self.original_note.encode())
         self.run_command("git", "restore", "README.md")
         head = self.run_command("git", "rev-parse", "HEAD").stdout
         output = self.repo / "github-output"
@@ -107,11 +108,14 @@ class ReleaseTest(unittest.TestCase):
                 self.assertEqual(self.run_command("git", "describe", "--exact-match").stdout.strip(),
                                  "v" + version)
                 self.assertIn(f"  VERSION {version}\n", (self.repo / "CMakeLists.txt").read_text())
+                changelog = (self.repo / "CHANGELOG.md").read_text()
+                self.assertIn(f"## v{version} (", changelog)
+                self.assertIn("initial checker", changelog.lower())
         self.commit("docs: explain installation")
         head = self.run_command("git", "rev-parse", "HEAD").stdout
         self.release()
         self.assertEqual(self.run_command("git", "rev-parse", "HEAD").stdout, head)
-        self.assertIn(self.original_note, (self.repo / "CHANGELOG.md").read_text())
+        self.assertEqual((self.repo / "docs/development-history.md").read_text(), self.original_note)
 
     def test_reject_mismatched_tag(self):
         self.run_command("git", "tag", "v9.9.9")
@@ -121,16 +125,19 @@ class ReleaseTest(unittest.TestCase):
         self.assertFalse((self.repo / "dist/SHA256SUMS").exists())
 
     def test_long_initial_history(self):
-        path = self.repo / "CHANGELOG.md"
-        path.write_text(path.read_text().replace(self.original_note, self.original_note * 2000))
-        self.run_command("git", "add", "CHANGELOG.md")
+        path = self.repo / "docs/development-history.md"
+        path.write_text(self.original_note * 2000)
+        self.run_command("git", "add", "docs/development-history.md")
         self.commit("docs: retain detailed migration history")
         self.release()
         self.package("v0.1.0")
         notes = (self.repo / "dist/release-notes.md").read_text()
         self.assertLess(len(notes.encode()), 60000)
         self.assertIn("blob/v0.1.0/CHANGELOG.md", notes)
+        self.assertIn("blob/v0.1.0/docs/development-history.md", notes)
         self.assertGreater(len(path.read_bytes()), 60000)
+        self.assertLess(len((self.repo / "CHANGELOG.md").read_bytes()), 60000)
+        self.assertNotIn(self.original_note, (self.repo / "CHANGELOG.md").read_text())
 
 
 if __name__ == "__main__":

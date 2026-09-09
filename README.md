@@ -213,6 +213,10 @@ distribution channel for WeaveC. Initial 0.x releases provide
 with the coverage limits described above; APIs and on-disk formats can change
 between minor versions.
 
+The pipeline generates [CHANGELOG.md](CHANGELOG.md) from Conventional Commits.
+The earlier hand-written implementation and migration notes are preserved in
+[the development history](docs/development-history.md).
+
 Download both files into the same directory and verify the archive with
 `shasum -a 256 -c SHA256SUMS` (or `sha256sum -c SHA256SUMS` on Linux).
 Install the build requirements above, extract the archive, and run from its

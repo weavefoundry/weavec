@@ -152,20 +152,24 @@ is pinned in `.github/release-requirements.txt` and configured in
 registry credentials involved. The first feature release is `0.1.0`;
 `feat` and breaking changes increment the minor while below 1.0, and
 `fix`/`perf` increment the patch. Other commit types do not normally release.
-Keep squash-merge titles in Conventional Commit form and write user-visible
-changes under `[Unreleased]` in `CHANGELOG.md`.
+Keep squash-merge titles in Conventional Commit form and describe user-visible
+changes in the relevant guides and commit/PR descriptions. `CHANGELOG.md` is
+generated solely by semantic-release; do not edit it manually. The earlier
+hand-written implementation and migration notes are archived in
+[development-history.md](development-history.md).
 
 The workflow first prepares everything locally: it stamps
-`project(... VERSION ...)` in `CMakeLists.txt`, moves the hand-written
-Unreleased notes under a dated version heading, leaves a fresh Unreleased
-section, and creates a release commit and `vX.Y.Z` tag. It packages that exact
+`project(... VERSION ...)` in `CMakeLists.txt`, regenerates `CHANGELOG.md` from
+the Conventional Commit history, and creates a release commit and `vX.Y.Z`
+tag. It packages that exact
 tag using `git archive` and verifies the version, changelog and required
 source files. Build directories and other untracked files are excluded.
 The commit and tag are pushed atomically, so a concurrent update or rejected
 push cannot publish just one of them. A GitHub draft receives the source
 archive and `SHA256SUMS` before it is made public. Release notes link to the
-versioned changelog and include its entry inline when it fits GitHub's body
-limit. The hand-written checker limitations and migration details are retained.
+versioned generated changelog and include its entry inline when it fits GitHub's
+body limit. The archived hand-written history is linked separately and included
+in every source archive.
 
 Repository setup: Actions needs permission to write repository contents,
 and the release identity needs to be allowed to push its release commit to
@@ -179,7 +183,7 @@ For a local preview, install the pinned tooling into a virtual environment
 and run this on `main` with all tags fetched:
 
 ```sh
-semantic-release -c .releaserc.toml --noop version --no-changelog --no-push --no-vcs-release
+semantic-release -c .releaserc.toml --noop version --no-push --no-vcs-release
 ```
 
 For a full rehearsal, use a disposable clone and omit `--noop`. This makes
