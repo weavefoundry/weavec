@@ -18,7 +18,7 @@ std::optional<FunctionDataflow::NumericExpression>
 FunctionDataflow::checkedByteExpression(const core::Affine &value,
                                         const core::AnalysisState &state) {
   const core::IntegerType bytes{.width = 64, .isSigned = false};
-  if (value.scale < 0 || value.constant < 0)
+  if (value.scale < 0 || (!value.place && value.constant < 0))
     return std::nullopt;
   if (!value.place)
     return NumericExpression::constant(core::IntegerValue::ofBits(
@@ -38,6 +38,12 @@ FunctionDataflow::checkedByteExpression(const core::Affine &value,
       if (const auto fact = state.scalars.factOf(*value.place);
           fact && fact->integer)
         type = fact->integer->type;
+    if (!type &&
+        (checkedTerminatorInputs.contains(*value.place) ||
+         std::ranges::any_of(checkedCoordinates, [&](const auto &entry) {
+           return entry.second == *value.place;
+         })))
+      type = bytes;
     if (type)
       expression = NumericExpression::input(*value.place, *type);
   }
@@ -58,13 +64,18 @@ FunctionDataflow::checkedByteExpression(const core::Affine &value,
                                               *expression, factor);
   }
   if (expression && value.constant != 0) {
-    const auto shift = NumericExpression::constant(core::IntegerValue::ofBits(
-        bytes, static_cast<std::uint64_t>(value.constant)));
-    if (!operationDoesNotOverflow(core::IntegerOp::Add, *expression, shift,
-                                  bytes, state))
+    const bool positive = value.constant >= 0;
+    const auto magnitude =
+        positive
+            ? static_cast<std::uint64_t>(value.constant)
+            : std::uint64_t{0} - static_cast<std::uint64_t>(value.constant);
+    const auto shift = NumericExpression::constant(
+        core::IntegerValue::ofBits(bytes, magnitude));
+    const auto operation =
+        positive ? core::IntegerOp::Add : core::IntegerOp::Subtract;
+    if (!operationDoesNotOverflow(operation, *expression, shift, bytes, state))
       return std::nullopt;
-    expression =
-        NumericExpression::operation(core::IntegerOp::Add, *expression, shift);
+    expression = NumericExpression::operation(operation, *expression, shift);
   }
   return expression;
 }
@@ -74,6 +85,33 @@ std::optional<core::Affine> FunctionDataflow::checkedByteSum(
     const core::AnalysisState &state, const Stmt &at) {
   if (const auto linear = sumOf(lhs, rhs))
     return linear;
+  const auto cancel =
+      [&](const core::Affine &cursor,
+          const core::Affine &remaining) -> std::optional<core::Affine> {
+    if (!cursor.place || !remaining.place || cursor.scale != 1 ||
+        remaining.scale != 1)
+      return std::nullopt;
+    const auto found = numericExpressions.find(*remaining.place);
+    if (found == numericExpressions.end())
+      return std::nullopt;
+    const auto &root = found->second.all().back();
+    const auto parts = found->second.operands();
+    if (root.kind != core::IntegerNodeKind::Operation ||
+        root.op != core::IntegerOp::Subtract || root.type.isSigned ||
+        parts.size() != 2 || !parts.front().inputKey() ||
+        parts.back().inputKey() != cursor.place ||
+        !checkedAtMost(core::Affine::ofPlace(*cursor.place),
+                       core::Affine::ofPlace(*parts.front().inputKey()), state))
+      return std::nullopt;
+    std::int64_t constant = 0;
+    if (__builtin_add_overflow(cursor.constant, remaining.constant, &constant))
+      return std::nullopt;
+    return core::Affine::ofPlace(*parts.front().inputKey(), 1, constant);
+  };
+  if (const auto exact = cancel(lhs, rhs))
+    return exact;
+  if (const auto exact = cancel(rhs, lhs))
+    return exact;
   const auto a = checkedByteExpression(lhs, state);
   const auto b = checkedByteExpression(rhs, state);
   if (!a || !b)
@@ -115,13 +153,50 @@ FunctionDataflow::checkedMemoryAt(core::PlaceId holder,
                                   const core::Affine &begin,
                                   const core::Affine &end,
                                   const core::AnalysisState &state) {
+  if (const auto found = state.safety->positions.find(holder);
+      found != state.safety->positions.end()) {
+    const auto &position = found->second;
+    const auto offset = foldAffine(position.offset, state);
+    auto first = sumOf(position.offset, begin);
+    auto last = sumOf(position.offset, end);
+    if (!first)
+      first = sumOf(offset, begin);
+    if (!last)
+      last = sumOf(offset, end);
+    if (!first)
+      first =
+          checkedByteSum(position.offset, begin, state, *function.getBody());
+    if (!last)
+      last = checkedByteSum(position.offset, end, state, *function.getBody());
+    if (!first || !last)
+      return std::nullopt;
+    auto extent = position.extent;
+    if (!extent)
+      if (const auto accessible =
+              state.safety->accessible.find(position.storage);
+          accessible != state.safety->accessible.end())
+        extent = accessible->second;
+    return CheckedMemory{.storage = position.storage,
+                         .begin = *first,
+                         .end = *last,
+                         .extent = extent,
+                         .input = position.input
+                                      ? builder.summaryPathOf(*position.input)
+                                      : std::nullopt,
+                         .pointer = nullptr,
+                         .holder = holder,
+                         .inputPlace = position.input};
+  }
+  const auto inputPath = stableSummaryPathOf(holder);
   CheckedMemory result{.storage = holder,
                        .begin = begin,
                        .end = end,
                        .extent = {},
-                       .input = stableSummaryPathOf(holder),
+                       .input = inputPath,
                        .pointer = nullptr,
-                       .holder = holder};
+                       .holder = holder,
+                       .inputPlace =
+                           inputPath ? std::optional(holder) : std::nullopt};
   const auto input = places.deref(holder);
   checkedInputObjects[holder] = input;
   result.storage = input;
@@ -156,8 +231,15 @@ FunctionDataflow::checkedMemoryAt(core::PlaceId holder,
       result.end = *last;
     }
   }
-  if (result.storage != input)
+  if (result.storage != input ||
+      state.safety->replacedPointers.contains(holder)) {
     result.input.reset();
+    result.inputPlace.reset();
+  }
+  if (!result.extent)
+    if (const auto accessible = state.safety->accessible.find(result.storage);
+        accessible != state.safety->accessible.end())
+      result.extent = accessible->second;
   return result;
 }
 
@@ -193,6 +275,10 @@ void FunctionDataflow::checkedPointerFormation(
     const std::optional<core::Affine> &shift, core::AnalysisState &state) {
   const auto memory =
       shift ? checkedMemory(pointer, *shift, *shift, state) : std::nullopt;
+  if (memory) {
+    checkedStringBound(*memory, at, state);
+    checkedStringUse(*memory, at, state);
+  }
   const bool bounds =
       memory && memory->extent &&
       checkedInterval(memory->begin, memory->end, *memory->extent, state);
@@ -233,14 +319,17 @@ bool FunctionDataflow::checkedInterval(const core::Affine &begin,
   const auto relation = last.place && size.place
                             ? state.relations.between(*last.place, *size.place)
                             : std::nullopt;
-  return core::checkSpatialBounds(first, last, size, relation,
-                                  {.needAtMost = upper(last),
-                                   .haveAtMost = upper(size),
-                                   .needAtLeast = lower(last),
-                                   .haveAtLeast = lower(size),
-                                   .needBoundaryWitness = false},
-                                  lower(first))
-             .outcome == core::SpatialOutcome::Proven;
+  const bool affine = core::checkSpatialBounds(first, last, size, relation,
+                                               {.needAtMost = upper(last),
+                                                .haveAtMost = upper(size),
+                                                .needAtLeast = lower(last),
+                                                .haveAtLeast = lower(size),
+                                                .needBoundaryWitness = false},
+                                               lower(first))
+                          .outcome == core::SpatialOutcome::Proven;
+  return affine || (checkedAtMost({}, first, state) &&
+                    checkedAtMost(first, last, state) &&
+                    checkedAtMost(last, size, state));
 }
 
 std::optional<FunctionDataflow::CheckedMemory>
@@ -248,6 +337,46 @@ FunctionDataflow::checkedMemory(const Expr &pointer, const core::Affine &begin,
                                 const core::Affine &end,
                                 const core::AnalysisState &state) {
   const Expr *value = pointer.IgnoreParenImpCasts();
+  if (const auto *address = dyn_cast<UnaryOperator>(value);
+      address && address->getOpcode() == UO_AddrOf) {
+    const auto *target = address->getSubExpr()->IgnoreParenImpCasts();
+    const bool indirect =
+        isa<ArraySubscriptExpr>(target) ||
+        (isa<UnaryOperator>(target) &&
+         cast<UnaryOperator>(target)->getOpcode() == UO_Deref);
+    if (indirect) {
+      auto location = checkedLvalue(*target, state);
+      if (!location)
+        return std::nullopt;
+      const auto first = checkedByteSum(location->begin, begin, state, pointer);
+      const auto last = checkedByteSum(location->begin, end, state, pointer);
+      if (!first || !last)
+        return std::nullopt;
+      location->begin = *first;
+      location->end = *last;
+      location->pointer = &pointer;
+      return location;
+    }
+  }
+  if (const auto saved = checkedPointerResults.find(value);
+      saved != checkedPointerResults.end() &&
+      state.safety->positions.contains(saved->second)) {
+    auto result = checkedMemoryAt(saved->second, begin, end, state);
+    if (result)
+      result->pointer = &pointer;
+    return result;
+  }
+  // A represented holder already denotes its current value. Classification
+  // can also carry an ordinary derived offset for an indirect holder; adding
+  // it again would double-count a previous pointer-to-pointer increment.
+  if (value->getType()->isPointerType() && PlaceBuilder::isPlaceExpr(*value))
+    if (const auto holder = builder.resolvePointerValue(*value);
+        holder && state.safety->positions.contains(holder->place)) {
+      auto result = checkedMemoryAt(holder->place, begin, end, state);
+      if (result)
+        result->pointer = &pointer;
+      return result;
+    }
   // Preserve the evaluated C index, then scale in mathematical byte units.
   if (const auto *binary = dyn_cast<BinaryOperator>(value);
       binary &&
@@ -473,6 +602,17 @@ bool FunctionDataflow::checkedInitialized(const CheckedMemory &memory,
         if (checkedInterval(memory.begin, memory.end,
                             core::Affine::ofConstant(*bytes), state))
           return true;
+  if (const auto witnesses = state.safety->termination.find(memory.storage);
+      witnesses != state.safety->termination.end())
+    for (const auto &witness : witnesses->second) {
+      auto when = witness.when;
+      const auto through = witness.zero.shifted(1);
+      if (through && pruneGuard(when, state) && when.trivial() &&
+          checkedAtMost(witness.begin, memory.begin, state) &&
+          checkedAtMost(memory.begin, memory.end, state) &&
+          checkedAtMost(memory.end, *through, state))
+        return true;
+    }
   const auto found = state.safety->memory.find(memory.storage);
   if (found == state.safety->memory.end())
     return false;
@@ -498,6 +638,8 @@ bool FunctionDataflow::checkedTerminated(const CheckedMemory &memory,
                                          const core::AnalysisState &state) {
   if (!memory.extent || !checkedValid(memory, state))
     return false;
+  if (checkedWitness(memory, state))
+    return true;
   const auto found = state.safety->memory.find(memory.storage);
   if (found == state.safety->memory.end())
     return false;
@@ -537,28 +679,67 @@ bool FunctionDataflow::checkedRequire(core::CheckedRequirementKind kind,
   }
   if (!memory.input)
     return false;
+  core::PathGuard condition;
+  if (recording()) {
+    if (checkedRequirementGuard) {
+      if (!*checkedRequirementGuard)
+        *checkedRequirementGuard = summaryGuardOf(guardHere(state));
+      condition = **checkedRequirementGuard;
+    } else {
+      condition = summaryGuardOf(guardHere(state));
+    }
+  }
   auto begin = summaryAffineOf(memory.begin);
   auto end = summaryAffineOf(memory.end);
   if (kind == core::CheckedRequirementKind::Valid ||
       kind == core::CheckedRequirementKind::Release) {
     begin = core::PathAffine::ofConstant(0);
     end = core::PathAffine::ofConstant(0);
+  } else if (kind == core::CheckedRequirementKind::Terminated) {
+    // RFC 0021: begin is the minimum entry terminator index, not an
+    // interval endpoint. The end field is reserved and remains zero even
+    // when a builtin or nested call consumes an advanced input pointer.
+    // An interval envelope that resets begin to zero would weaken this
+    // requirement, so an unrepresentable minimum must remain unresolved.
+    // Entry witnesses initialize bytes starting at the input pointer. They
+    // cannot justify a scan that may start before it.
+    if (!checkedAtMost({}, memory.begin, state))
+      return false;
+    end = core::PathAffine::ofConstant(0);
   } else if (!end) {
-    end = checkedLoopRequirement(memory.end, at, state);
-    if (end && memory.begin.scale >= 0 && memory.begin.constant >= 0)
+    end = checkedRequirementEnvelope(memory.end, state);
+    if (!end)
+      end = checkedLoopRequirement(memory.end, at, state);
+    if (end && checkedAtMost({}, memory.begin, state))
       begin = core::PathAffine::ofConstant(0);
     else
       return false;
   }
   if (!begin || !end)
     return false;
+  if (kind == core::CheckedRequirementKind::Extent &&
+      checkedAtMost({}, memory.begin, state)) {
+    auto &accessible = state.safety->accessible;
+    const auto found = accessible.find(memory.storage);
+    if (found == accessible.end() ||
+        checkedAtMost(found->second, memory.end, state))
+      accessible[memory.storage] = memory.end;
+  }
+  if (kind == core::CheckedRequirementKind::Valid && memory.holder) {
+    state.safety->pointers.insert(*memory.holder);
+    if (state.nulls.stateOf(*memory.holder) != core::Nullness::NonNull)
+      state.nulls.set(*memory.holder, {.state = core::Nullness::NonNull,
+                                       .location = {},
+                                       .reason = core::NullReason::Declared});
+  }
   if (recording())
     inferred.checked.require({.kind = kind,
                               .path = *memory.input,
                               .other = {},
                               .begin = *begin,
                               .end = *end,
-                              .family = std::move(family)});
+                              .family = std::move(family),
+                              .when = condition});
   return true;
 }
 
@@ -593,6 +774,8 @@ void FunctionDataflow::checkedAccess(const Expr &expr, const PlaceRef &ref,
                      "memory location is not represented");
     return;
   }
+  checkedStringBound(*memory, expr, state);
+  checkedStringUse(*memory, expr, state);
   if (role == Role::Write || role == Role::ReadWrite)
     checkedWrite(*memory, expr, state);
   if (memory->pointer || memory->holder) {

@@ -107,6 +107,9 @@ void FunctionDataflow::initializeCallContext(core::AnalysisState &state) {
         state.resources.markNull(place->first);
     } else {
       state.scalars.set(place->first, fact);
+      if (const auto entry = numericEntryValues.find(place->first);
+          entry != numericEntryValues.end())
+        state.scalars.set(entry->second, fact);
     }
   };
   for (const auto &[path, fact] : memoryContext.facts)
@@ -147,6 +150,15 @@ void FunctionDataflow::initializeCallContext(core::AnalysisState &state) {
     }
     state.distinctObjects.insert(std::minmax(a->first, b->first));
     state.pointerFacts.requirePointer(a->first, b->first, false);
+  }
+  for (const auto &[first, second] : memoryContext.orders) {
+    const auto a = contextPlace(first, state);
+    const auto b = contextPlace(second, state);
+    const auto bytePointer = [](const auto &input) {
+      return input && input->second->isPointerType() &&
+             input->second->getPointeeType()->isCharType();
+    };
+    valid &= bytePointer(a) && bytePointer(b);
   }
   for (const auto &[path, place] : inputs) {
     for (const auto &[anchor, origin] : inputs) {
@@ -190,6 +202,7 @@ FunctionDataflow::captureCallContext(const CallExpr &call,
     core::PlaceId place;
     core::PointerOffset offset;
     bool storage = false;
+    bool bytePointer = false;
   };
   std::vector<Input> inputs;
   bool unresolved = false;
@@ -226,13 +239,17 @@ FunctionDataflow::captureCallContext(const CallExpr &call,
         inputs.push_back({.path = path,
                           .place = origin.place->place,
                           .offset = origin.offset,
-                          .storage = true});
+                          .storage = true,
+                          .bytePointer = type->getPointeeType()->isCharType()});
         result.facts[path] = core::ValueFact::of(core::Outcome::NonNull);
         continue;
       }
       if (const auto copied = PlaceBuilder::copyOrNull(origin)) {
-        inputs.push_back(
-            {.path = path, .place = copied->place, .offset = origin.offset});
+        inputs.push_back({.path = path,
+                          .place = copied->place,
+                          .offset = origin.offset,
+                          .storage = false,
+                          .bytePointer = type->getPointeeType()->isCharType()});
         if (origin.offset.isZero())
           if (const auto fact = state.factOf(copied->place);
               fact && !fact->trivial())
@@ -241,7 +258,11 @@ FunctionDataflow::captureCallContext(const CallExpr &call,
       }
     }
     if (const auto ref = builder.resolveSummaryPath(path, call)) {
-      inputs.push_back({.path = path, .place = ref->place, .offset = {}});
+      inputs.push_back({.path = path,
+                        .place = ref->place,
+                        .offset = {},
+                        .storage = false,
+                        .bytePointer = type->getPointeeType()->isCharType()});
       if (const auto fact = state.factOf(ref->place); fact && !fact->trivial())
         result.facts[path] = *fact;
     } else {
@@ -252,6 +273,10 @@ FunctionDataflow::captureCallContext(const CallExpr &call,
       [&state](const Input &input) -> std::optional<core::PlaceId> {
     if (input.storage)
       return input.place;
+    if (state.safety)
+      if (const auto position = state.safety->positions.find(input.place);
+          position != state.safety->positions.end())
+        return position->second.storage;
     const auto loans = state.loans.heldBy(input.place);
     if (loans.size() == 1)
       return loans.front().place;
@@ -270,6 +295,44 @@ FunctionDataflow::captureCallContext(const CallExpr &call,
       bool sameShare = true;
       const auto sa = storageOfInput(a);
       const auto sb = storageOfInput(b);
+      const auto position =
+          [&](const Input &input) -> std::optional<CheckedMemory> {
+        if (!state.safety || input.storage || !input.bytePointer ||
+            !input.offset.isZero())
+          return std::nullopt;
+        const auto memory = checkedMemoryAt(input.place, {}, {}, state);
+        if (!memory || !memory->extent ||
+            !checkedInterval(memory->begin, memory->end, *memory->extent,
+                             state))
+          return std::nullopt;
+        const bool valid = checkedValid(*memory, state) ||
+                           checkedRequire(core::CheckedRequirementKind::Valid,
+                                          *memory, call, state);
+        return valid ? memory : std::nullopt;
+      };
+      const auto pa = position(a);
+      const auto pb = position(b);
+      if (pa && pb && pa->storage == pb->storage) {
+        // Same array with a proved order, without inventing a displacement.
+        const bool ab = checkedAtMost(pa->begin, pb->begin, state);
+        const bool ba = checkedAtMost(pb->begin, pa->begin, state);
+        if (ab || ba) {
+          if (!result.addAlias(
+                  {.first = a.path,
+                   .second = b.path,
+                   .offset = core::PointerOffset::unknown(),
+                   .definite = true,
+                   .sameShare = state.aliases.sameShare(a.place, b.place)})) {
+            reportIncomplete("call context relationship limit reached", call);
+            return std::nullopt;
+          }
+          if (ab)
+            result.orders.emplace(a.path, b.path);
+          if (ba)
+            result.orders.emplace(b.path, a.path);
+          continue;
+        }
+      }
       if (sa || sb) {
         if (sa && sb &&
             (*sa == *sb || std::ranges::any_of(definiteMirrors(*sa, state),
@@ -285,6 +348,16 @@ FunctionDataflow::captureCallContext(const CallExpr &call,
           if (!b.storage)
             if (const auto spatial = state.spatial.recordOf(b.place))
               *offset = offset->plus(spatial->offset.negated());
+          // Checked cursors can move through helper outputs while the
+          // ordinary spatial record still names their entry displacement.
+          // Without the checked order above, shared storage supplies no
+          // particular address difference or ownership-share identity.
+          if (state.safety &&
+              ((!a.storage && state.safety->positions.contains(a.place)) ||
+               (!b.storage && state.safety->positions.contains(b.place)))) {
+            offset = core::PointerOffset::unknown();
+            sameShare = state.aliases.sameShare(a.place, b.place);
+          }
         }
       } else {
         offset = state.definiteAliases.offsetOf(b.place, a.place);
@@ -303,6 +376,15 @@ FunctionDataflow::captureCallContext(const CallExpr &call,
           const auto rb = places.root(*sb);
           distinct = ra != rb && !places.innermostDeref(*sa) &&
                      !places.innermostDeref(*sb);
+          if (state.safety) {
+            const auto inputObject = [&](core::PlaceId storage) {
+              return std::ranges::any_of(
+                  checkedInputObjects,
+                  [&](const auto &entry) { return entry.second == storage; });
+            };
+            distinct |= (isLocalStorage(*sa) && inputObject(*sb)) ||
+                        (isLocalStorage(*sb) && inputObject(*sa));
+          }
         }
         const auto ar = state.resources.recordOf(a.place);
         const auto br = state.resources.recordOf(b.place);

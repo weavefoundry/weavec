@@ -31,6 +31,42 @@ bool FunctionDataflow::operationDoesNotOverflow(
               .overflow.constant();
       overflow && overflow->bits == 0)
     return true;
+  if (state.safety && !type.isSigned && lhs.type() == type &&
+      rhs.type() == type) {
+    if (op == core::IntegerOp::Subtract && lhs.inputKey() && rhs.inputKey() &&
+        !numericExpressions.contains(*lhs.inputKey()) &&
+        !numericExpressions.contains(*rhs.inputKey()) &&
+        checkedAtMost(core::Affine::ofPlace(*rhs.inputKey()),
+                      core::Affine::ofPlace(*lhs.inputKey()), state))
+      return true;
+    if (op == core::IntegerOp::Subtract && rhs.constantValue()) {
+      const auto &root = lhs.all().back();
+      const auto parts = lhs.operands();
+      const auto count = rhs.constantValue()->signedValue();
+      if (root.kind == core::IntegerNodeKind::Operation &&
+          root.op == core::IntegerOp::Subtract && parts.size() == 2 &&
+          parts.front().inputKey() && parts.back().inputKey() && count &&
+          *count >= 0 &&
+          !numericExpressions.contains(*parts.front().inputKey()) &&
+          !numericExpressions.contains(*parts.back().inputKey()) &&
+          checkedAtMost(
+              core::Affine::ofPlace(*parts.back().inputKey(), 1, *count),
+              core::Affine::ofPlace(*parts.front().inputKey()), state))
+        return true;
+    }
+    if (op == core::IntegerOp::Add)
+      if (const auto sum = NumericExpression::operation(op, lhs, rhs))
+        if (const auto bound = checkedTraversalSum(*sum, state);
+            bound && bound->place) {
+          const auto values = integerRangeAt(*bound->place, type, state);
+          if (!values.empty() && !values.maximum()->negative() &&
+              (bound->constant <= 0 ||
+               (static_cast<std::uint64_t>(bound->constant) <= type.mask() &&
+                values.maximum()->bits <=
+                    type.mask() - static_cast<std::uint64_t>(bound->constant))))
+            return true;
+        }
+  }
   const auto overflowExpression =
       NumericExpression::overflow(op, lhs, rhs, type);
   // RFC 0019: `a <= MAX - b - k` proves the nonnegative sum a+b+k.
@@ -117,6 +153,16 @@ bool FunctionDataflow::operationDoesNotOverflow(
         const bool matched =
             (smaller == summands.front() && parts.back() == summands.back()) ||
             (smaller == summands.back() && parts.back() == summands.front());
+        // RFC 0021: count <= length-index also bounds index+count by
+        // length, provided the remaining-length subtraction cannot wrap.
+        const auto length = parts.front().inputKey();
+        const auto index = parts.back().inputKey();
+        if (state.safety && matched && length && index &&
+            parts.front().type() == type && parts.back().type() == type &&
+            checkedAtMost(core::Affine::ofPlace(*index),
+                          core::Affine::ofPlace(*length), state) &&
+            constant <= (relation == core::IntegerOp::Less ? 1U : 0U))
+          return true;
         if (maximum && matched && !subtracted.mayBeInvalid &&
             !subtracted.values.empty() &&
             subtracted.values.maximum()->bits <= maximum->bits) {

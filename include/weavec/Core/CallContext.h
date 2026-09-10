@@ -34,11 +34,14 @@ struct CallContext {
   CallbackBindings callbacks;
   std::set<ContextAlias> aliases;
   std::set<std::pair<SummaryPath, SummaryPath>> separations;
+  /// RFC 0021: first <= second in one byte array at call entry. These
+  /// directed facts do not assert an exact displacement or ownership share.
+  std::set<std::pair<SummaryPath, SummaryPath>> orders;
   std::map<SummaryPath, ValueFact> facts;
 
   [[nodiscard]] bool empty() const noexcept {
     return callbacks.empty() && aliases.empty() && separations.empty() &&
-           facts.empty();
+           orders.empty() && facts.empty();
   }
   /// Canonicalizes the pair, without weakening a conflicting existing fact.
   /// False means the context cannot be represented; callers must not use it.

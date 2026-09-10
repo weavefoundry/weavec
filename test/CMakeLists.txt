@@ -97,6 +97,15 @@ if(Python3_Interpreter_FOUND)
   set_tests_properties(checked-evaluation-rfc0019
                        PROPERTIES LABELS "integration" TIMEOUT 300)
   add_test(
+    NAME checked-evaluation-rfc0021
+    COMMAND
+      "${Python3_EXECUTABLE}"
+      "${PROJECT_SOURCE_DIR}/scripts/checked-evaluation.py" --weavec
+      "$<TARGET_FILE:weavec>" --clang "${WEAVEC_CLANG_EXECUTABLE}" --manifest
+      "${PROJECT_SOURCE_DIR}/test/evaluation/rfc0021/manifest.json")
+  set_tests_properties(checked-evaluation-rfc0021
+                       PROPERTIES LABELS "integration" TIMEOUT 300)
+  add_test(
     NAME checked-transport-rfc0019
     COMMAND
       "${Python3_EXECUTABLE}"

@@ -10,7 +10,10 @@
 #include "Dataflow.h"
 #include "weavec/Analysis/ProgramDatabase.h"
 
+#include "llvm/ADT/ScopeExit.h"
+
 #include <array>
+#include <utility>
 
 using namespace clang;
 
@@ -19,8 +22,10 @@ namespace weavec::analysis {
 void FunctionDataflow::checkedCall(const CallExpr &call,
                                    const CallEffects *effects,
                                    core::AnalysisState &state) {
+  checkedCallAssignedPointers.clear();
   checkedWrites.erase(&call);
   checkedPosts.erase(&call);
+  checkedPositionPosts.erase(&call);
   const auto *callee = call.getDirectCallee();
   std::string name = callee ? callee->getNameAsString() : "indirect call";
   if (callee && callee->getBuiltinID() != 0) {
@@ -189,7 +194,8 @@ void FunctionDataflow::checkedCall(const CallExpr &call,
       for (const auto &range : checkedCopyRanges(*memory, {}, *bytes, state))
         checkedPosts[&call].push_back({.path = core::SummaryPath::result(),
                                        .range = range,
-                                       .on = core::Outcome::NonNull});
+                                       .on = core::Outcome::NonNull,
+                                       .storage = {}});
     return;
   }
   if (builtin && (name == "strlen" || name == "strnlen" || name == "strcpy" ||
@@ -278,7 +284,8 @@ void FunctionDataflow::checkedCall(const CallExpr &call,
       if (output)
         checkedPosts[&call].push_back({.path = core::SummaryPath::result(),
                                        .range = {.begin = {}, .end = *output},
-                                       .on = core::Outcome::NonNull});
+                                       .on = core::Outcome::NonNull,
+                                       .storage = {}});
     }
     return;
   }
@@ -382,6 +389,20 @@ void FunctionDataflow::checkedCall(const CallExpr &call,
       contract->obligations.complete() && !contract->limited;
   if (pendingExternal && recording())
     inferred.checked.deferred = true;
+  prepareCheckedStringInputs(call, *contract, state);
+  if (effects && effects->summary &&
+      std::ranges::any_of(effects->summary->effects, [](const auto &entry) {
+        return entry.second.written;
+      }))
+    for (const auto *argument : call.arguments())
+      if (argument->getType()->isPointerType())
+        if (const auto memory = checkedMemory(*argument, {}, {}, state)) {
+          state.safety->writtenStorage.insert(memory->storage);
+          for (const auto &[holder, position] : state.safety->positions)
+            if (holder == memory->storage ||
+                places.isDescendantOf(holder, memory->storage))
+              state.safety->writtenStorage.insert(position.storage);
+        }
   // RFC 0020: propagation only writes the final explanation ledger. During
   // transfer iterations safetyObligation is a no-op; avoid constructing and
   // escaping thousands of discarded call paths on those iterations.
@@ -404,133 +425,234 @@ void FunctionDataflow::checkedCall(const CallExpr &call,
     }
     propagate(true);
   }
-  for (const auto &requirement : contract->requirements) {
-    if (requirement.kind == core::CheckedRequirementKind::SumFits) {
-      const auto first = builder.affineFromPath(requirement.begin, call);
-      const auto last = builder.affineFromPath(requirement.end, call);
-      const auto a =
-          first ? checkedByteExpression(*first, state) : std::nullopt;
-      const auto b = last ? checkedByteExpression(*last, state) : std::nullopt;
-      const bool proved = a && b &&
-                          operationDoesNotOverflow(core::IntegerOp::Add, *a, *b,
-                                                   a->type(), state);
-      const auto begin = first ? summaryAffineOf(first) : std::nullopt;
-      const auto end = last ? summaryAffineOf(last) : std::nullopt;
-      const bool required = !proved && begin && end;
-      if (required && recording())
-        inferred.checked.require({.kind = requirement.kind,
-                                  .path = {},
-                                  .other = {},
-                                  .begin = *begin,
-                                  .end = *end,
-                                  .family = {}});
-      obligation(core::SafetyProperty::Arithmetic, proved, required,
-                 "callee byte interval sum must not overflow");
-      continue;
+  // A requirement check reads the caller state without executing the callee.
+  // Conditioning changes these domains through AnalysisState::learn/narrow;
+  // checkedRequire can additionally establish pointer validity and capacity.
+  // Keep the remaining ownership, heap and memory state in place: copying its
+  // histories for each conditional obligation is particularly costly in SCCs.
+  struct CheckedRequirementState {
+    core::MoveTracker moves;
+    core::ResourceTracker resources;
+    core::NullTracker nulls;
+    core::ScalarTracker scalars;
+    core::PlaceGuard numericConditions;
+    core::PlaceGuard pointerFacts;
+    std::set<core::PlaceId> pointers;
+    std::map<core::PlaceId, core::Affine> accessible;
+
+    explicit CheckedRequirementState(const core::AnalysisState &state)
+        : moves(state.moves), resources(state.resources), nulls(state.nulls),
+          scalars(state.scalars), numericConditions(state.numericConditions),
+          pointerFacts(state.pointerFacts), pointers(state.safety->pointers),
+          accessible(state.safety->accessible) {}
+
+    void restore(core::AnalysisState &state) {
+      state.moves = std::move(moves);
+      state.resources = std::move(resources);
+      state.nulls = std::move(nulls);
+      state.scalars = std::move(scalars);
+      state.numericConditions = std::move(numericConditions);
+      state.pointerFacts = std::move(pointerFacts);
+      state.safety->pointers = std::move(pointers);
+      state.safety->accessible = std::move(accessible);
     }
-    const Expr *pointer = requirement.path.isParam() &&
-                                  requirement.path.isRoot() &&
-                                  requirement.path.index < call.getNumArgs()
-                              ? call.getArg(requirement.path.index)
-                              : nullptr;
-    if (requirement.kind == core::CheckedRequirementKind::Release &&
-        requirement.family == "free" && pointer &&
-        builder.classifyValue(*pointer).kind == ValueOrigin::Kind::Null) {
-      obligation(core::SafetyProperty::Release, true, false,
-                 "free permits a null pointer");
+  };
+
+  // Requirements sharing an antecedent are a conjunction. Discharge them
+  // together so translation, refinement and rollback happen once per guard.
+  // Only independently proved or recorded entry facts can help the next
+  // requirement; callee writes and outputs are still applied after checking.
+  std::map<core::PathGuard, std::vector<const core::CheckedRequirement *>>
+      groups;
+  for (const auto &requirement : contract->requirements)
+    groups[requirement.when].push_back(&requirement);
+  for (const auto &[when, requirements] : groups) {
+    auto condition = builder.translateGuard(when, call);
+    if (!condition)
       continue;
-    }
-    const auto first = builder.affineFromPath(requirement.begin, call);
-    const auto last = builder.affineFromPath(requirement.end, call);
-    const auto memory =
-        first && last
-            ? checkedPathMemory(requirement.path, call, *first, *last, state)
-            : std::nullopt;
-    if (!memory) {
-      obligation(core::SafetyProperty::Call, false, false,
-                 "checked requirement interval cannot be instantiated");
+    if (!pruneGuard(*condition, state))
       continue;
+    std::optional<CheckedRequirementState> unconditioned;
+    if (!condition->trivial()) {
+      unconditioned.emplace(state);
+      for (const auto &[place, fact] : condition->conditions) {
+        if (!fact.isPointer())
+          (void)state.scalars.narrow(place, fact);
+        (void)state.learn(place, fact);
+      }
+      for (const auto &predicate : condition->integers)
+        state.numericConditions.requireInteger(predicate);
+      for (const auto &[pair, equal] : condition->pointers)
+        state.pointerFacts.requirePointer(pair.first, pair.second, equal);
     }
-    const auto kind = requirement.kind;
-    if (kind == core::CheckedRequirementKind::Writable) {
-      checkedWrite(*memory, call, state);
-      continue;
-    }
-    if (kind == core::CheckedRequirementKind::Valid) {
-      valid(*memory);
-      continue;
-    }
-    bool proved = false;
-    auto property = core::SafetyProperty::Bounds;
-    if (kind == core::CheckedRequirementKind::Extent) {
-      proved = memory->extent && checkedInterval(memory->begin, memory->end,
-                                                 *memory->extent, state);
-    } else if (kind == core::CheckedRequirementKind::Initialized) {
-      property = core::SafetyProperty::Initialization;
-      proved = checkedInitialized(*memory, state);
-    } else if (kind == core::CheckedRequirementKind::Terminated) {
-      property = core::SafetyProperty::Initialization;
-      proved = checkedTerminated(*memory, state);
-      std::optional<core::Affine> length;
-      if (pointer)
-        length = stringLengthOf(*pointer, state);
-      else if (const auto spatial = spatialRecordAt(
-                   memory->holder.value_or(memory->storage), state);
-               spatial && spatial->string && !spatial->string->unterminated)
-        length = spatial->string->length;
-      if (length)
-        if (const auto end = length->shifted(1)) {
-          auto bytes = *memory;
-          bytes.end = *end;
-          proved |=
-              checkedValid(bytes, state) && bytes.extent &&
-              checkedInterval(bytes.begin, bytes.end, *bytes.extent, state) &&
-              checkedInitialized(bytes, state);
-        }
-    } else if (kind == core::CheckedRequirementKind::Release) {
-      property = core::SafetyProperty::Release;
-      const auto holder = memory->holder.value_or(memory->storage);
-      const auto resource = state.resources.recordOf(holder);
-      const auto spatial = state.spatial.recordOf(holder);
-      const auto nullness = nullnessAt(holder, state);
-      proved = requirement.family == "free" && nullness &&
-               nullness->state == core::Nullness::Null;
-      proved |= resource && !resource->escaped &&
-                !state.moves.recordOf(holder) &&
-                resource->family == requirement.family &&
-                (!spatial || spatial->offset.isZero());
-    } else if (kind == core::CheckedRequirementKind::Separated) {
-      property = core::SafetyProperty::Aliasing;
-      {
-        const auto other =
-            checkedPathMemory(requirement.other, call, {}, {}, state);
-        if (other && other->storage != memory->storage) {
-          proved = separate(*memory, *other);
-          if (!proved && memory->input && other->input) {
-            if (recording()) {
-              auto exported = requirement;
-              exported.path = *memory->input;
-              exported.other = *other->input;
-              inferred.checked.require(std::move(exported));
-            }
-            obligation(property, false, true,
-                       "callee requires separated input objects");
-            continue;
-          }
+    std::optional<core::PathGuard> projectedGuard;
+    auto *previousGuard =
+        std::exchange(checkedRequirementGuard, &projectedGuard);
+    const auto restoreCondition = llvm::scope_exit([&] {
+      checkedRequirementGuard = previousGuard;
+      if (unconditioned)
+        unconditioned->restore(state);
+    });
+    for (const auto *entry : requirements) {
+      const auto &requirement = *entry;
+      if (requirement.kind == core::CheckedRequirementKind::Separated) {
+        const auto nullInput = [&](const core::SummaryPath &path) {
+          if (path.isParam() && path.isRoot() &&
+              path.index < call.getNumArgs() &&
+              builder.classifyValue(*call.getArg(path.index)).kind ==
+                  ValueOrigin::Kind::Null)
+            return true;
+          const auto ref = builder.resolveSummaryPath(path, call);
+          return ref && state.nulls.stateOf(ref->place) == core::Nullness::Null;
+        };
+        if (nullInput(requirement.path) || nullInput(requirement.other)) {
+          obligation(core::SafetyProperty::Aliasing, true, false,
+                     "callee requires separated input objects");
+          continue;
         }
       }
-      obligation(property, proved, false,
-                 "callee requires separated input objects");
-      continue;
+      if (requirement.kind == core::CheckedRequirementKind::SumFits) {
+        const auto first = builder.affineFromPath(requirement.begin, call);
+        const auto last = builder.affineFromPath(requirement.end, call);
+        const auto a =
+            first ? checkedByteExpression(*first, state) : std::nullopt;
+        const auto b =
+            last ? checkedByteExpression(*last, state) : std::nullopt;
+        const bool proved = a && b &&
+                            operationDoesNotOverflow(core::IntegerOp::Add, *a,
+                                                     *b, a->type(), state);
+        const auto begin = first ? summaryAffineOf(first) : std::nullopt;
+        const auto end = last ? summaryAffineOf(last) : std::nullopt;
+        const bool required = !proved && begin && end;
+        if (required && recording())
+          inferred.checked.require({.kind = requirement.kind,
+                                    .path = {},
+                                    .other = {},
+                                    .begin = *begin,
+                                    .end = *end,
+                                    .family = {}});
+        obligation(core::SafetyProperty::Arithmetic, proved, required,
+                   "callee byte interval sum must not overflow");
+        continue;
+      }
+      const Expr *pointer = requirement.path.isParam() &&
+                                    requirement.path.isRoot() &&
+                                    requirement.path.index < call.getNumArgs()
+                                ? call.getArg(requirement.path.index)
+                                : nullptr;
+      if (requirement.kind == core::CheckedRequirementKind::Release &&
+          requirement.family == "free" && pointer &&
+          builder.classifyValue(*pointer).kind == ValueOrigin::Kind::Null) {
+        obligation(core::SafetyProperty::Release, true, false,
+                   "free permits a null pointer");
+        continue;
+      }
+      const auto first = builder.affineFromPath(requirement.begin, call);
+      const auto last = builder.affineFromPath(requirement.end, call);
+      const auto memory =
+          first && last
+              ? checkedPathMemory(requirement.path, call, *first, *last, state)
+              : std::nullopt;
+      if (!memory) {
+        obligation(core::SafetyProperty::Call, false, false,
+                   "checked requirement interval cannot be instantiated");
+        continue;
+      }
+      const auto kind = requirement.kind;
+      if (kind == core::CheckedRequirementKind::Writable) {
+        checkedWrite(*memory, call, state);
+        continue;
+      }
+      if (kind == core::CheckedRequirementKind::Valid) {
+        valid(*memory);
+        continue;
+      }
+      bool proved = false;
+      auto property = core::SafetyProperty::Bounds;
+      if (kind == core::CheckedRequirementKind::Extent) {
+        proved = memory->extent && checkedInterval(memory->begin, memory->end,
+                                                   *memory->extent, state);
+      } else if (kind == core::CheckedRequirementKind::Initialized) {
+        property = core::SafetyProperty::Initialization;
+        proved = checkedInitialized(*memory, state);
+      } else if (kind == core::CheckedRequirementKind::Terminated) {
+        property = core::SafetyProperty::Initialization;
+        const auto base =
+            checkedPathMemory(requirement.path, call, {}, {}, state);
+        const auto witness = checkedWitness(*memory, state);
+        if (base && witness) {
+          auto prefix = *base;
+          const auto through = witness->zero.shifted(1);
+          if (through) {
+            prefix.end = *through;
+            proved = checkedValid(prefix, state) && prefix.extent &&
+                     checkedInterval(prefix.begin, prefix.end, *prefix.extent,
+                                     state) &&
+                     checkedInitialized(prefix, state);
+          }
+        }
+        std::optional<core::Affine> length;
+        if (pointer)
+          length = stringLengthOf(*pointer, state);
+        else if (const auto spatial = spatialRecordAt(
+                     memory->holder.value_or(memory->storage), state);
+                 spatial && spatial->string && !spatial->string->unterminated)
+          length = spatial->string->length;
+        if (length)
+          if (const auto end = length->shifted(1)) {
+            auto bytes = base.value_or(*memory);
+            bytes.end = *end;
+            proved |=
+                checkedValid(bytes, state) && bytes.extent &&
+                checkedAtMost(memory->begin, *length, state) &&
+                checkedInterval(bytes.begin, bytes.end, *bytes.extent, state) &&
+                checkedInitialized(bytes, state);
+          }
+      } else if (kind == core::CheckedRequirementKind::Release) {
+        property = core::SafetyProperty::Release;
+        const auto holder = memory->holder.value_or(memory->storage);
+        const auto resource = state.resources.recordOf(holder);
+        const auto spatial = state.spatial.recordOf(holder);
+        const auto nullness = nullnessAt(holder, state);
+        proved = requirement.family == "free" && nullness &&
+                 nullness->state == core::Nullness::Null;
+        proved |= resource && !resource->escaped &&
+                  !state.moves.recordOf(holder) &&
+                  resource->family == requirement.family &&
+                  (!spatial || spatial->offset.isZero());
+      } else if (kind == core::CheckedRequirementKind::Separated) {
+        property = core::SafetyProperty::Aliasing;
+        {
+          const auto other =
+              checkedPathMemory(requirement.other, call, {}, {}, state);
+          if (other && other->storage != memory->storage) {
+            proved = separate(*memory, *other);
+            if (!proved && memory->input && other->input) {
+              if (recording()) {
+                auto exported = requirement;
+                exported.path = *memory->input;
+                exported.other = *other->input;
+                inferred.checked.require(std::move(exported));
+              }
+              obligation(property, false, true,
+                         "callee requires separated input objects");
+              continue;
+            }
+          }
+        }
+        obligation(property, proved, false,
+                   "callee requires separated input objects");
+        continue;
+      }
+      const bool required =
+          (!proved || (memory->input &&
+                       (kind == core::CheckedRequirementKind::Extent ||
+                        kind == core::CheckedRequirementKind::Release))) &&
+          checkedRequire(kind, *memory, call, state, requirement.family);
+      obligation(property, proved, required,
+                 "callee " + std::string(core::toString(kind)) +
+                     " safety precondition must hold");
     }
-    const bool required =
-        (!proved ||
-         (memory->input && (kind == core::CheckedRequirementKind::Extent ||
-                            kind == core::CheckedRequirementKind::Release))) &&
-        checkedRequire(kind, *memory, call, state, requirement.family);
-    obligation(property, proved, required,
-               "callee " + std::string(core::toString(kind)) +
-                   " safety precondition must hold");
   }
   captureCheckedPosts(call, *contract, state);
 }
@@ -558,6 +680,7 @@ void FunctionDataflow::checkedCallAfter(const CallExpr &call,
                     entry.second.reason != "compiler object-size query";
            }))) {
     state.safety->memory.clear();
+    state.safety->termination.clear();
     state.safety->havoc = true;
     for (const Expr *arg : call.arguments())
       if (arg->getType()->isPointerType())
@@ -584,12 +707,25 @@ void FunctionDataflow::checkedCallAfter(const CallExpr &call,
                          callee->getName() == "__builtin_memset" ||
                          callee->getName() == "__builtin___memset_chk") &&
                         integerConstant(*call.getArg(1), context) == 0;
-    for (const auto &memory : writes->second)
+    for (const auto &memory : writes->second) {
+      state.safety->writtenStorage.insert(memory.storage);
       state.safety->initialize(
           memory.storage,
           {.begin = memory.begin, .end = memory.end, .zeroed = zeroed});
+    }
     checkedWrites.erase(writes);
   }
+  if (effects && effects->summary)
+    for (const auto &[path, effect] : effects->summary->effects) {
+      if (!effect.written)
+        continue;
+      const auto place = builder.resolveSummaryPath(path, call);
+      if (!place || checkedCallAssignedPointers.contains(place->place))
+        continue;
+      state.safety->positions.erase(place->place);
+      state.safety->pointers.erase(place->place);
+      state.safety->replacedPointers.insert(place->place);
+    }
   if (effects && effects->summary)
     applyCheckedPosts(call, *effects->summary, state);
 }

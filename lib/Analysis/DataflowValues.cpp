@@ -63,7 +63,14 @@ void FunctionDataflow::snapshotScalar(core::PlaceId place,
       state.numericConditions.integers, [place](const auto &predicate) {
         return predicate.lhs.dependsOn(place) || predicate.rhs.dependsOn(place);
       });
-  if (affected.empty() && !valuesAffected && !conditionsAffected)
+  const bool positionsAffected =
+      state.safety &&
+      std::ranges::any_of(state.safety->positions, [&](const auto &entry) {
+        return entry.second.offset.place == place ||
+               (entry.second.extent && entry.second.extent->place == place);
+      });
+  if (affected.empty() && !valuesAffected && !conditionsAffected &&
+      !positionsAffected)
     return;
 
   // Fold constants before allocating a symbolic name. A snapshot is interned
@@ -152,6 +159,15 @@ void FunctionDataflow::snapshotScalar(core::PlaceId place,
           state.relations.learn(pair.first, edge.relation, *snapshot,
                                 edge.offset);
       }
+      if (state.safety)
+        for (const auto &[pair, edge] : state.relations.allBounds()) {
+          if (pair.first == place)
+            state.relations.learn(*snapshot, edge.relation, pair.second,
+                                  edge.offset);
+          else if (pair.second == place)
+            state.relations.learn(pair.first, edge.relation, *snapshot,
+                                  edge.offset);
+        }
       if (const auto bound = state.relations.atMost(place))
         state.relations.learnAtMost(*snapshot, *bound);
       if (const auto bound = state.relations.atLeast(place))
@@ -209,6 +225,20 @@ void FunctionDataflow::snapshotScalar(core::PlaceId place,
     if (record.string)
       capture(record.string->length);
     state.spatial.set(holder, std::move(record));
+  }
+  if (positionsAffected) {
+    // Capture can retire the preceding generation of a snapshot. Work on a
+    // copy, then install only entries still present after that retirement.
+    const auto positions = state.safety->positions;
+    for (auto [holder, position] : positions) {
+      std::optional<core::Affine> offset = position.offset;
+      capture(offset);
+      capture(position.extent);
+      if (offset && state.safety->positions.contains(holder)) {
+        position.offset = *offset;
+        state.safety->positions[holder] = position;
+      }
+    }
   }
 }
 

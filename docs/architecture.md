@@ -549,6 +549,42 @@ counted-loop bounds and proves complete supported fills/copies on normal exits.
 `PendingOutcome` carries memory and numeric output facts until an outcome is
 selected, with invalidation when output storage or dependencies change.
 The additional state is enabled by checked selection or a report request.
+
+RFC 0021 adds stable same-array positions and terminated-prefix witnesses to
+the checked state. `Core/Traversal` provides bounded difference constraints
+and target pointer-difference arithmetic; `Core/Relation` joins both sides of
+a difference interval and widens changing bounds through a finite zero
+threshold. These components contain no Clang or LLVM dependencies.
+
+`CheckedRequirements` shares ordered entry/output sets between copied
+contracts. Its public iterators are immutable; insertion and intersection
+detach shared storage before modifying it. Duplicate joins preserve storage,
+the original requirement cap and exact portable contents. This avoids copying
+large conditional guards while rebuilding whole-program databases.
+Global remapping retains shared checked sets when none of their paths,
+affine expressions or guard predicates references a global. Path projection
+caches immutable local/synthetic failures as well as stable interface paths;
+array selectors remain dependent on the current state.
+At unit export, a sufficient entry requirement may omit antecedent predicates
+on known private globals. This strengthens its caller obligation while keeping
+the native contract precise. Required object/interval references and every
+public output premise still undergo strict global remapping.
+`DataflowCursors` captures and updates byte coordinates;
+`DataflowPointerOperations` validates same-array comparisons and differences;
+`DataflowTraversalRelations` verifies common incoming facts and sufficient
+buffer envelopes; `DataflowStringTraversal` maintains initialized termination
+witnesses. `Dataflow.cpp` retains all CFG edges, including direct gotos, and
+can partition eligible small loops by completed back edges before falling
+back to widening. Every final obligation is checked on converged states.
+
+`position`, `progress` and explicit `terminator` quantities cross interfaces
+through checked-record encoding 3. Call-entry snapshots precede ordinary
+effects, with output positions installed afterward. Portable call contexts
+can additionally contain directed same-array byte-pointer orders (`o:`
+records); these neither equate addresses nor invent ownership shares. They
+participate in context equality, global remapping, validation and the existing
+context budgets. Interacting writes must preserve the witness byte or require
+separation of the actual referents.
 `AnalysisState` stores it in an optional domain, so ordinary analysis skips
 constructing, copying and joining the proof containers.
 
@@ -560,8 +596,9 @@ objects for compiler-sidecar validation before replay. Compilation may defer
 an unavailable external contract; the link pass must resolve it. Checked
 failure reaches Clang independently of the diagnostic filtering policy.
 
-Summary format 15 and sidecar format 16 carry guarded/outcome-qualified contracts and
-numeric outputs. Checked record encoding and report JSON use version 2.
+Summary format 16 and sidecar format 17 carry guarded/outcome-qualified contracts,
+numeric outputs and RFC 0021 traversal records. Checked record encoding uses
+version 3; report JSON uses expanded version 2 or compact version 3.
 Strict parsing and global remapping reject missing premises. Explanation depth
 is bounded independently of semantic contract limits; truncating a call chain
 does not change the obligation it explains.
@@ -598,14 +635,15 @@ settles. Private format 2 separates shared obligation/path/ledger tables from
 canonical sidecar records carrying the remaining export metadata. It checks
 producer round trips in the same global namespace and validates all table
 references before restoring contracts. Diagnostics and dependencies use bounded
-JSON records. The cache format is independent of sidecar format 16. Input validation preprocesses an effective
+JSON records. The cache format is independent of sidecar format 17. Input validation preprocesses an effective
 invocation; imported validation projects observed symbols plus conservative
 global facts and requests. The [guide](incremental-analysis.md) describes cache
 misses and compact report version 3.
 
-Sidecar format 16 additionally records `checked-preprocessing`. The compiler
+Sidecar format 16 introduced `checked-preprocessing`. The compiler
 computes it from the effective preprocessor invocation before compiling, then
 recomputes it from the recorded command before validating any checked link
 input. This catches new conditional-include targets as well as changed loaded
 files. Unsupported or unverifiable preprocessing cannot substantiate checked
-object replay. Core summary format 15 is unchanged.
+object replay. RFC 0021 extends the records with summary format 16 and
+sidecar format 17; the preprocessing and executable bindings still apply.

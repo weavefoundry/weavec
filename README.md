@@ -80,7 +80,7 @@ remain coverage gaps; general nonlinear and loop reasoning are outside the
 model. Early-exit and other unsupported loops do not produce inferred
 must-requirements on callers. Existing annotations remain trusted contracts.
 There is no runtime instrumentation or whole-program verification certificate.
-Core summary format is **15**; sidecar format **16** requires rebuilding objects carrying older
+Core summary format is **16**; sidecar format **17** requires rebuilding objects carrying older
 sidecars. The [validation report](docs/validation-rfc0017.md) records
 **900/900 tests passing**, including under ASan/UBSan, **44/44 original bugs
 detected and 32/32 clean cases**, plus twelve separate bug/clean regression
@@ -101,6 +101,15 @@ passing in Debug and ASan/UBSan, 43% less ordinary analysis time and 5% less
 peak memory. All five checked corpus reports finish within 600 seconds; warm
 runs reuse every unit with zero function analyses and equivalent reports.
 Incomplete functions and existing checking limits remain visible.
+
+Checked traversal contracts ([RFC 0021](docs/rfcs/0021-practical-c-traversal.md))
+carry same-array pointer positions, consumed/produced intervals, terminated
+input prefixes and paired cursor progress through helpers. Counted `while`
+and `do` loops, guarded cursor advances and direct local `goto` use the same
+CFG and lifetime checks. Loop facts must hold on every incoming edge;
+unrelated arrays, skipped stores and overwritten terminators cannot supply
+missing safety evidence. See the [traversal guide](docs/checked-code.md#check-traversals-and-cursor-helpers)
+and the [validation record](docs/validation-rfc0021.md).
 
 ## Quick look
 

@@ -11,6 +11,10 @@ weavec_add_library(
           DataflowSafetyCalls.cpp
           DataflowSafetyContracts.cpp
           DataflowSafetyLoops.cpp
+          DataflowPointerOperations.cpp
+          DataflowTraversalRelations.cpp
+          DataflowCursors.cpp
+          DataflowStringTraversal.cpp
           DataflowArrays.cpp
           DataflowArrayMemory.cpp
           DataflowArrayRanges.cpp

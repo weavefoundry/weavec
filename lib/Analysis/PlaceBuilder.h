@@ -172,6 +172,8 @@ public:
   legacyAffineOf(const clang::Expr &expr);
   std::function<std::optional<core::ValueFact>(const clang::Expr &)>
       integerFact;
+  /// RFC 0021: evaluated pointer expressions with checked CFG result slots.
+  std::function<std::optional<PlaceRef>(const clang::Expr &)> pointerResult;
   std::function<bool(const core::SummaryPath &, const clang::CallExpr &)>
       validatePath;
 
@@ -514,6 +516,11 @@ private:
   llvm::DenseMap<const clang::VarDecl *, core::PlaceId> varPlaces;
   llvm::DenseMap<std::uint32_t, const clang::VarDecl *> placeVars;
   llvm::DenseMap<std::uint32_t, const clang::FieldDecl *> placeFields;
+  // Variable bindings and negative local/synthetic roots are immutable.
+  // Positive paths omit state-dependent selectors and replay conflicting
+  // object-view registrations by invalidating the cache.
+  static constexpr std::size_t MaxCachedSummaryPaths = 4096;
+  llvm::DenseMap<std::uint32_t, std::optional<core::SummaryPath>> summaryPaths;
   std::vector<const clang::VarDecl *> order;
   std::optional<core::PlaceId> literal;
   /// RFC 0012: string place -> its length place, and back.

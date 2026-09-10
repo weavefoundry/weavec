@@ -36,7 +36,9 @@
 #include <compare>
 #include <cstdint>
 #include <functional>
+#include <initializer_list>
 #include <map>
+#include <memory>
 #include <optional>
 #include <set>
 #include <string>
@@ -128,6 +130,8 @@ using PathGuard = GuardOn<SummaryPath>;
 /// path + constant` bytes, or `constant` alone. `xmalloc(n)` returns an
 /// object of `param 0 * 1 + 0` bytes; `make_node()` one of `sizeof(struct
 /// node)`.
+enum class AffineQuantity : std::uint8_t { Integer, Terminator };
+
 struct PathAffine {
   // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
   std::optional<SummaryPath> path = {};
@@ -137,6 +141,7 @@ struct PathAffine {
   // RFC 0017: an actual C value, followed by mathematical byte scaling.
   // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
   std::optional<IntegerExpression<SummaryPath>> expression = {};
+  AffineQuantity quantity = AffineQuantity::Integer;
 
   [[nodiscard]] static PathAffine
   ofExpression(IntegerExpression<SummaryPath> value, std::int64_t scale = 1,
@@ -151,6 +156,14 @@ struct PathAffine {
   ofPath(SummaryPath path, std::int64_t scale = 1, std::int64_t constant = 0) {
     return PathAffine{
         .path = std::move(path), .scale = scale, .constant = constant};
+  }
+  [[nodiscard]] static PathAffine ofTerminator(SummaryPath path,
+                                               std::int64_t scale = 1,
+                                               std::int64_t constant = 0) {
+    return {.path = std::move(path),
+            .scale = scale,
+            .constant = constant,
+            .quantity = AffineQuantity::Terminator};
   }
   [[nodiscard]] bool isConstant() const noexcept {
     return !path && !expression;
@@ -203,7 +216,11 @@ enum class CheckedRequirementKind : std::uint8_t {
   Terminated,
   Copied,
   SumFits,
-  Zeroed
+  Zeroed,
+  /// RFC 0021: inclusive byte displacement from the entry pointer in other.
+  Position,
+  /// RFC 0021: advance(path) <= advance(other) + end.constant.
+  Progress
 };
 struct CheckedRequirement {
   CheckedRequirementKind kind = CheckedRequirementKind::Valid;
@@ -221,6 +238,37 @@ struct CheckedRequirement {
   friend auto operator<=>(const CheckedRequirement &,
                           const CheckedRequirement &) = default;
 };
+
+/// RFC 0021: copied contracts retain immutable requirement/output storage.
+/// Mutations detach; no iterator permits changes to a shared entry.
+class CheckedRequirements {
+public:
+  using Set = std::set<CheckedRequirement>;
+  using ConstIterator = Set::const_iterator;
+  CheckedRequirements() = default;
+  CheckedRequirements(std::initializer_list<CheckedRequirement> entries);
+  [[nodiscard]] ConstIterator begin() const { return entries().begin(); }
+  [[nodiscard]] ConstIterator end() const { return entries().end(); }
+  [[nodiscard]] bool empty() const { return entries().empty(); }
+  [[nodiscard]] std::size_t size() const { return entries().size(); }
+  [[nodiscard]] bool contains(const CheckedRequirement &entry) const {
+    return entries().contains(entry);
+  }
+  std::pair<ConstIterator, bool> insert(CheckedRequirement entry);
+  void clear() { values.reset(); }
+  void assign(Set entries);
+  void intersect(const CheckedRequirements &other);
+  friend bool operator==(const CheckedRequirements &left,
+                         const CheckedRequirements &right) {
+    return left.values == right.values || left.entries() == right.entries();
+  }
+
+private:
+  [[nodiscard]] const Set &entries() const;
+  Set &writable();
+  std::shared_ptr<Set> values;
+};
+
 struct CheckedContract {
   /// Frontend canonical C function type. Empty only for synthetic Core values.
   std::string signature;
@@ -228,8 +276,8 @@ struct CheckedContract {
   bool selected = false;
   bool deferred = false;
   bool limited = false;
-  std::set<CheckedRequirement> requirements;
-  std::set<CheckedRequirement> establishes;
+  CheckedRequirements requirements;
+  CheckedRequirements establishes;
   SafetyLedger obligations;
 
   void require(CheckedRequirement requirement);

@@ -6,11 +6,13 @@ runs one checker process at a time. It preserves every report and raw corpus
 result; its summary never substitutes a timeout for a completed report.
 """
 import argparse
+import gzip
 import hashlib
 import importlib.util
 import json
 from pathlib import Path
 import statistics
+import shutil
 import subprocess
 import time
 
@@ -131,8 +133,27 @@ def checked_coverage_valid(units, report):
     return True
 
 
+def archive_report(path, expected):
+    """Preserve large reports after measurement with verified decoded bytes."""
+    archive = Path(str(path) + '.gz')
+    temporary = Path(str(archive) + '.tmp')
+    with path.open('rb') as source, temporary.open('wb') as destination:
+        with gzip.GzipFile(filename='', mode='wb', fileobj=destination,
+                           compresslevel=1, mtime=0) as compressed:
+            shutil.copyfileobj(source, compressed, 1024 * 1024)
+    with gzip.open(temporary, 'rb') as decoded:
+        actual = hashlib.file_digest(decoded, 'sha256').hexdigest()
+    if actual != expected:
+        raise ValueError('compressed report failed verification: ' + str(path))
+    temporary.replace(archive)
+    result = dict(path=str(archive), bytes=archive.stat().st_size,
+                  sha256=digest(archive), decoded_sha256=actual)
+    path.unlink()
+    return result
+
+
 def observation(binary, output, name, projects, *, checked=False, cache=False,
-                compact=False, timeout=600):
+                compact=False, timeout=600, archive_reports=False):
     destination = output / name
     destination.mkdir(parents=True, exist_ok=True)
     result = dict(name=name, binary_sha256=digest(binary), projects=[])
@@ -170,6 +191,8 @@ def observation(binary, output, name, projects, *, checked=False, cache=False,
             entry['cold_time_gate'] = entry.get('measurement', {}).get('seconds', float('inf')) <= 600
             if stats.exists():
                 entry['stats'] = json.loads(stats.read_text())
+            if archive_reports and entry['report']['present']:
+                entry['report']['archive'] = archive_report(report, entry['report']['sha256'])
         result['projects'].append(entry)
         (destination / 'observation.json').write_text(json.dumps(result, indent=2) + '\n')
         measurement = entry.get('measurement', {})
@@ -200,6 +223,8 @@ def main():
     parser.add_argument('--only', action='append', default=[])
     parser.add_argument('--repetitions', type=int, default=3)
     parser.add_argument('--timeout', type=float, default=600)
+    parser.add_argument('--archive-reports', action='store_true',
+                        help='checksum-verify and compress reports after measurement')
     args = parser.parse_args()
     if args.repetitions < 1:
         parser.error('--repetitions must be positive')
@@ -215,7 +240,8 @@ def main():
                    phase=args.phase, observations=[])
 
     def record(name, **options):
-        result = observation(binary, output, name, projects, timeout=args.timeout, **options)
+        result = observation(binary, output, name, projects, timeout=args.timeout,
+                             archive_reports=args.archive_reports, **options)
         summary['observations'].append(result)
         save()
         return result

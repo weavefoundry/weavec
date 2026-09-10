@@ -97,7 +97,7 @@ namespace weavec::core {
 /// Version of the record format; bumped when a record written by this
 /// version cannot be read by the previous one.
 // Version 14 (RFC 0018) adds bounded sufficient safety contracts.
-inline constexpr unsigned SummaryFormatVersion = 15;
+inline constexpr unsigned SummaryFormatVersion = 16;
 
 // RFC 0014: deterministic, single-token callback contexts. Bindings name
 // parameter paths; globals retain their ordinary exported value sources.

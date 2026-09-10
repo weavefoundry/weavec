@@ -788,6 +788,32 @@ void FunctionSummary::join(const FunctionSummary &other) {
   normalizeStoresOn();
 }
 
+static bool checkedUsesGlobals(const CheckedRequirement &requirement) {
+  const auto expression = [](const IntegerExpression<SummaryPath> &value) {
+    return std::ranges::any_of(value.all(), [](const auto &node) {
+      return node.key && node.key->isGlobal();
+    });
+  };
+  const auto affine = [&](const PathAffine &value) {
+    return value.expression ? expression(*value.expression)
+                            : value.path && value.path->isGlobal();
+  };
+  const auto &guard = requirement.when;
+  return requirement.path.isGlobal() || requirement.other.isGlobal() ||
+         affine(requirement.begin) || affine(requirement.end) ||
+         std::ranges::any_of(
+             guard.conditions,
+             [](const auto &entry) { return entry.first.isGlobal(); }) ||
+         std::ranges::any_of(guard.pointers,
+                             [](const auto &entry) {
+                               return entry.first.first.isGlobal() ||
+                                      entry.first.second.isGlobal();
+                             }) ||
+         std::ranges::any_of(guard.integers, [&](const auto &predicate) {
+           return expression(predicate.lhs) || expression(predicate.rhs);
+         });
+}
+
 FunctionSummary remapGlobals(const FunctionSummary &summary,
                              const GlobalIdMap &map) {
   const auto remapPath =
@@ -887,6 +913,11 @@ FunctionSummary remapGlobals(const FunctionSummary &summary,
   FunctionSummary result;
   result.checked = summary.checked;
   const auto remapChecked = [&](auto &requirements) {
+    // RFC 0021: parameter/result-only contracts retain their immutable set.
+    // Inspect every path-bearing field, including nested numeric premises,
+    // before skipping the global remap and its otherwise redundant copies.
+    if (!std::ranges::any_of(requirements, checkedUsesGlobals))
+      return;
     std::set<CheckedRequirement> mapped;
     for (auto requirement : requirements) {
       const auto path = remapPath(requirement.path);
@@ -906,7 +937,7 @@ FunctionSummary remapGlobals(const FunctionSummary &summary,
       requirement.when = when;
       mapped.insert(std::move(requirement));
     }
-    requirements = std::move(mapped);
+    requirements.assign(std::move(mapped));
   };
   remapChecked(result.checked.requirements);
   remapChecked(result.checked.establishes);

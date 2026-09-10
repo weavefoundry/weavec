@@ -228,7 +228,7 @@ void ScalarTracker::forget(PlaceId place) {
   facts.erase(place);
 }
 
-bool ScalarTracker::join(const ScalarTracker &other) {
+bool ScalarTracker::join(const ScalarTracker &other, bool widenRanges) {
   bool changed = false;
   for (auto it = facts.begin(); it != facts.end();) {
     const auto theirs = other.facts.find(it->first);
@@ -238,11 +238,17 @@ bool ScalarTracker::join(const ScalarTracker &other) {
       continue;
     }
     const ValueFact before = it->second;
-    if (it->second.integer || theirs->second.integer) {
-      const auto type = it->second.integer ? it->second.integer->type
-                                           : theirs->second.integer->type;
-      it->second = ValueFact::ofInteger(
-          it->second.inType(type).widened(theirs->second.inType(type)));
+    if (it->second.integer || theirs->second.integer ||
+        (!widenRanges && it->second.constant && theirs->second.constant)) {
+      auto type = IntegerType{.width = 64, .isSigned = true};
+      if (it->second.integer)
+        type = it->second.integer->type;
+      else if (theirs->second.integer)
+        type = theirs->second.integer->type;
+      const auto a = it->second.inType(type);
+      const auto b = theirs->second.inType(type);
+      it->second =
+          ValueFact::ofInteger(widenRanges ? a.widened(b) : a.united(b));
     } else {
       it->second.join(theirs->second);
     }

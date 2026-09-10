@@ -897,6 +897,8 @@ TEST(CheckedIO, ConditionalNestedAndResultInitializationRoundTrip) {
   post.kind = CheckedRequirementKind::Terminated;
   post.path = SummaryPath::param(0);
   post.on.reset();
+  // RFC 0021 names the minimum witness index in begin; end is reserved.
+  post.end = PathAffine::ofConstant(0);
   contract.require(post);
   const GlobalNamer names = [](std::uint32_t) { return std::string("global"); };
   const GlobalResolver resolve = [](std::string_view) {

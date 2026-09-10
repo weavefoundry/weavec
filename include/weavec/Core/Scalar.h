@@ -565,7 +565,7 @@ public:
 
   /// Per place, the join of the two facts; a place with a fact on one side
   /// only has none after. Returns whether this tracker changed.
-  bool join(const ScalarTracker &other);
+  bool join(const ScalarTracker &other, bool widenRanges = true);
 
   /// Places with a fact, ascending (for dumps).
   [[nodiscard]] std::vector<PlaceId> places() const;

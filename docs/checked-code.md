@@ -73,6 +73,12 @@ writable interval. A caller providing four initialized bytes can satisfy `touch(
 it cannot establish `touch(p,8)` from those facts. The latter is an unresolved
 precondition, without claiming that execution necessarily reaches byte eight.
 
+Exported requirements can be stronger when a helper's condition depends on a
+private global. For example, a private callback flag guarding `free(p)` may
+produce an unconditional portable release requirement for `p`. Callers must
+still establish that requirement; this does not turn a private condition into
+an assumed fact or remove a condition from an output guarantee.
+
 Write permission is a separate requirement: string literals and `const` objects
 remain read-only even through a cast. Mutable local objects and modeled
 allocations provide positive writability evidence; helper callers must establish
@@ -111,6 +117,44 @@ success; its grown tail needs writes. Failure retains the incoming storage.
 String models check accessible initialized data through a terminator.
 A known zero byte can witness termination without inventing an exact length.
 
+## Check traversals and cursor helpers
+
+[RFC 0021](rfcs/0021-practical-c-traversal.md) extends checked contracts to
+counted `while` and `do` loops, same-array cursors, guarded variable advances,
+and supported early exits. For example:
+
+```c
+static char *fill(char *p, unsigned n) {
+  char *end = p + n;
+  while (p < end) *p++ = 1;
+  return p;
+}
+int main(void) {
+  char bytes[8];
+  char *end = fill(bytes, 8);
+  return end[-1];
+}
+```
+
+The returned cursor is one past the initialized array. Reading `end[0]`
+still fails. Subtracting or ordering pointers requires live positions in the
+same array, compatible element types and a representable target result.
+Distinct array members of one structure do not become one array.
+
+The checker preserves supported relationships such as `output <= input`
+through in-place compaction and complete pointer-to-pointer helpers. It
+checks every entry and back edge before retaining a loop fact. `continue`,
+skipped writes and early returns cannot establish an unwritten interval.
+Direct local `goto` follows the actual CFG and retains initialization and
+lifetime checks, including when it jumps into a loop or past a declaration.
+
+Terminated scans require an initialized prefix through a known zero byte.
+That witness need not be the first zero. Reading a nonzero byte before the
+witness can justify advancing the cursor; lookahead has its own bounds.
+A potentially overlapping write must preserve the witness, establish a new
+zero, or lose the termination evidence. Separating pointer holders does not
+separate the arrays they reference.
+
 ## Read a report
 
 `--checked-report=path` computes contracts and writes JSON without selecting
@@ -148,6 +192,21 @@ byte intervals; `copied` preserves only the input bytes already initialized
 within an interval. It does not claim that unused input capacity was initialized
 or that the bytes retain a particular value.
 
+Traversal contracts additionally use `position` for an output pointer's
+inclusive byte-displacement interval from a captured entry pointer. `progress`
+relates two cursors' advances from their respective entry values; it preserves
+a caller's proved order without equating unrelated arrays. An endpoint such
+as `terminator param 0 scale 1 plus 0` names the selected entry witness's
+byte index. It is not a C integer argument or an exact `strlen` result.
+Entry `terminated` requirements use `begin` for the minimum witness index;
+their `end` is zero. A `terminated` output uses `begin` for the initialized
+prefix start and `end` for the known zero byte. Input values are captured
+before a call overwrites their holders, and conditional outputs apply only
+on their recorded outcomes.
+
+These facts use summary format 16, sidecar format 17 and checked-record
+encoding 3. Expanded JSON remains version 2; compact JSON remains version 3.
+
 ## Current limits
 
 The model is bounded, single-threaded C. Unsupported unions, assembly,
@@ -156,8 +215,10 @@ call effects and exhausted limits fail selected checking. General recursive
 heap invariants and arbitrary loop induction are not implemented. Complex
 pointer-containing paths, callbacks and dynamic expressions require complete
 facts from their existing models; otherwise the result stays unresolved.
-Pointer differences, ordered pointer comparisons and floating-to-integer
-conversions currently require an unsafe boundary. Conservative rejection of valid C is expected.
+Unproved pointer relationships and floating-to-integer conversions remain
+incomplete. Traversal reasoning is bounded to 64 active variables, 32 loop
+iterations/candidates and 4,096 relation steps per operation. Exhaustion is
+reported and supplies no proof. Conservative rejection of valid C is expected.
 
 Library proof models cover allocation/release, bounded memory operations,
 positive-size `realloc`, `strlen`, `strnlen`, `strcpy`, `stpcpy`, `strcat`,
@@ -173,4 +234,5 @@ obligation. The compiler still fails selected checking.
 
 The authoritative design and acceptance criteria are in
 [RFC 0018](rfcs/0018-checked-code-and-safety-contracts.md) and
-[RFC 0019](rfcs/0019-practical-checked-memory-contracts.md).
+[RFC 0019](rfcs/0019-practical-checked-memory-contracts.md), extended by
+[RFC 0021](rfcs/0021-practical-c-traversal.md).

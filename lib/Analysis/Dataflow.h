@@ -28,6 +28,7 @@
 #include "weavec/Core/Resource.h"
 #include "weavec/Core/SourceLocation.h"
 #include "weavec/Core/Summary.h"
+#include "weavec/Core/Traversal.h"
 
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/Decl.h"
@@ -71,7 +72,7 @@ public:
   core::CallContext memoryContext;
   bool validMemoryContext = true;
   bool checkedOutputSeen = false;
-  std::map<std::optional<core::Outcome>, std::set<core::CheckedRequirement>>
+  std::map<std::optional<core::Outcome>, core::CheckedRequirements>
       checkedOutputClasses;
 
   /// The summary inferred by `run` (RFC 0003, *Deriving a summary*).
@@ -248,18 +249,28 @@ private:
     const clang::Expr *pointer = nullptr;
     // NOLINTNEXTLINE(readability-redundant-member-init): aggregate default
     std::optional<core::PlaceId> holder = {};
+    // NOLINTNEXTLINE(readability-redundant-member-init): aggregate default
+    std::optional<core::PlaceId> inputPlace = {};
   };
   struct CheckedPointer {
     bool known = false;
+    bool nonNull = false;
     bool zeroed = false;
     bool fresh = false;
     bool deferred = false;
     std::vector<core::InitializedRange> initialized;
     std::optional<core::PlaceId> storage;
+    std::optional<core::PointerPosition> position;
   };
   void initializeChecked();
   void checkedBefore(const clang::Stmt &stmt, core::AnalysisState &state);
   void checkedAfter(const clang::Stmt &stmt, core::AnalysisState &state);
+  [[nodiscard]] std::optional<core::IntegerValue>
+  checkedPointerOperation(const clang::BinaryOperator &expr,
+                          const core::AnalysisState &state);
+  [[nodiscard]] std::optional<core::IntegerRange>
+  checkedPointerRange(const clang::BinaryOperator &expr,
+                      const core::AnalysisState &state);
   void checkedPointerFormation(const clang::Expr &at,
                                const clang::Expr &pointer,
                                const std::optional<core::Affine> &shift,
@@ -283,6 +294,19 @@ private:
                         core::AnalysisState &state);
   void installCheckedPointer(core::PlaceId dest, const CheckedPointer &value,
                              core::AnalysisState &state);
+  void installCheckedPosition(core::PlaceId dest,
+                              core::PointerPosition position,
+                              core::AnalysisState &state);
+  void checkedAdvancePointer(const clang::Expr &expr,
+                             core::AnalysisState &state);
+  void checkedPointerCondition(const clang::BinaryOperator &expr, bool holds,
+                               core::AnalysisState &state);
+  [[nodiscard]] bool checkedPointerComparable(const clang::BinaryOperator &expr,
+                                              core::AnalysisState &state);
+  std::set<core::PlaceId> checkedSteppedPointers;
+  std::map<core::PlaceId, core::PlaceId> checkedCoordinates;
+  std::map<const clang::Expr *, core::PlaceId> checkedPointerResults;
+  std::set<core::PlaceId> checkedCallAssignedPointers;
   [[nodiscard]] std::optional<CheckedMemory>
   checkedMemory(const clang::Expr &pointer, const core::Affine &begin,
                 const core::Affine &end, const core::AnalysisState &state);
@@ -297,12 +321,53 @@ private:
                                   const core::AnalysisState &state);
   [[nodiscard]] bool checkedTerminated(const CheckedMemory &memory,
                                        const core::AnalysisState &state);
+  void collectCheckedStrings(const clang::Stmt &stmt);
+  void initializeCheckedStrings(core::AnalysisState &state);
+  void prepareCheckedStringInputs(const clang::CallExpr &call,
+                                  const core::CheckedContract &contract,
+                                  core::AnalysisState &state);
+  void checkedStringCondition(const clang::Expr &expr,
+                              clang::BinaryOperatorKind op,
+                              const clang::Expr *other, bool holds,
+                              core::AnalysisState &state);
+  void checkedStringBound(const CheckedMemory &memory, const clang::Stmt &at,
+                          core::AnalysisState &state);
+  void checkedStringUse(const CheckedMemory &memory, const clang::Stmt &at,
+                        core::AnalysisState &state);
+  void checkedStringWrite(const std::optional<CheckedMemory> &memory,
+                          bool zeroed, core::AnalysisState &state);
+  [[nodiscard]] std::optional<core::TerminationWitness>
+  checkedWitness(const CheckedMemory &memory, const core::AnalysisState &state);
+  [[nodiscard]] std::optional<core::Affine>
+  checkedTerminatorQuantity(const core::PathAffine &value,
+                            const clang::CallExpr &call,
+                            core::AnalysisState &state);
+  std::set<core::PlaceId> checkedStringInputs;
+  std::map<core::PlaceId, core::PlaceId> checkedTerminatorInputs;
+  std::map<core::PlaceId, std::int64_t> checkedWitnessMinimum;
   [[nodiscard]] std::optional<CheckedMemory>
   checkedLvalue(const clang::Expr &expr, const core::AnalysisState &state);
   [[nodiscard]] bool checkedInterval(const core::Affine &begin,
                                      const core::Affine &end,
                                      const core::Affine &extent,
                                      const core::AnalysisState &state);
+  [[nodiscard]] core::DifferenceConstraints
+  checkedRelations(const core::AnalysisState &state);
+  [[nodiscard]] bool checkedAtMost(const core::Affine &lhs,
+                                   const core::Affine &rhs,
+                                   const core::AnalysisState &state);
+  [[nodiscard]] std::optional<core::PathAffine>
+  checkedRequirementEnvelope(const core::Affine &need,
+                             const core::AnalysisState &state);
+  [[nodiscard]] core::Affine
+  checkedStableAffine(const core::Affine &value,
+                      const core::AnalysisState &state);
+  bool checkedJoinPremises(core::AnalysisState &target,
+                           core::AnalysisState &incoming);
+  void checkedDifferenceCondition(const clang::Expr &lhs,
+                                  clang::BinaryOperatorKind op,
+                                  const clang::Expr &rhs, bool holds,
+                                  core::AnalysisState &state);
   [[nodiscard]] std::optional<bool>
   checkedWritePermission(const CheckedMemory &memory,
                          const core::AnalysisState &state);
@@ -318,12 +383,15 @@ private:
                          core::AnalysisState &state);
   void checkedLoopExit(const clang::ForStmt &loop, core::AnalysisState &state);
   std::map<const clang::Stmt *, const clang::ForStmt *> checkedLoops;
+  // Lazy caller-entry guard shared by one conditional requirement group.
+  // The group restores this pointer before its local cache leaves scope.
+  std::optional<core::PathGuard> *checkedRequirementGuard = nullptr;
   std::map<const clang::CallExpr *, std::vector<CheckedMemory>> checkedWrites;
   std::map<std::pair<const clang::CallExpr *, core::PlaceId>, core::PlaceId>
       checkedObjects;
   std::map<core::PlaceId, core::PlaceId> checkedInputObjects;
   std::set<const clang::CallExpr *> checkedDeferredCalls;
-  std::map<const clang::CallExpr *, core::PlaceId> checkedReturnPlaces;
+  std::map<const clang::Expr *, core::PlaceId> checkedReturnPlaces;
   [[nodiscard]] std::vector<core::InitializedRange>
   checkedCopyRanges(const CheckedMemory &source, const core::Affine &begin,
                     const core::Affine &end, const core::AnalysisState &state);
@@ -331,8 +399,31 @@ private:
     core::SummaryPath path;
     core::InitializedRange range;
     std::optional<core::Outcome> on;
+    std::optional<core::PlaceId> storage;
   };
   std::map<const clang::CallExpr *, std::vector<CheckedPost>> checkedPosts;
+  struct CheckedPositionPost {
+    core::SummaryPath path;
+    core::PointerPosition position;
+    std::optional<core::Affine> upper;
+    core::PlaceGuard when;
+    std::optional<core::Outcome> on;
+    bool nonNull = false;
+  };
+  std::map<const clang::CallExpr *, std::vector<CheckedPositionPost>>
+      checkedPositionPosts;
+  struct CheckedProgressPost {
+    core::SummaryPath path;
+    core::SummaryPath other;
+    core::PlaceId storage;
+    std::int64_t offset = 0;
+    std::optional<core::Outcome> on;
+  };
+  std::map<const clang::CallExpr *, std::vector<CheckedProgressPost>>
+      checkedProgressPosts;
+  void applyCheckedPositions(const clang::CallExpr &call,
+                             core::AnalysisState &state,
+                             std::optional<core::PlaceId> result = {});
   std::map<const clang::CallExpr *, std::map<core::PlaceId, core::PlaceId>>
       checkedSnapshots;
   [[nodiscard]] std::optional<core::PlaceGuard>
@@ -416,6 +507,9 @@ private:
                           std::optional<std::int64_t>>
   integerBounds(core::PlaceId place, const core::AnalysisState &state);
   using NumericExpression = core::IntegerExpression<core::PlaceId>;
+  [[nodiscard]] std::optional<core::Affine>
+  checkedTraversalSum(const NumericExpression &expression,
+                      const core::AnalysisState &state);
   // RFC 0017: values read at call entry, independent of the post-state
   // paths. Slots are bounded by call site, interface path and integer type.
   using NumericInputKey = std::pair<core::SummaryPath, core::IntegerType>;
@@ -1048,10 +1142,6 @@ private:
                            core::MoveReason reason, const clang::Expr &at,
                            const core::AnalysisState &state,
                            const core::PointerOffset &calleeOffset = {});
-  /// RFC 0011: `place`'s own value moved by `step` (`p++`, `p += k`, `p = p
-  /// + k`): its spatial record and its alias edges follow.
-  static void stepPointer(core::PlaceId place, const core::PointerOffset &step,
-                          core::AnalysisState &state);
   /// RFC 0011: the spatial record of a borrow of `storage` at `offset`: the
   /// size of the variable, array or field borrowed, when it is complete.
   [[nodiscard]] std::optional<core::SpatialRecord>

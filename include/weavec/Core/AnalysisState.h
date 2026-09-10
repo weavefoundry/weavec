@@ -299,7 +299,8 @@ struct AnalysisState {
   /// whether this state changed, so the fixpoint engine need not copy and
   /// compare whole states. With place topology, a null pointer has no
   /// object whose missing spatial facts weaken a non-null predecessor.
-  bool join(const AnalysisState &other, const PlaceTable *places = nullptr);
+  bool join(const AnalysisState &other, const PlaceTable *places = nullptr,
+            bool widenScalars = true);
 
   /// Ownership kind of `place`, `Unknown` if never assigned.
   [[nodiscard]] OwnershipKind kindOf(PlaceId place) const noexcept;

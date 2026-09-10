@@ -97,7 +97,8 @@ std::string printAffine(const PathAffine &affine, const GlobalNamer &names) {
            std::to_string(affine.constant);
   if (!affine.path)
     return std::to_string(affine.constant);
-  return printSummaryPath(*affine.path, names) + " scale " +
+  return (affine.quantity == AffineQuantity::Terminator ? "terminator " : "") +
+         printSummaryPath(*affine.path, names) + " scale " +
          std::to_string(affine.scale) + " plus " +
          std::to_string(affine.constant);
 }
@@ -516,6 +517,9 @@ static bool parseAffine(Tokens &tokens, const GlobalResolver &resolve,
     affine = PathAffine::ofConstant(constant);
     return true;
   }
+  const bool terminator = tokens.peek() == "terminator";
+  if (terminator)
+    tokens.take();
   ParsedPath path;
   if (!parsePath(tokens, resolve, path))
     return false;
@@ -524,7 +528,10 @@ static bool parseAffine(Tokens &tokens, const GlobalResolver &resolve,
       tokens.take() != "plus" || !parseInteger(tokens.take(), constant))
     return false;
   if (path.path)
-    affine = PathAffine::ofPath(std::move(*path.path), scale, constant);
+    affine =
+        terminator
+            ? PathAffine::ofTerminator(std::move(*path.path), scale, constant)
+            : PathAffine::ofPath(std::move(*path.path), scale, constant);
   else
     affine = std::nullopt;
   return true;

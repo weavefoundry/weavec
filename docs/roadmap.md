@@ -426,6 +426,23 @@ Design: [RFC 0020](rfcs/0020-scalable-modular-checked-analysis.md).
 - [x] Complete the frozen evaluation and publish measured cold/warm corpus gates
       ([validation](validation-rfc0020.md), [results](../scripts/corpus/rfc0020-results.json)).
 
+## Milestone 20 — Practical C traversal (complete)
+
+Design: [RFC 0021](rfcs/0021-practical-c-traversal.md) (Implemented).
+
+- [x] Same-array cursor arithmetic, ordering and target-width differences.
+- [x] Bounded inductive loop facts, initialized prefixes and direct local gotos.
+- [x] Terminated-prefix witnesses, cursor positions and paired progress across
+      helpers, source units, compiler objects and persistent checkpoints.
+- [x] All five unchanged Jansson UTF definitions and four cJSON minifier
+      definitions, with proven closed callers and adversarial counterexamples.
+- [x] Preserve every baseline-complete selected function, increasing the total
+      from 99 to 120, and validate all 51 warm unit hits without function analyses.
+- [x] Pass full Debug/sanitizer suites and ordinary runtime/memory gates;
+      publish [validation](validation-rfc0021.md),
+      [measured results](../scripts/corpus/rfc0021-results.json) and
+      [diagnostic changes](../scripts/corpus/rfc0021-diagnostics.jsonl).
+
 ## Ongoing
 
 - Corpus testing against real C projects (`scripts/corpus.py`; false-positive

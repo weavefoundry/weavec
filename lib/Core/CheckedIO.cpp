@@ -16,6 +16,15 @@ namespace weavec::core {
 static constexpr std::size_t MaxRecordBytes = 4UL * 1024 * 1024;
 static constexpr std::size_t MaxFieldBytes = 65536;
 
+static bool hasResult(const PathAffine &value) {
+  if (value.path && value.path->isResult())
+    return true;
+  return value.expression &&
+         std::ranges::any_of(value.expression->all(), [](const auto &node) {
+           return node.key && node.key->isResult();
+         });
+}
+
 // NOLINTNEXTLINE(misc-use-internal-linkage): project namespace convention
 class CheckedWriter {
 public:
@@ -46,6 +55,7 @@ public:
                  return printSummaryPath(path, names);
                })
              : "");
+    number(static_cast<unsigned>(value.quantity));
   }
   void requirement(const CheckedRequirement &value, const GlobalNamer &names) {
     text(toString(value.kind));
@@ -166,6 +176,13 @@ public:
           });
       valid &= result.expression.has_value() && !result.path;
     }
+    const auto quantity = number<unsigned>();
+    valid &= quantity <= static_cast<unsigned>(AffineQuantity::Terminator);
+    if (quantity <= static_cast<unsigned>(AffineQuantity::Terminator))
+      result.quantity = static_cast<AffineQuantity>(quantity);
+    if (result.quantity == AffineQuantity::Terminator)
+      valid &=
+          result.path.has_value() && !result.expression && !hasResult(result);
     return result;
   }
   CheckedRequirement requirement(const GlobalResolver &resolve) {
@@ -208,7 +225,7 @@ private:
 std::string printCheckedContract(const CheckedContract &contract,
                                  const GlobalNamer &names) {
   CheckedWriter out;
-  out.text("2");
+  out.text("3");
   out.text(contract.signature);
   out.number(contract.computed);
   out.number(contract.selected);
@@ -247,7 +264,7 @@ std::string printCheckedContract(const CheckedContract &contract,
 std::optional<CheckedContract>
 parseCheckedContract(std::string_view record, const GlobalResolver &resolve) {
   CheckedReader in(record);
-  if (in.text() != "2")
+  if (in.text() != "3")
     return std::nullopt;
   CheckedContract result;
   result.signature = in.text();
@@ -270,12 +287,40 @@ parseCheckedContract(std::string_view record, const GlobalResolver &resolve) {
       !readRequirements(result.establishes))
     return std::nullopt;
   for (const auto &requirement : result.requirements)
-    if (requirement.path.isResult() || requirement.on ||
+    if (requirement.path.isResult() || requirement.other.isResult() ||
+        requirement.on || hasResult(requirement.begin) ||
+        hasResult(requirement.end) ||
         requirement.kind == CheckedRequirementKind::Copied ||
-        requirement.kind == CheckedRequirementKind::Zeroed)
+        requirement.kind == CheckedRequirementKind::Zeroed ||
+        requirement.kind == CheckedRequirementKind::Position ||
+        requirement.kind == CheckedRequirementKind::Progress)
       return std::nullopt;
+  for (const auto &requirement : result.requirements)
+    if (requirement.kind == CheckedRequirementKind::Terminated &&
+        (!requirement.end.isConstant() || requirement.end.constant != 0 ||
+         !requirement.family.empty() ||
+         (requirement.begin.isConstant() && requirement.begin.constant < 0)))
+      return std::nullopt;
+  for (const auto &post : result.establishes) {
+    if (post.kind == CheckedRequirementKind::Progress &&
+        (post.path.isResult() || post.other.isResult() ||
+         post.path == post.other ||
+         (post.path.isParam() && post.path.isRoot()) ||
+         (post.other.isParam() && post.other.isRoot()) ||
+         !post.begin.isConstant() || post.begin.constant != 0 ||
+         !post.end.isConstant() || !post.family.empty()))
+      return std::nullopt;
+    if (post.kind != CheckedRequirementKind::Position)
+      continue;
+    if ((post.path.isParam() && post.path.isRoot()) || !post.family.empty() ||
+        hasResult(post.begin) || hasResult(post.end) ||
+        (post.begin.isConstant() && post.end.isConstant() &&
+         post.begin.constant > post.end.constant))
+      return std::nullopt;
+  }
   for (const auto &post : result.establishes)
-    if ((post.kind == CheckedRequirementKind::Copied &&
+    if (((post.kind == CheckedRequirementKind::Copied ||
+          post.kind == CheckedRequirementKind::Position) &&
          post.other.isResult()) ||
         post.kind == CheckedRequirementKind::SumFits)
       return std::nullopt;
