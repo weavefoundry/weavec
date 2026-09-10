@@ -430,10 +430,10 @@ FunctionDataflow::checkedRelations(const core::AnalysisState &state) {
       if (!a || predicate.range->empty())
         continue;
       if (const auto upper = predicate.range->maximum()->signedValue())
-        result.constrain(*a, {}, *upper);
+        result.constrain(a, {}, *upper);
       if (const auto lower = predicate.range->minimum()->signedValue();
           lower && *lower != std::numeric_limits<std::int64_t>::min())
-        result.constrain({}, *a, -*lower);
+        result.constrain({}, a, -*lower);
       continue;
     }
     if (predicate.lhs.type() != predicate.rhs.type())
@@ -496,7 +496,7 @@ FunctionDataflow::checkedRelations(const core::AnalysisState &state) {
       continue;
     const auto a = operands.front().inputKey();
     const auto b = operands.back().inputKey();
-    if (!a || !b || !result.implies(*b, *a, 0))
+    if (!a || !b || !result.implies(b, a, 0))
       continue;
     std::optional<core::Relation> relation;
     switch (operation) {
@@ -618,7 +618,7 @@ FunctionDataflow::checkedRequirementEnvelope(const core::Affine &need,
       const auto shifted =
           scaled ? scaled->shifted(need.constant) : std::nullopt;
       if (shifted)
-        if (const auto projected = summaryAffineOf(*shifted))
+        if (const auto projected = summaryAffineOf(shifted))
           return projected;
     }
   if (const auto sum = traversalSumBound(
@@ -627,7 +627,7 @@ FunctionDataflow::checkedRequirementEnvelope(const core::Affine &need,
             return checkedAtMost(core::Affine::ofPlace(index),
                                  core::Affine::ofPlace(length), state);
           }))
-    if (const auto projected = summaryAffineOf(*sum))
+    if (const auto projected = summaryAffineOf(sum))
       return projected;
   const auto relations = checkedRelations(state);
   std::set<core::PlaceId> candidates;
@@ -639,7 +639,7 @@ FunctionDataflow::checkedRequirementEnvelope(const core::Affine &need,
   for (const auto candidate : candidates) {
     if (candidate == *need.place)
       continue;
-    const auto distance = relations.bound(*need.place, candidate);
+    const auto distance = relations.bound(need.place, candidate);
     inferred.checked.limited |= relations.limited();
     if (relations.limited())
       inferred.incomplete.insert("traversal relational limit reached");
