@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.24...3.31)
 
 project(
   WeaveC
-  VERSION 0.1.0
+  VERSION 0.2.0
   DESCRIPTION
     "A mostly source-compatible C compiler bringing inferred ownership and borrowing to C"
   HOMEPAGE_URL "https://github.com/weavefoundry/weavec"

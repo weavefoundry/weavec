@@ -1,6 +1,20 @@
 # CHANGELOG
 
 
+## v0.2.0 (2026-09-10)
+
+### Continuous Integration
+
+- Standardize GitHub release titles and notes
+  ([`90caa95`](https://github.com/weavefoundry/weavec/commit/90caa9547e95c769f1118fbdc4c461bcd3bf604c))
+
+### Features
+
+- Add checked C traversal and buffer contracts
+  ([#24](https://github.com/weavefoundry/weavec/pull/24),
+  [`0cb8a6c`](https://github.com/weavefoundry/weavec/commit/0cb8a6c8c6f512afdb4ad28450b587b9ec46cd5f))
+
+
 ## v0.1.0 (2026-09-09)
 
 ### Continuous Integration
