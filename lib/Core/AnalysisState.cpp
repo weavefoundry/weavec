@@ -237,7 +237,8 @@ bool PendingOutcome::settled() const {
          });
 }
 
-bool AnalysisState::join(const AnalysisState &other, const PlaceTable *places) {
+bool AnalysisState::join(const AnalysisState &other, const PlaceTable *places,
+                         bool widenScalars) {
   const auto leftSafetyGuard = safety ? pathGuard() : PlaceGuard{};
   const auto rightSafetyGuard = other.safety ? other.pathGuard() : PlaceGuard{};
   const auto isNull = [](PlaceId place, const AnalysisState &state) {
@@ -291,7 +292,7 @@ bool AnalysisState::join(const AnalysisState &other, const PlaceTable *places) {
   changed |= raw.join(other.raw);
   changed |= resources.join(other.resources);
   changed |= nulls.join(other.nulls);
-  changed |= scalars.join(other.scalars);
+  changed |= scalars.join(other.scalars, widenScalars);
   changed |= numericWrites.join(other.numericWrites);
   changed |= numericConditions.join(other.numericConditions);
   changed |= !numericConditionsIncomplete && other.numericConditionsIncomplete;
@@ -301,7 +302,8 @@ bool AnalysisState::join(const AnalysisState &other, const PlaceTable *places) {
                return found == other.numericValues.end() ||
                       found->second != entry.second;
              }) != 0;
-  changed |= relations.join(other.relations);
+  changed |=
+      relations.join(other.relations, safety && other.safety, widenScalars);
   changed |= pointerFacts.join(other.pointerFacts);
   for (auto &[key, range] : filledArrayRanges) {
     const auto found = other.filledArrayRanges.find(key);

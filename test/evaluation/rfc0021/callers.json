@@ -1,0 +1,83 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "name": "utf-good",
+      "module": "jansson",
+      "source": "utf-good.c",
+      "sha256": "4753963ecd598387fbb72f67b116d6a7145d174127cb6fbd521df82dff571b8b",
+      "expect": "accepted",
+      "reason": "",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    },
+    {
+      "name": "utf-short-output",
+      "module": "jansson",
+      "source": "utf-short-output.c",
+      "sha256": "698e975ce8a603eaeb22fbb7fc2d784add43165a2e8492e7b128eb88710bf1b2",
+      "expect": "rejected",
+      "reason": "extent|bound",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    },
+    {
+      "name": "utf-truncated",
+      "module": "jansson",
+      "source": "utf-truncated.c",
+      "sha256": "6a028ac721dc21088643fc1181f81f13672368f24dca3aed4da6daae26bc50ab",
+      "expect": "rejected",
+      "reason": "extent|bound",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    },
+    {
+      "name": "minifier-good",
+      "module": "cJSON-program",
+      "source": "minifier-good.c",
+      "sha256": "4c297855a781402dbf39c5dccd4689b2524b1c0688f4241c69b1eae85bad83aa",
+      "expect": "accepted",
+      "reason": "",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    },
+    {
+      "name": "minifier-unterminated",
+      "module": "cJSON-program",
+      "source": "minifier-unterminated.c",
+      "sha256": "a234b96c32f990dc15cad8a2cd2ff63c3f81fc542e5b6f6151692c92e659e1e9",
+      "expect": "rejected",
+      "reason": "terminat|initializ",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    },
+    {
+      "name": "minifier-uninitialized",
+      "module": "cJSON-program",
+      "source": "minifier-uninitialized.c",
+      "sha256": "c44be2a5813a5f717397dc3f10fef14578ae782f58c801e809a91c94309e0ec4",
+      "expect": "rejected",
+      "reason": "initializ|terminat",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    }
+  ]
+}

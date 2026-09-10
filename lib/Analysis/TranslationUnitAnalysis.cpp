@@ -263,20 +263,74 @@ UnitExports TranslationUnitAnalyzer::exports() {
     return std::optional(result.globals.idFor(var->getName()));
   };
   const auto exportSummary = [&](const core::FunctionSummary &summary) {
+    const auto privateGlobal = [&](const core::SummaryPath &path) {
+      if (!path.isGlobal())
+        return false;
+      const auto *global = table.declFor(path.index);
+      return global != nullptr && !global->isExternallyVisible();
+    };
+    const auto privateExpression = [&](const auto &expression) {
+      return std::ranges::any_of(expression.all(), [&](const auto &node) {
+        return node.key && privateGlobal(*node.key);
+      });
+    };
+    const auto privateCondition = [&](const auto &entry) {
+      return privateGlobal(entry.first);
+    };
+    const auto privatePointers = [&](const auto &entry) {
+      return privateGlobal(entry.first.first) ||
+             privateGlobal(entry.first.second);
+    };
+    const auto privateInteger = [&](const auto &predicate) {
+      return privateExpression(predicate.lhs) ||
+             privateExpression(predicate.rhs);
+    };
+    const auto privateAntecedent = [&](const auto &requirement) {
+      const auto &guard = requirement.when;
+      return std::ranges::any_of(guard.conditions, privateCondition) ||
+             std::ranges::any_of(guard.pointers, privatePointers) ||
+             std::ranges::any_of(guard.integers, privateInteger);
+    };
     // RFC 0019: a private output fact has no cross-unit consumer. Omit the
     // entire fact, retaining strict remapping of every requirement and every
     // premise attached to a public or result output.
     const auto privateOutput = [&](const auto &post) {
-      if (!post.path.isGlobal())
-        return false;
-      const auto *global = table.declFor(post.path.index);
-      return global != nullptr && !global->isExternallyVisible();
+      return privateGlobal(post.path);
     };
-    if (!summary.checked.computed ||
-        !std::ranges::any_of(summary.checked.establishes, privateOutput))
+    const bool privateOutputs =
+        std::ranges::any_of(summary.checked.establishes, privateOutput);
+    const bool privateRequirements =
+        std::ranges::any_of(summary.checked.requirements, privateAntecedent);
+    if (!summary.checked.computed || (!privateOutputs && !privateRequirements))
       return core::remapGlobals(summary, byName);
     auto portable = summary;
-    std::erase_if(portable.checked.establishes, privateOutput);
+    if (privateOutputs) {
+      core::CheckedRequirements::Set outputs;
+      for (const auto &post : portable.checked.establishes)
+        if (!privateOutput(post))
+          outputs.insert(post);
+      portable.checked.establishes.assign(std::move(outputs));
+    }
+    if (privateRequirements) {
+      // RFC 0021: weaken only the antecedent, thereby strengthening a
+      // sufficient requirement. Preserve the local conditional contract and
+      // keep strict remapping of required properties and every output premise.
+      core::CheckedRequirements::Set requirements;
+      const auto discard = [](auto &entries, const auto &privateEntry) {
+        for (auto it = entries.begin(); it != entries.end();)
+          if (privateEntry(*it))
+            it = entries.erase(it);
+          else
+            ++it;
+      };
+      for (auto requirement : portable.checked.requirements) {
+        discard(requirement.when.conditions, privateCondition);
+        discard(requirement.when.pointers, privatePointers);
+        discard(requirement.when.integers, privateInteger);
+        requirements.insert(std::move(requirement));
+      }
+      portable.checked.requirements.assign(std::move(requirements));
+    }
     return core::remapGlobals(portable, byName);
   };
   for (const FunctionDecl *function : definitions) {

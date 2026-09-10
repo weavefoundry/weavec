@@ -31,5 +31,6 @@ weavec_add_library(
           Scc.cpp
           SourceLocation.cpp
           Spatial.cpp
+          Traversal.cpp
           Summary.cpp
           SummaryIO.cpp)

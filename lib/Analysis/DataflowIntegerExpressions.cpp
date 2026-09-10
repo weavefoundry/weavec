@@ -105,6 +105,8 @@ FunctionDataflow::integerExpressionOf(const Expr &expr,
       trait->getTypeOfArgument()->isVariablyModifiedType())
     return variableArraySize(trait->getTypeOfArgument(), state);
   if (const auto *binary = dyn_cast<BinaryOperator>(e)) {
+    if (const auto pointer = checkedPointerOperation(*binary, state))
+      return NumericExpression::constant(*pointer);
     if (binary->getOpcode() == BO_Assign || binary->getOpcode() == BO_Comma)
       return child(*binary->getRHS());
     if (binary->isCompoundAssignmentOp())
@@ -275,6 +277,18 @@ FunctionDataflow::integerAffineOf(const Expr &expr,
         return core::Affine::ofConstant(*exact);
   }
   const Expr *e = expr.IgnoreParens();
+  if (options.checkContracts)
+    if (const auto *adjust = dyn_cast<UnaryOperator>(e);
+        adjust && adjust->isIncrementDecrementOp()) {
+      if (adjust->isPostfix()) {
+        if (const auto saved = integerStatementResults.find(adjust);
+            saved != integerStatementResults.end() && saved->second)
+          return core::Affine::ofPlace(*saved->second);
+      } else if (const auto place = builder.resolve(*adjust->getSubExpr());
+                 place && place->element.isWhole()) {
+        return core::Affine::ofPlace(place->place);
+      }
+    }
   if (const auto *cast = dyn_cast<CastExpr>(e);
       cast && preservesInteger(*cast, state))
     return integerAffineOf(*cast->getSubExpr(), state);

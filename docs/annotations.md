@@ -570,7 +570,7 @@ Calls whose inputs have no established interacting relationship still use
 generic summaries; silence does not prove arbitrary pointers disjoint.
 The [validation report](validation-rfc0016.md) records the supported matrix
 and remaining coverage limits. These context records are retained in the
-current format 16 sidecars; rebuild older objects before link analysis. Checked
+current format 17 sidecars; rebuild older objects before link analysis. Checked
 mode also specializes exact scalar inputs and fields under the same context
 limits (RFC 0019).
 
@@ -659,7 +659,7 @@ bits, unsupported union/type-punning and pointer-provenance operations,
 unrestricted aliases, byte-encoded pointers, GC invariants and concurrency
 remain outside the supported model.
 
-RFC 0017 introduced summary and sidecar format **13**; current summary format **15** and sidecar format **16**
+RFC 0017 introduced summary and sidecar format **13**; current summary format **16** and sidecar format **17**
 requires rebuilding older objects. The [RFC 0017 validation report](validation-rfc0017.md) records
 passing regression and sanitizer suites, corpus coverage, performance costs
 and remaining false positives.
@@ -711,5 +711,20 @@ initialized`, `access interval must fit its object`, `callee initialized safety
 precondition must hold`, and `memcpy intervals must be disjoint`. String calls
 also require a represented initialized terminator. Missing evidence remains
 distinct from a concrete `checking-failed` violation. Conditional memory and
-numeric output facts use summary format 15, sidecar format 16 and checked JSON version 2 (or compact version 3);
+numeric output facts use summary format 16, sidecar format 17 and checked JSON version 2 (or compact version 3);
 rebuild older objects before link analysis.
+
+RFC 0021 adds traversal contracts without new annotation spellings or IDs.
+Reasons include `pointer difference or ordering needs shared-object evidence`,
+`pointer difference must fit target ptrdiff_t and element size`,
+`formed pointer must remain within its object or one past it`,
+`pointer arithmetic requires live non-null storage`, and
+`traversal requires an initialized terminated prefix`. The last describes
+an inferred caller requirement. A failed caller may report
+`callee terminated safety precondition must hold`. The checked ledger retains
+separate bounds, initialization, validity and arithmetic obligations; an
+unresolved relationship does not assert a concrete invalid execution.
+Exhaustion remains explicit as `traversal variable limit reached`,
+`traversal invariant candidate limit reached`, or
+`traversal relational limit reached`. Diagnostic demotion does not make a
+limited contract complete.

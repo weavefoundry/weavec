@@ -225,10 +225,20 @@ bool PlaceBuilder::isDeclaredRaw(core::PlaceId place) const {
 
 std::optional<core::SummaryPath>
 PlaceBuilder::summaryPathOf(core::PlaceId place) {
+  if (const auto found = summaryPaths.find(place.value);
+      found != summaryPaths.end())
+    return found->second;
   const core::PlaceId root = places.root(place);
   const VarDecl *var = varForPlace(root);
-  if (var == nullptr)
+  const auto unavailable = [&]() -> std::optional<core::SummaryPath> {
+    // placeForVar creates and binds a fresh root atomically. An existing
+    // local/synthetic root can never acquire a parameter/global declaration.
+    if (summaryPaths.size() < MaxCachedSummaryPaths)
+      summaryPaths.try_emplace(place.value, std::nullopt);
     return std::nullopt;
+  };
+  if (var == nullptr)
+    return unavailable();
 
   core::SummaryPath path;
   if (const auto *param = dyn_cast<ParmVarDecl>(var)) {
@@ -236,14 +246,15 @@ PlaceBuilder::summaryPathOf(core::PlaceId place) {
   } else if (var->hasGlobalStorage()) {
     path = core::SummaryPath::global(summaries.globals().idFor(*var));
   } else {
-    return std::nullopt;
+    return unavailable();
   }
 
   // Ancestors come nearest-first; the path is spelled root-first.
   std::vector<core::PlaceId> chain{place};
   llvm::append_range(chain, places.ancestors(place));
   if (chain.size() - 1 > MaxPlaceDepth)
-    return std::nullopt;
+    return unavailable();
+  bool cacheable = true;
   for (const core::PlaceId node : llvm::reverse(chain)) {
     if (node == root)
       continue;
@@ -255,12 +266,25 @@ PlaceBuilder::summaryPathOf(core::PlaceId place) {
       if (const auto *field = dyn_cast_or_null<FieldDecl>(declFor(node))) {
         const auto view = summaries.objectView(
             context.getCanonicalTypeDeclType(field->getParent()));
-        if (!view.empty())
-          objectViews[path] = view;
+        if (!view.empty()) {
+          const auto [entry, inserted] = objectViews.try_emplace(path, view);
+          if (!inserted && entry->second != view) {
+            // Different record views can share a pointer-path prefix. A
+            // subsequent lookup must replay its own view registration.
+            summaryPaths.clear();
+            entry->second = view;
+          }
+        } else {
+          cacheable = false;
+        }
+      } else {
+        cacheable = false;
       }
       path = path.field(places.fieldName(node));
       break;
     case core::PathStep::Index:
+      // A selector can depend on the active caller state and must be rebuilt.
+      cacheable = false;
       if (places.isElement(node)) {
         const auto selector = summaryIndex
                                   ? summaryIndex(places.fieldName(node))
@@ -272,6 +296,8 @@ PlaceBuilder::summaryPathOf(core::PlaceId place) {
       break;
     }
   }
+  if (cacheable && summaryPaths.size() < MaxCachedSummaryPaths)
+    summaryPaths.try_emplace(place.value, path);
   return path;
 }
 
@@ -1142,6 +1168,9 @@ const Expr *PlaceBuilder::pointerOperandOfArithmetic(const Expr &expr) {
 
 std::optional<PlaceRef> PlaceBuilder::resolvePointerValue(const Expr &expr) {
   const Expr &stripped = stripTransparent(expr);
+  if (pointerResult)
+    if (const auto result = pointerResult(stripped))
+      return result;
   // `free(s - header)` releases the object `s` points into (RFC 0004,
   // *Pointer identity*): the argument names `s`'s object, at another offset.
   if (const Expr *pointer = pointerOperandOfArithmetic(stripped))
@@ -1953,7 +1982,7 @@ core::PointerOffset PlaceBuilder::arithmeticStepOf(const BinaryOperator &binary,
 std::optional<core::Affine>
 PlaceBuilder::affineFromPath(const core::PathAffine &affine,
                              const CallExpr &call) {
-  if (affine.expression)
+  if (affine.expression || affine.quantity == core::AffineQuantity::Terminator)
     return expressionFromPath ? expressionFromPath(affine, call) : std::nullopt;
   if (!affine.path)
     return core::Affine::ofConstant(affine.constant);

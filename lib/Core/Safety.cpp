@@ -472,6 +472,99 @@ bool operator==(const SafetyLedger &left, const SafetyLedger &right) {
       });
 }
 
+static std::optional<ValueFact> exactConditionUnion(const ValueFact &a,
+                                                    const ValueFact &b) {
+  if (a == b)
+    return a;
+  if (a.isPointer() && b.isPointer()) {
+    auto joined = a;
+    joined.join(b);
+    return joined;
+  }
+  if (!a.integer || !b.integer || a.integer->type != b.integer->type)
+    return std::nullopt;
+  auto intervals = a.integer->all();
+  intervals.insert(intervals.end(), b.integer->all().begin(),
+                   b.integer->all().end());
+  std::ranges::sort(intervals);
+  std::vector<IntegerInterval> exact;
+  for (const auto &interval : intervals) {
+    if (!exact.empty() && (interval.lower <= exact.back().upper ||
+                           (exact.back().upper != UINT64_MAX &&
+                            interval.lower == exact.back().upper + 1)))
+      exact.back().upper = std::max(exact.back().upper, interval.upper);
+    else
+      exact.push_back(interval);
+  }
+  const auto joined = a.integer->united(*b.integer);
+  // A range-domain cap may fill holes. That is safe for possible values,
+  // but cannot widen the condition under which a must-fact is claimed.
+  return joined.all() == exact ? std::optional(ValueFact::ofInteger(joined))
+                               : std::nullopt;
+}
+
+static bool mergeInitializedConditions(std::vector<InitializedRange> &ranges) {
+  bool changed = false;
+  for (std::size_t i = 0; i < ranges.size(); ++i)
+    for (std::size_t j = i + 1; j < ranges.size();) {
+      auto &a = ranges[i];
+      const auto &b = ranges[j];
+      if (a.begin != b.begin || a.end != b.end || a.source != b.source ||
+          a.zeroed != b.zeroed || a.when.pointers != b.when.pointers ||
+          a.when.integers != b.when.integers) {
+        ++j;
+        continue;
+      }
+      std::set<PlaceId> keys;
+      for (const auto &[key, fact] : a.when.conditions) {
+        (void)fact;
+        keys.insert(key);
+      }
+      for (const auto &[key, fact] : b.when.conditions) {
+        (void)fact;
+        keys.insert(key);
+      }
+      std::optional<PlaceId> different;
+      bool compatible = true;
+      for (const auto key : keys) {
+        const auto x = a.when.conditions.find(key);
+        const auto y = b.when.conditions.find(key);
+        if (x != a.when.conditions.end() && y != b.when.conditions.end() &&
+            x->second == y->second)
+          continue;
+        if (different) {
+          compatible = false;
+          break;
+        }
+        different = key;
+      }
+      if (compatible && different) {
+        const auto x = a.when.conditions.find(*different);
+        const auto y = b.when.conditions.find(*different);
+        if (x == a.when.conditions.end() || y == b.when.conditions.end()) {
+          a.when.conditions.erase(*different);
+        } else if (const auto joined =
+                       exactConditionUnion(x->second, y->second)) {
+          if (joined->trivial())
+            a.when.conditions.erase(*different);
+          else
+            x->second = *joined;
+        } else {
+          compatible = false;
+        }
+      }
+      if (compatible) {
+        ranges.erase(ranges.begin() + static_cast<std::ptrdiff_t>(j));
+        changed = true;
+      } else {
+        ++j;
+      }
+    }
+  if (changed)
+    std::ranges::sort(ranges);
+  return changed;
+}
+
 void SafetyState::initialize(PlaceId storage, InitializedRange range) {
   if (range.zeroed) {
     auto plain = range;
@@ -483,6 +576,25 @@ void SafetyState::initialize(PlaceId storage, InitializedRange range) {
   auto &ranges = memory[storage];
   if (std::ranges::find(ranges, range) != ranges.end())
     return;
+  // Exact adjacency is valid for symbolic endpoints as well as constants.
+  // Every constituent interval is a must-fact; no gap is filled here.
+  bool extended = true;
+  while (extended) {
+    extended = std::erase_if(ranges, [&](const InitializedRange &old) {
+                 if (old.source != range.source || old.zeroed != range.zeroed ||
+                     old.when != range.when)
+                   return false;
+                 if (old.end == range.begin) {
+                   range.begin = old.begin;
+                   return true;
+                 }
+                 if (range.end == old.begin) {
+                   range.end = old.end;
+                   return true;
+                 }
+                 return false;
+               }) != 0;
+  }
   if (range.begin.isConstant() && range.end.isConstant()) {
     if (range.begin.constant > range.end.constant)
       return;
@@ -501,11 +613,13 @@ void SafetyState::initialize(PlaceId storage, InitializedRange range) {
   // Losing initialization evidence is safe; the later read stays unresolved.
   if (ranges.size() < MaxInitializedRanges) {
     ranges.push_back(range);
+    mergeInitializedConditions(ranges);
     std::ranges::sort(ranges);
   }
 }
 
 void SafetyState::forgetZeros() {
+  termination.clear();
   for (auto &[storage, ranges] : memory) {
     (void)storage;
     std::erase_if(ranges, [](const auto &range) { return range.zeroed; });
@@ -514,6 +628,10 @@ void SafetyState::forgetZeros() {
 void SafetyState::copyMemory(PlaceId source, PlaceId destination) {
   if (source == destination)
     return;
+  if (const auto position = positions.find(source); position != positions.end())
+    positions.insert_or_assign(destination, position->second);
+  else
+    positions.erase(destination);
   if (const auto object = objects.find(source); object != objects.end())
     objects[destination] = object->second;
   else
@@ -523,8 +641,21 @@ void SafetyState::copyMemory(PlaceId source, PlaceId destination) {
     memory.erase(destination);
   else
     memory[destination] = it->second;
+  if (const auto witness = termination.find(source);
+      witness != termination.end())
+    termination[destination] = witness->second;
+  else
+    termination.erase(destination);
 }
 void SafetyState::forget(PlaceId place) {
+  writtenStorage.erase(place);
+  termination.erase(place);
+  replacedPointers.erase(place);
+  accessible.erase(place);
+  positions.erase(place);
+  std::erase_if(positions, [&](const auto &entry) {
+    return entry.second.storage == place;
+  });
   objects.erase(place);
   initialized.erase(place);
   pointers.erase(place);
@@ -534,6 +665,21 @@ void SafetyState::forget(PlaceId place) {
 }
 
 void SafetyState::forgetDependency(PlaceId place) {
+  for (auto &[storage, witnesses] : termination) {
+    (void)storage;
+    std::erase_if(witnesses, [&](const auto &witness) {
+      return witness.begin.place == place || witness.zero.place == place ||
+             witness.when.dependsOn(place);
+    });
+  }
+  std::erase_if(termination,
+                [](const auto &entry) { return entry.second.empty(); });
+  std::erase_if(accessible,
+                [&](const auto &entry) { return entry.second.place == place; });
+  std::erase_if(positions, [&](const auto &entry) {
+    return entry.second.offset.place == place ||
+           (entry.second.extent && entry.second.extent->place == place);
+  });
   for (auto &path : paths)
     path.drop(place);
   for (auto &[storage, ranges] : memory) {
@@ -585,6 +731,35 @@ void SafetyState::refinePaths(const PlaceGuard &guard) {
 bool SafetyState::join(const SafetyState &other, const PlaceGuard &left,
                        const PlaceGuard &right) {
   bool changed = other.havoc && !havoc;
+  const auto written = writtenStorage.size();
+  writtenStorage.insert(other.writtenStorage.begin(),
+                        other.writtenStorage.end());
+  changed |= writtenStorage.size() != written;
+  for (auto &[storage, witnesses] : termination) {
+    const auto found = other.termination.find(storage);
+    changed |= std::erase_if(witnesses, [&](const auto &witness) {
+                 return found == other.termination.end() ||
+                        std::ranges::find(found->second, witness) ==
+                            found->second.end();
+               }) != 0;
+  }
+  changed |= std::erase_if(termination, [](const auto &entry) {
+               return entry.second.empty();
+             }) != 0;
+  const auto replacements = replacedPointers.size();
+  replacedPointers.insert(other.replacedPointers.begin(),
+                          other.replacedPointers.end());
+  changed |= replacements != replacedPointers.size();
+  changed |=
+      std::erase_if(accessible, [&](const auto &entry) {
+        const auto found = other.accessible.find(entry.first);
+        return found == other.accessible.end() || found->second != entry.second;
+      }) != 0;
+  changed |=
+      std::erase_if(positions, [&](const auto &entry) {
+        const auto found = other.positions.find(entry.first);
+        return found == other.positions.end() || found->second != entry.second;
+      }) != 0;
   havoc |= other.havoc;
   auto leftPaths = paths.empty() ? std::vector<PlaceGuard>{left} : paths;
   auto rightPaths =
@@ -685,6 +860,7 @@ bool SafetyState::join(const SafetyState &other, const PlaceGuard &left,
     };
     conditional(aRanges, leftPaths, rightPaths);
     conditional(bRanges, rightPaths, leftPaths);
+    mergeInitializedConditions(common);
     std::ranges::sort(common);
     common.erase(std::ranges::unique(common).begin(), common.end());
     if (common.size() > MaxInitializedRanges)

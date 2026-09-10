@@ -23,6 +23,7 @@ weavec_add_unittest(
           ResourceTest.cpp
           ScalarTest.cpp
           SpatialTest.cpp
+          TraversalTest.cpp
           SummaryIOTest.cpp
           SummaryTest.cpp
   DEPS weavec::Core)

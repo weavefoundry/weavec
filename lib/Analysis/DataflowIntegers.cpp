@@ -124,6 +124,8 @@ std::optional<core::IntegerRangeEvaluation> FunctionDataflow::integerRangeOf(
                 : unknown();
   }
   if (const auto *binary = dyn_cast<BinaryOperator>(e)) {
+    if (const auto pointer = checkedPointerRange(*binary, state))
+      return core::IntegerRangeEvaluation{.values = *pointer};
     if (binary->getOpcode() == BO_Assign || binary->getOpcode() == BO_Comma)
       return child(*binary->getRHS());
     if (binary->isCompoundAssignmentOp()) {
@@ -431,6 +433,12 @@ FunctionDataflow::integerBounds(core::PlaceId place,
   const auto fact = state.scalars.factOf(place);
   if (!type && fact && fact->integer)
     type = fact->integer->type;
+  if (!type && state.safety &&
+      (checkedTerminatorInputs.contains(place) ||
+       std::ranges::any_of(checkedCoordinates, [&](const auto &entry) {
+         return entry.second == place;
+       })))
+    type = core::IntegerType{.width = 64, .isSigned = false};
   if (!type)
     return {lower, upper};
   const auto range = integerRangeAt(place, *type, state);
@@ -462,12 +470,61 @@ void FunctionDataflow::recordSpatialCheck(const Expr &at,
     it->second = check;
 }
 
+static std::optional<core::IntegerExpression<core::PlaceId>>
+traversalConditionExpression(const Expr &expr, PlaceBuilder &builder,
+                             ASTContext &context, unsigned depth = 0) {
+  using Expression = core::IntegerExpression<core::PlaceId>;
+  if (depth == 12 || expr.HasSideEffects(context))
+    return std::nullopt;
+  const auto type = integerTypeOf(expr.getType(), context);
+  if (!type)
+    return std::nullopt;
+  const auto *value = expr.IgnoreParens();
+  if (const auto *cast = dyn_cast<CastExpr>(value)) {
+    const auto input = traversalConditionExpression(
+        *cast->getSubExpr(), builder, context, depth + 1);
+    return input ? input->converted(*type) : std::nullopt;
+  }
+  if (const auto *ref = dyn_cast<DeclRefExpr>(value))
+    if (const auto *var = dyn_cast<VarDecl>(ref->getDecl()))
+      return Expression::input(builder.placeForVar(*var), *type);
+  if (const auto *literal = dyn_cast<IntegerLiteral>(value))
+    return Expression::constant(core::IntegerValue::ofBits(
+        *type, literal->getValue().getLimitedValue()));
+  if (const auto *binary = dyn_cast<BinaryOperator>(value)) {
+    const auto op = integerOpOf(binary->getOpcode());
+    const auto a = traversalConditionExpression(*binary->getLHS(), builder,
+                                                context, depth + 1);
+    const auto b = traversalConditionExpression(*binary->getRHS(), builder,
+                                                context, depth + 1);
+    if (op && a && b)
+      return Expression::operation(
+          *op, *a, *b, context.getLangOpts().isSignedOverflowDefined());
+  }
+  return std::nullopt;
+}
+
 void FunctionDataflow::recordIntegerCondition(const Expr &lhs,
                                               core::IntegerOp op,
                                               const Expr &rhs,
                                               core::AnalysisState &state) {
-  const auto a = integerExpressionOf(lhs, state);
-  const auto b = integerExpressionOf(rhs, state);
+  auto a = integerExpressionOf(lhs, state);
+  auto b = integerExpressionOf(rhs, state);
+  const auto difference = [](const Expr &expr) {
+    const auto *binary = dyn_cast<BinaryOperator>(expr.IgnoreParenImpCasts());
+    return binary && binary->getOpcode() == BO_Sub &&
+           expr.getType()->isUnsignedIntegerType();
+  };
+  bool traversal = false;
+  if (state.safety && (difference(lhs) || difference(rhs))) {
+    const auto directA = traversalConditionExpression(lhs, builder, context);
+    const auto directB = traversalConditionExpression(rhs, builder, context);
+    if (directA && directB) {
+      a = directA;
+      b = directB;
+      traversal = true;
+    }
+  }
   if (!a || !b) {
     state.numericConditionsIncomplete = true;
     return;
@@ -478,7 +535,7 @@ void FunctionDataflow::recordIntegerCondition(const Expr &lhs,
           predicate.evaluate([&](core::PlaceId place, core::IntegerType type) {
             return integerRangeAt(place, type, state);
           });
-      known && *known)
+      known && *known && !traversal)
     return;
   if (state.numericConditions.size() >= core::MaxGuardConjuncts &&
       !std::ranges::binary_search(state.numericConditions.integers,

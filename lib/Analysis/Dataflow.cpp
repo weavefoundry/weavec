@@ -48,6 +48,7 @@
 #include "clang/Analysis/FlowSensitive/DataflowWorklist.h"
 #include "clang/Lex/Lexer.h"
 
+#include "llvm/ADT/SCCIterator.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/SmallVector.h"
@@ -120,6 +121,9 @@ FunctionDataflow::FunctionDataflow(ASTContext &ctx, const FunctionDecl &fn,
   };
   builder.expressionFromPath = [this](const core::PathAffine &value,
                                       const CallExpr &call) {
+    if (currentState && currentState->safety &&
+        value.quantity == core::AffineQuantity::Terminator)
+      return checkedTerminatorQuantity(value, call, *currentState);
     return currentState
                ? instantiateIntegerExpression(value, call, *currentState)
                : std::nullopt;
@@ -131,6 +135,20 @@ FunctionDataflow::FunctionDataflow(ASTContext &ctx, const FunctionDecl &fn,
       [this](const Expr &expr) -> std::optional<core::ValueFact> {
     return currentState ? scalarFactOf(expr, *currentState) : std::nullopt;
   };
+  if (options.checkContracts)
+    builder.pointerResult =
+        [this](const Expr &expr) -> std::optional<PlaceRef> {
+      const auto result = checkedPointerResults.find(&expr);
+      if (!currentState || !currentState->safety ||
+          result == checkedPointerResults.end() ||
+          !currentState->safety->positions.contains(result->second))
+        return std::nullopt;
+      return PlaceRef{.place = result->second,
+                      .derefs = {},
+                      .derefExprs = {},
+                      .derefElements = {},
+                      .element = {}};
+    };
   builder.selectArray = [this](PlaceRef storage,
                                std::optional<core::Affine> index, QualType type,
                                const Expr &at) {
@@ -301,11 +319,18 @@ void FunctionDataflow::classifyExpr(const Expr *expr, Role role) {
       return;
     if (const auto step = builder.pointerStepOf(*e))
       pointerSteps.try_emplace(&stripped, *step);
+    if (options.checkContracts)
+      if (const auto place = builder.resolve(stripped))
+        checkedSteppedPointers.insert(place->place);
   };
 
   if (const auto *unary = dyn_cast<UnaryOperator>(e)) {
     switch (unary->getOpcode()) {
     case UO_AddrOf:
+      // A helper can advance a pointer through its address even when this
+      // function has no syntactic increment of that cursor (RFC 0021).
+      if (options.checkContracts)
+        noteStepped(*unary->getSubExpr());
       classifyExpr(unary->getSubExpr(), Role::AddressOf);
       return;
     case UO_PreInc:
@@ -481,8 +506,10 @@ void FunctionDataflow::collectDiscardedCalls(const Stmt *stmt) {
 
 core::AnalysisState FunctionDataflow::initialState() {
   core::AnalysisState state;
-  if (options.checkContracts)
+  if (options.checkContracts) {
     state.safety.emplace();
+    state.relations.trackDifferences();
+  }
   for (const ParmVarDecl *param : function.parameters()) {
     const core::PlaceId place = builder.placeForVar(*param);
     varLifetimes[param->getCanonicalDecl()] = fnLifetime;
@@ -496,6 +523,8 @@ core::AnalysisState FunctionDataflow::initialState() {
       if (type && paramReassigned[param->getFunctionScopeIndex()]) {
         const auto saved = places.create("entry(" + nameOf(place) + ")");
         numericEntryValues.emplace(place, saved);
+        state.scalars.set(
+            saved, core::ValueFact::ofInteger(core::IntegerRange::full(*type)));
         snapshotPlaces.insert(saved);
         numericSnapshotExpressions.emplace(
             saved, core::IntegerExpression<core::SummaryPath>::input(
@@ -571,6 +600,38 @@ core::AnalysisState FunctionDataflow::initialState() {
     state.callTargets[place] = targets;
   }
   initializeCallContext(state);
+  if (state.safety)
+    for (const auto pointer : checkedSteppedPointers)
+      if (const auto path = builder.summaryPathOf(pointer);
+          path && path->isParam()) {
+        const auto storage = places.deref(pointer);
+        checkedInputObjects[pointer] = storage;
+        installCheckedPosition(
+            pointer,
+            {.storage = storage, .offset = {}, .extent = {}, .input = pointer},
+            state);
+      }
+  if (state.safety)
+    for (const auto &[holder, coordinate] : checkedCoordinates) {
+      (void)holder;
+      const auto value = state.scalars.factOf(coordinate);
+      if (!value || value->constant != 0)
+        continue;
+      for (const auto &[otherHolder, other] : checkedCoordinates) {
+        (void)otherHolder;
+        if (other == coordinate)
+          break;
+        const auto otherValue = state.scalars.factOf(other);
+        if (otherValue && otherValue->constant == 0) {
+          // These are relative byte counts, initially zero even for distinct
+          // input objects. Their equality establishes no pointer identity.
+          state.relations.learn(coordinate, core::Relation::Equal, other);
+          break;
+        }
+      }
+    }
+  if (state.safety)
+    initializeCheckedStrings(state);
   for (const auto *param : function.parameters())
     if (param->getType()->isVariablyModifiedType())
       captureVariableArray(builder.placeForVar(*param), *param, state);
@@ -1402,9 +1463,9 @@ bool FunctionDataflow::isStorageOfVariable(core::PlaceId place) const {
   return builder.varForPlace(root) != nullptr || builder.isLiteralPlace(root);
 }
 
-void FunctionDataflow::stepPointer(core::PlaceId place,
-                                   const core::PointerOffset &step,
-                                   core::AnalysisState &state) {
+/// RFC 0011: the pointer's own value moves, carrying its spatial/alias facts.
+static void stepPointer(core::PlaceId place, const core::PointerOffset &step,
+                        core::AnalysisState &state) {
   if (step.isZero())
     return;
   // A place with no record so far stood at the start of what it points into
@@ -1433,6 +1494,11 @@ FunctionDataflow::summaryAffineOf(const std::optional<core::Affine> &affine) {
     return std::nullopt;
   if (!affine->place)
     return core::PathAffine::ofConstant(affine->constant);
+  if (const auto input = checkedTerminatorInputs.find(*affine->place);
+      input != checkedTerminatorInputs.end())
+    if (const auto path = builder.summaryPathOf(input->second))
+      return core::PathAffine::ofTerminator(*path, affine->scale,
+                                            affine->constant);
   if (const auto saved = numericSnapshotExpressions.find(*affine->place);
       saved != numericSnapshotExpressions.end())
     return core::PathAffine::ofExpression(saved->second, affine->scale,
@@ -1445,9 +1511,29 @@ FunctionDataflow::summaryAffineOf(const std::optional<core::Affine> &affine) {
                      : std::nullopt;
   }
   const auto path = stableSummaryPathOf(*affine->place);
-  if (!path)
-    return std::nullopt;
-  return core::PathAffine::ofPath(*path, affine->scale, affine->constant);
+  if (path)
+    return core::PathAffine::ofPath(*path, affine->scale, affine->constant);
+  if (options.checkContracts && currentState) {
+    const auto folded = foldAffine(affine, *currentState);
+    if (folded && folded->isConstant())
+      return core::PathAffine::ofConstant(folded->constant);
+    for (const auto &[pair, edge] : currentState->relations.all()) {
+      if (edge.relation != core::Relation::Equal ||
+          (pair.first != *affine->place && pair.second != *affine->place))
+        continue;
+      const auto oriented =
+          pair.first == *affine->place ? std::optional(edge) : edge.flipped();
+      const auto other =
+          pair.first == *affine->place ? pair.second : pair.first;
+      const auto input = stableSummaryPathOf(other);
+      std::int64_t constant = 0;
+      if (oriented && input &&
+          !__builtin_mul_overflow(oriented->offset, affine->scale, &constant) &&
+          !__builtin_add_overflow(constant, affine->constant, &constant))
+        return core::PathAffine::ofPath(*input, affine->scale, constant);
+    }
+  }
+  return std::nullopt;
 }
 
 void FunctionDataflow::checkOutlivedLoans(
@@ -1761,6 +1847,94 @@ void FunctionDataflow::run() {
 
   entryStates.assign(cfg->getNumBlockIDs(), std::nullopt);
   std::vector<unsigned> visits(cfg->getNumBlockIDs(), 0);
+  std::vector<bool> cyclicBlocks(cfg->getNumBlockIDs(), false);
+  struct Expansion {
+    const CFGBlock *header;
+    const BinaryOperator *condition;
+    std::set<unsigned> blocks;
+    bool decided = false;
+    bool active = false;
+  };
+  std::vector<Expansion> expansions;
+  std::vector<std::optional<std::size_t>> expansionFor(cfg->getNumBlockIDs());
+  if (options.checkContracts)
+    for (auto component = llvm::scc_begin(cfg.get()); !component.isAtEnd();
+         ++component) {
+      if (!component.hasCycle())
+        continue;
+      const CFGBlock *header = nullptr;
+      const ForStmt *loop = nullptr;
+      bool eligible = true;
+      std::set<unsigned> members;
+      for (const auto *block : *component) {
+        cyclicBlocks[block->getBlockID()] = true;
+        members.insert(block->getBlockID());
+        const auto *terminator = block->getTerminatorStmt();
+        if (const auto *candidate = dyn_cast_or_null<ForStmt>(terminator)) {
+          eligible &= loop == nullptr;
+          loop = candidate;
+          header = block;
+        } else if (isa_and_nonnull<WhileStmt, DoStmt, GotoStmt,
+                                   IndirectGotoStmt>(terminator)) {
+          eligible = false;
+        }
+      }
+      const auto *condition =
+          loop && loop->getCond()
+              ? dyn_cast<BinaryOperator>(loop->getCond()->IgnoreParenImpCasts())
+              : nullptr;
+      const auto *increment =
+          loop && loop->getInc()
+              ? dyn_cast<UnaryOperator>(loop->getInc()->IgnoreParenImpCasts())
+              : nullptr;
+      const auto *index = condition
+                              ? dyn_cast<DeclRefExpr>(
+                                    condition->getLHS()->IgnoreParenImpCasts())
+                              : nullptr;
+      const auto *stepped =
+          increment ? dyn_cast<DeclRefExpr>(
+                          increment->getSubExpr()->IgnoreParenImpCasts())
+                    : nullptr;
+      eligible &= header != nullptr && condition != nullptr &&
+                  condition->getOpcode() == BO_LT && index != nullptr &&
+                  increment != nullptr && increment->isIncrementOp() &&
+                  stepped != nullptr &&
+                  index->getDecl() == stepped->getDecl() &&
+                  !condition->getRHS()->HasSideEffects(context);
+      if (!eligible)
+        continue;
+      // Every external entry must cross the header. Removing the back edges
+      // must leave an acyclic region, including unusual local control flow.
+      std::map<unsigned, unsigned> incoming;
+      for (const auto *block : *component) {
+        incoming[block->getBlockID()] = 0;
+        for (const auto &edge : block->preds())
+          if (const auto *pred = edge.getReachableBlock()) {
+            if (!members.contains(pred->getBlockID()))
+              eligible &= block == header;
+            else if (block != header)
+              ++incoming[block->getBlockID()];
+          }
+      }
+      std::vector<const CFGBlock *> ready{header};
+      for (std::size_t i = 0; i < ready.size(); ++i)
+        for (const auto &edge : ready[i]->succs())
+          if (const auto *succ = edge.getReachableBlock();
+              succ && succ != header && members.contains(succ->getBlockID()) &&
+              --incoming[succ->getBlockID()] == 0)
+            ready.push_back(succ);
+      if (!eligible || ready.size() != members.size())
+        continue;
+      for (const auto id : members)
+        expansionFor[id] = expansions.size();
+      expansions.push_back({.header = header,
+                            .condition = condition,
+                            .blocks = std::move(members)});
+    }
+  using ExpandedKey = std::pair<unsigned, unsigned>;
+  std::map<ExpandedKey, core::AnalysisState> expandedEntries;
+  std::map<ExpandedKey, unsigned> expandedVisits;
+  std::vector<std::set<unsigned>> dirtyLayers(cfg->getNumBlockIDs());
 
   // RFC 0020: checked runs process predecessors before acyclic joins.
   // Ordinary heuristic domains retain their established FIFO work order.
@@ -1785,7 +1959,8 @@ void FunctionDataflow::run() {
     worklist.emplace(*cfg, preparation->order.get());
   else
     fifo.emplace();
-  const auto enqueue = [&](const CFGBlock *block) {
+  const auto enqueue = [&](const CFGBlock *block, unsigned layer = 0) {
+    dirtyLayers[block->getBlockID()].insert(layer);
     if (worklist) {
       worklist->enqueueBlock(block);
     } else if (!queued[block->getBlockID()]) {
@@ -1805,61 +1980,134 @@ void FunctionDataflow::run() {
   };
   enqueue(&entry);
   while (const CFGBlock *block = dequeue()) {
-    if (++visits[block->getBlockID()] > MaxVisitsPerBlock) {
-      convergenceFailed = true;
-      continue;
-    }
+    auto layers = std::move(dirtyLayers[block->getBlockID()]);
+    dirtyLayers[block->getBlockID()].clear();
+    for (const auto layer : layers) {
+      auto &visited = layer == 0 ? visits[block->getBlockID()]
+                                 : expandedVisits[{block->getBlockID(), layer}];
+      if (++visited > MaxVisitsPerBlock) {
+        convergenceFailed = true;
+        continue;
+      }
 
-    core::AnalysisState out = *entryStates[block->getBlockID()];
-    if (options.stats)
-      options.stats->add("block_transfers");
-    transfer(*block, out);
-    // A call to a function that never returns ends the path here (RFC 0009,
-    // *Inferred `noreturn`*), as a declared `noreturn` does through the CFG.
-    if (blockTerminated)
-      continue;
+      core::AnalysisState out =
+          layer == 0 ? *entryStates[block->getBlockID()]
+                     : expandedEntries.at({block->getBlockID(), layer});
+      if (const auto region = expansionFor[block->getBlockID()]; region) {
+        auto &expansion = expansions[*region];
+        if (block == expansion.header && !expansion.decided) {
+          expansion.decided = true;
+          const auto first =
+              integerRangeOf(*expansion.condition->getLHS(), out);
+          const auto last = integerRangeOf(*expansion.condition->getRHS(), out);
+          const auto start = first && !first->mayBeInvalid
+                                 ? first->values.constant()
+                                 : std::nullopt;
+          const auto end = last && !last->mayBeInvalid && !last->values.empty()
+                               ? last->values.maximum()->signedValue()
+                               : std::nullopt;
+          if (start && start->signedValue() && end &&
+              *start->signedValue() >= 0 && *end >= *start->signedValue() &&
+              *end - *start->signedValue() <=
+                  static_cast<std::int64_t>(core::MaxTraversalIterations)) {
+            expansion.active = true;
+            if (options.stats)
+              options.stats->add("checked_loop_expansions");
+          }
+        }
+      }
+      if (options.stats)
+        options.stats->add("block_transfers");
+      transfer(*block, out);
+      // A call to a function that never returns ends the path here (RFC 0009,
+      // *Inferred `noreturn`*), as a declared `noreturn` does through the CFG.
+      if (blockTerminated)
+        continue;
 
-    const auto propagate = [&](unsigned succIndex, const CFGBlock &succ,
-                               core::AnalysisState edgeState) {
-      leaveBlock(*block, succIndex, edgeState);
-      // RFC 0009: an edge the state's facts contradict is dead.
-      if (edgeInfeasible)
-        return;
-      std::optional<core::AnalysisState> &target =
-          entryStates[succ.getBlockID()];
-      bool changed = false;
-      if (!target) {
-        target = std::move(edgeState);
-        changed = true;
-      } else {
+      const auto propagate = [&](unsigned succIndex, const CFGBlock &succ,
+                                 core::AnalysisState edgeState) {
+        leaveBlock(*block, succIndex, edgeState);
+        // RFC 0009: an edge the state's facts contradict is dead.
+        if (edgeInfeasible)
+          return;
+        // A single bounded region can keep its iteration partition through
+        // subsequent validation and returns. Merging it at the loop exit would
+        // lose the correlation between decoder width and accumulator range.
+        unsigned nextLayer =
+            expansions.size() == 1 && expansions.front().active ? layer : 0;
+        const auto region = expansionFor[block->getBlockID()];
+        if (region && expansions[*region].active &&
+            expansionFor[succ.getBlockID()] == region) {
+          nextLayer = layer;
+          if (&succ == expansions[*region].header) {
+            nextLayer = std::min(
+                layer + 1, static_cast<unsigned>(core::MaxTraversalIterations));
+            if (nextLayer == layer && options.stats)
+              options.stats->add("checked_loop_expansion_fallbacks");
+          }
+        }
+        core::AnalysisState *target = nullptr;
+        if (nextLayer == 0) {
+          auto &slot = entryStates[succ.getBlockID()];
+          if (!slot) {
+            slot = std::move(edgeState);
+            enqueue(&succ, nextLayer);
+            return;
+          }
+          target = &*slot;
+        } else {
+          const auto [slot, inserted] = expandedEntries.try_emplace(
+              ExpandedKey{succ.getBlockID(), nextLayer}, edgeState);
+          if (inserted) {
+            enqueue(&succ, nextLayer);
+            return;
+          }
+          target = &slot->second;
+        }
         if (options.stats)
           options.stats->add("state_joins");
-        changed = target->join(edgeState, &places);
-      }
-      if (changed)
-        enqueue(&succ);
-    };
+        const bool premises =
+            options.checkContracts && checkedJoinPremises(*target, edgeState);
+        const auto successorRegion = expansionFor[succ.getBlockID()];
+        const bool expandedSuccessor =
+            successorRegion && expansions[*successorRegion].active;
+        const bool widen =
+            !options.checkContracts ||
+            (cyclicBlocks[succ.getBlockID()] &&
+             ((!expandedSuccessor &&
+               (nextLayer == 0
+                    ? visits[succ.getBlockID()] > 0
+                    : expandedVisits[{succ.getBlockID(), nextLayer}] > 0)) ||
+              (nextLayer == core::MaxTraversalIterations &&
+               layer == nextLayer)));
+        const bool changed =
+            target->join(edgeState, &places, widen) || premises;
+        if (changed)
+          enqueue(&succ, nextLayer);
+      };
 
-    // The last reachable successor takes the block's state itself; every
-    // earlier one gets a copy. States in a large function are big (the
-    // alias relation over a loop body is dense), so copies are the cost.
-    llvm::SmallVector<std::pair<unsigned, const CFGBlock *>, 4> reachable;
-    unsigned index = 0;
-    for (const CFGBlock::AdjacentBlock &adjacent : block->succs()) {
-      // A block that ends in a `noreturn` call never hands control back to
-      // the caller: its state is no part of what a call to this function
-      // does (RFC 0003, *What a summary describes*).
-      if (const CFGBlock *succ = adjacent.getReachableBlock();
-          succ != nullptr &&
-          (succ != &cfg->getExit() || !block->hasNoReturnElement()))
-        reachable.emplace_back(index, succ);
-      ++index;
+      // The last reachable successor takes the block's state itself; every
+      // earlier one gets a copy. States in a large function are big (the
+      // alias relation over a loop body is dense), so copies are the cost.
+      llvm::SmallVector<std::pair<unsigned, const CFGBlock *>, 4> reachable;
+      unsigned index = 0;
+      for (const CFGBlock::AdjacentBlock &adjacent : block->succs()) {
+        // A block that ends in a `noreturn` call never hands control back to
+        // the caller: its state is no part of what a call to this function
+        // does (RFC 0003, *What a summary describes*).
+        if (const CFGBlock *succ = adjacent.getReachableBlock();
+            succ != nullptr &&
+            (succ != &cfg->getExit() || !block->hasNoReturnElement()))
+          reachable.emplace_back(index, succ);
+        ++index;
+      }
+      if (reachable.empty())
+        continue;
+      for (const auto &[succIndex, succ] : llvm::drop_end(reachable))
+        propagate(succIndex, *succ, out);
+      propagate(reachable.back().first, *reachable.back().second,
+                std::move(out));
     }
-    if (reachable.empty())
-      continue;
-    for (const auto &[succIndex, succ] : llvm::drop_end(reachable))
-      propagate(succIndex, *succ, out);
-    propagate(reachable.back().first, *reachable.back().second, std::move(out));
   }
 
   // Final pass: once per reachable block, from its fixpoint entry state.
@@ -1867,47 +2115,90 @@ void FunctionDataflow::run() {
   // the fixpoint states and each program point exactly once.
   phase = Phase::Final;
   for (const CFGBlock *block : *cfg) {
-    if (block == nullptr || !entryStates[block->getBlockID()])
+    if (block == nullptr)
       continue;
     // RFC 0020: no later block reads this settled entry. Keep the exit
     // entry intact for finalization and the optional dump below.
-    auto &blockEntry = *entryStates[block->getBlockID()];
-    core::AnalysisState state =
-        block == &cfg->getExit() ? blockEntry : std::move(blockEntry);
-    transfer(*block, state);
-    // What dies at the block's end is checked per edge; the edge that
-    // exits the function sees the report of everything left (RFC 0007). A
-    // block that never hands control back has no edges to check.
-    // RFC 0013: a swap or extraction can publish only incoming pointers,
-    // with no locally allocated resource. Its fallthrough still needs a
-    // final heap snapshot before the parameter/local names are retired.
-    if (blockTerminated ||
-        (!options.checkContracts && state.resources.empty() &&
-         !arrayCleanupLoops.contains(
-             dyn_cast_or_null<ForStmt>(block->getTerminatorStmt())) &&
-         !arrayFillLoops.contains(
-             dyn_cast_or_null<ForStmt>(block->getTerminatorStmt())) &&
-         (state.returned ||
-          (state.stored.empty() && state.arrayRanges.empty() &&
-           state.releasedArrayRanges.empty() &&
-           state.filledArrayRanges.empty() && writtenScalarPaths.empty()))))
-      continue;
-    llvm::SmallVector<unsigned, 4> reachable;
-    unsigned index = 0;
-    for (const CFGBlock::AdjacentBlock &adjacent : block->succs()) {
-      if (adjacent.getReachableBlock() != nullptr)
-        reachable.push_back(index);
-      ++index;
+    std::vector<core::AnalysisState *> layers;
+    if (entryStates[block->getBlockID()])
+      layers.push_back(&*entryStates[block->getBlockID()]);
+    for (unsigned layer = 1; layer <= core::MaxTraversalIterations; ++layer)
+      if (const auto found = expandedEntries.find({block->getBlockID(), layer});
+          found != expandedEntries.end())
+        layers.push_back(&found->second);
+    for (auto *settled : layers) {
+      auto &blockEntry = *settled;
+      core::AnalysisState state =
+          block == &cfg->getExit() ? blockEntry : std::move(blockEntry);
+      if (options.dumpStream && emitDiagnostics && state.safety) {
+        auto &stream = *options.dumpStream;
+        stream << "checked CFG " << function.getNameAsString() << " block "
+               << block->getBlockID() << " entry:\n";
+        for (const auto &[storage, ranges] : state.safety->memory)
+          for (const auto &range : ranges)
+            stream << "  initialized " << nameOf(storage) << " ["
+                   << range.begin.toString() << "," << range.end.toString()
+                   << ")\n";
+        for (const auto &[holder, position] : state.safety->positions)
+          stream << "  position " << nameOf(holder) << " = "
+                 << nameOf(position.storage) << " + "
+                 << position.offset.toString() << " extent "
+                 << (position.extent ? position.extent->toString() : "?")
+                 << "\n";
+        for (const auto &[storage, witnesses] : state.safety->termination)
+          for (const auto &witness : witnesses)
+            stream << "  terminated " << nameOf(storage) << " ["
+                   << witness.begin.toString() << "," << witness.zero.toString()
+                   << "]\n";
+        for (const auto &[pair, edge] : state.relations.all())
+          stream << "  relation " << nameOf(pair.first) << " "
+                 << core::spelling(edge.relation) << " " << nameOf(pair.second)
+                 << " + " << edge.offset << "\n";
+      }
+      transfer(*block, state);
+      // What dies at the block's end is checked per edge; the edge that
+      // exits the function sees the report of everything left (RFC 0007). A
+      // block that never hands control back has no edges to check.
+      // RFC 0013: a swap or extraction can publish only incoming pointers,
+      // with no locally allocated resource. Its fallthrough still needs a
+      // final heap snapshot before the parameter/local names are retired.
+      if (blockTerminated ||
+          (!options.checkContracts && state.resources.empty() &&
+           !arrayCleanupLoops.contains(
+               dyn_cast_or_null<ForStmt>(block->getTerminatorStmt())) &&
+           !arrayFillLoops.contains(
+               dyn_cast_or_null<ForStmt>(block->getTerminatorStmt())) &&
+           (state.returned ||
+            (state.stored.empty() && state.arrayRanges.empty() &&
+             state.releasedArrayRanges.empty() &&
+             state.filledArrayRanges.empty() && writtenScalarPaths.empty()))))
+        continue;
+      llvm::SmallVector<unsigned, 4> reachable;
+      unsigned index = 0;
+      for (const CFGBlock::AdjacentBlock &adjacent : block->succs()) {
+        if (adjacent.getReachableBlock() != nullptr)
+          reachable.push_back(index);
+        ++index;
+      }
+      if (reachable.empty())
+        continue;
+      for (const auto succIndex : llvm::drop_end(reachable)) {
+        core::AnalysisState edgeState = state;
+        leaveBlock(*block, succIndex, edgeState);
+      }
+      leaveBlock(*block, reachable.back(), state);
     }
-    if (reachable.empty())
-      continue;
-    for (const auto succIndex : llvm::drop_end(reachable)) {
-      core::AnalysisState edgeState = state;
-      leaveBlock(*block, succIndex, edgeState);
-    }
-    leaveBlock(*block, reachable.back(), state);
   }
-  const auto &exitState = entryStates[cfg->getExit().getBlockID()];
+  auto &exitState = entryStates[cfg->getExit().getBlockID()];
+  for (unsigned layer = 1; layer <= core::MaxTraversalIterations; ++layer)
+    if (const auto found =
+            expandedEntries.find({cfg->getExit().getBlockID(), layer});
+        found != expandedEntries.end()) {
+      if (exitState)
+        exitState->join(found->second, &places, false);
+      else
+        exitState = found->second;
+    }
   finalizeSummary(exitState ? &*exitState : nullptr);
   if (options.checkContracts)
     checkedFinish(exitState ? &*exitState : nullptr);
@@ -2243,6 +2534,9 @@ void FunctionDataflow::applyCondition(const Expr &condition, bool holds,
     const Expr &rhs = *binary->getRHS();
     const BinaryOperatorKind op = binary->getOpcode();
     const bool equality = op == BO_EQ || op == BO_NE;
+    if (options.checkContracts && lhs.getType()->isPointerType() &&
+        rhs.getType()->isPointerType())
+      checkedPointerCondition(*binary, holds, state);
 
     // `x == NULL`, `NULL != x`: a null test of `x`.
     if (equality && lhs.getType()->isPointerType() &&
@@ -2326,9 +2620,15 @@ void FunctionDataflow::applyCondition(const Expr &condition, bool holds,
     // `x OP k`, `k OP x` on an integer result. The edge on which `x == k`
     // holds (or `x != k` fails) knows the value exactly (RFC 0009).
     if (lhs.getType()->isIntegerType() && rhs.getType()->isIntegerType()) {
+      if (state.safety) {
+        checkedStringCondition(lhs, op, &rhs, holds, state);
+        checkedStringCondition(rhs, flipComparison(op), &lhs, holds, state);
+      }
       refineIntegerComparison(lhs, op, rhs, holds, state);
       if (edgeInfeasible)
         return;
+      if (options.checkContracts)
+        checkedDifferenceCondition(lhs, op, rhs, holds, state);
       // Both operands have the comparison's type (the usual arithmetic
       // conversions); `k` is read in it, so `x > ULONG_MAX` has no `k` and
       // decides nothing, and `-1u` is `UINT_MAX`.
@@ -2352,6 +2652,8 @@ void FunctionDataflow::applyCondition(const Expr &condition, bool holds,
     applyOutcomeTest(*e, {holds ? core::Outcome::NonNull : core::Outcome::Null},
                      state);
   } else if (e->getType()->isIntegerType()) {
+    if (state.safety)
+      checkedStringCondition(*e, BO_NE, nullptr, holds, state);
     // `!x` is `x == 0`: the zero class is one value, which the fact records
     // so that `switch (x) case 0` and `if (!x)` agree. Spelled as the
     // comparison `x != 0` so that `if (--x)` reads the adjusted place (RFC
@@ -2679,6 +2981,17 @@ void FunctionDataflow::applyOutcomeTest(const Expr &operand,
   };
 
   if (const auto *call = dyn_cast<CallExpr>(e)) {
+    if (state.safety)
+      if (const auto result = numericCallResult(*call)) {
+        core::ValueFact fact;
+        for (const auto outcome : selected)
+          if (outcome != core::Outcome::Null &&
+              outcome != core::Outcome::NonNull)
+            fact.classes.insert(outcome);
+        fact.constant = constant;
+        if (!fact.classes.empty())
+          (void)state.scalars.narrow(*result, fact);
+      }
     // A result tested directly: the call sits in this block, and its
     // pending outcome was recorded when it was transferred.
     if (!lastCall || lastCall->call != call)
@@ -2718,6 +3031,18 @@ void FunctionDataflow::applyOutcomeTest(const Expr &operand,
   // `p = malloc(n); if (!p) return -1;` is not a leak. Exact copies hold the
   // same null.
   if (selected == std::set<core::Outcome>{core::Outcome::Null}) {
+    // RFC 0021: an established non-null context excludes this edge before
+    // null transfer destroys referent evidence. Retaining the contradictory
+    // edge otherwise loses a conditional must-write when the paths rejoin.
+    if (state.safety)
+      if (const auto known = nullnessAt(ref->place, state);
+          known && known->state == core::Nullness::NonNull) {
+        auto guard = known->guard;
+        if (pruneGuard(guard, state) && guard.trivial()) {
+          edgeInfeasible = true;
+          return;
+        }
+      }
     markNullWithCopies(ref->place, state);
     forgetBelowNull(ref->place, state);
   }
@@ -3047,6 +3372,11 @@ FunctionDataflow::summaryGuardOf(const core::PlaceGuard &guard) {
 bool FunctionDataflow::pruneGuard(core::PlaceGuard &guard,
                                   const core::AnalysisState &state) {
   for (auto it = guard.integers.begin(); it != guard.integers.end();) {
+    if (state.safety &&
+        std::ranges::binary_search(state.numericConditions.integers, *it)) {
+      it = guard.integers.erase(it);
+      continue;
+    }
     const auto known =
         it->evaluate([&](core::PlaceId place, core::IntegerType type) {
           return integerRangeAt(place, type, state);
@@ -3356,6 +3686,46 @@ void FunctionDataflow::handleAdjustment(
     if (!llvm::is_contained(cells, image))
       cells.push_back(image);
   }
+  std::vector<std::pair<core::PlaceId, core::InitializedRange>> advanced;
+  const auto previousRelations =
+      state.safety && preserves
+          ? state.relations.all()
+          : std::map<std::pair<core::PlaceId, core::PlaceId>,
+                     core::RelationEdge>{};
+  if (state.safety && preserves && whole) {
+    for (const auto &[object, ranges] : state.safety->memory)
+      for (auto range : ranges) {
+        bool depends = false;
+        bool valid = true;
+        for (const auto cell : cells) {
+          if (range.when.dependsOn(cell) || range.source == cell) {
+            valid = false;
+            break;
+          }
+          if (const auto reused = valueSnapshots.find({cell, &at});
+              reused != valueSnapshots.end() &&
+              (range.begin.place == reused->second ||
+               range.end.place == reused->second ||
+               range.when.dependsOn(reused->second))) {
+            valid = false;
+            break;
+          }
+          for (auto *endpoint : {&range.begin, &range.end}) {
+            if (endpoint->place != cell)
+              continue;
+            depends = true;
+            std::int64_t change = 0;
+            valid &= !__builtin_mul_overflow(endpoint->scale,
+                                             std::int64_t{adjustment.delta},
+                                             &change) &&
+                     !__builtin_sub_overflow(endpoint->constant, change,
+                                             &endpoint->constant);
+          }
+        }
+        if (valid && depends)
+          advanced.emplace_back(object, std::move(range));
+      }
+  }
   for (const core::PlaceId cell : cells) {
     snapshotArrayIndex(cell, &at, state);
     // RFC 0011: `i++` after `i < n` says nothing about `i` and `n`.
@@ -3377,6 +3747,25 @@ void FunctionDataflow::handleAdjustment(
     state.numericWrites.insert(cell);
     if (const auto path = builder.summaryPathOf(cell))
       writtenScalarPaths.insert(*path);
+  }
+  if (state.safety && preserves && whole) {
+    for (const auto &[object, range] : advanced)
+      state.safety->initialize(object, range);
+    for (const auto &[pair, edge] : previousRelations) {
+      const bool first = llvm::is_contained(cells, pair.first);
+      const bool second = llvm::is_contained(cells, pair.second);
+      if (!first && !second)
+        continue;
+      std::int64_t offset = edge.offset;
+      if (first != second &&
+          (first ? __builtin_add_overflow(offset, adjustment.delta, &offset)
+                 : __builtin_sub_overflow(offset, adjustment.delta, &offset)))
+        continue;
+      state.relations.learn(pair.first, edge.relation, pair.second, offset);
+    }
+    if (oldValue)
+      state.relations.learn(place, core::Relation::Equal, *oldValue,
+                            adjustment.delta);
   }
   if (oldValue && storage) {
     const auto old = state.numericValues.find(*oldValue);
@@ -5203,6 +5592,39 @@ void FunctionDataflow::handleLifetimeEnd(const VarDecl &var,
   const auto place = builder.lookupVar(var);
   if (!place)
     return;
+  if (state.safety && var.getType()->isIntegerType()) {
+    const auto retire = [&](core::Affine value) {
+      if (value.place != place)
+        return value;
+      const auto folded = foldAffine(value, state);
+      if (folded.isConstant())
+        return folded;
+      for (const auto &[pair, edge] : state.relations.all()) {
+        if (edge.relation != core::Relation::Equal ||
+            (pair.first != *place && pair.second != *place))
+          continue;
+        const auto other = pair.first == *place ? pair.second : pair.first;
+        if (other == *place)
+          continue;
+        const auto oriented =
+            pair.first == *place ? std::optional(edge) : edge.flipped();
+        std::int64_t offset = 0;
+        if (oriented &&
+            !__builtin_mul_overflow(oriented->offset, value.scale, &offset) &&
+            !__builtin_add_overflow(offset, value.constant, &offset))
+          return core::Affine::ofPlace(other, value.scale, offset);
+      }
+      return value;
+    };
+    for (auto &[storage, ranges] : state.safety->memory) {
+      (void)storage;
+      for (auto &range : ranges) {
+        range.begin = retire(range.begin);
+        range.end = retire(range.end);
+      }
+    }
+    snapshotScalar(*place, nullptr, state);
+  }
   // Liveness declares every other local dead at its last use, where its
   // resources were checked; an address-taken one lives until here. The
   // report lands on the statement the scope ends after (the `return`), not
@@ -5727,9 +6149,27 @@ void FunctionDataflow::applyPointerAssign(core::PlaceId dest,
                                           const Expr &at, bool constPointee,
                                           core::AnalysisState &state,
                                           core::ElementWitness element) {
-  const auto checkedValue = options.checkContracts
-                                ? captureCheckedPointer(dest, given, state)
-                                : CheckedPointer{};
+  auto checkedValue = options.checkContracts
+                          ? captureCheckedPointer(dest, given, state)
+                          : CheckedPointer{};
+  if (options.checkContracts) {
+    const Expr *value = &at;
+    if (const auto *assignment = dyn_cast<BinaryOperator>(value);
+        assignment && assignment->getOpcode() == BO_Assign)
+      value = assignment->getRHS();
+    if (value->getType()->isPointerType() &&
+        !isa<CallExpr>(value->IgnoreParenCasts()))
+      if (const auto position = checkedMemory(*value, {}, {}, state)) {
+        checkedValue.nonNull = checkedValid(*position, state);
+        checkedValue.known |= checkedValue.nonNull;
+        checkedValue.storage = position->storage;
+        checkedValue.position =
+            core::PointerPosition{.storage = position->storage,
+                                  .offset = position->begin,
+                                  .extent = foldAffine(position->extent, state),
+                                  .input = position->inputPlace};
+      }
+  }
   const auto checkedAssignment = llvm::scope_exit([&] {
     if (options.checkContracts && element.isWhole())
       installCheckedPointer(dest, checkedValue, state);

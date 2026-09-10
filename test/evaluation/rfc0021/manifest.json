@@ -1,0 +1,419 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "name": "while-fill-good",
+      "source": "while-fill-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "while-fill-bad",
+      "source": "while-fill-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "extent|interval"
+    },
+    {
+      "name": "do-fill-good",
+      "source": "do-fill-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "do-fill-bad",
+      "source": "do-fill-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "bounds|interval|extent"
+    },
+    {
+      "name": "cursor-fill-good",
+      "source": "cursor-fill-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "cursor-fill-bad",
+      "source": "cursor-fill-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "interval|past|bounds|extent"
+    },
+    {
+      "name": "nonzero-start-good",
+      "source": "nonzero-start-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "nonzero-start-bad",
+      "source": "nonzero-start-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "initializ"
+    },
+    {
+      "name": "reverse-fill-good",
+      "source": "reverse-fill-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "reverse-fill-bad",
+      "source": "reverse-fill-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "interval|extent|bounds"
+    },
+    {
+      "name": "pointer-difference-good",
+      "source": "pointer-difference-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "pointer-difference-bad",
+      "source": "pointer-difference-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "pointer difference|shared|array"
+    },
+    {
+      "name": "pointer-order-good",
+      "source": "pointer-order-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "pointer-order-bad",
+      "source": "pointer-order-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "pointer difference|shared|array"
+    },
+    {
+      "name": "early-exit-good",
+      "source": "early-exit-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "early-exit-bad",
+      "source": "early-exit-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "initializ"
+    },
+    {
+      "name": "continue-good",
+      "source": "continue-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "continue-bad",
+      "source": "continue-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "initializ"
+    },
+    {
+      "name": "bound-snapshot-good",
+      "source": "bound-snapshot-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "bound-snapshot-bad",
+      "source": "bound-snapshot-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "bounds|interval|past|extent"
+    },
+    {
+      "name": "variable-step-good",
+      "source": "variable-step-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "variable-step-bad",
+      "source": "variable-step-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "interval|extent|bounds"
+    },
+    {
+      "name": "lookahead-good",
+      "source": "lookahead-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "lookahead-bad",
+      "source": "lookahead-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "interval|extent|bounds"
+    },
+    {
+      "name": "cursor-output-good",
+      "source": "cursor-output-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "cursor-output-bad",
+      "source": "cursor-output-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "interval|extent|past|bounds"
+    },
+    {
+      "name": "out-cursor-good",
+      "source": "out-cursor-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "out-cursor-bad",
+      "source": "out-cursor-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "interval|extent|past|bounds"
+    },
+    {
+      "name": "goto-init-good",
+      "source": "goto-init-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "goto-init-bad",
+      "source": "goto-init-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "initializ"
+    },
+    {
+      "name": "goto-cleanup-good",
+      "source": "goto-cleanup-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "goto-cleanup-bad",
+      "source": "goto-cleanup-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "freed|live"
+    },
+    {
+      "name": "compaction-good",
+      "source": "compaction-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "compaction-bad",
+      "source": "compaction-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "interval|extent|past|bounds"
+    },
+    {
+      "name": "pointer-lifetime-good",
+      "source": "pointer-lifetime-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "pointer-lifetime-bad",
+      "source": "pointer-lifetime-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "freed|live|pointer difference"
+    }
+  ]
+}

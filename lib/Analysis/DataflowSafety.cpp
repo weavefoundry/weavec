@@ -105,6 +105,7 @@ static bool hasCheckedAssumptions(const AnnotationSet &annotations) {
 }
 
 void FunctionDataflow::initializeChecked() {
+  collectCheckedStrings(*function.getBody());
   inferred.checked.computed = true;
   inferred.checked.signature = functionTypeKey(function.getType(), context);
   inferred.checked.selected =
@@ -141,8 +142,8 @@ void FunctionDataflow::initializeChecked() {
       inferred.checked.limited = true;
       break;
     }
-    if (isa<AsmStmt, IndirectGotoStmt, GotoStmt, AddrLabelExpr, VAArgExpr,
-            AtomicExpr>(stmt))
+    if (isa<AsmStmt, IndirectGotoStmt, AddrLabelExpr, VAArgExpr, AtomicExpr>(
+            stmt))
       checkedUnsupported.insert(stmt);
     if (const auto *expr = dyn_cast<Expr>(stmt)) {
       if (const auto *cast = dyn_cast<CastExpr>(expr);
@@ -217,9 +218,11 @@ void FunctionDataflow::checkedBefore(const Stmt &stmt,
   if (const auto *unary = dyn_cast<UnaryOperator>(&stmt);
       unary && unary->isIncrementDecrementOp())
     written = unary->getSubExpr();
-  if (written)
-    if (const auto ref = builder.resolve(*written))
+  if (written && !written->getType()->isIntegerType())
+    if (const auto ref = builder.resolve(*written)) {
+      snapshotScalar(ref->place, dyn_cast<Expr>(&stmt), state);
       state.safety->forgetDependency(ref->place);
+    }
 
   if (const auto *ret = dyn_cast<ReturnStmt>(&stmt); ret && recording())
     checkedOutputs(state, ret->getRetValue());
@@ -263,11 +266,19 @@ void FunctionDataflow::checkedBefore(const Stmt &stmt,
       checkedPointerFormation(*expr, *expr, core::Affine::ofConstant(0), state);
     if ((binary->getOpcode() == BO_Sub || binary->isRelationalOp()) &&
         binary->getLHS()->getType()->isPointerType() &&
-        binary->getRHS()->getType()->isPointerType())
+        binary->getRHS()->getType()->isPointerType()) {
+      const bool related = checkedPointerComparable(*binary, state);
+      const bool proved = related && (binary->isRelationalOp() ||
+                                      checkedPointerRange(*binary, state));
       safetyObligation(
-          core::SafetyProperty::Semantics, core::SafetyOutcome::Unresolved,
+          core::SafetyProperty::Semantics,
+          proved ? core::SafetyOutcome::Proven
+                 : core::SafetyOutcome::Unresolved,
           stmt, "pointer difference or ordering",
-          "pointer difference or ordering needs shared-object evidence");
+          related && binary->getOpcode() == BO_Sub
+              ? "pointer difference must fit target ptrdiff_t and element size"
+              : "pointer difference or ordering needs shared-object evidence");
+    }
   }
   if (const auto *unary = dyn_cast<UnaryOperator>(expr);
       unary && unary->isIncrementDecrementOp() &&
@@ -308,10 +319,15 @@ void FunctionDataflow::checkedBefore(const Stmt &stmt,
 
 void FunctionDataflow::checkedAfter(const Stmt &stmt,
                                     core::AnalysisState &state) {
+  if (const auto *expr = dyn_cast<Expr>(&stmt))
+    checkedAdvancePointer(*expr, state);
   if (inUnsafe && checkedUnsupported.contains(&stmt)) {
     state.safety->initialized.clear();
     state.safety->pointers.clear();
     state.safety->memory.clear();
+    state.safety->positions.clear();
+    state.safety->accessible.clear();
+    state.safety->termination.clear();
   }
   if (const auto *decl = dyn_cast<DeclStmt>(&stmt)) {
     for (const auto *d : decl->decls()) {
@@ -337,20 +353,65 @@ void FunctionDataflow::checkedAfter(const Stmt &stmt,
       unary && unary->isIncrementDecrementOp())
     written = unary->getSubExpr();
   if (written) {
-    state.forgetZeroedMemory();
+    const auto writtenMemory = checkedLvalue(*written, state);
+    const auto *assignment = dyn_cast<BinaryOperator>(&stmt);
+    const bool zeroed = assignment != nullptr &&
+                        assignment->getOpcode() == BO_Assign &&
+                        byteSizeOf(written->getType(), context) == 1 &&
+                        integerConstant(*assignment->getRHS(), context) == 0;
+    checkedStringWrite(writtenMemory, zeroed, state);
     if (const auto ref = builder.resolve(*written))
       if (ref->element.isWhole())
         state.safety->initialized.insert(ref->place);
-    if (const auto memory = checkedLvalue(*written, state)) {
-      const auto *assignment = dyn_cast<BinaryOperator>(&stmt);
-      const bool zeroed = (assignment != nullptr) &&
-                          assignment->getOpcode() == BO_Assign &&
-                          byteSizeOf(written->getType(), context) == 1 &&
-                          integerConstant(*assignment->getRHS(), context) == 0;
+    if (const auto &memory = writtenMemory) {
       state.safety->initialize(memory->storage,
                                {.begin = foldAffine(memory->begin, state),
                                 .end = foldAffine(memory->end, state),
                                 .zeroed = zeroed});
+      // Keep a symbolic right endpoint as well as the folded interval. A
+      // subsequent value-preserving advance can carry this must-write fact
+      // around a CFG back edge without pretending that a visit was a store.
+      state.safety->initialize(memory->storage,
+                               {.begin = checkedStableAffine(
+                                    foldAffine(memory->begin, state), state),
+                                .end = checkedStableAffine(memory->end, state),
+                                .zeroed = zeroed});
+      if (const auto *subscript =
+              dyn_cast<ArraySubscriptExpr>(written->IgnoreParenImpCasts())) {
+        const Expr *indexExpr = subscript->getIdx()->IgnoreParenImpCasts();
+        int displacement = 0;
+        if (const auto *adjust = dyn_cast<UnaryOperator>(indexExpr);
+            adjust && adjust->isIncrementDecrementOp()) {
+          if (adjust->isPostfix())
+            displacement = adjust->isIncrementOp() ? -1 : 1;
+          indexExpr = adjust->getSubExpr()->IgnoreParenImpCasts();
+        }
+        if (const auto *index = dyn_cast<DeclRefExpr>(indexExpr))
+          if (const auto *var = dyn_cast<VarDecl>(index->getDecl())) {
+            const auto unit = byteSizeOf(written->getType(), context);
+            const auto first =
+                unit ? core::Affine::ofPlace(builder.placeForVar(*var), 1,
+                                             displacement)
+                           .times(*unit)
+                     : std::nullopt;
+            const auto end =
+                first && unit ? first->shifted(*unit) : std::nullopt;
+            if (first && end)
+              if (const auto symbolic = checkedMemory(*subscript->getBase(),
+                                                      *first, *end, state)) {
+                state.safety->initialize(
+                    symbolic->storage,
+                    {.begin = foldAffine(symbolic->begin, state),
+                     .end = checkedStableAffine(symbolic->end, state),
+                     .zeroed = zeroed});
+                state.safety->initialize(
+                    symbolic->storage,
+                    {.begin = symbolic->begin,
+                     .end = checkedStableAffine(symbolic->end, state),
+                     .zeroed = zeroed});
+              }
+          }
+      }
     }
   }
 }
@@ -380,7 +441,7 @@ FunctionDataflow::CheckedPointer FunctionDataflow::captureCheckedPointer(
     break;
   case ValueOrigin::Kind::Borrow:
     result.known = origin.place.has_value() || origin.literalLength.has_value();
-    if (origin.place && origin.offset.isZero()) {
+    if (origin.place) {
       auto storage = origin.place->place;
       if (places.step(storage) == core::PathStep::Index)
         if (const auto parent = places.parent(storage))
@@ -397,6 +458,11 @@ FunctionDataflow::CheckedPointer FunctionDataflow::captureCheckedPointer(
       result.storage = storage;
       result.deferred = state.safety->deferred.contains(origin.place->place) ||
                         state.safety->deferred.contains(storage);
+      if (memory && origin.offset.isZero())
+        result.position = core::PointerPosition{.storage = storage,
+                                                .offset = memory->begin,
+                                                .extent = memory->extent,
+                                                .input = memory->inputPlace};
       if (const auto it = state.safety->memory.find(storage);
           it != state.safety->memory.end())
         result.initialized = it->second;
@@ -414,7 +480,10 @@ FunctionDataflow::CheckedPointer FunctionDataflow::captureCheckedPointer(
       } else {
         if (result.storage != value.storage)
           result.storage.reset();
+        if (result.position != value.position)
+          result.position.reset();
         result.known &= value.known;
+        result.nonNull &= value.nonNull;
         result.fresh &= value.fresh;
         result.zeroed &= value.zeroed;
         result.deferred |= value.deferred;
@@ -440,24 +509,38 @@ FunctionDataflow::CheckedPointer FunctionDataflow::captureCheckedPointer(
 void FunctionDataflow::installCheckedPointer(core::PlaceId dest,
                                              const CheckedPointer &value,
                                              core::AnalysisState &state) {
+  checkedCallAssignedPointers.insert(dest);
+  state.safety->replacedPointers.insert(dest);
   state.safety->initialized.insert(dest);
   state.safety->pointers.erase(dest);
   state.safety->objects.erase(dest);
+  state.safety->positions.erase(dest);
   state.safety->deferred.erase(dest);
   if (value.deferred)
     state.safety->deferred.insert(dest);
   const auto storage = value.storage.value_or(places.deref(dest));
   if (value.fresh) {
+    state.safety->writtenStorage.erase(storage);
     state.safety->memory.erase(storage);
+    state.safety->accessible.erase(storage);
+    std::erase_if(state.safety->positions, [&](const auto &entry) {
+      return entry.second.storage == storage;
+    });
     std::erase_if(state.safety->objects,
                   [&](const auto &entry) { return entry.second == storage; });
   }
   if (value.storage)
     state.safety->objects[dest] = storage;
+  if (value.position)
+    installCheckedPosition(dest, *value.position, state);
   if (!value.storage)
     state.safety->memory.erase(storage);
   if (value.known)
     state.safety->pointers.insert(dest);
+  if (value.nonNull)
+    state.nulls.set(dest, {.state = core::Nullness::NonNull,
+                           .location = {},
+                           .reason = core::NullReason::Declared});
   for (const auto &range : value.initialized)
     state.safety->initialize(storage, range);
   if (value.zeroed)
@@ -472,8 +555,17 @@ void FunctionDataflow::checkedOutputs(const core::AnalysisState &incoming,
                                       const Expr *value) {
   std::optional<core::AnalysisState> materialized;
   std::optional<core::PlaceId> returned;
-  if (value && value->getType()->isPointerType())
-    if (const auto *call = dyn_cast<CallExpr>(value->IgnoreParenCasts())) {
+  if (value && value->getType()->isPointerType()) {
+    const auto *expression = value->IgnoreParenImpCasts();
+    const auto direct = PlaceBuilder::isPlaceExpr(*expression)
+                            ? builder.resolvePointerValue(*expression)
+                            : std::nullopt;
+    if (direct) {
+      // The original holder ties return-outcome guards and nested objects
+      // to the result. Only derived expressions need a synthetic position.
+      returned = direct->place;
+    } else if (const auto *call =
+                   dyn_cast<CallExpr>(value->IgnoreParenCasts())) {
       materialized = incoming;
       const auto [slot, inserted] = checkedReturnPlaces.try_emplace(call);
       if (inserted)
@@ -483,8 +575,40 @@ void FunctionDataflow::checkedOutputs(const core::AnalysisState &incoming,
           *returned, builder.classifyValue(*value), *materialized);
       installCheckedPointer(*returned, pointer, *materialized);
       applyCheckedResult(*returned, *call, *materialized);
+    } else if (const auto memory = checkedMemory(*value, {}, {}, incoming)) {
+      materialized = incoming;
+      const auto [slot, inserted] = checkedReturnPlaces.try_emplace(value);
+      if (inserted)
+        slot->second = places.create("checked returned pointer");
+      returned = slot->second;
+      auto pointer = captureCheckedPointer(
+          *returned, builder.classifyValue(*value), *materialized);
+      pointer.storage = memory->storage;
+      pointer.position = core::PointerPosition{.storage = memory->storage,
+                                               .offset = memory->begin,
+                                               .extent = memory->extent,
+                                               .input = memory->inputPlace};
+      pointer.nonNull = checkedValid(*memory, incoming);
+      installCheckedPointer(*returned, pointer, *materialized);
     }
+  }
   const auto &state = materialized ? *materialized : incoming;
+  const auto endpoint =
+      [&](const core::Affine &point) -> std::optional<core::PathAffine> {
+    if (value && value->getType()->isIntegerType()) {
+      const auto returnedValue = builder.affineOf(*value);
+      if (returnedValue && returnedValue->place &&
+          returnedValue->place == point.place && returnedValue->scale == 1) {
+        std::int64_t offset = 0;
+        if (!__builtin_mul_overflow(returnedValue->constant, point.scale,
+                                    &offset) &&
+            !__builtin_sub_overflow(point.constant, offset, &offset))
+          return core::PathAffine::ofPath(core::SummaryPath::result(),
+                                          point.scale, offset);
+      }
+    }
+    return summaryAffineOf(point);
+  };
   std::set<std::optional<core::Outcome>> classes;
   if (value && value->getType()->isPointerType()) {
     const auto origin = builder.classifyValue(*value);
@@ -495,7 +619,8 @@ void FunctionDataflow::checkedOutputs(const core::AnalysisState &incoming,
     } else {
       classes = {core::Outcome::Null, core::Outcome::NonNull};
       if (origin.place && origin.offset.isZero()) {
-        returned = origin.place->place;
+        if (!returned)
+          returned = origin.place->place;
         if (const auto nullness = nullnessAt(*returned, state)) {
           if (nullness->state == core::Nullness::Null)
             classes.erase(core::Outcome::NonNull);
@@ -503,6 +628,8 @@ void FunctionDataflow::checkedOutputs(const core::AnalysisState &incoming,
             classes.erase(core::Outcome::Null);
         }
       }
+      if (returned && state.nulls.stateOf(*returned) == core::Nullness::NonNull)
+        classes.erase(core::Outcome::Null);
     }
   } else if (value && value->getType()->isIntegerType()) {
     const auto fact = scalarFactOf(*value, state);
@@ -545,7 +672,79 @@ void FunctionDataflow::checkedOutputs(const core::AnalysisState &incoming,
   }
   for (const auto outcome : classes) {
     core::CheckedContract outputs;
+    for (const auto &[holder, position] : state.safety->positions) {
+      if (!position.input)
+        continue;
+      const auto origin = builder.summaryPathOf(*position.input);
+      if (!origin)
+        continue;
+      auto destination = builder.summaryPathOf(holder);
+      if (returned == holder && outcome == core::Outcome::NonNull)
+        destination = core::SummaryPath::result();
+      if (!destination || (destination->isParam() && destination->isRoot()))
+        continue;
+      const auto establish = [&](const core::PathAffine &first,
+                                 const core::PathAffine &last) {
+        outputs.establish({.kind = core::CheckedRequirementKind::Position,
+                           .path = *destination,
+                           .other = *origin,
+                           .begin = first,
+                           .end = last,
+                           .family = {},
+                           .on = outcome});
+      };
+      if (const auto offset = summaryAffineOf(position.offset))
+        establish(*offset, *offset);
+      if (checkedAtMost({}, position.offset, state))
+        if (const auto bound =
+                checkedRequirementEnvelope(position.offset, state))
+          establish(core::PathAffine::ofConstant(0), *bound);
+      // Common entry bounds survive alternative return sites, including a
+      // zero-length early return. Each bound is proved on this return edge.
+      if (checkedAtMost({}, position.offset, state))
+        for (const auto &[zero, input] : checkedTerminatorInputs) {
+          (void)input;
+          const auto bound = core::Affine::ofPlace(zero);
+          const auto exported = summaryAffineOf(bound);
+          if (exported && checkedAtMost(position.offset, bound, state))
+            establish(core::PathAffine::ofConstant(0), *exported);
+        }
+      if (checkedAtMost({}, position.offset, state))
+        for (const auto *parameter : function.parameters()) {
+          if (!parameter->getType()->isIntegerType())
+            continue;
+          const auto input = builder.placeForVar(*parameter);
+          const auto saved = numericEntryValues.find(input);
+          const auto entry =
+              saved == numericEntryValues.end() ? input : saved->second;
+          const auto bound = core::Affine::ofPlace(entry);
+          const auto exported = summaryAffineOf(bound);
+          if (exported && checkedAtMost(position.offset, bound, state))
+            establish(core::PathAffine::ofConstant(0), *exported);
+        }
+    }
     auto memory = *state.safety;
+    for (const auto &[holder, position] : state.safety->positions) {
+      const auto path = builder.summaryPathOf(holder);
+      if (!path || (path->isParam() && path->isRoot()) ||
+          position.input != holder)
+        continue;
+      for (const auto &[otherHolder, otherPosition] : state.safety->positions) {
+        const auto other = builder.summaryPathOf(otherHolder);
+        if (otherHolder == holder || !other ||
+            (other->isParam() && other->isRoot()) ||
+            otherPosition.input != otherHolder ||
+            !checkedAtMost(position.offset, otherPosition.offset, state))
+          continue;
+        outputs.establish({.kind = core::CheckedRequirementKind::Progress,
+                           .path = *path,
+                           .other = *other,
+                           .begin = {},
+                           .end = {},
+                           .family = {},
+                           .on = outcome});
+      }
+    }
     const auto *call =
         value ? dyn_cast<CallExpr>(value->IgnoreParenImpCasts()) : nullptr;
     if (outcome && call &&
@@ -557,7 +756,15 @@ void FunctionDataflow::checkedOutputs(const core::AnalysisState &incoming,
         memory.initialize(storage, range);
     }
     auto destinations = paths;
-    if (outcome == core::Outcome::NonNull && returnedStorage) {
+    const auto returnedPosition = returned
+                                      ? state.safety->positions.find(*returned)
+                                      : state.safety->positions.end();
+    const bool returnedAtStart =
+        returnedPosition == state.safety->positions.end() ||
+        (foldAffine(returnedPosition->second.offset, state).isConstant() &&
+         foldAffine(returnedPosition->second.offset, state).constant == 0);
+    if (outcome == core::Outcome::NonNull && returnedStorage &&
+        returnedAtStart) {
       destinations[*returnedStorage].insert(core::SummaryPath::result());
       for (const auto &[holder, storage] : state.safety->objects) {
         if (!returned || !places.isDescendantOf(holder, *returned))
@@ -576,11 +783,34 @@ void FunctionDataflow::checkedOutputs(const core::AnalysisState &incoming,
       }
     }
     for (const auto &[storage, exported] : destinations) {
+      if (const auto witnesses = memory.termination.find(storage);
+          witnesses != memory.termination.end())
+        for (const auto &witness : witnesses->second) {
+          auto condition = witness.when;
+          if (!pruneGuard(condition, state))
+            continue;
+          const auto guard = summaryGuardOf(condition);
+          const auto first = endpoint(witness.begin);
+          const auto zero = endpoint(witness.zero);
+          if (!first || !zero || !summaryGuardComplete(condition, guard))
+            continue;
+          for (const auto &path : exported)
+            outputs.establish({.kind = core::CheckedRequirementKind::Terminated,
+                               .path = path,
+                               .other = {},
+                               .begin = *first,
+                               .end = *zero,
+                               .family = {},
+                               .when = guard,
+                               .on = outcome});
+        }
       const auto found = memory.memory.find(storage);
       if (found == memory.memory.end())
         continue;
       for (const auto &range : found->second) {
         auto condition = range.when;
+        if (!pruneGuard(condition, state))
+          continue;
         // A result class supplies precisely this premise, never an unrelated
         // local condition. Any remaining unexportable premise loses the fact.
         if (returned && outcome)
@@ -591,8 +821,8 @@ void FunctionDataflow::checkedOutputs(const core::AnalysisState &incoming,
         const auto guard = summaryGuardOf(condition);
         if (!summaryGuardComplete(condition, guard))
           continue;
-        const auto first = summaryAffineOf(range.begin);
-        const auto last = summaryAffineOf(range.end);
+        const auto first = endpoint(range.begin);
+        const auto last = endpoint(range.end);
         if (!first || !last)
           continue;
         std::optional<core::SummaryPath> source;
@@ -622,17 +852,24 @@ void FunctionDataflow::checkedOutputs(const core::AnalysisState &incoming,
     const auto [existing, inserted] =
         checkedOutputClasses.try_emplace(outcome, outputs.establishes);
     if (!inserted)
-      std::erase_if(existing->second, [&](const auto &post) {
-        return !outputs.establishes.contains(post);
-      });
+      existing->second.intersect(outputs.establishes);
     inferred.checked.limited |= outputs.limited;
   }
   checkedOutputSeen = true;
   inferred.checked.establishes.clear();
   for (const auto &[outcome, outputs] : checkedOutputClasses) {
     (void)outcome;
-    for (const auto &post : outputs)
-      inferred.checked.establish(post);
+    for (auto post : outputs) {
+      const bool everyOutcome =
+          std::ranges::all_of(checkedOutputClasses, [&](const auto &entry) {
+            auto selected = post;
+            selected.on = entry.first;
+            return entry.second.contains(selected);
+          });
+      if (everyOutcome)
+        post.on.reset();
+      inferred.checked.establish(std::move(post));
+    }
   }
 }
 

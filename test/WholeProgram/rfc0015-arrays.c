@@ -7,7 +7,7 @@
 // RUN: not %weavec_cc %t/library.o %t/caller.o -o %t/program 2>&1 | FileCheck %s
 #include "Inputs/array15.h"
 
-// SIDECAR: weavec-summaries 16
+// SIDECAR: weavec-summaries 17
 // RFC 0017: memcpy's element count is the wrapped byte product divided by 8.
 // SIDECAR-DAG: array-copy param 0 * from param 1 * dest-begin 0 source-begin 0 count expr u64,c,8;u64,v,706172616d2032;u64,mul;u64,c,8;u64,div scale 1 plus 0 bytes 8 view pointer definite when cmp u64,c,8;u64,v,706172616d2032;u64,mul;u64,c,8;u64,div in u64:0-2305843009213693951
 // SIDECAR-DAG: array-copy result * from param 0 * dest-begin 0 source-begin 0 count expr u64,c,8;u64,v,706172616d2031;u64,mul;u64,c,8;u64,div scale 1 plus 0 bytes 8 view pointer definite when cmp u64,c,8;u64,v,706172616d2031;u64,mul;u64,c,8;u64,div in u64:0-2305843009213693951

@@ -231,6 +231,28 @@ struct InitializedRange {
 };
 
 /// RFC 0018: must-facts. Missing entries are unknown, never initialized.
+/// RFC 0021: the address of a value is independent of its pointer holder.
+/// Offsets and extents are mathematical bytes within one array subobject.
+struct PointerPosition {
+  PlaceId storage;
+  Affine offset;
+  std::optional<Affine> extent;
+  std::optional<PlaceId> input;
+  friend bool operator==(const PointerPosition &,
+                         const PointerPosition &) = default;
+};
+
+/// RFC 0021: initialized bytes through a represented zero. The zero need
+/// not be the first one. An input origin names an entry contract dependency.
+struct TerminationWitness {
+  Affine begin;
+  Affine zero;
+  std::optional<PlaceId> input;
+  PlaceGuard when;
+  friend auto operator<=>(const TerminationWitness &,
+                          const TerminationWitness &) = default;
+};
+
 struct SafetyState {
   std::set<PlaceId> initialized;
   std::set<PlaceId> pointers;
@@ -239,6 +261,14 @@ struct SafetyState {
   std::map<PlaceId, std::vector<InitializedRange>> memory;
   /// RFC 0019: pointer holders name storage, independently of their own bytes.
   std::map<PlaceId, PlaceId> objects;
+  std::map<PlaceId, PointerPosition> positions;
+  std::map<PlaceId, std::vector<TerminationWitness>> termination;
+  /// May-fact: entry byte contents cannot be reintroduced after a write.
+  std::set<PlaceId> writtenStorage;
+  /// Proven or required accessible prefixes, not necessarily exact sizes.
+  std::map<PlaceId, Affine> accessible;
+  /// May-fact: a holder no longer denotes its function-entry pointer value.
+  std::set<PlaceId> replacedPointers;
   /// A bounded disjunction of incoming path conditions. Empty means unknown.
   std::vector<PlaceGuard> paths;
   bool havoc = false;

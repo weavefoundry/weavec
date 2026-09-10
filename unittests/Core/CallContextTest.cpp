@@ -34,6 +34,64 @@ static CallContext equalInputs() {
   return result;
 }
 
+TEST(CallContext, TraversalOrdersRoundTripRemapAndRequireDefiniteIdentity) {
+  const auto a = SummaryPath::param(0).deref();
+  const auto b = SummaryPath::global(0);
+  CallContext input;
+  EXPECT_TRUE(input.addAlias({.first = a,
+                              .second = b,
+                              .offset = PointerOffset::unknown(),
+                              .definite = true,
+                              .sameShare = false}));
+  input.orders.emplace(a, b);
+  EXPECT_TRUE(input.valid());
+  const auto encoded = printCallContext(input, contextGlobalName);
+  EXPECT_EQ(parseCallContext(encoded, resolveContextGlobal), input);
+  const auto mapped =
+      remapCallContext(input, [](std::uint32_t) { return std::optional(1U); });
+  ASSERT_TRUE(mapped);
+  EXPECT_TRUE(mapped->orders.contains({a, SummaryPath::global(1)}));
+  EXPECT_FALSE(remapCallContext(
+      input, [](std::uint32_t) { return std::optional<std::uint32_t>{}; }));
+  auto bad = input;
+  bad.aliases.clear();
+  EXPECT_FALSE(bad.valid());
+  bad = input;
+  auto alias = *bad.aliases.begin();
+  bad.aliases.clear();
+  alias.definite = false;
+  bad.aliases.insert(alias);
+  EXPECT_FALSE(bad.valid());
+  bad = input;
+  bad.orders.emplace(a, a);
+  EXPECT_FALSE(bad.valid());
+  bad = input;
+  bad.facts[b] = ValueFact::of(Outcome::Null);
+  EXPECT_FALSE(bad.valid());
+  const auto order = encoded.substr(encoded.find(";o:"));
+  EXPECT_FALSE(parseCallContext(encoded + order, resolveContextGlobal));
+}
+
+TEST(CallContext, TraversalOrderClosureRejectsContradictoryExactOffsets) {
+  const auto a = SummaryPath::param(0);
+  const auto b = SummaryPath::param(1);
+  const auto c = SummaryPath::param(2);
+  CallContext input;
+  EXPECT_TRUE(input.addAlias(
+      {.first = a, .second = b, .offset = PointerOffset::ofElements(1)}));
+  EXPECT_TRUE(input.addAlias(
+      {.first = b, .second = c, .offset = PointerOffset::unknown()}));
+  input.orders.emplace(a, c);
+  EXPECT_TRUE(input.valid());
+  input.orders.emplace(c, b);
+  EXPECT_FALSE(input.valid());
+  input.orders.clear();
+  input.orders.emplace(b, a);
+  EXPECT_TRUE(input.valid());
+  input.orders.emplace(a, b);
+  EXPECT_FALSE(input.valid());
+}
+
 TEST(CallContext, CanonicalOrderingReversesTheOffset) {
   CallContext forward;
   CallContext backward;

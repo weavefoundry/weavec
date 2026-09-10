@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "selections": [
+    {
+      "project": "jansson",
+      "revision": "851a2145e3256f2e67e5dfe24b0e456bf198b741",
+      "source": "src/utf.c",
+      "functions": [
+        "utf8_encode",
+        "utf8_check_first",
+        "utf8_check_full",
+        "utf8_iterate",
+        "utf8_check_string"
+      ]
+    },
+    {
+      "project": "cJSON-program",
+      "revision": "fb16e5cf358798aabb049655975cde8427101056",
+      "source": "cJSON.c",
+      "functions": [
+        "cJSON_Minify",
+        "skip_oneline_comment",
+        "skip_multiline_comment",
+        "minify_string"
+      ]
+    }
+  ]
+}

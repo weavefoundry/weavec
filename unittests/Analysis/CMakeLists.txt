@@ -23,4 +23,5 @@ weavec_add_unittest(
           ValueConditionalTest.cpp
           LoopRequirementsTest.cpp
           GuardCompletenessTest.cpp
+          TraversalTest.cpp
   DEPS weavec::Analysis weavec::Frontend)
