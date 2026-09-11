@@ -591,6 +591,22 @@ bool FunctionDataflow::checkedInitialized(const CheckedMemory &memory,
     return true;
   if (builder.isLiteralPlace(memory.storage) && memory.extent)
     return checkedInterval(memory.begin, memory.end, *memory.extent, state);
+  // RFC 0022: C initializes static scalar cells, including function pointers
+  // inside hook records. This does not initialize anything they point to.
+  if (const auto *global = builder.varForPlace(places.root(memory.storage));
+      global && global->hasGlobalStorage()) {
+    bool cell = true;
+    for (auto place = memory.storage; !places.isBase(place);) {
+      if (places.step(place) == core::PathStep::Deref) {
+        cell = false;
+        break;
+      }
+      place = *places.parent(place);
+    }
+    if (cell && memory.extent &&
+        checkedInterval(memory.begin, memory.end, *memory.extent, state))
+      return true;
+  }
   // This is the object's own value (including a by-value parameter), not
   // the referent of an initialized pointer holder.
   if (state.safety->initialized.contains(memory.storage) &&
@@ -745,6 +761,10 @@ bool FunctionDataflow::checkedRequire(core::CheckedRequirementKind kind,
 
 void FunctionDataflow::checkedAccess(const Expr &expr, const PlaceRef &ref,
                                      Role role, core::AnalysisState &state) {
+  // RFC 0022: a function designator is not an object memory access. Its
+  // pointer operand is still evaluated and checked in the ordinary walk.
+  if (expr.getType()->isFunctionType())
+    return;
   const bool reads =
       role == Role::Read || role == Role::ReadWrite || role == Role::Consume;
   if (const auto *decl = dyn_cast<DeclRefExpr>(expr.IgnoreParenImpCasts())) {

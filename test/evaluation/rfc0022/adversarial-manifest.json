@@ -1,0 +1,372 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "name": "allocation-type-good",
+      "source": "adversarial/allocation-type-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": null
+    },
+    {
+      "name": "allocation-type-bad",
+      "source": "adversarial/allocation-type-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "pointer recovery has an incompatible object type or alignment"
+    },
+    {
+      "name": "allocation-uninitialized-bad",
+      "source": "adversarial/allocation-uninitialized-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "initializ"
+    },
+    {
+      "name": "offset-good",
+      "source": "adversarial/offset-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": null
+    },
+    {
+      "name": "offset-bad",
+      "source": "adversarial/offset-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "object|type|align|view"
+    },
+    {
+      "name": "view-join-bad",
+      "source": "adversarial/view-join-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "object|type|view"
+    },
+    {
+      "name": "output-replacement-bad",
+      "source": "adversarial/output-replacement-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "initializ"
+    },
+    {
+      "name": "output-conditional-bad",
+      "source": "adversarial/output-conditional-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "initializ"
+    },
+    {
+      "name": "indirect-strlen-good",
+      "source": "adversarial/indirect-strlen-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": null
+    },
+    {
+      "name": "indirect-strlen-bad",
+      "source": "adversarial/indirect-strlen-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "terminat|bound"
+    },
+    {
+      "name": "null-hook-bad",
+      "source": "adversarial/null-hook-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "indirect|target|call"
+    },
+    {
+      "name": "mixed-target-good",
+      "source": "adversarial/mixed-target-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": null
+    },
+    {
+      "name": "mixed-target-bad",
+      "source": "adversarial/mixed-target-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "bound|extent"
+    },
+    {
+      "name": "allocation-return-good",
+      "source": "adversarial/allocation-return-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": null
+    },
+    {
+      "name": "allocation-return-bad",
+      "source": "adversarial/allocation-return-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "pointer recovery has an incompatible object type or alignment"
+    },
+    {
+      "name": "output-explicit-null-first",
+      "source": "adversarial/output-explicit-null-first.c",
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "output-explicit-null-last",
+      "source": "adversarial/output-explicit-null-last.c",
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "packed-alignment-bad",
+      "source": "adversarial/packed-alignment-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "pointer recovery has an incompatible object type or alignment"
+    },
+    {
+      "name": "mixed-allocation-initialization-bad",
+      "source": "adversarial/mixed-allocation-initialization-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "initializ"
+    },
+    {
+      "name": "mixed-strlen-good",
+      "source": "adversarial/mixed-strlen-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": null
+    },
+    {
+      "name": "mixed-strlen-bad",
+      "source": "adversarial/mixed-strlen-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "terminat"
+    },
+    {
+      "name": "mixed-copy-good",
+      "source": "adversarial/mixed-copy-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": null
+    },
+    {
+      "name": "mixed-copy-bad",
+      "source": "adversarial/mixed-copy-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "disjoint"
+    },
+    {
+      "name": "record-view-good",
+      "source": "adversarial/record-view-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": null
+    },
+    {
+      "name": "record-scope-bad",
+      "source": "adversarial/record-scope-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "pointer recovery has an incompatible object type or alignment"
+    },
+    {
+      "name": "indirect-zero-good",
+      "source": "adversarial/indirect-zero-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "indirect-zero-bad",
+      "source": "adversarial/indirect-zero-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "terminat"
+    },
+    {
+      "name": "mixed-unmodeled-bad",
+      "source": "adversarial/mixed-unmodeled-bad.c",
+      "function": "client",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "callee has no complete checked contract"
+    },
+    {
+      "name": "mixed-unmodeled-good",
+      "source": "adversarial/mixed-unmodeled-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "typedef-alignment-bad",
+      "source": "adversarial/typedef-alignment-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "pointer recovery requires a represented object type and alignment"
+    },
+    {
+      "name": "typedef-alignment-good",
+      "source": "adversarial/typedef-alignment-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ]
+    }
+  ]
+}

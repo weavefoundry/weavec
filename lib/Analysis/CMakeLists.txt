@@ -7,6 +7,8 @@ weavec_add_library(
           ClangLocation.cpp
           Dataflow.cpp
           DataflowSafety.cpp
+          DataflowObjectTypes.cpp
+          DataflowCheckedCallbacks.cpp
           DataflowSafetyMemory.cpp
           DataflowSafetyCalls.cpp
           DataflowSafetyContracts.cpp

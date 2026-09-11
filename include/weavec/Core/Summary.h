@@ -220,7 +220,9 @@ enum class CheckedRequirementKind : std::uint8_t {
   /// RFC 0021: inclusive byte displacement from the entry pointer in other.
   Position,
   /// RFC 0021: advance(path) <= advance(other) + end.constant.
-  Progress
+  Progress,
+  /// RFC 0022: family encodes the required target object view.
+  ObjectType
 };
 struct CheckedRequirement {
   CheckedRequirementKind kind = CheckedRequirementKind::Valid;
@@ -235,6 +237,9 @@ struct CheckedRequirement {
   /// Only output facts may be restricted to a returning outcome.
   // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
   std::optional<Outcome> on = {};
+  /// RFC 0022: memory output holds when its final destination pointer is
+  /// non-null.
+  bool ifNonNull = false;
   friend auto operator<=>(const CheckedRequirement &,
                           const CheckedRequirement &) = default;
 };

@@ -8,6 +8,8 @@
 
 #include "weavec/Core/CheckedIO.h"
 
+#include "weavec/Core/ObjectType.h"
+
 #include <charconv>
 #include <limits>
 
@@ -66,6 +68,7 @@ public:
     text(value.family);
     text(printGuard(value.when, names));
     text(value.on ? toString(*value.on) : "");
+    number(value.ifNonNull);
   }
   [[nodiscard]] bool good() const { return valid; }
   [[nodiscard]] std::string finish() const {
@@ -200,6 +203,8 @@ public:
     result.begin = affine(resolve);
     result.end = affine(resolve);
     result.family = text();
+    if (result.kind == CheckedRequirementKind::ObjectType)
+      valid &= ObjectType::parse(result.family).has_value();
     const auto guard = parseSummaryGuard(text(), resolve);
     valid &= guard.has_value();
     if (guard)
@@ -209,6 +214,9 @@ public:
       result.on = parseOutcome(outcome);
       valid &= result.on.has_value();
     }
+    result.ifNonNull = flag();
+    if (result.kind == CheckedRequirementKind::ObjectType)
+      valid &= result.begin == result.end && !result.ifNonNull;
     return result;
   }
   [[nodiscard]] bool good() const { return valid; }
@@ -225,7 +233,7 @@ private:
 std::string printCheckedContract(const CheckedContract &contract,
                                  const GlobalNamer &names) {
   CheckedWriter out;
-  out.text("3");
+  out.text("4");
   out.text(contract.signature);
   out.number(contract.computed);
   out.number(contract.selected);
@@ -264,7 +272,7 @@ std::string printCheckedContract(const CheckedContract &contract,
 std::optional<CheckedContract>
 parseCheckedContract(std::string_view record, const GlobalResolver &resolve) {
   CheckedReader in(record);
-  if (in.text() != "3")
+  if (in.text() != "4")
     return std::nullopt;
   CheckedContract result;
   result.signature = in.text();
@@ -288,8 +296,8 @@ parseCheckedContract(std::string_view record, const GlobalResolver &resolve) {
     return std::nullopt;
   for (const auto &requirement : result.requirements)
     if (requirement.path.isResult() || requirement.other.isResult() ||
-        requirement.on || hasResult(requirement.begin) ||
-        hasResult(requirement.end) ||
+        requirement.on || requirement.ifNonNull ||
+        hasResult(requirement.begin) || hasResult(requirement.end) ||
         requirement.kind == CheckedRequirementKind::Copied ||
         requirement.kind == CheckedRequirementKind::Zeroed ||
         requirement.kind == CheckedRequirementKind::Position ||
@@ -302,6 +310,10 @@ parseCheckedContract(std::string_view record, const GlobalResolver &resolve) {
          (requirement.begin.isConstant() && requirement.begin.constant < 0)))
       return std::nullopt;
   for (const auto &post : result.establishes) {
+    if (post.ifNonNull && post.kind != CheckedRequirementKind::Initialized &&
+        post.kind != CheckedRequirementKind::Zeroed &&
+        post.kind != CheckedRequirementKind::Copied)
+      return std::nullopt;
     if (post.kind == CheckedRequirementKind::Progress &&
         (post.path.isResult() || post.other.isResult() ||
          post.path == post.other ||

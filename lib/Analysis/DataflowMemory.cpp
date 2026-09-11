@@ -53,11 +53,11 @@ static bool containsPointer(QualType type, unsigned depth = 0) {
 bool FunctionDataflow::handleMemoryCopy(const CallExpr &call,
                                         const CallEffects &effects,
                                         core::AnalysisState &state) {
-  const FunctionDecl *callee = call.getDirectCallee();
-  if (!callee || effects.source != SummarySource::Builtin ||
+  const auto library = resolvedLibraryName(call);
+  if (library.empty() || effects.source != SummarySource::Builtin ||
       call.getNumArgs() < 3)
     return false;
-  llvm::StringRef name = callee->getName();
+  llvm::StringRef name = library;
   if (name.starts_with("__builtin___")) {
     name = name.drop_front(12);
     name.consume_back("_chk");

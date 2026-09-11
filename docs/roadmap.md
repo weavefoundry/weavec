@@ -443,6 +443,29 @@ Design: [RFC 0021](rfcs/0021-practical-c-traversal.md) (Implemented).
       [measured results](../scripts/corpus/rfc0021-results.json) and
       [diagnostic changes](../scripts/corpus/rfc0021-diagnostics.jsonl).
 
+## Milestone 21 — Checked C interfaces (complete)
+
+Design: [RFC 0022](rfcs/0022-checked-c-interfaces.md) (Implemented).
+
+- [x] Compatible opaque pointer recovery with independent object type,
+      alignment, initialization, bounds and lifetime obligations.
+- [x] Checked synchronous callback forwarding and conservative mixed-target
+      requirements and outputs, including modeled library functions.
+- [x] Configurable allocator hooks, private callback cells and nullable
+      output initialization across source units and compiler objects.
+- [x] Version 17 summaries, version 18 sidecars and checked encoding 4,
+      with strict context remapping and persistent reuse regression cases.
+- [x] Pass correctness, real-source and measured performance gates; retain
+      119/120 baseline-complete identities, reject one demonstrated false proof,
+      and gain five complete contracts. Publish the
+      [validation](validation-rfc0022.md),
+      [measured results](../scripts/corpus/rfc0022-results.json) and
+      [exact diagnostic changes](../scripts/corpus/rfc0022-diagnostics.jsonl).
+
+Generic callback interfaces may remain incomplete until their actual bindings
+are known. Recursive heaps, arbitrary type punning, asynchronous callback
+protocols and unavailable-callback contract languages remain separate work.
+
 ## Ongoing
 
 - Corpus testing against real C projects (`scripts/corpus.py`; false-positive

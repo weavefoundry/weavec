@@ -24,7 +24,7 @@ weavec-cc -fweavec-checked -fweavec-analysis-cache=build/weavec-cache \
 `--whole-program`. The compiler uses checkpoints during source replay at link
 time; compiling an object still runs Clang code generation and produces its
 sidecar. A link cache does not authorize reuse of a stale object. Keep the
-usual source, header, command and object bindings valid. Sidecar version 17
+usual source, header, command and object bindings valid. Sidecar version 18
 retains the preprocessing bindings introduced in version 16, including conditional-include probes. Rebuild
 objects carrying older sidecars. A checked link rejects inputs whose preprocessing
 cannot be reproduced or validated. Preprocessing is bound before AST creation

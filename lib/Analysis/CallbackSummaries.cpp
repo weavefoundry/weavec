@@ -141,7 +141,7 @@ SummaryStore::targetsForGlobal(const core::SummaryPath &path) const {
   const auto *global = globalTable.declFor(path.index);
   if (!global)
     return {};
-  std::string name = globalSymbol(*global);
+  std::string name = globalTable.callbackName(path.index);
   for (const auto &step : path.steps) {
     if (step.step == core::PathStep::Field)
       name += "." + step.field;
@@ -242,7 +242,7 @@ SummaryStore::exportedCallbackGlobals() const {
       const auto *global = globalTable.declFor(store.dest.index);
       if (!global)
         continue;
-      std::string name = globalSymbol(*global);
+      std::string name = globalTable.callbackName(store.dest.index);
       QualType type = global->getType();
       for (const auto &step : store.dest.steps) {
         if (type.isNull())
@@ -343,7 +343,13 @@ std::optional<ResolvedSummary> SummaryStore::specialize(
   if (!definition) {
     if (!database)
       return std::nullopt;
-    const auto *summary = database->findSpecialization(symbol, bindings);
+    core::CallContext input;
+    input.callbacks = bindings;
+    const auto exported = database->exportContext(input, globalTable);
+    if (!exported)
+      return std::nullopt;
+    const auto *summary =
+        database->findSpecialization(symbol, exported->callbacks);
     if (!summary)
       return std::nullopt;
     return ResolvedSummary{.summary = importSummary(*summary),

@@ -64,9 +64,10 @@ void CheckedRequirements::intersect(const CheckedRequirements &other) {
     std::erase_if(writable(), absent);
 }
 
-static constexpr std::array<std::string_view, 12> Kinds{
-    "valid",      "extent", "initialized", "release", "separated", "writable",
-    "terminated", "copied", "sum-fits",    "zeroed",  "position",  "progress"};
+static constexpr std::array<std::string_view, 13> Kinds{
+    "valid",    "extent",     "initialized", "release",  "separated",
+    "writable", "terminated", "copied",      "sum-fits", "zeroed",
+    "position", "progress",   "object-type"};
 
 std::string_view toString(CheckedRequirementKind value) noexcept {
   const auto index = static_cast<std::size_t>(value);

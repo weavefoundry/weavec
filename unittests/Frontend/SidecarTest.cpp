@@ -103,7 +103,8 @@ TEST(Sidecar, PathIsOutputPlusExtension) {
 
 TEST(Sidecar, PrintsStableText) {
   EXPECT_EQ(printUnitRecord(sample()),
-            "weavec-summaries 17\n"
+            "weavec-summaries 18\n"
+            "global-name -:675f6361636865\n"
             "source src/node.c\n"
             "cwd /work/build\n"
             "arg -triple\n"
@@ -195,8 +196,7 @@ TEST(Sidecar, RoundTrips) {
     EXPECT_EQ(it->second.external, function.external) << name;
     EXPECT_EQ(it->second.addressTaken, function.addressTaken) << name;
   }
-  // Globals are interned in the order they are met, which is the print
-  // order here, so the summaries compare equal directly.
+  // RFC 0022's name prelude preserves the producer's namespace.
   EXPECT_TRUE(parsed->exports.sameSummariesAs(original.exports));
   EXPECT_EQ(parsed->exports.globals.find("g_cache"),
             std::optional<std::uint32_t>(0));
@@ -215,33 +215,33 @@ TEST(Sidecar, RejectsOtherFormatsAndMalformedLines) {
   EXPECT_FALSE(parseUnitRecord("", &error));
   EXPECT_EQ(error, "empty file");
   EXPECT_FALSE(parseUnitRecord(
-      "weavec-summaries 17\nsummary\n  return fresh\nend\n", &error));
+      "weavec-summaries 18\nsummary\n  return fresh\nend\n", &error));
   EXPECT_EQ(error, "line 2: summary record without a function");
-  EXPECT_FALSE(parseUnitRecord("weavec-summaries 17\nfunction f\n", &error));
+  EXPECT_FALSE(parseUnitRecord("weavec-summaries 18\nfunction f\n", &error));
   EXPECT_EQ(error, "line 2: malformed 'function' line");
-  EXPECT_FALSE(parseUnitRecord("weavec-summaries 17\nfunction f external "
+  EXPECT_FALSE(parseUnitRecord("weavec-summaries 18\nfunction f external "
                                "plain\nsummary\n  return fresh\n",
                                &error));
   EXPECT_EQ(error, "line 4: summary record without 'end'");
   EXPECT_FALSE(
-      parseUnitRecord("weavec-summaries 17\nreported x y z\n", &error));
+      parseUnitRecord("weavec-summaries 18\nreported x y z\n", &error));
   EXPECT_EQ(error, "line 2: malformed 'reported' line");
   // RFC 0012.
   EXPECT_FALSE(
-      parseUnitRecord("weavec-summaries 17\nsized-field a b\n", &error));
+      parseUnitRecord("weavec-summaries 18\nsized-field a b\n", &error));
   EXPECT_EQ(error, "line 2: malformed 'sized-field' line");
   EXPECT_FALSE(
-      parseUnitRecord("weavec-summaries 17\nsized-field a b c\n", &error));
+      parseUnitRecord("weavec-summaries 18\nsized-field a b c\n", &error));
   EXPECT_EQ(error, "line 2: malformed 'sized-field' line");
   EXPECT_FALSE(
-      parseUnitRecord("weavec-summaries 17\nunsized-field a b c\n", &error));
+      parseUnitRecord("weavec-summaries 18\nunsized-field a b c\n", &error));
   EXPECT_EQ(error, "line 2: malformed 'unsized-field' line");
 }
 
 TEST(Sidecar, SkipsUnknownLinesAndBlankOnes) {
   std::string error;
   const std::optional<UnitRecord> parsed = parseUnitRecord(
-      "weavec-summaries 17\n\nfuture-thing 42\nsource a.c\n\n", &error);
+      "weavec-summaries 18\n\nfuture-thing 42\nsource a.c\n\n", &error);
   ASSERT_TRUE(parsed) << error;
   EXPECT_EQ(parsed->exports.source, "a.c");
   EXPECT_TRUE(parsed->exports.functions.empty());
@@ -271,9 +271,12 @@ TEST(Sidecar, WritesAndReadsFiles) {
 
 TEST(Sidecar, CallbackContextsAndTargetSymbolsRoundTrip) {
   UnitRecord record = sample();
+  const auto hook =
+      record.exports.globals.idFor("@weavec-hook:7372632f61206323686f6f6b");
   const core::CallbackBindings bindings{
       {SummaryPath::param(0),
-       core::CallTargets::function("src/a dir/helper.c#drop")}};
+       core::CallTargets::function("src/a dir/helper.c#drop")},
+      {SummaryPath::global(hook), core::CallTargets::function("malloc")}};
   record.exports.callbackRequests["invoke"].insert(bindings);
   record.exports.callbackGlobals["global.drop"] =
       core::CallTargets::function("drop");
@@ -286,8 +289,63 @@ TEST(Sidecar, CallbackContextsAndTargetSymbolsRoundTrip) {
   std::string error;
   const auto parsed = parseUnitRecord(printed, &error);
   ASSERT_TRUE(parsed) << error;
-  EXPECT_TRUE(parsed->exports.sameSummariesAs(record.exports));
+  analysis::ProgramDatabase database;
+  database.add(record.exports);
+  EXPECT_TRUE(database.renumbered(parsed->exports)
+                  .sameSummariesAs(database.renumbered(record.exports)));
   EXPECT_EQ(printUnitRecord(*parsed), printed);
+}
+
+TEST(Sidecar, GlobalNamesPreserveCallbackOrderingAndUnusedIdentities) {
+  UnitRecord record;
+  auto &exports = record.exports;
+  const auto unused = exports.globals.idFor("unused");
+  const auto a = exports.globals.idFor("z_hook");
+  const auto b = exports.globals.idFor("a_hook");
+  const auto c = exports.globals.idFor("m_hook");
+  auto &contract = exports.checkedDefinitions["entry"];
+  contract.computed = true;
+  contract.require({.kind = core::CheckedRequirementKind::Valid,
+                    .path = SummaryPath::global(c),
+                    .other = {},
+                    .family = {}});
+  auto &function = exports.functions["invoke"];
+  for (const auto id : {a, b, c})
+    function.summary.callbackInputs.insert(SummaryPath::global(id));
+  for (const auto *target : {"first", "second"}) {
+    const core::CallbackBindings bindings{
+        {SummaryPath::global(a), core::CallTargets::function(target)},
+        {SummaryPath::global(b), core::CallTargets::function("drop")},
+        {SummaryPath::global(c), core::CallTargets::function("fill")}};
+    exports.callbackRequests["invoke"].insert(bindings);
+    function.specializations[bindings] = function.summary;
+    core::CallContext context;
+    context.callbacks = bindings;
+    context.reportDiagnostics = false;
+    exports.memoryRequests["invoke"].insert(context);
+    function.memorySpecializations[context] = function.summary;
+  }
+  const auto encoded = printUnitRecord(record);
+  const auto decoded = parseUnitRecord(encoded);
+  ASSERT_TRUE(decoded);
+  EXPECT_EQ(decoded->exports.globals.find("unused"), unused);
+  EXPECT_TRUE(decoded->exports.sameSummariesAs(exports));
+  EXPECT_EQ(printUnitRecord(*decoded), encoded);
+}
+
+TEST(Sidecar, InvalidDuplicateAndOversizedGlobalNameTablesAreRejected) {
+  const std::string header =
+      "weavec-summaries " + std::to_string(SidecarFormatVersion) + "\n";
+  for (const auto *record :
+       {"global-name \n", "global-name ?\n", "global-name -:zz\n",
+        "global-name -:61,62\n", "global-name -:61\nglobal-name -:61\n"})
+    EXPECT_FALSE(parseUnitRecord(header + record)) << record;
+  std::string oversized = header;
+  for (unsigned i = 0; i <= 65536; ++i)
+    oversized +=
+        "global-name " +
+        core::CallTargets::function("g" + std::to_string(i)).toString() + '\n';
+  EXPECT_FALSE(parseUnitRecord(oversized));
 }
 
 TEST(Sidecar, MalformedCallbackRecordsAreRejected) {
@@ -458,7 +516,7 @@ TEST(Sidecar, MalformedTypedCountsAreRejected) {
         "a b 256 u8", "a b 4 u64 extra"}) {
     std::string error;
     EXPECT_FALSE(parseUnitRecord(
-        std::string("weavec-summaries 17\nsized-field ") + line + "\n", &error))
+        std::string("weavec-summaries 18\nsized-field ") + line + "\n", &error))
         << line;
     EXPECT_FALSE(error.empty());
   }

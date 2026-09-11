@@ -79,12 +79,9 @@ static constexpr auto SeekingReads = std::to_array<SeekingRead>({
 });
 // clang-format on
 
-static std::optional<StringCallee> stringCalleeOf(const CallExpr &call) {
-  const FunctionDecl *callee = call.getDirectCallee();
-  if (callee == nullptr || callee->getIdentifier() == nullptr ||
-      !callee->isGlobal())
+static std::optional<StringCallee> stringCalleeOf(llvm::StringRef name) {
+  if (name.empty())
     return std::nullopt;
-  llvm::StringRef name = callee->getName();
   StringCallee result;
   if (name.consume_front("__builtin___"))
     result.checked = name.consume_back("_chk");
@@ -523,7 +520,8 @@ FunctionDataflow::formatNeedOf(const CallExpr &call, unsigned formatIndex,
 void FunctionDataflow::applyStringEffects(const CallExpr &call,
                                           const core::FunctionSummary &summary,
                                           core::AnalysisState &state) {
-  const auto callee = stringCalleeOf(call);
+  const std::string libraryName = resolvedLibraryName(call);
+  const auto callee = stringCalleeOf(libraryName);
   const llvm::StringRef name = callee ? callee->name : llvm::StringRef();
   const auto argument = [&call](unsigned index) -> const Expr * {
     return index < call.getNumArgs() ? call.getArg(index) : nullptr;
@@ -696,7 +694,8 @@ void FunctionDataflow::applyStringEffects(const CallExpr &call,
 std::optional<std::pair<core::Affine, core::StringFact>>
 FunctionDataflow::duplicatedStringOf(const CallExpr &call,
                                      const core::AnalysisState &state) {
-  const auto callee = stringCalleeOf(call);
+  const std::string libraryName = resolvedLibraryName(call);
+  const auto callee = stringCalleeOf(libraryName);
   if (!callee || callee->name != "strdup" || call.getNumArgs() != 1)
     return std::nullopt;
   const auto length = stringLengthOf(*call.getArg(0), state);
@@ -718,7 +717,8 @@ void FunctionDataflow::checkStringArguments(
   (void)summary;
   if (!recording())
     return;
-  const auto callee = stringCalleeOf(call);
+  const std::string libraryName = resolvedLibraryName(call);
+  const auto callee = stringCalleeOf(libraryName);
   if (!callee)
     return;
   const llvm::StringRef name = callee->name;

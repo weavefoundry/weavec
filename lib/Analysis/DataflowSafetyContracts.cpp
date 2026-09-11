@@ -168,6 +168,16 @@ void FunctionDataflow::captureCheckedPosts(
     return builder.affineFromPath(value, call);
   };
   for (const auto &post : contract.establishes) {
+    if (post.kind == core::CheckedRequirementKind::ObjectType) {
+      const auto guard = checkedGuard(post.when, call, state);
+      if (guard && guard->trivial())
+        posts.push_back({.path = post.path,
+                         .range = {},
+                         .on = post.on,
+                         .storage = {},
+                         .objectType = post.family});
+      continue;
+    }
     if (post.kind == core::CheckedRequirementKind::Progress) {
       const auto guard = checkedGuard(post.when, call, state);
       const auto a = checkedPathMemory(post.path, call, {}, {}, state);
@@ -304,7 +314,9 @@ void FunctionDataflow::captureCheckedPosts(
       posts.push_back({.path = post.path,
                        .range = range,
                        .on = post.on,
-                       .storage = storage});
+                       .storage = storage,
+                       .ifNonNull = post.ifNonNull,
+                       .objectType = {}});
     }
   }
 }
@@ -457,9 +469,22 @@ void FunctionDataflow::applyCheckedResult(core::PlaceId dest,
                                : std::nullopt;
     if (!memory)
       continue;
+    if (!post.objectType.empty()) {
+      if (state.safety->objectTypes.size() < core::MaxSafetyRequirements ||
+          state.safety->objectTypes.contains(memory->storage))
+        state.safety->objectTypes[memory->storage] = post.objectType;
+      else if (recording())
+        inferred.checked.limited = true;
+      continue;
+    }
     auto range = post.range;
     range.begin = memory->begin;
     range.end = memory->end;
+    if (post.ifNonNull) {
+      if (range.when.size() == core::MaxGuardConjuncts)
+        continue;
+      range.when.require(*holder, core::ValueFact::of(core::Outcome::NonNull));
+    }
     if (post.on) {
       if (range.when.size() == core::MaxGuardConjuncts)
         continue;
@@ -479,6 +504,20 @@ void FunctionDataflow::applyCheckedPosts(const CallExpr &call,
   for (const auto &post : found->second) {
     if (post.path.isResult())
       continue;
+    if (!post.objectType.empty()) {
+      const auto output = checkedPathMemory(post.path, call, {}, {}, state);
+      const auto outcome = scalarFactOf(call, state);
+      if (output &&
+          (!post.on ||
+           (outcome && outcome->implies(core::ValueFact::of(*post.on))))) {
+        if (state.safety->objectTypes.size() < core::MaxSafetyRequirements ||
+            state.safety->objectTypes.contains(output->storage))
+          state.safety->objectTypes[output->storage] = post.objectType;
+        else if (recording())
+          inferred.checked.limited = true;
+      }
+      continue;
+    }
     auto storage = post.storage;
     auto range = post.range;
     if (!storage) {
@@ -489,6 +528,13 @@ void FunctionDataflow::applyCheckedPosts(const CallExpr &call,
       storage = memory->storage;
       range.begin = memory->begin;
       range.end = memory->end;
+    }
+    if (post.ifNonNull) {
+      const auto output = builder.resolveSummaryPath(post.path, call);
+      if (!output || range.when.size() == core::MaxGuardConjuncts)
+        continue;
+      range.when.require(output->place,
+                         core::ValueFact::of(core::Outcome::NonNull));
     }
     if (!post.on) {
       state.safety->initialize(*storage, range);

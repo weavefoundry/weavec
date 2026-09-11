@@ -204,8 +204,59 @@ prefix start and `end` for the known zero byte. Input values are captured
 before a call overwrites their holders, and conditional outputs apply only
 on their recorded outcomes.
 
-These facts use summary format 16, sidecar format 17 and checked-record
-encoding 3. Expanded JSON remains version 2; compact JSON remains version 3.
+These facts use summary format 17, sidecar format 18 and checked-record
+encoding 4. Expanded JSON remains version 2; compact JSON remains version 3.
+
+## Check opaque pointers and callback interfaces
+
+RFC 0022 carries checked facts through ordinary synchronous C interfaces:
+
+```c
+static void *identity(void *p) { return p; }
+static void fill(char *p) { *p = 7; }
+static void invoke(void (*fn)(char *), char *p) { fn(p); }
+int main(void) {
+    int value = 7;
+    int *restored = identity(&value);
+    char byte;
+    invoke(fill, &byte);
+    return *restored == byte;
+}
+```
+
+Check the closed caller with `weavec --checked-function=main file.c --`.
+The original `int` storage justifies restoring `int *`. The instantiated
+`fill` contract justifies reading `byte`. Replacing `fill` with a callback
+that skips the store leaves the read incomplete. Restoring `float *` from
+that same `int` object fails even on a target where their sizes match.
+
+An opaque-input helper may export an `object-type` requirement. Its descriptor
+records target byte size, alignment and canonical type or record layout. This
+requirement supplies no validity, initialization, capacity or release permission.
+Allocated storage eligible for a supported view and original declared objects
+can discharge it; arbitrary type punning and enclosing-record recovery remain
+unsupported. Const storage retains its existing write restrictions.
+
+Known callback values retain their actual contracts through forwarding helpers,
+hook records and setters. Direct library operations also retain their checked
+interpretation through established function pointers. A custom allocator's
+available body determines its capacity and release behavior. Selecting a safe
+callback alongside an unsafe, null or unknown alternative cannot make the call
+complete. Context bounds and unknown alternatives remain visible in reports.
+An open generic callback helper may be incomplete while its specialization
+under the caller's known target is complete.
+
+A helper that writes `*out = malloc(n)` and initializes the allocation on
+success can export an `initialized` output with `if_nonnull: true`. It refers
+to the final pointer stored in `*out`, independently of the pointer passed on
+entry. Callers must still test the output before reading it. Replacing that
+pointer or losing the required input premises retires the dependent evidence.
+
+Private file-scope function-pointer cells cross translation units under
+source-qualified identities. This lets a setter in one module establish
+which allocator a later call uses. These internal identities do not add a
+user annotation or a runtime ABI, and do not make arbitrary private storage
+available to foreign source code. Rebuild objects with older sidecars.
 
 ## Current limits
 
@@ -235,4 +286,5 @@ obligation. The compiler still fails selected checking.
 The authoritative design and acceptance criteria are in
 [RFC 0018](rfcs/0018-checked-code-and-safety-contracts.md) and
 [RFC 0019](rfcs/0019-practical-checked-memory-contracts.md), extended by
-[RFC 0021](rfcs/0021-practical-c-traversal.md).
+[RFC 0021](rfcs/0021-practical-c-traversal.md) and
+[RFC 0022](rfcs/0022-checked-c-interfaces.md).

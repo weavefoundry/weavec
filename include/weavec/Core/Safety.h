@@ -261,6 +261,9 @@ struct SafetyState {
   std::map<PlaceId, std::vector<InitializedRange>> memory;
   /// RFC 0019: pointer holders name storage, independently of their own bytes.
   std::map<PlaceId, PlaceId> objects;
+  /// RFC 0022: allocation views. Empty means fresh untyped storage; "?"
+  /// means incompatible/unknown incoming views and cannot justify recovery.
+  std::map<PlaceId, std::string> objectTypes;
   std::map<PlaceId, PointerPosition> positions;
   std::map<PlaceId, std::vector<TerminationWitness>> termination;
   /// May-fact: entry byte contents cannot be reintroduced after a write.

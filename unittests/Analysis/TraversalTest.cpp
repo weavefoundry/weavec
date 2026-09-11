@@ -313,7 +313,13 @@ TEST(Traversal, PrivateAntecedentsStrengthenOnlyPortableEntryRequirements) {
       EXPECT_FALSE(requirement.when.trivial());
       for (const auto &[path, fact] : requirement.when.conditions) {
         (void)fact;
-        EXPECT_FALSE(path.isGlobal());
+        // RFC 0022 preserves private scalar callback cells by name. Other
+        // private conditions still strengthen only the entry requirement.
+        if (path.isGlobal()) {
+          EXPECT_EQ(condition, "hidden != 0");
+          EXPECT_TRUE(
+              exported.globals.nameOf(path.index).starts_with("@weavec-hook:"));
+        }
       }
       for (const auto &[pair, equal] : requirement.when.pointers) {
         (void)equal;

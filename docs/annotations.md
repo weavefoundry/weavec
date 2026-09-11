@@ -570,7 +570,7 @@ Calls whose inputs have no established interacting relationship still use
 generic summaries; silence does not prove arbitrary pointers disjoint.
 The [validation report](validation-rfc0016.md) records the supported matrix
 and remaining coverage limits. These context records are retained in the
-current format 17 sidecars; rebuild older objects before link analysis. Checked
+current format 18 sidecars; rebuild older objects before link analysis. Checked
 mode also specializes exact scalar inputs and fields under the same context
 limits (RFC 0019).
 
@@ -659,8 +659,8 @@ bits, unsupported union/type-punning and pointer-provenance operations,
 unrestricted aliases, byte-encoded pointers, GC invariants and concurrency
 remain outside the supported model.
 
-RFC 0017 introduced summary and sidecar format **13**; current summary format **16** and sidecar format **17**
-requires rebuilding older objects. The [RFC 0017 validation report](validation-rfc0017.md) records
+RFC 0017 introduced summary and sidecar format **13**. Current summary format
+**17** and sidecar format **18** require rebuilding older objects. The [RFC 0017 validation report](validation-rfc0017.md) records
 passing regression and sanitizer suites, corpus coverage, performance costs
 and remaining false positives.
 No runtime instrumentation, `--verify` flag or verification certificate is

@@ -257,17 +257,15 @@ UnitExports TranslationUnitAnalyzer::exports() {
   // Globals travel by name; a `static` one means nothing elsewhere and is
   // dropped (RFC 0005, *The program database*).
   const core::GlobalIdMap byName = [&](std::uint32_t id) {
-    const VarDecl *var = table.declFor(id);
-    if (var == nullptr || !var->isExternallyVisible())
-      return std::optional<std::uint32_t>();
-    return std::optional(result.globals.idFor(var->getName()));
+    const auto name = table.portableName(id);
+    return name ? std::optional(result.globals.idFor(*name)) : std::nullopt;
   };
   const auto exportSummary = [&](const core::FunctionSummary &summary) {
     const auto privateGlobal = [&](const core::SummaryPath &path) {
       if (!path.isGlobal())
         return false;
       const auto *global = table.declFor(path.index);
-      return global != nullptr && !global->isExternallyVisible();
+      return global != nullptr && !table.portableName(path.index);
     };
     const auto privateExpression = [&](const auto &expression) {
       return std::ranges::any_of(expression.all(), [&](const auto &node) {
@@ -354,8 +352,9 @@ UnitExports TranslationUnitAnalyzer::exports() {
     result.unknownIndirectTypes.insert(std::move(key));
   // RFC 0010: count fields are keyed by type spelling, so they travel as is.
   for (const auto &[symbol, requests] : store.callbackRequests)
-    if (!requests.empty())
-      result.callbackRequests[symbol] = requests;
+    for (const auto &input : requests)
+      if (const auto mapped = core::remapCallbackBindings(input, byName))
+        result.callbackRequests[symbol].insert(*mapped);
   for (const auto &[symbol, requests] : store.memoryRequests)
     for (const auto &input : requests)
       if (const auto mapped = core::remapCallContext(input, byName))
@@ -374,8 +373,9 @@ UnitExports TranslationUnitAnalyzer::exports() {
     if (!function || !function->getDefinition())
       continue;
     const auto it = result.functions.find(function->getNameAsString());
-    if (it != result.functions.end() && summary)
-      it->second.specializations[key.second] = exportSummary(*summary);
+    const auto mapped = core::remapCallbackBindings(key.second, byName);
+    if (it != result.functions.end() && mapped && summary)
+      it->second.specializations[*mapped] = exportSummary(*summary);
   }
   result.countFields = store.knownCountKeys();
   // RFC 0012: so are sized-field witnesses and refutations.
@@ -452,7 +452,14 @@ void TranslationUnitAnalyzer::run(
     const std::string symbol = callableSymbol(*function);
     if (const auto *program = store.programDatabase()) {
       const auto &requests = program->requestsFor(symbol);
-      store.callbackRequests[symbol].insert(requests.begin(), requests.end());
+      for (const auto &input : requests) {
+        core::CallContext callbacks;
+        callbacks.callbacks = input;
+        const auto mapped =
+            program->importContext(callbacks, context, store.globals());
+        if (mapped)
+          store.callbackRequests[symbol].insert(mapped->callbacks);
+      }
       for (const auto &input : program->memoryRequestsFor(symbol)) {
         const auto mapped =
             program->importContext(input, context, store.globals());

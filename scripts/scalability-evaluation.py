@@ -13,6 +13,7 @@ import json
 from pathlib import Path
 import statistics
 import shutil
+import signal
 import subprocess
 import time
 
@@ -152,6 +153,25 @@ def archive_report(path, expected):
     return result
 
 
+def run_corpus(command, *, cwd, stdout, timeout):
+    """Let corpus.py reap its detached checker before stopping the runner."""
+    with subprocess.Popen(command, cwd=cwd, stdout=stdout,
+                          stderr=subprocess.STDOUT) as process:
+        try:
+            process.wait(timeout=timeout)
+        except (KeyboardInterrupt, subprocess.TimeoutExpired):
+            # subprocess.run kills its immediate child on interruption. That
+            # prevents corpus.py from cleaning up the checker's own session.
+            process.send_signal(signal.SIGINT)
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+            raise
+    return process
+
+
 def observation(binary, output, name, projects, *, checked=False, cache=False,
                 compact=False, timeout=600, archive_reports=False):
     destination = output / name
@@ -177,8 +197,7 @@ def observation(binary, output, name, projects, *, checked=False, cache=False,
             command.append(f'--weavec-arg=--analysis-cache={output / "cache" / project["name"]}')
         started = time.time()
         with Path(str(stem) + '.log').open('w') as log:
-            process = subprocess.run(command, cwd=ROOT, stdout=log, stderr=subprocess.STDOUT,
-                                     timeout=timeout + 60)
+            process = run_corpus(command, cwd=ROOT, stdout=log, timeout=timeout + 60)
         entry = dict(project=project['name'], command=command, started=started,
                      elapsed=time.time() - started, returncode=process.returncode)
         if corpus.exists():

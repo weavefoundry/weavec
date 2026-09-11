@@ -621,13 +621,14 @@ static bool parseSource(Tokens &tokens, const GlobalResolver &resolve,
   return true;
 }
 
-std::string printCallbackBindings(const CallbackBindings &bindings) {
+std::string printCallbackBindings(const CallbackBindings &bindings,
+                                  const GlobalNamer &names) {
   std::string result;
   for (const auto &[path, targets] : bindings) {
     if (!result.empty())
       result += ';';
-    std::string token =
-        printSummaryPath(path, [](std::uint32_t) { return std::string{}; });
+    std::string token = printSummaryPath(
+        path, names ? names : [](std::uint32_t) { return std::string{}; });
     for (char &c : token)
       if (c == ' ')
         c = '~';
@@ -636,7 +637,10 @@ std::string printCallbackBindings(const CallbackBindings &bindings) {
   return result;
 }
 
-std::optional<CallbackBindings> parseCallbackBindings(std::string_view text) {
+std::optional<CallbackBindings>
+parseCallbackBindings(std::string_view text, const GlobalResolver &resolve) {
+  if (text.empty() || text.size() > 262144)
+    return std::nullopt;
   CallbackBindings result;
   while (!text.empty()) {
     const auto end = text.find(';');
@@ -654,10 +658,13 @@ std::optional<CallbackBindings> parseCallbackBindings(std::string_view text) {
     if (!targets ||
         !parsePath(
             tokens,
-            [](std::string_view) { return std::optional<std::uint32_t>{}; },
+            resolve
+                ? resolve
+                : [](std::
+                         string_view) { return std::optional<std::uint32_t>{}; },
             path) ||
         !path.path || !tokens.empty() ||
-        path.path->root != SummaryRoot::Param ||
+        (!path.path->isParam() && !path.path->isGlobal()) ||
         path.path->steps.size() > MaxHeapPathDepth ||
         !result.emplace(*path.path, *targets).second ||
         result.size() > MaxCallbackContexts)

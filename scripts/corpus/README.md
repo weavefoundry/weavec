@@ -105,6 +105,25 @@ corpus failures; a timeout or missing report never counts as valid coverage.
 See the [validation report](../../docs/validation-rfc0020.md) and
 [results artifact](rfc0020-results.json) for the measured acceptance results.
 
+## Checked interfaces (RFC 0022)
+
+The interface evaluation exercises unchanged Jansson allocation wrappers and
+buffer code with concrete default/custom hooks and adversarial callers:
+
+```sh
+python3 scripts/checked-interfaces.py --weavec build/rel/bin/weavec \
+  --output build/rfc0022-real
+```
+
+The frozen population and revision are in
+`test/evaluation/rfc0022/real-modules.json`. This runner checks source hashes,
+upstream revision, C syntax and closed-caller requirements independently of the
+checker result. It uses Jansson's actual allocator hook implementation.
+The [validation record](../../docs/validation-rfc0022.md) distinguishes these
+clients from generic contracts and whole-project coverage. Run the complete
+five-project scalability evaluation above separately; targeted client success
+does not establish the corpus cost or preservation gates.
+
 ## Historical baseline triage
 
 Every diagnostic in the baseline has been looked at. They are all false

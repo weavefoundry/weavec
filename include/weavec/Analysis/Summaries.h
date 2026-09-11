@@ -69,11 +69,22 @@ public:
   /// Display name for `id`, or `<global>` if unknown.
   [[nodiscard]] llvm::StringRef nameOf(std::uint32_t id) const;
 
+  // RFC 0022: private file-scope scalar callback cells cross units by a
+  // source-qualified name. Foreign cells have internal storage proxies.
+  [[nodiscard]] std::optional<std::string> portableName(std::uint32_t id) const;
+  [[nodiscard]] std::string callbackName(std::uint32_t id) const;
+  [[nodiscard]] std::optional<std::uint32_t>
+  importName(llvm::StringRef name, const clang::ASTContext &context);
+
   [[nodiscard]] std::size_t size() const noexcept { return decls.size(); }
 
 private:
   llvm::DenseMap<const clang::VarDecl *, std::uint32_t> ids;
   std::vector<const clang::VarDecl *> decls;
+  std::map<std::uint32_t, std::string> callbackProxies;
+  std::map<const clang::ASTContext *,
+           std::map<std::string, std::uint32_t, std::less<>>>
+      importedNames;
 };
 
 /// Where a callee's summary came from.

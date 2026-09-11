@@ -14,6 +14,7 @@ weavec_add_unittest(
           LifetimeTest.cpp
           MovesTest.cpp
           NullnessTest.cpp
+          ObjectTypeTest.cpp
           NumericContractsTest.cpp
           OffsetTest.cpp
           OwnershipTest.cpp
