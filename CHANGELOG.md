@@ -1,6 +1,15 @@
 # CHANGELOG
 
 
+## v0.3.0 (2026-09-11)
+
+### Features
+
+- Check opaque pointers, callbacks, and allocator hooks
+  ([#25](https://github.com/weavefoundry/weavec/pull/25),
+  [`8ed6a1b`](https://github.com/weavefoundry/weavec/commit/8ed6a1b80866a5adaab6c9cf5e84acd6122e0640))
+
+
 ## v0.2.0 (2026-09-10)
 
 ### Continuous Integration
