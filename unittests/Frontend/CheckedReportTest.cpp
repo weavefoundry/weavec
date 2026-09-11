@@ -40,7 +40,7 @@ TEST(CheckedReport, EscapingAndScopeRoundTripThroughJson) {
   const auto *object = parsed->getAsObject();
   ASSERT_NE(object, nullptr);
   EXPECT_EQ(object->getInteger("version"), 2);
-  EXPECT_EQ(object->getInteger("model_version"), 17);
+  EXPECT_EQ(object->getInteger("model_version"), 18);
   ASSERT_NE(object->getObject("totals"), nullptr);
   EXPECT_EQ(object->getObject("totals")->getInteger("complete"), 1);
   const auto *units = object->getArray("units");

@@ -103,7 +103,7 @@ TEST(Sidecar, PathIsOutputPlusExtension) {
 
 TEST(Sidecar, PrintsStableText) {
   EXPECT_EQ(printUnitRecord(sample()),
-            "weavec-summaries 18\n"
+            "weavec-summaries 19\n"
             "global-name -:675f6361636865\n"
             "source src/node.c\n"
             "cwd /work/build\n"
@@ -215,33 +215,33 @@ TEST(Sidecar, RejectsOtherFormatsAndMalformedLines) {
   EXPECT_FALSE(parseUnitRecord("", &error));
   EXPECT_EQ(error, "empty file");
   EXPECT_FALSE(parseUnitRecord(
-      "weavec-summaries 18\nsummary\n  return fresh\nend\n", &error));
+      "weavec-summaries 19\nsummary\n  return fresh\nend\n", &error));
   EXPECT_EQ(error, "line 2: summary record without a function");
-  EXPECT_FALSE(parseUnitRecord("weavec-summaries 18\nfunction f\n", &error));
+  EXPECT_FALSE(parseUnitRecord("weavec-summaries 19\nfunction f\n", &error));
   EXPECT_EQ(error, "line 2: malformed 'function' line");
-  EXPECT_FALSE(parseUnitRecord("weavec-summaries 18\nfunction f external "
+  EXPECT_FALSE(parseUnitRecord("weavec-summaries 19\nfunction f external "
                                "plain\nsummary\n  return fresh\n",
                                &error));
   EXPECT_EQ(error, "line 4: summary record without 'end'");
   EXPECT_FALSE(
-      parseUnitRecord("weavec-summaries 18\nreported x y z\n", &error));
+      parseUnitRecord("weavec-summaries 19\nreported x y z\n", &error));
   EXPECT_EQ(error, "line 2: malformed 'reported' line");
   // RFC 0012.
   EXPECT_FALSE(
-      parseUnitRecord("weavec-summaries 18\nsized-field a b\n", &error));
+      parseUnitRecord("weavec-summaries 19\nsized-field a b\n", &error));
   EXPECT_EQ(error, "line 2: malformed 'sized-field' line");
   EXPECT_FALSE(
-      parseUnitRecord("weavec-summaries 18\nsized-field a b c\n", &error));
+      parseUnitRecord("weavec-summaries 19\nsized-field a b c\n", &error));
   EXPECT_EQ(error, "line 2: malformed 'sized-field' line");
   EXPECT_FALSE(
-      parseUnitRecord("weavec-summaries 18\nunsized-field a b c\n", &error));
+      parseUnitRecord("weavec-summaries 19\nunsized-field a b c\n", &error));
   EXPECT_EQ(error, "line 2: malformed 'unsized-field' line");
 }
 
 TEST(Sidecar, SkipsUnknownLinesAndBlankOnes) {
   std::string error;
   const std::optional<UnitRecord> parsed = parseUnitRecord(
-      "weavec-summaries 18\n\nfuture-thing 42\nsource a.c\n\n", &error);
+      "weavec-summaries 19\n\nfuture-thing 42\nsource a.c\n\n", &error);
   ASSERT_TRUE(parsed) << error;
   EXPECT_EQ(parsed->exports.source, "a.c");
   EXPECT_TRUE(parsed->exports.functions.empty());
@@ -516,7 +516,7 @@ TEST(Sidecar, MalformedTypedCountsAreRejected) {
         "a b 256 u8", "a b 4 u64 extra"}) {
     std::string error;
     EXPECT_FALSE(parseUnitRecord(
-        std::string("weavec-summaries 18\nsized-field ") + line + "\n", &error))
+        std::string("weavec-summaries 19\nsized-field ") + line + "\n", &error))
         << line;
     EXPECT_FALSE(error.empty());
   }

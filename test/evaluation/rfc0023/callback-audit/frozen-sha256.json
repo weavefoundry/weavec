@@ -1,0 +1,10 @@
+{
+  "chain-or-head.c": "715aa271f205d17dc980763c06ce12b4d51ef0dc14bf8160f35e8bda17b5791c",
+  "head-or-chain.c": "abdb501bb6408efe67fb4f8eba219ec3c28b2289c560a16e0f7d17fdbf70feb7",
+  "manifest.json": "b1449fd14668b6aca4be9003139ae07068018510b838dbd7fbcfc869d99bdb65",
+  "new-value.c": "b1dc8463aeec786ecee941d4beb723f7de7200f1dba88e93886bbbee373ca9f8",
+  "read-before-release.c": "67e6c14e4536004fb402993a8e6e12f91b7928b2698a1143895ac7bb62f588f7",
+  "singleton.c": "9e7d79180678b67bbedce30ebf584e5fed16a194dc10f93ca90e78d7cb031ab4",
+  "two-targets.c": "b13ca7e7134f9ed20480bc17b47de9068ba08dc589071b6de1f9cf6d96a0d751",
+  "runtime-witness.c": "48768ab9f2ad847591b9bd85e011251c605a16dbe3140f5059364c45ac6727f1"
+}

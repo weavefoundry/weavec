@@ -6,6 +6,9 @@ weavec_add_library(
           Builtins.cpp
           ClangLocation.cpp
           Dataflow.cpp
+          DataflowContainers.cpp
+          DataflowContainerTransfer.cpp
+          DataflowContainerContracts.cpp
           DataflowSafety.cpp
           DataflowObjectTypes.cpp
           DataflowCheckedCallbacks.cpp

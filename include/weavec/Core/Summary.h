@@ -222,7 +222,17 @@ enum class CheckedRequirementKind : std::uint8_t {
   /// RFC 0021: advance(path) <= advance(other) + end.constant.
   Progress,
   /// RFC 0022: family encodes the required target object view.
-  ObjectType
+  ObjectType,
+  /// RFC 0023: family encodes a sufficient linked-container predicate.
+  Container,
+  /// RFC 0023: disjoint node/payload footprints, not just distinct heads.
+  ContainerSeparated,
+  /// RFC 0023: output capability derives from the call-entry chain in other.
+  ContainerDerived,
+  /// RFC 0023: output has a fresh, separated owned allocation footprint.
+  ContainerFresh,
+  /// RFC 0023: the output is a saved successor, separate from the input head.
+  ContainerTail
 };
 struct CheckedRequirement {
   CheckedRequirementKind kind = CheckedRequirementKind::Valid;
@@ -297,6 +307,10 @@ struct CheckedContract {
 [[nodiscard]] std::string_view toString(CheckedRequirementKind value) noexcept;
 [[nodiscard]] std::optional<CheckedRequirementKind>
 parseCheckedRequirementKind(std::string_view value);
+/// RFC 0023: retain every input premise when joining derived chain outputs.
+[[nodiscard]] std::optional<CheckedRequirement>
+joinContainerOutput(const CheckedRequirement &first,
+                    const CheckedRequirement &second);
 
 /// What the callee may do to the object at a summary path.
 struct PlaceEffect {

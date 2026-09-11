@@ -270,7 +270,7 @@ snapshot site invalidates the old generation's dependent facts. The domain
 remains bounded; RFC 0017 extends these snapshots to every dependency of a
 typed symbolic expression while retaining affine and relation fast paths.
 
-The current summary version 17 and sidecar version 18 retain heap descriptions, post
+The current summary version 18 and sidecar version 19 retain heap descriptions, post
 references and string metadata. `ProgramDatabase` remaps global references
 and compares these descriptions as part of normal dependency invalidation.
 The compiler and tooling whole-program modes share this implementation.
@@ -438,7 +438,7 @@ checks by source operation. `--dump-analysis` prints
 These counts are independent of unsafe-region reporting and warning controls.
 A caller requirement is an obligation, not a proof that all callers satisfy it.
 
-`SummaryFormatVersion` is **17** and `SidecarFormatVersion` is **18**. Numeric
+`SummaryFormatVersion` is **18** and `SidecarFormatVersion` is **19**. Numeric
 outputs use `numeric <path> value ...` records; `requires-extent` retains
 optional `start` intervals and typed guards. Core validates types, operators,
 paths, shapes and limits. Comparison, global remapping and dependency
@@ -676,3 +676,51 @@ for allocation, memory and string rules. `DataflowCheckedCallbacks.cpp` checks
 each resolved alternative against a separate call-entry state and intersects
 its guaranteed outputs over returning targets. Unknown alternatives remain coverage
 boundaries; no contract is inferred from a callback's prototype alone.
+
+## Inductive containers (RFC 0023)
+
+`Core/Container.h` keeps the portable chain descriptor, explicit graph prover,
+capability entailment and bounded must-fact lattice independent of Clang.
+`ContainerShape` describes the canonical record layout, its successor field,
+initialized fields, optional terminal head and read/write/release capability.
+A release shape also describes owned payload fields and allocation families.
+The graph prover checks every explicit node and endpoint; it never treats an
+unknown edge as null. A folded fact represents any finite runtime length.
+
+`DataflowContainers.cpp` discovers candidate links from actual field operations,
+establishes predicates from checked storage, and exports sufficient entry
+premises for generic functions. Candidate discovery supplies no closed proof.
+Immutable entry witnesses retain their original descriptors when a cursor or
+output shape changes. `DataflowContainerTransfer.cpp` handles field mutation,
+folding, saved successors, separated regions, release and call invalidation.
+`DataflowContainerContracts.cpp` transports the resulting output predicates.
+These components use the existing evaluated CFG and loop fixed point; ordinary
+integer, lifetime, byte-memory, unsupported-call and leak checks still apply.
+
+The fact's member set is a conservative invalidation dependency, not evidence
+of separation. Separation comes from concrete disjoint storage, a sufficient
+entry premise, a saved head/tail relation, or fresh allocation. An unknown write
+retires affected evidence and prevents the same input from being assumed again.
+Pointer replacement also retires saved relations to its former value. Joins
+intersect established facts and separation while combining invalidation sets.
+Quantified release also retires native byte-pointer evidence into the consumed
+footprint, including owned payloads. `SafetyState::invalidatedPointers` prevents
+an old input snapshot or allocation record from reestablishing checked lifetime
+after consumption. The mark survives joins and pointer copies until a new value
+is installed; ordinary resource records remain available for leak checking.
+
+Checked encoding 5 adds `container`, `container-separated`, `container-derived`,
+`container-fresh` and `container-tail`. Derived outputs retain up to three
+conjunctive entry sources, all remapped through the existing path machinery.
+They describe a subset plus freshly added nodes; they do not promise full input
+consumption. Fresh outputs require actual allocation evidence. Tail outputs are
+imported across read-only calls. A terminal output can establish a detached
+node's null successor. Descriptors, source premises and capability combinations
+are validated during decoding. Summary format 18 and sidecar format 19 prevent
+older metadata from silently discarding these records.
+
+Limits are 32 fields, 64 explicit nodes, 64 active facts and 16 KiB per encoded
+descriptor. Hitting a limit loses proof. Native inference initially supports
+null-ended singly linked chains; Core also checks endpoint-exclusive explicit
+segments. General graphs, cyclic ownership, tagged unions, volatile/atomic links
+and doubly linked mutation remain outside this predicate.

@@ -8,7 +8,7 @@
 #include "../Inputs/prelude.h"
 #include "Inputs/heap13.h"
 
-// SIDECAR: weavec-summaries 18
+// SIDECAR: weavec-summaries 19
 // SIDECAR: heap result complete
 // SIDECAR-NEXT: heap-field result at result *.data fresh(free) extent 4
 // SIDECAR: heap-field result at result *.data copy param 0

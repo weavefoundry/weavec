@@ -660,10 +660,12 @@ void SafetyState::copyMemory(PlaceId source, PlaceId destination) {
     termination.erase(destination);
 }
 void SafetyState::forget(PlaceId place) {
+  containers.erase(place);
   objectTypes.erase(place);
   writtenStorage.erase(place);
   termination.erase(place);
   replacedPointers.erase(place);
+  invalidatedPointers.erase(place);
   accessible.erase(place);
   positions.erase(place);
   std::erase_if(positions, [&](const auto &entry) {
@@ -744,6 +746,7 @@ void SafetyState::refinePaths(const PlaceGuard &guard) {
 bool SafetyState::join(const SafetyState &other, const PlaceGuard &left,
                        const PlaceGuard &right) {
   bool changed = other.havoc && !havoc;
+  changed |= containers.join(other.containers);
   for (auto &[storage, type] : objectTypes) {
     const auto found = other.objectTypes.find(storage);
     if (type != "?" &&
@@ -778,6 +781,10 @@ bool SafetyState::join(const SafetyState &other, const PlaceGuard &left,
   replacedPointers.insert(other.replacedPointers.begin(),
                           other.replacedPointers.end());
   changed |= replacements != replacedPointers.size();
+  const auto invalidations = invalidatedPointers.size();
+  invalidatedPointers.insert(other.invalidatedPointers.begin(),
+                             other.invalidatedPointers.end());
+  changed |= invalidations != invalidatedPointers.size();
   changed |=
       std::erase_if(accessible, [&](const auto &entry) {
         const auto found = other.accessible.find(entry.first);

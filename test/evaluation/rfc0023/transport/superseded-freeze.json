@@ -1,0 +1,27 @@
+{
+  "reason": "Initial transport generator used the good reverse/build helpers for variants with different helper bodies. Preserve this inventory; corrected cases now use exact original definitions with external linkage. This changes no original RFC 0023 frozen input.",
+  "sha256": {
+    "borrowed-bad.c": "da28ff3680940de610fc8223961565a37e89b2700faf28fd25a87ad519809914",
+    "borrowed-good.c": "07e6bdb63047544b65551f30739053dee5b907b6e5f5b0a9f6d8f0910482fef7",
+    "concat-bad.c": "6576620bd46deb5fe4a976976d377db3f534feccf50dc79479c1d7a6f497547e",
+    "concat-good.c": "030d46700eb710a976bfebc8ae7c39c5b96a2b67257d993fc5a59264cd4773c2",
+    "detach-bad.c": "0b8389227bcc12a0bf673df1c5eb4d7e401ac1428d6d7f30124d1470e422488b",
+    "detach-good.c": "0c3e9294bcbf9f63fd3f2922f29b598dfe221afe58484b983d69e61d18e29bad",
+    "failure-bad.c": "89e0251b5ae926c60aa88ca74cf4a8ca220338f0435c77927444adcd202835af",
+    "failure-good.c": "89e0251b5ae926c60aa88ca74cf4a8ca220338f0435c77927444adcd202835af",
+    "helpers-failure-bad.c": "fb3d54384a5e2c464aecbef874e42bab19076c7ded3b69511880cba257dfae59",
+    "helpers-runtime-bad.c": "ab6c72132fd91bfacd073ad8df713b38b6f6b2fae4db2f8a10d6acd2d12f5b44",
+    "helpers.c": "3b2a2f44740d5b063deef4b6be5692c93c6ce37c100c91a18e09ccbbc534c610",
+    "independent-bad.c": "9bd3a391efa8be2f45ab3d6ddd1fa54bf0f5673b64884534037145bc8026b7be",
+    "independent-good.c": "71e53fa1fbf7981afcac0f086af2ea0446fef294bc74bf6171fbd0894aed67a3",
+    "manifest.json": "aed675f12e0aeecb161fd23cdd8a30bd092ef8636e96ce97e64ec7d538782d70",
+    "node.h": "9f9ea76bd7e87c2b52e842ff2e01db4d13dfbf48c0d94257e7ed842b0b60a0c7",
+    "reverse-bad.c": "b78c454096d0a35f13d163d06ffb65c4c1aa44ca3811c416372a949b25de4fc4",
+    "reverse-good.c": "b78c454096d0a35f13d163d06ffb65c4c1aa44ca3811c416372a949b25de4fc4",
+    "runtime-bad.c": "89e0251b5ae926c60aa88ca74cf4a8ca220338f0435c77927444adcd202835af",
+    "runtime-good.c": "89e0251b5ae926c60aa88ca74cf4a8ca220338f0435c77927444adcd202835af",
+    "saved-alias-bad.c": "d1a78bb41588e8abd9591aa38da5d53a67220a9b43cc9a3d4f0ded3369273c68",
+    "saved-alias-good.c": "0c6d9aa52bb42d4f840d974d058525e8155e84bf40849b57e849a97e22095858"
+  },
+  "baseline_report": "build/rfc23-validation/baseline-transport.json"
+}

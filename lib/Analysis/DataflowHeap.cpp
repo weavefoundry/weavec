@@ -182,6 +182,9 @@ static void copyHeapCell(core::PlaceId source, core::PlaceId target,
       state.safety->initialized.insert(target);
     if (state.safety->pointers.contains(source))
       state.safety->pointers.insert(target);
+    // RFC 0023: copying a field cannot revive a consumed pointer value.
+    if (state.safety->invalidatedPointers.contains(source))
+      state.safety->invalidatedPointers.insert(target);
     state.safety->copyMemory(source, target);
   }
   if (numeric && !numeric->dependsOn(target))

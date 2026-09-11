@@ -94,6 +94,7 @@ std::vector<core::InitializedRange> FunctionDataflow::checkedCopyRanges(
 void FunctionDataflow::captureCheckedPosts(
     const CallExpr &call, const core::CheckedContract &contract,
     core::AnalysisState &state) {
+  captureContainerPosts(call, contract, state);
   auto &posts = checkedPosts[&call];
   posts.clear();
   auto &positions = checkedPositionPosts[&call];
@@ -168,6 +169,8 @@ void FunctionDataflow::captureCheckedPosts(
     return builder.affineFromPath(value, call);
   };
   for (const auto &post : contract.establishes) {
+    if (post.kind == core::CheckedRequirementKind::Container)
+      continue;
     if (post.kind == core::CheckedRequirementKind::ObjectType) {
       const auto guard = checkedGuard(post.when, call, state);
       if (guard && guard->trivial())
@@ -452,6 +455,7 @@ void FunctionDataflow::applyCheckedResult(core::PlaceId dest,
                                           const CallExpr &call,
                                           core::AnalysisState &state) {
   applyCheckedPositions(call, state, dest);
+  applyContainerPosts(call, state, dest);
   const auto found = checkedPosts.find(&call);
   if (found == checkedPosts.end())
     return;
@@ -498,6 +502,7 @@ void FunctionDataflow::applyCheckedPosts(const CallExpr &call,
                                          const core::FunctionSummary &summary,
                                          core::AnalysisState &state) {
   applyCheckedPositions(call, state);
+  applyContainerPosts(call, state);
   const auto found = checkedPosts.find(&call);
   if (found == checkedPosts.end())
     return;

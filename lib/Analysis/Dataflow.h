@@ -83,6 +83,79 @@ public:
   }
 
 private:
+  void discoverContainers();
+  void initializeContainers(core::AnalysisState &state);
+  std::map<const clang::RecordDecl *, core::ContainerShape> containerShapes;
+  std::map<std::string, const clang::RecordDecl *> containerRecords;
+  std::map<core::PlaceId, core::SummaryPath> containerInputs;
+  std::map<core::PlaceId, core::ContainerShape> containerInputShapes;
+  std::map<std::pair<core::PlaceId, std::string>, core::PlaceId>
+      containerInputIds;
+  core::ContainerFact containerInput(core::PlaceId holder,
+                                     const core::SummaryPath &path,
+                                     const core::ContainerShape &shape);
+  void refineContainers(core::AnalysisState &state);
+  void snapshotContainerOutput(core::PlaceId holder,
+                               core::AnalysisState &state);
+  std::map<core::SummaryPath, core::PlaceId> containerOutputObjects;
+  std::map<core::PlaceId, core::SummaryPath> containerOutputPaths;
+  [[nodiscard]] const core::ContainerShape *
+  containerShape(clang::QualType type) const;
+  [[nodiscard]] std::optional<core::ContainerFact>
+  captureContainer(core::PlaceId dest, const ValueOrigin &origin,
+                   core::AnalysisState &state);
+  [[nodiscard]] std::optional<core::ContainerFact>
+  containerAt(core::PlaceId holder, const core::ContainerShape &shape,
+              core::AnalysisState &state, bool allowInput = false);
+  [[nodiscard]] std::optional<core::ContainerFact>
+  strengthenContainer(const core::ContainerFact &fact,
+                      const core::ContainerShape &required);
+  bool requireContainer(const core::ContainerFact &fact, const clang::Stmt &at,
+                        core::AnalysisState &state);
+  bool checkedContainerAccess(const clang::Expr &expr, bool read, bool write,
+                              core::AnalysisState &state);
+  void checkedContainerCall(const core::CheckedRequirement &requirement,
+                            const clang::CallExpr &call,
+                            core::AnalysisState &state);
+  bool checkedContainerRelease(const clang::CallExpr &call,
+                               core::AnalysisState &state);
+  void checkedContainerStore(const clang::Stmt &stmt,
+                             core::AnalysisState &state);
+  bool separateContainers(core::PlaceId first, core::PlaceId second,
+                          const clang::Stmt &at, core::AnalysisState &state);
+  void invalidateContainers(core::PlaceId holder, bool release, bool keepTail,
+                            core::AnalysisState &state);
+  void checkedContainersAfterCall(const clang::CallExpr &call,
+                                  const CallEffects *effects,
+                                  core::AnalysisState &state);
+  void captureContainerPosts(const clang::CallExpr &call,
+                             const core::CheckedContract &contract,
+                             core::AnalysisState &state);
+  void applyContainerPosts(const clang::CallExpr &call,
+                           core::AnalysisState &state,
+                           std::optional<core::PlaceId> result = std::nullopt);
+  void containerOutputs(core::CheckedContract &outputs,
+                        const core::AnalysisState &state,
+                        std::optional<core::PlaceId> returned,
+                        std::optional<core::Outcome> outcome);
+  struct ContainerPost {
+    core::SummaryPath path;
+    core::ContainerFact fact;
+    std::optional<core::Outcome> on;
+    bool fresh = false;
+  };
+  std::map<const clang::CallExpr *, std::vector<ContainerPost>> containerPosts;
+  std::map<const clang::CallExpr *, std::vector<core::CheckedRequirement>>
+      containerSeparationPosts;
+  std::map<const clang::CallExpr *, std::vector<core::CheckedRequirement>>
+      containerTailPosts;
+  std::set<const clang::CallExpr *> containerReadOnlyCalls;
+  std::map<const clang::CallExpr *,
+           std::map<core::SummaryPath, core::ContainerFact>>
+      containerArguments;
+  std::map<const clang::CallExpr *, core::PlaceId> containerReleases;
+  std::map<const clang::CallExpr *, core::PlaceId> containerPayloadReleases;
+  std::map<const clang::CallExpr *, core::PlaceId> containerCallObjects;
   [[nodiscard]] std::optional<core::CallContext>
   captureCallContext(const clang::CallExpr &call,
                      const core::FunctionSummary &summary,
@@ -257,6 +330,9 @@ private:
                            const CheckedMemory &) = default;
   };
   struct CheckedPointer {
+    bool invalidated = false;
+    std::optional<core::ContainerFact> container;
+    std::set<core::PlaceId> containerSeparated;
     bool known = false;
     bool nonNull = false;
     bool zeroed = false;
@@ -266,6 +342,10 @@ private:
     std::optional<core::PlaceId> storage;
     std::optional<core::PointerPosition> position;
   };
+  [[nodiscard]] std::optional<core::ContainerFact>
+  establishContainer(const CheckedMemory &memory,
+                     const core::ContainerShape &shape,
+                     core::AnalysisState &state);
   void initializeChecked();
   void checkedBefore(const clang::Stmt &stmt, core::AnalysisState &state);
   void checkedAfter(const clang::Stmt &stmt, core::AnalysisState &state);

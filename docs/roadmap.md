@@ -463,8 +463,30 @@ Design: [RFC 0022](rfcs/0022-checked-c-interfaces.md) (Implemented).
       [exact diagnostic changes](../scripts/corpus/rfc0022-diagnostics.jsonl).
 
 Generic callback interfaces may remain incomplete until their actual bindings
-are known. Recursive heaps, arbitrary type punning, asynchronous callback
+are known. General recursive heaps, arbitrary type punning, asynchronous callback
 protocols and unavailable-callback contract languages remain separate work.
+
+## Milestone 22 — Inductive linked containers
+
+Design: [RFC 0023](rfcs/0023-inductive-container-contracts.md).
+
+- [x] Finite chain predicates with initialized node fields, read/write/release
+      capabilities and independently owned payloads.
+- [x] Runtime construction, traversal, reversal, concatenation, head detachment
+      and cleanup through inferred helper contracts.
+- [x] Conservative alias invalidation, including native payload pointers and
+      every returning resolved callback target.
+- [x] Version 18 summaries, version 19 sidecars and checked encoding 5, with
+      strict descriptor validation and cache invalidation cases.
+- [x] Frozen closed callers, unchanged cJSON traversal clients, independent
+      graph/release oracles, and complete Debug/ASan/UBSan suites.
+- [x] Exact corpus preservation, canonical cache equivalence and ordinary
+      runtime/memory gates, with published [validation](validation-rfc0023.md)
+      and [measured results](../scripts/corpus/rfc0023-results.json).
+
+Derived outputs describe subsets of their input chains. Whole-footprint
+consumption through arbitrary transformations, cyclic ownership, general trees
+and graphs, and doubly linked mutation remain separate work.
 
 ## Ongoing
 

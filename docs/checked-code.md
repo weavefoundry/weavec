@@ -288,3 +288,77 @@ The authoritative design and acceptance criteria are in
 [RFC 0019](rfcs/0019-practical-checked-memory-contracts.md), extended by
 [RFC 0021](rfcs/0021-practical-c-traversal.md) and
 [RFC 0022](rfcs/0022-checked-c-interfaces.md).
+
+## Linked containers
+
+[RFC 0023](rfcs/0023-inductive-container-contracts.md) infers sufficient contracts
+for finite, null-ended linked chains. No annotation or special field name is
+needed. For example, this helper requires a live chain with initialized nodes:
+
+```c
+struct node { unsigned value; struct node *next; };
+
+static unsigned count(const struct node *p) {
+    unsigned n = 0;
+    while (p) {
+        ++n;
+        p = p->next;
+    }
+    return n;
+}
+
+int main(void) {
+    struct node last = {2, 0}, first = {1, &last};
+    return count(&first) != 2;
+}
+```
+
+Check the closed caller with `weavec --checked-function=main example.c --`.
+The caller establishes the chain from its initialized local objects and has no
+entry requirements. The current descriptor includes all named record fields,
+so unused data fields can also require initialization. Making
+`last.next = &first` creates a cycle and fails the finite-chain precondition.
+A generic `count` contract remains conditional on its caller's input;
+declaring a recursive pointer type does not establish it.
+
+A cleanup loop additionally needs allocation-base ownership of every node:
+
+```c
+static void destroy(struct node *p) {
+    while (p) {
+        struct node *next = p->next;
+        free(p);
+        p = next;
+    }
+}
+```
+
+Include `<stdlib.h>` for `free`. Saving the successor before release preserves
+the live remainder; reading `p->next` after release fails. The borrowed local
+chain above cannot be passed to `destroy`. Owned payload cleanup requires each
+payload allocation to be distinct from every node and other owned payload.
+A shared or borrowed payload does not become owned because of its field name.
+
+Supported operations include runtime prepend construction, allocation-failure
+cleanup, traversal/search, reversal, concatenation of disjoint chains, head
+detachment through an output pointer, and node/payload destruction. Helpers and
+compiler objects transport the same sufficient premises and guaranteed output
+facts. Use `--checked-report=report.json` to inspect `container` requirements
+and missing chain/separation obligations. Existing `checking-incomplete` and
+`checking-failed` identifiers retain their meanings.
+
+Unknown writes, callbacks and unmodeled alias effects invalidate evidence.
+Ordinary checks still cover arithmetic, other fields, initialization and leaks.
+A derived output describes nodes from its input chains plus fresh additions;
+it does not establish that every original node reaches that output. Thus a
+wrapper such as `destroy(reverse(p))` can propagate an ownership requirement
+while its closed caller still reports a leak when the ordinary summary loses
+full-consumption information. This is a documented conservative limitation.
+General graphs, cyclic owning lists, arbitrary trees, doubly linked mutation,
+volatile/atomic links and concurrent access are outside this milestone.
+
+Summary format 18 and sidecar format 19 require rebuilding older compiler
+objects. Persistent caches validate executable, source, preprocessing and
+callee dependencies before reusing a container contract. See the
+[validation report](validation-rfc0023.md) for the frozen acceptance population,
+real-source callers and measured cost.

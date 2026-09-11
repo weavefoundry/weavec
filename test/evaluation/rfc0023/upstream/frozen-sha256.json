@@ -1,0 +1,12 @@
+{
+  "item-bad.c": "060af8729183f044ebe96293a845b5b8b4ec06ce0ee460bab137a938a5a93e8c",
+  "item-good.c": "6e751a5519ca4905f5b4c5c405e094b51fc122a5efd347f0df559337ad047c06",
+  "manifest.json": "f167f9600c78334fb8a5319f64038310410c7691064c3d0f5aba5f5c5f8ae87c",
+  "public-item-bad.c": "94a721da7c3e4851b227a16f1f1b05f7c73fdcecd4d45c8c2e6e730770044c9f",
+  "public-item-good.c": "e5436b5d9e8c7fc5d8fb5736e6f665ee68f998f4fd0ebdcfeaaa5379e430fc41",
+  "size-bad.c": "acdeff3bdbbe64060f00d53438c39ce0d6ec100507581d269335f55e39e365fc",
+  "size-good.c": "1b6a934ed24c2e89d82e4f35b87478ebaaaa9a813b0333cfa6947dd64a79fdcd",
+  "upstream-identity.json": "cb238241583c07f777088b7baf57dca04a3376a14f27e2151f0b5ed6d6dad67d",
+  "utils-item-bad.c": "81e2f35c0fdddabf0571f9bb802a9755a373b0b111eef6bcd09c982c885854cf",
+  "utils-item-good.c": "1acf32efa4322c0bcb92805a1a09a8069c1e806d3b9da4d3563783e9999bcf62"
+}

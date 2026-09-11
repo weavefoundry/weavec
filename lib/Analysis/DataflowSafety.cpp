@@ -106,6 +106,7 @@ static bool hasCheckedAssumptions(const AnnotationSet &annotations) {
 }
 
 void FunctionDataflow::initializeChecked() {
+  discoverContainers();
   collectCheckedStrings(*function.getBody());
   inferred.checked.computed = true;
   inferred.checked.signature = functionTypeKey(function.getType(), context);
@@ -330,6 +331,7 @@ void FunctionDataflow::checkedAfter(const Stmt &stmt,
       (void)storage;
       type = "?";
     }
+    state.safety->containers.clear();
     state.safety->initialized.clear();
     state.safety->pointers.clear();
     state.safety->memory.clear();
@@ -422,6 +424,7 @@ void FunctionDataflow::checkedAfter(const Stmt &stmt,
       }
     }
   }
+  checkedContainerStore(stmt, state);
 }
 
 FunctionDataflow::CheckedPointer FunctionDataflow::captureCheckedPointer(
@@ -430,6 +433,17 @@ FunctionDataflow::CheckedPointer FunctionDataflow::captureCheckedPointer(
   if (!pruneOrigin(origin, state))
     return {};
   CheckedPointer result;
+  result.container = captureContainer(dest, origin, state);
+  if (origin.place) {
+    auto source = origin.place->place;
+    result.invalidated = state.safety->invalidatedPointers.contains(source);
+    if (result.container && result.container->tailOf &&
+        !state.safety->containers.find(source))
+      source = *result.container->tailOf;
+    result.containerSeparated = state.safety->containers.separatedFrom(source);
+    if (result.container)
+      result.container->ancestors.insert(source);
+  }
   switch (origin.kind) {
   case ValueOrigin::Kind::Null:
     result.known = true;
@@ -486,6 +500,11 @@ FunctionDataflow::CheckedPointer FunctionDataflow::captureCheckedPointer(
         result = value;
         first = false;
       } else {
+        if (result.container != value.container)
+          result.container.reset();
+        std::erase_if(result.containerSeparated, [&](core::PlaceId place) {
+          return !value.containerSeparated.contains(place);
+        });
         if (result.storage != value.storage)
           result.storage.reset();
         if (result.position != value.position)
@@ -493,6 +512,7 @@ FunctionDataflow::CheckedPointer FunctionDataflow::captureCheckedPointer(
         result.known &= value.known;
         result.nonNull &= value.nonNull;
         result.fresh &= value.fresh;
+        result.invalidated |= value.invalidated;
         result.zeroed &= value.zeroed;
         result.deferred |= value.deferred;
         std::erase_if(result.initialized, [&](const auto &range) {
@@ -511,12 +531,35 @@ FunctionDataflow::CheckedPointer FunctionDataflow::captureCheckedPointer(
   }
   result.deferred |=
       (origin.call != nullptr) && checkedDeferredCalls.contains(origin.call);
+  result.known |= result.container.has_value();
   return result;
 }
 
 void FunctionDataflow::installCheckedPointer(core::PlaceId dest,
                                              const CheckedPointer &value,
                                              core::AnalysisState &state) {
+  // Capture precedes the ordinary assignment. Its resulting nullness remains
+  // authoritative, including chained assignments and related input contexts.
+  const bool consistentContainer =
+      !value.container || !value.container->empty ||
+      state.nulls.stateOf(dest) != core::Nullness::NonNull;
+  state.safety->containers.replace(dest);
+  state.safety->invalidatedPointers.erase(dest);
+  if (value.invalidated)
+    state.safety->invalidatedPointers.insert(dest);
+  if (value.container && consistentContainer) {
+    auto fact = *value.container;
+    fact.ancestors.erase(dest);
+    if (fact.tailOf == dest)
+      fact.tailOf.reset();
+    state.safety->containers.set(dest, std::move(fact));
+  }
+  if (consistentContainer)
+    for (const auto other : value.containerSeparated)
+      state.safety->containers.separate(dest, other);
+  if (value.fresh)
+    state.safety->containers.markFresh(dest);
+  snapshotContainerOutput(dest, state);
   checkedCallAssignedPointers.insert(dest);
   state.safety->replacedPointers.insert(dest);
   state.safety->initialized.insert(dest);
@@ -557,7 +600,7 @@ void FunctionDataflow::installCheckedPointer(core::PlaceId dest,
     installCheckedPosition(dest, *value.position, state);
   if (!value.storage)
     state.safety->memory.erase(storage);
-  if (value.known)
+  if ((value.known && consistentContainer) || value.nonNull)
     state.safety->pointers.insert(dest);
   if (value.nonNull)
     state.nulls.set(dest, {.state = core::Nullness::NonNull,
@@ -586,6 +629,12 @@ void FunctionDataflow::checkedOutputs(const core::AnalysisState &incoming,
       // The original holder ties return-outcome guards and nested objects
       // to the result. Only derived expressions need a synthetic position.
       returned = direct->place;
+      if (!incoming.safety->containers.find(*returned)) {
+        materialized = incoming;
+        if (const auto fact = captureContainer(
+                *returned, builder.classifyValue(*value), *materialized))
+          materialized->safety->containers.set(*returned, *fact);
+      }
     } else if (const auto *call =
                    dyn_cast<CallExpr>(value->IgnoreParenCasts())) {
       materialized = incoming;
@@ -702,6 +751,7 @@ void FunctionDataflow::checkedOutputs(const core::AnalysisState &incoming,
   }
   for (const auto outcome : classes) {
     core::CheckedContract outputs;
+    containerOutputs(outputs, state, returned, outcome);
     for (const auto &[holder, position] : state.safety->positions) {
       if (!position.input)
         continue;
@@ -923,6 +973,12 @@ void FunctionDataflow::checkedOutputs(const core::AnalysisState &incoming,
         if (outputs.establishes.contains(post) ||
             (post.ifNonNull && nullOutputs.contains(post.path)))
           joined.insert(post);
+      for (const auto &first : existing->second)
+        if (first.kind == core::CheckedRequirementKind::ContainerDerived)
+          for (const auto &second : outputs.establishes)
+            if (const auto generalized =
+                    core::joinContainerOutput(first, second))
+              joined.insert(*generalized);
       auto &previousNull = checkedNullOutputClasses[outcome];
       for (const auto &post : outputs.establishes)
         if (post.ifNonNull && previousNull.contains(post.path))

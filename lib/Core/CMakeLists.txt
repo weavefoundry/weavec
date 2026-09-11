@@ -10,6 +10,7 @@ weavec_add_library(
           Borrow.cpp
           CallContext.cpp
           CallTargets.cpp
+          Container.cpp
           Diagnostic.cpp
           Integer.cpp
           CheckedInteger.cpp

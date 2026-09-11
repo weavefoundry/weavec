@@ -63,6 +63,10 @@ bool FunctionDataflow::checkedAlternatives(const CallExpr &call,
     for (auto &post : outputs)
       if (post.storage && !post.ifNonNull && !post.path.isResult())
         post.path = core::SummaryPath::param(0);
+    // RFC 0023: a returning target may consume an entire chain footprint.
+    // Retire native payload aliases before the join, even though indirect
+    // container output predicates are not imported. Invalidation is a may fact.
+    checkedContainersAfterCall(call, &targetEffects, input);
     if (!returning) {
       returning = std::move(input);
       posts = std::move(outputs);
@@ -80,6 +84,14 @@ bool FunctionDataflow::checkedAlternatives(const CallExpr &call,
   checkedPositionPosts[&call] = std::move(positions);
   checkedProgressPosts[&call] = std::move(progress);
   checkedCallAssignedPointers.clear();
+  // RFC 0023: container outputs are not yet intersected over callback targets.
+  // In particular, the last target's single-node release must not preserve a
+  // tail that another target can consume. Each target was invalidated above.
+  containerReleases.erase(&call);
+  containerPayloadReleases.erase(&call);
+  containerPosts.erase(&call);
+  containerTailPosts.erase(&call);
+  containerSeparationPosts.erase(&call);
   if (returning)
     state = std::move(*returning);
   return true;

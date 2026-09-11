@@ -135,6 +135,46 @@ if(Python3_Interpreter_FOUND)
   set_tests_properties(checked-objects-rfc0022 PROPERTIES LABELS "integration"
                                                           TIMEOUT 300)
   add_test(
+    NAME checked-evaluation-rfc0023
+    COMMAND
+      "${Python3_EXECUTABLE}"
+      "${PROJECT_SOURCE_DIR}/scripts/checked-evaluation.py" --weavec
+      "$<TARGET_FILE:weavec>" --clang "${WEAVEC_CLANG_EXECUTABLE}" --manifest
+      "${PROJECT_SOURCE_DIR}/test/evaluation/rfc0023/manifest.json")
+  set_tests_properties(checked-evaluation-rfc0023
+                       PROPERTIES LABELS "integration" TIMEOUT 300)
+  foreach(kind IN ITEMS transport adversarial audit callback-audit)
+    add_test(
+      NAME checked-${kind}-rfc0023
+      COMMAND
+        "${Python3_EXECUTABLE}"
+        "${PROJECT_SOURCE_DIR}/scripts/checked-evaluation.py" --weavec
+        "$<TARGET_FILE:weavec>" --clang "${WEAVEC_CLANG_EXECUTABLE}" --manifest
+        "${PROJECT_SOURCE_DIR}/test/evaluation/rfc0023/${kind}/manifest.json")
+    set_tests_properties(checked-${kind}-rfc0023
+                         PROPERTIES LABELS "integration" TIMEOUT 300)
+  endforeach()
+  add_test(
+    NAME checked-objects-rfc0023
+    COMMAND
+      "${Python3_EXECUTABLE}"
+      "${PROJECT_SOURCE_DIR}/scripts/checked-containers.py" --population
+      objects --weavec "$<TARGET_FILE:weavec>" --cc "$<TARGET_FILE:weavec-cc>"
+      --clang "${WEAVEC_CLANG_EXECUTABLE}" --output
+      "${CMAKE_CURRENT_BINARY_DIR}/rfc0023-objects")
+  set_tests_properties(checked-objects-rfc0023 PROPERTIES LABELS "integration"
+                                                          TIMEOUT 300)
+  add_test(
+    NAME checked-cache-rfc0023
+    COMMAND
+      "${Python3_EXECUTABLE}"
+      "${PROJECT_SOURCE_DIR}/scripts/checked-containers.py" --population cache
+      --weavec "$<TARGET_FILE:weavec>" --cc "$<TARGET_FILE:weavec-cc>" --clang
+      "${WEAVEC_CLANG_EXECUTABLE}" --output
+      "${CMAKE_CURRENT_BINARY_DIR}/rfc0023-cache")
+  set_tests_properties(checked-cache-rfc0023 PROPERTIES LABELS "integration"
+                                                        TIMEOUT 180)
+  add_test(
     NAME checked-transport-rfc0019
     COMMAND
       "${Python3_EXECUTABLE}"

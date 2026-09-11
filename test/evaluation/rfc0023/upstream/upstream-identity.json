@@ -1,0 +1,11 @@
+{
+  "commit": "fb16e5cf358798aabb049655975cde8427101056",
+  "files": {
+    "cJSON.h": "25b0145150d500498e4d209cec69c18c42cf818bffcc54690be3b895a2a16dee",
+    "cJSON_Utils.h": "1050a7cce8ffe352c509e0c1faad505b9b8a09cac3a1c45c544447868e05f3b5",
+    "cJSON.c": "607e756460fa0de37d20a7a9181f2de29c97bfb7ce5a0e6c2f548243836cd852",
+    "test.c": "9073e70d626d83f202768c3a486aa5496ac33277b7f265fdba200888fc93941e",
+    "cJSON_Utils.c": "11786fd89807c52c80aabec0df58aca4286b7360e11bd6eb2b464a1acab3eab1"
+  },
+  "note": "Supplemental population frozen after initial traversal hooks, before upstream-specific work. Baseline uses preserved unmodified RFC 0022 binary."
+}

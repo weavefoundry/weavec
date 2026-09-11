@@ -1,0 +1,3 @@
+#include <stdlib.h>
+#include "node.h"
+int main(int argc, char **argv) { (void)argv; struct node *p=build((unsigned)argc), *q=p; destroy(p); return count(q)>100; }

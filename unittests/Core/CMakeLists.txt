@@ -3,6 +3,7 @@ weavec_add_unittest(
   SOURCES SafetyTest.cpp
           CallContextTest.cpp
           CallTargetsTest.cpp
+          ContainerTest.cpp
           AliasRelationTest.cpp
           AnalysisStateTest.cpp
           ArrayTest.cpp

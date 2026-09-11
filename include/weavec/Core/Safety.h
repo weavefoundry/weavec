@@ -9,6 +9,7 @@
 #ifndef WEAVEC_CORE_SAFETY_H
 #define WEAVEC_CORE_SAFETY_H
 
+#include "weavec/Core/Container.h"
 #include "weavec/Core/Place.h"
 #include "weavec/Core/SafetyCallPath.h"
 #include "weavec/Core/Scalar.h"
@@ -254,6 +255,7 @@ struct TerminationWitness {
 };
 
 struct SafetyState {
+  ContainerFacts containers;
   std::set<PlaceId> initialized;
   std::set<PlaceId> pointers;
   /// May-fact: these objects require unresolved external effects at link time.
@@ -272,6 +274,9 @@ struct SafetyState {
   std::map<PlaceId, Affine> accessible;
   /// May-fact: a holder no longer denotes its function-entry pointer value.
   std::set<PlaceId> replacedPointers;
+  /// RFC 0023: quantified consumption may have destroyed this pointer's
+  /// referent. Follows copies; ordinary ownership/leak records are unchanged.
+  std::set<PlaceId> invalidatedPointers;
   /// A bounded disjunction of incoming path conditions. Empty means unknown.
   std::vector<PlaceGuard> paths;
   bool havoc = false;
