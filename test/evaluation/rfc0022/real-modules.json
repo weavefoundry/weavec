@@ -1,0 +1,52 @@
+{
+  "version": 1,
+  "project": "jansson",
+  "revision": "851a2145e3256f2e67e5dfe24b0e456bf198b741",
+  "sources": [
+    "src/memory.c",
+    "src/strbuffer.c"
+  ],
+  "functions": [
+    "jsonp_malloc",
+    "jsonp_free",
+    "jsonp_realloc",
+    "strbuffer_init",
+    "strbuffer_close",
+    "strbuffer_clear",
+    "strbuffer_value",
+    "strbuffer_steal_value",
+    "strbuffer_append_byte",
+    "strbuffer_append_bytes",
+    "strbuffer_pop"
+  ],
+  "cases": [
+    {
+      "name": "strbuffer-lifecycle",
+      "source": "real/strbuffer-lifecycle.c",
+      "expect": "accepted"
+    },
+    {
+      "name": "strbuffer-custom",
+      "source": "real/strbuffer-custom.c",
+      "expect": "accepted"
+    },
+    {
+      "name": "strbuffer-short",
+      "source": "real/strbuffer-short.c",
+      "expect": "rejected",
+      "reason": "extent"
+    },
+    {
+      "name": "strbuffer-partial",
+      "source": "real/strbuffer-partial.c",
+      "expect": "rejected",
+      "reason": "initializ"
+    },
+    {
+      "name": "strbuffer-stale",
+      "source": "real/strbuffer-stale.c",
+      "expect": "rejected",
+      "reason": "freed"
+    }
+  ]
+}

@@ -21,13 +21,24 @@ namespace weavec::analysis {
 
 void FunctionDataflow::checkedCall(const CallExpr &call,
                                    const CallEffects *effects,
-                                   core::AnalysisState &state) {
+                                   core::AnalysisState &state,
+                                   std::string_view target) {
+  if (target.empty() && effects && checkedAlternatives(call, *effects, state))
+    return;
   checkedCallAssignedPointers.clear();
   checkedWrites.erase(&call);
   checkedPosts.erase(&call);
   checkedPositionPosts.erase(&call);
+  checkedProgressPosts.erase(&call);
   const auto *callee = call.getDirectCallee();
   std::string name = callee ? callee->getNameAsString() : "indirect call";
+  if (!callee && effects && effects->source == SummarySource::Builtin)
+    if (const auto targets = callTargetsSeen.find(&call);
+        targets != callTargetsSeen.end() && !targets->second.unknown &&
+        !targets->second.null && targets->second.functions.size() == 1)
+      name = *targets->second.functions.begin();
+  if (!target.empty())
+    name = target;
   if (callee && callee->getBuiltinID() != 0) {
     if (name.starts_with("__builtin___") && name.ends_with("_chk"))
       name = name.substr(12, name.size() - 16);
@@ -195,7 +206,8 @@ void FunctionDataflow::checkedCall(const CallExpr &call,
         checkedPosts[&call].push_back({.path = core::SummaryPath::result(),
                                        .range = range,
                                        .on = core::Outcome::NonNull,
-                                       .storage = {}});
+                                       .storage = {},
+                                       .objectType = {}});
     return;
   }
   if (builtin && (name == "strlen" || name == "strnlen" || name == "strcpy" ||
@@ -285,7 +297,8 @@ void FunctionDataflow::checkedCall(const CallExpr &call,
         checkedPosts[&call].push_back({.path = core::SummaryPath::result(),
                                        .range = {.begin = {}, .end = *output},
                                        .on = core::Outcome::NonNull,
-                                       .storage = {}});
+                                       .storage = {},
+                                       .objectType = {}});
     }
     return;
   }
@@ -439,12 +452,14 @@ void FunctionDataflow::checkedCall(const CallExpr &call,
     core::PlaceGuard pointerFacts;
     std::set<core::PlaceId> pointers;
     std::map<core::PlaceId, core::Affine> accessible;
+    std::map<core::PlaceId, std::string> objectTypes;
 
     explicit CheckedRequirementState(const core::AnalysisState &state)
         : moves(state.moves), resources(state.resources), nulls(state.nulls),
           scalars(state.scalars), numericConditions(state.numericConditions),
           pointerFacts(state.pointerFacts), pointers(state.safety->pointers),
-          accessible(state.safety->accessible) {}
+          accessible(state.safety->accessible),
+          objectTypes(state.safety->objectTypes) {}
 
     void restore(core::AnalysisState &state) {
       state.moves = std::move(moves);
@@ -455,6 +470,7 @@ void FunctionDataflow::checkedCall(const CallExpr &call,
       state.pointerFacts = std::move(pointerFacts);
       state.safety->pointers = std::move(pointers);
       state.safety->accessible = std::move(accessible);
+      state.safety->objectTypes = std::move(objectTypes);
     }
   };
 
@@ -559,6 +575,10 @@ void FunctionDataflow::checkedCall(const CallExpr &call,
         continue;
       }
       const auto kind = requirement.kind;
+      if (kind == core::CheckedRequirementKind::ObjectType) {
+        checkedObjectRequirement(*memory, requirement.family, call, state);
+        continue;
+      }
       if (kind == core::CheckedRequirementKind::Writable) {
         checkedWrite(*memory, call, state);
         continue;
@@ -665,9 +685,17 @@ void FunctionDataflow::checkedCallAfter(const CallExpr &call,
       (callee->getName() == "__builtin_object_size" ||
        callee->getName() == "__builtin_dynamic_object_size"))
     return;
+  const auto alternatives = checkedCallAlternatives.find(&call);
+  const bool uncheckedAlternative =
+      alternatives != checkedCallAlternatives.end() &&
+      std::ranges::any_of(alternatives->second, [](const auto &entry) {
+        const auto &actual = entry.second;
+        return actual.source != SummarySource::Builtin &&
+               !actual.summary->checked.computed;
+      });
   // Unknown/unsafe calls may replace pointer representations and mutate every
   // reachable byte. Do not allow a trusted call to manufacture later evidence.
-  if (!effects || !effects->summary ||
+  if (uncheckedAlternative || !effects || !effects->summary ||
       (!effects->summary->checked.computed &&
        effects->source != SummarySource::Builtin) ||
       (effects->source != SummarySource::Builtin &&
@@ -680,6 +708,10 @@ void FunctionDataflow::checkedCallAfter(const CallExpr &call,
                     entry.second.reason != "compiler object-size query";
            }))) {
     state.safety->memory.clear();
+    for (auto &[storage, type] : state.safety->objectTypes) {
+      (void)storage;
+      type = "?";
+    }
     state.safety->termination.clear();
     state.safety->havoc = true;
     for (const Expr *arg : call.arguments())

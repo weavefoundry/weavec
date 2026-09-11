@@ -1,0 +1,142 @@
+{
+  "version": 2,
+  "rfc": "0022",
+  "cases": [
+    {
+      "name": "cross-opaque-good",
+      "sources": [
+        "transport/opaque-helper.c",
+        "transport/opaque-good-main.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "accepted",
+      "reason": null,
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "cross-opaque-bad",
+      "sources": [
+        "transport/opaque-helper.c",
+        "transport/opaque-bad-main.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "reason": "object|type|view",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "cross-callback-good",
+      "sources": [
+        "transport/callback-helper.c",
+        "transport/callback-good-main.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "accepted",
+      "reason": null,
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "cross-callback-bad",
+      "sources": [
+        "transport/callback-helper.c",
+        "transport/callback-bad-main.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "reason": "initializ",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "cross-output-good",
+      "sources": [
+        "transport/output-helper.c",
+        "transport/output-good-main.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "accepted",
+      "reason": null,
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "cross-output-bad",
+      "sources": [
+        "transport/output-bad-helper.c",
+        "transport/output-bad-main.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "reason": "initializ",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "cross-hooks-good",
+      "sources": [
+        "transport/hooks-helper.c",
+        "transport/hooks-good-main.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "accepted",
+      "reason": null,
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "cross-hooks-bad",
+      "sources": [
+        "transport/hooks-helper.c",
+        "transport/hooks-bad-main.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "reason": "extent|bound",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ]
+    }
+  ]
+}

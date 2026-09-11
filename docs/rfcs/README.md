@@ -68,5 +68,6 @@ decision is a new RFC that supersedes the relevant section.
 | [0019](0019-practical-checked-memory-contracts.md) | Practical checked memory contracts for buffers and heap objects | Implemented |
 | [0020](0020-scalable-modular-checked-analysis.md) | Scalable modular checked analysis | Implemented |
 | [0021](0021-practical-c-traversal.md) | Practical C traversal and inductive buffer contracts | Implemented |
+| [0022](0022-checked-c-interfaces.md) | Compositional checked interfaces for opaque pointers and callbacks | Implemented |
 
 The [roadmap](../roadmap.md) links each milestone to the RFCs that define it.

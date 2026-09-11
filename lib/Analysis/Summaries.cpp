@@ -11,6 +11,10 @@
 #include "weavec/Analysis/Annotations.h"
 #include "weavec/Analysis/ProgramDatabase.h"
 
+#include "clang/Basic/SourceManager.h"
+
+#include "llvm/ADT/StringExtras.h"
+
 // Defines `LazyGenerationalUpdatePtr::makeValue`, which `Redeclarable`
 // walks (`getCanonicalDecl`, `redecls()`) instantiate here.
 #include "clang/AST/ASTContext.h"
@@ -42,6 +46,87 @@ const VarDecl *GlobalTable::declFor(std::uint32_t id) const noexcept {
 llvm::StringRef GlobalTable::nameOf(std::uint32_t id) const {
   const VarDecl *decl = declFor(id);
   return decl == nullptr ? llvm::StringRef("<global>") : decl->getName();
+}
+
+// RFC 0022: prefix cannot be a C identifier, and hex escapes source paths.
+static constexpr llvm::StringLiteral HookPrefix = "@weavec-hook:";
+
+static std::string callbackGlobalName(const VarDecl &var) {
+  if (var.isExternallyVisible())
+    return var.getNameAsString();
+  const auto &sm = var.getASTContext().getSourceManager();
+  const auto file = sm.getFileEntryRefForID(sm.getMainFileID());
+  return (file ? file->getName().str() : std::string{}) + "#" +
+         var.getNameAsString();
+}
+
+std::optional<std::string> GlobalTable::portableName(std::uint32_t id) const {
+  if (const auto found = callbackProxies.find(id);
+      found != callbackProxies.end())
+    return found->second;
+  const auto *var = declFor(id);
+  if (!var)
+    return std::nullopt;
+  if (var->isExternallyVisible())
+    return var->getNameAsString();
+  if (var->isFileVarDecl() && var->getType()->isFunctionPointerType())
+    return HookPrefix.str() + llvm::toHex(callbackGlobalName(*var), true);
+  return std::nullopt;
+}
+
+std::string GlobalTable::callbackName(std::uint32_t id) const {
+  if (const auto found = callbackProxies.find(id);
+      found != callbackProxies.end())
+    return llvm::fromHex(
+        llvm::StringRef(found->second).drop_front(HookPrefix.size()));
+  const auto *var = declFor(id);
+  return var ? callbackGlobalName(*var) : std::string{};
+}
+
+std::optional<std::uint32_t>
+GlobalTable::importName(llvm::StringRef name, const ASTContext &context) {
+  auto &names = importedNames[&context];
+  if (const auto found = names.find(name.str()); found != names.end())
+    return found->second;
+  const auto remember = [&](const VarDecl &var) {
+    const auto id = idFor(var);
+    names.emplace(name.str(), id);
+    return id;
+  };
+  if (!name.starts_with(HookPrefix)) {
+    for (const auto *decl : context.getTranslationUnitDecl()->lookup(
+             DeclarationName(&context.Idents.get(name))))
+      if (const auto *var = dyn_cast<VarDecl>(decl);
+          var && var->hasGlobalStorage() && var->isExternallyVisible())
+        return remember(*var);
+    return std::nullopt;
+  }
+  for (const auto *decl : context.getTranslationUnitDecl()->decls()) {
+    const auto *var = dyn_cast<VarDecl>(decl);
+    if (var && var->hasGlobalStorage() && !var->isExternallyVisible() &&
+        var->getType()->isFunctionPointerType() &&
+        name == HookPrefix.str() + llvm::toHex(callbackGlobalName(*var), true))
+      return remember(*var);
+  }
+  const auto encoded = name.drop_front(HookPrefix.size());
+  std::string decoded;
+  if (encoded.empty() || encoded.size() > 32768 ||
+      !llvm::tryGetFromHex(encoded, decoded) ||
+      llvm::toHex(decoded, true) != encoded ||
+      decoded.find('#') == std::string::npos)
+    return std::nullopt;
+  const auto type =
+      context.getPointerType(context.getFunctionNoProtoType(context.VoidTy));
+  auto &arena = context.getTranslationUnitDecl()->getASTContext();
+  auto *proxy = VarDecl::Create(arena, context.getTranslationUnitDecl(), {}, {},
+                                &context.Idents.get("__weavec_callback_cell"),
+                                type, nullptr, SC_Extern);
+  proxy->setImplicit();
+  // Deliberately not added to TranslationUnitDecl: user lookup must never see
+  // it.
+  const auto id = remember(*proxy);
+  callbackProxies.emplace(id, name.str());
+  return id;
 }
 
 // -- Annotations --------------------------------------------------------------

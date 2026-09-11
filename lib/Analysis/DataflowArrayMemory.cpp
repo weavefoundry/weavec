@@ -272,11 +272,10 @@ bool FunctionDataflow::handleArrayCopy(const CallExpr &call,
 void FunctionDataflow::captureArrayReallocation(const CallExpr &call,
                                                 const CallEffects &effects,
                                                 core::AnalysisState &state) {
-  const auto *callee = call.getDirectCallee();
-  if (!callee || effects.source != SummarySource::Builtin ||
+  const auto name = resolvedLibraryName(call);
+  if (name.empty() || effects.source != SummarySource::Builtin ||
       call.getNumArgs() < 2)
     return;
-  const auto name = callee->getName();
   if (name != "realloc" && name != "reallocarray")
     return;
   const auto source = builder.resolvePointerValue(*call.getArg(0));

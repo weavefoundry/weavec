@@ -881,4 +881,40 @@ TEST(ContextDependencies,
   EXPECT_EQ(countContextDiagnostic(result, core::diag::AnalysisIncomplete), 0U);
 }
 
+TEST(CompositionalCall, UnresolvedGlobalTargetsDoNotCreateDuplicateContexts) {
+  const auto result = test::analyze(R"c(
+void fill(char *p) { *p = 1; }
+static void (*hook)(char *) = fill;
+void set_hook(void (*fn)(char *)) { hook = fn; }
+void invoke_hook(char *p) { hook(p); }
+void forward_hook(char *p) { invoke_hook(p); }
+int concrete(void) {
+  char value;
+  set_hook(fill);
+  invoke_hook(&value);
+  return value;
+}
+)c",
+                                    {.checkContracts = true, .checked = true});
+  ASSERT_TRUE(result.ast);
+  const auto *generic = result.summary("forward_hook");
+  const auto *concrete = result.summary("concrete");
+  ASSERT_NE(generic, nullptr);
+  ASSERT_NE(concrete, nullptr);
+  EXPECT_FALSE(generic->checked.complete());
+  EXPECT_FALSE(generic->callbackInputs.empty());
+  EXPECT_TRUE(concrete->checked.complete());
+  EXPECT_TRUE(concrete->checked.requirements.empty());
+  const auto &requests = result.analyzer->summaries().callbackRequests;
+  const auto found = requests.find("invoke_hook");
+  ASSERT_NE(found, requests.end());
+  ASSERT_FALSE(found->second.empty());
+  for (const auto &bindings : found->second)
+    for (const auto &[path, targets] : bindings) {
+      EXPECT_TRUE(path.isGlobal());
+      EXPECT_FALSE(targets.unknown);
+      EXPECT_EQ(targets, core::CallTargets::function("fill"));
+    }
+}
+
 } // namespace weavec::analysis

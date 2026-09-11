@@ -80,7 +80,7 @@ remain coverage gaps; general nonlinear and loop reasoning are outside the
 model. Early-exit and other unsupported loops do not produce inferred
 must-requirements on callers. Existing annotations remain trusted contracts.
 There is no runtime instrumentation or whole-program verification certificate.
-Core summary format is **16**; sidecar format **17** requires rebuilding objects carrying older
+Core summary format is **17**; sidecar format **18** requires rebuilding objects carrying older
 sidecars. The [validation report](docs/validation-rfc0017.md) records
 **900/900 tests passing**, including under ASan/UBSan, **44/44 original bugs
 detected and 32/32 clean cases**, plus twelve separate bug/clean regression
@@ -110,6 +110,17 @@ CFG and lifetime checks. Loop facts must hold on every incoming edge;
 unrelated arrays, skipped stores and overwritten terminators cannot supply
 missing safety evidence. See the [traversal guide](docs/checked-code.md#check-traversals-and-cursor-helpers)
 and the [validation record](docs/validation-rfc0021.md).
+
+Checked C interfaces ([RFC 0022](docs/rfcs/0022-checked-c-interfaces.md))
+preserve object identity through `void *`, check recovered types and alignment,
+and apply the contracts of established synchronous callback targets. Allocation
+hooks retain actual allocator behavior, including through private hook setters
+and separate source units. Nullable output pointers can establish initialized
+bytes conditional on the final pointer being non-null. These guarantees still
+require valid storage, sufficient bounds and the actual callback contract;
+unknown targets, incompatible views and missing initialization remain failures.
+See the [interface guide](docs/checked-code.md#check-opaque-pointers-and-callback-interfaces)
+and the [validation record](docs/validation-rfc0022.md).
 
 ## Quick look
 

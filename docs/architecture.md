@@ -270,7 +270,7 @@ snapshot site invalidates the old generation's dependent facts. The domain
 remains bounded; RFC 0017 extends these snapshots to every dependency of a
 typed symbolic expression while retaining affine and relation fast paths.
 
-The current summary version 15 and sidecar version 16 retain heap descriptions, post
+The current summary version 17 and sidecar version 18 retain heap descriptions, post
 references and string metadata. `ProgramDatabase` remaps global references
 and compares these descriptions as part of normal dependency invalidation.
 The compiler and tooling whole-program modes share this implementation.
@@ -438,7 +438,7 @@ checks by source operation. `--dump-analysis` prints
 These counts are independent of unsafe-region reporting and warning controls.
 A caller requirement is an obligation, not a proof that all callers satisfy it.
 
-`SummaryFormatVersion` is **15** and `SidecarFormatVersion` is **16**. Numeric
+`SummaryFormatVersion` is **17** and `SidecarFormatVersion` is **18**. Numeric
 outputs use `numeric <path> value ...` records; `requires-extent` retains
 optional `start` intervals and typed guards. Core validates types, operators,
 paths, shapes and limits. Comparison, global remapping and dependency
@@ -507,7 +507,7 @@ comparison predicates share the existing bounded guard representation.
 `CallbackSummaries.cpp` specializes ordinary `FunctionDataflow` analyses under
 callback bindings. Contexts are bounded and cached, and active recursive
 contexts remain explicit incomplete boundaries. Generic summaries record the
-parameter paths used as callbacks. A caller binds those paths; the callee body
+parameter and global paths used as callbacks. A caller binds those paths; the callee body
 keeps the associated userdata and operation ordering. Declarations retain
 authority over the specialized summary.
 
@@ -578,7 +578,7 @@ can partition eligible small loops by completed back edges before falling
 back to widening. Every final obligation is checked on converged states.
 
 `position`, `progress` and explicit `terminator` quantities cross interfaces
-through checked-record encoding 3. Call-entry snapshots precede ordinary
+through checked-record encoding 4. Call-entry snapshots precede ordinary
 effects, with output positions installed afterward. Portable call contexts
 can additionally contain directed same-array byte-pointer orders (`o:`
 records); these neither equate addresses nor invent ownership shares. They
@@ -647,3 +647,32 @@ input. This catches new conditional-include targets as well as changed loaded
 files. Unsupported or unverifiable preprocessing cannot substantiate checked
 object replay. RFC 0021 extends the records with summary format 16 and
 sidecar format 17; the preprocessing and executable bindings still apply.
+
+## Checked C interfaces (RFC 0022)
+
+`Core/ObjectType` validates portable byte size, alignment and canonical view
+identity; it has no Clang dependency. `DataflowObjectTypes.cpp` builds target
+views and discharges erased-pointer recovery at evaluated CFG points. Object
+views live on checked storage identities. Conflicting or missing predecessor
+views become unknown, distinct from untyped fresh allocated storage.
+
+`CheckedRequirement::ifNonNull` is an output-value condition on initialized,
+zeroed or copied bytes. Call-entry conditions are captured before stores; the
+output pointer is resolved after them. Return merging permits a final-null
+edge to satisfy this conditional guarantee, retaining only null paths proved
+on every preceding edge. Unknown non-null bytes never acquire initialization.
+
+Callback contexts remap global paths and reject any lost binding. Sidecars
+serialize the names of globals in callback contexts as in memory contexts.
+A `global-name` prelude retains the producer's name-table order, including
+unused identities, so decoding cannot reorder callback inputs or context keys.
+The table contributes no storage or callback facts.
+`GlobalTable` provides portable identities for private file-scope scalar
+function-pointer cells. Foreign units use implicit storage proxies outside
+source declaration lookup; the defining unit resolves them to the original
+variable. Other private globals keep RFC 0005's exclusion. Checked invocation
+uses established reaching targets and preserves singleton library provenance
+for allocation, memory and string rules. `DataflowCheckedCallbacks.cpp` checks
+each resolved alternative against a separate call-entry state and intersects
+its guaranteed outputs over returning targets. Unknown alternatives remain coverage
+boundaries; no contract is inferred from a callback's prototype alone.

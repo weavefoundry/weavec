@@ -106,6 +106,35 @@ if(Python3_Interpreter_FOUND)
   set_tests_properties(checked-evaluation-rfc0021
                        PROPERTIES LABELS "integration" TIMEOUT 300)
   add_test(
+    NAME checked-evaluation-rfc0022
+    COMMAND
+      "${Python3_EXECUTABLE}"
+      "${PROJECT_SOURCE_DIR}/scripts/checked-evaluation.py" --weavec
+      "$<TARGET_FILE:weavec>" --clang "${WEAVEC_CLANG_EXECUTABLE}" --manifest
+      "${PROJECT_SOURCE_DIR}/test/evaluation/rfc0022/manifest.json")
+  set_tests_properties(checked-evaluation-rfc0022
+                       PROPERTIES LABELS "integration" TIMEOUT 300)
+  foreach(kind IN ITEMS transport adversarial)
+    add_test(
+      NAME checked-${kind}-rfc0022
+      COMMAND
+        "${Python3_EXECUTABLE}"
+        "${PROJECT_SOURCE_DIR}/scripts/checked-evaluation.py" --weavec
+        "$<TARGET_FILE:weavec>" --clang "${WEAVEC_CLANG_EXECUTABLE}" --manifest
+        "${PROJECT_SOURCE_DIR}/test/evaluation/rfc0022/${kind}-manifest.json")
+    set_tests_properties(checked-${kind}-rfc0022
+                         PROPERTIES LABELS "integration" TIMEOUT 300)
+  endforeach()
+  add_test(
+    NAME checked-objects-rfc0022
+    COMMAND
+      "${Python3_EXECUTABLE}"
+      "${PROJECT_SOURCE_DIR}/scripts/checked-memory-build.py" --cc
+      "$<TARGET_FILE:weavec-cc>" --manifest
+      "${PROJECT_SOURCE_DIR}/test/evaluation/rfc0022/transport-manifest.json")
+  set_tests_properties(checked-objects-rfc0022 PROPERTIES LABELS "integration"
+                                                          TIMEOUT 300)
+  add_test(
     NAME checked-transport-rfc0019
     COMMAND
       "${Python3_EXECUTABLE}"

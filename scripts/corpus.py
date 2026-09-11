@@ -223,6 +223,12 @@ def run_units(weavec: str, project: Project, root: Path, files: list[Path], extr
                 failure = f"timeout after {timeout:g} seconds"
                 os.killpg(proc.pid, signal.SIGKILL)
                 stdout, stderr = proc.communicate()
+            except KeyboardInterrupt:
+                # The checker has its own session, so terminal cancellation
+                # reaches this runner but not the checker or RSS wrapper.
+                os.killpg(proc.pid, signal.SIGKILL)
+                proc.communicate()
+                raise
             output = stderr + stdout
             exit_code = proc.returncode
     except OSError as exc:

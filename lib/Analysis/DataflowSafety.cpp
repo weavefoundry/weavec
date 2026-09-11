@@ -10,6 +10,7 @@
 #include "Dataflow.h"
 #include "IntegerSupport.h"
 #include "weavec/Analysis/ProgramDatabase.h"
+#include "weavec/Core/ObjectType.h"
 
 #include "clang/AST/Attr.h"
 #include "clang/Basic/SourceManager.h"
@@ -157,6 +158,7 @@ void FunctionDataflow::initializeChecked() {
         const auto to = cast->getType()->getPointeeType();
         if (!to->isVoidType() && !to->isCharType() &&
             !clang::ASTContext::hasSameUnqualifiedType(from, to) &&
+            !from->isVoidType() && !from->isCharType() &&
             !checkedAllocationOrigin(builder.classifyValue(*cast)))
           checkedUnsupported.insert(stmt);
       }
@@ -203,6 +205,8 @@ void FunctionDataflow::initializeChecked() {
 
 void FunctionDataflow::checkedBefore(const Stmt &stmt,
                                      core::AnalysisState &state) {
+  if (const auto *cast = dyn_cast<CastExpr>(&stmt))
+    checkedObjectCast(*cast, state);
   if (const auto *declarations = dyn_cast<DeclStmt>(&stmt))
     for (const auto *decl : declarations->decls())
       if (const auto *var = dyn_cast<VarDecl>(decl);
@@ -322,6 +326,10 @@ void FunctionDataflow::checkedAfter(const Stmt &stmt,
   if (const auto *expr = dyn_cast<Expr>(&stmt))
     checkedAdvancePointer(*expr, state);
   if (inUnsafe && checkedUnsupported.contains(&stmt)) {
+    for (auto &[storage, type] : state.safety->objectTypes) {
+      (void)storage;
+      type = "?";
+    }
     state.safety->initialized.clear();
     state.safety->pointers.clear();
     state.safety->memory.clear();
@@ -436,8 +444,8 @@ FunctionDataflow::CheckedPointer FunctionDataflow::captureCheckedPointer(
         object->second = places.create("checked allocation");
       result.storage = object->second;
     }
-    if (origin.call && origin.call->getDirectCallee())
-      result.zeroed = origin.call->getDirectCallee()->getName() == "calloc";
+    if (origin.call)
+      result.zeroed = resolvedLibraryName(*origin.call) == "calloc";
     break;
   case ValueOrigin::Kind::Borrow:
     result.known = origin.place.has_value() || origin.literalLength.has_value();
@@ -520,6 +528,20 @@ void FunctionDataflow::installCheckedPointer(core::PlaceId dest,
     state.safety->deferred.insert(dest);
   const auto storage = value.storage.value_or(places.deref(dest));
   if (value.fresh) {
+    if (state.safety->objectTypes.size() < core::MaxSafetyRequirements ||
+        state.safety->objectTypes.contains(storage)) {
+      std::string type;
+      if (const auto *decl = dyn_cast_or_null<ValueDecl>(builder.declFor(dest));
+          decl && decl->getType()->isPointerType()) {
+        const auto pointee = decl->getType()->getPointeeType();
+        if (!pointee->isVoidType() && !pointee->isCharType())
+          type = checkedObjectType(pointee);
+      }
+      state.safety->objectTypes[storage] = std::move(type);
+    } else {
+      if (recording())
+        inferred.checked.limited = true;
+    }
     state.safety->writtenStorage.erase(storage);
     state.safety->memory.erase(storage);
     state.safety->accessible.erase(storage);
@@ -670,6 +692,14 @@ void FunctionDataflow::checkedOutputs(const core::AnalysisState &incoming,
     returnedStorage =
         object == state.safety->objects.end() ? *returned : object->second;
   }
+  std::set<core::SummaryPath> nullOutputs;
+  for (const auto &[holder, nullness] : state.nulls.all()) {
+    const auto path = builder.summaryPathOf(holder);
+    if (path && !(path->isParam() && path->isRoot()) &&
+        nullness.state == core::Nullness::Null &&
+        nullOutputs.size() < core::MaxSafetyRequirements)
+      nullOutputs.insert(*path);
+  }
   for (const auto outcome : classes) {
     core::CheckedContract outputs;
     for (const auto &[holder, position] : state.safety->positions) {
@@ -783,6 +813,18 @@ void FunctionDataflow::checkedOutputs(const core::AnalysisState &incoming,
       }
     }
     for (const auto &[storage, exported] : destinations) {
+      if (const auto type = memory.objectTypes.find(storage);
+          type != memory.objectTypes.end() &&
+          core::ObjectType::parse(type->second))
+        for (const auto &path : exported) {
+          if (path.isParam() && path.isRoot() && state.isOverwritten(path))
+            continue;
+          outputs.establish({.kind = core::CheckedRequirementKind::ObjectType,
+                             .path = path,
+                             .other = {},
+                             .family = type->second,
+                             .on = outcome});
+        }
       if (const auto witnesses = memory.termination.find(storage);
           witnesses != memory.termination.end())
         for (const auto &witness : witnesses->second) {
@@ -818,9 +860,6 @@ void FunctionDataflow::checkedOutputs(const core::AnalysisState &incoming,
               entry != condition.conditions.end() &&
               core::ValueFact::of(*outcome).implies(entry->second))
             condition.conditions.erase(entry);
-        const auto guard = summaryGuardOf(condition);
-        if (!summaryGuardComplete(condition, guard))
-          continue;
         const auto first = endpoint(range.begin);
         const auto last = endpoint(range.end);
         if (!first || !last)
@@ -838,7 +877,30 @@ void FunctionDataflow::checkedOutputs(const core::AnalysisState &incoming,
           kind = core::CheckedRequirementKind::Copied;
         else if (range.zeroed)
           kind = core::CheckedRequirementKind::Zeroed;
-        for (const auto &path : exported)
+        for (const auto &path : exported) {
+          auto inputCondition = condition;
+          bool ifNonNull =
+              !(path.isParam() && path.isRoot()) &&
+              std::ranges::any_of(memory.objects, [&](const auto &entry) {
+                return entry.second == storage &&
+                       builder.summaryPathOf(entry.first) == path;
+              });
+          for (auto it = inputCondition.conditions.begin();
+               it != inputCondition.conditions.end();) {
+            const auto object = memory.objects.find(it->first);
+            if (object != memory.objects.end() && object->second == storage &&
+                builder.summaryPathOf(it->first) == path &&
+                core::ValueFact::of(core::Outcome::NonNull)
+                    .implies(it->second)) {
+              ifNonNull = true;
+              it = inputCondition.conditions.erase(it);
+            } else {
+              ++it;
+            }
+          }
+          const auto guard = summaryGuardOf(inputCondition);
+          if (!summaryGuardComplete(inputCondition, guard))
+            continue;
           outputs.establish({.kind = kind,
                              .path = path,
                              .other = source.value_or(core::SummaryPath{}),
@@ -846,13 +908,35 @@ void FunctionDataflow::checkedOutputs(const core::AnalysisState &incoming,
                              .end = *last,
                              .family = {},
                              .when = guard,
-                             .on = outcome});
+                             .on = outcome,
+                             .ifNonNull = ifNonNull});
+        }
       }
     }
     const auto [existing, inserted] =
         checkedOutputClasses.try_emplace(outcome, outputs.establishes);
-    if (!inserted)
-      existing->second.intersect(outputs.establishes);
+    if (inserted) {
+      checkedNullOutputClasses[outcome] = nullOutputs;
+    } else {
+      core::CheckedRequirements::Set joined;
+      for (const auto &post : existing->second)
+        if (outputs.establishes.contains(post) ||
+            (post.ifNonNull && nullOutputs.contains(post.path)))
+          joined.insert(post);
+      auto &previousNull = checkedNullOutputClasses[outcome];
+      for (const auto &post : outputs.establishes)
+        if (post.ifNonNull && previousNull.contains(post.path))
+          joined.insert(post);
+      if (joined.size() > core::MaxSafetyRequirements) {
+        joined.erase(std::next(joined.begin(), core::MaxSafetyRequirements),
+                     joined.end());
+        outputs.limited = true;
+      }
+      existing->second.assign(std::move(joined));
+      std::erase_if(previousNull, [&](const auto &path) {
+        return !nullOutputs.contains(path);
+      });
+    }
     inferred.checked.limited |= outputs.limited;
   }
   checkedOutputSeen = true;
@@ -910,7 +994,9 @@ void FunctionDataflow::checkedFinish(const core::AnalysisState *exitState) {
     for (unsigned i = 0; i < function.getNumParams(); ++i)
       for (unsigned j = i + 1; j < function.getNumParams(); ++j)
         if (function.getParamDecl(i)->getType()->isPointerType() &&
-            function.getParamDecl(j)->getType()->isPointerType())
+            !function.getParamDecl(i)->getType()->isFunctionPointerType() &&
+            function.getParamDecl(j)->getType()->isPointerType() &&
+            !function.getParamDecl(j)->getType()->isFunctionPointerType())
           inferred.checked.require(
               {.kind = core::CheckedRequirementKind::Separated,
                .path = core::SummaryPath::param(i),

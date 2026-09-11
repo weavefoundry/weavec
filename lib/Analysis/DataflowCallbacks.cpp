@@ -13,6 +13,19 @@ using namespace clang;
 
 namespace weavec::analysis {
 
+std::string FunctionDataflow::resolvedLibraryName(const CallExpr &call) const {
+  const auto source = callSources.find(&call);
+  if (source == callSources.end() || source->second != SummarySource::Builtin)
+    return {};
+  if (const auto *direct = call.getDirectCallee())
+    return direct->getNameAsString();
+  const auto targets = callTargetsSeen.find(&call);
+  if (targets == callTargetsSeen.end() || targets->second.unknown ||
+      targets->second.null || targets->second.functions.size() != 1)
+    return {};
+  return *targets->second.functions.begin();
+}
+
 core::CallTargets
 FunctionDataflow::originTargets(const ValueOrigin &origin,
                                 const core::AnalysisState &state) {
@@ -94,8 +107,15 @@ core::CallTargets FunctionDataflow::functionTargets(const Expr &expr,
       input.kind = ValueOrigin::Kind::Copy;
       input.place = *place;
       const auto source = sourceValueOf(input, state, true);
-      if (source.path && source.path->isParam() && recording())
-        inferred.callbackInputs.insert(*source.path);
+      auto path = source.path;
+      if (!path && options.checkContracts)
+        if (const auto global = builder.summaryPathOf(place->place);
+            global && global->isGlobal() && !state.isOverwritten(*global))
+          path = global;
+      if (path &&
+          (path->isParam() || (options.checkContracts && path->isGlobal())) &&
+          recording())
+        inferred.callbackInputs.insert(*path);
     }
     if (found != state.callTargets.end())
       return found->second;
@@ -140,6 +160,7 @@ FunctionDataflow::resolveCall(const CallExpr &call) {
     return ResolvedSummary{.summary = cached->second,
                            .source = callSources.at(&call)};
   }
+  checkedCallAlternatives.erase(&call);
   const FunctionDecl *direct = call.getDirectCallee();
   if (!currentState)
     return direct ? summaries.lookup(*direct) : summaries.lookupIndirect(call);
@@ -188,11 +209,25 @@ FunctionDataflow::resolveCall(const CallExpr &call) {
           } else if (const auto place =
                          builder.resolveSummaryPath(path, call)) {
             const auto it = state.callTargets.find(place->place);
-            bindings[path] = it == state.callTargets.end()
-                                 ? core::CallTargets::any()
-                                 : it->second;
+            if (it != state.callTargets.end())
+              bindings[path] = it->second;
+            else if (path.isGlobal())
+              bindings[path] = summaries.targetsForGlobal(path);
+            else
+              bindings[path] = core::CallTargets::any();
+            if (bindings[path].empty())
+              bindings[path] = core::CallTargets::any();
+            if (path.isGlobal() && bindings[path].unknown && recording())
+              inferred.callbackInputs.insert(path);
           }
         }
+        // RFC 0022: replaying the generic unresolved global set adds no
+        // target or nullness premise. Keep its dependency, not a duplicate
+        // specialization whose entry state would resolve the same set.
+        std::erase_if(bindings, [&](const auto &binding) {
+          return binding.first.isGlobal() && binding.second.unknown &&
+                 binding.second == summaries.targetsForGlobal(binding.first);
+        });
         const bool known =
             !bindings.empty() &&
             std::ranges::any_of(bindings, [](const auto &binding) {
@@ -238,6 +273,7 @@ FunctionDataflow::resolveCall(const CallExpr &call) {
       source = contract->source;
     } else {
       bool returns = false;
+      std::optional<SummarySource> singleSource;
       std::shared_ptr<core::FunctionSummary> joined;
       for (const auto &symbol : targets.functions) {
         const auto target = summaries.lookupSymbol(symbol);
@@ -245,7 +281,16 @@ FunctionDataflow::resolveCall(const CallExpr &call) {
           targets.unknown = true;
           continue;
         }
-        auto actual = contextualize(symbol, summaries.retainSummary(*target));
+        if (targets.functions.size() == 1 && !targets.unknown && !targets.null)
+          singleSource = target->source;
+        auto actual =
+            target->source == SummarySource::Builtin
+                ? summaries.retainSummary(*target)
+                : contextualize(symbol, summaries.retainSummary(*target));
+        if (options.checkContracts && targets.functions.size() > 1)
+          checkedCallAlternatives[&call].emplace(
+              symbol,
+              ResolvedSummary{.summary = actual, .source = target->source});
         returns |= !actual->neverReturns;
         if (!result) {
           result = std::move(actual);
@@ -270,6 +315,31 @@ FunctionDataflow::resolveCall(const CallExpr &call) {
           // Retain known effects and the unresolved alternative's boundary.
           handleUncheckedCall(call, state);
         }
+      }
+      if (singleSource && !targets.unknown && !targets.null)
+        source = *singleSource;
+      const bool separateChecking =
+          options.checkContracts &&
+          std::ranges::any_of(
+              checkedCallAlternatives[&call], [](const auto &entry) {
+                return entry.second.source == SummarySource::Builtin ||
+                       !entry.second.summary->checked.computed ||
+                       entry.second.summary->neverReturns;
+              });
+      if (!separateChecking)
+        checkedCallAlternatives.erase(&call);
+      if (separateChecking && result && targets.functions.size() > 1 &&
+          !targets.unknown && !targets.null &&
+          checkedCallAlternatives[&call].size() == targets.functions.size()) {
+        if (!joined)
+          joined = std::make_shared<core::FunctionSummary>(*result);
+        // Every actual target is checked at this call. The generic join must
+        // not preserve a user target's must-output across an unchecked builtin.
+        joined->checked.computed = true;
+        joined->checked.signature =
+            functionTypeKey(call.getCallee()->getType(), context);
+        joined->checked.establishes.clear();
+        result = joined;
       }
     }
   }

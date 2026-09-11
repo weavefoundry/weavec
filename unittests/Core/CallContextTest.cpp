@@ -34,6 +34,30 @@ static CallContext equalInputs() {
   return result;
 }
 
+TEST(CallContext, GlobalCallbackBindingsRoundTripAndRemapEveryPremise) {
+  CallContext input;
+  auto targets = CallTargets::function("module.c#allocate");
+  targets.null = true;
+  input.callbacks.emplace(SummaryPath::global(0), targets);
+  input.callbacks.emplace(SummaryPath::param(1), CallTargets::any());
+  ASSERT_TRUE(input.valid());
+  const auto text = printCallContext(input, contextGlobalName);
+  EXPECT_EQ(parseCallContext(text, resolveContextGlobal), input);
+  EXPECT_FALSE(parseCallContext(
+      text, [](std::string_view) { return std::optional<std::uint32_t>{}; }));
+  const auto mapped =
+      remapCallContext(input, [](std::uint32_t) { return std::optional(1U); });
+  ASSERT_TRUE(mapped);
+  EXPECT_EQ(mapped->callbacks.at(SummaryPath::global(1)), targets);
+  EXPECT_TRUE(mapped->callbacks.at(SummaryPath::param(1)).unknown);
+  EXPECT_FALSE(remapCallContext(
+      input, [](std::uint32_t) { return std::optional<std::uint32_t>{}; }));
+  input.callbacks.emplace(SummaryPath::global(1),
+                          CallTargets::function("other"));
+  EXPECT_FALSE(
+      remapCallContext(input, [](std::uint32_t) { return std::optional(0U); }));
+}
+
 TEST(CallContext, TraversalOrdersRoundTripRemapAndRequireDefiniteIdentity) {
   const auto a = SummaryPath::param(0).deref();
   const auto b = SummaryPath::global(0);

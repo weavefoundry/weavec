@@ -213,12 +213,16 @@ std::optional<BorrowKind>
 FunctionSummary::borrowKind(std::uint32_t param) const {
   const SummaryPath pointee = SummaryPath::param(param).deref();
   bool read = false;
-  bool mutated = false;
-  for (const auto &[path, effect] : effects) {
-    if (path == pointee || pointee.isProperPrefixOf(path)) {
-      read = read || effect.read;
-      mutated = mutated || effect.mutates();
-    }
+  // RFC 0003: only this pointee's subtree contributes. SummaryPath's
+  // lexicographic ordering keeps that subtree contiguous; mutation already
+  // determines the strongest borrow kind regardless of the remaining facts.
+  for (auto it = effects.lower_bound(pointee); it != effects.end(); ++it) {
+    const auto &[path, effect] = *it;
+    if (path != pointee && !pointee.isProperPrefixOf(path))
+      break;
+    if (effect.mutates())
+      return BorrowKind::Mutable;
+    read |= effect.read;
   }
   // Handing out a pointer into the pointee (returned or stored elsewhere) is a
   // shared use of it even when nothing was read through it. A copy of the
@@ -237,13 +241,11 @@ FunctionSummary::borrowKind(std::uint32_t param) const {
   };
   for (const Store &store : stores) {
     if (store.dest == pointee || pointee.isProperPrefixOf(store.dest))
-      mutated = true;
+      return BorrowKind::Mutable;
     read = read || usesPointee(store.value);
   }
   for (const ValueSource &value : returns)
     read = read || usesPointee(value);
-  if (mutated)
-    return BorrowKind::Mutable;
   if (read)
     return BorrowKind::Shared;
   return std::nullopt;
@@ -590,6 +592,13 @@ void FunctionSummary::join(const FunctionSummary &other) {
   // In particular, numeric output insertion can erase an existing alternative.
   if (this == &other)
     return;
+  // Equal interface facts are already a fixed point. Explanation routes do
+  // not participate in semantic equality, so still apply their canonical join
+  // (RFC 0020) instead of rebuilding all of the ownership maps.
+  if (*this == other) {
+    checked.join(other.checked);
+    return;
+  }
   // The empty summary is the bottom of the lattice (a join of candidates
   // starts from it): the other side's classes are the answer.
   const bool wasEmpty = empty();

@@ -2,12 +2,21 @@
 """RFC 0014: corpus setup and tool failures must never look like clean code."""
 import contextlib
 import io
+import importlib.util
+import os
+import signal
 import tempfile
 import sys
+import time
 import unittest
 from pathlib import Path
 
 from corpus import Project, UnitResult, compare_to_baseline, main, run_units, summarise
+
+SPEC = importlib.util.spec_from_file_location(
+    'scalability_evaluation', Path(__file__).with_name('scalability-evaluation.py'))
+SCALABILITY = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(SCALABILITY)
 
 
 class CorpusTest(unittest.TestCase):
@@ -74,9 +83,62 @@ class CorpusTest(unittest.TestCase):
         self.assertIn("timeout", result.failure)
         self.assertLess(result.seconds, 2)
 
+    def test_cancellation_reaps_the_detached_checker(self):
+        identity = self.root / "checker.pid"
+        started = time.monotonic()
+        with self.assertRaises(KeyboardInterrupt):
+            self.run_tool(
+                "import os, signal, time\n"
+                f"open({str(identity)!r}, 'w').write(str(os.getpid()))\n"
+                "os.kill(os.getppid(), signal.SIGINT)\n"
+                "time.sleep(3)"
+            )
+        pid = int(identity.read_text())
+        try:
+            with self.assertRaises(ProcessLookupError):
+                os.kill(pid, 0)
+            self.assertLess(time.monotonic() - started, 2)
+        finally:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
     def test_missing_binary_is_reported(self):
         result = run_units(str(self.root / "missing"), self.project, self.root, [self.source], [])
         self.assertTrue(result.failure)
+
+    def test_outer_measurement_cancellation_reaps_the_checker(self):
+        identity = self.root / "outer-checker.pid"
+        binary = self.fake(
+            "import os, signal, time\n"
+            f"open({str(identity)!r}, 'w').write(str(os.getpid()))\n"
+            f"os.kill({os.getpid()}, signal.SIGINT)\n"
+            "time.sleep(3)"
+        )
+        script = (
+            "import sys\n"
+            f"sys.path.insert(0, {str(Path(__file__).resolve().parent)!r})\n"
+            "from corpus import Project, run_units\n"
+            "from pathlib import Path\n"
+            f"run_units({binary!r}, Project('sample', None, 'local', ['*.c'], []), "
+            f"Path({str(self.root)!r}), [Path({str(self.source)!r})], [])\n"
+        )
+        started = time.monotonic()
+        with (self.root / "outer.log").open('w') as log:
+            with self.assertRaises(KeyboardInterrupt):
+                SCALABILITY.run_corpus([sys.executable, '-c', script],
+                                       cwd=self.root, stdout=log, timeout=10)
+        pid = int(identity.read_text())
+        try:
+            with self.assertRaises(ProcessLookupError):
+                os.kill(pid, 0)
+            self.assertLess(time.monotonic() - started, 2)
+        finally:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
 
     def test_missing_projects_and_changed_unit_counts_fail_comparison(self):
         baseline = {"projects": {"sample": {"units": 2}}, "totals": {}}

@@ -97,14 +97,7 @@ namespace weavec::core {
 /// Version of the record format; bumped when a record written by this
 /// version cannot be read by the previous one.
 // Version 14 (RFC 0018) adds bounded sufficient safety contracts.
-inline constexpr unsigned SummaryFormatVersion = 16;
-
-// RFC 0014: deterministic, single-token callback contexts. Bindings name
-// parameter paths; globals retain their ordinary exported value sources.
-[[nodiscard]] std::string
-printCallbackBindings(const CallbackBindings &bindings);
-[[nodiscard]] std::optional<CallbackBindings>
-parseCallbackBindings(std::string_view text);
+inline constexpr unsigned SummaryFormatVersion = 17;
 
 /// The name to print for a global root id.
 using GlobalNamer = std::function<std::string(std::uint32_t)>;
@@ -113,6 +106,16 @@ using GlobalNamer = std::function<std::string(std::uint32_t)>;
 /// every fact about that root (RFC 0005, *The program database*).
 using GlobalResolver =
     std::function<std::optional<std::uint32_t>(std::string_view)>;
+
+// RFC 0022: global bindings use portable names just like summary paths.
+[[nodiscard]] std::string
+printCallbackBindings(const CallbackBindings &bindings,
+                      const GlobalNamer &names = {});
+[[nodiscard]] std::optional<CallbackBindings>
+parseCallbackBindings(std::string_view text,
+                      const GlobalResolver &resolve = {});
+[[nodiscard]] std::optional<CallbackBindings>
+remapCallbackBindings(const CallbackBindings &bindings, const GlobalIdMap &map);
 
 /// Spells `path` as in the record format (`param 0 *.data`).
 [[nodiscard]] std::string printSummaryPath(const SummaryPath &path,

@@ -400,6 +400,8 @@ TEST(ProgramDatabase, ContextRebuildAgreesWithGlobalRenumbering) {
   function.memorySpecializations[input] = function.summary;
   core::CallbackBindings callbacks;
   callbacks[SummaryPath::param(0)] = core::CallTargets::function("release");
+  callbacks[SummaryPath::global(0)] = core::CallTargets::function("allocate");
+  unit.callbackRequests["helper"].insert(callbacks);
   function.specializations[callbacks] = function.summary;
   ProgramDatabase direct;
   direct.add(prefix);
@@ -410,6 +412,10 @@ TEST(ProgramDatabase, ContextRebuildAgreesWithGlobalRenumbering) {
   rebuilt.add(numbered);
   EXPECT_TRUE(direct.checkpointInputs({"helper"})
                   .sameSummariesAs(rebuilt.checkpointInputs({"helper"})));
+  ASSERT_EQ(rebuilt.requestsFor("helper").size(), 1U);
+  const auto &mappedCallbacks = *rebuilt.requestsFor("helper").begin();
+  EXPECT_TRUE(mappedCallbacks.contains(SummaryPath::global(1)));
+  ASSERT_NE(rebuilt.findSpecialization("helper", mappedCallbacks), nullptr);
   const auto &mapped = *rebuilt.memoryRequestsFor("helper").begin();
   EXPECT_TRUE(mapped.facts.contains(SummaryPath::global(1)));
   ASSERT_NE(rebuilt.findMemorySpecialization("helper", mapped), nullptr);

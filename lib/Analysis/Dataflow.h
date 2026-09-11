@@ -74,6 +74,8 @@ public:
   bool checkedOutputSeen = false;
   std::map<std::optional<core::Outcome>, core::CheckedRequirements>
       checkedOutputClasses;
+  std::map<std::optional<core::Outcome>, std::set<core::SummaryPath>>
+      checkedNullOutputClasses;
 
   /// The summary inferred by `run` (RFC 0003, *Deriving a summary*).
   [[nodiscard]] const core::FunctionSummary &summary() const noexcept {
@@ -251,6 +253,8 @@ private:
     std::optional<core::PlaceId> holder = {};
     // NOLINTNEXTLINE(readability-redundant-member-init): aggregate default
     std::optional<core::PlaceId> inputPlace = {};
+    friend bool operator==(const CheckedMemory &,
+                           const CheckedMemory &) = default;
   };
   struct CheckedPointer {
     bool known = false;
@@ -278,7 +282,12 @@ private:
   void checkedAccess(const clang::Expr &expr, const PlaceRef &ref, Role role,
                      core::AnalysisState &state);
   void checkedCall(const clang::CallExpr &call, const CallEffects *effects,
-                   core::AnalysisState &state);
+                   core::AnalysisState &state, std::string_view target = {});
+  bool checkedAlternatives(const clang::CallExpr &call,
+                           const CallEffects &effects,
+                           core::AnalysisState &state);
+  std::map<const clang::CallExpr *, std::map<std::string, ResolvedSummary>>
+      checkedCallAlternatives;
   void checkedCallAfter(const clang::CallExpr &call, const CallEffects *effects,
                         core::AnalysisState &state);
   void checkedFinish(const core::AnalysisState *exitState);
@@ -317,6 +326,15 @@ private:
   checkedPathMemory(const core::SummaryPath &path, const clang::CallExpr &call,
                     const core::Affine &begin, const core::Affine &end,
                     const core::AnalysisState &state);
+  void checkedObjectCast(const clang::CastExpr &cast,
+                         core::AnalysisState &state);
+  [[nodiscard]] std::string checkedObjectType(clang::QualType type);
+  [[nodiscard]] std::string
+  resolvedLibraryName(const clang::CallExpr &call) const;
+  void checkedObjectRequirement(const CheckedMemory &memory,
+                                std::string_view descriptor,
+                                const clang::Stmt &at,
+                                core::AnalysisState &state);
   [[nodiscard]] bool checkedValid(const CheckedMemory &memory,
                                   const core::AnalysisState &state);
   [[nodiscard]] bool checkedTerminated(const CheckedMemory &memory,
@@ -400,6 +418,9 @@ private:
     core::InitializedRange range;
     std::optional<core::Outcome> on;
     std::optional<core::PlaceId> storage;
+    bool ifNonNull = false;
+    std::string objectType;
+    friend bool operator==(const CheckedPost &, const CheckedPost &) = default;
   };
   std::map<const clang::CallExpr *, std::vector<CheckedPost>> checkedPosts;
   struct CheckedPositionPost {
@@ -409,6 +430,8 @@ private:
     core::PlaceGuard when;
     std::optional<core::Outcome> on;
     bool nonNull = false;
+    friend bool operator==(const CheckedPositionPost &,
+                           const CheckedPositionPost &) = default;
   };
   std::map<const clang::CallExpr *, std::vector<CheckedPositionPost>>
       checkedPositionPosts;
@@ -418,6 +441,8 @@ private:
     core::PlaceId storage;
     std::int64_t offset = 0;
     std::optional<core::Outcome> on;
+    friend bool operator==(const CheckedProgressPost &,
+                           const CheckedProgressPost &) = default;
   };
   std::map<const clang::CallExpr *, std::vector<CheckedProgressPost>>
       checkedProgressPosts;

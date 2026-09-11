@@ -578,26 +578,20 @@ core::AnalysisState FunctionDataflow::initialState() {
                      .declared = true});
   }
   for (const auto &[path, targets] : callbackBindings) {
-    if (path.root != core::SummaryRoot::Param ||
-        path.index >= function.getNumParams())
+    const auto input = contextPlace(path, state);
+    if (!input || !input->second->isFunctionPointerType())
       continue;
-    core::PlaceId place =
-        builder.placeForVar(*function.getParamDecl(path.index));
-    for (const auto &step : path.steps) {
-      switch (step.step) {
-      case core::PathStep::Deref:
-        place = places.deref(place);
-        break;
-      case core::PathStep::Field:
-        place = places.field(place, step.field);
-        break;
-      case core::PathStep::Index:
-        place = step.field.empty() ? places.index(place)
-                                   : places.element(place, step.field);
-        break;
-      }
+    state.callTargets[input->first] = targets;
+    if (!targets.unknown && !targets.empty()) {
+      auto value = core::Nullness::NonNull;
+      if (targets.functions.empty())
+        value = core::Nullness::Null;
+      else if (targets.null)
+        value = core::Nullness::MaybeNull;
+      state.nulls.set(input->first, {.state = value,
+                                     .location = {},
+                                     .reason = core::NullReason::Declared});
     }
-    state.callTargets[place] = targets;
   }
   initializeCallContext(state);
   if (state.safety)

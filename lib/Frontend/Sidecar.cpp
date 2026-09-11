@@ -52,6 +52,13 @@ std::string printUnitRecord(const UnitRecord &record) {
     return exports.globals.nameOf(id).str();
   };
   os << "weavec-summaries " << SidecarFormatVersion << '\n';
+  // RFC 0022: first-use interning can otherwise reorder global callback
+  // bindings and specialization keys during a checkpoint round trip.
+  for (std::uint32_t id = 0; id < exports.globals.size(); ++id)
+    os << "global-name "
+       << core::CallTargets::function(exports.globals.nameOf(id).str())
+              .toString()
+       << '\n';
   if (!record.objectDigest.empty())
     os << "checked-object " << record.objectDigest << '\n';
   if (!record.commandDigest.empty())
@@ -78,7 +85,7 @@ std::string printUnitRecord(const UnitRecord &record) {
     for (const auto &bindings : requests)
       os << "callback-request "
          << core::CallTargets::function(symbol).toString() << ' '
-         << core::printCallbackBindings(bindings) << '\n';
+         << core::printCallbackBindings(bindings, names) << '\n';
   }
   for (const auto &[symbol, requests] : exports.memoryRequests)
     for (const auto &input : requests)
@@ -134,7 +141,8 @@ std::string printUnitRecord(const UnitRecord &record) {
       os << core::printSummary(summary, names);
     }
     for (const auto &[bindings, summary] : function.specializations) {
-      os << "specialization " << core::printCallbackBindings(bindings) << '\n';
+      os << "specialization " << core::printCallbackBindings(bindings, names)
+         << '\n';
       os << core::printSummary(summary, names);
     }
   }
@@ -231,8 +239,15 @@ std::optional<UnitRecord> parseUnitRecord(llvm::StringRef text,
                return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
              });
     };
-    if (kind == "checked-object" || kind == "checked-command" ||
-        kind == "checked-preprocessing") {
+    if (kind == "global-name") {
+      const auto name = core::CallTargets::parse(value.str());
+      if (!name || !name->resolved() || name->functions.size() != 1 ||
+          exports.globals.size() >= 65536 ||
+          exports.globals.find(*name->functions.begin()))
+        return fail("invalid or duplicate global name");
+      (void)exports.globals.idFor(*name->functions.begin());
+    } else if (kind == "checked-object" || kind == "checked-command" ||
+               kind == "checked-preprocessing") {
       auto *digest = &record.preprocessingDigest;
       if (kind == "checked-object")
         digest = &record.objectDigest;
@@ -304,7 +319,8 @@ std::optional<UnitRecord> parseUnitRecord(llvm::StringRef text,
     } else if (kind == "callback-request") {
       const auto [symbolText, bindingText] = value.split(' ');
       const auto symbol = core::CallTargets::parse(symbolText.str());
-      const auto bindings = core::parseCallbackBindings(bindingText.str());
+      const auto bindings =
+          core::parseCallbackBindings(bindingText.str(), resolve);
       if (!symbol || !symbol->resolved() || symbol->functions.size() != 1 ||
           !bindings)
         return fail("invalid callback request");
@@ -316,7 +332,7 @@ std::optional<UnitRecord> parseUnitRecord(llvm::StringRef text,
       if (!current || specialized ||
           current->specializations.size() >= core::MaxCallbackContexts)
         return fail("invalid specialization record");
-      specialized = core::parseCallbackBindings(value.str());
+      specialized = core::parseCallbackBindings(value.str(), resolve);
       if (!specialized)
         return fail("invalid callback bindings");
     } else if (kind == "source") {

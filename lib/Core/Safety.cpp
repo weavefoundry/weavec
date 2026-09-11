@@ -248,6 +248,12 @@ void SafetyLedger::addCalls(std::span<const SafetyObligation> origins,
     const auto found = entries().find(key);
     if (rejects(found, outcome, reason))
       continue;
+    auto calls = entry.calls;
+    calls.normalize();
+    if (found != entries().end() && found->second.outcome == outcome &&
+        found->second.reason == reason &&
+        !preferSafetyCalls(calls, found->second.calls))
+      continue;
     addPrepared(std::move(key),
                 {.property = SafetyProperty::Call,
                  .outcome = outcome,
@@ -255,7 +261,7 @@ void SafetyLedger::addCalls(std::span<const SafetyObligation> origins,
                  .function = caller,
                  .subject = std::string(boundedSubject),
                  .reason = std::string(reason),
-                 .calls = entry.calls},
+                 .calls = std::move(calls)},
                 found);
   }
 }
@@ -340,6 +346,12 @@ void SafetyLedger::addCalls(const SafetyLedger &source, bool trusted,
     const auto found = entries().find(identity);
     if (rejects(found, outcome, strings.reason))
       continue;
+    auto calls = entry.calls;
+    calls.normalize();
+    if (found != entries().end() && found->second.outcome == outcome &&
+        found->second.reason == strings.reason &&
+        !preferSafetyCalls(calls, found->second.calls))
+      continue;
     addPrepared(std::move(identity),
                 {.property = SafetyProperty::Call,
                  .outcome = outcome,
@@ -347,7 +359,7 @@ void SafetyLedger::addCalls(const SafetyLedger &source, bool trusted,
                  .function = caller,
                  .subject = strings.subject,
                  .reason = strings.reason,
-                 .calls = entry.calls},
+                 .calls = std::move(calls)},
                 found);
   }
 }
@@ -648,6 +660,7 @@ void SafetyState::copyMemory(PlaceId source, PlaceId destination) {
     termination.erase(destination);
 }
 void SafetyState::forget(PlaceId place) {
+  objectTypes.erase(place);
   writtenStorage.erase(place);
   termination.erase(place);
   replacedPointers.erase(place);
@@ -731,6 +744,21 @@ void SafetyState::refinePaths(const PlaceGuard &guard) {
 bool SafetyState::join(const SafetyState &other, const PlaceGuard &left,
                        const PlaceGuard &right) {
   bool changed = other.havoc && !havoc;
+  for (auto &[storage, type] : objectTypes) {
+    const auto found = other.objectTypes.find(storage);
+    if (type != "?" &&
+        (found == other.objectTypes.end() || found->second != type)) {
+      type = "?";
+      changed = true;
+    }
+  }
+  for (const auto &[storage, type] : other.objectTypes) {
+    (void)type;
+    if (!objectTypes.contains(storage)) {
+      objectTypes.emplace(storage, "?");
+      changed = true;
+    }
+  }
   const auto written = writtenStorage.size();
   writtenStorage.insert(other.writtenStorage.begin(),
                         other.writtenStorage.end());

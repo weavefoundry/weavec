@@ -81,7 +81,7 @@ bool CallContext::valid() const {
   AliasRelation definite;
   AliasRelation sameShares;
   for (const auto &[path, targets] : callbacks) {
-    if (!validContextPath(path) || !path.isParam() || targets.empty() ||
+    if (!validContextPath(path) || targets.empty() ||
         CallTargets::parse(targets.toString()) != targets)
       return false;
   }
@@ -165,6 +165,28 @@ bool CallContext::valid() const {
   return paths.size() <= MaxCallContextPaths;
 }
 
+std::optional<CallbackBindings>
+remapCallbackBindings(const CallbackBindings &bindings,
+                      const GlobalIdMap &map) {
+  CallbackBindings result;
+  if (bindings.size() > MaxCallbackContexts)
+    return std::nullopt;
+  for (const auto &[input, targets] : bindings) {
+    if (!validContextPath(input) || targets.empty())
+      return std::nullopt;
+    auto path = input;
+    if (path.isGlobal()) {
+      const auto id = map(path.index);
+      if (!id)
+        return std::nullopt;
+      path.index = *id;
+    }
+    if (!result.emplace(path, targets).second)
+      return std::nullopt;
+  }
+  return result;
+}
+
 std::optional<CallContext> remapCallContext(const CallContext &context,
                                             const GlobalIdMap &map) {
   if (!context.valid())
@@ -180,7 +202,10 @@ std::optional<CallContext> remapCallContext(const CallContext &context,
   };
   CallContext result;
   result.reportDiagnostics = context.reportDiagnostics;
-  result.callbacks = context.callbacks;
+  const auto callbacks = remapCallbackBindings(context.callbacks, map);
+  if (!callbacks)
+    return std::nullopt;
+  result.callbacks = *callbacks;
   for (const auto &alias : context.aliases) {
     const auto a = pathOf(alias.first);
     const auto b = pathOf(alias.second);
@@ -341,7 +366,8 @@ std::string printCallContext(const CallContext &context,
   };
   append(context.reportDiagnostics ? "r:1" : "r:0");
   if (!context.callbacks.empty())
-    append("c:" + encodeContextText(printCallbackBindings(context.callbacks)));
+    append("c:" +
+           encodeContextText(printCallbackBindings(context.callbacks, names)));
   for (const auto &alias : context.aliases)
     append("a:" + path(alias.first) + ':' + path(alias.second) + ':' +
            encodeContextText(alias.offset.toString()) + ':' +
@@ -390,7 +416,7 @@ std::optional<CallContext> parseCallContext(std::string_view text,
     } else if (fields[0] == "c" && fields.size() == 2) {
       const auto decoded = decodeContextText(fields[1]);
       const auto callbacks =
-          decoded ? parseCallbackBindings(*decoded) : std::nullopt;
+          decoded ? parseCallbackBindings(*decoded, resolve) : std::nullopt;
       if (!callbacks || !result.callbacks.empty())
         return std::nullopt;
       result.callbacks = *callbacks;

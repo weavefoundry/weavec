@@ -159,7 +159,7 @@ TEST_F(AnalysisCacheTest, SharedLedgersPreserveOversizedExpandedContracts) {
             checkpointExportsIdentity(changed));
 }
 
-TEST_F(AnalysisCacheTest, ProducerValidationComparesGlobalNamesNotTableOrder) {
+TEST_F(AnalysisCacheTest, ProducerValidationPreservesTheGlobalNameTable) {
   auto before = checkpoint();
   auto &unit = before.units.front().exports;
   (void)unit.globals.idFor("unused");
@@ -173,7 +173,9 @@ TEST_F(AnalysisCacheTest, ProducerValidationComparesGlobalNamesNotTableOrder) {
   const auto &decoded = after->units.front().exports;
   const auto mapped = decoded.globals.find("counter");
   ASSERT_TRUE(mapped);
-  EXPECT_NE(*mapped, global);
+  // RFC 0022 retains the producer's names before any first-use references.
+  EXPECT_EQ(*mapped, global);
+  EXPECT_EQ(decoded.globals, unit.globals);
   EXPECT_TRUE(decoded.functions.at("get")
                   .summary.effects.at(core::SummaryPath::global(*mapped))
                   .read);

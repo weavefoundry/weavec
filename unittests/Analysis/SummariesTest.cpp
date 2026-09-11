@@ -378,6 +378,44 @@ TEST(Summaries, GlobalTableInternsCanonicalDecls) {
   EXPECT_EQ(table.declFor(99), nullptr);
 }
 
+TEST(Summaries, PrivateCallbackCellsHaveStableInvisibleForeignProxies) {
+  const auto owner = parse("static void (*hook)(void *); static int hidden;");
+  const auto foreign = parse("int unrelated;");
+  ASSERT_TRUE(owner.ast);
+  ASSERT_TRUE(foreign.ast);
+  GlobalTable local;
+  GlobalTable remote;
+  const clang::VarDecl *hook = nullptr;
+  for (const auto *decl :
+       owner.ast->getASTContext().getTranslationUnitDecl()->decls())
+    if (const auto *var = llvm::dyn_cast<clang::VarDecl>(decl)) {
+      if (var->getName() == "hook")
+        hook = var;
+      else if (var->getName() == "hidden")
+        EXPECT_FALSE(local.portableName(local.idFor(*var)));
+    }
+  ASSERT_NE(hook, nullptr);
+  const auto id = local.idFor(*hook);
+  const auto name = local.portableName(id);
+  ASSERT_TRUE(name);
+  const auto &ctx = foreign.ast->getASTContext();
+  const auto before = std::distance(ctx.getTranslationUnitDecl()->decls_begin(),
+                                    ctx.getTranslationUnitDecl()->decls_end());
+  const auto proxy = remote.importName(*name, ctx);
+  ASSERT_TRUE(proxy);
+  EXPECT_TRUE(remote.declFor(*proxy)->isImplicit());
+  EXPECT_TRUE(remote.declFor(*proxy)->getType()->isFunctionPointerType());
+  EXPECT_EQ(remote.importName(*name, ctx), proxy);
+  EXPECT_EQ(remote.portableName(*proxy), name);
+  EXPECT_EQ(remote.callbackName(*proxy), local.callbackName(id));
+  EXPECT_EQ(before, std::distance(ctx.getTranslationUnitDecl()->decls_begin(),
+                                  ctx.getTranslationUnitDecl()->decls_end()));
+  EXPECT_EQ(local.importName(*name, owner.ast->getASTContext()), id);
+  EXPECT_FALSE(remote.importName("@weavec-hook:broken", ctx));
+  EXPECT_FALSE(remote.importName("@weavec-hook:00", ctx));
+  EXPECT_FALSE(remote.importName("missing", ctx));
+}
+
 // -- Builtins -----------------------------------------------------------------
 
 TEST(Builtins, TableCoversTheAllocatorList) {

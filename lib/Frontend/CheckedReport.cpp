@@ -127,7 +127,10 @@ void CheckedReport::write(llvm::raw_ostream &out, bool invocationOK) const {
               << ",\"family\":" << quote(entry.family)
               << ",\"when\":" << quote(core::printGuard(entry.when, names))
               << ",\"on\":"
-              << (entry.on ? quote(core::toString(*entry.on)) : "null") << '}';
+              << (entry.on ? quote(core::toString(*entry.on)) : "null");
+          if (entry.ifNonNull)
+            out << ",\"if_nonnull\":true";
+          out << '}';
         }
         out << ']';
       };

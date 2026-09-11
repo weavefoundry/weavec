@@ -16,6 +16,7 @@ weavec_add_library(
           Lifetime.cpp
           Moves.cpp
           Nullness.cpp
+          ObjectType.cpp
           Offset.cpp
           Ownership.cpp
           Place.cpp
