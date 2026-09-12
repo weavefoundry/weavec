@@ -371,6 +371,49 @@ private:
   void checkedCallAfter(const clang::CallExpr &call, const CallEffects *effects,
                         core::AnalysisState &state);
   void checkedFinish(const core::AnalysisState *exitState);
+  bool checkedRuntimeCall(const clang::CallExpr &call,
+                          const CallEffects *effects,
+                          core::AnalysisState &state, std::string_view name);
+  bool runtimeIntrinsic(const clang::CallExpr &call,
+                        core::AnalysisState &state);
+  void runtimeStandardOutput(const clang::Stmt &at, core::AnalysisState &state);
+  bool runtimeListType(clang::QualType type) const;
+  std::optional<core::PlaceId> runtimeListPlace(const clang::Expr &expr);
+  std::optional<core::ArgumentListState>
+  runtimeList(const clang::Expr &expr, const clang::Stmt &at,
+              core::AnalysisState &state);
+  bool runtimeListIntrinsic(const clang::CallExpr &call,
+                            core::AnalysisState &state);
+  void runtimeListReturns(const clang::Stmt &at,
+                          const core::AnalysisState &state);
+  std::set<core::SummaryPath> runtimeConsumedLists;
+  bool runtimeRequirement(const core::CheckedRequirement &requirement,
+                          const clang::CallExpr &call,
+                          core::AnalysisState &state);
+  void runtimeFormat(const clang::CallExpr &call, std::string_view name,
+                     core::AnalysisState &state);
+  struct FormatResult {
+    bool valid = false;
+    std::optional<std::int64_t> upper;
+    std::optional<std::int64_t> exact;
+  };
+  FormatResult runtimeFormatArguments(
+      const clang::Expr &format, const clang::CallExpr &call, unsigned first,
+      const std::optional<core::ArgumentListState> &list,
+      const std::optional<CheckedMemory> &destination,
+      core::AnalysisState &state, std::optional<std::string_view> literal = {});
+  [[nodiscard]] std::optional<CheckedMemory>
+  runtimeInterval(const clang::Expr &pointer, const core::Affine &bytes,
+                  bool read, bool write, const clang::Stmt &at,
+                  core::AnalysisState &state);
+  [[nodiscard]] std::optional<CheckedMemory>
+  runtimeString(const clang::Expr &pointer,
+                const std::optional<core::Affine> &limit, const clang::Stmt &at,
+                core::AnalysisState &state);
+  bool runtimeStream(const clang::Expr &pointer, const clang::Stmt &at,
+                     core::AnalysisState &state, bool allowNull = false);
+  bool runtimeSeparate(const CheckedMemory &first, const CheckedMemory &second,
+                       const clang::Stmt &at, core::AnalysisState &state);
   void checkedOutputs(const core::AnalysisState &incoming,
                       const clang::Expr *value = nullptr);
   void safetyObligation(core::SafetyProperty property,

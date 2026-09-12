@@ -362,3 +362,77 @@ objects. Persistent caches validate executable, source, preprocessing and
 callee dependencies before reusing a container contract. See the
 [validation report](validation-rfc0023.md) for the frozen acceptance population,
 real-source callers and measured cost.
+
+## C runtime contracts
+
+Implicit output through `puts`, `putchar`, `printf` and `vprintf` carries a
+named `standard-stream` requirement for stdout through helpers. The C entry
+point begins with standard streams available; known closure, replacement or
+unknown mutation prevents later discharge. This condition is separate from
+format and argument validation.
+
+[RFC 0024](rfcs/0024-checked-runtime-contracts.md) adds checked contracts for
+comparison/search operations, scalar math, stream and descriptor I/O, formatted
+output and variadic forwarding. Calls must satisfy the operation's memory and
+type requirements. Reports identify the C library as a modeled trusted dependency.
+Source definitions and resolved callback implementations take precedence over
+a familiar library name.
+
+`memcmp`, `strcmp`, bounded comparisons and searches require initialized input.
+A search result remains a nullable borrow from the original object. Freeing that
+object invalidates a saved search result. Floating operations such as `fabs`
+and `floor` add no memory requirements; prediction builtins preserve their
+first argument and both possible branch outcomes.
+
+`read` and `fread` initialize the prefix described by their successful returned
+count, in bytes and complete elements respectively. Testing success never
+initializes the unused tail. `fgets` establishes a terminated initialized prefix
+only on its non-null result. Streams must have live matching provenance;
+standard streams have explicit library provenance.
+
+```c
+char buffer[64];
+ssize_t received = read(fd, buffer, sizeof buffer);
+if (received > 0) {
+    use_byte(buffer[0]);       /* initialized */
+    /* buffer[63] still needs proof that received is at least 64 */
+}
+```
+
+The bounded format parser checks ordinary narrow integer, character, string,
+pointer and floating conversions. Consumed arguments need the correct promoted
+types, including `int` for `*` width and precision. A precision can bound a `%s`
+read without requiring a terminator beyond that bound. Formatting input and
+output must satisfy the operation's non-overlap requirement.
+
+For `snprintf`, the result is the length that would have been written. After a
+nonnegative result and positive capacity, the destination contains an initialized
+terminated prefix. This does not prove the entire capacity initialized. Exact
+literal bounds can establish more; unbounded `sprintf` requires a sufficient
+output bound. Fortified forms retain their additional object-size checks.
+
+`va_start` creates an active argument list. `va_copy` creates an independent
+active cursor. A `vprintf` family traversal consumes its cursor, and every
+locally started or copied list needs `va_end` on each returning path. Checked
+helpers can forward a format and trailing arguments, or an incoming argument
+list, through portable requirements. Callers must discharge those requirements
+against their actual format and arguments. A helper that may consume an incoming
+list retires the caller's cursor for further traversal.
+The initial cursor model covers local variables and incoming parameters;
+argument lists embedded in records remain unsupported.
+
+The parser is limited to 4,096 format bytes, 64 conversions and 128 argument
+slots. Dynamic formats that cannot be bound through a supported interface,
+positional and wide conversions, `%n`, direct `va_arg`, escaping lists and
+unrepresented output bounds remain explicit coverage gaps. Directly ending an
+incoming caller-owned cursor is outside this milestone; end locally owned lists.
+No format annotation or warning suppression supplies missing checked evidence.
+
+For a constant positive `snprintf` capacity, testing the returned count can also
+establish the exact written prefix. If `0 <= n && n < sizeof buffer`, `buffer[n]`
+is the written terminator. If `n >= sizeof buffer`, truncation initializes the
+capacity and its final NUL. A negative or overwritten result establishes neither.
+
+Runtime records use checked encoding 6, summary format 19 and sidecar format 20.
+Rebuild objects carrying older sidecars. The cache validates the executable and
+source dependencies before reusing these records.

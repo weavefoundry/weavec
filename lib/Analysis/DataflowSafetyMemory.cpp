@@ -580,6 +580,12 @@ FunctionDataflow::checkedWritePermission(const CheckedMemory &memory,
 
 bool FunctionDataflow::checkedWrite(const CheckedMemory &memory, const Stmt &at,
                                     core::AnalysisState &state) {
+  // RFC 0024: byte writes do not implement a variadic lifecycle operation.
+  // Retain the outstanding va_end obligation while retiring cursor evidence.
+  if (foldAffine(memory.begin, state) != foldAffine(memory.end, state))
+    for (auto &[place, list] : state.safety->argumentLists)
+      if (places.root(place) == places.root(memory.storage))
+        list.phase = core::ArgumentListPhase::Unknown;
   const auto permission = checkedWritePermission(memory, state);
   const bool required =
       !permission &&
@@ -665,6 +671,16 @@ bool FunctionDataflow::checkedTerminated(const CheckedMemory &memory,
     return false;
   if (checkedWitness(memory, state))
     return true;
+  if (const auto bounded =
+          state.safety->boundedTermination.find(memory.storage);
+      bounded != state.safety->boundedTermination.end())
+    for (const auto &fact : bounded->second) {
+      auto when = fact.when;
+      if (pruneGuard(when, state) && when.trivial() &&
+          fact.begin == memory.begin &&
+          checkedInterval(fact.begin, fact.end, *memory.extent, state))
+        return true;
+    }
   const auto found = state.safety->memory.find(memory.storage);
   if (found == state.safety->memory.end())
     return false;
@@ -784,7 +800,8 @@ void FunctionDataflow::checkedAccess(const Expr &expr, const PlaceRef &ref,
       role == Role::Read || role == Role::ReadWrite || role == Role::Consume;
   if (const auto *decl = dyn_cast<DeclRefExpr>(expr.IgnoreParenImpCasts())) {
     const auto *var = dyn_cast<VarDecl>(decl->getDecl());
-    if (!var || var->getType()->isArrayType() || role == Role::AddressOf)
+    if (!var || var->getType()->isArrayType() || role == Role::AddressOf ||
+        runtimeListType(var->getType()))
       return;
     const auto storage = checkedLvalue(expr, state);
     if (reads) {

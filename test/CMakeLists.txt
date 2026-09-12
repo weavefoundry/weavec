@@ -194,6 +194,37 @@ if(Python3_Interpreter_FOUND)
   add_test(NAME checked-evaluation-harness
            COMMAND "${Python3_EXECUTABLE}"
                    "${PROJECT_SOURCE_DIR}/scripts/test_checked_evaluation.py")
+  foreach(population source transport)
+    if(population STREQUAL "source")
+      set(runtime_manifest
+          "${PROJECT_SOURCE_DIR}/test/evaluation/rfc0024/manifest.json")
+    else()
+      set(runtime_manifest
+          "${PROJECT_SOURCE_DIR}/test/evaluation/rfc0024/transport/manifest.json"
+      )
+    endif()
+    add_test(
+      NAME checked-${population}-rfc0024
+      COMMAND
+        "${Python3_EXECUTABLE}"
+        "${PROJECT_SOURCE_DIR}/scripts/checked-evaluation.py" --weavec
+        "$<TARGET_FILE:weavec>" --clang "${WEAVEC_CLANG_EXECUTABLE}" --manifest
+        "${runtime_manifest}")
+    set_tests_properties(checked-${population}-rfc0024
+                         PROPERTIES LABELS "integration" TIMEOUT 300)
+  endforeach()
+  foreach(population objects cache)
+    add_test(
+      NAME checked-${population}-rfc0024
+      COMMAND
+        "${Python3_EXECUTABLE}"
+        "${PROJECT_SOURCE_DIR}/scripts/checked-runtime.py" --population
+        "${population}" --weavec "$<TARGET_FILE:weavec>" --cc
+        "$<TARGET_FILE:weavec-cc>" --output
+        "${CMAKE_CURRENT_BINARY_DIR}/rfc0024-${population}")
+    set_tests_properties(checked-${population}-rfc0024
+                         PROPERTIES LABELS "integration" TIMEOUT 300)
+  endforeach()
   set_tests_properties(checked-evaluation-harness PROPERTIES LABELS "unit")
   add_test(NAME recall-harness
            COMMAND "${Python3_EXECUTABLE}"

@@ -79,6 +79,12 @@ struct BuiltinSpec {
 
 // clang-format off
 static constexpr auto Specs = std::to_array<BuiltinSpec>({
+    // RFC 0024: scalar math has no pointer effects; checked semantics live in
+    // RuntimeModels. No floating result is an inferred integer-size proof.
+    {"fabs", ".", '-'}, {"fabsf", ".", '-'}, {"fabsl", ".", '-'},
+    {"floor", ".", '-'}, {"floorf", ".", '-'}, {"floorl", ".", '-'},
+    {"ceil", ".", '-'}, {"ceilf", ".", '-'}, {"ceill", ".", '-'},
+    {"trunc", ".", '-'}, {"truncf", ".", '-'}, {"truncl", ".", '-'},
     // -- ISO C (RFC 0003) -----------------------------------------------------
     // <stdlib.h>
     {"malloc",        ".",      'F'},
@@ -735,6 +741,11 @@ static llvm::StringMap<core::FunctionSummary> buildTable() {
   llvm::StringMap<core::FunctionSummary> table;
   for (const BuiltinSpec &spec : Specs)
     table[spec.name] = fromSpec(spec);
+  for (const auto &spec : Specs)
+    if (spec.params == "." &&
+        (spec.name.starts_with("fabs") || spec.name.starts_with("floor") ||
+         spec.name.starts_with("ceil") || spec.name.starts_with("trunc")))
+      table[("__builtin_" + spec.name).str()] = table[spec.name];
 
   // `realloc(p, n)` consumes `p` only when it succeeds (RFC 0006,
   // *Outcome-conditional summaries*, replacing RFC 0002's `realloc-like`).

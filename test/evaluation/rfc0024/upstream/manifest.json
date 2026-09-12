@@ -1,0 +1,49 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "name": "compare-double",
+      "source": "compare-double.c",
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "compare-strings",
+      "source": "compare-strings.c",
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "clear-screen",
+      "source": "clear-screen.c",
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "beep",
+      "source": "beep.c",
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ]
+    }
+  ]
+}

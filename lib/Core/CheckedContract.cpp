@@ -105,24 +105,30 @@ void CheckedRequirements::intersect(const CheckedRequirements &other) {
       insert(entry);
 }
 
-static constexpr std::array<std::string_view, 18> Kinds{"valid",
-                                                        "extent",
-                                                        "initialized",
-                                                        "release",
-                                                        "separated",
-                                                        "writable",
-                                                        "terminated",
-                                                        "copied",
-                                                        "sum-fits",
-                                                        "zeroed",
-                                                        "position",
-                                                        "progress",
-                                                        "object-type",
-                                                        "container",
-                                                        "container-separated",
-                                                        "container-derived",
-                                                        "container-fresh",
-                                                        "container-tail"};
+static constexpr std::array<std::string_view, 23> Kinds{
+    "valid",
+    "extent",
+    "initialized",
+    "release",
+    "separated",
+    "writable",
+    "terminated",
+    "copied",
+    "sum-fits",
+    "zeroed",
+    "position",
+    "progress",
+    "object-type",
+    "container",
+    "container-separated",
+    "container-derived",
+    "container-fresh",
+    "container-tail",
+    "format-arguments",
+    "argument-list",
+    "argument-list-consumed",
+    "terminated-within",
+    "standard-stream"};
 
 std::string_view toString(CheckedRequirementKind value) noexcept {
   const auto index = static_cast<std::size_t>(value);
@@ -166,7 +172,19 @@ void CheckedContract::join(const CheckedContract &other) {
     for (const auto &requirement : other.requirements)
       if (!requirements.contains(requirement))
         require(requirement);
-  establishes.intersect(other.establishes);
+  if (establishes != other.establishes) {
+    std::vector<CheckedRequirement> retirements;
+    const auto collect = [&](const CheckedRequirements &facts) {
+      for (const auto &post : facts)
+        if (post.kind == CheckedRequirementKind::ArgumentListConsumed)
+          retirements.push_back(post);
+    };
+    collect(establishes);
+    collect(other.establishes);
+    establishes.intersect(other.establishes);
+    for (auto &post : retirements)
+      establish(std::move(post));
+  }
   obligations.join(other.obligations);
 }
 

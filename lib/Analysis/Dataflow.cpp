@@ -39,6 +39,7 @@
 #include "AffineSupport.h"
 #include "FunctionPreparation.h"
 #include "IntegerSupport.h"
+#include "RuntimeModels.h"
 #include "weavec/Analysis/Annotations.h"
 #include "weavec/Analysis/ClangLocation.h"
 #include "weavec/Core/Ownership.h"
@@ -901,9 +902,16 @@ std::vector<core::PlaceId> FunctionDataflow::storageOf(core::PlaceId place) {
 }
 
 void FunctionDataflow::escape(core::PlaceId place, core::AnalysisState &state) {
-  state.resources.escape(place);
+  const auto retire = [&](core::PlaceId holder) {
+    state.resources.escape(holder);
+    if (state.safety)
+      if (const auto list = state.safety->argumentLists.find(holder);
+          list != state.safety->argumentLists.end())
+        list->second.phase = core::ArgumentListPhase::Unknown;
+  };
+  retire(place);
   for (const core::PlaceId mirror : mirrors(place, state))
-    state.resources.escape(mirror);
+    retire(mirror);
 }
 
 void FunctionDataflow::escapeOutOfSight(core::PlaceId place,
@@ -2461,6 +2469,17 @@ void FunctionDataflow::applyCondition(const Expr &condition, bool holds,
   });
   const Expr *e = condition.IgnoreParenImpCasts();
   for (;;) {
+    // RFC 0024: prediction hints preserve both possible condition outcomes.
+    if (const auto *call = dyn_cast<CallExpr>(e);
+        call && options.checkContracts)
+      if (const auto *callee = call->getDirectCallee();
+          callee && callee->getBuiltinID() &&
+          (callee->getName() == "__builtin_expect" ||
+           callee->getName() == "__builtin_expect_with_probability")) {
+        e = call->getArg(0)->IgnoreParenImpCasts();
+        wrapped = true;
+        continue;
+      }
     // `!c` flips the edge.
     if (const auto *unary = dyn_cast<UnaryOperator>(e);
         unary != nullptr && unary->getOpcode() == UO_LNot) {
@@ -3404,16 +3423,59 @@ bool FunctionDataflow::pruneGuard(core::PlaceGuard &guard,
     it = guard.pointers.erase(it);
   }
   for (auto it = guard.conditions.begin(); it != guard.conditions.end();) {
-    const auto known = state.factOf(it->first);
-    if (!known) {
-      ++it;
-      continue;
+    // Most exported guards are already decided by a scalar fact. RFC 0024's
+    // additional range/alias refinement is needed only for the remainder;
+    // avoid rebuilding ranges and scanning relations on this common path.
+    if (const auto known = state.factOf(it->first)) {
+      if (known->disjointFrom(it->second))
+        return false;
+      if (known->implies(it->second)) {
+        it = guard.conditions.erase(it);
+        continue;
+      }
     }
-    if (known->disjointFrom(it->second))
-      return false;
-    if (known->implies(it->second)) {
-      it = guard.conditions.erase(it);
-      continue;
+    if (state.safety && !it->second.isPointer()) {
+      if (it->second.integer) {
+        const auto known =
+            integerRangeAt(it->first, it->second.integer->type, state);
+        if (known.disjoint(*it->second.integer))
+          return false;
+        if (it->second.integer->contains(known)) {
+          it = guard.conditions.erase(it);
+          continue;
+        }
+      }
+      const bool equalEvidence =
+          std::ranges::any_of(state.relations.all(), [&](const auto &equal) {
+            const auto &[pair, edge] = equal;
+            if (edge.relation != core::Relation::Equal || edge.offset != 0 ||
+                (pair.first != it->first && pair.second != it->first))
+              return false;
+            const auto fact = state.factOf(
+                pair.first == it->first ? pair.second : pair.first);
+            return fact && fact->implies(it->second);
+          });
+      if (equalEvidence) {
+        it = guard.conditions.erase(it);
+        continue;
+      }
+      const auto minimum = state.relations.atLeast(it->first);
+      const auto maximum = state.relations.atMost(it->first);
+      auto possible =
+          core::ValueFact::of({core::Outcome::Negative, core::Outcome::Zero,
+                               core::Outcome::Positive});
+      if (minimum && *minimum >= 0)
+        possible.classes.erase(core::Outcome::Negative);
+      if (minimum && *minimum > 0)
+        possible.classes.erase(core::Outcome::Zero);
+      if (maximum && *maximum <= 0)
+        possible.classes.erase(core::Outcome::Positive);
+      if (maximum && *maximum < 0)
+        possible.classes.erase(core::Outcome::Zero);
+      if (possible.implies(it->second)) {
+        it = guard.conditions.erase(it);
+        continue;
+      }
     }
     ++it;
   }
@@ -3462,10 +3524,20 @@ void FunctionDataflow::handleExpr(const Expr &expr,
       return;
     const auto ref = builder.resolve(expr);
     if (!ref) {
-      if (options.checkContracts)
+      if (options.checkContracts) {
+        const auto *dereference =
+            dyn_cast<UnaryOperator>(expr.IgnoreParenImpCasts());
+        const bool null =
+            dereference != nullptr && dereference->getOpcode() == UO_Deref &&
+            builder.classifyValue(*dereference->getSubExpr()).kind ==
+                ValueOrigin::Kind::Null;
         safetyObligation(core::SafetyProperty::Semantics,
-                         core::SafetyOutcome::Unresolved, expr, "access",
-                         "unrepresentable memory access");
+                         null ? core::SafetyOutcome::Violation
+                              : core::SafetyOutcome::Unresolved,
+                         expr, "access",
+                         null ? "dereference requires a non-null pointer"
+                              : "unrepresentable memory access");
+      }
       // `((T *)(uintptr_t)x)->f`: a dereference of a raw value that lives
       // in no place (RFC 0004, *Raw pointers*, rule 1).
       if (const auto raw = builder.rawBaseOf(expr)) {
@@ -4471,6 +4543,8 @@ void FunctionDataflow::handleCall(const CallExpr &call,
   }
   numericInputsReady.erase(&call);
   lastCall.reset();
+  if (options.checkContracts && runtimeIntrinsic(call, state))
+    return;
   if (handleCheckedIntegerCall(call, state)) {
     if (options.checkContracts)
       safetyObligation(core::SafetyProperty::Call,
@@ -4581,9 +4655,27 @@ void FunctionDataflow::applySummary(const CallExpr &call,
   //    the callee stores a copy of has a second home now.
   const bool trustSilence = effects.source == SummarySource::Inferred ||
                             effects.source == SummarySource::Program;
+  bool modeledList = false;
+  if (library && options.checkContracts) {
+    const auto *callee = call.getDirectCallee();
+    if (!callee)
+      if (const auto targets = callTargetsSeen.find(&call);
+          targets != callTargetsSeen.end() && !targets->second.unknown &&
+          !targets->second.null && targets->second.functions.size() == 1)
+        callee = summaries.callable(*targets->second.functions.begin());
+    const auto *model =
+        callee ? runtimeModel(callee->getNameAsString()) : nullptr;
+    modeledList = model != nullptr && model->family == RuntimeFamily::Format &&
+                  model->parameters.ends_with('a') &&
+                  runtimeSignature(*model, call, context);
+  }
   for (unsigned i = 0; i < call.getNumArgs(); ++i) {
     const Expr &arg = *call.getArg(i);
     if (!arg.getType()->isPointerType())
+      continue;
+    // RFC 0024 models this opaque cursor's consumption. The ownership table's
+    // ABI-neutral placeholder must not additionally classify it as retained.
+    if (modeledList && i + 1 == call.getNumArgs())
       continue;
     if (i >= effects.declaredParams) {
       if (!library)
@@ -5590,6 +5682,17 @@ void FunctionDataflow::handleLifetimeEnd(const VarDecl &var,
   const auto place = builder.lookupVar(var);
   if (!place)
     return;
+  if (state.safety) {
+    const auto list = state.safety->argumentLists.find(*place);
+    if (list != state.safety->argumentLists.end()) {
+      if (list->second.needsEnd)
+        safetyObligation(
+            core::SafetyProperty::Resource, core::SafetyOutcome::Unresolved,
+            *function.getBody(), "argument list",
+            "locally started or copied argument list requires va_end");
+      state.safety->argumentLists.erase(list);
+    }
+  }
   if (state.safety && var.getType()->isIntegerType()) {
     const auto retire = [&](core::Affine value) {
       if (value.place != place)
@@ -5647,6 +5750,15 @@ void FunctionDataflow::handleLifetimeEnd(const VarDecl &var,
 
 void FunctionDataflow::reinit(core::PlaceId place, core::AnalysisState &state,
                               core::ElementWitness element) {
+  // An ordinary assignment cannot discharge an outstanding va_end. Scope
+  // retirement checks and removes this record explicitly (RFC 0024).
+  std::optional<core::ArgumentListState> retiredList;
+  if (state.safety)
+    if (const auto list = state.safety->argumentLists.find(place);
+        list != state.safety->argumentLists.end()) {
+      retiredList = list->second;
+      retiredList->phase = core::ArgumentListPhase::Unknown;
+    }
   // `a[i] = ...` overwrites one element: a record that another element was
   // freed still holds (RFC 0006, *Element witnesses*).
   std::optional<core::MoveRecord> survivor;
@@ -5660,6 +5772,8 @@ void FunctionDataflow::reinit(core::PlaceId place, core::AnalysisState &state,
     reinitMirrors(place, state);
   }
   state.forget(place);
+  if (retiredList)
+    state.safety->argumentLists[place] = *retiredList;
   if (survivor) {
     state.moves.markMoved(place, survivor->reason, survivor->location,
                           survivor->via, survivor->element, survivor->family,

@@ -11,6 +11,7 @@ weavec_add_library(
           CallContext.cpp
           CallTargets.cpp
           Container.cpp
+          Format.cpp
           Diagnostic.cpp
           Integer.cpp
           CheckedInteger.cpp

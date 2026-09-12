@@ -9,6 +9,7 @@
 
 #include "AffineSupport.h"
 #include "Dataflow.h"
+#include "IntegerSupport.h"
 
 using namespace clang;
 
@@ -169,6 +170,14 @@ void FunctionDataflow::captureCheckedPosts(
     return builder.affineFromPath(value, call);
   };
   for (const auto &post : contract.establishes) {
+    if (post.kind == core::CheckedRequirementKind::ArgumentListConsumed) {
+      if (post.path.isParam() && post.path.isRoot() &&
+          post.path.index < call.getNumArgs())
+        if (const auto place = runtimeListPlace(*call.getArg(post.path.index)))
+          state.safety->argumentLists[*place].phase =
+              core::ArgumentListPhase::Consumed;
+      continue;
+    }
     if (post.kind == core::CheckedRequirementKind::Container)
       continue;
     if (post.kind == core::CheckedRequirementKind::ObjectType) {
@@ -238,7 +247,8 @@ void FunctionDataflow::captureCheckedPosts(
     if (post.kind != core::CheckedRequirementKind::Initialized &&
         post.kind != core::CheckedRequirementKind::Copied &&
         post.kind != core::CheckedRequirementKind::Zeroed &&
-        post.kind != core::CheckedRequirementKind::Terminated)
+        post.kind != core::CheckedRequirementKind::Terminated &&
+        post.kind != core::CheckedRequirementKind::TerminatedWithin)
       continue;
     const auto first = endpoint(post.begin);
     const auto last = endpoint(post.end);
@@ -269,7 +279,9 @@ void FunctionDataflow::captureCheckedPosts(
       ranges.push_back(
           {.begin = *first,
            .end = *last,
-           .zeroed = post.kind == core::CheckedRequirementKind::Zeroed});
+           .zeroed = post.kind == core::CheckedRequirementKind::Zeroed,
+           .terminatedWithin =
+               post.kind == core::CheckedRequirementKind::TerminatedWithin});
     }
     for (auto range : ranges) {
       if (range.when.size() + frozen.size() > core::MaxGuardConjuncts ||
@@ -547,12 +559,17 @@ void FunctionDataflow::applyCheckedPosts(const CallExpr &call,
     }
     if (const auto result = numericCallResult(call)) {
       if (range.when.size() < core::MaxGuardConjuncts) {
-        range.when.require(*result, core::ValueFact::of(*post.on));
+        const auto type = integerTypeOf(call.getType(), context);
+        if (!type)
+          continue;
+        range.when.require(*result,
+                           core::ValueFact::ofInteger(
+                               core::ValueFact::of(*post.on).inType(*type)));
         state.safety->initialize(*storage, range);
       }
       continue;
     }
-    if (summary.outcomes.empty())
+    if (summary.outcomes.empty() && !call.getType()->isPointerType())
       continue;
     if (!lastCall || lastCall->call != &call) {
       core::PendingOutcome outcome;
@@ -563,6 +580,10 @@ void FunctionDataflow::applyCheckedPosts(const CallExpr &call,
     for (const auto &[outcome, effects] : summary.outcomes) {
       (void)effects;
       lastCall->pending.consumedBy.try_emplace(outcome);
+    }
+    if (summary.outcomes.empty()) {
+      lastCall->pending.consumedBy.try_emplace(core::Outcome::Null);
+      lastCall->pending.consumedBy.try_emplace(core::Outcome::NonNull);
     }
     lastCall->pending.initializedOn[*post.on].emplace_back(*storage, range);
   }

@@ -187,6 +187,7 @@ void FunctionDataflow::invalidateContainers(core::PlaceId holder, bool release,
     for (const auto object : storage) {
       state.safety->memory.erase(object);
       state.safety->termination.erase(object);
+      state.safety->boundedTermination.erase(object);
       state.safety->accessible.erase(object);
       state.safety->writtenStorage.insert(object);
       state.safety->objectTypes[object] = "?";

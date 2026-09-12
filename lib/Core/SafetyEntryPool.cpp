@@ -18,6 +18,10 @@ struct SafetyEntryPool::Storage {
     std::size_t operator()(const CallKey &key) const {
       return std::hash<const SafetyPropagation *>{}(key.source) ^
              (std::hash<std::string>{}(key.callee) << 1U) ^
+             (std::hash<std::string>{}(key.location.file) << 3U) ^
+             (std::hash<std::string>{}(key.caller) << 4U) ^
+             (static_cast<std::size_t>(key.location.line) << 5U) ^
+             (static_cast<std::size_t>(key.location.column) << 6U) ^
              (static_cast<std::size_t>(key.trusted) << 2U) ^
              static_cast<std::size_t>(key.unsafe);
     }
@@ -167,7 +171,7 @@ void SafetyEntryPool::saveCalls(
   // by these records; each application reads the retained source projection.
   const auto bytes = prepared->bytes + sizeof(CallKey) +
                      sizeof(Storage::CallPreparation) + key.callee.capacity() +
-                     128;
+                     key.location.file.capacity() + key.caller.capacity() + 128;
   if (bytes > pool.callBytesLimit) {
     ++pool.callRejections;
     return;

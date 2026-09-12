@@ -97,19 +97,22 @@ std::optional<SafetyProperty> parseSafetyProperty(std::string_view value) {
   return std::nullopt;
 }
 
+static void appendSafetyJsonString(std::string &result, std::string_view value);
+
 static std::string identityPrefix(std::string_view file, std::uint32_t line,
                                   std::uint32_t column,
                                   std::string_view function,
                                   SafetyProperty property) {
   // Length-delimited JSON strings cannot collide on embedded separators.
-  auto result = safetyJsonString(file);
-  result.reserve(result.size() + function.size() + 64);
+  std::string result;
+  result.reserve(file.size() + function.size() + 64);
+  appendSafetyJsonString(result, file);
   result += ':';
   result += std::to_string(line);
   result += ':';
   result += std::to_string(column);
   result += ':';
-  result += safetyJsonString(function);
+  appendSafetyJsonString(result, function);
   result += ':';
   result += toString(property);
   result += ':';
@@ -210,6 +213,14 @@ void SafetyLedger::addCalls(std::span<const SafetyObligation> origins,
                             const SourceLocation &location,
                             std::string_view function, std::string_view callee,
                             bool unsafe) {
+  applyCallOrigins(origins, location, function, callee, unsafe, nullptr);
+}
+
+void SafetyLedger::applyCallOrigins(std::span<const SafetyObligation> origins,
+                                    const SourceLocation &location,
+                                    std::string_view function,
+                                    std::string_view callee, bool unsafe,
+                                    std::vector<std::string> *orderedKeys) {
   if (origins.empty())
     return;
   // Inserting into this ledger can invalidate its own cached projection.
@@ -234,9 +245,9 @@ void SafetyLedger::addCalls(std::span<const SafetyObligation> origins,
   for (const auto &entry : origins) {
     const auto &origin =
         entry.calls.empty() ? entry.location : entry.calls.back();
-    const auto subject = identityPrefix(origin.file, origin.line, origin.column,
-                                        called, SafetyProperty::Call) +
-                         safetyJsonString(entry.reason);
+    auto subject = identityPrefix(origin.file, origin.line, origin.column,
+                                  called, SafetyProperty::Call);
+    appendSafetyJsonString(subject, entry.reason);
     const auto boundedSubject = bound(subject);
     std::string unsafeReason;
     if (unsafe)
@@ -244,7 +255,12 @@ void SafetyLedger::addCalls(std::span<const SafetyObligation> origins,
     const auto reason = bound(unsafe ? std::string_view(unsafeReason)
                                      : std::string_view(entry.reason));
     const auto outcome = unsafe ? SafetyOutcome::Trusted : entry.outcome;
-    auto key = prefix + safetyJsonString(boundedSubject);
+    std::string key;
+    key.reserve(prefix.size() + boundedSubject.size() + 2);
+    key += prefix;
+    appendSafetyJsonString(key, boundedSubject);
+    if (orderedKeys)
+      orderedKeys->push_back(key);
     const auto found = entries().find(key);
     if (rejects(found, outcome, reason))
       continue;
@@ -266,35 +282,37 @@ void SafetyLedger::addCalls(std::span<const SafetyObligation> origins,
   }
 }
 
-static std::shared_ptr<const PreparedSafetyOrigins>
-prepareCallOrigins(std::span<const SafetyObligation> origins,
-                   std::string_view callee, bool unsafe) {
+std::shared_ptr<const PreparedSafetyOrigins> SafetyLedger::prepareCallOrigins(
+    std::span<const SafetyObligation> origins, const SourceLocation &location,
+    std::string_view caller, std::string_view callee, bool unsafe) {
   auto result = std::make_shared<PreparedSafetyOrigins>();
-  result->entries.reserve(origins.size());
-  for (const auto &entry : origins) {
-    const auto &origin =
-        entry.calls.empty() ? entry.location : entry.calls.back();
-    PreparedSafetyOrigins::Entry prepared;
-    prepared.subject = identityPrefix(origin.file, origin.line, origin.column,
-                                      callee, SafetyProperty::Call) +
-                       safetyJsonString(entry.reason);
-    prepared.reason =
-        unsafe ? "unsafe boundary: " + entry.reason : entry.reason;
-    for (auto *text : {&prepared.subject, &prepared.reason}) {
-      if (text->size() > 65536) {
-        text->resize(65536);
-        prepared.limited = true;
-      }
-    }
-    prepared.escapedSubject = safetyJsonString(prepared.subject);
-    result->bytes += prepared.subject.capacity() +
-                     prepared.escapedSubject.capacity() +
-                     prepared.reason.capacity() + 3;
-    result->entries.push_back(std::move(prepared));
+  std::vector<std::string> orderedKeys;
+  orderedKeys.reserve(origins.size());
+  result->ledger.applyCallOrigins(origins, location, caller, callee, unsafe,
+                                  &orderedKeys);
+  result->ordered.reserve(origins.size());
+  // Reuse the exact bounded keys made by insertion. Reconstructing nested
+  // JSON identities here doubles preparation work on large incomplete calls.
+  for (const auto &key : orderedKeys) {
+    const auto found = result->ledger.entries().find(key);
+    if (found == result->ledger.entries().end())
+      return {};
+    result->ordered.push_back(found.current->second);
   }
-  result->bytes +=
-      sizeof(PreparedSafetyOrigins) +
-      (result->entries.capacity() * sizeof(PreparedSafetyOrigins::Entry));
+  result->bytes = sizeof(PreparedSafetyOrigins) + 128;
+  result->bytes += result->ordered.capacity() * sizeof(result->ordered[0]);
+  // Charge shared rows and paths in full, conservatively including map nodes
+  // and control blocks. Reuse must stay inside the existing byte budget.
+  for (const auto &[key, entry] : result->ledger.entries()) {
+    result->bytes += sizeof(SafetyEntries::Row) + key.capacity() +
+                     entry.location.file.capacity() +
+                     entry.function.capacity() + entry.subject.capacity() +
+                     entry.reason.capacity() + 128;
+    result->bytes +=
+        (entry.calls.entries().capacity() * sizeof(SourceLocation)) + 128;
+    for (const auto &call : entry.calls)
+      result->bytes += call.file.capacity() + 1;
+  }
   return result;
 }
 
@@ -306,7 +324,8 @@ void SafetyLedger::addCalls(const SafetyLedger &source, bool trusted,
   const auto &origins = trusted ? projection.trusted : projection.unresolved;
   if (origins.empty())
     return;
-  if (!SafetyEntryPool::cachesCalls() || callee.size() > 4096) {
+  if (!SafetyEntryPool::cachesCalls() || callee.size() > 4096 ||
+      location.file.size() > 65536 || function.size() > 65536) {
     addCalls(origins, location, function, callee, unsafe);
     return;
   }
@@ -315,53 +334,59 @@ void SafetyLedger::addCalls(const SafetyLedger &source, bool trusted,
   const auto owner = source.obligations->propagation;
   SafetyEntryPool::CallKey key{.source = owner.get(),
                                .callee = std::string(callee),
+                               .location = {.file = location.file,
+                                            .line = location.line,
+                                            .column = location.column,
+                                            .opaque = 0},
+                               .caller = std::string(function),
                                .trusted = trusted,
                                .unsafe = unsafe};
   auto prepared = SafetyEntryPool::findCalls(key, owner);
   if (!prepared) {
-    prepared = prepareCallOrigins(origins, callee, unsafe);
+    prepared =
+        prepareCallOrigins(origins, key.location, function, callee, unsafe);
+    if (!prepared) {
+      addCalls(origins, location, function, callee, unsafe);
+      return;
+    }
     SafetyEntryPool::saveCalls(std::move(key), owner, prepared);
   }
-  const auto bound = [&](std::string_view value) {
-    if (value.size() > 65536) {
-      exhausted = true;
-      value = value.substr(0, 65536);
-    }
-    return value;
-  };
-  const SourceLocation callsite{.file = std::string(bound(location.file)),
-                                .line = location.line,
-                                .column = location.column,
-                                .opaque = 0};
-  const std::string caller(bound(function));
-  const auto prefix =
-      identityPrefix(callsite.file, callsite.line, callsite.column, caller,
-                     SafetyProperty::Call);
-  for (std::size_t i = 0; i < origins.size(); ++i) {
-    const auto &entry = origins.at(i);
-    const auto &strings = prepared->entries.at(i);
-    exhausted |= strings.limited;
-    const auto outcome = unsafe ? SafetyOutcome::Trusted : entry.outcome;
-    auto identity = prefix + strings.escapedSubject;
-    const auto found = entries().find(identity);
-    if (rejects(found, outcome, strings.reason))
-      continue;
-    auto calls = entry.calls;
-    calls.normalize();
-    if (found != entries().end() && found->second.outcome == outcome &&
-        found->second.reason == strings.reason &&
-        !preferSafetyCalls(calls, found->second.calls))
-      continue;
-    addPrepared(std::move(identity),
-                {.property = SafetyProperty::Call,
-                 .outcome = outcome,
-                 .location = callsite,
-                 .function = caller,
-                 .subject = strings.subject,
-                 .reason = strings.reason,
-                 .calls = std::move(calls)},
-                found);
+  if (origins.size() <= MaxSafetyObligations - entries().size()) {
+    join(prepared->ledger);
+    return;
   }
+  // Each key's first occurrence gets exactly the same capacity decision as
+  // individual insertion. Its canonical row is the final join of all its
+  // origins; later updates never need another slot. Repeated keys are harmless.
+  exhausted |= prepared->ledger.limited();
+  for (const auto &row : prepared->ordered)
+    addPrepared(row);
+}
+
+void SafetyLedger::addPrepared(
+    const std::shared_ptr<const SafetyEntries::Row> &row) {
+  const auto found = entries().find(row->first);
+  if (found != entries().end() && &*found == row.get())
+    return;
+  const auto &entry = row->second;
+  if (rejects(found, entry.outcome, entry.reason))
+    return;
+  if (found != entries().end()) {
+    const auto &present = found->second;
+    if (present.outcome == entry.outcome && present.reason == entry.reason &&
+        !preferSafetyCalls(entry.calls, present.calls))
+      return;
+    trustedEntries -= present.outcome == SafetyOutcome::Trusted ? 1U : 0U;
+  }
+  trustedEntries += entry.outcome == SafetyOutcome::Trusted ? 1U : 0U;
+  weakest = std::max(weakest, entry.outcome);
+  if (!obligations)
+    obligations = std::make_shared<Storage>();
+  else if (obligations.use_count() != 1 || obligations->published)
+    obligations = std::make_shared<Storage>(*obligations);
+  obligations->published = false;
+  obligations->propagation.reset();
+  obligations->entries.set(row);
 }
 
 bool SafetyLedger::rejects(SafetyEntries::ConstIterator found,
@@ -422,9 +447,11 @@ void SafetyLedger::join(const SafetyLedger &other) {
     trustedEntries = other.trustedEntries;
     return;
   }
-  if (!other.obligations || obligations == other.obligations)
+  if (!other.obligations || obligations == other.obligations ||
+      other.obligations->entries.empty())
     return;
-  auto position = obligations->entries.index.cbegin();
+  auto position = obligations->entries.index.lower_bound(
+      other.obligations->entries.index.cbegin()->first);
   for (const auto &[key, row] : other.obligations->entries.index) {
     while (position != obligations->entries.index.cend() &&
            position->first < key)
@@ -489,6 +516,14 @@ static std::optional<ValueFact> exactConditionUnion(const ValueFact &a,
   if (a == b)
     return a;
   if (a.isPointer() && b.isPointer()) {
+    auto joined = a;
+    joined.join(b);
+    return joined;
+  }
+  // Unqualified sign classes (including the singleton zero) have an exact
+  // finite union. No integer interval or nonzero singleton is widened here.
+  if (!a.integer && !b.integer && (!a.constant || *a.constant == 0) &&
+      (!b.constant || *b.constant == 0)) {
     auto joined = a;
     joined.join(b);
     return joined;
@@ -578,6 +613,16 @@ static bool mergeInitializedConditions(std::vector<InitializedRange> &ranges) {
 }
 
 void SafetyState::initialize(PlaceId storage, InitializedRange range) {
+  if (range.terminatedWithin) {
+    auto &facts = boundedTermination[storage];
+    if (facts.size() < MaxInitializedRanges &&
+        std::ranges::find(facts, range) == facts.end()) {
+      facts.push_back(range);
+      mergeInitializedConditions(facts);
+      std::ranges::sort(facts);
+    }
+    return;
+  }
   if (range.zeroed) {
     auto plain = range;
     plain.zeroed = false;
@@ -632,6 +677,7 @@ void SafetyState::initialize(PlaceId storage, InitializedRange range) {
 
 void SafetyState::forgetZeros() {
   termination.clear();
+  boundedTermination.clear();
   for (auto &[storage, ranges] : memory) {
     (void)storage;
     std::erase_if(ranges, [](const auto &range) { return range.zeroed; });
@@ -653,6 +699,11 @@ void SafetyState::copyMemory(PlaceId source, PlaceId destination) {
     memory.erase(destination);
   else
     memory[destination] = it->second;
+  if (const auto bounded = boundedTermination.find(source);
+      bounded != boundedTermination.end())
+    boundedTermination[destination] = bounded->second;
+  else
+    boundedTermination.erase(destination);
   if (const auto witness = termination.find(source);
       witness != termination.end())
     termination[destination] = witness->second;
@@ -664,6 +715,8 @@ void SafetyState::forget(PlaceId place) {
   objectTypes.erase(place);
   writtenStorage.erase(place);
   termination.erase(place);
+  boundedTermination.erase(place);
+  argumentLists.erase(place);
   replacedPointers.erase(place);
   invalidatedPointers.erase(place);
   accessible.erase(place);
@@ -680,6 +733,15 @@ void SafetyState::forget(PlaceId place) {
 }
 
 void SafetyState::forgetDependency(PlaceId place) {
+  for (auto &[storage, facts] : boundedTermination) {
+    (void)storage;
+    std::erase_if(facts, [&](const auto &fact) {
+      return fact.begin.place == place || fact.end.place == place ||
+             fact.when.dependsOn(place);
+    });
+  }
+  std::erase_if(boundedTermination,
+                [](const auto &entry) { return entry.second.empty(); });
   for (auto &[storage, witnesses] : termination) {
     (void)storage;
     std::erase_if(witnesses, [&](const auto &witness) {
@@ -747,6 +809,25 @@ bool SafetyState::join(const SafetyState &other, const PlaceGuard &left,
                        const PlaceGuard &right) {
   bool changed = other.havoc && !havoc;
   changed |= containers.join(other.containers);
+  for (auto &[place, list] : argumentLists) {
+    const auto found = other.argumentLists.find(place);
+    if (found != other.argumentLists.end() && found->second == list)
+      continue;
+    ArgumentListState joined;
+    joined.input = list.input;
+    joined.copy = list.copy;
+    joined.needsEnd = list.needsEnd || (found != other.argumentLists.end() &&
+                                        found->second.needsEnd);
+    changed |= list != joined;
+    list = joined;
+  }
+  for (const auto &[place, list] : other.argumentLists)
+    if (!argumentLists.contains(place)) {
+      auto unknown = list;
+      unknown.phase = ArgumentListPhase::Unknown;
+      argumentLists.emplace(place, unknown);
+      changed = true;
+    }
   for (auto &[storage, type] : objectTypes) {
     const auto found = other.objectTypes.find(storage);
     if (type != "?" &&
@@ -775,6 +856,17 @@ bool SafetyState::join(const SafetyState &other, const PlaceGuard &left,
                }) != 0;
   }
   changed |= std::erase_if(termination, [](const auto &entry) {
+               return entry.second.empty();
+             }) != 0;
+  for (auto &[storage, facts] : boundedTermination) {
+    const auto found = other.boundedTermination.find(storage);
+    changed |=
+        std::erase_if(facts, [&](const auto &fact) {
+          return found == other.boundedTermination.end() ||
+                 std::ranges::find(found->second, fact) == found->second.end();
+        }) != 0;
+  }
+  changed |= std::erase_if(boundedTermination, [](const auto &entry) {
                return entry.second.empty();
              }) != 0;
   const auto replacements = replacedPointers.size();
@@ -910,10 +1002,10 @@ bool SafetyState::join(const SafetyState &other, const PlaceGuard &left,
   return changed;
 }
 
-std::string safetyJsonString(std::string_view value) {
+static void appendSafetyJsonString(std::string &result,
+                                   std::string_view value) {
   static constexpr std::string_view Hex = "0123456789abcdef";
-  std::string result;
-  result.reserve(value.size() + 2);
+  result.reserve(result.size() + value.size() + 2);
   result += '"';
   for (std::size_t i = 0; i < value.size(); ++i) {
     const auto begin = i;
@@ -962,6 +1054,11 @@ std::string safetyJsonString(std::string_view value) {
     }
   }
   result += '"';
+}
+
+std::string safetyJsonString(std::string_view value) {
+  std::string result;
+  appendSafetyJsonString(result, value);
   return result;
 }
 

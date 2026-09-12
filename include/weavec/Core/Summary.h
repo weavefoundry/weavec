@@ -232,7 +232,16 @@ enum class CheckedRequirementKind : std::uint8_t {
   /// RFC 0023: output has a fresh, separated owned allocation footprint.
   ContainerFresh,
   /// RFC 0023: the output is a saved successor, separate from the input head.
-  ContainerTail
+  ContainerTail,
+  /// RFC 0024: format plus trailing pack (begin >= 0) or list (begin=-1).
+  FormatArguments,
+  /// RFC 0024: sufficient initialized, unconsumed va_list input.
+  ArgumentList,
+  /// RFC 0024: input list cannot be traversed again after this call.
+  ArgumentListConsumed,
+  TerminatedWithin,
+  /// RFC 0024: named environmental stream; paths and bounds are unused.
+  StandardStream
 };
 struct CheckedRequirement {
   CheckedRequirementKind kind = CheckedRequirementKind::Valid;

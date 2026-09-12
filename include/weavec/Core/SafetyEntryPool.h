@@ -14,15 +14,11 @@ namespace weavec::core {
 
 struct AnalysisStats;
 
-/// Caller-independent strings derived from one immutable origin sequence.
+/// RFC 0024: a canonical call ledger derived from an immutable origin sequence.
 struct PreparedSafetyOrigins {
-  struct Entry {
-    std::string subject;
-    std::string escapedSubject;
-    std::string reason;
-    bool limited = false;
-  };
-  std::vector<Entry> entries;
+  SafetyLedger ledger;
+  // Canonical rows in original origin order preserve capped insertion.
+  std::vector<std::shared_ptr<const SafetyEntries::Row>> ordered;
   std::size_t bytes = 0;
 };
 
@@ -46,6 +42,8 @@ private:
   struct CallKey {
     const SafetyPropagation *source;
     std::string callee;
+    SourceLocation location;
+    std::string caller;
     bool trusted;
     bool unsafe;
     friend bool operator==(const CallKey &, const CallKey &) = default;

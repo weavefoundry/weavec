@@ -469,12 +469,15 @@ TEST(SafetyEntryPool, PreparedOriginsKeepCallerAndUnsafeSemantics) {
           actual.addCalls(source, trusted, location, name, "callee", unsafe);
           EXPECT_TRUE(actual.sameExplanationsAs(expected));
           EXPECT_EQ(actual.trusted(), expected.trusted());
+          SafetyLedger replay;
+          replay.addCalls(source, trusted, location, name, "callee", unsafe);
+          EXPECT_TRUE(replay.sameExplanationsAs(expected));
         }
       }
     }
   }
-  EXPECT_EQ(stats.count("explanation_call_hits"), 4U);
-  EXPECT_EQ(stats.count("explanation_call_misses"), 4U);
+  EXPECT_EQ(stats.count("explanation_call_hits"), 8U);
+  EXPECT_EQ(stats.count("explanation_call_misses"), 8U);
 }
 
 TEST(SafetyEntryPool, PreparedOriginsPreserveCapOrderAndTruncationOnHits) {
@@ -517,7 +520,75 @@ TEST(SafetyEntryPool, PreparedOriginsPreserveCapOrderAndTruncationOnHits) {
     }
   }
   EXPECT_EQ(stats.count("explanation_call_misses"), 2U);
-  EXPECT_EQ(stats.count("explanation_call_hits"), 8U);
+  EXPECT_EQ(stats.count("explanation_call_hits"), 6U);
+}
+
+TEST(SafetyEntryPool, PreparedCallLedgersShareRowsWithoutSharingMutation) {
+  // RFC 0024: disable the row pool to distinguish call-ledger reuse from
+  // ordinary entry interning. Every displayed call-site field is an input.
+  SafetyEntryPool pool(nullptr, 0, 0);
+  SafetyLedger source;
+  source.add(obligation(SafetyOutcome::Unresolved));
+  const SourceLocation location{.file = "caller.c", .line = 17, .column = 4};
+  SafetyLedger first;
+  SafetyLedger second;
+  first.addCalls(source, false, location, "caller", "callee", false);
+  auto opaqueOnly = location;
+  opaqueOnly.opaque = 123;
+  second.addCalls(source, false, opaqueOnly, "caller", "callee", false);
+  EXPECT_EQ(&*first.entries().begin(), &*second.entries().begin());
+  first.add(obligation(SafetyOutcome::Violation, 90));
+  EXPECT_TRUE(first.violated());
+  EXPECT_FALSE(second.violated());
+  EXPECT_EQ(second.entries().size(), 1U);
+  for (unsigned change = 0; change < 4; ++change) {
+    auto site = location;
+    std::string caller = "caller";
+    if (change == 0)
+      site.file = "another.c";
+    else if (change == 1)
+      ++site.line;
+    else if (change == 2)
+      ++site.column;
+    else
+      caller = "another";
+    SafetyLedger actual;
+    SafetyLedger expected;
+    actual.addCalls(source, false, site, caller, "callee", false);
+    addCallsIndividually(expected, source.propagation().unresolved, site,
+                         caller, "callee", false);
+    EXPECT_TRUE(actual.sameExplanationsAs(expected));
+    EXPECT_FALSE(actual.sameExplanationsAs(second));
+  }
+}
+
+TEST(SafetyEntryPool, PreparedCallMergeMatchesInsertionWithExistingOutcomes) {
+  SafetyEntryPool pool(nullptr, 0, 0);
+  const SourceLocation location{.file = "caller.c", .line = 17};
+  for (const bool unsafe : {false, true}) {
+    SafetyLedger source;
+    source.add(obligation(SafetyOutcome::Unresolved, 1));
+    source.add(obligation(SafetyOutcome::Violation, 2));
+    SafetyLedger prepared;
+    prepared.addCalls(source, false, location, "caller", "callee", unsafe);
+    for (unsigned outcome = 0; outcome < 5; ++outcome) {
+      SafetyLedger actual;
+      for (const auto &[key, entry] : prepared.entries()) {
+        (void)key;
+        auto prior = entry;
+        prior.outcome = static_cast<SafetyOutcome>(outcome);
+        actual.add(std::move(prior));
+      }
+      actual.shareSnapshot();
+      auto expected = actual;
+      addCallsIndividually(expected, source.propagation().unresolved, location,
+                           "caller", "callee", unsafe);
+      actual.addCalls(source, false, location, "caller", "callee", unsafe);
+      EXPECT_TRUE(actual.sameExplanationsAs(expected));
+      EXPECT_EQ(actual.trusted(), expected.trusted());
+      EXPECT_EQ(actual.violated(), expected.violated());
+    }
+  }
 }
 
 TEST(SafetyEntryPool, PreparedOriginsHonorCapacityBytesAndDisabledScopes) {

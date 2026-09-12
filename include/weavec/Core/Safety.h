@@ -157,6 +157,8 @@ public:
   friend bool operator==(const SafetyEntries &, const SafetyEntries &);
 };
 
+struct PreparedSafetyOrigins;
+
 class SafetyLedger {
 public:
   SafetyLedger() = default;
@@ -180,7 +182,7 @@ public:
   void addCalls(std::span<const SafetyObligation> origins,
                 const SourceLocation &location, std::string_view function,
                 std::string_view callee, bool unsafe);
-  /// Reuse callee-specific explanation preparation from an immutable ledger.
+  /// Reuse an exact call ledger; preserve insertion order near the budget.
   void addCalls(const SafetyLedger &source, bool trusted,
                 const SourceLocation &location, std::string_view function,
                 std::string_view callee, bool unsafe);
@@ -201,10 +203,19 @@ public:
   }
 
 private:
+  void applyCallOrigins(std::span<const SafetyObligation> origins,
+                        const SourceLocation &location,
+                        std::string_view function, std::string_view callee,
+                        bool unsafe, std::vector<std::string> *orderedKeys);
   bool rejects(SafetyEntries::ConstIterator found, SafetyOutcome outcome,
                std::string_view reason);
   void addPrepared(std::string key, SafetyObligation obligation,
                    SafetyEntries::ConstIterator found);
+  void addPrepared(const std::shared_ptr<const SafetyEntries::Row> &row);
+  static std::shared_ptr<const PreparedSafetyOrigins>
+  prepareCallOrigins(std::span<const SafetyObligation> origins,
+                     const SourceLocation &location, std::string_view caller,
+                     std::string_view callee, bool unsafe);
   /// Immutable across copies; mutation detaches only when necessary.
   struct Storage;
   friend class SafetyEntryPool;
@@ -227,6 +238,8 @@ struct InitializedRange {
   // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
   std::optional<PlaceId> source = {};
   bool zeroed = false;
+  /// RFC 0024: transport an existential prefix, never a full initialized range.
+  bool terminatedWithin = false;
   friend auto operator<=>(const InitializedRange &,
                           const InitializedRange &) = default;
 };
@@ -238,7 +251,8 @@ struct PointerPosition {
   PlaceId storage;
   Affine offset;
   std::optional<Affine> extent;
-  std::optional<PlaceId> input;
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
+  std::optional<PlaceId> input = {};
   friend bool operator==(const PointerPosition &,
                          const PointerPosition &) = default;
 };
@@ -254,8 +268,28 @@ struct TerminationWitness {
                           const TerminationWitness &) = default;
 };
 
+/// RFC 0024: a cursor into a trailing pack or a caller-supplied argument list.
+enum class ArgumentListPhase : std::uint8_t {
+  Unknown,
+  Active,
+  Consumed,
+  Ended
+};
+struct ArgumentListState {
+  ArgumentListPhase phase = ArgumentListPhase::Unknown;
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
+  std::optional<PlaceId> input = {};
+  unsigned first = 0;
+  bool needsEnd = false;
+  /// A copied cursor retains the pack but does not consume its source input.
+  bool copy = false;
+  friend bool operator==(const ArgumentListState &,
+                         const ArgumentListState &) = default;
+};
+
 struct SafetyState {
   ContainerFacts containers;
+  std::map<PlaceId, ArgumentListState> argumentLists;
   std::set<PlaceId> initialized;
   std::set<PlaceId> pointers;
   /// May-fact: these objects require unresolved external effects at link time.
@@ -268,6 +302,7 @@ struct SafetyState {
   std::map<PlaceId, std::string> objectTypes;
   std::map<PlaceId, PointerPosition> positions;
   std::map<PlaceId, std::vector<TerminationWitness>> termination;
+  std::map<PlaceId, std::vector<InitializedRange>> boundedTermination;
   /// May-fact: entry byte contents cannot be reintroduced after a write.
   std::set<PlaceId> writtenStorage;
   /// Proven or required accessible prefixes, not necessarily exact sizes.

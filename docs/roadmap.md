@@ -488,6 +488,28 @@ Derived outputs describe subsets of their input chains. Whole-footprint
 consumption through arbitrary transformations, cyclic ownership, general trees
 and graphs, and doubly linked mutation remain separate work.
 
+## Milestone 23 — Checked C runtime contracts
+
+Design: [RFC 0024](rfcs/0024-checked-runtime-contracts.md).
+
+- [x] Validated comparison/search, scalar math, stream and descriptor I/O
+      contracts, with initialized inputs and result-qualified output prefixes.
+- [x] Bounded narrow-format parsing, promoted argument types, capacity and
+      overlap checks, and explicit rejection of unsupported conversions.
+- [x] Independent variadic cursors, required cleanup, conservative mutation
+      invalidation and inferred forwarding requirements across helpers.
+- [x] Version 19 summaries, version 20 sidecars and checked encoding 6, with
+      separate-source, compiler-object and cache regression populations.
+- [x] Full Debug/ASan/UBSan suites and unchanged-source clients; retain the
+      cJSON string-comparison client as a visible incomplete case.
+- [x] Publish exact corpus preservation, cache equivalence and measured
+      runtime/memory gates in the [validation record](validation-rfc0024.md).
+
+Direct variadic extraction, record-embedded or escaping argument lists,
+positional/wide formats, `%n`, scanning and unbound dynamic formats remain
+separate work. A complete conditional runtime contract retains its entry
+requirements and does not certify an entire library.
+
 ## Ongoing
 
 - Corpus testing against real C projects (`scripts/corpus.py`; false-positive
