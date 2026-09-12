@@ -195,7 +195,7 @@ FunctionDataflow::FormatResult FunctionDataflow::runtimeFormatArguments(
         if (precisionKnown)
           exact = upper;
       } else if (precision) {
-        upper = *precision;
+        upper = precision;
       }
     } else if (conversion.conversion == 'c') {
       upper = 1;

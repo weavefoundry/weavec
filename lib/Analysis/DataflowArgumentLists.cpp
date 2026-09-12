@@ -51,7 +51,7 @@ FunctionDataflow::runtimeList(const Expr &expr, const Stmt &at,
     if (const auto path = builder.summaryPathOf(*place);
         path && path->isParam()) {
       state.safety->argumentLists[*place] = {
-          .phase = core::ArgumentListPhase::Active, .input = *place};
+          .phase = core::ArgumentListPhase::Active, .input = place};
       if (recording())
         inferred.checked.require(
             {.kind = core::CheckedRequirementKind::ArgumentList,

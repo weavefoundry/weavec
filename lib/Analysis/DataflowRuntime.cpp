@@ -310,7 +310,7 @@ bool FunctionDataflow::checkedRuntimeCall(const CallExpr &call,
                           .offset = first->begin,
                           .extent = first->extent,
                           .input = first->inputPlace},
-             .upper = *end,
+             .upper = end,
              .when = {},
              .on = core::Outcome::NonNull});
     return true;
