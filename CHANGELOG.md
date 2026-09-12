@@ -1,6 +1,15 @@
 # CHANGELOG
 
 
+## v0.4.0 (2026-09-12)
+
+### Features
+
+- Infer ownership contracts for linked containers
+  ([#26](https://github.com/weavefoundry/weavec/pull/26),
+  [`1f75ed5`](https://github.com/weavefoundry/weavec/commit/1f75ed576350a33161a16ab632f5dac64e99517b))
+
+
 ## v0.3.0 (2026-09-11)
 
 ### Features
