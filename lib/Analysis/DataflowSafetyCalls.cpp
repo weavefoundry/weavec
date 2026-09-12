@@ -58,6 +58,8 @@ void FunctionDataflow::checkedCall(const CallExpr &call,
       return;
     }
   }
+  if (checkedRuntimeCall(call, effects, state, name))
+    return;
   const auto obligation = [&](core::SafetyProperty property, bool proved,
                               bool required, const std::string &reason) {
     safetyObligation(property, core::safetyOutcome(proved, required), call,
@@ -384,7 +386,16 @@ void FunctionDataflow::checkedCall(const CallExpr &call,
                        call, name, "explicit unsafe external contract");
       return;
     }
-    if (options.deferCheckedCalls && callee && !callee->hasBody() && !builtin) {
+    const auto *external = callee;
+    if (!external && !target.empty())
+      external = summaries.callable(target);
+    if (!external)
+      if (const auto targets = callTargetsSeen.find(&call);
+          targets != callTargetsSeen.end() && !targets->second.unknown &&
+          !targets->second.null && targets->second.functions.size() == 1)
+        external = summaries.callable(*targets->second.functions.begin());
+    if (options.deferCheckedCalls && external && !external->hasBody() &&
+        !builtin) {
       checkedDeferredCalls.insert(&call);
       if (recording())
         inferred.checked.deferred = true;
@@ -519,6 +530,8 @@ void FunctionDataflow::checkedCall(const CallExpr &call,
     });
     for (const auto *entry : requirements) {
       const auto &requirement = *entry;
+      if (runtimeRequirement(requirement, call, state))
+        continue;
       if (requirement.kind == core::CheckedRequirementKind::Container ||
           requirement.kind ==
               core::CheckedRequirementKind::ContainerSeparated) {
@@ -739,7 +752,13 @@ void FunctionDataflow::checkedCallAfter(const CallExpr &call,
       type = "?";
     }
     state.safety->termination.clear();
+    state.safety->boundedTermination.clear();
     state.safety->havoc = true;
+    for (auto &[place, list] : state.safety->argumentLists) {
+      list.phase = core::ArgumentListPhase::Unknown;
+      if (options.deferCheckedCalls && checkedDeferredCalls.contains(&call))
+        state.safety->deferred.insert(place);
+    }
     for (const Expr *arg : call.arguments())
       if (arg->getType()->isPointerType())
         if (const auto memory = checkedMemory(*arg, {}, {}, state)) {

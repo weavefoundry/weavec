@@ -64,6 +64,40 @@ std::string CheckedReport::json(bool invocationOK) const {
 void CheckedReport::write(llvm::raw_ostream &out, bool invocationOK) const {
   const auto shared = compact ? std::make_unique<CompactReport>() : nullptr;
   const auto quote = core::safetyJsonString;
+  // The immutable report owns these backing vectors for this entire write.
+  // Reuse their expanded JSON without changing the format or retaining a DOM.
+  std::map<const core::SourceLocation *, std::string> renderedCalls;
+  std::size_t callBytes = 0;
+  const auto writeCalls = [&](const core::SafetyCallPath &calls) {
+    if (calls.empty()) {
+      out << "[]";
+      return;
+    }
+    const auto *identity = calls.entries().data();
+    if (const auto found = renderedCalls.find(identity);
+        found != renderedCalls.end()) {
+      out << found->second;
+      return;
+    }
+    std::string text = "[";
+    for (const auto &call : calls) {
+      if (text.size() != 1)
+        text += ',';
+      text += checkedLocation(call);
+    }
+    text += ']';
+    out << text;
+    static constexpr std::size_t MaxBytes = std::size_t{8} * 1024U * 1024U;
+    const auto bytes = text.capacity() + 128;
+    if (bytes > MaxBytes)
+      return;
+    if (renderedCalls.size() == 1024 || bytes > MaxBytes - callBytes) {
+      renderedCalls.clear();
+      callBytes = 0;
+    }
+    callBytes += bytes;
+    renderedCalls.emplace(identity, std::move(text));
+  };
   out << "{\"version\":" << (compact ? 3 : 2)
       << ",\"invocation_ok\":" << (invocationOK ? "true" : "false")
       << ",\"guarantee\":\"conditional safety of selected source "
@@ -151,15 +185,9 @@ void CheckedReport::write(llvm::raw_ostream &out, bool invocationOK) const {
             << ",\"outcome\":" << quote(core::toString(entry.outcome))
             << ",\"location\":" << checkedLocation(entry.location)
             << ",\"subject\":" << quote(entry.subject)
-            << ",\"reason\":" << quote(entry.reason) << ",\"calls\":[";
-        bool firstCall = true;
-        for (const auto &call : entry.calls) {
-          if (!firstCall)
-            out << ',';
-          firstCall = false;
-          out << checkedLocation(call);
-        }
-        out << "]}";
+            << ",\"reason\":" << quote(entry.reason) << ",\"calls\":";
+        writeCalls(entry.calls);
+        out << '}';
       }
       out << "]}";
     }

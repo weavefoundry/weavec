@@ -570,7 +570,7 @@ Calls whose inputs have no established interacting relationship still use
 generic summaries; silence does not prove arbitrary pointers disjoint.
 The [validation report](validation-rfc0016.md) records the supported matrix
 and remaining coverage limits. These context records are retained in the
-current format 18 sidecars; rebuild older objects before link analysis. Checked
+current format 20 sidecars; rebuild older objects before link analysis. Checked
 mode also specializes exact scalar inputs and fields under the same context
 limits (RFC 0019).
 
@@ -660,7 +660,7 @@ unrestricted aliases, byte-encoded pointers, GC invariants and concurrency
 remain outside the supported model.
 
 RFC 0017 introduced summary and sidecar format **13**. Current summary format
-**17** and sidecar format **18** require rebuilding older objects. The [RFC 0017 validation report](validation-rfc0017.md) records
+**19** and sidecar format **20** require rebuilding older objects. The [RFC 0017 validation report](validation-rfc0017.md) records
 passing regression and sanitizer suites, corpus coverage, performance costs
 and remaining false positives.
 No runtime instrumentation, `--verify` flag or verification certificate is
@@ -739,3 +739,23 @@ latter requires disjoint whole node and owned-payload footprints. Pointer
 inequality alone is insufficient. Cycles and unknown links do not satisfy a
 finite chain. Existing invalid-release, use-after-free and leak diagnostics
 remain active alongside these obligations. See [linked containers](checked-code.md#linked-containers).
+
+### Runtime diagnostics (RFC 0024)
+
+Runtime contracts reuse the two checking identifiers. Missing evidence can
+report `runtime input interval must be initialized`, `runtime access interval
+must fit its object`, `runtime string requires an initialized terminator`, or
+`runtime operation requires a live C stream`. Format reasons distinguish a
+missing argument, an incorrect promoted type, unsupported syntax, insufficient
+capacity and overlapping input/output. Fortified output also checks its
+object-size bound.
+
+List diagnostics distinguish an inactive or consumed cursor (`variadic traversal
+requires an active unconsumed argument list`), an invalid start/copy/end operation,
+and an outstanding cleanup (`locally started or copied argument list requires
+va_end`). Raw byte writes and scope exit cannot discharge that obligation.
+A proven null dereference reports `checking-failed` with `dereference requires
+a non-null pointer`. No annotation or warning suppression grants runtime safety.
+Implicit output also requires a live standard stream, including through
+helpers that do not spell the stream argument.
+See [C runtime contracts](checked-code.md#c-runtime-contracts).

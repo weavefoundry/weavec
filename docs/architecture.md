@@ -37,6 +37,22 @@ piece the README asks to keep "as modular as possible": it can be unit-tested
 without parsing any code, reused by a different frontend, or embedded in other
 tools.
 
+RFC 0024 keeps runtime format syntax in the Clang-free `Format.h` / `Format.cpp`
+parser. Its bounded conversion records describe promoted argument categories;
+Analysis binds those categories to the target's actual C types. `SafetyState`
+holds opaque argument-list lifecycle records and initialized terminated-prefix
+envelopes. These envelopes are separate from ordinary initialized-byte ranges:
+an unknown terminator inside a capacity does not initialize the unused tail.
+
+Analysis's immutable `RuntimeModels` registry validates call signatures before
+dispatch. `DataflowRuntime.cpp` checks memory and stream preconditions,
+`DataflowFormats.cpp` binds formats and establishes guarded output facts, and
+`DataflowArgumentLists.cpp` handles cursor ownership, consumption and forwarding.
+They use the existing checked call, callback, output and summary machinery.
+Source definitions retain priority over library spellings. Ordinary summaries
+alone never authorize a checked runtime contract. Portable records use checked
+encoding 6, summary format 19 and sidecar format 20.
+
 | Header             | Purpose                                                                                        |
 | ------------------ | ---------------------------------------------------------------------------------------------- |
 | `Ownership.h`      | `OwnershipKind` lattice (`Unknown ⊑ {Owned, Shared, Mutable} ⊑ Raw`) and `join`. `Raw` is "no guarantee": tracked, but usable only inside an unsafe region. |
@@ -438,7 +454,7 @@ checks by source operation. `--dump-analysis` prints
 These counts are independent of unsafe-region reporting and warning controls.
 A caller requirement is an obligation, not a proof that all callers satisfy it.
 
-`SummaryFormatVersion` is **18** and `SidecarFormatVersion` is **19**. Numeric
+`SummaryFormatVersion` is **19** and `SidecarFormatVersion` is **20**. Numeric
 outputs use `numeric <path> value ...` records; `requires-extent` retains
 optional `start` intervals and typed guards. Core validates types, operators,
 paths, shapes and limits. Comparison, global remapping and dependency
@@ -561,6 +577,12 @@ contracts. Its public iterators are immutable; insertion and intersection
 detach shared storage before modifying it. Duplicate joins preserve storage,
 the original requirement cap and exact portable contents. This avoids copying
 large conditional guards while rebuilding whole-program databases.
+RFC 0024 reuses canonical call ledgers in the bounded explanation-preparation
+cache. The key includes the live source projection, callee, caller, call site
+and trust/unsafe modes. Ordered merging applies when the obligation cap cannot
+be reached. Near the cap, prepared rows retain the original origin order and
+capacity decisions. Retained rows, strings and call-path capacity count against
+the existing cache byte bound; cache eviction changes reuse only.
 Global remapping retains shared checked sets when none of their paths,
 affine expressions or guard predicates references a global. Path projection
 caches immutable local/synthetic failures as well as stable interface paths;

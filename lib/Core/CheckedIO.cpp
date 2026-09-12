@@ -8,10 +8,12 @@
 
 #include "weavec/Core/CheckedIO.h"
 
+#include "weavec/Core/Format.h"
 #include "weavec/Core/ObjectType.h"
 
 #include <charconv>
 #include <limits>
+#include <utility>
 
 namespace weavec::core {
 
@@ -203,6 +205,34 @@ public:
     result.begin = affine(resolve);
     result.end = affine(resolve);
     result.family = text();
+    if (result.kind == CheckedRequirementKind::StandardStream)
+      valid &= result.path == SummaryPath{} && result.other == SummaryPath{} &&
+               result.begin == PathAffine::ofConstant(0) &&
+               result.end == PathAffine::ofConstant(0) &&
+               result.family == "stdout";
+    if (result.kind == CheckedRequirementKind::FormatArguments) {
+      const auto literal = decodeFormatLiteral(result.family);
+      valid &= result.path.isParam() && result.path.isRoot() &&
+               result.begin.isConstant() && result.begin.constant >= -1 &&
+               std::cmp_less_equal(result.begin.constant, MaxFormatArguments) &&
+               result.end == PathAffine::ofConstant(0) &&
+               (result.family.empty() ||
+                (literal && OutputFormat::parse(*literal).valid())) &&
+               (result.begin.constant != -1 ||
+                (result.other.isParam() && result.other.isRoot())) &&
+               (result.begin.constant == -1 || result.other == SummaryPath{});
+    }
+    if (result.kind == CheckedRequirementKind::ArgumentList ||
+        result.kind == CheckedRequirementKind::ArgumentListConsumed)
+      valid &= result.path.isParam() && result.path.isRoot() &&
+               result.other == SummaryPath{} && result.family.empty() &&
+               result.begin == PathAffine::ofConstant(0) &&
+               result.end == PathAffine::ofConstant(0);
+    if (result.kind == CheckedRequirementKind::TerminatedWithin)
+      valid &= result.family.empty() &&
+               (!result.begin.isConstant() || result.begin.constant >= 0) &&
+               (!result.begin.isConstant() || !result.end.isConstant() ||
+                result.begin.constant < result.end.constant);
     if (result.kind == CheckedRequirementKind::ObjectType)
       valid &= ObjectType::parse(result.family).has_value();
     if (result.kind == CheckedRequirementKind::Container ||
@@ -264,7 +294,7 @@ private:
 std::string printCheckedContract(const CheckedContract &contract,
                                  const GlobalNamer &names) {
   CheckedWriter out;
-  out.text("5");
+  out.text("6");
   out.text(contract.signature);
   out.number(contract.computed);
   out.number(contract.selected);
@@ -303,7 +333,7 @@ std::string printCheckedContract(const CheckedContract &contract,
 std::optional<CheckedContract>
 parseCheckedContract(std::string_view record, const GlobalResolver &resolve) {
   CheckedReader in(record);
-  if (in.text() != "5")
+  if (in.text() != "6")
     return std::nullopt;
   CheckedContract result;
   result.signature = in.text();
@@ -338,12 +368,22 @@ parseCheckedContract(std::string_view record, const GlobalResolver &resolve) {
         requirement.kind == CheckedRequirementKind::ContainerTail)
       return std::nullopt;
   for (const auto &requirement : result.requirements)
+    if (requirement.kind == CheckedRequirementKind::ArgumentListConsumed ||
+        requirement.kind == CheckedRequirementKind::TerminatedWithin)
+      return std::nullopt;
+  for (const auto &requirement : result.requirements)
     if (requirement.kind == CheckedRequirementKind::Terminated &&
         (!requirement.end.isConstant() || requirement.end.constant != 0 ||
          !requirement.family.empty() ||
          (requirement.begin.isConstant() && requirement.begin.constant < 0)))
       return std::nullopt;
   for (const auto &post : result.establishes) {
+    if (post.kind == CheckedRequirementKind::StandardStream ||
+        post.kind == CheckedRequirementKind::ArgumentList ||
+        post.kind == CheckedRequirementKind::FormatArguments ||
+        (post.kind == CheckedRequirementKind::ArgumentListConsumed &&
+         (!post.when.trivial() || post.on || post.ifNonNull)))
+      return std::nullopt;
     if (post.kind == CheckedRequirementKind::ContainerDerived ||
         post.kind == CheckedRequirementKind::ContainerTail) {
       const auto shape = ContainerShape::decode(post.family);
@@ -371,6 +411,7 @@ parseCheckedContract(std::string_view record, const GlobalResolver &resolve) {
       return std::nullopt;
     if (post.ifNonNull && post.kind != CheckedRequirementKind::Initialized &&
         post.kind != CheckedRequirementKind::Zeroed &&
+        post.kind != CheckedRequirementKind::TerminatedWithin &&
         post.kind != CheckedRequirementKind::Copied)
       return std::nullopt;
     if (post.kind == CheckedRequirementKind::Progress &&

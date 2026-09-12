@@ -1,0 +1,121 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "name": "format-good",
+      "sources": [
+        "format-good.c",
+        "render.c"
+      ],
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "format-bad",
+      "sources": [
+        "format-bad.c",
+        "render.c"
+      ],
+      "function": "main",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "format|promoted"
+    },
+    {
+      "name": "partial-good",
+      "sources": [
+        "partial-good.c",
+        "pull.c"
+      ],
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "partial-bad",
+      "sources": [
+        "partial-bad.c",
+        "pull.c"
+      ],
+      "function": "main",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "initializ"
+    },
+    {
+      "name": "list-good",
+      "sources": [
+        "list-good.c",
+        "forward.c"
+      ],
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "list-bad",
+      "sources": [
+        "list-bad.c",
+        "forward.c"
+      ],
+      "function": "main",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "argument list|variadic"
+    },
+    {
+      "name": "callback-good",
+      "sources": [
+        "callback-good.c",
+        "render.c"
+      ],
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "callback-bad",
+      "sources": [
+        "callback-bad.c",
+        "render.c"
+      ],
+      "function": "main",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "null|callee|checked"
+    }
+  ]
+}

@@ -609,6 +609,10 @@ void FunctionDataflow::applyStringEffects(const CallExpr &call,
     return;
   }
   if (name == "sprintf" || name == "vsprintf") {
+    // RFC 0024 records initialized output and termination separately. The
+    // number of emitted bytes is not strlen when a %c emits an embedded NUL.
+    if (options.checkContracts)
+      return;
     if (const auto index = formatIndexOf(*callee)) {
       if (const auto need = formatNeedOf(call, *index, state);
           need && need->exact && name == "sprintf")
@@ -759,7 +763,7 @@ void FunctionDataflow::checkStringArguments(
   std::optional<FormatNeed> format;
   if (const auto formatIndex = formatIndexOf(*callee)) {
     format = formatNeedOf(call, *formatIndex, state);
-    if (format) {
+    if (format && !options.checkContracts) {
       for (const unsigned index : format->stringArguments) {
         if (checkSeekingRead(index))
           return;

@@ -4,6 +4,10 @@ weavec_add_library(
   SOURCES Allocators.cpp
           Annotations.cpp
           Builtins.cpp
+          RuntimeModels.cpp
+          DataflowRuntime.cpp
+          DataflowFormats.cpp
+          DataflowArgumentLists.cpp
           ClangLocation.cpp
           Dataflow.cpp
           DataflowContainers.cpp

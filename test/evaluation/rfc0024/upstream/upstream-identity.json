@@ -1,0 +1,16 @@
+{
+  "cJSON-program": {
+    "commit": "fb16e5cf358798aabb049655975cde8427101056",
+    "files": {
+      "cJSON.c": "607e756460fa0de37d20a7a9181f2de29c97bfb7ce5a0e6c2f548243836cd852",
+      "cJSON.h": "25b0145150d500498e4d209cec69c18c42cf818bffcc54690be3b895a2a16dee"
+    }
+  },
+  "linenoise-program": {
+    "commit": "a473823d74b93eab2ba83480df16ed37617493f2",
+    "files": {
+      "linenoise.c": "4bc28faf2a46ccaea11d07aa056e21aa2e9a748b4dc6962346a3f658593103a8",
+      "linenoise.h": "5f94c6295e3b62e0f8b4b62b0a2f351433d0b6b21029607aec0c9abbc60acff7"
+    }
+  }
+}

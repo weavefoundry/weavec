@@ -1,0 +1,566 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "name": "expect-good",
+      "source": "expect-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    },
+    {
+      "name": "expect-bad",
+      "source": "expect-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "null|live"
+    },
+    {
+      "name": "numeric-good",
+      "source": "numeric-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    },
+    {
+      "name": "numeric-bad",
+      "source": "numeric-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "freed"
+    },
+    {
+      "name": "strcmp-good",
+      "source": "strcmp-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    },
+    {
+      "name": "strcmp-bad",
+      "source": "strcmp-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "initializ|terminat"
+    },
+    {
+      "name": "strncmp-good",
+      "source": "strncmp-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    },
+    {
+      "name": "strncmp-bad",
+      "source": "strncmp-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "initializ|terminat"
+    },
+    {
+      "name": "memcmp-good",
+      "source": "memcmp-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    },
+    {
+      "name": "memcmp-bad",
+      "source": "memcmp-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "initializ|terminat"
+    },
+    {
+      "name": "memchr-good",
+      "source": "memchr-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    },
+    {
+      "name": "memchr-bad",
+      "source": "memchr-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "freed|live"
+    },
+    {
+      "name": "strchr-good",
+      "source": "strchr-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    },
+    {
+      "name": "strchr-bad",
+      "source": "strchr-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "freed|live"
+    },
+    {
+      "name": "strrchr-good",
+      "source": "strrchr-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    },
+    {
+      "name": "strrchr-bad",
+      "source": "strrchr-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "freed|live"
+    },
+    {
+      "name": "strstr-good",
+      "source": "strstr-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    },
+    {
+      "name": "strstr-bad",
+      "source": "strstr-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "freed|live"
+    },
+    {
+      "name": "strpbrk-good",
+      "source": "strpbrk-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    },
+    {
+      "name": "strpbrk-bad",
+      "source": "strpbrk-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "freed|live"
+    },
+    {
+      "name": "span-good",
+      "source": "span-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    },
+    {
+      "name": "span-bad",
+      "source": "span-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "terminat|bound"
+    },
+    {
+      "name": "write-good",
+      "source": "write-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    },
+    {
+      "name": "write-bad",
+      "source": "write-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "initializ"
+    },
+    {
+      "name": "read-good",
+      "source": "read-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    },
+    {
+      "name": "read-bad",
+      "source": "read-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "initializ"
+    },
+    {
+      "name": "fread-good",
+      "source": "fread-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    },
+    {
+      "name": "fread-bad",
+      "source": "fread-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "initializ"
+    },
+    {
+      "name": "fgets-good",
+      "source": "fgets-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    },
+    {
+      "name": "fgets-bad",
+      "source": "fgets-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "initializ"
+    },
+    {
+      "name": "streams-good",
+      "source": "streams-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    },
+    {
+      "name": "streams-bad",
+      "source": "streams-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "freed|live|stream"
+    },
+    {
+      "name": "snprintf-good",
+      "source": "snprintf-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    },
+    {
+      "name": "snprintf-bad",
+      "source": "snprintf-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "initializ"
+    },
+    {
+      "name": "truncate-good",
+      "source": "truncate-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    },
+    {
+      "name": "truncate-bad",
+      "source": "truncate-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "bound|interval"
+    },
+    {
+      "name": "precision-good",
+      "source": "precision-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    },
+    {
+      "name": "precision-bad",
+      "source": "precision-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "bound|interval|terminat"
+    },
+    {
+      "name": "format-good",
+      "source": "format-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    },
+    {
+      "name": "format-bad",
+      "source": "format-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "format|argument"
+    },
+    {
+      "name": "sprintf-good",
+      "source": "sprintf-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    },
+    {
+      "name": "sprintf-bad",
+      "source": "sprintf-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "bound|interval"
+    },
+    {
+      "name": "variadic-good",
+      "source": "variadic-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    },
+    {
+      "name": "variadic-bad",
+      "source": "variadic-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "format|argument"
+    },
+    {
+      "name": "va-copy-good",
+      "source": "va-copy-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    },
+    {
+      "name": "va-copy-bad",
+      "source": "va-copy-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "argument list|variadic|consum"
+    },
+    {
+      "name": "va-ended-bad",
+      "source": "va-ended-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "argument list|variadic|ended"
+    },
+    {
+      "name": "va-uninitialized-bad",
+      "source": "va-uninitialized-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "argument list|variadic|initializ"
+    },
+    {
+      "name": "format-overlap-bad",
+      "source": "format-overlap-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "overlap|disjoint|separat"
+    },
+    {
+      "name": "percent-n-bad",
+      "source": "percent-n-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "format|conversion"
+    },
+    {
+      "name": "zero-size-good",
+      "source": "zero-size-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    }
+  ]
+}

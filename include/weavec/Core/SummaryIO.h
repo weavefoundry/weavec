@@ -98,7 +98,7 @@ namespace weavec::core {
 /// version cannot be read by the previous one.
 // Version 18 (RFC 0023) adds inductive container predicates to checked
 // contracts.
-inline constexpr unsigned SummaryFormatVersion = 18;
+inline constexpr unsigned SummaryFormatVersion = 19;
 
 /// The name to print for a global root id.
 using GlobalNamer = std::function<std::string(std::uint32_t)>;

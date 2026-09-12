@@ -227,10 +227,15 @@ void FunctionDataflow::checkedBefore(const Stmt &stmt,
     if (const auto ref = builder.resolve(*written)) {
       snapshotScalar(ref->place, dyn_cast<Expr>(&stmt), state);
       state.safety->forgetDependency(ref->place);
+      if (auto list = state.safety->argumentLists.find(ref->place);
+          list != state.safety->argumentLists.end())
+        list->second.phase = core::ArgumentListPhase::Unknown;
     }
 
-  if (const auto *ret = dyn_cast<ReturnStmt>(&stmt); ret && recording())
+  if (const auto *ret = dyn_cast<ReturnStmt>(&stmt); ret && recording()) {
+    runtimeListReturns(stmt, state);
     checkedOutputs(state, ret->getRetValue());
+  }
   const auto *expr = dyn_cast<Expr>(&stmt);
   if (!expr)
     return;
@@ -338,6 +343,11 @@ void FunctionDataflow::checkedAfter(const Stmt &stmt,
     state.safety->positions.clear();
     state.safety->accessible.clear();
     state.safety->termination.clear();
+    state.safety->boundedTermination.clear();
+    for (auto &[place, list] : state.safety->argumentLists) {
+      (void)place;
+      list.phase = core::ArgumentListPhase::Unknown;
+    }
   }
   if (const auto *decl = dyn_cast<DeclStmt>(&stmt)) {
     for (const auto *d : decl->decls()) {
@@ -664,8 +674,16 @@ void FunctionDataflow::checkedOutputs(const core::AnalysisState &incoming,
     }
   }
   const auto &state = materialized ? *materialized : incoming;
+  const auto returnedNumber = value && value->getType()->isIntegerType()
+                                  ? integerExpressionOf(*value, state)
+                                  : std::nullopt;
+  const auto returnedIdentity =
+      returnedNumber ? returnedNumber->inputKey() : std::nullopt;
   const auto endpoint =
       [&](const core::Affine &point) -> std::optional<core::PathAffine> {
+    if (point.place && point.place == returnedIdentity)
+      return core::PathAffine::ofPath(core::SummaryPath::result(), point.scale,
+                                      point.constant);
     if (value && value->getType()->isIntegerType()) {
       const auto returnedValue = builder.affineOf(*value);
       if (returnedValue && returnedValue->place &&
@@ -896,10 +914,12 @@ void FunctionDataflow::checkedOutputs(const core::AnalysisState &incoming,
                                .when = guard,
                                .on = outcome});
         }
-      const auto found = memory.memory.find(storage);
-      if (found == memory.memory.end())
-        continue;
-      for (const auto &range : found->second) {
+      auto ranges = memory.memory[storage];
+      if (const auto bounded = memory.boundedTermination.find(storage);
+          bounded != memory.boundedTermination.end())
+        ranges.insert(ranges.end(), bounded->second.begin(),
+                      bounded->second.end());
+      for (const auto &range : ranges) {
         auto condition = range.when;
         if (!pruneGuard(condition, state))
           continue;
@@ -907,6 +927,11 @@ void FunctionDataflow::checkedOutputs(const core::AnalysisState &incoming,
         // local condition. Any remaining unexportable premise loses the fact.
         if (returned && outcome)
           if (const auto entry = condition.conditions.find(*returned);
+              entry != condition.conditions.end() &&
+              core::ValueFact::of(*outcome).implies(entry->second))
+            condition.conditions.erase(entry);
+        if (returnedIdentity && outcome)
+          if (const auto entry = condition.conditions.find(*returnedIdentity);
               entry != condition.conditions.end() &&
               core::ValueFact::of(*outcome).implies(entry->second))
             condition.conditions.erase(entry);
@@ -927,6 +952,8 @@ void FunctionDataflow::checkedOutputs(const core::AnalysisState &incoming,
           kind = core::CheckedRequirementKind::Copied;
         else if (range.zeroed)
           kind = core::CheckedRequirementKind::Zeroed;
+        else if (range.terminatedWithin)
+          kind = core::CheckedRequirementKind::TerminatedWithin;
         for (const auto &path : exported) {
           auto inputCondition = condition;
           bool ifNonNull =
@@ -997,6 +1024,12 @@ void FunctionDataflow::checkedOutputs(const core::AnalysisState &incoming,
   }
   checkedOutputSeen = true;
   inferred.checked.establishes.clear();
+  for (const auto &path : runtimeConsumedLists)
+    inferred.checked.establish(
+        {.kind = core::CheckedRequirementKind::ArgumentListConsumed,
+         .path = path,
+         .other = {},
+         .family = {}});
   for (const auto &[outcome, outputs] : checkedOutputClasses) {
     (void)outcome;
     for (auto post : outputs) {
@@ -1014,8 +1047,10 @@ void FunctionDataflow::checkedOutputs(const core::AnalysisState &incoming,
 }
 
 void FunctionDataflow::checkedFinish(const core::AnalysisState *exitState) {
-  if (!checkedOutputSeen && exitState)
+  if (!checkedOutputSeen && exitState) {
+    runtimeListReturns(*function.getBody(), *exitState);
     checkedOutputs(*exitState);
+  }
   for (const Stmt *stmt : checkedUnsupported) {
     const bool previous = inUnsafe;
     inUnsafe = unsafeBody || unsafeStmts.contains(stmt);

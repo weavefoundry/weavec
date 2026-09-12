@@ -40,7 +40,7 @@ TEST(CheckedReport, EscapingAndScopeRoundTripThroughJson) {
   const auto *object = parsed->getAsObject();
   ASSERT_NE(object, nullptr);
   EXPECT_EQ(object->getInteger("version"), 2);
-  EXPECT_EQ(object->getInteger("model_version"), 18);
+  EXPECT_EQ(object->getInteger("model_version"), 19);
   ASSERT_NE(object->getObject("totals"), nullptr);
   EXPECT_EQ(object->getObject("totals")->getInteger("complete"), 1);
   const auto *units = object->getArray("units");
@@ -136,6 +136,68 @@ TEST(CheckedReport, CompactStringsOwnTheirStorageAfterObligationsAreReplaced) {
   EXPECT_TRUE(found);
   ASSERT_NE(root->getArray("obligation_records"), nullptr);
   EXPECT_EQ(root->getArray("obligation_records")->size(), 1U);
+}
+TEST(CheckedReport, ExpandedSharedPathsSurviveEvictionAndReportReplacement) {
+  auto unit = checkedUnit();
+  for (unsigned function = 0; function < 2; ++function) {
+    auto &contract = unit.checkedDefinitions["f" + std::to_string(function)];
+    contract.computed = contract.selected = true;
+    for (unsigned origin = 0; origin < 600; ++origin) {
+      core::SafetyCallPath calls{
+          {.file = "quoted \"é\\path.c", .line = origin + 1, .column = 7},
+          {.file = "origin.c", .line = function + 1, .column = 3}};
+      calls.normalize();
+      for (unsigned copy = 0; copy < 2; ++copy)
+        contract.obligations.add({.property = core::SafetyProperty::Call,
+                                  .outcome = core::SafetyOutcome::Unresolved,
+                                  .location = {.file = unit.source,
+                                               .line = (2 * origin) + copy + 1,
+                                               .column = 1},
+                                  .function = "f",
+                                  .subject = "call",
+                                  .reason = "origin",
+                                  .calls = calls});
+    }
+  }
+  CheckedReport report;
+  report.record(unit);
+  const auto text = report.json();
+  EXPECT_EQ(text, report.json());
+  auto parsed = llvm::json::parse(text);
+  ASSERT_TRUE(parsed);
+  const auto *functions =
+      parsed->getAsObject()->getArray("units")->front().getAsObject()->getArray(
+          "functions");
+  ASSERT_NE(functions, nullptr);
+  for (const auto &value : *functions) {
+    const auto *function = value.getAsObject();
+    ASSERT_NE(function, nullptr);
+    const auto name = function->getString("name");
+    ASSERT_TRUE(name);
+    const auto &expected = unit.checkedDefinitions.at(name->str());
+    const auto *entries = function->getArray("obligations");
+    ASSERT_NE(entries, nullptr);
+    ASSERT_EQ(entries->size(), expected.obligations.entries().size());
+    unsigned index = 0;
+    for (const auto &[key, entry] : expected.obligations.entries()) {
+      (void)key;
+      const auto *calls = (*entries)[index++].getAsObject()->getArray("calls");
+      ASSERT_NE(calls, nullptr);
+      ASSERT_EQ(calls->size(), entry.calls.size());
+      unsigned position = 0;
+      for (const auto &call : entry.calls) {
+        const auto *actual = (*calls)[position++].getAsObject();
+        ASSERT_NE(actual, nullptr);
+        EXPECT_EQ(actual->getString("file"), call.file);
+        EXPECT_EQ(actual->getInteger("line"), call.line);
+        EXPECT_EQ(actual->getInteger("column"), call.column);
+      }
+    }
+  }
+  report.record(checkedUnit());
+  CheckedReport fresh;
+  fresh.record(checkedUnit());
+  EXPECT_EQ(report.json(), fresh.json());
 }
 
 } // namespace weavec::frontend
