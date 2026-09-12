@@ -1,6 +1,15 @@
 # CHANGELOG
 
 
+## v0.5.0 (2026-09-12)
+
+### Features
+
+- Check C runtime and variadic interface contracts
+  ([#27](https://github.com/weavefoundry/weavec/pull/27),
+  [`4f05ecc`](https://github.com/weavefoundry/weavec/commit/4f05ecc162da02a7b2518606ff35525257a0da08))
+
+
 ## v0.4.0 (2026-09-12)
 
 ### Features
