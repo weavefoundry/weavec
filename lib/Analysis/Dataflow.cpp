@@ -626,6 +626,8 @@ core::AnalysisState FunctionDataflow::initialState() {
     }
   if (state.safety)
     initializeCheckedStrings(state);
+  if (state.safety)
+    initializeContainers(state);
   for (const auto *param : function.parameters())
     if (param->getType()->isVariablyModifiedType())
       captureVariableArray(builder.placeForVar(*param), *param, state);
@@ -2452,8 +2454,10 @@ void FunctionDataflow::applyCondition(const Expr &condition, bool holds,
                                       bool wrapped,
                                       core::AnalysisState &state) {
   const auto checkedCondition = llvm::scope_exit([&] {
-    if (state.safety && !edgeInfeasible)
+    if (state.safety && !edgeInfeasible) {
       state.safety->refinePaths(state.pathGuard());
+      refineContainers(state);
+    }
   });
   const Expr *e = condition.IgnoreParenImpCasts();
   for (;;) {

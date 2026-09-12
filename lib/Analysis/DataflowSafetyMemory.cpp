@@ -153,6 +153,14 @@ FunctionDataflow::checkedMemoryAt(core::PlaceId holder,
                                   const core::Affine &begin,
                                   const core::Affine &end,
                                   const core::AnalysisState &state) {
+  if (state.safety->invalidatedPointers.contains(holder))
+    return CheckedMemory{.storage = places.deref(holder),
+                         .begin = begin,
+                         .end = end,
+                         .extent = {},
+                         .input = {},
+                         .pointer = nullptr,
+                         .holder = holder};
   if (const auto found = state.safety->positions.find(holder);
       found != state.safety->positions.end()) {
     const auto &position = found->second;
@@ -266,6 +274,7 @@ bool FunctionDataflow::checkedValid(const CheckedMemory &memory,
   const auto place = *memory.holder;
   const auto nullness = nullnessAt(place, state);
   return state.safety->pointers.contains(place) &&
+         !state.safety->invalidatedPointers.contains(place) &&
          !state.moves.recordOf(place) && !state.resources.isEscaped(place) &&
          nullness && nullness->state == core::Nullness::NonNull;
 }
@@ -764,6 +773,12 @@ void FunctionDataflow::checkedAccess(const Expr &expr, const PlaceRef &ref,
   // RFC 0022: a function designator is not an object memory access. Its
   // pointer operand is still evaluated and checked in the ordinary walk.
   if (expr.getType()->isFunctionType())
+    return;
+  if (checkedContainerAccess(expr,
+                             role == Role::Read || role == Role::ReadWrite ||
+                                 role == Role::Consume,
+                             role == Role::Write || role == Role::ReadWrite,
+                             state))
     return;
   const bool reads =
       role == Role::Read || role == Role::ReadWrite || role == Role::Consume;

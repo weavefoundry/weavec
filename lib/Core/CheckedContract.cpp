@@ -13,6 +13,38 @@
 
 namespace weavec::core {
 
+std::optional<CheckedRequirement>
+joinContainerOutput(const CheckedRequirement &first,
+                    const CheckedRequirement &second) {
+  if (first.kind != CheckedRequirementKind::ContainerDerived ||
+      second.kind != CheckedRequirementKind::ContainerDerived ||
+      first.path != second.path || first.family != second.family ||
+      first.on != second.on || first.when != second.when || first.ifNonNull ||
+      second.ifNonNull)
+    return std::nullopt;
+  std::set<SummaryPath> sources{first.other, second.other};
+  for (const auto *post : {&first, &second}) {
+    if (post->begin.path)
+      sources.insert(*post->begin.path);
+    if (post->end.path)
+      sources.insert(*post->end.path);
+  }
+  auto result = first;
+  result.begin = result.end = {};
+  result.other = {};
+  if (sources.size() > 3) {
+    result.kind = CheckedRequirementKind::Container;
+    return result;
+  }
+  auto source = sources.begin();
+  result.other = *source++;
+  if (source != sources.end())
+    result.begin = PathAffine::ofPath(*source++);
+  if (source != sources.end())
+    result.end = PathAffine::ofPath(*source);
+  return result;
+}
+
 CheckedRequirements::CheckedRequirements(
     std::initializer_list<CheckedRequirement> entries) {
   assign(Set(entries));
@@ -56,18 +88,41 @@ void CheckedRequirements::intersect(const CheckedRequirements &other) {
     clear();
     return;
   }
+  Set generalized;
+  for (const auto &first : entries())
+    if (first.kind == CheckedRequirementKind::ContainerDerived)
+      for (const auto &second : other.entries())
+        if (const auto joined = joinContainerOutput(first, second))
+          generalized.insert(*joined);
   const auto absent = [&](const CheckedRequirement &entry) {
     return !other.contains(entry);
   };
   // Preserve shared storage when the intersection removes nothing.
   if (std::ranges::any_of(entries(), absent))
     std::erase_if(writable(), absent);
+  for (const auto &entry : generalized)
+    if (size() < MaxSafetyRequirements)
+      insert(entry);
 }
 
-static constexpr std::array<std::string_view, 13> Kinds{
-    "valid",    "extent",     "initialized", "release",  "separated",
-    "writable", "terminated", "copied",      "sum-fits", "zeroed",
-    "position", "progress",   "object-type"};
+static constexpr std::array<std::string_view, 18> Kinds{"valid",
+                                                        "extent",
+                                                        "initialized",
+                                                        "release",
+                                                        "separated",
+                                                        "writable",
+                                                        "terminated",
+                                                        "copied",
+                                                        "sum-fits",
+                                                        "zeroed",
+                                                        "position",
+                                                        "progress",
+                                                        "object-type",
+                                                        "container",
+                                                        "container-separated",
+                                                        "container-derived",
+                                                        "container-fresh",
+                                                        "container-tail"};
 
 std::string_view toString(CheckedRequirementKind value) noexcept {
   const auto index = static_cast<std::size_t>(value);

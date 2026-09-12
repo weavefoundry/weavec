@@ -1,0 +1,282 @@
+{
+  "version": 1,
+  "rfc": "0023",
+  "cases": [
+    {
+      "name": "borrowed-good",
+      "source": "borrowed-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "borrowed-bad",
+      "source": "borrowed-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "chain|container|initializ|live|freed|release|allocation|null|cycle|separat"
+    },
+    {
+      "name": "empty-good",
+      "source": "empty-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "empty-bad",
+      "source": "empty-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "chain|container|initializ|live|freed|release|allocation|null|cycle|separat"
+    },
+    {
+      "name": "singleton-good",
+      "source": "singleton-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "singleton-bad",
+      "source": "singleton-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "chain|container|initializ|live|freed|release|allocation|null|cycle|separat"
+    },
+    {
+      "name": "runtime-good",
+      "source": "runtime-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "runtime-bad",
+      "source": "runtime-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "chain|container|initializ|live|freed|release|allocation|null|cycle|separat"
+    },
+    {
+      "name": "reverse-good",
+      "source": "reverse-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "reverse-bad",
+      "source": "reverse-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "chain|container|initializ|live|freed|release|allocation|null|cycle|separat"
+    },
+    {
+      "name": "concat-good",
+      "source": "concat-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "concat-bad",
+      "source": "concat-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "chain|container|initializ|live|freed|release|allocation|null|cycle|separat"
+    },
+    {
+      "name": "detach-good",
+      "source": "detach-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "detach-bad",
+      "source": "detach-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "chain|container|initializ|live|freed|release|allocation|null|cycle|separat"
+    },
+    {
+      "name": "saved-alias-good",
+      "source": "saved-alias-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "saved-alias-bad",
+      "source": "saved-alias-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "chain|container|initializ|live|freed|release|allocation|null|cycle|separat"
+    },
+    {
+      "name": "stack-release-good",
+      "source": "stack-release-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "stack-release-bad",
+      "source": "stack-release-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "chain|container|initializ|live|freed|release|allocation|null|cycle|separat"
+    },
+    {
+      "name": "independent-good",
+      "source": "independent-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "independent-bad",
+      "source": "independent-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "chain|container|initializ|live|freed|release|allocation|null|cycle|separat"
+    },
+    {
+      "name": "failure-good",
+      "source": "failure-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "failure-bad",
+      "source": "failure-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "chain|container|initializ|live|freed|release|allocation|null|cycle|separat"
+    },
+    {
+      "name": "payload-good",
+      "source": "payload-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "payload-bad",
+      "source": "payload-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "chain|container|initializ|live|freed|release|allocation|null|cycle|separat"
+    }
+  ]
+}

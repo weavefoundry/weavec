@@ -25,6 +25,11 @@ void FunctionDataflow::checkedCall(const CallExpr &call,
                                    std::string_view target) {
   if (target.empty() && effects && checkedAlternatives(call, *effects, state))
     return;
+  containerArguments.erase(&call);
+  containerPosts.erase(&call);
+  containerReadOnlyCalls.erase(&call);
+  containerReleases.erase(&call);
+  containerPayloadReleases.erase(&call);
   checkedCallAssignedPointers.clear();
   checkedWrites.erase(&call);
   checkedPosts.erase(&call);
@@ -305,6 +310,8 @@ void FunctionDataflow::checkedCall(const CallExpr &call,
   if (builtin && (name == "free" || name == "fclose")) {
     if (call.getNumArgs() == 0)
       return;
+    if (name == "free" && checkedContainerRelease(call, state))
+      return;
     const auto origin = builder.classifyValue(*call.getArg(0));
     bool released = origin.kind == ValueOrigin::Kind::Null && name == "free";
     bool required = false;
@@ -317,6 +324,7 @@ void FunctionDataflow::checkedCall(const CallExpr &call,
       const auto spatial = state.spatial.recordOf(place);
       released |=
           resource && !resource->escaped && !state.moves.recordOf(place) &&
+          !state.safety->invalidatedPointers.contains(place) &&
           resource->family == (name == "free" ? "free" : "fclose") &&
           origin.offset.isZero() && (!spatial || spatial->offset.isZero());
       {
@@ -511,6 +519,12 @@ void FunctionDataflow::checkedCall(const CallExpr &call,
     });
     for (const auto *entry : requirements) {
       const auto &requirement = *entry;
+      if (requirement.kind == core::CheckedRequirementKind::Container ||
+          requirement.kind ==
+              core::CheckedRequirementKind::ContainerSeparated) {
+        checkedContainerCall(requirement, call, state);
+        continue;
+      }
       if (requirement.kind == core::CheckedRequirementKind::Separated) {
         const auto nullInput = [&](const core::SummaryPath &path) {
           if (path.isParam() && path.isRoot() &&
@@ -638,9 +652,21 @@ void FunctionDataflow::checkedCall(const CallExpr &call,
                  nullness->state == core::Nullness::Null;
         proved |= resource && !resource->escaped &&
                   !state.moves.recordOf(holder) &&
+                  !state.safety->invalidatedPointers.contains(holder) &&
                   resource->family == requirement.family &&
                   (!spatial || spatial->offset.isZero());
       } else if (kind == core::CheckedRequirementKind::Separated) {
+        if (const auto firstChain =
+                builder.resolveSummaryPath(requirement.path, call))
+          if (const auto secondChain =
+                  builder.resolveSummaryPath(requirement.other, call);
+              secondChain && state.safety->containers.separated(
+                                 firstChain->place, secondChain->place)) {
+            obligation(core::SafetyProperty::Aliasing, true, false,
+                       "callee requires separated input objects");
+            continue;
+          }
+
         property = core::SafetyProperty::Aliasing;
         {
           const auto other =
@@ -758,6 +784,7 @@ void FunctionDataflow::checkedCallAfter(const CallExpr &call,
       state.safety->pointers.erase(place->place);
       state.safety->replacedPointers.insert(place->place);
     }
+  checkedContainersAfterCall(call, effects, state);
   if (effects && effects->summary)
     applyCheckedPosts(call, *effects->summary, state);
 }

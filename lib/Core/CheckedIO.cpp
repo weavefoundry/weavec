@@ -205,6 +205,31 @@ public:
     result.family = text();
     if (result.kind == CheckedRequirementKind::ObjectType)
       valid &= ObjectType::parse(result.family).has_value();
+    if (result.kind == CheckedRequirementKind::Container ||
+        result.kind == CheckedRequirementKind::ContainerFresh ||
+        result.kind == CheckedRequirementKind::ContainerTail)
+      valid &= ContainerShape::decode(result.family).has_value() &&
+               result.begin == PathAffine::ofConstant(0) &&
+               result.end == PathAffine::ofConstant(0);
+    if (result.kind == CheckedRequirementKind::ContainerDerived) {
+      const auto source = [](const PathAffine &value) {
+        return value == PathAffine::ofConstant(0) ||
+               (value.path && !value.path->isResult() && value.scale == 1 &&
+                value.constant == 0 && !value.expression &&
+                value.quantity == PathAffine{}.quantity);
+      };
+      valid &= ContainerShape::decode(result.family).has_value() &&
+               !result.other.isResult() && source(result.begin) &&
+               source(result.end) &&
+               (!result.end.path || result.begin.path.has_value()) &&
+               (!result.begin.path || *result.begin.path != result.other) &&
+               (!result.end.path || (*result.end.path != result.other &&
+                                     result.end.path != result.begin.path));
+    }
+    if (result.kind == CheckedRequirementKind::ContainerSeparated)
+      valid &= result.family.empty() && result.path != result.other &&
+               result.begin == PathAffine::ofConstant(0) &&
+               result.end == PathAffine::ofConstant(0);
     const auto guard = parseSummaryGuard(text(), resolve);
     valid &= guard.has_value();
     if (guard)
@@ -215,8 +240,14 @@ public:
       valid &= result.on.has_value();
     }
     result.ifNonNull = flag();
-    if (result.kind == CheckedRequirementKind::ObjectType)
+    if (result.kind == CheckedRequirementKind::ObjectType ||
+        result.kind == CheckedRequirementKind::Container ||
+        result.kind == CheckedRequirementKind::ContainerSeparated ||
+        result.kind == CheckedRequirementKind::ContainerFresh ||
+        result.kind == CheckedRequirementKind::ContainerTail)
       valid &= result.begin == result.end && !result.ifNonNull;
+    if (result.kind == CheckedRequirementKind::ContainerDerived)
+      valid &= !result.ifNonNull;
     return result;
   }
   [[nodiscard]] bool good() const { return valid; }
@@ -233,7 +264,7 @@ private:
 std::string printCheckedContract(const CheckedContract &contract,
                                  const GlobalNamer &names) {
   CheckedWriter out;
-  out.text("4");
+  out.text("5");
   out.text(contract.signature);
   out.number(contract.computed);
   out.number(contract.selected);
@@ -272,7 +303,7 @@ std::string printCheckedContract(const CheckedContract &contract,
 std::optional<CheckedContract>
 parseCheckedContract(std::string_view record, const GlobalResolver &resolve) {
   CheckedReader in(record);
-  if (in.text() != "4")
+  if (in.text() != "5")
     return std::nullopt;
   CheckedContract result;
   result.signature = in.text();
@@ -301,7 +332,10 @@ parseCheckedContract(std::string_view record, const GlobalResolver &resolve) {
         requirement.kind == CheckedRequirementKind::Copied ||
         requirement.kind == CheckedRequirementKind::Zeroed ||
         requirement.kind == CheckedRequirementKind::Position ||
-        requirement.kind == CheckedRequirementKind::Progress)
+        requirement.kind == CheckedRequirementKind::Progress ||
+        requirement.kind == CheckedRequirementKind::ContainerDerived ||
+        requirement.kind == CheckedRequirementKind::ContainerFresh ||
+        requirement.kind == CheckedRequirementKind::ContainerTail)
       return std::nullopt;
   for (const auto &requirement : result.requirements)
     if (requirement.kind == CheckedRequirementKind::Terminated &&
@@ -310,6 +344,31 @@ parseCheckedContract(std::string_view record, const GlobalResolver &resolve) {
          (requirement.begin.isConstant() && requirement.begin.constant < 0)))
       return std::nullopt;
   for (const auto &post : result.establishes) {
+    if (post.kind == CheckedRequirementKind::ContainerDerived ||
+        post.kind == CheckedRequirementKind::ContainerTail) {
+      const auto shape = ContainerShape::decode(post.family);
+      const auto hasPremise = [&](const SummaryPath &path) {
+        return std::ranges::any_of(result.requirements, [&](const auto &entry) {
+          if (entry.kind != CheckedRequirementKind::Container ||
+              entry.path != path || !entry.when.trivial())
+            return false;
+          const auto input = ContainerShape::decode(entry.family);
+          return input && input->object == shape->object &&
+                 input->link == shape->link;
+        });
+      };
+      if (!hasPremise(post.other) ||
+          (post.begin.path && !hasPremise(*post.begin.path)) ||
+          (post.end.path && !hasPremise(*post.end.path)))
+        return std::nullopt;
+    }
+    if ((post.kind == CheckedRequirementKind::ContainerDerived ||
+         post.kind == CheckedRequirementKind::ContainerTail) &&
+        post.other.isResult())
+      return std::nullopt;
+    if (post.kind == CheckedRequirementKind::ContainerFresh &&
+        ContainerShape::decode(post.family)->access != ContainerAccess::Release)
+      return std::nullopt;
     if (post.ifNonNull && post.kind != CheckedRequirementKind::Initialized &&
         post.kind != CheckedRequirementKind::Zeroed &&
         post.kind != CheckedRequirementKind::Copied)

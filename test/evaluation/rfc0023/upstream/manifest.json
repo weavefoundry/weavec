@@ -1,0 +1,99 @@
+{
+  "version": 1,
+  "rfc": "0023",
+  "population": "supplemental unchanged cJSON source",
+  "cases": [
+    {
+      "name": "size-good",
+      "source": "size-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "size-bad",
+      "source": "size-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "container|chain|cycle|live|initialized|extent"
+    },
+    {
+      "name": "item-good",
+      "source": "item-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "item-bad",
+      "source": "item-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "container|chain|cycle|live|initialized|extent"
+    },
+    {
+      "name": "public-item-good",
+      "source": "public-item-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "public-item-bad",
+      "source": "public-item-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "container|chain|cycle|live|initialized|extent"
+    },
+    {
+      "name": "utils-item-good",
+      "source": "utils-item-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "utils-item-bad",
+      "source": "utils-item-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "container|chain|cycle|live|initialized|extent"
+    }
+  ]
+}

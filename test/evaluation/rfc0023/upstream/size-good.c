@@ -1,0 +1,8 @@
+/* RFC 0023: unchanged upstream definition, concrete closed caller. */
+#include "../../../../build/corpus/cJSON-program/cJSON.c"
+int main(void) {
+  cJSON a = {0}, b = {0}, parent = {0};
+  parent.child = &a;
+  a.next = &b;
+  return cJSON_GetArraySize(&parent) != 0;
+}

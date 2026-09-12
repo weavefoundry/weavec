@@ -728,3 +728,14 @@ Exhaustion remains explicit as `traversal variable limit reached`,
 `traversal invariant candidate limit reached`, or
 `traversal relational limit reached`. Diagnostic demotion does not make a
 limited contract complete.
+
+### Inductive chain diagnostics (RFC 0023)
+
+Container inference adds no annotation or diagnostic identifier.
+`checking-incomplete` can report `callee container chain precondition must hold`
+or `callee requires disjoint container footprints`. The former requires actual
+live, initialized nodes with the requested read/write/release capability; the
+latter requires disjoint whole node and owned-payload footprints. Pointer
+inequality alone is insufficient. Cycles and unknown links do not satisfy a
+finite chain. Existing invalid-release, use-after-free and leak diagnostics
+remain active alongside these obligations. See [linked containers](checked-code.md#linked-containers).

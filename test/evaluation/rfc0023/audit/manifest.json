@@ -1,0 +1,82 @@
+{
+  "version": 1,
+  "rfc": "0023",
+  "population": "supplemental alias audit; generic conditional contracts",
+  "cases": [
+    {
+      "name": "saved-tail-payload",
+      "source": "saved-tail-payload.c",
+      "function": "client",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "live|initialized|release|allocation|freed"
+    },
+    {
+      "name": "copied-tail-payload",
+      "source": "copied-tail-payload.c",
+      "function": "client",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "live|initialized|release|allocation|freed"
+    },
+    {
+      "name": "joined-tail-payload",
+      "source": "joined-tail-payload.c",
+      "function": "client",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "live|initialized|release|allocation|freed"
+    },
+    {
+      "name": "released-tail-payload",
+      "source": "released-tail-payload.c",
+      "function": "client",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "live|initialized|release|allocation|freed"
+    },
+    {
+      "name": "input-payload-alias",
+      "source": "input-payload-alias.c",
+      "function": "client",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "live|initialized|release|allocation|freed"
+    },
+    {
+      "name": "read-before-clear",
+      "source": "read-before-clear.c",
+      "function": "client",
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "reassigned-payload",
+      "source": "reassigned-payload.c",
+      "function": "client",
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ]
+    }
+  ]
+}

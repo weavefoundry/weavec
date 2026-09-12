@@ -1,0 +1,71 @@
+{
+  "version": 1,
+  "rfc": "0023",
+  "population": "supplemental callback alias audit; conditional contracts",
+  "cases": [
+    {
+      "name": "two-targets",
+      "source": "two-targets.c",
+      "function": "client",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "live|initialized|release|allocation|freed"
+    },
+    {
+      "name": "singleton",
+      "source": "singleton.c",
+      "function": "client",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "live|initialized|release|allocation|freed"
+    },
+    {
+      "name": "head-or-chain",
+      "source": "head-or-chain.c",
+      "function": "client",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "live|initialized|release|allocation|freed"
+    },
+    {
+      "name": "chain-or-head",
+      "source": "chain-or-head.c",
+      "function": "client",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "live|initialized|release|allocation|freed"
+    },
+    {
+      "name": "read-before-release",
+      "source": "read-before-release.c",
+      "function": "client",
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "new-value",
+      "source": "new-value.c",
+      "function": "client",
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ]
+    }
+  ]
+}

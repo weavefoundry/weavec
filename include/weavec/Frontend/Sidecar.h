@@ -57,7 +57,8 @@ namespace weavec::frontend {
 /// output references and string facts).
 /// Version 14 (RFC 0018): safety contracts and checked build input bindings.
 /// Version 16 (RFC 0020): effective preprocessing identity for object binding.
-inline constexpr unsigned SidecarFormatVersion = 18;
+/// Version 19 (RFC 0023): inductive container contracts (summary format 18).
+inline constexpr unsigned SidecarFormatVersion = 19;
 
 /// Everything the driver remembers about one compiled unit.
 struct UnitRecord {

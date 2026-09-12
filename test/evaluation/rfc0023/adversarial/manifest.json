@@ -1,0 +1,260 @@
+{
+  "version": 1,
+  "rfc": "0023",
+  "population": "supplemental adversarial",
+  "cases": [
+    {
+      "name": "alias-cycle",
+      "source": "alias-cycle.c",
+      "function": "main",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "container|chain|live|release|initialized|initializ|callee|freed|alignment|writ"
+    },
+    {
+      "name": "helper-link-cycle",
+      "source": "helper-link-cycle.c",
+      "function": "main",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "container|chain|live|release|initialized|initializ|callee|freed|alignment|writ"
+    },
+    {
+      "name": "generic-link-cycle",
+      "source": "generic-link-cycle.c",
+      "function": "f",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "container|chain|live|release|initialized|initializ|callee|freed|alignment|writ"
+    },
+    {
+      "name": "generic-link-unknown",
+      "source": "generic-link-unknown.c",
+      "function": "main",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "container|chain|live|release|initialized|initializ|callee|freed|alignment|writ"
+    },
+    {
+      "name": "generic-link-after-release",
+      "source": "generic-link-after-release.c",
+      "function": "f",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "container|chain|live|release|initialized|initializ|callee|freed|alignment|writ"
+    },
+    {
+      "name": "generic-byte-corruption",
+      "source": "generic-byte-corruption.c",
+      "function": "f",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "container|chain|live|release|initialized|initializ|callee|freed|alignment|writ"
+    },
+    {
+      "name": "generic-read-after-release",
+      "source": "generic-read-after-release.c",
+      "function": "f",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "container|chain|live|release|initialized|initializ|callee|freed|alignment|writ"
+    },
+    {
+      "name": "local-borrowed-release",
+      "source": "local-borrowed-release.c",
+      "function": "main",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "container|chain|live|release|initialized|initializ|callee|freed|alignment|writ"
+    },
+    {
+      "name": "const-write",
+      "source": "const-write.c",
+      "function": "main",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "container|chain|live|release|initialized|initializ|callee|freed|alignment|writ"
+    },
+    {
+      "name": "misaligned-chain",
+      "source": "misaligned-chain.c",
+      "function": "main",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "container|chain|live|release|initialized|initializ|callee|freed|alignment|writ"
+    },
+    {
+      "name": "skipped-initialization",
+      "source": "skipped-initialization.c",
+      "function": "main",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "container|chain|live|release|initialized|initializ|callee|freed|alignment|writ"
+    },
+    {
+      "name": "unknown-callback",
+      "source": "unknown-callback.c",
+      "function": "f",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "container|chain|live|release|initialized|initializ|callee|freed|alignment|writ"
+    },
+    {
+      "name": "pointer-increment",
+      "source": "pointer-increment.c",
+      "function": "f",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "container|chain|live|release|initialized|initializ|callee|freed|alignment|writ|valid|allocation"
+    },
+    {
+      "name": "link-increment",
+      "source": "link-increment.c",
+      "function": "f",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "container|chain|live|release|initialized|initializ|callee|freed|alignment|writ|valid|allocation"
+    },
+    {
+      "name": "link-compound",
+      "source": "link-compound.c",
+      "function": "f",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "container|chain|live|release|initialized|initializ|callee|freed|alignment|writ|valid|allocation"
+    },
+    {
+      "name": "helper-unrelated-mutation",
+      "source": "helper-unrelated-mutation.c",
+      "function": "main",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "container|chain|live|release|initialized|initializ|callee|freed|alignment|writ|valid|allocation"
+    },
+    {
+      "name": "helper-unrelated-release",
+      "source": "helper-unrelated-release.c",
+      "function": "main",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "container|chain|live|release|initialized|initializ|callee|freed|alignment|writ|valid|allocation"
+    },
+    {
+      "name": "helper-return-freed",
+      "source": "helper-return-freed.c",
+      "function": "main",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "container|chain|live|release|initialized|initializ|callee|freed|alignment|writ|valid|allocation"
+    },
+    {
+      "name": "partial-initialization-loop",
+      "source": "partial-initialization-loop.c",
+      "function": "main",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "container|chain|live|release|initialized|initializ|callee|freed|alignment|writ|valid|allocation"
+    },
+    {
+      "name": "cached-allocation-alias",
+      "source": "cached-allocation-alias.c",
+      "function": "main",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "container|chain|live|release|initialized|initializ|callee|freed|alignment|writ|valid|allocation"
+    },
+    {
+      "name": "shared-payload",
+      "source": "shared-payload.c",
+      "function": "main",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "container|chain|live|release|initialized|initializ|callee|freed|alignment|writ|valid|allocation"
+    },
+    {
+      "name": "payload-return-consumed",
+      "source": "payload-return-consumed.c",
+      "function": "main",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "container|chain|live|release|initialized|initializ|callee|freed|alignment|writ|valid|allocation"
+    },
+    {
+      "name": "saved-payload-alias",
+      "source": "saved-payload-alias.c",
+      "function": "main",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "container|chain|live|release|initialized|initializ|callee|freed|alignment|writ|valid|allocation"
+    }
+  ]
+}
