@@ -96,6 +96,7 @@ void FunctionDataflow::captureCheckedPosts(
     const CallExpr &call, const core::CheckedContract &contract,
     core::AnalysisState &state) {
   captureContainerPosts(call, contract, state);
+  captureBufferPosts(call, contract, state);
   auto &posts = checkedPosts[&call];
   posts.clear();
   auto &positions = checkedPositionPosts[&call];
@@ -169,13 +170,95 @@ void FunctionDataflow::captureCheckedPosts(
     }
     return builder.affineFromPath(value, call);
   };
+  // RFC 0026: an exact returned input pointer keeps its entry storage view,
+  // even when the callee clears the container field before returning it.
+  // Every represented return must name that same pointer; a nullable
+  // alternative chosen independently of the input cannot use this rule.
+  // Conditional backing validity is introduced only for registered buffers.
+  // Avoid resolving unrelated pointer-returning calls for this refinement.
+  if (!bufferObjects.empty() && call.getType()->isPointerType()) {
+    const auto effects = classifyCall(call, summaries);
+    if (effects && effects->summary && !effects->summary->returns.empty()) {
+      const auto &firstReturn = *effects->summary->returns.begin();
+      const bool exact =
+          firstReturn.kind == core::ValueSource::Kind::Copy &&
+          firstReturn.path && firstReturn.offset.isZero() &&
+          firstReturn.when.trivial() &&
+          std::ranges::all_of(
+              effects->summary->returns, [&](const auto &alternative) {
+                return alternative.kind == core::ValueSource::Kind::Copy &&
+                       alternative.path == firstReturn.path &&
+                       alternative.offset.isZero() &&
+                       alternative.when.trivial();
+              });
+      const auto origin =
+          exact ? checkedPathMemory(*firstReturn.path, call, {}, {}, state)
+                : std::nullopt;
+      if (origin && origin->validWhenNonempty) {
+        bool preservesBytes = true;
+        for (const auto &[path, effect] : effects->summary->effects) {
+          if (!effect.written && !effect.consumed())
+            continue;
+          const auto target = builder.resolveSummaryPath(path, call, true);
+          bool headerWrite = false;
+          if (target && origin->holder)
+            for (const auto &[object, shape] : bufferObjects)
+              if (places.field(object, shape.data.name) == *origin->holder)
+                headerWrite |=
+                    target->place == places.field(object, shape.data.name) ||
+                    target->place == places.field(object, shape.length.name) ||
+                    target->place == places.field(object, shape.capacity.name);
+          preservesBytes &= headerWrite && !effect.consumed();
+        }
+        positions.push_back(
+            {.path = core::SummaryPath::result(),
+             .position = {.storage = origin->storage,
+                          .offset = freeze(origin->begin),
+                          .extent = origin->extent
+                                        ? std::optional(freeze(*origin->extent))
+                                        : std::nullopt,
+                          .input = origin->inputPlace,
+                          .validWhenNonempty = true},
+             .upper = {},
+             .when = {},
+             .on = {},
+             .nonNull = checkedValid(*origin, state)});
+        if (const auto initialized = state.safety->memory.find(origin->storage);
+            initialized != state.safety->memory.end())
+          for (auto range : initialized->second) {
+            if (range.source || !range.when.trivial())
+              continue;
+            range.begin = freeze(range.begin);
+            range.end = freeze(range.end);
+            range.zeroed &= preservesBytes;
+            posts.push_back({.path = core::SummaryPath::result(),
+                             .range = range,
+                             .on = {},
+                             .storage = {},
+                             .objectType = {}});
+          }
+      }
+    }
+  }
   for (const auto &post : contract.establishes) {
+    if (post.kind == core::CheckedRequirementKind::BufferPreserved ||
+        post.kind == core::CheckedRequirementKind::BufferAppended) {
+      if (auto sequenceSnapshot = bufferSequencePosts[&call].find(post);
+          sequenceSnapshot != bufferSequencePosts[&call].end())
+        sequenceSnapshot->second.index = freeze(sequenceSnapshot->second.index);
+      continue;
+    }
     if (post.kind == core::CheckedRequirementKind::ArgumentListConsumed) {
       if (post.path.isParam() && post.path.isRoot() &&
           post.path.index < call.getNumArgs())
         if (const auto place = runtimeListPlace(*call.getArg(post.path.index)))
           state.safety->argumentLists[*place].phase =
               core::ArgumentListPhase::Consumed;
+      continue;
+    }
+    if (post.kind == core::CheckedRequirementKind::Buffer) {
+      if (const auto bound = endpoint(post.end))
+        bufferPostBounds[&call][post] = freeze(*bound);
       continue;
     }
     if (post.kind == core::CheckedRequirementKind::Container)
@@ -250,7 +333,8 @@ void FunctionDataflow::captureCheckedPosts(
           .offset = freeze(origin->begin),
           .extent = origin->extent ? std::optional(freeze(*origin->extent))
                                    : std::nullopt,
-          .input = origin->inputPlace};
+          .input = origin->inputPlace,
+          .validWhenNonempty = origin->validWhenNonempty};
       positions.push_back({.path = post.path,
                            .position = position,
                            .upper = freeze(upper),
@@ -533,6 +617,7 @@ void FunctionDataflow::applyCheckedPosts(const CallExpr &call,
                                          core::AnalysisState &state) {
   applyCheckedPositions(call, state);
   applyContainerPosts(call, state);
+  applyBufferPosts(call, state);
   applyCheckedUnionPosts(call, state);
   const auto found = checkedPosts.find(&call);
   if (found == checkedPosts.end())

@@ -243,7 +243,11 @@ enum class CheckedRequirementKind : std::uint8_t {
   /// RFC 0024: named environmental stream; paths and bounds are unused.
   StandardStream,
   /// RFC 0025: independent initialized member view of overlapping storage.
-  UnionMember
+  UnionMember,
+  /// RFC 0026: current contiguous container invariant.
+  Buffer,
+  BufferPreserved,
+  BufferAppended
 };
 struct CheckedRequirement {
   CheckedRequirementKind kind = CheckedRequirementKind::Valid;

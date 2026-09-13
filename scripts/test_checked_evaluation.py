@@ -1,6 +1,14 @@
 #!/usr/bin/env python3
 """RFC 0019: the proof evaluation harness must not mistake failures for bugs."""
 import importlib.util
+import contextlib
+import io
+import json
+import os
+import subprocess
+import sys
+import tempfile
+from unittest import mock
 from pathlib import Path
 import unittest
 
@@ -54,6 +62,35 @@ class AssessmentTest(unittest.TestCase):
         self.assertTrue(module.assess(self.case, 0, self.document)[0])
         self.function['limited'] = True
         self.assertFalse(module.assess(self.case, 0, self.document)[0])
+
+
+class BufferRunnerTest(unittest.TestCase):
+    def test_missing_new_report_cannot_reuse_a_previous_success(self):
+        spec = importlib.util.spec_from_file_location(
+            'checked_buffers', Path(__file__).with_name('checked-buffers.py'))
+        buffers = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(buffers)
+        original_directory = Path.cwd()
+        for code in (0, 1):
+            with self.subTest(returncode=code), tempfile.TemporaryDirectory() as directory:
+                output = Path(directory)
+                stale = dict(cases=[dict(name='old', passed=True)])
+                (output / 'cases.json').write_text(json.dumps(stale))
+                (output / 'results.json').write_text(json.dumps(stale))
+                args = ['checked-buffers.py', '--population', 'source',
+                        '--weavec', sys.executable, '--output', str(output)]
+                run = subprocess.CompletedProcess([], code, stdout='', stderr='')
+                try:
+                    with mock.patch.object(sys, 'argv', args), \
+                         mock.patch.object(buffers.SUPPORT, 'invoke', return_value=(run, 0)), \
+                         contextlib.redirect_stdout(io.StringIO()):
+                        self.assertEqual(buffers.main(), 1)
+                finally:
+                    os.chdir(original_directory)
+                result = json.loads((output / 'results.json').read_text())
+                self.assertEqual(len(result['cases']), 1)
+                self.assertFalse(result['cases'][0]['passed'])
+                self.assertNotEqual(result['cases'][0]['name'], 'old')
 
 
 if __name__ == '__main__':

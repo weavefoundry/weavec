@@ -109,8 +109,49 @@ UnitResult analyzeRetainedUnit(clang::ASTUnit &ast,
   auto &diagnostics = ast.getDiagnostics();
   auto *previous = diagnostics.getClient();
   auto owned = diagnostics.takeClient();
-  clang::TextDiagnosticPrinter printer(llvm::errs(),
-                                       diagnostics.getDiagnosticOptions());
+  // RFC 0020: Clang renders each diagnostic in many small writes. A private
+  // bounded stderr stream combines them without changing global stream state
+  // or retaining a translation unit's entire output. Descriptor 2 stays open.
+  class DiagnosticStream final : public llvm::raw_ostream {
+  public:
+    DiagnosticStream() : llvm::raw_ostream(true), destination(2, false) {
+      destination.SetBufferSize(16384);
+      enable_colors(llvm::errs().colors_enabled());
+      destination.enable_colors(colors_enabled());
+    }
+    void finishDiagnostic() { destination.flush(); }
+    bool is_displayed() const override { return destination.is_displayed(); }
+    bool has_colors() const override { return destination.has_colors(); }
+
+  private:
+    // Clang's formatted stream takes its immediate sink's buffer. Keep this
+    // facade unbuffered so locationless diagnostics cannot bypass a pending
+    // source snippet in that formatted stream. Only the destination buffers.
+    llvm::raw_fd_ostream destination;
+    void write_impl(const char *data, std::size_t size) override {
+      destination.write(data, size);
+    }
+    std::uint64_t current_pos() const override { return destination.tell(); }
+  };
+  DiagnosticStream diagnosticOutput;
+  class BufferedDiagnosticPrinter final : public clang::TextDiagnosticPrinter {
+  public:
+    BufferedDiagnosticPrinter(DiagnosticStream &output,
+                              clang::DiagnosticOptions &options)
+        : clang::TextDiagnosticPrinter(output, options), output(output) {}
+    void HandleDiagnostic(clang::DiagnosticsEngine::Level level,
+                          const clang::Diagnostic &info) override {
+      clang::TextDiagnosticPrinter::HandleDiagnostic(level, info);
+      // Preserve prompt delivery, including an isolated error before a later
+      // long-running analysis or fatal exit.
+      output.finishDiagnostic();
+    }
+
+  private:
+    DiagnosticStream &output;
+  };
+  BufferedDiagnosticPrinter printer(diagnosticOutput,
+                                    diagnostics.getDiagnosticOptions());
   diagnostics.setClient(&printer, false);
   diagnostics.Reset(true);
   printer.BeginSourceFile(ast.getLangOpts(), &ast.getPreprocessor());
@@ -120,6 +161,7 @@ UnitResult analyzeRetainedUnit(clang::ASTUnit &ast,
   if (diagnostics.hasErrorOccurred() && result.errors == 0)
     result.errors = 1;
   printer.EndSourceFile();
+  diagnosticOutput.finishDiagnostic();
   const auto warnings = printer.getNumWarnings();
   const auto errors = printer.getNumErrors();
   if (warnings || errors) {

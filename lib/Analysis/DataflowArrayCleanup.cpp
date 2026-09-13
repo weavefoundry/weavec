@@ -196,6 +196,12 @@ void FunctionDataflow::completeArrayCleanupLoop(const CFGBlock &from,
   releaseArrayRange(buffer->storage,
                     {.begin = core::ArrayIndex::constant(0), .count = *count},
                     cleanup.cleared, *cleanup.release, state);
+  if (state.safety)
+    if (const auto ref = builder.resolve(*cleanup.element->getBase()))
+      if (auto fact = state.safety->buffers.values.find(ref->place);
+          fact != state.safety->buffers.values.end())
+        fact->second.shape.ownsElements =
+            count->isConstant() && count->constant == 0;
 }
 
 void FunctionDataflow::releaseArrayRange(core::PlaceId storage,

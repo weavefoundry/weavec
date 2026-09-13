@@ -22,6 +22,7 @@
 #include "weavec/Analysis/Annotations.h"
 #include "weavec/Analysis/ProgramDatabase.h"
 #include "weavec/Core/AnalysisStats.h"
+#include "weavec/Core/Buffer.h"
 #include "weavec/Core/Diagnostic.h"
 #include "weavec/Core/Summary.h"
 
@@ -288,6 +289,12 @@ public:
   [[nodiscard]] const core::FunctionSummary *
   inferredFor(const clang::FunctionDecl &function) const;
 
+  /// RFC 0026: cache only immutable descriptor discovery, including misses.
+  /// No flow facts or proof outcomes are shared through this cache.
+  [[nodiscard]] std::optional<core::BufferShape> bufferShape(
+      const clang::RecordDecl &record,
+      const std::function<std::optional<core::BufferShape>()> &discover);
+
   /// Immutable Clang record layouts, cached for this AST's lifetime.
   [[nodiscard]] std::string_view objectView(clang::QualType type);
 
@@ -317,8 +324,10 @@ public:
   /// The unit being analysed; needed to spell type keys and to name the
   /// unit's globals when importing program summaries.
   void setContext(const clang::ASTContext *unitContext) noexcept {
-    if (context != unitContext)
+    if (context != unitContext) {
       objectViewCache.clear();
+      bufferShapeCache.clear();
+    }
     context = unitContext;
   }
 
@@ -434,6 +443,8 @@ private:
   const ProgramDatabase *database = nullptr;
   const clang::ASTContext *context = nullptr;
   std::map<const clang::RecordDecl *, std::string> objectViewCache;
+  std::map<const clang::RecordDecl *, std::optional<core::BufferShape>>
+      bufferShapeCache;
   std::set<std::string> knownCounts;
   SizedFieldFacts sizedFields;
   std::set<std::string> sizedLoads;

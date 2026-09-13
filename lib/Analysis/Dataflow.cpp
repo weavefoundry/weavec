@@ -629,6 +629,8 @@ core::AnalysisState FunctionDataflow::initialState() {
     initializeCheckedStrings(state);
   if (state.safety)
     initializeContainers(state);
+  if (state.safety)
+    initializeBuffers(state);
   for (const auto *param : function.parameters())
     if (param->getType()->isVariablyModifiedType())
       captureVariableArray(builder.placeForVar(*param), *param, state);
@@ -2138,6 +2140,14 @@ void FunctionDataflow::run() {
         auto &stream = *options.dumpStream;
         stream << "checked CFG " << function.getNameAsString() << " block "
                << block->getBlockID() << " entry:\n";
+        for (const auto &[data, fact] : state.safety->buffers.values)
+          stream << "  buffer " << nameOf(data) << " length "
+                 << nameOf(fact.length) << " capacity " << nameOf(fact.capacity)
+                 << " initialized " << static_cast<unsigned>(fact.initialized)
+                 << " owned-backing "
+                 << static_cast<unsigned>(fact.shape.ownsBacking)
+                 << " owned-elements "
+                 << static_cast<unsigned>(fact.shape.ownsElements) << "\n";
         for (const auto &[storage, ranges] : state.safety->memory)
           for (const auto &range : ranges)
             stream << "  initialized " << nameOf(storage) << " ["
@@ -2298,6 +2308,8 @@ void FunctionDataflow::leaveBlock(const CFGBlock &from, unsigned succIndex,
   if (edgeInfeasible)
     return;
   completeArrayCleanupLoop(from, succIndex, state);
+  if (state.safety)
+    normalizeBuffers(state);
   const CFGBlock *successor = nullptr;
   if (succIndex < from.succ_size())
     successor = (*std::next(from.succ_begin(), succIndex)).getReachableBlock();
@@ -2465,6 +2477,9 @@ void FunctionDataflow::applyCondition(const Expr &condition, bool holds,
     if (state.safety && !edgeInfeasible) {
       state.safety->refinePaths(state.pathGuard());
       refineContainers(state);
+      // RFC 0026: establish result-dependent predicates on the actual edge,
+      // before its join with the no-growth path or the loop entry.
+      materializeBuffers(state);
     }
   });
   const Expr *e = condition.IgnoreParenImpCasts();
@@ -2874,6 +2889,17 @@ void FunctionDataflow::applyOutcomeGuards(
 
 void FunctionDataflow::applyOutcomeStores(core::PendingOutcome &narrowed,
                                           core::AnalysisState &state) {
+  // RFC 0026: retracting an abstract possible store refines the already
+  // executed call. It is not another C write. Must-predicates established
+  // after that call remain true on every narrowed outcome; actual intervening
+  // writes have already retired them through ordinary dependency invalidation.
+  auto buffers = state.safety && !bufferObjects.empty()
+                     ? std::optional(state.safety->buffers)
+                     : std::nullopt;
+  const auto restoreBuffers = llvm::scope_exit([&] {
+    if (buffers)
+      state.safety->buffers = std::move(*buffers);
+  });
   // RFC 0010, *Per-outcome stores*: a store on none of the remaining classes
   // did not happen. Its destination is forgotten (what it held before the
   // call is unknown again) and a copy's source is no longer escaped by it.
@@ -4594,10 +4620,35 @@ void FunctionDataflow::initRecord(core::PlaceId dest, const InitListExpr &init,
 void FunctionDataflow::handleCall(const CallExpr &call,
                                   core::AnalysisState &state) {
   if (arrayCleanupCalls.contains(&call)) {
-    if (options.checkContracts)
+    if (options.checkContracts) {
+      bool proved = false;
+      for (const auto &[loop, cleanup] : arrayCleanupLoops) {
+        (void)loop;
+        if (cleanup.release != &call)
+          continue;
+        const auto ref = builder.resolve(*cleanup.element->getBase());
+        const auto count = foldAffine(builder.affineOf(*cleanup.count), state);
+        const auto *buffer = ref ? bufferFact(ref->place, state) : nullptr;
+        if (!buffer || !buffer->initialized || !buffer->shape.ownsElements ||
+            !count)
+          continue;
+        const auto length =
+            foldAffine(core::Affine::ofPlace(buffer->length), state);
+        proved |= checkedAtMost(*count, length, state) &&
+                  checkedAtMost(length, *count, state);
+      }
       safetyObligation(core::SafetyProperty::Call,
-                       core::SafetyOutcome::Unresolved, call, "cleanup",
-                       "range cleanup has no checked contract");
+                       proved ? core::SafetyOutcome::Proven
+                              : core::SafetyOutcome::Unresolved,
+                       call, "cleanup",
+                       proved
+                           ? "buffer elements have distinct release permission"
+                           : "range cleanup has no checked contract");
+      if (proved)
+        safetyObligation(core::SafetyProperty::Call,
+                         core::SafetyOutcome::Trusted, call, "free",
+                         "modeled C library contract");
+    }
     return;
   }
   numericInputsReady.erase(&call);
@@ -5083,6 +5134,7 @@ void FunctionDataflow::applySummary(const CallExpr &call,
       finalRoots.insert(root);
     }
   }
+  std::set<core::SummaryPath> heapManagedStores;
   // A graph's child assignment is materialized once by applyHeapOutputs.
   // The may-store and a separately rooted child description may name that
   // same cell; replaying all three would introduce duplicate allocations.
@@ -5095,9 +5147,83 @@ void FunctionDataflow::applySummary(const CallExpr &call,
       auto absolute = root;
       absolute.steps.insert(absolute.steps.end(), field.dest.steps.begin(),
                             field.dest.steps.end());
-      byDest.erase(absolute);
+      if (byDest.erase(absolute) && !summary.storesOn.empty())
+        heapManagedStores.insert(absolute);
     }
   }
+  const auto recordConditionalStore = [&](const core::SummaryPath &dest) {
+    if (summary.storesOn.empty())
+      return;
+    const auto ref = builder.resolveSummaryPath(dest, call);
+    if (!ref)
+      return;
+    //    RFC 0010, *Per-outcome stores*: a destination stored on some
+    //    classes only is pending until the result is tested.
+    if (!ref->element.isWhole())
+      return;
+    core::OutcomeSet on;
+    for (const auto &[cls, classEffects] : summary.outcomes) {
+      // storesOn is nonempty and cls is represented, so membership is the
+      // existing row's membership. Do not copy every path for this query.
+      const auto stores = summary.storesOn.find(cls);
+      if (stores != summary.storesOn.end() && stores->second.contains(dest))
+        on.insert(cls);
+    }
+    if (on.size() == summary.outcomes.size())
+      return;
+    if (!lastCall || lastCall->call != &call) {
+      core::PendingOutcome fresh;
+      for (const auto &[cls, classEffects] : summary.outcomes)
+        fresh.consumedBy.try_emplace(cls);
+      fresh.callee = calleeName(call);
+      fresh.location = locate(call);
+      lastCall = CallOutcome{.call = &call, .pending = std::move(fresh)};
+    }
+    core::PendingOutcome::PendingStore store{
+        .dest = ref->place, .on = on, .source = std::nullopt};
+    if (const auto source = copySources.find(dest);
+        source != copySources.end()) {
+      store.source = source->second.first;
+      store.sourceEscapedBefore = source->second.second;
+    }
+    const auto old = heapInputs.find(std::pair{&call, dest});
+    if (old != heapInputs.end()) {
+      store.oldValue = old->second;
+      store.oldValueEscaped = heapInputEscaped[std::pair{&call, dest}];
+    }
+    if (state.safety &&
+        std::ranges::any_of(bufferObjects, [&](const auto &entry) {
+          return places.field(entry.first, entry.second.data.name) ==
+                 ref->place;
+        })) {
+      const auto result = scalarFactOf(call, state);
+      const bool happened =
+          result && !result->classes.empty() &&
+          std::ranges::all_of(result->classes, [&](core::Outcome outcome) {
+            return on.contains(outcome);
+          });
+      if (!happened) {
+        // The stored allocation is only one result alternative. Its extent,
+        // pointer identity and nonnull state cannot describe the no-store
+        // alternative. Outcome refinement reinstalls the selected value;
+        // an unconditional buffer post supplies only its logical capacity.
+        state.safety->objects.erase(ref->place);
+        state.safety->positions.erase(ref->place);
+        state.safety->pointers.erase(ref->place);
+        auto spatial = state.spatial.recordOf(ref->place);
+        if (spatial) {
+          spatial->extent.reset();
+          spatial->string.reset();
+          state.spatial.set(ref->place, *spatial);
+        }
+        state.nulls.set(ref->place, {.state = core::Nullness::MaybeNull,
+                                     .location = locate(call),
+                                     .reason = core::NullReason::CalleeStore,
+                                     .detail = calleeName(call)});
+      }
+    }
+    lastCall->pending.stores.push_back(store);
+  };
   for (const auto &[dest, values] : byDest) {
     if (dest.isParam() && summary.consumes(dest.index))
       continue;
@@ -5210,40 +5336,14 @@ void FunctionDataflow::applySummary(const CallExpr &call,
                             kept->element, kept->family, kept->ownValue,
                             kept->guard);
     }
-    //    RFC 0010, *Per-outcome stores*: a destination stored on some
-    //    classes only is pending until the result is tested.
-    if (summary.storesOn.empty() || !ref->element.isWhole())
-      continue;
-    core::OutcomeSet on;
-    for (const auto &[cls, classEffects] : summary.outcomes) {
-      if (summary.storesOnClass(cls).contains(dest))
-        on.insert(cls);
-    }
-    if (on.size() == summary.outcomes.size())
-      continue;
-    if (!lastCall || lastCall->call != &call) {
-      core::PendingOutcome fresh;
-      for (const auto &[cls, classEffects] : summary.outcomes)
-        fresh.consumedBy.try_emplace(cls);
-      fresh.callee = calleeName(call);
-      fresh.location = locate(call);
-      lastCall = CallOutcome{.call = &call, .pending = std::move(fresh)};
-    }
-    core::PendingOutcome::PendingStore store{
-        .dest = ref->place, .on = on, .source = std::nullopt};
-    if (const auto source = copySources.find(dest);
-        source != copySources.end()) {
-      store.source = source->second.first;
-      store.sourceEscapedBefore = source->second.second;
-    }
-    const auto old = heapInputs.find(std::pair{&call, dest});
-    if (old != heapInputs.end()) {
-      store.oldValue = old->second;
-      store.oldValueEscaped = heapInputEscaped[std::pair{&call, dest}];
-    }
-    lastCall->pending.stores.push_back(store);
+    recordConditionalStore(dest);
   }
   applyHeapOutputs(call, summary, state);
+  // RFC 0010/0013/0026: final heap children are still conditional C stores.
+  // Omitting their outcome records retained nonexistent failure-path loans
+  // and left the source resource escaped when insertion failed.
+  for (const auto &dest : heapManagedStores)
+    recordConditionalStore(dest);
 }
 
 void FunctionDataflow::noteCalleeStore(core::PlaceId dest, const CallExpr &call,
@@ -7726,6 +7826,11 @@ void FunctionDataflow::noteRequirement(core::PlaceId place,
 
 void FunctionDataflow::checkDereference(core::PlaceId pointer, const Expr &at,
                                         core::AnalysisState &state) {
+  // RFC 0026: a pending external mutator may have replaced this buffer
+  // field. Link-time checking replays the access with the actual definition.
+  if (options.deferCheckedCalls && state.safety &&
+      state.safety->deferred.contains(pointer))
+    return;
   const auto record = nullnessAt(pointer, state);
   if (!record) {
     noteRequirement(pointer, state);
@@ -8083,6 +8188,9 @@ bool FunctionDataflow::reportBounds(
     std::optional<core::Affine> accessStart) {
   const Expr &site = call ? static_cast<const Expr &>(*call) : at;
   recordSpatialCheck(site, {.reason = core::SpatialReason::UnknownExtent});
+  if (options.deferCheckedCalls && state.safety && known.pointer &&
+      state.safety->deferred.contains(*known.pointer))
+    return false;
   // A call that needs no bytes at all (`tablerehash(tb->hash, 0, n)` with
   // `requires-extent{vect: osize*8}`) is satisfied by any object; only an
   // element access counts its own bytes, so only there does a need at or
@@ -9865,6 +9973,8 @@ void FunctionDataflow::recordOutcomes(const Expr &value,
   const std::optional<ScalarReturnTest> scalarTest = scalarTestReturn(value);
 
   for (const core::Outcome outcome : classes) {
+    std::set<core::SummaryPath> nullInClass = nullHere;
+    std::set<core::SummaryPath> nonNullInClass = nonNullHere;
     recordStoredAtReturn(outcome, state, scalarTest);
     core::OutcomeEffects effects = base;
     if (retractable != nullptr) {
@@ -9872,6 +9982,22 @@ void FunctionDataflow::recordOutcomes(const Expr &value,
       for (const core::PlaceId place : narrowed.select({outcome})) {
         if (const auto path = builder.summaryPathOf(place))
           effects.erase(*path);
+      }
+      // RFC 0007/0008: a direct `return make(out)` forwards the callee's
+      // per-outcome stores. No intervening statement can overwrite them.
+      // A saved result needs separate write invalidation before this applies.
+      if (isa<CallExpr>(e)) {
+        for (const core::PlaceId place : narrowed.nullInAll()) {
+          // An omitted fresh store leaves the incoming value intact. It is
+          // not a null guarantee for a wrapper that may already hold it.
+          if (llvm::is_contained(narrowed.unheldOnly, place))
+            continue;
+          if (const auto path = callerVisiblePath(place))
+            nullInClass.insert(*path);
+        }
+        for (const core::PlaceId place : narrowed.nonNullInAll())
+          if (const auto path = callerVisiblePath(place))
+            nonNullInClass.insert(*path);
       }
       // A consume the class performs only under a guard is claimed under
       // it (RFC 0009, *Guards*), or not at all where this path refutes it.
@@ -9893,7 +10019,6 @@ void FunctionDataflow::recordOutcomes(const Expr &value,
     for (const auto &[path, effect] : effects)
       inferred.addOutcome(outcome, path, effect);
 
-    std::set<core::SummaryPath> nullInClass = nullHere;
     if (tested && tested->second == outcome)
       nullInClass.insert(tested->first);
     // `return *out != NULL` holds a record at the statement and none on the
@@ -9903,7 +10028,6 @@ void FunctionDataflow::recordOutcomes(const Expr &value,
                                 std::inserter(heldInClass, heldInClass.end()));
     // `return *out != NULL`: on every class but the one that means null, the
     // tested place is non-null.
-    std::set<core::SummaryPath> nonNullInClass = nonNullHere;
     if (tested && tested->second != outcome)
       nonNullInClass.insert(tested->first);
     for (const core::SummaryPath &path : nullInClass)

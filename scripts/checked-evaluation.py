@@ -66,9 +66,15 @@ def main():
             command += ['--', '-ferror-limit=0', '-D_POSIX_C_SOURCE=200809L']
             try:
                 if args.clang:
+                    # --extra-arg options are compiler inputs for both the
+                    # independent C syntax check and the analyzer invocation.
+                    syntax_flags = [flag.removeprefix('--extra-arg=')
+                                    for flag in case.get('flags', [])
+                                    if flag.startswith('--extra-arg=')]
                     syntax = subprocess.run(
                         [args.clang, '-fsyntax-only', '-D_POSIX_C_SOURCE=200809L',
                          '-I' + str(Path(__file__).resolve().parent.parent / 'resources/include'),
+                         *syntax_flags,
                          *[str(args.manifest.parent / source) for source in sources]],
                         capture_output=True, text=True, timeout=args.timeout)
                     if syntax.returncode:

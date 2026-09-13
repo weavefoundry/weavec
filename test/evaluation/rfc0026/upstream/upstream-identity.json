@@ -1,0 +1,11 @@
+{
+  "jansson": {
+    "commit": "851a2145e3256f2e67e5dfe24b0e456bf198b741",
+    "files": {
+      "src/strbuffer.c": "c7b37475f5af2b908cb6236a3384bad5ab96a809e8926bd237d8d4c17ff5dff8",
+      "src/strbuffer.h": "18d0141ab1af1560e1aaa2f94fdfc45f8d76d6bb15a917fe7e6a43b6cf280f26",
+      "src/jansson_private.h": "4b96ac6f90fb8fadd2acafbba6a87ac78639e53887fd6a57d4ae50a0233abe0a",
+      "src/jansson.h": "899dc9038f70430e7c5fc6d76cfc85bd0bd7dab04e600ef8be882e097838c627"
+    }
+  }
+}

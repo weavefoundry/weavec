@@ -69,8 +69,17 @@ void FunctionDataflow::snapshotScalar(core::PlaceId place,
         return entry.second.offset.place == place ||
                (entry.second.extent && entry.second.extent->place == place);
       });
+  // RFC 0026 retains the old initialized prefix while buffer counts change.
+  // Other functions keep the existing dependency-invalidation behavior.
+  const bool rangesAffected =
+      state.safety && !bufferObjects.empty() &&
+      std::ranges::any_of(state.safety->memory, [place](const auto &entry) {
+        return std::ranges::any_of(entry.second, [place](const auto &range) {
+          return range.begin.place == place || range.end.place == place;
+        });
+      });
   if (affected.empty() && !valuesAffected && !conditionsAffected &&
-      !positionsAffected)
+      !positionsAffected && !rangesAffected)
     return;
 
   // Fold constants before allocating a symbolic name. A snapshot is interned
@@ -237,6 +246,32 @@ void FunctionDataflow::snapshotScalar(core::PlaceId place,
       if (offset && state.safety->positions.contains(holder)) {
         position.offset = *offset;
         state.safety->positions[holder] = position;
+      }
+    }
+  }
+  if (rangesAffected) {
+    // Initialized bytes refer to the old scalar value too. Capturing a new
+    // snapshot generation can invalidate existing ranges; never restore a
+    // range that depended on that retired generation (RFC 0026).
+    const auto memory = state.safety->memory;
+    for (const auto &[storage, ranges] : memory) {
+      for (auto range : ranges) {
+        if (range.begin.place != place && range.end.place != place)
+          continue;
+        if (!range.when.trivial())
+          continue;
+        std::optional<core::Affine> begin = range.begin;
+        std::optional<core::Affine> end = range.end;
+        capture(begin);
+        capture(end);
+        if (!begin || !end ||
+            (snapshot &&
+             ((range.begin.place == snapshot && range.begin.place != place) ||
+              (range.end.place == snapshot && range.end.place != place))))
+          continue;
+        range.begin = *begin;
+        range.end = *end;
+        state.safety->initialize(storage, range);
       }
     }
   }

@@ -14,6 +14,8 @@
 
 #include <gtest/gtest.h>
 
+#include <utility>
+
 namespace weavec::frontend {
 TEST(CheckedReport, CaseProofDoesNotReplaceTheSelectedGenericDefinition) {
   analysis::UnitExports unit;
@@ -85,7 +87,7 @@ TEST(CheckedReport, EscapingAndScopeRoundTripThroughJson) {
   const auto *object = parsed->getAsObject();
   ASSERT_NE(object, nullptr);
   EXPECT_EQ(object->getInteger("version"), 2);
-  EXPECT_EQ(object->getInteger("model_version"), 20);
+  EXPECT_EQ(object->getInteger("model_version"), 21);
   ASSERT_NE(object->getObject("totals"), nullptr);
   EXPECT_EQ(object->getObject("totals")->getInteger("complete"), 1);
   const auto *units = object->getArray("units");
@@ -182,7 +184,7 @@ TEST(CheckedReport, CompactStringsOwnTheirStorageAfterObligationsAreReplaced) {
   ASSERT_NE(root->getArray("obligation_records"), nullptr);
   EXPECT_EQ(root->getArray("obligation_records")->size(), 1U);
 }
-TEST(CheckedReport, ExpandedSharedPathsSurviveEvictionAndReportReplacement) {
+static analysis::UnitExports sharedPathUnit() {
   auto unit = checkedUnit();
   for (unsigned function = 0; function < 2; ++function) {
     auto &contract = unit.checkedDefinitions["f" + std::to_string(function)];
@@ -204,6 +206,10 @@ TEST(CheckedReport, ExpandedSharedPathsSurviveEvictionAndReportReplacement) {
                                   .calls = calls});
     }
   }
+  return unit;
+}
+TEST(CheckedReport, ExpandedSharedPathsSurviveEvictionAndReportReplacement) {
+  const auto unit = sharedPathUnit();
   CheckedReport report;
   report.record(unit);
   const auto text = report.json();
@@ -241,6 +247,74 @@ TEST(CheckedReport, ExpandedSharedPathsSurviveEvictionAndReportReplacement) {
   }
   report.record(checkedUnit());
   CheckedReport fresh;
+  fresh.record(checkedUnit());
+  EXPECT_EQ(report.json(), fresh.json());
+}
+
+static const llvm::json::Array *compactRow(const llvm::json::Object &root,
+                                           llvm::StringRef table,
+                                           const llvm::json::Value &reference) {
+  const auto id = reference.getAsInteger();
+  const auto *rows = root.getArray(table);
+  if (!id || *id < 0 || !rows || std::cmp_greater_equal(*id, rows->size()))
+    return nullptr;
+  return (*rows)[static_cast<std::size_t>(*id)].getAsArray();
+}
+
+TEST(CheckedReport, CompactSharedPathsSurviveMemoReset) {
+  const auto unit = sharedPathUnit();
+  CheckedReport report;
+  report.compact = true;
+  report.record(unit);
+  const auto text = report.json();
+  EXPECT_EQ(text, report.json());
+  auto parsed = llvm::json::parse(text);
+  ASSERT_TRUE(parsed);
+  const auto *root = parsed->getAsObject();
+  ASSERT_NE(root, nullptr);
+  const auto *strings = root->getArray("strings");
+  ASSERT_NE(strings, nullptr);
+  const auto *functions =
+      root->getArray("units")->front().getAsObject()->getArray("functions");
+  ASSERT_NE(functions, nullptr);
+  for (const auto &value : *functions) {
+    const auto *function = value.getAsObject();
+    ASSERT_NE(function, nullptr);
+    const auto name = function->getString("name");
+    ASSERT_TRUE(name);
+    const auto &expected = unit.checkedDefinitions.at(name->str());
+    const auto *entries = function->getArray("obligations");
+    ASSERT_NE(entries, nullptr);
+    ASSERT_EQ(entries->size(), expected.obligations.entries().size());
+    unsigned index = 0;
+    for (const auto &[key, entry] : expected.obligations.entries()) {
+      (void)key;
+      const auto *row =
+          compactRow(*root, "obligation_records", (*entries)[index++]);
+      ASSERT_NE(row, nullptr);
+      ASSERT_EQ(row->size(), 6U);
+      const auto *calls = compactRow(*root, "call_paths", (*row)[5]);
+      ASSERT_NE(calls, nullptr);
+      ASSERT_EQ(calls->size(), entry.calls.size());
+      unsigned position = 0;
+      for (const auto &call : entry.calls) {
+        const auto *actual =
+            compactRow(*root, "locations", (*calls)[position++]);
+        ASSERT_NE(actual, nullptr);
+        ASSERT_EQ(actual->size(), 3U);
+        const auto file = (*actual)[0].getAsInteger();
+        ASSERT_TRUE(file && *file >= 0);
+        ASSERT_LT(static_cast<std::uint64_t>(*file), strings->size());
+        EXPECT_EQ((*strings)[static_cast<std::size_t>(*file)].getAsString(),
+                  call.file);
+        EXPECT_EQ((*actual)[1].getAsInteger(), call.line);
+        EXPECT_EQ((*actual)[2].getAsInteger(), call.column);
+      }
+    }
+  }
+  report.record(checkedUnit());
+  CheckedReport fresh;
+  fresh.compact = true;
   fresh.record(checkedUnit());
   EXPECT_EQ(report.json(), fresh.json());
 }

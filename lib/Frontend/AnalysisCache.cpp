@@ -237,7 +237,7 @@ readAnalysisCheckpoint(std::string_view directory, std::string_view key,
 }
 
 static bool preservesProducer(const UnitRecord &record, std::string_view text) {
-  const auto decoded = parseUnitRecord(text);
+  auto decoded = parseUnitRecord(text);
   if (!decoded || printUnitRecord(*decoded) != text)
     return false;
   // The sidecar reader assigns global ids in first-use order. Compare in the
@@ -246,7 +246,7 @@ static bool preservesProducer(const UnitRecord &record, std::string_view text) {
   names.globals = record.exports.globals;
   analysis::ProgramDatabase numbering;
   numbering.add(names);
-  const auto restored = numbering.renumbered(decoded->exports);
+  const auto restored = numbering.renumbered(std::move(decoded->exports));
   return restored.globals == record.exports.globals &&
          restored.functions == record.exports.functions &&
          restored.checkedDefinitions == record.exports.checkedDefinitions;

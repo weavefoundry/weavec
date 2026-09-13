@@ -52,8 +52,9 @@ bool FunctionAnalyzer::analyze(const FunctionDecl &function,
                             emitDiagnostics);
   dataflow.run();
   if (!options.checkContracts)
-    return summaries.setInferred(function, dataflow.summary(), widenSummary);
-  auto summary = dataflow.summary();
+    return summaries.setInferred(function, std::move(dataflow).summary(),
+                                 widenSummary);
+  auto summary = std::move(dataflow).summary();
   if (options.checkContracts)
     for (const auto &diagnostic : validation.diagnostics())
       if (diagnostic.severity == core::Severity::Error ||
@@ -66,7 +67,7 @@ bool FunctionAnalyzer::analyze(const FunctionDecl &function,
              .subject = std::string(diagnostic.id),
              .reason = diagnostic.message,
              .calls = {}});
-  return summaries.setInferred(function, summary, widenSummary);
+  return summaries.setInferred(function, std::move(summary), widenSummary);
 }
 
 void FunctionAnalyzer::validate(const FunctionDecl &function) {

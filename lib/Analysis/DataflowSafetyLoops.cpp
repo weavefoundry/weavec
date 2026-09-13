@@ -265,8 +265,35 @@ void FunctionDataflow::checkedLoopExit(const ForStmt &loop,
     return;
   const auto next = core::Affine{
       .place = builder.placeForVar(*index), .scale = *unit, .constant = *unit};
-  if (!checkedLoopRequirement(next, *subscript, state))
-    return;
+  if (!checkedLoopRequirement(next, *subscript, state)) {
+    // RFC 0026: an unconditional suffix fill extends a prefix established
+    // before the loop. Keep the zero-iteration path: when n <= old length,
+    // that same prefix already covers every byte below n.
+    const auto base = builder.resolvePointerValue(*subscript->getBase());
+    const auto start = initial ? builder.resolve(*initial) : std::nullopt;
+    const auto *buffer = base ? bufferFact(base->place, state) : nullptr;
+    const auto *increment =
+        loop.getInc() ? dyn_cast<UnaryOperator>(loop.getInc()->IgnoreParens())
+                      : nullptr;
+    const auto type = integerTypeOf(*index, context);
+    if (!buffer || !buffer->initialized || buffer->shape.pointerElements ||
+        !start || start->place != buffer->length || !initial ||
+        initial->HasSideEffects(context) || addressTaken.contains(index) ||
+        !increment || !increment->isIncrementOp() ||
+        loopRequirementVariable(increment->getSubExpr()) != index || !type)
+      return;
+    const auto first = integerRangeOf(*initial, state);
+    bool fits = false;
+    unsigned remaining = MaxLoopRequirementConditionNodes;
+    std::set<const VarDecl *> inputs{index};
+    if (!first || first->mayBeInvalid ||
+        !conversionPreserves(first->values, *type) ||
+        !canonicalLoopRequirementCondition(*condition, *index, *type, context,
+                                           addressTaken, inputs, fits,
+                                           remaining) ||
+        !fits)
+      return;
+  }
   if (const auto memory =
           checkedMemory(*subscript->getBase(), {}, *end, state)) {
     state.safety->initialize(memory->storage,

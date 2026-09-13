@@ -36,7 +36,12 @@ private:
     std::map<T, std::uint64_t> ids;
     // Map nodes own values and remain stable as the table grows.
     std::vector<const T *> values;
-    std::uint64_t intern(T value) {
+    std::uint64_t intern(const T &value) {
+      if (const auto found = ids.find(value); found != ids.end())
+        return found->second;
+      return intern(T(value));
+    }
+    std::uint64_t intern(T &&value) {
       const auto [it, inserted] =
           ids.try_emplace(std::move(value), values.size());
       if (inserted)
@@ -45,6 +50,7 @@ private:
     }
   };
   std::uint64_t location(const core::SourceLocation &value);
+  std::uint64_t callPath(const core::SafetyCallPath &value);
   Table<std::string> strings;
   Table<std::array<std::uint64_t, 3>> locations;
   Table<std::vector<std::uint64_t>> paths;
@@ -52,6 +58,12 @@ private:
   bool includeFunctions;
   // Report units own all rows throughout serialization.
   std::unordered_map<const core::SafetyObligation *, std::uint64_t> rowIds;
+  struct PathReference {
+    // Keep the immutable backing alive even if a caller releases its row.
+    core::SafetyCallPath path;
+    std::uint64_t id;
+  };
+  std::unordered_map<const core::SourceLocation *, PathReference> pathIds;
 };
 
 } // namespace weavec::frontend

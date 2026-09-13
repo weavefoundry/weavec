@@ -233,6 +233,21 @@ public:
                (!result.begin.isConstant() || result.begin.constant >= 0) &&
                (!result.begin.isConstant() || !result.end.isConstant() ||
                 result.begin.constant < result.end.constant);
+    if (result.kind == CheckedRequirementKind::Buffer)
+      valid &= BufferShape::decode(result.family).has_value() &&
+               result.other == SummaryPath{} &&
+               result.begin == PathAffine::ofConstant(0) &&
+               (!result.end.isConstant() || result.end.constant >= 0);
+    if (result.kind == CheckedRequirementKind::BufferPreserved ||
+        result.kind == CheckedRequirementKind::BufferAppended) {
+      const auto shape = BufferShape::decode(result.family);
+      valid &= shape && shape->pointerElements &&
+               result.begin == PathAffine::ofConstant(0) &&
+               result.end == PathAffine::ofConstant(0) &&
+               !result.path.isResult() && !result.other.isResult() &&
+               (result.kind != CheckedRequirementKind::BufferPreserved ||
+                result.other == result.path);
+    }
     if (result.kind == CheckedRequirementKind::UnionMember)
       valid &= UnionMember::decode(result.family).has_value() &&
                result.begin == PathAffine::ofConstant(0) &&
@@ -274,6 +289,11 @@ public:
       valid &= result.on.has_value();
     }
     result.ifNonNull = flag();
+    if (result.kind == CheckedRequirementKind::Buffer ||
+        result.kind == CheckedRequirementKind::BufferPreserved ||
+        result.kind == CheckedRequirementKind::BufferAppended)
+      valid &= !result.ifNonNull && !hasResult(result.end) &&
+               result.end.quantity == AffineQuantity::Integer;
     if (result.kind == CheckedRequirementKind::UnionMember ||
         result.kind == CheckedRequirementKind::ObjectType ||
         result.kind == CheckedRequirementKind::Container ||
@@ -299,7 +319,7 @@ private:
 std::string printCheckedContract(const CheckedContract &contract,
                                  const GlobalNamer &names) {
   CheckedWriter out;
-  out.text("7");
+  out.text("8");
   out.text(contract.signature);
   out.number(contract.computed);
   out.number(contract.selected);
@@ -341,7 +361,7 @@ std::string printCheckedContract(const CheckedContract &contract,
 std::optional<CheckedContract>
 parseCheckedContract(std::string_view record, const GlobalResolver &resolve) {
   CheckedReader in(record);
-  if (in.text() != "7")
+  if (in.text() != "8")
     return std::nullopt;
   CheckedContract result;
   result.signature = in.text();
@@ -380,9 +400,15 @@ parseCheckedContract(std::string_view record, const GlobalResolver &resolve) {
         requirement.kind == CheckedRequirementKind::Zeroed ||
         requirement.kind == CheckedRequirementKind::Position ||
         requirement.kind == CheckedRequirementKind::Progress ||
+        requirement.kind == CheckedRequirementKind::BufferPreserved ||
+        requirement.kind == CheckedRequirementKind::BufferAppended ||
         requirement.kind == CheckedRequirementKind::ContainerDerived ||
         requirement.kind == CheckedRequirementKind::ContainerFresh ||
         requirement.kind == CheckedRequirementKind::ContainerTail)
+      return std::nullopt;
+  for (const auto &requirement : result.requirements)
+    if (requirement.kind == CheckedRequirementKind::Buffer &&
+        requirement.end != PathAffine::ofConstant(0))
       return std::nullopt;
   for (const auto &requirement : result.requirements)
     if (requirement.kind == CheckedRequirementKind::ArgumentListConsumed ||

@@ -128,6 +128,8 @@ private:
     /// RFC 0012, *Sized fields*: the pairs the database confirmed when the
     /// unit was last reported on; more at the end means another pass.
     std::set<analysis::SizedFieldWitness> sizedPairsSeen;
+    // RFC 0020: pending replay metadata only; exports remain in `exports`
+    // until moved temporarily into a checkpoint for writing.
     std::optional<UnitResult> checkpoint = std::nullopt;
     // Default for designated initialization.
     // NOLINTNEXTLINE(readability-redundant-member-init)
@@ -155,7 +157,7 @@ private:
   /// Records what a reporting run of `unit` against `db` produced: its
   /// exports, the diagnostics shown, the sized-field pairs in force.
   void settle(Unit &unit, const analysis::ProgramDatabase &db,
-              const UnitResult &run) const;
+              UnitResult run) const;
   /// RFC 0012, *Sized fields*, "Inference": one more reporting pass over
   /// every unit analysed before the program confirmed a pair it may load;
   /// only what is new is shown.

@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstring>
 #include <iterator>
 #include <span>
 #include <tuple>
@@ -742,6 +743,7 @@ void SafetyState::forget(PlaceId place) {
 }
 
 void SafetyState::forgetDependency(PlaceId place) {
+  buffers.forget(place);
   unions.forgetDependency(place);
   for (auto &[storage, facts] : boundedTermination) {
     (void)storage;
@@ -824,6 +826,7 @@ bool SafetyState::join(const SafetyState &other, const PlaceGuard &left,
         unions.join(other.unions, paths.empty() ? std::vector{left} : paths,
                     other.paths.empty() ? std::vector{right} : other.paths);
   changed |= containers.join(other.containers);
+  changed |= buffers.join(other.buffers);
   for (auto &[place, list] : argumentLists) {
     const auto found = other.argumentLists.find(place);
     if (found != other.argumentLists.end() && found->second == list)
@@ -1017,6 +1020,21 @@ bool SafetyState::join(const SafetyState &other, const PlaceGuard &left,
   return changed;
 }
 
+// Test eight bytes without alignment or endianness assumptions. A positive
+// result permits only printable ASCII without JSON quoting; all other bytes
+// still use the existing UTF-8 and escape handling below (RFC 0020).
+static bool plainJsonWord(std::uint64_t word) {
+  constexpr std::uint64_t High = 0x8080808080808080ULL;
+  constexpr std::uint64_t Low = 0x0101010101010101ULL;
+  const auto containsZero = [=](std::uint64_t value) {
+    return ((value - Low) & ~value & High) != 0;
+  };
+  return (word & High) == 0 &&
+         ((word - 0x2020202020202020ULL) & ~word & High) == 0 &&
+         !containsZero(word ^ 0x2222222222222222ULL) &&
+         !containsZero(word ^ 0x5c5c5c5c5c5c5c5cULL);
+}
+
 static void appendSafetyJsonString(std::string &result,
                                    std::string_view value) {
   static constexpr std::string_view Hex = "0123456789abcdef";
@@ -1024,6 +1042,13 @@ static void appendSafetyJsonString(std::string &result,
   result += '"';
   for (std::size_t i = 0; i < value.size(); ++i) {
     const auto begin = i;
+    while (value.size() - i >= sizeof(std::uint64_t)) {
+      std::uint64_t word = 0;
+      std::memcpy(&word, value.data() + i, sizeof(word));
+      if (!plainJsonWord(word))
+        break;
+      i += sizeof(word);
+    }
     while (i < value.size()) {
       const auto plain = static_cast<unsigned char>(value[i]);
       if (plain < 0x20 || plain >= 0x80 || plain == '"' || plain == '\\')

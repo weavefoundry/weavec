@@ -72,14 +72,20 @@ public:
   core::CallContext memoryContext;
   bool validMemoryContext = true;
   bool checkedOutputSeen = false;
+  bool provingBufferBound = false;
+  // Monotone implementation hint: no proof depends on this flag.
+  bool hasBufferPositions = false;
   std::map<std::optional<core::Outcome>, core::CheckedRequirements>
       checkedOutputClasses;
   std::map<std::optional<core::Outcome>, std::set<core::SummaryPath>>
       checkedNullOutputClasses;
 
   /// The summary inferred by `run` (RFC 0003, *Deriving a summary*).
-  [[nodiscard]] const core::FunctionSummary &summary() const noexcept {
+  [[nodiscard]] const core::FunctionSummary &summary() const & noexcept {
     return inferred;
+  }
+  [[nodiscard]] core::FunctionSummary summary() && noexcept {
+    return std::move(inferred);
   }
 
 private:
@@ -326,12 +332,14 @@ private:
     std::optional<core::PlaceId> holder = {};
     // NOLINTNEXTLINE(readability-redundant-member-init): aggregate default
     std::optional<core::PlaceId> inputPlace = {};
+    bool validWhenNonempty = false;
     friend bool operator==(const CheckedMemory &,
                            const CheckedMemory &) = default;
   };
   struct CheckedPointer {
     bool invalidated = false;
     std::optional<core::ContainerFact> container;
+    std::optional<core::BufferSequence> bufferSequence;
     std::set<core::PlaceId> containerSeparated;
     bool known = false;
     bool nonNull = false;
@@ -346,6 +354,64 @@ private:
   establishContainer(const CheckedMemory &memory,
                      const core::ContainerShape &shape,
                      core::AnalysisState &state);
+  // RFC 0026: current-state contiguous storage predicates.
+  std::map<core::PlaceId, core::BufferShape> bufferObjects;
+  std::map<const clang::RecordDecl *, core::BufferShape> bufferShapes;
+  std::map<const clang::CallExpr *, std::vector<core::CheckedRequirement>>
+      bufferPosts;
+  std::map<const clang::CallExpr *,
+           std::map<core::CheckedRequirement, core::Affine>>
+      bufferPostBounds;
+  std::map<core::PlaceId, core::BufferSequence> bufferEntries;
+  std::set<core::PlaceId> bufferEntryBackings;
+  std::map<const clang::CallExpr *, core::BufferSequence>
+      bufferAllocationSequences;
+  struct BufferCallInput {
+    std::optional<core::BufferSequence> sequence;
+    bool ownsElements = false;
+    core::Affine length;
+  };
+  std::map<const clang::CallExpr *, std::map<core::PlaceId, BufferCallInput>>
+      bufferCallInputs;
+  std::map<core::PlaceId, const clang::CallExpr *> bufferSequenceCalls;
+  std::map<const clang::CallExpr *, core::PlaceId> bufferSequenceEvents;
+  std::map<const clang::CallExpr *,
+           std::map<core::CheckedRequirement, core::BufferSequencePost>>
+      bufferSequencePosts;
+  void materializeBufferSequences(core::AnalysisState &state);
+  void checkedBufferRelease(core::PlaceId data, const clang::CallExpr &call,
+                            const core::FunctionSummary *summary,
+                            core::AnalysisState &state);
+  void bufferElementWrite(const clang::BinaryOperator &assignment,
+                          core::AnalysisState &state);
+  std::optional<core::BufferShape>
+  discoverBufferShape(const clang::RecordDecl &record);
+  void discoverBuffers();
+  void registerBuffer(core::PlaceId object, const clang::RecordDecl &record);
+  void initializeBuffers(core::AnalysisState &state);
+  void normalizeBuffers(core::AnalysisState &state);
+  void materializeBuffers(core::AnalysisState &state);
+  void invalidateBufferWrite(const clang::Expr &written,
+                             core::AnalysisState &state);
+  void invalidateBufferCall(const clang::CallExpr &call,
+                            const CallEffects *effects,
+                            core::AnalysisState &state);
+  static const core::BufferFact *bufferFact(core::PlaceId data,
+                                            const core::AnalysisState &state);
+  std::optional<core::PlaceId>
+  bufferArgument(const core::CheckedRequirement &requirement,
+                 const clang::CallExpr &call, core::AnalysisState &state);
+  void checkedBufferCall(const core::CheckedRequirement &requirement,
+                         const clang::CallExpr &call,
+                         core::AnalysisState &state);
+  void captureBufferPosts(const clang::CallExpr &call,
+                          const core::CheckedContract &contract,
+                          core::AnalysisState &state);
+  void applyBufferPosts(const clang::CallExpr &call,
+                        core::AnalysisState &state);
+  void bufferOutputs(core::CheckedContract &outputs,
+                     const core::AnalysisState &state,
+                     std::optional<core::Outcome> outcome);
   void initializeChecked();
   void discoverCheckedCases();
   [[nodiscard]] std::string checkedUnionMember(const clang::FieldDecl &field);

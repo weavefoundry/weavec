@@ -66,6 +66,44 @@ FunctionDataflow::integerRangeAt(core::PlaceId place, core::IntegerType type,
       otherRange = otherRange.intersect(fact->inType(*otherType));
     if (otherRange.empty())
       continue;
+    // RFC 0026: size_t's upper half is not representable by signedValue().
+    // Keep mathematical relation bounds in unsigned target order, so len<cap
+    // excludes SIZE_MAX before incrementing len. No wrapped bound is used.
+    if (state.safety && !type.isSigned && !otherType->isSigned) {
+      const auto restrictUnsigned = [&](std::uint64_t value, int extra,
+                                        core::IntegerOp operation) {
+        std::int64_t delta = 0;
+        if (__builtin_add_overflow(edge->offset, extra, &delta))
+          return;
+        if (delta < 0) {
+          const auto magnitude =
+              std::uint64_t{0} - static_cast<std::uint64_t>(delta);
+          if (value < magnitude)
+            return;
+          value -= magnitude;
+        } else {
+          if (__builtin_add_overflow(value, static_cast<std::uint64_t>(delta),
+                                     &value))
+            return;
+        }
+        if (value <= type.mask())
+          range = range.satisfying(
+              operation, core::IntegerRange::singleton(
+                             core::IntegerValue::ofBits(type, value)));
+      };
+      if (edge->relation == core::Relation::Less ||
+          edge->relation == core::Relation::LessEqual ||
+          edge->relation == core::Relation::Equal)
+        restrictUnsigned(otherRange.maximum()->bits,
+                         edge->relation == core::Relation::Less ? -1 : 0,
+                         core::IntegerOp::LessEqual);
+      if (edge->relation == core::Relation::Greater ||
+          edge->relation == core::Relation::GreaterEqual ||
+          edge->relation == core::Relation::Equal)
+        restrictUnsigned(otherRange.minimum()->bits,
+                         edge->relation == core::Relation::Greater ? 1 : 0,
+                         core::IntegerOp::GreaterEqual);
+    }
     const auto shifted = [&](std::optional<std::int64_t> value,
                              int extra) -> std::optional<std::int64_t> {
       if (!value || __builtin_add_overflow(*value, edge->offset, &*value) ||

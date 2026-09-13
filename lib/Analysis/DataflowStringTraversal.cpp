@@ -319,6 +319,17 @@ void FunctionDataflow::checkedStringCondition(const Expr &expr,
 void FunctionDataflow::checkedStringWrite(
     const std::optional<CheckedMemory> &memory, bool zeroed,
     core::AnalysisState &state) {
+  for (auto &[data, fact] : state.safety->buffers.values) {
+    (void)data;
+    fact.shape.terminated = false;
+  }
+  for (auto &[data, posts] : state.safety->buffers.pending) {
+    (void)data;
+    for (auto &post : posts)
+      if (!memory || !isLocalStorage(memory->storage) ||
+          !post.fact.shape.ownsBacking)
+        post.fact.shape.terminated = false;
+  }
   auto witnesses = std::move(state.safety->termination);
   state.forgetZeroedMemory();
   if (!memory) {
@@ -348,6 +359,26 @@ void FunctionDataflow::checkedStringWrite(
           (isLocalStorage(storage) && isLocalStorage(memory->storage) &&
            places.root(storage) != places.root(memory->storage)))
         return false;
+      if (hasBufferPositions && isLocalStorage(memory->storage)) {
+        // A live allocation base cannot overlap an automatic variable. Buffer
+        // entry backing likewise predates this frame; a fresh replacement
+        // retains that separation without reusing the old pointer's validity.
+        const bool bufferBacking = std::ranges::any_of(
+            state.safety->buffers.values, [&](const auto &entry) {
+              const auto &[data, fact] = entry;
+              const auto backing = state.safety->objects.contains(data)
+                                       ? state.safety->objects.at(data)
+                                       : places.deref(data);
+              return backing == storage &&
+                     (fact.shape.ownsBacking || fact.entryBacking);
+            });
+        const bool allocation =
+            std::ranges::any_of(checkedObjects, [&](const auto &entry) {
+              return entry.second == storage;
+            });
+        if (bufferBacking || allocation)
+          return false;
+      }
       const auto input =
           witness.input ? builder.summaryPathOf(*witness.input) : std::nullopt;
       if (!memory->input || !input) {

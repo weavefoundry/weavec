@@ -14,6 +14,8 @@ weavec_add_library(
           DataflowContainerTransfer.cpp
           DataflowContainerContracts.cpp
           DataflowSafety.cpp
+          DataflowBuffers.cpp
+          DataflowBufferContracts.cpp
           DataflowCases.cpp
           DataflowUnions.cpp
           DataflowObjectTypes.cpp
