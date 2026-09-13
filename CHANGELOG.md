@@ -1,6 +1,15 @@
 # CHANGELOG
 
 
+## v0.6.0 (2026-09-13)
+
+### Features
+
+- Add checked input cases and union member tracking
+  ([#28](https://github.com/weavefoundry/weavec/pull/28),
+  [`75b7f8d`](https://github.com/weavefoundry/weavec/commit/75b7f8d20b38264fe772f7b5d9b12b688ae5ba94))
+
+
 ## v0.5.0 (2026-09-12)
 
 ### Features
