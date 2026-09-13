@@ -1,6 +1,14 @@
 # CHANGELOG
 
 
+## v0.7.0 (2026-09-13)
+
+### Features
+
+- Infer growable buffer and vector contracts ([#29](https://github.com/weavefoundry/weavec/pull/29),
+  [`00575b9`](https://github.com/weavefoundry/weavec/commit/00575b9b9f9215d868a2f691a4931879d5600f66))
+
+
 ## v0.6.0 (2026-09-13)
 
 ### Features
