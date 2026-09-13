@@ -1,0 +1,9 @@
+{
+  "cJSON-program": {
+    "commit": "fb16e5cf358798aabb049655975cde8427101056",
+    "files": {
+      "cJSON.c": "607e756460fa0de37d20a7a9181f2de29c97bfb7ce5a0e6c2f548243836cd852",
+      "cJSON.h": "25b0145150d500498e4d209cec69c18c42cf818bffcc54690be3b895a2a16dee"
+    }
+  }
+}

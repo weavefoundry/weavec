@@ -523,6 +523,45 @@ TEST(SafetyEntryPool, PreparedOriginsPreserveCapOrderAndTruncationOnHits) {
   EXPECT_EQ(stats.count("explanation_call_hits"), 6U);
 }
 
+TEST(SafetyEntryPool, CrowdedColdCallsPreserveUpdatesTruncationAndOrder) {
+  // RFC 0025: compare the cold path with independent individual insertion,
+  // including an existing key that must still be strengthened at capacity.
+  for (const bool unsafe : {false, true}) {
+    for (const unsigned remaining : {0U, 1U, 7U}) {
+      SafetyEntryPool pool(nullptr, 0, 0);
+      SafetyLedger source;
+      for (unsigned i = 0; i < 12; ++i) {
+        auto entry = obligation(SafetyOutcome::Unresolved, i + 1);
+        entry.calls = {{.file = "origin.c", .line = 12 - i}};
+        source.add(std::move(entry));
+      }
+      auto truncated = obligation(SafetyOutcome::Violation, 30);
+      truncated.reason.assign(65536, '"');
+      source.add(std::move(truncated));
+      const auto origins = source.propagation().unresolved;
+      const SourceLocation location{.file = "caller.c", .line = 17};
+      SafetyLedger existing;
+      addCallsIndividually(existing, {origins.front()}, location, "caller",
+                           "callee", unsafe);
+      auto prior = existing.entries().begin()->second;
+      prior.outcome = SafetyOutcome::Proven;
+      SafetyLedger actual;
+      actual.add(std::move(prior));
+      for (unsigned i = remaining + 1; i < MaxSafetyObligations; ++i)
+        actual.add(obligation(SafetyOutcome::Proven, i + 100));
+      actual.shareSnapshot();
+      auto expected = actual;
+      addCallsIndividually(expected, origins, location, "caller", "callee",
+                           unsafe);
+      actual.addCalls(source, false, location, "caller", "callee", unsafe);
+      EXPECT_TRUE(actual.sameExplanationsAs(expected));
+      EXPECT_EQ(actual.trusted(), expected.trusted());
+      EXPECT_EQ(actual.violated(), expected.violated());
+      EXPECT_TRUE(actual.limited());
+    }
+  }
+}
+
 TEST(SafetyEntryPool, PreparedCallLedgersShareRowsWithoutSharingMutation) {
   // RFC 0024: disable the row pool to distinguish call-ledger reuse from
   // ordinary entry interning. Every displayed call-site field is an input.

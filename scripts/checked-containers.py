@@ -259,10 +259,10 @@ def cache(args):
         (work / names[1]).write_text(original)
         metadata = work / '1.o.weavec'
         contents = metadata.read_text()
-        assert contents.startswith('weavec-summaries 20\n')
-        metadata.write_text(contents.replace('weavec-summaries 20\n', 'weavec-summaries 19\n', 1))
+        assert contents.startswith('weavec-summaries 21\n')
+        metadata.write_text(contents.replace('weavec-summaries 21\n', 'weavec-summaries 20\n', 1))
         process, _ = link('sidecar-old-format')
-        assert process.returncode == 1 and 'unsupported format 19' in process.stderr, process.stderr
+        assert process.returncode == 1 and 'unsupported format 20' in process.stderr, process.stderr
         results.append(dict(name='old-container-sidecar-format', passed=True))
     for result in results:
         print('PASS ' + result['name'], flush=True)

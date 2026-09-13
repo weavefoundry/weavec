@@ -71,5 +71,6 @@ decision is a new RFC that supersedes the relevant section.
 | [0022](0022-checked-c-interfaces.md) | Compositional checked interfaces for opaque pointers and callbacks | Implemented |
 | [0023](0023-inductive-container-contracts.md) | Inductive ownership contracts for linked containers | Implemented |
 | [0024](0024-checked-runtime-contracts.md) | Checked C runtime contracts and variadic interfaces | Implemented |
+| [0025](0025-case-sensitive-checked-contracts.md) | Case-sensitive checked contracts and discriminated C objects | Implemented |
 
 The [roadmap](../roadmap.md) links each milestone to the RFCs that define it.

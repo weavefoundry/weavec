@@ -15,6 +15,51 @@
 #include <gtest/gtest.h>
 
 namespace weavec::frontend {
+TEST(CheckedReport, CaseProofDoesNotReplaceTheSelectedGenericDefinition) {
+  analysis::UnitExports unit;
+  unit.source = "case.c";
+  auto &generic = unit.checkedDefinitions["read_if"];
+  generic.computed = generic.selected = true;
+  generic.noteCaseInput(core::SummaryPath::param(0));
+  generic.obligations.add(
+      {.property = core::SafetyProperty::Arithmetic,
+       .outcome = core::SafetyOutcome::Unresolved,
+       .location = {.file = "case.c", .line = 3, .column = 1},
+       .function = "read_if",
+       .subject = "division",
+       .reason = "possibly zero divisor",
+       .calls = {}});
+  core::CallContext input;
+  input.facts[core::SummaryPath::param(0)] = core::ValueFact::ofConstant(0);
+  auto &specialized = unit.functions["read_if"].memorySpecializations[input];
+  specialized.checked.computed = true;
+  specialized.checked.signature = "int (int, const char *)";
+  CheckedReport report;
+  report.record(unit);
+  EXPECT_TRUE(CheckedReport::failed(unit));
+  for (const bool compact : {false, true}) {
+    report.compact = compact;
+    const auto text = report.json();
+    EXPECT_EQ(text, report.json());
+    auto parsed = llvm::json::parse(text);
+    ASSERT_TRUE(parsed);
+    const auto *function = parsed->getAsObject()
+                               ->getArray("units")
+                               ->front()
+                               .getAsObject()
+                               ->getArray("functions")
+                               ->front()
+                               .getAsObject();
+    EXPECT_EQ(function->getBoolean("complete"), false);
+    ASSERT_NE(function->getArray("cases"), nullptr);
+    ASSERT_EQ(function->getArray("cases")->size(), 1U);
+    const auto *proof = function->getArray("cases")->front().getAsObject();
+    EXPECT_EQ(proof->getBoolean("complete"), true);
+    EXPECT_EQ(proof->getString("status"), "proven");
+    EXPECT_TRUE(proof->getString("premises"));
+  }
+}
+
 static analysis::UnitExports checkedUnit() {
   analysis::UnitExports unit;
   unit.source = "space and é/\"source.c";
@@ -40,7 +85,7 @@ TEST(CheckedReport, EscapingAndScopeRoundTripThroughJson) {
   const auto *object = parsed->getAsObject();
   ASSERT_NE(object, nullptr);
   EXPECT_EQ(object->getInteger("version"), 2);
-  EXPECT_EQ(object->getInteger("model_version"), 19);
+  EXPECT_EQ(object->getInteger("model_version"), 20);
   ASSERT_NE(object->getObject("totals"), nullptr);
   EXPECT_EQ(object->getObject("totals")->getInteger("complete"), 1);
   const auto *units = object->getArray("units");

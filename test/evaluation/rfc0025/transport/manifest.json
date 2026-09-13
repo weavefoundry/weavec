@@ -1,0 +1,150 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "name": "readonly-good",
+      "sources": [
+        "readonly-good.c",
+        "helpers.c",
+        "forward.c"
+      ],
+      "function": "main",
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "entry_requirements": 0
+    },
+    {
+      "name": "readonly-bad",
+      "sources": [
+        "readonly-bad.c",
+        "helpers.c",
+        "forward.c"
+      ],
+      "function": "main",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    },
+    {
+      "name": "callback-good",
+      "sources": [
+        "callback-good.c",
+        "helpers.c",
+        "forward.c"
+      ],
+      "function": "main",
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "entry_requirements": 0
+    },
+    {
+      "name": "callback-bad",
+      "sources": [
+        "callback-bad.c",
+        "helpers.c",
+        "forward.c"
+      ],
+      "function": "main",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    },
+    {
+      "name": "tagged-good",
+      "sources": [
+        "tagged-good.c",
+        "helpers.c",
+        "forward.c"
+      ],
+      "function": "main",
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "entry_requirements": 0
+    },
+    {
+      "name": "tagged-bad",
+      "sources": [
+        "tagged-bad.c",
+        "helpers.c",
+        "forward.c"
+      ],
+      "function": "main",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    },
+    {
+      "name": "output-good",
+      "sources": [
+        "output-good.c",
+        "helpers.c",
+        "forward.c"
+      ],
+      "function": "main",
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "entry_requirements": 0
+    },
+    {
+      "name": "output-bad",
+      "sources": [
+        "output-bad.c",
+        "helpers.c",
+        "forward.c"
+      ],
+      "function": "main",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    },
+    {
+      "name": "return-good",
+      "sources": [
+        "return-good.c",
+        "helpers.c",
+        "forward.c"
+      ],
+      "function": "main",
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "entry_requirements": 0
+    },
+    {
+      "name": "return-bad",
+      "sources": [
+        "return-bad.c",
+        "helpers.c",
+        "forward.c"
+      ],
+      "function": "main",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    }
+  ]
+}

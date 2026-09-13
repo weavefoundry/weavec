@@ -1,6 +1,7 @@
 weavec_add_unittest(
   WeaveCAnalysisTests
   SOURCES CheckedCodeTest.cpp
+          UnionCasesTest.cpp
           RuntimeContractsTest.cpp
           ContainerTest.cpp
           AllocatorsTest.cpp

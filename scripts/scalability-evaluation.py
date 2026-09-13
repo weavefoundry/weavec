@@ -173,7 +173,7 @@ def run_corpus(command, *, cwd, stdout, timeout):
 
 
 def observation(binary, output, name, projects, *, checked=False, cache=False,
-                compact=False, timeout=600, archive_reports=False):
+                compact=False, timeout=600, archive_reports=False, compact_projects=()):
     destination = output / name
     destination.mkdir(parents=True, exist_ok=True)
     result = dict(name=name, binary_sha256=digest(binary), projects=[])
@@ -191,7 +191,7 @@ def observation(binary, output, name, projects, *, checked=False, cache=False,
         if checked:
             command += ['--weavec-arg=--checked', f'--weavec-arg=--checked-report={report}',
                         f'--weavec-arg=--analysis-stats={stats}']
-        if compact:
+        if checked and (compact or project['name'] in compact_projects):
             command.append('--weavec-arg=--checked-report-format=compact')
         if cache:
             command.append(f'--weavec-arg=--analysis-cache={output / "cache" / project["name"]}')
@@ -242,6 +242,8 @@ def main():
     parser.add_argument('--only', action='append', default=[])
     parser.add_argument('--repetitions', type=int, default=3)
     parser.add_argument('--timeout', type=float, default=600)
+    parser.add_argument('--compact-project', action='append', default=[],
+                        help='use compact checked reports for a named project, including cold runs')
     parser.add_argument('--archive-reports', action='store_true',
                         help='checksum-verify and compress reports after measurement')
     args = parser.parse_args()
@@ -251,6 +253,9 @@ def main():
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
     projects = json.loads(MANIFEST.read_text())['projects']
+    unknown = set(args.compact_project) - {project['name'] for project in projects}
+    if unknown:
+        parser.error('unknown compact project: ' + ', '.join(sorted(unknown)))
     if args.only:
         projects = [project for project in projects if project['name'] in args.only]
     if not projects:
@@ -260,7 +265,7 @@ def main():
 
     def record(name, **options):
         result = observation(binary, output, name, projects, timeout=args.timeout,
-                             archive_reports=args.archive_reports, **options)
+                             archive_reports=args.archive_reports, compact_projects=args.compact_project, **options)
         summary['observations'].append(result)
         save()
         return result

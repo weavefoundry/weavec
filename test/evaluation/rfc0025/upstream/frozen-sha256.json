@@ -1,0 +1,9 @@
+{
+  "compare-bools.c": "d22365a8ca4c2c12fdc094ae84bd77d101b4aea8eec28de6ad48dd4c8e7359c0",
+  "compare-masked.c": "c31a3b87ba699a9f511aaa4b0918decd3a40b5e0ed9b4b32e5fdf9725d974dfc",
+  "compare-strings.c": "d9b8c1ce2f4b20e7b8af74f05dd7e85957767a1ea05b3568a3f69e007b0c54f2",
+  "compare-uninitialized-bad.c": "662d08f594d8288346dc18d3dfdd69126bab74313783bbae2ba3e38150f2ba8c",
+  "compare-unterminated-bad.c": "dda04258bd7e31548a95c6beca43be6f9425a1033feb4413cf084f615edf8466",
+  "manifest.json": "a46579359ba6b1a87453e5dd67d63e240e193c4349df0a8385d1e541d6304b07",
+  "upstream-identity.json": "3d2ce7f6901652045aaa7dbfb744f59aa62e85dbe7328aa0a36d0e00b3e9df9a"
+}

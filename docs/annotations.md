@@ -759,3 +759,11 @@ a non-null pointer`. No annotation or warning suppression grants runtime safety.
 Implicit output also requires a live standard stream, including through
 helpers that do not spell the stream argument.
 See [C runtime contracts](checked-code.md#c-runtime-contracts).
+
+RFC 0025 adds the `checking-incomplete` reason
+`read requires an initialized compatible union member`. This requirement is
+independent of pointee lifetime, initialized bytes, bounds and ownership. A tag
+comparison cannot establish it. Unrepresented union storage reports
+`union storage cannot be represented`; a call whose input member path cannot
+be resolved reports `union member requirement cannot be instantiated`.
+No new annotation spelling or diagnostic identifier is introduced.

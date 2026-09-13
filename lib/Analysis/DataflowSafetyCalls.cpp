@@ -422,6 +422,7 @@ void FunctionDataflow::checkedCall(const CallExpr &call,
   if (pendingExternal && recording())
     inferred.checked.deferred = true;
   prepareCheckedStringInputs(call, *contract, state);
+  forwardCheckedCaseInputs(call, *contract);
   if (effects && effects->summary &&
       std::ranges::any_of(effects->summary->effects, [](const auto &entry) {
         return entry.second.written;
@@ -576,6 +577,15 @@ void FunctionDataflow::checkedCall(const CallExpr &call,
                                     .family = {}});
         obligation(core::SafetyProperty::Arithmetic, proved, required,
                    "callee byte interval sum must not overflow");
+        continue;
+      }
+      if (requirement.kind == core::CheckedRequirementKind::UnionMember) {
+        const auto ref = builder.resolveSummaryPath(requirement.path, call);
+        if (ref)
+          checkedUnionRequirement(ref->place, requirement.family, call, state);
+        else
+          obligation(core::SafetyProperty::Initialization, false, false,
+                     "union member requirement cannot be instantiated");
         continue;
       }
       const Expr *pointer = requirement.path.isParam() &&
@@ -746,6 +756,7 @@ void FunctionDataflow::checkedCallAfter(const CallExpr &call,
                     entry.second.reason != "modeled C library contract" &&
                     entry.second.reason != "compiler object-size query";
            }))) {
+    state.safety->unions.invalidateAll();
     state.safety->memory.clear();
     for (auto &[storage, type] : state.safety->objectTypes) {
       (void)storage;

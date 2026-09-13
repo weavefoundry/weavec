@@ -343,6 +343,12 @@ void SafetyLedger::addCalls(const SafetyLedger &source, bool trusted,
                                .unsafe = unsafe};
   auto prepared = SafetyEntryPool::findCalls(key, owner);
   if (!prepared) {
+    // RFC 0025: a crowded destination will reject most new keys. Preserve
+    // insertion order without allocating an entire temporary call ledger.
+    if (origins.size() > MaxSafetyObligations - entries().size()) {
+      addCalls(origins, location, function, callee, unsafe);
+      return;
+    }
     prepared =
         prepareCallOrigins(origins, key.location, function, callee, unsafe);
     if (!prepared) {
@@ -711,6 +717,9 @@ void SafetyState::copyMemory(PlaceId source, PlaceId destination) {
     termination.erase(destination);
 }
 void SafetyState::forget(PlaceId place) {
+  unions.forgetPointer(place);
+  if (unions.members.contains(place) || unions.written.contains(place))
+    unions.invalidate(place);
   containers.erase(place);
   objectTypes.erase(place);
   writtenStorage.erase(place);
@@ -733,6 +742,7 @@ void SafetyState::forget(PlaceId place) {
 }
 
 void SafetyState::forgetDependency(PlaceId place) {
+  unions.forgetDependency(place);
   for (auto &[storage, facts] : boundedTermination) {
     (void)storage;
     std::erase_if(facts, [&](const auto &fact) {
@@ -808,6 +818,11 @@ void SafetyState::refinePaths(const PlaceGuard &guard) {
 bool SafetyState::join(const SafetyState &other, const PlaceGuard &left,
                        const PlaceGuard &right) {
   bool changed = other.havoc && !havoc;
+  // Empty path sets mean unknown, never an impossible predecessor.
+  if (unions != other.unions)
+    changed |=
+        unions.join(other.unions, paths.empty() ? std::vector{left} : paths,
+                    other.paths.empty() ? std::vector{right} : other.paths);
   changed |= containers.join(other.containers);
   for (auto &[place, list] : argumentLists) {
     const auto found = other.argumentLists.find(place);

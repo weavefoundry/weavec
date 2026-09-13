@@ -921,6 +921,10 @@ FunctionSummary remapGlobals(const FunctionSummary &summary,
 
   FunctionSummary result;
   result.checked = summary.checked;
+  result.checked.caseInputs.clear();
+  for (const auto &input : summary.checked.caseInputs)
+    if (const auto mapped = remapPath(input))
+      result.checked.noteCaseInput(*mapped);
   const auto remapChecked = [&](auto &requirements) {
     // RFC 0021: parameter/result-only contracts retain their immutable set.
     // Inspect every path-bearing field, including nested numeric premises,

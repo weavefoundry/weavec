@@ -186,9 +186,20 @@ FunctionDataflow::captureCallContext(const CallExpr &call,
       std::ranges::any_of(summary.effects, [](const auto &entry) {
         return entry.second.consumed();
       });
-  if (!changesMemory)
+  // A complete contract already proves its admitted input cases. Its
+  // inductive outputs can be stronger than a particular bounded recheck.
+  const bool checkedCase =
+      !changesMemory && options.checkContracts && summary.checked.computed &&
+      !summary.checked.complete() &&
+      std::ranges::none_of(summary.effects, [](const auto &entry) {
+        return entry.second.written;
+      });
+  if (!changesMemory && !checkedCase)
     return std::nullopt;
   auto footprint = core::callMemoryFootprint(summary);
+  if (checkedCase)
+    footprint.insert(summary.checked.caseInputs.begin(),
+                     summary.checked.caseInputs.end());
   if (options.checkContracts && summary.checked.computed)
     for (const auto &[path, effect] : summary.effects)
       if (effect.written && !path.isResult())
@@ -215,6 +226,11 @@ FunctionDataflow::captureCallContext(const CallExpr &call,
     if (path.isParam() && path.index < call.getNumArgs()) {
       arg = call.getArg(path.index);
       type = arg->IgnoreParenCasts()->getType();
+      // Stripping the null-to-pointer conversion exposes integer literal 0.
+      // Keep its converted pointer type when capturing a null selector.
+      if (arg->getType()->isPointerType() && !type->isPointerType() &&
+          !type->isArrayType())
+        type = arg->getType();
       if (const auto *array = type->getAsArrayTypeUnsafe())
         type = context.getPointerType(array->getElementType());
     } else if (path.isGlobal()) {
@@ -466,8 +482,10 @@ FunctionDataflow::captureCallContext(const CallExpr &call,
   }
   const bool checkedScalars =
       options.checkContracts && summary.checked.computed &&
-      std::ranges::any_of(result.facts, [](const auto &entry) {
-        return !entry.second.isPointer() && entry.second.constant.has_value();
+      std::ranges::any_of(result.facts, [&](const auto &entry) {
+        return checkedCase ? !entry.second.trivial()
+                           : !entry.second.isPointer() &&
+                                 entry.second.constant.has_value();
       });
   if (result.aliases.empty() && !checkedScalars &&
       (!selectedInputs || inputs.size() < 2 || unresolved || unrepresentable))

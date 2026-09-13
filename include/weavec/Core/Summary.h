@@ -241,7 +241,9 @@ enum class CheckedRequirementKind : std::uint8_t {
   ArgumentListConsumed,
   TerminatedWithin,
   /// RFC 0024: named environmental stream; paths and bounds are unused.
-  StandardStream
+  StandardStream,
+  /// RFC 0025: independent initialized member view of overlapping storage.
+  UnionMember
 };
 struct CheckedRequirement {
   CheckedRequirementKind kind = CheckedRequirementKind::Valid;
@@ -303,6 +305,10 @@ struct CheckedContract {
   CheckedRequirements requirements;
   CheckedRequirements establishes;
   SafetyLedger obligations;
+  /// RFC 0025: optional selector discovery, never proof or an entry premise.
+  std::set<SummaryPath> caseInputs;
+
+  void noteCaseInput(const SummaryPath &path);
 
   void require(CheckedRequirement requirement);
   void establish(CheckedRequirement requirement);

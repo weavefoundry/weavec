@@ -87,11 +87,19 @@ static bool checkedTypeUnsupported(QualType type, unsigned depth = 0) {
   if (const auto *array = type->getAsArrayTypeUnsafe())
     return checkedTypeUnsupported(array->getElementType(), depth + 1);
   if (const auto *record = type->getAsRecordDecl()) {
-    if (record->isUnion())
-      return true;
+    if (record->isUnion()) {
+      if (!record->isCompleteDefinition() ||
+          std::cmp_greater(std::ranges::distance(record->fields()),
+                           core::MaxUnionMembers))
+        return true;
+      for (const auto *field : record->fields())
+        if (field->getName().empty() || !field->getType()->isScalarType() ||
+            field->getType()->isComplexType())
+          return true;
+    }
     if (record->isCompleteDefinition())
       for (const auto *field : record->fields())
-        if (field->isBitField() ||
+        if (field->isBitField() || field->isAnonymousStructOrUnion() ||
             checkedTypeUnsupported(field->getType(), depth + 1))
           return true;
   }
@@ -106,6 +114,11 @@ static bool hasCheckedAssumptions(const AnnotationSet &annotations) {
 }
 
 void FunctionDataflow::initializeChecked() {
+  discoverCheckedCases();
+  for (const auto *block : *cfg)
+    for (const auto &element : *block)
+      if (const auto operation = element.getAs<CFGStmt>())
+        checkedCFGOperations.insert(operation->getStmt());
   discoverContainers();
   collectCheckedStrings(*function.getBody());
   inferred.checked.computed = true;
@@ -206,6 +219,10 @@ void FunctionDataflow::initializeChecked() {
 
 void FunctionDataflow::checkedBefore(const Stmt &stmt,
                                      core::AnalysisState &state) {
+  if (checkedUnsupported.contains(&stmt))
+    safetyObligation(core::SafetyProperty::Semantics,
+                     core::SafetyOutcome::Unresolved, stmt, "unsupported",
+                     "unsupported checked C construct or storage type");
   if (const auto *cast = dyn_cast<CastExpr>(&stmt))
     checkedObjectCast(*cast, state);
   if (const auto *declarations = dyn_cast<DeclStmt>(&stmt))
@@ -336,6 +353,7 @@ void FunctionDataflow::checkedAfter(const Stmt &stmt,
       (void)storage;
       type = "?";
     }
+    state.safety->unions.invalidateAll();
     state.safety->containers.clear();
     state.safety->initialized.clear();
     state.safety->pointers.clear();
@@ -380,6 +398,7 @@ void FunctionDataflow::checkedAfter(const Stmt &stmt,
                         byteSizeOf(written->getType(), context) == 1 &&
                         integerConstant(*assignment->getRHS(), context) == 0;
     checkedStringWrite(writtenMemory, zeroed, state);
+    checkedUnionWrite(*written, writtenMemory, state);
     if (const auto ref = builder.resolve(*written))
       if (ref->element.isWhole())
         state.safety->initialized.insert(ref->place);
@@ -769,6 +788,7 @@ void FunctionDataflow::checkedOutputs(const core::AnalysisState &incoming,
   }
   for (const auto outcome : classes) {
     core::CheckedContract outputs;
+    checkedUnionOutputs(outputs, value, outcome, state);
     containerOutputs(outputs, state, returned, outcome);
     for (const auto &[holder, position] : state.safety->positions) {
       if (!position.input)
@@ -1052,6 +1072,10 @@ void FunctionDataflow::checkedFinish(const core::AnalysisState *exitState) {
     checkedOutputs(*exitState);
   }
   for (const Stmt *stmt : checkedUnsupported) {
+    // RFC 0025: evaluated exclusions belong to their reachable proof case.
+    // Unmapped exclusions remain unconditional; absence is not reachability.
+    if (checkedCFGOperations.contains(stmt))
+      continue;
     const bool previous = inUnsafe;
     inUnsafe = unsafeBody || unsafeStmts.contains(stmt);
     safetyObligation(core::SafetyProperty::Semantics,

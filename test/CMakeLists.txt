@@ -225,6 +225,18 @@ if(Python3_Interpreter_FOUND)
     set_tests_properties(checked-${population}-rfc0024
                          PROPERTIES LABELS "integration" TIMEOUT 300)
   endforeach()
+  foreach(population source transport regressions objects cache)
+    add_test(
+      NAME checked-${population}-rfc0025
+      COMMAND
+        "${Python3_EXECUTABLE}"
+        "${PROJECT_SOURCE_DIR}/scripts/checked-cases.py" --population
+        "${population}" --weavec "$<TARGET_FILE:weavec>" --cc
+        "$<TARGET_FILE:weavec-cc>" --output
+        "${CMAKE_CURRENT_BINARY_DIR}/rfc0025-${population}")
+    set_tests_properties(checked-${population}-rfc0025
+                         PROPERTIES LABELS "integration" TIMEOUT 300)
+  endforeach()
   set_tests_properties(checked-evaluation-harness PROPERTIES LABELS "unit")
   add_test(NAME recall-harness
            COMMAND "${Python3_EXECUTABLE}"

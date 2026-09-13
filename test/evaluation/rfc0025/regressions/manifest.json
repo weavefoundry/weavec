@@ -1,0 +1,266 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "name": "alias-read-good",
+      "source": "alias-read-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "entry_requirements": 0
+    },
+    {
+      "name": "addressed-member-read-good",
+      "source": "addressed-member-read-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "entry_requirements": 0
+    },
+    {
+      "name": "addressed-inactive-bad",
+      "source": "addressed-inactive-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    },
+    {
+      "name": "addressed-write-good",
+      "source": "addressed-write-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "entry_requirements": 0
+    },
+    {
+      "name": "addressed-pointer-write-good",
+      "source": "addressed-pointer-write-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "entry_requirements": 0
+    },
+    {
+      "name": "copy-replace-source-good",
+      "source": "copy-replace-source-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "entry_requirements": 0
+    },
+    {
+      "name": "copy-dead-bad",
+      "source": "copy-dead-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    },
+    {
+      "name": "join-dead-bad",
+      "source": "join-dead-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    },
+    {
+      "name": "join-uninitialized-pointee-bad",
+      "source": "join-uninitialized-pointee-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    },
+    {
+      "name": "join-null-bad",
+      "source": "join-null-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    },
+    {
+      "name": "scalar-memcpy-good",
+      "source": "scalar-memcpy-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "entry_requirements": 0
+    },
+    {
+      "name": "scalar-memcpy-view-bad",
+      "source": "scalar-memcpy-view-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    },
+    {
+      "name": "memset-view-bad",
+      "source": "memset-view-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    },
+    {
+      "name": "possible-alias-bad",
+      "source": "possible-alias-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    },
+    {
+      "name": "unknown-call-bad",
+      "source": "unknown-call-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    },
+    {
+      "name": "aggregate-member-bad",
+      "source": "aggregate-member-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    },
+    {
+      "name": "anonymous-promotion-bad",
+      "source": "anonymous-promotion-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    },
+    {
+      "name": "volatile-member-bad",
+      "source": "volatile-member-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    },
+    {
+      "name": "pointer-zero-good",
+      "source": "pointer-zero-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "entry_requirements": 0
+    },
+    {
+      "name": "conditional-output-good",
+      "source": "conditional-output-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "entry_requirements": 0
+    },
+    {
+      "name": "conditional-output-bad",
+      "source": "conditional-output-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    },
+    {
+      "name": "changed-case-bad",
+      "source": "changed-case-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    },
+    {
+      "name": "null-selector-good",
+      "source": "null-selector-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "entry_requirements": 0
+    },
+    {
+      "name": "floating-member-good",
+      "source": "floating-member-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "entry_requirements": 0
+    },
+    {
+      "name": "function-member-good",
+      "source": "function-member-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "entry_requirements": 0
+    }
+  ]
+}

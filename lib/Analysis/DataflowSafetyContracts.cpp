@@ -180,6 +180,21 @@ void FunctionDataflow::captureCheckedPosts(
     }
     if (post.kind == core::CheckedRequirementKind::Container)
       continue;
+    if (post.kind == core::CheckedRequirementKind::UnionMember) {
+      const auto guard = checkedGuard(post.when, call, state);
+      if (!guard || !guard->integers.empty() || !guard->pointers.empty())
+        continue;
+      core::PlaceGuard frozen;
+      for (const auto &[input, fact] : guard->conditions)
+        frozen.require(snapshot(input), fact);
+      posts.push_back({.path = post.path,
+                       .range = {.when = frozen},
+                       .on = post.on,
+                       .storage = {},
+                       .objectType = {},
+                       .unionMember = post.family});
+      continue;
+    }
     if (post.kind == core::CheckedRequirementKind::ObjectType) {
       const auto guard = checkedGuard(post.when, call, state);
       if (guard && guard->trivial())
@@ -468,10 +483,13 @@ void FunctionDataflow::applyCheckedResult(core::PlaceId dest,
                                           core::AnalysisState &state) {
   applyCheckedPositions(call, state, dest);
   applyContainerPosts(call, state, dest);
+  applyCheckedUnionPosts(call, state, dest);
   const auto found = checkedPosts.find(&call);
   if (found == checkedPosts.end())
     return;
   for (const auto &post : found->second) {
+    if (!post.unionMember.empty())
+      continue;
     if (!post.path.isResult() || (post.on && post.on != core::Outcome::NonNull))
       continue;
     std::optional<core::PlaceId> holder = dest;
@@ -515,10 +533,13 @@ void FunctionDataflow::applyCheckedPosts(const CallExpr &call,
                                          core::AnalysisState &state) {
   applyCheckedPositions(call, state);
   applyContainerPosts(call, state);
+  applyCheckedUnionPosts(call, state);
   const auto found = checkedPosts.find(&call);
   if (found == checkedPosts.end())
     return;
   for (const auto &post : found->second) {
+    if (!post.unionMember.empty())
+      continue;
     if (post.path.isResult())
       continue;
     if (!post.objectType.empty()) {
@@ -591,6 +612,8 @@ void FunctionDataflow::applyCheckedPosts(const CallExpr &call,
   // still zero and the entire prefix remains initialized in the call frame.
   // Its immutable index needs no per-call snapshot or changed join identity.
   for (const auto &post : found->second) {
+    if (!post.unionMember.empty())
+      continue;
     if (!post.storage || post.on || !post.range.zeroed ||
         !post.range.when.trivial() || !post.range.begin.place ||
         post.range.begin.scale != 1 || post.range.begin.constant != 0)

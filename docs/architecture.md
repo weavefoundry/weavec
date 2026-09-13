@@ -51,7 +51,7 @@ dispatch. `DataflowRuntime.cpp` checks memory and stream preconditions,
 They use the existing checked call, callback, output and summary machinery.
 Source definitions retain priority over library spellings. Ordinary summaries
 alone never authorize a checked runtime contract. Portable records use checked
-encoding 6, summary format 19 and sidecar format 20.
+encoding 7, summary format 20 and sidecar format 21 (RFC 0025).
 
 | Header             | Purpose                                                                                        |
 | ------------------ | ---------------------------------------------------------------------------------------------- |
@@ -454,7 +454,7 @@ checks by source operation. `--dump-analysis` prints
 These counts are independent of unsafe-region reporting and warning controls.
 A caller requirement is an obligation, not a proof that all callers satisfy it.
 
-`SummaryFormatVersion` is **19** and `SidecarFormatVersion` is **20**. Numeric
+`SummaryFormatVersion` is **20** and `SidecarFormatVersion` is **21**. Numeric
 outputs use `numeric <path> value ...` records; `requires-extent` retains
 optional `start` intervals and typed guards. Core validates types, operators,
 paths, shapes and limits. Comparison, global remapping and dependency
@@ -746,3 +746,25 @@ descriptor. Hitting a limit loses proof. Native inference initially supports
 null-ended singly linked chains; Core also checks endpoint-exclusive explicit
 segments. General graphs, cyclic ownership, tagged unions, volatile/atomic links
 and doubly linked mutation remain outside this predicate.
+
+### Input cases and overlapping member storage (RFC 0025)
+
+`DataflowCases.cpp` discovers bounded scalar/pointer input paths and forwards
+those candidates across calls. `DataflowCallContext.cpp` captures established
+values for read-only helpers as well as memory-changing helpers. Each canonical
+context retains a separately checked summary; generic definition reports and
+selection remain independent. Unsupported CFG operations are accounted for
+where they execute, while unrepresented operations remain conservative.
+
+`Core/Union.h` stores member descriptors and bounded guarded witnesses without
+Clang dependencies. `DataflowUnions.cpp` supplies target layouts, checks member
+reads and invalidates overlapping values on writes. Independently captured
+pointer positions may survive a guarded member join, but the member witness
+never supplies initialized pointee bytes. Consumption, unknown writes and lost
+scalar dependencies retire the corresponding evidence. Record copies project
+holder identities before installing copied pointer facts.
+
+Checked encoding 7 carries optional `caseInputs` and `union-member` requirements
+and postconditions. Sidecars and checkpoints retain the existing canonical
+context-to-summary association. Expanded and compact reports include every
+retained case premise and ledger under the generic function's `cases` field.

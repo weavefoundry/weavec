@@ -133,7 +133,10 @@ class CompactTables:
                     calls=[self.location(i) for i in self.at(self.paths, calls)])
 
     def expand_function(self, function):
-        return dict(function, obligations=[self.obligation(i) for i in function['obligations']])
+        result = dict(function, obligations=[self.obligation(i) for i in function['obligations']])
+        if 'cases' in result:
+            result['cases'] = [self.expand_function(case) for case in result['cases']]
+        return result
 
 
 def expand_report(document):
