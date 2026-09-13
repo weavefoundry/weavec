@@ -104,8 +104,12 @@ should be covered by a lit test because they pin the exact user-visible output.
 ### Sanitizers
 
 `cmake --workflow --preset ci-debug` builds with ASan+UBSan and runs
-everything. Analysis code is the most likely place for lifetime bugs of our
-own, so run this before submitting analysis changes.
+everything. This CI preset uses `-O1 -gline-tables-only` to keep the full
+evaluation suite within the job's runtime budget while retaining assertions,
+both sanitizers and source locations in stack traces. The `dev-asan` preset
+keeps the unoptimized Debug build for interactive debugging. Analysis code is
+the most likely place for lifetime bugs of our own, so run the CI preset
+before submitting analysis changes.
 
 ## Formatting and linting
 
