@@ -105,7 +105,7 @@ void CheckedRequirements::intersect(const CheckedRequirements &other) {
       insert(entry);
 }
 
-static constexpr std::array<std::string_view, 23> Kinds{
+static constexpr std::array<std::string_view, 24> Kinds{
     "valid",
     "extent",
     "initialized",
@@ -128,7 +128,8 @@ static constexpr std::array<std::string_view, 23> Kinds{
     "argument-list",
     "argument-list-consumed",
     "terminated-within",
-    "standard-stream"};
+    "standard-stream",
+    "union-member"};
 
 std::string_view toString(CheckedRequirementKind value) noexcept {
   const auto index = static_cast<std::size_t>(value);
@@ -140,6 +141,13 @@ parseCheckedRequirementKind(std::string_view value) {
     if (Kinds.at(i) == value)
       return static_cast<CheckedRequirementKind>(i);
   return std::nullopt;
+}
+void CheckedContract::noteCaseInput(const SummaryPath &path) {
+  if (path.isResult() || path.steps.size() > MaxHeapPathDepth)
+    return;
+  caseInputs.insert(path);
+  if (caseInputs.size() > 64)
+    caseInputs.erase(std::prev(caseInputs.end()));
 }
 void CheckedContract::require(CheckedRequirement requirement) {
   if (requirements.size() != MaxSafetyRequirements)
@@ -168,6 +176,8 @@ void CheckedContract::join(const CheckedContract &other) {
   limited |= signature != other.signature;
   deferred |= other.deferred;
   limited |= other.limited;
+  for (const auto &path : other.caseInputs)
+    noteCaseInput(path);
   if (requirements != other.requirements)
     for (const auto &requirement : other.requirements)
       if (!requirements.contains(requirement))

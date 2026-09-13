@@ -30,7 +30,7 @@ int main(void) {
   p[0] = 1; free(p);
   return 0;
 }
-// FORMAT: weavec-summaries 20
+// FORMAT: weavec-summaries 21
 // FORMAT-DAG: numeric result value
 // FORMAT-DAG: requires-extent 0 param 1 scale 1 plus 1 start param 1 scale 1 plus 0
 // LINK-DAG: error: 'put_at' requires 'a' before its start [weavec::out-of-bounds]

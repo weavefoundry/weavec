@@ -15,39 +15,53 @@ namespace weavec::analysis {
 std::optional<ResolvedSummary> SummaryStore::specializeMemory(
     std::string_view symbol, const core::CallContext &bindings,
     const AnalysisOptions &options, core::DiagnosticSink *sink) {
-  if (!bindings.valid())
+  const bool checkedCase = options.stats != nullptr && options.checkContracts &&
+                           !bindings.facts.empty();
+  if (checkedCase)
+    options.stats->add("checked_case_requests");
+  const auto decline = [&]() -> std::optional<ResolvedSummary> {
+    if (checkedCase)
+      options.stats->add("checked_case_declines");
     return std::nullopt;
+  };
+  if (!bindings.valid())
+    return decline();
   const MemoryContextKey key{std::string(symbol), bindings};
   noteDependency(symbol);
   auto &requests = memoryRequests[key.first];
   if (!requests.contains(bindings) &&
       requests.size() >= core::MaxMemoryContexts)
-    return std::nullopt;
+    return decline();
   requests.insert(bindings);
   const auto *function = callable(symbol);
   const auto *definition = function ? function->getDefinition() : nullptr;
   if (!context)
-    return std::nullopt;
+    return decline();
   if (!definition) {
     if (!database)
-      return std::nullopt;
+      return decline();
     const auto exported = database->exportContext(bindings, globalTable);
     if (!exported)
-      return std::nullopt;
+      return decline();
     const auto *summary = database->findMemorySpecialization(symbol, *exported);
     if (!summary)
-      return std::nullopt;
+      return decline();
+    if (checkedCase)
+      options.stats->add("checked_case_hits");
     return ResolvedSummary{.summary = importSummary(*summary),
                            .source = SummarySource::Program};
   }
   if (activeMemoryContexts.contains(key) ||
       activeMemoryContexts.size() + activeContexts.size() >=
           core::MaxCallContextDepth)
-    return std::nullopt;
+    return decline();
   discardStaleContexts();
   if (!memorySpecialized.contains(key) || !memorySpecialized.at(key)) {
-    if (options.stats)
+    if (options.stats) {
       options.stats->add("specialization_misses");
+      if (checkedCase)
+        options.stats->add("checked_case_analyses");
+    }
     std::optional<core::AnalysisTimer> invocationTimer;
     if (options.stats)
       invocationTimer.emplace(options.stats, "memory:" + std::string(symbol));
@@ -67,7 +81,7 @@ std::optional<ResolvedSummary> SummaryStore::specializeMemory(
     analysis.callbackBindings = bindings.callbacks;
     analysis.run();
     if (!analysis.validMemoryContext)
-      return std::nullopt;
+      return decline();
     auto summary = analysis.summary();
     applyContract(*function, summary);
     memorySpecialized[key] = publishSummary(std::move(summary));
@@ -78,6 +92,8 @@ std::optional<ResolvedSummary> SummaryStore::specializeMemory(
   } else {
     if (options.stats)
       options.stats->add("specialization_hits");
+    if (checkedCase)
+      options.stats->add("checked_case_hits");
     inheritDependencies(memoryDependencies[key]);
   }
   if (sink && bindings.reportDiagnostics)

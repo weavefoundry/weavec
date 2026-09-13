@@ -1,0 +1,58 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "name": "compare-bools",
+      "source": "compare-bools.c",
+      "function": "main",
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "entry_requirements": 0
+    },
+    {
+      "name": "compare-masked",
+      "source": "compare-masked.c",
+      "function": "main",
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "entry_requirements": 0
+    },
+    {
+      "name": "compare-strings",
+      "source": "compare-strings.c",
+      "function": "main",
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "entry_requirements": 0
+    },
+    {
+      "name": "compare-uninitialized-bad",
+      "source": "compare-uninitialized-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    },
+    {
+      "name": "compare-unterminated-bad",
+      "source": "compare-unterminated-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    }
+  ]
+}

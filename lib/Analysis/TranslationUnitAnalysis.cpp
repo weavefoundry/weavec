@@ -480,6 +480,13 @@ void TranslationUnitAnalyzer::run(
     const std::string symbol = callableSymbol(*function);
     const auto requests = store.callbackRequests[symbol];
     const auto memory = store.memoryRequests[symbol];
+    const bool selectedDefinition =
+        options.checkContracts &&
+        ((options.checked &&
+          (!options.checkedMainFileOnly ||
+           context.getSourceManager().isInMainFile(function->getLocation()))) ||
+         options.checkedFunctions.contains(function->getNameAsString()) ||
+         getAnnotations(*function).checked);
     if (!memory.empty()) {
       if (options.dumpStream) {
         core::DiagnosticCollector ignored;
@@ -518,7 +525,7 @@ void TranslationUnitAnalyzer::run(
         }
       }
       analyzer.validate(*function);
-      bool needsGenericCheck = false;
+      bool needsGenericCheck = selectedDefinition;
       for (const auto &input : memory)
         if (!store.specializeMemory(symbol, input, options, &remembered) &&
             input.reportDiagnostics)
@@ -538,14 +545,22 @@ void TranslationUnitAnalyzer::run(
           recursiveFunctions.contains(function->getCanonicalDecl()));
     } else {
       analyzer.validate(*function);
+      if (selectedDefinition)
+        analyzer.analyze(
+            *function, store, true,
+            recursiveFunctions.contains(function->getCanonicalDecl()));
       for (const auto &bindings : requests)
         (void)store.specialize(*function, bindings, options, &remembered);
     }
     if (options.reportUnannotated)
       reportUnannotatedInterface(*function);
   }
+  reportConfirmedSizedFields(reported, remembered.seen());
+  // The sized-field reporting pass can invalidate contexts as well.
   // Reporting can refine generic imports. Rebuild every requested result
   // against the final store before exporting it, including nested requests.
+  if (!options.checkContracts)
+    return;
   for (unsigned round = 0; round < core::MaxCallContextDepth; ++round) {
     const auto requests = store.memoryRequests;
     for (const auto &[symbol, contexts] : requests)
@@ -554,7 +569,6 @@ void TranslationUnitAnalyzer::run(
     if (requests == store.memoryRequests)
       break;
   }
-  reportConfirmedSizedFields(reported, remembered.seen());
 }
 
 void TranslationUnitAnalyzer::RememberingSink::report(

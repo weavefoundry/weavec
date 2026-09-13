@@ -510,6 +510,28 @@ positional/wide formats, `%n`, scanning and unbound dynamic formats remain
 separate work. A complete conditional runtime contract retains its entry
 requirements and does not certify an entire library.
 
+## Milestone 24 — Input cases and discriminated objects
+
+Design: [RFC 0025](rfcs/0025-case-sensitive-checked-contracts.md).
+
+- [x] Recheck incomplete helpers under established scalar, tag and nullness
+      inputs, including read-only and forwarded callback cases.
+- [x] Keep generic definitions independently selected and preserve their
+      complete contracts when a bounded case would lose inductive outputs.
+- [x] Track named scalar and pointer union members separately from pointer
+      validity, lifetime, bounds and initialized pointee bytes.
+- [x] Invalidate overlapping member facts; preserve complete compatible copies,
+      guarded joins, helper requirements and output-member guarantees.
+- [x] Transport complete proof cases through version 20 summaries, version 21
+      sidecars and checked encoding 7, including compact reports and caches.
+- [x] Complete the frozen source, object, upstream and adversarial populations,
+      full Debug/ASan/UBSan suites, corpus preservation and cost validation;
+      publish the [validation record](validation-rfc0025.md).
+
+Aggregate union members, representation punning, anonymous member promotion,
+volatile/atomic union storage and unrestricted symbolic execution remain
+separate work. A tag chooses a branch; an actual write establishes its payload.
+
 ## Ongoing
 
 - Corpus testing against real C projects (`scripts/corpus.py`; false-positive

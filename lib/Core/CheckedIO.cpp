@@ -233,6 +233,10 @@ public:
                (!result.begin.isConstant() || result.begin.constant >= 0) &&
                (!result.begin.isConstant() || !result.end.isConstant() ||
                 result.begin.constant < result.end.constant);
+    if (result.kind == CheckedRequirementKind::UnionMember)
+      valid &= UnionMember::decode(result.family).has_value() &&
+               result.begin == PathAffine::ofConstant(0) &&
+               result.end == PathAffine::ofConstant(0);
     if (result.kind == CheckedRequirementKind::ObjectType)
       valid &= ObjectType::parse(result.family).has_value();
     if (result.kind == CheckedRequirementKind::Container ||
@@ -270,7 +274,8 @@ public:
       valid &= result.on.has_value();
     }
     result.ifNonNull = flag();
-    if (result.kind == CheckedRequirementKind::ObjectType ||
+    if (result.kind == CheckedRequirementKind::UnionMember ||
+        result.kind == CheckedRequirementKind::ObjectType ||
         result.kind == CheckedRequirementKind::Container ||
         result.kind == CheckedRequirementKind::ContainerSeparated ||
         result.kind == CheckedRequirementKind::ContainerFresh ||
@@ -294,13 +299,16 @@ private:
 std::string printCheckedContract(const CheckedContract &contract,
                                  const GlobalNamer &names) {
   CheckedWriter out;
-  out.text("6");
+  out.text("7");
   out.text(contract.signature);
   out.number(contract.computed);
   out.number(contract.selected);
   out.number(contract.deferred);
   out.number(contract.limited);
   out.number(contract.obligations.limited());
+  out.number(contract.caseInputs.size());
+  for (const auto &input : contract.caseInputs)
+    out.text(printSummaryPath(input, names));
   out.number(contract.requirements.size());
   for (const auto &requirement : contract.requirements)
     out.requirement(requirement, names);
@@ -333,7 +341,7 @@ std::string printCheckedContract(const CheckedContract &contract,
 std::optional<CheckedContract>
 parseCheckedContract(std::string_view record, const GlobalResolver &resolve) {
   CheckedReader in(record);
-  if (in.text() != "6")
+  if (in.text() != "7")
     return std::nullopt;
   CheckedContract result;
   result.signature = in.text();
@@ -343,6 +351,15 @@ parseCheckedContract(std::string_view record, const GlobalResolver &resolve) {
   result.limited = in.flag();
   if (in.flag())
     result.obligations.markLimited();
+  const auto inputs = in.number<std::size_t>();
+  if (!in.good() || inputs > 64)
+    return std::nullopt;
+  for (std::size_t i = 0; i < inputs; ++i) {
+    const auto path = parseSummaryPath(in.text(), resolve);
+    if (!path || path->isResult() || path->steps.size() > MaxHeapPathDepth ||
+        !result.caseInputs.insert(*path).second)
+      return std::nullopt;
+  }
   const auto readRequirements = [&](auto &requirements) {
     const auto count = in.number<std::size_t>();
     if (!in.good() || count > MaxSafetyRequirements)

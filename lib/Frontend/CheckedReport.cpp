@@ -15,6 +15,7 @@
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <functional>
 #include <memory>
 
 namespace weavec::frontend {
@@ -25,16 +26,26 @@ void CheckedReport::record(const analysis::UnitExports &unit) {
 }
 
 void CheckedReport::invalidate(std::string_view reason) {
-  for (auto &[source, unit] : units)
-    for (auto &[name, contract] : unit.checkedDefinitions)
+  for (auto &[source, unit] : units) {
+    const auto invalidateContract = [&](std::string_view name,
+                                        core::CheckedContract &contract) {
       contract.obligations.add(
           {.property = core::SafetyProperty::Semantics,
            .outcome = core::SafetyOutcome::Unresolved,
            .location = {.file = source, .line = 0, .column = 0, .opaque = 0},
-           .function = name,
+           .function = std::string(name),
            .subject = "whole-program analysis",
            .reason = std::string(reason),
            .calls = {}});
+    };
+    for (auto &[name, contract] : unit.checkedDefinitions)
+      invalidateContract(name, contract);
+    for (auto &[name, definition] : unit.functions)
+      for (auto &[input, summary] : definition.memorySpecializations) {
+        (void)input;
+        invalidateContract(name, summary.checked);
+      }
+  }
 }
 
 bool CheckedReport::failed(const analysis::UnitExports &unit,
@@ -117,16 +128,12 @@ void CheckedReport::write(llvm::raw_ostream &out, bool invocationOK) const {
     const core::GlobalNamer names = [&](std::uint32_t id) {
       return unit.globals.nameOf(id).str();
     };
-    bool firstFunction = true;
-    for (const auto &[name, contract] : unit.checkedDefinitions) {
-      if (!firstFunction)
-        out << ',';
-      firstFunction = false;
-      ++total;
-      selected += contract.selected ? 1 : 0;
-      complete += contract.complete() ? 1 : 0;
-      trusted += contract.complete() && contract.obligations.trusted() ? 1 : 0;
-      deferred += contract.deferred ? 1 : 0;
+    std::function<void(std::string_view, const core::CheckedContract &,
+                       const core::CallContext *)>
+        writeContract;
+    writeContract = [&](std::string_view name,
+                        const core::CheckedContract &contract,
+                        const core::CallContext *premises) {
       std::string_view status = "incomplete";
       if (contract.complete()) {
         status = "proven";
@@ -144,6 +151,18 @@ void CheckedReport::write(llvm::raw_ostream &out, bool invocationOK) const {
           << ",\"limited\":"
           << (contract.limited || contract.obligations.limited() ? "true"
                                                                  : "false");
+      if (premises)
+        out << ",\"premises\":"
+            << quote(core::printCallContext(*premises, names));
+      out << ",\"case_inputs\":[";
+      bool firstInput = true;
+      for (const auto &path : contract.caseInputs) {
+        if (!firstInput)
+          out << ',';
+        firstInput = false;
+        out << quote(core::printSummaryPath(path, names));
+      }
+      out << ']';
       const auto requirements = [&](std::string_view key, const auto &entries) {
         out << "," << quote(key) << ":[";
         bool first = true;
@@ -189,7 +208,36 @@ void CheckedReport::write(llvm::raw_ostream &out, bool invocationOK) const {
         writeCalls(entry.calls);
         out << '}';
       }
-      out << "]}";
+      out << ']';
+      if (!premises) {
+        out << ",\"cases\":[";
+        bool firstCase = true;
+        if (const auto definition = unit.functions.find(std::string(name));
+            definition != unit.functions.end())
+          for (const auto &[input, summary] :
+               definition->second.memorySpecializations) {
+            if (!summary.checked.computed)
+              continue;
+            if (!firstCase)
+              out << ',';
+            firstCase = false;
+            writeContract(name, summary.checked, &input);
+          }
+        out << ']';
+      }
+      out << '}';
+    };
+    bool firstFunction = true;
+    for (const auto &[name, contract] : unit.checkedDefinitions) {
+      if (!firstFunction)
+        out << ',';
+      firstFunction = false;
+      ++total;
+      selected += contract.selected ? 1 : 0;
+      complete += contract.complete() ? 1 : 0;
+      trusted += contract.complete() && contract.obligations.trusted() ? 1 : 0;
+      deferred += contract.deferred ? 1 : 0;
+      writeContract(name, contract, nullptr);
     }
     out << "]}";
   }

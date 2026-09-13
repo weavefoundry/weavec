@@ -10,6 +10,8 @@
 #include "Dataflow.h"
 #include "IntegerSupport.h"
 
+#include <array>
+
 using namespace clang;
 
 namespace weavec::analysis {
@@ -153,6 +155,29 @@ FunctionDataflow::checkedMemoryAt(core::PlaceId holder,
                                   const core::Affine &begin,
                                   const core::Affine &end,
                                   const core::AnalysisState &state) {
+  // A borrowed union object's member is the same holder under either name.
+  // Canonicalize only definite, bounded storage images, never may-alias values.
+  if (!state.safety->unions.members.empty()) {
+    std::array<core::PlaceId, core::MaxHeapPathDepth> visited{};
+    std::size_t count = 0;
+    while (count < visited.size()) {
+      if (std::find(visited.begin(),
+                    visited.begin() + static_cast<std::ptrdiff_t>(count),
+                    holder) !=
+          visited.begin() + static_cast<std::ptrdiff_t>(count))
+        break;
+      visited.at(count++) = holder;
+      const auto images = borrowedImages(holder, state);
+      if (images.size() != 1 || images.front() == holder)
+        break;
+      const auto *field =
+          dyn_cast_or_null<FieldDecl>(builder.declFor(images.front()));
+      if (!field || !field->getParent()->isUnion() ||
+          !field->getType()->isPointerType())
+        break;
+      holder = images.front();
+    }
+  }
   if (state.safety->invalidatedPointers.contains(holder))
     return CheckedMemory{.storage = places.deref(holder),
                          .begin = begin,
@@ -244,6 +269,12 @@ FunctionDataflow::checkedMemoryAt(core::PlaceId holder,
     result.input.reset();
     result.inputPlace.reset();
   }
+  if (!result.extent)
+    if (const auto *field =
+            dyn_cast_or_null<FieldDecl>(builder.declFor(result.storage));
+        field && field->getParent()->isUnion())
+      if (const auto bytes = byteSizeOf(field->getType(), context))
+        result.extent = core::Affine::ofConstant(*bytes);
   if (!result.extent)
     if (const auto accessible = state.safety->accessible.find(result.storage);
         accessible != state.safety->accessible.end())
@@ -457,9 +488,13 @@ FunctionDataflow::checkedMemory(const Expr &pointer, const core::Affine &begin,
     offset = known->offset.plus(origin.offset);
   }
   if (origin.kind == ValueOrigin::Kind::Borrow)
-    if (const auto *var = builder.varForPlace(result.storage))
-      if (const auto size = byteSizeOf(var->getType(), context))
-        result.extent = core::Affine::ofConstant(*size);
+    if (const auto *decl =
+            dyn_cast_or_null<ValueDecl>(builder.declFor(result.storage))) {
+      const auto *field = dyn_cast<FieldDecl>(decl);
+      if (isa<VarDecl>(decl) || (field && field->getParent()->isUnion()))
+        if (const auto size = byteSizeOf(decl->getType(), context))
+          result.extent = core::Affine::ofConstant(*size);
+    }
   if (!offset.isZero()) {
     const auto unit = byteSizeOf(pointer.getType()->getPointeeType(), context);
     std::int64_t shift = 0;
@@ -786,8 +821,13 @@ bool FunctionDataflow::checkedRequire(core::CheckedRequirementKind kind,
 
 void FunctionDataflow::checkedAccess(const Expr &expr, const PlaceRef &ref,
                                      Role role, core::AnalysisState &state) {
-  // RFC 0022: a function designator is not an object memory access. Its
-  // pointer operand is still evaluated and checked in the ordinary walk.
+  // Intermediate member operands have Role::Ignore in the ordinary walk.
+  // Loading a union pointer to reach a pointee still reads that member.
+  for (const auto *pointer : ref.derefExprs)
+    if (pointer)
+      checkedUnionAccess(*pointer, Role::Read, state);
+  checkedUnionAccess(expr, role, state);
+  // RFC 0022: the function designator itself is not object memory.
   if (expr.getType()->isFunctionType())
     return;
   if (checkedContainerAccess(expr,

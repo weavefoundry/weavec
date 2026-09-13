@@ -4316,6 +4316,7 @@ void FunctionDataflow::copyRecordPlaces(core::PlaceId dest,
     bool definitelyWritten;
     bool localObject;
     bool incomplete;
+    std::optional<CheckedPointer> checkedPointer;
   };
   std::vector<FieldFacts> facts;
   const std::size_t srcDepth = places.depth(source);
@@ -4361,7 +4362,24 @@ void FunctionDataflow::copyRecordPlaces(core::PlaceId dest,
         .definitelyWritten = state.definiteHeapWrites.contains(place),
         .localObject = state.heapLocalObjects.contains(place),
         .incomplete = state.incompleteHeap.contains(place),
+        .checkedPointer = {},
     };
+    if (state.safety)
+      if (const auto *decl =
+              dyn_cast_or_null<ValueDecl>(builder.declFor(place));
+          (decl && decl->getType()->isPointerType()) ||
+          state.safety->pointers.contains(place) ||
+          state.safety->positions.contains(place) ||
+          state.safety->objects.contains(place)) {
+        ValueOrigin origin;
+        origin.kind = ValueOrigin::Kind::Copy;
+        origin.place = PlaceRef{.place = place,
+                                .derefs = {},
+                                .derefExprs = {},
+                                .derefElements = {},
+                                .element = {}};
+        field.checkedPointer = captureCheckedPointer(field.to, origin, state);
+      }
     if (const auto record = state.moves.recordOf(place))
       field.moved = *record;
     if (const auto record = state.resources.recordOf(place))
@@ -4378,7 +4396,22 @@ void FunctionDataflow::copyRecordPlaces(core::PlaceId dest,
   }
 
   const auto identities = state.definiteAliases;
+  const auto unionFacts =
+      state.safety ? state.safety->unions : core::UnionState{};
   reinit(dest, state);
+  if (state.safety)
+    for (const auto &[storage, witnesses] : unionFacts.members)
+      if (storage == source || places.isDescendantOf(storage, source)) {
+        const auto target = places.translate(storage, source, dest);
+        if (state.safety->unions.members.size() < core::MaxUnionObjects) {
+          auto copiedWitnesses = witnesses;
+          for (auto &witness : copiedWitnesses)
+            if (witness.pointer)
+              witness.pointer->holder =
+                  places.translate(witness.pointer->holder, source, dest);
+          state.safety->unions.members[target] = std::move(copiedWitnesses);
+        }
+      }
   for (const FieldFacts &field : facts) {
     if (!field.targets.empty())
       state.callTargets[field.to] = field.targets;
@@ -4400,6 +4433,8 @@ void FunctionDataflow::copyRecordPlaces(core::PlaceId dest,
       state.spatial.set(field.to, *field.spatial);
     if (field.null)
       state.nulls.set(field.to, *field.null);
+    if (field.checkedPointer)
+      installCheckedPointer(field.to, *field.checkedPointer, state);
     if (field.scalar) {
       state.scalars.set(field.to, *field.scalar);
       state.relations.learn(field.to, core::Relation::Equal, field.from);
@@ -4446,10 +4481,15 @@ void FunctionDataflow::copyRecordPlaces(core::PlaceId dest,
 void FunctionDataflow::applyResultStores(core::PlaceId dest,
                                          const CallExpr &call,
                                          core::AnalysisState &state) {
+  if (options.checkContracts && checkedDeferredCalls.contains(&call))
+    state.safety->deferred.insert(dest);
   const auto effects = classifyCall(call, summaries);
   if (!effects)
     return;
   const core::FunctionSummary &summary = *effects->summary;
+  if (options.checkContracts) {
+    applyCheckedUnionPosts(call, state, dest);
+  }
   if (summary.heap.contains(core::SummaryPath::result())) {
     applyHeapResult(dest, call, state);
     return;
@@ -4493,14 +4533,18 @@ void FunctionDataflow::initRecord(core::PlaceId dest, const InitListExpr &init,
     return;
 
   const auto assignField = [&](const FieldDecl &field, const Expr &value) {
-    if (isa<ImplicitValueInitExpr>(&value) && !field.getType()->isIntegerType())
+    if (isa<ImplicitValueInitExpr>(&value) &&
+        !field.getType()->isIntegerType() && !field.getType()->isPointerType())
       return;
     const core::PlaceId place = builder.fieldPlace(dest, field);
     const QualType type = field.getType();
     if (type->isPointerType()) {
-      applyPointerAssign(place, builder.classifyValue(value), value,
+      auto origin = builder.classifyValue(value);
+      if (isa<ImplicitValueInitExpr>(&value))
+        origin.kind = ValueOrigin::Kind::Null;
+      applyPointerAssign(place, origin, value,
                          type->getPointeeType().isConstQualified(), state);
-      applyHeapValue(place, builder.classifyValue(value), state);
+      applyHeapValue(place, origin, state);
     } else if (type->isRecordType()) {
       copyRecord(place, value, state);
     } else if (type->isIntegerType()) {
@@ -4513,9 +4557,24 @@ void FunctionDataflow::initRecord(core::PlaceId dest, const InitListExpr &init,
 
   if (record->isUnion()) {
     const FieldDecl *field = semantic->getInitializedFieldInUnion();
+    if (semantic->getNumInits() == 0) {
+      if (!field && !record->field_empty())
+        field = *record->field_begin();
+      if (field) {
+        const auto *zero =
+            new (context) ImplicitValueInitExpr(field->getType());
+        assignField(*field, *zero);
+        // ASTContext owns the synthetic node and releases its arena.
+        // NOLINTNEXTLINE(clang-analyzer-cplusplus.NewDeleteLeaks)
+        checkedUnionSet(dest, *field, state);
+      }
+      return;
+    }
     if (field != nullptr && semantic->getNumInits() > 0 &&
-        semantic->getInit(0) != nullptr)
+        semantic->getInit(0) != nullptr) {
       assignField(*field, *semantic->getInit(0));
+      checkedUnionSet(dest, *field, state);
+    }
     return;
   }
   // Mirrors the semantic form's layout: one initializer per field in
@@ -4593,8 +4652,10 @@ void FunctionDataflow::handleCall(const CallExpr &call,
     inferred.incomplete.insert(effects->summary->incomplete.begin(),
                                effects->summary->incomplete.end());
   prepareNumericCall(call, *effects->summary, state);
-  if (options.checkContracts)
+  if (options.checkContracts) {
     checkedCall(call, &*effects, state);
+    checkedUnionCall(call, *effects, state);
+  }
   const auto checkedComplete = llvm::scope_exit([&] {
     if (options.checkContracts)
       checkedCallAfter(call, &*effects, state);
@@ -6202,6 +6263,8 @@ FunctionDataflow::doConsume(const PlaceRef &ref, core::MoveReason reason,
     // either, however the paths join later (RFC 0008, *Replaced values*).
     const auto path = builder.summaryPathOf(target.place);
     const bool ownValue = path && state.isOverwritten(*path);
+    if (state.safety)
+      state.safety->unions.forgetPointer(target.place);
     state.moves.markMoved(target.place, reason, here, via, target.element,
                           std::string(family), ownValue, guard);
     // `offset` is where the released value lies in its object, counted from
@@ -6283,8 +6346,15 @@ void FunctionDataflow::applyPointerAssign(core::PlaceId dest,
       }
   }
   const auto checkedAssignment = llvm::scope_exit([&] {
-    if (options.checkContracts && element.isWhole())
+    if (options.checkContracts && element.isWhole()) {
       installCheckedPointer(dest, checkedValue, state);
+      const auto images = borrowedImages(dest, state);
+      if (images.size() == 1 && images.front() != dest)
+        if (const auto *field =
+                dyn_cast_or_null<FieldDecl>(builder.declFor(images.front()));
+            field && field->getParent()->isUnion())
+          installCheckedPointer(images.front(), checkedValue, state);
+    }
   });
   // RFC 0009: an alternative whose guard the facts refute is not a value
   // this path can receive (`p = f(n)` after `if (n == 0) return;` with `f`

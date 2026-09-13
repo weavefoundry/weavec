@@ -155,6 +155,40 @@ A potentially overlapping write must preserve the witness, establish a new
 zero, or lose the termination evidence. Separating pointer holders does not
 separate the arrays they reference.
 
+## Check input cases and union members
+
+RFC 0025 rechecks helpers under bounded facts established by a caller,
+including read-only helpers. For example, `read_if(0, 0)` can be checked when
+`read_if` returns immediately for a zero selector, even if its other branch
+has unresolved arithmetic or memory accesses. Forwarding helpers and resolved
+callbacks retain the case premises. Every evaluated selector still needs
+initialized storage; a tag value supplies no payload or pointee permission.
+
+Named, complete unions with scalar or pointer members can be checked directly:
+
+```c
+union value { int number; int *pointer; };
+int main(void) {
+    int n = 7;
+    union value v = {.pointer = &n};
+    return *v.pointer;
+}
+```
+
+Reading a member requires evidence that this member was initialized. Reading
+another member, or changing an enclosing tag without establishing the selected
+payload, leaves checking incomplete. A pointer member independently needs live
+storage, sufficient bounds and initialized pointee bytes. Compatible complete
+record copies preserve member evidence; partial byte writes and unknown writes
+invalidate overlapping values. Guarded branch joins retain only evidence
+justified on every applicable incoming path.
+
+A helper can require an input member or establish a member through an output
+parameter or a returned record. The `union-member` requirement is separate
+from initialized byte ranges. Unsupported aggregate/array members, anonymous
+member promotion, bit-fields, volatile/atomic union storage and representation
+punning remain incomplete. There is no union or tag annotation.
+
 ## Read a report
 
 `--checked-report=path` computes contracts and writes JSON without selecting
@@ -167,7 +201,14 @@ units with source, target and function records. Each function records:
 - `status`: proven, conditional, trusted, or incomplete;
 - sufficient `requirements` and guaranteed `establishes`, including `when`
   input guards and optional `on` returning outcomes;
-- `obligations` with property, outcome, source location, reason and call origins.
+- `obligations` with property, outcome, source location, reason and call origins;
+- `case_inputs`, the optional candidate input paths, and `cases`, each with
+  canonical `premises` and its own complete contract and obligation ledger.
+
+Case results do not change the generic function's status or the totals of
+selected definitions. Selecting both a successful caller and its incomplete
+generic helper still fails the invocation. Compact reports preserve the same
+case records when expanded with `scripts/checked-report.py`.
 
 Obligation outcomes distinguish proven facts, entry requirements, explicit
 trust, unresolved coverage and violations. A complete conditional helper still
@@ -433,6 +474,6 @@ establish the exact written prefix. If `0 <= n && n < sizeof buffer`, `buffer[n]
 is the written terminator. If `n >= sizeof buffer`, truncation initializes the
 capacity and its final NUL. A negative or overwritten result establishes neither.
 
-Runtime records use checked encoding 6, summary format 19 and sidecar format 20.
+Runtime records use checked encoding 7, summary format 20 and sidecar format 21.
 Rebuild objects carrying older sidecars. The cache validates the executable and
 source dependencies before reusing these records.

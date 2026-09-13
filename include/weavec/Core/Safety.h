@@ -15,6 +15,7 @@
 #include "weavec/Core/Scalar.h"
 #include "weavec/Core/SourceLocation.h"
 #include "weavec/Core/Spatial.h"
+#include "weavec/Core/Union.h"
 
 #include <iterator>
 #include <map>
@@ -288,6 +289,7 @@ struct ArgumentListState {
 };
 
 struct SafetyState {
+  UnionState unions;
   ContainerFacts containers;
   std::map<PlaceId, ArgumentListState> argumentLists;
   std::set<PlaceId> initialized;

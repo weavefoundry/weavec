@@ -1,0 +1,423 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "name": "readonly-good",
+      "source": "readonly-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "entry_requirements": 0
+    },
+    {
+      "name": "readonly-bad",
+      "source": "readonly-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "live|null|interval"
+    },
+    {
+      "name": "forward-good",
+      "source": "forward-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "entry_requirements": 0
+    },
+    {
+      "name": "forward-bad",
+      "source": "forward-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "live|null|interval"
+    },
+    {
+      "name": "callback-good",
+      "source": "callback-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "entry_requirements": 0
+    },
+    {
+      "name": "callback-bad",
+      "source": "callback-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "live|null|interval"
+    },
+    {
+      "name": "masked-tag-good",
+      "source": "masked-tag-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "entry_requirements": 0
+    },
+    {
+      "name": "masked-tag-bad",
+      "source": "masked-tag-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "live|null|interval"
+    },
+    {
+      "name": "selector-write-bad",
+      "source": "selector-write-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "live|null|interval"
+    },
+    {
+      "name": "selector-uninitialized-bad",
+      "source": "selector-uninitialized-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "initializ"
+    },
+    {
+      "name": "member-int-good",
+      "source": "member-int-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "entry_requirements": 0
+    },
+    {
+      "name": "member-zero-good",
+      "source": "member-zero-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "entry_requirements": 0
+    },
+    {
+      "name": "member-pointer-good",
+      "source": "member-pointer-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "entry_requirements": 0
+    },
+    {
+      "name": "member-pointer-bad",
+      "source": "member-pointer-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "live|null"
+    },
+    {
+      "name": "member-uninitialized-bad",
+      "source": "member-uninitialized-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "member|initializ"
+    },
+    {
+      "name": "member-inactive-bad",
+      "source": "member-inactive-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "member|initializ"
+    },
+    {
+      "name": "member-replace-good",
+      "source": "member-replace-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "entry_requirements": 0
+    },
+    {
+      "name": "member-replace-bad",
+      "source": "member-replace-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "member|initializ"
+    },
+    {
+      "name": "member-alias-good",
+      "source": "member-alias-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "entry_requirements": 0
+    },
+    {
+      "name": "member-alias-bad",
+      "source": "member-alias-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "member|initializ"
+    },
+    {
+      "name": "member-copy-good",
+      "source": "member-copy-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "entry_requirements": 0
+    },
+    {
+      "name": "member-copy-bad",
+      "source": "member-copy-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "member|initializ"
+    },
+    {
+      "name": "member-memcpy-good",
+      "source": "member-memcpy-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "entry_requirements": 0
+    },
+    {
+      "name": "member-partial-bad",
+      "source": "member-partial-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "member|initializ"
+    },
+    {
+      "name": "member-byte-write-bad",
+      "source": "member-byte-write-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "member|initializ"
+    },
+    {
+      "name": "member-saved-alias-bad",
+      "source": "member-saved-alias-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "freed|live"
+    },
+    {
+      "name": "member-read-helper-good",
+      "source": "member-read-helper-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "entry_requirements": 0
+    },
+    {
+      "name": "member-read-helper-bad",
+      "source": "member-read-helper-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "member"
+    },
+    {
+      "name": "member-output-good",
+      "source": "member-output-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "entry_requirements": 0
+    },
+    {
+      "name": "member-output-bad",
+      "source": "member-output-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "member"
+    },
+    {
+      "name": "tagged-good",
+      "source": "tagged-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "entry_requirements": 0
+    },
+    {
+      "name": "tagged-bad",
+      "source": "tagged-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "member|initializ"
+    },
+    {
+      "name": "tagged-pointer-good",
+      "source": "tagged-pointer-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "entry_requirements": 0
+    },
+    {
+      "name": "tagged-change-bad",
+      "source": "tagged-change-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "member|initializ"
+    },
+    {
+      "name": "member-join-good",
+      "source": "member-join-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "entry_requirements": 0
+    },
+    {
+      "name": "member-join-bad",
+      "source": "member-join-bad.c",
+      "function": "main",
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "member|initializ"
+    },
+    {
+      "name": "tagged-join-good",
+      "source": "tagged-join-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "entry_requirements": 0
+    },
+    {
+      "name": "member-return-good",
+      "source": "member-return-good.c",
+      "function": "main",
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "entry_requirements": 0
+    }
+  ]
+}

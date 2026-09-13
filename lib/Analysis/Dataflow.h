@@ -347,6 +347,33 @@ private:
                      const core::ContainerShape &shape,
                      core::AnalysisState &state);
   void initializeChecked();
+  void discoverCheckedCases();
+  [[nodiscard]] std::string checkedUnionMember(const clang::FieldDecl &field);
+  [[nodiscard]] core::PlaceId
+  checkedUnionStorage(core::PlaceId place, const core::AnalysisState &state);
+  void checkedUnionAccess(const clang::Expr &expr, Role role,
+                          core::AnalysisState &state);
+  void checkedUnionWrite(const clang::Expr &expr,
+                         const std::optional<CheckedMemory> &memory,
+                         core::AnalysisState &state);
+  void checkedUnionClobber(const std::optional<CheckedMemory> &memory,
+                           const clang::Stmt &at, core::AnalysisState &state);
+  void checkedUnionCall(const clang::CallExpr &call, const CallEffects &effects,
+                        core::AnalysisState &state);
+  void checkedUnionSet(core::PlaceId storage, const clang::FieldDecl &field,
+                       core::AnalysisState &state);
+  void checkedUnionRequirement(core::PlaceId storage, std::string_view member,
+                               const clang::Stmt &at,
+                               core::AnalysisState &state);
+  void checkedUnionOutputs(core::CheckedContract &outputs,
+                           const clang::Expr *value,
+                           std::optional<core::Outcome> outcome,
+                           const core::AnalysisState &state);
+  void applyCheckedUnionPosts(const clang::CallExpr &call,
+                              core::AnalysisState &state,
+                              std::optional<core::PlaceId> result = {});
+  void forwardCheckedCaseInputs(const clang::CallExpr &call,
+                                const core::CheckedContract &contract);
   void checkedBefore(const clang::Stmt &stmt, core::AnalysisState &state);
   void checkedAfter(const clang::Stmt &stmt, core::AnalysisState &state);
   [[nodiscard]] std::optional<core::IntegerValue>
@@ -543,6 +570,9 @@ private:
     std::optional<core::PlaceId> storage;
     bool ifNonNull = false;
     std::string objectType;
+    // Default preserves existing designated initializers.
+    // NOLINTNEXTLINE(readability-redundant-member-init)
+    std::string unionMember = {};
     friend bool operator==(const CheckedPost &, const CheckedPost &) = default;
   };
   std::map<const clang::CallExpr *, std::vector<CheckedPost>> checkedPosts;
@@ -586,6 +616,7 @@ private:
                          const core::FunctionSummary &summary,
                          core::AnalysisState &state);
   std::set<const clang::Stmt *> checkedUnsupported;
+  std::set<const clang::Stmt *> checkedCFGOperations;
 
   clang::ASTContext &context;
   const clang::FunctionDecl &function;

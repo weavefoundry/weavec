@@ -1,0 +1,72 @@
+$ROOT/test/evaluation/rfc0020/projection.c:4:40: error: cannot establish checked safety: local value must be initialized [weavec::checking-incomplete]
+    4 | static int first(void) { int x; return x; }
+      |                                        ^
+$ROOT/test/evaluation/rfc0020/projection.c:5:41: error: cannot establish checked safety: local value must be initialized [weavec::checking-incomplete]
+    5 | static int second(void) { int y; return y; }
+      |                                         ^
+$ROOT/test/evaluation/rfc0020/projection.c:8:10: error: cannot establish checked safety: integer operation may be invalid [weavec::checking-incomplete]
+    8 |   return second() + first();
+      |          ^
+$ROOT/test/evaluation/rfc0020/projection.c:8:10: error: cannot establish checked safety: local value must be initialized [weavec::checking-incomplete]
+$ROOT/test/evaluation/rfc0020/projection.c:5:41: note: checked obligation originates here
+    5 | static int second(void) { int y; return y; }
+      |                                         ^
+$ROOT/test/evaluation/rfc0020/projection.c:8:21: error: cannot establish checked safety: local value must be initialized [weavec::checking-incomplete]
+    8 |   return second() + first();
+      |                     ^
+$ROOT/test/evaluation/rfc0020/projection.c:4:40: note: checked obligation originates here
+    4 | static int first(void) { int x; return x; }
+      |                                        ^
+$ROOT/test/evaluation/rfc0020/projection.c:7:17: error: cannot establish checked safety: integer operation may be invalid [weavec::checking-incomplete]
+    7 |   if (n) return first() + second();
+      |                 ^
+$ROOT/test/evaluation/rfc0020/projection.c:7:17: error: cannot establish checked safety: local value must be initialized [weavec::checking-incomplete]
+$ROOT/test/evaluation/rfc0020/projection.c:4:40: note: checked obligation originates here
+    4 | static int first(void) { int x; return x; }
+      |                                        ^
+$ROOT/test/evaluation/rfc0020/projection.c:7:27: error: cannot establish checked safety: local value must be initialized [weavec::checking-incomplete]
+    7 |   if (n) return first() + second();
+      |                           ^
+$ROOT/test/evaluation/rfc0020/projection.c:5:41: note: checked obligation originates here
+    5 | static int second(void) { int y; return y; }
+      |                                         ^
+$ROOT/test/evaluation/rfc0020/projection.c:10:36: error: cannot establish checked safety: integer operation may be invalid [weavec::checking-incomplete]
+   10 | static int diamond(int n) { return middle(n) + middle(!n); }
+      |                                    ^
+$ROOT/test/evaluation/rfc0020/projection.c:10:36: error: cannot establish checked safety: local value must be initialized [weavec::checking-incomplete]
+$ROOT/test/evaluation/rfc0020/projection.c:7:17: note: checked obligation originates here
+    7 |   if (n) return first() + second();
+      |                 ^
+$ROOT/test/evaluation/rfc0020/projection.c:4:40: note: checked obligation originates here
+    4 | static int first(void) { int x; return x; }
+      |                                        ^
+$ROOT/test/evaluation/rfc0020/projection.c:10:48: error: cannot establish checked safety: integer operation may be invalid [weavec::checking-incomplete]
+   10 | static int diamond(int n) { return middle(n) + middle(!n); }
+      |                                                ^
+$ROOT/test/evaluation/rfc0020/projection.c:8:10: note: checked obligation originates here
+    8 |   return second() + first();
+      |          ^
+$ROOT/test/evaluation/rfc0020/projection.c:10:48: error: cannot establish checked safety: local value must be initialized [weavec::checking-incomplete]
+   10 | static int diamond(int n) { return middle(n) + middle(!n); }
+      |                                                ^
+$ROOT/test/evaluation/rfc0020/projection.c:8:21: note: checked obligation originates here
+    8 |   return second() + first();
+      |                     ^
+$ROOT/test/evaluation/rfc0020/projection.c:4:40: note: checked obligation originates here
+    4 | static int first(void) { int x; return x; }
+      |                                        ^
+$ROOT/test/evaluation/rfc0020/projection.c:14:25: error: cannot establish checked safety: integer operation may be invalid [weavec::checking-incomplete]
+   14 | int main(void) { return diamond(1) + trusted(0); }
+      |                         ^
+$ROOT/test/evaluation/rfc0020/projection.c:14:25: error: cannot establish checked safety: local value must be initialized [weavec::checking-incomplete]
+$ROOT/test/evaluation/rfc0020/projection.c:10:36: note: checked obligation originates here
+   10 | static int diamond(int n) { return middle(n) + middle(!n); }
+      |                                    ^
+$ROOT/test/evaluation/rfc0020/projection.c:7:17: note: checked obligation originates here
+    7 |   if (n) return first() + second();
+      |                 ^
+$ROOT/test/evaluation/rfc0020/projection.c:4:40: note: checked obligation originates here
+    4 | static int first(void) { int x; return x; }
+      |                                        ^
+error: checked safety requirements were not established
+15 errors generated.
