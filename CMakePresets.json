@@ -79,9 +79,12 @@
     {
       "name": "ci-debug",
       "displayName": "CI (Debug + ASan/UBSan)",
+      "description": "Assertions and ASan/UBSan with light optimization so the full evaluation suite fits the CI runtime budget.",
       "inherits": "ci-base",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_C_FLAGS_DEBUG": "-O1 -gline-tables-only",
+        "CMAKE_CXX_FLAGS_DEBUG": "-O1 -gline-tables-only",
         "WEAVEC_SANITIZERS": "address;undefined"
       }
     },

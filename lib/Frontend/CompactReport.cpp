@@ -16,18 +16,33 @@ std::uint64_t CompactReport::location(const core::SourceLocation &value) {
       {strings.intern(value.file), value.line, value.column});
 }
 
+std::uint64_t CompactReport::callPath(const core::SafetyCallPath &value) {
+  const auto *identity = value.entries().data();
+  if (const auto found = pathIds.find(identity); found != pathIds.end())
+    return found->second.id;
+  std::vector<std::uint64_t> calls;
+  calls.reserve(value.size());
+  for (const auto &call : value)
+    calls.push_back(location(call));
+  const auto id = paths.intern(std::move(calls));
+  // RFC 0020: this bounded memo changes neither table contents nor ordering.
+  // Clearing it merely repeats interning; retained paths prevent address reuse.
+  if (pathIds.size() >= 1024)
+    pathIds.clear();
+  pathIds.emplace(identity, PathReference{.path = value, .id = id});
+  return id;
+}
+
 std::uint64_t CompactReport::obligation(const core::SafetyObligation &entry) {
   if (const auto found = rowIds.find(&entry); found != rowIds.end())
     return found->second;
-  std::vector<std::uint64_t> calls;
-  calls.reserve(entry.calls.size());
-  for (const auto &call : entry.calls)
-    calls.push_back(location(call));
+  // Intern paths before row fields, preserving the existing first-use order.
+  const auto calls = callPath(entry.calls);
   const auto id = obligations.intern(
       {strings.intern(std::string(core::toString(entry.property))),
        strings.intern(std::string(core::toString(entry.outcome))),
        location(entry.location), strings.intern(entry.subject),
-       strings.intern(entry.reason), paths.intern(std::move(calls)),
+       strings.intern(entry.reason), calls,
        includeFunctions ? strings.intern(entry.function) : 0});
   rowIds.emplace(&entry, id);
   return id;

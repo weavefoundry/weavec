@@ -398,11 +398,57 @@ full-consumption information. This is a documented conservative limitation.
 General graphs, cyclic owning lists, arbitrary trees, doubly linked mutation,
 volatile/atomic links and concurrent access are outside this milestone.
 
-Summary format 18 and sidecar format 19 require rebuilding older compiler
+Summary format 21 and sidecar format 22 require rebuilding older compiler
 objects. Persistent caches validate executable, source, preprocessing and
 callee dependencies before reusing a container contract. See the
 [validation report](validation-rfc0023.md) for the frozen acceptance population,
 real-source callers and measured cost.
+
+## Growable buffers and vectors
+
+[RFC 0026](rfcs/0026-growable-buffer-contracts.md) adds inferred contracts for
+ordinary records with a data pointer and unsigned logical-length and capacity
+fields. Discovery proposes a shape; callers establish it from real storage and
+initialization. Field names and annotations do not grant the predicate.
+
+The basic contract relates `0 <= length <= capacity` to accessible backing
+storage and initialized elements in `[0,length)`. Capacity can be smaller than
+a separately known physical allocation. Increasing either count never creates
+storage or initializes bytes. A terminated byte buffer additionally has an
+initialized zero at `data[length]` and room for it.
+
+Reserve and append compose through inferred helpers, including checked
+`realloc` and allocate/copy/free patterns. Success-only guarantees activate
+after the result is tested. An intervening write retires the dependent
+guarantee. Overflow guards must establish the evaluated C allocation size;
+wrapped arithmetic cannot be interpreted as a larger mathematical size.
+Runtime loops retain only invariants established by their entry and every
+back edge. No fixed number of successful appends establishes an arbitrary loop.
+
+Logical truncation and clearing do not release the backing allocation. A steal
+retains the returned allocation's actual extent and initialized contents while
+leaving the source in the state its code establishes. Saved pointers into old
+backing storage remain invalid after successful replacement.
+
+Pointer-element vectors distinguish initialized cells, borrowed pointees and
+separately owned pointees. A proved append can transfer a distinct owned
+allocation into an owned prefix; insertion failure leaves its caller responsible
+for cleanup. Complete element cleanup discharges those obligations before the
+array is released. Duplicate insertion, skipped cleanup and byte-level mutation
+cannot manufacture a valid ownership transfer. Unsupported quantified element
+transfers remain incomplete.
+
+The portable `buffer`, `buffer-preserved` and `buffer-appended` records travel
+through the normal source, object and cache workflows. They add no annotation
+spelling or pointer ABI. Rebuild older object sidecars for format 22.
+Shape discovery is bounded to 16 descriptors and 64 instances; descriptors are
+limited to 16 KiB. Exhaustion is reported as incomplete. The initial discovery
+rule requires one non-function data pointer and two unsigned, non-Boolean count
+fields, with fixed-size scalar or pointer elements. Embedded buffer records are
+supported; ambiguous layouts can decline inference. Recursive element records,
+nested vector inference and shared-reference protocols are outside this
+structural family. Quantified pop, truncate and steal of owned pointer elements
+also remain incomplete.
 
 ## C runtime contracts
 
@@ -474,6 +520,6 @@ establish the exact written prefix. If `0 <= n && n < sizeof buffer`, `buffer[n]
 is the written terminator. If `n >= sizeof buffer`, truncation initializes the
 capacity and its final NUL. A negative or overwritten result establishes neither.
 
-Runtime records use checked encoding 7, summary format 20 and sidecar format 21.
+Runtime records use checked encoding 8, summary format 21 and sidecar format 22.
 Rebuild objects carrying older sidecars. The cache validates the executable and
 source dependencies before reusing these records.

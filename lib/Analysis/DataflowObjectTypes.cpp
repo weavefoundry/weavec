@@ -13,7 +13,9 @@
 #include "clang/Basic/SourceManager.h"
 #include "clang/Basic/TargetInfo.h"
 
+#include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringExtras.h"
+#include "llvm/Support/Path.h"
 
 #include <algorithm>
 #include <utility>
@@ -47,8 +49,18 @@ static std::optional<core::ObjectType> objectTypeOf(QualType type,
         sm.getExpansionLoc(record->getCanonicalDecl()->getLocation());
     if (location.isInvalid())
       return std::nullopt;
-    result.identity += ":scope:" + llvm::toHex(sm.getFilename(location), true) +
-                       ":" + std::to_string(sm.getFileOffset(location));
+    // RFC 0022/0026: the same anonymous header declaration has one identity
+    // whether a TU found it through a relative include or an absolute path.
+    llvm::SmallString<256> source(sm.getFilename(location));
+    if (const auto file = sm.getFileEntryRefForID(sm.getFileID(location))) {
+      const auto real = file->getFileEntry().tryGetRealPathName();
+      if (!real.empty())
+        source = real;
+    }
+    (void)sm.getFileManager().makeAbsolutePath(source);
+    llvm::sys::path::remove_dots(source, true);
+    result.identity += ":scope:" + llvm::toHex(source, true) + ":" +
+                       std::to_string(sm.getFileOffset(location));
   }
   return result.valid() ? std::optional(result) : std::nullopt;
 }

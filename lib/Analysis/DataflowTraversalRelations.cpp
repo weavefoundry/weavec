@@ -7,6 +7,9 @@
 //===----------------------------------------------------------------------===//
 
 #include "Dataflow.h"
+#include "IntegerSupport.h"
+
+#include "llvm/ADT/ScopeExit.h"
 
 #include <limits>
 
@@ -603,7 +606,139 @@ bool FunctionDataflow::checkedAtMost(const core::Affine &lhs,
   inferred.checked.limited |= relations.limited();
   if (relations.limited())
     inferred.incomplete.insert("traversal relational limit reached");
-  return proved;
+  if (proved || bufferObjects.empty() || provingBufferBound)
+    return proved;
+  // RFC 0026: compare represented nonwrapping sums with a min/max growth
+  // choice. A maximum supplies either operand's lower bound on both arms.
+  // Recursive arithmetic premises use the base relation solver, preventing a
+  // sum from proving its own no-overflow condition.
+  provingBufferBound = true;
+  llvm::scope_exit reset([&] { provingBufferBound = false; });
+  const auto expression =
+      [&](const core::Affine &value) -> std::optional<NumericExpression> {
+    if (!value.place) {
+      if (value.constant < 0)
+        return std::nullopt;
+      return NumericExpression::constant(core::IntegerValue::ofBits(
+          {.width = 64, .isSigned = false},
+          static_cast<std::uint64_t>(value.constant)));
+    }
+    auto found = numericExpressions.find(*value.place);
+    std::optional<NumericExpression> result;
+    if (found != numericExpressions.end())
+      result = found->second;
+    else if (const auto stored = state.numericValues.find(*value.place);
+             stored != state.numericValues.end())
+      result = stored->second;
+    else if (const auto *decl =
+                 dyn_cast_or_null<ValueDecl>(builder.declFor(*value.place)))
+      if (const auto type = integerTypeOf(*decl, context))
+        result = NumericExpression::input(*value.place, *type);
+    if (result && result->inputKey())
+      for (const auto &[pair, edge] : state.relations.all()) {
+        if (edge.relation != core::Relation::Equal || edge.offset != 0 ||
+            (pair.first != *value.place && pair.second != *value.place))
+          continue;
+        const auto other =
+            pair.first == *value.place ? pair.second : pair.first;
+        if (const auto stored = state.numericValues.find(other);
+            stored != state.numericValues.end()) {
+          result = stored->second.converted(result->type());
+          break;
+        }
+      }
+    if (!result || result->type().isSigned || value.scale != 1)
+      return std::nullopt;
+    for (unsigned depth = 0; depth < 8; ++depth) {
+      const auto expanded = result->substitute<core::PlaceId>(
+          [&](core::PlaceId key,
+              core::IntegerType type) -> std::optional<NumericExpression> {
+            // A represented entry case can fix an operand (for example
+            // append_bytes(..., 1)). Use its target integer value inside
+            // the expression as well as when the whole bound is constant.
+            if (const auto fact = state.scalars.factOf(key))
+              if (const auto exact = fact->inType(type).constant())
+                return NumericExpression::constant(*exact);
+            const auto stored = state.numericValues.find(key);
+            if (stored != state.numericValues.end() &&
+                !stored->second.dependsOn(key))
+              return stored->second.converted(type);
+            return NumericExpression::input(key, type);
+          });
+      if (!expanded)
+        return std::nullopt;
+      if (*expanded == *result)
+        break;
+      result = expanded;
+    }
+    if (value.constant != 0) {
+      const auto magnitude =
+          value.constant > 0
+              ? static_cast<std::uint64_t>(value.constant)
+              : std::uint64_t{0} - static_cast<std::uint64_t>(value.constant);
+      const auto amount = NumericExpression::constant(
+          core::IntegerValue::ofBits(result->type(), magnitude));
+      const auto op =
+          value.constant > 0 ? core::IntegerOp::Add : core::IntegerOp::Subtract;
+      if (!operationDoesNotOverflow(op, *result, amount, result->type(), state))
+        return std::nullopt;
+      result = NumericExpression::operation(op, *result, amount);
+    }
+    return result;
+  };
+  const auto left = expression(a);
+  const auto right = expression(b);
+  if (!left || !right || left->type() != right->type())
+    return false;
+  const auto compare = [&](auto &&self, const NumericExpression &x,
+                           const NumericExpression &y, unsigned depth) -> bool {
+    if (depth > 8 || x.type() != y.type())
+      return false;
+    if (x == y)
+      return true;
+    const auto &xr = x.all().back();
+    const auto &yr = y.all().back();
+    const auto xp = x.operands();
+    const auto yp = y.operands();
+    if (yr.kind == core::IntegerNodeKind::Operation &&
+        yr.op == core::IntegerOp::Maximum && yp.size() == 2)
+      return self(self, x, yp.front(), depth + 1) ||
+             self(self, x, yp.back(), depth + 1);
+    if (xr.kind == core::IntegerNodeKind::Operation &&
+        xr.op == core::IntegerOp::Minimum && xp.size() == 2)
+      return self(self, xp.front(), y, depth + 1) ||
+             self(self, xp.back(), y, depth + 1);
+    std::vector<NumericExpression> xs;
+    std::vector<NumericExpression> ys;
+    std::uint64_t xc = 0;
+    std::uint64_t yc = 0;
+    const auto flatten = [&](auto &&walk, const NumericExpression &part,
+                             std::vector<NumericExpression> &terms,
+                             std::uint64_t &constant) -> bool {
+      if (const auto exact = part.constantValue())
+        return !__builtin_add_overflow(constant, exact->bits, &constant);
+      const auto &root = part.all().back();
+      const auto parts = part.operands();
+      if (root.kind == core::IntegerNodeKind::Operation &&
+          root.op == core::IntegerOp::Add && parts.size() == 2) {
+        if (!operationDoesNotOverflow(root.op, parts.front(), parts.back(),
+                                      root.type, state))
+          return false;
+        return walk(walk, parts.front(), terms, constant) &&
+               walk(walk, parts.back(), terms, constant);
+      }
+      terms.push_back(part);
+      return true;
+    };
+    if (!flatten(flatten, x, xs, xc) || !flatten(flatten, y, ys, yc))
+      return false;
+    std::ranges::sort(xs);
+    std::ranges::sort(ys);
+    // Every remaining unsigned summand is nonnegative. Flattening above
+    // already checked that each addition has its mathematical value.
+    return xc <= yc && std::ranges::includes(ys, xs);
+  };
+  return compare(compare, *left, *right, 0);
 }
 
 std::optional<core::PathAffine>

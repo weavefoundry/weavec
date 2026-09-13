@@ -51,13 +51,14 @@ dispatch. `DataflowRuntime.cpp` checks memory and stream preconditions,
 They use the existing checked call, callback, output and summary machinery.
 Source definitions retain priority over library spellings. Ordinary summaries
 alone never authorize a checked runtime contract. Portable records use checked
-encoding 7, summary format 20 and sidecar format 21 (RFC 0025).
+encoding 8, summary format 21 and sidecar format 22 (RFC 0026).
 
 | Header             | Purpose                                                                                        |
 | ------------------ | ---------------------------------------------------------------------------------------------- |
 | `Ownership.h`      | `OwnershipKind` lattice (`Unknown ⊑ {Owned, Shared, Mutable} ⊑ Raw`) and `join`. `Raw` is "no guarantee": tracked, but usable only inside an unsafe region. |
 | `Place.h`          | `PlaceId` and `PlaceTable`: structured places (`p`, `s.f`, `*p`, `p->f`, `a[*]`, `a[0]`) with parent/descendant/translate queries. |
 | `Array.h`          | Bounded constant/symbolic selectors, half-open intervals, sparse spans and evidence-based membership/disjointness queries (RFC 0015). |
+| `Buffer.h`         | Target-layout descriptors, current initialized-prefix invariants, backing ownership, pointer-sequence identity and guarded buffer postconditions (RFC 0026). |
 | `AliasRelation.h`  | Symmetric may-alias graph over places; closed under copies, plain union at joins (deliberately not transitive). Each edge records the `PointerOffset` between the two places — the same value (`Zero`), a constant number of elements, a field, or `Unknown` — so a pointer derived from another is a name for the same object at a known distance (RFC 0011), and which element of the other end is meant (RFC 0006); `separateExact` refutes a zero-offset edge on a `!=` edge. |
 | `Lifetime.h`       | `LifetimeId` and `LifetimeConstraints` (transitive `outlives` queries; `'static` is id 0).      |
 | `Borrow.h`         | `Loan` (place, kind, lifetime, holder) and `BorrowState`: may this borrow be created; may this place be moved or mutated; `expireHolders` drops the loans of holders a predicate declares dead (RFC 0006 liveness). |
@@ -218,7 +219,7 @@ argument-conditional summaries and inferred `noreturn` by
   from a compilation database.
 - `Sidecar.h` reads and writes `foo.o.weavec`: the unit's exports, the cc1
   command that produced it and the diagnostics already reported, in a
-  line-oriented text format versioned by its `weavec-summaries 16` header.
+  line-oriented text format versioned by its `weavec-summaries 21` header.
 - `Driver.h` is `weavec-cc`: Clang's `driver::Driver` plans the jobs, each
   `-cc1` job runs in-process with WeaveC's consumer multiplexed beside
   Clang's, the compile step writes the sidecar, and the link step runs
@@ -286,7 +287,7 @@ snapshot site invalidates the old generation's dependent facts. The domain
 remains bounded; RFC 0017 extends these snapshots to every dependency of a
 typed symbolic expression while retaining affine and relation fast paths.
 
-The current summary version 18 and sidecar version 19 retain heap descriptions, post
+The current summary version 21 and sidecar version 22 retain heap descriptions, post
 references and string metadata. `ProgramDatabase` remaps global references
 and compares these descriptions as part of normal dependency invalidation.
 The compiler and tooling whole-program modes share this implementation.
@@ -454,7 +455,7 @@ checks by source operation. `--dump-analysis` prints
 These counts are independent of unsafe-region reporting and warning controls.
 A caller requirement is an obligation, not a proof that all callers satisfy it.
 
-`SummaryFormatVersion` is **20** and `SidecarFormatVersion` is **21**. Numeric
+`SummaryFormatVersion` is **21** and `SidecarFormatVersion` is **22**. Numeric
 outputs use `numeric <path> value ...` records; `requires-extent` retains
 optional `start` intervals and typed guards. Core validates types, operators,
 paths, shapes and limits. Comparison, global remapping and dependency
@@ -600,7 +601,7 @@ can partition eligible small loops by completed back edges before falling
 back to widening. Every final obligation is checked on converged states.
 
 `position`, `progress` and explicit `terminator` quantities cross interfaces
-through checked-record encoding 4. Call-entry snapshots precede ordinary
+through checked-record encoding 8. Call-entry snapshots precede ordinary
 effects, with output positions installed afterward. Portable call contexts
 can additionally contain directed same-array byte-pointer orders (`o:`
 records); these neither equate addresses nor invent ownership shares. They
@@ -618,7 +619,7 @@ objects for compiler-sidecar validation before replay. Compilation may defer
 an unavailable external contract; the link pass must resolve it. Checked
 failure reaches Clang independently of the diagnostic filtering policy.
 
-Summary format 16 and sidecar format 17 carry guarded/outcome-qualified contracts,
+Summary format 21 and sidecar format 22 carry guarded/outcome-qualified contracts,
 numeric outputs and RFC 0021 traversal records. Checked record encoding uses
 version 3; report JSON uses expanded version 2 or compact version 3.
 Strict parsing and global remapping reject missing premises. Explanation depth
@@ -645,9 +646,35 @@ analysis finishes. A preparation cache is owned by the retained AST and contains
 CFGs, lexical lifetimes and liveness with its nonreturning-block assumptions.
 Place IDs, initial states, call effects and diagnostics are per-run data.
 
+`ProgramDatabase` publishes one immutable generic contract for callable,
+external-definition and indirect-candidate lookup where their contents agree.
+Copied databases share those publications. Duplicate-definition and candidate
+joins construct private replacements, preserving other indexes and earlier
+database generations. Renumbering happens before publication; checkpoints still
+retain every lookup namespace. Completed dataflow results move into publication
+instead of copying their owned maps.
+Within one unit addition, indirect candidates of a shared type accumulate in
+a private group before publication, avoiding repeated copies of its growing
+contract. Whole-program members with matching global numbering move their
+complete export sets into place; remapping uses the existing namespace rules.
+Completed cache candidates retain replay metadata beside a single export set.
+Checkpoint publication temporarily takes those exports and restores them after
+the write, including on failure, before any later analysis runs.
+
 `CompilationDatabaseUnit` and the compiler's `Cc1Unit` retain an AST during
 whole-program iteration. The frontend's common analysis/replay path attaches a
 fresh reporting consumer, the current program database and warning controls.
+The retained-unit diagnostic consumer writes through a private 16 KiB stderr
+buffer and flushes after each diagnostic. It preserves Clang's rendered output,
+color policy and prompt delivery without changing global stream buffering.
+Compact report interning reuses immutable call paths through a 1,024-entry memo
+that retains its backing storage. Eviction repeats interning without changing
+first-use table identifiers or report semantics.
+Call checking resolves an erased argument holder only when its static type
+cannot supply an expected object view; recovery is consumed within that one
+validation. Trust classification reuses the ledger's exact trusted-origin
+projection. Diagnostic identities scan plain ASCII in bounded words and retain
+the byte-wise UTF-8/escape rules for every other input.
 `SafetyLedger` copies share storage until mutation. Semantic equality compares
 operation identity, outcome and exhaustion; diagnostic wording and route choice
 have a separate equality operation.
@@ -657,7 +684,7 @@ settles. Private format 2 separates shared obligation/path/ledger tables from
 canonical sidecar records carrying the remaining export metadata. It checks
 producer round trips in the same global namespace and validates all table
 references before restoring contracts. Diagnostics and dependencies use bounded
-JSON records. The cache format is independent of sidecar format 17. Input validation preprocesses an effective
+JSON records. The cache format is independent of the sidecar format. Input validation preprocesses an effective
 invocation; imported validation projects observed symbols plus conservative
 global facts and requests. The [guide](incremental-analysis.md) describes cache
 misses and compact report version 3.
@@ -667,7 +694,7 @@ computes it from the effective preprocessor invocation before compiling, then
 recomputes it from the recorded command before validating any checked link
 input. This catches new conditional-include targets as well as changed loaded
 files. Unsupported or unverifiable preprocessing cannot substantiate checked
-object replay. RFC 0021 extends the records with summary format 16 and
+object replay. RFC 0021 extended the records with summary format 16 and
 sidecar format 17; the preprocessing and executable bindings still apply.
 
 ## Checked C interfaces (RFC 0022)
@@ -738,7 +765,7 @@ They describe a subset plus freshly added nodes; they do not promise full input
 consumption. Fresh outputs require actual allocation evidence. Tail outputs are
 imported across read-only calls. A terminal output can establish a detached
 node's null successor. Descriptors, source premises and capability combinations
-are validated during decoding. Summary format 18 and sidecar format 19 prevent
+are validated during decoding. Summary format 21 and sidecar format 22 prevent
 older metadata from silently discarding these records.
 
 Limits are 32 fields, 64 explicit nodes, 64 active facts and 16 KiB per encoded
@@ -764,7 +791,35 @@ never supplies initialized pointee bytes. Consumption, unknown writes and lost
 scalar dependencies retire the corresponding evidence. Record copies project
 holder identities before installing copied pointer facts.
 
-Checked encoding 7 carries optional `caseInputs` and `union-member` requirements
+Checked encoding 8 carries optional `caseInputs` and `union-member` requirements
 and postconditions. Sidecars and checkpoints retain the existing canonical
 context-to-summary association. Expanded and compact reports include every
 retained case premise and ledger under the generic function's `cases` field.
+
+### Contiguous buffer invariants (RFC 0026)
+
+`Core/Buffer.h` separates layout, initialized prefix, optional termination,
+backing release permission and pointer-element sequence ownership. Its must
+facts intersect at joins. Guarded posts carry immutable call results and lose
+their authority on dependent writes. Bounded sequence refinements distinguish
+preserving entry elements from appending a separately represented pointer.
+
+`DataflowBuffers.cpp` discovers candidate records and establishes the current
+predicate from allocation, byte, count and lifetime facts. It materializes
+relational bounds without equating successive backing allocations.
+`DataflowBufferContracts.cpp` checks caller premises, activates result-guarded
+posts, projects interfaces and accounts for element release obligations.
+`DataflowTraversalRelations.cpp` proves bounded min/max and nonwrapping sum
+relations on each predecessor. Compound count updates carry only bounds and
+initialized prefixes proved for their evaluated right-hand side.
+
+`SummaryStore` memoizes immutable layout discovery, including rejected shapes,
+for one AST lifetime. Its 256-entry cache recomputes on saturation and never
+stores flow facts or proof results. Discovery avoids interning places for
+records with no buffer subobjects. Buffer-specific range snapshots and numeric
+reasoning run only in functions with registered buffer candidates.
+
+Checked encoding 8 adds validated `buffer`, `buffer-preserved` and
+`buffer-appended` requirements and outputs to the existing interface codec.
+Summary format 21 and sidecar format 22 reject older encodings. Ordinary
+warnings remain independent from checked completeness.

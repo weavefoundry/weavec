@@ -570,7 +570,7 @@ Calls whose inputs have no established interacting relationship still use
 generic summaries; silence does not prove arbitrary pointers disjoint.
 The [validation report](validation-rfc0016.md) records the supported matrix
 and remaining coverage limits. These context records are retained in the
-current format 20 sidecars; rebuild older objects before link analysis. Checked
+current format 22 sidecars; rebuild older objects before link analysis. Checked
 mode also specializes exact scalar inputs and fields under the same context
 limits (RFC 0019).
 
@@ -660,7 +660,7 @@ unrestricted aliases, byte-encoded pointers, GC invariants and concurrency
 remain outside the supported model.
 
 RFC 0017 introduced summary and sidecar format **13**. Current summary format
-**19** and sidecar format **20** require rebuilding older objects. The [RFC 0017 validation report](validation-rfc0017.md) records
+**21** and sidecar format **22** require rebuilding older objects. The [RFC 0017 validation report](validation-rfc0017.md) records
 passing regression and sanitizer suites, corpus coverage, performance costs
 and remaining false positives.
 No runtime instrumentation, `--verify` flag or verification certificate is
@@ -711,7 +711,7 @@ initialized`, `access interval must fit its object`, `callee initialized safety
 precondition must hold`, and `memcpy intervals must be disjoint`. String calls
 also require a represented initialized terminator. Missing evidence remains
 distinct from a concrete `checking-failed` violation. Conditional memory and
-numeric output facts use summary format 16, sidecar format 17 and checked JSON version 2 (or compact version 3);
+numeric output facts use summary format 21, sidecar format 22 and checked JSON version 2 (or compact version 3);
 rebuild older objects before link analysis.
 
 RFC 0021 adds traversal contracts without new annotation spellings or IDs.
@@ -767,3 +767,13 @@ comparison cannot establish it. Unrepresented union storage reports
 `union storage cannot be represented`; a call whose input member path cannot
 be resolved reports `union member requirement cannot be instantiated`.
 No new annotation spelling or diagnostic identifier is introduced.
+
+RFC 0026 adds buffer explanations under `checking-incomplete`:
+`callee buffer allocation extent and initialized-prefix precondition must hold`
+requires an established current buffer invariant;
+`callee buffer backing storage requires allocation release permission`
+distinguishes borrowed storage from an allocation the callee may release.
+`owned buffer elements require complete release or transfer before container mutation`
+preserves the independently owned pointee obligations. Initialized pointer
+bytes alone cannot discharge them. See
+[growable buffers](checked-code.md#growable-buffers-and-vectors).

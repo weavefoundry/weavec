@@ -7,10 +7,12 @@
 //===----------------------------------------------------------------------===//
 #include "weavec/Frontend/AnalysisCache.h"
 
+#include "weavec/Analysis/ClangLocation.h"
 #include "weavec/Frontend/AnalysisStats.h"
 #include "weavec/Frontend/CheckedArtifacts.h"
 #include "weavec/Frontend/ProgramAnalysis.h"
 
+#include "clang/Frontend/TextDiagnosticPrinter.h"
 #include "clang/Tooling/CompilationDatabase.h"
 
 #include "llvm/Support/Compression.h"
@@ -261,6 +263,94 @@ TEST_F(AnalysisCacheTest, IndependentUnitReusesImportedPointerReturnType) {
   EXPECT_EQ(warm.warnings, cold.warnings);
   EXPECT_EQ(warmStats.count("cache_hits"), 2U);
   EXPECT_EQ(warmStats.count("function_analyses"), 0U);
+}
+
+TEST_F(AnalysisCacheTest, CheckpointPublicationPreservesExportsOnWriteFailure) {
+  // RFC 0020: publication temporarily owns completed exports. Later runs
+  // still need their imports to order units, even when the cache write fails.
+  const auto producer = directory.str().str() + "/producer.c";
+  const auto consumer = directory.str().str() + "/consumer.c";
+  const auto blocked = directory.str().str() + "/blocked-cache";
+  ASSERT_TRUE(writeAtomicText(producer, "int source_value(void){return 1;}\n"));
+  ASSERT_TRUE(writeAtomicText(
+      consumer, "int source_value(void);\n"
+                "int read_value(void){return 42/source_value();}\n"));
+  ASSERT_TRUE(writeAtomicText(blocked, "not a directory"));
+  clang::tooling::FixedCompilationDatabase commands(directory.str(),
+                                                    {"-xc", "-std=c11"});
+  for (const auto &cache : {blocked, directory.str().str()}) {
+    core::AnalysisStats stats;
+    FrontendOptions options;
+    options.analysis.checked = true;
+    options.analysis.stats = &stats;
+    options.analysisCache = cache;
+    ProgramAnalysis program(options);
+    // Deliberately put the consumer first: retained dependency information
+    // must still make the producer available before checking its division.
+    program.addUnit(std::make_unique<CompilationDatabaseUnit>(
+        commands, consumer, std::vector<clang::tooling::ArgumentsAdjuster>{}));
+    program.addUnit(std::make_unique<CompilationDatabaseUnit>(
+        commands, producer, std::vector<clang::tooling::ArgumentsAdjuster>{}));
+    ASSERT_TRUE(program.run().ok());
+    ASSERT_NE(program.database().find("read_value"), nullptr);
+    const auto before = *program.database().find("read_value");
+    if (cache == blocked)
+      EXPECT_GT(stats.count("cache_write_failures"), 0U);
+    else
+      EXPECT_GT(stats.count("cache_writes"), 0U);
+    const auto analyses = stats.count("function_analyses");
+    EXPECT_TRUE(program.run().ok());
+    ASSERT_NE(program.database().find("read_value"), nullptr);
+    EXPECT_TRUE(before == *program.database().find("read_value"));
+    if (cache == blocked)
+      EXPECT_GT(stats.count("function_analyses"), analyses);
+  }
+}
+
+TEST_F(AnalysisCacheTest, BufferedRetainedDiagnosticsPreserveExactOutput) {
+  auto ast = clang::tooling::buildASTFromCode("int value;\n", "diagnostic.c");
+  ASSERT_TRUE(ast);
+  auto &diagnostics = ast->getDiagnostics();
+  auto *previous = diagnostics.getClient();
+  auto owned = diagnostics.takeClient();
+  const auto location = analysis::toCoreLocation(
+      ast->getSourceManager(), ast->getSourceManager().getLocForStartOfFile(
+                                   ast->getSourceManager().getMainFileID()));
+  UnitResult result;
+  result.diagnostics.push_back({.severity = core::Severity::Error,
+                                .id = core::diag::CheckingIncomplete,
+                                .message = std::string(20000, 'x') + " 100%",
+                                .location = location,
+                                .notes = {},
+                                .fixits = {}});
+  result.diagnostics.back().addNote("retained note", location);
+  result.diagnostics.push_back({.severity = core::Severity::Error,
+                                .id = core::diag::CheckingIncomplete,
+                                .message = "locationless final error",
+                                .location = {},
+                                .notes = {},
+                                .fixits = {}});
+  FrontendOptions options;
+  std::string expected;
+  llvm::raw_string_ostream output(expected);
+  clang::TextDiagnosticPrinter reference(output,
+                                         diagnostics.getDiagnosticOptions());
+  diagnostics.setClient(&reference, false);
+  diagnostics.Reset(true);
+  reference.BeginSourceFile(ast->getLangOpts(), &ast->getPreprocessor());
+  (void)replayUnitResult(result, diagnostics, options);
+  reference.EndSourceFile();
+  output << "2 errors generated.\nafter diagnostics\n";
+
+  testing::internal::CaptureStderr();
+  const auto actual = analyzeRetainedUnit(*ast, options, &result);
+  llvm::errs() << "after diagnostics\n";
+  const auto text = testing::internal::GetCapturedStderr();
+  EXPECT_EQ(text, expected);
+  EXPECT_EQ(actual.errors, 2U);
+  EXPECT_EQ(diagnostics.getClient(), &reference);
+  const bool owns = static_cast<bool>(owned);
+  diagnostics.setClient(owns ? owned.release() : previous, owns);
 }
 
 TEST_F(AnalysisCacheTest, InvalidSharedTablesNeverPublishAPartialUnit) {

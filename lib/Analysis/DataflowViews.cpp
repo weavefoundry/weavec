@@ -23,18 +23,14 @@ bool FunctionDataflow::validateObjectPath(const core::SummaryPath &path,
   if (views.empty())
     return true;
   QualType type;
-  std::string recovered;
+  const Expr *argument = nullptr;
+  bool recovered = false;
   if (path.isParam() && path.index < call.getNumArgs()) {
     if (call.getArg(path.index)
             ->isNullPointerConstant(context, Expr::NPC_ValueDependentIsNotNull))
       return true;
-    const Expr *arg = call.getArg(path.index)->IgnoreParenCasts();
-    type = arg->getType();
-    if (const auto ref = builder.resolve(*arg)) {
-      const auto found = currentState->objectViews.find(ref->place);
-      if (found != currentState->objectViews.end())
-        recovered = found->second;
-    }
+    argument = call.getArg(path.index)->IgnoreParenCasts();
+    type = argument->getType();
   } else if (path.isGlobal()) {
     if (const auto *global = summaries.globals().declFor(path.index))
       type = global->getType();
@@ -43,9 +39,17 @@ bool FunctionDataflow::validateObjectPath(const core::SummaryPath &path,
   for (const auto &step : path.steps) {
     if (const auto expected = views.find(prefix); expected != views.end()) {
       std::string actual(summaries.objectView(type));
-      if (actual.empty() && !recovered.empty()) {
-        actual = recovered;
-        recovered.clear();
+      if (actual.empty() && !recovered) {
+        // RFC 0020: typed arguments already supply their object view. Resolve
+        // the entry holder only when this path actually needs erased recovery.
+        // Recovery remains local to this validation and is consumed once.
+        recovered = true;
+        if (argument)
+          if (const auto ref = builder.resolve(*argument)) {
+            const auto found = currentState->objectViews.find(ref->place);
+            if (found != currentState->objectViews.end())
+              actual = found->second;
+          }
       }
       if (actual.empty() || actual != expected->second) {
         reportIncomplete("incompatible or unknown object view at call", call);

@@ -56,6 +56,48 @@ static Parsed parse(const std::string &code) {
 
 namespace {
 
+TEST(Summaries, BufferDiscoveryCachesMissesOnlyWithinItsASTLifetime) {
+  const auto parsed = parse(R"c(
+    struct buffer { char *data; unsigned long length, capacity; };
+    void buffer_cache_probe(struct buffer *b);
+  )c");
+  ASSERT_TRUE(parsed.ast);
+  const auto *function = parsed.fn("buffer_cache_probe");
+  ASSERT_NE(function, nullptr);
+  const auto *record =
+      function->getParamDecl(0)->getType()->getPointeeType()->getAsRecordDecl();
+  ASSERT_NE(record, nullptr);
+  SummaryStore store;
+  store.setContext(&parsed.ast->getASTContext());
+  unsigned discoveries = 0;
+  const auto absent = [&]() -> std::optional<core::BufferShape> {
+    ++discoveries;
+    return std::nullopt;
+  };
+  EXPECT_FALSE(store.bufferShape(*record, absent));
+  EXPECT_FALSE(store.bufferShape(*record, absent));
+  EXPECT_EQ(discoveries, 1U);
+  store.setContext(&parsed.ast->getASTContext());
+  EXPECT_FALSE(store.bufferShape(*record, absent));
+  EXPECT_EQ(discoveries, 1U);
+  // An AST can be destroyed and another allocated at the same address. End
+  // of context must retire cached misses as well as positive descriptors.
+  store.setContext(nullptr);
+  store.setContext(&parsed.ast->getASTContext());
+  const core::BufferShape shape{
+      .object = {.bytes = 24, .alignment = 8, .identity = "record:buffer"},
+      .data = {.name = "data", .offset = 0, .bytes = 8},
+      .length = {.name = "length", .offset = 8, .bytes = 8},
+      .capacity = {.name = "capacity", .offset = 16, .bytes = 8}};
+  const auto present = [&]() -> std::optional<core::BufferShape> {
+    ++discoveries;
+    return shape;
+  };
+  EXPECT_EQ(store.bufferShape(*record, present), shape);
+  EXPECT_EQ(store.bufferShape(*record, absent), shape);
+  EXPECT_EQ(discoveries, 2U);
+}
+
 TEST(Summaries, AnnotationsDeriveASummary) {
   const auto parsed = parse(R"c(
     struct s;

@@ -234,6 +234,8 @@ public:
   /// per summary instead of a renumbering, which is what the whole-program
   /// fixpoint does once per changed member (RFC 0005, *Performance*).
   [[nodiscard]] UnitExports renumbered(const UnitExports &unit);
+  /// Consume exports with existing database numbering without copying them.
+  [[nodiscard]] UnitExports renumbered(UnitExports &&unit);
   void clear();
   [[nodiscard]] bool empty() const noexcept { return functions.empty(); }
 
@@ -290,15 +292,18 @@ private:
       memorySummaries;
   std::map<std::string, std::set<core::CallContext>, std::less<>>
       memoryRequests;
-  std::map<std::string, core::FunctionSummary, std::less<>> functions;
-  std::map<std::string, core::FunctionSummary, std::less<>> callableSummaries;
+  // RFC 0020: indexes and copied databases share immutable publications.
+  // Joining another definition builds a private replacement first.
+  using PublishedSummary = std::shared_ptr<const core::FunctionSummary>;
+  std::map<std::string, PublishedSummary, std::less<>> functions;
+  std::map<std::string, PublishedSummary, std::less<>> callableSummaries;
   std::map<std::pair<std::string, core::CallbackBindings>,
            core::FunctionSummary>
       contextSummaries;
   std::map<std::string, std::set<core::CallbackBindings>, std::less<>>
       callbackRequests;
 
-  std::map<std::string, core::FunctionSummary, std::less<>> candidateSummaries;
+  std::map<std::string, PublishedSummary, std::less<>> candidateSummaries;
   GlobalNames globalNames;
   std::set<std::string, std::less<>> countFields;
   SizedFieldFacts sizedFields;

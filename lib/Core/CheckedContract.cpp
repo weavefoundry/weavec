@@ -105,7 +105,7 @@ void CheckedRequirements::intersect(const CheckedRequirements &other) {
       insert(entry);
 }
 
-static constexpr std::array<std::string_view, 24> Kinds{
+static constexpr std::array<std::string_view, 27> Kinds{
     "valid",
     "extent",
     "initialized",
@@ -129,7 +129,10 @@ static constexpr std::array<std::string_view, 24> Kinds{
     "argument-list-consumed",
     "terminated-within",
     "standard-stream",
-    "union-member"};
+    "union-member",
+    "buffer",
+    "buffer-preserved",
+    "buffer-appended"};
 
 std::string_view toString(CheckedRequirementKind value) noexcept {
   const auto index = static_cast<std::size_t>(value);

@@ -4,6 +4,7 @@ weavec_add_unittest(
           UnionCasesTest.cpp
           RuntimeContractsTest.cpp
           ContainerTest.cpp
+          BufferTest.cpp
           AllocatorsTest.cpp
           AnnotationsTest.cpp
           ArrayOwnershipTest.cpp

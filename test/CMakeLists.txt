@@ -238,6 +238,18 @@ if(Python3_Interpreter_FOUND)
                          PROPERTIES LABELS "integration" TIMEOUT 300)
   endforeach()
   set_tests_properties(checked-evaluation-harness PROPERTIES LABELS "unit")
+  foreach(population source transport objects cache oracle)
+    add_test(
+      NAME checked-${population}-rfc0026
+      COMMAND
+        "${Python3_EXECUTABLE}"
+        "${PROJECT_SOURCE_DIR}/scripts/checked-buffers.py" --population
+        "${population}" --weavec "$<TARGET_FILE:weavec>" --cc
+        "$<TARGET_FILE:weavec-cc>" --output
+        "${CMAKE_CURRENT_BINARY_DIR}/rfc0026-${population}")
+    set_tests_properties(checked-${population}-rfc0026
+                         PROPERTIES LABELS "integration" TIMEOUT 600)
+  endforeach()
   add_test(NAME recall-harness
            COMMAND "${Python3_EXECUTABLE}"
                    "${PROJECT_SOURCE_DIR}/scripts/test_recall.py")

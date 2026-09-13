@@ -28,6 +28,19 @@ using namespace clang;
 
 namespace weavec::analysis {
 
+std::optional<core::BufferShape> SummaryStore::bufferShape(
+    const RecordDecl &record,
+    const std::function<std::optional<core::BufferShape>()> &discover) {
+  if (const auto found = bufferShapeCache.find(&record);
+      found != bufferShapeCache.end())
+    return found->second;
+  auto result = discover();
+  // Cache saturation changes cost only; discovery still runs on a miss.
+  if (bufferShapeCache.size() < 256)
+    bufferShapeCache.emplace(&record, result);
+  return result;
+}
+
 // -- GlobalTable --------------------------------------------------------------
 
 std::uint32_t GlobalTable::idFor(const VarDecl &var) {

@@ -154,6 +154,133 @@ TEST(ProgramDatabase, JoinsDuplicateDefinitions) {
   EXPECT_EQ(db.find("g"), nullptr);
 }
 
+TEST(ProgramDatabase, SharedPublicationsDetachOnDefinitionAndCandidateJoins) {
+  // RFC 0020: a new database generation cannot mutate a retained contract,
+  // another lookup index, or a copy of the previous database.
+  UnitExports first;
+  auto &original = first.functions["f"];
+  original.typeKey = "void (void *)";
+  original.addressTaken = true;
+  original.summary.effects[SummaryPath::param(0)].freed = true;
+  original.summary.neverReturns = true;
+  ProgramDatabase db;
+  db.add(first);
+  ProgramDatabase retained = db;
+  const auto *old = retained.findCallable("f");
+  ASSERT_NE(old, nullptr);
+  const auto expected = *old;
+
+  UnitExports second;
+  auto &replacement = second.functions["f"];
+  replacement.typeKey = original.typeKey;
+  replacement.addressTaken = true;
+  replacement.summary.effects[SummaryPath::param(0).deref()].written = true;
+  db.add(second);
+  ASSERT_NE(db.find("f"), nullptr);
+  EXPECT_TRUE(db.find("f")->frees(0));
+  EXPECT_TRUE(db.find("f")->effectOf(SummaryPath::param(0).deref()).written);
+  EXPECT_FALSE(db.find("f")->neverReturns);
+  ASSERT_NE(db.findCallable("f"), nullptr);
+  EXPECT_TRUE(*db.findCallable("f") == replacement.summary);
+  ASSERT_NE(db.candidates(original.typeKey), nullptr);
+  EXPECT_TRUE(*db.candidates(original.typeKey) == *db.find("f"));
+  EXPECT_TRUE(*old == expected);
+  EXPECT_TRUE(*retained.find("f") == expected);
+  EXPECT_TRUE(*retained.candidates(original.typeKey) == expected);
+
+  UnitExports third;
+  auto &candidate = third.functions["g"];
+  candidate.typeKey = original.typeKey;
+  candidate.addressTaken = true;
+  candidate.summary.effects[SummaryPath::param(1)].freed = true;
+  db.add(third);
+  EXPECT_TRUE(db.candidates(original.typeKey)->frees(1));
+  EXPECT_FALSE(db.find("f")->frees(1));
+  EXPECT_FALSE(db.findCallable("f")->frees(1));
+  db.clear();
+  EXPECT_TRUE(*old == expected);
+  EXPECT_TRUE(*retained.find("f") == expected);
+}
+
+TEST(ProgramDatabase, CandidateGroupJoinsPreserveIndividualPublications) {
+  // RFC 0020: joining several targets in one add preserves every target's
+  // effects and leaves both individual contracts and older groups unchanged.
+  UnitExports first;
+  for (unsigned index = 0; index < 3; ++index) {
+    auto &function = first.functions["f" + std::to_string(index)];
+    function.typeKey = "void (void *, void *, void *)";
+    function.addressTaken = true;
+    function.summary.effects[SummaryPath::param(index)].freed = true;
+    function.summary.neverReturns = index != 1;
+  }
+  ProgramDatabase db;
+  db.add(first);
+  const auto type = first.functions.begin()->second.typeKey;
+  ProgramDatabase retained = db;
+  UnitExports second;
+  for (unsigned index = 0; index < 3; ++index) {
+    auto &function = second.functions["g" + std::to_string(index)];
+    function.typeKey = type;
+    function.addressTaken = true;
+    function.summary.effects[SummaryPath::param(index).deref()].written = true;
+    function.summary.neverReturns = true;
+  }
+  db.add(second);
+  ASSERT_NE(db.candidates(type), nullptr);
+  EXPECT_FALSE(db.candidates(type)->neverReturns);
+  for (unsigned index = 0; index < 3; ++index) {
+    EXPECT_TRUE(db.candidates(type)->frees(index));
+    EXPECT_TRUE(db.candidates(type)
+                    ->effectOf(SummaryPath::param(index).deref())
+                    .written);
+    EXPECT_FALSE(retained.candidates(type)
+                     ->effectOf(SummaryPath::param(index).deref())
+                     .written);
+    const auto name = "f" + std::to_string(index);
+    ASSERT_NE(db.find(name), nullptr);
+    EXPECT_TRUE(*db.find(name) == first.functions.at(name).summary);
+    EXPECT_TRUE(*db.findCallable(name) == first.functions.at(name).summary);
+  }
+}
+
+TEST(ProgramDatabase, SharedIndexesRetainRenumberedGlobalEffects) {
+  // RFC 0005/0020: sharing the callable publication must use its database
+  // numbering, including internal address-taken candidates and checkpoints.
+  UnitExports first;
+  (void)first.globals.idFor("first");
+  (void)first.globals.idFor("second");
+  ProgramDatabase db;
+  db.add(first);
+  UnitExports reordered;
+  reordered.source = "other.c";
+  const auto second = reordered.globals.idFor("second");
+  (void)reordered.globals.idFor("first");
+  auto &external = reordered.functions["f"];
+  external.typeKey = "void (void)";
+  external.addressTaken = true;
+  external.summary.effects[SummaryPath::global(second)].freed = true;
+  auto &internal = reordered.functions["g"];
+  internal = external;
+  internal.external = false;
+  db.add(reordered);
+  const auto expected = SummaryPath::global(*db.globals().find("second"));
+  ASSERT_NE(db.find("f"), nullptr);
+  ASSERT_NE(db.findCallable("other.c#g"), nullptr);
+  ASSERT_NE(db.candidates(external.typeKey), nullptr);
+  for (const auto *summary :
+       {db.find("f"), db.findCallable("f"), db.findCallable("other.c#g"),
+        db.candidates(external.typeKey)}) {
+    EXPECT_EQ(summary->effects.size(), 1U);
+    EXPECT_TRUE(summary->effectOf(expected).freed);
+  }
+  const auto checkpoint = db.checkpointInputs({"f", "other.c#g"});
+  ASSERT_EQ(checkpoint.functions.size(), 4U);
+  for (const auto &[name, function] : checkpoint.functions) {
+    EXPECT_EQ(function.summary.effects.size(), 1U) << name;
+    EXPECT_TRUE(function.summary.effectOf(expected).freed) << name;
+  }
+}
+
 /// The node unit's exports, kept alive for the database.
 struct NodeProgram {
   test::AnalysisResult unit = analyze(NodeUnit);
@@ -422,6 +549,20 @@ TEST(ProgramDatabase, ContextRebuildAgreesWithGlobalRenumbering) {
   EXPECT_TRUE(rebuilt.findMemorySpecialization("helper", mapped)
                   ->effectOf(SummaryPath::global(1))
                   .freed);
+
+  // Consume both a differently numbered export and an already-numbered one.
+  // The move fast path must retain context keys, requests and global effects.
+  ProgramDatabase consuming;
+  consuming.add(prefix);
+  auto moved = consuming.renumbered(UnitExports(unit));
+  EXPECT_TRUE(moved.sameSummariesAs(numbered));
+  EXPECT_EQ(moved.globals, numbered.globals);
+  auto unchanged = consuming.renumbered(std::move(moved));
+  EXPECT_TRUE(unchanged.sameSummariesAs(numbered));
+  EXPECT_EQ(unchanged.globals, numbered.globals);
+  consuming.add(unchanged);
+  EXPECT_TRUE(consuming.checkpointInputs({"helper"})
+                  .sameSummariesAs(direct.checkpointInputs({"helper"})));
 }
 
 TEST(ProgramDatabase, ProgramDefinitionOutranksTheLibraryTable) {

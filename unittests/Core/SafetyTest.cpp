@@ -1294,6 +1294,44 @@ TEST(SafetyJson, PlainRunsPreserveMixedEscapesAndInvalidUnicodeBytes) {
             "\"before\\u00ffafter\"");
 }
 
+TEST(SafetyJson, EveryByteAndUtf8BoundaryKeepTheCanonicalEncoding) {
+  constexpr std::string_view Hex = "0123456789abcdef";
+  for (unsigned prefix = 0; prefix < 18; ++prefix) {
+    SCOPED_TRACE(prefix);
+    const std::string before(prefix, 'a');
+    const std::string after(24, 'z');
+    const auto check = [&](std::string_view bytes, std::string_view escaped) {
+      std::string input = before;
+      input += bytes;
+      input += after;
+      std::string expected = "\"";
+      expected += before;
+      expected += escaped;
+      expected += after;
+      expected += '"';
+      EXPECT_EQ(safetyJsonString(input), expected);
+    };
+    for (unsigned byte = 0; byte < 256; ++byte) {
+      SCOPED_TRACE(byte);
+      std::string escaped;
+      if (byte == '"' || byte == '\\') {
+        escaped = '\\';
+        escaped += static_cast<char>(byte);
+      } else if (byte < 32 || byte >= 128) {
+        escaped = "\\u00";
+        escaped += Hex[byte / 16];
+        escaped += Hex[byte % 16];
+      } else {
+        escaped += static_cast<char>(byte);
+      }
+      const auto input = static_cast<char>(byte);
+      check(std::string_view(&input, 1), escaped);
+    }
+    check("é€😀", "é€😀");
+    check("\xed\xa0\x80", R"(\u00ed\u00a0\u0080)");
+  }
+}
+
 TEST(SafetyState,
      CommonInitializationDoesNotAccumulateRedundantBranchPremises) {
   const PlaceId object{1};

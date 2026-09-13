@@ -115,6 +115,7 @@ static bool hasCheckedAssumptions(const AnnotationSet &annotations) {
 
 void FunctionDataflow::initializeChecked() {
   discoverCheckedCases();
+  discoverBuffers();
   for (const auto *block : *cfg)
     for (const auto &element : *block)
       if (const auto operation = element.getAs<CFGStmt>())
@@ -219,6 +220,7 @@ void FunctionDataflow::initializeChecked() {
 
 void FunctionDataflow::checkedBefore(const Stmt &stmt,
                                      core::AnalysisState &state) {
+  materializeBuffers(state);
   if (checkedUnsupported.contains(&stmt))
     safetyObligation(core::SafetyProperty::Semantics,
                      core::SafetyOutcome::Unresolved, stmt, "unsupported",
@@ -240,6 +242,11 @@ void FunctionDataflow::checkedBefore(const Stmt &stmt,
   if (const auto *unary = dyn_cast<UnaryOperator>(&stmt);
       unary && unary->isIncrementDecrementOp())
     written = unary->getSubExpr();
+  if (written)
+    invalidateBufferWrite(*written, state);
+  if (const auto *binary = dyn_cast<BinaryOperator>(&stmt);
+      binary && binary->getOpcode() == BO_Assign)
+    bufferElementWrite(*binary, state);
   if (written && !written->getType()->isIntegerType())
     if (const auto ref = builder.resolve(*written)) {
       snapshotScalar(ref->place, dyn_cast<Expr>(&stmt), state);
@@ -354,6 +361,11 @@ void FunctionDataflow::checkedAfter(const Stmt &stmt,
       type = "?";
     }
     state.safety->unions.invalidateAll();
+    state.safety->buffers.values.clear();
+    state.safety->buffers.pending.clear();
+    state.safety->buffers.sequences.clear();
+    state.safety->buffers.pendingSequences.clear();
+    state.safety->buffers.storage.clear();
     state.safety->containers.clear();
     state.safety->initialized.clear();
     state.safety->pointers.clear();
@@ -454,6 +466,7 @@ void FunctionDataflow::checkedAfter(const Stmt &stmt,
     }
   }
   checkedContainerStore(stmt, state);
+  normalizeBuffers(state);
 }
 
 FunctionDataflow::CheckedPointer FunctionDataflow::captureCheckedPointer(
@@ -489,6 +502,9 @@ FunctionDataflow::CheckedPointer FunctionDataflow::captureCheckedPointer(
     }
     if (origin.call)
       result.zeroed = resolvedLibraryName(*origin.call) == "calloc";
+    if (const auto found = bufferAllocationSequences.find(origin.call);
+        found != bufferAllocationSequences.end())
+      result.bufferSequence = found->second;
     break;
   case ValueOrigin::Kind::Borrow:
     result.known = origin.place.has_value() || origin.literalLength.has_value();
@@ -502,6 +518,10 @@ FunctionDataflow::CheckedPointer FunctionDataflow::captureCheckedPointer(
     break;
   case ValueOrigin::Kind::Copy:
     if (origin.place) {
+      if (const auto sequence =
+              state.safety->buffers.sequences.find(origin.place->place);
+          sequence != state.safety->buffers.sequences.end())
+        result.bufferSequence = sequence->second;
       result.known = state.safety->pointers.contains(origin.place->place);
       const auto memory = checkedMemoryAt(origin.place->place, {}, {}, state);
       const auto storage =
@@ -513,7 +533,9 @@ FunctionDataflow::CheckedPointer FunctionDataflow::captureCheckedPointer(
         result.position = core::PointerPosition{.storage = storage,
                                                 .offset = memory->begin,
                                                 .extent = memory->extent,
-                                                .input = memory->inputPlace};
+                                                .input = memory->inputPlace,
+                                                .validWhenNonempty =
+                                                    memory->validWhenNonempty};
       if (const auto it = state.safety->memory.find(storage);
           it != state.safety->memory.end())
         result.initialized = it->second;
@@ -531,6 +553,8 @@ FunctionDataflow::CheckedPointer FunctionDataflow::captureCheckedPointer(
       } else {
         if (result.container != value.container)
           result.container.reset();
+        if (result.bufferSequence != value.bufferSequence)
+          result.bufferSequence.reset();
         std::erase_if(result.containerSeparated, [&](core::PlaceId place) {
           return !value.containerSeparated.contains(place);
         });
@@ -573,6 +597,9 @@ void FunctionDataflow::installCheckedPointer(core::PlaceId dest,
       !value.container || !value.container->empty ||
       state.nulls.stateOf(dest) != core::Nullness::NonNull;
   state.safety->containers.replace(dest);
+  state.safety->buffers.sequences.erase(dest);
+  if (value.bufferSequence)
+    state.safety->buffers.sequences[dest] = *value.bufferSequence;
   state.safety->invalidatedPointers.erase(dest);
   if (value.invalidated)
     state.safety->invalidatedPointers.insert(dest);
@@ -790,6 +817,16 @@ void FunctionDataflow::checkedOutputs(const core::AnalysisState &incoming,
     core::CheckedContract outputs;
     checkedUnionOutputs(outputs, value, outcome, state);
     containerOutputs(outputs, state, returned, outcome);
+    if (outcome && returnedIdentity && !state.safety->buffers.pending.empty()) {
+      auto selected = state;
+      (void)selected.learn(*returnedIdentity, core::ValueFact::of(*outcome));
+      (void)selected.scalars.narrow(*returnedIdentity,
+                                    core::ValueFact::of(*outcome));
+      materializeBuffers(selected);
+      bufferOutputs(outputs, selected, outcome);
+    } else {
+      bufferOutputs(outputs, state, outcome);
+    }
     for (const auto &[holder, position] : state.safety->positions) {
       if (!position.input)
         continue;

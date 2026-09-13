@@ -186,6 +186,45 @@ FunctionDataflow::checkedMemoryAt(core::PlaceId holder,
                          .input = {},
                          .pointer = nullptr,
                          .holder = holder};
+  if (const auto *fact = bufferFact(holder, state)) {
+    const auto object = state.safety->objects.find(holder);
+    const auto storage = object != state.safety->objects.end()
+                             ? object->second
+                             : places.deref(holder);
+    auto extent = core::Affine::ofPlace(
+        fact->capacity, static_cast<std::int64_t>(fact->shape.elementBytes));
+    // A container may advertise less than its physical allocation. Folding a
+    // logical capacity must not discard a separately proved larger extent.
+    if (const auto physical = spatialRecordAt(holder, state);
+        physical && physical->extent && physical->offset.isZero() &&
+        checkedAtMost(extent, *physical->extent, state))
+      extent = *physical->extent;
+    const auto input = storage == places.deref(holder) &&
+                               !state.safety->replacedPointers.contains(holder)
+                           ? stableSummaryPathOf(holder)
+                           : std::nullopt;
+    const auto entry = input ? std::optional(holder) : std::nullopt;
+    return CheckedMemory{
+        .storage = storage,
+        .begin = begin,
+        .end = end,
+        .extent = extent,
+        // The relational premise describes current storage.
+        // Keep entry identity for separation, but do not turn
+        // derived current bounds/validity into scalar input
+        // requirements about a possibly replaced pointer.
+        .input = {},
+        .pointer = nullptr,
+        .holder = holder,
+        .inputPlace = fact->entryBacking ? fact->entryBacking : entry,
+        .validWhenNonempty =
+            fact->nonNull ||
+            extent == core::Affine::ofPlace(fact->capacity,
+                                            static_cast<std::int64_t>(
+                                                fact->shape.elementBytes)) ||
+            checkedAtMost(core::Affine::ofConstant(1),
+                          core::Affine::ofPlace(fact->capacity), state)};
+  }
   if (const auto found = state.safety->positions.find(holder);
       found != state.safety->positions.end()) {
     const auto &position = found->second;
@@ -218,7 +257,8 @@ FunctionDataflow::checkedMemoryAt(core::PlaceId holder,
                                       : std::nullopt,
                          .pointer = nullptr,
                          .holder = holder,
-                         .inputPlace = position.input};
+                         .inputPlace = position.input,
+                         .validWhenNonempty = position.validWhenNonempty};
   }
   const auto inputPath = stableSummaryPathOf(holder);
   CheckedMemory result{.storage = holder,
@@ -303,6 +343,16 @@ bool FunctionDataflow::checkedValid(const CheckedMemory &memory,
            builder.classifyValue(*memory.pointer).kind ==
                ValueOrigin::Kind::Borrow;
   const auto place = *memory.holder;
+  if (memory.validWhenNonempty && memory.extent &&
+      !state.safety->invalidatedPointers.contains(place) &&
+      !state.moves.recordOf(place) && !state.resources.isEscaped(place) &&
+      checkedAtMost(core::Affine::ofConstant(1), *memory.extent, state))
+    return true;
+  if (const auto *fact = bufferFact(place, state);
+      fact && (fact->nonNull ||
+               checkedAtMost(core::Affine::ofConstant(1),
+                             core::Affine::ofPlace(fact->capacity), state)))
+    return true;
   const auto nullness = nullnessAt(place, state);
   return state.safety->pointers.contains(place) &&
          !state.safety->invalidatedPointers.contains(place) &&
@@ -566,6 +616,8 @@ FunctionDataflow::checkedWritePermission(const CheckedMemory &memory,
                                          const core::AnalysisState &state) {
   if (foldAffine(memory.begin, state) == foldAffine(memory.end, state))
     return true;
+  if (memory.holder && bufferFact(*memory.holder, state))
+    return true;
   if (memory.input)
     return std::nullopt;
   if (builder.isLiteralPlace(places.root(memory.storage)))
@@ -639,6 +691,15 @@ bool FunctionDataflow::checkedInitialized(const CheckedMemory &memory,
                                           const core::AnalysisState &state) {
   if (foldAffine(memory.begin, state) == foldAffine(memory.end, state))
     return true;
+  if (memory.holder)
+    if (const auto *fact = bufferFact(*memory.holder, state);
+        fact && fact->initialized &&
+        checkedInterval(
+            memory.begin, memory.end,
+            core::Affine::ofPlace(fact->length, static_cast<std::int64_t>(
+                                                    fact->shape.elementBytes)),
+            state))
+      return true;
   if (builder.isLiteralPlace(memory.storage) && memory.extent)
     return checkedInterval(memory.begin, memory.end, *memory.extent, state);
   // RFC 0022: C initializes static scalar cells, including function pointers

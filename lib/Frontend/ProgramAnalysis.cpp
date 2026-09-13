@@ -205,7 +205,7 @@ void ProgramAnalysis::analyzeAcyclic(unsigned index, Result &result) {
   FrontendOptions overrides;
   overrides.database = &settled;
   overrides.alreadyReported = &unit.reported;
-  const std::optional<UnitResult> run = runUnit(*unit.unit, overrides);
+  std::optional<UnitResult> run = runUnit(*unit.unit, overrides);
   if (!run) {
     result.failed.push_back(unit.unit->name());
     // The compile-time view is the best the rest of the program can get.
@@ -216,15 +216,19 @@ void ProgramAnalysis::analyzeAcyclic(unsigned index, Result &result) {
   result.errors += run->errors;
   result.warnings += run->warnings;
   settled.add(run->exports);
-  settle(unit, settled, *run);
+  settle(unit, settled, std::move(*run));
 }
 
 void ProgramAnalysis::settle(Unit &unit, const analysis::ProgramDatabase &db,
-                             const UnitResult &run) const {
-  unit.exports = run.exports;
-  if (!options.analysisCache.empty())
-    unit.checkpoint = run;
+                             UnitResult run) const {
+  unit.exports = std::move(run.exports);
   unit.reported.insert(run.reported.begin(), run.reported.end());
+  if (!options.analysisCache.empty()) {
+    // RFC 0020: retain one completed export. A checkpoint needs the replay
+    // metadata too, but must not duplicate every function and context here.
+    run.exports = analysis::UnitExports{};
+    unit.checkpoint = std::move(run);
+  }
   unit.sizedPairsSeen = db.sizedFieldFacts().confirmedPairs();
 }
 
@@ -258,7 +262,7 @@ void ProgramAnalysis::reportConfirmedSizedFields(Result &result) {
     overrides.database = &settled;
     overrides.alreadyReported = &unit.reported;
     overrides.onlyIds = &OnlyBounds;
-    const std::optional<UnitResult> run = runUnit(*unit.unit, overrides);
+    std::optional<UnitResult> run = runUnit(*unit.unit, overrides);
     if (!run) {
       result.failed.push_back(unit.unit->name());
       continue;
@@ -266,7 +270,7 @@ void ProgramAnalysis::reportConfirmedSizedFields(Result &result) {
     result.errors += run->errors;
     result.warnings += run->warnings;
     settled.add(run->exports);
-    settle(unit, settled, *run);
+    settle(unit, settled, std::move(*run));
   }
 }
 
@@ -382,7 +386,7 @@ void ProgramAnalysis::analyzeCyclic(const std::vector<unsigned> &component,
   // their summaries instead of renumbering each of them.
   analysis::ProgramDatabase db = databaseFor(current);
   for (analysis::UnitExports &member : current)
-    member = db.renumbered(member);
+    member = db.renumbered(std::move(member));
 
   // RFC 0010, *Whole-program fixpoint*: a member whose inputs did not change
   // since it last ran produces the same exports, so only members with a
@@ -426,7 +430,7 @@ void ProgramAnalysis::analyzeCyclic(const std::vector<unsigned> &component,
       FrontendOptions overrides;
       overrides.database = &db;
       overrides.silent = true;
-      const std::optional<UnitResult> run =
+      std::optional<UnitResult> run =
           runUnit(*units[component[k]].unit, overrides);
       if (!run) {
         broken[k] = true;
@@ -435,7 +439,7 @@ void ProgramAnalysis::analyzeCyclic(const std::vector<unsigned> &component,
       }
       // Both sides are numbered by the database's table (`renumbered` only
       // ever appends to it), so the summaries alone decide the fixpoint.
-      analysis::UnitExports exports = db.renumbered(run->exports);
+      analysis::UnitExports exports = db.renumbered(std::move(run->exports));
       // RFC 0011, *Whole-program widening*: a group that oscillates (a
       // must-fact one member drops makes another add one back) is joined
       // towards what every round agreed on; `join` only ever weakens.
@@ -485,7 +489,7 @@ void ProgramAnalysis::analyzeCyclic(const std::vector<unsigned> &component,
     FrontendOptions overrides;
     overrides.database = &db;
     overrides.alreadyReported = &unit.reported;
-    const std::optional<UnitResult> run = runUnit(*unit.unit, overrides);
+    std::optional<UnitResult> run = runUnit(*unit.unit, overrides);
     if (!run) {
       broken[k] = true;
       result.failed.push_back(unit.unit->name());
@@ -493,7 +497,7 @@ void ProgramAnalysis::analyzeCyclic(const std::vector<unsigned> &component,
     }
     result.errors += run->errors;
     result.warnings += run->warnings;
-    settle(unit, db, *run);
+    settle(unit, db, std::move(*run));
     // The unit now owns its completed export; the approximation has no
     // remaining reader. Keep failed members' previous exports below.
     current[k] = analysis::UnitExports{};
@@ -550,10 +554,10 @@ void ProgramAnalysis::analyzeComponent(const std::vector<unsigned> &component,
             replay.database = &settled;
             replay.alreadyReported = &unit.reported;
             replay.boundaryOnce = &boundaryOnce;
-            replay.onResult = [&](const UnitResult &run) {
+            replay.onResult = [&](UnitResult run) {
               result.errors += run.errors;
               result.warnings += run.warnings;
-              settle(unit, settled, run);
+              settle(unit, settled, std::move(run));
               unit.sizedPairsSeen = checkpoint->sizedPairsSeen[k];
             };
             replayed &= unit.unit->replay(checkpoint->units[k], replay);
@@ -588,11 +592,18 @@ void ProgramAnalysis::analyzeComponent(const std::vector<unsigned> &component,
     return;
   AnalysisCheckpoint checkpoint;
   std::set<std::string> dependencies;
+  // Validate the complete component before transferring any exports. No
+  // analyzer runs during publication; restore them even if the write fails.
   for (const auto index : component) {
-    const auto &unit = units[index];
-    if (!unit.checkpoint)
+    if (!units[index].checkpoint || !units[index].exports)
       return;
-    checkpoint.units.push_back(*unit.checkpoint);
+  }
+  checkpoint.units.reserve(component.size());
+  for (const auto index : component) {
+    auto &unit = units[index];
+    checkpoint.units.push_back(std::move(*unit.checkpoint));
+    unit.checkpoint.reset();
+    checkpoint.units.back().exports = std::move(*unit.exports);
     checkpoint.sizedPairsSeen.push_back(unit.sizedPairsSeen);
     checkpoint.units.back().dependencies = unit.dependencies;
     dependencies.insert(unit.dependencies.begin(), unit.dependencies.end());
@@ -600,6 +611,8 @@ void ProgramAnalysis::analyzeComponent(const std::vector<unsigned> &component,
   checkpoint.importedIdentity = importedIdentity(*imported, dependencies);
   (void)writeAnalysisCheckpoint(options.analysisCache, key, checkpoint,
                                 options.analysis.stats);
+  for (unsigned k = 0; k < component.size(); ++k)
+    units[component[k]].exports = std::move(checkpoint.units[k].exports);
 }
 
 ProgramAnalysis::Result ProgramAnalysis::run() {

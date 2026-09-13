@@ -66,7 +66,7 @@ UnitExports ProgramDatabase::checkpointInputs(
   // Candidate-set changes can introduce a dependency that did not previously
   // exist. Conservatively retain every type bucket in the identity.
   for (const auto &[type, summary] : candidateSummaries)
-    result.functions[encodedName("indirect", type)].summary = summary;
+    result.functions[encodedName("indirect", type)].summary = *summary;
   return result;
 }
 
@@ -238,38 +238,59 @@ static core::FunctionSummary renumber(const core::FunctionSummary &summary,
 
 void ProgramDatabase::add(const UnitExports &unit) {
   addCallbackInformation(unit);
-  // Exports already numbered by (a prefix or an extension of) this table
-  // mean the same thing verbatim; renumbering them would rebuild every
-  // summary's maps for nothing.
-  const bool sameNumbering = globalNames.extendTo(unit.globals);
+  // Join each indirect bucket privately, then publish once. A unit can add
+  // many targets of one type; repeatedly cloning their accumulated contract
+  // would make immutable publication quadratic in that target population.
+  std::map<std::string, std::shared_ptr<core::FunctionSummary>, std::less<>>
+      candidateJoins;
   for (const auto &[name, function] : unit.functions) {
-    std::optional<core::FunctionSummary> renumbered;
-    const core::FunctionSummary &summary =
-        sameNumbering ? function.summary
-                      : renumbered.emplace(renumber(function.summary,
-                                                    unit.globals, globalNames));
+    // The callable publication already has database global numbering.
+    // Reuse it in the other indexes until a join needs a private result.
+    const auto &summary = callableSummaries.at(
+        function.external ? name : unit.source + "#" + name);
     // RFC 0009: a definition that returns makes the join return. Settled
     // here because the join cannot tell a definition that does nothing
     // from the empty summary it treats as bottom.
     const auto fold = [&summary](core::FunctionSummary &into) {
-      const bool bothNeverReturn = into.neverReturns && summary.neverReturns;
-      into.join(summary);
+      const bool bothNeverReturn = into.neverReturns && summary->neverReturns;
+      into.join(*summary);
       into.neverReturns = bothNeverReturn;
     };
     if (function.external) {
       auto [it, inserted] = functions.try_emplace(name, summary);
-      if (!inserted)
-        fold(it->second);
+      if (!inserted) {
+        auto joined = std::make_shared<core::FunctionSummary>(*it->second);
+        fold(*joined);
+        it->second = std::move(joined);
+      }
     }
     if (function.addressTaken && !function.typeKey.empty()) {
       auto [it, inserted] =
           candidateSummaries.try_emplace(function.typeKey, summary);
-      if (!inserted)
-        fold(it->second);
+      if (!inserted) {
+        auto [pending, firstJoin] =
+            candidateJoins.try_emplace(function.typeKey);
+        if (firstJoin)
+          pending->second =
+              std::make_shared<core::FunctionSummary>(*it->second);
+        fold(*pending->second);
+      }
     }
   }
+  for (auto &[type, joined] : candidateJoins)
+    candidateSummaries[type] = std::move(joined);
   countFields.insert(unit.countFields.begin(), unit.countFields.end());
   sizedFields.merge(unit.sizedFields);
+}
+
+UnitExports ProgramDatabase::renumbered(UnitExports &&unit) {
+  // RFC 0020: whole-program members and completed runs usually already use
+  // this global numbering. Their caller relinquishes the entire export set.
+  if (!globalNames.extendTo(unit.globals))
+    return renumbered(static_cast<const UnitExports &>(unit));
+  generation = std::make_shared<const char>(0);
+  unit.globals = globalNames;
+  return std::move(unit);
 }
 
 UnitExports ProgramDatabase::renumbered(const UnitExports &unit) {
@@ -361,14 +382,23 @@ void ProgramDatabase::addCallbackInformation(const UnitExports &unit) {
   for (const auto &[name, function] : unit.functions) {
     const std::string symbol =
         function.external ? name : unit.source + "#" + name;
-    callableSummaries[symbol] =
-        sameNumbering ? function.summary
-                      : renumber(function.summary, unit.globals, globalNames);
+    // RFC 0020: one immutable publication serves all generic indexes.
+    // Keep the branches separate to avoid a const temporary and second copy.
+    auto &callable = callableSummaries[symbol];
+    if (sameNumbering)
+      callable =
+          std::make_shared<const core::FunctionSummary>(function.summary);
+    else
+      callable = std::make_shared<const core::FunctionSummary>(
+          renumber(function.summary, unit.globals, globalNames));
     for (const auto &[bindings, summary] : function.specializations)
-      if (const auto mapped = core::remapCallbackBindings(bindings, map))
-        contextSummaries[{symbol, *mapped}] =
-            sameNumbering ? summary
-                          : renumber(summary, unit.globals, globalNames);
+      if (const auto mapped = core::remapCallbackBindings(bindings, map)) {
+        auto &specialized = contextSummaries[{symbol, *mapped}];
+        if (sameNumbering)
+          specialized = summary;
+        else
+          specialized = renumber(summary, unit.globals, globalNames);
+      }
     for (const auto &[input, summary] : function.memorySpecializations)
       if (const auto mapped = core::remapCallContext(input, map)) {
         if (sameNumbering)
@@ -383,7 +413,7 @@ void ProgramDatabase::addCallbackInformation(const UnitExports &unit) {
 const core::FunctionSummary *
 ProgramDatabase::findCallable(std::string_view symbol) const {
   const auto it = callableSummaries.find(symbol);
-  return it == callableSummaries.end() ? nullptr : &it->second;
+  return it == callableSummaries.end() ? nullptr : it->second.get();
 }
 const core::FunctionSummary *ProgramDatabase::findSpecialization(
     std::string_view symbol, const core::CallbackBindings &bindings) const {
@@ -418,13 +448,13 @@ bool ProgramDatabase::defines(llvm::StringRef name) const {
 
 const core::FunctionSummary *ProgramDatabase::find(llvm::StringRef name) const {
   const auto it = functions.find(name);
-  return it == functions.end() ? nullptr : &it->second;
+  return it == functions.end() ? nullptr : it->second.get();
 }
 
 const core::FunctionSummary *
 ProgramDatabase::candidates(llvm::StringRef typeKey) const {
   const auto it = candidateSummaries.find(typeKey);
-  return it == candidateSummaries.end() ? nullptr : &it->second;
+  return it == candidateSummaries.end() ? nullptr : it->second.get();
 }
 
 /// The external-linkage variable named `name` at file scope, if the unit
@@ -585,11 +615,11 @@ void ProgramDatabase::dump(llvm::raw_ostream &os) const {
   os << "program:\n";
   for (const auto &[name, summary] : functions) {
     os << "  function '" << name << "':";
-    describe(os, summary, globalNames);
+    describe(os, *summary, globalNames);
   }
   for (const auto &[key, summary] : candidateSummaries) {
     os << "  candidate '" << key << "':";
-    describe(os, summary, globalNames);
+    describe(os, *summary, globalNames);
   }
   for (const std::string &key : countFields)
     os << "  count-field '" << key << "'\n";

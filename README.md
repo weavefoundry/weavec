@@ -32,6 +32,16 @@ the [case and union guide](docs/checked-code.md#check-input-cases-and-union-memb
 and [validation record](docs/validation-rfc0025.md) for supported cases,
 remaining limits and measured coverage and cost.
 
+Growable buffers have inferred relational contracts
+([RFC 0026](docs/rfcs/0026-growable-buffer-contracts.md)). The checker relates
+current backing storage, capacity, logical length and initialized contents
+across reserve, append and runtime loops. Backing ownership and pointer-element
+ownership remain separate. Capacity stores do not create allocations, and
+successful growth does not revive saved pointers into old storage. See the
+[buffer guide](docs/checked-code.md#growable-buffers-and-vectors) for supported
+operations and inference limits, and the [validation record](docs/validation-rfc0026.md)
+for measured coverage and cost.
+
 Common C runtime operations now carry checked contracts
 ([RFC 0024](docs/rfcs/0024-checked-runtime-contracts.md)). Comparison and search
 check initialized input; descriptor and stream reads establish only their
@@ -115,7 +125,7 @@ remain coverage gaps; general nonlinear and loop reasoning are outside the
 model. Early-exit and other unsupported loops do not produce inferred
 must-requirements on callers. Existing annotations remain trusted contracts.
 There is no runtime instrumentation or whole-program verification certificate.
-Core summary format is **19**; sidecar format **20** requires rebuilding objects carrying older
+Core summary format is **21**; sidecar format **22** requires rebuilding objects carrying older
 sidecars. The [validation report](docs/validation-rfc0017.md) records
 **900/900 tests passing**, including under ASan/UBSan, **44/44 original bugs
 detected and 32/32 clean cases**, plus twelve separate bug/clean regression

@@ -9,6 +9,7 @@
 #ifndef WEAVEC_CORE_SAFETY_H
 #define WEAVEC_CORE_SAFETY_H
 
+#include "weavec/Core/Buffer.h"
 #include "weavec/Core/Container.h"
 #include "weavec/Core/Place.h"
 #include "weavec/Core/SafetyCallPath.h"
@@ -254,6 +255,8 @@ struct PointerPosition {
   std::optional<Affine> extent;
   // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
   std::optional<PlaceId> input = {};
+  /// RFC 0026: an empty backing may be null; a positive extent is live.
+  bool validWhenNonempty = false;
   friend bool operator==(const PointerPosition &,
                          const PointerPosition &) = default;
 };
@@ -289,6 +292,7 @@ struct ArgumentListState {
 };
 
 struct SafetyState {
+  BufferFacts buffers;
   UnionState unions;
   ContainerFacts containers;
   std::map<PlaceId, ArgumentListState> argumentLists;

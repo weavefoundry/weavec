@@ -35,6 +35,7 @@ void FunctionDataflow::checkedCall(const CallExpr &call,
   checkedPosts.erase(&call);
   checkedPositionPosts.erase(&call);
   checkedProgressPosts.erase(&call);
+  bufferAllocationSequences.erase(&call);
   const auto *callee = call.getDirectCallee();
   std::string name = callee ? callee->getNameAsString() : "indirect call";
   if (!callee && effects && effects->source == SummarySource::Builtin)
@@ -75,6 +76,10 @@ void FunctionDataflow::checkedCall(const CallExpr &call,
       };
   const auto separate = [&](const CheckedMemory &left,
                             const CheckedMemory &right) {
+    for (const auto holder : {left.holder, right.holder})
+      if (holder && (state.moves.recordOf(*holder) ||
+                     state.safety->invalidatedPointers.contains(*holder)))
+        return false;
     if (left.storage == right.storage)
       return checkedInterval(left.end, left.end, right.begin, state) ||
              checkedInterval(right.end, right.end, left.begin, state);
@@ -90,20 +95,24 @@ void FunctionDataflow::checkedCall(const CallExpr &call,
         isa<StringLiteral>(right.pointer->IgnoreParenImpCasts());
     if (localA && localB)
       return places.root(left.storage) != places.root(right.storage);
-    if ((localA && (right.input || liveAllocation(b) || literalB)) ||
-        (localB && (left.input || liveAllocation(a) || literalA)) ||
+    if ((localA &&
+         (right.input || right.inputPlace || liveAllocation(b) || literalB)) ||
+        (localB &&
+         (left.input || left.inputPlace || liveAllocation(a) || literalA)) ||
         (literalA && liveAllocation(b)) || (literalB && liveAllocation(a)))
       return true;
-    if ((!left.input && liveAllocation(a) && right.input) ||
-        (!right.input && liveAllocation(b) && left.input))
+    if ((!left.input && !left.inputPlace && liveAllocation(a) &&
+         (right.input || right.inputPlace)) ||
+        (!right.input && !right.inputPlace && liveAllocation(b) &&
+         (left.input || left.inputPlace)))
       return true;
     const auto freshObject = [&](core::PlaceId storage) {
       return std::ranges::any_of(checkedObjects, [&](const auto &entry) {
         return entry.second == storage;
       });
     };
-    if ((freshObject(left.storage) && right.input) ||
-        (freshObject(right.storage) && left.input))
+    if ((freshObject(left.storage) && (right.input || right.inputPlace)) ||
+        (freshObject(right.storage) && (left.input || left.inputPlace)))
       return true;
     return liveAllocation(a) && liveAllocation(b) && a->location != b->location;
   };
@@ -199,6 +208,9 @@ void FunctionDataflow::checkedCall(const CallExpr &call,
     if (memory) {
       const auto holder = memory->holder.value_or(memory->storage);
       const auto resource = state.resources.recordOf(holder);
+      if (const auto *buffer = bufferFact(holder, state))
+        releasable |= buffer->shape.ownsBacking &&
+                      memory->begin == core::Affine::ofConstant(0);
       releasable |= resource && resource->family == "free" &&
                     !resource->escaped && !state.moves.recordOf(holder) &&
                     memory->begin == core::Affine::ofConstant(0);
@@ -208,6 +220,26 @@ void FunctionDataflow::checkedCall(const CallExpr &call,
                                          *memory, call, state, "free");
     obligation(core::SafetyProperty::Release, releasable, required,
                "reallocation requires a live allocation base");
+    if (positive && releasable)
+      if (const auto ref = builder.resolve(*call.getArg(0))) {
+        const auto *buffer = bufferFact(ref->place, state);
+        const auto sequence = state.safety->buffers.sequences.find(ref->place);
+        if (buffer && sequence != state.safety->buffers.sequences.end() &&
+            foldAffine(core::Affine::ofPlace(buffer->length), state) ==
+                core::Affine::ofConstant(0))
+          bufferAllocationSequences[&call] = sequence->second;
+      }
+    if (positive && (releasable || required) && memory && memory->holder) {
+      const auto data = *memory->holder;
+      const auto *buffer = bufferFact(data, state);
+      const auto sequence = state.safety->buffers.sequences.find(data);
+      if (buffer && sequence != state.safety->buffers.sequences.end() &&
+          checkedAtMost(core::Affine::ofPlace(buffer->length,
+                                              static_cast<std::int64_t>(
+                                                  buffer->shape.elementBytes)),
+                        *bytes, state))
+        bufferAllocationSequences[&call] = sequence->second;
+    }
     if (positive && (releasable || required) && memory)
       for (const auto &range : checkedCopyRanges(*memory, {}, *bytes, state))
         checkedPosts[&call].push_back({.path = core::SummaryPath::result(),
@@ -319,11 +351,16 @@ void FunctionDataflow::checkedCall(const CallExpr &call,
     bool required = false;
     if (origin.place) {
       const auto place = origin.place->place;
+      if (name == "free")
+        checkedBufferRelease(place, call, nullptr, state);
       const auto nullness = nullnessAt(place, state);
       released |=
           name == "free" && nullness && nullness->state == core::Nullness::Null;
       const auto resource = state.resources.recordOf(place);
       const auto spatial = state.spatial.recordOf(place);
+      if (const auto *buffer = bufferFact(place, state))
+        released |= name == "free" && buffer->shape.ownsBacking &&
+                    origin.offset.isZero();
       released |=
           resource && !resource->escaped && !state.moves.recordOf(place) &&
           !state.safety->invalidatedPointers.contains(place) &&
@@ -353,6 +390,18 @@ void FunctionDataflow::checkedCall(const CallExpr &call,
                  "memory operation length is not represented");
       return;
     }
+    // Byte initialization is not a proof that pointer cells retained their
+    // identities or that their separately owned pointees were released.
+    // Conservatively retire sequence evidence across byte-level mutation.
+    for (auto &[data, fact] : state.safety->buffers.values) {
+      if (!fact.shape.pointerElements)
+        continue;
+      checkedBufferRelease(data, call, nullptr, state);
+      fact.shape.ownsElements = false;
+    }
+    state.safety->buffers.sequences.clear();
+    state.safety->buffers.pendingSequences.clear();
+    state.safety->buffers.pending.clear();
     bool source = true;
     if (name != "memset")
       source = interval(1, *bytes, true, false);
@@ -361,13 +410,26 @@ void FunctionDataflow::checkedCall(const CallExpr &call,
       const auto left = checkedMemory(*call.getArg(0), {}, *bytes, state);
       const auto right = checkedMemory(*call.getArg(1), {}, *bytes, state);
       const bool separated = left && right && separate(*left, *right);
-      const bool required =
-          !separated && left && right && left->input && right->input;
+      const auto identity = [&](const std::optional<CheckedMemory> &memory) {
+        if (!memory)
+          return std::optional<core::SummaryPath>{};
+        if (memory->holder)
+          if (const auto *buffer = bufferFact(*memory->holder, state);
+              buffer && buffer->entryBacking)
+            return builder.summaryPathOf(*buffer->entryBacking);
+        if (memory->input)
+          return memory->input;
+        return memory->inputPlace ? stableSummaryPathOf(*memory->inputPlace)
+                                  : std::nullopt;
+      };
+      const auto leftInput = identity(left);
+      const auto rightInput = identity(right);
+      const bool required = !separated && leftInput && rightInput;
       if (required && recording())
         inferred.checked.require(
             {.kind = core::CheckedRequirementKind::Separated,
-             .path = *left->input,
-             .other = *right->input,
+             .path = *leftInput,
+             .other = *rightInput,
              .family = {}});
       obligation(core::SafetyProperty::Aliasing, separated, required,
                  "memcpy intervals must be disjoint");
@@ -401,8 +463,23 @@ void FunctionDataflow::checkedCall(const CallExpr &call,
         inferred.checked.deferred = true;
       for (const auto *argument : call.arguments())
         if (argument->getType()->isPointerType())
-          if (const auto memory = checkedMemory(*argument, {}, {}, state))
+          if (const auto memory = checkedMemory(*argument, {}, {}, state)) {
             state.safety->deferred.insert(memory->storage);
+            // RFC 0026: an unavailable mutator may replace a reachable
+            // buffer's backing pointer. Its old null/count values cannot
+            // decide post-call accesses during the compile-only phase.
+            for (const auto &[object, shape] : bufferObjects) {
+              if (object != memory->storage &&
+                  !places.isDescendantOf(object, memory->storage))
+                continue;
+              const auto data = places.field(object, shape.data.name);
+              for (const auto &field :
+                   {shape.data, shape.length, shape.capacity})
+                state.safety->deferred.insert(places.field(object, field.name));
+              state.safety->deferred.insert(places.deref(data));
+              state.nulls.forget(data);
+            }
+          }
       safetyObligation(core::SafetyProperty::Call,
                        core::SafetyOutcome::Required, call, name,
                        "external checked contract deferred until link");
@@ -494,6 +571,24 @@ void FunctionDataflow::checkedCall(const CallExpr &call,
     }
   };
 
+  // Discover and fold caller evidence before temporarily assuming a callee's
+  // antecedent. Guarded requirement probes must not publish unconditional
+  // buffer facts or numeric relations (RFC 0026).
+  for (const auto &requirement : contract->requirements)
+    if (requirement.kind == core::CheckedRequirementKind::Buffer)
+      (void)bufferArgument(requirement, call, state);
+  normalizeBuffers(state);
+  if (effects && effects->summary)
+    for (const auto &[path, effect] : effects->summary->effects)
+      if (effect.consumed() || effect.written)
+        if (const auto ref = builder.resolveSummaryPath(path, call, true)) {
+          checkedBufferRelease(ref->place, call, effects->summary.get(), state);
+          for (const auto &[data, fact] : state.safety->buffers.values)
+            if (ref->place == fact.length || ref->place == fact.capacity ||
+                ref->place == fact.object ||
+                places.isDescendantOf(ref->place, places.deref(data)))
+              checkedBufferRelease(data, call, effects->summary.get(), state);
+        }
   // Requirements sharing an antecedent are a conjunction. Discharge them
   // together so translation, refinement and rollback happen once per guard.
   // Only independently proved or recorded entry facts can help the next
@@ -531,6 +626,10 @@ void FunctionDataflow::checkedCall(const CallExpr &call,
     });
     for (const auto *entry : requirements) {
       const auto &requirement = *entry;
+      if (requirement.kind == core::CheckedRequirementKind::Buffer) {
+        checkedBufferCall(requirement, call, state);
+        continue;
+      }
       if (runtimeRequirement(requirement, call, state))
         continue;
       if (requirement.kind == core::CheckedRequirementKind::Container ||
@@ -673,6 +772,9 @@ void FunctionDataflow::checkedCall(const CallExpr &call,
         const auto nullness = nullnessAt(holder, state);
         proved = requirement.family == "free" && nullness &&
                  nullness->state == core::Nullness::Null;
+        if (const auto *buffer = bufferFact(holder, state))
+          proved |= requirement.family == "free" && buffer->shape.ownsBacking &&
+                    memory->begin == core::Affine::ofConstant(0);
         proved |= resource && !resource->escaped &&
                   !state.moves.recordOf(holder) &&
                   !state.safety->invalidatedPointers.contains(holder) &&
@@ -724,6 +826,7 @@ void FunctionDataflow::checkedCall(const CallExpr &call,
     }
   }
   captureCheckedPosts(call, *contract, state);
+  invalidateBufferCall(call, effects, state);
 }
 
 void FunctionDataflow::checkedCallAfter(const CallExpr &call,
@@ -750,13 +853,17 @@ void FunctionDataflow::checkedCallAfter(const CallExpr &call,
       (effects->source != SummarySource::Builtin &&
        effects->summary->checked.obligations.trusted() &&
        std::ranges::any_of(
-           effects->summary->checked.obligations.entries(),
+           effects->summary->checked.obligations.propagation().trusted,
            [](const auto &entry) {
-             return entry.second.outcome == core::SafetyOutcome::Trusted &&
-                    entry.second.reason != "modeled C library contract" &&
-                    entry.second.reason != "compiler object-size query";
+             return entry.reason != "modeled C library contract" &&
+                    entry.reason != "compiler object-size query";
            }))) {
     state.safety->unions.invalidateAll();
+    state.safety->buffers.values.clear();
+    state.safety->buffers.pending.clear();
+    state.safety->buffers.sequences.clear();
+    state.safety->buffers.pendingSequences.clear();
+    state.safety->buffers.storage.clear();
     state.safety->memory.clear();
     for (auto &[storage, type] : state.safety->objectTypes) {
       (void)storage;
@@ -784,8 +891,13 @@ void FunctionDataflow::checkedCallAfter(const CallExpr &call,
       (effects && effects->summary &&
        std::ranges::any_of(effects->summary->effects, [](const auto &entry) {
          return entry.second.written;
-       })))
+       }))) {
+    for (auto &[data, fact] : state.safety->buffers.values) {
+      (void)data;
+      fact.shape.terminated = false;
+    }
     state.forgetZeroedMemory();
+  }
   if (writes != checkedWrites.end()) {
     const auto *callee = call.getDirectCallee();
     const bool zeroed = (effects != nullptr) &&
