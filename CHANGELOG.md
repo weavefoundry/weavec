@@ -1,6 +1,15 @@
 # CHANGELOG
 
 
+## v0.9.0 (2026-09-15)
+
+### Features
+
+- Infer contracts for opaque objects and private state
+  ([#31](https://github.com/weavefoundry/weavec/pull/31),
+  [`7f160c2`](https://github.com/weavefoundry/weavec/commit/7f160c2eb5a054895a41a6f2cd96ff0127f75841))
+
+
 ## v0.8.0 (2026-09-15)
 
 ### Features
