@@ -13,6 +13,7 @@
 #include <limits>
 #include <new>
 #include <stdexcept>
+#include <type_traits>
 #include <utility>
 
 namespace weavec::core {
@@ -35,22 +36,18 @@ struct alignas(PathElem) SummarySteps::Storage {
 
   static Storage *create(std::size_t capacity) {
     static_assert(alignof(Storage) <= alignof(std::max_align_t));
+    static_assert(std::is_nothrow_default_constructible_v<PathElem>);
     if (capacity > maximumCapacity())
       throw std::length_error("summary path allocation overflow");
     auto *memory =
         ::operator new(sizeof(Storage) + (capacity * sizeof(PathElem)));
     auto *result = ::new (memory) Storage{.capacity = capacity};
-    try {
-      auto *arrayMemory = static_cast<std::byte *>(memory) + sizeof(Storage);
-      // Non-allocating placement array establishes lifetimes in the checked
-      // trailing allocation.
-      result->elements =
-          ::new (static_cast<void *>(arrayMemory)) PathElem[capacity];
-    } catch (...) {
-      result->~Storage();
-      ::operator delete(memory);
-      throw;
-    }
+    // Storage's alignment makes the address after its header suitable for
+    // PathElem. Non-allocating placement array construction cannot throw:
+    // the element constructor is checked above and allocation already
+    // succeeded.
+    result->elements =
+        ::new (static_cast<void *>(result + 1)) PathElem[capacity];
     return result;
   }
 
