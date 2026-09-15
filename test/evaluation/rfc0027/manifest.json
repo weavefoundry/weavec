@@ -1,0 +1,368 @@
+{
+  "version": 1,
+  "rfc": "0027",
+  "cases": [
+    {
+      "name": "borrowed-tree-good",
+      "source": "borrowed-tree-good.c",
+      "functions": [
+        "main"
+      ],
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "entry_requirements": 0
+    },
+    {
+      "name": "borrowed-tree-uninitialized-bad",
+      "source": "borrowed-tree-uninitialized-bad.c",
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "entry_requirements": 0,
+      "reason": "recursive|footprint|container|initializ|live|freed|release|allocation|leak|null|cycle|separat|incomplete"
+    },
+    {
+      "name": "borrowed-tree-cycle-bad",
+      "source": "borrowed-tree-cycle-bad.c",
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "entry_requirements": 0,
+      "reason": "recursive|footprint|container|initializ|live|freed|release|allocation|leak|null|cycle|separat|incomplete"
+    },
+    {
+      "name": "empty-good",
+      "source": "empty-good.c",
+      "functions": [
+        "main"
+      ],
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "entry_requirements": 0
+    },
+    {
+      "name": "singleton-good",
+      "source": "singleton-good.c",
+      "functions": [
+        "main"
+      ],
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "entry_requirements": 0
+    },
+    {
+      "name": "stack-release-bad",
+      "source": "stack-release-bad.c",
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "entry_requirements": 0,
+      "reason": "recursive|footprint|container|initializ|live|freed|release|allocation|leak|null|cycle|separat|incomplete"
+    },
+    {
+      "name": "runtime-good",
+      "source": "runtime-good.c",
+      "functions": [
+        "main"
+      ],
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "entry_requirements": 0
+    },
+    {
+      "name": "saved-alias-bad",
+      "source": "saved-alias-bad.c",
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "entry_requirements": 0,
+      "reason": "recursive|footprint|container|initializ|live|freed|release|allocation|leak|null|cycle|separat|incomplete"
+    },
+    {
+      "name": "independent-good",
+      "source": "independent-good.c",
+      "functions": [
+        "main"
+      ],
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "entry_requirements": 0
+    },
+    {
+      "name": "detach-good",
+      "source": "detach-good.c",
+      "functions": [
+        "main"
+      ],
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "entry_requirements": 0
+    },
+    {
+      "name": "detach-leak-bad",
+      "source": "detach-leak-bad.c",
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "entry_requirements": 0,
+      "reason": "recursive|footprint|container|initializ|live|freed|release|allocation|leak|null|cycle|separat|incomplete"
+    },
+    {
+      "name": "attach-good",
+      "source": "attach-good.c",
+      "functions": [
+        "main"
+      ],
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "entry_requirements": 0
+    },
+    {
+      "name": "attach-overwrite-bad",
+      "source": "attach-overwrite-bad.c",
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "entry_requirements": 0,
+      "reason": "recursive|footprint|container|initializ|live|freed|release|allocation|leak|null|cycle|separat|incomplete"
+    },
+    {
+      "name": "shared-child-bad",
+      "source": "shared-child-bad.c",
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "entry_requirements": 0,
+      "reason": "recursive|footprint|container|initializ|live|freed|release|allocation|leak|null|cycle|separat|incomplete"
+    },
+    {
+      "name": "attach-cycle-bad",
+      "source": "attach-cycle-bad.c",
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "entry_requirements": 0,
+      "reason": "recursive|footprint|container|initializ|live|freed|release|allocation|leak|null|cycle|separat|incomplete"
+    },
+    {
+      "name": "double-destroy-bad",
+      "source": "double-destroy-bad.c",
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "entry_requirements": 0,
+      "reason": "recursive|footprint|container|initializ|live|freed|release|allocation|leak|null|cycle|separat|incomplete"
+    },
+    {
+      "name": "branching-good",
+      "source": "branching-good.c",
+      "functions": [
+        "main"
+      ],
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "entry_requirements": 0
+    },
+    {
+      "name": "failure-good",
+      "source": "failure-good.c",
+      "functions": [
+        "main"
+      ],
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "entry_requirements": 0
+    },
+    {
+      "name": "generic-read",
+      "source": "generic-read.c",
+      "functions": [
+        "total"
+      ],
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "generic-destroy",
+      "source": "generic-destroy.c",
+      "functions": [
+        "destroy"
+      ],
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "nondecreasing-recursion-bad",
+      "source": "nondecreasing-recursion-bad.c",
+      "functions": [
+        "destroy"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "recursive|footprint|container|initializ|live|freed|release|allocation|leak|null|cycle|separat|incomplete"
+    },
+    {
+      "name": "partial-cleanup-bad",
+      "source": "partial-cleanup-bad.c",
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "entry_requirements": 0,
+      "reason": "recursive|footprint|container|initializ|live|freed|release|allocation|leak|null|cycle|separat|incomplete"
+    },
+    {
+      "name": "early-cleanup-bad",
+      "source": "early-cleanup-bad.c",
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "entry_requirements": 0,
+      "reason": "recursive|footprint|container|initializ|live|freed|release|allocation|leak|null|cycle|separat|incomplete"
+    },
+    {
+      "name": "renamed-good",
+      "source": "renamed-good.c",
+      "functions": [
+        "main"
+      ],
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "entry_requirements": 0
+    },
+    {
+      "name": "reverse-wrapper-good",
+      "source": "reverse-wrapper-good.c",
+      "functions": [
+        "main"
+      ],
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "entry_requirements": 0
+    },
+    {
+      "name": "reverse-drop-bad",
+      "source": "reverse-drop-bad.c",
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "entry_requirements": 0,
+      "reason": "recursive|footprint|container|initializ|live|freed|release|allocation|leak|null|cycle|separat|incomplete"
+    },
+    {
+      "name": "reverse-alias-bad",
+      "source": "reverse-alias-bad.c",
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "entry_requirements": 0,
+      "reason": "recursive|footprint|container|initializ|live|freed|release|allocation|leak|null|cycle|separat|incomplete"
+    }
+  ]
+}

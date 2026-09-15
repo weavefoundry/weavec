@@ -247,7 +247,15 @@ enum class CheckedRequirementKind : std::uint8_t {
   /// RFC 0026: current contiguous container invariant.
   Buffer,
   BufferPreserved,
-  BufferAppended
+  BufferAppended,
+  /// RFC 0027: output path contains exactly the entry footprint in other.
+  ContainerPreserved,
+  /// RFC 0027: every allocation in the entry footprint in path was released.
+  ContainerConsumed,
+  /// RFC 0027: output path + output other partition the entry in begin.path.
+  ContainerPartition,
+  /// RFC 0027: output path is the union of entry other and entry begin.path.
+  ContainerCombined
 };
 struct CheckedRequirement {
   CheckedRequirementKind kind = CheckedRequirementKind::Valid;
@@ -316,6 +324,10 @@ struct CheckedContract {
 
   void require(CheckedRequirement requirement);
   void establish(CheckedRequirement requirement);
+  /// RFC 0027: dependent outputs need premises retained within contract bounds.
+  [[nodiscard]] bool
+  hasContainerOutputPremises(const CheckedRequirement &post) const;
+  void discardUnrepresentedContainerOutputs();
   void join(const CheckedContract &other);
   [[nodiscard]] bool complete() const {
     return computed && !limited && !deferred && obligations.complete();

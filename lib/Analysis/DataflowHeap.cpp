@@ -130,15 +130,27 @@ FunctionDataflow::heapWriteGuard(core::PlaceId place,
   return value.when;
 }
 
-std::vector<core::PlaceId>
+FunctionDataflow::MirrorPlaces
 FunctionDataflow::definiteMirrors(core::PlaceId place,
                                   const core::AnalysisState &state) {
   const auto parent = places.parent(place);
   if (!parent)
     return {place};
+  const auto step = places.step(place);
+  auto parents = definiteMirrors(*parent, state);
+  if (parents.size() == 1 && parents.front() == *parent &&
+      (step != core::PathStep::Deref ||
+       state.definiteAliases.viewEdgesFrom(*parent).empty())) {
+    parents.front() = place;
+    return parents;
+  }
   std::set<core::PlaceId> result;
-  for (const core::PlaceId base : definiteMirrors(*parent, state)) {
-    switch (places.step(place)) {
+  for (const core::PlaceId base : parents) {
+    if (step != core::PathStep::Deref && base == *parent) {
+      result.insert(place);
+      continue;
+    }
+    switch (step) {
     case core::PathStep::Field:
       result.insert(places.field(base, places.fieldName(place)));
       break;
@@ -148,8 +160,9 @@ FunctionDataflow::definiteMirrors(core::PlaceId place,
                         : places.index(base));
       break;
     case core::PathStep::Deref:
-      result.insert(places.deref(base));
-      for (const auto &[alias, edge] : state.definiteAliases.edgesFrom(base)) {
+      result.insert(base == *parent ? place : places.deref(base));
+      for (const auto &[alias, edge] :
+           state.definiteAliases.viewEdgesFrom(base)) {
         if (places.isDescendantOf(alias, base) ||
             places.depth(alias) >= PlaceBuilder::MaxPlaceDepth)
           continue;
@@ -423,11 +436,7 @@ FunctionDataflow::describeHeap(core::PlaceId root, bool pointer,
       } else {
         ValueOrigin origin;
         origin.kind = ValueOrigin::Kind::Copy;
-        origin.place = PlaceRef{.place = field,
-                                .derefs = {},
-                                .derefExprs = {},
-                                .derefElements = {},
-                                .element = {}};
+        origin.place = PlaceRef{.place = field, .derefs = {}, .element = {}};
         value = sourceOf(origin, state, true);
         // A published allocation is escaped for local leak accounting, but
         // is still the very allocation the output hands to its receiver.
@@ -569,11 +578,7 @@ void FunctionDataflow::recordHeapOutputs(const core::AnalysisState &state) {
       graph = describeHeap(place, true, state, nullptr);
     ValueOrigin origin;
     origin.kind = ValueOrigin::Kind::Copy;
-    origin.place = PlaceRef{.place = place,
-                            .derefs = {},
-                            .derefExprs = {},
-                            .derefElements = {},
-                            .element = {}};
+    origin.place = PlaceRef{.place = place, .derefs = {}, .element = {}};
     auto value = sourceOf(origin, state, true);
     // Legacy stores name interface cells. A final heap value may use such
     // a path as an entry identity only if it has not already been written.
@@ -696,14 +701,51 @@ void FunctionDataflow::captureHeapInputs(const clang::CallExpr &call,
       written.insert(std::move(path));
     }
   }
-  const auto mayWrite = [&written](core::SummaryPath path) {
-    for (;;) {
-      if (written.contains(path))
-        return true;
-      if (path.steps.empty())
-        return false;
-      path.steps.pop_back();
+  std::map<core::SummaryPath, bool> writtenInputs;
+  std::optional<std::vector<core::PlaceId>> actualWrites;
+  const auto mayWrite = [&](const core::SummaryPath &path) {
+    if (written.empty())
+      return false;
+    // Resolving pending array ranges can materialize entry cells and their
+    // aliases. Reevaluate those queries against the newly materialized facts.
+    if (!state.arrayRanges.empty() || !state.filledArrayRanges.empty() ||
+        !state.releasedArrayRanges.empty()) {
+      writtenInputs.clear();
+      actualWrites.reset();
     }
+    // All queries precede effect application. Resolve each formal path once
+    // for this call, including repeated guards and aliases (RFC 0027).
+    const auto [entry, inserted] = writtenInputs.try_emplace(path, false);
+    if (!inserted)
+      return entry->second;
+    for (auto prefix = path;; prefix.steps.pop_back()) {
+      if (written.contains(prefix)) {
+        entry->second = true;
+        return true;
+      }
+      if (prefix.steps.empty())
+        break;
+    }
+    // Two formal inputs may name the same caller cell, including a nested
+    // getter passed to a detachment helper. Snapshot its entry value before
+    // another formal's store changes the cell; parameter spelling alone does
+    // not establish that the returned input remains unchanged (RFC 0027).
+    const auto actual = builder.resolveSummaryPath(path, call);
+    if (!actual)
+      return false;
+    if (!actualWrites) {
+      actualWrites.emplace();
+      for (const auto &output : written)
+        if (const auto target = builder.resolveSummaryPath(output, call))
+          actualWrites->push_back(target->place);
+    }
+    entry->second = std::ranges::any_of(*actualWrites, [&](const auto target) {
+      const auto alias = state.definiteAliases.offsetOf(actual->place, target);
+      return actual->place == target ||
+             places.isDescendantOf(actual->place, target) ||
+             (alias && alias->isZero());
+    });
+    return entry->second;
   };
   std::set<core::SummaryPath> inputs;
   std::set<core::SummaryPath> values;
@@ -883,11 +925,8 @@ FunctionDataflow::heapOrigin(const core::ValueSource &value,
     const auto it = heapInputs.find(std::pair{&call, *value.path});
     if (it != heapInputs.end()) {
       origin->kind = ValueOrigin::Kind::Copy;
-      origin->place = PlaceRef{.place = it->second,
-                               .derefs = {},
-                               .derefExprs = {},
-                               .derefElements = {},
-                               .element = {}};
+      origin->place =
+          PlaceRef{.place = it->second, .derefs = {}, .element = {}};
     }
   }
   // A guard in the description refers to entry values, even after an
@@ -948,11 +987,8 @@ void FunctionDataflow::applyHeap(core::PlaceId dest,
                   builder.resolveBelow(dest, *value.path, &call)) {
             origin = ValueOrigin{};
             origin->kind = ValueOrigin::Kind::Copy;
-            origin->place = PlaceRef{.place = *target,
-                                     .derefs = {},
-                                     .derefExprs = {},
-                                     .derefElements = {},
-                                     .element = {}};
+            origin->place =
+                PlaceRef{.place = *target, .derefs = {}, .element = {}};
             origin->offset = value.offset;
             if (const auto guard = builder.translateGuard(value.when, call))
               origin->guard = *guard;

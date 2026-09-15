@@ -23,6 +23,7 @@
 #include "weavec/Analysis/ProgramDatabase.h"
 #include "weavec/Core/AnalysisStats.h"
 #include "weavec/Core/Buffer.h"
+#include "weavec/Core/Container.h"
 #include "weavec/Core/Diagnostic.h"
 #include "weavec/Core/Summary.h"
 
@@ -282,7 +283,8 @@ public:
   /// previous one, or joining the previous approximation when `widen` is
   /// requested by a recursive component (RFC 0017). Returns whether changed.
   bool setInferred(const clang::FunctionDecl &function,
-                   core::FunctionSummary summary, bool widen = false);
+                   core::FunctionSummary summary, bool widen = false,
+                   bool verifiedInduction = false);
 
   /// The current inferred summary, or null. This raw observer lasts until
   /// that function's next setInferred; resolved calls retain their version.
@@ -294,6 +296,14 @@ public:
   [[nodiscard]] std::optional<core::BufferShape> bufferShape(
       const clang::RecordDecl &record,
       const std::function<std::optional<core::BufferShape>()> &discover);
+  /// RFC 0027: immutable topology discovery, never a flow-sensitive proof.
+  [[nodiscard]] std::vector<const clang::FieldDecl *>
+  recursiveLinks(const clang::RecordDecl &record);
+  [[nodiscard]] std::map<std::string, core::ContainerCondition>
+  containerOwnership(
+      const clang::RecordDecl &record,
+      const std::function<std::map<std::string, core::ContainerCondition>()>
+          &discover);
 
   /// Immutable Clang record layouts, cached for this AST's lifetime.
   [[nodiscard]] std::string_view objectView(clang::QualType type);
@@ -327,6 +337,9 @@ public:
     if (context != unitContext) {
       objectViewCache.clear();
       bufferShapeCache.clear();
+      recursiveLinkCache.clear();
+      importedRecursiveLinkCache.clear();
+      containerOwnershipCache.clear();
     }
     context = unitContext;
   }
@@ -445,6 +458,18 @@ private:
   std::map<const clang::RecordDecl *, std::string> objectViewCache;
   std::map<const clang::RecordDecl *, std::optional<core::BufferShape>>
       bufferShapeCache;
+  std::map<const clang::RecordDecl *, std::vector<const clang::FieldDecl *>>
+      recursiveLinkCache;
+  struct ImportedRecursiveLinks {
+    std::vector<const clang::FieldDecl *> fields;
+    Dependencies dependencies;
+  };
+  std::shared_ptr<const char> recursiveLinkGeneration;
+  std::map<const clang::RecordDecl *, ImportedRecursiveLinks>
+      importedRecursiveLinkCache;
+  std::map<const clang::RecordDecl *,
+           std::map<std::string, core::ContainerCondition>>
+      containerOwnershipCache;
   std::set<std::string> knownCounts;
   SizedFieldFacts sizedFields;
   std::set<std::string> sizedLoads;

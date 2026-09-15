@@ -342,11 +342,7 @@ void FunctionDataflow::applyArrayRanges(const CallExpr &call,
                 .first;
       arrayTypes[found->second] = arrayElementType(source->place);
       pointerSnapshots.insert(found->second);
-      dest = PlaceRef{.place = found->second,
-                      .derefs = {},
-                      .derefExprs = {},
-                      .derefElements = {},
-                      .element = {}};
+      dest = PlaceRef{.place = found->second, .derefs = {}, .element = {}};
     }
     if (!dest || !source || !destBegin || !sourceBegin || !count) {
       reportIncomplete("unresolved array range at call", call);

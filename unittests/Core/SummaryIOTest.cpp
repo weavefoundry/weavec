@@ -8,12 +8,50 @@
 
 #include "weavec/Core/SummaryIO.h"
 
+#include "weavec/Core/CheckedIO.h"
+
 #include <gtest/gtest.h>
 
 #include <map>
 #include <string>
 
 namespace weavec::core {
+
+TEST(SummaryIO, CheckedGuardRenderingKeepsNamespacesAcrossCacheEviction) {
+  CheckedContract contract;
+  contract.computed = contract.selected = true;
+  for (unsigned i = 0; i < 160; ++i) {
+    PathGuard when;
+    when.require(SummaryPath::global(0), ValueFact::ofConstant(i / 2));
+    contract.require({.kind = CheckedRequirementKind::Valid,
+                      .path = SummaryPath::param(i),
+                      .other = {},
+                      .family = {},
+                      .when = std::move(when)});
+  }
+  std::string previous;
+  for (const auto *name : {"first_flag", "second_flag"}) {
+    const auto encoded = printCheckedContract(
+        contract, [&](std::uint32_t) { return std::string(name); });
+    const auto parsed = parseCheckedContract(
+        encoded, [&](std::string_view value) -> std::optional<std::uint32_t> {
+          return value == name ? std::optional<std::uint32_t>(0) : std::nullopt;
+        });
+    ASSERT_TRUE(parsed);
+    EXPECT_EQ(*parsed, contract);
+    const auto remapped = parseCheckedContract(encoded, [](std::string_view) {
+      return std::optional<std::uint32_t>(7);
+    });
+    ASSERT_TRUE(remapped);
+    for (const auto &requirement : remapped->requirements) {
+      EXPECT_TRUE(requirement.when.conditions.contains(SummaryPath::global(7)));
+      EXPECT_FALSE(
+          requirement.when.conditions.contains(SummaryPath::global(0)));
+    }
+    EXPECT_NE(encoded, previous);
+    previous = encoded;
+  }
+}
 
 static constexpr auto Names = [](std::uint32_t id) {
   return id == 0 ? std::string("g_buf") : "g" + std::to_string(id);
@@ -174,7 +212,7 @@ TEST(SummaryIO, PrintsAndParsesGuardsAndNeverReturns) {
 // RFC 0010, *Summary text format (version 6)*: the `share` flag and the
 // `increment`, `decrement`, `count`, `stored` and `fact` lines.
 TEST(SummaryIO, PrintsAndParsesSharesAndPerOutcomeLines) {
-  EXPECT_EQ(SummaryFormatVersion, 21U);
+  EXPECT_EQ(SummaryFormatVersion, 22U);
   const SummaryPath rc = SummaryPath::param(0).deref().field("rc");
   FunctionSummary unref;
   unref.addEffect(SummaryPath::param(0),

@@ -13,6 +13,7 @@ weavec_add_library(
           DataflowContainers.cpp
           DataflowContainerTransfer.cpp
           DataflowContainerContracts.cpp
+          DataflowFootprints.cpp
           DataflowSafety.cpp
           DataflowBuffers.cpp
           DataflowBufferContracts.cpp

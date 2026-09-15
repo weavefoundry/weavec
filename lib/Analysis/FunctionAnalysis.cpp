@@ -54,6 +54,7 @@ bool FunctionAnalyzer::analyze(const FunctionDecl &function,
   if (!options.checkContracts)
     return summaries.setInferred(function, std::move(dataflow).summary(),
                                  widenSummary);
+  const bool verifiedInduction = dataflow.verifiedRecursiveCleanup();
   auto summary = std::move(dataflow).summary();
   if (options.checkContracts)
     for (const auto &diagnostic : validation.diagnostics())
@@ -67,7 +68,8 @@ bool FunctionAnalyzer::analyze(const FunctionDecl &function,
              .subject = std::string(diagnostic.id),
              .reason = diagnostic.message,
              .calls = {}});
-  return summaries.setInferred(function, std::move(summary), widenSummary);
+  return summaries.setInferred(function, std::move(summary), widenSummary,
+                               verifiedInduction);
 }
 
 void FunctionAnalyzer::validate(const FunctionDecl &function) {

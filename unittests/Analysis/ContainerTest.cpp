@@ -196,15 +196,15 @@ TEST(ContainerAnalysis, OwnershipRequirementsPropagateThroughReversalWrappers) {
     return entry.kind == core::CheckedRequirementKind::Container &&
            descriptor && descriptor->access == core::ContainerAccess::Release;
   }));
-  // A derived result is a subset, not a promise that every original node
-  // reaches the result. Preserve the ordinary leak obligation (RFC 0023).
-  EXPECT_FALSE(containerCheck(helpers + R"c(
+  // RFC 0027 separately proves conservation through reversal; the complete
+  // consumption contract can discharge the caller's actual allocation.
+  EXPECT_TRUE(containerCheck(helpers + R"c(
     int client(void) {
       struct node *p=malloc(sizeof *p); if(!p) return 0;
       p->value=1; p->next=0; cleanup(p); return 0;
     }
   )c")
-                   .complete());
+                  .complete());
   EXPECT_FALSE(containerCheck(helpers + R"c(
     int client(void) { struct node p={1,0}; cleanup(&p); return 0; }
   )c")

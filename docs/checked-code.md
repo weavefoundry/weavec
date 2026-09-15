@@ -392,17 +392,73 @@ Unknown writes, callbacks and unmodeled alias effects invalidate evidence.
 Ordinary checks still cover arithmetic, other fields, initialization and leaks.
 A derived output describes nodes from its input chains plus fresh additions;
 it does not establish that every original node reaches that output. Thus a
-wrapper such as `destroy(reverse(p))` can propagate an ownership requirement
-while its closed caller still reports a leak when the ordinary summary loses
-full-consumption information. This is a documented conservative limitation.
-General graphs, cyclic owning lists, arbitrary trees, doubly linked mutation,
-volatile/atomic links and concurrent access are outside this milestone.
+wrapper such as `destroy(reverse(p))` needs a separate conservation proof.
+RFC 0027 supplies that proof for supported transformations, described below.
+General graphs, cyclic ownership, volatile/atomic links and concurrent access
+remain outside the model.
 
-Summary format 21 and sidecar format 22 require rebuilding older compiler
+Summary format 22 and sidecar format 23 require rebuilding older compiler
 objects. Persistent caches validate executable, source, preprocessing and
 callee dependencies before reusing a container contract. See the
 [validation report](validation-rfc0023.md) for the frozen acceptance population,
 real-source callers and measured cost.
+
+## Recursive object ownership
+
+[RFC 0027](rfcs/0027-recursive-object-ownership.md) extends inferred container
+contracts to finite acyclic trees and child/sibling forests. For example:
+
+```c
+#include <stdlib.h>
+struct node { unsigned value; struct node *left, *right; };
+static void destroy(struct node *p) {
+    if (!p) return;
+    destroy(p->left);
+    destroy(p->right);
+    free(p);
+}
+```
+
+The generic helper requires a finite initialized structure with independently
+owned nodes and a matching release family. It proves complete consumption using
+proper-child induction. A closed caller must establish that requirement from
+actual allocations and initialized links. Borrowed stack trees support reads;
+they cannot satisfy release permission. Runtime construction and cleanup use
+inductive invariants, independent of the number of nodes allocated at runtime.
+
+Structural validity and complete cleanup are separate facts. Reports expose
+`container-preserved`, `container-consumed`, `container-partition`, and
+`container-combined` outputs alongside their structural and separation premises.
+A detachment can partition an input between its remaining parent and returned
+child. Both allocations still need cleanup or transfer. A reverse wrapper may
+preserve every allocation, while a wrapper that discards its head cannot settle
+its caller's cleanup obligation. Entry release permission by itself does not
+transfer a caller's cleanup duty to a helper that only partially releases input.
+
+Supported initialized integer flag tests can distinguish owned children and
+payloads from borrowed references. An inactive ownership edge grants no permission
+to access or release its pointee. Changing a flag or link retires old evidence;
+it cannot make a lost allocation disappear. Nonowning previous links may cycle,
+but owning links must remain acyclic and separate. Unknown callback targets,
+unproved mutation and exhausted metadata limits remain incomplete.
+
+The unchanged cJSON validation clients explicitly establish default allocation
+hooks before creating, attaching, traversing, detaching and deleting objects.
+This covers the selected lifecycle slice, not the parser, printer or arbitrary
+custom hooks. Generic direct recursive destruction and supported helper wrappers
+are inferred from bodies; no library-name certificate or new annotation is used.
+Mutual recursive cleanup, arbitrary shared graphs and general logical ownership
+predicates remain unsupported. The domain bounds metadata to 64 footprint
+variables and relations; exceeding those bounds loses proof.
+
+Source analysis, compiler objects and validated checkpoints transport the same
+contracts. Cross-unit callers still need compatible record-layout evidence for
+recursive contracts; a forward declaration alone does not supply it. Private
+mutable allocation hooks across separate translation units remain unsupported.
+Summary format 22, sidecar format 23 and checked encoding 9 reject
+older metadata; rebuild old objects. Expanded JSON version 2 and compact version
+3 retain their existing meanings. See [validation](validation-rfc0027.md) for
+fixed populations, counterexamples, test results and cost observations.
 
 ## Growable buffers and vectors
 
@@ -440,7 +496,7 @@ transfers remain incomplete.
 
 The portable `buffer`, `buffer-preserved` and `buffer-appended` records travel
 through the normal source, object and cache workflows. They add no annotation
-spelling or pointer ABI. Rebuild older object sidecars for format 22.
+spelling or pointer ABI. Rebuild older object sidecars for format 23.
 Shape discovery is bounded to 16 descriptors and 64 instances; descriptors are
 limited to 16 KiB. Exhaustion is reported as incomplete. The initial discovery
 rule requires one non-function data pointer and two unsigned, non-Boolean count
@@ -520,6 +576,6 @@ establish the exact written prefix. If `0 <= n && n < sizeof buffer`, `buffer[n]
 is the written terminator. If `n >= sizeof buffer`, truncation initializes the
 capacity and its final NUL. A negative or overwritten result establishes neither.
 
-Runtime records use checked encoding 8, summary format 21 and sidecar format 22.
+Runtime records use checked encoding 9, summary format 22 and sidecar format 23.
 Rebuild objects carrying older sidecars. The cache validates the executable and
 source dependencies before reusing these records.

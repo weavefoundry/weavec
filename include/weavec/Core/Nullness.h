@@ -127,6 +127,12 @@ public:
   std::vector<PlaceId> learn(PlaceId place, const ValueFact &fact);
   /// `place` was overwritten: no guard may speak about it any more.
   void dropGuardsOn(PlaceId place);
+  /// RFC 0027: invalidate several overwritten values in one record scan.
+  template <typename Matches>
+  void dropGuardsIf(Matches matches) {
+    for (auto &[holder, record] : records)
+      record.guard.dropIf(matches);
+  }
 
   /// Places with a record, ascending (for dumps).
   [[nodiscard]] std::vector<PlaceId> places() const;

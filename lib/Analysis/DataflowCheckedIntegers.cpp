@@ -77,7 +77,7 @@ bool FunctionDataflow::handleCheckedIntegerCall(const CallExpr &call,
   if (stored)
     state.numericValues.insert_or_assign(*saved, *stored);
   assignScalar(pointee->place, nullptr, state, &call);
-  std::vector<core::PlaceId> cells = mirrors(pointee->place, state);
+  auto cells = mirrors(pointee->place, state);
   cells.push_back(pointee->place);
   llvm::append_range(cells, borrowedImages(pointee->place, state));
   for (const auto cell : cells) {

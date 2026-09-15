@@ -51,7 +51,7 @@ dispatch. `DataflowRuntime.cpp` checks memory and stream preconditions,
 They use the existing checked call, callback, output and summary machinery.
 Source definitions retain priority over library spellings. Ordinary summaries
 alone never authorize a checked runtime contract. Portable records use checked
-encoding 8, summary format 21 and sidecar format 22 (RFC 0026).
+encoding 9, summary format 22 and sidecar format 23 (RFC 0027).
 
 | Header             | Purpose                                                                                        |
 | ------------------ | ---------------------------------------------------------------------------------------------- |
@@ -118,6 +118,12 @@ be mistaken for an empty access.
 - maps expressions onto structured places, classifies pointer-typed values
   as allocation, copy, borrow, null, raw or opaque, and translates summary
   paths into the caller's places and back (`lib/Analysis/PlaceBuilder.h`).
+  Resolved dereferences retain each pointer, expression and element witness
+  together; short paths and mirror-query results use inline storage that grows
+  for larger results. Object-view validation may reuse an individual comparison
+  between an immutable AST type and a view in the same live callee summary.
+  Every path step and expected view still participates; erased-pointer recovery
+  reads the current flow state (RFC 0027).
   Pointer arithmetic and pointer-to-pointer casts preserve identity; only
   integer-to-pointer casts produce raw values;
 - runs a forward dataflow over `clang::CFG` for each function body
@@ -219,7 +225,7 @@ argument-conditional summaries and inferred `noreturn` by
   from a compilation database.
 - `Sidecar.h` reads and writes `foo.o.weavec`: the unit's exports, the cc1
   command that produced it and the diagnostics already reported, in a
-  line-oriented text format versioned by its `weavec-summaries 21` header.
+  line-oriented text format versioned by its `weavec-summaries 23` header.
 - `Driver.h` is `weavec-cc`: Clang's `driver::Driver` plans the jobs, each
   `-cc1` job runs in-process with WeaveC's consumer multiplexed beside
   Clang's, the compile step writes the sidecar, and the link step runs
@@ -287,7 +293,7 @@ snapshot site invalidates the old generation's dependent facts. The domain
 remains bounded; RFC 0017 extends these snapshots to every dependency of a
 typed symbolic expression while retaining affine and relation fast paths.
 
-The current summary version 21 and sidecar version 22 retain heap descriptions, post
+The current summary version 22 and sidecar version 23 retain heap descriptions, post
 references and string metadata. `ProgramDatabase` remaps global references
 and compares these descriptions as part of normal dependency invalidation.
 The compiler and tooling whole-program modes share this implementation.
@@ -455,7 +461,7 @@ checks by source operation. `--dump-analysis` prints
 These counts are independent of unsafe-region reporting and warning controls.
 A caller requirement is an obligation, not a proof that all callers satisfy it.
 
-`SummaryFormatVersion` is **21** and `SidecarFormatVersion` is **22**. Numeric
+`SummaryFormatVersion` is **22** and `SidecarFormatVersion` is **23**. Numeric
 outputs use `numeric <path> value ...` records; `requires-extent` retains
 optional `start` intervals and typed guards. Core validates types, operators,
 paths, shapes and limits. Comparison, global remapping and dependency
@@ -601,7 +607,7 @@ can partition eligible small loops by completed back edges before falling
 back to widening. Every final obligation is checked on converged states.
 
 `position`, `progress` and explicit `terminator` quantities cross interfaces
-through checked-record encoding 8. Call-entry snapshots precede ordinary
+through checked-record encoding 9. Call-entry snapshots precede ordinary
 effects, with output positions installed afterward. Portable call contexts
 can additionally contain directed same-array byte-pointer orders (`o:`
 records); these neither equate addresses nor invent ownership shares. They
@@ -619,9 +625,9 @@ objects for compiler-sidecar validation before replay. Compilation may defer
 an unavailable external contract; the link pass must resolve it. Checked
 failure reaches Clang independently of the diagnostic filtering policy.
 
-Summary format 21 and sidecar format 22 carry guarded/outcome-qualified contracts,
+Summary format 22 and sidecar format 23 carry guarded/outcome-qualified contracts,
 numeric outputs and RFC 0021 traversal records. Checked record encoding uses
-version 3; report JSON uses expanded version 2 or compact version 3.
+version 9; report JSON uses expanded version 2 or compact version 3.
 Strict parsing and global remapping reject missing premises. Explanation depth
 is bounded independently of semantic contract limits; truncating a call chain
 does not change the obligation it explains.
@@ -765,7 +771,7 @@ They describe a subset plus freshly added nodes; they do not promise full input
 consumption. Fresh outputs require actual allocation evidence. Tail outputs are
 imported across read-only calls. A terminal output can establish a detached
 node's null successor. Descriptors, source premises and capability combinations
-are validated during decoding. Summary format 21 and sidecar format 22 prevent
+are validated during decoding. Summary format 22 and sidecar format 23 prevent
 older metadata from silently discarding these records.
 
 Limits are 32 fields, 64 explicit nodes, 64 active facts and 16 KiB per encoded
@@ -773,6 +779,39 @@ descriptor. Hitting a limit loses proof. Native inference initially supports
 null-ended singly linked chains; Core also checks endpoint-exclusive explicit
 segments. General graphs, cyclic ownership, tagged unions, volatile/atomic links
 and doubly linked mutation remain outside this predicate.
+
+### Recursive ownership and footprint conservation (RFC 0027)
+
+`ContainerShape` adds multiple recursive fields, initialized-scalar ownership
+conditions, and head-only refinements for known null links/payloads and scalar
+values. Descendant projection drops head refinements. The explicit graph prover
+checks acyclicity, initialized nodes, active ownership edges and disjoint owned
+payloads; inactive edges grant no pointee capability. Partial head facts retain
+which children or payloads have already been released and cannot be exported as
+intact whole objects.
+
+`Core/Footprint.h` supplies a separate sparse domain of exact equalities over
+formal allocation identities. Fraction-free elimination detects arithmetic
+overflow. Forget is existential projection; join intersects row spaces, including
+equalities represented by different bases. Both variables and relations are
+capped at 64. These equations cannot create structural validity or separation.
+
+`DataflowFootprints.cpp` maintains entry snapshots, head/payload allocations,
+conditional field contributions, current root footprints, acquired allocations
+and accumulated release. Replacement and mutation retire current-value equations
+while retaining historical allocation identities. A complete output requires both
+the structural predicate and its proved conservation relation. Calls capture
+inputs before effects, then install only established output relations. Indirect
+targets contribute only their common guaranteed outputs.
+
+Direct recursive cleanup uses private proper-child induction hypotheses. Every
+returning path must establish complete input consumption before an inferred
+contract is published. Active recursion alone supplies no output. The ordinary
+may-effect fixed point continues independently. Mutual recursion remains
+conservative. Complete preservation, consumption, partition and combination
+outputs use checked encoding 9; strict decoding requires their source predicates
+and separation premises. Summary format 22 and sidecar format 23 carry these
+records across program databases, object metadata and validated checkpoints.
 
 ### Input cases and overlapping member storage (RFC 0025)
 
@@ -791,7 +830,7 @@ never supplies initialized pointee bytes. Consumption, unknown writes and lost
 scalar dependencies retire the corresponding evidence. Record copies project
 holder identities before installing copied pointer facts.
 
-Checked encoding 8 carries optional `caseInputs` and `union-member` requirements
+Checked encoding 9 carries optional `caseInputs` and `union-member` requirements
 and postconditions. Sidecars and checkpoints retain the existing canonical
 context-to-summary association. Expanded and compact reports include every
 retained case premise and ledger under the generic function's `cases` field.
@@ -819,7 +858,7 @@ stores flow facts or proof results. Discovery avoids interning places for
 records with no buffer subobjects. Buffer-specific range snapshots and numeric
 reasoning run only in functions with registered buffer candidates.
 
-Checked encoding 8 adds validated `buffer`, `buffer-preserved` and
+Checked encoding 9 carries validated `buffer`, `buffer-preserved` and
 `buffer-appended` requirements and outputs to the existing interface codec.
-Summary format 21 and sidecar format 22 reject older encodings. Ordinary
+Summary format 22 and sidecar format 23 reject older encodings. Ordinary
 warnings remain independent from checked completeness.

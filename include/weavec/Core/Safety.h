@@ -11,6 +11,7 @@
 
 #include "weavec/Core/Buffer.h"
 #include "weavec/Core/Container.h"
+#include "weavec/Core/Footprint.h"
 #include "weavec/Core/Place.h"
 #include "weavec/Core/SafetyCallPath.h"
 #include "weavec/Core/Scalar.h"
@@ -218,6 +219,13 @@ private:
   prepareCallOrigins(std::span<const SafetyObligation> origins,
                      const SourceLocation &location, std::string_view caller,
                      std::string_view callee, bool unsafe);
+  static std::shared_ptr<const PreparedSafetyOrigins>
+  prepareCallOriginText(std::span<const SafetyObligation> origins,
+                        std::string_view callee, bool unsafe);
+  void applyCallOriginText(const PreparedSafetyOrigins &prepared,
+                           std::span<const SafetyObligation> origins,
+                           const SourceLocation &location,
+                           std::string_view function);
   /// Immutable across copies; mutation detaches only when necessary.
   struct Storage;
   friend class SafetyEntryPool;
@@ -295,6 +303,9 @@ struct SafetyState {
   BufferFacts buffers;
   UnionState unions;
   ContainerFacts containers;
+  FootprintRelations footprints;
+  /// Current head/child decomposition was established before any link update.
+  std::set<PlaceId> unfoldedFootprints;
   std::map<PlaceId, ArgumentListState> argumentLists;
   std::set<PlaceId> initialized;
   std::set<PlaceId> pointers;

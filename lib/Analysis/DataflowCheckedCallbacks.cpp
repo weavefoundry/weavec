@@ -28,6 +28,11 @@ bool FunctionDataflow::checkedAlternatives(const CallExpr &call,
   std::vector<CheckedPost> posts;
   std::vector<CheckedPositionPost> positions;
   std::vector<CheckedProgressPost> progress;
+  std::vector<ContainerPost> containers;
+  std::vector<core::CheckedRequirement> tails;
+  std::vector<core::CheckedRequirement> separation;
+  std::vector<core::CheckedRequirement> footprints;
+  bool readOnly = true;
   std::optional<core::AnalysisState> returning;
   const auto intersect = [](auto &common, const auto &alternative) {
     std::erase_if(common, [&](const auto &fact) {
@@ -63,20 +68,29 @@ bool FunctionDataflow::checkedAlternatives(const CallExpr &call,
     for (auto &post : outputs)
       if (post.storage && !post.ifNonNull && !post.path.isResult())
         post.path = core::SummaryPath::param(0);
-    // RFC 0023: a returning target may consume an entire chain footprint.
-    // Retire native payload aliases before the join, even though indirect
-    // container output predicates are not imported. Invalidation is a may fact.
+    // RFC 0027: invalidation is a may fact, while a structural or conservation
+    // output must be guaranteed by every returning target. Each target captures
+    // its actual input identities before its effects are joined.
     checkedContainersAfterCall(call, &targetEffects, input);
+    readOnly &= containerReadOnlyCalls.contains(&call);
     if (!returning) {
       returning = std::move(input);
       posts = std::move(outputs);
       positions = checkedPositionPosts[&call];
       progress = checkedProgressPosts[&call];
+      containers = containerPosts[&call];
+      tails = containerTailPosts[&call];
+      separation = containerSeparationPosts[&call];
+      footprints = footprintPosts[&call];
     } else {
       returning->join(input, &places, false);
       intersect(posts, outputs);
       intersect(positions, checkedPositionPosts[&call]);
       intersect(progress, checkedProgressPosts[&call]);
+      intersect(containers, containerPosts[&call]);
+      intersect(tails, containerTailPosts[&call]);
+      intersect(separation, containerSeparationPosts[&call]);
+      intersect(footprints, footprintPosts[&call]);
     }
   }
   checkedWrites.erase(&call);
@@ -84,14 +98,14 @@ bool FunctionDataflow::checkedAlternatives(const CallExpr &call,
   checkedPositionPosts[&call] = std::move(positions);
   checkedProgressPosts[&call] = std::move(progress);
   checkedCallAssignedPointers.clear();
-  // RFC 0023: container outputs are not yet intersected over callback targets.
-  // In particular, the last target's single-node release must not preserve a
-  // tail that another target can consume. Each target was invalidated above.
   containerReleases.erase(&call);
   containerPayloadReleases.erase(&call);
-  containerPosts.erase(&call);
-  containerTailPosts.erase(&call);
-  containerSeparationPosts.erase(&call);
+  containerPosts[&call] = std::move(containers);
+  containerTailPosts[&call] = std::move(tails);
+  containerSeparationPosts[&call] = std::move(separation);
+  footprintPosts[&call] = std::move(footprints);
+  if (!readOnly)
+    containerReadOnlyCalls.erase(&call);
   if (returning)
     state = std::move(*returning);
   return true;

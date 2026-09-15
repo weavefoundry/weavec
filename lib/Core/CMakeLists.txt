@@ -12,6 +12,7 @@ weavec_add_library(
           CallContext.cpp
           CallTargets.cpp
           Container.cpp
+          Footprint.cpp
           Format.cpp
           Diagnostic.cpp
           Integer.cpp

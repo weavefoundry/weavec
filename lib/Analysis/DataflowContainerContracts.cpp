@@ -38,6 +38,7 @@ void FunctionDataflow::snapshotContainerOutput(core::PlaceId holder,
   const auto output = entry->second;
   containerOutputPaths[output] = *path;
   state.safety->containers.replace(output);
+  state.safety->footprints.assign(output, {{holder, 1}});
   if (const auto *fact = state.safety->containers.find(holder)) {
     state.safety->containers.set(output, *fact);
     for (const auto separate : state.safety->containers.separatedFrom(holder))
@@ -52,8 +53,8 @@ void FunctionDataflow::containerOutputs(core::CheckedContract &outputs,
   std::map<core::PlaceId, core::SummaryPath> exported;
   for (const auto &[holder, fact] : state.safety->containers.all()) {
     if (!fact.valid() || state.safety->invalidatedPointers.contains(holder) ||
-        !fact.releasedPayloads.empty() || state.moves.recordOf(holder) ||
-        state.raw.isRaw(holder))
+        !fact.releasedPayloads.empty() || !fact.releasedChildren.empty() ||
+        state.moves.recordOf(holder) || state.raw.isRaw(holder))
       continue;
     auto path = builder.summaryPathOf(holder);
     if (const auto output = containerOutputPaths.find(holder);
@@ -61,8 +62,18 @@ void FunctionDataflow::containerOutputs(core::CheckedContract &outputs,
       path = output->second;
     if (holder == returned && outcome == core::Outcome::NonNull)
       path = core::SummaryPath::result();
-    if (!path || (path->isParam() && path->isRoot()) ||
-        (!path->isResult() && !path->isParam() && !path->isGlobal()))
+    if (!path || (!path->isResult() && !path->isParam() && !path->isGlobal()))
+      continue;
+    if (path->isParam() && path->isRoot() &&
+        (!stableSummaryPathOf(holder) ||
+         (std::ranges::none_of(inferred.effects,
+                               [&](const auto &effect) {
+                                 return effect.second.written &&
+                                        path->isProperPrefixOf(effect.first);
+                               }) &&
+          std::ranges::none_of(state.stored, [&](const auto &stored) {
+            return path->isProperPrefixOf(stored);
+          }))))
       continue;
     bool portable = true;
     for (const auto input : fact.inputs) {
@@ -142,7 +153,7 @@ void FunctionDataflow::captureContainerPosts(
   separation.clear();
   auto &posts = containerPosts[&call];
   posts.clear();
-  if (!contract.complete() || !call.getDirectCallee())
+  if (!contract.complete())
     return;
   const auto arguments = containerArguments.find(&call);
   for (const auto &requirement : contract.requirements)
@@ -195,6 +206,9 @@ void FunctionDataflow::captureContainerPosts(
       bool allocationCompatible = true;
       auto needed = *shape;
       needed.terminal = false;
+      needed.emptyLinks.clear();
+      needed.headValues.clear();
+      needed.emptyPayloads.clear();
       for (const auto &path : sources) {
         const auto source = arguments->second.find(path);
         if (source != arguments->second.end() && source->second.empty)
@@ -207,6 +221,9 @@ void FunctionDataflow::captureContainerPosts(
         }
         auto actual = source->second.shape;
         actual.terminal = shape->terminal;
+        actual.emptyLinks = shape->emptyLinks;
+        actual.headValues = shape->headValues;
+        actual.emptyPayloads = shape->emptyPayloads;
         if (!capability || capability->entails(actual)) {
           capability = actual;
         } else if (!actual.entails(*capability)) {
@@ -299,14 +316,19 @@ void FunctionDataflow::applyContainerPosts(
       state.safety->containers.separate(*holder, other);
     state.safety->pointers.insert(*holder);
     snapshotContainerOutput(*holder, state);
-    if (post.fact.shape.terminal)
+    if (post.fact.shape.terminal || !post.fact.shape.emptyLinks.empty() ||
+        !post.fact.shape.emptyPayloads.empty())
       if (const auto *decl =
               dyn_cast_or_null<ValueDecl>(builder.declFor(*holder));
           decl && decl->getType()->isPointerType())
         if (const auto *record =
                 decl->getType()->getPointeeType()->getAsRecordDecl())
           for (const auto *field : record->fields())
-            if (field->getName() == post.fact.shape.link.name) {
+            if ((post.fact.shape.terminal &&
+                 post.fact.shape.recursiveLink(field->getNameAsString())) ||
+                post.fact.shape.emptyLinks.contains(field->getNameAsString()) ||
+                post.fact.shape.emptyPayloads.contains(
+                    field->getNameAsString())) {
               const auto cell =
                   builder.fieldPlace(places.deref(*holder), *field);
               reinit(cell, state);

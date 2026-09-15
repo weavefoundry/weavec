@@ -148,6 +148,12 @@ public:
   std::vector<PlaceId> learn(PlaceId place, const ValueFact &fact);
   /// `place` was overwritten: no guard may speak about it any more.
   void dropGuardsOn(PlaceId place);
+  /// RFC 0027: invalidate several overwritten values in one record scan.
+  template <typename Matches>
+  void dropGuardsIf(Matches matches) {
+    for (auto &[holder, record] : owned)
+      record.guard.dropIf(matches);
+  }
 
   /// Holders in ascending order (for dumps and the leak scan).
   [[nodiscard]] std::vector<PlaceId> holders() const;

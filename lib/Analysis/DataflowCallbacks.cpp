@@ -167,6 +167,39 @@ FunctionDataflow::resolveCall(const CallExpr &call) {
   core::AnalysisState &state = *currentState;
   std::shared_ptr<const core::FunctionSummary> result;
   SummarySource source = SummarySource::Inferred;
+  const auto captureCallbacks = [&](const core::FunctionSummary &summary) {
+    core::CallbackBindings bindings;
+    for (const auto &path : summary.callbackInputs) {
+      if (path.root == core::SummaryRoot::Param &&
+          path.index < call.getNumArgs() && path.steps.empty()) {
+        bindings[path] = functionTargets(*call.getArg(path.index), state);
+      } else if (const auto place = builder.resolveSummaryPath(path, call)) {
+        const auto actualPath = stableSummaryPathOf(place->place);
+        const auto it = state.callTargets.find(place->place);
+        if (it != state.callTargets.end())
+          bindings[path] = it->second;
+        else if (actualPath && actualPath->isGlobal())
+          bindings[path] = summaries.targetsForGlobal(*actualPath);
+        else if (path.isGlobal())
+          bindings[path] = summaries.targetsForGlobal(path);
+        else
+          bindings[path] = core::CallTargets::any();
+        if (bindings[path].empty())
+          bindings[path] = core::CallTargets::any();
+        if (actualPath && bindings[path].unknown && recording() &&
+            (actualPath->isGlobal() || actualPath->isParam()))
+          inferred.callbackInputs.insert(*actualPath);
+      }
+    }
+    // RFC 0022: replaying the generic unresolved global set adds no
+    // target or nullness premise. Keep its dependency, not a duplicate
+    // specialization whose entry state would resolve the same set.
+    std::erase_if(bindings, [&](const auto &binding) {
+      return binding.first.isGlobal() && binding.second.unknown &&
+             binding.second == summaries.targetsForGlobal(binding.first);
+    });
+    return bindings;
+  };
   const auto contextualize =
       [&](std::string_view symbol,
           std::shared_ptr<const core::FunctionSummary> base) {
@@ -201,33 +234,7 @@ FunctionDataflow::resolveCall(const CallExpr &call) {
       result = summaries.retainSummary(*base);
       source = base->source;
       if (!result->callbackInputs.empty()) {
-        core::CallbackBindings bindings;
-        for (const auto &path : result->callbackInputs) {
-          if (path.root == core::SummaryRoot::Param &&
-              path.index < call.getNumArgs() && path.steps.empty()) {
-            bindings[path] = functionTargets(*call.getArg(path.index), state);
-          } else if (const auto place =
-                         builder.resolveSummaryPath(path, call)) {
-            const auto it = state.callTargets.find(place->place);
-            if (it != state.callTargets.end())
-              bindings[path] = it->second;
-            else if (path.isGlobal())
-              bindings[path] = summaries.targetsForGlobal(path);
-            else
-              bindings[path] = core::CallTargets::any();
-            if (bindings[path].empty())
-              bindings[path] = core::CallTargets::any();
-            if (path.isGlobal() && bindings[path].unknown && recording())
-              inferred.callbackInputs.insert(path);
-          }
-        }
-        // RFC 0022: replaying the generic unresolved global set adds no
-        // target or nullness premise. Keep its dependency, not a duplicate
-        // specialization whose entry state would resolve the same set.
-        std::erase_if(bindings, [&](const auto &binding) {
-          return binding.first.isGlobal() && binding.second.unknown &&
-                 binding.second == summaries.targetsForGlobal(binding.first);
-        });
+        auto bindings = captureCallbacks(*result);
         const bool known =
             !bindings.empty() &&
             std::ranges::any_of(bindings, [](const auto &binding) {
@@ -283,10 +290,39 @@ FunctionDataflow::resolveCall(const CallExpr &call) {
         }
         if (targets.functions.size() == 1 && !targets.unknown && !targets.null)
           singleSource = target->source;
-        auto actual =
-            target->source == SummarySource::Builtin
-                ? summaries.retainSummary(*target)
-                : contextualize(symbol, summaries.retainSummary(*target));
+        auto targetSummary = summaries.retainSummary(*target);
+        callbackContexts.erase(&call);
+        if (target->source != SummarySource::Builtin &&
+            !targetSummary->callbackInputs.empty()) {
+          auto bindings = captureCallbacks(*targetSummary);
+          const bool known =
+              std::ranges::any_of(bindings, [](const auto &binding) {
+                return !binding.second.functions.empty() || binding.second.null;
+              });
+          if (known) {
+            callbackContexts[&call] = bindings;
+            if (const auto *definition = summaries.callable(symbol)) {
+              if (const auto specialized = summaries.specialize(
+                      *definition, bindings, options, nullptr))
+                targetSummary = summaries.retainSummary(*specialized);
+              else
+                reportIncomplete(
+                    "callback context unavailable or limit reached", call);
+            } else {
+              core::CallContext callbackContext;
+              callbackContext.callbacks = bindings;
+              if (const auto specialized = summaries.specializeMemory(
+                      symbol, callbackContext, options, nullptr))
+                targetSummary = summaries.retainSummary(*specialized);
+              else
+                reportIncomplete(
+                    "callback context unavailable or limit reached", call);
+            }
+          }
+        }
+        auto actual = target->source == SummarySource::Builtin
+                          ? std::move(targetSummary)
+                          : contextualize(symbol, std::move(targetSummary));
         if (options.checkContracts && targets.functions.size() > 1)
           checkedCallAlternatives[&call].emplace(
               symbol,

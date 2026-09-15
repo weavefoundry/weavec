@@ -146,11 +146,7 @@ bool FunctionDataflow::handleMemoryCopy(const CallExpr &call,
     copyHeapValue(source->place, snapshot, state);
     ValueOrigin origin;
     origin.kind = ValueOrigin::Kind::Copy;
-    origin.place = PlaceRef{.place = snapshot,
-                            .derefs = {},
-                            .derefExprs = {},
-                            .derefElements = {},
-                            .element = {}};
+    origin.place = PlaceRef{.place = snapshot, .derefs = {}, .element = {}};
     noteRewritten(dest->place, state);
     noteOverwritten(dest->place, state);
     applyPointerAssign(dest->place, origin, call,

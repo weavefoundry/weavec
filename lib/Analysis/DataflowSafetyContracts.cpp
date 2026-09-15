@@ -96,6 +96,7 @@ void FunctionDataflow::captureCheckedPosts(
     const CallExpr &call, const core::CheckedContract &contract,
     core::AnalysisState &state) {
   captureContainerPosts(call, contract, state);
+  captureFootprintPosts(call, contract, state);
   captureBufferPosts(call, contract, state);
   auto &posts = checkedPosts[&call];
   posts.clear();
@@ -567,6 +568,7 @@ void FunctionDataflow::applyCheckedResult(core::PlaceId dest,
                                           core::AnalysisState &state) {
   applyCheckedPositions(call, state, dest);
   applyContainerPosts(call, state, dest);
+  applyFootprintPosts(call, state, dest);
   applyCheckedUnionPosts(call, state, dest);
   const auto found = checkedPosts.find(&call);
   if (found == checkedPosts.end())
@@ -617,6 +619,7 @@ void FunctionDataflow::applyCheckedPosts(const CallExpr &call,
                                          core::AnalysisState &state) {
   applyCheckedPositions(call, state);
   applyContainerPosts(call, state);
+  applyFootprintPosts(call, state, std::nullopt);
   applyBufferPosts(call, state);
   applyCheckedUnionPosts(call, state);
   const auto found = checkedPosts.find(&call);

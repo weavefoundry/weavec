@@ -19,9 +19,10 @@ bool FunctionDataflow::validateObjectPath(const core::SummaryPath &path,
   if (!currentState || cached == callSummaries.end() || !cached->second ||
       path.steps.empty())
     return true;
-  const auto &views = cached->second->objectViews;
-  if (views.empty())
+  if (cached->second->objectViews.empty())
     return true;
+  const auto summaryOwner = cached->second;
+  const auto &views = summaryOwner->objectViews;
   QualType type;
   const Expr *argument = nullptr;
   bool recovered = false;
@@ -38,22 +39,39 @@ bool FunctionDataflow::validateObjectPath(const core::SummaryPath &path,
   core::SummaryPath prefix = path.rootPath();
   for (const auto &step : path.steps) {
     if (const auto expected = views.find(prefix); expected != views.end()) {
-      std::string actual(summaries.objectView(type));
-      if (actual.empty() && !recovered) {
-        // RFC 0020: typed arguments already supply their object view. Resolve
-        // the entry holder only when this path actually needs erased recovery.
-        // Recovery remains local to this validation and is consumed once.
-        recovered = true;
-        if (argument)
-          if (const auto ref = builder.resolve(*argument)) {
-            const auto found = currentState->objectViews.find(ref->place);
-            if (found != currentState->objectViews.end())
-              actual = found->second;
-          }
-      }
-      if (actual.empty() || actual != expected->second) {
-        reportIncomplete("incompatible or unknown object view at call", call);
-        return false;
+      // RFC 0027: reuse a typed layout comparison, never the path walk.
+      // Each later prefix still needs its own view, and erased recovery is
+      // flow-dependent. An address is valid only with its live summary owner.
+      const std::pair<const void *, const std::string *> key{
+          type.getAsOpaquePtr(), &expected->second};
+      const auto known = validatedObjectViews.find(key);
+      const bool reused = known != validatedObjectViews.end() &&
+                          known->second.lock() == summaryOwner;
+      if (!reused) {
+        std::string_view actual = summaries.objectView(type);
+        const bool typed = !actual.empty();
+        if (actual.empty() && !recovered) {
+          // RFC 0020: typed arguments already supply their object view. Resolve
+          // the entry holder only when this path actually needs erased
+          // recovery. Recovery remains local to this validation and is consumed
+          // once.
+          recovered = true;
+          if (argument)
+            if (const auto ref = builder.resolve(*argument)) {
+              const auto found = currentState->objectViews.find(ref->place);
+              if (found != currentState->objectViews.end())
+                actual = found->second;
+            }
+        }
+        if (actual.empty() || actual != expected->second) {
+          reportIncomplete("incompatible or unknown object view at call", call);
+          return false;
+        }
+        if (typed) {
+          if (validatedObjectViews.size() == 128)
+            validatedObjectViews.clear();
+          validatedObjectViews[key] = summaryOwner;
+        }
       }
     }
     switch (step.step) {

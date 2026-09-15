@@ -5,6 +5,7 @@ weavec_add_unittest(
           CallContextTest.cpp
           CallTargetsTest.cpp
           ContainerTest.cpp
+          FootprintTest.cpp
           BufferTest.cpp
           AliasRelationTest.cpp
           AnalysisStateTest.cpp

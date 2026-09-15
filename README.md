@@ -32,6 +32,16 @@ the [case and union guide](docs/checked-code.md#check-input-cases-and-union-memb
 and [validation record](docs/validation-rfc0025.md) for supported cases,
 remaining limits and measured coverage and cost.
 
+Recursive objects have separate structural and allocation-conservation contracts
+([RFC 0027](docs/rfcs/0027-recursive-object-ownership.md)). Supported finite
+trees and child/sibling forests carry ownership through recursive cleanup,
+attachment, detachment and ownership-preserving helper transformations.
+Scalar ownership flags and borrowed backlinks retain their distinct meanings.
+Discarding a child cannot count as releasing it. See the
+[recursive ownership guide](docs/checked-code.md#recursive-object-ownership)
+and [validation record](docs/validation-rfc0027.md) for the supported lifecycle
+slice, unchanged cJSON clients and remaining limits.
+
 Growable buffers have inferred relational contracts
 ([RFC 0026](docs/rfcs/0026-growable-buffer-contracts.md)). The checker relates
 current backing storage, capacity, logical length and initialized contents
@@ -64,7 +74,8 @@ release remain rejected. Contracts compose across helpers, source units,
 compiler sidecars and validated checkpoints. See the
 [container guide](docs/checked-code.md#linked-containers) and
 [validation report](docs/validation-rfc0023.md) for the supported cases and
-remaining limits, including whole-footprint consumption through transformations.
+remaining limits. RFC 0027 adds complete-footprint proofs through supported
+transformations.
 
 Constructor inference now carries the initialized heap back to callers
 ([RFC 0013](docs/rfcs/0013-interprocedural-heap-state.md)). If `box_new()`
@@ -125,7 +136,7 @@ remain coverage gaps; general nonlinear and loop reasoning are outside the
 model. Early-exit and other unsupported loops do not produce inferred
 must-requirements on callers. Existing annotations remain trusted contracts.
 There is no runtime instrumentation or whole-program verification certificate.
-Core summary format is **21**; sidecar format **22** requires rebuilding objects carrying older
+Core summary format is **22**; sidecar format **23** requires rebuilding objects carrying older
 sidecars. The [validation report](docs/validation-rfc0017.md) records
 **900/900 tests passing**, including under ASan/UBSan, **44/44 original bugs
 detected and 32/32 clean cases**, plus twelve separate bug/clean regression

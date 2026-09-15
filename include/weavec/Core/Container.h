@@ -45,6 +45,16 @@ struct ContainerPayload {
                           const ContainerPayload &) = default;
 };
 
+/// An ownership edge is active exactly when (field & mask) == value.
+/// The field's initialized target-width bits are required by the predicate.
+struct ContainerCondition {
+  ContainerField field;
+  std::uint64_t mask = 0;
+  std::uint64_t value = 0;
+  friend auto operator<=>(const ContainerCondition &,
+                          const ContainerCondition &) = default;
+};
+
 /// Portable target-aware predicate. Initialized fields exclude padding bytes.
 struct ContainerShape {
   ObjectType object;
@@ -54,6 +64,22 @@ struct ContainerShape {
   std::string family;
   ContainerAccess access = ContainerAccess::Read;
   bool terminal = false;
+  /// RFC 0027: additional proper recursive children, separate from the link.
+  // NOLINTNEXTLINE(readability-redundant-member-init): aggregate default
+  std::vector<ContainerField> children = {};
+  /// Known-null recursive slots in the current head, not in every descendant.
+  // NOLINTNEXTLINE(readability-redundant-member-init): aggregate default
+  std::set<std::string> emptyLinks = {};
+  // NOLINTNEXTLINE(readability-redundant-member-init): aggregate default
+  std::map<std::string, ContainerCondition> ownership = {};
+  /// Exact initialized ownership-selector bits in this head only.
+  // NOLINTNEXTLINE(readability-redundant-member-init): aggregate default
+  std::map<std::string, std::uint64_t> headValues = {};
+  // Null payload slots of this head; no claim about recursive descendants.
+  // NOLINTNEXTLINE(readability-redundant-member-init): aggregate default
+  std::set<std::string> emptyPayloads = {};
+
+  [[nodiscard]] bool recursiveLink(std::string_view name) const;
 
   [[nodiscard]] bool valid() const;
   [[nodiscard]] bool entails(const ContainerShape &required) const;
@@ -84,6 +110,12 @@ struct ContainerFact {
   bool localAllocation = false;
   // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
   std::set<std::string> releasedPayloads = {};
+  /// Proper child selector; unlike may-membership this distinguishes siblings.
+  // NOLINTNEXTLINE(readability-redundant-member-init): aggregate default
+  std::string tailField = {};
+  /// Released children leave a live initialized head, not a complete tree.
+  // NOLINTNEXTLINE(readability-redundant-member-init): aggregate default
+  std::set<std::string> releasedChildren = {};
   [[nodiscard]] bool valid() const;
   [[nodiscard]] bool entails(const ContainerShape &required) const;
   friend bool operator==(const ContainerFact &,
@@ -150,6 +182,10 @@ struct ContainerNode {
   bool live = false;
   bool writable = false;
   bool allocationBase = false;
+  // NOLINTNEXTLINE(readability-redundant-member-init): aggregate default
+  std::map<std::string, ContainerEdge> children = {};
+  // NOLINTNEXTLINE(readability-redundant-member-init): aggregate default
+  std::map<std::string, std::uint64_t> scalars = {};
   friend bool operator==(const ContainerNode &,
                          const ContainerNode &) = default;
 };

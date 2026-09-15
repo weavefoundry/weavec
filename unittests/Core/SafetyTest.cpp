@@ -562,6 +562,144 @@ TEST(SafetyEntryPool, CrowdedColdCallsPreserveUpdatesTruncationAndOrder) {
   }
 }
 
+// RFC 0027: crowded callers reuse fragments within the existing pool limits.
+TEST(SafetyEntryPool, CrowdedOriginsReuseTextAcrossCallersWithinSharedBounds) {
+  for (const std::size_t capacity : {0U, 1U, 8U}) {
+    for (const std::size_t bytes : {1U, 1048576U}) {
+      AnalysisStats stats;
+      {
+        SafetyEntryPool pool(&stats, 0, 0, capacity, bytes);
+        SafetyLedger source;
+        for (unsigned i = 0; i < 4; ++i) {
+          auto entry = obligation(i == 0 ? SafetyOutcome::Trusted
+                                         : SafetyOutcome::Unresolved,
+                                  i + 1);
+          entry.reason = "quoted \"reason\"\\path\n" + std::to_string(i);
+          entry.calls = {{.file = "nested.c", .line = 5 - i}, entry.location};
+          source.add(entry);
+        }
+        auto longEntry = obligation(SafetyOutcome::Violation, 9);
+        longEntry.reason.assign(65536, '"');
+        source.add(std::move(longEntry));
+        for (const bool trusted : {false, true}) {
+          for (const bool unsafe : {false, true}) {
+            for (unsigned caller = 0; caller < 3; ++caller) {
+              const SourceLocation location{.file = "caller.c",
+                                            .line = caller + 1,
+                                            .column = 2,
+                                            .opaque = 99};
+              const auto name = "caller" + std::to_string(caller);
+              const auto &projection = source.propagation();
+              const auto &origins =
+                  trusted ? projection.trusted : projection.unresolved;
+              for (const unsigned remaining : {0U, 1U}) {
+                SafetyLedger actual;
+                // An existing key still changes at capacity. Other origins
+                // compete for the remaining slot in their original order.
+                addCallsIndividually(actual, {origins.front()}, location, name,
+                                     "callee", unsafe);
+                auto prior = actual.entries().begin()->second;
+                prior.outcome = SafetyOutcome::Proven;
+                actual = {};
+                actual.add(std::move(prior));
+                for (unsigned i = remaining + 1; i < MaxSafetyObligations; ++i)
+                  actual.add(obligation(SafetyOutcome::Proven, i + 100));
+                const auto snapshot = actual;
+                auto expected = actual;
+                addCallsIndividually(expected, origins, location, name,
+                                     "callee", unsafe);
+                actual.addCalls(source, trusted, location, name, "callee",
+                                unsafe);
+                EXPECT_TRUE(actual.sameExplanationsAs(expected));
+                EXPECT_TRUE(snapshot.complete());
+                EXPECT_FALSE(snapshot.limited());
+                EXPECT_EQ(snapshot.entries().size(),
+                          MaxSafetyObligations - remaining);
+                EXPECT_EQ(actual.trusted(), expected.trusted());
+                EXPECT_EQ(actual.violated(), expected.violated());
+              }
+            }
+          }
+        }
+      }
+      if (capacity && bytes > 1)
+        EXPECT_GT(stats.count("explanation_call_hits"), 0U);
+      else
+        EXPECT_EQ(stats.count("explanation_call_hits"), 0U);
+      if (capacity && bytes == 1)
+        EXPECT_GT(stats.count("explanation_call_rejections"), 0U);
+      if (capacity == 1 && bytes > 1)
+        EXPECT_GT(stats.count("explanation_call_resets"), 0U);
+    }
+  }
+}
+
+// RFC 0027: the API accepts caller text borrowed from the destination itself.
+// Updating its first row must not invalidate the name used by later updates.
+TEST(SafetyEntryPool, CrowdedOriginsOwnCallerTextAcrossRowReplacement) {
+  AnalysisStats stats;
+  {
+    SafetyEntryPool pool(&stats, 0, 0);
+    SafetyLedger source;
+    source.add(obligation(SafetyOutcome::Violation, 1));
+    source.add(obligation(SafetyOutcome::Violation, 2));
+    const auto origins = source.propagation().unresolved;
+    for (const bool unsafe : {false, true}) {
+      for (const std::string caller : {"first_caller_with_heap_backed_name",
+                                       "second_caller_with_heap_backed_name"}) {
+        const SourceLocation site{
+            .file = "caller_location_with_heap_backed_storage.c", .line = 3};
+        const auto makeLedger = [&] {
+          SafetyLedger seed;
+          addCallsIndividually(seed, origins, site, caller, "callee", unsafe);
+          SafetyLedger result;
+          for (const auto &[key, value] : seed.entries()) {
+            (void)key;
+            auto prior = value;
+            prior.outcome = SafetyOutcome::Proven;
+            result.add(std::move(prior));
+          }
+          for (unsigned i = 2; i < MaxSafetyObligations; ++i)
+            result.add(obligation(SafetyOutcome::Proven, i + 100));
+          return result;
+        };
+        // Construct independently: a copied ledger would keep the old row
+        // alive and mask the dangling-view regression under ASan.
+        auto expected = makeLedger();
+        auto actual = makeLedger();
+        const auto &first = actual.entries().begin()->second;
+        ASSERT_EQ(first.function, caller);
+        const std::string_view borrowedName = first.function;
+        const auto &borrowedSite = first.location;
+        addCallsIndividually(expected, origins, site, caller, "callee", unsafe);
+        actual.addCalls(source, false, borrowedSite, borrowedName, "callee",
+                        unsafe);
+        EXPECT_TRUE(actual.sameExplanationsAs(expected));
+        EXPECT_EQ(actual.entries().size(), MaxSafetyObligations);
+      }
+    }
+  }
+  // One fragment hit per unsafe mode, with distinct callers and replaced rows.
+  EXPECT_EQ(stats.count("explanation_call_hits"), 2U);
+}
+
+TEST(SafetyEntryPool, CrowdedOriginsRetainSelfProjectionAcrossReplacement) {
+  SafetyEntryPool pool(nullptr, 0, 0, 2);
+  for (unsigned generation = 0; generation < 8; ++generation) {
+    SafetyLedger source;
+    for (unsigned i = 0; i < MaxSafetyObligations; ++i)
+      source.add(obligation(i == 0 ? SafetyOutcome::Violation
+                                   : SafetyOutcome::Unresolved,
+                            i + 1 + generation));
+    auto expected = source;
+    const auto origins = source.propagation().unresolved;
+    const SourceLocation location{.file = "self.c", .line = 2};
+    addCallsIndividually(expected, origins, location, "self", "self", false);
+    source.addCalls(source, false, location, "self", "self", false);
+    EXPECT_TRUE(source.sameExplanationsAs(expected));
+  }
+}
+
 TEST(SafetyEntryPool, PreparedCallLedgersShareRowsWithoutSharingMutation) {
   // RFC 0024: disable the row pool to distinguish call-ledger reuse from
   // ordinary entry interning. Every displayed call-site field is an input.

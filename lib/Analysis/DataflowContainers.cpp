@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "Dataflow.h"
+#include "IntegerSupport.h"
 
 #include "clang/AST/RecordLayout.h"
 #include "clang/Basic/Version.h"
@@ -56,6 +57,99 @@ containerField(const FieldDecl &field, const ASTContext &context) {
                               .bytes = static_cast<std::uint64_t>(bytes)};
 }
 
+// A syntactic ownership condition nominates a predicate. Body checking and
+// concrete folding still prove the initialized selector and active pointees.
+static std::map<std::string, core::ContainerCondition>
+containerOwnershipCandidates(const RecordDecl &record, ASTContext &context) {
+  std::map<std::string, core::ContainerCondition> result;
+  std::set<std::string> conflicting;
+  const auto condition =
+      [&](const Expr *expr) -> std::optional<core::ContainerCondition> {
+    const auto *negation = dyn_cast<UnaryOperator>(expr->IgnoreParenImpCasts());
+    if (!negation || negation->getOpcode() != UO_LNot)
+      return std::nullopt;
+    const auto *bits =
+        dyn_cast<BinaryOperator>(negation->getSubExpr()->IgnoreParenImpCasts());
+    if (!bits || bits->getOpcode() != BO_And)
+      return std::nullopt;
+    for (bool reverse : {false, true}) {
+      const auto *member = dyn_cast<MemberExpr>(
+          (reverse ? bits->getRHS() : bits->getLHS())->IgnoreParenImpCasts());
+      const auto *field =
+          member ? dyn_cast<FieldDecl>(member->getMemberDecl()) : nullptr;
+      Expr::EvalResult mask;
+      if (!field || field->getParent() != &record ||
+          !field->getType()->isIntegerType() ||
+          !(reverse ? bits->getLHS() : bits->getRHS())
+               ->EvaluateAsInt(mask, context))
+        continue;
+      const auto descriptor = containerField(*field, context);
+      if (!descriptor || descriptor->bytes > 8 ||
+          mask.Val.getInt().getActiveBits() > descriptor->bytes * 8 ||
+          mask.Val.getInt().isZero())
+        continue;
+      return core::ContainerCondition{.field = *descriptor,
+                                      .mask = mask.Val.getInt().getZExtValue(),
+                                      .value = 0};
+    }
+    return std::nullopt;
+  };
+  struct Work {
+    const Stmt *statement;
+    std::optional<core::ContainerCondition> guard;
+  };
+  for (const auto *decl : context.getTranslationUnitDecl()->decls()) {
+    const auto *fn = dyn_cast<FunctionDecl>(decl);
+    if (!fn || !fn->doesThisDeclarationHaveABody())
+      continue;
+    std::vector<Work> work{{.statement = fn->getBody(), .guard = {}}};
+    for (std::size_t i = 0; i < work.size() && work.size() <= 65536; ++i) {
+      const auto [stmt, guard] = work[i];
+      if (!stmt)
+        continue;
+      if (const auto *branch = dyn_cast<IfStmt>(stmt)) {
+        auto next = guard;
+        std::vector<const Expr *> clauses{branch->getCond()};
+        for (std::size_t j = 0; j < clauses.size() && clauses.size() < 32;
+             ++j) {
+          const auto *expr = clauses[j]->IgnoreParenImpCasts();
+          if (const auto *andExpr = dyn_cast<BinaryOperator>(expr);
+              andExpr && andExpr->getOpcode() == BO_LAnd) {
+            clauses.push_back(andExpr->getLHS());
+            clauses.push_back(andExpr->getRHS());
+          } else if (const auto found = condition(expr)) {
+            next = found;
+          }
+        }
+        work.push_back({.statement = branch->getThen(), .guard = next});
+        work.push_back({.statement = branch->getElse(), .guard = guard});
+        continue;
+      }
+      if (guard)
+        if (const auto *call = dyn_cast<CallExpr>(stmt);
+            call && call->getNumArgs() == 1)
+          if (const auto *member =
+                  dyn_cast<MemberExpr>(call->getArg(0)->IgnoreParenImpCasts()))
+            if (const auto *field =
+                    dyn_cast<FieldDecl>(member->getMemberDecl());
+                field && field->getParent() == &record &&
+                field->getType()->isPointerType()) {
+              const auto name = field->getNameAsString();
+              const auto [found, inserted] = result.emplace(name, *guard);
+              if (!inserted && found->second != *guard)
+                conflicting.insert(name);
+            }
+      for (const auto *child : stmt->children())
+        work.push_back({.statement = child, .guard = guard});
+    }
+    if (work.size() > 65536)
+      return {};
+  }
+  for (const auto &name : conflicting)
+    result.erase(name);
+  return result;
+}
+
 const core::ContainerShape *
 FunctionDataflow::containerShape(QualType type) const {
   if (containerShapes.empty())
@@ -67,6 +161,7 @@ FunctionDataflow::containerShape(QualType type) const {
 
 void FunctionDataflow::discoverContainers() {
   std::map<const FieldDecl *, unsigned> candidates;
+  std::set<const RecordDecl *> localRecords;
   std::set<const RecordDecl *> releases;
   std::set<const RecordDecl *> writes;
   std::map<const RecordDecl *, std::set<const FieldDecl *>> payloads;
@@ -85,6 +180,9 @@ void FunctionDataflow::discoverContainers() {
     const auto *stmt = workItems[i];
     if (!stmt)
       continue;
+    if (const auto *call = dyn_cast<CallExpr>(stmt))
+      if (const auto *record = containerRecord(call->getType()))
+        localRecords.insert(record);
     if (const auto *assignment = dyn_cast<BinaryOperator>(stmt);
         assignment && assignment->getOpcode() == BO_Assign) {
       note(assignment->getRHS(), 2);
@@ -105,12 +203,26 @@ void FunctionDataflow::discoverContainers() {
     }
     if (const auto *decls = dyn_cast<DeclStmt>(stmt))
       for (const auto *decl : decls->decls())
-        if (const auto *var = dyn_cast<VarDecl>(decl); var && var->hasInit())
-          note(var->getInit(), 2);
+        if (const auto *var = dyn_cast<VarDecl>(decl)) {
+          if (var->hasInit())
+            note(var->getInit(), 2);
+          if (const auto *record = containerRecord(var->getType()))
+            localRecords.insert(record);
+        }
     if (const auto *call = dyn_cast<CallExpr>(stmt);
         call && call->getNumArgs() == 1)
       if (const auto *callee = call->getDirectCallee();
-          callee && callee->getName() == "free") {
+          (callee && callee->getName() == "free" && !callee->hasBody()) ||
+          (!callee && [&] {
+            const auto ref = builder.resolve(*call->getCallee());
+            const auto path =
+                ref ? builder.summaryPathOf(ref->place) : std::nullopt;
+            const auto binding =
+                path ? callbackBindings.find(*path) : callbackBindings.end();
+            return binding != callbackBindings.end() &&
+                   !binding->second.unknown && !binding->second.null &&
+                   binding->second.functions == std::set<std::string>{"free"};
+          }())) {
         if (const auto *record = containerRecord(
                 call->getArg(0)->IgnoreParenImpCasts()->getType()))
           releases.insert(record);
@@ -130,6 +242,32 @@ void FunctionDataflow::discoverContainers() {
     else if (score == best.second)
       best.first = nullptr;
   }
+  // RFC 0027: all recursive functions on a record nominate the same topology.
+  // This includes constructors whose local stores do not choose one cursor.
+  for (const auto *param : function.parameters())
+    if (const auto *record = containerRecord(param->getType()))
+      chosen.try_emplace(record);
+  for (const auto *record : localRecords)
+    chosen.try_emplace(record);
+  for (auto &[record, selected] : chosen) {
+    const auto links = summaries.recursiveLinks(*record);
+    if (!links.empty()) {
+      selected.first = links.front();
+    } else if (!selected.first) {
+      // A unique self pointer supplies a candidate for forwarding wrappers;
+      // initialization and separation still have to establish the predicate.
+      const FieldDecl *only = nullptr;
+      bool ambiguous = false;
+      for (const auto *field : record->fields())
+        if (field->getType()->isPointerType() &&
+            containerRecord(field->getType()) == record) {
+          ambiguous |= only != nullptr;
+          only = field;
+        }
+      if (!ambiguous)
+        selected.first = only;
+    }
+  }
   for (const auto &[record, selected] : chosen) {
     if (!selected.first)
       continue;
@@ -144,6 +282,13 @@ void FunctionDataflow::discoverContainers() {
                                .payloads = {},
                                .family = {},
                                .access = core::ContainerAccess::Read};
+    const auto recursive = summaries.recursiveLinks(*record);
+    if (recursive.size() > 1)
+      for (const auto *field : recursive)
+        if (field != selected.first)
+          if (const auto child = containerField(*field, context))
+            shape.children.push_back(*child);
+    std::ranges::sort(shape.children);
     bool valid = true;
     for (const auto *field : record->fields()) {
       const auto descriptor = containerField(*field, context);
@@ -160,12 +305,27 @@ void FunctionDataflow::discoverContainers() {
       shape.family = "free";
       for (const auto *field : payloads[record]) {
         const auto descriptor = containerField(*field, context);
-        if (!descriptor || field == selected.first) {
+        if (!descriptor || shape.recursiveLink(field->getNameAsString())) {
           valid = false;
           break;
         }
         shape.payloads.push_back({.field = *descriptor, .family = "free"});
       }
+    }
+    shape.ownership = summaries.containerOwnership(*record, [&] {
+      return containerOwnershipCandidates(*record, context);
+    });
+    for (const auto &[name, condition] : shape.ownership) {
+      (void)condition;
+      if (shape.recursiveLink(name) ||
+          std::ranges::any_of(shape.payloads, [&](const auto &payload) {
+            return payload.field.name == name;
+          }))
+        continue;
+      for (const auto *field : record->fields())
+        if (field->getName() == name)
+          if (const auto descriptor = containerField(*field, context))
+            shape.payloads.push_back({.field = *descriptor, .family = "free"});
     }
     std::ranges::sort(shape.initialized);
     std::ranges::sort(shape.payloads);
@@ -194,6 +354,18 @@ FunctionDataflow::containerInput(core::PlaceId holder,
 }
 
 void FunctionDataflow::refineContainers(core::AnalysisState &state) {
+  for (const auto &[holder, head] : footprintHeads)
+    if (state.nulls.stateOf(holder) == core::Nullness::Null) {
+      state.safety->footprints.constrain({{holder, 1}});
+      state.safety->footprints.constrain({{head, 1}});
+      if (!state.safety->containers.find(holder))
+        if (const auto *decl =
+                dyn_cast_or_null<ValueDecl>(builder.declFor(holder)))
+          if (const auto *shape = containerShape(decl->getType()))
+            state.safety->containers.set(
+                holder,
+                {.shape = *shape, .members = {}, .inputs = {}, .empty = true});
+    }
   std::vector<std::pair<core::PlaceId, core::ContainerFact>> refined;
   for (const auto &[holder, fact] : state.safety->containers.all())
     if (!fact.empty)
@@ -205,15 +377,49 @@ void FunctionDataflow::refineContainers(core::AnalysisState &state) {
         empty.tailOf.reset();
         empty.releasedPayloads.clear();
         empty.shape.terminal = true;
+        empty.shape.emptyLinks.clear();
         refined.emplace_back(holder, std::move(empty));
       }
-  for (auto &[holder, fact] : refined)
+  for (auto &[holder, fact] : refined) {
+    unfoldFootprint(holder, fact, state);
     state.safety->containers.set(holder, std::move(fact));
+  }
+  for (const auto &[holder, fact] : state.safety->containers.all()) {
+    if (state.nulls.stateOf(holder) == core::Nullness::NonNull) {
+      const auto materialize = [&](const core::ContainerField &field) {
+        if (fact.shape.emptyPayloads.contains(field.name) ||
+            containerZeroField(holder, field, state)) {
+          const auto cell = places.field(places.deref(holder), field.name);
+          state.nulls.set(cell, {.state = core::Nullness::Null,
+                                 .location = {},
+                                 .reason = core::NullReason::Declared});
+          state.safety->footprints.constrain({{cell, 1}});
+        }
+      };
+      materialize(fact.shape.link);
+      for (const auto &child : fact.shape.children)
+        materialize(child);
+      for (const auto &payload : fact.shape.payloads)
+        materialize(payload.field);
+    }
+    if (!fact.shape.ownership.empty())
+      unfoldFootprint(holder, fact, state);
+  }
+  if (state.safety->footprints.limited() && recording())
+    inferred.checked.limited = true;
   if (state.safety->containers.limited() && recording())
     inferred.checked.limited = true;
 }
 
 void FunctionDataflow::initializeContainers(core::AnalysisState &state) {
+  if (!containerShapes.empty()) {
+    if (!footprintReleased)
+      footprintReleased = places.create("released allocation footprint");
+    state.safety->footprints.assign(*footprintReleased, {});
+    if (!footprintAllocated)
+      footprintAllocated = places.create("allocated footprint");
+    state.safety->footprints.assign(*footprintAllocated, {});
+  }
   for (const auto *param : function.parameters()) {
     if (!param->getType()->isPointerType() || getAnnotations(*param).raw)
       continue;
@@ -221,11 +427,64 @@ void FunctionDataflow::initializeContainers(core::AnalysisState &state) {
     if (!shape)
       continue;
     const auto place = builder.placeForVar(*param);
-    state.safety->containers.set(
-        place,
-        containerInput(place,
-                       core::SummaryPath::param(param->getFunctionScopeIndex()),
-                       *shape));
+    initializeFootprint(
+        place, core::SummaryPath::param(param->getFunctionScopeIndex()), *shape,
+        state);
+    auto fact = containerInput(
+        place, core::SummaryPath::param(param->getFunctionScopeIndex()),
+        *shape);
+    if (!memoryContext.empty()) {
+      for (const auto *field : containerRecord(param->getType())->fields()) {
+        const auto cell = builder.fieldPlace(places.deref(place), *field);
+        if (std::ranges::any_of(shape->ownership, [&](const auto &entry) {
+              return entry.second.field.name == field->getName();
+            }))
+          if (const auto type = integerTypeOf(*field, context))
+            if (const auto value =
+                    integerRangeAt(cell, *type, state).constant())
+              fact.shape.headValues[field->getNameAsString()] = value->bits;
+        if (state.nulls.stateOf(cell) == core::Nullness::Null) {
+          if (shape->recursiveLink(field->getNameAsString()))
+            fact.shape.emptyLinks.insert(field->getNameAsString());
+          else if (std::ranges::any_of(
+                       shape->payloads, [&](const auto &payload) {
+                         return payload.field.name == field->getName();
+                       }))
+            fact.shape.emptyPayloads.insert(field->getNameAsString());
+        }
+      }
+      if (fact.shape.emptyLinks.size() == fact.shape.children.size() + 1) {
+        fact.shape.terminal = true;
+        fact.shape.emptyLinks.clear();
+      }
+    }
+    state.safety->containers.set(place, std::move(fact));
+  }
+  // Definite entry aliases of a proper child carry that child's structural
+  // witness and allocation identity, rather than a second independent input.
+  for (const auto &alias : memoryContext.aliases) {
+    if (!alias.definite || !alias.offset.isZero())
+      continue;
+    for (bool reverse : {false, true}) {
+      const auto &childPath = reverse ? alias.second : alias.first;
+      const auto &rootPath = reverse ? alias.first : alias.second;
+      if (!rootPath.isParam() || !rootPath.isRoot() ||
+          childPath.steps.size() < 2)
+        continue;
+      const auto child = contextPlace(childPath, state);
+      const auto root = contextPlace(rootPath, state);
+      const auto *shape = root ? containerShape(root->second) : nullptr;
+      if (!child || !root || !shape)
+        continue;
+      const auto fact = containerAt(child->first, *shape, state);
+      if (!fact || !fact->tailOf || fact->tailField.empty())
+        continue;
+      state.safety->containers.set(root->first, *fact);
+      state.safety->footprints.constrain(
+          {{root->first, 1}, {child->first, -1}});
+      state.safety->footprints.constrain(
+          {{footprintHead(root->first), 1}, {footprintHead(child->first), -1}});
+    }
   }
 }
 
@@ -235,9 +494,12 @@ FunctionDataflow::strengthenContainer(const core::ContainerFact &fact,
   if (fact.entails(required))
     return fact;
   if (!fact.allocationCompatible || !fact.releasedPayloads.empty() ||
+      !fact.releasedChildren.empty() ||
       (fact.inputs.empty() && !fact.localAllocation) ||
       fact.shape.object != required.object ||
       fact.shape.link != required.link ||
+      fact.shape.children != required.children ||
+      fact.shape.ownership != required.ownership ||
       fact.shape.payloads != required.payloads ||
       (required.access == core::ContainerAccess::Release &&
        required.family != "free"))
@@ -255,6 +517,8 @@ FunctionDataflow::strengthenContainer(const core::ContainerFact &fact,
         descriptor == containerInputShapes.end() ||
         descriptor->second.object != required.object ||
         descriptor->second.link != required.link ||
+        descriptor->second.children != required.children ||
+        descriptor->second.ownership != required.ownership ||
         descriptor->second.payloads != required.payloads)
       return std::nullopt;
     auto premise = descriptor->second;
@@ -285,16 +549,32 @@ FunctionDataflow::containerAt(core::PlaceId holder,
     const auto pointer = parent && places.step(*parent) == core::PathStep::Deref
                              ? places.parent(*parent)
                              : std::nullopt;
-    if (pointer && places.fieldName(holder) == shape.link.name)
+    if (pointer && shape.recursiveLink(places.fieldName(holder)))
       if (const auto *fact = state.safety->containers.find(*pointer);
-          fact && fact->entails(shape)) {
+          fact && fact->shape.entails(shape) &&
+          containerOwns(*pointer, places.fieldName(holder), fact->shape,
+                        state) == true &&
+          !fact->releasedChildren.contains(
+              std::string(places.fieldName(holder))) &&
+          fact->releasedPayloads.empty()) {
         auto tail = *fact;
         tail.suffix = true;
         tail.tailOf = *pointer;
-        tail.empty = fact->shape.terminal;
+        tail.tailField = std::string(places.fieldName(holder));
+        unfoldFootprint(*pointer, *fact, state);
+        tail.empty = fact->shape.terminal ||
+                     fact->shape.emptyLinks.contains(tail.tailField);
+        tail.shape.emptyLinks.clear();
+        tail.shape.headValues.clear();
+        tail.shape.emptyPayloads.clear();
         if (tail.empty)
           tail.members.clear();
         tail.releasedPayloads.clear();
+        tail.releasedChildren.clear();
+        state.safety->containers.set(holder, tail);
+        for (const auto other :
+             state.safety->containers.separatedFrom(*pointer))
+          state.safety->containers.separate(holder, other);
         return tail;
       }
   }
@@ -303,6 +583,7 @@ FunctionDataflow::containerAt(core::PlaceId holder,
     if (const auto path = stableSummaryPathOf(holder);
         path && path->isParam()) {
       auto input = containerInput(holder, *path, shape);
+      initializeFootprint(holder, *path, shape, state);
       state.safety->containers.set(holder, input);
       snapshotContainerOutput(holder, state);
       return input;
@@ -333,7 +614,7 @@ std::optional<core::ContainerFact> FunctionDataflow::captureContainer(
               : std::nullopt;
       if (pointer)
         if (const auto *fact = state.safety->containers.find(*pointer);
-            fact && places.fieldName(source) == fact->shape.link.name)
+            fact && fact->shape.recursiveLink(places.fieldName(source)))
           shape = &fact->shape;
     }
   }
@@ -391,9 +672,14 @@ bool FunctionDataflow::checkedContainerAccess(const Expr &expr, bool read,
     return false;
   const auto *fact = state.safety->containers.find(holder->place);
   if (!fact || fact->empty || state.moves.recordOf(holder->place) ||
-      state.raw.isRaw(holder->place) ||
-      state.nulls.stateOf(holder->place) != core::Nullness::NonNull)
+      state.raw.isRaw(holder->place))
     return false;
+  if (state.nulls.stateOf(holder->place) != core::Nullness::NonNull) {
+    const auto memory = checkedMemoryAt(holder->place, {}, {}, state);
+    if (!memory || !checkedRequire(core::CheckedRequirementKind::Valid, *memory,
+                                   expr, state))
+      return false;
+  }
   const auto descriptor = containerField(*field, context);
   if (!descriptor ||
       std::ranges::find(fact->shape.initialized, *descriptor) ==
@@ -449,6 +735,7 @@ FunctionDataflow::establishContainer(const CheckedMemory &memory,
            containerField(*actual->second, context) == field;
   };
   if (!matchesField(shape.link) ||
+      !std::ranges::all_of(shape.children, matchesField) ||
       !std::ranges::all_of(shape.initialized, matchesField))
     return std::nullopt;
   core::ContainerGraph graph;
@@ -519,22 +806,65 @@ FunctionDataflow::establishContainer(const CheckedMemory &memory,
     if (storageDecl && containerRecord(storageDecl->getType()) &&
         !storageDecl->getType()->isPointerType())
       parent = current.storage;
+    for (const auto &[name, condition] : shape.ownership) {
+      (void)name;
+      const auto selector = fields.find(condition.field.name);
+      if (selector == fields.end())
+        return std::nullopt;
+      const auto type = integerTypeOf(*selector->second, context);
+      if (!type)
+        return std::nullopt;
+      const auto cell = builder.fieldPlace(parent, *selector->second);
+      const auto value = integerRangeAt(cell, *type, state).constant();
+      const bool zero =
+          current.holder &&
+          containerZeroField(*current.holder, condition.field, state);
+      if (!value && !zero)
+        return std::nullopt;
+      node.scalars[condition.field.name] = zero ? 0 : value->bits;
+    }
+    const auto active = [&](const std::string &name) {
+      const auto condition = shape.ownership.find(name);
+      return condition == shape.ownership.end() ||
+             (node.scalars.at(condition->second.field.name) &
+              condition->second.mask) == condition->second.value;
+    };
     const auto link = fields.find(shape.link.name);
     if (link == fields.end())
       return std::nullopt;
     const auto cell = builder.fieldPlace(parent, *link->second);
-    if (state.nulls.stateOf(cell) == core::Nullness::Null) {
+    if (state.nulls.stateOf(cell) == core::Nullness::Null ||
+        (current.holder &&
+         containerZeroField(*current.holder, shape.link, state))) {
       node.next = core::ContainerEdge::null();
-    } else if (const auto next = checkedMemoryAt(cell, {}, {}, state)) {
+    } else if (const auto next = checkedMemoryAt(cell, {}, {}, state);
+               next && active(shape.link.name)) {
       node.next = core::ContainerEdge::to(next->storage);
       workItems.push_back(*next);
     }
+    for (const auto &child : shape.children) {
+      if (!active(child.name))
+        continue;
+      const auto childCell = builder.fieldPlace(parent, *fields.at(child.name));
+      if (state.nulls.stateOf(childCell) == core::Nullness::Null ||
+          (current.holder &&
+           containerZeroField(*current.holder, child, state))) {
+        node.children[child.name] = core::ContainerEdge::null();
+      } else if (const auto next = checkedMemoryAt(childCell, {}, {}, state)) {
+        node.children[child.name] = core::ContainerEdge::to(next->storage);
+        workItems.push_back(*next);
+      }
+    }
     for (const auto &payload : shape.payloads) {
+      if (!active(payload.field.name))
+        continue;
       const auto field = fields.find(payload.field.name);
       if (field == fields.end())
         return std::nullopt;
       const auto payloadCell = builder.fieldPlace(parent, *field->second);
-      if (state.nulls.stateOf(payloadCell) == core::Nullness::Null) {
+      if (state.nulls.stateOf(payloadCell) == core::Nullness::Null ||
+          (current.holder &&
+           containerZeroField(*current.holder, payload.field, state))) {
         node.payloads[payload.field.name] = core::ContainerEdge::null();
         continue;
       }
@@ -567,11 +897,37 @@ FunctionDataflow::establishContainer(const CheckedMemory &memory,
     return std::nullopt;
   auto members = proof.members;
   members.insert(proof.payloads.begin(), proof.payloads.end());
+  if (memory.holder) {
+    state.safety->unfoldedFootprints.erase(*memory.holder);
+    core::FootprintSum footprint;
+    for (const auto member : members)
+      ++footprint[footprintAtom(member)];
+    state.safety->footprints.assign(*memory.holder, std::move(footprint));
+    state.safety->footprints.assign(footprintHead(*memory.holder),
+                                    {{footprintAtom(memory.storage), 1}});
+  }
   auto established = shape;
+  const auto &head = graph.nodes.at(memory.storage);
+  established.headValues = head.scalars;
+  for (const auto &[name, edge] : head.payloads)
+    if (edge == core::ContainerEdge::null())
+      established.emptyPayloads.insert(name);
+  established.emptyLinks.clear();
+  if (head.next == core::ContainerEdge::null())
+    established.emptyLinks.insert(shape.link.name);
+  for (const auto &child : shape.children)
+    if (const auto edge = head.children.find(child.name);
+        edge != head.children.end() &&
+        edge->second == core::ContainerEdge::null())
+      established.emptyLinks.insert(child.name);
+  established.terminal =
+      established.emptyLinks.size() == shape.children.size() + 1;
+  if (established.terminal)
+    established.emptyLinks.clear();
   bool freshCapability =
       owned && local && shape.access == core::ContainerAccess::Release;
-  if (owned && local && shape.payloads.empty()) {
-    auto releasable = shape;
+  if (owned && local) {
+    auto releasable = established;
     releasable.access = core::ContainerAccess::Release;
     releasable.family = "free";
     if (graph.prove(core::ContainerEdge::to(memory.storage), releasable)
@@ -657,7 +1013,9 @@ void FunctionDataflow::checkedContainerCall(
       proved ? core::safetyOutcome(fact->inputs.empty(), !fact->inputs.empty())
              : core::SafetyOutcome::Unresolved,
       call, "container argument",
-      "callee container chain precondition must hold");
+      shape->children.empty() && shape->ownership.empty()
+          ? "callee container chain precondition must hold"
+          : "callee recursive ownership precondition must hold");
 }
 
 bool FunctionDataflow::checkedContainerRelease(const CallExpr &call,
@@ -681,9 +1039,13 @@ bool FunctionDataflow::checkedContainerRelease(const CallExpr &call,
         !state.moves.recordOf(holder))
       for (const auto &payload : head->shape.payloads)
         if (payload.field.name == places.fieldName(holder) &&
-            payload.family == "free") {
+            payload.family == "free" &&
+            containerOwns(*pointer, payload.field.name, head->shape, state) ==
+                true) {
           if (!requireContainer(*head, call, state))
             return false;
+          unfoldFootprint(*pointer, *head, state);
+          releaseFootprint(holder, true, state);
           auto consumed = *head;
           consumed.releasedPayloads.insert(payload.field.name);
           state.safety->containers.set(*pointer, std::move(consumed));
@@ -696,11 +1058,21 @@ bool FunctionDataflow::checkedContainerRelease(const CallExpr &call,
         }
   }
   const auto *fact = state.safety->containers.find(holder);
+  if (!fact && footprintHeads.contains(holder)) {
+    const auto resource = state.resources.recordOf(holder);
+    const auto memory = checkedMemoryAt(holder, {}, {}, state);
+    if (resource && resource->origin == core::ResourceOrigin::Allocated &&
+        resource->family == "free" && !resource->escaped && memory &&
+        memory->begin == core::Affine::ofConstant(0) &&
+        checkedValid(*memory, state))
+      releaseFootprint(holder, false, state);
+  }
   if (!fact || fact->shape.access != core::ContainerAccess::Release ||
       fact->shape.family != "free" || state.moves.recordOf(holder))
     return false;
   if (!requireContainer(*fact, call, state))
     return false;
+  releaseFootprint(holder, false, state);
   containerReleases.insert_or_assign(&call, holder);
   safetyObligation(
       core::SafetyProperty::Release,

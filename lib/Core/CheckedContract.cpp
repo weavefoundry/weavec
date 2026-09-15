@@ -105,7 +105,7 @@ void CheckedRequirements::intersect(const CheckedRequirements &other) {
       insert(entry);
 }
 
-static constexpr std::array<std::string_view, 27> Kinds{
+static constexpr std::array<std::string_view, 31> Kinds{
     "valid",
     "extent",
     "initialized",
@@ -132,7 +132,11 @@ static constexpr std::array<std::string_view, 27> Kinds{
     "union-member",
     "buffer",
     "buffer-preserved",
-    "buffer-appended"};
+    "buffer-appended",
+    "container-preserved",
+    "container-consumed",
+    "container-partition",
+    "container-combined"};
 
 std::string_view toString(CheckedRequirementKind value) noexcept {
   const auto index = static_cast<std::size_t>(value);
@@ -164,6 +168,85 @@ void CheckedContract::establish(CheckedRequirement requirement) {
   else if (!establishes.contains(requirement))
     limited = true;
 }
+bool CheckedContract::hasContainerOutputPremises(
+    const CheckedRequirement &post) const {
+  if (post.kind == CheckedRequirementKind::ContainerDerived ||
+      post.kind == CheckedRequirementKind::ContainerTail ||
+      post.kind == CheckedRequirementKind::ContainerPreserved ||
+      post.kind == CheckedRequirementKind::ContainerConsumed) {
+    const auto shape = ContainerShape::decode(post.family);
+    if (!shape)
+      return false;
+    const auto hasPremise = [&](const SummaryPath &path) {
+      return std::ranges::any_of(requirements, [&](const auto &entry) {
+        if (entry.kind != CheckedRequirementKind::Container ||
+            entry.path != path || !entry.when.trivial())
+          return false;
+        const auto input = ContainerShape::decode(entry.family);
+        return input && input->object == shape->object &&
+               input->link == shape->link &&
+               input->children == shape->children &&
+               input->ownership == shape->ownership &&
+               ((post.kind != CheckedRequirementKind::ContainerConsumed &&
+                 post.kind != CheckedRequirementKind::ContainerPreserved) ||
+                input->entails(*shape));
+      });
+    };
+    if (!hasPremise(post.other) ||
+        (post.begin.path && !hasPremise(*post.begin.path)) ||
+        (post.end.path && !hasPremise(*post.end.path)))
+      return false;
+  }
+  if (post.kind == CheckedRequirementKind::ContainerPartition ||
+      post.kind == CheckedRequirementKind::ContainerCombined) {
+    const auto shape = ContainerShape::decode(post.family);
+    if (!shape)
+      return false;
+    const auto premise = [&](const SummaryPath &path) {
+      return std::ranges::any_of(requirements, [&](const auto &entry) {
+        if (entry.kind != CheckedRequirementKind::Container ||
+            entry.path != path || !entry.when.trivial())
+          return false;
+        const auto input = ContainerShape::decode(entry.family);
+        return input && input->entails(*shape);
+      });
+    };
+    if (!post.begin.path || !premise(*post.begin.path))
+      return false;
+    const auto separated = [&](const CheckedRequirements &entries,
+                               const SummaryPath &a, const SummaryPath &b,
+                               bool output) {
+      return std::ranges::any_of(entries, [&](const auto &entry) {
+        return entry.kind == CheckedRequirementKind::ContainerSeparated &&
+               ((entry.path == a && entry.other == b) ||
+                (entry.path == b && entry.other == a)) &&
+               entry.when.trivial() && (!output || entry.on == post.on);
+      });
+    };
+    if (post.kind == CheckedRequirementKind::ContainerCombined) {
+      if (!premise(post.other) ||
+          !separated(requirements, post.other, *post.begin.path, false))
+        return false;
+    } else if (!separated(establishes, post.path, post.other, true)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+void CheckedContract::discardUnrepresentedContainerOutputs() {
+  if (std::ranges::none_of(establishes, [&](const auto &post) {
+        return !hasContainerOutputPremises(post);
+      }))
+    return;
+  CheckedRequirements::Set retained;
+  for (const auto &post : establishes)
+    if (hasContainerOutputPremises(post))
+      retained.insert(post);
+  establishes.assign(std::move(retained));
+  limited = true;
+}
+
 void CheckedContract::join(const CheckedContract &other) {
   if (this == &other)
     return;
@@ -197,6 +280,7 @@ void CheckedContract::join(const CheckedContract &other) {
     establishes.intersect(other.establishes);
     for (auto &post : retirements)
       establish(std::move(post));
+    discardUnrepresentedContainerOutputs();
   }
   obligations.join(other.obligations);
 }

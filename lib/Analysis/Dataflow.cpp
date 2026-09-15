@@ -144,11 +144,7 @@ FunctionDataflow::FunctionDataflow(ASTContext &ctx, const FunctionDecl &fn,
           result == checkedPointerResults.end() ||
           !currentState->safety->positions.contains(result->second))
         return std::nullopt;
-      return PlaceRef{.place = result->second,
-                      .derefs = {},
-                      .derefExprs = {},
-                      .derefElements = {},
-                      .element = {}};
+      return PlaceRef{.place = result->second, .derefs = {}, .element = {}};
     };
   builder.selectArray = [this](PlaceRef storage,
                                std::optional<core::Affine> index, QualType type,
@@ -2140,6 +2136,13 @@ void FunctionDataflow::run() {
         auto &stream = *options.dumpStream;
         stream << "checked CFG " << function.getNameAsString() << " block "
                << block->getBlockID() << " entry:\n";
+        for (const auto &row : state.safety->footprints.all()) {
+          stream << "  footprint ";
+          for (const auto &[place, coefficient] : row)
+            stream << coefficient << "*" << nameOf(place) << "#" << place.value
+                   << " ";
+          stream << "= 0\n";
+        }
         for (const auto &[data, fact] : state.safety->buffers.values)
           stream << "  buffer " << nameOf(data) << " length "
                  << nameOf(fact.length) << " capacity " << nameOf(fact.capacity)
@@ -3214,7 +3217,7 @@ void FunctionDataflow::assignScalar(core::PlaceId place, const Expr *value,
     at = value;
   // The old value is gone under every name of the cell (RFC 0009, *Scalar
   // facts in the state*: guards speak about the value that was tested).
-  std::vector<core::PlaceId> cells = mirrors(place, state);
+  auto cells = mirrors(place, state);
   if (!llvm::is_contained(cells, place))
     cells.push_back(place);
   // `*q = 1` or `q->n = 1` where `q` borrows a local: the local's storage is
@@ -3775,7 +3778,7 @@ void FunctionDataflow::handleAdjustment(
                          : old.minimum()->bits > 0;
     }
   }
-  std::vector<core::PlaceId> cells = mirrors(place, state);
+  auto cells = mirrors(place, state);
   if (!llvm::is_contained(cells, place))
     cells.push_back(place);
   for (const core::PlaceId image : borrowedImages(place, state)) {
@@ -4304,7 +4307,35 @@ void FunctionDataflow::copyRecord(core::PlaceId dest, const Expr &value,
       applyResultStores(dest, *call, state);
     return;
   }
+  // RFC 0027: a whole-record copy also replaces callback fields that have
+  // never been explicitly read in this body. Materialize those leaves so an
+  // unknown source cannot leave the destination's old global targets intact.
+  std::vector<std::pair<core::PlaceId, ValueOrigin>> copiedCallbacks;
+  const auto callbacks = [&](auto &&self, QualType type, core::PlaceId from,
+                             core::PlaceId to, unsigned depth) -> void {
+    if (depth > core::MaxHeapPathDepth)
+      return;
+    if (type->isFunctionPointerType()) {
+      if (!state.callTargets.contains(from))
+        state.callTargets[from] = core::CallTargets::any();
+      ValueOrigin origin;
+      origin.kind = ValueOrigin::Kind::Copy;
+      origin.place = PlaceRef{.place = from, .derefs = {}, .element = {}};
+      recordStore(to, sourceOf(origin, state), state);
+      copiedCallbacks.emplace_back(to, std::move(origin));
+      return;
+    }
+    if (const auto *record = type->getAsRecordDecl())
+      for (const auto *field : record->fields())
+        if (field->getType()->isFunctionPointerType() ||
+            field->getType()->isRecordType())
+          self(self, field->getType(), builder.fieldPlace(from, *field),
+               builder.fieldPlace(to, *field), depth + 1);
+  };
+  callbacks(callbacks, value.getType(), src->place, dest, 0);
   copyRecordPlaces(dest, src->place, state);
+  for (const auto &[target, origin] : copiedCallbacks)
+    applyPointerAssign(target, origin, value, false, state);
 }
 
 void FunctionDataflow::copyRecordPlaces(core::PlaceId dest,
@@ -4399,11 +4430,7 @@ void FunctionDataflow::copyRecordPlaces(core::PlaceId dest,
           state.safety->objects.contains(place)) {
         ValueOrigin origin;
         origin.kind = ValueOrigin::Kind::Copy;
-        origin.place = PlaceRef{.place = place,
-                                .derefs = {},
-                                .derefExprs = {},
-                                .derefElements = {},
-                                .element = {}};
+        origin.place = PlaceRef{.place = place, .derefs = {}, .element = {}};
         field.checkedPointer = captureCheckedPointer(field.to, origin, state);
       }
     if (const auto record = state.moves.recordOf(place))
@@ -4662,6 +4689,8 @@ void FunctionDataflow::handleCall(const CallExpr &call,
                        "checked integer output initialization is unresolved");
     return;
   }
+  if (options.checkContracts && handleRecursiveCleanup(call, state))
+    return;
   retireHeapInputs(state);
   // RFC 0012, *`WEAVEC_ASSUME`*: the argument holds from here on, as on the
   // true edge of `if (arg)`; an assumption the facts contradict ends the
@@ -5824,11 +5853,7 @@ void FunctionDataflow::recordResultStores(const PlaceRef &returned,
       origin.kind = ValueOrigin::Kind::Null;
     } else {
       origin.kind = ValueOrigin::Kind::Copy;
-      origin.place = PlaceRef{.place = place,
-                              .derefs = {},
-                              .derefExprs = {},
-                              .derefElements = {},
-                              .element = {}};
+      origin.place = PlaceRef{.place = place, .derefs = {}, .element = {}};
     }
     const core::ValueSource source = sourceOf(origin, state);
     if (source.kind == core::ValueSource::Kind::Unknown)
@@ -6026,7 +6051,8 @@ void FunctionDataflow::forgetBelow(core::PlaceId place,
                                    core::AnalysisState &state) {
   // The objects below were overwritten: what they held is unknown. They
   // still exist, so loans *against* them stay.
-  for (const core::PlaceId child : places.descendants(place)) {
+  auto children = places.descendants(place);
+  for (const core::PlaceId child : children) {
     state.moves.reinitialize(child);
     state.aliases.separate(child);
     state.definiteAliases.separate(child);
@@ -6046,8 +6072,8 @@ void FunctionDataflow::forgetBelow(core::PlaceId place,
     state.heapInputEscapes.erase(child);
     state.definiteHeapWrites.erase(child);
     state.incompleteHeap.erase(child);
-    state.dropGuardsOn(child);
   }
+  state.dropGuardsOn(std::move(children));
 }
 
 void FunctionDataflow::mirrorSubtree(core::PlaceId src, core::PlaceId dest,
@@ -6159,26 +6185,25 @@ void FunctionDataflow::setKind(core::PlaceId place, core::OwnershipKind kind,
 void FunctionDataflow::doRead(const PlaceRef &ref, const Expr &at,
                               core::AnalysisState &state, bool includeSelf,
                               bool reportMoved) {
-  for (std::size_t i = 0; i < ref.derefs.size(); ++i) {
+  for (const auto &deref : ref.derefs) {
     // Loading a pointer stored in caller memory is a read of that memory.
-    recordAccess(ref.derefs[i], /*write=*/false, state);
-    const Expr *where = ref.derefExprs[i];
-    if (const auto hit =
-            findMoved(ref.derefs[i], state, ref.derefElements[i])) {
+    recordAccess(deref.pointer, /*write=*/false, state);
+    const Expr *where = deref.expression;
+    if (const auto hit = findMoved(deref.pointer, state, deref.element)) {
       if (reportMoved)
-        reportUseOfMoved(ref.derefs[i], *hit, where != nullptr ? *where : at);
+        reportUseOfMoved(deref.pointer, *hit, where != nullptr ? *where : at);
       return;
     }
     // Dereferencing a raw pointer (RFC 0004, *Raw pointers*, rule 1).
-    if (const auto raw = rawAt(ref.derefs[i], state)) {
-      const std::string name = nameOf(ref.derefs[i]);
+    if (const auto raw = rawAt(deref.pointer, state)) {
+      const std::string name = nameOf(deref.pointer);
       reportRawOperation("dereference of raw pointer '" + name +
                              "' outside an unsafe region",
                          name, *raw, where != nullptr ? *where : at);
       return;
     }
     // Dereferencing a pointer that may be null (RFC 0008, *Nullness*).
-    checkDereference(ref.derefs[i], where != nullptr ? *where : at, state);
+    checkDereference(deref.pointer, where != nullptr ? *where : at, state);
   }
   if (!includeSelf)
     return;
@@ -6338,7 +6363,7 @@ FunctionDataflow::doConsume(const PlaceRef &ref, core::MoveReason reason,
   // A callee that released the value and reinitialised the place (RFC 0008,
   // *Replaced values*) leaves the place and its mirrors (the same cell) live
   // and every other name for the old value dead.
-  std::vector<core::PlaceId> sameCell;
+  MirrorPlaces sameCell;
   if (replaced)
     sameCell = mirrors(place, state);
   for (const ConsumeTarget &target :
@@ -7101,26 +7126,40 @@ void FunctionDataflow::checkTemporaryBorrow(const PlaceRef &borrowed,
 
 // -- Queries ------------------------------------------------------------------
 
-std::vector<core::PlaceId>
+FunctionDataflow::MirrorPlaces
 FunctionDataflow::mirrors(core::PlaceId place,
                           const core::AnalysisState &state) {
   const auto parent = places.parent(place);
   if (!parent)
     return {place};
 
-  std::vector<core::PlaceId> result;
+  MirrorPlaces result;
   const auto add = [&result](core::PlaceId id) {
     if (!llvm::is_contained(result, id))
       result.push_back(id);
   };
   const core::PathStep step = places.step(place);
-  for (const core::PlaceId parentMirror : mirrors(*parent, state)) {
+  auto parents = mirrors(*parent, state);
+  // Reuse the existing path and vector when this level has no expansion.
+  // Only dereference steps consult aliases; field/index steps on the same
+  // parent already have their interned identity and declaration (RFC 0020).
+  if (parents.size() == 1 && parents.front() == *parent &&
+      (step != core::PathStep::Deref ||
+       state.aliases.viewEdgesFrom(*parent).empty())) {
+    parents.front() = place;
+    return parents;
+  }
+  for (const core::PlaceId parentMirror : parents) {
+    if (step != core::PathStep::Deref && parentMirror == *parent) {
+      add(place);
+      continue;
+    }
     if (step == core::PathStep::Deref) {
       // `*p` is also `*q` for every alias q of p. Aliases *below* p
       // (`p ~ p->next`, which joins of a cyclic walk can produce) would make
       // the mirror deeper than the original and the expansion unbounded, so
       // they are skipped along with anything past the depth limit.
-      add(places.deref(parentMirror));
+      add(parentMirror == *parent ? place : places.deref(parentMirror));
       for (const auto &[alias, edge] :
            state.aliases.viewEdgesFrom(parentMirror)) {
         if (places.isDescendantOf(alias, parentMirror) ||
@@ -9013,12 +9052,12 @@ FunctionDataflow::rawRecordOf(const ValueOrigin &origin, const Expr &at,
       return record;
     }
     // A value loaded through a raw pointer is raw (RFC 0004, *Raw pointers*).
-    for (const core::PlaceId deref : origin.place->derefs) {
-      if (const auto record = rawAt(deref, state)) {
+    for (const auto &deref : origin.place->derefs) {
+      if (const auto record = rawAt(deref.pointer, state)) {
         return core::RawRecord{.reason = core::RawReason::LoadedThroughRaw,
                                .location = locate(at),
                                .via = std::nullopt,
-                               .detail = nameOf(deref)};
+                               .detail = nameOf(deref.pointer)};
       }
     }
     return std::nullopt;
@@ -9599,7 +9638,7 @@ void FunctionDataflow::recordAccess(core::PlaceId place, bool write,
                                     const core::AnalysisState &state) {
   if (!recording())
     return;
-  std::vector<core::PlaceId> affected = mirrors(place, state);
+  auto affected = mirrors(place, state);
   if (!llvm::is_contained(affected, place))
     affected.push_back(place);
   for (const core::PlaceId affectedPlace : affected) {
@@ -9626,7 +9665,7 @@ void FunctionDataflow::replayWrites(const CallExpr &call,
   // call, and Lua-sized programs pass a state pointer with dozens of
   // written fields to every call.
   std::vector<core::SummaryPath> bases;
-  std::vector<core::PlaceId> affected = mirrors(pointee.place, state);
+  auto affected = mirrors(pointee.place, state);
   if (!llvm::is_contained(affected, pointee.place))
     affected.push_back(pointee.place);
   for (const core::PlaceId place : affected) {
@@ -9770,7 +9809,7 @@ void FunctionDataflow::noteRewritten(core::PlaceId place,
   // translate field offsets*): `tb = &G->strt; ... = realloc(tb->hash, n);
   // tb->hash = nv;` consumed and then replaced `G->strt.hash`, which is the
   // name the consume was recorded under. Writes are recorded the same way.
-  std::vector<core::PlaceId> affected = mirrors(place, state);
+  auto affected = mirrors(place, state);
   if (!llvm::is_contained(affected, place))
     affected.push_back(place);
   for (const core::PlaceId affectedPlace : affected)
@@ -10810,7 +10849,7 @@ void FunctionDataflow::checkAnnotationOnConsume(
   }
   // Releasing something the borrowed object owns mutates it.
   if (!ref.derefs.empty()) {
-    const core::PlaceId through = ref.derefs.back();
+    const core::PlaceId through = ref.derefs.back().pointer;
     const auto param = borrowedParamFor(through, state);
     if (param && param->annotation == Annotation::Borrowed)
       reportMismatch(*param, "'" + nameOf(ref.place) + "' is " + verb + " here",
@@ -10822,7 +10861,7 @@ void FunctionDataflow::checkAnnotationOnWrite(
     const PlaceRef &ref, const Expr &at, const core::AnalysisState &state) {
   if (!recording() || ref.derefs.empty())
     return;
-  const core::PlaceId through = ref.derefs.back();
+  const core::PlaceId through = ref.derefs.back().pointer;
   const auto param = borrowedParamFor(through, state);
   if (param && param->annotation == Annotation::Borrowed)
     reportMismatch(*param, "is written through here", through, at);

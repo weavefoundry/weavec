@@ -357,11 +357,7 @@ PlaceBuilder::resolveSummaryPath(const core::SummaryPath &path,
     const VarDecl *global = summaries.globals().declFor(path.index);
     if (global == nullptr)
       return std::nullopt;
-    ref = PlaceRef{.place = placeForVar(*global),
-                   .derefs = {},
-                   .derefExprs = {},
-                   .derefElements = {},
-                   .element = {}};
+    ref = PlaceRef{.place = placeForVar(*global), .derefs = {}, .element = {}};
   } else {
     // A `result` root names the returned record (RFC 0008, *Struct-by-value
     // results*): no caller place until it is assigned; see `resolveBelow`.
@@ -448,11 +444,7 @@ PlaceBuilder::resolveBelow(core::PlaceId base, const core::SummaryPath &path,
                           selector->offset),
                       *call)
                 : std::optional(core::Affine::ofConstant(selector->offset));
-        PlaceRef ref{.place = place,
-                     .derefs = {},
-                     .derefExprs = {},
-                     .derefElements = {},
-                     .element = {}};
+        PlaceRef ref{.place = place, .derefs = {}, .element = {}};
         place = selectArray(ref, index, QualType{}, *call).place;
         break;
       }
@@ -997,11 +989,8 @@ PlaceBuilder::ScalarOperand PlaceBuilder::scalarOperand(const Expr &expr) {
       return operand;
     }
     if (const auto place = stringPlaceOf(*string)) {
-      operand.place = PlaceRef{.place = lengthPlace(*place),
-                               .derefs = {},
-                               .derefExprs = {},
-                               .derefElements = {},
-                               .element = {}};
+      operand.place =
+          PlaceRef{.place = lengthPlace(*place), .derefs = {}, .element = {}};
     }
     return operand;
   }
@@ -1208,11 +1197,7 @@ std::optional<PlaceRef> PlaceBuilder::resolve(const Expr &expr) {
     const auto *var = dyn_cast<VarDecl>(ref->getDecl());
     if (var == nullptr)
       return std::nullopt;
-    return PlaceRef{.place = placeForVar(*var),
-                    .derefs = {},
-                    .derefExprs = {},
-                    .derefElements = {},
-                    .element = {}};
+    return PlaceRef{.place = placeForVar(*var), .derefs = {}, .element = {}};
   }
 
   if (const auto *member = dyn_cast<MemberExpr>(&e)) {
@@ -1395,13 +1380,10 @@ ValueOrigin PlaceBuilder::classifyValue(const Expr &expr) {
       // is not a heap object (RFC 0008, *Invalid releases*).
       if (isa<StringLiteral, PredefinedExpr>(
               cast->getSubExpr()->IgnoreParens())) {
-        auto origin = makeOrigin(ValueOrigin::Kind::Borrow,
-                                 PlaceRef{.place = literalPlace(),
-                                          .derefs = {},
-                                          .derefExprs = {},
-                                          .derefElements = {},
-                                          .element = {}},
-                                 nullptr, /*constObject=*/true);
+        auto origin = makeOrigin(
+            ValueOrigin::Kind::Borrow,
+            PlaceRef{.place = literalPlace(), .derefs = {}, .element = {}},
+            nullptr, /*constObject=*/true);
         // RFC 0011, *Extents*: a literal's extent is its length plus the
         // terminator, in elements.
         if (const auto *text =
@@ -1495,11 +1477,8 @@ ValueOrigin PlaceBuilder::classifyValue(const Expr &expr) {
           if (const auto guard = translateGuard(source.when, *call)) {
             ValueOrigin origin;
             origin.kind = ValueOrigin::Kind::Copy;
-            origin.place = PlaceRef{.place = *input,
-                                    .derefs = {},
-                                    .derefExprs = {},
-                                    .derefElements = {},
-                                    .element = {}};
+            origin.place =
+                PlaceRef{.place = *input, .derefs = {}, .element = {}};
             origin.offset = source.offset;
             origin.guard = *guard;
             alternatives.push_back(returned(std::move(origin), source));

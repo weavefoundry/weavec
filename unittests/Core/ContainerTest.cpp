@@ -536,4 +536,441 @@ TEST(ContainerFacts, QuantifiedLifetimeInvalidationSurvivesEitherJoinOrder) {
   EXPECT_FALSE(first.invalidatedPointers.contains(alias));
 }
 
+static ContainerShape
+treeShape(ContainerAccess access = ContainerAccess::Read) {
+  auto result = shape(access);
+  result.object.bytes = 32;
+  result.link = {.name = "left", .offset = 8, .bytes = 8};
+  result.children = {{.name = "right", .offset = 16, .bytes = 8}};
+  result.initialized = {{.name = "back", .offset = 24, .bytes = 8},
+                        result.link,
+                        result.children.front(),
+                        {.name = "value", .offset = 0, .bytes = 4}};
+  return result;
+}
+
+static ContainerNode treeNode(ContainerEdge left = ContainerEdge::null(),
+                              ContainerEdge right = ContainerEdge::null()) {
+  auto result = node(left);
+  const auto descriptor = treeShape();
+  result.object = descriptor.object;
+  result.initialized = {descriptor.initialized.begin(),
+                        descriptor.initialized.end()};
+  result.children["right"] = right;
+  return result;
+}
+
+TEST(RecursiveContainerShape, PortableTopologyIncludesEveryProperChild) {
+  const auto descriptor = treeShape(ContainerAccess::Release);
+  ASSERT_TRUE(descriptor.valid());
+  EXPECT_EQ(ContainerShape::decode(descriptor.encode()), descriptor);
+  EXPECT_TRUE(descriptor.recursiveLink("left"));
+  EXPECT_TRUE(descriptor.recursiveLink("right"));
+  EXPECT_FALSE(descriptor.recursiveLink("back"));
+  auto changed = descriptor;
+  changed.children.clear();
+  EXPECT_FALSE(descriptor.entails(changed));
+  EXPECT_FALSE(changed.entails(descriptor));
+  changed = descriptor;
+  changed.children.push_back(changed.children.front());
+  EXPECT_FALSE(changed.valid());
+  changed = descriptor;
+  changed.children.front().offset = changed.object.bytes;
+  EXPECT_FALSE(changed.valid());
+  for (std::size_t end = 0; end < descriptor.encode().size(); ++end)
+    EXPECT_FALSE(ContainerShape::decode(descriptor.encode().substr(0, end)));
+}
+
+TEST(RecursiveContainerGraph, BranchesAreFiniteInitializedAndSeparatelyOwned) {
+  ContainerGraph graph;
+  graph.nodes = {{PlaceId{1}, treeNode(ContainerEdge::to(PlaceId{2}),
+                                       ContainerEdge::to(PlaceId{3}))},
+                 {PlaceId{2}, treeNode()},
+                 {PlaceId{3}, treeNode()}};
+  const auto root = ContainerEdge::to(PlaceId{1});
+  const auto owned = treeShape(ContainerAccess::Release);
+  ASSERT_TRUE(graph.prove(root, owned).complete());
+  EXPECT_EQ(graph.prove(root, owned).members.size(), 3U);
+  auto changed = graph;
+  changed.nodes.at(PlaceId{3}).initialized.clear();
+  EXPECT_FALSE(changed.prove(root, owned).complete());
+  changed = graph;
+  changed.nodes.at(PlaceId{1}).children["right"] = {};
+  EXPECT_FALSE(changed.prove(root, owned).complete());
+  changed = graph;
+  changed.nodes.at(PlaceId{1}).children["right"] =
+      ContainerEdge::to(PlaceId{2});
+  EXPECT_FALSE(changed.prove(root, owned).complete());
+  changed = graph;
+  changed.nodes.at(PlaceId{3}).next = root;
+  EXPECT_FALSE(changed.prove(root, owned).complete());
+  changed = graph;
+  changed.nodes.at(PlaceId{3}).allocationBase = false;
+  EXPECT_TRUE(changed.prove(root, treeShape()).complete());
+  EXPECT_FALSE(changed.prove(root, owned).complete());
+}
+
+// A concrete interpreter with integer identities and a stack of pending reads.
+// The abstract model receives only the encoded graph, never this oracle result.
+TEST(RecursiveContainerGraph, ExhaustiveThreeNodeHeapOracle) {
+  constexpr unsigned Nodes = 3;
+  constexpr unsigned Choices = Nodes + 1;
+  constexpr unsigned Configurations = 4096; // Four choices for six child cells.
+  unsigned checked = 0;
+  for (unsigned encoded = 0; encoded < Configurations; ++encoded) {
+    unsigned bits = encoded;
+    std::vector<std::pair<unsigned, unsigned>> links;
+    ContainerGraph graph;
+    for (unsigned i = 0; i < Nodes; ++i) {
+      const unsigned left = bits % Choices;
+      bits /= Choices;
+      const unsigned right = bits % Choices;
+      bits /= Choices;
+      links.emplace_back(left, right);
+      graph.nodes.emplace(PlaceId{i + 1},
+                          treeNode(left ? ContainerEdge::to(PlaceId{left})
+                                        : ContainerEdge::null(),
+                                   right ? ContainerEdge::to(PlaceId{right})
+                                         : ContainerEdge::null()));
+    }
+    std::vector<unsigned> pending{1};
+    std::set<unsigned> visited;
+    bool valid = true;
+    while (!pending.empty() && valid) {
+      const auto current = pending.back();
+      pending.pop_back();
+      if (!current)
+        continue;
+      valid = visited.insert(current).second;
+      pending.push_back(links.at(current - 1).first);
+      pending.push_back(links.at(current - 1).second);
+    }
+    EXPECT_EQ(graph
+                  .prove(ContainerEdge::to(PlaceId{1}),
+                         treeShape(ContainerAccess::Release))
+                  .complete(),
+              valid)
+        << encoded;
+    ++checked;
+  }
+  EXPECT_EQ(checked, Configurations);
+}
+
+TEST(RecursiveContainerFacts, PartialParentsCannotCertifyAWholeTree) {
+  ContainerFact fact{.shape = treeShape(ContainerAccess::Release),
+                     .members = {PlaceId{1}},
+                     .inputs = {PlaceId{1}}};
+  ASSERT_TRUE(fact.entails(treeShape()));
+  fact.releasedChildren.insert("left");
+  EXPECT_TRUE(fact.valid());
+  EXPECT_FALSE(fact.entails(treeShape()));
+  ContainerFacts left;
+  ContainerFacts right;
+  left.set(PlaceId{1}, fact);
+  fact.releasedChildren.clear();
+  right.set(PlaceId{1}, fact);
+  left.join(right);
+  ASSERT_NE(left.find(PlaceId{1}), nullptr);
+  EXPECT_FALSE(left.find(PlaceId{1})->entails(treeShape()));
+}
+
+TEST(RecursiveContainerContracts, ConservationRequiresAnEntryPremise) {
+  for (const auto kind : {CheckedRequirementKind::ContainerPreserved,
+                          CheckedRequirementKind::ContainerConsumed}) {
+    CheckedContract contract;
+    contract.computed = true;
+    contract.signature = "void (struct node *)";
+    const auto descriptor = treeShape(ContainerAccess::Release).encode();
+    const auto input = SummaryPath::param(0);
+    contract.establish(
+        {.kind = kind, .path = input, .other = input, .family = descriptor});
+    EXPECT_FALSE(parseCheckedContract(printCheckedContract(contract, {}), {}));
+    contract.require({.kind = CheckedRequirementKind::Container,
+                      .path = input,
+                      .other = {},
+                      .family = descriptor});
+    const auto roundTrip =
+        parseCheckedContract(printCheckedContract(contract, {}), {});
+    ASSERT_TRUE(roundTrip);
+    EXPECT_EQ(*roundTrip, contract);
+    contract.requirements.clear();
+    contract.require(
+        {.kind = kind, .path = input, .other = input, .family = descriptor});
+    EXPECT_FALSE(parseCheckedContract(printCheckedContract(contract, {}), {}));
+  }
+}
+
+TEST(RecursiveContainerShape, EmptySlotsDescribeOnlyTheCurrentHead) {
+  auto descriptor = treeShape();
+  descriptor.emptyLinks.insert("right");
+  ASSERT_TRUE(descriptor.valid());
+  EXPECT_EQ(ContainerShape::decode(descriptor.encode()), descriptor);
+  ContainerGraph graph;
+  graph.nodes = {{PlaceId{1}, treeNode(ContainerEdge::to(PlaceId{2}))},
+                 {PlaceId{2}, treeNode(ContainerEdge::null(),
+                                       ContainerEdge::to(PlaceId{3}))},
+                 {PlaceId{3}, treeNode()}};
+  EXPECT_TRUE(
+      graph.prove(ContainerEdge::to(PlaceId{1}), descriptor).complete());
+  EXPECT_FALSE(
+      graph.prove(ContainerEdge::to(PlaceId{2}), descriptor).complete());
+  auto terminal = treeShape();
+  terminal.terminal = true;
+  EXPECT_TRUE(terminal.entails(descriptor));
+  EXPECT_FALSE(descriptor.entails(terminal));
+  descriptor.emptyLinks.insert("left");
+  EXPECT_FALSE(descriptor.valid()); // Canonical spelling is terminal=true.
+}
+
+TEST(RecursiveContainerFacts, JoiningHeadNullSlotsKeepsTheirIntersection) {
+  auto terminal = treeShape();
+  terminal.terminal = true;
+  auto rightEmpty = treeShape();
+  rightEmpty.emptyLinks.insert("right");
+  ContainerFacts first;
+  ContainerFacts second;
+  first.set(PlaceId{1}, {.shape = terminal, .members = {}, .inputs = {}});
+  second.set(PlaceId{1}, {.shape = rightEmpty, .members = {}, .inputs = {}});
+  first.join(second);
+  ASSERT_NE(first.find(PlaceId{1}), nullptr);
+  EXPECT_EQ(first.find(PlaceId{1})->shape, rightEmpty);
+  auto leftEmpty = treeShape();
+  leftEmpty.emptyLinks.insert("left");
+  second.set(PlaceId{1}, {.shape = leftEmpty, .members = {}, .inputs = {}});
+  first.join(second);
+  ASSERT_NE(first.find(PlaceId{1}), nullptr);
+  EXPECT_EQ(first.find(PlaceId{1})->shape, treeShape());
+}
+
+TEST(RecursiveContainerShape,
+     OwnershipConditionsRequireCanonicalInitializedBits) {
+  auto descriptor = shape(ContainerAccess::Release);
+  descriptor.ownership.emplace(
+      "next", ContainerCondition{.field = descriptor.initialized.back(),
+                                 .mask = 256,
+                                 .value = 0});
+  ASSERT_TRUE(descriptor.valid());
+  EXPECT_EQ(ContainerShape::decode(descriptor.encode()), descriptor);
+  EXPECT_FALSE(descriptor.entails(shape(ContainerAccess::Release)));
+  EXPECT_FALSE(shape(ContainerAccess::Release).entails(descriptor));
+  const auto encoding = descriptor.encode();
+  for (std::size_t i = 0; i < encoding.size(); ++i)
+    EXPECT_FALSE(ContainerShape::decode(encoding.substr(0, i)));
+  descriptor.ownership.at("next").mask = std::uint64_t{1} << 40U;
+  EXPECT_FALSE(descriptor.valid());
+  descriptor.ownership.at("next").mask = 256;
+  descriptor.ownership.at("next").value = 1;
+  EXPECT_FALSE(descriptor.valid());
+}
+
+TEST(RecursiveContainerGraph, BorrowedEdgesDoNotGrantPointeePermissions) {
+  auto descriptor = shape(ContainerAccess::Release);
+  descriptor.ownership.emplace(
+      "next", ContainerCondition{.field = descriptor.initialized.back(),
+                                 .mask = 256,
+                                 .value = 0});
+  ContainerGraph graph;
+  graph.nodes.emplace(PlaceId{1}, node(ContainerEdge::to(PlaceId{1})));
+  // Missing initialized value evidence never selects an ownership branch.
+  EXPECT_FALSE(
+      graph.prove(ContainerEdge::to(PlaceId{1}), descriptor).complete());
+  graph.nodes.at(PlaceId{1}).scalars["value"] = 256;
+  const auto borrowed = graph.prove(ContainerEdge::to(PlaceId{1}), descriptor);
+  ASSERT_TRUE(borrowed.complete());
+  EXPECT_EQ(borrowed.members, (std::set<PlaceId>{PlaceId{1}}));
+  graph.nodes.at(PlaceId{1}).scalars["value"] = 0;
+  EXPECT_EQ(graph.prove(ContainerEdge::to(PlaceId{1}), descriptor).failure,
+            ContainerFailure::Cycle);
+  graph.nodes.at(PlaceId{1}).scalars["value"] = 256;
+  graph.nodes.at(PlaceId{1}).next = ContainerEdge::to(PlaceId{2});
+  EXPECT_TRUE(
+      graph.prove(ContainerEdge::to(PlaceId{1}), descriptor).complete());
+  // The borrowed destination has no storage or lifetime witness of its own.
+  EXPECT_FALSE(
+      graph.prove(ContainerEdge::to(PlaceId{2}), descriptor).complete());
+  graph.nodes.at(PlaceId{1}).initialized.erase(descriptor.initialized.back());
+  EXPECT_EQ(graph.prove(ContainerEdge::to(PlaceId{1}), descriptor).failure,
+            ContainerFailure::Initialization);
+}
+
+TEST(RecursiveContainerShape, HeadSelectorValuesAreNotRecursiveAssumptions) {
+  auto descriptor = shape(ContainerAccess::Release);
+  descriptor.ownership.emplace(
+      "next", ContainerCondition{.field = descriptor.initialized.back(),
+                                 .mask = 256,
+                                 .value = 0});
+  const auto generic = descriptor;
+  descriptor.headValues["value"] = 1;
+  ASSERT_TRUE(descriptor.valid());
+  EXPECT_EQ(ContainerShape::decode(descriptor.encode()), descriptor);
+  EXPECT_TRUE(descriptor.entails(generic));
+  EXPECT_FALSE(generic.entails(descriptor));
+  ContainerGraph graph;
+  graph.nodes = {{PlaceId{1}, node(ContainerEdge::to(PlaceId{2}))},
+                 {PlaceId{2}, node(ContainerEdge::to(PlaceId{2}))}};
+  graph.nodes.at(PlaceId{1}).scalars["value"] = 1;
+  graph.nodes.at(PlaceId{2}).scalars["value"] = 256;
+  EXPECT_TRUE(
+      graph.prove(ContainerEdge::to(PlaceId{1}), descriptor).complete());
+  EXPECT_FALSE(
+      graph.prove(ContainerEdge::to(PlaceId{2}), descriptor).complete());
+  ContainerFacts first;
+  ContainerFacts second;
+  first.set(PlaceId{1}, {.shape = descriptor, .members = {}, .inputs = {}});
+  descriptor.headValues["value"] = 2;
+  second.set(PlaceId{1}, {.shape = descriptor, .members = {}, .inputs = {}});
+  first.join(second);
+  ASSERT_NE(first.find(PlaceId{1}), nullptr);
+  EXPECT_TRUE(first.find(PlaceId{1})->shape.headValues.empty());
+}
+
+TEST(RecursiveContainerContracts, PartitionAndCombinationRequireSeparation) {
+  const auto input = SummaryPath::param(0);
+  const auto second = SummaryPath::param(1);
+  const auto result = SummaryPath::result();
+  const auto descriptor = treeShape(ContainerAccess::Release).encode();
+  for (const auto kind : {CheckedRequirementKind::ContainerPartition,
+                          CheckedRequirementKind::ContainerCombined}) {
+    CheckedContract contract;
+    contract.computed = true;
+    contract.signature = "struct node *(struct node *, struct node *)";
+    contract.require({.kind = CheckedRequirementKind::Container,
+                      .path = input,
+                      .other = {},
+                      .family = descriptor});
+    if (kind == CheckedRequirementKind::ContainerCombined)
+      contract.require({.kind = CheckedRequirementKind::Container,
+                        .path = second,
+                        .other = {},
+                        .family = descriptor});
+    contract.establish(
+        {.kind = kind,
+         .path = result,
+         .other =
+             kind == CheckedRequirementKind::ContainerCombined ? second : input,
+         .begin = PathAffine::ofPath(input),
+         .family = descriptor,
+         .on = Outcome::NonNull});
+    EXPECT_FALSE(parseCheckedContract(printCheckedContract(contract, {}), {}));
+    CheckedRequirement separation{
+        .kind = CheckedRequirementKind::ContainerSeparated,
+        .path =
+            kind == CheckedRequirementKind::ContainerCombined ? second : result,
+        .other = input,
+        .family = {}};
+    if (kind == CheckedRequirementKind::ContainerCombined) {
+      contract.require(separation);
+    } else {
+      separation.on = Outcome::NonNull;
+      contract.establish(separation);
+    }
+    const auto encoded = printCheckedContract(contract, {});
+    const auto parsed = parseCheckedContract(encoded, {});
+    ASSERT_TRUE(parsed) << encoded;
+    EXPECT_EQ(*parsed, contract);
+    contract.requirements.clear();
+    EXPECT_FALSE(parseCheckedContract(printCheckedContract(contract, {}), {}));
+  }
+}
+
+TEST(RecursiveContainerContracts, SaturationRetiresDanglingOutputs) {
+  for (const auto kind : {CheckedRequirementKind::ContainerDerived,
+                          CheckedRequirementKind::ContainerTail,
+                          CheckedRequirementKind::ContainerPreserved,
+                          CheckedRequirementKind::ContainerConsumed}) {
+    CheckedContract contract;
+    contract.computed = true;
+    for (unsigned i = 0; i < MaxSafetyRequirements; ++i)
+      contract.require({.kind = CheckedRequirementKind::Valid,
+                        .path = SummaryPath::param(i),
+                        .other = {},
+                        .family = {}});
+    const auto descriptor = treeShape(ContainerAccess::Release).encode();
+    const CheckedRequirement premise{.kind = CheckedRequirementKind::Container,
+                                     .path = SummaryPath::param(0),
+                                     .other = {},
+                                     .family = descriptor};
+    contract.require(premise);
+    contract.establish(premise);
+    contract.establish({.kind = kind,
+                        .path = SummaryPath::param(0),
+                        .other = SummaryPath::param(0),
+                        .family = descriptor});
+    ASSERT_TRUE(contract.limited);
+    ASSERT_FALSE(parseCheckedContract(printCheckedContract(contract, {}), {}));
+    contract.discardUnrepresentedContainerOutputs();
+    EXPECT_TRUE(contract.limited);
+    EXPECT_FALSE(contract.complete());
+    EXPECT_EQ(contract.requirements.size(), MaxSafetyRequirements);
+    EXPECT_EQ(contract.establishes, CheckedRequirements{premise});
+    EXPECT_EQ(parseCheckedContract(printCheckedContract(contract, {}), {}),
+              contract);
+  }
+}
+
+TEST(RecursiveContainerContracts, JoinedPartitionsNeedRetainedSeparation) {
+  CheckedContract first;
+  first.computed = true;
+  const auto input = SummaryPath::param(0);
+  const auto output = SummaryPath::result();
+  const auto descriptor = treeShape(ContainerAccess::Release).encode();
+  first.require({.kind = CheckedRequirementKind::Container,
+                 .path = input,
+                 .other = {},
+                 .family = descriptor});
+  first.establish({.kind = CheckedRequirementKind::ContainerPartition,
+                   .path = input,
+                   .other = output,
+                   .begin = PathAffine::ofPath(input),
+                   .family = descriptor});
+  auto second = first;
+  first.establish({.kind = CheckedRequirementKind::ContainerSeparated,
+                   .path = input,
+                   .other = output,
+                   .family = {}});
+  second.establish({.kind = CheckedRequirementKind::ContainerSeparated,
+                    .path = output,
+                    .other = input,
+                    .family = {}});
+  ASSERT_TRUE(parseCheckedContract(printCheckedContract(first, {}), {}));
+  ASSERT_TRUE(parseCheckedContract(printCheckedContract(second, {}), {}));
+  first.join(second);
+  EXPECT_TRUE(first.limited);
+  EXPECT_TRUE(first.establishes.empty());
+  EXPECT_EQ(parseCheckedContract(printCheckedContract(first, {}), {}), first);
+}
+
+TEST(RecursiveContainerShape, EmptyPayloadSlotsAreHeadFacts) {
+  auto descriptor = payloadShape();
+  const auto generic = descriptor;
+  descriptor.emptyPayloads.insert("data");
+  ASSERT_TRUE(descriptor.valid());
+  EXPECT_EQ(ContainerShape::decode(descriptor.encode()), descriptor);
+  EXPECT_TRUE(descriptor.entails(generic));
+  EXPECT_FALSE(generic.entails(descriptor));
+  for (std::size_t i = 0; i < descriptor.encode().size(); ++i)
+    EXPECT_FALSE(ContainerShape::decode(descriptor.encode().substr(0, i)));
+  ContainerNode first{.object = descriptor.object,
+                      .initialized = {descriptor.initialized.begin(),
+                                      descriptor.initialized.end()},
+                      .next = ContainerEdge::to(PlaceId{2}),
+                      .payloads = {{"data", ContainerEdge::null()}},
+                      .family = "free",
+                      .live = true,
+                      .writable = true,
+                      .allocationBase = true};
+  auto second = first;
+  second.next = ContainerEdge::null();
+  second.payloads["data"] = ContainerEdge::to(PlaceId{3});
+  ContainerGraph graph;
+  graph.nodes = {
+      {PlaceId{1}, first}, {PlaceId{2}, second}, {PlaceId{3}, node()}};
+  EXPECT_TRUE(
+      graph.prove(ContainerEdge::to(PlaceId{1}), descriptor).complete());
+  EXPECT_FALSE(
+      graph.prove(ContainerEdge::to(PlaceId{2}), descriptor).complete());
+  descriptor.emptyPayloads.insert("next");
+  EXPECT_FALSE(descriptor.valid());
+}
+
 } // namespace weavec::core
