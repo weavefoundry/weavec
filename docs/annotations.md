@@ -570,7 +570,7 @@ Calls whose inputs have no established interacting relationship still use
 generic summaries; silence does not prove arbitrary pointers disjoint.
 The [validation report](validation-rfc0016.md) records the supported matrix
 and remaining coverage limits. These context records are retained in the
-current format 22 sidecars; rebuild older objects before link analysis. Checked
+current format 23 sidecars; rebuild older objects before link analysis. Checked
 mode also specializes exact scalar inputs and fields under the same context
 limits (RFC 0019).
 
@@ -660,7 +660,7 @@ unrestricted aliases, byte-encoded pointers, GC invariants and concurrency
 remain outside the supported model.
 
 RFC 0017 introduced summary and sidecar format **13**. Current summary format
-**21** and sidecar format **22** require rebuilding older objects. The [RFC 0017 validation report](validation-rfc0017.md) records
+**22** and sidecar format **23** require rebuilding older objects. The [RFC 0017 validation report](validation-rfc0017.md) records
 passing regression and sanitizer suites, corpus coverage, performance costs
 and remaining false positives.
 No runtime instrumentation, `--verify` flag or verification certificate is
@@ -711,7 +711,7 @@ initialized`, `access interval must fit its object`, `callee initialized safety
 precondition must hold`, and `memcpy intervals must be disjoint`. String calls
 also require a represented initialized terminator. Missing evidence remains
 distinct from a concrete `checking-failed` violation. Conditional memory and
-numeric output facts use summary format 21, sidecar format 22 and checked JSON version 2 (or compact version 3);
+numeric output facts use summary format 22, sidecar format 23 and checked JSON version 2 (or compact version 3);
 rebuild older objects before link analysis.
 
 RFC 0021 adds traversal contracts without new annotation spellings or IDs.
@@ -739,6 +739,19 @@ latter requires disjoint whole node and owned-payload footprints. Pointer
 inequality alone is insufficient. Cycles and unknown links do not satisfy a
 finite chain. Existing invalid-release, use-after-free and leak diagnostics
 remain active alongside these obligations. See [linked containers](checked-code.md#linked-containers).
+
+### Recursive ownership diagnostics (RFC 0027)
+
+No new annotations or diagnostic ids are introduced. `checking-incomplete` can
+report `callee recursive ownership precondition must hold` for an unproved tree
+or forest, `container operation loses part of the owned allocation footprint`
+when cleanup or transfer is incomplete, and `recursive cleanup does not establish
+complete input footprint consumption` when a proposed recursive destructor
+cannot discharge its induction hypothesis. These messages describe failed proof
+obligations; ordinary `leak`, `invalid-release`, `double-free` and
+`use-after-free` checks remain active. A relation limit reports `allocation
+footprint relation limit reached` and cannot produce a complete contract. See
+[recursive object ownership](checked-code.md#recursive-object-ownership).
 
 ### Runtime diagnostics (RFC 0024)
 

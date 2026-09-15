@@ -73,5 +73,6 @@ decision is a new RFC that supersedes the relevant section.
 | [0024](0024-checked-runtime-contracts.md) | Checked C runtime contracts and variadic interfaces | Implemented |
 | [0025](0025-case-sensitive-checked-contracts.md) | Case-sensitive checked contracts and discriminated C objects | Implemented |
 | [0026](0026-growable-buffer-contracts.md) | Inferred relational contracts for growable buffers and vectors | Implemented |
+| [0027](0027-recursive-object-ownership.md) | Recursive object ownership and complete cleanup contracts | Implemented |
 
 The [roadmap](../roadmap.md) links each milestone to the RFCs that define it.

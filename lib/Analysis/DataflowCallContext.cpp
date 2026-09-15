@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "Dataflow.h"
+#include "IntegerSupport.h"
 
 using namespace clang;
 
@@ -186,11 +187,27 @@ FunctionDataflow::captureCallContext(const CallExpr &call,
       std::ranges::any_of(summary.effects, [](const auto &entry) {
         return entry.second.consumed();
       });
-  // A complete contract already proves its admitted input cases. Its
-  // inductive outputs can be stronger than a particular bounded recheck.
+  // A constructor case can refine head fields (for example an empty child
+  // slot for a singleton), while its general contract remains inductive.
+  const bool constructorCase =
+      options.checkContracts &&
+      std::ranges::any_of(summary.checked.establishes, [](const auto &post) {
+        if (post.kind != core::CheckedRequirementKind::ContainerFresh ||
+            !post.path.isResult())
+          return false;
+        const auto shape = core::ContainerShape::decode(post.family);
+        return shape && (!shape->children.empty() || !shape->ownership.empty());
+      });
+  const bool projectionCase =
+      options.checkContracts &&
+      std::ranges::any_of(summary.checked.establishes, [](const auto &post) {
+        return (post.kind == core::CheckedRequirementKind::ContainerTail ||
+                post.kind == core::CheckedRequirementKind::ContainerDerived) &&
+               post.path.isResult();
+      });
   const bool checkedCase =
       !changesMemory && options.checkContracts && summary.checked.computed &&
-      !summary.checked.complete() &&
+      (!summary.checked.complete() || constructorCase || projectionCase) &&
       std::ranges::none_of(summary.effects, [](const auto &entry) {
         return entry.second.written;
       });
@@ -204,6 +221,16 @@ FunctionDataflow::captureCallContext(const CallExpr &call,
     for (const auto &[path, effect] : summary.effects)
       if (effect.written && !path.isResult())
         footprint.insert(path);
+  if (state.safety)
+    for (unsigned i = 0; i < call.getNumArgs(); ++i)
+      if (const auto ref =
+              builder.resolveSummaryPath(core::SummaryPath::param(i), call))
+        if (const auto *fact = state.safety->containers.find(ref->place))
+          for (const auto &[name, condition] : fact->shape.ownership) {
+            (void)name;
+            footprint.insert(core::SummaryPath::param(i).deref().field(
+                condition.field.name));
+          }
   if (footprint.size() > core::MaxCallContextFacts) {
     reportIncomplete("call context input path limit reached", call);
     return std::nullopt;
@@ -464,6 +491,10 @@ FunctionDataflow::captureCallContext(const CallExpr &call,
     const auto *arg = call.getArg(i);
     if (!arg->getType()->isIntegerType())
       continue;
+    if (const auto fact = scalarFactOf(*arg, state);
+        fact &&
+        (fact->constant || (fact->integer && fact->integer->constant())))
+      result.facts[core::SummaryPath::param(i)] = *fact;
     const auto affine = foldAffine(builder.affineOf(*arg), state);
     if (!affine)
       continue;
@@ -480,12 +511,54 @@ FunctionDataflow::captureCallContext(const CallExpr &call,
       if (const auto fact = state.factOf(ref->place); fact && !fact->trivial())
         result.facts[path] = *fact;
   }
+  // A recursive predicate can establish an empty head slot even when no
+  // ordinary pointer-cell fact was exported by its constructor.
+  if (state.safety)
+    for (const auto &path : footprint) {
+      if (path.steps.size() < 2 ||
+          path.steps.back().step != core::PathStep::Field ||
+          path.steps[path.steps.size() - 2].step != core::PathStep::Deref)
+        continue;
+      auto parent = path;
+      const auto field = parent.steps.back().field;
+      parent.steps.resize(parent.steps.size() - 2);
+      if (const auto ref = builder.resolveSummaryPath(parent, call))
+        if (const auto *fact = state.safety->containers.find(ref->place);
+            fact && state.nulls.isNonNull(ref->place)) {
+          if (fact->shape.recursiveLink(field) &&
+              (fact->shape.terminal || fact->shape.emptyLinks.contains(field)))
+            result.facts[path] = core::ValueFact::of(core::Outcome::Null);
+          if (const auto known = fact->shape.headValues.find(field);
+              known != fact->shape.headValues.end())
+            if (const auto record =
+                    containerRecords.find(fact->shape.object.toString());
+                record != containerRecords.end())
+              for (const auto *selector : record->second->fields())
+                if (selector->getName() == field)
+                  if (const auto type = integerTypeOf(*selector, context))
+                    result.facts[path] = core::ValueFact::ofInteger(
+                        core::IntegerRange::singleton(
+                            core::IntegerValue::ofBits(*type, known->second)));
+        }
+    }
+  const bool completeConsumption =
+      summary.checked.complete() &&
+      std::ranges::any_of(summary.checked.establishes, [](const auto &post) {
+        return post.kind == core::CheckedRequirementKind::ContainerConsumed;
+      });
+  const bool recursiveContext =
+      state.safety && !state.safety->containers.all().empty();
+  // A complete inductive destructor needs no bounded scalar recheck. Alias
+  // contexts still take the existing path; its generic premises are checked
+  // against the actual caller before applying the consumption guarantee.
   const bool checkedScalars =
-      options.checkContracts && summary.checked.computed &&
+      !completeConsumption && options.checkContracts &&
+      summary.checked.computed &&
       std::ranges::any_of(result.facts, [&](const auto &entry) {
-        return checkedCase ? !entry.second.trivial()
-                           : !entry.second.isPointer() &&
-                                 entry.second.constant.has_value();
+        return checkedCase || (recursiveContext && !entry.first.isRoot())
+                   ? !entry.second.trivial()
+                   : !entry.second.isPointer() &&
+                         entry.second.constant.has_value();
       });
   if (result.aliases.empty() && !checkedScalars &&
       (!selectedInputs || inputs.size() < 2 || unresolved || unrepresentable))

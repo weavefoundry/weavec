@@ -884,9 +884,9 @@ void FunctionDataflow::checkedAccess(const Expr &expr, const PlaceRef &ref,
                                      Role role, core::AnalysisState &state) {
   // Intermediate member operands have Role::Ignore in the ordinary walk.
   // Loading a union pointer to reach a pointee still reads that member.
-  for (const auto *pointer : ref.derefExprs)
-    if (pointer)
-      checkedUnionAccess(*pointer, Role::Read, state);
+  for (const auto &deref : ref.derefs)
+    if (deref.expression)
+      checkedUnionAccess(*deref.expression, Role::Read, state);
   checkedUnionAccess(expr, role, state);
   // RFC 0022: the function designator itself is not object memory.
   if (expr.getType()->isFunctionType())

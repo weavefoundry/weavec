@@ -113,6 +113,13 @@ public:
     return std::ranges::any_of(
         nodes, [&](const Node &node) { return node.key == key; });
   }
+  /// RFC 0027: test a set of overwritten inputs in one expression walk.
+  template <typename Matches>
+  [[nodiscard]] bool dependsOnIf(Matches matches) const {
+    return std::ranges::any_of(nodes, [&](const Node &node) {
+      return node.key && matches(*node.key);
+    });
+  }
   [[nodiscard]] std::optional<IntegerExpression>
   converted(IntegerType to) const {
     if (!to.valid())
@@ -580,6 +587,10 @@ struct IntegerPredicate {
   std::optional<IntegerRange> range = {};
   [[nodiscard]] bool dependsOn(const Key &key) const {
     return lhs.dependsOn(key) || rhs.dependsOn(key);
+  }
+  template <typename Matches>
+  [[nodiscard]] bool dependsOnIf(Matches matches) const {
+    return lhs.dependsOnIf(matches) || rhs.dependsOnIf(matches);
   }
   template <typename Read>
   [[nodiscard]] std::optional<bool> evaluate(Read read) const {

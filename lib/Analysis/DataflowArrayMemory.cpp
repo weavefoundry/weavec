@@ -139,11 +139,7 @@ void FunctionDataflow::copyArrayCell(core::PlaceId dest, core::PlaceId source,
     }
     ValueOrigin origin;
     origin.kind = ValueOrigin::Kind::Copy;
-    origin.place = PlaceRef{.place = source,
-                            .derefs = {},
-                            .derefExprs = {},
-                            .derefElements = {},
-                            .element = {}};
+    origin.place = PlaceRef{.place = source, .derefs = {}, .element = {}};
     noteRewritten(dest, state);
     noteOverwritten(dest, state);
     applyPointerAssign(dest, origin, at,
@@ -232,16 +228,8 @@ bool FunctionDataflow::handleArrayCopy(const CallExpr &call,
     const auto dstIndex = dest->start.shifted(i);
     if (!srcIndex || !dstIndex)
       return false;
-    PlaceRef src{.place = source->storage,
-                 .derefs = {},
-                 .derefExprs = {},
-                 .derefElements = {},
-                 .element = {}};
-    PlaceRef dst{.place = dest->storage,
-                 .derefs = {},
-                 .derefExprs = {},
-                 .derefElements = {},
-                 .element = {}};
+    PlaceRef src{.place = source->storage, .derefs = {}, .element = {}};
+    PlaceRef dst{.place = dest->storage, .derefs = {}, .element = {}};
     src = selectArrayElement(src, srcIndex, source->element, call);
     dst = selectArrayElement(dst, dstIndex, dest->element, call);
     if (!src.element.isWhole() || !dst.element.isWhole())

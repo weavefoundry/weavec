@@ -97,7 +97,7 @@ void FunctionDataflow::handleIntegerCompound(const CompoundAssignOperator &expr,
   if (expression)
     state.numericValues.insert_or_assign(*outputs, *expression);
   assignScalar(ref->place, nullptr, state, &expr);
-  std::vector<core::PlaceId> cells = mirrors(ref->place, state);
+  auto cells = mirrors(ref->place, state);
   cells.push_back(ref->place);
   llvm::append_range(cells, borrowedImages(ref->place, state));
   for (const auto cell : cells) {

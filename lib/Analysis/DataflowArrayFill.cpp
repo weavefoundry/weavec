@@ -167,11 +167,7 @@ void FunctionDataflow::applyArrayFills(const CallExpr &call,
                 .first;
       arrayTypes[found->second] = call.getType()->getPointeeType();
       pointerSnapshots.insert(found->second);
-      storage = PlaceRef{.place = found->second,
-                         .derefs = {},
-                         .derefExprs = {},
-                         .derefElements = {},
-                         .element = {}};
+      storage = PlaceRef{.place = found->second, .derefs = {}, .element = {}};
     }
     const auto count =
         foldAffine(builder.affineFromPath(fill.count, call), state);

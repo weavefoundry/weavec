@@ -330,6 +330,9 @@ struct AnalysisState {
 
   /// `place` was written: no guard speaks about its old value any more.
   void dropGuardsOn(PlaceId place);
+  /// RFC 0027: the same invalidation for any order of possibly repeated keys.
+  /// Takes ownership so subtree callers can reuse their descendant vector.
+  void dropGuardsOn(std::vector<PlaceId> places);
   void forgetZeroedMemory();
 
   /// True if `path`, or an object containing it, is in `overwritten`: the

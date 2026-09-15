@@ -13,6 +13,7 @@
 
 #include <charconv>
 #include <limits>
+#include <map>
 #include <utility>
 
 namespace weavec::core {
@@ -68,7 +69,7 @@ public:
     affine(value.begin, names);
     affine(value.end, names);
     text(value.family);
-    text(printGuard(value.when, names));
+    guard(value.when, names);
     text(value.on ? toString(*value.on) : "");
     number(value.ifNonNull);
   }
@@ -86,8 +87,35 @@ public:
   }
 
 private:
+  void guard(const PathGuard &value, const GlobalNamer &names) {
+    if (value.trivial()) {
+      text("");
+      return;
+    }
+    if (const auto found = renderedGuards.find(value);
+        found != renderedGuards.end()) {
+      text(found->second);
+      return;
+    }
+    auto rendered = printGuard(value, names);
+    text(rendered);
+    // One writer owns one contract and one global-name mapping. Repeated
+    // antecedents need no repeated expression/path formatting (RFC 0027).
+    static constexpr std::size_t MaxBytes = 1024UL * 1024UL;
+    if (!valid || rendered.size() > MaxBytes)
+      return;
+    if (renderedGuards.size() == 64 ||
+        rendered.size() > MaxBytes - guardBytes) {
+      renderedGuards.clear();
+      guardBytes = 0;
+    }
+    guardBytes += rendered.size();
+    renderedGuards.emplace(value, std::move(rendered));
+  }
   bool valid = true;
   std::string bytes;
+  std::map<PathGuard, std::string> renderedGuards;
+  std::size_t guardBytes = 0;
 };
 
 // NOLINTNEXTLINE(misc-use-internal-linkage): project namespace convention
@@ -256,7 +284,9 @@ public:
       valid &= ObjectType::parse(result.family).has_value();
     if (result.kind == CheckedRequirementKind::Container ||
         result.kind == CheckedRequirementKind::ContainerFresh ||
-        result.kind == CheckedRequirementKind::ContainerTail)
+        result.kind == CheckedRequirementKind::ContainerTail ||
+        result.kind == CheckedRequirementKind::ContainerPreserved ||
+        result.kind == CheckedRequirementKind::ContainerConsumed)
       valid &= ContainerShape::decode(result.family).has_value() &&
                result.begin == PathAffine::ofConstant(0) &&
                result.end == PathAffine::ofConstant(0);
@@ -275,14 +305,24 @@ public:
                (!result.end.path || (*result.end.path != result.other &&
                                      result.end.path != result.begin.path));
     }
+    if (result.kind == CheckedRequirementKind::ContainerPartition ||
+        result.kind == CheckedRequirementKind::ContainerCombined)
+      valid &=
+          ContainerShape::decode(result.family).has_value() &&
+          result.begin.path && !result.begin.path->isResult() &&
+          result.begin.scale == 1 && result.begin.constant == 0 &&
+          !result.begin.expression &&
+          result.begin.quantity == PathAffine{}.quantity &&
+          result.end == PathAffine::ofConstant(0) &&
+          (result.kind != CheckedRequirementKind::ContainerPartition ||
+           result.path != result.other) &&
+          (result.kind != CheckedRequirementKind::ContainerCombined ||
+           (!result.other.isResult() && result.begin.path != result.other));
     if (result.kind == CheckedRequirementKind::ContainerSeparated)
       valid &= result.family.empty() && result.path != result.other &&
                result.begin == PathAffine::ofConstant(0) &&
                result.end == PathAffine::ofConstant(0);
-    const auto guard = parseSummaryGuard(text(), resolve);
-    valid &= guard.has_value();
-    if (guard)
-      result.when = *guard;
+    guard(result.when, resolve);
     const auto outcome = text();
     if (!outcome.empty()) {
       result.on = parseOutcome(outcome);
@@ -299,9 +339,13 @@ public:
         result.kind == CheckedRequirementKind::Container ||
         result.kind == CheckedRequirementKind::ContainerSeparated ||
         result.kind == CheckedRequirementKind::ContainerFresh ||
-        result.kind == CheckedRequirementKind::ContainerTail)
+        result.kind == CheckedRequirementKind::ContainerTail ||
+        result.kind == CheckedRequirementKind::ContainerPreserved ||
+        result.kind == CheckedRequirementKind::ContainerConsumed)
       valid &= result.begin == result.end && !result.ifNonNull;
-    if (result.kind == CheckedRequirementKind::ContainerDerived)
+    if (result.kind == CheckedRequirementKind::ContainerDerived ||
+        result.kind == CheckedRequirementKind::ContainerPartition ||
+        result.kind == CheckedRequirementKind::ContainerCombined)
       valid &= !result.ifNonNull;
     return result;
   }
@@ -311,15 +355,46 @@ public:
   }
 
 private:
+  void guard(PathGuard &result, const GlobalResolver &resolve) {
+    const auto encoded = text();
+    if (encoded.empty()) {
+      result = {};
+      return;
+    }
+    if (const auto found = decodedGuards.find(encoded);
+        found != decodedGuards.end()) {
+      result = found->second;
+      return;
+    }
+    auto decoded = parseSummaryGuard(encoded, resolve);
+    valid &= decoded.has_value();
+    if (!decoded)
+      return;
+    // The input bytes and resolver stay fixed for this reader. Cache only
+    // validated text; framing and all enclosing requirement checks still run.
+    static constexpr std::size_t MaxBytes = 1024UL * 1024UL;
+    if (encoded.size() <= MaxBytes) {
+      if (decodedGuards.size() == 64 ||
+          encoded.size() > MaxBytes - guardBytes) {
+        decodedGuards.clear();
+        guardBytes = 0;
+      }
+      guardBytes += encoded.size();
+      decodedGuards.emplace(encoded, *decoded);
+    }
+    result = std::move(*decoded);
+  }
   std::string bytes;
   std::size_t position = 0;
   bool valid = true;
+  std::map<std::string_view, PathGuard> decodedGuards;
+  std::size_t guardBytes = 0;
 };
 
 std::string printCheckedContract(const CheckedContract &contract,
                                  const GlobalNamer &names) {
   CheckedWriter out;
-  out.text("8");
+  out.text("9");
   out.text(contract.signature);
   out.number(contract.computed);
   out.number(contract.selected);
@@ -361,7 +436,7 @@ std::string printCheckedContract(const CheckedContract &contract,
 std::optional<CheckedContract>
 parseCheckedContract(std::string_view record, const GlobalResolver &resolve) {
   CheckedReader in(record);
-  if (in.text() != "8")
+  if (in.text() != "9")
     return std::nullopt;
   CheckedContract result;
   result.signature = in.text();
@@ -404,7 +479,11 @@ parseCheckedContract(std::string_view record, const GlobalResolver &resolve) {
         requirement.kind == CheckedRequirementKind::BufferAppended ||
         requirement.kind == CheckedRequirementKind::ContainerDerived ||
         requirement.kind == CheckedRequirementKind::ContainerFresh ||
-        requirement.kind == CheckedRequirementKind::ContainerTail)
+        requirement.kind == CheckedRequirementKind::ContainerTail ||
+        requirement.kind == CheckedRequirementKind::ContainerPreserved ||
+        requirement.kind == CheckedRequirementKind::ContainerConsumed ||
+        requirement.kind == CheckedRequirementKind::ContainerPartition ||
+        requirement.kind == CheckedRequirementKind::ContainerCombined)
       return std::nullopt;
   for (const auto &requirement : result.requirements)
     if (requirement.kind == CheckedRequirementKind::Buffer &&
@@ -427,27 +506,20 @@ parseCheckedContract(std::string_view record, const GlobalResolver &resolve) {
         (post.kind == CheckedRequirementKind::ArgumentListConsumed &&
          (!post.when.trivial() || post.on || post.ifNonNull)))
       return std::nullopt;
-    if (post.kind == CheckedRequirementKind::ContainerDerived ||
-        post.kind == CheckedRequirementKind::ContainerTail) {
-      const auto shape = ContainerShape::decode(post.family);
-      const auto hasPremise = [&](const SummaryPath &path) {
-        return std::ranges::any_of(result.requirements, [&](const auto &entry) {
-          if (entry.kind != CheckedRequirementKind::Container ||
-              entry.path != path || !entry.when.trivial())
-            return false;
-          const auto input = ContainerShape::decode(entry.family);
-          return input && input->object == shape->object &&
-                 input->link == shape->link;
-        });
-      };
-      if (!hasPremise(post.other) ||
-          (post.begin.path && !hasPremise(*post.begin.path)) ||
-          (post.end.path && !hasPremise(*post.end.path)))
-        return std::nullopt;
-    }
+    if (!result.hasContainerOutputPremises(post))
+      return std::nullopt;
     if ((post.kind == CheckedRequirementKind::ContainerDerived ||
          post.kind == CheckedRequirementKind::ContainerTail) &&
         post.other.isResult())
+      return std::nullopt;
+    if ((post.kind == CheckedRequirementKind::ContainerPreserved ||
+         post.kind == CheckedRequirementKind::ContainerConsumed) &&
+        post.other.isResult())
+      return std::nullopt;
+    if (post.kind == CheckedRequirementKind::ContainerConsumed &&
+        (post.path != post.other ||
+         ContainerShape::decode(post.family)->access !=
+             ContainerAccess::Release))
       return std::nullopt;
     if (post.kind == CheckedRequirementKind::ContainerFresh &&
         ContainerShape::decode(post.family)->access != ContainerAccess::Release)

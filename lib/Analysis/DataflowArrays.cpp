@@ -526,11 +526,7 @@ void FunctionDataflow::checkArrayTraversal(core::PlaceId storage,
   if (places.step(storage) == core::PathStep::Deref) {
     if (span.contains(core::ArrayIndex::constant(0), state.scalars,
                       state.relations) == core::ArrayRelation::Yes) {
-      PlaceRef ref{.place = *parent,
-                   .derefs = {},
-                   .derefExprs = {},
-                   .derefElements = {},
-                   .element = {}};
+      PlaceRef ref{.place = *parent, .derefs = {}, .element = {}};
       doRead(ref, at, state, true);
       checkDereference(*parent, at, state);
     }

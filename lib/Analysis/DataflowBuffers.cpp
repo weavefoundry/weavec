@@ -810,8 +810,6 @@ void FunctionDataflow::materializeBufferSequences(core::AnalysisState &state) {
         origin.place = PlaceRef{.place = post.borrowed.value_or(
                                     post.value.value_or(core::PlaceId{})),
                                 .derefs = {},
-                                .derefExprs = {},
-                                .derefElements = {},
                                 .element = {}};
       } else if (post.nullValue) {
         origin.kind = ValueOrigin::Kind::Null;

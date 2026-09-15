@@ -23,7 +23,8 @@ struct SafetyEntryPool::Storage {
              (static_cast<std::size_t>(key.location.line) << 5U) ^
              (static_cast<std::size_t>(key.location.column) << 6U) ^
              (static_cast<std::size_t>(key.trusted) << 2U) ^
-             static_cast<std::size_t>(key.unsafe);
+             static_cast<std::size_t>(key.unsafe) ^
+             (static_cast<std::size_t>(key.textOnly) << 7U);
     }
   };
   struct CallPreparation {

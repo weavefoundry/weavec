@@ -29,6 +29,63 @@ static void drop(void *p) { free(p); }
 static void keep(void *p) { (void)p; }
 )c";
 
+TEST(PointerIdentity, WideAliasQueriesPreserveReleaseAndReplacement) {
+  // RFC 0027: query-result storage must grow past its inline capacity.
+  // Every saved alias remains live across the release and optional write.
+  for (const unsigned width : {3U, 4U, 5U, 12U}) {
+    for (const bool replace : {false, true}) {
+      SCOPED_TRACE(width);
+      SCOPED_TRACE(replace);
+      std::string source =
+          "struct box { int *slot; }; void client(struct box *root) {";
+      for (unsigned i = 0; i < width; ++i)
+        source += "struct box *a" + std::to_string(i) + "=root;";
+      source += "free(a0->slot);";
+      if (replace)
+        source += "a0->slot=malloc(sizeof(int)); if(!a0->slot)return;";
+      for (unsigned i = 0; i < width; ++i)
+        source += "use(a" + std::to_string(i) + "->slot);";
+      if (replace)
+        source += "free(a0->slot);";
+      source += '}';
+      const auto result = test::analyze(source);
+      ASSERT_TRUE(result.ast);
+      EXPECT_EQ(countId(result, core::diag::UseAfterFree), replace ? 0 : width)
+          << ::testing::PrintToString(test::messages(result.diagnostics));
+      if (replace)
+        EXPECT_TRUE(result.diagnostics.empty())
+            << ::testing::PrintToString(test::messages(result.diagnostics));
+    }
+  }
+}
+
+TEST(PointerIdentity, DeepDereferencesRetainTheirReleasedPointer) {
+  // RFC 0027: every dereference keeps its pointer, expression and witness
+  // when a resolved path grows beyond its inline storage.
+  for (const bool replace : {false, true}) {
+    SCOPED_TRACE(replace);
+    std::string source = R"c(
+      struct node { struct node *next; int value; };
+      int client(struct node *p) {
+        free(p->next->next);
+    )c";
+    if (replace)
+      source += "p->next->next=malloc(sizeof(struct node));"
+                "if(!p->next->next)return 0; p->next->next->value=1;";
+    source += "int value=p->next->next->value;";
+    if (replace)
+      source += "free(p->next->next);";
+    source += "return value;}";
+    const auto result = test::analyze(source);
+    ASSERT_TRUE(result.ast);
+    EXPECT_EQ(countId(result, core::diag::UseAfterFree), replace ? 0U : 1U)
+        << ::testing::PrintToString(test::messages(result.diagnostics));
+    if (replace)
+      EXPECT_TRUE(result.diagnostics.empty())
+          << ::testing::PrintToString(test::messages(result.diagnostics));
+  }
+}
+
 TEST(PointerIdentity, AStoredTargetDoesNotAcquireAnUnrelatedFunctionsEffects) {
   const auto result = test::analyze(std::string(Callbacks) + R"c(
 void (*unrelated)(void *) = drop;
@@ -410,6 +467,22 @@ void bad(struct outer *b) { void *erased = &b->in; drop_field(erased); use(b->in
   ASSERT_TRUE(result.ast);
   EXPECT_EQ(countId(result, core::diag::AnalysisIncomplete), 0U);
   EXPECT_EQ(countId(result, core::diag::UseAfterFree), 1U);
+}
+
+TEST(PointerIdentity, RepeatedErasedCallsRecheckChangedObjectViews) {
+  const auto result = test::analyze(R"c(
+struct first { int *p; }; struct second { int tag; int *p; };
+static void drop_field(void *object) { struct first *a = object; free(a->p); }
+void boundary(struct first *a, struct second *b) {
+  void *erased = a;
+  for (int i = 0; i < 2; ++i) {
+    drop_field(erased);
+    erased = b;
+  }
+}
+)c");
+  ASSERT_TRUE(result.ast);
+  EXPECT_GT(countId(result, core::diag::AnalysisIncomplete), 0U);
 }
 
 TEST(PointerIdentity, InvalidCTestFixturesCannotReturnACleanAnalysis) {

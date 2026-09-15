@@ -250,6 +250,18 @@ if(Python3_Interpreter_FOUND)
     set_tests_properties(checked-${population}-rfc0026
                          PROPERTIES LABELS "integration" TIMEOUT 600)
   endforeach()
+  foreach(population source transport objects cache oracle scaling)
+    add_test(
+      NAME checked-${population}-rfc0027
+      COMMAND
+        "${Python3_EXECUTABLE}"
+        "${PROJECT_SOURCE_DIR}/scripts/checked-recursive.py" --population
+        "${population}" --weavec "$<TARGET_FILE:weavec>" --cc
+        "$<TARGET_FILE:weavec-cc>" --clang "${WEAVEC_CLANG_EXECUTABLE}"
+        --output "${CMAKE_CURRENT_BINARY_DIR}/rfc0027-${population}")
+    set_tests_properties(checked-${population}-rfc0027
+                         PROPERTIES LABELS "integration" TIMEOUT 600)
+  endforeach()
   add_test(NAME recall-harness
            COMMAND "${Python3_EXECUTABLE}"
                    "${PROJECT_SOURCE_DIR}/scripts/test_recall.py")

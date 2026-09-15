@@ -307,6 +307,11 @@ public:
     return 1;
   }
 
+  template <typename Predicate>
+  std::size_t eraseIf(Predicate predicate) {
+    return std::erase_if(entries, predicate);
+  }
+
   friend bool operator==(const FlatMap &, const FlatMap &) = default;
   friend auto operator<=>(const FlatMap &, const FlatMap &) = default;
 
@@ -535,6 +540,36 @@ struct GuardOn {
       }
     }
     return changed;
+  }
+
+  /// RFC 0027: simultaneous invalidation, equivalent to dropping every
+  /// matching key individually. Compact each bounded conjunct vector once.
+  template <typename Matches>
+  bool dropIf(Matches matches) {
+    bool changed = conditions.eraseIf([&](const auto &entry) {
+      return matches(entry.first);
+    }) != 0;
+    changed |= pointers.eraseIf([&](const auto &entry) {
+      return matches(entry.first.first) || matches(entry.first.second);
+    }) != 0;
+    changed |= std::erase_if(integers, [&](const auto &predicate) {
+                 return predicate.dependsOnIf(matches);
+               }) != 0;
+    return changed;
+  }
+  template <typename Matches>
+  [[nodiscard]] bool dependsOnIf(Matches matches) const {
+    return std::ranges::any_of(
+               conditions,
+               [&](const auto &entry) { return matches(entry.first); }) ||
+           std::ranges::any_of(pointers,
+                               [&](const auto &entry) {
+                                 return matches(entry.first.first) ||
+                                        matches(entry.first.second);
+                               }) ||
+           std::ranges::any_of(integers, [&](const auto &predicate) {
+             return predicate.dependsOnIf(matches);
+           });
   }
 
   friend bool operator==(const GuardOn &, const GuardOn &) = default;

@@ -671,6 +671,51 @@ void AnalysisState::dropGuardsOn(PlaceId place) {
   dropOtherGuardsOn(*this, place);
 }
 
+void AnalysisState::dropGuardsOn(std::vector<PlaceId> places) {
+  if (places.empty())
+    return;
+  if (places.size() == 1) {
+    dropGuardsOn(places.front());
+    return;
+  }
+  // Keep checked invalidation in its original order. The other guarded
+  // domains do not consume safety facts (RFCs 0020 and 0027).
+  if (safety)
+    for (const auto place : places)
+      safety->forgetDependency(place);
+  std::ranges::sort(places);
+  const auto matches = [&](PlaceId place) {
+    return std::ranges::binary_search(places, place);
+  };
+  for (auto &[result, outcome] : pending) {
+    (void)result;
+    for (auto &[cls, facts] : outcome.factOn) {
+      (void)cls;
+      std::erase_if(facts,
+                    [&](const auto &fact) { return matches(fact.first); });
+    }
+    if (safety)
+      for (auto &[cls, facts] : outcome.initializedOn) {
+        (void)cls;
+        std::erase_if(facts, [&](const auto &fact) {
+          return matches(fact.first) ||
+                 (fact.second.begin.place &&
+                  matches(*fact.second.begin.place)) ||
+                 (fact.second.end.place && matches(*fact.second.end.place)) ||
+                 fact.second.when.dependsOnIf(matches);
+        });
+      }
+  }
+  numericConditions.dropIf(matches);
+  std::erase_if(numericValues, [&](const auto &entry) {
+    return matches(entry.first) || entry.second.dependsOnIf(matches);
+  });
+  pointerFacts.dropIf(matches);
+  moves.dropGuardsIf(matches);
+  resources.dropGuardsIf(matches);
+  nulls.dropGuardsIf(matches);
+}
+
 void AnalysisState::forgetZeroedMemory() {
   if (!safety)
     return;

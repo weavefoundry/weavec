@@ -484,9 +484,9 @@ Design: [RFC 0023](rfcs/0023-inductive-container-contracts.md).
       runtime/memory gates, with published [validation](validation-rfc0023.md)
       and [measured results](../scripts/corpus/rfc0023-results.json).
 
-Derived outputs describe subsets of their input chains. Whole-footprint
-consumption through arbitrary transformations, cyclic ownership, general trees
-and graphs, and doubly linked mutation remain separate work.
+Derived outputs describe subsets of their input chains. RFC 0027 adds separate
+whole-footprint conservation for supported transformations and finite recursive
+forests. Arbitrary graphs and cyclic ownership remain separate work.
 
 ## Milestone 23 — Checked C runtime contracts
 
@@ -531,6 +531,36 @@ Design: [RFC 0025](rfcs/0025-case-sensitive-checked-contracts.md).
 Aggregate union members, representation punning, anonymous member promotion,
 volatile/atomic union storage and unrestricted symbolic execution remain
 separate work. A tag chooses a branch; an actual write establishes its payload.
+
+## Milestone 25 — Growable buffers and vectors
+
+Design: [RFC 0026](rfcs/0026-growable-buffer-contracts.md).
+
+- [x] Infer related length, capacity, allocation, initialization and ownership
+      contracts through reserve, append, resize, truncate, clear and steal.
+- [x] Preserve failure outcomes and distinguish pointer-element ownership from
+      initialization; transport proofs through sources, objects and checkpoints.
+- [x] Validate the fixed and unchanged Jansson populations, corpus preservation
+      and cost gates; publish the [validation record](validation-rfc0026.md).
+
+## Milestone 26 — Recursive object ownership
+
+Design: [RFC 0027](rfcs/0027-recursive-object-ownership.md).
+
+- [x] Infer finite recursive ownership forests with multiple children, separately
+      owned payloads, initialized ownership flags and borrowed backlinks.
+- [x] Prove complete allocation preservation, partition, combination and
+      consumption independently of structural validity.
+- [x] Verify direct recursive cleanup through proper-child induction and compose
+      construction, traversal, attachment, detachment and supported relinking.
+- [x] Transport contracts through sources, compiler objects and validated caches;
+      check unchanged cJSON lifecycle clients and an independent heap oracle.
+- [x] Complete all preservation and performance gates and publish the final
+      [validation record](validation-rfc0027.md) and
+      [machine-readable evidence](../scripts/corpus/rfc0027-results.json).
+
+General graphs, shared recursive ownership, mutual recursive cleanup and full
+parser/printer verification remain separate work.
 
 ## Ongoing
 

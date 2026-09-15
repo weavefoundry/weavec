@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "Dataflow.h"
+#include "IntegerSupport.h"
 
 #include <algorithm>
 #include <utility>
@@ -19,6 +20,22 @@ bool FunctionDataflow::separateContainers(core::PlaceId first,
                                           core::PlaceId second, const Stmt &at,
                                           core::AnalysisState &state) {
   auto &facts = state.safety->containers;
+  const auto preserveAliases = [&] {
+    std::vector<core::PlaceId> firstNames{first};
+    std::vector<core::PlaceId> secondNames{second};
+    for (const auto &[holder, fact] : facts.all()) {
+      (void)fact;
+      if (const auto offset = state.definiteAliases.offsetOf(holder, first);
+          holder != first && offset && offset->isZero())
+        firstNames.push_back(holder);
+      if (const auto offset = state.definiteAliases.offsetOf(holder, second);
+          holder != second && offset && offset->isZero())
+        secondNames.push_back(holder);
+    }
+    for (const auto a : firstNames)
+      for (const auto b : secondNames)
+        facts.separate(a, b);
+  };
   if (facts.separated(first, second))
     return true;
   const auto *a = facts.find(first);
@@ -37,6 +54,7 @@ bool FunctionDataflow::separateContainers(core::PlaceId first,
       overlap |= b->members.contains(member);
     if (!overlap) {
       facts.separate(first, second);
+      preserveAliases();
       return true;
     }
   }
@@ -67,6 +85,7 @@ bool FunctionDataflow::separateContainers(core::PlaceId first,
              .other = containerInputs.at(bi),
              .family = {}});
   facts.separate(first, second);
+  preserveAliases();
   safetyObligation(core::SafetyProperty::Aliasing,
                    core::SafetyOutcome::Required, at, "container separation",
                    "input container footprints must be disjoint");
@@ -91,11 +110,11 @@ static bool containerEffectCovered(const core::SummaryPath &input,
     if (field.step != core::PathStep::Field)
       return false;
     if (index == effect.steps.size())
-      return !operation.consumed() || field.field == shape.link.name ||
+      return !operation.consumed() || shape.recursiveLink(field.field) ||
              std::ranges::any_of(shape.payloads, [&](const auto &payload) {
                return payload.field.name == field.field;
              });
-    if (field.field != shape.link.name) {
+    if (!shape.recursiveLink(field.field)) {
       // The payload certificate owns its allocation, not pointer targets
       // reachable through arbitrary payload contents.
       return false;
@@ -108,8 +127,23 @@ void FunctionDataflow::invalidateContainers(core::PlaceId holder, bool release,
                                             bool keepTail,
                                             core::AnalysisState &state) {
   auto &facts = state.safety->containers;
+  const auto *targetFact = facts.find(holder);
+  const auto parent =
+      release && !keepTail && targetFact ? targetFact->tailOf : std::nullopt;
+  const auto childName = targetFact ? targetFact->tailField : std::string{};
+  const auto parentMemory =
+      parent ? checkedMemoryAt(*parent, {}, {}, state) : std::nullopt;
+  const auto properIndependent = [&](core::PlaceId other,
+                                     const core::ContainerFact &fact) {
+    return parent && !childName.empty() &&
+           (other == *parent ||
+            (fact.tailOf == parent && !fact.tailField.empty() &&
+             fact.tailField != childName));
+  };
   std::vector<core::PlaceId> affected;
   for (const auto &[other, fact] : facts.all()) {
+    if (properIndependent(other, fact))
+      continue;
     if (facts.separated(holder, other) || (keepTail && fact.tailOf == holder))
       continue;
     affected.push_back(other);
@@ -132,6 +166,10 @@ void FunctionDataflow::invalidateContainers(core::PlaceId holder, bool release,
     for (const auto pointer : candidates) {
       const auto memory = checkedMemoryAt(pointer, {}, {}, state);
       bool independent = facts.separated(holder, pointer);
+      if (const auto *fact = facts.find(pointer))
+        independent |= properIndependent(pointer, *fact);
+      if (parentMemory && memory && memory->storage == parentMemory->storage)
+        independent = true;
       if (memory && !independent) {
         const auto *decl =
             dyn_cast_or_null<VarDecl>(builder.declFor(memory->storage));
@@ -193,8 +231,26 @@ void FunctionDataflow::invalidateContainers(core::PlaceId holder, bool release,
       state.safety->objectTypes[object] = "?";
     }
   }
-  for (const auto other : affected)
+  for (const auto other : affected) {
+    // Entry snapshots and accumulated releases retain the old allocation
+    // identities. The current pointer's shape may change even when a helper
+    // requires release permission (attachment/detachment also require it).
+    // Keeping its old equality would identify a detached live child with the
+    // empty new slot when the helper's structural output is unfolded.
+    state.safety->footprints.forget(other);
+    state.safety->unfoldedFootprints.erase(other);
+    if (release)
+      for (const auto &[cell, contribution] : footprintContributions)
+        if (places.isDescendantOf(cell, other))
+          state.safety->footprints.forget(contribution);
     facts.block(other);
+  }
+  if (parent)
+    if (const auto *fact = facts.find(*parent)) {
+      auto partial = *fact;
+      partial.releasedChildren.insert(childName);
+      facts.set(*parent, std::move(partial));
+    }
 }
 
 void FunctionDataflow::checkedContainerStore(const Stmt &stmt,
@@ -215,6 +271,16 @@ void FunctionDataflow::checkedContainerStore(const Stmt &stmt,
     return;
   const auto *member =
       dyn_cast<MemberExpr>(assignment->getLHS()->IgnoreParenImpCasts());
+  if (const auto *indirect =
+          dyn_cast<UnaryOperator>(assignment->getLHS()->IgnoreParenImpCasts());
+      indirect && indirect->getOpcode() == UO_Deref) {
+    const auto *record = indirect->getType()->getAsRecordDecl();
+    const auto holder = builder.resolvePointerValue(*indirect->getSubExpr());
+    if (record && holder && holder->element.isWhole()) {
+      foldContainerStores(holder->place, *record, nullptr, stmt, state);
+      return;
+    }
+  }
   if (!member || !member->isArrow()) {
     // Arbitrary byte and indirect stores can corrupt a previously folded
     // object. Direct holder replacement is handled by installCheckedPointer.
@@ -229,27 +295,66 @@ void FunctionDataflow::checkedContainerStore(const Stmt &stmt,
     state.safety->containers.clear();
     return;
   }
+  foldContainerStores(holder->place, *field->getParent(), field, stmt, state);
+}
+
+void FunctionDataflow::foldContainerStores(core::PlaceId holder,
+                                           const RecordDecl &record,
+                                           const FieldDecl *field,
+                                           const Stmt &stmt,
+                                           core::AnalysisState &state) {
   auto &facts = state.safety->containers;
-  const auto *candidate = containerShape(member->getBase()->getType());
-  const auto *old = facts.find(holder->place);
+  const auto discovered = containerShapes.find(&record);
+  const auto *candidate =
+      discovered == containerShapes.end() ? nullptr : &discovered->second;
+  const auto *old = facts.find(holder);
   if (!candidate && !old)
     return;
   auto shape = old ? old->shape : *candidate;
-  const auto previous = old ? std::optional(*old) : std::nullopt;
-  const bool linkWrite = field->getName() == shape.link.name;
+  const auto previous = old && field ? std::optional(*old) : std::nullopt;
+  const bool linkWrite =
+      field == nullptr || shape.recursiveLink(field->getNameAsString());
   const bool payloadWrite =
       std::ranges::any_of(shape.payloads, [&](const auto &payload) {
-        return field->getName() == payload.field.name;
+        return !field || field->getName() == payload.field.name;
       });
-  if (previous && !linkWrite && !payloadWrite)
+  const bool conditionWrite =
+      std::ranges::any_of(shape.ownership, [&](const auto &entry) {
+        return !field || field->getName() == entry.second.field.name;
+      });
+  // The old contribution belongs to the pre-store footprint. Retire its
+  // current-cell name before refining any predicate under the new selector.
+  if (conditionWrite)
+    for (const auto &[name, condition] : shape.ownership)
+      if (!field || field->getName() == condition.field.name)
+        state.safety->footprints.forget(footprintContribution(holder, name));
+  if (previous && field && payloadWrite &&
+      previous->releasedPayloads.contains(field->getNameAsString()) &&
+      state.nulls.stateOf(builder.fieldPlace(places.deref(holder), *field)) ==
+          core::Nullness::Null)
+    return; // Clearing a consumed slot preserves the remaining live head.
+  if (previous && !linkWrite && !payloadWrite && !conditionWrite)
     return;
 
-  const auto memory = checkedMemoryAt(holder->place, {}, {}, state);
+  const auto memory = checkedMemoryAt(holder, {}, {}, state);
+  if (payloadWrite && field && memory && previous &&
+      previous->localAllocation && previous->releasedChildren.empty() &&
+      previous->releasedPayloads.empty()) {
+    // A newly stored payload needs real allocation-base and separation
+    // evidence. The concrete graph checks it against every node and payload;
+    // its root atom denotes the same already established live head.
+    state.safety->footprints.constrain(
+        {{footprintAtom(memory->storage), 1}, {footprintHead(holder), -1}});
+    if (const auto concrete = establishContainer(*memory, shape, state)) {
+      facts.set(holder, *concrete);
+      return;
+    }
+  }
   std::optional<core::ContainerFact> head;
   if (previous && !previous->empty &&
       shape.access != core::ContainerAccess::Read &&
-      state.nulls.stateOf(holder->place) == core::Nullness::NonNull &&
-      !state.moves.recordOf(holder->place)) {
+      state.nulls.stateOf(holder) == core::Nullness::NonNull &&
+      !state.moves.recordOf(holder)) {
     head = *previous;
   } else if (memory && checkedValid(*memory, state) && memory->extent &&
              memory->begin == core::Affine::ofConstant(0) &&
@@ -273,7 +378,7 @@ void FunctionDataflow::checkedContainerStore(const Stmt &stmt,
       initialized &= checkedInitialized(bytes, state);
     }
     if (initialized) {
-      if (const auto resource = state.resources.recordOf(holder->place);
+      if (const auto resource = state.resources.recordOf(holder);
           resource && resource->origin == core::ResourceOrigin::Allocated &&
           resource->family == "free" && !resource->escaped) {
         shape.access = core::ContainerAccess::Release;
@@ -286,82 +391,297 @@ void FunctionDataflow::checkedContainerStore(const Stmt &stmt,
           .allocationCompatible =
               shape.access == core::ContainerAccess::Release,
           .localAllocation = shape.access == core::ContainerAccess::Release &&
-                             facts.unlinked(holder->place)};
+                             facts.unlinked(holder)};
     }
   }
 
-  const FieldDecl *link = nullptr;
-  for (const auto *f : field->getParent()->fields())
-    if (f->getName() == shape.link.name)
-      link = f;
-  const auto cell = link ? std::optional(builder.fieldPlace(
-                               places.deref(holder->place), *link))
-                         : std::nullopt;
-  auto tailShape = shape;
-  tailShape.terminal = false;
-  if (cell)
-    if (const auto *next = facts.find(*cell);
-        next && !next->empty && !next->shape.entails(shape) &&
-        shape.access == core::ContainerAccess::Release) {
-      tailShape.access = next->shape.access;
-      tailShape.family = next->shape.family;
-      if (head)
-        head->shape = tailShape;
+  struct Child {
+    core::PlaceId cell;
+    core::ContainerFact fact;
+    bool owned = true;
+    bool retained = false;
+  };
+  std::vector<Child> children;
+  const bool retainConditional =
+      previous && field != nullptr && !conditionWrite &&
+      shape.recursiveLink(field->getNameAsString()) &&
+      previous->releasedChildren.empty() &&
+      previous->releasedPayloads.empty() &&
+      state.nulls.stateOf(builder.fieldPlace(places.deref(holder), *field)) ==
+          core::Nullness::Null;
+  bool complete = head.has_value();
+  for (const auto *link : record.fields()) {
+    if (!shape.recursiveLink(link->getNameAsString()))
+      continue;
+    const auto cell = builder.fieldPlace(places.deref(holder), *link);
+    auto required = shape;
+    required.terminal = false;
+    required.emptyLinks.clear();
+    required.headValues.clear();
+    required.emptyPayloads.clear();
+    std::optional<core::ContainerFact> tail;
+    const auto active =
+        containerOwns(holder, link->getNameAsString(), shape, state);
+    if (active == false) {
+      children.push_back({.cell = cell,
+                          .fact = {.shape = required,
+                                   .members = {},
+                                   .inputs = {},
+                                   .empty = true},
+                          .owned = false});
+      continue;
     }
-  std::optional<core::ContainerFact> tail;
-  if (cell) {
-    if (const auto *stored = facts.find(*cell);
-        stored && stored->entails(tailShape))
-      tail = *stored;
-    else if (state.nulls.stateOf(*cell) == core::Nullness::Null)
+    if (!active) {
+      if (state.nulls.stateOf(cell) == core::Nullness::Null) {
+        children.push_back({.cell = cell,
+                            .fact = {.shape = required,
+                                     .members = {},
+                                     .inputs = {},
+                                     .empty = true}});
+        continue;
+      }
+      if (retainConditional) {
+        // Clearing a different link preserves this guarded contribution.
+        // The placeholder grants no pointee access or nullness fact.
+        children.push_back({.cell = cell,
+                            .fact = {.shape = required,
+                                     .members = {},
+                                     .inputs = {},
+                                     .empty = true},
+                            .retained = true});
+        continue;
+      }
+      complete = false;
+      continue;
+    }
+    if (const auto *stored = facts.find(cell)) {
+      if (stored->entails(required)) {
+        tail = *stored;
+      } else if (shape.access == core::ContainerAccess::Release &&
+                 stored->shape.object == shape.object &&
+                 stored->shape.link == shape.link &&
+                 stored->shape.children == shape.children &&
+                 stored->shape.ownership == shape.ownership &&
+                 stored->releasedChildren.empty() &&
+                 stored->releasedPayloads.empty()) {
+        // A borrowed child cannot be upgraded by attaching it to an owner.
+        tail = *stored;
+        if (head) {
+          head->shape.access = stored->shape.access;
+          head->shape.family = stored->shape.family;
+        }
+      }
+    } else if (state.nulls.stateOf(cell) == core::Nullness::Null) {
       tail = core::ContainerFact{
-          .shape = tailShape, .members = {}, .inputs = {}, .empty = true};
-    else if (!linkWrite)
-      tail = containerAt(*cell, tailShape, state);
-    else if (const auto successor = checkedMemoryAt(*cell, {}, {}, state))
-      tail = establishContainer(*successor, tailShape, state);
+          .shape = required, .members = {}, .inputs = {}, .empty = true};
+    } else if (!linkWrite || link != field) {
+      tail = containerAt(cell, required, state);
+    } else if (const auto successor = checkedMemoryAt(cell, {}, {}, state)) {
+      tail = establishContainer(*successor, required, state);
+    }
+    const bool disjoint =
+        tail && (tail->empty || tail->tailOf == holder ||
+                 separateContainers(holder, cell, stmt, state));
+    if (!tail || !disjoint) {
+      complete = false;
+      continue;
+    }
+    for (const auto &sibling : children)
+      if (!tail->empty && !sibling.fact.empty &&
+          (tail->tailOf != holder || sibling.fact.tailOf != holder ||
+           tail->tailField.empty() || sibling.fact.tailField.empty() ||
+           tail->tailField == sibling.fact.tailField) &&
+          !separateContainers(cell, sibling.cell, stmt, state))
+        complete = false;
+    children.push_back({.cell = cell, .fact = *tail});
   }
-  // The saved pointer cell inherits whole-chain separation from its RHS.
-  bool disjoint =
-      tail && (tail->empty || tail->tailOf == holder->place ||
-               (cell && separateContainers(holder->place, *cell, stmt, state)));
   std::vector<std::pair<core::PlaceId, core::ContainerFact>> prefixes;
+  std::map<core::PlaceId, core::PlaceId> prefixFrames;
   std::vector<core::PlaceId> savedTails;
-  if (head && tail && disjoint) {
+  std::vector<core::PlaceId> preservedSeparation;
+  if (complete) {
     for (const auto &[other, fact] : facts.all()) {
-      if (fact.tailOf == holder->place)
+      if (fact.tailOf == holder)
         savedTails.push_back(other);
       if (previous && previous->ancestors.contains(other) &&
-          (tail->empty ||
-           (cell && separateContainers(other, *cell, stmt, state))))
+          std::ranges::all_of(children, [&](const auto &child) {
+            return child.fact.empty || child.fact.tailOf == holder ||
+                   separateContainers(other, child.cell, stmt, state);
+          })) {
         prefixes.emplace_back(other, fact);
+        const auto [saved, inserted] = footprintSnapshots.try_emplace(other);
+        if (inserted)
+          saved->second = {places.create("saved container footprint"),
+                           places.create("saved head footprint")};
+        const auto frame = saved->second.first;
+        state.safety->footprints.assign(frame, {{other, 1}, {holder, -1}});
+        prefixFrames.emplace(other, frame);
+      }
+      if (facts.separated(holder, other) &&
+          std::ranges::all_of(children, [&](const auto &child) {
+            return child.fact.empty || facts.separated(child.cell, other);
+          }))
+        preservedSeparation.push_back(other);
     }
   }
-  if (linkWrite || payloadWrite)
-    invalidateContainers(holder->place, false, true, state);
-  if (!head || !tail || !disjoint || payloadWrite)
+  if (linkWrite || payloadWrite || conditionWrite)
+    invalidateContainers(holder, false, true, state);
+  if (!complete || !head)
     return;
   if (previous && !requireContainer(*previous, stmt, state))
     return;
-  if (!requireContainer(*tail, stmt, state))
-    return;
-  head->members.insert(tail->members.begin(), tail->members.end());
-  head->inputs.insert(tail->inputs.begin(), tail->inputs.end());
-  head->allocationCompatible &= tail->empty || tail->allocationCompatible;
-  head->localAllocation &= tail->empty || tail->localAllocation;
-  head->shape.terminal = tail->empty;
+  core::FootprintSum footprint{{footprintHead(holder), 1}};
+  head->shape.terminal = true;
+  head->shape.emptyLinks.clear();
+  for (const auto &[name, condition] : shape.ownership) {
+    (void)name;
+    for (const auto *selector : record.fields())
+      if (selector->getName() == condition.field.name)
+        if (const auto type = integerTypeOf(*selector, context)) {
+          const auto cell = builder.fieldPlace(places.deref(holder), *selector);
+          if (const auto value = integerRangeAt(cell, *type, state).constant())
+            head->shape.headValues[condition.field.name] = value->bits;
+          else if (containerZeroField(holder, condition.field, state))
+            head->shape.headValues[condition.field.name] = 0;
+          else if (state.numericWrites.contains(cell))
+            head->shape.headValues.erase(condition.field.name);
+        }
+  }
+  for (const auto &child : children) {
+    if (child.retained) {
+      ++footprint[footprintContribution(holder, places.fieldName(child.cell))];
+      head->shape.terminal = false;
+      continue;
+    }
+    if (!requireContainer(child.fact, stmt, state))
+      return;
+    head->members.insert(child.fact.members.begin(), child.fact.members.end());
+    head->inputs.insert(child.fact.inputs.begin(), child.fact.inputs.end());
+    head->allocationCompatible &=
+        child.fact.empty || child.fact.allocationCompatible;
+    head->localAllocation &= child.fact.empty || child.fact.localAllocation;
+    const bool null = state.nulls.stateOf(child.cell) == core::Nullness::Null ||
+                      (child.owned && child.fact.empty);
+    head->shape.terminal &= null;
+    if (null) {
+      state.safety->footprints.assign(child.cell, {});
+      head->shape.emptyLinks.insert(std::string(places.fieldName(child.cell)));
+    }
+    if (shape.ownership.contains(std::string(places.fieldName(child.cell)))) {
+      const auto contribution =
+          footprintContribution(holder, places.fieldName(child.cell));
+      state.safety->footprints.assign(
+          contribution, child.owned ? core::FootprintSum{{child.cell, 1}}
+                                    : core::FootprintSum{});
+      ++footprint[contribution];
+    } else {
+      ++footprint[child.cell];
+    }
+  }
+  if (head->shape.terminal)
+    head->shape.emptyLinks.clear();
+  for (const auto &payload : shape.payloads) {
+    const auto cell = places.field(places.deref(holder), payload.field.name);
+    const auto active = containerOwns(holder, payload.field.name, shape, state);
+    if (!active && retainConditional) {
+      ++footprint[footprintContribution(holder, payload.field.name)];
+      continue;
+    }
+    if (!active)
+      return;
+    const bool empty = state.nulls.stateOf(cell) == core::Nullness::Null;
+    if (*active && !empty &&
+        (!previous || conditionWrite ||
+         (field && field->getName() == payload.field.name) ||
+         previous->releasedPayloads.contains(payload.field.name))) {
+      const auto *assignment = dyn_cast<BinaryOperator>(&stmt);
+      const auto origin = assignment
+                              ? builder.classifyValue(*assignment->getRHS())
+                              : ValueOrigin{};
+      const auto allocation =
+          origin.call ? resolvedLibraryName(*origin.call) : std::string{};
+      const auto resource = state.resources.recordOf(cell);
+      const auto bytes = checkedMemoryAt(cell, {}, {}, state);
+      // A fresh nullable allocation is either empty or a separate allocation
+      // base. A copied pointer, borrowed object or stale field supplies no such
+      // separation from the existing inductive object and its other payloads.
+      if (!previous || !field || field->getName() != payload.field.name ||
+          (allocation != "malloc" && allocation != "calloc") || !resource ||
+          resource->origin != core::ResourceOrigin::Allocated ||
+          resource->escaped || resource->family != payload.family || !bytes ||
+          bytes->begin != core::Affine::ofConstant(0) ||
+          state.moves.recordOf(cell) || !footprintHeads.contains(cell))
+        return;
+      head->members.insert(bytes->storage);
+      head->releasedPayloads.erase(payload.field.name);
+    }
+    if (empty) {
+      head->shape.emptyPayloads.insert(payload.field.name);
+      state.safety->footprints.constrain({{cell, 1}});
+    } else {
+      head->shape.emptyPayloads.erase(payload.field.name);
+    }
+    if (shape.ownership.contains(payload.field.name)) {
+      const auto contribution =
+          footprintContribution(holder, payload.field.name);
+      state.safety->footprints.assign(contribution,
+                                      *active ? core::FootprintSum{{cell, 1}}
+                                              : core::FootprintSum{});
+      ++footprint[contribution];
+    } else {
+      ++footprint[cell];
+    }
+  }
+  state.safety->footprints.assign(holder, std::move(footprint));
+  state.safety->unfoldedFootprints.insert(holder);
   head->tailOf.reset();
+  head->tailField.clear();
+  head->releasedChildren.clear();
   head->ancestors.clear();
   head->empty = false;
   head->suffix = true; // A fold can represent unbounded allocation instances.
-  facts.set(holder->place, *head);
-  facts.publish(holder->place);
-  for (const auto other : savedTails)
-    facts.separate(holder->place, other);
-  for (auto &[other, fact] : prefixes) {
-    fact.members.insert(tail->members.begin(), tail->members.end());
-    fact.inputs.insert(tail->inputs.begin(), tail->inputs.end());
+  facts.set(holder, *head);
+  facts.publish(holder);
+  for (const auto other : preservedSeparation)
+    facts.separate(holder, other);
+  std::vector<std::pair<core::PlaceId, core::ContainerFact>> descendants;
+  for (const auto &child : children) {
+    if (!child.owned || child.fact.empty)
+      continue;
+    for (const auto &[other, fact] : facts.all()) {
+      if (other == holder)
+        continue;
+      const auto alias = state.definiteAliases.offsetOf(other, child.cell);
+      if (other == child.cell || (alias && alias->isZero())) {
+        auto descendant = fact;
+        descendant.ancestors.insert(holder);
+        descendants.emplace_back(other, std::move(descendant));
+      }
+    }
+  }
+  for (auto &[other, fact] : descendants)
     facts.set(other, std::move(fact));
+  for (const auto other : savedTails) {
+    // An existing successor remains separate only when no new edge reaches it.
+    const auto *saved = facts.find(other);
+    if (std::ranges::all_of(children, [&](const auto &child) {
+          return child.fact.empty || facts.separated(child.cell, other) ||
+                 (saved && saved->tailOf == holder &&
+                  child.fact.tailOf == holder && !saved->tailField.empty() &&
+                  !child.fact.tailField.empty() &&
+                  saved->tailField != child.fact.tailField);
+        }))
+      facts.separate(holder, other);
+  }
+  for (auto &[other, fact] : prefixes) {
+    for (const auto &child : children) {
+      fact.members.insert(child.fact.members.begin(), child.fact.members.end());
+      fact.inputs.insert(child.fact.inputs.begin(), child.fact.inputs.end());
+    }
+    facts.set(other, std::move(fact));
+    const auto frame = prefixFrames.at(other);
+    state.safety->footprints.assign(other, {{frame, 1}, {holder, 1}});
+    state.safety->footprints.forget(frame);
   }
 }
 
@@ -399,6 +719,17 @@ void FunctionDataflow::checkedContainersAfterCall(const CallExpr &call,
         return;
     }
     state.safety->containers.clear();
+    if ((name == "memset" || name == "__builtin_memset" ||
+         name == "__builtin___memset_chk") &&
+        call.getNumArgs() > 0)
+      if (const auto actual = builder.resolvePointerValue(*call.getArg(0)))
+        if (const auto *decl =
+                dyn_cast_or_null<ValueDecl>(builder.declFor(actual->place)))
+          if (const auto *shape = containerShape(decl->getType()))
+            if (const auto memory =
+                    checkedMemoryAt(actual->place, {}, {}, state))
+              if (const auto fact = establishContainer(*memory, *shape, state))
+                state.safety->containers.set(actual->place, *fact);
     return;
   }
   if (!effects->summary->checked.complete()) {
@@ -431,8 +762,6 @@ void FunctionDataflow::checkedContainersAfterCall(const CallExpr &call,
       state.safety->containers.clear();
       break;
     }
-  if (!call.getDirectCallee())
-    state.safety->containers.clear();
 }
 
 } // namespace weavec::analysis

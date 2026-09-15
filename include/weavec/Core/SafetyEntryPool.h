@@ -16,6 +16,16 @@ struct AnalysisStats;
 
 /// RFC 0024: a canonical call ledger derived from an immutable origin sequence.
 struct PreparedSafetyOrigins {
+  /// RFC 0027: a crowded destination reuses only caller-independent text.
+  /// Routes remain in the immutable source projection retained by application.
+  struct Text {
+    std::string subject;
+    std::string escapedSubject;
+    std::string reason;
+    SafetyOutcome outcome;
+  };
+  std::vector<Text> text;
+  bool limited = false;
   SafetyLedger ledger;
   // Canonical rows in original origin order preserve capped insertion.
   std::vector<std::shared_ptr<const SafetyEntries::Row>> ordered;
@@ -46,6 +56,7 @@ private:
     std::string caller;
     bool trusted;
     bool unsafe;
+    bool textOnly = false;
     friend bool operator==(const CallKey &, const CallKey &) = default;
   };
   static bool cachesCalls();

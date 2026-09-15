@@ -40,6 +40,7 @@
 #include "llvm/ADT/BitVector.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/SmallVector.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -87,9 +88,26 @@ public:
   [[nodiscard]] core::FunctionSummary summary() && noexcept {
     return std::move(inferred);
   }
+  [[nodiscard]] bool verifiedRecursiveCleanup() const {
+    return !recursiveCleanupPremises.empty() && inferred.checked.complete();
+  }
 
 private:
+  // RFC 0027: most mirror queries return one place. Larger results grow
+  // normally; inline capacity never limits alias expansion.
+  using MirrorPlaces = llvm::SmallVector<core::PlaceId, 4>;
+
   void discoverContainers();
+  std::optional<bool> containerOwns(core::PlaceId holder,
+                                    std::string_view field,
+                                    const core::ContainerShape &shape,
+                                    const core::AnalysisState &state);
+  bool containerZeroField(core::PlaceId holder,
+                          const core::ContainerField &field,
+                          const core::AnalysisState &state);
+  core::PlaceId footprintContribution(core::PlaceId holder,
+                                      std::string_view field);
+  std::map<core::PlaceId, core::PlaceId> footprintContributions;
   void initializeContainers(core::AnalysisState &state);
   std::map<const clang::RecordDecl *, core::ContainerShape> containerShapes;
   std::map<std::string, const clang::RecordDecl *> containerRecords;
@@ -127,6 +145,10 @@ private:
                                core::AnalysisState &state);
   void checkedContainerStore(const clang::Stmt &stmt,
                              core::AnalysisState &state);
+  void foldContainerStores(core::PlaceId holder,
+                           const clang::RecordDecl &record,
+                           const clang::FieldDecl *field,
+                           const clang::Stmt &stmt, core::AnalysisState &state);
   bool separateContainers(core::PlaceId first, core::PlaceId second,
                           const clang::Stmt &at, core::AnalysisState &state);
   void invalidateContainers(core::PlaceId holder, bool release, bool keepTail,
@@ -149,6 +171,7 @@ private:
     core::ContainerFact fact;
     std::optional<core::Outcome> on;
     bool fresh = false;
+    bool operator==(const ContainerPost &) const = default;
   };
   std::map<const clang::CallExpr *, std::vector<ContainerPost>> containerPosts;
   std::map<const clang::CallExpr *, std::vector<core::CheckedRequirement>>
@@ -349,7 +372,53 @@ private:
     std::vector<core::InitializedRange> initialized;
     std::optional<core::PlaceId> storage;
     std::optional<core::PointerPosition> position;
+    std::optional<std::pair<core::PlaceId, core::PlaceId>> footprint;
   };
+  // RFC 0027: formal allocation identities, separate from structural facts.
+  std::map<core::PlaceId, core::PlaceId> footprintHeads;
+  std::map<core::PlaceId, core::PlaceId> footprintAtoms;
+  std::map<core::PlaceId, std::pair<core::PlaceId, core::PlaceId>>
+      footprintSnapshots;
+  struct FootprintEntry {
+    core::PlaceId holder;
+    core::PlaceId identity;
+    core::ContainerShape shape;
+  };
+  std::map<core::SummaryPath, FootprintEntry> footprintEntries;
+  std::optional<core::PlaceId> footprintReleased;
+  std::optional<core::PlaceId> footprintAllocated;
+  std::optional<bool> recursiveCleanupCandidate;
+  std::set<core::SummaryPath> recursiveCleanupPremises;
+  bool handleRecursiveCleanup(const clang::CallExpr &call,
+                              core::AnalysisState &state);
+  void verifyRecursiveCleanup();
+  std::map<const clang::CallExpr *, std::map<core::SummaryPath, core::PlaceId>>
+      footprintCallInputs;
+  std::map<const clang::CallExpr *, std::vector<core::CheckedRequirement>>
+      footprintPosts;
+  core::PlaceId footprintHead(core::PlaceId holder);
+  core::PlaceId footprintAtom(core::PlaceId storage);
+  void initializeFootprint(core::PlaceId holder, const core::SummaryPath &path,
+                           const core::ContainerShape &shape,
+                           core::AnalysisState &state);
+  void unfoldFootprint(core::PlaceId holder, const core::ContainerFact &fact,
+                       core::AnalysisState &state);
+  void captureFootprint(core::PlaceId dest, const ValueOrigin &origin,
+                        CheckedPointer &pointer, core::AnalysisState &state);
+  void installFootprint(core::PlaceId dest, const CheckedPointer &pointer,
+                        core::AnalysisState &state);
+  void releaseFootprint(core::PlaceId holder, bool whole,
+                        core::AnalysisState &state);
+  void footprintOutputs(core::CheckedContract &outputs,
+                        const core::AnalysisState &state,
+                        std::optional<core::PlaceId> returned,
+                        std::optional<core::Outcome> outcome);
+  void captureFootprintPosts(const clang::CallExpr &call,
+                             const core::CheckedContract &contract,
+                             core::AnalysisState &state);
+  void applyFootprintPosts(const clang::CallExpr &call,
+                           core::AnalysisState &state,
+                           std::optional<core::PlaceId> result);
   [[nodiscard]] std::optional<core::ContainerFact>
   establishContainer(const CheckedMemory &memory,
                      const core::ContainerShape &shape,
@@ -804,6 +873,9 @@ private:
   std::map<const clang::CallExpr *,
            std::shared_ptr<const core::FunctionSummary>>
       callSummaries;
+  llvm::DenseMap<std::pair<const void *, const std::string *>,
+                 std::weak_ptr<const core::FunctionSummary>>
+      validatedObjectViews;
   std::map<const clang::CallExpr *, SummarySource> callSources;
   std::map<const clang::CallExpr *, core::CallTargets> callTargetsSeen;
   std::map<const clang::CallExpr *, core::CallbackBindings> callbackContexts;
@@ -891,8 +963,8 @@ private:
   [[nodiscard]] core::PathGuard
   heapWriteGuard(core::PlaceId place, const core::AnalysisState &state);
   std::map<core::PlaceId, core::SummaryPath> snapshotInputPaths;
-  [[nodiscard]] std::vector<core::PlaceId>
-  definiteMirrors(core::PlaceId place, const core::AnalysisState &state);
+  [[nodiscard]] MirrorPlaces definiteMirrors(core::PlaceId place,
+                                             const core::AnalysisState &state);
   std::map<std::pair<const clang::CallExpr *, core::SummaryPath>, core::PlaceId>
       heapInputs;
   std::map<std::pair<const clang::CallExpr *, core::SummaryPath>, bool>
@@ -2012,8 +2084,8 @@ private:
   [[nodiscard]] bool knowsPlace(core::PlaceId place,
                                 core::ElementWitness element,
                                 const core::AnalysisState &state);
-  [[nodiscard]] std::vector<core::PlaceId>
-  mirrors(core::PlaceId place, const core::AnalysisState &state);
+  [[nodiscard]] MirrorPlaces mirrors(core::PlaceId place,
+                                     const core::AnalysisState &state);
   /// `place` together with its ancestors and descendants.
   [[nodiscard]] std::vector<core::PlaceId> related(core::PlaceId place);
 

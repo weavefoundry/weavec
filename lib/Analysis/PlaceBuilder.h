@@ -31,6 +31,7 @@
 #include "clang/AST/Expr.h"
 
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/SmallVector.h"
 
 #include <cstdint>
 #include <functional>
@@ -63,23 +64,25 @@ integerConvertedTo(std::int64_t value, clang::QualType type,
 /// that had to be dereferenced to reach it (each of those is *read* by the
 /// access, so a moved one is a use-after-free).
 struct PlaceRef {
+  struct Dereference {
+    core::PlaceId pointer;
+    // Null for a synthesized dereference rather than a written expression.
+    const clang::Expr *expression;
+    // Element from which this pointer was read, e.g. a[i] in a[i]->x.
+    core::ElementWitness element;
+  };
   core::PlaceId place;
-  std::vector<core::PlaceId> derefs;
-  /// The expression naming each entry of `derefs` (parallel vector; entries
-  /// may be null when the dereference was synthesised rather than written).
-  std::vector<const clang::Expr *> derefExprs;
-  /// The witness in force for each entry of `derefs` (parallel vector): the
-  /// element the dereferenced pointer was read from (`a[i]` in `a[i]->x`).
-  std::vector<core::ElementWitness> derefElements;
+  // RFC 0027: one growing sequence preserves the parallel evidence without
+  // three allocations for each short resolved path.
+  llvm::SmallVector<Dereference, 2> derefs;
   /// Which element the access named: the nearest subscript on the path
   /// (RFC 0006, *Element witnesses*), `Whole` when there is none, `Unknown`
   /// when a second subscript follows it (`m[i][j]`).
   core::ElementWitness element;
 
   void addDeref(core::PlaceId pointer, const clang::Expr *expr) {
-    derefs.push_back(pointer);
-    derefExprs.push_back(expr);
-    derefElements.push_back(element);
+    derefs.push_back(
+        {.pointer = pointer, .expression = expr, .element = element});
   }
 };
 

@@ -317,6 +317,77 @@ std::shared_ptr<const PreparedSafetyOrigins> SafetyLedger::prepareCallOrigins(
   return result;
 }
 
+std::shared_ptr<const PreparedSafetyOrigins>
+SafetyLedger::prepareCallOriginText(std::span<const SafetyObligation> origins,
+                                    std::string_view callee, bool unsafe) {
+  auto result = std::make_shared<PreparedSafetyOrigins>();
+  const auto bound = [&](std::string &value) {
+    if (value.size() > 65536) {
+      value.resize(65536);
+      result->limited = true;
+    }
+  };
+  result->text.reserve(origins.size());
+  for (const auto &entry : origins) {
+    const auto &origin =
+        entry.calls.empty() ? entry.location : entry.calls.back();
+    auto subject = identityPrefix(origin.file, origin.line, origin.column,
+                                  callee, SafetyProperty::Call);
+    appendSafetyJsonString(subject, entry.reason);
+    bound(subject);
+    auto reason = unsafe ? "unsafe boundary: " + entry.reason : entry.reason;
+    bound(reason);
+    auto escaped = safetyJsonString(subject);
+    result->text.push_back(
+        {.subject = std::move(subject),
+         .escapedSubject = std::move(escaped),
+         .reason = std::move(reason),
+         .outcome = unsafe ? SafetyOutcome::Trusted : entry.outcome});
+  }
+  result->bytes =
+      sizeof(PreparedSafetyOrigins) + 128 +
+      (result->text.capacity() * sizeof(PreparedSafetyOrigins::Text));
+  for (const auto &entry : result->text)
+    result->bytes += entry.subject.capacity() +
+                     entry.escapedSubject.capacity() + entry.reason.capacity() +
+                     3;
+  return result;
+}
+
+void SafetyLedger::applyCallOriginText(
+    const PreparedSafetyOrigins &prepared,
+    std::span<const SafetyObligation> origins, const SourceLocation &location,
+    std::string_view function) {
+  // The caller retained the source projection, even for self-insertion. Text
+  // was prepared in precisely its order; no path is owned by the cache.
+  exhausted |= prepared.limited;
+  const auto prefix =
+      identityPrefix(location.file, location.line, location.column, function,
+                     SafetyProperty::Call);
+  for (std::size_t i = 0; i < origins.size(); ++i) {
+    const auto &text = prepared.text[i];
+    auto key = prefix + text.escapedSubject;
+    const auto found = entries().find(key);
+    if (rejects(found, text.outcome, text.reason))
+      continue;
+    auto calls = origins[i].calls;
+    calls.normalize();
+    if (found != entries().end() && found->second.outcome == text.outcome &&
+        found->second.reason == text.reason &&
+        !preferSafetyCalls(calls, found->second.calls))
+      continue;
+    addPrepared(std::move(key),
+                {.property = SafetyProperty::Call,
+                 .outcome = text.outcome,
+                 .location = location,
+                 .function = std::string(function),
+                 .subject = text.subject,
+                 .reason = text.reason,
+                 .calls = std::move(calls)},
+                found);
+  }
+}
+
 void SafetyLedger::addCalls(const SafetyLedger &source, bool trusted,
                             const SourceLocation &location,
                             std::string_view function, std::string_view callee,
@@ -344,10 +415,25 @@ void SafetyLedger::addCalls(const SafetyLedger &source, bool trusted,
                                .unsafe = unsafe};
   auto prepared = SafetyEntryPool::findCalls(key, owner);
   if (!prepared) {
-    // RFC 0025: a crowded destination will reject most new keys. Preserve
-    // insertion order without allocating an entire temporary call ledger.
+    // RFC 0027: a crowded destination reuses callee text across callers,
+    // preserving ordered insertion without constructing a temporary ledger.
     if (origins.size() > MaxSafetyObligations - entries().size()) {
-      addCalls(origins, location, function, callee, unsafe);
+      key.location = {};
+      // The input view can borrow a row that the first insertion replaces.
+      // Retain the lookup key's existing owned copy for the whole application.
+      const auto caller = std::exchange(key.caller, {});
+      key.textOnly = true;
+      auto text = SafetyEntryPool::findCalls(key, owner);
+      if (!text) {
+        text = prepareCallOriginText(origins, callee, unsafe);
+        SafetyEntryPool::saveCalls(std::move(key), owner, text);
+      }
+      applyCallOriginText(*text, origins,
+                          {.file = location.file,
+                           .line = location.line,
+                           .column = location.column,
+                           .opaque = 0},
+                          caller);
       return;
     }
     prepared =
@@ -722,6 +808,8 @@ void SafetyState::forget(PlaceId place) {
   if (unions.members.contains(place) || unions.written.contains(place))
     unions.invalidate(place);
   containers.erase(place);
+  footprints.forget(place);
+  unfoldedFootprints.erase(place);
   objectTypes.erase(place);
   writtenStorage.erase(place);
   termination.erase(place);
@@ -826,6 +914,12 @@ bool SafetyState::join(const SafetyState &other, const PlaceGuard &left,
         unions.join(other.unions, paths.empty() ? std::vector{left} : paths,
                     other.paths.empty() ? std::vector{right} : other.paths);
   changed |= containers.join(other.containers);
+  changed |= footprints.join(other.footprints);
+  const auto unfoldedBefore = unfoldedFootprints.size();
+  std::erase_if(unfoldedFootprints, [&](PlaceId holder) {
+    return !other.unfoldedFootprints.contains(holder);
+  });
+  changed |= unfoldedBefore != unfoldedFootprints.size();
   changed |= buffers.join(other.buffers);
   for (auto &[place, list] : argumentLists) {
     const auto found = other.argumentLists.find(place);

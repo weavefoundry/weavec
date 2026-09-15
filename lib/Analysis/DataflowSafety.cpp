@@ -585,6 +585,7 @@ FunctionDataflow::CheckedPointer FunctionDataflow::captureCheckedPointer(
   result.deferred |=
       (origin.call != nullptr) && checkedDeferredCalls.contains(origin.call);
   result.known |= result.container.has_value();
+  captureFootprint(dest, origin, result, state);
   return result;
 }
 
@@ -615,6 +616,7 @@ void FunctionDataflow::installCheckedPointer(core::PlaceId dest,
       state.safety->containers.separate(dest, other);
   if (value.fresh)
     state.safety->containers.markFresh(dest);
+  installFootprint(dest, value, state);
   snapshotContainerOutput(dest, state);
   checkedCallAssignedPointers.insert(dest);
   state.safety->replacedPointers.insert(dest);
@@ -817,6 +819,7 @@ void FunctionDataflow::checkedOutputs(const core::AnalysisState &incoming,
     core::CheckedContract outputs;
     checkedUnionOutputs(outputs, value, outcome, state);
     containerOutputs(outputs, state, returned, outcome);
+    footprintOutputs(outputs, state, returned, outcome);
     if (outcome && returnedIdentity && !state.safety->buffers.pending.empty()) {
       auto selected = state;
       (void)selected.learn(*returnedIdentity, core::ValueFact::of(*outcome));
@@ -1108,6 +1111,7 @@ void FunctionDataflow::checkedFinish(const core::AnalysisState *exitState) {
     runtimeListReturns(*function.getBody(), *exitState);
     checkedOutputs(*exitState);
   }
+  verifyRecursiveCleanup();
   for (const Stmt *stmt : checkedUnsupported) {
     // RFC 0025: evaluated exclusions belong to their reachable proof case.
     // Unmapped exclusions remain unconditional; absence is not reachability.
@@ -1157,6 +1161,7 @@ void FunctionDataflow::checkedFinish(const core::AnalysisState *exitState) {
                .end = {},
                .family = {}});
   }
+  inferred.checked.discardUnrepresentedContainerOutputs();
   const auto annotations = getAnnotations(function);
   if (annotations.unsafe)
     safetyObligation(core::SafetyProperty::Semantics,

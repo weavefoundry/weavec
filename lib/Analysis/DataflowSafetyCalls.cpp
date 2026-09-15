@@ -30,6 +30,7 @@ void FunctionDataflow::checkedCall(const CallExpr &call,
   containerReadOnlyCalls.erase(&call);
   containerReleases.erase(&call);
   containerPayloadReleases.erase(&call);
+  footprintPosts.erase(&call);
   checkedCallAssignedPointers.clear();
   checkedWrites.erase(&call);
   checkedPosts.erase(&call);
@@ -543,6 +544,7 @@ void FunctionDataflow::checkedCall(const CallExpr &call,
   struct CheckedRequirementState {
     core::MoveTracker moves;
     core::ResourceTracker resources;
+    core::FootprintRelations footprints;
     core::NullTracker nulls;
     core::ScalarTracker scalars;
     core::PlaceGuard numericConditions;
@@ -552,7 +554,8 @@ void FunctionDataflow::checkedCall(const CallExpr &call,
     std::map<core::PlaceId, std::string> objectTypes;
 
     explicit CheckedRequirementState(const core::AnalysisState &state)
-        : moves(state.moves), resources(state.resources), nulls(state.nulls),
+        : moves(state.moves), resources(state.resources),
+          footprints(state.safety->footprints), nulls(state.nulls),
           scalars(state.scalars), numericConditions(state.numericConditions),
           pointerFacts(state.pointerFacts), pointers(state.safety->pointers),
           accessible(state.safety->accessible),
@@ -561,6 +564,7 @@ void FunctionDataflow::checkedCall(const CallExpr &call,
     void restore(core::AnalysisState &state) {
       state.moves = std::move(moves);
       state.resources = std::move(resources);
+      state.safety->footprints = std::move(footprints);
       state.nulls = std::move(nulls);
       state.scalars = std::move(scalars);
       state.numericConditions = std::move(numericConditions);

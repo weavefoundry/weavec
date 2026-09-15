@@ -288,11 +288,7 @@ void FunctionDataflow::materializeArrayRelease(core::PlaceId storage,
     }
     // The loop's own selected body place may already have a record from a
     // different path; doConsume preserves the earliest release evidence.
-    PlaceRef ref{.place = cell,
-                 .derefs = {},
-                 .derefExprs = {},
-                 .derefElements = {},
-                 .element = {}};
+    PlaceRef ref{.place = cell, .derefs = {}, .element = {}};
     std::optional<core::AnalysisState> before;
     if (range.cleared && range.definite &&
         membership == core::ArrayRelation::Unknown)

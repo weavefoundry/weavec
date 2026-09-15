@@ -183,6 +183,12 @@ public:
 
   /// `place` was overwritten: no guard may speak about it any more.
   void dropGuardsOn(PlaceId place);
+  /// RFC 0027: invalidate several overwritten values in one record scan.
+  template <typename Matches>
+  void dropGuardsIf(Matches matches) {
+    for (auto &[holder, record] : moved)
+      record.guard.dropIf(matches);
+  }
 
   /// The record for `place` is now guarded by `guard` (used after a pending
   /// outcome narrowed the classes a guarded consume was attached to).

@@ -1,0 +1,508 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "name": "heap-000",
+      "source": "heap-000.c",
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "heap-001",
+      "source": "heap-001.c",
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "heap-002",
+      "source": "heap-002.c",
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "heap-003",
+      "source": "heap-003.c",
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "heap-004",
+      "source": "heap-004.c",
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "heap-005",
+      "source": "heap-005.c",
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "heap-006",
+      "source": "heap-006.c",
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "heap-007",
+      "source": "heap-007.c",
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "heap-008",
+      "source": "heap-008.c",
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "heap-009",
+      "source": "heap-009.c",
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "heap-010",
+      "source": "heap-010.c",
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "heap-011",
+      "source": "heap-011.c",
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "heap-012",
+      "source": "heap-012.c",
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ]
+    },
+    {
+      "name": "heap-013",
+      "source": "heap-013.c",
+      "function": "main",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "ownership|container|footprint|freed|release|live|leak"
+    },
+    {
+      "name": "heap-014",
+      "source": "heap-014.c",
+      "function": "main",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "ownership|container|footprint|freed|release|live|leak"
+    },
+    {
+      "name": "heap-015",
+      "source": "heap-015.c",
+      "function": "main",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "ownership|container|footprint|freed|release|live|leak"
+    },
+    {
+      "name": "heap-016",
+      "source": "heap-016.c",
+      "function": "main",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "ownership|container|footprint|freed|release|live|leak"
+    },
+    {
+      "name": "heap-017",
+      "source": "heap-017.c",
+      "function": "main",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "ownership|container|footprint|freed|release|live|leak"
+    },
+    {
+      "name": "heap-018",
+      "source": "heap-018.c",
+      "function": "main",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "ownership|container|footprint|freed|release|live|leak"
+    },
+    {
+      "name": "heap-019",
+      "source": "heap-019.c",
+      "function": "main",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "ownership|container|footprint|freed|release|live|leak"
+    },
+    {
+      "name": "heap-020",
+      "source": "heap-020.c",
+      "function": "main",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "ownership|container|footprint|freed|release|live|leak"
+    },
+    {
+      "name": "heap-021",
+      "source": "heap-021.c",
+      "function": "main",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "ownership|container|footprint|freed|release|live|leak"
+    },
+    {
+      "name": "heap-022",
+      "source": "heap-022.c",
+      "function": "main",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "ownership|container|footprint|freed|release|live|leak"
+    },
+    {
+      "name": "heap-023",
+      "source": "heap-023.c",
+      "function": "main",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "ownership|container|footprint|freed|release|live|leak"
+    },
+    {
+      "name": "heap-024",
+      "source": "heap-024.c",
+      "function": "main",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "ownership|container|footprint|freed|release|live|leak"
+    },
+    {
+      "name": "heap-025",
+      "source": "heap-025.c",
+      "function": "main",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "ownership|container|footprint|freed|release|live|leak"
+    },
+    {
+      "name": "heap-026",
+      "source": "heap-026.c",
+      "function": "main",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "ownership|container|footprint|freed|release|live|leak"
+    },
+    {
+      "name": "heap-027",
+      "source": "heap-027.c",
+      "function": "main",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "ownership|container|footprint|freed|release|live|leak"
+    },
+    {
+      "name": "heap-028",
+      "source": "heap-028.c",
+      "function": "main",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "ownership|container|footprint|freed|release|live|leak"
+    },
+    {
+      "name": "heap-029",
+      "source": "heap-029.c",
+      "function": "main",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "ownership|container|footprint|freed|release|live|leak"
+    },
+    {
+      "name": "heap-030",
+      "source": "heap-030.c",
+      "function": "main",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "ownership|container|footprint|freed|release|live|leak"
+    },
+    {
+      "name": "heap-031",
+      "source": "heap-031.c",
+      "function": "main",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "ownership|container|footprint|freed|release|live|leak"
+    },
+    {
+      "name": "heap-032",
+      "source": "heap-032.c",
+      "function": "main",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "ownership|container|footprint|freed|release|live|leak"
+    },
+    {
+      "name": "heap-033",
+      "source": "heap-033.c",
+      "function": "main",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "ownership|container|footprint|freed|release|live|leak"
+    },
+    {
+      "name": "heap-034",
+      "source": "heap-034.c",
+      "function": "main",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "ownership|container|footprint|freed|release|live|leak"
+    },
+    {
+      "name": "heap-035",
+      "source": "heap-035.c",
+      "function": "main",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "ownership|container|footprint|freed|release|live|leak"
+    },
+    {
+      "name": "heap-036",
+      "source": "heap-036.c",
+      "function": "main",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "ownership|container|footprint|freed|release|live|leak"
+    },
+    {
+      "name": "heap-037",
+      "source": "heap-037.c",
+      "function": "main",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "ownership|container|footprint|freed|release|live|leak"
+    },
+    {
+      "name": "heap-038",
+      "source": "heap-038.c",
+      "function": "main",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "ownership|container|footprint|freed|release|live|leak"
+    },
+    {
+      "name": "heap-039",
+      "source": "heap-039.c",
+      "function": "main",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "ownership|container|footprint|freed|release|live|leak"
+    },
+    {
+      "name": "heap-040",
+      "source": "heap-040.c",
+      "function": "main",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "ownership|container|footprint|freed|release|live|leak"
+    },
+    {
+      "name": "heap-041",
+      "source": "heap-041.c",
+      "function": "main",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "ownership|container|footprint|freed|release|live|leak"
+    },
+    {
+      "name": "heap-042",
+      "source": "heap-042.c",
+      "function": "main",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation assumptions"
+      ],
+      "reason": "ownership|container|footprint|freed|release|live|leak"
+    }
+  ]
+}

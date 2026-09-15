@@ -19,6 +19,58 @@ constexpr PlaceId Q{1};
 constexpr PlaceId R{2};
 constexpr PlaceId S{3};
 
+// RFC 0027: the outer row index must not change observable ordering, even
+// for sparse identifiers or a copy modified while another holds a view.
+TEST(AliasRelation, SparseRowsPreserveEnumerationAndPredicateOrder) {
+  const PlaceId far{0xfffffffeU};
+  const PlaceId middle{65537};
+  AliasRelation source;
+  source.unite(far, Q);
+  source.unite(middle, P);
+  const auto &borrowed = source.viewEdgesFrom(Q);
+  const auto snapshot = source.edgesFrom(Q);
+  auto copy = source;
+  std::vector<PlaceId> visited;
+  copy.separateIf([&](PlaceId place) {
+    visited.push_back(place);
+    return place == far;
+  });
+  EXPECT_EQ(visited, (Members{P, Q, middle, far}));
+  using Snapshot = std::vector<std::pair<PlaceId, AliasEdge>>;
+  EXPECT_EQ(Snapshot(borrowed.begin(), borrowed.end()), snapshot);
+  EXPECT_TRUE(source.mayAlias(Q, far));
+  EXPECT_FALSE(copy.mayAlias(Q, far));
+  using Pair = std::pair<PlaceId, PlaceId>;
+  EXPECT_EQ(source.pairs(), (std::vector<Pair>{{P, middle}, {Q, far}}));
+  AliasRelation reversed;
+  reversed.unite(P, middle);
+  reversed.unite(Q, far);
+  EXPECT_EQ(source, reversed);
+}
+
+TEST(AliasRelation, AdoptedAndMovedCopiesKeepIndependentValues) {
+  AliasRelation source;
+  source.unite(P, Q);
+  AliasRelation adopted;
+  EXPECT_TRUE(adopted.join(source));
+  const auto &borrowed = adopted.viewEdgesFrom(P);
+  source.separate(P);
+  EXPECT_EQ(source, AliasRelation{});
+  EXPECT_TRUE(borrowed.contains(Q));
+  auto moved = std::move(adopted);
+  // A moved-from relation remains a valid value that can acquire new edges.
+  // NOLINTNEXTLINE(bugprone-use-after-move,clang-analyzer-cplusplus.Move)
+  adopted.unite(R, S);
+  EXPECT_TRUE(moved.mayAlias(P, Q));
+  EXPECT_FALSE(moved.mayAlias(R, S));
+  const auto survivor = moved;
+  EXPECT_TRUE(moved.intersect({}));
+  EXPECT_EQ(moved.size(), 0U);
+  EXPECT_EQ(moved, AliasRelation{});
+  EXPECT_TRUE(survivor.mayAlias(P, Q));
+  EXPECT_FALSE(moved.intersect(survivor));
+}
+
 // RFC 0020: independent edge maps pin copy isolation and the algebra of
 // ordered row joins. Both edge directions carry their own element witness.
 using EdgeModel = std::map<std::pair<PlaceId, PlaceId>, AliasEdge>;
