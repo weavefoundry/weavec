@@ -73,11 +73,11 @@ writable interval. A caller providing four initialized bytes can satisfy `touch(
 it cannot establish `touch(p,8)` from those facts. The latter is an unresolved
 precondition, without claiming that execution necessarily reaches byte eight.
 
-Exported requirements can be stronger when a helper's condition depends on a
-private global. For example, a private callback flag guarding `free(p)` may
-produce an unconditional portable release requirement for `p`. Callers must
-still establish that requirement; this does not turn a private condition into
-an assumed fact or remove a condition from an output guarantee.
+Supported private globals retain their identities and conditions in exported
+requirements (RFC 0028). A caller can establish such a condition through a
+verified initializer or setter. Unsupported private storage can still require
+stronger entry assumptions or prevent complete export; a missing premise never
+becomes an assumed fact or disappears from an output guarantee.
 
 Write permission is a separate requirement: string literals and `const` objects
 remain read-only even through a cast. Mutable local objects and modeled
@@ -89,6 +89,14 @@ before reads; `calloc` supplies zeroed bytes. Writing one cell does not establis
 another cell. At branch joins, initialization is retained only where every
 incoming path establishes it. Supported complete copies establish the copied
 range. Complete helper contracts can export initialization postconditions.
+
+A verified cleanup wrapper can export `allocation-consumed` for a pointer
+parameter. This guarantees cleanup of that entry allocation, including a null
+entry that has nothing to release. It does not cover child allocations or
+buffer payloads; complete container cleanup needs `container-consumed` and its
+ownership requirements. A conditional or omitted free cannot establish an
+unconditional cleanup output. Current forwarding supports unconditional
+outputs for direct pointer parameters and the `free` allocation family.
 
 For example, a complete fill establishes the bytes that a later read needs:
 
@@ -397,7 +405,7 @@ RFC 0027 supplies that proof for supported transformations, described below.
 General graphs, cyclic ownership, volatile/atomic links and concurrent access
 remain outside the model.
 
-Summary format 22 and sidecar format 23 require rebuilding older compiler
+Summary format 23 and sidecar format 24 require rebuilding older compiler
 objects. Persistent caches validate executable, source, preprocessing and
 callee dependencies before reusing a container contract. See the
 [validation report](validation-rfc0023.md) for the frozen acceptance population,
@@ -452,10 +460,11 @@ predicates remain unsupported. The domain bounds metadata to 64 footprint
 variables and relations; exceeding those bounds loses proof.
 
 Source analysis, compiler objects and validated checkpoints transport the same
-contracts. Cross-unit callers still need compatible record-layout evidence for
-recursive contracts; a forward declaration alone does not supply it. Private
-mutable allocation hooks across separate translation units remain unsupported.
-Summary format 22, sidecar format 23 and checked encoding 9 reject
+contracts. Cross-unit callers need compatible object evidence for recursive
+contracts; a forward declaration alone does not supply it. RFC 0028 transports
+that evidence from verified constructors and preserves supported private hook
+state across separate translation units, as described below.
+Summary format 23, sidecar format 24 and checked encoding 9 reject
 older metadata; rebuild old objects. Expanded JSON version 2 and compact version
 3 retain their existing meanings. See [validation](validation-rfc0027.md) for
 fixed populations, counterexamples, test results and cost observations.
@@ -496,7 +505,7 @@ transfers remain incomplete.
 
 The portable `buffer`, `buffer-preserved` and `buffer-appended` records travel
 through the normal source, object and cache workflows. They add no annotation
-spelling or pointer ABI. Rebuild older object sidecars for format 23.
+spelling or pointer ABI. Rebuild older object sidecars for format 24.
 Shape discovery is bounded to 16 descriptors and 64 instances; descriptors are
 limited to 16 KiB. Exhaustion is reported as incomplete. The initial discovery
 rule requires one non-function data pointer and two unsigned, non-Boolean count
@@ -576,6 +585,71 @@ establish the exact written prefix. If `0 <= n && n < sizeof buffer`, `buffer[n]
 is the written terminator. If `n >= sizeof buffer`, truncation initializes the
 capacity and its final NUL. A negative or overwritten result establishes neither.
 
-Runtime records use checked encoding 9, summary format 22 and sidecar format 23.
+Runtime records use checked encoding 9, summary format 23 and sidecar format 24.
 Rebuild objects carrying older sidecars. The cache validates the executable and
 source dependencies before reusing these records.
+
+## Opaque objects and private library state
+
+[RFC 0028](rfcs/0028-opaque-objects-and-library-state.md) preserves supported
+inferred contracts when a client's public header contains only `struct node;`
+or `struct buffer;`. Analyze the implementation and client together, or compile
+both with `weavec-cc` and select the client at link time:
+
+```sh
+weavec --whole-program --checked-function=main client.c library.c -- -std=c11
+weavec-cc -c library.c -o library.o
+weavec-cc -c client.c -o client.o
+weavec-cc -fweavec-checked-function=main client.o library.o -o client
+```
+
+A verified constructor supplies the object's actual allocation and initialized
+shape. That evidence follows pointer copies, supported returned borrows and
+ownership transfers. Forwarding helpers can export sufficient input predicates;
+a closed client must discharge them. A forward declaration, cast or matching
+layout alone supplies no ownership or memory permission. Double destruction,
+lost detached ownership and use of a saved borrow after destruction remain
+failures.
+
+Returned buffers carry their verified initialized-prefix relation and captured
+capacity bounds. Successful append can establish initialized elements; a failed
+append or an increased capacity does not initialize additional bytes. Accessors
+retain the backing allocation's identity, including when called directly in an
+indexing expression. Replacing or releasing storage invalidates saved borrows.
+
+Private setters and initializers transport actual scalar and callback state.
+Separate modules' same-spelled static variables stay distinct. An established
+callback target uses its analyzed implementation or existing modeled libc
+contract; unknown or nullable targets cannot acquire a contract from their
+prototype. Writes invalidate dependent state. Callers cannot assume an
+initializer still describes storage after reachable mutations.
+
+The pinned cJSON public-header clients establish default or concrete custom
+hooks and verify supported lifecycle operations with its unchanged implementation
+in a separate source unit. For compiler-object builds, request an unselected
+contract report while compiling the library, then select the client at link:
+
+```sh
+weavec-cc -fweavec-checked-report=library-contracts.json -c cJSON.c -o cJSON.o
+weavec-cc -c client.c -o client.o
+weavec-cc -fweavec-checked-function=main client.o cJSON.o -o client
+```
+
+An unselected compile report collects contracts without claiming that the whole
+library checks. The selected link must still discharge every client obligation.
+
+Portable descriptions support ordinary scalar types, pointers, C function
+types, structs and fixed arrays, including cyclic pointer layouts. They are
+bounded to 128 type nodes, 64 fields per record and 64 KiB per description.
+Unions, bitfields, atomic/volatile access, flexible arrays, variable-length
+storage and exhausted limits can prevent complete inference. These descriptions
+preserve layout; they do not imply that every operation on a supported type is
+provable. General shared graphs and asynchronous callback protocols remain
+outside this milestone.
+
+The metadata remains internal to analysis. It neither completes the client's
+forward declarations nor inserts private names into C lookup. Conflicting
+layouts lose evidence. Rebuild older artifacts: summary format 23, sidecar
+format 24 and checkpoint format 3 intentionally reject previous artifacts.
+Source/header, preprocessing, target and object-content validation still apply;
+this does not support source-free checked linking.

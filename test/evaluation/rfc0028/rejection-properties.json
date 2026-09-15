@@ -1,0 +1,13 @@
+{
+  "double-destroy-bad": "freed twice",
+  "saved-alias-bad": "after it was freed",
+  "borrow-dead-bad": "container chain precondition",
+  "drop-bad": "loses part of the owned allocation footprint",
+  "lost-detach-bad": "loses part of the owned allocation footprint",
+  "buffer-uninitialized-bad": "read interval must be initialized",
+  "buffer-borrow-dead-bad": "after it was freed|live non-null storage",
+  "hooks-cleared-bad": "indirect call has an unresolved target",
+  "hooks-release-cleared-bad": "indirect call has an unresolved target",
+  "state-disabled-bad": "loses part of the owned allocation footprint",
+  "incompatible-bad": "incompatible or unknown object view|not a heap object"
+}

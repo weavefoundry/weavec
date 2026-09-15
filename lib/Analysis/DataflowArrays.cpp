@@ -32,6 +32,30 @@ static bool hasPointerCells(QualType type, unsigned depth = 0) {
   return false;
 }
 
+std::vector<core::PlaceId>
+FunctionDataflow::scalarArrayOverlaps(core::PlaceId place,
+                                      const core::AnalysisState &state) const {
+  std::vector<core::PlaceId> result;
+  if (!places.isElement(place))
+    return result;
+  const auto storage = *places.parent(place);
+  const auto type = arrayTypes.find(storage);
+  if (type == arrayTypes.end() || !type->second->isIntegerType())
+    return result;
+  const auto index = core::ArrayIndex::parse(places.fieldName(place));
+  for (const auto other : places.descendants(storage)) {
+    if (other == place || places.parent(other) != storage ||
+        !places.isElement(other))
+      continue;
+    const auto selected = core::ArrayIndex::parse(places.fieldName(other));
+    if (!index || !selected ||
+        !core::arrayIndicesDisjoint(*index, *selected, state.scalars,
+                                    state.relations))
+      result.push_back(other);
+  }
+  return result;
+}
+
 std::optional<std::string>
 FunctionDataflow::summaryArrayIndex(std::string_view selector) {
   auto index = core::ArrayIndex::parse(selector);
@@ -76,8 +100,16 @@ FunctionDataflow::boundedArrayCell(core::PlaceId storage,
 PlaceRef FunctionDataflow::selectArrayElement(PlaceRef storage,
                                               std::optional<core::Affine> index,
                                               QualType type, const Expr &at) {
-  if (!hasPointerCells(type))
-    return storage;
+  if (!hasPointerCells(type)) {
+    // RFC 0028: exact cells of private integer arrays use the same bounded
+    // selectors as pointer cells. General numeric array inference is separate.
+    const auto *root = builder.varForPlace(places.root(storage.place));
+    if (type.isNull() || !type->isIntegerType() || !root ||
+        !root->hasGlobalStorage() || root->isExternallyVisible() ||
+        places.innermostDeref(storage.place) ||
+        !tracksScalar(places.root(storage.place)))
+      return storage;
+  }
   // A helper called with &a[k] starts selection at k. The address already
   // denotes a cell, whereas a decayed array denotes its storage summary.
   if (places.isElement(storage.place)) {

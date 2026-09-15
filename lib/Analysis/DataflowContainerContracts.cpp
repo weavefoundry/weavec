@@ -317,12 +317,16 @@ void FunctionDataflow::applyContainerPosts(
     state.safety->pointers.insert(*holder);
     snapshotContainerOutput(*holder, state);
     if (post.fact.shape.terminal || !post.fact.shape.emptyLinks.empty() ||
-        !post.fact.shape.emptyPayloads.empty())
+        !post.fact.shape.emptyPayloads.empty()) {
+      QualType type;
       if (const auto *decl =
               dyn_cast_or_null<ValueDecl>(builder.declFor(*holder));
           decl && decl->getType()->isPointerType())
-        if (const auto *record =
-                decl->getType()->getPointeeType()->getAsRecordDecl())
+        type = decl->getType()->getPointeeType();
+      if (type.isNull() || type->isIncompleteType())
+        type = summaries.interfaceType(post.fact.shape.object.identity);
+      if (!type.isNull())
+        if (const auto *record = type->getAsRecordDecl())
           for (const auto *field : record->fields())
             if ((post.fact.shape.terminal &&
                  post.fact.shape.recursiveLink(field->getNameAsString())) ||
@@ -338,6 +342,7 @@ void FunctionDataflow::applyContainerPosts(
               state.safety->initialized.insert(cell);
               state.safety->pointers.insert(cell);
             }
+    }
   }
   if (result && containerReadOnlyCalls.contains(&call))
     if (const auto tails = containerTailPosts.find(&call);

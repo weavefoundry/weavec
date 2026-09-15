@@ -181,6 +181,51 @@ void FunctionDataflow::discoverContainers() {
     if (!stmt)
       continue;
     if (const auto *call = dyn_cast<CallExpr>(stmt))
+      if (const auto *callee = call->getDirectCallee())
+        if (const auto summary = summaries.lookup(*callee)) {
+          const auto container = [](const auto &entry) {
+            return entry.kind == core::CheckedRequirementKind::Container;
+          };
+          hasContainerCalls |=
+              std::ranges::any_of(summary->summary->checked.requirements,
+                                  container) ||
+              std::ranges::any_of(summary->summary->checked.establishes,
+                                  container);
+          // RFC 0028: forwarding an opaque parameter may infer a sufficient
+          // entry predicate. Nomination supplies no fact about a local value:
+          // every closed caller still has to establish this input contract.
+          for (const auto &requirement :
+               summary->summary->checked.requirements) {
+            const auto &path = requirement.path;
+            if (!container(requirement) || !path.isParam() || !path.isRoot() ||
+                path.index >= call->getNumArgs())
+              continue;
+            const auto *ref = dyn_cast<DeclRefExpr>(
+                call->getArg(path.index)->IgnoreParenImpCasts());
+            const auto *parameter =
+                ref ? dyn_cast<ParmVarDecl>(ref->getDecl()) : nullptr;
+            if (!parameter || parameter->getDeclContext() != &function ||
+                !parameter->getType()->isPointerType())
+              continue;
+            const auto pointee = parameter->getType()->getPointeeType();
+            if (!pointee->isRecordType() || !pointee->isIncompleteType())
+              continue;
+            const auto shape = core::ContainerShape::decode(requirement.family);
+            if (!shape ||
+                summaries.interfaceType(shape->object.identity).isNull())
+              continue;
+            const auto place = builder.placeForVar(*parameter);
+            const auto [found, inserted] =
+                opaqueContainerParameters.emplace(place, *shape);
+            if (!inserted && found->second && !found->second->entails(*shape)) {
+              if (shape->entails(*found->second))
+                found->second = *shape;
+              else
+                found->second.reset();
+            }
+          }
+        }
+    if (const auto *call = dyn_cast<CallExpr>(stmt))
       if (const auto *record = containerRecord(call->getType()))
         localRecords.insert(record);
     if (const auto *assignment = dyn_cast<BinaryOperator>(stmt);
@@ -412,7 +457,7 @@ void FunctionDataflow::refineContainers(core::AnalysisState &state) {
 }
 
 void FunctionDataflow::initializeContainers(core::AnalysisState &state) {
-  if (!containerShapes.empty()) {
+  if (!containerShapes.empty() || hasContainerCalls) {
     if (!footprintReleased)
       footprintReleased = places.create("released allocation footprint");
     state.safety->footprints.assign(*footprintReleased, {});
@@ -423,10 +468,25 @@ void FunctionDataflow::initializeContainers(core::AnalysisState &state) {
   for (const auto *param : function.parameters()) {
     if (!param->getType()->isPointerType() || getAnnotations(*param).raw)
       continue;
+    const auto place = builder.placeForVar(*param);
+    const auto *record = containerRecord(param->getType());
     const auto *shape = containerShape(param->getType());
     if (!shape)
+      if (const auto opaque = opaqueContainerParameters.find(place);
+          opaque != opaqueContainerParameters.end() && opaque->second) {
+        shape = &*opaque->second;
+        const auto type = summaries.interfaceType(shape->object.identity);
+        record = type.isNull() ? nullptr : type->getAsRecordDecl();
+        if (!record)
+          continue;
+        for (const auto *field : record->fields())
+          (void)builder.fieldPlace(places.deref(place), *field);
+        inferred.objectViews
+            [core::SummaryPath::param(param->getFunctionScopeIndex()).deref()] =
+            shape->object.identity;
+      }
+    if (!shape)
       continue;
-    const auto place = builder.placeForVar(*param);
     initializeFootprint(
         place, core::SummaryPath::param(param->getFunctionScopeIndex()), *shape,
         state);
@@ -434,7 +494,7 @@ void FunctionDataflow::initializeContainers(core::AnalysisState &state) {
         place, core::SummaryPath::param(param->getFunctionScopeIndex()),
         *shape);
     if (!memoryContext.empty()) {
-      for (const auto *field : containerRecord(param->getType())->fields()) {
+      for (const auto *field : record->fields()) {
         const auto cell = builder.fieldPlace(places.deref(place), *field);
         if (std::ranges::any_of(shape->ownership, [&](const auto &entry) {
               return entry.second.field.name == field->getName();

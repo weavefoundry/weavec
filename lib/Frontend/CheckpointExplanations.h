@@ -16,7 +16,7 @@
 
 namespace weavec::frontend {
 
-/// Private checkpoint format 2. The caller owns all source rows while writing.
+/// Private checkpoint format 3. The caller owns all source rows while writing.
 class CheckpointExplanations {
 public:
   llvm::json::Array extract(analysis::UnitExports &exports);

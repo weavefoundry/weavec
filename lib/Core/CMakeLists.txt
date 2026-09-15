@@ -16,6 +16,7 @@ weavec_add_library(
           Format.cpp
           Diagnostic.cpp
           Integer.cpp
+          Interface.cpp
           CheckedInteger.cpp
           Lifetime.cpp
           Moves.cpp
@@ -39,4 +40,5 @@ weavec_add_library(
           Traversal.cpp
           Union.cpp
           Summary.cpp
+          SummarySteps.cpp
           SummaryIO.cpp)

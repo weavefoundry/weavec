@@ -133,7 +133,7 @@ ProgramAnalysis::runUnit(ProgramUnit &unit, const FrontendOptions &overrides) {
 static analysis::UnitExports skeleton(const analysis::UnitExports &exports) {
   analysis::UnitExports result = exports;
   for (auto &[name, function] : result.functions) {
-    function.summary = core::FunctionSummary{};
+    function.summary = analysis::ExportedSummary{};
     function.memorySpecializations.clear();
   }
   result.unknownCallees.clear();
@@ -283,11 +283,16 @@ void ProgramAnalysis::widen(analysis::UnitExports &exports,
   for (auto &[name, function] : exports.functions) {
     const auto before = previous.functions.find(name);
     if (before != previous.functions.end()) {
-      function.summary.join(before->second.summary);
+      auto joined = function.summary.get();
+      joined.join(before->second.summary.get());
+      function.summary.assign(std::move(joined));
       for (const auto &[input, summary] : before->second.memorySpecializations)
         if (function.memorySpecializations.contains(input) ||
-            function.memorySpecializations.size() < core::MaxMemoryContexts)
-          function.memorySpecializations[input].join(summary);
+            function.memorySpecializations.size() < core::MaxMemoryContexts) {
+          auto specialized = function.memorySpecializations[input].get();
+          specialized.join(summary.get());
+          function.memorySpecializations[input].assign(std::move(specialized));
+        }
     }
   }
   for (const auto &[symbol, requests] : previous.memoryRequests)

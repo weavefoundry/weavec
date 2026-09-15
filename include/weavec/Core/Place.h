@@ -28,10 +28,10 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
-#include <map>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 namespace weavec::core {
@@ -172,20 +172,57 @@ private:
     std::vector<PlaceId> children;
   };
 
+  struct ChildKeyView {
+    std::uint32_t parent;
+    PathStep step;
+    std::string_view field;
+
+    friend bool operator==(ChildKeyView, ChildKeyView) = default;
+  };
+
   struct ChildKey {
     std::uint32_t parent;
     PathStep step;
     std::string field;
 
-    friend std::strong_ordering operator<=>(const ChildKey &,
-                                            const ChildKey &) = default;
+    [[nodiscard]] ChildKeyView view() const noexcept {
+      return {.parent = parent, .step = step, .field = field};
+    }
+  };
+
+  struct ChildHash {
+    // Standard-library lookup requires this spelling.
+    // NOLINTNEXTLINE(readability-identifier-naming)
+    using is_transparent = void;
+    [[nodiscard]] std::size_t operator()(ChildKeyView key) const noexcept;
+    [[nodiscard]] std::size_t operator()(const ChildKey &key) const noexcept {
+      return (*this)(key.view());
+    }
+  };
+
+  struct ChildEqual {
+    // Standard-library lookup requires this spelling.
+    // NOLINTNEXTLINE(readability-identifier-naming)
+    using is_transparent = void;
+    [[nodiscard]] bool operator()(const ChildKey &a,
+                                  const ChildKey &b) const noexcept {
+      return a.view() == b.view();
+    }
+    [[nodiscard]] bool operator()(const ChildKey &a,
+                                  ChildKeyView b) const noexcept {
+      return a.view() == b;
+    }
+    [[nodiscard]] bool operator()(ChildKeyView a,
+                                  const ChildKey &b) const noexcept {
+      return a == b.view();
+    }
   };
 
   std::vector<Entry> entries;
-  std::map<ChildKey, PlaceId> children;
+  std::unordered_map<ChildKey, PlaceId, ChildHash, ChildEqual> children;
 
   [[nodiscard]] PlaceId intern(PlaceId parent, PathStep step,
-                               std::string field);
+                               std::string_view field);
 };
 
 } // namespace weavec::core

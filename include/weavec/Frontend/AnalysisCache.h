@@ -26,7 +26,7 @@ struct AnalysisCheckpoint {
   std::string importedIdentity;
 };
 
-/// Lossless explanation identity for imported facts (private format 2).
+/// Lossless explanation identity for imported facts (private format 3).
 std::string checkpointExportsIdentity(const analysis::UnitExports &exports);
 
 /// A component is published only after all its units have settled. No active

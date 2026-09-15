@@ -380,6 +380,9 @@ void FunctionDataflow::checkedCall(const CallExpr &call,
     obligation(
         core::SafetyProperty::Release, released && !required, required,
         "release requires a live allocation base of the matching family");
+    if (name == "free" && (released || required) && origin.place &&
+        origin.offset.isZero())
+      recordAllocationConsumed(origin.place->place, state);
     return;
   }
   if (builtin && (name == "memset" || name == "memcpy" || name == "memmove")) {

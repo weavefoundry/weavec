@@ -285,7 +285,7 @@ TEST(Traversal, CachedMissingPathsDoNotHideNewDeclarationsOrSelectors) {
             core::SummaryPath::param(0).indexed("second"));
 }
 
-TEST(Traversal, PrivateAntecedentsStrengthenOnlyPortableEntryRequirements) {
+TEST(Traversal, PrivateAntecedentsSurvivePortableEntryRequirements) {
   const std::vector<std::pair<std::string, std::string>> cases{
       {"static int hidden;", "hidden"},
       {"static void (*hidden)(void);", "hidden != 0"},
@@ -313,29 +313,31 @@ TEST(Traversal, PrivateAntecedentsStrengthenOnlyPortableEntryRequirements) {
       EXPECT_FALSE(requirement.when.trivial());
       for (const auto &[path, fact] : requirement.when.conditions) {
         (void)fact;
-        // RFC 0022 preserves private scalar callback cells by name. Other
-        // private conditions still strengthen only the entry requirement.
+        // RFC 0028 transports all supported private premises.
         if (path.isGlobal()) {
-          EXPECT_EQ(condition, "hidden != 0");
-          EXPECT_TRUE(
-              exported.globals.nameOf(path.index).starts_with("@weavec-hook:"));
+          EXPECT_TRUE(exported.globals.nameOf(path.index)
+                          .starts_with("@weavec-state:"));
         }
       }
       for (const auto &[pair, equal] : requirement.when.pointers) {
         (void)equal;
-        EXPECT_FALSE(pair.first.isGlobal());
-        EXPECT_FALSE(pair.second.isGlobal());
+        for (const auto &path : {pair.first, pair.second})
+          if (path.isGlobal())
+            EXPECT_TRUE(exported.globals.nameOf(path.index)
+                            .starts_with("@weavec-state:"));
       }
       for (const auto &predicate : requirement.when.integers)
         for (const auto *expression : {&predicate.lhs, &predicate.rhs})
           for (const auto &node : expression->all())
-            EXPECT_FALSE(node.key && node.key->isGlobal());
+            if (node.key && node.key->isGlobal())
+              EXPECT_TRUE(exported.globals.nameOf(node.key->index)
+                              .starts_with("@weavec-state:"));
     }
     EXPECT_EQ(unit.summary("f")->checked, local);
   }
 }
 
-TEST(Traversal, PrivateRequiredIntervalsStillInvalidatePortableCompleteness) {
+TEST(Traversal, PrivateRequiredIntervalsRemainExplicitPortablePremises) {
   AnalysisOptions options;
   options.checkedFunctions.insert("f");
   const auto unit = test::analyze(
@@ -345,8 +347,10 @@ TEST(Traversal, PrivateRequiredIntervalsStillInvalidatePortableCompleteness) {
   ASSERT_NE(unit.summary("f"), nullptr);
   ASSERT_TRUE(unit.summary("f")->checked.complete());
   const auto exported = unit.analyzer->exports();
-  EXPECT_FALSE(exported.checkedDefinitions.at("f").complete());
-  EXPECT_TRUE(exported.checkedDefinitions.at("f").limited);
+  EXPECT_TRUE(exported.checkedDefinitions.at("f").complete());
+  EXPECT_FALSE(exported.checkedDefinitions.at("f").limited);
+  EXPECT_FALSE(exported.checkedDefinitions.at("f").requirements.empty());
+  EXPECT_FALSE(exported.globalInterfaces.empty());
   EXPECT_FALSE(
       traversalCheck("void free(void *);static int hidden;"
                      "static void release(char *p){if(hidden)free(p);}"

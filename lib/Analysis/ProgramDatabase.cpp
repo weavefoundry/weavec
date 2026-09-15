@@ -20,6 +20,7 @@
 #include "llvm/ADT/StringExtras.h"
 
 #include <algorithm>
+#include <cassert>
 #include <limits>
 #include <optional>
 #include <string>
@@ -38,6 +39,8 @@ UnitExports ProgramDatabase::checkpointInputs(
     return kind.str() + ':' + llvm::toHex(name);
   };
   UnitExports result;
+  result.globalInterfaces = globalInterfaces;
+  result.objectInterfaces = objectInterfaces;
   result.globals = globalNames;
   result.countFields.insert(countFields.begin(), countFields.end());
   result.sizedFields = sizedFields;
@@ -51,22 +54,28 @@ UnitExports ProgramDatabase::checkpointInputs(
       continue;
     result.imports.insert(symbol);
     const auto callable = encodedName("callable", symbol);
-    if (const auto *summary = findCallable(symbol))
-      result.functions[callable].summary = *summary;
+    if (const auto summary = callableSummaries.find(symbol);
+        summary != callableSummaries.end())
+      result.functions[callable].summary =
+          ExportedSummary::fromShared(summary->second);
     // External and callable lookup tables need not contain the same join.
-    if (const auto *summary = find(symbol))
-      result.functions[encodedName("external", symbol)].summary = *summary;
+    if (const auto summary = functions.find(symbol); summary != functions.end())
+      result.functions[encodedName("external", symbol)].summary =
+          ExportedSummary::fromShared(summary->second);
     for (const auto &[key, summary] : contextSummaries)
       if (key.first == symbol)
-        result.functions[callable].specializations[key.second] = summary;
+        result.functions[callable].specializations[key.second] =
+            ExportedSummary::fromShared(summary);
     for (const auto &[key, summary] : memorySummaries)
       if (key.first == symbol)
-        result.functions[callable].memorySpecializations[key.second] = summary;
+        result.functions[callable].memorySpecializations[key.second] =
+            ExportedSummary::fromShared(summary);
   }
   // Candidate-set changes can introduce a dependency that did not previously
   // exist. Conservatively retain every type bucket in the identity.
   for (const auto &[type, summary] : candidateSummaries)
-    result.functions[encodedName("indirect", type)].summary = *summary;
+    result.functions[encodedName("indirect", type)].summary =
+        ExportedSummary::fromShared(summary);
   return result;
 }
 
@@ -100,9 +109,36 @@ bool GlobalNames::extendTo(const GlobalNames &other) {
   return true;
 }
 
+// -- ExportedSummary ----------------------------------------------------------
+
+const std::shared_ptr<const core::FunctionSummary> &
+ExportedSummary::emptyPublication() {
+  static const auto Empty = std::make_shared<const core::FunctionSummary>();
+  return Empty;
+}
+
+ExportedSummary::ExportedSummary(core::FunctionSummary summary)
+    : value(std::make_shared<const core::FunctionSummary>(std::move(summary))) {
+}
+
+void ExportedSummary::assign(core::FunctionSummary summary) {
+  value = std::make_shared<const core::FunctionSummary>(std::move(summary));
+}
+
+ExportedSummary ExportedSummary::fromShared(
+    std::shared_ptr<const core::FunctionSummary> summary) {
+  assert(summary && "an exported summary must have a publication");
+  ExportedSummary result;
+  result.value = std::move(summary);
+  return result;
+}
+
 // -- UnitExports --------------------------------------------------------------
 
 bool UnitExports::sameSummariesAs(const UnitExports &other) const {
+  if (globalInterfaces != other.globalInterfaces ||
+      objectInterfaces != other.objectInterfaces)
+    return false;
   if (callbackGlobals != other.callbackGlobals ||
       callbackRequests != other.callbackRequests ||
       memoryRequests != other.memoryRequests)
@@ -181,7 +217,8 @@ static std::string stableTypeKey(QualType type, const ASTContext &context) {
   policy.SuppressScope = true;
   policy.Bool = false;
   std::string key = type.getCanonicalType().getAsString(policy);
-  for (const char *marker : {"(unnamed ", "(anonymous ", "<anonymous"}) {
+  for (const char *marker :
+       {"(unnamed ", "(unnamed)", "(anonymous ", "<anonymous"}) {
     if (key.find(marker) != std::string::npos)
       return {};
   }
@@ -234,6 +271,21 @@ static core::FunctionSummary renumber(const core::FunctionSummary &summary,
   return core::remapGlobals(summary, [&](std::uint32_t id) {
     return std::optional(to.idFor(from.nameOf(id)));
   });
+}
+
+static bool samePublishedValue(const core::FunctionSummary &left,
+                               const core::FunctionSummary &right) {
+  return left == right &&
+         left.checked.obligations.sameExplanationsAs(right.checked.obligations);
+}
+
+static ExportedSummary renumberPublication(const ExportedSummary &summary,
+                                           const GlobalNames &from,
+                                           GlobalNames &to) {
+  auto mapped = renumber(summary.get(), from, to);
+  return samePublishedValue(mapped, summary.get())
+             ? summary
+             : ExportedSummary(std::move(mapped));
 }
 
 void ProgramDatabase::add(const UnitExports &unit) {
@@ -304,7 +356,8 @@ UnitExports ProgramDatabase::renumbered(const UnitExports &unit) {
       contract = renumber(wrapper, unit.globals, globalNames).checked;
     }
     for (auto &[name, function] : result.functions) {
-      function.summary = renumber(function.summary, unit.globals, globalNames);
+      function.summary =
+          renumberPublication(function.summary, unit.globals, globalNames);
       decltype(function.specializations) callbacks;
       for (const auto &[input, summary] : function.specializations)
         if (const auto mapped =
@@ -314,8 +367,8 @@ UnitExports ProgramDatabase::renumbered(const UnitExports &unit) {
                                    globalNames.idFor(unit.globals.nameOf(id)))
                              : std::nullopt;
                 }))
-          callbacks.emplace(*mapped,
-                            renumber(summary, unit.globals, globalNames));
+          callbacks.emplace(
+              *mapped, renumberPublication(summary, unit.globals, globalNames));
       function.specializations = std::move(callbacks);
       decltype(function.memorySpecializations) contexts;
       for (const auto &[input, summary] : function.memorySpecializations) {
@@ -326,8 +379,8 @@ UnitExports ProgramDatabase::renumbered(const UnitExports &unit) {
                                               : std::nullopt;
             });
         if (mapped)
-          contexts.emplace(*mapped,
-                           renumber(summary, unit.globals, globalNames));
+          contexts.emplace(
+              *mapped, renumberPublication(summary, unit.globals, globalNames));
       }
       function.memorySpecializations = std::move(contexts);
     }
@@ -360,6 +413,8 @@ UnitExports ProgramDatabase::renumbered(const UnitExports &unit) {
 
 void ProgramDatabase::addCallbackInformation(const UnitExports &unit) {
   generation = std::make_shared<const char>(0);
+  core::mergeInterfaceTypes(globalInterfaces, unit.globalInterfaces);
+  core::mergeInterfaceTypes(objectInterfaces, unit.objectInterfaces);
   // RFC 0020: the whole-program fixed point already numbers its member
   // exports with this table. Preserve that representation for contexts too;
   // remapping every unchanged context used to dominate large components.
@@ -386,26 +441,42 @@ void ProgramDatabase::addCallbackInformation(const UnitExports &unit) {
     // Keep the branches separate to avoid a const temporary and second copy.
     auto &callable = callableSummaries[symbol];
     if (sameNumbering)
-      callable =
-          std::make_shared<const core::FunctionSummary>(function.summary);
+      callable = function.summary.share();
     else
-      callable = std::make_shared<const core::FunctionSummary>(
-          renumber(function.summary, unit.globals, globalNames));
+      callable =
+          renumberPublication(function.summary, unit.globals, globalNames)
+              .share();
     for (const auto &[bindings, summary] : function.specializations)
       if (const auto mapped = core::remapCallbackBindings(bindings, map)) {
         auto &specialized = contextSummaries[{symbol, *mapped}];
         if (sameNumbering)
-          specialized = summary;
+          specialized = summary.share();
         else
-          specialized = renumber(summary, unit.globals, globalNames);
+          specialized =
+              renumberPublication(summary, unit.globals, globalNames).share();
       }
     for (const auto &[input, summary] : function.memorySpecializations)
       if (const auto mapped = core::remapCallContext(input, map)) {
-        if (sameNumbering)
-          memorySummaries[{symbol, *mapped}].join(summary);
+        const auto incoming =
+            sameNumbering
+                ? summary.share()
+                : renumberPublication(summary, unit.globals, globalNames)
+                      .share();
+        auto &publication = memorySummaries[{symbol, *mapped}];
+        core::FunctionSummary joined;
+        if (publication)
+          joined = *publication;
+        joined.join(*incoming);
+        const auto unchanged = [&](const auto &owner) {
+          return owner && samePublishedValue(joined, *owner);
+        };
+        if (unchanged(publication))
+          continue;
+        if (unchanged(incoming))
+          publication = incoming;
         else
-          memorySummaries[{symbol, *mapped}].join(
-              renumber(summary, unit.globals, globalNames));
+          publication =
+              std::make_shared<const core::FunctionSummary>(std::move(joined));
       }
   }
 }
@@ -418,7 +489,7 @@ ProgramDatabase::findCallable(std::string_view symbol) const {
 const core::FunctionSummary *ProgramDatabase::findSpecialization(
     std::string_view symbol, const core::CallbackBindings &bindings) const {
   const auto it = contextSummaries.find({std::string(symbol), bindings});
-  return it == contextSummaries.end() ? nullptr : &it->second;
+  return it == contextSummaries.end() ? nullptr : it->second.get();
 }
 const std::set<core::CallbackBindings> &
 ProgramDatabase::requestsFor(std::string_view symbol) const {
@@ -428,6 +499,8 @@ ProgramDatabase::requestsFor(std::string_view symbol) const {
 }
 
 void ProgramDatabase::clear() {
+  globalInterfaces.clear();
+  objectInterfaces.clear();
   generation = std::make_shared<const char>(0);
   memorySummaries.clear();
   memoryRequests.clear();
@@ -464,14 +537,14 @@ ProgramDatabase::importInto(const core::FunctionSummary &summary,
                             const ASTContext &context,
                             GlobalTable &table) const {
   return core::remapGlobals(summary, [&](std::uint32_t id) {
-    return table.importName(globalNames.nameOf(id), context);
+    return table.importName(globalNames.nameOf(id), context, globalInterfaces);
   });
 }
 
 const core::FunctionSummary *ProgramDatabase::findMemorySpecialization(
     std::string_view symbol, const core::CallContext &context) const {
   const auto it = memorySummaries.find({std::string(symbol), context});
-  return it == memorySummaries.end() ? nullptr : &it->second;
+  return it == memorySummaries.end() ? nullptr : it->second.get();
 }
 
 const std::set<core::CallContext> &
@@ -486,7 +559,7 @@ ProgramDatabase::importContext(const core::CallContext &input,
                                const ASTContext &context,
                                GlobalTable &table) const {
   return core::remapCallContext(input, [&](std::uint32_t id) {
-    return table.importName(globalNames.nameOf(id), context);
+    return table.importName(globalNames.nameOf(id), context, globalInterfaces);
   });
 }
 

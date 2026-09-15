@@ -570,7 +570,7 @@ Calls whose inputs have no established interacting relationship still use
 generic summaries; silence does not prove arbitrary pointers disjoint.
 The [validation report](validation-rfc0016.md) records the supported matrix
 and remaining coverage limits. These context records are retained in the
-current format 23 sidecars; rebuild older objects before link analysis. Checked
+current format 24 sidecars; rebuild older objects before link analysis. Checked
 mode also specializes exact scalar inputs and fields under the same context
 limits (RFC 0019).
 
@@ -660,7 +660,7 @@ unrestricted aliases, byte-encoded pointers, GC invariants and concurrency
 remain outside the supported model.
 
 RFC 0017 introduced summary and sidecar format **13**. Current summary format
-**22** and sidecar format **23** require rebuilding older objects. The [RFC 0017 validation report](validation-rfc0017.md) records
+**23** and sidecar format **24** require rebuilding older objects. The [RFC 0017 validation report](validation-rfc0017.md) records
 passing regression and sanitizer suites, corpus coverage, performance costs
 and remaining false positives.
 No runtime instrumentation, `--verify` flag or verification certificate is
@@ -711,7 +711,7 @@ initialized`, `access interval must fit its object`, `callee initialized safety
 precondition must hold`, and `memcpy intervals must be disjoint`. String calls
 also require a represented initialized terminator. Missing evidence remains
 distinct from a concrete `checking-failed` violation. Conditional memory and
-numeric output facts use summary format 22, sidecar format 23 and checked JSON version 2 (or compact version 3);
+numeric output facts use summary format 23, sidecar format 24 and checked JSON version 2 (or compact version 3);
 rebuild older objects before link analysis.
 
 RFC 0021 adds traversal contracts without new annotation spellings or IDs.
@@ -790,3 +790,12 @@ distinguishes borrowed storage from an allocation the callee may release.
 preserves the independently owned pointee obligations. Initialized pointer
 bytes alone cannot discharge them. See
 [growable buffers](checked-code.md#growable-buffers-and-vectors).
+
+RFC 0028 carries these obligations across opaque public headers and private
+library state without new annotation spellings or diagnostic identifiers.
+Missing object evidence, incompatible layouts and unestablished private values
+retain incomplete checking; representation metadata alone grants no memory
+permission. Double cleanup and stale borrows retain their lifetime and ownership
+diagnostics across source units and compiler objects. See
+[opaque objects and private library state](checked-code.md#opaque-objects-and-private-library-state)
+for supported interfaces and required initialization.

@@ -56,8 +56,25 @@ remapCallContext(const CallContext &context, const GlobalIdMap &map);
 
 /// Pointer value paths whose identities can affect a call's memory effects.
 /// Analysis additionally validates the types and resolves actual input values.
-[[nodiscard]] std::set<SummaryPath>
+/// RFC 0028: nullopt means more than MaxCallContextFacts distinct inputs.
+/// An over-limit prefix must never be used as a complete footprint.
+[[nodiscard]] std::optional<std::set<SummaryPath>>
 callMemoryFootprint(const FunctionSummary &summary);
+
+/// Per-function preparation of immutable summary inputs; no caller state.
+class CallMemoryFootprintCache {
+public:
+  static constexpr std::size_t Capacity = 64;
+  [[nodiscard]] const std::optional<std::set<SummaryPath>> &
+  get(const std::shared_ptr<const FunctionSummary> &summary);
+
+private:
+  struct Entry {
+    std::weak_ptr<const FunctionSummary> owner;
+    std::optional<std::set<SummaryPath>> paths;
+  };
+  std::map<const FunctionSummary *, Entry> entries;
+};
 
 /// Single-token format. Paths and facts are hex encoded so user field/global
 /// spellings cannot introduce record delimiters. Global names use the ordinary

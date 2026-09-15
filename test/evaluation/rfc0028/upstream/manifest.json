@@ -1,0 +1,90 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "name": "empty-good",
+      "sources": [
+        "empty-good.c",
+        "../../../../build/corpus/cJSON-program/cJSON.c"
+      ],
+      "function": "main",
+      "flags": [
+        "--whole-program"
+      ],
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    },
+    {
+      "name": "nested-good",
+      "sources": [
+        "nested-good.c",
+        "../../../../build/corpus/cJSON-program/cJSON.c"
+      ],
+      "function": "main",
+      "flags": [
+        "--whole-program"
+      ],
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    },
+    {
+      "name": "custom-good",
+      "sources": [
+        "custom-good.c",
+        "../../../../build/corpus/cJSON-program/cJSON.c"
+      ],
+      "function": "main",
+      "flags": [
+        "--whole-program"
+      ],
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    },
+    {
+      "name": "double-delete-bad",
+      "sources": [
+        "double-delete-bad.c",
+        "../../../../build/corpus/cJSON-program/cJSON.c"
+      ],
+      "function": "main",
+      "flags": [
+        "--whole-program"
+      ],
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    },
+    {
+      "name": "stale-borrow-bad",
+      "sources": [
+        "stale-borrow-bad.c",
+        "../../../../build/corpus/cJSON-program/cJSON.c"
+      ],
+      "function": "main",
+      "flags": [
+        "--whole-program"
+      ],
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    }
+  ]
+}

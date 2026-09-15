@@ -9,6 +9,7 @@ weavec_add_library(
           DataflowFormats.cpp
           DataflowArgumentLists.cpp
           ClangLocation.cpp
+          InterfaceTypes.cpp
           Dataflow.cpp
           DataflowContainers.cpp
           DataflowContainerTransfer.cpp

@@ -562,6 +562,30 @@ Design: [RFC 0027](rfcs/0027-recursive-object-ownership.md).
 General graphs, shared recursive ownership, mutual recursive cleanup and full
 parser/printer verification remain separate work.
 
+## Milestone 27 — Opaque objects and private library state
+
+Design: [RFC 0028](rfcs/0028-opaque-objects-and-library-state.md).
+
+- [x] Preserve inferred object representation, borrowing, initialization and
+      ownership contracts through public headers with incomplete record types.
+- [x] Transport private static records, nested callbacks, scalar configuration
+      and fixed arrays with stable identities and validated storage descriptions.
+- [x] Infer wrapper release guarantees for individual allocations while retaining
+      independent whole-container cleanup and allocation-footprint obligations.
+- [x] Replace the callback-only private proxy; use summary format 23, sidecar
+      format 24 and checkpoint format 3, requiring older artifacts to rebuild.
+- [x] Validate frozen clients, independent counterexamples and unchanged cJSON
+      public-header clients through source units and separate compiler objects;
+      complete Debug/ASan/UBSan, strict lint and fixed-evaluation checks.
+- [x] Complete corpus preservation, cache replay and isolated cost gates;
+      publish the final [validation record](validation-rfc0028.md) and
+      [machine-readable evidence](../scripts/corpus/rfc0028-results.json).
+
+Unsupported private types, richer conditional release forwarding, reassigned
+entry-parameter projection and arbitrary shared graphs remain incomplete.
+Selected cJSON lifecycle clients do not certify its parser, printer or every
+generic library function.
+
 ## Ongoing
 
 - Corpus testing against real C projects (`scripts/corpus.py`; false-positive

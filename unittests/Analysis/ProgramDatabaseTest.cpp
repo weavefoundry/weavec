@@ -67,32 +67,36 @@ TEST(UnitExports, ExportsExternalAndAddressTakenDefinitions) {
   EXPECT_TRUE(nodeFree.external);
   EXPECT_FALSE(nodeFree.addressTaken);
   EXPECT_EQ(nodeFree.typeKey, "void (struct node *)");
-  EXPECT_TRUE(nodeFree.summary.frees(0));
+  EXPECT_TRUE(nodeFree.summary.get().frees(0));
 
   const ExportedFunction &drop = exports.functions.at("drop_impl");
   EXPECT_FALSE(drop.external);
   EXPECT_TRUE(drop.addressTaken);
   EXPECT_EQ(drop.typeKey, "void (void *)");
-  EXPECT_TRUE(drop.summary.frees(0));
+  EXPECT_TRUE(drop.summary.get().frees(0));
 
-  EXPECT_TRUE(llvm::any_of(exports.functions.at("node_new").summary.returns,
-                           [](const ValueSource &source) {
-                             return source.isFresh() && source.family == "free";
-                           }));
+  EXPECT_TRUE(
+      llvm::any_of(exports.functions.at("node_new").summary.get().returns,
+                   [](const ValueSource &source) {
+                     return source.isFresh() && source.family == "free";
+                   }));
   EXPECT_TRUE(exports.functions.at("node_name")
-                  .summary.returns.contains(ValueSource::copy(
+                  .summary.get()
+                  .returns.contains(ValueSource::copy(
                       SummaryPath::param(0).deref().field("name"))));
-  EXPECT_TRUE(exports.functions.at("node_vp").summary.returns.contains(
+  EXPECT_TRUE(exports.functions.at("node_vp").summary.get().returns.contains(
       ValueSource::copyAt(SummaryPath::param(0),
                           core::PointerOffset::ofField("struct node.v"))));
 
-  // Globals travel by name; the static one is dropped.
+  // RFC 0028: the static cell travels under its declaration identity.
   const core::FunctionSummary &reset =
-      exports.functions.at("reset_caches").summary;
-  ASSERT_EQ(exports.globals.size(), 1U);
+      exports.functions.at("reset_caches").summary.get();
+  ASSERT_EQ(exports.globals.size(), 2U);
   EXPECT_EQ(exports.globals.nameOf(0), "g_cache");
   EXPECT_TRUE(reset.effectOf(SummaryPath::global(0)).freed);
-  EXPECT_EQ(reset.effects.size(), 1U);
+  EXPECT_EQ(reset.effects.size(), 2U);
+  EXPECT_TRUE(exports.globals.nameOf(1).starts_with("@weavec-state:"));
+  EXPECT_TRUE(reset.effectOf(SummaryPath::global(1)).freed);
 
   // libc callees are imports too; they just never resolve to a unit.
   EXPECT_TRUE(exports.imports.contains("malloc"));
@@ -114,7 +118,8 @@ TEST(UnitExports, DiscoverySkipsAnalysis) {
   const UnitExports skeleton = fresh.discover();
   EXPECT_TRUE(sink.empty());
   EXPECT_EQ(skeleton.functions.size(), 1U);
-  EXPECT_TRUE(skeleton.functions.at("f").summary == core::FunctionSummary{});
+  EXPECT_TRUE(skeleton.functions.at("f").summary.get() ==
+              core::FunctionSummary{});
   EXPECT_TRUE(skeleton.imports.contains("other"));
   EXPECT_EQ(skeleton.indirectTypes, (std::set<std::string>{"void (int)"}));
 }
@@ -161,8 +166,10 @@ TEST(ProgramDatabase, SharedPublicationsDetachOnDefinitionAndCandidateJoins) {
   auto &original = first.functions["f"];
   original.typeKey = "void (void *)";
   original.addressTaken = true;
-  original.summary.effects[SummaryPath::param(0)].freed = true;
-  original.summary.neverReturns = true;
+  core::FunctionSummary originalSummary;
+  originalSummary.effects[SummaryPath::param(0)].freed = true;
+  originalSummary.neverReturns = true;
+  original.summary.assign(std::move(originalSummary));
   ProgramDatabase db;
   db.add(first);
   ProgramDatabase retained = db;
@@ -174,14 +181,17 @@ TEST(ProgramDatabase, SharedPublicationsDetachOnDefinitionAndCandidateJoins) {
   auto &replacement = second.functions["f"];
   replacement.typeKey = original.typeKey;
   replacement.addressTaken = true;
-  replacement.summary.effects[SummaryPath::param(0).deref()].written = true;
+  core::FunctionSummary replacementSummary;
+  replacementSummary.addEffect(SummaryPath::param(0).deref(),
+                               {.written = true});
+  replacement.summary.assign(std::move(replacementSummary));
   db.add(second);
   ASSERT_NE(db.find("f"), nullptr);
   EXPECT_TRUE(db.find("f")->frees(0));
   EXPECT_TRUE(db.find("f")->effectOf(SummaryPath::param(0).deref()).written);
   EXPECT_FALSE(db.find("f")->neverReturns);
   ASSERT_NE(db.findCallable("f"), nullptr);
-  EXPECT_TRUE(*db.findCallable("f") == replacement.summary);
+  EXPECT_TRUE(*db.findCallable("f") == replacement.summary.get());
   ASSERT_NE(db.candidates(original.typeKey), nullptr);
   EXPECT_TRUE(*db.candidates(original.typeKey) == *db.find("f"));
   EXPECT_TRUE(*old == expected);
@@ -192,7 +202,9 @@ TEST(ProgramDatabase, SharedPublicationsDetachOnDefinitionAndCandidateJoins) {
   auto &candidate = third.functions["g"];
   candidate.typeKey = original.typeKey;
   candidate.addressTaken = true;
-  candidate.summary.effects[SummaryPath::param(1)].freed = true;
+  core::FunctionSummary candidateSummary;
+  candidateSummary.addEffect(SummaryPath::param(1), {.freed = true});
+  candidate.summary.assign(std::move(candidateSummary));
   db.add(third);
   EXPECT_TRUE(db.candidates(original.typeKey)->frees(1));
   EXPECT_FALSE(db.find("f")->frees(1));
@@ -200,6 +212,183 @@ TEST(ProgramDatabase, SharedPublicationsDetachOnDefinitionAndCandidateJoins) {
   db.clear();
   EXPECT_TRUE(*old == expected);
   EXPECT_TRUE(*retained.find("f") == expected);
+}
+
+TEST(ExportedSummary,
+     CopiesKeepTheirValuesAfterReplacementAndOwnerDestruction) {
+  ExportedSummary retained;
+  {
+    core::FunctionSummary value;
+    value.addEffect(SummaryPath::param(0), {.freed = true});
+    ExportedSummary original(std::move(value));
+    retained = original;
+    EXPECT_EQ(retained.share(), original.share());
+    const ExportedSummary equal(original.get());
+    EXPECT_EQ(equal, original);
+    EXPECT_NE(equal.share(), original.share());
+    auto changed = original.get();
+    changed.addEffect(SummaryPath::param(1), {.written = true});
+    original.assign(std::move(changed));
+    EXPECT_NE(retained, original);
+    EXPECT_FALSE(retained.get().effectOf(SummaryPath::param(1)).written);
+    EXPECT_TRUE(original.get().effectOf(SummaryPath::param(1)).written);
+  }
+  EXPECT_TRUE(retained.get().frees(0));
+  EXPECT_EQ(ExportedSummary::fromShared(retained.share()).share(),
+            retained.share());
+}
+
+TEST(ProgramDatabase, ExportAndCheckpointIndexesReuseTheImmutablePublication) {
+  UnitExports exports;
+  core::FunctionSummary value;
+  value.addEffect(SummaryPath::param(0), {.freed = true});
+  auto &function = exports.functions["release"];
+  function.summary.assign(std::move(value));
+  function.typeKey = "void (void *)";
+  function.addressTaken = true;
+  const UnitExports retained = exports;
+  const auto owner = function.summary.share();
+  ProgramDatabase database;
+  database.add(exports);
+  EXPECT_EQ(database.find("release"), owner.get());
+  EXPECT_EQ(database.findCallable("release"), owner.get());
+  EXPECT_EQ(database.candidates(function.typeKey), owner.get());
+  const auto checkpoint = database.checkpointInputs({"release"});
+  ASSERT_EQ(checkpoint.functions.size(), 3U);
+  for (const auto &[name, entry] : checkpoint.functions)
+    EXPECT_EQ(entry.summary.share(), owner) << name;
+  function.summary.assign({});
+  exports = {};
+  EXPECT_TRUE(database.find("release")->frees(0));
+  EXPECT_TRUE(retained.functions.at("release").summary.get().frees(0));
+  database.clear();
+  for (const auto &[name, entry] : checkpoint.functions)
+    EXPECT_TRUE(entry.summary.get().frees(0)) << name;
+}
+
+TEST(ProgramDatabase, SpecializedPublicationsRetainKeysAndNormalizeJoins) {
+  UnitExports unit;
+  core::CallContext input;
+  input.facts[SummaryPath::param(1)] = core::ValueFact::ofConstant(0);
+  core::CallContext otherInput;
+  otherInput.facts[SummaryPath::param(1)] = core::ValueFact::ofConstant(1);
+  const core::CallbackBindings callbacks{
+      {SummaryPath::param(2), core::CallTargets::function("drop")}};
+  core::FunctionSummary value;
+  value.addEffect(SummaryPath::param(0), {.freed = true, .family = "free"});
+  ExportedSummary publication(value);
+  auto &function = unit.functions["release"];
+  function.memorySpecializations[input] = publication;
+  function.specializations[callbacks] = publication;
+  ProgramDatabase database;
+  database.add(unit);
+  EXPECT_EQ(database.findMemorySpecialization("release", input),
+            publication.share().get());
+  EXPECT_EQ(database.findSpecialization("release", callbacks),
+            publication.share().get());
+  EXPECT_EQ(database.findMemorySpecialization("release", otherInput), nullptr);
+  const ProgramDatabase retained = database;
+  core::FunctionSummary changed;
+  changed.addEffect(SummaryPath::param(0), {.written = true});
+  function.memorySpecializations[input].assign(changed);
+  function.memorySpecializations[otherInput].assign(changed);
+  database.add(unit);
+  core::FunctionSummary expected;
+  expected.join(value);
+  expected.join(changed);
+  EXPECT_EQ(*database.findMemorySpecialization("release", input), expected);
+  EXPECT_FALSE(retained.findMemorySpecialization("release", input)
+                   ->effectOf(SummaryPath::param(0))
+                   .written);
+  EXPECT_FALSE(
+      database.findMemorySpecialization("release", otherInput)->frees(0));
+  // The old join normalizes metadata that is irrelevant to a read-only effect.
+  core::FunctionSummary unnormalized;
+  unnormalized.effects[SummaryPath::param(0)] = {.read = true,
+                                                 .family = "unused"};
+  unit.functions["read"].memorySpecializations[input].assign(unnormalized);
+  database.add(unit);
+  core::FunctionSummary normalized;
+  normalized.join(unnormalized);
+  EXPECT_NE(normalized, unnormalized);
+  EXPECT_EQ(*database.findMemorySpecialization("read", input), normalized);
+  EXPECT_NE(
+      database.findMemorySpecialization("read", input),
+      unit.functions.at("read").memorySpecializations.at(input).share().get());
+  // Equal semantic facts still need their canonical explanation join.
+  const auto proof = [](std::string reason) {
+    core::FunctionSummary result;
+    result.checked.computed = true;
+    result.checked.obligations.add(
+        {.property = core::SafetyProperty::Initialization,
+         .outcome = core::SafetyOutcome::Unresolved,
+         .location = {.file = "proof.c", .line = 1, .column = 1, .opaque = 0},
+         .function = "proof",
+         .subject = "p",
+         .reason = std::move(reason),
+         .calls = {}});
+    return result;
+  };
+  const auto later = proof("z explanation");
+  const auto earlier = proof("a explanation");
+  EXPECT_EQ(later, earlier);
+  unit.functions["proof"].memorySpecializations[input].assign(later);
+  database.add(unit);
+  const ProgramDatabase beforeProof = database;
+  unit.functions["proof"].memorySpecializations[input].assign(earlier);
+  database.add(unit);
+  core::FunctionSummary mergedProof;
+  mergedProof.join(later);
+  mergedProof.join(earlier);
+  EXPECT_TRUE(database.findMemorySpecialization("proof", input)
+                  ->checked.obligations.sameExplanationsAs(
+                      mergedProof.checked.obligations));
+  EXPECT_FALSE(beforeProof.findMemorySpecialization("proof", input)
+                   ->checked.obligations.sameExplanationsAs(
+                       mergedProof.checked.obligations));
+}
+
+TEST(ProgramDatabase, UnchangedRemappedValuesRetainPublicationsUnderNewKeys) {
+  UnitExports prefix;
+  (void)prefix.globals.idFor("other");
+  (void)prefix.globals.idFor("shared");
+  UnitExports unit;
+  (void)unit.globals.idFor("shared");
+  (void)unit.globals.idFor("other");
+  core::FunctionSummary value;
+  value.addEffect(SummaryPath::param(0), {.freed = true});
+  ExportedSummary publication(std::move(value));
+  core::CallContext input;
+  input.facts[SummaryPath::global(0)] = core::ValueFact::ofConstant(7);
+  const core::CallbackBindings callbacks{
+      {SummaryPath::global(0), core::CallTargets::function("drop")}};
+  auto &function = unit.functions["release"];
+  function.summary = publication;
+  function.memorySpecializations[input] = publication;
+  function.specializations[callbacks] = publication;
+  ProgramDatabase database;
+  database.add(prefix);
+  const auto numbered = database.renumbered(unit);
+  const auto &mapped = numbered.functions.at("release");
+  EXPECT_EQ(mapped.summary.share(), publication.share());
+  ASSERT_EQ(mapped.memorySpecializations.size(), 1U);
+  const auto &[mappedInput, memory] = *mapped.memorySpecializations.begin();
+  EXPECT_TRUE(mappedInput.facts.contains(SummaryPath::global(1)));
+  EXPECT_EQ(memory.share(), publication.share());
+  ASSERT_EQ(mapped.specializations.size(), 1U);
+  EXPECT_TRUE(
+      mapped.specializations.begin()->first.contains(SummaryPath::global(1)));
+  EXPECT_EQ(mapped.specializations.begin()->second.share(),
+            publication.share());
+  EXPECT_TRUE(
+      unit.functions.at("release").memorySpecializations.contains(input));
+  database.add(numbered);
+  const auto checkpoint = database.checkpointInputs({"release"});
+  for (const auto &[name, entry] : checkpoint.functions)
+    for (const auto &[context, summary] : entry.memorySpecializations) {
+      EXPECT_EQ(context, mappedInput) << name;
+      EXPECT_EQ(summary.share(), publication.share()) << name;
+    }
 }
 
 TEST(ProgramDatabase, CandidateGroupJoinsPreserveIndividualPublications) {
@@ -210,8 +399,10 @@ TEST(ProgramDatabase, CandidateGroupJoinsPreserveIndividualPublications) {
     auto &function = first.functions["f" + std::to_string(index)];
     function.typeKey = "void (void *, void *, void *)";
     function.addressTaken = true;
-    function.summary.effects[SummaryPath::param(index)].freed = true;
-    function.summary.neverReturns = index != 1;
+    core::FunctionSummary summary;
+    summary.addEffect(SummaryPath::param(index), {.freed = true});
+    summary.neverReturns = index != 1;
+    function.summary.assign(std::move(summary));
   }
   ProgramDatabase db;
   db.add(first);
@@ -222,8 +413,10 @@ TEST(ProgramDatabase, CandidateGroupJoinsPreserveIndividualPublications) {
     auto &function = second.functions["g" + std::to_string(index)];
     function.typeKey = type;
     function.addressTaken = true;
-    function.summary.effects[SummaryPath::param(index).deref()].written = true;
-    function.summary.neverReturns = true;
+    core::FunctionSummary summary;
+    summary.addEffect(SummaryPath::param(index).deref(), {.written = true});
+    summary.neverReturns = true;
+    function.summary.assign(std::move(summary));
   }
   db.add(second);
   ASSERT_NE(db.candidates(type), nullptr);
@@ -238,8 +431,9 @@ TEST(ProgramDatabase, CandidateGroupJoinsPreserveIndividualPublications) {
                      .written);
     const auto name = "f" + std::to_string(index);
     ASSERT_NE(db.find(name), nullptr);
-    EXPECT_TRUE(*db.find(name) == first.functions.at(name).summary);
-    EXPECT_TRUE(*db.findCallable(name) == first.functions.at(name).summary);
+    EXPECT_TRUE(*db.find(name) == first.functions.at(name).summary.get());
+    EXPECT_TRUE(*db.findCallable(name) ==
+                first.functions.at(name).summary.get());
   }
 }
 
@@ -258,7 +452,9 @@ TEST(ProgramDatabase, SharedIndexesRetainRenumberedGlobalEffects) {
   auto &external = reordered.functions["f"];
   external.typeKey = "void (void)";
   external.addressTaken = true;
-  external.summary.effects[SummaryPath::global(second)].freed = true;
+  core::FunctionSummary externalSummary;
+  externalSummary.addEffect(SummaryPath::global(second), {.freed = true});
+  external.summary.assign(std::move(externalSummary));
   auto &internal = reordered.functions["g"];
   internal = external;
   internal.external = false;
@@ -276,8 +472,8 @@ TEST(ProgramDatabase, SharedIndexesRetainRenumberedGlobalEffects) {
   const auto checkpoint = db.checkpointInputs({"f", "other.c#g"});
   ASSERT_EQ(checkpoint.functions.size(), 4U);
   for (const auto &[name, function] : checkpoint.functions) {
-    EXPECT_EQ(function.summary.effects.size(), 1U) << name;
-    EXPECT_TRUE(function.summary.effectOf(expected).freed) << name;
+    EXPECT_EQ(function.summary.get().effects.size(), 1U) << name;
+    EXPECT_TRUE(function.summary.get().effectOf(expected).freed) << name;
   }
 }
 
@@ -425,7 +621,7 @@ TEST(ProgramDatabase, GlobalsAreMatchedByNameOrDropped) {
   EXPECT_EQ(ids(freeOnly.diagnostics),
             (std::vector<std::string>{"use-after-free"}));
 
-  // A unit that never names the global cannot observe the effect.
+  // Undeclared public storage is dropped; private storage has an adapter.
   const auto undeclared = analyzeInProgram(R"c(
     void reset_caches(void);
     int f(void) { reset_caches(); return 0; }
@@ -436,7 +632,14 @@ TEST(ProgramDatabase, GlobalsAreMatchedByNameOrDropped) {
   const auto resolved = undeclared.analyzer->summaries().lookup(
       *undeclared.function("reset_caches"));
   ASSERT_TRUE(resolved);
-  EXPECT_TRUE(resolved->summary->effects.empty());
+  ASSERT_EQ(resolved->summary->effects.size(), 1U);
+  const auto &[path, effect] = *resolved->summary->effects.begin();
+  ASSERT_TRUE(path.isGlobal());
+  EXPECT_TRUE(effect.freed);
+  EXPECT_TRUE(undeclared.analyzer->summaries()
+                  .globals()
+                  .portableName(path.index)
+                  ->starts_with("@weavec-state:"));
   EXPECT_TRUE(resolved->summary->stores.empty());
 }
 
@@ -518,18 +721,19 @@ TEST(ProgramDatabase, ContextRebuildAgreesWithGlobalRenumbering) {
   (void)unit.globals.idFor("b");
   (void)unit.globals.idFor("a");
   auto &function = unit.functions["helper"];
-  function.summary.addEffect(SummaryPath::global(0),
-                             PlaceEffect{.freed = true});
+  core::FunctionSummary summary;
+  summary.addEffect(SummaryPath::global(0), PlaceEffect{.freed = true});
+  function.summary.assign(std::move(summary));
   core::CallContext input;
   input.facts[SummaryPath::global(0)] =
       core::ValueFact::of(core::Outcome::NonNull);
   unit.memoryRequests["helper"].insert(input);
-  function.memorySpecializations[input] = function.summary;
+  function.memorySpecializations[input].assign(function.summary.get());
   core::CallbackBindings callbacks;
   callbacks[SummaryPath::param(0)] = core::CallTargets::function("release");
   callbacks[SummaryPath::global(0)] = core::CallTargets::function("allocate");
   unit.callbackRequests["helper"].insert(callbacks);
-  function.specializations[callbacks] = function.summary;
+  function.specializations[callbacks].assign(function.summary.get());
   ProgramDatabase direct;
   direct.add(prefix);
   direct.add(unit);
@@ -679,7 +883,7 @@ TEST(ProgramDatabase, DumpListsFunctionsAndCandidates) {
                       "returns{}\n"),
             std::string::npos);
   EXPECT_NE(text.find("  function 'reset_caches': global g_cache: freed(free); "
-                      "stores{} returns{}\n"),
+                      "global @weavec-state:"),
             std::string::npos);
   EXPECT_NE(
       text.find("  function 'node_vp': stores{} "

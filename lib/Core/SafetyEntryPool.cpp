@@ -9,6 +9,8 @@
 
 #include "weavec/Core/AnalysisStats.h"
 
+#include <iterator>
+#include <list>
 #include <unordered_map>
 
 namespace weavec::core {
@@ -27,10 +29,12 @@ struct SafetyEntryPool::Storage {
              (static_cast<std::size_t>(key.textOnly) << 7U);
     }
   };
+  using CallOrder = std::list<const CallKey *>;
   struct CallPreparation {
     std::weak_ptr<const SafetyPropagation> source;
     std::shared_ptr<const PreparedSafetyOrigins> prepared;
     std::size_t bytes;
+    CallOrder::iterator position;
   };
   struct Snapshot {
     std::weak_ptr<SafetyLedger::Storage> owner;
@@ -42,6 +46,7 @@ struct SafetyEntryPool::Storage {
       rows;
   std::unordered_map<std::size_t, std::vector<Snapshot>> snapshots;
   std::unordered_map<CallKey, CallPreparation, CallHash> calls;
+  CallOrder callOrder;
   std::uint64_t *recordedHits = nullptr;
   std::uint64_t *recordedMisses = nullptr;
   std::uint64_t *recordedResets = nullptr;
@@ -151,12 +156,15 @@ std::shared_ptr<const PreparedSafetyOrigins> SafetyEntryPool::findCalls(
   auto &pool = *active;
   if (const auto found = pool.calls.find(key); found != pool.calls.end()) {
     if (found->second.source.lock() == source) {
+      pool.callOrder.splice(pool.callOrder.end(), pool.callOrder,
+                            found->second.position);
       ++pool.callHits;
       return found->second.prepared;
     }
     // Raw addresses are only indexes. An expired projection can never
     // validate another projection subsequently allocated at that address.
     pool.callBytesUsed -= found->second.bytes;
+    pool.callOrder.erase(found->second.position);
     pool.calls.erase(found);
   }
   ++pool.callMisses;
@@ -172,7 +180,8 @@ void SafetyEntryPool::saveCalls(
   // by these records; each application reads the retained source projection.
   const auto bytes = prepared->bytes + sizeof(CallKey) +
                      sizeof(Storage::CallPreparation) + key.callee.capacity() +
-                     key.location.file.capacity() + key.caller.capacity() + 128;
+                     key.location.file.capacity() + key.caller.capacity() +
+                     (3 * sizeof(void *)) + 128;
   if (bytes > pool.callBytesLimit) {
     ++pool.callRejections;
     return;
@@ -180,18 +189,33 @@ void SafetyEntryPool::saveCalls(
   if (const auto previous = pool.calls.find(key);
       previous != pool.calls.end()) {
     pool.callBytesUsed -= previous->second.bytes;
+    pool.callOrder.erase(previous->second.position);
     pool.calls.erase(previous);
   }
   if (pool.calls.size() == pool.callCapacity ||
       bytes > pool.callBytesLimit - pool.callBytesUsed) {
-    pool.calls.clear();
-    pool.callBytesUsed = 0;
+    // RFC 0028: keep recently reused preparations within the same bounds.
+    // A hash-table rehash preserves addresses of its keys. Remove each key
+    // from the recency list before destroying its containing hash node.
     ++pool.callResets;
+    do {
+      const auto oldest = pool.calls.find(*pool.callOrder.front());
+      pool.callBytesUsed -= oldest->second.bytes;
+      pool.callOrder.pop_front();
+      pool.calls.erase(oldest);
+    } while (pool.calls.size() == pool.callCapacity ||
+             bytes > pool.callBytesLimit - pool.callBytesUsed);
   }
-  pool.calls.emplace(std::move(key),
-                     Storage::CallPreparation{.source = source,
-                                              .prepared = std::move(prepared),
-                                              .bytes = bytes});
+  const auto inserted =
+      pool.calls
+          .emplace(std::move(key),
+                   Storage::CallPreparation{.source = source,
+                                            .prepared = std::move(prepared),
+                                            .bytes = bytes,
+                                            .position = {}})
+          .first;
+  pool.callOrder.push_back(&inserted->first);
+  inserted->second.position = std::prev(pool.callOrder.end());
   pool.callBytesUsed += bytes;
 }
 

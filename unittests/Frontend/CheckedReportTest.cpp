@@ -33,9 +33,11 @@ TEST(CheckedReport, CaseProofDoesNotReplaceTheSelectedGenericDefinition) {
        .calls = {}});
   core::CallContext input;
   input.facts[core::SummaryPath::param(0)] = core::ValueFact::ofConstant(0);
-  auto &specialized = unit.functions["read_if"].memorySpecializations[input];
+  core::FunctionSummary specialized;
   specialized.checked.computed = true;
   specialized.checked.signature = "int (int, const char *)";
+  unit.functions["read_if"].memorySpecializations[input].assign(
+      std::move(specialized));
   CheckedReport report;
   report.record(unit);
   EXPECT_TRUE(CheckedReport::failed(unit));
@@ -60,6 +62,24 @@ TEST(CheckedReport, CaseProofDoesNotReplaceTheSelectedGenericDefinition) {
     EXPECT_EQ(proof->getString("status"), "proven");
     EXPECT_TRUE(proof->getString("premises"));
   }
+  report.invalidate("example whole-program failure");
+  EXPECT_TRUE(unit.functions.at("read_if")
+                  .memorySpecializations.at(input)
+                  .get()
+                  .checked.complete());
+  auto invalidated = llvm::json::parse(report.json());
+  ASSERT_TRUE(invalidated);
+  const auto *proof = invalidated->getAsObject()
+                          ->getArray("units")
+                          ->front()
+                          .getAsObject()
+                          ->getArray("functions")
+                          ->front()
+                          .getAsObject()
+                          ->getArray("cases")
+                          ->front()
+                          .getAsObject();
+  EXPECT_EQ(proof->getBoolean("complete"), false);
 }
 
 static analysis::UnitExports checkedUnit() {
@@ -87,7 +107,7 @@ TEST(CheckedReport, EscapingAndScopeRoundTripThroughJson) {
   const auto *object = parsed->getAsObject();
   ASSERT_NE(object, nullptr);
   EXPECT_EQ(object->getInteger("version"), 2);
-  EXPECT_EQ(object->getInteger("model_version"), 22);
+  EXPECT_EQ(object->getInteger("model_version"), 23);
   ASSERT_NE(object->getObject("totals"), nullptr);
   EXPECT_EQ(object->getObject("totals")->getInteger("complete"), 1);
   const auto *units = object->getArray("units");
@@ -317,6 +337,86 @@ TEST(CheckedReport, CompactSharedPathsSurviveMemoReset) {
   fresh.compact = true;
   fresh.record(checkedUnit());
   EXPECT_EQ(report.json(), fresh.json());
+}
+
+TEST(CheckedReport, CompactTablesMatchAnOrderedFirstUseReference) {
+  auto unit = sharedPathUnit();
+  for (auto &[name, contract] : unit.checkedDefinitions) {
+    core::SafetyLedger replaced;
+    for (const auto &[key, original] : contract.obligations.entries()) {
+      (void)key;
+      auto entry = original;
+      entry.reason = std::string(512, 'r') + name +
+                     std::to_string(entry.location.line) + "\n\"é\\";
+      replaced.add(std::move(entry));
+    }
+    contract.obligations = std::move(replaced);
+  }
+  std::map<std::string, std::uint64_t> stringIds;
+  std::map<std::array<std::uint64_t, 3>, std::uint64_t> locationIds;
+  std::map<std::vector<std::uint64_t>, std::uint64_t> pathIds;
+  std::map<std::array<std::uint64_t, 6>, std::uint64_t> rowIds;
+  llvm::json::Array strings;
+  llvm::json::Array locations;
+  llvm::json::Array paths;
+  llvm::json::Array rows;
+  const auto intern = [](const auto &value, auto &ids,
+                         llvm::json::Array &values) {
+    const auto [it, inserted] = ids.try_emplace(value, values.size());
+    if (inserted) {
+      if constexpr (std::is_same_v<std::decay_t<decltype(value)>,
+                                   std::string>) {
+        values.push_back(value);
+      } else {
+        llvm::json::Array encoded;
+        for (const auto element : value)
+          encoded.push_back(element);
+        values.push_back(std::move(encoded));
+      }
+    }
+    return it->second;
+  };
+  const auto string = [&](std::string_view value) {
+    return intern(std::string(value), stringIds, strings);
+  };
+  const auto location = [&](const core::SourceLocation &value) {
+    return intern(std::array<std::uint64_t, 3>{string(value.file), value.line,
+                                               value.column},
+                  locationIds, locations);
+  };
+  for (const auto &[name, contract] : unit.checkedDefinitions) {
+    (void)name;
+    for (const auto &[key, entry] : contract.obligations.entries()) {
+      (void)key;
+      std::vector<std::uint64_t> calls;
+      for (const auto &call : entry.calls)
+        calls.push_back(location(call));
+      const auto path = intern(calls, pathIds, paths);
+      (void)intern(
+          std::array<std::uint64_t, 6>{
+              string(core::toString(entry.property)),
+              string(core::toString(entry.outcome)), location(entry.location),
+              string(entry.subject), string(entry.reason), path},
+          rowIds, rows);
+    }
+  }
+  CheckedReport report;
+  report.compact = true;
+  report.record(unit);
+  auto parsed = llvm::json::parse(report.json());
+  ASSERT_TRUE(parsed);
+  const auto *root = parsed->getAsObject();
+  ASSERT_NE(root, nullptr);
+  for (const auto &[name, expected] :
+       std::array<std::pair<llvm::StringRef, const llvm::json::Array *>, 4>{
+           {{"strings", &strings},
+            {"locations", &locations},
+            {"call_paths", &paths},
+            {"obligation_records", &rows}}}) {
+    const auto *actual = root->getArray(name);
+    ASSERT_NE(actual, nullptr);
+    EXPECT_EQ(*actual, *expected) << name.str();
+  }
 }
 
 } // namespace weavec::frontend

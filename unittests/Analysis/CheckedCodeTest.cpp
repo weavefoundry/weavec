@@ -21,8 +21,8 @@ static core::CheckedContract check(const std::string &code,
   }
   return result.summary(name)->checked;
 }
-// RFC 0019: private output storage is not part of the program namespace.
-TEST(CheckedCode, PrivateOutputFactsDoNotInvalidateAnExportedSetter) {
+// RFC 0028: private output storage participates in portable contracts.
+TEST(CheckedCode, PrivateOutputFactsSurviveAnExportedSetter) {
   AnalysisOptions options;
   options.checked = true;
   const auto unit =
@@ -38,12 +38,18 @@ TEST(CheckedCode, PrivateOutputFactsDoNotInvalidateAnExportedSetter) {
     EXPECT_FALSE(unit.summary(name)->checked.establishes.empty());
     const auto &contract = exports.checkedDefinitions.at(name);
     EXPECT_TRUE(contract.complete());
-    EXPECT_TRUE(contract.establishes.empty());
-    EXPECT_TRUE(exports.functions.at(name).summary.checked.complete());
+    EXPECT_FALSE(contract.establishes.empty());
+    for (const auto &post : contract.establishes) {
+      ASSERT_TRUE(post.path.isGlobal());
+      const auto storageName = exports.globals.nameOf(post.path.index);
+      EXPECT_TRUE(storageName.starts_with("@weavec-state:"));
+      EXPECT_TRUE(exports.globalInterfaces.contains(std::string(storageName)));
+    }
+    EXPECT_TRUE(exports.functions.at(name).summary.get().checked.complete());
   }
 }
 
-TEST(CheckedCode, PrivatePremiseOfAPublicOutputStillFailsExport) {
+TEST(CheckedCode, PrivatePremiseOfAPublicOutputSurvivesExport) {
   AnalysisOptions options;
   options.checked = true;
   const auto unit =
@@ -68,8 +74,16 @@ TEST(CheckedCode, PrivatePremiseOfAPublicOutputStillFailsExport) {
   summary.checked.establishes = {post};
   store.setInferred(*unit.function("f"), std::move(summary));
   const auto exports = unit.analyzer->exports();
-  EXPECT_TRUE(exports.checkedDefinitions.at("f").limited);
-  EXPECT_FALSE(exports.checkedDefinitions.at("f").complete());
+  const auto &contract = exports.checkedDefinitions.at("f");
+  EXPECT_FALSE(contract.limited);
+  EXPECT_TRUE(contract.complete());
+  ASSERT_EQ(contract.establishes.size(), 1U);
+  const auto &conditions = contract.establishes.begin()->when.conditions;
+  ASSERT_EQ(conditions.size(), 1U);
+  const auto &[path, fact] = *conditions.begin();
+  ASSERT_TRUE(path.isGlobal());
+  EXPECT_EQ(fact, core::ValueFact::of(core::Outcome::Positive));
+  EXPECT_TRUE(exports.globals.nameOf(path.index).starts_with("@weavec-state:"));
 }
 
 TEST(CheckedCode, UnknownIndexFailsAndGuardProvesIt) {
@@ -252,6 +266,76 @@ TEST(CheckedCode, UnsafeAndAssumptionsAreRecorded) {
   EXPECT_TRUE(transitive.complete());
   EXPECT_TRUE(transitive.obligations.trusted());
 }
+TEST(CheckedCode, AllocationConsumptionRequiresEveryEntryAllocationReleased) {
+  const auto consumed = [](const core::CheckedContract &contract) {
+    return std::ranges::any_of(contract.establishes, [](const auto &post) {
+      return post.kind == core::CheckedRequirementKind::AllocationConsumed &&
+             post.path == core::SummaryPath::param(0) && !post.on;
+    });
+  };
+  for (const auto *code :
+       {"void f(void*p){free(p);}", "void f(void*p){if(p)free(p);}",
+        "void h(void*p){free(p);} void f(void*p){h(p);}",
+        "void f(void*p,int flag){if(flag){free(p);return;}free(p);}"}) {
+    SCOPED_TRACE(code);
+    const auto contract = check(code);
+    EXPECT_TRUE(contract.complete());
+    EXPECT_TRUE(consumed(contract));
+  }
+  for (const auto *code :
+       {"void f(void*p,int flag){if(flag)free(p);}",
+        "void f(void*p,int flag){if(flag)return;free(p);}",
+        "void f(void*p){p=malloc(4);free(p);}", "void f(void*p){p=0;}",
+        "void f(char*p){free(p+1);}"}) {
+    SCOPED_TRACE(code);
+    EXPECT_FALSE(consumed(check(code)));
+  }
+}
+
+// RFC 0028: repeated static layout checks never discharge live-memory checks.
+TEST(CheckedCode, TypedViewReuseRetainsLifetimeAndInitializationObligations) {
+  const std::string library =
+      "struct item{int value;};int observe(struct item*p){return p->value;}";
+  const auto good = check(
+      library + "int f(void){struct item*p=malloc(sizeof *p);if(!p)return 0;"
+                "p->value=1;for(unsigned i=0;i<2;++i)(void)observe(p);"
+                "free(p);return 0;}");
+  EXPECT_TRUE(good.complete());
+  EXPECT_TRUE(good.requirements.empty());
+  EXPECT_FALSE(
+      check(
+          library +
+          "int f(void){struct item*p=malloc(sizeof *p);if(!p)return 0;"
+          "p->value=1;for(unsigned i=0;i<2;++i){if(i)free(p);(void)observe(p);}"
+          "return 0;}")
+          .complete());
+  EXPECT_FALSE(
+      check(library +
+            "int f(void){struct item*p=malloc(sizeof *p);if(!p)return 0;"
+            "for(unsigned i=0;i<2;++i)(void)observe(p);free(p);return 0;}")
+          .complete());
+}
+
+TEST(CheckedCode, PrivateIntegerArrayCellsRetainOnlyEstablishedValues) {
+  const std::string library = "static unsigned char values[2];"
+                              "void set(unsigned n){values[1]=n;}"
+                              "void other(void){values[0]=0;}"
+                              "void change(unsigned i){if(i<2)values[i]=0;}";
+  for (const auto *body : {"set(1);", "set(257);", "set(1);other();"}) {
+    SCOPED_TRACE(body);
+    const auto result = check(library + "int f(void){" + body +
+                              "int a[1]={0};return a[values[1]-1];}");
+    EXPECT_TRUE(result.complete());
+    EXPECT_TRUE(result.requirements.empty());
+  }
+  EXPECT_FALSE(check(library + "int f(unsigned i){set(1);change(i);"
+                               "int a[1]={0};return a[values[1]-1];}")
+                   .complete());
+  EXPECT_FALSE(check(library + "int f(void){set(256);"
+                               "int a[1]={0};return a[values[1]-1];}")
+                   .complete());
+}
+
 TEST(CheckedCode, DeepCallProvenanceDoesNotExpandRecursiveIdentities) {
   for (const bool trusted : {false, true}) {
     std::string code =

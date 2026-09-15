@@ -1,0 +1,203 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "name": "private-independent-good",
+      "sources": [
+        "private-independent-good.c",
+        "a.c",
+        "b.c",
+        "../library.c"
+      ],
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    },
+    {
+      "name": "private-independent-bad",
+      "sources": [
+        "private-independent-bad.c",
+        "a.c",
+        "b.c",
+        "../library.c"
+      ],
+      "function": "main",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "loses part of the owned allocation footprint"
+    },
+    {
+      "name": "state-during-lifetime-good",
+      "sources": [
+        "state-during-lifetime-good.c",
+        "../library.c"
+      ],
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    },
+    {
+      "name": "wrapper-hooks-good",
+      "sources": [
+        "wrapper-hooks-good.c",
+        "../library.c"
+      ],
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    },
+    {
+      "name": "wrapper-cleanup-bad",
+      "sources": [
+        "wrapper-cleanup-bad.c",
+        "../library.c"
+      ],
+      "function": "main",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "loses part of the owned allocation footprint"
+    },
+    {
+      "name": "nullable-hooks-bad",
+      "sources": [
+        "nullable-hooks-bad.c",
+        "../library.c"
+      ],
+      "function": "main",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "indirect call has an unresolved target|callee has no complete checked contract"
+    },
+    {
+      "name": "unknown-state-bad",
+      "sources": [
+        "unknown-state-bad.c",
+        "../library.c"
+      ],
+      "function": "main",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "indirect call has an unresolved target|callee has no complete checked contract"
+    },
+    {
+      "name": "buffer-failed-append-bad",
+      "sources": [
+        "buffer-failed-append-bad.c",
+        "../library.c"
+      ],
+      "function": "main",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "read interval must be initialized"
+    },
+    {
+      "name": "buffer-second-byte-bad",
+      "sources": [
+        "buffer-second-byte-bad.c",
+        "../library.c"
+      ],
+      "function": "main",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "read interval must be initialized"
+    },
+    {
+      "name": "array-state-good",
+      "sources": [
+        "array-state-good.c",
+        "array-state.c",
+        "../library.c"
+      ],
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    },
+    {
+      "name": "array-state-bad",
+      "sources": [
+        "array-state-bad.c",
+        "array-state.c",
+        "../library.c"
+      ],
+      "function": "main",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "loses part of the owned allocation footprint"
+    },
+    {
+      "name": "local-static-good",
+      "sources": [
+        "local-static-good.c",
+        "local-static.c",
+        "../library.c"
+      ],
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    },
+    {
+      "name": "local-static-bad",
+      "sources": [
+        "local-static-bad.c",
+        "local-static.c",
+        "../library.c"
+      ],
+      "function": "main",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "loses part of the owned allocation footprint"
+    }
+  ]
+}

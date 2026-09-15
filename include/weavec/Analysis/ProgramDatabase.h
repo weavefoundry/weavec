@@ -18,6 +18,7 @@
 #define WEAVEC_ANALYSIS_PROGRAMDATABASE_H
 
 #include "weavec/Core/CallContext.h"
+#include "weavec/Core/Interface.h"
 #include "weavec/Core/Summary.h"
 
 #include "clang/AST/ASTContext.h"
@@ -60,12 +61,40 @@ private:
   std::map<std::string, std::uint32_t, std::less<>> ids;
 };
 
+/// RFC 0028: an immutable publication with value equality. Replacing one
+/// handle never changes the contents observed by another export or database.
+class ExportedSummary {
+public:
+  ExportedSummary() = default;
+  explicit ExportedSummary(core::FunctionSummary summary);
+
+  void assign(core::FunctionSummary summary);
+  [[nodiscard]] const core::FunctionSummary &get() const { return *share(); }
+  [[nodiscard]] const std::shared_ptr<const core::FunctionSummary> &
+  share() const {
+    return value ? value : emptyPublication();
+  }
+  [[nodiscard]] static ExportedSummary
+  fromShared(std::shared_ptr<const core::FunctionSummary> summary);
+
+  friend bool operator==(const ExportedSummary &left,
+                         const ExportedSummary &right) {
+    return left.value == right.value || left.get() == right.get();
+  }
+
+private:
+  // A default or moved-from handle denotes the same immutable empty value.
+  [[nodiscard]] static const std::shared_ptr<const core::FunctionSummary> &
+  emptyPublication();
+  std::shared_ptr<const core::FunctionSummary> value;
+};
+
 /// One function a unit exports.
 struct ExportedFunction {
   /// The summary a caller in the exporting unit would see (annotations
   /// applied), with globals numbered by the unit's `GlobalNames`.
-  core::FunctionSummary summary;
-  std::map<core::CallbackBindings, core::FunctionSummary> specializations;
+  ExportedSummary summary;
+  std::map<core::CallbackBindings, ExportedSummary> specializations;
   /// `functionTypeKey` of the definition; empty if the type has no stable
   /// spelling (an anonymous record is involved).
   std::string typeKey;
@@ -77,7 +106,7 @@ struct ExportedFunction {
   bool acceptsCallbacks = false;
   bool acceptsMemoryContexts = false;
   // NOLINTNEXTLINE(readability-redundant-member-init)
-  std::map<core::CallContext, core::FunctionSummary> memorySpecializations = {};
+  std::map<core::CallContext, ExportedSummary> memorySpecializations = {};
 
   friend bool operator==(const ExportedFunction &,
                          const ExportedFunction &) = default;
@@ -137,6 +166,8 @@ struct SizedFieldFacts {
 /// Everything one translation unit contributes to, and needs from, the
 /// program.
 struct UnitExports {
+  core::InterfaceTypes globalInterfaces;
+  core::InterfaceTypes objectInterfaces;
   /// The main source file, for messages and the dump.
   std::string source;
   // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
@@ -198,6 +229,8 @@ struct UnitExports {
 /// The exports of every unit of a program except the one being analysed.
 class ProgramDatabase {
 public:
+  core::InterfaceTypes globalInterfaces;
+  core::InterfaceTypes objectInterfaces;
   /// RFC 0020: identity of the summaries and global numbering used by
   /// importInto. Copies share it until a mutating operation starts.
   [[nodiscard]] const std::shared_ptr<const char> &importGeneration() const {
@@ -287,18 +320,17 @@ public:
   checkpointInputs(const std::set<std::string> &dependencies) const;
 
 private:
+  using PublishedSummary = std::shared_ptr<const core::FunctionSummary>;
   std::shared_ptr<const char> generation = std::make_shared<const char>(0);
-  std::map<std::pair<std::string, core::CallContext>, core::FunctionSummary>
+  std::map<std::pair<std::string, core::CallContext>, PublishedSummary>
       memorySummaries;
   std::map<std::string, std::set<core::CallContext>, std::less<>>
       memoryRequests;
   // RFC 0020: indexes and copied databases share immutable publications.
   // Joining another definition builds a private replacement first.
-  using PublishedSummary = std::shared_ptr<const core::FunctionSummary>;
   std::map<std::string, PublishedSummary, std::less<>> functions;
   std::map<std::string, PublishedSummary, std::less<>> callableSummaries;
-  std::map<std::pair<std::string, core::CallbackBindings>,
-           core::FunctionSummary>
+  std::map<std::pair<std::string, core::CallbackBindings>, PublishedSummary>
       contextSummaries;
   std::map<std::string, std::set<core::CallbackBindings>, std::less<>>
       callbackRequests;

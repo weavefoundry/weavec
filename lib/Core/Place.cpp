@@ -60,20 +60,34 @@ PlaceId PlaceTable::create(std::string displayName) {
   return PlaceId{id};
 }
 
-PlaceId PlaceTable::intern(PlaceId parent, PathStep step, std::string field) {
-  ChildKey key{.parent = parent.value, .step = step, .field = field};
-  if (const auto it = children.find(key); it != children.end())
+std::size_t PlaceTable::ChildHash::operator()(ChildKeyView key) const noexcept {
+  auto hash = std::hash<std::string_view>{}(key.field);
+  hash ^= key.parent + 0x9e3779b9U + (hash << 6U) + (hash >> 2U);
+  hash ^= static_cast<std::size_t>(key.step) + 0x9e3779b9U + (hash << 6U) +
+          (hash >> 2U);
+  return hash;
+}
+
+PlaceId PlaceTable::intern(PlaceId parent, PathStep step,
+                           std::string_view field) {
+  const ChildKeyView lookup{
+      .parent = parent.value, .step = step, .field = field};
+  if (const auto it = children.find(lookup); it != children.end())
     return it->second;
 
+  // RFC 0028: own the lookup bytes before growing entries. The incoming view
+  // may refer to a small string inside an entry that growth relocates.
+  ChildKey key{
+      .parent = parent.value, .step = step, .field = std::string(field)};
   const Entry &parentEntry = entries[parent.value];
   std::string displayName;
   switch (step) {
   case PathStep::Field:
     // `(*p).f` is spelled `p->f`, as the user wrote it.
     if (parentEntry.parent && parentEntry.step == PathStep::Deref)
-      displayName = std::string(name(*parentEntry.parent)) + "->" + field;
+      displayName = std::string(name(*parentEntry.parent)) + "->" + key.field;
     else
-      displayName = parentEntry.name + "." + field;
+      displayName = parentEntry.name + "." + key.field;
     break;
   case PathStep::Deref:
     displayName = "*" + parentEntry.name;
@@ -84,9 +98,10 @@ PlaceId PlaceTable::intern(PlaceId parent, PathStep step, std::string field) {
     else if (parentEntry.parent && (parentEntry.step == PathStep::Deref ||
                                     (parentEntry.step == PathStep::Index &&
                                      parentEntry.field.empty())))
-      displayName = std::string(name(*parentEntry.parent)) + "[" + field + "]";
+      displayName =
+          std::string(name(*parentEntry.parent)) + "[" + key.field + "]";
     else
-      displayName = parentEntry.name + "[" + field + "]";
+      displayName = parentEntry.name + "[" + key.field + "]";
     break;
   }
 
@@ -94,7 +109,7 @@ PlaceId PlaceTable::intern(PlaceId parent, PathStep step, std::string field) {
   entries.push_back(Entry{.name = std::move(displayName),
                           .parent = parent,
                           .step = step,
-                          .field = std::move(field),
+                          .field = key.field,
                           .children = {}});
   entries[parent.value].children.push_back(PlaceId{id});
   children.emplace(std::move(key), PlaceId{id});
@@ -103,7 +118,7 @@ PlaceId PlaceTable::intern(PlaceId parent, PathStep step, std::string field) {
 
 PlaceId PlaceTable::field(PlaceId parent, std::string_view fieldName) {
   assert(parent.value < entries.size() && "unknown parent place");
-  return intern(parent, PathStep::Field, std::string(fieldName));
+  return intern(parent, PathStep::Field, fieldName);
 }
 
 PlaceId PlaceTable::deref(PlaceId parent) {
@@ -122,7 +137,7 @@ PlaceId PlaceTable::index(PlaceId parent) {
 
 PlaceId PlaceTable::element(PlaceId parent, std::string_view selector) {
   assert(!selector.empty() && "a selected element needs an index");
-  return intern(parent, PathStep::Index, std::string(selector));
+  return intern(parent, PathStep::Index, selector);
 }
 
 std::optional<PlaceId> PlaceTable::child(PlaceId parent, PathStep step,
@@ -133,10 +148,10 @@ std::optional<PlaceId> PlaceTable::child(PlaceId parent, PathStep step,
       ((entry.step == PathStep::Index && entry.field.empty()) ||
        entry.step == PathStep::Deref))
     return parent;
-  ChildKey key{.parent = parent.value,
-               .step = step,
-               .field = step != PathStep::Deref ? std::string(field)
-                                                : std::string()};
+  const ChildKeyView key{.parent = parent.value,
+                         .step = step,
+                         .field = step != PathStep::Deref ? field
+                                                          : std::string_view{}};
   if (const auto it = children.find(key); it != children.end())
     return it->second;
   return std::nullopt;

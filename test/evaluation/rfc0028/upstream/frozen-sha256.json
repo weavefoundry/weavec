@@ -1,0 +1,8 @@
+{
+  "custom-good.c": "cdfa63fa9f83153ff7f2e5198a75b63d5e6c36806f44143a699e72d5ce450902",
+  "double-delete-bad.c": "4ca2a9f84df7a0866fcc46799d14985e3304560ab8dfdadec6a9c2e478a2aa6d",
+  "empty-good.c": "8b2b24bb6412631e891e940aaf8ce230e3946712bbc3d3daf04d1b36552a9d78",
+  "manifest.json": "4bc6d1101a597f9070e65589f9ae0206f242c2f96c96067c9d0875d102034922",
+  "nested-good.c": "82f2cabb14b43faa1a4a3ae648437e60c2072cb9be09f8434a7f6a4a3f53d7e0",
+  "stale-borrow-bad.c": "e416830a4e139bddebedbabc00f3717f01b291ac611cb8625aa9db3f2b7c4b7e"
+}

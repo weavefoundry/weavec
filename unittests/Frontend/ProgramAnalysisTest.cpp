@@ -294,12 +294,12 @@ int main(void) {
   core::FunctionSummary freeSummary;
   freeSummary.addEffect(core::SummaryPath::param(0),
                         core::PlaceEffect{.freed = true});
-  node.functions["node_free"] =
-      analysis::ExportedFunction{.summary = freeSummary,
-                                 .specializations = {},
-                                 .typeKey = "void (void *)",
-                                 .external = true,
-                                 .addressTaken = false};
+  node.functions["node_free"] = analysis::ExportedFunction{
+      .summary = analysis::ExportedSummary(freeSummary),
+      .specializations = {},
+      .typeKey = "void (void *)",
+      .external = true,
+      .addressTaken = false};
 
   ProgramAnalysis analysis(program.options);
   analysis.addExports(node);
@@ -340,27 +340,31 @@ int main(void) {
 TEST(ProgramAnalysis, WideningJoinsWithThePreviousRound) {
   static_assert(ProgramAnalysis::WidenAfter < ProgramAnalysis::MaxRounds);
   analysis::UnitExports previous;
-  previous.functions["f"].summary.neverReturns = true;
-  previous.functions["f"].summary.effects[core::SummaryPath::param(0)] =
-      core::PlaceEffect{.freed = true};
-  previous.functions["g"].summary.neverReturns = true;
+  core::FunctionSummary before;
+  before.neverReturns = true;
+  before.addEffect(core::SummaryPath::param(0), {.freed = true});
+  previous.functions["f"].summary.assign(std::move(before));
+  core::FunctionSummary terminating;
+  terminating.neverReturns = true;
+  previous.functions["g"].summary.assign(terminating);
   previous.countFields = {"struct a.rc"};
 
   analysis::UnitExports current;
-  current.functions["f"].summary.neverReturns = false;
-  current.functions["f"].summary.effects[core::SummaryPath::param(0)] =
-      core::PlaceEffect{.read = true, .freed = true};
-  current.functions["h"].summary.neverReturns = true;
+  core::FunctionSummary after;
+  after.addEffect(core::SummaryPath::param(0), {.read = true, .freed = true});
+  current.functions["f"].summary.assign(std::move(after));
+  current.functions["h"].summary.assign(std::move(terminating));
   current.countFields = {"struct b.rc"};
 
   ProgramAnalysis::widen(current, previous);
   // The must-fact only one round had is dropped; the shared one stays.
-  EXPECT_FALSE(current.functions.at("f").summary.neverReturns);
+  EXPECT_FALSE(current.functions.at("f").summary.get().neverReturns);
   EXPECT_TRUE(current.functions.at("f")
-                  .summary.effects.at(core::SummaryPath::param(0))
+                  .summary.get()
+                  .effects.at(core::SummaryPath::param(0))
                   .freed);
   // Functions only the new round exports are kept as they are.
-  EXPECT_TRUE(current.functions.at("h").summary.neverReturns);
+  EXPECT_TRUE(current.functions.at("h").summary.get().neverReturns);
   EXPECT_FALSE(current.functions.contains("g"));
   EXPECT_EQ(current.countFields,
             (std::set<std::string>{"struct a.rc", "struct b.rc"}));

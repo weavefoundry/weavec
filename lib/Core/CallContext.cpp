@@ -12,6 +12,7 @@
 #include "weavec/Core/Array.h"
 
 #include <algorithm>
+#include <cassert>
 
 namespace weavec::core {
 
@@ -239,24 +240,37 @@ std::optional<CallContext> remapCallContext(const CallContext &context,
   return result.valid() ? std::optional(result) : std::nullopt;
 }
 
-std::set<SummaryPath> callMemoryFootprint(const FunctionSummary &summary) {
+std::optional<std::set<SummaryPath>>
+callMemoryFootprint(const FunctionSummary &summary) {
   std::set<SummaryPath> result;
-  const auto visit = [&result](const SummaryPath &path, bool value) {
-    if (path.isResult())
+  bool overLimit = false;
+  const auto visit = [&result, &overLimit](const SummaryPath &path,
+                                           bool value) {
+    if (overLimit || path.isResult())
       return;
-    SummaryPath prefix = path.rootPath();
-    for (const auto &step : path.steps) {
-      if (step.step == PathStep::Deref)
-        result.insert(prefix);
-      prefix.steps.push_back(step);
+    const auto insert = [&](const SummaryPath &input) {
+      result.insert(input);
+      overLimit = result.size() > MaxCallContextFacts;
+    };
+    for (std::size_t i = 0; i < path.steps.size(); ++i) {
+      if (path.steps[i].step != PathStep::Deref)
+        continue;
+      auto prefix = path;
+      prefix.steps.truncate(i);
+      insert(prefix);
+      if (overLimit)
+        return;
     }
     if (value)
-      result.insert(path);
+      insert(path);
   };
-  const auto expression = [&visit](const auto &value) {
-    for (const auto &node : value.all())
+  const auto expression = [&visit, &overLimit](const auto &value) {
+    for (const auto &node : value.all()) {
+      if (overLimit)
+        return;
       if (node.key)
         visit(*node.key, true);
+    }
   };
   const auto numericGuard = [&expression](const PathGuard &guard) {
     for (const auto &predicate : guard.integers) {
@@ -279,6 +293,8 @@ std::set<SummaryPath> callMemoryFootprint(const FunctionSummary &summary) {
       affine(*value.stringLength);
   };
   for (const auto &[path, effect] : summary.effects) {
+    if (overLimit)
+      return std::nullopt;
     visit(path, effect.consumed() || effect.read);
     numericGuard(effect.when);
     for (const auto &[condition, fact] : effect.when.conditions) {
@@ -292,6 +308,8 @@ std::set<SummaryPath> callMemoryFootprint(const FunctionSummary &summary) {
     }
   }
   for (const auto &store : summary.stores) {
+    if (overLimit)
+      return std::nullopt;
     visit(store.dest, false);
     if (store.value.path)
       visit(*store.value.path, true);
@@ -303,6 +321,8 @@ std::set<SummaryPath> callMemoryFootprint(const FunctionSummary &summary) {
     for (const auto &field : graph.fields)
       numericSource(field.value);
   for (const auto &[path, outputs] : summary.numericOutputs) {
+    if (overLimit)
+      return std::nullopt;
     visit(path, true);
     for (const auto &output : outputs) {
       numericGuard(output.when);
@@ -317,7 +337,23 @@ std::set<SummaryPath> callMemoryFootprint(const FunctionSummary &summary) {
       if (requirement.start)
         affine(*requirement.start);
     }
-  return result;
+  return overLimit ? std::nullopt : std::optional(std::move(result));
+}
+
+const std::optional<std::set<SummaryPath>> &CallMemoryFootprintCache::get(
+    const std::shared_ptr<const FunctionSummary> &summary) {
+  assert(summary && "footprint preparation needs an immutable summary");
+  if (const auto found = entries.find(summary.get()); found != entries.end()) {
+    if (found->second.owner.lock() == summary)
+      return found->second.paths;
+    entries.erase(found);
+  }
+  if (entries.size() == Capacity)
+    entries.clear();
+  return entries
+      .emplace(summary.get(),
+               Entry{.owner = summary, .paths = callMemoryFootprint(*summary)})
+      .first->second.paths;
 }
 
 static std::string encodeContextText(std::string_view text) {

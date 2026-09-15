@@ -105,7 +105,7 @@ void CheckedRequirements::intersect(const CheckedRequirements &other) {
       insert(entry);
 }
 
-static constexpr std::array<std::string_view, 31> Kinds{
+static constexpr std::array<std::string_view, 32> Kinds{
     "valid",
     "extent",
     "initialized",
@@ -136,7 +136,8 @@ static constexpr std::array<std::string_view, 31> Kinds{
     "container-preserved",
     "container-consumed",
     "container-partition",
-    "container-combined"};
+    "container-combined",
+    "allocation-consumed"};
 
 std::string_view toString(CheckedRequirementKind value) noexcept {
   const auto index = static_cast<std::size_t>(value);

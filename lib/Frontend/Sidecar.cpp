@@ -52,6 +52,14 @@ std::string printUnitRecord(const UnitRecord &record) {
     return exports.globals.nameOf(id).str();
   };
   os << "weavec-summaries " << SidecarFormatVersion << '\n';
+  const auto interfaces = [&](llvm::StringRef kind,
+                              const core::InterfaceTypes &types) {
+    for (const auto &[name, type] : types)
+      os << kind << ' ' << llvm::toHex(name, true) << ' '
+         << (type ? llvm::toHex(type->encode(), true) : "-") << '\n';
+  };
+  interfaces("global-interface", exports.globalInterfaces);
+  interfaces("object-interface", exports.objectInterfaces);
   // RFC 0022: first-use interning can otherwise reorder global callback
   // bindings and specialization keys during a checkpoint round trip.
   for (std::uint32_t id = 0; id < exports.globals.size(); ++id)
@@ -134,16 +142,16 @@ std::string printUnitRecord(const UnitRecord &record) {
       os << "accepts-callbacks\n";
     if (function.acceptsMemoryContexts)
       os << "accepts-memory-contexts\n";
-    os << core::printSummary(function.summary, names);
+    os << core::printSummary(function.summary.get(), names);
     for (const auto &[input, summary] : function.memorySpecializations) {
       os << "memory-specialization " << core::printCallContext(input, names)
          << '\n';
-      os << core::printSummary(summary, names);
+      os << core::printSummary(summary.get(), names);
     }
     for (const auto &[bindings, summary] : function.specializations) {
       os << "specialization " << core::printCallbackBindings(bindings, names)
          << '\n';
-      os << core::printSummary(summary, names);
+      os << core::printSummary(summary.get(), names);
     }
   }
   return text;
@@ -216,16 +224,19 @@ std::optional<UnitRecord> parseUnitRecord(llvm::StringRef text,
         return fail("line " + std::to_string(lineNumber) + ": " + summaryError);
       if (memorySpecialized) {
         if (!current->memorySpecializations
-                 .emplace(*memorySpecialized, *summary)
+                 .emplace(*memorySpecialized,
+                          analysis::ExportedSummary(*summary))
                  .second)
           return fail("duplicate memory specialization");
         memorySpecialized.reset();
       } else if (specialized) {
-        if (!current->specializations.emplace(*specialized, *summary).second)
+        if (!current->specializations
+                 .emplace(*specialized, analysis::ExportedSummary(*summary))
+                 .second)
           return fail("duplicate callback specialization");
         specialized.reset();
       } else {
-        current->summary = *summary;
+        current->summary.assign(*summary);
       }
       continue;
     }
@@ -239,7 +250,30 @@ std::optional<UnitRecord> parseUnitRecord(llvm::StringRef text,
                return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
              });
     };
-    if (kind == "global-name") {
+    if (kind == "global-interface" || kind == "object-interface") {
+      const auto [encodedName, encodedType] = value.split(' ');
+      std::string name;
+      std::string type;
+      auto &types = kind == "global-interface" ? exports.globalInterfaces
+                                               : exports.objectInterfaces;
+      if (encodedName.size() > 65536 ||
+          !llvm::tryGetFromHex(encodedName, name) || name.empty() ||
+          llvm::toHex(name, true) != encodedName || types.size() >= 4096 ||
+          types.contains(name))
+        return fail("invalid or duplicate interface identity");
+      if (encodedType == "-") {
+        types.emplace(name, std::nullopt);
+      } else {
+        if (encodedType.size() > core::MaxInterfaceBytes * 2 ||
+            !llvm::tryGetFromHex(encodedType, type) ||
+            llvm::toHex(type, true) != encodedType)
+          return fail("invalid interface encoding");
+        const auto description = core::InterfaceType::decode(type);
+        if (!description)
+          return fail("invalid interface storage description");
+        types.emplace(std::move(name), *description);
+      }
+    } else if (kind == "global-name") {
       const auto name = core::CallTargets::parse(value.str());
       if (!name || !name->resolved() || name->functions.size() != 1 ||
           exports.globals.size() >= 65536 ||
@@ -294,7 +328,7 @@ std::optional<UnitRecord> parseUnitRecord(llvm::StringRef text,
       auto &requests = exports.memoryRequests[*symbol->functions.begin()];
       if (!requests.insert(*input).second)
         return fail("duplicate memory request");
-      if (requests.size() > core::MaxMemoryContexts)
+      if (requests.size() > MaxSidecarContextRequests)
         return fail("too many memory requests");
     } else if (kind == "memory-specialization") {
       if (!current || specialized || memorySpecialized ||
@@ -326,7 +360,7 @@ std::optional<UnitRecord> parseUnitRecord(llvm::StringRef text,
         return fail("invalid callback request");
       auto &requests = exports.callbackRequests[*symbol->functions.begin()];
       requests.insert(*bindings);
-      if (requests.size() > core::MaxCallbackContexts)
+      if (requests.size() > MaxSidecarContextRequests)
         return fail("too many callback requests");
     } else if (kind == "specialization") {
       if (!current || specialized ||

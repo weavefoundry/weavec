@@ -300,6 +300,8 @@ struct ArgumentListState {
 };
 
 struct SafetyState {
+  /// RFC 0028: historical must-fact about direct entry pointer parameters.
+  std::set<PlaceId> consumedAllocations;
   BufferFacts buffers;
   UnionState unions;
   ContainerFacts containers;

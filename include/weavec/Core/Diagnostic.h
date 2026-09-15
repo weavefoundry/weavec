@@ -22,6 +22,7 @@
 #include <cstddef>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace weavec::core {
@@ -158,8 +159,11 @@ class DiagnosticCollector final : public DiagnosticSink {
 public:
   void report(const Diagnostic &diagnostic) override;
 
-  [[nodiscard]] const std::vector<Diagnostic> &diagnostics() const noexcept {
+  [[nodiscard]] const std::vector<Diagnostic> &diagnostics() const & noexcept {
     return items;
+  }
+  [[nodiscard]] std::vector<Diagnostic> diagnostics() && noexcept {
+    return std::move(items);
   }
   [[nodiscard]] bool empty() const noexcept { return items.empty(); }
   [[nodiscard]] std::size_t size() const noexcept { return items.size(); }

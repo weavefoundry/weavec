@@ -17,6 +17,19 @@ using namespace clang;
 
 namespace weavec::analysis {
 
+void FunctionDataflow::recordAllocationConsumed(core::PlaceId holder,
+                                                core::AnalysisState &state) {
+  const auto path = builder.summaryPathOf(holder);
+  if (!path || !path->isParam() || !path->isRoot() ||
+      path->index >= function.getNumParams() ||
+      state.safety->replacedPointers.contains(holder))
+    return;
+  const auto *parameter = function.getParamDecl(path->index);
+  if (parameter->getType()->isPointerType() &&
+      builder.placeForVar(*parameter) == holder)
+    state.safety->consumedAllocations.insert(holder);
+}
+
 bool FunctionDataflow::containerZeroField(core::PlaceId holder,
                                           const core::ContainerField &field,
                                           const core::AnalysisState &state) {
@@ -225,7 +238,11 @@ void FunctionDataflow::captureFootprint(core::PlaceId dest,
     // A conditional copy of an existing pointer has no such property.
     if (origin.call && allocated == 1 && nonNull == 1)
       return;
-    if (footprintAllocated &&
+    const auto owner =
+        origin.call ? callSummaries.find(origin.call) : callSummaries.end();
+    const bool mayAcquire = owner == callSummaries.end() || !owner->second ||
+                            owner->second->returnsFresh();
+    if (footprintAllocated && !materializingHeap && mayAcquire &&
         std::ranges::any_of(origin.alternatives, [](const auto &alternative) {
           return alternative.kind == ValueOrigin::Kind::Alloc;
         }))
@@ -663,6 +680,30 @@ void FunctionDataflow::applyFootprintPosts(
           post.begin.path)
         ++footprint[inputs.at(*post.begin.path)];
       state.safety->footprints.assign(*holder, std::move(footprint));
+    } else {
+      continue;
+    }
+    // RFC 0028: a verified partition or preservation transfers the cleanup
+    // duty with the complete footprint, including an unassigned call result.
+    // The function's allocation balance still rejects losing that result.
+    if (footprintAllocated) {
+      const auto retire = [&](const core::SummaryPath &source) {
+        if (const auto actual = builder.resolveSummaryPath(source, call);
+            actual && actual->place != *holder) {
+          const auto resource = state.resources.recordOf(actual->place);
+          if (resource && resource->origin == core::ResourceOrigin::Allocated)
+            state.resources.clear(actual->place);
+        }
+      };
+      if (partition) {
+        if (post.begin.path)
+          retire(*post.begin.path);
+      } else {
+        retire(post.other);
+        if (post.kind == core::CheckedRequirementKind::ContainerCombined &&
+            post.begin.path)
+          retire(*post.begin.path);
+      }
     }
   }
 }

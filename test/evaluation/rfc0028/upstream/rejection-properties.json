@@ -1,0 +1,4 @@
+{
+  "double-delete-bad": "freed twice|container chain precondition",
+  "stale-borrow-bad": "after it was freed|live non-null storage|container chain precondition"
+}

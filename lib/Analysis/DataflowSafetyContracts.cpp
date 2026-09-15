@@ -106,6 +106,34 @@ void FunctionDataflow::captureCheckedPosts(
   progress.clear();
   if (!contract.complete())
     return;
+  for (const auto &post : contract.establishes) {
+    if (post.kind != core::CheckedRequirementKind::AllocationConsumed ||
+        post.on || !post.when.trivial() || post.family != "free" ||
+        !post.path.isParam() || !post.path.isRoot() ||
+        post.path.index >= call.getNumArgs())
+      continue;
+    const auto origin = builder.classifyValue(*call.getArg(post.path.index));
+    if (!origin.place || !origin.offset.isZero())
+      continue;
+    const auto holder = origin.place->place;
+    recordAllocationConsumed(holder, state);
+    if (std::ranges::any_of(contract.establishes, [&](const auto &other) {
+          return other.kind ==
+                     core::CheckedRequirementKind::ContainerConsumed &&
+                 other.path == post.path;
+        }))
+      continue;
+    if (const auto *fact = state.safety->containers.find(holder)) {
+      auto required = fact->shape;
+      required.access = core::ContainerAccess::Release;
+      required.family = "free";
+      if (const auto owned = strengthenContainer(*fact, required);
+          owned && requireContainer(*owned, call, state)) {
+        state.safety->containers.set(holder, *owned);
+        releaseFootprint(holder, false, state);
+      }
+    }
+  }
   auto &snapshots = checkedSnapshots[&call];
   for (const auto &[input, saved] : snapshots) {
     (void)input;
@@ -567,6 +595,7 @@ void FunctionDataflow::applyCheckedResult(core::PlaceId dest,
                                           const CallExpr &call,
                                           core::AnalysisState &state) {
   applyCheckedPositions(call, state, dest);
+  applyBufferPosts(call, state, dest);
   applyContainerPosts(call, state, dest);
   applyFootprintPosts(call, state, dest);
   applyCheckedUnionPosts(call, state, dest);
@@ -621,6 +650,23 @@ void FunctionDataflow::applyCheckedPosts(const CallExpr &call,
   applyContainerPosts(call, state);
   applyFootprintPosts(call, state, std::nullopt);
   applyBufferPosts(call, state);
+  // RFC 0028: an accessor used directly in an expression still has a pointer
+  // value. Retain its verified storage position independently of assignment.
+  // This gives nested dereferences the same lifetime and bounds evidence as
+  // a saved accessor result.
+  if (call.getType()->isPointerType())
+    if (const auto positions = checkedPositionPosts.find(&call);
+        positions != checkedPositionPosts.end() &&
+        std::ranges::any_of(positions->second, [](const auto &post) {
+          return post.path.isResult() && post.path.isRoot();
+        })) {
+      const auto [entry, inserted] = checkedPointerResults.try_emplace(&call);
+      if (inserted)
+        entry->second =
+            places.create("pointer-call@" + std::to_string(locate(call).line));
+      reinit(entry->second, state);
+      applyCheckedResult(entry->second, call, state);
+    }
   applyCheckedUnionPosts(call, state);
   const auto found = checkedPosts.find(&call);
   if (found == checkedPosts.end())

@@ -32,25 +32,45 @@ static constexpr std::size_t CompressAboveBytes = std::size_t{1024} * 1024;
 static constexpr std::size_t MaxCheckpointUnits = 4096;
 static constexpr std::size_t MaxDiagnostics = 1000000;
 
-static llvm::json::Value locationJSON(const core::SourceLocation &location) {
-  return llvm::json::Array{location.file, location.line, location.column};
+// RFC 0028: preserve LLVM JSON's decoded string values while escaping long
+// records in bulk. Invalid UTF-8 has the same replacement policy as Value.
+static std::string checkpointString(llvm::StringRef value) {
+  if (llvm::json::isUTF8(value))
+    return core::safetyJsonString(value);
+  return core::safetyJsonString(llvm::json::fixUTF8(value));
 }
 
-static llvm::json::Value diagnosticJSON(const core::Diagnostic &diagnostic) {
-  llvm::json::Array notes;
-  for (const auto &note : diagnostic.notes)
-    notes.push_back(diagnosticJSON(note));
-  llvm::json::Array fixits;
-  for (const auto &fixit : diagnostic.fixits)
-    fixits.push_back(
-        llvm::json::Array{locationJSON(fixit.location), fixit.insertion});
-  return llvm::json::Object{
-      {.K = "severity", .V = static_cast<unsigned>(diagnostic.severity)},
-      {.K = "id", .V = std::string(diagnostic.id)},
-      {.K = "message", .V = diagnostic.message},
-      {.K = "location", .V = locationJSON(diagnostic.location)},
-      {.K = "notes", .V = std::move(notes)},
-      {.K = "fixits", .V = std::move(fixits)}};
+static void writeLocationJSON(llvm::raw_ostream &out,
+                              const core::SourceLocation &location) {
+  out << '[' << checkpointString(location.file) << ',' << location.line << ','
+      << location.column << ']';
+}
+
+static void writeDiagnosticJSON(llvm::raw_ostream &out,
+                                const core::Diagnostic &diagnostic) {
+  out << R"({"fixits":[)";
+  bool first = true;
+  for (const auto &fixit : diagnostic.fixits) {
+    if (!first)
+      out << ',';
+    first = false;
+    out << '[';
+    writeLocationJSON(out, fixit.location);
+    out << ',' << checkpointString(fixit.insertion) << ']';
+  }
+  out << R"(],"id":)" << checkpointString(diagnostic.id) << R"(,"location":)";
+  writeLocationJSON(out, diagnostic.location);
+  out << R"(,"message":)" << checkpointString(diagnostic.message)
+      << R"(,"notes":[)";
+  first = true;
+  for (const auto &note : diagnostic.notes) {
+    if (!first)
+      out << ',';
+    first = false;
+    writeDiagnosticJSON(out, note);
+  }
+  out << R"(],"severity":)" << static_cast<unsigned>(diagnostic.severity)
+      << '}';
 }
 
 static bool parseLocation(const llvm::json::Value &value,
@@ -179,7 +199,7 @@ readAnalysisCheckpoint(std::string_view directory, std::string_view key,
     return std::nullopt;
   }
   const auto *object = parsed->getAsObject();
-  if (!object || object->size() != 10 || object->getInteger("version") != 2 ||
+  if (!object || object->size() != 10 || object->getInteger("version") != 3 ||
       object->getString("key") != llvm::StringRef(key))
     return std::nullopt;
   const auto *units = object->getArray("units");
@@ -277,15 +297,13 @@ bool writeAnalysisCheckpoint(std::string_view directory, std::string_view key,
       checkpoint.units.empty() || checkpoint.units.size() > MaxCheckpointUnits)
     return false;
   CheckpointExplanations explanations;
-  llvm::json::Array units;
+  std::string payload;
+  llvm::raw_string_ostream out(payload);
+  out << R"({"version":3,"key":)" << core::safetyJsonString(key)
+      << R"(,"imports":)" << core::safetyJsonString(checkpoint.importedIdentity)
+      << R"(,"units":[)";
   unsigned index = 0;
   for (const auto &unit : checkpoint.units) {
-    llvm::json::Array diagnostics;
-    for (const auto &diagnostic : unit.diagnostics)
-      diagnostics.push_back(diagnosticJSON(diagnostic));
-    llvm::json::Array dependencies;
-    for (const auto &dependency : unit.dependencies)
-      dependencies.push_back(dependency);
     UnitRecord record;
     record.exports = unit.exports;
     auto references = explanations.extract(record.exports);
@@ -300,19 +318,30 @@ bool writeAnalysisCheckpoint(std::string_view directory, std::string_view key,
     UnitRecord seen;
     if (index < checkpoint.sizedPairsSeen.size())
       seen.exports.sizedFields.witnesses = checkpoint.sizedPairsSeen[index];
-    ++index;
-    units.push_back(llvm::json::Object{
-        {.K = "record", .V = std::move(text)},
-        {.K = "ledgers", .V = std::move(references)},
-        {.K = "sized_pairs_seen", .V = printUnitRecord(seen)},
-        {.K = "diagnostics", .V = std::move(diagnostics)},
-        {.K = "dependencies", .V = std::move(dependencies)}});
+    if (index++)
+      out << ',';
+    out << R"({"dependencies":[)";
+    bool first = true;
+    for (const auto &dependency : unit.dependencies) {
+      if (!first)
+        out << ',';
+      first = false;
+      out << checkpointString(dependency);
+    }
+    out << R"(],"diagnostics":[)";
+    first = true;
+    for (const auto &diagnostic : unit.diagnostics) {
+      if (!first)
+        out << ',';
+      first = false;
+      writeDiagnosticJSON(out, diagnostic);
+    }
+    out << R"(],"ledgers":)" << llvm::json::Value(std::move(references))
+        << R"(,"record":)" << checkpointString(text)
+        << R"(,"sized_pairs_seen":)" << checkpointString(printUnitRecord(seen))
+        << '}';
   }
-  std::string payload;
-  llvm::raw_string_ostream out(payload);
-  out << R"({"version":2,"key":)" << core::safetyJsonString(key)
-      << ",\"imports\":" << core::safetyJsonString(checkpoint.importedIdentity)
-      << ",\"units\":" << llvm::json::Value(std::move(units));
+  out << ']';
   explanations.writeTables(out);
   out << '}';
   if (stats)

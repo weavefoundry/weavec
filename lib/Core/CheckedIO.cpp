@@ -256,6 +256,11 @@ public:
                result.other == SummaryPath{} && result.family.empty() &&
                result.begin == PathAffine::ofConstant(0) &&
                result.end == PathAffine::ofConstant(0);
+    if (result.kind == CheckedRequirementKind::AllocationConsumed)
+      valid &= result.path.isParam() && result.path.isRoot() &&
+               result.other == SummaryPath{} && result.family == "free" &&
+               result.begin == PathAffine::ofConstant(0) &&
+               result.end == PathAffine::ofConstant(0);
     if (result.kind == CheckedRequirementKind::TerminatedWithin)
       valid &= result.family.empty() &&
                (!result.begin.isConstant() || result.begin.constant >= 0) &&
@@ -329,6 +334,8 @@ public:
       valid &= result.on.has_value();
     }
     result.ifNonNull = flag();
+    if (result.kind == CheckedRequirementKind::AllocationConsumed)
+      valid &= result.when.trivial() && !result.ifNonNull;
     if (result.kind == CheckedRequirementKind::Buffer ||
         result.kind == CheckedRequirementKind::BufferPreserved ||
         result.kind == CheckedRequirementKind::BufferAppended)
@@ -483,7 +490,8 @@ parseCheckedContract(std::string_view record, const GlobalResolver &resolve) {
         requirement.kind == CheckedRequirementKind::ContainerPreserved ||
         requirement.kind == CheckedRequirementKind::ContainerConsumed ||
         requirement.kind == CheckedRequirementKind::ContainerPartition ||
-        requirement.kind == CheckedRequirementKind::ContainerCombined)
+        requirement.kind == CheckedRequirementKind::ContainerCombined ||
+        requirement.kind == CheckedRequirementKind::AllocationConsumed)
       return std::nullopt;
   for (const auto &requirement : result.requirements)
     if (requirement.kind == CheckedRequirementKind::Buffer &&

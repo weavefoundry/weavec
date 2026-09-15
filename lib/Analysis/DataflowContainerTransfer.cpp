@@ -759,6 +759,14 @@ void FunctionDataflow::checkedContainersAfterCall(const CallExpr &call,
           return containerEffectCovered(input.first, input.second, path,
                                         effect);
         })) {
+      // RFC 0028: writing a private numeric cell cannot change a heap graph.
+      // Its scalar facts are invalidated by the normal call effects. Preserve
+      // independently established object evidence across configuration calls.
+      if (effect.written && !effect.consumed() && path.isGlobal() &&
+          !path.hasDeref())
+        if (const auto actual = contextPlace(path, state);
+            actual && actual->second->isArithmeticType())
+          continue;
       state.safety->containers.clear();
       break;
     }

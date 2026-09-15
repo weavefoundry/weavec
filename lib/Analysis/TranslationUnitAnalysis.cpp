@@ -254,8 +254,7 @@ UnitExports TranslationUnitAnalyzer::exports() {
   UnitExports result = skeletonExports();
   result.checkedTarget = context.getTargetInfo().getTriple().str();
   const GlobalTable &table = store.globals();
-  // Globals travel by name; a `static` one means nothing elsewhere and is
-  // dropped (RFC 0005, *The program database*).
+  // RFC 0028: supported private roots retain identity and representation.
   const core::GlobalIdMap byName = [&](std::uint32_t id) {
     const auto name = table.portableName(id);
     return name ? std::optional(result.globals.idFor(*name)) : std::nullopt;
@@ -344,7 +343,7 @@ UnitExports TranslationUnitAnalyzer::exports() {
     if (portable.checked.computed)
       result.checkedDefinitions[function->getNameAsString()] = portable.checked;
     if (it != result.functions.end())
-      it->second.summary = std::move(portable);
+      it->second.summary.assign(std::move(portable));
   }
   for (std::string &name : store.unknownCalleeNames())
     result.unknownCallees.insert(std::move(name));
@@ -366,7 +365,7 @@ UnitExports TranslationUnitAnalyzer::exports() {
     const auto it = result.functions.find(function->getNameAsString());
     const auto mapped = core::remapCallContext(key.second, byName);
     if (it != result.functions.end() && mapped && summary)
-      it->second.memorySpecializations[*mapped] = exportSummary(*summary);
+      it->second.memorySpecializations[*mapped].assign(exportSummary(*summary));
   }
   for (const auto &[key, summary] : store.specialized) {
     const auto *function = store.callable(key.first);
@@ -375,12 +374,14 @@ UnitExports TranslationUnitAnalyzer::exports() {
     const auto it = result.functions.find(function->getNameAsString());
     const auto mapped = core::remapCallbackBindings(key.second, byName);
     if (it != result.functions.end() && mapped && summary)
-      it->second.specializations[*mapped] = exportSummary(*summary);
+      it->second.specializations[*mapped].assign(exportSummary(*summary));
   }
   result.countFields = store.knownCountKeys();
   // RFC 0012: so are sized-field witnesses and refutations.
   result.sizedFields = store.sizedFieldFacts();
   result.sizedFieldLoads = store.sizedFieldLoads();
+  result.globalInterfaces = table.interfaces;
+  result.objectInterfaces = store.objectInterfaces;
   return result;
 }
 
