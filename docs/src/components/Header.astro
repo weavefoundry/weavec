@@ -1,0 +1,21 @@
+---
+import SiteTitle from '@astrojs/starlight/components/SiteTitle.astro';
+import Search from '@astrojs/starlight/components/Search.astro';
+import ThemeSelect from '@astrojs/starlight/components/ThemeSelect.astro';
+import { Icon } from '@astrojs/starlight/components';
+import project from '../../.generated/project.json';
+---
+
+<div class="weavec-header">
+  <div class="brand">
+    <SiteTitle /><a class="version" href="/project/releases/">v{project.version}</a>
+  </div>
+  <div class="header-search"><Search /></div>
+  <nav class="header-links" aria-label="Main navigation">
+    <a href="/getting-started/introduction/">Docs</a><a href="/rfcs/">RFCs</a>
+    <a class="github" href="https://github.com/weavefoundry/weavec" aria-label="WeaveC on GitHub"
+      ><Icon name="github" size="1.25rem" /></a
+    >
+    <ThemeSelect />
+  </nav>
+</div>

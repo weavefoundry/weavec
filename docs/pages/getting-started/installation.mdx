@@ -1,0 +1,87 @@
+---
+title: Installation
+description: Build and install WeaveC from source on macOS or Linux using LLVM, Clang, CMake, and Ninja.
+---
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
+WeaveC currently ships source releases. Build it against an LLVM/Clang development installation, and keep that LLVM installation available at runtime. The CI-tested platforms are macOS and Linux.
+
+## 1. Install the toolchain
+
+You need **CMake 3.25 or newer** for the supplied presets, Ninja, a C++20 compiler, and the LLVM/Clang development libraries. LLVM **23.x** is recommended; the project supports LLVM **20 and newer**. Tests also require `lit` and LLVM's `FileCheck`.
+
+<Tabs>
+<TabItem label="macOS">
+
+```sh
+brew install cmake llvm ninja lit
+export WEAVEC_LLVM_PREFIX="$(brew --prefix llvm)"
+```
+
+Apple's system Clang can compile WeaveC, but the development libraries come from Homebrew's LLVM package. Xcode does not include them.
+
+</TabItem>
+<TabItem label="Ubuntu / Debian">
+
+Install LLVM from the [official LLVM packages](https://apt.llvm.org/) for your distribution. Review the installer before running it with elevated privileges:
+
+```sh
+wget https://apt.llvm.org/llvm.sh
+less llvm.sh
+sudo bash llvm.sh 23 all
+sudo apt-get install -y cmake ninja-build python3-venv
+python3 -m venv .venv
+. .venv/bin/activate
+pip install lit==23.1.0
+export WEAVEC_LLVM_PREFIX=/usr/lib/llvm-23
+export CC=clang-23 CXX=clang++-23
+```
+
+Check `cmake --version`; older distributions may need a newer CMake installation to use the presets.
+
+</TabItem>
+</Tabs>
+
+## 2. Get a release
+
+Download the source archive and `SHA256SUMS` from [GitHub Releases](https://github.com/weavefoundry/weavec/releases) into the same directory. Verify the archive with one of:
+
+```sh
+shasum -a 256 -c SHA256SUMS  # macOS
+sha256sum -c SHA256SUMS     # Linux
+```
+
+Extract `weavec-X.Y.Z-source.tar.gz`, replacing `X.Y.Z` with the downloaded version, and enter its `weavec-X.Y.Z` directory.
+
+For development, you can instead clone the current source:
+
+```sh
+git clone https://github.com/weavefoundry/weavec.git
+cd weavec
+```
+
+## 3. Build, test, and install
+
+Run these commands from the source directory:
+
+```sh
+cmake --preset release -DWEAVEC_VERSION_SUFFIX=""
+cmake --build --preset release
+ctest --preset release
+cmake --install build/release --prefix "$HOME/.local"
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+Add the PATH export to your shell configuration to retain it in new terminals. Use the [developer guide](/contributing/development/) for debug builds, alternative LLVM installations, and build options.
+
+## 4. Verify the installation
+
+```sh
+weavec --version
+weavec-cc --version
+```
+
+Both commands should print their version. If Clang resources or shared libraries cannot be found, check [installation troubleshooting](/reference/troubleshooting/).
+
+**Next:** [Run your first check](/getting-started/first-check/).
