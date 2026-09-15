@@ -51,6 +51,15 @@ __pycache__/
 .venv/
 venv/
 
+# Documentation website
+/docs/node_modules/
+/docs/.astro/
+/docs/.generated/
+/docs/dist/
+/docs/playwright-report/
+/docs/test-results/
+/docs/public/social-card.png
+
 # Coverage / profiling
 *.gcda
 *.gcno

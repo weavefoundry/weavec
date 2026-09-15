@@ -1,0 +1,26 @@
+---
+import Default from '@astrojs/starlight/components/PageTitle.astro';
+const { entry } = Astro.locals.starlightRoute;
+const status = entry.data.rfcStatus;
+const section = entry.id.split('/')[0];
+const labels: Record<string, string> = {
+  'getting-started': 'START HERE',
+  guides: 'GUIDES',
+  reference: 'REFERENCE',
+  internals: 'UNDER THE HOOD',
+  contributing: 'CONTRIBUTE',
+  project: 'PROJECT',
+  rfcs: 'DESIGN RECORDS',
+};
+---
+
+<div class="page-eyebrow">
+  {labels[section] || 'DOCUMENTATION'}{
+    status && (
+      <span class="status-badge" data-status={status.toLowerCase()}>
+        {status}
+      </span>
+    )
+  }
+</div>
+<Default />

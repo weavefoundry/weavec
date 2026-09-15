@@ -1,5 +1,17 @@
 version: 2
 updates:
+  - package-ecosystem: npm
+    directory: /docs
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      documentation:
+        patterns: ["*"]
+        update-types: [minor, patch]
+    labels: [dependencies]
+    commit-message:
+      prefix: "build(docs)"
   - package-ecosystem: github-actions
     directory: /
     schedule:

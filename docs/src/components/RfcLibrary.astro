@@ -1,0 +1,145 @@
+---
+import project from '../../.generated/project.json';
+const { rfcs } = project;
+---
+
+<div class="rfc-library">
+  <div class="rfc-controls">
+    <label
+      >Find a design record<input
+        id="rfc-query"
+        type="search"
+        placeholder="Search titles or RFC numbers…"
+      /></label
+    ><label
+      >Status<select id="rfc-status"
+        ><option value="">All statuses</option>{
+          [...new Set(rfcs.map((rfc) => rfc.status))]
+            .sort()
+            .map((status) => <option>{status}</option>)
+        }</select
+      ></label
+    >
+  </div>
+  <p id="rfc-count" role="status" aria-live="polite">{rfcs.length} design records</p>
+  <ul class="rfc-list">
+    {
+      rfcs.map((rfc) => (
+        <li data-search={`${rfc.number} ${rfc.title}`.toLowerCase()} data-status={rfc.status}>
+          <a href={rfc.href}>
+            <>
+              <span class="rfc-number">RFC {rfc.number}</span>
+              <span class="rfc-title">{rfc.title}</span>
+              <span class="status-badge" data-status={rfc.status.toLowerCase()}>
+                {rfc.status}
+              </span>
+              <span class="rfc-arrow" aria-hidden="true">
+                ↗
+              </span>
+            </>
+          </a>
+        </li>
+      ))
+    }
+  </ul>
+  <p id="rfc-empty" hidden>No matching records. Try a shorter title or choose all statuses.</p>
+</div>
+<script>
+  const query = document.querySelector<HTMLInputElement>('#rfc-query')!;
+  const status = document.querySelector<HTMLSelectElement>('#rfc-status')!;
+  const rows = [...document.querySelectorAll<HTMLLIElement>('.rfc-list li')];
+  function filter() {
+    let count = 0;
+    for (const row of rows) {
+      row.hidden = !(
+        row.dataset.search!.includes(query.value.trim().toLowerCase()) &&
+        (!status.value || row.dataset.status === status.value)
+      );
+      if (!row.hidden) count++;
+    }
+    document.querySelector('#rfc-count')!.textContent =
+      `${count} design record${count === 1 ? '' : 's'}`;
+    (document.querySelector('#rfc-empty') as HTMLElement).hidden = count !== 0;
+  }
+  query.addEventListener('input', filter);
+  status.addEventListener('change', filter);
+</script>
+<style>
+  .rfc-controls {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 1rem;
+    margin-top: 2rem;
+  }
+  label {
+    display: grid;
+    gap: 0.4rem;
+    font-size: 0.75rem;
+    font-weight: 600;
+  }
+  input,
+  select {
+    font: inherit;
+    color: var(--sl-color-white);
+    background: var(--sl-color-bg);
+    border: 1px solid var(--sl-color-gray-4);
+    border-radius: 5px;
+    padding: 0.75rem;
+    width: 100%;
+    min-width: 0;
+  }
+  #rfc-count {
+    color: var(--sl-color-gray-3);
+    font: 0.7rem var(--sl-font-mono);
+    margin-block: 1.25rem;
+  }
+  .rfc-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    border-top: 1px solid var(--sl-color-gray-5);
+  }
+  .rfc-list li {
+    margin: 0;
+    border-bottom: 1px solid var(--sl-color-gray-5);
+  }
+  .rfc-list a {
+    display: grid;
+    grid-template-columns: 5rem 1fr auto 1rem;
+    gap: 1rem;
+    align-items: center;
+    padding: 1rem 0.3rem;
+    color: var(--sl-color-white);
+    text-decoration: none;
+  }
+  .rfc-list a:hover {
+    background: var(--home-panel);
+  }
+  .rfc-number {
+    font: 0.65rem var(--sl-font-mono);
+    color: var(--sl-color-gray-3);
+  }
+  .rfc-title {
+    font-size: 0.85rem;
+    line-height: 1.5;
+  }
+  .rfc-arrow {
+    color: var(--sl-color-accent-high);
+  }
+  @media (max-width: 40rem) {
+    .rfc-controls {
+      grid-template-columns: 1fr;
+    }
+    .rfc-list a {
+      grid-template-columns: 1fr auto;
+      gap: 0.5rem;
+    }
+    .rfc-title {
+      grid-column: 1 / -1;
+      grid-row: 2;
+    }
+    .rfc-arrow {
+      display: none;
+    }
+  }
+</style>

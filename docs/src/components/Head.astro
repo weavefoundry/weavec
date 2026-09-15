@@ -1,0 +1,25 @@
+---
+import Default from '@astrojs/starlight/components/Head.astro';
+const image = new URL('/social-card.png', Astro.site).href;
+// GitHub Pages serves the error document at /404.html, not /404/.
+if (Astro.locals.starlightRoute.entry.id === '404') {
+  for (const element of Astro.locals.starlightRoute.head) {
+    if (element.tag === 'link' && element.attrs?.rel === 'canonical')
+      element.attrs.href = new URL('/404.html', Astro.site).href;
+    if (element.tag === 'meta' && element.attrs?.property === 'og:url')
+      element.attrs.content = new URL('/404.html', Astro.site).href;
+  }
+}
+---
+
+<Default />
+<meta property="og:image" content={image} />
+<meta property="og:image:width" content="1200" />
+<meta property="og:image:height" content="630" />
+<meta
+  property="og:image:alt"
+  content="WeaveC — C, with more certainty. Inferred ownership and borrowing, built on Clang and LLVM."
+/>
+<meta name="twitter:card" content="summary_large_image" />
+<meta name="twitter:image" content={image} />
+<meta name="theme-color" content="#112523" />

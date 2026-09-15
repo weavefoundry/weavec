@@ -1,0 +1,170 @@
+---
+import { Code } from '@astrojs/starlight/components';
+import project from '../../.generated/project.json';
+import example from '../../examples/use-after-free.c?raw';
+const paths = [
+  {
+    number: '01',
+    title: 'Run your first check',
+    description: 'Install WeaveC, find a lifetime bug, and understand the fix.',
+    href: '/getting-started/first-check/',
+    label: 'GET STARTED',
+  },
+  {
+    number: '02',
+    title: 'Bring your codebase',
+    description: 'Use your compilation database or build with weavec-cc.',
+    href: '/guides/build-integration/',
+    label: 'INTEGRATE',
+  },
+  {
+    number: '03',
+    title: 'Make the contract clear',
+    description: 'Select functions for checked safety and inspect the evidence.',
+    href: '/guides/checked-code/',
+    label: 'GO DEEPER',
+  },
+];
+---
+
+<div class="home">
+  <section class="home-hero" aria-labelledby="_top">
+    <div class="hero-copy">
+      <a class="release-pill" href="/project/releases/"
+        ><span class="pulse-dot"></span> WEAVEC v{project.version}<span class="pill-divider">/</span
+        > EARLY RELEASE <span aria-hidden="true">↗</span></a
+      >
+      <h1 id="_top">C, with more<br /><span>certainty.</span></h1>
+      <p class="hero-description">
+        Ownership and borrowing for the C you already write. Find memory bugs, make contracts
+        explicit, and adopt checked safety one function at a time.
+      </p>
+      <div class="hero-actions">
+        <a class="button-primary" href="/getting-started/installation/"
+          >Get started <span aria-hidden="true">→</span></a
+        ><a class="button-secondary" href="/getting-started/introduction/"
+          >Explore the docs <span aria-hidden="true">↗</span></a
+        >
+      </div>
+      <div class="hero-footnote"><span>BUILT ON CLANG + LLVM</span><span>OPEN SOURCE</span></div>
+    </div>
+    <div class="hero-demo" aria-label="WeaveC catches a use after free through an alias">
+      <div class="demo-label">
+        <span class="demo-dot"></span> FOLLOW THE OWNERSHIP <span>C17</span>
+      </div>
+      <Code
+        code={example}
+        lang="c"
+        title="example.c"
+        mark="node_free(alias);"
+        del="return n->value;"
+      />
+      <div class="diagnostic-output">
+        <div>
+          <span class="error-marker">ERROR</span><a href="/reference/diagnostics/use-after-free/"
+            >weavec::use-after-free</a
+          >
+        </div><p>use of 'n' after it was freed</p><span class="diagnostic-note"
+          >↳ freed here, through 'alias'</span
+        >
+      </div>
+      <div class="demo-caption">
+        <span aria-hidden="true">✓</span> Ownership inferred. No annotations needed for this example.
+      </div>
+    </div>
+  </section>
+  <div class="principle-strip" aria-label="WeaveC principles">
+    <span>YOUR C SOURCE</span><span aria-hidden="true">→</span><strong>INFER OWNERSHIP</strong><span
+      aria-hidden="true">→</span
+    ><strong>CHECK CONTRACTS</strong><span aria-hidden="true">→</span><span>CLANG + LLVM</span>
+  </div>
+  <section class="home-section" aria-labelledby="start-title">
+    <div class="section-heading">
+      <div>
+        <span class="eyebrow">A CLEAR PATH FORWARD</span><h2 id="start-title">
+          Start small. Build confidence.
+        </h2>
+      </div><p>
+        From one source file to a whole program.<br />Choose the next step for your project.
+      </p>
+    </div>
+    <div class="path-grid">
+      {
+        paths.map((entry) => (
+          <a class="path-card" href={entry.href}>
+            <>
+              <div class="card-top">
+                <>
+                  <span>{entry.label}</span>
+                  <span class="card-number">{entry.number}</span>
+                </>
+              </div>
+              <h3>{entry.title}</h3>
+              <p>{entry.description}</p>
+              <span class="card-arrow" aria-hidden="true">
+                ↗
+              </span>
+            </>
+          </a>
+        ))
+      }
+    </div>
+  </section>
+  <section class="home-section model-section" aria-labelledby="model-title">
+    <div>
+      <span class="eyebrow">A MODEL YOU CAN REASON ABOUT</span><h2 id="model-title">
+        The intent is already<br />in your code.
+      </h2><p>
+        Allocators, cleanup functions, aliases, and control flow tell a story. WeaveC follows it
+        across functions and source files.
+      </p><a class="text-link" href="/guides/ownership/"
+        >Understand ownership and borrowing <span aria-hidden="true">→</span></a
+      >
+    </div>
+    <div class="model-list">
+      <div>
+        <span>01</span><section>
+          <h3>Infer first</h3><p>
+            Function bodies reveal what they free, store, borrow, and return. Add annotations where
+            an interface needs a contract.
+          </p>
+        </section>
+      </div><div>
+        <span>02</span><section>
+          <h3>Keep your toolchain</h3><p>
+            Analyze C with libTooling or use weavec-cc in a normal build. Clang handles parsing and
+            code generation.
+          </p>
+        </section>
+      </div><div>
+        <span>03</span><section>
+          <h3>Know the boundary</h3><p>
+            Checked reports expose requirements, unresolved obligations, and trusted operations.
+            Review the evidence behind each result.
+          </p>
+        </section>
+      </div>
+    </div>
+  </section>
+  <section class="reference-band" aria-labelledby="reference-title">
+    <div>
+      <span class="eyebrow">WHEN YOU NEED THE DETAILS</span><h2 id="reference-title">
+        Keep the reference close.
+      </h2>
+    </div><div class="reference-links">
+      <a href="/reference/diagnostics/">Diagnostics <span>Understand the message ↗</span></a><a
+        href="/reference/annotations/">Annotations <span>Express a contract ↗</span></a
+      ><a href="/reference/cli/">Command line <span>Find the right flag ↗</span></a><a href="/rfcs/"
+        >Design RFCs <span>Read the reasoning ↗</span></a
+      >
+    </div>
+  </section>
+  <section class="scope-note">
+    <span class="scope-icon" aria-hidden="true">i</span><p>
+      <strong>Early software. Explicit guarantees.</strong> Checked safety applies to selected source
+      functions within the supported model, under recorded requirements and trust boundaries. <a
+        href="/reference/guarantees/">Read the scope and limits →</a
+      >
+    </p>
+  </section>
+</div>
