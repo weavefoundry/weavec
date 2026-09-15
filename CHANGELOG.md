@@ -1,6 +1,15 @@
 # CHANGELOG
 
 
+## v0.8.0 (2026-09-15)
+
+### Features
+
+- Add recursive ownership and complete cleanup contracts
+  ([#30](https://github.com/weavefoundry/weavec/pull/30),
+  [`40e5b2b`](https://github.com/weavefoundry/weavec/commit/40e5b2b2d7f1821b5f593bd0bf9cce234c06a937))
+
+
 ## v0.7.0 (2026-09-13)
 
 ### Features
