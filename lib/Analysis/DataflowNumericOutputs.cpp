@@ -244,7 +244,14 @@ void FunctionDataflow::prepareNumericCall(const CallExpr &call,
         unknownHere();
         continue;
       }
-      const auto actual = evaluateNumericExpression(*expression, state);
+      auto actual = evaluateNumericExpression(*expression, state);
+      // RFC 0028: this expression is an output only on its guarded case.
+      // Keep a proved range of that same value local to the alternative;
+      // assuming its guard in caller state would leak into other outcomes.
+      if (!actual.mayBeInvalid)
+        for (const auto &predicate : output.when.integers)
+          if (predicate.range && predicate.lhs == *output.value)
+            actual.values = actual.values.intersect(*predicate.range);
       if (actual.mayBeInvalid) {
         unknown = true;
         unknownHere();

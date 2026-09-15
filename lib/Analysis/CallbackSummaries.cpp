@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "Dataflow.h"
+#include "InterfaceTypes.h"
 #include "weavec/Analysis/Summaries.h"
 
 #include "clang/Basic/SourceManager.h"
@@ -23,19 +24,59 @@ std::string_view SummaryStore::objectView(QualType type) {
     return {};
   const auto *record = type->getAsRecordDecl();
   const auto [it, inserted] = objectViewCache.try_emplace(record);
-  if (inserted)
+  if (inserted) {
     it->second = recordLayoutKey(type, *context);
+    if (!it->second.empty())
+      if (const auto descriptor =
+              describeInterfaceType(type.getUnqualifiedType(), *context))
+        objectInterfaces.emplace(it->second, *descriptor);
+  }
   return it->second;
 }
 
+void SummaryStore::setDatabase(const ProgramDatabase *program) {
+  const auto generation = program ? program->importGeneration() : nullptr;
+  if (interfaceGeneration != generation) {
+    invalidateDependency("@interfaces");
+    interfaceGeneration = generation;
+  }
+  database = program;
+}
+
+QualType SummaryStore::interfaceType(std::string_view view) {
+  setDatabase(database);
+  noteDependency("@interfaces");
+  const auto local = objectInterfaces.find(std::string(view));
+  if (local != objectInterfaces.end() && !local->second)
+    return {};
+  const core::InterfaceType *description =
+      local != objectInterfaces.end() && local->second ? &*local->second
+                                                       : nullptr;
+  if (database) {
+    const auto remote = database->objectInterfaces.find(std::string(view));
+    if (remote != database->objectInterfaces.end()) {
+      if (!remote->second || (description && *description != *remote->second))
+        return {};
+      description = &*remote->second;
+    }
+  }
+  if (!description || !context)
+    return {};
+  const auto key = description->encode();
+  if (const auto found = interfaceAdapters.find(key);
+      found != interfaceAdapters.end())
+    return found->second;
+  auto &arena = context->getTranslationUnitDecl()->getASTContext();
+  const auto type = materializeInterfaceType(*description, arena);
+  interfaceAdapters.emplace(key, type);
+  if (!type.isNull() && type->isRecordType())
+    objectViewCache[type->getAsRecordDecl()] = view;
+  return type;
+}
+
 static std::string globalSymbol(const VarDecl &var) {
-  if (var.isExternallyVisible())
-    return var.getNameAsString();
-  const auto &sm = var.getASTContext().getSourceManager();
-  std::string unit;
-  if (const auto file = sm.getFileEntryRefForID(sm.getMainFileID()))
-    unit = file->getName().str();
-  return unit + "#" + var.getNameAsString();
+  return var.isExternallyVisible() ? var.getNameAsString()
+                                   : privateStorageName(var);
 }
 
 static std::string globalTargetKey(const Expr &expr, const ASTContext *ctx) {
@@ -378,13 +419,14 @@ std::optional<ResolvedSummary> SummaryStore::specialize(
                               nestedOptions, *this, true);
     analysis.callbackBindings = bindings;
     analysis.run();
-    auto summary = analysis.summary();
+    auto summary = std::move(analysis).summary();
     applyContract(function, summary);
     specialized[contextKey] = publishSummary(std::move(summary));
-    specializedDiagnostics[contextKey] = collected.diagnostics();
+    specializedDiagnostics[contextKey] = std::move(collected).diagnostics();
     callbackDependencies[contextKey] = std::move(dependencies);
-    callbackVersions[contextKey] = dependencySnapshot();
-    contextsNeedValidation = true;
+    auto &snapshot = callbackVersions[contextKey];
+    snapshot = dependencySnapshot();
+    contextsNeedValidation |= !dependenciesCurrent(snapshot);
   } else {
     if (options.stats)
       options.stats->add("specialization_hits");

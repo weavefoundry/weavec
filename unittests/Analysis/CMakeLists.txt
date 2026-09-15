@@ -15,6 +15,7 @@ weavec_add_unittest(
           FunctionAnalysisTest.cpp
           HeapStateTest.cpp
           IntegerSemanticsTest.cpp
+          InterfaceTypesTest.cpp
           NumericInputsTest.cpp
           PointerValidityTest.cpp
           PointerIdentityTest.cpp

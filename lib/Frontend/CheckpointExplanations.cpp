@@ -10,7 +10,7 @@
 
 namespace weavec::frontend {
 
-// This order is part of private checkpoint format 2. Include uncomputed
+// This order is part of private checkpoint format 3. Include uncomputed
 // generic summaries too, so omission cannot shift another contract's ledger.
 template <typename F>
 static bool visitContracts(analysis::UnitExports &exports, F visit) {
@@ -21,17 +21,23 @@ static bool visitContracts(analysis::UnitExports &exports, F visit) {
   }
   for (auto &[name, function] : exports.functions) {
     (void)name;
-    if (!visit(function.summary.checked))
+    auto generic = function.summary.get();
+    if (!visit(generic.checked))
       return false;
+    function.summary.assign(std::move(generic));
     for (auto &[context, summary] : function.specializations) {
       (void)context;
-      if (!visit(summary.checked))
+      auto specialized = summary.get();
+      if (!visit(specialized.checked))
         return false;
+      summary.assign(std::move(specialized));
     }
     for (auto &[context, summary] : function.memorySpecializations) {
       (void)context;
-      if (!visit(summary.checked))
+      auto specialized = summary.get();
+      if (!visit(specialized.checked))
         return false;
+      summary.assign(std::move(specialized));
     }
   }
   return true;

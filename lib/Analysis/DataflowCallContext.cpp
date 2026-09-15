@@ -213,7 +213,15 @@ FunctionDataflow::captureCallContext(const CallExpr &call,
       });
   if (!changesMemory && !checkedCase)
     return std::nullopt;
-  auto footprint = core::callMemoryFootprint(summary);
+  const auto owner = callSummaries.find(&call);
+  assert(owner != callSummaries.end() && owner->second.get() == &summary &&
+         "capture requires the retained immutable call summary");
+  const auto &prepared = callFootprints.get(owner->second);
+  if (!prepared) {
+    reportIncomplete("call context input path limit reached", call);
+    return std::nullopt;
+  }
+  auto footprint = *prepared;
   if (checkedCase)
     footprint.insert(summary.checked.caseInputs.begin(),
                      summary.checked.caseInputs.end());
@@ -225,12 +233,34 @@ FunctionDataflow::captureCallContext(const CallExpr &call,
     for (unsigned i = 0; i < call.getNumArgs(); ++i)
       if (const auto ref =
               builder.resolveSummaryPath(core::SummaryPath::param(i), call))
-        if (const auto *fact = state.safety->containers.find(ref->place))
+        if (const auto *fact = state.safety->containers.find(ref->place)) {
+          // A terminal opaque object can specialize a helper that releases
+          // only its head. These are actual null fields, not new ownership.
+          const auto *callee = call.getDirectCallee();
+          const auto parameter = callee && i < callee->getNumParams()
+                                     ? callee->getParamDecl(i)->getType()
+                                     : QualType{};
+          const bool recordParameter =
+              !parameter.isNull() && parameter->isPointerType() &&
+              parameter->getPointeeType()->isRecordType();
+          if ((fact->shape.terminal || !fact->shape.emptyLinks.empty()) &&
+              (recordParameter || summary.objectViews.contains(
+                                      core::SummaryPath::param(i).deref()))) {
+            const auto nominate = [&](const std::string &name) {
+              if (fact->shape.terminal || fact->shape.emptyLinks.contains(name))
+                footprint.insert(
+                    core::SummaryPath::param(i).deref().field(name));
+            };
+            nominate(fact->shape.link.name);
+            for (const auto &child : fact->shape.children)
+              nominate(child.name);
+          }
           for (const auto &[name, condition] : fact->shape.ownership) {
             (void)name;
             footprint.insert(core::SummaryPath::param(i).deref().field(
                 condition.field.name));
           }
+        }
   if (footprint.size() > core::MaxCallContextFacts) {
     reportIncomplete("call context input path limit reached", call);
     return std::nullopt;
@@ -521,7 +551,7 @@ FunctionDataflow::captureCallContext(const CallExpr &call,
         continue;
       auto parent = path;
       const auto field = parent.steps.back().field;
-      parent.steps.resize(parent.steps.size() - 2);
+      parent.steps.truncate(parent.steps.size() - 2);
       if (const auto ref = builder.resolveSummaryPath(parent, call))
         if (const auto *fact = state.safety->containers.find(ref->place);
             fact && state.nulls.isNonNull(ref->place)) {

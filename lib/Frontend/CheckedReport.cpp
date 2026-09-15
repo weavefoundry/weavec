@@ -43,7 +43,9 @@ void CheckedReport::invalidate(std::string_view reason) {
     for (auto &[name, definition] : unit.functions)
       for (auto &[input, summary] : definition.memorySpecializations) {
         (void)input;
-        invalidateContract(name, summary.checked);
+        auto invalidated = summary.get();
+        invalidateContract(name, invalidated.checked);
+        summary.assign(std::move(invalidated));
       }
   }
 }
@@ -216,12 +218,12 @@ void CheckedReport::write(llvm::raw_ostream &out, bool invocationOK) const {
             definition != unit.functions.end())
           for (const auto &[input, summary] :
                definition->second.memorySpecializations) {
-            if (!summary.checked.computed)
+            if (!summary.get().checked.computed)
               continue;
             if (!firstCase)
               out << ',';
             firstCase = false;
-            writeContract(name, summary.checked, &input);
+            writeContract(name, summary.get().checked, &input);
           }
         out << ']';
       }

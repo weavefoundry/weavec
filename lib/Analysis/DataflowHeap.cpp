@@ -543,8 +543,7 @@ bool FunctionDataflow::isHeapOutputPath(const core::SummaryPath &path) const {
       continue;
     for (const auto &field : graph.fields) {
       auto absolute = root;
-      absolute.steps.insert(absolute.steps.end(), field.dest.steps.begin(),
-                            field.dest.steps.end());
+      absolute.steps.append(field.dest.steps);
       if (absolute == path && !field.value.post)
         return true;
     }
@@ -696,8 +695,7 @@ void FunctionDataflow::captureHeapInputs(const clang::CallExpr &call,
       continue;
     for (const auto &field : graph.fields) {
       auto path = root;
-      path.steps.insert(path.steps.end(), field.dest.steps.begin(),
-                        field.dest.steps.end());
+      path.steps.append(field.dest.steps);
       written.insert(std::move(path));
     }
   }
@@ -718,7 +716,7 @@ void FunctionDataflow::captureHeapInputs(const clang::CallExpr &call,
     const auto [entry, inserted] = writtenInputs.try_emplace(path, false);
     if (!inserted)
       return entry->second;
-    for (auto prefix = path;; prefix.steps.pop_back()) {
+    for (auto prefix = path;; prefix.steps.popBack()) {
       if (written.contains(prefix)) {
         entry->second = true;
         return true;
@@ -1123,8 +1121,7 @@ void FunctionDataflow::applyHeapOutputs(const clang::CallExpr &call,
       if (field.dest.isRoot())
         continue;
       auto absolute = root;
-      absolute.steps.insert(absolute.steps.end(), field.dest.steps.begin(),
-                            field.dest.steps.end());
+      absolute.steps.append(field.dest.steps);
       if (!applied.contains(absolute))
         remaining.addField(field);
     }
@@ -1132,8 +1129,7 @@ void FunctionDataflow::applyHeapOutputs(const clang::CallExpr &call,
       applyHeap(dest->place, remaining, call, summary, state);
     for (const auto &field : graph.fields) {
       auto absolute = root;
-      absolute.steps.insert(absolute.steps.end(), field.dest.steps.begin(),
-                            field.dest.steps.end());
+      absolute.steps.append(field.dest.steps);
       applied.insert(std::move(absolute));
     }
   }

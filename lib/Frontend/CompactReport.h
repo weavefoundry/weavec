@@ -13,7 +13,7 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <array>
-#include <map>
+#include <type_traits>
 #include <unordered_map>
 #include <vector>
 
@@ -33,7 +33,20 @@ public:
 private:
   template <typename T>
   struct Table {
-    std::map<T, std::uint64_t> ids;
+    struct Hash {
+      std::size_t operator()(const T &value) const {
+        if constexpr (std::is_same_v<T, std::string>) {
+          return std::hash<std::string>{}(value);
+        } else {
+          std::size_t hash = value.size();
+          for (const auto element : value)
+            hash ^= std::hash<std::uint64_t>{}(element) + 0x9e3779b9U +
+                    (hash << 6U) + (hash >> 2U);
+          return hash;
+        }
+      }
+    };
+    std::unordered_map<T, std::uint64_t, Hash> ids;
     // Map nodes own values and remain stable as the table grows.
     std::vector<const T *> values;
     std::uint64_t intern(const T &value) {

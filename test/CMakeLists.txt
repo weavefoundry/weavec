@@ -262,6 +262,18 @@ if(Python3_Interpreter_FOUND)
     set_tests_properties(checked-${population}-rfc0027
                          PROPERTIES LABELS "integration" TIMEOUT 600)
   endforeach()
+  foreach(population source objects cache regressions regression-objects)
+    add_test(
+      NAME checked-${population}-rfc0028
+      COMMAND
+        "${Python3_EXECUTABLE}"
+        "${PROJECT_SOURCE_DIR}/scripts/checked-opaque-interfaces.py"
+        --population "${population}" --weavec "$<TARGET_FILE:weavec>" --cc
+        "$<TARGET_FILE:weavec-cc>" --clang "${WEAVEC_CLANG_EXECUTABLE}"
+        --output "${CMAKE_CURRENT_BINARY_DIR}/rfc0028-${population}")
+    set_tests_properties(checked-${population}-rfc0028
+                         PROPERTIES LABELS "integration" TIMEOUT 600)
+  endforeach()
   add_test(NAME recall-harness
            COMMAND "${Python3_EXECUTABLE}"
                    "${PROJECT_SOURCE_DIR}/scripts/test_recall.py")

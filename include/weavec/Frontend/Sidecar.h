@@ -35,6 +35,7 @@
 
 #include "llvm/ADT/StringRef.h"
 
+#include <cstddef>
 #include <optional>
 #include <set>
 #include <string>
@@ -58,7 +59,10 @@ namespace weavec::frontend {
 /// Version 14 (RFC 0018): safety contracts and checked build input bindings.
 /// Version 16 (RFC 0020): effective preprocessing identity for object binding.
 /// Version 19 (RFC 0023): inductive container contracts (summary format 18).
-inline constexpr unsigned SidecarFormatVersion = 23;
+inline constexpr unsigned SidecarFormatVersion = 24;
+
+/// RFC 0028: accumulated demand is independent of computed-context limits.
+inline constexpr std::size_t MaxSidecarContextRequests = 65536;
 
 /// Everything the driver remembers about one compiled unit.
 struct UnitRecord {

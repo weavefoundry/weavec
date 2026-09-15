@@ -41,6 +41,7 @@
 #include <memory>
 #include <optional>
 #include <set>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -68,12 +69,54 @@ struct PathElem {
                                           const PathElem &) = default;
 };
 
+/// RFC 0028: immutable shared steps, with prefixes and explicit detaching
+/// edits. Element references are read-only; copies cannot observe another
+/// path's edits.
+class SummarySteps {
+public:
+  using ConstIterator = std::span<const PathElem>::iterator;
+  SummarySteps() = default;
+  SummarySteps(const SummarySteps &) noexcept;
+  SummarySteps &operator=(const SummarySteps &) noexcept;
+  SummarySteps(SummarySteps &&other) noexcept;
+  SummarySteps &operator=(SummarySteps &&other) noexcept;
+  ~SummarySteps();
+  SummarySteps(std::initializer_list<PathElem> elements);
+
+  [[nodiscard]] std::span<const PathElem> entries() const;
+  [[nodiscard]] std::size_t size() const noexcept { return count; }
+  [[nodiscard]] bool empty() const noexcept { return count == 0; }
+  [[nodiscard]] const PathElem *data() const { return entries().data(); }
+  [[nodiscard]] ConstIterator begin() const { return entries().begin(); }
+  [[nodiscard]] ConstIterator end() const { return entries().end(); }
+  [[nodiscard]] const PathElem &front() const { return entries().front(); }
+  [[nodiscard]] const PathElem &back() const { return entries().back(); }
+  [[nodiscard]] const PathElem &operator[](std::size_t index) const {
+    return entries()[index];
+  }
+  void pushBack(PathElem element);
+  void pushFront(PathElem element);
+  void popBack();
+  void truncate(std::size_t size);
+  void append(const SummarySteps &other, std::size_t first = 0);
+
+  friend bool operator==(const SummarySteps &, const SummarySteps &);
+  friend std::strong_ordering operator<=>(const SummarySteps &,
+                                          const SummarySteps &);
+
+private:
+  struct Storage;
+  Storage *storage = nullptr;
+  std::size_t count = 0;
+  void makeWritable(std::size_t minimumCapacity);
+};
+
 /// A place relative to a function's interface: `param(0)`, `param(0)*`,
 /// `param(0)*.data`, `global(3)`.
 struct SummaryPath {
   SummaryRoot root = SummaryRoot::Param;
   std::uint32_t index = 0;
-  std::vector<PathElem> steps;
+  SummarySteps steps;
 
   [[nodiscard]] static SummaryPath param(std::uint32_t index) {
     return SummaryPath{.root = SummaryRoot::Param, .index = index, .steps = {}};
@@ -255,7 +298,9 @@ enum class CheckedRequirementKind : std::uint8_t {
   /// RFC 0027: output path + output other partition the entry in begin.path.
   ContainerPartition,
   /// RFC 0027: output path is the union of entry other and entry begin.path.
-  ContainerCombined
+  ContainerCombined,
+  /// RFC 0028: the entry parameter's single allocation was definitely freed.
+  AllocationConsumed
 };
 struct CheckedRequirement {
   CheckedRequirementKind kind = CheckedRequirementKind::Valid;

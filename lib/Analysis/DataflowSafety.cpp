@@ -817,6 +817,25 @@ void FunctionDataflow::checkedOutputs(const core::AnalysisState &incoming,
   }
   for (const auto outcome : classes) {
     core::CheckedContract outputs;
+    auto consumed = state.safety->consumedAllocations;
+    // RFC 0028: a null entry pointer has no allocation left to release.
+    // Reassignment cannot make this true of an earlier non-null input.
+    for (const auto *parameter : function.parameters()) {
+      if (!parameter->getType()->isPointerType())
+        continue;
+      const auto input = builder.placeForVar(*parameter);
+      if (!state.safety->replacedPointers.contains(input) &&
+          state.nulls.stateOf(input) == core::Nullness::Null)
+        consumed.insert(input);
+    }
+    for (const auto input : consumed)
+      if (const auto path = builder.summaryPathOf(input))
+        outputs.establish(
+            {.kind = core::CheckedRequirementKind::AllocationConsumed,
+             .path = *path,
+             .other = {},
+             .family = "free",
+             .on = outcome});
     checkedUnionOutputs(outputs, value, outcome, state);
     containerOutputs(outputs, state, returned, outcome);
     footprintOutputs(outputs, state, returned, outcome);
@@ -826,9 +845,9 @@ void FunctionDataflow::checkedOutputs(const core::AnalysisState &incoming,
       (void)selected.scalars.narrow(*returnedIdentity,
                                     core::ValueFact::of(*outcome));
       materializeBuffers(selected);
-      bufferOutputs(outputs, selected, outcome);
+      bufferOutputs(outputs, selected, outcome, returned);
     } else {
-      bufferOutputs(outputs, state, outcome);
+      bufferOutputs(outputs, state, outcome, returned);
     }
     for (const auto &[holder, position] : state.safety->positions) {
       if (!position.input)
@@ -931,9 +950,8 @@ void FunctionDataflow::checkedOutputs(const core::AnalysisState &incoming,
         auto child = holder;
         while (child != *returned &&
                path.steps.size() <= core::MaxHeapPathDepth) {
-          path.steps.insert(path.steps.begin(),
-                            {.step = places.step(child),
-                             .field = std::string(places.fieldName(child))});
+          path.steps.pushFront({.step = places.step(child),
+                                .field = std::string(places.fieldName(child))});
           child = *places.parent(child);
         }
         if (child == *returned && path.steps.size() <= core::MaxHeapPathDepth)

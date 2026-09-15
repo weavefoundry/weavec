@@ -445,7 +445,8 @@ TEST(CompositionalDatabase, ContextGlobalsAreRenumberedWithTheirSummaries) {
       {.first = core::SummaryPath::param(0), .second = global, .offset = {}}));
   core::FunctionSummary summary;
   summary.addEffect(global, {.freed = true});
-  second.functions["zap"].memorySpecializations[input] = summary;
+  second.functions["zap"].memorySpecializations[input].assign(
+      std::move(summary));
   second.memoryRequests["zap"].insert(input);
   ProgramDatabase db;
   db.add(first);
@@ -467,10 +468,14 @@ TEST(CompositionalDatabase, DuplicateDefinitionsJoinContextEffects) {
   ASSERT_TRUE(input.addAlias({.first = core::SummaryPath::param(0),
                               .second = core::SummaryPath::param(1),
                               .offset = {}}));
-  first.functions["zap"].memorySpecializations[input].addEffect(
-      core::SummaryPath::param(0), {.freed = true});
-  second.functions["zap"].memorySpecializations[input].addEffect(
-      core::SummaryPath::param(1).deref(), {.written = true});
+  core::FunctionSummary releases;
+  releases.addEffect(core::SummaryPath::param(0), {.freed = true});
+  first.functions["zap"].memorySpecializations[input].assign(
+      std::move(releases));
+  core::FunctionSummary writes;
+  writes.addEffect(core::SummaryPath::param(1).deref(), {.written = true});
+  second.functions["zap"].memorySpecializations[input].assign(
+      std::move(writes));
   ProgramDatabase db;
   db.add(first);
   db.add(second);
@@ -487,8 +492,9 @@ TEST(CompositionalDatabase, MissingGlobalRejectsTheEntireContext) {
                               .second = core::SummaryPath::global(4),
                               .offset = {}}));
   unit.memoryRequests["zap"].insert(input);
-  unit.functions["zap"].memorySpecializations[input].addEffect(
-      core::SummaryPath::param(0), {.freed = true});
+  core::FunctionSummary summary;
+  summary.addEffect(core::SummaryPath::param(0), {.freed = true});
+  unit.functions["zap"].memorySpecializations[input].assign(std::move(summary));
   ProgramDatabase db;
   db.add(unit);
   EXPECT_TRUE(db.memoryRequestsFor("zap").empty());
@@ -508,9 +514,11 @@ TEST(CompositionalDatabase, ImportedContextsReuseCopiesButStillRecordRequests) {
       {core::SummaryPath::param(0), core::CallTargets::function("target")}};
   UnitExports unit;
   auto &function = unit.functions["zap"];
-  function.summary.addEffect(core::SummaryPath::param(0), {.freed = true});
-  function.memorySpecializations[input] = function.summary;
-  function.specializations[callbacks] = function.summary;
+  core::FunctionSummary generic;
+  generic.addEffect(core::SummaryPath::param(0), {.freed = true});
+  function.summary.assign(std::move(generic));
+  function.memorySpecializations[input].assign(function.summary.get());
+  function.specializations[callbacks].assign(function.summary.get());
   ProgramDatabase db;
   db.add(unit);
   SummaryStore store;
@@ -550,10 +558,11 @@ TEST(CompositionalDatabase, ImportedContextsReuseCopiesButStillRecordRequests) {
   // Replacing the database must preserve old pointers while importing the
   // replacement contract, even when it has identical lookup keys.
   ProgramDatabase replacement;
-  function.summary = {};
-  function.summary.addEffect(core::SummaryPath::param(1), {.freed = true});
-  function.memorySpecializations[input] = function.summary;
-  function.specializations[callbacks] = function.summary;
+  core::FunctionSummary replacementSummary;
+  replacementSummary.addEffect(core::SummaryPath::param(1), {.freed = true});
+  function.summary.assign(std::move(replacementSummary));
+  function.memorySpecializations[input].assign(function.summary.get());
+  function.specializations[callbacks].assign(function.summary.get());
   replacement.add(unit);
   db = replacement;
   const auto replacedMemory = store.specializeMemory("zap", input, {});
@@ -589,7 +598,9 @@ TEST(CompositionalDatabase, ImportGenerationsFollowCopiesAndGlobalNumbering) {
   ASSERT_TRUE(absent.ast);
   UnitExports unit;
   const auto shared = core::SummaryPath::global(unit.globals.idFor("shared"));
-  unit.functions["zap"].summary.addEffect(shared, {.freed = true});
+  core::FunctionSummary generic;
+  generic.addEffect(shared, {.freed = true});
+  unit.functions["zap"].summary.assign(std::move(generic));
   ProgramDatabase db;
   db.add(unit);
   ProgramDatabase copy = db;

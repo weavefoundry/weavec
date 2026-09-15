@@ -51,7 +51,7 @@ dispatch. `DataflowRuntime.cpp` checks memory and stream preconditions,
 They use the existing checked call, callback, output and summary machinery.
 Source definitions retain priority over library spellings. Ordinary summaries
 alone never authorize a checked runtime contract. Portable records use checked
-encoding 9, summary format 22 and sidecar format 23 (RFC 0027).
+encoding 9, summary format 23 and sidecar format 24 (RFC 0028).
 
 | Header             | Purpose                                                                                        |
 | ------------------ | ---------------------------------------------------------------------------------------------- |
@@ -293,7 +293,7 @@ snapshot site invalidates the old generation's dependent facts. The domain
 remains bounded; RFC 0017 extends these snapshots to every dependency of a
 typed symbolic expression while retaining affine and relation fast paths.
 
-The current summary version 22 and sidecar version 23 retain heap descriptions, post
+The current summary version 23 and sidecar version 24 retain heap descriptions, post
 references and string metadata. `ProgramDatabase` remaps global references
 and compares these descriptions as part of normal dependency invalidation.
 The compiler and tooling whole-program modes share this implementation.
@@ -461,7 +461,7 @@ checks by source operation. `--dump-analysis` prints
 These counts are independent of unsafe-region reporting and warning controls.
 A caller requirement is an obligation, not a proof that all callers satisfy it.
 
-`SummaryFormatVersion` is **22** and `SidecarFormatVersion` is **23**. Numeric
+`SummaryFormatVersion` is **23** and `SidecarFormatVersion` is **24**. Numeric
 outputs use `numeric <path> value ...` records; `requires-extent` retains
 optional `start` intervals and typed guards. Core validates types, operators,
 paths, shapes and limits. Comparison, global remapping and dependency
@@ -594,6 +594,32 @@ Global remapping retains shared checked sets when none of their paths,
 affine expressions or guard predicates references a global. Path projection
 caches immutable local/synthetic failures as well as stable interface paths;
 array selectors remain dependent on the current state.
+RFC 0028 stores summary-path steps in `SummarySteps`: copies and shortened
+prefixes share read-only bytes, while explicit edits detach before mutation.
+An atomic reference count and trailing element array share one aligned
+allocation; the path handle retains only the backing pointer and visible length.
+Allocation arithmetic and object lifetimes are checked.
+The uniqueness check acquires other handles' releases before reusing their
+backing bytes for an edit.
+Call-input footprints stop with an explicit over-limit result after the existing
+64-fact bound. Each function can reuse up to 64 preparations under live immutable
+summary owners. Caller values, aliases and checked-case additions are always
+computed from the current state.
+Element views remain const, and self-append retains its source during growth.
+The common dereference step has one immutable backing value. This changes no
+path ordering, selector, serialized spelling or proof premise. `PlaceTable`
+uses owned hashed keys with non-owning lookup probes; dense IDs and descendant
+order still follow creation order. Sorted effect maps merge with a moving
+insertion position while preserving each existing per-path join.
+Generic and specialized unit exports use `ExportedSummary` to retain an
+immutable publication.
+Unit copies, database indexes and checkpoint inputs reuse it when global
+numbering agrees. Its const value view supports exact comparison and transport;
+replacement and widening publish independent values. Remapping retains the
+input publication only when the projected value and all proof explanations
+remain identical. Context keys remap independently. Memory specializations
+retain the original join and normalization; report invalidation replaces its
+own publication without changing earlier readers.
 At unit export, a sufficient entry requirement may omit antecedent predicates
 on known private globals. This strengthens its caller obligation while keeping
 the native contract precise. Required object/interval references and every
@@ -625,18 +651,18 @@ objects for compiler-sidecar validation before replay. Compilation may defer
 an unavailable external contract; the link pass must resolve it. Checked
 failure reaches Clang independently of the diagnostic filtering policy.
 
-Summary format 22 and sidecar format 23 carry guarded/outcome-qualified contracts,
+Summary format 23 and sidecar format 24 carry guarded/outcome-qualified contracts,
 numeric outputs and RFC 0021 traversal records. Checked record encoding uses
 version 9; report JSON uses expanded version 2 or compact version 3.
 Strict parsing and global remapping reject missing premises. Explanation depth
 is bounded independently of semantic contract limits; truncating a call chain
 does not change the obligation it explains.
 
-The unit exporter omits optional postconditions rooted wholly in private
-globals, following RFC 0005's namespace boundary. Local callers still see
-those facts. Entry requirements and private premises of public/result output
-facts retain strict remapping; exporting a contract cannot silently forget
-something its proof needs.
+The unit exporter preserves supported private roots and their postconditions
+with RFC 0028 interface metadata. Entry requirements and private premises of
+public/result output facts retain strict remapping; exporting a contract cannot
+silently forget something its proof needs. Unsupported private storage retains
+the conservative exclusion rules.
 
 ## Reuse and work accounting (RFC 0020)
 
@@ -722,10 +748,10 @@ serialize the names of globals in callback contexts as in memory contexts.
 A `global-name` prelude retains the producer's name-table order, including
 unused identities, so decoding cannot reorder callback inputs or context keys.
 The table contributes no storage or callback facts.
-`GlobalTable` provides portable identities for private file-scope scalar
-function-pointer cells. Foreign units use implicit storage proxies outside
-source declaration lookup; the defining unit resolves them to the original
-variable. Other private globals keep RFC 0005's exclusion. Checked invocation
+`GlobalTable` provides portable identities for supported private static storage,
+including local statics, nested records and fixed arrays (RFC 0028). Foreign
+units use implicit storage adapters outside source declaration lookup; the
+defining unit resolves them to the original variable. Checked invocation
 uses established reaching targets and preserves singleton library provenance
 for allocation, memory and string rules. `DataflowCheckedCallbacks.cpp` checks
 each resolved alternative against a separate call-entry state and intersects
@@ -771,7 +797,7 @@ They describe a subset plus freshly added nodes; they do not promise full input
 consumption. Fresh outputs require actual allocation evidence. Tail outputs are
 imported across read-only calls. A terminal output can establish a detached
 node's null successor. Descriptors, source premises and capability combinations
-are validated during decoding. Summary format 22 and sidecar format 23 prevent
+are validated during decoding. Summary format 23 and sidecar format 24 prevent
 older metadata from silently discarding these records.
 
 Limits are 32 fields, 64 explicit nodes, 64 active facts and 16 KiB per encoded
@@ -810,7 +836,7 @@ contract is published. Active recursion alone supplies no output. The ordinary
 may-effect fixed point continues independently. Mutual recursion remains
 conservative. Complete preservation, consumption, partition and combination
 outputs use checked encoding 9; strict decoding requires their source predicates
-and separation premises. Summary format 22 and sidecar format 23 carry these
+and separation premises. Summary format 23 and sidecar format 24 carry these
 records across program databases, object metadata and validated checkpoints.
 
 ### Input cases and overlapping member storage (RFC 0025)
@@ -860,5 +886,74 @@ reasoning run only in functions with registered buffer candidates.
 
 Checked encoding 9 carries validated `buffer`, `buffer-preserved` and
 `buffer-appended` requirements and outputs to the existing interface codec.
-Summary format 22 and sidecar format 23 reject older encodings. Ordinary
+Summary format 23 and sidecar format 24 reject older encodings. Ordinary
 warnings remain independent from checked completeness.
+
+## Opaque interfaces and private state (RFC 0028)
+
+Core's `Interface.h`/`Interface.cpp` define a bounded graph of storage types and
+its canonical `it1` codec. Edges represent pointer referents, function arguments,
+fixed-array elements and record fields. Validation rejects invalid references,
+overlapping fields, duplicate names, by-value cycles, malformed numbers and
+exhausted bounds before Analysis sees a description. Conflicting descriptions
+for one key merge to an absorbing unavailable value.
+
+Analysis's `InterfaceTypes.cpp` captures Clang's target layouts and materializes
+implicit analysis-only declarations. Every reconstructed size, alignment, field
+offset and record identity must match. A materialized record is outside the
+translation unit's declaration list and cannot complete a source forward
+declaration. `GlobalTable` keeps the private declaration identity separate from
+its description: the identity contains the normalized defining translation
+unit, declaration source, source offset and name. Macro-generated declarations
+also include their spelling/expansion chain so repeated private names remain
+distinct within one outer expansion.
+
+`UnitExports` and `ProgramDatabase` carry private-root and object-view maps.
+`Sidecar.cpp` validates `global-interface` and `object-interface` records before
+import, with duplicate rejection and a finite inventory. Metadata participates
+in convergence and checkpoint inputs. `SummaryStore` caches immutable adapters
+by their complete encoding and records interface dependencies for contextual
+reuse. An import-generation change invalidates consulting specializations.
+
+`DataflowViews.cpp` recovers opaque representations only from the current
+value's established object, buffer or container evidence. Ordinary typed view
+checks still apply. Container nomination can infer entry predicates for opaque
+parameters forwarded to verified helpers. Those predicates remain explicit
+caller requirements, with their allocation footprint and compatible view.
+A local or forged pointer never receives an input predicate by nomination.
+Fully typed layout validation can reuse the result for the exact call/path and
+same live immutable summary. This cache holds at most 1,024 paths per function
+analysis. A path that needed opaque value evidence is always revalidated against
+current state. No memory permission or lifetime result is cached with the layout.
+
+Private numeric cells use ordinary scalar state, call-entry snapshots and
+numeric outputs. Setters that copy callback inputs also record those inputs for
+specialization. Unknown calls invalidate reachable private state. Direct
+numeric configuration writes preserve independent heap-container evidence;
+possibly overlapping array writes invalidate known scalar cells, while proven
+disjoint indices retain their values. Actual heap writes and cleanup still use
+structural and lifetime invalidation.
+Returned buffer predicates activate under a non-null result, retain capacity
+bounds captured before effects, and preserve the backing identity through
+accessors. Numeric output alternatives retain their own guarded value interval
+without narrowing unrelated outcomes or caller inputs.
+
+Primitive `allocation-consumed` outputs record historical must-evidence about
+direct entry allocations, including the empty null case. Joins intersect this
+evidence. Applying the output accounts for only the actual head allocation;
+`container-consumed` retains the distinct whole-footprint guarantee.
+
+RFC 0028 keeps accumulated callback/memory requests separate from computed
+specializations. Sidecars carry up to 65,536 requests per symbol and kind;
+the existing 32-context analysis limits still govern computed results.
+Checkpoint fingerprints retain the complete represented demand set.
+Checkpoint units and diagnostics stream directly into the payload; bulk string
+escaping preserves decoded JSON values. Shared explanation tables use owned
+hash indexes while first-use vectors determine every serialized id and row.
+Producer validation, checksums, compression and all analysis bounds remain.
+
+Run `scripts/checked-opaque-interfaces.py` for the frozen source, object and cache
+populations and independent regressions. The optional `upstream` and
+`upstream-objects` populations require the pinned cJSON checkout and verify its
+commit and file digests. The harness rejects syntax failures, missing reports,
+crashes and unrelated negative outcomes; it retains full compressed reports.

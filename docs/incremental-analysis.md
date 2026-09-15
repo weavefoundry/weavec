@@ -109,7 +109,11 @@ call sites. This index retains at most 1,024 preparations and 64 MiB of
 accounted storage, validates the originating projection's weak owner, and
 bypasses oversized keys. Eviction only repeats preparation. Statistics expose
 `explanation_call_hits`, `explanation_call_misses`, `explanation_call_resets`
-and `explanation_call_rejections`. Caller identity, unsafe conversion,
+and `explanation_call_rejections`. RFC 0028 retains recently reused preparations
+and evicts the oldest entries only until the new preparation fits. Recency
+storage counts toward the same byte bound; `explanation_call_resets` counts
+capacity-pressure events, which may replace only part of the index.
+Caller identity, unsafe conversion,
 truncation and destination ledger limits remain part of each application.
 Exactly equal completed ledgers can also share their whole ordered index;
 subsequent changes still detach before mutation.
@@ -141,11 +145,13 @@ malformed or noncanonical records, invalid diagnostic identifiers and
 incompatible versions are misses. Payloads of at least 1 MiB use zstd when
 available in LLVM, with a separate 4 GiB decoded-size bound enforced before
 decompression. Without compression support, a large checkpoint may lose reuse.
-Private checkpoint format 2 shares exact obligation rows, paths and ledgers
+Private checkpoint format 3 shares exact obligation rows, paths and ledgers
 across definitions and specializations. It retains originating function names
 and exhaustion flags, validates every reference before restoring a unit, and
 checks that the remaining contract metadata survives serialization. The public
-summary and compiler-sidecar formats retain their existing versions.
+summary format 23 and compiler-sidecar format 24 also carry RFC 0028's validated
+opaque object descriptions and private storage identities. Older checkpoint
+versions miss the cache; older compiler sidecars require rebuilding the objects.
 Writes use a unique neighboring temporary
 file and atomic rename. Checkpoints are local build data, not a substitute for
 reviewed external library contracts.

@@ -130,16 +130,22 @@ static bool preferSafetyCalls(const SafetyCallPath &candidate,
                               const SafetyCallPath &current) {
   if (candidate.size() != current.size())
     return candidate.size() < current.size();
-  if (candidate == current)
+  if (&candidate.entries() == &current.entries())
     return false;
-  const auto provenance = [](const auto &calls) {
-    std::string result;
-    for (const auto &call : calls)
-      result += safetyJsonString(call.file) + ":" + std::to_string(call.line) +
-                ":" + std::to_string(call.column) + ";";
-    return result;
-  };
-  return provenance(candidate) < provenance(current);
+  for (std::size_t i = 0; i < candidate.size(); ++i) {
+    const auto &left = candidate.entries()[i];
+    const auto &right = current.entries()[i];
+    // RFC 0028: compare exactly the old serialized provenance ordering,
+    // without formatting the common prefix or any later locations.
+    if (left.file != right.file)
+      return safetyJsonString(left.file) < safetyJsonString(right.file);
+    if (left.line != right.line)
+      return std::to_string(left.line) + ':' < std::to_string(right.line) + ':';
+    if (left.column != right.column)
+      return std::to_string(left.column) + ';' <
+             std::to_string(right.column) + ';';
+  }
+  return false;
 }
 
 const SafetyPropagation &SafetyLedger::propagation() const {
@@ -908,6 +914,9 @@ void SafetyState::refinePaths(const PlaceGuard &guard) {
 bool SafetyState::join(const SafetyState &other, const PlaceGuard &left,
                        const PlaceGuard &right) {
   bool changed = other.havoc && !havoc;
+  changed |= std::erase_if(consumedAllocations, [&](PlaceId input) {
+               return !other.consumedAllocations.contains(input);
+             }) != 0;
   // Empty path sets mean unknown, never an impossible predecessor.
   if (unions != other.unions)
     changed |=

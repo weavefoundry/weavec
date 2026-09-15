@@ -421,7 +421,7 @@ TEST(Summaries, GlobalTableInternsCanonicalDecls) {
   EXPECT_EQ(table.declFor(99), nullptr);
 }
 
-TEST(Summaries, PrivateCallbackCellsHaveStableInvisibleForeignProxies) {
+TEST(Summaries, PrivateStorageHasStableInvisibleForeignAdapters) {
   const auto owner = parse("static void (*hook)(void *); static int hidden;");
   const auto foreign = parse("int unrelated;");
   ASSERT_TRUE(owner.ast);
@@ -435,7 +435,7 @@ TEST(Summaries, PrivateCallbackCellsHaveStableInvisibleForeignProxies) {
       if (var->getName() == "hook")
         hook = var;
       else if (var->getName() == "hidden")
-        EXPECT_FALSE(local.portableName(local.idFor(*var)));
+        EXPECT_TRUE(local.portableName(local.idFor(*var)));
     }
   ASSERT_NE(hook, nullptr);
   const auto id = local.idFor(*hook);
@@ -444,11 +444,11 @@ TEST(Summaries, PrivateCallbackCellsHaveStableInvisibleForeignProxies) {
   const auto &ctx = foreign.ast->getASTContext();
   const auto before = std::distance(ctx.getTranslationUnitDecl()->decls_begin(),
                                     ctx.getTranslationUnitDecl()->decls_end());
-  const auto proxy = remote.importName(*name, ctx);
+  const auto proxy = remote.importName(*name, ctx, local.interfaces);
   ASSERT_TRUE(proxy);
   EXPECT_TRUE(remote.declFor(*proxy)->isImplicit());
   EXPECT_TRUE(remote.declFor(*proxy)->getType()->isFunctionPointerType());
-  EXPECT_EQ(remote.importName(*name, ctx), proxy);
+  EXPECT_EQ(remote.importName(*name, ctx, local.interfaces), proxy);
   EXPECT_EQ(remote.portableName(*proxy), name);
   EXPECT_EQ(remote.callbackName(*proxy), local.callbackName(id));
   EXPECT_EQ(before, std::distance(ctx.getTranslationUnitDecl()->decls_begin(),

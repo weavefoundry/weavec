@@ -331,7 +331,7 @@ void FunctionDataflow::initializeBuffers(core::AnalysisState &state) {
         entry->second.length = places.create("buffer entry length");
         snapshotPlaces.insert(entry->second.length);
         auto countPath = *path;
-        countPath.steps.push_back(
+        countPath.steps.pushBack(
             {.step = core::PathStep::Field, .field = shape.length.name});
         snapshotInputPaths[entry->second.length] = countPath;
       }

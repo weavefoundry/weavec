@@ -379,9 +379,8 @@ void FunctionDataflow::checkedUnionOutputs(core::CheckedContract &outputs,
       path = core::SummaryPath::result();
       for (auto cursor = storage; cursor != returned->place;
            cursor = *places.parent(cursor))
-        path->steps.insert(path->steps.begin(),
-                           {.step = places.step(cursor),
-                            .field = std::string(places.fieldName(cursor))});
+        path->steps.pushFront({.step = places.step(cursor),
+                               .field = std::string(places.fieldName(cursor))});
     }
     if (!path || path->steps.size() > core::MaxHeapPathDepth ||
         (path->isParam() && path->isRoot()))

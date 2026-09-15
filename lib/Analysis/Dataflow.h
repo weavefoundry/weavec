@@ -98,6 +98,11 @@ private:
   using MirrorPlaces = llvm::SmallVector<core::PlaceId, 4>;
 
   void discoverContainers();
+  [[nodiscard]] std::vector<core::PlaceId>
+  scalarArrayOverlaps(core::PlaceId place,
+                      const core::AnalysisState &state) const;
+  void recordAllocationConsumed(core::PlaceId holder,
+                                core::AnalysisState &state);
   std::optional<bool> containerOwns(core::PlaceId holder,
                                     std::string_view field,
                                     const core::ContainerShape &shape,
@@ -110,6 +115,8 @@ private:
   std::map<core::PlaceId, core::PlaceId> footprintContributions;
   void initializeContainers(core::AnalysisState &state);
   std::map<const clang::RecordDecl *, core::ContainerShape> containerShapes;
+  std::map<core::PlaceId, std::optional<core::ContainerShape>>
+      opaqueContainerParameters;
   std::map<std::string, const clang::RecordDecl *> containerRecords;
   std::map<core::PlaceId, core::SummaryPath> containerInputs;
   std::map<core::PlaceId, core::ContainerShape> containerInputShapes;
@@ -476,11 +483,12 @@ private:
   void captureBufferPosts(const clang::CallExpr &call,
                           const core::CheckedContract &contract,
                           core::AnalysisState &state);
-  void applyBufferPosts(const clang::CallExpr &call,
-                        core::AnalysisState &state);
+  void applyBufferPosts(const clang::CallExpr &call, core::AnalysisState &state,
+                        std::optional<core::PlaceId> result = std::nullopt);
   void bufferOutputs(core::CheckedContract &outputs,
                      const core::AnalysisState &state,
-                     std::optional<core::Outcome> outcome);
+                     std::optional<core::Outcome> outcome,
+                     std::optional<core::PlaceId> returned);
   void initializeChecked();
   void discoverCheckedCases();
   [[nodiscard]] std::string checkedUnionMember(const clang::FieldDecl &field);
@@ -761,6 +769,7 @@ private:
   bool materializingArray = false;
   bool materializingArrayFill = false;
   bool materializingArrayRelease = false;
+  bool hasContainerCalls = false;
   const bool emitDiagnostics;
 
   [[nodiscard]] std::optional<core::PlaceGuard>
@@ -873,9 +882,15 @@ private:
   std::map<const clang::CallExpr *,
            std::shared_ptr<const core::FunctionSummary>>
       callSummaries;
+  core::CallMemoryFootprintCache callFootprints;
   llvm::DenseMap<std::pair<const void *, const std::string *>,
                  std::weak_ptr<const core::FunctionSummary>>
       validatedObjectViews;
+  std::map<
+      const clang::CallExpr *,
+      std::map<core::SummaryPath, std::weak_ptr<const core::FunctionSummary>>>
+      validatedObjectPaths;
+  std::size_t validatedObjectPathCount = 0;
   std::map<const clang::CallExpr *, SummarySource> callSources;
   std::map<const clang::CallExpr *, core::CallTargets> callTargetsSeen;
   std::map<const clang::CallExpr *, core::CallbackBindings> callbackContexts;
@@ -886,6 +901,8 @@ private:
   originTargets(const ValueOrigin &origin, const core::AnalysisState &state);
   [[nodiscard]] std::optional<ResolvedSummary>
   resolveCall(const clang::CallExpr &call);
+  [[nodiscard]] static std::string
+  objectEvidenceView(core::PlaceId holder, const core::AnalysisState &state);
   [[nodiscard]] bool validateObjectPath(const core::SummaryPath &path,
                                         const clang::CallExpr &call);
   core::PlaceTable places;

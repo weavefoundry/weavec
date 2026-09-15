@@ -32,6 +32,42 @@ TEST(PlaceTable, NamesRoundTrip) {
   EXPECT_EQ(table.name(PlaceId{99}), "<unknown place>");
 }
 
+TEST(PlaceTable, BorrowedLookupKeysSurviveGrowthAndIndependentCopies) {
+  // RFC 0028: rehashing cannot change dense identities or traversal order.
+  // Insertion must own a view before an entry-vector growth relocates it.
+  PlaceTable table;
+  const auto root = table.create("root");
+  const auto shortField = table.field(root, "short");
+  const auto longField = table.field(root, std::string(160, 'x'));
+  const auto binaryField = table.field(root, std::string("x\0y", 3));
+  std::vector<PlaceId> descendants{shortField, longField, binaryField};
+  for (unsigned i = 0; i < 500; ++i) {
+    const auto parent = table.field(root, std::to_string(i));
+    descendants.push_back(parent);
+    for (const auto source : {shortField, longField, binaryField}) {
+      const auto child = table.field(parent, table.fieldName(source));
+      descendants.push_back(child);
+      EXPECT_EQ(table.fieldName(child), table.fieldName(source));
+      EXPECT_EQ(table.field(parent, table.fieldName(source)), child);
+      EXPECT_EQ(table.child(parent, PathStep::Field, table.fieldName(source)),
+                child);
+    }
+  }
+  EXPECT_EQ(table.descendants(root), descendants);
+  auto copied = table;
+  table = PlaceTable{};
+  EXPECT_EQ(copied.descendants(root), descendants);
+  EXPECT_EQ(copied.field(root, "short"), shortField);
+  EXPECT_EQ(copied.field(root, std::string(160, 'x')), longField);
+  EXPECT_EQ(copied.field(root, std::string("x\0y", 3)), binaryField);
+  const auto dereferenced = copied.deref(root);
+  EXPECT_EQ(copied.child(root, PathStep::Deref, "ignored"), dereferenced);
+  EXPECT_EQ(copied.index(dereferenced), dereferenced);
+  const auto element = copied.element(root, "short");
+  EXPECT_EQ(element, copied.child(root, PathStep::Index, "short"));
+  EXPECT_NE(element, shortField);
+}
+
 TEST(PlaceId, Hashable) {
   std::unordered_set<PlaceId, PlaceIdHash> set;
   set.insert(PlaceId{1});

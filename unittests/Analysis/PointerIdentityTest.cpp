@@ -195,6 +195,31 @@ void bad(int *p) { struct hook a = {keep, p}; install(&a); struct hook b = a; b.
   EXPECT_EQ(countId(result, core::diag::AnnotationRequired), 0U);
 }
 
+// RFC 0028: copy-only setters need extra contexts for checked heap outputs;
+// ordinary stores forward their input path without specializing the setter.
+TEST(PointerIdentity, CopyOnlySettersKeepOrdinaryCallbackEffectsSymbolic) {
+  const std::string source = std::string(Callbacks) + R"c(
+struct hook { void (*fn)(void *); };
+static void install(struct hook *h, void (*fn)(void *)) { h->fn = fn; }
+void bad(int *p) { struct hook h = {keep}; install(&h, drop); h.fn(p); free(p); }
+)c";
+  const auto ordinary = test::analyze(source);
+  ASSERT_TRUE(ordinary.ast);
+  ASSERT_NE(ordinary.summary("install"), nullptr);
+  EXPECT_TRUE(ordinary.summary("install")->callbackInputs.empty());
+  EXPECT_EQ(countId(ordinary, core::diag::DoubleFree), 1U);
+  EXPECT_EQ(countId(ordinary, core::diag::AnnotationRequired), 0U);
+
+  AnalysisOptions options;
+  options.checked = true;
+  const auto checked = test::analyze(source, options);
+  ASSERT_TRUE(checked.ast);
+  ASSERT_NE(checked.summary("install"), nullptr);
+  EXPECT_TRUE(checked.summary("install")->callbackInputs.contains(
+      core::SummaryPath::param(1)));
+  EXPECT_EQ(countId(checked, core::diag::DoubleFree), 1U);
+}
+
 TEST(PointerIdentity, UnknownTargetsRemainUnknownDespiteAddressTakenFunctions) {
   const auto result = test::analyze(std::string(Callbacks) + R"c(
 void (*unrelated)(void *) = keep;

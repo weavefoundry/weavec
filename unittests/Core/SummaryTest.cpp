@@ -10,6 +10,10 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
+#include <barrier>
+#include <thread>
+
 namespace weavec::core {
 namespace {
 
@@ -55,6 +59,154 @@ TEST(SummaryPath, OrdersDeterministically) {
   EXPECT_LT(SummaryPath::param(5), SummaryPath::global(0));
 }
 
+TEST(SummarySteps, SharedEditsAndOrderingMatchIndependentVectors) {
+  std::vector<SummarySteps> snapshots;
+  std::vector<std::vector<PathElem>> expected;
+  for (unsigned seed = 0; seed < 24; ++seed) {
+    SummarySteps path;
+    std::vector<PathElem> values;
+    for (unsigned i = 0; i <= seed % 8; ++i) {
+      const auto step = static_cast<PathStep>((i + seed) % 3);
+      const PathElem element{.step = step,
+                             .field = step == PathStep::Deref
+                                          ? std::string{}
+                                          : std::string("field\0", 6) +
+                                                std::to_string(i)};
+      path.pushBack(element);
+      values.push_back(element);
+    }
+    snapshots.push_back(path);
+    expected.push_back(values);
+    const auto original = path;
+    const auto originalValues = values;
+    const auto prefix = values.size() / 2;
+    path.truncate(prefix);
+    values.resize(prefix);
+    path.append(original, prefix);
+    values.insert(values.end(),
+                  originalValues.begin() + static_cast<std::ptrdiff_t>(prefix),
+                  originalValues.end());
+    ASSERT_TRUE(std::ranges::equal(path, values));
+    ASSERT_TRUE(std::ranges::equal(original, originalValues));
+    path.pushFront(path.back());
+    const auto last = values.back();
+    values.insert(values.begin(), last);
+    path.pushBack(path.front());
+    values.push_back(values.front());
+    const auto beforeAppend = values;
+    path.append(path, 1);
+    values.insert(values.end(), std::next(beforeAppend.begin()),
+                  beforeAppend.end());
+    path.popBack();
+    values.pop_back();
+    snapshots.push_back(path);
+    expected.push_back(values);
+    ASSERT_TRUE(std::ranges::equal(path, values));
+    ASSERT_TRUE(std::ranges::equal(original, originalValues));
+    SummarySteps moved = std::move(path);
+    // RFC 0028 explicitly guarantees a valid empty source after a move.
+    // NOLINTBEGIN(bugprone-use-after-move, clang-analyzer-cplusplus.Move)
+    EXPECT_TRUE(path.empty());
+    EXPECT_EQ(path.begin(), path.end());
+    EXPECT_TRUE(std::ranges::equal(moved, values));
+    path = std::move(moved);
+    EXPECT_TRUE(moved.empty());
+    // NOLINTEND(bugprone-use-after-move, clang-analyzer-cplusplus.Move)
+    EXPECT_TRUE(std::ranges::equal(path, values));
+  }
+  for (std::size_t i = 0; i < snapshots.size(); ++i)
+    for (std::size_t j = 0; j < snapshots.size(); ++j) {
+      EXPECT_EQ(snapshots[i] == snapshots[j], expected[i] == expected[j]);
+      EXPECT_EQ(snapshots[i] <=> snapshots[j], expected[i] <=> expected[j]);
+    }
+}
+
+TEST(SummarySteps, PrefixGrowthDoesNotRestoreHiddenOrDestroyedSuffixes) {
+  SummarySteps prefix;
+  {
+    const auto full = SummaryPath::param(0).deref().field("old").deref();
+    prefix = full.steps;
+    prefix.truncate(1);
+    EXPECT_LT(prefix, full.steps);
+    EXPECT_NE(prefix, full.steps);
+  }
+  prefix.pushBack({.step = PathStep::Field, .field = "new"});
+  EXPECT_EQ(prefix, SummaryPath::param(0).deref().field("new").steps);
+  auto preserved = prefix;
+  prefix.truncate(0);
+  prefix.pushBack(preserved.back());
+  EXPECT_EQ(prefix, SummaryPath::param(0).field("new").steps);
+  EXPECT_EQ(preserved, SummaryPath::param(0).deref().field("new").steps);
+  preserved.append(prefix, prefix.size());
+  EXPECT_EQ(preserved, SummaryPath::param(0).deref().field("new").steps);
+}
+
+TEST(SummarySteps, ConcurrentCopiesDetachWithoutChangingTheirSharedSource) {
+  const auto original = SummaryPath::param(0)
+                            .deref()
+                            .field("a_field_long_enough_to_allocate_storage")
+                            .deref()
+                            .field("original");
+  std::atomic<unsigned> failures{0};
+  {
+    std::vector<std::jthread> workers;
+    workers.reserve(4);
+    for (unsigned worker = 0; worker < 4; ++worker)
+      workers.emplace_back([original, worker, &failures] {
+        const auto name = "worker_" + std::to_string(worker);
+        for (unsigned i = 0; i < 2000; ++i) {
+          auto changed = original;
+          changed.steps.popBack();
+          changed.steps.pushBack({.step = PathStep::Field, .field = name});
+          auto prefix = changed;
+          prefix.steps.truncate(2);
+          changed.steps.append(prefix.steps);
+          if (original.steps.back().field != "original" ||
+              changed.steps[3].field != name || prefix.steps.size() != 2)
+            failures.fetch_add(1, std::memory_order_relaxed);
+        }
+      });
+  }
+  EXPECT_EQ(failures.load(), 0U);
+  EXPECT_EQ(original.steps.back().field, "original");
+}
+
+TEST(SummarySteps, ReleasedCopiesPermitMutationOfTheRemainingOwner) {
+  std::atomic<unsigned> failures{0};
+  for (unsigned iteration = 0; iteration < 64; ++iteration) {
+    auto remaining = SummaryPath::param(0).deref().field(
+        "original_field_long_enough_to_allocate_storage");
+    std::barrier start{2};
+    std::atomic<bool> released{false};
+    std::jthread reader(
+        [copy = remaining, &start, &failures, &released]() mutable {
+          start.arrive_and_wait();
+          for (unsigned i = 0; i < 128; ++i)
+            if (copy.steps.back().step != PathStep::Field ||
+                copy.steps.back().field !=
+                    "original_field_long_enough_to_allocate_storage")
+              failures.fetch_add(1, std::memory_order_relaxed);
+          // Release this owner without a separate synchronization with the
+          // writer. Its next unique edit must acquire the backing's ownership
+          // release.
+          copy.steps.truncate(0);
+          released.store(true, std::memory_order_relaxed);
+        });
+    start.arrive_and_wait();
+    while (!released.load(std::memory_order_relaxed))
+      std::this_thread::yield();
+    for (unsigned i = 0; i < 128; ++i) {
+      remaining.steps.popBack();
+      remaining.steps.pushBack(
+          {.step = PathStep::Field,
+           .field = "replacement_field_long_enough_to_allocate_storage"});
+    }
+    EXPECT_EQ(remaining.steps.back().field,
+              "replacement_field_long_enough_to_allocate_storage");
+  }
+  EXPECT_EQ(failures.load(), 0U);
+}
+
 TEST(PlaceEffect, JoinIsOr) {
   PlaceEffect a{.read = true};
   const PlaceEffect b{.freed = true};
@@ -66,6 +218,55 @@ TEST(PlaceEffect, JoinIsOr) {
   EXPECT_TRUE(a.mutates());
   EXPECT_FALSE(PlaceEffect{.read = true}.mutates());
   EXPECT_TRUE(PlaceEffect{}.empty());
+}
+
+TEST(FunctionSummary, SortedEffectJoinsMatchIndividualInsertion) {
+  // RFC 0028: generic effects discard empty inputs; outcome maps retain
+  // their keys. Both still apply the same guarded consume join per key.
+  for (unsigned seed = 0; seed < 32; ++seed) {
+    FunctionSummary left;
+    FunctionSummary right;
+    left.addOutcome(Outcome::Zero);
+    right.addOutcome(Outcome::Zero);
+    for (unsigned i = 0; i < 160; ++i) {
+      const auto path =
+          (i % 2 ? SummaryPath::global(i / 2) : SummaryPath::param(i / 2))
+              .deref()
+              .field("payload");
+      PlaceEffect effect{.read = i % 7 == 0,
+                         .written = i % 7 == 1,
+                         .freed = i % 7 == 2,
+                         .moved = i % 7 == 3,
+                         .escaped = i % 7 == 4};
+      effect.replaced = i % 3 == 0;
+      effect.share = i % 5 == 0;
+      effect.family = i % 2 ? "free" : "custom";
+      effect.when.require(SummaryPath::param(0),
+                          ValueFact::of(Outcome::NonNull));
+      if (seed != 0 && (i + seed) % 3 == 0) {
+        left.effects[path] = effect;
+        left.outcomes[Outcome::Zero][path] = effect;
+      }
+      effect.replaced = !effect.replaced;
+      effect.family = "free";
+      effect.when.require(SummaryPath::param(1),
+                          ValueFact::of(Outcome::NonNull));
+      if ((i + seed) % 5 != 0) {
+        right.effects[path] = effect;
+        right.outcomes[i % 2 ? Outcome::Zero : Outcome::Positive][path] =
+            effect;
+      }
+    }
+    auto expected = left;
+    for (const auto &[path, effect] : right.effects)
+      expected.addEffect(path, effect);
+    for (const auto &[outcome, effects] : right.outcomes)
+      for (const auto &[path, effect] : effects)
+        expected.outcomes[outcome][path].join(effect);
+    left.join(right);
+    EXPECT_EQ(left.effects, expected.effects) << seed;
+    EXPECT_EQ(left.outcomes, expected.outcomes) << seed;
+  }
 }
 
 // RFC 0008, *Replaced values*: `replaced` is a must-fact about a consume.

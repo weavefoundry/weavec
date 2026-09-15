@@ -8,10 +8,40 @@
 
 #include "Dataflow.h"
 #include "weavec/Analysis/ProgramDatabase.h"
+#include "weavec/Core/ObjectType.h"
 
 using namespace clang;
 
 namespace weavec::analysis {
+
+// RFC 0028: recover representation from the current value's positive facts.
+// This does not establish memory validity or release permission.
+std::string
+FunctionDataflow::objectEvidenceView(core::PlaceId holder,
+                                     const core::AnalysisState &state) {
+  if (state.moves.recordOf(holder) || state.raw.isRaw(holder) ||
+      (state.safety && state.safety->invalidatedPointers.contains(holder)))
+    return {};
+  if (const auto view = state.objectViews.find(holder);
+      view != state.objectViews.end())
+    return view->second;
+  if (!state.safety)
+    return {};
+  if (const auto *fact = state.safety->containers.find(holder))
+    return fact->shape.object.identity;
+  for (const auto &[data, fact] : state.safety->buffers.values) {
+    (void)data;
+    if (fact.object == holder && fact.initialized)
+      return fact.shape.object.identity;
+  }
+  if (const auto storage = state.safety->objects.find(holder);
+      storage != state.safety->objects.end())
+    if (const auto view = state.safety->objectTypes.find(storage->second);
+        view != state.safety->objectTypes.end())
+      if (const auto type = core::ObjectType::parse(view->second))
+        return type->identity;
+  return {};
+}
 
 bool FunctionDataflow::validateObjectPath(const core::SummaryPath &path,
                                           const CallExpr &call) {
@@ -22,10 +52,15 @@ bool FunctionDataflow::validateObjectPath(const core::SummaryPath &path,
   if (cached->second->objectViews.empty())
     return true;
   const auto summaryOwner = cached->second;
+  if (const auto paths = validatedObjectPaths.find(&call);
+      paths != validatedObjectPaths.end())
+    if (const auto found = paths->second.find(path);
+        found != paths->second.end() && found->second.lock() == summaryOwner)
+      return true;
   const auto &views = summaryOwner->objectViews;
+  bool typedPath = true;
   QualType type;
   const Expr *argument = nullptr;
-  bool recovered = false;
   if (path.isParam() && path.index < call.getNumArgs()) {
     if (call.getArg(path.index)
             ->isNullPointerConstant(context, Expr::NPC_ValueDependentIsNotNull))
@@ -36,6 +71,28 @@ bool FunctionDataflow::validateObjectPath(const core::SummaryPath &path,
     if (const auto *global = summaries.globals().declFor(path.index))
       type = global->getType();
   }
+  // RFC 0028: typed paths need layout checks only. Resolving and walking a
+  // parallel place chain on every lookup is expensive in large call graphs.
+  // Recover the identical holder lazily when actual erased evidence is needed.
+  const auto evidenceHolder = [&](const core::SummaryPath &prefix) {
+    std::optional<core::PlaceId> holder;
+    if (const auto root = builder.resolveSummaryPath(path.rootPath(), call))
+      holder = root->place;
+    const auto addressed =
+        argument ? builder.addressedPlace(*argument) : std::nullopt;
+    std::optional<core::PlaceId> pointee;
+    bool first = true;
+    for (const auto &step : prefix.steps) {
+      if (step.step == core::PathStep::Deref)
+        pointee = holder;
+      if (first && addressed && step.step == core::PathStep::Deref)
+        holder = addressed->place;
+      else if (holder)
+        holder = places.child(*holder, step.step, step.field);
+      first = false;
+    }
+    return pointee;
+  };
   core::SummaryPath prefix = path.rootPath();
   for (const auto &step : path.steps) {
     if (const auto expected = views.find(prefix); expected != views.end()) {
@@ -48,20 +105,35 @@ bool FunctionDataflow::validateObjectPath(const core::SummaryPath &path,
       const bool reused = known != validatedObjectViews.end() &&
                           known->second.lock() == summaryOwner;
       if (!reused) {
-        std::string_view actual = summaries.objectView(type);
+        std::string actual(summaries.objectView(type));
         const bool typed = !actual.empty();
-        if (actual.empty() && !recovered) {
-          // RFC 0020: typed arguments already supply their object view. Resolve
-          // the entry holder only when this path actually needs erased
-          // recovery. Recovery remains local to this validation and is consumed
-          // once.
-          recovered = true;
-          if (argument)
-            if (const auto ref = builder.resolve(*argument)) {
-              const auto found = currentState->objectViews.find(ref->place);
-              if (found != currentState->objectViews.end())
-                actual = found->second;
-            }
+        if (actual.empty()) {
+          typedPath = false;
+          if (const auto holder = evidenceHolder(prefix))
+            actual = objectEvidenceView(*holder, *currentState);
+          // A nested constructor has no assignment holder yet. Its captured
+          // postconditions have already checked the constructor's premises.
+          if (actual.empty() && prefix.steps.size() == 1 && argument)
+            if (const auto *producer = dyn_cast<CallExpr>(argument))
+              if (const auto posts = containerPosts.find(producer);
+                  posts != containerPosts.end())
+                for (const auto &post : posts->second)
+                  if (post.path.isResult() && post.path.isRoot() &&
+                      (!post.on || post.on == core::Outcome::NonNull)) {
+                    const auto &view = post.fact.shape.object.identity;
+                    if (!actual.empty() && actual != view) {
+                      actual.clear();
+                      break;
+                    }
+                    actual = view;
+                  }
+          if (actual == expected->second) {
+            const auto adapter = summaries.interfaceType(actual);
+            if (adapter.isNull())
+              actual.clear();
+            else
+              type = adapter;
+          }
         }
         if (actual.empty() || actual != expected->second) {
           reportIncomplete("incompatible or unknown object view at call", call);
@@ -110,7 +182,22 @@ bool FunctionDataflow::validateObjectPath(const core::SummaryPath &path,
       break;
     }
     }
-    prefix.steps.push_back(step);
+    prefix.steps.pushBack(step);
+  }
+  // Every prefix passed using immutable C types. Only this exact call/path
+  // and live summary can reuse the layout result. Opaque value evidence and
+  // all flow-sensitive memory obligations remain outside this cache.
+  if (typedPath) {
+    if (validatedObjectPathCount == 1024) {
+      validatedObjectPaths.clear();
+      validatedObjectPathCount = 0;
+    }
+    auto &paths = validatedObjectPaths[&call];
+    const auto [entry, inserted] = paths.try_emplace(path, summaryOwner);
+    if (inserted)
+      ++validatedObjectPathCount;
+    else
+      entry->second = summaryOwner;
   }
   return true;
 }

@@ -721,11 +721,12 @@ TEST(HeapState, KnownFinalValuesSurviveWidenedConsumptionEffects) {
   )c");
   ASSERT_TRUE(library.ast);
   auto exports = library.analyzer->exports();
-  auto &summary = exports.functions.at("reset").summary;
+  auto summary = exports.functions.at("reset").summary.get();
   const auto path = core::SummaryPath::param(0).deref().field("data");
   // A recursive join can lose the legacy must-replaced flag while retaining
   // an independently known final value. The old input is still consumed.
   summary.effects.at(path).replaced = false;
+  exports.functions.at("reset").summary.assign(std::move(summary));
   ProgramDatabase database;
   database.add(exports);
   const auto caller = weavec::test::analyzeInProgram(R"c(
@@ -870,12 +871,13 @@ TEST(HeapState, UnknownFinalValuesRetainNoIntermediateBound) {
   )c");
   ASSERT_TRUE(library.ast);
   auto exports = library.analyzer->exports();
-  auto &summary = exports.functions.at("reset").summary;
+  auto summary = exports.functions.at("reset").summary.get();
   const auto path = core::SummaryPath::param(0).deref().field("data");
   summary.heap.at(path).fields.clear();
   summary.heap.at(path).addField(
       core::Store{.dest = core::SummaryPath::result(),
                   .value = core::ValueSource::unknown()});
+  exports.functions.at("reset").summary.assign(std::move(summary));
   ProgramDatabase database;
   database.add(exports);
   const auto caller = weavec::test::analyzeInProgram(R"c(
@@ -896,12 +898,13 @@ TEST(HeapState, UnknownFinalValuesDoNotProveDisjointnessFromCopyAlternatives) {
   )c");
   ASSERT_TRUE(library.ast);
   auto exports = library.analyzer->exports();
-  auto &summary = exports.functions.at("publish").summary;
+  auto summary = exports.functions.at("publish").summary.get();
   const auto path = core::SummaryPath::param(0).deref();
   summary.heap.at(path).fields.clear();
   summary.heap.at(path).addField(
       core::Store{.dest = core::SummaryPath::result(),
                   .value = core::ValueSource::unknown()});
+  exports.functions.at("publish").summary.assign(std::move(summary));
   ProgramDatabase database;
   database.add(exports);
   const auto caller = weavec::test::analyzeInProgram(R"c(

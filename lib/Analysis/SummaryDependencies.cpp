@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
+#include "weavec/Analysis/ProgramDatabase.h"
 #include "weavec/Analysis/Summaries.h"
 
 namespace weavec::analysis {
@@ -67,6 +68,10 @@ SummaryStore::DependencyVersions SummaryStore::dependencySnapshot() const {
 
 bool SummaryStore::dependenciesCurrent(
     const DependencyVersions &snapshot) const {
+  if (snapshot.contains("@interfaces") &&
+      interfaceGeneration !=
+          (database ? database->importGeneration() : nullptr))
+    return false;
   return std::ranges::all_of(snapshot, [&](const auto &entry) {
     const auto current = revisions.find(entry.first);
     return entry.second == (current == revisions.end() ? 0 : current->second);
@@ -74,14 +79,14 @@ bool SummaryStore::dependenciesCurrent(
 }
 
 void SummaryStore::discardStaleContexts() {
+  setDatabase(database);
   if (!contextsNeedValidation)
     return;
   contextsNeedValidation = false;
   const auto stale = [&](const auto &versions, auto &dependencies,
                          auto &summaries, auto &diagnostics, auto &retired) {
     for (const auto &[key, snapshot] : versions) {
-      const bool changed = !dependenciesCurrent(snapshot);
-      if (!changed || !summaries.contains(key))
+      if (!summaries.contains(key) || dependenciesCurrent(snapshot))
         continue;
       if (analysisDepth)
         retired.push_back(summaries.extract(key));
@@ -100,12 +105,13 @@ void SummaryStore::discardStaleContexts() {
 }
 
 void SummaryStore::invalidateDependency(std::string_view name) {
-  ++revisions[std::string(name)];
+  const std::string dependency(name);
+  ++revisions[dependency];
   contextsNeedValidation = true;
   const auto invalidate = [&](auto &dependencies, auto &summaries,
                               auto &diagnostics, auto &retired) {
     for (auto it = dependencies.begin(); it != dependencies.end();) {
-      if (!it->second.contains(std::string(name))) {
+      if (!it->second.contains(dependency)) {
         ++it;
         continue;
       }

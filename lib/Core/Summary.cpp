@@ -18,13 +18,13 @@ namespace weavec::core {
 
 SummaryPath SummaryPath::deref() const {
   SummaryPath result = *this;
-  result.steps.push_back(PathElem{.step = PathStep::Deref, .field = {}});
+  result.steps.pushBack(PathElem{.step = PathStep::Deref, .field = {}});
   return result;
 }
 
 SummaryPath SummaryPath::field(std::string_view name) const {
   SummaryPath result = *this;
-  result.steps.push_back(
+  result.steps.pushBack(
       PathElem{.step = PathStep::Field, .field = std::string(name)});
   return result;
 }
@@ -37,7 +37,7 @@ SummaryPath SummaryPath::indexed(std::string_view selector) const {
        steps.back().step == PathStep::Deref))
     return *this;
   SummaryPath result = *this;
-  result.steps.push_back(
+  result.steps.pushBack(
       PathElem{.step = PathStep::Index, .field = std::string(selector)});
   return result;
 }
@@ -588,6 +588,28 @@ void FunctionSummary::addNumericOutput(const SummaryPath &path,
   }
 }
 
+static void joinEffects(std::map<SummaryPath, PlaceEffect> &into,
+                        const std::map<SummaryPath, PlaceEffect> &from,
+                        bool discardEmpty) {
+  if (from.empty())
+    return;
+  auto position = into.lower_bound(from.begin()->first);
+  for (const auto &[path, effect] : from) {
+    if (discardEmpty && effect.empty())
+      continue;
+    while (position != into.end() && position->first < path)
+      ++position;
+    if (position == into.end() || path < position->first) {
+      PlaceEffect added;
+      added.join(effect);
+      into.emplace_hint(position, path, std::move(added));
+    } else {
+      position->second.join(effect);
+      ++position;
+    }
+  }
+}
+
 void FunctionSummary::join(const FunctionSummary &other) {
   // In particular, numeric output insertion can erase an existing alternative.
   if (this == &other)
@@ -604,15 +626,16 @@ void FunctionSummary::join(const FunctionSummary &other) {
   const bool wasEmpty = empty();
   const bool otherEmpty = other.empty();
   checked.join(other.checked);
-  const auto beforeNumeric = numericOutputs;
   for (const auto &[path, outputs] : other.numericOutputs) {
-    if (!wasEmpty && !beforeNumeric.contains(path))
+    if (!wasEmpty && !numericOutputs.contains(path))
       addNumericOutput(path, NumericOutput{});
     for (const auto &output : outputs)
       addNumericOutput(path, output);
   }
   if (!otherEmpty)
-    for (const auto &[path, outputs] : beforeNumeric)
+    // New keys all came from the other input, so only original missing keys
+    // gain unknown here. Insertion changes no outer-map iterator (RFC 0028).
+    for (const auto &[path, outputs] : numericOutputs)
       if (!other.numericOutputs.contains(path))
         addNumericOutput(path, NumericOutput{});
 
@@ -672,8 +695,9 @@ void FunctionSummary::join(const FunctionSummary &other) {
   std::map<Outcome, std::set<SummaryPath>> mineStoresOn;
   for (const auto &[outcome, perClass] : outcomes)
     mineStoresOn[outcome] = storesOnClass(outcome);
-  for (const auto &[path, effect] : other.effects)
-    addEffect(path, effect);
+  // RFC 0028: both inputs are sorted. Preserve per-key joins while avoiding
+  // an independent tree search and temporary key for every incoming effect.
+  joinEffects(effects, other.effects, true);
   for (const Store &store : other.stores)
     addStore(store);
   for (const ValueSource &source : other.returns)
@@ -791,8 +815,7 @@ void FunctionSummary::join(const FunctionSummary &other) {
   nonNullOn = joinMust(nonNullOn, other.nonNullOn);
   for (const auto &[outcome, theirs] : other.outcomes) {
     OutcomeEffects &mine = outcomes[outcome];
-    for (const auto &[path, effect] : theirs)
-      mine[path].join(effect);
+    joinEffects(mine, theirs, false);
   }
   normalizeStoresOn();
 }

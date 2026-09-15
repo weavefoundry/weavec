@@ -1,0 +1,3 @@
+{
+  "nullable-hooks-bad": "dereference of .*which may be null|indirect call has an unresolved target"
+}

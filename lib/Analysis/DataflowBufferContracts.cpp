@@ -13,7 +13,6 @@ std::optional<core::PlaceId>
 FunctionDataflow::bufferArgument(const core::CheckedRequirement &requirement,
                                  const CallExpr &call,
                                  core::AnalysisState &state) {
-  (void)state;
   const auto shape = core::BufferShape::decode(requirement.family);
   const auto object = builder.resolveSummaryPath(requirement.path, call, true);
   if (!shape || !object || !object->element.isWhole())
@@ -26,6 +25,19 @@ FunctionDataflow::bufferArgument(const core::CheckedRequirement &requirement,
     if (const auto *record = type->getAsRecordDecl())
       registerBuffer(object->place, *record);
   }
+  if (!bufferObjects.contains(object->place) &&
+      places.step(object->place) == core::PathStep::Deref)
+    if (const auto pointer = places.parent(object->place)) {
+      const auto evidence = objectEvidenceView(*pointer, state);
+      if (evidence == shape->object.identity) {
+        const auto type = summaries.interfaceType(evidence);
+        if (!type.isNull())
+          if (const auto *record = type->getAsRecordDecl()) {
+            registerBuffer(object->place, *record);
+            normalizeBuffers(state);
+          }
+      }
+    }
   const auto found = bufferObjects.find(object->place);
   if (found == bufferObjects.end() || !found->second.sameLayoutAs(*shape)) {
     return std::nullopt;
@@ -88,6 +100,13 @@ void FunctionDataflow::captureBufferPosts(const CallExpr &call,
         post.kind == core::CheckedRequirementKind::BufferPreserved ||
         post.kind == core::CheckedRequirementKind::BufferAppended) {
       const auto guard = checkedGuard(post.when, call, state);
+      if (post.kind == core::CheckedRequirementKind::Buffer &&
+          post.path.isResult()) {
+        if (guard && guard->trivial() && post.on == core::Outcome::NonNull &&
+            core::BufferShape::decode(post.family))
+          posts.push_back(post);
+        continue;
+      }
       const auto object = bufferArgument(post, call, state);
       if (!guard || !guard->trivial() || !object)
         continue;
@@ -214,15 +233,30 @@ void FunctionDataflow::captureBufferPosts(const CallExpr &call,
 }
 
 void FunctionDataflow::applyBufferPosts(const CallExpr &call,
-                                        core::AnalysisState &state) {
+                                        core::AnalysisState &state,
+                                        std::optional<core::PlaceId> result) {
   const auto found = bufferPosts.find(&call);
   if (found == bufferPosts.end())
     return;
   for (const auto &post : found->second) {
-    const auto object = bufferArgument(post, call, state);
-    if (!object)
+    if (post.path.isResult() != result.has_value())
       continue;
     auto shape = core::BufferShape::decode(post.family).value();
+    std::optional<core::PlaceId> object;
+    if (result) {
+      object = builder.resolveBelow(*result, post.path, &call);
+      const auto type = summaries.interfaceType(shape.object.identity);
+      if (!object || type.isNull() || !type->isRecordType())
+        continue;
+      registerBuffer(*object, *type->getAsRecordDecl());
+      const auto layout = bufferObjects.find(*object);
+      if (layout == bufferObjects.end() || !layout->second.sameLayoutAs(shape))
+        continue;
+    } else {
+      object = bufferArgument(post, call, state);
+    }
+    if (!object)
+      continue;
     const auto data = places.field(*object, shape.data.name);
     if (const auto *previous = bufferFact(data, state))
       shape.ownsBacking |= previous->shape.ownsBacking;
@@ -262,7 +296,7 @@ void FunctionDataflow::applyBufferPosts(const CallExpr &call,
                  .capacity = places.field(*object, shape.capacity.name),
                  .initialized = true});
     } else if (post.on) {
-      if (const auto result = numericCallResult(call)) {
+      if (const auto selector = result ? result : numericCallResult(call)) {
         core::BufferPost guarantee{
             .fact = {.shape = shape,
                      .object = *object,
@@ -270,7 +304,7 @@ void FunctionDataflow::applyBufferPosts(const CallExpr &call,
                      .capacity = places.field(*object, shape.capacity.name),
                      .initialized = true},
             .when = {}};
-        guarantee.when.require(*result, core::ValueFact::of(*post.on));
+        guarantee.when.require(*selector, core::ValueFact::of(*post.on));
         auto &entries = state.safety->buffers.pending[data];
         if (std::ranges::find(entries, guarantee) == entries.end()) {
           if (entries.size() < core::MaxBufferShapes)
@@ -290,10 +324,10 @@ void FunctionDataflow::applyBufferPosts(const CallExpr &call,
         post.end != core::PathAffine::ofConstant(0)) {
       core::PlaceGuard when;
       if (!active) {
-        const auto result = numericCallResult(call);
-        if (!result || !post.on)
+        const auto selector = result ? result : numericCallResult(call);
+        if (!selector || !post.on)
           continue;
-        when.require(*result, core::ValueFact::of(*post.on));
+        when.require(*selector, core::ValueFact::of(*post.on));
       }
       auto &bounds = state.safety->buffers.bounds[data];
       const core::BufferCapacityBound lower{
@@ -313,12 +347,17 @@ void FunctionDataflow::applyBufferPosts(const CallExpr &call,
 
 void FunctionDataflow::bufferOutputs(core::CheckedContract &outputs,
                                      const core::AnalysisState &state,
-                                     std::optional<core::Outcome> outcome) {
+                                     std::optional<core::Outcome> outcome,
+                                     std::optional<core::PlaceId> returned) {
   for (const auto &[data, fact] : state.safety->buffers.values) {
     if (!fact.initialized || !bufferFact(data, state))
       continue;
-    const auto path = builder.summaryPathOf(fact.object);
-    if (!path || path->isResult() || (path->isParam() && path->isRoot()))
+    auto path = builder.summaryPathOf(fact.object);
+    if (returned && outcome == core::Outcome::NonNull &&
+        places.step(fact.object) == core::PathStep::Deref &&
+        places.parent(fact.object) == returned)
+      path = core::SummaryPath::result().deref();
+    if (!path || (path->isParam() && path->isRoot()))
       continue;
     outputs.establish({.kind = core::CheckedRequirementKind::Buffer,
                        .path = *path,

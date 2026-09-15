@@ -1,0 +1,49 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "name": "wrapper-head-only-bad",
+      "sources": [
+        "wrapper-head-only-bad.c",
+        "../library.c"
+      ],
+      "function": "main",
+      "expect": "rejected",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "loses part of the owned allocation footprint"
+    },
+    {
+      "name": "wrapper-independent-good",
+      "sources": [
+        "wrapper-independent-good.c",
+        "../library.c"
+      ],
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    },
+    {
+      "name": "array-during-lifetime-good",
+      "sources": [
+        "array-during-lifetime-good.c",
+        "../library.c",
+        "../regressions/array-state.c"
+      ],
+      "function": "main",
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    }
+  ]
+}

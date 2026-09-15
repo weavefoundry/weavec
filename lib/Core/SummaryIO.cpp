@@ -397,7 +397,7 @@ static bool parseSteps(std::string_view text, SummaryPath &path) {
   while (pos < text.size()) {
     switch (text[pos]) {
     case '*':
-      path.steps.push_back(PathElem{.step = PathStep::Deref, .field = {}});
+      path.steps.pushBack(PathElem{.step = PathStep::Deref, .field = {}});
       ++pos;
       break;
     case '[': {
@@ -408,8 +408,8 @@ static bool parseSteps(std::string_view text, SummaryPath &path) {
       const auto index = ArrayIndex::parse(selector);
       if (!selector.empty() && !index)
         return false;
-      path.steps.push_back(PathElem{.step = PathStep::Index,
-                                    .field = index ? index->toString() : ""});
+      path.steps.pushBack(PathElem{.step = PathStep::Index,
+                                   .field = index ? index->toString() : ""});
       pos = end + 1;
       break;
     }
@@ -420,7 +420,7 @@ static bool parseSteps(std::string_view text, SummaryPath &path) {
         ++pos;
       if (pos == start)
         return false;
-      path.steps.push_back(
+      path.steps.pushBack(
           PathElem{.step = PathStep::Field,
                    .field = std::string(text.substr(start, pos - start))});
       break;
@@ -1273,8 +1273,7 @@ std::optional<FunctionSummary> parseSummary(std::string_view record,
       if (field.value.post)
         continue;
       auto absolute = root;
-      absolute.steps.insert(absolute.steps.end(), field.dest.steps.begin(),
-                            field.dest.steps.end());
+      absolute.steps.append(field.dest.steps);
       outputNodes.insert(std::move(absolute));
     }
   }

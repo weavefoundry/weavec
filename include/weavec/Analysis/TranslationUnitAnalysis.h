@@ -54,7 +54,7 @@ public:
 
   /// Attaches the exports of the other units of the program (RFC 0005);
   /// call before `run`. The database must outlive the analyzer.
-  void setDatabase(const ProgramDatabase *database) noexcept {
+  void setDatabase(const ProgramDatabase *database) {
     store.setDatabase(database);
   }
 

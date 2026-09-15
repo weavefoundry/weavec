@@ -324,11 +324,64 @@ TEST(CallContext, FootprintContainsStoragePrefixesConsumedValuesAndGuards) {
   summary.addEffect(SummaryPath::param(0).deref().field("data"), effect);
   summary.addEffect(SummaryPath::param(1).deref(), {.written = true});
   const auto footprint = callMemoryFootprint(summary);
-  EXPECT_TRUE(footprint.contains(SummaryPath::param(0)));
-  EXPECT_TRUE(footprint.contains(SummaryPath::param(0).deref().field("data")));
-  EXPECT_TRUE(footprint.contains(SummaryPath::param(0).deref().field("flag")));
-  EXPECT_TRUE(footprint.contains(SummaryPath::param(1)));
-  EXPECT_FALSE(footprint.contains(SummaryPath::param(1).deref()));
+  ASSERT_TRUE(footprint);
+  EXPECT_TRUE(footprint->contains(SummaryPath::param(0)));
+  EXPECT_TRUE(footprint->contains(SummaryPath::param(0).deref().field("data")));
+  EXPECT_TRUE(footprint->contains(SummaryPath::param(0).deref().field("flag")));
+  EXPECT_TRUE(footprint->contains(SummaryPath::param(1)));
+  EXPECT_FALSE(footprint->contains(SummaryPath::param(1).deref()));
+}
+
+// RFC 0028: a bounded preparation must reject excess inputs, never silently
+// discard a late premise. Repeated uses of one input consume no extra budget.
+TEST(CallContext, FootprintLimitCountsDistinctInputsAndRejectsTheNextOne) {
+  FunctionSummary summary;
+  std::set<SummaryPath> expected;
+  for (std::uint32_t i = 0; i < MaxCallContextFacts; ++i) {
+    const auto input = SummaryPath::param(i);
+    expected.insert(input);
+    summary.addEffect(input.deref(), {.written = true});
+    summary.addStore(
+        {.dest = input.deref(),
+         .value = ValueSource::copyAt(input, PointerOffset::zero())});
+  }
+  EXPECT_EQ(callMemoryFootprint(summary), expected);
+  summary.addEffect(SummaryPath::global(0), {.read = true});
+  EXPECT_FALSE(callMemoryFootprint(summary));
+  summary.effects.erase(SummaryPath::global(0));
+  EXPECT_EQ(callMemoryFootprint(summary), expected);
+}
+
+TEST(CallContext, FootprintReuseRetainsNoSummaryAndSurvivesEviction) {
+  CallMemoryFootprintCache cache;
+  const auto make = [](std::uint32_t index) {
+    FunctionSummary summary;
+    summary.addEffect(SummaryPath::param(index).deref(), {.freed = true});
+    return std::make_shared<const FunctionSummary>(std::move(summary));
+  };
+  auto original = make(0);
+  const auto expected = callMemoryFootprint(*original);
+  EXPECT_EQ(cache.get(original), expected);
+  EXPECT_EQ(cache.get(original), expected);
+  std::weak_ptr<const FunctionSummary> weak = original;
+  original.reset();
+  EXPECT_TRUE(weak.expired());
+  std::vector<std::shared_ptr<const FunctionSummary>> owners;
+  for (std::uint32_t i = 1; i <= CallMemoryFootprintCache::Capacity + 1; ++i) {
+    owners.push_back(make(i));
+    EXPECT_EQ(cache.get(owners.back()), callMemoryFootprint(*owners.back()));
+  }
+  EXPECT_EQ(cache.get(owners.front()), callMemoryFootprint(*owners.front()));
+  original = make(0);
+  EXPECT_EQ(cache.get(original), expected);
+  FunctionSummary large;
+  for (std::uint32_t i = 0; i <= MaxCallContextFacts; ++i)
+    large.addEffect(SummaryPath::param(i), {.read = true});
+  const auto rejected =
+      std::make_shared<const FunctionSummary>(std::move(large));
+  EXPECT_FALSE(cache.get(rejected));
+  EXPECT_FALSE(cache.get(rejected));
+  EXPECT_EQ(cache.get(original), expected);
 }
 
 TEST(CallContext, ObjectSeparationIsNotJustPointerInequality) {
@@ -363,11 +416,12 @@ TEST(CallContext, NumericContractsIncludeEveryInputDependency) {
       0, {.need = PathAffine::ofExpression(Expression::input(argument, Type)),
           .start = PathAffine::ofExpression(Expression::input(field, Type))});
   const auto footprint = callMemoryFootprint(summary);
-  EXPECT_TRUE(footprint.contains(result));
-  EXPECT_TRUE(footprint.contains(SummaryPath::param(0)));
-  EXPECT_TRUE(footprint.contains(argument));
-  EXPECT_TRUE(footprint.contains(field));
-  EXPECT_TRUE(footprint.contains(SummaryPath::global(0)));
+  ASSERT_TRUE(footprint);
+  EXPECT_TRUE(footprint->contains(result));
+  EXPECT_TRUE(footprint->contains(SummaryPath::param(0)));
+  EXPECT_TRUE(footprint->contains(argument));
+  EXPECT_TRUE(footprint->contains(field));
+  EXPECT_TRUE(footprint->contains(SummaryPath::global(0)));
 }
 
 TEST(CallContext, GlobalSeparationPremisesCannotBeDropped) {

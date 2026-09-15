@@ -32,6 +32,60 @@ static CheckedRequirement extent(unsigned index, std::int64_t bytes = 4) {
           .end = PathAffine::ofConstant(bytes),
           .family = {}};
 }
+
+TEST(SafetyLedgerTest, RouteSelectionMatchesFullSerializedOrdering) {
+  // RFC 0028: retain the original bytewise route order, including numeric
+  // prefixes whose following separator reverses ordinary prefix ordering.
+  std::vector<SourceLocation> locations;
+  for (const auto &file :
+       std::vector<std::string>{"", "a", "a:", "a\"", "a\\", "a\n", "a\t",
+                                std::string("a\0", 2), "\x80", "\xc3\xa9"})
+    locations.push_back({.file = file, .line = 1, .column = 1, .opaque = 17});
+  for (const unsigned value : {0U, 1U, 9U, 10U, 11U, 99U, 100U, 4294967295U}) {
+    locations.push_back({.file = "a", .line = value, .column = 1});
+    locations.push_back({.file = "a", .line = 1, .column = value});
+  }
+  std::vector<SafetyCallPath> routes{{}};
+  for (const unsigned prefixLength : {0U, 3U}) {
+    for (const auto &location : locations) {
+      SafetyCallPath route;
+      for (unsigned i = 0; i < prefixLength; ++i)
+        route.pushBack({.file = "prefix.c", .line = i, .column = 1});
+      route.pushBack(location);
+      route.pushBack({.file = "tail.c", .line = 10, .column = 100});
+      route.normalize();
+      routes.push_back(std::move(route));
+    }
+  }
+  const auto serialized = [](const SafetyCallPath &calls) {
+    std::string result;
+    for (const auto &call : calls)
+      result += safetyJsonString(call.file) + ":" + std::to_string(call.line) +
+                ":" + std::to_string(call.column) + ";";
+    return result;
+  };
+  for (const auto &first : routes) {
+    for (const auto &second : routes) {
+      const bool preferSecond = second.size() < first.size() ||
+                                (second.size() == first.size() &&
+                                 serialized(second) < serialized(first));
+      const auto &expected = preferSecond ? second : first;
+      SafetyLedger ledger;
+      auto entry = obligation(SafetyOutcome::Unresolved);
+      entry.calls = first;
+      ledger.add(entry);
+      auto joined = ledger;
+      entry.calls = second;
+      ledger.add(entry);
+      SafetyLedger other;
+      other.add(entry);
+      joined.join(other);
+      ASSERT_EQ(ledger.entries().begin()->second.calls, expected);
+      ASSERT_TRUE(joined.sameExplanationsAs(ledger));
+    }
+  }
+}
+
 TEST(SafetyLedgerTest, SharedJoinMatchesCanonicalInsertionAcrossOutcomes) {
   SafetyEntryPool pool(nullptr, 4, 2);
   for (unsigned seed = 0; seed < 20; ++seed) {
@@ -796,6 +850,43 @@ TEST(SafetyEntryPool, PreparedOriginsHonorCapacityBytesAndDisabledScopes) {
   }
 }
 
+TEST(SafetyEntryPool, PreparedOriginsRetainRecentlyUsedEntriesUnderBothBounds) {
+  // RFC 0028: entry pressure and byte pressure both preserve a recently used
+  // preparation. Compare every application with independent insertion.
+  for (const bool bytePressure : {false, true}) {
+    AnalysisStats stats;
+    {
+      SafetyEntryPool pool(&stats, 0, 0, bytePressure ? 1024 : 2,
+                           bytePressure ? 1048576 : 4194304);
+      SafetyLedger source;
+      auto entry = obligation(SafetyOutcome::Unresolved);
+      entry.reason.assign(50000, 'x');
+      source.add(std::move(entry));
+      const SourceLocation location{.file = "caller.c", .line = 17};
+      const auto apply = [&](const std::string &callee) {
+        SafetyLedger expected;
+        SafetyLedger actual;
+        addCallsIndividually(expected, source.propagation().unresolved,
+                             location, "caller", callee, false);
+        actual.addCalls(source, false, location, "caller", callee, false);
+        EXPECT_TRUE(actual.sameExplanationsAs(expected));
+        EXPECT_EQ(actual.limited(), expected.limited());
+      };
+      apply("hot");
+      for (unsigned i = 0; i < 10; ++i) {
+        apply("cold" + std::to_string(i));
+        apply("hot");
+      }
+      // Replacing the immutable projection cannot reuse its old preparation.
+      source.add(obligation(SafetyOutcome::Violation, 2));
+      apply("hot");
+    }
+    EXPECT_EQ(stats.count("explanation_call_hits"), 10U);
+    EXPECT_EQ(stats.count("explanation_call_misses"), 12U);
+    EXPECT_GT(stats.count("explanation_call_resets"), 0U);
+  }
+}
+
 TEST(SafetyEntryPool, PreparedOriginsSurviveSelfInsertionAndSourceReplacement) {
   SafetyLedger retained;
   {
@@ -968,6 +1059,71 @@ TEST(CheckedContract, PortableRoundTripAndCorruption) {
   summary.checked = contract;
   EXPECT_EQ(parseSummary(printSummary(summary, names), resolve), summary);
 }
+TEST(CheckedContract, AllocationConsumedIsARestrictedOutput) {
+  const GlobalNamer names = [](std::uint32_t) { return std::string("g"); };
+  const GlobalResolver resolve = [](std::string_view) {
+    return std::optional<std::uint32_t>(0);
+  };
+  auto post = extent(0, 0);
+  post.kind = CheckedRequirementKind::AllocationConsumed;
+  post.family = "free";
+  CheckedContract contract;
+  contract.computed = true;
+  contract.establish(post);
+  EXPECT_EQ(
+      parseCheckedContract(printCheckedContract(contract, names), resolve),
+      contract);
+  for (unsigned mutation = 0; mutation < 7; ++mutation) {
+    SCOPED_TRACE(mutation);
+    auto invalid = post;
+    switch (mutation) {
+    case 0:
+      invalid.path = SummaryPath::result();
+      break;
+    case 1:
+      invalid.path = SummaryPath::param(0).deref();
+      break;
+    case 2:
+      invalid.family = "fclose";
+      break;
+    case 3:
+      invalid.end = PathAffine::ofConstant(1);
+      break;
+    case 4:
+      invalid.ifNonNull = true;
+      break;
+    case 5:
+      invalid.when.require(SummaryPath::param(0),
+                           ValueFact::of(Outcome::NonNull));
+      break;
+    default:
+      invalid.other = SummaryPath::param(1);
+      break;
+    }
+    contract.establishes.clear();
+    contract.establish(invalid);
+    EXPECT_FALSE(
+        parseCheckedContract(printCheckedContract(contract, names), resolve));
+  }
+  contract.establishes.clear();
+  contract.require(post);
+  EXPECT_FALSE(
+      parseCheckedContract(printCheckedContract(contract, names), resolve));
+}
+
+TEST(SafetyState, AllocationConsumptionIntersectsAndSurvivesHolderReplacement) {
+  SafetyState a;
+  SafetyState b;
+  a.consumedAllocations = {PlaceId{1}, PlaceId{2}};
+  b.consumedAllocations = {PlaceId{2}, PlaceId{3}};
+  EXPECT_TRUE(a.join(b));
+  EXPECT_EQ(a.consumedAllocations, (std::set<PlaceId>{PlaceId{2}}));
+  a.forget(PlaceId{2});
+  EXPECT_TRUE(a.consumedAllocations.contains(PlaceId{2}));
+  a.join(SafetyState{});
+  EXPECT_TRUE(a.consumedAllocations.empty());
+}
+
 TEST(CheckedContract, MissingGlobalsInvalidateProof) {
   FunctionSummary summary;
   summary.checked.computed = true;

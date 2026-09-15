@@ -158,7 +158,7 @@ TEST(BufferFacts, ExhaustionIsStickyAndCannotStrengthenAJoin) {
 
 TEST(BufferContracts, CapacityGuaranteesRoundTripAndAreOutputOnly) {
   auto path = SummaryPath::param(0);
-  path.steps.push_back({.step = PathStep::Deref, .field = {}});
+  path.steps.pushBack({.step = PathStep::Deref, .field = {}});
   const CheckedRequirement premise{.kind = CheckedRequirementKind::Buffer,
                                    .path = path,
                                    .other = {},
@@ -237,7 +237,7 @@ TEST(BufferFacts, DeferredGuaranteesDependOnTheCallAndEveryContainerField) {
 
 TEST(BufferContracts, SequenceOutputsRequirePointerCellsAndCannotBeInputs) {
   auto path = SummaryPath::param(0);
-  path.steps.push_back({.step = PathStep::Deref, .field = {}});
+  path.steps.pushBack({.step = PathStep::Deref, .field = {}});
   auto shape = bufferShape();
   shape.pointerElements = true;
   shape.elementBytes = 8;

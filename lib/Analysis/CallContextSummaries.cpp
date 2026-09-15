@@ -82,13 +82,14 @@ std::optional<ResolvedSummary> SummaryStore::specializeMemory(
     analysis.run();
     if (!analysis.validMemoryContext)
       return decline();
-    auto summary = analysis.summary();
+    auto summary = std::move(analysis).summary();
     applyContract(*function, summary);
     memorySpecialized[key] = publishSummary(std::move(summary));
-    memoryDiagnostics[key] = collected.diagnostics();
+    memoryDiagnostics[key] = std::move(collected).diagnostics();
     memoryDependencies[key] = std::move(dependencies);
-    memoryVersions[key] = dependencySnapshot();
-    contextsNeedValidation = true;
+    auto &snapshot = memoryVersions[key];
+    snapshot = dependencySnapshot();
+    contextsNeedValidation |= !dependenciesCurrent(snapshot);
   } else {
     if (options.stats)
       options.stats->add("specialization_hits");

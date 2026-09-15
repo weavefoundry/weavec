@@ -54,30 +54,31 @@ static UnitRecord sample() {
   FunctionSummary freeSummary;
   freeSummary.addEffect(SummaryPath::param(0), PlaceEffect{.freed = true});
   freeSummary.addEffect(SummaryPath::global(cache), PlaceEffect{.freed = true});
-  exports.functions["node_free"] =
-      analysis::ExportedFunction{.summary = freeSummary,
-                                 .specializations = {},
-                                 .typeKey = "void (struct node *)",
-                                 .external = true,
-                                 .addressTaken = true};
+  exports.functions["node_free"] = analysis::ExportedFunction{
+      .summary = analysis::ExportedSummary(freeSummary),
+      .specializations = {},
+      .typeKey = "void (struct node *)",
+      .external = true,
+      .addressTaken = true};
 
   FunctionSummary newSummary;
   newSummary.addReturn(ValueSource::fresh());
-  exports.functions["node_new"] =
-      analysis::ExportedFunction{.summary = newSummary,
-                                 .specializations = {},
-                                 .typeKey = "struct node *(void)",
-                                 .external = true,
-                                 .addressTaken = false};
+  exports.functions["node_new"] = analysis::ExportedFunction{
+      .summary = analysis::ExportedSummary(newSummary),
+      .specializations = {},
+      .typeKey = "struct node *(void)",
+      .external = true,
+      .addressTaken = false};
 
   FunctionSummary helper;
   helper.addReturn(
       ValueSource::borrow(SummaryPath::param(0).deref().field("v")));
-  exports.functions["vp"] = analysis::ExportedFunction{.summary = helper,
-                                                       .specializations = {},
-                                                       .typeKey = "",
-                                                       .external = false,
-                                                       .addressTaken = true};
+  exports.functions["vp"] =
+      analysis::ExportedFunction{.summary = analysis::ExportedSummary(helper),
+                                 .specializations = {},
+                                 .typeKey = "",
+                                 .external = false,
+                                 .addressTaken = true};
 
   // RFC 0006: an outcome-conditional consumer and an interior copy.
   FunctionSummary grow;
@@ -89,7 +90,7 @@ static UnitRecord sample() {
   grow.addOutcome(core::Outcome::NonNull, SummaryPath::param(0),
                   PlaceEffect{.moved = true});
   exports.functions["grow"] =
-      analysis::ExportedFunction{.summary = grow,
+      analysis::ExportedFunction{.summary = analysis::ExportedSummary(grow),
                                  .specializations = {},
                                  .typeKey = "char *(char *, unsigned long)",
                                  .external = true,
@@ -103,7 +104,7 @@ TEST(Sidecar, PathIsOutputPlusExtension) {
 
 TEST(Sidecar, PrintsStableText) {
   EXPECT_EQ(printUnitRecord(sample()),
-            "weavec-summaries 23\n"
+            "weavec-summaries 24\n"
             "global-name -:675f6361636865\n"
             "source src/node.c\n"
             "cwd /work/build\n"
@@ -152,7 +153,7 @@ TEST(Sidecar, PrintsStableText) {
 
 TEST(Sidecar, HeapPostconditionsRoundTripWithStringsAndAliases) {
   auto original = sample();
-  auto &summary = original.exports.functions.at("node_new").summary;
+  auto summary = original.exports.functions.at("node_new").summary.get();
   auto &graph = summary.heap[SummaryPath::result()];
   auto child =
       ValueSource::freshAt("free", {}, core::PathAffine::ofConstant(4));
@@ -164,10 +165,11 @@ TEST(Sidecar, HeapPostconditionsRoundTripWithStringsAndAliases) {
   graph.addField(core::Store{.dest = SummaryPath::result().deref().field("b"),
                              .value = shared});
   graph.incomplete = true;
+  original.exports.functions.at("node_new").summary.assign(summary);
   std::string error;
   const auto decoded = parseUnitRecord(printUnitRecord(original), &error);
   ASSERT_TRUE(decoded) << error;
-  EXPECT_EQ(decoded->exports.functions.at("node_new").summary, summary);
+  EXPECT_EQ(decoded->exports.functions.at("node_new").summary.get(), summary);
 }
 
 TEST(Sidecar, RoundTrips) {
@@ -215,33 +217,33 @@ TEST(Sidecar, RejectsOtherFormatsAndMalformedLines) {
   EXPECT_FALSE(parseUnitRecord("", &error));
   EXPECT_EQ(error, "empty file");
   EXPECT_FALSE(parseUnitRecord(
-      "weavec-summaries 23\nsummary\n  return fresh\nend\n", &error));
+      "weavec-summaries 24\nsummary\n  return fresh\nend\n", &error));
   EXPECT_EQ(error, "line 2: summary record without a function");
-  EXPECT_FALSE(parseUnitRecord("weavec-summaries 23\nfunction f\n", &error));
+  EXPECT_FALSE(parseUnitRecord("weavec-summaries 24\nfunction f\n", &error));
   EXPECT_EQ(error, "line 2: malformed 'function' line");
-  EXPECT_FALSE(parseUnitRecord("weavec-summaries 23\nfunction f external "
+  EXPECT_FALSE(parseUnitRecord("weavec-summaries 24\nfunction f external "
                                "plain\nsummary\n  return fresh\n",
                                &error));
   EXPECT_EQ(error, "line 4: summary record without 'end'");
   EXPECT_FALSE(
-      parseUnitRecord("weavec-summaries 23\nreported x y z\n", &error));
+      parseUnitRecord("weavec-summaries 24\nreported x y z\n", &error));
   EXPECT_EQ(error, "line 2: malformed 'reported' line");
   // RFC 0012.
   EXPECT_FALSE(
-      parseUnitRecord("weavec-summaries 23\nsized-field a b\n", &error));
+      parseUnitRecord("weavec-summaries 24\nsized-field a b\n", &error));
   EXPECT_EQ(error, "line 2: malformed 'sized-field' line");
   EXPECT_FALSE(
-      parseUnitRecord("weavec-summaries 23\nsized-field a b c\n", &error));
+      parseUnitRecord("weavec-summaries 24\nsized-field a b c\n", &error));
   EXPECT_EQ(error, "line 2: malformed 'sized-field' line");
   EXPECT_FALSE(
-      parseUnitRecord("weavec-summaries 23\nunsized-field a b c\n", &error));
+      parseUnitRecord("weavec-summaries 24\nunsized-field a b c\n", &error));
   EXPECT_EQ(error, "line 2: malformed 'unsized-field' line");
 }
 
 TEST(Sidecar, SkipsUnknownLinesAndBlankOnes) {
   std::string error;
   const std::optional<UnitRecord> parsed = parseUnitRecord(
-      "weavec-summaries 23\n\nfuture-thing 42\nsource a.c\n\n", &error);
+      "weavec-summaries 24\n\nfuture-thing 42\nsource a.c\n\n", &error);
   ASSERT_TRUE(parsed) << error;
   EXPECT_EQ(parsed->exports.source, "a.c");
   EXPECT_TRUE(parsed->exports.functions.empty());
@@ -272,7 +274,7 @@ TEST(Sidecar, WritesAndReadsFiles) {
 TEST(Sidecar, CallbackContextsAndTargetSymbolsRoundTrip) {
   UnitRecord record = sample();
   const auto hook =
-      record.exports.globals.idFor("@weavec-hook:7372632f61206323686f6f6b");
+      record.exports.globals.idFor("@weavec-state:612e63:612e63:10:686f6f6b");
   const core::CallbackBindings bindings{
       {SummaryPath::param(0),
        core::CallTargets::function("src/a dir/helper.c#drop")},
@@ -281,10 +283,13 @@ TEST(Sidecar, CallbackContextsAndTargetSymbolsRoundTrip) {
   record.exports.callbackGlobals["global.drop"] =
       core::CallTargets::function("drop");
   auto &function = record.exports.functions["invoke"];
-  function.summary.callbackInputs.insert(SummaryPath::param(0));
-  function.specializations[bindings].addEffect(SummaryPath::param(1),
-                                               PlaceEffect{.freed = true});
-  function.specializations[bindings].incomplete.insert("example reason");
+  core::FunctionSummary generic;
+  generic.callbackInputs.insert(SummaryPath::param(0));
+  function.summary.assign(std::move(generic));
+  core::FunctionSummary specialized;
+  specialized.addEffect(SummaryPath::param(1), PlaceEffect{.freed = true});
+  specialized.incomplete.insert("example reason");
+  function.specializations[bindings].assign(std::move(specialized));
   const auto printed = printUnitRecord(record);
   std::string error;
   const auto parsed = parseUnitRecord(printed, &error);
@@ -310,20 +315,22 @@ TEST(Sidecar, GlobalNamesPreserveCallbackOrderingAndUnusedIdentities) {
                     .other = {},
                     .family = {}});
   auto &function = exports.functions["invoke"];
+  core::FunctionSummary generic;
   for (const auto id : {a, b, c})
-    function.summary.callbackInputs.insert(SummaryPath::global(id));
+    generic.callbackInputs.insert(SummaryPath::global(id));
+  function.summary.assign(std::move(generic));
   for (const auto *target : {"first", "second"}) {
     const core::CallbackBindings bindings{
         {SummaryPath::global(a), core::CallTargets::function(target)},
         {SummaryPath::global(b), core::CallTargets::function("drop")},
         {SummaryPath::global(c), core::CallTargets::function("fill")}};
     exports.callbackRequests["invoke"].insert(bindings);
-    function.specializations[bindings] = function.summary;
+    function.specializations[bindings].assign(function.summary.get());
     core::CallContext context;
     context.callbacks = bindings;
     context.reportDiagnostics = false;
     exports.memoryRequests["invoke"].insert(context);
-    function.memorySpecializations[context] = function.summary;
+    function.memorySpecializations[context].assign(function.summary.get());
   }
   const auto encoded = printUnitRecord(record);
   const auto decoded = parseUnitRecord(encoded);
@@ -361,7 +368,7 @@ TEST(Sidecar, MalformedCallbackRecordsAreRejected) {
 
 TEST(Sidecar, SelectedArrayPathsAndAllRangeKindsRoundTrip) {
   auto original = sample();
-  auto &summary = original.exports.functions.at("node_new").summary;
+  auto summary = original.exports.functions.at("node_new").summary.get();
   summary.arrayCopies.insert(
       {.dest = SummaryPath::result().deref(),
        .source = SummaryPath::param(0).deref(),
@@ -385,11 +392,12 @@ TEST(Sidecar, SelectedArrayPathsAndAllRangeKindsRoundTrip) {
                                 .definite = false});
   summary.addEffect(SummaryPath::param(0).deref().indexed("$1+2"),
                     PlaceEffect{.read = true});
+  original.exports.functions.at("node_new").summary.assign(summary);
   std::string error;
   const auto encoded = printUnitRecord(original);
   const auto decoded = parseUnitRecord(encoded, &error);
   ASSERT_TRUE(decoded) << error;
-  EXPECT_EQ(decoded->exports.functions.at("node_new").summary, summary);
+  EXPECT_EQ(decoded->exports.functions.at("node_new").summary.get(), summary);
   EXPECT_EQ(printUnitRecord(*decoded), encoded);
 }
 
@@ -413,8 +421,10 @@ TEST(Sidecar, MemoryContextsKeepRequestsResultsGlobalsAndUnsafeState) {
   record.exports.memoryRequests["zap"].insert(input);
   auto &function = record.exports.functions["zap"];
   function.acceptsMemoryContexts = true;
-  function.summary.addEffect(core::SummaryPath::param(0), {.freed = true});
-  function.memorySpecializations[input] = function.summary;
+  core::FunctionSummary generic;
+  generic.addEffect(core::SummaryPath::param(0), {.freed = true});
+  function.summary.assign(std::move(generic));
+  function.memorySpecializations[input].assign(function.summary.get());
   const auto text = printUnitRecord(record);
   EXPECT_NE(text.find("memory-request "), std::string::npos);
   EXPECT_NE(text.find("memory-specialization "), std::string::npos);
@@ -456,7 +466,7 @@ TEST(Sidecar, MalformedMemoryMetadataCannotBecomeAGenericSummary) {
   EXPECT_FALSE(parseUnitRecord("weavec-summaries 11\n"));
 }
 
-TEST(Sidecar, MemoryRequestAndResultCountsAreBounded) {
+TEST(Sidecar, MemoryRequestsDoNotChangeTheComputedContextLimit) {
   const std::string prefix =
       "weavec-summaries " + std::to_string(SidecarFormatVersion) + "\n";
   const auto symbol = core::CallTargets::function("zap").toString();
@@ -478,8 +488,60 @@ TEST(Sidecar, MemoryRequestAndResultCountsAreBounded) {
       EXPECT_TRUE(parseUnitRecord(prefix + results));
     }
   }
-  EXPECT_FALSE(parseUnitRecord(prefix + requests));
+  EXPECT_TRUE(parseUnitRecord(prefix + requests));
   EXPECT_FALSE(parseUnitRecord(prefix + results));
+}
+
+TEST(Sidecar, CallbackRequestsDoNotChangeTheComputedContextLimit) {
+  UnitRecord record;
+  auto &function = record.exports.functions["invoke"];
+  for (unsigned i = 0; i <= core::MaxCallbackContexts; ++i) {
+    const core::CallbackBindings bindings{
+        {SummaryPath::param(0),
+         core::CallTargets::function("target" + std::to_string(i))}};
+    record.exports.callbackRequests["invoke"].insert(bindings);
+    function.specializations[bindings] = {};
+    if (i + 1 == core::MaxCallbackContexts)
+      EXPECT_TRUE(parseUnitRecord(printUnitRecord(record)));
+  }
+  EXPECT_FALSE(parseUnitRecord(printUnitRecord(record)));
+  function.specializations.clear();
+  const auto parsed = parseUnitRecord(printUnitRecord(record));
+  ASSERT_TRUE(parsed);
+  EXPECT_EQ(parsed->exports.callbackRequests, record.exports.callbackRequests);
+}
+
+TEST(Sidecar, ContextRequestTransportBoundsAreEnforced) {
+  const std::string prefix =
+      "weavec-summaries " + std::to_string(SidecarFormatVersion) + "\n";
+  const auto symbol = core::CallTargets::function("invoke").toString();
+  for (const bool callback : {false, true}) {
+    std::string requests;
+    for (unsigned i = 0; i <= MaxSidecarContextRequests; ++i) {
+      std::string encoded;
+      if (callback) {
+        const core::CallbackBindings bindings{
+            {SummaryPath::param(0),
+             core::CallTargets::function("target" + std::to_string(i))}};
+        encoded = core::printCallbackBindings(bindings, {});
+      } else {
+        core::CallContext input;
+        input.facts[SummaryPath::param(0)] = core::ValueFact::ofConstant(i);
+        encoded = core::printCallContext(input, {});
+      }
+      requests.append(callback ? "callback-request " : "memory-request ")
+          .append(symbol)
+          .append(" ")
+          .append(encoded)
+          .append("\n");
+      if (i + 1 == MaxSidecarContextRequests)
+        EXPECT_TRUE(parseUnitRecord(prefix + requests));
+    }
+    std::string error;
+    EXPECT_FALSE(parseUnitRecord(prefix + requests, &error));
+    EXPECT_EQ(error, callback ? "too many callback requests"
+                              : "too many memory requests");
+  }
 }
 
 } // namespace weavec::frontend
@@ -494,7 +556,7 @@ TEST(Sidecar, TypedCountsAndNumericInterfacesRoundTrip) {
       .scale = 4,
       .productType = core::IntegerType{.width = 64, .isSigned = false}});
   using Expression = core::IntegerExpression<SummaryPath>;
-  auto &summary = record.exports.functions.at("node_new").summary;
+  auto summary = record.exports.functions.at("node_new").summary.get();
   const auto value =
       Expression::input(SummaryPath::param(0), {.width = 32, .isSigned = false})
           .converted({.width = 8, .isSigned = false});
@@ -502,13 +564,14 @@ TEST(Sidecar, TypedCountsAndNumericInterfacesRoundTrip) {
   summary.addNumericOutput(SummaryPath::result(), {.value = value});
   summary.addRequirement(0, {.need = core::PathAffine::ofConstant(0),
                              .start = core::PathAffine::ofConstant(-1)});
+  record.exports.functions.at("node_new").summary.assign(summary);
   const auto text = printUnitRecord(record);
   EXPECT_NE(text.find("sized-field struct~vec.items struct~vec.cap 4 u64"),
             std::string::npos);
   const auto parsed = parseUnitRecord(text);
   ASSERT_TRUE(parsed);
   EXPECT_EQ(parsed->exports.sizedFields, record.exports.sizedFields);
-  EXPECT_EQ(parsed->exports.functions.at("node_new").summary, summary);
+  EXPECT_EQ(parsed->exports.functions.at("node_new").summary.get(), summary);
 }
 TEST(Sidecar, MalformedTypedCountsAreRejected) {
   for (const auto *line :
@@ -516,9 +579,46 @@ TEST(Sidecar, MalformedTypedCountsAreRejected) {
         "a b 256 u8", "a b 4 u64 extra"}) {
     std::string error;
     EXPECT_FALSE(parseUnitRecord(
-        std::string("weavec-summaries 23\nsized-field ") + line + "\n", &error))
+        std::string("weavec-summaries 24\nsized-field ") + line + "\n", &error))
         << line;
     EXPECT_FALSE(error.empty());
   }
 }
+
+TEST(Sidecar, PrivateInterfaceMetadataRoundTripsWithoutSourceDeclarations) {
+  auto record = sample();
+  core::InterfaceNode integer;
+  integer.kind = core::InterfaceKind::Integer;
+  integer.bytes = 4;
+  integer.alignment = 4;
+  integer.name = "unsigned int";
+  const core::InterfaceType type{{integer}};
+  record.exports.globalInterfaces["@weavec-state:one:decl"] = type;
+  record.exports.objectInterfaces["conflicting-view"] = std::nullopt;
+  const auto text = printUnitRecord(record);
+  const auto parsed = parseUnitRecord(text);
+  ASSERT_TRUE(parsed);
+  EXPECT_EQ(parsed->exports.globalInterfaces, record.exports.globalInterfaces);
+  EXPECT_EQ(parsed->exports.objectInterfaces, record.exports.objectInterfaces);
+  EXPECT_EQ(printUnitRecord(*parsed), text);
+  const auto start = text.find("global-interface ");
+  ASSERT_NE(start, std::string::npos);
+  const auto end = text.find('\n', start);
+  const auto line = text.substr(start, end - start + 1);
+  EXPECT_FALSE(parseUnitRecord(text + line));
+}
+
+TEST(Sidecar, MalformedInterfaceRecordsAndPreviousFormatAreRejected) {
+  const auto header =
+      "weavec-summaries " + std::to_string(SidecarFormatVersion) + "\n";
+  for (const auto *line :
+       {"global-interface \n", "global-interface zz -\n",
+        "global-interface 61 zz\n", "global-interface 61 00\n",
+        "global-interface 61 - extra\n",
+        "global-interface 61 -\nglobal-interface 61 -\n",
+        "object-interface 61 -\nobject-interface 61 -\n"})
+    EXPECT_FALSE(parseUnitRecord(header + line)) << line;
+  EXPECT_FALSE(parseUnitRecord("weavec-summaries 23\n"));
+}
+
 } // namespace weavec::frontend

@@ -1950,6 +1950,11 @@ void FunctionDataflow::run() {
 
   const CFGBlock &entry = cfg->getEntry();
   entryStates[entry.getBlockID()] = initialState();
+  std::vector<core::PlaceId> pointerParameters;
+  if (options.checkContracts)
+    for (const auto *parameter : function.parameters())
+      if (parameter->getType()->isPointerType())
+        pointerParameters.push_back(builder.placeForVar(*parameter));
 
   const bool ordered = options.checkContracts;
   if (options.stats)
@@ -2032,6 +2037,13 @@ void FunctionDataflow::run() {
         // RFC 0009: an edge the state's facts contradict is dead.
         if (edgeInfeasible)
           return;
+        // RFC 0028: carry the vacuous null-entry case into must-fact joins.
+        // A later assignment cannot erase an allocation from the entry value.
+        if (edgeState.safety)
+          for (const auto input : pointerParameters)
+            if (edgeState.nulls.stateOf(input) == core::Nullness::Null &&
+                !edgeState.safety->replacedPointers.contains(input))
+              edgeState.safety->consumedAllocations.insert(input);
         // A single bounded region can keep its iteration partition through
         // subsequent validation and returns. Merging it at the loop exit would
         // lose the correlation between decoder width and accumulator range.
@@ -3168,8 +3180,9 @@ bool FunctionDataflow::tracksScalar(core::PlaceId place) const {
   // that writes through it reports `written` (or, unknown, forgets what it
   // reaches), and a write through a pointer this function holds is applied
   // to what the pointer borrows (`assignScalar`); the nullness tracker
-  // makes the same bet (RFC 0008). A global may be written by any callee,
-  // which summaries do not report for integers.
+  // makes the same bet (RFC 0008). RFC 0028 additionally tracks portable
+  // private cells: their writes are exported, and unknown calls invalidate
+  // their current contents before any following specialization.
   const core::PlaceId root = places.root(place);
   // RFC 0012: a length place is written by nobody; the string tracker
   // forgets it when the string changes.
@@ -3177,7 +3190,13 @@ bool FunctionDataflow::tracksScalar(core::PlaceId place) const {
       numericExpressions.contains(root))
     return true;
   const VarDecl *var = builder.varForPlace(root);
-  return var != nullptr && !var->hasGlobalStorage();
+  if (!var)
+    return false;
+  if (!var->hasGlobalStorage())
+    return true;
+  const auto name =
+      summaries.globals().portableName(summaries.globals().idFor(*var));
+  return name && name->starts_with("@weavec-state:");
 }
 
 void FunctionDataflow::learnFact(core::PlaceId place,
@@ -3232,13 +3251,16 @@ void FunctionDataflow::assignScalar(core::PlaceId place, const Expr *value,
     fact = scalarFactOf(*value, state);
     numeric = integerExpressionOf(*value, state);
     const auto *decl = dyn_cast_or_null<ValueDecl>(builder.declFor(place));
-    if (decl) {
-      if (const auto storage = integerTypeOf(*decl, context)) {
-        if (fact)
-          fact = core::ValueFact::ofInteger(fact->inType(*storage));
-        if (numeric)
-          numeric = numeric->converted(*storage);
-      }
+    auto storage = decl ? integerTypeOf(*decl, context) : std::nullopt;
+    if (!storage && places.isElement(place))
+      if (const auto array = arrayTypes.find(*places.parent(place));
+          array != arrayTypes.end())
+        storage = integerTypeOf(array->second, context);
+    if (storage) {
+      if (fact)
+        fact = core::ValueFact::ofInteger(fact->inType(*storage));
+      if (numeric)
+        numeric = numeric->converted(*storage);
     }
   }
   // RFC 0011: `n = m` relates the two (RFC 0012: `n = m + 1` too, as `n ==
@@ -3268,6 +3290,17 @@ void FunctionDataflow::assignScalar(core::PlaceId place, const Expr *value,
       same = input;
       sameOffset = 0;
     }
+  // RFC 0028: a symbolic private-array write may replace a known element.
+  // Capture the RHS first, then discard expressions that still name an old
+  // overlapping cell. Only established disjoint selectors keep their values.
+  if (value)
+    for (const auto other : scalarArrayOverlaps(place, state)) {
+      if (numeric && numeric->dependsOn(other))
+        numeric.reset();
+      if (same == other)
+        same.reset();
+      assignScalar(other, nullptr, state, at);
+    }
   for (const core::PlaceId cell : cells) {
     snapshotArrayIndex(cell, at, state);
     snapshotIntegerDependencies(cell, at, state);
@@ -3294,7 +3327,10 @@ void FunctionDataflow::assignScalar(core::PlaceId place, const Expr *value,
 void FunctionDataflow::forgetScalar(core::PlaceId place,
                                     core::AnalysisState &state,
                                     const Expr *at) {
+  const auto overlaps = scalarArrayOverlaps(place, state);
   assignScalar(place, nullptr, state, at);
+  for (const auto other : overlaps)
+    assignScalar(other, nullptr, state, at);
 }
 
 std::vector<core::PlaceId>
@@ -3977,8 +4013,10 @@ void FunctionDataflow::applyAdjustments(const CallExpr &call,
       }
     }
     if (!pointerType.isNull() && pointerType->isPointerType()) {
-      result.key = countKeyFor(pointerType->getPointeeType(),
-                               llvm::ArrayRef(path.steps).drop_front());
+      result.key = countKeyFor(
+          pointerType->getPointeeType(),
+          llvm::ArrayRef<core::PathElem>(path.steps.data(), path.steps.size())
+              .drop_front());
     }
     return result;
   };
@@ -4263,10 +4301,16 @@ void FunctionDataflow::handleAssign(const BinaryOperator &assign,
   // A scalar result (`int rc = try_take(p)`) carries its call's pending
   // outcome to the place that will be tested.
   state.pending.erase(lhs->place);
-  if (type->isIntegerType() && lhs->element.isWhole())
+  if (type->isIntegerType() && lhs->element.isWhole()) {
     assignScalar(lhs->place, assign.getRHS(), state, &assign);
-  else if (type->isIntegerType())
+  } else if (type->isIntegerType()) {
     forgetScalar(lhs->place, state, &assign);
+    for (const auto cell : places.descendants(lhs->place))
+      forgetScalar(cell, state, &assign);
+    if (const auto path = builder.summaryPathOf(lhs->place);
+        path && path->isGlobal() && tracksScalar(lhs->place) && recording())
+      inferred.addEffect(*path, core::PlaceEffect{.written = true});
+  }
   // RFC 0012: `d[i] = 0` terminates the string, `d[i] = 'x'` may not.
   if (type->isIntegerType())
     noteByteStore(*assign.getLHS(), assign.getRHS(), state);
@@ -5060,9 +5104,12 @@ void FunctionDataflow::applySummary(const CallExpr &call,
     forgetBelow(place, state);
     // The written place itself: a pointer's new value arrives through the
     // callee's stores, an integer's is simply unknown now (RFC 0009).
-    if (const auto *decl =
-            dyn_cast_if_present<ValueDecl>(builder.declFor(place));
-        decl != nullptr && decl->getType()->isIntegerType())
+    const auto *decl = dyn_cast_if_present<ValueDecl>(builder.declFor(place));
+    const auto array = places.isElement(place)
+                           ? arrayTypes.find(*places.parent(place))
+                           : arrayTypes.end();
+    if ((decl != nullptr && decl->getType()->isIntegerType()) ||
+        (array != arrayTypes.end() && array->second->isIntegerType()))
       forgetScalar(place, state);
     // RFC 0012: a callee that wrote the object behind a pointer (`*d`, or
     // anything below it) may have changed the string it holds. The library
@@ -5174,8 +5221,7 @@ void FunctionDataflow::applySummary(const CallExpr &call,
       if (field.dest.isRoot())
         continue;
       auto absolute = root;
-      absolute.steps.insert(absolute.steps.end(), field.dest.steps.begin(),
-                            field.dest.steps.end());
+      absolute.steps.append(field.dest.steps);
       if (byDest.erase(absolute) && !summary.storesOn.empty())
         heapManagedStores.insert(absolute);
     }
@@ -5532,6 +5578,24 @@ void FunctionDataflow::handleUncheckedCall(const CallExpr &call,
   const FunctionDecl *callee = call.getDirectCallee();
   if (callee != nullptr && isCompilerIntrinsic(*callee))
     return;
+  // Unknown code may call back into any reachable library entry point.
+  // A later initializer or verified output can establish new private state.
+  const auto count = places.size();
+  for (std::size_t i = 0; i < count; ++i) {
+    const core::PlaceId place{static_cast<std::uint32_t>(i)};
+    if (!places.isBase(place))
+      continue;
+    const auto *var = builder.varForPlace(place);
+    if (!var || !var->hasGlobalStorage() || !tracksScalar(place))
+      continue;
+    forgetBelow(place, state);
+    forgetScalar(place, state, &call);
+    state.callTargets.erase(place);
+    state.nulls.forget(place);
+    if (recording())
+      if (const auto path = builder.summaryPathOf(place))
+        inferred.addEffect(*path, core::PlaceEffect{.written = true});
+  }
   if (!callInvolvesPointers(call))
     return;
   // Whatever the callee was handed may be kept (RFC 0007, *Escape*), and
@@ -6528,11 +6592,22 @@ void FunctionDataflow::applyPointerAssign(core::PlaceId dest,
   const ValueOrigin &origin = *chosen;
   targets = originTargets(origin, state);
   if (const auto *decl = dyn_cast_or_null<ValueDecl>(builder.declFor(dest));
-      decl && decl->getType()->isFunctionPointerType() && targets.empty()) {
-    if (origin.kind == ValueOrigin::Kind::Null)
-      targets.null = true;
-    else
-      targets.unknown = true;
+      decl && decl->getType()->isFunctionPointerType()) {
+    if (targets.empty()) {
+      if (origin.kind == ValueOrigin::Kind::Null)
+        targets.null = true;
+      else
+        targets.unknown = true;
+    }
+    // RFC 0028: checked setters need an actual callback input binding even
+    // without invoking it, so a joined heap output retains the caller target.
+    // Ordinary stores already forward the symbolic source input path.
+    if (options.checkContracts && targets.unknown && origin.place &&
+        recording()) {
+      const auto input = sourceValueOf(origin, state, true);
+      if (input.path && (input.path->isParam() || input.path->isGlobal()))
+        inferred.callbackInputs.insert(*input.path);
+    }
   }
   commitTargets = true;
   const auto writeGuard = heapWriteGuard(dest, state);
@@ -9644,8 +9719,20 @@ void FunctionDataflow::recordAccess(core::PlaceId place, bool write,
   for (const core::PlaceId affectedPlace : affected) {
     const auto path = builder.summaryPathOf(affectedPlace);
     // Only caller memory counts: the parameter variable itself is the
-    // callee's own copy, and a global's value is reported through stores.
-    if (!path || !path->hasDeref())
+    // callee's own copy. Private numeric cells also need may-effects. Pointer
+    // stores already carry guarded replacement effects; an unconditional
+    // `written` here would discard the entry guard of lazy publication.
+    const auto *decl =
+        dyn_cast_if_present<ValueDecl>(builder.declFor(affectedPlace));
+    const auto array = places.isElement(affectedPlace)
+                           ? arrayTypes.find(*places.parent(affectedPlace))
+                           : arrayTypes.end();
+    const bool scalar =
+        (decl != nullptr && decl->getType()->isArithmeticType()) ||
+        (array != arrayTypes.end() && array->second->isArithmeticType());
+    const bool privateScalar =
+        path && path->isGlobal() && scalar && tracksScalar(affectedPlace);
+    if (!path || (!path->hasDeref() && !privateScalar))
       continue;
     inferred.addEffect(*path, write ? core::PlaceEffect{.written = true}
                                     : core::PlaceEffect{.read = true});
@@ -9699,11 +9786,7 @@ void FunctionDataflow::replayWrites(const CallExpr &call,
       continue;
     for (const core::SummaryPath &base : bases) {
       core::SummaryPath written = base;
-      written.steps.insert(
-          written.steps.end(),
-          std::next(path.steps.begin(),
-                    static_cast<std::ptrdiff_t>(pointeePath.steps.size())),
-          path.steps.end());
+      written.steps.append(path.steps, pointeePath.steps.size());
       if (written.steps.size() <= MaxPlaceDepth)
         inferred.addEffect(std::move(written),
                            core::PlaceEffect{.written = true});

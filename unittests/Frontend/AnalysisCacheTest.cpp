@@ -47,9 +47,11 @@ protected:
     unit.exports.source = "cache-input.c";
     // A widened real-project offset must survive the ordinary summary
     // transport used inside a checkpoint (RFC 0020).
-    unit.exports.functions["get"].summary.addReturn(
+    core::FunctionSummary generic;
+    generic.addReturn(
         core::ValueSource::freshAt("free", core::PointerOffset::inside(),
                                    core::PathAffine::ofConstant(24)));
+    unit.exports.functions["get"].summary.assign(std::move(generic));
     auto &contract = unit.exports.checkedDefinitions["main"];
     contract.computed = contract.selected = true;
     contract.obligations.add({.property = core::SafetyProperty::Initialization,
@@ -123,14 +125,16 @@ TEST_F(AnalysisCacheTest, SharedLedgersPreserveOversizedExpandedContracts) {
   contract.obligations.markLimited();
   unit.checkedDefinitions["alias"] = contract;
   auto &function = unit.functions.at("get");
-  function.summary.checked = contract;
+  auto generic = function.summary.get();
+  generic.checked = contract;
+  function.summary.assign(std::move(generic));
   core::CallbackBindings callback;
   callback[core::SummaryPath::param(0)] = core::CallTargets::any();
-  function.specializations[callback] = function.summary;
+  function.specializations[callback].assign(function.summary.get());
   core::CallContext memory;
   memory.facts[core::SummaryPath::param(0)] =
       core::ValueFact::of(core::Outcome::NonNull);
-  function.memorySpecializations[memory] = function.summary;
+  function.memorySpecializations[memory].assign(function.summary.get());
   core::AnalysisStats stats;
   ASSERT_TRUE(writeAnalysisCheckpoint(directory.str(), key, before, &stats));
   EXPECT_LT(stats.count("cache_uncompressed_bytes"), 1024U * 1024U);
@@ -144,8 +148,9 @@ TEST_F(AnalysisCacheTest, SharedLedgersPreserveOversizedExpandedContracts) {
         unit.checkedDefinitions.at(name).obligations));
   const auto &decodedFunction = decoded.functions.at("get");
   for (const auto *summary :
-       {&decodedFunction.summary, &decodedFunction.specializations.at(callback),
-        &decodedFunction.memorySpecializations.at(memory)})
+       {&decodedFunction.summary.get(),
+        &decodedFunction.specializations.at(callback).get(),
+        &decodedFunction.memorySpecializations.at(memory).get()})
     EXPECT_TRUE(
         summary->checked.obligations.sameExplanationsAs(contract.obligations));
   auto changed = unit;
@@ -166,9 +171,9 @@ TEST_F(AnalysisCacheTest, ProducerValidationPreservesTheGlobalNameTable) {
   auto &unit = before.units.front().exports;
   (void)unit.globals.idFor("unused");
   const auto global = unit.globals.idFor("counter");
-  unit.functions.at("get")
-      .summary.effects[core::SummaryPath::global(global)]
-      .read = true;
+  auto generic = unit.functions.at("get").summary.get();
+  generic.addEffect(core::SummaryPath::global(global), {.read = true});
+  unit.functions.at("get").summary.assign(std::move(generic));
   ASSERT_TRUE(writeAnalysisCheckpoint(directory.str(), key, before, nullptr));
   const auto after = readAnalysisCheckpoint(directory.str(), key, nullptr);
   ASSERT_TRUE(after);
@@ -179,7 +184,8 @@ TEST_F(AnalysisCacheTest, ProducerValidationPreservesTheGlobalNameTable) {
   EXPECT_EQ(*mapped, global);
   EXPECT_EQ(decoded.globals, unit.globals);
   EXPECT_TRUE(decoded.functions.at("get")
-                  .summary.effects.at(core::SummaryPath::global(*mapped))
+                  .summary.get()
+                  .effects.at(core::SummaryPath::global(*mapped))
                   .read);
   EXPECT_EQ(checkpointExportsIdentity(unit),
             checkpointExportsIdentity(decoded));
@@ -198,13 +204,72 @@ TEST_F(AnalysisCacheTest, LossyMetadataNeverGetsAReusableIdentity) {
   EXPECT_FALSE(readAnalysisCheckpoint(directory.str(), key, nullptr));
 }
 
+TEST_F(AnalysisCacheTest, AccumulatedRequestsRetainLosslessCheckpoints) {
+  auto before = checkpoint();
+  auto &unit = before.units.front().exports;
+  // RFC 0028: Lua's callers request 40 callback contexts. The request union
+  // remains relevant even when the analyzer can compute only 32 results.
+  for (unsigned i = 0; i < 40; ++i) {
+    const core::CallbackBindings bindings{
+        {core::SummaryPath::param(0),
+         core::CallTargets::function("target" + std::to_string(i))}};
+    unit.callbackRequests["invoke"].insert(bindings);
+    core::CallContext input;
+    input.facts[core::SummaryPath::param(0)] = core::ValueFact::ofConstant(i);
+    unit.memoryRequests["invoke"].insert(input);
+  }
+  const auto identity = checkpointExportsIdentity(unit);
+  ASSERT_FALSE(identity.empty());
+  core::AnalysisStats stats;
+  ASSERT_TRUE(writeAnalysisCheckpoint(directory.str(), key, before, &stats));
+  EXPECT_EQ(stats.count("cache_writes"), 1U);
+  EXPECT_EQ(stats.count("cache_write_failures"), 0U);
+  const auto after = readAnalysisCheckpoint(directory.str(), key, &stats);
+  ASSERT_TRUE(after);
+  const auto &decoded = after->units.front().exports;
+  EXPECT_EQ(decoded.callbackRequests, unit.callbackRequests);
+  EXPECT_EQ(decoded.memoryRequests, unit.memoryRequests);
+  EXPECT_EQ(decoded.functions, unit.functions);
+  EXPECT_EQ(decoded.checkedDefinitions, unit.checkedDefinitions);
+  EXPECT_EQ(checkpointExportsIdentity(decoded), identity);
+}
+
+TEST_F(AnalysisCacheTest, StreamedDiagnosticsPreserveNestedTextAndFixIts) {
+  auto before = checkpoint();
+  std::string text = std::string(65536, 'x') + "é😀\"\\";
+  for (unsigned byte = 0; byte < 32; ++byte)
+    text += static_cast<char>(byte);
+  auto &diagnostic = before.units.front().diagnostics.front();
+  diagnostic.message = text;
+  diagnostic.location.file = text;
+  diagnostic.notes.front().message = text;
+  diagnostic.notes.front().addNote(text, diagnostic.location);
+  diagnostic.fixits.front().insertion = text;
+  ASSERT_TRUE(writeAnalysisCheckpoint(directory.str(), key, before, nullptr));
+  const auto after = readAnalysisCheckpoint(directory.str(), key, nullptr);
+  ASSERT_TRUE(after);
+  const auto &decoded = after->units.front().diagnostics.front();
+  EXPECT_EQ(decoded.message, text);
+  EXPECT_EQ(decoded.location.file, text);
+  ASSERT_EQ(decoded.notes.size(), 1U);
+  EXPECT_EQ(decoded.notes.front().message, text);
+  ASSERT_EQ(decoded.notes.front().notes.size(), 1U);
+  EXPECT_EQ(decoded.notes.front().notes.front().message, text);
+  ASSERT_EQ(decoded.fixits.size(), 1U);
+  EXPECT_EQ(decoded.fixits.front().insertion, text);
+  EXPECT_EQ(decoded.id, diagnostic.id);
+  EXPECT_EQ(decoded.severity, diagnostic.severity);
+}
+
 TEST_F(AnalysisCacheTest, ImportedNamesAndTypeSpellingsHaveLosslessKeys) {
   analysis::UnitExports unit;
   unit.source = "directory with spaces/callback.c";
   auto &callback = unit.functions["callback"];
   callback.addressTaken = true;
   callback.typeKey = "char *(const char *)";
-  callback.summary.effects[core::SummaryPath::param(0)].read = true;
+  core::FunctionSummary generic;
+  generic.addEffect(core::SummaryPath::param(0), {.read = true});
+  callback.summary.assign(std::move(generic));
   unit.functions["local"] = callback;
   unit.functions["local"].external = false;
   const std::set<std::string> dependencies{"callback", unit.source + "#local",
@@ -215,9 +280,9 @@ TEST_F(AnalysisCacheTest, ImportedNamesAndTypeSpellingsHaveLosslessKeys) {
       checkpointExportsIdentity(database.checkpointInputs(dependencies));
   ASSERT_EQ(identity.size(), 64U);
   auto changed = unit;
-  changed.functions.at("callback")
-      .summary.effects[core::SummaryPath::param(0)]
-      .written = true;
+  auto modified = changed.functions.at("callback").summary.get();
+  modified.addEffect(core::SummaryPath::param(0), {.written = true});
+  changed.functions.at("callback").summary.assign(std::move(modified));
   analysis::ProgramDatabase changedDatabase;
   changedDatabase.add(changed);
   EXPECT_NE(identity, checkpointExportsIdentity(
@@ -490,7 +555,7 @@ TEST_F(AnalysisCacheTest,
   const auto original = (*buffer)->getBuffer().split('\n').second.str();
   for (const auto &[from, to] :
        std::vector<std::pair<std::string, std::string>>{
-           {"\"version\":2", "\"version\":999"},
+           {"\"version\":3", "\"version\":999"},
            {R"("id":"checking-incomplete")", R"("id":"invented")"}}) {
     auto changed = original;
     const auto at = changed.find(from);

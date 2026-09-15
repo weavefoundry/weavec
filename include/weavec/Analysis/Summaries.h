@@ -71,19 +71,21 @@ public:
   /// Display name for `id`, or `<global>` if unknown.
   [[nodiscard]] llvm::StringRef nameOf(std::uint32_t id) const;
 
-  // RFC 0022: private file-scope scalar callback cells cross units by a
-  // source-qualified name. Foreign cells have internal storage proxies.
+  // RFC 0028: private storage crosses units with validated type metadata.
+  mutable core::InterfaceTypes interfaces;
   [[nodiscard]] std::optional<std::string> portableName(std::uint32_t id) const;
   [[nodiscard]] std::string callbackName(std::uint32_t id) const;
   [[nodiscard]] std::optional<std::uint32_t>
-  importName(llvm::StringRef name, const clang::ASTContext &context);
+  importName(llvm::StringRef name, const clang::ASTContext &context,
+             const core::InterfaceTypes &descriptions = {});
 
   [[nodiscard]] std::size_t size() const noexcept { return decls.size(); }
 
 private:
   llvm::DenseMap<const clang::VarDecl *, std::uint32_t> ids;
   std::vector<const clang::VarDecl *> decls;
-  std::map<std::uint32_t, std::string> callbackProxies;
+  std::map<std::uint32_t, std::string> storageProxies;
+  mutable std::map<std::uint32_t, std::optional<std::string>> portableNames;
   std::map<const clang::ASTContext *,
            std::map<std::string, std::uint32_t, std::less<>>>
       importedNames;
@@ -212,6 +214,8 @@ builtinSummary(const clang::FunctionDecl &function);
 /// lookups by combining them with annotations and the builtin table.
 class SummaryStore {
 public:
+  core::InterfaceTypes objectInterfaces;
+  [[nodiscard]] clang::QualType interfaceType(std::string_view view);
   /// RFC 0020: immutable preparation is owned by this AST's store.
   std::shared_ptr<FunctionPreparationCache> prepared =
       std::make_shared<FunctionPreparationCache>();
@@ -336,6 +340,8 @@ public:
   void setContext(const clang::ASTContext *unitContext) noexcept {
     if (context != unitContext) {
       objectViewCache.clear();
+      objectInterfaces.clear();
+      interfaceAdapters.clear();
       bufferShapeCache.clear();
       recursiveLinkCache.clear();
       importedRecursiveLinkCache.clear();
@@ -347,9 +353,8 @@ public:
   /// Attaches the exports of the other units of the program (RFC 0005):
   /// `lookup` consults them for a callee with external linkage and no body
   /// here, `lookupIndirect` joins their candidates with this unit's.
-  void setDatabase(const ProgramDatabase *program) noexcept {
-    database = program;
-  }
+  void setDatabase(const ProgramDatabase *program);
+
   [[nodiscard]] const ProgramDatabase *programDatabase() const noexcept {
     return database;
   }
@@ -420,6 +425,7 @@ public:
   bool noteInvalidSizedField(const clang::FieldDecl &field);
 
 private:
+  std::map<std::string, clang::QualType, std::less<>> interfaceAdapters;
   [[nodiscard]] SummarySnapshot
   publishSummary(core::FunctionSummary summary) const;
   // RFC 0020: preserve imported pointers across database replacements. A
@@ -454,6 +460,7 @@ private:
   llvm::DenseSet<const clang::Type *> unknownIndirect;
   GlobalTable globalTable;
   const ProgramDatabase *database = nullptr;
+  std::shared_ptr<const char> interfaceGeneration;
   const clang::ASTContext *context = nullptr;
   std::map<const clang::RecordDecl *, std::string> objectViewCache;
   std::map<const clang::RecordDecl *, std::optional<core::BufferShape>>
