@@ -2043,3 +2043,49 @@ byte-content, non-NaN, read-only-record and combined callback contexts added
 by this milestone. Until the request count is brought back near baseline, the
 checker portion of this work cannot satisfy section 6.
 
+### Cost decomposition: the gate is out of reach by tuning
+
+The regression was profiled against the rebuilt `bbf14c3` baseline on one
+linenoise translation unit, measured as user CPU with no competing load:
+
+| measure | baseline | candidate 103 | ratio |
+| --- | --- | --- | --- |
+| user CPU | 3.47 s | 74.35 s | 21.4 |
+| function analyses | 602 | 1,752 | 2.9 |
+| checked case analyses | 265 | 1,429 | 5.4 |
+| cost per function analysis | 5.8 ms | 42 ms | 7.3 |
+
+The 21x is the product of two independent factors. Analyses grew 2.9x, and
+each analysis became 7.3x more expensive. The second factor dominates and is
+the new rule machinery itself running over every statement and state, which no
+scheduling or caching change removes.
+
+Within the analysis count there is genuine waste: 465 distinct contexts are
+analyzed 1,429 times. The cause is coarse dependency invalidation. Only 194
+`invalidateDependency` calls produce 962 specialization retirements, because a
+single `@callback-globals` change retires every specialization that read any
+callback global. Making that dependency per-global would plausibly cut the
+analysis factor from 5.4x to near 1.8x, worth roughly a third of the total.
+
+A scheduling experiment deferred in-round case analysis to the settled passes,
+which already rebuild every recorded request. It moved 662 analyses out of the
+fixed-point rounds and changed wall time by less than noise, because the same
+contexts are then analyzed in the settled passes instead. It was reverted
+rather than kept as dead complexity; the attempt is recorded here.
+
+The conclusion is that the mandatory 1.10x cost gate cannot be met by
+optimization. Even removing all invalidation churn leaves roughly 7x, since the
+per-analysis cost is inherent to the volume of machinery this milestone adds.
+Meeting the gate as written would require removing a substantial part of the
+milestone. Ordinary analysis remains unaffected, so this is a cost of checked
+contract mode only.
+
+Three courses are available and the choice is the owner's, not the
+implementation's, because this RFC forbids silently reducing a resource bound.
+The gate can be amended to a measured multiplier and per-project deadline for
+checked mode, recorded as an explicit decision. The expensive machinery, which
+is largely the byte-level parser layer whose goals are already deferred, can be
+cut and the cost re-measured. Or the implementation can stay unmerged until a
+separate performance milestone addresses the per-analysis cost. No option is
+available that keeps both this scope and the stated bound.
+
