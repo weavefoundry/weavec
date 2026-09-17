@@ -16,12 +16,33 @@ namespace weavec::core {
 std::optional<CheckedRequirement>
 joinContainerOutput(const CheckedRequirement &first,
                     const CheckedRequirement &second) {
-  if (first.kind != CheckedRequirementKind::ContainerDerived ||
-      second.kind != CheckedRequirementKind::ContainerDerived ||
-      first.path != second.path || first.family != second.family ||
+  const bool derived = first.kind == CheckedRequirementKind::ContainerDerived;
+  if ((!derived && first.kind != CheckedRequirementKind::Container &&
+       first.kind != CheckedRequirementKind::ContainerFresh &&
+       first.kind != CheckedRequirementKind::ContainerExtended) ||
+      second.kind != first.kind || first.path != second.path ||
       first.on != second.on || first.when != second.when || first.ifNonNull ||
-      second.ifNonNull)
+      second.ifNonNull ||
+      (!derived && (first.other != second.other ||
+                    first.begin != second.begin || first.end != second.end)))
     return std::nullopt;
+  const auto a = ContainerShape::decode(first.family);
+  const auto b = ContainerShape::decode(second.family);
+  if (!a || !b)
+    return std::nullopt;
+  ContainerFacts left;
+  ContainerFacts right;
+  const PlaceId holder{0};
+  left.set(holder, {.shape = *a, .members = {}, .inputs = {}});
+  right.set(holder, {.shape = *b, .members = {}, .inputs = {}});
+  left.join(right);
+  const auto *common = left.find(holder);
+  if (!common)
+    return std::nullopt;
+  auto result = first;
+  result.family = common->shape.encode();
+  if (!derived)
+    return result;
   std::set<SummaryPath> sources{first.other, second.other};
   for (const auto *post : {&first, &second}) {
     if (post->begin.path)
@@ -29,7 +50,6 @@ joinContainerOutput(const CheckedRequirement &first,
     if (post->end.path)
       sources.insert(*post->end.path);
   }
-  auto result = first;
   result.begin = result.end = {};
   result.other = {};
   if (sources.size() > 3) {
@@ -90,7 +110,10 @@ void CheckedRequirements::intersect(const CheckedRequirements &other) {
   }
   Set generalized;
   for (const auto &first : entries())
-    if (first.kind == CheckedRequirementKind::ContainerDerived)
+    if (first.kind == CheckedRequirementKind::ContainerDerived ||
+        first.kind == CheckedRequirementKind::ContainerExtended ||
+        first.kind == CheckedRequirementKind::Container ||
+        first.kind == CheckedRequirementKind::ContainerFresh)
       for (const auto &second : other.entries())
         if (const auto joined = joinContainerOutput(first, second))
           generalized.insert(*joined);
@@ -105,7 +128,7 @@ void CheckedRequirements::intersect(const CheckedRequirements &other) {
       insert(entry);
 }
 
-static constexpr std::array<std::string_view, 32> Kinds{
+static constexpr std::array<std::string_view, 38> Kinds{
     "valid",
     "extent",
     "initialized",
@@ -137,7 +160,13 @@ static constexpr std::array<std::string_view, 32> Kinds{
     "container-consumed",
     "container-partition",
     "container-combined",
-    "allocation-consumed"};
+    "allocation-consumed",
+    "callback-allocate",
+    "callback-release",
+    "initialized-span",
+    "count-within-span",
+    "initialized-advance",
+    "container-extended"};
 
 std::string_view toString(CheckedRequirementKind value) noexcept {
   const auto index = static_cast<std::size_t>(value);
@@ -171,10 +200,19 @@ void CheckedContract::establish(CheckedRequirement requirement) {
 }
 bool CheckedContract::hasContainerOutputPremises(
     const CheckedRequirement &post) const {
+  if (post.kind == CheckedRequirementKind::ContainerExtended &&
+      (post.on || !post.when.trivial() || post.ifNonNull ||
+       post.path != post.other || !post.path.isParam() || !post.path.isRoot() ||
+       std::ranges::none_of(requirements, [&](const auto &pre) {
+         return pre.kind == CheckedRequirementKind::Valid &&
+                pre.path == post.other && pre.when.trivial();
+       })))
+    return false;
   if (post.kind == CheckedRequirementKind::ContainerDerived ||
       post.kind == CheckedRequirementKind::ContainerTail ||
       post.kind == CheckedRequirementKind::ContainerPreserved ||
-      post.kind == CheckedRequirementKind::ContainerConsumed) {
+      post.kind == CheckedRequirementKind::ContainerConsumed ||
+      post.kind == CheckedRequirementKind::ContainerExtended) {
     const auto shape = ContainerShape::decode(post.family);
     if (!shape)
       return false;
@@ -188,6 +226,12 @@ bool CheckedContract::hasContainerOutputPremises(
                input->link == shape->link &&
                input->children == shape->children &&
                input->ownership == shape->ownership &&
+               (post.kind != CheckedRequirementKind::ContainerExtended ||
+                (input->singletonHead() &&
+                 input->access == ContainerAccess::Release &&
+                 shape->access == ContainerAccess::Release &&
+                 input->family == shape->family &&
+                 input->payloads == shape->payloads)) &&
                ((post.kind != CheckedRequirementKind::ContainerConsumed &&
                  post.kind != CheckedRequirementKind::ContainerPreserved) ||
                 input->entails(*shape));
@@ -228,6 +272,29 @@ bool CheckedContract::hasContainerOutputPremises(
       if (!premise(post.other) ||
           !separated(requirements, post.other, *post.begin.path, false))
         return false;
+      // RFC 0029: a fresh region needs two owned inputs and a live head.
+      if (post.end == PathAffine::ofConstant(1)) {
+        const auto owned = [&](const SummaryPath &path) {
+          return std::ranges::any_of(requirements, [&](const auto &entry) {
+            if (entry.kind != CheckedRequirementKind::Container ||
+                entry.path != path || !entry.when.trivial())
+              return false;
+            const auto input = ContainerShape::decode(entry.family);
+            return input && input->access == ContainerAccess::Release &&
+                   input->family == "free";
+          });
+        };
+        if (post.path != post.other || !post.path.isParam() ||
+            !post.path.isRoot() || shape->access != ContainerAccess::Release ||
+            !owned(post.other) || !owned(*post.begin.path) ||
+            std::ranges::none_of(requirements, [&](const auto &pre) {
+              return pre.kind == CheckedRequirementKind::Valid &&
+                     pre.path == post.other && pre.when.trivial();
+            }))
+          return false;
+      } else if (post.end != PathAffine::ofConstant(0)) {
+        return false;
+      }
     } else if (!separated(establishes, post.path, post.other, true)) {
       return false;
     }

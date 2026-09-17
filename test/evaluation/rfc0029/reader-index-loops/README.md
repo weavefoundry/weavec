@@ -1,0 +1,1 @@
+RFC 0029 discovered reader traversal regression, frozen before induction support: unit-stride indexing relative to a stable reader position, with a strict unsigned extent guard, outgoing goto, and switch. Negative clients violate the extent, initialization, index or stable-position premises.

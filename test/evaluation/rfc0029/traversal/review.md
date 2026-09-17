@@ -1,0 +1,1 @@
+The original nondecreasing probe has a strict edge from visit_even to visit_odd, so every cycle still makes progress. It is a valid forwarding case. The original manifest and failed observation remain unchanged. The reviewed manifest accepts it and adds cycle.c, with non-strict edges in both directions. Frozen before the failed-progress diagnostic was run against cycle.c.

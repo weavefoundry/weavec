@@ -8,6 +8,7 @@
 
 #include "AffineSupport.h"
 #include "Dataflow.h"
+#include "IntegerSupport.h"
 
 using namespace clang;
 
@@ -38,7 +39,40 @@ bool FunctionDataflow::checkedPointerComparable(const BinaryOperator &expr,
                        state);
     return live && bounds;
   };
-  return position(*a) && position(*b);
+  if (!position(*a) || !position(*b))
+    return false;
+  if (expr.getOpcode() == BO_Sub && aType->getPointeeType()->isCharType() &&
+      a->inputPlace && bufferFact(*a->inputPlace, state) && a->extent &&
+      a->extent == b->extent && a->extent->place && a->extent->scale == 1 &&
+      a->extent->constant == 0) {
+    const auto type = integerTypeOf(expr.getType(), context);
+    const auto maximum =
+        type ? core::IntegerRange::full(*type).maximum() : std::nullopt;
+    const auto limit = maximum ? maximum->signedValue() : std::nullopt;
+    if (limit &&
+        !checkedAtMost(*a->extent, core::Affine::ofConstant(*limit), state))
+      if (const auto extent = summaryAffineOf(a->extent)) {
+        // RFC 0029: an explicit sufficient entry bound proves ptrdiff_t
+        // representability, independently of provenance and cursor bounds.
+        const auto slack =
+            NumericExpression::constant(core::IntegerValue::ofBits(
+                CursorType,
+                CursorType.mask() - static_cast<std::uint64_t>(*limit)));
+        const auto projected = summaryIntegerExpression(slack);
+        if (projected) {
+          if (recording())
+            inferred.checked.require(
+                {.kind = core::CheckedRequirementKind::SumFits,
+                 .path = {},
+                 .other = {},
+                 .begin = *extent,
+                 .end = core::PathAffine::ofExpression(*projected),
+                 .family = {}});
+          state.relations.learnAtMost(*a->extent->place, *limit);
+        }
+      }
+  }
+  return true;
 }
 
 void FunctionDataflow::checkedPointerCondition(const BinaryOperator &expr,
@@ -85,6 +119,34 @@ void FunctionDataflow::checkedPointerCondition(const BinaryOperator &expr,
   }
   if (!relation || lhs.scale != 1 || rhs.scale != 1)
     return;
+  const auto strictlyLess = [&](const core::Affine &a, const core::Affine &b) {
+    const auto next = a.shifted(1);
+    return next && checkedAtMost(*next, b, state);
+  };
+  bool impossible = false;
+  switch (*relation) {
+  case core::Relation::Less:
+    // The reversed bound refutes this branch's strict comparison.
+    // NOLINTNEXTLINE(readability-suspicious-call-argument)
+    impossible = checkedAtMost(rhs, lhs, state);
+    break;
+  case core::Relation::LessEqual:
+    impossible = strictlyLess(rhs, lhs);
+    break;
+  case core::Relation::Equal:
+    impossible = strictlyLess(lhs, rhs) || strictlyLess(rhs, lhs);
+    break;
+  case core::Relation::GreaterEqual:
+    impossible = strictlyLess(lhs, rhs);
+    break;
+  case core::Relation::Greater:
+    impossible = checkedAtMost(lhs, rhs, state);
+    break;
+  }
+  if (impossible) {
+    edgeInfeasible = true;
+    return;
+  }
   std::int64_t offset = 0;
   if (__builtin_sub_overflow(rhs.constant, lhs.constant, &offset))
     return;
@@ -137,10 +199,42 @@ void FunctionDataflow::installCheckedPosition(core::PlaceId dest,
     return;
   }
   const auto expression = checkedByteExpression(position.offset, state);
+  const bool selfDependent = expression && expression->dependsOn(coordinate);
+  bool bounded = false;
+  if (position.extent && position.extent->place != coordinate) {
+    const auto extentExpression =
+        position.extent->place
+            ? numericExpressions.find(*position.extent->place)
+            : numericExpressions.end();
+    if (extentExpression == numericExpressions.end() ||
+        !extentExpression->second.dependsOn(coordinate))
+      bounded = checkedAtMost(sourceOffset, *position.extent, state);
+  }
+  auto upperBound = position.extent;
+  if (bounded) {
+    const CheckedMemory memory{.storage = position.storage,
+                               .begin = sourceOffset,
+                               .end = sourceOffset,
+                               .extent = position.extent,
+                               .input = {},
+                               .pointer = nullptr};
+    if (const auto witness = checkedWitness(memory, state);
+        witness && witness->zero.isConstant() &&
+        checkedAtMost(witness->zero, *upperBound, state)) {
+      const auto zero = witness->zero.place
+                            ? numericExpressions.find(*witness->zero.place)
+                            : numericExpressions.end();
+      if (zero == numericExpressions.end() ||
+          !zero->second.dependsOn(coordinate))
+        upperBound = witness->zero;
+    }
+  }
   const auto range = expression
                          ? evaluateNumericExpression(*expression, state)
                          : core::IntegerRangeEvaluation{
                                .values = core::IntegerRange::full(CursorType)};
+  if (selfDependent)
+    snapshotIntegerDependencies(coordinate, nullptr, state);
   snapshotScalar(coordinate, nullptr, state);
   state.dropGuardsOn(coordinate);
   state.relations.forget(coordinate);
@@ -148,12 +242,34 @@ void FunctionDataflow::installCheckedPosition(core::PlaceId dest,
                                     range.mayBeInvalid
                                         ? core::IntegerRange::full(CursorType)
                                         : range.values.converted(CursorType)));
+  if (!range.mayBeInvalid)
+    if (const auto value = range.values.converted(CursorType).constant())
+      for (const auto &[otherHolder, other] : checkedCoordinates) {
+        const auto current = state.safety->positions.find(otherHolder);
+        if (other == coordinate || current == state.safety->positions.end() ||
+            current->second.offset != core::Affine::ofPlace(other))
+          continue;
+        const auto known = state.scalars.factOf(other);
+        if (known && known->inType(CursorType).constant() == value) {
+          // Equal byte counts need no shared object. This edge is established
+          // by actual assignments, then updated by ordinary cursor transfers.
+          state.relations.learn(coordinate, core::Relation::Equal, other);
+          break;
+        }
+      }
   if (sourceOffset.place && sourceOffset.scale == 1 &&
-      sourceOffset.place != coordinate)
+      sourceOffset.place != coordinate && !selfDependent)
     state.relations.learn(coordinate, core::Relation::Equal,
                           *sourceOffset.place, sourceOffset.constant);
   if (nonnegative)
     state.relations.learnAtLeast(coordinate, 0);
+  if (bounded) {
+    if (upperBound->isConstant())
+      state.relations.learnAtMost(coordinate, upperBound->constant);
+    else if (upperBound->scale == 1)
+      state.relations.learn(coordinate, core::Relation::LessEqual,
+                            *upperBound->place, upperBound->constant);
+  }
   position.offset = core::Affine::ofPlace(coordinate);
   state.safety->positions[dest] = position;
 }
@@ -184,8 +300,10 @@ void FunctionDataflow::checkedAdvancePointer(const Expr &expr,
   const auto ref = builder.resolve(*operand);
   if (!ref || !ref->element.isWhole())
     return;
-  const auto holder = ref->place;
+  auto holder = ref->place;
   const auto old = checkedMemoryAt(holder, {}, {}, state);
+  if (old && old->holder)
+    holder = *old->holder;
   if (!old || !shift) {
     state.safety->positions.erase(holder);
     return;
@@ -216,6 +334,16 @@ void FunctionDataflow::checkedAdvancePointer(const Expr &expr,
     }
     return;
   }
+  const auto advancedOffset = position.offset.shifted(delta.constant);
+  const auto extentExpression =
+      position.extent && position.extent->place
+          ? numericExpressions.find(*position.extent->place)
+          : numericExpressions.end();
+  const bool retainsExtent =
+      advancedOffset && position.extent && position.extent->place != id &&
+      (extentExpression == numericExpressions.end() ||
+       !extentExpression->second.dependsOn(id)) &&
+      checkedAtMost(*advancedOffset, *position.extent, state);
   const auto previous = integerRangeAt(id, CursorType, state);
   const bool positive = delta.constant >= 0;
   const auto magnitude =
@@ -234,10 +362,32 @@ void FunctionDataflow::checkedAdvancePointer(const Expr &expr,
   // target-typed maximum, before retaining mathematical update relations.
   if (!preserves && positive) {
     const auto bounds = checkedRelations(state);
-    for (const auto &[other, fact] : state.scalars.all()) {
-      if (other == id || !fact.integer || fact.integer->empty())
+    if (const auto upper = bounds.bound(id, std::nullopt); upper && *upper >= 0)
+      preserves =
+          static_cast<std::uint64_t>(*upper) <= CursorType.mask() - magnitude;
+    std::map<core::PlaceId, core::IntegerType> inputs;
+    for (const auto &[other, fact] : state.scalars.all())
+      if (fact.integer)
+        inputs.emplace(other, fact.integer->type);
+    for (const auto &[otherHolder, other] : checkedCoordinates)
+      if (state.safety->positions.contains(otherHolder))
+        inputs.emplace(other, CursorType);
+    for (const auto &[pair, edge] : state.relations.all()) {
+      (void)edge;
+      for (const auto other : {pair.first, pair.second})
+        if (const auto *decl =
+                dyn_cast_or_null<ValueDecl>(builder.declFor(other)))
+          if (const auto type = integerTypeOf(*decl, context))
+            inputs.emplace(other, *type);
+    }
+    for (const auto &[other, type] : inputs) {
+      if (preserves)
+        break;
+      if (other == id)
         continue;
-      const auto upper = fact.integer->maximum();
+      // A full target range still bounds nonwrapping arithmetic. Widening
+      // may omit that redundant scalar fact while retaining q < p or q < n.
+      const auto upper = integerRangeAt(other, type, state).maximum();
       const auto distance = bounds.bound(id, other);
       inferred.checked.limited |= bounds.limited();
       if (bounds.limited())
@@ -359,6 +509,14 @@ void FunctionDataflow::checkedAdvancePointer(const Expr &expr,
     }
     for (const auto &[storage, range] : advanced)
       state.safety->initialize(storage, range);
+    if (retainsExtent) {
+      if (position.extent->isConstant())
+        state.relations.learnAtMost(id, position.extent->constant);
+      else if (position.extent->scale == 1)
+        state.relations.learn(id, core::Relation::LessEqual,
+                              *position.extent->place,
+                              position.extent->constant);
+    }
   }
   if (!postfix) {
     state.safety->positions[saved] = position;

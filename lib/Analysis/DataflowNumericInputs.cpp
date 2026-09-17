@@ -85,6 +85,14 @@ void FunctionDataflow::captureNumericInputs(
   const auto affine = [&](const core::PathAffine &value) {
     if (value.expression)
       expression(*value.expression);
+    else if (options.checkContracts && value.path && value.path->isParam() &&
+             value.path->isRoot() && value.path->index < call.getNumArgs() &&
+             value.quantity == core::AffineQuantity::Integer &&
+             isa<AbstractConditionalOperator>(
+                 call.getArg(value.path->index)->IgnoreParenCasts()))
+      if (const auto type =
+              integerTypeOf(call.getArg(value.path->index)->getType(), context))
+        dependencies.emplace(*value.path, *type);
   };
   const auto source = [&](const core::ValueSource &value) {
     guard(value.when);
@@ -156,6 +164,7 @@ void FunctionDataflow::captureNumericInputs(
     state.dropGuardsOn(saved);
     state.scalars.forget(saved);
     state.relations.forget(saved);
+    state.numericValues.erase(saved);
     numericSnapshotExpressions.erase(saved);
   }
   for (const auto &[path, type] : dependencies) {
@@ -172,8 +181,20 @@ void FunctionDataflow::captureNumericInputs(
     // never take (including a null argument). Capture unknown here; eagerly
     // diagnosing every possible dependency would add warnings even when its
     // guarded consumer is refuted or the null access is already diagnosed.
-    if (!value)
+    if (!value) {
+      if (options.checkContracts && path.isParam() && path.isRoot() &&
+          path.index < call.getNumArgs()) {
+        const auto *argument = call.getArg(path.index);
+        if (!argument->HasSideEffects(context) &&
+            isa<AbstractConditionalOperator>(argument->IgnoreParenCasts()))
+          if (const auto range = integerRangeOf(*argument, state);
+              range && !range->mayBeInvalid)
+            state.scalars.set(
+                saved->second,
+                core::ValueFact::ofInteger(range->values.converted(type)));
+      }
       continue;
+    }
     const auto evaluated = evaluateNumericExpression(*value, state);
     if (!evaluated.mayBeInvalid)
       state.scalars.set(saved->second,

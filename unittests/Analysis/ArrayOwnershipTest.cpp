@@ -47,6 +47,40 @@ void clean(char **a) { free(a[0]); free(a[1]); }
       << ::testing::PrintToString(test::messages(result.diagnostics));
 }
 
+// RFC 0029: array decay and an explicit selected record share one cell.
+TEST(ArrayOwnership, RecordArrayArrowAgreesWithSelectionAndForwarding) {
+  AnalysisOptions options;
+  options.checkedFunctions.insert("client");
+  const auto result = test::analyze(R"c(
+struct slot { char *p; unsigned n; };
+static void release(struct slot *s) { free(s->p); }
+void client(void) {
+  struct slot a[2]; a->p=malloc(4); a[1].p=malloc(4);
+  if ((*a).p) a[0].p[0]=1;
+  release(a); free(a[1].p);
+}
+)c",
+                                    options);
+  ASSERT_TRUE(result.ast);
+  ASSERT_NE(result.summary("client"), nullptr);
+  EXPECT_TRUE(result.summary("client")->checked.complete());
+  EXPECT_TRUE(result.summary("client")->checked.requirements.empty());
+  EXPECT_TRUE(result.diagnostics.empty())
+      << ::testing::PrintToString(test::messages(result.diagnostics));
+}
+
+TEST(ArrayOwnership, RecordArrayArrowPreservesAliasReleaseHistory) {
+  const auto result = test::analyze(R"c(
+struct slot { char *p; };
+void bad(void) {
+  struct slot a[2]; a->p=malloc(4); a[1].p=(*a).p;
+  free(a[1].p); free(a->p);
+}
+)c");
+  ASSERT_TRUE(result.ast);
+  EXPECT_EQ(countId(result, core::diag::DoubleFree), 1U);
+}
+
 TEST(ArrayOwnership, AConstantIndexIsCapturedBeforeReassignment) {
   const auto result = test::analyze(R"c(
 void bad(char **a) { int i = 0; free(a[i]); i = 1; a[0][0] = 1; }

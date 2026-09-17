@@ -1,0 +1,3 @@
+// RUN: %weavec --whole-program --checked-function=main %S/../evaluation/rfc0029/container-alias-outputs/forwarded.c %S/../evaluation/rfc0029/container-alias-outputs/update.c %S/../evaluation/rfc0029/container-alias-outputs/forward.c %S/../evaluation/rfc0029/container-alias-outputs/drop.c --
+// RUN: not %weavec --whole-program --checked-function=main %S/../evaluation/rfc0029/container-alias-outputs/disowned.c %S/../evaluation/rfc0029/container-alias-outputs/disown.c %S/../evaluation/rfc0029/container-alias-outputs/forward.c %S/../evaluation/rfc0029/container-alias-outputs/drop.c -- 2>&1 | FileCheck %s
+// CHECK: cannot establish checked safety:

@@ -1,0 +1,95 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "name": "good",
+      "sources": [
+        "good.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "entry_requirements": 0
+    },
+    {
+      "name": "offset",
+      "sources": [
+        "offset.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "entry_requirements": 0
+    },
+    {
+      "name": "undersized",
+      "sources": [
+        "undersized.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "interval|extent|bounds|pointer|same|shared"
+    },
+    {
+      "name": "overrun",
+      "sources": [
+        "overrun.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "interval|extent|bounds|pointer|same|shared"
+    },
+    {
+      "name": "changed-end",
+      "sources": [
+        "changed-end.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "interval|extent|bounds|pointer|same|shared"
+    },
+    {
+      "name": "cross-object",
+      "sources": [
+        "cross-object.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "interval|extent|bounds|pointer|same|shared"
+    }
+  ]
+}

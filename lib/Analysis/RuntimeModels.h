@@ -14,6 +14,7 @@
 namespace weavec::analysis {
 enum class RuntimeFamily : std::uint8_t {
   Numeric,
+  ParseNumeric,
   Compare,
   Search,
   Span,
@@ -27,7 +28,7 @@ struct RuntimeModel {
   std::string_view name;
   RuntimeFamily family;
   // s: narrow string, p: memory, f: stream, z: size_t, i: int, d: fd,
-  // r: real scalar, a: va_list. Result:
+  // r: real scalar, a: va_list, t: const char input, e: char ** output. Result:
   // i:int,z:size_t,n:ssize_t,p:pointer,r:real.
   std::string_view parameters;
   char result;

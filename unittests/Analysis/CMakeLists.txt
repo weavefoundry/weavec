@@ -5,6 +5,7 @@ weavec_add_unittest(
           RuntimeContractsTest.cpp
           ContainerTest.cpp
           RecursiveContainerTest.cpp
+          RecursiveContractsTest.cpp
           BufferTest.cpp
           AllocatorsTest.cpp
           AnnotationsTest.cpp

@@ -1,0 +1,231 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "name": "state-runtime",
+      "sources": [
+        "state-good.c"
+      ],
+      "functions": [
+        "client",
+        "main"
+      ],
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "entry_requirements": 0
+    },
+    {
+      "name": "state-generic",
+      "sources": [
+        "state-good.c"
+      ],
+      "functions": [
+        "reserve",
+        "append",
+        "last"
+      ],
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    },
+    {
+      "name": "state-capacity",
+      "sources": [
+        "state-capacity-bad.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "buffer|extent|bounds"
+    },
+    {
+      "name": "state-stale",
+      "sources": [
+        "state-stale-bad.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "freed|valid|live"
+    },
+    {
+      "name": "state-tail",
+      "sources": [
+        "state-tail-bad.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "initializ|buffer"
+    },
+    {
+      "name": "reader-closed",
+      "sources": [
+        "reader-good.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "entry_requirements": 0
+    },
+    {
+      "name": "reader-generic",
+      "sources": [
+        "reader-good.c"
+      ],
+      "functions": [
+        "take",
+        "forwarded"
+      ],
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    },
+    {
+      "name": "reader-short",
+      "sources": [
+        "reader-short-bad.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "extent|bounds|interval"
+    },
+    {
+      "name": "reassigned-release",
+      "sources": [
+        "reassigned-release.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "entry_requirements": 0
+    },
+    {
+      "name": "mutual-cleanup",
+      "sources": [
+        "mutual-cleanup.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "entry_requirements": 0
+    },
+    {
+      "name": "mutual-generic",
+      "sources": [
+        "mutual-cleanup.c"
+      ],
+      "functions": [
+        "destroy_even",
+        "destroy_odd"
+      ],
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    },
+    {
+      "name": "mutual-skipped",
+      "sources": [
+        "mutual-skipped-bad.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "leak|footprint|cleanup|consum"
+    },
+    {
+      "name": "callback-closed",
+      "sources": [
+        "callback-allocate.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "entry_requirements": 0
+    },
+    {
+      "name": "callback-generic",
+      "sources": [
+        "callback-allocate.c"
+      ],
+      "functions": [
+        "create"
+      ],
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    },
+    {
+      "name": "callback-short",
+      "sources": [
+        "callback-short-bad.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "extent|bounds|interval|callback"
+    }
+  ]
+}

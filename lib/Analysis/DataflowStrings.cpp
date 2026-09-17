@@ -104,9 +104,9 @@ static std::optional<unsigned> formatIndexOf(const StringCallee &callee) {
   return std::nullopt;
 }
 
-/// The string literal `expr` is, through the array decay and parentheses.
+/// The string literal behind ordinary storage-preserving pointer casts.
 static const StringLiteral *literalOf(const Expr &expr) {
-  return dyn_cast<StringLiteral>(expr.IgnoreParenImpCasts());
+  return dyn_cast<StringLiteral>(&PlaceBuilder::stripTransparent(expr));
 }
 
 /// A byte offset in elements of `unit` bytes, when the tracker follows it:

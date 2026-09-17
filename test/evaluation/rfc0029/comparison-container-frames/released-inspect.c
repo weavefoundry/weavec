@@ -1,0 +1,3 @@
+#include "api.h"
+void unknown(struct node *);
+int inspect(struct node *n,const char *s){free(n);if(strncmp(s,"ok",2)==0)return read_tree(n);return read_tree(n);}

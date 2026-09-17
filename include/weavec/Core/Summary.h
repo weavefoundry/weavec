@@ -300,7 +300,18 @@ enum class CheckedRequirementKind : std::uint8_t {
   /// RFC 0027: output path is the union of entry other and entry begin.path.
   ContainerCombined,
   /// RFC 0028: the entry parameter's single allocation was definitely freed.
-  AllocationConsumed
+  AllocationConsumed,
+  /// RFC 0029: synchronous allocator/releaser behavior of an entry callback.
+  CallbackAllocate,
+  CallbackRelease,
+  /// RFC 0029: live initialized byte interval [path, other).
+  InitializedSpan,
+  /// RFC 0029: nonnegative integer result bounded by an entry byte span.
+  CountWithinSpan,
+  /// RFC 0029: initialized bytes from entry other to the final path position.
+  InitializedAdvance,
+  /// RFC 0029: unchanged entry head plus a disjoint fresh allocation region.
+  ContainerExtended
 };
 struct CheckedRequirement {
   CheckedRequirementKind kind = CheckedRequirementKind::Valid;

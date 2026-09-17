@@ -143,6 +143,38 @@ public:
           return constant(*evaluated.value);
       }
     }
+    // RFC 0029: unsigned addition/subtraction is modular. Cancel the repeated
+    // operand only when its evaluation is total; a discarded invalid shift or
+    // division must not disappear from the expression's safety obligations.
+    if (op == IntegerOp::Add && !lhs.type().isSigned && !lhs.type().isBoolean &&
+        lhs.type() == rhs.type()) {
+      const auto cancel = [](const IntegerExpression &addend,
+                             const IntegerExpression &difference)
+          -> std::optional<IntegerExpression> {
+        if (difference.nodes.back().kind != IntegerNodeKind::Operation ||
+            difference.nodes.back().op != IntegerOp::Subtract ||
+            difference.nodes.size() <= addend.nodes.size() + 1)
+          return std::nullopt;
+        const auto end = difference.nodes.end() - 1;
+        const auto start =
+            end - static_cast<std::ptrdiff_t>(addend.nodes.size());
+        if (!std::equal(start, end, addend.nodes.begin()) ||
+            addend
+                .evaluate([](const Key &, IntegerType type) {
+                  return IntegerRange::full(type);
+                })
+                .mayBeInvalid)
+          return std::nullopt;
+        auto remaining =
+            checked(std::vector<Node>(difference.nodes.begin(), start));
+        return remaining && remaining->type() == addend.type() ? remaining
+                                                               : std::nullopt;
+      };
+      if (auto result = cancel(lhs, rhs))
+        return result;
+      if (auto result = cancel(rhs, lhs))
+        return result;
+    }
     // Canonicalize only operations whose C evaluation is commutative. This
     // compares already captured values; it never reorders source side effects.
     if (!isUnary(op) &&

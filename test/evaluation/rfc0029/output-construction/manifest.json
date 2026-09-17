@@ -1,0 +1,132 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "name": "output-construction-build",
+      "sources": [
+        "build.c"
+      ],
+      "functions": [
+        "build",
+        "main"
+      ],
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    },
+    {
+      "name": "output-construction-short",
+      "sources": [
+        "short.c"
+      ],
+      "functions": [
+        "build",
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "extent|bounds|interval"
+    },
+    {
+      "name": "output-construction-leak",
+      "sources": [
+        "leak.c"
+      ],
+      "functions": [
+        "build",
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "footprint|leak|cleanup|contract"
+    },
+    {
+      "name": "output-construction-double",
+      "sources": [
+        "double.c"
+      ],
+      "functions": [
+        "build",
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "freed|release"
+    },
+    {
+      "name": "output-construction-cycle",
+      "sources": [
+        "cycle.c"
+      ],
+      "functions": [
+        "build",
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "recursive|progress"
+    },
+    {
+      "name": "output-construction-false-success",
+      "sources": [
+        "false-success.c"
+      ],
+      "functions": [
+        "build",
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "output|contract|footprint|leak"
+    },
+    {
+      "name": "output-construction-uncleared-failure",
+      "sources": [
+        "uncleared-failure.c"
+      ],
+      "functions": [
+        "build",
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "output|contract"
+    },
+    {
+      "name": "output-construction-null-slot",
+      "sources": [
+        "null-slot.c"
+      ],
+      "functions": [
+        "build",
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "live|null|valid"
+    }
+  ]
+}

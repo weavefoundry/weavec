@@ -70,12 +70,14 @@ public:
   /// (if enabled) and computes the summary.
   void run();
   core::CallbackBindings callbackBindings;
+  std::set<std::pair<const clang::FunctionDecl *, bool>> recursiveContractCalls;
   core::CallContext memoryContext;
   bool validMemoryContext = true;
   bool checkedOutputSeen = false;
   bool provingBufferBound = false;
   // Monotone implementation hint: no proof depends on this flag.
   bool hasBufferPositions = false;
+  bool checkedCaseReachesRecursion = false;
   std::map<std::optional<core::Outcome>, core::CheckedRequirements>
       checkedOutputClasses;
   std::map<std::optional<core::Outcome>, std::set<core::SummaryPath>>
@@ -88,8 +90,9 @@ public:
   [[nodiscard]] core::FunctionSummary summary() && noexcept {
     return std::move(inferred);
   }
-  [[nodiscard]] bool verifiedRecursiveCleanup() const {
-    return !recursiveCleanupPremises.empty() && inferred.checked.complete();
+  [[nodiscard]] bool verifiedRecursiveContracts() const {
+    return (!recursiveContractPremises.empty() || recursiveInputUsed) &&
+           inferred.checked.complete();
   }
 
 private:
@@ -115,6 +118,27 @@ private:
   std::map<core::PlaceId, core::PlaceId> footprintContributions;
   void initializeContainers(core::AnalysisState &state);
   std::map<const clang::RecordDecl *, core::ContainerShape> containerShapes;
+  std::set<const clang::RecordDecl *> containerPayloadWriters;
+  std::set<const clang::RecordDecl *> containerLinkWriters;
+  std::map<const clang::BinaryOperator *, const clang::BinaryOperator *>
+      payloadRelocationClears;
+  std::map<const clang::BinaryOperator *,
+           std::pair<core::PlaceId, core::PlaceId>>
+      payloadRelocationSnapshots;
+  struct PayloadRelocation {
+    const clang::BinaryOperator *clear;
+    std::set<const clang::Stmt *> evaluation;
+    core::PlaceId holder;
+    std::string source;
+    std::string destination;
+    std::pair<core::PlaceId, core::PlaceId> snapshot;
+    std::map<core::PlaceId, core::ContainerFact> aliases;
+    std::map<core::PlaceId, core::ContainerFact> separated;
+  };
+  std::optional<PayloadRelocation>
+  capturePayloadRelocation(const clang::Stmt &stmt, core::AnalysisState &state);
+  void applyPayloadRelocation(const PayloadRelocation &relocation,
+                              core::AnalysisState &state);
   std::map<core::PlaceId, std::optional<core::ContainerShape>>
       opaqueContainerParameters;
   std::map<std::string, const clang::RecordDecl *> containerRecords;
@@ -132,6 +156,9 @@ private:
   std::map<core::PlaceId, core::SummaryPath> containerOutputPaths;
   [[nodiscard]] const core::ContainerShape *
   containerShape(clang::QualType type) const;
+  [[nodiscard]] std::optional<core::ValueFact>
+  containerValueFact(core::PlaceId cell,
+                     const core::AnalysisState &state) const;
   [[nodiscard]] std::optional<core::ContainerFact>
   captureContainer(core::PlaceId dest, const ValueOrigin &origin,
                    core::AnalysisState &state);
@@ -160,15 +187,41 @@ private:
                           const clang::Stmt &at, core::AnalysisState &state);
   void invalidateContainers(core::PlaceId holder, bool release, bool keepTail,
                             core::AnalysisState &state);
+  bool preserveFreshContainersAcrossWrite(core::PlaceId cell,
+                                          core::AnalysisState &state);
+  bool preserveInputContainersAcrossLocalWrite(core::PlaceId storage,
+                                               core::AnalysisState &state);
   void checkedContainersAfterCall(const clang::CallExpr &call,
                                   const CallEffects *effects,
                                   core::AnalysisState &state);
   void captureContainerPosts(const clang::CallExpr &call,
                              const core::CheckedContract &contract,
                              core::AnalysisState &state);
-  void applyContainerPosts(const clang::CallExpr &call,
-                           core::AnalysisState &state,
-                           std::optional<core::PlaceId> result = std::nullopt);
+  // `prior`: install only outcome-specific outputs that this earlier result
+  // fact had not yet selected (RFC 0029, immediate result tests).
+  void
+  applyContainerPosts(const clang::CallExpr &call, core::AnalysisState &state,
+                      std::optional<core::PlaceId> result = std::nullopt,
+                      const std::optional<core::ValueFact> *prior = nullptr);
+  struct ContainerPrefix {
+    core::PlaceId ancestor;
+    core::ContainerFact fact;
+    std::pair<core::PlaceId, core::PlaceId> snapshot;
+    std::map<core::PlaceId, core::ContainerFact> separated;
+  };
+  std::map<const clang::CallExpr *,
+           std::map<core::CheckedRequirement, std::vector<ContainerPrefix>>>
+      containerPrefixPosts;
+  std::map<const clang::CallExpr *,
+           std::map<std::pair<core::SummaryPath, core::PlaceId>,
+                    std::pair<core::PlaceId, core::PlaceId>>>
+      containerPrefixSnapshots;
+  void captureContainerPrefixes(const clang::CallExpr &call,
+                                const core::CheckedRequirement &post,
+                                core::AnalysisState &state);
+  void applyContainerPrefixes(const clang::CallExpr &call,
+                              const core::CheckedRequirement &post,
+                              core::PlaceId holder, core::AnalysisState &state);
   void containerOutputs(core::CheckedContract &outputs,
                         const core::AnalysisState &state,
                         std::optional<core::PlaceId> returned,
@@ -178,6 +231,7 @@ private:
     core::ContainerFact fact;
     std::optional<core::Outcome> on;
     bool fresh = false;
+    std::map<core::PlaceId, core::ContainerFact> separated;
     bool operator==(const ContainerPost &) const = default;
   };
   std::map<const clang::CallExpr *, std::vector<ContainerPost>> containerPosts;
@@ -191,6 +245,7 @@ private:
       containerArguments;
   std::map<const clang::CallExpr *, core::PlaceId> containerReleases;
   std::map<const clang::CallExpr *, core::PlaceId> containerPayloadReleases;
+  std::set<const clang::CallExpr *> containerLocalReleases;
   std::map<const clang::CallExpr *, core::PlaceId> containerCallObjects;
   [[nodiscard]] std::optional<core::CallContext>
   captureCallContext(const clang::CallExpr &call,
@@ -380,10 +435,15 @@ private:
     std::optional<core::PlaceId> storage;
     std::optional<core::PointerPosition> position;
     std::optional<std::pair<core::PlaceId, core::PlaceId>> footprint;
+    std::optional<core::PlaceId> pendingAllocationRelease;
   };
   // RFC 0027: formal allocation identities, separate from structural facts.
   std::map<core::PlaceId, core::PlaceId> footprintHeads;
   std::map<core::PlaceId, core::PlaceId> footprintAtoms;
+  std::map<const clang::CallExpr *, core::PlaceId> reallocationFootprints;
+  void prepareReallocationFootprint(const clang::CallExpr &call,
+                                    core::AnalysisState &state);
+  void refineAllocationFootprints(core::AnalysisState &state);
   std::map<core::PlaceId, std::pair<core::PlaceId, core::PlaceId>>
       footprintSnapshots;
   struct FootprintEntry {
@@ -394,15 +454,48 @@ private:
   std::map<core::SummaryPath, FootprintEntry> footprintEntries;
   std::optional<core::PlaceId> footprintReleased;
   std::optional<core::PlaceId> footprintAllocated;
-  std::optional<bool> recursiveCleanupCandidate;
-  std::set<core::SummaryPath> recursiveCleanupPremises;
-  bool handleRecursiveCleanup(const clang::CallExpr &call,
-                              core::AnalysisState &state);
-  void verifyRecursiveCleanup();
+  struct FootprintTransfers {
+    std::optional<core::Outcome> outcome;
+    std::vector<std::set<core::SummaryPath>> alternatives;
+    bool operator==(const FootprintTransfers &) const = default;
+  };
+  std::vector<FootprintTransfers> footprintTransfers;
+  void verifyFootprintTransfers();
+  std::optional<bool> recursiveContractCandidate;
+  bool recursiveInputUsed = false;
+  void initializeRecursiveInput(core::AnalysisState &state);
+  std::shared_ptr<const core::FunctionSummary>
+  recursiveInputCandidate(const clang::FunctionDecl &callee);
+  std::shared_ptr<const core::FunctionSummary>
+  recursiveInputCall(const clang::CallExpr &call, core::AnalysisState &state);
+  void verifyRecursiveConstruction();
+  std::shared_ptr<const core::FunctionSummary>
+  recursiveExtensionCandidate(const clang::FunctionDecl &callee);
+  void initializeRecursiveExtension(core::AnalysisState &state);
+  std::shared_ptr<const core::FunctionSummary>
+  recursiveExtensionCall(const clang::CallExpr &call,
+                         core::AnalysisState &state);
+  void verifyRecursiveExtension();
+  [[nodiscard]] std::shared_ptr<const core::FunctionSummary>
+  recursiveWriterCandidate(const clang::FunctionDecl &callee);
+  void initializeRecursiveWriter(core::AnalysisState &state);
+  void verifyRecursiveWriter();
+  [[nodiscard]] bool
+  recursiveInputRequirementsCovered(const core::FunctionSummary &candidate);
+  std::set<core::SummaryPath> recursiveContractPremises;
+  bool handleRecursiveContract(const clang::CallExpr &call,
+                               core::AnalysisState &state);
+  void verifyRecursiveContract();
   std::map<const clang::CallExpr *, std::map<core::SummaryPath, core::PlaceId>>
       footprintCallInputs;
   std::map<const clang::CallExpr *, std::vector<core::CheckedRequirement>>
       footprintPosts;
+  std::map<std::pair<const clang::CallExpr *, core::SummaryPath>, core::PlaceId>
+      footprintExtensions;
+  std::map<const clang::CallExpr *, core::SummaryPath> freshFootprintSlots;
+  std::map<const clang::CallExpr *,
+           std::pair<core::PlaceId, core::ContainerFact>>
+      freshFootprintSlotParents;
   core::PlaceId footprintHead(core::PlaceId holder);
   core::PlaceId footprintAtom(core::PlaceId storage);
   void initializeFootprint(core::PlaceId holder, const core::SummaryPath &path,
@@ -423,9 +516,10 @@ private:
   void captureFootprintPosts(const clang::CallExpr &call,
                              const core::CheckedContract &contract,
                              core::AnalysisState &state);
-  void applyFootprintPosts(const clang::CallExpr &call,
-                           core::AnalysisState &state,
-                           std::optional<core::PlaceId> result);
+  void
+  applyFootprintPosts(const clang::CallExpr &call, core::AnalysisState &state,
+                      std::optional<core::PlaceId> result,
+                      const std::optional<core::ValueFact> *prior = nullptr);
   [[nodiscard]] std::optional<core::ContainerFact>
   establishContainer(const CheckedMemory &memory,
                      const core::ContainerShape &shape,
@@ -463,7 +557,8 @@ private:
   std::optional<core::BufferShape>
   discoverBufferShape(const clang::RecordDecl &record);
   void discoverBuffers();
-  void registerBuffer(core::PlaceId object, const clang::RecordDecl &record);
+  void registerBuffer(core::PlaceId object, const clang::RecordDecl &record,
+                      const core::BufferShape *transported = nullptr);
   void initializeBuffers(core::AnalysisState &state);
   void normalizeBuffers(core::AnalysisState &state);
   void materializeBuffers(core::AnalysisState &state);
@@ -490,6 +585,15 @@ private:
                      std::optional<core::Outcome> outcome,
                      std::optional<core::PlaceId> returned);
   void initializeChecked();
+  void initializeCheckedSpans(core::AnalysisState &state);
+  void checkedSpanCountBounds(core::AnalysisState &state);
+  void checkedSpanOutputs(core::CheckedContract &outputs,
+                          const core::AnalysisState &state,
+                          const clang::Expr *value,
+                          std::optional<core::Outcome> outcome);
+  std::map<std::pair<core::PlaceId, core::PlaceId>, core::PlaceId> checkedSpans;
+  bool checkedSpanCall(const core::CheckedRequirement &requirement,
+                       const clang::CallExpr &call, core::AnalysisState &state);
   void discoverCheckedCases();
   [[nodiscard]] std::string checkedUnionMember(const clang::FieldDecl &field);
   [[nodiscard]] core::PlaceId
@@ -609,12 +713,24 @@ private:
   std::map<core::PlaceId, core::PlaceId> checkedCoordinates;
   std::map<const clang::Expr *, core::PlaceId> checkedPointerResults;
   std::set<core::PlaceId> checkedCallAssignedPointers;
+  /// RFC 0029: pointer variables this body may change, from one bounded
+  /// syntactic scan. A null entry means the budget was exhausted, which
+  /// conservatively disqualifies every variable.
+  std::optional<std::set<const clang::VarDecl *>> changedPointerVariables;
+  [[nodiscard]] bool unchangedPointerVariable(core::PlaceId place);
   [[nodiscard]] std::optional<CheckedMemory>
   checkedMemory(const clang::Expr &pointer, const core::Affine &begin,
                 const core::Affine &end, const core::AnalysisState &state);
   [[nodiscard]] std::optional<CheckedMemory>
   checkedMemoryAt(core::PlaceId holder, const core::Affine &begin,
                   const core::Affine &end, const core::AnalysisState &state);
+  [[nodiscard]] bool checkedZeroInteger(core::PlaceId place,
+                                        const core::AnalysisState &state);
+  [[nodiscard]] std::optional<CheckedMemory>
+  checkedScalarMemory(core::PlaceId place, const core::AnalysisState &state);
+  [[nodiscard]] std::optional<core::SummaryPath>
+  checkedSeparationInput(const CheckedMemory &memory,
+                         const core::AnalysisState &state);
   [[nodiscard]] std::optional<CheckedMemory>
   checkedPathMemory(const core::SummaryPath &path, const clang::CallExpr &call,
                     const core::Affine &begin, const core::Affine &end,
@@ -645,10 +761,21 @@ private:
                           core::AnalysisState &state);
   void checkedStringUse(const CheckedMemory &memory, const clang::Stmt &at,
                         core::AnalysisState &state);
+  void checkedStringLength(const clang::CallExpr &call,
+                           core::AnalysisState &state);
   void checkedStringWrite(const std::optional<CheckedMemory> &memory,
-                          bool zeroed, core::AnalysisState &state);
+                          bool zeroed, core::AnalysisState &state,
+                          bool numericText = false);
   [[nodiscard]] std::optional<core::TerminationWitness>
   checkedWitness(const CheckedMemory &memory, const core::AnalysisState &state);
+  [[nodiscard]] std::optional<std::pair<std::int64_t, std::string>>
+  checkedByteContents(const CheckedMemory &memory,
+                      const core::AnalysisState &state);
+  [[nodiscard]] std::optional<core::IntegerRange>
+  checkedByteRange(const clang::Expr &expr, const core::AnalysisState &state);
+  [[nodiscard]] std::vector<std::pair<core::PlaceId, core::Affine>>
+  checkedJoinBoundaries(const core::AnalysisState &first,
+                        const core::AnalysisState &second);
   [[nodiscard]] std::optional<core::Affine>
   checkedTerminatorQuantity(const core::PathAffine &value,
                             const clang::CallExpr &call,
@@ -656,6 +783,7 @@ private:
   std::set<core::PlaceId> checkedStringInputs;
   std::map<core::PlaceId, core::PlaceId> checkedTerminatorInputs;
   std::map<core::PlaceId, std::int64_t> checkedWitnessMinimum;
+  std::map<const clang::CallExpr *, core::PlaceId> checkedFirstZeros;
   [[nodiscard]] std::optional<CheckedMemory>
   checkedLvalue(const clang::Expr &expr, const core::AnalysisState &state);
   [[nodiscard]] bool checkedInterval(const core::Affine &begin,
@@ -686,6 +814,15 @@ private:
                     core::AnalysisState &state);
   [[nodiscard]] bool checkedInitialized(const CheckedMemory &memory,
                                         const core::AnalysisState &state);
+  bool checkedNumericByte(const clang::Expr &value,
+                          const core::AnalysisState &state);
+  bool checkedNumericText(const CheckedMemory &memory,
+                          const core::AnalysisState &state);
+  bool checkedFloatingValue(const clang::Expr &value,
+                            const core::AnalysisState &state);
+  void checkedFloatingAfter(const clang::Stmt &stmt,
+                            core::AnalysisState &state);
+  std::map<const clang::CallExpr *, core::PlaceId> checkedFloatingResults;
   bool checkedRequire(core::CheckedRequirementKind kind,
                       const CheckedMemory &memory, const clang::Stmt &at,
                       core::AnalysisState &state, std::string family = {});
@@ -693,7 +830,19 @@ private:
   checkedLoopRequirement(const core::Affine &need, const clang::Stmt &at,
                          core::AnalysisState &state);
   void checkedLoopExit(const clang::ForStmt &loop, core::AnalysisState &state);
+  void checkedReaderLoop(const clang::Stmt &at, core::AnalysisState &state);
   std::map<const clang::Stmt *, const clang::ForStmt *> checkedLoops;
+  std::set<const clang::Stmt *> checkedLoopConditions;
+  std::set<core::PlaceId> checkedLoopCounters;
+  struct CheckedReaderLoop {
+    const clang::Expr *index = nullptr;
+    const clang::Expr *position = nullptr;
+    const clang::Expr *capacity = nullptr;
+    core::PlaceId backing;
+    const clang::Expr *numericInput = nullptr;
+  };
+  std::map<const clang::ForStmt *, std::optional<CheckedReaderLoop>>
+      checkedReaderLoops;
   // Lazy caller-entry guard shared by one conditional requirement group.
   // The group restores this pointer before its local cache leaves scope.
   std::optional<core::PathGuard> *checkedRequirementGuard = nullptr;
@@ -716,6 +865,7 @@ private:
     // Default preserves existing designated initializers.
     // NOLINTNEXTLINE(readability-redundant-member-init)
     std::string unionMember = {};
+    bool throughPosition = false;
     friend bool operator==(const CheckedPost &, const CheckedPost &) = default;
   };
   std::map<const clang::CallExpr *, std::vector<CheckedPost>> checkedPosts;
@@ -830,6 +980,9 @@ private:
                           std::optional<std::int64_t>>
   integerBounds(core::PlaceId place, const core::AnalysisState &state);
   using NumericExpression = core::IntegerExpression<core::PlaceId>;
+  std::map<const clang::CallExpr *,
+           std::vector<std::pair<NumericExpression, NumericExpression>>>
+      checkedSpanPosts;
   [[nodiscard]] std::optional<core::Affine>
   checkedTraversalSum(const NumericExpression &expression,
                       const core::AnalysisState &state);
@@ -901,6 +1054,13 @@ private:
   originTargets(const ValueOrigin &origin, const core::AnalysisState &state);
   [[nodiscard]] std::optional<ResolvedSummary>
   resolveCall(const clang::CallExpr &call);
+  [[nodiscard]] std::shared_ptr<const core::FunctionSummary>
+  requiredCallback(const clang::CallExpr &call, core::AnalysisState &state);
+  [[nodiscard]] std::optional<core::SummaryPath>
+  callbackEntry(core::PlaceId holder, const core::AnalysisState &state);
+  void checkedCallbackRequirement(const core::CheckedRequirement &requirement,
+                                  const clang::CallExpr &call,
+                                  core::AnalysisState &state);
   [[nodiscard]] static std::string
   objectEvidenceView(core::PlaceId holder, const core::AnalysisState &state);
   [[nodiscard]] bool validateObjectPath(const core::SummaryPath &path,
@@ -1305,7 +1465,7 @@ private:
                  unsigned depth = 0);
   [[nodiscard]] core::IntegerRange
   integerRangeAt(core::PlaceId place, core::IntegerType type,
-                 const core::AnalysisState &state);
+                 const core::AnalysisState &state, unsigned equalityDepth = 0);
   [[nodiscard]] bool preservesInteger(const clang::Expr &expr,
                                       const core::AnalysisState &state);
   void checkIntegerOperation(const clang::Expr &expr,
@@ -1319,6 +1479,8 @@ private:
   /// storage of a local or parameter, or memory behind a pointer; not a
   /// global (any callee may write it) or an array element.
   [[nodiscard]] bool tracksScalar(core::PlaceId place) const;
+  void stepPointer(core::PlaceId place, const core::PointerOffset &step,
+                   core::AnalysisState &state, const clang::Expr &at);
   /// The storage a write to `place` lands in when `place` is below a
   /// pointer that borrows a local (`q->n` with `q = &s` is `s.n`).
   [[nodiscard]] std::vector<core::PlaceId>
@@ -2102,7 +2264,10 @@ private:
                                 core::ElementWitness element,
                                 const core::AnalysisState &state);
   [[nodiscard]] MirrorPlaces mirrors(core::PlaceId place,
-                                     const core::AnalysisState &state);
+                                     const core::AnalysisState &state,
+                                     bool definite = false);
+  [[nodiscard]] MirrorPlaces scalarMirrors(core::PlaceId place,
+                                           const core::AnalysisState &state);
   /// `place` together with its ancestors and descendants.
   [[nodiscard]] std::vector<core::PlaceId> related(core::PlaceId place);
 

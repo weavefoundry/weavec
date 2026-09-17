@@ -700,6 +700,62 @@ TEST(RecursiveContainerContracts, ConservationRequiresAnEntryPremise) {
   }
 }
 
+TEST(RecursiveContainerContracts, ExtensionRequiresAnOwnedSingletonHead) {
+  auto input = treeShape(ContainerAccess::Release);
+  const auto output = input;
+  EXPECT_FALSE(input.singletonHead());
+  input.terminal = true;
+  EXPECT_TRUE(input.singletonHead());
+  const auto root = SummaryPath::param(0);
+  CheckedContract contract;
+  contract.computed = true;
+  contract.signature = "int (struct node *, unsigned)";
+  const CheckedRequirement post{.kind =
+                                    CheckedRequirementKind::ContainerExtended,
+                                .path = root,
+                                .other = root,
+                                .family = output.encode()};
+  contract.establish(post);
+  contract.require({.kind = CheckedRequirementKind::Valid,
+                    .path = root,
+                    .other = {},
+                    .family = {}});
+  for (const auto &descriptor : {input, output, treeShape()}) {
+    auto trial = contract;
+    trial.require({.kind = CheckedRequirementKind::Container,
+                   .path = root,
+                   .other = {},
+                   .family = descriptor.encode()});
+    const auto parsed =
+        parseCheckedContract(printCheckedContract(trial, {}), {});
+    EXPECT_EQ(parsed.has_value(), descriptor == input);
+    if (parsed)
+      EXPECT_EQ(*parsed, trial);
+  }
+  contract.require({.kind = CheckedRequirementKind::Container,
+                    .path = root,
+                    .other = {},
+                    .family = input.encode()});
+  for (const unsigned mutation : {0U, 1U, 2U, 3U}) {
+    auto trial = contract;
+    auto invalid = post;
+    if (mutation == 0)
+      invalid.on = Outcome::Positive;
+    if (mutation == 1)
+      invalid.path = SummaryPath::result();
+    if (mutation == 2)
+      invalid.end = PathAffine::ofConstant(1);
+    if (mutation == 3)
+      trial.requirements.clear();
+    trial.establishes.clear();
+    trial.establish(invalid);
+    EXPECT_FALSE(parseCheckedContract(printCheckedContract(trial, {}), {}));
+  }
+  contract.requirements.clear();
+  contract.discardUnrepresentedContainerOutputs();
+  EXPECT_TRUE(contract.establishes.empty());
+}
+
 TEST(RecursiveContainerShape, EmptySlotsDescribeOnlyTheCurrentHead) {
   auto descriptor = treeShape();
   descriptor.emptyLinks.insert("right");
@@ -720,6 +776,111 @@ TEST(RecursiveContainerShape, EmptySlotsDescribeOnlyTheCurrentHead) {
   EXPECT_FALSE(descriptor.entails(terminal));
   descriptor.emptyLinks.insert("left");
   EXPECT_FALSE(descriptor.valid()); // Canonical spelling is terminal=true.
+}
+
+TEST(RecursiveContainerContracts,
+     StructuralJoinsForgetOnlyDifferentHeadValues) {
+  auto firstShape = payloadShape();
+  firstShape.terminal = true;
+  firstShape.emptyPayloads.insert("data");
+  firstShape.ownership.emplace(
+      "data", ContainerCondition{.field = firstShape.initialized.back(),
+                                 .mask = 1,
+                                 .value = 0});
+  firstShape.headValues["value"] = 0;
+  auto secondShape = firstShape;
+  secondShape.headValues["value"] = 2;
+  auto commonShape = firstShape;
+  commonShape.headValues.clear();
+  for (const auto kind : {CheckedRequirementKind::Container,
+                          CheckedRequirementKind::ContainerDerived,
+                          CheckedRequirementKind::ContainerFresh,
+                          CheckedRequirementKind::ContainerExtended}) {
+    const CheckedRequirement first{.kind = kind,
+                                   .path = SummaryPath::param(0),
+                                   .other = SummaryPath::param(0),
+                                   .family = firstShape.encode()};
+    auto second = first;
+    second.family = secondShape.encode();
+    const auto joined = joinContainerOutput(first, second);
+    ASSERT_TRUE(joined);
+    EXPECT_EQ(joined->family, commonShape.encode());
+    CheckedRequirements posts{first};
+    posts.intersect({second});
+    EXPECT_EQ(posts, (CheckedRequirements{*joined}));
+    second.on = Outcome::Positive;
+    EXPECT_FALSE(joinContainerOutput(first, second));
+    second.on.reset();
+    auto incompatible = secondShape;
+    incompatible.ownership.at("data").mask = 2;
+    second.family = incompatible.encode();
+    EXPECT_FALSE(joinContainerOutput(first, second));
+    if (kind == CheckedRequirementKind::ContainerDerived) {
+      second.family = secondShape.encode();
+      second.other = SummaryPath::param(1);
+      const auto combined = joinContainerOutput(first, second);
+      ASSERT_TRUE(combined);
+      EXPECT_EQ(combined->family, commonShape.encode());
+      EXPECT_EQ(combined->other, SummaryPath::param(0));
+      EXPECT_EQ(combined->begin.path, SummaryPath::param(1));
+    }
+  }
+}
+
+TEST(RecursiveContainerContracts, ExtensionJoinsKeepOnlyCommonHeadFacts) {
+  auto empty = payloadShape();
+  empty.terminal = true;
+  empty.emptyPayloads.insert("data");
+  auto populated = empty;
+  populated.emptyPayloads.clear();
+  const auto root = SummaryPath::param(0);
+  const CheckedRequirement first{.kind =
+                                     CheckedRequirementKind::ContainerExtended,
+                                 .path = root,
+                                 .other = root,
+                                 .family = empty.encode()};
+  auto second = first;
+  second.family = populated.encode();
+  const auto joined = joinContainerOutput(first, second);
+  ASSERT_TRUE(joined);
+  EXPECT_EQ(joined->family, populated.encode());
+  CheckedRequirements posts{first};
+  posts.intersect({second});
+  EXPECT_EQ(posts, (CheckedRequirements{*joined}));
+  CheckedContract contract;
+  contract.computed = true;
+  contract.signature = "int (struct node *)";
+  contract.require({.kind = CheckedRequirementKind::Valid,
+                    .path = root,
+                    .other = {},
+                    .family = {}});
+  contract.require({.kind = CheckedRequirementKind::Container,
+                    .path = root,
+                    .other = {},
+                    .family = empty.encode()});
+  contract.establish(*joined);
+  const auto parsed =
+      parseCheckedContract(printCheckedContract(contract, {}), {});
+  ASSERT_TRUE(parsed);
+  EXPECT_EQ(*parsed, contract);
+  for (const unsigned mutation : {0U, 1U, 2U, 3U, 4U}) {
+    auto incompatible = second;
+    if (mutation == 0)
+      incompatible.path = SummaryPath::param(1);
+    if (mutation == 1)
+      incompatible.other = SummaryPath::param(1);
+    if (mutation == 2)
+      incompatible.on = Outcome::Positive;
+    if (mutation == 3)
+      incompatible.ifNonNull = true;
+    if (mutation == 4) {
+      auto borrowed = populated;
+      borrowed.access = ContainerAccess::Read;
+      borrowed.family.clear();
+      incompatible.family = borrowed.encode();
+    }
+    EXPECT_FALSE(joinContainerOutput(first, incompatible)) << mutation;
+  }
 }
 
 TEST(RecursiveContainerFacts, JoiningHeadNullSlotsKeepsTheirIntersection) {
@@ -871,6 +1032,69 @@ TEST(RecursiveContainerContracts, PartitionAndCombinationRequireSeparation) {
     contract.requirements.clear();
     EXPECT_FALSE(parseCheckedContract(printCheckedContract(contract, {}), {}));
   }
+}
+
+TEST(RecursiveContainerContracts,
+     CombinedExtensionNeedsOwnedInputsAndALiveHead) {
+  // RFC 0029: `end` one adds a fresh region to the two combined inputs.
+  const auto input = SummaryPath::param(0);
+  const auto second = SummaryPath::param(1);
+  const auto owned = treeShape(ContainerAccess::Release).encode();
+  const auto borrowed = treeShape(ContainerAccess::Read).encode();
+  const auto build = [&](const std::string &secondFamily,
+                         const SummaryPath &path, bool live) {
+    CheckedContract contract;
+    contract.computed = true;
+    contract.signature = "int (struct node *, struct node *)";
+    contract.require({.kind = CheckedRequirementKind::Container,
+                      .path = input,
+                      .other = {},
+                      .family = owned});
+    contract.require({.kind = CheckedRequirementKind::Container,
+                      .path = second,
+                      .other = {},
+                      .family = secondFamily});
+    contract.require({.kind = CheckedRequirementKind::ContainerSeparated,
+                      .path = input,
+                      .other = second,
+                      .family = {}});
+    if (live)
+      contract.require({.kind = CheckedRequirementKind::Valid,
+                        .path = input,
+                        .other = {},
+                        .family = {}});
+    contract.establish({.kind = CheckedRequirementKind::ContainerCombined,
+                        .path = path,
+                        .other = input,
+                        .begin = PathAffine::ofPath(second),
+                        .end = PathAffine::ofConstant(1),
+                        .family = owned,
+                        .on = Outcome::Positive});
+    return contract;
+  };
+  const auto accepted = build(owned, input, true);
+  const auto encoded = printCheckedContract(accepted, {});
+  const auto parsed = parseCheckedContract(encoded, {});
+  ASSERT_TRUE(parsed) << encoded;
+  EXPECT_EQ(*parsed, accepted);
+  // A borrowed second input, a missing live head, an unrelated output path
+  // and any other extension constant have no such relation.
+  EXPECT_FALSE(parseCheckedContract(
+      printCheckedContract(build(borrowed, input, true), {}), {}));
+  EXPECT_FALSE(parseCheckedContract(
+      printCheckedContract(build(owned, input, false), {}), {}));
+  EXPECT_FALSE(parseCheckedContract(
+      printCheckedContract(build(owned, SummaryPath::result(), true), {}), {}));
+  auto oversized = accepted;
+  oversized.establishes.clear();
+  oversized.establish({.kind = CheckedRequirementKind::ContainerCombined,
+                       .path = input,
+                       .other = input,
+                       .begin = PathAffine::ofPath(second),
+                       .end = PathAffine::ofConstant(2),
+                       .family = owned,
+                       .on = Outcome::Positive});
+  EXPECT_FALSE(parseCheckedContract(printCheckedContract(oversized, {}), {}));
 }
 
 TEST(RecursiveContainerContracts, SaturationRetiresDanglingOutputs) {

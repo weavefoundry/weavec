@@ -1,0 +1,54 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "name": "runtime-hex",
+      "sources": [
+        "client.c",
+        "hex.c"
+      ],
+      "functions": [
+        "encode_client",
+        "main"
+      ],
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    },
+    {
+      "name": "generic-hex",
+      "sources": [
+        "hex.c"
+      ],
+      "functions": [
+        "hex_encode",
+        "push",
+        "hex_dispose"
+      ],
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    },
+    {
+      "name": "short-input",
+      "sources": [
+        "short.c",
+        "hex.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "reason": "interval|extent|bounds",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    }
+  ]
+}

@@ -105,6 +105,19 @@ bool ContainerShape::recursiveLink(std::string_view name) const {
              children, [&](const auto &child) { return child.name == name; });
 }
 
+bool ContainerShape::singletonHead() const {
+  return valid() &&
+         (terminal ||
+          (emptyLinks.contains(link.name) &&
+           std::ranges::all_of(children,
+                               [&](const auto &child) {
+                                 return emptyLinks.contains(child.name);
+                               }))) &&
+         std::ranges::all_of(payloads, [&](const auto &payload) {
+           return emptyPayloads.contains(payload.field.name);
+         });
+}
+
 bool ContainerShape::entails(const ContainerShape &required) const {
   return valid() && required.valid() && object == required.object &&
          link == required.link && children == required.children &&

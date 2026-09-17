@@ -480,7 +480,12 @@ bool RelationTracker::join(const RelationTracker &other,
       continue;
     }
     if (theirs->second > it->second) {
-      it->second = theirs->second;
+      if (keepDifferenceBound && widenDifferences && theirs->second > 0) {
+        it = upper.erase(it);
+        changed = true;
+        continue;
+      }
+      it->second = keepDifferenceBound && widenDifferences ? 0 : theirs->second;
       changed = true;
     }
     ++it;
@@ -493,7 +498,12 @@ bool RelationTracker::join(const RelationTracker &other,
       continue;
     }
     if (theirs->second < it->second) {
-      it->second = theirs->second;
+      if (keepDifferenceBound && widenDifferences && theirs->second < 0) {
+        it = lower.erase(it);
+        changed = true;
+        continue;
+      }
+      it->second = keepDifferenceBound && widenDifferences ? 0 : theirs->second;
       changed = true;
     }
     ++it;

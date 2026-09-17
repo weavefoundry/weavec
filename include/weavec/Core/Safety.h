@@ -248,8 +248,19 @@ struct InitializedRange {
   // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
   std::optional<PlaceId> source = {};
   bool zeroed = false;
+  /// RFC 0029: every byte belongs to the decimal numeric text alphabet.
+  bool numericText = false;
+  /// RFC 0029: exact bytes at constant endpoints, bounded by 64 bytes.
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
+  std::string bytes = {};
+  /// The bytes come from an actual const-qualified character array object.
+  bool immutableBytes = false;
   /// RFC 0024: transport an existential prefix, never a full initialized range.
   bool terminatedWithin = false;
+  /// RFC 0029: portions untouched by a write in the same byte coordinates.
+  /// Unrepresented intervals and existential termination facts yield none.
+  [[nodiscard]] std::vector<InitializedRange>
+  outsideWrite(const Affine &first, const Affine &last) const;
   friend auto operator<=>(const InitializedRange &,
                           const InitializedRange &) = default;
 };
@@ -300,16 +311,26 @@ struct ArgumentListState {
 };
 
 struct SafetyState {
+  struct PendingAllocationRelease {
+    PlaceId storage;
+    PlaceId snapshot;
+    friend bool operator==(const PendingAllocationRelease &,
+                           const PendingAllocationRelease &) = default;
+  };
   /// RFC 0028: historical must-fact about direct entry pointer parameters.
   std::set<PlaceId> consumedAllocations;
   BufferFacts buffers;
   UnionState unions;
   ContainerFacts containers;
   FootprintRelations footprints;
+  /// RFC 0029: release a captured old allocation only on non-null realloc.
+  std::map<PlaceId, PendingAllocationRelease> pendingAllocationReleases;
   /// Current head/child decomposition was established before any link update.
   std::set<PlaceId> unfoldedFootprints;
   std::map<PlaceId, ArgumentListState> argumentLists;
   std::set<PlaceId> initialized;
+  /// Local must-fact: floating values exclude NaN, but may be infinite.
+  std::set<PlaceId> nonNan;
   std::set<PlaceId> pointers;
   /// May-fact: these objects require unresolved external effects at link time.
   std::set<PlaceId> deferred;

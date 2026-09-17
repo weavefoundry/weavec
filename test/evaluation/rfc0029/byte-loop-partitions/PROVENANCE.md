@@ -1,0 +1,1 @@
+Frozen against candidate80e before using the existing bounded loop-partition domain for byte-specialized while/do regions. Repeated delimiters test the first actual loop exit; skipping it, changing it, omitting it, and reading an uninitialized output remain negative. No loop bound or context budget is increased.

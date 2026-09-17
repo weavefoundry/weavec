@@ -16,6 +16,7 @@ weavec_add_library(
           Format.cpp
           Diagnostic.cpp
           Integer.cpp
+          Induction.cpp
           Interface.cpp
           CheckedInteger.cpp
           Lifetime.cpp

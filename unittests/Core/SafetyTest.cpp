@@ -14,6 +14,34 @@
 
 namespace weavec::core {
 
+TEST(SafetyStateTest, ExactBytesAreSlicedInvalidatedAndJoinedConservatively) {
+  const PlaceId object{1};
+  const InitializedRange input{.begin = Affine::ofConstant(2),
+                               .end = Affine::ofConstant(6),
+                               .bytes = "abcd",
+                               .immutableBytes = true};
+  const auto parts =
+      input.outsideWrite(Affine::ofConstant(3), Affine::ofConstant(5));
+  ASSERT_EQ(parts.size(), 2U);
+  EXPECT_EQ(parts[0].bytes, "a");
+  EXPECT_EQ(parts[1].bytes, "d");
+  EXPECT_TRUE(parts[0].immutableBytes);
+  EXPECT_TRUE(parts[1].immutableBytes);
+  SafetyState state;
+  state.initialize(object, input);
+  ASSERT_EQ(state.memory.at(object).size(), 2U);
+  auto other = state;
+  other.forgetZeros();
+  state.join(other);
+  ASSERT_EQ(state.memory.at(object).size(), 1U);
+  EXPECT_TRUE(state.memory.at(object).front().bytes.empty());
+  EXPECT_FALSE(state.memory.at(object).front().immutableBytes);
+  auto malformed = input;
+  malformed.end = Affine::ofConstant(7);
+  state.initialize(object, malformed);
+  ASSERT_EQ(state.memory.at(object).size(), 1U);
+}
+
 static SafetyObligation obligation(SafetyOutcome outcome, unsigned line = 1) {
   return {
       .property = SafetyProperty::Bounds,
@@ -1643,6 +1671,345 @@ TEST(SafetyState,
   a.join(b, yes, no);
   ASSERT_EQ(a.memory.at(object).size(), 1U);
   EXPECT_TRUE(a.memory.at(object).front().when.trivial());
+}
+
+// RFC 0029: callback behavior is a visible caller premise, not an output.
+TEST(CheckedContract, CallbackProtocolsAreStrictInputOnlyRecords) {
+  const GlobalNamer names = [](std::uint32_t) { return std::string("g"); };
+  const GlobalResolver resolve = [](std::string_view) {
+    return std::optional<std::uint32_t>(0);
+  };
+  for (const auto kind : {CheckedRequirementKind::CallbackAllocate,
+                          CheckedRequirementKind::CallbackRelease}) {
+    CheckedRequirement pre{.kind = kind,
+                           .path = SummaryPath::param(2).deref().field("hook"),
+                           .other = {},
+                           .family = "free"};
+    CheckedContract contract;
+    contract.computed = true;
+    contract.require(pre);
+    const auto encoded = printCheckedContract(contract, names);
+    EXPECT_EQ(parseCheckedContract(encoded, resolve), contract);
+    for (std::size_t n = 0; n < encoded.size(); ++n)
+      EXPECT_FALSE(parseCheckedContract(encoded.substr(0, n), resolve));
+    for (unsigned mutation = 0; mutation < 8; ++mutation) {
+      auto bad = pre;
+      switch (mutation) {
+      case 0:
+        bad.path = SummaryPath::result();
+        break;
+      case 1:
+        bad.path = SummaryPath::global(0);
+        break;
+      case 2:
+        bad.other = SummaryPath::param(1);
+        break;
+      case 3:
+        bad.begin = PathAffine::ofConstant(1);
+        break;
+      case 4:
+        bad.end = PathAffine::ofPath(SummaryPath::param(0));
+        break;
+      case 5:
+        bad.family = "fclose";
+        break;
+      case 6:
+        bad.on = Outcome::NonNull;
+        break;
+      default:
+        bad.ifNonNull = true;
+        break;
+      }
+      contract.requirements.clear();
+      contract.require(bad);
+      EXPECT_FALSE(
+          parseCheckedContract(printCheckedContract(contract, names), resolve));
+    }
+    contract.requirements.clear();
+    contract.establish(pre);
+    EXPECT_FALSE(
+        parseCheckedContract(printCheckedContract(contract, names), resolve));
+  }
+}
+
+TEST(InitializedRange, WriteFrameMatchesIndependentByteOracle) {
+  for (std::int64_t begin = 0; begin <= 8; ++begin)
+    for (std::int64_t end = begin; end <= 8; ++end)
+      for (std::int64_t first = 0; first <= 8; ++first)
+        for (std::int64_t last = first; last <= 8; ++last) {
+          InitializedRange range{.begin = Affine::ofConstant(begin),
+                                 .end = Affine::ofConstant(end),
+                                 .zeroed = true};
+          range.when.require(PlaceId{3}, ValueFact::of(Outcome::Positive));
+          const auto preserved = range.outsideWrite(Affine::ofConstant(first),
+                                                    Affine::ofConstant(last));
+          for (std::int64_t byte = 0; byte < 8; ++byte) {
+            const bool expected =
+                begin <= byte && byte < end && (byte < first || byte >= last);
+            bool actual = false;
+            for (const auto &part : preserved) {
+              EXPECT_TRUE(part.zeroed);
+              EXPECT_EQ(part.when, range.when);
+              actual |= part.begin.constant <= byte && byte < part.end.constant;
+            }
+            EXPECT_EQ(actual, expected);
+          }
+        }
+  InitializedRange range{
+      .begin = {}, .end = Affine::ofConstant(8), .zeroed = true};
+  EXPECT_TRUE(
+      range.outsideWrite(Affine::ofPlace(PlaceId{1}), Affine::ofConstant(8))
+          .empty());
+  EXPECT_TRUE(
+      range.outsideWrite(Affine::ofConstant(8), Affine::ofConstant(7)).empty());
+  range.terminatedWithin = true;
+  EXPECT_TRUE(range.outsideWrite({}, {}).empty());
+}
+
+TEST(SafetyState, PendingAllocationReleasesRequireIdenticalIncomingEvidence) {
+  const PlaceId result{1};
+  const PlaceId storage{2};
+  const PlaceId snapshot{3};
+  const PlaceId otherSnapshot{4};
+  SafetyState first;
+  first.pendingAllocationReleases[result] = {.storage = storage,
+                                             .snapshot = snapshot};
+  auto same = first;
+  EXPECT_FALSE(first.join(same));
+  EXPECT_EQ(first.pendingAllocationReleases.size(), 1U);
+  same.pendingAllocationReleases[result].snapshot = otherSnapshot;
+  EXPECT_TRUE(first.join(same));
+  EXPECT_TRUE(first.pendingAllocationReleases.empty());
+  for (const auto replaced : {result, storage, snapshot}) {
+    first.pendingAllocationReleases[result] = {.storage = storage,
+                                               .snapshot = snapshot};
+    first.forget(replaced);
+    EXPECT_TRUE(first.pendingAllocationReleases.empty());
+  }
+}
+
+TEST(CheckedContract, InitializedSpansAreStrictInputOnlyRecords) {
+  const GlobalNamer names = [](std::uint32_t) { return std::string("g"); };
+  const GlobalResolver resolve = [](std::string_view) {
+    return std::optional<std::uint32_t>(0);
+  };
+  const CheckedRequirement span{.kind = CheckedRequirementKind::InitializedSpan,
+                                .path = SummaryPath::param(0),
+                                .other = SummaryPath::param(1),
+                                .end = PathAffine::ofConstant(INT64_MAX),
+                                .family = {}};
+  CheckedContract contract;
+  contract.computed = true;
+  contract.require(span);
+  EXPECT_EQ(
+      parseCheckedContract(printCheckedContract(contract, names), resolve),
+      contract);
+  for (unsigned mutation = 0; mutation < 9; ++mutation) {
+    auto bad = span;
+    switch (mutation) {
+    case 0:
+      bad.other = bad.path;
+      break;
+    case 1:
+      bad.path = SummaryPath::result();
+      break;
+    case 2:
+      bad.begin = PathAffine::ofConstant(1);
+      break;
+    case 3:
+      bad.end = PathAffine::ofConstant(0);
+      break;
+    case 4:
+      bad.end = PathAffine::ofConstant(-1);
+      break;
+    case 5:
+      bad.end = PathAffine::ofPath(SummaryPath::param(2));
+      break;
+    case 6:
+      bad.family = "free";
+      break;
+    case 7:
+      bad.on = Outcome::Positive;
+      break;
+    default:
+      bad.ifNonNull = true;
+      break;
+    }
+    contract.requirements.clear();
+    contract.require(bad);
+    EXPECT_FALSE(
+        parseCheckedContract(printCheckedContract(contract, names), resolve));
+  }
+  contract.requirements.clear();
+  contract.establish(span);
+  EXPECT_FALSE(
+      parseCheckedContract(printCheckedContract(contract, names), resolve));
+}
+TEST(CheckedContract, CountWithinSpanNeedsItsInputAndEveryReturn) {
+  const GlobalNamer names = [](std::uint32_t n) { return std::to_string(n); };
+  const GlobalResolver resolve = [](std::string_view n) {
+    return std::optional<std::uint32_t>(n == "0" ? 0U : 1U);
+  };
+  const CheckedRequirement pre{.kind = CheckedRequirementKind::InitializedSpan,
+                               .path = SummaryPath::global(0),
+                               .other = SummaryPath::global(1),
+                               .end = PathAffine::ofConstant(INT64_MAX),
+                               .family = {}};
+  const CheckedRequirement post{.kind = CheckedRequirementKind::CountWithinSpan,
+                                .path = pre.path,
+                                .other = pre.other,
+                                .family = {}};
+  FunctionSummary summary;
+  summary.checked.computed = true;
+  summary.checked.require(pre);
+  summary.checked.establish(post);
+  EXPECT_EQ(parseCheckedContract(printCheckedContract(summary.checked, names),
+                                 resolve),
+            summary.checked);
+  const auto mapped = remapGlobals(
+      summary, [](std::uint32_t n) { return std::optional(n + 4); });
+  ASSERT_EQ(mapped.checked.establishes.size(), 1U);
+  EXPECT_EQ(mapped.checked.establishes.begin()->path, SummaryPath::global(4));
+  EXPECT_EQ(mapped.checked.establishes.begin()->other, SummaryPath::global(5));
+  const auto missing = remapGlobals(summary, [](std::uint32_t n) {
+    return n == 0 ? std::optional(n) : std::nullopt;
+  });
+  EXPECT_FALSE(missing.checked.complete());
+  for (unsigned mutation = 0; mutation < 8; ++mutation) {
+    auto bad = summary.checked;
+    auto invalid = post;
+    switch (mutation) {
+    case 0:
+      bad.requirements.clear();
+      break;
+    case 1:
+      invalid.on = Outcome::Positive;
+      break;
+    case 2:
+      invalid.ifNonNull = true;
+      break;
+    case 3:
+      invalid.begin = PathAffine::ofConstant(1);
+      break;
+    case 4:
+      invalid.end = PathAffine::ofConstant(1);
+      break;
+    case 5:
+      invalid.family = "free";
+      break;
+    case 6:
+      invalid.when.require(SummaryPath::param(2), ValueFact::nonZero());
+      break;
+    default:
+      invalid.other = SummaryPath::param(2);
+      break;
+    }
+    bad.establishes.clear();
+    bad.establish(invalid);
+    EXPECT_FALSE(
+        parseCheckedContract(printCheckedContract(bad, names), resolve));
+  }
+  summary.checked.establishes.clear();
+  summary.checked.require(post);
+  EXPECT_FALSE(parseCheckedContract(
+      printCheckedContract(summary.checked, names), resolve));
+}
+
+TEST(CheckedContract, InitializedAdvanceRequiresMatchingPosition) {
+  const GlobalNamer names = [](std::uint32_t n) { return std::to_string(n); };
+  const GlobalResolver resolve = [](std::string_view) {
+    return std::optional<std::uint32_t>(0);
+  };
+  const auto path = SummaryPath::param(0).deref();
+  const CheckedRequirement position{.kind = CheckedRequirementKind::Position,
+                                    .path = path,
+                                    .other = path,
+                                    .end = PathAffine::ofConstant(4),
+                                    .family = {}};
+  const CheckedRequirement post{.kind =
+                                    CheckedRequirementKind::InitializedAdvance,
+                                .path = path,
+                                .other = path,
+                                .family = {}};
+  CheckedContract contract;
+  contract.computed = true;
+  contract.establish(position);
+  contract.establish(post);
+  EXPECT_EQ(
+      parseCheckedContract(printCheckedContract(contract, names), resolve),
+      contract);
+  for (unsigned mutation = 0; mutation < 8; ++mutation) {
+    auto bad = contract;
+    auto invalid = post;
+    bad.establishes.clear();
+    if (mutation != 0)
+      bad.establish(position);
+    switch (mutation) {
+    case 1:
+      invalid.other = SummaryPath::param(1);
+      break;
+    case 2:
+      invalid.path = SummaryPath::result();
+      break;
+    case 3:
+      invalid.begin = PathAffine::ofConstant(1);
+      break;
+    case 4:
+      invalid.end = PathAffine::ofConstant(1);
+      break;
+    case 5:
+      invalid.family = "free";
+      break;
+    case 6:
+      invalid.ifNonNull = true;
+      break;
+    case 7:
+      invalid.when.require(SummaryPath::param(1), ValueFact::nonZero());
+      break;
+    default:
+      break;
+    }
+    bad.establish(invalid);
+    EXPECT_FALSE(
+        parseCheckedContract(printCheckedContract(bad, names), resolve));
+  }
+  contract.require(post);
+  EXPECT_FALSE(
+      parseCheckedContract(printCheckedContract(contract, names), resolve));
+}
+
+TEST(SafetyState, NumericContentsNeedEveryPathAndRetireWithWrites) {
+  const PlaceId storage{1};
+  SafetyState state;
+  state.initialize(
+      storage,
+      {.begin = {}, .end = Affine::ofConstant(4), .numericText = true});
+  ASSERT_EQ(state.memory.at(storage).size(), 2U);
+  auto other = state;
+  other.forgetZeros();
+  ASSERT_EQ(other.memory.at(storage).size(), 1U);
+  state.join(other);
+  EXPECT_EQ(state, other);
+  AnalysisState pending;
+  pending.safety.emplace();
+  auto &outcome = pending.pending[PlaceId{2}];
+  outcome.consumedBy.try_emplace(Outcome::Zero);
+  outcome.initializedOn[Outcome::Zero].push_back(
+      {storage,
+       {.begin = {}, .end = Affine::ofConstant(4), .numericText = true}});
+  pending.forgetZeroedMemory();
+  EXPECT_TRUE(outcome.initializedInAll().empty());
+}
+
+TEST(SafetyState, NonNanFactsRequireEveryPathAndUnchangedStorage) {
+  const PlaceId value{1};
+  SafetyState state;
+  state.nonNan.insert(value);
+  auto other = state;
+  other.forgetDependency(value);
+  EXPECT_TRUE(other.nonNan.empty());
+  state.join(other);
+  EXPECT_TRUE(state.nonNan.empty());
 }
 
 } // namespace weavec::core

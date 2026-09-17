@@ -1,0 +1,100 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "name": "construction-build",
+      "sources": [
+        "build.c"
+      ],
+      "functions": [
+        "build",
+        "main"
+      ],
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    },
+    {
+      "name": "construction-short",
+      "sources": [
+        "short.c"
+      ],
+      "functions": [
+        "build",
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "extent|bounds|interval"
+    },
+    {
+      "name": "construction-uninitialized",
+      "sources": [
+        "uninitialized.c"
+      ],
+      "functions": [
+        "build",
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "initializ"
+    },
+    {
+      "name": "construction-leak",
+      "sources": [
+        "leak.c"
+      ],
+      "functions": [
+        "build",
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "footprint|leak|cleanup|contract"
+    },
+    {
+      "name": "construction-double",
+      "sources": [
+        "double.c"
+      ],
+      "functions": [
+        "build",
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "freed|release"
+    },
+    {
+      "name": "construction-cycle",
+      "sources": [
+        "cycle.c"
+      ],
+      "functions": [
+        "build",
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "recursive|progress"
+    }
+  ]
+}

@@ -19,6 +19,7 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/ScopeExit.h"
 #include "llvm/Support/FormatVariadic.h"
 
 #include <algorithm>
@@ -419,6 +420,17 @@ void TranslationUnitAnalyzer::run(
   const std::vector<std::vector<unsigned>> adjacency = buildCallGraph();
   const std::vector<std::vector<unsigned>> components =
       core::stronglyConnectedComponents(adjacency);
+  if (options.checkContracts)
+    for (unsigned index = 0; index < components.size(); ++index)
+      for (const auto member : components[index]) {
+        store.recursiveComponents[definitions[member]->getCanonicalDecl()] =
+            index;
+        if (components[index].size() > 1 ||
+            std::ranges::find(adjacency[member], member) !=
+                adjacency[member].end())
+          store.recursiveFunctions.insert(
+              definitions[member]->getCanonicalDecl());
+      }
 
   // RFC 0012, *Sized fields*, "Two passes in a unit": the first pass takes
   // inferred sized fields from the program database only; every report is
@@ -714,6 +726,15 @@ void TranslationUnitAnalyzer::analyzeComponent(
   if (recursive) {
     for (const unsigned member : component)
       recursiveFunctions.insert(definitions[member]->getCanonicalDecl());
+  }
+  const bool verifiedGroup = recursive && options.checkContracts &&
+                             verifyRecursiveContractGroup(component);
+  const bool previousApproximation = store.checkingRecursiveApproximation;
+  store.checkingRecursiveApproximation = recursive && !verifiedGroup;
+  const auto restoreApproximation = llvm::scope_exit(
+      [&] { store.checkingRecursiveApproximation = previousApproximation; });
+  bool settled = false;
+  if (recursive && !verifiedGroup) {
     // Start every member at the bottom summary and iterate silently until
     // nothing changes; the final, reporting run then sees the fixpoint.
     for (const unsigned member : component) {
@@ -736,17 +757,26 @@ void TranslationUnitAnalyzer::analyzeComponent(
         changed =
             analyzeSilently(*definitions[member], analyzer, true) || changed;
       }
-      if (!changed)
+      if (!changed) {
+        settled = true;
         break;
+      }
       if (round + 1 == MaxFixpointRounds)
         for (const unsigned member : component)
           store.markIncomplete(*definitions[member]);
     }
   }
 
+  const bool previousRefresh = store.refreshingRecursiveValueOutcomes;
+  store.refreshingRecursiveValueOutcomes =
+      recursive && settled && !verifiedGroup;
+  const auto restoreRefresh = llvm::scope_exit(
+      [&] { store.refreshingRecursiveValueOutcomes = previousRefresh; });
   for (const unsigned member : component) {
     const FunctionDecl &function = *definitions[member];
     const bool report = shouldReport(function);
+    if (store.refreshingRecursiveValueOutcomes)
+      silentAnalyses.erase(function.getCanonicalDecl());
     if (report)
       analyzer.analyze(function, store, true, /*widenSummary=*/recursive);
     else

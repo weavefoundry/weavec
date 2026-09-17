@@ -1,0 +1,131 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "name": "direct",
+      "sources": [
+        "direct.c",
+        "update.c",
+        "forward.c",
+        "drop.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "entry_requirements": 0
+    },
+    {
+      "name": "forwarded",
+      "sources": [
+        "forwarded.c",
+        "update.c",
+        "forward.c",
+        "drop.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "entry_requirements": 0
+    },
+    {
+      "name": "payload",
+      "sources": [
+        "payload.c",
+        "update.c",
+        "forward.c",
+        "drop.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "entry_requirements": 0
+    },
+    {
+      "name": "released",
+      "sources": [
+        "released.c",
+        "update.c",
+        "forward.c",
+        "drop.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "live|release|recursive|footprint|allocation|interval|leak"
+    },
+    {
+      "name": "interior",
+      "sources": [
+        "interior.c",
+        "update.c",
+        "forward.c",
+        "drop.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "live|release|recursive|footprint|allocation|interval|leak"
+    },
+    {
+      "name": "disowned",
+      "sources": [
+        "disowned.c",
+        "disown.c",
+        "forward.c",
+        "drop.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "live|release|recursive|footprint|allocation|interval|leak"
+    },
+    {
+      "name": "lost-payload",
+      "sources": [
+        "lost-payload.c",
+        "update.c",
+        "forward.c",
+        "drop.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "live|release|recursive|footprint|allocation|interval|leak"
+    }
+  ]
+}

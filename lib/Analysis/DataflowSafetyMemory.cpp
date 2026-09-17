@@ -16,6 +16,182 @@ using namespace clang;
 
 namespace weavec::analysis {
 
+std::optional<core::SummaryPath>
+FunctionDataflow::checkedSeparationInput(const CheckedMemory &memory,
+                                         const core::AnalysisState &state) {
+  // An immutable backing identity supports separation after a cursor update,
+  // but supplies neither current validity nor current capacity (RFC 0029).
+  if (memory.holder) {
+    if (state.moves.recordOf(*memory.holder) ||
+        state.safety->invalidatedPointers.contains(*memory.holder))
+      return std::nullopt;
+    if (const auto *buffer = bufferFact(*memory.holder, state);
+        buffer && buffer->entryBacking)
+      return builder.summaryPathOf(*buffer->entryBacking);
+    // Changing the logical prefix retires the full buffer predicate while
+    // preserving the backing identity. Storage facts are independently
+    // invalidated if that pointer, header or capacity is replaced.
+    if (const auto backing = state.safety->buffers.storage.find(*memory.holder);
+        backing != state.safety->buffers.storage.end() &&
+        backing->second.entryBacking &&
+        memory.storage == places.deref(*backing->second.entryBacking))
+      return builder.summaryPathOf(*backing->second.entryBacking);
+  }
+  if (memory.input)
+    return memory.input;
+  return memory.inputPlace ? stableSummaryPathOf(*memory.inputPlace)
+                           : std::nullopt;
+}
+
+std::optional<FunctionDataflow::CheckedMemory>
+FunctionDataflow::checkedScalarMemory(core::PlaceId place,
+                                      const core::AnalysisState &state) {
+  if (!state.safety || state.safety->havoc)
+    return std::nullopt;
+  const auto *decl = dyn_cast_or_null<ValueDecl>(builder.declFor(place));
+  QualType type = decl ? decl->getType() : QualType{};
+  if (!places.isBase(place) && places.step(place) == core::PathStep::Deref) {
+    const auto *pointer =
+        dyn_cast_or_null<ValueDecl>(builder.declFor(*places.parent(place)));
+    type = pointer && pointer->getType()->isPointerType()
+               ? pointer->getType()->getPointeeType()
+               : QualType{};
+  } else if (places.isElement(place)) {
+    type = arrayElementType(*places.parent(place));
+  }
+  if (type.isNull() || !type->isIntegerType() || type.isVolatileQualified() ||
+      type->isAtomicType())
+    return std::nullopt;
+  const auto bytes = byteSizeOf(type, context);
+  if (!bytes)
+    return std::nullopt;
+  auto storage = place;
+  std::int64_t offset = 0;
+  bool selected = false;
+  unsigned depth = 0;
+  while (!places.isBase(storage)) {
+    if (++depth > core::MaxHeapPathDepth)
+      return std::nullopt;
+    const auto parent = places.parent(storage);
+    if (!parent)
+      return std::nullopt;
+    std::int64_t shift = 0;
+    if (places.step(storage) == core::PathStep::Deref) {
+      std::int64_t end = 0;
+      if (__builtin_add_overflow(offset, *bytes, &end))
+        return std::nullopt;
+      return checkedMemoryAt(*parent, core::Affine::ofConstant(offset),
+                             core::Affine::ofConstant(end), state);
+    }
+    if (places.step(storage) == core::PathStep::Field) {
+      const auto *field = dyn_cast_or_null<FieldDecl>(builder.declFor(storage));
+      if (!field || field->isBitField() || field->getParent()->isUnion())
+        return std::nullopt;
+      shift = static_cast<std::int64_t>(context.getFieldOffset(field) /
+                                        context.getCharWidth());
+    } else if (places.isElement(storage)) {
+      const auto index = core::ArrayIndex::parse(places.fieldName(storage));
+      const auto element = arrayElementType(*parent);
+      const auto unit =
+          element.isNull() ? std::nullopt : byteSizeOf(element, context);
+      if (!index || index->symbol || !unit ||
+          __builtin_mul_overflow(index->offset, *unit, &shift))
+        return std::nullopt;
+      selected = true;
+    } else if (places.step(storage) == core::PathStep::Index && selected) {
+      selected = false;
+    } else {
+      return std::nullopt;
+    }
+    if (__builtin_add_overflow(offset, shift, &offset))
+      return std::nullopt;
+    storage = *parent;
+  }
+  std::int64_t end = 0;
+  if (__builtin_add_overflow(offset, *bytes, &end))
+    return std::nullopt;
+  return CheckedMemory{.storage = storage,
+                       .begin = core::Affine::ofConstant(offset),
+                       .end = core::Affine::ofConstant(end),
+                       .extent = {},
+                       .input = {},
+                       .pointer = nullptr};
+}
+
+bool FunctionDataflow::checkedZeroInteger(core::PlaceId place,
+                                          const core::AnalysisState &state) {
+  if (!state.safety || state.safety->havoc || state.safety->memory.empty())
+    return false;
+  const auto root = places.root(place);
+  const auto ranges = state.safety->memory.find(root);
+  if (ranges == state.safety->memory.end() ||
+      std::ranges::none_of(ranges->second, [](const auto &range) {
+        return range.zeroed && !range.source && range.when.trivial();
+      }))
+    return false;
+  const auto *decl = dyn_cast_or_null<ValueDecl>(builder.declFor(place));
+  if (!decl || !decl->getType()->isIntegerType() ||
+      decl->getType().isVolatileQualified() || decl->getType()->isAtomicType())
+    return false;
+  const auto bytes = byteSizeOf(decl->getType(), context);
+  if (!bytes)
+    return false;
+  // RFC 0029: use current byte evidence, never a remembered memset event.
+  // This bounded layout walk covers concrete automatic cells only. It does
+  // not dereference a pointer or assume that a wildcard denotes element zero.
+  auto storage = place;
+  std::int64_t offset = 0;
+  bool selected = false;
+  unsigned depth = 0;
+  while (!places.isBase(storage)) {
+    if (++depth > core::MaxHeapPathDepth)
+      return false;
+    const auto parent = places.parent(storage);
+    if (!parent)
+      return false;
+    std::int64_t shift = 0;
+    if (places.step(storage) == core::PathStep::Field) {
+      const auto *field = dyn_cast_or_null<FieldDecl>(builder.declFor(storage));
+      if (!field || field->isBitField() || field->getParent()->isUnion() ||
+          field->getType().isVolatileQualified() ||
+          field->getType()->isAtomicType())
+        return false;
+      shift = static_cast<std::int64_t>(context.getFieldOffset(field) /
+                                        context.getCharWidth());
+    } else if (places.isElement(storage)) {
+      const auto index = core::ArrayIndex::parse(places.fieldName(storage));
+      const auto type = arrayElementType(*parent);
+      const auto unit =
+          type.isNull() ? std::nullopt : byteSizeOf(type, context);
+      if (!index || index->symbol || index->offset < 0 || !unit ||
+          __builtin_mul_overflow(index->offset, *unit, &shift))
+        return false;
+      selected = true;
+    } else if (places.step(storage) == core::PathStep::Index && selected) {
+      selected = false;
+    } else {
+      return false;
+    }
+    if (__builtin_add_overflow(offset, shift, &offset))
+      return false;
+    storage = *parent;
+  }
+  const auto *var = builder.varForPlace(storage);
+  if (!var || !var->hasLocalStorage() || var->getType().isVolatileQualified() ||
+      var->getType()->isAtomicType())
+    return false;
+  const auto extent = byteSizeOf(var->getType(), context);
+  std::int64_t end = 0;
+  if (!extent || __builtin_add_overflow(offset, *bytes, &end) || offset < 0 ||
+      end > *extent)
+    return false;
+  return std::ranges::any_of(ranges->second, [&](const auto &range) {
+    return range.zeroed && !range.source && range.when.trivial() &&
+           range.begin.isConstant() && range.end.isConstant() &&
+           range.begin.constant <= offset && end <= range.end.constant;
+  });
+}
+
 std::optional<FunctionDataflow::NumericExpression>
 FunctionDataflow::checkedByteExpression(const core::Affine &value,
                                         const core::AnalysisState &state) {
@@ -42,6 +218,9 @@ FunctionDataflow::checkedByteExpression(const core::Affine &value,
         type = fact->integer->type;
     if (!type &&
         (checkedTerminatorInputs.contains(*value.place) ||
+         std::ranges::any_of(
+             checkedSpans,
+             [&](const auto &entry) { return entry.second == *value.place; }) ||
          std::ranges::any_of(checkedCoordinates, [&](const auto &entry) {
            return entry.second == *value.place;
          })))
@@ -114,8 +293,18 @@ std::optional<core::Affine> FunctionDataflow::checkedByteSum(
     return exact;
   if (const auto exact = cancel(rhs, lhs))
     return exact;
-  const auto a = checkedByteExpression(lhs, state);
-  const auto b = checkedByteExpression(rhs, state);
+  // Byte endpoints carry mathematical displacements separately from their
+  // evaluated C values. Keep that normal form when two symbolic bases are
+  // combined, so a strict bound on a+b also covers the endpoint a+b+1.
+  std::int64_t displacement = 0;
+  if (__builtin_add_overflow(lhs.constant, rhs.constant, &displacement))
+    return std::nullopt;
+  auto left = lhs;
+  auto right = rhs;
+  left.constant = 0;
+  right.constant = 0;
+  const auto a = checkedByteExpression(left, state);
+  const auto b = checkedByteExpression(right, state);
   if (!a || !b)
     return std::nullopt;
   const auto sum = NumericExpression::operation(core::IntegerOp::Add, *a, *b);
@@ -125,8 +314,8 @@ std::optional<core::Affine> FunctionDataflow::checkedByteSum(
       operationDoesNotOverflow(core::IntegerOp::Add, *a, *b, a->type(), state);
   bool required = false;
   if (!proved && options.checkContracts) {
-    const auto first = summaryAffineOf(lhs);
-    const auto last = summaryAffineOf(rhs);
+    const auto first = summaryAffineOf(left);
+    const auto last = summaryAffineOf(right);
     required = first && last;
     if (required && recording())
       inferred.checked.require({.kind = core::CheckedRequirementKind::SumFits,
@@ -147,7 +336,7 @@ std::optional<core::Affine> FunctionDataflow::checkedByteSum(
     saved = expressionPlaces.emplace(*sum, place).first;
     numericExpressions.emplace(place, *sum);
   }
-  return core::Affine::ofPlace(saved->second);
+  return core::Affine::ofPlace(saved->second, 1, displacement);
 }
 
 std::optional<FunctionDataflow::CheckedMemory>
@@ -155,6 +344,33 @@ FunctionDataflow::checkedMemoryAt(core::PlaceId holder,
                                   const core::Affine &begin,
                                   const core::Affine &end,
                                   const core::AnalysisState &state) {
+  // RFC 0029: *slot can name a local pointer cell, not a second cursor.
+  // Resolve only an exact whole-cell access with independently proved
+  // validity, initialization and the same ordinary pointer representation.
+  if (places.step(holder) == core::PathStep::Deref)
+    if (const auto parent = places.parent(holder))
+      if (const auto *pointer =
+              dyn_cast_or_null<ValueDecl>(builder.declFor(*parent));
+          pointer && pointer->getType()->isPointerType()) {
+        const auto type = pointer->getType()->getPointeeType();
+        const auto bytes = byteSizeOf(type, context);
+        if (type->isPointerType() && !type.isVolatileQualified() && bytes) {
+          const auto cell = checkedMemoryAt(
+              *parent, {}, core::Affine::ofConstant(*bytes), state);
+          const auto *variable =
+              cell ? dyn_cast_or_null<VarDecl>(builder.declFor(cell->storage))
+                   : nullptr;
+          if (variable && variable->hasLocalStorage() &&
+              places.isBase(cell->storage) &&
+              !variable->getType().isVolatileQualified() &&
+              ASTContext::hasSameUnqualifiedType(type, variable->getType()) &&
+              foldAffine(cell->begin, state) == core::Affine::ofConstant(0) &&
+              cell->extent && checkedValid(*cell, state) &&
+              checkedInitialized(*cell, state) &&
+              checkedInterval(cell->begin, cell->end, *cell->extent, state))
+            holder = cell->storage;
+        }
+      }
   // A borrowed union object's member is the same holder under either name.
   // Canonicalize only definite, bounded storage images, never may-alias values.
   if (!state.safety->unions.members.empty()) {
@@ -209,10 +425,8 @@ FunctionDataflow::checkedMemoryAt(core::PlaceId holder,
         .begin = begin,
         .end = end,
         .extent = extent,
-        // The relational premise describes current storage.
-        // Keep entry identity for separation, but do not turn
-        // derived current bounds/validity into scalar input
-        // requirements about a possibly replaced pointer.
+        // The relational premise describes current storage. Its retained
+        // entry identity is generally usable for separation alone.
         .input = {},
         .pointer = nullptr,
         .holder = holder,
@@ -260,7 +474,15 @@ FunctionDataflow::checkedMemoryAt(core::PlaceId holder,
                          .inputPlace = position.input,
                          .validWhenNonempty = position.validWhenNonempty};
   }
-  const auto inputPath = stableSummaryPathOf(holder);
+  auto inputPath = stableSummaryPathOf(holder);
+  // RFC 0029: a later parameter assignment does not change the value at this
+  // operation. Recover the entry root only while the flow-sensitive domain
+  // proves that it has not been replaced on any incoming edge.
+  if (!inputPath && !state.safety->replacedPointers.contains(holder)) {
+    const auto path = builder.summaryPathOf(holder);
+    if (path && path->isParam() && path->isRoot())
+      inputPath = path;
+  }
   CheckedMemory result{.storage = holder,
                        .begin = begin,
                        .end = end,
@@ -380,9 +602,22 @@ void FunctionDataflow::checkedPointerFormation(
       "pointer formation",
       "formed pointer must remain within its object or one past it");
   const bool valid = memory && checkedValid(*memory, state);
+  auto validity = memory;
+  if (!valid && validity && !validity->input && validity->holder) {
+    const auto holder = *validity->holder;
+    // An empty buffer need not promise a live backing. Pointer arithmetic
+    // still needs one, even for an offset of zero. Export that extra premise
+    // only for the exact unchanged entry pointer; a replaced backing cannot
+    // recover validity from its old allocation's identity.
+    if (const auto *fact = bufferFact(holder, state);
+        fact && fact->entryBacking == holder &&
+        validity->storage == places.deref(holder) &&
+        !state.safety->replacedPointers.contains(holder))
+      validity->input = stableSummaryPathOf(holder);
+  }
   const bool input =
-      memory && memory->input &&
-      checkedRequire(core::CheckedRequirementKind::Valid, *memory, at, state);
+      validity && validity->input &&
+      checkedRequire(core::CheckedRequirementKind::Valid, *validity, at, state);
   safetyObligation(core::SafetyProperty::Validity,
                    core::safetyOutcome(valid, input), at, "pointer formation",
                    "pointer arithmetic requires live non-null storage");
@@ -426,15 +661,31 @@ std::optional<FunctionDataflow::CheckedMemory>
 FunctionDataflow::checkedMemory(const Expr &pointer, const core::Affine &begin,
                                 const core::Affine &end,
                                 const core::AnalysisState &state) {
-  const Expr *value = pointer.IgnoreParenImpCasts();
+  // Pointer-to-pointer casts preserve storage identity (RFC 0004). Inspect
+  // arithmetic inside an explicit cast too, retaining the operand's original
+  // element size before expressing its offset in mathematical byte units.
+  const Expr *value = &PlaceBuilder::stripTransparent(pointer);
   if (const auto *address = dyn_cast<UnaryOperator>(value);
       address && address->getOpcode() == UO_AddrOf) {
     const auto *target = address->getSubExpr()->IgnoreParenImpCasts();
     const bool indirect =
-        isa<ArraySubscriptExpr>(target) ||
+        isa<ArraySubscriptExpr>(target) || isa<MemberExpr>(target) ||
         (isa<UnaryOperator>(target) &&
          cast<UnaryOperator>(target)->getOpcode() == UO_Deref);
-    if (indirect) {
+    // Keep a const subobject's own identity so a cast cannot turn its mutable
+    // enclosing record into write permission for that member (RFC 0018).
+    if (indirect && !target->getType().isConstQualified()) {
+      // A member address retains its enclosing storage identity, but typed
+      // pointer arithmetic is still confined to that member subobject. Its
+      // layout alone supplies no evidence that the enclosing storage is live
+      // or large enough; checkedLvalue retains those separate obligations.
+      if (isa<MemberExpr>(target)) {
+        const auto bytes = byteSizeOf(target->getType(), context);
+        if (!bytes || !checkedAtMost({}, begin, state) ||
+            !checkedAtMost(begin, end, state) ||
+            !checkedAtMost(end, core::Affine::ofConstant(*bytes), state))
+          return std::nullopt;
+      }
       auto location = checkedLvalue(*target, state);
       if (!location)
         return std::nullopt;
@@ -460,12 +711,13 @@ FunctionDataflow::checkedMemory(const Expr &pointer, const core::Affine &begin,
   // can also carry an ordinary derived offset for an indirect holder; adding
   // it again would double-count a previous pointer-to-pointer increment.
   if (value->getType()->isPointerType() && PlaceBuilder::isPlaceExpr(*value))
-    if (const auto holder = builder.resolvePointerValue(*value);
-        holder && state.safety->positions.contains(holder->place)) {
+    if (const auto holder = builder.resolvePointerValue(*value)) {
       auto result = checkedMemoryAt(holder->place, begin, end, state);
-      if (result)
+      if (result && result->holder &&
+          state.safety->positions.contains(*result->holder)) {
         result->pointer = &pointer;
-      return result;
+        return result;
+      }
     }
   // Preserve the evaluated C index, then scale in mathematical byte units.
   if (const auto *binary = dyn_cast<BinaryOperator>(value);
@@ -616,8 +868,10 @@ FunctionDataflow::checkedWritePermission(const CheckedMemory &memory,
                                          const core::AnalysisState &state) {
   if (foldAffine(memory.begin, state) == foldAffine(memory.end, state))
     return true;
-  if (memory.holder && bufferFact(*memory.holder, state))
-    return true;
+  if (memory.holder)
+    if (const auto *fact = bufferFact(*memory.holder, state);
+        fact && !fact->shape.reader)
+      return true;
   if (memory.input)
     return std::nullopt;
   if (builder.isLiteralPlace(places.root(memory.storage)))
@@ -639,7 +893,14 @@ FunctionDataflow::checkedWritePermission(const CheckedMemory &memory,
           type = array->getElementType();
         if (type.isConstQualified())
           return false;
-        if (isa<VarDecl>(decl) && !type->isPointerType())
+        // RFC 0018: an identified pointer variable is a writable cell too.
+        // Its pointee still needs separate permission. A direct lvalue or a
+        // different holder identifying this object denotes the cell itself.
+        if (isa<VarDecl>(decl) &&
+            (!type->isPointerType() ||
+             (place == memory.storage &&
+              (!memory.holder || *memory.holder != memory.storage) &&
+              !places.innermostDeref(place))))
           mutableObject = true;
         if (place == memory.storage && memory.pointer && !memory.holder &&
             builder.classifyValue(*memory.pointer).kind ==
@@ -662,6 +923,20 @@ FunctionDataflow::checkedWritePermission(const CheckedMemory &memory,
   if (resource && resource->origin == core::ResourceOrigin::Allocated &&
       resource->family == "free")
     return true;
+  for (const auto &[holder, storage] : state.safety->objects) {
+    if (storage != memory.storage)
+      continue;
+    const auto owner = state.resources.recordOf(holder);
+    if (!owner || owner->origin != core::ResourceOrigin::Allocated ||
+        owner->family != "free" || owner->escaped)
+      continue;
+    auto guard = owner->guard;
+    const auto allocation = checkedMemoryAt(holder, {}, {}, state);
+    if (pruneGuard(guard, state) && guard.trivial() && allocation &&
+        allocation->storage == memory.storage &&
+        checkedValid(*allocation, state))
+      return true;
+  }
   return std::nullopt;
 }
 
@@ -696,8 +971,9 @@ bool FunctionDataflow::checkedInitialized(const CheckedMemory &memory,
         fact && fact->initialized &&
         checkedInterval(
             memory.begin, memory.end,
-            core::Affine::ofPlace(fact->length, static_cast<std::int64_t>(
-                                                    fact->shape.elementBytes)),
+            core::Affine::ofPlace(
+                fact->shape.reader ? fact->capacity : fact->length,
+                static_cast<std::int64_t>(fact->shape.elementBytes)),
             state))
       return true;
   if (builder.isLiteralPlace(memory.storage) && memory.extent)
@@ -765,8 +1041,11 @@ bool FunctionDataflow::checkedTerminated(const CheckedMemory &memory,
                                          const core::AnalysisState &state) {
   if (!memory.extent || !checkedValid(memory, state))
     return false;
-  if (checkedWitness(memory, state))
-    return true;
+  if (const auto witness = checkedWitness(memory, state))
+    if (const auto through = witness->zero.shifted(1);
+        through &&
+        checkedInterval(memory.begin, *through, *memory.extent, state))
+      return true;
   if (const auto bounded =
           state.safety->boundedTermination.find(memory.storage);
       bounded != state.safety->boundedTermination.end())
@@ -814,8 +1093,23 @@ bool FunctionDataflow::checkedRequire(core::CheckedRequirementKind kind,
       inferred.checked.deferred = true;
     return true;
   }
-  if (!memory.input)
+  auto input = memory.input;
+  if (!input && memory.holder &&
+      (kind == core::CheckedRequirementKind::Extent ||
+       kind == core::CheckedRequirementKind::Initialized) &&
+      bufferFact(*memory.holder, state) &&
+      memory.storage == places.deref(*memory.holder) &&
+      !state.safety->replacedPointers.contains(*memory.holder))
+    input = stableSummaryPathOf(*memory.holder);
+  if (!input)
     return false;
+  if (kind == core::CheckedRequirementKind::Extent && memory.inputPlace &&
+      bufferFact(*memory.inputPlace, state)) {
+    const auto backing = checkedMemoryAt(*memory.inputPlace, {}, {}, state);
+    if (backing && backing->storage == memory.storage && backing->extent &&
+        checkedInterval(memory.begin, memory.end, *backing->extent, state))
+      return true;
+  }
   core::PathGuard condition;
   if (recording()) {
     if (checkedRequirementGuard) {
@@ -843,6 +1137,11 @@ bool FunctionDataflow::checkedRequire(core::CheckedRequirementKind kind,
     if (!checkedAtMost({}, memory.begin, state))
       return false;
     end = core::PathAffine::ofConstant(0);
+  } else if (kind == core::CheckedRequirementKind::TerminatedWithin) {
+    // Both bounds name entry values. Widening or resetting the start of a
+    // terminated prefix could include an earlier, uninitialized interval.
+    if (!begin || !end || !checkedAtMost({}, memory.begin, state))
+      return false;
   } else if (!end) {
     end = checkedRequirementEnvelope(memory.end, state);
     if (!end)
@@ -871,7 +1170,7 @@ bool FunctionDataflow::checkedRequire(core::CheckedRequirementKind kind,
   }
   if (recording())
     inferred.checked.require({.kind = kind,
-                              .path = *memory.input,
+                              .path = *input,
                               .other = {},
                               .begin = *begin,
                               .end = *end,

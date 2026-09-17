@@ -97,9 +97,7 @@ void FunctionDataflow::handleIntegerCompound(const CompoundAssignOperator &expr,
   if (expression)
     state.numericValues.insert_or_assign(*outputs, *expression);
   assignScalar(ref->place, nullptr, state, &expr);
-  auto cells = mirrors(ref->place, state);
-  cells.push_back(ref->place);
-  llvm::append_range(cells, borrowedImages(ref->place, state));
+  const auto cells = scalarMirrors(ref->place, state);
   for (const auto cell : cells) {
     if (!tracksScalar(cell))
       continue;
@@ -107,8 +105,12 @@ void FunctionDataflow::handleIntegerCompound(const CompoundAssignOperator &expr,
       state.scalars.set(
           cell, core::ValueFact::ofInteger(result.values.converted(*storage)));
     if (const auto frozen = state.numericValues.find(*outputs);
-        frozen != state.numericValues.end() && !frozen->second.dependsOn(cell))
+        frozen != state.numericValues.end() &&
+        !frozen->second.dependsOn(cell)) {
       state.numericValues.insert_or_assign(cell, frozen->second);
+      if (const auto input = frozen->second.inputKey())
+        state.relations.learn(cell, core::Relation::Equal, *input);
+    }
   }
   state.numericValues.erase(*outputs);
   // The right hand side was evaluated before overwriting the logical count.

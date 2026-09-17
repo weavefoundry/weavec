@@ -1,0 +1,50 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "name": "recursive-context-client",
+      "sources": [
+        "client.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    },
+    {
+      "name": "recursive-context-null-output",
+      "sources": [
+        "bad.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "reason": "null|live|valid",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    },
+    {
+      "name": "recursive-context-generic",
+      "sources": [
+        "generic.c"
+      ],
+      "functions": [
+        "walk"
+      ],
+      "expect": "rejected",
+      "reason": "recursive|iteration limit|context",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    }
+  ]
+}

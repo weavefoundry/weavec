@@ -35,6 +35,14 @@ for the supported boundary and required evidence, and the
 [validation record](docs/validation-rfc0028.md) for closed-client proofs,
 remaining limits and measured cost.
 
+[RFC 0029](docs/rfcs/0029-compositional-recursive-workflows.md) adds explicit
+allocator/releaser callback requirements, group validation for supported recursive
+cleanup, traversal and fresh construction, and buffer role discovery through
+extra state fields and separate-source interfaces. Closed workflow checks cover
+partial-tree failure cleanup, a streaming serializer, compiler objects and
+validated cache reuse. The broader recursive parser/serializer milestone is
+still in progress; see the [validation record](docs/validation-rfc0029.md).
+
 Checked helpers can be rechecked under established input cases, including
 read-only helpers and forwarded callbacks
 ([RFC 0025](docs/rfcs/0025-case-sensitive-checked-contracts.md)). Named unions
@@ -150,7 +158,7 @@ remain coverage gaps; general nonlinear and loop reasoning are outside the
 model. Early-exit and other unsupported loops do not produce inferred
 must-requirements on callers. Existing annotations remain trusted contracts.
 There is no runtime instrumentation or whole-program verification certificate.
-Core summary format is **23**; sidecar format **24** requires rebuilding objects carrying older
+Core summary format is **25**; sidecar format **26** requires rebuilding objects carrying older
 sidecars. The [validation report](docs/validation-rfc0017.md) records
 **900/900 tests passing**, including under ASan/UBSan, **44/44 original bugs
 detected and 32/32 clean cases**, plus twelve separate bug/clean regression

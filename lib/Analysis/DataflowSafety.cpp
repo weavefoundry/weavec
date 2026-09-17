@@ -8,12 +8,15 @@
 
 #include "AffineSupport.h"
 #include "Dataflow.h"
+#include "FloatingCastSupport.h"
 #include "IntegerSupport.h"
 #include "weavec/Analysis/ProgramDatabase.h"
 #include "weavec/Core/ObjectType.h"
 
 #include "clang/AST/Attr.h"
 #include "clang/Basic/SourceManager.h"
+
+#include "llvm/ADT/ScopeExit.h"
 
 using namespace clang;
 
@@ -76,6 +79,25 @@ static bool checkedAllocationOrigin(const ValueOrigin &origin,
          std::ranges::all_of(origin.alternatives, [&](const auto &alternative) {
            return checkedAllocationOrigin(alternative, depth + 1);
          });
+}
+
+static bool checkedCharacterPointerView(QualType from, QualType to,
+                                        const ASTContext &context) {
+  if (!from->isPointerType() || !to->isPointerType() ||
+      from.isVolatileQualified() || to.isVolatileQualified() ||
+      !from->getPointeeType()->isAnyCharacterType() ||
+      !to->getPointeeType()->isAnyCharacterType() ||
+      from->getPointeeType().isVolatileQualified() ||
+      to->getPointeeType().isVolatileQualified() ||
+      from->getPointeeType().getAddressSpace() !=
+          to->getPointeeType().getAddressSpace())
+    return false;
+  // RFC 0029: Clang's character-pointer alias class shares the actual target
+  // representation. A compatible view does not make a const slot writable.
+  return from->getPointeeType()->isCharType() &&
+         to->getPointeeType()->isCharType() &&
+         context.getTypeSize(from) == context.getTypeSize(to) &&
+         context.getTypeAlign(from) == context.getTypeAlign(to);
 }
 
 static bool checkedTypeUnsupported(QualType type, unsigned depth = 0) {
@@ -149,6 +171,34 @@ void FunctionDataflow::initializeChecked() {
       checkedUnsupported.insert(function.getBody());
   if (getAnnotations(function).invalid)
     checkedUnsupported.insert(function.getBody());
+  const auto nominateCounter = [&](const Stmt *statement) {
+    const auto *adjustment = dyn_cast_or_null<UnaryOperator>(statement);
+    const auto *returned = dyn_cast_or_null<ReturnStmt>(statement);
+    const Expr *operand = returned ? returned->getRetValue() : nullptr;
+    if (adjustment && adjustment->isIncrementDecrementOp())
+      operand = adjustment->getSubExpr();
+    if (!operand)
+      return;
+    const auto *reference =
+        dyn_cast<DeclRefExpr>(operand->IgnoreParenImpCasts());
+    const auto *variable =
+        reference ? dyn_cast<VarDecl>(reference->getDecl()) : nullptr;
+    if (!variable || !variable->hasLocalStorage() ||
+        !variable->getType()->isIntegerType() ||
+        variable->getType()->isBooleanType() ||
+        variable->getType().isVolatileQualified() ||
+        variable->getType()->isAtomicType() ||
+        addressTaken.contains(variable->getCanonicalDecl()))
+      return;
+    const auto place = builder.placeForVar(*variable);
+    if (checkedLoopCounters.size() < core::MaxTraversalVariables ||
+        checkedLoopCounters.contains(place)) {
+      checkedLoopCounters.insert(place);
+    } else {
+      inferred.checked.limited = true;
+      inferred.incomplete.insert("traversal variable limit reached");
+    }
+  };
   std::vector<const Stmt *> pendingStmts{function.getBody()};
   for (std::size_t i = 0; i < pendingStmts.size(); ++i) {
     const Stmt *stmt = pendingStmts[i];
@@ -158,12 +208,15 @@ void FunctionDataflow::initializeChecked() {
       inferred.checked.limited = true;
       break;
     }
+    if (isa<ReturnStmt>(stmt))
+      nominateCounter(stmt);
     if (isa<AsmStmt, IndirectGotoStmt, AddrLabelExpr, VAArgExpr, AtomicExpr>(
             stmt))
       checkedUnsupported.insert(stmt);
     if (const auto *expr = dyn_cast<Expr>(stmt)) {
       if (const auto *cast = dyn_cast<CastExpr>(expr);
-          cast && cast->getCastKind() == CK_FloatingToIntegral)
+          cast && cast->getCastKind() == CK_FloatingToIntegral &&
+          !finiteFloatingCast(*cast, function, context))
         checkedUnsupported.insert(stmt);
       if (const auto *cast = dyn_cast<CastExpr>(expr);
           cast && cast->getCastKind() == CK_BitCast &&
@@ -174,6 +227,7 @@ void FunctionDataflow::initializeChecked() {
         if (!to->isVoidType() && !to->isCharType() &&
             !clang::ASTContext::hasSameUnqualifiedType(from, to) &&
             !from->isVoidType() && !from->isCharType() &&
+            !checkedCharacterPointerView(from, to, context) &&
             !checkedAllocationOrigin(builder.classifyValue(*cast)))
           checkedUnsupported.insert(stmt);
       }
@@ -197,11 +251,33 @@ void FunctionDataflow::initializeChecked() {
                     getAnnotations(*var).checked))
           checkedUnsupported.insert(stmt);
     if (const auto *loop = dyn_cast<ForStmt>(stmt)) {
+      nominateCounter(loop->getInc());
+      checkedLoops[loop] = loop;
+      if (loop->getCond()) {
+        std::vector<const Stmt *> conditions{loop->getCond()};
+        for (std::size_t j = 0;
+             j < conditions.size() && conditions.size() <= 64; ++j)
+          for (const auto *child : conditions[j]->children())
+            if (child)
+              conditions.push_back(child);
+        if (conditions.size() <= 64) {
+          for (const auto *condition : conditions) {
+            checkedLoops[condition] = loop;
+            checkedLoopConditions.insert(condition);
+          }
+        } else {
+          checkedLoops[loop->getCond()] = loop;
+          checkedLoopConditions.insert(loop->getCond());
+        }
+      }
+      if (loop->getInc())
+        checkedLoops[loop->getInc()] = loop;
       std::vector<const Stmt *> body{loop->getBody()};
       for (std::size_t j = 0; j < body.size() && body.size() < 65536; ++j) {
         if (!body[j])
           continue;
         checkedLoops[body[j]] = loop;
+        nominateCounter(body[j]);
         for (const auto *child : body[j]->children())
           body.push_back(child);
       }
@@ -221,12 +297,25 @@ void FunctionDataflow::initializeChecked() {
 void FunctionDataflow::checkedBefore(const Stmt &stmt,
                                      core::AnalysisState &state) {
   materializeBuffers(state);
-  if (checkedUnsupported.contains(&stmt))
+  checkedReaderLoop(stmt, state);
+  const auto *floatingCast = dyn_cast<CastExpr>(&stmt);
+  const bool provedFloating =
+      floatingCast != nullptr &&
+      floatingCast->getCastKind() == CK_FloatingToIntegral &&
+      finiteFloatingCast(
+          *floatingCast, function, context,
+          checkedFloatingValue(*floatingCast->getSubExpr(), state));
+  if (checkedUnsupported.contains(&stmt) && !provedFloating)
     safetyObligation(core::SafetyProperty::Semantics,
                      core::SafetyOutcome::Unresolved, stmt, "unsupported",
                      "unsupported checked C construct or storage type");
-  if (const auto *cast = dyn_cast<CastExpr>(&stmt))
+  if (const auto *cast = dyn_cast<CastExpr>(&stmt)) {
+    if (cast->getCastKind() == CK_FloatingToIntegral && provedFloating)
+      safetyObligation(core::SafetyProperty::Semantics,
+                       core::SafetyOutcome::Proven, stmt, "conversion",
+                       "floating conversion has a finite representable range");
     checkedObjectCast(*cast, state);
+  }
   if (const auto *declarations = dyn_cast<DeclStmt>(&stmt))
     for (const auto *decl : declarations->decls())
       if (const auto *var = dyn_cast<VarDecl>(decl);
@@ -353,6 +442,26 @@ void FunctionDataflow::checkedBefore(const Stmt &stmt,
 
 void FunctionDataflow::checkedAfter(const Stmt &stmt,
                                     core::AnalysisState &state) {
+  if (const auto *conditional = dyn_cast<AbstractConditionalOperator>(&stmt);
+      conditional && conditional->getType()->isIntegerType() &&
+      !conditional->HasSideEffects(context)) {
+    const auto range = integerRangeOf(*conditional, state);
+    auto &saved = integerStatementResults[conditional];
+    if (!saved) {
+      saved = places.create("conditional-value@" +
+                            std::to_string(locate(stmt).line));
+      snapshotPlaces.insert(*saved);
+    }
+    snapshotIntegerDependencies(*saved, conditional, state);
+    snapshotScalar(*saved, conditional, state);
+    state.dropGuardsOn(*saved);
+    state.relations.forget(*saved);
+    state.numericValues.erase(*saved);
+    state.scalars.forget(*saved);
+    if (range && !range->mayBeInvalid && !range->values.empty())
+      state.scalars.set(*saved, core::ValueFact::ofInteger(range->values));
+  }
+  checkedFloatingAfter(stmt, state);
   if (const auto *expr = dyn_cast<Expr>(&stmt))
     checkedAdvancePointer(*expr, state);
   if (inUnsafe && checkedUnsupported.contains(&stmt)) {
@@ -368,6 +477,7 @@ void FunctionDataflow::checkedAfter(const Stmt &stmt,
     state.safety->buffers.storage.clear();
     state.safety->containers.clear();
     state.safety->initialized.clear();
+    state.safety->nonNan.clear();
     state.safety->pointers.clear();
     state.safety->memory.clear();
     state.safety->positions.clear();
@@ -409,7 +519,11 @@ void FunctionDataflow::checkedAfter(const Stmt &stmt,
                         assignment->getOpcode() == BO_Assign &&
                         byteSizeOf(written->getType(), context) == 1 &&
                         integerConstant(*assignment->getRHS(), context) == 0;
-    checkedStringWrite(writtenMemory, zeroed, state);
+    const bool numericText = assignment != nullptr &&
+                             assignment->getOpcode() == BO_Assign &&
+                             byteSizeOf(written->getType(), context) == 1 &&
+                             checkedNumericByte(*assignment->getRHS(), state);
+    checkedStringWrite(writtenMemory, zeroed, state, numericText);
     checkedUnionWrite(*written, writtenMemory, state);
     if (const auto ref = builder.resolve(*written))
       if (ref->element.isWhole())
@@ -418,7 +532,8 @@ void FunctionDataflow::checkedAfter(const Stmt &stmt,
       state.safety->initialize(memory->storage,
                                {.begin = foldAffine(memory->begin, state),
                                 .end = foldAffine(memory->end, state),
-                                .zeroed = zeroed});
+                                .zeroed = zeroed,
+                                .numericText = numericText});
       // Keep a symbolic right endpoint as well as the folded interval. A
       // subsequent value-preserving advance can carry this must-write fact
       // around a CFG back edge without pretending that a visit was a store.
@@ -426,7 +541,8 @@ void FunctionDataflow::checkedAfter(const Stmt &stmt,
                                {.begin = checkedStableAffine(
                                     foldAffine(memory->begin, state), state),
                                 .end = checkedStableAffine(memory->end, state),
-                                .zeroed = zeroed});
+                                .zeroed = zeroed,
+                                .numericText = numericText});
       if (const auto *subscript =
               dyn_cast<ArraySubscriptExpr>(written->IgnoreParenImpCasts())) {
         const Expr *indexExpr = subscript->getIdx()->IgnoreParenImpCasts();
@@ -454,12 +570,14 @@ void FunctionDataflow::checkedAfter(const Stmt &stmt,
                     symbolic->storage,
                     {.begin = foldAffine(symbolic->begin, state),
                      .end = checkedStableAffine(symbolic->end, state),
-                     .zeroed = zeroed});
+                     .zeroed = zeroed,
+                     .numericText = numericText});
                 state.safety->initialize(
                     symbolic->storage,
                     {.begin = symbolic->begin,
                      .end = checkedStableAffine(symbolic->end, state),
-                     .zeroed = zeroed});
+                     .zeroed = zeroed,
+                     .numericText = numericText});
               }
           }
       }
@@ -676,6 +794,34 @@ void FunctionDataflow::installCheckedPointer(core::PlaceId dest,
 
 void FunctionDataflow::checkedOutputs(const core::AnalysisState &incoming,
                                       const Expr *value) {
+  if (value && value->getType()->isPointerType())
+    if (const auto *conditional =
+            dyn_cast<ConditionalOperator>(value->IgnoreParenImpCasts());
+        conditional && !conditional->HasSideEffects(context) &&
+        !isa<AbstractConditionalOperator>(
+            conditional->getTrueExpr()->IgnoreParenImpCasts()) &&
+        !isa<AbstractConditionalOperator>(
+            conditional->getFalseExpr()->IgnoreParenImpCasts())) {
+      // RFC 0029: pure conditional returns have the same output alternatives
+      // as explicit returns on the two CFG edges. Refine the computed whole
+      // condition, not just the final operand of a short-circuit expression.
+      const bool previousInfeasible = edgeInfeasible;
+      const auto previousCall = lastCall;
+      const auto restore = llvm::scope_exit([&] {
+        edgeInfeasible = previousInfeasible;
+        lastCall = previousCall;
+      });
+      for (const bool holds : {true, false}) {
+        auto branch = incoming;
+        edgeInfeasible = false;
+        lastCall = previousCall;
+        applyCondition(*conditional->getCond(), holds, true, branch);
+        if (!edgeInfeasible)
+          checkedOutputs(branch, holds ? conditional->getTrueExpr()
+                                       : conditional->getFalseExpr());
+      }
+      return;
+    }
   std::optional<core::AnalysisState> materialized;
   std::optional<core::PlaceId> returned;
   if (value && value->getType()->isPointerType()) {
@@ -790,7 +936,7 @@ void FunctionDataflow::checkedOutputs(const core::AnalysisState &incoming,
         });
     if (!indirect)
       if (const auto path = builder.summaryPathOf(storage);
-          path && (path->isParam() || path->isGlobal()))
+          path && ((path->isParam() && !path->isRoot()) || path->isGlobal()))
         paths[storage].insert(*path);
   }
   for (const auto &[holder, storage] : checkedInputObjects)
@@ -815,8 +961,30 @@ void FunctionDataflow::checkedOutputs(const core::AnalysisState &incoming,
         nullOutputs.size() < core::MaxSafetyRequirements)
       nullOutputs.insert(*path);
   }
+  // RFC 0029: `return helper(...);` forwards the callee's outcome-specific
+  // structural and footprint outputs into each of this function's outcomes.
+  const auto *forwarded = value && value->getType()->isIntegerType() &&
+                                  options.checkContracts && state.safety &&
+                                  returnedIdentity
+                              ? dyn_cast<CallExpr>(value->IgnoreParenCasts())
+                              : nullptr;
+  if (forwarded && (!footprintPosts.contains(forwarded) ||
+                    numericCallResult(*forwarded) != returnedIdentity))
+    forwarded = nullptr;
   for (const auto outcome : classes) {
     core::CheckedContract outputs;
+    std::optional<core::AnalysisState> selectedOutcome;
+    if (forwarded && outcome) {
+      selectedOutcome = state;
+      const auto prior = scalarFactOf(*forwarded, *selectedOutcome);
+      const auto fact = core::ValueFact::of(*outcome);
+      (void)selectedOutcome->learn(*returnedIdentity, fact);
+      (void)selectedOutcome->scalars.narrow(*returnedIdentity, fact);
+      applyContainerPosts(*forwarded, *selectedOutcome, std::nullopt, &prior);
+      applyFootprintPosts(*forwarded, *selectedOutcome, std::nullopt, &prior);
+    }
+    const core::AnalysisState &outcomeState =
+        selectedOutcome ? *selectedOutcome : state;
     auto consumed = state.safety->consumedAllocations;
     // RFC 0028: a null entry pointer has no allocation left to release.
     // Reassignment cannot make this true of an earlier non-null input.
@@ -836,9 +1004,10 @@ void FunctionDataflow::checkedOutputs(const core::AnalysisState &incoming,
              .other = {},
              .family = "free",
              .on = outcome});
+    checkedSpanOutputs(outputs, state, value, outcome);
     checkedUnionOutputs(outputs, value, outcome, state);
-    containerOutputs(outputs, state, returned, outcome);
-    footprintOutputs(outputs, state, returned, outcome);
+    containerOutputs(outputs, outcomeState, returned, outcome);
+    footprintOutputs(outputs, outcomeState, returned, outcome);
     if (outcome && returnedIdentity && !state.safety->buffers.pending.empty()) {
       auto selected = state;
       (void)selected.learn(*returnedIdentity, core::ValueFact::of(*outcome));
@@ -869,13 +1038,42 @@ void FunctionDataflow::checkedOutputs(const core::AnalysisState &incoming,
                            .end = last,
                            .family = {},
                            .on = outcome});
+        const CheckedMemory prefix{.storage = position.storage,
+                                   .begin = {},
+                                   .end = position.offset,
+                                   .extent = position.extent,
+                                   .input = origin};
+        if (!destination->isResult() &&
+            checkedAtMost({}, position.offset, state) &&
+            checkedInitialized(prefix, state))
+          outputs.establish(
+              {.kind = core::CheckedRequirementKind::InitializedAdvance,
+               .path = *destination,
+               .other = *origin,
+               .family = {},
+               .on = outcome});
       };
       if (const auto offset = summaryAffineOf(position.offset))
         establish(*offset, *offset);
       if (checkedAtMost({}, position.offset, state))
         if (const auto bound =
-                checkedRequirementEnvelope(position.offset, state))
-          establish(core::PathAffine::ofConstant(0), *bound);
+                checkedRequirementEnvelope(position.offset, state)) {
+          std::int64_t first = 0;
+          if (position.offset.place && position.offset.scale > 0)
+            if (const auto lower =
+                    integerBounds(*position.offset.place, state).first) {
+              std::int64_t scaled = 0;
+              if (!__builtin_mul_overflow(*lower, position.offset.scale,
+                                          &scaled) &&
+                  !__builtin_add_overflow(scaled, position.offset.constant,
+                                          &scaled) &&
+                  scaled > 0 &&
+                  checkedAtMost(core::Affine::ofConstant(scaled),
+                                position.offset, state))
+                first = scaled;
+            }
+          establish(core::PathAffine::ofConstant(first), *bound);
+        }
       // Common entry bounds survive alternative return sites, including a
       // zero-length early return. Each bound is proved on this return edge.
       if (checkedAtMost({}, position.offset, state))
@@ -1079,7 +1277,10 @@ void FunctionDataflow::checkedOutputs(const core::AnalysisState &incoming,
             (post.ifNonNull && nullOutputs.contains(post.path)))
           joined.insert(post);
       for (const auto &first : existing->second)
-        if (first.kind == core::CheckedRequirementKind::ContainerDerived)
+        if (first.kind == core::CheckedRequirementKind::ContainerDerived ||
+            first.kind == core::CheckedRequirementKind::ContainerExtended ||
+            first.kind == core::CheckedRequirementKind::Container ||
+            first.kind == core::CheckedRequirementKind::ContainerFresh)
           for (const auto &second : outputs.establishes)
             if (const auto generalized =
                     core::joinContainerOutput(first, second))
@@ -1111,16 +1312,114 @@ void FunctionDataflow::checkedOutputs(const core::AnalysisState &incoming,
   for (const auto &[outcome, outputs] : checkedOutputClasses) {
     (void)outcome;
     for (auto post : outputs) {
+      if (post.kind == core::CheckedRequirementKind::ContainerExtended ||
+          post.kind == core::CheckedRequirementKind::ContainerDerived ||
+          post.kind == core::CheckedRequirementKind::Container ||
+          post.kind == core::CheckedRequirementKind::ContainerFresh) {
+        std::optional<core::CheckedRequirement> common = post;
+        for (const auto &[otherOutcome, otherOutputs] : checkedOutputClasses) {
+          (void)otherOutcome;
+          std::optional<core::CheckedRequirement> joined;
+          for (auto other : otherOutputs) {
+            other.on = post.on;
+            if (const auto candidate =
+                    core::joinContainerOutput(*common, other)) {
+              joined = candidate;
+              break;
+            }
+          }
+          common = joined;
+          if (!common)
+            break;
+        }
+        if (common) {
+          common->on.reset();
+          inferred.checked.establish(*common);
+        }
+        if (post.kind != core::CheckedRequirementKind::ContainerExtended) {
+          auto unconditional = post;
+          unconditional.on.reset();
+          if (!common || unconditional != *common)
+            inferred.checked.establish(std::move(post));
+        }
+        continue;
+      }
       const bool everyOutcome =
           std::ranges::all_of(checkedOutputClasses, [&](const auto &entry) {
             auto selected = post;
             selected.on = entry.first;
             return entry.second.contains(selected);
           });
+      if (post.kind == core::CheckedRequirementKind::CountWithinSpan &&
+          !everyOutcome)
+        continue;
       if (everyOutcome)
         post.on.reset();
       inferred.checked.establish(std::move(post));
     }
+  }
+  // Every outcome contributes independently proved bounds. A common enclosing
+  // interval preserves the actual cursor identity even when early returns
+  // advance by zero and successful returns advance by a variable count.
+  if (checkedOutputClasses.size() > 1)
+    for (const auto &candidate : checkedOutputClasses.begin()->second) {
+      if (candidate.kind != core::CheckedRequirementKind::Position ||
+          !candidate.when.trivial() || !candidate.begin.isConstant() ||
+          !candidate.end.isConstant())
+        continue;
+      auto first = candidate.begin.constant;
+      auto last = candidate.end.constant;
+      bool covered = true;
+      for (const auto &[outcome, outputs] : checkedOutputClasses) {
+        (void)outcome;
+        std::optional<std::pair<std::int64_t, std::int64_t>> interval;
+        for (const auto &post : outputs) {
+          if (post.kind != core::CheckedRequirementKind::Position ||
+              post.path != candidate.path || post.other != candidate.other ||
+              !post.when.trivial() || !post.begin.isConstant() ||
+              !post.end.isConstant())
+            continue;
+          if (!interval) {
+            interval = {post.begin.constant, post.end.constant};
+          } else {
+            interval->first = std::max(interval->first, post.begin.constant);
+            interval->second = std::min(interval->second, post.end.constant);
+          }
+        }
+        if (!interval || interval->first > interval->second) {
+          covered = false;
+          break;
+        }
+        first = std::min(first, interval->first);
+        last = std::max(last, interval->second);
+      }
+      if (covered) {
+        auto joined = candidate;
+        joined.begin = core::PathAffine::ofConstant(first);
+        joined.end = core::PathAffine::ofConstant(last);
+        joined.on.reset();
+        inferred.checked.establish(std::move(joined));
+      }
+    }
+  if (std::ranges::any_of(inferred.checked.establishes, [](const auto &post) {
+        return post.kind == core::CheckedRequirementKind::InitializedAdvance;
+      })) {
+    core::CheckedRequirements::Set supported(
+        inferred.checked.establishes.begin(),
+        inferred.checked.establishes.end());
+    std::erase_if(supported, [&](const auto &post) {
+      return post.kind == core::CheckedRequirementKind::InitializedAdvance &&
+             std::ranges::none_of(
+                 inferred.checked.establishes, [&](const auto &position) {
+                   return position.kind ==
+                              core::CheckedRequirementKind::Position &&
+                          position.path == post.path &&
+                          position.other == post.other &&
+                          position.when.trivial() &&
+                          (!position.on || position.on == post.on);
+                 });
+    });
+    inferred.checked.establishes.assign(std::move(supported));
   }
 }
 
@@ -1129,7 +1428,27 @@ void FunctionDataflow::checkedFinish(const core::AnalysisState *exitState) {
     runtimeListReturns(*function.getBody(), *exitState);
     checkedOutputs(*exitState);
   }
-  verifyRecursiveCleanup();
+  verifyRecursiveContract();
+  verifyFootprintTransfers();
+  if (const auto failed =
+          summaries.failedRecursiveOutputs.find(function.getCanonicalDecl());
+      failed != summaries.failedRecursiveOutputs.end() &&
+      !summaries.activeRecursiveContracts.members.contains(
+          function.getCanonicalDecl()))
+    safetyObligation(
+        core::SafetyProperty::Semantics, core::SafetyOutcome::Unresolved,
+        *function.getBody(),
+        failed->second ? "recursive writer output"
+                       : "recursive construction output",
+        failed->second
+            ? "recursive writer does not establish its complete output contract"
+            : "recursive construction does not establish its complete output "
+              "contract");
+  if (summaries.failedRecursiveProgress.contains(function.getCanonicalDecl()))
+    safetyObligation(core::SafetyProperty::Semantics,
+                     core::SafetyOutcome::Unresolved, *function.getBody(),
+                     "recursive progress",
+                     "recursive proof cycle has no strict progress");
   for (const Stmt *stmt : checkedUnsupported) {
     // RFC 0025: evaluated exclusions belong to their reachable proof case.
     // Unmapped exclusions remain unconditional; absence is not reachability.
@@ -1170,7 +1489,26 @@ void FunctionDataflow::checkedFinish(const core::AnalysisState *exitState) {
         if (function.getParamDecl(i)->getType()->isPointerType() &&
             !function.getParamDecl(i)->getType()->isFunctionPointerType() &&
             function.getParamDecl(j)->getType()->isPointerType() &&
-            !function.getParamDecl(j)->getType()->isFunctionPointerType())
+            !function.getParamDecl(j)->getType()->isFunctionPointerType()) {
+          const auto first = core::SummaryPath::param(i);
+          const auto second = core::SummaryPath::param(j);
+          const bool readOnly =
+              std::ranges::none_of(inferred.effects, [&](const auto &entry) {
+                const auto &[path, effect] = entry;
+                return path.isParam() && (path.index == i || path.index == j) &&
+                       (effect.written || effect.consumed() || effect.escaped);
+              });
+          const bool span =
+              readOnly &&
+              std::ranges::any_of(
+                  inferred.checked.requirements, [&](const auto &pre) {
+                    return pre.kind ==
+                               core::CheckedRequirementKind::InitializedSpan &&
+                           ((pre.path == first && pre.other == second) ||
+                            (pre.path == second && pre.other == first));
+                  });
+          if (span)
+            continue;
           inferred.checked.require(
               {.kind = core::CheckedRequirementKind::Separated,
                .path = core::SummaryPath::param(i),
@@ -1178,6 +1516,7 @@ void FunctionDataflow::checkedFinish(const core::AnalysisState *exitState) {
                .begin = {},
                .end = {},
                .family = {}});
+        }
   }
   inferred.checked.discardUnrepresentedContainerOutputs();
   const auto annotations = getAnnotations(function);

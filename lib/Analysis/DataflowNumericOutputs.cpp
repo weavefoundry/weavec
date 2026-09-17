@@ -15,6 +15,34 @@ using namespace clang;
 
 namespace weavec::analysis {
 
+static bool numericPathKeepsActualCell(const core::SummaryPath &path,
+                                       const CallExpr &call,
+                                       PlaceBuilder &builder) {
+  if (!path.isParam() || path.steps.empty() ||
+      path.steps.front().step != core::PathStep::Deref)
+    return true;
+  if (path.index >= call.getNumArgs())
+    return false;
+  const auto &argument = *call.getArg(path.index);
+  if (builder.addressedPlace(argument))
+    return true;
+  const auto origin = builder.classifyValue(argument);
+  std::vector<const ValueOrigin *> pending{&origin};
+  while (!pending.empty()) {
+    const auto *value = pending.back();
+    pending.pop_back();
+    if (value->kind == ValueOrigin::Kind::Conditional) {
+      for (const auto &alternative : value->alternatives)
+        pending.push_back(&alternative);
+    } else if (!value->offset.isZero()) {
+      // A may-effect can name the pointee summary of p + n. A numeric
+      // must-output cannot silently assign that value to *p (RFC 0029).
+      return false;
+    }
+  }
+  return true;
+}
+
 void FunctionDataflow::recordNumericOutputs(const Expr *value,
                                             const core::AnalysisState &state) {
   if (!recording())
@@ -176,6 +204,8 @@ void FunctionDataflow::prepareNumericCall(const CallExpr &call,
   for (const auto &[path, outputs] : summary.numericOutputs) {
     if (path.isResult() && !path.isRoot())
       continue;
+    if (!numericPathKeepsActualCell(path, call, builder))
+      continue;
     std::optional<core::IntegerType> type;
     if (path.isResult()) {
       type = integerTypeOf(call.getType(), context);
@@ -304,19 +334,14 @@ void FunctionDataflow::finishNumericCall(const CallExpr &call,
     if (path.isResult())
       continue;
     const auto dest = builder.resolveSummaryPath(path, call);
-    if (!dest)
+    if (!dest || !dest->element.isWhole())
       continue;
     const auto fact = state.scalars.factOf(saved);
     const auto expression = state.numericValues.find(saved);
     const auto value = expression == state.numericValues.end()
                            ? std::nullopt
                            : std::optional(expression->second);
-    auto cells = mirrors(dest->place, state);
-    if (!llvm::is_contained(cells, dest->place))
-      cells.push_back(dest->place);
-    for (const auto cell : borrowedImages(dest->place, state))
-      if (!llvm::is_contained(cells, cell))
-        cells.push_back(cell);
+    const auto cells = scalarMirrors(dest->place, state);
     for (const auto cell : cells) {
       auto [entry, inserted] =
           outputs.try_emplace(cell, Output{.fact = fact, .value = value});

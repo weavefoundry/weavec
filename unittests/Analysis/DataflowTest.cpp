@@ -920,7 +920,7 @@ TEST(Dataflow, ArrayDecayBorrowsTheElements) {
   const auto result = analyze(code, Exclusive);
   ASSERT_TRUE(result.ast);
   EXPECT_EQ(messages(result.diagnostics),
-            (Strings{"5: cannot borrow 'a[*]' as mutable because it is already "
+            (Strings{"5: cannot borrow 'a[1]' as mutable because it is already "
                      "borrowed"}));
 }
 

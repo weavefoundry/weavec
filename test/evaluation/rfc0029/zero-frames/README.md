@@ -1,0 +1,1 @@
+RFC0029 current zero-byte separation. Frozen before shared separation projection for zero-byte frames, baseline candidate29b. The writer must preserve its stored zero while updating a distinct header. A subsequent overwrite or an aliased byte store must not preserve that zero.

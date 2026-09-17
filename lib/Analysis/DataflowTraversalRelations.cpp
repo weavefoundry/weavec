@@ -97,7 +97,8 @@ static std::optional<core::Affine> traversalSumBound(
     const std::map<core::PlaceId, core::IntegerExpression<core::PlaceId>>
         &expressions,
     const core::AnalysisState &state,
-    const std::function<bool(core::PlaceId, core::PlaceId)> &atMost) {
+    const std::function<bool(const core::Affine &, const core::Affine &)>
+        &atMost) {
   if (!value.place || value.scale <= 0)
     return std::nullopt;
   const auto stored = expressions.find(*value.place);
@@ -111,6 +112,28 @@ static std::optional<core::Affine> traversalSumBound(
   const auto operands = sum.operands();
   if (operands.size() != 2)
     return std::nullopt;
+  const auto endpoint =
+      [&](const auto &expression) -> std::optional<core::Affine> {
+    if (const auto constant = expression.constantValue()) {
+      const auto value = constant->signedValue();
+      return value && *value >= 0
+                 ? std::optional(core::Affine::ofConstant(*value))
+                 : std::nullopt;
+    }
+    const auto input = expression.inputKey();
+    return input && !expressions.contains(*input)
+               ? std::optional(core::Affine::ofPlace(*input))
+               : std::nullopt;
+  };
+  const auto same = [&](const auto &a, const auto &b) {
+    if (a == b)
+      return true;
+    const auto x = a.inputKey();
+    const auto y = b.inputKey();
+    return a.type() == b.type() && x && y && !expressions.contains(*x) &&
+           !expressions.contains(*y) &&
+           state.relations.between(*x, *y) == core::Relation::Equal;
+  };
   for (const auto &predicate : state.numericConditions.integers) {
     if (predicate.range)
       continue;
@@ -133,12 +156,13 @@ static std::optional<core::Affine> traversalSumBound(
     if (parts.size() != 2 || parts.front().type() != sum.type() ||
         parts.back().type() != sum.type())
       continue;
-    const auto length = parts.front().inputKey();
-    const auto index = parts.back().inputKey();
-    if (!length || !index || expressions.contains(*length) ||
-        expressions.contains(*index) || !atMost(*index, *length) ||
-        !((operands.front() == count && operands.back() == parts.back()) ||
-          (operands.back() == count && operands.front() == parts.back())))
+    const auto length = endpoint(parts.front());
+    const auto index = endpoint(parts.back());
+    if (!length || !index || !atMost(*index, *length) ||
+        !((same(operands.front(), count) &&
+           same(operands.back(), parts.back())) ||
+          (same(operands.back(), count) &&
+           same(operands.front(), parts.back()))))
       continue;
     const auto offset = relation == core::IntegerOp::Less ? -1 : 0;
     std::int64_t displacement = 0;
@@ -146,7 +170,8 @@ static std::optional<core::Affine> traversalSumBound(
                                &displacement) ||
         __builtin_add_overflow(displacement, value.constant, &displacement))
       continue;
-    return core::Affine::ofPlace(*length, value.scale, displacement);
+    const auto scaled = length->times(value.scale);
+    return scaled ? scaled->shifted(displacement) : std::nullopt;
   }
   return std::nullopt;
 }
@@ -155,6 +180,93 @@ void FunctionDataflow::checkedDifferenceCondition(const Expr &lhs,
                                                   BinaryOperatorKind op,
                                                   const Expr &rhs, bool holds,
                                                   core::AnalysisState &state) {
+  // RFC 0029: retain the coordinate tested by (size_t)(cursor-base), rather
+  // than only the range known on this particular visit to the loop header.
+  const Expr *value = lhs.IgnoreParens();
+  std::vector<const CastExpr *> conversions;
+  while (const auto *cast = dyn_cast<CastExpr>(value)) {
+    if (conversions.size() == 12)
+      return;
+    conversions.push_back(cast);
+    value = cast->getSubExpr()->IgnoreParens();
+  }
+  if (const auto *subtraction = dyn_cast<BinaryOperator>(value);
+      subtraction && subtraction->getOpcode() == BO_Sub &&
+      subtraction->getLHS()->getType()->isPointerType()) {
+    if (lhs.HasSideEffects(context) || rhs.HasSideEffects(context) ||
+        !subtraction->getLHS()->getType()->getPointeeType()->isCharType())
+      return;
+    auto range = checkedPointerRange(*subtraction, state);
+    if (!range)
+      return;
+    for (const auto *cast : llvm::reverse(conversions)) {
+      const auto type = integerTypeOf(cast->getType(), context);
+      if (!type || !conversionPreserves(*range, *type))
+        return;
+      range = range->converted(*type);
+    }
+    const auto cursor = checkedMemory(*subtraction->getLHS(), {}, {}, state);
+    const auto base = checkedMemory(*subtraction->getRHS(), {}, {}, state);
+    auto limit = integerAffineOf(rhs, state);
+    // Keep the live bound cell even when this case knows its current value.
+    // Its relation survives ordinary CFG widening more precisely than a
+    // succession of constant cursor hulls.
+    if (const auto bound = builder.resolve(*rhs.IgnoreParenImpCasts()))
+      if (const auto *decl =
+              dyn_cast_or_null<ValueDecl>(builder.declFor(bound->place));
+          decl && bound->element.isWhole() &&
+          integerTypeOf(*decl, context) ==
+              integerTypeOf(rhs.getType(), context))
+        limit = core::Affine::ofPlace(bound->place);
+    if (!cursor || !base || !limit || !base->begin.isConstant() ||
+        !cursor->begin.place || cursor->begin.scale != 1 || limit->scale != 1)
+      return;
+    std::optional<core::Relation> relation;
+    switch (op) {
+    case BO_LT:
+      relation = holds ? core::Relation::Less : core::Relation::GreaterEqual;
+      break;
+    case BO_LE:
+      relation = holds ? core::Relation::LessEqual : core::Relation::Greater;
+      break;
+    case BO_GT:
+      relation = holds ? core::Relation::Greater : core::Relation::LessEqual;
+      break;
+    case BO_GE:
+      relation = holds ? core::Relation::GreaterEqual : core::Relation::Less;
+      break;
+    case BO_EQ:
+    case BO_NE:
+      if ((op == BO_EQ) == holds)
+        relation = core::Relation::Equal;
+      break;
+    default:
+      break;
+    }
+    std::int64_t offset = 0;
+    if (!relation ||
+        __builtin_add_overflow(limit->constant, base->begin.constant,
+                               &offset) ||
+        __builtin_sub_overflow(offset, cursor->begin.constant, &offset))
+      return;
+    const auto coordinate = *cursor->begin.place;
+    if (limit->place) {
+      state.relations.learn(coordinate, *relation, *limit->place, offset);
+    } else {
+      if (*relation == core::Relation::Less && offset != INT64_MIN)
+        state.relations.learnAtMost(coordinate, offset - 1);
+      if (*relation == core::Relation::Greater && offset != INT64_MAX)
+        state.relations.learnAtLeast(coordinate, offset + 1);
+      if (*relation == core::Relation::LessEqual ||
+          *relation == core::Relation::Equal)
+        state.relations.learnAtMost(coordinate, offset);
+      if (*relation == core::Relation::GreaterEqual ||
+          *relation == core::Relation::Equal)
+        state.relations.learnAtLeast(coordinate, offset);
+    }
+    checkedSpanCountBounds(state);
+    return;
+  }
   const auto *difference = dyn_cast<BinaryOperator>(lhs.IgnoreParenImpCasts());
   const auto constant = integerConstant(rhs, context);
   if (!difference || difference->getOpcode() != BO_Sub || !constant ||
@@ -235,6 +347,91 @@ FunctionDataflow::checkedStableAffine(const core::Affine &value,
   return value;
 }
 
+std::vector<std::pair<core::PlaceId, core::Affine>>
+FunctionDataflow::checkedJoinBoundaries(const core::AnalysisState &first,
+                                        const core::AnalysisState &second) {
+  std::vector<std::pair<core::PlaceId, core::Affine>> result;
+  if (!first.safety || !second.safety)
+    return result;
+  std::size_t candidates = 0;
+  std::optional<core::DifferenceConstraints> firstBounds;
+  std::optional<core::DifferenceConstraints> secondBounds;
+  for (const auto &[holder, coordinate] : checkedCoordinates) {
+    const auto a = first.safety->positions.find(holder);
+    const auto b = second.safety->positions.find(holder);
+    if (a == first.safety->positions.end() ||
+        b == second.safety->positions.end() || a->second != b->second ||
+        a->second.offset != core::Affine::ofPlace(coordinate))
+      continue;
+    std::vector<core::Affine> endpoints;
+    if (a->second.extent)
+      endpoints.push_back(*a->second.extent);
+    if (const auto found = first.safety->termination.find(a->second.storage);
+        found != first.safety->termination.end())
+      for (const auto &witness : found->second)
+        endpoints.push_back(witness.zero);
+    for (const auto &[otherHolder, position] : first.safety->positions) {
+      if (otherHolder == holder || position.storage != a->second.storage ||
+          position.offset.place == coordinate ||
+          checkedCoordinates.contains(otherHolder))
+        continue;
+      const auto other = second.safety->positions.find(otherHolder);
+      if (other != second.safety->positions.end() && other->second == position)
+        endpoints.push_back(position.offset);
+    }
+    for (const auto &endpoint : endpoints) {
+      if (++candidates > core::MaxTraversalIterations) {
+        inferred.checked.limited = true;
+        inferred.incomplete.insert(
+            "traversal invariant candidate limit reached");
+        return result;
+      }
+      if (endpoint.place == coordinate || endpoint.scale != 1 ||
+          !checkedAtMost(a->second.offset, endpoint, first) ||
+          !checkedAtMost(b->second.offset, endpoint, second))
+        continue;
+      if (endpoint.place)
+        if (const auto expression = numericExpressions.find(*endpoint.place);
+            expression != numericExpressions.end() &&
+            expression->second.dependsOn(coordinate))
+          continue;
+      result.emplace_back(coordinate, endpoint);
+    }
+    for (const auto &[otherHolder, other] : checkedCoordinates) {
+      if (coordinate == other)
+        continue;
+      const auto x = first.safety->positions.find(otherHolder);
+      const auto y = second.safety->positions.find(otherHolder);
+      if (x == first.safety->positions.end() ||
+          y == second.safety->positions.end() || x->second != y->second ||
+          x->second.offset != core::Affine::ofPlace(other))
+        continue;
+      if (++candidates > core::MaxTraversalIterations) {
+        inferred.checked.limited = true;
+        inferred.incomplete.insert(
+            "traversal invariant candidate limit reached");
+        return result;
+      }
+      if (!firstBounds) {
+        firstBounds = checkedRelations(first);
+        secondBounds = checkedRelations(second);
+      }
+      const auto left = firstBounds->bound(coordinate, other);
+      const auto right = secondBounds->bound(coordinate, other);
+      if (firstBounds->limited() || secondBounds->limited()) {
+        inferred.checked.limited = true;
+        inferred.incomplete.insert("traversal relational limit reached");
+        continue;
+      }
+      if (left && right && *left <= 0 && *right <= 0)
+        result.emplace_back(
+            coordinate,
+            core::Affine::ofPlace(other, 1, *left < 0 && *right < 0 ? -1 : 0));
+    }
+  }
+  return result;
+}
+
 bool FunctionDataflow::checkedJoinPremises(core::AnalysisState &target,
                                            core::AnalysisState &incoming) {
   if (!target.safety || !incoming.safety)
@@ -256,15 +453,18 @@ bool FunctionDataflow::checkedJoinPremises(core::AnalysisState &target,
   normalize(incoming);
   bool cursorPremises = false;
   std::size_t candidates = 0;
+  std::optional<core::DifferenceConstraints> targetBounds;
+  std::optional<core::DifferenceConstraints> incomingBounds;
   for (const auto &[holder, position] : target.safety->positions) {
+    (void)position;
     const auto coordinate = checkedCoordinates.find(holder);
     if (coordinate == checkedCoordinates.end() ||
         !incoming.safety->positions.contains(holder))
       continue;
     for (const auto &[other, otherPosition] : target.safety->positions) {
+      (void)otherPosition;
       const auto otherCoordinate = checkedCoordinates.find(other);
-      if (!(holder < other) || position.storage != otherPosition.storage ||
-          otherCoordinate == checkedCoordinates.end() ||
+      if (!(holder < other) || otherCoordinate == checkedCoordinates.end() ||
           !incoming.safety->positions.contains(other))
         continue;
       if (++candidates > core::MaxTraversalIterations) {
@@ -276,16 +476,29 @@ bool FunctionDataflow::checkedJoinPremises(core::AnalysisState &target,
       for (const bool reverse : {false, true}) {
         const auto a = reverse ? otherCoordinate->second : coordinate->second;
         const auto b = reverse ? coordinate->second : otherCoordinate->second;
-        // Both edges must prove the candidate independently, including an
-        // edge where the order is implicit through a saved call input.
-        if (!checkedAtMost(core::Affine::ofPlace(a), core::Affine::ofPlace(b),
-                           target) ||
-            !checkedAtMost(core::Affine::ofPlace(a), core::Affine::ofPlace(b),
-                           incoming))
+        // Both edges must prove the numeric candidate independently, including
+        // an edge where the order is implicit through a saved call input.
+        // Offsets in different objects may be related; this establishes no
+        // common pointer provenance (RFC 0029).
+        if (!targetBounds) {
+          targetBounds = checkedRelations(target);
+          incomingBounds = checkedRelations(incoming);
+        }
+        const auto left = targetBounds->bound(a, b);
+        const auto right = incomingBounds->bound(a, b);
+        if (targetBounds->limited() || incomingBounds->limited()) {
+          inferred.checked.limited = true;
+          inferred.incomplete.insert("traversal relational limit reached");
           continue;
+        }
+        if (!left || !right)
+          continue;
+        // Do not tighten an established order to an incidental first-trip
+        // distance: widening that distance can erase a strict loop guard.
+        const auto displacement = std::max({*left, *right, std::int64_t{0}});
         const auto previous = target.relations;
-        target.relations.learn(a, core::Relation::LessEqual, b);
-        incoming.relations.learn(a, core::Relation::LessEqual, b);
+        target.relations.learn(a, core::Relation::LessEqual, b, displacement);
+        incoming.relations.learn(a, core::Relation::LessEqual, b, displacement);
         cursorPremises |= previous != target.relations;
       }
     }
@@ -497,52 +710,53 @@ FunctionDataflow::checkedRelations(const core::AnalysisState &state) {
     if (operands.size() != 2 || operands.front().type() != root.type ||
         operands.back().type() != root.type)
       continue;
-    const auto a = operands.front().inputKey();
-    const auto b = operands.back().inputKey();
-    if (!a || !b || !result.implies(b, a, 0))
-      continue;
-    std::optional<core::Relation> relation;
-    switch (operation) {
-    case core::IntegerOp::Less:
-      relation = core::Relation::Less;
-      break;
-    case core::IntegerOp::LessEqual:
-      relation = core::Relation::LessEqual;
-      break;
-    case core::IntegerOp::Equal:
-      relation = core::Relation::Equal;
-      break;
-    case core::IntegerOp::GreaterEqual:
-      relation = core::Relation::GreaterEqual;
-      break;
-    case core::IntegerOp::Greater:
-      relation = core::Relation::Greater;
-      break;
-    default:
-      break;
-    }
-    if (!relation)
+    const auto endpoint =
+        [&](NumericExpression value) -> std::optional<core::Affine> {
+      while (value.all().back().kind == core::IntegerNodeKind::Convert) {
+        const auto operand = value.operands().front();
+        const auto range =
+            operand.evaluate([&](core::PlaceId place, core::IntegerType type) {
+              return integerRangeAt(place, type, state);
+            });
+        if (range.mayBeInvalid ||
+            !conversionPreserves(range.values, value.type()))
+          return std::nullopt;
+        value = operand;
+      }
+      if (const auto input = value.inputKey())
+        return core::Affine::ofPlace(*input);
+      if (const auto constant = value.constantValue())
+        if (const auto number = constant->signedValue())
+          return core::Affine::ofConstant(*number);
+      return std::nullopt;
+    };
+    const auto a = endpoint(operands.front());
+    const auto b = endpoint(operands.back());
+    std::int64_t displacement = 0;
+    if (!a || !b ||
+        __builtin_sub_overflow(a->constant, b->constant, &displacement) ||
+        !result.implies(b->place, a->place, displacement))
       continue;
     const auto lower = evaluated.values.minimum()->signedValue();
     const auto upper = evaluated.values.maximum()->signedValue();
-    if (lower && (*relation == core::Relation::Greater ||
-                  *relation == core::Relation::GreaterEqual ||
-                  *relation == core::Relation::Equal))
-      result.learn(*a,
-                   {.relation = *relation == core::Relation::Equal
-                                    ? core::Relation::GreaterEqual
-                                    : *relation,
-                    .offset = *lower},
-                   *b);
-    if (upper && (*relation == core::Relation::Less ||
-                  *relation == core::Relation::LessEqual ||
-                  *relation == core::Relation::Equal))
-      result.learn(*a,
-                   {.relation = *relation == core::Relation::Equal
-                                    ? core::Relation::LessEqual
-                                    : *relation,
-                    .offset = *upper},
-                   *b);
+    if (lower && (operation == core::IntegerOp::Greater ||
+                  operation == core::IntegerOp::GreaterEqual ||
+                  operation == core::IntegerOp::Equal)) {
+      std::int64_t bound = 0;
+      if (!__builtin_sub_overflow(displacement, *lower, &bound) &&
+          (operation != core::IntegerOp::Greater ||
+           !__builtin_sub_overflow(bound, std::int64_t{1}, &bound)))
+        result.constrain(b->place, a->place, bound);
+    }
+    if (upper && (operation == core::IntegerOp::Less ||
+                  operation == core::IntegerOp::LessEqual ||
+                  operation == core::IntegerOp::Equal)) {
+      std::int64_t bound = 0;
+      if (!__builtin_sub_overflow(*upper, displacement, &bound) &&
+          (operation != core::IntegerOp::Less ||
+           !__builtin_sub_overflow(bound, std::int64_t{1}, &bound)))
+        result.constrain(a->place, b->place, bound);
+    }
   }
   inferred.checked.limited |= result.limited();
   if (result.limited())
@@ -584,9 +798,8 @@ bool FunctionDataflow::checkedAtMost(const core::Affine &lhs,
       }
   if (const auto sum = traversalSumBound(
           a, numericExpressions, state,
-          [&](core::PlaceId index, core::PlaceId length) {
-            return checkedAtMost(core::Affine::ofPlace(index),
-                                 core::Affine::ofPlace(length), state);
+          [&](const core::Affine &index, const core::Affine &length) {
+            return checkedAtMost(index, length, state);
           });
       sum && checkedAtMost(*sum, b, state))
     return true;
@@ -758,9 +971,8 @@ FunctionDataflow::checkedRequirementEnvelope(const core::Affine &need,
     }
   if (const auto sum = traversalSumBound(
           need, numericExpressions, state,
-          [&](core::PlaceId index, core::PlaceId length) {
-            return checkedAtMost(core::Affine::ofPlace(index),
-                                 core::Affine::ofPlace(length), state);
+          [&](const core::Affine &index, const core::Affine &length) {
+            return checkedAtMost(index, length, state);
           }))
     if (const auto projected = summaryAffineOf(sum))
       return projected;
@@ -790,8 +1002,25 @@ FunctionDataflow::checkedRequirementEnvelope(const core::Affine &need,
       return projected;
   }
   // A type maximum is not a useful inferred traversal capacity. Project a
-  // constant only when control flow explicitly established that boundary.
-  const auto upper = state.relations.atMost(*need.place);
+  // constant only from an explicit boundary or an actual narrowed value fact.
+  auto upper = state.relations.atMost(*need.place);
+  std::optional<core::IntegerType> type;
+  if (const auto *decl =
+          dyn_cast_or_null<ValueDecl>(builder.declFor(*need.place)))
+    type = integerTypeOf(*decl, context);
+  if (const auto fact = state.scalars.factOf(*need.place)) {
+    if (!type && fact->integer)
+      type = fact->integer->type;
+    if (type) {
+      const auto range = fact->inType(*type);
+      const auto maximum = range.maximum();
+      const auto bound = maximum ? maximum->signedValue() : std::nullopt;
+      const auto typeMaximum = core::IntegerRange::full(*type).maximum();
+      if (bound && (fact->constant ||
+                    (typeMaximum && maximum->bits != typeMaximum->bits)))
+        upper = upper ? std::min(*upper, *bound) : bound;
+    }
+  }
   std::int64_t last = 0;
   if (upper && !__builtin_mul_overflow(*upper, need.scale, &last) &&
       !__builtin_add_overflow(last, need.constant, &last) && last >= 0)

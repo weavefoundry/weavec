@@ -18,98 +18,9 @@
 using namespace clang;
 namespace weavec::analysis {
 
-std::optional<core::BufferShape>
-FunctionDataflow::discoverBufferShape(const RecordDecl &record) {
-  return summaries.bufferShape(
-      record, [&]() -> std::optional<core::BufferShape> {
-        if (!record.isCompleteDefinition() || record.isUnion())
-          return std::nullopt;
-        const FieldDecl *data = nullptr;
-        std::vector<const FieldDecl *> counts;
-        for (const auto *field : record.fields()) {
-          const auto type = field->getType();
-          if (field->isBitField() || field->getName().empty() ||
-              type.isVolatileQualified() || type->isAtomicType())
-            return std::nullopt;
-          if (type->isPointerType() && !type->isFunctionPointerType()) {
-            if (data)
-              return std::nullopt;
-            data = field;
-          } else if (type->isUnsignedIntegerType() && !type->isBooleanType()) {
-            counts.push_back(field);
-          }
-        }
-        if (!data || counts.size() != 2)
-          return std::nullopt;
-        const auto element = data->getType()->getPointeeType();
-        const auto unit = byteSizeOf(element, context);
-        if (!unit || *unit <= 0 || !element->isScalarType() ||
-            element->isFunctionType())
-          return std::nullopt;
-#if CLANG_VERSION_MAJOR >= 23
-        const auto type = context.getCanonicalTagType(&record);
-#else
-    const auto type = context.getRecordType(&record);
-#endif
-        const auto objectType =
-            core::ObjectType::parse(checkedObjectType(type));
-        if (!objectType)
-          return std::nullopt;
-        const auto field = [&](const FieldDecl &decl) {
-          return core::ContainerField{
-              .name = decl.getNameAsString(),
-              .offset = context.getASTRecordLayout(&record).getFieldOffset(
-                            decl.getFieldIndex()) /
-                        context.getCharWidth(),
-              .bytes = static_cast<std::uint64_t>(
-                  context.getTypeSizeInChars(decl.getType()).getQuantity())};
-        };
-        // Look for the count used to select cells of this record's data field.
-        // Discovery is shared across the TU's definitions so constructors and
-        // reserve helpers agree with indexing helpers. This nominates a
-        // relation; callers still have to establish its physical and
-        // initialized storage.
-        std::array<unsigned, 2> indexed{};
-        std::vector<const Stmt *> usage;
-        for (const auto *decl : context.getTranslationUnitDecl()->decls())
-          if (const auto *definition = dyn_cast<FunctionDecl>(decl);
-              definition && definition->doesThisDeclarationHaveABody())
-            usage.push_back(definition->getBody());
-        for (std::size_t i = 0; i < usage.size() && usage.size() <= 65536;
-             ++i) {
-          if (!usage[i])
-            continue;
-          if (const auto *index = dyn_cast<ArraySubscriptExpr>(usage[i])) {
-            const auto *base =
-                dyn_cast<MemberExpr>(index->getBase()->IgnoreParenImpCasts());
-            if (base && base->getMemberDecl() == data) {
-              const Expr *selector = index->getIdx()->IgnoreParenImpCasts();
-              if (const auto *adjustment = dyn_cast<UnaryOperator>(selector))
-                selector = adjustment->getSubExpr()->IgnoreParenImpCasts();
-              if (const auto *member = dyn_cast<MemberExpr>(selector))
-                for (unsigned c = 0; c < 2; ++c)
-                  if (member->getMemberDecl() == counts[c])
-                    ++indexed.at(c);
-            }
-          }
-          for (const auto *child : usage[i]->children())
-            usage.push_back(child);
-        }
-        if (indexed[1] > indexed[0])
-          std::swap(counts[0], counts[1]);
-        core::BufferShape shape{.object = *objectType,
-                                .data = field(*data),
-                                .length = field(*counts[0]),
-                                .capacity = field(*counts[1]),
-                                .elementBytes =
-                                    static_cast<std::uint64_t>(*unit),
-                                .pointerElements = element->isPointerType()};
-        return shape.valid() ? std::optional(shape) : std::nullopt;
-      });
-}
-
 void FunctionDataflow::registerBuffer(core::PlaceId object,
-                                      const RecordDecl &record) {
+                                      const RecordDecl &record,
+                                      const core::BufferShape *transported) {
   if (bufferObjects.contains(object))
     return;
   if (!record.isCompleteDefinition() || record.isUnion())
@@ -126,7 +37,62 @@ void FunctionDataflow::registerBuffer(core::PlaceId object,
       inferred.incomplete.insert("buffer shape limit reached");
       return;
     }
-    const auto shape = discoverBufferShape(record);
+    auto shape = discoverBufferShape(record);
+    // RFC 0029: a separate-source caller need not repeat the callee's indexing
+    // operations to discover field roles. Import only its layout candidate,
+    // validate it against the actual C type, and prove current values below.
+    if (!shape && transported && transported->valid()) {
+#if CLANG_VERSION_MAJOR >= 23
+      const auto type = context.getCanonicalTagType(&record);
+#else
+      const auto type = context.getRecordType(&record);
+#endif
+      bool valid = checkedObjectType(type) == transported->object.toString();
+      unsigned matched = 0;
+      for (const auto *field : record.fields()) {
+        const core::ContainerField *descriptor = nullptr;
+        for (const auto *candidate :
+             {&transported->data, &transported->length, &transported->capacity})
+          if (field->getName() == candidate->name)
+            descriptor = candidate;
+        if (!descriptor)
+          continue;
+        ++matched;
+        const auto fieldType = field->getType();
+        valid &= !field->isBitField() && !fieldType.isVolatileQualified() &&
+                 !fieldType->isAtomicType() &&
+                 context.getASTRecordLayout(&record).getFieldOffset(
+                     field->getFieldIndex()) /
+                         context.getCharWidth() ==
+                     descriptor->offset &&
+                 context.getTypeSizeInChars(fieldType).getQuantity() ==
+                     static_cast<std::int64_t>(descriptor->bytes);
+        if (descriptor == &transported->data) {
+          valid &=
+              fieldType->isPointerType() && !fieldType->isFunctionPointerType();
+          if (fieldType->isPointerType()) {
+            const auto element = fieldType->getPointeeType();
+            valid &= element->isScalarType() &&
+                     !element.isVolatileQualified() &&
+                     !element->isAtomicType() &&
+                     element.isConstQualified() == transported->reader &&
+                     (!transported->reader || element->isCharType()) &&
+                     byteSizeOf(element, context) ==
+                         static_cast<std::int64_t>(transported->elementBytes) &&
+                     element->isPointerType() == transported->pointerElements;
+          }
+        } else {
+          valid &=
+              fieldType->isUnsignedIntegerType() && !fieldType->isBooleanType();
+        }
+      }
+      if (valid && matched == 3) {
+        shape = *transported;
+        shape->ownsBacking = false;
+        shape->ownsElements = false;
+        shape->terminated = false;
+      }
+    }
     if (!shape)
       return;
     found = bufferShapes.emplace(&record, *shape).first;
@@ -189,6 +155,40 @@ void FunctionDataflow::discoverBuffers() {
     for (const auto *child : work[i]->children())
       work.push_back(child);
   }
+  // A separate-source forwarding helper may contain no indexing itself.
+  // Import a callee's layout candidate before entry initialization so
+  // its sufficient predicate can be forwarded through the helper. Actual
+  // C layout validation still happens in registerBuffer; this grants no
+  // facts about a local object or any post-call state. Generic incompleteness
+  // does not invalidate a layout candidate or supply a proof of the call.
+  for (const auto *statement : work) {
+    const auto *call = dyn_cast_or_null<CallExpr>(statement);
+    const auto *callee = call ? call->getDirectCallee() : nullptr;
+    const auto summary = callee ? summaries.lookup(*callee) : std::nullopt;
+    if (!summary)
+      continue;
+    for (const auto &requirement : summary->summary->checked.requirements) {
+      if (requirement.kind != core::CheckedRequirementKind::Buffer)
+        continue;
+      const auto shape = core::BufferShape::decode(requirement.family);
+      const auto ref =
+          builder.resolveSummaryPath(requirement.path, *call, true);
+      if (!shape || !ref || !ref->element.isWhole())
+        continue;
+      const auto *decl =
+          dyn_cast_or_null<ValueDecl>(builder.declFor(ref->place));
+      if (!decl && places.step(ref->place) == core::PathStep::Deref)
+        if (const auto pointer = places.parent(ref->place))
+          decl = dyn_cast_or_null<ValueDecl>(builder.declFor(*pointer));
+      if (!decl)
+        continue;
+      const auto type = decl->getType()->isPointerType()
+                            ? decl->getType()->getPointeeType()
+                            : decl->getType();
+      if (const auto *record = type->getAsRecordDecl())
+        registerBuffer(ref->place, *record, &*shape);
+    }
+  }
 }
 
 const core::BufferFact *
@@ -214,6 +214,15 @@ void FunctionDataflow::initializeBuffers(core::AnalysisState &state) {
     const auto data = places.field(object, shape.data.name);
     const auto length = places.field(object, shape.length.name);
     const auto capacity = places.field(object, shape.capacity.name);
+    // A concrete exhausted/escaped cursor can take an early-return branch
+    // without touching the input at all. Do not impose the generic readable
+    // buffer candidate on that case. Any actual read still needs the ordinary
+    // validity, extent and initialization evidence, and outputs are folded
+    // only from the actual final state.
+    if (shape.reader && !memoryContext.empty() &&
+        checkedAtMost(core::Affine::ofPlace(capacity),
+                      core::Affine::ofPlace(length), state))
+      continue;
     // Do not demand an initialized input container from a constructor. This
     // is only a candidate filter: declining an entry premise grants no facts.
     std::optional<Role> firstUse;
@@ -233,17 +242,16 @@ void FunctionDataflow::initializeBuffers(core::AnalysisState &state) {
         self(self, child);
     };
     visit(visit, function.getBody());
-    // Nominate a forwarded premise when its callee has a proved contract.
-    // Carrying predicates through already-incomplete calls adds work without
-    // making those calls complete. Direct count accesses nominate
-    // independently.
+    // A forwarded requirement nominates a sufficient entry premise even if
+    // the generic callee is incomplete. Its actual checked call still needs
+    // a complete contract (possibly for an independently verified input case).
     std::optional<core::BufferShape> forwarded;
     const auto forwards = [&](auto &&self, const Stmt *statement) -> void {
       if (!statement)
         return;
       if (const auto *call = dyn_cast<CallExpr>(statement))
         if (const auto effects = classifyCall(*call, summaries);
-            effects && effects->summary && effects->summary->checked.complete())
+            effects && effects->summary)
           for (const auto &requirement :
                effects->summary->checked.requirements) {
             if (requirement.kind != core::CheckedRequirementKind::Buffer)
@@ -527,12 +535,23 @@ void FunctionDataflow::materializeBuffers(core::AnalysisState &state) {
     const auto storage = state.safety->objects.contains(data)
                              ? state.safety->objects.at(data)
                              : places.deref(data);
+    // A provisional logical capacity (often zero before its field is set)
+    // must not shrink independently established allocation-time storage.
+    // Retain that extent if a later header write retires the buffer predicate.
+    auto accessible = extent;
+    if (const auto physical = spatialRecordAt(data, state);
+        physical && physical->extent && physical->offset.isZero() &&
+        checkedAtMost(extent, *physical->extent, state))
+      accessible = *physical->extent;
     if (!state.safety->positions.contains(data)) {
-      state.safety->positions[data] = {.storage = storage,
-                                       .offset = {},
-                                       .extent = extent,
-                                       .input = {},
-                                       .validWhenNonempty = true};
+      state.safety->positions[data] = {
+          .storage = storage,
+          .offset = {},
+          .extent = accessible,
+          .input = {},
+          .validWhenNonempty =
+              accessible == extent || fact.nonNull ||
+              checkedAtMost(core::Affine::ofConstant(1), extent, state)};
     } else {
       auto &position = state.safety->positions.at(data);
       if (position.extent && checkedAtMost(*position.extent, extent, state) &&
@@ -540,7 +559,8 @@ void FunctionDataflow::materializeBuffers(core::AnalysisState &state) {
         position.validWhenNonempty = true;
     }
     if (fact.initialized)
-      state.safety->initialize(storage, {.begin = {}, .end = bytes});
+      state.safety->initialize(
+          storage, {.begin = {}, .end = fact.shape.reader ? extent : bytes});
     if (fact.shape.terminated) {
       state.relations.learn(fact.length, core::Relation::Less, fact.capacity);
       const auto through = core::Affine::ofPlace(fact.length, 1, 1);
@@ -561,14 +581,9 @@ void FunctionDataflow::materializeBuffers(core::AnalysisState &state) {
                              .location = {},
                              .reason = core::NullReason::Declared});
     }
-    auto spatial = state.spatial.recordOf(data).value_or(core::SpatialRecord{});
-    // Keep stronger allocation-time bounds. Between `data = replacement`
-    // and `capacity = new_capacity`, the old advertised capacity can be
-    // smaller than the new allocation; folding must not erase its size.
-    if (!spatial.extent) {
-      spatial.extent = extent;
-      state.spatial.set(data, spatial);
-    }
+    // The predicate proves at least capacity accessible bytes (RFC 0029).
+    // Keep that bound in checked memory; ordinary spatial extents describe
+    // the actual object size and must not be invented from this lower bound.
   }
 }
 
@@ -587,8 +602,12 @@ void FunctionDataflow::normalizeBuffers(core::AnalysisState &state) {
     }
     const auto length = places.field(object, shape.length.name);
     const auto capacity = places.field(object, shape.capacity.name);
-    const auto len = foldAffine(core::Affine::ofPlace(length), state);
-    const auto cap = foldAffine(core::Affine::ofPlace(capacity), state);
+    const auto len = checkedZeroInteger(length, state)
+                         ? core::Affine::ofConstant(0)
+                         : foldAffine(core::Affine::ofPlace(length), state);
+    const auto cap = checkedZeroInteger(capacity, state)
+                         ? core::Affine::ofConstant(0)
+                         : foldAffine(core::Affine::ofPlace(capacity), state);
     if (!checkedAtMost({}, len, state) || !checkedAtMost(len, cap, state)) {
       continue;
     }
@@ -609,6 +628,7 @@ void FunctionDataflow::normalizeBuffers(core::AnalysisState &state) {
     const auto lengthBytes = len.times(unit);
     if (!capacityBytes || !lengthBytes)
       continue;
+    const auto initializedBytes = shape.reader ? *capacityBytes : *lengthBytes;
     const auto memory = checkedMemoryAt(data, {}, *capacityBytes, state);
     const auto backing = state.safety->buffers.storage.find(data);
     if (backing != state.safety->buffers.storage.end()) {
@@ -616,10 +636,10 @@ void FunctionDataflow::normalizeBuffers(core::AnalysisState &state) {
       established.shape.ownsElements =
           shape.pointerElements && len.isConstant() && len.constant == 0;
       established.initialized =
-          lengthBytes->isConstant() && lengthBytes->constant == 0;
+          initializedBytes.isConstant() && initializedBytes.constant == 0;
       if (memory) {
         auto prefix = *memory;
-        prefix.end = *lengthBytes;
+        prefix.end = initializedBytes;
         established.initialized |= checkedInitialized(prefix, state);
       }
       state.safety->buffers.set(data, established);
@@ -628,11 +648,11 @@ void FunctionDataflow::normalizeBuffers(core::AnalysisState &state) {
     if (!memory || memory->begin != core::Affine::ofConstant(0) ||
         !memory->extent || !checkedValid(*memory, state) ||
         !checkedInterval({}, *capacityBytes, *memory->extent, state) ||
-        checkedWritePermission(*memory, state) != true) {
+        (!shape.reader && checkedWritePermission(*memory, state) != true)) {
       continue;
     }
     auto prefix = *memory;
-    prefix.end = *lengthBytes;
+    prefix.end = initializedBytes;
     auto established = shape;
     const auto resource = state.resources.recordOf(data);
     established.ownsBacking =

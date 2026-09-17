@@ -1,0 +1,3 @@
+// RUN: %weavec --whole-program --checked-function=main %S/../evaluation/rfc0029/payload-reader-returns/client.c %S/../evaluation/rfc0029/payload-reader-returns/wrap.c %S/../evaluation/rfc0029/payload-reader-returns/good.c %S/../evaluation/rfc0029/payload-reader-returns/drop.c --
+// RUN: not %weavec --whole-program --checked-function=main %S/../evaluation/rfc0029/payload-reader-returns/client.c %S/../evaluation/rfc0029/payload-reader-returns/wrap.c %S/../evaluation/rfc0029/payload-reader-returns/leak.c %S/../evaluation/rfc0029/payload-reader-returns/drop.c -- 2>&1 | FileCheck %s
+// CHECK: cannot establish checked safety:

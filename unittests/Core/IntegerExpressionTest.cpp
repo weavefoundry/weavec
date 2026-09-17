@@ -15,6 +15,53 @@ using Expression = IntegerExpression<std::string>;
 static constexpr IntegerType U8{.width = 8, .isSigned = false};
 static constexpr IntegerType I8{.width = 8, .isSigned = true};
 
+TEST(IntegerExpression, UnsignedCancellationPreservesInvalidEvaluations) {
+  const auto a = Expression::input("a", U8);
+  const auto b = Expression::input("b", U8);
+  const auto difference = Expression::operation(IntegerOp::Subtract, b, a);
+  ASSERT_TRUE(difference);
+  EXPECT_EQ(Expression::operation(IntegerOp::Add, a, *difference), b);
+  EXPECT_EQ(Expression::operation(IntegerOp::Add, *difference, a), b);
+  for (unsigned x = 0; x < 256; ++x)
+    for (unsigned y = 0; y < 256; ++y) {
+      const auto delta =
+          evaluateInteger(IntegerOp::Subtract, IntegerValue::ofBits(U8, y),
+                          IntegerValue::ofBits(U8, x));
+      ASSERT_TRUE(delta.value);
+      EXPECT_EQ(evaluateInteger(IntegerOp::Add, IntegerValue::ofBits(U8, x),
+                                *delta.value)
+                    .value,
+                IntegerValue::ofBits(U8, y));
+    }
+  const auto quotient = Expression::operation(IntegerOp::Divide, a, b);
+  ASSERT_TRUE(quotient);
+  const auto subtract =
+      Expression::operation(IntegerOp::Subtract, b, *quotient);
+  ASSERT_TRUE(subtract);
+  const auto invalid =
+      Expression::operation(IntegerOp::Add, *quotient, *subtract);
+  ASSERT_TRUE(invalid);
+  EXPECT_TRUE(invalid
+                  ->evaluate([](const std::string &, IntegerType type) {
+                    return IntegerRange::full(type);
+                  })
+                  .mayBeInvalid);
+  const auto signedA = Expression::input("a", I8);
+  const auto signedB = Expression::input("b", I8);
+  const auto signedDifference =
+      Expression::operation(IntegerOp::Subtract, signedB, signedA);
+  ASSERT_TRUE(signedDifference);
+  EXPECT_NE(Expression::operation(IntegerOp::Add, signedA, *signedDifference),
+            signedB);
+  const auto booleanA = Expression::input("a", BooleanType);
+  const auto booleanB = Expression::input("b", BooleanType);
+  const auto booleanDifference =
+      Expression::operation(IntegerOp::Subtract, booleanB, booleanA);
+  ASSERT_TRUE(booleanDifference);
+  EXPECT_NE(Expression::operation(IntegerOp::Add, booleanA, *booleanDifference),
+            booleanB);
+}
+
 TEST(IntegerExpression,
      OperationsRetainWidthsAndCanonicalizeCommutativeValues) {
   const auto a = Expression::input("a", U8);

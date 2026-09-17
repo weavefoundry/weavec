@@ -16,6 +16,7 @@ bool BufferShape::valid() const {
   if (!object.valid() || elementBytes == 0 ||
       elementBytes > static_cast<std::uint64_t>(INT64_MAX) ||
       (terminated && (elementBytes != 1 || pointerElements)) ||
+      (reader && (elementBytes != 1 || pointerElements)) ||
       (ownsElements && !pointerElements))
     return false;
   const auto validField = [&](const ContainerField &field) {
@@ -62,7 +63,8 @@ std::string BufferShape::encode() const {
   const auto field = [](const std::string &name) {
     return std::to_string(name.size()) + ':' + name;
   };
-  return "buffer1:" + std::to_string(elementBytes) + ':' +
+  return std::string(reader ? "reader1:" : "buffer1:") +
+         std::to_string(elementBytes) + ':' +
          std::to_string(static_cast<unsigned>(pointerElements)) + ':' +
          std::to_string(static_cast<unsigned>(terminated)) + ':' +
          std::to_string(static_cast<unsigned>(ownsBacking)) + ':' +
@@ -70,7 +72,8 @@ std::string BufferShape::encode() const {
          field(length.name) + field(capacity.name) + carrier.encode();
 }
 std::optional<BufferShape> BufferShape::decode(std::string_view text) {
-  if (!text.starts_with("buffer1:") || text.size() > 16384)
+  if ((!text.starts_with("buffer1:") && !text.starts_with("reader1:")) ||
+      text.size() > 16384)
     return std::nullopt;
   const auto original = text;
   text.remove_prefix(8);
@@ -96,6 +99,7 @@ std::optional<BufferShape> BufferShape::decode(std::string_view text) {
     return true;
   };
   BufferShape result;
+  result.reader = original.starts_with("reader1:");
   std::uint64_t pointers = 0;
   std::uint64_t terminated = 0;
   std::uint64_t backing = 0;

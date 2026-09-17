@@ -77,9 +77,7 @@ bool FunctionDataflow::handleCheckedIntegerCall(const CallExpr &call,
   if (stored)
     state.numericValues.insert_or_assign(*saved, *stored);
   assignScalar(pointee->place, nullptr, state, &call);
-  auto cells = mirrors(pointee->place, state);
-  cells.push_back(pointee->place);
-  llvm::append_range(cells, borrowedImages(pointee->place, state));
+  const auto cells = scalarMirrors(pointee->place, state);
   for (const auto cell : cells) {
     state.scalars.set(cell, core::ValueFact::ofInteger(values.values));
     if (const auto frozen = state.numericValues.find(*saved);

@@ -1,0 +1,50 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "name": "recursive-offset-forward",
+      "sources": [
+        "forward.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "extent|recursive|footprint|release|fit|live"
+    },
+    {
+      "name": "recursive-offset-child",
+      "sources": [
+        "child.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "extent|recursive|footprint|release|fit|live"
+    },
+    {
+      "name": "recursive-offset-zero",
+      "sources": [
+        "zero.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "entry_requirements": 0
+    }
+  ]
+}

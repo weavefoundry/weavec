@@ -1,0 +1,1 @@
+Frozen before RFC 0029 character-pointer-slot support. Clang target alias semantics permit character-pointer views of a pointer cell; actual extent, initialization, mutability and end-pointer provenance remain required. Unrelated pointer element types remain unsupported.

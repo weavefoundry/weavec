@@ -1,0 +1,1 @@
+Independent RFC 0029 workflow, authored and frozen on 2026-09-16 after the primary fixtures. A streaming hexadecimal serializer with runtime-sized input, repeated growth, allocation failure, separate-source calls and explicit cleanup. It does not share implementation headers with the primary writer. Frozen before its first analyzer run.

@@ -1,0 +1,1 @@
+Separate-source equivalent of the previously frozen output-construction case, frozen on 2026-09-16 after candidate 21 established its output-slot proof. Also selects generic construction, traversal and cleanup independently. Source, ordinary-object and validated-checkpoint runs retain their own observations. Existing populations and expectations are unchanged.

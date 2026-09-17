@@ -368,6 +368,8 @@ std::optional<ResolvedSummary> SummaryStore::lookupCall(const CallExpr &call) {
 std::optional<ResolvedSummary> SummaryStore::specialize(
     const FunctionDecl &function, const core::CallbackBindings &bindings,
     const AnalysisOptions &options, core::DiagnosticSink *sink) {
+  if (activeRecursiveContracts.members.contains(function.getCanonicalDecl()))
+    return std::nullopt;
   if (bindings.empty())
     return lookup(function);
   const std::string symbol = callableSymbol(function);

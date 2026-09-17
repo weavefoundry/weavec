@@ -84,7 +84,7 @@ void temporary_borrows(void) {
 void array_decay(void) {
   int a[4];
   int *p = a;
-  // EXCL: rfc0002-borrows.c:[[@LINE+1]]:12: error: cannot borrow 'a[*]' as mutable because it is already borrowed [weavec::conflicting-borrow]
+  // EXCL: rfc0002-borrows.c:[[@LINE+1]]:12: error: cannot borrow 'a[1]' as mutable because it is already borrowed [weavec::conflicting-borrow]
   int *q = &a[1];
   use(p);
   use(q);

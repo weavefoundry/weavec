@@ -1,0 +1,145 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "name": "generic",
+      "sources": [
+        "library.c"
+      ],
+      "functions": [
+        "pair"
+      ],
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    },
+    {
+      "name": "good",
+      "sources": [
+        "good.c",
+        "library.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "entry_requirements": 0
+    },
+    {
+      "name": "empty",
+      "sources": [
+        "empty.c",
+        "library.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "entry_requirements": 0
+    },
+    {
+      "name": "unrelated",
+      "sources": [
+        "unrelated.c",
+        "library.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "span|interval|bounds|extent|shared-object|initialized|live|freed|writable|complete|unresolved"
+    },
+    {
+      "name": "uninitialized",
+      "sources": [
+        "uninitialized.c",
+        "library.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "span|interval|bounds|extent|shared-object|initialized|live|freed|writable|complete|unresolved"
+    },
+    {
+      "name": "freed",
+      "sources": [
+        "freed.c",
+        "library.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "span|interval|bounds|extent|shared-object|initialized|live|freed|writable|complete|unresolved"
+    },
+    {
+      "name": "outside",
+      "sources": [
+        "outside.c",
+        "library.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "span|interval|bounds|extent|shared-object|initialized|live|freed|writable|complete|unresolved"
+    },
+    {
+      "name": "write",
+      "sources": [
+        "write.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "span|interval|bounds|extent|shared-object|initialized|live|freed|writable|complete|unresolved"
+    },
+    {
+      "name": "clobber",
+      "sources": [
+        "clobber.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "span|interval|bounds|extent|shared-object|initialized|live|freed|writable|complete|unresolved"
+    }
+  ]
+}

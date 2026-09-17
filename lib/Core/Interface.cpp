@@ -41,11 +41,16 @@ bool InterfaceType::valid() const {
   for (const auto &node : nodes) {
     if (node.kind > InterfaceKind::Array || node.qualifiers > 7 ||
         !interfaceText(node.name) || !interfaceText(node.view) ||
+        !interfaceText(node.typedefName) ||
         node.fields.size() > MaxInterfaceFields ||
         node.parameters.size() > MaxInterfaceFields ||
         node.bytes > std::numeric_limits<std::int64_t>::max())
       return false;
     if ((node.qualifiers & 4U) && node.kind != InterfaceKind::Pointer)
+      return false;
+    if (!node.typedefName.empty() &&
+        (node.kind != InterfaceKind::Record || !node.name.empty() ||
+         !node.bytes || !interfaceIdentifier(node.typedefName)))
       return false;
     if (node.kind == InterfaceKind::Record) {
       if ((!node.name.empty() && !interfaceIdentifier(node.name)) ||
@@ -59,7 +64,7 @@ bool InterfaceType::valid() const {
         node.kind != InterfaceKind::Integer &&
         node.kind != InterfaceKind::Floating && !node.name.empty())
       return false;
-    textBytes += node.name.size() + node.view.size();
+    textBytes += node.name.size() + node.view.size() + node.typedefName.size();
     if (textBytes > MaxInterfaceBytes)
       return false;
     const bool incomplete =
@@ -149,7 +154,7 @@ bool InterfaceType::valid() const {
 std::string InterfaceType::encode() const {
   if (!valid())
     return {};
-  std::string result = "it1;";
+  std::string result = "it2;";
   const auto number = [&](std::uint64_t value) {
     result += std::to_string(value);
     result += ';';
@@ -170,6 +175,7 @@ std::string InterfaceType::encode() const {
     number(node.prototype ? 1U : 0U);
     text(node.name);
     text(node.view);
+    text(node.typedefName);
     number(node.parameters.size());
     for (const auto parameter : node.parameters)
       number(parameter);
@@ -184,7 +190,7 @@ std::string InterfaceType::encode() const {
 }
 
 std::optional<InterfaceType> InterfaceType::decode(std::string_view input) {
-  if (input.size() > MaxInterfaceBytes || !input.starts_with("it1;"))
+  if (input.size() > MaxInterfaceBytes || !input.starts_with("it2;"))
     return std::nullopt;
   const auto original = input;
   input.remove_prefix(4);
@@ -230,6 +236,7 @@ std::optional<InterfaceType> InterfaceType::decode(std::string_view input) {
     node.prototype = number(1) != 0;
     node.name = text();
     node.view = text();
+    node.typedefName = text();
     const auto parameters = number(MaxInterfaceFields);
     for (std::uint64_t j = 0; ok && j < parameters; ++j)
       node.parameters.push_back(

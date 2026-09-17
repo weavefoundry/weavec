@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <array>
+#include <utility>
 
 using namespace clang;
 namespace weavec::analysis {
@@ -223,6 +224,14 @@ bool FunctionDataflow::runtimeIntrinsic(const CallExpr &call,
     return false;
   if (runtimeListIntrinsic(call, state))
     return true;
+  llvm::APFloat constant(0.0);
+  if (call.getType()->isRealFloatingType() && !call.HasSideEffects(context) &&
+      call.EvaluateAsFloat(constant, context)) {
+    safetyObligation(core::SafetyProperty::Call, core::SafetyOutcome::Proven,
+                     call, callee->getNameAsString(),
+                     "target-evaluated floating constant intrinsic");
+    return true;
+  }
   const auto name = callee->getName();
   const bool expect =
       name == "__builtin_expect" || name == "__builtin_expect_with_probability";
@@ -274,16 +283,59 @@ bool FunctionDataflow::checkedRuntimeCall(const CallExpr &call,
   };
   if (model->family == RuntimeFamily::Numeric)
     return true;
+  if (model->family == RuntimeFamily::ParseNumeric) {
+    const auto input = runtimeString(argument(0), std::nullopt, call, state);
+    auto [floating, inserted] = checkedFloatingResults.try_emplace(&call);
+    if (inserted)
+      floating->second = places.create("numeric floating result");
+    state.safety->nonNan.erase(floating->second);
+    if (input && checkedNumericText(*input, state))
+      state.safety->nonNan.insert(floating->second);
+    const auto slot = builder.classifyValue(argument(1));
+    const bool nullSlot =
+        slot.kind == ValueOrigin::Kind::Null ||
+        (slot.kind == ValueOrigin::Kind::Copy && slot.place &&
+         slot.offset.isZero() &&
+         state.nulls.stateOf(slot.place->place) == core::Nullness::Null);
+    if (nullSlot)
+      return true;
+    const auto bytes =
+        context.getTypeSizeInChars(argument(1).getType()->getPointeeType())
+            .getQuantity();
+    const auto output = runtimeInterval(
+        argument(1), core::Affine::ofConstant(bytes), false, true, call, state);
+    if (!input || !output || !runtimeSeparate(*input, *output, call, state))
+      return true;
+    checkedWrites[&call].push_back(*output);
+    // The end pointer can identify the terminator itself, never a later byte.
+    // This establishes memory provenance only, including failed conversions;
+    // the floating result may still be NaN or infinite.
+    if (const auto end = input->end.shifted(-1);
+        end && checkedAtMost(input->begin, *end, state))
+      checkedPositionPosts[&call].push_back(
+          {.path = core::SummaryPath::param(1).deref(),
+           .position = {.storage = input->storage,
+                        .offset = input->begin,
+                        .extent = input->extent,
+                        .input = input->inputPlace},
+           .upper = end,
+           .when = {},
+           .on = {},
+           .nonNull = true});
+    return true;
+  }
   if (model->family == RuntimeFamily::Compare ||
       model->family == RuntimeFamily::Search ||
       model->family == RuntimeFamily::Span) {
     std::optional<CheckedMemory> first;
+    std::optional<CheckedMemory> second;
     if (name == "memcmp" || name == "memchr") {
       const auto bytes = count(2);
       if (bytes) {
         first = runtimeInterval(argument(0), *bytes, true, false, call, state);
         if (name == "memcmp")
-          (void)runtimeInterval(argument(1), *bytes, true, false, call, state);
+          second =
+              runtimeInterval(argument(1), *bytes, true, false, call, state);
       } else {
         safetyObligation(
             core::SafetyProperty::Bounds, core::SafetyOutcome::Unresolved, call,
@@ -299,7 +351,68 @@ bool FunctionDataflow::checkedRuntimeCall(const CallExpr &call,
       }
       first = runtimeString(argument(0), limit, call, state);
       if (model->parameters[1] == 's')
-        (void)runtimeString(argument(1), limit, call, state);
+        second = runtimeString(argument(1), limit, call, state);
+    }
+    if (first && second && context.getCharWidth() == 8 &&
+        model->family == RuntimeFamily::Compare) {
+      // RFC 0029: contents can establish the sign, never the implementation's
+      // chosen nonzero magnitude. Each byte still needs independent bounds,
+      // lifetime and initialization evidence.
+      const auto byte =
+          [&](const Expr &pointer,
+              std::int64_t index) -> std::optional<unsigned char> {
+        if (const auto *literal =
+                dyn_cast<StringLiteral>(pointer.IgnoreParenCasts())) {
+          if (!literal->isOrdinary() ||
+              std::cmp_greater(index, literal->getLength()))
+            return std::nullopt;
+          return std::cmp_equal(index, literal->getLength())
+                     ? 0
+                     : literal->getCodeUnit(static_cast<unsigned>(index));
+        }
+        const auto memory =
+            checkedMemory(pointer, core::Affine::ofConstant(index),
+                          core::Affine::ofConstant(index + 1), state);
+        const auto contents =
+            memory ? checkedByteContents(*memory, state) : std::nullopt;
+        if (!contents || contents->second.size() != 1)
+          return std::nullopt;
+        return static_cast<unsigned char>(contents->second.front());
+      };
+      std::optional<std::int64_t> length;
+      if (name == "memcmp" || name == "strncmp")
+        if (const auto range = integerRangeOf(argument(2), state);
+            range && !range->mayBeInvalid)
+          if (const auto value = range->values.constant())
+            length = value->signedValue();
+      const bool bounded = name != "strcmp";
+      if (!bounded || (length && *length >= 0)) {
+        std::optional<core::ValueFact> result;
+        for (std::int64_t index = 0; index <= 64; ++index) {
+          if (bounded && index == *length) {
+            result = core::ValueFact::ofConstant(0);
+            break;
+          }
+          if (index == 64)
+            break;
+          const auto left = byte(argument(0), index);
+          const auto right = byte(argument(1), index);
+          if (!left || !right)
+            break;
+          if (*left != *right) {
+            result =
+                core::ValueFact::of(*left < *right ? core::Outcome::Negative
+                                                   : core::Outcome::Positive);
+            break;
+          }
+          if (name != "memcmp" && *left == 0) {
+            result = core::ValueFact::ofConstant(0);
+            break;
+          }
+        }
+        if (const auto place = numericCallResult(call); place && result)
+          state.scalars.set(*place, *result);
+      }
     }
     if (first && model->family == RuntimeFamily::Search)
       if (const auto end = first->end.shifted(-1);

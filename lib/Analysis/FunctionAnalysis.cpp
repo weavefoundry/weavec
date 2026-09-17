@@ -54,7 +54,7 @@ bool FunctionAnalyzer::analyze(const FunctionDecl &function,
   if (!options.checkContracts)
     return summaries.setInferred(function, std::move(dataflow).summary(),
                                  widenSummary);
-  const bool verifiedInduction = dataflow.verifiedRecursiveCleanup();
+  const bool verifiedInduction = dataflow.verifiedRecursiveContracts();
   auto summary = std::move(dataflow).summary();
   if (options.checkContracts)
     for (const auto &diagnostic : validation.diagnostics())

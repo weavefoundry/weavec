@@ -45,6 +45,7 @@ FunctionDataflow::contextPlace(const core::SummaryPath &path,
   core::PlaceId place = builder.placeForVar(*root);
   QualType type = root->getType();
   for (const auto &step : path.steps) {
+    const auto parentType = type;
     type = contextStepType(type, step);
     if (type.isNull())
       return std::nullopt;
@@ -53,7 +54,11 @@ FunctionDataflow::contextPlace(const core::SummaryPath &path,
       place = places.deref(place);
       break;
     case core::PathStep::Field:
-      place = places.field(place, step.field);
+      for (const auto *field : parentType->getAsRecordDecl()->fields())
+        if (field->getName() == step.field) {
+          place = builder.fieldPlace(place, *field);
+          break;
+        }
       break;
     case core::PathStep::Index:
       if (step.field.empty()) {
@@ -119,6 +124,42 @@ void FunctionDataflow::initializeCallContext(core::AnalysisState &state) {
   for (const auto &[path, fact] : memoryContext.facts)
     if (!path.isRoot() || fact.isPointer())
       installFact(path, fact);
+  for (const auto &path : memoryContext.nonNan) {
+    const auto input = contextPlace(path, state);
+    if (!state.safety || !input || !input->second->isRealFloatingType() ||
+        input->second.isVolatileQualified() || input->second->isAtomicType()) {
+      valid = false;
+      continue;
+    }
+    state.safety->nonNan.insert(input->first);
+  }
+  for (const auto &[path, bytes] : memoryContext.bytes) {
+    const auto input = contextPlace(path, state);
+    if (!state.safety || !input || !input->second->isPointerType() ||
+        !input->second->getPointeeType()->isCharType() ||
+        input->second->getPointeeType().isVolatileQualified() ||
+        context.getCharWidth() != 8) {
+      valid = false;
+      continue;
+    }
+    const auto storage = places.deref(input->first);
+    const auto end =
+        core::Affine::ofConstant(static_cast<std::int64_t>(bytes.size()));
+    // RFC 0029: capturing the payload independently proved this live readable
+    // interval. It supplies a minimum accessible extent, not write permission
+    // or an exact physical allocation size.
+    state.safety->pointers.insert(input->first);
+    state.nulls.set(input->first, {.state = core::Nullness::NonNull,
+                                   .location = {},
+                                   .reason = core::NullReason::Declared});
+    state.safety->accessible[storage] = end;
+    state.safety->initialize(
+        storage,
+        {.begin = {},
+         .end = end,
+         .bytes = bytes,
+         .immutableBytes = memoryContext.immutableBytes.contains(path)});
+  }
   std::map<core::SummaryPath, core::PlaceId> inputs;
   for (const auto &alias : memoryContext.aliases) {
     const auto a = contextPlace(alias.first, state);
@@ -185,7 +226,7 @@ FunctionDataflow::captureCallContext(const CallExpr &call,
           summary.numericOutputs,
           [](const auto &entry) { return !entry.first.isResult(); }) ||
       std::ranges::any_of(summary.effects, [](const auto &entry) {
-        return entry.second.consumed();
+        return entry.second.consumed() || entry.second.written;
       });
   // A constructor case can refine head fields (for example an empty child
   // slot for a singleton), while its general contract remains inductive.
@@ -205,13 +246,26 @@ FunctionDataflow::captureCallContext(const CallExpr &call,
                 post.kind == core::CheckedRequirementKind::ContainerDerived) &&
                post.path.isResult();
       });
-  const bool checkedCase =
-      !changesMemory && options.checkContracts && summary.checked.computed &&
-      (!summary.checked.complete() || constructorCase || projectionCase) &&
-      std::ranges::none_of(summary.effects, [](const auto &entry) {
-        return entry.second.written;
+  bool checkedCase =
+      options.checkContracts && summary.checked.computed &&
+      (!summary.checked.complete() || constructorCase || projectionCase);
+  const auto *inductiveCallee = call.getDirectCallee();
+  const bool completeInduction = inductiveCallee != nullptr &&
+                                 summary.checked.complete() &&
+                                 summaries.verifiedRecursiveContracts.contains(
+                                     inductiveCallee->getCanonicalDecl());
+  // Complete induction already covers the input bytes. Keep its established
+  // contract instead of nominating extra pointee selectors merely from a
+  // payload. Existing constructor, alias and scalar cases remain available.
+  const bool byteCandidate =
+      !completeInduction && options.checkContracts &&
+      summary.checked.computed && state.safety &&
+      std::ranges::any_of(state.safety->memory, [](const auto &entry) {
+        return std::ranges::any_of(entry.second, [](const auto &range) {
+          return !range.bytes.empty();
+        });
       });
-  if (!changesMemory && !checkedCase)
+  if (!changesMemory && !checkedCase && !byteCandidate)
     return std::nullopt;
   const auto owner = callSummaries.find(&call);
   assert(owner != callSummaries.end() && owner->second.get() == &summary &&
@@ -222,17 +276,35 @@ FunctionDataflow::captureCallContext(const CallExpr &call,
     return std::nullopt;
   }
   auto footprint = *prepared;
-  if (checkedCase)
+  if (checkedCase || byteCandidate)
     footprint.insert(summary.checked.caseInputs.begin(),
                      summary.checked.caseInputs.end());
   if (options.checkContracts && summary.checked.computed)
     for (const auto &[path, effect] : summary.effects)
       if (effect.written && !path.isResult())
         footprint.insert(path);
+  if (state.safety && checkedCase)
+    for (const auto &pre : summary.checked.requirements) {
+      if (pre.kind != core::CheckedRequirementKind::Container ||
+          !pre.path.isParam() || !pre.path.isRoot())
+        continue;
+      const auto actual = builder.resolveSummaryPath(pre.path, call);
+      const auto shape = core::ContainerShape::decode(pre.family);
+      if (!actual || !shape || state.safety->containers.find(actual->place))
+        continue;
+      if (const auto memory = checkedMemoryAt(actual->place, {}, {}, state))
+        if (const auto fact = establishContainer(*memory, *shape, state))
+          state.safety->containers.set(actual->place, *fact);
+    }
   if (state.safety)
     for (unsigned i = 0; i < call.getNumArgs(); ++i)
       if (const auto ref =
-              builder.resolveSummaryPath(core::SummaryPath::param(i), call))
+              builder.resolveSummaryPath(core::SummaryPath::param(i), call)) {
+        if (checkedCase && !state.safety->containers.find(ref->place))
+          if (const auto *shape = containerShape(call.getArg(i)->getType()))
+            if (const auto memory = checkedMemoryAt(ref->place, {}, {}, state))
+              if (const auto fact = establishContainer(*memory, *shape, state))
+                state.safety->containers.set(ref->place, *fact);
         if (const auto *fact = state.safety->containers.find(ref->place)) {
           // A terminal opaque object can specialize a helper that releases
           // only its head. These are actual null fields, not new ownership.
@@ -260,7 +332,10 @@ FunctionDataflow::captureCallContext(const CallExpr &call,
             footprint.insert(core::SummaryPath::param(i).deref().field(
                 condition.field.name));
           }
+          for (const auto &name : fact->shape.emptyPayloads)
+            footprint.insert(core::SummaryPath::param(i).deref().field(name));
         }
+      }
   if (footprint.size() > core::MaxCallContextFacts) {
     reportIncomplete("call context input path limit reached", call);
     return std::nullopt;
@@ -519,6 +594,9 @@ FunctionDataflow::captureCallContext(const CallExpr &call,
   // domain and conversion assumptions are the same as ordinary CFG checking.
   for (unsigned i = 0; i < call.getNumArgs(); ++i) {
     const auto *arg = call.getArg(i);
+    if (options.checkContracts && arg->getType()->isRealFloatingType() &&
+        checkedFloatingValue(*arg, state))
+      result.nonNan.insert(core::SummaryPath::param(i));
     if (!arg->getType()->isIntegerType())
       continue;
     if (const auto fact = scalarFactOf(*arg, state);
@@ -536,41 +614,85 @@ FunctionDataflow::captureCallContext(const CallExpr &call,
           fact && !fact->trivial())
         result.facts[core::SummaryPath::param(i)] = *fact;
   }
+  if (byteCandidate && context.getCharWidth() == 8)
+    for (const auto &input : inputs) {
+      if (!input.bytePointer)
+        continue;
+      const auto memory = checkedPathMemory(input.path, call, {}, {}, state);
+      if (!memory || !memory->extent || !checkedValid(*memory, state))
+        continue;
+      const auto start = foldAffine(memory->begin, state);
+      const auto found = state.safety->memory.find(memory->storage);
+      if (!start.isConstant() || found == state.safety->memory.end())
+        continue;
+      for (const auto &range : found->second) {
+        if (range.bytes.empty() || range.source || !range.begin.isConstant() ||
+            !range.end.isConstant() || range.begin.constant > start.constant ||
+            start.constant >= range.end.constant)
+          continue;
+        auto when = range.when;
+        auto slice = *memory;
+        slice.end = range.end;
+        if (!pruneGuard(when, state) || !when.trivial() ||
+            !checkedInterval(slice.begin, slice.end, *slice.extent, state) ||
+            !checkedInitialized(slice, state))
+          continue;
+        result.bytes[input.path] = range.bytes.substr(
+            static_cast<std::size_t>(start.constant - range.begin.constant));
+        if (range.immutableBytes)
+          result.immutableBytes.insert(input.path);
+        break;
+      }
+    }
+  checkedCase |= !result.bytes.empty();
+  if (!changesMemory && !checkedCase)
+    return std::nullopt;
   for (const auto &path : footprint) {
-    if (const auto ref = builder.resolveSummaryPath(path, call))
+    if (const auto ref = builder.resolveSummaryPath(path, call)) {
       if (const auto fact = state.factOf(ref->place); fact && !fact->trivial())
         result.facts[path] = *fact;
-  }
-  // A recursive predicate can establish an empty head slot even when no
-  // ordinary pointer-cell fact was exported by its constructor.
-  if (state.safety)
-    for (const auto &path : footprint) {
-      if (path.steps.size() < 2 ||
-          path.steps.back().step != core::PathStep::Field ||
-          path.steps[path.steps.size() - 2].step != core::PathStep::Deref)
-        continue;
-      auto parent = path;
-      const auto field = parent.steps.back().field;
-      parent.steps.truncate(parent.steps.size() - 2);
-      if (const auto ref = builder.resolveSummaryPath(parent, call))
-        if (const auto *fact = state.safety->containers.find(ref->place);
-            fact && state.nulls.isNonNull(ref->place)) {
-          if (fact->shape.recursiveLink(field) &&
-              (fact->shape.terminal || fact->shape.emptyLinks.contains(field)))
-            result.facts[path] = core::ValueFact::of(core::Outcome::Null);
-          if (const auto known = fact->shape.headValues.find(field);
-              known != fact->shape.headValues.end())
-            if (const auto record =
-                    containerRecords.find(fact->shape.object.toString());
-                record != containerRecords.end())
-              for (const auto *selector : record->second->fields())
-                if (selector->getName() == field)
-                  if (const auto type = integerTypeOf(*selector, context))
-                    result.facts[path] = core::ValueFact::ofInteger(
-                        core::IntegerRange::singleton(
-                            core::IntegerValue::ofBits(*type, known->second)));
-        }
+      if (checkedZeroInteger(ref->place, state))
+        result.facts[path] = core::ValueFact::ofConstant(0);
     }
+    // A copied pointer field may identify an initialized local scalar without
+    // a separately materialized scalar fact under the field's dereference.
+    // Capture only an exact whole scalar of the same target C type. Merely
+    // sharing an allocation or a byte representation does not give its value.
+    if (!options.checkContracts || result.facts.contains(path) ||
+        path.steps.empty() || path.steps.back().step != core::PathStep::Deref ||
+        !path.isParam() || path.index >= call.getNumArgs())
+      continue;
+    auto type = call.getArg(path.index)->getType();
+    for (const auto &step : path.steps)
+      type = contextStepType(type, step);
+    if (type.isNull() || !type->isIntegerType() || type.isVolatileQualified() ||
+        type->isAtomicType())
+      continue;
+    auto pointer = path;
+    pointer.steps.truncate(pointer.steps.size() - 1);
+    const auto bytes = core::Affine::ofConstant(
+        context.getTypeSizeInChars(type).getQuantity());
+    const auto memory = checkedPathMemory(pointer, call, {}, bytes, state);
+    if (!memory || memory->begin != core::Affine::ofConstant(0) ||
+        memory->end != bytes || !memory->extent ||
+        !checkedInterval(memory->begin, memory->end, *memory->extent, state) ||
+        !checkedValid(*memory, state) || !checkedInitialized(*memory, state))
+      continue;
+    const auto *decl =
+        dyn_cast_or_null<ValueDecl>(builder.declFor(memory->storage));
+    if (!decl || decl->getType().isVolatileQualified() ||
+        decl->getType()->isAtomicType() ||
+        !ASTContext::hasSameUnqualifiedType(type, decl->getType()))
+      continue;
+    if (const auto fact = state.scalars.factOf(memory->storage);
+        fact && !fact->trivial())
+      result.facts[path] = *fact;
+  }
+  // RFC 0029: capture and guard checking use the same current head evidence.
+  for (const auto &path : footprint)
+    if (const auto ref = builder.resolveSummaryPath(path, call))
+      if (const auto fact = containerValueFact(ref->place, state))
+        result.facts[path] = *fact;
   const bool completeConsumption =
       summary.checked.complete() &&
       std::ranges::any_of(summary.checked.establishes, [](const auto &post) {
@@ -584,12 +706,13 @@ FunctionDataflow::captureCallContext(const CallExpr &call,
   const bool checkedScalars =
       !completeConsumption && options.checkContracts &&
       summary.checked.computed &&
-      std::ranges::any_of(result.facts, [&](const auto &entry) {
-        return checkedCase || (recursiveContext && !entry.first.isRoot())
-                   ? !entry.second.trivial()
-                   : !entry.second.isPointer() &&
-                         entry.second.constant.has_value();
-      });
+      (!result.bytes.empty() || !result.nonNan.empty() ||
+       std::ranges::any_of(result.facts, [&](const auto &entry) {
+         return checkedCase || (recursiveContext && !entry.first.isRoot())
+                    ? !entry.second.trivial()
+                    : !entry.second.isPointer() &&
+                          entry.second.constant.has_value();
+       }));
   if (result.aliases.empty() && !checkedScalars &&
       (!selectedInputs || inputs.size() < 2 || unresolved || unrepresentable))
     return std::nullopt;

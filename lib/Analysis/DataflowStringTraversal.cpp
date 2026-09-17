@@ -16,6 +16,124 @@ using namespace clang;
 
 namespace weavec::analysis {
 
+void FunctionDataflow::checkedStringLength(const CallExpr &call,
+                                           core::AnalysisState &state) {
+  if (call.getNumArgs() != 1 || state.safety->havoc)
+    return;
+  const auto result = builder.legacyAffineOf(call);
+  if (!result || !result->place)
+    return;
+  // A later call may observe changed bytes. Saved results keep their old
+  // value, while this call's result cannot reuse a previous first-zero proof.
+  snapshotIntegerDependencies(*result->place, &call, state);
+  snapshotScalar(*result->place, &call, state);
+  state.dropGuardsOn(*result->place);
+  state.numericValues.erase(*result->place);
+  if (stringLengthOf(*call.getArg(0), state))
+    return;
+  auto memory = checkedMemory(*call.getArg(0), {}, {}, state);
+  const auto type = integerTypeOf(call.getType(), context);
+  if (!memory || !memory->extent || !result || !result->place || !type)
+    return;
+  std::optional<core::Affine> upper;
+  if (const auto witness = checkedWitness(*memory, state))
+    upper = witness->zero.shifted(1);
+  if (!upper)
+    if (const auto found =
+            state.safety->boundedTermination.find(memory->storage);
+        found != state.safety->boundedTermination.end())
+      for (const auto &fact : found->second) {
+        auto when = fact.when;
+        if (pruneGuard(when, state) && when.trivial() &&
+            checkedAtMost(fact.begin, memory->begin, state) &&
+            checkedAtMost(memory->begin, fact.begin, state)) {
+          upper = fact.end;
+          break;
+        }
+      }
+  bool required = false;
+  if (!upper && !state.safety->writtenStorage.contains(memory->storage)) {
+    // A buffer's capacity nominates an explicit bounded-string premise; it
+    // supplies no initialized contents or zero byte by itself (RFC 0029).
+    for (const auto &[data, buffer] : state.safety->buffers.values) {
+      if (buffer.shape.reader || buffer.shape.pointerElements ||
+          buffer.shape.elementBytes != 1 || !buffer.entryBacking ||
+          memory->storage != places.deref(*buffer.entryBacking) ||
+          state.safety->replacedPointers.contains(data))
+        continue;
+      auto input = *memory;
+      input.input = stableSummaryPathOf(*buffer.entryBacking);
+      input.end = core::Affine::ofPlace(buffer.capacity);
+      if (input.input &&
+          checkedRequire(core::CheckedRequirementKind::TerminatedWithin, input,
+                         call, state)) {
+        upper = input.end;
+        required = true;
+        break;
+      }
+    }
+  }
+  if (!upper || !checkedValid(*memory, state) ||
+      (!required &&
+       !checkedInterval(memory->begin, *upper, *memory->extent, state)))
+    return;
+  const auto begin = checkedByteExpression(memory->begin, state);
+  if (!begin)
+    return;
+  auto first = checkedFirstZeros.find(&call);
+  if (first == checkedFirstZeros.end()) {
+    if (checkedFirstZeros.size() >= core::MaxTraversalVariables)
+      return;
+    first = checkedFirstZeros.emplace(&call, places.create("first zero")).first;
+  }
+  const auto zero = first->second;
+  if (begin->dependsOn(zero) || upper->place == zero)
+    return;
+  snapshotIntegerDependencies(zero, &call, state);
+  snapshotScalar(zero, &call, state);
+  state.dropGuardsOn(zero);
+  state.relations.forget(zero);
+  state.numericValues.erase(zero);
+  state.scalars.set(zero,
+                    core::ValueFact::ofInteger(core::IntegerRange::between(
+                        core::IntegerValue::ofBits(*type, 0),
+                        core::IntegerValue::ofBits(*type, type->mask() - 1))));
+  const auto bound = [&](const core::Affine &value, bool lower) {
+    const auto folded = foldAffine(value, state);
+    if (folded.isConstant()) {
+      if (lower)
+        state.relations.learnAtLeast(zero, folded.constant);
+      else if (folded.constant != INT64_MIN)
+        state.relations.learnAtMost(zero, folded.constant - 1);
+    } else if (folded.scale == 1) {
+      state.relations.learn(
+          zero, lower ? core::Relation::GreaterEqual : core::Relation::Less,
+          *folded.place, folded.constant);
+    }
+  };
+  bound(memory->begin, true);
+  bound(*upper, false);
+  const auto start = begin->converted(*type);
+  const auto length = start ? NumericExpression::operation(
+                                  core::IntegerOp::Subtract,
+                                  NumericExpression::input(zero, *type), *start)
+                            : std::nullopt;
+  if (!length)
+    return;
+  state.numericValues.insert_or_assign(*result->place, *length);
+  const auto through = core::Affine::ofPlace(zero, 1, 1);
+  state.safety->initialize(memory->storage,
+                           {.begin = memory->begin, .end = through});
+  state.safety->initialize(
+      memory->storage,
+      {.begin = core::Affine::ofPlace(zero), .end = through, .zeroed = true});
+  safetyObligation(
+      core::SafetyProperty::Initialization,
+      required ? core::SafetyOutcome::Required : core::SafetyOutcome::Proven,
+      call, "bounded string",
+      "string length ends at the first initialized zero within its bound");
+}
+
 void FunctionDataflow::collectCheckedStrings(const Stmt &stmt) {
   std::vector<const Stmt *> pendingNodes{&stmt};
   for (std::size_t i = 0;
@@ -118,6 +236,16 @@ FunctionDataflow::checkedWitness(const CheckedMemory &memory,
   // Existing exact string facts and explicit zero stores can introduce a
   // witness, but only after the entire prefix is proved initialized.
   std::vector<core::Affine> candidates;
+  if (memory.holder)
+    if (const auto spatial = spatialRecordAt(*memory.holder, state);
+        spatial && spatial->offset.isZero() && spatial->string &&
+        !spatial->string->unterminated && spatial->string->length) {
+      const auto origin = checkedMemoryAt(*memory.holder, {}, {}, state);
+      if (origin && origin->storage == memory.storage &&
+          checkedAtMost({}, origin->begin, state) &&
+          checkedAtMost(origin->begin, {}, state))
+        candidates.push_back(*spatial->string->length);
+    }
   if (memory.pointer)
     if (const auto length = stringLengthOf(*memory.pointer, state)) {
       const auto base = checkedMemory(*memory.pointer, {}, {}, state);
@@ -273,11 +401,60 @@ void FunctionDataflow::checkedStringCondition(const Expr &expr,
                                               const Expr *other, bool holds,
                                               core::AnalysisState &state) {
   const auto *value = expr.IgnoreParenImpCasts();
-  if (!value->getType()->isCharType() || !PlaceBuilder::isPlaceExpr(*value))
+  if (!value->getType()->isCharType() ||
+      value->getType().isVolatileQualified() ||
+      value->getType()->isAtomicType() || !PlaceBuilder::isPlaceExpr(*value))
     return;
   const auto memory = checkedLvalue(*value, state);
   if (!memory || !checkedValid(*memory, state))
     return;
+  const auto byteType = integerTypeOf(value->getType(), context);
+  const auto comparedType = integerTypeOf(expr.getType(), context);
+  const auto operation = integerOpOf(op);
+  const auto comparedValue =
+      other ? integerRangeOf(*other, state)
+            : std::optional(core::IntegerRangeEvaluation{
+                  .values =
+                      core::IntegerRange::singleton(core::IntegerValue::ofBits(
+                          comparedType.value_or(core::BooleanType), 0))});
+  const auto contents = checkedByteContents(*memory, state);
+  if (contents && byteType && comparedType && operation && comparedValue &&
+      !comparedValue->mayBeInvalid && comparedValue->values.constant()) {
+    std::optional<std::int64_t> first;
+    std::optional<std::int64_t> last;
+    for (std::size_t i = 0; i < contents->second.size(); ++i) {
+      const auto byte =
+          core::IntegerValue::ofBits(
+              *byteType, static_cast<unsigned char>(contents->second[i]))
+              .converted(*comparedType);
+      const auto test = core::evaluateInteger(
+          *operation, byte, *comparedValue->values.constant());
+      if (!test.value)
+        return;
+      if ((test.value->bits != 0) != holds)
+        continue;
+      const auto index = contents->first + static_cast<std::int64_t>(i);
+      if (!first)
+        first = index;
+      last = index;
+    }
+    if (!first) {
+      edgeInfeasible = true;
+      return;
+    }
+    if (memory->begin.place && memory->begin.scale == 1) {
+      std::int64_t lower = 0;
+      std::int64_t upper = 0;
+      if (!__builtin_sub_overflow(*first, memory->begin.constant, &lower) &&
+          !__builtin_sub_overflow(*last, memory->begin.constant, &upper)) {
+        if (*first > contents->first)
+          state.relations.learnAtLeast(*memory->begin.place, lower);
+        if (*last < contents->first +
+                        static_cast<std::int64_t>(contents->second.size()) - 1)
+          state.relations.learnAtMost(*memory->begin.place, upper);
+      }
+    }
+  }
   const auto witness = checkedWitness(*memory, state);
   if (!witness)
     return;
@@ -297,6 +474,13 @@ void FunctionDataflow::checkedStringCondition(const Expr &expr,
     return;
   const auto coordinate = memory->begin;
   const auto zero = witness->zero;
+  if (checkedAtMost(zero, coordinate, state)) {
+    // checkedWitness already proved coordinate <= zero. Reading a nonzero
+    // byte at that same current zero is impossible, not a negative offset
+    // that should flow into loop widening (RFC 0029).
+    edgeInfeasible = true;
+    return;
+  }
   if (coordinate.place && zero.place && coordinate.scale == 1 &&
       zero.scale == 1) {
     std::int64_t shift = 0;
@@ -318,7 +502,7 @@ void FunctionDataflow::checkedStringCondition(const Expr &expr,
 
 void FunctionDataflow::checkedStringWrite(
     const std::optional<CheckedMemory> &memory, bool zeroed,
-    core::AnalysisState &state) {
+    core::AnalysisState &state, bool numericText) {
   for (auto &[data, fact] : state.safety->buffers.values) {
     (void)data;
     fact.shape.terminated = false;
@@ -331,7 +515,86 @@ void FunctionDataflow::checkedStringWrite(
         post.fact.shape.terminated = false;
   }
   auto witnesses = std::move(state.safety->termination);
+  // RFC 0029: preserve only proved frames of zero-initialized storage. A
+  // concrete field store must not erase calloc's untouched sibling fields.
+  std::vector<std::pair<core::PlaceId, core::InitializedRange>> zeros;
+  if (memory) {
+    const auto concrete = [&](core::PlaceId storage) {
+      return isLocalStorage(storage) ||
+             std::ranges::any_of(checkedObjects, [&](const auto &entry) {
+               return entry.second == storage;
+             });
+    };
+    const auto *writtenVariable =
+        builder.varForPlace(places.root(memory->storage));
+    const bool privateScalar =
+        isLocalStorage(memory->storage) && writtenVariable != nullptr &&
+        writtenVariable->hasLocalStorage() &&
+        writtenVariable->getType()->isScalarType() &&
+        !addressTaken.contains(writtenVariable->getCanonicalDecl());
+    const auto writtenInput = checkedSeparationInput(*memory, state);
+    for (const auto &[storage, ranges] : state.safety->memory) {
+      std::optional<core::SummaryPath> preservedInput;
+      bool liveEntry = false;
+      if (storage != memory->storage &&
+          places.step(storage) == core::PathStep::Deref)
+        if (const auto holder = places.parent(storage))
+          if (const auto input = checkedMemoryAt(*holder, {}, {}, state);
+              input && input->storage == storage) {
+            preservedInput = checkedSeparationInput(*input, state);
+            liveEntry =
+                preservedInput && input->inputPlace &&
+                storage == places.deref(*input->inputPlace) &&
+                !state.safety->replacedPointers.contains(*input->inputPlace) &&
+                checkedValid(*input, state);
+          }
+      for (const auto &range : ranges) {
+        if ((!range.zeroed && !range.numericText && range.bytes.empty()) ||
+            range.source)
+          continue;
+        if (storage == memory->storage) {
+          if (numericText && (range.numericText || range.zeroed)) {
+            auto content = range;
+            content.zeroed = false;
+            content.numericText = true;
+            content.bytes.clear();
+            content.immutableBytes = false;
+            zeros.emplace_back(storage, std::move(content));
+          }
+          if (checkedAtMost(memory->end, range.begin, state) ||
+              checkedAtMost(range.end, memory->begin, state)) {
+            zeros.emplace_back(storage, range);
+          } else {
+            for (auto part :
+                 range.outsideWrite(foldAffine(memory->begin, state),
+                                    foldAffine(memory->end, state)))
+              zeros.emplace_back(storage, std::move(part));
+          }
+        } else if (range.immutableBytes || privateScalar ||
+                   (liveEntry && concrete(memory->storage) &&
+                    checkedValid(*memory, state)) ||
+                   (concrete(storage) && concrete(memory->storage) &&
+                    places.root(storage) != places.root(memory->storage))) {
+          zeros.emplace_back(storage, range);
+        } else if (writtenInput && preservedInput &&
+                   writtenInput != preservedInput) {
+          // Conditional proof, not separation inferred from different names:
+          // each caller must establish that the unchanged entry objects are
+          // disjoint before this retained zero can be used.
+          if (recording())
+            inferred.checked.require(
+                {.kind = core::CheckedRequirementKind::Separated,
+                 .path = *writtenInput,
+                 .other = *preservedInput,
+                 .family = {}});
+          zeros.emplace_back(storage, range);
+        }
+      }
+    }
+  }
   state.forgetZeroedMemory();
+  for (auto &[storage, range] : zeros)
+    state.safety->initialize(storage, std::move(range));
   if (!memory) {
     for (const auto &[storage, entries] : witnesses) {
       (void)entries;

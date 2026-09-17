@@ -48,6 +48,7 @@ struct InterfaceNode {
   bool prototype = true;
   std::string name;
   std::string view;
+  std::string typedefName;
   std::vector<std::uint32_t> parameters;
   std::vector<InterfaceField> fields;
   friend bool operator==(const InterfaceNode &,

@@ -1,0 +1,124 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "name": "bounded",
+      "sources": [
+        "bounded.c",
+        "bounded-inspect.c",
+        "reader.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "entry_requirements": 0
+    },
+    {
+      "name": "bytes",
+      "sources": [
+        "bytes.c",
+        "bytes-inspect.c",
+        "reader.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "entry_requirements": 0
+    },
+    {
+      "name": "string",
+      "sources": [
+        "string.c",
+        "string-inspect.c",
+        "reader.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "entry_requirements": 0
+    },
+    {
+      "name": "released",
+      "sources": [
+        "released.c",
+        "released-inspect.c",
+        "reader.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "initialized|interval|live|released|unavailable|contract|container|call"
+    },
+    {
+      "name": "uninitialized",
+      "sources": [
+        "uninitialized.c",
+        "uninitialized-inspect.c",
+        "reader.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "initialized|interval|live|released|unavailable|contract|container|call"
+    },
+    {
+      "name": "extent",
+      "sources": [
+        "extent.c",
+        "extent-inspect.c",
+        "reader.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "initialized|interval|live|released|unavailable|contract|container|call"
+    },
+    {
+      "name": "unknown",
+      "sources": [
+        "unknown.c",
+        "unknown-inspect.c",
+        "reader.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "initialized|interval|live|released|unavailable|contract|container|call"
+    }
+  ]
+}

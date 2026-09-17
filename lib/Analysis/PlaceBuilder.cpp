@@ -366,7 +366,10 @@ PlaceBuilder::resolveSummaryPath(const core::SummaryPath &path,
 
   // A scalar pointee contract applied to a decayed array names element
   // zero. Explicit selected paths and range roots already name storage.
-  if (!arrayStorage && firstStep == 1 && argExpr && selectArray &&
+  if ((!arrayStorage ||
+       (firstStep < path.steps.size() &&
+        path.steps[firstStep].step == core::PathStep::Field)) &&
+      firstStep == 1 && argExpr && selectArray &&
       (firstStep == path.steps.size() ||
        path.steps[firstStep].step != core::PathStep::Index)) {
     const auto *array =
@@ -1226,6 +1229,10 @@ std::optional<PlaceRef> PlaceBuilder::resolve(const Expr &expr) {
         return std::nullopt;
       ref->place = places.index(ref->place);
       setWitness(*ref, core::ElementWitness::ofConstant(0));
+      if (selectArray)
+        *ref = selectArray(
+            *ref, core::Affine::ofConstant(0),
+            base.getType()->getAsArrayTypeUnsafe()->getElementType(), e);
       ref->place = fieldPlace(ref->place, field);
       return ref;
     }
@@ -1970,6 +1977,8 @@ PlaceBuilder::affineFromPath(const core::PathAffine &affine,
     if (affine.path->index >= call.getNumArgs())
       return std::nullopt;
     base = affineOf(*call.getArg(affine.path->index));
+    if (!base && expressionFromPath)
+      return expressionFromPath(affine, call);
   } else if (const auto ref = resolveSummaryPath(*affine.path, call)) {
     base = core::Affine::ofPlace(ref->place);
   }

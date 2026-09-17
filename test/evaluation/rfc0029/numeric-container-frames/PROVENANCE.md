@@ -1,0 +1,1 @@
+Frozen against candidate85a before framing actual automatic end-pointer output cells of modeled floating parsers. The incoming forest predates that local cell; the null-end variant has no output write. Released nodes, uninitialized input, end pointers published into owned payloads, and unknown calls remain negative.

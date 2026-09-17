@@ -405,7 +405,7 @@ RFC 0027 supplies that proof for supported transformations, described below.
 General graphs, cyclic ownership, volatile/atomic links and concurrent access
 remain outside the model.
 
-Summary format 23 and sidecar format 24 require rebuilding older compiler
+Summary format 26 and sidecar format 27 require rebuilding older compiler
 objects. Persistent caches validate executable, source, preprocessing and
 callee dependencies before reusing a container contract. See the
 [validation report](validation-rfc0023.md) for the frozen acceptance population,
@@ -464,7 +464,7 @@ contracts. Cross-unit callers need compatible object evidence for recursive
 contracts; a forward declaration alone does not supply it. RFC 0028 transports
 that evidence from verified constructors and preserves supported private hook
 state across separate translation units, as described below.
-Summary format 23, sidecar format 24 and checked encoding 9 reject
+Summary format 26, sidecar format 27 and checked encoding 12 reject
 older metadata; rebuild old objects. Expanded JSON version 2 and compact version
 3 retain their existing meanings. See [validation](validation-rfc0027.md) for
 fixed populations, counterexamples, test results and cost observations.
@@ -505,7 +505,7 @@ transfers remain incomplete.
 
 The portable `buffer`, `buffer-preserved` and `buffer-appended` records travel
 through the normal source, object and cache workflows. They add no annotation
-spelling or pointer ABI. Rebuild older object sidecars for format 24.
+spelling or pointer ABI. Rebuild older object sidecars for format 27.
 Shape discovery is bounded to 16 descriptors and 64 instances; descriptors are
 limited to 16 KiB. Exhaustion is reported as incomplete. The initial discovery
 rule requires one non-function data pointer and two unsigned, non-Boolean count
@@ -585,7 +585,7 @@ establish the exact written prefix. If `0 <= n && n < sizeof buffer`, `buffer[n]
 is the written terminator. If `n >= sizeof buffer`, truncation initializes the
 capacity and its final NUL. A negative or overwritten result establishes neither.
 
-Runtime records use checked encoding 9, summary format 23 and sidecar format 24.
+Runtime records use checked encoding 12, summary format 26 and sidecar format 27.
 Rebuild objects carrying older sidecars. The cache validates the executable and
 source dependencies before reusing these records.
 
@@ -649,7 +649,218 @@ outside this milestone.
 
 The metadata remains internal to analysis. It neither completes the client's
 forward declarations nor inserts private names into C lookup. Conflicting
-layouts lose evidence. Rebuild older artifacts: summary format 23, sidecar
-format 24 and checkpoint format 3 intentionally reject previous artifacts.
+layouts lose evidence. Rebuild older artifacts: summary format 26, sidecar
+format 27 and checkpoint format 3 intentionally reject previous artifacts.
 Source/header, preprocessing, target and object-content validation still apply;
 this does not support source-free checked linking.
+
+
+## Composing recursive and stateful helpers (RFC 0029)
+
+A mutable output record can have extra counters, flags and nested hook records.
+The analyzer uses indexing, loop bounds and pointer arithmetic to nominate its
+backing pointer, logical length and capacity. The caller must still establish
+live storage, sufficient allocation extent and initialized contents. Changing a
+capacity or logical length does not create either storage or initialized bytes.
+A helper's transported field roles are checked against the caller's actual
+record layout, so a separate-source caller need not repeat its indexing code.
+Capacity is a guaranteed accessible range; the allocation may be larger. A
+helper can require additional initialized entry bytes while its backing pointer
+is unchanged. Its caller must prove those bytes independently of capacity.
+
+A reader loop that advances a field cursor requires the entire interval it may
+visit. After the cursor changes, its current value cannot be exported as the
+incoming cursor value. A stable upper bound may instead supply a sufficient
+extent and initialization requirement. A caller with only the first cell
+initialized, or with less storage than the advertised end, fails that contract.
+A separate byte pointer and unsigned count can supply the same explicit input
+interval when a helper compares a pointer distance against that count. The
+caller must establish live initialized storage and a representable distance;
+the comparison itself supplies no storage evidence.
+
+A helper that advances a byte writer by `strlen` can require an initialized
+terminated prefix between its incoming cursor and capacity. The caller must
+establish a real zero inside that bound; unused capacity need not be initialized.
+The returned length ends at the first zero, which can precede another known zero.
+This relationship lets a cursor update retain its initialized prefix and strict
+capacity bound. Replacing the backing pointer or changing the relevant bytes
+invalidates the associated termination evidence.
+
+Byte-pointer endpoint helpers can require a live initialized span in one array,
+with a distance representable by the target `ptrdiff_t`. Callers must prove
+that interval from actual storage; unrelated arrays and uninitialized tails
+fail the requirement. An integer-returning helper can also guarantee a
+nonnegative count no larger than its incoming span. This guarantee must hold
+on every return, including joined branches, and promises no processing or writes.
+
+An unconditional reverse byte-writing loop with a stable bound can establish
+the suffix it visits. Index zero requires its own store. Conditional writes,
+skipped iterations and early exits do not establish that whole suffix.
+A helper that advances an output pointer can preserve initialization up to its
+actual final position, including a zero advance on an early return. A bound on
+the largest possible advance alone never initializes those bytes. Conditional
+integer arguments retain the range of their actual converted values at call
+entry; neither arm is replaced by an assumed exact maximum.
+
+For eligible direct or mutually recursive cleanup and read-only traversal
+functions, WeaveC checks the complete group before publishing any member's
+guarantee. Proper-child calls
+supply progress; forwarding the unchanged input is permitted only when every
+cycle also contains a proper-child step. Base cases, each owned child and the
+head release all remain obligations. The initial group rule covers at most 32
+single-parameter functions on one record type, with no hidden global effects or
+unverified external helpers. A node's own callback binding cannot stand for its
+children's bindings. Shared children and owning cycles do not satisfy the
+finite ownership-forest predicate.
+
+An initial recursive construction rule accepts functions taking a constant
+byte pointer and an unsigned remaining count, returning a nullable fresh
+initialized forest. The caller supplies the entire readable input interval.
+Each recursive call stays inside that interval, and every cycle decreases
+the immutable entry count. Failure paths must release all partial allocations;
+successful paths must transfer the complete fresh forest. Complete inferred
+helpers can perform reads and partial-tree cleanup. Private hypotheses cannot
+become cached callback or memory specializations. These contracts compose
+through separate source files, ordinary objects and validated checkpoints.
+An integer-returning constructor may instead publish through a third, pointer
+output parameter: positive returns establish a non-null fresh forest and zero
+returns must actually leave the slot null. The slot needs writable storage
+separated from the input; its previous value supplies no ownership. Immediate
+success tests transfer the whole forest, including a child attached by a helper.
+The byte pointer and remaining count can also reside in a reader record, with
+unrelated fields. Passing it by value preserves the caller's record. Passing a
+pointer to it requires initialized writable reader storage separated from the
+input bytes; changing its cursor/count invalidates the caller's old field facts.
+The recursive hypothesis supplies no post-call reader bounds. Both forms prove
+progress against the original input and account for every allocation.
+
+A constructor taking an owned node pointer and unsigned count can extend an
+existing initialized head whose owned links and payloads are initially null.
+Every recursive cycle must decrease the entry count. The head remains live and
+unchanged on every return; newly acquired descendants must be attached exactly
+once or released, including failure paths. Its `container-extended` output keeps
+the original head separate from the fresh acquisition ledger. Broader mutable
+reader and partial-consumption interfaces, owned-tree writers, and the mandatory
+cJSON parsing and printing goals remain incomplete.
+
+A helper may also publish an allocated byte payload through a local pointer
+or a complete allocating helper. The caller must establish an owned head with
+the required empty slots. Successful and failed returns retain its ownership;
+each acquired payload must be attached exactly once or released. Interior,
+released, duplicated, borrowed and lost allocations do not satisfy this proof.
+Payload fields discovered from imported cleanup contracts nominate the shape
+only; actual storage, initialization and ownership still need proof.
+
+The modeled `strtod`, `strtof` and `strtold` boundary requires a terminated,
+initialized input. A non-null end-pointer slot must be writable and separate
+from that input. The resulting pointer retains the input object's bounds and
+lifetime; a null slot is permitted. The model makes no claim that the numeric
+result is finite or safe to convert to an integer.
+
+A complete callee that stores a copied pointer into a confined automatic slot
+can preserve the source allocation's ownership. This includes an end pointer
+stored by `strtod`. The slot address must remain confined to that represented
+call. The copy preserves aliases: freeing the base invalidates the end pointer,
+an interior pointer cannot be released, and losing every local holder still
+leaks the allocation.
+
+Generic synchronous allocation and release helpers can now export explicit
+`callback-allocate` and `callback-release` requirements:
+
+```c
+void *make(void *(*allocate)(size_t), size_t bytes) {
+  if (!bytes) return NULL;
+  unsigned char *p = allocate(bytes);
+  if (p) p[bytes - 1] = 7;
+  return p;
+}
+```
+
+The helper's contract requires a non-null callback returning either null or a
+fresh `free`-compatible allocation of the requested extent. A closed caller
+passing `malloc` discharges that requirement through the modeled C-library
+boundary. A callback allocating fewer bytes, an unknown external target, a
+nullable binding or an incompatible cast does not discharge it. Complete
+inferred wrappers are accepted only when their checked interface and effects
+establish the same behavior. This adds no annotation or runtime dispatch.
+
+`free(p); p = NULL;` preserves the earlier release of the entry allocation.
+Assigning a new allocation to `p` cannot discharge the old allocation's cleanup
+obligation. Zero-initialized byte ranges outside a proved store are preserved;
+unknown overlapping writes discard that evidence.
+
+Scans can also use up to 64 exact initialized bytes from an ordinary character
+array initializer, including an immutable static local array. Known contents
+can exclude a branch only after the read's storage, bounds and initialization
+are proved. Mutation retires overlapping contents; unchanged slices and proved
+separate storage can retain them. Actual byte-pointer call cases transport the
+captured contents within the existing context budget. This can weaken a
+sufficient generic precondition only after rechecking the callee for that input;
+it does not certify arbitrary strings or bypass the generic body. An actual
+const-qualified array object can retain its contents across a represented write
+to another object. A const-qualified pointer alone supplies no such premise,
+and writes to the constant array still require ordinary write-permission checks.
+
+These records require summary format 26, sidecar format 27 and checked encoding
+12. Older object sidecars and checkpoints, including interim RFC 0029 development
+artifacts, must be rebuilt.
+
+Floating-to-integer conversions can be proved locally for finite constants or
+unchanged scalar inputs under true finite bounds. The bounds are checked using
+the target floating format and integer width, including strict endpoints around
+64-bit limits. For example, `x >= INT_MIN && x <= INT_MAX` excludes NaN on its
+true branch when those constants are represented exactly. Testing and rejecting
+`x < INT_MIN || x > INT_MAX` leaves NaN on the remaining branch and supplies no
+such proof. Taken addresses, changes to the guarded value, bypassing jumps and
+nonstandard floating modes prevent this inference.
+
+Run the frozen primary, independent serializer, reader, transport, object and cache
+populations with `scripts/checked-workflows.py`. The separate `upstream`
+population retains the broader cJSON parse/print acceptance goals. Those goals
+are not implied by passing the smaller workflows; consult the RFC 0029
+validation record for outstanding coverage. These changes do not establish
+arbitrary recursive construction, general floating-point conversion safety or
+a complete cJSON library certificate.
+
+RFC 0029 also supports a recursive byte writer taking immutable byte input, an
+unsigned remaining count and a pointer to a discovered buffer record. A checked
+writer requires the full initialized input interval, writable output storage
+and separation of input, header and backing. Its verified output describes the
+actual initialized prefix on every return, including partial failure. A success
+return alone does not imply that all input was copied or that the output is
+zero terminated. Clients must use the established current length when reading
+that prefix. This does not yet cover the required recursive tree printer.
+
+Reader records with a const byte pointer, initialized input length and changing
+cursor can carry a reusable reader predicate. The cursor remains between zero
+and the readable input length, including on a partial failure return. The
+entire input interval must be initialized; the predicate supplies no permission
+to write it. Copied records and separate-source helpers retain that distinction.
+A reader output alone specifies no exact consumed count or parsing result.
+
+An independently checked input case can avoid a generic recursive limit by
+proving the recursive branch unreachable. Exact values captured through live
+whole scalar objects may help establish that branch; invalidated storage,
+partial objects and incompatible views supply no value. The generic function
+still reports its own exhaustion when selected independently.
+
+Exact record-array cells use the same identity for `a->field`, `a[0].field`
+and `(*a).field`, including contracts forwarded to a helper. Complete current
+zero-byte intervals can establish zero-valued ordinary integer fields in
+automatic records and exact array cells. Partial byte coverage and later writes
+cannot supply that fact. A stored string terminator can survive an update to a
+separate header only when the separation is proved or exported as an explicit
+caller requirement using unchanged entry identities.
+
+Small fixed-size automatic integer arrays retain values for exact elements.
+Writes through possibly overlapping indices discard those values. Advancing a
+pointer retains its allocation identity but retires facts about its previous
+pointee. Borrow diagnostics can therefore identify an exact element such as
+`a[1]` where the earlier diagnostic used the whole-array spelling `a[*]`.
+
+A local numeric byte prefix can exclude NaN from a modeled `strtod`, `strtof`
+or `strtold` result. The checker must establish actual numeric characters
+through stores, a validated scan, or a byte-preserving copy. Plain initialized
+storage is insufficient. Infinity remains possible, so converting the result
+to an integer still requires unchanged, target-representable bounds. A null
+end-pointer argument does not export ownership of the input allocation.

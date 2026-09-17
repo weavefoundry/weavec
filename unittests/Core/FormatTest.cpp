@@ -69,6 +69,34 @@ TEST(RuntimeSafetyTest, BoundedTerminationDoesNotInitializeCapacity) {
   state.forgetZeros();
   EXPECT_TRUE(state.boundedTermination.empty());
 }
+TEST(RuntimeSafetyTest, BoundedTerminationInputsRoundTripWithoutOutputGuards) {
+  CheckedContract contract;
+  contract.computed = true;
+  CheckedRequirement input{.kind = CheckedRequirementKind::TerminatedWithin,
+                           .path = SummaryPath::param(0),
+                           .other = {},
+                           .begin = PathAffine::ofPath(SummaryPath::param(1)),
+                           .end = PathAffine::ofPath(SummaryPath::param(2)),
+                           .family = {}};
+  contract.require(input);
+  EXPECT_EQ(parseCheckedContract(printCheckedContract(contract, {}), {}),
+            contract);
+  for (unsigned variant = 0; variant < 4; ++variant) {
+    auto invalid = contract;
+    auto changed = input;
+    if (variant == 0)
+      changed.other = SummaryPath::param(1);
+    else if (variant == 1)
+      changed.family = "free";
+    else if (variant == 2)
+      changed.on = Outcome::NonNull;
+    else
+      changed.end = PathAffine::ofPath(SummaryPath::result());
+    invalid.requirements.clear();
+    invalid.require(changed);
+    EXPECT_FALSE(parseCheckedContract(printCheckedContract(invalid, {}), {}));
+  }
+}
 TEST(RuntimeSafetyTest,
      ConditionalInitializationDoesNotActivateAnArgumentList) {
   SafetyState state;

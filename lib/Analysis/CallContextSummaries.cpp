@@ -10,13 +10,16 @@
 
 #include "llvm/ADT/ScopeExit.h"
 
+#include <algorithm>
+
 namespace weavec::analysis {
 
 std::optional<ResolvedSummary> SummaryStore::specializeMemory(
     std::string_view symbol, const core::CallContext &bindings,
     const AnalysisOptions &options, core::DiagnosticSink *sink) {
-  const bool checkedCase = options.stats != nullptr && options.checkContracts &&
-                           !bindings.facts.empty();
+  const bool checkedCase =
+      options.stats != nullptr && options.checkContracts &&
+      (!bindings.facts.empty() || !bindings.nonNan.empty());
   if (checkedCase)
     options.stats->add("checked_case_requests");
   const auto decline = [&]() -> std::optional<ResolvedSummary> {
@@ -24,8 +27,92 @@ std::optional<ResolvedSummary> SummaryStore::specializeMemory(
       options.stats->add("checked_case_declines");
     return std::nullopt;
   };
+  const auto *function = callable(symbol);
+  // Private induction premises belong to the enclosing proof transaction.
+  // A nested context must not publish a member before that group verifies.
+  if (function != nullptr &&
+      activeRecursiveContracts.members.contains(function->getCanonicalDecl()))
+    return decline();
   if (!bindings.valid())
     return decline();
+  if (options.checkContracts && checkingRecursiveApproximation &&
+      activeMemoryContexts.empty() && bindings.aliases.empty() &&
+      bindings.orders.empty()) {
+    if (options.stats)
+      options.stats->add("recursive_provisional_context_declines");
+    return decline();
+  }
+  if (options.checkContracts && function &&
+      recursiveFunctions.contains(function->getCanonicalDecl()) &&
+      !verifiedRecursiveContracts.contains(function->getCanonicalDecl()) &&
+      bindings.aliases.empty() && bindings.orders.empty()) {
+    auto base = lookup(*function);
+    if (base) {
+      std::set<unsigned> readOnlyRecords;
+      for (unsigned i = 0; i < function->getNumParams(); ++i) {
+        const auto type = function->getParamDecl(i)->getType();
+        if (!type->isPointerType() || !type->getPointeeType()->isRecordType())
+          continue;
+        bool read = false;
+        bool changed = false;
+        for (const auto &[path, effect] : base->summary->effects) {
+          if (!path.isParam() || path.index != i)
+            continue;
+          read |= path.hasDeref() && effect.read;
+          changed |= effect.written || effect.replaced || effect.consumed();
+        }
+        if (read && !changed)
+          readOnlyRecords.insert(i);
+      }
+      const auto overwritten = [&](const core::SummaryPath &path) {
+        return path.hasDeref() &&
+               std::ranges::any_of(
+                   base->summary->effects, [&](const auto &effect) {
+                     return (effect.second.written || effect.second.replaced) &&
+                            (effect.first == path ||
+                             effect.first.isProperPrefixOf(path));
+                   });
+      };
+      const bool refinesInput =
+          std::ranges::any_of(bindings.facts, [&](const auto &entry) {
+            const auto &[path, fact] = entry;
+            const bool exact =
+                fact.constant || (fact.integer && fact.integer->constant()) ||
+                (fact.isPointer() &&
+                 fact.implies(core::ValueFact::of(core::Outcome::Null)));
+            if (!path.isParam() || !exact)
+              return false;
+            if (!readOnlyRecords.empty() && path.hasDeref() &&
+                !readOnlyRecords.contains(path.index))
+              return false;
+            return !overwritten(path);
+          });
+      if (!refinesInput) {
+        if (options.stats)
+          options.stats->add("recursive_context_nomination_declines");
+        if (base->summary->checked.complete())
+          return base;
+        return decline();
+      }
+      const auto stableInputs = [&](core::CallContext input) {
+        std::erase_if(input.facts, [&](const auto &fact) {
+          return overwritten(fact.first);
+        });
+        return input;
+      };
+      const auto stable = stableInputs(bindings);
+      if (std::ranges::any_of(activeMemoryContexts, [&](const auto &active) {
+            return active.first == symbol && active.second != bindings &&
+                   stableInputs(active.second) == stable;
+          })) {
+        if (options.stats)
+          options.stats->add("recursive_output_context_declines");
+        if (base->summary->checked.complete())
+          return base;
+        return decline();
+      }
+    }
+  }
   const MemoryContextKey key{std::string(symbol), bindings};
   noteDependency(symbol);
   auto &requests = memoryRequests[key.first];
@@ -33,7 +120,6 @@ std::optional<ResolvedSummary> SummaryStore::specializeMemory(
       requests.size() >= core::MaxMemoryContexts)
     return decline();
   requests.insert(bindings);
-  const auto *function = callable(symbol);
   const auto *definition = function ? function->getDefinition() : nullptr;
   if (!context)
     return decline();

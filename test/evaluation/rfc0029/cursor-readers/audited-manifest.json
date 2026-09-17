@@ -1,0 +1,181 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "name": "cursor-reader-client",
+      "sources": [
+        "client.c",
+        "library.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    },
+    {
+      "name": "cursor-reader-empty",
+      "sources": [
+        "empty.c",
+        "library.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    },
+    {
+      "name": "cursor-reader-copy",
+      "sources": [
+        "copy.c",
+        "library.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    },
+    {
+      "name": "cursor-reader-generic",
+      "sources": [
+        "client.c",
+        "library.c"
+      ],
+      "functions": [
+        "take",
+        "main"
+      ],
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    },
+    {
+      "name": "cursor-reader-partial",
+      "sources": [
+        "client.c",
+        "partial.c"
+      ],
+      "functions": [
+        "take",
+        "main"
+      ],
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    },
+    {
+      "name": "cursor-reader-uninitialized",
+      "sources": [
+        "uninitialized-read.c",
+        "library.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "reason": "initialized|buffer",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    },
+    {
+      "name": "cursor-reader-capacity",
+      "sources": [
+        "capacity-read.c",
+        "library.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "reason": "extent|bounds|buffer",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    },
+    {
+      "name": "cursor-reader-cursor",
+      "sources": [
+        "cursor.c",
+        "library.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "reason": "range|bounds|buffer|cursor|extent",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    },
+    {
+      "name": "cursor-reader-off-by-one",
+      "sources": [
+        "endpoint-read.c",
+        "off-by-one.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "reason": "range|bounds|buffer|extent",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    },
+    {
+      "name": "cursor-reader-escape",
+      "sources": [
+        "escaped-read.c",
+        "escape.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "reason": "range|bounds|buffer|extent",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    },
+    {
+      "name": "cursor-reader-readonly",
+      "sources": [
+        "client.c",
+        "readonly.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "reason": "writable|read-only",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    }
+  ]
+}

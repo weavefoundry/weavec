@@ -1,0 +1,1 @@
+Frozen against candidate75e before bounded comparison-result inference. Checks actual contents, embedded zeros, unsigned byte ordering, mutation, incomplete initialization and short objects. A nonzero result has only a sign, never a prescribed magnitude. No upstream code is changed.

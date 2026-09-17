@@ -1,0 +1,78 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "name": "wrong-base-byte",
+      "sources": [
+        "wrong-base-byte.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "bound|extent|interval"
+    },
+    {
+      "name": "unreachable-write",
+      "sources": [
+        "unreachable-write.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    },
+    {
+      "name": "heap-wrong-base-byte",
+      "sources": [
+        "heap-wrong-base-byte.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "bound|extent|interval"
+    },
+    {
+      "name": "heap-unreachable-write",
+      "sources": [
+        "heap-unreachable-write.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    },
+    {
+      "name": "advanced-read",
+      "sources": [
+        "advanced-read.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "bound|extent|interval"
+    }
+  ]
+}

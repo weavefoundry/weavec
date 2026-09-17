@@ -1,0 +1,100 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "name": "failure-leak",
+      "sources": [
+        "failure-leak.c"
+      ],
+      "functions": [
+        "make",
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "allocation|footprint|leak|release|freed|live|positive size"
+    },
+    {
+      "name": "stale-release",
+      "sources": [
+        "stale-release.c"
+      ],
+      "functions": [
+        "make",
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "allocation|footprint|leak|release|freed|live|positive size"
+    },
+    {
+      "name": "lost-result",
+      "sources": [
+        "lost-result.c"
+      ],
+      "functions": [
+        "make",
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "allocation|footprint|leak|release|freed|live|positive size"
+    },
+    {
+      "name": "overwrite-failure",
+      "sources": [
+        "overwrite-failure.c"
+      ],
+      "functions": [
+        "make",
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "allocation|footprint|leak|release|freed|live|positive size"
+    },
+    {
+      "name": "zero-size",
+      "sources": [
+        "zero-size.c"
+      ],
+      "functions": [
+        "make",
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "allocation|footprint|leak|release|freed|live|positive size"
+    },
+    {
+      "name": "null-input",
+      "sources": [
+        "null-input.c"
+      ],
+      "functions": [
+        "make",
+        "main"
+      ],
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    }
+  ]
+}

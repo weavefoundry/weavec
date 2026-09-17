@@ -46,6 +46,7 @@
 
 #include "clang/AST/ExprCXX.h"
 #include "clang/AST/OperationKinds.h"
+#include "clang/AST/RecordLayout.h"
 #include "clang/Analysis/FlowSensitive/DataflowWorklist.h"
 #include "clang/Lex/Lexer.h"
 
@@ -514,10 +515,37 @@ core::AnalysisState FunctionDataflow::initialState() {
       state.safety->initialized.insert(place);
       if (param->getType()->isPointerType())
         state.safety->pointers.insert(place);
+      // RFC 0018: by-value arguments provide initialized field values. Keep
+      // the intervals separate so that this supplies neither initialized
+      // padding nor evidence about a pointer field's referent.
+      if (const auto *record = param->getType()->getAsRecordDecl();
+          record && record->isCompleteDefinition() && !record->isUnion()) {
+        const auto &layout = context.getASTRecordLayout(record);
+        for (const auto *field : record->fields()) {
+          if (field->isBitField() || !field->getType()->isScalarType())
+            continue;
+          const auto bytes = byteSizeOf(field->getType(), context);
+          const auto bits = layout.getFieldOffset(field->getFieldIndex());
+          if (!bytes || bits % context.getCharWidth() != 0)
+            continue;
+          const auto offset =
+              static_cast<std::int64_t>(bits / context.getCharWidth());
+          state.safety->initialized.insert(builder.fieldPlace(place, *field));
+          state.safety->initialize(
+              place, {.begin = core::Affine::ofConstant(offset),
+                      .end = core::Affine::ofConstant(offset + *bytes)});
+        }
+      }
     }
     if (!param->getType()->isPointerType()) {
       const auto type = integerTypeOf(param->getType(), context);
-      if (type && paramReassigned[param->getFunctionScopeIndex()]) {
+      const auto *recursiveGroup = summaries.recursiveContractGroup(function);
+      const bool progressInput =
+          options.checkContracts && recursiveGroup != nullptr &&
+          (recursiveGroup->constructs || recursiveGroup->writes) &&
+          param->getFunctionScopeIndex() == 1;
+      if (type &&
+          (paramReassigned[param->getFunctionScopeIndex()] || progressInput)) {
         const auto saved = places.create("entry(" + nameOf(place) + ")");
         numericEntryValues.emplace(place, saved);
         state.scalars.set(
@@ -627,6 +655,10 @@ core::AnalysisState FunctionDataflow::initialState() {
     initializeContainers(state);
   if (state.safety)
     initializeBuffers(state);
+  if (state.safety)
+    initializeRecursiveInput(state);
+  if (state.safety)
+    initializeCheckedSpans(state);
   for (const auto *param : function.parameters())
     if (param->getType()->isVariablyModifiedType())
       captureVariableArray(builder.placeForVar(*param), *param, state);
@@ -1466,10 +1498,24 @@ bool FunctionDataflow::isStorageOfVariable(core::PlaceId place) const {
 }
 
 /// RFC 0011: the pointer's own value moves, carrying its spatial/alias facts.
-static void stepPointer(core::PlaceId place, const core::PointerOffset &step,
-                        core::AnalysisState &state) {
+void FunctionDataflow::stepPointer(core::PlaceId place,
+                                   const core::PointerOffset &step,
+                                   core::AnalysisState &state, const Expr &at) {
   if (step.isZero())
     return;
+  // The pointer retains its allocation, but its pointee names a different
+  // cell. Retire only facts below this holder: its unchanged aliases still
+  // name their original cells, and no memory was written by the advance.
+  for (const auto cell : places.descendants(place)) {
+    if (!tracksScalar(cell))
+      continue;
+    snapshotIntegerDependencies(cell, &at, state);
+    snapshotScalar(cell, &at, state);
+    state.dropGuardsOn(cell);
+    state.relations.forget(cell);
+    state.numericValues.erase(cell);
+    state.scalars.forget(cell);
+  }
   // A place with no record so far stood at the start of what it points into
   // (RFC 0008's convention for parameters); now it is `step` further.
   const core::SpatialRecord record =
@@ -1513,7 +1559,11 @@ FunctionDataflow::summaryAffineOf(const std::optional<core::Affine> &affine) {
                      : std::nullopt;
   }
   const auto path = stableSummaryPathOf(*affine->place);
-  if (path)
+  // RFC 0029: a field spelling is not its immutable entry value after a
+  // numeric write. In particular, a loop cursor must project an envelope
+  // covering every iteration, not just its initial cell.
+  if (path &&
+      (!currentState || !currentState->numericWrites.contains(*affine->place)))
     return core::PathAffine::ofPath(*path, affine->scale, affine->constant);
   if (options.checkContracts && currentState) {
     const auto folded = foldAffine(affine, *currentState);
@@ -1529,7 +1579,7 @@ FunctionDataflow::summaryAffineOf(const std::optional<core::Affine> &affine) {
           pair.first == *affine->place ? pair.second : pair.first;
       const auto input = stableSummaryPathOf(other);
       std::int64_t constant = 0;
-      if (oriented && input &&
+      if (oriented && input && !currentState->numericWrites.contains(other) &&
           !__builtin_mul_overflow(oriented->offset, affine->scale, &constant) &&
           !__builtin_add_overflow(constant, affine->constant, &constant))
         return core::PathAffine::ofPath(*input, affine->scale, constant);
@@ -1809,6 +1859,36 @@ void FunctionDataflow::run() {
     return;
   }
 
+  // Specialized direct cleanup uses the same private group and progress
+  // checker as a TU component. Its callback bindings belong only to this
+  // analysis; the hypothesis must never enter the generic summary store.
+  bool singletonRecursiveGroup = false;
+  if (options.checkContracts && function.getNumParams() == 1 &&
+      function.getReturnType()->isVoidType() &&
+      function.getParamDecl(0)->getType()->isPointerType() &&
+      function.getParamDecl(0)
+              ->getType()
+              ->getPointeeType()
+              ->getAsRecordDecl() != nullptr &&
+      !summaries.recursiveContractGroup(function) &&
+      summaries.activeRecursiveContracts.members.empty()) {
+    for (const auto *block : *cfg)
+      for (const auto &element : *block)
+        if (const auto statement = element.getAs<CFGStmt>())
+          if (const auto *call = dyn_cast<CallExpr>(statement->getStmt()))
+            if (const auto *callee = call->getDirectCallee();
+                callee &&
+                callee->getCanonicalDecl() == function.getCanonicalDecl())
+              singletonRecursiveGroup = true;
+    if (singletonRecursiveGroup)
+      summaries.activeRecursiveContracts = {
+          .members = {function.getCanonicalDecl()}, .releases = true};
+  }
+  const auto finishRecursiveGroup = llvm::scope_exit([&] {
+    if (singletonRecursiveGroup)
+      summaries.activeRecursiveContracts = {};
+  });
+
   classifyStmt(body);
   if (options.checkContracts)
     initializeChecked();
@@ -1866,18 +1946,34 @@ void FunctionDataflow::run() {
         continue;
       const CFGBlock *header = nullptr;
       const ForStmt *loop = nullptr;
+      const Stmt *loopStatement = nullptr;
+      const bool byteContext = !memoryContext.bytes.empty();
+      bool byteSwitch = false;
       bool eligible = true;
       std::set<unsigned> members;
       for (const auto *block : *component) {
         cyclicBlocks[block->getBlockID()] = true;
         members.insert(block->getBlockID());
         const auto *terminator = block->getTerminatorStmt();
+        if (const auto *dispatch = dyn_cast_or_null<SwitchStmt>(terminator)) {
+          const auto *value = dispatch->getCond()->IgnoreParenImpCasts();
+          byteSwitch |= value->getType()->isCharType() &&
+                        !value->getType().isVolatileQualified() &&
+                        (isa<ArraySubscriptExpr>(value) ||
+                         (isa<UnaryOperator>(value) &&
+                          cast<UnaryOperator>(value)->getOpcode() == UO_Deref));
+        }
         if (const auto *candidate = dyn_cast_or_null<ForStmt>(terminator)) {
-          eligible &= loop == nullptr;
+          eligible &= loopStatement == nullptr || loopStatement == candidate;
+          loopStatement = candidate;
           loop = candidate;
           header = block;
-        } else if (isa_and_nonnull<WhileStmt, DoStmt, GotoStmt,
-                                   IndirectGotoStmt>(terminator)) {
+        } else if (isa_and_nonnull<WhileStmt, DoStmt>(terminator)) {
+          eligible &= byteContext &&
+                      (loopStatement == nullptr || loopStatement == terminator);
+          loopStatement = terminator;
+        } else if (isa_and_nonnull<IndirectGotoStmt>(terminator) ||
+                   (!byteContext && isa_and_nonnull<GotoStmt>(terminator))) {
           eligible = false;
         }
       }
@@ -1897,12 +1993,35 @@ void FunctionDataflow::run() {
           increment ? dyn_cast<DeclRefExpr>(
                           increment->getSubExpr()->IgnoreParenImpCasts())
                     : nullptr;
-      eligible &= header != nullptr && condition != nullptr &&
-                  condition->getOpcode() == BO_LT && index != nullptr &&
-                  increment != nullptr && increment->isIncrementOp() &&
-                  stepped != nullptr &&
-                  index->getDecl() == stepped->getDecl() &&
-                  !condition->getRHS()->HasSideEffects(context);
+      const bool byteCase =
+          byteContext &&
+          (isa_and_nonnull<WhileStmt, DoStmt>(loopStatement) ||
+           (loop != nullptr && byteSwitch && increment != nullptr &&
+            increment->isIncrementOp() && stepped != nullptr &&
+            stepped->getType()->isIntegerType() &&
+            !stepped->getType().isVolatileQualified()));
+      if (byteCase) {
+        // RFC 0029: partition actual byte-specialized loop executions under
+        // the existing traversal bound. The last layer still joins and
+        // widens every later backedge; no trip-count assumption is made.
+        header = nullptr;
+        eligible &= loopStatement != nullptr;
+        for (const auto *block : *component)
+          for (const auto &edge : block->preds())
+            if (const auto *pred = edge.getReachableBlock();
+                pred && !members.contains(pred->getBlockID())) {
+              eligible &= header == nullptr || header == block;
+              header = block;
+            }
+        eligible &= header != nullptr;
+      } else {
+        eligible &= header != nullptr && condition != nullptr &&
+                    condition->getOpcode() == BO_LT && index != nullptr &&
+                    increment != nullptr && increment->isIncrementOp() &&
+                    stepped != nullptr &&
+                    index->getDecl() == stepped->getDecl() &&
+                    !condition->getRHS()->HasSideEffects(context);
+      }
       if (!eligible)
         continue;
       // Every external entry must cross the header. Removing the back edges
@@ -1931,7 +2050,11 @@ void FunctionDataflow::run() {
         expansionFor[id] = expansions.size();
       expansions.push_back({.header = header,
                             .condition = condition,
-                            .blocks = std::move(members)});
+                            .blocks = std::move(members),
+                            .decided = byteCase,
+                            .active = byteCase});
+      if (byteCase && options.stats)
+        options.stats->add("checked_loop_expansions");
     }
   using ExpandedKey = std::pair<unsigned, unsigned>;
   std::map<ExpandedKey, core::AnalysisState> expandedEntries;
@@ -2094,8 +2217,34 @@ void FunctionDataflow::run() {
                     : expandedVisits[{succ.getBlockID(), nextLayer}] > 0)) ||
               (nextLayer == core::MaxTraversalIterations &&
                layer == nextLayer)));
-        const bool changed =
-            target->join(edgeState, &places, widen) || premises;
+        const auto boundaries =
+            options.checkContracts && widen
+                ? checkedJoinBoundaries(*target, edgeState)
+                : std::vector<std::pair<core::PlaceId, core::Affine>>{};
+        bool changed = target->join(edgeState, &places, widen) || premises;
+        for (const auto &[coordinate, endpoint] : boundaries) {
+          const auto represented = [&](core::PlaceId cursor) {
+            return std::ranges::any_of(
+                target->safety->positions, [&](const auto &entry) {
+                  return entry.second.offset == core::Affine::ofPlace(cursor);
+                });
+          };
+          if (!represented(coordinate) ||
+              (endpoint.place &&
+               std::ranges::any_of(checkedCoordinates,
+                                   [&](const auto &entry) {
+                                     return entry.second == *endpoint.place;
+                                   }) &&
+               !represented(*endpoint.place)))
+            continue;
+          const auto before = target->relations;
+          if (!endpoint.place)
+            target->relations.learnAtMost(coordinate, endpoint.constant);
+          else
+            target->relations.learn(coordinate, core::Relation::LessEqual,
+                                    *endpoint.place, endpoint.constant);
+          changed |= before != target->relations;
+        }
         if (changed)
           enqueue(&succ, nextLayer);
       };
@@ -2167,7 +2316,10 @@ void FunctionDataflow::run() {
           for (const auto &range : ranges)
             stream << "  initialized " << nameOf(storage) << " ["
                    << range.begin.toString() << "," << range.end.toString()
-                   << ")\n";
+                   << ")" << (range.numericText ? " numeric-text" : "")
+                   << (!range.bytes.empty() ? " exact-bytes" : "") << "\n";
+        for (const auto place : state.safety->nonNan)
+          stream << "  non-NaN " << nameOf(place) << "\n";
         for (const auto &[holder, position] : state.safety->positions)
           stream << "  position " << nameOf(holder) << " = "
                  << nameOf(position.storage) << " + "
@@ -2247,6 +2399,14 @@ void FunctionDataflow::transfer(const CFGBlock &block,
   lastCall.reset();
   retireHeapInputs(state);
   blockTerminated = false;
+  std::optional<PayloadRelocation> relocation;
+  const auto discardRelocation = [&] {
+    if (!relocation)
+      return;
+    state.safety->footprints.forget(relocation->snapshot.first);
+    state.safety->footprints.forget(relocation->snapshot.second);
+    relocation.reset();
+  };
   for (std::size_t index = 0; index < block.size() && !blockTerminated;
        ++index) {
     const CFGElement &element = block[index];
@@ -2256,6 +2416,10 @@ void FunctionDataflow::transfer(const CFGBlock &block,
       const Stmt *stmt = stmtElement->getStmt();
       if (stmt == nullptr)
         continue;
+      if (relocation && !relocation->evaluation.contains(stmt))
+        discardRelocation();
+      if (options.checkContracts && !relocation)
+        relocation = capturePayloadRelocation(*stmt, state);
       inUnsafe = unsafeBody || unsafeStmts.contains(stmt);
       if (options.checkContracts)
         checkedBefore(*stmt, state);
@@ -2267,9 +2431,14 @@ void FunctionDataflow::transfer(const CFGBlock &block,
         handleReturn(*ret, state);
       if (options.checkContracts)
         checkedAfter(*stmt, state);
+      if (relocation && stmt == relocation->clear) {
+        applyPayloadRelocation(*relocation, state);
+        discardRelocation();
+      }
       inUnsafe = unsafeBody;
       continue;
     }
+    discardRelocation();
     if (const auto lifetimeEnd = element.getAs<CFGLifetimeEnds>()) {
       // Clang <= 22 also ends parameter lifetimes at every `return` (Clang 23
       // gates this behind `AddParameterLifetimes`). Parameters live for the
@@ -2280,6 +2449,7 @@ void FunctionDataflow::transfer(const CFGBlock &block,
         handleLifetimeEnd(*var, locateElement(block, index), state);
     }
   }
+  discardRelocation();
   retireHeapInputs(state);
 }
 
@@ -2479,6 +2649,9 @@ void FunctionDataflow::applyEdge(const CFGBlock &from, unsigned succIndex,
     return;
 
   // Successor 0 is the edge taken when the condition holds.
+  if (options.checkContracts)
+    if (const auto *loop = dyn_cast_or_null<ForStmt>(from.getTerminatorStmt()))
+      checkedReaderLoop(*loop, state);
   applyCondition(*condition, succIndex == 0, /*wrapped=*/false, state);
   if (options.checkContracts && succIndex == 1 && !edgeInfeasible)
     if (const auto *loop = dyn_cast_or_null<ForStmt>(from.getTerminatorStmt()))
@@ -2933,7 +3106,12 @@ void FunctionDataflow::applyOutcomeStores(core::PendingOutcome &narrowed,
   // RFC 0010, *Per-outcome integer facts*: what the callee wrote holds on
   // every class still possible, and refutes the guards it contradicts.
   for (const auto &[place, fact] : narrowed.factsInAll()) {
-    if (!tracksScalar(place))
+    const bool cursor =
+        state.safety &&
+        std::ranges::any_of(checkedCoordinates, [&](const auto &entry) {
+          return entry.second == place;
+        });
+    if (!tracksScalar(place) && !cursor)
       continue;
     state.scalars.set(place, fact);
     learnFact(place, fact, state);
@@ -2946,6 +3124,7 @@ void FunctionDataflow::applyOutcomeTest(const Expr &operand,
                                         std::optional<std::int64_t> constant) {
   if (selected.empty())
     return;
+  auto feasible = selected;
   if (operand.getType()->isIntegerType()) {
     if (const auto actual = scalarFactOf(operand, state)) {
       core::ValueFact wanted;
@@ -2960,6 +3139,16 @@ void FunctionDataflow::applyOutcomeTest(const Expr &operand,
           edgeInfeasible = true;
         return;
       }
+      // RFCs 0017/0029: the current numeric value can exclude a sign class
+      // retained by a conservative call-effect approximation. Apply the same
+      // trust boundary as branch refutation; the conversion checks below
+      // still have to succeed before these classes reach pending effects.
+      const auto read = builder.scalarOperand(operand);
+      if (!read.place || !places.innermostDeref(read.place->place) ||
+          !memoryContext.empty())
+        std::erase_if(feasible, [&](core::Outcome outcome) {
+          return !actual->classes.contains(outcome);
+        });
     }
     const auto safeRead = builder.scalarOperand(operand);
     const Expr *tested = operand.IgnoreParens();
@@ -3039,6 +3228,9 @@ void FunctionDataflow::applyOutcomeTest(const Expr &operand,
   };
 
   if (const auto *call = dyn_cast<CallExpr>(e)) {
+    // What the call itself already knew about its result (RFC 0029).
+    const std::optional<core::ValueFact> priorOutcome =
+        state.safety ? scalarFactOf(*call, state) : std::nullopt;
     if (state.safety)
       if (const auto result = numericCallResult(*call)) {
         core::ValueFact fact;
@@ -3055,10 +3247,32 @@ void FunctionDataflow::applyOutcomeTest(const Expr &operand,
     if (!lastCall || lastCall->call != call)
       return;
     core::PendingOutcome narrowed = lastCall->pending;
-    reinstate(narrowed.select(selected));
+    reinstate(narrowed.select(feasible));
     applyOutcomeGuards(narrowed, state, reinstate);
     markNullOutcomes(narrowed, state);
     applyOutcomeStores(narrowed, state);
+    // The call is tested directly in this CFG block. Its output-slot
+    // constructor has no intervening writes or other mutating effects, so
+    // this edge can materialize the already captured success guarantee.
+    // Saved integer results need separately invalidated pending evidence.
+    if (state.safety && freshFootprintSlots.contains(call)) {
+      if (const auto result = numericCallResult(*call)) {
+        core::ValueFact possible;
+        for (const auto &[outcome, targets] : narrowed.consumedBy) {
+          (void)targets;
+          possible.classes.insert(outcome);
+        }
+        if (!possible.classes.empty())
+          (void)state.scalars.narrow(*result, possible);
+      }
+      applyContainerPosts(*call, state);
+      applyFootprintPosts(*call, state, std::nullopt);
+    } else if (state.safety && options.checkContracts) {
+      // RFC 0029: this edge immediately tests the call's own result. Install
+      // only the outcome-specific outputs the call could not yet select.
+      applyContainerPosts(*call, state, std::nullopt, &priorOutcome);
+      applyFootprintPosts(*call, state, std::nullopt, &priorOutcome);
+    }
     return;
   }
   if (!PlaceBuilder::isPlaceExpr(*e))
@@ -3141,7 +3355,7 @@ void FunctionDataflow::applyOutcomeTest(const Expr &operand,
   // The narrowed entry stays even once nothing more can be retracted: it
   // records which classes the result can still be in, which a later
   // `return` of it needs. It goes when the result is reassigned.
-  const std::vector<core::PlaceId> reinstated = entry->second.select(selected);
+  const std::vector<core::PlaceId> reinstated = entry->second.select(feasible);
   reinstate(reinstated);
   applyOutcomeGuards(entry->second, state, reinstate);
   markNullOutcomes(entry->second, state);
@@ -3245,6 +3459,32 @@ void FunctionDataflow::assignScalar(core::PlaceId place, const Expr *value,
     if (!llvm::is_contained(cells, image))
       cells.push_back(image);
   }
+  // May aliases identify values to retire, not cells that receive this
+  // value. In particular *p and *(p + 1) are different scalar cells even
+  // though ownership effects deliberately share their element summary.
+  const auto exact = mirrors(place, state, true);
+  auto written = checkedScalarMemory(place, state);
+  const auto *assignment = dyn_cast_or_null<BinaryOperator>(at);
+  if (state.safety && assignment && assignment->getOpcode() == BO_Assign)
+    written = checkedLvalue(*assignment->getLHS(), state);
+  std::set<core::PlaceId> assigned;
+  std::set<core::PlaceId> disjoint;
+  for (const auto cell : cells) {
+    const auto memory = checkedScalarMemory(cell, state);
+    if (written && memory && written->storage == memory->storage) {
+      if (checkedAtMost(written->begin, memory->begin, state) &&
+          checkedAtMost(memory->begin, written->begin, state) &&
+          checkedAtMost(written->end, memory->end, state) &&
+          checkedAtMost(memory->end, written->end, state))
+        assigned.insert(cell);
+      else if (checkedAtMost(written->end, memory->begin, state) ||
+               checkedAtMost(memory->end, written->begin, state))
+        disjoint.insert(cell);
+    } else if (llvm::is_contained(exact, cell) &&
+               !(assignment && assignment->getLHS()->HasSideEffects(context))) {
+      assigned.insert(cell);
+    }
+  }
   std::optional<core::ValueFact> fact;
   std::optional<NumericExpression> numeric;
   if (value != nullptr && tracksScalar(place)) {
@@ -3252,6 +3492,8 @@ void FunctionDataflow::assignScalar(core::PlaceId place, const Expr *value,
     numeric = integerExpressionOf(*value, state);
     const auto *decl = dyn_cast_or_null<ValueDecl>(builder.declFor(place));
     auto storage = decl ? integerTypeOf(*decl, context) : std::nullopt;
+    if (!storage && assignment && assignment->getOpcode() == BO_Assign)
+      storage = integerTypeOf(assignment->getLHS()->getType(), context);
     if (!storage && places.isElement(place))
       if (const auto array = arrayTypes.find(*places.parent(place));
           array != arrayTypes.end())
@@ -3290,6 +3532,53 @@ void FunctionDataflow::assignScalar(core::PlaceId place, const Expr *value,
       same = input;
       sameOffset = 0;
     }
+  if (state.safety && numeric)
+    if (const auto linear = linearIntegerExpression(*numeric, state);
+        linear && linear->place && linear->scale == 1 &&
+        !llvm::is_contained(cells, *linear->place)) {
+      same = linear->place;
+      sameOffset = linear->constant;
+    }
+  // RFC 0029: equal constants seed counter relations; the ordinary CFG join
+  // and nonwrapping adjustment rules must maintain them on every path.
+  if (!same && state.safety && fact && numeric &&
+      checkedLoopCounters.contains(place))
+    if (const auto exactValue = fact->inType(numeric->type()).constant())
+      for (const auto other : checkedLoopCounters) {
+        if (llvm::is_contained(cells, other))
+          continue;
+        const auto *otherDecl =
+            dyn_cast_or_null<ValueDecl>(builder.declFor(other));
+        const auto known = state.scalars.factOf(other);
+        if (known && otherDecl &&
+            integerTypeOf(*otherDecl, context) == numeric->type() &&
+            known->inType(numeric->type()).constant() == exactValue) {
+          same = other;
+          break;
+        }
+      }
+  // RFC 0029: resetting an index does not change the range already proved
+  // for an equal, unchanged count. Capture it before retiring the equality.
+  if (state.safety && fact && fact->constant &&
+      checkedLoopCounters.contains(place)) {
+    std::vector<std::pair<core::PlaceId, core::ValueFact>> retained;
+    for (const auto &[pair, edge] : state.relations.all()) {
+      if (edge.relation != core::Relation::Equal ||
+          (pair.first != place && pair.second != place))
+        continue;
+      const auto other = pair.first == place ? pair.second : pair.first;
+      if (!checkedLoopCounters.contains(other) ||
+          llvm::is_contained(cells, other))
+        continue;
+      const auto *decl = dyn_cast_or_null<ValueDecl>(builder.declFor(other));
+      const auto type = decl ? integerTypeOf(*decl, context) : std::nullopt;
+      if (type)
+        retained.emplace_back(other, core::ValueFact::ofInteger(
+                                         integerRangeAt(other, *type, state)));
+    }
+    for (const auto &[other, range] : retained)
+      state.scalars.set(other, range);
+  }
   // RFC 0028: a symbolic private-array write may replace a known element.
   // Capture the RHS first, then discard expressions that still name an old
   // overlapping cell. Only established disjoint selectors keep their values.
@@ -3302,23 +3591,33 @@ void FunctionDataflow::assignScalar(core::PlaceId place, const Expr *value,
       assignScalar(other, nullptr, state, at);
     }
   for (const core::PlaceId cell : cells) {
+    if (disjoint.contains(cell))
+      continue;
     snapshotArrayIndex(cell, at, state);
     snapshotIntegerDependencies(cell, at, state);
     snapshotScalar(cell, at, state);
     state.dropGuardsOn(cell);
     state.relations.forget(cell);
-    if (numeric && !numeric->dependsOn(cell) && tracksScalar(cell))
+    state.numericValues.erase(cell);
+    if (assigned.contains(cell) && numeric && !numeric->dependsOn(cell) &&
+        tracksScalar(cell))
       state.numericValues.insert_or_assign(cell, *numeric);
-    if (fact && tracksScalar(cell))
+    if (assigned.contains(cell) && fact && tracksScalar(cell))
       state.scalars.set(cell, *fact);
     else
       state.scalars.forget(cell);
-    if (same && tracksScalar(cell))
+    if (assigned.contains(cell) && fact && fact->constant &&
+        checkedLoopCounters.contains(cell)) {
+      state.relations.learnAtLeast(cell, *fact->constant);
+      state.relations.learnAtMost(cell, *fact->constant);
+    }
+    if (assigned.contains(cell) && same && tracksScalar(cell))
       state.relations.learn(cell, core::Relation::Equal, *same, sameOffset);
     state.numericWrites.insert(cell);
     if (const auto path = builder.summaryPathOf(cell))
       writtenScalarPaths.insert(*path);
   }
+  checkedSpanCountBounds(state);
   // RFC 0012, *Sized fields*: a count written beside a pointer field.
   for (const core::PlaceId cell : cells)
     noteFieldScalarWrite(cell, at, state);
@@ -3491,10 +3790,13 @@ bool FunctionDataflow::pruneGuard(core::PlaceGuard &guard,
     // Most exported guards are already decided by a scalar fact. RFC 0024's
     // additional range/alias refinement is needed only for the remainder;
     // avoid rebuilding ranges and scanning relations on this common path.
-    if (const auto known = state.factOf(it->first)) {
-      if (known->disjointFrom(it->second))
+    auto actualFact = state.factOf(it->first);
+    if (!actualFact)
+      actualFact = containerValueFact(it->first, state);
+    if (actualFact) {
+      if (actualFact->disjointFrom(it->second))
         return false;
-      if (known->implies(it->second)) {
+      if (actualFact->implies(it->second)) {
         it = guard.conditions.erase(it);
         continue;
       }
@@ -3639,7 +3941,7 @@ void FunctionDataflow::handleExpr(const Expr &expr,
         stepPointer(ref->place,
                     step == pointerSteps.end() ? core::PointerOffset::unknown()
                                                : step->second,
-                    state);
+                    state, expr);
       }
       // `n++`, `n += k`: whatever was known of `n` is gone (RFC 0009),
       // unless the adjustment itself updates it (RFC 0010).
@@ -4733,7 +5035,7 @@ void FunctionDataflow::handleCall(const CallExpr &call,
                        "checked integer output initialization is unresolved");
     return;
   }
-  if (options.checkContracts && handleRecursiveCleanup(call, state))
+  if (options.checkContracts && handleRecursiveContract(call, state))
     return;
   retireHeapInputs(state);
   // RFC 0012, *`WEAVEC_ASSUME`*: the argument holds from here on, as on the
@@ -4763,6 +5065,31 @@ void FunctionDataflow::handleCall(const CallExpr &call,
       checkDereference(pointer->place, call, state);
   }
   const auto effects = classifyCall(call, summaries);
+  if (options.checkContracts && recording() && !memoryContext.empty()) {
+    const auto *callee = call.getDirectCallee();
+    const auto own =
+        summaries.recursiveComponents.find(function.getCanonicalDecl());
+    const auto peer =
+        callee ? summaries.recursiveComponents.find(callee->getCanonicalDecl())
+               : summaries.recursiveComponents.end();
+    const bool recursiveEdge =
+        callee == nullptr ||
+        callee->getCanonicalDecl() == function.getCanonicalDecl() ||
+        (own != summaries.recursiveComponents.end() &&
+         peer != summaries.recursiveComponents.end() &&
+         own->second == peer->second);
+    if (recursiveEdge) {
+      // An actual input case may terminate at a peer's base case. Require its
+      // separately completed contract; a generic recursive approximation,
+      // including the fixed point's optimistic initial summary, cannot
+      // discharge this case's exhaustion marker (RFC 0029).
+      const auto generic = callee ? summaries.lookup(*callee) : std::nullopt;
+      const bool completeCase = effects && generic &&
+                                effects->summary->checked.complete() &&
+                                effects->summary != generic->summary;
+      checkedCaseReachesRecursion |= !completeCase;
+    }
+  }
   if (!effects) {
     prepareNumericCall(call, core::FunctionSummary{}, state);
     if (options.checkContracts)
@@ -4873,6 +5200,65 @@ void FunctionDataflow::applySummary(const CallExpr &call,
       continue;
     escapeValue(builder.classifyValue(arg), /*deep=*/true, state);
   }
+  const auto confinedCopyDestination = [&](const core::SummaryPath &dest) {
+    if (!state.safety || (!library && !summary.checked.complete()) ||
+        !dest.isParam() || dest.index >= call.getNumArgs() ||
+        dest.steps.size() != 1 ||
+        dest.steps.front().step != core::PathStep::Deref)
+      return false;
+    const auto *argument = call.getArg(dest.index)->IgnoreParenCasts();
+    const auto *address = dyn_cast<UnaryOperator>(argument);
+    const auto *reference =
+        address && address->getOpcode() == UO_AddrOf
+            ? dyn_cast<DeclRefExpr>(
+                  address->getSubExpr()->IgnoreParenImpCasts())
+            : nullptr;
+    const auto *variable =
+        reference ? dyn_cast<VarDecl>(reference->getDecl()) : nullptr;
+    if (!variable || !variable->hasLocalStorage() ||
+        !variable->getType()->isPointerType() ||
+        variable->getType().isVolatileQualified() ||
+        variable->getType()->isAtomicType())
+      return false;
+    const auto parameter = core::SummaryPath::param(dest.index);
+    const auto effect = summary.effectOf(parameter);
+    if (effect.escaped || effect.consumed() || effect.replaced ||
+        std::ranges::any_of(
+            summary.heap,
+            [&](const auto &entry) {
+              return entry.first != dest || entry.second.incomplete ||
+                     std::ranges::any_of(
+                         entry.second.fields, [&](const auto &field) {
+                           return field.dest != core::SummaryPath::result() ||
+                                  field.value.path == parameter;
+                         });
+            }) ||
+        std::ranges::any_of(
+            summary.returns,
+            [&](const auto &value) { return value.path == parameter; }) ||
+        std::ranges::any_of(summary.stores, [&](const auto &store) {
+          return store.dest != dest || store.value.path == parameter;
+        }))
+      return false;
+    // RFC 0029: this address is confined to this represented output call.
+    // Another address use keeps the ordinary conservative escape rule.
+    std::vector<const Stmt *> syntax{function.getBody()};
+    for (std::size_t i = 0; i < syntax.size(); ++i) {
+      const auto *statement = syntax[i];
+      if (const auto *other = dyn_cast<UnaryOperator>(statement);
+          other && other != address && other->getOpcode() == UO_AddrOf &&
+          addressedLocal(*other->getSubExpr()) == variable)
+        return false;
+      for (const auto *child : statement->children()) {
+        if (!child)
+          continue;
+        if (syntax.size() == 65536)
+          return false;
+        syntax.push_back(child);
+      }
+    }
+    return true;
+  };
   //    RFC 0010, *Per-outcome stores*: a store the callee performs on some
   //    classes only may be retracted by an outcome test, which then undoes
   //    the source's escape; what it was before the call is remembered here.
@@ -4880,11 +5266,15 @@ void FunctionDataflow::applySummary(const CallExpr &call,
   for (const core::Store &store : summary.stores) {
     if (store.value.kind != core::ValueSource::Kind::Copy || !store.value.path)
       continue;
+    auto guard = builder.translateGuard(store.value.when, call);
+    if (!guard || !pruneGuard(*guard, state))
+      continue;
     if (const auto ref = builder.resolveSummaryPath(*store.value.path, call)) {
       if (!summary.storesOn.empty())
         copySources.try_emplace(store.dest, ref->place,
                                 state.resources.isEscaped(ref->place));
-      escape(ref->place, state);
+      if (!confinedCopyDestination(store.dest))
+        escape(ref->place, state);
     }
   }
 
@@ -6147,13 +6537,12 @@ void FunctionDataflow::mirrorSubtree(core::PlaceId src, core::PlaceId dest,
   // every fact recorded about the former must hold for the latter too. After
   // `dest = &src->f` (RFC 0011, *Mirrors translate field offsets*) what is
   // below `(*src).f` is below `*dest`; after `dest = container_of(src, T,
-  // f)` what is below `*src` is below `(*dest).f`. Element and unknown
-  // offsets stay within the element summary. A copy somewhere `Inside` the
-  // object points at another sub-object: nothing below `*src` is below
-  // `*dest` (the alias edge alone carries the shared object).
+  // f)` what is below `*src` is below `(*dest).f`. Nonzero element and
+  // unknown offsets do not identify the same pointee cell. Their ordinary
+  // alias edge retains possible shared storage, without copying must-facts.
   if (state.incompleteHeap.contains(src))
     state.incompleteHeap.insert(dest);
-  if (offset.isInside())
+  if (!offset.isZero() && !offset.isField())
     return;
   core::PlaceId from = places.deref(src);
   core::PlaceId to = places.deref(dest);
@@ -6686,7 +7075,7 @@ void FunctionDataflow::applyPointerAssign(core::PlaceId dest,
     // Except that after `p = p + 1` the place points one element further
     // into what it owns (RFC 0008, *Invalid releases*; RFC 0011).
     if (element.isWhole())
-      stepPointer(dest, arms[0].origin->offset, state);
+      stepPointer(dest, arms[0].origin->offset, state, at);
     return;
   }
 
@@ -7202,8 +7591,35 @@ void FunctionDataflow::checkTemporaryBorrow(const PlaceRef &borrowed,
 // -- Queries ------------------------------------------------------------------
 
 FunctionDataflow::MirrorPlaces
-FunctionDataflow::mirrors(core::PlaceId place,
-                          const core::AnalysisState &state) {
+FunctionDataflow::scalarMirrors(core::PlaceId place,
+                                const core::AnalysisState &state) {
+  auto result = mirrors(place, state, true);
+  const auto memory = checkedScalarMemory(place, state);
+  for (const auto image : borrowedImages(place, state)) {
+    if (llvm::is_contained(result, image))
+      continue;
+    const auto other = checkedScalarMemory(image, state);
+    bool same = memory && other && memory->storage == other->storage &&
+                checkedAtMost(memory->begin, other->begin, state) &&
+                checkedAtMost(other->begin, memory->begin, state) &&
+                checkedAtMost(memory->end, other->end, state) &&
+                checkedAtMost(other->end, memory->end, state);
+    if (!state.safety)
+      if (const auto deref = places.innermostDeref(place)) {
+        const auto holder = *places.parent(*deref);
+        const auto spatial = spatialRecordAt(holder, state);
+        same = state.loans.heldBy(holder).size() == 1 &&
+               (!spatial || spatial->offset.isZero());
+      }
+    if (same)
+      result.push_back(image);
+  }
+  return result;
+}
+
+FunctionDataflow::MirrorPlaces
+FunctionDataflow::mirrors(core::PlaceId place, const core::AnalysisState &state,
+                          bool definite) {
   const auto parent = places.parent(place);
   if (!parent)
     return {place};
@@ -7214,13 +7630,14 @@ FunctionDataflow::mirrors(core::PlaceId place,
       result.push_back(id);
   };
   const core::PathStep step = places.step(place);
-  auto parents = mirrors(*parent, state);
+  auto parents = mirrors(*parent, state, definite);
+  const auto &aliases = definite ? state.definiteAliases : state.aliases;
   // Reuse the existing path and vector when this level has no expansion.
   // Only dereference steps consult aliases; field/index steps on the same
   // parent already have their interned identity and declaration (RFC 0020).
   if (parents.size() == 1 && parents.front() == *parent &&
       (step != core::PathStep::Deref ||
-       state.aliases.viewEdgesFrom(*parent).empty())) {
+       aliases.viewEdgesFrom(*parent).empty())) {
     parents.front() = place;
     return parents;
   }
@@ -7235,8 +7652,7 @@ FunctionDataflow::mirrors(core::PlaceId place,
       // the mirror deeper than the original and the expansion unbounded, so
       // they are skipped along with anything past the depth limit.
       add(parentMirror == *parent ? place : places.deref(parentMirror));
-      for (const auto &[alias, edge] :
-           state.aliases.viewEdgesFrom(parentMirror)) {
+      for (const auto &[alias, edge] : aliases.viewEdgesFrom(parentMirror)) {
         if (places.isDescendantOf(alias, parentMirror) ||
             places.depth(alias) >= MaxPlaceDepth)
           continue;
@@ -7248,6 +7664,8 @@ FunctionDataflow::mirrors(core::PlaceId place,
         // `container_of` result) shares the object, not the pointee: what
         // it points at is another sub-object, whose fields are not `*p`'s.
         if (edge.offset.isInside())
+          continue;
+        if (definite && !edge.offset.isZero() && !edge.offset.isField())
           continue;
         if (edge.offset.isField()) {
           if (!edge.offset.negative)
@@ -8118,7 +8536,8 @@ FunctionDataflow::accessOf(const Expr &lvalue) {
       return std::nullopt;
     std::optional<Access> inner;
     const Expr &base = PlaceBuilder::stripTransparent(*member->getBase());
-    if (!member->isArrow()) {
+    if (!member->isArrow() || base.getType()->isArrayType()) {
+      // Array decay selects element zero: `a->f` is `a[0].f`.
       inner = accessOf(base);
     } else if (const auto *addr = dyn_cast<UnaryOperator>(&base);
                addr != nullptr && addr->getOpcode() == UO_AddrOf) {
@@ -10567,7 +10986,9 @@ void FunctionDataflow::finalizeSummary(const core::AnalysisState *exitState) {
     summaryTimer.emplace(options.stats, "summary:" + functionWorkKey(function));
   const auto captureViews =
       llvm::scope_exit([&] { inferred.objectViews = builder.objectViews; });
-  if (summaries.incompleteFunctions.contains(function.getCanonicalDecl()))
+  if (summaries.incompleteFunctions.contains(function.getCanonicalDecl()) &&
+      (!options.checkContracts || memoryContext.empty() ||
+       !validMemoryContext || checkedCaseReachesRecursion))
     reportIncomplete("summary iteration limit reached", *function.getBody());
   if (convergenceFailed)
     reportIncomplete("function dataflow iteration limit reached",

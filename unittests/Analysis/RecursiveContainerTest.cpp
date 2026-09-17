@@ -70,6 +70,53 @@ TEST(RecursiveContainerAnalysis,
   EXPECT_TRUE(contract.complete());
   EXPECT_TRUE(contract.requirements.empty());
 }
+
+TEST(RecursiveContainerAnalysis,
+     HeadPredicateValuesDischargeOnlyCurrentReturnGuards) {
+  for (const std::string variant :
+       {"null", "changed", "alias", "failed-replacement", "replacement",
+        "released", "allocation"}) {
+    SCOPED_TRACE(variant);
+    std::string mutation;
+    if (variant == "changed")
+      mutation = "p->flags=2;";
+    else if (variant == "alias")
+      mutation = "struct node *q=p;q->flags=2;";
+    else if (variant == "failed-replacement")
+      mutation = "destroy(p);p=create();if(!p)return 0;p->flags=2;";
+    else if (variant == "replacement")
+      mutation = "destroy(p);reset(0);p=create();if(!p)return 0;"
+                 "p->flags=2;reset(&h);";
+    else if (variant == "released")
+      mutation = "destroy(p);";
+    const auto contract =
+        forestCheck(R"c(
+      static void *fail(size_t n) { (void)n; return 0; }
+      static void *render(const struct node *p) {
+        if(p->flags!=1)return malloc(1);
+        char *out=global_hooks.allocate(1);
+        if(!out)return 0;
+        *out='a';return out;
+      }
+      int client(void) {
+        reset(0);struct node *p=create();if(!p)return 0;
+        struct hooks h={)c" +
+                    std::string(variant == "allocation" ? "malloc" : "fail") +
+                    R"c(,free};reset(&h);
+      )c" + mutation +
+                    R"c(
+        char *out=render(p);if(out){out[2]=1;free(out);}
+      )c" + (variant == "released" ? "" : "destroy(p);") +
+                    R"c(
+        return 0;
+      }
+    )c");
+    EXPECT_EQ(contract.complete(),
+              variant == "null" || variant == "failed-replacement");
+    EXPECT_TRUE(contract.requirements.empty());
+  }
+}
+
 TEST(RecursiveContainerAnalysis, UnknownHooksAreNotAssumedToBeLibc) {
   EXPECT_FALSE(forestCheck(R"c(
     int client(struct hooks *h) { reset(h); struct node *p=create();
@@ -244,6 +291,393 @@ TEST(RecursiveContainerAnalysis,
                    .complete());
 }
 
+TEST(RecursiveContainerAnalysis,
+     PayloadPublicationRequiresTheWholeAcquisition) {
+  for (const std::string variant :
+       {"direct", "helper", "duplicate", "interior", "released", "lost",
+        "overwritten", "helper-leak"}) {
+    SCOPED_TRACE(variant);
+    const bool helper = variant == "helper" || variant == "helper-leak";
+    std::string store = "n->text=p;";
+    if (variant == "duplicate")
+      store += "n->name=p;";
+    else if (variant == "interior")
+      store = "n->text=p+1;";
+    else if (variant == "released")
+      store = "free(p);n->text=p;";
+    else if (variant == "lost")
+      store.clear();
+    const std::string source = R"c(
+      typedef __SIZE_TYPE__ size_t;
+      void *malloc(size_t); void *calloc(size_t,size_t); void free(void *);
+      struct node { struct node *next,*child; char *text,*name; };
+      static void drop(struct node *n) {
+        while(n) { struct node *next=n->next; drop(n->child);
+          free(n->text);free(n->name);free(n);n=next; }
+      }
+      static char *make(void) {
+    )c" + std::string(variant == "helper-leak" ? "(void)malloc(2);" : "") +
+                               R"c(
+        char *p=malloc(4);if(p)p[0]=0;return p;
+      }
+      static int fill(struct node *n) { char *p=
+    )c" + std::string(helper ? "make()" : "malloc(4)") +
+                               ";if(!p)return 0;p[0]=0;" + store + R"c(
+        return 1;
+      }
+      int client(void) {
+        struct node *n=calloc(1,sizeof *n);if(!n)return 0;
+    )c" + std::string(variant == "overwritten" ? "n->text=malloc(2);" : "") +
+                               "fill(n);drop(n);return 0;}";
+    AnalysisOptions options;
+    options.checkedFunctions.insert("client");
+    const auto unit = test::analyze(source, options);
+    ASSERT_NE(unit.summary("client"), nullptr);
+    const auto &contract = unit.summary("client")->checked;
+    EXPECT_EQ(contract.complete(), variant == "direct" || variant == "helper");
+    if (contract.complete())
+      EXPECT_TRUE(contract.requirements.empty());
+  }
+}
+
+TEST(RecursiveContainerAnalysis, PayloadFramesRequireActualInputSeparation) {
+  for (const std::string variant :
+       {"direct", "early", "helper", "alias", "aliased-helper", "duplicate"}) {
+    SCOPED_TRACE(variant);
+    const bool helper = variant == "helper" || variant == "aliased-helper";
+    const bool alias = variant == "alias" || variant == "aliased-helper";
+    const std::string write = helper ? "step(cursor);" : "*cursor=256;";
+    std::string body = R"c(
+      static void step(int *p) { *p=256; }
+      static int fill(struct node *n,int *cursor) {
+    )c" + std::string(variant == "early" ? write : "") +
+                       R"c(
+        char *p=malloc(4);if(!p){
+    )c" + write + R"c(
+          return 0;
+        }
+        p[0]=0;n->text=p;
+    )c";
+    if (variant == "duplicate")
+      body += "n->key=p;";
+    body += write;
+    body += R"c(
+        return 1;
+      }
+      int client(void) {
+        reset(0);struct node *n=create();if(!n)return 0;int cursor=0;
+        fill(n,
+    )c" + std::string(alias ? "&n->flags" : "&cursor") +
+            ");destroy(n);return 0;}";
+    const auto contract = forestCheck(body);
+    EXPECT_EQ(contract.complete(), !alias && variant != "duplicate");
+    if (contract.complete())
+      EXPECT_TRUE(contract.requirements.empty());
+  }
+}
+
+TEST(RecursiveContainerAnalysis, PayloadRelocationConservesActualOwnership) {
+  for (const std::string variant :
+       {"helper", "local", "alias", "duplicate", "interior", "overwritten",
+        "released", "intervening"}) {
+    SCOPED_TRACE(variant);
+    std::string source = R"c(
+      typedef __SIZE_TYPE__ size_t;
+      void *malloc(size_t);void *calloc(size_t,size_t);void free(void *);
+      struct node {struct node *next,*child;char *text,*name;};
+      static void drop(struct node *n) {while(n){struct node *next=n->next;
+        drop(n->child);free(n->text);free(n->name);free(n);n=next;}}
+      static int fill(struct node *n) {char *p=malloc(4);if(!p)return 0;
+        p[0]=0;n->text=p;return 1;}
+      int client(void) {struct node *n=calloc(1,sizeof *n);if(!n)return 0;
+    )c";
+    source += variant == "local" ? "n->text=malloc(4);" : "fill(n);";
+    if (variant == "overwritten")
+      source += "n->name=malloc(4);";
+    if (variant == "released")
+      source += "free(n->text);";
+    if (variant == "alias") {
+      source += "struct node *p=n;p->name=p->text;p->text=0;";
+    } else if (variant == "interior") {
+      source += "if(n->text){n->name=n->text+1;n->text=0;}";
+    } else {
+      source += "n->name=n->text;";
+      if (variant == "intervening")
+        source += "free(n->text);";
+      if (variant != "duplicate")
+        source += "n->text=0;";
+    }
+    source += "drop(n);return 0;}";
+    AnalysisOptions options;
+    options.checkedFunctions.insert("client");
+    const auto unit = test::analyze(source, options);
+    ASSERT_NE(unit.summary("client"), nullptr);
+    const auto &contract = unit.summary("client")->checked;
+    EXPECT_EQ(contract.complete(),
+              variant == "helper" || variant == "local" || variant == "alias");
+    if (contract.complete())
+      EXPECT_TRUE(contract.requirements.empty());
+  }
+}
+
+TEST(RecursiveContainerAnalysis,
+     ComparisonFramesRetainOrdinaryReadObligations) {
+  for (const std::string variant : {"bounded", "bytes", "string", "released",
+                                    "uninitialized", "extent", "unknown"}) {
+    SCOPED_TRACE(variant);
+    std::string source = R"c(
+      typedef __SIZE_TYPE__ size_t;
+      void *calloc(size_t,size_t);void free(void *);
+      int strcmp(const char *,const char *);
+      int strncmp(const char *,const char *,size_t);
+      int memcmp(const void *,const void *,size_t);
+      struct node {struct node *next,*child;unsigned value;};
+      void unknown(struct node *);
+      static unsigned read_tree(const struct node *n) {
+        return n?n->value+read_tree(n->child)+read_tree(n->next):0;
+      }
+      static void drop(struct node *n) {while(n){struct node *next=n->next;
+        drop(n->child);free(n);n=next;}}
+      static unsigned inspect(struct node *n,const char *s) {
+    )c";
+    if (variant == "released")
+      source += "free(n);";
+    if (variant == "unknown")
+      source += "unknown(n);";
+    std::string comparison = "strncmp(s,\"ok\",2)";
+    if (variant == "string")
+      comparison = "strcmp(s,\"ok\")";
+    else if (variant == "bytes")
+      comparison = "memcmp(s,\"ok\",2)";
+    else if (variant == "extent")
+      comparison = "memcmp(s,\"okay\",4)";
+    source +=
+        "if(" + comparison + "==0)return read_tree(n);return read_tree(n);}";
+    source += R"c(
+      int client(void) {struct node *n=calloc(1,sizeof *n);if(!n)return 0;
+        n->value=3;
+    )c";
+    source += variant == "uninitialized" ? "char s[3];s[0]='o';"
+                                         : "const char s[]=\"ok\";";
+    source += "unsigned r=inspect(n,s);";
+    if (variant != "released")
+      source += "drop(n);";
+    source += "return r==3?0:1;}";
+    AnalysisOptions options;
+    options.checkedFunctions.insert("client");
+    const auto unit = test::analyze(source, options);
+    ASSERT_NE(unit.summary("client"), nullptr);
+    const auto &contract = unit.summary("client")->checked;
+    EXPECT_EQ(contract.complete(), variant == "bounded" || variant == "bytes" ||
+                                       variant == "string");
+    if (contract.complete())
+      EXPECT_TRUE(contract.requirements.empty());
+  }
+}
+
+TEST(RecursiveContainerAnalysis, PayloadExtensionSurvivesReaderForwarding) {
+  for (const std::string variant : {"goto", "early", "leak", "duplicate",
+                                    "released-head", "released-payload"}) {
+    SCOPED_TRACE(variant);
+    std::string source = R"c(
+      typedef __SIZE_TYPE__ size_t;
+      void *malloc(size_t);void *calloc(size_t,size_t);void free(void *);
+      struct node {struct node *next,*child;unsigned flags;char *text,*name;};
+      struct reader {const unsigned char *content;size_t length,offset,depth;};
+      static void drop(struct node *n) {
+        while(n){struct node *next=n->next;drop(n->child);
+          if(!(n->flags&1))free(n->text);free(n->name);free(n);n=next;}
+      }
+      static int role(struct reader *r) {
+        if(r->offset<r->length){r->offset++;return 1;}return 0;
+      }
+      static int fill(struct node *n,struct reader *r) {char *p=malloc(4);
+    )c";
+    source += variant == "early" ? "if(!p){r->offset=1;return 0;}"
+                                 : "if(!p)goto fail;";
+    source += "p[0]=0;";
+    if (variant == "released-payload")
+      source += "free(p);";
+    if (variant != "leak")
+      source += "n->text=p;";
+    if (variant == "duplicate")
+      source += "n->name=p;";
+    source += "r->offset++;return 1;";
+    if (variant != "early") {
+      source += "fail:";
+      if (variant == "released-head")
+        source += "free(n);";
+      source += "r->offset=1;return 0;";
+    }
+    source += R"c(
+      }
+      static int wrap(struct node *n,struct reader *r) {
+        if(!fill(n,r))return 0;r->offset++;return 1;
+      }
+      int client(void) {
+        struct node *n=calloc(1,sizeof *n);if(!n)return 0;
+        static const unsigned char bytes[]="abc";
+        struct reader r={bytes,sizeof bytes,0,0};wrap(n,&r);drop(n);return 0;
+      }
+    )c";
+    AnalysisOptions options;
+    options.checkedFunctions.insert("client");
+    const auto unit = test::analyze(source, options);
+    ASSERT_NE(unit.summary("client"), nullptr);
+    const auto &contract = unit.summary("client")->checked;
+    EXPECT_EQ(contract.complete(), variant == "goto" || variant == "early");
+    if (contract.complete())
+      EXPECT_TRUE(contract.requirements.empty());
+  }
+}
+
+TEST(RecursiveContainerAnalysis, NumericParserFramesRequireSeparateEndCells) {
+  for (const std::string variant :
+       {"null-end", "local-end", "record-end", "released", "uninitialized",
+        "owned-end", "unknown"}) {
+    SCOPED_TRACE(variant);
+    std::string source = R"c(
+      typedef __SIZE_TYPE__ size_t;
+      void *calloc(size_t,size_t);void free(void *);
+      double strtod(const char *,char **);
+      struct node {struct node *next,*child;char *text;unsigned value;};
+      void unknown(struct node *);
+      static unsigned read_tree(const struct node *n) {
+        return n?n->value+read_tree(n->child)+read_tree(n->next):0;
+      }
+      static void drop(struct node *n) {while(n){struct node *next=n->next;
+        drop(n->child);free(n->text);free(n);n=next;}}
+      static unsigned inspect(struct node *n,const char *s) {
+        char *end=0;struct {char *end;} local={0};
+    )c";
+    if (variant == "released")
+      source += "free(n);";
+    std::string output = "&end";
+    if (variant == "null-end")
+      output = "0";
+    else if (variant == "record-end")
+      output = "&local.end";
+    else if (variant == "owned-end")
+      output = "&n->text";
+    source += "(void)strtod(s," + output + ");";
+    if (variant == "unknown")
+      source += "unknown(n);";
+    source += R"c(
+        return read_tree(n);
+      }
+      int client(void) {struct node *n=calloc(1,sizeof *n);if(!n)return 0;
+        n->value=3;
+    )c";
+    source += variant == "uninitialized" ? "char s[3];s[0]='1';"
+                                         : "const char s[]=\"12\";";
+    source += "unsigned r=inspect(n,s);";
+    if (variant != "released")
+      source += "drop(n);";
+    source += "return r==3?0:1;}";
+    AnalysisOptions options;
+    options.checkedFunctions.insert("client");
+    const auto unit = test::analyze(source, options);
+    ASSERT_NE(unit.summary("client"), nullptr);
+    const auto &contract = unit.summary("client")->checked;
+    EXPECT_EQ(contract.complete(), variant == "null-end" ||
+                                       variant == "local-end" ||
+                                       variant == "record-end");
+    if (contract.complete())
+      EXPECT_TRUE(contract.requirements.empty());
+  }
+}
+
+TEST(RecursiveContainerAnalysis, TemporaryReleaseFramesKeepActualEntryForests) {
+  for (const std::string variant : {"guarded", "nullable", "helper", "interior",
+                                    "twice", "lost", "attached"}) {
+    SCOPED_TRACE(variant);
+    std::string source = R"c(
+      typedef __SIZE_TYPE__ size_t;
+      void *malloc(size_t);void *calloc(size_t,size_t);void free(void *);
+      struct node {struct node *next,*child;char *text;unsigned value;};
+      static unsigned read_tree(const struct node *n) {
+        return n?n->value+read_tree(n->child)+read_tree(n->next):0;
+      }
+      static void drop(struct node *n) {while(n){struct node *next=n->next;
+        drop(n->child);free(n->text);free(n);n=next;}}
+      static char *make(void) {return malloc(4);}
+      static unsigned inspect(struct node *n) {char *p=
+    )c";
+    source += variant == "helper" ? "make();" : "malloc(4);";
+    if (variant != "nullable")
+      source += "if(!p)return read_tree(n);";
+    if (variant == "attached")
+      source += "n->text=p;";
+    if (variant != "lost")
+      source += variant == "interior" ? "free(p+1);" : "free(p);";
+    if (variant == "twice")
+      source += "free(p);";
+    source += R"c(
+        return read_tree(n);
+      }
+      int client(void) {struct node *n=calloc(1,sizeof *n);if(!n)return 0;
+        n->value=3;unsigned r=inspect(n);drop(n);return r==3?0:1;}
+    )c";
+    AnalysisOptions options;
+    options.checkedFunctions.insert("client");
+    const auto unit = test::analyze(source, options);
+    ASSERT_NE(unit.summary("client"), nullptr);
+    const auto &contract = unit.summary("client")->checked;
+    EXPECT_EQ(contract.complete(), variant == "guarded" ||
+                                       variant == "nullable" ||
+                                       variant == "helper");
+    if (contract.complete())
+      EXPECT_TRUE(contract.requirements.empty());
+  }
+}
+
+TEST(RecursiveContainerAnalysis, OutcomeJoinsRetainCommonOwnershipStructure) {
+  for (const std::string variant :
+       {"direct", "helper", "branch", "released", "lost", "disowned"}) {
+    SCOPED_TRACE(variant);
+    std::string source = R"c(
+      typedef __SIZE_TYPE__ size_t;
+      void *malloc(size_t);void *calloc(size_t,size_t);void free(void *);
+      struct node {struct node *next,*child;char *text;unsigned flags;};
+      static void drop(struct node *n) {while(n){struct node *next=n->next;
+        drop(n->child);if(!(n->flags&1))free(n->text);free(n);n=next;}}
+      static int inspect(struct node *n) {
+        void *p=malloc(4);if(!p)return 0;free(p);
+    )c";
+    if (variant == "released")
+      source += "free(n);";
+    else if (variant == "lost")
+      source += "n->text=0;";
+    else if (variant == "disowned")
+      source += "n->flags=1;";
+    else
+      source += "n->flags=2;";
+    source += R"c(
+        return 1;
+      }
+      static int forward(struct node *n) {return inspect(n);}
+      int client(void) {struct node *n=calloc(1,sizeof *n);if(!n)return 0;
+        n->text=malloc(4);if(!n->text){drop(n);return 0;}
+    )c";
+    if (variant == "branch")
+      source += "if(inspect(n))drop(n);else drop(n);";
+    else if (variant == "helper")
+      source += "(void)forward(n);drop(n);";
+    else
+      source += "(void)inspect(n);drop(n);";
+    source += "return 0;}";
+    AnalysisOptions options;
+    options.checkedFunctions.insert("client");
+    const auto unit = test::analyze(source, options);
+    ASSERT_NE(unit.summary("client"), nullptr);
+    const auto &contract = unit.summary("client")->checked;
+    EXPECT_EQ(contract.complete(), variant == "direct" || variant == "helper" ||
+                                       variant == "branch");
+    if (contract.complete())
+      EXPECT_TRUE(contract.requirements.empty());
+  }
+}
+
 TEST(RecursiveContainerAnalysis, DetachmentPreservesBothAllocationPartitions) {
   const std::string helpers = R"c(
 static struct node *get_array_item(const struct node *array, size_t index){ struct node *child=NULL;if(array==NULL)return NULL;child=array->child;while(child!=NULL&&index>0){index--;child=child->next;}return child;}
@@ -303,6 +737,57 @@ int client(void){reset(0);struct node*a=create();if(!a)return 0;struct node*b=cr
 int client(void){reset(0);struct node*a=create();if(!a)return 0;struct node*b=create();if(!b){destroy(a);return 0;}if(!add(a,b)){destroy(b);destroy(a);return 0;}struct node*child=detach_at(a,0);destroy(a);(void)child;return 0;}
 )c")
                    .complete());
+}
+
+TEST(RecursiveContainerAnalysis, AttachedPayloadsTransferOnTheTestedOutcome) {
+  // RFC 0029: a complete attach publishes the union of both owned inputs and
+  // its own fresh payload on success, and preserves them separately on
+  // failure. A forwarding wrapper carries that outcome-specific guarantee.
+  for (const std::string variant : {"good", "leak", "twice", "ignored"}) {
+    const std::string body =
+        "static int attach(struct node *object,struct node *item){char *key=0;"
+        "if(!object||!item||object==item)return 0;key=(char*)malloc(4);"
+        "if(!key)return 0;key[0]=0;item->key=key;return add(object,item);}"
+        "static int attach_wrapper(struct node *o,struct node *i){"
+        "return attach(o,i);}"
+        "int client(void){reset(0);struct node *o=create();if(!o)return 0;"
+        "struct node *i=create();if(!i){destroy(o);return 0;}"
+        "if(!attach_wrapper(o,i)){" +
+        std::string(variant == "good"    ? "destroy(i);destroy(o);return 0;"
+                    : variant == "leak"  ? "destroy(o);return 0;"
+                    : variant == "twice" ? "destroy(i);destroy(o);return 0;"
+                                         : "") +
+        "}destroy(o);" + std::string(variant == "twice" ? "destroy(i);" : "") +
+        "return 0;}";
+    EXPECT_EQ(forestCheck(body).complete(), variant == "good") << variant;
+  }
+}
+
+TEST(RecursiveContainerAnalysis,
+     DirectByteResultsAndHelperReleasesAreLedgered) {
+  // RFC 0029: a complete callee's fresh byte result returned without a local
+  // holder transfers one allocation; a complete release helper settles it.
+  for (const std::string variant :
+       {"good", "unguarded", "leak", "twice", "interior"}) {
+    const std::string body =
+        "static char *render(const struct node *p){"
+        "char *out=(char*)global_hooks.allocate(4);if(!out)return 0;"
+        "out[0]=p->flags?'x':'y';out[1]=0;return out;}"
+        "static char *publish(const struct node *p){return (char*)render(p)" +
+        std::string(variant == "interior" ? "+1" : "") +
+        ";}static void release(void *p){global_hooks.deallocate(p);}"
+        "int client(void){reset(0);struct node *v=create();if(!v)return 0;"
+        "char *t=publish(v);destroy(v);" +
+        std::string(variant == "good" || variant == "interior"
+                        ? "if(t)release(t);"
+                    : variant == "unguarded" ? "release(t);"
+                    : variant == "twice"     ? "if(t){release(t);release(t);}"
+                                             : "") +
+        "return 0;}";
+    EXPECT_EQ(forestCheck(body).complete(),
+              variant == "good" || variant == "unguarded")
+        << variant;
+  }
 }
 
 TEST(RecursiveContainerAnalysis, EveryCallbackTargetMustConsumeTheWholeInput) {

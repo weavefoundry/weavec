@@ -16,6 +16,7 @@
 #include <iterator>
 #include <span>
 #include <tuple>
+#include <utility>
 
 namespace weavec::core {
 
@@ -656,7 +657,9 @@ static bool mergeInitializedConditions(std::vector<InitializedRange> &ranges) {
       auto &a = ranges[i];
       const auto &b = ranges[j];
       if (a.begin != b.begin || a.end != b.end || a.source != b.source ||
-          a.zeroed != b.zeroed || a.when.pointers != b.when.pointers ||
+          a.zeroed != b.zeroed || a.numericText != b.numericText ||
+          a.bytes != b.bytes || a.immutableBytes != b.immutableBytes ||
+          a.when.pointers != b.when.pointers ||
           a.when.integers != b.when.integers) {
         ++j;
         continue;
@@ -711,7 +714,46 @@ static bool mergeInitializedConditions(std::vector<InitializedRange> &ranges) {
   return changed;
 }
 
+std::vector<InitializedRange>
+InitializedRange::outsideWrite(const Affine &first, const Affine &last) const {
+  if (terminatedWithin || !begin.isConstant() || !end.isConstant() ||
+      !first.isConstant() || !last.isConstant() || begin.constant < 0 ||
+      first.constant < 0 || begin.constant > end.constant ||
+      first.constant > last.constant)
+    return {};
+  if (first == last || last.constant <= begin.constant ||
+      first.constant >= end.constant)
+    return {*this};
+  std::vector<InitializedRange> result;
+  if (begin.constant < first.constant) {
+    auto left = *this;
+    left.end = first;
+    if (!left.bytes.empty())
+      left.bytes.resize(
+          static_cast<std::size_t>(first.constant - begin.constant));
+    result.push_back(std::move(left));
+  }
+  if (last.constant < end.constant) {
+    auto right = *this;
+    right.begin = last;
+    if (!right.bytes.empty())
+      right.bytes.erase(
+          0, static_cast<std::size_t>(last.constant - begin.constant));
+    result.push_back(std::move(right));
+  }
+  return result;
+}
+
 void SafetyState::initialize(PlaceId storage, InitializedRange range) {
+  if (range.immutableBytes && range.bytes.empty())
+    return;
+  if (!range.bytes.empty() &&
+      (!range.begin.isConstant() || !range.end.isConstant() ||
+       range.begin.constant < 0 || range.end.constant < range.begin.constant ||
+       std::cmp_not_equal(range.end.constant - range.begin.constant,
+                          range.bytes.size()) ||
+       range.bytes.size() > 64 || range.source || range.terminatedWithin))
+    return;
   if (range.terminatedWithin) {
     auto &facts = boundedTermination[storage];
     if (facts.size() < MaxInitializedRanges &&
@@ -722,9 +764,12 @@ void SafetyState::initialize(PlaceId storage, InitializedRange range) {
     }
     return;
   }
-  if (range.zeroed) {
+  if (range.zeroed || range.numericText || !range.bytes.empty()) {
     auto plain = range;
     plain.zeroed = false;
+    plain.numericText = false;
+    plain.bytes.clear();
+    plain.immutableBytes = false;
     initialize(storage, std::move(plain));
   }
   if (range.begin == range.end)
@@ -734,11 +779,12 @@ void SafetyState::initialize(PlaceId storage, InitializedRange range) {
     return;
   // Exact adjacency is valid for symbolic endpoints as well as constants.
   // Every constituent interval is a must-fact; no gap is filled here.
-  bool extended = true;
+  bool extended = range.bytes.empty();
   while (extended) {
     extended = std::erase_if(ranges, [&](const InitializedRange &old) {
                  if (old.source != range.source || old.zeroed != range.zeroed ||
-                     old.when != range.when)
+                     old.numericText != range.numericText ||
+                     old.when != range.when || !old.bytes.empty())
                    return false;
                  if (old.end == range.begin) {
                    range.begin = old.begin;
@@ -751,13 +797,15 @@ void SafetyState::initialize(PlaceId storage, InitializedRange range) {
                  return false;
                }) != 0;
   }
-  if (range.begin.isConstant() && range.end.isConstant()) {
+  if (range.bytes.empty() && range.begin.isConstant() &&
+      range.end.isConstant()) {
     if (range.begin.constant > range.end.constant)
       return;
     // Coalesce only known adjacent/overlapping intervals, never gaps.
     std::erase_if(ranges, [&](const InitializedRange &old) {
       if (old.source != range.source || old.zeroed != range.zeroed ||
-          old.when != range.when || !old.begin.isConstant() ||
+          old.numericText != range.numericText || old.when != range.when ||
+          !old.bytes.empty() || !old.begin.isConstant() ||
           !old.end.isConstant() || old.end.constant < range.begin.constant ||
           range.end.constant < old.begin.constant)
         return false;
@@ -779,7 +827,9 @@ void SafetyState::forgetZeros() {
   boundedTermination.clear();
   for (auto &[storage, ranges] : memory) {
     (void)storage;
-    std::erase_if(ranges, [](const auto &range) { return range.zeroed; });
+    std::erase_if(ranges, [](const auto &range) {
+      return range.zeroed || range.numericText || !range.bytes.empty();
+    });
   }
 }
 void SafetyState::copyMemory(PlaceId source, PlaceId destination) {
@@ -815,6 +865,10 @@ void SafetyState::forget(PlaceId place) {
     unions.invalidate(place);
   containers.erase(place);
   footprints.forget(place);
+  std::erase_if(pendingAllocationReleases, [&](const auto &entry) {
+    return entry.first == place || entry.second.storage == place ||
+           entry.second.snapshot == place;
+  });
   unfoldedFootprints.erase(place);
   objectTypes.erase(place);
   writtenStorage.erase(place);
@@ -837,6 +891,7 @@ void SafetyState::forget(PlaceId place) {
 }
 
 void SafetyState::forgetDependency(PlaceId place) {
+  nonNan.erase(place);
   buffers.forget(place);
   unions.forgetDependency(place);
   for (auto &[storage, facts] : boundedTermination) {
@@ -924,11 +979,20 @@ bool SafetyState::join(const SafetyState &other, const PlaceGuard &left,
                     other.paths.empty() ? std::vector{right} : other.paths);
   changed |= containers.join(other.containers);
   changed |= footprints.join(other.footprints);
+  changed |= std::erase_if(pendingAllocationReleases, [&](const auto &entry) {
+               const auto found =
+                   other.pendingAllocationReleases.find(entry.first);
+               return found == other.pendingAllocationReleases.end() ||
+                      found->second != entry.second;
+             }) != 0;
   const auto unfoldedBefore = unfoldedFootprints.size();
   std::erase_if(unfoldedFootprints, [&](PlaceId holder) {
     return !other.unfoldedFootprints.contains(holder);
   });
   changed |= unfoldedBefore != unfoldedFootprints.size();
+  changed |= std::erase_if(nonNan, [&](PlaceId place) {
+               return !other.nonNan.contains(place);
+             }) != 0;
   changed |= buffers.join(other.buffers);
   for (auto &[place, list] : argumentLists) {
     const auto found = other.argumentLists.find(place);
@@ -1058,12 +1122,15 @@ bool SafetyState::join(const SafetyState &other, const PlaceGuard &left,
     std::vector<InitializedRange> common;
     for (const auto &a : aRanges) {
       for (const auto &b : bRanges) {
-        if (a.source != b.source || a.zeroed != b.zeroed || a.when != b.when)
+        if (a.source != b.source || a.zeroed != b.zeroed ||
+            a.numericText != b.numericText || a.bytes != b.bytes ||
+            a.immutableBytes != b.immutableBytes || a.when != b.when)
           continue;
         if (a == b) {
           common.push_back(a);
-        } else if (a.begin.isConstant() && a.end.isConstant() &&
-                   b.begin.isConstant() && b.end.isConstant()) {
+        } else if (a.bytes.empty() && a.begin.isConstant() &&
+                   a.end.isConstant() && b.begin.isConstant() &&
+                   b.end.isConstant()) {
           const auto first = std::max(a.begin.constant, b.begin.constant);
           const auto last = std::min(a.end.constant, b.end.constant);
           if (first < last)
@@ -1071,7 +1138,8 @@ bool SafetyState::join(const SafetyState &other, const PlaceGuard &left,
                               .end = Affine::ofConstant(last),
                               .when = a.when,
                               .source = a.source,
-                              .zeroed = a.zeroed});
+                              .zeroed = a.zeroed,
+                              .numericText = a.numericText});
         }
       }
     }

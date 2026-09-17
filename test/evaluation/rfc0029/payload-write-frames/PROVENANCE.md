@@ -1,0 +1,1 @@
+Frozen against candidate78h before preserving a published payload across writes to a separated cursor. Direct and helper-mediated stores share the same input separation obligation. Aliasing the cursor with the ownership selector makes cleanup leak the payload; duplicate publication still owns one allocation twice. The original payload-publication population remains unchanged.

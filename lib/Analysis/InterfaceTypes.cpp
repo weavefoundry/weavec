@@ -132,6 +132,9 @@ describeInterfaceType(QualType root, const ASTContext &context) {
         valid = false;
       } else {
         node.name = record->getNameAsString();
+        if (node.name.empty())
+          if (const auto *alias = record->getTypedefNameForAnonDecl())
+            node.typedefName = alias->getNameAsString();
         if (record->isCompleteDefinition()) {
           node.view = recordLayoutKey(type, context);
           const auto &layout = context.getASTRecordLayout(record);
@@ -176,6 +179,15 @@ QualType materializeInterfaceType(const core::InterfaceType &description,
         context, TagTypeKind::Struct, context.getTranslationUnitDecl(), {}, {},
         node.name.empty() ? nullptr : &context.Idents.get(node.name));
     records[i]->setImplicit();
+    if (!node.typedefName.empty()) {
+      auto *alias = TypedefDecl::Create(
+          context, context.getTranslationUnitDecl(), {}, {},
+          &context.Idents.get(node.typedefName),
+          context.getTrivialTypeSourceInfo(
+              context.getCanonicalTypeDeclType(records[i])));
+      alias->setImplicit();
+      records[i]->setTypedefNameForAnonDecl(alias);
+    }
     Qualifiers qualifiers;
     if (node.qualifiers & 1U)
       qualifiers.addConst();
