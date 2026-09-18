@@ -1,6 +1,20 @@
 # CHANGELOG
 
 
+## v0.10.0 (2026-09-18)
+
+### Documentation
+
+- Launch WeaveC documentation site with Starlight
+  ([`bbf14c3`](https://github.com/weavefoundry/weavec/commit/bbf14c3628c38ed0f34cd642ebabe58a461846da))
+
+### Features
+
+- Infer ownership transfer for attaching helpers
+  ([#33](https://github.com/weavefoundry/weavec/pull/33),
+  [`fcc3b46`](https://github.com/weavefoundry/weavec/commit/fcc3b46bee0556b220c7b0e0be792fc796252169))
+
+
 ## v0.9.0 (2026-09-15)
 
 ### Features
