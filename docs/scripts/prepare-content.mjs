@@ -106,6 +106,7 @@ await split(
     'Growable buffers and vectors': 'guides/growable-buffers',
     'C runtime contracts': 'guides/runtime-contracts',
     'Opaque objects and private library state': 'guides/opaque-objects',
+    'Composing recursive and stateful helpers (RFC 0029)': 'guides/composing-helpers',
   },
   'guides/checked-code',
   'Checked code',

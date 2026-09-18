@@ -2059,3 +2059,45 @@ Whether to raise the checked deadline for large projects, to exclude lua from
 checked-mode timing with its limitation recorded, or to treat per-analysis cost
 as its own milestone is an acceptance decision for the owner; this RFC forbids
 reducing a resource bound silently, and no bound has been changed here.
+
+### Candidate 105: CI repairs and the landing decision
+
+Continuous integration on candidate 104 exposed two defects that local runs had
+missed.
+
+- `checked-conditional-count-arguments-rfc0029` and its object-mode twin
+  rejected the frozen `zero` case, `touch(out, argc > 1 ? 4 : 0)`. Bisecting the
+  retained candidates places the regression between candidates 76 and 77. A
+  conditional integer argument has no single affine form, so the callee's interval endpoint
+  lost the captured call-entry identity that the conditional requirement already
+  used. `PlaceBuilder::affineFromPath` now gives both the same captured
+  identity. The frozen population reports its recorded outcomes again: `good`,
+  `converted` and `zero` accepted, `short` and `changed` rejected.
+- clang-tidy rejected two `bugprone-optional-value-conversion` findings in
+  `DataflowByteContents.cpp`. Strict clang-tidy is now clean on every source file
+  changed by this milestone, not only on the files touched last.
+
+The documentation site also failed to build: the checked-code guide gained a
+section that the site generator had no page for. It is now published as
+`guides/composing-helpers`.
+
+After these repairs the Debug build passes all 1,709 CTest entries and all 205
+lit tests, the fixed evaluation stays at 44/44 and 32/32, and every frozen RFC
+0029 population reports its expected outcomes.
+
+**Landing decision.** This milestone lands with RFC 0029 kept at **Accepted**,
+not Implemented, following the precedent of RFCs 0007 to 0013 and 0018. Three
+acceptance items remain open and are not waived:
+
+1. lua exceeds its 600-second checked deadline (candidate 104). The deadline is
+   unchanged and continues to gate the flip to Implemented.
+2. The ordinary 1.10x time and RSS gate still needs three isolated sequential
+   runs on a quiet machine.
+3. The upstream cJSON parse-delete, malformed-delete, nested-serialize and
+   nested-print workflows still end `checking-incomplete`.
+
+No resource bound, acceptance denominator or required workflow has been
+reduced. The weekly corpus job runs ordinary analysis only, so lua's checked
+cost does not affect it. The next milestone should be scoped to
+per-analysis checked cost, measured against `checked_case_requests` and user CPU
+on every candidate.

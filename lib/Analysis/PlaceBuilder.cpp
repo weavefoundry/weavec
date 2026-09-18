@@ -1976,7 +1976,17 @@ PlaceBuilder::affineFromPath(const core::PathAffine &affine,
   if (affine.path->isParam() && affine.path->isRoot()) {
     if (affine.path->index >= call.getNumArgs())
       return std::nullopt;
-    base = affineOf(*call.getArg(affine.path->index));
+    const Expr &argument = *call.getArg(affine.path->index);
+    // RFC 0029: a conditional argument's captured call-entry identity serves
+    // both conditional requirements and interval endpoints. Guard translation
+    // already uses that capture; an endpoint resolved to the conditional's
+    // in-body evaluation value instead would name a different place, so the
+    // guard could never narrow the interval it protects.
+    if (expressionFromPath && argument.getType()->isIntegerType() &&
+        isa<AbstractConditionalOperator>(argument.IgnoreParenCasts()))
+      if (auto captured = expressionFromPath(affine, call))
+        return captured;
+    base = affineOf(argument);
     if (!base && expressionFromPath)
       return expressionFromPath(affine, call);
   } else if (const auto ref = resolveSummaryPath(*affine.path, call)) {

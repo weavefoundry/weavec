@@ -35,8 +35,8 @@ FunctionDataflow::checkedByteContents(const CheckedMemory &memory,
       return std::nullopt;
     std::tie(low, high) = integerBounds(*first.place, state);
     const auto relations = checkedRelations(state);
-    const auto upper = relations.bound(*first.place, std::nullopt);
-    const auto negativeLower = relations.bound(std::nullopt, *first.place);
+    const auto upper = relations.bound(first.place, std::nullopt);
+    const auto negativeLower = relations.bound(std::nullopt, first.place);
     if (relations.limited()) {
       inferred.checked.limited = true;
       inferred.incomplete.insert("traversal relational limit reached");
