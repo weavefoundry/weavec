@@ -176,15 +176,12 @@ bool RelationTracker::different(PlaceId a, PlaceId b) const {
     std::swap(a, b);
   if (distinct.contains({a, b}))
     return true;
-  for (const auto &[same, offset] : equalsOf(a)) {
-    if (offset != 0)
-      continue;
-    const auto pair = std::minmax(same, b);
-    if (distinct.contains(pair))
-      return true;
-  }
-  return std::ranges::any_of(equalsOf(b), [&](const auto &entry) {
-    return entry.second == 0 && distinct.contains(std::minmax(entry.first, a));
+  if (forEachEqual(a, [&](PlaceId same, std::int64_t offset) {
+        return offset == 0 && distinct.contains(std::minmax(same, b));
+      }))
+    return true;
+  return forEachEqual(b, [&](PlaceId same, std::int64_t offset) {
+    return offset == 0 && distinct.contains(std::minmax(same, a));
   });
 }
 
@@ -267,21 +264,6 @@ std::optional<RelationEdge> RelationTracker::directly(PlaceId lhs,
   return swapped ? it->second.flipped() : it->second;
 }
 
-std::vector<std::pair<PlaceId, std::int64_t>>
-RelationTracker::equalsOf(PlaceId place) const {
-  std::vector<std::pair<PlaceId, std::int64_t>> result;
-  for (const auto &[pair, edge] : pairs) {
-    if (edge.relation != Relation::Equal)
-      continue;
-    // `first == second + k`.
-    if (pair.first == place)
-      result.emplace_back(pair.second, edge.offset);
-    else if (pair.second == place && edge.offset != INT64_MIN)
-      result.emplace_back(pair.first, -edge.offset);
-  }
-  return result;
-}
-
 std::optional<RelationEdge> RelationTracker::edgeBetween(PlaceId lhs,
                                                          PlaceId rhs) const {
   if (lhs == rhs)
@@ -298,19 +280,28 @@ std::optional<RelationEdge> RelationTracker::edgeBetween(PlaceId lhs,
   };
   // One hop through an equal place: `j = i + 1; if (j < n)` says `i < n -
   // 1` (`lhs == other + k1`, `other REL rhs + k2`: `lhs REL rhs + k1 + k2`).
-  for (const auto &[other, k1] : equalsOf(lhs)) {
-    if (other == rhs)
-      continue;
-    if (const auto via = directly(other, rhs))
-      return compose(*via, k1);
-  }
+  std::optional<RelationEdge> hop;
+  if (forEachEqual(lhs, [&](PlaceId other, std::int64_t k1) {
+        if (other == rhs)
+          return false;
+        if (const auto via = directly(other, rhs)) {
+          hop = compose(*via, k1);
+          return true;
+        }
+        return false;
+      }))
+    return hop;
   // `rhs == other + k1`, `lhs REL other + k2`: `lhs REL rhs + k2 - k1`.
-  for (const auto &[other, k1] : equalsOf(rhs)) {
-    if (other == lhs || k1 == INT64_MIN)
-      continue;
-    if (const auto via = directly(lhs, other))
-      return compose(*via, -k1);
-  }
+  if (forEachEqual(rhs, [&](PlaceId other, std::int64_t k1) {
+        if (other == lhs || k1 == INT64_MIN)
+          return false;
+        if (const auto via = directly(lhs, other)) {
+          hop = compose(*via, -k1);
+          return true;
+        }
+        return false;
+      }))
+    return hop;
   return std::nullopt;
 }
 
@@ -350,33 +341,34 @@ void RelationTracker::learnAtLeast(PlaceId place, std::int64_t bound) {
 
 /// The bound of `place` in `bounds`, or of a place known equal to it with
 /// the equality's offset applied (`j = i + 1; if (j < 8)` bounds `i` by 6).
-static std::optional<std::int64_t> boundThroughEquals(
-    PlaceId place, const std::map<PlaceId, std::int64_t> &bounds,
-    const std::vector<std::pair<PlaceId, std::int64_t>> &equals) {
+std::optional<std::int64_t> RelationTracker::boundThroughEquals(
+    PlaceId place, const std::map<PlaceId, std::int64_t> &bounds) const {
   if (const auto it = bounds.find(place); it != bounds.end())
     return it->second;
-  for (const auto &[other, k] : equals) {
+  std::optional<std::int64_t> result;
+  (void)forEachEqual(place, [&](PlaceId other, std::int64_t k) {
     const auto it = bounds.find(other);
     if (it == bounds.end())
-      continue;
+      return false;
     std::int64_t shifted = 0;
     if (__builtin_add_overflow(it->second, k, &shifted))
-      continue;
-    return shifted;
-  }
-  return std::nullopt;
+      return false;
+    result = shifted;
+    return true;
+  });
+  return result;
 }
 
 std::optional<std::int64_t> RelationTracker::atMost(PlaceId place) const {
   if (const auto it = upper.find(place); it != upper.end())
     return it->second;
-  return boundThroughEquals(place, upper, equalsOf(place));
+  return boundThroughEquals(place, upper);
 }
 
 std::optional<std::int64_t> RelationTracker::atLeast(PlaceId place) const {
   if (const auto it = lower.find(place); it != lower.end())
     return it->second;
-  return boundThroughEquals(place, lower, equalsOf(place));
+  return boundThroughEquals(place, lower);
 }
 
 bool RelationTracker::conditions(PlaceId place) const {

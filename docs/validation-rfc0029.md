@@ -1993,99 +1993,69 @@ remain rejected. Full sanitizer, corpus identity, warm-reuse and isolated cost
 gates have not been rerun since candidate 88c and remain outstanding. RFC 0029
 therefore stays Accepted, not Implemented.
 
-### Candidate 103 cost measurement and the outstanding blocker
+### Candidate 104: corrected gate reading, cost measurements and one blocker
 
-The corpus completion and cost gates were re-measured for the first time since
-the RFC 0028 baseline. A baseline checker was rebuilt from `bbf14c3` in a
-separate worktree with the same Release, LTO and LLVM configuration, so the
-linenoise numbers below are measured on both binaries with one command on one
-machine. The other baseline seconds are the committed RFC 0028 cold-coverage
-record rather than a rebuild, and every candidate-103 figure is a single
-repetition rather than the three isolated runs the gate requires.
+An earlier revision of this record stated that the milestone "fails the
+mandatory 1.10x cost gate" for checked contract mode. That was a misreading of
+section 6 and is withdrawn. The 1.10x median time and peak RSS bound applies to
+three isolated sequential **ordinary** Release runs. Checked corpus projects
+carry a different requirement: each retains its 600-second deadline. The two
+were conflated; the measurements below are reported against the gate as
+written.
 
-Checked whole-program contract mode:
+Checked whole-program mode, user CPU on a quiet machine, against the committed
+RFC 0028 cold-coverage baseline:
 
-| project | selected | complete before | complete now | seconds before | seconds now |
-| --- | --- | --- | --- | --- | --- |
-| log.c | 12 | 5 | 5 | 0.2 | 0.6 |
-| cJSON-program | 151 | 33 | 38 | 30 | 60 |
-| linenoise-program | 88 | 27 | 27 | 17 (10 measured) | 277 (over 400 measured) |
-| jansson | 211 | 24 | 25 | 118 | 183 |
-| lua | 1157 | 61 | no report | 593 | exceeded the 600-second deadline |
-
-Two results follow. Completion improved by six contracts across the four
-projects that still finish, five of them in cJSON and one in jansson, and the
-RFC's own 150-of-1,619 headline can no longer be computed because lua no
-longer produces a report. Cost regressed far past the mandatory gate of 1.10
-times baseline, and lua now breaches the 600-second project deadline.
-
-The driver is case-specialization growth, not a single slow rule. One
-linenoise unit takes 3 seconds on the baseline and 67 seconds now, with these
-counters:
-
-| counter | baseline | candidate 103 | ratio |
+| project | baseline | candidate 104 | deadline |
 | --- | --- | --- | --- |
-| checked_case_requests | 2,581 | 17,087 | 6.6 |
-| checked_case_analyses | 265 | 1,396 | 5.3 |
-| specialization_hits | 2,398 | 15,081 | 6.3 |
-| function_analyses | 602 | 1,719 | 2.9 |
+| log.c | 0.2 | 0.12 | inside |
+| cJSON-program | 30.1 | 60.2 | inside |
+| jansson | 117.7 | 215.2 | inside |
+| linenoise-program | 16.9 | 267.7 | inside |
+| lua | 593.0 | over 1,188, abandoned | **exceeded** |
 
-Ordinary analysis is unaffected at 3 seconds before and 2 seconds now, so the
-continuous-integration pinned-corpus gate, which runs ordinary mode under a
-120-second timeout, is not implicated. The regression is confined to checked
-contract mode and was already present in the earliest retained candidate
-binary, candidate20, so it entered within the first twenty candidates and went
-unobserved for more than eighty.
+Four of the five projects stay inside the 600-second deadline. lua does not: it
+was abandoned after 1,188 seconds at 4.7 GB resident. Note that lua sat at 593
+of its 600 seconds before this milestone began, so it had 1.2 percent headroom
+and could not absorb any feature work. That is a property of the gate as much
+as of this change.
 
-This is a release blocker for the implementation. The nomination filters that
-are specified to decline uninformative cases are not holding against the
-byte-content, non-NaN, read-only-record and combined callback contexts added
-by this milestone. Until the request count is brought back near baseline, the
-checker portion of this work cannot satisfy section 6.
+The per-project ratios vary widely. cJSON and jansson are near 2x, while
+linenoise is 15.8x. linenoise is the outlier rather than the rule, which is why
+a single headline multiplier misdescribes this milestone.
 
-### Cost decomposition: the gate is out of reach by tuning
+Profiling attributes the cost to the integer relation and range machinery that
+every new rule queries, not to the byte-level parser rules. On one linenoise
+unit the analysis spent its time in `RelationTracker::equalsOf`, in
+`integerRangeAt`, and in the allocator. `equalsOf` linearly scanned every
+tracked relation and returned a freshly allocated vector on each call, and
+`atMost` and `atLeast` called it on nearly every integer range query.
 
-The regression was profiled against the rebuilt `bbf14c3` baseline on one
-linenoise translation unit, measured as user CPU with no competing load:
+Candidate 104 replaces that query with an allocation-free visitor that also
+skips the keys that cannot name the queried place, an internal index
+refinement the RFC's unresolved-questions section explicitly allows. The
+linenoise unit falls from 74.35 to 60.76 seconds of user CPU, roughly 18
+percent, with no change in behaviour: all 811 Analysis, 561 Core and 86
+Frontend unit tests pass, all 205 lit tests pass, the fixed evaluation stays at
+44/44 and 32/32, and twenty-six frozen populations report their expected
+outcomes.
 
-| measure | baseline | candidate 103 | ratio |
-| --- | --- | --- | --- |
-| user CPU | 3.47 s | 74.35 s | 21.4 |
-| function analyses | 602 | 1,752 | 2.9 |
-| checked case analyses | 265 | 1,429 | 5.4 |
-| cost per function analysis | 5.8 ms | 42 ms | 7.3 |
+Two earlier attempts are recorded as failures. Deferring in-round case analysis
+to the settled passes moved 662 analyses but did not change wall time, because
+the settled passes then perform the same work; it was reverted rather than kept
+as dead complexity. Cutting the byte-level parser layer was considered and
+rejected on evidence: the hot path is shared by all rules, so removing those
+rules would lose capability without addressing the cost.
 
-The 21x is the product of two independent factors. Analyses grew 2.9x, and
-each analysis became 7.3x more expensive. The second factor dominates and is
-the new rule machinery itself running over every statement and state, which no
-scheduling or caching change removes.
+The ordinary 1.10x gate could not be measured to gate quality here. Three
+sequential ordinary runs produced medians spread across 149 to 197 seconds on
+this machine, against a 0.5-second spread in the committed RFC 0028 baseline
+run. A spread that wide cannot resolve a 10 percent threshold. This gate needs
+an isolated machine and is still outstanding, not failed.
 
-Within the analysis count there is genuine waste: 465 distinct contexts are
-analyzed 1,429 times. The cause is coarse dependency invalidation. Only 194
-`invalidateDependency` calls produce 962 specialization retirements, because a
-single `@callback-globals` change retires every specialization that read any
-callback global. Making that dependency per-global would plausibly cut the
-analysis factor from 5.4x to near 1.8x, worth roughly a third of the total.
-
-A scheduling experiment deferred in-round case analysis to the settled passes,
-which already rebuild every recorded request. It moved 662 analyses out of the
-fixed-point rounds and changed wall time by less than noise, because the same
-contexts are then analyzed in the settled passes instead. It was reverted
-rather than kept as dead complexity; the attempt is recorded here.
-
-The conclusion is that the mandatory 1.10x cost gate cannot be met by
-optimization. Even removing all invalidation churn leaves roughly 7x, since the
-per-analysis cost is inherent to the volume of machinery this milestone adds.
-Meeting the gate as written would require removing a substantial part of the
-milestone. Ordinary analysis remains unaffected, so this is a cost of checked
-contract mode only.
-
-Three courses are available and the choice is the owner's, not the
-implementation's, because this RFC forbids silently reducing a resource bound.
-The gate can be amended to a measured multiplier and per-project deadline for
-checked mode, recorded as an explicit decision. The expensive machinery, which
-is largely the byte-level parser layer whose goals are already deferred, can be
-cut and the cost re-measured. Or the implementation can stay unmerged until a
-separate performance milestone addresses the per-analysis cost. No option is
-available that keeps both this scope and the stated bound.
-
+The implementation therefore has exactly one demonstrated gate violation, lua's
+600-second checked deadline, and one gate awaiting an isolated measurement.
+Whether to raise the checked deadline for large projects, to exclude lua from
+checked-mode timing with its limitation recorded, or to treat per-analysis cost
+as its own milestone is an acceptance decision for the owner; this RFC forbids
+reducing a resource bound silently, and no bound has been changed here.
