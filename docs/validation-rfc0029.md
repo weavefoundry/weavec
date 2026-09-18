@@ -1682,7 +1682,7 @@ incomplete. The retained 132 MB report is upstream79b-static/source.json; these
 focused successes do not satisfy the mandatory upstream acceptance gate.
 
 Candidate 80c passes all 790 Debug Analysis tests (141.043 seconds). The exact
-unchanged string-parser case now exports its ownership extension on every
+unchanged string-parser case now exports its ownership extension on candidates
 return: payload-writer entry premises previously depended on final CFG block
 visitation order. Its reader-forwarding wrapper is complete, although the
 full unchanged nested parser still fails (upstream80c-static). The new frozen
@@ -2082,12 +2082,12 @@ section that the site generator had no page for. It is now published as
 `guides/composing-helpers`.
 
 After these repairs the Debug build passes all 1,709 CTest entries and all 205
-lit tests, the fixed evaluation stays at 44/44 and 32/32, and every frozen RFC
-0029 population reports its expected outcomes.
+lit tests, the fixed evaluation stays at 44/44 and 32/32, and every registered
+RFC 0029 population reports its expected outcomes.
 
 **Landing decision.** This milestone lands with RFC 0029 kept at **Accepted**,
-not Implemented, following the precedent of RFCs 0007 to 0013 and 0018. Three
-acceptance items remain open and are not waived:
+not Implemented, following the precedent of RFCs 0007 to 0013 and 0018. These
+items remain open and are not waived:
 
 1. lua exceeds its 600-second checked deadline (candidate 104). The deadline is
    unchanged and continues to gate the flip to Implemented.
@@ -2095,6 +2095,11 @@ acceptance items remain open and are not waived:
    runs on a quiet machine.
 3. The upstream cJSON parse-delete, malformed-delete, nested-serialize and
    nested-print workflows still end `checking-incomplete`.
+4. The `mixed-helper-frames` probe, frozen at candidate 91b, is not a
+   registered gate and has never passed. Its `direct` and `helper` cases end
+   `checking-incomplete` on a callee recursive ownership precondition on
+   candidates 91b, 93a, 96e, 98b and 105. Its `lost`, `freed` and `disowned`
+   negatives are rejected, so the gap is one of precision, not soundness.
 
 No resource bound, acceptance denominator or required workflow has been
 reduced. The weekly corpus job runs ordinary analysis only, so lua's checked
