@@ -1,0 +1,1 @@
+Frozen before RFC 0029 pointer-difference guard projection. A same-array reader cursor uses its actual relative byte difference in the loop guard. Safe generic and closed traversals must compose; off-by-one, cursor escape, unrelated arrays, uninitialized input and forged capacity remain rejected.

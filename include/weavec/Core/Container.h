@@ -82,6 +82,8 @@ struct ContainerShape {
   [[nodiscard]] bool recursiveLink(std::string_view name) const;
 
   [[nodiscard]] bool valid() const;
+  /// Every owned edge is null, so a live instance owns only its head.
+  [[nodiscard]] bool singletonHead() const;
   [[nodiscard]] bool entails(const ContainerShape &required) const;
   [[nodiscard]] std::string encode() const;
   [[nodiscard]] static std::optional<ContainerShape>

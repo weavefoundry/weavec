@@ -1,0 +1,6 @@
+{
+  "manifest.json": "2fd66cb9a8a97727cd467372b51b63b947770dde37088995ad5687d7ee036c1f",
+  "skip.c": "04c12b6e0a1dc921263133291a5ba45ab5e942dbb537e103b0e210be0c25ae10",
+  "write.c": "8cdc2866e5b4f3e1fd0d585aab37198f2d3af179dd3f2227e4c5a05d647c05ce",
+  "wrong-byte.c": "ae1f047ba72744a12ab0efa597fea249591aacafa2dd41f2e1a84dc1a96a3ecf"
+}

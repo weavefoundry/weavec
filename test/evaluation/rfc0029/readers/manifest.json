@@ -1,0 +1,84 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "name": "reader-client",
+      "sources": [
+        "client.c",
+        "cursor.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "entry_requirements": 0
+    },
+    {
+      "name": "reader-generic",
+      "sources": [
+        "cursor.c"
+      ],
+      "functions": [
+        "take",
+        "consume"
+      ],
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    },
+    {
+      "name": "reader-short",
+      "sources": [
+        "short.c",
+        "cursor.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "buffer|extent|initialized|bounds"
+    },
+    {
+      "name": "reader-uninitialized",
+      "sources": [
+        "uninitialized.c",
+        "cursor.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "buffer|extent|initialized|bounds"
+    },
+    {
+      "name": "reader-escape",
+      "sources": [
+        "cursor-escape.c",
+        "cursor.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "buffer|extent|initialized|bounds"
+    }
+  ]
+}

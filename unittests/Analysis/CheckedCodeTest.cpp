@@ -21,6 +21,19 @@ static core::CheckedContract check(const std::string &code,
   }
   return result.summary(name)->checked;
 }
+
+TEST(CheckedCode, SavedPostfixCursorRetainsOnlyItsCurrentAllocationPermission) {
+  for (const auto &change : {"", "free(out);", "p=(unsigned char*)\"x\";"}) {
+    SCOPED_TRACE(change);
+    const std::string code =
+        "int f(void){unsigned char *out=malloc(3);if(!out)return 0;"
+        "unsigned char *p=out;unsigned char **slot=&p;(void)slot;" +
+        std::string(change) + "*p++=1;" +
+        (std::string(change) == "free(out);" ? "" : "free(out);") +
+        "return 0;}";
+    EXPECT_EQ(check(code).complete(), std::string(change).empty());
+  }
+}
 // RFC 0028: private output storage participates in portable contracts.
 TEST(CheckedCode, PrivateOutputFactsSurviveAnExportedSetter) {
   AnalysisOptions options;

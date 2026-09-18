@@ -8,6 +8,7 @@
 
 #include "Dataflow.h"
 #include "IntegerSupport.h"
+#include "weavec/Core/Induction.h"
 
 #include "llvm/Support/raw_ostream.h"
 
@@ -16,6 +17,97 @@
 using namespace clang;
 
 namespace weavec::analysis {
+
+static bool freshFootprintSlot(const core::FunctionSummary &summary,
+                               const core::CheckedContract &contract,
+                               const core::CheckedRequirement &post) {
+  if (!summary.returns.empty() || summary.outcomes.size() != 2 ||
+      !summary.outcomes.contains(core::Outcome::Positive) ||
+      !summary.outcomes.contains(core::Outcome::Zero) ||
+      post.kind != core::CheckedRequirementKind::ContainerFresh ||
+      !post.path.isParam() || !post.path.hasDeref() ||
+      post.on != core::Outcome::Positive || post.ifNonNull)
+    return false;
+  const auto nulls = summary.nullOn.find(core::Outcome::Zero);
+  return nulls != summary.nullOn.end() && nulls->second.contains(post.path) &&
+         std::ranges::none_of(
+             contract.establishes,
+             [&](const auto &other) {
+               return other.kind ==
+                          core::CheckedRequirementKind::ContainerFresh &&
+                      other.path != post.path;
+             }) &&
+         std::ranges::all_of(summary.stores,
+                             [&](const auto &store) {
+                               return !store.value.isFresh() ||
+                                      store.dest == post.path;
+                             }) &&
+         std::ranges::all_of(summary.effects, [&](const auto &entry) {
+           const auto &effect = entry.second;
+           return !effect.consumed() && !effect.escaped &&
+                  (!effect.written || entry.first == post.path);
+         });
+}
+
+void FunctionDataflow::verifyFootprintTransfers() {
+  const auto &contract = inferred.checked;
+  for (const auto &transfer : footprintTransfers) {
+    const auto applies = [&](const auto &post) {
+      return post.when.trivial() && (!post.on || post.on == transfer.outcome);
+    };
+    const bool published =
+        std::ranges::any_of(transfer.alternatives, [&](const auto &paths) {
+          if (!std::ranges::all_of(paths, [&](const auto &path) {
+                // The exit ledger already proved this proper returned forest
+                // contains the complete transfer. A null result contributes
+                // no allocation; fresh-result posts describe the non-null arm.
+                if (path.isResult() && path.isRoot() &&
+                    transfer.outcome == core::Outcome::Null)
+                  return true;
+                return std::ranges::any_of(
+                    contract.establishes, [&](const auto &post) {
+                      if (!applies(post))
+                        return false;
+                      if (post.kind ==
+                          core::CheckedRequirementKind::ContainerPartition)
+                        return post.path == path || post.other == path;
+                      if (post.path != path)
+                        return false;
+                      if (post.kind ==
+                          core::CheckedRequirementKind::ContainerFresh)
+                        return (path.isResult() && path.isRoot()) ||
+                               freshFootprintSlot(inferred, contract, post);
+                      return post.kind == core::CheckedRequirementKind::
+                                              ContainerPreserved ||
+                             post.kind == core::CheckedRequirementKind::
+                                              ContainerCombined ||
+                             (post.kind == core::CheckedRequirementKind::
+                                               ContainerExtended &&
+                              !post.on);
+                    });
+              }))
+            return false;
+          return paths.size() < 2 ||
+                 std::ranges::any_of(
+                     contract.establishes,
+                     [&](const auto &post) {
+                       return applies(post) &&
+                              post.kind == core::CheckedRequirementKind::
+                                               ContainerSeparated &&
+                              paths.contains(post.path) &&
+                              paths.contains(post.other) &&
+                              post.path != post.other;
+                     });
+        });
+    if (!published) {
+      safetyObligation(
+          core::SafetyProperty::Semantics, core::SafetyOutcome::Unresolved,
+          *function.getBody(), "container footprint",
+          "allocation transfer has no surviving portable output guarantee");
+      return;
+    }
+  }
+}
 
 void FunctionDataflow::recordAllocationConsumed(core::PlaceId holder,
                                                 core::AnalysisState &state) {
@@ -131,6 +223,42 @@ core::PlaceId FunctionDataflow::footprintAtom(core::PlaceId storage) {
   return entry->second;
 }
 
+bool FunctionDataflow::unchangedPointerVariable(core::PlaceId place) {
+  if (!changedPointerVariables) {
+    auto &changed = changedPointerVariables.emplace();
+    const auto note = [&](const Expr *expr) {
+      if (const auto *ref = dyn_cast_or_null<DeclRefExpr>(
+              expr ? expr->IgnoreParenImpCasts() : nullptr))
+        if (const auto *var = dyn_cast<VarDecl>(ref->getDecl()))
+          changed.insert(var->getCanonicalDecl());
+    };
+    std::vector<const Stmt *> work{function.getBody()};
+    for (std::size_t i = 0; i < work.size(); ++i) {
+      const auto *stmt = work[i];
+      if (!stmt)
+        continue;
+      if (work.size() > 65536) {
+        // An exhausted scan proves nothing about any variable.
+        changed.insert(nullptr);
+        break;
+      }
+      if (const auto *assignment = dyn_cast<BinaryOperator>(stmt);
+          assignment && assignment->isAssignmentOp())
+        note(assignment->getLHS());
+      if (const auto *unary = dyn_cast<UnaryOperator>(stmt);
+          unary &&
+          (unary->isIncrementDecrementOp() || unary->getOpcode() == UO_AddrOf))
+        note(unary->getSubExpr());
+      for (const auto *child : stmt->children())
+        work.push_back(child);
+    }
+  }
+  const auto *var = builder.varForPlace(place);
+  return var != nullptr && places.isBase(place) &&
+         !changedPointerVariables->contains(nullptr) &&
+         !changedPointerVariables->contains(var->getCanonicalDecl());
+}
+
 void FunctionDataflow::initializeFootprint(core::PlaceId holder,
                                            const core::SummaryPath &path,
                                            const core::ContainerShape &shape,
@@ -209,6 +337,56 @@ void FunctionDataflow::unfoldFootprint(core::PlaceId holder,
   state.safety->unfoldedFootprints.insert(holder);
 }
 
+void FunctionDataflow::prepareReallocationFootprint(
+    const CallExpr &call, core::AnalysisState &state) {
+  if (!footprintAllocated || call.getNumArgs() == 0)
+    return;
+  const auto [saved, inserted] = reallocationFootprints.try_emplace(&call);
+  if (inserted)
+    saved->second = places.create("reallocation input footprint");
+  // A loop can revisit the same call before an older result was refined.
+  // That result must not release the new generation's saved input head.
+  state.safety->forget(saved->second);
+  auto &relations = state.safety->footprints;
+  const auto origin = builder.classifyValue(*call.getArg(0));
+  if (origin.kind == ValueOrigin::Kind::Null ||
+      (origin.place &&
+       state.nulls.stateOf(origin.place->place) == core::Nullness::Null)) {
+    relations.assign(saved->second, {});
+  } else if (origin.place && origin.offset.isZero() &&
+             footprintHeads.contains(origin.place->place)) {
+    relations.assign(saved->second, {{footprintHead(origin.place->place), 1}});
+  }
+}
+
+void FunctionDataflow::refineAllocationFootprints(core::AnalysisState &state) {
+  auto &pendingReleases = state.safety->pendingAllocationReleases;
+  if (state.safety->havoc) {
+    pendingReleases.clear();
+    return;
+  }
+  for (auto entry = pendingReleases.begin(); entry != pendingReleases.end();) {
+    const auto [holder, release] = *entry;
+    const auto object = state.safety->objects.find(holder);
+    if (!footprintReleased || object == state.safety->objects.end() ||
+        object->second != release.storage ||
+        state.safety->invalidatedPointers.contains(holder)) {
+      entry = pendingReleases.erase(entry);
+      continue;
+    }
+    const auto nullness = state.nulls.stateOf(holder);
+    if (nullness == core::Nullness::NonNull) {
+      state.safety->footprints.assign(
+          *footprintReleased, {{*footprintReleased, 1}, {release.snapshot, 1}});
+      entry = pendingReleases.erase(entry);
+    } else if (nullness == core::Nullness::Null) {
+      entry = pendingReleases.erase(entry);
+    } else {
+      ++entry;
+    }
+  }
+}
+
 void FunctionDataflow::captureFootprint(core::PlaceId dest,
                                         const ValueOrigin &origin,
                                         CheckedPointer &pointer,
@@ -218,8 +396,23 @@ void FunctionDataflow::captureFootprint(core::PlaceId dest,
                               containerShape(decl->getType()) != nullptr;
   const auto library =
       origin.call ? resolvedLibraryName(*origin.call) : std::string{};
+  const bool reallocation =
+      (library == "realloc" || library == "reallocarray") &&
+      reallocationFootprints.contains(origin.call);
+  const auto callee =
+      origin.call ? callSummaries.find(origin.call) : callSummaries.end();
+  const bool byteHelper =
+      origin.call != nullptr && origin.call->getType()->isPointerType() &&
+      origin.call->getType()->getPointeeType()->isCharType() &&
+      origin.family == "free" && callee != callSummaries.end() &&
+      callee->second && callee->second->checked.complete() &&
+      std::ranges::none_of(
+          callee->second->checked.establishes, [](const auto &post) {
+            return post.kind == core::CheckedRequirementKind::ContainerFresh;
+          });
   const bool freshAllocation = pointer.fresh && footprintAllocated &&
-                               (library == "malloc" || library == "calloc");
+                               (library == "malloc" || library == "calloc" ||
+                                reallocation || byteHelper);
   if (!pointer.container && !freshContainer && !freshAllocation &&
       !footprintHeads.contains(dest) &&
       !(origin.place && footprintHeads.contains(origin.place->place)))
@@ -286,6 +479,9 @@ void FunctionDataflow::captureFootprint(core::PlaceId dest,
       relations.assign(whole, {{atom, 1}});
       relations.assign(*footprintAllocated,
                        {{*footprintAllocated, 1}, {atom, 1}});
+      if (const auto previous = reallocationFootprints.find(origin.call);
+          reallocation && previous != reallocationFootprints.end())
+        pointer.pendingAllocationRelease = previous->second;
     }
   } else if (origin.place && origin.offset.isZero()) {
     const auto source = origin.place->place;
@@ -301,6 +497,17 @@ void FunctionDataflow::installFootprint(core::PlaceId dest,
                                         const CheckedPointer &pointer,
                                         core::AnalysisState &state) {
   auto &relations = state.safety->footprints;
+  state.safety->pendingAllocationReleases.erase(dest);
+  if (pointer.pendingAllocationRelease && pointer.storage) {
+    if (state.safety->pendingAllocationReleases.size() <
+        core::MaxFootprintVariables)
+      state.safety->pendingAllocationReleases.emplace(
+          dest, core::SafetyState::PendingAllocationRelease{
+                    .storage = *pointer.storage,
+                    .snapshot = *pointer.pendingAllocationRelease});
+    else
+      inferred.checked.limited = true;
+  }
   // Head identities below a replaced pointer name belong to its old object.
   // Ghost places are not ordinary descendants retired by reinitialization.
   for (const auto &[holder, head] : footprintHeads)
@@ -419,6 +626,45 @@ void FunctionDataflow::footprintOutputs(core::CheckedContract &outputs,
              .on = outcome});
     }
     for (auto first = visible.begin(); first != visible.end(); ++first) {
+      // RFC 0029: the live unchanged singleton head remains the complete
+      // entry footprint. Every other output member must come from this
+      // invocation, and the allocation ledger must account for all of it.
+      if (first->first == entry.holder && first->second == path &&
+          shape.access == core::ContainerAccess::Release &&
+          shape.singletonHead() && footprintAllocated &&
+          !state.safety->replacedPointers.contains(entry.holder)) {
+        const auto *fact = state.safety->containers.find(first->first);
+        const auto memory = checkedMemoryAt(entry.holder, {}, {}, state);
+        const bool onlyEntry =
+            fact != nullptr && fact->inputs.size() == 1 &&
+            containerInputs.contains(*fact->inputs.begin()) &&
+            containerInputs.at(*fact->inputs.begin()) == path;
+        core::FootprintSum complete{{entry.identity, 1},
+                                    {*footprintAllocated, 1},
+                                    {*footprintReleased, -1},
+                                    {first->first, -1}};
+        if (onlyEntry && fact->allocationCompatible && memory &&
+            memory->input == path && memory->begin == core::Affine{} &&
+            checkedValid(*memory, state) && relations.entails(complete)) {
+          auto extended = fact->shape;
+          if (extended.access == core::ContainerAccess::Release) {
+            // A case may know non-nullness from its captured values. Keep
+            // the explicit live-entry premise required by this portable
+            // ownership relation as well.
+            inferred.checked.require(
+                {.kind = core::CheckedRequirementKind::Valid,
+                 .path = path,
+                 .other = {},
+                 .family = {}});
+            outputs.establish(
+                {.kind = core::CheckedRequirementKind::ContainerExtended,
+                 .path = path,
+                 .other = path,
+                 .family = extended.encode(),
+                 .on = outcome});
+          }
+        }
+      }
       if (relations.equal(first->first, entry.identity))
         outputs.establish(
             {.kind = core::CheckedRequirementKind::ContainerPreserved,
@@ -497,6 +743,59 @@ void FunctionDataflow::footprintOutputs(core::CheckedContract &outputs,
                .family = combinedShape.encode(),
                .on = outcome});
         }
+      // RFC 0029: an attaching helper may also publish a payload acquired by
+      // this call. The unchanged live head then owns both complete entry
+      // footprints and exactly this invocation's outstanding acquisitions.
+      if (!footprintAllocated ||
+          a->second.access != core::ContainerAccess::Release ||
+          b->second.access != core::ContainerAccess::Release ||
+          a->second.family != b->second.family ||
+          a->second.payloads != b->second.payloads)
+        continue;
+      for (const auto &[head, tail] :
+           {std::pair{first, second}, std::pair{second, first}}) {
+        const auto holder = head->second.holder;
+        const auto output = visible.find(holder);
+        const auto *fact = state.safety->containers.find(holder);
+        const auto memory = checkedMemoryAt(holder, {}, {}, state);
+        if (output == visible.end() || output->second != head->first || !fact ||
+            !fact->allocationCompatible || !memory ||
+            memory->begin != core::Affine{} ||
+            !unchangedPointerVariable(holder) ||
+            !checkedValid(*memory, state) ||
+            relations.entails({{holder, 1},
+                               {head->second.identity, -1},
+                               {tail->second.identity, -1}}) ||
+            !relations.entails({{holder, 1},
+                                {head->second.identity, -1},
+                                {tail->second.identity, -1},
+                                {*footprintAllocated, -1},
+                                {*footprintReleased, 1}}) ||
+            !std::ranges::all_of(fact->inputs, [&](const auto input) {
+              const auto source = containerInputs.find(input);
+              return source != containerInputs.end() &&
+                     (source->second == head->first ||
+                      source->second == tail->first);
+            }))
+          continue;
+        inferred.checked.require(
+            {.kind = core::CheckedRequirementKind::ContainerSeparated,
+             .path = first->first,
+             .other = second->first,
+             .family = {}});
+        inferred.checked.require({.kind = core::CheckedRequirementKind::Valid,
+                                  .path = head->first,
+                                  .other = {},
+                                  .family = {}});
+        outputs.establish(
+            {.kind = core::CheckedRequirementKind::ContainerCombined,
+             .path = head->first,
+             .other = head->first,
+             .begin = core::PathAffine::ofPath(tail->first),
+             .end = core::PathAffine::ofConstant(1),
+             .family = combinedShape.encode(),
+             .on = outcome});
+      }
     }
   // Entry release permission does not transfer the caller's cleanup duty.
   // Without local acquisitions, a partial helper can be conditionally safe;
@@ -505,19 +804,84 @@ void FunctionDataflow::footprintOutputs(core::CheckedContract &outputs,
   // consumption candidates are independently checked on every exit.
   bool accounted = relations.entails(balance) ||
                    (footprintAllocated && relations.empty(*footprintAllocated));
-  for (auto first = visible.begin(); first != visible.end() && !accounted;
+  // RFC 0029: byte allocations participate in the same acquisition ledger,
+  // but returning their live base transfers one allocation, not a forest.
+  if (!accounted && returned && outcome == core::Outcome::NonNull &&
+      footprintHeads.contains(*returned)) {
+    const auto resource = state.resources.recordOf(*returned);
+    const auto memory = checkedMemoryAt(*returned, {}, {}, state);
+    if (resource && resource->origin == core::ResourceOrigin::Allocated &&
+        resource->family == "free" && !resource->escaped &&
+        !state.moves.recordOf(*returned) && memory &&
+        memory->begin == core::Affine::ofConstant(0) &&
+        checkedValid(*memory, state)) {
+      auto transferred = balance;
+      --transferred[footprintHead(*returned)];
+      accounted = relations.entails(std::move(transferred));
+    }
+  }
+  // A complete callee's fresh result returned without a local holder has no
+  // resource record. Its identity is either null or that single allocation.
+  if (!accounted && returned && footprintHeads.contains(*returned) &&
+      (outcome == core::Outcome::NonNull || outcome == core::Outcome::Null))
+    for (const auto &[expression, place] : checkedReturnPlaces) {
+      const auto *call = dyn_cast<CallExpr>(expression);
+      if (place != *returned || call == nullptr)
+        continue;
+      // Every alternative is null or this call's own allocation base.
+      const std::function<bool(const ValueOrigin &)> single =
+          [&](const ValueOrigin &origin) {
+            if (origin.kind == ValueOrigin::Kind::Null)
+              return true;
+            if (origin.kind == ValueOrigin::Kind::Conditional)
+              return !origin.alternatives.empty() &&
+                     std::ranges::all_of(origin.alternatives, single);
+            return origin.kind == ValueOrigin::Kind::Alloc &&
+                   origin.call == call && origin.family == "free" &&
+                   origin.offset.isZero();
+          };
+      if (!single(builder.classifyValue(*call)) ||
+          !checkedObjects.contains({call, *returned}) ||
+          state.safety->invalidatedPointers.contains(*returned))
+        continue;
+      auto transferred = balance;
+      --transferred[footprintHead(*returned)];
+      accounted = relations.entails(std::move(transferred));
+    }
+  const bool needsOutput = !accounted;
+  FootprintTransfers transfers{.outcome = outcome, .alternatives = {}};
+  const auto remember = [&](std::set<core::SummaryPath> paths) {
+    accounted = true;
+    if (std::ranges::find(transfers.alternatives, paths) !=
+        transfers.alternatives.end())
+      return;
+    if (transfers.alternatives.size() < core::MaxContainerFacts)
+      transfers.alternatives.push_back(std::move(paths));
+    else
+      inferred.checked.limited = true;
+  };
+  for (auto first = visible.begin(); first != visible.end() && needsOutput;
        ++first) {
     auto remaining = balance;
     --remaining[first->first];
-    accounted = relations.entails(remaining);
-    for (auto second = std::next(first); second != visible.end() && !accounted;
-         ++second) {
+    if (relations.entails(remaining))
+      remember({first->second});
+    for (auto second = std::next(first); second != visible.end(); ++second) {
       if (!state.safety->containers.separated(first->first, second->first))
         continue;
       auto partition = remaining;
       --partition[second->first];
-      accounted = relations.entails(std::move(partition));
+      if (relations.entails(std::move(partition)))
+        remember({first->second, second->second});
     }
+  }
+  if (needsOutput && accounted && recording() &&
+      std::ranges::find(footprintTransfers, transfers) ==
+          footprintTransfers.end()) {
+    if (footprintTransfers.size() < core::MaxSafetyRequirements)
+      footprintTransfers.push_back(std::move(transfers));
+    else
+      inferred.checked.limited = true;
   }
   safetyObligation(
       core::SafetyProperty::Semantics,
@@ -533,18 +897,66 @@ void FunctionDataflow::captureFootprintPosts(
     core::AnalysisState &state) {
   auto &posts = footprintPosts[&call];
   posts.clear();
+  containerPrefixPosts[&call].clear();
   if (!contract.complete())
     return;
   const auto arguments = containerArguments.find(&call);
   auto &inputs = footprintCallInputs[&call];
+  freshFootprintSlots.erase(&call);
+  freshFootprintSlotParents.erase(&call);
+  // A single success-published output slot carries an entire fresh forest,
+  // not just the allocation of its head. The other returning class acquires
+  // no output allocation. Keep this conditional region until the caller
+  // actually tests the result; an unchecked call cannot discharge its ledger.
+  const auto resolved = callSummaries.find(&call);
+  if (call.getDirectCallee() != nullptr && resolved != callSummaries.end() &&
+      resolved->second && resolved->second->returns.empty() &&
+      resolved->second->outcomes.size() == 2 &&
+      resolved->second->outcomes.contains(core::Outcome::Positive) &&
+      resolved->second->outcomes.contains(core::Outcome::Zero)) {
+    const auto &summary = *resolved->second;
+    std::set<core::SummaryPath> slots;
+    for (const auto &post : contract.establishes) {
+      const auto nulls = summary.nullOn.find(core::Outcome::Zero);
+      const auto guard = checkedGuard(post.when, call, state);
+      if (post.kind == core::CheckedRequirementKind::ContainerFresh &&
+          post.path.isParam() && post.path.hasDeref() &&
+          post.on == core::Outcome::Positive && !post.ifNonNull && guard &&
+          guard->trivial() && nulls != summary.nullOn.end() &&
+          nulls->second.contains(post.path))
+        slots.insert(post.path);
+    }
+    if (slots.size() == 1 &&
+        std::ranges::all_of(summary.stores,
+                            [&](const auto &store) {
+                              return !store.value.isFresh() ||
+                                     store.dest == *slots.begin();
+                            }) &&
+        std::ranges::all_of(summary.effects, [&](const auto &entry) {
+          const auto &effect = entry.second;
+          return !effect.consumed() && !effect.escaped &&
+                 (!effect.written || entry.first == *slots.begin());
+        }))
+      freshFootprintSlots.emplace(&call, *slots.begin());
+  }
+  if (const auto slot = freshFootprintSlots.find(&call);
+      slot != freshFootprintSlots.end())
+    if (const auto actual = builder.resolveSummaryPath(slot->second, call);
+        actual && places.step(actual->place) == core::PathStep::Field)
+      if (const auto object = places.parent(actual->place);
+          object && places.step(*object) == core::PathStep::Deref)
+        if (const auto parent = places.parent(*object))
+          if (const auto *fact = state.safety->containers.find(*parent))
+            freshFootprintSlotParents.emplace(&call, std::pair{*parent, *fact});
   if (footprintAllocated && containerCallObjects.contains(&call) &&
-      std::ranges::any_of(contract.establishes, [&](const auto &post) {
-        const auto guard = checkedGuard(post.when, call, state);
-        return post.kind == core::CheckedRequirementKind::ContainerFresh &&
-               post.path.isResult() && post.path.isRoot() &&
-               (!post.on || post.on == core::Outcome::NonNull) && guard &&
-               guard->trivial();
-      })) {
+      (freshFootprintSlots.contains(&call) ||
+       std::ranges::any_of(contract.establishes, [&](const auto &post) {
+         const auto guard = checkedGuard(post.when, call, state);
+         return post.kind == core::CheckedRequirementKind::ContainerFresh &&
+                post.path.isResult() && post.path.isRoot() &&
+                (!post.on || post.on == core::Outcome::NonNull) && guard &&
+                guard->trivial();
+       }))) {
     const auto region = containerCallObjects.at(&call);
     state.safety->footprints.forget(region);
     state.safety->footprints.assign(*footprintAllocated,
@@ -583,14 +995,24 @@ void FunctionDataflow::captureFootprintPosts(
     state.safety->footprints.assign(saved->second, {{*source, 1}});
     return true;
   };
+  std::set<core::PlaceId> extended;
   for (const auto &post : contract.establishes) {
     if (post.kind != core::CheckedRequirementKind::ContainerPreserved &&
         post.kind != core::CheckedRequirementKind::ContainerConsumed &&
         post.kind != core::CheckedRequirementKind::ContainerPartition &&
-        post.kind != core::CheckedRequirementKind::ContainerCombined)
+        post.kind != core::CheckedRequirementKind::ContainerCombined &&
+        post.kind != core::CheckedRequirementKind::ContainerExtended)
       continue;
     const auto guard = checkedGuard(post.when, call, state);
     if (!guard || !guard->trivial())
+      continue;
+    if (post.kind == core::CheckedRequirementKind::ContainerExtended &&
+        std::ranges::any_of(contract.establishes, [&](const auto &other) {
+          return other.kind ==
+                     core::CheckedRequirementKind::ContainerPreserved &&
+                 other.path == post.path && other.other == post.other &&
+                 other.when == post.when && other.on == post.on;
+        }))
       continue;
     bool captured = false;
     if (post.kind == core::CheckedRequirementKind::ContainerPartition)
@@ -599,17 +1021,77 @@ void FunctionDataflow::captureFootprintPosts(
       captured = capture(post.other);
     if (post.kind == core::CheckedRequirementKind::ContainerCombined)
       captured &= post.begin.path && capture(*post.begin.path);
-    if (captured)
+    const bool combinedExtension =
+        post.kind == core::CheckedRequirementKind::ContainerCombined &&
+        post.end == core::PathAffine::ofConstant(1);
+    if (captured && combinedExtension && !footprintAllocated)
+      continue;
+    if (captured &&
+        (post.kind == core::CheckedRequirementKind::ContainerExtended ||
+         combinedExtension)) {
+      if ((post.on && !combinedExtension) || !footprintAllocated)
+        continue;
+      const auto [extension, inserted] =
+          footprintExtensions.try_emplace({&call, post.path});
+      if (inserted)
+        extension->second = places.create("fresh extension footprint");
+      // Outcome-specific outputs of one path share one fresh region.
+      if (extended.insert(extension->second).second) {
+        state.safety->footprints.forget(extension->second);
+        state.safety->footprints.assign(
+            *footprintAllocated,
+            {{*footprintAllocated, 1}, {extension->second, 1}});
+      }
+    }
+    if (captured) {
       posts.push_back(post);
+      captureContainerPrefixes(call, post, state);
+    }
   }
 }
 
 void FunctionDataflow::applyFootprintPosts(
     const CallExpr &call, core::AnalysisState &state,
-    std::optional<core::PlaceId> result) {
+    std::optional<core::PlaceId> result,
+    const std::optional<core::ValueFact> *prior) {
   const auto region = containerCallObjects.find(&call);
   const auto structural = containerPosts.find(&call);
-  if (result && region != containerCallObjects.end() &&
+  if (!prior && !result && region != containerCallObjects.end())
+    if (const auto slot = freshFootprintSlots.find(&call);
+        slot != freshFootprintSlots.end()) {
+      const auto outcome = scalarFactOf(call, state);
+      const bool failure =
+          outcome && outcome->implies(core::ValueFact::of(core::Outcome::Zero));
+      const bool success =
+          outcome &&
+          outcome->implies(core::ValueFact::of(core::Outcome::Positive));
+      const auto actual = builder.resolveSummaryPath(slot->second, call);
+      if (failure)
+        state.safety->footprints.constrain({{region->second, 1}});
+      else if (success)
+        if (actual && state.safety->containers.find(actual->place)) {
+          state.safety->footprints.assign(actual->place, {{region->second, 1}});
+          snapshotContainerOutput(actual->place, state);
+        }
+      // The only possible write of this completed helper is the exact output
+      // slot. Restore the captured parent frame and fold that one changed
+      // child using its newly proved output (or its actual null failure).
+      if (actual && (success || failure))
+        if (const auto parent = freshFootprintSlotParents.find(&call);
+            parent != freshFootprintSlotParents.end())
+          if (const auto *field =
+                  dyn_cast_or_null<FieldDecl>(builder.declFor(actual->place))) {
+            const auto &[holder, before] = parent->second;
+            state.safety->containers.set(holder, before);
+            if (before.localAllocation)
+              state.safety->containers.markFresh(holder);
+            if (success)
+              state.safety->containers.separate(holder, actual->place);
+            foldContainerStores(holder, *field->getParent(), field, call,
+                                state);
+          }
+    }
+  if (!prior && result && region != containerCallObjects.end() &&
       structural != containerPosts.end() &&
       std::ranges::any_of(structural->second, [](const auto &post) {
         return post.fresh && post.path.isResult() && post.path.isRoot();
@@ -643,6 +1125,19 @@ void FunctionDataflow::applyFootprintPosts(
         hasResult && !result && region != containerCallObjects.end();
     if (!nested && hasResult != result.has_value())
       continue;
+    // An immediate result test installs only what the call could not, and
+    // never replays consumption.
+    // On an immediate result test, install only the transfers that add a
+    // guarantee. Replaying a preserved or consumed output could replace
+    // current evidence with the weaker captured entry footprint.
+    if (prior &&
+        (!post.on ||
+         post.kind == core::CheckedRequirementKind::ContainerConsumed ||
+         (*prior && (*prior)->implies(core::ValueFact::of(*post.on)))))
+      continue;
+    const bool combinedExtension =
+        post.kind == core::CheckedRequirementKind::ContainerCombined &&
+        post.end == core::PathAffine::ofConstant(1);
     if (post.on) {
       const auto outcome = scalarFactOf(call, state);
       const bool resultMatches =
@@ -652,8 +1147,22 @@ void FunctionDataflow::applyFootprintPosts(
            (post.on == core::Outcome::Null &&
             state.nulls.stateOf(*result) == core::Nullness::Null));
       if (!resultMatches &&
-          (!outcome || !outcome->implies(core::ValueFact::of(*post.on))))
+          (!outcome || !outcome->implies(core::ValueFact::of(*post.on)))) {
+        // The fresh region exists only on a covered outcome. Once every
+        // covering output of this path is excluded, it is empty.
+        const auto extension = footprintExtensions.find({&call, post.path});
+        if (combinedExtension && outcome &&
+            extension != footprintExtensions.end() &&
+            std::ranges::none_of(found->second, [&](const auto &other) {
+              return other.kind ==
+                         core::CheckedRequirementKind::ContainerCombined &&
+                     other.end == core::PathAffine::ofConstant(1) &&
+                     other.path == post.path &&
+                     (!other.on || outcome->classes.contains(*other.on));
+            }))
+          state.safety->footprints.constrain({{extension->second, 1}});
         continue;
+      }
     }
     const auto &inputs = footprintCallInputs.at(&call);
     if (post.kind == core::CheckedRequirementKind::ContainerConsumed) {
@@ -679,10 +1188,47 @@ void FunctionDataflow::applyFootprintPosts(
       if (post.kind == core::CheckedRequirementKind::ContainerCombined &&
           post.begin.path)
         ++footprint[inputs.at(*post.begin.path)];
+      if (combinedExtension) {
+        const auto extension = footprintExtensions.find({&call, post.path});
+        if (extension == footprintExtensions.end())
+          continue;
+        ++footprint[extension->second];
+      }
+      if (post.kind == core::CheckedRequirementKind::ContainerExtended) {
+        const auto extension = footprintExtensions.find({&call, post.path});
+        if (extension == footprintExtensions.end())
+          continue;
+        ++footprint[extension->second];
+        state.safety->footprints.assign(footprintHead(*holder),
+                                        {{inputs.at(post.other), 1}});
+      }
+      // RFC 0029: this output states the final footprint is exactly its
+      // incoming regions, so the same contract's fresh region is empty.
+      if (post.kind != core::CheckedRequirementKind::ContainerExtended &&
+          !combinedExtension)
+        if (const auto extension = footprintExtensions.find({&call, post.path});
+            extension != footprintExtensions.end())
+          state.safety->footprints.constrain({{extension->second, 1}});
       state.safety->footprints.assign(*holder, std::move(footprint));
+      const auto *fact = state.safety->containers.find(*holder);
+      const auto memory = checkedMemoryAt(*holder, {}, {}, state);
+      if (fact && memory)
+        for (const auto &[alias, edge] :
+             state.definiteAliases.edgesFrom(*holder)) {
+          const auto *otherFact = state.safety->containers.find(alias);
+          if (alias == *holder || !edge.exact() || !otherFact ||
+              *otherFact != *fact ||
+              !state.definiteAliases.sameShare(*holder, alias))
+            continue;
+          const auto other = checkedMemoryAt(alias, {}, {}, state);
+          if (other && other->storage == memory->storage &&
+              other->begin == memory->begin)
+            state.safety->footprints.assign(alias, {{*holder, 1}});
+        }
     } else {
       continue;
     }
+    applyContainerPrefixes(call, post, *holder, state);
     // RFC 0028: a verified partition or preservation transfers the cleanup
     // duty with the complete footprint, including an unassigned call result.
     // The function's allocation balance still rejects losing that result.
@@ -708,17 +1254,19 @@ void FunctionDataflow::applyFootprintPosts(
   }
 }
 
-bool FunctionDataflow::handleRecursiveCleanup(const CallExpr &call,
-                                              core::AnalysisState &state) {
+bool FunctionDataflow::handleRecursiveContract(const CallExpr &call,
+                                               core::AnalysisState &state) {
   const auto *callee = call.getDirectCallee();
-  if (!callee || callee->getCanonicalDecl() != function.getCanonicalDecl() ||
-      function.getNumParams() != 1 || call.getNumArgs() != 1 ||
-      !function.getReturnType()->isVoidType())
+  const auto *group = summaries.recursiveContractGroup(function);
+  if (!callee || !summaries.recursiveContractPeer(function, *callee) ||
+      !group || function.getNumParams() != 1 || call.getNumArgs() != 1)
     return false;
+  const bool releases = group->releases;
   const auto *shape = containerShape(function.getParamDecl(0)->getType());
-  if (!shape || shape->access != core::ContainerAccess::Release)
+  if (!shape || shape->access != (releases ? core::ContainerAccess::Release
+                                           : core::ContainerAccess::Read))
     return false;
-  if (!recursiveCleanupCandidate) {
+  if (!recursiveContractCandidate) {
     // The initial induction rule has no hidden global effects or outputs.
     // Additional callbacks/mutators need their ordinary verified contracts.
     bool candidate = true;
@@ -736,16 +1284,18 @@ bool FunctionDataflow::handleRecursiveCleanup(const CallExpr &call,
         const auto binding =
             path ? callbackBindings.find(*path) : callbackBindings.end();
         const bool actualFree =
-            binding != callbackBindings.end() && !binding->second.unknown &&
-            !binding->second.null &&
+            path && path->isGlobal() && binding != callbackBindings.end() &&
+            !binding->second.unknown && !binding->second.null &&
             binding->second.functions == std::set<std::string>{"free"} &&
             operation->getNumArgs() == 1;
-        candidate &=
-            actualFree ||
-            (target != nullptr &&
-             (target->getCanonicalDecl() == function.getCanonicalDecl() ||
-              (target->getName() == "free" && !target->hasBody() &&
-               operation->getNumArgs() == 1)));
+        // A callback stored in the current node need not be the callback in
+        // its children. The structural predicate carries no per-node callback
+        // behavior; a root specialization cannot authorize the induction.
+        candidate &= (releases && actualFree) ||
+                     (target != nullptr &&
+                      (summaries.recursiveContractPeer(function, *target) ||
+                       (releases && target->getName() == "free" &&
+                        !target->hasBody() && operation->getNumArgs() == 1)));
       }
       if (const auto *assignment = dyn_cast<BinaryOperator>(stmt);
           assignment && assignment->isAssignmentOp()) {
@@ -755,8 +1305,10 @@ bool FunctionDataflow::handleRecursiveCleanup(const CallExpr &call,
             reference ? dyn_cast<VarDecl>(reference->getDecl()) : nullptr;
         const auto *member =
             dyn_cast<MemberExpr>(assignment->getLHS()->IgnoreParenImpCasts());
-        const bool localCursor = var != nullptr && var->hasLocalStorage() &&
-                                 var->getType()->isPointerType();
+        const bool localCursor =
+            var != nullptr && var->hasLocalStorage() &&
+            (var->getType()->isPointerType() ||
+             (!releases && var->getType()->isIntegerType()));
         const bool clearedPayload =
             member != nullptr &&
             builder.classifyValue(*assignment->getRHS()).kind ==
@@ -765,27 +1317,53 @@ bool FunctionDataflow::handleRecursiveCleanup(const CallExpr &call,
               return member->getMemberNameInfo().getAsString() ==
                      payload.field.name;
             });
-        candidate &= assignment->getOpcode() == BO_Assign &&
-                     (localCursor || clearedPayload);
+        candidate &= (assignment->getOpcode() == BO_Assign || !releases) &&
+                     (localCursor || (releases && clearedPayload));
       }
-      if (const auto *unary = dyn_cast<UnaryOperator>(stmt))
-        candidate &= !unary->isIncrementDecrementOp();
+      if (const auto *unary = dyn_cast<UnaryOperator>(stmt);
+          unary && unary->isIncrementDecrementOp()) {
+        const auto *reference =
+            dyn_cast<DeclRefExpr>(unary->getSubExpr()->IgnoreParenImpCasts());
+        const auto *var =
+            reference ? dyn_cast<VarDecl>(reference->getDecl()) : nullptr;
+        candidate &= !releases && var != nullptr && var->hasLocalStorage() &&
+                     var->getType()->isIntegerType();
+      }
       for (const auto *child : stmt->children())
         work.push_back(child);
     }
-    recursiveCleanupCandidate = candidate && work.size() <= 65536;
+    recursiveContractCandidate = candidate && work.size() <= 65536;
   }
-  if (!*recursiveCleanupCandidate)
+  if (!*recursiveContractCandidate)
     return false;
-  const auto actual = builder.resolvePointerValue(*call.getArg(0));
-  if (!actual)
+  // RFC 0029: ownership resolution intentionally strips pointer arithmetic.
+  // An induction premise instead needs the exact node, not an interior or
+  // one-past address into the same allocation.
+  const auto origin = builder.classifyValue(*call.getArg(0));
+  const auto actual = origin.place;
+  if (origin.kind != ValueOrigin::Kind::Copy || !actual ||
+      !actual->element.isWhole() || !origin.offset.isZero() ||
+      (origin.boundsOffset && !origin.boundsOffset->isZero()) ||
+      std::ranges::any_of(origin.spatialSteps,
+                          [](const auto &step) { return !step.isZero(); }))
+    return false;
+  if (const auto spatial = spatialRecordAt(actual->place, state);
+      spatial && !spatial->offset.isZero())
     return false;
   const auto fact = containerAt(actual->place, *shape, state);
-  if (!fact || !fact->tailOf || fact->tailField.empty() ||
-      !shape->recursiveLink(fact->tailField) ||
-      state.nulls.stateOf(*fact->tailOf) != core::Nullness::NonNull)
+  if (!fact)
     return false;
-  auto source = stableSummaryPathOf(*fact->tailOf);
+  const bool strict =
+      fact->tailOf && !fact->tailField.empty() &&
+      shape->recursiveLink(fact->tailField) &&
+      state.nulls.stateOf(*fact->tailOf) == core::Nullness::NonNull;
+  const bool forward =
+      actual->place == builder.placeForVar(*function.getParamDecl(0)) &&
+      !state.safety->replacedPointers.contains(actual->place) &&
+      fact->releasedChildren.empty() && fact->releasedPayloads.empty();
+  if (!strict && !forward)
+    return false;
+  auto source = stableSummaryPathOf(strict ? *fact->tailOf : actual->place);
   if (!source && fact->inputs.size() == 1)
     if (const auto entry = containerInputs.find(*fact->inputs.begin());
         entry != containerInputs.end())
@@ -794,34 +1372,69 @@ bool FunctionDataflow::handleRecursiveCleanup(const CallExpr &call,
     return false;
   if (!requireContainer(*fact, call, state))
     return false;
-  recursiveCleanupPremises.insert(*source);
+  recursiveContractPremises.insert(*source);
+  recursiveContractCalls.emplace(callee->getCanonicalDecl(), strict);
   state.safety->containers.set(actual->place, *fact);
-  releaseFootprint(actual->place, true, state);
-  invalidateContainers(actual->place, true, false, state);
-  state.moves.markMoved(actual->place, core::MoveReason::Freed, locate(call));
-  state.resources.clear(actual->place);
+  if (releases) {
+    releaseFootprint(actual->place, true, state);
+    invalidateContainers(actual->place, true, false, state);
+    state.moves.markMoved(actual->place, core::MoveReason::Freed, locate(call));
+    state.resources.clear(actual->place);
+  }
   safetyObligation(
       core::SafetyProperty::Call, core::SafetyOutcome::Required, call,
-      "proper recursive child",
-      "recursive cleanup uses a proper child induction hypothesis");
+      strict ? "proper recursive child" : "recursive forwarding",
+      strict ? "recursive call uses a proper child induction hypothesis"
+             : "recursive forwarding requires progress on every group cycle");
   return true;
 }
 
-void FunctionDataflow::verifyRecursiveCleanup() {
-  for (const auto &path : recursiveCleanupPremises) {
+void FunctionDataflow::verifyRecursiveContract() {
+  const auto *group = summaries.recursiveContractGroup(function);
+  if (!group)
+    return;
+  if (group->constructs)
+    verifyRecursiveConstruction();
+  if (group->writes)
+    verifyRecursiveWriter();
+  if (group->members.size() == 1 && !recursiveContractCalls.empty()) {
+    std::vector<core::InductionEdge> edges;
+    for (const auto &[callee, strict] : recursiveContractCalls) {
+      (void)callee;
+      edges.push_back({.caller = 0, .callee = 0, .strict = strict});
+    }
+    if (!core::validInductionProgress(1, edges)) {
+      summaries.failedRecursiveProgress.insert(function.getCanonicalDecl());
+      safetyObligation(core::SafetyProperty::Semantics,
+                       core::SafetyOutcome::Unresolved, *function.getBody(),
+                       "recursive progress",
+                       "recursive proof cycle has no strict progress");
+    }
+  }
+  for (const auto &path : recursiveContractPremises) {
     const bool verified = std::ranges::any_of(
         inferred.checked.establishes, [&](const auto &post) {
-          return post.kind == core::CheckedRequirementKind::ContainerConsumed &&
+          return post.kind ==
+                     (group->releases
+                          ? core::CheckedRequirementKind::ContainerConsumed
+                          : core::CheckedRequirementKind::ContainerPreserved) &&
                  post.path == path && post.when.trivial() && !post.on;
         });
+    const auto *success = group->releases
+                              ? "recursive cleanup conserves and releases the "
+                                "complete input footprint"
+                              : "recursive traversal preserves the complete "
+                                "input footprint";
+    const auto *failure =
+        group->releases ? "recursive cleanup does not establish complete "
+                          "input footprint consumption"
+                        : "recursive traversal does not establish complete "
+                          "input footprint preservation";
     safetyObligation(core::SafetyProperty::Semantics,
                      verified ? core::SafetyOutcome::Proven
                               : core::SafetyOutcome::Unresolved,
                      *function.getBody(), "recursive footprint",
-                     verified ? "recursive cleanup conserves and releases the "
-                                "complete input footprint"
-                              : "recursive cleanup does not establish complete "
-                                "input footprint consumption");
+                     verified ? success : failure);
   }
 }
 

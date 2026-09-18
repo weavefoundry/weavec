@@ -1,0 +1,8 @@
+{
+  "README.md": "064f0084032d277ca61346541dfb5fb17bd0790bddacd31184fec63771f7dd39",
+  "manifest.json": "4891f12a0f19603883cca9da701577c829da5b0a61f7484ac20ced43cbe12532",
+  "nested-serialize.c": "d9aeb3d53f9c0f8f3ce611034844e8c5e900a91851eeacb75f0feedfd1feca3e",
+  "output-leak.c": "dd04f646ffd8af417e43427c1b5e1723de9dadce398446d2411b3776b16ad52e",
+  "output-twice.c": "73efa4bbf7e4cd213c9c7b78aec90abe0743f759798d6c81ae3ccb9d80cf39c8",
+  "upstream-identity.json": "3aa0f5db2be2097c3f6f12ea1eb63ef004ed6df7b97df59f75ed07f5ba847980"
+}

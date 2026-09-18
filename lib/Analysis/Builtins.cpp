@@ -791,9 +791,12 @@ static llvm::StringMap<core::FunctionSummary> buildTable() {
         llvm::StringLiteral("strtod"), llvm::StringLiteral("strtof"),
         llvm::StringLiteral("strtold"), llvm::StringLiteral("strtoimax"),
         llvm::StringLiteral("strtoumax")}) {
-    table[name].addStore(core::Store{
-        .dest = core::SummaryPath::param(1).deref(),
-        .value = core::ValueSource::interiorCopy(core::SummaryPath::param(0))});
+    auto value = core::ValueSource::interiorCopy(core::SummaryPath::param(0));
+    value.when.require(core::SummaryPath::param(1),
+                       core::ValueFact::of(core::Outcome::NonNull));
+    table[name].addStore(
+        core::Store{.dest = core::SummaryPath::param(1).deref(),
+                    .value = std::move(value)});
   }
 
   // Out-parameters that receive a fresh allocation the caller must release

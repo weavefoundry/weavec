@@ -1,0 +1,99 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "name": "bounded",
+      "sources": [
+        "finish.c",
+        "bounded.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    },
+    {
+      "name": "earlier-zero",
+      "sources": [
+        "finish.c",
+        "earlier-zero.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    },
+    {
+      "name": "forged-capacity",
+      "sources": [
+        "finish.c",
+        "forged-capacity.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "bound|extent|interval|terminat|initializ"
+    },
+    {
+      "name": "unterminated",
+      "sources": [
+        "finish.c",
+        "unterminated.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "bound|extent|interval|terminat|initializ"
+    },
+    {
+      "name": "uninitialized",
+      "sources": [
+        "finish.c",
+        "uninitialized.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "bound|extent|interval|terminat|initializ"
+    },
+    {
+      "name": "escaped-cursor",
+      "sources": [
+        "finish.c",
+        "escaped-cursor.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "bound|extent|interval|terminat|initializ"
+    }
+  ]
+}

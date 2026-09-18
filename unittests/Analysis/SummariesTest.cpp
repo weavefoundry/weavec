@@ -516,8 +516,10 @@ TEST(Builtins, Entries) {
   EXPECT_TRUE(strtolSummary->returns.empty());
   ASSERT_EQ(strtolSummary->stores.size(), 1U);
   EXPECT_EQ(strtolSummary->stores.begin()->dest, SummaryPath::param(1).deref());
-  EXPECT_EQ(strtolSummary->stores.begin()->value,
-            ValueSource::interiorCopy(SummaryPath::param(0)));
+  auto endPointer = ValueSource::interiorCopy(SummaryPath::param(0));
+  endPointer.when.require(SummaryPath::param(1),
+                          core::ValueFact::of(core::Outcome::NonNull));
+  EXPECT_EQ(strtolSummary->stores.begin()->value, endPointer);
   EXPECT_TRUE(strtolSummary->requiresParam(0));
   EXPECT_FALSE(strtolSummary->requiresParam(1)) << "`endptr` may be null";
 

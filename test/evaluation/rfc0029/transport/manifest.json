@@ -1,0 +1,54 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "name": "composed-client",
+      "sources": [
+        "client.c",
+        "library.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    },
+    {
+      "name": "generic-interfaces",
+      "sources": [
+        "library.c"
+      ],
+      "functions": [
+        "destroy_even",
+        "destroy_odd",
+        "make",
+        "dispose"
+      ],
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    },
+    {
+      "name": "undersized-callback",
+      "sources": [
+        "bad.c",
+        "library.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "reason": "interval|extent|bounds|callback",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    }
+  ]
+}

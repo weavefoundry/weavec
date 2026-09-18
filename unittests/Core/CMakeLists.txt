@@ -1,6 +1,7 @@
 weavec_add_unittest(
   WeaveCCoreTests
   SOURCES SafetyTest.cpp
+          InductionTest.cpp
           FormatTest.cpp
           CallContextTest.cpp
           CallTargetsTest.cpp

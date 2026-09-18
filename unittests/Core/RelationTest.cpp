@@ -35,6 +35,39 @@ TEST(Relation, NarrowsAndWidens) {
   EXPECT_EQ(spelling(Relation::GreaterEqual), ">=");
 }
 
+// RFC 0029: constant bounds obey the same finite widening as differences.
+TEST(Relation, CheckedConstantBoundsWidenThroughZero) {
+  RelationTracker previous;
+  RelationTracker incoming;
+  previous.learnAtMost(I, -5);
+  incoming.learnAtMost(I, -3);
+  previous.learnAtLeast(N, 8);
+  incoming.learnAtLeast(N, 6);
+  previous.learnAtMost(K, 9);
+  incoming.learnAtMost(K, 9);
+  EXPECT_TRUE(previous.join(incoming, true, true));
+  EXPECT_EQ(previous.atMost(I), 0);
+  EXPECT_EQ(previous.atLeast(N), 0);
+  EXPECT_EQ(previous.atMost(K), 9);
+  EXPECT_FALSE(previous.join(incoming, true, true));
+  incoming.forget(I);
+  incoming.learnAtMost(I, 1);
+  incoming.forget(N);
+  incoming.learnAtLeast(N, -1);
+  EXPECT_TRUE(previous.join(incoming, true, true));
+  EXPECT_FALSE(previous.atMost(I));
+  EXPECT_FALSE(previous.atLeast(N));
+  EXPECT_FALSE(previous.join(incoming, true, true));
+
+  RelationTracker exact;
+  RelationTracker later;
+  exact.learnAtMost(I, 1);
+  later.learnAtMost(I, 2);
+  EXPECT_TRUE(exact.join(later, true, false));
+  EXPECT_EQ(exact.atMost(I), 2);
+  EXPECT_TRUE(exact.isBounded(I));
+}
+
 TEST(RelationTracker, LearnsInEitherOrderAndNarrows) {
   RelationTracker relations;
   relations.learn(I, Relation::Less, N); // i < n

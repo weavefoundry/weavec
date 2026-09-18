@@ -66,6 +66,25 @@ TEST(Traversal, SameArrayDifferenceStillRequiresTheTargetIntegerRange) {
   EXPECT_TRUE(found);
 }
 
+TEST(Traversal, RecognizedMinimumKeepsItsOperandRelation) {
+  // RFC 0029: an evaluation-site union must not replace min(a, b) <= b.
+  const auto contract = traversalCheck(
+      "typedef __SIZE_TYPE__ size_t;size_t strlen(const char*);"
+      "void *malloc(size_t);void free(void*);"
+      "void *memcpy(void*,const void*,size_t);"
+      "char *copy(const char *text,size_t length){size_t offset=strlen(text);"
+      "char *out=malloc(offset+1);if(!out)return 0;"
+      "memcpy(out,text,length<offset+1?length:offset+1);return out;}"
+      "int f(void){char bytes[8]={'a','b',0};"
+      "char *p=copy(bytes,sizeof bytes);free(p);return 0;}");
+  for (const auto &[key, obligation] : contract.obligations.entries()) {
+    (void)key;
+    EXPECT_FALSE(obligation.reason ==
+                     "call input interval must be initialized" &&
+                 obligation.outcome == core::SafetyOutcome::Unresolved);
+  }
+}
+
 TEST(Traversal, ExhaustedVariableBudgetRemainsExplicitlyIncomplete) {
   std::string code = "void f(";
   for (unsigned i = 0; i < 65; ++i)

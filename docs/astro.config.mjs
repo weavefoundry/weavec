@@ -86,6 +86,7 @@ export default defineConfig({
             item('Growable buffers', 'guides/growable-buffers'),
             item('C runtime contracts', 'guides/runtime-contracts'),
             item('Opaque objects', 'guides/opaque-objects'),
+            item('Composing helpers', 'guides/composing-helpers'),
             item('Related pointers', 'guides/related-pointers'),
             item('Integers & bounds', 'guides/integers-and-bounds'),
           ],

@@ -725,7 +725,8 @@ void AnalysisState::forgetZeroedMemory() {
     for (auto &[cls, facts] : outcome.initializedOn) {
       (void)cls;
       std::erase_if(facts, [](const auto &fact) {
-        return fact.second.zeroed || fact.second.terminatedWithin;
+        return fact.second.zeroed || fact.second.numericText ||
+               fact.second.terminatedWithin;
       });
     }
   }

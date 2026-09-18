@@ -1,0 +1,50 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "name": "write",
+      "sources": [
+        "write.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "entry_requirements": 0
+    },
+    {
+      "name": "skip",
+      "sources": [
+        "skip.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "initialized|prefix|terminated"
+    },
+    {
+      "name": "wrong-byte",
+      "sources": [
+        "wrong-byte.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "initialized|prefix|terminated"
+    }
+  ]
+}

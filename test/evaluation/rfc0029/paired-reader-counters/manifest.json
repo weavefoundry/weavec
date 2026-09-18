@@ -1,0 +1,66 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "name": "good",
+      "sources": [
+        "good.c",
+        "library.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "entry_requirements": 0
+    },
+    {
+      "name": "too-many",
+      "sources": [
+        "too-many.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "interval|initialized|extent|projection|bounds"
+    },
+    {
+      "name": "nonzero",
+      "sources": [
+        "nonzero.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "interval|initialized|extent|projection|bounds"
+    },
+    {
+      "name": "skipped-index",
+      "sources": [
+        "skipped-index.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "interval|initialized|extent|projection|bounds"
+    }
+  ]
+}

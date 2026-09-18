@@ -1,0 +1,69 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "name": "generic",
+      "sources": [
+        "library.c"
+      ],
+      "functions": [
+        "build",
+        "sum",
+        "destroy"
+      ],
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    },
+    {
+      "name": "client",
+      "sources": [
+        "client.c",
+        "library.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "entry_requirements": 0
+    },
+    {
+      "name": "short",
+      "sources": [
+        "short.c",
+        "library.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "extent|interval|bounds"
+    },
+    {
+      "name": "uninitialized",
+      "sources": [
+        "uninitialized.c",
+        "library.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "initializ"
+    }
+  ]
+}

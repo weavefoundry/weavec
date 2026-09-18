@@ -1,0 +1,1 @@
+Frozen before active recursive output-context nomination. A stable mode flag alone must not force separate recursive requests for each changing depth value before a concrete node selector is available. Baseline candidate28; generic unresolved recursion remains incomplete.

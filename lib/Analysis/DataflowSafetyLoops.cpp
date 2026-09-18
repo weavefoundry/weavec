@@ -11,6 +11,8 @@
 #include "Dataflow.h"
 #include "IntegerSupport.h"
 
+#include "clang/AST/ParentMapContext.h"
+
 using namespace clang;
 
 namespace weavec::analysis {
@@ -59,6 +61,217 @@ static const VarDecl *loopRequirementIndex(const ForStmt &loop,
     return nullptr;
   initial = assignment->getRHS();
   return loopRequirementVariable(assignment->getLHS());
+}
+
+void FunctionDataflow::checkedReaderLoop(const Stmt &at,
+                                         core::AnalysisState &state) {
+  if (bufferObjects.empty())
+    return;
+  const auto found = checkedLoops.find(&at);
+  if (found == checkedLoops.end())
+    return;
+  const auto &loop = *found->second;
+  auto [saved, inserted] = checkedReaderLoops.try_emplace(&loop);
+  if (inserted) {
+    const Expr *initial = nullptr;
+    const auto *index = loopRequirementIndex(loop, initial);
+    const auto type = index ? integerTypeOf(*index, context) : std::nullopt;
+    const auto *increment =
+        loop.getInc()
+            ? dyn_cast<UnaryOperator>(loop.getInc()->IgnoreParenImpCasts())
+            : nullptr;
+    if (!index || !type || type->isSigned || type->isBoolean ||
+        !index->hasLocalStorage() || addressTaken.contains(index) ||
+        index->getType().isVolatileQualified() ||
+        index->getType()->isAtomicType() || !initial ||
+        integerConstant(*initial, context) != 0 ||
+        initial->HasSideEffects(context) || !increment ||
+        !increment->isIncrementOp() ||
+        loopRequirementVariable(increment->getSubExpr()) != index ||
+        !loop.getCond() || loop.getCond()->HasSideEffects(context))
+      return;
+    // A surrounding switch could jump directly into a case in the loop.
+    const Stmt *ancestor = &loop;
+    bool reachedBody = false;
+    for (unsigned depth = 0; depth < 128; ++depth) {
+      if (ancestor == function.getBody()) {
+        reachedBody = true;
+        break;
+      }
+      const auto parents = context.getParents(*ancestor);
+      if (parents.size() != 1)
+        return;
+      ancestor = parents[0].get<Stmt>();
+      if (!ancestor || isa<SwitchStmt>(ancestor))
+        return;
+    }
+    if (!reachedBody)
+      return;
+    std::vector<const Stmt *> body;
+    if (!collectLoopRequirementStatements(loop.getBody(), body))
+      return;
+    for (const auto *statement : body) {
+      if (isa<CallExpr, AsmStmt, LabelStmt, IndirectGotoStmt, ForStmt,
+              WhileStmt, DoStmt>(statement))
+        return;
+      const Expr *written = nullptr;
+      if (const auto *assignment = dyn_cast<BinaryOperator>(statement);
+          assignment && assignment->isAssignmentOp())
+        written = assignment->getLHS();
+      if (const auto *unary = dyn_cast<UnaryOperator>(statement);
+          unary && unary->isIncrementDecrementOp())
+        written = unary->getSubExpr();
+      if (written) {
+        const auto *variable = loopRequirementVariable(written);
+        if (!variable || variable == index || !variable->hasLocalStorage() ||
+            !variable->getType()->isArithmeticType())
+          return;
+      }
+    }
+    std::vector<const Expr *> conditions{loop.getCond()};
+    for (std::size_t i = 0; i < conditions.size(); ++i) {
+      if (conditions.size() > MaxLoopRequirementConditionNodes)
+        return;
+      const auto *comparison =
+          dyn_cast<BinaryOperator>(conditions[i]->IgnoreParenImpCasts());
+      if (!comparison)
+        continue;
+      if (comparison->getOpcode() == BO_LAnd) {
+        conditions.push_back(comparison->getLHS());
+        conditions.push_back(comparison->getRHS());
+        continue;
+      }
+      if (comparison->getOpcode() != BO_LT)
+        continue;
+      const auto *sum =
+          dyn_cast<BinaryOperator>(comparison->getLHS()->IgnoreParenImpCasts());
+      if (!sum || sum->getOpcode() != BO_Add ||
+          integerTypeOf(sum->getType(), context) != type ||
+          integerTypeOf(comparison->getRHS()->getType(), context) != type)
+        continue;
+      const Expr *indexed = sum->getLHS();
+      const Expr *position = sum->getRHS();
+      if (loopRequirementVariable(indexed) != index)
+        std::swap(indexed, position);
+      if (loopRequirementVariable(indexed) != index ||
+          integerTypeOf(indexed->getType(), context) != type ||
+          integerTypeOf(position->getType(), context) != type ||
+          !isa<MemberExpr>(position->IgnoreParenImpCasts()) ||
+          !isa<MemberExpr>(comparison->getRHS()->IgnoreParenImpCasts()))
+        continue;
+      const auto cursor = builder.resolve(*position);
+      const auto capacity = builder.resolve(*comparison->getRHS());
+      if (!cursor || !capacity)
+        continue;
+      const auto *cursorDecl =
+          dyn_cast_or_null<ValueDecl>(builder.declFor(cursor->place));
+      const auto *capacityDecl =
+          dyn_cast_or_null<ValueDecl>(builder.declFor(capacity->place));
+      if (!cursorDecl || !capacityDecl ||
+          integerTypeOf(*cursorDecl, context) != type ||
+          integerTypeOf(*capacityDecl, context) != type)
+        continue;
+      for (const auto &[object, shape] : bufferObjects)
+        if (shape.reader &&
+            places.field(object, shape.length.name) == cursor->place &&
+            places.field(object, shape.capacity.name) == capacity->place) {
+          saved->second = CheckedReaderLoop{
+              .index = indexed,
+              .position = position,
+              .capacity = comparison->getRHS(),
+              .backing = places.field(object, shape.data.name)};
+          const auto *compound = dyn_cast<CompoundStmt>(loop.getBody());
+          const auto *selection =
+              compound && compound->size() == 1
+                  ? dyn_cast<SwitchStmt>(*compound->body_begin())
+                  : dyn_cast<SwitchStmt>(loop.getBody());
+          const auto *byte =
+              selection ? dyn_cast<ArraySubscriptExpr>(
+                              selection->getCond()->IgnoreParenImpCasts())
+                        : nullptr;
+          bool numeric = byte != nullptr &&
+                         byteSizeOf(byte->getType(), context) == 1 &&
+                         !byte->getType().isVolatileQualified() &&
+                         !byte->getType()->isAtomicType() &&
+                         loopRequirementVariable(byte->getIdx()) == index;
+          bool hasDefault = false;
+          unsigned labels = 0;
+          for (const auto *label = selection ? selection->getSwitchCaseList()
+                                             : nullptr;
+               label && numeric; label = label->getNextSwitchCase()) {
+            if (++labels > 256) {
+              numeric = false;
+              break;
+            }
+            if (const auto *branch = dyn_cast<CaseStmt>(label)) {
+              numeric &=
+                  branch->getRHS() == nullptr &&
+                  integerConstant(*branch->getLHS(), context).has_value() &&
+                  checkedNumericByte(*branch->getLHS(), state);
+            } else {
+              const auto *otherwise = cast<DefaultStmt>(label);
+              const auto *jump = dyn_cast<GotoStmt>(otherwise->getSubStmt());
+              hasDefault = true;
+              numeric &= jump != nullptr &&
+                         std::ranges::find(body, jump->getLabel()->getStmt()) ==
+                             body.end();
+            }
+          }
+          if (numeric && hasDefault && labels > 1)
+            saved->second->numericInput = byte->getBase();
+          break;
+        }
+    }
+  }
+  if (!saved->second)
+    return;
+  const auto &candidate = *saved->second;
+  const auto *buffer = bufferFact(candidate.backing, state);
+  if (!buffer || !buffer->shape.reader || !buffer->initialized)
+    return;
+  const auto index = integerExpressionOf(*candidate.index, state);
+  const auto cursor = integerExpressionOf(*candidate.position, state);
+  const auto capacity = integerExpressionOf(*candidate.capacity, state);
+  if (!index || !cursor || !capacity ||
+      !checkedAtMost(core::Affine::ofPlace(buffer->length),
+                     core::Affine::ofPlace(buffer->capacity), state))
+    return;
+  const auto room = NumericExpression::operation(core::IntegerOp::Subtract,
+                                                 *capacity, *cursor);
+  if (!room)
+    return;
+  // The initial index is zero; stable counters and the strict successful
+  // test leave room for the next unit step. This is an arithmetic induction
+  // premise, independently of the storage/initialization obligations.
+  state.numericConditions.requireInteger(
+      {.lhs = *index, .op = core::IntegerOp::LessEqual, .rhs = *room});
+  const bool strict = &at != &loop && !checkedLoopConditions.contains(&at);
+  if (strict)
+    state.numericConditions.requireInteger(
+        {.lhs = *index, .op = core::IntegerOp::Less, .rhs = *room});
+  const auto local = builder.resolve(*candidate.index);
+  if (local) {
+    const auto type = index->type();
+    auto range = core::IntegerRange::full(type);
+    const auto available = evaluateNumericExpression(*room, state);
+    if (!available.mayBeInvalid)
+      range = range.satisfying(strict ? core::IntegerOp::Less
+                                      : core::IntegerOp::LessEqual,
+                               available.values);
+    state.scalars.set(
+        local->place,
+        core::ValueFact::ofInteger(
+            integerRangeAt(local->place, type, state).intersect(range)));
+    if (candidate.numericInput && &at != &loop) {
+      const auto memory =
+          checkedMemory(*candidate.numericInput, {},
+                        core::Affine::ofPlace(local->place), state);
+      if (memory && checkedAtMost(memory->begin, memory->end, state))
+        state.safety->initialize(
+            memory->storage,
+            {.begin = memory->begin, .end = memory->end, .numericText = true});
+    }
+  }
 }
 
 // Only scalar locals and parameters can be stable without tracking heap writes.
@@ -220,6 +433,120 @@ void FunctionDataflow::checkedLoopExit(const ForStmt &loop,
   const auto *condition =
       loop.getCond() ? dyn_cast<BinaryOperator>(loop.getCond()->IgnoreParens())
                      : nullptr;
+  if (index && condition && condition->getOpcode() == BO_GT &&
+      loopRequirementVariable(condition->getLHS()) == index &&
+      integerConstant(*condition->getRHS(), context) == 0) {
+    const auto type = integerTypeOf(*index, context);
+    const auto *decrement =
+        loop.getInc()
+            ? dyn_cast<UnaryOperator>(loop.getInc()->IgnoreParenImpCasts())
+            : nullptr;
+    if (!type || type->isBoolean || !index->hasLocalStorage() ||
+        addressTaken.contains(index) ||
+        index->getType().isVolatileQualified() ||
+        index->getType()->isAtomicType() || !initial ||
+        initial->HasSideEffects(context) || !decrement ||
+        !decrement->isDecrementOp() ||
+        loopRequirementVariable(decrement->getSubExpr()) != index)
+      return;
+    std::set<const VarDecl *> inputs{index};
+    std::vector<const Stmt *> initialNodes;
+    if (!collectLoopRequirementStatements(initial, initialNodes))
+      return;
+    for (const auto *node : initialNodes)
+      if (const auto *reference = dyn_cast<DeclRefExpr>(node)) {
+        const auto *variable = dyn_cast<VarDecl>(reference->getDecl());
+        if (!variable || !variable->hasLocalStorage() ||
+            !variable->getType()->isIntegerType() ||
+            variable->getType().isVolatileQualified() ||
+            variable->getType()->isAtomicType() ||
+            addressTaken.contains(variable->getCanonicalDecl()))
+          return;
+        inputs.insert(variable->getCanonicalDecl());
+      }
+    std::vector<const Stmt *> statements;
+    if (!collectLoopRequirementStatements(loop.getBody(), statements))
+      return;
+    const ArraySubscriptExpr *written = nullptr;
+    for (const auto *statement : statements) {
+      if (isa<IfStmt, SwitchStmt, CaseStmt, DefaultStmt, BreakStmt,
+              ContinueStmt, ReturnStmt, GotoStmt, LabelStmt, IndirectGotoStmt,
+              ConditionalOperator, CallExpr, ForStmt, WhileStmt, DoStmt,
+              AsmStmt>(statement))
+        return;
+      const Expr *target = nullptr;
+      if (const auto *unary = dyn_cast<UnaryOperator>(statement);
+          unary &&
+          (unary->isIncrementDecrementOp() || unary->getOpcode() == UO_AddrOf))
+        return;
+      if (const auto *binary = dyn_cast<BinaryOperator>(statement)) {
+        if (binary->isLogicalOp())
+          return;
+        if (binary->isAssignmentOp()) {
+          target = binary->getLHS();
+          if (const auto *subscript =
+                  dyn_cast<ArraySubscriptExpr>(target->IgnoreParenImpCasts())) {
+            if (written || binary->getOpcode() != BO_Assign ||
+                loopRequirementVariable(subscript->getIdx()) != index ||
+                !subscript->getType()->isCharType() ||
+                subscript->getType().isVolatileQualified())
+              return;
+            written = subscript;
+            target = nullptr;
+          }
+        }
+      }
+      if (target) {
+        const auto *variable = loopRequirementVariable(target);
+        if (!variable || !variable->hasLocalStorage() ||
+            !variable->getType()->isIntegerType() ||
+            inputs.contains(variable) ||
+            variable->getType().isVolatileQualified() ||
+            variable->getType()->isAtomicType() ||
+            addressTaken.contains(variable))
+          return;
+      }
+    }
+    if (!written || written->getBase()->HasSideEffects(context))
+      return;
+    const auto *base = written->getBase()->IgnoreParenImpCasts();
+    const auto *slot = dyn_cast<UnaryOperator>(base);
+    const auto *baseVariable = loopRequirementVariable(base);
+    if (slot && slot->getOpcode() == UO_Deref)
+      baseVariable = loopRequirementVariable(slot->getSubExpr());
+    else
+      slot = nullptr;
+    if (!baseVariable || !baseVariable->hasLocalStorage() ||
+        (!baseVariable->getType()->isPointerType() &&
+         !baseVariable->getType()->isArrayType()) ||
+        baseVariable->getType().isVolatileQualified() ||
+        baseVariable->getType()->isAtomicType() ||
+        (baseVariable->getType()->isPointerType() &&
+         addressTaken.contains(baseVariable)))
+      return;
+    const auto expression = integerExpressionOf(*initial, state);
+    const auto first =
+        expression ? linearIntegerExpression(*expression, state) : std::nullopt;
+    const auto end = first ? first->shifted(1) : std::nullopt;
+    if (!first || !end || !checkedAtMost({}, *first, state))
+      return;
+    const auto memory = checkedMemory(*written->getBase(),
+                                      core::Affine::ofConstant(1), *end, state);
+    if (!memory)
+      return;
+    if (slot) {
+      const auto bytes = byteSizeOf(slot->getType(), context);
+      const auto header =
+          bytes ? checkedMemory(*slot->getSubExpr(), {},
+                                core::Affine::ofConstant(*bytes), state)
+                : std::nullopt;
+      if (!header || !runtimeSeparate(*header, *memory, loop, state))
+        return;
+    }
+    state.safety->initialize(memory->storage,
+                             {.begin = memory->begin, .end = memory->end});
+    return;
+  }
   if (!index || !condition || condition->getOpcode() != BO_LT ||
       loopRequirementVariable(condition->getLHS()) != index)
     return;

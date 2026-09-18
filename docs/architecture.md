@@ -51,7 +51,7 @@ dispatch. `DataflowRuntime.cpp` checks memory and stream preconditions,
 They use the existing checked call, callback, output and summary machinery.
 Source definitions retain priority over library spellings. Ordinary summaries
 alone never authorize a checked runtime contract. Portable records use checked
-encoding 9, summary format 23 and sidecar format 24 (RFC 0028).
+encoding 12, summary format 26 and sidecar format 27 (RFC 0029).
 
 | Header             | Purpose                                                                                        |
 | ------------------ | ---------------------------------------------------------------------------------------------- |
@@ -651,7 +651,7 @@ objects for compiler-sidecar validation before replay. Compilation may defer
 an unavailable external contract; the link pass must resolve it. Checked
 failure reaches Clang independently of the diagnostic filtering policy.
 
-Summary format 23 and sidecar format 24 carry guarded/outcome-qualified contracts,
+Summary format 26 and sidecar format 27 carry guarded/outcome-qualified contracts,
 numeric outputs and RFC 0021 traversal records. Checked record encoding uses
 version 9; report JSON uses expanded version 2 or compact version 3.
 Strict parsing and global remapping reject missing premises. Explanation depth
@@ -797,7 +797,7 @@ They describe a subset plus freshly added nodes; they do not promise full input
 consumption. Fresh outputs require actual allocation evidence. Tail outputs are
 imported across read-only calls. A terminal output can establish a detached
 node's null successor. Descriptors, source premises and capability combinations
-are validated during decoding. Summary format 23 and sidecar format 24 prevent
+are validated during decoding. Summary format 26 and sidecar format 27 prevent
 older metadata from silently discarding these records.
 
 Limits are 32 fields, 64 explicit nodes, 64 active facts and 16 KiB per encoded
@@ -835,8 +835,8 @@ returning path must establish complete input consumption before an inferred
 contract is published. Active recursion alone supplies no output. The ordinary
 may-effect fixed point continues independently. Mutual recursion remains
 conservative. Complete preservation, consumption, partition and combination
-outputs use checked encoding 9; strict decoding requires their source predicates
-and separation premises. Summary format 23 and sidecar format 24 carry these
+outputs use checked encoding 12; strict decoding requires their source predicates
+and separation premises. Summary format 26 and sidecar format 27 carry these
 records across program databases, object metadata and validated checkpoints.
 
 ### Input cases and overlapping member storage (RFC 0025)
@@ -886,13 +886,15 @@ reasoning run only in functions with registered buffer candidates.
 
 Checked encoding 9 carries validated `buffer`, `buffer-preserved` and
 `buffer-appended` requirements and outputs to the existing interface codec.
-Summary format 23 and sidecar format 24 reject older encodings. Ordinary
+Summary format 26 and sidecar format 27 reject older encodings. Ordinary
 warnings remain independent from checked completeness.
 
 ## Opaque interfaces and private state (RFC 0028)
 
 Core's `Interface.h`/`Interface.cpp` define a bounded graph of storage types and
-its canonical `it1` codec. Edges represent pointer referents, function arguments,
+its canonical `it2` codec. Anonymous record typedef identities remain distinct
+from tag names and are reproduced only in internal analysis adapters. Edges
+represent pointer referents, function arguments,
 fixed-array elements and record fields. Validation rejects invalid references,
 overlapping fields, duplicate names, by-value cycles, malformed numbers and
 exhausted bounds before Analysis sees a description. Conflicting descriptions
@@ -957,3 +959,59 @@ populations and independent regressions. The optional `upstream` and
 `upstream-objects` populations require the pinned cJSON checkout and verify its
 commit and file digests. The harness rejects syntax failures, missing reports,
 crashes and unrelated negative outcomes; it retains full compressed reports.
+
+
+## Compositional workflows (RFC 0029)
+
+`DataflowBufferDiscovery.cpp` nominates state roles independently of field
+count. At imported calls, `registerBuffer` validates a transported role
+candidate against the target layout and clears all capability flags before
+attempting a fold. Nomination supplies no memory permission.
+
+`RecursiveContracts.cpp` validates eligible cleanup, traversal and construction
+SCCs in a private proof
+environment. The ordinary summary store receives results only after every
+member and Core's `validInductionProgress` check succeed. The Core check
+removes strict edges and tests the remaining graph for cycles; Analysis must
+prove that those edges decrease the same finite ownership measure. A failed
+candidate cannot publish another member's proposed outputs. Existing bounded
+may-effect inference remains separate from the inductive must-proofs.
+
+Direct cleanup uses the same progress graph, including its specialized
+contexts. `DataflowRecursiveConstruction.cpp` proposes a nullable fresh forest
+and an explicit initialized input interval for two-parameter byte/count
+constructors. Recursive edges use immutable entry counts and exact input
+identity. Ordinary call transfer composes completed helpers; final validation
+checks that every required premise follows from the candidate, every promised
+forest is established, and allocation conservation holds on all exits.
+Output-slot constructors additionally verify actual null failure states and
+positive fresh-forest outputs. An immediately tested completed helper can
+transfer one conditional forest through a slot. When that slot is a parent
+node's child, the unchanged parent frame and the new child feed the ordinary
+folding and allocation accounting rules.
+The callback and memory specialization stores reject active private proof
+members so no nested context can publish an unverified hypothesis.
+
+`DataflowCallbackContracts.cpp` introduces input-only behavioral callback
+requirements. Generic helpers use a conditional interface under that explicit
+premise. Callers check every actual target and propagate its trusted boundaries.
+A complete generic behavioral interface avoids unnecessary concrete callback
+specialization; unsupported callback protocols retain the existing mechanisms.
+The callback names participate in ordinary checked encoding, path remapping,
+strict sidecar validation and executable-bound checkpoint invalidation.
+
+Core's `InitializedRange::outsideWrite` computes exact constant-byte frames.
+Analysis preserves them only within the same represented storage or across
+proved concrete object separation. It never uses different pointer spellings
+alone as evidence that writes cannot overlap.
+
+Affine interface projection rejects numeric places written on an incoming path,
+matching typed integer-expression projection. A changing cursor can instead
+project a proved envelope over an unchanged endpoint. This prevents a loop's
+current cursor from being mistaken for its entry value at a caller.
+
+`FloatingCastSupport.cpp` checks finite conversions using Clang's target types
+and LLVM's floating/integer representations. It accepts constant operands or
+unchanged scalar inputs under lexically dominating true bounds, after ruling
+out address exposure, mutation and bypassing jumps. It publishes no numerical
+return relationship. Unknown bounds remain ordinary incomplete obligations.

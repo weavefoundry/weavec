@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "name": "good",
+      "sources": ["good.c", "library.c"],
+      "functions": ["main"],
+      "expect": "accepted",
+      "forbidden_trust": ["unsafe", "annotation"],
+      "entry_requirements": 0
+    },
+    {
+      "name": "leak",
+      "sources": ["leak.c", "library.c"],
+      "functions": ["main"],
+      "expect": "rejected",
+      "forbidden_trust": ["unsafe", "annotation"],
+      "reason": "leak|footprint|ownership"
+    },
+    {
+      "name": "twice",
+      "sources": ["twice.c", "library.c"],
+      "functions": ["main"],
+      "expect": "rejected",
+      "forbidden_trust": ["unsafe", "annotation"],
+      "reason": "freed twice|release|ownership|footprint"
+    },
+    {
+      "name": "ignored",
+      "sources": ["ignored.c", "library.c"],
+      "functions": ["main"],
+      "expect": "rejected",
+      "forbidden_trust": ["unsafe", "annotation"],
+      "reason": "leak|footprint|ownership"
+    }
+  ]
+}

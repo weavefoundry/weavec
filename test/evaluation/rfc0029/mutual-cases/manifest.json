@@ -1,0 +1,66 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "name": "mutual-case-live",
+      "sources": [
+        "live.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "entry_requirements": 0
+    },
+    {
+      "name": "mutual-case-null",
+      "sources": [
+        "null.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "null|live|valid"
+    },
+    {
+      "name": "mutual-case-unbounded",
+      "sources": [
+        "unbounded.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "limit|recursive"
+    },
+    {
+      "name": "mutual-case-generic",
+      "sources": [
+        "live.c"
+      ],
+      "functions": [
+        "walk",
+        "next"
+      ],
+      "expect": "rejected",
+      "reason": "limit|recursive",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    }
+  ]
+}

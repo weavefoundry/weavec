@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "name": "parse-delete",
+      "sources": [
+        "parse-delete.c",
+        "../../../../build/corpus/cJSON-program/cJSON.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    },
+    {
+      "name": "malformed-delete",
+      "sources": [
+        "malformed-delete.c",
+        "../../../../build/corpus/cJSON-program/cJSON.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "accepted",
+      "entry_requirements": 0,
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,80 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "name": "end",
+      "sources": [
+        "end.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "entry_requirements": 0
+    },
+    {
+      "name": "write",
+      "sources": [
+        "write.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "entry_requirements": 0
+    },
+    {
+      "name": "readonly",
+      "sources": [
+        "readonly.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "read-only|writ"
+    },
+    {
+      "name": "past-end",
+      "sources": [
+        "past-end.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "bounds|interval|extent"
+    },
+    {
+      "name": "unrelated",
+      "sources": [
+        "unrelated.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "unsupported checked C construct"
+    }
+  ]
+}

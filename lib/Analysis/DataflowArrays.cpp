@@ -8,6 +8,7 @@
 
 #include "AffineSupport.h"
 #include "Dataflow.h"
+#include "IntegerSupport.h"
 #include "weavec/Core/Array.h"
 
 #include "clang/AST/Type.h"
@@ -101,11 +102,19 @@ PlaceRef FunctionDataflow::selectArrayElement(PlaceRef storage,
                                               std::optional<core::Affine> index,
                                               QualType type, const Expr &at) {
   if (!hasPointerCells(type)) {
-    // RFC 0028: exact cells of private integer arrays use the same bounded
-    // selectors as pointer cells. General numeric array inference is separate.
+    // RFCs 0028/0029: private integer arrays and small concrete automatic
+    // arrays use exact cells. This does not enumerate a runtime-sized array.
     const auto *root = builder.varForPlace(places.root(storage.place));
-    if (type.isNull() || !type->isIntegerType() || !root ||
-        !root->hasGlobalStorage() || root->isExternallyVisible() ||
+    const auto *array =
+        root ? context.getAsConstantArrayType(root->getType()) : nullptr;
+    const bool automatic =
+        root != nullptr && root->hasLocalStorage() && array != nullptr &&
+        array->getSize().getLimitedValue(core::MaxArrayCells + 1) <=
+            core::MaxArrayCells;
+    if (type.isNull() || !type->isIntegerType() || type.isVolatileQualified() ||
+        type->isAtomicType() || !root ||
+        (!automatic &&
+         (!root->hasGlobalStorage() || root->isExternallyVisible())) ||
         places.innermostDeref(storage.place) ||
         !tracksScalar(places.root(storage.place)))
       return storage;
@@ -390,17 +399,76 @@ void FunctionDataflow::initializeArray(core::PlaceId storage, QualType type,
                                        core::AnalysisState &state,
                                        bool zeroInitialize) {
   const auto *array = context.getAsConstantArrayType(type);
-  if (!array || !hasPointerCells(array->getElementType()))
+  if (!array)
+    return;
+  if (state.safety &&
+      (decl.hasLocalStorage() ||
+       (decl.isStaticLocal() && array->getElementType().isConstQualified())) &&
+      init && array->getElementType()->isCharType() &&
+      !array->getElementType().isVolatileQualified() &&
+      context.getCharWidth() == 8 &&
+      array->getSize().getLimitedValue(65) <= 64) {
+    const auto size = array->getSize().getZExtValue();
+    const auto *literal = dyn_cast<StringLiteral>(init->IgnoreParenImpCasts());
+    const auto *values = dyn_cast<InitListExpr>(init->IgnoreParenImpCasts());
+    std::string bytes;
+    bool known = literal != nullptr || values != nullptr;
+    for (std::uint64_t i = 0; known && i < size; ++i) {
+      std::uint64_t byte = 0;
+      if (literal && i < literal->getLength()) {
+        byte = literal->getCodeUnit(static_cast<unsigned>(i));
+      } else if (values && i < values->getNumInits()) {
+        const auto value =
+            integerRangeOf(*values->getInit(static_cast<unsigned>(i)), state);
+        const auto exact = value && !value->mayBeInvalid
+                               ? value->values.constant()
+                               : std::nullopt;
+        known = exact.has_value();
+        if (exact)
+          byte = exact->bits;
+      }
+      bytes.push_back(static_cast<char>(byte & 255U));
+    }
+    if (known && !bytes.empty())
+      state.safety->initialize(
+          storage,
+          {.begin = {},
+           .end = core::Affine::ofConstant(static_cast<std::int64_t>(size)),
+           .bytes = std::move(bytes),
+           .immutableBytes = array->getElementType().isConstQualified()});
+  }
+  const bool scalar =
+      decl.hasLocalStorage() && array->getElementType()->isIntegerType() &&
+      !array->getElementType().isVolatileQualified() &&
+      !array->getElementType()->isAtomicType() &&
+      array->getSize().getLimitedValue(core::MaxArrayCells + 1) <=
+          core::MaxArrayCells;
+  if (!scalar && !hasPointerCells(array->getElementType()))
     return;
   const auto count = array->getSize().getLimitedValue(core::MaxArrayCells + 1);
   const auto summary = places.index(storage);
   arrayTypes[summary] = array->getElementType();
   const auto *list =
       init ? dyn_cast<InitListExpr>(init->IgnoreParenImpCasts()) : nullptr;
+  const auto *literal =
+      scalar && init ? dyn_cast<StringLiteral>(init->IgnoreParenImpCasts())
+                     : nullptr;
   const auto limit =
       std::min(count, static_cast<std::uint64_t>(core::MaxArrayCells));
   for (std::uint64_t i = 0; i < limit; ++i) {
     const auto cell = places.element(summary, std::to_string(i));
+    if (literal) {
+      const auto integer = integerTypeOf(array->getElementType(), context);
+      if (integer)
+        state.scalars.set(
+            cell, core::ValueFact::ofInteger(
+                      core::IntegerRange::singleton(core::IntegerValue::ofBits(
+                          *integer,
+                          i < literal->getLength()
+                              ? literal->getCodeUnit(static_cast<unsigned>(i))
+                              : 0))));
+      continue;
+    }
     const Expr *value = list && i < list->getNumInits()
                             ? list->getInit(static_cast<unsigned>(i))
                             : nullptr;

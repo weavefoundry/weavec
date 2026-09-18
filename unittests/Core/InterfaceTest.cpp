@@ -43,10 +43,29 @@ TEST(InterfaceType, CyclicPointerGraphsRoundTripCanonically) {
   for (std::size_t i = 0; i < text.size(); ++i)
     EXPECT_FALSE(InterfaceType::decode(text.substr(0, i))) << i;
   EXPECT_FALSE(InterfaceType::decode(text + " "));
-  EXPECT_FALSE(InterfaceType::decode("it1;03;" + text.substr(6)));
+  EXPECT_FALSE(InterfaceType::decode("it2;03;" + text.substr(6)));
+  EXPECT_FALSE(InterfaceType::decode("it1;" + text.substr(4)));
   EXPECT_FALSE(InterfaceType::decode("it0;" + text.substr(4)));
-  EXPECT_FALSE(InterfaceType::decode("it1;18446744073709551616;"));
+  EXPECT_FALSE(InterfaceType::decode("it2;18446744073709551616;"));
   EXPECT_FALSE(InterfaceType::decode(std::string(MaxInterfaceBytes + 1, 'x')));
+}
+
+TEST(InterfaceType, AnonymousTypedefNamesAreStrictlyBoundedRecordMetadata) {
+  auto type = chainInterface();
+  type.nodes[0].name.clear();
+  type.nodes[0].typedefName = "node_alias";
+  ASSERT_TRUE(type.valid());
+  EXPECT_EQ(InterfaceType::decode(type.encode()), type);
+  for (std::size_t i = 0; i < type.encode().size(); ++i)
+    EXPECT_FALSE(InterfaceType::decode(type.encode().substr(0, i))) << i;
+  type.nodes[0].name = "tag";
+  EXPECT_FALSE(type.valid());
+  type.nodes[0].name.clear();
+  type.nodes[0].typedefName = "bad name";
+  EXPECT_FALSE(type.valid());
+  type.nodes[0].typedefName.clear();
+  type.nodes[1].typedefName = "scalar_alias";
+  EXPECT_FALSE(type.valid());
 }
 
 TEST(InterfaceType, InvalidEdgesLayoutsAndByValueCyclesAreRejected) {

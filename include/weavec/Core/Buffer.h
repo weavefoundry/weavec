@@ -26,6 +26,9 @@ struct BufferShape {
   ContainerField capacity;
   std::uint64_t elementBytes = 1;
   bool pointerElements = false;
+  // RFC 0029: length is a cursor into fully initialized capacity. This
+  // descriptor grants read access only, independently of backing ownership.
+  bool reader = false;
   bool terminated = false;
   bool ownsBacking = false;
   bool ownsElements = false;

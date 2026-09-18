@@ -1,0 +1,68 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "name": "build",
+      "sources": [
+        "build.c"
+      ],
+      "functions": [
+        "build",
+        "main"
+      ],
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    },
+    {
+      "name": "leak",
+      "sources": [
+        "leak.c"
+      ],
+      "functions": [
+        "build",
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "footprint|leak|cleanup|contract"
+    },
+    {
+      "name": "double",
+      "sources": [
+        "double.c"
+      ],
+      "functions": [
+        "build",
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "freed|release|live"
+    },
+    {
+      "name": "short",
+      "sources": [
+        "short.c"
+      ],
+      "functions": [
+        "build",
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "extent|bounds|interval"
+    }
+  ]
+}

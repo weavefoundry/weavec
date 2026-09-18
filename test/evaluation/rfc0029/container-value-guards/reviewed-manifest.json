@@ -1,0 +1,110 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "name": "null-result",
+      "sources": [
+        "null-result.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "entry_requirements": 0
+    },
+    {
+      "name": "changed-selector",
+      "sources": [
+        "changed-selector.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "bounds|extent|live|freed|precondition"
+    },
+    {
+      "name": "changed-alias",
+      "sources": [
+        "changed-alias.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "bounds|extent|live|freed|precondition"
+    },
+    {
+      "name": "replaced-head",
+      "sources": [
+        "replaced-head.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "entry_requirements": 0
+    },
+    {
+      "name": "released-head",
+      "sources": [
+        "released-head.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "bounds|extent|live|freed|precondition"
+    },
+    {
+      "name": "actual-allocation",
+      "sources": [
+        "actual-allocation.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "bounds|extent|live|freed|precondition"
+    },
+    {
+      "name": "replaced-live-head",
+      "sources": [
+        "replaced-live-head.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "reason": "bounds|extent|live|freed|precondition",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,127 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "name": "generic",
+      "sources": [
+        "library.c"
+      ],
+      "functions": [
+        "copy_bytes"
+      ],
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    },
+    {
+      "name": "good",
+      "sources": [
+        "good.c",
+        "library.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "entry_requirements": 0
+    },
+    {
+      "name": "closed",
+      "sources": [
+        "closed.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "entry_requirements": 0
+    },
+    {
+      "name": "reordered",
+      "sources": [
+        "reordered.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "entry_requirements": 0
+    },
+    {
+      "name": "short",
+      "sources": [
+        "short.c",
+        "library.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "interval|bounds|extent|initialized|pointer"
+    },
+    {
+      "name": "uninitialized",
+      "sources": [
+        "uninitialized.c",
+        "library.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "interval|bounds|extent|initialized|pointer"
+    },
+    {
+      "name": "extra-step",
+      "sources": [
+        "extra-step.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "interval|bounds|extent|initialized|pointer"
+    },
+    {
+      "name": "offset",
+      "sources": [
+        "offset.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "interval|bounds|extent|initialized|pointer"
+    }
+  ]
+}

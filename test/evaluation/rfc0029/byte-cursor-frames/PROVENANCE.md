@@ -1,0 +1,1 @@
+Frozen before extending exact-byte frame preservation. Baseline: completed Debug73f semantics, with temporary parse_string-only diagnostics. Tests fresh allocation and address-taken local pointer cells separately from aliased input writes, actual escape bytes, changed contents and partial initialization. No trusted helper contract.

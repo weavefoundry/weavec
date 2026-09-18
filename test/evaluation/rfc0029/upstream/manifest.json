@@ -1,0 +1,53 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "name": "parse-delete",
+      "sources": [
+        "parse-delete.c",
+        "../../../../build/corpus/cJSON-program/cJSON.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "entry_requirements": 0
+    },
+    {
+      "name": "print-delete",
+      "sources": [
+        "print-delete.c",
+        "../../../../build/corpus/cJSON-program/cJSON.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "entry_requirements": 0
+    },
+    {
+      "name": "parse-double-bad",
+      "sources": [
+        "parse-double-bad.c",
+        "../../../../build/corpus/cJSON-program/cJSON.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "freed|release|live"
+    }
+  ]
+}

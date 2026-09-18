@@ -12,6 +12,18 @@
 #include <array>
 namespace weavec::analysis {
 static constexpr auto Models = std::to_array<RuntimeModel>({
+    {.name = "strtod",
+     .family = RuntimeFamily::ParseNumeric,
+     .parameters = "te",
+     .result = 'r'},
+    {.name = "strtof",
+     .family = RuntimeFamily::ParseNumeric,
+     .parameters = "te",
+     .result = 'r'},
+    {.name = "strtold",
+     .family = RuntimeFamily::ParseNumeric,
+     .parameters = "te",
+     .result = 'r'},
     {.name = "fabs",
      .family = RuntimeFamily::Numeric,
      .parameters = "r",
@@ -220,6 +232,14 @@ bool runtimeSignature(const RuntimeModel &model, const clang::CallExpr &call,
     return false;
   const auto matches = [&](char role, clang::QualType type) {
     switch (role) {
+    case 't':
+      return type->isPointerType() &&
+             ASTContext::hasSameType(type->getPointeeType(),
+                                     context.CharTy.withConst());
+    case 'e':
+      return type->isPointerType() &&
+             ASTContext::hasSameType(type->getPointeeType(),
+                                     context.getPointerType(context.CharTy));
     case 's':
       return type->isPointerType() && type->getPointeeType()->isCharType();
     case 'p':
@@ -236,7 +256,8 @@ bool runtimeSignature(const RuntimeModel &model, const clang::CallExpr &call,
       return ASTContext::hasSameUnqualifiedType(type, context.IntTy);
     case 'r': {
       const bool base = model.name == "fabs" || model.name == "floor" ||
-                        model.name == "ceil" || model.name == "trunc";
+                        model.name == "ceil" || model.name == "trunc" ||
+                        model.name == "strtod";
       auto expected = context.DoubleTy;
       if (!base)
         expected =

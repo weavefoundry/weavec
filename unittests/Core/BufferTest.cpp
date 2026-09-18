@@ -49,6 +49,53 @@ TEST(BufferShape, CanonicalTargetLayoutsRoundTrip) {
   EXPECT_FALSE(terminated.valid());
 }
 
+TEST(BufferShape, ReaderAndWriterCapabilitiesCannotBeInterchanged) {
+  const auto writer = bufferShape();
+  auto reader = writer;
+  reader.reader = true;
+  ASSERT_TRUE(reader.valid());
+  EXPECT_TRUE(reader.encode().starts_with("reader1:"));
+  EXPECT_EQ(BufferShape::decode(reader.encode()), reader);
+  EXPECT_FALSE(reader.sameLayoutAs(writer));
+  EXPECT_FALSE(reader.entails(writer));
+  EXPECT_FALSE(writer.entails(reader));
+  reader.ownsBacking = true;
+  reader.terminated = true;
+  EXPECT_EQ(BufferShape::decode(reader.encode()), reader);
+  reader.pointerElements = true;
+  EXPECT_FALSE(reader.valid());
+  reader.pointerElements = false;
+  reader.elementBytes = 4;
+  EXPECT_FALSE(reader.valid());
+}
+
+TEST(BufferShape, ReaderProofTransportRetainsItsDistinctSemantics) {
+  auto shape = bufferShape();
+  shape.reader = true;
+  CheckedContract contract;
+  contract.computed = true;
+  contract.require({.kind = CheckedRequirementKind::Buffer,
+                    .path = SummaryPath::param(0).deref(),
+                    .other = {},
+                    .family = shape.encode()});
+  contract.establish({.kind = CheckedRequirementKind::Buffer,
+                      .path = SummaryPath::param(0).deref(),
+                      .other = {},
+                      .family = shape.encode()});
+  const auto encoded = printCheckedContract(contract, {});
+  EXPECT_EQ(parseCheckedContract(encoded, {}), contract);
+  auto a = bufferFact();
+  auto b = a;
+  b.shape.reader = true;
+  BufferFacts left;
+  BufferFacts right;
+  left.set(PlaceId{2}, a);
+  right.set(PlaceId{2}, b);
+  left.join(right);
+  EXPECT_TRUE(left.values.empty());
+  EXPECT_TRUE(left.storage.empty());
+}
+
 TEST(BufferShape, MalformedDescriptorsCannotPublishEvidence) {
   const auto encoded = bufferShape().encode();
   for (std::size_t n = 0; n < encoded.size(); ++n)

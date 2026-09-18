@@ -1,0 +1,1 @@
+RFC 0029 transport population frozen after primary-source implementation, before first transport analysis. Exercises mutual cleanup and allocator/releaser callbacks across source/object boundaries and checkpoints. Expected outcomes are independent of source selection, compact reporting and cache state.

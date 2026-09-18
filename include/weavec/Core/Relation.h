@@ -25,6 +25,7 @@
 #include "weavec/Core/Place.h"
 
 #include <cstdint>
+#include <limits>
 #include <map>
 #include <optional>
 #include <set>
@@ -174,10 +175,32 @@ private:
   /// The edge learnt for the pair itself.
   [[nodiscard]] std::optional<RelationEdge> directly(PlaceId lhs,
                                                      PlaceId rhs) const;
-  /// The places known equal to `place`, each with the offset `place ==
-  /// other + offset`.
-  [[nodiscard]] std::vector<std::pair<PlaceId, std::int64_t>>
-  equalsOf(PlaceId place) const;
+  /// Visits the places known equal to `place`, passing each with the offset
+  /// `place == other + offset`. Stops early when `visit` returns true, and
+  /// reports whether it did. Allocation-free and skips the keys that cannot
+  /// name `place`: these queries run on nearly every integer range lookup,
+  /// so materializing a vector per call dominated the analysis cost. This is
+  /// an internal index refinement; it visits exactly the same edges.
+  /// The bound of `place`, or of a place known equal to it.
+  [[nodiscard]] std::optional<std::int64_t>
+  boundThroughEquals(PlaceId place,
+                     const std::map<PlaceId, std::int64_t> &bounds) const;
+  template <typename Visit>
+  bool forEachEqual(PlaceId place, Visit visit) const {
+    // Keys are canonical ordered pairs, so an edge naming `place` as its
+    // second component has a strictly smaller first component.
+    const auto owned = pairs.lower_bound({place, PlaceId{}});
+    for (auto it = pairs.begin(); it != owned; ++it)
+      if (it->second.relation == Relation::Equal && it->first.second == place &&
+          it->second.offset != std::numeric_limits<std::int64_t>::min() &&
+          visit(it->first.first, -it->second.offset))
+        return true;
+    for (auto it = owned; it != pairs.end() && it->first.first == place; ++it)
+      if (it->second.relation == Relation::Equal &&
+          visit(it->first.second, it->second.offset))
+        return true;
+    return false;
+  }
 
   // Keyed on `(min, max)`; the edge is stated `min REL max + offset`.
   std::map<std::pair<PlaceId, PlaceId>, RelationEdge> pairs;

@@ -261,8 +261,20 @@ public:
                result.other == SummaryPath{} && result.family == "free" &&
                result.begin == PathAffine::ofConstant(0) &&
                result.end == PathAffine::ofConstant(0);
-    if (result.kind == CheckedRequirementKind::TerminatedWithin)
+    if (result.kind == CheckedRequirementKind::CountWithinSpan)
+      valid &= result.path != result.other && result.family.empty() &&
+               result.begin == PathAffine::ofConstant(0) &&
+               result.end == PathAffine::ofConstant(0);
+    if (result.kind == CheckedRequirementKind::InitializedAdvance)
       valid &= result.family.empty() &&
+               result.begin == PathAffine::ofConstant(0) &&
+               result.end == PathAffine::ofConstant(0);
+    if (result.kind == CheckedRequirementKind::InitializedSpan)
+      valid &= result.path != result.other && result.family.empty() &&
+               result.begin == PathAffine::ofConstant(0) &&
+               result.end.isConstant() && result.end.constant > 0;
+    if (result.kind == CheckedRequirementKind::TerminatedWithin)
+      valid &= result.family.empty() && result.other == SummaryPath{} &&
                (!result.begin.isConstant() || result.begin.constant >= 0) &&
                (!result.begin.isConstant() || !result.end.isConstant() ||
                 result.begin.constant < result.end.constant);
@@ -291,7 +303,8 @@ public:
         result.kind == CheckedRequirementKind::ContainerFresh ||
         result.kind == CheckedRequirementKind::ContainerTail ||
         result.kind == CheckedRequirementKind::ContainerPreserved ||
-        result.kind == CheckedRequirementKind::ContainerConsumed)
+        result.kind == CheckedRequirementKind::ContainerConsumed ||
+        result.kind == CheckedRequirementKind::ContainerExtended)
       valid &= ContainerShape::decode(result.family).has_value() &&
                result.begin == PathAffine::ofConstant(0) &&
                result.end == PathAffine::ofConstant(0);
@@ -318,7 +331,11 @@ public:
           result.begin.scale == 1 && result.begin.constant == 0 &&
           !result.begin.expression &&
           result.begin.quantity == PathAffine{}.quantity &&
-          result.end == PathAffine::ofConstant(0) &&
+          (result.end == PathAffine::ofConstant(0) ||
+           (result.kind == CheckedRequirementKind::ContainerCombined &&
+            result.end == PathAffine::ofConstant(1) &&
+            result.path == result.other && result.path.isParam() &&
+            result.path.isRoot())) &&
           (result.kind != CheckedRequirementKind::ContainerPartition ||
            result.path != result.other) &&
           (result.kind != CheckedRequirementKind::ContainerCombined ||
@@ -334,8 +351,18 @@ public:
       valid &= result.on.has_value();
     }
     result.ifNonNull = flag();
+    if (result.kind == CheckedRequirementKind::CallbackAllocate ||
+        result.kind == CheckedRequirementKind::CallbackRelease)
+      valid &= result.path.isParam() && result.other == SummaryPath{} &&
+               result.begin == PathAffine::ofConstant(0) &&
+               result.end == PathAffine::ofConstant(0) &&
+               result.family == "free" && !result.on && !result.ifNonNull;
     if (result.kind == CheckedRequirementKind::AllocationConsumed)
       valid &= result.when.trivial() && !result.ifNonNull;
+    if (result.kind == CheckedRequirementKind::ContainerExtended)
+      valid &= result.when.trivial() && !result.on && !result.ifNonNull &&
+               result.path == result.other && result.path.isParam() &&
+               result.path.isRoot();
     if (result.kind == CheckedRequirementKind::Buffer ||
         result.kind == CheckedRequirementKind::BufferPreserved ||
         result.kind == CheckedRequirementKind::BufferAppended)
@@ -348,7 +375,8 @@ public:
         result.kind == CheckedRequirementKind::ContainerFresh ||
         result.kind == CheckedRequirementKind::ContainerTail ||
         result.kind == CheckedRequirementKind::ContainerPreserved ||
-        result.kind == CheckedRequirementKind::ContainerConsumed)
+        result.kind == CheckedRequirementKind::ContainerConsumed ||
+        result.kind == CheckedRequirementKind::ContainerExtended)
       valid &= result.begin == result.end && !result.ifNonNull;
     if (result.kind == CheckedRequirementKind::ContainerDerived ||
         result.kind == CheckedRequirementKind::ContainerPartition ||
@@ -401,7 +429,7 @@ private:
 std::string printCheckedContract(const CheckedContract &contract,
                                  const GlobalNamer &names) {
   CheckedWriter out;
-  out.text("9");
+  out.text("12");
   out.text(contract.signature);
   out.number(contract.computed);
   out.number(contract.selected);
@@ -443,7 +471,7 @@ std::string printCheckedContract(const CheckedContract &contract,
 std::optional<CheckedContract>
 parseCheckedContract(std::string_view record, const GlobalResolver &resolve) {
   CheckedReader in(record);
-  if (in.text() != "9")
+  if (in.text() != "12")
     return std::nullopt;
   CheckedContract result;
   result.signature = in.text();
@@ -478,6 +506,8 @@ parseCheckedContract(std::string_view record, const GlobalResolver &resolve) {
     if (requirement.path.isResult() || requirement.other.isResult() ||
         requirement.on || requirement.ifNonNull ||
         hasResult(requirement.begin) || hasResult(requirement.end) ||
+        requirement.kind == CheckedRequirementKind::CountWithinSpan ||
+        requirement.kind == CheckedRequirementKind::InitializedAdvance ||
         requirement.kind == CheckedRequirementKind::Copied ||
         requirement.kind == CheckedRequirementKind::Zeroed ||
         requirement.kind == CheckedRequirementKind::Position ||
@@ -491,6 +521,7 @@ parseCheckedContract(std::string_view record, const GlobalResolver &resolve) {
         requirement.kind == CheckedRequirementKind::ContainerConsumed ||
         requirement.kind == CheckedRequirementKind::ContainerPartition ||
         requirement.kind == CheckedRequirementKind::ContainerCombined ||
+        requirement.kind == CheckedRequirementKind::ContainerExtended ||
         requirement.kind == CheckedRequirementKind::AllocationConsumed)
       return std::nullopt;
   for (const auto &requirement : result.requirements)
@@ -498,8 +529,7 @@ parseCheckedContract(std::string_view record, const GlobalResolver &resolve) {
         requirement.end != PathAffine::ofConstant(0))
       return std::nullopt;
   for (const auto &requirement : result.requirements)
-    if (requirement.kind == CheckedRequirementKind::ArgumentListConsumed ||
-        requirement.kind == CheckedRequirementKind::TerminatedWithin)
+    if (requirement.kind == CheckedRequirementKind::ArgumentListConsumed)
       return std::nullopt;
   for (const auto &requirement : result.requirements)
     if (requirement.kind == CheckedRequirementKind::Terminated &&
@@ -508,7 +538,30 @@ parseCheckedContract(std::string_view record, const GlobalResolver &resolve) {
          (requirement.begin.isConstant() && requirement.begin.constant < 0)))
       return std::nullopt;
   for (const auto &post : result.establishes) {
-    if (post.kind == CheckedRequirementKind::StandardStream ||
+    if (post.kind == CheckedRequirementKind::InitializedAdvance &&
+        (post.path.isResult() || post.other.isResult() ||
+         (post.path.isParam() && post.path.isRoot()) || post.ifNonNull ||
+         !post.when.trivial() ||
+         std::ranges::none_of(result.establishes, [&](const auto &position) {
+           return position.kind == CheckedRequirementKind::Position &&
+                  position.path == post.path && position.other == post.other &&
+                  position.when.trivial() &&
+                  (!position.on || position.on == post.on);
+         })))
+      return std::nullopt;
+    if (post.kind == CheckedRequirementKind::CountWithinSpan &&
+        (post.path.isResult() || post.other.isResult() || post.on ||
+         post.ifNonNull || !post.when.trivial() ||
+         std::ranges::none_of(result.requirements, [&](const auto &pre) {
+           return pre.kind == CheckedRequirementKind::InitializedSpan &&
+                  pre.path == post.path && pre.other == post.other &&
+                  pre.when.trivial();
+         })))
+      return std::nullopt;
+    if (post.kind == CheckedRequirementKind::InitializedSpan ||
+        post.kind == CheckedRequirementKind::StandardStream ||
+        post.kind == CheckedRequirementKind::CallbackAllocate ||
+        post.kind == CheckedRequirementKind::CallbackRelease ||
         post.kind == CheckedRequirementKind::ArgumentList ||
         post.kind == CheckedRequirementKind::FormatArguments ||
         (post.kind == CheckedRequirementKind::ArgumentListConsumed &&
@@ -521,7 +574,8 @@ parseCheckedContract(std::string_view record, const GlobalResolver &resolve) {
         post.other.isResult())
       return std::nullopt;
     if ((post.kind == CheckedRequirementKind::ContainerPreserved ||
-         post.kind == CheckedRequirementKind::ContainerConsumed) &&
+         post.kind == CheckedRequirementKind::ContainerConsumed ||
+         post.kind == CheckedRequirementKind::ContainerExtended) &&
         post.other.isResult())
       return std::nullopt;
     if (post.kind == CheckedRequirementKind::ContainerConsumed &&

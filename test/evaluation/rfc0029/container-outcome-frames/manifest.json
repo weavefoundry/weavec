@@ -1,0 +1,113 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "name": "direct",
+      "sources": [
+        "direct.c",
+        "direct-inspect.c",
+        "forward.c",
+        "drop.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "entry_requirements": 0
+    },
+    {
+      "name": "helper",
+      "sources": [
+        "helper.c",
+        "helper-inspect.c",
+        "forward.c",
+        "drop.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "entry_requirements": 0
+    },
+    {
+      "name": "branch",
+      "sources": [
+        "branch.c",
+        "branch-inspect.c",
+        "forward.c",
+        "drop.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "entry_requirements": 0
+    },
+    {
+      "name": "released",
+      "sources": [
+        "released.c",
+        "released-inspect.c",
+        "forward.c",
+        "drop.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "release|live|allocation|contract|container|footprint|leak"
+    },
+    {
+      "name": "lost",
+      "sources": [
+        "lost.c",
+        "lost-inspect.c",
+        "forward.c",
+        "drop.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "release|live|allocation|contract|container|footprint|leak"
+    },
+    {
+      "name": "disowned",
+      "sources": [
+        "disowned.c",
+        "disowned-inspect.c",
+        "forward.c",
+        "drop.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "release|live|allocation|contract|container|footprint|leak"
+    }
+  ]
+}

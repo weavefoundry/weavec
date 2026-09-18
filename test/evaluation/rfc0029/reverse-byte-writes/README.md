@@ -1,0 +1,1 @@
+Frozen before projecting scalar range bounds as sufficient access envelopes. A reverse byte writer computes a width from actual control flow and decrements a positive narrow counter. Storage extent, write permission, exact evaluated offsets and caller requirements must remain independent.

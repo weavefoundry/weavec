@@ -1,0 +1,53 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "name": "nested-serialize",
+      "sources": [
+        "nested-serialize.c",
+        "../../../../build/corpus/cJSON-program/cJSON.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "entry_requirements": 0
+    },
+    {
+      "name": "output-leak",
+      "sources": [
+        "output-leak.c",
+        "../../../../build/corpus/cJSON-program/cJSON.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "live|release|freed|footprint|allocation|leak"
+    },
+    {
+      "name": "output-twice",
+      "sources": [
+        "output-twice.c",
+        "../../../../build/corpus/cJSON-program/cJSON.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "live|release|freed|footprint|allocation|leak"
+    }
+  ]
+}

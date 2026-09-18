@@ -15,6 +15,19 @@ using namespace clang;
 
 namespace weavec::analysis {
 
+static bool unchangedContainerRegion(const core::ContainerFact &before,
+                                     const core::ContainerFact &after) {
+  if (!std::ranges::includes(before.ancestors, after.ancestors) ||
+      (after.tailOf && after.tailOf != before.tailOf) ||
+      (!after.tailField.empty() && after.tailField != before.tailField))
+    return false;
+  auto previous = before;
+  previous.ancestors = after.ancestors;
+  previous.tailOf = after.tailOf;
+  previous.tailField = after.tailField;
+  return previous == after;
+}
+
 void FunctionDataflow::snapshotContainerOutput(core::PlaceId holder,
                                                core::AnalysisState &state) {
   const bool hasFact = state.safety->containers.find(holder) != nullptr;
@@ -176,7 +189,8 @@ void FunctionDataflow::captureContainerPosts(
     }
     if (post.kind != core::CheckedRequirementKind::Container &&
         post.kind != core::CheckedRequirementKind::ContainerDerived &&
-        post.kind != core::CheckedRequirementKind::ContainerFresh)
+        post.kind != core::CheckedRequirementKind::ContainerFresh &&
+        post.kind != core::CheckedRequirementKind::ContainerExtended)
       continue;
     const auto shape = core::ContainerShape::decode(post.family);
     const auto guard = checkedGuard(post.when, call, state);
@@ -193,7 +207,8 @@ void FunctionDataflow::captureContainerPosts(
     if (post.kind == core::CheckedRequirementKind::ContainerFresh) {
       fact.allocationCompatible = true;
       fact.localAllocation = true;
-    } else if (post.kind == core::CheckedRequirementKind::ContainerDerived &&
+    } else if ((post.kind == core::CheckedRequirementKind::ContainerDerived ||
+                post.kind == core::CheckedRequirementKind::ContainerExtended) &&
                arguments != containerArguments.end()) {
       std::vector<core::SummaryPath> sources{post.other};
       if (post.begin.path)
@@ -254,24 +269,81 @@ void FunctionDataflow::captureContainerPosts(
     if (inserted)
       object->second = places.create("container call region");
     fact.members.insert(object->second);
+    std::map<core::PlaceId, core::ContainerFact> separated;
+    if (post.kind == core::CheckedRequirementKind::ContainerFresh)
+      for (const auto &[other, current] : state.safety->containers.all()) {
+        const bool output = std::ranges::any_of(
+            contract.establishes, [&](const auto &candidate) {
+              if (candidate.path.isResult())
+                return false;
+              const auto actual =
+                  builder.resolveSummaryPath(candidate.path, call);
+              return actual && (actual->place == other ||
+                                places.isDescendantOf(other, actual->place));
+            });
+        if (!output && !state.safety->invalidatedPointers.contains(other) &&
+            !state.moves.recordOf(other))
+          separated.emplace(other, current);
+      }
+    if (post.kind == core::CheckedRequirementKind::ContainerExtended ||
+        post.kind == core::CheckedRequirementKind::ContainerDerived) {
+      std::vector<core::SummaryPath> sources{post.other};
+      if (post.begin.path)
+        sources.push_back(*post.begin.path);
+      if (post.end.path)
+        sources.push_back(*post.end.path);
+      for (const auto &[other, current] : state.safety->containers.all())
+        if (std::ranges::all_of(sources, [&](const auto &path) {
+              const auto source = builder.resolveSummaryPath(path, call);
+              return source &&
+                     state.safety->containers.separated(source->place, other);
+            }))
+          separated.emplace(other, current);
+    }
     if (fact.valid())
       posts.push_back(
           {.path = post.path,
            .fact = std::move(fact),
            .on = post.on,
-           .fresh = post.kind == core::CheckedRequirementKind::ContainerFresh});
+           .fresh = post.kind == core::CheckedRequirementKind::ContainerFresh,
+           .separated = std::move(separated)});
   }
 }
 
 void FunctionDataflow::applyContainerPosts(
     const CallExpr &call, core::AnalysisState &state,
-    std::optional<core::PlaceId> result) {
+    std::optional<core::PlaceId> result,
+    const std::optional<core::ValueFact> *prior) {
   const auto found = containerPosts.find(&call);
   if (found == containerPosts.end())
     return;
   for (const auto &post : found->second) {
     if (post.path.isResult() != result.has_value())
       continue;
+    // RFC 0029: an immediate result test installs a verified transfer and
+    // only the structural outputs on that transfer's own paths.
+    if (prior) {
+      if (!post.on ||
+          (*prior && (*prior)->implies(core::ValueFact::of(*post.on))))
+        continue;
+      const auto selected = scalarFactOf(call, state);
+      const auto posts = footprintPosts.find(&call);
+      if (!selected || posts == footprintPosts.end())
+        continue;
+      if (std::ranges::none_of(posts->second, [&](const auto &transfer) {
+            const bool region =
+                transfer.kind ==
+                    core::CheckedRequirementKind::ContainerExtended ||
+                (transfer.kind ==
+                     core::CheckedRequirementKind::ContainerCombined &&
+                 transfer.end == core::PathAffine::ofConstant(1));
+            return region && transfer.on &&
+                   selected->implies(core::ValueFact::of(*transfer.on)) &&
+                   (transfer.path == post.path ||
+                    transfer.path.isProperPrefixOf(post.path));
+          }))
+        continue;
+    }
     if (post.on && !(result && post.on == core::Outcome::NonNull)) {
       const auto outcome = scalarFactOf(call, state);
       bool allOutcomes = false;
@@ -299,23 +371,43 @@ void FunctionDataflow::applyContainerPosts(
     }
     if (!holder)
       continue;
-    std::vector<core::PlaceId> previous;
-    if (post.fresh)
-      for (const auto &[other, fact] : state.safety->containers.all()) {
-        // Outputs of one invocation may denote the same fresh allocation.
-        // A reused loop call-region identity also supplies no separation.
-        const auto region = containerCallObjects.find(&call);
-        if (region != containerCallObjects.end() &&
-            fact.members.contains(region->second))
-          continue;
-        previous.push_back(other);
-      }
     state.safety->containers.set(*holder, post.fact);
     state.safety->invalidatedPointers.erase(*holder);
-    for (const auto other : previous)
-      state.safety->containers.separate(*holder, other);
+    // RFC 0029: only the original singleton and fresh descendants compose
+    // this output. Preserve separation from a surviving unchanged forest.
+    for (const auto &[other, before] : post.separated) {
+      const auto alias = state.definiteAliases.offsetOf(*holder, other);
+      if (other == *holder || (alias && alias->isZero()) ||
+          state.safety->invalidatedPointers.contains(other) ||
+          state.moves.recordOf(other))
+        continue;
+      if (const auto *current = state.safety->containers.find(other);
+          current && unchangedContainerRegion(before, *current))
+        state.safety->containers.separate(*holder, other);
+    }
     state.safety->pointers.insert(*holder);
     snapshotContainerOutput(*holder, state);
+    // RFC 0029: the output describes this actual head, including every
+    // unchanged definite alias. Old descriptors are not restored.
+    const auto memory = checkedMemoryAt(*holder, {}, {}, state);
+    if (memory)
+      for (const auto &[alias, edge] :
+           state.definiteAliases.edgesFrom(*holder)) {
+        if (alias == *holder || !edge.exact() ||
+            !state.definiteAliases.sameShare(*holder, alias))
+          continue;
+        const auto other = checkedMemoryAt(alias, {}, {}, state);
+        if (!other || other->storage != memory->storage ||
+            other->begin != memory->begin)
+          continue;
+        state.safety->containers.set(alias, post.fact);
+        for (const auto separate :
+             state.safety->containers.separatedFrom(*holder))
+          state.safety->containers.separate(alias, separate);
+        state.safety->invalidatedPointers.erase(alias);
+        state.safety->pointers.insert(alias);
+        snapshotContainerOutput(alias, state);
+      }
     if (post.fact.shape.terminal || !post.fact.shape.emptyLinks.empty() ||
         !post.fact.shape.emptyPayloads.empty()) {
       QualType type;

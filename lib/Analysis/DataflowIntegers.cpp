@@ -18,7 +18,8 @@ namespace weavec::analysis {
 
 core::IntegerRange
 FunctionDataflow::integerRangeAt(core::PlaceId place, core::IntegerType type,
-                                 const core::AnalysisState &state) {
+                                 const core::AnalysisState &state,
+                                 unsigned equalityDepth) {
   auto range = core::IntegerRange::full(type);
   if (builder.isLengthPlace(place)) {
     const auto sizeType = integerTypeOf(context.getSizeType(), context);
@@ -33,6 +34,9 @@ FunctionDataflow::integerRangeAt(core::PlaceId place, core::IntegerType type,
       range = core::IntegerRange::full(*storage).converted(type);
   if (const auto fact = state.scalars.factOf(place))
     range = range.intersect(fact->inType(type));
+  if (checkedZeroInteger(place, state))
+    range = range.intersect(
+        core::IntegerRange::singleton(core::IntegerValue::ofBits(type, 0)));
   const auto restrict = [&](std::optional<std::int64_t> bound,
                             core::IntegerOp op) {
     if (!bound)
@@ -64,6 +68,12 @@ FunctionDataflow::integerRangeAt(core::PlaceId place, core::IntegerType type,
     auto otherRange = core::IntegerRange::full(*otherType);
     if (const auto fact = state.scalars.factOf(other))
       otherRange = otherRange.intersect(fact->inType(*otherType));
+    if (equalityDepth == 0 && state.safety &&
+        edge->relation == core::Relation::Equal &&
+        checkedLoopCounters.contains(place) &&
+        checkedLoopCounters.contains(other))
+      otherRange = otherRange.intersect(
+          integerRangeAt(other, *otherType, state, equalityDepth + 1));
     if (otherRange.empty())
       continue;
     // RFC 0026: size_t's upper half is not representable by signedValue().
@@ -288,6 +298,8 @@ std::optional<core::IntegerRangeEvaluation> FunctionDataflow::integerRangeOf(
         .mayBeInvalid = a->mayBeInvalid || b->mayBeInvalid};
   }
   if (PlaceBuilder::isPlaceExpr(*e)) {
+    if (const auto bytes = checkedByteRange(*e, state))
+      return core::IntegerRangeEvaluation{.values = bytes->converted(*type)};
     if (const auto *ref = dyn_cast<DeclRefExpr>(e);
         ref && isa<EnumConstantDecl>(ref->getDecl())) {
       const auto &value = cast<EnumConstantDecl>(ref->getDecl())->getInitVal();
@@ -427,8 +439,21 @@ bool FunctionDataflow::refineIntegerComparison(const Expr &lhs,
   const auto left = builder.scalarOperand(lhs);
   const auto right = builder.scalarOperand(rhs);
   const auto trusted = [&](const PlaceBuilder::ScalarOperand &read) {
-    return !read.place || !places.innermostDeref(read.place->place) ||
-           !memoryContext.empty();
+    if (!read.place || !places.innermostDeref(read.place->place) ||
+        !memoryContext.empty())
+      return true;
+    const auto memory = checkedScalarMemory(read.place->place, state);
+    if (!memory || !memory->extent || !checkedValid(*memory, state) ||
+        !checkedInitialized(*memory, state) ||
+        !checkedInterval(memory->begin, memory->end, *memory->extent, state))
+      return false;
+    const auto *local = builder.varForPlace(places.root(memory->storage));
+    if (local && local->hasLocalStorage() &&
+        !places.innermostDeref(memory->storage))
+      return true;
+    return std::ranges::any_of(checkedObjects, [&](const auto &entry) {
+      return entry.second == memory->storage;
+    });
   };
   if (narrowed.empty()) {
     if (trusted(left) && trusted(right))

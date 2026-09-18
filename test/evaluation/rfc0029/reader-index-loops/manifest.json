@@ -1,0 +1,112 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "name": "generic",
+      "sources": [
+        "library.c"
+      ],
+      "functions": [
+        "scan"
+      ],
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    },
+    {
+      "name": "good",
+      "sources": [
+        "good.c",
+        "library.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "entry_requirements": 0
+    },
+    {
+      "name": "forged",
+      "sources": [
+        "forged.c",
+        "library.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "buffer|interval|represented|initialized|bounds"
+    },
+    {
+      "name": "uninitialized",
+      "sources": [
+        "uninitialized.c",
+        "library.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "buffer|interval|represented|initialized|bounds"
+    },
+    {
+      "name": "off-by-one",
+      "sources": [
+        "off-by-one.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "buffer|interval|represented|initialized|bounds"
+    },
+    {
+      "name": "body-index",
+      "sources": [
+        "body-index.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "buffer|interval|represented|initialized|bounds"
+    },
+    {
+      "name": "body-cursor",
+      "sources": [
+        "body-cursor.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "buffer|interval|represented|initialized|bounds"
+    }
+  ]
+}

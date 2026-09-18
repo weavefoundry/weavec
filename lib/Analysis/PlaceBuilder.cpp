@@ -366,7 +366,10 @@ PlaceBuilder::resolveSummaryPath(const core::SummaryPath &path,
 
   // A scalar pointee contract applied to a decayed array names element
   // zero. Explicit selected paths and range roots already name storage.
-  if (!arrayStorage && firstStep == 1 && argExpr && selectArray &&
+  if ((!arrayStorage ||
+       (firstStep < path.steps.size() &&
+        path.steps[firstStep].step == core::PathStep::Field)) &&
+      firstStep == 1 && argExpr && selectArray &&
       (firstStep == path.steps.size() ||
        path.steps[firstStep].step != core::PathStep::Index)) {
     const auto *array =
@@ -1226,6 +1229,10 @@ std::optional<PlaceRef> PlaceBuilder::resolve(const Expr &expr) {
         return std::nullopt;
       ref->place = places.index(ref->place);
       setWitness(*ref, core::ElementWitness::ofConstant(0));
+      if (selectArray)
+        *ref = selectArray(
+            *ref, core::Affine::ofConstant(0),
+            base.getType()->getAsArrayTypeUnsafe()->getElementType(), e);
       ref->place = fieldPlace(ref->place, field);
       return ref;
     }
@@ -1969,7 +1976,19 @@ PlaceBuilder::affineFromPath(const core::PathAffine &affine,
   if (affine.path->isParam() && affine.path->isRoot()) {
     if (affine.path->index >= call.getNumArgs())
       return std::nullopt;
-    base = affineOf(*call.getArg(affine.path->index));
+    const Expr &argument = *call.getArg(affine.path->index);
+    // RFC 0029: a conditional argument's captured call-entry identity serves
+    // both conditional requirements and interval endpoints. Guard translation
+    // already uses that capture; an endpoint resolved to the conditional's
+    // in-body evaluation value instead would name a different place, so the
+    // guard could never narrow the interval it protects.
+    if (expressionFromPath && argument.getType()->isIntegerType() &&
+        isa<AbstractConditionalOperator>(argument.IgnoreParenCasts()))
+      if (auto captured = expressionFromPath(affine, call))
+        return captured;
+    base = affineOf(argument);
+    if (!base && expressionFromPath)
+      return expressionFromPath(affine, call);
   } else if (const auto ref = resolveSummaryPath(*affine.path, call)) {
     base = core::Affine::ofPlace(ref->place);
   }

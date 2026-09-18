@@ -63,6 +63,38 @@ TEST(InterfaceTypes, PrivateNestedStorageRetainsTargetLayoutAndQualifiers) {
       EXPECT_FALSE(record->isCompleteDefinition());
 }
 
+TEST(InterfaceTypes, AnonymousTypedefsRetainViewsWithoutEnteringClientLookup) {
+  auto owner = interfaceAST(R"c(
+    typedef struct { const unsigned char *data; unsigned long offset; } cursor;
+    typedef struct { cursor saved; const cursor *current; } session;
+    static const session state;
+  )c");
+  auto foreign = interfaceAST("typedef int cursor; int client;", "client.c");
+  ASSERT_TRUE(owner);
+  ASSERT_TRUE(foreign);
+  const auto &source = owner->getASTContext();
+  auto &target = foreign->getASTContext();
+  const auto description = describeInterfaceType(
+      interfaceVariable(source, "state")->getType(), source);
+  ASSERT_TRUE(description);
+  ASSERT_EQ(description->nodes.front().typedefName, "session");
+  const auto declarations =
+      std::distance(target.getTranslationUnitDecl()->decls_begin(),
+                    target.getTranslationUnitDecl()->decls_end());
+  const auto materialized = materializeInterfaceType(*description, target);
+  ASSERT_FALSE(materialized.isNull());
+  EXPECT_TRUE(materialized.isConstQualified());
+  EXPECT_EQ(describeInterfaceType(materialized, target), description);
+  EXPECT_EQ(declarations,
+            std::distance(target.getTranslationUnitDecl()->decls_begin(),
+                          target.getTranslationUnitDecl()->decls_end()));
+  auto forged = *description;
+  forged.nodes.front().typedefName = "other";
+  EXPECT_TRUE(materializeInterfaceType(forged, target).isNull());
+  forged.nodes.front().typedefName.clear();
+  EXPECT_TRUE(materializeInterfaceType(forged, target).isNull());
+}
+
 TEST(InterfaceTypes, TargetMismatchAndForgedViewsCannotBeMaterialized) {
   auto owner =
       interfaceAST("struct item { int value; }; static struct item state;");

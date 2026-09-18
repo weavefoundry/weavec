@@ -14,17 +14,25 @@ FunctionDataflow::bufferArgument(const core::CheckedRequirement &requirement,
                                  const CallExpr &call,
                                  core::AnalysisState &state) {
   const auto shape = core::BufferShape::decode(requirement.family);
-  const auto object = builder.resolveSummaryPath(requirement.path, call, true);
+  const auto object = builder.resolveSummaryPath(requirement.path, call);
   if (!shape || !object || !object->element.isWhole())
     return std::nullopt;
+  const bool registered = bufferObjects.contains(object->place);
   if (const auto *decl =
           dyn_cast_or_null<ValueDecl>(builder.declFor(object->place))) {
     auto type = decl->getType();
     if (type->isPointerType())
       type = type->getPointeeType();
     if (const auto *record = type->getAsRecordDecl())
-      registerBuffer(object->place, *record);
+      registerBuffer(object->place, *record, &*shape);
   }
+  if (places.isElement(object->place))
+    if (const auto storage = places.parent(object->place)) {
+      const auto type = arrayElementType(*storage);
+      if (!type.isNull())
+        if (const auto *record = type->getAsRecordDecl())
+          registerBuffer(object->place, *record, &*shape);
+    }
   if (!bufferObjects.contains(object->place) &&
       places.step(object->place) == core::PathStep::Deref)
     if (const auto pointer = places.parent(object->place)) {
@@ -33,8 +41,7 @@ FunctionDataflow::bufferArgument(const core::CheckedRequirement &requirement,
         const auto type = summaries.interfaceType(evidence);
         if (!type.isNull())
           if (const auto *record = type->getAsRecordDecl()) {
-            registerBuffer(object->place, *record);
-            normalizeBuffers(state);
+            registerBuffer(object->place, *record, &*shape);
           }
       }
     }
@@ -42,6 +49,8 @@ FunctionDataflow::bufferArgument(const core::CheckedRequirement &requirement,
   if (found == bufferObjects.end() || !found->second.sameLayoutAs(*shape)) {
     return std::nullopt;
   }
+  if (!registered)
+    normalizeBuffers(state);
   return object->place;
 }
 
@@ -248,7 +257,7 @@ void FunctionDataflow::applyBufferPosts(const CallExpr &call,
       const auto type = summaries.interfaceType(shape.object.identity);
       if (!object || type.isNull() || !type->isRecordType())
         continue;
-      registerBuffer(*object, *type->getAsRecordDecl());
+      registerBuffer(*object, *type->getAsRecordDecl(), &shape);
       const auto layout = bufferObjects.find(*object);
       if (layout == bufferObjects.end() || !layout->second.sameLayoutAs(shape))
         continue;
@@ -258,8 +267,14 @@ void FunctionDataflow::applyBufferPosts(const CallExpr &call,
     if (!object)
       continue;
     const auto data = places.field(*object, shape.data.name);
-    if (const auto *previous = bufferFact(data, state))
+    std::optional<core::PlaceId> entryBacking;
+    if (const auto *previous = bufferFact(data, state)) {
       shape.ownsBacking |= previous->shape.ownsBacking;
+      entryBacking = previous->entryBacking;
+    } else if (const auto backing = state.safety->buffers.storage.find(data);
+               backing != state.safety->buffers.storage.end()) {
+      entryBacking = backing->second.entryBacking;
+    }
     const auto fact = scalarFactOf(call, state);
     const bool active =
         !post.on || (fact && fact->implies(core::ValueFact::of(*post.on)));
@@ -294,7 +309,8 @@ void FunctionDataflow::applyBufferPosts(const CallExpr &call,
                  .object = *object,
                  .length = places.field(*object, shape.length.name),
                  .capacity = places.field(*object, shape.capacity.name),
-                 .initialized = true});
+                 .initialized = true,
+                 .entryBacking = entryBacking});
     } else if (post.on) {
       if (const auto selector = result ? result : numericCallResult(call)) {
         core::BufferPost guarantee{
@@ -302,7 +318,8 @@ void FunctionDataflow::applyBufferPosts(const CallExpr &call,
                      .object = *object,
                      .length = places.field(*object, shape.length.name),
                      .capacity = places.field(*object, shape.capacity.name),
-                     .initialized = true},
+                     .initialized = true,
+                     .entryBacking = entryBacking},
             .when = {}};
         guarantee.when.require(*selector, core::ValueFact::of(*post.on));
         auto &entries = state.safety->buffers.pending[data];

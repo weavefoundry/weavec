@@ -1,0 +1,8 @@
+{
+  "failed-parse.c": "cf34d246210bbc54cc6dab9d5ac8a46aa33bb678e92fbd2d32871ceb1b7c298e",
+  "failed-print.c": "a387b9b87516d2c5fd937edd1690a55ff73615cc5b2fc8387c22a0d53048d1fc",
+  "malformed-delete.c": "16b7dfa2a74b75af92138d220b49218164f1c3a07744956b74c17960ba0f9028",
+  "manifest.json": "e1ffc32764e4eefbc33860a260803d938de6d85ba9d244f1e7dd7b2e5861fbc4",
+  "nested-print.c": "386f74d1fcea08dc52274d6ff4d4a1cbf46ad7bcf1650e363716a6ace9f9dced",
+  "upstream-identity.json": "3aa0f5db2be2097c3f6f12ea1eb63ef004ed6df7b97df59f75ed07f5ba847980"
+}

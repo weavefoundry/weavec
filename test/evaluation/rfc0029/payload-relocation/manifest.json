@@ -1,0 +1,107 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "name": "helper",
+      "sources": [
+        "helper.c",
+        "fill.c",
+        "drop.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "entry_requirements": 0
+    },
+    {
+      "name": "local",
+      "sources": [
+        "local.c",
+        "fill.c",
+        "drop.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "entry_requirements": 0
+    },
+    {
+      "name": "duplicate",
+      "sources": [
+        "duplicate.c",
+        "fill.c",
+        "drop.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "footprint|container|live|release|allocation|contract"
+    },
+    {
+      "name": "interior",
+      "sources": [
+        "interior.c",
+        "fill.c",
+        "drop.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "footprint|container|live|release|allocation|contract"
+    },
+    {
+      "name": "overwritten",
+      "sources": [
+        "overwritten.c",
+        "fill.c",
+        "drop.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "footprint|container|live|release|allocation|contract"
+    },
+    {
+      "name": "released",
+      "sources": [
+        "released.c",
+        "fill.c",
+        "drop.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "footprint|container|live|release|allocation|contract"
+    }
+  ]
+}

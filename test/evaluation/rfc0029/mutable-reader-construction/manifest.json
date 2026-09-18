@@ -1,0 +1,116 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "name": "mutable-reader-construction-build",
+      "sources": [
+        "build.c"
+      ],
+      "functions": [
+        "build",
+        "main"
+      ],
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ]
+    },
+    {
+      "name": "mutable-reader-construction-short",
+      "sources": [
+        "short.c"
+      ],
+      "functions": [
+        "build",
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "extent|bounds|interval"
+    },
+    {
+      "name": "mutable-reader-construction-uninitialized",
+      "sources": [
+        "uninitialized.c"
+      ],
+      "functions": [
+        "build",
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "initializ"
+    },
+    {
+      "name": "mutable-reader-construction-cycle",
+      "sources": [
+        "cycle.c"
+      ],
+      "functions": [
+        "build",
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "recursive|progress"
+    },
+    {
+      "name": "mutable-reader-construction-leak",
+      "sources": [
+        "leak.c"
+      ],
+      "functions": [
+        "build",
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "footprint|leak|cleanup|contract"
+    },
+    {
+      "name": "mutable-reader-construction-double",
+      "sources": [
+        "double.c"
+      ],
+      "functions": [
+        "build",
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "freed|release"
+    },
+    {
+      "name": "mutable-reader-construction-escape",
+      "sources": [
+        "escape.c"
+      ],
+      "functions": [
+        "build",
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "interval|extent|bounds|recursive"
+    }
+  ]
+}

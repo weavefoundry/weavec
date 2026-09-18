@@ -17,6 +17,377 @@
 
 namespace weavec::analysis {
 
+TEST(CompositionalCall, RuntimeComparisonsKeepOnlyTheirEstablishedSign) {
+  const auto result = test::analyze(R"c(
+    typedef __SIZE_TYPE__ size_t;
+    int memcmp(const void *,const void *,size_t);
+    int strcmp(const char *,const char *);
+    int strncmp(const char *,const char *,size_t);
+    int inspect(const unsigned char *p, unsigned n, unsigned mode) {
+      if (mode==0 && strncmp((const char*)p,"\xef\xbb\xbf",3)==0) return p[n];
+      if (mode==1 && memcmp(p,"\0y",2)>=0) return p[n];
+      if (mode==2 && strcmp((const char*)p,"\0y")!=0) return p[n];
+      if (mode==3 && memcmp(p,"a",1)<=0) return p[n];
+      if (mode==4 && memcmp(p,"abc",3)==1) return p[n];
+      return 0;
+    }
+    int absent(void){const unsigned char p[]="abc";return inspect(p,4,0);}
+    int embedded(void){const unsigned char p[]={0,120};return inspect(p,2,1);}
+    int terminated(void){const unsigned char p[]={0,120};return inspect(p,2,2);}
+    int high(void){const unsigned char p[]={255};return inspect(p,1,3);}
+    int present(void){const unsigned char p[]={239,187,191,0};return inspect(p,4,0);}
+    int magnitude(void){const unsigned char p[]="dbc";return inspect(p,4,4);}
+    int short_input(void){const unsigned char p[]={239};return inspect(p,1,0);}
+    int unknown(void){unsigned char p[4];p[0]=97;return inspect(p,4,0);}
+  )c",
+                                    {.checkContracts = true, .checked = true});
+  ASSERT_TRUE(result.ast);
+  for (const auto *name : {"absent", "embedded", "terminated", "high"}) {
+    ASSERT_NE(result.summary(name), nullptr);
+    EXPECT_TRUE(result.summary(name)->checked.complete()) << name;
+    EXPECT_TRUE(result.summary(name)->checked.requirements.empty()) << name;
+  }
+  for (const auto *name : {"present", "magnitude", "short_input", "unknown"}) {
+    ASSERT_NE(result.summary(name), nullptr);
+    EXPECT_FALSE(result.summary(name)->checked.complete()) << name;
+  }
+}
+
+TEST(CompositionalCall, CompleteLocalHelperWritesKeepSeparateInputBytes) {
+  const auto result = test::analyze(R"c(
+    void bump(unsigned *p) { ++*p; }
+    int inspect(const unsigned char *p, unsigned n) {
+      unsigned counter=0; bump(&counter);
+      for (unsigned i=0; i<n; ++i)
+        if (p[i]==92) return p[n];
+      return 0;
+    }
+    int good(void) {
+      const unsigned char text[]={'a','b','c'};
+      return inspect(text,3);
+    }
+    int changed(void) {
+      unsigned char text[]={'a','b','c'}; text[1]=92;
+      return inspect(text,3);
+    }
+  )c",
+                                    {.checkContracts = true, .checked = true});
+  ASSERT_TRUE(result.ast);
+  ASSERT_NE(result.summary("good"), nullptr);
+  EXPECT_TRUE(result.summary("good")->checked.complete());
+  EXPECT_TRUE(result.summary("good")->checked.requirements.empty());
+  ASSERT_NE(result.summary("changed"), nullptr);
+  EXPECT_FALSE(result.summary("changed")->checked.complete());
+}
+
+TEST(CompositionalCall, ConstantByteObjectsRetainContentsAcrossGlobalWrites) {
+  const auto result = test::analyze(R"c(
+    static unsigned calls;
+    int inspect(const unsigned char *p, unsigned n) {
+      ++calls;
+      for (unsigned i=0; i<n; ++i)
+        if (p[i]==92) return p[n];
+      return 0;
+    }
+    int good(void) {
+      static const unsigned char text[]={'a','b','c'};
+      return inspect(text,3);
+    }
+    int automatic(void) {
+      const unsigned char text[]={'a','b','c'};
+      return inspect(text,3);
+    }
+    int changed(void) {
+      unsigned char text[]={'a','b','c'}; text[1]=92;
+      return inspect(text,3);
+    }
+    int write_const(unsigned char *p) { p[1]=92; return 0; }
+    int invalid_write(void) {
+      static const unsigned char text[]={'a','b','c'};
+      return write_const((unsigned char*)text);
+    }
+  )c",
+                                    {.checkContracts = true, .checked = true});
+  ASSERT_TRUE(result.ast);
+  for (const auto *name : {"good", "automatic"}) {
+    ASSERT_NE(result.summary(name), nullptr);
+    EXPECT_TRUE(result.summary(name)->checked.complete()) << name;
+    EXPECT_TRUE(result.summary(name)->checked.requirements.empty()) << name;
+  }
+  for (const auto *name : {"changed", "invalid_write"}) {
+    ASSERT_NE(result.summary(name), nullptr);
+    EXPECT_FALSE(result.summary(name)->checked.complete()) << name;
+  }
+}
+
+TEST(CompositionalCall,
+     ExactBytesRetainTheirReadableIntervalThroughForwarding) {
+  const auto result = test::analyze(R"c(
+    int scan(const unsigned char *p, unsigned n) {
+      for (unsigned i=0; i<n; ++i)
+        if (p[i]==92) return p[n];
+      return 0;
+    }
+    int forward(const unsigned char *p, unsigned n) { return scan(p,n); }
+    int good(void) {
+      static const unsigned char text[]={'a','b','c'};
+      return forward(text,3);
+    }
+    int changed(void) {
+      unsigned char text[]={'a','b','c'}; text[1]=92;
+      return forward(text,3);
+    }
+    int oversized(void) {
+      const unsigned char text[]={'a','b','c'};
+      return forward(text,4);
+    }
+    int partial(void) {
+      unsigned char text[3]; text[0]='a';
+      return forward(text,3);
+    }
+  )c",
+                                    {.checkContracts = true, .checked = true});
+  ASSERT_TRUE(result.ast);
+  ASSERT_NE(result.summary("good"), nullptr);
+  EXPECT_TRUE(result.summary("good")->checked.complete());
+  EXPECT_TRUE(result.summary("good")->checked.requirements.empty());
+  for (const auto *name : {"changed", "oversized", "partial"}) {
+    ASSERT_NE(result.summary(name), nullptr);
+    EXPECT_FALSE(result.summary(name)->checked.complete()) << name;
+  }
+}
+
+TEST(CompositionalCall, ExactLocalPointerCellsShareTheirCurrentCursor) {
+  for (const auto *step : {"(*slot)++", "*slot+=3"}) {
+    SCOPED_TRACE(step);
+    const std::string source =
+        "int client(void){const unsigned char text[]=\"abc\";"
+        "const unsigned char *p=text;const unsigned char **slot=&p;"
+        "while(p<text+4){if(*p==92)return p[4];" +
+        std::string(step) + ";}return 0;}";
+    const auto result =
+        test::analyze(source, {.checkContracts = true, .checked = true});
+    ASSERT_TRUE(result.ast);
+    ASSERT_NE(result.summary("client"), nullptr);
+    EXPECT_EQ(result.summary("client")->checked.complete(),
+              std::string(step) == "(*slot)++");
+  }
+}
+
+TEST(CompositionalCall, ByteContentsUseIndependentlyProvedCursorRelations) {
+  for (const bool escape : {false, true}) {
+    SCOPED_TRACE(escape);
+    const std::string source = R"c(
+      int scan(const unsigned char *data, size_t size) {
+        const unsigned char *p=data+1,*end=data+1;
+        while((size_t)(end-data)<size && *end!=34) ++end;
+        if((size_t)(end-data)>=size || *end!=34) return 0;
+        while(p<end) { if(*p==92) return p[size]; ++p; }
+        return 0;
+      }
+      int client(void) { const unsigned char text[]={34,97,)c" +
+                               std::string(escape ? "92" : "98") +
+                               R"c(,99,34,0};
+        return scan(text,sizeof text);
+      }
+    )c";
+    const auto result =
+        test::analyze(source, {.checkContracts = true, .checked = true});
+    ASSERT_TRUE(result.ast);
+    ASSERT_NE(result.summary("client"), nullptr);
+    EXPECT_EQ(result.summary("client")->checked.complete(), !escape);
+  }
+}
+
+TEST(CompositionalCall, CompleteCalleeFramesRequireActualConstantObjects) {
+  for (const std::string variant : {"static", "local", "wrong", "mutable-write",
+                                    "const-write", "partial", "unknown"}) {
+    SCOPED_TRACE(variant);
+    const bool write = variant == "mutable-write" || variant == "const-write";
+    std::string source = "static unsigned config;struct state{unsigned n;};";
+    if (variant == "unknown") {
+      source += "void change(struct state *,unsigned char *);";
+    } else {
+      source +=
+          "void change(struct state *s,unsigned char *p){s->n=1;config=1;";
+      if (write)
+        source += "p[0]=98;";
+      source += '}';
+    }
+    source += "int inspect(struct state *s,const unsigned char *p){"
+              "change(s,(unsigned char*)p);if(p[0]!=97)return p[8];return 0;}"
+              "int client(void){struct state s={0};";
+    if (variant == "local")
+      source += "const unsigned char p[]={97};";
+    else if (variant == "partial")
+      source += "unsigned char p[1];";
+    else if (variant == "mutable-write")
+      source += "unsigned char p[]={97};";
+    else if (variant == "wrong")
+      source += "static const unsigned char p[]={98};";
+    else
+      source += "static const unsigned char p[]={97};";
+    source += "return inspect(&s,p);}";
+    const auto result =
+        test::analyze(source, {.checkContracts = true, .checked = true});
+    ASSERT_NE(result.summary("client"), nullptr);
+    const auto &contract = result.summary("client")->checked;
+    EXPECT_EQ(contract.complete(), variant == "static" || variant == "local");
+    if (contract.complete())
+      EXPECT_TRUE(contract.requirements.empty());
+  }
+}
+
+TEST(CompositionalCall, ByteLoopPartitionsKeepActualFirstExitAndFallback) {
+  for (const std::string variant :
+       {"while", "do", "helper", "skipped", "changed", "missing",
+        "uninitialized", "late"}) {
+    SCOPED_TRACE(variant);
+    const std::string step = variant == "skipped" ? "i+=2" : "i++";
+    std::string source = "unsigned inner(const unsigned char *p,unsigned n) {";
+    if (variant == "do")
+      source += "unsigned i=0;if(!n)return 0;do{if(p[i]==34)return i;i++;}"
+                "while(i<n);return i;}";
+    else
+      source += "unsigned i=0;while(i<n&&p[i]!=34)" + step + ";return i;}";
+    source +=
+        "unsigned scan(const unsigned char *p,unsigned n){return inner(p,n);}"
+        "int client(void){";
+    if (variant == "late") {
+      // This actual out-of-bounds access occurs beyond the last partition.
+      source += "static const unsigned char p[40]={";
+      for (unsigned i = 0; i < 39; ++i)
+        source += "97,";
+      source += "34};";
+    } else if (variant == "missing") {
+      source += "static const unsigned char p[]={97,98,99,100,101,102};";
+    } else if (variant == "changed") {
+      source += "unsigned char p[]={97,34,98,99,100,34};p[1]=120;";
+    } else {
+      source += "static const unsigned char p[]={97,34,98,99,100,34};";
+    }
+    source += variant == "uninitialized" ? "char out[2];out[0]=1;"
+                                         : "char out[2]={1,2};";
+    source += variant == "helper" ? "return out[scan(p,sizeof p)];}"
+                                  : "return out[inner(p,sizeof p)];}";
+    const auto result =
+        test::analyze(source, {.checkContracts = true, .checked = true});
+    ASSERT_NE(result.summary("client"), nullptr);
+    const auto &contract = result.summary("client")->checked;
+    EXPECT_EQ(contract.complete(),
+              variant == "while" || variant == "do" || variant == "helper");
+    if (contract.complete())
+      EXPECT_TRUE(contract.requirements.empty());
+  }
+}
+
+TEST(CompositionalCall, ByteSwitchPartitionsRetainFirstExitAndFallback) {
+  for (const std::string variant :
+       {"direct", "forward", "shifted", "skip", "changed", "missing",
+        "uninitialized", "beyond-bound"}) {
+    SCOPED_TRACE(variant);
+    std::string source = R"c(
+      typedef __SIZE_TYPE__ size_t;
+      static size_t scan(const unsigned char *p,size_t n,size_t start) {
+        size_t i;
+        for(i=0;start+i<n;i++) {
+          switch(p[start+i]) {case '1':case '2':break;default:
+    )c";
+    if (variant == "skip")
+      source += "i++;";
+    source += R"c(
+            goto done;
+          }
+        }
+      done:return i;
+      }
+      static size_t forward(const unsigned char *p,size_t n,size_t start) {
+        return scan(p,n,start);
+      }
+      int client(void) {
+    )c";
+    if (variant == "shifted")
+      source += "const unsigned char p[]=\"q1x2x\";";
+    else if (variant == "changed")
+      source += "unsigned char p[]=\"1x2x\";p[1]='1';";
+    else if (variant == "missing")
+      source += "const unsigned char p[]=\"1122\";";
+    else if (variant == "uninitialized")
+      source += "unsigned char p[5];p[0]='1';";
+    else if (variant == "beyond-bound")
+      source += "const unsigned char p[]=\"" + std::string(39, '1') + "x\";";
+    else
+      source += "const unsigned char p[]=\"1x2x\";";
+    source += variant == "forward" ? "size_t k=forward(p,sizeof p,"
+                                   : "size_t k=scan(p,sizeof p,";
+    source += variant == "shifted" ? "1);" : "0);";
+    source += "unsigned char out[1]={0};if(k==1)return 0;return out[k+1];}";
+    const auto result =
+        test::analyze(source, {.checkContracts = true, .checked = true});
+    ASSERT_NE(result.summary("client"), nullptr);
+    const auto &contract = result.summary("client")->checked;
+    EXPECT_EQ(contract.complete(), variant == "direct" ||
+                                       variant == "forward" ||
+                                       variant == "shifted");
+    if (contract.complete())
+      EXPECT_TRUE(contract.requirements.empty());
+  }
+}
+
+TEST(CompositionalCall, ExactBytesRequireCurrentInitializedStorage) {
+  const auto result = test::analyze(R"c(
+    int inspect(const unsigned char *p, unsigned n) {
+      for (unsigned i=0; i<n; ++i)
+        if (p[i]=='\\') return p[n];
+      return 0;
+    }
+    int good(void) {
+      const unsigned char text[]={'a','b','c'};
+      return inspect(text,3);
+    }
+    int offset(void) {
+      const unsigned char text[]={'\\','a','b','c'};
+      return inspect(text+1,3);
+    }
+    int changed(void) {
+      unsigned char text[]={'a','b','c'}; text[1]='\\';
+      return inspect(text,3);
+    }
+    int unknown_write(unsigned i) {
+      unsigned char text[]={'a','b','c'};
+      if(i<3) text[i]='\\';
+      return inspect(text,3);
+    }
+    int partial(void) {
+      unsigned char text[3]; text[0]='a';
+      return inspect(text,3);
+    }
+    int local(void) {
+      const unsigned char text[]="abc";
+      const unsigned char *p=text;
+      while(p<text+4) { if(*p=='\\') return p[4]; ++p; }
+      return 0;
+    }
+    int escaped(void) {
+      const unsigned char text[]="abc";
+      const unsigned char *p=text;
+      while(p<text+4) { if(*p=='\\') return p[4]; p+=2; }
+      return *p;
+    }
+  )c",
+                                    {.checkContracts = true, .checked = true});
+  ASSERT_TRUE(result.ast);
+  for (const auto *name : {"good", "offset", "local"}) {
+    ASSERT_NE(result.summary(name), nullptr);
+    EXPECT_TRUE(result.summary(name)->checked.complete()) << name;
+    EXPECT_TRUE(result.summary(name)->checked.requirements.empty()) << name;
+  }
+  for (const auto *name : {"changed", "unknown_write", "partial", "escaped"}) {
+    ASSERT_NE(result.summary(name), nullptr);
+    EXPECT_FALSE(result.summary(name)->checked.complete()) << name;
+  }
+}
+
 static std::size_t countContextDiagnostic(const test::AnalysisResult &result,
                                           std::string_view id) {
   return static_cast<std::size_t>(
@@ -385,6 +756,31 @@ TEST(CompositionalCall, OversizedInputFootprintsHaveAnExplicitBoundary) {
         return diagnostic.message ==
                "analysis is incomplete: call context input path limit reached";
       }));
+}
+
+TEST(CompositionalCall, CallbackAndScalarPremisesShareOneBodyCase) {
+  core::AnalysisStats stats;
+  AnalysisOptions options;
+  options.checkedFunctions.insert("client");
+  options.stats = &stats;
+  const auto result = test::analyze(R"c(
+static void fill(char *p) { *p=7; }
+int invoke(int enabled, void (*write)(char *), char *p) {
+  if(!enabled) return 0;
+  write(p); return *p;
+}
+int client(void) { char p[1]; return invoke(1,fill,p); }
+)c",
+                                    options);
+  ASSERT_TRUE(result.ast);
+  ASSERT_NE(result.summary("client"), nullptr);
+  EXPECT_TRUE(result.summary("client")->checked.complete());
+  EXPECT_TRUE(result.summary("client")->checked.requirements.empty());
+  EXPECT_GT(stats.count("combined_callback_case_requests"), 0U);
+  const auto &store = result.analyzer->summaries();
+  const auto requests = store.callbackRequests.find("invoke");
+  EXPECT_TRUE(requests == store.callbackRequests.end() ||
+              requests->second.empty());
 }
 
 TEST(CompositionalCall, InvalidTypedContextsAreNeverCachedAsChecked) {
@@ -881,14 +1277,17 @@ TEST(ContextDependencies, ChangesDuringAnalysisCannotProduceACurrentSnapshot) {
   EXPECT_TRUE(store.dependenciesCurrent(current));
 }
 
-TEST(ContextDependencies,
-     SettledSilentRecursiveAnalysisIsReusedBeforeReporting) {
+TEST(ContextDependencies, SettledRecursiveValuesAreRecheckedBeforeReporting) {
   core::AnalysisStats stats;
   const auto result =
       test::analyze("int f(int n) { if (n <= 0) return 0; return f(n - 1); }",
                     {.stats = &stats});
   ASSERT_TRUE(result.ast);
-  EXPECT_GT(stats.count("silent_function_reuses"), 0U);
+  // RFC 0029 rechecks the body against settled conservative dependencies to
+  // refine value outcomes; a pre-finalization silent result cannot supply it.
+  EXPECT_EQ(stats.count("silent_function_reuses"), 0U);
+  EXPECT_GT(stats.count("function_analyses"),
+            stats.count("function_fixpoint_rounds"));
   EXPECT_EQ(countContextDiagnostic(result, core::diag::AnalysisIncomplete), 0U);
 }
 
@@ -916,16 +1315,133 @@ int concrete(void) {
   EXPECT_FALSE(generic->callbackInputs.empty());
   EXPECT_TRUE(concrete->checked.complete());
   EXPECT_TRUE(concrete->checked.requirements.empty());
-  const auto &requests = result.analyzer->summaries().callbackRequests;
-  const auto found = requests.find("invoke_hook");
-  ASSERT_NE(found, requests.end());
-  ASSERT_FALSE(found->second.empty());
-  for (const auto &bindings : found->second)
+  const auto &store = result.analyzer->summaries();
+  std::vector<core::CallbackBindings> requests;
+  if (const auto found = store.callbackRequests.find("invoke_hook");
+      found != store.callbackRequests.end())
+    requests.insert(requests.end(), found->second.begin(), found->second.end());
+  if (const auto found = store.memoryRequests.find("invoke_hook");
+      found != store.memoryRequests.end())
+    for (const auto &input : found->second)
+      if (!input.callbacks.empty())
+        requests.push_back(input.callbacks);
+  ASSERT_FALSE(requests.empty());
+  for (const auto &bindings : requests)
     for (const auto &[path, targets] : bindings) {
       EXPECT_TRUE(path.isGlobal());
       EXPECT_FALSE(targets.unknown);
       EXPECT_EQ(targets, core::CallTargets::function("fill"));
     }
+}
+
+TEST(CompositionalCall, AnUnexecutedRecursiveBranchKeepsCaseLocalLimits) {
+  const std::string helper = R"c(
+    struct state { unsigned depth, tag; char *data; };
+    static int walk(struct state *s) {
+      if (!s->tag) return 0;
+      if (s->depth >= 1000) return 0;
+      ++s->depth;
+      if (*s->data == 1) return 100 / *s->data;
+      return walk(s);
+    }
+  )c";
+  for (const auto *entry :
+       {"struct state s={0,0,0};return walk(&s);",
+        "char data=1;struct state s={0,1,&data};return walk(&s);"}) {
+    AnalysisOptions options;
+    options.checkedFunctions.insert("client");
+    const auto result =
+        test::analyze(helper + "int client(void){" + entry + "}", options);
+    ASSERT_NE(result.summary("client"), nullptr);
+    EXPECT_TRUE(result.summary("client")->checked.complete()) << entry;
+    EXPECT_TRUE(result.summary("client")->checked.requirements.empty());
+    ASSERT_NE(result.summary("walk"), nullptr);
+    EXPECT_FALSE(result.summary("walk")->checked.complete());
+  }
+}
+
+TEST(CompositionalCall, ReachableRecursiveCasesRetainLimitsAndLocalErrors) {
+  AnalysisOptions options;
+  options.checkedFunctions.insert("client");
+  for (const auto *entry :
+       {"struct state s={0,1,0};", "char data=0;struct state s={0,1,&data};"}) {
+    const auto result = test::analyze(R"c(
+      struct state { unsigned depth, tag; char *data; };
+      static int walk(struct state *s) {
+        if (!s->tag) return 0;
+        if (s->depth >= 1000) return 0;
+        ++s->depth;
+        if (*s->data == 1) return 100 / *s->data;
+        return walk(s);
+      }
+      int client(void){
+    )c" + std::string(entry) + "return walk(&s);}",
+                                      options);
+    ASSERT_NE(result.summary("client"), nullptr);
+    EXPECT_FALSE(result.summary("client")->checked.complete()) << entry;
+  }
+}
+
+TEST(CompositionalCall, CapturedPointeeValuesNeedExactLiveScalarStorage) {
+  AnalysisOptions options;
+  options.checkedFunctions.insert("client");
+  for (const auto *entry : {"char data=1;struct state s={0,1,&data};data=0;",
+                            "char data[2]={1,0};struct state s={0,1,data+1};",
+                            "char *data=malloc(1);if(!data)return 0;*data=1;"
+                            "struct state s={0,1,data};free(data);",
+                            "int data=1;struct state s={0,1,(char*)&data};"}) {
+    const auto result = test::analyze(R"c(
+      void *malloc(__SIZE_TYPE__);
+      void free(void *);
+      struct state { unsigned depth, tag; char *data; };
+      static int walk(struct state *s) {
+        if (!s->tag) return 0;
+        if (s->depth >= 1000) return 0;
+        ++s->depth;
+        if (*s->data == 1) return 100 / *s->data;
+        return walk(s);
+      }
+      int client(void){
+    )c" + std::string(entry) + "return walk(&s);}",
+                                      options);
+    ASSERT_NE(result.summary("client"), nullptr);
+    EXPECT_FALSE(result.summary("client")->checked.complete()) << entry;
+  }
+}
+
+TEST(CompositionalCall, MutableStateConstantsDoNotCrowdOutRecursiveInputs) {
+  std::string code = R"c(
+    struct node { struct node *next; unsigned tag; };
+    struct state { unsigned seen, mode; };
+    static int walk(struct node *p, struct state *s) {
+      if (!p) return 0;
+      s->seen = s->mode;
+      if (p->tag == 1) return 1;
+      return walk(p->next, s);
+    }
+  )c";
+  for (unsigned i = 0; i < 36; ++i)
+    code += "int generic_" + std::to_string(i) +
+            "(struct node *p){struct state s={0," + std::to_string(i) +
+            "};return walk(p,&s);}";
+  code += R"c(
+    int client(void) {
+      struct node n = {0, 1};
+      struct state s = {0, 100};
+      return walk(&n, &s);
+    }
+    int bad(void) { struct node n = {0, 1}; return walk(&n, 0); }
+  )c";
+  AnalysisOptions options;
+  options.checkedFunctions = {"client", "bad", "walk"};
+  const auto result = test::analyze(code, options);
+  ASSERT_NE(result.summary("client"), nullptr);
+  EXPECT_TRUE(result.summary("client")->checked.complete());
+  EXPECT_TRUE(result.summary("client")->checked.requirements.empty());
+  ASSERT_NE(result.summary("bad"), nullptr);
+  EXPECT_FALSE(result.summary("bad")->checked.complete());
+  ASSERT_NE(result.summary("walk"), nullptr);
+  EXPECT_FALSE(result.summary("walk")->checked.complete());
 }
 
 } // namespace weavec::analysis

@@ -142,6 +142,7 @@ private:
   void reportConfirmedSizedFields(
       llvm::ArrayRef<const clang::FunctionDecl *> reported,
       const std::set<DiagnosticKey> &alreadyReported);
+  bool verifyRecursiveContractGroup(const std::vector<unsigned> &component);
 };
 
 } // namespace weavec::analysis

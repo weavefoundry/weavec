@@ -1,0 +1,141 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "name": "direct",
+      "sources": [
+        "direct.c",
+        "scanner.c",
+        "forward.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "entry_requirements": 0
+    },
+    {
+      "name": "forward",
+      "sources": [
+        "forward.c",
+        "scanner.c",
+        "forward.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "entry_requirements": 0
+    },
+    {
+      "name": "shifted",
+      "sources": [
+        "shifted.c",
+        "scanner.c",
+        "forward.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "accepted",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "entry_requirements": 0
+    },
+    {
+      "name": "skip",
+      "sources": [
+        "skip.c",
+        "skip.c",
+        "forward.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "interval|initialized|bound|access|integer|contract"
+    },
+    {
+      "name": "changed",
+      "sources": [
+        "changed.c",
+        "scanner.c",
+        "forward.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "interval|initialized|bound|access|integer|contract"
+    },
+    {
+      "name": "missing",
+      "sources": [
+        "missing.c",
+        "scanner.c",
+        "forward.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "interval|initialized|bound|access|integer|contract"
+    },
+    {
+      "name": "uninitialized",
+      "sources": [
+        "uninitialized.c",
+        "scanner.c",
+        "forward.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "interval|initialized|bound|access|integer|contract"
+    },
+    {
+      "name": "beyond-bound",
+      "sources": [
+        "beyond-bound.c",
+        "scanner.c",
+        "forward.c"
+      ],
+      "functions": [
+        "main"
+      ],
+      "expect": "rejected",
+      "forbidden_trust": [
+        "unsafe",
+        "annotation"
+      ],
+      "reason": "interval|initialized|bound|access|integer|contract"
+    }
+  ]
+}

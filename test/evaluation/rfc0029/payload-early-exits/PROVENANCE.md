@@ -1,0 +1,1 @@
+Frozen against candidate79b before making payload-writer entry ownership premises independent of CFG return visitation order. The goto and direct-return bodies have the same successful publication and failure preservation; negative bodies lose, duplicate or release owned storage. The original payload populations remain unchanged.

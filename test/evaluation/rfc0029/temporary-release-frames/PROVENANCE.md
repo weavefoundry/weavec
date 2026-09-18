@@ -1,0 +1,1 @@
+Frozen against candidate86a before a modeled release of a proved local temporary preserves independently live entry-only forest facts. Positives cover guarded, nullable and inferred helper allocations. Negative cases release an interior pointer, release twice, lose an allocation, or release a payload still attached to its parent.

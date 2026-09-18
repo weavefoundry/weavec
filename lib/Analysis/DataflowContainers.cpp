@@ -20,6 +20,43 @@ using namespace clang;
 
 namespace weavec::analysis {
 
+std::optional<core::ValueFact>
+FunctionDataflow::containerValueFact(core::PlaceId cell,
+                                     const core::AnalysisState &state) const {
+  if (!state.safety || places.isBase(cell) ||
+      places.step(cell) != core::PathStep::Field)
+    return std::nullopt;
+  const auto object = places.parent(cell);
+  if (!object || places.isBase(*object) ||
+      places.step(*object) != core::PathStep::Deref)
+    return std::nullopt;
+  const auto holder = places.parent(*object);
+  if (!holder || !state.nulls.isNonNull(*holder) ||
+      state.moves.recordOf(*holder) ||
+      state.safety->invalidatedPointers.contains(*holder))
+    return std::nullopt;
+  const auto *fact = state.safety->containers.find(*holder);
+  if (!fact || fact->empty)
+    return std::nullopt;
+  const std::string field(places.fieldName(cell));
+  if (fact->shape.emptyPayloads.contains(field) ||
+      (fact->shape.recursiveLink(field) &&
+       (fact->shape.terminal || fact->shape.emptyLinks.contains(field))))
+    return core::ValueFact::of(core::Outcome::Null);
+  const auto known = fact->shape.headValues.find(field);
+  const auto record = containerRecords.find(fact->shape.object.toString());
+  if (known == fact->shape.headValues.end() || record == containerRecords.end())
+    return std::nullopt;
+  for (const auto *selector : record->second->fields())
+    if (selector->getName() == field && !selector->isBitField() &&
+        !selector->getType().isVolatileQualified() &&
+        !selector->getType()->isAtomicType())
+      if (const auto type = integerTypeOf(*selector, context))
+        return core::ValueFact::ofInteger(core::IntegerRange::singleton(
+            core::IntegerValue::ofBits(*type, known->second)));
+  return std::nullopt;
+}
+
 static QualType containerRecordType(const RecordDecl *record,
                                     const ASTContext &ctx) {
 #if CLANG_VERSION_MAJOR >= 23
@@ -162,8 +199,10 @@ FunctionDataflow::containerShape(QualType type) const {
 void FunctionDataflow::discoverContainers() {
   std::map<const FieldDecl *, unsigned> candidates;
   std::set<const RecordDecl *> localRecords;
+  std::set<const RecordDecl *> producedRecords;
   std::set<const RecordDecl *> releases;
   std::set<const RecordDecl *> writes;
+  std::set<const FieldDecl *> payloadStores;
   std::map<const RecordDecl *, std::set<const FieldDecl *>> payloads;
   const auto note = [&](const Expr *expr, unsigned weight) {
     const auto *member =
@@ -180,6 +219,17 @@ void FunctionDataflow::discoverContainers() {
     const auto *stmt = workItems[i];
     if (!stmt)
       continue;
+    if (const auto *compound = dyn_cast<CompoundStmt>(stmt)) {
+      const BinaryOperator *previous = nullptr;
+      for (const auto *child : compound->body()) {
+        const auto *assignment = dyn_cast<BinaryOperator>(child);
+        if (previous && assignment && assignment->getOpcode() == BO_Assign)
+          payloadRelocationClears.emplace(previous, assignment);
+        previous = assignment && assignment->getOpcode() == BO_Assign
+                       ? assignment
+                       : nullptr;
+      }
+    }
     if (const auto *call = dyn_cast<CallExpr>(stmt))
       if (const auto *callee = call->getDirectCallee())
         if (const auto summary = summaries.lookup(*callee)) {
@@ -191,7 +241,7 @@ void FunctionDataflow::discoverContainers() {
                                   container) ||
               std::ranges::any_of(summary->summary->checked.establishes,
                                   container);
-          // RFC 0028: forwarding an opaque parameter may infer a sufficient
+          // RFC 0028/0029: forwarding a parameter may infer a sufficient
           // entry predicate. Nomination supplies no fact about a local value:
           // every closed caller still has to establish this input contract.
           for (const auto &requirement :
@@ -208,11 +258,15 @@ void FunctionDataflow::discoverContainers() {
                 !parameter->getType()->isPointerType())
               continue;
             const auto pointee = parameter->getType()->getPointeeType();
-            if (!pointee->isRecordType() || !pointee->isIncompleteType())
+            if (!pointee->isRecordType())
               continue;
             const auto shape = core::ContainerShape::decode(requirement.family);
             if (!shape ||
-                summaries.interfaceType(shape->object.identity).isNull())
+                (pointee->isIncompleteType() &&
+                 summaries.interfaceType(shape->object.identity).isNull()))
+              continue;
+            if (!pointee->isIncompleteType() &&
+                checkedObjectType(pointee) != shape->object.toString())
               continue;
             const auto place = builder.placeForVar(*parameter);
             const auto [found, inserted] =
@@ -226,16 +280,23 @@ void FunctionDataflow::discoverContainers() {
           }
         }
     if (const auto *call = dyn_cast<CallExpr>(stmt))
-      if (const auto *record = containerRecord(call->getType()))
+      if (const auto *record = containerRecord(call->getType())) {
         localRecords.insert(record);
+        producedRecords.insert(record);
+      }
     if (const auto *assignment = dyn_cast<BinaryOperator>(stmt);
         assignment && assignment->getOpcode() == BO_Assign) {
       note(assignment->getRHS(), 2);
       note(assignment->getLHS(), 1);
       if (const auto *member =
               dyn_cast<MemberExpr>(assignment->getLHS()->IgnoreParenImpCasts()))
-        if (const auto *field = dyn_cast<FieldDecl>(member->getMemberDecl()))
+        if (const auto *field = dyn_cast<FieldDecl>(member->getMemberDecl())) {
           writes.insert(field->getParent());
+          if (field->getType()->isPointerType() &&
+              !assignment->getRHS()->isNullPointerConstant(
+                  context, Expr::NPC_ValueDependentIsNotNull))
+            payloadStores.insert(field);
+        }
       if (const auto *rhs =
               dyn_cast<MemberExpr>(assignment->getRHS()->IgnoreParenImpCasts()))
         if (const auto *field = dyn_cast<FieldDecl>(rhs->getMemberDecl());
@@ -290,10 +351,21 @@ void FunctionDataflow::discoverContainers() {
   // RFC 0027: all recursive functions on a record nominate the same topology.
   // This includes constructors whose local stores do not choose one cursor.
   for (const auto *param : function.parameters())
-    if (const auto *record = containerRecord(param->getType()))
+    if (const auto *record = containerRecord(param->getType())) {
       chosen.try_emplace(record);
+      if (const auto *group = summaries.recursiveContractGroup(function);
+          group && group->releases)
+        releases.insert(record);
+    }
   for (const auto *record : localRecords)
     chosen.try_emplace(record);
+  if (const auto *group = summaries.recursiveContractGroup(function);
+      group && group->constructs)
+    if (const auto *record = containerRecord(
+            function.getNumParams() == 3
+                ? function.getParamDecl(2)->getType()->getPointeeType()
+                : function.getReturnType()))
+      chosen.try_emplace(record);
   for (auto &[record, selected] : chosen) {
     const auto links = summaries.recursiveLinks(*record);
     if (!links.empty()) {
@@ -348,18 +420,34 @@ void FunctionDataflow::discoverContainers() {
     if (releases.contains(record)) {
       shape.access = core::ContainerAccess::Release;
       shape.family = "free";
-      for (const auto *field : payloads[record]) {
-        const auto descriptor = containerField(*field, context);
-        if (!descriptor || shape.recursiveLink(field->getNameAsString())) {
-          valid = false;
-          break;
-        }
-        shape.payloads.push_back({.field = *descriptor, .family = "free"});
+    }
+    const auto imported = summaries.containerFields(*record);
+    for (const auto *field : imported.payloads)
+      payloads[record].insert(field);
+    for (const auto *field : payloads[record]) {
+      const auto descriptor = containerField(*field, context);
+      if (!descriptor || shape.recursiveLink(field->getNameAsString())) {
+        valid = false;
+        break;
       }
+      shape.payloads.push_back({.field = *descriptor, .family = "free"});
     }
     shape.ownership = summaries.containerOwnership(*record, [&] {
       return containerOwnershipCandidates(*record, context);
     });
+    for (const auto &[name, condition] : imported.ownership) {
+      const bool matches =
+          std::ranges::any_of(record->fields(), [&](const auto *field) {
+            return field->getName() == condition.field.name &&
+                   field->getType()->isIntegerType() &&
+                   containerField(*field, context) == condition.field;
+          });
+      if (!matches)
+        continue;
+      const auto [found, inserted] = shape.ownership.emplace(name, condition);
+      if (!inserted && found->second != condition)
+        shape.ownership.erase(found);
+    }
     for (const auto &[name, condition] : shape.ownership) {
       (void)condition;
       if (shape.recursiveLink(name) ||
@@ -374,6 +462,22 @@ void FunctionDataflow::discoverContainers() {
     }
     std::ranges::sort(shape.initialized);
     std::ranges::sort(shape.payloads);
+    if (producedRecords.contains(record) &&
+        std::ranges::any_of(payloadStores, [&](const auto *field) {
+          return field->getParent() == record &&
+                 shape.recursiveLink(field->getNameAsString());
+        }))
+      containerLinkWriters.insert(record);
+    if (std::ranges::any_of(payloadStores, [&](const auto *field) {
+          return field->getParent() == record &&
+                 std::ranges::any_of(shape.payloads, [&](const auto &payload) {
+                   return field->getName() == payload.field.name;
+                 });
+        })) {
+      shape.access = core::ContainerAccess::Release;
+      shape.family = "free";
+      containerPayloadWriters.insert(record);
+    }
     if (valid && shape.valid()) {
       containerShapes.emplace(record, shape);
       containerRecords.emplace(shape.object.toString(), record);
@@ -399,6 +503,7 @@ FunctionDataflow::containerInput(core::PlaceId holder,
 }
 
 void FunctionDataflow::refineContainers(core::AnalysisState &state) {
+  refineAllocationFootprints(state);
   for (const auto &[holder, head] : footprintHeads)
     if (state.nulls.stateOf(holder) == core::Nullness::Null) {
       state.safety->footprints.constrain({{holder, 1}});
@@ -475,8 +580,10 @@ void FunctionDataflow::initializeContainers(core::AnalysisState &state) {
       if (const auto opaque = opaqueContainerParameters.find(place);
           opaque != opaqueContainerParameters.end() && opaque->second) {
         shape = &*opaque->second;
-        const auto type = summaries.interfaceType(shape->object.identity);
-        record = type.isNull() ? nullptr : type->getAsRecordDecl();
+        if (!record) {
+          const auto type = summaries.interfaceType(shape->object.identity);
+          record = type.isNull() ? nullptr : type->getAsRecordDecl();
+        }
         if (!record)
           continue;
         for (const auto *field : record->fields())
@@ -517,8 +624,40 @@ void FunctionDataflow::initializeContainers(core::AnalysisState &state) {
         fact.shape.terminal = true;
         fact.shape.emptyLinks.clear();
       }
+      if (containerLinkWriters.contains(record) && fact.shape.singletonHead()) {
+        fact.shape.access = core::ContainerAccess::Release;
+        fact.shape.family = "free";
+      }
+      if ((containerPayloadWriters.contains(record) ||
+           (fact.shape.singletonHead() &&
+            (shape->access != core::ContainerAccess::Release ||
+             containerLinkWriters.contains(record)))) &&
+          fact.shape != *shape)
+        fact = containerInput(
+            place, core::SummaryPath::param(param->getFunctionScopeIndex()),
+            fact.shape);
     }
+    // RFC 0029: the payload writer's nominated ownership is an entry
+    // premise on every path, including an early allocation failure. Install
+    // it before final CFG visitation so return order cannot lose that frame.
+    if (containerPayloadWriters.contains(record) ||
+        (containerLinkWriters.contains(record) && fact.shape.singletonHead()))
+      inferred.checked.require(
+          {.kind = core::CheckedRequirementKind::Container,
+           .path = core::SummaryPath::param(param->getFunctionScopeIndex()),
+           .other = {},
+           .family = fact.shape.encode()});
     state.safety->containers.set(place, std::move(fact));
+  }
+  // RFC 0029: a complete singleton is exactly its head object, so an explicit
+  // distinct-object case premise separates two such incoming footprints.
+  for (const auto &[first, second] : state.distinctObjects) {
+    const auto *a = state.safety->containers.find(first);
+    const auto *b = state.safety->containers.find(second);
+    if (a && b && !a->empty && !b->empty && a->shape.singletonHead() &&
+        b->shape.singletonHead() && a->inputs.size() == 1 &&
+        b->inputs.size() == 1 && a->inputs != b->inputs)
+      state.safety->containers.separate(first, second);
   }
   // Definite entry aliases of a proper child carry that child's structural
   // witness and allocation identity, rather than a second independent input.
@@ -599,11 +738,35 @@ FunctionDataflow::containerAt(core::PlaceId holder,
         .shape = shape, .members = {}, .inputs = {}, .empty = true};
   if (state.moves.recordOf(holder) || state.raw.isRaw(holder))
     return std::nullopt;
-  if (const auto *fact = state.safety->containers.find(holder))
-    if (const auto sufficient = strengthenContainer(*fact, shape)) {
+  if (const auto *fact = state.safety->containers.find(holder)) {
+    auto current = *fact;
+    if (!current.empty && state.nulls.isNonNull(holder) &&
+        !state.safety->invalidatedPointers.contains(holder)) {
+      const auto nullField = [&](const std::string &name) {
+        return state.nulls.stateOf(places.field(places.deref(holder), name)) ==
+               core::Nullness::Null;
+      };
+      for (const auto &payload : current.shape.payloads)
+        if (nullField(payload.field.name))
+          current.shape.emptyPayloads.insert(payload.field.name);
+      if (!current.shape.terminal) {
+        if (nullField(current.shape.link.name))
+          current.shape.emptyLinks.insert(current.shape.link.name);
+        for (const auto &child : current.shape.children)
+          if (nullField(child.name))
+            current.shape.emptyLinks.insert(child.name);
+        if (current.shape.emptyLinks.size() ==
+            current.shape.children.size() + 1) {
+          current.shape.terminal = true;
+          current.shape.emptyLinks.clear();
+        }
+      }
+    }
+    if (const auto sufficient = strengthenContainer(current, shape)) {
       state.safety->containers.set(holder, *sufficient);
       return sufficient;
     }
+  }
   if (places.step(holder) == core::PathStep::Field) {
     const auto parent = places.parent(holder);
     const auto pointer = parent && places.step(*parent) == core::PathStep::Deref
@@ -750,6 +913,8 @@ bool FunctionDataflow::checkedContainerAccess(const Expr &expr, bool read,
     return false;
   if (!requireContainer(*fact, expr, state))
     return false;
+  if (write)
+    unfoldFootprint(holder->place, *fact, state);
   const auto outcome =
       core::safetyOutcome(fact->inputs.empty(), !fact->inputs.empty());
   safetyObligation(core::SafetyProperty::Bounds, outcome, expr,
@@ -1121,11 +1286,20 @@ bool FunctionDataflow::checkedContainerRelease(const CallExpr &call,
   if (!fact && footprintHeads.contains(holder)) {
     const auto resource = state.resources.recordOf(holder);
     const auto memory = checkedMemoryAt(holder, {}, {}, state);
+    auto when = resource ? resource->guard : core::PlaceGuard{};
+    auto nonNull = state;
+    nonNull.nulls.set(holder, {.state = core::Nullness::NonNull,
+                               .location = {},
+                               .reason = core::NullReason::Declared});
     if (resource && resource->origin == core::ResourceOrigin::Allocated &&
         resource->family == "free" && !resource->escaped && memory &&
         memory->begin == core::Affine::ofConstant(0) &&
-        checkedValid(*memory, state))
+        checkedValid(*memory, nonNull) && pruneGuard(when, nonNull) &&
+        when.trivial()) {
       releaseFootprint(holder, false, state);
+      if (preserveInputContainersAcrossLocalWrite(memory->storage, state))
+        containerLocalReleases.insert(&call);
+    }
   }
   if (!fact || fact->shape.access != core::ContainerAccess::Release ||
       fact->shape.family != "free" || state.moves.recordOf(holder))

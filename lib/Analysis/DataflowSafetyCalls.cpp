@@ -30,12 +30,16 @@ void FunctionDataflow::checkedCall(const CallExpr &call,
   containerReadOnlyCalls.erase(&call);
   containerReleases.erase(&call);
   containerPayloadReleases.erase(&call);
+  containerLocalReleases.erase(&call);
   footprintPosts.erase(&call);
+  freshFootprintSlots.erase(&call);
+  freshFootprintSlotParents.erase(&call);
   checkedCallAssignedPointers.clear();
   checkedWrites.erase(&call);
   checkedPosts.erase(&call);
   checkedPositionPosts.erase(&call);
   checkedProgressPosts.erase(&call);
+  checkedSpanPosts.erase(&call);
   bufferAllocationSequences.erase(&call);
   const auto *callee = call.getDirectCallee();
   std::string name = callee ? callee->getNameAsString() : "indirect call";
@@ -114,6 +118,12 @@ void FunctionDataflow::checkedCall(const CallExpr &call,
     };
     if ((freshObject(left.storage) && (right.input || right.inputPlace)) ||
         (freshObject(right.storage) && (left.input || left.inputPlace)))
+      return true;
+    // RFC 0029: an allocation identity acquired by this invocation remains
+    // separate from its automatic objects after attachment retires the
+    // allocation's resource record. Validity stays an independent obligation.
+    if ((localA && freshObject(right.storage)) ||
+        (localB && freshObject(left.storage)))
       return true;
     return liveAllocation(a) && liveAllocation(b) && a->location != b->location;
   };
@@ -205,7 +215,10 @@ void FunctionDataflow::checkedCall(const CallExpr &call,
                "checked reallocation requires a positive size");
     const auto origin = builder.classifyValue(*call.getArg(0));
     const auto memory = checkedMemory(*call.getArg(0), {}, {}, state);
-    bool releasable = origin.kind == ValueOrigin::Kind::Null;
+    bool releasable =
+        origin.kind == ValueOrigin::Kind::Null ||
+        (origin.place &&
+         state.nulls.stateOf(origin.place->place) == core::Nullness::Null);
     if (memory) {
       const auto holder = memory->holder.value_or(memory->storage);
       const auto resource = state.resources.recordOf(holder);
@@ -221,6 +234,8 @@ void FunctionDataflow::checkedCall(const CallExpr &call,
                                          *memory, call, state, "free");
     obligation(core::SafetyProperty::Release, releasable, required,
                "reallocation requires a live allocation base");
+    if (positive && (releasable || required))
+      prepareReallocationFootprint(call, state);
     if (positive && releasable)
       if (const auto ref = builder.resolve(*call.getArg(0))) {
         const auto *buffer = bufferFact(ref->place, state);
@@ -258,6 +273,17 @@ void FunctionDataflow::checkedCall(const CallExpr &call,
     const unsigned source = copy ? 1U : 0U;
     if (call.getNumArgs() <= source)
       return;
+    if (name == "strlen") {
+      core::CheckedContract input;
+      input.require({.kind = core::CheckedRequirementKind::Terminated,
+                     .path = core::SummaryPath::param(0),
+                     .other = {},
+                     .begin = {},
+                     .end = {},
+                     .family = {}});
+      prepareCheckedStringInputs(call, input, state);
+      checkedStringLength(call, state);
+    }
     const auto length = stringLengthOf(*call.getArg(source), state);
     const auto throughNul = length ? length->shifted(1) : std::nullopt;
     std::optional<core::Affine> count;
@@ -410,25 +436,33 @@ void FunctionDataflow::checkedCall(const CallExpr &call,
     if (name != "memset")
       source = interval(1, *bytes, true, false);
     interval(0, *bytes, false, source);
+    if (source && name != "memset") {
+      const auto input = checkedMemory(*call.getArg(1), {}, *bytes, state);
+      if (input && checkedNumericText(*input, state)) {
+        // Capture both the byte contents and every endpoint before the copy's
+        // effects, including an aliased length cell. This local primitive
+        // contract uses the normal snapshot and postcondition machinery.
+        core::CheckedContract copy;
+        copy.computed = true;
+        copy.establish(
+            {.kind = core::CheckedRequirementKind::Copied,
+             .path = core::SummaryPath::param(0),
+             .other = core::SummaryPath::param(1),
+             .end = core::PathAffine::ofPath(core::SummaryPath::param(2)),
+             .family = {}});
+        captureCheckedPosts(call, copy, state);
+      }
+    }
     if (name == "memcpy") {
       const auto left = checkedMemory(*call.getArg(0), {}, *bytes, state);
       const auto right = checkedMemory(*call.getArg(1), {}, *bytes, state);
       const bool separated = left && right && separate(*left, *right);
-      const auto identity = [&](const std::optional<CheckedMemory> &memory) {
-        if (!memory)
-          return std::optional<core::SummaryPath>{};
-        if (memory->holder)
-          if (const auto *buffer = bufferFact(*memory->holder, state);
-              buffer && buffer->entryBacking)
-            return builder.summaryPathOf(*buffer->entryBacking);
-        if (memory->input)
-          return memory->input;
-        return memory->inputPlace ? stableSummaryPathOf(*memory->inputPlace)
-                                  : std::nullopt;
-      };
-      const auto leftInput = identity(left);
-      const auto rightInput = identity(right);
-      const bool required = !separated && leftInput && rightInput;
+      const auto leftInput =
+          left ? checkedSeparationInput(*left, state) : std::nullopt;
+      const auto rightInput =
+          right ? checkedSeparationInput(*right, state) : std::nullopt;
+      const bool required =
+          !separated && leftInput && rightInput && leftInput != rightInput;
       if (required && recording())
         inferred.checked.require(
             {.kind = core::CheckedRequirementKind::Separated,
@@ -633,6 +667,11 @@ void FunctionDataflow::checkedCall(const CallExpr &call,
     });
     for (const auto *entry : requirements) {
       const auto &requirement = *entry;
+      if (requirement.kind == core::CheckedRequirementKind::CallbackAllocate ||
+          requirement.kind == core::CheckedRequirementKind::CallbackRelease) {
+        checkedCallbackRequirement(requirement, call, state);
+        continue;
+      }
       if (requirement.kind == core::CheckedRequirementKind::Buffer) {
         checkedBufferCall(requirement, call, state);
         continue;
@@ -660,6 +699,12 @@ void FunctionDataflow::checkedCall(const CallExpr &call,
                      "callee requires separated input objects");
           continue;
         }
+      }
+      if (requirement.kind == core::CheckedRequirementKind::InitializedSpan) {
+        obligation(core::SafetyProperty::Bounds,
+                   checkedSpanCall(requirement, call, state), false,
+                   "callee requires a live initialized same-array byte span");
+        continue;
       }
       if (requirement.kind == core::CheckedRequirementKind::SumFits) {
         const auto first = builder.affineFromPath(requirement.begin, call);
@@ -706,6 +751,12 @@ void FunctionDataflow::checkedCall(const CallExpr &call,
                    "free permits a null pointer");
         continue;
       }
+      if (requirement.kind == core::CheckedRequirementKind::Valid && pointer &&
+          builder.classifyValue(*pointer).kind == ValueOrigin::Kind::Null) {
+        obligation(core::SafetyProperty::Validity, false, false,
+                   "call requires live non-null storage");
+        continue;
+      }
       const auto first = builder.affineFromPath(requirement.begin, call);
       const auto last = builder.affineFromPath(requirement.end, call);
       const auto memory =
@@ -738,6 +789,14 @@ void FunctionDataflow::checkedCall(const CallExpr &call,
       } else if (kind == core::CheckedRequirementKind::Initialized) {
         property = core::SafetyProperty::Initialization;
         proved = checkedInitialized(*memory, state);
+      } else if (kind == core::CheckedRequirementKind::TerminatedWithin) {
+        property = core::SafetyProperty::Initialization;
+        auto bounded = *memory;
+        bounded.extent = memory->end;
+        proved = memory->extent &&
+                 checkedInterval(memory->begin, memory->end, *memory->extent,
+                                 state) &&
+                 checkedTerminated(bounded, state);
       } else if (kind == core::CheckedRequirementKind::Terminated) {
         property = core::SafetyProperty::Initialization;
         const auto base =
@@ -805,11 +864,13 @@ void FunctionDataflow::checkedCall(const CallExpr &call,
               checkedPathMemory(requirement.other, call, {}, {}, state);
           if (other && other->storage != memory->storage) {
             proved = separate(*memory, *other);
-            if (!proved && memory->input && other->input) {
+            const auto leftInput = checkedSeparationInput(*memory, state);
+            const auto rightInput = checkedSeparationInput(*other, state);
+            if (!proved && leftInput && rightInput && leftInput != rightInput) {
               if (recording()) {
                 auto exported = requirement;
-                exported.path = *memory->input;
-                exported.other = *other->input;
+                exported.path = *leftInput;
+                exported.other = *rightInput;
                 inferred.checked.require(std::move(exported));
               }
               obligation(property, false, true,
@@ -899,11 +960,87 @@ void FunctionDataflow::checkedCallAfter(const CallExpr &call,
        std::ranges::any_of(effects->summary->effects, [](const auto &entry) {
          return entry.second.written;
        }))) {
+    // RFC 0029: a complete helper may change addressed automatic cells while
+    // leaving separate byte objects intact. Resolve every actual destination;
+    // unknown writes and escaping or consuming effects supply no frame.
+    bool localWrites = effects != nullptr && effects->summary &&
+                       effects->summary->checked.complete();
+    std::set<core::PlaceId> writtenRoots;
+    if (localWrites) {
+      for (const auto &[path, effect] : effects->summary->effects) {
+        if (effect.consumed() || effect.escaped || effect.replaced)
+          localWrites = false;
+        if (!effect.written)
+          continue;
+        const auto actual = builder.resolveSummaryPath(path, call);
+        if (!actual || !isLocalStorage(actual->place)) {
+          localWrites = false;
+          break;
+        }
+        writtenRoots.insert(places.root(actual->place));
+      }
+      if (writes != checkedWrites.end())
+        for (const auto &memory : writes->second) {
+          localWrites &= isLocalStorage(memory.storage);
+          writtenRoots.insert(places.root(memory.storage));
+        }
+    }
+    std::vector<std::pair<core::PlaceId, core::InitializedRange>> retained;
+    bool representedWrites = effects != nullptr && effects->summary &&
+                             effects->summary->checked.complete();
+    std::set<core::PlaceId> writtenObjects;
+    if (representedWrites) {
+      for (const auto &[path, effect] : effects->summary->effects) {
+        if (!effect.written)
+          continue;
+        const auto actual = builder.resolveSummaryPath(path, call);
+        if (!actual || !actual->element.isWhole()) {
+          representedWrites = false;
+          break;
+        }
+        auto storage = places.root(actual->place);
+        if (const auto object = places.innermostDeref(actual->place)) {
+          const auto holder = places.parent(*object);
+          const auto memory =
+              holder ? checkedMemoryAt(*holder, {}, {}, state) : std::nullopt;
+          if (!memory) {
+            representedWrites = false;
+            break;
+          }
+          storage = memory->storage;
+        }
+        writtenObjects.insert(storage);
+      }
+      if (writes != checkedWrites.end())
+        for (const auto &memory : writes->second)
+          writtenObjects.insert(memory.storage);
+    }
+    if (representedWrites || (localWrites && !writtenRoots.empty()))
+      for (const auto &[storage, ranges] : state.safety->memory) {
+        bool separate = localWrites && isLocalStorage(storage) &&
+                        !writtenRoots.contains(places.root(storage));
+        if (localWrites && places.step(storage) == core::PathStep::Deref)
+          if (const auto holder = places.parent(storage))
+            if (const auto memory = checkedMemoryAt(*holder, {}, {}, state);
+                memory && memory->storage == storage && memory->inputPlace &&
+                storage == places.deref(*memory->inputPlace) &&
+                !state.safety->replacedPointers.contains(*memory->inputPlace) &&
+                checkedSeparationInput(*memory, state) &&
+                checkedValid(*memory, state))
+              separate = true;
+        for (const auto &range : ranges)
+          if (!range.bytes.empty() && !range.source &&
+              (separate || (representedWrites && range.immutableBytes &&
+                            !writtenObjects.contains(storage))))
+            retained.emplace_back(storage, range);
+      }
     for (auto &[data, fact] : state.safety->buffers.values) {
       (void)data;
       fact.shape.terminated = false;
     }
     state.forgetZeroedMemory();
+    for (auto &[storage, range] : retained)
+      state.safety->initialize(storage, std::move(range));
   }
   if (writes != checkedWrites.end()) {
     const auto *callee = call.getDirectCallee();

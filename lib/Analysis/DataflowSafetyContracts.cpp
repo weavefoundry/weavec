@@ -75,6 +75,17 @@ std::vector<core::InitializedRange> FunctionDataflow::checkedCopyRanges(
       range.end = foldAffine(range.end, state);
       const auto first = foldAffine(begin, state);
       const auto last = foldAffine(end, state);
+      if ((range.numericText || range.zeroed) &&
+          checkedAtMost(range.begin, source.begin, state) &&
+          checkedAtMost(source.end, range.end, state)) {
+        // Source ranges use storage coordinates; copied output ranges use
+        // argument-relative coordinates. Full coverage needs no subtraction
+        // of two independently represented symbolic origins.
+        range.begin = first;
+        range.end = last;
+        result.push_back(std::move(range));
+        continue;
+      }
       if (range.begin.isConstant() && range.end.isConstant() &&
           first.isConstant() && last.isConstant()) {
         range.begin.constant = std::max(range.begin.constant, first.constant);
@@ -104,6 +115,8 @@ void FunctionDataflow::captureCheckedPosts(
   positions.clear();
   auto &progress = checkedProgressPosts[&call];
   progress.clear();
+  auto &spanCounts = checkedSpanPosts[&call];
+  spanCounts.clear();
   if (!contract.complete())
     return;
   for (const auto &post : contract.establishes) {
@@ -132,6 +145,23 @@ void FunctionDataflow::captureCheckedPosts(
         state.safety->containers.set(holder, *owned);
         releaseFootprint(holder, false, state);
       }
+    } else if (footprintHeads.contains(holder)) {
+      // RFC 0029: the helper consumes this ordinary allocation exactly as a
+      // modeled nullable release does; null contributes the empty footprint.
+      const auto resource = state.resources.recordOf(holder);
+      const auto memory = checkedMemoryAt(holder, {}, {}, state);
+      auto when = resource ? resource->guard : core::PlaceGuard{};
+      auto nonNull = state;
+      nonNull.nulls.set(holder, {.state = core::Nullness::NonNull,
+                                 .location = {},
+                                 .reason = core::NullReason::Declared});
+      if (resource && resource->origin == core::ResourceOrigin::Allocated &&
+          resource->family == "free" && !resource->escaped &&
+          !state.moves.recordOf(holder) && memory &&
+          memory->begin == core::Affine::ofConstant(0) &&
+          checkedValid(*memory, nonNull) && pruneGuard(when, nonNull) &&
+          when.trivial())
+        releaseFootprint(holder, false, state);
     }
   }
   auto &snapshots = checkedSnapshots[&call];
@@ -260,6 +290,7 @@ void FunctionDataflow::captureCheckedPosts(
             range.begin = freeze(range.begin);
             range.end = freeze(range.end);
             range.zeroed &= preservesBytes;
+            range.numericText &= preservesBytes;
             posts.push_back({.path = core::SummaryPath::result(),
                              .range = range,
                              .on = {},
@@ -315,6 +346,64 @@ void FunctionDataflow::captureCheckedPosts(
                          .on = post.on,
                          .storage = {},
                          .objectType = post.family});
+      continue;
+    }
+    if (post.kind == core::CheckedRequirementKind::InitializedAdvance) {
+      const auto origin = checkedPathMemory(post.other, call, {}, {}, state);
+      if (origin && !post.path.isResult() && post.when.trivial())
+        posts.push_back({.path = post.path,
+                         .range = {.begin = freeze(origin->begin)},
+                         .on = post.on,
+                         .storage = origin->storage,
+                         .objectType = {},
+                         .throughPosition = true});
+      continue;
+    }
+    if (post.kind == core::CheckedRequirementKind::CountWithinSpan) {
+      const auto result = numericCallResult(call);
+      const auto type = integerTypeOf(call.getType(), context);
+      const auto a = checkedPathMemory(post.path, call, {}, {}, state);
+      const auto b = checkedPathMemory(post.other, call, {}, {}, state);
+      if (!result || !type || !a || !b || a->storage != b->storage ||
+          !checkedAtMost({}, a->begin, state) ||
+          !checkedAtMost(a->begin, b->begin, state))
+        continue;
+      const auto capture = [&](const core::Affine &coordinate) {
+        auto expression = checkedByteExpression(coordinate, state);
+        if (coordinate.place && coordinate.scale == 1 &&
+            coordinate.constant == 0)
+          if (const auto *decl = dyn_cast_or_null<ValueDecl>(
+                  builder.declFor(*coordinate.place));
+              decl && !decl->getType().isVolatileQualified() &&
+              !decl->getType()->isAtomicType())
+            if (const auto cellType = integerTypeOf(*decl, context);
+                cellType && cellType->width <= 64)
+              if (const auto minimum =
+                      integerRangeAt(*coordinate.place, *cellType, state)
+                          .minimum();
+                  minimum && !minimum->negative())
+                expression =
+                    NumericExpression::input(*coordinate.place, *cellType)
+                        .converted({.width = 64, .isSigned = false});
+        return expression
+                   ? expression->substitute<core::PlaceId>(
+                         [&](core::PlaceId key, core::IntegerType keyType) {
+                           return std::optional(NumericExpression::input(
+                               snapshot(key), keyType));
+                         })
+                   : std::nullopt;
+      };
+      const auto first = capture(a->begin);
+      const auto last = capture(b->begin);
+      const core::IntegerType bytes{.width = 64, .isSigned = false};
+      const auto count =
+          NumericExpression::input(*result, *type).converted(bytes);
+      const auto length = first && last
+                              ? NumericExpression::operation(
+                                    core::IntegerOp::Subtract, *last, *first)
+                              : std::nullopt;
+      if (count && length)
+        spanCounts.emplace_back(*count, *length);
       continue;
     }
     if (post.kind == core::CheckedRequirementKind::Progress) {
@@ -393,10 +482,21 @@ void FunctionDataflow::captureCheckedPosts(
           checkedPathMemory(post.other, call, *first, *last, state);
       if (source)
         ranges = checkedCopyRanges(*source, *first, *last, state);
-      // The relational contract preserves initialization, not byte values.
-      // A callee may have overwritten initialized input with nonzero data.
-      for (auto &range : ranges)
-        range.zeroed = false;
+      // Only a recognized byte-copy primitive also preserves contents.
+      // A general initialized-output contract may have overwritten the input.
+      auto name = resolvedLibraryName(call);
+      if (const auto *callee = call.getDirectCallee();
+          callee && callee->getBuiltinID()) {
+        if (name.starts_with("__builtin___") && name.ends_with("_chk"))
+          name = name.substr(12, name.size() - 16);
+        else if (name.starts_with("__builtin_"))
+          name = name.substr(10);
+      }
+      const bool byteCopy = name == "memcpy" || name == "memmove";
+      for (auto &range : ranges) {
+        range.zeroed &= byteCopy;
+        range.numericText &= byteCopy;
+      }
     } else if (post.kind == core::CheckedRequirementKind::Terminated) {
       const auto through = last->shifted(1);
       if (!through)
@@ -499,12 +599,22 @@ void FunctionDataflow::applyCheckedPositions(
           existing && existing->storage == post.position.storage &&
           existing->extent &&
           checkedInterval(existing->begin, existing->end, *existing->extent,
-                          state) &&
-          (!post.position.extent ||
-           !checkedInterval(post.position.offset,
-                            post.upper.value_or(post.position.offset),
-                            *post.position.extent, state)))
-        continue;
+                          state)) {
+        // Position outputs are simultaneous guarantees. A wider envelope
+        // must not replace an already established exact (or narrower) value.
+        const auto upper = post.upper.value_or(post.position.offset);
+        const bool sameExtent =
+            post.position.extent &&
+            checkedAtMost(*existing->extent, *post.position.extent, state) &&
+            checkedAtMost(*post.position.extent, *existing->extent, state);
+        if (!post.position.extent ||
+            !checkedInterval(post.position.offset, upper, *post.position.extent,
+                             state) ||
+            (sameExtent &&
+             checkedAtMost(post.position.offset, existing->begin, state) &&
+             checkedAtMost(existing->end, upper, state)))
+          continue;
+      }
     auto position = post.position;
     if (post.upper &&
         foldAffine(*post.upper, state) != foldAffine(position.offset, state)) {
@@ -558,6 +668,13 @@ void FunctionDataflow::applyCheckedPositions(
       spatial.offset = core::PointerOffset::ofElements(offset.constant / *unit);
       spatial.boundsOffset = spatial.offset;
       state.spatial.set(*dest, spatial);
+    } else {
+      auto spatial =
+          state.spatial.recordOf(*dest).value_or(core::SpatialRecord{});
+      spatial.extent = post.position.extent;
+      spatial.offset = core::PointerOffset::unknown();
+      spatial.boundsOffset = spatial.offset;
+      state.spatial.set(*dest, spatial);
     }
     if (post.nonNull && (!post.on || !result)) {
       state.safety->pointers.insert(*dest);
@@ -566,6 +683,49 @@ void FunctionDataflow::applyCheckedPositions(
                               .reason = core::NullReason::Declared});
     }
   }
+  if (!result)
+    for (const auto &post : found->second) {
+      if (!post.on || !post.when.trivial() ||
+          !post.position.offset.isConstant() || !post.upper ||
+          !post.upper->isConstant() || post.position.offset.constant < 0 ||
+          post.position.offset.constant > post.upper->constant)
+        continue;
+      const auto dest = builder.resolveSummaryPath(post.path, call);
+      if (!dest || !installed.contains(dest->place))
+        continue;
+      const auto actual = state.safety->positions.find(dest->place);
+      const auto coordinate = checkedCoordinates.find(dest->place);
+      if (actual == state.safety->positions.end() ||
+          coordinate == checkedCoordinates.end() ||
+          actual->second.storage != post.position.storage ||
+          actual->second.offset != core::Affine::ofPlace(coordinate->second))
+        continue;
+      if (!lastCall || lastCall->call != &call) {
+        core::PendingOutcome outcome;
+        outcome.callee = calleeName(call);
+        outcome.location = locate(call);
+        if (call.getType()->isPointerType()) {
+          outcome.consumedBy.try_emplace(core::Outcome::Null);
+          outcome.consumedBy.try_emplace(core::Outcome::NonNull);
+        } else if (call.getType()->isIntegerType()) {
+          outcome.consumedBy.try_emplace(core::Outcome::Zero);
+          outcome.consumedBy.try_emplace(core::Outcome::Positive);
+          if (call.getType()->isSignedIntegerType())
+            outcome.consumedBy.try_emplace(core::Outcome::Negative);
+        } else {
+          continue;
+        }
+        lastCall = CallOutcome{.call = &call, .pending = std::move(outcome)};
+      }
+      const core::IntegerType bytes{.width = 64, .isSigned = false};
+      const auto range = core::IntegerRange::between(
+          core::IntegerValue::ofBits(
+              bytes, static_cast<std::uint64_t>(post.position.offset.constant)),
+          core::IntegerValue::ofBits(
+              bytes, static_cast<std::uint64_t>(post.upper->constant)));
+      lastCall->pending.factOn[*post.on].emplace_back(
+          coordinate->second, core::ValueFact::ofInteger(range));
+    }
   if (!result)
     if (const auto progress = checkedProgressPosts.find(&call);
         progress != checkedProgressPosts.end())
@@ -646,6 +806,26 @@ void FunctionDataflow::applyCheckedResult(core::PlaceId dest,
 void FunctionDataflow::applyCheckedPosts(const CallExpr &call,
                                          const core::FunctionSummary &summary,
                                          core::AnalysisState &state) {
+  if (const auto counts = checkedSpanPosts.find(&call);
+      counts != checkedSpanPosts.end())
+    for (const auto &[count, length] : counts->second) {
+      if (const auto result = numericCallResult(call)) {
+        state.relations.learnAtLeast(*result, 0);
+        if (const auto bound = linearIntegerExpression(length, state)) {
+          if (bound->isConstant())
+            state.relations.learnAtMost(*result, bound->constant);
+          else if (bound->place && bound->scale == 1)
+            state.relations.learn(*result, core::Relation::LessEqual,
+                                  *bound->place, bound->constant);
+        }
+      }
+      if (!state.numericConditions.requireInteger(
+              {.lhs = count,
+               .op = core::IntegerOp::LessEqual,
+               .rhs = length}) &&
+          state.numericConditions.size() >= core::MaxGuardConjuncts)
+        state.numericConditionsIncomplete = true;
+    }
   applyCheckedPositions(call, state);
   applyContainerPosts(call, state);
   applyFootprintPosts(call, state, std::nullopt);
@@ -692,6 +872,15 @@ void FunctionDataflow::applyCheckedPosts(const CallExpr &call,
     }
     auto storage = post.storage;
     auto range = post.range;
+    if (post.throughPosition) {
+      const auto output = checkedPathMemory(post.path, call, {}, {}, state);
+      if (!storage || !output || output->storage != *storage ||
+          !checkedAtMost(range.begin, output->begin, state) ||
+          !checkedValid(*output, state) || !output->extent ||
+          !checkedInterval(range.begin, output->begin, *output->extent, state))
+        continue;
+      range.end = output->begin;
+    }
     if (!storage) {
       const auto memory =
           checkedPathMemory(post.path, call, range.begin, range.end, state);
