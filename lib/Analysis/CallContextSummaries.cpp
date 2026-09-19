@@ -63,16 +63,22 @@ SummaryStore::specializeMemory(std::string_view symbol,
     activeMemoryContexts.insert(key);
     const auto release =
         llvm::scope_exit([&] { activeMemoryContexts.erase(key); });
+    // RFC 0030 §5.5: the context runs of one function share a budget.
+    const auto budget = contextBudget(*definition, options);
+    if (!budget)
+      return std::nullopt;
     LedgerAdapter collected(definition->getASTContext(),
                             LedgerAdapter::Mode::Collecting);
     AnalysisOptions nestedOptions = options;
     nestedOptions.dumpStream = nullptr;
+    nestedOptions.budget = *budget;
     FunctionDataflow analysis(definition->getASTContext(), *definition,
                               collected, nestedOptions, *this, true);
     analysis.memoryContext = bindings;
     analysis.callbackBindings = bindings.callbacks;
     analysis.run();
-    if (!analysis.validMemoryContext)
+    contextTransfers[definition->getCanonicalDecl()] += analysis.transfers();
+    if (!analysis.validMemoryContext || analysis.overBudget())
       return std::nullopt;
     auto summary = std::move(analysis).summary();
     applyContract(*function, summary);

@@ -36,8 +36,8 @@ namespace weavec::test {
 /// Minimal prelude so tests can call `free`/`malloc` without system headers.
 /// `OWNED`/`BORROWED`/`MUT`/`RAW`/`UNSAFE` spell the annotations without
 /// `weavec.h`. `use` is the opaque "look at this pointer" helper; it is
-/// annotated because an unannotated external function warns by default (RFC
-/// 0003).
+/// annotated because an unannotated external function is an unknown callee
+/// (RFC 0030 §5.1), which may have freed what it was handed.
 inline constexpr const char *Prelude = R"c(
 typedef unsigned long size_t;
 void *malloc(size_t);
@@ -201,6 +201,25 @@ inline std::vector<std::string> incomplete(const AnalysisResult &result) {
                         std::string(record->decision.reasonText()) + ": " +
                         record->decision.detail);
         }
+  return out;
+}
+
+/// RFC 0030 §5.1: the call sites whose temporal facet is
+/// `unresolved(unknown-callee)` (a call into code the analysis cannot see),
+/// as `"<line>: <site text>"` in ledger order. (Before RFC 0030 such a callee
+/// was an `annotation-required` warning, once per callee.)
+inline std::vector<std::string> unknownCalls(const AnalysisResult &result) {
+  std::vector<std::string> out;
+  for (const core::UnitLedger &unit : result.planned.ledger.units)
+    for (const core::FunctionLedger &function : unit.functions)
+      for (const core::Site &site : function.sites) {
+        const core::FacetRecord *record = site.facet(core::Facet::Temporal);
+        if (site.kind == core::SiteKind::Call &&
+            site.boundary == core::Boundary::Call && record != nullptr &&
+            record->decision.unresolved ==
+                core::UnresolvedReason::UnknownCallee)
+          out.push_back(std::to_string(site.location.line) + ": " + site.text);
+      }
   return out;
 }
 

@@ -30,4 +30,5 @@ weavec_add_unittest(
           CheckPlannerTest.cpp
           LedgerAdapterTest.cpp
           EngineDecisionsTest.cpp
+          SoundDefaultsTest.cpp
   DEPS weavec::Analysis weavec::Frontend)

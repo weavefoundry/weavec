@@ -164,7 +164,7 @@ int main(void) {
   EXPECT_FALSE(db.defines("main"));
 }
 
-TEST(ProgramAnalysis, NoBoundaryWarningForCalleesTheProgramDefines) {
+TEST(ProgramAnalysis, NoWarningForUnknownCallees) {
   Program program;
   program.add("a.c", "void take(char *p) { free(p); }\n");
   program.add("b.c", R"c(
@@ -182,14 +182,10 @@ void g(void) { blob_close(malloc(1)); }
 )c");
   const ProgramAnalysis::Result result = program.run();
   EXPECT_EQ(result.errors, 0U) << llvm::join(program.recorder.lines, "\n");
-  // `take` is defined in a.c: no warning. `blob_close` is defined nowhere:
-  // one warning for the program, not one per calling unit.
-  EXPECT_EQ(result.warnings, 1U);
-  ASSERT_EQ(program.recorder.lines.size(), 1U)
-      << llvm::join(program.recorder.lines, "\n");
-  EXPECT_EQ(program.recorder.lines[0],
-            "/src/b.c:7: warning: call to 'blob_close' is not checked: it has "
-            "no definition or ownership annotations here");
+  // `take` is defined in a.c. `blob_close` is defined nowhere: an unknown
+  // callee, which RFC 0030 §5.1 records as a ledger row, not a warning.
+  EXPECT_EQ(result.warnings, 0U) << llvm::join(program.recorder.lines, "\n");
+  EXPECT_TRUE(program.recorder.lines.empty());
 }
 
 TEST(ProgramAnalysis, MutuallyDependentUnitsReachAFixpoint) {
@@ -681,7 +677,9 @@ void test(void) { char *p = malloc(4); if (p) safe(p); p = malloc(4); if (p) bad
       << ::testing::PrintToString(program.recorder.lines);
 }
 
-TEST(ProgramAnalysis, UnsafeCrossUnitRequestsDoNotProduceDelayedReports) {
+TEST(ProgramAnalysis, UnsafeCrossUnitRequestsReportLikeAnyOther) {
+  // RFC 0030 §6.1: a context run requested from inside an unsafe region
+  // reports its findings, as one from outside does.
   Program program;
   program.add("callee.c", "void zap(char *a, char *b) { free(a); *b = 1; }");
   program.add("caller.c", R"c(
@@ -694,7 +692,7 @@ void test(void) {
   const auto result = program.run();
   EXPECT_TRUE(result.failed.empty());
   EXPECT_TRUE(result.nonConverging.empty());
-  EXPECT_EQ(result.errors, 0U)
+  EXPECT_EQ(result.errors, 1U)
       << ::testing::PrintToString(program.recorder.lines);
   EXPECT_EQ(result.warnings, 0U)
       << ::testing::PrintToString(program.recorder.lines);

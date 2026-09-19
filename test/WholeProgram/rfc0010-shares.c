@@ -5,7 +5,7 @@
 // RUN: not %weavec --whole-program %s %S/Inputs/counted.c -- -I%S/Inputs 2>&1 | FileCheck %s
 // RUN: not %weavec --whole-program --dump-analysis %s %S/Inputs/counted.c -- -I%S/Inputs 2>&1 | FileCheck --check-prefix=DUMP %s
 //
-// Alone, the calls are unchecked boundaries: nothing is reported.
+// Alone, the calls are into unknown code: nothing is reported.
 // RUN: %weavec %s -- -I%S/Inputs 2>&1 | FileCheck --check-prefix=ALONE %s
 #include "../Inputs/prelude.h"
 #include "counted.h"
@@ -47,6 +47,7 @@ void lost(struct list *l) {
   counted_ref(p);
 }
 
-// ALONE: warning: call to 'counted_new' is not checked
-// ALONE-NOT: error:
+// Alone, the calls into the other unit are unknown code (RFC 0030 §5.1).
+// ALONE-NOT: {{warning|error}}:
+// ALONE: 0 errors, 0 warnings
 // CHECK: 1 warning and 1 error generated.

@@ -118,6 +118,19 @@ void LedgerAdapter::decideAs(const clang::Stmt &site, core::SiteKind kind,
   decideAt(sites.find(site, kind, boundary), site, facet, decision);
 }
 
+void LedgerAdapter::suggest(const clang::Stmt &site, core::SiteKind kind,
+                            std::optional<core::Boundary> boundary,
+                            core::Facet facet, core::FixItHint fixit) {
+  if (isDiscarding())
+    return;
+  const std::optional<core::SiteId> id = sites.find(site, kind, boundary);
+  if (!id)
+    return;
+  core::FacetRecord *facetRecord = record(*id, facet);
+  if (facetRecord != nullptr && !facetRecord->fixit)
+    facetRecord->fixit = std::move(fixit);
+}
+
 void LedgerAdapter::requirement(const clang::Stmt &site, core::Facet facet,
                                 core::Requirement record,
                                 std::optional<CheckWitness> witness) {
@@ -454,9 +467,20 @@ void LedgerAdapter::reportRequireLevel() {
       const core::Site *site = row.site(info.id.ordinal);
       if (site == nullptr)
         continue;
-      const std::string pointer =
+      std::string pointer =
           info.operand != nullptr ? textOf(info.operand, context) : site->text;
-      const std::string callee = !site->callee.empty() ? site->callee : pointer;
+      std::string callee = !site->callee.empty() ? site->callee : pointer;
+      if (info.kind == core::SiteKind::Call &&
+          info.boundary == core::Boundary::Call) {
+        // §5.1: what an unknown callee may have freed or kept: its first
+        // pointer argument.
+        if (const auto *call = llvm::dyn_cast<clang::CallExpr>(info.stmt))
+          for (const clang::Expr *arg : call->arguments())
+            if (arg->getType()->isPointerType()) {
+              pointer = textOf(arg, context);
+              break;
+            }
+      }
       std::string type;
       if (const auto *expr = llvm::dyn_cast<clang::Expr>(info.stmt))
         type = expr->getType().getAsString();
@@ -516,9 +540,14 @@ void LedgerAdapter::reportRequireLevel() {
             .fixits = {},
         };
         if (unresolved) {
+          // §5.1: at a use, the unknown code the record names.
+          const bool useOfUnknown = *facetRecord->decision.unresolved ==
+                                        core::UnresolvedReason::UnknownCallee &&
+                                    info.kind != core::SiteKind::Call &&
+                                    !facetRecord->decision.detail.empty();
           const core::PhraseArguments arguments{
               .pointer = pointer,
-              .callee = callee,
+              .callee = useOfUnknown ? facetRecord->decision.detail : callee,
               .slot = pointer,
               .function = row.name,
               .detail = facetRecord->decision.detail,

@@ -255,9 +255,6 @@ public:
   /// a field step), for locating notes; null when unknown.
   [[nodiscard]] const clang::NamedDecl *declFor(core::PlaceId place) const;
 
-  /// Under `--strict-externs`, a call into code with no summary yields a raw
-  /// result rather than an unknown one (RFC 0004, *Boundaries*).
-  void setStrictExterns(bool strict) noexcept { strictExterns = strict; }
   /// RFC 0013: an incoming value returned after its interface cell changed.
   using IncomingLookup = std::function<std::optional<core::PlaceId>(
       const clang::CallExpr &, const core::SummaryPath &)>;
@@ -501,7 +498,6 @@ private:
   core::PlaceTable &places;
   SummaryStore &summaries;
   const clang::ASTContext &context;
-  bool strictExterns = false;
   IncomingLookup incomingLookup;
   llvm::DenseMap<const clang::VarDecl *, core::PlaceId> varPlaces;
   llvm::DenseMap<std::uint32_t, const clang::VarDecl *> placeVars;

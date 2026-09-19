@@ -46,7 +46,7 @@ TEST(DiagnosticCollector, CountsBySeverity) {
   EXPECT_FALSE(collector.hasErrors());
 
   collector.report(Diagnostic{.severity = Severity::Warning,
-                              .id = diag::AnnotationRequired,
+                              .id = diag::Leak,
                               .message = "w",
                               .location = {},
                               .notes = {},
@@ -76,7 +76,8 @@ TEST(DiagnosticIds, PointerValidityIdsAreKnown) {
   for (const std::string_view id :
        {diag::NullDereference, diag::UseOfUninitialized, diag::InvalidRelease})
     EXPECT_TRUE(diag::isKnown(id)) << id;
-  EXPECT_EQ(diag::All.size(), 22U);
+  // RFC 0030, *Diagnostics*: 15 kept ids and 5 added ones.
+  EXPECT_EQ(diag::All.size(), 20U);
 }
 
 TEST(DiagnosticIds, SpatialSafetyIdIsKnown) {
@@ -117,10 +118,15 @@ TEST(DiagnosticIds, ProveOrTrapIdsAreKnown) {
             Severity::Error);
   EXPECT_EQ(diag::defaultSeverity(diag::UseAfterFree, Certainty::Possible),
             Severity::Warning);
-  // Checked mode's ids are gone.
-  EXPECT_TRUE(diag::isRemoved("checking-incomplete"));
-  EXPECT_TRUE(diag::isRemoved("checking-failed"));
-  EXPECT_FALSE(diag::isKnown("checking-failed"));
+  // Checked mode's ids are gone, and so are the two RFC 0030 replaces with
+  // ledger rows (`unresolved(unanalysed | budget | ...)`, and
+  // `unresolved(unknown-callee)` with a fix-it).
+  for (const std::string_view id :
+       {"checking-incomplete", "checking-failed", "analysis-incomplete",
+        "annotation-required"}) {
+    EXPECT_TRUE(diag::isRemoved(id)) << id;
+    EXPECT_FALSE(diag::isKnown(id)) << id;
+  }
 }
 
 TEST(Diagnostic, CertaintyDefaultsToDefinite) {

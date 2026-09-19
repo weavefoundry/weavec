@@ -171,10 +171,27 @@ TEST(SummaryIO, PrintsAndParsesGuardsAndNeverReturns) {
   EXPECT_TRUE(reparsed->neverReturns);
 }
 
+// RFC 0030 §5.1 (version 28): the `unknown` flag, a value the callee handed
+// to code it cannot see.
+TEST(SummaryIO, PrintsAndParsesTheUnknownFlag) {
+  FunctionSummary handed;
+  handed.addEffect(SummaryPath::param(0), PlaceEffect{.unknown = true});
+  handed.addEffect(SummaryPath::global(0), PlaceEffect{.unknown = true});
+  const std::string text = printSummary(handed, Names);
+  EXPECT_NE(text.find("  effect param 0 unknown\n"), std::string::npos) << text;
+  EXPECT_NE(text.find("  effect global g_buf unknown\n"), std::string::npos)
+      << text;
+  const auto reparsed = parseSummary(text, ResolveAll);
+  ASSERT_TRUE(reparsed);
+  EXPECT_EQ(*reparsed, handed);
+  EXPECT_TRUE(reparsed->effectOf(SummaryPath::param(0)).unknown);
+  EXPECT_FALSE(reparsed->effectOf(SummaryPath::param(0)).consumed());
+}
+
 // RFC 0010, *Summary text format (version 6)*: the `share` flag and the
 // `increment`, `decrement`, `count`, `stored` and `fact` lines.
 TEST(SummaryIO, PrintsAndParsesSharesAndPerOutcomeLines) {
-  EXPECT_EQ(SummaryFormatVersion, 27U);
+  EXPECT_EQ(SummaryFormatVersion, 28U);
   const SummaryPath rc = SummaryPath::param(0).deref().field("rc");
   FunctionSummary unref;
   unref.addEffect(SummaryPath::param(0),

@@ -27,6 +27,7 @@ weavec_add_library(
           DataflowWitnesses.cpp
           DataflowLibraryRequirements.cpp
           DataflowCallbacks.cpp
+          DataflowUnknown.cpp
           CallbackSummaries.cpp
           CallContextSummaries.cpp
           DataflowCallContext.cpp

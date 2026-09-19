@@ -31,7 +31,6 @@ bool FunctionDataflow::handleCheckedIntegerCall(const CallExpr &call,
     return true;
   }
   doRead(*pointee, call, state, false);
-  doMutationCheck(pointee->place, call, state);
   checkAnnotationOnWrite(*pointee, call, state);
   recordAccess(pointee->place, true, state);
   auto values = core::evaluateCheckedInteger(*op, a->values, b->values, *type);

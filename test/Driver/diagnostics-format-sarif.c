@@ -23,7 +23,8 @@
 // SARIF-NOT: Stack dump
 // WEAVEC: weavec: error: -fdiagnostics-format=sarif is not supported; write the ledger as SARIF with --ledger=<path> --ledger-format=sarif
 // WEAVEC-NOT: Stack dump
-// LAST: warning: call to 'node_new' is not checked
+// LAST: weavec: {{.*}}diagnostics-format-sarif.c: {{[0-9]+}} sites:
+// LAST-NOT: "version"
 // LAST-NOT: error:
 
 #ifdef BUG

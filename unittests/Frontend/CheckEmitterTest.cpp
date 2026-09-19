@@ -513,10 +513,9 @@ int print(int x) { char b[4]; return sprintf(b, "%d", x); }
   EXPECT_NE(text.find("__weavec_chk_assert(((n > 0) != 0));"),
             std::string::npos)
       << text;
-  EXPECT_NE(
-      text.find("return __weavec_chk_len_r(snprintf((b), sizeof(char[4]), "
-                "(\"%d\"), (x)), sizeof(char[4]));"),
-      std::string::npos)
+  EXPECT_NE(text.find("return __weavec_chk_len_r(snprintf((b), 4ULL, "
+                      "(\"%d\"), (x)), 4ULL);"),
+            std::string::npos)
       << text;
   EXPECT_EQ(out.inserted, 8U) << text;
 }

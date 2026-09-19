@@ -36,6 +36,7 @@
 #include "weavec/Core/Spatial.h"
 #include "weavec/Core/Summary.h"
 
+#include <cstdint>
 #include <map>
 #include <optional>
 #include <set>
@@ -287,9 +288,28 @@ struct AnalysisState {
   /// non-pointer member, `va_arg`), so nothing the engine knows of pointers
   /// describes it. Joins by union; a plain assignment clears it.
   std::set<PlaceId> reinterpreted;
+  /// RFC 0030 §3.1, *Aliases of a released object*: what was released on
+  /// some path so far, as the pointee types of the released objects (an
+  /// opaque key per type; `AnyType` for a character, `void` or unknown
+  /// type, which may designate any object). Joins by union.
+  std::set<std::uint64_t> releasedTypes;
+  /// Some release so far was of a value not loaded from an owning place
+  /// (§9.4): the owner-uniqueness assumption cannot separate it. Joins by
+  /// disjunction.
+  bool releasedUnowned = false;
+  /// Pointer places whose value was stored, on every path, since the last
+  /// release and is not a copy of an older value: it is not a released
+  /// object. Joins by intersection; a release empties it.
+  std::set<PlaceId> storedSinceRelease;
   std::map<PlaceId, ArrayRange> arrayRanges;
   std::map<PlaceId, ReleasedArrayRange> releasedArrayRanges;
   std::map<PlaceId, FilledArrayRange> filledArrayRanges;
+
+  /// The key of a type that may designate any object (`releasedTypes`).
+  static constexpr std::uint64_t AnyType = 0;
+  /// §3.1: an object of pointee type `type` was released on this path; it
+  /// was loaded from an owning place when `owned`.
+  void noteRelease(std::uint64_t type, bool owned);
 
   /// Component-wise join with the state of another incoming edge. Returns
   /// whether this state changed, so the fixpoint engine need not copy and
@@ -340,6 +360,9 @@ struct AnalysisState {
   /// every guard conjunct about it. Used when the place is (re)initialised
   /// or goes out of scope. Descendants are the caller's responsibility.
   void forget(PlaceId place);
+  /// `forget` for each of `places`, with one scan of the guards for all of
+  /// them (a subtree).
+  void forget(std::vector<PlaceId> places);
 
   friend bool operator==(const AnalysisState &,
                          const AnalysisState &) = default;

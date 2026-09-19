@@ -383,8 +383,32 @@ TEST(MoveTracker, JoinOfCertaintyBits) {
   EXPECT_FALSE(second->allPaths);
   const auto third = a.recordOf(PlaceId{2});
   EXPECT_TRUE(third->unknownOrigin);
-  EXPECT_TRUE(third->allPaths);
+  EXPECT_FALSE(third->allPaths)
+      << "the unknown-callee default holds on some paths only (§5.1)";
   EXPECT_FALSE(third->isDefinite()) << "never diagnosed";
+}
+
+// RFC 0030 §5.1, §3.1: the unknown-callee default marks a place only when it
+// has no record, and a known consume replaces such a record.
+TEST(MoveTracker, UnknownDefaultMarksOnlyUnmovedPlacesAndGivesWay) {
+  MoveTracker tracker;
+  ASSERT_FALSE(tracker.markMoved(PlaceId{0}, MoveReason::Freed, at(1)));
+  EXPECT_FALSE(tracker.markUnknown(PlaceId{0}, at(2)))
+      << "a known record stays";
+  EXPECT_TRUE(tracker.markUnknown(PlaceId{1}, at(3)));
+  const auto unknown = tracker.recordOf(PlaceId{1});
+  ASSERT_TRUE(unknown);
+  EXPECT_EQ(unknown->reason, MoveReason::Freed);
+  EXPECT_TRUE(unknown->unknownOrigin);
+  EXPECT_FALSE(unknown->allPaths);
+  EXPECT_FALSE(unknown->isDefinite());
+
+  EXPECT_FALSE(tracker.eraseUnknown(PlaceId{0})) << "only an unknown record";
+  EXPECT_TRUE(tracker.eraseUnknown(PlaceId{1}));
+  EXPECT_FALSE(tracker.recordOf(PlaceId{1}));
+  // The known consume that replaced it is definite.
+  ASSERT_FALSE(tracker.markMoved(PlaceId{1}, MoveReason::Freed, at(4)));
+  EXPECT_TRUE(tracker.recordOf(PlaceId{1})->isDefinite());
 }
 
 TEST(MoveTracker, ResultTestSettlesConditionalUnlessLossy) {
@@ -434,6 +458,64 @@ TEST(MoveTracker, AnUnconditionalSecondConsumeHoldsOnEveryPath) {
   EXPECT_TRUE(record->allPaths);
   EXPECT_TRUE(record->guard.trivial()) << "the facts of the second consume";
   EXPECT_TRUE(record->isDefinite());
+}
+
+TEST(MoveTracker, ACopiedRecordKeepsItsCertainty) {
+  MoveTracker tracker;
+  ASSERT_TRUE(tracker.markUnknown(PlaceId{0}, at(1), "consume"));
+  ASSERT_FALSE(tracker.copyRecord(PlaceId{1}, *tracker.recordOf(PlaceId{0})));
+  const auto copy = tracker.recordOf(PlaceId{1});
+  ASSERT_TRUE(copy);
+  EXPECT_TRUE(copy->unknownOrigin);
+  EXPECT_FALSE(copy->allPaths);
+  EXPECT_EQ(copy->origin, "consume");
+  // A second record for the same element keeps the first, as markMoved.
+  EXPECT_TRUE(tracker.copyRecord(PlaceId{1}, MoveRecord{}));
+  EXPECT_TRUE(tracker.recordOf(PlaceId{1})->unknownOrigin);
+}
+
+TEST(MoveTracker, TheReleaseOfAnOwnValueDoesNotHideAnUnknownRecord) {
+  // One path released the value the function itself stored (`ownValue`),
+  // another handed the caller's value to unknown code: the join is the
+  // unknown record, whichever side it is on.
+  for (const bool unknownFirst : {false, true}) {
+    MoveTracker own;
+    ASSERT_FALSE(own.markMoved(PlaceId{0}, MoveReason::Freed, at(1), {},
+                               ElementWitness::whole(), "free",
+                               /*ownValue=*/true));
+    MoveTracker unknown;
+    ASSERT_TRUE(unknown.markUnknown(PlaceId{0}, at(2), "report"));
+    MoveTracker &into = unknownFirst ? unknown : own;
+    const MoveTracker &from = unknownFirst ? own : unknown;
+    EXPECT_EQ(into.join(from), !unknownFirst);
+    const auto record = into.recordOf(PlaceId{0});
+    ASSERT_TRUE(record);
+    EXPECT_TRUE(record->unknownOrigin);
+    EXPECT_FALSE(record->ownValue);
+    EXPECT_FALSE(record->allPaths);
+    EXPECT_EQ(record->location.line, 2U);
+    EXPECT_FALSE(into.join(from)) << "a fixpoint";
+  }
+}
+
+TEST(MoveTracker, AKnownRecordJoinedIntoAnUnknownOneBringsItsPosition) {
+  MoveTracker unknown;
+  ASSERT_TRUE(unknown.markUnknown(PlaceId{0}, at(1), "consume"));
+  EXPECT_TRUE(unknown.recordOf(PlaceId{0})->location.file.empty())
+      << "never diagnosed: no file name to copy";
+  MoveTracker known;
+  ASSERT_FALSE(known.markMoved(PlaceId{0}, MoveReason::Freed, at(2), {},
+                               ElementWitness::whole(), "free", false,
+                               when(PlaceId{1}, ValueFact::nonZero())));
+  EXPECT_TRUE(unknown.join(known));
+  const auto record = unknown.recordOf(PlaceId{0});
+  ASSERT_TRUE(record);
+  EXPECT_FALSE(record->unknownOrigin);
+  EXPECT_FALSE(record->allPaths);
+  EXPECT_EQ(record->location.line, 2U);
+  EXPECT_EQ(record->family, "free");
+  EXPECT_TRUE(record->guard.trivial()) << "the unknown side had no guard";
+  EXPECT_FALSE(unknown.join(known)) << "a fixpoint";
 }
 
 } // namespace

@@ -742,6 +742,17 @@ bool unknownOrigin = false;
 - The existing rules for reason, location, witness, guard and `ownValue`
   are unchanged.
 
+**Amendment (S3).** A record of the function's own value (RFC 0008,
+`ownValue`) on one side and an `unknownOrigin` record on the other describe
+different values: the join is the `unknownOrigin` record, with
+`allPaths = false`, so releasing a value the function stored itself never
+reads as a known release of the caller's value. Otherwise, when one side
+is known and the other `unknownOrigin`, the joined record takes the known
+side's reason, location and names (only a known record is ever diagnosed),
+with the bits and guard joined as above. A record copied to another name (an
+assignment, a mirrored heap cell, a record restored after a store) keeps all
+of its certainty bits.
+
 A record is **definite** when
 
 ```
@@ -1291,6 +1302,18 @@ over the corpus. The chosen value is recorded in the CLI reference. At most
 1% of corpus functions may exceed it (gate G15). This budget replaces the
 internal "iteration limit reached" incompleteness paths. The existing
 `MaxFixpointRounds` guard stays as a bug guard.
+
+**Correction (S3).** The calibration measured 2,874 corpus functions (every
+config's files per unit and the whole-program configs as programs, budget
+unlimited): the 99.9th percentile is 7,208 block transfers and the largest,
+Lua's `luaV_execute`, 25,518, so the default is 50,000 and no corpus function
+exceeds it. A run that hits `MaxVisitsPerBlock` has no fixpoint and counts as
+over budget. A summary whose incompleteness is about integers or extents,
+about a context run the callee fell back from (the default-context summary is
+sound), or about an indirect call with an unresolved target (the callee
+applied §5.1 there, and its summary's `unknown` effects say what it handed
+on) leaves the effects complete; the other reasons, the round limit and the
+budget make callers apply the unknown-callee default at the call.
 
 #### 5.6 Headers
 

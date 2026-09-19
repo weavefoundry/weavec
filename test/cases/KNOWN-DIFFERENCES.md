@@ -62,6 +62,6 @@ denominator, and once S3 removes the flags they are outside
 | `test/Annotations/rfc0003-unknown-extern.c` | `--strict-externs` |
 | `test/WholeProgram/rfc0016-composition.c` | `--strict-externs` |
 | `test/WholeProgram/rfc0017-numeric.c` | `--strict-externs` |
-| `test/Driver/headers-skipped.c` | `--analyze-headers` (becomes `headers-analysed.c`) |
+| `test/Driver/headers-analysed.c` (was `headers-skipped.c`) | `--analyze-headers`, inverted in S3 |
 | `test/Driver/version.c` | `--help` lists `--report-unannotated` and `--analyze-headers` |
 | `test/Driver/rfc0005-flags.c` | warning control over `annotation-required`, which S3 removes |

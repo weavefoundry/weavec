@@ -372,19 +372,17 @@ void FunctionDataflow::snapshotArrayIndex(core::PlaceId place, const Expr *at,
             moved = record;
             break;
           }
-      if (moved)
-        state.moves.markMoved(array, moved->reason, moved->location, moved->via,
-                              core::ElementWitness::unknown(), moved->family,
-                              moved->ownValue, moved->guard);
+      if (moved) {
+        moved->element = core::ElementWitness::unknown();
+        state.moves.copyRecord(array, std::move(*moved));
+      }
       continue;
     }
     const auto old = existing.value_or(places.element(array, selectorKey));
     const auto previous = state.moves.recordOf(old);
     copyHeapValue(cell, old, state);
     if (previous) {
-      state.moves.markMoved(old, previous->reason, previous->location,
-                            previous->via, previous->element, previous->family,
-                            previous->ownValue, previous->guard);
+      state.moves.copyRecord(old, *previous);
       if (at)
         decideIncomplete("array index snapshot generation is ambiguous", *at);
     }

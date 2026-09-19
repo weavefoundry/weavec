@@ -2,7 +2,7 @@
 // RUN: not %weavec --whole-program %s %S/Inputs/array15.c -- 2>&1 | FileCheck %s
 // RUN: rm -rf %t && mkdir -p %t
 // RUN: %weavec_cc -c %S/Inputs/array15.c -o %t/library.o 2>&1 | count 0
-// RUN: %weavec_cc -Wno-weavec-annotation-required -c %s -o %t/caller.o 2>&1 | count 0
+// RUN: %weavec_cc -c %s -o %t/caller.o 2>&1 | count 0
 // RUN: %weavec --dump-record=%t/library.o.weavec | FileCheck --check-prefix=RECORD %s
 // RUN: not %weavec_cc %t/library.o %t/caller.o -o %t/program 2>&1 | FileCheck %s
 #include "Inputs/array15.h"

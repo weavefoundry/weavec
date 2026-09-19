@@ -209,6 +209,12 @@ public:
   void decideAs(const clang::Stmt &site, core::SiteKind kind,
                 std::optional<core::Boundary> boundary, core::Facet facet,
                 const core::FacetDecision &decision);
+  /// A suggested annotation (§12.1 `fixit`) for `facet` of the site of
+  /// `stmt` of kind `kind`: §5.1's suggestion at an unknown callee's call.
+  /// The first suggestion of a pass stands.
+  void suggest(const clang::Stmt &site, core::SiteKind kind,
+               std::optional<core::Boundary> boundary, core::Facet facet,
+               core::FixItHint fixit);
   /// One requirement record of a LibCall, Release or Call facet: kept in
   /// the row's `requirements` with its own outcome, and merged into the
   /// facet by rank (§2.5). A witness for it may come along.

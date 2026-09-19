@@ -40,8 +40,8 @@ namespace weavec::analysis {
 
 /// An engine's tunables (§14).
 struct EngineOptions {
-  /// `FunctionDataflow`'s own tunables: `dumpStream`, `stats`, and until the
-  /// sound defaults land (S3) the RFC 0003–0006 flags.
+  /// `FunctionDataflow`'s own tunables: `dumpStream`, `stats`, the budget
+  /// (§5.5), zero-initialisation (§11) and strict aliasing (§3.1).
   // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
   AnalysisOptions analysis = {};
   /// §5.5: block transfers per function body; 0 is unlimited.
@@ -55,8 +55,8 @@ struct EngineOptions {
   /// §3.1: the unit follows C's effective-type rules (not
   /// `-fno-strict-aliasing`).
   bool strictAliasing = true;
-  /// The functions whose diagnostics are reported (`mainFileOnly` until
-  /// every emitted function reports, §15 item 18); empty reports all.
+  /// The functions whose diagnostics are reported; empty reports every
+  /// emitted function, the ones `EngineInput::sites` holds (§2.6, §5.6).
   std::function<bool(const clang::FunctionDecl &)> shouldReport = nullptr;
   /// RFC 0020: receives the callee summaries the unit's analysis read.
   SummaryStore::Dependencies *dependencies = nullptr;

@@ -18,12 +18,14 @@
 #include "weavec/Analysis/Summaries.h"
 #include "weavec/Core/AnalysisStats.h"
 #include "weavec/Core/Diagnostic.h"
+#include "weavec/Core/Ledger.h"
 
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/Decl.h"
 
 #include "llvm/Support/raw_ostream.h"
 
+#include <cstdint>
 #include <set>
 #include <string>
 
@@ -33,28 +35,19 @@ class LedgerAdapter;
 
 /// Tunables for the analyses.
 struct AnalysisOptions {
-  /// `--report-unannotated` (RFC 0003): for every exported function
-  /// definition, report pointer parameters and results without an
-  /// annotation, offering the inferred one as a fix-it; and include callees
-  /// declared in system headers in the external-boundary
-  /// `annotation-required` report.
-  bool reportUnannotated = false;
-  /// `--strict-externs` (RFC 0004, *Boundaries*): a call into code with no
-  /// definition, annotation or library summary is a raw operation. It is an
-  /// `unsafe-operation` error outside an unsafe region and its pointer
-  /// result is raw, instead of the RFC 0003 once-per-callee warning.
-  bool strictExterns = false;
-  /// RFC 0005, *`weavec-cc`*, compile step: record the callees that are
-  /// boundaries (for the unit's exports) but do not emit the
-  /// `annotation-required` warning for them; the link step decides whether
-  /// the program defines them.
-  bool deferBoundary = false;
-  /// `--exclusive-borrows` (RFC 0006, *Conflict rules*): enforce RFC 0001's
-  /// exclusivity rule in full, so a second mutable borrow, a shared borrow
-  /// of a mutably borrowed place, or a direct write to a borrowed place is
-  /// a `conflicting-borrow`. By default only freeing, moving or
-  /// reallocating a borrowed object conflicts with a live loan.
-  bool exclusiveBorrows = false;
+  /// RFC 0030 §5.5: the CFG block transfers one run of `FunctionDataflow`
+  /// may make over one function body, fixpoint and final pass together
+  /// (`-fweavec-budget`, `--budget`); 0 is unlimited. The context runs of
+  /// one function share a second budget of the same size.
+  std::uint64_t budget = core::DefaultBudget;
+  /// RFC 0030 §11: locals and the lowered allocations are zero-initialised
+  /// (not `-fno-weavec-zero-init`). Without it a possibly uninitialised
+  /// pointer's null facet is `unresolved(no-zero-init)`.
+  bool zeroInit = true;
+  /// RFC 0030 §3.1: the unit follows C's effective-type rules; under
+  /// `-fno-strict-aliasing` every two pointee types may designate one
+  /// object (`may-alias-released`).
+  bool strictAliasing = true;
   /// If set, print the inferred facts for every analysed function
   /// (`--dump-analysis`): places and their kinds, lifetimes, and the state
   /// at function exit. Intended for debugging and lit tests; the format is

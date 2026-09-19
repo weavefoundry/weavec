@@ -151,6 +151,7 @@ std::string printFlags(const PlaceEffect &effect) {
   add(effect.consumed() && effect.element, "element", false);
   add(effect.consumed() && effect.share, "share", false);
   add(effect.escaped, "escaped", false);
+  add(effect.unknown, "unknown", false);
   // RFC 0011: the offset at which the value was released, when not zero.
   if (effect.consumed() && !effect.at.isZero()) {
     if (!flags.empty())
@@ -707,6 +708,8 @@ static bool parseFlags(std::string_view text, PlaceEffect &effect) {
       effect.share = true;
     else if (flag == "escaped")
       effect.escaped = true;
+    else if (flag == "unknown")
+      effect.unknown = true;
     else
       return false;
     if (!family.empty()) {

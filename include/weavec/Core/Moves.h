@@ -25,8 +25,10 @@
 #include "weavec/Core/Scalar.h"
 #include "weavec/Core/SourceLocation.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <map>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -138,6 +140,11 @@ struct MoveRecord {
   /// RFC 0030 §3.1: made by the unknown-callee default (§5.1) or an open
   /// slot (§9.3). Never diagnosed.
   bool unknownOrigin = false;
+  /// RFC 0030 §5.1: for a record of unknown origin, the code that may have
+  /// released the value (the callee's name, `inline assembly`), for the
+  /// ledger's detail and the require-level messages.
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
+  std::string origin = {};
 
   /// RFC 0030 §3.1: the record holds on every path that reaches a use, from
   /// a consume that happened on each of them. The `guard` of a record holds
@@ -179,6 +186,12 @@ public:
             ElementWitness element = ElementWitness::whole(),
             std::string family = {}, bool ownValue = false,
             PlaceGuard guard = {}, MoveOrigin origin = {});
+  /// RFC 0030 §3.1: `place` now holds what another record was made for (a
+  /// copied value, a mirrored heap cell, a record restored after a store).
+  /// It gets `record` whole, certainty bits included, so a copy of a
+  /// possible or unknown-origin record is not definite. The insertion rules
+  /// are `markMoved`'s.
+  std::optional<MoveRecord> copyRecord(PlaceId place, MoveRecord record);
 
   /// RFC 0030 §3.1: a test of the call's result selected only classes that
   /// consume `place`: its record is no longer conditional, unless it came
@@ -189,6 +202,18 @@ public:
   /// `guard`: it is moved on every path through here, whatever the paths
   /// into the first consume were.
   void reaffirm(PlaceId place, PlaceGuard guard);
+  /// RFC 0030 §5.1: the unknown-callee default. Unless `place` already has
+  /// a record, it gets one of reason `Freed` and unknown origin, which holds
+  /// on some paths only (`allPaths` is false) and is never diagnosed.
+  /// Returns whether a record was made. The record keeps the position of
+  /// `location` but not its file name, which no diagnostic needs and which
+  /// every copy of the state would copy.
+  bool markUnknown(PlaceId place, const SourceLocation &location,
+                   std::string_view origin = {});
+  /// RFC 0030 §3.1, *A known release after an unknown one*: erases the
+  /// record of `place` if it has unknown origin, so that a known consume
+  /// replaces it. Returns whether it did.
+  bool eraseUnknown(PlaceId place);
 
   /// Reinitializes `place`, e.g. after assignment of a fresh value. With a
   /// witness, only a record whose witness matches is erased (an element
@@ -204,6 +229,9 @@ public:
 
   /// The record for `place` whatever its witness (for dumps and copies).
   [[nodiscard]] std::optional<MoveRecord> recordOf(PlaceId place) const;
+  /// The record of `place`, if any, without a copy; valid until the next
+  /// change to the tracker.
+  [[nodiscard]] const MoveRecord *find(PlaceId place) const;
 
   [[nodiscard]] bool isMoved(PlaceId place) const {
     return movedAt(place).has_value();
@@ -235,7 +263,12 @@ public:
   /// RFC 0027: invalidate several overwritten values in one record scan.
   template <typename Matches>
   void dropGuardsIf(Matches matches) {
-    for (auto &[holder, record] : moved)
+    // Read first: the records stay shared when no guard changes.
+    if (std::none_of(view().begin(), view().end(), [&](const auto &entry) {
+          return entry.second.guard.dependsOnIf(matches);
+        }))
+      return;
+    for (auto &[holder, record] : edit())
       record.guard.dropIf(matches);
   }
 
@@ -246,12 +279,24 @@ public:
   /// Moved places in ascending order (for dumps).
   [[nodiscard]] std::vector<PlaceId> movedPlaces() const;
 
-  [[nodiscard]] bool empty() const noexcept { return moved.empty(); }
+  [[nodiscard]] bool empty() const noexcept {
+    return records == nullptr || records->empty();
+  }
 
-  friend bool operator==(const MoveTracker &, const MoveTracker &) = default;
+  friend bool operator==(const MoveTracker &a, const MoveTracker &b) {
+    return a.records == b.records || a.view() == b.view();
+  }
 
 private:
-  std::map<PlaceId, MoveRecord> moved;
+  using Records = std::map<PlaceId, MoveRecord>;
+  /// Copy-on-write: the copies of an analysis state share their records
+  /// until one of them changes (states are copied per CFG edge, and the
+  /// records dominate their size). Null when there are none.
+  std::shared_ptr<Records> records;
+
+  [[nodiscard]] const Records &view() const;
+  /// The records, unshared first.
+  Records &edit();
 };
 
 } // namespace weavec::core

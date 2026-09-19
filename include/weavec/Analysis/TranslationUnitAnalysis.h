@@ -126,7 +126,6 @@ private:
   [[nodiscard]] UnitExports skeletonExports() const;
   void analyzeComponent(const std::vector<unsigned> &component, bool recursive,
                         FunctionAnalyzer &analyzer);
-  void reportUnannotatedInterface(const clang::FunctionDecl &function);
   /// `--dump-analysis`: the memory contexts of `function` and their
   /// summaries.
   void dumpMemoryContexts(const clang::FunctionDecl &function);

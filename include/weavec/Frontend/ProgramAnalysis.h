@@ -81,7 +81,7 @@ public:
     }
   };
 
-  /// `opts.database`, `alreadyReported`, `boundaryOnce`, `silent`,
+  /// `opts.database`, `alreadyReported`, `silent`,
   /// `discoverOnly` and `onResult` are managed by the analysis; the rest
   /// apply to every unit.
   explicit ProgramAnalysis(FrontendOptions opts);
@@ -182,7 +182,6 @@ private:
   /// `weavec --whole-program`: the program facts from what discovery
   /// collected.
   void solveDiscoveredSlots();
-  std::set<std::string> boundaryOnce;
   bool boundedRetention = false;
   std::vector<ProgramUnit *> retainedUnits;
   void touchRetainedUnit(ProgramUnit &unit);

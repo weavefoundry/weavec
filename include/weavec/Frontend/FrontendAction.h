@@ -83,9 +83,6 @@ struct FrontendOptions {
   analysis::AnalysisOptions analysis;
   // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
   std::string analysisStatsPath = {};
-  /// Only analyse declarations in the main file (not in included headers).
-  /// RFC 0030 §5.6 removed `--analyze-headers`, the flag that cleared it.
-  bool mainFileOnly = true;
   /// `-W` overrides applied before a diagnostic reaches Clang.
   DiagnosticControl control;
   // RFC 0030 (S3-C, begin): the configuration the ledger records and the
@@ -108,9 +105,6 @@ struct FrontendOptions {
   /// pass that re-analyses a unit for a sized field the program confirmed
   /// shows only what the field's extent can change).
   const std::set<std::string_view> *onlyIds = nullptr;
-  /// Messages of `annotation-required` reports already made for the
-  /// program, so each boundary is reported once per program. Updated.
-  std::set<std::string> *boundaryOnce = nullptr;
   /// Analyse but report nothing (a fixpoint round).
   bool silent = false;
   /// Collect the unit's definitions, imports and indirect types without

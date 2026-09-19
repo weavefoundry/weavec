@@ -426,6 +426,18 @@ class EvaluationTest(Workspace):
             "outcome": "unresolved", "reason": "dangling-escape"})])], ledger_expected=True))
         self.assertEqual((result["status"], result["class"]), ("fail", "row"))
 
+    def test_not_proven_ignores_a_function_exit_on_the_line(self):
+        # `return p[0];`: the exit's temporal facet is about the boundary (section 9.4),
+        # the access's is what the marker means; an exit alone on the line still counts.
+        case = self.bug_case("BUG: use-after-free // NOT-PROVEN: temporal")
+        exit_row = dict(site(6, temporal={"outcome": "proven"}), kind="call", boundary="exit")
+        access = site(6, temporal={"outcome": "unresolved", "reason": "unknown-callee"})
+        result = rc.evaluate(case, self.evidence(ledgers=[ledger(case.path, [exit_row, access])],
+                                                 ledger_expected=True))
+        self.assertEqual((result["status"], result["class"]), ("pass", "row"), result["failures"])
+        alone = rc.evaluate(case, self.evidence(ledgers=[ledger(case.path, [exit_row])], ledger_expected=True))
+        self.assertTrue(any("NOT-PROVEN temporal: the facet is proven" in f for f in alone["failures"]))
+
     def test_no_emission_uses_checked_facets_and_neutralisation_counts_as_miss(self):
         case = self.case("s/n.c", """
             int main(int argc, char **argv) {

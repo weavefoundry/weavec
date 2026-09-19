@@ -8,9 +8,7 @@
 
 #include "weavec/Analysis/TranslationUnitAnalysis.h"
 
-#include "weavec/Analysis/ClangLocation.h"
 #include "weavec/Analysis/ProgramDatabase.h"
-#include "weavec/Core/Ownership.h"
 #include "weavec/Core/Scc.h"
 
 #include "clang/AST/RecursiveASTVisitor.h"
@@ -20,7 +18,6 @@
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/ScopeExit.h"
-#include "llvm/Support/FormatVariadic.h"
 
 #include <algorithm>
 #include <string>
@@ -381,25 +378,13 @@ void TranslationUnitAnalyzer::run(
   // a context run reports that run's findings, linked to the call.
   store.setUnitSizedFactsInForce(true);
   FunctionAnalyzer authoritative(context, ledger, options);
-  // A function its callers check through contexts got no generic reporting
-  // pass before RFC 0030; the unknown targets of its generic pass are not
-  // `annotation-required` boundaries (stage S3-B3 replaces that warning
-  // with `unresolved(callback)` rows for every function).
-  AnalysisOptions contextOptions = options;
-  contextOptions.deferBoundary = true;
-  FunctionAnalyzer contextChecked(context, ledger, contextOptions);
   for (const FunctionDecl *function : reported) {
     ledger.beginFunction(*function);
-    const std::string symbol = callableSymbol(*function);
-    const bool checkedInContexts = !store.callbackRequests[symbol].empty() ||
-                                   !store.memoryRequests[symbol].empty();
-    (checkedInContexts ? contextChecked : authoritative)
-        .analyze(*function, store, /*emitDiagnostics=*/true,
-                 recursiveFunctions.contains(function->getCanonicalDecl()));
+    authoritative.analyze(
+        *function, store, /*emitDiagnostics=*/true,
+        recursiveFunctions.contains(function->getCanonicalDecl()));
     if (options.dumpStream)
       dumpMemoryContexts(*function);
-    if (options.reportUnannotated)
-      reportUnannotatedInterface(*function);
   }
   for (const FunctionDecl *function : reported)
     reportUnclaimedContexts(*function);
@@ -530,102 +515,6 @@ void TranslationUnitAnalyzer::analyzeComponent(
       silentAnalyses.erase(function.getCanonicalDecl());
     analyzeSilently(function, analyzer, recursive);
   }
-}
-
-static const char *macroFor(core::OwnershipKind kind) {
-  switch (kind) {
-  case core::OwnershipKind::Owned:
-    return "WEAVEC_OWNED";
-  case core::OwnershipKind::Shared:
-    return "WEAVEC_BORROWED";
-  case core::OwnershipKind::Mutable:
-    return "WEAVEC_MUT";
-  case core::OwnershipKind::Raw:
-    return "WEAVEC_RAW";
-  case core::OwnershipKind::Unknown:
-    break;
-  }
-  return nullptr;
-}
-
-void TranslationUnitAnalyzer::reportUnannotatedInterface(
-    const FunctionDecl &function) {
-  // Only the exported surface: a `static` helper's callers are all here and
-  // already checked against its inferred summary, and nobody annotates
-  // `main`.
-  if (!function.isGlobal() || function.isMain() ||
-      getAnnotations(function).unsafe)
-    return;
-  const core::FunctionSummary *summary = store.inferredFor(function);
-  if (summary == nullptr)
-    return;
-
-  const SourceManager &sm = context.getSourceManager();
-  const SignatureAnnotations annotations = collectAnnotations(function);
-  const std::string name = function.getNameAsString();
-
-  for (unsigned i = 0; i < function.getNumParams(); ++i) {
-    const ParmVarDecl *param = function.getParamDecl(i);
-    // A nullness annotation alone says nothing about ownership (RFC 0008).
-    if (!param->getType()->isPointerType() ||
-        (i < annotations.params.size() &&
-         (annotations.params[i].ownership() || annotations.params[i].invalid)))
-      continue;
-    const std::string paramName = param->getNameAsString();
-    const core::SourceLocation at = toCoreLocation(sm, param->getLocation());
-    if (const char *macro = macroFor(summary->inferredKind(i))) {
-      core::Diagnostic diagnostic{
-          .severity = core::Severity::Warning,
-          .id = core::diag::AnnotationRequired,
-          .message = llvm::formatv("pointer parameter '{0}' of '{1}' is "
-                                   "inferred {2}; add the annotation to its "
-                                   "declaration",
-                                   paramName, name, macro)
-                         .str(),
-          .location = at,
-          .notes = {},
-          .fixits = {},
-      };
-      if (!paramName.empty())
-        diagnostic.addFixIt(at, std::string(macro) + " ");
-      ledger.report(std::move(diagnostic), core::Certainty::Possible);
-      continue;
-    }
-    ledger.report(
-        core::Diagnostic{
-            .severity = core::Severity::Warning,
-            .id = core::diag::AnnotationRequired,
-            .message = "pointer parameter '" + paramName +
-                       "' has no inferable ownership; annotate it with "
-                       "WEAVEC_OWNED, WEAVEC_BORROWED or WEAVEC_MUT",
-            .location = at,
-            .notes = {},
-            .fixits = {},
-        },
-        core::Certainty::Possible);
-  }
-
-  if (!function.getReturnType()->isPointerType() ||
-      annotations.result.ownership() || annotations.result.invalid ||
-      annotations.result.unsafe)
-    return;
-  const char *macro = macroFor(summary->inferredReturnKind());
-  if (macro == nullptr)
-    return;
-  const core::SourceLocation at = toCoreLocation(sm, function.getLocation());
-  core::Diagnostic diagnostic{
-      .severity = core::Severity::Warning,
-      .id = core::diag::AnnotationRequired,
-      .message = llvm::formatv("return value of '{0}' is inferred {1}; add "
-                               "the annotation to its declaration",
-                               name, macro)
-                     .str(),
-      .location = at,
-      .notes = {},
-      .fixits = {},
-  };
-  diagnostic.addFixIt(at, std::string(macro) + " ");
-  ledger.report(std::move(diagnostic), core::Certainty::Possible);
 }
 
 } // namespace weavec::analysis

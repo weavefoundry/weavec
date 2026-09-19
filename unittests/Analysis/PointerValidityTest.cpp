@@ -220,11 +220,13 @@ TEST(NullDereference, UncheckedCalleesMayWriteWhatTheyReach) {
     }
   )c");
   ASSERT_TRUE(result.ast);
-  EXPECT_EQ(ids(result.diagnostics),
-            (Strings{"annotation-required", "annotation-required",
-                     "null-dereference"}));
-  EXPECT_EQ(messages(result.diagnostics)[2],
-            "18: dereference of 'p', which is null");
+  // RFC 0030 §5.1: the calls into unknown code report nothing; the value
+  // passed by value keeps its nullness.
+  EXPECT_EQ(messages(result.diagnostics),
+            (Strings{"18: dereference of 'p', which is null"}));
+  EXPECT_EQ(
+      test::unknownCalls(result),
+      (Strings{"7: fill(&lc)", "12: fill((structlc*)&p)", "17: look(p)"}));
 }
 
 TEST(NullDereference, UnknownPointersAreTrusted) {
@@ -237,8 +239,9 @@ TEST(NullDereference, UnknownPointersAreTrusted) {
     int external(void) { return lookup(1)->v; }
   )c");
   ASSERT_TRUE(result.ast);
-  EXPECT_EQ(ids(result.diagnostics), (Strings{"annotation-required"}))
-      << "only the RFC 0003 boundary warning";
+  EXPECT_TRUE(result.diagnostics.empty()) << messages(result.diagnostics)[0];
+  // RFC 0030 §5.1: the call to `lookup` is into unknown code.
+  EXPECT_EQ(test::unknownCalls(result), (Strings{"5: lookup(1)"}));
 }
 
 TEST(NullDereference, DereferencesBecomeRequirements) {
@@ -478,10 +481,10 @@ TEST(NullDereference, NullableAnnotation) {
 
 TEST(NullDereference, AnnotationsOnUncheckedCallees) {
   // RFC 0008, *Annotation surface*: neither annotation says anything about
-  // ownership, so an otherwise unannotated declaration is still a boundary
-  // (RFC 0003), but what they do say holds. RFC 0030 §3.2: a result that
-  // may be null is a checked facet; a null argument where the declaration
-  // requires non-null is definite.
+  // ownership, so an otherwise unannotated declaration is still an unknown
+  // callee (RFC 0030 §5.1), but what they do say holds. RFC 0030 §3.2: a
+  // result that may be null is a checked facet; a null argument where the
+  // declaration requires non-null is definite.
   const auto result = analyze(std::string(Types) + R"c(
     char *NULLABLE lookup(int k);
     void need(struct node *NONNULL n);
@@ -489,11 +492,11 @@ TEST(NullDereference, AnnotationsOnUncheckedCallees) {
     void argument(void) { need(NULL); }
   )c");
   ASSERT_TRUE(result.ast);
-  EXPECT_EQ(ids(result.diagnostics),
-            (Strings{"annotation-required", "annotation-required",
-                     "null-dereference"}));
-  EXPECT_EQ(messages(result.diagnostics)[2],
-            "5: a null pointer is passed to 'need', which dereferences it");
+  EXPECT_EQ(messages(result.diagnostics),
+            (Strings{"5: a null pointer is passed to 'need', which "
+                     "dereferences it"}));
+  EXPECT_EQ(test::unknownCalls(result),
+            (Strings{"4: lookup(1)", "5: need(NULL)"}));
 }
 
 TEST(NullDereference, NonNullAnnotation) {

@@ -207,7 +207,6 @@ bool FunctionDataflow::handleMemoryCopy(const CallExpr &call,
 
   checkRequiredArguments(call, *effects.summary, state);
   checkRequiredExtents(call, *effects.summary, state);
-  doMutationCheck(dest->place, call, state);
   checkAnnotationOnWrite(*dest, call, state);
   recordAccess(source->place, false, state);
   recordAccess(dest->place, true, state);

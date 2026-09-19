@@ -519,12 +519,12 @@ void caller(void) { char *p = malloc(4); if (!p) return; two(p, p); }
             (Lines{"2: error: use of 'b' after it was freed [freed here "
                    "(through 'a')] [called here with related pointer "
                    "arguments]"}));
-  // The callee's own site is decided by its generic pass (RFC 0030 §3.1:
-  // `may-alias-released` there is stage S3-B3's); the context's finding is
-  // the call's.
+  // The callee's own site is decided by its generic pass: `b` may alias the
+  // released `a` (RFC 0030 §3.1, `may-alias-released`); the context's
+  // finding is the call's.
   EXPECT_EQ(outcomes(piped.ledger, "two")[1],
             "b[0] spatial=unresolved/unknown-extent null=checked "
-            "temporal=proven");
+            "temporal=unresolved/may-alias-released");
   EXPECT_EQ(outcomes(piped.ledger, "caller")[2], "two(p,p) temporal=violation");
   ASSERT_EQ(piped.ledger.diagnostics.size(), 1U);
   EXPECT_EQ(piped.ledger.diagnostics[0].function, "caller");

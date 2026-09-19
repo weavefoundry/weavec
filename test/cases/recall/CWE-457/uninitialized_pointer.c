@@ -11,7 +11,7 @@ void bad_on_path(int flag) {
   char *data;
   if (flag)
     data = buf;
-  print_line(data); // BUG: use-of-uninitialized
+  print_line(data); // BUG: use-of-uninitialized // NEUTRALISED: zero-init
 }
 
 void good(int flag) {
@@ -25,6 +25,9 @@ void good(int flag) {
 }
 
 // bad_on_path only passes the pointer on; zero-initialisation makes that harmless, so no run executes it.
+// `data` is uninitialised there only when `flag` is zero, and RFC 0030 gives a pointer that is not
+// definitely uninitialised no diagnostic (section 3.1): zero-initialisation (section 11) makes it null
+// on that path, and handing a null pointer on is defined, so the pin is neutralised.
 // Driver (RFC 0030 section 17.2): executes the defect so the runtime oracle can observe the check.
 void print_line(const char *s) { (void)s; }
 int main(void) {

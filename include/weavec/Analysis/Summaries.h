@@ -243,6 +243,19 @@ public:
   [[nodiscard]] core::CallTargets
   targetsForGlobal(const core::SummaryPath &path) const;
   std::set<const clang::FunctionDecl *> incompleteFunctions;
+  /// RFC 0030 §3.1, §9.4: the owning slots of the unit (fields and globals
+  /// some function releases a value loaded from), computed on first use by
+  /// `FunctionDataflow`.
+  std::optional<llvm::DenseSet<const clang::Decl *>> owningSlots;
+  /// RFC 0030 §5.5: the block transfers the context-specialised runs of each
+  /// function have spent, against their shared budget.
+  std::map<const clang::FunctionDecl *, std::uint64_t> contextTransfers;
+  /// §5.5: the budget left to one more context run of `definition`, or
+  /// nothing once the runs so far have exhausted it (further contexts use
+  /// the default-context summary).
+  [[nodiscard]] std::optional<std::uint64_t>
+  contextBudget(const clang::FunctionDecl &definition,
+                const AnalysisOptions &options) const;
   /// RFC 0029: the final pass of a settled recursive component rechecks
   /// ordinary value outcomes against its converged may-effects.
   bool refreshingRecursiveValueOutcomes = false;

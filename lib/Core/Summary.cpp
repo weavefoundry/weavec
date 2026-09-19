@@ -98,6 +98,7 @@ void PlaceEffect::join(const PlaceEffect &other) {
   freed = freed || other.freed;
   moved = moved || other.moved;
   escaped = escaped || other.escaped;
+  unknown = unknown || other.unknown;
   if (!other.consumed())
     return;
   if (!wasConsumed) {

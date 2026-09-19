@@ -109,7 +109,7 @@ cl::opt<weavec::core::RequireLevel> requireLevel(
 cl::opt<std::uint64_t>
     budget("budget",
            cl::desc("Block transfers per function before its analysis stops "
-                    "(0: unlimited)"),
+                    "(default: 50000; 0: unlimited)"),
            cl::init(weavec::core::DefaultBudget), cl::cat(weavecCategory));
 
 cl::opt<bool> noZeroInit("no-zero-init",
@@ -527,6 +527,8 @@ int main(int argc, const char **argv) {
   options.analysisStatsPath = analysisStatsPath.getValue();
   if (dumpAnalysis)
     options.analysis.dumpStream = &llvm::outs();
+  options.analysis.zeroInit = !noZeroInit;
+  options.analysis.budget = budget;
   options.control = control;
   // §16: the ledger models a `weavec-cc` build with the default checks, and
   // the summary line, always printed, says they are not enforced.

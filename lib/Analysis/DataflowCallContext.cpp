@@ -208,7 +208,9 @@ FunctionDataflow::captureCallContext(const CallExpr &call,
   bool unresolved = false;
   bool unrepresentable = false;
   core::CallContext result;
-  result.reportDiagnostics = !inUnsafe && memoryContext.reportDiagnostics;
+  // RFC 0030 §6.1: a call inside an unsafe region reports its context
+  // run's findings like any other.
+  result.reportDiagnostics = memoryContext.reportDiagnostics;
   for (const auto &path : footprint) {
     QualType type;
     const Expr *arg = nullptr;

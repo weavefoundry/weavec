@@ -219,7 +219,6 @@ bool FunctionDataflow::handleArrayCopy(const CallExpr &call,
     return false;
   checkRequiredArguments(call, *effects.summary, state);
   checkRequiredExtents(call, *effects.summary, state);
-  doMutationCheck(dest->storage, call, state);
   arrayTypes[source->storage] = source->element;
   arrayTypes[dest->storage] = dest->element;
   std::vector<std::pair<core::PlaceId, core::PlaceId>> cells;

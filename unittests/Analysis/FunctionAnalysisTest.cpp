@@ -113,7 +113,9 @@ TEST(FunctionAnalyzer, BranchesAreJoinedConservatively) {
       std::vector<std::string>{"8: use of 'p' after it may have been freed"});
 }
 
-TEST(FunctionAnalyzer, UnsafeFunctionIsSkipped) {
+TEST(FunctionAnalyzer, UnsafeFunctionReportsTemporalViolations) {
+  // RFC 0030 §6.1: temporal state is tracked inside an unsafe region exactly
+  // as outside it, and a definite violation is still an error.
   const auto result = analyze(R"c(
     __attribute__((annotate("weavec.unsafe")))
     void f(int *p) {
@@ -122,10 +124,12 @@ TEST(FunctionAnalyzer, UnsafeFunctionIsSkipped) {
     }
   )c");
   ASSERT_TRUE(result.ast);
-  EXPECT_TRUE(result.diagnostics.empty());
+  EXPECT_EQ(messages(result.diagnostics), Strings{"5: 'p' is freed twice"});
+  EXPECT_EQ(result.diagnostics.diagnostics()[0].severity,
+            core::Severity::Error);
 }
 
-TEST(FunctionAnalyzer, UnsafeBlockIsSkipped) {
+TEST(FunctionAnalyzer, UnsafeBlockReportsTemporalViolations) {
   const auto result = analyze(R"c(
     void f(int *p) {
       free(p);
@@ -135,12 +139,13 @@ TEST(FunctionAnalyzer, UnsafeBlockIsSkipped) {
     }
   )c");
   ASSERT_TRUE(result.ast);
-  EXPECT_TRUE(result.diagnostics.empty());
+  EXPECT_EQ(messages(result.diagnostics),
+            Strings{"5: use of 'p' after it was freed"});
 }
 
 TEST(FunctionAnalyzer, UnsafeBlockEffectsEscape) {
-  // RFC 0004, "Unsafe regions": the block is analysed but not reported, so
-  // a free inside it is checked against the uses after it.
+  // RFC 0004, "Unsafe regions": the block is analysed, so a free inside it
+  // is checked against the uses after it.
   const auto result = analyze(R"c(
     void f(int *p) {
       __attribute__((annotate("weavec.unsafe"))) {
@@ -154,22 +159,29 @@ TEST(FunctionAnalyzer, UnsafeBlockEffectsEscape) {
             Strings{"6: use of 'p' after it was freed"});
 }
 
-TEST(FunctionAnalyzer, UnsafeBlockSuppressesReportsInside) {
+TEST(FunctionAnalyzer, UnsafeRegionsDropNoDiagnostic) {
+  // RFC 0030 §6.1: the `inUnsafe` suppression is gone; a possible finding
+  // inside a region is reported as outside it, with "may" wording.
   const auto result = analyze(R"c(
-    void f(int *p) {
-      free(p);
+    void f(int *p, int c) {
+      if (c) free(p);
       __attribute__((annotate("weavec.unsafe"))) {
         use(p);
-        free(p);
       }
     }
     __attribute__((annotate("weavec.unsafe"))) void g(int *p) {
       free(p);
-      free(p);
+      use(p);
     }
   )c");
   ASSERT_TRUE(result.ast);
-  EXPECT_TRUE(result.diagnostics.empty()) << messages(result.diagnostics)[0];
+  EXPECT_EQ(messages(result.diagnostics),
+            (Strings{"5: use of 'p' after it may have been freed",
+                     "10: use of 'p' after it was freed"}));
+  EXPECT_EQ(result.diagnostics.diagnostics()[0].severity,
+            core::Severity::Warning);
+  EXPECT_EQ(result.diagnostics.diagnostics()[1].severity,
+            core::Severity::Error);
 }
 
 TEST(FunctionAnalyzer, DeclarationsAndBodylessFunctionsAreIgnored) {
@@ -194,24 +206,14 @@ TEST(FunctionAnalyzer, ReportsInvalidAnnotation) {
             core::Severity::Warning);
 }
 
-TEST(FunctionAnalyzer, ReportUnannotatedIsOptIn) {
-  const char *code = R"c(
+TEST(FunctionAnalyzer, UnannotatedParametersAreNotReported) {
+  // RFC 0030 removed `--report-unannotated` and `annotation-required`: an
+  // unannotated interface is reported by nothing.
+  const auto result = analyze(R"c(
     void f(int *p, int n, int *__attribute__((annotate("weavec.borrowed"))) q) {}
-  )c";
-
-  const auto quiet = analyze(code);
-  ASSERT_TRUE(quiet.ast);
-  EXPECT_TRUE(quiet.diagnostics.empty());
-
-  AnalysisOptions options;
-  options.reportUnannotated = true;
-  const auto loud = analyze(code, options);
-  ASSERT_TRUE(loud.ast);
-  ASSERT_EQ(loud.diagnostics.size(), 1U) << "only the unannotated pointer";
-  EXPECT_EQ(loud.diagnostics.diagnostics()[0].id,
-            core::diag::AnnotationRequired);
-  EXPECT_NE(loud.diagnostics.diagnostics()[0].message.find("'p'"),
-            std::string::npos);
+  )c");
+  ASSERT_TRUE(result.ast);
+  EXPECT_TRUE(result.diagnostics.empty());
 }
 
 TEST(FunctionAnalyzer, DumpStreamDescribesEveryFunction) {

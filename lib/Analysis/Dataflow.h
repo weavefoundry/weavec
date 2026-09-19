@@ -79,6 +79,14 @@ public:
   core::CallContext memoryContext;
   bool validMemoryContext = true;
 
+  /// RFC 0030 §5.5: the CFG blocks `run` transferred, fixpoint and final
+  /// pass together, and whether it stopped over its budget (or without a
+  /// fixpoint).
+  [[nodiscard]] std::uint64_t transfers() const noexcept {
+    return blockTransfers;
+  }
+  [[nodiscard]] bool overBudget() const noexcept { return convergenceFailed; }
+
   /// The summary inferred by `run` (RFC 0003, *Deriving a summary*).
   [[nodiscard]] const core::FunctionSummary &summary() const & noexcept {
     return inferred;
@@ -460,7 +468,8 @@ private:
   /// The whole body is an unsafe region (`WEAVEC_UNSAFE` on the function).
   bool unsafeBody;
   /// The CFG element being transferred lies in an unsafe region: raw
-  /// operations are permitted and nothing is reported.
+  /// operations are permitted (RFC 0004), and a dereference there is
+  /// trusted and refines nothing (RFC 0030 §6.1).
   bool inUnsafe;
   /// Ownership annotations on local variables, consumed for the assertion
   /// rule (RFC 0004, *Laundering*).
@@ -581,9 +590,15 @@ private:
   /// 0009, *Inferred `noreturn`*): the rest of the block is dead and its
   /// state reaches no successor.
   bool blockTerminated = false;
-  /// Some block hit `MaxVisitsPerBlock`: the exit state is not a fixpoint,
-  /// so an unreachable exit proves nothing about termination.
+  /// RFC 0030 §5.5: the run went over its budget of block transfers, or some
+  /// block hit `MaxVisitsPerBlock` (no fixpoint): it stopped, and the
+  /// function takes the defaults.
   bool convergenceFailed = false;
+  /// RFC 0030 §5.5: the block transfers so far.
+  std::uint64_t blockTransfers = 0;
+  /// §5.5: the defaults and the unknown-callee summary of a function over
+  /// its budget.
+  void finishOverBudget();
   /// The edge being applied contradicts a must-fact of the state (`if (c)`
   /// with `c` known zero): no real path takes it, so its state reaches
   /// nobody and nothing dies on it (RFC 0009, *Scalar facts in the state*).
@@ -1059,8 +1074,6 @@ private:
             core::PlaceGuard guard = {}, bool share = false,
             const core::PointerOffset &offset = {},
             core::MoveOrigin origin = {});
-  void doMutationCheck(core::PlaceId place, const clang::Expr &at,
-                       core::AnalysisState &state);
   /// The variable `place` names (if it is a base place) was assigned or had
   /// its address taken: element witnesses on it are no longer reliable
   /// (RFC 0006, *Element witnesses*).
@@ -1078,8 +1091,8 @@ private:
   void applyBorrow(core::PlaceId dest, const PlaceRef &borrowed,
                    core::BorrowKind kind, const clang::Expr &at,
                    core::AnalysisState &state);
-  /// The loan part of `applyBorrow`: the exclusivity check (opt-in) and the
-  /// loans on `target` (and its mirrors) held by `dest` (and its mirrors).
+  /// The loan part of `applyBorrow`: the loans on `target` (and its mirrors)
+  /// held by `dest` (and its mirrors).
   /// Also what a derived copy `&p->f` gives its holder on `(*p).f` (RFC
   /// 0011, *Derived pointers*).
   void lend(core::PlaceId dest, core::PlaceId target, core::BorrowKind kind,
@@ -1088,9 +1101,6 @@ private:
   /// True if `holder` is a plain local whose loans liveness retires (RFC
   /// 0006): not address-taken, not memory behind a pointer, not a global.
   [[nodiscard]] bool isLivenessTracked(core::PlaceId holder) const;
-  void checkTemporaryBorrow(const PlaceRef &borrowed, core::BorrowKind kind,
-                            const clang::Expr &at,
-                            const core::AnalysisState &state);
   /// Forgets every fact about `place` and the places below it. With a
   /// non-whole `element`, a move record of another element of `place`
   /// survives (an element write does not reinitialise its neighbours).
@@ -1175,14 +1185,102 @@ private:
       const std::vector<
           std::pair<core::SummaryPath, std::vector<core::PlaceId>>>
           &consumedTargets);
-  /// Handles a call across the checking boundary (no summary): the RFC 0003
-  /// warning by default, a raw operation under `--strict-externs` (RFC
-  /// 0004, *Boundaries*).
+
+  // -- Code WeaveC cannot see (RFC 0030 §5; DataflowUnknown.cpp) ------------
+
+  /// The declared type of `place`: its variable's or field's, or what its
+  /// parent points to or holds; none when the builder cannot name it.
+  [[nodiscard]] std::optional<clang::QualType>
+  placeType(core::PlaceId place) const;
+  /// Whether `place` holds a pointer, from its declaration; unknown for a
+  /// place whose type the builder cannot name.
+  [[nodiscard]] std::optional<bool> holdsPointer(core::PlaceId place) const;
+  /// §3.1, §9.4: `place` is a field or global some function of the unit
+  /// releases a value loaded from.
+  [[nodiscard]] bool isOwningPlace(core::PlaceId place);
+  /// §3.1: the key of the type `pointer` points to, for the effective-type
+  /// rule (`AnalysisState::AnyType` for a character, `void` or unknown one).
+  [[nodiscard]] std::uint64_t pointeeTypeKey(core::PlaceId pointer) const;
+  /// §3.1: the object `released` points to was released on this path.
+  void noteRelease(core::PlaceId released, core::AnalysisState &state);
+  /// §3.1, *Aliases of a released object*: an access through `pointer`,
+  /// which has no move record, may reach an object released earlier on some
+  /// path: `pointer` comes from a parameter- or global-rooted place and is
+  /// not provably distinct from every object released so far.
+  [[nodiscard]] bool mayAliasReleased(core::PlaceId pointer,
+                                      const core::AnalysisState &state);
+  /// §3.1: a value of `origin` stored now is not a released object: it is
+  /// not a copy of a value older than the last release.
+  [[nodiscard]] bool storedSinceRelease(const ValueOrigin &origin,
+                                        const core::AnalysisState &state);
+  /// §5.1: `place` and every name holding the same value get a release
+  /// record of unknown origin, unless they have a record. `reached`: the
+  /// callee reached the place through a pointee, so an uninitialised record
+  /// gives way (the callee may have written it).
+  void markUnknown(core::PlaceId place, const core::SourceLocation &here,
+                   bool reached, core::AnalysisState &state);
+  /// §5.1: nothing known about `object` and what lies below it holds: its
+  /// nullness, extents, scalar facts and call targets.
+  void forgetReachableFacts(core::PlaceId object, core::AnalysisState &state);
+  /// §5.1: the places one call's unknown effects mark and the objects whose
+  /// facts they forget, collected while `unknownBatch` is set and applied
+  /// once by `flushUnknown`: marking first (the mirrors of a subtree are
+  /// shared), then one forgetting pass over the outermost objects.
+  struct UnknownBatch {
+    std::vector<std::pair<core::PlaceId, bool>> marks;
+    std::vector<core::PlaceId> objects;
+  };
+  UnknownBatch *unknownBatch = nullptr;
+  void flushUnknown(UnknownBatch &batch, const core::SourceLocation &here,
+                    core::AnalysisState &state);
+  /// `forgetReachableFacts` for the places `reached` (an object and what
+  /// lies below it), with one scan of the guards.
+  void forgetFactsOf(std::vector<core::PlaceId> reached,
+                     core::AnalysisState &state);
+  /// §5.1: the unknown-callee default for one pointer handed to unknown
+  /// code: its holders get unknown-origin release records, and through a
+  /// pointee that is not `readOnly`, so does every pointer cached there and
+  /// the facts there are gone. The value's own nullness and extent stay.
+  void applyUnknownToValue(const ValueOrigin &value, bool readOnly,
+                           const core::SourceLocation &here,
+                           core::AnalysisState &state);
+  /// §5.1: every escaped place and every pointer global the unknown code
+  /// can reach.
+  void applyUnknownToReachable(const core::SourceLocation &here,
+                               core::AnalysisState &state);
+  /// §5.1: the Call site's temporal facet `unresolved(unknown-callee)`, with
+  /// the suggestion for the first argument `uncovered` by a contract.
+  void decideUnknownCall(const clang::CallExpr &call,
+                         std::optional<unsigned> uncovered);
+  /// §5.1: a direct callee with no body, program summary, table entry, and
+  /// not declared in a platform header.
+  [[nodiscard]] bool isExternCallee(const clang::FunctionDecl &callee) const;
+  /// §5.1, §5.5, after a known summary is applied: its `unknown` effects,
+  /// the default for the pointer parameters of an external callee without
+  /// an ownership contract (else `trusted(extern-contract)`), and an
+  /// incomplete summary's may-effects on every argument.
+  void applyUnknownEffects(const clang::CallExpr &call,
+                           const CallEffects &effects,
+                           core::AnalysisState &state);
+  /// §5.1: the code the unknown-callee default being applied stands for
+  /// (the callee's name, `inline assembly`), which its records keep.
+  std::string unknownCode;
+  /// `calleeName` without its quotes.
+  [[nodiscard]] std::string unquotedCalleeName(const clang::CallExpr &call);
+  /// §5.7: an `asm` statement's pointer operands get the unknown-callee
+  /// default, and a `"memory"` clobber reaches every escaped place and
+  /// reachable global.
+  void handleAsm(const clang::GCCAsmStmt &stmt, core::AnalysisState &state);
+  /// RFC 0030 §6.2: when `call` is `WEAVEC_ASSUME(e)`, decides its assertion
+  /// facet (proven when the facts refute `!e`; a violation, the
+  /// `contradicted-assumption` error, when they refute `e`; checked
+  /// otherwise) and assumes `e` from here on. False for any other call.
+  bool handleAssumption(const clang::CallExpr &call,
+                        core::AnalysisState &state);
+  /// Handles a call across the checking boundary (no summary): §5.2 for a
+  /// platform function, else the unknown-callee default (§5.1).
   void handleUncheckedCall(const clang::CallExpr &call,
                            core::AnalysisState &state);
-  /// Reports `annotation-required` the first time an unresolvable callee
-  /// with pointer parameters or result is called from reported code.
-  void noteUnknownCallee(const clang::CallExpr &call);
   /// True if `call` has a pointer argument or result worth reporting on.
   [[nodiscard]] static bool callInvolvesPointers(const clang::CallExpr &call);
   /// `'free'`, `'o.drop'`, or `a function pointer`, for messages.
@@ -1697,6 +1795,13 @@ private:
   [[nodiscard]] MirrorPlaces mirrors(core::PlaceId place,
                                      const core::AnalysisState &state,
                                      bool definite = false);
+  [[nodiscard]] MirrorPlaces computeMirrors(core::PlaceId place,
+                                            const core::AnalysisState &state,
+                                            bool definite);
+  /// RFC 0030 §5.1: while the unknown-callee default marks the places of a
+  /// subtree, which changes no alias, the (non-definite) mirrors of each
+  /// place, shared by its descendants.
+  llvm::DenseMap<std::uint32_t, MirrorPlaces> *mirrorCache = nullptr;
   [[nodiscard]] MirrorPlaces scalarMirrors(core::PlaceId place,
                                            const core::AnalysisState &state);
 
@@ -1874,6 +1979,12 @@ private:
   libraryValue(const core::LibTerm &term, const clang::CallExpr &call,
                const core::LibraryMatch &match,
                const core::AnalysisState &state);
+  /// §8.3: the `null-if-zero` length of call argument `argument` is a
+  /// non-zero constant here, so the argument's `nonnull_n` check refines it.
+  [[nodiscard]] bool lengthKnownNonZero(const clang::CallExpr &call,
+                                        const SiteInfo &site,
+                                        std::uint32_t argument,
+                                        const core::AnalysisState &state);
   /// Per pointer operand (stripped of transparent casts), the sites of this
   /// function it is the operand of; built on first use.
   llvm::DenseMap<const clang::Expr *, llvm::SmallVector<const SiteInfo *, 1>>
@@ -1908,6 +2019,9 @@ private:
                          const core::SourceLocation &at, bool returned,
                          core::Certainty certainty = core::Certainty::Definite,
                          const SiteInfo *site = nullptr);
+  /// The summary side of a dangling holder: a caller-visible holder's value
+  /// is `unknown` to callers.
+  void noteDanglingHolder(core::PlaceId holder);
   [[nodiscard]] std::string nameOf(core::PlaceId place) const;
   [[nodiscard]] std::string summaryName(const core::SummaryPath &path) const;
   [[nodiscard]] core::Diagnostic makeError(std::string_view id,

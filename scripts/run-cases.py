@@ -731,6 +731,7 @@ class Row:
     kind: str
     text: str
     facets: dict  # facet -> the JSON object of section 12.1
+    boundary: str = ""  # "call" or "exit" for Call sites
 
 
 def ledger_rows(ledger: dict) -> list[Row]:
@@ -750,7 +751,8 @@ def ledger_rows(ledger: dict) -> list[Row]:
             for site in function.get("sites") or []:
                 rows.append(Row(where(site.get("file")) or function_file, int(site.get("line", 0)),
                                 int(site.get("column", 0)), str(site.get("kind", "")),
-                                str(site.get("text", "")), dict(site.get("facets") or {})))
+                                str(site.get("text", "")), dict(site.get("facets") or {}),
+                                str(site.get("boundary") or "")))
     return rows
 
 
@@ -979,7 +981,10 @@ def evaluate(case: Case, ev: Evidence) -> dict:
         here = index["rows"].get(at, [])
         if marker.kind == "NOT-PROVEN":
             facet = marker.value
-            outcomes = [rec.get("outcome") for r in here for rec in facet_records(r, facet)[:1]]
+            # A function exit on the line (`return p[0];`) is a boundary (section 9.4), not
+            # the operation the marker is about, unless it is the only row there.
+            accesses = [r for r in here if r.boundary != "exit" and facet_records(r, facet)]
+            outcomes = [rec.get("outcome") for r in (accesses or here) for rec in facet_records(r, facet)[:1]]
             ok = bool(outcomes) and "proven" not in outcomes
             if not ok and ledger_available:
                 failures.append(f"{loc(marker)}: NOT-PROVEN {facet}: " + (

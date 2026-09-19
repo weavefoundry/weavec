@@ -116,13 +116,20 @@ UnitResult analyzeTranslationUnit(clang::ASTContext &context,
   UnitResult result;
   analysis::UnitPipelineOptions pipeline;
   pipeline.engine.analysis = options.analysis;
+  // RFC 0030 §5.5: the budget the ledger records is the one the engine
+  // counts against.
+  pipeline.engine.budget = options.config.budget;
+  pipeline.engine.zeroInit = options.analysis.zeroInit;
+  pipeline.engine.strictAliasing = options.analysis.strictAliasing;
   if (options.silent)
     pipeline.engine.analysis.dumpStream = nullptr;
-  const clang::SourceManager &sm = context.getSourceManager();
-  pipeline.engine.shouldReport = [&](const clang::FunctionDecl &function) {
-    return !options.silent &&
-           (!options.mainFileOnly || sm.isInMainFile(function.getLocation()));
-  };
+  // RFC 0030 §5.6: every emitted function is analysed and reported, those
+  // of user headers included (the engine asks the unit's sites); a silent
+  // round reports nothing.
+  if (options.silent)
+    pipeline.engine.shouldReport = [](const clang::FunctionDecl &) {
+      return false;
+    };
   if (options.database != nullptr)
     pipeline.engine.dependencies = &result.dependencies;
   pipeline.database = options.database;
@@ -168,7 +175,7 @@ UnitResult analyzeTranslationUnit(clang::ASTContext &context,
 
   ClangDiagnosticSink clangSink(diagnostics);
   FilteringSink sink(clangSink, options.control, options.alreadyReported,
-                     options.boundaryOnce, options.onlyIds);
+                     options.onlyIds);
   if (!options.silent)
     for (const auto &diagnostic : collected.diagnostics())
       sink.report(diagnostic);
@@ -262,6 +269,10 @@ public:
       : compiler(compiler), options(std::move(opts)) {
     if (options.analysis.stats)
       options.analysis.stats->add("unit_parses");
+    // RFC 0030 §3.1: under `-fno-strict-aliasing` any two pointee types may
+    // designate one object.
+    options.analysis.strictAliasing =
+        !compiler.getCodeGenOpts().RelaxedAliasing;
   }
   void HandleTranslationUnit(clang::ASTContext &context) override {
     auto result =

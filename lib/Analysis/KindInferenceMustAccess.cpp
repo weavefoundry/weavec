@@ -66,36 +66,6 @@ KindInferenceState::cfgOf(const clang::FunctionDecl &function) const {
 // -- Known to return (§7.5)
 // ----------------------------------------------------
 
-/// §5.2: `function` is declared in a C library, POSIX or platform header, or
-/// in the toolchain's own headers.
-static bool platformDeclaration(const clang::FunctionDecl &function,
-                                const core::LibrarySpec &library,
-                                const clang::SourceManager &sm) {
-  const clang::SourceLocation location =
-      sm.getExpansionLoc(function.getCanonicalDecl()->getLocation());
-  if (!sm.isInSystemHeader(location))
-    return false;
-  const llvm::StringRef path = sm.getFilename(location);
-  if (path.empty())
-    return false;
-  if (path.contains("/lib/clang/"))
-    return true;
-  const bool darwinSdk = path.contains(".sdk/");
-  // The include directory that found the header is not known here: every
-  // suffix of the path is a candidate name.
-  llvm::StringRef rest = path;
-  while (!rest.empty()) {
-    if (library.isPlatformHeader(std::string_view(rest.data(), rest.size()),
-                                 darwinSdk))
-      return true;
-    const std::size_t slash = rest.find('/');
-    if (slash == llvm::StringRef::npos)
-      break;
-    rest = rest.drop_front(slash + 1);
-  }
-  return false;
-}
-
 /// Known to return without looking at the unit's own definitions: none for
 /// a call to a function the unit defines.
 static std::optional<bool> returnsOutsideUnit(const clang::CallExpr &call,
@@ -112,7 +82,7 @@ static std::optional<bool> returnsOutsideUnit(const clang::CallExpr &call,
     return std::nullopt;
   if (callee->getBuiltinID() != 0)
     return true;
-  return platformDeclaration(*callee, library, sm);
+  return isPlatformDeclaration(*callee, library, sm);
 }
 
 bool KindInferenceState::alwaysReturns(

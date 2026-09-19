@@ -65,7 +65,6 @@ ProgramAnalysis::runUnit(ProgramUnit &unit, const FrontendOptions &overrides) {
   run.silent = overrides.silent;
   run.discoverOnly = overrides.discoverOnly;
   run.collectInterface = overrides.collectInterface;
-  run.boundaryOnce = &boundaryOnce;
   if (run.silent)
     run.analysis.dumpStream = nullptr;
 
@@ -485,7 +484,6 @@ ProgramAnalysis::Result ProgramAnalysis::run() {
   Result result;
   settled.clear();
   settled.programFacts = programFacts;
-  boundaryOnce.clear();
   boundedRetention = false;
   retainedUnits.clear();
   for (const analysis::UnitExports &exports : fixed)

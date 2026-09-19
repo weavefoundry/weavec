@@ -653,14 +653,12 @@ TEST(Dataflow, ReallocIntoAliasSeparatesIt) {
 
 // -- Borrows ------------------------------------------------------------------
 //
-// Exclusivity between borrows (two mutable, shared then mutable, a write
-// while borrowed) is RFC 0001's rule and is opt-in under
-// `AnalysisOptions::exclusiveBorrows` (RFC 0006, *Conflict rules*); the
-// default only rejects freeing or moving a borrowed object.
+// Only freeing or moving a borrowed object conflicts with a loan (RFC 0006,
+// *Conflict rules*); RFC 0030 removed `--exclusive-borrows`, the opt-in to
+// RFC 0001's full exclusivity (two mutable borrows, shared then mutable, a
+// write while borrowed).
 
-const analysis::AnalysisOptions Exclusive{.exclusiveBorrows = true};
-
-TEST(Dataflow, TwoMutableBorrowsConflict) {
+TEST(Dataflow, TwoMutableBorrowsCoexist) {
   const std::string code = R"c(
     void f(void) {
       int x = 0;
@@ -672,16 +670,6 @@ TEST(Dataflow, TwoMutableBorrowsConflict) {
   const auto lenient = analyze(code);
   ASSERT_TRUE(lenient.ast);
   EXPECT_TRUE(lenient.diagnostics.empty());
-
-  const auto result = analyze(code, Exclusive);
-  ASSERT_TRUE(result.ast);
-  EXPECT_EQ(ids(result.diagnostics),
-            (Strings{std::string(core::diag::ConflictingBorrow)}));
-  EXPECT_EQ(messages(result.diagnostics),
-            (Strings{"5: cannot borrow 'x' as mutable because it is already "
-                     "borrowed"}));
-  EXPECT_EQ(notes(result.diagnostics),
-            (Strings{"previous borrow of 'x' by 'a' here"}));
 }
 
 TEST(Dataflow, SharedBorrowsCoexist) {
@@ -697,7 +685,7 @@ TEST(Dataflow, SharedBorrowsCoexist) {
   EXPECT_TRUE(result.diagnostics.empty());
 }
 
-TEST(Dataflow, SharedThenMutableConflicts) {
+TEST(Dataflow, SharedThenMutableCoexist) {
   const std::string code = R"c(
     void f(void) {
       int x = 0;
@@ -707,14 +695,9 @@ TEST(Dataflow, SharedThenMutableConflicts) {
     }
   )c";
   EXPECT_TRUE(analyze(code).diagnostics.empty());
-  const auto result = analyze(code, Exclusive);
-  ASSERT_TRUE(result.ast);
-  EXPECT_EQ(messages(result.diagnostics),
-            (Strings{"5: cannot borrow 'x' as mutable because it is already "
-                     "borrowed"}));
 }
 
-TEST(Dataflow, MutableThenSharedConflicts) {
+TEST(Dataflow, MutableThenSharedCoexist) {
   const std::string code = R"c(
     void f(void) {
       int x = 0;
@@ -724,14 +707,9 @@ TEST(Dataflow, MutableThenSharedConflicts) {
     }
   )c";
   EXPECT_TRUE(analyze(code).diagnostics.empty());
-  const auto result = analyze(code, Exclusive);
-  ASSERT_TRUE(result.ast);
-  EXPECT_EQ(messages(result.diagnostics),
-            (Strings{"5: cannot borrow 'x' as shared because it is already "
-                     "mutably borrowed"}));
 }
 
-TEST(Dataflow, WritingABorrowedObjectConflicts) {
+TEST(Dataflow, WritingABorrowedObjectIsAllowed) {
   const std::string code = R"c(
     void f(void) {
       int x = 0;
@@ -741,11 +719,6 @@ TEST(Dataflow, WritingABorrowedObjectConflicts) {
     }
   )c";
   EXPECT_TRUE(analyze(code).diagnostics.empty());
-  const auto result = analyze(code, Exclusive);
-  ASSERT_TRUE(result.ast);
-  EXPECT_EQ(messages(result.diagnostics),
-            (Strings{"5: cannot assign to 'x' while it is borrowed"}));
-  EXPECT_EQ(notes(result.diagnostics), (Strings{"borrowed by 'a' here"}));
 }
 
 TEST(Dataflow, MutationWhileViewedIsTheDefaultIdiom) {
@@ -866,11 +839,6 @@ TEST(Dataflow, TemporaryBorrowsForAnnotatedArguments) {
     }
   )c";
   EXPECT_TRUE(analyze(code).diagnostics.empty());
-  const auto result = analyze(code, Exclusive);
-  ASSERT_TRUE(result.ast);
-  EXPECT_EQ(messages(result.diagnostics),
-            (Strings{"7: cannot borrow 'x' as mutable because it is already "
-                     "borrowed"}));
 }
 
 TEST(Dataflow, ArrayDecayBorrowsTheElements) {
@@ -883,11 +851,6 @@ TEST(Dataflow, ArrayDecayBorrowsTheElements) {
     }
   )c";
   EXPECT_TRUE(analyze(code).diagnostics.empty());
-  const auto result = analyze(code, Exclusive);
-  ASSERT_TRUE(result.ast);
-  EXPECT_EQ(messages(result.diagnostics),
-            (Strings{"5: cannot borrow 'a[1]' as mutable because it is already "
-                     "borrowed"}));
 }
 
 TEST(Dataflow, LoansEndAtTheLastUseOfTheHolder) {
@@ -937,9 +900,8 @@ TEST(Dataflow, LoansEndAtTheLastUseOfTheHolder) {
       free(n);                    /* `a` is dead: fine */
     }
   )c";
-  for (const analysis::AnalysisOptions &options :
-       {analysis::AnalysisOptions{}, Exclusive}) {
-    const auto result = analyze(code, options);
+  {
+    const auto result = analyze(code);
     ASSERT_TRUE(result.ast);
     // `&n->v` is a derived copy of `n` that also lends `n->v` (RFC 0011,
     // *Derived pointers*): a plain local holder's use after the free is the
@@ -950,8 +912,7 @@ TEST(Dataflow, LoansEndAtTheLastUseOfTheHolder) {
               (Strings{"19: use of 'a' after it was freed",
                        "23: cannot free 'n' while it is borrowed",
                        "28: cannot free 'n' while it is borrowed",
-                       "36: use of 'a' after it may have been freed"}))
-        << "exclusive=" << options.exclusiveBorrows;
+                       "36: use of 'a' after it may have been freed"}));
   }
 }
 
@@ -1281,7 +1242,10 @@ TEST(Dataflow, RawAnnotationOnParametersFieldsAndLocals) {
             "'p' is raw: declared WEAVEC_RAW here (through 'c->cookie')");
 }
 
-TEST(Dataflow, UnsafeRegionPermitsRawOperationsAndSuppressesReports) {
+TEST(Dataflow, UnsafeRegionPermitsRawOperationsButReportsViolations) {
+  // RFC 0004: raw operations are permitted inside a region. RFC 0030 §6.1:
+  // no diagnostic is dropped for being inside one, so the double free is
+  // still an error.
   const auto result = analyze(R"c(
     void f(long x, int *p) {
       UNSAFE {
@@ -1295,7 +1259,7 @@ TEST(Dataflow, UnsafeRegionPermitsRawOperationsAndSuppressesReports) {
     UNSAFE void g(int *RAW r) { *r = 1; free(r); }
   )c");
   ASSERT_TRUE(result.ast);
-  EXPECT_TRUE(result.diagnostics.empty()) << messages(result.diagnostics)[0];
+  EXPECT_EQ(messages(result.diagnostics), (Strings{"8: 'p' is freed twice"}));
   // The unsafe function still has a summary its callers use.
   ASSERT_NE(result.summary("g"), nullptr);
   EXPECT_TRUE(result.summary("g")->frees(0));
@@ -1409,10 +1373,11 @@ TEST(Dataflow, IndirectCallsUseTypeAnnotationsOrAddressTakenJoin) {
   EXPECT_EQ(messages(result.diagnostics),
             (Strings{"8: use of 'n' after it was moved",
                      "9: use of 'n' after it was freed",
-                     "10: use of 'n' after it was freed",
-                     "11: call through 'cb' is not checked: its function type "
-                     "has no ownership annotations and its target is unknown"}))
-      << "`cmp` has no pointer parameters: not even a boundary warning";
+                     "10: use of 'n' after it was freed"}));
+  // RFC 0030 §5.1: the calls through `cb` and `cmp` are into unknown code;
+  // only `cb` was handed `n`, so only its later use is unresolved.
+  EXPECT_EQ(weavec::test::unknownCalls(result),
+            (Strings{"11: cb(n)", "11: use(n)", "12: cmp(1,2)"}));
 }
 
 TEST(Dataflow, CallbacksAreAnalysedBeforeTheirCallers) {

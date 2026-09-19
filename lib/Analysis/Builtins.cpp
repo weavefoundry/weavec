@@ -758,6 +758,19 @@ static llvm::StringMap<core::FunctionSummary> buildTable() {
                        core::PlaceEffect{.moved = true});
   }
 
+  // `freopen(path, mode, f)` closes `f` and returns it reopened, or null
+  // when reopening fails, and then `f` stays closed (ISO C 7.21.5.4): the
+  // stream is released on the null class only.
+  {
+    core::FunctionSummary &summary = table["freopen"];
+    const core::PlaceEffect closed{.freed = true, .family = "fclose"};
+    summary.addEffect(core::SummaryPath::param(2), closed);
+    summary.addReturn(core::ValueSource::null());
+    summary.addOutcome(core::Outcome::NonNull);
+    summary.addOutcome(core::Outcome::Null, core::SummaryPath::param(2),
+                       closed);
+  }
+
   // `_FORTIFY_SOURCE` rewrites `memcpy(d, s, n)` into
   // `__builtin___memcpy_chk(d, s, n, __builtin_object_size(d, 0))`; the
   // checked form has the plain one's effects (the extra trailing argument

@@ -122,7 +122,7 @@ TEST(LedgerWriter, GoldenUnitLedger) {
       R"({"schema":"weavec-ledger","version":1,)"
       R"("producer":{"name":"weavec","version":"0.11.0","revision":"abc1234"},)"
       R"("scope":"unit","root":"/proj",)"
-      R"("config":{"checks":"trap","zeroInit":true,"require":"none","budget":200000},)"
+      R"("config":{"checks":"trap","zeroInit":true,"require":"none","budget":50000},)"
       R"("summary":{)" +
       counts +
       R"(},"units":[{"source":"src/cJSON.c","object":"build/cJSON.o",)"
@@ -329,7 +329,7 @@ TEST(LedgerWriter, ProgramLedgerSnippets) {
   };
   expectSnippet(R"("scope":"program")");
   expectSnippet(R"("config":{"checks":"verify","zeroInit":true,)"
-                R"("require":"none","budget":200000})");
+                R"("require":"none","budget":50000})");
   expectSnippet(
       R"("assumptions":{"A1":{"exportedRequirements":14,"verified":11,)"
       R"("reliesOnSingle":40,"unverifiedCallers":3},"A3":{)"

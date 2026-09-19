@@ -12,6 +12,7 @@
 
 #include <gtest/gtest.h>
 
+#include <cstring>
 #include <initializer_list>
 #include <optional>
 #include <set>
@@ -24,7 +25,7 @@ namespace weavec::frontend {
 using core::Certainty;
 using core::Severity;
 using core::diag::AllocationFailure;
-using core::diag::AnnotationRequired;
+using core::diag::Leak;
 using core::diag::UseAfterFree;
 
 static core::Diagnostic make(std::string_view id, Severity severity,
@@ -63,15 +64,13 @@ TEST(DiagnosticControl, DefaultsLeaveDiagnosticsAlone) {
   const auto error = control.apply(make(UseAfterFree, Severity::Error));
   ASSERT_TRUE(error);
   EXPECT_EQ(error->severity, Severity::Error);
-  const auto warning =
-      control.apply(make(AnnotationRequired, Severity::Warning));
+  const auto warning = control.apply(make(Leak, Severity::Warning));
   ASSERT_TRUE(warning);
   EXPECT_EQ(warning->severity, Severity::Warning);
 }
 
 TEST(DiagnosticControl, RecognisesOnlyWeaveCSpellings) {
-  EXPECT_TRUE(
-      DiagnosticControl::isWeaveCFlag("-Wno-weavec-annotation-required"));
+  EXPECT_TRUE(DiagnosticControl::isWeaveCFlag("-Wno-weavec-leak"));
   EXPECT_TRUE(DiagnosticControl::isWeaveCFlag("-Werror=weavec"));
   EXPECT_TRUE(DiagnosticControl::isWeaveCFlag("-Wno-error=weavec-double-free"));
   EXPECT_TRUE(DiagnosticControl::isWeaveCFlag("-Wweavec-invalid-annotation"));
@@ -85,14 +84,14 @@ TEST(DiagnosticControl, RecognisesOnlyWeaveCSpellings) {
 TEST(DiagnosticControl, DisablesAndReenablesWarnings) {
   DiagnosticControl control;
   std::string error;
-  ASSERT_TRUE(control.parse("-Wno-weavec-annotation-required", error));
+  ASSERT_TRUE(control.parse("-Wno-weavec-leak", error));
   EXPECT_TRUE(error.empty());
-  EXPECT_FALSE(control.apply(make(AnnotationRequired, Severity::Warning)));
+  EXPECT_FALSE(control.apply(make(Leak, Severity::Warning)));
   // Other ids are untouched.
   EXPECT_TRUE(control.apply(make(UseAfterFree, Severity::Error)));
 
-  ASSERT_TRUE(control.parse("-Wweavec-annotation-required", error));
-  EXPECT_TRUE(control.apply(make(AnnotationRequired, Severity::Warning)));
+  ASSERT_TRUE(control.parse("-Wweavec-leak", error));
+  EXPECT_TRUE(control.apply(make(Leak, Severity::Warning)));
 }
 
 TEST(DiagnosticControl, ErrorsCannotBeDisabledOnlyLowered) {
@@ -208,12 +207,14 @@ TEST(DiagnosticControl, RejectsRemovedIds) {
   for (const char *flag :
        {"-Wno-weavec-checking-incomplete", "-Wweavec-checking-failed",
         "-Werror=weavec-checking-failed",
-        "-Wno-error=weavec-checking-incomplete"}) {
+        "-Wno-error=weavec-checking-incomplete",
+        "-Wno-weavec-analysis-incomplete", "-Wweavec-annotation-required",
+        "-Werror=weavec-annotation-required"}) {
     DiagnosticControl control;
     std::string error;
     ASSERT_TRUE(control.parse(flag, error));
-    const llvm::StringRef id =
-        llvm::StringRef(flag).substr(llvm::StringRef(flag).find("checking-"));
+    const llvm::StringRef id = llvm::StringRef(flag).substr(
+        llvm::StringRef(flag).find("weavec-") + std::strlen("weavec-"));
     EXPECT_EQ(error, "unknown WeaveC diagnostic '" + id.str() +
                          "' (removed by RFC 0030)");
     EXPECT_EQ(control, DiagnosticControl{});
@@ -223,9 +224,8 @@ TEST(DiagnosticControl, RejectsRemovedIds) {
 TEST(DiagnosticControl, RaisesWarningsToErrors) {
   DiagnosticControl control;
   std::string error;
-  ASSERT_TRUE(control.parse("-Werror=weavec-annotation-required", error));
-  const auto raised =
-      control.apply(make(AnnotationRequired, Severity::Warning));
+  ASSERT_TRUE(control.parse("-Werror=weavec-leak", error));
+  const auto raised = control.apply(make(Leak, Severity::Warning));
   ASSERT_TRUE(raised);
   EXPECT_EQ(raised->severity, Severity::Error);
 }
@@ -239,33 +239,30 @@ TEST(DiagnosticControl, GroupFlagsApplyToEveryId) {
   EXPECT_EQ(
       control.apply(make(core::diag::DoubleFree, Severity::Error))->severity,
       Severity::Warning);
-  EXPECT_EQ(
-      control.apply(make(AnnotationRequired, Severity::Warning))->severity,
-      Severity::Warning);
+  EXPECT_EQ(control.apply(make(Leak, Severity::Warning))->severity,
+            Severity::Warning);
 
   ASSERT_TRUE(control.parse("-Werror=weavec", error));
-  EXPECT_EQ(
-      control.apply(make(AnnotationRequired, Severity::Warning))->severity,
-      Severity::Error);
+  EXPECT_EQ(control.apply(make(Leak, Severity::Warning))->severity,
+            Severity::Error);
 
   // `-Wno-weavec` disables the warnings and leaves the errors alone.
   ASSERT_TRUE(control.parse("-Wno-weavec", error));
-  EXPECT_FALSE(control.apply(make(AnnotationRequired, Severity::Warning)));
+  EXPECT_FALSE(control.apply(make(Leak, Severity::Warning)));
   EXPECT_TRUE(control.apply(make(UseAfterFree, Severity::Error)));
 }
 
 TEST(DiagnosticControl, LaterFlagsWinButDisabledStaysDisabled) {
   DiagnosticControl control;
   std::string error;
-  ASSERT_TRUE(control.parse("-Werror=weavec-annotation-required", error));
+  ASSERT_TRUE(control.parse("-Werror=weavec-leak", error));
   ASSERT_TRUE(control.parse("-Wno-error=weavec", error));
-  EXPECT_EQ(
-      control.apply(make(AnnotationRequired, Severity::Warning))->severity,
-      Severity::Warning);
+  EXPECT_EQ(control.apply(make(Leak, Severity::Warning))->severity,
+            Severity::Warning);
 
-  ASSERT_TRUE(control.parse("-Wno-weavec-annotation-required", error));
+  ASSERT_TRUE(control.parse("-Wno-weavec-leak", error));
   ASSERT_TRUE(control.parse("-Werror=weavec", error));
-  EXPECT_FALSE(control.apply(make(AnnotationRequired, Severity::Warning)));
+  EXPECT_FALSE(control.apply(make(Leak, Severity::Warning)));
   EXPECT_EQ(control.apply(make(UseAfterFree, Severity::Error))->severity,
             Severity::Error);
 }
@@ -315,25 +312,6 @@ TEST(FilteringSink, SkipsWhatAnEarlierStepReported) {
   EXPECT_EQ(sink.errors(), 1U);
 }
 
-TEST(FilteringSink, ReportsEachBoundaryOncePerProgram) {
-  Recorder recorder;
-  std::set<std::string> once;
-  FilteringSink first(recorder, DiagnosticControl{}, nullptr, &once);
-  first.report(make(AnnotationRequired, Severity::Warning, "call to 'f'", 1));
-  first.report(make(AnnotationRequired, Severity::Warning, "call to 'f'", 5));
-  FilteringSink second(recorder, DiagnosticControl{}, nullptr, &once);
-  second.report(make(AnnotationRequired, Severity::Warning, "call to 'f'", 2));
-  second.report(make(AnnotationRequired, Severity::Warning, "call to 'g'", 3));
-  // Other ids are never deduplicated by message.
-  second.report(make(UseAfterFree, Severity::Error, "same", 4));
-  second.report(make(UseAfterFree, Severity::Error, "same", 6));
-  ASSERT_EQ(recorder.seen.size(), 4U);
-  EXPECT_EQ(recorder.seen[0].message, "call to 'f'");
-  EXPECT_EQ(recorder.seen[1].message, "call to 'g'");
-  EXPECT_EQ(recorder.seen[2].location.line, 4U);
-  EXPECT_EQ(recorder.seen[3].location.line, 6U);
-}
-
 TEST(DiagnosticIds, DefaultSeverities) {
   using core::diag::defaultSeverity;
   const auto always = [](std::string_view id, Severity severity) {
@@ -359,9 +337,8 @@ TEST(DiagnosticIds, DefaultSeverities) {
     always(id, Severity::Error);
   // Warnings, never errors (RFC 0007: a leak; RFC 0030 §13.2: a link input).
   for (const std::string_view id :
-       {core::diag::Leak, core::diag::InvalidAnnotation, AllocationFailure,
-        core::diag::UnanalyzedInput, AnnotationRequired,
-        core::diag::AnalysisIncomplete})
+       {Leak, core::diag::InvalidAnnotation, AllocationFailure,
+        core::diag::UnanalyzedInput})
     always(id, Severity::Warning);
   always("no-such-id", Severity::Error);
 
@@ -378,9 +355,8 @@ TEST(DiagnosticIds, DefaultSeverities) {
         "contradicted-assumption", "allocation-failure", "unresolved-operation",
         "unchecked-operation", "unanalyzed-input"})
     EXPECT_TRUE(core::diag::isKnown(id)) << id;
-  // The 20 ids of RFC 0030, and the two S3-B retires with the engine paths
-  // that emit them.
-  EXPECT_EQ(core::diag::All.size(), 22U);
+  // The 20 ids of RFC 0030 (*Diagnostics*).
+  EXPECT_EQ(core::diag::All.size(), 20U);
 }
 
 TEST(DiagnosticIds, RemovedIdsAreRefused) {
@@ -392,8 +368,9 @@ TEST(DiagnosticIds, RemovedIdsAreRefused) {
     EXPECT_EQ(error, "unknown WeaveC diagnostic '" + std::string(id) +
                          "' (removed by RFC 0030)");
   }
-  EXPECT_TRUE(core::diag::isRemoved("checking-incomplete"));
-  EXPECT_TRUE(core::diag::isRemoved("checking-failed"));
+  for (const char *id : {"checking-incomplete", "checking-failed",
+                         "analysis-incomplete", "annotation-required"})
+    EXPECT_TRUE(core::diag::isRemoved(id)) << id;
   EXPECT_FALSE(core::diag::isRemoved("use-after-free"));
 }
 

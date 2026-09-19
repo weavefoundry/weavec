@@ -366,6 +366,19 @@ std::optional<ResolvedSummary> SummaryStore::lookupCall(const CallExpr &call) {
   return lookupIndirect(call);
 }
 
+std::optional<std::uint64_t>
+SummaryStore::contextBudget(const FunctionDecl &definition,
+                            const AnalysisOptions &options) const {
+  if (options.budget == 0)
+    return 0;
+  const auto spent = contextTransfers.find(definition.getCanonicalDecl());
+  const std::uint64_t used =
+      spent == contextTransfers.end() ? 0 : spent->second;
+  if (used >= options.budget)
+    return std::nullopt;
+  return options.budget - used;
+}
+
 std::optional<ResolvedSummary>
 SummaryStore::specialize(const FunctionDecl &function,
                          const core::CallbackBindings &bindings,
@@ -415,14 +428,22 @@ SummaryStore::specialize(const FunctionDecl &function,
     activeContexts.insert(contextKey);
     const auto release =
         llvm::scope_exit([&] { activeContexts.erase(contextKey); });
+    // RFC 0030 §5.5: the context runs of one function share a budget.
+    const auto budget = contextBudget(*definition, options);
+    if (!budget)
+      return std::nullopt;
     LedgerAdapter collected(function.getASTContext(),
                             LedgerAdapter::Mode::Collecting);
     AnalysisOptions nestedOptions = options;
     nestedOptions.dumpStream = nullptr;
+    nestedOptions.budget = *budget;
     FunctionDataflow analysis(function.getASTContext(), *definition, collected,
                               nestedOptions, *this, true);
     analysis.callbackBindings = bindings;
     analysis.run();
+    contextTransfers[definition->getCanonicalDecl()] += analysis.transfers();
+    if (analysis.overBudget())
+      return std::nullopt;
     auto summary = std::move(analysis).summary();
     applyContract(function, summary);
     specialized[contextKey] = publishSummary(std::move(summary));

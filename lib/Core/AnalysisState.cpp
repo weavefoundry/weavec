@@ -407,6 +407,21 @@ bool AnalysisState::join(const AnalysisState &other, const PlaceTable *places,
     changed |= incompleteHeap.insert(root).second;
   for (const PlaceId place : other.reinterpreted)
     changed |= reinterpreted.insert(place).second;
+  // RFC 0030 §3.1: released on some path; stored since on every path.
+  for (const std::uint64_t type : other.releasedTypes)
+    changed |= releasedTypes.insert(type).second;
+  if (other.releasedUnowned && !releasedUnowned) {
+    releasedUnowned = true;
+    changed = true;
+  }
+  for (auto it = storedSinceRelease.begin(); it != storedSinceRelease.end();) {
+    if (other.storedSinceRelease.contains(*it)) {
+      ++it;
+    } else {
+      it = storedSinceRelease.erase(it);
+      changed = true;
+    }
+  }
   for (auto it = incoming.begin(); it != incoming.end();) {
     const auto theirs = other.incoming.find(it->first);
     if (theirs == other.incoming.end() || theirs->second != it->second) {
@@ -641,35 +656,53 @@ void AnalysisState::dropGuardsOn(std::vector<PlaceId> places) {
   nulls.dropGuardsIf(matches);
 }
 
-void AnalysisState::forget(PlaceId place) {
-  numericWrites.insert(place);
-  moves.reinitialize(place);
-  aliases.separate(place);
-  definiteAliases.separate(place);
-  std::erase_if(distinctObjects, [place](const auto &pair) {
+/// Everything `forget` clears about `place` but the guard conjuncts.
+static void forgetFacts(AnalysisState &state, PlaceId place) {
+  state.numericWrites.insert(place);
+  state.moves.reinitialize(place);
+  state.aliases.separate(place);
+  state.definiteAliases.separate(place);
+  std::erase_if(state.distinctObjects, [place](const auto &pair) {
     return pair.first == place || pair.second == place;
   });
-  loans.dropHolder(place);
-  loans.release(place);
-  pending.erase(place);
-  kinds.erase(place);
-  raw.clear(place);
-  resources.forget(place);
-  nulls.forget(place);
-  scalars.forget(place);
-  spatial.forget(place);
-  relations.forget(place);
-  callTargets.erase(place);
-  objectViews.erase(place);
-  incoming.erase(place);
-  heapWriteGuards.erase(place);
-  heapInputEscapes.erase(place);
-  definiteHeapWrites.erase(place);
-  heapLocalObjects.erase(place);
-  incompleteHeap.erase(place);
-  reinterpreted.erase(place);
+  state.loans.dropHolder(place);
+  state.loans.release(place);
+  state.pending.erase(place);
+  state.kinds.erase(place);
+  state.raw.clear(place);
+  state.resources.forget(place);
+  state.nulls.forget(place);
+  state.scalars.forget(place);
+  state.spatial.forget(place);
+  state.relations.forget(place);
+  state.callTargets.erase(place);
+  state.objectViews.erase(place);
+  state.incoming.erase(place);
+  state.heapWriteGuards.erase(place);
+  state.heapInputEscapes.erase(place);
+  state.definiteHeapWrites.erase(place);
+  state.heapLocalObjects.erase(place);
+  state.incompleteHeap.erase(place);
+  state.reinterpreted.erase(place);
+  state.storedSinceRelease.erase(place);
+}
+
+void AnalysisState::forget(PlaceId place) {
+  forgetFacts(*this, place);
   // Pending outputs and the remaining guarded domains still need a scan.
   dropOtherGuardsOn(*this, place);
+}
+
+void AnalysisState::forget(std::vector<PlaceId> places) {
+  for (const PlaceId place : places)
+    forgetFacts(*this, place);
+  dropGuardsOn(std::move(places));
+}
+
+void AnalysisState::noteRelease(std::uint64_t type, bool owned) {
+  releasedTypes.insert(type);
+  releasedUnowned = releasedUnowned || !owned;
+  storedSinceRelease.clear();
 }
 
 } // namespace weavec::core

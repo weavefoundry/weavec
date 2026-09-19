@@ -1423,11 +1423,9 @@ ValueOrigin PlaceBuilder::classifyValue(const Expr &expr) {
   if (const auto *call = dyn_cast<CallExpr>(e)) {
     const auto effects = classifyCall(*call, summaries);
     if (!effects) {
-      // Unchecked code: under strict mode its result is raw (RFC 0004,
-      // *Boundaries*); by default nothing is known about it beyond what its
-      // declaration says about nullness (RFC 0008), hence the call.
-      if (strictExterns)
-        return makeRaw(core::RawReason::UnknownCallee, call);
+      // Unchecked code: nothing is known about the result beyond what its
+      // declaration says about nullness (RFC 0008), hence the call; it has
+      // no ownership (RFC 0030 §5.1).
       ValueOrigin opaque;
       opaque.call = call;
       return opaque;

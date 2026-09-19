@@ -125,15 +125,14 @@ TEST(UnitExports, DiscoverySkipsAnalysis) {
   EXPECT_EQ(skeleton.indirectTypes, (std::set<std::string>{"void (int)"}));
 }
 
-TEST(UnitExports, RecordsBoundariesAndDefersTheirWarnings) {
-  AnalysisOptions options;
-  options.deferBoundary = true;
+TEST(UnitExports, RecordsBoundaries) {
+  // RFC 0030 §5.1: the calls into code the unit cannot see are recorded for
+  // the link step, and report nothing (they are ledger rows).
   const auto unit = analyze(R"c(
     void other(void *p);
     void (*hook)(void *);
     void f(void *p) { other(p); hook(p); }
-  )c",
-                            options);
+  )c");
   ASSERT_TRUE(unit.ast);
   EXPECT_TRUE(unit.diagnostics.empty());
   const UnitExports exports = unit.analyzer->exports();
@@ -443,7 +442,10 @@ TEST(ProgramDatabase, CalleeDefinedInAnotherUnitIsChecked) {
   EXPECT_TRUE(resolved->summary->frees(0));
 }
 
-TEST(ProgramDatabase, NoBoundaryWarningForProgramDefinitions) {
+TEST(ProgramDatabase, ProgramDefinitionsAreNotUnknownCallees) {
+  // RFC 0030 §5.1: in a per-unit analysis the calls into other units are
+  // unknown callees; with the program's database only the callee no unit
+  // defines stays one. None of them is a diagnostic.
   NodeProgram program;
   ASSERT_TRUE(program.unit.ast);
   const std::string code = std::string(ClientHeader) + R"c(
@@ -457,19 +459,15 @@ TEST(ProgramDatabase, NoBoundaryWarningForProgramDefinitions) {
   )c";
   const auto alone = analyze(code);
   ASSERT_TRUE(alone.ast);
-  // Alone: node_new, other and node_free are all boundaries.
-  EXPECT_EQ(alone.diagnostics.size(), 3U);
+  EXPECT_TRUE(alone.diagnostics.empty());
+  EXPECT_EQ(test::unknownCalls(alone).size(), 3U);
   const auto together = analyzeInProgram(code, &program.db);
   ASSERT_TRUE(together.ast);
-  ASSERT_EQ(ids(together.diagnostics),
-            (std::vector<std::string>{"annotation-required"}));
-  EXPECT_EQ(messages(together.diagnostics)[0],
-            "14: call to 'other' is not checked: it has no definition or "
-            "ownership annotations here");
-  EXPECT_EQ(test::notes(together.diagnostics)[1],
-            "annotate its pointer parameters with WEAVEC_OWNED, "
-            "WEAVEC_BORROWED, WEAVEC_MUT or WEAVEC_RAW, or define it in this "
-            "program");
+  EXPECT_TRUE(together.diagnostics.empty());
+  // `other` may have released `n`, so the known release after it is
+  // unresolved too (§3.1, *A known release after an unknown one*).
+  EXPECT_EQ(test::unknownCalls(together),
+            (std::vector<std::string>{"14: other(n)", "15: node_free(n)"}));
 }
 
 TEST(ProgramDatabase, IndirectCandidatesFromOtherUnits) {

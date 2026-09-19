@@ -916,5 +916,15 @@ TEST(ValueSource, KindNames) {
   EXPECT_EQ(toString(ValueSource::Kind::Raw), "raw");
 }
 
+// RFC 0030 §5.1: `unknown` is a may-fact.
+TEST(PlaceEffect, UnknownEffectJoinsByDisjunction) {
+  PlaceEffect effect{.read = true};
+  EXPECT_FALSE(effect.unknown);
+  effect.join(PlaceEffect{.unknown = true});
+  EXPECT_TRUE(effect.unknown);
+  EXPECT_FALSE(effect.consumed());
+  EXPECT_FALSE(PlaceEffect{.unknown = true}.empty());
+}
+
 } // namespace
 } // namespace weavec::core

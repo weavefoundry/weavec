@@ -572,8 +572,11 @@ struct Producer {
   friend bool operator==(const Producer &, const Producer &) = default;
 };
 
-/// The default of `-fweavec-budget` before S3 calibrates it (§5.5).
-inline constexpr std::uint64_t DefaultBudget = 200000;
+/// The default of `-fweavec-budget` (§5.5): the smallest multiple of 50,000
+/// that is at least four times the 99.9th percentile of per-function block
+/// transfers over the corpus (S3 measured 7,208 over 2,874 functions; the
+/// most, `luaV_execute`, takes 25,518).
+inline constexpr std::uint64_t DefaultBudget = 50000;
 
 /// §12.1 `config`.
 struct LedgerConfig {

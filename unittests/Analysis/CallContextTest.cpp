@@ -231,13 +231,18 @@ char *items[2] = {p, q}; zap(items, 0, 1); free(q); }
                 "2: use of 'a[j]' after it may have been freed"}));
 }
 
-TEST(CompositionalCall, UnsafeRequestsRetainEffectsWithoutDelayedReports) {
-  expectCleanContext(R"c(
+TEST(CompositionalCall, UnsafeRequestsReportLikeAnyOther) {
+  // RFC 0030 §6.1: no diagnostic is dropped for being inside an unsafe
+  // region, neither a context run requested from one nor one of an unsafe
+  // function.
+  expectContextError(R"c(
 static void zap(char *a, char *b) { free(a); *b = 1; }
-)c" + Entry + "UNSAFE { zap(p, p); } }");
-  expectCleanContext(R"c(
+)c" + Entry + "UNSAFE { zap(p, p); } }",
+                     core::diag::UseAfterFree);
+  expectContextError(R"c(
 static void UNSAFE zap(char *a, char *b) { free(a); *b = 1; }
-)c" + Entry + "zap(p, p); }");
+)c" + Entry + "zap(p, p); }",
+                     core::diag::UseAfterFree);
   expectContextError(R"c(
 static void zap(char *a, char *b) { free(a); *b = 1; }
 )c" + Entry + "UNSAFE { zap(p, p); } *p = 2; }",

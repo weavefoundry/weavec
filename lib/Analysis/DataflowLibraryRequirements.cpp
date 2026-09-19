@@ -274,10 +274,15 @@ void FunctionDataflow::decideArgumentRequirements(
     }
     return term;
   };
+  // §10.4 (RFC 0030 S5): a writer of the `printf` family has no need term
+  // (`fmtlen` never is one); its destination is checked through the result
+  // of its bounded writer, which the planner lowers it to.
+  const bool formatWriter = site.library && site.library->entry != nullptr &&
+                            site.library->entry->format.has_value();
   const auto lengthWitness =
       [&](const Target &target,
           std::optional<WitnessTerm> need) -> std::optional<CheckWitness> {
-    if (!need)
+    if (!need && !formatWriter)
       return std::nullopt;
     std::optional<core::PlaceId> readsThrough;
     auto have = haveTerm(target, readsThrough);

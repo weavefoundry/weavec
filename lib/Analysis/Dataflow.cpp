@@ -68,8 +68,14 @@ namespace weavec::analysis {
 
 /// Upper bound on visits per block before giving up on convergence. Every
 /// state component is a finite lattice so this is never hit in practice; it
-/// guards against a bug turning into a hang.
+/// guards against a bug turning into a hang. Hitting it leaves no fixpoint,
+/// so the function counts as over its budget (RFC 0030 §5.5).
 static constexpr unsigned MaxVisitsPerBlock = 64;
+
+/// RFC 0030 §5.5: the incompleteness an over-budget function's summary
+/// carries; callers apply the unknown-callee default at its calls.
+static constexpr std::string_view BudgetReason =
+    "analysis budget limit reached";
 
 /// Longest place path the analysis will synthesise when mirroring facts
 /// between aliases, and the longest a summary spells (see
@@ -144,7 +150,6 @@ FunctionDataflow::FunctionDataflow(ASTContext &ctx, const FunctionDecl &fn,
     return validateObjectPath(path, call);
   };
   lifetimes.addOutlives(callerLifetime, fnLifetime);
-  builder.setStrictExterns(options.strictExterns);
   builder.setIncomingLookup(
       [this](const clang::CallExpr &call,
              const core::SummaryPath &path) -> std::optional<core::PlaceId> {
@@ -1475,6 +1480,9 @@ void FunctionDataflow::checkOutlivedLoans(
     const core::AnalysisState &state) {
   if (!recording())
     return;
+  // One report per dying object and escape site: another name of the same
+  // holder (`fs->bl` and its mirror `fs->ls->fs->bl`) is the same store.
+  std::set<std::tuple<std::uint32_t, std::uint32_t, std::uint32_t>> reported;
   for (const core::Loan &loan : state.loans.loans()) {
     if (!isLocalStorage(loan.place) || !dying(loan.place))
       continue;
@@ -1492,11 +1500,19 @@ void FunctionDataflow::checkOutlivedLoans(
         break;
       }
     }
-    if (tooShort)
-      reportLifetimeTooShort(loan.holder, loan.place, loan.location,
-                             /*returned=*/false,
-                             loan.allPaths ? core::Certainty::Definite
-                                           : core::Certainty::Possible);
+    if (!tooShort)
+      continue;
+    if (!reported
+             .emplace(loan.place.value, loan.location.line,
+                      loan.location.column)
+             .second) {
+      noteDanglingHolder(loan.holder);
+      continue;
+    }
+    reportLifetimeTooShort(loan.holder, loan.place, loan.location,
+                           /*returned=*/false,
+                           loan.allPaths ? core::Certainty::Definite
+                                         : core::Certainty::Possible);
   }
 }
 
@@ -1840,10 +1856,14 @@ void FunctionDataflow::run() {
     const CFGBlock *block = fifo.front();
     fifo.pop_front();
     queued[block->getBlockID()] = false;
-    if (++visits[block->getBlockID()] > MaxVisitsPerBlock) {
+    // RFC 0030 §5.5: a deterministic count of block transfers; past the
+    // budget, or without a fixpoint, the analysis stops.
+    if (++visits[block->getBlockID()] > MaxVisitsPerBlock ||
+        (options.budget != 0 && blockTransfers >= options.budget)) {
       convergenceFailed = true;
-      continue;
+      break;
     }
+    ++blockTransfers;
 
     core::AnalysisState out = *entryStates[block->getBlockID()];
     if (options.stats)
@@ -1892,6 +1912,23 @@ void FunctionDataflow::run() {
     for (const auto &[succIndex, succ] : llvm::drop_end(reachable))
       propagate(succIndex, *succ, out);
     propagate(reachable.back().first, *reachable.back().second, std::move(out));
+  }
+
+  // §5.5: the final pass transfers every reachable block once more.
+  const auto finalTransfers = static_cast<std::uint64_t>(llvm::count_if(
+      entryStates, [](const auto &entry) { return entry.has_value(); }));
+  if (!convergenceFailed && options.budget != 0 &&
+      blockTransfers + finalTransfers > options.budget)
+    convergenceFailed = true;
+  if (convergenceFailed) {
+    finishOverBudget();
+    return;
+  }
+  blockTransfers += finalTransfers;
+  if (options.stats && callbackBindings.empty() && memoryContext.empty()) {
+    auto &most =
+        options.stats->counters["transfers:" + functionWorkKey(function)];
+    most = std::max(most, blockTransfers);
   }
 
   // Final pass: once per reachable block, from its fixpoint entry state.
@@ -1954,6 +1991,24 @@ void FunctionDataflow::run() {
     dump(exitState ? &*exitState : nullptr);
 }
 
+void FunctionDataflow::finishOverBudget() {
+  // RFC 0030 §5.5: the function's facets take the §2.6 defaults with reason
+  // `budget`, and its summary becomes the unknown-callee effects: an
+  // incomplete summary, at whose calls callers apply the default.
+  inferred = core::FunctionSummary{};
+  inferred.incomplete.insert(std::string(BudgetReason));
+  pending.clear();
+  if (emitDiagnostics)
+    ledger.overBudget(function);
+  if (options.stats) {
+    options.stats->add("over_budget_runs");
+    options.stats->add("over_budget:" + functionWorkKey(function));
+  }
+  if (options.dumpStream != nullptr && emitDiagnostics)
+    *options.dumpStream << "function " << function.getNameAsString()
+                        << ": over the analysis budget\n";
+}
+
 void FunctionDataflow::transfer(const CFGBlock &block,
                                 core::AnalysisState &state) {
   callSummaries.clear();
@@ -1978,6 +2033,8 @@ void FunctionDataflow::transfer(const CFGBlock &block,
         handleDecl(*decl, state);
       else if (const auto *ret = dyn_cast<ReturnStmt>(stmt))
         handleReturn(*ret, state);
+      else if (const auto *assembly = dyn_cast<GCCAsmStmt>(stmt))
+        handleAsm(*assembly, state);
       inUnsafe = unsafeBody;
       continue;
     }
@@ -2718,7 +2775,7 @@ void FunctionDataflow::applyOutcomeTest(const Expr &operand,
   const auto reinstate = [this,
                           &state](const std::vector<core::PlaceId> &targets) {
     for (const core::PlaceId place : targets) {
-      if (!state.moves.recordOf(place))
+      if (state.moves.find(place) == nullptr)
         continue;
       state.moves.reinitialize(place);
       if (const auto path = builder.summaryPathOf(place))
@@ -3268,7 +3325,6 @@ void FunctionDataflow::handleExpr(const Expr &expr,
       // so nothing about it changes, except that `p` no longer points at
       // the start of what it owns (RFC 0008, *Invalid releases*).
       doRead(*ref, expr, state, /*includeSelf=*/true);
-      doMutationCheck(ref->place, expr, state);
       checkAnnotationOnWrite(*ref, expr, state);
       recordAccess(ref->place, /*write=*/true, state);
       noteVariableWrite(ref->place, state);
@@ -3822,7 +3878,6 @@ void FunctionDataflow::handleAssign(const BinaryOperator &assign,
                   state);
     return;
   }
-  doMutationCheck(lhs->place, assign, state);
   checkAnnotationOnWrite(*lhs, assign, state);
   recordAccess(lhs->place, /*write=*/true, state);
   noteReinterpretingStore(*assign.getLHS(), *lhs, state);
@@ -4068,10 +4123,9 @@ void FunctionDataflow::copyRecordPlaces(core::PlaceId dest,
     if (field.kind)
       setKind(field.to, *field.kind, state);
     if (field.moved) {
-      state.moves.markMoved(
-          field.to, field.moved->reason, field.moved->location,
-          field.moved->via.value_or(field.from), field.moved->element,
-          field.moved->family, field.moved->ownValue, field.moved->guard);
+      core::MoveRecord copy = *field.moved;
+      copy.via = field.moved->via.value_or(field.from);
+      state.moves.copyRecord(field.to, std::move(copy));
     }
     if (field.raw)
       state.raw.markRaw(field.to, *field.raw);
@@ -4239,19 +4293,10 @@ void FunctionDataflow::handleCall(const CallExpr &call,
   if (handleCheckedIntegerCall(call, state))
     return;
   retireHeapInputs(state);
-  // RFC 0012, *`WEAVEC_ASSUME`*: the argument holds from here on, as on the
-  // true edge of `if (arg)`; an assumption the facts contradict ends the
-  // path, as an infeasible edge does. The callee itself does nothing.
-  if (const FunctionDecl *callee = call.getDirectCallee();
-      callee != nullptr && call.getNumArgs() == 1 &&
-      getAnnotations(*callee).assume) {
-    edgeInfeasible = false;
-    applyCondition(*call.getArg(0), /*holds=*/true, /*wrapped=*/true, state);
-    if (edgeInfeasible)
-      blockTerminated = true;
-    edgeInfeasible = false;
+  // RFC 0012, RFC 0030 §6.2: `WEAVEC_ASSUME(e)` is proven, refuted or
+  // checked, and `e` holds from here on. The callee itself does nothing.
+  if (handleAssumption(call, state))
     return;
-  }
   callSummaries.erase(&call);
   if (callbackContexts.contains(&call) || memoryContexts.contains(&call))
     writtenAt.erase(&call);
@@ -4277,22 +4322,24 @@ void FunctionDataflow::handleCall(const CallExpr &call,
   }
   // The temporal facet of a call whose callees the engine knows: what it
   // uses or releases is decided where that happens, and merges in by rank.
-  // An unresolved callee's is the §5.1 default (stage S3-B3).
+  // An unresolved callee's is the §5.1 default (`applyUnknownEffects`).
   if (const auto seen = callTargetsSeen.find(&call);
       call.getDirectCallee() != nullptr ||
       (seen != callTargetsSeen.end() && !seen->second.unknown &&
        !seen->second.null && !seen->second.functions.empty()))
     decide(siteFor(call, core::Facet::Temporal), core::Facet::Temporal,
            core::FacetDecision::proven());
-  if (recording())
-    inferred.incomplete.insert(effects->summary->incomplete.begin(),
-                               effects->summary->incomplete.end());
   prepareNumericCall(call, *effects->summary, state);
   const auto completeNumeric =
       llvm::scope_exit([&] { finishNumericCall(call, state); });
   captureArrayReallocation(call, *effects, state);
   if (!handleMemoryCopy(call, *effects, state))
     applySummary(call, *effects, state);
+  // RFC 0030 §5.1, §5.5: what the callee handed to code it cannot see, the
+  // parameters of an external callee without an ownership contract, and an
+  // incomplete summary's may-effects. (An incomplete summary is applied
+  // soundly here, so this function's own summary stays complete.)
+  applyUnknownEffects(call, *effects, state);
   // RFC 0009, *Inferred `noreturn`*: the callee never hands control back,
   // so nothing after it in this block runs and its state reaches nobody.
   // Its effects were still applied: they are what happens before the exit.
@@ -4654,7 +4701,7 @@ void FunctionDataflow::applySummary(const CallExpr &call,
   // lies below*, applied to the cell itself). Lua's `correctstack` rewrites
   // every stack pointer after `realloc` freed the stack they pointed into.
   for (const core::PlaceId place : written.unnamedValue) {
-    if (!state.moves.recordOf(place))
+    if (state.moves.find(place) == nullptr)
       continue;
     for (const core::PlaceId mirror : mirrors(place, state))
       state.moves.reinitialize(mirror);
@@ -4672,7 +4719,6 @@ void FunctionDataflow::applySummary(const CallExpr &call,
     const std::optional<PlaceRef> pointee = builder.pointeeOf(origin);
     if (!pointee)
       continue;
-    checkTemporaryBorrow(*pointee, kind, call, state);
     if (kind == core::BorrowKind::Shared) {
       recordAccess(pointee->place, /*write=*/false, state);
       continue;
@@ -4819,7 +4865,6 @@ void FunctionDataflow::applySummary(const CallExpr &call,
                                    return value.guard.trivial();
                                  });
     }();
-    doMutationCheck(ref->place, call, state);
     checkAnnotationOnWrite(*ref, call, state);
     recordAccess(ref->place, /*write=*/true, state);
     // A resource the caller still holds there is the callee's business (RFC
@@ -4883,11 +4928,8 @@ void FunctionDataflow::applySummary(const CallExpr &call,
       }
     }
     noteCalleeStore(ref->place, call, state);
-    if (kept) {
-      state.moves.markMoved(ref->place, kept->reason, kept->location, kept->via,
-                            kept->element, kept->family, kept->ownValue,
-                            kept->guard);
-    }
+    if (kept)
+      state.moves.copyRecord(ref->place, *kept);
     recordConditionalStore(dest);
   }
   applyHeapOutputs(call, summary, state);
@@ -5021,12 +5063,6 @@ void FunctionDataflow::notePendingOutcome(
   lastCall = CallOutcome{.call = &call, .pending = std::move(conditional)};
 }
 
-/// Compiler intrinsics (`__builtin_*`, `__sync_*`, ...) are not a checking
-/// boundary: they are part of the language, not unknown code.
-static bool isCompilerIntrinsic(const FunctionDecl &callee) {
-  return callee.getBuiltinID() != 0 && callee.getName().starts_with("__");
-}
-
 bool FunctionDataflow::callInvolvesPointers(const CallExpr &call) {
   return call.getType()->isPointerType() ||
          llvm::any_of(call.arguments(), [](const Expr *arg) {
@@ -5048,156 +5084,6 @@ std::string FunctionDataflow::calleeName(const CallExpr &call) {
   if (const auto ref = builder.resolvePointerValue(*call.getCallee()))
     return "'" + nameOf(ref->place) + "'";
   return "a function pointer";
-}
-
-void FunctionDataflow::handleUncheckedCall(const CallExpr &call,
-                                           core::AnalysisState &state) {
-  const FunctionDecl *callee = call.getDirectCallee();
-  if (callee != nullptr && isCompilerIntrinsic(*callee))
-    return;
-  // Unknown code may call back into any reachable library entry point.
-  // A later initializer or verified output can establish new private state.
-  const auto count = places.size();
-  for (std::size_t i = 0; i < count; ++i) {
-    const core::PlaceId place{static_cast<std::uint32_t>(i)};
-    if (!places.isBase(place))
-      continue;
-    const auto *var = builder.varForPlace(place);
-    if (!var || !var->hasGlobalStorage() || !tracksScalar(place))
-      continue;
-    forgetBelow(place, state);
-    forgetScalar(place, state, &call);
-    state.callTargets.erase(place);
-    state.nulls.forget(place);
-    if (recording())
-      if (const auto path = builder.summaryPathOf(place))
-        inferred.addEffect(*path, core::PlaceEffect{.written = true});
-  }
-  if (!callInvolvesPointers(call))
-    return;
-  // Whatever the callee was handed may be kept (RFC 0007, *Escape*), and
-  // whatever it reaches through a pointer may have been written: the
-  // nullness facts there are gone (RFC 0008). Ownership facts stay: the
-  // boundary warning is what covers an unchecked callee's frees and moves
-  // (RFC 0003, *Boundaries*).
-  for (const Expr *arg : call.arguments()) {
-    if (!arg->getType()->isPointerType())
-      continue;
-    const ValueOrigin origin = builder.classifyValue(*arg);
-    escapeValue(origin, /*deep=*/true, state);
-    forgetNullnessReachable(origin, state);
-  }
-  // Nullness annotations say nothing about ownership, so they do not make
-  // the callee checked; but what they do say holds (RFC 0008, *Annotation
-  // surface*): a `WEAVEC_NONNULL` parameter is a requirement on this call.
-  if (callee != nullptr) {
-    const SignatureAnnotations annotations = collectAnnotations(*callee);
-    if (annotations.anyNullness() || annotations.anySizedBy()) {
-      const core::FunctionSummary declared = summaryFromAnnotations(*callee);
-      if (annotations.anyNullness())
-        checkRequiredArguments(call, declared, state);
-      if (annotations.anySizedBy())
-        checkRequiredExtents(call, declared, state);
-    }
-  }
-
-  if (!options.strictExterns) {
-    noteUnknownCallee(call);
-    return;
-  }
-
-  // Strict mode (RFC 0004, *Boundaries*): calling into unchecked code is a
-  // raw operation. Its arguments are untouched (the region's author vouches
-  // for the callee) and its result is raw, which `classifyValue` arranges.
-  if (!recording() || !emitDiagnostics || inUnsafe)
-    return;
-  const bool direct = callee != nullptr;
-  const std::string name = calleeName(call);
-  core::Diagnostic diagnostic =
-      makeError(core::diag::UnsafeOperation,
-                std::string("unchecked call ") + (direct ? "to " : "through ") +
-                    name + " outside an unsafe region",
-                call);
-  if (direct) {
-    diagnostic.addNote(name + " is declared here",
-                       locate(callee->getLocation()));
-    diagnostic.addNote(
-        "annotate its pointer parameters with WEAVEC_OWNED, WEAVEC_BORROWED, "
-        "WEAVEC_MUT or WEAVEC_RAW, define it in this program, or "
-        "move the call into a WEAVEC_UNSAFE region",
-        locate(callee->getLocation()));
-  } else {
-    diagnostic.addNote(
-        "annotate the parameters of its function type, pass a known "
-        "function pointer, or move the call "
-        "into a WEAVEC_UNSAFE region",
-        locate(call));
-  }
-  report(std::move(diagnostic));
-}
-
-void FunctionDataflow::noteUnknownCallee(const CallExpr &call) {
-  if (!recording() || !emitDiagnostics || inUnsafe)
-    return;
-  const FunctionDecl *callee = call.getDirectCallee();
-  if (callee == nullptr) {
-    // A call through a function pointer with no signature: once per
-    // function type (RFC 0004, *Boundaries*).
-    const bool first = summaries.noteUnknownIndirect(call);
-    // A specialization collects diagnostics before its caller is reported.
-    // Rebuilding that cache must not lose a boundary merely because another
-    // speculative context registered the same function type already.
-    if ((!first && callbackBindings.empty() && memoryContext.empty()) ||
-        options.deferBoundary)
-      return;
-    core::Diagnostic diagnostic{
-        .severity = core::Severity::Warning,
-        .id = core::diag::AnnotationRequired,
-        .message = "call through " + calleeName(call) +
-                   " is not checked: its function type has no ownership "
-                   "annotations and its target is unknown",
-        .location = locate(call),
-        .notes = {},
-        .fixits = {},
-    };
-    diagnostic.addNote(
-        "annotate the parameters of its function type with WEAVEC_OWNED, "
-        "WEAVEC_BORROWED, WEAVEC_MUT or WEAVEC_RAW, or pass a known "
-        "function pointer",
-        locate(call));
-    report(std::move(diagnostic));
-    return;
-  }
-
-  const SourceManager &sm = context.getSourceManager();
-  if (!options.reportUnannotated && sm.isInSystemHeader(callee->getLocation()))
-    return;
-  // RFC 0005: in the compile step of the driver the boundary is recorded
-  // for the exports and the link step reports it if the program has no
-  // definition either.
-  const bool first = summaries.noteUnknownCallee(*callee);
-  if ((!first && callbackBindings.empty() && memoryContext.empty()) ||
-      options.deferBoundary)
-    return;
-
-  const std::string name = callee->getNameAsString();
-  core::Diagnostic diagnostic{
-      .severity = core::Severity::Warning,
-      .id = core::diag::AnnotationRequired,
-      .message = "call to '" + name +
-                 "' is not checked: it has no definition or ownership "
-                 "annotations here",
-      .location = locate(call),
-      .notes = {},
-      .fixits = {},
-  };
-  diagnostic.addNote("'" + name + "' is declared here",
-                     locate(callee->getLocation()));
-  diagnostic.addNote("annotate its pointer parameters with WEAVEC_OWNED, "
-                     "WEAVEC_BORROWED, WEAVEC_MUT or WEAVEC_RAW, or define it "
-                     "in this program",
-                     locate(callee->getLocation()));
-  report(std::move(diagnostic));
 }
 
 void FunctionDataflow::handleReturn(const ReturnStmt &ret,
@@ -5452,13 +5338,9 @@ void FunctionDataflow::reinit(core::PlaceId place, core::AnalysisState &state,
     reinitMirrors(place, state);
   }
   state.forget(place);
-  if (survivor) {
-    state.moves.markMoved(place, survivor->reason, survivor->location,
-                          survivor->via, survivor->element, survivor->family,
-                          survivor->ownValue, survivor->guard);
-  }
-  for (const core::PlaceId child : places.descendants(place))
-    state.forget(child);
+  if (survivor)
+    state.moves.copyRecord(place, *survivor);
+  state.forget(places.descendants(place));
 }
 
 void FunctionDataflow::reinitMirrors(core::PlaceId place,
@@ -5602,10 +5484,10 @@ void FunctionDataflow::mirrorSubtree(core::PlaceId src, core::PlaceId dest,
       continue;
     }
     const core::PlaceId mirror = places.translate(place, from, to);
-    if (const auto record = state.moves.recordOf(place)) {
-      state.moves.markMoved(mirror, record->reason, record->location,
-                            record->via.value_or(place), record->element,
-                            record->family, /*ownValue=*/false, record->guard);
+    if (auto record = state.moves.recordOf(place)) {
+      record->via = record->via.value_or(place);
+      record->ownValue = false;
+      state.moves.copyRecord(mirror, std::move(*record));
     }
     if (const auto fact = state.scalars.factOf(place))
       state.scalars.set(mirror, *fact);
@@ -5683,6 +5565,12 @@ void FunctionDataflow::doRead(const PlaceRef &ref, const Expr &at,
     if (const auto hit = findMoved(deref.pointer, state, deref.element)) {
       if (reportMoved)
         reportUseOfMoved(deref.pointer, *hit, where != nullptr ? *where : at);
+      // RFC 0030 §5.1: a record of unknown origin is never diagnosed and
+      // hides nothing else: the dereference is checked as any other.
+      if (hit->record.unknownOrigin) {
+        checkDereference(deref.pointer, where != nullptr ? *where : at, state);
+        continue;
+      }
       // RFC 0030 §15 item 4: the site's null facet is still decided by
       // what is known of the pointer (the use is the finding here; nothing
       // else is reported or refined).
@@ -5702,20 +5590,31 @@ void FunctionDataflow::doRead(const PlaceRef &ref, const Expr &at,
       reportRawOperation("dereference of raw pointer '" + name +
                              "' outside an unsafe region",
                          name, *raw, where != nullptr ? *where : at);
+      // RFC 0030 §6.1: inside a region a raw access is trusted for every
+      // facet, the temporal one included.
+      if (inUnsafe && where != nullptr)
+        decide(siteFor(*where, core::Facet::Temporal, /*operand=*/true),
+               core::Facet::Temporal,
+               core::FacetDecision::trustedFor(core::TrustReason::Unsafe));
       return;
     }
     // RFC 0030 §3.1: no record, the object is live (under the entry
-    // assumptions and §9.4). Stage S3-B3 adds `may-alias-released` and the
-    // unknown-callee records. §15 item 4: a pointer made by
-    // reinterpretation says nothing about the object it points to.
-    if (where != nullptr) {
+    // assumptions and §9.4), unless the pointer may alias an object released
+    // earlier on some path (`may-alias-released`). §15 item 4: a pointer
+    // made by reinterpretation says nothing about the object it points to.
+    if (where != nullptr && publishing()) {
       const bool reinterpreted = state.reinterpreted.contains(deref.pointer);
-      const core::FacetDecision decision =
+      core::FacetDecision decision =
           reinterpreted ? core::FacetDecision::unresolvedFor(
                               core::UnresolvedReason::RawCast,
                               "'" + nameOf(deref.pointer) +
                                   "' was made from a non-pointer value")
                         : core::FacetDecision::proven();
+      if (!reinterpreted && mayAliasReleased(deref.pointer, state))
+        decision = core::FacetDecision::unresolvedFor(
+            core::UnresolvedReason::MayAliasReleased,
+            "'" + nameOf(deref.pointer) +
+                "' may point into an object released earlier");
       decide(siteFor(*where, core::Facet::Temporal, /*operand=*/true),
              core::Facet::Temporal, decision);
       if (reinterpreted)
@@ -5760,7 +5659,20 @@ std::vector<core::PlaceId> FunctionDataflow::doConsume(
   const SiteInfo *site = siteFor(at, core::Facet::Temporal);
   const bool conditional = origin.conditional || origin.lossy ||
                            !guard.trivial() || origin.unknownOrigin;
-  if (const auto hit = findMoved(place, state, ref.element)) {
+  const auto hit = findMoved(place, state, ref.element);
+  if (hit && hit->record.unknownOrigin && !origin.unknownOrigin &&
+      hit->target == place) {
+    // §3.1, *A known release after an unknown one*: the unknown callee may
+    // already have released the object, so this release's own temporal
+    // facet is unresolved, with no diagnostic. The known consume then
+    // replaces the record, so a later use is what this consume makes it.
+    decide(site, core::Facet::Temporal,
+           core::FacetDecision::unresolvedFor(
+               core::UnresolvedReason::UnknownCallee, hit->record.origin));
+    for (const ConsumeTarget &target :
+         consumeTargets(place, ref.element, state))
+      state.moves.eraseUnknown(target.place);
+  } else if (hit) {
     const bool bothFreed = hit->record.reason == core::MoveReason::Freed &&
                            reason == core::MoveReason::Freed;
     const bool bothReleased =
@@ -5770,12 +5682,11 @@ std::vector<core::PlaceId> FunctionDataflow::doConsume(
                                           ? core::Certainty::Possible
                                           : certaintyOf(hit->record);
     if (hit->record.unknownOrigin) {
-      // §3.1, *A known release after an unknown one*: the unknown callee
-      // may already have released the object; no diagnostic. (Replacing the
-      // record is stage S3-B3's, with the unknown-callee default.)
+      // §3.1: another unknown effect on an object unknown code may already
+      // have released; no diagnostic.
       decide(site, core::Facet::Temporal,
              core::FacetDecision::unresolvedFor(
-                 core::UnresolvedReason::UnknownCallee));
+                 core::UnresolvedReason::UnknownCallee, hit->record.origin));
     } else if (bothFreed || bothReleased) {
       const bool definite = certainty == core::Certainty::Definite;
       decide(site, core::Facet::Temporal,
@@ -5875,8 +5786,19 @@ std::vector<core::PlaceId> FunctionDataflow::doConsume(
   // storage still holds (`free(b)` with `b->data` owned).
   checkReleaseFamily(place, family, at, state);
   // §3.1: nothing released the object before: the consume is proven, unless
-  // a conflict or a family above says otherwise (records merge by rank).
-  decide(site, core::Facet::Temporal, core::FacetDecision::proven());
+  // a conflict or a family above says otherwise (records merge by rank), or
+  // the pointer may alias an object released earlier on some path.
+  const bool releasing =
+      reason == core::MoveReason::Freed || reason == core::MoveReason::Released;
+  decide(site, core::Facet::Temporal,
+         releasing && publishing() && mayAliasReleased(place, state)
+             ? core::FacetDecision::unresolvedFor(
+                   core::UnresolvedReason::MayAliasReleased,
+                   "'" + nameOf(place) +
+                       "' may point into an object released earlier")
+             : core::FacetDecision::proven());
+  if (releasing)
+    noteRelease(place, state);
   if (reason == core::MoveReason::Freed && ref.element.isWhole()) {
     if (library)
       checkContainerFree(place, at, state);
@@ -5981,29 +5903,6 @@ std::vector<core::PlaceId> FunctionDataflow::doConsume(
   return marked;
 }
 
-void FunctionDataflow::doMutationCheck(core::PlaceId place, const Expr &at,
-                                       core::AnalysisState &state) {
-  // Writing to a borrowed place is Rust's exclusivity rule, opt-in under
-  // `--exclusive-borrows` (RFC 0006, *Conflict rules*).
-  if (!options.exclusiveBorrows)
-    return;
-  const auto conflict = findLoanConflict(place, std::nullopt, state);
-  if (!conflict)
-    return;
-  core::Diagnostic diagnostic{
-      .severity = core::Severity::Error,
-      .id = core::diag::ConflictingBorrow,
-      .message =
-          "cannot assign to '" + nameOf(place) + "' while it is borrowed",
-      .location = locate(at),
-      .notes = {},
-      .fixits = {},
-  };
-  diagnostic.addNote("borrowed by '" + nameOf(conflict->holder) + "' here",
-                     conflict->location);
-  report(std::move(diagnostic));
-}
-
 /// Whether the pointer value `value` is converted, on its way from the
 /// place or storage it comes from, between pointers to elements of
 /// different sizes (`void` counting as unknown).
@@ -6060,7 +5959,15 @@ void FunctionDataflow::applyPointerAssign(core::PlaceId dest,
       isa<VAArgExpr>(rhs->IgnoreParenCasts()) ||
       (given.kind == ValueOrigin::Kind::Copy && given.place &&
        state.reinterpreted.contains(given.place->place));
+  // RFC 0030 §3.1: a value stored since the last release (not a copy of an
+  // older one) is not a released object.
+  const bool freshValue =
+      !state.releasedTypes.empty() && storedSinceRelease(given, state);
   const auto settleReinterpreted = llvm::scope_exit([&] {
+    if (freshValue)
+      state.storedSinceRelease.insert(dest);
+    else
+      state.storedSinceRelease.erase(dest);
     if (reinterpretedValue)
       state.reinterpreted.insert(dest);
     else
@@ -6418,11 +6325,13 @@ void FunctionDataflow::applyPointerAssign(core::PlaceId dest,
         // uses through it do not cascade into a second report per alias. A
         // copy of an uninitialised pointer is reported once, at the copy:
         // the destination itself is initialised now (RFC 0008).
-        state.moves.markMoved(
-            dest, source->moved->record.reason, source->moved->record.location,
-            source->moved->record.via.value_or(source->moved->target), element,
-            source->moved->record.family, /*ownValue=*/false,
-            source->moved->record.guard);
+        // RFC 0030 §3.1: with the record's certainty; a copy of a possible
+        // or unknown-origin record is not definite.
+        core::MoveRecord copy = source->moved->record;
+        copy.via = copy.via.value_or(source->moved->target);
+        copy.element = element;
+        copy.ownValue = false;
+        state.moves.copyRecord(dest, std::move(copy));
       }
       break;
     }
@@ -6657,30 +6566,6 @@ void FunctionDataflow::lend(core::PlaceId dest, core::PlaceId target,
                             core::BorrowKind kind,
                             core::LifetimeId loanLifetime, const Expr &at,
                             core::AnalysisState &state) {
-  // Exclusivity (RFC 0001), opt-in under `--exclusive-borrows` (RFC 0006,
-  // *Conflict rules*).
-  if (const auto conflict = options.exclusiveBorrows
-                                ? findLoanConflict(target, kind, state)
-                                : std::nullopt) {
-    const bool mutableAttempt = kind == core::BorrowKind::Mutable;
-    core::Diagnostic diagnostic{
-        .severity = core::Severity::Error,
-        .id = core::diag::ConflictingBorrow,
-        .message = "cannot borrow '" + nameOf(target) + "' as " +
-                   (mutableAttempt ? "mutable" : "shared") +
-                   " because it is already " +
-                   (mutableAttempt ? "borrowed" : "mutably borrowed"),
-        .location = locate(at),
-        .notes = {},
-        .fixits = {},
-    };
-    diagnostic.addNote("previous borrow of '" + nameOf(conflict->place) +
-                           "' by '" + nameOf(conflict->holder) + "' here",
-                       conflict->location);
-    report(std::move(diagnostic));
-    return;
-  }
-
   const core::SourceLocation here = locate(at);
   for (const core::PlaceId holder : mirrors(dest, state)) {
     for (const core::PlaceId place : mirrors(target, state)) {
@@ -6691,33 +6576,6 @@ void FunctionDataflow::lend(core::PlaceId dest, core::PlaceId target,
                                               .holder = holder});
     }
   }
-}
-
-void FunctionDataflow::checkTemporaryBorrow(const PlaceRef &borrowed,
-                                            core::BorrowKind kind,
-                                            const Expr &at,
-                                            const core::AnalysisState &state) {
-  if (!options.exclusiveBorrows)
-    return;
-  const auto conflict = findLoanConflict(borrowed.place, kind, state);
-  if (!conflict)
-    return;
-  const bool mutableAttempt = kind == core::BorrowKind::Mutable;
-  core::Diagnostic diagnostic{
-      .severity = core::Severity::Error,
-      .id = core::diag::ConflictingBorrow,
-      .message = "cannot borrow '" + nameOf(borrowed.place) + "' as " +
-                 (mutableAttempt ? "mutable" : "shared") +
-                 " because it is already " +
-                 (mutableAttempt ? "borrowed" : "mutably borrowed"),
-      .location = locate(at),
-      .notes = {},
-      .fixits = {},
-  };
-  diagnostic.addNote("previous borrow of '" + nameOf(conflict->place) +
-                         "' by '" + nameOf(conflict->holder) + "' here",
-                     conflict->location);
-  report(std::move(diagnostic));
 }
 
 // -- Queries ------------------------------------------------------------------
@@ -6745,6 +6603,17 @@ FunctionDataflow::scalarMirrors(core::PlaceId place,
 FunctionDataflow::MirrorPlaces
 FunctionDataflow::mirrors(core::PlaceId place, const core::AnalysisState &state,
                           bool definite) {
+  if (mirrorCache == nullptr || definite)
+    return computeMirrors(place, state, definite);
+  if (const auto it = mirrorCache->find(place.value); it != mirrorCache->end())
+    return it->second;
+  MirrorPlaces result = computeMirrors(place, state, definite);
+  mirrorCache->try_emplace(place.value, result);
+  return result;
+}
+
+FunctionDataflow::MirrorPlaces FunctionDataflow::computeMirrors(
+    core::PlaceId place, const core::AnalysisState &state, bool definite) {
   const auto parent = places.parent(place);
   if (!parent)
     return {place};
@@ -7084,10 +6953,9 @@ void FunctionDataflow::report(core::Diagnostic diagnostic) {
 void FunctionDataflow::report(core::Diagnostic diagnostic,
                               core::Certainty certainty, const SiteInfo *site,
                               std::optional<core::Facet> facet) {
-  // Nothing is reported for code inside an unsafe region (RFC 0004, *Unsafe
-  // regions*); the region is still analysed so its effects reach the code
-  // around it, where they are checked.
-  if (phase != Phase::Final || !emitDiagnostics || inUnsafe)
+  // RFC 0030 §6.1: no diagnostic is dropped for being inside an unsafe
+  // region; the region's own rules are the ledger's (`trusted(unsafe)`).
+  if (phase != Phase::Final || !emitDiagnostics)
     return;
   // RFC 0030 §3: the severity follows from the id and the certainty.
   diagnostic.severity = core::diag::defaultSeverity(diagnostic.id, certainty);
@@ -7122,8 +6990,7 @@ void FunctionDataflow::flushDiagnostics() {
 }
 
 bool FunctionDataflow::publishing() const noexcept {
-  return phase == Phase::Final && emitDiagnostics && !inUnsafe &&
-         !ledger.isDiscarding();
+  return phase == Phase::Final && emitDiagnostics && !ledger.isDiscarding();
 }
 
 const SiteInfo *FunctionDataflow::siteFor(const Stmt &at, core::Facet facet,
@@ -7291,9 +7158,10 @@ core::Certainty FunctionDataflow::certaintyOf(const core::MoveRecord &record) {
 core::FacetDecision
 FunctionDataflow::temporalDecisionFor(const core::MoveRecord &record,
                                       core::Certainty certainty) {
+  // §5.1: the detail names the unknown code (for the require-level text).
   if (record.unknownOrigin)
     return core::FacetDecision::unresolvedFor(
-        core::UnresolvedReason::UnknownCallee);
+        core::UnresolvedReason::UnknownCallee, record.origin);
   if (certainty == core::Certainty::Definite)
     return core::FacetDecision::violation();
   return core::FacetDecision::unresolvedFor(
@@ -7314,7 +7182,14 @@ void FunctionDataflow::reportUseOfMoved(core::PlaceId used, const MovedHit &hit,
     const SiteInfo *site =
         siteFor(at, core::Facet::Null, /*operand=*/!isa<CallExpr>(at));
     if (!definite) {
-      decide(site, core::Facet::Null, core::FacetDecision::checked());
+      // §11: without zero-initialisation the value may be garbage, which a
+      // null check cannot catch.
+      decide(site, core::Facet::Null,
+             options.zeroInit
+                 ? core::FacetDecision::checked()
+                 : core::FacetDecision::unresolvedFor(
+                       core::UnresolvedReason::NoZeroInit,
+                       "'" + nameOf(used) + "' may be uninitialised"));
       return;
     }
     decide(site, core::Facet::Null, core::FacetDecision::violation());
@@ -7390,6 +7265,7 @@ void FunctionDataflow::reportLifetimeTooShort(core::PlaceId holder,
              ? core::FacetDecision::violation()
              : core::FacetDecision::unresolvedFor(
                    core::UnresolvedReason::MayDangle));
+  noteDanglingHolder(holder);
   const core::PlaceId borrowedRoot = places.root(borrowed);
   const std::string borrowedName = nameOf(borrowedRoot);
   core::Diagnostic diagnostic{
@@ -7415,6 +7291,16 @@ void FunctionDataflow::reportLifetimeTooShort(core::PlaceId holder,
     }
   }
   report(std::move(diagnostic), certainty, site, core::Facet::Temporal);
+}
+
+void FunctionDataflow::noteDanglingHolder(core::PlaceId holder) {
+  // What a caller finds in its memory there may point to dead storage: it
+  // must trust nothing about the value (the `unknown` effect, until §9.4's
+  // boundary propagation, stage S7, names it `dangling-escape`).
+  if (recording() && !boundsDecisionOnly)
+    if (const auto path = builder.summaryPathOf(holder);
+        path && (path->isGlobal() || (path->isParam() && !path->isRoot())))
+      inferred.addEffect(*path, core::PlaceEffect{.unknown = true});
 }
 
 core::Diagnostic FunctionDataflow::makeError(std::string_view id,
@@ -7724,10 +7610,12 @@ void FunctionDataflow::checkDereference(core::PlaceId pointer, const Expr &at,
   if (!record) {
     // RFC 0030 §3.2: nothing is known (a parameter, a loaded field, an
     // unknown result): the null facet is checked, and after the check the
-    // pointer is non-null.
+    // pointer is non-null. Inside an unsafe region the facet is
+    // `trusted(unsafe)` and refines nothing (§6.1).
     decide(site, core::Facet::Null, core::FacetDecision::checked());
     noteRequirement(pointer, state);
-    markDereferenced(pointer, at, state);
+    if (!inUnsafe)
+      markDereferenced(pointer, at, state);
     return;
   }
   if (!record->mayBeNull()) {
@@ -7758,8 +7646,10 @@ void FunctionDataflow::checkDereference(core::PlaceId pointer, const Expr &at,
   if (record->allocatorSource)
     reportAllocationFailure(*record, at, site);
   // §3.2, *Refinement after a dereference*: the check traps on null, so the
-  // pointer is non-null downstream.
-  markDereferenced(pointer, at, state);
+  // pointer is non-null downstream; a trusted dereference inside an unsafe
+  // region refines nothing (§6.1).
+  if (!inUnsafe)
+    markDereferenced(pointer, at, state);
 }
 
 void FunctionDataflow::reportAllocationFailure(const core::NullRecord &record,
@@ -7801,7 +7691,7 @@ void FunctionDataflow::markDereferenced(core::PlaceId pointer, const Expr &at,
 
 void FunctionDataflow::checkResultDereference(const CallExpr &call,
                                               core::AnalysisState &state) {
-  if (!recording() || !emitDiagnostics || inUnsafe)
+  if (!recording() || !emitDiagnostics)
     return;
   const SiteInfo *site = siteFor(call, core::Facet::Null);
   const auto record = nullnessOf(builder.classifyValue(call), call, state);
@@ -7865,9 +7755,14 @@ void FunctionDataflow::checkRequiredArguments(
       continue;
     const ArgumentNeed *need = declaredNeed(index);
     // The call site checks the argument (`nonnull` is always expressible,
-    // except under a length that has no name here).
-    const bool checkedHere = need != nullptr && !need->systemApi &&
-                             (!need->allowedIfZero || need->unlessZero);
+    // except under a length that has no name here). A `null-if-zero`
+    // argument's check (`nonnull_n(p, n)`) lets a null pointer through when
+    // the length is zero, so it refines the argument only when the facts
+    // give the length as non-zero (§3.2 *Refinement*, §8.3).
+    const bool checkedHere =
+        need != nullptr && !need->systemApi &&
+        (!need->allowedIfZero ||
+         (need->unlessZero && lengthKnownNonZero(call, *site, index, state)));
     const auto publish = [&](const core::FacetDecision &decision) {
       if (need == nullptr || !publishing())
         return;
@@ -7901,8 +7796,8 @@ void FunctionDataflow::checkRequiredArguments(
         noteRequirement(*place, state);
         // §3.2: only a planned check makes the argument non-null after the
         // call (`f(q, 0)` with a callee that dereferences on some path
-        // leaves `q` unknown).
-        if (checkedHere)
+        // leaves `q` unknown); none is planned inside an unsafe region.
+        if (checkedHere && !inUnsafe)
           markDereferenced(*place, arg, state);
       }
       continue;
@@ -7918,7 +7813,7 @@ void FunctionDataflow::checkRequiredArguments(
       publish(core::FacetDecision::checked());
       if (record->allocatorSource && need != nullptr)
         reportAllocationFailure(*record, arg, site);
-      if (place && checkedHere)
+      if (place && checkedHere && !inUnsafe)
         markDereferenced(*place, arg, state);
       continue;
     }
@@ -7953,6 +7848,20 @@ void FunctionDataflow::checkRequiredArguments(
                                          .detail = {}});
     }
   }
+}
+
+bool FunctionDataflow::lengthKnownNonZero(const CallExpr &call,
+                                          const SiteInfo &site,
+                                          std::uint32_t argument,
+                                          const core::AnalysisState &state) {
+  if (!site.library || site.library->entry == nullptr)
+    return false;
+  const core::LibraryParam *param = site.library->param(argument);
+  if (param == nullptr || !param->zeroTerm)
+    return false;
+  const auto length =
+      libraryValue(*param->zeroTerm, call, *site.library, state);
+  return length && length->isConstant() && length->constant > 0;
 }
 
 // -- Bounds (RFC 0011, *Bounds checks*) ---------------------------------------
@@ -9984,6 +9893,12 @@ FunctionDataflow::consumptionAt(const core::AnalysisState &state) {
         input != state.incoming.end() && input->second.path &&
         input->second.path != path)
       continue;
+    // RFC 0030 §5.1: handed to code nobody can see, which is not a consume
+    // on this class (finalizeSummary's rule for the exit).
+    if (record->unknownOrigin) {
+      result[*path].join(core::PlaceEffect{.unknown = true});
+      continue;
+    }
     core::PlaceEffect effect =
         effectOfMove(record->reason, record->family, record->element,
                      summaryGuardOf(record->guard));
@@ -10101,6 +10016,15 @@ void FunctionDataflow::recordOutcomes(const Expr &value,
   // (`if (strm == NULL) return Z_STREAM_ERROR;` before `strm->state = s`).
   std::set<core::SummaryPath> heldHere;
   for (const core::PlaceId place : state.resources.holders()) {
+    if (const auto path = callerVisiblePath(place))
+      heldHere.insert(*path);
+  }
+  // RFC 0030 §5.1: a place handed to unknown code may hold anything, a
+  // stored resource included; the class cannot claim the store missed it.
+  for (const core::PlaceId place : state.moves.movedPlaces()) {
+    const core::MoveRecord *record = state.moves.find(place);
+    if (record == nullptr || !record->unknownOrigin)
+      continue;
     if (const auto path = callerVisiblePath(place))
       heldHere.insert(*path);
   }
@@ -10599,9 +10523,6 @@ void FunctionDataflow::finalizeSummary(const core::AnalysisState *exitState) {
       llvm::scope_exit([&] { inferred.objectViews = builder.objectViews; });
   if (summaries.incompleteFunctions.contains(function.getCanonicalDecl()))
     decideIncomplete("summary iteration limit reached", *function.getBody());
-  if (convergenceFailed)
-    decideIncomplete("function dataflow iteration limit reached",
-                     *function.getBody());
   // RFC 0012, *Sized fields*: what this function's stores say.
   finalizeSizedFields(exitState);
   // Consumption is recorded as it happens for every caller-visible path
@@ -10634,6 +10555,12 @@ void FunctionDataflow::finalizeSummary(const core::AnalysisState *exitState) {
           input != exitState->incoming.end() && input->second.path &&
           input->second.path != path)
         continue;
+      // RFC 0030 §5.1: handed to code nobody can see; the caller applies
+      // the same default to its names for the value.
+      if (record->unknownOrigin) {
+        inferred.addEffect(*path, core::PlaceEffect{.unknown = true});
+        continue;
+      }
       core::PathGuard guard = summaryGuardOf(record->guard);
       core::PlaceEffect effect =
           effectOfMove(record->reason, record->family, record->element, guard);

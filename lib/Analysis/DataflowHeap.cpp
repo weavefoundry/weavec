@@ -225,10 +225,10 @@ static void copyHeapCell(core::PlaceId source, core::PlaceId target,
     state.incoming[target] = input->second;
   state.pointerFacts.copyPointer(source, target);
   state.loans.copyHolder(source, target);
-  if (const auto moved = state.moves.recordOf(source))
-    state.moves.markMoved(target, moved->reason, moved->location,
-                          moved->via.value_or(source), moved->element,
-                          moved->family, moved->ownValue, moved->guard);
+  if (auto moved = state.moves.recordOf(source)) {
+    moved->via = moved->via.value_or(source);
+    state.moves.copyRecord(target, std::move(*moved));
+  }
 }
 
 void FunctionDataflow::mirrorHeapWrite(core::PlaceId place,
@@ -259,7 +259,7 @@ void FunctionDataflow::mirrorHeapWrite(core::PlaceId place,
       if (state.kindOf(child) == core::OwnershipKind::Unknown &&
           !state.resources.holds(child) && !state.nulls.recordOf(child) &&
           !state.spatial.has(child) && !state.scalars.factOf(child) &&
-          !state.raw.isRaw(child) && !state.moves.recordOf(child) &&
+          !state.raw.isRaw(child) && state.moves.find(child) == nullptr &&
           state.loans.heldBy(child).empty())
         continue;
       const auto target = places.translate(child, place, mirror);
@@ -655,7 +655,7 @@ void FunctionDataflow::copyHeapValue(core::PlaceId source, core::PlaceId target,
     if (state.kindOf(child) == core::OwnershipKind::Unknown &&
         !state.resources.holds(child) && !state.nulls.recordOf(child) &&
         !state.spatial.has(child) && !state.scalars.factOf(child) &&
-        !state.raw.isRaw(child) && !state.moves.recordOf(child) &&
+        !state.raw.isRaw(child) && state.moves.find(child) == nullptr &&
         !state.callTargets.contains(child) && !state.incoming.contains(child) &&
         state.loans.heldBy(child).empty())
       continue;

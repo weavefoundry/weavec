@@ -52,7 +52,6 @@ inline constexpr std::string_view UseAfterMove = "use-after-move";
 inline constexpr std::string_view ConflictingBorrow = "conflicting-borrow";
 inline constexpr std::string_view LifetimeTooShort = "lifetime-too-short";
 inline constexpr std::string_view UnsafeOperation = "unsafe-operation";
-inline constexpr std::string_view AnnotationRequired = "annotation-required";
 inline constexpr std::string_view AnnotationMismatch = "annotation-mismatch";
 inline constexpr std::string_view InvalidAnnotation = "invalid-annotation";
 /// RFC 0007: an owned resource whose every holder went out of reach without
@@ -80,9 +79,6 @@ inline constexpr std::string_view OutOfBounds = "out-of-bounds";
 /// RFC 0017: a definitely invalid operation in the target integer type.
 inline constexpr std::string_view InvalidIntegerOperation =
     "invalid-integer-operation";
-/// RFC 0014: an operation lost analysis coverage. Removed by RFC 0030 once
-/// the engine stops emitting it (it becomes `unresolved` ledger rows).
-inline constexpr std::string_view AnalysisIncomplete = "analysis-incomplete";
 /// RFC 0030 §6.2: a `WEAVEC_ASSUME(e)` the analysis refutes.
 inline constexpr std::string_view ContradictedAssumption =
     "contradicted-assumption";
@@ -101,28 +97,13 @@ inline constexpr std::string_view UnanalyzedInput = "unanalyzed-input";
 
 /// Every id, for validating user input (`-Wweavec-<id>`).
 inline constexpr std::array All{
-    UseAfterFree,
-    DoubleFree,
-    UseAfterMove,
-    ConflictingBorrow,
-    LifetimeTooShort,
-    UnsafeOperation,
-    AnnotationRequired,
-    AnnotationMismatch,
-    InvalidAnnotation,
-    Leak,
-    MismatchedRelease,
-    NullDereference,
-    UseOfUninitialized,
-    InvalidRelease,
-    OutOfBounds,
-    AnalysisIncomplete,
-    InvalidIntegerOperation,
-    ContradictedAssumption,
-    AllocationFailure,
-    UnresolvedOperation,
-    UncheckedOperation,
-    UnanalyzedInput,
+    UseAfterFree,           DoubleFree,        UseAfterMove,
+    ConflictingBorrow,      LifetimeTooShort,  UnsafeOperation,
+    AnnotationMismatch,     InvalidAnnotation, Leak,
+    MismatchedRelease,      NullDereference,   UseOfUninitialized,
+    InvalidRelease,         OutOfBounds,       InvalidIntegerOperation,
+    ContradictedAssumption, AllocationFailure, UnresolvedOperation,
+    UncheckedOperation,     UnanalyzedInput,
 };
 
 [[nodiscard]] constexpr bool isKnown(std::string_view id) noexcept {
@@ -132,8 +113,12 @@ inline constexpr std::array All{
 
 /// Ids RFC 0030 removed (*Diagnostics*). A `-W` flag naming one is an error,
 /// `unknown WeaveC diagnostic '<id>' (removed by RFC 0030)`; no alias is
-/// kept.
+/// kept. `analysis-incomplete` became `unresolved(unanalysed | budget | ...)`
+/// ledger rows, `annotation-required` became `unresolved(unknown-callee)`
+/// rows with fix-its (§5.1).
 inline constexpr std::array Removed{
+    std::string_view("analysis-incomplete"),
+    std::string_view("annotation-required"),
     std::string_view("checking-incomplete"),
     std::string_view("checking-failed"),
 };
@@ -146,9 +131,8 @@ inline constexpr std::array Removed{
 /// The severity `id` has unless the user overrides it (RFC 0030,
 /// *Diagnostics*): an error when definite and a warning when possible,
 /// except that
-///   - `leak`, `invalid-annotation`, `allocation-failure`,
-///     `unanalyzed-input`, `annotation-required` and `analysis-incomplete`
-///     are always warnings, and
+///   - `leak`, `invalid-annotation`, `allocation-failure` and
+///     `unanalyzed-input` are always warnings, and
 ///   - `null-dereference`, `use-of-uninitialized` and `out-of-bounds`
 ///     (reported only when definite), `unsafe-operation`,
 ///     `annotation-mismatch`, `invalid-integer-operation`,
@@ -161,8 +145,6 @@ inline constexpr std::array Removed{
       InvalidAnnotation,
       AllocationFailure,
       UnanalyzedInput,
-      AnnotationRequired,
-      AnalysisIncomplete,
   };
   constexpr std::array ByCertainty{
       UseAfterFree,     DoubleFree,        UseAfterMove,   ConflictingBorrow,

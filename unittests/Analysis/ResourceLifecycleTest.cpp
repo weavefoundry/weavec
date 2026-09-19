@@ -170,10 +170,8 @@ TEST(ResourceLifecycle, EscapesAreNotLeaks) {
     }
   )c");
   ASSERT_TRUE(result.ast);
-  // Only the boundary warnings for the unknown callees.
-  EXPECT_EQ(ids(result.diagnostics),
-            (Strings{"annotation-required", "annotation-required",
-                     "annotation-required"}));
+  // Nothing: the unknown callees are ledger rows (RFC 0030 §5.1).
+  EXPECT_TRUE(result.diagnostics.empty()) << messages(result.diagnostics)[0];
 }
 
 // `tb = &L->strt; tb->hash = fresh`: the store lands in the caller's object
@@ -366,6 +364,29 @@ TEST(ResourceLifecycle, ReallocFailurePathIsNotALeak) {
   )c");
   ASSERT_TRUE(result.ast);
   EXPECT_EQ(messages(result.diagnostics), Strings{});
+}
+
+TEST(ResourceLifecycle, FreopenClosesItsStreamWhenItFails) {
+  // ISO C 7.21.5.4: `freopen` returns its stream reopened, or null with the
+  // stream closed (Lua's `luaL_loadfilex` reassigns the result).
+  const auto result = analyze(std::string(Libc) + R"c(
+    FILE *freopen(const char *, const char *, FILE *);
+    int reopen(const char *path) {
+      FILE *f = fopen(path, "r");
+      if (!f) return -1;
+      f = freopen(path, "rb", f);
+      if (!f) return -2;
+      return fclose(f);
+    }
+    void closed_twice(const char *path) {
+      FILE *f = fopen(path, "r");
+      if (!f) return;
+      if (!freopen(path, "rb", f)) { fclose(f); return; }
+      fclose(f);
+    }
+  )c");
+  ASSERT_TRUE(result.ast);
+  EXPECT_EQ(messages(result.diagnostics), Strings{"13: 'f' is freed twice"});
 }
 
 // -- Mismatched releases (RFC 0007, *Release families*) -----------------------
@@ -621,9 +642,8 @@ TEST(ResourceLifecycle, AnEscapedAliasMeansTheResourceEscaped) {
     }
   )c");
   ASSERT_TRUE(result.ast);
-  EXPECT_EQ(messages(result.diagnostics),
-            (Strings{"7: call to 'keep' is not checked: it has no definition "
-                     "or ownership annotations here"}));
+  // No leak; the unknown callee itself is a ledger row (RFC 0030 §5.1).
+  EXPECT_TRUE(result.diagnostics.empty()) << messages(result.diagnostics)[0];
 }
 
 TEST(ResourceLifecycle, AFreedElementDoesNotReleaseWhatAnotherElementHolds) {

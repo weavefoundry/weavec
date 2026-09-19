@@ -208,6 +208,10 @@ FrontendOptions DriverOptions::toFrontendOptions() const {
   options.analysis.stats = stats.get();
   options.analysisStatsPath = analysisStatsPath;
   options.analysis.dumpStream = dumpAnalysis ? &llvm::outs() : nullptr;
+  // RFC 0030 §3.2, §11: the ledger describes the enforcing build, which
+  // zero-initialises unless `-fno-weavec-zero-init` says otherwise.
+  options.analysis.zeroInit = zeroInit.value_or(true);
+  options.analysis.budget = budget;
   options.control = control;
   options.config = core::LedgerConfig{.checks = checks,
                                       .zeroInit = zeroInitialises(),
@@ -244,7 +248,8 @@ llvm::StringRef driverFlagsHelp() {
   -fweavec-summary, -fno-weavec-summary
       Print the summary line on stderr (default: when a ledger is written).
   -fweavec-budget=<n>
-      Block transfers per function before its analysis stops (0: unlimited).
+      Block transfers per function before its analysis stops (default:
+      50000; 0: unlimited).
   -fweavec-link, -fno-weavec-link
       Run the whole-program step before linking (default: on).
   -fweavec-print-prelude
@@ -528,7 +533,8 @@ static int runCc1Job(llvm::ArrayRef<const char *> argv, const char *argv0,
   }
   // RFC 0030 §11 (end).
 
-  // The compile step sees the unit alone; boundaries wait for the link.
+  // The compile step sees the unit alone (RFC 0030 §5.1: calls into the
+  // other units are unknown callees until the link step).
   if (driver != nullptr && driver->stats)
     weavec.stats = driver->stats;
   // RFC 0030 §13.1: a job that writes a file writes the unit record next
@@ -536,7 +542,6 @@ static int runCc1Job(llvm::ArrayRef<const char *> argv, const char *argv0,
   const std::string output = compiler->getFrontendOpts().OutputFile;
   const bool writesRecord = !output.empty() && output != "-";
   FrontendOptions options = weavec.toFrontendOptions();
-  options.analysis.deferBoundary = true;
   options.collectInterface = writesRecord;
   const core::LedgerConfig config = options.config;
   std::optional<UnitResult> result;

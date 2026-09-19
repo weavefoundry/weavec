@@ -10,6 +10,8 @@
 
 #include "weavec/Analysis/TranslationUnitAnalysis.h"
 
+#include "clang/Basic/SourceManager.h"
+
 #include <utility>
 
 namespace weavec::analysis {
@@ -35,6 +37,9 @@ DataflowEngine::~DataflowEngine() = default;
 void DataflowEngine::analyzeUnit(const EngineInput &input, LedgerAdapter &out) {
   context = &input.context;
   analysisOptions = input.options.analysis;
+  analysisOptions.budget = input.options.budget;
+  analysisOptions.zeroInit = input.options.zeroInit;
+  analysisOptions.strictAliasing = input.options.strictAliasing;
   // Everything the engine publishes goes through `out` (§14): the
   // authoritative pass of each reported function opens with
   // `beginFunction`, and the fixpoint rounds publish into a discarding
@@ -44,10 +49,20 @@ void DataflowEngine::analyzeUnit(const EngineInput &input, LedgerAdapter &out) {
   analyzer->setDatabase(input.database);
   if (input.options.dependencies != nullptr)
     analyzer->summaries().beginDependencies(*input.options.dependencies);
+  // RFC 0030 §5.6, §2.6: every emitted function is analysed and reported,
+  // `static inline` functions of user headers included, and so is every
+  // definition of the main file (an unused `static` one is not emitted, but
+  // its findings are still the unit's); definitions in system headers, and
+  // header functions CodeGen never emits, are not.
+  const SiteIndex &sites = input.sites;
+  const clang::SourceManager &sm = input.context.getSourceManager();
   if (input.options.shouldReport)
     analyzer->run(input.options.shouldReport);
   else
-    analyzer->run();
+    analyzer->run([&sites, &sm](const clang::FunctionDecl &function) {
+      return sites.function(function) != nullptr ||
+             sm.isInMainFile(sm.getExpansionLoc(function.getLocation()));
+    });
   // The exports read summaries, which count as dependencies (RFC 0020).
   exported = analyzer->exports();
   if (input.options.dependencies != nullptr)

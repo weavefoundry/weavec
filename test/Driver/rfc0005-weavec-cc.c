@@ -22,8 +22,9 @@
 // RUN: %weavec_cc -fno-weavec-link %t/node.o %t/main.o -o %t/prog2 2>&1 | count 0
 // RUN: ls %t/prog2
 //
-// A boundary deferred by the compile step is reported by the link step when
-// no unit defines the callee (the linker then fails on the same symbols).
+// A callee no unit defines is unknown code at the link step too: RFC 0030
+// §5.1 records the calls as ledger rows and reports nothing, and the linker
+// fails on the undefined symbols.
 // RUN: %weavec_cc -c %s -o %t/bnd.o -I%S/../WholeProgram/Inputs -DBOUNDARY 2>&1 | count 0
 // RUN: %weavec --dump-record=%t/bnd.o.weavec | FileCheck --check-prefix=DEFERRED %s
 // RUN: not %weavec_cc %t/node.o %t/bnd.o -o %t/prog3 2>&1 | FileCheck --check-prefix=BOUNDARY %s
@@ -93,9 +94,10 @@ struct blob *blob_open(const char *path);
 void blob_close(struct blob *b);
 
 int main(void) {
-  // BOUNDARY: rfc0005-weavec-cc.c:[[@LINE+1]]:20: warning: call to 'blob_open' is not checked: it has no definition or ownership annotations here [weavec::annotation-required]
+  // BOUNDARY-NOT: warning:
+  // BOUNDARY: blob_close
+  // BOUNDARY-NOT: warning:
   struct blob *b = blob_open("x");
-  // BOUNDARY: rfc0005-weavec-cc.c:[[@LINE+1]]:3: warning: call to 'blob_close' is not checked
   blob_close(b);
   node_free(node_new());
   return 0;

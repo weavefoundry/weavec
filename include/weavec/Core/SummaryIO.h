@@ -97,8 +97,9 @@ namespace weavec::core {
 /// Version of the record format; bumped when a record written by this
 /// version cannot be read by the previous one.
 // Version 27 (RFC 0030) removes the checked contract and the checked
-// call-context entries (orders, bytes, non-NaN inputs).
-inline constexpr unsigned SummaryFormatVersion = 27;
+// call-context entries (orders, bytes, non-NaN inputs). Version 28 (RFC 0030
+// §5.1) adds the `unknown` effect flag.
+inline constexpr unsigned SummaryFormatVersion = 28;
 
 /// The name to print for a global root id.
 using GlobalNamer = std::function<std::string(std::uint32_t)>;

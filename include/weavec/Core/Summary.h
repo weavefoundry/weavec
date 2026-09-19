@@ -274,6 +274,14 @@ struct PlaceEffect {
   /// The caller marks its argument escaped, as it does for a value a
   /// `store` copies (RFC 0007, *Escape*). A may-fact: joins by disjunction.
   bool escaped = false;
+  /// RFC 0030 §5.1: the value at the path was handed to code WeaveC cannot
+  /// see (an unknown callee, inline assembly, an open slot, or a callee
+  /// whose summary is incomplete or over budget), which may have released,
+  /// retained or replaced it and written what it reaches. The caller applies
+  /// the unknown-callee default to its value: a release record of unknown
+  /// origin, never diagnosed, and nothing known below it. A may-fact: joins
+  /// by disjunction.
+  bool unknown = false;
   /// The release family of the consume (RFC 0007): the canonical releaser
   /// the resource ends up with (`free`, `fclose`, ...); empty when unknown.
   /// Meaningful only when `freed` or `moved` is set.
@@ -296,7 +304,7 @@ struct PlaceEffect {
   PointerOffset at = {};
 
   [[nodiscard]] bool empty() const noexcept {
-    return !read && !written && !freed && !moved && !escaped;
+    return !read && !written && !freed && !moved && !escaped && !unknown;
   }
   [[nodiscard]] bool consumed() const noexcept { return freed || moved; }
   /// Anything that changes the object: a caller must hold no loan on it.

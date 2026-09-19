@@ -27,7 +27,7 @@ weavec --whole-program [options] -p build
 | `-fweavec-ledger=<path>`                                   | unset                             | Write the unit ledger when compiling and the program ledger when linking. A value ending in `/` or naming a directory writes one file per unit and per link. |
 | `-fweavec-ledger-format=json\|sarif`                       | `json`                            | The ledger's format.                                                                                                                                         |
 | `-fweavec-summary` / `-fno-weavec-summary`                 | off, on when a ledger is written  | Print the one-line summary on stderr.                                                                                                                        |
-| `-fweavec-budget=<n>`                                      | 200,000 (see [budgets](#budgets)) | Per-function limit on analysed CFG block transfers; `0` means unlimited.                                                                                     |
+| `-fweavec-budget=<n>`                                      | 50,000 (see [budgets](#budgets))  | Per-function limit on analysed CFG block transfers; `0` means unlimited.                                                                                     |
 | `-fweavec-link` / `-fno-weavec-link`                       | on                                | Run the whole-program step when linking.                                                                                                                     |
 | `-fweavec-print-prelude`                                   | off                               | Print the check helpers for the current `-fweavec-checks` mode and exit.                                                                                     |
 | `-fweavec-dump-analysis`, `-fweavec-analysis-stats=<path>` | off                               | Debugging output: the inferred facts (unstable format), and work statistics as JSON.                                                                         |
@@ -97,7 +97,7 @@ Every ledger is written to a temporary file and renamed into place. Naming one f
 
 Each function's analysis counts the CFG blocks it transfers. A function over the budget stops early: its null facets, and spatial facets whose exact extent needs no flow facts, fall back to runtime checks; its other facets are `unresolved(budget)`; callers apply the unknown-callee effects to its arguments; and the summary line and ledger name it. The count is deterministic and independent of timing.
 
-The default is 200,000 block transfers, the initial value of RFC 0030 §5.5. `TODO(S8)`: record the calibrated default here once the corpus calibration of §5.5 has run.
+The default is 50,000 block transfers, calibrated by the rule of RFC 0030 §5.5: the smallest multiple of 50,000 that is at least four times the 99.9th percentile of the per-function counts over the corpus (7,208 over 2,874 functions; the largest, Lua's `luaV_execute`, is 25,518), so no corpus function exceeds it.
 
 ## Diagnostic controls
 

@@ -23,7 +23,7 @@ void good_swap(void) {
 void bad_swap(void) {
   struct heap13_box a = {malloc(4)}, b = {malloc(8)};
   heap13_local_swap(&a, &b);
-  if (b.data) b.data[4] = 0; // BUG: out-of-bounds
+  if (b.data) b.data[4] = 0; // BUG: out-of-bounds // UNRESOLVED: spatial:unknown-extent
   free(a.data); free(b.data);
 }
 int main(void) { return 0; }

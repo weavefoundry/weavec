@@ -264,6 +264,13 @@ private:
 [[nodiscard]] bool callDoesNotReturn(const clang::CallExpr &call,
                                      const core::LibrarySpec &library);
 
+/// §5.2: whether `function` is declared in a C library, POSIX or platform
+/// header: a system header under the toolchain's resource directory, or one
+/// the `LibrarySpec` header list names (on Darwin, every header of the SDK).
+[[nodiscard]] bool isPlatformDeclaration(const clang::FunctionDecl &function,
+                                         const core::LibrarySpec &library,
+                                         const clang::SourceManager &sm);
+
 /// Whether `function` is a returns-twice function (§5.4): `returns_twice`,
 /// a `LibrarySpec` row marked `returns-twice`, or `__builtin_setjmp`.
 [[nodiscard]] bool isReturnsTwice(const clang::FunctionDecl &function,

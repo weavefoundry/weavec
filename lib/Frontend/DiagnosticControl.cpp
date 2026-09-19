@@ -182,9 +182,6 @@ void FilteringSink::report(const core::Diagnostic &diagnostic) {
   const ReportedDiagnostic key = ReportedDiagnostic::of(*adjusted);
   if (skip != nullptr && skip->contains(key))
     return;
-  if (once != nullptr && adjusted->id == core::diag::AnnotationRequired &&
-      !once->insert(adjusted->message).second)
-    return;
   forwarded.insert(key);
   if (adjusted->severity == core::Severity::Error)
     ++errorCount;

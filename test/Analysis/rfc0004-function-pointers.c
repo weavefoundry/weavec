@@ -1,8 +1,10 @@
 // RFC 0004, "Signatures for function pointers": an indirect call is resolved
 // through ownership annotations on the function-pointer type, else through
 // the join of every address-taken function of that type in the translation
-// unit; with neither it is a checking boundary like an unannotated extern.
-// RUN: not %weavec %s -- 2>&1 | FileCheck %s
+// unit; with neither it is a call into unknown code like an unannotated
+// extern: RFC 0030 §5.1 records it as an `unresolved(unknown-callee)` row.
+// RUN: not %weavec --ledger=%t.json %s -- 2>&1 | FileCheck %s
+// RUN: FileCheck --check-prefix=LEDGER %s < %t.json
 #include "../Inputs/prelude.h"
 #include <weavec.h>
 
@@ -61,7 +63,9 @@ void through_table(struct node *n) {
 }
 void register_peek(struct hooks *h) { h->on_drop = node_peek; }
 void through_callback(void (*cb)(struct node *), struct node *n) {
-  // CHECK: warning: call through 'cb' is not checked: its function type has no ownership annotations and its target is unknown [weavec::annotation-required]
+  // LEDGER: "text": "cb(n)",
+  // LEDGER: "reason": "unknown-callee",
+  // LEDGER-NEXT: "detail": "the target of 'cb' is unknown; annotate the parameters of its function type",
   cb(n); /* RFC 0014: a type match alone does not identify this value. */
   use(n);
 }
@@ -70,13 +74,13 @@ void through_callback(void (*cb)(struct node *), struct node *n) {
 static int helper(int x) { return x; }
 int calls_directly(int x) { return helper(x); }
 
-// 3. Otherwise a boundary: once per function type by default.
+// 3. Otherwise unknown code, at every call.
 void boundary(int (*cmp)(const void *, const void *), char *a, char *b) {
-  // CHECK: rfc0004-function-pointers.c:[[@LINE+1]]:3: warning: call through 'cmp' is not checked: its function type has no ownership annotations and its target is unknown [weavec::annotation-required]
+  // LEDGER: "text": "cmp(a,b)",
+  // LEDGER: "reason": "unknown-callee",
   cmp(a, b);
-  // CHECK-NEXT: {{.*}}cmp(a, b);
-  // CHECK-NEXT: {{.*}}^
-  // CHECK-NEXT: rfc0004-function-pointers.c:[[@LINE-3]]:3: note: annotate the parameters of its function type with WEAVEC_OWNED, WEAVEC_BORROWED, WEAVEC_MUT or WEAVEC_RAW, or pass a known function pointer
+  // LEDGER: "text": "cmp(b,a)",
+  // LEDGER: "reason": "unknown-callee",
   cmp(b, a);
 }
 
@@ -84,9 +88,12 @@ void boundary(int (*cmp)(const void *, const void *), char *a, char *b) {
 static struct node *(*hook)(void);
 static struct node *(*get_hook(void))(void) { return hook; }
 void boundary_without_place(void) {
-  // CHECK: rfc0004-function-pointers.c:[[@LINE+1]]:20: warning: call through a function pointer is not checked
+  // LEDGER: "text": "get_hook()()",
+  // LEDGER: "reason": "unknown-callee",
+  // LEDGER-NEXT: "detail": "the target of a function pointer is unknown; annotate the parameters of its function type",
   struct node *n = get_hook()();
   use(n);
 }
 
-// CHECK: 3 warnings and 5 errors generated.
+// CHECK-NOT: warning:
+// CHECK: 5 errors generated.

@@ -491,6 +491,8 @@ TEST(Assume, StatesAFact) {
   EXPECT_EQ(messages(result.diagnostics),
             (Strings{"7: 'd[b->cap]' is out of bounds: 'b->cap' is the number "
                      "of elements of 'd'",
+                     // RFC 0030 §6.2: `p` is null on every path to it.
+                     "16: assumption 'p != NULL' is false here",
                      "21: dereference of 'p', which is null",
                      "23: 'weavec.assume' is not an annotation for 'mine'"}));
 }

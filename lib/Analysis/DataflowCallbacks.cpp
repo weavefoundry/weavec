@@ -209,7 +209,7 @@ FunctionDataflow::resolveCall(const CallExpr &call) {
           bindings->callbacks = callbacks->second;
         memoryContexts[&call] = *bindings;
         // RFC 0030 §2.6: the context run's findings are this call's.
-        const bool reporting = recording() && emitDiagnostics && !inUnsafe;
+        const bool reporting = recording() && emitDiagnostics;
         std::vector<core::Diagnostic> found;
         const auto specialized = summaries.specializeMemory(
             symbol, *bindings, options, reporting ? &found : nullptr);
@@ -267,15 +267,16 @@ FunctionDataflow::resolveCall(const CallExpr &call) {
         result = contextualize(callableSymbol(*direct), std::move(result));
       }
       if (!memoryContexts.contains(&call) && callbackContexts.contains(&call) &&
-          recording() && emitDiagnostics && !inUnsafe &&
-          memoryContext.reportDiagnostics) {
+          recording() && emitDiagnostics && memoryContext.reportDiagnostics) {
         std::vector<core::Diagnostic> found;
         (void)summaries.specialize(*direct, callbackContexts.at(&call), options,
                                    &found);
         if (!ledger.isDiscarding())
           summaries.claimedCallbackContexts.insert(
               {callableSymbol(*direct), callbackContexts.at(&call)});
-        reportContextFindings(call, std::move(found), {});
+        // RFC 0030 §2.6: a context run's finding names the call.
+        reportContextFindings(call, std::move(found),
+                              "called here with function pointer arguments");
       }
     }
   } else {

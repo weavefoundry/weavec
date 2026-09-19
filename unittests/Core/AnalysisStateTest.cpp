@@ -155,6 +155,33 @@ TEST(AnalysisState, JoinUnionsReinterpretedPointers) {
   EXPECT_FALSE(a.reinterpreted.contains(PlaceId{3}));
 }
 
+// RFC 0030 §3.1, *Aliases of a released object*: what was released on some
+// path joins by union, a release not loaded from an owning place by
+// disjunction, and what was stored since the last release on every path by
+// intersection; a release forgets what was stored before it.
+TEST(AnalysisState, JoinTracksReleasesForAliases) {
+  AnalysisState a;
+  AnalysisState b;
+  a.storedSinceRelease = {PlaceId{1}, PlaceId{2}};
+  b.storedSinceRelease = {PlaceId{2}};
+  b.noteRelease(7, /*owned=*/true);
+  EXPECT_TRUE(b.storedSinceRelease.empty());
+  b.storedSinceRelease.insert(PlaceId{2});
+  EXPECT_TRUE(a.join(b));
+  EXPECT_EQ(a.releasedTypes, std::set<std::uint64_t>{7});
+  EXPECT_FALSE(a.releasedUnowned);
+  EXPECT_EQ(a.storedSinceRelease, std::set<PlaceId>{PlaceId{2}});
+  EXPECT_FALSE(a.join(b)) << "fixpoint";
+
+  AnalysisState c;
+  c.noteRelease(AnalysisState::AnyType, /*owned=*/false);
+  EXPECT_TRUE(a.join(c));
+  EXPECT_EQ(a.releasedTypes,
+            (std::set<std::uint64_t>{AnalysisState::AnyType, 7}));
+  EXPECT_TRUE(a.releasedUnowned);
+  EXPECT_TRUE(a.storedSinceRelease.empty());
+}
+
 TEST(AnalysisState, JoinUnionsConsumed) {
   const SummaryPath p = SummaryPath::param(0);
   AnalysisState left;
