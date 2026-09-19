@@ -889,6 +889,25 @@ clang::Expr *CheckEmitter::Impl::term(const core::CheckTerm &term,
     const clang::ExprResult result = callHelper(name, args, loc, nullptr);
     return usable(result) ? result.get() : nullptr;
   }
+  case core::CheckTerm::Kind::Div: {
+    // RFC 0030 §10.1 (amended in S3): floor division by a positive
+    // constant, which only an extent (a have) uses; the dividend is never
+    // negative there, so C's unsigned division is exact.
+    if (term.operands.size() != 2 || need)
+      return nullptr;
+    const core::CheckTerm &divisor = term.operands[1];
+    if (divisor.kind != core::CheckTerm::Kind::Constant || divisor.constant <= 0)
+      return nullptr;
+    clang::Expr *dividend = this->term(term.operands[0], direction, site);
+    if (dividend == nullptr)
+      return nullptr;
+    clang::Expr *constant =
+        literal(static_cast<std::uint64_t>(divisor.constant),
+                context.UnsignedLongLongTy, loc);
+    const clang::ExprResult quotient =
+        sema.BuildBinOp(nullptr, loc, clang::BO_Div, dividend, constant);
+    return usable(quotient) ? quotient.get() : nullptr;
+  }
   case core::CheckTerm::Kind::StrNLen: {
     if (term.operands.size() != 2)
       return nullptr;
