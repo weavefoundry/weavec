@@ -1,5 +1,10 @@
 // RFC 0017: checked multiplication returns overflow and stores SIZE_MAX - 1.
 // CLEAN
+// TOOL
+// The helper's overflow result (another unit) makes the use after free
+// unreachable; only the whole-program view sees it, so the pair is analysed
+// with `weavec --whole-program` (RFC 0030 §Soundness, *Accepted false
+// positives*: an infeasible path a per-unit compile cannot refute).
 // UNITS: Inputs/numeric-helpers.c
 // FLAGS: -std=c11
 #include "Inputs/numeric-helpers.h"

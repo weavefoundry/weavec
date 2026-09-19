@@ -914,6 +914,20 @@ core::CheckPlan CheckPlanner::plan(core::UnitLedger &unit,
         }
         if (worse)
           record->decide(*worse);
+        // §3.4: a violation of the facet itself (a definite error linked to
+        // it) that no requirement check guards still traps when lowered.
+        if (record->outcome() == core::SiteOutcome::Violation &&
+            options.lowered && options.lowered(site.id, facet) &&
+            llvm::none_of(record->requirements,
+                          [](const core::Requirement &requirement) {
+                            return requirement.check.has_value();
+                          })) {
+          Entry guard = violationGuard(site, facet);
+          guard.site = site.id;
+          guard.facet = facet;
+          record->check = core::facetCheck(guard);
+          planned.push_back(std::move(guard));
+        }
         if (record->outcome() == core::SiteOutcome::Checked && !record->check)
           for (const core::Requirement &requirement : record->requirements)
             if (requirement.check) {

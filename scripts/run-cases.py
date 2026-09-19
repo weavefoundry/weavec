@@ -840,6 +840,9 @@ class Evidence:
     asan_runs: list[Run] = dataclasses.field(default_factory=list)
     ledger_proxy: bool = False  # TRAP markers are judged from the ledger (no runs possible)
     no_emission: bool = False
+    # Section 3.4: the executable was rebuilt with -Wno-error=weavec because only the
+    # case's own definite errors stopped the build; a lowered violation must still trap.
+    lowered_ran: bool = False
     zero_init: bool = False     # zero-initialisation is in effect in the executable build
     notes: list[str] = dataclasses.field(default_factory=list)
     commands: list[str] = dataclasses.field(default_factory=list)
@@ -1035,26 +1038,37 @@ def evaluate(case: Case, ev: Evidence) -> dict:
             continue
         at = located(trap.file, trap.line)
         if ev.ran:
-            ok = any(r.template == trap.value for r in index["reports"].get(at, []))
+            # Section 3.4: a lowered violation traps with its facet's template, or with
+            # `violation` when that check has no expression.
+            templates = (trap.value, "violation") if ev.lowered_ran else (trap.value,)
+            ok = any(r.template in templates for r in index["reports"].get(at, []))
             if not ok:
-                failures.append(f"{loc(trap)}: TRAP {trap.value} not reported by the report-mode run")
-        elif ev.ledger_proxy and ledger_available:
-            ok = any(rec.get("outcome") == "checked" and (rec.get("check") or {}).get("template") == trap.value
-                     for r in index["rows"].get(at, []) for facet in r.facets for rec in facet_records(r, facet))
-            if not ok:
-                failures.append(f"{loc(trap)}: TRAP {trap.value}: no checked facet with that template "
-                                f"in the ledger")
+                failures.append(f"{loc(trap)}: TRAP {trap.value} not reported by the report-mode run"
+                                + (" of the build lowered with -Wno-error=weavec (section 3.4)"
+                                   if ev.lowered_ran else ""))
         else:
-            ok = False
+            # Section 3.4: a definite violation at the line is an error; lowered, it traps.
             stopped = any(d.severity == "error" and d.id == bug.value[0] for bug in case.bugs
                           if located(bug.file, bug.line) == at for d in index["diagnostics"].get(at, []))
-            if not stopped:
-                failures.append(f"{loc(trap)}: TRAP {trap.value} not observed: no executable was built")
+            if ev.ledger_proxy and ledger_available:
+                ok = stopped or any(
+                    rec.get("outcome") == "checked" and (rec.get("check") or {}).get("template") == trap.value
+                    for r in index["rows"].get(at, []) for facet in r.facets
+                    for rec in facet_records(r, facet))
+                if not ok:
+                    failures.append(f"{loc(trap)}: TRAP {trap.value}: no checked facet with that "
+                                    f"template in the ledger")
+            else:
+                ok = False
+                if not stopped:
+                    failures.append(f"{loc(trap)}: TRAP {trap.value} not observed: no executable "
+                                    f"was built")
         index["trap_ok"][id(trap)] = ok
     if ev.ran:
         for report in ev.reports:
             at = (report.file, report.line)
-            if not any(t.value == report.template for t in index["traps"].get(at, [])):
+            lowered = ev.lowered_ran and report.template == "violation"
+            if not any(t.value == report.template or lowered for t in index["traps"].get(at, [])):
                 failures.append(f"unexpected runtime check failure: {report.template} at "
                                 f"{relative(report.file)}:{report.line}:{report.column}")
     failures.extend(ev.proven_traps)
@@ -1390,6 +1404,15 @@ def lldb_trap_reason(exe: Path, run_input: RunInput, cwd: Path) -> str | None:
     return out + err
 
 
+def only_expected_errors(case: Case, ev: Evidence) -> bool:
+    """Whether every error of the build is a definite BUG the case expects at its line."""
+    if ev.clang_errors:
+        return False
+    expected = {(located(b.file, b.line), b.value[0]) for b in case.bugs}
+    errors = [d for d in ev.diagnostics if d.severity == "error"]
+    return bool(errors) and all((located(d.file, d.line), d.id) in expected for d in errors)
+
+
 def run_case(case: Case, cfg: Config) -> dict:
     if case.errors:
         return evaluate(case, Evidence("legacy" if cfg.legacy else cfg.checks))
@@ -1412,6 +1435,16 @@ def run_case(case: Case, cfg: Config) -> dict:
             extra = ["-g"] if cfg.checks == "verify" else []
             exe = build(case, cfg, ev, temp / "main", cfg.checks, ledger_dir, extra, record=True)
             ev.built = exe is not None
+            lowered_flags: list[str] = []
+            if exe is None and case.has_main and case.traps and not cfg.no_run \
+                    and not cfg.no_emission and only_expected_errors(case, ev):
+                # Section 3.4: the case's own definite errors stopped the build. Lowered to
+                # warnings, each violation is guarded by a check that traps, so the lowered
+                # build stands in for the executable: its runs judge every TRAP marker.
+                lowered_flags = ["-Wno-error=weavec"]
+                exe = build(case, cfg, ev, temp / "lowered", cfg.checks, None, lowered_flags,
+                            record=False)
+                ev.lowered_ran = exe is not None
             analysed = case.analysed_units()
             if not case.has_main and len(analysed) > 1:
                 translated = tool_arguments(case.flags, legacy=False)
@@ -1422,12 +1455,13 @@ def run_case(case: Case, cfg: Config) -> dict:
                 record_tool(ev, command, temp, cfg.compile_timeout, "weavec --whole-program")
             load_ledgers(ev, ledger_dir)
             ev.diagnostics = sorted(set(ev.diagnostics))
-            runs_possible = ev.built and not cfg.no_run and not cfg.no_emission
+            runs_possible = (ev.built or ev.lowered_ran) and not cfg.no_run and not cfg.no_emission
             ev.ledger_proxy = not runs_possible and (cfg.no_run or cfg.no_emission or not case.has_main)
             if runs_possible:
                 env = run_environment()
                 ev.runs = run_executable(exe, case, cfg, temp, env, cfg.run_timeout)
-                report_exe = build(case, cfg, ev, temp / "report", "report", None, [], record=False)
+                report_exe = build(case, cfg, ev, temp / "report", "report", None, lowered_flags,
+                                   record=False)
                 if report_exe is None:
                     ev.tool_failures.append("the report-mode build failed")
                 else:

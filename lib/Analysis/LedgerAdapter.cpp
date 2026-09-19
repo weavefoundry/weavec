@@ -233,6 +233,16 @@ void LedgerAdapter::publish(core::Diagnostic diagnostic,
   const auto index = static_cast<std::uint32_t>(ledgerDiagnostics.size());
   if (id) {
     entry.function = unit.functions[id->function].name;
+    // §3.4 and (V): a definite error is a violation of its facet, whatever
+    // path reported it. The facet is made to apply when the site kind would
+    // not otherwise carry it (a callee's requirement at a Call site), so the
+    // planner guards the site when the error is lowered with -Wno-error.
+    if (facet && certainty == core::Certainty::Definite &&
+        diagnostic.severity == core::Severity::Error) {
+      if (core::Site *site = unit.site(*id))
+        site->addFacet(*facet).decide(
+            core::FacetDecision::violation(diagnostic.message));
+    }
     core::FacetRecord *linked = facet ? record(*id, *facet) : nullptr;
     if (linked != nullptr) {
       entry.site = id->ordinal;
@@ -245,6 +255,23 @@ void LedgerAdapter::publish(core::Diagnostic diagnostic,
   }
   ledgerDiagnostics.push_back(std::move(entry));
   emitted.push_back(std::move(diagnostic));
+}
+
+/// The facet a definite error of `id` is a violation of (§3, §17.3's
+/// matching facets), or none for ids that are about no facet.
+static std::optional<core::Facet> facetOfDiagnostic(std::string_view id) {
+  namespace diag = core::diag;
+  if (id == diag::OutOfBounds || id == diag::InvalidRelease)
+    return core::Facet::Spatial;
+  if (id == diag::NullDereference || id == diag::UseOfUninitialized)
+    return core::Facet::Null;
+  if (id == diag::UseAfterFree || id == diag::DoubleFree ||
+      id == diag::UseAfterMove || id == diag::ConflictingBorrow ||
+      id == diag::LifetimeTooShort || id == diag::MismatchedRelease)
+    return core::Facet::Temporal;
+  if (id == diag::ContradictedAssumption)
+    return core::Facet::Assertion;
+  return std::nullopt;
 }
 
 void LedgerAdapter::report(core::Diagnostic diagnostic,
@@ -268,6 +295,22 @@ void LedgerAdapter::report(core::Diagnostic diagnostic,
     id = sites.find(*site);
     if (!id)
       id = sites.findExit(*site);
+  }
+  // (V): a definite error must reach a site the planner can guard (§3.4).
+  // One reported without its site, or at a subexpression that is no site of
+  // its own (the argument of a call whose callee requires more than it has),
+  // belongs to the innermost site around it, on the facet its id governs.
+  if (!id && certainty == core::Certainty::Definite &&
+      diagnostic.severity == core::Severity::Error) {
+    if (!facet)
+      facet = facetOfDiagnostic(diagnostic.id);
+    const clang::SourceLocation at =
+        site != nullptr ? site->getBeginLoc()
+                        : clang::SourceLocation::getFromRawEncoding(
+                              static_cast<clang::SourceLocation::UIntTy>(
+                                  diagnostic.location.opaque));
+    if (facet && at.isValid())
+      id = sites.innermostAt(at, std::nullopt, context.getSourceManager());
   }
   publish(std::move(diagnostic), certainty, id, facet);
 }

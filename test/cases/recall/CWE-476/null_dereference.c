@@ -1,12 +1,15 @@
 // CWE-476: NULL pointer dereference, an allocation used without a check and
 // a pointer set to NULL then dereferenced.
+// RFC 0030 §8.4: an allocation result used without a null test is the
+// allocation-failure id (off by default) and a checked null facet.
+// FLAGS: -Wweavec-allocation-failure
 // RUN-INPUT: 1
 // RUN-INPUT: 2
 #include "../recall.h"
 
 void bad_unchecked_malloc(void) {
   char *data = malloc(100);
-  data[0] = 'A'; // BUG: null-dereference
+  data[0] = 'A'; // BUG: allocation-failure
   free(data);
 }
 
