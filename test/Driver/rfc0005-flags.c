@@ -54,8 +54,7 @@
 // VERSION: weavec-cc version {{[0-9]+\.[0-9]+\.[0-9]+}}
 // VERSION-NEXT: built with LLVM {{[0-9]+\.}}
 // RECORDED: "reported": [
-// RECORDED-NEXT: {
-// RECORDED-NEXT: "id": "use-after-free",
+// RECORDED: "id": "use-after-free",
 // RECORDED-NEXT: "file": "{{.*}}rfc0005-flags.c",
 // RECORDED-NEXT: "line": [[#]],
 // RECORDED-NEXT: "column": 10

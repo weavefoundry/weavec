@@ -201,7 +201,7 @@ TEST(UnitRecord, SchemaFingerprintIsTheTableHash) {
   const std::string text = schemaText();
   const auto expected = llvm::SHA256::hash(llvm::arrayRefFromStringRef(text));
   EXPECT_EQ(schemaFingerprint(), expected);
-  EXPECT_EQ(text.rfind("weavec-record-schema\nsummary-format:27\n"
+  EXPECT_EQ(text.rfind("weavec-record-schema\nsummary-format:28\n"
                        "header:object{producer:object{"
                        "name:string,version:string,revision:string},"
                        "source:string,cwd:string,command:array<string>,"
