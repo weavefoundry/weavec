@@ -8,7 +8,8 @@
 
 #include "weavec/Frontend/FrontendAction.h"
 
-#include "weavec/Analysis/TranslationUnitAnalysis.h"
+#include "weavec/Analysis/LedgerAdapter.h"
+#include "weavec/Analysis/UnitPipeline.h"
 #include "weavec/Frontend/ClangDiagnosticSink.h"
 
 #include "clang/AST/ASTConsumer.h"
@@ -24,31 +25,30 @@ namespace weavec::frontend {
 UnitResult analyzeTranslationUnit(clang::ASTContext &context,
                                   clang::DiagnosticsEngine &diagnostics,
                                   const FrontendOptions &options) {
-  analysis::AnalysisOptions analysisOptions = options.analysis;
-  if (options.silent)
-    analysisOptions.dumpStream = nullptr;
-  core::DiagnosticCollector collected;
-  analysis::TranslationUnitAnalyzer analyzer(context, collected,
-                                             analysisOptions);
-  analyzer.setDatabase(options.database);
+  // RFC 0030 §1 steps 2 and 3: kinds, sites, the engine through the ledger
+  // adapter, planning; the diagnostics come back in the engine's order.
   UnitResult result;
-  const bool trackImports = options.database != nullptr;
-  if (trackImports)
-    analyzer.summaries().beginDependencies(result.dependencies);
-  if (options.discoverOnly) {
-    result.exports = analyzer.discover();
-    if (trackImports)
-      analyzer.summaries().endDependencies();
-    return result;
-  }
+  analysis::UnitPipelineOptions pipeline;
+  pipeline.engine.analysis = options.analysis;
+  if (options.silent)
+    pipeline.engine.analysis.dumpStream = nullptr;
   const clang::SourceManager &sm = context.getSourceManager();
-  analyzer.run([&](const clang::FunctionDecl &function) {
+  pipeline.engine.shouldReport = [&](const clang::FunctionDecl &function) {
     return !options.silent &&
            (!options.mainFileOnly || sm.isInMainFile(function.getLocation()));
-  });
-  result.exports = analyzer.exports();
-  if (trackImports)
-    analyzer.summaries().endDependencies();
+  };
+  if (options.database != nullptr)
+    pipeline.engine.dependencies = &result.dependencies;
+  pipeline.database = options.database;
+  pipeline.discoverOnly = options.discoverOnly;
+  pipeline.buildLedger = !options.silent;
+  core::DiagnosticCollector collected;
+  analysis::UnitPipelineResult unit =
+      analysis::runUnitAnalysis(context, pipeline, collected);
+  result.exports = std::move(unit.exports);
+  result.ledger = std::move(unit.ledger);
+  if (options.discoverOnly)
+    return result;
 
   ClangDiagnosticSink clangSink(diagnostics);
   FilteringSink sink(clangSink, options.control, options.alreadyReported,

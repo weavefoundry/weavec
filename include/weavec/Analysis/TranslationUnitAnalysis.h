@@ -28,9 +28,11 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/STLFunctionalExtras.h"
 
+#include <functional>
 #include <set>
 #include <string>
 #include <tuple>
+#include <utility>
 #include <vector>
 
 namespace weavec::analysis {
@@ -50,6 +52,13 @@ public:
   /// Analyses and reports everything.
   void run() {
     run([](const clang::FunctionDecl &) { return true; });
+  }
+
+  /// RFC 0030 §14, §15 item 18: `observer` is told as the reporting pass
+  /// over each reported function begins (`LedgerAdapter::beginFunction`).
+  void setReportingObserver(
+      std::function<void(const clang::FunctionDecl &)> observer) {
+    reportingObserver = std::move(observer);
   }
 
   /// Attaches the exports of the other units of the program (RFC 0005);
@@ -82,6 +91,7 @@ private:
   core::DiagnosticSink &sink;
   AnalysisOptions options;
   SummaryStore store;
+  std::function<void(const clang::FunctionDecl &)> reportingObserver;
   struct SilentAnalysis {
     bool widen;
     SummaryStore::DependencyVersions dependencies;

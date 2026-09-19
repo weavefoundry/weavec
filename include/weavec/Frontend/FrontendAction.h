@@ -32,6 +32,10 @@
 #include <set>
 #include <string>
 
+namespace weavec::analysis {
+struct PlannedLedger;
+} // namespace weavec::analysis
+
 namespace weavec::frontend {
 
 /// What one run of the consumer over a unit produced (RFC 0005).
@@ -45,6 +49,10 @@ struct UnitResult {
   std::set<ReportedDiagnostic> reported;
   std::size_t errors = 0;
   std::size_t warnings = 0;
+  /// RFC 0030: the unit's ledger and check plan (§14); null for a silent or
+  /// discovery run.
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
+  std::shared_ptr<analysis::PlannedLedger> ledger = {};
 };
 
 struct FrontendOptions;

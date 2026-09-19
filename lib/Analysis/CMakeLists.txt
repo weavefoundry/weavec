@@ -39,6 +39,14 @@ weavec_add_library(
           TranslationUnitAnalysis.cpp
           DataflowLoopRequirements.cpp
           DataflowGuardCompleteness.cpp
+          KindTable.cpp
+          AttributeReader.cpp
+          SiteCollector.cpp
+          CheckPlanner.cpp
+          LedgerAdapter.cpp
+          SafetyEngine.cpp
+          DataflowEngine.cpp
+          UnitPipeline.cpp
   PUBLIC_DEPS weavec::Core
   USES_LLVM)
 

@@ -394,6 +394,8 @@ void TranslationUnitAnalyzer::run(
       (void)store.specializeMemory(symbol, input, options, nullptr);
   }
   for (const FunctionDecl *function : reported) {
+    if (reportingObserver)
+      reportingObserver(*function);
     const std::string symbol = callableSymbol(*function);
     const auto requests = store.callbackRequests[symbol];
     const auto memory = store.memoryRequests[symbol];

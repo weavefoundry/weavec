@@ -23,4 +23,8 @@ weavec_add_unittest(
           ValueConditionalTest.cpp
           LoopRequirementsTest.cpp
           GuardCompletenessTest.cpp
+          AttributeReaderTest.cpp
+          SiteCollectorTest.cpp
+          CheckPlannerTest.cpp
+          LedgerAdapterTest.cpp
   DEPS weavec::Analysis weavec::Frontend)
