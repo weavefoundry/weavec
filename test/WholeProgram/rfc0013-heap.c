@@ -3,15 +3,14 @@
 // RUN: rm -rf %t && mkdir -p %t
 // RUN: %weavec_cc -c %S/Inputs/heap13.c -o %t/library.o 2>&1 | count 0
 // RUN: %weavec_cc -Wno-weavec-annotation-required -c %s -o %t/caller.o 2>&1 | count 0
-// RUN: FileCheck --check-prefix=SIDECAR %s < %t/library.o.weavec
+// RUN: %weavec --dump-record=%t/library.o.weavec | FileCheck --check-prefix=RECORD %s
 // RUN: not %weavec_cc %t/library.o %t/caller.o -o %t/program 2>&1 | FileCheck %s
 #include "../Inputs/prelude.h"
 #include "Inputs/heap13.h"
 
-// SIDECAR: weavec-summaries 28
-// SIDECAR: heap result complete
-// SIDECAR-NEXT: heap-field result at result *.data fresh(free) extent 4
-// SIDECAR: heap-field result at result *.data copy param 0
+// RECORD: "format": 28,
+// RECORD: heap result complete\n  heap-field result at result *.data fresh(free) extent 4
+// RECORD: heap-field result at result *.data copy param 0
 
 void overflow(void) {
   struct heap13_box *b = heap13_new(); if (!b) return;

@@ -10,11 +10,13 @@ weavec_add_library(
           Prelude.cpp
           ProgramAnalysis.cpp
           ResourceDir.cpp
-          Sidecar.cpp
           # RFC 0030: the ledger writers, where ledgers and summary lines
-          # go, and the format-28 unit record.
+          # go, the format-28 unit record and the link step.
           LedgerOutput.cpp
           LedgerWriter.cpp
+          LinkStep.cpp
+          RecordFacts.cpp
+          RecordPayload.cpp
           UnitRecord.cpp
           # RFC 0030 S5: the check rewrites and zero-initialisation.
           CheckEmitter.cpp

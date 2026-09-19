@@ -5,10 +5,12 @@ weavec_add_unittest(
           DiagnosticControlTest.cpp
           LedgerOutputTest.cpp
           LedgerWriterTest.cpp
+          LinkStepTest.cpp
           PreludeTest.cpp
           ProgramAnalysisTest.cpp
+          RecordFactsTest.cpp
+          RecordPayloadTest.cpp
           RetainedUnitTest.cpp
-          SidecarTest.cpp
           UnitRecordTest.cpp
   DEPS weavec::Frontend)
 

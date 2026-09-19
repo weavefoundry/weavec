@@ -40,6 +40,9 @@ struct PlannedLedger;
 namespace weavec::frontend {
 
 struct ZeroInitPlan;
+namespace record {
+struct InterfaceFacts;
+} // namespace record
 
 /// What one run of the consumer over a unit produced (RFC 0005).
 struct UnitResult {
@@ -60,6 +63,11 @@ struct UnitResult {
   /// ledger holds; null when there is no ledger.
   // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
   std::shared_ptr<ZeroInitPlan> zeroInit = {};
+  /// RFC 0030 §13.1: the unit's interface facts, under
+  /// `FrontendOptions::collectInterface`; after a discovery run only the
+  /// function-pointer slots.
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
+  std::shared_ptr<const record::InterfaceFacts> interface = {};
 };
 
 struct FrontendOptions;
@@ -108,6 +116,9 @@ struct FrontendOptions {
   /// Collect the unit's definitions, imports and indirect types without
   /// analysing anything; `onResult` receives exports with empty summaries.
   bool discoverOnly = false;
+  /// RFC 0030 §13.1: also collect the unit's interface facts for its record
+  /// (`UnitResult::interface`).
+  bool collectInterface = false;
   /// Receives the unit's exports and reporting statistics.
   std::function<void(UnitResult)> onResult;
 };

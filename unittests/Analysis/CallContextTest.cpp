@@ -8,7 +8,7 @@
 
 #include "TestUtils.h"
 #include "weavec/Analysis/Allocators.h"
-#include "weavec/Frontend/Sidecar.h"
+#include "weavec/Frontend/RecordPayload.h"
 
 #include <gtest/gtest.h>
 
@@ -298,20 +298,21 @@ static void zap(char *a, char *b) { *b = 1; free(a); }
   EXPECT_FALSE(store.memoryRequests.empty());
 }
 
-TEST(CompositionalCall, ExportedRequestsAndResultsSurviveSidecars) {
+TEST(CompositionalCall, ExportedRequestsAndResultsSurviveUnitRecords) {
   auto result = test::analyze(R"c(
 static void zap(char *a, char *b) { free(a); *b = 1; }
 )c" + Entry + "zap(p, p); }");
   ASSERT_TRUE(result.ast);
-  frontend::UnitRecord record;
-  record.exports = result.analyzer->exports();
-  ASSERT_TRUE(record.exports.functions.contains("zap"));
+  frontend::record::Payload payload;
+  payload.exports = result.analyzer->exports();
+  ASSERT_TRUE(payload.exports.functions.contains("zap"));
   EXPECT_FALSE(
-      record.exports.functions.at("zap").memorySpecializations.empty());
-  const auto parsed =
-      frontend::parseUnitRecord(frontend::printUnitRecord(record));
-  ASSERT_TRUE(parsed);
-  EXPECT_TRUE(record.exports.sameSummariesAs(parsed->exports));
+      payload.exports.functions.at("zap").memorySpecializations.empty());
+  std::string error;
+  const auto parsed = frontend::record::payloadFromJson(
+      frontend::record::toJson(payload), payload.exports.source, error);
+  ASSERT_TRUE(parsed) << error;
+  EXPECT_TRUE(payload.exports.sameSummariesAs(parsed->exports));
 }
 
 TEST(CompositionalCall, WritesThroughAliasesInvalidateEntryFieldFacts) {

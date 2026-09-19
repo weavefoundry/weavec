@@ -8,9 +8,11 @@
 
 #include "weavec/Frontend/ProgramAnalysis.h"
 
+#include "weavec/Analysis/LedgerAdapter.h"
 #include "weavec/Core/Diagnostic.h"
 #include "weavec/Core/Scc.h"
 #include "weavec/Frontend/AnalysisStats.h"
+#include "weavec/Frontend/LinkStep.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/raw_ostream.h"
@@ -62,6 +64,7 @@ ProgramAnalysis::runUnit(ProgramUnit &unit, const FrontendOptions &overrides) {
   run.onlyIds = overrides.onlyIds;
   run.silent = overrides.silent;
   run.discoverOnly = overrides.discoverOnly;
+  run.collectInterface = overrides.collectInterface;
   run.boundaryOnce = &boundaryOnce;
   if (run.silent)
     run.analysis.dumpStream = nullptr;
@@ -162,6 +165,7 @@ void ProgramAnalysis::analyzeAcyclic(unsigned index, Result &result) {
   FrontendOptions overrides;
   overrides.database = &settled;
   overrides.alreadyReported = &unit.reported;
+  overrides.collectInterface = interfaces;
   std::optional<UnitResult> run = runUnit(*unit.unit, overrides);
   if (!run) {
     result.failed.push_back(unit.unit->name());
@@ -177,10 +181,15 @@ void ProgramAnalysis::analyzeAcyclic(unsigned index, Result &result) {
 }
 
 void ProgramAnalysis::settle(Unit &unit, const analysis::ProgramDatabase &db,
-                             UnitResult run) {
+                             UnitResult run) const {
   unit.exports = std::move(run.exports);
   unit.reported.insert(run.reported.begin(), run.reported.end());
   unit.sizedPairsSeen = db.sizedFieldFacts().confirmedPairs();
+  // RFC 0030 §2.6: only the last reporting run publishes.
+  if (run.ledger && (ledgers || interfaces))
+    unit.ledger = std::make_shared<const core::Ledger>(run.ledger->ledger);
+  if (run.interface)
+    unit.interface = std::move(run.interface);
 }
 
 void ProgramAnalysis::reportConfirmedSizedFields(Result &result) {
@@ -213,6 +222,7 @@ void ProgramAnalysis::reportConfirmedSizedFields(Result &result) {
     overrides.database = &settled;
     overrides.alreadyReported = &unit.reported;
     overrides.onlyIds = &OnlyBounds;
+    overrides.collectInterface = interfaces;
     std::optional<UnitResult> run = runUnit(*unit.unit, overrides);
     if (!run) {
       result.failed.push_back(unit.unit->name());
@@ -438,6 +448,7 @@ void ProgramAnalysis::analyzeCyclic(const std::vector<unsigned> &component,
     FrontendOptions overrides;
     overrides.database = &db;
     overrides.alreadyReported = &unit.reported;
+    overrides.collectInterface = interfaces;
     std::optional<UnitResult> run = runUnit(*unit.unit, overrides);
     if (!run) {
       broken[k] = true;
@@ -473,6 +484,7 @@ void ProgramAnalysis::analyzeComponent(const std::vector<unsigned> &component,
 ProgramAnalysis::Result ProgramAnalysis::run() {
   Result result;
   settled.clear();
+  settled.programFacts = programFacts;
   boundaryOnce.clear();
   boundedRetention = false;
   retainedUnits.clear();
@@ -486,12 +498,18 @@ ProgramAnalysis::Result ProgramAnalysis::run() {
       continue;
     FrontendOptions overrides;
     overrides.discoverOnly = true;
+    overrides.collectInterface = interfaces;
     if (std::optional<UnitResult> run = runUnit(*unit.unit, overrides)) {
       unit.exports = std::move(run->exports);
+      unit.interface = std::move(run->interface);
     } else {
       result.failed.push_back(unit.unit->name());
     }
   }
+  // RFC 0030 §13.2 step 2 in `weavec --whole-program`.
+  if (interfaces && !programFacts)
+    solveDiscoveredSlots();
+  settled.programFacts = programFacts;
 
   // RFC 0020: after discovery, keep one retained AST at a time unless an
   // analysis dump needs them all.
@@ -508,9 +526,57 @@ ProgramAnalysis::Result ProgramAnalysis::run() {
   }
   reportConfirmedSizedFields(result);
 
-  if (llvm::raw_ostream *dump = options.analysis.dumpStream)
+  if (llvm::raw_ostream *dump = options.analysis.dumpStream) {
     settled.dump(*dump);
+    if (programFacts)
+      dumpProgramSlots(programFacts->slots, *dump);
+  }
   return result;
+}
+
+void ProgramAnalysis::solveDiscoveredSlots() {
+  std::vector<ProgramMember> members;
+  LinkShape shape;
+  shape.executable = false;
+  for (const Unit &unit : units) {
+    if (!unit.interface)
+      continue;
+    ProgramMember member;
+    member.source = unit.unit->name();
+    member.payload.facts.slots = unit.interface->slots;
+    shape.executable =
+        shape.executable || unit.interface->slots.defined.contains("main");
+    members.push_back(std::move(member));
+  }
+  auto facts = std::make_shared<analysis::ProgramFacts>();
+  facts->slots = solveProgramSlots(members, shape);
+  facts->boundaries = programBoundaries(members);
+  programFacts = std::move(facts);
+}
+
+const core::Ledger *ProgramAnalysis::ledgerOf(std::size_t index) const {
+  return index < units.size() ? units[index].ledger.get() : nullptr;
+}
+
+const record::InterfaceFacts *
+ProgramAnalysis::interfaceOf(std::size_t index) const {
+  return index < units.size() ? units[index].interface.get() : nullptr;
+}
+
+const analysis::UnitExports *
+ProgramAnalysis::exportsOf(std::size_t index) const {
+  return index < units.size() && units[index].exports ? &*units[index].exports
+                                                      : nullptr;
+}
+
+const std::set<ReportedDiagnostic> &
+ProgramAnalysis::reportedOf(std::size_t index) const {
+  static const std::set<ReportedDiagnostic> None;
+  return index < units.size() ? units[index].reported : None;
+}
+
+std::string ProgramAnalysis::unitName(std::size_t index) const {
+  return index < units.size() ? units[index].unit->name() : std::string();
 }
 
 bool CompilationDatabaseUnit::run(

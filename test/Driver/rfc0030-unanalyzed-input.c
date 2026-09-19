@@ -25,8 +25,10 @@
 // RUN: %weavec_cc %t/main.o %t/bw.o -L%t -lextra -lm -o %t/lib 2>&1 | FileCheck --check-prefix=LIB %s
 // RUN: %weavec_cc %t/main.o %t/bw.o %t/cw.o -lm -o %t/system 2>&1 | count 0
 //
-// A record older than its object is stale.
-// RUN: touch -t 203001010000 %t/cw.o
+// A record written for another object is stale (§13.1): rebuilding the
+// object without WeaveC (and with another value) leaves the old record
+// behind. rfc0030-stale-record.c has the other reasons.
+// RUN: %weavec_cc -fno-weavec -c %s -DUNIT_C -DOTHER=8 -o %t/cw.o
 // RUN: %weavec_cc %t/main.o %t/bw.o %t/cw.o -o %t/stale 2>&1 | FileCheck --check-prefix=STALE %s
 //
 // The warning follows the -W flags: it can be disabled, or made an error
@@ -47,7 +49,7 @@
 // LIB: weavec-cc: warning: link input '{{.*}}libextra.a' has no WeaveC record; calls into it are trusted [weavec::unanalyzed-input]
 // LIB-NOT: libm
 
-// STALE: weavec-cc: warning: link input '{{.*}}cw.o' has a stale WeaveC record ('{{.*}}cw.o.weavec' is older than the object); calls into it are trusted [weavec::unanalyzed-input]
+// STALE: weavec-cc: warning: link input '{{.*}}cw.o' has a stale WeaveC record ('{{.*}}cw.o.weavec': it describes another object (digest mismatch)); calls into it are trusted [weavec::unanalyzed-input]
 
 // RAISED: weavec-cc: error: 2 link inputs have no WeaveC record; calls into them are trusted [weavec::unanalyzed-input]
 
@@ -55,7 +57,10 @@
 #if defined(UNIT_B)
 int helper(int v) { return v; }
 #elif defined(UNIT_C)
-int other(void) { return 7; }
+#ifndef OTHER
+#define OTHER 7
+#endif
+int other(void) { return OTHER; }
 #else
 int helper(int v);
 int other(void);

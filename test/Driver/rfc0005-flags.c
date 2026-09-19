@@ -18,13 +18,13 @@
 // RUN: not %weavec -Wno-weavec-nonsense %s -- 2>&1 | FileCheck --check-prefix=UNKNOWN %s
 //
 // The same spellings on the driver. -fno-weavec compiles without analysis
-// and without a sidecar; -fsyntax-only analyses but writes nothing.
+// and without a unit record; -fsyntax-only analyses but writes nothing.
 // RUN: rm -rf %t && mkdir -p %t
 // RUN: not %weavec_cc -c %s -o %t/bug.o -DBUG 2>&1 | FileCheck --check-prefix=BUG %s
 // RUN: not ls %t/bug.o
 // RUN: not ls %t/bug.o.weavec
 // RUN: %weavec_cc -Wno-error=weavec -c %s -o %t/bug.o -DBUG 2>&1 | FileCheck --check-prefix=LOWERED %s
-// RUN: FileCheck --check-prefix=RECORDED %s < %t/bug.o.weavec
+// RUN: %weavec --dump-record=%t/bug.o.weavec | FileCheck --check-prefix=RECORDED %s
 // RUN: %weavec_cc -fno-weavec -c %s -o %t/plain.o -DBUG 2>&1 | count 0
 // RUN: not ls %t/plain.o.weavec
 // RUN: %weavec_cc -fsyntax-only %s 2>&1 | count 0
@@ -52,7 +52,12 @@ void mystery(void *p);
 // JOBS-NOT: error:
 // VERSION: weavec-cc version {{[0-9]+\.[0-9]+\.[0-9]+}}
 // VERSION-NEXT: built with LLVM {{[0-9]+\.}}
-// RECORDED: reported use-after-free [[#]] 10 {{.*}}rfc0005-flags.c
+// RECORDED: "reported": [
+// RECORDED-NEXT: {
+// RECORDED-NEXT: "id": "use-after-free",
+// RECORDED-NEXT: "file": "{{.*}}rfc0005-flags.c",
+// RECORDED-NEXT: "line": [[#]],
+// RECORDED-NEXT: "column": 10
 void f(void *p) { mystery(p); }
 
 #ifdef BUG

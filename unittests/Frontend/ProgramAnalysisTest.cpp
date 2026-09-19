@@ -120,9 +120,12 @@ struct Program {
 
   /// The analysis of the last `run`, for inspecting its database.
   std::unique_ptr<ProgramAnalysis> analysis;
+  /// RFC 0030 §13.2: as `weavec --whole-program` runs it.
+  bool interfaces = false;
 
   ProgramAnalysis::Result run() {
     analysis = std::make_unique<ProgramAnalysis>(options);
+    analysis->collectInterfaces(interfaces);
     for (const std::string &file : files)
       analysis->addUnit(std::make_unique<InMemoryUnit>(file, fs, recorder));
     return analysis->run();
@@ -240,6 +243,51 @@ int run(void) {
   EXPECT_EQ(program.recorder.lines,
             (std::vector<std::string>{
                 "/src/loop.c:7: error: use of 'buf' after it was freed"}));
+}
+
+// RFC 0030 §13.2: `weavec --whole-program` keeps each unit's last ledger
+// and interface facts, and solves the slots of every unit together before
+// any runs (a hook stored in one unit, called through in another).
+TEST(ProgramAnalysis, WholeProgramRunsSolveSlotsAndKeepTheirLedgers) {
+  Program program;
+  program.interfaces = true;
+  program.header("hook.h", R"c(
+typedef void (*release_fn)(void *);
+struct ops { release_fn release; };
+void set_release(release_fn f);
+void run(void *p);
+)c");
+  program.add("lib.c", R"c(
+#include "hook.h"
+static struct ops the_ops;
+void set_release(release_fn f) { the_ops.release = f; }
+void run(void *p) { the_ops.release(p); }
+)c");
+  program.add("main.c", R"c(
+#include "hook.h"
+static void drop(void *p) { free(p); }
+int main(void) {
+  set_release(drop);
+  run(malloc(4));
+  return 0;
+}
+)c");
+  const auto result = program.run();
+  EXPECT_TRUE(result.failed.empty());
+  const auto &facts = program.analysis->facts();
+  ASSERT_TRUE(facts);
+  const core::SlotKey field = core::SlotKey::field("struct ops", "release");
+  EXPECT_EQ(facts->slots.targets(field),
+            std::set<std::string>{"/src/main.c:drop"});
+  EXPECT_TRUE(facts->slots.isClosed(field));
+  ASSERT_EQ(program.analysis->unitCount(), 2U);
+  for (std::size_t unit = 0; unit < 2; ++unit) {
+    EXPECT_NE(program.analysis->ledgerOf(unit), nullptr) << unit;
+    EXPECT_NE(program.analysis->interfaceOf(unit), nullptr) << unit;
+    EXPECT_NE(program.analysis->exportsOf(unit), nullptr) << unit;
+  }
+  // The database every run saw carries them.
+  EXPECT_EQ(program.analysis->database().programFacts, facts);
 }
 
 TEST(ProgramAnalysis, UnparsableUnitsAreReportedNotFatal) {

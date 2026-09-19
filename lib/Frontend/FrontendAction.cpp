@@ -13,6 +13,7 @@
 #include "weavec/Frontend/ClangDiagnosticSink.h"
 #include "weavec/Frontend/LedgerOutput.h"
 #include "weavec/Frontend/Prelude.h"
+#include "weavec/Frontend/RecordFacts.h"
 #include "weavec/Frontend/ZeroInit.h"
 
 #include "clang/AST/ASTConsumer.h"
@@ -134,13 +135,35 @@ UnitResult analyzeTranslationUnit(clang::ASTContext &context,
       analysis::runUnitAnalysis(context, pipeline, collected);
   result.exports = std::move(unit.exports);
   result.ledger = std::move(unit.ledger);
-  if (options.discoverOnly)
+  if (options.discoverOnly) {
+    // RFC 0030 §13.2 step 2: the whole-program driver solves the slots of
+    // every unit before it analyses any.
+    if (options.collectInterface)
+      result.interface = std::make_shared<const record::InterfaceFacts>(
+          record::collectSlotFacts(context));
     return result;
+  }
   // RFC 0030 §11: the zero-initialisation plan, decided before anything is
   // emitted so that the ledger's A5 counts are known when it is written.
   if (result.ledger && !result.ledger->ledger.units.empty()) {
     result.zeroInit = zeroInitPlanOf(context, options);
     result.ledger->ledger.units.front().a5 = result.zeroInit->a5;
+  }
+  // RFC 0030 §13.1: what the unit record carries beyond the summaries.
+  if (options.collectInterface && !options.silent) {
+    std::uint64_t lowered = 0;
+    if (result.zeroInit)
+      lowered = static_cast<std::uint64_t>(std::ranges::count_if(
+          result.zeroInit->rewrites, [](const ZeroInitRewrite &rewrite) {
+            return rewrite.kind != ZeroInitRewrite::Kind::Alloca;
+          }));
+    const record::FactsInput input{
+        .exports = result.exports,
+        .sites = result.ledger ? result.ledger->sites.get() : nullptr,
+        .loweredAllocations = lowered,
+        .library = nullptr};
+    result.interface = std::make_shared<const record::InterfaceFacts>(
+        record::collectInterfaceFacts(context, input));
   }
 
   ClangDiagnosticSink clangSink(diagnostics);

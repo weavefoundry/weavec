@@ -18,7 +18,9 @@
 #define WEAVEC_ANALYSIS_PROGRAMDATABASE_H
 
 #include "weavec/Core/CallContext.h"
+#include "weavec/Core/FnSlots.h"
 #include "weavec/Core/Interface.h"
+#include "weavec/Core/Ledger.h"
 #include "weavec/Core/Summary.h"
 
 #include "clang/AST/ASTContext.h"
@@ -204,6 +206,36 @@ struct UnitExports {
   [[nodiscard]] bool sameSummariesAs(const UnitExports &other) const;
 };
 
+/// RFC 0030 §9.4, §13.1 `boundaries`: one `dangling-escape` or
+/// `second-owner` row of a unit, with the place class it concerns, for
+/// program-wide propagation (§13.2 step 5).
+struct BoundaryRow {
+  /// The unit's main source; empty inside the unit's own record.
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
+  std::string unit = {};
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
+  std::string function = {};
+  /// The boundary's site ordinal within `function`.
+  std::uint32_t site = 0;
+  core::UnresolvedReason reason = core::UnresolvedReason::DanglingEscape;
+  /// A global `g`, or a field path `<struct>.<field>...`.
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
+  std::string placeClass = {};
+
+  friend auto operator<=>(const BoundaryRow &, const BoundaryRow &) = default;
+};
+
+/// RFC 0030 §13.2: what the link step (and `weavec --whole-program`) knows
+/// about the whole program beyond the summaries, for the engine's runs over
+/// its units: the function-pointer slots solved over every unit (step 2,
+/// §9.3) and every unit's boundary rows (step 5, §9.4).
+struct ProgramFacts {
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
+  core::SlotSolution slots = {};
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
+  std::vector<BoundaryRow> boundaries = {};
+};
+
 /// The canonical spelling of a function type that identifies indirect-call
 /// candidates across units, or an empty string when the type involves an
 /// anonymous record and so has no stable spelling.
@@ -223,6 +255,10 @@ class ProgramDatabase {
 public:
   core::InterfaceTypes globalInterfaces;
   core::InterfaceTypes objectInterfaces;
+  /// RFC 0030 §13.2: the program's solved slots and boundary rows, set by
+  /// the whole-program driver for every run it makes; null otherwise (and
+  /// never cleared by `clear`). Copies share it.
+  std::shared_ptr<const ProgramFacts> programFacts = nullptr;
   /// RFC 0020: identity of the summaries and global numbering used by
   /// importInto. Copies share it until a mutating operation starts.
   [[nodiscard]] const std::shared_ptr<const char> &importGeneration() const {

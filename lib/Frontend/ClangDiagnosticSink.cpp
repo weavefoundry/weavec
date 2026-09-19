@@ -46,12 +46,19 @@ void ClangDiagnosticSink::emit(const core::Diagnostic &diagnostic,
   auto location = analysis::toClangLocation(diagnostic.location);
   if (location.isInvalid() && engine.hasSourceManager() &&
       diagnostic.location.line != 0 && !diagnostic.location.file.empty()) {
-    const auto &sources = engine.getSourceManager();
+    auto &sources = engine.getSourceManager();
     if (const auto file = sources.getFileManager().getOptionalFileRef(
-            diagnostic.location.file))
+            diagnostic.location.file)) {
       location = sources.translateFileLineCol(&file->getFileEntry(),
                                               diagnostic.location.line,
                                               diagnostic.location.column);
+      // RFC 0030 §13.2: the link step reports at places no compile of this
+      // process has read; the file is entered on first use.
+      if (location.isInvalid())
+        location = sources.translateLineCol(
+            sources.getOrCreateFileID(*file, clang::SrcMgr::C_User),
+            diagnostic.location.line, diagnostic.location.column);
+    }
   }
   auto builder = engine.Report(location, id);
   builder << diagnostic.message;

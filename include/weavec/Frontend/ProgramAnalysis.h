@@ -23,8 +23,10 @@
 #define WEAVEC_FRONTEND_PROGRAMANALYSIS_H
 
 #include "weavec/Analysis/ProgramDatabase.h"
+#include "weavec/Core/Ledger.h"
 #include "weavec/Frontend/DiagnosticControl.h"
 #include "weavec/Frontend/FrontendAction.h"
+#include "weavec/Frontend/RecordPayload.h"
 
 #include "clang/Frontend/ASTUnit.h"
 #include "clang/Tooling/Tooling.h"
@@ -85,7 +87,7 @@ public:
   explicit ProgramAnalysis(FrontendOptions opts);
 
   /// Adds a unit to analyse. `known` are its exports if they are already
-  /// on hand (from a sidecar); otherwise the unit is parsed once to discover
+  /// on hand (from a record); otherwise the unit is parsed once to discover
   /// them. `reported` are the diagnostics an earlier step already printed
   /// for it.
   void addUnit(std::unique_ptr<ProgramUnit> unit,
@@ -102,6 +104,41 @@ public:
   [[nodiscard]] const analysis::ProgramDatabase &database() const noexcept {
     return settled;
   }
+
+  // RFC 0030 §13.2 (begin).
+
+  /// The program facts every run sees through its database
+  /// (`ProgramDatabase::programFacts`): at link, the slots solved over the
+  /// records and their boundary rows.
+  void setProgramFacts(std::shared_ptr<const analysis::ProgramFacts> facts) {
+    programFacts = std::move(facts);
+  }
+  /// `weavec --whole-program`: collect every unit's interface facts, and
+  /// solve the program's slots from what discovery collected when no facts
+  /// were set. The program is an executable (its slots closed, §9.3) when
+  /// some unit defines `main`.
+  void collectInterfaces(bool collect) { interfaces = collect; }
+  /// Keep the ledger of every unit's last reporting run for `ledgerOf` (on
+  /// with `collectInterfaces`).
+  void keepLedgers(bool keep) { ledgers = keep; }
+
+  /// After `run`, for the unit added `index`-th: the ledger of its last
+  /// reporting run, its interface facts, exports and reported diagnostics
+  /// (null or empty when it was not analysed).
+  [[nodiscard]] const core::Ledger *ledgerOf(std::size_t index) const;
+  [[nodiscard]] const record::InterfaceFacts *
+  interfaceOf(std::size_t index) const;
+  [[nodiscard]] const analysis::UnitExports *exportsOf(std::size_t index) const;
+  [[nodiscard]] const std::set<ReportedDiagnostic> &
+  reportedOf(std::size_t index) const;
+  [[nodiscard]] std::size_t unitCount() const noexcept { return units.size(); }
+  [[nodiscard]] std::string unitName(std::size_t index) const;
+  [[nodiscard]] const std::shared_ptr<const analysis::ProgramFacts> &
+  facts() const noexcept {
+    return programFacts;
+  }
+
+  // RFC 0030 §13.2 (end).
 
   /// Upper bound on fixpoint rounds for a cyclic component.
   static constexpr unsigned MaxRounds = 16;
@@ -126,12 +163,25 @@ private:
     // Default for designated initialization.
     // NOLINTNEXTLINE(readability-redundant-member-init)
     std::set<std::string> dependencies = {};
+    /// RFC 0030 §13.2: the ledger of the last reporting run and the
+    /// interface facts collected (at discovery, then by the last reporting
+    /// run).
+    // NOLINTNEXTLINE(readability-redundant-member-init)
+    std::shared_ptr<const core::Ledger> ledger = {};
+    // NOLINTNEXTLINE(readability-redundant-member-init)
+    std::shared_ptr<const record::InterfaceFacts> interface = {};
   };
 
   FrontendOptions options;
   std::vector<Unit> units;
   std::vector<analysis::UnitExports> fixed;
   analysis::ProgramDatabase settled;
+  std::shared_ptr<const analysis::ProgramFacts> programFacts;
+  bool interfaces = false;
+  bool ledgers = false;
+  /// `weavec --whole-program`: the program facts from what discovery
+  /// collected.
+  void solveDiscoveredSlots();
   std::set<std::string> boundaryOnce;
   bool boundedRetention = false;
   std::vector<ProgramUnit *> retainedUnits;
@@ -148,8 +198,8 @@ private:
   void analyzeComponent(const std::vector<unsigned> &component, Result &result);
   /// Records what a reporting run of `unit` against `db` produced: its
   /// exports, the diagnostics shown, the sized-field pairs in force.
-  static void settle(Unit &unit, const analysis::ProgramDatabase &db,
-                     UnitResult run);
+  void settle(Unit &unit, const analysis::ProgramDatabase &db,
+              UnitResult run) const;
   /// RFC 0012, *Sized fields*, "Inference": one more reporting pass over
   /// every unit analysed before the program confirmed a pair it may load;
   /// only what is new is shown.

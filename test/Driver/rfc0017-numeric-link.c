@@ -1,8 +1,9 @@
-// RFC 0017: format 13 carries numeric expressions and access intervals.
+// RFC 0017: the unit record carries numeric expressions and access
+// intervals in its summaries.
 // RUN: rm -rf %t && mkdir -p %t
 // RUN: %weavec-cc -c %S/../WholeProgram/Inputs/rfc0017-numeric.c -o %t/callee.o
 // RUN: %weavec-cc -c %s -o %t/caller.o
-// RUN: FileCheck %s --check-prefix=FORMAT < %t/callee.o.weavec
+// RUN: %weavec --dump-record=%t/callee.o.weavec | FileCheck %s --check-prefix=FORMAT
 // RUN: not %weavec-cc %t/caller.o %t/callee.o -o %t/program 2>&1 | FileCheck %s --check-prefix=LINK
 // RUN: not test -f %t/program
 #include "../Inputs/prelude.h"
@@ -30,7 +31,7 @@ int main(void) {
   p[0] = 1; free(p);
   return 0;
 }
-// FORMAT: weavec-summaries 28
+// FORMAT: "format": 28,
 // FORMAT-DAG: numeric result value
 // FORMAT-DAG: requires-extent 0 param 1 scale 1 plus 1 start param 1 scale 1 plus 0
 // LINK-DAG: error: 'put_at' requires 'a' before its start [weavec::out-of-bounds]

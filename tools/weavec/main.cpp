@@ -35,8 +35,11 @@
 #include "weavec/Frontend/FrontendAction.h"
 #include "weavec/Frontend/LedgerOutput.h"
 #include "weavec/Frontend/LedgerWriter.h"
+#include "weavec/Frontend/LinkStep.h"
 #include "weavec/Frontend/ProgramAnalysis.h"
+#include "weavec/Frontend/RecordPayload.h"
 #include "weavec/Frontend/ResourceDir.h"
+#include "weavec/Frontend/UnitRecord.h"
 
 #include "clang/AST/ASTConsumer.h"
 #include "clang/AST/ASTContext.h"
@@ -48,8 +51,11 @@
 #include "clang/Tooling/Tooling.h"
 
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallString.h"
 #include "llvm/Support/CommandLine.h"
+#include "llvm/Support/FileSystem.h"
 #include "llvm/Support/InitLLVM.h"
+#include "llvm/Support/Path.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
@@ -126,6 +132,13 @@ cl::opt<bool> dumpKinds(
              "(debugging aid; format unstable)"),
     cl::init(false), cl::cat(weavecCategory));
 
+cl::opt<std::string> dumpRecord(
+    "dump-record",
+    cl::desc("Print the WeaveC unit record at <path> (an <object>.weavec that "
+             "weavec-cc wrote) as JSON and exit; a stale record is an error "
+             "that says why (debugging aid)"),
+    cl::value_desc("path"), cl::cat(weavecCategory));
+
 cl::opt<bool> wholeProgram(
     "whole-program",
     cl::desc("Analyse the given sources (all sources of the compilation "
@@ -188,6 +201,103 @@ protected:
 };
 
 } // namespace
+
+/// `--dump-record`: the record at `path` as JSON, or why it is stale.
+static int printRecord(llvm::StringRef path) {
+  std::string reason;
+  const std::optional<weavec::frontend::record::UnitRecord> record =
+      weavec::frontend::record::readRecord(path, reason);
+  if (!record) {
+    llvm::errs() << "weavec: error: '" << path << "' is a stale WeaveC record ("
+                 << reason << ")\n";
+    return 1;
+  }
+  // The payload is read as the link step reads it, so what it rejects is
+  // stale here too.
+  if (!weavec::frontend::record::payloadFromJson(
+          record->payload, record->header.source, reason)) {
+    llvm::errs() << "weavec: error: '" << path << "' is a stale WeaveC record ("
+                 << reason << ")\n";
+    return 1;
+  }
+  llvm::outs() << weavec::frontend::record::renderRecord(*record);
+  return 0;
+}
+
+static std::string currentDirectory() {
+  llvm::SmallString<256> cwd;
+  if (llvm::sys::fs::current_path(cwd))
+    return {};
+  return cwd.str().str();
+}
+
+/// RFC 0030 §13.2 in `weavec --whole-program`: the declarations verified
+/// against their definitions and the program ledger, from the units' last
+/// runs. False after an error.
+static bool
+finishProgram(const weavec::frontend::ProgramAnalysis &program,
+              const clang::tooling::CompilationDatabase &compilations,
+              const std::vector<std::string> &sources,
+              const weavec::frontend::FrontendOptions &options) {
+  namespace frontend = weavec::frontend;
+  const std::string cwd = currentDirectory();
+  std::vector<frontend::ProgramMember> members;
+  std::vector<const weavec::core::Ledger *> runs;
+  std::string programName = "program";
+  for (std::size_t i = 0; i < program.unitCount(); ++i) {
+    const weavec::analysis::UnitExports *exports = program.exportsOf(i);
+    if (exports == nullptr)
+      continue;
+    frontend::ProgramMember member;
+    member.source = program.unitName(i);
+    if (i < sources.size()) {
+      const auto commands = compilations.getCompileCommands(sources[i]);
+      if (!commands.empty())
+        member.cwd = commands.front().Directory;
+    }
+    member.payload.exports = *exports;
+    if (const auto *facts = program.interfaceOf(i))
+      member.payload.facts = *facts;
+    const weavec::core::Ledger *ledger = program.ledgerOf(i);
+    if (ledger != nullptr && !ledger->units.empty()) {
+      member.payload.sites = frontend::record::siteRows(ledger->units.front());
+      member.payload.a5 = ledger->units.front().a5;
+      if (llvm::any_of(ledger->units.front().functions,
+                       [](const weavec::core::FunctionLedger &function) {
+                         return function.name == "main";
+                       }))
+        programName = llvm::sys::path::stem(member.source).str();
+    }
+    member.payload.reported = program.reportedOf(i);
+    members.push_back(std::move(member));
+    runs.push_back(ledger);
+  }
+  const frontend::DeclarationCheck declarations =
+      frontend::verifyDeclarations(members, cwd);
+  frontend::LinkDiagnosticPrinter printer("weavec");
+  frontend::FilteringSink sink(printer, options.control);
+  for (const weavec::core::Diagnostic &diagnostic : declarations.diagnostics)
+    sink.report(diagnostic);
+  weavec::core::Ledger ledger = frontend::composeProgramLedger(
+      frontend::ProgramLedgerInput{.members = members,
+                                   .runs = runs,
+                                   .copyRecordRows = false,
+                                   .declarations = &declarations,
+                                   .shape = {},
+                                   .linkDiagnostics = {},
+                                   .cwd = cwd});
+  frontend::applyDiagnosticControl(ledger, options.control);
+  frontend::LedgerOutputOptions output = options.ledgerOutput;
+  output.path = ledgerPath.getValue();
+  std::string error;
+  if (!frontend::emitProgramLedger(ledger, programName, cwd, options.config,
+                                   output, llvm::errs(), &error)) {
+    llvm::errs() << "weavec: error: cannot write the program ledger: " << error
+                 << '\n';
+    return false;
+  }
+  return sink.errors() == 0;
+}
 
 static void printVersion(llvm::raw_ostream &os) {
   os << "weavec version " << WEAVEC_VERSION_STRING;
@@ -354,6 +464,8 @@ int main(int argc, const char **argv) {
     return 1;
   }
   clang::tooling::CommonOptionsParser &parser = *expectedParser;
+  if (!dumpRecord.empty())
+    return printRecord(dumpRecord);
 
   // Without a source the parser loads no database (and has none to give
   // unless `--` built the fixed one): `--whole-program -p <dir>` loads it
@@ -438,6 +550,8 @@ int main(int argc, const char **argv) {
 
   if (wholeProgram) {
     weavec::frontend::ProgramAnalysis program(options);
+    // RFC 0030 §13.2: `weavec --whole-program` runs the link step's checks.
+    program.collectInterfaces(true);
     for (const std::string &source : sources) {
       program.addUnit(
           std::make_unique<weavec::frontend::CompilationDatabaseUnit>(
@@ -453,9 +567,11 @@ int main(int argc, const char **argv) {
       });
       llvm::errs() << " did not converge\n";
     }
+    const bool finished =
+        finishProgram(program, compilations, sources, options);
     const bool statsOK = weavec::frontend::writeAnalysisStats(
         analysisStatsPath, options.analysis.stats);
-    return result.ok() && statsOK ? 0 : 1;
+    return result.ok() && finished && statsOK ? 0 : 1;
   }
 
   clang::tooling::ClangTool tool(compilations, sources);

@@ -69,6 +69,9 @@ static UnitRecord sampleRecord() {
   record.payload = emptyPayload();
   llvm::json::Object sites;
   sites["function"] = "cJSON_Delete";
+  sites["file"] = "";
+  sites["line"] = 253;
+  sites["linkage"] = "external";
   sites["rows"] = llvm::json::Array{
       llvm::json::Array{0, "deref", 258, 21, "proven", "checked",
                         "unresolved/unknown-callee", nullptr}};
@@ -155,10 +158,11 @@ TEST(UnitRecord, FramingFollowsTheLayout) {
             std::string::npos);
   EXPECT_EQ(payload.rfind(R"({"functions":[],"globals":[],"imports":[],)", 0),
             0U);
-  EXPECT_NE(payload.find(R"("sites":[{"function":"cJSON_Delete","rows":[[0,)"
+  EXPECT_NE(payload.find(R"("sites":[{"function":"cJSON_Delete","file":"",)"
+                         R"("line":253,"linkage":"external","rows":[[0,)"
                          R"("deref",258,21,"proven","checked",)"
                          R"("unresolved/unknown-callee",null]]}],)"
-                         R"("reported":[],"definesAllocator":true})"),
+                         R"("reported":[],"definesAllocator":true,"a5":{)"),
             std::string::npos);
 }
 
@@ -187,7 +191,9 @@ TEST(UnitRecord, EmittedKeysMatchTheFieldTable) {
   EXPECT_EQ(emitted, schemaPaths());
   for (const std::string path :
        {"header.config.budget", "payload.sites[].rows[]",
-        "payload.imports[].calls[][]", "payload.invariants[].store.line"})
+        "payload.imports[].calls[].args[]", "payload.invariants[].store.line",
+        "payload.functions[].contexts.memory[].summary",
+        "payload.slotRules.escapedStatics[]", "payload.a5.allocator"})
     EXPECT_TRUE(std::ranges::binary_search(schemaPaths(), path)) << path;
 }
 
@@ -195,7 +201,8 @@ TEST(UnitRecord, SchemaFingerprintIsTheTableHash) {
   const std::string text = schemaText();
   const auto expected = llvm::SHA256::hash(llvm::arrayRefFromStringRef(text));
   EXPECT_EQ(schemaFingerprint(), expected);
-  EXPECT_EQ(text.rfind("weavec-record-schema\nheader:object{producer:object{"
+  EXPECT_EQ(text.rfind("weavec-record-schema\nsummary-format:27\n"
+                       "header:object{producer:object{"
                        "name:string,version:string,revision:string},"
                        "source:string,cwd:string,command:array<string>,"
                        "target:string,config:object{checks:string,"
@@ -204,13 +211,17 @@ TEST(UnitRecord, SchemaFingerprintIsTheTableHash) {
                        "payload:object{functions:array<object{name:string,",
                        0),
             0U);
-  EXPECT_NE(text.find("sites:array<object{function:string,rows:array<tuple("
+  EXPECT_NE(text.find("sites:array<object{function:string,file:string,"
+                      "line:integer,linkage:string,rows:array<tuple("
                       "integer,string,integer,integer,string?,string?,"
                       "string?,string?)>}>"),
             std::string::npos);
   EXPECT_NE(text.find("store:object{file:string,line:integer,column:integer}?"),
             std::string::npos);
-  EXPECT_TRUE(llvm::StringRef(text).ends_with("definesAllocator:boolean}\n"));
+  EXPECT_TRUE(llvm::StringRef(text).ends_with(
+      "definesAllocator:boolean,a5:object{loweredAllocations:integer,"
+      "nonLoweredAllocations:integer,bypassedDeclarations:integer,"
+      "allocator:string?}}\n"));
 }
 
 TEST(UnitRecord, AnythingElseIsStale) {
@@ -284,7 +295,7 @@ TEST(UnitRecord, EncodeRejectsWhatTheTableDoesNotDescribe) {
   EXPECT_EQ(error, "payload.functions[0]: missing key 'linkage'");
   EXPECT_FALSE(
       validate(llvm::json::Value(emptyPayload()), payloadSchema(), "payload"));
-  EXPECT_EQ(emptyPayload().size(), 16U);
+  EXPECT_EQ(emptyPayload().size(), 20U);
   const FieldSpec nullable{
       .name = "x", .type = FieldType::String, .nullable = true, .members = {}};
   EXPECT_FALSE(validate(nullptr, nullable, "x"));

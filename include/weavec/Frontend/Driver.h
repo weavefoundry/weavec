@@ -9,9 +9,10 @@
 // `weavec-cc` is Clang's driver with WeaveC inside (RFC 0005, *`weavec-cc`*):
 //
 //   weavec-cc -c foo.c -o foo.o      compile foo.c, analyse it alone, write
-//                                    foo.o and foo.o.weavec
-//   weavec-cc foo.o bar.o -o prog    analyse the program the sidecars
-//                                    describe, then link
+//                                    foo.o and its unit record foo.o.weavec
+//   weavec-cc foo.o bar.o -o prog    verify and analyse the program the
+//                                    records describe (RFC 0030 §13.2),
+//                                    then link
 //
 // The `-fweavec-*` and `-W*weavec*` flags are WeaveC's; everything else is
 // Clang's. Each `-cc1` job runs in this process with WeaveC's AST consumer
@@ -95,8 +96,8 @@ struct DriverOptions {
 int runDriver(llvm::ArrayRef<const char *> argv, void *mainAddress);
 
 /// Runs a `-cc1` command line (`argv` excludes `-cc1`): Clang's compiler
-/// proper with WeaveC's consumer multiplexed in, writing the unit's sidecar
-/// next to the output.
+/// proper with WeaveC's consumer multiplexed in, writing the unit record
+/// (RFC 0030 §13.1) next to the output.
 int runCc1(llvm::ArrayRef<const char *> argv, const char *argv0);
 
 } // namespace weavec::frontend

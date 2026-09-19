@@ -14,9 +14,12 @@
 #include "weavec/Frontend/ClangDiagnosticSink.h"
 #include "weavec/Frontend/DeferredCodeGenConsumer.h"
 #include "weavec/Frontend/LedgerOutput.h"
+#include "weavec/Frontend/LinkStep.h"
 #include "weavec/Frontend/ProgramAnalysis.h"
+#include "weavec/Frontend/RecordFacts.h"
+#include "weavec/Frontend/RecordPayload.h"
 #include "weavec/Frontend/ResourceDir.h"
-#include "weavec/Frontend/Sidecar.h"
+#include "weavec/Frontend/UnitRecord.h"
 #include "weavec/Frontend/ZeroInit.h"
 
 #include "clang/Basic/Diagnostic.h"
@@ -417,6 +420,37 @@ static void warnOnceWithoutUsableSize(llvm::StringRef triple) {
                   "zero-initialised\n";
 }
 
+/// RFC 0030 §13.1: writes the unit record of the object `output` the job
+/// `compiler` just wrote.
+static bool writeUnitRecord(llvm::StringRef path, llvm::StringRef output,
+                            llvm::ArrayRef<const char *> cc1Args,
+                            const clang::CompilerInstance &compiler,
+                            const core::LedgerConfig &config,
+                            const UnitResult &result, std::string *error) {
+  record::UnitRecord unit;
+  unit.header.producer = record::currentProducer();
+  const auto &inputs = compiler.getFrontendOpts().Inputs;
+  if (!inputs.empty() && inputs.front().isFile())
+    unit.header.source = inputs.front().getFile().str();
+  unit.header.cwd = compiler.getFileSystemOpts().WorkingDir;
+  if (unit.header.cwd.empty())
+    unit.header.cwd = currentDirectory();
+  for (const char *arg : cc1Args)
+    unit.header.command.emplace_back(arg);
+  unit.header.target = compiler.getTargetOpts().Triple;
+  unit.header.config = config;
+  const std::optional<std::string> digest = record::fileDigest(output);
+  if (!digest) {
+    if (error != nullptr)
+      *error = "cannot read '" + output.str() + "' to bind its WeaveC record";
+    return false;
+  }
+  unit.header.object =
+      record::RecordObject{.path = output.str(), .digest = *digest};
+  unit.payload = record::toJson(record::payloadOf(result));
+  return record::writeRecord(path, unit, error);
+}
+
 /// Runs one `-cc1` job. `driver` is set when the `weavec-cc` driver runs the
 /// job in process; the driver then owns the statistics and writes them.
 static int runCc1Job(llvm::ArrayRef<const char *> argv, const char *argv0,
@@ -497,29 +531,29 @@ static int runCc1Job(llvm::ArrayRef<const char *> argv, const char *argv0,
   // The compile step sees the unit alone; boundaries wait for the link.
   if (driver != nullptr && driver->stats)
     weavec.stats = driver->stats;
+  // RFC 0030 §13.1: a job that writes a file writes the unit record next
+  // to it.
+  const std::string output = compiler->getFrontendOpts().OutputFile;
+  const bool writesRecord = !output.empty() && output != "-";
   FrontendOptions options = weavec.toFrontendOptions();
   options.analysis.deferBoundary = true;
+  options.collectInterface = writesRecord;
+  const core::LedgerConfig config = options.config;
   std::optional<UnitResult> result;
   options.onResult = [&result](UnitResult r) { result = std::move(r); };
 
   WeaveCWrapperAction action(std::move(inner), std::move(options));
   success = compiler->ExecuteAction(action);
 
-  const std::string &output = compiler->getFrontendOpts().OutputFile;
-  if (!output.empty() && output != "-") {
-    const std::string sidecar = sidecarPathFor(output);
-    if (success && result) {
-      UnitRecord record;
-      record.exports = std::move(result->exports);
-      record.reported = std::move(result->reported);
-      record.workingDirectory = currentDirectory();
-      for (const char *arg : cc1Args)
-        record.command.emplace_back(arg);
-      std::string error;
-      if (!writeSidecar(sidecar, record, &error))
-        llvm::errs() << "weavec-cc: warning: " << error << '\n';
-    } else {
-      removeQuietly(sidecar);
+  if (writesRecord) {
+    const std::string path = record::recordPathFor(output);
+    std::string error;
+    if (!success || !result) {
+      removeQuietly(path);
+    } else if (!writeUnitRecord(path, output, cc1Args, *compiler, config,
+                                *result, &error)) {
+      removeQuietly(path);
+      llvm::errs() << "weavec-cc: warning: " << error << '\n';
     }
   }
   const bool statsOK =
@@ -534,13 +568,14 @@ static int runCc1Job(llvm::ArrayRef<const char *> argv, const char *argv0,
 
 namespace {
 
-/// A unit re-parsed from the cc1 command line its sidecar recorded.
+/// A unit re-parsed from the cc1 command line its record holds.
 class Cc1Unit final : public ProgramUnit {
 public:
   Cc1Unit(std::string displayName, std::vector<std::string> command,
-          std::string workingDirectory, const char *argv0)
+          std::string workingDirectory, core::LedgerConfig recorded,
+          const char *argv0)
       : display(std::move(displayName)), args(std::move(command)),
-        cwd(std::move(workingDirectory)), argv0(argv0) {}
+        cwd(std::move(workingDirectory)), config(recorded), argv0(argv0) {}
 
   [[nodiscard]] std::string name() const override { return display; }
 
@@ -586,6 +621,8 @@ public:
       return false;
     auto current = options;
     current.analysis.preparation = preparation;
+    // The unit is analysed as it was compiled.
+    current.config = config;
     auto result = analyzeRetainedUnit(*ast, current);
     if (options.onResult)
       options.onResult(std::move(result));
@@ -643,12 +680,15 @@ private:
   std::string display;
   std::vector<std::string> args;
   std::string cwd;
+  core::LedgerConfig config;
   const char *argv0;
 };
 
+/// A link input with a valid unit record (§13.1).
 struct LinkInput {
   std::string object;
-  UnitRecord record;
+  record::UnitRecord record;
+  record::Payload payload;
 };
 
 /// RFC 0030 §13.2: a link input without a valid WeaveC record.
@@ -669,14 +709,6 @@ struct LinkInputs {
 };
 
 } // namespace
-
-static bool newerThan(llvm::StringRef a, llvm::StringRef b) {
-  llvm::sys::fs::file_status statusA;
-  llvm::sys::fs::file_status statusB;
-  if (llvm::sys::fs::status(a, statusA) || llvm::sys::fs::status(b, statusB))
-    return false;
-  return statusA.getLastModificationTime() > statusB.getLastModificationTime();
-}
 
 /// `path` absolute, without `.` and `..`, and without symbolic links when it
 /// exists.
@@ -812,27 +844,38 @@ collectLinkInputs(const clang::driver::Compilation &compilation,
     const std::string object = input.getFilename();
     const std::string name =
         isTemporary(object) ? std::string(input.getBaseInput()) : object;
-    const std::string path = sidecarPathFor(object);
+    const std::string path = record::recordPathFor(object);
     if (!llvm::sys::fs::exists(path)) {
       if (!isSystem(object))
         addUnanalyzed(UnanalyzedInput{.name = name});
       continue;
     }
-    std::string error;
-    std::optional<UnitRecord> record = readSidecar(path, &error);
-    if (!record) {
-      std::string stale = "'" + path + "': ";
-      stale += error;
-      addUnanalyzed(UnanalyzedInput{.name = name, .stale = std::move(stale)});
+    // §13.1: a record that is not format 28 with this schema and a valid
+    // digest, whose payload cannot be read, or that was written for another
+    // object is stale.
+    const auto stale = [&](const std::string &why) {
+      addUnanalyzed(
+          UnanalyzedInput{.name = name, .stale = "'" + path + "': " + why});
+    };
+    std::string reason;
+    std::optional<record::UnitRecord> unit = record::readRecord(path, reason);
+    if (!unit) {
+      stale(reason);
       continue;
     }
-    if (newerThan(object, path)) {
-      addUnanalyzed(UnanalyzedInput{
-          .name = name, .stale = "'" + path + "' is older than the object"});
+    if (record::fileDigest(object) != unit->header.object.digest) {
+      stale("it describes another object (digest mismatch)");
       continue;
     }
-    inputs.analysed.push_back(
-        LinkInput{.object = object, .record = std::move(*record)});
+    std::optional<record::Payload> payload =
+        record::payloadFromJson(unit->payload, unit->header.source, reason);
+    if (!payload) {
+      stale(reason);
+      continue;
+    }
+    inputs.analysed.push_back(LinkInput{.object = object,
+                                        .record = std::move(*unit),
+                                        .payload = std::move(*payload)});
   }
   for (const llvm::opt::Arg *arg :
        compilation.getArgs().filtered(clang::options::OPT_l)) {
@@ -844,14 +887,12 @@ collectLinkInputs(const clang::driver::Compilation &compilation,
   return inputs;
 }
 
-/// §13.2: one `unanalyzed-input` warning per link naming every input
-/// without a valid record, subject to the `-W` flags. False when they made
-/// it an error.
-static bool reportUnanalyzedInputs(llvm::ArrayRef<UnanalyzedInput> inputs,
-                                   const DiagnosticControl &control,
-                                   clang::DiagnosticsEngine &diags) {
+/// §13.2 step 1: the one `unanalyzed-input` warning of a link, naming every
+/// input without a valid record; none when there is none.
+static std::optional<core::Diagnostic>
+unanalyzedInputDiagnostic(llvm::ArrayRef<UnanalyzedInput> inputs) {
   if (inputs.empty())
-    return true;
+    return std::nullopt;
   const auto describe = [](const UnanalyzedInput &input) {
     return "link input '" + input.name +
            (input.stale.empty()
@@ -875,106 +916,172 @@ static bool reportUnanalyzedInputs(llvm::ArrayRef<UnanalyzedInput> inputs,
     for (const UnanalyzedInput &input : inputs)
       diagnostic.addNote(describe(input), {});
   }
-  ClangDiagnosticSink clangSink(diags);
-  FilteringSink sink(clangSink, control);
-  sink.report(diagnostic);
-  return sink.errors() == 0;
+  return diagnostic;
 }
 
-/// The whole-program step: true if the link may proceed.
+/// §9.3, §13.2 step 1: what the link line says about code outside the
+/// inputs.
+static LinkShape linkShapeOf(const clang::driver::Compilation &compilation,
+                             llvm::ArrayRef<UnanalyzedInput> unanalyzed) {
+  const llvm::opt::ArgList &args = compilation.getArgs();
+  LinkShape shape;
+  shape.executable = !args.hasArg(clang::options::OPT_shared) &&
+                     !args.hasArg(clang::options::OPT_r) &&
+                     !args.hasArg(clang::options::OPT_dynamiclib) &&
+                     !args.hasArg(clang::options::OPT_bundle);
+  const auto exportsDynamic = [](llvm::StringRef flag) {
+    return flag == "-export-dynamic" || flag == "--export-dynamic" ||
+           flag == "-E" || flag == "-export_dynamic";
+  };
+  shape.exportDynamic = args.hasArg(clang::options::OPT_rdynamic);
+  for (const llvm::opt::Arg *arg :
+       args.filtered(clang::options::OPT_Wl_COMMA, clang::options::OPT_Xlinker))
+    for (const char *value : arg->getValues())
+      shape.exportDynamic = shape.exportDynamic || exportsDynamic(value);
+  for (const UnanalyzedInput &input : unanalyzed)
+    shape.inputsWithoutRecords.push_back(input.name);
+  return shape;
+}
+
+/// The name the link output gives the program (§12.4, §16).
+static std::string linkOutput(const clang::driver::Command &link) {
+  const std::vector<std::string> &outputs = link.getOutputFilenames();
+  return outputs.empty() ? std::string("a.out") : outputs.front();
+}
+
+/// RFC 0005, *weavec-cc*: whether a unit's view at compile time can differ
+/// from the program's, so that it must be analysed again at link.
+static bool needsAnalysis(llvm::ArrayRef<ProgramMember> members,
+                          std::size_t index, const core::SlotSolution &slots) {
+  const analysis::UnitExports &exports = members[index].payload.exports;
+  const auto other = [&](auto &&predicate) {
+    for (std::size_t o = 0; o < members.size(); ++o)
+      if (o != index && predicate(members[o].payload.exports))
+        return true;
+    return false;
+  };
+  if (!exports.unknownCallees.empty() || !exports.unknownIndirectTypes.empty())
+    return true;
+  // A callee, an indirect-call candidate, a sized-field witness or a caller
+  // with call contexts in another unit.
+  if (llvm::any_of(exports.imports, [&](const std::string &name) {
+        return other([&](const analysis::UnitExports &unit) {
+          const auto it = unit.functions.find(name);
+          return it != unit.functions.end() && it->second.external;
+        });
+      }))
+    return true;
+  if (llvm::any_of(exports.indirectTypes, [&](const std::string &key) {
+        return other([&](const analysis::UnitExports &unit) {
+          return llvm::any_of(unit.functions, [&](const auto &entry) {
+            return entry.second.addressTaken && entry.second.typeKey == key;
+          });
+        });
+      }))
+    return true;
+  if (llvm::any_of(exports.sizedFieldLoads, [&](const std::string &key) {
+        return other([&](const analysis::UnitExports &unit) {
+          return llvm::any_of(unit.sizedFields.witnesses,
+                              [&](const analysis::SizedFieldWitness &w) {
+                                return w.field == key;
+                              });
+        });
+      }))
+    return true;
+  // RFC 0016: a locally complete definition can acquire new contextual
+  // obligations from another object.
+  if (llvm::any_of(exports.functions, [&](const auto &entry) {
+        const auto &[symbol, function] = entry;
+        if (!function.acceptsMemoryContexts && !function.acceptsCallbacks)
+          return false;
+        return other([&](const analysis::UnitExports &caller) {
+          return (function.external && caller.imports.contains(symbol)) ||
+                 (function.addressTaken && !function.typeKey.empty() &&
+                  caller.indirectTypes.contains(function.typeKey));
+        });
+      }))
+    return true;
+  // RFC 0030 §9.3: an indirect call through a slot the program resolves.
+  return llvm::any_of(
+      members[index].payload.facts.slots.rows, [&](const core::SlotRow &row) {
+        const std::optional<core::SlotKey> callee = row.slot.callee();
+        return callee && !slots.targets(*callee).empty();
+      });
+}
+
+/// The whole-program step (RFC 0030 §13.2): true if the link may proceed.
 static bool runLinkStep(const clang::driver::Compilation &compilation,
                         const clang::driver::Command &link,
-                        const DriverOptions &weavec,
-                        clang::DiagnosticsEngine &diags, const char *argv0) {
+                        const DriverOptions &weavec, const char *argv0) {
   LinkInputs linkInputs = collectLinkInputs(compilation, link);
-  if (!reportUnanalyzedInputs(linkInputs.unanalyzed, weavec.control, diags))
-    return false;
+  LinkDiagnosticPrinter reporter("weavec-cc");
+  FilteringSink sink(reporter, weavec.control);
+  std::vector<core::Diagnostic> linkDiagnostics;
+  // Step 1.
+  if (const auto unanalyzed =
+          unanalyzedInputDiagnostic(linkInputs.unanalyzed)) {
+    sink.report(*unanalyzed);
+    linkDiagnostics.push_back(*unanalyzed);
+    if (sink.errors() != 0)
+      return false;
+  }
   std::vector<LinkInput> &inputs = linkInputs.analysed;
-  if (inputs.empty())
+  FrontendOptions unitOptions = weavec.toFrontendOptions();
+  const LedgerOutputOptions output = unitOptions.ledgerOutput;
+  const bool compose = output.writesLedger() || output.printsSummary();
+  // Without a record there is nothing to analyse; the program ledger, when
+  // one is asked for, still names the inputs without records.
+  if (inputs.empty() && !compose)
     return true;
 
-  // Which units another unit's definitions or callbacks can affect.
-  std::map<std::string, std::vector<unsigned>, std::less<>> candidates;
-  std::set<std::string> defined;
-  for (unsigned i = 0; i < inputs.size(); ++i) {
-    for (const auto &[name, function] : inputs[i].record.exports.functions) {
-      if (function.external)
-        defined.insert(name);
-      if (function.addressTaken && !function.typeKey.empty())
-        candidates[function.typeKey].push_back(i);
-    }
-  }
-  // RFC 0012, *Sized fields*: the fields some unit's stores witness as
-  // counted, by the unit. A unit that checks an access through one of them
-  // has something to learn from the rest of the program.
-  std::map<std::string, std::vector<unsigned>, std::less<>> witnessed;
-  for (unsigned i = 0; i < inputs.size(); ++i) {
-    for (const analysis::SizedFieldWitness &witness :
-         inputs[i].record.exports.sizedFields.witnesses)
-      witnessed[witness.field].push_back(i);
-  }
+  const std::string cwd = currentDirectory();
+  std::vector<ProgramMember> members;
+  members.reserve(inputs.size());
+  for (LinkInput &input : inputs)
+    members.push_back(ProgramMember{.source = input.record.header.source,
+                                    .cwd = input.record.header.cwd,
+                                    .object = input.object,
+                                    .target = input.record.header.target,
+                                    .payload = std::move(input.payload)});
+  const LinkShape shape = linkShapeOf(compilation, linkInputs.unanalyzed);
 
-  // The units' ledgers and summary lines are the compile step's; the link
-  // writes only the program's (§13.2 step 6).
-  FrontendOptions unitOptions = weavec.toFrontendOptions();
+  // Step 2: the slots of every record, solved together.
+  auto facts = std::make_shared<analysis::ProgramFacts>();
+  facts->slots = solveProgramSlots(members, shape);
+  facts->boundaries = programBoundaries(members);
+
+  // Step 3: declarations against definitions.
+  const DeclarationCheck declarations = verifyDeclarations(members, cwd);
+  for (const core::Diagnostic &diagnostic : declarations.diagnostics)
+    sink.report(diagnostic);
+
+  // Step 4: the units analysed again with the program in view. The units'
+  // ledgers and summary lines are the compile step's; the link writes only
+  // the program's. Composing that ledger needs every unit's rows in full,
+  // which records do not carry, so then every unit runs again.
   unitOptions.ledgerOutput.path.clear();
   unitOptions.ledgerOutput.summary = false;
   ProgramAnalysis program(std::move(unitOptions));
-  for (unsigned i = 0; i < inputs.size(); ++i) {
-    UnitRecord &record = inputs[i].record;
-    const analysis::UnitExports &exports = record.exports;
-    bool needsAnalysis = !exports.unknownCallees.empty() ||
-                         !exports.unknownIndirectTypes.empty();
-    needsAnalysis = needsAnalysis ||
-                    llvm::any_of(exports.imports, [&](const std::string &name) {
-                      return defined.contains(name);
-                    });
-    needsAnalysis =
-        needsAnalysis ||
-        llvm::any_of(exports.indirectTypes, [&](const std::string &key) {
-          const auto it = candidates.find(key);
-          return it != candidates.end() &&
-                 llvm::any_of(it->second, [i](unsigned u) { return u != i; });
-        });
-    needsAnalysis =
-        needsAnalysis ||
-        llvm::any_of(exports.sizedFieldLoads, [&](const std::string &key) {
-          const auto it = witnessed.find(key);
-          return it != witnessed.end() &&
-                 llvm::any_of(it->second, [i](unsigned u) { return u != i; });
-        });
-
-    // RFC 0016: a locally complete definition can acquire new contextual
-    // obligations from another object. Keep its source available for replay.
-    needsAnalysis =
-        needsAnalysis ||
-        llvm::any_of(exports.functions, [&](const auto &entry) {
-          const auto &[symbol, function] = entry;
-          if (!function.acceptsMemoryContexts && !function.acceptsCallbacks)
-            return false;
-          for (unsigned other = 0; other < inputs.size(); ++other) {
-            if (other == i)
-              continue;
-            const auto &caller = inputs[other].record.exports;
-            if ((function.external && caller.imports.contains(symbol)) ||
-                (function.addressTaken && !function.typeKey.empty() &&
-                 caller.indirectTypes.contains(function.typeKey)))
-              return true;
-          }
-          return false;
-        });
-
-    if (needsAnalysis && !record.command.empty()) {
+  program.setProgramFacts(facts);
+  program.keepLedgers(compose);
+  std::vector<std::optional<std::size_t>> analysed(inputs.size());
+  std::size_t added = 0;
+  for (std::size_t i = 0; i < inputs.size(); ++i) {
+    const record::RecordHeader &header = inputs[i].record.header;
+    const record::Payload &payload = members[i].payload;
+    if ((compose || needsAnalysis(members, i, facts->slots)) &&
+        !header.command.empty()) {
       const std::string name =
-          exports.source.empty() ? inputs[i].object : exports.source;
-      program.addUnit(std::make_unique<Cc1Unit>(name, record.command,
-                                                record.workingDirectory, argv0),
-                      record.exports, std::move(record.reported));
+          header.source.empty() ? inputs[i].object : header.source;
+      program.addUnit(std::make_unique<Cc1Unit>(name, header.command,
+                                                header.cwd, header.config,
+                                                argv0),
+                      payload.exports, payload.reported);
+      analysed[i] = added++;
     } else {
-      program.addExports(record.exports);
+      program.addExports(payload.exports);
     }
   }
-
   const ProgramAnalysis::Result result = program.run();
   for (const std::string &name : result.failed)
     llvm::errs() << "weavec-cc: error: cannot re-analyse '" << name << "'\n";
@@ -985,7 +1092,40 @@ static bool runLinkStep(const clang::driver::Compilation &compilation,
     });
     llvm::errs() << " did not converge\n";
   }
-  return result.ok();
+
+  // Step 5: the allocator (the other checks of the step are part of the
+  // program ledger).
+  if (const std::optional<AllocatorFinding> allocator =
+          allocatorDefinedBy(members))
+    llvm::errs() << "weavec-cc: warning: "
+                 << allocatorWarning(members, *allocator, cwd) << '\n';
+
+  // Step 6.
+  bool written = true;
+  if (compose) {
+    std::vector<const core::Ledger *> runs(members.size(), nullptr);
+    for (std::size_t i = 0; i < members.size(); ++i)
+      if (analysed[i])
+        runs[i] = program.ledgerOf(*analysed[i]);
+    core::Ledger ledger = composeProgramLedger(
+        ProgramLedgerInput{.members = members,
+                           .runs = runs,
+                           .copyRecordRows = true,
+                           .declarations = &declarations,
+                           .shape = shape,
+                           .linkDiagnostics = std::move(linkDiagnostics),
+                           .cwd = cwd});
+    applyDiagnosticControl(ledger, weavec.control);
+    std::string error;
+    written = emitProgramLedger(ledger, linkOutput(link), cwd,
+                                weavec.toFrontendOptions().config, output,
+                                llvm::errs(), &error);
+    if (!written)
+      llvm::errs() << "weavec-cc: error: cannot write the WeaveC program "
+                      "ledger: "
+                   << error << '\n';
+  }
+  return result.ok() && sink.errors() == 0 && written;
 }
 
 //===----------------------------------------------------------------------===//
@@ -1272,7 +1412,7 @@ int runDriver(llvm::ArrayRef<const char *> argv, void *mainAddress) {
   }
 
   // Every cc1 job runs here, whatever their number, so that a WeaveC flag,
-  // a sidecar and a diagnostic mean the same thing in a one-step build as
+  // a record and a diagnostic mean the same thing in a one-step build as
   // in a `-c` build.
   for (clang::driver::Command &job : compilation->getJobs()) {
     if (!job.getArguments().empty() &&
@@ -1285,7 +1425,7 @@ int runDriver(llvm::ArrayRef<const char *> argv, void *mainAddress) {
     const bool isLink =
         job.getSource().getKind() == clang::driver::Action::LinkJobClass;
     if (isLink && weavec.enabled && weavec.link &&
-        !runLinkStep(*compilation, job, weavec, diags, executable.c_str())) {
+        !runLinkStep(*compilation, job, weavec, executable.c_str())) {
       status = 1;
       break;
     }
@@ -1304,9 +1444,9 @@ int runDriver(llvm::ArrayRef<const char *> argv, void *mainAddress) {
     }
   }
 
-  // Temporary objects vanish with the compilation; so should their sidecars.
+  // Temporary objects vanish with the compilation; so should their records.
   for (const char *temp : compilation->getTempFiles())
-    removeQuietly(sidecarPathFor(temp));
+    removeQuietly(record::recordPathFor(temp));
   const bool statsOK =
       writeAnalysisStats(weavec.analysisStatsPath, weavec.stats.get());
   return statsOK ? status : 1;

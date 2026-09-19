@@ -1,15 +1,16 @@
 // RFC 0005, *weavec-cc*: the compile step analyses the unit alone, writes
-// the object and a `.weavec` sidecar next to it, and defers boundary
-// warnings; the link step reads the sidecars, analyses the program, reports
-// what needs two files, and refuses to link on an error.
+// the object and its unit record (`.weavec`, RFC 0030 §13.1) next to it,
+// and defers boundary warnings; the link step reads the records, analyses
+// the program, reports what needs two files, and refuses to link on an
+// error.
 //
 // RUN: rm -rf %t && mkdir -p %t
 // RUN: %weavec_cc -c %S/../WholeProgram/Inputs/node.c -o %t/node.o -I%S/../WholeProgram/Inputs > %t/compile.log 2>&1
 // RUN: count 0 < %t/compile.log
 // RUN: %weavec_cc -c %s -o %t/main.o -I%S/../WholeProgram/Inputs > %t/compile.log 2>&1
 // RUN: count 0 < %t/compile.log
-// RUN: FileCheck --check-prefix=SIDECAR %s < %t/node.o.weavec
-// RUN: FileCheck --check-prefix=MAIN %s < %t/main.o.weavec
+// RUN: %weavec --dump-record=%t/node.o.weavec | FileCheck --check-prefix=RECORD %s
+// RUN: %weavec --dump-record=%t/main.o.weavec | FileCheck --check-prefix=MAIN %s
 // RUN: not %weavec_cc %t/node.o %t/main.o -o %t/prog 2>&1 | FileCheck --check-prefix=LINK %s
 // RUN: not ls %t/prog
 //
@@ -24,63 +25,67 @@
 // A boundary deferred by the compile step is reported by the link step when
 // no unit defines the callee (the linker then fails on the same symbols).
 // RUN: %weavec_cc -c %s -o %t/bnd.o -I%S/../WholeProgram/Inputs -DBOUNDARY 2>&1 | count 0
-// RUN: FileCheck --check-prefix=DEFERRED %s < %t/bnd.o.weavec
+// RUN: %weavec --dump-record=%t/bnd.o.weavec | FileCheck --check-prefix=DEFERRED %s
 // RUN: not %weavec_cc %t/node.o %t/bnd.o -o %t/prog3 2>&1 | FileCheck --check-prefix=BOUNDARY %s
 //
-// A sidecar older than its object is stale: the input is named in the link's
-// `unanalyzed-input` warning (RFC 0030 §13.2), and the
+// A record written for another object is stale (RFC 0030 §13.1): here the
+// object is rebuilt without WeaveC, which leaves the old record behind. The
+// input is named in the link's `unanalyzed-input` warning (§13.2), and the
 // object is unknown code, so nothing is checked and the link goes ahead.
-// RUN: touch -t 203001010000 %t/main.o
+// RUN: %weavec_cc -fno-weavec -c %s -o %t/main.o -I%S/../WholeProgram/Inputs
 // RUN: %weavec_cc %t/node.o %t/main.o -o %t/prog4 2>&1 | FileCheck --check-prefix=STALE %s
 // RUN: ls %t/prog4
 #include "../Inputs/prelude.h"
 #include "node.h"
 
-// SIDECAR: weavec-summaries 28
-// SIDECAR: source {{.*}}node.c
-// SIDECAR: cwd {{.+}}
-// SIDECAR: arg -triple
-// SIDECAR: arg -emit-obj
-// SIDECAR: import free
-// SIDECAR: import malloc
-// SIDECAR: function node_free external plain void (struct node *)
-// SIDECAR-NEXT: accepts-memory-contexts
-// SIDECAR-NEXT: summary
-// SIDECAR-NEXT:   object-view param 0 *
-// SIDECAR-NEXT:   effect param 0 freed(free)
-// SIDECAR-NEXT:   effect param 0 *.name freed(free)
-// SIDECAR-NEXT: end
-// SIDECAR: function node_new external plain struct node *(void)
-// SIDECAR-NEXT: accepts-memory-contexts
-// SIDECAR-NEXT: summary
-// SIDECAR:   return fresh(free)
-// SIDECAR-NEXT:   return null
-// SIDECAR-NEXT: end
-// SIDECAR: function node_set_name external plain void (struct node *, char *)
-// SIDECAR-NEXT: accepts-memory-contexts
-// SIDECAR-NEXT: summary
-// SIDECAR-NEXT:   object-view param 0 *
-// SIDECAR-NEXT:   effect param 0 *.name written,freed(free),replaced
-// SIDECAR-NEXT:   store param 0 *.name copy param 1
-// SIDECAR:   requires 0
-// SIDECAR-NEXT: end
-// SIDECAR: function node_vp external plain int *(struct node *)
-// SIDECAR-NEXT: accepts-memory-contexts
-// SIDECAR-NEXT: summary
-// SIDECAR-NEXT:   object-view param 0 *
-// SIDECAR-NEXT:   return copy param 0 @+struct~node.v
-// SIDECAR:   requires 0
-// SIDECAR-NEXT: end
+// RECORD: "format": 28,
+// RECORD: "source": "{{.*}}node.c",
+// RECORD-NEXT: "cwd": "{{.+}}",
+// RECORD-NEXT: "command": [
+// RECORD-NEXT: "-triple",
+// RECORD: "-emit-obj",
+// RECORD: "object": {
+// RECORD-NEXT: "path": "{{.*}}node.o",
+// RECORD-NEXT: "digest": "sha256:{{[0-9a-f]+}}"
+// RECORD: "functions": [
+// RECORD: "name": "node_free",
+// RECORD-NEXT: "linkage": "external",
+// RECORD-NEXT: "addressTaken": false,
+// RECORD-NEXT: "typeKey": "void (struct node *)",
+// RECORD-NEXT: "summary": "summary\n  object-view param 0 * {{.*}}\n  effect param 0 freed(free)\n  effect param 0 *.name freed(free){{.*}}\nend\n",
+// RECORD: "acceptsMemory": true,
+// RECORD: "name": "node_new",
+// RECORD-NEXT: "linkage": "external",
+// RECORD-NEXT: "addressTaken": false,
+// RECORD-NEXT: "typeKey": "struct node *(void)",
+// RECORD-NEXT: "summary": "summary\n{{.*}}  return fresh(free){{.*}}\n  return null\nend\n",
+// RECORD: "name": "node_set_name",
+// RECORD: "typeKey": "void (struct node *, char *)",
+// RECORD-NEXT: "summary": "summary\n  object-view param 0 * {{.*}}\n  effect param 0 *.name written,freed(free),replaced\n  store param 0 *.name copy param 1\n{{.*}}  requires 0\nend\n",
+// RECORD: "name": "node_vp",
+// RECORD: "typeKey": "int *(struct node *)",
+// RECORD-NEXT: "summary": "summary\n  object-view param 0 * {{.*}}\n  return copy param 0 @+struct~node.v\n  requires 0\nend\n",
+// RECORD: "imports": [
+// RECORD: "name": "free",
+// RECORD: "name": "malloc",
+// RECORD: "sites": [
+// RECORD: "function": "node_new",
 
-// MAIN: import node_free
-// MAIN: import node_new
-// MAIN: import node_vp
-// MAIN: unknown node_free
-// MAIN-NOT: function
-// MAIN-NOT: reported
+// MAIN: "functions": [],
+// MAIN: "imports": [
+// MAIN: "name": "node_free",
+// MAIN: "calls": [
+// MAIN-NEXT: {
+// MAIN-NEXT: "function": "main",
+// MAIN: "name": "node_new",
+// MAIN: "name": "node_vp",
+// MAIN: "unknown": [
+// MAIN: "node_free",
+// MAIN: "reported": [],
 
-// DEFERRED: unknown blob_close
-// DEFERRED: unknown blob_open
+// DEFERRED: "unknown": [
+// DEFERRED-NEXT: "blob_close",
+// DEFERRED-NEXT: "blob_open",
 
 #ifdef BOUNDARY
 struct blob;
@@ -110,5 +115,5 @@ int main(void) {
 }
 #endif
 
-// STALE: weavec-cc: warning: link input '{{.*}}main.o' has a stale WeaveC record ('{{.*}}main.o.weavec' is older than the object); calls into it are trusted [weavec::unanalyzed-input]
+// STALE: weavec-cc: warning: link input '{{.*}}main.o' has a stale WeaveC record ('{{.*}}main.o.weavec': it describes another object (digest mismatch)); calls into it are trusted [weavec::unanalyzed-input]
 // STALE-NOT: error:

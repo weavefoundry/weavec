@@ -12,13 +12,13 @@
 // Alone, nothing witnesses the pair: nothing is reported.
 // RUN: %weavec %s -- -I%S/Inputs 2>&1 | FileCheck --allow-empty --check-prefix=ALONE %s
 //
-// The same through weavec-cc: the sidecar carries the witnesses and the
-// refutations, including the multiplication type (RFC 0017, format 13).
+// The same through weavec-cc: the unit record carries the witnesses and
+// the refutations, including the multiplication type (RFC 0017).
 // RUN: rm -rf %t && mkdir -p %t
 // RUN: %weavec_cc -c %S/Inputs/vec.c -o %t/vec.o -I%S/Inputs 2>&1 | count 0
 // RUN: %weavec_cc -c %s -o %t/main.o -I%S/Inputs 2>&1 | count 0
-// RUN: FileCheck --check-prefix=SIDECAR %s < %t/vec.o.weavec
-// RUN: FileCheck --check-prefix=LOADS %s < %t/main.o.weavec
+// RUN: %weavec --dump-record=%t/vec.o.weavec | FileCheck --check-prefix=RECORD %s
+// RUN: %weavec --dump-record=%t/main.o.weavec | FileCheck --check-prefix=LOADS %s
 // The program has no `main`, so only the system linker fails.
 // RUN: not %weavec_cc %t/vec.o %t/main.o -o %t/prog 2>&1 | FileCheck %s
 #include "../Inputs/prelude.h"
@@ -29,15 +29,25 @@
 // DUMP-NEXT: sized-field 'struct view.raw' by 'struct view.len' * 4 in u64
 // DUMP-NEXT: unsized-field 'struct view.raw'
 
-// SIDECAR: weavec-summaries 28
-// SIDECAR-DAG: sized-field struct~vec.items struct~vec.cap 4 u64
-// SIDECAR-DAG: sized-field struct~view.raw struct~view.len 4 u64
-// SIDECAR-DAG: unsized-field struct~view.raw
+// RECORD: "sizedFields": {
+// RECORD-NEXT: "witnesses": [
+// RECORD-NEXT: {
+// RECORD-NEXT: "field": "struct vec.items",
+// RECORD-NEXT: "count": "struct vec.cap",
+// RECORD-NEXT: "scale": 4,
+// RECORD-NEXT: "productType": "u64"
+// RECORD: "field": "struct view.raw",
+// RECORD-NEXT: "count": "struct view.len",
+// RECORD-NEXT: "scale": 4,
+// RECORD-NEXT: "productType": "u64"
+// RECORD: "unsizedFields": [
+// RECORD-NEXT: "struct view.raw"
 
 // This unit looked the fields up without deciding anything: the link step
 // knows to analyse it again once another unit witnesses the pair.
-// LOADS-DAG: loads-field struct~vec.items
-// LOADS-DAG: loads-field struct~view.raw
+// LOADS: "sizedFieldLoads": [
+// LOADS-NEXT: "struct vec.items",
+// LOADS-NEXT: "struct view.raw"
 
 // ALONE-NOT: error:
 // ALONE-NOT: out-of-bounds

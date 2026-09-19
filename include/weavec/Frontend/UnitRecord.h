@@ -31,12 +31,10 @@
 // *stale record*, with a reason, and the input is treated as having none;
 // there are no legacy readers.
 //
-// The header is typed (`RecordHeader`). The payload is carried as a
-// generic `llvm::json::Object` checked against the table; S8 fills in its
-// producers and consumers.
-//
-// The namespace keeps these names apart from the RFC 0005 sidecar's
-// `frontend::UnitRecord` until S8 deletes it.
+// The header is typed (`RecordHeader`). The payload is carried here as a
+// generic `llvm::json::Object` checked against the table; RecordPayload.h
+// converts it to and from the typed `record::Payload` the compile step
+// writes and the link step reads.
 //
 //===----------------------------------------------------------------------===//
 
@@ -102,7 +100,8 @@ struct FieldSpec {
 
 /// The canonical text of the field table: each field as
 /// `<name>:<type>[?]`, objects as `object{...}`, arrays as `array<...>`,
-/// tuples as `tuple(...)`, members separated by commas, `?` for nullable.
+/// tuples as `tuple(...)`, members separated by commas, `?` for nullable;
+/// after the SummaryIO format the summary strings are written in.
 [[nodiscard]] std::string schemaText();
 /// SHA-256 of `schemaText()`: bytes 16 to 48 of every record.
 [[nodiscard]] std::array<std::uint8_t, DigestSize> schemaFingerprint();
@@ -178,6 +177,14 @@ struct UnitRecord {
 /// wrong lengths, a wrong digest, or JSON the table does not describe.
 [[nodiscard]] std::optional<UnitRecord> decode(llvm::StringRef bytes,
                                                std::string &staleReason);
+
+/// A decoded record as one indented JSON document, `{"format": 28,
+/// "header": ..., "payload": ...}` with keys in table order (`weavec
+/// --dump-record`).
+[[nodiscard]] std::string renderRecord(const UnitRecord &record);
+
+/// This build of WeaveC, as records and ledgers name their producer.
+[[nodiscard]] core::Producer currentProducer();
 
 /// `<object>.weavec`.
 [[nodiscard]] std::string recordPathFor(llvm::StringRef object);

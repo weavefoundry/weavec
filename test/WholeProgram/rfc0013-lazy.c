@@ -1,4 +1,4 @@
-// RFC 0013: entry guards on output graphs survive global remapping and sidecars.
+// RFC 0013: entry guards on output graphs survive global remapping and unit records.
 // RUN: not %weavec --whole-program %s %S/Inputs/heap13.c -- 2>&1 | FileCheck %s
 // RUN: rm -rf %t && mkdir -p %t
 // RUN: %weavec_cc -c %S/Inputs/heap13.c -o %t/library.o 2>&1 | count 0
