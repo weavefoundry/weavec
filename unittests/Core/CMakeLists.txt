@@ -14,6 +14,7 @@ weavec_add_unittest(
           MovesTest.cpp
           NullnessTest.cpp
           InterfaceTest.cpp
+          LibrarySpecTest.cpp
           NumericContractsTest.cpp
           OffsetTest.cpp
           OwnershipTest.cpp

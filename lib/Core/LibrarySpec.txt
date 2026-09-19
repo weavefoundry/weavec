@@ -1,0 +1,1789 @@
+# LibrarySpec.txt - the declarative C library table (RFC 0030 section 8)
+#
+# Part of WeaveC, under the Apache License v2.0 with LLVM Exceptions.
+# See LICENSE for license information.
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+#
+# CMake embeds this file in the Core library (lib/Core/CMakeLists.txt) and
+# core::LibrarySpec parses it on first use. unittests/Core/LibrarySpecTest.cpp
+# checks every entry against an independent, hand-written expectation table,
+# so an entry changed here must be changed there too.
+#
+# LEXICAL STRUCTURE
+#   '#' starts a comment. A line whose last character before any comment is
+#   '\' continues on the next line. Each logical line holds one directive or
+#   one entry, ended by ';'. The file is ASCII.
+#
+# DIRECTIVES
+#   header NAME;   NAME, relative to its include directory ("stdio.h",
+#                  "sys/ioctl.h"), is a C library, POSIX or platform header
+#                  (section 5.2), and the entries that follow are declared in
+#                  it. "DIR/*" names every header under DIR; an entry cannot
+#                  follow a pattern directly.
+#   builtins;      The entries that follow are compiler builtins, declared by
+#                  no header (__builtin_expect, __builtin_object_size).
+#
+#   A system header is a C library, POSIX or platform header when it is
+#   under the toolchain's resource directory, when it belongs to a Darwin SDK
+#   (every SDK header counts), or when it is named in a header directive.
+#   Third-party libraries installed as system headers (jansson.h, sqlite3.h,
+#   libcap's sys/capability.h) are not listed: their functions are unknown
+#   callees (section 5.1).
+#
+# ENTRIES (section 8.2; '+' marks an extension of the RFC's grammar)
+#   entry    ::= NAME '(' params ')' '->' result { clause } ';'
+#   params   ::= [ param { ',' param } ] [ ',' '...' ]
+#   param    ::= 'int' | 'other' | 'fn' { ':' fflag } | access { ':' pflag }
+#   fflag    ::= callback | 'null-ok'+
+#   access   ::= 'r' | 'w' | 'rw' | 'none'
+#   pflag    ::= 'bytes(' term ')' | 'count(' term ')'+ | 'str' | 'null-ok'
+#              | 'null-if-zero(' term ')' | 'release(' FAMILY ')'
+#              | 'realloc(' FAMILY ')' | 'retain(' STATE ')' | 'escape'
+#              | 'init(' FAMILY ')'+ | 'fini(' FAMILY ')'+
+#              | 'out(' value ')'+ | callback+
+#   callback ::= 'sync(' [ INT { ',' INT } ] ')' | 'entry(' [ INT ] ')'
+#              | 'at-exit'
+#   result   ::= 'void' | 'int' [ ':value(' term ')' ]+ | 'noreturn' | value
+#   value    ::= rkind { ':' rflag }
+#   rkind    ::= 'fresh(' FAMILY ')' | 'static(' STATE ')' | 'arg(' INT ')'
+#              | 'interior(' INT ')' | 'interior-state(' STATE ')' | 'ptr'
+#   rflag    ::= 'extent(' term ')' | 'null-on-failure' | 'nonnull'
+#              | 'null-ok' | 'zero-init' | 'no-zero-init' | 'str'+
+#              | 'replaces'+ | 'or-fresh(' FAMILY ')'+
+#              | 'or-static(' STATE ')'+ | 'offset(' term ')'+
+#              | 'zero-filled'+
+#   clause   ::= 'disjoint(' INT ',' INT ',' term ')'
+#              | 'copies(' INT ',' INT ',' term ')'+
+#              | 'fills(' INT ',' term ',' term ')'+
+#              | 'writes-str(' INT [ ',' term ] ')'+
+#              | 'invalidates(' STATE ')' | 'reads(' STATE ')' | 'exits'
+#              | 'returns-twice' | 'printf(' INT ',' INT ')'
+#              | 'scanf(' INT ',' INT ')' | 'chk(' NAME ':' INT { ',' INT } ')'
+#   term     ::= INT | 'a' N | 'strlen(a' N ')' | 'fmtlen(a' N ')' | MACRO+
+#              | term '*' term | term '+' term | term '-' INT
+#              | 'min(' term ',' term ')' | '(' term ')'+
+#
+# PARAMETERS
+#   int, other, fn   an integer; any other non-pointer (floating, struct,
+#                    va_list); a function pointer.
+#   r, w, rw, none   the call reads, writes, reads and writes, or does not
+#                    access the bytes behind the pointer. Without bytes, count
+#                    or str the pointer needs one element of its pointee type.
+#   bytes(t)         it needs t accessible bytes.
+#   count(t)+        it needs t accessible elements of its pointee type
+#                    (wchar_t for the wide functions).
+#   str              its pointee holds a string terminated within its object
+#                    (by a zero wchar_t for wide strings); needs r or rw.
+#   null-ok          null is allowed. null-if-zero(t): allowed when t is zero
+#                    (section 8.3). Otherwise null is forbidden.
+#   release(F)       the call releases the pointer, of release family F.
+#   realloc(F)       as realloc: released on a non-null result; on a null
+#                    result kept, or released when the result's extent (the
+#                    requested size) is zero; kept when there is no extent.
+#   retain(S)        the pointer is kept in hidden state slot S; releasing it
+#                    while kept makes the next reads(S) a use after free.
+#   escape           the library keeps the pointer where no entry follows it
+#                    (setvbuf's buffer, pthread_create's argument).
+#   init(F)+         the object behind the pointer acquires a resource of
+#                    family F (regcomp, glob). fini(F)+: that resource ends.
+#                    The object's own storage is not the resource: it stays
+#                    valid, fini on a local is no invalid release, and init
+#                    after fini is no use after release.
+#   out(v)+          the pointer points to a pointer slot, and the call stores
+#                    v there (asprintf's buffer, strtol's end pointer). The
+#                    nullability of v describes the stored value; with
+#                    null-on-failure nothing usable is stored when the call
+#                    reports failure.
+#   sync(i, ...)     the function is called zero or more times before the call
+#                    returns, its k-th pointer parameter pointing into call
+#                    argument i_k (qsort: sync(0,0)); sync() when it only
+#                    receives the library's own storage (nftw).
+#   entry(i)         the function becomes an entry point (a thread, a signal
+#                    handler) that receives argument i; entry() when it
+#                    receives nothing from the call (signal).
+#   at-exit          the function runs after the main flow has ended.
+#                    On a pointer parameter, a callback flag describes the
+#                    function pointers stored in the pointee (sigaction).
+#
+# RESULTS
+#   void, int        no result; any non-pointer result.
+#   noreturn         the call does not return.
+#   fresh(F)         a new resource of family F: 'free' is the heap, 'stack'
+#                    the calling frame (alloca); other families are named
+#                    after their releaser (fclose, closedir, freeaddrinfo).
+#   static(S)        a borrow of hidden state slot S, a global place <S>.
+#   arg(N)           argument N itself.
+#   interior(N)      a pointer into argument N's object. When argument N is
+#                    null, the result points into the object that the entry's
+#                    out(interior(N)) slot held before the call (strtok_r),
+#                    or into static storage when there is no such slot
+#                    (basename(NULL) is ".").
+#   interior-state(S) a pointer into the value slot S retains (strtok).
+#   ptr              a pointer of unknown provenance.
+#   extent(t)        (fresh, static) the value has t accessible bytes.
+#   nonnull, null-on-failure, null-ok
+#                    never null (for arg: exactly the argument); null exactly
+#                    when the call fails; possibly null. Defaults: fresh
+#                    null-on-failure; static and arg nonnull; interior,
+#                    interior-state and ptr null-ok.
+#   zero-init, no-zero-init
+#                    (section 11) whether a fresh value may be lowered to a
+#                    zeroing wrapper; every fresh(free) value carries one. A
+#                    str value without an extent was written up to its
+#                    terminator.
+#   str+             the value points to a terminated string.
+#   replaces+        (out values) the slot's previous value is consumed as by
+#                    realloc of the same family before the new one is stored.
+#   or-fresh(F)+, or-static(S)+
+#                    (arg results) when argument N is null the result is
+#                    fresh(F) (realpath, getcwd) or static(S) (tmpnam).
+#   value(t)+        (int results) the result equals t (strlen: strlen(a0)).
+#   offset(t)+       (interior results) the result is t elements past the
+#                    start of argument N (stpcpy: strlen(a1)).
+#   zero-filled+     (fresh results) the library sets the whole extent to
+#                    zero (calloc), whatever section 11 lowering does.
+#
+# CLAUSES
+#   disjoint(a,b,t)  the first t bytes behind arguments a and b do not overlap.
+#   copies(d,s,t)+   the call copies the first t bytes of argument s to
+#                    argument d (memcpy; strncpy copies min(a2,strlen(a1)+1)).
+#   fills(d,v,t)+    the call sets the first t bytes of argument d to v
+#                    (memset: fills(0,a1,a2); bzero: fills(0,0,a1)).
+#   writes-str(d[,t])+
+#                    on success argument d holds a string of t characters,
+#                    or of unknown length without t (fgets). Terms use the
+#                    values before the call; a negative t writes nothing
+#                    (snprintf with a zero size).
+#   invalidates(S)   possibly ends every borrow of slot S (section 8.2),
+#                    before the call's own result borrows S (getpwnam reuses
+#                    and may reallocate its static buffer).
+#   reads(S)         the call reads the values slot S retains.
+#   exits            the call ends the process: leaks are not reported there
+#                    (section 8.4). Needs noreturn.
+#   returns-twice    setjmp-like (section 5.4).
+#   printf(f,v), scanf(f,v)
+#                    argument f is the format; v is the first variadic
+#                    argument, or the va_list parameter of a v- function.
+#   chk(A: i0, i1, ...)
+#                    A is an alias of the entry (a fortified form): its k-th
+#                    argument is the entry's argument i_k, or dropped (-1).
+#                    For a variadic entry, alias arguments after the list
+#                    continue from the last index. Every entry also answers to
+#                    __builtin_NAME. The macOS SDK (secure/_string.h,
+#                    secure/_stdio.h) and glibc (bits/*_fortified.h,
+#                    bits/stdio2.h) spell the same builtins; glibc also calls
+#                    the __NAME_chk functions directly.
+#
+# TERMS
+#   aN               the value of argument N.
+#   strlen(aN)       the length of argument N's string, in elements. Under
+#                    min(t, e) a strlen(aN) in e is bounded by t, as
+#                    strnlen(aN, t), and needs no terminator within t
+#                    elements: min(a2,strlen(a1)+1) is what strncpy reads.
+#   fmtlen(aN)       the length of the output of the format at argument N; a
+#                    requirement, never a check term (section 8.1).
+#   MACRO+           the value of that macro in the calling unit (BUFSIZ);
+#                    unknown where it is not defined. No unit defines
+#                    __WEAVEC_UNBOUNDED: a requirement that uses it is never
+#                    proven or checked (gets).
+#   Terms are mathematical integers; '*' binds tighter than '+' and '-'.
+#
+# OVERLOADS AND ABSENCES
+#   A name may have several entries when their signatures (parameter classes,
+#   arity, variadic, pointer result) differ; the engine uses the one that
+#   accepts the declaration (glibc and BSD qsort_r, GNU and XSI strerror_r).
+#   Arguments in '...' positions are borrowed for the call, and read or
+#   written as the format says for printf and scanf entries.
+#   Deliberately absent (section 5.2 applies): ioctl (its third argument's
+#   layout depends on the request) and syscall. The buffers behind iovec and
+#   msghdr arrays are nested in the argument, where no term can name them.
+
+#============================================================================
+# The header list (section 5.2). The entry groups below repeat their header.
+# The list is consulted only for system headers under the SDK or sysroot.
+#============================================================================
+
+# ISO C (C23)
+header assert.h;
+header complex.h;
+header ctype.h;
+header errno.h;
+header fenv.h;
+header float.h;
+header inttypes.h;
+header iso646.h;
+header limits.h;
+header locale.h;
+header math.h;
+header setjmp.h;
+header signal.h;
+header stdalign.h;
+header stdarg.h;
+header stdatomic.h;
+header stdbit.h;
+header stdbool.h;
+header stdckdint.h;
+header stddef.h;
+header stdint.h;
+header stdio.h;
+header stdlib.h;
+header stdnoreturn.h;
+header string.h;
+header tgmath.h;
+header threads.h;
+header time.h;
+header uchar.h;
+header wchar.h;
+header wctype.h;
+
+# POSIX.1-2024 (and headers POSIX.1-2008 had)
+header aio.h;
+header arpa/inet.h;
+header cpio.h;
+header devctl.h;
+header dirent.h;
+header dlfcn.h;
+header endian.h;
+header fcntl.h;
+header fmtmsg.h;
+header fnmatch.h;
+header ftw.h;
+header glob.h;
+header grp.h;
+header iconv.h;
+header langinfo.h;
+header libgen.h;
+header libintl.h;
+header monetary.h;
+header mqueue.h;
+header ndbm.h;
+header net/if.h;
+header netdb.h;
+header netinet/in.h;
+header netinet/tcp.h;
+header nl_types.h;
+header poll.h;
+header pthread.h;
+header pwd.h;
+header regex.h;
+header sched.h;
+header search.h;
+header semaphore.h;
+header spawn.h;
+header strings.h;
+header stropts.h;
+header sys/ipc.h;
+header sys/mman.h;
+header sys/msg.h;
+header sys/resource.h;
+header sys/select.h;
+header sys/sem.h;
+header sys/shm.h;
+header sys/socket.h;
+header sys/stat.h;
+header sys/statvfs.h;
+header sys/time.h;
+header sys/times.h;
+header sys/types.h;
+header sys/uio.h;
+header sys/un.h;
+header sys/utsname.h;
+header sys/wait.h;
+header syslog.h;
+header tar.h;
+header termios.h;
+header trace.h;
+header ulimit.h;
+header unistd.h;
+header utime.h;
+header utmpx.h;
+header wordexp.h;
+
+# glibc, musl and BSD headers outside POSIX
+header alloca.h;
+header argp.h;
+header byteswap.h;
+header crypt.h;
+header elf.h;
+header err.h;
+header error.h;
+header execinfo.h;
+header features.h;
+header fts.h;
+header getopt.h;
+header ifaddrs.h;
+header lastlog.h;
+header link.h;
+header malloc.h;
+header mntent.h;
+header obstack.h;
+header paths.h;
+header printf.h;
+header pty.h;
+header resolv.h;
+header sgtty.h;
+header shadow.h;
+header stdc-predef.h;
+header sysexits.h;
+header ucontext.h;
+header utmp.h;
+header values.h;
+header xlocale.h;
+header arpa/ftp.h;
+header arpa/nameser.h;
+header arpa/nameser_compat.h;
+header arpa/telnet.h;
+header arpa/tftp.h;
+header sys/acct.h;
+header sys/auxv.h;
+header sys/cdefs.h;
+header sys/dir.h;
+header sys/epoll.h;
+header sys/errno.h;
+header sys/event.h;
+header sys/eventfd.h;
+header sys/fanotify.h;
+header sys/fcntl.h;
+header sys/file.h;
+header sys/filio.h;
+header sys/fsuid.h;
+header sys/inotify.h;
+header sys/io.h;
+header sys/ioccom.h;
+header sys/ioctl.h;
+header sys/kd.h;
+header sys/klog.h;
+header sys/mount.h;
+header sys/mtio.h;
+header sys/param.h;
+header sys/personality.h;
+header sys/pidfd.h;
+header sys/poll.h;
+header sys/prctl.h;
+header sys/procfs.h;
+header sys/ptrace.h;
+header sys/queue.h;
+header sys/quota.h;
+header sys/random.h;
+header sys/reboot.h;
+header sys/rseq.h;
+header sys/sendfile.h;
+header sys/signal.h;
+header sys/signalfd.h;
+header sys/single_threaded.h;
+header sys/sockio.h;
+header sys/statfs.h;
+header sys/swap.h;
+header sys/syscall.h;
+header sys/sysctl.h;
+header sys/sysinfo.h;
+header sys/syslog.h;
+header sys/sysmacros.h;
+header sys/timeb.h;
+header sys/timerfd.h;
+header sys/timex.h;
+header sys/ttycom.h;
+header sys/ttydefaults.h;
+header sys/ucontext.h;
+header sys/unistd.h;
+header sys/user.h;
+header sys/vfs.h;
+header sys/vt.h;
+header sys/xattr.h;
+
+# Implementation directories: every header under them.
+header asm/*;
+header asm-generic/*;
+header bits/*;
+header gnu/*;
+header linux/*;
+header net/*;
+header netinet/*;
+header netpacket/*;
+header scsi/*;
+
+#============================================================================
+# Heap allocation and release
+#============================================================================
+
+header stdlib.h;
+malloc (int) -> fresh(free):extent(a0):null-on-failure:zero-init;
+calloc (int, int) -> \
+    fresh(free):extent(a0*a1):null-on-failure:zero-init:zero-filled;
+realloc (rw:null-ok:realloc(free), int) -> \
+    fresh(free):extent(a1):null-on-failure:zero-init;
+reallocarray (rw:null-ok:realloc(free), int, int) -> \
+    fresh(free):extent(a1*a2):null-on-failure:zero-init;
+# BSD: the argument is freed on failure as well.
+reallocf (rw:null-ok:release(free), int) -> \
+    fresh(free):extent(a1):null-on-failure:no-zero-init;
+aligned_alloc (int, int) -> fresh(free):extent(a1):null-on-failure:zero-init;
+posix_memalign (w:out(fresh(free):extent(a2):null-on-failure:zero-init), \
+    int, int) -> int;
+valloc (int) -> fresh(free):extent(a0):null-on-failure:zero-init;
+free (none:null-ok:release(free)) -> void;
+free_sized (none:null-ok:release(free), int) -> void;
+free_aligned_sized (none:null-ok:release(free), int, int) -> void;
+# glibc: allocates the result of realpath(path, NULL) in one call.
+canonicalize_file_name (r:str) -> fresh(free):null-on-failure:zero-init:str;
+realpath (r:str, w:null-ok:bytes(PATH_MAX)) -> \
+    arg(1):null-on-failure:or-fresh(free):zero-init:str \
+    chk(__realpath_chk: 0,1,-1);
+
+header malloc.h;
+memalign (int, int) -> fresh(free):extent(a1):null-on-failure:zero-init;
+pvalloc (int) -> fresh(free):extent(a0):null-on-failure:zero-init;
+malloc_usable_size (none:null-ok) -> int;
+
+header malloc/malloc.h;
+malloc_size (none:null-ok) -> int;
+malloc_good_size (int) -> int;
+
+header alloca.h;
+alloca (int) -> fresh(stack):extent(a0):nonnull:zero-init;
+
+header string.h;
+strdup (r:str) -> \
+    fresh(free):extent(strlen(a0)+1):null-on-failure:zero-init:str;
+strndup (r:bytes(min(a1,strlen(a0)+1)), int) -> \
+    fresh(free):extent(min(a1,strlen(a0))+1):null-on-failure:zero-init:str;
+
+header wchar.h;
+wcsdup (r:str) -> fresh(free):null-on-failure:zero-init:str;
+
+header stdio.h;
+asprintf (w:out(fresh(free):extent(fmtlen(a1)+1):null-on-failure:zero-init:str), \
+    r:str, ...) -> int printf(1,2) chk(__asprintf_chk: 0,-1,1,2);
+vasprintf (w:out(fresh(free):extent(fmtlen(a1)+1):null-on-failure:zero-init:str), \
+    r:str, other) -> int printf(1,2) chk(__vasprintf_chk: 0,-1,1,2);
+# The buffer is reallocated in place of the old one, and stays allocated
+# after a failed read: it is freed on every path.
+getline (rw:out(fresh(free):null-ok:zero-init:str:replaces), rw, rw) -> int;
+getdelim (rw:out(fresh(free):null-ok:zero-init:str:replaces), rw, int, rw) \
+    -> int;
+tempnam (r:str:null-ok, r:str:null-ok) -> \
+    fresh(free):null-on-failure:zero-init:str reads(environ);
+
+header unistd.h;
+# getcwd(NULL, n) allocates (glibc, BSD, macOS).
+getcwd (w:null-ok:bytes(a1), int) -> \
+    arg(0):null-on-failure:or-fresh(free):zero-init:str \
+    chk(__getcwd_chk: 0,1,-1);
+get_current_dir_name () -> fresh(free):null-on-failure:zero-init:str \
+    reads(environ);
+
+header execinfo.h;
+backtrace (w:count(a1), int) -> int;
+backtrace_symbols (r:count(a1), int) -> fresh(free):null-on-failure:no-zero-init;
+backtrace_symbols_fd (r:count(a1), int, int) -> void;
+
+#============================================================================
+# <string.h>, <strings.h>
+#============================================================================
+
+header string.h;
+memcpy (w:bytes(a2):null-if-zero(a2), r:bytes(a2):null-if-zero(a2), int) \
+    -> arg(0) disjoint(0,1,a2) copies(0,1,a2) \
+    chk(__builtin___memcpy_chk: 0,1,2,-1) chk(__memcpy_chk: 0,1,2,-1);
+memmove (w:bytes(a2):null-if-zero(a2), r:bytes(a2):null-if-zero(a2), int) \
+    -> arg(0) copies(0,1,a2) \
+    chk(__builtin___memmove_chk: 0,1,2,-1) chk(__memmove_chk: 0,1,2,-1);
+memset (w:bytes(a2):null-if-zero(a2), int, int) -> arg(0) fills(0,a1,a2) \
+    chk(__builtin___memset_chk: 0,1,2,-1) chk(__memset_chk: 0,1,2,-1);
+memset_explicit (w:bytes(a2):null-if-zero(a2), int, int) -> arg(0) \
+    fills(0,a1,a2);
+memcmp (r:bytes(a2):null-if-zero(a2), r:bytes(a2):null-if-zero(a2), int) \
+    -> int;
+memchr (r:bytes(a2), int, int) -> interior(0):null-ok;
+memrchr (r:bytes(a2), int, int) -> interior(0):null-ok;
+# GNU: searches without a bound for a byte the caller promises is there.
+rawmemchr (r:bytes(__WEAVEC_UNBOUNDED), int) -> interior(0):nonnull;
+memmem (r:bytes(a1), int, r:bytes(a3), int) -> interior(0):null-ok;
+mempcpy (w:bytes(a2), r:bytes(a2), int) -> interior(0):offset(a2):nonnull \
+    disjoint(0,1,a2) copies(0,1,a2) \
+    chk(__builtin___mempcpy_chk: 0,1,2,-1) chk(__mempcpy_chk: 0,1,2,-1);
+# memccpy stops after the byte c; a NUL-terminated source bounds the read for
+# the common c == 0 use, and a source without c or NUL is read for n bytes.
+memccpy (w:bytes(min(a3,strlen(a1)+1)), r:bytes(min(a3,strlen(a1)+1)), \
+    int, int) -> interior(0):null-ok disjoint(0,1,min(a3,strlen(a1)+1)) \
+    chk(__builtin___memccpy_chk: 0,1,2,3,-1);
+strcpy (w:bytes(strlen(a1)+1), r:str) -> arg(0) \
+    disjoint(0,1,strlen(a1)+1) writes-str(0,strlen(a1)) \
+    chk(__builtin___strcpy_chk: 0,1,-1) chk(__strcpy_chk: 0,1,-1);
+strncpy (w:bytes(a2):null-if-zero(a2), \
+    r:bytes(min(a2,strlen(a1)+1)):null-if-zero(a2), int) -> arg(0) \
+    disjoint(0,1,min(a2,strlen(a1)+1)) copies(0,1,min(a2,strlen(a1)+1)) \
+    chk(__builtin___strncpy_chk: 0,1,2,-1) chk(__strncpy_chk: 0,1,2,-1);
+stpcpy (w:bytes(strlen(a1)+1), r:str) -> \
+    interior(0):offset(strlen(a1)):nonnull \
+    disjoint(0,1,strlen(a1)+1) writes-str(0,strlen(a1)) \
+    chk(__builtin___stpcpy_chk: 0,1,-1) chk(__stpcpy_chk: 0,1,-1);
+stpncpy (w:bytes(a2), r:bytes(min(a2,strlen(a1)+1)), int) \
+    -> interior(0):offset(min(a2,strlen(a1))):nonnull \
+    disjoint(0,1,min(a2,strlen(a1)+1)) copies(0,1,min(a2,strlen(a1)+1)) \
+    chk(__builtin___stpncpy_chk: 0,1,2,-1) chk(__stpncpy_chk: 0,1,2,-1);
+strcat (rw:bytes(strlen(a0)+strlen(a1)+1):str, r:str) -> arg(0) \
+    disjoint(0,1,strlen(a0)+strlen(a1)+1) \
+    writes-str(0,strlen(a0)+strlen(a1)) \
+    chk(__builtin___strcat_chk: 0,1,-1) chk(__strcat_chk: 0,1,-1);
+strncat (rw:bytes(strlen(a0)+min(a2,strlen(a1))+1):str, \
+    r:bytes(min(a2,strlen(a1)+1)), int) -> arg(0) \
+    disjoint(0,1,strlen(a0)+min(a2,strlen(a1))+1) \
+    writes-str(0,strlen(a0)+min(a2,strlen(a1))) \
+    chk(__builtin___strncat_chk: 0,1,2,-1) chk(__strncat_chk: 0,1,2,-1);
+# BSD, glibc 2.38: the whole source is read to compute the result.
+strlcpy (w:bytes(a2):null-if-zero(a2), r:str, int) -> int:value(strlen(a1)) \
+    disjoint(0,1,min(a2,strlen(a1)+1)) writes-str(0,min(a2-1,strlen(a1))) \
+    chk(__builtin___strlcpy_chk: 0,1,2,-1) chk(__strlcpy_chk: 0,1,2,-1);
+strlcat (rw:bytes(a2):null-if-zero(a2), r:str, int) -> int \
+    chk(__builtin___strlcat_chk: 0,1,2,-1) chk(__strlcat_chk: 0,1,2,-1);
+strlen (r:str) -> int:value(strlen(a0));
+strnlen (r:bytes(min(a1,strlen(a0)+1)), int) -> int:value(min(a1,strlen(a0)));
+strcmp (r:str, r:str) -> int;
+strncmp (r:bytes(min(a2,strlen(a0)+1)), r:bytes(min(a2,strlen(a1)+1)), int) \
+    -> int;
+strcoll (r:str, r:str) -> int;
+strcoll_l (r:str, r:str, none) -> int;
+strxfrm (w:bytes(a2):null-if-zero(a2), r:str, int) -> int;
+strxfrm_l (w:bytes(a2):null-if-zero(a2), r:str, int, none) -> int;
+strverscmp (r:str, r:str) -> int;
+strchr (r:str, int) -> interior(0):null-ok;
+strrchr (r:str, int) -> interior(0):null-ok;
+strchrnul (r:str, int) -> interior(0):nonnull;
+strstr (r:str, r:str) -> interior(0):null-ok;
+strcasestr (r:str, r:str) -> interior(0):null-ok;
+strpbrk (r:str, r:str) -> interior(0):null-ok;
+strspn (r:str, r:str) -> int;
+strcspn (r:str, r:str) -> int;
+strtok (rw:str:null-ok:retain(strtok), r:str) -> \
+    interior-state(strtok):null-ok reads(strtok);
+strtok_r (rw:str:null-ok, r:str, rw:out(interior(0):null-ok)) -> \
+    interior(0):null-ok;
+strsep (rw, r:str) -> ptr:null-ok:str;
+strerror (int) -> static(strerror):nonnull:str;
+strerror_l (int, none) -> static(strerror):nonnull:str;
+# GNU: the message is in buf or in static storage. XSI: an int result.
+strerror_r (int, w:bytes(a2), int) -> ptr:nonnull:str;
+strerror_r (int, w:bytes(a2), int) -> int;
+strsignal (int) -> static(strsignal):null-ok:str;
+explicit_bzero (w:bytes(a1), int) -> void fills(0,0,a1) \
+    chk(__explicit_bzero_chk: 0,1,-1);
+memset_s (w:bytes(a1), int, int, int) -> int fills(0,a2,a3);
+
+header strings.h;
+bzero (w:bytes(a1), int) -> void fills(0,0,a1);
+bcopy (r:bytes(a2), w:bytes(a2), int) -> void copies(1,0,a2);
+bcmp (r:bytes(a2), r:bytes(a2), int) -> int;
+index (r:str, int) -> interior(0):null-ok;
+rindex (r:str, int) -> interior(0):null-ok;
+strcasecmp (r:str, r:str) -> int;
+strncasecmp (r:bytes(min(a2,strlen(a0)+1)), r:bytes(min(a2,strlen(a1)+1)), \
+    int) -> int;
+strcasecmp_l (r:str, r:str, none) -> int;
+strncasecmp_l (r:bytes(min(a2,strlen(a0)+1)), \
+    r:bytes(min(a2,strlen(a1)+1)), int, none) -> int;
+ffs (int) -> int;
+ffsl (int) -> int;
+ffsll (int) -> int;
+
+#============================================================================
+# <stdio.h>
+#============================================================================
+
+header stdio.h;
+fopen (r:str, r:str) -> fresh(fclose):null-on-failure;
+fdopen (int, r:str) -> fresh(fclose):null-on-failure;
+# On failure the old stream is closed as well; that path is not modelled.
+freopen (r:str:null-ok, r:str, rw) -> arg(2):null-on-failure;
+tmpfile () -> fresh(fclose):null-on-failure;
+fmemopen (w:bytes(a1):null-ok:escape, int, r:str) \
+    -> fresh(fclose):null-on-failure;
+open_memstream (w:escape:out(fresh(free):null-on-failure:no-zero-init), \
+    w:escape) -> fresh(fclose):null-on-failure;
+fclose (rw:release(fclose)) -> int;
+popen (r:str, r:str) -> fresh(pclose):null-on-failure reads(environ);
+pclose (rw:release(pclose)) -> int;
+fflush (rw:null-ok) -> int;
+fpurge (rw) -> int;
+setvbuf (rw, w:bytes(a3):null-ok:escape, int, int) -> int;
+setbuf (rw, w:bytes(BUFSIZ):null-ok:escape) -> void;
+setbuffer (rw, w:bytes(a2):null-ok:escape, int) -> void;
+setlinebuf (rw) -> void;
+fileno (r) -> int;
+fileno_unlocked (r) -> int;
+feof (r) -> int;
+ferror (r) -> int;
+clearerr (rw) -> void;
+fseek (rw, int, int) -> int;
+fseeko (rw, int, int) -> int;
+ftell (r) -> int;
+ftello (r) -> int;
+rewind (rw) -> void;
+fgetpos (rw, w) -> int;
+fsetpos (rw, r) -> int;
+flockfile (rw) -> void;
+funlockfile (rw) -> void;
+ftrylockfile (rw) -> int;
+fgetc (rw) -> int;
+getc (rw) -> int;
+getc_unlocked (rw) -> int;
+getchar () -> int;
+getchar_unlocked () -> int;
+ungetc (int, rw) -> int;
+fputc (int, rw) -> int;
+putc (int, rw) -> int;
+putc_unlocked (int, rw) -> int;
+putchar (int) -> int;
+putchar_unlocked (int) -> int;
+fgets (w:bytes(a1), int, rw) -> arg(0):null-ok writes-str(0) \
+    chk(__fgets_chk: 0,-1,1,2);
+# gets has no bound: no unit defines the macro, so its requirement is never
+# proven (C11 removed gets).
+gets (w:bytes(__WEAVEC_UNBOUNDED)) -> arg(0):null-ok chk(__gets_chk: 0,-1);
+# BSD: the line is in the stream's buffer, not terminated.
+fgetln (rw, w) -> interior(0):null-ok;
+fread (w:bytes(a1*a2), int, int, rw) -> int chk(__fread_chk: 0,-1,1,2,3);
+fread_unlocked (w:bytes(a1*a2), int, int, rw) -> int \
+    chk(__fread_unlocked_chk: 0,-1,1,2,3);
+fwrite (r:bytes(a1*a2), int, int, rw) -> int;
+fwrite_unlocked (r:bytes(a1*a2), int, int, rw) -> int;
+puts (r:str) -> int;
+fputs (r:str, rw) -> int;
+perror (r:str:null-ok) -> void;
+printf (r:str, ...) -> int printf(0,1) \
+    chk(__builtin___printf_chk: -1,0,1) chk(__printf_chk: -1,0,1);
+fprintf (rw, r:str, ...) -> int printf(1,2) \
+    chk(__builtin___fprintf_chk: 0,-1,1,2) chk(__fprintf_chk: 0,-1,1,2);
+dprintf (int, r:str, ...) -> int printf(1,2) chk(__dprintf_chk: 0,-1,1,2);
+sprintf (w:bytes(fmtlen(a1)+1), r:str, ...) -> int:value(fmtlen(a1)) \
+    writes-str(0,fmtlen(a1)) printf(1,2) \
+    chk(__builtin___sprintf_chk: 0,-1,-1,1,2) chk(__sprintf_chk: 0,-1,-1,1,2);
+snprintf (w:bytes(a1):null-if-zero(a1), int, r:str, ...) \
+    -> int:value(fmtlen(a2)) writes-str(0,min(a1-1,fmtlen(a2))) printf(2,3) \
+    chk(__builtin___snprintf_chk: 0,1,-1,-1,2,3) \
+    chk(__snprintf_chk: 0,1,-1,-1,2,3);
+vprintf (r:str, other) -> int printf(0,1) \
+    chk(__builtin___vprintf_chk: -1,0,1) chk(__vprintf_chk: -1,0,1);
+vfprintf (rw, r:str, other) -> int printf(1,2) \
+    chk(__builtin___vfprintf_chk: 0,-1,1,2) chk(__vfprintf_chk: 0,-1,1,2);
+vdprintf (int, r:str, other) -> int printf(1,2) chk(__vdprintf_chk: 0,-1,1,2);
+vsprintf (w:bytes(fmtlen(a1)+1), r:str, other) -> int:value(fmtlen(a1)) \
+    writes-str(0,fmtlen(a1)) printf(1,2) \
+    chk(__builtin___vsprintf_chk: 0,-1,-1,1,2) \
+    chk(__vsprintf_chk: 0,-1,-1,1,2);
+vsnprintf (w:bytes(a1):null-if-zero(a1), int, r:str, other) \
+    -> int:value(fmtlen(a2)) writes-str(0,min(a1-1,fmtlen(a2))) printf(2,3) \
+    chk(__builtin___vsnprintf_chk: 0,1,-1,-1,2,3) \
+    chk(__vsnprintf_chk: 0,1,-1,-1,2,3);
+# glibc renames the scanf family for C99 and C23 semantics.
+scanf (r:str, ...) -> int scanf(0,1) \
+    chk(__isoc99_scanf: 0,1) chk(__isoc23_scanf: 0,1);
+fscanf (rw, r:str, ...) -> int scanf(1,2) \
+    chk(__isoc99_fscanf: 0,1,2) chk(__isoc23_fscanf: 0,1,2);
+sscanf (r:str, r:str, ...) -> int scanf(1,2) \
+    chk(__isoc99_sscanf: 0,1,2) chk(__isoc23_sscanf: 0,1,2);
+vscanf (r:str, other) -> int scanf(0,1) \
+    chk(__isoc99_vscanf: 0,1) chk(__isoc23_vscanf: 0,1);
+vfscanf (rw, r:str, other) -> int scanf(1,2) \
+    chk(__isoc99_vfscanf: 0,1,2) chk(__isoc23_vfscanf: 0,1,2);
+vsscanf (r:str, r:str, other) -> int scanf(1,2) \
+    chk(__isoc99_vsscanf: 0,1,2) chk(__isoc23_vsscanf: 0,1,2);
+remove (r:str) -> int;
+rename (r:str, r:str) -> int;
+renameat (int, r:str, int, r:str) -> int;
+tmpnam (w:null-ok:bytes(L_tmpnam)) -> \
+    arg(0):null-on-failure:or-static(tmpnam):str;
+ctermid (w:null-ok:bytes(L_ctermid)) -> arg(0):or-static(ctermid):str;
+
+#============================================================================
+# <stdlib.h>, <inttypes.h>: conversions, environment, sorting, exit
+#============================================================================
+
+header stdlib.h;
+atoi (r:str) -> int;
+atol (r:str) -> int;
+atoll (r:str) -> int;
+atof (r:str) -> int;
+# The end pointer points into the string; glibc renames the integer forms
+# for C23 semantics.
+strtol (r:str, w:null-ok:out(interior(0):nonnull), int) -> int \
+    chk(__isoc23_strtol: 0,1,2);
+strtoll (r:str, w:null-ok:out(interior(0):nonnull), int) -> int \
+    chk(__isoc23_strtoll: 0,1,2);
+strtoul (r:str, w:null-ok:out(interior(0):nonnull), int) -> int \
+    chk(__isoc23_strtoul: 0,1,2);
+strtoull (r:str, w:null-ok:out(interior(0):nonnull), int) -> int \
+    chk(__isoc23_strtoull: 0,1,2);
+strtod (r:str, w:null-ok:out(interior(0):nonnull)) -> int;
+strtof (r:str, w:null-ok:out(interior(0):nonnull)) -> int;
+strtold (r:str, w:null-ok:out(interior(0):nonnull)) -> int;
+getenv (r:str) -> static(environ):null-ok:str reads(environ);
+secure_getenv (r:str) -> static(environ):null-ok:str reads(environ);
+setenv (r:str, r:str, int) -> int invalidates(environ) reads(environ);
+unsetenv (r:str) -> int invalidates(environ) reads(environ);
+# The string itself becomes part of the environment.
+putenv (r:str:retain(environ)) -> int invalidates(environ) reads(environ);
+clearenv () -> int invalidates(environ);
+system (r:str:null-ok) -> int reads(environ);
+qsort (rw:bytes(a1*a2), int, int, fn:sync(0,0)) -> void;
+# glibc (and C2y): compar(a, b, arg). BSD and macOS: compar(thunk, a, b).
+qsort_r (rw:bytes(a1*a2), int, int, fn:sync(0,0,4), none:null-ok) -> void;
+qsort_r (rw:bytes(a1*a2), int, int, none:null-ok, fn:sync(3,0,0)) -> void;
+bsearch (none, r:bytes(a2*a3), int, int, fn:sync(0,1)) -> interior(1):null-ok;
+exit (int) -> noreturn exits;
+_Exit (int) -> noreturn exits;
+quick_exit (int) -> noreturn exits;
+abort () -> noreturn exits;
+atexit (fn:at-exit) -> int;
+at_quick_exit (fn:at-exit) -> int;
+on_exit (fn:at-exit, none:null-ok:escape) -> int;
+mblen (r:bytes(min(a1,strlen(a0)+1)):null-ok, int) -> int;
+mbtowc (w:null-ok, r:bytes(min(a2,strlen(a1)+1)):null-ok, int) -> int;
+wctomb (w:bytes(MB_CUR_MAX):null-ok, int) -> int chk(__wctomb_chk: 0,1,-1);
+mbstowcs (w:count(a2):null-ok, r:str, int) -> int \
+    chk(__mbstowcs_chk: 0,1,2,-1);
+wcstombs (w:bytes(a2):null-ok, r:str, int) -> int \
+    chk(__wcstombs_chk: 0,1,2,-1);
+mkstemp (rw:str) -> int;
+mkostemp (rw:str, int) -> int;
+mkstemps (rw:str, int) -> int;
+mkdtemp (rw:str) -> arg(0):null-on-failure;
+mktemp (rw:str) -> arg(0);
+rand () -> int;
+srand (int) -> void;
+rand_r (rw) -> int;
+random () -> int;
+srandom (int) -> void;
+# The library keeps using the state array after the call.
+initstate (int, w:bytes(a2):escape, int) -> ptr:null-ok;
+setstate (rw:escape) -> ptr:null-ok;
+drand48 () -> int;
+erand48 (rw:count(3)) -> int;
+lrand48 () -> int;
+nrand48 (rw:count(3)) -> int;
+mrand48 () -> int;
+jrand48 (rw:count(3)) -> int;
+srand48 (int) -> void;
+seed48 (r:count(3)) -> static(seed48):nonnull;
+lcong48 (r:count(7)) -> void;
+arc4random () -> int;
+arc4random_uniform (int) -> int;
+arc4random_buf (w:bytes(a1), int) -> void;
+getsubopt (rw, r, w:out(ptr:null-ok)) -> int;
+a64l (r:str) -> int;
+l64a (int) -> static(l64a):nonnull:str;
+getloadavg (w:count(a1), int) -> int;
+# BSD and macOS: the name set by setprogname is kept, not copied.
+getprogname () -> interior-state(progname):nonnull:str reads(progname);
+setprogname (r:str:retain(progname)) -> void;
+ptsname (int) -> static(ptsname):null-on-failure:str;
+ptsname_r (int, w:bytes(a2), int) -> int;
+posix_openpt (int) -> int;
+grantpt (int) -> int;
+unlockpt (int) -> int;
+
+header inttypes.h;
+strtoimax (r:str, w:null-ok:out(interior(0):nonnull), int) -> int \
+    chk(__isoc23_strtoimax: 0,1,2);
+strtoumax (r:str, w:null-ok:out(interior(0):nonnull), int) -> int \
+    chk(__isoc23_strtoumax: 0,1,2);
+
+#============================================================================
+# <unistd.h>, <fcntl.h>, <sys/stat.h> and file-system relatives
+#============================================================================
+
+header unistd.h;
+read (int, w:bytes(a2):null-if-zero(a2), int) -> int chk(__read_chk: 0,1,2,-1);
+write (int, r:bytes(a2):null-if-zero(a2), int) -> int;
+pread (int, w:bytes(a2):null-if-zero(a2), int, int) -> int \
+    chk(__pread_chk: 0,1,2,3,-1) chk(__pread64_chk: 0,1,2,3,-1);
+pwrite (int, r:bytes(a2):null-if-zero(a2), int, int) -> int;
+close (int) -> int;
+pipe (w:count(2)) -> int;
+pipe2 (w:count(2), int) -> int;
+dup (int) -> int;
+dup2 (int, int) -> int;
+dup3 (int, int, int) -> int;
+lseek (int, int, int) -> int;
+access (r:str, int) -> int;
+faccessat (int, r:str, int, int) -> int;
+unlink (r:str) -> int;
+unlinkat (int, r:str, int) -> int;
+rmdir (r:str) -> int;
+chdir (r:str) -> int;
+fchdir (int) -> int;
+getwd (w:bytes(PATH_MAX)) -> arg(0):null-on-failure;
+readlink (r:str, w:bytes(a2), int) -> int chk(__readlink_chk: 0,1,2,-1);
+readlinkat (int, r:str, w:bytes(a3), int) -> int \
+    chk(__readlinkat_chk: 0,1,2,3,-1);
+symlink (r:str, r:str) -> int;
+symlinkat (r:str, int, r:str) -> int;
+link (r:str, r:str) -> int;
+linkat (int, r:str, int, r:str, int) -> int;
+chown (r:str, int, int) -> int;
+fchown (int, int, int) -> int;
+lchown (r:str, int, int) -> int;
+fchownat (int, r:str, int, int, int) -> int;
+truncate (r:str, int) -> int;
+ftruncate (int, int) -> int;
+fsync (int) -> int;
+fdatasync (int) -> int;
+sync () -> void;
+isatty (int) -> int;
+ttyname (int) -> static(ttyname):null-on-failure:str;
+ttyname_r (int, w:bytes(a2), int) -> int chk(__ttyname_r_chk: 0,1,2,-1);
+gethostname (w:bytes(a1), int) -> int chk(__gethostname_chk: 0,1,-1);
+sethostname (r:bytes(a1), int) -> int;
+getdomainname (w:bytes(a1), int) -> int chk(__getdomainname_chk: 0,1,-1);
+getlogin () -> static(getlogin):null-on-failure:str;
+getlogin_r (w:bytes(a1), int) -> int chk(__getlogin_r_chk: 0,1,-1);
+# GNU getopt permutes argv; optarg points into its strings.
+getopt (int, rw:count(a0), r:str) -> int;
+execv (r:str, r) -> int reads(environ);
+execve (r:str, r, r:null-ok) -> int;
+execvp (r:str, r) -> int reads(environ);
+execvpe (r:str, r, r) -> int reads(environ);
+execl (r:str, r:str:null-ok, ...) -> int reads(environ);
+execlp (r:str, r:str:null-ok, ...) -> int reads(environ);
+execle (r:str, r:str:null-ok, ...) -> int;
+fexecve (int, r, r) -> int;
+fork () -> int;
+vfork () -> int returns-twice;
+_exit (int) -> noreturn exits;
+alarm (int) -> int;
+pause () -> int;
+sleep (int) -> int;
+usleep (int) -> int;
+getpid () -> int;
+getppid () -> int;
+sysconf (int) -> int;
+pathconf (r:str, int) -> int;
+fpathconf (int, int) -> int;
+confstr (int, w:bytes(a2):null-if-zero(a2), int) -> int \
+    chk(__confstr_chk: 0,1,2,-1);
+chroot (r:str) -> int;
+nice (int) -> int;
+getentropy (w:bytes(a1), int) -> int;
+getgroups (int, w:count(a0):null-if-zero(a0)) -> int \
+    chk(__getgroups_chk: 0,1,-1);
+swab (r:bytes(a2), w:bytes(a2), int) -> void disjoint(0,1,a2);
+
+header getopt.h;
+getopt_long (int, rw:count(a0), r:str, r:null-ok, w:null-ok) -> int;
+getopt_long_only (int, rw:count(a0), r:str, r:null-ok, w:null-ok) -> int;
+
+header fcntl.h;
+open (r:str, int, ...) -> int chk(__open_2: 0,1);
+openat (int, r:str, int, ...) -> int chk(__openat_2: 0,1,2);
+creat (r:str, int) -> int;
+fcntl (int, int, ...) -> int;
+posix_fadvise (int, int, int, int) -> int;
+posix_fallocate (int, int, int) -> int;
+
+header sys/stat.h;
+stat (r:str, w) -> int;
+fstat (int, w) -> int;
+lstat (r:str, w) -> int;
+fstatat (int, r:str, w, int) -> int;
+chmod (r:str, int) -> int;
+fchmod (int, int) -> int;
+fchmodat (int, r:str, int, int) -> int;
+mkdir (r:str, int) -> int;
+mkdirat (int, r:str, int) -> int;
+mkfifo (r:str, int) -> int;
+mkfifoat (int, r:str, int) -> int;
+mknod (r:str, int, int) -> int;
+mknodat (int, r:str, int, int) -> int;
+umask (int) -> int;
+utimensat (int, r:str, r:count(2):null-ok, int) -> int;
+futimens (int, r:count(2):null-ok) -> int;
+
+header sys/statvfs.h;
+statvfs (r:str, w) -> int;
+fstatvfs (int, w) -> int;
+
+header sys/statfs.h;
+statfs (r:str, w) -> int;
+fstatfs (int, w) -> int;
+
+header utime.h;
+utime (r:str, r:null-ok) -> int;
+
+header sys/time.h;
+utimes (r:str, r:count(2):null-ok) -> int;
+futimes (int, r:count(2):null-ok) -> int;
+lutimes (r:str, r:count(2):null-ok) -> int;
+gettimeofday (w, w:null-ok) -> int;
+settimeofday (r, r:null-ok) -> int;
+getitimer (int, w) -> int;
+setitimer (int, r, w:null-ok) -> int;
+
+#============================================================================
+# <dirent.h>, <time.h>, <sys/mman.h>, <dlfcn.h>
+#============================================================================
+
+header dirent.h;
+opendir (r:str) -> fresh(closedir):null-on-failure;
+fdopendir (int) -> fresh(closedir):null-on-failure;
+closedir (rw:release(closedir)) -> int;
+# The entry lives in the stream: closedir ends it.
+readdir (rw) -> interior(0):null-ok;
+readdir_r (rw, w, w:out(arg(1):null-ok)) -> int;
+rewinddir (rw) -> void;
+seekdir (rw, int) -> void;
+telldir (r) -> int;
+dirfd (r) -> int;
+# The array and each entry in it are the caller's to free.
+scandir (r:str, w:out(fresh(free):null-on-failure:no-zero-init), \
+    fn:null-ok:sync(), fn:null-ok:sync()) -> int;
+alphasort (r, r) -> int;
+versionsort (r, r) -> int;
+
+header time.h;
+time (w:null-ok) -> int;
+clock () -> int;
+difftime (int, int) -> int;
+mktime (rw) -> int reads(environ);
+timegm (rw) -> int;
+# asctime and ctime share one buffer, gmtime and localtime one struct tm.
+asctime (r) -> static(asctime):null-on-failure:str;
+ctime (r) -> static(asctime):null-on-failure:str reads(environ);
+gmtime (r) -> static(tm):null-on-failure;
+localtime (r) -> static(tm):null-on-failure reads(environ);
+asctime_r (r, w:bytes(26)) -> arg(1):null-on-failure:str;
+ctime_r (r, w:bytes(26)) -> arg(1):null-on-failure:str reads(environ);
+gmtime_r (r, w) -> arg(1):null-on-failure;
+localtime_r (r, w) -> arg(1):null-on-failure reads(environ);
+strftime (w:bytes(a1), int, r:str, r) -> int reads(environ);
+strftime_l (w:bytes(a1), int, r:str, r, none) -> int;
+strptime (r:str, r:str, w) -> interior(0):null-ok;
+tzset () -> void reads(environ);
+timespec_get (w, int) -> int;
+timespec_getres (w:null-ok, int) -> int;
+clock_gettime (int, w) -> int;
+clock_getres (int, w:null-ok) -> int;
+clock_settime (int, r) -> int;
+clock_nanosleep (int, int, r, w:null-ok) -> int;
+nanosleep (r, w:null-ok) -> int;
+# glibc's timer_t is an opaque pointer that is never dereferenced.
+timer_create (int, r:null-ok:entry(), w) -> int;
+timer_settime (none:null-ok, int, r, w:null-ok) -> int;
+timer_gettime (none:null-ok, w) -> int;
+timer_getoverrun (none:null-ok) -> int;
+timer_delete (none:null-ok) -> int;
+
+header sys/mman.h;
+# mmap fails with MAP_FAILED, not null.
+mmap (none:null-ok, int, int, int, int, int) -> \
+    fresh(munmap):extent(a1):nonnull;
+munmap (none:release(munmap), int) -> int;
+mprotect (none, int, int) -> int;
+msync (none, int, int) -> int;
+madvise (none, int, int) -> int;
+posix_madvise (none, int, int) -> int;
+mlock (none, int) -> int;
+munlock (none, int) -> int;
+mincore (none, int, w) -> int;
+shm_open (r:str, int, int) -> int;
+shm_unlink (r:str) -> int;
+memfd_create (r:str, int) -> int;
+
+header dlfcn.h;
+dlopen (r:str:null-ok, int) -> fresh(dlclose):null-on-failure;
+dlclose (none:release(dlclose)) -> int;
+# The handle may be a pseudo-handle (RTLD_DEFAULT, RTLD_NEXT).
+dlsym (none:null-ok, r:str) -> ptr:null-ok;
+dlerror () -> static(dlerror):null-ok:str;
+dladdr (none, w) -> int;
+
+#============================================================================
+# Users and groups, locales, conversions, paths, patterns, messages
+#============================================================================
+
+# The non-reentrant lookups return static storage that the next lookup of
+# the same database overwrites, and glibc may reallocate it.
+header pwd.h;
+getpwnam (r:str) -> static(passwd):null-ok invalidates(passwd);
+getpwuid (int) -> static(passwd):null-ok invalidates(passwd);
+getpwent () -> static(passwd):null-ok invalidates(passwd);
+setpwent () -> void;
+endpwent () -> void;
+getpwnam_r (r:str, w, w:bytes(a3), int, w:out(arg(1):null-ok)) -> int;
+getpwuid_r (int, w, w:bytes(a3), int, w:out(arg(1):null-ok)) -> int;
+
+header grp.h;
+getgrnam (r:str) -> static(group):null-ok invalidates(group);
+getgrgid (int) -> static(group):null-ok invalidates(group);
+getgrent () -> static(group):null-ok invalidates(group);
+setgrent () -> void;
+endgrent () -> void;
+getgrnam_r (r:str, w, w:bytes(a3), int, w:out(arg(1):null-ok)) -> int;
+getgrgid_r (int, w, w:bytes(a3), int, w:out(arg(1):null-ok)) -> int;
+setgroups (int, r:count(a0)) -> int;
+initgroups (r:str, int) -> int;
+
+header locale.h;
+# The previous result's storage is freed by glibc when the locale changes.
+setlocale (int, r:str:null-ok) -> static(setlocale):null-on-failure:str \
+    invalidates(setlocale) invalidates(localeconv) invalidates(nl_langinfo);
+localeconv () -> static(localeconv):nonnull;
+# The base locale is reused for the result, or freed, on success only.
+newlocale (int, r:str, none:null-ok:realloc(freelocale)) -> \
+    fresh(freelocale):null-on-failure;
+duplocale (none) -> fresh(freelocale):null-on-failure;
+freelocale (none:release(freelocale)) -> void;
+uselocale (none:null-ok) -> ptr:null-ok;
+
+header langinfo.h;
+nl_langinfo (int) -> static(nl_langinfo):nonnull:str;
+nl_langinfo_l (int, none) -> static(nl_langinfo):nonnull:str;
+
+header iconv.h;
+# iconv_open fails with (iconv_t)-1, not null.
+iconv_open (r:str, r:str) -> fresh(iconv_close):nonnull;
+iconv (none, rw:null-ok, rw:null-ok, rw:null-ok, rw:null-ok) -> int;
+iconv_close (none:release(iconv_close)) -> int;
+
+header libgen.h;
+# POSIX basename and dirname may modify the path; glibc's libgen.h renames
+# basename to __xpg_basename.
+basename (rw:str:null-ok) -> interior(0):nonnull:str \
+    chk(__xpg_basename: 0);
+dirname (rw:str:null-ok) -> interior(0):nonnull:str;
+
+header regex.h;
+regcomp (w:init(regfree), r:str, int) -> int;
+regexec (r, r:str, int, w:count(a2):null-ok, int) -> int;
+regerror (int, r, w:bytes(a3):null-if-zero(a3), int) -> int;
+regfree (rw:fini(regfree)) -> void;
+
+header fnmatch.h;
+fnmatch (r:str, r:str, int) -> int;
+
+header glob.h;
+glob (r:str, int, fn:null-ok:sync(), rw:init(globfree)) -> int;
+globfree (rw:fini(globfree)) -> void;
+
+header wordexp.h;
+wordexp (r:str, rw:init(wordfree), int) -> int reads(environ);
+wordfree (rw:fini(wordfree)) -> void;
+
+header err.h;
+err (int, r:str:null-ok, ...) -> noreturn exits printf(1,2);
+errx (int, r:str:null-ok, ...) -> noreturn exits printf(1,2);
+verr (int, r:str:null-ok, other) -> noreturn exits printf(1,2);
+verrx (int, r:str:null-ok, other) -> noreturn exits printf(1,2);
+warn (r:str:null-ok, ...) -> void printf(0,1);
+warnx (r:str:null-ok, ...) -> void printf(0,1);
+vwarn (r:str:null-ok, other) -> void printf(0,1);
+vwarnx (r:str:null-ok, other) -> void printf(0,1);
+
+header error.h;
+# Exits when the status is non-zero, so it is not noreturn.
+error (int, int, r:str, ...) -> void printf(2,3);
+error_at_line (int, int, r:str:null-ok, int, r:str, ...) -> void printf(4,5);
+
+header syslog.h;
+# glibc and BSD keep the ident pointer, not a copy.
+openlog (r:str:null-ok:retain(syslog), int, int) -> void;
+syslog (int, r:str, ...) -> void printf(1,2) reads(syslog) \
+    chk(__syslog_chk: 0,-1,1,2);
+vsyslog (int, r:str, other) -> void printf(1,2) reads(syslog) \
+    chk(__vsyslog_chk: 0,-1,1,2);
+closelog () -> void;
+setlogmask (int) -> int;
+
+header sys/utsname.h;
+uname (w) -> int;
+
+header sys/resource.h;
+getrlimit (int, w) -> int;
+setrlimit (int, r) -> int;
+getrusage (int, w) -> int;
+
+header termios.h;
+tcgetattr (int, w) -> int;
+tcsetattr (int, int, r) -> int;
+cfmakeraw (w) -> void;
+cfgetispeed (r) -> int;
+cfgetospeed (r) -> int;
+cfsetispeed (w, int) -> int;
+cfsetospeed (w, int) -> int;
+
+#============================================================================
+# Threads, signals, non-local jumps (sections 5.3, 5.4)
+#============================================================================
+
+# pthread_t, thrd_t: an integer on glibc, a pointer on macOS ('other').
+header pthread.h;
+pthread_create (w, r:null-ok, fn:entry(3), none:null-ok:escape) -> int;
+pthread_join (other, w:null-ok) -> int;
+pthread_detach (other) -> int;
+pthread_exit (none:null-ok:escape) -> noreturn;
+pthread_self () -> int;
+pthread_self () -> ptr:nonnull;
+pthread_equal (other, other) -> int;
+pthread_cancel (other) -> int;
+pthread_kill (other, int) -> int;
+pthread_setcancelstate (int, w:null-ok) -> int;
+pthread_setcanceltype (int, w:null-ok) -> int;
+pthread_testcancel () -> void;
+pthread_attr_init (w) -> int;
+pthread_attr_destroy (rw) -> int;
+pthread_attr_setdetachstate (rw, int) -> int;
+pthread_attr_getdetachstate (r, w) -> int;
+pthread_attr_setstacksize (rw, int) -> int;
+pthread_attr_getstacksize (r, w) -> int;
+# The thread runs on the caller's stack memory.
+pthread_attr_setstack (rw, none:escape, int) -> int;
+pthread_mutex_init (w, r:null-ok) -> int;
+pthread_mutex_destroy (rw) -> int;
+pthread_mutex_lock (rw) -> int;
+pthread_mutex_trylock (rw) -> int;
+pthread_mutex_timedlock (rw, r) -> int;
+pthread_mutex_unlock (rw) -> int;
+pthread_mutexattr_init (w) -> int;
+pthread_mutexattr_destroy (rw) -> int;
+pthread_mutexattr_settype (rw, int) -> int;
+pthread_mutexattr_gettype (r, w) -> int;
+pthread_mutexattr_setpshared (rw, int) -> int;
+pthread_cond_init (w, r:null-ok) -> int;
+pthread_cond_destroy (rw) -> int;
+pthread_cond_wait (rw, rw) -> int;
+pthread_cond_timedwait (rw, rw, r) -> int;
+pthread_cond_signal (rw) -> int;
+pthread_cond_broadcast (rw) -> int;
+pthread_condattr_init (w) -> int;
+pthread_condattr_destroy (rw) -> int;
+pthread_condattr_setclock (rw, int) -> int;
+pthread_rwlock_init (w, r:null-ok) -> int;
+pthread_rwlock_destroy (rw) -> int;
+pthread_rwlock_rdlock (rw) -> int;
+pthread_rwlock_wrlock (rw) -> int;
+pthread_rwlock_tryrdlock (rw) -> int;
+pthread_rwlock_trywrlock (rw) -> int;
+pthread_rwlock_unlock (rw) -> int;
+pthread_spin_init (w, int) -> int;
+pthread_spin_destroy (rw) -> int;
+pthread_spin_lock (rw) -> int;
+pthread_spin_trylock (rw) -> int;
+pthread_spin_unlock (rw) -> int;
+pthread_barrier_init (w, r:null-ok, int) -> int;
+pthread_barrier_wait (rw) -> int;
+pthread_barrier_destroy (rw) -> int;
+pthread_once (rw, fn:sync()) -> int;
+# Destructors run at thread exit, concurrently with other threads.
+pthread_key_create (w, fn:null-ok:entry()) -> int;
+pthread_key_delete (int) -> int;
+pthread_setspecific (int, none:null-ok:escape) -> int;
+pthread_getspecific (int) -> ptr:null-ok;
+pthread_sigmask (int, r:null-ok, w:null-ok) -> int;
+pthread_atfork (fn:null-ok:entry(), fn:null-ok:entry(), \
+    fn:null-ok:entry()) -> int;
+# glibc names the thread explicitly; macOS names the calling thread.
+pthread_setname_np (other, r:str) -> int;
+pthread_setname_np (r:str) -> int;
+pthread_getname_np (other, w:bytes(a2), int) -> int;
+
+header threads.h;
+thrd_create (w, fn:entry(2), none:null-ok:escape) -> int;
+thrd_join (other, w:null-ok) -> int;
+thrd_detach (other) -> int;
+thrd_exit (int) -> noreturn;
+thrd_sleep (r, w:null-ok) -> int;
+thrd_yield () -> void;
+mtx_init (w, int) -> int;
+mtx_lock (rw) -> int;
+mtx_trylock (rw) -> int;
+mtx_timedlock (rw, r) -> int;
+mtx_unlock (rw) -> int;
+mtx_destroy (rw) -> void;
+cnd_init (w) -> int;
+cnd_signal (rw) -> int;
+cnd_broadcast (rw) -> int;
+cnd_wait (rw, rw) -> int;
+cnd_timedwait (rw, rw, r) -> int;
+cnd_destroy (rw) -> void;
+tss_create (w, fn:null-ok:entry()) -> int;
+tss_delete (int) -> void;
+tss_get (int) -> ptr:null-ok;
+tss_set (int, none:null-ok:escape) -> int;
+call_once (rw, fn:sync()) -> void;
+
+header signal.h;
+# SIG_DFL is a null handler; the result is the previous handler.
+signal (int, fn:null-ok:entry()) -> ptr;
+sigaction (int, r:null-ok:entry(), w:null-ok) -> int;
+raise (int) -> int;
+kill (int, int) -> int;
+killpg (int, int) -> int;
+sigemptyset (w) -> int;
+sigfillset (w) -> int;
+sigaddset (rw, int) -> int;
+sigdelset (rw, int) -> int;
+sigismember (r, int) -> int;
+sigprocmask (int, r:null-ok, w:null-ok) -> int;
+sigsuspend (r) -> int;
+sigwait (r, w) -> int;
+sigwaitinfo (r, w:null-ok) -> int;
+sigtimedwait (r, w:null-ok, r:null-ok) -> int;
+sigpending (w) -> int;
+sigaltstack (r:null-ok, w:null-ok) -> int;
+siginterrupt (int, int) -> int;
+sigqueue (int, int, other) -> int;
+psignal (int, r:str:null-ok) -> void;
+psiginfo (r, r:str:null-ok) -> void;
+
+header sys/wait.h;
+wait (w:null-ok) -> int;
+waitpid (int, w:null-ok, int) -> int;
+waitid (int, int, w, int) -> int;
+wait4 (int, w:null-ok, int, w:null-ok) -> int;
+
+# jmp_buf decays to a pointer; the rows do not model its contents. glibc's
+# setjmp and sigsetjmp are macros for _setjmp and __sigsetjmp, and its
+# fortified longjmp is __longjmp_chk.
+header setjmp.h;
+setjmp (other) -> int returns-twice;
+_setjmp (other) -> int returns-twice;
+sigsetjmp (other, int) -> int returns-twice chk(__sigsetjmp: 0,1);
+longjmp (other, int) -> noreturn chk(__longjmp_chk: 0,1);
+_longjmp (other, int) -> noreturn;
+siglongjmp (other, int) -> noreturn;
+
+header sched.h;
+sched_yield () -> int;
+sched_getaffinity (int, int, w:bytes(a1)) -> int;
+sched_setaffinity (int, int, r:bytes(a1)) -> int;
+sched_getparam (int, w) -> int;
+sched_setparam (int, r) -> int;
+sched_setscheduler (int, int, r) -> int;
+
+header semaphore.h;
+# SEM_FAILED is null on glibc and (sem_t *)-1 on macOS.
+sem_open (r:str, int, ...) -> fresh(sem_close):null-ok;
+sem_close (rw:release(sem_close)) -> int;
+sem_unlink (r:str) -> int;
+sem_init (w, int, int) -> int;
+sem_destroy (rw) -> int;
+sem_wait (rw) -> int;
+sem_trywait (rw) -> int;
+sem_timedwait (rw, r) -> int;
+sem_post (rw) -> int;
+sem_getvalue (rw, w) -> int;
+
+header search.h;
+# The tree keeps the key; comparisons see the key and the tree's keys.
+tsearch (none:escape, rw, fn:sync(0,1)) -> ptr:null-ok;
+tfind (none, r, fn:sync(0,1)) -> ptr:null-ok;
+tdelete (none, rw, fn:sync(0,1)) -> ptr:null-ok;
+twalk (none:null-ok, fn:sync(0)) -> void;
+tdestroy (none:null-ok, fn:sync()) -> void;
+# The element count is behind a pointer, which no term can read.
+lfind (none, r:bytes(__WEAVEC_UNBOUNDED), rw, int, fn:sync(0,1)) \
+    -> interior(1):null-ok;
+lsearch (none, rw:bytes(__WEAVEC_UNBOUNDED), rw, int, fn:sync(0,1)) \
+    -> interior(1):nonnull;
+
+header ftw.h;
+ftw (r:str, fn:sync(), int) -> int;
+nftw (r:str, fn:sync(), int, int) -> int;
+
+header spawn.h;
+posix_spawn (w:null-ok, r:str, r:null-ok, r:null-ok, r, r) -> int;
+posix_spawnp (w:null-ok, r:str, r:null-ok, r:null-ok, r, r) -> int \
+    reads(environ);
+
+header poll.h;
+poll (rw:count(a1):null-if-zero(a1), int, int) -> int \
+    chk(__poll_chk: 0,1,2,-1);
+ppoll (rw:count(a1):null-if-zero(a1), int, r:null-ok, r:null-ok) -> int \
+    chk(__ppoll_chk: 0,1,2,3,-1);
+
+header sys/select.h;
+select (int, rw:null-ok, rw:null-ok, rw:null-ok, rw:null-ok) -> int;
+pselect (int, rw:null-ok, rw:null-ok, rw:null-ok, r:null-ok, r:null-ok) \
+    -> int;
+
+header sys/epoll.h;
+epoll_create (int) -> int;
+epoll_create1 (int) -> int;
+epoll_ctl (int, int, int, r:null-ok) -> int;
+epoll_wait (int, w:count(a2), int, int) -> int;
+epoll_pwait (int, w:count(a2), int, int, r:null-ok) -> int;
+
+header sys/event.h;
+kqueue () -> int;
+kevent (int, r:count(a2):null-if-zero(a2), int, \
+    w:count(a4):null-if-zero(a4), int, r:null-ok) -> int;
+
+#============================================================================
+# Sockets, name resolution, interfaces, I/O vectors
+#============================================================================
+
+# Socket addresses whose length is behind a pointer (accept, getsockname)
+# need one struct sockaddr.
+header sys/socket.h;
+socket (int, int, int) -> int;
+socketpair (int, int, int, w:count(2)) -> int;
+bind (int, r:bytes(a2), int) -> int;
+connect (int, r:bytes(a2), int) -> int;
+listen (int, int) -> int;
+accept (int, w:null-ok, rw:null-ok) -> int;
+accept4 (int, w:null-ok, rw:null-ok, int) -> int;
+shutdown (int, int) -> int;
+send (int, r:bytes(a2):null-if-zero(a2), int, int) -> int;
+sendto (int, r:bytes(a2):null-if-zero(a2), int, int, r:bytes(a5):null-ok, \
+    int) -> int;
+sendmsg (int, r, int) -> int;
+recv (int, w:bytes(a2):null-if-zero(a2), int, int) -> int \
+    chk(__recv_chk: 0,1,2,-1,3);
+recvfrom (int, w:bytes(a2):null-if-zero(a2), int, int, w:null-ok, \
+    rw:null-ok) -> int chk(__recvfrom_chk: 0,1,2,-1,3,4,5);
+recvmsg (int, rw, int) -> int;
+getsockopt (int, int, int, w:null-ok, rw) -> int;
+setsockopt (int, int, int, r:bytes(a4):null-if-zero(a4), int) -> int;
+getsockname (int, w, rw) -> int;
+getpeername (int, w, rw) -> int;
+
+header netdb.h;
+getaddrinfo (r:str:null-ok, r:str:null-ok, r:null-ok, \
+    w:out(fresh(freeaddrinfo):null-on-failure)) -> int;
+freeaddrinfo (none:release(freeaddrinfo)) -> void;
+gai_strerror (int) -> static(gai_strerror):nonnull:str;
+getnameinfo (r:bytes(a1), int, w:bytes(a3):null-ok, int, \
+    w:bytes(a5):null-ok, int, int) -> int;
+gethostbyname (r:str) -> static(hostent):null-ok invalidates(hostent);
+gethostbyname2 (r:str, int) -> static(hostent):null-ok invalidates(hostent);
+gethostbyaddr (r:bytes(a1), int, int) -> static(hostent):null-ok \
+    invalidates(hostent);
+getservbyname (r:str, r:str:null-ok) -> static(servent):null-ok \
+    invalidates(servent);
+getservbyport (int, r:str:null-ok) -> static(servent):null-ok \
+    invalidates(servent);
+getprotobyname (r:str) -> static(protoent):null-ok invalidates(protoent);
+getprotobynumber (int) -> static(protoent):null-ok invalidates(protoent);
+herror (r:str:null-ok) -> void;
+hstrerror (int) -> static(hstrerror):nonnull:str;
+
+# The address size depends on the family (4 or 16 bytes): one element.
+header arpa/inet.h;
+inet_ntop (int, r, w:bytes(a3), int) -> arg(2):null-on-failure:str;
+inet_pton (int, r:str, w) -> int;
+inet_addr (r:str) -> int;
+inet_aton (r:str, w) -> int;
+inet_network (r:str) -> int;
+inet_ntoa (other) -> static(inet_ntoa):nonnull:str;
+htons (int) -> int;
+htonl (int) -> int;
+ntohs (int) -> int;
+ntohl (int) -> int;
+
+header ifaddrs.h;
+getifaddrs (w:out(fresh(freeifaddrs):null-on-failure)) -> int;
+freeifaddrs (none:release(freeifaddrs)) -> void;
+
+header net/if.h;
+if_nametoindex (r:str) -> int;
+if_indextoname (int, w:bytes(IF_NAMESIZE)) -> arg(1):null-on-failure:str;
+if_nameindex () -> fresh(if_freenameindex):null-on-failure;
+if_freenameindex (none:release(if_freenameindex)) -> void;
+
+# Only the iovec array is described; the buffers it names are not.
+header sys/uio.h;
+readv (int, r:count(a2), int) -> int;
+writev (int, r:count(a2), int) -> int;
+preadv (int, r:count(a2), int, int) -> int;
+pwritev (int, r:count(a2), int, int) -> int;
+
+header sys/sendfile.h;
+sendfile (int, int, rw:null-ok, int) -> int;
+
+header sys/random.h;
+getrandom (w:bytes(a1), int, int) -> int;
+
+header sys/eventfd.h;
+eventfd (int, int) -> int;
+
+header sys/inotify.h;
+inotify_init () -> int;
+inotify_init1 (int) -> int;
+inotify_add_watch (int, r:str, int) -> int;
+inotify_rm_watch (int, int) -> int;
+
+header sys/timerfd.h;
+timerfd_create (int, int) -> int;
+timerfd_settime (int, int, r, w:null-ok) -> int;
+timerfd_gettime (int, w) -> int;
+
+header sys/signalfd.h;
+signalfd (int, r, int) -> int;
+
+header sys/prctl.h;
+prctl (int, ...) -> int;
+
+header sys/sysinfo.h;
+sysinfo (w) -> int;
+
+header sys/sysctl.h;
+sysctlbyname (r:str, w:null-ok, rw:null-ok, r:null-ok, int) -> int;
+
+header sys/file.h;
+flock (int, int) -> int;
+
+header sys/shm.h;
+shmget (int, int, int) -> int;
+# shmat fails with (void *)-1, not null.
+shmat (int, none:null-ok, int) -> fresh(shmdt):nonnull;
+shmdt (none:release(shmdt)) -> int;
+shmctl (int, int, rw:null-ok) -> int;
+
+header mqueue.h;
+mq_open (r:str, int, ...) -> int;
+mq_close (int) -> int;
+mq_unlink (r:str) -> int;
+mq_send (int, r:bytes(a2), int, int) -> int;
+mq_receive (int, w:bytes(a2), int, w:null-ok) -> int;
+
+# The control block and its buffer are used until the operation completes.
+header aio.h;
+aio_read (rw:escape) -> int;
+aio_write (rw:escape) -> int;
+aio_error (r) -> int;
+aio_return (rw) -> int;
+aio_suspend (r:count(a1), int, r:null-ok) -> int;
+aio_cancel (int, rw:null-ok) -> int;
+
+header mntent.h;
+setmntent (r:str, r:str) -> fresh(endmntent):null-on-failure;
+getmntent (rw) -> static(mntent):null-ok invalidates(mntent);
+endmntent (rw:release(endmntent)) -> int;
+
+header fts.h;
+fts_open (r, int, fn:null-ok:sync()) -> fresh(fts_close):null-on-failure;
+fts_read (rw) -> interior(0):null-ok;
+fts_children (rw, int) -> interior(0):null-ok;
+fts_set (rw, rw, int) -> int;
+fts_close (rw:release(fts_close)) -> int;
+
+#============================================================================
+# Wide and multibyte characters (<wchar.h>, <wctype.h>, <uchar.h>)
+#============================================================================
+
+# Lengths count wchar_t elements: count(t), and strlen(aN) is wcslen. No
+# disjoint clauses: their lengths are in bytes.
+header wchar.h;
+wcslen (r:str) -> int:value(strlen(a0));
+wcsnlen (r:count(min(a1,strlen(a0)+1)), int) -> int:value(min(a1,strlen(a0)));
+wcscpy (w:count(strlen(a1)+1), r:str) -> arg(0) chk(__wcscpy_chk: 0,1,-1);
+wcsncpy (w:count(a2), r:count(min(a2,strlen(a1)+1)), int) -> arg(0) \
+    chk(__wcsncpy_chk: 0,1,2,-1);
+wcpcpy (w:count(strlen(a1)+1), r:str) -> interior(0):nonnull \
+    chk(__wcpcpy_chk: 0,1,-1);
+wcpncpy (w:count(a2), r:count(min(a2,strlen(a1)+1)), int) \
+    -> interior(0):nonnull chk(__wcpncpy_chk: 0,1,2,-1);
+wcscat (rw:count(strlen(a0)+strlen(a1)+1):str, r:str) -> arg(0) \
+    chk(__wcscat_chk: 0,1,-1);
+wcsncat (rw:count(strlen(a0)+min(a2,strlen(a1))+1):str, \
+    r:count(min(a2,strlen(a1)+1)), int) -> arg(0) \
+    chk(__wcsncat_chk: 0,1,2,-1);
+wcscmp (r:str, r:str) -> int;
+wcsncmp (r:count(min(a2,strlen(a0)+1)), r:count(min(a2,strlen(a1)+1)), int) \
+    -> int;
+wcscasecmp (r:str, r:str) -> int;
+wcsncasecmp (r:count(min(a2,strlen(a0)+1)), \
+    r:count(min(a2,strlen(a1)+1)), int) -> int;
+wcscoll (r:str, r:str) -> int;
+wcsxfrm (w:count(a2):null-if-zero(a2), r:str, int) -> int;
+wcschr (r:str, int) -> interior(0):null-ok;
+wcsrchr (r:str, int) -> interior(0):null-ok;
+wcsstr (r:str, r:str) -> interior(0):null-ok;
+wcspbrk (r:str, r:str) -> interior(0):null-ok;
+wcsspn (r:str, r:str) -> int;
+wcscspn (r:str, r:str) -> int;
+wcstok (rw:str:null-ok, r:str, rw:out(interior(0):null-ok)) -> \
+    interior(0):null-ok;
+wcswidth (r:count(min(a1,strlen(a0)+1)), int) -> int;
+wcwidth (int) -> int;
+wmemcpy (w:count(a2):null-if-zero(a2), r:count(a2):null-if-zero(a2), int) \
+    -> arg(0) chk(__wmemcpy_chk: 0,1,2,-1);
+wmemmove (w:count(a2):null-if-zero(a2), r:count(a2):null-if-zero(a2), int) \
+    -> arg(0) chk(__wmemmove_chk: 0,1,2,-1);
+wmemset (w:count(a2):null-if-zero(a2), int, int) -> arg(0) \
+    chk(__wmemset_chk: 0,1,2,-1);
+wmemcmp (r:count(a2):null-if-zero(a2), r:count(a2):null-if-zero(a2), int) \
+    -> int;
+wmemchr (r:count(a2), int, int) -> interior(0):null-ok;
+wmempcpy (w:count(a2), r:count(a2), int) -> interior(0):nonnull \
+    chk(__wmempcpy_chk: 0,1,2,-1);
+wcstol (r:str, w:null-ok:out(interior(0):nonnull), int) -> int \
+    chk(__isoc23_wcstol: 0,1,2);
+wcstoll (r:str, w:null-ok:out(interior(0):nonnull), int) -> int \
+    chk(__isoc23_wcstoll: 0,1,2);
+wcstoul (r:str, w:null-ok:out(interior(0):nonnull), int) -> int \
+    chk(__isoc23_wcstoul: 0,1,2);
+wcstoull (r:str, w:null-ok:out(interior(0):nonnull), int) -> int \
+    chk(__isoc23_wcstoull: 0,1,2);
+wcstod (r:str, w:null-ok:out(interior(0):nonnull)) -> int;
+wcstof (r:str, w:null-ok:out(interior(0):nonnull)) -> int;
+wcstold (r:str, w:null-ok:out(interior(0):nonnull)) -> int;
+btowc (int) -> int;
+wctob (int) -> int;
+mbsinit (r:null-ok) -> int;
+mbrlen (r:bytes(min(a1,strlen(a0)+1)):null-ok, int, rw:null-ok) -> int;
+mbrtowc (w:null-ok, r:bytes(min(a2,strlen(a1)+1)):null-ok, int, rw:null-ok) \
+    -> int;
+wcrtomb (w:bytes(MB_CUR_MAX):null-ok, int, rw:null-ok) -> int \
+    chk(__wcrtomb_chk: 0,1,2,-1);
+mbsrtowcs (w:count(a2):null-ok, rw, int, rw:null-ok) -> int \
+    chk(__mbsrtowcs_chk: 0,1,2,3,-1);
+wcsrtombs (w:bytes(a2):null-ok, rw, int, rw:null-ok) -> int \
+    chk(__wcsrtombs_chk: 0,1,2,3,-1);
+mbsnrtowcs (w:count(a3):null-ok, rw, int, int, rw:null-ok) -> int \
+    chk(__mbsnrtowcs_chk: 0,1,2,3,4,-1);
+wcsnrtombs (w:bytes(a3):null-ok, rw, int, int, rw:null-ok) -> int \
+    chk(__wcsnrtombs_chk: 0,1,2,3,4,-1);
+fgetwc (rw) -> int;
+getwc (rw) -> int;
+getwchar () -> int;
+fputwc (int, rw) -> int;
+putwc (int, rw) -> int;
+putwchar (int) -> int;
+ungetwc (int, rw) -> int;
+fgetws (w:count(a1), int, rw) -> arg(0):null-ok chk(__fgetws_chk: 0,-1,1,2);
+fputws (r:str, rw) -> int;
+fwide (rw, int) -> int;
+wprintf (r:str, ...) -> int printf(0,1) chk(__wprintf_chk: -1,0,1);
+fwprintf (rw, r:str, ...) -> int printf(1,2) chk(__fwprintf_chk: 0,-1,1,2);
+swprintf (w:count(a1):null-if-zero(a1), int, r:str, ...) -> int printf(2,3) \
+    chk(__swprintf_chk: 0,1,-1,-1,2,3);
+vwprintf (r:str, other) -> int printf(0,1) chk(__vwprintf_chk: -1,0,1);
+vfwprintf (rw, r:str, other) -> int printf(1,2) \
+    chk(__vfwprintf_chk: 0,-1,1,2);
+vswprintf (w:count(a1):null-if-zero(a1), int, r:str, other) \
+    -> int printf(2,3) chk(__vswprintf_chk: 0,1,-1,-1,2,3);
+wscanf (r:str, ...) -> int scanf(0,1) \
+    chk(__isoc99_wscanf: 0,1) chk(__isoc23_wscanf: 0,1);
+fwscanf (rw, r:str, ...) -> int scanf(1,2) \
+    chk(__isoc99_fwscanf: 0,1,2) chk(__isoc23_fwscanf: 0,1,2);
+swscanf (r:str, r:str, ...) -> int scanf(1,2) \
+    chk(__isoc99_swscanf: 0,1,2) chk(__isoc23_swscanf: 0,1,2);
+vwscanf (r:str, other) -> int scanf(0,1) \
+    chk(__isoc99_vwscanf: 0,1) chk(__isoc23_vwscanf: 0,1);
+vfwscanf (rw, r:str, other) -> int scanf(1,2) \
+    chk(__isoc99_vfwscanf: 0,1,2) chk(__isoc23_vfwscanf: 0,1,2);
+vswscanf (r:str, r:str, other) -> int scanf(1,2) \
+    chk(__isoc99_vswscanf: 0,1,2) chk(__isoc23_vswscanf: 0,1,2);
+wcsftime (w:count(a1), int, r:str, r) -> int reads(environ);
+open_wmemstream (w:escape:out(fresh(free):null-on-failure:no-zero-init), \
+    w:escape) -> fresh(fclose):null-on-failure;
+
+header wctype.h;
+wctype (r:str) -> int;
+wctrans (r:str) -> int;
+
+header uchar.h;
+mbrtoc8 (w:null-ok, r:bytes(min(a2,strlen(a1)+1)):null-ok, int, rw:null-ok) \
+    -> int;
+mbrtoc16 (w:null-ok, r:bytes(min(a2,strlen(a1)+1)):null-ok, int, \
+    rw:null-ok) -> int;
+mbrtoc32 (w:null-ok, r:bytes(min(a2,strlen(a1)+1)):null-ok, int, \
+    rw:null-ok) -> int;
+c8rtomb (w:bytes(MB_CUR_MAX):null-ok, int, rw:null-ok) -> int;
+c16rtomb (w:bytes(MB_CUR_MAX):null-ok, int, rw:null-ok) -> int;
+c32rtomb (w:bytes(MB_CUR_MAX):null-ok, int, rw:null-ok) -> int;
+
+#============================================================================
+# <math.h>, <errno.h>, <ctype.h>
+#============================================================================
+
+# Scalar functions have no pointer effects; they are listed so that their
+# __builtin_ forms are known.
+header math.h;
+fabs (other) -> int;
+fabsf (other) -> int;
+fabsl (other) -> int;
+floor (other) -> int;
+floorf (other) -> int;
+floorl (other) -> int;
+ceil (other) -> int;
+ceilf (other) -> int;
+ceill (other) -> int;
+trunc (other) -> int;
+truncf (other) -> int;
+truncl (other) -> int;
+frexp (other, w) -> int;
+frexpf (other, w) -> int;
+frexpl (other, w) -> int;
+modf (other, w) -> int;
+modff (other, w) -> int;
+modfl (other, w) -> int;
+remquo (other, other, w) -> int;
+remquof (other, other, w) -> int;
+remquol (other, other, w) -> int;
+nan (r:str) -> int;
+nanf (r:str) -> int;
+nanl (r:str) -> int;
+sincos (other, w, w) -> void;
+sincosf (other, w, w) -> void;
+sincosl (other, w, w) -> void;
+lgamma_r (other, w) -> int;
+
+# errno is a per-thread location: glibc and musl, macOS.
+header errno.h;
+__errno_location () -> static(errno):nonnull;
+__error () -> static(errno):nonnull;
+
+# glibc's classification tables; the table pointers they return point into
+# the middle of their tables, which no row can describe.
+header ctype.h;
+__ctype_b_loc () -> static(ctype):nonnull;
+__ctype_tolower_loc () -> static(ctype):nonnull;
+__ctype_toupper_loc () -> static(ctype):nonnull;
+
+#============================================================================
+# Compiler builtins
+#============================================================================
+# Every entry above also answers to __builtin_NAME (__builtin_memcpy,
+# __builtin_alloca, __builtin_setjmp). These are the builtins with no library
+# counterpart whose arguments are pointers or which change control flow.
+# Their value semantics (__builtin_expect's result is its argument, the
+# overflow builtins' flag) are the engine's, keyed by Clang builtin id; the
+# rows give their memory effects.
+
+builtins;
+__builtin_object_size (none:null-ok, int) -> int;
+__builtin_dynamic_object_size (none:null-ok, int) -> int;
+__builtin_expect (int, int) -> int;
+__builtin_expect_with_probability (int, int, other) -> int;
+__builtin_unpredictable (int) -> int;
+__builtin_assume (int) -> void;
+__builtin_assume_aligned (none:null-ok, int, ...) -> arg(0);
+__builtin_launder (none:null-ok) -> arg(0);
+__builtin_prefetch (none:null-ok, ...) -> void;
+__builtin_unreachable () -> noreturn;
+__builtin_trap () -> noreturn exits;
+__builtin_verbose_trap (r:str, r:str) -> noreturn exits;
+__builtin_debugtrap () -> void;
+# va_list is an array on some targets and a pointer on others: 'other'.
+__builtin_va_start (other, ...) -> void;
+__builtin_c23_va_start (other, ...) -> void;
+__builtin_va_end (other) -> void;
+__builtin_va_copy (other, other) -> void;
+__builtin_frame_address (int) -> ptr:null-ok;
+__builtin_return_address (int) -> ptr:null-ok;
+__builtin_extract_return_addr (none:null-ok) -> arg(0);
+__builtin___clear_cache (none, none) -> void;
+__builtin_memcpy_inline (w:bytes(a2), r:bytes(a2), int) -> void \
+    disjoint(0,1,a2) copies(0,1,a2);
+__builtin_memset_inline (w:bytes(a2), int, int) -> void fills(0,a1,a2);
+__builtin_alloca_with_align (int, int) -> \
+    fresh(stack):extent(a0):nonnull:zero-init;
+__builtin_alloca_uninitialized (int) -> \
+    fresh(stack):extent(a0):nonnull:no-zero-init;
+__builtin_alloca_with_align_uninitialized (int, int) -> \
+    fresh(stack):extent(a0):nonnull:no-zero-init;
+__builtin_add_overflow (other, other, w) -> int;
+__builtin_sub_overflow (other, other, w) -> int;
+__builtin_mul_overflow (other, other, w) -> int;
+__builtin_sadd_overflow (int, int, w) -> int;
+__builtin_saddl_overflow (int, int, w) -> int;
+__builtin_saddll_overflow (int, int, w) -> int;
+__builtin_uadd_overflow (int, int, w) -> int;
+__builtin_uaddl_overflow (int, int, w) -> int;
+__builtin_uaddll_overflow (int, int, w) -> int;
+__builtin_ssub_overflow (int, int, w) -> int;
+__builtin_ssubl_overflow (int, int, w) -> int;
+__builtin_ssubll_overflow (int, int, w) -> int;
+__builtin_usub_overflow (int, int, w) -> int;
+__builtin_usubl_overflow (int, int, w) -> int;
+__builtin_usubll_overflow (int, int, w) -> int;
+__builtin_smul_overflow (int, int, w) -> int;
+__builtin_smull_overflow (int, int, w) -> int;
+__builtin_smulll_overflow (int, int, w) -> int;
+__builtin_umul_overflow (int, int, w) -> int;
+__builtin_umull_overflow (int, int, w) -> int;
+__builtin_umulll_overflow (int, int, w) -> int;
+__builtin_bswap16 (int) -> int;
+__builtin_bswap32 (int) -> int;
+__builtin_bswap64 (int) -> int;
+__atomic_thread_fence (int) -> void;
+__atomic_signal_fence (int) -> void;
+__atomic_is_lock_free (int, none:null-ok) -> int;
+__atomic_always_lock_free (int, none:null-ok) -> int;
+__c11_atomic_thread_fence (int) -> void;
+__c11_atomic_signal_fence (int) -> void;
+__c11_atomic_is_lock_free (int) -> int;
+# Sema resolves each __sync builtin to its sized form (_1 to _16).
+__sync_fetch_and_add (rw, int, ...) -> int \
+    chk(__sync_fetch_and_add_1: 0,1) chk(__sync_fetch_and_add_2: 0,1) \
+    chk(__sync_fetch_and_add_4: 0,1) chk(__sync_fetch_and_add_8: 0,1) \
+    chk(__sync_fetch_and_add_16: 0,1);
+__sync_fetch_and_sub (rw, int, ...) -> int \
+    chk(__sync_fetch_and_sub_1: 0,1) chk(__sync_fetch_and_sub_2: 0,1) \
+    chk(__sync_fetch_and_sub_4: 0,1) chk(__sync_fetch_and_sub_8: 0,1) \
+    chk(__sync_fetch_and_sub_16: 0,1);
+__sync_fetch_and_or (rw, int, ...) -> int \
+    chk(__sync_fetch_and_or_1: 0,1) chk(__sync_fetch_and_or_2: 0,1) \
+    chk(__sync_fetch_and_or_4: 0,1) chk(__sync_fetch_and_or_8: 0,1) \
+    chk(__sync_fetch_and_or_16: 0,1);
+__sync_fetch_and_and (rw, int, ...) -> int \
+    chk(__sync_fetch_and_and_1: 0,1) chk(__sync_fetch_and_and_2: 0,1) \
+    chk(__sync_fetch_and_and_4: 0,1) chk(__sync_fetch_and_and_8: 0,1) \
+    chk(__sync_fetch_and_and_16: 0,1);
+__sync_fetch_and_xor (rw, int, ...) -> int \
+    chk(__sync_fetch_and_xor_1: 0,1) chk(__sync_fetch_and_xor_2: 0,1) \
+    chk(__sync_fetch_and_xor_4: 0,1) chk(__sync_fetch_and_xor_8: 0,1) \
+    chk(__sync_fetch_and_xor_16: 0,1);
+__sync_add_and_fetch (rw, int, ...) -> int \
+    chk(__sync_add_and_fetch_1: 0,1) chk(__sync_add_and_fetch_2: 0,1) \
+    chk(__sync_add_and_fetch_4: 0,1) chk(__sync_add_and_fetch_8: 0,1) \
+    chk(__sync_add_and_fetch_16: 0,1);
+__sync_sub_and_fetch (rw, int, ...) -> int \
+    chk(__sync_sub_and_fetch_1: 0,1) chk(__sync_sub_and_fetch_2: 0,1) \
+    chk(__sync_sub_and_fetch_4: 0,1) chk(__sync_sub_and_fetch_8: 0,1) \
+    chk(__sync_sub_and_fetch_16: 0,1);
+__sync_or_and_fetch (rw, int, ...) -> int \
+    chk(__sync_or_and_fetch_1: 0,1) chk(__sync_or_and_fetch_2: 0,1) \
+    chk(__sync_or_and_fetch_4: 0,1) chk(__sync_or_and_fetch_8: 0,1) \
+    chk(__sync_or_and_fetch_16: 0,1);
+__sync_and_and_fetch (rw, int, ...) -> int \
+    chk(__sync_and_and_fetch_1: 0,1) chk(__sync_and_and_fetch_2: 0,1) \
+    chk(__sync_and_and_fetch_4: 0,1) chk(__sync_and_and_fetch_8: 0,1) \
+    chk(__sync_and_and_fetch_16: 0,1);
+__sync_xor_and_fetch (rw, int, ...) -> int \
+    chk(__sync_xor_and_fetch_1: 0,1) chk(__sync_xor_and_fetch_2: 0,1) \
+    chk(__sync_xor_and_fetch_4: 0,1) chk(__sync_xor_and_fetch_8: 0,1) \
+    chk(__sync_xor_and_fetch_16: 0,1);
+__sync_bool_compare_and_swap (rw, int, int, ...) -> int \
+    chk(__sync_bool_compare_and_swap_1: 0,1,2) \
+    chk(__sync_bool_compare_and_swap_2: 0,1,2) \
+    chk(__sync_bool_compare_and_swap_4: 0,1,2) \
+    chk(__sync_bool_compare_and_swap_8: 0,1,2) \
+    chk(__sync_bool_compare_and_swap_16: 0,1,2);
+__sync_val_compare_and_swap (rw, int, int, ...) -> int \
+    chk(__sync_val_compare_and_swap_1: 0,1,2) \
+    chk(__sync_val_compare_and_swap_2: 0,1,2) \
+    chk(__sync_val_compare_and_swap_4: 0,1,2) \
+    chk(__sync_val_compare_and_swap_8: 0,1,2) \
+    chk(__sync_val_compare_and_swap_16: 0,1,2);
+__sync_lock_test_and_set (rw, int, ...) -> int \
+    chk(__sync_lock_test_and_set_1: 0,1) \
+    chk(__sync_lock_test_and_set_2: 0,1) \
+    chk(__sync_lock_test_and_set_4: 0,1) \
+    chk(__sync_lock_test_and_set_8: 0,1) \
+    chk(__sync_lock_test_and_set_16: 0,1);
+__sync_lock_release (w, ...) -> void \
+    chk(__sync_lock_release_1: 0) chk(__sync_lock_release_2: 0) \
+    chk(__sync_lock_release_4: 0) chk(__sync_lock_release_8: 0) \
+    chk(__sync_lock_release_16: 0);
+__sync_synchronize () -> void;
+
+# The functions assert() calls when an assertion fails: glibc and musl,
+# macOS. They abort the process.
+header assert.h;
+__assert_fail (r:str, r:str, int, r:str:null-ok) -> noreturn exits;
+__assert_perror_fail (int, r:str, int, r:str:null-ok) -> noreturn exits;
+__assert_rtn (r:str:null-ok, r:str, int, r:str) -> noreturn exits;
+__assert (r:str, r:str, int) -> noreturn exits;
+
