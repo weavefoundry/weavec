@@ -45,10 +45,11 @@ namespace weavec::frontend {
 
 struct FrontendOptions;
 
-/// RFC 0030, fallback point A (*Implementation plan*): until `CheckEmitter`
-/// lands in S5 no check is emitted, so the summary line of every mode says
-/// `checkable (not enforced)`. S5 sets this to true.
-inline constexpr bool ChecksAreEmitted = false;
+/// RFC 0030, fallback point A (*Implementation plan*): before `CheckEmitter`
+/// (S5) no check was emitted, and the summary line of every mode said
+/// `checkable (not enforced)`. `weavec-cc` now emits the checks, so its
+/// summary line says `checked` unless the checks are `none`.
+inline constexpr bool ChecksAreEmitted = true;
 
 /// `-fweavec-ledger`, `-fweavec-ledger-format` and `-f[no-]weavec-summary`,
 /// or their `weavec` equivalents.

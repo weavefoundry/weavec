@@ -39,6 +39,8 @@ struct PlannedLedger;
 
 namespace weavec::frontend {
 
+struct ZeroInitPlan;
+
 /// What one run of the consumer over a unit produced (RFC 0005).
 struct UnitResult {
   analysis::UnitExports exports;
@@ -54,6 +56,10 @@ struct UnitResult {
   /// discovery run.
   // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
   std::shared_ptr<analysis::PlannedLedger> ledger = {};
+  /// RFC 0030 §11: the unit's zero-initialisation plan, whose A5 counts the
+  /// ledger holds; null when there is no ledger.
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
+  std::shared_ptr<ZeroInitPlan> zeroInit = {};
 };
 
 struct FrontendOptions;

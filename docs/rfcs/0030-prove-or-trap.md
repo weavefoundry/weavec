@@ -2554,6 +2554,24 @@ requirements use `WrapArgument` for `nonnull`/`span` on the argument, and
 use the zero-length form of `nonnull`, whose length operand must be an
 expressible term.
 
+**Amendment (S5).** Until the engine publishes witnesses for them, a
+`sprintf` or `vsprintf` call defaults to *checked* by its lowering only when
+the destination has an extent the declarations give, the bounded writer is
+declared in the unit, and the format is a literal whose conversions neither
+read a string argument (`%s`) nor write through one (`%n`): the lowering is
+then the call's whole spatial requirement. Its witness is a `Length`
+witness without a need term, which `CheckPlanner` turns into the result
+form. The prelude's own helpers, in the predefines buffer, are neither sites
+nor zero-initialised. `CheckEmitter` orders one site's rewrites itself
+(operand, index and argument wraps first, `nonnull` innermost, then the
+replacements, then `BeforeCall`), since the plan's order puts facets before
+templates. A `BeforeCall` check at a `return;` becomes `{ check; return; }`,
+and at the end of a body its last statement. Whether a violation was
+lowered (§3.4) is answered per facet: when the `-W` flags lower the error of
+any id that reports a violation of that facet. A violation whose error
+stands fails the compile before anything is emitted, so the answer matters
+only for the ledger's `check` of a unit that fails anyway.
+
 #### 10.5 `DeferredCodeGenConsumer`
 
 `WeaveCWrapperAction::CreateASTConsumer` (lib/Frontend/Driver.cpp,
@@ -2775,6 +2793,26 @@ system allocator, or for a replacement that interposes the query along
 with `malloc`; a unit that defines the allocator itself is flagged at link
 (§13.2). This assumption is named A5 rather than folded into A3, because
 A3 is about code outside *U* and this one is about *U*'s own reads.
+
+**Amendment (S5).** The wrapper is chosen by the row and the declaration,
+not by name. `malloc`, `calloc`, `realloc`, `strdup` and `strndup`, when
+Clang knows the declaration as that library builtin, and the reallocating
+rows by their arity (`realloc`, `reallocarray`), have wrappers with the
+callee's own signature: the callee reference is swapped, and an address
+taken becomes a `_fn` wrapper. Every other `zero-init` allocator of the
+heap family (`aligned_alloc`, `memalign`, `valloc`, `pvalloc`) keeps its
+call inside `__weavec_zero_tail(call, 0)`, which zeroes the whole usable
+region, and a narrow string result keeps its call inside
+`__weavec_zero_string`. An `or-fresh` row (`realpath`, `getcwd`) is lowered
+only when the argument that makes its result fresh is a null pointer
+constant; `getline`, `getdelim`, `asprintf` and `vasprintf` only when their
+slot is `&object`; `posix_memalign` through its helper when the declaration
+has exactly the helper's type. Wide-string rows, `alloca` of a size with
+side effects, references in a unit that defines an allocator, and heap rows
+of a freestanding unit or of a target without a usable-size query are not
+lowered, and count in A5. Clang's `-ftrivial-auto-var-init=zero` already
+zeroes `__builtin_alloca`; the explicit `memset` stays, and the optimiser
+drops one of the two.
 
 ### 12. The ledger: JSON, SARIF, fingerprints and the summary line
 

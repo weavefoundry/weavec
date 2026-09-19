@@ -1755,4 +1755,15 @@ const std::string &LibrarySpec::shippedError() {
   return shippedLibrarySpec().error;
 }
 
+std::string boundedWriterName(std::string_view writer) {
+  // The name knowledge stays in the table's own file (§19, gate H2).
+  constexpr std::string_view Suffix = "printf";
+  if (writer.size() <= Suffix.size() || !writer.ends_with(Suffix))
+    return {};
+  const std::string_view stem = writer.substr(0, writer.size() - Suffix.size());
+  if (stem != "s" && stem != "vs")
+    return {};
+  return std::string(stem) + "nprintf";
+}
+
 } // namespace weavec::core

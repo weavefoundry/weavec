@@ -16,6 +16,9 @@ weavec_add_library(
           LedgerOutput.cpp
           LedgerWriter.cpp
           UnitRecord.cpp
+          # RFC 0030 S5: the check rewrites and zero-initialisation.
+          CheckEmitter.cpp
+          ZeroInit.cpp
   PUBLIC_DEPS weavec::Analysis
   USES_LLVM)
 

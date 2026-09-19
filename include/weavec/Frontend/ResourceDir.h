@@ -23,6 +23,13 @@ namespace weavec::frontend {
 /// Returns an empty string if none exists.
 std::string findResourceIncludeDir(const char *argv0, void *mainAddr);
 
+/// Finds a runtime archive of RFC 0030 (`libweavec_rt.a`, `libweavec_chk.a`)
+/// next to the annotation header's directory: `$WEAVEC_RESOURCE_DIR/<name>`,
+/// then `<exe-dir>/../lib/weavec/<name>` (installed and build-tree layouts).
+/// Returns an empty string if neither exists.
+std::string findRuntimeLibrary(const char *argv0, void *mainAddr,
+                               const std::string &name);
+
 /// The Clang resource directory (builtin headers such as `<stddef.h>`) of the
 /// Clang installation WeaveC was built against, or an empty string if it is
 /// not available on this machine.

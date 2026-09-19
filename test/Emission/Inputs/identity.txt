@@ -1,0 +1,8 @@
+# Units of rfc0030-checks-none-identity.c: <project>/<path> [args...],
+# compiled in test/<project> (scripts/codegen-identity.py).
+Emission/rfc0030-trap-runtime.c
+Emission/rfc0030-report-runtime.c
+Emission/rfc0030-zero-init.c
+Emission/rewrite-oracle-len-before-call.c
+Emission/rewrite-oracle-sprintf.c
+Emission/rewrite-oracle-zero-init-allocators.c

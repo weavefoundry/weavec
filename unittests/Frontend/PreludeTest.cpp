@@ -83,12 +83,16 @@ TEST(PreludeTest, UsesNoMacrosNorLineComments) {
     EXPECT_EQ(text.find("__SIZE_TYPE__"), std::string::npos);
     EXPECT_EQ(text.find("//"), std::string::npos);
     EXPECT_EQ(text.find('$'), std::string::npos) << "an unexpanded marker";
-    // Every helper is a static always-inline function.
+    // Every helper is a static always-inline function, but for the static
+    // non-inline wrappers whose address a program takes (section 11).
     llvm::SmallVector<llvm::StringRef, 256> lines;
     llvm::StringRef(text).split(lines, '\n');
     for (const llvm::StringRef line : lines)
       if (line.contains("__weavec_") && line.ends_with("{"))
-        EXPECT_TRUE(line.starts_with("static __inline__ __attribute__"))
+        EXPECT_TRUE(line.starts_with("static __inline__ __attribute__") ||
+                    (line.starts_with("static __attribute__((unused, "
+                                      "nodebug))") &&
+                     line.contains("_zero_fn(")))
             << line.str();
   }
 }

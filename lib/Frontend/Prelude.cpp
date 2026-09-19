@@ -225,6 +225,31 @@ $A long long __weavec_zero_line(long long n, char **slot) {
  * would be released when the inlined helper returns. */
 )C";
 
+/// Section 11: `p = malloc` takes the address of a static, non-inline
+/// wrapper with the callee's own signature. Inline form only: out of line
+/// the wrappers above are real functions already.
+static constexpr llvm::StringLiteral AddressWrappers = R"C(
+/* Address-taken allocators: static, non-inline, with the same signature. */
+static __attribute__((unused, nodebug)) void *__weavec_malloc_zero_fn(__typeof__(sizeof 0) n) {
+  return __weavec_malloc_zero(n);
+}
+static __attribute__((unused, nodebug)) void *__weavec_calloc_zero_fn(__typeof__(sizeof 0) m, __typeof__(sizeof 0) n) {
+  return __weavec_calloc_zero(m, n);
+}
+static __attribute__((unused, nodebug)) void *__weavec_realloc_zero_fn(void *p, __typeof__(sizeof 0) n) {
+  return __weavec_realloc_zero(p, n);
+}
+static __attribute__((unused, nodebug)) void *__weavec_reallocarray_zero_fn(void *p, __typeof__(sizeof 0) m, __typeof__(sizeof 0) n) {
+  return __weavec_reallocarray_zero(p, m, n);
+}
+static __attribute__((unused, nodebug)) char *__weavec_strdup_zero_fn(const char *s) {
+  return __weavec_strdup_zero(s);
+}
+static __attribute__((unused, nodebug)) char *__weavec_strndup_zero_fn(const char *s, __typeof__(sizeof 0) n) {
+  return __weavec_strndup_zero(s, n);
+}
+)C";
+
 namespace {
 
 /// How one family of helpers is spelled.
@@ -383,6 +408,7 @@ std::string buildCheckPrelude(const PreludeOptions &options) {
                options.usableSize != UsableSizeQuery::None) {
       out += usableQueryDeclaration(options.usableSize).str();
       out += render(ZeroInitHelpers, check).substr(1);
+      out += AddressWrappers.substr(1).str();
     }
   }
   if (!outOfLine)

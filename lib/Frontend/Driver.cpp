@@ -10,12 +10,14 @@
 
 #include "weavec/Config/Version.h"
 #include "weavec/Frontend/AnalysisStats.h"
+#include "weavec/Frontend/CheckEmitter.h"
 #include "weavec/Frontend/ClangDiagnosticSink.h"
 #include "weavec/Frontend/DeferredCodeGenConsumer.h"
 #include "weavec/Frontend/LedgerOutput.h"
 #include "weavec/Frontend/ProgramAnalysis.h"
 #include "weavec/Frontend/ResourceDir.h"
 #include "weavec/Frontend/Sidecar.h"
+#include "weavec/Frontend/ZeroInit.h"
 
 #include "clang/Basic/Diagnostic.h"
 #include "clang/Basic/DiagnosticIDs.h"
@@ -33,6 +35,8 @@
 #include "clang/Frontend/TextDiagnosticBuffer.h"
 #include "clang/Frontend/TextDiagnosticPrinter.h"
 #include "clang/FrontendTool/Utils.h"
+#include "clang/Lex/Preprocessor.h"
+#include "clang/Lex/PreprocessorOptions.h"
 #include "clang/Options/Options.h"
 
 #include "llvm/ADT/IntrusiveRefCntPtr.h"
@@ -267,27 +271,112 @@ public:
       : WrapperFrontendAction(std::move(wrapped)), options(std::move(opts)) {}
 
 protected:
+  // RFC 0030, sections 10.2 and 10.9 (begin): a C code-generating action
+  // with checks gets the check prelude in its predefines, unless a
+  // precompiled header or modules are in use. Their predefines must stay
+  // those plain Clang built them with, so the helpers are then declared
+  // `extern` and come from libweavec_chk.a.
+  bool BeginSourceFileAction(clang::CompilerInstance &compiler) override {
+    if (!WrapperFrontendAction::BeginSourceFileAction(compiler))
+      return false;
+    if (!emitsChecks(compiler))
+      return true;
+    const clang::PreprocessorOptions &preprocessor =
+        compiler.getPreprocessorOpts();
+    const clang::LangOptions &lang = compiler.getLangOpts();
+    externalHelpers = !preprocessor.ImplicitPCHInclude.empty() ||
+                      lang.Modules || lang.CompilingPCH;
+    if (externalHelpers)
+      return true;
+    PreludeOptions prelude;
+    prelude.mode = preludeModeOf(options.config.checks);
+    prelude.zeroInit = options.config.zeroInit;
+    prelude.usableSize = usableSizeQueryFor(compiler.getTarget().getTriple());
+    clang::Preprocessor &pp = compiler.getPreprocessor();
+    pp.setPredefines(pp.getPredefines() + buildCheckPrelude(prelude));
+    return true;
+  }
+  // RFC 0030, sections 10.2 and 10.9 (end).
+
   std::unique_ptr<clang::ASTConsumer>
   CreateASTConsumer(clang::CompilerInstance &compiler,
                     llvm::StringRef inFile) override {
-    std::vector<std::unique_ptr<clang::ASTConsumer>> consumers;
-    consumers.push_back(createWeaveCConsumer(compiler, options));
-    if (auto inner =
-            WrapperFrontendAction::CreateASTConsumer(compiler, inFile)) {
-      // RFC 0030, section 10.5 (begin): a code-generating action gets the
-      // code generator behind DeferredCodeGenConsumer, so the analysis runs
-      // before any code is emitted; other actions keep the multiplexer.
-      if (isCodeGenAction(compiler.getFrontendOpts().ProgramAction))
-        return createDeferredCodeGenConsumer(std::move(consumers.front()),
-                                             std::move(inner));
-      // RFC 0030, section 10.5 (end).
-      consumers.push_back(std::move(inner));
+    // RFC 0030, sections 10.5 and 10.6 (begin): the unit's planned ledger
+    // and its zero-initialisation plan reach the check emitter through
+    // `onResult`.
+    auto planned = std::make_shared<UnitResult>();
+    FrontendOptions analysisOptions = options;
+    analysisOptions.onResult = [planned,
+                                forward = options.onResult](UnitResult unit) {
+      planned->ledger = unit.ledger;
+      planned->zeroInit = unit.zeroInit;
+      if (forward)
+        forward(std::move(unit));
+    };
+    std::unique_ptr<clang::ASTConsumer> analysis =
+        createWeaveCConsumer(compiler, analysisOptions);
+    std::unique_ptr<clang::ASTConsumer> inner =
+        WrapperFrontendAction::CreateASTConsumer(compiler, inFile);
+    if (!inner)
+      return analysis;
+    // A code-generating action gets the code generator behind
+    // DeferredCodeGenConsumer, so the analysis and the check rewrites run
+    // before any code is emitted; other actions keep the multiplexer.
+    if (isCodeGenAction(compiler.getFrontendOpts().ProgramAction)) {
+      const bool checks = emitsChecks(compiler);
+      clang::DiagnosticsEngine &diagnostics = compiler.getDiagnostics();
+      return std::make_unique<DeferredCodeGenConsumer>(
+          std::move(inner),
+          [this, &diagnostics, checks, planned, analysis = std::move(analysis)](
+              clang::ASTContext &context, clang::Sema &sema) {
+            analysis->HandleTranslationUnit(context);
+            // §10.5 step 2: the checks of a unit without errors.
+            if (!checks || diagnostics.hasErrorOccurred())
+              return;
+            CheckEmitter emitter(
+                sema, CheckEmitterOptions{.mode = options.config.checks,
+                                          .externalHelpers = externalHelpers});
+            if (planned->ledger)
+              emitter.emit(*planned->ledger);
+            if (planned->zeroInit)
+              emitter.lowerZeroInit(*planned->zeroInit);
+          });
     }
+    // RFC 0030, sections 10.5 and 10.6 (end).
+    std::vector<std::unique_ptr<clang::ASTConsumer>> consumers;
+    consumers.push_back(std::move(analysis));
+    consumers.push_back(std::move(inner));
     return std::make_unique<clang::MultiplexConsumer>(std::move(consumers));
   }
 
 private:
   FrontendOptions options;
+  /// §10.9: the prelude was not injected.
+  bool externalHelpers = false;
+
+  /// A C unit whose code is emitted, with checks on (§10.5, §10.7).
+  [[nodiscard]] bool
+  emitsChecks(const clang::CompilerInstance &compiler) const {
+    const clang::LangOptions &lang = compiler.getLangOpts();
+    // OpenCL C has no function pointers, which the prelude needs.
+    return options.config.checks != core::ChecksMode::None && !lang.CPlusPlus &&
+           !lang.ObjC && !lang.OpenCL &&
+           isCodeGenAction(compiler.getFrontendOpts().ProgramAction);
+  }
+
+  static CheckMode preludeModeOf(core::ChecksMode checks) {
+    switch (checks) {
+    case core::ChecksMode::Trap:
+      return CheckMode::Trap;
+    case core::ChecksMode::Report:
+      return CheckMode::Report;
+    case core::ChecksMode::Verify:
+      return CheckMode::Verify;
+    case core::ChecksMode::None:
+      return CheckMode::None;
+    }
+    return CheckMode::Trap;
+  }
 };
 
 } // namespace
@@ -313,6 +402,19 @@ static std::string currentDirectory() {
   if (llvm::sys::fs::current_path(cwd))
     return {};
   return cwd.str().str();
+}
+
+/// RFC 0030 §11: on a target whose C library has no usable-size query, the
+/// allocation family is not zero-initialised; `weavec-cc` says so once.
+static void warnOnceWithoutUsableSize(llvm::StringRef triple) {
+  static bool warned = false;
+  if (warned || usableSizeQueryFor(llvm::Triple(
+                    llvm::Triple::normalize(triple))) != UsableSizeQuery::None)
+    return;
+  warned = true;
+  llvm::errs() << "weavec-cc: warning: the C library of '" << triple
+               << "' has no usable-size query, so heap allocations are not "
+                  "zero-initialised\n";
 }
 
 /// Runs one `-cc1` job. `driver` is set when the `weavec-cc` driver runs the
@@ -380,6 +482,17 @@ static int runCc1Job(llvm::ArrayRef<const char *> argv, const char *argv0,
     return 1;
   if (inner->usesPreprocessorOnly())
     return compiler->ExecuteAction(*inner) ? 0 : 1;
+
+  // RFC 0030 §11 (begin): in the enforcing modes locals are
+  // zero-initialised, and the heap family where the C library can say how
+  // large a block is.
+  if (weavec.zeroInitialises() &&
+      isCodeGenAction(compiler->getFrontendOpts().ProgramAction)) {
+    compiler->getLangOpts().setTrivialAutoVarInit(
+        clang::LangOptions::TrivialAutoVarInitKind::Zero);
+    warnOnceWithoutUsableSize(compiler->getTargetOpts().Triple);
+  }
+  // RFC 0030 §11 (end).
 
   // The compile step sees the unit alone; boundaries wait for the link.
   if (driver != nullptr && driver->stats)
@@ -993,6 +1106,47 @@ static std::size_t countLedgers(const clang::driver::Compilation &compilation,
   return count;
 }
 
+/// RFC 0030 §10.7, §10.9: appends the runtime archives to every link job.
+/// The helper archive is host code, so it is added only when the link
+/// targets the host; report mode cannot do without its runtime.
+static bool addRuntimeLibraries(clang::driver::Compilation &compilation,
+                                const DriverOptions &weavec, const char *argv0,
+                                void *mainAddress) {
+  const llvm::Triple target = compilation.getDefaultToolChain().getTriple();
+  const llvm::Triple host(llvm::sys::getProcessTriple());
+  const bool native =
+      target.getArch() == host.getArch() && target.getOS() == host.getOS();
+  const bool report = weavec.checks == core::ChecksMode::Report;
+  std::vector<std::string> archives;
+  if (native) {
+    std::string helpers =
+        findRuntimeLibrary(argv0, mainAddress, "libweavec_chk.a");
+    if (!helpers.empty())
+      archives.push_back(std::move(helpers));
+  }
+  if (report) {
+    std::string runtime =
+        findRuntimeLibrary(argv0, mainAddress, "libweavec_rt.a");
+    if (runtime.empty()) {
+      llvm::errs() << "weavec-cc: error: cannot find libweavec_rt.a, which "
+                      "-fweavec-checks=report links\n";
+      return false;
+    }
+    archives.push_back(std::move(runtime));
+  }
+  if (archives.empty())
+    return true;
+  for (clang::driver::Command &job : compilation.getJobs()) {
+    if (job.getSource().getKind() != clang::driver::Action::LinkJobClass)
+      continue;
+    llvm::opt::ArgStringList args = job.getArguments();
+    for (const std::string &archive : archives)
+      args.push_back(compilation.getArgs().MakeArgString(archive));
+    job.replaceArguments(args);
+  }
+  return true;
+}
+
 int runCc1(llvm::ArrayRef<const char *> argv, const char *argv0) {
   return runCc1Job(argv, argv0);
 }
@@ -1105,6 +1259,13 @@ int runDriver(llvm::ArrayRef<const char *> argv, void *mainAddress) {
       return 1;
     }
   }
+  // RFC 0030 §10.7, §10.9: report mode links libweavec_rt.a, and every
+  // checked link libweavec_chk.a, whose out-of-line helpers only units built
+  // with a precompiled header or modules call (an archive member is linked
+  // only when referenced).
+  if (weavec.enabled && weavec.checks != core::ChecksMode::None &&
+      !addRuntimeLibraries(*compilation, weavec, argv[0], mainAddress))
+    return 1;
   if (printJobsOnly) {
     compilation->getJobs().Print(llvm::errs(), "\n", /*Quote=*/true);
     return 0;

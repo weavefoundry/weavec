@@ -12,9 +12,10 @@ it must change nothing.
 Both compilers get the same `-isysroot` (on macOS, `xcrun --show-sdk-path`
 unless `--sysroot` says otherwise): Homebrew's clang reads a configuration
 file that may name a different SDK than the one `weavec-cc` finds, and
-`-g` records the SDK. Until `-fweavec-checks=none` exists, `weavec-cc` gets
-`-Wno-error=weavec` (see `--weavec-flag`) so that units with WeaveC errors
-still produce objects.
+`-g` records the SDK. `weavec-cc` gets `-fweavec-checks=none`, the
+configuration gate G7 is about (the default trap build inserts checks and
+zero-initialises), and `-Wno-error=weavec` (see `--weavec-flag`), so that units
+with WeaveC errors still produce objects.
 
 List format (`--list`): one unit per line, `<project>/<path> [args...]`,
 shell-quoted; `#` starts a comment. Each unit compiles in
@@ -53,7 +54,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CONFIGS = ["-O2", "-O0 -g", "-O2 -flto=thin"]
-DEFAULT_WEAVEC_FLAGS = ["-Wno-error=weavec"]
+DEFAULT_WEAVEC_FLAGS = ["-fweavec-checks=none", "-Wno-error=weavec"]
 
 
 @dataclasses.dataclass(frozen=True)

@@ -1,21 +1,21 @@
 // RFC 0030, section 10.5: weavec-cc holds every code generator callback
 // until the WeaveC analysis has run, then replays them in order. With no
-// rewrites the object is byte-identical to the reference Clang's at -O2,
-// -O0 -g and -O2 -flto=thin: gate G7 (scripts/codegen-identity.py) in
-// miniature. Both compilers get the same empty sysroot, because -g records
+// rewrites (-fweavec-checks=none) the object is byte-identical to the
+// reference Clang's at -O2, -O0 -g and -O2 -flto=thin: gate G7
+// (scripts/codegen-identity.py) in miniature. Both compilers get the same empty sysroot, because -g records
 // it and this file includes nothing. The constructs below are the ones whose
 // code generation depends on what was parsed before them.
 //
 // RUN: rm -rf %t && mkdir -p %t/sdk
-// RUN: %weavec_cc -isysroot %t/sdk -O2 -c %s -o %t/unit.o
+// RUN: %weavec_cc -fweavec-checks=none -isysroot %t/sdk -O2 -c %s -o %t/unit.o
 // RUN: mv %t/unit.o %t/weavec.o
 // RUN: %clang -isysroot %t/sdk -O2 -c %s -o %t/unit.o -isystem %resource_dir -D__WEAVEC__=1
 // RUN: cmp %t/unit.o %t/weavec.o
-// RUN: %weavec_cc -isysroot %t/sdk -O0 -g -c %s -o %t/unit.o
+// RUN: %weavec_cc -fweavec-checks=none -isysroot %t/sdk -O0 -g -c %s -o %t/unit.o
 // RUN: mv %t/unit.o %t/weavec.o
 // RUN: %clang -isysroot %t/sdk -O0 -g -c %s -o %t/unit.o -isystem %resource_dir -D__WEAVEC__=1
 // RUN: cmp %t/unit.o %t/weavec.o
-// RUN: %weavec_cc -isysroot %t/sdk -O2 -flto=thin -c %s -o %t/unit.o
+// RUN: %weavec_cc -fweavec-checks=none -isysroot %t/sdk -O2 -flto=thin -c %s -o %t/unit.o
 // RUN: mv %t/unit.o %t/weavec.o
 // RUN: %clang -isysroot %t/sdk -O2 -flto=thin -c %s -o %t/unit.o -isystem %resource_dir -D__WEAVEC__=1
 // RUN: cmp %t/unit.o %t/weavec.o

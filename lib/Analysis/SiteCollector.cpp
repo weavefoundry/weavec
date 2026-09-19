@@ -484,6 +484,11 @@ private:
   [[nodiscard]] std::vector<CheckWitness>
   libraryDefaults(const clang::CallExpr &call,
                   const core::LibraryMatch &match) const;
+  /// §10.4 (RFC 0030 S5): the witness of the `snprintf` lowering of a
+  /// `printf`-family writer into an unbounded destination.
+  [[nodiscard]] std::optional<CheckWitness>
+  formatWriterDefault(const clang::CallExpr &call,
+                      const core::LibraryMatch &match) const;
   /// §2.6: the same for the declared requirements of a Call's arguments.
   [[nodiscard]] std::vector<CheckWitness>
   declaredDefaults(const clang::CallExpr &call,
@@ -1732,9 +1737,86 @@ accessedType(const clang::Expr &argument) {
   return pointee;
 }
 
+/// §8.1: whether a library term states a formatted length.
+static bool mentionsFormatLength(const core::LibTerm &term) {
+  return term.kind == core::LibTerm::Kind::FormatLength ||
+         llvm::any_of(term.operands, mentionsFormatLength);
+}
+
+/// A `printf` format literal whose conversions neither read a string
+/// argument (`%s`) nor write through one (`%n`): the lowering is then the
+/// call's whole spatial requirement.
+static bool isPlainFormatLiteral(const clang::Expr &format) {
+  const auto *literal =
+      llvm::dyn_cast<clang::StringLiteral>(format.IgnoreParenImpCasts());
+  if (literal == nullptr || literal->getCharByteWidth() != 1)
+    return false;
+  const llvm::StringRef text = literal->getString();
+  for (std::size_t i = 0; i < text.size(); ++i) {
+    if (text[i] != '%')
+      continue;
+    if (++i >= text.size())
+      return false;
+    if (text[i] == '%')
+      continue;
+    // Argument position, flags, width, precision and length.
+    while (i < text.size() &&
+           llvm::StringRef("0123456789$-+ #'.*hljztLq").contains(text[i]))
+      ++i;
+    if (i >= text.size() ||
+        !llvm::StringRef("diouxXeEfFgGaAcp").contains(text[i]))
+      return false;
+  }
+  return true;
+}
+
+std::optional<CheckWitness>
+Walker::formatWriterDefault(const clang::CallExpr &call,
+                            const core::LibraryMatch &match) const {
+  const core::LibraryEntry &row = *match.entry;
+  if (!row.format || row.format->kind != core::LibFormat::Kind::Printf ||
+      row.params.empty() || !row.params.front().bytes ||
+      !mentionsFormatLength(*row.params.front().bytes))
+    return std::nullopt;
+  // §10.4: the unit must declare the bounded writer.
+  const std::string bounded = core::boundedWriterName(row.name);
+  if (bounded.empty() ||
+      llvm::none_of(context.getTranslationUnitDecl()->lookup(
+                        clang::DeclarationName(&context.Idents.get(bounded))),
+                    [](const clang::NamedDecl *decl) {
+                      return llvm::isa<clang::FunctionDecl>(decl);
+                    }))
+    return std::nullopt;
+  const int destination = match.callArgument(0);
+  const int format = match.callArgument(row.format->format);
+  if (destination < 0 || format < 0 ||
+      static_cast<unsigned>(std::max(destination, format)) >=
+          call.getNumArgs() ||
+      !isPlainFormatLiteral(*call.getArg(static_cast<unsigned>(format))))
+    return std::nullopt;
+  // A fortified alias's own arguments are evaluated once, by the call.
+  for (unsigned i = 0; i < call.getNumArgs(); ++i)
+    if (match.rowArgument(i) < 0 &&
+        call.getArg(i)->HasSideEffects(context,
+                                       /*IncludePossibleEffects=*/true))
+      return std::nullopt;
+  const auto have =
+      argumentExtent(*call.getArg(static_cast<unsigned>(destination)));
+  if (!have)
+    return std::nullopt;
+  return CheckWitness{.shape = CheckWitness::Shape::Length,
+                      .argument = static_cast<std::uint8_t>(destination),
+                      .extent = have->first,
+                      .extentClass = have->second,
+                      .unmodified = true,
+                      .accessesSafe = true};
+}
+
 std::vector<CheckWitness>
 Walker::libraryDefaults(const clang::CallExpr &call,
                         const core::LibraryMatch &match) const {
+  if (auto lowered = formatWriterDefault(call, match))
+    return {std::move(*lowered)};
   std::vector<CheckWitness> out;
   for (unsigned i = 0; i < call.getNumArgs(); ++i) {
     const core::LibraryParam *param = match.param(i);
@@ -1868,8 +1950,11 @@ bool SiteCollector::isEmitted(const clang::FunctionDecl &function) {
   if (!function.doesThisDeclarationHaveABody() || function.isInvalidDecl())
     return false;
   // Functions defined in system headers are never analysed or instrumented
-  // (§5.6), and are not in the ledger (§2.6).
-  if (context.getSourceManager().isInSystemHeader(function.getLocation()))
+  // (§5.6), and are not in the ledger (§2.6); nor is the check prelude,
+  // which `weavec-cc` appends to the predefines (§10.2).
+  const clang::SourceManager &sm = context.getSourceManager();
+  if (sm.isInSystemHeader(function.getLocation()) ||
+      sm.isWrittenInBuiltinFile(sm.getExpansionLoc(function.getLocation())))
     return false;
   if (context.DeclMustBeEmitted(&function))
     return true;

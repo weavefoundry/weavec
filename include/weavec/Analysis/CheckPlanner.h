@@ -141,6 +141,11 @@ public:
           const CheckWitness &witness, PlaceHandleTable &handles,
           const std::optional<core::CheckTerm> &have = std::nullopt) const;
 
+  /// The unit's AST.
+  [[nodiscard]] const clang::ASTContext &astContext() const noexcept {
+    return context;
+  }
+
 private:
   clang::ASTContext &context;
   const SiteIndex &sites;

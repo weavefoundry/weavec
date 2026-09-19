@@ -622,6 +622,20 @@ private:
   const SiteInfo &site;
   PlaceHandleTable &handles;
 
+  /// §10.4: the unit declares the bounded writer that lowers `writer`.
+  [[nodiscard]] bool
+  declaresBoundedWriter(const core::LibraryEntry &writer) const {
+    const std::string name = core::boundedWriterName(writer.name);
+    if (name.empty())
+      return false;
+    const clang::ASTContext &context = planner.astContext();
+    const clang::DeclarationName declName(&context.Idents.get(name));
+    return llvm::any_of(context.getTranslationUnitDecl()->lookup(declName),
+                        [](const clang::NamedDecl *decl) {
+                          return llvm::isa<clang::FunctionDecl>(decl);
+                        });
+  }
+
   static bool fail(std::string &failure, std::string why) {
     failure = std::move(why);
     return false;
@@ -746,6 +760,18 @@ private:
         auto have = term(witness.extent, witness, failure);
         if (!have)
           return false;
+        // §10.4 (RFC 0030 S5): a writer of the `printf` family has no need
+        // term (`fmtlen` never is one); it is lowered to its bounded writer,
+        // which the unit must declare.
+        if (!witness.need && site.library && site.library->entry != nullptr &&
+            site.library->entry->format) {
+          if (!declaresBoundedWriter(*site.library->entry))
+            return fail(failure, "no bounded writer is declared for it");
+          out.push_back(makeEntry(Entry::Template::Len, Entry::Form::Result,
+                                  Entry::Placement::ReplaceCall,
+                                  {std::move(*have)}));
+          break;
+        }
         auto need = term(witness.need, witness, failure, have);
         if (!need)
           return false;

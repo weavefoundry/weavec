@@ -12,16 +12,100 @@
 #include "weavec/Analysis/UnitPipeline.h"
 #include "weavec/Frontend/ClangDiagnosticSink.h"
 #include "weavec/Frontend/LedgerOutput.h"
+#include "weavec/Frontend/Prelude.h"
+#include "weavec/Frontend/ZeroInit.h"
 
 #include "clang/AST/ASTConsumer.h"
 #include "clang/AST/ASTContext.h"
+#include "clang/Basic/TargetInfo.h"
 #include "clang/Frontend/ASTUnit.h"
 #include "clang/Frontend/CompilerInstance.h"
 #include "clang/Frontend/TextDiagnosticPrinter.h"
 
+#include <array>
+#include <string_view>
 #include <utility>
 
 namespace weavec::frontend {
+
+// RFC 0030 (S5, begin): lowered violations and zero-initialisation.
+
+/// The ids whose error reports a violation of `facet` (§3, §3.4).
+static llvm::ArrayRef<std::string_view> violationIds(core::Facet facet) {
+  static constexpr std::array Temporal{
+      core::diag::UseAfterFree,       core::diag::UseAfterMove,
+      core::diag::DoubleFree,         core::diag::MismatchedRelease,
+      core::diag::ConflictingBorrow,  core::diag::LifetimeTooShort,
+      core::diag::AnnotationMismatch,
+  };
+  static constexpr std::array Null{
+      core::diag::NullDereference,
+      core::diag::UseOfUninitialized,
+      core::diag::AnnotationMismatch,
+  };
+  static constexpr std::array Spatial{
+      core::diag::OutOfBounds,
+      core::diag::InvalidRelease,
+      core::diag::UnsafeOperation,
+      core::diag::AnnotationMismatch,
+  };
+  static constexpr std::array Assertion{
+      core::diag::ContradictedAssumption,
+      core::diag::AnnotationMismatch,
+  };
+  switch (facet) {
+  case core::Facet::Temporal:
+    return Temporal;
+  case core::Facet::Null:
+    return Null;
+  case core::Facet::Spatial:
+    return Spatial;
+  case core::Facet::Assertion:
+    return Assertion;
+  }
+  return {};
+}
+
+/// §3.4: a definite violation whose error the `-W` flags lower to a warning
+/// still traps, since the unit then produces an object. The planner asks
+/// per facet; an id of the facet lowered is enough, since a violation whose
+/// error stands fails the compile before any check is emitted.
+static std::function<bool(core::SiteId, core::Facet)>
+loweredViolations(const DiagnosticControl &control) {
+  return [control](core::SiteId /*site*/, core::Facet facet) {
+    for (const std::string_view id : violationIds(facet)) {
+      const core::Diagnostic probe{.severity = core::Severity::Error,
+                                   .certainty = core::Certainty::Definite,
+                                   .id = id,
+                                   .message = {},
+                                   .location = {},
+                                   .notes = {},
+                                   .fixits = {}};
+      const std::optional<core::Diagnostic> shown = control.apply(probe);
+      if (shown && shown->severity == core::Severity::Warning)
+        return true;
+    }
+    return false;
+  };
+}
+
+/// §11: which references the unit lowers, and the ledger's A5 counts.
+static std::shared_ptr<ZeroInitPlan>
+zeroInitPlanOf(clang::ASTContext &context, const FrontendOptions &options) {
+  // A freestanding unit's allocator is not the C library's, whose calloc
+  // and usable-size query the wrappers call.
+  const UsableSizeQuery query =
+      usableSizeQueryFor(context.getTargetInfo().getTriple());
+  const bool heap =
+      query != UsableSizeQuery::None && !context.getLangOpts().Freestanding;
+  return std::make_shared<ZeroInitPlan>(
+      planZeroInit(context, core::LibrarySpec::shipped(),
+                   options.config.checks != core::ChecksMode::None &&
+                       options.config.zeroInit,
+                   ZeroInitOptions{.heap = heap, .stack = true}));
+}
+
+// RFC 0030 (S5, end).
 
 UnitResult analyzeTranslationUnit(clang::ASTContext &context,
                                   clang::DiagnosticsEngine &diagnostics,
@@ -44,6 +128,7 @@ UnitResult analyzeTranslationUnit(clang::ASTContext &context,
   pipeline.discoverOnly = options.discoverOnly;
   pipeline.config = options.config;
   pipeline.buildLedger = !options.silent;
+  pipeline.lowered = loweredViolations(options.control);
   core::DiagnosticCollector collected;
   analysis::UnitPipelineResult unit =
       analysis::runUnitAnalysis(context, pipeline, collected);
@@ -51,6 +136,12 @@ UnitResult analyzeTranslationUnit(clang::ASTContext &context,
   result.ledger = std::move(unit.ledger);
   if (options.discoverOnly)
     return result;
+  // RFC 0030 §11: the zero-initialisation plan, decided before anything is
+  // emitted so that the ledger's A5 counts are known when it is written.
+  if (result.ledger && !result.ledger->ledger.units.empty()) {
+    result.zeroInit = zeroInitPlanOf(context, options);
+    result.ledger->ledger.units.front().a5 = result.zeroInit->a5;
+  }
 
   ClangDiagnosticSink clangSink(diagnostics);
   FilteringSink sink(clangSink, options.control, options.alreadyReported,

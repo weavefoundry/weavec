@@ -474,6 +474,11 @@ inline constexpr std::string_view StackFamily = "stack";
 /// The family of `FILE` streams from `fopen` and friends.
 inline constexpr std::string_view StreamFamily = "fclose";
 
+/// RFC 0030 §10.4: the bounded writer that lowers a `printf`-family row
+/// writing an unbounded destination, as `snprintf` lowers `sprintf` and
+/// `vsnprintf` lowers `vsprintf`; empty for any other name.
+[[nodiscard]] std::string boundedWriterName(std::string_view writer);
+
 } // namespace weavec::core
 
 #endif // WEAVEC_CORE_LIBRARYSPEC_H
