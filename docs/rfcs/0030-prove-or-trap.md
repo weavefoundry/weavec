@@ -2325,6 +2325,7 @@ same whether or not checks are emitted.
 
 ```cpp
 struct CheckTerm;   // constant | place handle (a decl plus a field/deref path) | sizeof
+                    // | div (floor division by a positive constant; extents only, amendment S3)
                     // | + - * (evaluated by the term helpers) | strnlen(term, term)
 struct CheckPlanEntry {
   SiteId site; Facet facet; std::uint16_t requirement; // index into the row's requirements
@@ -3054,7 +3055,13 @@ When `weavec-cc` links (and `weavec --whole-program`, which uses the same
    algorithm, with the program database and solved slots) to refine
    temporal facets. Only the last round publishes (§2.6). Definite temporal
    violations found at link are errors, and the link fails as today;
-   possible ones are warnings.
+   possible ones are warnings. **Amendment (S3):** a definite spatial or
+   null violation that only the program-wide view reveals (a callee's
+   effect on an extent, known once its unit's summary is visible) is also
+   an error at link, so v0.10.0's link-time catches are kept. The program
+   ledger still copies the unit's spatial and null outcomes (step 6),
+   because those decided the emitted code; the link error names the site
+   and the unit's check, if any, stays in place.
 5. **Verify interfaces.**
    - For every cross-unit call to an exported function with an inferred
      requirement, decide the requirement at the caller: proven discharges
