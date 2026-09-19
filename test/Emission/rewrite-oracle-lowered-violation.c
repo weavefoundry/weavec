@@ -5,11 +5,6 @@
 // The -O0 IR equals that of Inputs/rewrite-oracle-lowered-violation.expected.c
 // compiled by the reference Clang with the printed prelude.
 //
-// The engine of this stage publishes only the default outcomes (S3-A), so
-// the double free is diagnosed but its facet is not a violation, and nothing
-// guards it; the planner (Form::Violation) and the emitter are in place
-// (unittests/Frontend/CheckEmitterTest.cpp, LoweredViolationOracle). Remove
-//
 // RUN: %rewrite_oracle %s %S/Inputs/rewrite-oracle-lowered-violation.expected.c %t -- -Wno-error=weavec-double-free
 
 void free(void *);

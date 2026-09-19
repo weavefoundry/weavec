@@ -1,4 +1,7 @@
 // RFC 0030, section 10.6, gate G8: the zero-length form: memcpy's pointers may be null when the length is 0 (§8.3).
+// The two parameters may overlap, so the destination also gets memcpy's
+// overlap check, around its `nonnull` check (section 10.4: `nonnull` is
+// innermost).
 // The -O0 IR equals that of Inputs/rewrite-oracle-nonnull-zero-length.expected.c
 // compiled by the reference Clang with the printed prelude.
 //

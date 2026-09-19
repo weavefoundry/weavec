@@ -2,8 +2,7 @@
 int posix_memalign(void **, unsigned long, unsigned long);
 void *get(unsigned long n) {
   void *p = 0;
-  if ((__weavec_chk_len(sizeof(void *), sizeof(void *)),
-       __weavec_posix_memalign_zero(posix_memalign, (void **)__weavec_chk_nonnull(&p), 64, n)) != 0)
+  if (__weavec_posix_memalign_zero(posix_memalign, &p, 64, n) != 0)
     return 0;
   return p;
 }

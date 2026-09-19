@@ -411,6 +411,12 @@ private:
         trait != nullptr && trait->getKind() == clang::UETT_SizeOf)
       return core::CheckTerm::sizeOf(handles.type(trait->getTypeOfArgument()));
     if (const auto *binary = llvm::dyn_cast<clang::BinaryOperator>(e)) {
+      // Pointer arithmetic is not integer arithmetic: `s + 1` on an `int *`
+      // advances by four bytes, and the term helpers only add integers.
+      if (binary->getType()->isAnyPointerType() ||
+          binary->getLHS()->getType()->isAnyPointerType() ||
+          binary->getRHS()->getType()->isAnyPointerType())
+        return fail("it is pointer arithmetic");
       const clang::BinaryOperatorKind op = binary->getOpcode();
       if (op != clang::BO_Add && op != clang::BO_Sub && op != clang::BO_Mul)
         return fail("it uses an operator the term helpers do not have");
@@ -786,6 +792,10 @@ private:
         auto other = term(witness.other, witness, failure);
         if (!other)
           return false;
+        // The other pointer is passed to the helper as a pointer, so it must
+        // be a named place (§10.3 rule 1), not a computed value.
+        if (other->kind != core::CheckTerm::Kind::Place)
+          return fail(failure, "the other pointer has no name here");
         auto length = term(witness.need, witness, failure);
         if (!length)
           return false;
