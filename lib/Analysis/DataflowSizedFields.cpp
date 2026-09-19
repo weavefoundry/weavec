@@ -179,7 +179,8 @@ FunctionDataflow::spatialRecordAt(core::PlaceId place,
   return core::SpatialRecord{.extent = extent,
                              .offset = {},
                              .location = locate(field->field->getLocation()),
-                             .declared = true};
+                             .declared = true,
+                             .lowerBound = true};
 }
 
 std::pair<std::optional<core::Affine>, std::optional<core::IntegerType>>

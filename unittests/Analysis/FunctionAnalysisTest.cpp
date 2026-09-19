@@ -108,8 +108,9 @@ TEST(FunctionAnalyzer, BranchesAreJoinedConservatively) {
     }
   )c");
   ASSERT_TRUE(result.ast);
-  EXPECT_EQ(messages(result.diagnostics),
-            std::vector<std::string>{"8: use of 'p' after it was freed"});
+  EXPECT_EQ(
+      messages(result.diagnostics),
+      std::vector<std::string>{"8: use of 'p' after it may have been freed"});
 }
 
 TEST(FunctionAnalyzer, UnsafeFunctionIsSkipped) {

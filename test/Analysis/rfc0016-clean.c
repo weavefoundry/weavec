@@ -1,5 +1,10 @@
 // RFC 0016: callers with related pointers retain safe ordering and replacement.
-// RUN: %weavec %s -- 2>&1 | FileCheck --allow-empty --check-prefix=QUIET %s
+// The contexts are clean. RFC 0030 §2.6: every function also gets the generic
+// (authoritative) pass, which cannot tell `a[i]` from `a[j]` in `selected`:
+// a possible finding there, and nothing else.
+// RUN: %weavec %s -- 2>&1 | FileCheck --check-prefix=QUIET %s
+// QUIET-NOT: {{warning|error}}:
+// QUIET: rfc0016-clean.c:[[@LINE+23]]:61: warning: use of 'a[j]' after it may have been freed [weavec::use-after-free]
 // QUIET-NOT: {{warning|error}}:
 #include "../Inputs/prelude.h"
 

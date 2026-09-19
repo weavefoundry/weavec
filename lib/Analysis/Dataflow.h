@@ -20,6 +20,8 @@
 #include "weavec/Analysis/Allocators.h"
 #include "weavec/Analysis/Annotations.h"
 #include "weavec/Analysis/FunctionAnalysis.h"
+#include "weavec/Analysis/LedgerAdapter.h"
+#include "weavec/Analysis/SiteCollector.h"
 #include "weavec/Analysis/Summaries.h"
 #include "weavec/Core/AnalysisState.h"
 #include "weavec/Core/Diagnostic.h"
@@ -33,6 +35,7 @@
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/Decl.h"
 #include "clang/AST/Expr.h"
+#include "clang/AST/ParentMap.h"
 #include "clang/AST/Stmt.h"
 #include "clang/Analysis/CFG.h"
 
@@ -60,14 +63,17 @@ class FunctionDataflow {
 public:
   /// `summaries` supplies callee summaries and receives this function's
   /// global roots. Diagnostics are produced only if `emitDiagnostics`; the
-  /// summary is produced either way.
+  /// summary is produced either way. Everything the analysis publishes goes
+  /// through `ledgerAdapter` (RFC 0030 §14): diagnostics with their
+  /// certainty, and, when it is authoritative, the decisions of the final
+  /// pass.
   FunctionDataflow(clang::ASTContext &ctx, const clang::FunctionDecl &fn,
-                   core::DiagnosticSink &diagSink,
+                   LedgerAdapter &ledgerAdapter,
                    const AnalysisOptions &analysisOptions,
                    SummaryStore &summaryStore, bool emitDiags);
 
-  /// Runs the analysis over `fn`'s body, reports diagnostics to the sink
-  /// (if enabled) and computes the summary.
+  /// Runs the analysis over `fn`'s body, publishes its diagnostics and
+  /// decisions through the adapter (if enabled) and computes the summary.
   void run();
   core::CallbackBindings callbackBindings;
   core::CallContext memoryContext;
@@ -257,7 +263,7 @@ private:
 
   clang::ASTContext &context;
   const clang::FunctionDecl &function;
-  core::DiagnosticSink &sink;
+  LedgerAdapter &ledger;
   const AnalysisOptions &options;
   SummaryStore &summaries;
   bool materializingArray = false;
@@ -459,7 +465,15 @@ private:
   Phase phase = Phase::Fixpoint;
   /// RFC 0013: final reachable heap state and caller materialization.
   bool materializingHeap = false;
-  std::vector<core::Diagnostic> pending;
+  /// A diagnostic of the final pass, flushed through the adapter at its end
+  /// (RFC 0030 §14): with its certainty and the site and facet it is about.
+  struct PendingReport {
+    core::Diagnostic diagnostic;
+    core::Certainty certainty = core::Certainty::Definite;
+    const clang::Stmt *site = nullptr;
+    std::optional<core::Facet> facet = std::nullopt;
+  };
+  std::vector<PendingReport> pending;
   std::map<core::PlaceId, core::OwnershipKind> summaryKinds;
 
   void mirrorHeapWrite(core::PlaceId place, core::AnalysisState &state);
@@ -567,6 +581,8 @@ private:
   /// with `c` known zero): no real path takes it, so its state reaches
   /// nobody and nothing dies on it (RFC 0009, *Scalar facts in the state*).
   bool edgeInfeasible = false;
+  /// Whether `sitesByOperand` is built (RFC 0030 §14).
+  bool sitesByOperandBuilt = false;
   /// Per block: whether it calls a function that never returns, declared
   /// (`hasNoReturnElement`) or inferred (RFC 0009); computed on first use.
   std::vector<std::optional<bool>> neverReturnsCache;
@@ -856,6 +872,10 @@ private:
   /// and non-null what it says is non-null (RFC 0008).
   static void markNullOutcomes(const core::PendingOutcome &narrowed,
                                core::AnalysisState &state);
+  /// RFC 0030 §3.1: the records of the places every class still possible
+  /// consumes, whatever the arguments, are no longer conditional.
+  static void settleConsumed(const core::PendingOutcome &narrowed,
+                             core::AnalysisState &state);
   /// RFC 0009, *Guards*: a place the classes still possible consume only
   /// under a guard on the arguments keeps that guard on its move record, or
   /// is reinstated (through `reinstate`) where the facts here refute it.
@@ -1020,7 +1040,8 @@ private:
             core::AnalysisState &state, std::string_view family = {},
             bool library = false, bool replaced = false,
             core::PlaceGuard guard = {}, bool share = false,
-            const core::PointerOffset &offset = {});
+            const core::PointerOffset &offset = {},
+            core::MoveOrigin origin = {});
   void doMutationCheck(core::PlaceId place, const clang::Expr &at,
                        core::AnalysisState &state);
   /// The variable `place` names (if it is a base place) was assigned or had
@@ -1206,6 +1227,10 @@ private:
   /// The result of `call` is dereferenced without being stored first.
   void checkResultDereference(const clang::CallExpr &call,
                               core::AnalysisState &state);
+  /// RFC 0030 §3.2, §8.4: an allocation's result, `record`, is used at `at`
+  /// without a null test (`allocation-failure`, off by default).
+  void reportAllocationFailure(const core::NullRecord &record,
+                               const clang::Expr &at, const SiteInfo *site);
   /// The arguments `summary.requiresNonNull` names must be non-null at
   /// `call`.
   void checkRequiredArguments(const clang::CallExpr &call,
@@ -1253,6 +1278,9 @@ private:
     /// Whether `origin` is a declaration (a variable, a `WEAVEC_SIZED_BY`
     /// parameter) rather than an allocation, for the note.
     bool declared = false;
+    /// RFC 0030 §7.1: the extent is a declared or inferred kind, a lower
+    /// bound on the object (`SpatialRecord::lowerBound`).
+    bool lowerBound = false;
   };
   [[nodiscard]] std::optional<KnownExtent>
   knownExtentOf(const Access &access, const core::AnalysisState &state);
@@ -1601,6 +1629,9 @@ private:
   struct MovedHit {
     core::PlaceId target;
     core::MoveRecord record;
+    /// The record is the accessed element's (or the whole array's), not
+    /// another cell's whose index may equal it (RFC 0030 §3.1).
+    bool sameElement = true;
   };
   /// The move record of `place` if it is moved and the record's element
   /// witness matches the access's (`Whole` matches everything).
@@ -1630,17 +1661,82 @@ private:
   [[nodiscard]] core::LifetimeId meet(std::vector<core::LifetimeId> ids);
   [[nodiscard]] core::LifetimeId rootLifetime(core::PlaceId place);
 
-  // -- Diagnostics ----------------------------------------------------------
+  // -- Diagnostics and decisions (RFC 0030 §3, §14) --------------------------
 
   [[nodiscard]] core::SourceLocation locate(const clang::Stmt &stmt) const;
   [[nodiscard]] core::SourceLocation locate(clang::SourceLocation loc) const;
+  /// A diagnostic whose id is about no facet (`leak`, `invalid-annotation`,
+  /// `analysis-incomplete`, ...): definite when it is an error.
   void report(core::Diagnostic diagnostic);
+  /// A diagnostic with its certainty, linked to `site` and `facet` when
+  /// given. Its severity is `diag::defaultSeverity(id, certainty)`.
+  void report(core::Diagnostic diagnostic, core::Certainty certainty,
+              const SiteInfo *site, std::optional<core::Facet> facet);
+  /// Whether this run publishes decisions: the final pass of the
+  /// authoritative run, outside an unsafe region (whose rules are §6.1's).
+  [[nodiscard]] bool publishing() const noexcept;
+  /// The site the engine's check at `at` is about, with `facet`: the
+  /// statement itself, the site `at` is the pointer operand of (tried first
+  /// when `operand`: `p->f` is itself a site, and the operand of `p->f[i]`),
+  /// or the innermost enclosing site (an argument's call, a returned value's
+  /// exit). Null when there is none, or when this run does not publish.
+  [[nodiscard]] const SiteInfo *
+  siteFor(const clang::Stmt &at, core::Facet facet, bool operand = false);
+  /// One decision about one facet of `site` (§2.5: records merge by rank).
+  void decide(const SiteInfo *site, core::Facet facet,
+              const core::FacetDecision &decision);
+  /// The same for the exit site `stmt` stands for: a `return`, the function
+  /// body, or a call that does not return.
+  void decideExit(const clang::Stmt &stmt, const core::FacetDecision &decision);
+  /// §14 `witness`: an index check of an access against `known`, when its
+  /// terms have C names here.
+  [[nodiscard]] std::optional<CheckWitness>
+  indexWitness(const KnownExtent &known);
+  /// `place` as a term: a variable, or a field below at most one
+  /// dereference (the pointer it reads through goes to `readsThrough`).
+  [[nodiscard]] std::optional<WitnessTerm>
+  placeTerm(core::PlaceId place, std::optional<core::PlaceId> &readsThrough);
+  [[nodiscard]] std::optional<WitnessTerm>
+  expressionTerm(const core::IntegerExpression<core::PlaceId> &expression,
+                 std::optional<core::PlaceId> &readsThrough);
+  /// §3.3: the spatial decision of an access against `known`, with the
+  /// witness a check needs when it is checked (published with it).
+  void decideSpatial(const SiteInfo *site, const core::SpatialCheck &check,
+                     const KnownExtent *known, const core::Affine *need);
+  /// Per pointer operand (stripped of transparent casts), the sites of this
+  /// function it is the operand of; built on first use.
+  llvm::DenseMap<const clang::Expr *, llvm::SmallVector<const SiteInfo *, 1>>
+      sitesByOperand;
+  std::unique_ptr<clang::ParentMap> parentMap;
+  /// RFC 0030 §3.1: the certainty of a move record hit at a use: definite
+  /// when it holds on every path from an unconditional consume.
+  [[nodiscard]] static core::Certainty
+  certaintyOf(const core::MoveRecord &record);
+  /// RFC 0030 §2.6: the findings of a context-specialised run requested at
+  /// `call`, reported where the run found them, with `note` naming the call
+  /// (when given), and linked to the call's site, whose temporal facet a
+  /// temporal finding decides.
+  void reportContextFindings(const clang::CallExpr &call,
+                             std::vector<core::Diagnostic> found,
+                             std::string_view note);
+  /// §3.1: the temporal decision a use that hits `record` gets.
+  [[nodiscard]] static core::FacetDecision
+  temporalDecisionFor(const core::MoveRecord &record,
+                      core::Certainty certainty);
   void reportUseOfMoved(core::PlaceId used, const MovedHit &hit,
                         const clang::Expr &at);
-  void reportLifetimeTooShort(core::PlaceId holder, core::PlaceId borrowed,
-                              const clang::Expr &at, bool returned);
-  void reportLifetimeTooShort(core::PlaceId holder, core::PlaceId borrowed,
-                              const core::SourceLocation &at, bool returned);
+  /// RFC 0030 §3.4: definite when the escaping value exactly aliases the
+  /// dying storage (on every path); a returned one is about the exit's
+  /// temporal facet (`may-dangle` when possible).
+  void
+  reportLifetimeTooShort(core::PlaceId holder, core::PlaceId borrowed,
+                         const clang::Expr &at, bool returned,
+                         core::Certainty certainty = core::Certainty::Definite);
+  void
+  reportLifetimeTooShort(core::PlaceId holder, core::PlaceId borrowed,
+                         const core::SourceLocation &at, bool returned,
+                         core::Certainty certainty = core::Certainty::Definite,
+                         const SiteInfo *site = nullptr);
   [[nodiscard]] std::string nameOf(core::PlaceId place) const;
   [[nodiscard]] std::string summaryName(const core::SummaryPath &path) const;
   [[nodiscard]] core::Diagnostic makeError(std::string_view id,

@@ -29,6 +29,8 @@
 
 namespace weavec::analysis {
 
+class LedgerAdapter;
+
 /// Tunables for the analyses.
 struct AnalysisOptions {
   /// `--report-unannotated` (RFC 0003): for every exported function
@@ -75,7 +77,10 @@ struct AnalysisOptions {
 /// `TranslationUnitAnalyzer` orders functions so callees come first.
 class FunctionAnalyzer {
 public:
-  FunctionAnalyzer(clang::ASTContext &ctx, core::DiagnosticSink &diagSink,
+  /// Everything the analysis publishes, its diagnostics included, goes
+  /// through `ledgerAdapter` (RFC 0030 §14): the authoritative one for the
+  /// reporting pass, a discarding one for fixpoint rounds.
+  FunctionAnalyzer(clang::ASTContext &ctx, LedgerAdapter &ledgerAdapter,
                    AnalysisOptions analysisOptions = {});
 
   /// Analyzes `function`, which must have a body, resolving callees from
@@ -91,7 +96,7 @@ public:
 
 private:
   clang::ASTContext &context;
-  core::DiagnosticSink &sink;
+  LedgerAdapter &ledger;
   AnalysisOptions options;
 };
 

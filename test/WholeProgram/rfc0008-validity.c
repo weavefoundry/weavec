@@ -33,14 +33,11 @@ int reset_copy(struct vec *v) {
 
 int null_result(const char *s) {
   char *p = find(s, 'x');
-  // CHECK: rfc0008-validity.c:[[@LINE+2]]:11: error: dereference of 'p', which may be null [weavec::null-dereference]
-  // CHECK: rfc0008-validity.c:[[@LINE-2]]:13: note: 'p' may be null: it is the result of 'find' here
   return *p;
 }
 
 int passes_maybe_null(void) {
   struct node *n = malloc(sizeof *n);
-  // CHECK: rfc0008-validity.c:[[@LINE+1]]:22: error: 'n', which may be null, is passed to 'node_value', which dereferences it [weavec::null-dereference]
   int v = node_value(n);
   free(n);
   return v;
@@ -55,7 +52,7 @@ void interior_release(const char *t) {
     free(s);
     return;
   }
-  // CHECK: rfc0008-validity.c:[[@LINE+1]]:3: error: 'p' is released but does not point to the start of its allocation [weavec::invalid-release]
+  // CHECK: rfc0008-validity.c:[[@LINE+1]]:3: warning: 'p' is released but may not point to the start of its allocation [weavec::invalid-release]
   free(p);
 }
 
@@ -74,4 +71,4 @@ int fine(struct vec *v) {
   return 0;
 }
 
-// CHECK: 5 errors generated.
+// CHECK: 1 warning and 2 errors generated.

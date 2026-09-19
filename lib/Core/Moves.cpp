@@ -33,14 +33,18 @@ std::optional<MoveRecord>
 MoveTracker::markMoved(PlaceId place, MoveReason reason,
                        SourceLocation location, std::optional<PlaceId> via,
                        ElementWitness element, std::string family,
-                       bool ownValue, PlaceGuard guard) {
+                       bool ownValue, PlaceGuard guard, MoveOrigin origin) {
   MoveRecord record{.reason = reason,
                     .location = std::move(location),
                     .via = via,
                     .element = element,
                     .family = std::move(family),
                     .ownValue = ownValue,
-                    .guard = std::move(guard)};
+                    .guard = std::move(guard),
+                    .allPaths = true,
+                    .conditional = origin.conditional || origin.lossy,
+                    .lossy = origin.lossy,
+                    .unknownOrigin = origin.unknownOrigin};
   auto [it, inserted] = moved.try_emplace(place, record);
   if (inserted)
     return std::nullopt;
@@ -90,13 +94,52 @@ void MoveTracker::forgetWitness(PlaceId variable) {
   }
 }
 
+void MoveTracker::settleConditional(PlaceId place) {
+  const auto it = moved.find(place);
+  if (it != moved.end() && !it->second.lossy)
+    it->second.conditional = false;
+}
+
+void MoveTracker::reaffirm(PlaceId place, PlaceGuard guard) {
+  const auto it = moved.find(place);
+  if (it == moved.end() || it->second.unknownOrigin)
+    return;
+  it->second.guard = std::move(guard);
+  it->second.allPaths = true;
+  it->second.conditional = false;
+  it->second.lossy = false;
+}
+
 bool MoveTracker::join(const MoveTracker &other) {
   bool changed = false;
+  // RFC 0030 §3.1: a record this side has and the other lacks reached here
+  // on some paths only.
+  for (auto &[place, record] : moved) {
+    if (record.allPaths && !other.moved.contains(place)) {
+      record.allPaths = false;
+      changed = true;
+    }
+  }
   for (const auto &[place, record] : other.moved) {
     auto [it, inserted] = moved.try_emplace(place, record);
     if (inserted) {
+      it->second.allPaths = false;
       changed = true;
       continue;
+    }
+    MoveRecord &mine = it->second;
+    const bool allPaths = mine.allPaths && record.allPaths &&
+                          mine.unknownOrigin == record.unknownOrigin;
+    const bool conditional = mine.conditional || record.conditional;
+    const bool lossy = mine.lossy || record.lossy;
+    const bool unknownOrigin = mine.unknownOrigin && record.unknownOrigin;
+    if (mine.allPaths != allPaths || mine.conditional != conditional ||
+        mine.lossy != lossy || mine.unknownOrigin != unknownOrigin) {
+      mine.allPaths = allPaths;
+      mine.conditional = conditional;
+      mine.lossy = lossy;
+      mine.unknownOrigin = unknownOrigin;
+      changed = true;
     }
     // Both sides moved the place: it is moved when either guard holds.
     changed |= it->second.guard.join(record.guard);

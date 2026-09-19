@@ -11,6 +11,8 @@
 #endif
 
 // Inside the body the extent is `n` bytes; the access at `n` is one past.
+// RFC 0030 §3.3: a declared count is a lower bound on the object, so that
+// access is a checked facet, not an error.
 // RFC 0017 retains body requirements for callers and wrappers, even when
 // the loop was proved against the annotated extent inside this function.
 // DUMP-LABEL: function 'fill':
@@ -19,9 +21,7 @@
 void fill(char *WEAVEC_SIZED_BY(n) p, size_t n) {
   for (size_t i = 0; i < n; i++)
     p[i] = 0;
-  // CHECK: rfc0011-sized-by.c:[[@LINE+1]]:3: error: 'p[n]' is out of bounds: 'n' is the number of elements of 'p' [weavec::out-of-bounds]
   p[n] = 0;
-  // CHECK: rfc0011-sized-by.c:[[@LINE-5]]:36: note: 'p' is declared here
 }
 
 // Elements, not bytes: `n` ints.

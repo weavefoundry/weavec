@@ -18,6 +18,7 @@
 #define WEAVEC_ANALYSIS_TRANSLATIONUNITANALYSIS_H
 
 #include "weavec/Analysis/FunctionAnalysis.h"
+#include "weavec/Analysis/LedgerAdapter.h"
 #include "weavec/Analysis/ProgramDatabase.h"
 #include "weavec/Analysis/Summaries.h"
 #include "weavec/Core/Diagnostic.h"
@@ -38,27 +39,29 @@
 namespace weavec::analysis {
 
 /// Runs WeaveC over a whole translation unit.
+///
+/// RFC 0030 §2.6, §15 item 18: every fixpoint round (the callback-global
+/// rounds, recursive components, specialisations) publishes into a
+/// discarding adapter. Then each reported function gets one *authoritative*
+/// pass, the context-insensitive analysis of its body with the unit's
+/// sized-field facts in force (RFC 0012's second pass folded in), opened by
+/// `LedgerAdapter::beginFunction`. Context-specialised runs decide no rows;
+/// the call that requests one reports its diagnostics, linked to that
+/// call's site, and what no call here reported (a request from another
+/// unit) is reported last, linked to nothing.
 class TranslationUnitAnalyzer {
 public:
-  TranslationUnitAnalyzer(clang::ASTContext &ctx,
-                          core::DiagnosticSink &diagSink,
+  TranslationUnitAnalyzer(clang::ASTContext &ctx, LedgerAdapter &ledgerAdapter,
                           AnalysisOptions analysisOptions = {});
 
   /// Analyses every function definition in the TU. Summaries are computed
-  /// for all of them; diagnostics are emitted only for those `shouldReport`
-  /// accepts (the frontend uses this for `mainFileOnly`).
+  /// for all of them; the authoritative pass runs only for those
+  /// `shouldReport` accepts (the frontend uses this for `mainFileOnly`).
   void run(llvm::function_ref<bool(const clang::FunctionDecl &)> shouldReport);
 
   /// Analyses and reports everything.
   void run() {
     run([](const clang::FunctionDecl &) { return true; });
-  }
-
-  /// RFC 0030 §14, §15 item 18: `observer` is told as the reporting pass
-  /// over each reported function begins (`LedgerAdapter::beginFunction`).
-  void setReportingObserver(
-      std::function<void(const clang::FunctionDecl &)> observer) {
-    reportingObserver = std::move(observer);
   }
 
   /// Attaches the exports of the other units of the program (RFC 0005);
@@ -88,10 +91,11 @@ public:
 
 private:
   clang::ASTContext &context;
-  core::DiagnosticSink &sink;
+  LedgerAdapter &ledger;
+  /// Where the fixpoint rounds publish (RFC 0030 §2.6).
+  LedgerAdapter discarding;
   AnalysisOptions options;
   SummaryStore store;
-  std::function<void(const clang::FunctionDecl &)> reportingObserver;
   struct SilentAnalysis {
     bool widen;
     SummaryStore::DependencyVersions dependencies;
@@ -120,38 +124,15 @@ private:
   void prepare();
   /// The exports without summaries: definitions, imports, indirect types.
   [[nodiscard]] UnitExports skeletonExports() const;
-  void analyzeComponent(
-      const std::vector<unsigned> &component, bool recursive,
-      FunctionAnalyzer &analyzer,
-      llvm::function_ref<bool(const clang::FunctionDecl &)> shouldReport);
+  void analyzeComponent(const std::vector<unsigned> &component, bool recursive,
+                        FunctionAnalyzer &analyzer);
   void reportUnannotatedInterface(const clang::FunctionDecl &function);
-
-  // -- Sized fields (RFC 0012, *Two passes in a unit*) ------------------------
-
-  /// A diagnostic by id, location and message: what "the same report"
-  /// means between the two passes.
-  using DiagnosticKey =
-      std::tuple<std::string, std::string, unsigned, unsigned, std::string>;
-  /// Forwards to the unit's sink and remembers what went through.
-  class RememberingSink final : public core::DiagnosticSink {
-  public:
-    explicit RememberingSink(core::DiagnosticSink &sink) : inner(sink) {}
-    void report(const core::Diagnostic &diagnostic) override;
-    [[nodiscard]] const std::set<DiagnosticKey> &seen() const noexcept {
-      return keys;
-    }
-    [[nodiscard]] static DiagnosticKey keyOf(const core::Diagnostic &);
-
-  private:
-    core::DiagnosticSink &inner;
-    std::set<DiagnosticKey> keys;
-  };
-  /// Re-analyses the reported functions that load a field the unit's own
-  /// witnesses confirmed, emitting the `out-of-bounds` reports the first
-  /// pass did not produce.
-  void reportConfirmedSizedFields(
-      llvm::ArrayRef<const clang::FunctionDecl *> reported,
-      const std::set<DiagnosticKey> &alreadyReported);
+  /// `--dump-analysis`: the memory contexts of `function` and their
+  /// summaries.
+  void dumpMemoryContexts(const clang::FunctionDecl &function);
+  /// The findings of `function`'s context runs that no call in this unit
+  /// reported (requests from other units), linked to nothing.
+  void reportUnclaimedContexts(const clang::FunctionDecl &function);
 };
 
 } // namespace weavec::analysis

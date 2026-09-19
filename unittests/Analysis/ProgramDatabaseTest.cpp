@@ -113,10 +113,11 @@ TEST(UnitExports, DiscoverySkipsAnalysis) {
     void f(void *p) { other(p); hook(1); }
   )c");
   ASSERT_TRUE(unit.ast);
-  core::DiagnosticCollector sink;
+  analysis::LedgerAdapter sink(unit.ast->getASTContext(),
+                               analysis::LedgerAdapter::Mode::Collecting);
   analysis::TranslationUnitAnalyzer fresh(unit.ast->getASTContext(), sink);
   const UnitExports skeleton = fresh.discover();
-  EXPECT_TRUE(sink.empty());
+  EXPECT_TRUE(sink.diagnostics().empty());
   EXPECT_EQ(skeleton.functions.size(), 1U);
   EXPECT_TRUE(skeleton.functions.at("f").summary.get() ==
               core::FunctionSummary{});

@@ -259,15 +259,19 @@ public:
   callable(std::string_view symbol) const;
   [[nodiscard]] std::optional<ResolvedSummary>
   lookupSymbol(std::string_view symbol);
+  /// A context-specialised run of `function` (RFC 0014, RFC 0016). It
+  /// decides no ledger rows (RFC 0030 §2.6); its diagnostics, each with its
+  /// certainty, are appended to `diagnostics` when given, for the call that
+  /// requested the run to report.
   [[nodiscard]] std::optional<ResolvedSummary>
   specialize(const clang::FunctionDecl &function,
              const core::CallbackBindings &bindings,
              const AnalysisOptions &options,
-             core::DiagnosticSink *sink = nullptr);
+             std::vector<core::Diagnostic> *diagnostics = nullptr);
   [[nodiscard]] std::optional<ResolvedSummary>
   specializeMemory(std::string_view symbol, const core::CallContext &bindings,
                    const AnalysisOptions &options,
-                   core::DiagnosticSink *sink = nullptr);
+                   std::vector<core::Diagnostic> *diagnostics = nullptr);
   using MemoryContextKey = std::pair<std::string, core::CallContext>;
   std::map<std::string, std::set<core::CallContext>> memoryRequests;
   std::map<MemoryContextKey, SummarySnapshot> memorySpecialized;
@@ -280,6 +284,11 @@ public:
   std::map<ContextKey, SummarySnapshot> specialized;
   std::map<ContextKey, std::vector<core::Diagnostic>> specializedDiagnostics;
   std::set<ContextKey> activeContexts;
+  /// RFC 0030 §2.6: the context runs whose findings a call in an
+  /// authoritative pass reported, linked to the call; the rest are reported
+  /// after every authoritative pass, linked to nothing.
+  std::set<MemoryContextKey> claimedMemoryContexts;
+  std::set<ContextKey> claimedCallbackContexts;
   std::map<std::string, const clang::FunctionDecl *> callables;
   mutable std::optional<std::map<std::string, core::CallTargets>>
       callbackGlobalCache;

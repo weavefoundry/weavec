@@ -192,7 +192,8 @@ FunctionDataflow::stringSubjectOf(const Expr &arg,
                                    .pointer = key,
                                    .offset = {},
                                    .unit = 1,
-                                   .declared = record->declared};
+                                   .declared = record->declared,
+                                   .lowerBound = record->lowerBound};
     }
     return subject;
   }
@@ -745,7 +746,11 @@ void FunctionDataflow::checkStringArguments(
     if (fact->location.isValid())
       diagnostic.addNote(object + " is left without a terminator here",
                          fact->location);
-    report(std::move(diagnostic));
+    // RFC 0030 §3.3: the object holds no NUL on every path: definite.
+    const SiteInfo *site = siteFor(call, core::Facet::Spatial);
+    decide(site, core::Facet::Spatial, core::FacetDecision::violation());
+    report(std::move(diagnostic), core::Certainty::Definite, site,
+           core::Facet::Spatial);
     return true;
   };
   for (const SeekingRead &entry : SeekingReads) {

@@ -2,8 +2,8 @@
 // a test of an integer place refines what is known about it, a move or a
 // held resource made under a fact carries it as a guard, and a later test
 // that contradicts the guard drops the record.
-// RUN: not %weavec %s -- 2>&1 | FileCheck %s
-// RUN: not %weavec --dump-analysis %s -- 2>&1 | FileCheck --check-prefix=DUMP %s
+// RUN: %weavec %s -- 2>&1 | FileCheck %s
+// RUN: %weavec --dump-analysis %s -- 2>&1 | FileCheck --check-prefix=DUMP %s
 #include "../Inputs/prelude.h"
 #include <weavec.h>
 
@@ -110,7 +110,7 @@ void overlap(int n, char *p) {
   if (n > 0)
     free(p);
   if (n != 0)
-    // CHECK: rfc0009-scalars.c:[[@LINE+1]]:9: error: use of 'p' after it was freed [weavec::use-after-free]
+    // CHECK: rfc0009-scalars.c:[[@LINE+1]]:9: warning: use of 'p' after it may have been freed [weavec::use-after-free]
     use(p);
 }
 
@@ -121,7 +121,7 @@ void reassigned(int c, int d, char *p) {
     free(p);
   c = d;
   if (!c)
-    // CHECK: rfc0009-scalars.c:[[@LINE+1]]:9: error: use of 'p' after it was freed [weavec::use-after-free]
+    // CHECK: rfc0009-scalars.c:[[@LINE+1]]:9: warning: use of 'p' after it may have been freed [weavec::use-after-free]
     use(p);
 }
 
@@ -130,7 +130,7 @@ void computed(int n, char *p) {
   if (n == 0)
     free(p);
   if ((n & 1) != 0)
-    // CHECK: rfc0009-scalars.c:[[@LINE+1]]:9: error: use of 'p' after it was freed [weavec::use-after-free]
+    // CHECK: rfc0009-scalars.c:[[@LINE+1]]:9: warning: use of 'p' after it may have been freed [weavec::use-after-free]
     use(p);
 }
 
@@ -152,7 +152,6 @@ int above_max(void) {
   size_t i = 0;
   char *p = malloc(4);
   if (i > 18446744073709551615UL) { free(p); return 1; }
-  // CHECK: rfc0009-scalars.c:[[@LINE+1]]:9: error: 'p', which may be null, is passed to 'touch', which dereferences it [weavec::null-dereference]
   touch(p);
   free(p);
   return 0;
@@ -176,12 +175,10 @@ void minus_one(void) {
   int y = -1;
   char *p = malloc(4);
   if (x > 5)
-    // CHECK: rfc0009-scalars.c:[[@LINE+1]]:11: error: 'p', which may be null, is passed to 'touch', which dereferences it [weavec::null-dereference]
     touch(p);
   free(p);
   p = malloc(4);
   if (y > 5u)
-    // CHECK: rfc0009-scalars.c:[[@LINE+1]]:11: error: 'p', which may be null, is passed to 'touch', which dereferences it [weavec::null-dereference]
     touch(p);
   free(p);
 }
@@ -195,4 +192,4 @@ void dead(void) {
   free(p);
 }
 
-// CHECK: 1 warning and 6 errors generated.
+// CHECK: 4 warnings generated.

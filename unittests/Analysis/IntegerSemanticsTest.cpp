@@ -605,7 +605,9 @@ TEST(IntegerSemantics, AbstractEndpointsAreNotReachableBoundaryWitnesses) {
     void definite(unsigned i) { char a[8]; if(i>=8) a[i]=0; }
   )c");
   ASSERT_TRUE(result.ast);
-  EXPECT_EQ(countId(result, core::diag::OutOfBounds), 2U)
+  // RFC 0030 §3.3: `explicit_bound` may reach index 8 (a checked facet);
+  // `definite` is past the end for every value.
+  EXPECT_EQ(countId(result, core::diag::OutOfBounds), 1U)
       << ::testing::PrintToString(messages(result.diagnostics));
 }
 

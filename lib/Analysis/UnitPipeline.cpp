@@ -57,7 +57,10 @@ UnitPipelineResult runUnitAnalysis(clang::ASTContext &context,
   adapterOptions.source = mainSource(context);
   adapterOptions.target = context.getTargetInfo().getTriple().str();
   adapterOptions.lowered = options.lowered;
-  LedgerAdapter adapter(context, *sites, std::move(adapterOptions));
+  // A silent round (no ledger) keeps nothing (§2.6).
+  LedgerAdapter adapter(context, *sites, std::move(adapterOptions),
+                        options.buildLedger ? LedgerAdapter::Mode::Authoritative
+                                            : LedgerAdapter::Mode::Discarding);
 
   // Stage S7 solves the unit's function-pointer slots and S6 proposes the
   // field invariants; until then both are empty.

@@ -9,10 +9,15 @@
 #ifndef WEAVEC_UNITTESTS_ANALYSIS_TESTUTILS_H
 #define WEAVEC_UNITTESTS_ANALYSIS_TESTUTILS_H
 
+#include "weavec/Analysis/AttributeReader.h"
 #include "weavec/Analysis/FunctionAnalysis.h"
+#include "weavec/Analysis/KindTable.h"
+#include "weavec/Analysis/LedgerAdapter.h"
+#include "weavec/Analysis/SiteCollector.h"
 #include "weavec/Analysis/Summaries.h"
 #include "weavec/Analysis/TranslationUnitAnalysis.h"
 #include "weavec/Core/Diagnostic.h"
+#include "weavec/Core/LibrarySpec.h"
 #include "weavec/Core/Summary.h"
 
 #include "clang/AST/ASTContext.h"
@@ -58,12 +63,39 @@ void poke(void *MUT p);
 #line 1
 )c";
 
+/// RFC 0030 §14: what the engine publishes through, for one unit: the
+/// declared kinds, the sites and the authoritative adapter.
+struct UnitLedgerHarness {
+  analysis::KindTable kinds;
+  analysis::SiteIndex sites;
+  std::unique_ptr<analysis::LedgerAdapter> ledger;
+
+  explicit UnitLedgerHarness(clang::ASTContext &context) {
+    const core::LibrarySpec &library = core::LibrarySpec::shipped();
+    kinds = analysis::AttributeReader(context, library).read();
+    sites = analysis::SiteCollector(context, kinds, library).collect();
+    ledger = std::make_unique<analysis::LedgerAdapter>(context, sites);
+  }
+
+  /// Completes the ledger (which checks it is complete) and copies the
+  /// diagnostics, in publication order, into `collector`.
+  analysis::PlannedLedger finish(core::DiagnosticCollector &collector) const {
+    analysis::PlannedLedger planned = ledger->finish();
+    for (const core::Diagnostic &diagnostic : ledger->diagnostics())
+      collector.report(diagnostic);
+    return planned;
+  }
+};
+
 /// Parses `code` (prepended with `Prelude`) as C and runs the analyzer over
 /// the translation unit, collecting core diagnostics and summaries.
 struct AnalysisResult {
   std::unique_ptr<clang::ASTUnit> ast;
   core::DiagnosticCollector diagnostics;
+  std::unique_ptr<UnitLedgerHarness> harness;
   std::unique_ptr<analysis::TranslationUnitAnalyzer> analyzer;
+  /// The completed unit ledger (RFC 0030 §12).
+  analysis::PlannedLedger planned;
 
   /// The function definition named `name`, or null.
   [[nodiscard]] const clang::FunctionDecl *
@@ -108,12 +140,28 @@ analyzeInProgram(const std::string &code,
   }
 
   clang::ASTContext &context = result.ast->getASTContext();
+  result.harness = std::make_unique<UnitLedgerHarness>(context);
   result.analyzer = std::make_unique<analysis::TranslationUnitAnalyzer>(
-      context, result.diagnostics, options);
+      context, *result.harness->ledger, options);
   if (database != nullptr)
     result.analyzer->setDatabase(database);
   result.analyzer->run();
+  result.planned = result.harness->finish(result.diagnostics);
   return result;
+}
+
+/// Runs a fresh analyzer over `context`, reporting only the functions
+/// `shouldReport` accepts, and returns its diagnostics.
+inline core::DiagnosticCollector analyzeFiltered(
+    clang::ASTContext &context,
+    llvm::function_ref<bool(const clang::FunctionDecl &)> shouldReport,
+    const analysis::AnalysisOptions &options = {}) {
+  UnitLedgerHarness harness(context);
+  analysis::TranslationUnitAnalyzer analyzer(context, *harness.ledger, options);
+  analyzer.run(shouldReport);
+  core::DiagnosticCollector collected;
+  (void)harness.finish(collected);
+  return collected;
 }
 
 inline AnalysisResult analyze(const std::string &code,

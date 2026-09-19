@@ -91,8 +91,10 @@ TEST(MoveTracker, OwnValueIsAMustFactAcrossJoins) {
   ASSERT_FALSE(ownAgain.markMoved(PlaceId{0}, MoveReason::Freed, at(1), {},
                                   ElementWitness::whole(), "free",
                                   /*ownValue=*/true));
-  EXPECT_TRUE(ownAgain.join(untouched) == false)
-      << "the other side has no record: nothing to learn";
+  EXPECT_TRUE(ownAgain.join(untouched))
+      << "RFC 0030: the record now holds on some paths only";
+  EXPECT_FALSE(ownAgain.join(untouched))
+      << "the other side has no record: nothing more to learn";
   EXPECT_TRUE(ownAgain.movedAt(PlaceId{0})->ownValue)
       << "a path that never touched the place says nothing about whose "
          "value was consumed";
@@ -283,8 +285,11 @@ TEST(MoveTracker, JoinWeakensGuardsToWhatBothSidesAgreeOn) {
   EXPECT_EQ(left.recordOf(PlaceId{0})->guard,
             when(PlaceId{1}, ValueFact::of(Outcome::Positive)));
 
-  // Present on one side only: the record keeps its own guard.
+  // Present on one side only: the record keeps its own guard (and holds on
+  // some paths only, RFC 0030).
   MoveTracker none;
+  EXPECT_TRUE(left.join(none));
+  EXPECT_FALSE(left.recordOf(PlaceId{0})->allPaths);
   EXPECT_FALSE(left.join(none));
   EXPECT_EQ(left.recordOf(PlaceId{0})->guard,
             when(PlaceId{1}, ValueFact::of(Outcome::Positive)));
@@ -326,6 +331,109 @@ TEST(MoveTracker, SecondMoveUnderAGuardIsStillADoubleMove) {
   tracker.setGuard(PlaceId{0}, when(PlaceId{1}, ValueFact::nonZero()));
   EXPECT_EQ(tracker.recordOf(PlaceId{0})->guard,
             when(PlaceId{1}, ValueFact::nonZero()));
+}
+
+// RFC 0030 §3.1: path coverage. A record on one side of a join only reached
+// the join on some paths.
+TEST(MoveTracker, JoinClearsAllPathsForOneSidedRecords) {
+  MoveTracker a;
+  MoveTracker b;
+  ASSERT_FALSE(a.markMoved(PlaceId{0}, MoveReason::Freed, at(1)));
+  ASSERT_FALSE(b.markMoved(PlaceId{0}, MoveReason::Freed, at(2)));
+  ASSERT_FALSE(b.markMoved(PlaceId{1}, MoveReason::Freed, at(3)));
+  ASSERT_FALSE(a.markMoved(PlaceId{2}, MoveReason::Moved, at(4)));
+  EXPECT_TRUE(a.recordOf(PlaceId{2})->allPaths) << "a new record";
+
+  EXPECT_TRUE(a.join(b));
+  EXPECT_TRUE(a.recordOf(PlaceId{0})->allPaths) << "on both sides";
+  EXPECT_FALSE(a.recordOf(PlaceId{1})->allPaths) << "on the other side only";
+  EXPECT_FALSE(a.recordOf(PlaceId{2})->allPaths) << "on this side only";
+  EXPECT_FALSE(a.join(b)) << "the bits settle, so the fixpoint ends";
+
+  EXPECT_TRUE(a.recordOf(PlaceId{0})->isDefinite());
+  EXPECT_FALSE(a.recordOf(PlaceId{1})->isDefinite());
+}
+
+TEST(MoveTracker, JoinOfCertaintyBits) {
+  const auto conditional = MoveOrigin{.conditional = true};
+  const auto unknown = MoveOrigin{.unknownOrigin = true};
+  MoveTracker a;
+  MoveTracker b;
+  // `conditional` when either side is.
+  ASSERT_FALSE(a.markMoved(PlaceId{0}, MoveReason::Freed, at(1), {},
+                           ElementWitness::whole(), "free", false, {},
+                           conditional));
+  ASSERT_FALSE(b.markMoved(PlaceId{0}, MoveReason::Freed, at(2)));
+  // `unknownOrigin` only when both are, and a disagreement costs `allPaths`.
+  ASSERT_FALSE(a.markMoved(PlaceId{1}, MoveReason::Freed, at(3), {},
+                           ElementWitness::whole(), "", false, {}, unknown));
+  ASSERT_FALSE(b.markMoved(PlaceId{1}, MoveReason::Freed, at(4)));
+  ASSERT_FALSE(a.markMoved(PlaceId{2}, MoveReason::Freed, at(5), {},
+                           ElementWitness::whole(), "", false, {}, unknown));
+  ASSERT_FALSE(b.markMoved(PlaceId{2}, MoveReason::Freed, at(6), {},
+                           ElementWitness::whole(), "", false, {}, unknown));
+  EXPECT_TRUE(a.join(b));
+
+  const auto first = a.recordOf(PlaceId{0});
+  EXPECT_TRUE(first->conditional);
+  EXPECT_TRUE(first->allPaths);
+  EXPECT_FALSE(first->isDefinite()) << "a conditional record is possible";
+  const auto second = a.recordOf(PlaceId{1});
+  EXPECT_FALSE(second->unknownOrigin);
+  EXPECT_FALSE(second->allPaths);
+  const auto third = a.recordOf(PlaceId{2});
+  EXPECT_TRUE(third->unknownOrigin);
+  EXPECT_TRUE(third->allPaths);
+  EXPECT_FALSE(third->isDefinite()) << "never diagnosed";
+}
+
+TEST(MoveTracker, ResultTestSettlesConditionalUnlessLossy) {
+  MoveTracker tracker;
+  ASSERT_FALSE(tracker.markMoved(PlaceId{0}, MoveReason::Freed, at(1), {},
+                                 ElementWitness::whole(), "free", false, {},
+                                 MoveOrigin{.conditional = true}));
+  ASSERT_FALSE(tracker.markMoved(PlaceId{1}, MoveReason::Freed, at(2), {},
+                                 ElementWitness::whole(), "free", false, {},
+                                 MoveOrigin{.lossy = true}));
+  EXPECT_TRUE(tracker.recordOf(PlaceId{1})->conditional)
+      << "a lossy effect is conditional";
+  tracker.settleConditional(PlaceId{0});
+  tracker.settleConditional(PlaceId{1});
+  EXPECT_FALSE(tracker.recordOf(PlaceId{0})->conditional);
+  EXPECT_TRUE(tracker.recordOf(PlaceId{0})->isDefinite());
+  EXPECT_TRUE(tracker.recordOf(PlaceId{1})->conditional)
+      << "a lossy effect is never settled";
+}
+
+TEST(MoveTracker, TheGuardsPathFactsDoNotWeakenCertainty) {
+  MoveTracker tracker;
+  // `if (n) { free(p); use(p); }`: the record carries the path's fact, which
+  // held where it was made.
+  ASSERT_FALSE(tracker.markMoved(PlaceId{0}, MoveReason::Freed, at(1), {},
+                                 ElementWitness::whole(), "free", false,
+                                 when(PlaceId{1}, ValueFact::nonZero())));
+  EXPECT_TRUE(tracker.recordOf(PlaceId{0})->isDefinite());
+  // A callee's condition the call left open is `conditional`.
+  ASSERT_FALSE(tracker.markMoved(PlaceId{2}, MoveReason::Freed, at(2), {},
+                                 ElementWitness::whole(), "free", false,
+                                 when(PlaceId{1}, ValueFact::nonZero()),
+                                 MoveOrigin{.conditional = true}));
+  EXPECT_FALSE(tracker.recordOf(PlaceId{2})->isDefinite());
+}
+
+TEST(MoveTracker, AnUnconditionalSecondConsumeHoldsOnEveryPath) {
+  MoveTracker a;
+  MoveTracker none;
+  ASSERT_FALSE(a.markMoved(PlaceId{0}, MoveReason::Freed, at(1), {},
+                           ElementWitness::whole(), "free", false,
+                           when(PlaceId{1}, ValueFact::nonZero())));
+  EXPECT_TRUE(a.join(none));
+  EXPECT_FALSE(a.recordOf(PlaceId{0})->allPaths);
+  a.reaffirm(PlaceId{0}, {});
+  const auto record = a.recordOf(PlaceId{0});
+  EXPECT_TRUE(record->allPaths);
+  EXPECT_TRUE(record->guard.trivial()) << "the facts of the second consume";
+  EXPECT_TRUE(record->isDefinite());
 }
 
 } // namespace

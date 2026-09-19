@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "Dataflow.h"
+#include "weavec/Analysis/DataflowEngine.h"
 #include "weavec/Analysis/Summaries.h"
 
 using namespace clang;
@@ -207,15 +208,16 @@ FunctionDataflow::resolveCall(const CallExpr &call) {
             callbacks != callbackContexts.end())
           bindings->callbacks = callbacks->second;
         memoryContexts[&call] = *bindings;
-        core::DiagnosticCollector collected;
+        // RFC 0030 §2.6: the context run's findings are this call's.
+        const bool reporting = recording() && emitDiagnostics && !inUnsafe;
+        std::vector<core::Diagnostic> found;
         const auto specialized = summaries.specializeMemory(
-            symbol, *bindings, options,
-            recording() && emitDiagnostics && !inUnsafe ? &collected : nullptr);
-        for (auto diagnostic : collected.diagnostics()) {
-          diagnostic.addNote("called here with related pointer arguments",
-                             locate(call));
-          report(std::move(diagnostic));
-        }
+            symbol, *bindings, options, reporting ? &found : nullptr);
+        if (reporting && !ledger.isDiscarding())
+          summaries.claimedMemoryContexts.insert(
+              {std::string(symbol), *bindings});
+        reportContextFindings(call, std::move(found),
+                              "called here with related pointer arguments");
         if (!specialized) {
           reportIncomplete("call context unavailable or limit reached", call);
           return snapshot;
@@ -258,9 +260,15 @@ FunctionDataflow::resolveCall(const CallExpr &call) {
       }
       if (!memoryContexts.contains(&call) && callbackContexts.contains(&call) &&
           recording() && emitDiagnostics && !inUnsafe &&
-          memoryContext.reportDiagnostics)
+          memoryContext.reportDiagnostics) {
+        std::vector<core::Diagnostic> found;
         (void)summaries.specialize(*direct, callbackContexts.at(&call), options,
-                                   &sink);
+                                   &found);
+        if (!ledger.isDiscarding())
+          summaries.claimedCallbackContexts.insert(
+              {callableSymbol(*direct), callbackContexts.at(&call)});
+        reportContextFindings(call, std::move(found), {});
+      }
     }
   } else {
     auto targets = functionTargets(*call.getCallee(), state);
@@ -358,6 +366,32 @@ FunctionDataflow::resolveCall(const CallExpr &call) {
   if (!cached)
     return std::nullopt;
   return ResolvedSummary{.summary = cached, .source = source};
+}
+
+void FunctionDataflow::reportContextFindings(
+    const CallExpr &call, std::vector<core::Diagnostic> found,
+    std::string_view note) {
+  if (found.empty())
+    return;
+  const SiteInfo *site = siteFor(call, core::Facet::Temporal);
+  for (core::Diagnostic &diagnostic : found) {
+    const core::Certainty certainty = diagnostic.certainty;
+    const std::optional<core::Facet> facet = facetOfDiagnostic(diagnostic.id);
+    const bool temporal = facet == core::Facet::Temporal;
+    // The call's temporal facet: a violation when the finding is definite
+    // in the context, `may-released` (or `may-moved`) when possible.
+    if (temporal)
+      decide(site, core::Facet::Temporal,
+             certainty == core::Certainty::Definite
+                 ? core::FacetDecision::violation()
+                 : core::FacetDecision::unresolvedFor(
+                       diagnostic.id == core::diag::UseAfterMove
+                           ? core::UnresolvedReason::MayMoved
+                           : core::UnresolvedReason::MayReleased));
+    if (!note.empty())
+      diagnostic.addNote(std::string(note), locate(call));
+    report(std::move(diagnostic), certainty, temporal ? site : nullptr, facet);
+  }
 }
 
 } // namespace weavec::analysis

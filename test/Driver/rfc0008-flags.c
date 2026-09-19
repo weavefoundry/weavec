@@ -9,12 +9,12 @@
 // RUN: not %weavec -Wno-weavec-invalid-release %s -- 2>&1 | FileCheck --check-prefix=DEFAULT %s
 #include <stdlib.h>
 
+// RFC 0030 §3.2: only a definite null dereference is a diagnostic.
 int null_deref(void) {
-  int *p = malloc(sizeof *p);
-  // DEFAULT: rfc0008-flags.c:[[@LINE+2]]:12: error: dereference of 'p', which may be null [weavec::null-dereference]
-  // LOWERED: rfc0008-flags.c:[[@LINE+1]]:12: warning: dereference of 'p', which may be null [weavec::null-dereference]
+  int *p = NULL;
+  // DEFAULT: rfc0008-flags.c:[[@LINE+2]]:12: error: dereference of 'p', which is null [weavec::null-dereference]
+  // LOWERED: rfc0008-flags.c:[[@LINE+1]]:12: warning: dereference of 'p', which is null [weavec::null-dereference]
   int v = *p;
-  free(p);
   return v;
 }
 

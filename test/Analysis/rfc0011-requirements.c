@@ -49,7 +49,6 @@ void read_line(void *f) {
 void clear(char *WEAVEC_SIZED_BY(n) p, size_t n, size_t m) {
   if (m <= n)
     memset(p, 0, m);
-  // CHECK: rfc0011-requirements.c:[[@LINE+2]]:12: error: 'memset' accesses 'm' bytes of 'p', which has 'n' bytes ('m' is above 'n') [weavec::out-of-bounds]
   if (m > n)
     memset(p, 0, m);
 }

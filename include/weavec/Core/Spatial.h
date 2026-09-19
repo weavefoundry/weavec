@@ -97,6 +97,12 @@ struct SpatialRecord {
   /// Whether `location` is a declaration (a variable's storage, an
   /// annotated parameter) rather than an allocation.
   bool declared = false;
+  /// RFC 0030 §7.1: the extent is a declared or inferred kind
+  /// (`WEAVEC_SIZED_BY` on a parameter or a field, an RFC 0012 inferred
+  /// sized field): a lower bound on the object, which may be larger, so an
+  /// access past it is never a definite `out-of-bounds`. A join keeps it
+  /// when either side has it.
+  bool lowerBound = false;
   /// RFC 0012: the string the object holds, when anything is known.
   // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
   std::optional<StringFact> string = {};

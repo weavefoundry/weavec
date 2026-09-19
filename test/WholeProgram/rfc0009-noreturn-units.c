@@ -1,11 +1,11 @@
 // RFC 0009, *Inferred `noreturn`*: `never-returns` inferred in one unit ends
 // paths in another, through the whole-program database (RFC 0005).
 //
-// RUN: not %weavec --whole-program %s %S/Inputs/die.c -- 2>&1 | FileCheck %s
-// RUN: not %weavec --whole-program --dump-analysis %s %S/Inputs/die.c -- 2>&1 | FileCheck --check-prefix=DUMP %s
+// RUN: %weavec --whole-program %s %S/Inputs/die.c -- 2>&1 | FileCheck %s
+// RUN: %weavec --whole-program --dump-analysis %s %S/Inputs/die.c -- 2>&1 | FileCheck --check-prefix=DUMP %s
 //
 // Alone, the calls are boundaries and `fail` is assumed to return.
-// RUN: not %weavec %s -- 2>&1 | FileCheck --check-prefix=ALONE %s
+// RUN: %weavec %s -- 2>&1 | FileCheck --check-prefix=ALONE %s
 #include "../Inputs/prelude.h"
 
 void die(const char *msg);
@@ -26,7 +26,7 @@ void good(int bad) {
     free(q);
     fail(bad);
   }
-  // ALONE: rfc0009-noreturn-units.c:[[@LINE+1]]:7: error: use of 'q' after it was freed [weavec::use-after-free]
+  // ALONE: rfc0009-noreturn-units.c:[[@LINE+1]]:7: warning: use of 'q' after it may have been freed [weavec::use-after-free]
   use(q);
   free(q);
 }
@@ -38,7 +38,7 @@ void checked(int bad) {
     free(q);
     check(bad);
   }
-  // CHECK: rfc0009-noreturn-units.c:[[@LINE+1]]:7: error: use of 'q' after it was freed [weavec::use-after-free]
+  // CHECK: rfc0009-noreturn-units.c:[[@LINE+1]]:7: warning: use of 'q' after it may have been freed [weavec::use-after-free]
   use(q);
   free(q);
 }

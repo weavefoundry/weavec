@@ -460,7 +460,9 @@ FunctionDataflow::describeHeap(core::PlaceId root, bool pointer,
       if (at != nullptr) {
         for (const core::Loan &loan : state.loans.heldBy(field)) {
           if (!lifetimes.outlives(loan.lifetime, callerLifetime)) {
-            reportLifetimeTooShort(field, loan.place, *at, /*returned=*/true);
+            reportLifetimeTooShort(field, loan.place, *at, /*returned=*/true,
+                                   loan.allPaths ? core::Certainty::Definite
+                                                 : core::Certainty::Possible);
             break;
           }
         }

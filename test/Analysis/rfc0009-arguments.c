@@ -127,14 +127,14 @@ void store_null(struct state *s) {
 void shrink(void *ud) {
   char *p = malloc(8);
   l_alloc(ud, p, 8, 0);
-  // CHECK: rfc0009-arguments.c:[[@LINE+1]]:7: error: use of 'p' after it was freed [weavec::use-after-free]
+  // CHECK: rfc0009-arguments.c:[[@LINE+1]]:7: warning: use of 'p' after it may have been freed [weavec::use-after-free]
   use(p);
 }
 
 void unknown_size(void *ud, size_t n) {
   char *p = malloc(8);
   char *q = l_alloc(ud, p, 8, n);
-  // CHECK: rfc0009-arguments.c:[[@LINE+1]]:7: error: use of 'p' after it was freed [weavec::use-after-free]
+  // CHECK: rfc0009-arguments.c:[[@LINE+1]]:7: warning: use of 'p' after it may have been freed [weavec::use-after-free]
   use(p);
   free(q);
 }
@@ -150,7 +150,7 @@ void free_heap(void) {
 
 void unknown_flag(struct buf *b) {
   release(b);
-  // CHECK: rfc0009-arguments.c:[[@LINE+1]]:7: error: use of 'b->data' after it was freed [weavec::use-after-free]
+  // CHECK: rfc0009-arguments.c:[[@LINE+1]]:7: warning: use of 'b->data' after it may have been freed [weavec::use-after-free]
   use(b->data);
 }
 
@@ -160,4 +160,4 @@ void store_local(struct state *s) {
   gz_error(s, 1, local);
 }
 
-// CHECK: 5 errors generated.
+// CHECK: 3 warnings and 2 errors generated.

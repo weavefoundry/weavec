@@ -17,7 +17,6 @@ void offsets(size_t n, size_t i) {
   if (i <= n - 1)
     a[i] = 0;
   if (i <= n - 1)
-    // CHECK: rfc0012-relations.c:[[@LINE+1]]:5: error: 'a[i + 1]' may be out of bounds: 'i' may reach one below 'n', and 'a' has 'n' * 4 bytes [weavec::out-of-bounds]
     a[i + 1] = 0;
   if (i < n - 1)
     a[i + 1] = 0;
@@ -34,7 +33,6 @@ void copies(size_t n, size_t i) {
     return;
   size_t j = i + 1;
   if (i < n)
-    // CHECK: rfc0012-relations.c:[[@LINE+1]]:5: error: 'a[j]' may be out of bounds: 'j' may equal 'n', the number of elements of 'a' [weavec::out-of-bounds]
     a[j] = 0;
   if (j < n)
     a[j] = 0;

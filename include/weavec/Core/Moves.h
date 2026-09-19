@@ -124,8 +124,43 @@ struct MoveRecord {
   /// the record is gone.
   // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
   PlaceGuard guard = {};
+  /// RFC 0030 §3.1: every predecessor merged since the record was made had
+  /// it.
+  bool allPaths = true;
+  /// RFC 0030 §3.1: made from a callee effect that holds only on some
+  /// outcome classes or paths (a `PendingOutcome` class, or a summary effect
+  /// that is not `consumesUnconditionally`). Cleared when a test of the
+  /// result narrows the pending classes to ones that all consume the place,
+  /// unless the effect is `lossy` (§9.1), in which case it is never cleared.
+  bool conditional = false;
+  /// RFC 0030 §9.1: made from a `lossy` effect; `conditional` stays set.
+  bool lossy = false;
+  /// RFC 0030 §3.1: made by the unknown-callee default (§5.1) or an open
+  /// slot (§9.3). Never diagnosed.
+  bool unknownOrigin = false;
+
+  /// RFC 0030 §3.1: the record holds on every path that reaches a use, from
+  /// a consume that happened on each of them. The `guard` of a record holds
+  /// the facts of each path that made it, which held there by construction;
+  /// a callee's condition on the arguments that the facts at the call left
+  /// open makes the record `conditional` instead (so `guard.trivial()` of the
+  /// RFC is the callee's part of the guard).
+  [[nodiscard]] bool isDefinite() const noexcept {
+    return allPaths && !conditional && !unknownOrigin;
+  }
 
   friend bool operator==(const MoveRecord &, const MoveRecord &) = default;
+};
+
+/// RFC 0030 §3.1: how a consume came about, for the certainty of the record
+/// it makes.
+struct MoveOrigin {
+  /// A callee effect that holds only on some outcome classes or paths.
+  bool conditional = false;
+  /// ... made by dropping a conjunct or folding classes (§9.1, stage S7).
+  bool lossy = false;
+  /// The unknown-callee default or an open slot (§5.1, §9.3).
+  bool unknownOrigin = false;
 };
 
 /// Flow-insensitive record of moved-out places. Flow sensitivity is layered
@@ -137,12 +172,23 @@ public:
   /// witnesses match (a double move / double free); the original record is
   /// kept. A prior record with a non-matching witness names another element
   /// and is replaced by the new one.
+  /// `origin` gives the new record its RFC 0030 certainty bits.
   std::optional<MoveRecord>
   markMoved(PlaceId place, MoveReason reason, SourceLocation location,
             std::optional<PlaceId> via = {},
             ElementWitness element = ElementWitness::whole(),
             std::string family = {}, bool ownValue = false,
-            PlaceGuard guard = {});
+            PlaceGuard guard = {}, MoveOrigin origin = {});
+
+  /// RFC 0030 §3.1: a test of the call's result selected only classes that
+  /// consume `place`: its record is no longer conditional, unless it came
+  /// from a lossy effect.
+  void settleConditional(PlaceId place);
+  /// RFC 0030 §3.1: `place`, already moved, was consumed again by an
+  /// unconditional known consume (a second `free`) on a path with the facts
+  /// `guard`: it is moved on every path through here, whatever the paths
+  /// into the first consume were.
+  void reaffirm(PlaceId place, PlaceGuard guard);
 
   /// Reinitializes `place`, e.g. after assignment of a fresh value. With a
   /// witness, only a record whose witness matches is erased (an element
@@ -173,7 +219,10 @@ public:
   /// the result does not depend on evaluation order; if the witnesses differ
   /// the kept record's witness becomes `Unknown`. A record on both sides is
   /// guarded by what its two guards agree on; one on one side keeps its own
-  /// (RFC 0009). Returns whether this tracker changed.
+  /// (RFC 0009). RFC 0030 §3.1: a record on one side only loses `allPaths`;
+  /// one on both keeps it when both had it and agree on `unknownOrigin`, is
+  /// `conditional` (and `lossy`) when either is, and `unknownOrigin` when
+  /// both are. Returns whether this tracker changed.
   bool join(const MoveTracker &other);
 
   /// `place` now satisfies `fact` (a condition edge): every record's guard

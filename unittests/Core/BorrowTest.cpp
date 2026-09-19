@@ -160,9 +160,40 @@ TEST_F(BorrowStateTest, JoinIsSetUnionAndEqualityIgnoresOrder) {
   ASSERT_FALSE(other.addLoan(makeLoan(q, BorrowKind::Shared, l2)));
   EXPECT_NE(state, other);
   EXPECT_TRUE(state.join(other));
-  EXPECT_EQ(state, other);
   EXPECT_EQ(state.loans().size(), 3U);
+  for (const Loan &loan : other.loans())
+    EXPECT_TRUE(state.contains(loan));
   EXPECT_FALSE(state.join(other)) << "nothing new: unchanged";
+}
+
+// RFC 0030 §3.1: a loan on one side of a join holds on some paths only.
+TEST_F(BorrowStateTest, JoinTracksWhetherALoanHoldsOnEveryPath) {
+  BorrowState other;
+  ASSERT_FALSE(state.addLoan(makeLoan(p, BorrowKind::Shared, l1)));
+  ASSERT_FALSE(other.addLoan(makeLoan(p, BorrowKind::Shared, l1)));
+  ASSERT_FALSE(other.addLoan(makeLoan(q, BorrowKind::Shared, l1)));
+  EXPECT_TRUE(state.loans().front().allPaths);
+  EXPECT_TRUE(state.join(other));
+  ASSERT_EQ(state.loans().size(), 2U);
+  EXPECT_TRUE(state.loans()[0].allPaths) << "on both sides";
+  EXPECT_FALSE(state.loans()[1].allPaths) << "on the other side only";
+  EXPECT_FALSE(state.join(other)) << "settled";
+
+  // Borrowed again on this path: it holds on every path from here.
+  state.addLoanUnchecked(makeLoan(q, BorrowKind::Shared, l1));
+  EXPECT_TRUE(state.loans()[1].allPaths);
+
+  // A value of several alternatives holds each of their loans on some
+  // paths only.
+  state.weakenHolder(PlaceId{100});
+  EXPECT_FALSE(state.loans()[1].allPaths);
+  state.addLoanUnchecked(makeLoan(q, BorrowKind::Shared, l1));
+  EXPECT_TRUE(state.loans()[1].allPaths);
+
+  // A predecessor with no loans at all.
+  EXPECT_TRUE(state.join(BorrowState{}));
+  EXPECT_FALSE(state.loans()[0].allPaths);
+  EXPECT_FALSE(state.loans()[1].allPaths);
   EXPECT_FALSE(state.join(BorrowState{}));
 }
 
@@ -209,6 +240,8 @@ TEST_F(BorrowStateTest, OneRecordPerBorrowAtTheEarliestSite) {
   // The join keeps one per borrow too, at the earliest site of either side.
   BorrowState later;
   later.addLoanUnchecked(again);
+  EXPECT_TRUE(state.join(later))
+      << "RFC 0030: 'other' now holds on some paths only";
   EXPECT_FALSE(state.join(later)) << "a later site of a known borrow is old";
   BorrowState earlier;
   Loan earliest = first;

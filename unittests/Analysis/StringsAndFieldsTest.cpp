@@ -273,14 +273,9 @@ TEST(SizedFields, AnnotatedLoads) {
     void copy_unknown(struct buf *b, const char *s) { strcpy(b->data, s); }
   )c");
   ASSERT_TRUE(result.ast);
-  EXPECT_EQ(messages(result.diagnostics),
-            (Strings{"1: 'b->data[b->cap]' is out of bounds: 'b->cap' is the "
-                     "number of elements of 'b->data'",
-                     "4: 'b->data[i]' may be out of bounds: 'i' may equal "
-                     "'b->cap', the number of elements of 'b->data'",
-                     "10: 'strcpy' accesses 6 bytes of 'b->data', which has 4 "
-                     "bytes"}));
-  EXPECT_EQ(notes(result.diagnostics), Strings{"'b->data' is declared here"});
+  // RFC 0030 §3.3: a declared count is a lower bound on the object, so an
+  // access past it is a checked facet, never a definite `out-of-bounds`.
+  EXPECT_EQ(messages(result.diagnostics), (Strings{}));
 }
 
 // A store into an annotated field is checked against the count, whichever
@@ -345,10 +340,9 @@ TEST(SizedFields, InferredWithinAUnit) {
     }
   )c");
   ASSERT_TRUE(result.ast);
-  EXPECT_EQ(messages(result.diagnostics),
-            (Strings{"1: 'v->items[v->cap]' is out of bounds: the access "
-                     "exceeds the allocation's converted size"}));
-  EXPECT_EQ(notes(result.diagnostics), Strings{"'v->items' is declared here"});
+  // RFC 0030 §3.3: an inferred count is a lower bound, never the ground
+  // for a definite `out-of-bounds`.
+  EXPECT_EQ(messages(result.diagnostics), (Strings{}));
   const SizedFieldFacts &facts = result.analyzer->exports().sizedFields;
   EXPECT_EQ(facts.witnesses,
             (std::set<SizedFieldWitness>{SizedFieldWitness{
@@ -406,9 +400,7 @@ TEST(SizedFields, InferredThroughTheDatabase) {
   )c",
                                        &database);
   ASSERT_TRUE(result.ast);
-  EXPECT_EQ(messages(result.diagnostics),
-            (Strings{"1: 'v->items[v->cap]' is out of bounds: 'v->cap' is the "
-                     "number of elements of 'v->items'"}));
+  EXPECT_EQ(messages(result.diagnostics), (Strings{}));
   // The copy loaded the field with the count's extent and stored it beside
   // an equal count: a witness of its own.
   const SizedFieldFacts &facts = result.analyzer->exports().sizedFields;
@@ -457,11 +449,7 @@ TEST(Relations, OffsetsAndLowerBounds) {
   ASSERT_TRUE(result.ast);
   EXPECT_EQ(
       messages(result.diagnostics),
-      (Strings{"5: 'a[i + 1]' may be out of bounds: 'i' may reach one below "
-               "'n', and 'a' has 'n' * 4 bytes",
-               "8: 'a[j]' may be out of bounds: 'j' may equal 'n', the number "
-               "of elements of 'a'",
-               "14: 'buf[i]' is out of bounds: 'i' is at least 8 in an object "
+      (Strings{"14: 'buf[i]' is out of bounds: 'i' is at least 8 in an object "
                "of 8 bytes",
                "15: 'buf[i]' is out of bounds: 'i' is at least 8 in an object "
                "of 8 bytes"}));

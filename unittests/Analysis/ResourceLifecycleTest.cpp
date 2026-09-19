@@ -543,7 +543,7 @@ TEST(ResourceLifecycle, MemoryBelowAFreedObjectGoesWithItsContainer) {
   ASSERT_TRUE(result.ast);
   // One report per object, not one per field the callee frees along with it.
   EXPECT_EQ(messages(result.diagnostics),
-            (Strings{"8: 'o' is freed twice", "9: 'o' is freed twice"}));
+            (Strings{"8: 'o' is freed twice", "9: 'o' may be freed twice"}));
   // The recursive call names `o->child`; what `del` frees below that is not
   // this function's to describe, so the summary does not grow one level per
   // fixpoint iteration.

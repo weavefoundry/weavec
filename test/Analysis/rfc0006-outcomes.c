@@ -2,8 +2,8 @@
 // argument only on the paths returning some class of value is summarised
 // per class, and a caller's test of the result retracts the consumption on
 // the edge where it did not happen. `realloc` is the built-in instance.
-// RUN: not %weavec %s -- 2>&1 | FileCheck %s
-// RUN: not %weavec --dump-analysis %s -- 2>&1 | FileCheck --check-prefix=DUMP %s
+// RUN: %weavec %s -- 2>&1 | FileCheck %s
+// RUN: %weavec --dump-analysis %s -- 2>&1 | FileCheck --check-prefix=DUMP %s
 #include "../Inputs/prelude.h"
 
 struct node {
@@ -100,19 +100,19 @@ void resized(struct table *t, size_t n) {
 void wrong_branch(struct node *n, int c) {
   int rc = try_take(n, c);
   if (rc == 0)
-    // CHECK: rfc0006-outcomes.c:[[@LINE+1]]:9: error: use of 'n' after it was freed [weavec::use-after-free]
+    // CHECK: rfc0006-outcomes.c:[[@LINE+1]]:9: warning: use of 'n' after it may have been freed [weavec::use-after-free]
     use(n);
 }
 
 void untested(struct node *n, int c) {
   try_take(n, c);
-  // CHECK: rfc0006-outcomes.c:[[@LINE+1]]:3: error: use of 'n' after it was freed [weavec::use-after-free]
+  // CHECK: rfc0006-outcomes.c:[[@LINE+1]]:3: warning: use of 'n' after it may have been freed [weavec::use-after-free]
   n->v = 1;
 }
 
 void realloc_untested(char *p) {
   char *q = realloc(p, 16);
-  // CHECK: rfc0006-outcomes.c:[[@LINE+1]]:3: error: use of 'p' after it was moved [weavec::use-after-move]
+  // CHECK: rfc0006-outcomes.c:[[@LINE+1]]:3: warning: use of 'p' after it may have been moved [weavec::use-after-move]
   free(p);
   // CHECK: rfc0006-outcomes.c:[[@LINE+1]]:3: warning: 'q' is leaked [weavec::leak]
   use(q);
@@ -124,8 +124,8 @@ void result_overwritten(char *p) {
   q = malloc(2);
   // CHECK: rfc0006-outcomes.c:[[@LINE+1]]:3: warning: 'q' is leaked [weavec::leak]
   if (q == NULL)
-    // CHECK: rfc0006-outcomes.c:[[@LINE+1]]:5: error: use of 'p' after it was moved [weavec::use-after-move]
+    // CHECK: rfc0006-outcomes.c:[[@LINE+1]]:5: warning: use of 'p' after it may have been moved [weavec::use-after-move]
     free(p);
 }
 
-// CHECK: 3 warnings and 4 errors generated.
+// CHECK: 7 warnings generated.

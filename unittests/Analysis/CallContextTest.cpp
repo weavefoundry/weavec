@@ -216,12 +216,19 @@ TEST(CompositionalCall, SelectedCellsKeepTheirPointeeIdentities) {
 static void zap(char **a, int i, int j) { free(a[i]); *a[j] = 1; }
 )c" + Entry + "char *items[2] = {p, p}; zap(items, 0, 1); }",
                      core::diag::UseAfterFree);
-  expectCleanContext(R"c(
+  // The context itself is clean. RFC 0030 §2.6: `zap` also gets the generic
+  // (authoritative) pass, which cannot tell `a[i]` from `a[j]`: its one
+  // finding is at the callee, not at the call.
+  const auto result = test::analyze(R"c(
 static void zap(char **a, int i, int j) { free(a[i]); *a[j] = 1; }
 )c" + Entry + R"c(
 char *q = malloc(4); if (!q) { free(p); return; }
 char *items[2] = {p, q}; zap(items, 0, 1); free(q); }
 )c");
+  ASSERT_TRUE(result.ast);
+  EXPECT_EQ(test::messages(result.diagnostics),
+            (std::vector<std::string>{
+                "2: use of 'a[j]' after it may have been freed"}));
 }
 
 TEST(CompositionalCall, UnsafeRequestsRetainEffectsWithoutDelayedReports) {
@@ -409,7 +416,10 @@ static void zap(char *OWNED a, char *b) { *b = 1; free(a); }
 }
 
 TEST(CompositionalCall, RewrittenSelectedCellsDoNotKeepObjectSeparation) {
-  expectContextError(R"c(
+  // RFC 0030 §2.6: `middle` also gets the generic pass, whose unresolved
+  // alias relation stage S3-B3 turns into ledger rows; the context's
+  // finding stands.
+  const auto result = test::analyze(R"c(
 static void zap(char **a, int i, int j) { free(a[i]); *a[j] = 1; }
 static void middle(char **a, int i, int j) {
   free(a[j]); a[j] = a[i]; zap(a, i, j);
@@ -417,8 +427,10 @@ static void middle(char **a, int i, int j) {
 )c" + Entry + R"c(
 char *q = malloc(4); if (!q) { free(p); return; }
 char *items[2] = {p, q}; middle(items, 0, 1); }
-)c",
-                     core::diag::UseAfterFree);
+)c");
+  ASSERT_TRUE(result.ast);
+  EXPECT_GT(countContextDiagnostic(result, core::diag::UseAfterFree), 0U)
+      << ::testing::PrintToString(test::messages(result.diagnostics));
 }
 
 TEST(CompositionalCall, PointerReassignmentAtOneCallSiteRechecksTheContext) {

@@ -282,7 +282,13 @@ bool FunctionDataflow::checkVariableArray(const Expr &expr,
                                         .needAtLeast = lo,
                                         .haveAtLeast = haveLo},
                                        boundsOf(start).first);
-      if (check.outcome == core::SpatialOutcome::Violation) {
+      // RFC 0030 §3.3: definite only (the dimension is an exact extent);
+      // a boundary value that may be past it is a checked facet.
+      if (check.outcome == core::SpatialOutcome::Violation && check.violation &&
+          (check.violation->kind == core::BoundsVerdict::Kind::OutOfBounds ||
+           check.violation->kind == core::BoundsVerdict::Kind::BeforeStart ||
+           check.violation->kind ==
+               core::BoundsVerdict::Kind::AtLeastPastEnd)) {
         auto diagnostic =
             makeError(core::diag::OutOfBounds,
                       "'" + spellIndex(&access, need) +
@@ -292,7 +298,10 @@ bool FunctionDataflow::checkVariableArray(const Expr &expr,
           diagnostic.addNote("the dimension is evaluated here", locate(*bound));
         else
           diagnostic.addNote("the array is declared here", locate(base));
-        report(std::move(diagnostic));
+        const SiteInfo *site = siteFor(access, core::Facet::Spatial);
+        decide(site, core::Facet::Spatial, core::FacetDecision::violation());
+        report(std::move(diagnostic), core::Certainty::Definite, site,
+               core::Facet::Spatial);
       }
     }
     // Every enclosing subscript and the full byte product must fit. Keep
@@ -305,6 +314,18 @@ bool FunctionDataflow::checkVariableArray(const Expr &expr,
         check = {.reason = core::SpatialReason::UnknownExtent};
     }
     recordSpatialCheck(access, check);
+    // §3.3 for what is not a definite violation (the extent is the exact
+    // dimension, so a check against it falls back to the declarations).
+    if (check.outcome != core::SpatialOutcome::Violation)
+      decideSpatial(siteFor(access, core::Facet::Spatial), check, nullptr,
+                    nullptr);
+    else if (!check.violation ||
+             (check.violation->kind != core::BoundsVerdict::Kind::OutOfBounds &&
+              check.violation->kind != core::BoundsVerdict::Kind::BeforeStart &&
+              check.violation->kind !=
+                  core::BoundsVerdict::Kind::AtLeastPastEnd))
+      decide(siteFor(access, core::Facet::Spatial), core::Facet::Spatial,
+             core::FacetDecision::checked());
     return check;
   };
   visit(visit, expr);

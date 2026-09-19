@@ -11,6 +11,7 @@
 #include "Dataflow.h"
 #include "weavec/Analysis/Annotations.h"
 #include "weavec/Analysis/ClangLocation.h"
+#include "weavec/Analysis/LedgerAdapter.h"
 #include "weavec/Analysis/Summaries.h"
 
 #include <string>
@@ -21,9 +22,20 @@ using namespace clang;
 namespace weavec::analysis {
 
 FunctionAnalyzer::FunctionAnalyzer(ASTContext &ctx,
-                                   core::DiagnosticSink &diagSink,
+                                   LedgerAdapter &ledgerAdapter,
                                    AnalysisOptions analysisOptions)
-    : context(ctx), sink(diagSink), options(std::move(analysisOptions)) {}
+    : context(ctx), ledger(ledgerAdapter), options(std::move(analysisOptions)) {
+}
+
+/// A declaration-level diagnostic: linked to no site, definite when it is
+/// an error.
+static void reportDeclaration(LedgerAdapter &ledger,
+                              core::Diagnostic diagnostic) {
+  const core::Certainty certainty = diagnostic.severity == core::Severity::Error
+                                        ? core::Certainty::Definite
+                                        : core::Certainty::Possible;
+  ledger.report(std::move(diagnostic), certainty);
+}
 
 bool FunctionAnalyzer::analyze(const FunctionDecl &function,
                                SummaryStore &summaries, bool emitDiagnostics,
@@ -40,7 +52,7 @@ bool FunctionAnalyzer::analyze(const FunctionDecl &function,
   // A `WEAVEC_UNSAFE` function is analysed like any other so its callers see
   // what it does; the dataflow itself suppresses reports inside it (RFC
   // 0004, *Unsafe regions*).
-  FunctionDataflow dataflow(context, function, sink, options, summaries,
+  FunctionDataflow dataflow(context, function, ledger, options, summaries,
                             emitDiagnostics);
   dataflow.run();
   return summaries.setInferred(function, std::move(dataflow).summary(),
@@ -53,13 +65,14 @@ void FunctionAnalyzer::validate(const FunctionDecl &function) {
   const auto invalidChecked = [&](const NamedDecl &decl) {
     if (!getAnnotations(decl).checked)
       return;
-    sink.report(core::Diagnostic{
-        .severity = core::Severity::Error,
-        .id = core::diag::InvalidAnnotation,
-        .message = "WEAVEC_CHECKED requires a function declaration",
-        .location = toCoreLocation(sm, decl.getLocation()),
-        .notes = {},
-        .fixits = {}});
+    reportDeclaration(
+        ledger, core::Diagnostic{
+                    .severity = core::Severity::Error,
+                    .id = core::diag::InvalidAnnotation,
+                    .message = "WEAVEC_CHECKED requires a function declaration",
+                    .location = toCoreLocation(sm, decl.getLocation()),
+                    .notes = {},
+                    .fixits = {}});
   };
   for (const auto *param : function.parameters())
     invalidChecked(*param);
@@ -77,29 +90,33 @@ void FunctionAnalyzer::validate(const FunctionDecl &function) {
   }
   const AnnotationSet annotations = getAnnotations(function);
   if (annotations.invalid) {
-    sink.report(core::Diagnostic{
-        .severity = core::Severity::Warning,
-        .id = core::diag::InvalidAnnotation,
-        .message = "unrecognised weavec annotation on '" +
-                   function.getNameAsString() + "'",
-        .location = toCoreLocation(sm, function.getLocation()),
-        .notes = {},
-        .fixits = {},
-    });
+    reportDeclaration(
+        ledger, core::Diagnostic{
+                    .severity = core::Severity::Warning,
+                    .id = core::diag::InvalidAnnotation,
+                    .message = "unrecognised weavec annotation on '" +
+                               function.getNameAsString() + "'",
+                    .location = toCoreLocation(sm, function.getLocation()),
+                    .notes = {},
+                    .fixits = {},
+                });
   }
   // `WEAVEC_NULLABLE` and `WEAVEC_NONNULL` on one declaration contradict
   // each other (RFC 0008, *Annotation surface*).
   {
     const auto reportContradiction = [&](const NamedDecl &decl) {
-      sink.report(core::Diagnostic{
-          .severity = core::Severity::Warning,
-          .id = core::diag::InvalidAnnotation,
-          .message = "'" + decl.getNameAsString() +
-                     "' is declared both WEAVEC_NULLABLE and WEAVEC_NONNULL",
-          .location = toCoreLocation(sm, decl.getLocation()),
-          .notes = {},
-          .fixits = {},
-      });
+      reportDeclaration(
+          ledger,
+          core::Diagnostic{
+              .severity = core::Severity::Warning,
+              .id = core::diag::InvalidAnnotation,
+              .message =
+                  "'" + decl.getNameAsString() +
+                  "' is declared both WEAVEC_NULLABLE and WEAVEC_NONNULL",
+              .location = toCoreLocation(sm, decl.getLocation()),
+              .notes = {},
+              .fixits = {},
+          });
     };
     // RFC 0010, *Annotations*: `WEAVEC_OWNED_BY` says which family an owned
     // pointer belongs to, so it needs `WEAVEC_OWNED`; retaining and
@@ -107,27 +124,31 @@ void FunctionAnalyzer::validate(const FunctionDecl &function) {
     const auto reportShareContradictions = [&](const NamedDecl &decl,
                                                const AnnotationSet &set) {
       if (set.retains && set.releases) {
-        sink.report(core::Diagnostic{
-            .severity = core::Severity::Warning,
-            .id = core::diag::InvalidAnnotation,
-            .message = "'" + decl.getNameAsString() +
-                       "' is declared both WEAVEC_RETAINS and WEAVEC_RELEASES",
-            .location = toCoreLocation(sm, decl.getLocation()),
-            .notes = {},
-            .fixits = {},
-        });
+        reportDeclaration(
+            ledger,
+            core::Diagnostic{
+                .severity = core::Severity::Warning,
+                .id = core::diag::InvalidAnnotation,
+                .message =
+                    "'" + decl.getNameAsString() +
+                    "' is declared both WEAVEC_RETAINS and WEAVEC_RELEASES",
+                .location = toCoreLocation(sm, decl.getLocation()),
+                .notes = {},
+                .fixits = {},
+            });
       }
       if (!set.family.empty() && !set.owned) {
-        sink.report(core::Diagnostic{
-            .severity = core::Severity::Warning,
-            .id = core::diag::InvalidAnnotation,
-            .message = "'" + decl.getNameAsString() +
-                       "' is declared WEAVEC_OWNED_BY(" + set.family +
-                       ") without WEAVEC_OWNED",
-            .location = toCoreLocation(sm, decl.getLocation()),
-            .notes = {},
-            .fixits = {},
-        });
+        reportDeclaration(
+            ledger, core::Diagnostic{
+                        .severity = core::Severity::Warning,
+                        .id = core::diag::InvalidAnnotation,
+                        .message = "'" + decl.getNameAsString() +
+                                   "' is declared WEAVEC_OWNED_BY(" +
+                                   set.family + ") without WEAVEC_OWNED",
+                        .location = toCoreLocation(sm, decl.getLocation()),
+                        .notes = {},
+                        .fixits = {},
+                    });
       }
     };
     if (annotations.nullable && annotations.nonNull)
@@ -136,15 +157,16 @@ void FunctionAnalyzer::validate(const FunctionDecl &function) {
     // RFC 0012, *`WEAVEC_ASSUME`*: `weavec.assume` belongs to the header's
     // `weavec_assume_` alone.
     if (annotations.assume && function.getName() != "weavec_assume_") {
-      sink.report(core::Diagnostic{
-          .severity = core::Severity::Warning,
-          .id = core::diag::InvalidAnnotation,
-          .message = "'weavec.assume' is not an annotation for '" +
-                     function.getNameAsString() + "'",
-          .location = toCoreLocation(sm, function.getLocation()),
-          .notes = {},
-          .fixits = {},
-      });
+      reportDeclaration(
+          ledger, core::Diagnostic{
+                      .severity = core::Severity::Warning,
+                      .id = core::diag::InvalidAnnotation,
+                      .message = "'weavec.assume' is not an annotation for '" +
+                                 function.getNameAsString() + "'",
+                      .location = toCoreLocation(sm, function.getLocation()),
+                      .notes = {},
+                      .fixits = {},
+                  });
     }
     for (const ParmVarDecl *param : function.parameters()) {
       const AnnotationSet onParam = getAnnotations(*param);
@@ -155,31 +177,33 @@ void FunctionAnalyzer::validate(const FunctionDecl &function) {
       // pointer parameter and names an integer parameter.
       if (!onParam.sizedBy.empty() &&
           !sizedByOf(function, param->getFunctionScopeIndex())) {
-        sink.report(core::Diagnostic{
-            .severity = core::Severity::Warning,
-            .id = core::diag::InvalidAnnotation,
-            .message = "'" + param->getNameAsString() +
-                       "' is declared WEAVEC_SIZED_BY(" + onParam.sizedBy +
-                       ")" +
-                       (param->getType()->isPointerType()
-                            ? " but '" + onParam.sizedBy +
-                                  "' is not an integer parameter"
-                            : " but is not a pointer"),
-            .location = toCoreLocation(sm, param->getLocation()),
-            .notes = {},
-            .fixits = {},
-        });
+        reportDeclaration(
+            ledger, core::Diagnostic{
+                        .severity = core::Severity::Warning,
+                        .id = core::diag::InvalidAnnotation,
+                        .message = "'" + param->getNameAsString() +
+                                   "' is declared WEAVEC_SIZED_BY(" +
+                                   onParam.sizedBy + ")" +
+                                   (param->getType()->isPointerType()
+                                        ? " but '" + onParam.sizedBy +
+                                              "' is not an integer parameter"
+                                        : " but is not a pointer"),
+                        .location = toCoreLocation(sm, param->getLocation()),
+                        .notes = {},
+                        .fixits = {},
+                    });
       }
       if (onParam.invalid) {
-        sink.report(core::Diagnostic{
-            .severity = core::Severity::Warning,
-            .id = core::diag::InvalidAnnotation,
-            .message = "unrecognised weavec annotation on '" +
-                       param->getNameAsString() + "'",
-            .location = toCoreLocation(sm, param->getLocation()),
-            .notes = {},
-            .fixits = {},
-        });
+        reportDeclaration(
+            ledger, core::Diagnostic{
+                        .severity = core::Severity::Warning,
+                        .id = core::diag::InvalidAnnotation,
+                        .message = "unrecognised weavec annotation on '" +
+                                   param->getNameAsString() + "'",
+                        .location = toCoreLocation(sm, param->getLocation()),
+                        .notes = {},
+                        .fixits = {},
+                    });
       }
     }
   }

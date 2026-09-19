@@ -290,5 +290,44 @@ TEST(NullTracker, Names) {
   EXPECT_EQ(toString(NullReason::Dereferenced), "dereferenced");
 }
 
+// RFC 0030 §3.2: an allocation's result on either side of a join.
+TEST(NullTracker, AllocatorSourceJoinsByDisjunction) {
+  NullRecord allocated =
+      record(Nullness::MaybeNull, 1, NullReason::CalleeResult, "'malloc'");
+  allocated.allocatorSource = true;
+
+  NullTracker maybe;
+  NullTracker null;
+  maybe.set(P, allocated);
+  null.set(P, record(Nullness::Null, 2));
+  EXPECT_TRUE(null.join(maybe));
+  EXPECT_EQ(null.stateOf(P), Nullness::MaybeNull);
+  EXPECT_TRUE(null.recordOf(P)->allocatorSource);
+
+  NullTracker nonNull;
+  nonNull.set(P, record(Nullness::NonNull, 3, NullReason::Tested));
+  EXPECT_TRUE(nonNull.join(maybe));
+  EXPECT_TRUE(nonNull.recordOf(P)->allocatorSource);
+
+  NullRecord testedAllocation =
+      record(Nullness::NonNull, 4, NullReason::Tested);
+  testedAllocation.allocatorSource = true;
+  NullTracker plainNull;
+  NullTracker tested;
+  plainNull.set(P, record(Nullness::Null, 5));
+  tested.set(P, testedAllocation);
+  EXPECT_TRUE(plainNull.join(tested));
+  EXPECT_EQ(plainNull.stateOf(P), Nullness::MaybeNull);
+  EXPECT_TRUE(plainNull.recordOf(P)->allocatorSource);
+  EXPECT_FALSE(plainNull.join(tested)) << "settled";
+
+  NullTracker plain;
+  plain.set(P, record(Nullness::Null, 6));
+  NullTracker other;
+  other.set(P, record(Nullness::Null, 7));
+  plain.join(other);
+  EXPECT_FALSE(plain.recordOf(P)->allocatorSource);
+}
+
 } // namespace
 } // namespace weavec::core

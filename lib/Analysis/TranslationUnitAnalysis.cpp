@@ -93,9 +93,11 @@ private:
 } // namespace
 
 TranslationUnitAnalyzer::TranslationUnitAnalyzer(
-    ASTContext &ctx, core::DiagnosticSink &diagSink,
+    ASTContext &ctx, LedgerAdapter &ledgerAdapter,
     AnalysisOptions analysisOptions)
-    : context(ctx), sink(diagSink), options(std::move(analysisOptions)) {
+    : context(ctx), ledger(ledgerAdapter),
+      discarding(ctx, LedgerAdapter::Mode::Discarding),
+      options(std::move(analysisOptions)) {
   store.setContext(&context);
   if (options.preparation)
     store.prepared = options.preparation;
@@ -309,39 +311,42 @@ UnitExports TranslationUnitAnalyzer::exports() {
 
 static void validateCheckedDeclarations(const DeclContext &dc,
                                         ASTContext &context,
-                                        core::DiagnosticSink &sink) {
+                                        LedgerAdapter &ledger) {
   for (const Decl *decl : dc.decls()) {
     if (isa<FunctionDecl>(decl))
       continue; // FunctionAnalyzer checks parameters and local declarations.
     if (const auto *named = dyn_cast<NamedDecl>(decl);
         named && getAnnotations(*named).checked)
-      sink.report({.severity = core::Severity::Error,
-                   .id = core::diag::InvalidAnnotation,
-                   .message = "WEAVEC_CHECKED requires a function declaration",
-                   .location = toCoreLocation(context.getSourceManager(),
-                                              named->getLocation()),
-                   .notes = {},
-                   .fixits = {}});
+      ledger.report(
+          {.severity = core::Severity::Error,
+           .id = core::diag::InvalidAnnotation,
+           .message = "WEAVEC_CHECKED requires a function declaration",
+           .location =
+               toCoreLocation(context.getSourceManager(), named->getLocation()),
+           .notes = {},
+           .fixits = {}},
+          core::Certainty::Definite);
     if (const auto *nested = dyn_cast<DeclContext>(decl))
-      validateCheckedDeclarations(*nested, context, sink);
+      validateCheckedDeclarations(*nested, context, ledger);
   }
 }
 
 void TranslationUnitAnalyzer::run(
     llvm::function_ref<bool(const FunctionDecl &)> shouldReport) {
   prepare();
-  validateCheckedDeclarations(*context.getTranslationUnitDecl(), context, sink);
+  validateCheckedDeclarations(*context.getTranslationUnitDecl(), context,
+                              ledger);
 
   const std::vector<std::vector<unsigned>> adjacency = buildCallGraph();
   const std::vector<std::vector<unsigned>> components =
       core::stronglyConnectedComponents(adjacency);
 
-  // RFC 0012, *Sized fields*, "Two passes in a unit": the first pass takes
-  // inferred sized fields from the program database only; every report is
-  // remembered so the second pass emits only what is new.
-  RememberingSink remembered(sink);
+  // RFC 0012, *Sized fields*: the rounds below take inferred sized fields
+  // from the program database only, while they collect the unit's own
+  // witnesses. Every round publishes into a discarding adapter (RFC 0030
+  // §2.6).
   store.setUnitSizedFactsInForce(false);
-  FunctionAnalyzer analyzer(context, remembered, options);
+  FunctionAnalyzer silent(context, discarding, options);
   std::vector<const FunctionDecl *> reported;
   for (const auto *function : definitions)
     if (shouldReport(*function))
@@ -356,8 +361,7 @@ void TranslationUnitAnalyzer::run(
       const bool recursive =
           component.size() > 1 ||
           llvm::is_contained(adjacency[component.front()], component.front());
-      analyzeComponent(component, recursive, analyzer,
-                       [](const FunctionDecl &) { return false; });
+      analyzeComponent(component, recursive, silent);
     }
     if (globalsBefore == store.exportedCallbackGlobals())
       break;
@@ -393,181 +397,89 @@ void TranslationUnitAnalyzer::run(
     for (const auto &input : memory)
       (void)store.specializeMemory(symbol, input, options, nullptr);
   }
+
+  // RFC 0030 §2.6, §15 item 18: the one authoritative pass over each
+  // reported function, the context-insensitive analysis of the body CodeGen
+  // emits for every caller, with the unit's sized-field facts in force (the
+  // RFC 0012 second reporting pass is folded into it). A call that requests
+  // a context run reports that run's findings, linked to the call.
+  store.setUnitSizedFactsInForce(true);
+  FunctionAnalyzer authoritative(context, ledger, options);
+  // A function its callers check through contexts got no generic reporting
+  // pass before RFC 0030; the unknown targets of its generic pass are not
+  // `annotation-required` boundaries (stage S3-B3 replaces that warning
+  // with `unresolved(callback)` rows for every function).
+  AnalysisOptions contextOptions = options;
+  contextOptions.deferBoundary = true;
+  FunctionAnalyzer contextChecked(context, ledger, contextOptions);
   for (const FunctionDecl *function : reported) {
-    if (reportingObserver)
-      reportingObserver(*function);
+    ledger.beginFunction(*function);
     const std::string symbol = callableSymbol(*function);
-    const auto requests = store.callbackRequests[symbol];
-    const auto memory = store.memoryRequests[symbol];
-    if (!memory.empty()) {
-      if (options.dumpStream) {
-        core::DiagnosticCollector ignored;
-        FunctionAnalyzer describe(context, ignored, options);
-        describe.analyze(
-            *function, store, true,
-            recursiveFunctions.contains(function->getCanonicalDecl()));
-        for (const auto &input : memory) {
-          *options.dumpStream
-              << "  call-context " << symbol
-              << (input.reportDiagnostics ? " checked" : " unsafe") << "\n";
-          const core::GlobalNamer names = [&](std::uint32_t id) {
-            const auto *global = store.globals().declFor(id);
-            return global ? global->getNameAsString() : "<unmapped>";
-          };
-          for (const auto &alias : input.aliases)
-            *options.dumpStream
-                << "    " << core::printSummaryPath(alias.first, names) << " = "
-                << core::printSummaryPath(alias.second, names) << " @"
-                << alias.offset.toString()
-                << (alias.definite ? " definite" : " possible")
-                << (alias.sameShare ? " same-share" : " distinct-shares")
-                << "\n";
-          for (const auto &[first, second] : input.separations)
-            *options.dumpStream
-                << "    " << core::printSummaryPath(first, names)
-                << " distinct-object " << core::printSummaryPath(second, names)
-                << "\n";
-          for (const auto &[path, fact] : input.facts)
-            *options.dumpStream << "    " << core::printSummaryPath(path, names)
-                                << " " << fact.toString() << "\n";
-          if (const auto selected =
-                  store.specializeMemory(symbol, input, options, nullptr))
-            *options.dumpStream
-                << core::printSummary(*selected->summary, names);
-        }
-      }
-      analyzer.validate(*function);
-      bool needsGenericCheck = false;
-      for (const auto &input : memory)
-        if (!store.specializeMemory(symbol, input, options, &remembered) &&
-            input.reportDiagnostics)
-          needsGenericCheck = true;
-      if (needsGenericCheck)
-        analyzer.analyze(
-            *function, store, true,
-            recursiveFunctions.contains(function->getCanonicalDecl()));
-      for (const auto &bindings : requests)
-        if (std::ranges::none_of(memory, [&](const auto &input) {
-              return input.callbacks == bindings;
-            }))
-          (void)store.specialize(*function, bindings, options, &remembered);
-    } else if (requests.empty()) {
-      analyzer.analyze(
-          *function, store, true,
-          recursiveFunctions.contains(function->getCanonicalDecl()));
-    } else {
-      analyzer.validate(*function);
-      for (const auto &bindings : requests)
-        (void)store.specialize(*function, bindings, options, &remembered);
-    }
+    const bool checkedInContexts = !store.callbackRequests[symbol].empty() ||
+                                   !store.memoryRequests[symbol].empty();
+    (checkedInContexts ? contextChecked : authoritative)
+        .analyze(*function, store, /*emitDiagnostics=*/true,
+                 recursiveFunctions.contains(function->getCanonicalDecl()));
+    if (options.dumpStream)
+      dumpMemoryContexts(*function);
     if (options.reportUnannotated)
       reportUnannotatedInterface(*function);
   }
-  reportConfirmedSizedFields(reported, remembered.seen());
+  for (const FunctionDecl *function : reported)
+    reportUnclaimedContexts(*function);
 }
 
-void TranslationUnitAnalyzer::RememberingSink::report(
-    const core::Diagnostic &diagnostic) {
-  if (keys.insert(keyOf(diagnostic)).second)
-    inner.report(diagnostic);
+void TranslationUnitAnalyzer::dumpMemoryContexts(const FunctionDecl &function) {
+  const std::string symbol = callableSymbol(function);
+  const auto memory = store.memoryRequests[symbol];
+  for (const auto &input : memory) {
+    *options.dumpStream << "  call-context " << symbol
+                        << (input.reportDiagnostics ? " checked" : " unsafe")
+                        << "\n";
+    const core::GlobalNamer names = [&](std::uint32_t id) {
+      const auto *global = store.globals().declFor(id);
+      return global ? global->getNameAsString() : "<unmapped>";
+    };
+    for (const auto &alias : input.aliases)
+      *options.dumpStream << "    "
+                          << core::printSummaryPath(alias.first, names) << " = "
+                          << core::printSummaryPath(alias.second, names) << " @"
+                          << alias.offset.toString()
+                          << (alias.definite ? " definite" : " possible")
+                          << (alias.sameShare ? " same-share"
+                                              : " distinct-shares")
+                          << "\n";
+    for (const auto &[first, second] : input.separations)
+      *options.dumpStream << "    " << core::printSummaryPath(first, names)
+                          << " distinct-object "
+                          << core::printSummaryPath(second, names) << "\n";
+    for (const auto &[path, fact] : input.facts)
+      *options.dumpStream << "    " << core::printSummaryPath(path, names)
+                          << " " << fact.toString() << "\n";
+    if (const auto selected =
+            store.specializeMemory(symbol, input, options, nullptr))
+      *options.dumpStream << core::printSummary(*selected->summary, names);
+  }
 }
 
-TranslationUnitAnalyzer::DiagnosticKey
-TranslationUnitAnalyzer::RememberingSink::keyOf(
-    const core::Diagnostic &diagnostic) {
-  return DiagnosticKey{std::string(diagnostic.id), diagnostic.location.file,
-                       diagnostic.location.line, diagnostic.location.column,
-                       diagnostic.message};
-}
-
-namespace {
-
-/// Whether a function body names any of a set of fields.
-class FieldUseFinder : public RecursiveASTVisitor<FieldUseFinder> {
-public:
-  explicit FieldUseFinder(const llvm::DenseSet<const FieldDecl *> &of)
-      : fields(of) {}
-  bool found = false;
-
-  // NOLINTNEXTLINE(readability-identifier-naming,bugprone-derived-method-shadowing-base-method)
-  bool VisitMemberExpr(MemberExpr *member) {
-    if (const auto *field = dyn_cast<FieldDecl>(member->getMemberDecl());
-        field != nullptr && fields.contains(field->getCanonicalDecl()))
-      found = true;
-    return !found;
-  }
-
-private:
-  const llvm::DenseSet<const FieldDecl *> &fields;
-};
-
-/// Every field of a named record declared in the unit whose key is one of
-/// `keys`.
-class FieldsByKeyCollector : public RecursiveASTVisitor<FieldsByKeyCollector> {
-public:
-  FieldsByKeyCollector(const std::set<std::string> &wanted,
-                       const ASTContext &ctx)
-      : keys(wanted), context(ctx) {}
-  llvm::DenseSet<const FieldDecl *> fields;
-
-  // NOLINTNEXTLINE(readability-identifier-naming,bugprone-derived-method-shadowing-base-method)
-  bool VisitFieldDecl(FieldDecl *field) {
-    if (field->getType()->isPointerType() &&
-        keys.contains(fieldKeyOf(*field, context)))
-      fields.insert(field->getCanonicalDecl());
-    return true;
-  }
-
-private:
-  const std::set<std::string> &keys;
-  const ASTContext &context;
-};
-
-} // namespace
-
-void TranslationUnitAnalyzer::reportConfirmedSizedFields(
-    llvm::ArrayRef<const FunctionDecl *> reported,
-    const std::set<DiagnosticKey> &alreadyReported) {
-  // The fields the unit's own witnesses confirm that the database alone
-  // did not (RFC 0012, *Sized fields*, "Two passes in a unit").
-  const SizedFieldFacts &unit = store.sizedFieldFacts();
-  if (unit.witnesses.empty() || reported.empty())
-    return;
-  std::set<std::string> newlyConfirmed;
-  for (const SizedFieldWitness &witness : unit.witnesses) {
-    if (store.confirmedSizedBy(witness.field))
-      continue;
-    store.setUnitSizedFactsInForce(true);
-    const bool confirmed = store.confirmedSizedBy(witness.field).has_value();
-    store.setUnitSizedFactsInForce(false);
-    if (confirmed)
-      newlyConfirmed.insert(witness.field);
-  }
-  if (newlyConfirmed.empty())
-    return;
-  FieldsByKeyCollector collector(newlyConfirmed, context);
-  collector.TraverseDecl(context.getTranslationUnitDecl());
-  if (collector.fields.empty())
-    return;
-
-  // Only a load of a confirmed field can change anything, and only into an
-  // `out-of-bounds` report; nothing else of the second run is emitted.
-  store.setUnitSizedFactsInForce(true);
-  core::DiagnosticCollector collected;
-  FunctionAnalyzer analyzer(context, collected, options);
-  for (const FunctionDecl *function : reported) {
-    FieldUseFinder finder(collector.fields);
-    finder.TraverseStmt(function->getBody());
-    if (!finder.found)
-      continue;
-    analyzer.analyze(*function, store, /*emitDiagnostics=*/true,
-                     recursiveFunctions.contains(function->getCanonicalDecl()));
-  }
-  for (const core::Diagnostic &diagnostic : collected.diagnostics()) {
-    if (diagnostic.id != core::diag::OutOfBounds ||
-        alreadyReported.contains(RememberingSink::keyOf(diagnostic)))
-      continue;
-    sink.report(diagnostic);
+void TranslationUnitAnalyzer::reportUnclaimedContexts(
+    const FunctionDecl &function) {
+  const std::string symbol = callableSymbol(function);
+  std::vector<core::Diagnostic> found;
+  const auto memory = store.memoryRequests[symbol];
+  for (const auto &input : memory)
+    if (!store.claimedMemoryContexts.contains({symbol, input}))
+      (void)store.specializeMemory(symbol, input, options, &found);
+  const auto requests = store.callbackRequests[symbol];
+  for (const auto &bindings : requests)
+    if (std::ranges::none_of(
+            memory,
+            [&](const auto &input) { return input.callbacks == bindings; }) &&
+        !store.claimedCallbackContexts.contains({symbol, bindings}))
+      (void)store.specialize(function, bindings, options, &found);
+  for (core::Diagnostic &diagnostic : found) {
+    const core::Certainty certainty = diagnostic.certainty;
+    ledger.report(std::move(diagnostic), certainty);
   }
 }
 
@@ -603,8 +515,7 @@ bool TranslationUnitAnalyzer::analyzeSilently(const FunctionDecl &function,
 
 void TranslationUnitAnalyzer::analyzeComponent(
     const std::vector<unsigned> &component, bool recursive,
-    FunctionAnalyzer &analyzer,
-    llvm::function_ref<bool(const FunctionDecl &)> shouldReport) {
+    FunctionAnalyzer &analyzer) {
   if (recursive) {
     for (const unsigned member : component)
       recursiveFunctions.insert(definitions[member]->getCanonicalDecl());
@@ -639,15 +550,9 @@ void TranslationUnitAnalyzer::analyzeComponent(
       [&] { store.refreshingRecursiveValueOutcomes = previousRefresh; });
   for (const unsigned member : component) {
     const FunctionDecl &function = *definitions[member];
-    const bool report = shouldReport(function);
     if (store.refreshingRecursiveValueOutcomes)
       silentAnalyses.erase(function.getCanonicalDecl());
-    if (report)
-      analyzer.analyze(function, store, true, /*widenSummary=*/recursive);
-    else
-      analyzeSilently(function, analyzer, recursive);
-    if (report && options.reportUnannotated)
-      reportUnannotatedInterface(function);
+    analyzeSilently(function, analyzer, recursive);
   }
 }
 
@@ -707,19 +612,21 @@ void TranslationUnitAnalyzer::reportUnannotatedInterface(
       };
       if (!paramName.empty())
         diagnostic.addFixIt(at, std::string(macro) + " ");
-      sink.report(diagnostic);
+      ledger.report(std::move(diagnostic), core::Certainty::Possible);
       continue;
     }
-    sink.report(core::Diagnostic{
-        .severity = core::Severity::Warning,
-        .id = core::diag::AnnotationRequired,
-        .message = "pointer parameter '" + paramName +
-                   "' has no inferable ownership; annotate it with "
-                   "WEAVEC_OWNED, WEAVEC_BORROWED or WEAVEC_MUT",
-        .location = at,
-        .notes = {},
-        .fixits = {},
-    });
+    ledger.report(
+        core::Diagnostic{
+            .severity = core::Severity::Warning,
+            .id = core::diag::AnnotationRequired,
+            .message = "pointer parameter '" + paramName +
+                       "' has no inferable ownership; annotate it with "
+                       "WEAVEC_OWNED, WEAVEC_BORROWED or WEAVEC_MUT",
+            .location = at,
+            .notes = {},
+            .fixits = {},
+        },
+        core::Certainty::Possible);
   }
 
   if (!function.getReturnType()->isPointerType() ||
@@ -742,7 +649,7 @@ void TranslationUnitAnalyzer::reportUnannotatedInterface(
       .fixits = {},
   };
   diagnostic.addFixIt(at, std::string(macro) + " ");
-  sink.report(diagnostic);
+  ledger.report(std::move(diagnostic), core::Certainty::Possible);
 }
 
 } // namespace weavec::analysis

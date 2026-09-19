@@ -54,8 +54,10 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <vector>
 
 namespace weavec::analysis {
@@ -161,14 +163,33 @@ public:
     Authoritative,
     /// Fixpoint and Houdini rounds: everything is dropped.
     Discarding,
+    /// Context-specialised runs (RFC 0016, §2.6): no row is decided, but
+    /// the diagnostics are kept, with their certainty, for the caller to
+    /// report at its call.
+    Collecting,
   };
 
   LedgerAdapter(clang::ASTContext &ctx, const SiteIndex &siteIndex,
                 LedgerAdapterOptions adapterOptions = {},
                 Mode adapterMode = Mode::Authoritative);
+  /// A discarding or collecting adapter, which needs no sites.
+  LedgerAdapter(clang::ASTContext &ctx, Mode adapterMode);
 
+  /// Whether decisions, requirements, witnesses and the other facts are
+  /// dropped: every mode but the authoritative one.
   [[nodiscard]] bool isDiscarding() const noexcept {
-    return mode == Mode::Discarding;
+    return mode != Mode::Authoritative;
+  }
+  [[nodiscard]] Mode adapterMode() const noexcept { return mode; }
+  [[nodiscard]] const SiteIndex &siteIndex() const noexcept { return sites; }
+  [[nodiscard]] clang::ASTContext &astContext() const noexcept {
+    return context;
+  }
+  /// Whether `facet` applies to the site `id` (§2.1).
+  [[nodiscard]] bool applies(core::SiteId id, core::Facet facet) const;
+  /// The function whose authoritative pass is running, or null.
+  [[nodiscard]] const clang::FunctionDecl *currentFunction() const noexcept {
+    return current;
   }
 
   /// Starts the authoritative pass over `function` and discards every row,
@@ -195,6 +216,9 @@ public:
                    core::Requirement record,
                    std::optional<CheckWitness> witness = std::nullopt);
   /// A diagnostic with its certainty; `site` and `facet` link it to its row.
+  /// The diagnostic's own `certainty` is set to `certainty`. The same
+  /// diagnostic (id, location and message) is reported once per unit, as
+  /// the engine's passes may find it more than once.
   void report(core::Diagnostic diagnostic, core::Certainty certainty,
               const clang::Stmt *site = nullptr,
               std::optional<core::Facet> facet = {});
@@ -255,6 +279,10 @@ private:
   const clang::FunctionDecl *current = nullptr;
   llvm::DenseSet<std::uint32_t> overBudgetFunctions;
   std::vector<core::Diagnostic> emitted;
+  /// (id, file, line, column, message) of what `emitted` holds.
+  std::set<std::tuple<std::string, std::string, std::uint32_t, std::uint32_t,
+                      std::string>>
+      emittedKeys;
   std::vector<core::LedgerDiagnostic> ledgerDiagnostics;
   std::vector<Orphan> orphans;
   std::vector<PublishedBoundary> boundaryList;

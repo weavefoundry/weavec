@@ -12,6 +12,7 @@
 
 #include "clang/Basic/SourceManager.h"
 
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/ScopeExit.h"
 
 using namespace clang;
@@ -365,9 +366,11 @@ std::optional<ResolvedSummary> SummaryStore::lookupCall(const CallExpr &call) {
   return lookupIndirect(call);
 }
 
-std::optional<ResolvedSummary> SummaryStore::specialize(
-    const FunctionDecl &function, const core::CallbackBindings &bindings,
-    const AnalysisOptions &options, core::DiagnosticSink *sink) {
+std::optional<ResolvedSummary>
+SummaryStore::specialize(const FunctionDecl &function,
+                         const core::CallbackBindings &bindings,
+                         const AnalysisOptions &options,
+                         std::vector<core::Diagnostic> *diagnostics) {
   if (bindings.empty())
     return lookup(function);
   const std::string symbol = callableSymbol(function);
@@ -412,7 +415,8 @@ std::optional<ResolvedSummary> SummaryStore::specialize(
     activeContexts.insert(contextKey);
     const auto release =
         llvm::scope_exit([&] { activeContexts.erase(contextKey); });
-    core::DiagnosticCollector collected;
+    LedgerAdapter collected(function.getASTContext(),
+                            LedgerAdapter::Mode::Collecting);
     AnalysisOptions nestedOptions = options;
     nestedOptions.dumpStream = nullptr;
     FunctionDataflow analysis(function.getASTContext(), *definition, collected,
@@ -422,7 +426,7 @@ std::optional<ResolvedSummary> SummaryStore::specialize(
     auto summary = std::move(analysis).summary();
     applyContract(function, summary);
     specialized[contextKey] = publishSummary(std::move(summary));
-    specializedDiagnostics[contextKey] = std::move(collected).diagnostics();
+    specializedDiagnostics[contextKey] = collected.diagnostics();
     callbackDependencies[contextKey] = std::move(dependencies);
     auto &snapshot = callbackVersions[contextKey];
     snapshot = dependencySnapshot();
@@ -432,10 +436,8 @@ std::optional<ResolvedSummary> SummaryStore::specialize(
       options.stats->add("specialization_hits");
     inheritDependencies(callbackDependencies[contextKey]);
   }
-  if (sink) {
-    for (const auto &diagnostic : specializedDiagnostics[contextKey])
-      sink->report(diagnostic);
-  }
+  if (diagnostics != nullptr)
+    llvm::append_range(*diagnostics, specializedDiagnostics[contextKey]);
   return ResolvedSummary{.summary = specialized.at(contextKey),
                          .source = SummarySource::Inferred};
 }

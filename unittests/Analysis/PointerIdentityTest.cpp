@@ -320,9 +320,10 @@ void clean(int *p, int *q) { release_same(p, q); if (p != q)
   use(p); }
 )c");
   ASSERT_TRUE(result.ast);
-  EXPECT_EQ(test::messages(result.diagnostics),
-            (std::vector<std::string>{"3: use of 'p' after it was freed",
-                                      "3: use of 'q' after it was freed"}));
+  EXPECT_EQ(
+      test::messages(result.diagnostics),
+      (std::vector<std::string>{"3: use of 'p' after it may have been freed",
+                                "3: use of 'q' after it may have been freed"}));
 }
 
 TEST(PointerIdentity, OverwrittenComparisonOperandsUseTheIncomingValues) {

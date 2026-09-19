@@ -33,9 +33,26 @@ LedgerAdapter::LedgerAdapter(clang::ASTContext &ctx, const SiteIndex &siteIndex,
   unit.target = options.target;
 }
 
+/// The sites of a unit nothing is decided about.
+static const SiteIndex &noSites() {
+  static const SiteIndex None;
+  return None;
+}
+
+LedgerAdapter::LedgerAdapter(clang::ASTContext &ctx, Mode adapterMode)
+    : LedgerAdapter(ctx, noSites(), {}, adapterMode) {
+  assert(adapterMode != Mode::Authoritative &&
+         "an authoritative adapter needs the unit's sites");
+}
+
 core::FacetRecord *LedgerAdapter::record(core::SiteId id, core::Facet facet) {
   core::Site *site = unit.site(id);
   return site != nullptr ? site->facet(facet) : nullptr;
+}
+
+bool LedgerAdapter::applies(core::SiteId id, core::Facet facet) const {
+  const core::Site *site = unit.site(id);
+  return site != nullptr && site->hasFacet(facet);
 }
 
 void LedgerAdapter::beginFunction(const clang::FunctionDecl &function) {
@@ -220,8 +237,19 @@ void LedgerAdapter::publish(core::Diagnostic diagnostic,
 void LedgerAdapter::report(core::Diagnostic diagnostic,
                            core::Certainty certainty, const clang::Stmt *site,
                            std::optional<core::Facet> facet) {
-  if (isDiscarding())
+  if (mode == Mode::Discarding)
     return;
+  diagnostic.certainty = certainty;
+  if (!emittedKeys
+           .emplace(std::string(diagnostic.id), diagnostic.location.file,
+                    diagnostic.location.line, diagnostic.location.column,
+                    diagnostic.message)
+           .second)
+    return;
+  if (mode == Mode::Collecting) {
+    emitted.push_back(std::move(diagnostic));
+    return;
+  }
   std::optional<core::SiteId> id;
   if (site != nullptr) {
     id = sites.find(*site);
@@ -264,11 +292,13 @@ void LedgerAdapter::fillDefaults(PlannerOptions & /*planner*/) {
         continue;
       for (const core::Facet facet : core::AllFacets) {
         core::FacetRecord *facetRecord = site->facet(facet);
-        if (facetRecord == nullptr || facetRecord->decided)
+        if (facetRecord == nullptr)
           continue;
-        facetRecord->decide(defaultFor(info, facet, row.overBudget));
-        // A default `checked` spatial facet is checked against the extent
-        // the declarations give (§2.6).
+        if (!facetRecord->decided)
+          facetRecord->decide(defaultFor(info, facet, row.overBudget));
+        // A `checked` spatial facet the engine gave no witness (and a
+        // default one) is checked against the extent the declarations give
+        // (§2.6); without one the planner finds it inexpressible.
         if (facet == core::Facet::Spatial &&
             facetRecord->outcome() == core::SiteOutcome::Checked &&
             witnesses.of(info.id, facet).empty())

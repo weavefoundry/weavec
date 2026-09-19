@@ -8,15 +8,18 @@
 
 #include "Dataflow.h"
 
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/ScopeExit.h"
 
 #include <algorithm>
 
 namespace weavec::analysis {
 
-std::optional<ResolvedSummary> SummaryStore::specializeMemory(
-    std::string_view symbol, const core::CallContext &bindings,
-    const AnalysisOptions &options, core::DiagnosticSink *sink) {
+std::optional<ResolvedSummary>
+SummaryStore::specializeMemory(std::string_view symbol,
+                               const core::CallContext &bindings,
+                               const AnalysisOptions &options,
+                               std::vector<core::Diagnostic> *diagnostics) {
   const auto *function = callable(symbol);
   if (!bindings.valid())
     return std::nullopt;
@@ -60,7 +63,8 @@ std::optional<ResolvedSummary> SummaryStore::specializeMemory(
     activeMemoryContexts.insert(key);
     const auto release =
         llvm::scope_exit([&] { activeMemoryContexts.erase(key); });
-    core::DiagnosticCollector collected;
+    LedgerAdapter collected(definition->getASTContext(),
+                            LedgerAdapter::Mode::Collecting);
     AnalysisOptions nestedOptions = options;
     nestedOptions.dumpStream = nullptr;
     FunctionDataflow analysis(definition->getASTContext(), *definition,
@@ -73,7 +77,7 @@ std::optional<ResolvedSummary> SummaryStore::specializeMemory(
     auto summary = std::move(analysis).summary();
     applyContract(*function, summary);
     memorySpecialized[key] = publishSummary(std::move(summary));
-    memoryDiagnostics[key] = std::move(collected).diagnostics();
+    memoryDiagnostics[key] = collected.diagnostics();
     memoryDependencies[key] = std::move(dependencies);
     auto &snapshot = memoryVersions[key];
     snapshot = dependencySnapshot();
@@ -83,9 +87,8 @@ std::optional<ResolvedSummary> SummaryStore::specializeMemory(
       options.stats->add("specialization_hits");
     inheritDependencies(memoryDependencies[key]);
   }
-  if (sink && bindings.reportDiagnostics)
-    for (const auto &diagnostic : memoryDiagnostics[key])
-      sink->report(diagnostic);
+  if (diagnostics != nullptr && bindings.reportDiagnostics)
+    llvm::append_range(*diagnostics, memoryDiagnostics[key]);
   return ResolvedSummary{.summary = memorySpecialized.at(key),
                          .source = SummarySource::Inferred};
 }

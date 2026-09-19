@@ -7,16 +7,10 @@
 //===----------------------------------------------------------------------===//
 //
 // RFC 0030 §14: `SafetyEngine` implemented over `TranslationUnitAnalyzer`
-// and `FunctionDataflow`. Every diagnostic the engine produces reaches the
-// ledger through `LedgerAdapter::report`, in the order the engine produces
-// it, with a placeholder certainty (definite for errors, possible for
-// warnings) and a link to the innermost site at its location that has the
-// facet the diagnostic id governs. The adapter's `beginFunction` marks each
-// reporting pass.
-//
-// Stage S3-B moves the decisions themselves into `FunctionDataflow`
-// (§15): `decide`, `requirement` and `witness` at each check, and certainty
-// from the new `MoveRecord`, `NullRecord` and `Loan` bits.
+// and `FunctionDataflow`, which publish only through `LedgerAdapter`: each
+// diagnostic with its certainty (from the `MoveRecord`, `NullRecord` and
+// `Loan` bits, §3) and the site and facet it is about, and the decisions of
+// the authoritative pass of each function (§2.6, §15).
 //
 //===----------------------------------------------------------------------===//
 
@@ -67,8 +61,6 @@ public:
                                             const ProgramDatabase *database);
 
 private:
-  class AdapterSink;
-  std::unique_ptr<AdapterSink> sink;
   std::unique_ptr<TranslationUnitAnalyzer> analyzer;
   clang::ASTContext *context = nullptr;
   AnalysisOptions analysisOptions;

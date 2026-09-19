@@ -53,6 +53,32 @@ static const SiteInfo &siteOf(const test::CollectedUnit &unit,
   return unit.sites.function(*unit.function(function))->sites.at(ordinal);
 }
 
+/// The pipeline over `unit`: its diagnostics, as `<line>: <severity>:
+/// <message> [<notes>]`, and its ledger.
+namespace {
+struct Piped {
+  Lines diagnostics;
+  core::Ledger ledger;
+};
+} // namespace
+static Piped pipe(const test::CollectedUnit &unit) {
+  core::DiagnosticCollector collected;
+  const UnitPipelineResult result =
+      runUnitAnalysis(unit.context(), UnitPipelineOptions{}, collected);
+  Piped out;
+  for (const core::Diagnostic &d : collected.diagnostics()) {
+    std::string line = std::to_string(d.location.line) + ": " +
+                       std::string(core::toString(d.severity)) + ": " +
+                       d.message;
+    for (const core::Diagnostic &note : d.notes)
+      line += " [" + note.message + "]";
+    out.diagnostics.push_back(std::move(line));
+  }
+  if (result.ledger)
+    out.ledger = result.ledger->ledger;
+  return out;
+}
+
 namespace {
 
 // §2.6: the defaults of undecided facets, and of an over-budget function.
@@ -398,6 +424,112 @@ int f(void) {
       runUnitAnalysis(unit.context(), discovery, none);
   EXPECT_EQ(discovered.ledger, nullptr);
   EXPECT_TRUE(none.empty());
+}
+
+// -- RFC 0030 §3: certainty, severity and the engine's decisions ------------
+
+TEST(EngineCertainty, TemporalFindingsAreDefiniteOrPossible) {
+  const auto unit = collectUnit(R"c(
+void g(char *p) { free(p); p[0] = 1; }
+void h(char *p, int c) { if (c) free(p); p[0] = 1; }
+void twice(char *p, int c) { if (c) free(p); free(p); }
+void fine(char *p) { p[0] = 1; free(p); }
+)c");
+  const Piped piped = pipe(unit);
+  EXPECT_EQ(piped.diagnostics,
+            (Lines{"2: error: use of 'p' after it was freed [freed here]",
+                   "3: warning: use of 'p' after it may have been freed "
+                   "[freed here on some paths]",
+                   "4: warning: 'p' may be freed twice [previously freed here "
+                   "on some paths]"}));
+  EXPECT_EQ(outcomes(piped.ledger, "g")[1],
+            "p[0] spatial=unresolved/unknown-extent null=checked "
+            "temporal=violation");
+  EXPECT_EQ(outcomes(piped.ledger, "h")[1],
+            "p[0] spatial=unresolved/unknown-extent null=checked "
+            "temporal=unresolved/may-released");
+  // The release's own spatial facet is stage S3-B2's.
+  EXPECT_EQ(outcomes(piped.ledger, "twice")[1],
+            "free(p) spatial=unresolved/unanalysed "
+            "temporal=unresolved/may-released");
+  EXPECT_EQ(outcomes(piped.ledger, "fine"),
+            (Lines{"p[0] spatial=unresolved/unknown-extent null=checked "
+                   "temporal=proven",
+                   "free(p) spatial=unresolved/unanalysed temporal=proven",
+                   "} temporal=proven"}));
+  ASSERT_EQ(piped.ledger.diagnostics.size(), 3U);
+  EXPECT_EQ(piped.ledger.diagnostics[0].certainty, core::Certainty::Definite);
+  EXPECT_EQ(piped.ledger.diagnostics[1].certainty, core::Certainty::Possible);
+  EXPECT_EQ(piped.ledger.diagnostics[1].facet,
+            std::optional(core::Facet::Temporal));
+}
+
+TEST(EngineCertainty, NullFindingsAreDefiniteOnly) {
+  const auto unit = collectUnit(R"c(
+struct node { int v; };
+int k(struct node *n) { if (n == 0) return n->v; return 0; }
+void m(void) { char *p = malloc(4); p[0] = 1; free(p); }
+int q(char *p) { return p[0]; }
+int r(void) { char *p = malloc(4); if (!p) return 0; int c = p[0]; free(p); return c; }
+)c");
+  const Piped piped = pipe(unit);
+  // `allocation-failure` is off by default; the engine reports it and the
+  // frontend drops it unless enabled.
+  EXPECT_EQ(piped.diagnostics,
+            (Lines{"3: error: dereference of 'n', which is null ['n' may be "
+                   "null: it is compared with NULL here]",
+                   "4: warning: the result of 'malloc' is used without a null "
+                   "test; it is null when allocation fails [allocated here]"}));
+  EXPECT_EQ(outcomes(piped.ledger, "k")[1],
+            "n->v spatial=unresolved/unknown-extent null=violation "
+            "temporal=proven");
+  EXPECT_EQ(outcomes(piped.ledger, "m")[1],
+            "p[0] spatial=proven null=checked temporal=proven");
+  EXPECT_EQ(outcomes(piped.ledger, "q")[1],
+            "p[0] spatial=unresolved/unknown-extent null=checked "
+            "temporal=proven");
+  EXPECT_EQ(outcomes(piped.ledger, "r")[2],
+            "p[0] spatial=proven null=proven temporal=proven");
+}
+
+TEST(EngineCertainty, SpatialFindingsAreDefiniteOnlyAgainstExactExtents) {
+  const auto unit = collectUnit(R"c(
+void e(void) { char *p = malloc(4); if (!p) return; p[4] = 0; free(p); }
+void loop(void) { char b[4]; for (int i = 0; i < 8; i++) b[i] = 0; }
+void declared(char *SIZED_BY(n) p, size_t n) { p[n] = 0; }
+)c");
+  const Piped piped = pipe(unit);
+  EXPECT_EQ(piped.diagnostics,
+            (Lines{"2: error: 'p[4]' is out of bounds: index 4 of an object of "
+                   "4 bytes ['p' is allocated here]"}));
+  EXPECT_EQ(outcomes(piped.ledger, "e")[2],
+            "p[4] spatial=violation null=proven temporal=proven");
+  EXPECT_EQ(outcomes(piped.ledger, "loop")[0], "b[i] spatial=checked");
+  EXPECT_EQ(outcomes(piped.ledger, "declared")[0],
+            "p[n] spatial=checked null=checked temporal=proven");
+}
+
+TEST(EngineCertainty, ContextFindingsLinkToTheCall) {
+  const auto unit = collectUnit(R"c(
+static void two(char *a, char *b) { free(a); b[0] = 1; }
+void caller(void) { char *p = malloc(4); if (!p) return; two(p, p); }
+)c");
+  const Piped piped = pipe(unit);
+  EXPECT_EQ(piped.diagnostics,
+            (Lines{"2: error: use of 'b' after it was freed [freed here "
+                   "(through 'a')] [called here with related pointer "
+                   "arguments]"}));
+  // The callee's own site is decided by its generic pass (RFC 0030 §3.1:
+  // `may-alias-released` there is stage S3-B3's); the context's finding is
+  // the call's.
+  EXPECT_EQ(outcomes(piped.ledger, "two")[1],
+            "b[0] spatial=unresolved/unknown-extent null=checked "
+            "temporal=proven");
+  EXPECT_EQ(outcomes(piped.ledger, "caller")[2], "two(p,p) temporal=violation");
+  ASSERT_EQ(piped.ledger.diagnostics.size(), 1U);
+  EXPECT_EQ(piped.ledger.diagnostics[0].function, "caller");
+  EXPECT_EQ(piped.ledger.diagnostics[0].facet,
+            std::optional(core::Facet::Temporal));
 }
 
 } // namespace

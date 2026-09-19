@@ -593,7 +593,8 @@ TEST(SignatureInference, ConditionalEffectsAreMayEffects) {
   // `f` is clean of use-after-free; on the path where `free_if` declined,
   // nobody releases `p` (RFC 0007).
   EXPECT_EQ(messages(result.diagnostics),
-            (Strings{"7: 'p' is leaked", "12: use of 'p' after it was freed",
+            (Strings{"7: 'p' is leaked",
+                     "12: use of 'p' after it may have been freed",
                      "17: use of 'p' after it was freed"}));
   const core::FunctionSummary *summary = result.summary("free_if");
   ASSERT_NE(summary, nullptr);
@@ -884,9 +885,8 @@ TEST(SignatureInference, FilteredFunctionsStillContributeSummaries) {
   )c");
   ASSERT_TRUE(result.ast);
   // Re-run with a filter that hides the helper's own bug.
-  core::DiagnosticCollector filtered;
-  TranslationUnitAnalyzer analyzer(result.ast->getASTContext(), filtered);
-  analyzer.run(
+  const core::DiagnosticCollector filtered = weavec::test::analyzeFiltered(
+      result.ast->getASTContext(),
       [](const clang::FunctionDecl &fn) { return fn.getName() == "f"; });
   EXPECT_EQ(messages(filtered), (Strings{"3: use of 'n' after it was freed"}));
   EXPECT_EQ(

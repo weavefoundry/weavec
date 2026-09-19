@@ -602,7 +602,8 @@ void FunctionDataflow::checkArrayTraversal(core::PlaceId storage,
                           .pointer = parent,
                           .offset = spatial->offset,
                           .unit = size,
-                          .declared = spatial->declared};
+                          .declared = spatial->declared,
+                          .lowerBound = spatial->lowerBound};
   } else if (const auto *decl = builder.varForPlace(*parent);
              decl && decl->getType()->isArrayType()) {
     if (const auto extent = byteSizeOf(decl->getType(), context))
