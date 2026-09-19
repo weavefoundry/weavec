@@ -843,6 +843,10 @@ class Evidence:
     # Section 3.4: the executable was rebuilt with -Wno-error=weavec because only the
     # case's own definite errors stopped the build; a lowered violation must still trap.
     lowered_ran: bool = False
+    # Per run: whether the report-mode run of the same input reported a failed
+    # WeaveC check. A trap without one is the program's own (macOS's malloc
+    # traps on a real double free), not a WeaveC check.
+    run_reported: list[bool] = dataclasses.field(default_factory=list)
     zero_init: bool = False     # zero-initialisation is in effect in the executable build
     notes: list[str] = dataclasses.field(default_factory=list)
     commands: list[str] = dataclasses.field(default_factory=list)
@@ -1024,10 +1028,14 @@ def evaluate(case: Case, ev: Evidence) -> dict:
 
     # Step 4: runs and TRAP markers.
     trap_expected = bool(case.traps)
-    for run in ev.runs:
+    for number, run in enumerate(ev.runs):
         what = f"run {shlex.join(run.args) or '(no arguments)'}"
+        native = run.trapped and number < len(ev.run_reported) and not ev.run_reported[number]
         if run.timed_out:
             failures.append(f"{what}: timed out")
+        elif native and not trap_expected:
+            ev.notes.append(f"{what}: {run.describe()} without a failed WeaveC check (the "
+                            f"program's own trap)")
         elif run.trapped != trap_expected and not legacy:
             failures.append(f"{what}: {run.describe()}, but the case has "
                             + ("TRAP markers" if trap_expected else "no TRAP marker"))
@@ -1467,6 +1475,7 @@ def run_case(case: Case, cfg: Config) -> dict:
                 else:
                     ev.ran = True
                     report_runs = run_executable(report_exe, case, cfg, temp, env, cfg.run_timeout)
+                    ev.run_reported = [bool(parse_reports(run.stderr, temp)) for run in report_runs]
                     seen = set()
                     for run in report_runs:
                         for report in parse_reports(run.stderr, temp):
