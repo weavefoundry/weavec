@@ -138,6 +138,10 @@ editor integration.
   step re-runs the `arg` lines recorded there.
 - `weavec --whole-program --dump-analysis a.c b.c --` prints each unit's
   dump in analysis order and then the joined program database.
+- `weavec --dump-kinds file.c --` prints the unit's RFC 0030 pointer kinds
+  (declared and inferred, with must-access requirements, slot demotions,
+  store groups and §7.6 candidates) and its function-pointer slots, without
+  running the engine.
 - For lit failures, `lit -a` prints the full command and output; the test's
   working files are under `build/<preset>/test/<suite>/Output/`.
 

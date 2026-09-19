@@ -24,6 +24,8 @@ weavec_add_unittest(
           LoopRequirementsTest.cpp
           GuardCompletenessTest.cpp
           AttributeReaderTest.cpp
+          KindInferenceTest.cpp
+          SlotCollectorTest.cpp
           SiteCollectorTest.cpp
           CheckPlannerTest.cpp
           LedgerAdapterTest.cpp

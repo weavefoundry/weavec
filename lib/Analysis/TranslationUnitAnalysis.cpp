@@ -309,33 +309,9 @@ UnitExports TranslationUnitAnalyzer::exports() {
   return result;
 }
 
-static void validateCheckedDeclarations(const DeclContext &dc,
-                                        ASTContext &context,
-                                        LedgerAdapter &ledger) {
-  for (const Decl *decl : dc.decls()) {
-    if (isa<FunctionDecl>(decl))
-      continue; // FunctionAnalyzer checks parameters and local declarations.
-    if (const auto *named = dyn_cast<NamedDecl>(decl);
-        named && getAnnotations(*named).checked)
-      ledger.report(
-          {.severity = core::Severity::Error,
-           .id = core::diag::InvalidAnnotation,
-           .message = "WEAVEC_CHECKED requires a function declaration",
-           .location =
-               toCoreLocation(context.getSourceManager(), named->getLocation()),
-           .notes = {},
-           .fixits = {}},
-          core::Certainty::Definite);
-    if (const auto *nested = dyn_cast<DeclContext>(decl))
-      validateCheckedDeclarations(*nested, context, ledger);
-  }
-}
-
 void TranslationUnitAnalyzer::run(
     llvm::function_ref<bool(const FunctionDecl &)> shouldReport) {
   prepare();
-  validateCheckedDeclarations(*context.getTranslationUnitDecl(), context,
-                              ledger);
 
   const std::vector<std::vector<unsigned>> adjacency = buildCallGraph();
   const std::vector<std::vector<unsigned>> components =

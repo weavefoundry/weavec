@@ -8,7 +8,13 @@
 
 #include "weavec/Analysis/KindTable.h"
 
+#include "weavec/Analysis/ClangLocation.h"
+
 #include "clang/AST/Type.h"
+
+#include "llvm/ADT/STLExtras.h"
+
+#include <algorithm>
 
 namespace weavec::analysis {
 
@@ -26,12 +32,66 @@ std::string_view toString(KindLevel level) noexcept {
   return "annotation";
 }
 
+std::string_view toString(MustAccessRule rule) noexcept {
+  switch (rule) {
+  case MustAccessRule::R1:
+    return "R1";
+  case MustAccessRule::R2:
+    return "R2";
+  case MustAccessRule::R3:
+    return "R3";
+  case MustAccessRule::R4:
+    return "R4";
+  case MustAccessRule::R5:
+    return "R5";
+  }
+  return "R1";
+}
+
+std::string_view toString(RequirementEnforcement enforcement) noexcept {
+  switch (enforcement) {
+  case RequirementEnforcement::CallSites:
+    return "call-sites";
+  case RequirementEnforcement::CallerContract:
+    return "caller-contract";
+  }
+  return "call-sites";
+}
+
+std::string RequirementGuard::toString() const {
+  return lhs.toString() +
+         (relation == Relation::Less ? std::string(" < ")
+                                     : std::string(" <= ")) +
+         rhs.toString();
+}
+
+std::string MustAccessRequirement::toString() const {
+  std::string text;
+  if (guard)
+    text = guard->toString() + " -> ";
+  return text + kind.toString() + " (" + std::string(analysis::toString(rule)) +
+         ")";
+}
+
 bool KindEntry::hasShape() const noexcept {
   return kind.shape != core::PointerShape::Unknown;
 }
 
+bool KindEntry::hasDeclaredShape() const noexcept {
+  return shapeLevel.has_value() && hasShape();
+}
+
 bool KindEntry::isNonnull() const noexcept {
   return kind.nullability == core::Nullability::Nonnull;
+}
+
+bool KindEntry::declaresNonnull() const noexcept {
+  return nullabilityLevel.has_value() && isNonnull();
+}
+
+bool KindEntry::hasEnforcedRequirement() const noexcept {
+  return enforcement == RequirementEnforcement::CallSites &&
+         !mustAccess.empty();
 }
 
 bool KindEntry::shapeFromSystemHeader() const noexcept {
@@ -97,6 +157,62 @@ void KindTable::setGovernedByLibrary(const clang::FunctionDecl &function) {
 
 void KindTable::addProblem(KindProblem problem) {
   problemList.push_back(std::move(problem));
+}
+
+bool KindTable::requireSafe(const clang::FunctionDecl &function) const {
+  return safe.contains(function.getCanonicalDecl());
+}
+
+void KindTable::setRequireSafe(const clang::FunctionDecl &function) {
+  safe.insert(function.getCanonicalDecl());
+}
+
+const OwnershipContract *
+KindTable::ownership(const clang::FunctionDecl &function) const {
+  const auto found = contracts.find(function.getCanonicalDecl());
+  return found == contracts.end() ? nullptr : &found->second;
+}
+
+void KindTable::setOwnership(const clang::FunctionDecl &function,
+                             OwnershipContract contract) {
+  contracts.insert_or_assign(function.getCanonicalDecl(), std::move(contract));
+}
+
+void KindTable::addSuggestion(KindSuggestion suggestion) {
+  suggestionList.push_back(std::move(suggestion));
+}
+
+std::vector<core::Diagnostic>
+kindProblemDiagnostics(const KindTable &table, const clang::SourceManager &sm) {
+  std::vector<const KindProblem *> ordered;
+  ordered.reserve(table.problems().size());
+  for (const KindProblem &problem : table.problems())
+    ordered.push_back(&problem);
+  std::ranges::stable_sort(
+      ordered, [&sm](const KindProblem *a, const KindProblem *b) {
+        return a->location != b->location &&
+               sm.isBeforeInTranslationUnit(a->location, b->location);
+      });
+  std::vector<core::Diagnostic> out;
+  for (const KindProblem *problem : ordered) {
+    // A redeclaration repeats its annotations; report each problem once.
+    const bool repeated = llvm::any_of(out, [&](const core::Diagnostic &seen) {
+      return seen.message == problem->message &&
+             seen.location == toCoreLocation(sm, problem->location);
+    });
+    if (repeated)
+      continue;
+    out.push_back(core::Diagnostic{
+        .severity = core::Severity::Warning,
+        .certainty = core::Certainty::Definite,
+        .id = core::diag::InvalidAnnotation,
+        .message = problem->message,
+        .location = toCoreLocation(sm, problem->location),
+        .notes = {},
+        .fixits = {},
+    });
+  }
+  return out;
 }
 
 std::size_t KindTable::size() const noexcept {

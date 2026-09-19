@@ -566,7 +566,8 @@ void Walker::walkStmt(const clang::Stmt *stmt, Context ctx) {
   if (const auto *ret = llvm::dyn_cast<clang::ReturnStmt>(stmt)) {
     const KindEntry *result = kinds.result(function);
     walkExpr(ret->getRetValue(), ctx, Use::Value,
-             result != nullptr && result->hasShape() ? result : nullptr);
+             result != nullptr && result->hasDeclaredShape() ? result
+                                                             : nullptr);
     PendingSite &exit =
         addSite(core::SiteKind::Call, *ret, FacetSet{.temporal = true}, ctx);
     exit.info.boundary = core::Boundary::Exit;
@@ -1051,10 +1052,11 @@ void Walker::walkCall(const clang::CallExpr &call, Context ctx) {
     for (unsigned i = 0; i < call.getNumArgs(); ++i) {
       // §7.4: an argument for a parameter with a declared kind is a
       // required position. A LibrarySpec row checks its own arguments.
+      // Inferred and default kinds are not: `hasDeclaredShape`.
       const KindEntry *param =
           callee != nullptr && !governed ? kinds.param(*callee, i) : nullptr;
       walkExpr(call.getArg(i), ctx, Use::Value,
-               param != nullptr && param->hasShape() ? param : nullptr);
+               param != nullptr && param->hasDeclaredShape() ? param : nullptr);
     }
   }
   addCallSites(call, ctx);
@@ -1239,7 +1241,7 @@ void Walker::addCallSites(const clang::CallExpr &call, Context ctx) {
       const KindEntry *param = kinds.param(*callee, i);
       if (param == nullptr)
         continue;
-      if (param->hasShape()) {
+      if (param->hasDeclaredShape()) {
         facets.spatial = true;
         spatialOnlySystem = spatialOnlySystem && param->shapeFromSystemHeader();
         if (!param->shapeFromSystemHeader())
@@ -1252,7 +1254,7 @@ void Walker::addCallSites(const clang::CallExpr &call, Context ctx) {
                       : clang::QualType()});
       }
       const clang::Expr *arg = call.getArg(i);
-      if (!param->isNonnull() || !arg->getType()->isPointerType() ||
+      if (!param->declaresNonnull() || !arg->getType()->isPointerType() ||
           decayedArray(arg) != nullptr)
         continue;
       facets.null = true;
@@ -1324,7 +1326,7 @@ void Walker::walkInitList(const clang::InitListExpr &list, Context ctx) {
   const auto store = [&](const clang::FieldDecl *field,
                          const clang::Expr *init) {
     const KindEntry *slot = field != nullptr ? kinds.field(*field) : nullptr;
-    if (slot != nullptr && !slot->hasShape())
+    if (slot != nullptr && !slot->hasDeclaredShape())
       slot = nullptr;
     walkExpr(init, ctx, Use::Value, slot);
     if (slot != nullptr && init != nullptr)
@@ -1399,7 +1401,7 @@ const KindEntry *Walker::slotKind(const clang::Expr *lvalue) const {
         variable != nullptr && variable->hasGlobalStorage())
       entry = kinds.variable(*variable);
   }
-  return entry != nullptr && entry->hasShape() ? entry : nullptr;
+  return entry != nullptr && entry->hasDeclaredShape() ? entry : nullptr;
 }
 
 bool Walker::hasRawOrigin(const clang::Expr *pointer, unsigned depth) const {
@@ -1810,7 +1812,7 @@ Walker::declaredDefaults(const clang::CallExpr &call,
   std::vector<CheckWitness> out;
   for (unsigned i = 0; i < call.getNumArgs(); ++i) {
     const KindEntry *entry = kinds.param(callee, i);
-    if (entry == nullptr || !entry->hasShape())
+    if (entry == nullptr || !entry->hasDeclaredShape())
       continue;
     if (!entry->isCheckOperand())
       return {};
@@ -1946,6 +1948,8 @@ SiteIndex SiteCollector::collect() {
     row.linkage = function->isExternallyVisible() ? core::Linkage::External
                                                   : core::Linkage::Internal;
     row.callsSetjmp = walker.callsSetjmp;
+    // §6.3: `WEAVEC_REQUIRE_SAFE` holds the function to `checked`.
+    row.requireSafe = kinds.requireSafe(*function);
     row.sites.reserve(pending.size());
     sites.sites.reserve(pending.size());
     for (std::size_t i = 0; i < pending.size(); ++i) {

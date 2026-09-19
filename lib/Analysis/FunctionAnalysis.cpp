@@ -62,32 +62,6 @@ bool FunctionAnalyzer::analyze(const FunctionDecl &function,
 void FunctionAnalyzer::validate(const FunctionDecl &function) {
   const SourceManager &sm = context.getSourceManager();
 
-  const auto invalidChecked = [&](const NamedDecl &decl) {
-    if (!getAnnotations(decl).checked)
-      return;
-    reportDeclaration(
-        ledger, core::Diagnostic{
-                    .severity = core::Severity::Error,
-                    .id = core::diag::InvalidAnnotation,
-                    .message = "WEAVEC_CHECKED requires a function declaration",
-                    .location = toCoreLocation(sm, decl.getLocation()),
-                    .notes = {},
-                    .fixits = {}});
-  };
-  for (const auto *param : function.parameters())
-    invalidChecked(*param);
-  std::vector<const Stmt *> declarations{function.getBody()};
-  for (std::size_t i = 0;
-       i < declarations.size() && declarations.size() < 65536; ++i) {
-    if (!declarations[i])
-      continue;
-    if (const auto *statement = dyn_cast<DeclStmt>(declarations[i]))
-      for (const auto *decl : statement->decls())
-        if (const auto *named = dyn_cast<NamedDecl>(decl))
-          invalidChecked(*named);
-    for (const auto *child : declarations[i]->children())
-      declarations.push_back(child);
-  }
   const AnnotationSet annotations = getAnnotations(function);
   if (annotations.invalid) {
     reportDeclaration(

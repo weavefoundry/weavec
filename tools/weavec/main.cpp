@@ -22,8 +22,14 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "weavec/Analysis/AttributeReader.h"
+#include "weavec/Analysis/KindInference.h"
+#include "weavec/Analysis/KindTable.h"
+#include "weavec/Analysis/SlotCollector.h"
 #include "weavec/Config/Version.h"
+#include "weavec/Core/FnSlots.h"
 #include "weavec/Core/Ledger.h"
+#include "weavec/Core/LibrarySpec.h"
 #include "weavec/Frontend/AnalysisStats.h"
 #include "weavec/Frontend/DiagnosticControl.h"
 #include "weavec/Frontend/FrontendAction.h"
@@ -32,6 +38,10 @@
 #include "weavec/Frontend/ProgramAnalysis.h"
 #include "weavec/Frontend/ResourceDir.h"
 
+#include "clang/AST/ASTConsumer.h"
+#include "clang/AST/ASTContext.h"
+#include "clang/Frontend/CompilerInstance.h"
+#include "clang/Frontend/FrontendAction.h"
 #include "clang/Tooling/ArgumentsAdjusters.h"
 #include "clang/Tooling/CommonOptionsParser.h"
 #include "clang/Tooling/CompilationDatabase.h"
@@ -108,6 +118,14 @@ cl::opt<bool> dumpAnalysis(
              "unstable)"),
     cl::init(false), cl::cat(weavecCategory));
 
+cl::opt<bool> dumpKinds(
+    "dump-kinds",
+    cl::desc("Print each unit's pointer kinds (RFC 0030 §7), must-access "
+             "requirements, store groups, field candidates and "
+             "function-pointer slots to stdout instead of analysing "
+             "(debugging aid; format unstable)"),
+    cl::init(false), cl::cat(weavecCategory));
+
 cl::opt<bool> wholeProgram(
     "whole-program",
     cl::desc("Analyse the given sources (all sources of the compilation "
@@ -130,6 +148,44 @@ cl::extrahelp moreHelp(
 // Any symbol inside this executable works for locating it on disk.
 int mainExecutableAnchor = 0;
 // NOLINTEND(cppcoreguidelines-avoid-non-const-global-variables)
+
+} // namespace
+
+namespace {
+
+/// `--dump-kinds`: the declared and inferred kinds and the slots of a unit,
+/// before any engine runs (RFC 0030 §7, §9.3).
+class DumpKindsConsumer : public clang::ASTConsumer {
+public:
+  // NOLINTNEXTLINE(readability-identifier-naming): ASTConsumer's hook
+  void HandleTranslationUnit(clang::ASTContext &context) override {
+    const weavec::core::LibrarySpec &library =
+        weavec::core::LibrarySpec::shipped();
+    weavec::analysis::KindTable kinds =
+        weavec::analysis::AttributeReader(context, library).read();
+    const weavec::analysis::SlotCollection slots =
+        weavec::analysis::SlotCollector(context, library).collect();
+    const weavec::core::SlotSolution solution = slots.solve();
+    weavec::analysis::KindInferenceOptions options;
+    options.slots = &slots;
+    options.slotSolution = &solution;
+    const weavec::analysis::KindInferenceResult inferred =
+        weavec::analysis::KindInference(context, library, options).infer(kinds);
+    llvm::outs() << "unit '" << slots.unit() << "'\n";
+    weavec::analysis::dumpKinds(kinds, inferred, context, llvm::outs());
+    weavec::analysis::dumpSlots(slots, solution, context, llvm::outs());
+  }
+};
+
+class DumpKindsAction : public clang::ASTFrontendAction {
+protected:
+  // NOLINTNEXTLINE(readability-identifier-naming): FrontendAction's hook
+  std::unique_ptr<clang::ASTConsumer>
+  CreateASTConsumer(clang::CompilerInstance & /*compiler*/,
+                    llvm::StringRef /*file*/) override {
+    return std::make_unique<DumpKindsConsumer>();
+  }
+};
 
 } // namespace
 
@@ -405,6 +461,9 @@ int main(int argc, const char **argv) {
   clang::tooling::ClangTool tool(compilations, sources);
   for (const clang::tooling::ArgumentsAdjuster &adjuster : adjusters)
     tool.appendArgumentsAdjuster(adjuster);
+  if (dumpKinds)
+    return tool.run(
+        clang::tooling::newFrontendActionFactory<DumpKindsAction>().get());
   const int status =
       tool.run(weavec::frontend::createWeaveCActionFactory(options).get());
   const bool statsOK = weavec::frontend::writeAnalysisStats(

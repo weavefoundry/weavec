@@ -364,6 +364,20 @@ int h(int *p) { if (setjmp(env)) return 0; return *p; }
   EXPECT_TRUE(unit.row("h")->callsSetjmp);
 }
 
+// RFC 0030 §6.3: `WEAVEC_REQUIRE_SAFE` marks the function's row, which
+// `LedgerAdapter` holds to `checked`.
+TEST(SiteCollector, MarksRequireSafeFunctions) {
+  const auto unit = collectUnit(R"c(
+#define REQUIRE_SAFE __attribute__((annotate("weavec.require_safe")))
+REQUIRE_SAFE int strict(int *p) { return *p; }
+int lax(int *p) { return *p; }
+)c");
+  ASSERT_NE(unit.row("strict"), nullptr);
+  ASSERT_NE(unit.row("lax"), nullptr);
+  EXPECT_TRUE(unit.row("strict")->requireSafe);
+  EXPECT_FALSE(unit.row("lax")->requireSafe);
+}
+
 // The index finds every site by statement, and the exit of a call that does
 // not return separately.
 TEST(SiteCollector, IndexesSitesByStatement) {

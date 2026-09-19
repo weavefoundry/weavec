@@ -39,8 +39,15 @@ struct LinearTerm {
 
 using PathOf =
     std::function<std::optional<core::ExtentPath>(const clang::ValueDecl &)>;
-using NameResolver =
-    std::function<std::optional<core::ExtentPath>(llvm::StringRef)>;
+
+/// What the name in a `WEAVEC_*` extent annotation resolves to (§7.2): a
+/// sibling parameter or field, in any position.
+struct Sibling {
+  core::ExtentPath path;
+  bool integer = false;
+  bool pointer = false;
+};
+using SiblingResolver = std::function<std::optional<Sibling>(llvm::StringRef)>;
 
 /// What one precedence level says about one position, over every
 /// redeclaration.
@@ -302,43 +309,140 @@ countAttributedKind(clang::QualType type, const clang::ASTContext &context,
                                         : core::Nullability::Nonnull};
 }
 
-/// WEAVEC_* annotations on one declaration (level 1): nullability, and a
-/// `WEAVEC_SIZED_BY` name resolved by `resolve`.
+/// The macro that spells an extent annotation, for messages.
+static llvm::StringRef macroOf(Annotation annotation) {
+  switch (annotation) {
+  case Annotation::SizedBy:
+    return "WEAVEC_SIZED_BY";
+  case Annotation::CountedBy:
+    return "WEAVEC_COUNTED_BY";
+  case Annotation::EndedBy:
+    return "WEAVEC_ENDED_BY";
+  default:
+    return "WEAVEC_STRING";
+  }
+}
+
+/// The name an extent annotation carries (empty for `weavec.string`).
+static llvm::StringRef nameOf(Annotation annotation, llvm::StringRef text) {
+  switch (annotation) {
+  case Annotation::SizedBy:
+    return text.drop_front(spelling::SizedByPrefix.size());
+  case Annotation::CountedBy:
+    return text.drop_front(spelling::CountedByPrefix.size());
+  case Annotation::EndedBy:
+    return text.drop_front(spelling::EndedByPrefix.size());
+  default:
+    return {};
+  }
+}
+
+namespace {
+/// Where an annotation is written, for the §7.2 "applies to" column.
+enum class Position : std::uint8_t { Parameter, Field, Result, Variable };
+} // namespace
+
+/// WEAVEC_* annotations on one declaration (level 1): nullability, and the
+/// extent annotations (§7.2), whose names `resolve` looks up among the
+/// siblings. A result takes only `WEAVEC_STRING`; a variable takes only
+/// nullability.
 static void readAnnotations(const clang::Decl &decl, clang::QualType type,
-                            const NameResolver &resolve, PositionFacts &facts,
-                            KindTable &table) {
+                            const SiblingResolver &resolve,
+                            PositionFacts &facts, KindTable &table,
+                            Position position) {
   const AnnotationSet annotations = getAnnotations(decl);
   const clang::SourceLocation at = decl.getLocation();
+  const auto *named = llvm::dyn_cast<clang::NamedDecl>(&decl);
+  const std::string subject =
+      position == Position::Result
+          ? "the result of '" +
+                (named != nullptr ? named->getNameAsString() : std::string()) +
+                "'"
+          : "'" +
+                (named != nullptr ? named->getNameAsString() : std::string()) +
+                "'";
+  const auto problem = [&](std::string message) {
+    table.addProblem(
+        KindProblem{.location = at, .message = std::move(message)});
+  };
+  // §6.3: `WEAVEC_REQUIRE_SAFE` goes before a function.
+  if (annotations.requireSafe && position != Position::Result)
+    problem("WEAVEC_REQUIRE_SAFE on " + subject + ", which is not a function");
   if (annotations.nonNull)
     facts.addNullability(KindLevel::Annotation, core::Nullability::Nonnull, at);
   if (annotations.nullable)
     facts.addNullability(KindLevel::Annotation, core::Nullability::Nullable,
                          at);
-  if (annotations.sizedBy.empty() || !type->isPointerType())
+  if (!annotations.extent())
     return;
-  // Every `weavec.sized_by.<n>` on the declaration: Clang copies a previous
-  // declaration's annotations onto a redeclared parameter, so two different
-  // names can meet here, which `AnnotationSet` keeps only one of.
-  std::vector<std::string> names;
+  // Every extent annotation written on this declaration. An inherited one
+  // was read on the declaration that wrote it, where its name resolves
+  // against that declaration's parameters (§7.2: by name).
+  std::vector<std::pair<Annotation, std::string>> written;
   for (const auto *attr : decl.specific_attrs<clang::AnnotateAttr>()) {
-    const llvm::StringRef text = attr->getAnnotation();
-    if (parseAnnotation(text) != Annotation::SizedBy)
+    if (attr->isInherited())
       continue;
-    std::string name = text.drop_front(spelling::SizedByPrefix.size()).str();
-    if (!llvm::is_contained(names, name))
-      names.push_back(std::move(name));
+    const llvm::StringRef text = attr->getAnnotation();
+    const auto parsed = parseAnnotation(text);
+    if (parsed != Annotation::SizedBy && parsed != Annotation::CountedBy &&
+        parsed != Annotation::EndedBy && parsed != Annotation::String)
+      continue;
+    std::pair entry{*parsed, nameOf(*parsed, text).str()};
+    if (!llvm::is_contained(written, entry))
+      written.push_back(std::move(entry));
   }
-  for (const std::string &name : names) {
-    const auto path = resolve(name);
-    if (!path) {
-      table.addProblem(KindProblem{
-          .location = at,
-          .message = "'" + name +
-                     "' in WEAVEC_SIZED_BY does not name a parameter or field",
-      });
+  for (const auto &[annotation, name] : written) {
+    std::string spelled = macroOf(annotation).str();
+    if (!name.empty())
+      spelled += "(" + name + ")";
+    if (!type->isPointerType()) {
+      std::string message = subject;
+      message += " is declared ";
+      message += spelled;
+      message += " but is not a pointer";
+      problem(std::move(message));
       continue;
     }
-    const core::ExtentTerm extent = core::ExtentTerm::of(*path);
+    if (position == Position::Variable ||
+        (position == Position::Result && annotation != Annotation::String)) {
+      std::string message = subject;
+      message += " is declared ";
+      message += spelled;
+      message += annotation == Annotation::String
+                     ? " but only parameters, fields and results take it"
+                     : " but only parameters and fields take it";
+      problem(std::move(message));
+      continue;
+    }
+    if (annotation == Annotation::String) {
+      facts.addShape(KindLevel::Annotation, core::PointerKind::nulTerminated(),
+                     at);
+      continue;
+    }
+    const std::optional<Sibling> sibling = resolve(name);
+    if (!sibling) {
+      problem("'" + name + "' in " + macroOf(annotation).str() +
+              " does not name a parameter or field");
+      continue;
+    }
+    if (annotation == Annotation::EndedBy) {
+      if (!sibling->pointer) {
+        problem("'" + name +
+                "' in WEAVEC_ENDED_BY is not a pointer parameter or field");
+        continue;
+      }
+      facts.addShape(KindLevel::Annotation,
+                     core::PointerKind::endedBy(sibling->path), at);
+      continue;
+    }
+    if (!sibling->integer) {
+      problem("'" + name + "' in " + macroOf(annotation).str() +
+              " is not an integer parameter or field");
+      continue;
+    }
+    // §7.2: the two macros are synonyms, counting elements, and bytes for
+    // `void` and character pointees.
+    const core::ExtentTerm extent = core::ExtentTerm::of(sibling->path);
     facts.addShape(KindLevel::Annotation,
                    countsBytes(type) ? core::PointerKind::sized(extent)
                                      : core::PointerKind::counted(extent),
@@ -346,11 +450,52 @@ static void readAnnotations(const clang::Decl &decl, clang::QualType type,
   }
 }
 
-/// `T p[static N]` and VLA parameters `T p[n]` (level 2 or 4).
+/// The sibling parameter of `function` named `wanted`, in any position.
+static std::optional<Sibling>
+siblingParameter(const clang::FunctionDecl &function, llvm::StringRef wanted) {
+  for (unsigned i = 0; i < function.getNumParams(); ++i) {
+    const clang::ParmVarDecl *param = function.getParamDecl(i);
+    if (param->getName() != wanted || wanted.empty())
+      continue;
+    const clang::QualType type = param->getType();
+    return Sibling{.path = core::ExtentPath::ofParam(i),
+                   .integer = type->isIntegerType(),
+                   .pointer = type->isPointerType()};
+  }
+  return std::nullopt;
+}
+
+/// §7.2: `T p[N]` without `static` is no requirement; it yields a fix-it
+/// suggestion that inserts `static` after the `[`.
+static void suggestStatic(const clang::ParmVarDecl &param,
+                          const clang::ConstantArrayType &array,
+                          const clang::ASTContext &context, KindTable &table) {
+  const clang::TypeSourceInfo *info = param.getTypeSourceInfo();
+  if (info == nullptr || param.getName().empty())
+    return;
+  const auto loc = info->getTypeLoc().getAsAdjusted<clang::ArrayTypeLoc>();
+  if (loc.isNull() || !loc.getLBracketLoc().isFileID())
+    return;
+  const std::string count = std::to_string(array.getSize().getZExtValue());
+  const std::string name = param.getNameAsString();
+  table.addSuggestion(KindSuggestion{
+      .location = loc.getLBracketLoc().getLocWithOffset(1),
+      .message = "'" + name + "' is declared with " + count +
+                 " elements, which C does not require of callers; declare "
+                 "it '" +
+                 name + "[static " + count + "]' to require them",
+      .insert = "static ",
+  });
+  (void)context;
+}
+
+/// `T p[static N]` and VLA parameters `T p[n]` (level 2 or 4). With
+/// `suggest`, a constant bound without `static` yields a suggestion.
 static void readArrayParameter(const clang::ParmVarDecl &param,
                                const clang::ASTContext &context,
                                const PathOf &pathOf, KindLevel level,
-                               PositionFacts &facts) {
+                               PositionFacts &facts, KindTable &table,
+                               bool suggest) {
   const clang::ArrayType *array =
       context.getAsArrayType(param.getOriginalType());
   if (array == nullptr)
@@ -359,9 +504,13 @@ static void readArrayParameter(const clang::ParmVarDecl &param,
       array->getSizeModifier() == clang::ArraySizeModifier::Static;
   std::optional<LinearTerm> count;
   if (const auto *constant = llvm::dyn_cast<clang::ConstantArrayType>(array)) {
-    // §7.2: a constant bound without `static` is no requirement.
-    if (!isStatic)
+    // §7.2: a constant bound without `static` is no requirement, because C
+    // gives it none and code commonly passes fewer elements.
+    if (!isStatic) {
+      if (suggest && level != KindLevel::SystemHeader)
+        suggestStatic(param, *constant, context, table);
       return;
+    }
     if (const auto value = constant->getSize().tryZExtValue();
         value && *value <= static_cast<std::uint64_t>(
                                std::numeric_limits<std::int64_t>::max()))
@@ -379,6 +528,46 @@ static void readArrayParameter(const clang::ParmVarDecl &param,
     facts.addShape(level, core::PointerKind::counted(toExtentTerm(*count)), at);
   if (isStatic)
     facts.addNullability(level, core::Nullability::Nonnull, at);
+}
+
+/// §7.2: `malloc` and the `ownership_*` attributes of every declaration of
+/// `function`: level 4 when all of them sit in system headers.
+static OwnershipContract ownershipContract(const clang::FunctionDecl &function,
+                                           const clang::SourceManager &sm) {
+  OwnershipContract contract;
+  bool outsideSystem = false;
+  for (const clang::FunctionDecl *redecl : function.redecls()) {
+    const bool system = sm.isInSystemHeader(redecl->getLocation());
+    if (redecl->hasAttr<clang::RestrictAttr>() &&
+        redecl->getReturnType()->isPointerType()) {
+      contract.freshResult =
+          contract.freshResult.value_or(std::string(core::HeapFamily));
+      outsideSystem = outsideSystem || !system;
+    }
+    for (const auto *attr : redecl->specific_attrs<clang::OwnershipAttr>()) {
+      outsideSystem = outsideSystem || !system;
+      const std::string family = attr->getModule() != nullptr
+                                     ? attr->getModule()->getName().str()
+                                     : std::string();
+      if (attr->getOwnKind() == clang::OwnershipAttr::Returns) {
+        contract.freshResult = family;
+        continue;
+      }
+      for (const clang::ParamIdx index : attr->args()) {
+        if (!index.isValid())
+          continue;
+        OwnershipContract::Argument argument{
+            .index = index.getASTIndex(),
+            .family = family,
+            .retains = attr->getOwnKind() == clang::OwnershipAttr::Holds};
+        if (!llvm::is_contained(contract.arguments, argument))
+          contract.arguments.push_back(std::move(argument));
+      }
+    }
+  }
+  contract.level =
+      outsideSystem ? KindLevel::Ecosystem : KindLevel::SystemHeader;
+  return contract;
 }
 
 void AttributeReader::readFunction(const clang::FunctionDecl &function,
@@ -405,6 +594,10 @@ void AttributeReader::readFunction(const clang::FunctionDecl &function,
                                    : paramName);
   }
   PositionFacts result(table, "result of '" + name + "'");
+  // §7.2 suggestions go on the definition, or on the first declaration.
+  const clang::FunctionDecl *suggestOn = canonical.getDefinition();
+  if (suggestOn == nullptr)
+    suggestOn = &canonical;
 
   for (const clang::FunctionDecl *redecl : canonical.redecls()) {
     const KindLevel level = ecosystemLevel(*redecl, sm);
@@ -419,14 +612,9 @@ void AttributeReader::readFunction(const clang::FunctionDecl &function,
           return core::ExtentPath::ofParam(i);
       return std::nullopt;
     };
-    const auto byName =
-        [redecl](llvm::StringRef wanted) -> std::optional<core::ExtentPath> {
-      for (unsigned i = 0; i < redecl->getNumParams(); ++i) {
-        const clang::ParmVarDecl *param = redecl->getParamDecl(i);
-        if (param->getName() == wanted && param->getType()->isIntegerType())
-          return core::ExtentPath::ofParam(i);
-      }
-      return std::nullopt;
+    const SiblingResolver byName =
+        [redecl](llvm::StringRef wanted) -> std::optional<Sibling> {
+      return siblingParameter(*redecl, wanted);
     };
 
     // Function-level `nonnull` (all pointer parameters, or the listed ones).
@@ -446,7 +634,7 @@ void AttributeReader::readFunction(const clang::FunctionDecl &function,
       const clang::ParmVarDecl &param = *redecl->getParamDecl(i);
       PositionFacts &facts = params[i];
       const clang::QualType type = param.getType();
-      readAnnotations(param, type, byName, facts, table);
+      readAnnotations(param, type, byName, facts, table, Position::Parameter);
       const clang::SourceLocation at = param.getLocation();
       if (type->isPointerType() &&
           (nonnullParams[i] || param.hasAttr<clang::NonNullAttr>()))
@@ -457,18 +645,21 @@ void AttributeReader::readFunction(const clang::FunctionDecl &function,
         facts.addShape(level, std::move(counted->first), at);
         facts.addNullability(level, counted->second, at);
       }
-      readArrayParameter(param, context, paramPath, level, facts);
+      readArrayParameter(param, context, paramPath, level, facts, table,
+                         /*suggest=*/redecl == suggestOn);
     }
 
-    // The result.
+    // The result: nullability, and `WEAVEC_STRING` (§7.2). The function's
+    // own name is no sibling of its result.
     const AnnotationSet onFunction = getAnnotations(*redecl);
     const clang::SourceLocation at = redecl->getLocation();
-    if (onFunction.nonNull)
-      result.addNullability(KindLevel::Annotation, core::Nullability::Nonnull,
-                            at);
-    if (onFunction.nullable)
-      result.addNullability(KindLevel::Annotation, core::Nullability::Nullable,
-                            at);
+    readAnnotations(
+        *redecl, redecl->getReturnType(),
+        [](llvm::StringRef) -> std::optional<Sibling> { return std::nullopt; },
+        result, table, Position::Result);
+    // §6.3: `WEAVEC_REQUIRE_SAFE` holds the function to `checked`.
+    if (onFunction.requireSafe)
+      table.setRequireSafe(canonical);
     if (redecl->getReturnType()->isPointerType()) {
       if (redecl->hasAttr<clang::ReturnsNonNullAttr>())
         result.addNullability(level, core::Nullability::Nonnull, at);
@@ -495,23 +686,43 @@ void AttributeReader::readFunction(const clang::FunctionDecl &function,
       table.setParam(canonical, i, std::move(*entry));
   if (auto entry = result.resolve(libraryGoverns))
     table.setResult(canonical, std::move(*entry));
+  // A `LibrarySpec` row (level 3) outranks system-header contracts.
+  if (auto contract = ownershipContract(canonical, sm);
+      !contract.empty() &&
+      (!libraryGoverns || contract.level != KindLevel::SystemHeader))
+    table.setOwnership(canonical, std::move(contract));
 }
 
 void AttributeReader::readField(const clang::FieldDecl &field,
                                 KindTable &table) {
   const clang::QualType type = field.getType();
-  if (!type->isPointerType() && !type->isArrayType())
+  if (!type->isPointerType() && !type->isArrayType()) {
+    // Only malformed annotations to report: an extent on a non-pointer.
+    if (const AnnotationSet set = getAnnotations(field);
+        set.extent() || set.requireSafe) {
+      PositionFacts ignored(table, field.getNameAsString());
+      readAnnotations(
+          field, type,
+          [](llvm::StringRef) -> std::optional<Sibling> {
+            return std::nullopt;
+          },
+          ignored, table, Position::Field);
+    }
     return;
+  }
   const clang::RecordDecl *record = field.getParent();
-  const auto byName =
-      [record,
-       &field](llvm::StringRef wanted) -> std::optional<core::ExtentPath> {
-    if (record == nullptr)
+  const SiblingResolver byName =
+      [record, &field](llvm::StringRef wanted) -> std::optional<Sibling> {
+    if (record == nullptr || wanted.empty())
       return std::nullopt;
-    for (const clang::FieldDecl *sibling : record->fields())
-      if (sibling != &field && sibling->getName() == wanted &&
-          sibling->getType()->isIntegerType())
-        return core::ExtentPath::ofField(wanted.str());
+    for (const clang::FieldDecl *sibling : record->fields()) {
+      if (sibling == &field || sibling->getName() != wanted)
+        continue;
+      const clang::QualType type = sibling->getType();
+      return Sibling{.path = core::ExtentPath::ofField(wanted.str()),
+                     .integer = type->isIntegerType(),
+                     .pointer = type->isPointerType()};
+    }
     return std::nullopt;
   };
   const PathOf fieldPath =
@@ -524,7 +735,7 @@ void AttributeReader::readField(const clang::FieldDecl &field,
     return core::ExtentPath::ofField(sibling->getNameAsString());
   };
   PositionFacts facts(table, field.getNameAsString());
-  readAnnotations(field, type, byName, facts, table);
+  readAnnotations(field, type, byName, facts, table, Position::Field);
   const KindLevel level = ecosystemLevel(field, context.getSourceManager());
   const clang::SourceLocation at = field.getLocation();
   if (auto counted = countAttributedKind(type, context, fieldPath)) {
@@ -543,15 +754,17 @@ void AttributeReader::readField(const clang::FieldDecl &field,
 void AttributeReader::readVariable(const clang::VarDecl &variable,
                                    KindTable &table) {
   const clang::QualType type = variable.getType();
-  if (!type->isPointerType())
+  const AnnotationSet annotations = getAnnotations(variable);
+  if (!type->isPointerType() && !annotations.extent() &&
+      !annotations.requireSafe)
     return;
   PositionFacts facts(table, variable.getNameAsString());
   readAnnotations(
       variable, type,
-      [](llvm::StringRef) -> std::optional<core::ExtentPath> {
-        return std::nullopt;
-      },
-      facts, table);
+      [](llvm::StringRef) -> std::optional<Sibling> { return std::nullopt; },
+      facts, table, Position::Variable);
+  if (!type->isPointerType())
+    return;
   if (const auto nullability = typeNullability(type))
     facts.addNullability(ecosystemLevel(variable, context.getSourceManager()),
                          *nullability, variable.getLocation());

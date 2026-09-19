@@ -45,7 +45,6 @@ enum class Annotation : std::uint8_t {
   Raw,
   /// `weavec.unsafe` -- the function body or block is an unsafe region.
   Unsafe,
-  Checked,
   /// `weavec.nullable` -- the pointer may be null (RFC 0008).
   Nullable,
   /// `weavec.nonnull` -- the pointer is never null (RFC 0008).
@@ -64,8 +63,24 @@ enum class Annotation : std::uint8_t {
   Family,
   /// `weavec.sized_by.<n>` -- the pointer parameter has at least `n`
   /// elements behind it, `n` another parameter of the same function (RFC
-  /// 0011). The name is carried in `AnnotationSet::sizedBy`.
+  /// 0011). The name is carried in `AnnotationSet::sizedBy`. RFC 0030 §7.2
+  /// makes it a synonym of `CountedBy`.
   SizedBy,
+  /// `weavec.counted_by.<n>` -- at least `n` elements (bytes for `void` and
+  /// character pointees) are accessible; `n` names a sibling parameter or
+  /// field (RFC 0030 §7.2). The name is carried in
+  /// `AnnotationSet::countedBy`.
+  CountedBy,
+  /// `weavec.ended_by.<q>` -- `[p, q)` lies in one object; `q` names a
+  /// sibling pointer parameter or field (RFC 0030 §7.2). The name is
+  /// carried in `AnnotationSet::endedBy`.
+  EndedBy,
+  /// `weavec.string` -- the pointer is NUL-terminated within its object
+  /// (RFC 0030 §7.2).
+  String,
+  /// `weavec.require_safe` -- the function's sites are held to
+  /// `-fweavec-require=checked` (RFC 0030 §6.3).
+  RequireSafe,
   /// `weavec.assume` -- the function is `weavec.h`'s `weavec_assume_`: a
   /// call to it states that its argument holds (RFC 0012).
   Assume,
@@ -90,12 +105,16 @@ inline constexpr llvm::StringLiteral Refcount = "weavec.refcount";
 inline constexpr llvm::StringLiteral FamilyPrefix = "weavec.family.";
 /// `weavec.sized_by.<n>`: the prefix, followed by the parameter name.
 inline constexpr llvm::StringLiteral SizedByPrefix = "weavec.sized_by.";
+/// RFC 0030 §7.2, `WEAVEC_COUNTED_BY(n)`: the prefix, followed by the name.
+inline constexpr llvm::StringLiteral CountedByPrefix = "weavec.counted_by.";
+/// RFC 0030 §7.2, `WEAVEC_ENDED_BY(q)`: the prefix, followed by the name.
+inline constexpr llvm::StringLiteral EndedByPrefix = "weavec.ended_by.";
+/// RFC 0030 §7.2, `WEAVEC_STRING`.
+inline constexpr llvm::StringLiteral String = "weavec.string";
+/// RFC 0030 §6.3, `WEAVEC_REQUIRE_SAFE`.
+inline constexpr llvm::StringLiteral RequireSafe = "weavec.require_safe";
 /// RFC 0012: the annotation on `weavec_assume_`, `WEAVEC_ASSUME`'s callee.
 inline constexpr llvm::StringLiteral Assume = "weavec.assume";
-/// `WEAVEC_CHECKED` (RFC 0018). Checked mode is gone (RFC 0030); the
-/// spelling is still recognised, and validated on declarations that are not
-/// functions, until `weavec.h` stops defining it.
-inline constexpr llvm::StringLiteral Checked = "weavec.checked";
 } // namespace spelling
 
 /// Parses an `annotate` payload. Returns `std::nullopt` for annotations that
@@ -111,7 +130,6 @@ struct AnnotationSet {
   bool mutBorrowed = false;
   bool raw = false;
   bool unsafe = false;
-  bool checked = false;
   bool nullable = false;
   bool nonNull = false;
   /// RFC 0010.
@@ -128,11 +146,26 @@ struct AnnotationSet {
   /// RFC 0011: the parameter `WEAVEC_SIZED_BY(n)` names; empty when there
   /// is none. Two different names on one declaration are `invalid`.
   std::string sizedBy;
+  /// RFC 0030 §7.2: the name `WEAVEC_COUNTED_BY(n)` names; empty when there
+  /// is none. Two different names on one declaration are `invalid`.
+  std::string countedBy;
+  /// RFC 0030 §7.2: the name `WEAVEC_ENDED_BY(q)` names; empty when there
+  /// is none. Two different names on one declaration are `invalid`.
+  std::string endedBy;
+  /// RFC 0030 §7.2: `WEAVEC_STRING`.
+  bool string = false;
+  /// RFC 0030 §6.3: `WEAVEC_REQUIRE_SAFE`.
+  bool requireSafe = false;
 
   [[nodiscard]] bool any() const noexcept {
-    return owned || borrowed || mutBorrowed || raw || unsafe || checked ||
-           nullable || nonNull || retains || releases || refcount || assume ||
-           invalid || !family.empty() || !sizedBy.empty();
+    return owned || borrowed || mutBorrowed || raw || unsafe || nullable ||
+           nonNull || retains || releases || refcount || assume || invalid ||
+           string || requireSafe || !family.empty() || !sizedBy.empty() ||
+           !countedBy.empty() || !endedBy.empty();
+  }
+  /// True if the set declares a pointer kind's shape (RFC 0030 §7.2).
+  [[nodiscard]] bool extent() const noexcept {
+    return string || !sizedBy.empty() || !countedBy.empty() || !endedBy.empty();
   }
   /// True if the set says something about nullness (RFC 0008).
   [[nodiscard]] bool nullness() const noexcept { return nullable || nonNull; }

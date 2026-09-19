@@ -15,10 +15,13 @@
 
 #include "SiteTestUtils.h"
 #include "weavec/Analysis/KindTable.h"
+#include "weavec/Core/Diagnostic.h"
 
 #include <gtest/gtest.h>
 
+#include <optional>
 #include <string>
+#include <vector>
 
 namespace weavec::analysis {
 
@@ -192,6 +195,162 @@ void *memcpy(void *, const void *, size_t) __attribute__((nonnull));
   ASSERT_FALSE(function->sites.empty());
   EXPECT_EQ(function->sites.front().kind, core::SiteKind::Call);
   EXPECT_TRUE(function->sites.front().nullSystemApi);
+}
+
+/// The RFC 0030 macros, spelled as `weavec.h` spells them.
+constexpr const char *KindMacros = R"c(
+#define COUNTED_BY(n) __attribute__((annotate("weavec.counted_by." #n)))
+#define ENDED_BY(q) __attribute__((annotate("weavec.ended_by." #q)))
+#define STRING __attribute__((annotate("weavec.string")))
+#define REQUIRE_SAFE __attribute__((annotate("weavec.require_safe")))
+)c";
+
+// §7.2: the new macros resolve by name to any sibling, in any position.
+TEST(AttributeReader, KindMacros) {
+  const auto unit = collectUnit(std::string(KindMacros) + R"c(
+struct s {
+  int *COUNTED_BY(n) items;
+  void *COUNTED_BY(n) bytes;
+  const char *STRING name;
+  int *ENDED_BY(stop) start;
+  int *stop;
+  int n;
+  int *COUNTED_BY(stop) wrong;
+  int *ENDED_BY(n) wrong_end;
+};
+void f(int *COUNTED_BY(n) p, const char *STRING s, int *ENDED_BY(e) b,
+       int *e, int n);
+STRING const char *g(void);
+void h(int *COUNTED_BY(nope) p, int COUNTED_BY(n) x, int n);
+void use(void) { f(0, 0, 0, 0, 0); (void)g(); h(0, 0, 0); }
+)c");
+  EXPECT_EQ(param(unit, "f", 0),
+            "counted(param 4 scale 1 plus 0) nullable annotation/-");
+  EXPECT_EQ(param(unit, "f", 1), "nul-terminated nullable annotation/-");
+  EXPECT_EQ(param(unit, "f", 2), "ended-by(param 3) nullable annotation/-");
+  EXPECT_EQ(spell(unit.kinds.result(*unit.function("g"))),
+            "nul-terminated nullable annotation/-");
+  EXPECT_EQ(param(unit, "h", 0), "none");
+  const clang::RecordDecl *record = nullptr;
+  for (const clang::Decl *decl :
+       unit.context().getTranslationUnitDecl()->decls())
+    if (const auto *tag = llvm::dyn_cast<clang::RecordDecl>(decl);
+        tag != nullptr && tag->getName() == "s")
+      record = tag;
+  ASSERT_NE(record, nullptr);
+  std::vector<std::string> fields;
+  for (const clang::FieldDecl *field : record->fields())
+    fields.push_back(field->getNameAsString() + ": " +
+                     spell(unit.kinds.field(*field)));
+  EXPECT_EQ(fields,
+            (std::vector<std::string>{
+                "items: counted(.n scale 1 plus 0) nullable annotation/-",
+                "bytes: sized(.n scale 1 plus 0) nullable annotation/-",
+                "name: nul-terminated nullable annotation/-",
+                "start: ended-by(.stop) nullable annotation/-", "stop: none",
+                "n: none", "wrong: none", "wrong_end: none"}));
+  std::vector<std::string> problems;
+  for (const KindProblem &problem : unit.kinds.problems())
+    problems.push_back(problem.message);
+  EXPECT_EQ(problems,
+            (std::vector<std::string>{
+                "'stop' in WEAVEC_COUNTED_BY is not an integer parameter or "
+                "field",
+                "'n' in WEAVEC_ENDED_BY is not a pointer parameter or field",
+                "'nope' in WEAVEC_COUNTED_BY does not name a parameter or "
+                "field",
+                "'x' is declared WEAVEC_COUNTED_BY(n) but is not a pointer"}));
+  const KindEntry *counted = unit.kinds.param(*unit.function("f"), 0);
+  ASSERT_NE(counted, nullptr);
+  EXPECT_TRUE(counted->hasDeclaredShape());
+  EXPECT_TRUE(counted->isCheckOperand());
+}
+
+// §6.3 and §7.2: `WEAVEC_REQUIRE_SAFE` marks the function; the ownership
+// attributes become its contract; a constant array bound without `static`
+// is a suggestion.
+TEST(AttributeReader, RequireSafeContractsAndSuggestions) {
+  const auto unit = collectUnit(std::string(KindMacros) + R"c(
+REQUIRE_SAFE int strict(void) { return 0; }
+int lax(void) { return 0; }
+REQUIRE_SAFE int flag;
+void *pool_get(unsigned long n) __attribute__((ownership_returns(pool)));
+void pool_put(int t, void *p) __attribute__((ownership_takes(pool, 2)));
+void pool_keep(void *p) __attribute__((ownership_holds(pool, 1)));
+void *fresh(unsigned long n) __attribute__((malloc));
+void loose(int k[4]) { (void)k; }
+void use(void) { pool_put(0, pool_get(1)); pool_keep(fresh(1)); }
+)c");
+  EXPECT_TRUE(unit.kinds.requireSafe(*unit.function("strict")));
+  EXPECT_FALSE(unit.kinds.requireSafe(*unit.function("lax")));
+  ASSERT_EQ(unit.kinds.problems().size(), 1U);
+  EXPECT_EQ(unit.kinds.problems().front().message,
+            "WEAVEC_REQUIRE_SAFE on 'flag', which is not a function");
+  const OwnershipContract *get =
+      unit.kinds.ownership(*unit.function("pool_get"));
+  ASSERT_NE(get, nullptr);
+  EXPECT_EQ(get->freshResult, std::optional<std::string>("pool"));
+  const OwnershipContract *put =
+      unit.kinds.ownership(*unit.function("pool_put"));
+  ASSERT_NE(put, nullptr);
+  ASSERT_EQ(put->arguments.size(), 1U);
+  EXPECT_EQ(put->arguments.front(),
+            (OwnershipContract::Argument{
+                .index = 1, .family = "pool", .retains = false}));
+  const OwnershipContract *keep =
+      unit.kinds.ownership(*unit.function("pool_keep"));
+  ASSERT_NE(keep, nullptr);
+  EXPECT_TRUE(keep->arguments.front().retains);
+  const OwnershipContract *heap = unit.kinds.ownership(*unit.function("fresh"));
+  ASSERT_NE(heap, nullptr);
+  EXPECT_EQ(heap->freshResult, std::optional<std::string>("free"));
+  EXPECT_EQ(heap->level, KindLevel::Ecosystem);
+  ASSERT_EQ(unit.kinds.suggestions().size(), 1U);
+  EXPECT_EQ(unit.kinds.suggestions().front().insert, "static ");
+  EXPECT_EQ(param(unit, "loose", 0), "none");
+  // The problems become `invalid-annotation` warnings.
+  const auto diagnostics =
+      kindProblemDiagnostics(unit.kinds, unit.context().getSourceManager());
+  ASSERT_EQ(diagnostics.size(), 1U);
+  EXPECT_EQ(diagnostics.front().id, core::diag::InvalidAnnotation);
+  EXPECT_EQ(diagnostics.front().severity, core::Severity::Warning);
+}
+
+// The table's inferred entries never make required positions.
+TEST(KindTable, DeclaredShapesAndRequirements) {
+  KindEntry entry;
+  entry.kind = core::PointerKind::single(core::Nullability::Nonnull,
+                                         core::KindSource::Default);
+  EXPECT_TRUE(entry.hasShape());
+  EXPECT_FALSE(entry.hasDeclaredShape());
+  EXPECT_TRUE(entry.isNonnull());
+  EXPECT_FALSE(entry.declaresNonnull());
+  entry.shapeLevel = KindLevel::Annotation;
+  entry.nullabilityLevel = KindLevel::Ecosystem;
+  EXPECT_TRUE(entry.hasDeclaredShape());
+  EXPECT_TRUE(entry.declaresNonnull());
+  EXPECT_FALSE(entry.hasEnforcedRequirement());
+  MustAccessRequirement requirement{
+      .kind = core::PointerKind::counted(
+          core::ExtentTerm::of(core::ExtentPath::ofParam(1), 1, 1),
+          core::Nullability::Nonnull, core::KindSource::Inferred),
+      .guard = RequirementGuard{.lhs = core::ExtentTerm::constant(0),
+                                .relation = RequirementGuard::Relation::Less,
+                                .rhs = core::ExtentTerm::of(
+                                    core::ExtentPath::ofParam(1))},
+      .rule = MustAccessRule::R2,
+      .access = nullptr};
+  EXPECT_EQ(requirement.toString(),
+            "0 < param 1 scale 1 plus 0 -> counted(param 1 scale 1 plus 1) "
+            "nonnull (R2)");
+  entry.mustAccess.push_back(requirement);
+  entry.enforcement = RequirementEnforcement::CallerContract;
+  EXPECT_FALSE(entry.hasEnforcedRequirement());
+  entry.enforcement = RequirementEnforcement::CallSites;
+  EXPECT_TRUE(entry.hasEnforcedRequirement());
+  EXPECT_EQ(toString(RequirementEnforcement::CallerContract),
+            "caller-contract");
+  EXPECT_EQ(toString(MustAccessRule::R4), "R4");
 }
 
 TEST(KindTable, EntryHelpers) {

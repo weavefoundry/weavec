@@ -31,13 +31,18 @@
 |*   WEAVEC_UNSAFE void poke(void) { ... }   // the body is an unsafe region
 |*   WEAVEC_UNSAFE { ... }                   // or just a block
 |*
+|*   void fill(char *WEAVEC_COUNTED_BY(len) buf, size_t len);   // extents
+|*   size_t sum(const int *WEAVEC_ENDED_BY(end) p, const int *end);
+|*   size_t name_len(const char *WEAVEC_STRING name);
+|*   WEAVEC_REQUIRE_SAFE int parse(const char *WEAVEC_STRING s) { ... }
+|*
 \*===----------------------------------------------------------------------===*/
 
 #ifndef WEAVEC_H
 #define WEAVEC_H
 
 #define WEAVEC_H_VERSION_MAJOR 0
-#define WEAVEC_H_VERSION_MINOR 8
+#define WEAVEC_H_VERSION_MINOR 9
 
 #if defined(__has_attribute)
 #if __has_attribute(annotate)
@@ -73,16 +78,22 @@
 
 /**
  * Makes a function body (when placed before its definition) or a block (when
- * placed before a compound statement) an unsafe region: raw pointers may be
- * dereferenced and released inside it, and no diagnostic is reported for
- * code inside it. The region is still analysed, so what it does to the
- * surrounding code (a free, a store) is checked there. Keep regions small
- * and document the invariant that makes the code sound.
+ * placed before a compound statement) an unsafe region: its raw pointers and
+ * its spatial and null operations are trusted, so no runtime checks are
+ * inserted there. Temporal state (frees, moves) is still tracked, possible
+ * temporal findings are still warnings, and definite violations remain
+ * errors; what the region does to the surrounding code is checked there.
+ * Keep regions small and document the invariant that makes the code sound.
  */
 #define WEAVEC_UNSAFE WEAVEC_ANNOTATE_("weavec.unsafe")
 
-/** Request conditional safety checking of a function body (RFC 0018). */
-#define WEAVEC_CHECKED WEAVEC_ANNOTATE_("weavec.checked")
+/**
+ * Before a function definition: its sites are held to
+ * -fweavec-require=checked, whatever the command line says. Every operation
+ * in the body must be proven safe or guarded by a runtime check; anything
+ * else is an `unresolved-operation` error. (Replaces WEAVEC_CHECKED.)
+ */
+#define WEAVEC_REQUIRE_SAFE WEAVEC_ANNOTATE_("weavec.require_safe")
 
 /**
  * The pointer may be null. On a parameter, the body is checked (a
@@ -94,9 +105,10 @@
 #define WEAVEC_NULLABLE WEAVEC_ANNOTATE_("weavec.nullable")
 
 /**
- * The pointer is never null. On a parameter, passing a possibly-null value
- * is reported at the call; on a return type, the result needs no test; on a
- * variable or field, loads are never reported. Does not change ownership.
+ * The pointer is never null. On a parameter, a possibly-null argument is
+ * checked at the call and a null one is an error; on a return type, the
+ * result needs no test; on a variable or field, loads are never reported.
+ * Does not change ownership.
  */
 #define WEAVEC_NONNULL WEAVEC_ANNOTATE_("weavec.nonnull")
 
@@ -130,19 +142,36 @@
 #define WEAVEC_OWNED_BY(f) WEAVEC_ANNOTATE_("weavec.family." #f)
 
 /**
- * On a pointer parameter: the caller passes at least `n` elements (bytes
- * for `void *`) behind it, `n` being another parameter of the same function
- * by name (`void fill(char *WEAVEC_SIZED_BY(len) buf, size_t len)`). The
- * body may access that many without a report; a caller passing a smaller
- * object is reported at the call.
- *
- * On a pointer field: the object holds at least `n` elements behind it, `n`
- * being another integer field of the same struct by name (`struct buf {
- * char *WEAVEC_SIZED_BY(cap) data; size_t cap; }`). Accesses through the
- * field are checked against the count; a store into the field of an object
- * the count says is too small is reported as a mismatch.
+ * On a pointer parameter or field: at least `n` elements (bytes for void
+ * and character pointees) are accessible; `n` names a sibling parameter or
+ * field, in any position (`void fill(char *WEAVEC_COUNTED_BY(len) buf,
+ * size_t len)`, `struct buf { char *WEAVEC_COUNTED_BY(cap) data; size_t
+ * cap; }`). The kind is checked at every call and every store, and
+ * accesses through the pointer are proven against it or checked at run
+ * time.
+ */
+#define WEAVEC_COUNTED_BY(n) WEAVEC_ANNOTATE_("weavec.counted_by." #n)
+
+/**
+ * The same as WEAVEC_COUNTED_BY(n): `n` counts elements (bytes for void and
+ * character pointees), unlike Clang's byte-counting `sized_by`. Calls and
+ * accesses through the pointer are checked against it when not proven. New
+ * code should use WEAVEC_COUNTED_BY.
  */
 #define WEAVEC_SIZED_BY(n) WEAVEC_ANNOTATE_("weavec.sized_by." #n)
+
+/**
+ * On a pointer parameter or field: `[p, q)` lies in one object, where `q`
+ * names a sibling pointer parameter or field (`size_t sum(const int
+ * *WEAVEC_ENDED_BY(end) p, const int *end)`).
+ */
+#define WEAVEC_ENDED_BY(q) WEAVEC_ANNOTATE_("weavec.ended_by." #q)
+
+/**
+ * On a pointer parameter, field or return type: the pointer is
+ * NUL-terminated within its object (a zero element lies at or after it).
+ */
+#define WEAVEC_STRING WEAVEC_ANNOTATE_("weavec.string")
 
 /** Non-zero when the translation unit is being processed by WeaveC. */
 #if defined(__WEAVEC__)
@@ -152,11 +181,15 @@
 #endif
 
 /**
- * States that `expr` holds here, as if the code below were inside
- * `if (expr)`: `WEAVEC_ASSUME(len <= cap)` lets the checker prove an access
- * in bounds when the invariant that makes it so is not visible in the
- * function. Trusted like every annotation. `expr` must be side-effect free;
- * it is evaluated under WeaveC and is not compiled at all elsewhere.
+ * States that `expr` holds here, and the analysis assumes it from here on,
+ * as if the code below were inside `if (expr)`: `WEAVEC_ASSUME(len <= cap)`
+ * lets the checker prove an access in bounds when the invariant that makes
+ * it so is not visible in the function. The assumption itself is not
+ * trusted: when the analysis proves `expr`, nothing is added; when it
+ * refutes it, that is a `contradicted-assumption` error; otherwise
+ * `weavec-cc` turns the call into a runtime assertion that traps when
+ * `expr` is false. `expr` must be side-effect free; under other compilers
+ * it is an unevaluated operand and is not compiled at all.
  */
 #if WEAVEC_ENABLED
 WEAVEC_ANNOTATE_("weavec.assume")

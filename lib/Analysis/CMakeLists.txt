@@ -43,6 +43,12 @@ weavec_add_library(
           DataflowGuardCompleteness.cpp
           KindTable.cpp
           AttributeReader.cpp
+          KindInference.cpp
+          KindInferenceCollect.cpp
+          KindInferenceDump.cpp
+          KindInferenceFields.cpp
+          KindInferenceMustAccess.cpp
+          SlotCollector.cpp
           SiteCollector.cpp
           CheckPlanner.cpp
           LedgerAdapter.cpp
