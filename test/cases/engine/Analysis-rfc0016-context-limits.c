@@ -7,7 +7,7 @@
 #include "Inputs/prelude.h"
 
 static void recurse(char *a, char *b, int n) {
-  if (n) recurse(a, b, n - 1); // BUG: analysis-incomplete possible
+  if (n) recurse(a, b, n - 1);
   else { *b = 1; free(a); }
 }
 void deep(void) {

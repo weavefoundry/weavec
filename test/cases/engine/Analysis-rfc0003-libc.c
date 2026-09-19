@@ -11,7 +11,7 @@ char *alias_from_strchr(void) {
     return NULL;
   char *eq = strchr(s, '=');
   free(s);
-  return eq; // BUG: use-after-free definite
+  return eq; // BUG: use-after-free
 }
 
 void end_pointer_from_strtol(const char *text) {
@@ -21,7 +21,7 @@ void end_pointer_from_strtol(const char *text) {
   char *end;
   long v = strtol(copy, &end, 10);
   free(copy);
-  if (*end) // BUG: use-after-free definite
+  if (*end) // BUG: use-after-free
     (void)v;
 }
 
@@ -30,7 +30,7 @@ void double_close(const char *path) {
   if (!f)
     return;
   fclose(f);
-  fclose(f); // BUG: double-free definite
+  fclose(f); // BUG: double-free
 }
 
 void fine(const char *path) {

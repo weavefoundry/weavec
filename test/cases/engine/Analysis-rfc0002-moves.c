@@ -7,13 +7,13 @@ void take(void *WEAVEC_OWNED p);
 
 void use_after_move(int *WEAVEC_OWNED p) {
   take(p);
-  use(p); // BUG: use-after-move definite
+  use(p); // BUG: use-after-move
 }
 
 void free_after_move(void) {
   int *p = malloc(4);
   take(p);
-  free(p); // BUG: use-after-move definite
+  free(p); // BUG: use-after-move
 }
 
 void move_then_reinitialise(void) {

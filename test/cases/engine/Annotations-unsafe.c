@@ -13,5 +13,5 @@ void unsafe_block(int *p) {
   WEAVEC_UNSAFE {
     use(p); // not reported
   }
-  use(p); // BUG: use-after-free definite
+  use(p); // BUG: use-after-free
 }

@@ -15,22 +15,22 @@ void member_of_local(void) {
   struct inner c;
   c.buf = malloc(4);
   free(c.buf);
-  use(c.buf); // BUG: use-after-free definite
+  use(c.buf); // BUG: use-after-free
 }
 
 void nested_arrows(struct outer *p) {
   free(p->in->buf);
-  use(p->in->buf); // BUG: use-after-free definite
+  use(p->in->buf); // BUG: use-after-free
 }
 
 void deref_parameter(char **pp) {
   free(*pp);
-  use(*pp); // BUG: use-after-free definite
+  use(*pp); // BUG: use-after-free
 }
 
 int deref_freed_object(struct outer *c) {
   free(c);
-  return c->n; // BUG: use-after-free definite
+  return c->n; // BUG: use-after-free
 }
 
 // RFC 0015: selected elements retain separate temporal and resource state.
@@ -40,7 +40,7 @@ void array_summary(void) {
   arr[1] = malloc(4);
   free(arr[0]);
   use(arr[1]); free(arr[1]); // another element: fine
-  use(arr[0]); // BUG: use-after-free definite
+  use(arr[0]); // BUG: use-after-free
 }
 
 // Pointer arithmetic keeps the identity of the object (RFC 0004, *Pointer
@@ -49,5 +49,5 @@ void arithmetic(void) {
   char *p = malloc(4);
   char *q = p + 1;
   free(p);
-  use(q); // BUG: use-after-free definite
+  use(q); // BUG: use-after-free
 }

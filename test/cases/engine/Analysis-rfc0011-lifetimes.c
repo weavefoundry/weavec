@@ -29,14 +29,14 @@ void enter_reset(struct state *st) {
 void enter_bad(struct state *st) {
   struct frame f;
   f.prev = st->fs;
-  st->fs = &f; // BUG: lifetime-too-short definite
+  st->fs = &f; // BUG: lifetime-too-short
 }
 
 // A store on one path only is still a store when the local dies.
 void one_path(struct state *st) {
   int local = 1;
   if (cond())
-    st->p = &local; // BUG: lifetime-too-short definite
+    st->p = &local; // BUG: lifetime-too-short
 }
 
 // Overwriting the escaped pointer with another local's address moves the
@@ -46,7 +46,7 @@ void to_global(void) {
   int local = 1;
   g = &local;
   g = NULL;
-  g = &local; // BUG: lifetime-too-short definite
+  g = &local; // BUG: lifetime-too-short
 }
 
 // Clean: the pointer to the local dies with it.
@@ -60,5 +60,5 @@ void same_scope(void) {
 // (RFC 0002): the deferral is for stores, which can be undone.
 int *escape(void) {
   int local = 1;
-  return &local; // BUG: lifetime-too-short definite
+  return &local; // BUG: lifetime-too-short
 }

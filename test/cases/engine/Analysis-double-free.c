@@ -3,5 +3,5 @@
 
 void double_free(int *p) {
   free(p);
-  free(p); // BUG: double-free definite
+  free(p); // BUG: double-free
 }

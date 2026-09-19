@@ -10,31 +10,31 @@ static int g;
 int *return_local_via_pointer(void) {
   int x = 1;
   int *p = &x;
-  return p; // BUG: lifetime-too-short definite
+  return p; // BUG: lifetime-too-short
 }
 
 int *return_address_of_local(void) {
   int x = 1;
-  return &x; // BUG: lifetime-too-short definite
+  return &x; // BUG: lifetime-too-short
 }
 
 void escapes_inner_scope(void) {
   int *p;
   {
     int x = 1;
-    p = &x; // BUG: lifetime-too-short definite
+    p = &x; // BUG: lifetime-too-short
   }
   use(p);
 }
 
 void escapes_through_out_parameter(int **out) {
   int x = 1;
-  *out = &x; // BUG: lifetime-too-short definite
+  *out = &x; // BUG: lifetime-too-short
 }
 
 void escapes_to_global(void) {
   int x = 1;
-  gp = &x; // BUG: lifetime-too-short definite
+  gp = &x; // BUG: lifetime-too-short
 }
 
 // Clean: the borrowed object outlives the holder.

@@ -12,22 +12,22 @@ static char table[16];
 void stack(void) {
   char buf[8];
   char *p = buf;
-  free(p); // BUG: invalid-release definite
+  free(p); // BUG: invalid-release
 }
 
 void object(void) {
   int x;
   int *p = &x;
-  free(p); // BUG: invalid-release definite
+  free(p); // BUG: invalid-release
 }
 
 void global(void) {
-  free(table); // BUG: invalid-release definite
+  free(table); // BUG: invalid-release
 }
 
 void literal(void) {
   char *s = "hello";
-  free(s); // BUG: invalid-release definite
+  free(s); // BUG: invalid-release
 }
 
 void interior(void) {
@@ -35,7 +35,7 @@ void interior(void) {
   if (!p)
     return;
   char *q = p + 1;
-  free(q); // BUG: invalid-release definite
+  free(q); // BUG: invalid-release
 }
 
 void searched(const char *s) {
@@ -47,14 +47,14 @@ void searched(const char *s) {
     free(p);
     return;
   }
-  free(q); // BUG: invalid-release definite
+  free(q); // BUG: invalid-release
 }
 
 void arithmetic(void) {
   char *p = malloc(8);
   if (!p)
     return;
-  free(p + 1); // BUG: invalid-release definite
+  free(p + 1); // BUG: invalid-release
 }
 
 // Clean: heap objects released at their start, `p + 0`, and a pointer that

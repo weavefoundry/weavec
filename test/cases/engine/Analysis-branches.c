@@ -9,12 +9,12 @@ void maybe_freed(int c) {
     free(p);
   else
     use(p); // fine: p is live on this path
-  use(p); // BUG: use-after-free definite
+  use(p); // BUG: use-after-free
 }
 
 void freed_in_loop(int n) {
   int *p = malloc(4);
   for (int i = 0; i < n; ++i)
-    free(p); // BUG: double-free definite
-  use(p); // BUG: use-after-free definite
+    free(p); // BUG: double-free
+  use(p); // BUG: use-after-free
 }

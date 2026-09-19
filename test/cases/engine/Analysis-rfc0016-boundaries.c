@@ -10,7 +10,7 @@
 static void many_relations(PARAMS_13) { READ_13; free(a); }
 void relation_limit(void) {
   char *p = malloc(4); if (!p) return;
-  many_relations(p,p,p,p,p,p,p,p,p,p,p,p,p); // BUG: analysis-incomplete possible // UNRESOLVED: temporal:budget
+  many_relations(p,p,p,p,p,p,p,p,p,p,p,p,p); // UNRESOLVED: temporal:budget
 }
 
 #define PARAMS_33 PARAMS_13, char *n, char *o, char *p, char *q, char *r, char *s, char *t, char *u, char *v, char *w, char *x, char *y, char *z, char *aa, char *ab, char *ac, char *ad, char *ae, char *af, char *ag
@@ -21,17 +21,17 @@ static void many_inputs(PARAMS_33) {
 }
 void input_limit(void) {
   char *p = malloc(4); if (!p) return;
-  many_inputs(p,p,p,p,p,p,p,p,p,p,p,p,p,p,p,p,p,p,p,p,p,p,p,p,p,p,p,p,p,p,p,p,p); // BUG: analysis-incomplete possible // UNRESOLVED: temporal:budget
+  many_inputs(p,p,p,p,p,p,p,p,p,p,p,p,p,p,p,p,p,p,p,p,p,p,p,p,p,p,p,p,p,p,p,p,p); // UNRESOLVED: temporal:budget
 }
 
 static void uncertain(char *a, char *b, char *c) { *b=1; *c=1; free(a); }
 void missing_relation(char *q) {
   char *p = malloc(4); if (!p) return;
-  uncertain(p, p, q); // BUG: analysis-incomplete possible // UNRESOLVED: temporal:unanalysed
+  uncertain(p, p, q); // UNRESOLVED: temporal:unanalysed
 }
 
 struct Box { char *data; };
 static void children(struct Box *a, struct Box *b) { *b->data=1; free(a->data); }
 void missing_view(void *p) {
-  children(p, p); // BUG: analysis-incomplete possible // UNRESOLVED: temporal:inexpressible
+  children(p, p); // UNRESOLVED: temporal:inexpressible
 }

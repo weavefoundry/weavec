@@ -14,7 +14,7 @@ static void cache_reset(void) {
 void freed_by_callee(void) {
   cache = malloc(8);
   cache_free();
-  cache[0] = 1; // BUG: use-after-free definite
+  cache[0] = 1; // BUG: use-after-free
 }
 
 void reset_is_fine(void) {
@@ -27,5 +27,5 @@ void reset_is_fine(void) {
 void double_free_by_callee(void) {
   cache = malloc(8);
   free(cache);
-  cache_free(); // BUG: double-free definite
+  cache_free(); // BUG: double-free
 }

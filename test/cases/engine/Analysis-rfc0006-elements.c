@@ -14,30 +14,30 @@ void same_constant(void) {
   arr[1] = malloc(4);
   free(arr[0]);
   use(arr[1]); free(arr[1]); // another element: fine
-  use(arr[0]); // BUG: use-after-free definite
+  use(arr[0]); // BUG: use-after-free
 }
 
 void same_variable(char **a, int i, int j) {
   free(a[i]);
-  use(a[j]); // may select the released cell // BUG: use-after-free definite
-  a[i][0] = 0; // BUG: use-after-free definite
+  use(a[j]); // may select the released cell // BUG: use-after-free
+  a[i][0] = 0; // BUG: use-after-free
 }
 
 void double_free_element(char **a) {
   free(a[0]);
-  free(a[0]); // BUG: double-free definite
+  free(a[0]); // BUG: double-free
 }
 
 void whole_access_matches(char **a, int i) {
   free(a[i]);
-  use(*a); // BUG: use-after-free definite
+  use(*a); // BUG: use-after-free
 }
 
 void first_element(void) {
   int *arr[2];
   arr[0] = malloc(4);
   free(*arr); // `*arr` on an array is `arr[0]`
-  use(arr[0]); // BUG: use-after-free definite
+  use(arr[0]); // BUG: use-after-free
 }
 
 void joined_on_both_sides(char **a, int i, int c) {
@@ -45,7 +45,7 @@ void joined_on_both_sides(char **a, int i, int c) {
     free(a[i]);
   else
     free(a[i]);
-  use(a[i]); // BUG: use-after-free definite
+  use(a[i]); // BUG: use-after-free
 }
 
 // A complete cleanup loop, and preservation of old index values.
@@ -60,7 +60,7 @@ void null_out(char **a, int n) {
     free(a[i]);
     a[i] = NULL;
   }
-  use(a[0]); // BUG: analysis-incomplete possible // UNRESOLVED: temporal:unanalysed
+  use(a[0]); // UNRESOLVED: temporal:unanalysed
 }
 
 void incremented(char **a, int i) {
@@ -72,12 +72,12 @@ void incremented(char **a, int i) {
 void reassigned(char **a, int i, int j) {
   free(a[i]);
   i = j;
-  use(a[i]); // BUG: use-after-free definite
+  use(a[i]); // BUG: use-after-free
 }
 
 void unrecognised_index(char **a, int i) {
   free(a[i + 1]);
-  use(a[i + 1]); // BUG: use-after-free definite
+  use(a[i + 1]); // BUG: use-after-free
 }
 
 void joined_with_different_witnesses(char **a, int i, int j, int c) {
@@ -85,5 +85,5 @@ void joined_with_different_witnesses(char **a, int i, int j, int c) {
     free(a[i]);
   else
     free(a[j]);
-  use(a[i]); // BUG: use-after-free definite
+  use(a[i]); // BUG: use-after-free
 }

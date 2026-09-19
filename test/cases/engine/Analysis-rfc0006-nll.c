@@ -40,7 +40,7 @@ void loop_then_free(struct node *WEAVEC_OWNED n, int k) {
 void still_live(struct node *WEAVEC_OWNED n) {
   int *a = &n->v;
   free(n);
-  *a = 1; // BUG: use-after-free definite
+  *a = 1; // BUG: use-after-free
 }
 
 void live_around_loop(struct node *WEAVEC_OWNED n, int k) {
@@ -51,7 +51,7 @@ void live_around_loop(struct node *WEAVEC_OWNED n, int k) {
       break;
     }
   }
-  *a = 1; // BUG: use-after-free definite
+  *a = 1; // BUG: use-after-free
 }
 
 // A holder that is not a plain local never expires on liveness, and the
@@ -59,18 +59,18 @@ void live_around_loop(struct node *WEAVEC_OWNED n, int k) {
 // reports the free: nothing in this function reads the copy again.
 void through_pointer(struct node *WEAVEC_OWNED n, int **out) {
   *out = &n->v;
-  free(n); // BUG: conflicting-borrow definite
+  free(n); // BUG: conflicting-borrow
 }
 
 void through_field(struct node *WEAVEC_OWNED n, struct holder *h) {
   h->view = &n->v;
-  free(n); // BUG: conflicting-borrow definite
+  free(n); // BUG: conflicting-borrow
 }
 
 void address_taken(struct node *WEAVEC_OWNED n) {
   int *a = &n->v;
   int **pa = &a;
-  free(n); // BUG: conflicting-borrow definite
+  free(n); // BUG: conflicting-borrow
   use(pa);
 }
 
@@ -79,5 +79,5 @@ void address_taken(struct node *WEAVEC_OWNED n) {
 int *escape(void) {
   int x = 1;
   int *p = &x;
-  return p; // BUG: lifetime-too-short definite
+  return p; // BUG: lifetime-too-short
 }

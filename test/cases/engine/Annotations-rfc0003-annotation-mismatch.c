@@ -16,33 +16,33 @@ void take(struct node *WEAVEC_OWNED n);
 void poke(struct node *WEAVEC_MUT n);
 
 void frees_borrowed(struct node *WEAVEC_BORROWED n) {
-  free(n); // BUG: annotation-mismatch definite
+  free(n); // BUG: annotation-mismatch
 }
 
 void frees_alias(struct node *WEAVEC_BORROWED n) {
   struct node *m = n;
-  free(m); // BUG: annotation-mismatch definite
+  free(m); // BUG: annotation-mismatch
 }
 
 void moves_mut(struct node *WEAVEC_MUT n) {
-  take(n); // BUG: annotation-mismatch definite
+  take(n); // BUG: annotation-mismatch
 }
 
 void writes_borrowed(struct node *WEAVEC_BORROWED n) {
-  n->v = 1; // BUG: annotation-mismatch definite
+  n->v = 1; // BUG: annotation-mismatch
 }
 
 void frees_field_of_borrowed(struct buf *WEAVEC_BORROWED b) {
-  free(b->data); // BUG: annotation-mismatch definite
+  free(b->data); // BUG: annotation-mismatch
 }
 
 void lends_borrowed_as_mut(struct node *WEAVEC_BORROWED n) {
-  poke(n); // BUG: annotation-mismatch definite
+  poke(n); // BUG: annotation-mismatch
 }
 
-char *WEAVEC_OWNED returns_borrow(struct buf *b) { return (char *)&b->data; } // BUG: annotation-mismatch definite
+char *WEAVEC_OWNED returns_borrow(struct buf *b) { return (char *)&b->data; } // BUG: annotation-mismatch
 
-char *WEAVEC_BORROWED returns_fresh(void) { return malloc(4); } // BUG: annotation-mismatch definite
+char *WEAVEC_BORROWED returns_fresh(void) { return malloc(4); } // BUG: annotation-mismatch
 
 void consistent(struct node *WEAVEC_MUT n, const struct buf *WEAVEC_BORROWED b,
                 struct node *WEAVEC_OWNED o) {

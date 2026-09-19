@@ -16,7 +16,7 @@ struct buf {
 // -- Loads --------------------------------------------------------------------
 
 void put(struct buf *b) {
-  b->data[b->cap] = 0; // BUG: out-of-bounds definite
+  b->data[b->cap] = 0; // BUG: out-of-bounds
   if (b->cap > 0)
     b->data[b->cap - 1] = 0;
 }
@@ -25,25 +25,25 @@ void fill(struct buf *b) {
   for (size_t i = 0; i < b->cap; i++)
     b->data[i] = 0;
   for (size_t i = 0; i <= b->cap; i++)
-    b->data[i] = 0; // BUG: out-of-bounds definite
+    b->data[i] = 0; // BUG: out-of-bounds
 }
 
 // The string checks see the count too.
 void copy(struct buf *b) {
   if (b->cap == 4)
-    strcpy(b->data, "hello"); // BUG: out-of-bounds definite
+    strcpy(b->data, "hello"); // BUG: out-of-bounds
 }
 
 // -- Stores -------------------------------------------------------------------
 
 void shrink(struct buf *b) {
   b->data = malloc(4);
-  b->cap = 8; // BUG: annotation-mismatch definite
+  b->cap = 8; // BUG: annotation-mismatch
 }
 
 void shrink_count_first(struct buf *b) {
   b->cap = 8;
-  b->data = malloc(4); // BUG: annotation-mismatch definite
+  b->data = malloc(4); // BUG: annotation-mismatch
 }
 
 // The right size, a larger object, an unknown one, or null: nothing.
@@ -67,7 +67,7 @@ void cleared(struct buf *b) {
 // -- Malformed annotations ----------------------------------------------------
 
 struct bad {
-  int *WEAVEC_SIZED_BY(nope) p; // BUG: invalid-annotation possible
+  int *WEAVEC_SIZED_BY(nope) p; // BUG: invalid-annotation
   int q;
 };
 
@@ -89,7 +89,7 @@ void flexible(size_t n) {
   if (!h)
     return;
   h->data[n - 1] = 0;
-  h->data[n] = 0; // BUG: out-of-bounds definite
+  h->data[n] = 0; // BUG: out-of-bounds
   free(h);
 }
 
@@ -116,6 +116,6 @@ void push(struct vec *v, int x) {
     v->items[v->n++] = x;
 }
 
-int last(struct vec *v) { return v->items[v->cap]; } // BUG: out-of-bounds definite
+int last(struct vec *v) { return v->items[v->cap]; } // BUG: out-of-bounds
 
 int last_n(struct vec *v) { return v->items[v->n]; }

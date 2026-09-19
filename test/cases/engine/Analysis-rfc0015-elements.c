@@ -6,24 +6,24 @@ void *memmove(void *, const void *, size_t);
 
 void history(char **a) {
   free(a[0]); free(a[1]);
-  a[0][0]=1; // BUG: use-after-free definite
-  free(a[0]); // BUG: double-free definite
+  a[0][0]=1; // BUG: use-after-free
+  free(a[0]); // BUG: double-free
 }
 void saved(char **a, int i) {
   int old=i; free(a[i]); i=7;
-  a[old][0]=1; // BUG: use-after-free definite
+  a[old][0]=1; // BUG: use-after-free
 }
 void initialization(char *p) {
   char *a[2]; a[0]=p;
-  a[1][0]=1; // BUG: use-of-uninitialized definite
+  a[1][0]=1; // BUG: use-of-uninitialized
 }
 void omitted(char *p) {
   char *a[2]={p};
-  a[1][0]=1; // BUG: null-dereference definite
+  a[1][0]=1; // BUG: null-dereference
 }
 void copied(char **a) {
   char *b[2]; memcpy(b,a,sizeof b); free(a[0]);
-  b[0][0]=1; // BUG: use-after-free definite
+  b[0][0]=1; // BUG: use-after-free
 }
 void clean(char **a, char *p) {
   free(a[0]); a[1][0]=1; a[0]=p; a[0][0]=1;

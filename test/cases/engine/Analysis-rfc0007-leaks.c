@@ -17,29 +17,29 @@ struct buf {
 int leak_path(int c) {
   char *p = malloc(8);
   if (c)
-    return -1; // BUG: leak possible
+    return -1; // BUG: leak
   free(p);
   return 0;
 }
 
 void overwrite(void) {
   char *p = malloc(8);
-  p = malloc(16); // BUG: leak possible
+  p = malloc(16); // BUG: leak
   free(p);
 }
 
 void owned_param(char *WEAVEC_OWNED p) {
-  use(p); // BUG: leak possible
+  use(p); // BUG: leak
 }
 
 void discarded(const char *s) {
-  strdup(s); // BUG: leak possible
+  strdup(s); // BUG: leak
 }
 
 // A value that is never read is lost right after it is stored.
 int never_used(int c) {
   char *p = malloc(8);
-  if (c) // BUG: leak possible
+  if (c) // BUG: leak
     return 1;
   return 2;
 }
@@ -49,20 +49,20 @@ int never_used(int c) {
 void copies(void) {
   char *p = malloc(8);
   char *q = p;
-  use(q); // BUG: leak possible
+  use(q); // BUG: leak
 }
 
 // Overwriting an owned global loses the old value for this function.
 static char *global;
 void global_overwrite(void) {
   global = malloc(8);
-  global = malloc(16); // BUG: leak possible
+  global = malloc(16); // BUG: leak
 }
 
 // A field the function itself made owned is checked on overwrite.
 void field_overwrite(struct buf *b) {
   b->data = malloc(8);
-  b->data = malloc(16); // BUG: leak possible
+  b->data = malloc(16); // BUG: leak
 }
 
 // Once a merge-point false positive: `p` may own at the second `if`, but the

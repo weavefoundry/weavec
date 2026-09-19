@@ -20,17 +20,17 @@ struct buf {
 // The RFC's snippets that must be reported.
 
 void declared(struct box *b) {
-  free(b); // BUG: leak possible
+  free(b); // BUG: leak
 }
 
 void inferred(struct buf *b) {
   b->data = malloc(8);
-  free(b); // BUG: leak possible
+  free(b); // BUG: leak
 }
 
 void elements(char **a, int n) {
   a[0] = strdup("x");
-  free(a); // BUG: leak possible
+  free(a); // BUG: leak
 }
 
 // Newly caught after the ordering fix: the caller's alias of a field the
@@ -43,7 +43,7 @@ static void both(struct box *b) {
 void alias_of_field(struct box *b) {
   char *q = b->p;
   both(b);
-  q[0] = 1; // BUG: use-after-free definite
+  q[0] = 1; // BUG: use-after-free
 }
 
 static void both_reversed(struct box *b) {
@@ -55,7 +55,7 @@ static void both_reversed(struct box *b) {
 void alias_of_field_reversed(struct box *b) {
   char *q = b->p;
   both_reversed(b);
-  q[0] = 1; // BUG: use-after-free definite
+  q[0] = 1; // BUG: use-after-free
 }
 
 // Clean (RFC 0007, *Deliberately not caught* and *Diagnostics*).

@@ -4,15 +4,15 @@
 
 static void after(char *a, char *b) {
   free(a);
-  *b = 1; // BUG: use-after-free definite
+  *b = 1; // BUG: use-after-free
 }
 static void twice(char *a, char *b) {
   free(a);
-  free(b); // BUG: double-free definite
+  free(b); // BUG: double-free
 }
 static void after_output(char **a, char **b) {
   free(*a);
-  **b = 1; // BUG: use-after-free definite
+  **b = 1; // BUG: use-after-free
 }
 static void forward(char *a, char *b) { after(a, b); }
 void bad(void) {

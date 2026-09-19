@@ -4,11 +4,11 @@
 void use_after_free(void) {
   int *p = malloc(sizeof(int));
   free(p);
-  *p = 1; // BUG: use-after-free definite
+  *p = 1; // BUG: use-after-free
 }
 
 void use_via_call(void) {
   int *p = malloc(sizeof(int));
   free(p);
-  use(p); // BUG: use-after-free definite
+  use(p); // BUG: use-after-free
 }

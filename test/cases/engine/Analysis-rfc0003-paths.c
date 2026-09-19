@@ -21,14 +21,14 @@ static void buf_reset(struct buf *b) {
 
 void field_by_pointer(struct buf *b) {
   buf_destroy(b);
-  b->data[0] = 1; // BUG: use-after-free definite
+  b->data[0] = 1; // BUG: use-after-free
 }
 
 void field_by_address(void) {
   struct buf b;
   buf_init(&b, 8);
   buf_destroy(&b);
-  b.data[0] = 1; // BUG: use-after-free definite
+  b.data[0] = 1; // BUG: use-after-free
 }
 
 void destroy_idiom_is_fine(void) {
@@ -49,7 +49,7 @@ void out_param(void) {
   if (!make(&s))
     return;
   free(s);
-  s[0] = 1; // BUG: use-after-free definite
+  s[0] = 1; // BUG: use-after-free
 }
 
 void out_param_fine(void) {
@@ -69,5 +69,5 @@ static void free_and_null(char *p) {
 void reassigned_parameter(void) {
   char *p = malloc(8);
   free_and_null(p);
-  p[0] = 1; // BUG: use-after-free definite
+  p[0] = 1; // BUG: use-after-free
 }

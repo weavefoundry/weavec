@@ -39,20 +39,20 @@ static void even_free(struct node *n) {
 int use_after_wrapper(void) {
   struct node *n = node_new();
   node_free(n);
-  return n->v; // BUG: use-after-free definite
+  return n->v; // BUG: use-after-free
 }
 
 void double_free_through_wrapper(void) {
   struct node *n = node_new();
   node_free3(n);
-  free(n); // BUG: double-free definite
+  free(n); // BUG: double-free
 }
 
 void recursion(struct node *a, struct node *b) {
   list_free(a);
-  use(a); // BUG: use-after-free definite
+  use(a); // BUG: use-after-free
   odd_free(b);
-  use(b); // BUG: use-after-free definite
+  use(b); // BUG: use-after-free
 }
 
 // Unresolvable arguments are dropped, and conditional frees are may-frees.
@@ -67,15 +67,15 @@ static int free_if(struct node *n, int c) {
 void fine(struct node *(*make)(void), void (*drop)(struct node *)) {
   node_free(NULL);
   node_free(node_new());
-  struct node *n = make(); // BUG: annotation-required possible
-  drop(n); // BUG: annotation-required possible
+  struct node *n = make(); // UNRESOLVED: temporal:unknown-callee
+  drop(n); // UNRESOLVED: temporal:unknown-callee
   use(n);
 }
 
 void maybe(int c) {
   struct node *n = node_new();
   free_if(n, c);
-  n->v = 1; // BUG: use-after-free definite
+  n->v = 1; // BUG: use-after-free
 }
 
 // Testing the result that tells the paths apart retracts the may-free on

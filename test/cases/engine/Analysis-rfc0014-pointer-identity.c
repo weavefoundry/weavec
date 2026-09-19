@@ -13,7 +13,7 @@ void (*unrelated)(void *) = keep;
 
 void callback_bad(int *p) {
   invoke(drop, p);
-  *p = 1; // BUG: use-after-free definite
+  *p = 1; // BUG: use-after-free
 }
 
 static void release_same(int *p, int *q) {
@@ -22,18 +22,18 @@ static void release_same(int *p, int *q) {
 }
 void equality_bad(int *p) {
   release_same(p, p);
-  free(p); // BUG: double-free definite
+  free(p); // BUG: double-free
 }
 
 void copied_pointer_bad(int *p) {
   int *q;
   memcpy(&q, &p, sizeof p);
   free(p);
-  *q = 1; // BUG: use-after-free definite
+  *q = 1; // BUG: use-after-free
 }
 
 void partial(int **dest, int **source) {
-  memcpy(dest, source, 1); // BUG: analysis-incomplete possible // UNRESOLVED: temporal:raw-cast
+  memcpy(dest, source, 1); // UNRESOLVED: temporal:raw-cast
 }
 
 struct first { int *p; };
@@ -43,5 +43,5 @@ static void release_field(void *object) {
   free(p->p);
 }
 void incompatible(struct second *p) {
-  release_field(p); // BUG: analysis-incomplete possible // UNRESOLVED: temporal:raw-cast
+  release_field(p); // UNRESOLVED: temporal:raw-cast
 }

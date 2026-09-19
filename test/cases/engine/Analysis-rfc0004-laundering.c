@@ -15,7 +15,7 @@ struct node {
 
 // Assertion by return.
 WEAVEC_OWNED struct node *by_return_outside(uintptr_t x) {
-  return (struct node *)x; // BUG: unsafe-operation definite
+  return (struct node *)x; // BUG: unsafe-operation
 }
 WEAVEC_OWNED struct node *by_return_inside(uintptr_t x) {
   WEAVEC_UNSAFE { return (struct node *)x; }
@@ -24,13 +24,13 @@ void uses_by_return(uintptr_t x) {
   struct node *n = by_return_inside(x);
   n->v = 1; /* owned, per the callee's annotation */
   free(n);
-  use(n); // BUG: use-after-free definite
+  use(n); // BUG: use-after-free
 }
 
 // Assertion by assignment to an annotated local.
 void by_local_outside(uintptr_t x) {
   struct node *raw = (struct node *)x;
-  WEAVEC_OWNED struct node *n = raw; // BUG: unsafe-operation definite
+  WEAVEC_OWNED struct node *n = raw; // BUG: unsafe-operation
   n->v = 1; /* asserted anyway, so this does not cascade */
   free(n);
 }
@@ -39,7 +39,7 @@ void by_local_inside(uintptr_t x) {
   WEAVEC_UNSAFE { n = (struct node *)x; }
   n->v = 1;
   free(n);
-  free(n); // BUG: double-free definite
+  free(n); // BUG: double-free
 }
 
 // Assertion by assignment to an annotated field.
@@ -47,10 +47,10 @@ struct box {
   struct node *WEAVEC_OWNED owned;
 };
 void by_field(struct box *b, uintptr_t x) {
-  b->owned = (struct node *)x; // BUG: unsafe-operation definite
+  b->owned = (struct node *)x; // BUG: unsafe-operation
   WEAVEC_UNSAFE { b->owned = (struct node *)x; }
   free(b->owned);
-  use(b->owned); // BUG: use-after-free definite
+  use(b->owned); // BUG: use-after-free
 }
 
 // Leaving the model.

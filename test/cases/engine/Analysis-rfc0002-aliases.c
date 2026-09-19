@@ -12,7 +12,7 @@ void through_copy(void) {
   char *p = malloc(8);
   char *q = p;
   free(q);
-  p[0] = 0; // BUG: use-after-free definite
+  p[0] = 0; // BUG: use-after-free
 }
 
 void through_conditional(int c) {
@@ -20,27 +20,27 @@ void through_conditional(int c) {
   char *q = malloc(4);
   char *r = c ? p : q;
   free(r);
-  use(p); // BUG: use-after-free definite
-  free(q); // BUG: double-free definite
+  use(p); // BUG: use-after-free
+  free(q); // BUG: double-free
 }
 
 void fields_follow_the_alias(struct node *n) {
   struct node *m = n;
   free(m->data);
-  use(n->data); // BUG: use-after-free definite
+  use(n->data); // BUG: use-after-free
 }
 
 void copy_after_the_fact(struct node *p) {
   free(p->data);
   struct node *q = p;
-  use(q->data); // BUG: use-after-free definite
+  use(q->data); // BUG: use-after-free
 }
 
 void freeing_kills_aliases(void) {
   struct node *c = malloc(sizeof *c);
   struct node *d = c;
   free(c);
-  use(d); // BUG: use-after-free definite
+  use(d); // BUG: use-after-free
 }
 
 // Reassigning an alias separates it again.

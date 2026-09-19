@@ -14,5 +14,5 @@ void a_free(void *p) { b_free(p); }
 int a_use_after(void) {
   char *p = malloc(1);
   a_free(p);
-  return p[0]; // BUG: use-after-free definite
+  return p[0]; // BUG: use-after-free
 }

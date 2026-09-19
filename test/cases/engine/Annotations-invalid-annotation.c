@@ -2,6 +2,6 @@
 // Unknown weavec.* annotations are reported; foreign annotations are ignored.
 #include "Inputs/prelude.h"
 
-__attribute__((annotate("weavec.ownd"))) void typo(void) {} // BUG: invalid-annotation possible
+__attribute__((annotate("weavec.ownd"))) void typo(void) {} // BUG: invalid-annotation
 
 __attribute__((annotate("gsl.owner"))) void foreign(void) {}

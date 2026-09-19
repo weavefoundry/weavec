@@ -11,7 +11,7 @@ void good_copy(void) {
 void bad_copy(void) {
   struct heap13_box a = {malloc(4)}, b = {malloc(8)};
   char *old = b.data; heap13_copy_and_free(&a, &b); free(old);
-  free(b.data); // BUG: double-free definite
+  free(b.data); // BUG: double-free
 }
 void good_swap(void) {
   struct heap13_box a = {malloc(4)}, b = {malloc(8)};
@@ -23,7 +23,7 @@ void good_swap(void) {
 void bad_swap(void) {
   struct heap13_box a = {malloc(4)}, b = {malloc(8)};
   heap13_local_swap(&a, &b);
-  if (b.data) b.data[4] = 0; // BUG: out-of-bounds definite
+  if (b.data) b.data[4] = 0; // BUG: out-of-bounds
   free(a.data); free(b.data);
 }
 int main(void) { return 0; }

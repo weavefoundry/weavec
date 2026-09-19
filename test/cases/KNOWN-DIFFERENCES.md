@@ -17,14 +17,20 @@ most 25 entries. Each entry gives:
 ## Entries
 
 In S0, `run-cases.py --legacy --filter 'engine/**'` reproduced every pin.
+No pin is currently listed as a miss.
 
-RFC 0030 removes `analysis-incomplete` (*Diagnostics*, *Removed ids*): what the
-engine cannot model becomes an `unresolved` row with the reason §15 item 3 maps
-the old text to (`budget` for a limit, `raw-cast` for a reinterpretation,
-`inexpressible` for "unrepresentable …", `unanalysed` otherwise), and the old
-text as its detail. No diagnostic reproduces these eight pins. Each line but
-the last carries an `UNRESOLVED` marker for the row that replaces it, so its
-`BUG` marker is still satisfied as a ledger row (stage S3-B2).
+## Converted pins
+
+RFC 0030 removes `analysis-incomplete` and `annotation-required`
+(*Diagnostics*, *Removed ids*). What the engine cannot model becomes an
+`unresolved` row whose reason §15 item 3 maps from the old text (`budget` for
+a limit, `raw-cast` for a reinterpretation, `inexpressible` for
+"unrepresentable …", `unanalysed` otherwise), and a call into unknown code
+becomes `unresolved(unknown-callee)` (§5.1). No diagnostic can reproduce these
+ten pins, so in S3 their `BUG` markers were replaced by `UNRESOLVED` markers
+for the rows that replace them. They are no longer pins: G3's denominator is
+the remaining 141 pins, and these lines are checked as ledger rows instead.
+They are listed for traceability and do not count toward the 25 entries.
 
 | Case and line | Golden | Now |
 | --- | --- | --- |
@@ -36,6 +42,8 @@ the last carries an `UNRESOLVED` marker for the row that replaces it, so its
 | `engine/Analysis-rfc0016-boundaries.c:27` | `analysis-incomplete`, warning | the call's temporal `unresolved(unanalysed)`: unresolved call alias relationship |
 | `engine/Analysis-rfc0016-boundaries.c:33` | `analysis-incomplete`, warning | the call's temporal `unresolved(inexpressible)`: unrepresentable call context input path |
 | `engine/Analysis-rfc0016-context-limits.c:6` | `analysis-incomplete`, warning | nothing on this line: the limit is reached inside the context run of `recurse(p, p, 20)` (line 11), which decides no rows (§2.6); that call's temporal facet is `unresolved(budget)` |
+| `engine/Analysis-rfc0003-wrappers.c:70` | `annotation-required`, warning | the call's temporal `unresolved(unknown-callee)` (§5.1) |
+| `engine/Analysis-rfc0003-wrappers.c:71` | `annotation-required`, warning | the call's temporal `unresolved(unknown-callee)` (§5.1) |
 
 ## Excluded
 

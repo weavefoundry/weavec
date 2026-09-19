@@ -36,14 +36,14 @@ void grow_in_loop(char *p, int n) {
 
 int no_null_test(char *p) {
   char *q = realloc(p, 16);
-  free(p); // BUG: use-after-move definite
+  free(p); // BUG: use-after-move
   use(q);
-  return 0; // BUG: leak possible
+  return 0; // BUG: leak
 }
 
 void result_overwritten(char *p) {
   char *q = realloc(p, 8);
-  q = malloc(2); // BUG: leak possible
-  if (q == NULL) // BUG: leak possible
-    free(p); // BUG: use-after-move definite
+  q = malloc(2); // BUG: leak
+  if (q == NULL) // BUG: leak
+    free(p); // BUG: use-after-move
 }

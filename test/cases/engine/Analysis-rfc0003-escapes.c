@@ -18,12 +18,12 @@ static char *through(char *p) { return p; }
 
 void escape_local(void) {
   char local[8];
-  keep(local); // BUG: lifetime-too-short definite
+  keep(local); // BUG: lifetime-too-short
 }
 
 void escape_through_out_param(char **slot) {
   int x;
-  store_in(slot, (char *)&x); // BUG: lifetime-too-short definite
+  store_in(slot, (char *)&x); // BUG: lifetime-too-short
 }
 
 void escape_fine(char *outer) {
@@ -34,21 +34,21 @@ void escape_fine(char *outer) {
 void result_copies_field(struct node *n) {
   struct node *m = next_of(n);
   free(n->next);
-  use(m); // BUG: use-after-free definite
+  use(m); // BUG: use-after-free
 }
 
 void result_copies_argument(void) {
   char *p = malloc(8);
   char *q = through(p);
   free(q);
-  use(p); // BUG: use-after-free definite
+  use(p); // BUG: use-after-free
 }
 
 void result_borrows_field(void) {
   int *v;
   {
     struct node n;
-    v = field_of(&n); // BUG: lifetime-too-short definite
+    v = field_of(&n); // BUG: lifetime-too-short
   }
   use(v);
 }
@@ -59,5 +59,5 @@ static int *global_int;
 void copied_loan(void) {
   int x = 0;
   int *p = &x;
-  global_int = p; // BUG: lifetime-too-short definite
+  global_int = p; // BUG: lifetime-too-short
 }
