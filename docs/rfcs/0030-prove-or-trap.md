@@ -3052,6 +3052,26 @@ format 27 is format 26 minus every component that only checked mode reads,
 as determined by reachability in S1, plus `kind`, `result-kind`, the
 `lossy` flag and the restricted `outcome … when` cases of §9.1.
 
+**Amendment (S8).** The implemented payload refines this list; the
+codec's field table (`lib/Frontend/RecordPayload.cpp`) is authoritative, and
+the schema fingerprint changes with it:
+
+- `functions[]` also carries `location` and `contexts` (the RFC 0014 and
+  RFC 0016 specialisations a caller requested), and its `kinds` spell their
+  source (`default single nullable`), so the link step can tell a declared
+  kind from a default.
+- `imports[].declared.params` has one object per parameter (`name`, `kind`,
+  `ownership`), and each entry of `calls` is `{function, site, args}`, so the
+  link step can find the caller's Call site for reliance and requirement
+  rows.
+- Further keys: `unknownIndirect` (indirect calls whose slot had no target in
+  the unit), `slotRules` (the unit's slot constraints before solving),
+  `interfaces` (exported requirements and reliance flags), `a5` (the unit's
+  §11 counts) and `contexts.callbackGlobals`.
+- `sites[]` groups carry the function's `file`, `line` and `linkage`.
+- The schema fingerprint also covers the SummaryIO format version, so a
+  summary-format change makes older records stale instead of being skipped.
+
 Readers accept only format 28 with a matching schema fingerprint and a
 valid digest. Anything else is a *stale record*, and the input is treated
 as having none. There are no legacy readers, and unknown fields are never
