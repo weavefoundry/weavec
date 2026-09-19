@@ -506,7 +506,7 @@ int print(int x) { char b[4]; return sprintf(b, "%d", x); }
       << text;
   // BeforeCall.
   EXPECT_NE(
-      text.find("__weavec_chk_len(n, sizeof(char[8])) , (memset(b, 0, n));"),
+      text.find("__weavec_chk_len(n, 8ULL) , (memset(b, 0, n));"),
       std::string::npos)
       << text;
   // ReplaceCall, both uses.
@@ -522,20 +522,22 @@ int print(int x) { char b[4]; return sprintf(b, "%d", x); }
 }
 
 // §10.6: stores, compound assignment, `++`, `&`, `->` and array decay all
-// still compile after the rewrite; each access has its check.
+// still compile after the rewrite; each access has its check. Every context
+// uses its own pointer, so no check is proven away by an earlier one (§3.2).
 TEST(CheckEmitterTest, LvalueContextsCompile) {
   const EmitOptions setup;
   const Emitted out = compile(R"C(
 struct s { int f; char name[8]; };
-int *contexts(int *p, struct s *q, int v) {
-  *p = v;
-  *p += 2;
-  ++*p;
-  (*p)--;
-  q->f = v;
-  char *n = q->name;
+int *contexts(int *p1, int *p2, int *p3, int *p4, struct s *q1, struct s *q2,
+              struct s *q3, int v) {
+  *p1 = v;
+  *p2 += 2;
+  ++*p3;
+  (*p4)--;
+  q1->f = v;
+  char *n = q2->name;
   (void)n;
-  return &q->f;
+  return &q3->f;
 }
 )C",
                               &setup);
