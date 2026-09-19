@@ -934,7 +934,17 @@ the violation actually happens. Any other violation (temporal, a release),
 and one whose check is not expressible, gets an unconditional
 `__builtin_verbose_trap("weavec", "violation")` before the operation.
 With `-fweavec-checks=none` nothing is emitted, as for every other check.
-This is what makes (V) hold under `-Wno-error`.
+This is what makes (V) hold under `-Wno-error`. **Amendment (S3).** The ledger adapter
+enforces this for every reporting path: a definite error that names a
+facet, or whose id governs one (`out-of-bounds` and `invalid-release`:
+spatial; `null-dereference` and `use-of-uninitialized`: null; the temporal
+ids; `contradicted-assumption`: assertion), records a violation on that
+facet of its site, or of the innermost site around it when it was reported
+at a subexpression that is no site of its own (a call argument whose callee
+requires more than it has), adding the facet where the site kind would not
+otherwise carry it. The planner then guards that facet when the error is
+lowered, including a library call's facet whose requirement records carry
+no check of their own.
 
 ### 4. Worked examples
 
@@ -3976,6 +3986,14 @@ numbers. Two fallback points and one abort rule bound the risk.
 | **S6 Kinds** | `AttributeReader`'s full table and the macros (§7.2); the engine's consumption of kinds (§15 item 14); slot kinds with reliance flags and demotions (§7.3); must-access inference with guarded call-site checks (§7.5); grouping (§7.4). Houdini (§7.6) comes last and is the first thing cut. | A lit test per row of the §7.2 table; G13; G4 for probes 09 and 14c; G5, G11 and G14 still pass. |
 | **S7 Temporal precision** | Case derivation with `lossy` bits (§9.1); slots per TU and in `--whole-program` (§9.3), replacing the RFC 0014 callback-global fixpoint; boundary invariants and their propagation (§9.4). | G9, G10, G14 and G15; G12 measured with `weavec --whole-program` (the `weavec-cc` link half waits for S8); G4 for probes 02, 02c and 02d. Repros `realloc0`–`realloc5` and `luaalloc` meet their exact expectations. |
 | **S8 Link and wrap-up** | Format 28 (§13.1); the link step (§13.2), including declaration verification, reliance checks, program-wide propagation and `unanalyzed-input`; CLI cleanup (§16); documentation, the docs site and RFC statuses (§19); CI wiring: parallel CTest, the `cases-*` tests, `corpus-gate --quick` on PRs, `--full` weekly, and `check-hygiene`. | Every gate below re-run on the final tree, including probe 38 at link, G12 through `weavec-cc` linking the objects, H1 on the PR's own CI run, and H2. `npm test && npm run build` in `docs/` pass. |
+
+**Amendment (S3 exit).** Probes 20b, 36 and 46 need the Call-site facets
+of inferred requirements (§7.5), and probe 27's bug site stays proven until
+the boundary invariants of §9.4 exist. They move from S3's G4 subset to S6
+(20b, 36, 46) and S7 (27). A multi-unit case whose defect only the link step
+sees (a callee defined in another unit) is a definite error at link; its
+objects are already compiled, so its `TRAP` markers were removed rather than
+expected from a lowered link error (§13.2 step 4).
 
 Only Houdini field invariants (§7.6) can be cut without breaking the
 design; G13 is sized to pass without them. The report-mode runtime cannot
