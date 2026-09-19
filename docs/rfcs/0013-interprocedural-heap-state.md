@@ -114,6 +114,10 @@ unmodelled element witnesses are not closed by this RFC. There is no
 new callback points-to analysis, garbage-collector invariant inference,
 solver, runtime instrumentation, or library packaging.
 
+> **Amended by [RFC 0030](0030-prove-or-trap.md).** By default `weavec-cc` now
+> inserts trapping checks for the unproven spatial and null obligations it can
+> express, and zero-initialises locals and heap allocations (§10–§11).
+
 The heap description follows the existing finite place vocabulary. It does
 not distinguish arbitrary elements of unbounded arrays or list lengths.
 Paths beyond the existing summary depth limit are not described. Recursive

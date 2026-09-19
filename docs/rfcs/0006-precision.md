@@ -208,6 +208,10 @@ only under `AnalysisOptions::exclusiveBorrows` (`weavec
 RFC 0001's rule verbatim (messages unchanged). Loan *kinds* (shared /
 mutable) are still recorded and still drive summaries (`borrowKind`).
 
+> **Amended by [RFC 0030](0030-prove-or-trap.md).** `--exclusive-borrows` and
+> `-fweavec-exclusive-borrows` are removed, and the full RFC 0001 exclusivity
+> rule they enabled goes with them (§16).
+
 Why not keep exclusivity on by default and accept the noise? Because the
 idioms it rejects are not bugs: `char *p = buf; snprintf(buf, ...);` writes
 a buffer that another pointer views, which is how every string routine in C

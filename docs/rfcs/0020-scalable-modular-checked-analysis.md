@@ -1,13 +1,12 @@
 # RFC 0020: Scalable modular checked analysis
 
-- **Status**: Implemented
+- **Status**: Superseded
 - **Authors**: WeaveC authors
 - **Created**: 2026-09-08
 - **Tracking issue**: TBD
-- **Supersedes / superseded by**: Amends RFCs 0003/0005's scheduling and
-  reuse, RFCs 0014/0016's specialization caches, and RFCs 0018/0019's
-  explanation representation. Qualifies RFC 0011's may-alias nullness heuristic
-  for checked proof facts. Annotation semantics remain.
+- **Supersedes / superseded by**: Superseded by RFC 0030
+
+> Superseded by [RFC 0030](0030-prove-or-trap.md).
 
 ## Summary
 

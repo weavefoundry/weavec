@@ -1,12 +1,12 @@
 # RFC 0023: Inductive ownership contracts for linked containers
 
-- **Status**: Implemented
+- **Status**: Superseded
 - **Authors**: WeaveC authors
 - **Created**: 2026-09-11
 - **Tracking issue**: TBD
-- **Supersedes / superseded by**: Extends RFC 0013's finite heap descriptions,
-  RFC 0015's container ownership, and RFCs 0018–0022's compositional checked
-  contracts. Preserves RFC 0020's dependency and artifact validation rules.
+- **Supersedes / superseded by**: Superseded by RFC 0030
+
+> Superseded by [RFC 0030](0030-prove-or-trap.md).
 
 The project owner requested this RFC first and then implementation end to end.
 The initial Accepted status recorded authorization to implement this design;

@@ -5,23 +5,14 @@
 [![CI](https://github.com/weavefoundry/weavec/actions/workflows/ci.yml/badge.svg)](https://github.com/weavefoundry/weavec/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0%20WITH%20LLVM--exception-blue.svg)](LICENSE)
 
-A mostly source-compatible C compiler that brings Rust-style memory safety to existing C code through inferred ownership and borrowing. It automatically proves memory safety where possible, requires lightweight annotations only when necessary, and isolates truly unsafe operations behind explicit `unsafe` boundaries. The goal is to let teams incrementally make large C codebases memory-safe without rewriting them in Rust or abandoning the C ecosystem.
+A mostly source-compatible C compiler that brings Rust-style memory safety to existing C code through inferred ownership and borrowing. For every memory operation it compiles, WeaveC proves what it can, inserts a runtime check for the null and bounds obligations it cannot prove, and records everything else with a reason. It is built on Clang/LLVM, which does the parsing, code generation and platform support; WeaveC adds ownership inference, borrow and lifetime checking, check insertion and the safety ledger, in C++ libraries kept separate from the Clang integration.
 
-WeaveC is built on Clang/LLVM rather than implementing a compiler from scratch, using Clang for parsing, semantic analysis, diagnostics, optimization, code generation, and platform support. WeaveC adds its own ownership inference, borrow checking, lifetime analysis, and memory-safety rules on top, allowing the project to focus on its core innovation while remaining compatible with the existing C toolchain and ecosystem.
-
-WeaveC itself is written in modern C++, which provides the most direct and complete access to Clang/LLVM's APIs and infrastructure. The core ownership, borrowing, lifetime, and inference logic should be kept as modular as possible so it remains cleanly separated from the Clang integration layer and can potentially be reused or extended in the future.
-
-> **Status:** WeaveC is early, v0.x software: flags, diagnostics and on-disk formats can change between minor versions. [RFC 0030](docs/rfcs/0030-prove-or-trap.md), *Prove or trap*, defines the current model and is being implemented. In that model, one ledger records an outcome for every safety facet of every memory operation (proven, checked at runtime, a definite violation, or unresolved or trusted with a stated reason), and `weavec-cc` turns spatial and null obligations it cannot prove into trapping runtime checks. Definite violations are errors, possible temporal bugs remain warnings, and checked mode (RFCs 0018–0029) is removed. The [roadmap](docs/roadmap.md) tracks progress.
+> **Status:** WeaveC is early, v0.x software: flags, diagnostics and on-disk formats can change between minor versions. [RFC 0030](docs/rfcs/0030-prove-or-trap.md), *Prove or trap*, defines the model described here and is being implemented; the [roadmap](docs/roadmap.md) tracks progress.
 
 ## Quick look
 
 ```c
-#include <stdint.h>
 #include <stdlib.h>
-#include <weavec.h>
-
-struct buffer *WEAVEC_OWNED buffer_new(size_t n);
-size_t buffer_len(const struct buffer *WEAVEC_BORROWED b);
 
 struct node { int v; struct node *next; };
 static void node_free(struct node *n) { free(n); }   // inferred: consumes n
@@ -29,70 +20,109 @@ static void node_free(struct node *n) { free(n); }   // inferred: consumes n
 int example(struct node *n) {
   struct node *m = n;
   node_free(m);
-  return n->v;       // error: use of 'n' after it was freed [weavec::use-after-free]
+  return n->v;       // error: freed on every path
+}
+
+int maybe(struct node *n, int done) {
+  if (done)
+    node_free(n);
+  return n->v;       // warning: freed on some paths
 }
 
 int *escape(void) {
   int x = 0;
-  return &x;         // error: returned pointer may outlive 'x' [weavec::lifetime-too-short]
+  return &x;         // error: the pointer outlives x
 }
 
-struct node *WEAVEC_OWNED from_handle(uintptr_t h) {
-  WEAVEC_UNSAFE { return (struct node *)h; }   // asserts ownership, at one greppable point
-}
-
-int handle(uintptr_t h) {
-  struct node *r = (struct node *)h;             // r is raw: no one knows who owns it
-  return r->v;       // error: dereference of raw pointer 'r' outside an unsafe region [weavec::unsafe-operation]
+int lookup(int i) {
+  static const int table[4] = {10, 20, 30, 40};
+  return i < 4 ? table[i] : -1;   // not proven for i < 0: checked at run time
 }
 ```
 
 ```
 $ weavec example.c --
-example.c:14:10: error: use of 'n' after it was freed [weavec::use-after-free]
-   14 |   return n->v;
+example.c:20:11: warning: address of stack memory associated with local variable 'x' returned [-Wreturn-stack-address]
+   20 |   return &x;         // error: the pointer outlives x
+      |           ^
+example.c:9:10: error: use of 'n' after it was freed [weavec::use-after-free]
+    9 |   return n->v;       // error: freed on every path
       |          ^
-example.c:13:3: note: freed here (through 'm')
-   13 |   node_free(m);
+example.c:8:3: note: freed here (through 'm')
+    8 |   node_free(m);
       |   ^
-example.c:19:10: error: returned pointer may outlive 'x', which it points to [weavec::lifetime-too-short]
-   19 |   return &x;
+example.c:15:10: warning: use of 'n' after it may have been freed [weavec::use-after-free]
+   15 |   return n->v;       // warning: freed on some paths
       |          ^
-example.c:18:7: note: 'x' is declared here
-   18 |   int x = 0;
+example.c:14:5: note: freed here on some paths
+   14 |     node_free(n);
+      |     ^
+example.c:20:10: error: returned pointer may outlive 'x', which it points to [weavec::lifetime-too-short]
+   20 |   return &x;         // error: the pointer outlives x
+      |          ^
+example.c:19:7: note: 'x' is declared here
+   19 |   int x = 0;
       |       ^
-example.c:28:10: error: dereference of raw pointer 'r' outside an unsafe region [weavec::unsafe-operation]
-   28 |   return r->v;
-      |          ^
-example.c:27:20: note: 'r' is raw: cast from an integer here
-   27 |   struct node *r = (struct node *)h;
-      |                    ^
-example.c:28:10: note: move this operation into a WEAVEC_UNSAFE block or function, or assert the pointer's ownership first
+weavec: example.c: 11 sites: 6 proven, 1 checkable (not enforced), 2 violations, 2 unresolved, 0 trusted; 2 errors, 1 warning
+2 warnings and 2 errors generated.
+Error while processing example.c.
 ```
 
-Annotations (`WEAVEC_OWNED`, `WEAVEC_BORROWED`, `WEAVEC_MUT`, `WEAVEC_RAW`, `WEAVEC_UNSAFE`, `WEAVEC_NULLABLE`, `WEAVEC_NONNULL`, `WEAVEC_RETAINS`, `WEAVEC_RELEASES`, `WEAVEC_REFCOUNT`, `WEAVEC_OWNED_BY(f)`) expand to nothing on other compilers, so annotated code remains plain, portable C. See [docs/annotations.md](docs/annotations.md).
+Definite bugs are errors; a use-after-free on some paths only is a warning. The first warning is Clang's own. The last line summarises the file's *ledger*, which records an outcome for each safety facet (spatial, null, temporal) of every memory operation (*site*): proven, checked, a violation, or unresolved or trusted with a reason. The line counts each site by its worst facet. `table[i]` is counted as checkable: `weavec` only analyses, and `weavec-cc`, the compiler, turns it into a check that traps when `i` is negative.
+
+Annotations (`WEAVEC_OWNED`, `WEAVEC_BORROWED`, `WEAVEC_MUT`, `WEAVEC_RAW`, `WEAVEC_UNSAFE`, `WEAVEC_NULLABLE`, `WEAVEC_NONNULL`, `WEAVEC_COUNTED_BY(n)`, `WEAVEC_ENDED_BY(q)`, `WEAVEC_STRING`, `WEAVEC_REQUIRE_SAFE`, `WEAVEC_ASSUME(e)` and the reference-counting forms) state contracts where inference needs help. They expand to nothing on other compilers, so annotated code remains plain, portable C. See [docs/annotations.md](docs/annotations.md).
+
+## What WeaveC guarantees
+
+For a translation unit compiled by `weavec-cc` in an enforcing mode (the default `-fweavec-checks=trap`, or `verify`, with zero-initialisation on), every operation outside a `WEAVEC_UNSAFE` region satisfies:
+
+- **(S)** if its spatial facet is proven or checked, it accesses only bytes inside the object its pointer was derived from, or the program traps first;
+- **(N)** if its null facet is proven or checked, it does not dereference null, or the program traps first;
+- **(T)** if its temporal facet is proven, the object is still alive, and a release releases a live allocation once;
+- **(V)** a definite violation never reaches the object unguarded: it fails the build, or, if lowered with `-Wno-error`, traps.
+
+These hold under five assumptions: **A1** callers outside the unit pass arguments that meet what it relies on; **A2** trusted callees (platform functions, the library table, declared contracts, code without WeaveC records) behave as their contracts say; **A3** other code leaves reachable pointers null or pointing to live objects, with owners unique; **A4** no other thread, signal handler or `longjmp` changes the memory outside sites marked for it; **A5** the allocator answers its usable-size query consistently, and memory from sources WeaveC does not zero is written before pointers are read from it. If a memory-safety violation happens anyway, then a check trapped first, or the ledger shows an unresolved or trusted facet (or an assumption at the unit's interface) that it rests on, or WeaveC has a bug, which `verify` mode monitors. Temporal bugs are not checked at run time. The full statement, what is caught and what is not, is in [the guarantees reference](docs/pages/reference/guarantees.md) and [RFC 0030, *Soundness*](docs/rfcs/0030-prove-or-trap.md#soundness).
+
+## Modes
+
+| `-fweavec-checks=` | Unproven null and bounds obligations | Zero-init | Guarantee |
+| --- | --- | --- | --- |
+| `trap` (default) | checked; a failed check traps | on | yes |
+| `report` | checked; a failed check prints `weavec: runtime check failed: …` and continues (links `libweavec_rt.a`) | on | only with `WEAVEC_RT_ABORT=1` |
+| `verify` | checked; proven facets are also checked where expressible, so a `weavec.proven` trap exposes a wrong proof | on | yes |
+| `none` | nothing: the object is what Clang would produce | off | no |
+
+- **Zero-initialisation.** In the checking modes, locals and the standard allocation calls are zero-initialised, so an uninitialised pointer is null and its checked dereference traps. `-fno-weavec-zero-init` turns it off.
+- **Require levels.** `-fweavec-require=checked` makes every unresolved facet an `unresolved-operation` error; `-fweavec-require=proven` also makes every checked facet an `unchecked-operation` error. Trusted facets are allowed at every level. `WEAVEC_REQUIRE_SAFE` holds one function to `checked`.
+- **Ledger.** `-fweavec-ledger=<path>` writes every site and facet with its outcome, reason, fix-it and a stable fingerprint, as JSON or, with `-fweavec-ledger-format=sarif`, SARIF 2.1.0. `-fweavec-summary` prints the one-line summary, which `weavec` always prints.
 
 ## Using it as the compiler
 
-`weavec-cc` is Clang's driver with WeaveC inside. Point a build at it and it compiles as `clang` would, analyses each file as it compiles it, and checks the whole program when it links:
+`weavec-cc` is Clang's driver with WeaveC inside. Point a build at it and it compiles as `clang` would, analyses and instruments each file as it compiles it, and checks the whole program when it links:
 
 ```sh
-$ CC=weavec-cc make
-weavec-cc -c node.c -o node.o          # node.o and node.o.weavec (its summaries)
+$ make CC=weavec-cc
+weavec-cc -c node.c -o node.o          # node.o and node.o.weavec (its WeaveC record)
 weavec-cc -c main.c -o main.o
-weavec-cc node.o main.o -o prog        # reads the sidecars, analyses the program, then links
-main.c:8:3: error: 'n' is freed twice [weavec::double-free]
-    8 |   node_free(n);
-      |   ^
-main.c:7:3: note: previously freed here
-    7 |   node_free(n);
-      |   ^
-1 error generated.
+weavec-cc node.o main.o -o prog        # reads the records, analyses the program, then links
 ```
 
-A bug inside one file is reported when that file is compiled; a bug that needs two files (`node_free` is defined in `node.c`) is reported when they are linked, and an error stops the link. Flags: `-fno-weavec` (compile only), `-fweavec-strict` (every call into unknown code is a raw operation), `-fno-weavec-link` (skip the link-time step), `-Wno-weavec-annotation-required`, `-Wno-error=weavec-use-after-free` (lower an error to a warning while migrating), `-Werror=weavec`.
+A bug inside one file is reported when that file is compiled; a bug that needs two files is reported when they are linked, and an error stops the link. Link inputs without a WeaveC record (archives, shared libraries, objects from another compiler) are named in one `unanalyzed-input` warning.
 
-The tooling form analyses a compilation database without building: `weavec --whole-program -p build/` (all sources) or `weavec --whole-program a.c b.c -- -Iinclude`. Without `--whole-program`, `weavec file.c --` checks one file as before.
+The checks are ordinary C inserted before code generation, with no ABI change and no runtime library in the default mode. With `lookup` from the quick look in a program that passes it `atoi(argv[1])`:
+
+```
+$ weavec-cc -fweavec-summary lookup.c -o lookup
+weavec: lookup.c: 7 sites: 4 proven, 1 checked, 2 unresolved, 0 trusted; 0 errors, 0 warnings
+$ ./lookup 2
+30
+$ ./lookup -1; echo "exit status $?"
+exit status 133
+```
+
+The negative index stops the program with `SIGTRAP` (or `SIGILL`, depending on the target) at the access, instead of reading past the table. Other flags: `-fno-weavec` (plain Clang), `-fno-weavec-link` (skip the link-time step), `-fweavec-budget=<n>` (per-function analysis budget), `-Wno-error=weavec-<id>` (lower an error to a warning while migrating), `-Werror=weavec`. `weavec-cc --help-weavec` lists them all.
+
+The tooling form analyses a compilation database without building: `weavec --whole-program -p build/` (all sources) or `weavec --whole-program a.c b.c -- -Iinclude`. Without `--whole-program`, `weavec file.c --` checks one file. Both take `--ledger`, `--ledger-format` and `--require`.
 
 ## Building
 
@@ -111,7 +141,7 @@ export WEAVEC_LLVM_PREFIX=/usr/lib/llvm-23
 # Everyone
 cmake --preset dev          # configure into build/dev
 cmake --build --preset dev  # build
-ctest --preset dev          # run unit + integration tests
+ctest --preset dev          # unit, lit and test/cases suites, in parallel
 ```
 
 Other presets: `dev-asan`, `dev-tidy`, `release`, `relwithdebinfo`. The full list is in [`CMakePresets.json`](CMakePresets.json); the developer guide is [docs/development.md](docs/development.md).
@@ -151,20 +181,26 @@ selection, publication and retries.
 
 ```
 include/weavec/   Public C++ headers
-  Core/           Ownership lattice, lifetimes, borrows, moves, diagnostics (no Clang/LLVM)
-  Analysis/       Clang AST -> core facts; the checkers
-  Frontend/       Clang FrontendAction / libTooling integration
-lib/              Implementations, mirroring include/
+  Core/           Ownership lattice, lifetimes, borrows, moves, pointer kinds, the ledger,
+                  the library table, check plans, diagnostics (no Clang/LLVM)
+  Analysis/       Clang AST -> core facts: sites, kinds, the engine and the planner behind one seam
+  Frontend/       Clang integration: deferred CodeGen, check emission, zero-init, ledger writers,
+                  unit records, the whole-program step, the compiler driver
+lib/              Implementations, mirroring include/ (lib/Core/LibrarySpec.txt is the library table)
+runtime/          The small C runtime: report-mode reporting and out-of-line check helpers
 tools/weavec/     The analysis tool (libTooling; --whole-program for a compilation database)
 tools/weavec-cc/  The drop-in compiler driver (Clang's driver with WeaveC inside)
 resources/        weavec.h, the C-facing annotation header (installed to lib/weavec/include)
 unittests/        GoogleTest unit tests
 test/             lit + FileCheck integration tests
-docs/             Architecture, RFCs (docs/rfcs/), roadmap
+  cases/          Executable C cases by feature, with markers, run by scripts/run-cases.py
+  corpus/         Real projects pinned by SHA, expectations and triage, run by scripts/corpus-gate.py
+scripts/          Test runners, the corpus gate, hygiene and release tooling
+docs/             Architecture, RFCs (docs/rfcs/), roadmap, and the weavec.com site
 cmake/            Build-system modules
 ```
 
-The layering rule is strict: `Core` must not include anything from `clang/` or `llvm/`. `Analysis` is the only layer that knows about both worlds. See [docs/architecture.md](docs/architecture.md).
+The layering rule is strict: `Core` must not include anything from `clang/` or `llvm/`. `Analysis` is the only layer that knows about both worlds, and only the engine behind the `SafetyEngine` seam sees the dataflow internals. See [docs/architecture.md](docs/architecture.md).
 
 ## Contributing
 

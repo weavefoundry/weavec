@@ -1,6 +1,6 @@
 ---
 title: The RFC library
-description: Browse WeaveC's design records for ownership, borrowing, whole-program analysis, and checked memory safety.
+description: Browse WeaveC's design records for ownership, borrowing, whole-program analysis, and proven or runtime-checked memory safety.
 editUrl: https://github.com/weavefoundry/weavec/edit/main/docs/rfcs/README.md
 ---
 
@@ -8,7 +8,7 @@ import RfcLibrary from '../src/components/RfcLibrary.astro';
 
 Every major model decision has a written record: the problem, the proposed semantics, the tradeoffs, and the evidence required. These RFCs are the authoritative design references for WeaveC.
 
-**Accepted** records specify the design. **Implemented** records have completed their defined implementation and test criteria. A status is not a guarantee about arbitrary C programs; consult each RFC's scope and validation.
+**Accepted** records specify the design. **Implemented** records have completed their defined implementation and test criteria. **Superseded** records are kept as history; the record that replaced them says what changed. [RFC 0030](/rfcs/0030-prove-or-trap/) defines the current model and guarantee. A status is not a guarantee about arbitrary C programs; consult each RFC's scope and validation.
 
 <RfcLibrary />
 

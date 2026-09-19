@@ -1,8 +1,17 @@
 # Architecture
 
-WeaveC is organised as three C++ libraries and two thin command-line tools.
-The libraries form a strict dependency chain; the arrows below point from a
-layer to what it may depend on.
+WeaveC is a memory-safety checker for C and a drop-in C compiler, built on
+Clang and LLVM. [RFC 0030](rfcs/0030-prove-or-trap.md), *Prove or trap*,
+defines its design. Each safety *facet* (spatial, null, temporal) of every
+memory operation, or *site*, gets exactly one outcome in the *ledger*:
+proven, checked by a compiler-inserted runtime check, a definite violation
+(a build error), or unresolved or trusted with a reason from a closed list.
+`weavec-cc` inserts the checks into the AST through Sema before a deferred
+CodeGen, with no ABI change. Temporal safety stays static: possible temporal
+bugs are warnings and ledger rows, never runtime checks.
+
+The code is three C++ libraries, two thin command-line tools and a small C
+runtime. The arrows point from a layer to what it may depend on.
 
 ```
         ┌──────────────────────┐  ┌──────────────────────────┐
@@ -12,14 +21,15 @@ layer to what it may depend on.
                    └───────────┬───────────────┘
                                ▼
                  ┌──────────────────────────┐
-                 │  weavec::Frontend        │  Clang FrontendAction, libTooling,
-                 │  lib/Frontend            │  whole-program orchestration,
-                 │                          │  sidecars, driver, diagnostics
+                 │  weavec::Frontend        │  deferred CodeGen, check
+                 │  lib/Frontend            │  emission, ledgers, unit
+                 │                          │  records, link step, driver
                  └────────────┬─────────────┘
                               ▼
                  ┌──────────────────────────┐
-                 │  weavec::Analysis        │  Clang AST → core facts,
-                 │  lib/Analysis            │  inference, checkers
+                 │  weavec::Analysis        │  kinds, sites, slots, the
+                 │  lib/Analysis            │  engine seam, FunctionDataflow,
+                 │                          │  check planning
                  └──────┬───────────┬───────┘
                         ▼           ▼
         ┌────────────────────┐   ┌────────────────────┐
@@ -29,997 +39,596 @@ layer to what it may depend on.
         └────────────────────┘
 ```
 
+`runtime/` is C code that `weavec-cc` links into user programs, only for
+report mode and for precompiled-header and module builds. It depends on
+nothing above. The layering rule is strict:
+
+- Core includes nothing from `clang/` or `llvm/`. It is the one library
+  built without their include paths.
+- Analysis is the only layer that knows both Core and Clang.
+- Inside Analysis, the components on the near side of the engine seam (see
+  *The engine seam*) never include `Dataflow.h`. Only `DataflowEngine.cpp`,
+  `FunctionAnalysis.cpp`, `CallbackSummaries.cpp`, `CallContextSummaries.cpp`
+  and the `Dataflow*.cpp` files may.
+
+RFC 0030 is being implemented in stages. This page describes its design; the
+[roadmap](roadmap.md) says which stages have landed. Checked mode (RFCs
+0018–0029) was removed by RFC 0030 and remains in the repository history at
+tag `v0.10.0`.
+
 ## `weavec::Core` — the model
 
-`lib/Core` contains the ownership, integer and spatial domains without AST or
-Clang dependencies. It depends only on the C++ standard library. This is the
-piece the README asks to keep "as modular as possible": it can be unit-tested
-without parsing any code, reused by a different frontend, or embedded in other
-tools.
+`lib/Core` holds the model and depends only on the C++ standard library, so
+it can be unit-tested without parsing code and reused by another frontend.
+It never sees a `clang::VarDecl`, only a `PlaceId`, and never a
+`clang::SourceLocation`, only a `core::SourceLocation` whose `opaque` field
+the frontend fills in. Check operands that name program state are opaque
+place handles, which Analysis resolves to Clang declarations.
 
-RFC 0024 keeps runtime format syntax in the Clang-free `Format.h` / `Format.cpp`
-parser. Its bounded conversion records describe promoted argument categories;
-Analysis binds those categories to the target's actual C types. `SafetyState`
-holds opaque argument-list lifecycle records and initialized terminated-prefix
-envelopes. These envelopes are separate from ordinary initialized-byte ranges:
-an unknown terminator inside a capacity does not initialize the unused tail.
+### The ledger and its companions
 
-Analysis's immutable `RuntimeModels` registry validates call signatures before
-dispatch. `DataflowRuntime.cpp` checks memory and stream preconditions,
-`DataflowFormats.cpp` binds formats and establishes guarded output facts, and
-`DataflowArgumentLists.cpp` handles cursor ownership, consumption and forwarding.
-They use the existing checked call, callback, output and summary machinery.
-Source definitions retain priority over library spellings. Ordinary summaries
-alone never authorize a checked runtime contract. Portable records use checked
-encoding 12, summary format 26 and sidecar format 27 (RFC 0029).
+| Header | Purpose |
+| --- | --- |
+| `Ledger.h` | Sites, facets and outcomes (RFC 0030 §2): `SiteKind`, `Facet`, `SiteOutcome`, the closed reason lists with their JSON spellings and phrases, merging by rank, the defaults for undecided facets, `UnitLedger` and `Ledger` with requirement records, diagnostics and the A1–A5 assumption counts, the `summary` rollup and the summary line. |
+| `PointerKind.h` | The kind lattice (§7.1): `single`, `counted(e)`, `sized(e)`, `ended-by(q)`, `nul-terminated` or `unknown`, with nullability, a source (declared, inferred, default) and an `ExtentTerm` over a sibling parameter or field. Every kind is a lower bound. `ExtentClass` says whether an extent is exact, declared or a lower bound; only the first two may be check operands, and only an exact extent can make an access a violation. |
+| `LibrarySpec.h`, [`LibrarySpec.txt`](../lib/Core/LibrarySpec.txt) | The one declarative table of C library, POSIX, platform and builtin functions (§8), and its parser: per argument, the access, required length, nullability, ownership effect, release family, state slots and callback clause; per call, the result, disjointness, `exits`/`noreturn`, format arguments and fortified aliases. It also lists the platform headers of §5.2. CMake embeds the text, and it replaces the three library models of v0.10.0. |
+| `CheckPlan.h` | Checks as pure data (§10.1): per checked requirement record or lowered violation, a template (`nonnull`, `index`, `span`, `len`, `disjoint`, `assert`), a form, a placement, an optional guard and `CheckTerm` operands. |
+| `FnSlots.h` | Function-pointer slots (§9.3): the constraints `f ∈ S`, `S ⊆ T` and `open(S)` over field, global, parameter, result and local slots, and the solver that computes each slot's targets and whether it is closed. |
 
-| Header             | Purpose                                                                                        |
-| ------------------ | ---------------------------------------------------------------------------------------------- |
-| `Ownership.h`      | `OwnershipKind` lattice (`Unknown ⊑ {Owned, Shared, Mutable} ⊑ Raw`) and `join`. `Raw` is "no guarantee": tracked, but usable only inside an unsafe region. |
-| `Place.h`          | `PlaceId` and `PlaceTable`: structured places (`p`, `s.f`, `*p`, `p->f`, `a[*]`, `a[0]`) with parent/descendant/translate queries. |
-| `Array.h`          | Bounded constant/symbolic selectors, half-open intervals, sparse spans and evidence-based membership/disjointness queries (RFC 0015). |
-| `Buffer.h`         | Target-layout descriptors, current initialized-prefix invariants, backing ownership, pointer-sequence identity and guarded buffer postconditions (RFC 0026). |
-| `AliasRelation.h`  | Symmetric may-alias graph over places; closed under copies, plain union at joins (deliberately not transitive). Each edge records the `PointerOffset` between the two places — the same value (`Zero`), a constant number of elements, a field, or `Unknown` — so a pointer derived from another is a name for the same object at a known distance (RFC 0011), and which element of the other end is meant (RFC 0006); `separateExact` refutes a zero-offset edge on a `!=` edge. |
-| `Lifetime.h`       | `LifetimeId` and `LifetimeConstraints` (transitive `outlives` queries; `'static` is id 0).      |
-| `Borrow.h`         | `Loan` (place, kind, lifetime, holder) and `BorrowState`: may this borrow be created; may this place be moved or mutated; `expireHolders` drops the loans of holders a predicate declares dead (RFC 0006 liveness). |
-| `Integer.h`        | Target integer types, masked bit-pattern values, bounded modular ranges, concrete/abstract arithmetic, conversion and checked-overflow results (RFC 0017). Implementations are `Integer.cpp` and `CheckedInteger.cpp`; neither uses host signed overflow to model target arithmetic. |
-| `IntegerExpression.h` | Bounded typed expressions and predicates over local places or stable summary paths: constants, inputs, casts, arithmetic, min/max and overflow tests, with validation, substitution and canonical serialization (RFC 0017). |
-| `Scalar.h`         | `ValueFact` (a set of RFC 0006 outcome classes — `zero`/`positive`/`negative` or `null`/`nonnull` — plus an optional exact constant; `join`, `narrow`, `disjointFrom`, `implies`), `GuardOn<Key>` (a conjunction of facts about places — `PlaceGuard` — or summary paths — `PathGuard` — under which alone a record or effect holds; `require`, `learn`, `refine`, `join`, `drop`, bounded by `MaxGuardConjuncts`) and `ScalarTracker` (per integer place, what is known about its value; RFC 0009). |
-| `Offset.h`         | `PointerOffset`: where inside its object a pointer points — `Zero`, `Elements(k)`, `Field(key)`, `Unknown` — with `plus`, `negated`, `toString`/`parse` (RFC 0011). |
-| `Spatial.h`        | `Affine` (an extent: a constant, or `scale * place + constant`), `SpatialRecord` (a place's extent and offset, and its `StringFact` — the length of the string the object holds, or that it has no terminator — RFC 0012), `SpatialTracker` (per place, joined by agreement) and `boundsVerdict`, the pure decision of RFC 0011's bounds rules (`OutOfBounds`, `MayBeOutOfBounds`, `MayReachPastEnd`, `BeforeStart`, and RFC 0012's `AtLeastPastEnd` from a lower bound) over `KnownBounds` (constant upper and lower bounds on either side). |
-| `Relation.h`       | `RelationTracker`: what the path knows of one integer place against another (`Less`, `LessEqual`, `Equal`, `GreaterEqual`, `Greater`, learnt from condition edges, through one equality hop, each with an *offset*: `i < n + k`, RFC 0012) and against a constant (`learnAtMost`/`atMost`, `learnAtLeast`/`atLeast`); `forget` on a write, `join` by agreement (RFC 0011). |
-| `Moves.h`          | `MoveTracker`: which places are currently moved-out/freed (and through which alias), each with an `ElementWitness` (whole / constant / variable / unknown) saying which element of an `a[*]` place was named (RFC 0006); a use is only reported when the witnesses match; conservative `join`. `MoveReason::Uninitialized` marks a local pointer place that has never been assigned (RFC 0008). Each record carries a `PlaceGuard` (RFC 0009): `learn` refutes and erases the records a condition edge contradicts, `dropGuardsOn` weakens the guards that name a written place. |
-| `Raw.h`            | `RawTracker`: which places currently hold a raw pointer, why (`RawReason`: integer cast, `WEAVEC_RAW` declaration, loaded through a raw pointer, callee result, unchecked callee) and through which alias; union at joins. |
-| `Resource.h`       | `ResourceTracker`: which places hold an owned resource this function is responsible for (`ResourceRecord`: origin — allocated or declared `WEAVEC_OWNED` —, location, release family, escaped, and the number of shares — RFC 0010; the offset a place points at is on its alias edges and in the `SpatialTracker`, RFC 0011), plus the places known to hold null; records join by union, null facts by intersection (RFC 0007). Each record carries a `PlaceGuard` (RFC 0009): a resource held only under a fact is cleared, not leaked, on the edge that refutes it. |
-| `Nullness.h`       | `NullTracker`: per place, whether the pointer it holds is `Null`, `MaybeNull` or `NonNull` (`NullRecord`: state, where the fact comes from and why — assigned null, a callee's result or store, a merged null test, a `WEAVEC_NULLABLE` declaration); no record is *unknown* and trusted. Joins by the RFC 0008 table (`MaybeNull` absorbs, `Null` with anything else is `MaybeNull`, `NonNull` with no fact is no fact). A `Null`/`MaybeNull` record carries the `PlaceGuard` of the paths that made it null and, when every other path was non-null, `otherwiseNonNull`, so refuting the guard makes the record `NonNull` (RFC 0009). |
-| `AnalysisState.h`  | The dataflow state: moves, loans, aliases, raw pointers, resources, nullness, scalar facts (RFC 0009), extents and offsets (`spatial`) and integer relations (`relations`, RFC 0011), inferred kinds, the `PendingOutcome`s of calls whose consumption (and whose null and non-null stores, RFC 0007/0008) depend on a not-yet-tested result, the flow-sensitive `consumed` record that feeds outcome classes at `return` (RFC 0006), and the `overwritten` caller-visible paths whose entry value has been replaced on every path (RFC 0008), with component-wise `join`. `pathGuard()` is the facts of the current path as the guard of a record created here; `learn` propagates a condition edge's fact to every guarded record; `factOf` reads scalar and definite nullness facts through one interface. |
-| `Summary.h`        | `FunctionSummary`: what a function does to its interface. `SummaryPath` (`param(i)`/`global(g)`/`result` plus deref/field/index steps), `PlaceEffect` (read/written/freed/moved, with the release family of a consumption, `replaced` when every consuming path reinitialised the place, `element` when every consume went through an element access — RFC 0008 — and `when`, the `PathGuard` under which alone the consume happens — RFC 0009), `Store` (value written into caller-visible memory), `ValueSource` (fresh — with its release family and, when known, its extent —/copy/borrow/null/raw/unknown, each at a `PointerOffset` from its root and with a `when` guard — RFC 0011; alternatives that differ only in their guard are merged by `addReturn`/`addStore`), `neverReturns` (the exit is unreachable; joins by conjunction, RFC 0009), `outcomes` (per `Outcome` class — `Null`, `NonNull`, `Zero`, `Positive`, `Negative` — the consumption that holds on the paths returning it; RFC 0006), `nullOn` (per class, the caller places that are null; RFC 0007), `nonNullOn` and `requiresNonNull` (per class, the caller places that are non-null; the parameters the function dereferences untested; RFC 0008), `requiresExtent` (per parameter, the `PathAffine` extent the body needs behind it, RFC 0011), with `join`, `remapGlobals` and the derived `consumes`/`consumesUnconditionally`/`borrowKind`/`inferredKind`/`freshReturnFamily` queries. |
-| `SummaryIO.h`      | The stable text form of a `FunctionSummary` (`summary` ... `end` records; RFC 0005): `printSummary`/`parseSummary` with callbacks that name and resolve globals, so the format is Clang-free and the on-disk sidecar format is defined here. |
-| `Scc.h`            | Tarjan's strongly connected components over an adjacency list, in reverse topological order; used for the call graph inside a unit and for the unit graph of a program. |
-| `Diagnostic.h`     | `Diagnostic`, stable ids in `diag::` (with `All`, `isKnown`, `Removed`, `isRemoved`, `defaultSeverity(id, certainty)` and `isEnabledByDefault`), `Certainty`, `FixItHint`, `DiagnosticSink`, and an in-memory `DiagnosticCollector`. |
-| `SourceLocation.h` | Frontend-neutral positions with an `opaque` slot for the frontend's native encoding.           |
+A site is one operation in one emitted function, identified by
+`{function, ordinal, kind, location}`. Its kind is `deref`, `index`,
+`ptr-arith`, `cast`, `int-to-ptr`, `lib-call`, `release`, `call` (a call or
+a function exit), `assume` or `raw` (§2.1), and a facet exists only where it
+has meaning. `assume` sites have a fourth facet, *assertion*. Records of one
+facet merge by rank within one pass:
+`violation > unresolved > checked > trusted > proven`. The unresolved reasons
+are `unknown-extent`, `unknown-index`, `inexpressible`, `may-released`,
+`may-moved`, `may-alias-released`, `may-invalid-release`,
+`may-mismatched-release`, `may-dangle`, `may-conflict`, `unknown-callee`,
+`callback`, `setjmp`, `budget`, `unanalysed`, `raw-cast`, `dangling-escape`,
+`second-owner` and `no-zero-init`. The trust reasons are `unsafe`,
+`system-api`, `library-spec`, `extern-contract`, `caller-contract`,
+`external-unit` and `concurrency`. Adding a reason requires an RFC.
 
-The core never sees a `clang::VarDecl`; it sees a `PlaceId`. It never sees a
-`clang::SourceLocation`; it sees a `core::SourceLocation` whose `opaque` field
-the frontend fills in so it can report at the exact original position.
-RFC 0017 extends `ValueFact` with typed integer ranges and `GuardOn` with
-integer predicates. `AnalysisState` retains numeric expressions, conditions
-and writes; `FunctionSummary::numericOutputs` and expression-bearing
-`PathAffine` values extend the earlier scalar and affine interfaces. Spatial
-requirements also retain the first accessed byte, so a negative start cannot
-be mistaken for an empty access.
+### The ownership, integer and spatial model
+
+| Header | Purpose |
+| --- | --- |
+| `Ownership.h` | `OwnershipKind` lattice (`Unknown ⊑ {Owned, Shared, Mutable} ⊑ Raw`); `Raw` is usable only inside an unsafe region. |
+| `Place.h` | `PlaceId` and `PlaceTable`: structured places (`p`, `s.f`, `*p`, `p->f`, `a[*]`, `a[0]`) with parent and descendant queries. |
+| `Array.h` | Bounded selectors, half-open intervals and sparse spans (RFC 0015). |
+| `AliasRelation.h` | Symmetric may-alias graph, closed under copies and joined by union (deliberately not transitive). Each edge records the `PointerOffset` between its ends (RFC 0011) and the element meant (RFC 0006). |
+| `Lifetime.h` | `LifetimeConstraints`: transitive `outlives` queries; `'static` is id 0. |
+| `Borrow.h` | `Loan` and `BorrowState`: whether a borrow may be created and a place moved or mutated. The loans of dead holders expire (RFC 0006). |
+| `Moves.h` | `MoveTracker`: moved-out and freed places, with element witnesses (RFC 0006), guards (RFC 0009) and certainty bits. `Uninitialized` marks pointer locals never assigned (RFC 0008). |
+| `Nullness.h` | `NullTracker`: `Null`, `MaybeNull` or `NonNull` per place, joined by the RFC 0008 table. |
+| `Resource.h` | `ResourceTracker`: owned resources with origin, release family, escape and shares (RFC 0007, RFC 0010). |
+| `Raw.h` | `RawTracker`: which places hold raw pointers, and why (RFC 0004). |
+| `Scalar.h` | `ValueFact`, the bounded guards `PlaceGuard` and `PathGuard`, and `ScalarTracker` (RFC 0009). |
+| `Integer.h`, `IntegerExpression.h` | Target integers, modular ranges, checked-overflow results and bounded typed expressions (RFC 0017). |
+| `Offset.h` | `PointerOffset`: `Zero`, `Elements(k)`, `Field(key)` or `Unknown` (RFC 0011). |
+| `Spatial.h` | `Affine` extents, `SpatialRecord` with string facts (RFC 0011, RFC 0012), `SpatialTracker`, and the pure bounds decision `checkSpatialBounds`. |
+| `Relation.h` | `RelationTracker`: relations with offsets between integer places (`i < n + k`), and bounds against constants. |
+| `CallTargets.h`, `CallContext.h` | Bounded sets of function values (RFC 0014) and call-context entry relationships (RFC 0016). |
+| `AnalysisState.h` | The dataflow state: every tracker above, the pending outcomes of calls whose result is not yet tested, and the caller-visible paths overwritten on every path; component-wise `join`, and `learn` for condition edges. |
+| `Diagnostic.h` | `Diagnostic`, `Certainty`, the ids in `diag::`, `FixItHint` and `DiagnosticSink`. |
+| `SourceLocation.h`, `Scc.h`, `AnalysisStats.h` | Frontend-neutral positions with an `opaque` slot; Tarjan's strongly connected components for call and unit graphs; work counters, never part of a proof. |
+
+### Certainty
+
+Every diagnostic is *definite* or *possible* (RFC 0030 §3). A `MoveRecord`
+is definite when it has `allPaths` (every predecessor merged since had it),
+is not `conditional` (from an effect that holds only on some outcome classes
+or paths, or from a `lossy` one) and is not of `unknownOrigin` (the
+unknown-callee default or an open slot, never diagnosed). A `NullRecord`'s
+`allocatorSource` bit keeps a null allocation result a checked facet rather
+than a `null-dereference` error. A `Loan`'s `allPaths` bit makes
+`conflicting-borrow` an error only when the conflict is reached on every
+path. A join clears `allPaths` for a record present on one side only, even
+when a guard encodes the condition, because guards are bounded and can be
+weakened. A correlated bug is therefore a warning, not an error.
+
+### Summaries
+
+`FunctionSummary` (`Summary.h`) is what a function does to its interface,
+over `SummaryPath`s: `param(i)`, `global(g)` or `result`, with dereference,
+field and index steps. It holds effects with release families and guards,
+stores and value sources, per-class outcomes and null facts, requirements,
+heap descriptions (RFC 0013), numeric outputs (RFC 0017) and kinds.
+`SummaryIO.h` defines its stable, Clang-free text form (RFC 0005). Summary
+format 27 is format 26 without the parts only checked mode read, plus kinds,
+reliance flags, the `lossy` flag and the restricted `outcome … when` cases of
+RFC 0030 §9.1. The format-28 unit record carries summaries in this form.
 
 ## `weavec::Analysis` — the bridge
 
-`lib/Analysis` is the only library allowed to include both `weavec/Core/*` and
-`clang/*`. It:
+`lib/Analysis` is the only library allowed to include both `weavec/Core/*`
+and `clang/*`. Besides the engine (next section), it holds shared services
+and the components around the engine seam.
 
-- recognises WeaveC annotations on declarations, statements and
-  function-pointer types (`Annotations.h`; `collectFunctionTypeAnnotations`
-  walks through typedefs, fields and parameters to the prototype);
-- converts source locations in both directions (`ClangLocation.h`);
-- resolves the summary of any callee (`Summaries.h`, `SummaryStore`), in
-  order: the callee's own annotations, the summary inferred from its body in
-  this TU, the program database (a definition in another unit of the
-  program), the shipped libc/POSIX table (`Builtins.cpp`), and finally a
-  documented default that also records the callee as an unknown boundary.
-  For a call through a function pointer (`lookupCall`), annotations on the
-  pointer's type remain authoritative; otherwise the current function-value
-  targets select the summaries. Unknown alternatives retain the boundary
-  behavior (RFC 0014). `lookupIndirect` supplies only an explicit type contract;
-- holds what other units export (`ProgramDatabase.h`): `UnitExports` (the
-  functions a unit defines with their summaries, linkage, canonical type key
-  and address-taken flag; the names it imports; the indirect-call type keys
-  it has no signature for; the boundaries it deferred) and
-  `ProgramDatabase`, which joins exports by name and by type key and remaps
-  summaries that mention globals into the importing unit's `GlobalTable`;
-- classifies calls by their ownership effect on top of that
-  (`Allocators.h`, `classifyCall` → `CallEffects`);
-- maps expressions onto structured places, classifies pointer-typed values
-  as allocation, copy, borrow, null, raw or opaque, and translates summary
-  paths into the caller's places and back (`lib/Analysis/PlaceBuilder.h`).
-  Resolved dereferences retain each pointer, expression and element witness
-  together; short paths and mirror-query results use inline storage that grows
-  for larger results. Object-view validation may reuse an individual comparison
-  between an immutable AST type and a view in the same live callee summary.
-  Every path step and expected view still participates; erased-pointer recovery
-  reads the current flow state (RFC 0027).
-  Pointer arithmetic and pointer-to-pointer casts preserve identity; only
-  integer-to-pointer casts produce raw values;
-- runs a forward dataflow over `clang::CFG` for each function body
-  (`lib/Analysis/Dataflow.h`, `FunctionDataflow`): a worklist to a fixpoint
-  with `core::AnalysisState` as the lattice, then one reporting pass that
-  emits each diagnostic once. A backward liveness pass over the same CFG
-  runs first; before each element the loans held by dead locals expire
-  (RFC 0006). On each edge out of a conditional, `applyEdge` refines the
-  state with what the condition says: pointer equality unites or separates
-  aliases, and a test on a call result selects outcome classes and
-  reinstates what the callee consumed only in the other classes. While
-  running it applies callee summaries at every call (element-aware, deepest
-  consumed path first, with `written` effects forgetting the facts below
-  the written place), records its own effects, stores, returns and
-  per-class consumption, checks them against the function's annotations,
-  tracks raw pointers and reports raw operations, keeps the books of owned
-  resources (acquired at allocations and `WEAVEC_OWNED` declarations;
-  released, moved, escaped or lost — the leak and release-family checks of
-  RFC 0007 run where a holder dies, on each CFG edge, at overwrites and at
-  container frees), tracks what is known about each pointer's nullness and
-  reports dereferences and calls that need more (RFC 0008; the null test
-  idioms are the RFC 0006 condition facts), marks uninitialised locals and
-  checks what a releaser is handed, tracks what is known about each
-  integer's value (constants assigned, `==`/`!=`/`<`/... against a
-  constant, truthiness, `switch` cases) and attaches the facts of the
-  current path as a *guard* to every move, held resource and null record
-  it creates so that a later test can refute them, translates a callee's
-  `when` guards to the arguments and prunes them against its own facts,
-  ends the block at a call to a callee inferred `never-returns` (RFC
-  0009), keeps what is known of the string each object holds and checks
-  the string copies and terminator-seeking reads of the shipped table
-  against it (`DataflowStrings.cpp`, RFC 0012), gives a `WEAVEC_SIZED_BY`
-  or inferred sized field the extent its count says and records what
-  every store into a field says about the pair (`DataflowSizedFields.cpp`,
-  RFC 0012), applies `WEAVEC_ASSUME` as a condition edge, and produces the
-  function's `FunctionSummary` at exit (with `neverReturns` when the exit
-  was never reached).
-  `WEAVEC_UNSAFE` regions are analysed like any other code; the pass only
-  suppresses what it would report inside them. `FunctionAnalysis.h` is the
-  per-function entry point; `AnalysisOptions::exclusiveBorrows` switches
-  RFC 0001's exclusivity rules back on;
-- drives a whole translation unit (`TranslationUnitAnalysis.h`,
-  `TranslationUnitAnalyzer`): collects definitions and address-taken
-  functions, builds the call graph (with an edge from every indirect call to
-  each candidate of its type), and analyses strongly connected components in
-  reverse topological order (callees first), iterating recursive components
-  to a fixpoint on their summaries before the final reporting pass. When the
-  unit's own stores confirm a sized-field pair (RFC 0012) the functions that
-  read the field are analysed once more with it in force and only their new
-  reports are shown. With a `ProgramDatabase` attached, callers see callees
-  from other units; `discover()` returns the unit's exports without
-  analysing it (what it defines and imports, for ordering units) and
-  `exports()` returns them with summaries, sized-field witnesses and
-  refutations, and the fields it looked up, after `run()`.
+| Service | Role |
+| --- | --- |
+| `Annotations.h`, `ClangLocation.h` | Recognise WeaveC annotations on declarations, statements and function-pointer types; convert source locations both ways. |
+| `Summaries.h` (`SummaryStore`) | Resolve a callee's summary, in order: its declaration's annotations, the summary inferred from its body in this unit, the program database, its `LibrarySpec` entry, else the defaults of RFC 0030 §5. A platform-header function borrows its arguments under `trusted(system-api)`; any other callee gets the unknown-callee may-effects. |
+| `ProgramDatabase.h` | Other units' exports (summaries, linkage, type keys, imports, context requests), joined by name and type key and remapped into the importing unit's globals. |
+| `Allocators.h`, `PlaceBuilder.h` | Classify calls by ownership effect; map expressions onto places and summary paths. Pointer arithmetic and pointer casts keep identity; only integer-to-pointer casts make raw values. |
 
-The model is specified by [RFC 0001](rfcs/0001-ownership-model.md), the
-dataflow by [RFC 0002](rfcs/0002-intraprocedural-checking.md), summaries by
-[RFC 0003](rfcs/0003-signature-inference.md), raw pointers, unsafe
-regions and indirect calls by
-[RFC 0004](rfcs/0004-unsafe-boundaries.md), cross-unit analysis by
-[RFC 0005](rfcs/0005-whole-program-analysis.md), non-lexical loans,
-condition facts, element witnesses and outcome-conditional summaries by
-[RFC 0006](rfcs/0006-precision.md), leaks, release families and owned
-fields by [RFC 0007](rfcs/0007-resource-lifecycle.md), nullness,
-uninitialised pointers, invalid releases and replaced values by
-[RFC 0008](rfcs/0008-pointer-validity.md), and scalar facts, guards,
-argument-conditional summaries and inferred `noreturn` by
-[RFC 0009](rfcs/0009-value-conditional-behaviour.md); each RFC's
-*Implementation notes* record where the code refines the design.
+Before the engine, these components read the AST and the `LibrarySpec`, with
+no engine fact:
+
+- `AttributeReader` reads the declared kinds (§7.2): the `WEAVEC_*` extent,
+  string and nullability macros, Clang's `counted_by`, `sized_by`,
+  `alloc_size` and nullability attributes, and `[static N]` and VLA
+  parameters. `WEAVEC_*` annotations win over ecosystem attributes, which win
+  over the `LibrarySpec` entry and then system-header attributes; a finding
+  that rests only on the last is `trusted(system-api)`.
+- `KindInference` fills the rest of the `KindTable` (§7.3–7.6): parameter
+  kinds with their `reliesOnSingle` flags, result kinds, slot kinds (a
+  greatest fixpoint that demotes `single` to `unknown` at any store that is
+  not Single-valid), the must-access requirements R1–R5, store groups, and
+  the counted-field candidates that Houdini rounds keep or drop.
+- `SiteCollector` enumerates the sites of every emitted function, with their
+  ordinals and facets, into the `SiteIndex` and the unit's undecided rows
+  (§2.6). It runs after the kinds, because PtrArith and Cast sites exist
+  only in required positions.
+- `SlotCollector` collects the unit's function-pointer constraints for
+  `FnSlots` (§9.3).
+
+After the engine, these components complete the ledger:
+
+- `BoundaryInvariants` (stage S7, not yet in the tree) checks at every call
+  boundary and function exit that no place reachable from a parameter or
+  global may hold a released or dangling pointer
+  (`unresolved(dangling-escape)`), and that no two owning places may hold
+  the same object (`unresolved(second-owner)`). It then downgrades every
+  temporal facet that relied on the broken entry assumption (§9.4).
+- `CheckPlanner` turns checked requirement records into `CheckPlan` entries,
+  and adds a trap for each violation lowered to a warning (§10). It decides
+  expressibility first (§10.3): an extra term must be side-effect free, name
+  C places unmodified since the extent was derived, and compare against an
+  exact or declared extent; otherwise the record is
+  `unresolved(inexpressible)`. Planning is pure and runs in every mode, so
+  the ledger does not depend on whether checks are emitted.
+- `LedgerAdapter`, `SafetyEngine` and `DataflowEngine` form the seam
+  described in *The engine seam*.
+
+`UnitPipeline` (`runUnitAnalysis`) runs steps 2 and 3 of the compile
+pipeline for one unit. It reads the declared kinds, collects the sites, runs
+`DataflowEngine` through an authoritative `LedgerAdapter` (a discarding one
+for a silent fixpoint round), calls `finish`, and reports the diagnostics in
+publication order, followed by the require-level errors. A discovery-only
+run returns the unit's exports without analysing it. Until stages S6 and S7
+land, the slot solution and field candidates it passes are empty. The
+Frontend calls it through `analyzeTranslationUnit`.
+
+## The engine: `FunctionDataflow`
+
+`FunctionDataflow` (`lib/Analysis/Dataflow.h`) is the prover behind the
+seam. For each function body it runs a forward dataflow over `clang::CFG` to
+a fixpoint, with `core::AnalysisState` as the lattice, then one final pass
+that publishes each decision and diagnostic once. It applies callee summaries
+at calls, refines the state on condition edges, and tracks loans
+(RFC 0006), raw pointers (RFC 0004), resources and leaks (RFC 0007),
+nullness (RFC 0008), integer facts and guards (RFC 0009), and strings, sized
+fields and extents (RFC 0011, RFC 0012). It produces the function's summary
+at exit.
+
+RFC 0030 §15 bounds the changes inside it:
+
+- The final pass decides every site it reaches by the rules of §3, with
+  witnesses for the checks (`DataflowWitnesses.cpp`,
+  `DataflowLibraryRequirements.cpp`). What used to be incomplete coverage is
+  an unresolved decision: `budget`, `unanalysed`, `raw-cast` or
+  `inexpressible`.
+- An unknown callee gives a `Freed` record of unknown origin to each pointer
+  argument's place, to what its non-`const` pointees reach, to escaped places
+  and to externally reachable globals, and forgets their facts except each
+  argument's own nullness and extent. Later uses are
+  `unresolved(unknown-callee)`, and the call carries a fix-it. `asm` operands
+  get the same default. In a function that calls `setjmp`, every temporal
+  facet is `unresolved(setjmp)`.
+- Nothing is suppressed in a `WEAVEC_UNSAFE` region: its spatial and null
+  facets are `trusted(unsafe)`, temporal state is tracked as outside, and
+  definite violations stay errors. `WEAVEC_ASSUME` is proven, refuted
+  (`contradicted-assumption`) or checked.
+- A body that transfers more CFG blocks than `-fweavec-budget` stops. Its
+  facets take the defaults with reason `budget`, and its summary the
+  unknown-callee effects. Callers of an incomplete summary add those
+  may-effects to its known effects.
+- Kinds seed extents at entry, loads and call results, marked exact,
+  declared or lower bound. Trailing arrays are flexible, and a pointer to a
+  member or element has the whole object's extent (§7.4).
+- Summaries gain outcome cases with `lossy` bits (§9.1), non-null facts from
+  guard functions (§9.2), kinds and an "always returns" fact.
+
+`TranslationUnitAnalyzer` (`TranslationUnitAnalysis.h`) drives a unit. It
+analyses the call graph's strongly connected components callees first,
+iterating recursive ones to a fixpoint through a discarding adapter, then
+gives each emitted function one authoritative pass
+(`LedgerAdapter::beginFunction`). `discover()` returns the unit's exports
+without analysing it.
+
+RFCs [0001](rfcs/0001-ownership-model.md) (model),
+[0002](rfcs/0002-intraprocedural-checking.md) (dataflow),
+[0003](rfcs/0003-signature-inference.md) (summaries),
+[0004](rfcs/0004-unsafe-boundaries.md) (unsafe boundaries),
+[0005](rfcs/0005-whole-program-analysis.md) (whole program),
+[0006](rfcs/0006-precision.md) (precision),
+[0007](rfcs/0007-resource-lifecycle.md) (resources),
+[0008](rfcs/0008-pointer-validity.md) (validity) and
+[0009](rfcs/0009-value-conditional-behaviour.md) (guards) specify the model
+and the engine. RFC 0030 replaces RFC 0001's guarantee statement and amends
+RFCs 0002–0008 where it changes them; its §19 lists each amendment.
 
 ## `weavec::Frontend` — Clang integration
 
-`lib/Frontend` adapts the analysis to Clang's frontend machinery:
+`lib/Frontend` adapts the analysis to Clang's frontend machinery, emits the
+checks, writes ledgers and unit records, and runs the link step.
 
-- `WeaveCAction` is an `ASTFrontendAction` whose consumer hands the whole
-  translation unit to `TranslationUnitAnalyzer`; every definition contributes
-  a summary, but by default only those in the main file are reported. The
-  same consumer (`createWeaveCConsumer`) is what `weavec-cc` multiplexes
-  beside Clang's code generator. `FrontendOptions` carries the analysis
-  options, the program database to consult, the diagnostics already
-  reported for the unit, and a receiver for the unit's exports.
-- `ClangDiagnosticSink` forwards `core::Diagnostic`s (including fix-its) to
-  Clang's `DiagnosticsEngine`, so WeaveC's output is rendered exactly like
-  Clang's own (carets, colours, `-fdiagnostics-format=`,
-  `-fdiagnostics-parseable-fixits`, `-Werror`, ...). `DiagnosticControl`
-  applies `-Wno-weavec-<id>`, `-Wno-error=weavec-<id>`, `-Werror=weavec`
-  and friends before the sink sees a diagnostic, by the default severity
-  of its id and certainty (RFC 0030); `FilteringSink` drops diagnostics
-  already reported by an earlier step and repeats of a boundary warning
-  within a program.
-- `LedgerOutput.h` completes a unit or program ledger (producer, root,
-  configuration, the unit's identity), writes it where `-fweavec-ledger`
-  says through `LedgerWriter`, and prints the summary line (RFC 0030 §12).
-  The WeaveC consumer calls `emitUnitLedger` once per unit.
-- `ProgramAnalysis` is the whole-program algorithm over an abstract
-  `ProgramUnit` (something that can parse a unit and run an action over
-  it): discover every unit's exports, build the unit graph (who imports
-  whose definitions, who calls through a type someone else has a candidate
-  for), analyse acyclic units once and cyclic groups to a fixpoint, each
-  against the database of what has been analysed so far, then one more
-  reporting pass over the units that looked up a sized field the program
-  confirmed after they were analysed (RFC 0012; a fact about a type, which
-  the call graph's order does not carry). `CompilationDatabaseUnit` parses
-  from a compilation database.
-- `Sidecar.h` reads and writes `foo.o.weavec`: the unit's exports, the cc1
-  command that produced it and the diagnostics already reported, in a
-  line-oriented text format versioned by its `weavec-summaries 23` header.
-- `Driver.h` is `weavec-cc`: Clang's `driver::Driver` plans the jobs, each
-  `-cc1` job runs in-process with WeaveC's consumer multiplexed beside
-  Clang's, the compile step writes the sidecar, and the link step runs
-  `ProgramAnalysis` over the sidecars of the objects being linked before
-  the linker.
-- `ResourceDir.h` locates `weavec.h`, Clang's resource directory and the
-  `clang` binary in installed and build-tree layouts.
+| Component | Role |
+| --- | --- |
+| `FrontendAction.h` | `WeaveCAction`, an `ASTFrontendAction` for libTooling, and `createWeaveCConsumer`, which `weavec-cc` runs at the end of each unit; both run `UnitPipeline`. Every emitted function is analysed, including `static inline` functions from user headers (§5.6). |
+| `DeferredCodeGenConsumer` | Sits in front of CodeGen in every C code-generating action (§10.5). It forwards Sema set-up at once and records every other callback. At the end of the unit it runs the analysis and `CheckEmitter`, then replays the callbacks in order. Without deferral, CodeGen emits external functions before the analysis runs. It overrides every `ASTConsumer` and `SemaConsumer` virtual of LLVM 23, a list on the LLVM-upgrade checklist. |
+| `CheckEmitter` | Applies the `CheckPlan` through Sema (§10.6): `BuildCallExpr` to the helper, `ImpCastExprToType` back to the operand's type so a dereference stays an lvalue, `BuildBinOp` with a comma for a check before a call. User expressions are never evaluated twice. A rewrite Sema rejects leaves the subtree unchanged and fails the compile with an internal error. It also applies the zero-initialisation lowering. |
+| `Prelude` | The helpers the rewrites call, injected into the predefines buffer (§10.2): `static`, `always_inline`, `nodebug` functions for the six templates and their forms, term helpers that saturate toward failure, and the allocation wrappers. Trap mode calls `__builtin_verbose_trap("weavec", <template>)`, report mode `__weavec_rt_report`, and verify mode adds `__weavec_prv_*` with the category `weavec.proven`. PCH and module builds declare the helpers `extern` instead (§10.9). |
+| `ZeroInit` | Plans the zero-initialisation of the allocation family (§11): calls to `LibrarySpec` entries with the `zero-init` flag become wrappers that zero the usable region, and `alloca` gets a `memset`. The plan is pure, so the ledger's A5 counts precede any rewrite. A unit that defines an allocator lowers nothing. |
+| `LedgerWriter` | JSON (`weavec-ledger`, version 1) and SARIF 2.1.0 renderings of a ledger (§12), the `weavec-fp/1` fingerprints (a truncated SHA-256 of key, root-relative path, function, normalised message and ordinal), the fingerprint root and atomic writes. |
+| `LedgerOutput` | Completes a unit or program ledger with the producer, root, configuration and the unit's source, object and target; applies the `-W` flags so the ledger counts what was reported; writes it where `-fweavec-ledger` says (a file, or a directory receiving one ledger per unit and per link) through a temporary file renamed into place; and prints the summary line under `-fweavec-summary`, whenever a ledger is written, and always in `weavec`. |
+| `UnitRecord` | The format-28 codec (§13.1): framing, a typed header, and a payload checked against the codec's field table, whose SHA-256 is the schema fingerprint. The encoder refuses values the table does not describe; the decoder rejects missing, unknown and mistyped keys. |
+| `ProgramAnalysis` | The whole-program algorithm of RFC 0005 over an abstract `ProgramUnit`: discover every unit's exports, order the units by strongly connected component, analyse acyclic units once and cyclic groups to a fixpoint, and publish in the last round only. It hosts the link step. |
+| `Sidecar` | Reads and writes `<object>.weavec` next to each object. From stage S8 the file holds the format-28 unit record instead of the line-oriented RFC 0005 sidecar. |
+| `Driver` | `weavec-cc`: Clang's driver plans the jobs, each `-cc1` job runs in-process behind `DeferredCodeGenConsumer`, compile jobs write the record, and link jobs run the link step before the linker. |
+| `DiagnosticControl` | Applies the `-W` flags by each diagnostic's id and certainty. An error can be lowered but never disabled, and a flag naming a removed id is refused. `FilteringSink` drops what an earlier step already reported. |
+| `ClangDiagnosticSink` | Forwards `core::Diagnostic`s, with notes and fix-its, to Clang's `DiagnosticsEngine`, so they render exactly like Clang's own. |
+| `ResourceDir`, `AnalysisStats` | Locate `weavec.h`, the runtime archives, Clang's resource directory and `clang`; write the work counters of `--analysis-stats`. |
+
+The ledger writers and the record codec live in Frontend because Core may
+not use LLVM. They are built on `llvm::json` and `llvm::SHA256`, and a Core
+JSON and SHA-256 implementation would duplicate LLVM's.
+
+## The runtime
+
+`runtime/` holds the only code WeaveC links into user programs. It is C,
+installed under `lib/weavec` next to `weavec.h`. The default trap mode needs
+none of it, because its checks are the prelude's inline helpers.
+
+- [`weavec_rt.c`](../runtime/weavec_rt.c) builds `libweavec_rt.a`, whose
+  `__weavec_rt_report` serves `-fweavec-checks=report`. A failed check
+  prints `weavec: runtime check failed: <template> at <file>:<line>:<column>`
+  once per site and the program goes on, or aborts under
+  `WEAVEC_RT_ABORT=1`. The case runner attributes traps through this output.
+- [`weavec_chk.c`](../runtime/weavec_chk.c) and
+  [`weavec_chk_report.c`](../runtime/weavec_chk_report.c) build
+  `libweavec_chk.a`, the out-of-line helpers for precompiled-header and
+  module builds (§10.9), generated from the prelude by
+  `weavec-cc -fweavec-print-prelude=out-of-line`. The report family carries a
+  `_report` suffix, because one archive cannot define two signatures under
+  one name.
+
+`weavec-cc` links `libweavec_rt.a` in report mode, and adds `libweavec_chk.a`
+to every checked link for the host; its members are linked only when a PCH
+or module build referenced them.
 
 ## `tools/weavec` and `tools/weavec-cc`
 
-`weavec` is a libTooling application: `weavec file.c -- <compiler flags>`
-or `weavec -p build/ file.c` with a compilation database. It injects
-`-isystem <resource-dir>/include` and `-D__WEAVEC__=1` so user code can
-`#include <weavec.h>`. `--whole-program` analyses every file given (or every
-file of the compilation database) as one program. `--dump-analysis` prints
-the inferred facts and summary per function for debugging (and, in
-whole-program mode, the program database). `--ledger`, `--ledger-format`,
-`--require`, `--budget` and `--no-zero-init` model a `weavec-cc` build
-(RFC 0030 §16). `-Wno-weavec-<id>` and the other `-W` spellings are
-accepted.
+`weavec` is a libTooling application: `weavec file.c -- <compiler flags>`, or
+`weavec -p build/ file.c` with a compilation database (with `-p` and no
+source, every file of the database). It injects
+`-isystem <resource-dir>/include` and `-D__WEAVEC__=1`, so user code can
+`#include <weavec.h>`. `--whole-program` analyses the files as one program.
+It always prints the summary line; `--ledger`, `--ledger-format`,
+`--require`, `--budget` and `--no-zero-init` model a `weavec-cc` build with
+the default checks. `--dump-analysis` and `--dump-kinds` are debugging aids.
 
-`weavec-cc` is the drop-in compiler: `CC=weavec-cc make`. Compile steps
-analyse the unit alone and write `<object>.weavec`; the link step reads the
-sidecars, re-analyses the units whose results depend on other units, reports
-what only the program could know, names the link inputs without a WeaveC
-record (`unanalyzed-input`), and refuses to link on an error. WeaveC's own
-flags (`weavec-cc --help-weavec`) are `-fweavec`/`-fno-weavec`,
-`-fweavec-checks=`, `-f[no-]weavec-zero-init`, `-fweavec-require=`,
-`-fweavec-ledger=`, `-fweavec-ledger-format=`, `-f[no-]weavec-summary`,
-`-fweavec-budget=`, `-fweavec-print-prelude`, `-fweavec-dump-analysis`,
-`-fweavec-link`/`-fno-weavec-link` and the `-W` spellings; everything else
-is Clang's. The design is
-[RFC 0005](rfcs/0005-whole-program-analysis.md), with the command line of
-[RFC 0030](rfcs/0030-prove-or-trap.md) §16.
+`weavec-cc` is the drop-in compiler: `CC=weavec-cc make`. Its own flags,
+which `weavec-cc --help-weavec` lists, choose the checks mode
+(`-fweavec-checks=trap|report|verify|none`), zero-initialisation, the
+require level, the ledger, the summary line and the budget; everything else
+is Clang's. The design is [RFC 0005](rfcs/0005-whole-program-analysis.md),
+with the command line of RFC 0030 §16. The checked-mode flags, the analysis
+cache, `--strict-externs`, `--exclusive-borrows`, `--analyze-headers` and
+`--report-unannotated` are gone, with no aliases.
 
-## Heap postconditions and value snapshots
+## Compile pipeline
+
+`weavec-cc` compiles one C translation unit in five steps (RFC 0030 §1):
+
+1. Clang parses the unit. `DeferredCodeGenConsumer` forwards Sema set-up and
+   records every CodeGen callback without running it.
+2. At `HandleTranslationUnit`, `AttributeReader` and the syntactic part of
+   `KindInference` compute kinds and must-access requirements,
+   `SiteCollector` enumerates the sites, and `SlotCollector` and `FnSlots`
+   solve the unit's slots. The engine runs through `LedgerAdapter`, and
+   `BoundaryInvariants` and the field-invariant rounds consume what it
+   published. `LedgerAdapter::finish` fills the defaults, propagates
+   boundary rows and plans the checks. This step runs in every mode.
+3. Definite violations are reported as errors and possible temporal findings
+   as warnings, with the require-level errors under `-fweavec-require`.
+4. After an error, the callbacks are replayed unchanged and CodeGen drops the
+   module. Otherwise, when checks are on, `CheckEmitter` applies the plan and
+   the zero-initialisation lowering, and then the callbacks are replayed.
+5. The object is written, then the format-28 record to `<object>.weavec`, the
+   unit ledger to `-fweavec-ledger` if given, and the summary line under
+   `-fweavec-summary` or `-fweavec-ledger`.
+
+`weavec` runs steps 1–3 and 5 without CodeGen, per source or as one program
+with `--whole-program`, and writes no object and no record. Its summary line
+says `checkable (not enforced)` where a `weavec-cc` build would check.
+
+Refinement is split by facet. Spatial, null and assertion outcomes are
+decided once per unit, because they decide the emitted code, and the link
+step copies them verbatim. Temporal outcomes are refined at link, where
+calls into other units stop being unknown.
+
+## The link step
+
+When `weavec-cc` links, it runs the link step (RFC 0030 §13.2) before the
+linker; `weavec --whole-program` uses the same `ProgramAnalysis`.
+
+1. **Collect inputs.** `collectLinkInputs` resolves objects, archives,
+   shared libraries and `-l` arguments as the linker does. One
+   `unanalyzed-input` warning per link names every non-system input without
+   a valid record. Calls into functions no record defines are then
+   `trusted(external-unit)`.
+2. **Solve slots** over all records.
+3. **Verify declarations** against the defining units' summaries and kinds.
+   A contradiction is an `annotation-mismatch` error.
+4. **Re-run the engine** over the units with records, with the program
+   database and the solved slots, to refine temporal facets. Only the last
+   round publishes, and a definite violation fails the link.
+5. **Verify interfaces.** Exported requirements and the reliance on Single
+   defaults are decided at cross-unit callers, header-struct invariants are
+   checked against every unit that stores to the fields, boundary rows
+   propagate, and a unit that defines the allocator is recorded under A5.
+6. **Compose the program ledger** from the units' spatial, null and
+   assertion facets, the Call rows of step 5 and the temporal facets of
+   step 4.
+
+What no record covers stays listed under assumptions A1 and A3. Archives,
+shared libraries and ccache do not carry records yet (RFC 0032), but every
+link names the gap.
+
+A unit record (§13.1) is one self-delimiting file, so that RFC 0032 can
+place it verbatim into an object section:
+
+| Offset | Size | Field |
+| --- | --- | --- |
+| 0 | 8 | magic `89 57 56 43 0D 0A 1A 0A` |
+| 8 | 8 | format `u32` = 28, then flags `u32` = 0, little-endian |
+| 16 | 32 | schema fingerprint: SHA-256 of the codec's field table |
+| 48 | 16 | header length `H` and payload length `P`, `u64` each |
+| 64 | `H` + `P` | header and payload, UTF-8 JSON |
+| 64+`H`+`P` | 32 | SHA-256 of the bytes before it |
+
+The header names the producer, source, `-cc1` command, target,
+configuration and object digest. The payload holds the unit's functions
+(summary format 27, kinds, reliance flags, exported requirements), imports,
+slots, field invariants, context requests, boundary place classes, one
+compact row per site and the diagnostics already reported, but no evidence.
+Readers accept only format 28 with a matching schema fingerprint and a valid
+digest. Anything else is a stale record, and the input counts as having
+none.
+
+## The engine seam
+
+Everything an engine produces flows through one interface (RFC 0030 §14),
+so RFC 0031 can replace `FunctionDataflow` by implementing `SafetyEngine`
+without touching the ledger, kinds, library table, planner, emitter, formats
+or tests. The types are in `include/weavec/Analysis/SafetyEngine.h`,
+`LedgerAdapter.h` and `CheckWitness.h`.
+
+`EngineInput` is everything an engine gets for one unit: the `ASTContext`,
+the `SiteIndex`, the `KindTable`, the `LibrarySpec`, the `FnSlots` solution
+(local, or program-wide at link), the `ProgramDatabase` at link, the field
+candidates assumed at entry, and `EngineOptions` (budget,
+zero-initialisation, require level, verify mode, strict aliasing, dump
+stream and statistics). `LedgerAdapter` is the only channel back:
+
+| Method | Carries |
+| --- | --- |
+| `beginFunction` | the start of a function's authoritative pass; rows from earlier passes are discarded |
+| `decide` | one outcome, with reason and detail, for one facet of a known site; records merge by rank |
+| `requirement` | one requirement record of a LibCall, Release or Call facet, kept with its own outcome and check |
+| `report` | a diagnostic with its certainty, linked to its site and facet |
+| `witness` | what a check needs: the extent and whether it is exact or declared, the base, the offset or index, library lengths |
+| `boundary` | the places reachable from parameters and globals that may hold released pointers or aliased owners, with place classes |
+| `overBudget` | a function that exceeded its budget |
+| `storeVerdict` | a store group's verdict on a field-invariant candidate: holds, violated or unknown |
+| `finish` | fills the defaults, applies the unsafe, `setjmp`, concurrency and boundary rules and the field-invariant upgrades, plans the checks, and returns the `PlannedLedger` |
+
+An adapter is authoritative, discarding (fixpoint, Houdini and early link
+rounds keep nothing) or collecting (context runs decide no row and keep
+their diagnostics for the caller). A decision about a statement
+`SiteCollector` did not enumerate is an internal error, and an
+`unresolved(unanalysed)` row in a release build.
+
+`SafetyEngine` is what an engine implements: `analyzeUnit(input, out)`,
+`exports()` for the unit record, and `dump(function, os)` for
+`--dump-analysis`. `DataflowEngine` implements it over `FunctionDataflow`.
+`PlannedLedger` is the unit's `core::Ledger` and `core::CheckPlan`, with the
+tables that resolve the plan's handles and site ids.
+
+Two rules keep the seam honest, and gate H2 (`scripts/check-hygiene.py`)
+checks both:
+
+- `FunctionDataflow` publishes nothing except through `LedgerAdapter`,
+  diagnostics included. It receives no `DiagnosticSink`.
+- `SiteCollector`, `AttributeReader`, `KindInference`, `SlotCollector`,
+  `BoundaryInvariants`, `CheckPlanner` and `LedgerAdapter` itself never
+  include `Dataflow.h`.
+
+## Heap postconditions and value snapshots (RFC 0013)
 
 [RFC 0013](rfcs/0013-interprocedural-heap-state.md) adds
-`FunctionSummary::heap`, a map from an output path to a `HeapDescription`.
-Each description uses result-relative pointer cells and the existing value
-sources. `copy-post` names an already represented output object; ordinary
-`copy` names an incoming value. This makes shared children and cycles finite
-and keeps final output values separate from historical `stores`. Core owns
-bounds, joins, validation and serialization, without Clang dependencies.
+`FunctionSummary::heap`: per output path, a graph of result-relative pointer
+cells. `copy-post` names an object the graph already holds and `copy` an
+incoming value, so shared children and cycles stay finite.
+`DataflowHeap.cpp` captures the final reachable facts, resolves incoming
+values before a call replaces them, and materialises the graph into the
+ordinary trackers. Graphs are bounded to eight path steps, 128 fields and
+eight alternatives per cell; fields a graph leaves out are unknown to
+callers. A call snapshots any guard operand or returned input pointer it can
+overwrite, which keeps extraction (`p = *slot; *slot = NULL; return p`)
+precise. `DataflowValues.cpp` moves an extent's dependency to an interned
+snapshot before its scalar is overwritten. A snapshot has no C name, so an
+extent over one is never a check operand: its requirement is
+`unresolved(inexpressible)`.
 
-`Analysis/DataflowHeap.cpp` captures final reachable facts, resolves incoming
-values before a call replaces them, and materializes the graph into the
-normal state trackers. A definite alias relation intersects at joins and
-supports strong updates through local aliases; the existing may-alias
-relation still governs possible consumes. Copies preserve identity when
-liveness retires the original local. Failure outcomes restore captured input
-facts. Projection is limited to eight path steps, 128 field alternatives per
-description and eight alternatives per cell; lost coverage remains visible.
-Materialized children remain in their containing graph instead of becoming
-additional historical stores on the next summary iteration.
+## Pointer identity and call effects (RFC 0014)
 
-Output writes and pointer returns retain conditions on immutable entry
-values. A call snapshots any guard operand or returned input pointer it
-can overwrite. This preserves extraction (`p = *slot; *slot = NULL; return p`)
-and lazy publication without treating a test of the new cell as a test of
-its old value. Definite publication guards apply to initialized children;
-an unconditional later write remains unconditional after a join.
+`Core/CallTargets.h` holds bounded sets of function values with unknown and
+null alternatives, which the state and summaries carry.
+`DataflowCallbacks.cpp` resolves each indirect call against the targets the
+state holds, and `CallbackSummaries.cpp` specialises `FunctionDataflow`
+analyses under callback bindings. Function pointers stored in fields and
+globals are resolved by the slots of RFC 0030 §9.3, which replace
+RFC 0014's callback-global fixpoint and its `callbackGlobals` export. A call
+through a closed slot with one target is analysed as a direct call, and with
+several targets as the join of their summaries. An open slot with known
+targets gives their temporal facts only, under `trusted(extern-contract)`;
+an open slot without targets gets the unknown-callee default with reason
+`callback`. Every indirect call has a null facet on its callee operand.
 
-`Analysis/DataflowValues.cpp` folds allocation sizes using current scalar
-facts. Before overwriting a scalar used by an extent or string length, it
-redirects the dependency to an interned allocation-time snapshot. Reusing a
-snapshot site invalidates the old generation's dependent facts. The domain
-remains bounded; RFC 0017 extends these snapshots to every dependency of a
-typed symbolic expression while retaining affine and relation fast paths.
-
-The current summary version 23 and sidecar version 24 retain heap descriptions, post
-references and string metadata. `ProgramDatabase` remaps global references
-and compares these descriptions as part of normal dependency invalidation.
-The compiler and tooling whole-program modes share this implementation.
-
-## Compositional calls (RFC 0016)
-
-`Core/CallContext.h` describes entry relationships independently of a final
-summary: parameter/global paths, may or definite aliases, relative offsets,
-same-share identity, proven distinct objects, scalar/null facts and callback
-bindings. Canonicalization and strict parsing reject contradictory premises.
-Global remapping is all-or-nothing: losing an entry fact cannot leave a
-specialized result available under a weaker context.
-
-`Analysis/DataflowCallContext.cpp` projects the caller state through the
-callee's relevant input footprint and installs a validated context at the
-callee's entry. `CallContextSummaries.cpp` reuses `FunctionDataflow` to check
-the body in source order and obtain its final summary. This distinguishes
-multiple operations from one operation exported under several aliases,
-without adding another interpreter for call effects. Entry-relative release
-offsets preserve the different starting positions of interior-pointer inputs.
-
-The normal scalar and alias trackers govern writes after entry. Distinct-object
-facts intersect at joins and expire with their input values. A per-call cache
-is invalidated when its CFG state changes; specialized summaries are invalidated
-when generic dependencies change. Pending contexts are separate from completed
-results. Contexts bound pointer paths at 32, relationships/facts at 64, distinct
-contexts per callable at 32 and nested specialization at eight levels.
-
-`TranslationUnitAnalysis` infers generic effects for every definition and checks
-requested memory contexts in its final reporting pass. Definitions without
-contexts retain ordinary reporting, and failed checked contexts retain ordinary
-body errors. Annotation validation remains independent. Requests carry whether
-their originating call permits diagnostics, so unsafe calls still receive
-effects without producing delayed errors in another unit. Nested calls retain
-source notes, and the final sink deduplicates reports of the same operation.
-
-`ProgramDatabase` maps requests and completed results through global names.
-`ProgramAnalysis` adds caller-to-definer and definer-to-caller dependencies and
-converges their context information before reporting. The compiler replay
-planner includes definitions that can receive requests from another object,
-even if their generic summaries were already locally complete. Introduced in
-format 12 and retained in format 15, sidecars serialize
-`accepts-memory-contexts`, `memory-request` and `memory-specialization`
-records alongside existing callback records.
-
-Unsupported projections retain generic call effects and expose missing
-coverage. Calls with no established interacting identity remain generic; they
-are not treated as proofs of disjoint inputs. `--dump-analysis` shows aliases,
-distinct objects, entry facts and final summaries for requested contexts.
+`DataflowMemory.cpp` snapshots complete pointer and compatible record copies
+(`memcpy`, `memmove`) before writing the destination. Pointers from a partial
+or unsupported copy, or seen through an incompatible record view
+(`DataflowViews.cpp`), are `unresolved(raw-cast)` where they are used.
 
 ## Arrays and containers (RFC 0015)
 
+`Core/Array.h` represents a selector as a constant or an immutable scalar
+plus an offset. Selected `Index` places live below the array's storage, and
+the empty `Index` is an unknown element; moves, aliases, ownership, nullness
+and heap children use these ordinary places. `AnalysisState` adds sparse
+range-copy, fill and release facts, at most 32 cells and 32 ranges per
+object. The `DataflowArray*.cpp` files resolve selectors, handle
+simultaneous copies and reallocations, keep copy snapshots and apply
+complete traversals, which summaries carry as `array-copy`, `array-fill`
+and `array-release` records. An unsupported composition leaves the facets
+that needed it unresolved.
 
-`Core/Array` represents a selector as a constant or an immutable scalar plus
-an offset. Selected `Index` places live below array storage; the empty `Index`
-remains an unknown-element summary. Nested selections preserve each dimension.
-Moves, aliases, ownership, loans, nullness, callbacks and heap children use
-those ordinary places. `AnalysisState` adds sparse range-copy, fill and release
-facts, with must-facts weakened at joins. Limits are 32 selected cells and 32
-range facts per storage object, independent of a program's array length.
+## Compositional calls (RFC 0016)
 
-The Analysis implementation is split by operation: `DataflowArrays.cpp`
-resolves selectors and initializes cells, `DataflowArrayMemory.cpp` handles
-simultaneous copies and reallocations, `DataflowArrayRanges.cpp` retains copy
-snapshots, and the cleanup/fill files recognize and apply complete traversals.
-Scalar writes freeze index/count dependencies under bounded source-site
-identities. Unsupported generations and compositions retain explicit coverage
-information. Snapshots are analysis temporaries, not extra resource owners.
-
-Summary paths encode selected constants and entry-parameter selectors. Final
-`array-copy` records carry storage paths, offsets, count, element size/view
-and guards; ordinary final cell postconditions take precedence. `array-fill`
-and `array-release` encode proved zero-based initialization and contiguous
-cleanup. Formats are deterministic and validated in Core, and global remapping
-visits every path, affine operand and guard. Returned ranges are captured
-before call effects and attached when the result obtains its destination.
-The normal function/program fixpoints compare these facts with the rest of
-the summary; compiler sidecars use the same format and inference.
+`Core/CallContext.h` describes a callee's entry relationships: aliases,
+offsets, shares, distinct objects, scalar and null facts, and callback
+bindings, with all-or-nothing global remapping. `DataflowCallContext.cpp`
+projects the caller's state into a validated context at the callee's entry,
+and `CallContextSummaries.cpp` reuses `FunctionDataflow` to check the body
+under it. The context runs of one function share a block-transfer budget,
+after which the default-context summary applies. A context run never decides
+the rows of the function it analyses (§2.6). It sharpens the summaries
+callers see and keeps its diagnostics: each is reported at the use in the
+callee with a note naming the call, and linked to that call's Call site,
+whose temporal facet becomes a violation or `unresolved(may-released)`. An
+absent alias edge is never a proof of disjoint inputs.
 
 ## Target integers and compositional bounds (RFC 0017)
 
 [RFC 0017](rfcs/0017-c-integer-semantics-and-spatial-safety.md) specifies
-the target-integer and spatial model. Its validation report (removed by
-RFC 0030) recorded correctness checks, corpus diagnostics, performance
-measurements and supported boundaries.
-
-Core represents types from one through 64 bits, signedness and boolean
-conversion behavior. `IntegerValue` stores an unsigned bit pattern;
-`IntegerRange` keeps at most two intervals in numeric order. Transfers model
-unsigned wrap, signed validity, comparisons and conversion before projecting
-legacy constants or sign classes. `_Bool` converts any nonzero value to one.
-An invalid operation supplies no invented value; possibly invalid operations
-cannot establish a branch fact. Changing loop ranges widen to type endpoints.
-
-`IntegerExpression<Key>` holds canonical typed operations over inputs, including
-products, min/max and checked-overflow predicates. Expressions are limited to
-64 nodes, depth 12 and 32,768 serialized characters. Guards admit at most eight
-conjuncts, including numeric predicates; numeric outputs keep at most eight
-alternatives. Exceeding representational limits loses precision or records
-incomplete coverage. These bounds do not limit source allocation sizes.
-
-The Analysis implementation separates the following responsibilities:
+the target-integer model. Core represents integer types of 1 to 64 bits:
+`IntegerValue` is an unsigned bit pattern, `IntegerRange` holds at most two
+intervals, and transfers model unsigned wrap, signed validity and
+conversions. An invalid operation supplies no invented value.
+`IntegerExpression<Key>` holds canonical typed expressions of at most 64
+nodes, and guards admit eight conjuncts. Exceeding a limit loses precision,
+and the facets that needed it stay unresolved.
 
 | File in `lib/Analysis` | Responsibility |
 | --- | --- |
-| `IntegerSupport.h` | Read Clang target widths, signedness, bit-field storage widths and operators; recognize checked builtins and value-preserving conversions. |
-| `DataflowIntegers.cpp` | Evaluate typed AST ranges without discarding implicit casts, refine comparisons, translate numeric guards, diagnose definite invalid operations and record spatial outcomes. |
-| `DataflowIntegerExpressions.cpp` | Lower and intern bounded expressions, use affine forms only where justified, substitute interface inputs and snapshot expression dependencies. |
-| `DataflowIntegerStatements.cpp` | Compute compound assignments in their promoted type before storage conversion; refine converted switch values and case ranges. |
-| `DataflowCheckedIntegers.cpp` | Apply overflow builtins and their output writes; specialize checked-product `calloc`/`reallocarray` success and failure. |
-| `DataflowIntegerProofs.cpp` | Use range bounds, overflow-success predicates and matching `MAX / count` guards to establish non-overflow. |
-| `DataflowNumericOutputs.cpp` | Capture guarded numeric returns and caller-visible writes, snapshot inputs before call effects, and install final output facts afterward. |
-| `DataflowNumericInputs.cpp` | Capture every numeric contract dependency before the callee writes its input storage; retire prior snapshot generations. |
-| `DataflowGuardCompleteness.cpp` | Require each must-contract premise to survive projection, accepting equivalent predicates that deduplicate. |
-| `DataflowLoopRequirements.cpp` | Recognize eligible unit-stride loops with stable bounds; exclude early exits and unsupported induction from minimum requirements. |
-| `DataflowDynamicExtents.cpp` | Capture VLA dimensions and `sizeof`, check dimension bounds, and derive array-subobject extents from target record layout. |
+| `IntegerSupport.h` | Target widths, signedness, bit-field widths and operators; checked builtins and value-preserving conversions. |
+| `DataflowIntegers.cpp` | Typed ranges of AST expressions, refined comparisons, numeric guards, definite invalid operations. |
+| `DataflowIntegerExpressions.cpp` | Bounded expressions, affine forms where justified, substitution of interface inputs, dependency snapshots. |
+| `DataflowIntegerStatements.cpp` | Compound assignments in their promoted type; converted switch values and case ranges. |
+| `DataflowCheckedIntegers.cpp` | The overflow builtins and their output writes; checked-product `calloc` and `reallocarray`. |
+| `DataflowIntegerProofs.cpp` | Non-overflow from range bounds, overflow-success predicates and `MAX / count` guards. |
+| `DataflowNumericOutputs.cpp`, `DataflowNumericInputs.cpp` | Guarded numeric returns and caller-visible writes; input snapshots before a callee writes them. |
+| `DataflowGuardCompleteness.cpp` | Every premise of a must-fact survives projection. |
+| `DataflowLoopRequirements.cpp` | Unit-stride loops with stable bounds; no minimum requirement from early exits. |
+| `DataflowDynamicExtents.cpp` | VLA dimensions, `sizeof`, and object extents from the record layout, with flexible trailing arrays. |
 
-`Dataflow.cpp` connects these transfers to ordinary scalar state, ownership
-guards, reference-count adjustments and spatial requirements. Array, string,
-heap and sized-field code use the same numeric facts. Numeric writes and
-may-alias writes invalidate dependencies; allocation, output and VLA snapshots
-retain earlier values under bounded source-site identities. Reusing a snapshot
-site invalidates stale dependencies. Inferred pointer/count field witnesses
-carry the C multiplication type through `ProgramDatabase` and sidecars.
-
-The monotone set of overwritten numeric inputs uses packed `PlaceSet` words;
-copying a large CFG state does not allocate a tree node for every written
-place. Recursive function components join fresh summaries into the previous
-approximation, including reporting passes. May-effect guards weaken, must
-postconditions retain agreement, and separately guarded requirements keep
-their premises. This prevents alternating numeric/temporal guard projections
-from cycling while retaining the existing convergence failure limit.
-
-An abstract range endpoint can prove an access safe or establish a definite
-violation, but cannot alone witness the possible-boundary diagnostic. Source
-constraints such as `i <= 8` provide that witness; a type-derived upper bound
-such as `INT_MAX - 1` under `i < unknown_count` does not.
-
-C values and byte intervals are distinct. `malloc(n * sizeof(T))` receives
-the actual C multiplication result, including unsigned wrap. An access first
-evaluates its index in C, then computes its first byte and exclusive end using
-checked mathematical byte arithmetic. A wrapped product's mathematical upper
-bound may establish a violation, but cannot establish that an access fits.
-Repeated expression identity supports one-past-product checks without general
-nonlinear solving. VLA extents use captured positive dimensions where the byte
-product is representable. Flexible tails use allocation bytes minus the target
-field offset, retaining the enclosing object's lifetime and release identity;
-fixed-array subobjects keep their own bounds.
-
-`PathAffine` can carry a typed expression followed by mathematical byte scaling.
-`ExtentRequirement` carries its guard, exclusive end and optional start.
-Supported zero-based, unit-stride loops with two upper bounds export a minimum
-bound. Early-exit and other unsupported loops do not produce inferred
-must-requirements: a possible access alone cannot establish a required bound
-for every caller. Arbitrary strides and induction remain outside this inference.
-Caller arguments are converted to the interface types before substitution.
-Unresolved requirements can pass through wrappers, while an unsupported
-condition is never deleted to create an unconditional caller error.
-
-`SpatialCheck` records `Proven`, `Violation` or `Unresolved`. Proving an access
-requires both lower and upper bounds; violations retain the existing definite
-or supported reachable-boundary policy. The final reporting pass aggregates
-checks by source operation. `--dump-analysis` prints
-`spatial: proven=<n> violation=<n> unresolved=<n>` and unresolved reason counts.
-These counts are independent of unsafe-region reporting and warning controls.
-A caller requirement is an obligation, not a proof that all callers satisfy it.
-
-`SummaryFormatVersion` is **23** and `SidecarFormatVersion` is **24**. Numeric
-outputs use `numeric <path> value ...` records; `requires-extent` retains
-optional `start` intervals and typed guards. Core validates types, operators,
-paths, shapes and limits. Comparison, global remapping and dependency
-invalidation visit expression leaves and conditions; losing a required global
-invalidates the dependent expression or premise. Frontend transports these
-facts through the existing whole-program engine. Rebuild older object sidecars.
-
-Unknown arbitrary indices remain unresolved without automatically producing
-`out-of-bounds`. Unsupported numeric projections use `analysis-incomplete`.
-Integers wider than 64 bits, general nonlinear inequalities, arbitrary loop
-invariants, unrestricted alias/provenance models, unions and type punning,
-byte-encoded pointers, GC invariants and concurrency remain outside the model.
-Trusted annotations and `WEAVEC_ASSUME` do not widen actual allocations. There
-is no runtime instrumentation, `--verify` flag or whole-program certificate.
+C values and byte intervals are distinct: `malloc(n * sizeof(T))` receives
+the actual C product, and an access computes its bytes in checked
+mathematical arithmetic, so a wrapped product can establish a violation but
+never that an access fits. `core::checkSpatialBounds` needs a lower and an
+upper bound to prove an access. Its result maps onto the spatial facet
+(RFC 0030 §3.3): a violation against an exact extent is an `out-of-bounds`
+error; an undecided access against an exact or declared extent is checked
+when its terms are expressible; an access that only a lower-bound kind
+covers is `unresolved(unknown-extent)`. A summary's `requiresExtent` and
+`requiresNonNull` are may-facts for summaries and fix-its; call-site checks
+and errors come from the must-access requirements of §7.5.
 
 ## Diagnostics contract
 
-Every diagnostic carries a stable identifier from `weavec::core::diag`
-(`use-after-free`, `double-free`, `conflicting-borrow`, ...). It is printed
-in brackets as `[weavec::<id>]` and is part of the user-facing contract:
-scripts and editors may filter on it, so renaming one is a breaking change.
+Every diagnostic carries a stable id from `weavec::core::diag`, printed as
+`[weavec::<id>]`. Scripts and editors filter on ids, so renaming one is a
+breaking change. There are 20:
+
+| Ids | Default severity |
+| --- | --- |
+| `use-after-free`, `double-free`, `use-after-move`, `conflicting-borrow`, `lifetime-too-short`, `mismatched-release`, `invalid-release` | error when definite, warning when possible |
+| `null-dereference`, `use-of-uninitialized`, `out-of-bounds` | error, reported only when definite |
+| `unsafe-operation`, `annotation-mismatch`, `invalid-integer-operation`, `contradicted-assumption` | error |
+| `unresolved-operation` | error, only under `-fweavec-require=checked` or `proven`, or in a `WEAVEC_REQUIRE_SAFE` function |
+| `unchecked-operation` | error, only under `-fweavec-require=proven` |
+| `leak`, `invalid-annotation`, `unanalyzed-input` | warning |
+| `allocation-failure` | warning, off by default (`-Wweavec-allocation-failure`) |
+
+`diag::defaultSeverity(id, certainty)` gives these severities. Possible null
+and spatial findings are checked facets rather than diagnostics. `-Werror`
+in project flags does not promote WeaveC warnings; `-Werror=weavec[-<id>]`
+does. An error can be lowered with `-Wno-error=weavec-<id>` but not
+disabled, and a lowered violation still traps. RFC 0030 removed
+`analysis-incomplete` (now unresolved rows, with reasons such as
+`unanalysed` and `budget`), `annotation-required` (now
+`unresolved(unknown-callee)` rows with fix-its), `checking-incomplete` and
+`checking-failed`. A `-W` flag naming one of them is an error.
+
+## Tests and gates
+
+- **Unit tests** (`unittests/`, GoogleTest) test each component alone;
+  `LibrarySpecTest.cpp` checks every library entry against an independent,
+  hand-written expectation table.
+- **Lit tests** (`test/Analysis`, `test/Annotations`, `test/Driver`,
+  `test/WholeProgram`, `test/Prelude`, `test/Emission`) pin exact messages
+  and driver behaviour; `test/Emission` holds the rewrite-oracle pairs.
+- **`test/cases`** is one tree of executable C cases by feature, with
+  expectations as line-comment markers (`BUG`, `TRAP`, `UNRESOLVED`,
+  `CLEAN`, …; see its [README](../test/cases/README.md)).
+  [`scripts/run-cases.py`](../scripts/run-cases.py) builds each case with
+  `weavec-cc`, checks its diagnostics and ledgers, and runs it in trap and
+  report mode, optionally under an ASan oracle. CTest registers one
+  `cases-<suite>` test per top-level directory, so `ctest -j` runs the
+  suites in parallel.
+- **`test/corpus`** pins 9 real projects in 11 configurations.
+  [`scripts/corpus-gate.py`](../scripts/corpus-gate.py) runs `--quick` on
+  every pull request, and `--full` (builds, the projects' own test suites,
+  injected bugs, benchmarks) weekly and for releases. `expected.json` is a
+  ratchet, and `triage.json` holds a verdict for every definite error and
+  possible temporal warning. See its [README](../test/corpus/README.md).
+
+[`scripts/codegen-identity.py`](../scripts/codegen-identity.py) implements
+gate G7: with `-fweavec-checks=none`, objects are byte-identical to Clang's.
+`scripts/check-hygiene.py` implements gate H2: no checked-mode remnants
+outside `docs/rfcs/`, no libc name comparisons outside the library table,
+the seam rules and the line budgets. `run-cases.py` measures G1–G6,
+`test/Emission` G8, and `corpus-gate.py` G9–G15.
 
 ## Build structure
 
-- `cmake/WeaveCLLVM.cmake` finds LLVM/Clang, sets `-fno-rtti`/`-fno-exceptions`
-  to match the LLVM build, and provides `weavec_link_llvm` /
-  `weavec_link_clang` which respect `LLVM_LINK_LLVM_DYLIB` /
-  `CLANG_LINK_CLANG_DYLIB`.
-- `cmake/WeaveCHelpers.cmake` provides `weavec_add_library` /
-  `weavec_add_executable`, which apply warnings, include paths and export
-  metadata uniformly.
-- Everything is installed with a CMake package config (`find_package(WeaveC)`)
-  so external tools can link `weavec::Core` or `weavec::Frontend`.
-
-## Corpus
-
-`scripts/corpus.py` runs the tool over real C projects
-(`scripts/corpus/projects.json`), one file at a time or whole-program
-(`"whole_program": true`), and compares diagnostic counts with
-`scripts/corpus/baseline.json`; see `scripts/corpus/README.md`. It is the
-empirical check on the RFCs' precision claims and runs weekly in CI.
-RFC 0014 also pins a smaller subset for both release pull-request jobs.
-
-The fixed evaluation suite (`scripts/evaluate.py`, `test/evaluation/`) is
-separate from corpus counts and recall regression pins. It retains known
-misses in its denominator and rejects parse errors, crashes, timeouts and
-unexpected diagnostics. Both it and its harness unit tests run under CTest.
-
-
-RFC 0013 also keeps a must-fact for objects allocated within the current
-function. Cleanup below those objects does not become consumption of entry
-fields merely because the object was published through an interface path.
-Copies and record copies preserve the fact; unknown non-null alternatives
-drop it at joins. Scalar guard snapshots carry scalar/null facts; RFC 0014
-also preserves pointer predicates through input identities. Pointer-value
-snapshots retain the required reachable state.
-
-## Pointer identity and contextual call effects (RFC 0014)
-
-`Core/CallTargets` stores bounded symbol sets with independent unknown and
-null alternatives. `AnalysisState` carries these values through pointer and
-record operations. Summary value sources can carry function values; pointer
-comparison predicates share the existing bounded guard representation.
-
-`DataflowCallbacks.cpp` resolves each call against its current state.
-`CallbackSummaries.cpp` specializes ordinary `FunctionDataflow` analyses under
-callback bindings. Contexts are bounded and cached, and active recursive
-contexts remain explicit incomplete boundaries. Generic summaries record the
-parameter and global paths used as callbacks. A caller binds those paths; the callee body
-keeps the associated userdata and operation ordering. Declarations retain
-authority over the specialized summary.
-
-`UnitExports` carries callback requests, specialized summaries and global
-function values. Interfaces capable of accepting callbacks introduce reverse
-scheduling dependencies, allowing requests and their answers to settle in the
-existing program SCC fixpoint before reporting. Function references also
-introduce dependencies, including references in global initializers. Extra
-type-compatible edges order inference but do not contribute effects.
-
-`DataflowMemory.cpp` snapshots complete pointer or compatible record copies
-before writing their destination. Existing ownership, heap and alias transfer
-machinery applies the snapshot. Partial or unsupported pointer-containing
-copies discard affected must-facts and record incomplete coverage.
-`DataflowViews.cpp` validates the record views attached to summary paths;
-Analysis supplies layout keys and Core remains independent of Clang.
-
-Summary and sidecar format 10 serialize these values, pointer predicates,
-record views and incomplete reasons. All representations use deterministic
-ordering, and sidecar readers reject malformed or oversized contexts.
-
-## Checked contracts (RFCs 0018–0019)
-
-`Core/Safety` owns the obligation ledger, object identities, guarded initialized
-and zeroed ranges, and bounded branch premises. Pointer holders and pointee
-storage have separate identities; initialization cannot establish provenance.
-`Core/CheckedContract` implements sufficient precondition union and
-postcondition intersection; `Core/CheckedIO` provides bounded portable
-serialization. `FunctionSummary::checked` is deliberately separate from
-witness-based `requiresExtent`, and survives global remapping and joins.
-
-The Analysis layer attaches operation accounting to the existing CFG transfer
-and reporting passes. `DataflowSafety` inventories supported semantics,
-initialization and diagnostics; `DataflowSafetyMemory` resolves byte intervals
-and entry requirements; `DataflowSafetyCalls` discharges requirements and models
-library effects; `DataflowSafetyContracts` captures call-entry dependencies and
-applies conditional output facts; `DataflowSafetyLoops` projects sufficient
-counted-loop bounds and proves complete supported fills/copies on normal exits.
-`PendingOutcome` carries memory and numeric output facts until an outcome is
-selected, with invalidation when output storage or dependencies change.
-The additional state is enabled by checked selection or a report request.
-
-RFC 0021 adds stable same-array positions and terminated-prefix witnesses to
-the checked state. `Core/Traversal` provides bounded difference constraints
-and target pointer-difference arithmetic; `Core/Relation` joins both sides of
-a difference interval and widens changing bounds through a finite zero
-threshold. These components contain no Clang or LLVM dependencies.
-
-`CheckedRequirements` shares ordered entry/output sets between copied
-contracts. Its public iterators are immutable; insertion and intersection
-detach shared storage before modifying it. Duplicate joins preserve storage,
-the original requirement cap and exact portable contents. This avoids copying
-large conditional guards while rebuilding whole-program databases.
-RFC 0024 reuses canonical call ledgers in the bounded explanation-preparation
-cache. The key includes the live source projection, callee, caller, call site
-and trust/unsafe modes. Ordered merging applies when the obligation cap cannot
-be reached. Near the cap, prepared rows retain the original origin order and
-capacity decisions. Retained rows, strings and call-path capacity count against
-the existing cache byte bound; cache eviction changes reuse only.
-Global remapping retains shared checked sets when none of their paths,
-affine expressions or guard predicates references a global. Path projection
-caches immutable local/synthetic failures as well as stable interface paths;
-array selectors remain dependent on the current state.
-RFC 0028 stores summary-path steps in `SummarySteps`: copies and shortened
-prefixes share read-only bytes, while explicit edits detach before mutation.
-An atomic reference count and trailing element array share one aligned
-allocation; the path handle retains only the backing pointer and visible length.
-Allocation arithmetic and object lifetimes are checked.
-The uniqueness check acquires other handles' releases before reusing their
-backing bytes for an edit.
-Call-input footprints stop with an explicit over-limit result after the existing
-64-fact bound. Each function can reuse up to 64 preparations under live immutable
-summary owners. Caller values, aliases and checked-case additions are always
-computed from the current state.
-Element views remain const, and self-append retains its source during growth.
-The common dereference step has one immutable backing value. This changes no
-path ordering, selector, serialized spelling or proof premise. `PlaceTable`
-uses owned hashed keys with non-owning lookup probes; dense IDs and descendant
-order still follow creation order. Sorted effect maps merge with a moving
-insertion position while preserving each existing per-path join.
-Generic and specialized unit exports use `ExportedSummary` to retain an
-immutable publication.
-Unit copies, database indexes and checkpoint inputs reuse it when global
-numbering agrees. Its const value view supports exact comparison and transport;
-replacement and widening publish independent values. Remapping retains the
-input publication only when the projected value and all proof explanations
-remain identical. Context keys remap independently. Memory specializations
-retain the original join and normalization; report invalidation replaces its
-own publication without changing earlier readers.
-At unit export, a sufficient entry requirement may omit antecedent predicates
-on known private globals. This strengthens its caller obligation while keeping
-the native contract precise. Required object/interval references and every
-public output premise still undergo strict global remapping.
-`DataflowCursors` captures and updates byte coordinates;
-`DataflowPointerOperations` validates same-array comparisons and differences;
-`DataflowTraversalRelations` verifies common incoming facts and sufficient
-buffer envelopes; `DataflowStringTraversal` maintains initialized termination
-witnesses. `Dataflow.cpp` retains all CFG edges, including direct gotos, and
-can partition eligible small loops by completed back edges before falling
-back to widening. Every final obligation is checked on converged states.
-
-`position`, `progress` and explicit `terminator` quantities cross interfaces
-through checked-record encoding 9. Call-entry snapshots precede ordinary
-effects, with output positions installed afterward. Portable call contexts
-can additionally contain directed same-array byte-pointer orders (`o:`
-records); these neither equate addresses nor invent ownership shares. They
-participate in context equality, global remapping, validation and the existing
-context budgets. Interacting writes must preserve the witness byte or require
-separation of the actual referents.
-`AnalysisState` stores it in an optional domain, so ordinary analysis skips
-constructing, copying and joining the proof containers.
-
-Every computed definition, including `main` and private helpers, has a record
-in `UnitExports::checkedDefinitions`. This does not change externally visible
-function lookup. `Frontend/CheckedReport` collects reporting passes and writes
-JSON atomically. `Frontend/CheckedArtifacts` fingerprints build inputs and
-objects for compiler-sidecar validation before replay. Compilation may defer
-an unavailable external contract; the link pass must resolve it. Checked
-failure reaches Clang independently of the diagnostic filtering policy.
-
-Summary format 26 and sidecar format 27 carry guarded/outcome-qualified contracts,
-numeric outputs and RFC 0021 traversal records. Checked record encoding uses
-version 9; report JSON uses expanded version 2 or compact version 3.
-Strict parsing and global remapping reject missing premises. Explanation depth
-is bounded independently of semantic contract limits; truncating a call chain
-does not change the obligation it explains.
-
-The unit exporter preserves supported private roots and their postconditions
-with RFC 0028 interface metadata. Entry requirements and private premises of
-public/result output facts retain strict remapping; exporting a contract cannot
-silently forget something its proof needs. Unsupported private storage retains
-the conservative exclusion rules.
-
-## Reuse and work accounting (RFC 0020)
-
-`AnalysisStats` is a Clang-free invocation-owned counter/timer sink. The frontend
-shares it with function and context analyses and writes the explicit JSON output
-atomically. No counter affects the model's joins or coverage decisions.
-
-`SummaryStore` records dependencies in every active analysis frame. Context hits
-inherit their dependencies into callers. Function and global-fact updates remove
-only affected contexts; revision snapshots also detect changes during a context's
-own computation. Invalidated nodes remain alive until the outermost applying
-analysis finishes. A preparation cache is owned by the retained AST and contains
-CFGs, lexical lifetimes and liveness with its nonreturning-block assumptions.
-Place IDs, initial states, call effects and diagnostics are per-run data.
-
-`ProgramDatabase` publishes one immutable generic contract for callable,
-external-definition and indirect-candidate lookup where their contents agree.
-Copied databases share those publications. Duplicate-definition and candidate
-joins construct private replacements, preserving other indexes and earlier
-database generations. Renumbering happens before publication; checkpoints still
-retain every lookup namespace. Completed dataflow results move into publication
-instead of copying their owned maps.
-Within one unit addition, indirect candidates of a shared type accumulate in
-a private group before publication, avoiding repeated copies of its growing
-contract. Whole-program members with matching global numbering move their
-complete export sets into place; remapping uses the existing namespace rules.
-Completed cache candidates retain replay metadata beside a single export set.
-Checkpoint publication temporarily takes those exports and restores them after
-the write, including on failure, before any later analysis runs.
-
-`CompilationDatabaseUnit` and the compiler's `Cc1Unit` retain an AST during
-whole-program iteration. The frontend's common analysis/replay path attaches a
-fresh reporting consumer, the current program database and warning controls.
-The retained-unit diagnostic consumer writes through a private 16 KiB stderr
-buffer and flushes after each diagnostic. It preserves Clang's rendered output,
-color policy and prompt delivery without changing global stream buffering.
-Compact report interning reuses immutable call paths through a 1,024-entry memo
-that retains its backing storage. Eviction repeats interning without changing
-first-use table identifiers or report semantics.
-Call checking resolves an erased argument holder only when its static type
-cannot supply an expected object view; recovery is consumed within that one
-validation. Trust classification reuses the ledger's exact trusted-origin
-projection. Diagnostic identities scan plain ASCII in bounded words and retain
-the byte-wise UTF-8/escape rules for every other input.
-`SafetyLedger` copies share storage until mutation. Semantic equality compares
-operation identity, outcome and exhaustion; diagnostic wording and route choice
-have a separate equality operation.
-
-`AnalysisCache` stores complete unit results only after their program component
-settles. Private format 2 separates shared obligation/path/ledger tables from
-canonical sidecar records carrying the remaining export metadata. It checks
-producer round trips in the same global namespace and validates all table
-references before restoring contracts. Diagnostics and dependencies use bounded
-JSON records. The cache format is independent of the sidecar format. Input validation preprocesses an effective
-invocation; imported validation projects observed symbols plus conservative
-global facts and requests. The [guide](incremental-analysis.md) describes cache
-misses and compact report version 3.
-
-Sidecar format 16 introduced `checked-preprocessing`. The compiler
-computes it from the effective preprocessor invocation before compiling, then
-recomputes it from the recorded command before validating any checked link
-input. This catches new conditional-include targets as well as changed loaded
-files. Unsupported or unverifiable preprocessing cannot substantiate checked
-object replay. RFC 0021 extended the records with summary format 16 and
-sidecar format 17; the preprocessing and executable bindings still apply.
-
-## Checked C interfaces (RFC 0022)
-
-`Core/ObjectType` validates portable byte size, alignment and canonical view
-identity; it has no Clang dependency. `DataflowObjectTypes.cpp` builds target
-views and discharges erased-pointer recovery at evaluated CFG points. Object
-views live on checked storage identities. Conflicting or missing predecessor
-views become unknown, distinct from untyped fresh allocated storage.
-
-`CheckedRequirement::ifNonNull` is an output-value condition on initialized,
-zeroed or copied bytes. Call-entry conditions are captured before stores; the
-output pointer is resolved after them. Return merging permits a final-null
-edge to satisfy this conditional guarantee, retaining only null paths proved
-on every preceding edge. Unknown non-null bytes never acquire initialization.
-
-Callback contexts remap global paths and reject any lost binding. Sidecars
-serialize the names of globals in callback contexts as in memory contexts.
-A `global-name` prelude retains the producer's name-table order, including
-unused identities, so decoding cannot reorder callback inputs or context keys.
-The table contributes no storage or callback facts.
-`GlobalTable` provides portable identities for supported private static storage,
-including local statics, nested records and fixed arrays (RFC 0028). Foreign
-units use implicit storage adapters outside source declaration lookup; the
-defining unit resolves them to the original variable. Checked invocation
-uses established reaching targets and preserves singleton library provenance
-for allocation, memory and string rules. `DataflowCheckedCallbacks.cpp` checks
-each resolved alternative against a separate call-entry state and intersects
-its guaranteed outputs over returning targets. Unknown alternatives remain coverage
-boundaries; no contract is inferred from a callback's prototype alone.
-
-## Inductive containers (RFC 0023)
-
-`Core/Container.h` keeps the portable chain descriptor, explicit graph prover,
-capability entailment and bounded must-fact lattice independent of Clang.
-`ContainerShape` describes the canonical record layout, its successor field,
-initialized fields, optional terminal head and read/write/release capability.
-A release shape also describes owned payload fields and allocation families.
-The graph prover checks every explicit node and endpoint; it never treats an
-unknown edge as null. A folded fact represents any finite runtime length.
-
-`DataflowContainers.cpp` discovers candidate links from actual field operations,
-establishes predicates from checked storage, and exports sufficient entry
-premises for generic functions. Candidate discovery supplies no closed proof.
-Immutable entry witnesses retain their original descriptors when a cursor or
-output shape changes. `DataflowContainerTransfer.cpp` handles field mutation,
-folding, saved successors, separated regions, release and call invalidation.
-`DataflowContainerContracts.cpp` transports the resulting output predicates.
-These components use the existing evaluated CFG and loop fixed point; ordinary
-integer, lifetime, byte-memory, unsupported-call and leak checks still apply.
-
-The fact's member set is a conservative invalidation dependency, not evidence
-of separation. Separation comes from concrete disjoint storage, a sufficient
-entry premise, a saved head/tail relation, or fresh allocation. An unknown write
-retires affected evidence and prevents the same input from being assumed again.
-Pointer replacement also retires saved relations to its former value. Joins
-intersect established facts and separation while combining invalidation sets.
-Quantified release also retires native byte-pointer evidence into the consumed
-footprint, including owned payloads. `SafetyState::invalidatedPointers` prevents
-an old input snapshot or allocation record from reestablishing checked lifetime
-after consumption. The mark survives joins and pointer copies until a new value
-is installed; ordinary resource records remain available for leak checking.
-
-Checked encoding 5 adds `container`, `container-separated`, `container-derived`,
-`container-fresh` and `container-tail`. Derived outputs retain up to three
-conjunctive entry sources, all remapped through the existing path machinery.
-They describe a subset plus freshly added nodes; they do not promise full input
-consumption. Fresh outputs require actual allocation evidence. Tail outputs are
-imported across read-only calls. A terminal output can establish a detached
-node's null successor. Descriptors, source premises and capability combinations
-are validated during decoding. Summary format 26 and sidecar format 27 prevent
-older metadata from silently discarding these records.
-
-Limits are 32 fields, 64 explicit nodes, 64 active facts and 16 KiB per encoded
-descriptor. Hitting a limit loses proof. Native inference initially supports
-null-ended singly linked chains; Core also checks endpoint-exclusive explicit
-segments. General graphs, cyclic ownership, tagged unions, volatile/atomic links
-and doubly linked mutation remain outside this predicate.
-
-### Recursive ownership and footprint conservation (RFC 0027)
-
-`ContainerShape` adds multiple recursive fields, initialized-scalar ownership
-conditions, and head-only refinements for known null links/payloads and scalar
-values. Descendant projection drops head refinements. The explicit graph prover
-checks acyclicity, initialized nodes, active ownership edges and disjoint owned
-payloads; inactive edges grant no pointee capability. Partial head facts retain
-which children or payloads have already been released and cannot be exported as
-intact whole objects.
-
-`Core/Footprint.h` supplies a separate sparse domain of exact equalities over
-formal allocation identities. Fraction-free elimination detects arithmetic
-overflow. Forget is existential projection; join intersects row spaces, including
-equalities represented by different bases. Both variables and relations are
-capped at 64. These equations cannot create structural validity or separation.
-
-`DataflowFootprints.cpp` maintains entry snapshots, head/payload allocations,
-conditional field contributions, current root footprints, acquired allocations
-and accumulated release. Replacement and mutation retire current-value equations
-while retaining historical allocation identities. A complete output requires both
-the structural predicate and its proved conservation relation. Calls capture
-inputs before effects, then install only established output relations. Indirect
-targets contribute only their common guaranteed outputs.
-
-Direct recursive cleanup uses private proper-child induction hypotheses. Every
-returning path must establish complete input consumption before an inferred
-contract is published. Active recursion alone supplies no output. The ordinary
-may-effect fixed point continues independently. Mutual recursion remains
-conservative. Complete preservation, consumption, partition and combination
-outputs use checked encoding 12; strict decoding requires their source predicates
-and separation premises. Summary format 26 and sidecar format 27 carry these
-records across program databases, object metadata and validated checkpoints.
-
-### Input cases and overlapping member storage (RFC 0025)
-
-`DataflowCases.cpp` discovers bounded scalar/pointer input paths and forwards
-those candidates across calls. `DataflowCallContext.cpp` captures established
-values for read-only helpers as well as memory-changing helpers. Each canonical
-context retains a separately checked summary; generic definition reports and
-selection remain independent. Unsupported CFG operations are accounted for
-where they execute, while unrepresented operations remain conservative.
-
-`Core/Union.h` stores member descriptors and bounded guarded witnesses without
-Clang dependencies. `DataflowUnions.cpp` supplies target layouts, checks member
-reads and invalidates overlapping values on writes. Independently captured
-pointer positions may survive a guarded member join, but the member witness
-never supplies initialized pointee bytes. Consumption, unknown writes and lost
-scalar dependencies retire the corresponding evidence. Record copies project
-holder identities before installing copied pointer facts.
-
-Checked encoding 9 carries optional `caseInputs` and `union-member` requirements
-and postconditions. Sidecars and checkpoints retain the existing canonical
-context-to-summary association. Expanded and compact reports include every
-retained case premise and ledger under the generic function's `cases` field.
-
-### Contiguous buffer invariants (RFC 0026)
-
-`Core/Buffer.h` separates layout, initialized prefix, optional termination,
-backing release permission and pointer-element sequence ownership. Its must
-facts intersect at joins. Guarded posts carry immutable call results and lose
-their authority on dependent writes. Bounded sequence refinements distinguish
-preserving entry elements from appending a separately represented pointer.
-
-`DataflowBuffers.cpp` discovers candidate records and establishes the current
-predicate from allocation, byte, count and lifetime facts. It materializes
-relational bounds without equating successive backing allocations.
-`DataflowBufferContracts.cpp` checks caller premises, activates result-guarded
-posts, projects interfaces and accounts for element release obligations.
-`DataflowTraversalRelations.cpp` proves bounded min/max and nonwrapping sum
-relations on each predecessor. Compound count updates carry only bounds and
-initialized prefixes proved for their evaluated right-hand side.
-
-`SummaryStore` memoizes immutable layout discovery, including rejected shapes,
-for one AST lifetime. Its 256-entry cache recomputes on saturation and never
-stores flow facts or proof results. Discovery avoids interning places for
-records with no buffer subobjects. Buffer-specific range snapshots and numeric
-reasoning run only in functions with registered buffer candidates.
-
-Checked encoding 9 carries validated `buffer`, `buffer-preserved` and
-`buffer-appended` requirements and outputs to the existing interface codec.
-Summary format 26 and sidecar format 27 reject older encodings. Ordinary
-warnings remain independent from checked completeness.
-
-## Opaque interfaces and private state (RFC 0028)
-
-Core's `Interface.h`/`Interface.cpp` define a bounded graph of storage types and
-its canonical `it2` codec. Anonymous record typedef identities remain distinct
-from tag names and are reproduced only in internal analysis adapters. Edges
-represent pointer referents, function arguments,
-fixed-array elements and record fields. Validation rejects invalid references,
-overlapping fields, duplicate names, by-value cycles, malformed numbers and
-exhausted bounds before Analysis sees a description. Conflicting descriptions
-for one key merge to an absorbing unavailable value.
-
-Analysis's `InterfaceTypes.cpp` captures Clang's target layouts and materializes
-implicit analysis-only declarations. Every reconstructed size, alignment, field
-offset and record identity must match. A materialized record is outside the
-translation unit's declaration list and cannot complete a source forward
-declaration. `GlobalTable` keeps the private declaration identity separate from
-its description: the identity contains the normalized defining translation
-unit, declaration source, source offset and name. Macro-generated declarations
-also include their spelling/expansion chain so repeated private names remain
-distinct within one outer expansion.
-
-`UnitExports` and `ProgramDatabase` carry private-root and object-view maps.
-`Sidecar.cpp` validates `global-interface` and `object-interface` records before
-import, with duplicate rejection and a finite inventory. Metadata participates
-in convergence and checkpoint inputs. `SummaryStore` caches immutable adapters
-by their complete encoding and records interface dependencies for contextual
-reuse. An import-generation change invalidates consulting specializations.
-
-`DataflowViews.cpp` recovers opaque representations only from the current
-value's established object, buffer or container evidence. Ordinary typed view
-checks still apply. Container nomination can infer entry predicates for opaque
-parameters forwarded to verified helpers. Those predicates remain explicit
-caller requirements, with their allocation footprint and compatible view.
-A local or forged pointer never receives an input predicate by nomination.
-Fully typed layout validation can reuse the result for the exact call/path and
-same live immutable summary. This cache holds at most 1,024 paths per function
-analysis. A path that needed opaque value evidence is always revalidated against
-current state. No memory permission or lifetime result is cached with the layout.
-
-Private numeric cells use ordinary scalar state, call-entry snapshots and
-numeric outputs. Setters that copy callback inputs also record those inputs for
-specialization. Unknown calls invalidate reachable private state. Direct
-numeric configuration writes preserve independent heap-container evidence;
-possibly overlapping array writes invalidate known scalar cells, while proven
-disjoint indices retain their values. Actual heap writes and cleanup still use
-structural and lifetime invalidation.
-Returned buffer predicates activate under a non-null result, retain capacity
-bounds captured before effects, and preserve the backing identity through
-accessors. Numeric output alternatives retain their own guarded value interval
-without narrowing unrelated outcomes or caller inputs.
-
-Primitive `allocation-consumed` outputs record historical must-evidence about
-direct entry allocations, including the empty null case. Joins intersect this
-evidence. Applying the output accounts for only the actual head allocation;
-`container-consumed` retains the distinct whole-footprint guarantee.
-
-RFC 0028 keeps accumulated callback/memory requests separate from computed
-specializations. Sidecars carry up to 65,536 requests per symbol and kind;
-the existing 32-context analysis limits still govern computed results.
-Checkpoint fingerprints retain the complete represented demand set.
-Checkpoint units and diagnostics stream directly into the payload; bulk string
-escaping preserves decoded JSON values. Shared explanation tables use owned
-hash indexes while first-use vectors determine every serialized id and row.
-Producer validation, checksums, compression and all analysis bounds remain.
-
-Run `scripts/checked-opaque-interfaces.py` for the frozen source, object and cache
-populations and independent regressions. The optional `upstream` and
-`upstream-objects` populations require the pinned cJSON checkout and verify its
-commit and file digests. The harness rejects syntax failures, missing reports,
-crashes and unrelated negative outcomes; it retains full compressed reports.
-
-
-## Compositional workflows (RFC 0029)
-
-`DataflowBufferDiscovery.cpp` nominates state roles independently of field
-count. At imported calls, `registerBuffer` validates a transported role
-candidate against the target layout and clears all capability flags before
-attempting a fold. Nomination supplies no memory permission.
-
-`RecursiveContracts.cpp` validates eligible cleanup, traversal and construction
-SCCs in a private proof
-environment. The ordinary summary store receives results only after every
-member and Core's `validInductionProgress` check succeed. The Core check
-removes strict edges and tests the remaining graph for cycles; Analysis must
-prove that those edges decrease the same finite ownership measure. A failed
-candidate cannot publish another member's proposed outputs. Existing bounded
-may-effect inference remains separate from the inductive must-proofs.
-
-Direct cleanup uses the same progress graph, including its specialized
-contexts. `DataflowRecursiveConstruction.cpp` proposes a nullable fresh forest
-and an explicit initialized input interval for two-parameter byte/count
-constructors. Recursive edges use immutable entry counts and exact input
-identity. Ordinary call transfer composes completed helpers; final validation
-checks that every required premise follows from the candidate, every promised
-forest is established, and allocation conservation holds on all exits.
-Output-slot constructors additionally verify actual null failure states and
-positive fresh-forest outputs. An immediately tested completed helper can
-transfer one conditional forest through a slot. When that slot is a parent
-node's child, the unchanged parent frame and the new child feed the ordinary
-folding and allocation accounting rules.
-The callback and memory specialization stores reject active private proof
-members so no nested context can publish an unverified hypothesis.
-
-`DataflowCallbackContracts.cpp` introduces input-only behavioral callback
-requirements. Generic helpers use a conditional interface under that explicit
-premise. Callers check every actual target and propagate its trusted boundaries.
-A complete generic behavioral interface avoids unnecessary concrete callback
-specialization; unsupported callback protocols retain the existing mechanisms.
-The callback names participate in ordinary checked encoding, path remapping,
-strict sidecar validation and executable-bound checkpoint invalidation.
-
-Core's `InitializedRange::outsideWrite` computes exact constant-byte frames.
-Analysis preserves them only within the same represented storage or across
-proved concrete object separation. It never uses different pointer spellings
-alone as evidence that writes cannot overlap.
-
-Affine interface projection rejects numeric places written on an incoming path,
-matching typed integer-expression projection. A changing cursor can instead
-project a proved envelope over an unchanged endpoint. This prevents a loop's
-current cursor from being mistaken for its entry value at a caller.
-
-`FloatingCastSupport.cpp` checks finite conversions using Clang's target types
-and LLVM's floating/integer representations. It accepts constant operands or
-unchanged scalar inputs under lexically dominating true bounds, after ruling
-out address exposure, mutation and bypassing jumps. It publishes no numerical
-return relationship. Unknown bounds remain ordinary incomplete obligations.
+- The top-level `CMakeLists.txt` builds `lib/` (Core, Analysis, Frontend),
+  `tools/`, `runtime/` and, with `WEAVEC_BUILD_TESTS`, `unittests/` and
+  `test/`.
+- `cmake/WeaveCLLVM.cmake` finds LLVM and Clang and provides the
+  `weavec::llvm` interface target and `weavec_link_llvm`/`weavec_link_clang`,
+  which respect `LLVM_LINK_LLVM_DYLIB` and `CLANG_LINK_CLANG_DYLIB`.
+- `cmake/WeaveCHelpers.cmake` provides `weavec_add_library` and
+  `weavec_add_executable`. Only `USES_LLVM` targets get LLVM's include
+  paths, and Core is not one of them.
+- `lib/Core/CMakeLists.txt` embeds `LibrarySpec.txt` as a byte array at
+  configure time; editing the table re-runs the configure step.
+- `runtime/CMakeLists.txt` builds both archives into the build tree's
+  `lib/weavec`, generating the helper bodies with the freshly built
+  `weavec-cc`.
+- A CMake package config (`find_package(WeaveC)`) exports `weavec::Core`,
+  `weavec::Analysis` and `weavec::Frontend` to external tools.

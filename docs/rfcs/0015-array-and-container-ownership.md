@@ -359,6 +359,10 @@ limit. Unit and RFC-numbered lit tests pin the new reasons and representative
 element diagnostics. The annotations reference documents the coverage
 extensions.
 
+> **Amended by [RFC 0030](0030-prove-or-trap.md).** `analysis-incomplete` is
+> removed: what it reported is now an `unresolved` ledger row with a reason from
+> a closed list (`unanalysed`, `budget`, …) plus the summary line (§2.3, §12).
+
 ## Drawbacks
 
 Tracking more cells increases state size and alias propagation cost. Range

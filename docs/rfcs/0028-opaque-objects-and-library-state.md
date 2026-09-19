@@ -1,12 +1,12 @@
 # RFC 0028: Inferred contracts for opaque objects and private library state
 
-- **Status**: Implemented
+- **Status**: Superseded
 - **Authors**: WeaveC authors
 - **Created**: 2026-09-15
 - **Tracking issue**: TBD
-- **Supersedes / superseded by**: Supersedes RFC 0005's exclusion of supported
-  private globals and RFC 0022's scalar-callback-only transport exception;
-  extends RFCs 0013, 0018–0020 and 0023–0027 with opaque interface evidence.
+- **Supersedes / superseded by**: Superseded by RFC 0030
+
+> Superseded by [RFC 0030](0030-prove-or-trap.md).
 
 ## Summary
 

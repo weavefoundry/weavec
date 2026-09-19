@@ -1,12 +1,12 @@
 # RFC 0021: Practical C traversal and inductive buffer contracts
 
-- **Status**: Implemented
+- **Status**: Superseded
 - **Authors**: WeaveC authors
 - **Created**: 2026-09-09
 - **Tracking issue**: TBD
-- **Supersedes / superseded by**: Extends RFCs 0017–0019's pointer,
-  numeric, initialization and checked contract models. RFC 0020 continues
-  to govern reuse, accounting and validated checkpoints.
+- **Supersedes / superseded by**: Superseded by RFC 0030
+
+> Superseded by [RFC 0030](0030-prove-or-trap.md).
 
 ## Summary
 

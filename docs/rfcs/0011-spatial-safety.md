@@ -860,6 +860,11 @@ One new id.
   p[n] = 0;   // error: 'p[n]' is out of bounds: 'n' is the number of elements of 'p'
   ```
 
+  > **Amended by [RFC 0030](0030-prove-or-trap.md).** `out-of-bounds` is an
+  > error only when definite against an exact extent (§3.3, §7.1). The "may"
+  > forms are removed: such accesses are checked at runtime where the check is
+  > expressible and are otherwise `unresolved` rows in the ledger.
+
 Changed wording, same id:
 
 - `invalid-release`: "does not point to the start of its allocation"

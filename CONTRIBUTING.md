@@ -93,11 +93,13 @@ Additional rules:
 - **Warnings** are errors in CI. Do not suppress warnings without a comment
   explaining why.
 - **Tests.** New checker behaviour needs both a unit test (in `unittests/`)
-  exercising the core logic and a lit test (in `test/`) exercising the
-  end-to-end diagnostic. Lit tests that pin behaviour specified by an RFC
-  carry its number in the filename (`test/Analysis/rfc0002-*.c`).
-  False-positive fixes need a regression case under `test/cases/` (a `// CLEAN`
-  file; see `test/cases/README.md`).
+  exercising the core logic and an end-to-end test: a lit test (in `test/`)
+  when the exact diagnostic text matters, or a case under `test/cases/`
+  whose markers pin what must be reported, checked or left unproven (see
+  `test/cases/README.md`). New tests are named by feature
+  (`test/cases/<area>/…`, `test/Emission/<feature>-*.c`), not by RFC number;
+  existing `rfcNNNN-` names may stay. False-positive fixes need a regression
+  case under `test/cases/` (a `// CLEAN` file).
 
 ## Commit messages
 

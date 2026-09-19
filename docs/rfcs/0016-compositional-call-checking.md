@@ -46,6 +46,10 @@ are diagnosed. The same gap occurs through aliased output parameters and
 through different records whose child pointers contain the same allocation.
 The use-after-free has been confirmed with AddressSanitizer.
 
+> **Amended by [RFC 0030](0030-prove-or-trap.md).** `--strict-externs` is
+> removed, subsumed by the sound defaults of §5 and the require levels of §6.3
+> (§16).
+
 A safe helper `void write_then_release(char *a, char *b) { *b = 1; free(a); }`
 exports the same aggregate summary as the first helper. Aggregate flags cannot
 reconstruct order. Removing the alias deduplication in `applySummary` is also
@@ -345,6 +349,10 @@ with existing release notes and a call-context note when available.
 unrepresentable input paths, unavailable contexts, and context/depth limits.
 These reasons require exact-message lit coverage. They do not assert that the
 program contains a memory bug.
+
+> **Amended by [RFC 0030](0030-prove-or-trap.md).** `analysis-incomplete` is
+> removed: what it reported is now an `unresolved` ledger row with a reason from
+> a closed list (`unanalysed`, `budget`, …) plus the summary line (§2.3, §12).
 
 ## Drawbacks
 

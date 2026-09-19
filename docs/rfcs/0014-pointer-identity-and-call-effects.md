@@ -84,6 +84,10 @@ byte encodings of pointers, concurrency, GC reachability, pointer relocation
 and general container invariants retain their prior limitations. This RFC
 does not add runtime checks, a general theorem prover or archive packaging.
 
+> **Amended by [RFC 0030](0030-prove-or-trap.md).** By default `weavec-cc` now
+> inserts trapping checks for the unproven spatial and null obligations it can
+> express, and zero-initialises locals and heap allocations (§10–§11).
+
 Complete copies mean an entire pointer object or an entire compatible record
 object of a known byte size. Partial, unresolved or incompatible copies must
 invalidate affected must-facts and mark coverage incomplete; they cannot be
@@ -173,6 +177,11 @@ all analyzed functions, including stores through extern declarations in other
 units. A unit repeats silent inference when those global values change,
 with the existing 16-round limit. Hitting that limit records incomplete
 coverage. Discovery and inference remain separate from final reporting.
+
+> **Amended by [RFC 0030](0030-prove-or-trap.md).** The callback-global
+> fixpoint and its `callbackGlobals` export are replaced by function-pointer
+> slots (§9.3), solved over all records at link; a call through an open slot
+> with no known target gets the unknown-callee default with reason `callback`.
 
 ### 2. Pointer comparisons as guards
 
@@ -330,6 +339,10 @@ callback. For example, copying an unknown number of bytes into a pointer cell
 cannot preserve its complete representation. The warning is distinct from a
 memory-safety violation and does not claim the operation is necessarily wrong.
 It is documented and controllable by the existing warning machinery.
+
+> **Amended by [RFC 0030](0030-prove-or-trap.md).** `analysis-incomplete` is
+> removed: what it reported is now an `unresolved` ledger row with a reason from
+> a closed list (`unanalysed`, `budget`, …) plus the summary line (§2.3, §12).
 
 ## Drawbacks
 

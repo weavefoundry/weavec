@@ -33,7 +33,6 @@ content. Author new site-specific content in `pages/`.
 - [Developer guide](development.md)
 - [Architecture](architecture.md)
 - [Annotations and diagnostics](annotations.md)
-- [Checked code](checked-code.md)
 - [RFCs](rfcs/README.md)
 - [Roadmap](roadmap.md)
 

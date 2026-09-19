@@ -27,17 +27,16 @@ Pagefind creates its search index during the production build. Validate search i
 
 ## Where content lives
 
-| Source                               | Purpose                                                          |
-| ------------------------------------ | ---------------------------------------------------------------- |
-| `docs/pages/`                        | Authored onboarding, task guides, and website pages.             |
-| `docs/annotations.md`                | Authoritative annotation and diagnostic reference.               |
-| `docs/checked-code.md`               | Authoritative checked-code guide, split into focused site pages. |
-| `docs/rfcs/`                         | Authoritative design records and their statuses.                 |
-| `docs/architecture.md`               | Architecture source, split by section for the site.              |
-| `docs/data/diagnostic-remedies.json` | Practical resolution guidance for each diagnostic.               |
-| `docs/examples/`                     | Tutorial source files included directly in published examples.   |
-| `docs/src/`                          | Components, styles, and content configuration.                   |
-| `docs/scripts/`                      | Content preparation and validation.                              |
+| Source                               | Purpose                                                        |
+| ------------------------------------ | -------------------------------------------------------------- |
+| `docs/pages/`                        | Authored onboarding, task guides, and website pages.           |
+| `docs/annotations.md`                | Authoritative annotation and diagnostic reference.             |
+| `docs/rfcs/`                         | Authoritative design records and their statuses.               |
+| `docs/architecture.md`               | Architecture source, split by section for the site.            |
+| `docs/data/diagnostic-remedies.json` | Practical resolution guidance for each diagnostic.             |
+| `docs/examples/`                     | Tutorial source files included directly in published examples. |
+| `docs/src/`                          | Components, styles, and content configuration.                 |
+| `docs/scripts/`                      | Content preparation and validation.                            |
 
 `npm run prepare:content` creates `docs/.generated/`. Do not edit or commit that directory. The preparation step preserves the original guides, rewrites repository links to site routes, and gives generated pages edit links pointing to their real source.
 
@@ -56,7 +55,7 @@ npm run test:browser
 
 The build checks TypeScript, every internal page and fragment link, local assets, canonical URLs, metadata, search output, and the 404 page. Browser tests exercise desktop and mobile navigation, search, RFC filtering, both themes, and accessibility.
 
-Tutorial examples are also exercised against WeaveC by the compiler CI. You can run them locally from the repository root:
+Tutorial examples are also exercised against WeaveC by the compiler CI: `weavec` must report the use-after-free example and accept its fix, and `weavec-cc` must record the lookup example's checked index in the ledger and trap on a negative index. You can run them locally from the repository root; `weavec-cc` is taken from the same directory unless `--weavec-cc` names it:
 
 ```sh
 python3 docs/scripts/check-examples.py --weavec build/dev/bin/weavec

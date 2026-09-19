@@ -1,12 +1,12 @@
 # RFC 0019: Practical checked memory contracts for buffers and heap objects
 
-- **Status**: Implemented
+- **Status**: Superseded
 - **Authors**: WeaveC authors
 - **Created**: 2026-09-08
 - **Tracking issue**: TBD
-- **Supersedes / superseded by**: Extends RFC 0018's checked contracts and
-  RFCs 0013/0015's heap and array postconditions. Amends checked call and
-  initialization transfer, without replacing the ordinary diagnostic model.
+- **Supersedes / superseded by**: Superseded by RFC 0030
+
+> Superseded by [RFC 0030](0030-prove-or-trap.md).
 
 ## Summary
 

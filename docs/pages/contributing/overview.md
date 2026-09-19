@@ -15,7 +15,7 @@ cmake --build --preset dev
 ctest --preset dev
 ```
 
-The [architecture guide](/internals/architecture/) explains the three libraries: Core owns the model, Analysis bridges Clang to Core, and Frontend orchestrates the driver, program analysis, and diagnostics.
+The [architecture guide](/internals/architecture/) explains the three libraries: Core owns the model and the ledger, Analysis bridges Clang to Core behind the engine seam, and Frontend orchestrates check insertion, the driver, program analysis, and diagnostics.
 
 ## Read the design before changing it
 
@@ -25,8 +25,8 @@ Start with the [RFC process](/rfcs/process/#process) and [RFC library](/rfcs/). 
 
 ## Make a reviewable change
 
-- Add meaningful unit and integration coverage for changed behavior.
-- Every new diagnostic needs a stable ID, an annotation-reference entry, a unit test, and a lit test pinning its exact message.
+- Add meaningful unit and integration coverage for changed behavior. Name new tests by feature (`test/cases/<area>/…`, `test/Emission/<feature>-*.c`); existing `rfcNNNN-` names may stay.
+- Every new diagnostic needs a stable ID, an annotation-reference entry, resolution guidance in `docs/data/diagnostic-remedies.json`, a unit test, and a lit test pinning its exact message.
 - Use Conventional Commit titles and update the relevant user guide.
 - Run formatting and required checks. Generated build outputs are not source files.
 - Leave `CHANGELOG.md` to semantic-release; do not edit it manually.

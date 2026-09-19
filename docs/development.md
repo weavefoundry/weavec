@@ -67,6 +67,7 @@ Useful cache variables (`-D...` or in `CMakeUserPresets.json`):
 | `WEAVEC_ENABLE_CCACHE`     | ON      | Use ccache/sccache when found                       |
 | `WEAVEC_ENABLE_CLANG_TIDY` | OFF     | Run clang-tidy during the build                     |
 | `WEAVEC_LLVM_MIN_VERSION`  | 20.0    | Minimum accepted LLVM                               |
+| `WEAVEC_CASES_ARGS`        | ""      | Extra `scripts/run-cases.py` options for the `cases-*` tests (`--no-run` in the ASan job) |
 
 Build targets of note:
 
@@ -99,13 +100,40 @@ with `lit -v build/dev/test/Analysis/rfc0008-null.c`. Every diagnostic change
 should be covered by a lit test because they pin the exact user-visible output.
 `test/WholeProgram/` runs several files through `%weavec --whole-program`
 (shared inputs in `test/WholeProgram/Inputs/`); `test/Driver/` drives
-`%weavec_cc` through compile, link and flag handling.
+`%weavec_cc` through compile, link and flag handling; `test/Emission/` pins the
+checks `weavec-cc` inserts against hand-written equivalents. New tests are
+named by feature (`test/Emission/<feature>-*.c`); existing `rfcNNNN-` names
+stay.
+
+### Test cases (`test/cases/`)
+
+Executable C cases organised by feature, with their expectations in
+line-comment markers (`// BUG: use-after-free`, `// TRAP: index`,
+`// UNRESOLVED: spatial:unknown-extent`, `// CLEAN`); see
+[`test/cases/README.md`](../test/cases/README.md). `scripts/run-cases.py`
+builds each case with `weavec-cc`, checks its diagnostics and ledger, runs
+it, and optionally runs it under ASan. CTest registers one `cases-<suite>`
+test per top-level directory, so `ctest --preset dev -L cases` runs them in
+parallel; the cache variable `WEAVEC_CASES_ARGS` passes runner options (the
+ASan CI job uses `--no-run`). A false-positive fix gets a `// CLEAN` case; a
+new rule gets a case under `test/cases/semantics/<feature>/`.
+
+### Corpus gate (`test/corpus/`)
+
+`scripts/corpus-gate.py` builds and analyses real C projects pinned by SHA
+in `test/corpus/manifest.json` and compares the results with the ratchet in
+`test/corpus/expected.json`; every definite error and possible temporal
+warning needs a verdict in `test/corpus/triage.json`. `--quick` runs on every
+pull request and `--full` (project builds, test suites, injections,
+benchmarks) weekly; see [`test/corpus/README.md`](../test/corpus/README.md).
+`scripts/check-hygiene.py` checks the repository rules of RFC 0030's gate H2
+and runs in the Linux Release CI job.
 
 ### Sanitizers
 
 `cmake --workflow --preset ci-debug` builds with ASan+UBSan and runs
-everything. This CI preset uses `-O1 -gline-tables-only` to keep the full
-evaluation suite within the job's runtime budget while retaining assertions,
+everything. This CI preset uses `-O1 -gline-tables-only` to keep the test
+suites within the job's runtime budget while retaining assertions,
 both sanitizers and source locations in stack traces. The `dev-asan` preset
 keeps the unoptimized Debug build for interactive debugging. Analysis code is
 the most likely place for lifetime bugs of our own, so run the CI preset
@@ -132,10 +160,15 @@ editor integration.
 - Run the tool under a debugger with `lldb -- build/dev/bin/weavec file.c --`.
 - `weavec-cc` runs its `-cc1` jobs in-process, so `lldb -- build/dev/bin/
   weavec-cc -c file.c` stops in the analysis directly; `weavec-cc -###
-  file.c` prints the jobs Clang's driver planned. A unit's exports are in
-  `<object>.weavec` next to the object (`weavec-summaries 6` header; one
-  `function ... summary ... end` record per exported function); the link
-  step re-runs the `arg` lines recorded there.
+  file.c` prints the jobs Clang's driver planned. A unit's record is
+  `<object>.weavec` next to the object: format 28, a framed JSON header
+  (producer, source, `-cc1` command, target, configuration, object digest)
+  and payload (summaries, kinds, imports, slots, site outcomes), with a
+  schema fingerprint and a SHA-256 digest (RFC 0030 §13.1). The link step
+  re-runs the recorded command.
+- Write the ledger (`weavec --ledger=out.json file.c --`) and read the rows
+  at the line in question: their facets, outcomes, reasons and fix-its say
+  what was decided and why.
 - `weavec --whole-program --dump-analysis a.c b.c --` prints each unit's
   dump in analysis order and then the joined program database.
 - `weavec --dump-kinds file.c --` prints the unit's RFC 0030 pointer kinds

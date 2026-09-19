@@ -19,9 +19,9 @@ const paths = [
   },
   {
     number: '03',
-    title: 'Make the contract clear',
-    description: 'Select functions for checked safety and inspect the evidence.',
-    href: '/guides/checked-code/',
+    title: 'Read the ledger',
+    description: 'See what is proven, checked at run time, or left open, and tighten it.',
+    href: '/guides/adoption/',
     label: 'GO DEEPER',
   },
 ];
@@ -36,8 +36,8 @@ const paths = [
       >
       <h1 id="_top">C, with more<br /><span>certainty.</span></h1>
       <p class="hero-description">
-        Ownership and borrowing for the C you already write. Find memory bugs, make contracts
-        explicit, and adopt checked safety one function at a time.
+        Ownership and borrowing for the C you already write. WeaveC proves what it can, checks the
+        rest at run time where it can, and lists every open question in a ledger.
       </p>
       <div class="hero-actions">
         <a class="button-primary" href="/getting-started/installation/"
@@ -76,7 +76,7 @@ const paths = [
   <div class="principle-strip" aria-label="WeaveC principles">
     <span>YOUR C SOURCE</span><span aria-hidden="true">→</span><strong>INFER OWNERSHIP</strong><span
       aria-hidden="true">→</span
-    ><strong>CHECK CONTRACTS</strong><span aria-hidden="true">→</span><span>CLANG + LLVM</span>
+    ><strong>PROVE OR CHECK</strong><span aria-hidden="true">→</span><span>CLANG + LLVM</span>
   </div>
   <section class="home-section" aria-labelledby="start-title">
     <div class="section-heading">
@@ -139,8 +139,8 @@ const paths = [
       </div><div>
         <span>03</span><section>
           <h3>Know the boundary</h3><p>
-            Checked reports expose requirements, unresolved obligations, and trusted operations.
-            Review the evidence behind each result.
+            The ledger records every operation as proven, checked, unresolved or trusted, with a
+            reason. Require levels turn what remains open into errors.
           </p>
         </section>
       </div>
@@ -161,8 +161,8 @@ const paths = [
   </section>
   <section class="scope-note">
     <span class="scope-icon" aria-hidden="true">i</span><p>
-      <strong>Early software. Explicit guarantees.</strong> Checked safety applies to selected source
-      functions within the supported model, under recorded requirements and trust boundaries. <a
+      <strong>Early software. Explicit guarantees.</strong> The guarantee covers proven and checked operations,
+      under five named assumptions; the ledger lists everything else. <a
         href="/reference/guarantees/">Read the scope and limits →</a
       >
     </p>

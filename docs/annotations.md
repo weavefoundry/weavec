@@ -1,7 +1,8 @@
 # Annotations reference
 
-WeaveC annotations live in the `weavec.h` header, which `weavec` puts on the
-system include path automatically (`#include <weavec.h>`). Every macro expands
+WeaveC annotations live in the `weavec.h` header, which `weavec` and
+`weavec-cc` put on the system include path automatically
+(`#include <weavec.h>`). Every macro expands
 to `__attribute__((annotate("weavec.<name>")))` under Clang and to nothing
 under compilers without the `annotate` attribute, so annotated code stays
 portable C.
@@ -43,12 +44,16 @@ An annotation on the declarator of a function pointer (the typedef name, the
 field or the parameter) describes the *result* of calls through it; the
 annotations inside its parameter list describe the arguments.
 
-Without a type contract, calls use the actual function-pointer values that
-reach them ([RFC 0014](rfcs/0014-pointer-identity-and-call-effects.md)). A helper
-can be checked with distinct callback bindings; a same-type function elsewhere
-in the program does not provide an unknown callback's behavior. Global target
-values include possible writes from analyzed functions, while a known store
-at a call updates that caller's state. Unknown alternatives remain boundaries.
+Without a type contract, a call through a function pointer uses the functions
+the program stores into that pointer's *slot* (a field, global, parameter or
+result; [RFC 0030](rfcs/0030-prove-or-trap.md) §9.3): one known target is
+analysed as a direct call, several as the join of their summaries. A
+same-type function elsewhere in the program does not provide an unknown
+callback's behavior. A slot that can also receive values from outside the
+program keeps its known targets for temporal facts, trusted as
+`extern-contract`; a slot with no known target is treated as an unknown
+callee, with reason `callback`. `weavec --whole-program` and the link step
+solve the slots across units.
 
 ## Placement
 
@@ -76,21 +81,24 @@ WEAVEC_UNSAFE void poke_hardware(volatile uint32_t *reg) { *reg = 1; }
 For blocks, before the opening brace:
 
 ```c
-void f(int *p) {
-  free(p);
+void reset_device(uintptr_t base) {
   WEAVEC_UNSAFE {
-    /* p is dangling here; we know the allocator keeps the page mapped. */
-    log_address(p);
+    /* base is the device's mapped register block. */
+    *(volatile uint32_t *)base = 1;
   }
 }
 ```
 
-An unsafe region is a boundary, not a hole: the checker still analyses what
-happens inside it (so a `free` inside the block is a free as far as the code
-after it is concerned, and the function's summary is still inferred) and only
-stops *reporting* there. It is also the only place a `WEAVEC_RAW` pointer may
-be dereferenced, released or handed to an owning parameter, and the place to
-assert what a raw pointer really is:
+An unsafe region is a boundary, not a hole ([RFC 0030](rfcs/0030-prove-or-trap.md)
+§6.1). The checker still analyses what happens inside it: a `free` inside the
+block is a free as far as the code after it is concerned, and the function's
+summary is still inferred. Inside the region, spatial and null operations
+and raw pointers are trusted (`trusted(unsafe)` in the ledger) and get no
+runtime checks. Nothing is suppressed: temporal findings are reported as
+anywhere else, definite violations remain errors, and `WEAVEC_ASSUME` keeps
+its runtime assertion. The region is also the only place a `WEAVEC_RAW`
+pointer may be dereferenced, released or handed to an owning parameter, and
+the place to assert what a raw pointer really is:
 
 ```c
 struct node *WEAVEC_OWNED node_from_handle(uintptr_t h) {
@@ -113,9 +121,7 @@ cascade. See [RFC 0004](rfcs/0004-unsafe-boundaries.md), *Laundering*.
   results and function-pointer results);
 - a load through a raw pointer (`raw->next` is raw too);
 - the result of a callee whose body returns or stores a raw value, or whose
-  declaration says `WEAVEC_RAW`;
-- under `--strict-externs`, every pointer that passes through a call the
-  checker cannot resolve (see `annotation-required`).
+  declaration says `WEAVEC_RAW`.
 
 Copying, comparing and converting a raw pointer back to an integer are fine
 anywhere; passing it to a callee's `WEAVEC_RAW` parameter is fine too. Only a
@@ -126,9 +132,15 @@ callee that reads or writes through it is a *raw operation*.
 
 Every WeaveC diagnostic ends with a stable identifier in brackets, e.g.
 `[weavec::use-after-free]`. The IDs are defined in
-`include/weavec/Core/Diagnostic.h`; RFC 0017 adds
-`weavec::core::diag::InvalidIntegerOperation`, spelled
-`invalid-integer-operation`, with error severity.
+`include/weavec/Core/Diagnostic.h`. Severity follows certainty
+([RFC 0030](rfcs/0030-prove-or-trap.md) §3): a finding that holds on every
+path is an error, and a temporal finding that holds on some paths only is a
+warning with "may" wording. A null dereference or out-of-bounds access that
+is only possible is not diagnosed: the operation is a *checked* facet, and
+`weavec-cc` inserts a runtime check for it. RFC 0030 removed
+`analysis-incomplete`, `annotation-required`, `checking-incomplete` and
+`checking-failed`; what they reported is now an `unresolved` ledger row with
+a reason.
 
 | Identifier            | Severity | Emitted when                                                          |
 | --------------------- | -------- | --------------------------------------------------------------------- |
@@ -159,37 +171,31 @@ Every WeaveC diagnostic ends with a stable identifier in brackets, e.g.
 
 The identifiers are defined in `include/weavec/Core/Diagnostic.h`
 (`weavec::core::diag`). Renaming one is a breaking change. The rules behind
-them are specified by [RFC 0001](rfcs/0001-ownership-model.md),
-[RFC 0002](rfcs/0002-intraprocedural-checking.md),
-[RFC 0003](rfcs/0003-signature-inference.md),
-[RFC 0004](rfcs/0004-unsafe-boundaries.md),
-[RFC 0006](rfcs/0006-precision.md),
-[RFC 0007](rfcs/0007-resource-lifecycle.md),
-[RFC 0008](rfcs/0008-pointer-validity.md) and
-[RFC 0009](rfcs/0009-value-conditional-behaviour.md) (which adds no
-diagnostic; it shrinks the set of programs that trigger the existing ones).
+them are specified by [RFC 0001](rfcs/0001-ownership-model.md) through
+[RFC 0017](rfcs/0017-c-integer-semantics-and-spatial-safety.md), as amended
+by [RFC 0030](rfcs/0030-prove-or-trap.md), which sets their severities and
+adds the last five. [RFC 0009](rfcs/0009-value-conditional-behaviour.md)
+adds no diagnostic; it shrinks the set of programs that trigger the
+existing ones.
 
-Fix-its are emitted through Clang, so `-fdiagnostics-parseable-fixits` and
-editor integrations that apply Clang fix-its work unchanged:
-
-```
-$ weavec --report-unannotated buffer.c --
-buffer.c:12:27: warning: pointer parameter 'b' of 'buffer_free' is inferred WEAVEC_OWNED; add the annotation to its declaration [weavec::annotation-required]
-   12 | void buffer_free(struct buffer *b) { free(b->data); free(b); }
-      |                                 ^
-      |                                 WEAVEC_OWNED
-```
+Annotation suggestions are ledger fix-its rather than diagnostics: the row
+of a call to a function WeaveC cannot see suggests the ownership annotation
+that would resolve it, such as `WEAVEC_BORROWED` on a parameter the callee
+neither keeps nor frees. Write the ledger with `-fweavec-ledger=` (or
+`weavec --ledger=`) to read them.
 
 ## What the checker understands
 
 - **Ownership sources**: `malloc`, `calloc`, `realloc`, `strdup`, `strndup`,
   `aligned_alloc`, `fopen`, `opendir`, `getaddrinfo`, `asprintf`, `getline`,
-  `mmap`, `pthread_create`, ... (the shipped libc/POSIX table, about 490
-  functions from `<stdlib.h>`, `<stdio.h>`, `<string.h>`, `<unistd.h>`,
-  `<fcntl.h>`, `<dirent.h>`, `<sys/mman.h>`, `<netdb.h>`, `<pthread.h>`,
-  `<time.h>`, `<pwd.h>`, `<grp.h>`, `<regex.h>`, `<dlfcn.h>`, `<wchar.h>`
-  and friends), any function whose return type carries `WEAVEC_OWNED`, and
-  any function defined in the program whose body returns a fresh
+  `mmap`, ... (the library table `lib/Core/LibrarySpec.txt`,
+  [RFC 0030](rfcs/0030-prove-or-trap.md) §8, which describes functions from
+  `<stdlib.h>`, `<stdio.h>`, `<string.h>`, `<unistd.h>`, `<fcntl.h>`,
+  `<dirent.h>`, `<sys/mman.h>`, `<netdb.h>`, `<pthread.h>`, `<time.h>`,
+  `<pwd.h>`, `<grp.h>`, `<regex.h>`, `<dlfcn.h>`, `<wchar.h>` and friends,
+  with their aliases and fortified forms), any function whose return type
+  carries `WEAVEC_OWNED` or Clang's `malloc`/`ownership_returns` attribute,
+  and any function defined in the program whose body returns a fresh
   allocation.
 - **Releases and moves**: `free`, `fclose`, `closedir`, `freeaddrinfo`,
   `munmap`, `regfree`, `dlclose`, ..., passing a pointer to a
@@ -230,16 +236,17 @@ buffer.c:12:27: warning: pointer parameter 'b' of 'buffer_free' is inferred WEAV
   next use is reported.
 - **Calls through function pointers**: the callee's signature is taken from
   the annotations on the function-pointer type (typedef, field or parameter)
-  when it has any; otherwise from the join of the summaries of every
-  function of that type whose address is taken anywhere in the program
-  (`ops.drop = node_free;`, `qsort(a, n, sz, cmp)`), so a call through
-  `ops->drop` frees what `node_free` frees. Pointers with neither are
-  reported once per type as `annotation-required`.
+  when it has any; otherwise from the functions the program stores into the
+  pointer's slot (`ops.drop = node_free;`, a callback argument such as
+  `qsort(a, n, sz, cmp)`; [RFC 0030](rfcs/0030-prove-or-trap.md) §9.3), so a
+  call through `ops->drop` frees what `node_free` frees. A slot with no
+  known target is treated as an unknown callee (below), with reason
+  `callback`.
 - **The program**: with `weavec file.c --` the program is that one file;
   with `weavec --whole-program` or `weavec-cc` it is every file analysed or
   linked together, and a callee defined in another file is checked from
-  its body there (a definition wins over the libc table, so a program that
-  defines its own `strdup` is checked against its own). A whole-struct
+  its body there (a definition wins over the library table, so a program
+  that defines its own `strdup` is checked against its own). A whole-struct
   copy `b = a` copies the facts of every pointer field, so `b = a;
   free(a.data); b.data[0]` is a use after free.
 - **Effects through parameters**: a callee that frees `b->data`, writes
@@ -262,20 +269,30 @@ buffer.c:12:27: warning: pointer parameter 'b' of 'buffer_free' is inferred WEAV
   knows when a pointer is null (`p = NULL`) or may be null (the result of
   `malloc`, `strchr`, `fopen`, `getenv`, ... or of any function in the
   program that can return null; a pointer compared with null whose null
-  edge merged back). Dereferencing it, or passing it to a callee whose body
-  dereferences the parameter without testing it, is a `null-dereference`.
+  edge merged back). Dereferencing a pointer that is null on every path
+  from a non-allocator source, or passing it to a callee whose body
+  dereferences the parameter without testing it, is a `null-dereference`
+  error; any other dereference that is not proven non-null is a *checked*
+  facet, guarded by a runtime check in `weavec-cc`
+  ([RFC 0030](rfcs/0030-prove-or-trap.md) §3.2).
   Every test idiom clears the fact on the non-null edge (`if (!p) return;`,
   `if (p && p->x)`, `p ? p->x : 0`, `while ((q = f()) != NULL)`,
   `__builtin_expect`), for the pointer and its copies; a callee's outcome
   does too (`if (!make(&p)) return -1; p[0]` is clean when `make` returns
   `*out != NULL`). Pointers the checker knows nothing about (parameters,
-  loaded fields, results of unchecked code) are trusted; `WEAVEC_NULLABLE`
-  and `WEAVEC_NONNULL` say otherwise. Summaries record which parameters a
+  loaded fields, results of unknown callees) are not assumed non-null: their
+  dereferences are checked. `WEAVEC_NONNULL` moves the obligation to the
+  callers, which are checked at the call. Summaries record which parameters a
   function requires non-null (`requires{s}`) and the classes on which an
   out-parameter is non-null (`notnull{*out}`).
 - **Uninitialised pointers** ([RFC 0008](rfcs/0008-pointer-validity.md)):
   `char *p;` and the pointer fields of `struct buf b;` hold nothing until
-  they are assigned; using them first is a `use-of-uninitialized`.
+  they are assigned; using them first on every path is a
+  `use-of-uninitialized` error. In the enforcing modes locals are
+  zero-initialised, so a pointer that may be uninitialised is null and its
+  dereference is checked; with `-fno-weavec-zero-init`, or when a jump
+  bypasses the declaration, its null facet is `unresolved(no-zero-init)`
+  ([RFC 0030](rfcs/0030-prove-or-trap.md) §11).
 - **Invalid releases** ([RFC 0008](rfcs/0008-pointer-validity.md)):
   `free` (or any releaser, or a consuming parameter) of a pointer to a
   stack or static object, a string literal, or the middle of an allocation
@@ -389,7 +406,11 @@ buffer.c:12:27: warning: pointer parameter 'b' of 'buffer_free' is inferred WEAV
   `malloc(n)`), a relation learnt from a condition (`i < n`, `i <= n`, `i >=
   n`, also through one copy `j = i`), or a constant bound (`i < 8`) — and
   a pointer's own offset is added (`p = buf + 4; p[4]` on eight bytes). A
-  write to the index or the counter forgets what was known. A callee that
+  write to the index or the counter forgets what was known. An access that
+  is out of bounds for every value the facts allow, against an exact extent,
+  is an `out-of-bounds` error; one that is not proven is checked at run time
+  when its bound can be named at the site, and `unresolved` otherwise
+  ([RFC 0030](rfcs/0030-prove-or-trap.md) §3.3, §7). A callee that
   accesses more of a parameter than its type promises (`b[7]` on `char *b`,
   `for (i = 0; i < n; i++) b[i]`, `for (i = 0; i < 8; i++) b[i]`,
   `memset(b, 0, n)`) is summarised with a *requirement* on that parameter's
@@ -397,8 +418,8 @@ buffer.c:12:27: warning: pointer parameter 'b' of 'buffer_free' is inferred WEAV
   against what the argument has and passed on through wrappers. RFC 0017
   retains representable numeric conditions such as `if (n > 4) b[4]`, the
   first accessed byte, and bounded product or minimum expressions. An
-  unsupported condition makes coverage incomplete; dropping it cannot create
-  an unconditional caller error.
+  unsupported condition leaves the access unresolved; dropping it cannot
+  create an unconditional caller error.
 - **Strings** ([RFC 0012](rfcs/0012-spatial-safety-strings-and-fields.md)):
   beside its extent an object carries what is known of the string it
   holds — its length (a constant, or `strlen(s)` as a place of its own, or
@@ -438,7 +459,9 @@ buffer.c:12:27: warning: pointer parameter 'b' of 'buffer_free' is inferred WEAV
 - **Assumptions** ([RFC 0012](rfcs/0012-spatial-safety-strings-and-fields.md)):
   `WEAVEC_ASSUME(expr)` applies `expr` as the true edge of `if (expr)`
   would — a null test, a relation, a bound, a constant, an outcome of a
-  call — and ends the path when the facts contradict it.
+  call. It is not trusted ([RFC 0030](rfcs/0030-prove-or-trap.md) §6.2): an
+  assumption the facts contradict is a `contradicted-assumption` error, and
+  one they neither prove nor refute becomes a runtime assertion.
 - **Result provenance**: a callee that returns one of its arguments or a
   pointer into one (`strchr`, `next_of(n)`, `&n->v`) makes the result an
   alias or a borrow of that argument in the caller, so freeing the argument
@@ -461,7 +484,7 @@ buffer.c:12:27: warning: pointer parameter 'b' of 'buffer_free' is inferred WEAV
   taken last until the holder is reassigned. Copying a pointer that holds
   a loan into a longer-lived pointer is checked like creating the loan
   there. Two live pointers into one object, or writing an object another
-  pointer views, are accepted by default; `--exclusive-borrows` rejects
+  pointer views, are accepted; RFC 0030 removed the option that rejected
   them as RFC 0001 does.
 - **Places**: `p`, `s.f`, `p->f`, `*pp`, `p->a->b`, file-scope variables;
   all elements of an array share one place, written `a[*]` in diagnostics
@@ -490,14 +513,21 @@ buffer.c:12:27: warning: pointer parameter 'b' of 'buffer_free' is inferred WEAV
   comparisons and conversions to integers are fine) but dereferencing,
   releasing or handing it to an owning parameter outside a `WEAVEC_UNSAFE`
   region is an `unsafe-operation`. Unsafe regions are analysed like any
-  other code with their diagnostics suppressed, so a `free` inside one is
-  still a free afterwards.
-- **Unchecked calls**: a call to a function with no body here, no annotations
-  and no libc entry borrows its pointer arguments for the call, retains
-  nothing, and returns an unknown value (this is what `annotation-required`
-  reports). With `--strict-externs` the call is an `unsafe-operation` unless
-  it is inside an unsafe region; its arguments are left alone and its
-  pointer result is raw.
+  other code, so a `free` inside one is still a free afterwards; inside
+  them spatial and null operations are trusted and unchecked, and nothing
+  is suppressed ([RFC 0030](rfcs/0030-prove-or-trap.md) §6.1).
+- **Unknown callees**: a call to a function with no body in the program, no
+  library-table entry and no ownership contract, not declared in a C
+  library, POSIX or platform header, may release, keep or replace every
+  pointer argument without an ownership annotation, and everything
+  reachable through it ([RFC 0030](rfcs/0030-prove-or-trap.md) §5.1). Later
+  uses are not reported; their temporal facets are
+  `unresolved(unknown-callee)`, and the call's ledger row suggests the
+  annotation that would resolve it. Its result has unknown nullness and no
+  ownership. A function declared in a platform header but missing from the
+  table borrows its arguments for the call; its rows are
+  `trusted(system-api)` (§5.2). In a per-file compile, calls into other
+  files are unknown until the link step applies their definitions.
 
 `weavec --dump-kinds file.c -- <flags>` prints, instead of analysing, each
 unit's pointer kinds ([RFC 0030](rfcs/0030-prove-or-trap.md) §7): the declared
@@ -513,7 +543,9 @@ lifetimes, exit state (including which places hold raw pointers, and why,
 which hold an owned resource, with its release family, and which are null,
 maybe-null or known non-null) and summary of every analysed function; with `--whole-program` it ends with
 the program database (every exported summary). `weavec-cc` writes each
-unit's exported summaries to `<object>.weavec` in the same text form.
+unit's record to `<object>.weavec`: format 28, framed JSON whose payload
+carries the exported summaries in the same text form
+([RFC 0030](rfcs/0030-prove-or-trap.md) §13.1).
 
 ### Constructors, returned fields and allocation-time sizes
 
@@ -545,10 +577,8 @@ These labels describe whether the bounded projection was truncated. A
 `complete` description is not a proof of safety: fields and extents can
 still be unknown. Projection follows at most eight steps and 128 field
 alternatives; more than eight alternatives for one cell widen it to unknown.
-The [evaluation suite](../test/evaluation/README.md) retains the original bug
-and clean populations; the RFC 0017 validation report (removed by RFC 0030)
-recorded detection of both retained product and VLA cases, with 44/44 original
-bugs detected and 32/32 original clean cases.
+The original evaluation's bug and clean programs are kept as cases under
+`test/cases/evaluation/` (see [test/cases](../test/cases/README.md)).
 
 ## Related pointer arguments
 
@@ -579,26 +609,28 @@ Errors name the operation in the helper, with a note at the originating call
 when available. `--dump-analysis` displays `call-context` entries containing
 relative aliases, distinct objects, entry facts and the resulting summary.
 Facts describe values on entry; subsequent writes still update or invalidate
-them. `WEAVEC_UNSAFE` retains effects and suppresses contextual reports from
-that call, including delayed checking in another file.
+them. A call inside a `WEAVEC_UNSAFE` region is checked the same way; the
+region no longer suppresses these reports ([RFC 0030](rfcs/0030-prove-or-trap.md)
+§6.1).
 
 An unresolved required relationship, unavailable view or exceeded context
-bound reports `analysis-incomplete` and retains ordinary call effects.
-Calls whose inputs have no established interacting relationship still use
-generic summaries; silence does not prove arbitrary pointers disjoint.
-The RFC 0016 validation report (removed by RFC 0030) recorded the supported
-matrix and remaining coverage limits. These context records are retained in the
-current format 24 sidecars; rebuild older objects before link analysis. Checked
-mode also specializes exact scalar inputs and fields under the same context
-limits (RFC 0019).
+bound leaves the affected facets unresolved (`unanalysed`) in the ledger and
+retains ordinary call effects. Calls whose inputs have no established
+interacting relationship still use generic summaries; silence does not prove
+arbitrary pointers disjoint, and the temporal facet of a use through a
+pointer that may alias a released object is not proven
+(`unresolved(may-alias-released)`). The context records travel in the
+format-28 unit record, so call-context checking works across compiler
+objects; rebuild older objects before link analysis.
 
 ## C integers and dynamic bounds
 
 [RFC 0017](rfcs/0017-c-integer-semantics-and-spatial-safety.md) adds no
 annotation spellings. `WEAVEC_SIZED_BY(n)` still counts elements (`void *`
-counts bytes), and `WEAVEC_ASSUME` still supplies a trusted invariant. Both
-use the expressions' actual C types. Neither contract changes an allocation's
-size or establishes whole-program verification.
+counts bytes), and `WEAVEC_ASSUME` supplies an invariant that is proven,
+refuted or checked at run time ([RFC 0030](rfcs/0030-prove-or-trap.md)
+§6.2). Both use the expressions' actual C types. Neither contract changes an
+allocation's size.
 
 Integer interpretation now affects temporal checks as well as bounds. On an
 eight-bit-char target, this narrowing cannot hide the use-after-free:
@@ -636,7 +668,7 @@ create a small successful allocation, and failed `reallocarray` retains its
 input object.
 
 Numeric returns and out-parameters retain representable expressions and guards
-through helpers, translation units and compiler sidecars. Access requirements
+through helpers, translation units and unit records. Access requirements
 retain lower bounds and numeric conditions. A supported zero-based unit-stride
 loop with `i < n && i < cap` can require `min(n, cap)` elements; equivalent
 explicit minimum expressions also compose. Early-exit and other unsupported
@@ -647,43 +679,40 @@ size operand does not resize an earlier allocation or output snapshot.
 VLA dimensions are captured at declaration time, including supported nested
 dimensions and subsequent `sizeof` of that array. A later write to the bound
 variable does not change the existing array. A definitely nonpositive dimension
-is `invalid-integer-operation`; an unrepresentable byte extent remains
-incomplete. Flexible-array member bounds come from the backing allocation minus
+is `invalid-integer-operation`; an unrepresentable byte extent leaves the
+access unresolved. Flexible-array member bounds come from the backing allocation minus
 the target's field offset, with the member's element size. A sibling count
 cannot invent tail storage. Tail pointers preserve the enclosing allocation's
 lifetime and release identity, while fixed-array subobjects retain their own
 bounds. Inferred sized fields preserve the C type of count multiplication,
 including its possible wrap.
 
-The dump reports `spatial: proven=<n> violation=<n> unresolved=<n>` per
-function, with unresolved reason counts. `proven` covers the full represented
-access, including its lower bound; `violation` follows the existing definite
-or supported reachable-boundary policy; `unresolved` means the check was not
-decided. Reasons include `unknown extent`, `unknown pointer offset`,
-`unknown index bounds`, `unrepresentable byte arithmetic`,
-`unsupported numeric expression` and `caller requirement`. A requirement still
-needs its callers checked. Counts are independent of diagnostic suppression:
-`WEAVEC_UNSAFE` retains numeric effects and spatial outcomes while suppressing
-reports, and changing warning severity does not turn an unresolved access into
-a proof.
+The ledger records each access's spatial outcome
+([RFC 0030](rfcs/0030-prove-or-trap.md) §2): `proven` covers the full
+represented access, including its lower bound; `violation` is an access out
+of bounds for every value the facts allow against an exact extent; `checked`
+is an access guarded by a runtime check; `unresolved` carries a reason such
+as `unknown-extent`, `unknown-index` or `inexpressible`. A requirement a
+callee places on its parameter is checked at its callers. Outcomes are
+independent of diagnostic controls: changing a warning's severity does not
+turn an unresolved access into a proof.
 
 Ranges retain at most two intervals; symbolic expressions have at most 64
 nodes and depth 12, and guards at most eight conjuncts including numeric
 predicates. Numeric outputs retain at most eight alternatives. Unsupported
-projection or exhausted bounds can report `analysis-incomplete`; an arbitrary
-unknown index alone remains unresolved without a new bounds error. General
+projection or exhausted bounds leave the affected facets unresolved
+(`unanalysed`); an arbitrary unknown index alone is checked at run time or
+unresolved, without a new bounds error. General
 nonlinear inequalities, arbitrary induction/strides, integers wider than 64
 bits, unsupported union/type-punning and pointer-provenance operations,
 unrestricted aliases, byte-encoded pointers, GC invariants and concurrency
 remain outside the supported model.
 
-RFC 0017 introduced summary and sidecar format **13**. Current summary format
-**23** and sidecar format **24** require rebuilding older objects. The RFC 0017
-validation report (removed by RFC 0030) recorded passing regression and
-sanitizer suites, corpus coverage, performance costs and remaining false
-positives.
-No runtime instrumentation, `--verify` flag or verification certificate is
-introduced.
+RFC 0017 introduced summary format **13**. The current summary format is
+**27**, carried in format-28 unit records
+([RFC 0030](rfcs/0030-prove-or-trap.md) §13); rebuild older objects. RFC 0017
+added no runtime instrumentation; under RFC 0030, `weavec-cc` checks at run
+time the accesses these rules leave unproven when their bounds can be named.
 
 ## Controlling diagnostics
 
@@ -691,13 +720,15 @@ introduced.
 
 | Flag                          | Effect                                                                                            |
 | ----------------------------- | ------------------------------------------------------------------------------------------------- |
-| `-Wno-weavec-<id>`            | Disable the diagnostics of `<id>` whose default severity is *warning*: all of `leak`, `invalid-annotation`, `allocation-failure`, `unanalyzed-input`, `annotation-required` and `analysis-incomplete`, and the possible (warning) findings of `use-after-free`, `double-free`, `use-after-move`, `conflicting-borrow`, `lifetime-too-short`, `mismatched-release` and `invalid-release`, whose definite findings stay errors ([RFC 0030](rfcs/0030-prove-or-trap.md) §3). Refused for an id that is always an error (`null-dereference`, `use-of-uninitialized`, `out-of-bounds`, `unsafe-operation`, `annotation-mismatch`, `invalid-integer-operation`, `contradicted-assumption`, `unresolved-operation`, `unchecked-operation`; lower those with `-Wno-error=`), and for an id RFC 0030 removed (`checking-incomplete`, `checking-failed`). |
+| `-Wno-weavec-<id>`            | Disable the diagnostics of `<id>` whose default severity is *warning*: all of `leak`, `invalid-annotation`, `allocation-failure` and `unanalyzed-input`, and the possible (warning) findings of `use-after-free`, `double-free`, `use-after-move`, `conflicting-borrow`, `lifetime-too-short`, `mismatched-release` and `invalid-release`, whose definite findings stay errors ([RFC 0030](rfcs/0030-prove-or-trap.md) §3). Refused for an id that is always an error (`null-dereference`, `use-of-uninitialized`, `out-of-bounds`, `unsafe-operation`, `annotation-mismatch`, `invalid-integer-operation`, `contradicted-assumption`, `unresolved-operation`, `unchecked-operation`; lower those with `-Wno-error=`), and for an id RFC 0030 removed (`analysis-incomplete`, `annotation-required`, `checking-incomplete`, `checking-failed`): naming one in any `-W` flag is an error. |
 | `-Wweavec-<id>`               | Re-enable it. `-Wweavec-allocation-failure` enables the one id that is off by default; `-Wweavec` enables every id.                                      |
 | `-Wno-error=weavec-<id>`      | Report an error as a warning (the migration path for a codebase that wants to build while it works through the reports). |
 | `-Werror=weavec-<id>`         | Report a warning as an error.                                                                     |
 | `-Wno-weavec`, `-Wno-error=weavec`, `-Werror=weavec` | The same for every WeaveC id (`-Wno-weavec` leaves the errors alone).                  |
 
-The soundness statement assumes default severities. `weavec-cc` additionally
+The guarantee ([RFC 0030](rfcs/0030-prove-or-trap.md), *Soundness*) does
+not depend on these flags, except that a violation lowered with
+`-Wno-error=` is compiled behind a check that traps. `weavec-cc` additionally
 takes `-fno-weavec` (compile only), `-fweavec-checks=`, `-f[no-]weavec-zero-init`,
 `-fweavec-require=` (`--require`), `-fweavec-ledger=` (`--ledger`),
 `-fweavec-ledger-format=` (`--ledger-format`), `-f[no-]weavec-summary`,
@@ -713,109 +744,3 @@ whole-program step); `weavec-cc --help-weavec` lists them. RFC 0030 removes
 `annotate` payloads that do not start with `weavec.` are ignored, so WeaveC
 coexists with GSL (`gsl::owner`), Clang's own attributes, and project-specific
 annotations.
-
-## Checked selection (RFC 0018)
-
-`WEAVEC_CHECKED` is gone ([RFC 0030](rfcs/0030-prove-or-trap.md), *Annotation
-surface*): `weavec.h` no longer defines it, so code that uses it no longer
-compiles. Write `WEAVEC_REQUIRE_SAFE` before the function definition instead.
-The rest of this section describes the RFC 0018 checked mode as it was.
-
-The two checking diagnostics are errors by default and support the same
-`-W` controls as other IDs. Selected checking still fails when a diagnostic
-is demoted or suppressed: the proof status is independent of presentation.
-
-RFC 0019 extends inferred memory contracts without adding annotations or
-diagnostic IDs. `checking-incomplete` reasons include `read interval must be
-initialized`, `access interval must fit its object`, `callee initialized safety
-precondition must hold`, and `memcpy intervals must be disjoint`. String calls
-also require a represented initialized terminator. Missing evidence remains
-distinct from a concrete `checking-failed` violation. Conditional memory and
-numeric output facts use summary format 23, sidecar format 24 and checked JSON version 2 (or compact version 3);
-rebuild older objects before link analysis.
-
-RFC 0021 adds traversal contracts without new annotation spellings or IDs.
-Reasons include `pointer difference or ordering needs shared-object evidence`,
-`pointer difference must fit target ptrdiff_t and element size`,
-`formed pointer must remain within its object or one past it`,
-`pointer arithmetic requires live non-null storage`, and
-`traversal requires an initialized terminated prefix`. The last describes
-an inferred caller requirement. A failed caller may report
-`callee terminated safety precondition must hold`. The checked ledger retains
-separate bounds, initialization, validity and arithmetic obligations; an
-unresolved relationship does not assert a concrete invalid execution.
-Exhaustion remains explicit as `traversal variable limit reached`,
-`traversal invariant candidate limit reached`, or
-`traversal relational limit reached`. Diagnostic demotion does not make a
-limited contract complete.
-
-### Inductive chain diagnostics (RFC 0023)
-
-Container inference adds no annotation or diagnostic identifier.
-`checking-incomplete` can report `callee container chain precondition must hold`
-or `callee requires disjoint container footprints`. The former requires actual
-live, initialized nodes with the requested read/write/release capability; the
-latter requires disjoint whole node and owned-payload footprints. Pointer
-inequality alone is insufficient. Cycles and unknown links do not satisfy a
-finite chain. Existing invalid-release, use-after-free and leak diagnostics
-remain active alongside these obligations. See [linked containers](checked-code.md#linked-containers).
-
-### Recursive ownership diagnostics (RFC 0027)
-
-No new annotations or diagnostic ids are introduced. `checking-incomplete` can
-report `callee recursive ownership precondition must hold` for an unproved tree
-or forest, `container operation loses part of the owned allocation footprint`
-when cleanup or transfer is incomplete, and `recursive cleanup does not establish
-complete input footprint consumption` when a proposed recursive destructor
-cannot discharge its induction hypothesis. These messages describe failed proof
-obligations; ordinary `leak`, `invalid-release`, `double-free` and
-`use-after-free` checks remain active. A relation limit reports `allocation
-footprint relation limit reached` and cannot produce a complete contract. See
-[recursive object ownership](checked-code.md#recursive-object-ownership).
-
-### Runtime diagnostics (RFC 0024)
-
-Runtime contracts reuse the two checking identifiers. Missing evidence can
-report `runtime input interval must be initialized`, `runtime access interval
-must fit its object`, `runtime string requires an initialized terminator`, or
-`runtime operation requires a live C stream`. Format reasons distinguish a
-missing argument, an incorrect promoted type, unsupported syntax, insufficient
-capacity and overlapping input/output. Fortified output also checks its
-object-size bound.
-
-List diagnostics distinguish an inactive or consumed cursor (`variadic traversal
-requires an active unconsumed argument list`), an invalid start/copy/end operation,
-and an outstanding cleanup (`locally started or copied argument list requires
-va_end`). Raw byte writes and scope exit cannot discharge that obligation.
-A proven null dereference reports `checking-failed` with `dereference requires
-a non-null pointer`. No annotation or warning suppression grants runtime safety.
-Implicit output also requires a live standard stream, including through
-helpers that do not spell the stream argument.
-See [C runtime contracts](checked-code.md#c-runtime-contracts).
-
-RFC 0025 adds the `checking-incomplete` reason
-`read requires an initialized compatible union member`. This requirement is
-independent of pointee lifetime, initialized bytes, bounds and ownership. A tag
-comparison cannot establish it. Unrepresented union storage reports
-`union storage cannot be represented`; a call whose input member path cannot
-be resolved reports `union member requirement cannot be instantiated`.
-No new annotation spelling or diagnostic identifier is introduced.
-
-RFC 0026 adds buffer explanations under `checking-incomplete`:
-`callee buffer allocation extent and initialized-prefix precondition must hold`
-requires an established current buffer invariant;
-`callee buffer backing storage requires allocation release permission`
-distinguishes borrowed storage from an allocation the callee may release.
-`owned buffer elements require complete release or transfer before container mutation`
-preserves the independently owned pointee obligations. Initialized pointer
-bytes alone cannot discharge them. See
-[growable buffers](checked-code.md#growable-buffers-and-vectors).
-
-RFC 0028 carries these obligations across opaque public headers and private
-library state without new annotation spellings or diagnostic identifiers.
-Missing object evidence, incompatible layouts and unestablished private values
-retain incomplete checking; representation metadata alone grants no memory
-permission. Double cleanup and stale borrows retain their lifetime and ownership
-diagnostics across source units and compiler objects. See
-[opaque objects and private library state](checked-code.md#opaque-objects-and-private-library-state)
-for supported interfaces and required initialization.

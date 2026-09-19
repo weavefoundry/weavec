@@ -11,7 +11,7 @@ An allocation needs someone responsible for releasing it. Other code may use it 
 | -------------- | ------------------------------------------------------------------------- | ----------------- |
 | Owned          | Responsible for the referent's resource lifetime.                         | `WEAVEC_OWNED`    |
 | Shared borrow  | Temporary, read-only access to a live referent.                           | `WEAVEC_BORROWED` |
-| Mutable borrow | Exclusive mutable access under the ownership model.                       | `WEAVEC_MUT`      |
+| Mutable borrow | Temporary mutable access to a live referent.                              | `WEAVEC_MUT`      |
 | Raw            | Outside the safe pointer contract; operations require an unsafe boundary. | `WEAVEC_RAW`      |
 
 Inference determines kinds and effects from ordinary C whenever possible. Annotations make an interface's expectations explicit. Include `weavec.h` to use them.
@@ -25,7 +25,7 @@ unsigned buffer_size(const struct buffer *WEAVEC_BORROWED buffer);
 void buffer_clear(struct buffer *WEAVEC_MUT buffer);
 ```
 
-These declarations express the intended public interface. They do not prove unavailable implementations. Checked callers must also satisfy the relevant safety and trust requirements.
+These declarations express the intended public interface. Callers are checked against them, and when the definitions are linked in, the link step checks each declaration against its definition.
 
 ## Copying a pointer does not copy the object
 
@@ -37,10 +37,10 @@ Moving ownership changes who may release or use the resource. After a consuming 
 
 A borrow must end before its referent is destroyed. WeaveC uses the pointer's last use when determining whether the borrow is live; the end of the lexical scope is not always the end of the borrow.
 
-Ordinary mode checks release, move, and reallocation conflicts with live borrows. Enable `--exclusive-borrows` (or `-fweavec-exclusive-borrows`) to enforce the model's additional shared-versus-mutable exclusivity rules.
+WeaveC checks release, move and reallocation conflicts with live borrows (`conflicting-borrow`). Two live pointers into one object, or a write to an object another pointer views, are accepted.
 
 ## Ownership is one part of safety
 
-Owning memory does not prove it is initialized, large enough, or non-null. A `malloc` result can be null, and newly allocated bytes need initialization before a checked read. [Checked contracts](/guides/contracts/) account for these separate obligations.
+Ownership decides the temporal facet of an operation: whether the object is still alive. Whether the pointer is non-null and whether the access stays inside the object are separate facets. A `malloc` result can be null, and an index can run past the allocation. WeaveC proves these facets where it can; otherwise `weavec-cc` checks them at run time, or the ledger lists them as unresolved. See [safety guarantees](/reference/guarantees/).
 
 For the model's precise semantics, read [RFC 0001](/rfcs/0001-ownership-model/). For syntax, use the [annotation reference](/reference/annotations/).

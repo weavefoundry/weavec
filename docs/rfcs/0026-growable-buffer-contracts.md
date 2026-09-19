@@ -1,11 +1,12 @@
 # RFC 0026: Inferred relational contracts for growable buffers and vectors
 
-- **Status**: Implemented
+- **Status**: Superseded
 - **Authors**: WeaveC authors
 - **Created**: 2026-09-13
 - **Tracking issue**: TBD
-- **Supersedes / superseded by**: Extends RFCs 0015, 0017, 0019 and 0021;
-  extends RFC 0025's checked interfaces beyond concrete input cases.
+- **Supersedes / superseded by**: Superseded by RFC 0030
+
+> Superseded by [RFC 0030](0030-prove-or-trap.md).
 
 ## Summary
 

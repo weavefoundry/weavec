@@ -70,6 +70,10 @@ is pinned by `test/WholeProgram/rfc0005-*.c`, `test/Driver/rfc0005-*.c`,
   '<object>'`, a sidecar whose modification time is older than its object's
   (RFC text: "records the object's size and mtime"). The object then stands
   as compiled with no exports, i.e. as unknown code; linking proceeds.
+  > **Amended by [RFC 0030](0030-prove-or-trap.md).** Anything but a format-28
+  > record with a matching schema fingerprint and a valid digest is stale and
+  > counts as no record (§13.1); the link step names such inputs in its one
+  > `unanalyzed-input` warning, and calls into them are trusted (§13.2).
 - **The link step's "needs analysis" test is as written**, plus the
   deferred-boundary case above. A unit that needs analysis but whose
   sidecar carries no command (a sidecar written by hand or by a future
@@ -351,6 +355,11 @@ s`) is a unit-tested invariant. This is the format RFC 0003 said
 `FunctionSummary` was designed to be; it is stable and versioned by the
 `weavec-summaries <version>` header of the files that carry it.
 
+> **Amended by [RFC 0030](0030-prove-or-trap.md).** The sidecar is now one
+> format-28 unit record (framed JSON with a schema fingerprint and a SHA-256
+> digest; summaries are SummaryIO format 27 text). Readers accept nothing else,
+> and unknown fields are never skipped silently (§13.1).
+
 ### The program database (`weavec::Analysis`)
 
 `ProgramDatabase` holds the exports of every unit of a program except the
@@ -477,6 +486,10 @@ with WeaveC inside:
   once per callee. Errors fail the link (the linker is not run and the
   driver exits non-zero). Sidecars of temporary objects (`weavec-cc a.c b.c
   -o prog` in one step) are read before the driver deletes them.
+  > **Amended by [RFC 0030](0030-prove-or-trap.md).** The link step also solves
+  > function-pointer slots, verifies declarations and interfaces, re-runs the
+  > engine for temporal facets, writes the program ledger, and names every
+  > non-system input without a valid record in `unanalyzed-input` (§13.2).
 - **Flags.** `-fweavec` (default) / `-fno-weavec` (compile only, no
   analysis, no sidecar); `-fweavec-strict` (`--strict-externs`);
   `-fweavec-report-unannotated`; `-fweavec-analyze-headers`;
@@ -491,6 +504,10 @@ with WeaveC inside:
   exist); lowering it to a warning is the migration path for a codebase
   that wants to build while it works through the reports. The guarantee
   assumes default severities.
+  > **Amended by [RFC 0030](0030-prove-or-trap.md).** `-fweavec-analyze-headers`
+  > is removed: every emitted function, `static inline` functions from user
+  > headers included, is analysed and instrumented (§5.6). `-fweavec-strict` and
+  > `-fweavec-report-unannotated` are removed too (§16).
 
 The compile step's view of a unit is the RFC 0003 single-unit view, so its
 diagnostics are what `weavec file.c` reports today; the link step's view is
