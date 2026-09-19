@@ -749,7 +749,19 @@ allPaths && !conditional && !unknownOrigin && guard.trivial()
 ```
 
 where `guard` is the RFC 0009 `PlaceGuard` and `trivial()` means no
-conjuncts. At a use or release that hits record *r*
+conjuncts.
+
+**Amendment (S3).** Only the *callee's* part of the guard counts. A
+summary `when` condition that is still undecided at the call makes the
+record `conditional`, which the rule above already excludes. The path-fact
+conjuncts the engine adds when it makes the record held on every path that
+made it, so they do not make it indefinite. Pruning them at the use was
+tried: numeric predicates are often undecidable there, and plain
+`free(p); p[0]` after a loop became a warning. So the implemented test is
+`allPaths && !conditional && !unknownOrigin`. A second unconditional
+consume of a place reaffirms its record (`allPaths` again, guard = the
+facts at the second consume): `while (n--) { free(p); use(p); }` is a
+possible double free and a definite use after free. At a use or release that hits record *r*
 (`FunctionDataflow::reportUseOfMoved`, the double-free branch of the
 consume path):
 
@@ -3815,7 +3827,7 @@ is false only for `allocation-failure`.
 | `mismatched-release` | definite error / possible warning | unchanged |
 | `null-dereference` | **error, definite only** | `dereference of '<p>', which is null`; `'<p>', which is null, is passed to '<f>', which dereferences it`. **The "may be null" forms are removed: they are checked facets now** |
 | `use-of-uninitialized` | **error, definite only** | `use of '<p>' before it was initialized`. Possible uses are made defined by zero-initialisation |
-| `invalid-release` | definite error / possible warning | unchanged; possible: **`'<p>' is released but may point to <x>, which is not a heap object`** |
+| `invalid-release` | definite error / possible warning | unchanged; possible: **`'<p>' is released but may point to <x>, which is not a heap object`**, and for an interior pointer at an unknown offset **`'<p>' is released but may not point to the start of its allocation`** |
 | `out-of-bounds` | **error, definite only** (an exact extent, §7.1) | existing definite forms; **new**: `'<f>' writes <n> bytes into '<b>', an object of <m> bytes`; `write through '<p>', which points to a string literal`; `format string of '<f>' reads <n> arguments but <m> are passed`; `'<a>' has <n> elements but '<f>' accesses <m> through parameter '<p>'` (a static-callee requirement at the call); `'<f>' copies <n> bytes between overlapping ranges of '<obj>'` (note `'<obj>' is declared here`). **The "may" forms are removed: they are checked facets now** |
 | `invalid-integer-operation` | error | unchanged (RFC 0017) |
 
