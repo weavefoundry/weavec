@@ -55,30 +55,10 @@ cl::opt<bool> reportUnannotated(
              "headers"),
     cl::init(false), cl::cat(weavecCategory));
 
-cl::opt<bool>
-    checked("checked",
-            cl::desc("Require complete safety contracts for input definitions"),
-            cl::cat(weavecCategory));
-cl::list<std::string>
-    checkedFunctions("checked-function",
-                     cl::desc("Select a function for checked safety"),
-                     cl::cat(weavecCategory));
-cl::opt<std::string> checkedReportPath("checked-report",
-                                       cl::desc("Write checked safety JSON"),
-                                       cl::cat(weavecCategory));
-
 cl::opt<std::string>
     analysisStatsPath("analysis-stats",
                       cl::desc("Write analysis work statistics JSON"),
                       cl::cat(weavecCategory));
-cl::opt<std::string> analysisCachePath(
-    "analysis-cache",
-    cl::desc("Reuse validated translation-unit analysis in this directory"),
-    cl::cat(weavecCategory));
-cl::opt<std::string>
-    checkedReportFormat("checked-report-format",
-                        cl::desc("Checked report format: expanded or compact"),
-                        cl::init("expanded"), cl::cat(weavecCategory));
 
 cl::opt<bool> strictExterns(
     "strict-externs",
@@ -246,30 +226,14 @@ int main(int argc, const char **argv) {
     }
   }
 
-  if ((analysisStatsPath.getNumOccurrences() && analysisStatsPath.empty()) ||
-      (analysisCachePath.getNumOccurrences() && analysisCachePath.empty())) {
-    llvm::errs() << "weavec: error: analysis statistics and cache options "
-                    "require a path\n";
-    return 1;
-  }
-  if (checkedReportFormat != "expanded" && checkedReportFormat != "compact") {
-    llvm::errs()
-        << "weavec: error: checked report format must be expanded or compact\n";
+  if (analysisStatsPath.getNumOccurrences() && analysisStatsPath.empty()) {
+    llvm::errs() << "weavec: error: analysis statistics require a path\n";
     return 1;
   }
   weavec::core::AnalysisStats stats;
   weavec::frontend::FrontendOptions options;
   options.analysis.stats = analysisStatsPath.empty() ? nullptr : &stats;
   options.analysisStatsPath = analysisStatsPath.getValue();
-  options.analysisCache = dumpAnalysis || reportUnannotated
-                              ? std::string{}
-                              : analysisCachePath.getValue();
-  options.checkedReport->compact = checkedReportFormat == "compact";
-  options.analysis.checked = checked;
-  options.analysis.checkedFunctions.insert(checkedFunctions.begin(),
-                                           checkedFunctions.end());
-  options.analysis.checkContracts =
-      checked || !checkedFunctions.empty() || !checkedReportPath.empty();
   options.analysis.reportUnannotated = reportUnannotated;
   options.analysis.strictExterns = strictExterns;
   options.analysis.exclusiveBorrows = exclusiveBorrows;
@@ -298,31 +262,9 @@ int main(int argc, const char **argv) {
       });
       llvm::errs() << " did not converge\n";
     }
-    const bool reportOK = options.checkedReport->finish(
-        checkedReportPath, options.analysis.checkedFunctions, result.ok());
     const bool statsOK = weavec::frontend::writeAnalysisStats(
         analysisStatsPath, options.analysis.stats);
-    return result.ok() && reportOK && statsOK ? 0 : 1;
-  }
-
-  if (!options.analysisCache.empty()) {
-    bool ok = true;
-    // Without --whole-program each source retains its independent boundary.
-    for (const auto &source : sources) {
-      weavec::frontend::ProgramAnalysis program(options);
-      program.addUnit(
-          std::make_unique<weavec::frontend::CompilationDatabaseUnit>(
-              compilations, source, adjusters));
-      const auto result = program.run();
-      ok &= result.ok();
-      for (const auto &failed : result.failed)
-        llvm::errs() << "weavec: error: cannot analyse '" << failed << "'\n";
-    }
-    const bool reportOK = options.checkedReport->finish(
-        checkedReportPath, options.analysis.checkedFunctions, ok);
-    const bool statsOK = weavec::frontend::writeAnalysisStats(
-        analysisStatsPath, options.analysis.stats);
-    return ok && reportOK && statsOK ? 0 : 1;
+    return result.ok() && statsOK ? 0 : 1;
   }
 
   clang::tooling::ClangTool tool(compilations, sources);
@@ -330,9 +272,7 @@ int main(int argc, const char **argv) {
     tool.appendArgumentsAdjuster(adjuster);
   const int status =
       tool.run(weavec::frontend::createWeaveCActionFactory(options).get());
-  const bool reportOK = options.checkedReport->finish(
-      checkedReportPath, options.analysis.checkedFunctions, status == 0);
   const bool statsOK = weavec::frontend::writeAnalysisStats(
       analysisStatsPath, options.analysis.stats);
-  return status == 0 && reportOK && statsOK ? 0 : 1;
+  return status == 0 && statsOK ? 0 : 1;
 }

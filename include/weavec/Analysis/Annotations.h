@@ -92,6 +92,9 @@ inline constexpr llvm::StringLiteral FamilyPrefix = "weavec.family.";
 inline constexpr llvm::StringLiteral SizedByPrefix = "weavec.sized_by.";
 /// RFC 0012: the annotation on `weavec_assume_`, `WEAVEC_ASSUME`'s callee.
 inline constexpr llvm::StringLiteral Assume = "weavec.assume";
+/// `WEAVEC_CHECKED` (RFC 0018). Checked mode is gone (RFC 0030); the
+/// spelling is still recognised, and validated on declarations that are not
+/// functions, until `weavec.h` stops defining it.
 inline constexpr llvm::StringLiteral Checked = "weavec.checked";
 } // namespace spelling
 

@@ -70,18 +70,8 @@ public:
   /// (if enabled) and computes the summary.
   void run();
   core::CallbackBindings callbackBindings;
-  std::set<std::pair<const clang::FunctionDecl *, bool>> recursiveContractCalls;
   core::CallContext memoryContext;
   bool validMemoryContext = true;
-  bool checkedOutputSeen = false;
-  bool provingBufferBound = false;
-  // Monotone implementation hint: no proof depends on this flag.
-  bool hasBufferPositions = false;
-  bool checkedCaseReachesRecursion = false;
-  std::map<std::optional<core::Outcome>, core::CheckedRequirements>
-      checkedOutputClasses;
-  std::map<std::optional<core::Outcome>, std::set<core::SummaryPath>>
-      checkedNullOutputClasses;
 
   /// The summary inferred by `run` (RFC 0003, *Deriving a summary*).
   [[nodiscard]] const core::FunctionSummary &summary() const & noexcept {
@@ -90,163 +80,15 @@ public:
   [[nodiscard]] core::FunctionSummary summary() && noexcept {
     return std::move(inferred);
   }
-  [[nodiscard]] bool verifiedRecursiveContracts() const {
-    return (!recursiveContractPremises.empty() || recursiveInputUsed) &&
-           inferred.checked.complete();
-  }
 
 private:
   // RFC 0027: most mirror queries return one place. Larger results grow
   // normally; inline capacity never limits alias expansion.
   using MirrorPlaces = llvm::SmallVector<core::PlaceId, 4>;
 
-  void discoverContainers();
   [[nodiscard]] std::vector<core::PlaceId>
   scalarArrayOverlaps(core::PlaceId place,
                       const core::AnalysisState &state) const;
-  void recordAllocationConsumed(core::PlaceId holder,
-                                core::AnalysisState &state);
-  std::optional<bool> containerOwns(core::PlaceId holder,
-                                    std::string_view field,
-                                    const core::ContainerShape &shape,
-                                    const core::AnalysisState &state);
-  bool containerZeroField(core::PlaceId holder,
-                          const core::ContainerField &field,
-                          const core::AnalysisState &state);
-  core::PlaceId footprintContribution(core::PlaceId holder,
-                                      std::string_view field);
-  std::map<core::PlaceId, core::PlaceId> footprintContributions;
-  void initializeContainers(core::AnalysisState &state);
-  std::map<const clang::RecordDecl *, core::ContainerShape> containerShapes;
-  std::set<const clang::RecordDecl *> containerPayloadWriters;
-  std::set<const clang::RecordDecl *> containerLinkWriters;
-  std::map<const clang::BinaryOperator *, const clang::BinaryOperator *>
-      payloadRelocationClears;
-  std::map<const clang::BinaryOperator *,
-           std::pair<core::PlaceId, core::PlaceId>>
-      payloadRelocationSnapshots;
-  struct PayloadRelocation {
-    const clang::BinaryOperator *clear;
-    std::set<const clang::Stmt *> evaluation;
-    core::PlaceId holder;
-    std::string source;
-    std::string destination;
-    std::pair<core::PlaceId, core::PlaceId> snapshot;
-    std::map<core::PlaceId, core::ContainerFact> aliases;
-    std::map<core::PlaceId, core::ContainerFact> separated;
-  };
-  std::optional<PayloadRelocation>
-  capturePayloadRelocation(const clang::Stmt &stmt, core::AnalysisState &state);
-  void applyPayloadRelocation(const PayloadRelocation &relocation,
-                              core::AnalysisState &state);
-  std::map<core::PlaceId, std::optional<core::ContainerShape>>
-      opaqueContainerParameters;
-  std::map<std::string, const clang::RecordDecl *> containerRecords;
-  std::map<core::PlaceId, core::SummaryPath> containerInputs;
-  std::map<core::PlaceId, core::ContainerShape> containerInputShapes;
-  std::map<std::pair<core::PlaceId, std::string>, core::PlaceId>
-      containerInputIds;
-  core::ContainerFact containerInput(core::PlaceId holder,
-                                     const core::SummaryPath &path,
-                                     const core::ContainerShape &shape);
-  void refineContainers(core::AnalysisState &state);
-  void snapshotContainerOutput(core::PlaceId holder,
-                               core::AnalysisState &state);
-  std::map<core::SummaryPath, core::PlaceId> containerOutputObjects;
-  std::map<core::PlaceId, core::SummaryPath> containerOutputPaths;
-  [[nodiscard]] const core::ContainerShape *
-  containerShape(clang::QualType type) const;
-  [[nodiscard]] std::optional<core::ValueFact>
-  containerValueFact(core::PlaceId cell,
-                     const core::AnalysisState &state) const;
-  [[nodiscard]] std::optional<core::ContainerFact>
-  captureContainer(core::PlaceId dest, const ValueOrigin &origin,
-                   core::AnalysisState &state);
-  [[nodiscard]] std::optional<core::ContainerFact>
-  containerAt(core::PlaceId holder, const core::ContainerShape &shape,
-              core::AnalysisState &state, bool allowInput = false);
-  [[nodiscard]] std::optional<core::ContainerFact>
-  strengthenContainer(const core::ContainerFact &fact,
-                      const core::ContainerShape &required);
-  bool requireContainer(const core::ContainerFact &fact, const clang::Stmt &at,
-                        core::AnalysisState &state);
-  bool checkedContainerAccess(const clang::Expr &expr, bool read, bool write,
-                              core::AnalysisState &state);
-  void checkedContainerCall(const core::CheckedRequirement &requirement,
-                            const clang::CallExpr &call,
-                            core::AnalysisState &state);
-  bool checkedContainerRelease(const clang::CallExpr &call,
-                               core::AnalysisState &state);
-  void checkedContainerStore(const clang::Stmt &stmt,
-                             core::AnalysisState &state);
-  void foldContainerStores(core::PlaceId holder,
-                           const clang::RecordDecl &record,
-                           const clang::FieldDecl *field,
-                           const clang::Stmt &stmt, core::AnalysisState &state);
-  bool separateContainers(core::PlaceId first, core::PlaceId second,
-                          const clang::Stmt &at, core::AnalysisState &state);
-  void invalidateContainers(core::PlaceId holder, bool release, bool keepTail,
-                            core::AnalysisState &state);
-  bool preserveFreshContainersAcrossWrite(core::PlaceId cell,
-                                          core::AnalysisState &state);
-  bool preserveInputContainersAcrossLocalWrite(core::PlaceId storage,
-                                               core::AnalysisState &state);
-  void checkedContainersAfterCall(const clang::CallExpr &call,
-                                  const CallEffects *effects,
-                                  core::AnalysisState &state);
-  void captureContainerPosts(const clang::CallExpr &call,
-                             const core::CheckedContract &contract,
-                             core::AnalysisState &state);
-  // `prior`: install only outcome-specific outputs that this earlier result
-  // fact had not yet selected (RFC 0029, immediate result tests).
-  void
-  applyContainerPosts(const clang::CallExpr &call, core::AnalysisState &state,
-                      std::optional<core::PlaceId> result = std::nullopt,
-                      const std::optional<core::ValueFact> *prior = nullptr);
-  struct ContainerPrefix {
-    core::PlaceId ancestor;
-    core::ContainerFact fact;
-    std::pair<core::PlaceId, core::PlaceId> snapshot;
-    std::map<core::PlaceId, core::ContainerFact> separated;
-  };
-  std::map<const clang::CallExpr *,
-           std::map<core::CheckedRequirement, std::vector<ContainerPrefix>>>
-      containerPrefixPosts;
-  std::map<const clang::CallExpr *,
-           std::map<std::pair<core::SummaryPath, core::PlaceId>,
-                    std::pair<core::PlaceId, core::PlaceId>>>
-      containerPrefixSnapshots;
-  void captureContainerPrefixes(const clang::CallExpr &call,
-                                const core::CheckedRequirement &post,
-                                core::AnalysisState &state);
-  void applyContainerPrefixes(const clang::CallExpr &call,
-                              const core::CheckedRequirement &post,
-                              core::PlaceId holder, core::AnalysisState &state);
-  void containerOutputs(core::CheckedContract &outputs,
-                        const core::AnalysisState &state,
-                        std::optional<core::PlaceId> returned,
-                        std::optional<core::Outcome> outcome);
-  struct ContainerPost {
-    core::SummaryPath path;
-    core::ContainerFact fact;
-    std::optional<core::Outcome> on;
-    bool fresh = false;
-    std::map<core::PlaceId, core::ContainerFact> separated;
-    bool operator==(const ContainerPost &) const = default;
-  };
-  std::map<const clang::CallExpr *, std::vector<ContainerPost>> containerPosts;
-  std::map<const clang::CallExpr *, std::vector<core::CheckedRequirement>>
-      containerSeparationPosts;
-  std::map<const clang::CallExpr *, std::vector<core::CheckedRequirement>>
-      containerTailPosts;
-  std::set<const clang::CallExpr *> containerReadOnlyCalls;
-  std::map<const clang::CallExpr *,
-           std::map<core::SummaryPath, core::ContainerFact>>
-      containerArguments;
-  std::map<const clang::CallExpr *, core::PlaceId> containerReleases;
-  std::map<const clang::CallExpr *, core::PlaceId> containerPayloadReleases;
-  std::set<const clang::CallExpr *> containerLocalReleases;
-  std::map<const clang::CallExpr *, core::PlaceId> containerCallObjects;
   [[nodiscard]] std::optional<core::CallContext>
   captureCallContext(const clang::CallExpr &call,
                      const core::FunctionSummary &summary,
@@ -405,511 +247,13 @@ private:
   /// once per block from the fixpoint states, reports and records.
   enum class Phase : std::uint8_t { Fixpoint, Final };
 
-  // RFC 0018: accounting shares the CFG and existing numeric/alias domains.
-  struct CheckedMemory {
-    core::PlaceId storage;
-    core::Affine begin;
-    core::Affine end;
-    std::optional<core::Affine> extent;
-    std::optional<core::SummaryPath> input;
-    const clang::Expr *pointer = nullptr;
-    // NOLINTNEXTLINE(readability-redundant-member-init): aggregate default
-    std::optional<core::PlaceId> holder = {};
-    // NOLINTNEXTLINE(readability-redundant-member-init): aggregate default
-    std::optional<core::PlaceId> inputPlace = {};
-    bool validWhenNonempty = false;
-    friend bool operator==(const CheckedMemory &,
-                           const CheckedMemory &) = default;
-  };
-  struct CheckedPointer {
-    bool invalidated = false;
-    std::optional<core::ContainerFact> container;
-    std::optional<core::BufferSequence> bufferSequence;
-    std::set<core::PlaceId> containerSeparated;
-    bool known = false;
-    bool nonNull = false;
-    bool zeroed = false;
-    bool fresh = false;
-    bool deferred = false;
-    std::vector<core::InitializedRange> initialized;
-    std::optional<core::PlaceId> storage;
-    std::optional<core::PointerPosition> position;
-    std::optional<std::pair<core::PlaceId, core::PlaceId>> footprint;
-    std::optional<core::PlaceId> pendingAllocationRelease;
-  };
-  // RFC 0027: formal allocation identities, separate from structural facts.
-  std::map<core::PlaceId, core::PlaceId> footprintHeads;
-  std::map<core::PlaceId, core::PlaceId> footprintAtoms;
-  std::map<const clang::CallExpr *, core::PlaceId> reallocationFootprints;
-  void prepareReallocationFootprint(const clang::CallExpr &call,
-                                    core::AnalysisState &state);
-  void refineAllocationFootprints(core::AnalysisState &state);
-  std::map<core::PlaceId, std::pair<core::PlaceId, core::PlaceId>>
-      footprintSnapshots;
-  struct FootprintEntry {
-    core::PlaceId holder;
-    core::PlaceId identity;
-    core::ContainerShape shape;
-  };
-  std::map<core::SummaryPath, FootprintEntry> footprintEntries;
-  std::optional<core::PlaceId> footprintReleased;
-  std::optional<core::PlaceId> footprintAllocated;
-  struct FootprintTransfers {
-    std::optional<core::Outcome> outcome;
-    std::vector<std::set<core::SummaryPath>> alternatives;
-    bool operator==(const FootprintTransfers &) const = default;
-  };
-  std::vector<FootprintTransfers> footprintTransfers;
-  void verifyFootprintTransfers();
-  std::optional<bool> recursiveContractCandidate;
-  bool recursiveInputUsed = false;
-  void initializeRecursiveInput(core::AnalysisState &state);
-  std::shared_ptr<const core::FunctionSummary>
-  recursiveInputCandidate(const clang::FunctionDecl &callee);
-  std::shared_ptr<const core::FunctionSummary>
-  recursiveInputCall(const clang::CallExpr &call, core::AnalysisState &state);
-  void verifyRecursiveConstruction();
-  std::shared_ptr<const core::FunctionSummary>
-  recursiveExtensionCandidate(const clang::FunctionDecl &callee);
-  void initializeRecursiveExtension(core::AnalysisState &state);
-  std::shared_ptr<const core::FunctionSummary>
-  recursiveExtensionCall(const clang::CallExpr &call,
-                         core::AnalysisState &state);
-  void verifyRecursiveExtension();
-  [[nodiscard]] std::shared_ptr<const core::FunctionSummary>
-  recursiveWriterCandidate(const clang::FunctionDecl &callee);
-  void initializeRecursiveWriter(core::AnalysisState &state);
-  void verifyRecursiveWriter();
-  [[nodiscard]] bool
-  recursiveInputRequirementsCovered(const core::FunctionSummary &candidate);
-  std::set<core::SummaryPath> recursiveContractPremises;
-  bool handleRecursiveContract(const clang::CallExpr &call,
-                               core::AnalysisState &state);
-  void verifyRecursiveContract();
-  std::map<const clang::CallExpr *, std::map<core::SummaryPath, core::PlaceId>>
-      footprintCallInputs;
-  std::map<const clang::CallExpr *, std::vector<core::CheckedRequirement>>
-      footprintPosts;
-  std::map<std::pair<const clang::CallExpr *, core::SummaryPath>, core::PlaceId>
-      footprintExtensions;
-  std::map<const clang::CallExpr *, core::SummaryPath> freshFootprintSlots;
-  std::map<const clang::CallExpr *,
-           std::pair<core::PlaceId, core::ContainerFact>>
-      freshFootprintSlotParents;
-  core::PlaceId footprintHead(core::PlaceId holder);
-  core::PlaceId footprintAtom(core::PlaceId storage);
-  void initializeFootprint(core::PlaceId holder, const core::SummaryPath &path,
-                           const core::ContainerShape &shape,
-                           core::AnalysisState &state);
-  void unfoldFootprint(core::PlaceId holder, const core::ContainerFact &fact,
-                       core::AnalysisState &state);
-  void captureFootprint(core::PlaceId dest, const ValueOrigin &origin,
-                        CheckedPointer &pointer, core::AnalysisState &state);
-  void installFootprint(core::PlaceId dest, const CheckedPointer &pointer,
-                        core::AnalysisState &state);
-  void releaseFootprint(core::PlaceId holder, bool whole,
-                        core::AnalysisState &state);
-  void footprintOutputs(core::CheckedContract &outputs,
-                        const core::AnalysisState &state,
-                        std::optional<core::PlaceId> returned,
-                        std::optional<core::Outcome> outcome);
-  void captureFootprintPosts(const clang::CallExpr &call,
-                             const core::CheckedContract &contract,
-                             core::AnalysisState &state);
-  void
-  applyFootprintPosts(const clang::CallExpr &call, core::AnalysisState &state,
-                      std::optional<core::PlaceId> result,
-                      const std::optional<core::ValueFact> *prior = nullptr);
-  [[nodiscard]] std::optional<core::ContainerFact>
-  establishContainer(const CheckedMemory &memory,
-                     const core::ContainerShape &shape,
-                     core::AnalysisState &state);
-  // RFC 0026: current-state contiguous storage predicates.
-  std::map<core::PlaceId, core::BufferShape> bufferObjects;
-  std::map<const clang::RecordDecl *, core::BufferShape> bufferShapes;
-  std::map<const clang::CallExpr *, std::vector<core::CheckedRequirement>>
-      bufferPosts;
-  std::map<const clang::CallExpr *,
-           std::map<core::CheckedRequirement, core::Affine>>
-      bufferPostBounds;
-  std::map<core::PlaceId, core::BufferSequence> bufferEntries;
-  std::set<core::PlaceId> bufferEntryBackings;
-  std::map<const clang::CallExpr *, core::BufferSequence>
-      bufferAllocationSequences;
-  struct BufferCallInput {
-    std::optional<core::BufferSequence> sequence;
-    bool ownsElements = false;
-    core::Affine length;
-  };
-  std::map<const clang::CallExpr *, std::map<core::PlaceId, BufferCallInput>>
-      bufferCallInputs;
-  std::map<core::PlaceId, const clang::CallExpr *> bufferSequenceCalls;
-  std::map<const clang::CallExpr *, core::PlaceId> bufferSequenceEvents;
-  std::map<const clang::CallExpr *,
-           std::map<core::CheckedRequirement, core::BufferSequencePost>>
-      bufferSequencePosts;
-  void materializeBufferSequences(core::AnalysisState &state);
-  void checkedBufferRelease(core::PlaceId data, const clang::CallExpr &call,
-                            const core::FunctionSummary *summary,
-                            core::AnalysisState &state);
-  void bufferElementWrite(const clang::BinaryOperator &assignment,
-                          core::AnalysisState &state);
-  std::optional<core::BufferShape>
-  discoverBufferShape(const clang::RecordDecl &record);
-  void discoverBuffers();
-  void registerBuffer(core::PlaceId object, const clang::RecordDecl &record,
-                      const core::BufferShape *transported = nullptr);
-  void initializeBuffers(core::AnalysisState &state);
-  void normalizeBuffers(core::AnalysisState &state);
-  void materializeBuffers(core::AnalysisState &state);
-  void invalidateBufferWrite(const clang::Expr &written,
-                             core::AnalysisState &state);
-  void invalidateBufferCall(const clang::CallExpr &call,
-                            const CallEffects *effects,
-                            core::AnalysisState &state);
-  static const core::BufferFact *bufferFact(core::PlaceId data,
-                                            const core::AnalysisState &state);
-  std::optional<core::PlaceId>
-  bufferArgument(const core::CheckedRequirement &requirement,
-                 const clang::CallExpr &call, core::AnalysisState &state);
-  void checkedBufferCall(const core::CheckedRequirement &requirement,
-                         const clang::CallExpr &call,
-                         core::AnalysisState &state);
-  void captureBufferPosts(const clang::CallExpr &call,
-                          const core::CheckedContract &contract,
-                          core::AnalysisState &state);
-  void applyBufferPosts(const clang::CallExpr &call, core::AnalysisState &state,
-                        std::optional<core::PlaceId> result = std::nullopt);
-  void bufferOutputs(core::CheckedContract &outputs,
-                     const core::AnalysisState &state,
-                     std::optional<core::Outcome> outcome,
-                     std::optional<core::PlaceId> returned);
-  void initializeChecked();
-  void initializeCheckedSpans(core::AnalysisState &state);
-  void checkedSpanCountBounds(core::AnalysisState &state);
-  void checkedSpanOutputs(core::CheckedContract &outputs,
-                          const core::AnalysisState &state,
-                          const clang::Expr *value,
-                          std::optional<core::Outcome> outcome);
-  std::map<std::pair<core::PlaceId, core::PlaceId>, core::PlaceId> checkedSpans;
-  bool checkedSpanCall(const core::CheckedRequirement &requirement,
-                       const clang::CallExpr &call, core::AnalysisState &state);
-  void discoverCheckedCases();
-  [[nodiscard]] std::string checkedUnionMember(const clang::FieldDecl &field);
-  [[nodiscard]] core::PlaceId
-  checkedUnionStorage(core::PlaceId place, const core::AnalysisState &state);
-  void checkedUnionAccess(const clang::Expr &expr, Role role,
-                          core::AnalysisState &state);
-  void checkedUnionWrite(const clang::Expr &expr,
-                         const std::optional<CheckedMemory> &memory,
-                         core::AnalysisState &state);
-  void checkedUnionClobber(const std::optional<CheckedMemory> &memory,
-                           const clang::Stmt &at, core::AnalysisState &state);
-  void checkedUnionCall(const clang::CallExpr &call, const CallEffects &effects,
-                        core::AnalysisState &state);
-  void checkedUnionSet(core::PlaceId storage, const clang::FieldDecl &field,
-                       core::AnalysisState &state);
-  void checkedUnionRequirement(core::PlaceId storage, std::string_view member,
-                               const clang::Stmt &at,
-                               core::AnalysisState &state);
-  void checkedUnionOutputs(core::CheckedContract &outputs,
-                           const clang::Expr *value,
-                           std::optional<core::Outcome> outcome,
-                           const core::AnalysisState &state);
-  void applyCheckedUnionPosts(const clang::CallExpr &call,
-                              core::AnalysisState &state,
-                              std::optional<core::PlaceId> result = {});
-  void forwardCheckedCaseInputs(const clang::CallExpr &call,
-                                const core::CheckedContract &contract);
-  void checkedBefore(const clang::Stmt &stmt, core::AnalysisState &state);
-  void checkedAfter(const clang::Stmt &stmt, core::AnalysisState &state);
-  [[nodiscard]] std::optional<core::IntegerValue>
-  checkedPointerOperation(const clang::BinaryOperator &expr,
-                          const core::AnalysisState &state);
-  [[nodiscard]] std::optional<core::IntegerRange>
-  checkedPointerRange(const clang::BinaryOperator &expr,
-                      const core::AnalysisState &state);
-  void checkedPointerFormation(const clang::Expr &at,
-                               const clang::Expr &pointer,
-                               const std::optional<core::Affine> &shift,
-                               core::AnalysisState &state);
-  void checkedAccess(const clang::Expr &expr, const PlaceRef &ref, Role role,
-                     core::AnalysisState &state);
-  void checkedCall(const clang::CallExpr &call, const CallEffects *effects,
-                   core::AnalysisState &state, std::string_view target = {});
-  bool checkedAlternatives(const clang::CallExpr &call,
-                           const CallEffects &effects,
-                           core::AnalysisState &state);
-  std::map<const clang::CallExpr *, std::map<std::string, ResolvedSummary>>
-      checkedCallAlternatives;
-  void checkedCallAfter(const clang::CallExpr &call, const CallEffects *effects,
-                        core::AnalysisState &state);
-  void checkedFinish(const core::AnalysisState *exitState);
-  bool checkedRuntimeCall(const clang::CallExpr &call,
-                          const CallEffects *effects,
-                          core::AnalysisState &state, std::string_view name);
-  bool runtimeIntrinsic(const clang::CallExpr &call,
-                        core::AnalysisState &state);
-  void runtimeStandardOutput(const clang::Stmt &at, core::AnalysisState &state);
-  bool runtimeListType(clang::QualType type) const;
-  std::optional<core::PlaceId> runtimeListPlace(const clang::Expr &expr);
-  std::optional<core::ArgumentListState>
-  runtimeList(const clang::Expr &expr, const clang::Stmt &at,
-              core::AnalysisState &state);
-  bool runtimeListIntrinsic(const clang::CallExpr &call,
-                            core::AnalysisState &state);
-  void runtimeListReturns(const clang::Stmt &at,
-                          const core::AnalysisState &state);
-  std::set<core::SummaryPath> runtimeConsumedLists;
-  bool runtimeRequirement(const core::CheckedRequirement &requirement,
-                          const clang::CallExpr &call,
-                          core::AnalysisState &state);
-  void runtimeFormat(const clang::CallExpr &call, std::string_view name,
-                     core::AnalysisState &state);
-  struct FormatResult {
-    bool valid = false;
-    std::optional<std::int64_t> upper;
-    std::optional<std::int64_t> exact;
-  };
-  FormatResult runtimeFormatArguments(
-      const clang::Expr &format, const clang::CallExpr &call, unsigned first,
-      const std::optional<core::ArgumentListState> &list,
-      const std::optional<CheckedMemory> &destination,
-      core::AnalysisState &state, std::optional<std::string_view> literal = {});
-  [[nodiscard]] std::optional<CheckedMemory>
-  runtimeInterval(const clang::Expr &pointer, const core::Affine &bytes,
-                  bool read, bool write, const clang::Stmt &at,
-                  core::AnalysisState &state);
-  [[nodiscard]] std::optional<CheckedMemory>
-  runtimeString(const clang::Expr &pointer,
-                const std::optional<core::Affine> &limit, const clang::Stmt &at,
-                core::AnalysisState &state);
-  bool runtimeStream(const clang::Expr &pointer, const clang::Stmt &at,
-                     core::AnalysisState &state, bool allowNull = false);
-  bool runtimeSeparate(const CheckedMemory &first, const CheckedMemory &second,
-                       const clang::Stmt &at, core::AnalysisState &state);
-  void checkedOutputs(const core::AnalysisState &incoming,
-                      const clang::Expr *value = nullptr);
-  void safetyObligation(core::SafetyProperty property,
-                        core::SafetyOutcome outcome, const clang::Stmt &at,
-                        std::string subject, std::string reason,
-                        std::vector<core::SourceLocation> calls = {});
-  void safetyDiagnostic(const core::Diagnostic &diagnostic);
-  [[nodiscard]] CheckedPointer
-  captureCheckedPointer(core::PlaceId dest, const ValueOrigin &given,
-                        core::AnalysisState &state);
-  void installCheckedPointer(core::PlaceId dest, const CheckedPointer &value,
-                             core::AnalysisState &state);
-  void installCheckedPosition(core::PlaceId dest,
-                              core::PointerPosition position,
-                              core::AnalysisState &state);
-  void checkedAdvancePointer(const clang::Expr &expr,
-                             core::AnalysisState &state);
-  void checkedPointerCondition(const clang::BinaryOperator &expr, bool holds,
-                               core::AnalysisState &state);
-  [[nodiscard]] bool checkedPointerComparable(const clang::BinaryOperator &expr,
-                                              core::AnalysisState &state);
-  std::set<core::PlaceId> checkedSteppedPointers;
-  std::map<core::PlaceId, core::PlaceId> checkedCoordinates;
-  std::map<const clang::Expr *, core::PlaceId> checkedPointerResults;
-  std::set<core::PlaceId> checkedCallAssignedPointers;
-  /// RFC 0029: pointer variables this body may change, from one bounded
-  /// syntactic scan. A null entry means the budget was exhausted, which
-  /// conservatively disqualifies every variable.
-  std::optional<std::set<const clang::VarDecl *>> changedPointerVariables;
-  [[nodiscard]] bool unchangedPointerVariable(core::PlaceId place);
-  [[nodiscard]] std::optional<CheckedMemory>
-  checkedMemory(const clang::Expr &pointer, const core::Affine &begin,
-                const core::Affine &end, const core::AnalysisState &state);
-  [[nodiscard]] std::optional<CheckedMemory>
-  checkedMemoryAt(core::PlaceId holder, const core::Affine &begin,
-                  const core::Affine &end, const core::AnalysisState &state);
-  [[nodiscard]] bool checkedZeroInteger(core::PlaceId place,
-                                        const core::AnalysisState &state);
-  [[nodiscard]] std::optional<CheckedMemory>
-  checkedScalarMemory(core::PlaceId place, const core::AnalysisState &state);
-  [[nodiscard]] std::optional<core::SummaryPath>
-  checkedSeparationInput(const CheckedMemory &memory,
-                         const core::AnalysisState &state);
-  [[nodiscard]] std::optional<CheckedMemory>
-  checkedPathMemory(const core::SummaryPath &path, const clang::CallExpr &call,
-                    const core::Affine &begin, const core::Affine &end,
-                    const core::AnalysisState &state);
-  void checkedObjectCast(const clang::CastExpr &cast,
-                         core::AnalysisState &state);
-  [[nodiscard]] std::string checkedObjectType(clang::QualType type);
   [[nodiscard]] std::string
   resolvedLibraryName(const clang::CallExpr &call) const;
-  void checkedObjectRequirement(const CheckedMemory &memory,
-                                std::string_view descriptor,
-                                const clang::Stmt &at,
-                                core::AnalysisState &state);
-  [[nodiscard]] bool checkedValid(const CheckedMemory &memory,
-                                  const core::AnalysisState &state);
-  [[nodiscard]] bool checkedTerminated(const CheckedMemory &memory,
-                                       const core::AnalysisState &state);
-  void collectCheckedStrings(const clang::Stmt &stmt);
-  void initializeCheckedStrings(core::AnalysisState &state);
-  void prepareCheckedStringInputs(const clang::CallExpr &call,
-                                  const core::CheckedContract &contract,
-                                  core::AnalysisState &state);
-  void checkedStringCondition(const clang::Expr &expr,
-                              clang::BinaryOperatorKind op,
-                              const clang::Expr *other, bool holds,
-                              core::AnalysisState &state);
-  void checkedStringBound(const CheckedMemory &memory, const clang::Stmt &at,
-                          core::AnalysisState &state);
-  void checkedStringUse(const CheckedMemory &memory, const clang::Stmt &at,
-                        core::AnalysisState &state);
-  void checkedStringLength(const clang::CallExpr &call,
-                           core::AnalysisState &state);
-  void checkedStringWrite(const std::optional<CheckedMemory> &memory,
-                          bool zeroed, core::AnalysisState &state,
-                          bool numericText = false);
-  [[nodiscard]] std::optional<core::TerminationWitness>
-  checkedWitness(const CheckedMemory &memory, const core::AnalysisState &state);
-  [[nodiscard]] std::optional<std::pair<std::int64_t, std::string>>
-  checkedByteContents(const CheckedMemory &memory,
-                      const core::AnalysisState &state);
-  [[nodiscard]] std::optional<core::IntegerRange>
-  checkedByteRange(const clang::Expr &expr, const core::AnalysisState &state);
-  [[nodiscard]] std::vector<std::pair<core::PlaceId, core::Affine>>
-  checkedJoinBoundaries(const core::AnalysisState &first,
-                        const core::AnalysisState &second);
-  [[nodiscard]] std::optional<core::Affine>
-  checkedTerminatorQuantity(const core::PathAffine &value,
-                            const clang::CallExpr &call,
-                            core::AnalysisState &state);
-  std::set<core::PlaceId> checkedStringInputs;
-  std::map<core::PlaceId, core::PlaceId> checkedTerminatorInputs;
-  std::map<core::PlaceId, std::int64_t> checkedWitnessMinimum;
-  std::map<const clang::CallExpr *, core::PlaceId> checkedFirstZeros;
-  [[nodiscard]] std::optional<CheckedMemory>
-  checkedLvalue(const clang::Expr &expr, const core::AnalysisState &state);
-  [[nodiscard]] bool checkedInterval(const core::Affine &begin,
-                                     const core::Affine &end,
-                                     const core::Affine &extent,
-                                     const core::AnalysisState &state);
   [[nodiscard]] core::DifferenceConstraints
-  checkedRelations(const core::AnalysisState &state);
-  [[nodiscard]] bool checkedAtMost(const core::Affine &lhs,
-                                   const core::Affine &rhs,
-                                   const core::AnalysisState &state);
-  [[nodiscard]] std::optional<core::PathAffine>
-  checkedRequirementEnvelope(const core::Affine &need,
-                             const core::AnalysisState &state);
-  [[nodiscard]] core::Affine
-  checkedStableAffine(const core::Affine &value,
-                      const core::AnalysisState &state);
-  bool checkedJoinPremises(core::AnalysisState &target,
-                           core::AnalysisState &incoming);
-  void checkedDifferenceCondition(const clang::Expr &lhs,
-                                  clang::BinaryOperatorKind op,
-                                  const clang::Expr &rhs, bool holds,
-                                  core::AnalysisState &state);
-  [[nodiscard]] std::optional<bool>
-  checkedWritePermission(const CheckedMemory &memory,
-                         const core::AnalysisState &state);
-  bool checkedWrite(const CheckedMemory &memory, const clang::Stmt &at,
-                    core::AnalysisState &state);
-  [[nodiscard]] bool checkedInitialized(const CheckedMemory &memory,
-                                        const core::AnalysisState &state);
-  bool checkedNumericByte(const clang::Expr &value,
-                          const core::AnalysisState &state);
-  bool checkedNumericText(const CheckedMemory &memory,
-                          const core::AnalysisState &state);
-  bool checkedFloatingValue(const clang::Expr &value,
-                            const core::AnalysisState &state);
-  void checkedFloatingAfter(const clang::Stmt &stmt,
-                            core::AnalysisState &state);
-  std::map<const clang::CallExpr *, core::PlaceId> checkedFloatingResults;
-  bool checkedRequire(core::CheckedRequirementKind kind,
-                      const CheckedMemory &memory, const clang::Stmt &at,
-                      core::AnalysisState &state, std::string family = {});
-  [[nodiscard]] std::optional<core::PathAffine>
-  checkedLoopRequirement(const core::Affine &need, const clang::Stmt &at,
-                         core::AnalysisState &state);
-  void checkedLoopExit(const clang::ForStmt &loop, core::AnalysisState &state);
-  void checkedReaderLoop(const clang::Stmt &at, core::AnalysisState &state);
-  std::map<const clang::Stmt *, const clang::ForStmt *> checkedLoops;
-  std::set<const clang::Stmt *> checkedLoopConditions;
-  std::set<core::PlaceId> checkedLoopCounters;
-  struct CheckedReaderLoop {
-    const clang::Expr *index = nullptr;
-    const clang::Expr *position = nullptr;
-    const clang::Expr *capacity = nullptr;
-    core::PlaceId backing;
-    const clang::Expr *numericInput = nullptr;
-  };
-  std::map<const clang::ForStmt *, std::optional<CheckedReaderLoop>>
-      checkedReaderLoops;
-  // Lazy caller-entry guard shared by one conditional requirement group.
-  // The group restores this pointer before its local cache leaves scope.
-  std::optional<core::PathGuard> *checkedRequirementGuard = nullptr;
-  std::map<const clang::CallExpr *, std::vector<CheckedMemory>> checkedWrites;
-  std::map<std::pair<const clang::CallExpr *, core::PlaceId>, core::PlaceId>
-      checkedObjects;
-  std::map<core::PlaceId, core::PlaceId> checkedInputObjects;
-  std::set<const clang::CallExpr *> checkedDeferredCalls;
-  std::map<const clang::Expr *, core::PlaceId> checkedReturnPlaces;
-  [[nodiscard]] std::vector<core::InitializedRange>
-  checkedCopyRanges(const CheckedMemory &source, const core::Affine &begin,
-                    const core::Affine &end, const core::AnalysisState &state);
-  struct CheckedPost {
-    core::SummaryPath path;
-    core::InitializedRange range;
-    std::optional<core::Outcome> on;
-    std::optional<core::PlaceId> storage;
-    bool ifNonNull = false;
-    std::string objectType;
-    // Default preserves existing designated initializers.
-    // NOLINTNEXTLINE(readability-redundant-member-init)
-    std::string unionMember = {};
-    bool throughPosition = false;
-    friend bool operator==(const CheckedPost &, const CheckedPost &) = default;
-  };
-  std::map<const clang::CallExpr *, std::vector<CheckedPost>> checkedPosts;
-  struct CheckedPositionPost {
-    core::SummaryPath path;
-    core::PointerPosition position;
-    std::optional<core::Affine> upper;
-    core::PlaceGuard when;
-    std::optional<core::Outcome> on;
-    bool nonNull = false;
-    friend bool operator==(const CheckedPositionPost &,
-                           const CheckedPositionPost &) = default;
-  };
-  std::map<const clang::CallExpr *, std::vector<CheckedPositionPost>>
-      checkedPositionPosts;
-  struct CheckedProgressPost {
-    core::SummaryPath path;
-    core::SummaryPath other;
-    core::PlaceId storage;
-    std::int64_t offset = 0;
-    std::optional<core::Outcome> on;
-    friend bool operator==(const CheckedProgressPost &,
-                           const CheckedProgressPost &) = default;
-  };
-  std::map<const clang::CallExpr *, std::vector<CheckedProgressPost>>
-      checkedProgressPosts;
-  void applyCheckedPositions(const clang::CallExpr &call,
-                             core::AnalysisState &state,
-                             std::optional<core::PlaceId> result = {});
-  std::map<const clang::CallExpr *, std::map<core::PlaceId, core::PlaceId>>
-      checkedSnapshots;
-  [[nodiscard]] std::optional<core::PlaceGuard>
-  checkedGuard(const core::PathGuard &when, const clang::CallExpr &call,
-               const core::AnalysisState &state);
-  void captureCheckedPosts(const clang::CallExpr &call,
-                           const core::CheckedContract &contract,
-                           core::AnalysisState &state);
-  void applyCheckedResult(core::PlaceId dest, const clang::CallExpr &call,
-                          core::AnalysisState &state);
-  void applyCheckedPosts(const clang::CallExpr &call,
-                         const core::FunctionSummary &summary,
-                         core::AnalysisState &state);
-  std::set<const clang::Stmt *> checkedUnsupported;
-  std::set<const clang::Stmt *> checkedCFGOperations;
+  differenceConstraints(const core::AnalysisState &state);
+  [[nodiscard]] bool provedAtMost(const core::Affine &lhs,
+                                  const core::Affine &rhs,
+                                  const core::AnalysisState &state);
 
   clang::ASTContext &context;
   const clang::FunctionDecl &function;
@@ -919,7 +263,6 @@ private:
   bool materializingArray = false;
   bool materializingArrayFill = false;
   bool materializingArrayRelease = false;
-  bool hasContainerCalls = false;
   const bool emitDiagnostics;
 
   [[nodiscard]] std::optional<core::PlaceGuard>
@@ -957,11 +300,10 @@ private:
   [[nodiscard]] std::optional<core::PlaceId>
   numericCallResult(const clang::CallExpr &call) const;
   [[nodiscard]] std::optional<core::Affine>
-  checkedByteSum(const core::Affine &lhs, const core::Affine &rhs,
-                 const core::AnalysisState &state, const clang::Stmt &at);
+  byteSum(const core::Affine &lhs, const core::Affine &rhs,
+          const core::AnalysisState &state);
   [[nodiscard]] std::optional<core::IntegerExpression<core::PlaceId>>
-  checkedByteExpression(const core::Affine &value,
-                        const core::AnalysisState &state);
+  byteExpression(const core::Affine &value, const core::AnalysisState &state);
   [[nodiscard]] core::SpatialRecord
   subobjectRecord(const core::SpatialRecord &record, core::PlaceId source,
                   const core::PointerOffset &step);
@@ -980,12 +322,6 @@ private:
                           std::optional<std::int64_t>>
   integerBounds(core::PlaceId place, const core::AnalysisState &state);
   using NumericExpression = core::IntegerExpression<core::PlaceId>;
-  std::map<const clang::CallExpr *,
-           std::vector<std::pair<NumericExpression, NumericExpression>>>
-      checkedSpanPosts;
-  [[nodiscard]] std::optional<core::Affine>
-  checkedTraversalSum(const NumericExpression &expression,
-                      const core::AnalysisState &state);
   // RFC 0017: values read at call entry, independent of the post-state
   // paths. Slots are bounded by call site, interface path and integer type.
   using NumericInputKey = std::pair<core::SummaryPath, core::IntegerType>;
@@ -1054,13 +390,6 @@ private:
   originTargets(const ValueOrigin &origin, const core::AnalysisState &state);
   [[nodiscard]] std::optional<ResolvedSummary>
   resolveCall(const clang::CallExpr &call);
-  [[nodiscard]] std::shared_ptr<const core::FunctionSummary>
-  requiredCallback(const clang::CallExpr &call, core::AnalysisState &state);
-  [[nodiscard]] std::optional<core::SummaryPath>
-  callbackEntry(core::PlaceId holder, const core::AnalysisState &state);
-  void checkedCallbackRequirement(const core::CheckedRequirement &requirement,
-                                  const clang::CallExpr &call,
-                                  core::AnalysisState &state);
   [[nodiscard]] static std::string
   objectEvidenceView(core::PlaceId holder, const core::AnalysisState &state);
   [[nodiscard]] bool validateObjectPath(const core::SummaryPath &path,
@@ -1465,7 +794,7 @@ private:
                  unsigned depth = 0);
   [[nodiscard]] core::IntegerRange
   integerRangeAt(core::PlaceId place, core::IntegerType type,
-                 const core::AnalysisState &state, unsigned equalityDepth = 0);
+                 const core::AnalysisState &state);
   [[nodiscard]] bool preservesInteger(const clang::Expr &expr,
                                       const core::AnalysisState &state);
   void checkIntegerOperation(const clang::Expr &expr,
@@ -2268,8 +1597,6 @@ private:
                                      bool definite = false);
   [[nodiscard]] MirrorPlaces scalarMirrors(core::PlaceId place,
                                            const core::AnalysisState &state);
-  /// `place` together with its ancestors and descendants.
-  [[nodiscard]] std::vector<core::PlaceId> related(core::PlaceId place);
 
   struct MovedHit {
     core::PlaceId target;

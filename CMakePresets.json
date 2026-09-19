@@ -121,6 +121,7 @@
     {
       "name": "test-base",
       "hidden": true,
+      "environment": { "CTEST_PARALLEL_LEVEL": "" },
       "output": { "outputOnFailure": true },
       "execution": { "noTestsAction": "error", "stopOnFailure": false }
     },

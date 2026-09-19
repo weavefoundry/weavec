@@ -35,41 +35,16 @@ bool FunctionAnalyzer::analyze(const FunctionDecl &function,
   if (options.stats)
     invocationTimer.emplace(options.stats,
                             "generic:" + callableSymbol(function));
-  core::DiagnosticCollector validation;
-  if (options.checkContracts) {
-    FunctionAnalyzer validator(context, validation, options);
-    validator.validate(function);
-    if (emitDiagnostics)
-      for (const auto &diagnostic : validation.diagnostics())
-        sink.report(diagnostic);
-  } else if (emitDiagnostics) {
+  if (emitDiagnostics)
     validate(function);
-  }
   // A `WEAVEC_UNSAFE` function is analysed like any other so its callers see
   // what it does; the dataflow itself suppresses reports inside it (RFC
   // 0004, *Unsafe regions*).
   FunctionDataflow dataflow(context, function, sink, options, summaries,
                             emitDiagnostics);
   dataflow.run();
-  if (!options.checkContracts)
-    return summaries.setInferred(function, std::move(dataflow).summary(),
-                                 widenSummary);
-  const bool verifiedInduction = dataflow.verifiedRecursiveContracts();
-  auto summary = std::move(dataflow).summary();
-  if (options.checkContracts)
-    for (const auto &diagnostic : validation.diagnostics())
-      if (diagnostic.severity == core::Severity::Error ||
-          diagnostic.id == core::diag::InvalidAnnotation)
-        summary.checked.obligations.add(
-            {.property = core::SafetyProperty::Semantics,
-             .outcome = core::SafetyOutcome::Violation,
-             .location = diagnostic.location,
-             .function = function.getNameAsString(),
-             .subject = std::string(diagnostic.id),
-             .reason = diagnostic.message,
-             .calls = {}});
-  return summaries.setInferred(function, std::move(summary), widenSummary,
-                               verifiedInduction);
+  return summaries.setInferred(function, std::move(dataflow).summary(),
+                               widenSummary);
 }
 
 void FunctionAnalyzer::validate(const FunctionDecl &function) {

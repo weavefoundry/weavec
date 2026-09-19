@@ -401,42 +401,6 @@ void FunctionDataflow::initializeArray(core::PlaceId storage, QualType type,
   const auto *array = context.getAsConstantArrayType(type);
   if (!array)
     return;
-  if (state.safety &&
-      (decl.hasLocalStorage() ||
-       (decl.isStaticLocal() && array->getElementType().isConstQualified())) &&
-      init && array->getElementType()->isCharType() &&
-      !array->getElementType().isVolatileQualified() &&
-      context.getCharWidth() == 8 &&
-      array->getSize().getLimitedValue(65) <= 64) {
-    const auto size = array->getSize().getZExtValue();
-    const auto *literal = dyn_cast<StringLiteral>(init->IgnoreParenImpCasts());
-    const auto *values = dyn_cast<InitListExpr>(init->IgnoreParenImpCasts());
-    std::string bytes;
-    bool known = literal != nullptr || values != nullptr;
-    for (std::uint64_t i = 0; known && i < size; ++i) {
-      std::uint64_t byte = 0;
-      if (literal && i < literal->getLength()) {
-        byte = literal->getCodeUnit(static_cast<unsigned>(i));
-      } else if (values && i < values->getNumInits()) {
-        const auto value =
-            integerRangeOf(*values->getInit(static_cast<unsigned>(i)), state);
-        const auto exact = value && !value->mayBeInvalid
-                               ? value->values.constant()
-                               : std::nullopt;
-        known = exact.has_value();
-        if (exact)
-          byte = exact->bits;
-      }
-      bytes.push_back(static_cast<char>(byte & 255U));
-    }
-    if (known && !bytes.empty())
-      state.safety->initialize(
-          storage,
-          {.begin = {},
-           .end = core::Affine::ofConstant(static_cast<std::int64_t>(size)),
-           .bytes = std::move(bytes),
-           .immutableBytes = array->getElementType().isConstQualified()});
-  }
   const bool scalar =
       decl.hasLocalStorage() && array->getElementType()->isIntegerType() &&
       !array->getElementType().isVolatileQualified() &&

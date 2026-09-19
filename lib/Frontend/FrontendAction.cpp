@@ -8,10 +8,7 @@
 
 #include "weavec/Frontend/FrontendAction.h"
 
-#include "weavec/Analysis/Annotations.h"
 #include "weavec/Analysis/TranslationUnitAnalysis.h"
-#include "weavec/Core/SafetyEntryPool.h"
-#include "weavec/Frontend/CheckedArtifacts.h"
 #include "weavec/Frontend/ClangDiagnosticSink.h"
 
 #include "clang/AST/ASTConsumer.h"
@@ -20,43 +17,14 @@
 #include "clang/Frontend/CompilerInstance.h"
 #include "clang/Frontend/TextDiagnosticPrinter.h"
 
-#include "llvm/ADT/SmallString.h"
-#include "llvm/Support/FileSystem.h"
-
 #include <utility>
 
 namespace weavec::frontend {
 
-UnitResult replayUnitResult(UnitResult result,
-                            clang::DiagnosticsEngine &diagnostics,
-                            const FrontendOptions &options) {
-  ClangDiagnosticSink clangSink(diagnostics);
-  FilteringSink sink(clangSink, options.control, options.alreadyReported,
-                     options.boundaryOnce, options.onlyIds);
-  if (!options.silent)
-    for (const auto &diagnostic : result.diagnostics)
-      sink.report(diagnostic);
-  const bool failure =
-      !options.silent &&
-      CheckedReport::failed(result.exports, options.analysis.deferCheckedCalls);
-  if (!options.silent && options.checkedReport)
-    options.checkedReport->record(result.exports);
-  if (failure)
-    diagnostics.Report(diagnostics.getCustomDiagID(
-        clang::DiagnosticsEngine::Error,
-        "checked safety requirements were not established"));
-  result.reported = sink.reported();
-  result.errors = sink.errors() + (failure ? 1 : 0);
-  result.warnings = sink.warnings();
-  return result;
-}
-
 UnitResult analyzeTranslationUnit(clang::ASTContext &context,
                                   clang::DiagnosticsEngine &diagnostics,
                                   const FrontendOptions &options) {
-  core::SafetyEntryPool explanations(options.analysis.stats);
   analysis::AnalysisOptions analysisOptions = options.analysis;
-  analysisOptions.checkedMainFileOnly = options.mainFileOnly;
   if (options.silent)
     analysisOptions.dumpStream = nullptr;
   core::DiagnosticCollector collected;
@@ -64,8 +32,7 @@ UnitResult analyzeTranslationUnit(clang::ASTContext &context,
                                              analysisOptions);
   analyzer.setDatabase(options.database);
   UnitResult result;
-  const bool trackImports =
-      options.database != nullptr || !options.analysisCache.empty();
+  const bool trackImports = options.database != nullptr;
   if (trackImports)
     analyzer.summaries().beginDependencies(result.dependencies);
   if (options.discoverOnly) {
@@ -77,35 +44,26 @@ UnitResult analyzeTranslationUnit(clang::ASTContext &context,
   const clang::SourceManager &sm = context.getSourceManager();
   analyzer.run([&](const clang::FunctionDecl &function) {
     return !options.silent &&
-           (!options.mainFileOnly || sm.isInMainFile(function.getLocation()) ||
-            options.analysis.checkedFunctions.contains(
-                function.getNameAsString()) ||
-            analysis::getAnnotations(function).checked);
+           (!options.mainFileOnly || sm.isInMainFile(function.getLocation()));
   });
   result.exports = analyzer.exports();
-  if (options.bindCheckedInputs || !result.exports.checkedDefinitions.empty() ||
-      !options.analysisCache.empty()) {
-    for (auto file = sm.fileinfo_begin(); file != sm.fileinfo_end(); ++file) {
-      const auto buffer = file->second->getBufferIfLoaded();
-      if (!buffer)
-        continue;
-      llvm::SmallString<256> absolute;
-      const auto name = file->first.getName();
-      if (llvm::sys::fs::real_path(name, absolute))
-        absolute = name;
-      result.exports.checkedInputs[absolute.str().str()] =
-          checkedDigest(buffer->getBuffer());
-    }
-  }
-  result.diagnostics = collected.diagnostics();
   if (trackImports)
     analyzer.summaries().endDependencies();
-  return replayUnitResult(std::move(result), diagnostics, options);
+
+  ClangDiagnosticSink clangSink(diagnostics);
+  FilteringSink sink(clangSink, options.control, options.alreadyReported,
+                     options.boundaryOnce, options.onlyIds);
+  if (!options.silent)
+    for (const auto &diagnostic : collected.diagnostics())
+      sink.report(diagnostic);
+  result.reported = sink.reported();
+  result.errors = sink.errors();
+  result.warnings = sink.warnings();
+  return result;
 }
 
 UnitResult analyzeRetainedUnit(clang::ASTUnit &ast,
-                               const FrontendOptions &options,
-                               const UnitResult *checkpoint) {
+                               const FrontendOptions &options) {
   auto &diagnostics = ast.getDiagnostics();
   auto *previous = diagnostics.getClient();
   auto owned = diagnostics.takeClient();
@@ -155,9 +113,8 @@ UnitResult analyzeRetainedUnit(clang::ASTUnit &ast,
   diagnostics.setClient(&printer, false);
   diagnostics.Reset(true);
   printer.BeginSourceFile(ast.getLangOpts(), &ast.getPreprocessor());
-  auto result = checkpoint ? replayUnitResult(*checkpoint, diagnostics, options)
-                           : analyzeTranslationUnit(ast.getASTContext(),
-                                                    diagnostics, options);
+  auto result =
+      analyzeTranslationUnit(ast.getASTContext(), diagnostics, options);
   if (diagnostics.hasErrorOccurred() && result.errors == 0)
     result.errors = 1;
   printer.EndSourceFile();

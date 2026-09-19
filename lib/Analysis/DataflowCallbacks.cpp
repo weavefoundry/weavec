@@ -107,14 +107,8 @@ core::CallTargets FunctionDataflow::functionTargets(const Expr &expr,
       input.kind = ValueOrigin::Kind::Copy;
       input.place = *place;
       const auto source = sourceValueOf(input, state, true);
-      auto path = source.path;
-      if (!path && options.checkContracts)
-        if (const auto global = builder.summaryPathOf(place->place);
-            global && global->isGlobal() && !state.isOverwritten(*global))
-          path = global;
-      if (path &&
-          (path->isParam() || (options.checkContracts && path->isGlobal())) &&
-          recording())
+      const auto &path = source.path;
+      if (path && path->isParam() && recording())
         inferred.callbackInputs.insert(*path);
     }
     if (found != state.callTargets.end())
@@ -160,17 +154,10 @@ FunctionDataflow::resolveCall(const CallExpr &call) {
     return ResolvedSummary{.summary = cached->second,
                            .source = callSources.at(&call)};
   }
-  checkedCallAlternatives.erase(&call);
   const FunctionDecl *direct = call.getDirectCallee();
   if (!currentState)
     return direct ? summaries.lookup(*direct) : summaries.lookupIndirect(call);
   core::AnalysisState &state = *currentState;
-  if (auto hypothesis = recursiveInputCall(call, state)) {
-    callSummaries[&call] = hypothesis;
-    callSources[&call] = SummarySource::Inferred;
-    return ResolvedSummary{.summary = std::move(hypothesis),
-                           .source = SummarySource::Inferred};
-  }
   std::shared_ptr<const core::FunctionSummary> result;
   SummarySource source = SummarySource::Inferred;
   const auto captureCallbacks = [&](const core::FunctionSummary &summary) {
@@ -208,14 +195,12 @@ FunctionDataflow::resolveCall(const CallExpr &call) {
   };
   const auto contextualize =
       [&](std::string_view symbol,
-          std::shared_ptr<const core::FunctionSummary> base,
-          std::optional<core::CallContext> prepared = std::nullopt) {
+          std::shared_ptr<const core::FunctionSummary> base) {
         // Path resolution validates this target's object views before using
         // its footprint. The final contextual result replaces this below.
         auto &snapshot = callSummaries[&call];
         snapshot = std::move(base);
-        auto bindings = prepared ? std::move(prepared)
-                                 : captureCallContext(call, *snapshot, state);
+        auto bindings = captureCallContext(call, *snapshot, state);
         if (!bindings)
           return snapshot;
         if (const auto callbacks = callbackContexts.find(&call);
@@ -226,13 +211,6 @@ FunctionDataflow::resolveCall(const CallExpr &call) {
         const auto specialized = summaries.specializeMemory(
             symbol, *bindings, options,
             recording() && emitDiagnostics && !inUnsafe ? &collected : nullptr);
-        // RFC 0029: a failed precision attempt cannot replace a complete
-        // generic proof. Its unchanged requirements still apply at this call.
-        if (options.checkContracts && snapshot->checked.complete() &&
-            (!specialized || !specialized->summary->checked.complete())) {
-          memoryContexts.erase(&call);
-          return snapshot;
-        }
         for (auto diagnostic : collected.diagnostics()) {
           diagnostic.addNote("called here with related pointer arguments",
                              locate(call));
@@ -248,43 +226,10 @@ FunctionDataflow::resolveCall(const CallExpr &call) {
     if (const auto base = summaries.lookup(*direct)) {
       result = summaries.retainSummary(*base);
       source = base->source;
-      std::optional<core::CallContext> combinedInputs;
       auto bindings = captureCallbacks(*result);
-      const bool behavioral =
-          result->checked.complete() && !result->callbackInputs.empty() &&
-          std::ranges::all_of(result->callbackInputs, [&](const auto &path) {
-            if (!path.isParam() || !path.isRoot())
-              return false;
-            const auto binding = bindings.find(path);
-            if (binding == bindings.end() || binding->second.null)
-              return false;
-            return std::ranges::any_of(
-                result->checked.requirements, [&](const auto &requirement) {
-                  if (requirement.path != path ||
-                      !(requirement.kind ==
-                            core::CheckedRequirementKind::CallbackAllocate ||
-                        requirement.kind ==
-                            core::CheckedRequirementKind::CallbackRelease))
-                    return false;
-                  return std::ranges::all_of(
-                      binding->second.functions, [&](const auto &symbol) {
-                        const auto actual = summaries.lookupSymbol(symbol);
-                        const auto expected =
-                            requirement.kind == core::CheckedRequirementKind::
-                                                    CallbackAllocate
-                                ? "malloc"
-                                : "free";
-                        return actual &&
-                               actual->source == SummarySource::Builtin &&
-                               symbol == expected;
-                      });
-                });
-          });
-      if (!result->callbackInputs.empty() && !behavioral) {
-        // A behavioral contract is one sufficient interface. A known target
-        // with another protocol (e.g. a void(void*) writer) still uses its
-        // actual body and memory effects, rather than acquiring release
-        // semantics from its C prototype.
+      if (!result->callbackInputs.empty()) {
+        // A known target supplies its actual body and memory effects
+        // (RFC 0014), rather than release semantics from its C prototype.
         const bool known =
             !bindings.empty() &&
             std::ranges::any_of(bindings, [](const auto &binding) {
@@ -292,26 +237,12 @@ FunctionDataflow::resolveCall(const CallExpr &call) {
             });
         if (known) {
           callbackContexts[&call] = bindings;
-          if (options.checkContracts) {
-            // RFC 0029: both sets of actual entry premises belong to one
-            // body check. A callback-only preliminary run can otherwise
-            // populate nested cases for selectors the caller already knows.
-            callSummaries[&call] = result;
-            combinedInputs = captureCallContext(call, *result, state);
-            if (combinedInputs) {
-              combinedInputs->callbacks = bindings;
-              if (options.stats)
-                options.stats->add("combined_callback_case_requests");
-            }
-          }
-          if (!combinedInputs) {
-            if (const auto specialized =
-                    summaries.specialize(*direct, bindings, options, nullptr)) {
-              result = summaries.retainSummary(*specialized);
-            } else {
-              reportIncomplete("callback context unavailable or limit reached",
-                               call);
-            }
+          if (const auto specialized =
+                  summaries.specialize(*direct, bindings, options, nullptr)) {
+            result = summaries.retainSummary(*specialized);
+          } else {
+            reportIncomplete("callback context unavailable or limit reached",
+                             call);
           }
         }
       }
@@ -319,12 +250,11 @@ FunctionDataflow::resolveCall(const CallExpr &call) {
           direct->getDefinition() != nullptr ||
           (summaries.programDatabase() != nullptr &&
            summaries.programDatabase()->defines(direct->getName()));
-      if (!behavioral && (source == SummarySource::Inferred ||
-                          source == SummarySource::Program ||
-                          (source == SummarySource::Annotation && knownBody))) {
+      if (source == SummarySource::Inferred ||
+          source == SummarySource::Program ||
+          (source == SummarySource::Annotation && knownBody)) {
         summaries.registerCallable(*direct);
-        result = contextualize(callableSymbol(*direct), std::move(result),
-                               std::move(combinedInputs));
+        result = contextualize(callableSymbol(*direct), std::move(result));
       }
       if (!memoryContexts.contains(&call) && callbackContexts.contains(&call) &&
           recording() && emitDiagnostics && !inUnsafe &&
@@ -343,14 +273,6 @@ FunctionDataflow::resolveCall(const CallExpr &call) {
     if (const auto contract = summaries.lookupIndirect(call)) {
       result = summaries.retainSummary(*contract);
       source = contract->source;
-    } else if (const auto required =
-                   targets.functions.empty() && targets.unknown && !targets.null
-                       ? requiredCallback(call, state)
-                       : nullptr;
-               required) {
-      result = required;
-      // RFC 0029: this is a sufficient entry requirement, never a trusted
-      // target or a replacement for checking a known callback implementation.
     } else {
       bool returns = false;
       std::optional<SummarySource> singleSource;
@@ -396,10 +318,6 @@ FunctionDataflow::resolveCall(const CallExpr &call) {
         auto actual = target->source == SummarySource::Builtin
                           ? std::move(targetSummary)
                           : contextualize(symbol, std::move(targetSummary));
-        if (options.checkContracts && targets.functions.size() > 1)
-          checkedCallAlternatives[&call].emplace(
-              symbol,
-              ResolvedSummary{.summary = actual, .source = target->source});
         returns |= !actual->neverReturns;
         if (!result) {
           result = std::move(actual);
@@ -427,29 +345,6 @@ FunctionDataflow::resolveCall(const CallExpr &call) {
       }
       if (singleSource && !targets.unknown && !targets.null)
         source = *singleSource;
-      const bool separateChecking =
-          options.checkContracts &&
-          std::ranges::any_of(
-              checkedCallAlternatives[&call], [](const auto &entry) {
-                return entry.second.source == SummarySource::Builtin ||
-                       !entry.second.summary->checked.computed ||
-                       entry.second.summary->neverReturns;
-              });
-      if (!separateChecking)
-        checkedCallAlternatives.erase(&call);
-      if (separateChecking && result && targets.functions.size() > 1 &&
-          !targets.unknown && !targets.null &&
-          checkedCallAlternatives[&call].size() == targets.functions.size()) {
-        if (!joined)
-          joined = std::make_shared<core::FunctionSummary>(*result);
-        // Every actual target is checked at this call. The generic join must
-        // not preserve a user target's must-output across an unchecked builtin.
-        joined->checked.computed = true;
-        joined->checked.signature =
-            functionTypeKey(call.getCallee()->getType(), context);
-        joined->checked.establishes.clear();
-        result = joined;
-      }
     }
   }
   if (result && source == SummarySource::Builtin) {

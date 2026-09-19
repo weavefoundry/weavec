@@ -8,7 +8,6 @@
 
 #include "weavec/Frontend/Sidecar.h"
 
-#include "weavec/Core/CheckedIO.h"
 #include "weavec/Core/SummaryIO.h"
 
 #include "llvm/ADT/SmallVector.h"
@@ -67,19 +66,6 @@ std::string printUnitRecord(const UnitRecord &record) {
        << core::CallTargets::function(exports.globals.nameOf(id).str())
               .toString()
        << '\n';
-  if (!record.objectDigest.empty())
-    os << "checked-object " << record.objectDigest << '\n';
-  if (!record.commandDigest.empty())
-    os << "checked-command " << record.commandDigest << '\n';
-  if (!record.preprocessingDigest.empty())
-    os << "checked-preprocessing " << record.preprocessingDigest << '\n';
-  for (const auto &[path, digest] : exports.checkedInputs)
-    os << "checked-input " << llvm::toHex(path, true) << ' ' << digest << '\n';
-  if (!exports.checkedTarget.empty())
-    os << "checked-target " << exports.checkedTarget << '\n';
-  for (const auto &[name, contract] : exports.checkedDefinitions)
-    os << "checked-definition " << core::CallTargets::function(name).toString()
-       << ' ' << core::printCheckedContract(contract, names) << '\n';
   if (!exports.source.empty())
     os << "source " << exports.source << '\n';
   if (!record.workingDirectory.empty())
@@ -245,11 +231,6 @@ std::optional<UnitRecord> parseUnitRecord(llvm::StringRef text,
     const llvm::StringRef value = rawValue.trim();
     if ((memorySpecialized || specialized) && kind != "summary")
       return fail("specialization without summary");
-    const auto digestValid = [](llvm::StringRef digest) {
-      return digest.size() == 64 && std::ranges::all_of(digest, [](char c) {
-               return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
-             });
-    };
     if (kind == "global-interface" || kind == "object-interface") {
       const auto [encodedName, encodedType] = value.split(' ');
       std::string name;
@@ -280,40 +261,6 @@ std::optional<UnitRecord> parseUnitRecord(llvm::StringRef text,
           exports.globals.find(*name->functions.begin()))
         return fail("invalid or duplicate global name");
       (void)exports.globals.idFor(*name->functions.begin());
-    } else if (kind == "checked-object" || kind == "checked-command" ||
-               kind == "checked-preprocessing") {
-      auto *digest = &record.preprocessingDigest;
-      if (kind == "checked-object")
-        digest = &record.objectDigest;
-      else if (kind == "checked-command")
-        digest = &record.commandDigest;
-      if (!digest->empty() || !digestValid(value))
-        return fail("invalid checked digest");
-      *digest = value.str();
-    } else if (kind == "checked-input") {
-      const auto [path, digest] = value.split(' ');
-      if (path.empty() || path.size() > 131072 || path.size() % 2 != 0 ||
-          !std::ranges::all_of(path,
-                               [](char c) { return llvm::isHexDigit(c); }) ||
-          !digestValid(digest) || exports.checkedInputs.size() >= 65536 ||
-          !exports.checkedInputs.emplace(llvm::fromHex(path), digest.str())
-               .second)
-        return fail("invalid checked input");
-    } else if (kind == "checked-target") {
-      if (!exports.checkedTarget.empty() || value.empty())
-        return fail("invalid checked target");
-      exports.checkedTarget = value.str();
-    } else if (kind == "checked-definition") {
-      const auto [nameText, contractText] = value.split(' ');
-      const auto name = core::CallTargets::parse(nameText.str());
-      const auto contract =
-          core::parseCheckedContract(contractText.str(), resolve);
-      if (!name || !name->resolved() || name->functions.size() != 1 ||
-          !contract || exports.checkedDefinitions.size() >= 65536 ||
-          !exports.checkedDefinitions
-               .emplace(*name->functions.begin(), *contract)
-               .second)
-        return fail("invalid checked definition");
     } else if (kind == "accepts-memory-contexts") {
       if (!current || !value.empty())
         return fail("invalid memory interface");

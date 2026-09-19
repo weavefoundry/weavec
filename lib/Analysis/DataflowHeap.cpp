@@ -190,16 +190,6 @@ static void copyHeapCell(core::PlaceId source, core::PlaceId target,
                            ? std::optional(state.numericValues.at(source))
                            : std::nullopt;
   state.forget(target);
-  if (state.safety) {
-    if (state.safety->initialized.contains(source))
-      state.safety->initialized.insert(target);
-    if (state.safety->pointers.contains(source))
-      state.safety->pointers.insert(target);
-    // RFC 0023: copying a field cannot revive a consumed pointer value.
-    if (state.safety->invalidatedPointers.contains(source))
-      state.safety->invalidatedPointers.insert(target);
-    state.safety->copyMemory(source, target);
-  }
   if (numeric && !numeric->dependsOn(target))
     state.numericValues.insert_or_assign(target, *numeric);
   state.kinds[target] = state.kindOf(source);
@@ -1085,10 +1075,6 @@ void FunctionDataflow::applyHeapResult(core::PlaceId dest,
                                        core::AnalysisState &state) {
   if (materializingHeap)
     return;
-  const auto checkedResult = llvm::scope_exit([&] {
-    if (options.checkContracts)
-      applyCheckedResult(dest, call, state);
-  });
   applyArrayReallocation(dest, call, state);
   const auto effects = classifyCall(call, summaries);
   if (!effects)

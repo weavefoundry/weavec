@@ -14,7 +14,6 @@
 #include "weavec/Analysis/Summaries.h"
 
 #include "TestUtils.h"
-#include "weavec/Core/CheckedIO.h"
 
 #include "clang/AST/RecursiveASTVisitor.h"
 
@@ -56,48 +55,6 @@ static Parsed parse(const std::string &code) {
 }
 
 namespace {
-
-TEST(Summaries, BufferDiscoveryCachesMissesOnlyWithinItsASTLifetime) {
-  const auto parsed = parse(R"c(
-    struct buffer { char *data; unsigned long length, capacity; };
-    void buffer_cache_probe(struct buffer *b);
-  )c");
-  ASSERT_TRUE(parsed.ast);
-  const auto *function = parsed.fn("buffer_cache_probe");
-  ASSERT_NE(function, nullptr);
-  const auto *record =
-      function->getParamDecl(0)->getType()->getPointeeType()->getAsRecordDecl();
-  ASSERT_NE(record, nullptr);
-  SummaryStore store;
-  store.setContext(&parsed.ast->getASTContext());
-  unsigned discoveries = 0;
-  const auto absent = [&]() -> std::optional<core::BufferShape> {
-    ++discoveries;
-    return std::nullopt;
-  };
-  EXPECT_FALSE(store.bufferShape(*record, absent));
-  EXPECT_FALSE(store.bufferShape(*record, absent));
-  EXPECT_EQ(discoveries, 1U);
-  store.setContext(&parsed.ast->getASTContext());
-  EXPECT_FALSE(store.bufferShape(*record, absent));
-  EXPECT_EQ(discoveries, 1U);
-  // An AST can be destroyed and another allocated at the same address. End
-  // of context must retire cached misses as well as positive descriptors.
-  store.setContext(nullptr);
-  store.setContext(&parsed.ast->getASTContext());
-  const core::BufferShape shape{
-      .object = {.bytes = 24, .alignment = 8, .identity = "record:buffer"},
-      .data = {.name = "data", .offset = 0, .bytes = 8},
-      .length = {.name = "length", .offset = 8, .bytes = 8},
-      .capacity = {.name = "capacity", .offset = 16, .bytes = 8}};
-  const auto present = [&]() -> std::optional<core::BufferShape> {
-    ++discoveries;
-    return shape;
-  };
-  EXPECT_EQ(store.bufferShape(*record, present), shape);
-  EXPECT_EQ(store.bufferShape(*record, absent), shape);
-  EXPECT_EQ(discoveries, 2U);
-}
 
 TEST(Summaries, AnnotationsDeriveASummary) {
   const auto parsed = parse(R"c(
@@ -734,68 +691,6 @@ TEST(Builtins, FortifiedPrintfRowsMatchThePlainOnes) {
   ASSERT_NE(vsnprintfChk, nullptr);
   EXPECT_FALSE(vsnprintfChk->requiresParam(0));
   EXPECT_TRUE(vsnprintfChk->requiresParam(4));
-}
-
-TEST(Summaries, VerifiedRecursiveOutputsNeedPremisesAfterWidening) {
-  // RFC 0027: restoring a proved induction output cannot restore a premise
-  // discarded when the widened entry requirements reach their fixed bound.
-  const auto parsed = parse("struct node; void cleanup(struct node *p);");
-  ASSERT_TRUE(parsed.ast);
-  const auto *function = parsed.fn("cleanup");
-  ASSERT_NE(function, nullptr);
-  const core::ContainerShape shape{
-      .object = {.bytes = 8, .alignment = 8, .identity = "record:node"},
-      .link = {.name = "next", .offset = 0, .bytes = 8},
-      .initialized = {{.name = "next", .offset = 0, .bytes = 8}},
-      .payloads = {},
-      .family = "free",
-      .access = core::ContainerAccess::Release};
-  const auto input = SummaryPath::param(0);
-  for (const std::size_t count :
-       {core::MaxSafetyRequirements - 1, core::MaxSafetyRequirements}) {
-    SCOPED_TRACE(count);
-    SummaryStore store;
-    core::FunctionSummary previous;
-    previous.checked.computed = true;
-    for (std::size_t i = 0; i < count; ++i)
-      previous.checked.require(
-          {.kind = core::CheckedRequirementKind::Valid,
-           .path = input.deref().field("member" + std::to_string(i)),
-           .other = {},
-           .family = {}});
-    previous.addEffect(input, {.freed = true});
-    core::FunctionSummary verified;
-    verified.checked.computed = true;
-    verified.checked.require({.kind = core::CheckedRequirementKind::Container,
-                              .path = input,
-                              .other = {},
-                              .family = shape.encode()});
-    verified.checked.establish(
-        {.kind = core::CheckedRequirementKind::ContainerConsumed,
-         .path = input,
-         .other = input,
-         .family = shape.encode()});
-    verified.addEffect(input, {.written = true});
-    ASSERT_TRUE(verified.checked.complete());
-    ASSERT_EQ(core::parseCheckedContract(
-                  core::printCheckedContract(verified.checked, {}), {}),
-              verified.checked);
-    ASSERT_TRUE(store.setInferred(*function, previous));
-    ASSERT_TRUE(store.setInferred(*function, verified, true, true));
-    const auto *summary = store.inferredFor(*function);
-    ASSERT_NE(summary, nullptr);
-    const auto &contract = summary->checked;
-    const bool exhausted = count == core::MaxSafetyRequirements;
-    EXPECT_EQ(contract.limited, exhausted);
-    EXPECT_EQ(contract.complete(), !exhausted);
-    EXPECT_EQ(contract.requirements.size(), core::MaxSafetyRequirements);
-    EXPECT_EQ(contract.establishes.size(), exhausted ? 0U : 1U);
-    EXPECT_TRUE(summary->effects.at(input).freed);
-    EXPECT_TRUE(summary->effects.at(input).written);
-    EXPECT_EQ(core::parseCheckedContract(
-                  core::printCheckedContract(contract, {}), {}),
-              contract);
-  }
 }
 
 TEST(Summaries, RecursiveApproximationsRetainEarlierGuardedEffects) {

@@ -1,13 +1,7 @@
 weavec_add_unittest(
   WeaveCCoreTests
-  SOURCES SafetyTest.cpp
-          InductionTest.cpp
-          FormatTest.cpp
-          CallContextTest.cpp
+  SOURCES CallContextTest.cpp
           CallTargetsTest.cpp
-          ContainerTest.cpp
-          FootprintTest.cpp
-          BufferTest.cpp
           AliasRelationTest.cpp
           AnalysisStateTest.cpp
           ArrayTest.cpp
@@ -19,7 +13,6 @@ weavec_add_unittest(
           LifetimeTest.cpp
           MovesTest.cpp
           NullnessTest.cpp
-          ObjectTypeTest.cpp
           InterfaceTest.cpp
           NumericContractsTest.cpp
           OffsetTest.cpp
@@ -31,7 +24,6 @@ weavec_add_unittest(
           ScalarTest.cpp
           SpatialTest.cpp
           TraversalTest.cpp
-          UnionTest.cpp
           SummaryIOTest.cpp
           SummaryTest.cpp
   DEPS weavec::Core)

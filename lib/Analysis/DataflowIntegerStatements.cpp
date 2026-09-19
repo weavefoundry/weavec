@@ -51,38 +51,6 @@ void FunctionDataflow::handleIntegerCompound(const CompoundAssignOperator &expr,
     if (expression)
       expression = expression->converted(*storage);
   }
-  struct BufferUpdate {
-    core::PlaceId capacity;
-    core::PlaceId backing;
-    bool strict = false;
-    bool initialized = false;
-    std::int64_t unit = 1;
-  };
-  std::vector<BufferUpdate> bufferUpdates;
-  if (state.safety && expression)
-    for (const auto &[object, shape] : bufferObjects) {
-      const auto length = places.field(object, shape.length.name);
-      if (length != ref->place)
-        continue;
-      const auto capacity = places.field(object, shape.capacity.name);
-      const auto next = internIntegerExpression(*expression, state);
-      if (!checkedAtMost(next, core::Affine::ofPlace(capacity), state))
-        continue;
-      const auto data = places.field(object, shape.data.name);
-      const auto unit = static_cast<std::int64_t>(shape.elementBytes);
-      const auto end = next.times(unit);
-      const auto memory =
-          end ? checkedMemoryAt(data, {}, *end, state) : std::nullopt;
-      const auto through = next.shifted(1);
-      bufferUpdates.push_back(
-          {.capacity = capacity,
-           .backing = memory ? memory->storage : places.deref(data),
-           .strict =
-               through &&
-               checkedAtMost(*through, core::Affine::ofPlace(capacity), state),
-           .initialized = memory && checkedInitialized(*memory, state),
-           .unit = unit});
-    }
   // Hold the result while assignScalar snapshots every old operand under
   // its aliases. The temporary is site-bounded, like an ordinary call output.
   // Intern a stable result slot independently of valueSnapshots' old-value
@@ -113,21 +81,6 @@ void FunctionDataflow::handleIntegerCompound(const CompoundAssignOperator &expr,
     }
   }
   state.numericValues.erase(*outputs);
-  // The right hand side was evaluated before overwriting the logical count.
-  // Transfer only bounds and initialized ranges proved for that exact value;
-  // a wrapped or unchecked endpoint cannot supply either fact.
-  for (const auto &update : bufferUpdates) {
-    if (llvm::is_contained(cells, update.capacity))
-      continue;
-    state.relations.learn(ref->place,
-                          update.strict ? core::Relation::Less
-                                        : core::Relation::LessEqual,
-                          update.capacity);
-    if (update.initialized)
-      state.safety->initialize(
-          update.backing,
-          {.begin = {}, .end = core::Affine::ofPlace(ref->place, update.unit)});
-  }
 }
 
 void FunctionDataflow::applyIntegerRange(const Expr &expr,

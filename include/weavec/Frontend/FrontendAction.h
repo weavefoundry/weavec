@@ -18,7 +18,6 @@
 
 #include "weavec/Analysis/FunctionAnalysis.h"
 #include "weavec/Analysis/ProgramDatabase.h"
-#include "weavec/Frontend/CheckedReport.h"
 #include "weavec/Frontend/DiagnosticControl.h"
 
 #include "clang/AST/ASTConsumer.h"
@@ -38,9 +37,8 @@ namespace weavec::frontend {
 /// What one run of the consumer over a unit produced (RFC 0005).
 struct UnitResult {
   analysis::UnitExports exports;
-  /// RFC 0020: unfiltered diagnostics for faithful checkpoint replay.
-  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
-  std::vector<core::Diagnostic> diagnostics = {};
+  /// The callee summaries the unit's analysis read (RFC 0020), so a cyclic
+  /// component re-runs only the members an export change can affect.
   // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
   std::set<std::string> dependencies = {};
   /// The diagnostics shown for the unit in this run.
@@ -53,26 +51,17 @@ struct FrontendOptions;
 UnitResult analyzeTranslationUnit(clang::ASTContext &context,
                                   clang::DiagnosticsEngine &diagnostics,
                                   const FrontendOptions &options);
-UnitResult replayUnitResult(UnitResult result,
-                            clang::DiagnosticsEngine &diagnostics,
-                            const FrontendOptions &options);
 /// Runs against an ASTUnit with a fresh diagnostic consumer and counters.
 UnitResult analyzeRetainedUnit(clang::ASTUnit &ast,
-                               const FrontendOptions &options,
-                               const UnitResult *checkpoint = nullptr);
+                               const FrontendOptions &options);
 
 /// User-configurable behaviour of the frontend action.
 struct FrontendOptions {
   analysis::AnalysisOptions analysis;
   // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
-  std::string analysisCache = {};
-  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
   std::string analysisStatsPath = {};
-  std::shared_ptr<CheckedReport> checkedReport =
-      std::make_shared<CheckedReport>();
   /// Only analyse declarations in the main file (not in included headers).
   bool mainFileOnly = true;
-  bool bindCheckedInputs = false;
   /// `-W` overrides applied before a diagnostic reaches Clang.
   DiagnosticControl control;
 

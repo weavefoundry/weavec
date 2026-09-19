@@ -12,7 +12,6 @@
 #include "weavec/Core/SourceLocation.h"
 
 #include "clang/AST/Decl.h"
-#include "clang/Analysis/Analyses/PostOrderCFGView.h"
 #include "clang/Analysis/CFG.h"
 
 #include "llvm/ADT/BitVector.h"
@@ -28,7 +27,6 @@ namespace weavec::analysis {
 /// RFC 0020: all handles belong to one AST; no mutable flow/place state.
 struct FunctionPreparation {
   std::shared_ptr<clang::CFG> cfg;
-  std::unique_ptr<clang::PostOrderCFGView> order;
   core::LifetimeConstraints lifetimes;
   llvm::DenseMap<const clang::VarDecl *, core::LifetimeId> varLifetimes;
   std::map<std::uint32_t, core::SourceLocation> scopeEnds;

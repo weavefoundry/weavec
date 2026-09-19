@@ -74,8 +74,6 @@ public:
   share() const {
     return value ? value : emptyPublication();
   }
-  [[nodiscard]] static ExportedSummary
-  fromShared(std::shared_ptr<const core::FunctionSummary> summary);
 
   friend bool operator==(const ExportedSummary &left,
                          const ExportedSummary &right) {
@@ -170,12 +168,6 @@ struct UnitExports {
   core::InterfaceTypes objectInterfaces;
   /// The main source file, for messages and the dump.
   std::string source;
-  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
-  std::string checkedTarget = {};
-  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
-  std::map<std::string, std::string> checkedInputs = {};
-  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
-  std::map<std::string, core::CheckedContract> checkedDefinitions = {};
   std::map<std::string, std::set<core::CallContext>> memoryRequests;
   std::map<std::string, std::set<core::CallbackBindings>> callbackRequests;
   std::map<std::string, core::CallTargets> callbackGlobals;
@@ -312,12 +304,6 @@ public:
   /// Sorted names of every exported function, then every type key with
   /// candidates, in the RFC 0003 dump spelling (for `--dump-analysis`).
   void dump(llvm::raw_ostream &os) const;
-
-  /// RFC 0020: canonicalizable projection of imported facts consulted by a
-  /// component. Global facts and context requests are conservative shared
-  /// dependencies; function lookups include absence as well as presence.
-  [[nodiscard]] UnitExports
-  checkpointInputs(const std::set<std::string> &dependencies) const;
 
 private:
   using PublishedSummary = std::shared_ptr<const core::FunctionSummary>;

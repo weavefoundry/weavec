@@ -1,15 +1,11 @@
-// RFC 0020: ordinary AST retention is bounded. Checked selections and
-// persistent checkpoints keep their original AST/input binding lifetimes.
+// RFC 0020: whole-program analysis retains a bounded number of parsed units
+// and reparses on demand. An analysis dump keeps every unit it prints.
 // RUN: rm -rf %t
 // RUN: split-file %s %t
 // RUN: %weavec --whole-program --analysis-stats=%t/ordinary.json %t/main.c %t/f*.c --
 // RUN: FileCheck %s --check-prefix=EVICT < %t/ordinary.json
-// RUN: %weavec --whole-program --checked --analysis-stats=%t/checked.json %t/main.c %t/f*.c --
-// RUN: FileCheck %s --check-prefix=KEEP --implicit-check-not=unit_evictions < %t/checked.json
-// RUN: %weavec --whole-program --analysis-stats=%t/annotated.json %t/main.c %t/f*.c -- -DCHECKED_LEAF
-// RUN: FileCheck %s --check-prefix=KEEP --implicit-check-not=unit_evictions < %t/annotated.json
-// RUN: %weavec --whole-program --analysis-cache=%t/cache --analysis-stats=%t/cached.json %t/main.c %t/f*.c --
-// RUN: FileCheck %s --check-prefix=KEEP --implicit-check-not=unit_evictions < %t/cached.json
+// RUN: %weavec --whole-program --dump-analysis --analysis-stats=%t/dump.json %t/main.c %t/f*.c -- > %t/dump.txt
+// RUN: FileCheck %s --check-prefix=KEEP --implicit-check-not=unit_evictions < %t/dump.json
 // RUN: %weavec_cc -fweavec-analysis-stats=%t/compiler.json %t/main.c %t/f*.c -o %t/program
 // RUN: FileCheck %s --check-prefix=EVICT < %t/compiler.json
 
@@ -45,7 +41,4 @@ void f7(void);
 void f6(void) { f7(); }
 
 //--- f7.c
-#ifdef CHECKED_LEAF
-__attribute__((annotate("weavec.checked")))
-#endif
 void f7(void) {}

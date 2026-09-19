@@ -126,14 +126,6 @@ core::PlaceId PlaceBuilder::lengthPlace(core::PlaceId string) {
   return id;
 }
 
-std::optional<core::PlaceId>
-PlaceBuilder::stringOfLengthPlace(core::PlaceId place) const {
-  const auto it = lengthOwners.find(place.value);
-  if (it == lengthOwners.end())
-    return std::nullopt;
-  return it->second;
-}
-
 std::optional<core::PlaceId> PlaceBuilder::stringPlaceOf(const Expr &expr) {
   const Expr &e = *expr.IgnoreParens();
   if (const auto *cast = dyn_cast<CastExpr>(&e)) {
@@ -746,19 +738,6 @@ std::optional<std::int64_t> integerConstant(const Expr &expr,
   return mathematicalValue(result.Val.getInt());
 }
 
-std::optional<std::int64_t> integerConvertedTo(std::int64_t value,
-                                               QualType type,
-                                               const ASTContext &context) {
-  if (!type->isIntegerType())
-    return std::nullopt;
-  llvm::APSInt converted(
-      llvm::APInt(64, static_cast<std::uint64_t>(value), /*isSigned=*/true),
-      /*isUnsigned=*/false);
-  converted = converted.extOrTrunc(context.getIntWidth(type));
-  converted.setIsUnsigned(type->isUnsignedIntegerType());
-  return mathematicalValue(converted);
-}
-
 /// An integer type, looking through `_Atomic` (RFC 0010: a count may be an
 /// atomic integer).
 static bool isIntegerLike(QualType type) {
@@ -1160,9 +1139,6 @@ const Expr *PlaceBuilder::pointerOperandOfArithmetic(const Expr &expr) {
 
 std::optional<PlaceRef> PlaceBuilder::resolvePointerValue(const Expr &expr) {
   const Expr &stripped = stripTransparent(expr);
-  if (pointerResult)
-    if (const auto result = pointerResult(stripped))
-      return result;
   // `free(s - header)` releases the object `s` points into (RFC 0004,
   // *Pointer identity*): the argument names `s`'s object, at another offset.
   if (const Expr *pointer = pointerOperandOfArithmetic(stripped))
@@ -1968,7 +1944,7 @@ core::PointerOffset PlaceBuilder::arithmeticStepOf(const BinaryOperator &binary,
 std::optional<core::Affine>
 PlaceBuilder::affineFromPath(const core::PathAffine &affine,
                              const CallExpr &call) {
-  if (affine.expression || affine.quantity == core::AffineQuantity::Terminator)
+  if (affine.expression)
     return expressionFromPath ? expressionFromPath(affine, call) : std::nullopt;
   if (!affine.path)
     return core::Affine::ofConstant(affine.constant);

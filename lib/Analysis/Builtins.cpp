@@ -79,8 +79,8 @@ struct BuiltinSpec {
 
 // clang-format off
 static constexpr auto Specs = std::to_array<BuiltinSpec>({
-    // RFC 0024: scalar math has no pointer effects; checked semantics live in
-    // RuntimeModels. No floating result is an inferred integer-size proof.
+    // RFC 0024: scalar math has no pointer effects. No floating result is an
+    // inferred integer-size proof.
     {"fabs", ".", '-'}, {"fabsf", ".", '-'}, {"fabsl", ".", '-'},
     {"floor", ".", '-'}, {"floorf", ".", '-'}, {"floorl", ".", '-'},
     {"ceil", ".", '-'}, {"ceilf", ".", '-'}, {"ceill", ".", '-'},

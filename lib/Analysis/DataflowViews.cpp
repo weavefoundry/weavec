@@ -8,7 +8,6 @@
 
 #include "Dataflow.h"
 #include "weavec/Analysis/ProgramDatabase.h"
-#include "weavec/Core/ObjectType.h"
 
 using namespace clang;
 
@@ -19,27 +18,11 @@ namespace weavec::analysis {
 std::string
 FunctionDataflow::objectEvidenceView(core::PlaceId holder,
                                      const core::AnalysisState &state) {
-  if (state.moves.recordOf(holder) || state.raw.isRaw(holder) ||
-      (state.safety && state.safety->invalidatedPointers.contains(holder)))
+  if (state.moves.recordOf(holder) || state.raw.isRaw(holder))
     return {};
   if (const auto view = state.objectViews.find(holder);
       view != state.objectViews.end())
     return view->second;
-  if (!state.safety)
-    return {};
-  if (const auto *fact = state.safety->containers.find(holder))
-    return fact->shape.object.identity;
-  for (const auto &[data, fact] : state.safety->buffers.values) {
-    (void)data;
-    if (fact.object == holder && fact.initialized)
-      return fact.shape.object.identity;
-  }
-  if (const auto storage = state.safety->objects.find(holder);
-      storage != state.safety->objects.end())
-    if (const auto view = state.safety->objectTypes.find(storage->second);
-        view != state.safety->objectTypes.end())
-      if (const auto type = core::ObjectType::parse(view->second))
-        return type->identity;
   return {};
 }
 
@@ -111,22 +94,6 @@ bool FunctionDataflow::validateObjectPath(const core::SummaryPath &path,
           typedPath = false;
           if (const auto holder = evidenceHolder(prefix))
             actual = objectEvidenceView(*holder, *currentState);
-          // A nested constructor has no assignment holder yet. Its captured
-          // postconditions have already checked the constructor's premises.
-          if (actual.empty() && prefix.steps.size() == 1 && argument)
-            if (const auto *producer = dyn_cast<CallExpr>(argument))
-              if (const auto posts = containerPosts.find(producer);
-                  posts != containerPosts.end())
-                for (const auto &post : posts->second)
-                  if (post.path.isResult() && post.path.isRoot() &&
-                      (!post.on || post.on == core::Outcome::NonNull)) {
-                    const auto &view = post.fact.shape.object.identity;
-                    if (!actual.empty() && actual != view) {
-                      actual.clear();
-                      break;
-                    }
-                    actual = view;
-                  }
           if (actual == expected->second) {
             const auto adapter = summaries.interfaceType(actual);
             if (adapter.isNull())

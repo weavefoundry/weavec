@@ -59,7 +59,9 @@ namespace weavec::frontend {
 /// Version 14 (RFC 0018): safety contracts and checked build input bindings.
 /// Version 16 (RFC 0020): effective preprocessing identity for object binding.
 /// Version 19 (RFC 0023): inductive container contracts (summary format 18).
-inline constexpr unsigned SidecarFormatVersion = 27;
+/// Version 28 (RFC 0030): checked contracts, build input bindings and
+/// artifact digests removed with checked mode (summary format 27).
+inline constexpr unsigned SidecarFormatVersion = 28;
 
 /// RFC 0028: accumulated demand is independent of computed-context limits.
 inline constexpr std::size_t MaxSidecarContextRequests = 65536;
@@ -67,12 +69,6 @@ inline constexpr std::size_t MaxSidecarContextRequests = 65536;
 /// Everything the driver remembers about one compiled unit.
 struct UnitRecord {
   analysis::UnitExports exports;
-  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
-  std::string objectDigest = {};
-  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
-  std::string commandDigest = {};
-  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
-  std::string preprocessingDigest = {};
   /// The `-cc1` command line (without `-cc1`) that produced the unit, so the
   /// link step can analyse it again.
   std::vector<std::string> command;

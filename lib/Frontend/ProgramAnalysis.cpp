@@ -9,12 +9,8 @@
 #include "weavec/Frontend/ProgramAnalysis.h"
 
 #include "weavec/Core/Diagnostic.h"
-#include "weavec/Core/SafetyEntryPool.h"
 #include "weavec/Core/Scc.h"
-#include "weavec/Frontend/AnalysisCache.h"
 #include "weavec/Frontend/AnalysisStats.h"
-#include "weavec/Frontend/CheckedArtifacts.h"
-#include "weavec/Frontend/Sidecar.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/raw_ostream.h"
@@ -26,9 +22,6 @@
 #include <utility>
 
 namespace weavec::frontend {
-
-static std::string importedIdentity(const analysis::ProgramDatabase &database,
-                                    const std::set<std::string> &dependencies);
 
 ProgramAnalysis::ProgramAnalysis(FrontendOptions opts)
     : options(std::move(opts)) {}
@@ -75,35 +68,7 @@ ProgramAnalysis::runUnit(ProgramUnit &unit, const FrontendOptions &overrides) {
 
   std::optional<UnitResult> result;
   run.onResult = [&result](UnitResult r) { result = std::move(r); };
-  std::string passKey;
-  bool reused = false;
-  bool clean = false;
-  // The late sized-field reporting pass is itself settled work, but it sees
-  // a fuller database than the component's initial report. Preserve that
-  // separate dependency boundary instead of assuming the first run suffices.
-  if (run.onlyIds && run.database && !run.analysisCache.empty()) {
-    const auto input = unit.inputIdentity(run);
-    const auto config = analysisOptionsIdentity(run);
-    if (!input.empty() && !config.empty()) {
-      std::vector<std::string> parts{input, config, "confirmed-sized-fields"};
-      for (const auto id : *run.onlyIds)
-        parts.emplace_back(id);
-      passKey = checkedCommandDigest(parts);
-      auto checkpoint = readAnalysisCheckpoint(run.analysisCache, passKey,
-                                               run.analysis.stats);
-      if (checkpoint && checkpoint->units.size() == 1 &&
-          checkpoint->importedIdentity ==
-              importedIdentity(*run.database,
-                               checkpoint->units[0].dependencies)) {
-        clean = unit.replay(checkpoint->units[0], run);
-        reused = clean && result.has_value();
-        if (reused && run.analysis.stats)
-          run.analysis.stats->add("cache_hits");
-      }
-    }
-  }
-  if (!reused)
-    clean = unit.analyze(run);
+  const bool clean = unit.analyze(run);
   if (!result)
     return std::nullopt;
   touchRetainedUnit(unit);
@@ -111,14 +76,6 @@ ProgramAnalysis::runUnit(ProgramUnit &unit, const FrontendOptions &overrides) {
     // Clang itself reported errors (the unit does not compile). Count one
     // so the run is not reported clean.
     result->errors = 1;
-  }
-  if (!reused && clean && !passKey.empty()) {
-    AnalysisCheckpoint checkpoint;
-    checkpoint.units.push_back(*result);
-    checkpoint.importedIdentity =
-        importedIdentity(*run.database, result->dependencies);
-    (void)writeAnalysisCheckpoint(run.analysisCache, passKey, checkpoint,
-                                  run.analysis.stats);
   }
   for (auto &entry : units)
     if (entry.unit.get() == &unit)
@@ -220,15 +177,9 @@ void ProgramAnalysis::analyzeAcyclic(unsigned index, Result &result) {
 }
 
 void ProgramAnalysis::settle(Unit &unit, const analysis::ProgramDatabase &db,
-                             UnitResult run) const {
+                             UnitResult run) {
   unit.exports = std::move(run.exports);
   unit.reported.insert(run.reported.begin(), run.reported.end());
-  if (!options.analysisCache.empty()) {
-    // RFC 0020: retain one completed export. A checkpoint needs the replay
-    // metadata too, but must not duplicate every function and context here.
-    run.exports = analysis::UnitExports{};
-    unit.checkpoint = std::move(run);
-  }
   unit.sizedPairsSeen = db.sizedFieldFacts().confirmedPairs();
 }
 
@@ -276,10 +227,6 @@ void ProgramAnalysis::reportConfirmedSizedFields(Result &result) {
 
 void ProgramAnalysis::widen(analysis::UnitExports &exports,
                             const analysis::UnitExports &previous) {
-  for (auto &[name, contract] : exports.checkedDefinitions)
-    if (const auto before = previous.checkedDefinitions.find(name);
-        before != previous.checkedDefinitions.end())
-      contract.join(before->second);
   for (auto &[name, function] : exports.functions) {
     const auto before = previous.functions.find(name);
     if (before != previous.functions.end()) {
@@ -399,9 +346,6 @@ void ProgramAnalysis::analyzeCyclic(const std::vector<unsigned> &component,
   // edges restricted to the group (`imports` and `indirectTypes` against
   // the members' definitions); a member with no known dependency inside the
   // group runs once.
-  for (const auto &unit : units)
-    if (unit.exports && !unit.exports->checkedDefinitions.empty())
-      options.analysis.checkContracts = true;
   const std::vector<std::vector<unsigned>> adjacency = unitGraph();
   std::map<unsigned, unsigned> position;
   for (unsigned k = 0; k < component.size(); ++k)
@@ -516,112 +460,17 @@ void ProgramAnalysis::analyzeCyclic(const std::vector<unsigned> &component,
   }
 }
 
-static std::string importedIdentity(const analysis::ProgramDatabase &database,
-                                    const std::set<std::string> &dependencies) {
-  return checkpointExportsIdentity(database.checkpointInputs(dependencies));
-}
-
 void ProgramAnalysis::analyzeComponent(const std::vector<unsigned> &component,
                                        Result &result) {
   if (component.size() == 1 && !units[component.front()].exports)
     return;
-  if (component.size() > 1)
-    for (const auto &unit : units)
-      if (unit.exports && !unit.exports->checkedDefinitions.empty())
-        options.analysis.checkContracts = true;
-  std::string key;
-  std::optional<analysis::ProgramDatabase> imported;
-  if (!options.analysisCache.empty()) {
-    std::vector<std::string> inputs{analysisOptionsIdentity(options)};
-    bool eligible = !inputs.front().empty();
-    for (const auto index : component) {
-      auto input = units[index].unit->inputIdentity(options);
-      eligible &= !input.empty();
-      inputs.push_back(units[index].unit->name());
-      inputs.push_back(std::move(input));
-    }
-    if (eligible) {
-      key = checkedCommandDigest(inputs);
-      imported = settled;
-      auto checkpoint = readAnalysisCheckpoint(options.analysisCache, key,
-                                               options.analysis.stats);
-      if (checkpoint && checkpoint->units.size() == component.size()) {
-        std::set<std::string> dependencies;
-        for (const auto &unit : checkpoint->units)
-          dependencies.insert(unit.dependencies.begin(),
-                              unit.dependencies.end());
-        if (checkpoint->importedIdentity ==
-            importedIdentity(settled, dependencies)) {
-          bool replayed = true;
-          for (unsigned k = 0; k < component.size(); ++k) {
-            auto &unit = units[component[k]];
-            auto replay = options;
-            replay.database = &settled;
-            replay.alreadyReported = &unit.reported;
-            replay.boundaryOnce = &boundaryOnce;
-            replay.onResult = [&](UnitResult run) {
-              result.errors += run.errors;
-              result.warnings += run.warnings;
-              settle(unit, settled, std::move(run));
-              unit.sizedPairsSeen = checkpoint->sizedPairsSeen[k];
-            };
-            replayed &= unit.unit->replay(checkpoint->units[k], replay);
-          }
-          // Production units validate replay support before providing an input
-          // identity. A failed custom unit cannot publish a successful cache
-          // hit.
-          if (replayed) {
-            for (const auto index : component)
-              settled.add(*units[index].exports);
-            if (options.analysis.stats)
-              options.analysis.stats->add("cache_hits", component.size());
-            return;
-          }
-        } else if (options.analysis.stats) {
-          options.analysis.stats->add("cache_dependency_misses",
-                                      component.size());
-        }
-      }
-    }
-    if (options.analysis.stats)
-      options.analysis.stats->add("cache_misses", component.size());
-  }
-  const auto failures = result.failed.size();
-  const auto unsettled = result.nonConverging.size();
   if (component.size() == 1)
     analyzeAcyclic(component.front(), result);
   else
     analyzeCyclic(component, result);
-  if (key.empty() || result.failed.size() != failures ||
-      result.nonConverging.size() != unsettled)
-    return;
-  AnalysisCheckpoint checkpoint;
-  std::set<std::string> dependencies;
-  // Validate the complete component before transferring any exports. No
-  // analyzer runs during publication; restore them even if the write fails.
-  for (const auto index : component) {
-    if (!units[index].checkpoint || !units[index].exports)
-      return;
-  }
-  checkpoint.units.reserve(component.size());
-  for (const auto index : component) {
-    auto &unit = units[index];
-    checkpoint.units.push_back(std::move(*unit.checkpoint));
-    unit.checkpoint.reset();
-    checkpoint.units.back().exports = std::move(*unit.exports);
-    checkpoint.sizedPairsSeen.push_back(unit.sizedPairsSeen);
-    checkpoint.units.back().dependencies = unit.dependencies;
-    dependencies.insert(unit.dependencies.begin(), unit.dependencies.end());
-  }
-  checkpoint.importedIdentity = importedIdentity(*imported, dependencies);
-  (void)writeAnalysisCheckpoint(options.analysisCache, key, checkpoint,
-                                options.analysis.stats);
-  for (unsigned k = 0; k < component.size(); ++k)
-    units[component[k]].exports = std::move(checkpoint.units[k].exports);
 }
 
 ProgramAnalysis::Result ProgramAnalysis::run() {
-  core::SafetyEntryPool explanations(options.analysis.stats);
   Result result;
   settled.clear();
   boundaryOnce.clear();
@@ -644,19 +493,9 @@ ProgramAnalysis::Result ProgramAnalysis::run() {
     }
   }
 
-  // RFC 0020: discover every annotation before allowing ordinary eviction.
-  // Bound neither checked input bindings nor a pending persistent cache key.
-  const auto checkedExports = [](const auto &exports) {
-    return !exports.checkedDefinitions.empty();
-  };
-  boundedRetention =
-      options.analysisCache.empty() && !options.analysis.checkContracts &&
-      !options.analysis.checked && options.analysis.checkedFunctions.empty() &&
-      !options.bindCheckedInputs && options.analysis.dumpStream == nullptr &&
-      std::ranges::none_of(fixed, checkedExports) &&
-      std::ranges::none_of(units, [&](const auto &unit) {
-        return unit.exports && checkedExports(*unit.exports);
-      });
+  // RFC 0020: after discovery, keep one retained AST at a time unless an
+  // analysis dump needs them all.
+  boundedRetention = options.analysis.dumpStream == nullptr;
   // Include ASTs retained by a previous invocation of this ProgramAnalysis.
   retainedUnits.clear();
   for (const auto &unit : units)
@@ -668,9 +507,6 @@ ProgramAnalysis::Result ProgramAnalysis::run() {
     analyzeComponent(component, result);
   }
   reportConfirmedSizedFields(result);
-  if (!result.failed.empty() || !result.nonConverging.empty())
-    options.checkedReport->invalidate(
-        "whole-program inputs did not produce settled checked contracts");
 
   if (llvm::raw_ostream *dump = options.analysis.dumpStream)
     settled.dump(*dump);
@@ -688,8 +524,6 @@ bool CompilationDatabaseUnit::run(
 bool CompilationDatabaseUnit::analyze(const FrontendOptions &options) {
   if (!attemptedParse) {
     attemptedParse = true;
-    if (!options.analysisCache.empty())
-      identity = preprocessingInput(options);
     core::AnalysisTimer timer(options.analysis.stats, "parsing");
     clang::tooling::ClangTool tool(compilations, {source});
     for (const auto &adjuster : adjusters)
@@ -703,12 +537,6 @@ bool CompilationDatabaseUnit::analyze(const FrontendOptions &options) {
     multipleCommands = asts.size() != 1;
     if (multipleCommands)
       asts.clear();
-    if (identity && !identity->empty() &&
-        (multipleCommands || preprocessingInput(options) != *identity)) {
-      identity->clear();
-      if (options.analysis.stats)
-        options.analysis.stats->add("cache_input_changes");
-    }
   } else if (options.analysis.stats) {
     options.analysis.stats->add("unit_reuses");
   }
@@ -725,48 +553,6 @@ bool CompilationDatabaseUnit::analyze(const FrontendOptions &options) {
   return true;
 }
 
-std::string
-CompilationDatabaseUnit::inputIdentity(const FrontendOptions &options) {
-  if (!attemptedParse) {
-    auto discovery = options;
-    discovery.discoverOnly = true;
-    discovery.onResult = {};
-    if (!analyze(discovery))
-      return {};
-  }
-  if (asts.size() != 1)
-    return {};
-  // Never attach current filesystem bytes to an AST parsed earlier.
-  return identity.value_or("");
-}
-
-std::string
-CompilationDatabaseUnit::preprocessingInput(const FrontendOptions &options) {
-  core::AnalysisTimer timer(options.analysis.stats, "cache_validation");
-  if (options.analysis.stats)
-    options.analysis.stats->add("cache_input_validations");
-  std::string observed;
-  auto factory = createInputIdentityFactory(observed);
-  clang::tooling::ClangTool tool(compilations, {source});
-  for (const auto &adjuster : adjusters)
-    tool.appendArgumentsAdjuster(adjuster);
-  clang::IgnoringDiagConsumer ignored;
-  tool.setDiagnosticConsumer(&ignored);
-  if (tool.run(factory.get()) != 0)
-    observed.clear();
-  return observed;
-}
-
-bool CompilationDatabaseUnit::replay(const UnitResult &result,
-                                     const FrontendOptions &options) {
-  if (asts.size() != 1)
-    return false;
-  auto replayed = analyzeRetainedUnit(*asts.front(), options, &result);
-  if (options.onResult)
-    options.onResult(std::move(replayed));
-  return true;
-}
-
 bool CompilationDatabaseUnit::releaseAST() {
   if (asts.empty())
     return false;
@@ -776,7 +562,6 @@ bool CompilationDatabaseUnit::releaseAST() {
   decltype(asts){}.swap(asts);
   attemptedParse = false;
   multipleCommands = false;
-  identity.reset();
   return true;
 }
 

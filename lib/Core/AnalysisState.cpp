@@ -105,27 +105,6 @@ std::vector<PlaceId> PendingOutcome::nonNullInAll() const {
   return inAllClasses(consumedBy, nonNullOn);
 }
 
-std::vector<std::pair<PlaceId, InitializedRange>>
-PendingOutcome::initializedInAll() const {
-  std::vector<std::pair<PlaceId, InitializedRange>> result;
-  bool first = true;
-  for (const auto &[outcome, consumed] : consumedBy) {
-    (void)consumed;
-    const auto found = initializedOn.find(outcome);
-    if (found == initializedOn.end())
-      return {};
-    if (first) {
-      result = found->second;
-      first = false;
-    } else {
-      std::erase_if(result, [&](const auto &fact) {
-        return std::ranges::find(found->second, fact) == found->second.end();
-      });
-    }
-  }
-  return result;
-}
-
 std::vector<std::pair<PlaceId, ValueFact>> PendingOutcome::factsInAll() const {
   std::map<PlaceId, ValueFact> joined;
   bool first = true;
@@ -163,17 +142,6 @@ bool PendingOutcome::unite(const PendingOutcome &other) {
   if (location != other.location || callee != other.callee ||
       returned != other.returned || unheldOnly != other.unheldOnly)
     return false;
-  for (const auto &[outcome, consumed] : consumedBy) {
-    (void)consumed;
-    if (!other.consumedBy.contains(outcome))
-      continue;
-    const auto ours = initializedOn.find(outcome);
-    const auto theirs = other.initializedOn.find(outcome);
-    if ((ours == initializedOn.end()) !=
-            (theirs == other.initializedOn.end()) ||
-        (ours != initializedOn.end() && ours->second != theirs->second))
-      return false;
-  }
   // A class both sides kept was narrowed from the same recording: it must
   // say the same on both.
   const auto agrees = [](const auto &mine, const auto &theirs) {
@@ -195,7 +163,6 @@ bool PendingOutcome::unite(const PendingOutcome &other) {
   merge(nullOn, other.nullOn);
   merge(nonNullOn, other.nonNullOn);
   merge(factOn, other.factOn);
-  merge(initializedOn, other.initializedOn);
   // A store one side retracted (on none of its classes) is back with the
   // classes it happens on.
   for (const PendingStore &store : other.stores) {
@@ -239,8 +206,6 @@ bool PendingOutcome::settled() const {
 
 bool AnalysisState::join(const AnalysisState &other, const PlaceTable *places,
                          bool widenScalars) {
-  const auto leftSafetyGuard = safety ? pathGuard() : PlaceGuard{};
-  const auto rightSafetyGuard = other.safety ? other.pathGuard() : PlaceGuard{};
   const auto isNull = [](PlaceId place, const AnalysisState &state) {
     return state.resources.isNull(place) ||
            state.nulls.stateOf(place) == Nullness::Null;
@@ -302,8 +267,7 @@ bool AnalysisState::join(const AnalysisState &other, const PlaceTable *places,
                return found == other.numericValues.end() ||
                       found->second != entry.second;
              }) != 0;
-  changed |=
-      relations.join(other.relations, safety && other.safety, widenScalars);
+  changed |= relations.join(other.relations);
   changed |= pointerFacts.join(other.pointerFacts);
   for (auto &[key, range] : filledArrayRanges) {
     const auto found = other.filledArrayRanges.find(key);
@@ -542,15 +506,6 @@ bool AnalysisState::join(const AnalysisState &other, const PlaceTable *places,
       changed = true;
     }
   }
-  if (safety && other.safety) {
-    changed |= safety->join(*other.safety, leftSafetyGuard, rightSafetyGuard);
-  } else if (safety) {
-    changed |= safety->join(SafetyState{});
-  } else if (other.safety) {
-    safety.emplace();
-    safety->join(*other.safety);
-    changed = true;
-  }
   return changed;
 }
 
@@ -641,18 +596,6 @@ static void dropOtherGuardsOn(AnalysisState &state, PlaceId place) {
                     [place](const auto &fact) { return fact.first == place; });
     }
   }
-  if (state.safety)
-    for (auto &[result, outcome] : state.pending) {
-      (void)result;
-      for (auto &[cls, facts] : outcome.initializedOn) {
-        (void)cls;
-        std::erase_if(facts, [&](const auto &fact) {
-          return fact.first == place || fact.second.begin.place == place ||
-                 fact.second.end.place == place ||
-                 fact.second.when.dependsOn(place);
-        });
-      }
-    }
   state.numericConditions.drop(place);
   std::erase_if(state.numericValues, [place](const auto &entry) {
     return entry.first == place || entry.second.dependsOn(place);
@@ -664,10 +607,6 @@ static void dropOtherGuardsOn(AnalysisState &state, PlaceId place) {
 }
 
 void AnalysisState::dropGuardsOn(PlaceId place) {
-  // RFC 0018: a write cannot reinterpret an earlier initialized interval
-  // using the new value of its index or count (including callee outputs).
-  if (safety)
-    safety->forgetDependency(place);
   dropOtherGuardsOn(*this, place);
 }
 
@@ -678,11 +617,6 @@ void AnalysisState::dropGuardsOn(std::vector<PlaceId> places) {
     dropGuardsOn(places.front());
     return;
   }
-  // Keep checked invalidation in its original order. The other guarded
-  // domains do not consume safety facts (RFCs 0020 and 0027).
-  if (safety)
-    for (const auto place : places)
-      safety->forgetDependency(place);
   std::ranges::sort(places);
   const auto matches = [&](PlaceId place) {
     return std::ranges::binary_search(places, place);
@@ -694,17 +628,6 @@ void AnalysisState::dropGuardsOn(std::vector<PlaceId> places) {
       std::erase_if(facts,
                     [&](const auto &fact) { return matches(fact.first); });
     }
-    if (safety)
-      for (auto &[cls, facts] : outcome.initializedOn) {
-        (void)cls;
-        std::erase_if(facts, [&](const auto &fact) {
-          return matches(fact.first) ||
-                 (fact.second.begin.place &&
-                  matches(*fact.second.begin.place)) ||
-                 (fact.second.end.place && matches(*fact.second.end.place)) ||
-                 fact.second.when.dependsOnIf(matches);
-        });
-      }
   }
   numericConditions.dropIf(matches);
   std::erase_if(numericValues, [&](const auto &entry) {
@@ -716,25 +639,7 @@ void AnalysisState::dropGuardsOn(std::vector<PlaceId> places) {
   nulls.dropGuardsIf(matches);
 }
 
-void AnalysisState::forgetZeroedMemory() {
-  if (!safety)
-    return;
-  safety->forgetZeros();
-  for (auto &[result, outcome] : pending) {
-    (void)result;
-    for (auto &[cls, facts] : outcome.initializedOn) {
-      (void)cls;
-      std::erase_if(facts, [](const auto &fact) {
-        return fact.second.zeroed || fact.second.numericText ||
-               fact.second.terminatedWithin;
-      });
-    }
-  }
-}
-
 void AnalysisState::forget(PlaceId place) {
-  if (safety)
-    safety->forget(place);
   numericWrites.insert(place);
   moves.reinitialize(place);
   aliases.separate(place);
@@ -760,7 +665,6 @@ void AnalysisState::forget(PlaceId place) {
   definiteHeapWrites.erase(place);
   heapLocalObjects.erase(place);
   incompleteHeap.erase(place);
-  // RFC 0020: safety->forget above already invalidated safety dependencies.
   // Pending outputs and the remaining guarded domains still need a scan.
   dropOtherGuardsOn(*this, place);
 }

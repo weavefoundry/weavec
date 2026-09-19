@@ -105,44 +105,6 @@ FunctionDataflow::integerExpressionOf(const Expr &expr,
       trait->getTypeOfArgument()->isVariablyModifiedType())
     return variableArraySize(trait->getTypeOfArgument(), state);
   if (const auto *binary = dyn_cast<BinaryOperator>(e)) {
-    if (const auto range = checkedPointerRange(*binary, state)) {
-      if (const auto pointer = range->constant())
-        return NumericExpression::constant(*pointer);
-      if (binary->getOpcode() == BO_Sub && type->isSigned &&
-          binary->getLHS()->getType()->getPointeeType()->isCharType()) {
-        const auto left = checkedMemory(*binary->getLHS(), {}, {}, state);
-        const auto right = checkedMemory(*binary->getRHS(), {}, {}, state);
-        const auto maximum =
-            core::IntegerRange::full(*type).maximum()->signedValue();
-        const auto coordinate =
-            [&](const core::Affine &value) -> std::optional<NumericExpression> {
-          const auto offset = foldAffine(value, state);
-          if (!maximum || offset.scale != 1 ||
-              !checkedAtMost({}, offset, state) ||
-              !checkedAtMost(offset, core::Affine::ofConstant(*maximum), state))
-            return std::nullopt;
-          if (!offset.place)
-            return NumericExpression::constant(core::IntegerValue::ofBits(
-                *type, static_cast<std::uint64_t>(offset.constant)));
-          const auto input = core::Affine::ofPlace(*offset.place);
-          if (!checkedAtMost({}, input, state) ||
-              !checkedAtMost(input, core::Affine::ofConstant(*maximum), state))
-            return std::nullopt;
-          auto result = NumericExpression::input(*offset.place, *type);
-          if (offset.constant == 0)
-            return result;
-          return NumericExpression::operation(
-              core::IntegerOp::Add, result,
-              NumericExpression::constant(core::IntegerValue::ofBits(
-                  *type, static_cast<std::uint64_t>(offset.constant))));
-        };
-        const auto lhs = left ? coordinate(left->begin) : std::nullopt;
-        const auto rhs = right ? coordinate(right->begin) : std::nullopt;
-        if (lhs && rhs)
-          return NumericExpression::operation(core::IntegerOp::Subtract, *lhs,
-                                              *rhs);
-      }
-    }
     if (binary->getOpcode() == BO_Assign || binary->getOpcode() == BO_Comma)
       return child(*binary->getRHS());
     if (binary->isCompoundAssignmentOp())
@@ -318,33 +280,9 @@ FunctionDataflow::integerAffineOf(const Expr &expr,
         return core::Affine::ofConstant(*exact);
   }
   const Expr *e = expr.IgnoreParens();
-  if (options.checkContracts)
-    if (const auto *adjust = dyn_cast<UnaryOperator>(e);
-        adjust && adjust->isIncrementDecrementOp()) {
-      if (adjust->isPostfix()) {
-        if (const auto saved = integerStatementResults.find(adjust);
-            saved != integerStatementResults.end() && saved->second)
-          return core::Affine::ofPlace(*saved->second);
-      } else if (const auto place = builder.resolve(*adjust->getSubExpr());
-                 place && place->element.isWhole()) {
-        return core::Affine::ofPlace(place->place);
-      }
-    }
   if (const auto *cast = dyn_cast<CastExpr>(e);
       cast && preservesInteger(*cast, state))
     return integerAffineOf(*cast->getSubExpr(), state);
-  if (state.safety)
-    if (const auto *conditional = dyn_cast<AbstractConditionalOperator>(e);
-        conditional && !conditional->HasSideEffects(context)) {
-      // A selected arm or a recognized minimum/maximum keeps its relation to
-      // the operands; the evaluation-site union is only the weaker fallback.
-      if (const auto expression = integerExpressionOf(*conditional, state))
-        return internIntegerExpression(*expression, state);
-      if (const auto saved = integerStatementResults.find(conditional);
-          saved != integerStatementResults.end() && saved->second &&
-          state.scalars.factOf(*saved->second))
-        return core::Affine::ofPlace(*saved->second);
-    }
   if (PlaceBuilder::isPlaceExpr(*e))
     if (const auto place = builder.resolve(*e);
         place && numericEntryValues.contains(place->place))
@@ -374,8 +312,7 @@ FunctionDataflow::instantiateIntegerExpression(const core::PathAffine &value,
           return numericInput(call, path, type, state);
         });
   } else if (value.path && value.path->isParam() && value.path->isRoot() &&
-             value.path->index < call.getNumArgs() &&
-             value.quantity == core::AffineQuantity::Integer) {
+             value.path->index < call.getNumArgs()) {
     if (const auto type =
             integerTypeOf(call.getArg(value.path->index)->getType(), context))
       substituted = numericInput(call, *value.path, *type, state);

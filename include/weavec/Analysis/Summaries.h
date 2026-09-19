@@ -22,8 +22,6 @@
 #include "weavec/Analysis/Annotations.h"
 #include "weavec/Analysis/ProgramDatabase.h"
 #include "weavec/Core/AnalysisStats.h"
-#include "weavec/Core/Buffer.h"
-#include "weavec/Core/Container.h"
 #include "weavec/Core/Diagnostic.h"
 #include "weavec/Core/Summary.h"
 
@@ -245,38 +243,9 @@ public:
   [[nodiscard]] core::CallTargets
   targetsForGlobal(const core::SummaryPath &path) const;
   std::set<const clang::FunctionDecl *> incompleteFunctions;
-  /// Immutable call-graph component identities used only for role nomination.
-  /// Membership supplies no induction hypothesis or completed contract.
-  std::map<const clang::FunctionDecl *, unsigned> recursiveComponents;
-  std::set<const clang::FunctionDecl *> recursiveFunctions;
-  /// RFC 0029: provisional recursive effects do not nominate scalar cases.
-  bool checkingRecursiveApproximation = false;
-  /// RFC 0029: the existing final pass rechecks ordinary value outcomes
-  /// against converged may-effects; this supplies no checked memory output.
+  /// RFC 0029: the final pass of a settled recursive component rechecks
+  /// ordinary value outcomes against its converged may-effects.
   bool refreshingRecursiveValueOutcomes = false;
-  /// RFC 0029: private hypotheses are visible only while validating their
-  /// group. Completed groups contain immutable same-TU bodies, never imports.
-  struct RecursiveContractGroup {
-    std::set<const clang::FunctionDecl *> members;
-    bool releases = true;
-    bool constructs = false;
-    bool extendsHead = false;
-    bool writes = false;
-    bool mutableReader = false;
-    const clang::FieldDecl *readerData = nullptr;
-    const clang::FieldDecl *readerCount = nullptr;
-  };
-  RecursiveContractGroup activeRecursiveContracts;
-  std::map<const clang::FunctionDecl *, RecursiveContractGroup>
-      verifiedRecursiveContracts;
-  std::set<const clang::FunctionDecl *> failedRecursiveProgress;
-  // Value distinguishes failed writer outputs from construction outputs.
-  std::map<const clang::FunctionDecl *, bool> failedRecursiveOutputs;
-  [[nodiscard]] const RecursiveContractGroup *
-  recursiveContractGroup(const clang::FunctionDecl &caller) const;
-  [[nodiscard]] bool
-  recursiveContractPeer(const clang::FunctionDecl &caller,
-                        const clang::FunctionDecl &callee) const;
   [[nodiscard]] core::CallTargets staticTargets(const clang::Expr &expr,
                                                 unsigned depth = 0);
   [[nodiscard]] const std::map<std::string, core::CallTargets> &
@@ -319,34 +288,12 @@ public:
   /// previous one, or joining the previous approximation when `widen` is
   /// requested by a recursive component (RFC 0017). Returns whether changed.
   bool setInferred(const clang::FunctionDecl &function,
-                   core::FunctionSummary summary, bool widen = false,
-                   bool verifiedInduction = false);
+                   core::FunctionSummary summary, bool widen = false);
 
   /// The current inferred summary, or null. This raw observer lasts until
   /// that function's next setInferred; resolved calls retain their version.
   [[nodiscard]] const core::FunctionSummary *
   inferredFor(const clang::FunctionDecl &function) const;
-
-  /// RFC 0026: cache only immutable descriptor discovery, including misses.
-  /// No flow facts or proof outcomes are shared through this cache.
-  [[nodiscard]] std::optional<core::BufferShape> bufferShape(
-      const clang::RecordDecl &record,
-      const std::function<std::optional<core::BufferShape>()> &discover);
-  /// RFC 0027: immutable topology discovery, never a flow-sensitive proof.
-  [[nodiscard]] std::vector<const clang::FieldDecl *>
-  recursiveLinks(const clang::RecordDecl &record);
-  struct ContainerFields {
-    std::vector<const clang::FieldDecl *> payloads;
-    std::map<std::string, core::ContainerCondition> ownership;
-  };
-  /// RFC 0029: nominations retain imported summary dependencies.
-  [[nodiscard]] ContainerFields
-  containerFields(const clang::RecordDecl &record);
-  [[nodiscard]] std::map<std::string, core::ContainerCondition>
-  containerOwnership(
-      const clang::RecordDecl &record,
-      const std::function<std::map<std::string, core::ContainerCondition>()>
-          &discover);
 
   /// Immutable Clang record layouts, cached for this AST's lifetime.
   [[nodiscard]] std::string_view objectView(clang::QualType type);
@@ -381,11 +328,6 @@ public:
       objectViewCache.clear();
       objectInterfaces.clear();
       interfaceAdapters.clear();
-      bufferShapeCache.clear();
-      recursiveLinkCache.clear();
-      importedRecursiveLinkCache.clear();
-      containerPayloadCache.clear();
-      containerOwnershipCache.clear();
     }
     context = unitContext;
   }
@@ -503,27 +445,6 @@ private:
   std::shared_ptr<const char> interfaceGeneration;
   const clang::ASTContext *context = nullptr;
   std::map<const clang::RecordDecl *, std::string> objectViewCache;
-  std::map<const clang::RecordDecl *, std::optional<core::BufferShape>>
-      bufferShapeCache;
-  std::map<const clang::RecordDecl *, std::vector<const clang::FieldDecl *>>
-      recursiveLinkCache;
-  struct ImportedRecursiveLinks {
-    std::vector<const clang::FieldDecl *> fields;
-    Dependencies dependencies;
-  };
-  std::shared_ptr<const char> recursiveLinkGeneration;
-  std::map<const clang::RecordDecl *, ImportedRecursiveLinks>
-      importedRecursiveLinkCache;
-  std::shared_ptr<const char> containerPayloadGeneration;
-  struct ImportedContainerFields {
-    ContainerFields fields;
-    Dependencies dependencies;
-  };
-  std::map<const clang::RecordDecl *, ImportedContainerFields>
-      containerPayloadCache;
-  std::map<const clang::RecordDecl *,
-           std::map<std::string, core::ContainerCondition>>
-      containerOwnershipCache;
   std::set<std::string> knownCounts;
   SizedFieldFacts sizedFields;
   std::set<std::string> sizedLoads;

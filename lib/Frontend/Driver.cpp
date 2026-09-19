@@ -9,9 +9,7 @@
 #include "weavec/Frontend/Driver.h"
 
 #include "weavec/Config/Version.h"
-#include "weavec/Frontend/AnalysisCache.h"
 #include "weavec/Frontend/AnalysisStats.h"
-#include "weavec/Frontend/CheckedArtifacts.h"
 #include "weavec/Frontend/ProgramAnalysis.h"
 #include "weavec/Frontend/ResourceDir.h"
 #include "weavec/Frontend/Sidecar.h"
@@ -64,35 +62,15 @@ namespace weavec::frontend {
 //===----------------------------------------------------------------------===//
 
 bool DriverOptions::consume(llvm::StringRef arg, std::string &error) {
-  if (arg.starts_with("-fweavec-analysis-stats=") ||
-      arg.starts_with("-fweavec-analysis-cache=") ||
-      arg.starts_with("-fweavec-checked-report-format=")) {
+  if (arg.starts_with("-fweavec-analysis-stats=")) {
     const auto [flag, argument] = arg.split('=');
     if (argument.empty()) {
       error = "missing value for '" + flag.str() + "'";
-    } else if (flag.ends_with("-stats")) {
+    } else {
       analysisStatsPath = argument.str();
       if (!stats)
         stats = std::make_shared<core::AnalysisStats>();
-    } else if (flag.ends_with("-cache")) {
-      analysisCache = argument.str();
-    } else if (argument != "compact" && argument != "expanded") {
-      error = "checked report format must be expanded or compact";
-    } else {
-      checkedReport->compact = argument == "compact";
     }
-    spellings.push_back(arg.str());
-    return true;
-  }
-  if (arg.starts_with("-fweavec-checked-function=") ||
-      arg.starts_with("-fweavec-checked-report=")) {
-    const auto [flag, argument] = arg.split('=');
-    if (argument.empty())
-      error = "missing value for '" + flag.str() + "'";
-    else if (flag.ends_with("-function"))
-      checkedFunctions.insert(argument.str());
-    else
-      checkedReportPath = argument.str();
     spellings.push_back(arg.str());
     return true;
   }
@@ -112,9 +90,8 @@ bool DriverOptions::consume(llvm::StringRef arg, std::string &error) {
     llvm::StringLiteral name;
     bool DriverOptions::*member;
   };
-  static constexpr std::array<Flag, 8> Flags{{
+  static constexpr std::array<Flag, 7> Flags{{
       {.name = "weavec", .member = &DriverOptions::enabled},
-      {.name = "weavec-checked", .member = &DriverOptions::checked},
       {.name = "weavec-strict", .member = &DriverOptions::strict},
       {.name = "weavec-exclusive-borrows",
        .member = &DriverOptions::exclusiveBorrows},
@@ -142,14 +119,7 @@ FrontendOptions DriverOptions::toFrontendOptions() const {
   FrontendOptions options;
   options.analysis.stats = stats.get();
   options.analysisStatsPath = analysisStatsPath;
-  options.analysisCache =
-      dumpAnalysis || reportUnannotated ? std::string{} : analysisCache;
   options.analysis.strictExterns = strict;
-  options.analysis.checked = checked;
-  options.analysis.checkedFunctions = checkedFunctions;
-  options.analysis.checkContracts =
-      checked || !checkedFunctions.empty() || !checkedReportPath.empty();
-  options.checkedReport = checkedReport;
   options.analysis.exclusiveBorrows = exclusiveBorrows;
   options.analysis.reportUnannotated = reportUnannotated;
   options.analysis.dumpStream = dumpAnalysis ? &llvm::outs() : nullptr;
@@ -213,30 +183,10 @@ static std::string currentDirectory() {
   return cwd.str().str();
 }
 
-static std::string
-preprocessingIdentity(const clang::CompilerInvocation &source,
-                      core::AnalysisStats *stats) {
-  if (!supportsInputIdentity(source))
-    return {};
-  core::AnalysisTimer timer(stats, "preprocessing");
-  if (stats)
-    stats->add("input_preprocesses");
-  auto invocation = std::make_shared<clang::CompilerInvocation>(source);
-  invocation->getFrontendOpts().OutputFile.clear();
-  clang::CompilerInstance compiler(std::move(invocation));
-  compiler.createDiagnostics(new clang::IgnoringDiagConsumer());
-  std::string identity;
-  auto factory = createInputIdentityFactory(identity);
-  auto action = factory->create();
-  if (!compiler.ExecuteAction(*action))
-    return {};
-  return identity;
-}
-
-static int
-runCc1WithReport(llvm::ArrayRef<const char *> argv, const char *argv0,
-                 const std::shared_ptr<CheckedReport> &report,
-                 const std::shared_ptr<core::AnalysisStats> &stats = {}) {
+/// Runs one `-cc1` job. `driver` is set when the `weavec-cc` driver runs the
+/// job in process; the driver then owns the statistics and writes them.
+static int runCc1Job(llvm::ArrayRef<const char *> argv, const char *argv0,
+                     const DriverOptions *driver = nullptr) {
   DriverOptions weavec;
   std::vector<const char *> cc1Args;
   for (const char *arg : argv) {
@@ -289,14 +239,8 @@ runCc1WithReport(llvm::ArrayRef<const char *> argv, const char *argv0,
   // is Clang's alone.
   const clang::LangOptions &lang = compiler->getLangOpts();
   const bool analyse = weavec.enabled && !lang.CPlusPlus && !lang.ObjC;
-  if (!analyse) {
-    if (weavec.checked || !weavec.checkedFunctions.empty() ||
-        !weavec.checkedReportPath.empty()) {
-      llvm::errs() << "weavec-cc: error: checked requests require C analysis\n";
-      return 1;
-    }
+  if (!analyse)
     return clang::ExecuteCompilerInvocation(compiler.get()) ? 0 : 1;
-  }
 
   std::unique_ptr<clang::FrontendAction> inner =
       clang::CreateFrontendAction(*compiler);
@@ -306,19 +250,13 @@ runCc1WithReport(llvm::ArrayRef<const char *> argv, const char *argv0,
     return compiler->ExecuteAction(*inner) ? 0 : 1;
 
   // The compile step sees the unit alone; boundaries wait for the link.
-  if (report)
-    weavec.checkedReport = report;
-  if (stats)
-    weavec.stats = stats;
+  if (driver != nullptr && driver->stats)
+    weavec.stats = driver->stats;
   FrontendOptions options = weavec.toFrontendOptions();
   options.analysis.deferBoundary = true;
-  options.analysis.deferCheckedCalls = true;
-  options.bindCheckedInputs = true;
   std::optional<UnitResult> result;
   options.onResult = [&result](UnitResult r) { result = std::move(r); };
 
-  const auto preprocessing =
-      preprocessingIdentity(compiler->getInvocation(), weavec.stats.get());
   WeaveCWrapperAction action(std::move(inner), std::move(options));
   success = compiler->ExecuteAction(action);
 
@@ -332,30 +270,17 @@ runCc1WithReport(llvm::ArrayRef<const char *> argv, const char *argv0,
       record.workingDirectory = currentDirectory();
       for (const char *arg : cc1Args)
         record.command.emplace_back(arg);
-      record.commandDigest = checkedCommandDigest(record.command);
-      record.preprocessingDigest = preprocessing;
-      record.objectDigest = checkedFileDigest(output).value_or("");
       std::string error;
-      if (!writeSidecar(sidecar, record, &error)) {
-        const bool selected = std::ranges::any_of(
-            record.exports.checkedDefinitions,
-            [](const auto &entry) { return entry.second.selected; });
-        llvm::errs() << (selected ? "weavec-cc: error: "
-                                  : "weavec-cc: warning: ")
-                     << error << '\n';
-        if (selected)
-          success = false;
-      }
+      if (!writeSidecar(sidecar, record, &error))
+        llvm::errs() << "weavec-cc: warning: " << error << '\n';
     } else {
       removeQuietly(sidecar);
     }
   }
-  const bool reportOK =
-      report || weavec.checkedReport->finish(weavec.checkedReportPath,
-                                             weavec.checkedFunctions, success);
-  const bool statsOK = report || writeAnalysisStats(weavec.analysisStatsPath,
-                                                    weavec.stats.get());
-  return success && reportOK && statsOK ? 0 : 1;
+  const bool statsOK =
+      driver != nullptr ||
+      writeAnalysisStats(weavec.analysisStatsPath, weavec.stats.get());
+  return success && statsOK ? 0 : 1;
 }
 
 //===----------------------------------------------------------------------===//
@@ -392,10 +317,6 @@ public:
       auto invocation = createInvocation();
       if (!invocation)
         return false;
-      const bool bindInputs =
-          identity.has_value() || !options.analysisCache.empty();
-      const auto before =
-          bindInputs ? preprocessingInput(options) : std::string{};
       core::AnalysisTimer timer(options.analysis.stats, "parsing");
       if (options.analysis.stats)
         options.analysis.stats->add("unit_parses");
@@ -413,24 +334,6 @@ public:
         ast.reset();
         return false;
       }
-      const auto afterInvocation =
-          before.empty() ? nullptr : createInvocation();
-      if (!before.empty() &&
-          (!afterInvocation ||
-           preprocessingIdentity(*afterInvocation, options.analysis.stats) !=
-               before)) {
-        identity = "";
-        if (options.analysis.stats)
-          options.analysis.stats->add("cache_input_changes");
-        if (options.analysis.checkContracts) {
-          llvm::errs()
-              << "weavec-cc: error: preprocessing inputs changed while "
-                 "retaining the checked AST for '"
-              << display << "'\n";
-          ast.reset();
-          return false;
-        }
-      }
     } else if (options.analysis.stats) {
       options.analysis.stats->add("unit_reuses");
     }
@@ -444,41 +347,6 @@ public:
     return true;
   }
 
-  std::string preprocessingInput(const FrontendOptions &options) {
-    if (identity)
-      return *identity;
-    const auto invocation = createInvocation();
-    identity = invocation
-                   ? preprocessingIdentity(*invocation, options.analysis.stats)
-                   : "";
-    return *identity;
-  }
-
-  std::string inputIdentity(const FrontendOptions &options) override {
-    if (!attemptedParse) {
-      auto discovery = options;
-      discovery.discoverOnly = true;
-      discovery.onResult = {};
-      if (!analyze(discovery))
-        return {};
-    }
-    if (!ast)
-      return {};
-    if (options.analysis.stats)
-      options.analysis.stats->add("cache_input_validations");
-    return preprocessingInput(options);
-  }
-
-  bool replay(const UnitResult &result,
-              const FrontendOptions &options) override {
-    if (!ast)
-      return false;
-    auto replayed = analyzeRetainedUnit(*ast, options, &result);
-    if (options.onResult)
-      options.onResult(std::move(replayed));
-    return true;
-  }
-
   bool releaseAST() override {
     if (!ast)
       return false;
@@ -486,7 +354,6 @@ public:
     ast.reset();
     diagOptions.reset();
     attemptedParse = false;
-    identity.reset();
     return true;
   }
 
@@ -522,7 +389,6 @@ private:
   bool attemptedParse = false;
   std::shared_ptr<clang::DiagnosticOptions> diagOptions;
   std::unique_ptr<clang::ASTUnit> ast;
-  std::optional<std::string> identity;
   std::shared_ptr<analysis::FunctionPreparationCache> preparation =
       std::make_shared<analysis::FunctionPreparationCache>();
   std::string display;
@@ -564,7 +430,7 @@ collectLinkInputs(const clang::driver::Command &link) {
                    << '\n';
       continue;
     }
-    if (record->exports.checkedDefinitions.empty() && newerThan(object, path)) {
+    if (newerThan(object, path)) {
       llvm::errs() << "weavec-cc: warning: ignoring '" << path
                    << "': older than '" << object << "'\n";
       continue;
@@ -578,14 +444,8 @@ collectLinkInputs(const clang::driver::Command &link) {
 static bool runLinkStep(const clang::driver::Command &link,
                         const DriverOptions &weavec, const char *argv0) {
   std::vector<LinkInput> inputs = collectLinkInputs(link);
-  if (inputs.empty()) {
-    if (weavec.checked || !weavec.checkedFunctions.empty()) {
-      llvm::errs() << "weavec-cc: error: no checked source metadata is "
-                      "available for link inputs\n";
-      return false;
-    }
+  if (inputs.empty())
     return true;
-  }
 
   // Which units another unit's definitions or callbacks can affect.
   std::map<std::string, std::vector<unsigned>, std::less<>> candidates;
@@ -608,39 +468,11 @@ static bool runLinkStep(const clang::driver::Command &link,
       witnessed[witness.field].push_back(i);
   }
 
-  auto linkOptions = weavec.toFrontendOptions();
-  for (const auto &input : inputs) {
-    linkOptions.analysis.checkContracts |=
-        !input.record.exports.checkedDefinitions.empty();
-    for (const auto &[name, contract] : input.record.exports.checkedDefinitions)
-      if (contract.selected)
-        linkOptions.analysis.checkedFunctions.insert(name);
-  }
-  std::vector<std::unique_ptr<Cc1Unit>> replayUnits;
-  for (const auto &input : inputs) {
-    const auto &record = input.record;
-    const auto name =
-        record.exports.source.empty() ? input.object : record.exports.source;
-    replayUnits.push_back(std::make_unique<Cc1Unit>(
-        name, record.command, record.workingDirectory, argv0));
-    if (linkOptions.analysis.checkContracts) {
-      std::string error;
-      const auto preprocessing =
-          replayUnits.back()->preprocessingInput(linkOptions);
-      if (!validateCheckedArtifact(record, input.object, error,
-                                   preprocessing)) {
-        llvm::errs() << "weavec-cc: error: " << error << '\n';
-        (void)weavec.checkedReport->finish(weavec.checkedReportPath, {}, false);
-        return false;
-      }
-    }
-  }
-  ProgramAnalysis program(linkOptions);
+  ProgramAnalysis program(weavec.toFrontendOptions());
   for (unsigned i = 0; i < inputs.size(); ++i) {
     UnitRecord &record = inputs[i].record;
     const analysis::UnitExports &exports = record.exports;
-    bool needsAnalysis = linkOptions.analysis.checkContracts ||
-                         !exports.unknownCallees.empty() ||
+    bool needsAnalysis = !exports.unknownCallees.empty() ||
                          !exports.unknownIndirectTypes.empty();
     needsAnalysis = needsAnalysis ||
                     llvm::any_of(exports.imports, [&](const std::string &name) {
@@ -682,8 +514,11 @@ static bool runLinkStep(const clang::driver::Command &link,
         });
 
     if (needsAnalysis && !record.command.empty()) {
-      program.addUnit(std::move(replayUnits[i]), record.exports,
-                      std::move(record.reported));
+      const std::string name =
+          exports.source.empty() ? inputs[i].object : exports.source;
+      program.addUnit(std::make_unique<Cc1Unit>(name, record.command,
+                                                record.workingDirectory, argv0),
+                      record.exports, std::move(record.reported));
     } else {
       program.addExports(record.exports);
     }
@@ -699,9 +534,7 @@ static bool runLinkStep(const clang::driver::Command &link,
     });
     llvm::errs() << " did not converge\n";
   }
-  const bool reportOK = weavec.checkedReport->finish(
-      weavec.checkedReportPath, weavec.checkedFunctions, result.ok());
-  return result.ok() && reportOK;
+  return result.ok();
 }
 
 //===----------------------------------------------------------------------===//
@@ -748,7 +581,7 @@ static void printVersion(llvm::raw_ostream &os) {
 }
 
 int runCc1(llvm::ArrayRef<const char *> argv, const char *argv0) {
-  return runCc1WithReport(argv, argv0, {});
+  return runCc1Job(argv, argv0);
 }
 
 int runDriver(llvm::ArrayRef<const char *> argv, void *mainAddress) {
@@ -793,12 +626,6 @@ int runDriver(llvm::ArrayRef<const char *> argv, void *mainAddress) {
     clangArgs.push_back(arg);
   }
 
-  if (!weavec.enabled && (weavec.checked || !weavec.checkedFunctions.empty() ||
-                          !weavec.checkedReportPath.empty())) {
-    llvm::errs()
-        << "weavec-cc: error: checked requests require WeaveC analysis\n";
-    return 1;
-  }
   const auto add = [&](std::string arg) {
     owned.push_back(std::move(arg));
     clangArgs.push_back(owned.back().c_str());
@@ -837,8 +664,7 @@ int runDriver(llvm::ArrayRef<const char *> argv, void *mainAddress) {
   driver.setTargetAndMode(
       clang::driver::ToolChain::getTargetAndModeFromProgramName("clang"));
   const auto cc1 = [&weavec](llvm::SmallVectorImpl<const char *> &args) {
-    return runCc1WithReport(llvm::ArrayRef(args).drop_front(2), args[0],
-                            weavec.checkedReport, weavec.stats);
+    return runCc1Job(llvm::ArrayRef(args).drop_front(2), args[0], &weavec);
   };
   driver.CC1Main = cc1;
   if (const std::string resources = getClangResourceDir(); !resources.empty())
@@ -867,21 +693,6 @@ int runDriver(llvm::ArrayRef<const char *> argv, void *mainAddress) {
   for (const clang::driver::Command &job : compilation->getJobs()) {
     const bool isLink =
         job.getSource().getKind() == clang::driver::Action::LinkJobClass;
-    if (isLink && !weavec.link) {
-      bool selected = weavec.checked || !weavec.checkedFunctions.empty();
-      for (const auto &input : collectLinkInputs(job))
-        for (const auto &[name, contract] :
-             input.record.exports.checkedDefinitions) {
-          (void)name;
-          selected |= contract.selected;
-        }
-      if (selected) {
-        llvm::errs() << "weavec-cc: error: selected checked code requires link "
-                        "verification\n";
-        status = 1;
-        break;
-      }
-    }
     if (isLink && weavec.enabled && weavec.link &&
         !runLinkStep(job, weavec, executable.c_str())) {
       status = 1;
@@ -905,11 +716,9 @@ int runDriver(llvm::ArrayRef<const char *> argv, void *mainAddress) {
   // Temporary objects vanish with the compilation; so should their sidecars.
   for (const char *temp : compilation->getTempFiles())
     removeQuietly(sidecarPathFor(temp));
-  const bool reportOK = weavec.checkedReport->finish(
-      weavec.checkedReportPath, weavec.checkedFunctions, status == 0);
   const bool statsOK =
       writeAnalysisStats(weavec.analysisStatsPath, weavec.stats.get());
-  return reportOK && statsOK ? status : 1;
+  return statsOK ? status : 1;
 }
 
 } // namespace weavec::frontend

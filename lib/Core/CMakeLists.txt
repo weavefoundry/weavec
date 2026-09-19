@@ -8,38 +8,26 @@ weavec_add_library(
           AnalysisState.cpp
           Array.cpp
           Borrow.cpp
-          Buffer.cpp
           CallContext.cpp
           CallTargets.cpp
-          Container.cpp
-          Footprint.cpp
-          Format.cpp
           Diagnostic.cpp
           Integer.cpp
-          Induction.cpp
           Interface.cpp
           CheckedInteger.cpp
           Lifetime.cpp
           Moves.cpp
           Nullness.cpp
-          ObjectType.cpp
           Offset.cpp
           Ownership.cpp
           Place.cpp
           Raw.cpp
           Relation.cpp
           Resource.cpp
-          Safety.cpp
-          SafetyCallPath.cpp
-          SafetyEntryPool.cpp
-          CheckedContract.cpp
-          CheckedIO.cpp
           Scalar.cpp
           Scc.cpp
           SourceLocation.cpp
           Spatial.cpp
           Traversal.cpp
-          Union.cpp
           Summary.cpp
           SummarySteps.cpp
           SummaryIO.cpp)

@@ -9,7 +9,6 @@
 #include "weavec/Core/SummaryIO.h"
 
 #include "weavec/Core/Array.h"
-#include "weavec/Core/CheckedIO.h"
 
 #include <charconv>
 #include <cstdint>
@@ -97,8 +96,7 @@ std::string printAffine(const PathAffine &affine, const GlobalNamer &names) {
            std::to_string(affine.constant);
   if (!affine.path)
     return std::to_string(affine.constant);
-  return (affine.quantity == AffineQuantity::Terminator ? "terminator " : "") +
-         printSummaryPath(*affine.path, names) + " scale " +
+  return printSummaryPath(*affine.path, names) + " scale " +
          std::to_string(affine.scale) + " plus " +
          std::to_string(affine.constant);
 }
@@ -207,8 +205,6 @@ std::string printGuard(const PathGuard &guard, const GlobalNamer &names) {
 std::string printSummary(const FunctionSummary &summary,
                          const GlobalNamer &names) {
   std::string text = "summary\n";
-  if (summary.checked.computed)
-    text += "  checked " + printCheckedContract(summary.checked, names) + "\n";
   for (const auto &fill : summary.arrayFills)
     text += "  array-fill " + printSummaryPath(fill.storage, names) +
             " count " + printAffine(fill.count, names) +
@@ -517,9 +513,6 @@ static bool parseAffine(Tokens &tokens, const GlobalResolver &resolve,
     affine = PathAffine::ofConstant(constant);
     return true;
   }
-  const bool terminator = tokens.peek() == "terminator";
-  if (terminator)
-    tokens.take();
   ParsedPath path;
   if (!parsePath(tokens, resolve, path))
     return false;
@@ -528,10 +521,7 @@ static bool parseAffine(Tokens &tokens, const GlobalResolver &resolve,
       tokens.take() != "plus" || !parseInteger(tokens.take(), constant))
     return false;
   if (path.path)
-    affine =
-        terminator
-            ? PathAffine::ofTerminator(std::move(*path.path), scale, constant)
-            : PathAffine::ofPath(std::move(*path.path), scale, constant);
+    affine = PathAffine::ofPath(std::move(*path.path), scale, constant);
   else
     affine = std::nullopt;
   return true;
@@ -839,16 +829,6 @@ static bool parseGuard(Tokens &tokens, const GlobalResolver &resolve,
   }
 }
 
-std::optional<PathGuard> parseSummaryGuard(std::string_view text,
-                                           const GlobalResolver &resolve) {
-  Tokens tokens(text);
-  PathGuard guard;
-  bool lost = false;
-  if (!parseGuard(tokens, resolve, guard, &lost) || lost || !tokens.empty())
-    return std::nullopt;
-  return guard;
-}
-
 static std::string_view trim(std::string_view text) noexcept {
   while (!text.empty() &&
          (text.front() == ' ' || text.front() == '\t' || text.front() == '\r'))
@@ -902,15 +882,6 @@ std::optional<FunctionSummary> parseSummary(std::string_view record,
       if (!tokens.empty() ||
           !summary.objectViews.emplace(*path.path, view).second)
         return fail("invalid object view");
-      continue;
-    }
-    if (kind == "checked") {
-      if (summary.checked.computed)
-        return fail("duplicate checked contract");
-      const auto contract = parseCheckedContract(tokens.take(), resolve);
-      if (!contract || !tokens.empty())
-        return fail("invalid checked contract");
-      summary.checked = *contract;
       continue;
     }
     if (kind == "callback-input") {

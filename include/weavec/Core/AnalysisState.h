@@ -150,13 +150,6 @@ struct PendingOutcome {
   /// returning the class.
   // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
   std::map<Outcome, std::vector<std::pair<PlaceId, ValueFact>>> factOn = {};
-  /// RFC 0019: must-initialized storage on every return of a class.
-  // NOLINTBEGIN(readability-redundant-member-init): aggregate default
-  std::map<Outcome, std::vector<std::pair<PlaceId, InitializedRange>>>
-      initializedOn = {};
-  // NOLINTEND(readability-redundant-member-init)
-  [[nodiscard]] std::vector<std::pair<PlaceId, InitializedRange>>
-  initializedInAll() const;
   /// The callee as spelled in messages (`'make'`) and the call's location,
   /// for the note on a place `nullOn` makes null.
   // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
@@ -209,9 +202,6 @@ struct PendingOutcome {
 };
 
 struct AnalysisState {
-  /// RFC 0018: optional positive evidence for checked code.
-  /// RFC 0018: ordinary analysis never constructs the optional proof domain.
-  std::optional<SafetyState> safety;
   /// Places whose resource has been released or moved out.
   MoveTracker moves;
   /// Live borrows.
@@ -333,7 +323,6 @@ struct AnalysisState {
   /// RFC 0027: the same invalidation for any order of possibly repeated keys.
   /// Takes ownership so subtree callers can reuse their descendant vector.
   void dropGuardsOn(std::vector<PlaceId> places);
-  void forgetZeroedMemory();
 
   /// True if `path`, or an object containing it, is in `overwritten`: the
   /// value the caller's memory held there on entry is gone on every path.

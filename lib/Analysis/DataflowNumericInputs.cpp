@@ -85,14 +85,6 @@ void FunctionDataflow::captureNumericInputs(
   const auto affine = [&](const core::PathAffine &value) {
     if (value.expression)
       expression(*value.expression);
-    else if (options.checkContracts && value.path && value.path->isParam() &&
-             value.path->isRoot() && value.path->index < call.getNumArgs() &&
-             value.quantity == core::AffineQuantity::Integer &&
-             isa<AbstractConditionalOperator>(
-                 call.getArg(value.path->index)->IgnoreParenCasts()))
-      if (const auto type =
-              integerTypeOf(call.getArg(value.path->index)->getType(), context))
-        dependencies.emplace(*value.path, *type);
   };
   const auto source = [&](const core::ValueSource &value) {
     guard(value.when);
@@ -141,18 +133,6 @@ void FunctionDataflow::captureNumericInputs(
     affine(release.begin);
     affine(release.count);
   }
-  if (options.checkContracts) {
-    for (const auto &requirement : summary.checked.requirements) {
-      guard(requirement.when);
-      affine(requirement.begin);
-      affine(requirement.end);
-    }
-    for (const auto &post : summary.checked.establishes) {
-      guard(post.when);
-      affine(post.begin);
-      affine(post.end);
-    }
-  }
 
   auto &inputs = numericInputs[&call];
   // Retire every previous slot, including dependencies that a contextual
@@ -181,20 +161,8 @@ void FunctionDataflow::captureNumericInputs(
     // never take (including a null argument). Capture unknown here; eagerly
     // diagnosing every possible dependency would add warnings even when its
     // guarded consumer is refuted or the null access is already diagnosed.
-    if (!value) {
-      if (options.checkContracts && path.isParam() && path.isRoot() &&
-          path.index < call.getNumArgs()) {
-        const auto *argument = call.getArg(path.index);
-        if (!argument->HasSideEffects(context) &&
-            isa<AbstractConditionalOperator>(argument->IgnoreParenCasts()))
-          if (const auto range = integerRangeOf(*argument, state);
-              range && !range->mayBeInvalid)
-            state.scalars.set(
-                saved->second,
-                core::ValueFact::ofInteger(range->values.converted(type)));
-      }
+    if (!value)
       continue;
-    }
     const auto evaluated = evaluateNumericExpression(*value, state);
     if (!evaluated.mayBeInvalid)
       state.scalars.set(saved->second,

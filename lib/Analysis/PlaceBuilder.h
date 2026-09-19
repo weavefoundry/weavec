@@ -52,14 +52,6 @@ struct CallEffects;
 [[nodiscard]] std::optional<std::int64_t>
 integerConstant(const clang::Expr &expr, const clang::ASTContext &context);
 
-/// The mathematical value `value` has once converted to the integer type
-/// `type` (C's usual arithmetic conversions: modulo 2^N for an unsigned
-/// type, two's-complement truncation for a signed one), if an `int64_t` holds
-/// it. `case -1:` on an `unsigned` scrutinee selects `UINT_MAX`.
-[[nodiscard]] std::optional<std::int64_t>
-integerConvertedTo(std::int64_t value, clang::QualType type,
-                   const clang::ASTContext &context);
-
 /// A place denoted by an lvalue expression together with the pointer places
 /// that had to be dereferenced to reach it (each of those is *read* by the
 /// access, so a moved one is a use-after-free).
@@ -175,8 +167,6 @@ public:
   legacyAffineOf(const clang::Expr &expr);
   std::function<std::optional<core::ValueFact>(const clang::Expr &)>
       integerFact;
-  /// RFC 0021: evaluated pointer expressions with checked CFG result slots.
-  std::function<std::optional<PlaceRef>(const clang::Expr &)> pointerResult;
   std::function<bool(const core::SummaryPath &, const clang::CallExpr &)>
       validatePath;
 
@@ -225,9 +215,6 @@ public:
       return std::nullopt;
     return it->second;
   }
-  /// The string place a length place was made for, if `place` is one.
-  [[nodiscard]] std::optional<core::PlaceId>
-  stringOfLengthPlace(core::PlaceId place) const;
   [[nodiscard]] bool isLengthPlace(core::PlaceId place) const {
     return lengthOwners.contains(place.value);
   }

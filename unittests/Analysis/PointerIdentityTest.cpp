@@ -209,15 +209,6 @@ void bad(int *p) { struct hook h = {keep}; install(&h, drop); h.fn(p); free(p); 
   EXPECT_TRUE(ordinary.summary("install")->callbackInputs.empty());
   EXPECT_EQ(countId(ordinary, core::diag::DoubleFree), 1U);
   EXPECT_EQ(countId(ordinary, core::diag::AnnotationRequired), 0U);
-
-  AnalysisOptions options;
-  options.checked = true;
-  const auto checked = test::analyze(source, options);
-  ASSERT_TRUE(checked.ast);
-  ASSERT_NE(checked.summary("install"), nullptr);
-  EXPECT_TRUE(checked.summary("install")->callbackInputs.contains(
-      core::SummaryPath::param(1)));
-  EXPECT_EQ(countId(checked, core::diag::DoubleFree), 1U);
 }
 
 TEST(PointerIdentity, UnknownTargetsRemainUnknownDespiteAddressTakenFunctions) {

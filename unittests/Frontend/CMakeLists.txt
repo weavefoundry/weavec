@@ -1,5 +1,5 @@
 weavec_add_unittest(
   WeaveCFrontendTests
-  SOURCES AnalysisCacheTest.cpp CheckedReportTest.cpp DiagnosticControlTest.cpp
-          ProgramAnalysisTest.cpp SidecarTest.cpp
+  SOURCES DiagnosticControlTest.cpp ProgramAnalysisTest.cpp RetainedUnitTest.cpp
+          SidecarTest.cpp
   DEPS weavec::Frontend)

@@ -96,9 +96,9 @@ namespace weavec::core {
 
 /// Version of the record format; bumped when a record written by this
 /// version cannot be read by the previous one.
-// Version 18 (RFC 0023) adds inductive container predicates to checked
-// contracts.
-inline constexpr unsigned SummaryFormatVersion = 26;
+// Version 27 (RFC 0030) removes the checked contract and the checked
+// call-context entries (orders, bytes, non-NaN inputs).
+inline constexpr unsigned SummaryFormatVersion = 27;
 
 /// The name to print for a global root id.
 using GlobalNamer = std::function<std::string(std::uint32_t)>;
@@ -142,9 +142,6 @@ parseSummaryPath(std::string_view text, const GlobalResolver &resolve);
 /// param 3 zero and param 2 nonnull`); empty for a trivial guard.
 [[nodiscard]] std::string printGuard(const PathGuard &guard,
                                      const GlobalNamer &names);
-/// RFC 0019: must-contract parsing rejects every unavailable premise.
-[[nodiscard]] std::optional<PathGuard>
-parseSummaryGuard(std::string_view text, const GlobalResolver &resolve);
 
 /// Prints `summary` as one record, `summary\n ... end\n`, lines indented by
 /// two spaces and in a deterministic order.

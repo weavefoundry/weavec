@@ -80,13 +80,7 @@ bool FunctionDataflow::handleMemoryCopy(const CallExpr &call,
   };
   const QualType destType = objectType(destExpr);
   const QualType sourceType = objectType(sourceExpr);
-  const auto unionObject = [](QualType type) {
-    const auto *record = type.isNull() ? nullptr : type->getAsRecordDecl();
-    return record && record->isUnion();
-  };
-  if (!containsPointer(destType) && !containsPointer(sourceType) &&
-      !(options.checkContracts &&
-        (unionObject(destType) || unionObject(sourceType))))
+  if (!containsPointer(destType) && !containsPointer(sourceType))
     return false;
   const auto storage = [&](const Expr &expr) -> std::optional<PlaceRef> {
     if (auto addressed = builder.addressedPlace(expr))

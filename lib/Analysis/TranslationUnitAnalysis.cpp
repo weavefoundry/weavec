@@ -208,10 +208,6 @@ UnitExports TranslationUnitAnalyzer::skeletonExports() const {
     result.source = entry->getName().str();
 
   for (const FunctionDecl *function : definitions) {
-    if (getAnnotations(*function).checked) {
-      auto &contract = result.checkedDefinitions[function->getNameAsString()];
-      contract.selected = true;
-    }
     if (function->isMain() || function->getIdentifier() == nullptr)
       continue;
     const bool external = function->isExternallyVisible();
@@ -253,7 +249,6 @@ UnitExports TranslationUnitAnalyzer::discover() {
 
 UnitExports TranslationUnitAnalyzer::exports() {
   UnitExports result = skeletonExports();
-  result.checkedTarget = context.getTargetInfo().getTriple().str();
   const GlobalTable &table = store.globals();
   // RFC 0028: supported private roots retain identity and representation.
   const core::GlobalIdMap byName = [&](std::uint32_t id) {
@@ -261,90 +256,16 @@ UnitExports TranslationUnitAnalyzer::exports() {
     return name ? std::optional(result.globals.idFor(*name)) : std::nullopt;
   };
   const auto exportSummary = [&](const core::FunctionSummary &summary) {
-    const auto privateGlobal = [&](const core::SummaryPath &path) {
-      if (!path.isGlobal())
-        return false;
-      const auto *global = table.declFor(path.index);
-      return global != nullptr && !table.portableName(path.index);
-    };
-    const auto privateExpression = [&](const auto &expression) {
-      return std::ranges::any_of(expression.all(), [&](const auto &node) {
-        return node.key && privateGlobal(*node.key);
-      });
-    };
-    const auto privateCondition = [&](const auto &entry) {
-      return privateGlobal(entry.first);
-    };
-    const auto privatePointers = [&](const auto &entry) {
-      return privateGlobal(entry.first.first) ||
-             privateGlobal(entry.first.second);
-    };
-    const auto privateInteger = [&](const auto &predicate) {
-      return privateExpression(predicate.lhs) ||
-             privateExpression(predicate.rhs);
-    };
-    const auto privateAntecedent = [&](const auto &requirement) {
-      const auto &guard = requirement.when;
-      return std::ranges::any_of(guard.conditions, privateCondition) ||
-             std::ranges::any_of(guard.pointers, privatePointers) ||
-             std::ranges::any_of(guard.integers, privateInteger);
-    };
-    // RFC 0019: a private output fact has no cross-unit consumer. Omit the
-    // entire fact, retaining strict remapping of every requirement and every
-    // premise attached to a public or result output.
-    const auto privateOutput = [&](const auto &post) {
-      return privateGlobal(post.path);
-    };
-    const bool privateOutputs =
-        std::ranges::any_of(summary.checked.establishes, privateOutput);
-    const bool privateRequirements =
-        std::ranges::any_of(summary.checked.requirements, privateAntecedent);
-    if (!summary.checked.computed || (!privateOutputs && !privateRequirements))
-      return core::remapGlobals(summary, byName);
-    auto portable = summary;
-    if (privateOutputs) {
-      core::CheckedRequirements::Set outputs;
-      for (const auto &post : portable.checked.establishes)
-        if (!privateOutput(post))
-          outputs.insert(post);
-      portable.checked.establishes.assign(std::move(outputs));
-    }
-    if (privateRequirements) {
-      // RFC 0021: weaken only the antecedent, thereby strengthening a
-      // sufficient requirement. Preserve the local conditional contract and
-      // keep strict remapping of required properties and every output premise.
-      core::CheckedRequirements::Set requirements;
-      const auto discard = [](auto &entries, const auto &privateEntry) {
-        for (auto it = entries.begin(); it != entries.end();)
-          if (privateEntry(*it))
-            it = entries.erase(it);
-          else
-            ++it;
-      };
-      for (auto requirement : portable.checked.requirements) {
-        discard(requirement.when.conditions, privateCondition);
-        discard(requirement.when.pointers, privatePointers);
-        discard(requirement.when.integers, privateInteger);
-        requirements.insert(std::move(requirement));
-      }
-      portable.checked.requirements.assign(std::move(requirements));
-    }
-    return core::remapGlobals(portable, byName);
+    return core::remapGlobals(summary, byName);
   };
   for (const FunctionDecl *function : definitions) {
     const auto resolved = store.lookup(*function);
     if (!resolved)
       continue;
     const auto it = result.functions.find(function->getNameAsString());
-    if (it == result.functions.end() && !resolved->summary->checked.computed)
+    if (it == result.functions.end())
       continue;
-    // RFC 0020: the checked definition and exported summary use the same
-    // portable result. A second remap discovers no additional global names.
-    auto portable = exportSummary(*resolved->summary);
-    if (portable.checked.computed)
-      result.checkedDefinitions[function->getNameAsString()] = portable.checked;
-    if (it != result.functions.end())
-      it->second.summary.assign(std::move(portable));
+    it->second.summary.assign(exportSummary(*resolved->summary));
   }
   for (std::string &name : store.unknownCalleeNames())
     result.unknownCallees.insert(std::move(name));
@@ -410,27 +331,10 @@ void TranslationUnitAnalyzer::run(
     llvm::function_ref<bool(const FunctionDecl &)> shouldReport) {
   prepare();
   validateCheckedDeclarations(*context.getTranslationUnitDecl(), context, sink);
-  options.checkContracts =
-      options.checkContracts || options.checked ||
-      !options.checkedFunctions.empty() ||
-      std::ranges::any_of(definitions, [](const FunctionDecl *fn) {
-        return getAnnotations(*fn).checked;
-      });
 
   const std::vector<std::vector<unsigned>> adjacency = buildCallGraph();
   const std::vector<std::vector<unsigned>> components =
       core::stronglyConnectedComponents(adjacency);
-  if (options.checkContracts)
-    for (unsigned index = 0; index < components.size(); ++index)
-      for (const auto member : components[index]) {
-        store.recursiveComponents[definitions[member]->getCanonicalDecl()] =
-            index;
-        if (components[index].size() > 1 ||
-            std::ranges::find(adjacency[member], member) !=
-                adjacency[member].end())
-          store.recursiveFunctions.insert(
-              definitions[member]->getCanonicalDecl());
-      }
 
   // RFC 0012, *Sized fields*, "Two passes in a unit": the first pass takes
   // inferred sized fields from the program database only; every report is
@@ -493,13 +397,6 @@ void TranslationUnitAnalyzer::run(
     const std::string symbol = callableSymbol(*function);
     const auto requests = store.callbackRequests[symbol];
     const auto memory = store.memoryRequests[symbol];
-    const bool selectedDefinition =
-        options.checkContracts &&
-        ((options.checked &&
-          (!options.checkedMainFileOnly ||
-           context.getSourceManager().isInMainFile(function->getLocation()))) ||
-         options.checkedFunctions.contains(function->getNameAsString()) ||
-         getAnnotations(*function).checked);
     if (!memory.empty()) {
       if (options.dumpStream) {
         core::DiagnosticCollector ignored;
@@ -538,7 +435,7 @@ void TranslationUnitAnalyzer::run(
         }
       }
       analyzer.validate(*function);
-      bool needsGenericCheck = selectedDefinition;
+      bool needsGenericCheck = false;
       for (const auto &input : memory)
         if (!store.specializeMemory(symbol, input, options, &remembered) &&
             input.reportDiagnostics)
@@ -558,10 +455,6 @@ void TranslationUnitAnalyzer::run(
           recursiveFunctions.contains(function->getCanonicalDecl()));
     } else {
       analyzer.validate(*function);
-      if (selectedDefinition)
-        analyzer.analyze(
-            *function, store, true,
-            recursiveFunctions.contains(function->getCanonicalDecl()));
       for (const auto &bindings : requests)
         (void)store.specialize(*function, bindings, options, &remembered);
     }
@@ -569,19 +462,6 @@ void TranslationUnitAnalyzer::run(
       reportUnannotatedInterface(*function);
   }
   reportConfirmedSizedFields(reported, remembered.seen());
-  // The sized-field reporting pass can invalidate contexts as well.
-  // Reporting can refine generic imports. Rebuild every requested result
-  // against the final store before exporting it, including nested requests.
-  if (!options.checkContracts)
-    return;
-  for (unsigned round = 0; round < core::MaxCallContextDepth; ++round) {
-    const auto requests = store.memoryRequests;
-    for (const auto &[symbol, contexts] : requests)
-      for (const auto &input : contexts)
-        (void)store.specializeMemory(symbol, input, options, nullptr);
-    if (requests == store.memoryRequests)
-      break;
-  }
 }
 
 void TranslationUnitAnalyzer::RememberingSink::report(
@@ -727,28 +607,12 @@ void TranslationUnitAnalyzer::analyzeComponent(
     for (const unsigned member : component)
       recursiveFunctions.insert(definitions[member]->getCanonicalDecl());
   }
-  const bool verifiedGroup = recursive && options.checkContracts &&
-                             verifyRecursiveContractGroup(component);
-  const bool previousApproximation = store.checkingRecursiveApproximation;
-  store.checkingRecursiveApproximation = recursive && !verifiedGroup;
-  const auto restoreApproximation = llvm::scope_exit(
-      [&] { store.checkingRecursiveApproximation = previousApproximation; });
   bool settled = false;
-  if (recursive && !verifiedGroup) {
+  if (recursive) {
     // Start every member at the bottom summary and iterate silently until
     // nothing changes; the final, reporting run then sees the fixpoint.
-    for (const unsigned member : component) {
-      core::FunctionSummary initial;
-      if (options.checkContracts) {
-        // RFC 0019: recursive call obligations start optimistically and grow
-        // with local obligations and input requirements. No recursive memory
-        // postcondition is assumed: establishes remains empty.
-        initial.checked.computed = true;
-        initial.checked.signature =
-            functionTypeKey(definitions[member]->getType(), context);
-      }
-      store.setInferred(*definitions[member], std::move(initial));
-    }
+    for (const unsigned member : component)
+      store.setInferred(*definitions[member], core::FunctionSummary{});
     for (unsigned round = 0; round < MaxFixpointRounds; ++round) {
       if (options.stats)
         options.stats->add("function_fixpoint_rounds");
@@ -768,8 +632,7 @@ void TranslationUnitAnalyzer::analyzeComponent(
   }
 
   const bool previousRefresh = store.refreshingRecursiveValueOutcomes;
-  store.refreshingRecursiveValueOutcomes =
-      recursive && settled && !verifiedGroup;
+  store.refreshingRecursiveValueOutcomes = recursive && settled;
   const auto restoreRefresh = llvm::scope_exit(
       [&] { store.refreshingRecursiveValueOutcomes = previousRefresh; });
   for (const unsigned member : component) {
