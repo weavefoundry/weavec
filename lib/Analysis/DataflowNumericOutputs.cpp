@@ -307,7 +307,7 @@ void FunctionDataflow::finishNumericCall(const CallExpr &call,
       writtenScalarPaths.insert(*path);
   }
   if (conflict)
-    reportIncomplete("conflicting numeric outputs for aliased storage", call);
+    decideIncomplete("conflicting numeric outputs for aliased storage", call);
   const auto conditional = numericCallOutcomeFacts.find(&call);
   if (!conflict && conditional != numericCallOutcomeFacts.end()) {
     if (!lastCall || lastCall->call != &call) {

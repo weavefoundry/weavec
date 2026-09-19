@@ -193,7 +193,7 @@ FunctionDataflow::stringSubjectOf(const Expr &arg,
                                    .offset = {},
                                    .unit = 1,
                                    .declared = record->declared,
-                                   .lowerBound = record->lowerBound};
+                                   .extentClass = record->extentClass};
     }
     return subject;
   }

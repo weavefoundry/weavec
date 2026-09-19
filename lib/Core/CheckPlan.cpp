@@ -59,6 +59,10 @@ CheckTerm CheckTerm::mul(CheckTerm lhs, CheckTerm rhs) {
   return binary(Kind::Mul, std::move(lhs), std::move(rhs));
 }
 
+CheckTerm CheckTerm::div(CheckTerm lhs, std::int64_t divisor) {
+  return binary(Kind::Div, std::move(lhs), ofConstant(divisor));
+}
+
 CheckTerm CheckTerm::strnlen(CheckTerm pointer, CheckTerm bound) {
   return binary(Kind::StrNLen, std::move(pointer), std::move(bound));
 }
@@ -80,6 +84,9 @@ bool CheckTerm::isWellFormed() const noexcept {
   case Kind::StrNLen:
     return path.empty() && operands.size() == 2 && operands[0].isWellFormed() &&
            operands[1].isWellFormed();
+  case Kind::Div:
+    return path.empty() && operands.size() == 2 && operands[0].isWellFormed() &&
+           operands[1].kind == Kind::Constant && operands[1].constant > 0;
   }
   return false;
 }
@@ -114,6 +121,8 @@ static std::string_view operatorText(CheckTerm::Kind kind) noexcept {
     return " - ";
   case CheckTerm::Kind::Mul:
     return " * ";
+  case CheckTerm::Kind::Div:
+    return " / ";
   case CheckTerm::Kind::Constant:
   case CheckTerm::Kind::Place:
   case CheckTerm::Kind::SizeOf:
@@ -133,7 +142,8 @@ std::string CheckTerm::toString() const {
     return "sizeof(#" + std::to_string(handle) + ")";
   case Kind::Add:
   case Kind::Sub:
-  case Kind::Mul: {
+  case Kind::Mul:
+  case Kind::Div: {
     if (operands.size() != 2)
       return "<malformed>";
     std::string text = "(";

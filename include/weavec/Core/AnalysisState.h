@@ -281,6 +281,12 @@ struct AnalysisState {
   std::set<PlaceId> heapLocalObjects;
   /// RFC 0013: roots whose heap projection lost facts at a bound.
   std::set<PlaceId> incompleteHeap;
+  /// RFC 0030 §2.3 `raw-cast`: pointer places whose value may have been
+  /// made by reinterpretation on some path (a byte-wise or partial store
+  /// into the pointer object, a union member whose last write was a
+  /// non-pointer member, `va_arg`), so nothing the engine knows of pointers
+  /// describes it. Joins by union; a plain assignment clears it.
+  std::set<PlaceId> reinterpreted;
   std::map<PlaceId, ArrayRange> arrayRanges;
   std::map<PlaceId, ReleasedArrayRange> releasedArrayRanges;
   std::map<PlaceId, FilledArrayRange> filledArrayRanges;

@@ -38,8 +38,8 @@ static void expectContextError(const std::string &code, std::string_view id) {
   ASSERT_TRUE(result.ast);
   EXPECT_GT(countContextDiagnostic(result, id), 0U)
       << ::testing::PrintToString(test::messages(result.diagnostics));
-  EXPECT_EQ(countContextDiagnostic(result, core::diag::AnalysisIncomplete), 0U)
-      << ::testing::PrintToString(test::messages(result.diagnostics));
+  EXPECT_TRUE(test::incomplete(result).empty())
+      << ::testing::PrintToString(test::incomplete(result));
 }
 
 static const std::string Entry = R"c(
@@ -181,7 +181,7 @@ static void outer(char *a, char *b) { middle(a, b); }
 )c" + Entry + "outer(p, p); }");
   ASSERT_TRUE(result.ast);
   EXPECT_EQ(countContextDiagnostic(result, core::diag::UseAfterFree), 1U);
-  EXPECT_EQ(countContextDiagnostic(result, core::diag::AnalysisIncomplete), 0U);
+  EXPECT_TRUE(test::incomplete(result).empty());
 }
 
 TEST(CompositionalCall, CallbackTargetsAndDataAliasesSelectOneContext) {
@@ -347,12 +347,12 @@ static void zap(char *a, char *b, int n) {
 }
 )c" + Entry + "zap(p, p, 20); }");
   ASSERT_TRUE(result.ast);
-  EXPECT_GT(countContextDiagnostic(result, core::diag::AnalysisIncomplete), 0U);
-  EXPECT_TRUE(std::ranges::any_of(
-      result.diagnostics.diagnostics(), [](const core::Diagnostic &diagnostic) {
-        return diagnostic.message == "analysis is incomplete: call context "
-                                     "unavailable or limit reached";
-      }));
+  // RFC 0030 §15 item 3: the call whose context summary is incomplete.
+  const auto found = test::incomplete(result);
+  EXPECT_TRUE(std::ranges::any_of(found, [](const std::string &line) {
+    return line.ends_with(
+        "temporal budget: call context unavailable or limit reached");
+  })) << ::testing::PrintToString(found);
 }
 
 TEST(CompositionalCall, TooManyDistinctContextsRetainGenericEffects) {
@@ -367,7 +367,7 @@ void test(void) {
             std::to_string(i) + "); free(p); }\n";
   const auto result = test::analyze(code + "}");
   ASSERT_TRUE(result.ast);
-  EXPECT_GT(countContextDiagnostic(result, core::diag::AnalysisIncomplete), 0U);
+  EXPECT_FALSE(test::incomplete(result).empty());
   for (const auto &[symbol, requests] :
        result.analyzer->summaries().memoryRequests) {
     (void)symbol;
@@ -387,11 +387,11 @@ TEST(CompositionalCall, OversizedInputFootprintsHaveAnExplicitBoundary) {
     code += ", p";
   const auto result = test::analyze(code + ");}");
   ASSERT_TRUE(result.ast);
-  EXPECT_TRUE(std::ranges::any_of(
-      result.diagnostics.diagnostics(), [](const core::Diagnostic &diagnostic) {
-        return diagnostic.message ==
-               "analysis is incomplete: call context input path limit reached";
-      }));
+  const auto found = test::incomplete(result);
+  EXPECT_TRUE(std::ranges::any_of(found, [](const std::string &line) {
+    return line.ends_with(
+        "temporal budget: call context input path limit reached");
+  })) << ::testing::PrintToString(found);
 }
 
 TEST(CompositionalCall, InvalidTypedContextsAreNeverCachedAsChecked) {
@@ -892,7 +892,7 @@ TEST(ContextDependencies, SettledRecursiveValuesAreRecheckedBeforeReporting) {
   EXPECT_EQ(stats.count("silent_function_reuses"), 0U);
   EXPECT_GT(stats.count("function_analyses"),
             stats.count("function_fixpoint_rounds"));
-  EXPECT_EQ(countContextDiagnostic(result, core::diag::AnalysisIncomplete), 0U);
+  EXPECT_TRUE(test::incomplete(result).empty());
 }
 
 } // namespace weavec::analysis

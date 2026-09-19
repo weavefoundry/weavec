@@ -54,6 +54,9 @@ struct WitnessTerm {
     Add,
     Sub,
     Mul,
+    /// `operands[0] / operands[1]`, the second a positive constant, rounding
+    /// down: an element count from a byte extent (§7.4).
+    Div,
     /// The length of the string `operands[0]` points to; the planner bounds
     /// it by the check's `have` (`__weavec_strnlen`, §10.3 rule 2).
     StrLen,
@@ -72,7 +75,7 @@ struct WitnessTerm {
   clang::QualType type = {};
   /// `Expr`.
   const clang::Expr *expr = nullptr;
-  /// `Add`, `Sub`, `Mul`: the two sides; `StrLen`: the pointer.
+  /// `Add`, `Sub`, `Mul`, `Div`: the two sides; `StrLen`: the pointer.
   // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
   std::vector<WitnessTerm> operands = {};
 
@@ -85,9 +88,12 @@ struct WitnessTerm {
   [[nodiscard]] static WitnessTerm add(WitnessTerm lhs, WitnessTerm rhs);
   [[nodiscard]] static WitnessTerm sub(WitnessTerm lhs, WitnessTerm rhs);
   [[nodiscard]] static WitnessTerm mul(WitnessTerm lhs, WitnessTerm rhs);
+  /// `lhs / divisor`, rounding down; `divisor` must be positive.
+  [[nodiscard]] static WitnessTerm div(WitnessTerm lhs, std::int64_t divisor);
   [[nodiscard]] static WitnessTerm strLen(WitnessTerm pointer);
 
-  /// A debugging spelling: `42`, `n`, `s->len`, `sizeof(int)`, `(a + b)`.
+  /// A debugging spelling: `42`, `n`, `s->len`, `sizeof(int)`, `(a + b)`,
+  /// `(n / 4)`.
   [[nodiscard]] std::string toString() const;
 };
 

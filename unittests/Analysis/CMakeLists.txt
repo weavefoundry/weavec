@@ -27,4 +27,5 @@ weavec_add_unittest(
           SiteCollectorTest.cpp
           CheckPlannerTest.cpp
           LedgerAdapterTest.cpp
+          EngineDecisionsTest.cpp
   DEPS weavec::Analysis weavec::Frontend)

@@ -555,7 +555,11 @@ TEST(IntegerSemantics, FlexibleTailAndElementOffsetsSurviveReturns) {
     }
   )c");
   ASSERT_TRUE(result.ast);
-  EXPECT_EQ(countId(result, core::diag::OutOfBounds), 4U);
+  // RFC 0030 §7.4: `data[2]` is the trailing member, flexible at
+  // -fstrict-flex-arrays=0 whatever its bound, so `fixed_bound` stays inside
+  // its 100 bytes; `bad`, `shifted` and `small` are past theirs.
+  EXPECT_EQ(countId(result, core::diag::OutOfBounds), 3U)
+      << ::testing::PrintToString(messages(result.diagnostics));
 }
 
 TEST(IntegerSemantics, SizedFieldInferenceRetainsModularMultiplication) {
@@ -619,11 +623,9 @@ TEST(IntegerSemantics, ExhaustedExpressionsRetainExplicitMissingCoverage) {
     }
   )c");
   ASSERT_TRUE(result.ast);
-  EXPECT_TRUE(std::ranges::any_of(
-      result.diagnostics.diagnostics(), [](const core::Diagnostic &diagnostic) {
-        return diagnostic.id == core::diag::AnalysisIncomplete &&
-               diagnostic.message ==
-                   "analysis is incomplete: integer expression limit reached";
-      }));
+  // RFC 0030 §15 item 3: the summary records the gap, and the allocation
+  // whose size the engine could not build decides nothing about `p[0]`.
+  EXPECT_TRUE(result.summary("large")->incomplete.contains(
+      "integer expression limit reached"));
   EXPECT_EQ(countId(result, core::diag::OutOfBounds), 0U);
 }

@@ -192,6 +192,16 @@ parseLedgerScope(std::string_view text);
 [[nodiscard]] std::span<const UnresolvedReason> allUnresolvedReasons() noexcept;
 [[nodiscard]] std::span<const TrustReason> allTrustReasons() noexcept;
 
+/// RFC 0030 §15 item 3: the reason a facet is unresolved when the engine
+/// could not model a construct, from the incompleteness text it records in
+/// the summary: `budget` for a limit ("… limit reached", "… exceeds …
+/// limit"), `raw-cast` for a reinterpretation ("incompatible or unknown
+/// object view …", "unsupported memory copy of pointer-containing
+/// storage"), `inexpressible` for "unrepresentable …", and `unanalysed` for
+/// the rest ("unsupported …", "unresolved array …", "… is ambiguous").
+[[nodiscard]] UnresolvedReason
+incompletenessReason(std::string_view incompleteness) noexcept;
+
 /// The values that fill a reason phrase's placeholders (RFC 0030,
 /// *Diagnostics*): the pointer, the callee, the slot, the function, the
 /// detail, the place, and the two owners of `second-owner`.

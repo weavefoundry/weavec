@@ -16,8 +16,26 @@ most 25 entries. Each entry gives:
 
 ## Entries
 
-None. In S0, `run-cases.py --legacy --filter 'engine/**'` reproduces every
-pin.
+In S0, `run-cases.py --legacy --filter 'engine/**'` reproduced every pin.
+
+RFC 0030 removes `analysis-incomplete` (*Diagnostics*, *Removed ids*): what the
+engine cannot model becomes an `unresolved` row with the reason §15 item 3 maps
+the old text to (`budget` for a limit, `raw-cast` for a reinterpretation,
+`inexpressible` for "unrepresentable …", `unanalysed` otherwise), and the old
+text as its detail. No diagnostic reproduces these eight pins. Each line but
+the last carries an `UNRESOLVED` marker for the row that replaces it, so its
+`BUG` marker is still satisfied as a ledger row (stage S3-B2).
+
+| Case and line | Golden | Now |
+| --- | --- | --- |
+| `engine/Analysis-rfc0006-elements.c:60` | `analysis-incomplete`, warning | `a[0]` temporal `unresolved(unanalysed)`: array cleanup membership is unresolved |
+| `engine/Analysis-rfc0014-pointer-identity.c:33` | `analysis-incomplete`, warning | `memcpy` temporal `unresolved(raw-cast)`: unsupported memory copy of pointer-containing storage |
+| `engine/Analysis-rfc0014-pointer-identity.c:43` | `analysis-incomplete`, warning | `release_field(p)` temporal `unresolved(raw-cast)`: incompatible or unknown object view at call |
+| `engine/Analysis-rfc0016-boundaries.c:10` | `analysis-incomplete`, warning | the call's temporal `unresolved(budget)`: call context relationship limit reached |
+| `engine/Analysis-rfc0016-boundaries.c:21` | `analysis-incomplete`, warning | the call's temporal `unresolved(budget)`: call context input path limit reached |
+| `engine/Analysis-rfc0016-boundaries.c:27` | `analysis-incomplete`, warning | the call's temporal `unresolved(unanalysed)`: unresolved call alias relationship |
+| `engine/Analysis-rfc0016-boundaries.c:33` | `analysis-incomplete`, warning | the call's temporal `unresolved(inexpressible)`: unrepresentable call context input path |
+| `engine/Analysis-rfc0016-context-limits.c:6` | `analysis-incomplete`, warning | nothing on this line: the limit is reached inside the context run of `recurse(p, p, 20)` (line 11), which decides no rows (§2.6); that call's temporal facet is `unresolved(budget)` |
 
 ## Excluded
 

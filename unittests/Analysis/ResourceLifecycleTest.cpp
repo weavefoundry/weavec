@@ -524,9 +524,12 @@ TEST(ResourceLifecycle, TwoSummaryPathsNamingOneCellAreOneRelease) {
   ASSERT_TRUE(result.ast);
   // RFC 0016 retains aggregate release deduplication. This recursive heap
   // projection cannot establish every requested input relationship yet.
-  EXPECT_EQ(ids(result.diagnostics), Strings{"analysis-incomplete"});
-  EXPECT_EQ(messages(result.diagnostics)[0],
-            "12: analysis is incomplete: unresolved call alias relationship");
+  // RFC 0030 §15 item 3: the call's use of the projection is unresolved.
+  EXPECT_TRUE(result.diagnostics.empty())
+      << ::testing::PrintToString(messages(result.diagnostics));
+  EXPECT_EQ(test::incomplete(result),
+            Strings{"12: temporal unanalysed: unresolved call alias "
+                    "relationship"});
 }
 
 TEST(ResourceLifecycle, MemoryBelowAFreedObjectGoesWithItsContainer) {

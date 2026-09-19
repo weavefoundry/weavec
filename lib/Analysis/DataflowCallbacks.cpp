@@ -219,9 +219,17 @@ FunctionDataflow::resolveCall(const CallExpr &call) {
         reportContextFindings(call, std::move(found),
                               "called here with related pointer arguments");
         if (!specialized) {
-          reportIncomplete("call context unavailable or limit reached", call);
+          decideIncomplete("call context unavailable or limit reached", call);
           return snapshot;
         }
+        // RFC 0030 §15 item 3: what the context run could not model (it
+        // decides no rows of its own, §2.6) leaves this call's use of its
+        // summary unresolved.
+        for (const std::string &reason : specialized->summary->incomplete)
+          if (incompleteFacet(reason) == core::Facet::Temporal) {
+            decideIncomplete(reason, call);
+            break;
+          }
         return summaries.retainSummary(*specialized);
       };
   if (direct) {
@@ -243,7 +251,7 @@ FunctionDataflow::resolveCall(const CallExpr &call) {
                   summaries.specialize(*direct, bindings, options, nullptr)) {
             result = summaries.retainSummary(*specialized);
           } else {
-            reportIncomplete("callback context unavailable or limit reached",
+            decideIncomplete("callback context unavailable or limit reached",
                              call);
           }
         }
@@ -309,7 +317,7 @@ FunctionDataflow::resolveCall(const CallExpr &call) {
                       *definition, bindings, options, nullptr))
                 targetSummary = summaries.retainSummary(*specialized);
               else
-                reportIncomplete(
+                decideIncomplete(
                     "callback context unavailable or limit reached", call);
             } else {
               core::CallContext callbackContext;
@@ -318,7 +326,7 @@ FunctionDataflow::resolveCall(const CallExpr &call) {
                       symbol, callbackContext, options, nullptr))
                 targetSummary = summaries.retainSummary(*specialized);
               else
-                reportIncomplete(
+                decideIncomplete(
                     "callback context unavailable or limit reached", call);
             }
           }

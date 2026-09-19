@@ -190,12 +190,12 @@ FunctionDataflow::captureCallContext(const CallExpr &call,
          "capture requires the retained immutable call summary");
   const auto &prepared = callFootprints.get(owner->second);
   if (!prepared) {
-    reportIncomplete("call context input path limit reached", call);
+    decideIncomplete("call context input path limit reached", call);
     return std::nullopt;
   }
   const auto footprint = *prepared;
   if (footprint.size() > core::MaxCallContextFacts) {
-    reportIncomplete("call context input path limit reached", call);
+    decideIncomplete("call context input path limit reached", call);
     return std::nullopt;
   }
   struct Input {
@@ -279,7 +279,7 @@ FunctionDataflow::captureCallContext(const CallExpr &call,
     return std::nullopt;
   };
   if (inputs.size() > core::MaxCallContextPaths) {
-    reportIncomplete("call context input path limit reached", call);
+    decideIncomplete("call context input path limit reached", call);
     return std::nullopt;
   }
   for (std::size_t i = 0; i < inputs.size(); ++i) {
@@ -354,7 +354,7 @@ FunctionDataflow::captureCallContext(const CallExpr &call,
                             .offset = *offset,
                             .definite = definite,
                             .sameShare = sameShare})) {
-        reportIncomplete("call context relationship limit reached", call);
+        decideIncomplete("call context relationship limit reached", call);
         return std::nullopt;
       }
     }
@@ -372,7 +372,7 @@ FunctionDataflow::captureCallContext(const CallExpr &call,
       (!selectedInputs || inputs.size() < 2 || unresolved || unrepresentable))
     return std::nullopt;
   if (unresolved || unrepresentable) {
-    reportIncomplete(unrepresentable ? "unrepresentable call context input path"
+    decideIncomplete(unrepresentable ? "unrepresentable call context input path"
                                      : "unresolved call alias relationship",
                      call);
     return std::nullopt;
@@ -405,7 +405,7 @@ FunctionDataflow::captureCallContext(const CallExpr &call,
   if (result.empty())
     return std::nullopt;
   if (!result.valid()) {
-    reportIncomplete("call context relationship limit reached", call);
+    decideIncomplete("call context relationship limit reached", call);
     return std::nullopt;
   }
   return result;

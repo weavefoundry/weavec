@@ -180,7 +180,11 @@ FunctionDataflow::spatialRecordAt(core::PlaceId place,
                              .offset = {},
                              .location = locate(field->field->getLocation()),
                              .declared = true,
-                             .lowerBound = true};
+                             // RFC 0030 §7.1: a declared kind. An RFC 0012
+                             // inferred count is checked against as one too
+                             // until S6's §7.6 invariants replace it (exact
+                             // when they survive).
+                             .extentClass = core::ExtentClass::Declared};
 }
 
 std::pair<std::optional<core::Affine>, std::optional<core::IntegerType>>

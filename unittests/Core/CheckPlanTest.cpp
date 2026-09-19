@@ -69,6 +69,19 @@ TEST(CheckPlan, TermsAreWellFormedByKind) {
       CheckTerm::add(CheckTerm::ofConstant(1), oneSided).isWellFormed());
 }
 
+// RFC 0030 §7.4: an element count from a byte extent, rounded down.
+TEST(CheckPlan, DivisionIsByAPositiveConstant) {
+  const CheckTerm count = CheckTerm::div(CheckTerm::ofPlace(1), 4);
+  EXPECT_TRUE(count.isWellFormed());
+  EXPECT_EQ(count.toString(), "($1 / 4)");
+  EXPECT_FALSE(CheckTerm::div(CheckTerm::ofPlace(1), 0).isWellFormed());
+  EXPECT_FALSE(CheckTerm::div(CheckTerm::ofPlace(1), -2).isWellFormed());
+  CheckTerm byPlace{.kind = CheckTerm::Kind::Div};
+  byPlace.operands.push_back(CheckTerm::ofPlace(1));
+  byPlace.operands.push_back(CheckTerm::ofPlace(2));
+  EXPECT_FALSE(byPlace.isWellFormed());
+}
+
 TEST(CheckPlan, Spellings) {
   EXPECT_EQ(toString(Template::Nonnull), "nonnull");
   EXPECT_EQ(toString(Template::Disjoint), "disjoint");

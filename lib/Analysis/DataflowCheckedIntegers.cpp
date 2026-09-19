@@ -26,7 +26,7 @@ bool FunctionDataflow::handleCheckedIntegerCall(const CallExpr &call,
   const auto a = integerRangeOf(*call.getArg(0), state);
   const auto b = integerRangeOf(*call.getArg(1), state);
   if (!pointee || !type || !a || !b) {
-    reportIncomplete("unsupported checked integer output", call);
+    decideIncomplete("unsupported checked integer output", call);
     forgetNullnessReachable(builder.classifyValue(*call.getArg(2)), state);
     return true;
   }

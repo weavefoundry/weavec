@@ -84,7 +84,7 @@ FunctionDataflow::integerExpressionOf(const Expr &expr,
   if (!type || expr.isValueDependent())
     return std::nullopt;
   if (depth >= core::MaxIntegerExpressionDepth) {
-    reportIncomplete("integer expression limit reached", expr);
+    decideIncomplete("integer expression limit reached", expr);
     return std::nullopt;
   }
   const Expr *e = expr.IgnoreParens();
@@ -95,7 +95,7 @@ FunctionDataflow::integerExpressionOf(const Expr &expr,
     const auto value = child(*cast->getSubExpr());
     const auto converted = value ? value->converted(*type) : std::nullopt;
     if (value && !converted)
-      reportIncomplete("integer expression limit reached", expr);
+      decideIncomplete("integer expression limit reached", expr);
     return converted;
   }
   if (const auto *constant = dyn_cast<ConstantExpr>(e))
@@ -117,7 +117,7 @@ FunctionDataflow::integerExpressionOf(const Expr &expr,
     const auto value = NumericExpression::operation(
         *op, *lhs, *rhs, context.getLangOpts().isSignedOverflowDefined());
     if (!value)
-      reportIncomplete("integer expression limit reached", expr);
+      decideIncomplete("integer expression limit reached", expr);
     return value ? value->converted(*type) : std::nullopt;
   }
   // A dereference is an integer place read. Its pointer operand is not an

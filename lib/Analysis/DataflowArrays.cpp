@@ -92,7 +92,7 @@ FunctionDataflow::boundedArrayCell(core::PlaceId storage,
       ++cells;
   if (cells >= core::MaxArrayCells) {
     state.incompleteHeap.insert(storage);
-    reportIncomplete("array element limit reached", at);
+    decideIncomplete("array element limit reached", at);
     return std::nullopt;
   }
   return places.element(storage, key);
@@ -215,7 +215,7 @@ PlaceRef FunctionDataflow::selectArrayElement(PlaceRef storage,
   }
   if (!index || (index->place && index->scale != 1)) {
     state.incompleteHeap.insert(storage.place);
-    reportIncomplete("unresolved array element selection", at);
+    decideIncomplete("unresolved array element selection", at);
     storage.element = core::ElementWitness::unknown();
     return storage;
   }
@@ -362,7 +362,7 @@ void FunctionDataflow::snapshotArrayIndex(core::PlaceId place, const Expr *at,
     if (!existing && std::cmp_greater_equal(count, core::MaxArrayCells)) {
       state.incompleteHeap.insert(array);
       if (at)
-        reportIncomplete("array index snapshot element limit reached", *at);
+        decideIncomplete("array index snapshot element limit reached", *at);
       // The old value must remain possibly consumed even if a later write
       // reinitializes the same syntactic selector with the new index value.
       auto moved = state.moves.recordOf(cell);
@@ -386,7 +386,7 @@ void FunctionDataflow::snapshotArrayIndex(core::PlaceId place, const Expr *at,
                             previous->via, previous->element, previous->family,
                             previous->ownValue, previous->guard);
       if (at)
-        reportIncomplete("array index snapshot generation is ambiguous", *at);
+        decideIncomplete("array index snapshot generation is ambiguous", *at);
     }
     state.forget(cell);
     for (const auto child : places.descendants(cell))
@@ -441,7 +441,7 @@ void FunctionDataflow::initializeArray(core::PlaceId storage, QualType type,
                              decl.hasGlobalStorage());
   }
   if (count > core::MaxArrayCells && init)
-    reportIncomplete("array initializer exceeds element limit", *init);
+    decideIncomplete("array initializer exceeds element limit", *init);
 }
 
 void FunctionDataflow::initializeArrayValue(core::PlaceId cell, QualType type,
@@ -452,7 +452,7 @@ void FunctionDataflow::initializeArrayValue(core::PlaceId cell, QualType type,
   if (places.depth(cell) >= PlaceBuilder::MaxPlaceDepth) {
     state.incompleteHeap.insert(cell);
     if (value)
-      reportIncomplete("array initializer exceeds path limit", *value);
+      decideIncomplete("array initializer exceeds path limit", *value);
     return;
   }
   if (type->isArrayType()) {
@@ -603,7 +603,7 @@ void FunctionDataflow::checkArrayTraversal(core::PlaceId storage,
                           .offset = spatial->offset,
                           .unit = size,
                           .declared = spatial->declared,
-                          .lowerBound = spatial->lowerBound};
+                          .extentClass = spatial->extentClass};
   } else if (const auto *decl = builder.varForPlace(*parent);
              decl && decl->getType()->isArrayType()) {
     if (const auto extent = byteSizeOf(decl->getType(), context))

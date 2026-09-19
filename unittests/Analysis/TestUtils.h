@@ -26,6 +26,7 @@
 #include "clang/Tooling/Tooling.h"
 
 #include <memory>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -167,6 +168,40 @@ inline core::DiagnosticCollector analyzeFiltered(
 inline AnalysisResult analyze(const std::string &code,
                               const analysis::AnalysisOptions &options = {}) {
   return analyzeInProgram(code, nullptr, options);
+}
+
+/// RFC 0030 §15 item 3: where the engine could not model a construct, as
+/// `"<line>: <facet> <reason>: <what>"` for every unresolved facet whose
+/// detail is an incompleteness some function's summary records, in ledger
+/// order. (Before RFC 0030 each was an `analysis-incomplete` warning.)
+inline std::vector<std::string> incomplete(const AnalysisResult &result) {
+  std::vector<std::string> out;
+  if (!result.ast)
+    return out;
+  std::set<std::string> recorded;
+  for (const clang::Decl *decl :
+       result.ast->getASTContext().getTranslationUnitDecl()->decls()) {
+    const auto *fn = llvm::dyn_cast<clang::FunctionDecl>(decl);
+    if (fn == nullptr || !fn->doesThisDeclarationHaveABody())
+      continue;
+    if (const core::FunctionSummary *summary = result.summary(fn->getName()))
+      recorded.insert(summary->incomplete.begin(), summary->incomplete.end());
+  }
+  for (const core::UnitLedger &unit : result.planned.ledger.units)
+    for (const core::FunctionLedger &function : unit.functions)
+      for (const core::Site &site : function.sites)
+        for (const core::Facet facet : core::AllFacets) {
+          const core::FacetRecord *record = site.facet(facet);
+          if (record == nullptr ||
+              record->outcome() != core::SiteOutcome::Unresolved ||
+              !recorded.contains(record->decision.detail))
+            continue;
+          out.push_back(std::to_string(site.location.line) + ": " +
+                        std::string(core::toString(facet)) + " " +
+                        std::string(record->decision.reasonText()) + ": " +
+                        record->decision.detail);
+        }
+  return out;
 }
 
 /// Returns the ids of all reported (non-note) diagnostics, in order.

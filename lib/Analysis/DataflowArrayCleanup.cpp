@@ -66,8 +66,10 @@ void FunctionDataflow::collectArrayCleanupLoops(const Stmt *stmt) {
   const auto ignorePlaces = [this](auto &&self, const Stmt *body) -> void {
     if (!body)
       return;
-    if (const auto *expr = dyn_cast<Expr>(body))
+    if (const auto *expr = dyn_cast<Expr>(body)) {
       roles[expr] = Role::Ignore;
+      arrayLoopExprs.insert(expr);
+    }
     for (const auto *child : body->children())
       self(self, child);
   };
@@ -177,7 +179,7 @@ void FunctionDataflow::completeArrayCleanupLoop(const CFGBlock &from,
       fillArrayRange(buffer->storage, *count, operation.bytes,
                      *operation.assignment, state);
     } else {
-      reportIncomplete("unsupported contiguous array fill",
+      decideIncomplete("unsupported contiguous array fill",
                        *operation.assignment);
     }
     return;
@@ -190,7 +192,7 @@ void FunctionDataflow::completeArrayCleanupLoop(const CFGBlock &from,
   const auto count = foldAffine(builder.affineOf(*cleanup.count), state);
   if (!buffer || !count || !buffer->start.isConstant() ||
       buffer->start.constant != 0) {
-    reportIncomplete("unsupported contiguous array cleanup", *cleanup.release);
+    decideIncomplete("unsupported contiguous array cleanup", *cleanup.release);
     return;
   }
   releaseArrayRange(buffer->storage,
@@ -225,7 +227,7 @@ void FunctionDataflow::releaseArrayRange(core::PlaceId storage,
   if (site == arrayReleaseSites.end()) {
     if (arrayReleaseSites.size() >= core::MaxArrayRanges) {
       state.incompleteHeap.insert(storage);
-      reportIncomplete("array release range limit reached", at);
+      decideIncomplete("array release range limit reached", at);
       return;
     }
     site = arrayReleaseSites
@@ -273,11 +275,11 @@ void FunctionDataflow::materializeArrayRelease(core::PlaceId storage,
       continue;
     if (membership == core::ArrayRelation::Unknown) {
       state.incompleteHeap.insert(storage);
-      reportIncomplete("array cleanup membership is unresolved", at);
+      decideIncomplete("array cleanup membership is unresolved", at);
     }
     if (range.materialized.size() >= core::MaxArrayCells) {
       state.incompleteHeap.insert(storage);
-      reportIncomplete("array cleanup element limit reached", at);
+      decideIncomplete("array cleanup element limit reached", at);
       continue;
     }
     // The loop's own selected body place may already have a record from a
@@ -319,7 +321,7 @@ void FunctionDataflow::applyArrayReleases(const CallExpr &call,
     const auto count =
         foldAffine(builder.affineFromPath(release.count, call), state);
     if (!storage || !begin || !count || (begin->place && begin->scale != 1)) {
-      reportIncomplete("unresolved array cleanup at call", call);
+      decideIncomplete("unresolved array cleanup at call", call);
       continue;
     }
     const auto index =

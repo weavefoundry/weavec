@@ -24,6 +24,8 @@ weavec_add_library(
           DataflowHeap.cpp
           DataflowMemory.cpp
           DataflowViews.cpp
+          DataflowWitnesses.cpp
+          DataflowLibraryRequirements.cpp
           DataflowCallbacks.cpp
           CallbackSummaries.cpp
           CallContextSummaries.cpp

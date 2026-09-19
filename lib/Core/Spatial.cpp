@@ -304,8 +304,9 @@ static bool joinRecord(SpatialRecord &mine, const SpatialRecord &theirs) {
     mine.extent.reset();
     changed = true;
   }
-  if (mine.extent && theirs.lowerBound && !mine.lowerBound) {
-    mine.lowerBound = true;
+  // The weaker class: Exact < Declared < LowerBound in the enum's order.
+  if (mine.extent && theirs.extentClass > mine.extentClass) {
+    mine.extentClass = theirs.extentClass;
     changed = true;
   }
   if (mine.boundsOffset != theirs.boundsOffset) {

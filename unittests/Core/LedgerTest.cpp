@@ -79,6 +79,32 @@ TEST(Ledger, UnresolvedReasonsAreTheClosedListInOrder) {
   EXPECT_FALSE(parseUnresolvedReason("unsafe"));
 }
 
+// RFC 0030 §15 item 3: the engine's incompleteness texts and their reasons.
+TEST(Ledger, IncompletenessMapsToAnUnresolvedReason) {
+  EXPECT_EQ(incompletenessReason("array element limit reached"),
+            UnresolvedReason::Budget);
+  EXPECT_EQ(incompletenessReason("call context unavailable or limit reached"),
+            UnresolvedReason::Budget);
+  EXPECT_EQ(incompletenessReason("array initializer exceeds element limit"),
+            UnresolvedReason::Budget);
+  EXPECT_EQ(incompletenessReason("function dataflow iteration limit reached"),
+            UnresolvedReason::Budget);
+  EXPECT_EQ(incompletenessReason("incompatible or unknown object view at call"),
+            UnresolvedReason::RawCast);
+  EXPECT_EQ(incompletenessReason(
+                "unsupported memory copy of pointer-containing storage"),
+            UnresolvedReason::RawCast);
+  EXPECT_EQ(incompletenessReason("unrepresentable call context input path"),
+            UnresolvedReason::Inexpressible);
+  EXPECT_EQ(incompletenessReason("unsupported compound integer assignment"),
+            UnresolvedReason::Unanalysed);
+  EXPECT_EQ(incompletenessReason("unresolved array element selection"),
+            UnresolvedReason::Unanalysed);
+  EXPECT_EQ(
+      incompletenessReason("array index snapshot generation is ambiguous"),
+      UnresolvedReason::Unanalysed);
+}
+
 TEST(Ledger, TrustReasonsAreTheClosedListInOrder) {
   const std::vector<std::string_view> expected{
       "unsafe",          "system-api",    "library-spec", "extern-contract",

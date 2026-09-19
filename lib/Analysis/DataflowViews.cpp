@@ -103,7 +103,7 @@ bool FunctionDataflow::validateObjectPath(const core::SummaryPath &path,
           }
         }
         if (actual.empty() || actual != expected->second) {
-          reportIncomplete("incompatible or unknown object view at call", call);
+          decideIncomplete("incompatible or unknown object view at call", call);
           return false;
         }
         if (typed) {

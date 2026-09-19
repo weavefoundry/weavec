@@ -25,7 +25,7 @@ void FunctionDataflow::fillArrayRange(core::PlaceId storage, core::Affine count,
     return;
   checkArrayTraversal(storage, count, at, state);
   if (count.place && count.scale != 1) {
-    reportIncomplete("unsupported contiguous array fill", at);
+    decideIncomplete("unsupported contiguous array fill", at);
     return;
   }
   if (recording()) {
@@ -42,7 +42,7 @@ void FunctionDataflow::fillArrayRange(core::PlaceId storage, core::Affine count,
   if (site == arrayFillSites.end()) {
     if (arrayFillSites.size() >= core::MaxArrayRanges) {
       state.incompleteHeap.insert(storage);
-      reportIncomplete("array fill range limit reached", at);
+      decideIncomplete("array fill range limit reached", at);
       return;
     }
     site = arrayFillSites
@@ -95,7 +95,7 @@ void FunctionDataflow::materializeArrayFill(core::PlaceId storage,
     const auto site = arrayFillExpressions.find(key);
     if (site == arrayFillExpressions.end() ||
         range.materialized.size() >= core::MaxArrayCells) {
-      reportIncomplete("array fill selection limit reached", at);
+      decideIncomplete("array fill selection limit reached", at);
       state.incompleteHeap.insert(storage);
       continue;
     }
@@ -143,7 +143,7 @@ void FunctionDataflow::materializeArrayFill(core::PlaceId storage,
     range.materialized.insert(index);
     if (before) {
       state.join(*before, &places);
-      reportIncomplete("array fill membership is unresolved", at);
+      decideIncomplete("array fill membership is unresolved", at);
       state.incompleteHeap.insert(storage);
     }
   }
@@ -172,7 +172,7 @@ void FunctionDataflow::applyArrayFills(const CallExpr &call,
     const auto count =
         foldAffine(builder.affineFromPath(fill.count, call), state);
     if (!storage || !count) {
-      reportIncomplete("unresolved array fill at call", call);
+      decideIncomplete("unresolved array fill at call", call);
       continue;
     }
     fillArrayRange(storage->place, *count, fill.bytes, call, state, ordinal++,

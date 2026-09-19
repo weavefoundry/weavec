@@ -1,5 +1,8 @@
 // Engine pin converted from test/Analysis/rfc0014-pointer-identity.c; markers are the v0.10.0 golden diagnostics.
 // RFC 0014: actual callbacks, pointer predicates, complete memory copies.
+// RFC 0030 (*Diagnostics*, §15 item 3): `analysis-incomplete` is removed; each
+// such pin now has the ledger row that replaces it (`UNRESOLVED`), and is
+// listed in test/cases/KNOWN-DIFFERENCES.md.
 #include <stdlib.h>
 #include <string.h>
 
@@ -30,7 +33,7 @@ void copied_pointer_bad(int *p) {
 }
 
 void partial(int **dest, int **source) {
-  memcpy(dest, source, 1); // BUG: analysis-incomplete possible
+  memcpy(dest, source, 1); // BUG: analysis-incomplete possible // UNRESOLVED: temporal:raw-cast
 }
 
 struct first { int *p; };
@@ -40,5 +43,5 @@ static void release_field(void *object) {
   free(p->p);
 }
 void incompatible(struct second *p) {
-  release_field(p); // BUG: analysis-incomplete possible
+  release_field(p); // BUG: analysis-incomplete possible // UNRESOLVED: temporal:raw-cast
 }

@@ -84,7 +84,9 @@ TEST(DynamicExtents, OverflowingElementByteProductCannotBeProven) {
                               {.dumpStream = &stream});
   ASSERT_TRUE(result.ast);
   EXPECT_EQ(countId(result, core::diag::OutOfBounds), 0U);
-  EXPECT_GT(countId(result, core::diag::AnalysisIncomplete), 0U);
+  // RFC 0030 §15 item 3: the gap is the summary's (a declaration is no
+  // site), and the access is not proven.
+  EXPECT_FALSE(result.summary("test")->incomplete.empty());
   EXPECT_NE(dump.find("spatial: proven=0 violation=0 unresolved=1"),
             std::string::npos)
       << dump;
@@ -103,7 +105,9 @@ TEST(DynamicExtents, OverflowingFixedOuterByteProductCannotBeProven) {
                               {.dumpStream = &stream});
   ASSERT_TRUE(result.ast);
   EXPECT_EQ(countId(result, core::diag::OutOfBounds), 0U);
-  EXPECT_GT(countId(result, core::diag::AnalysisIncomplete), 0U);
+  // RFC 0030 §15 item 3: the gap is the summary's (a declaration is no
+  // site), and the access is not proven.
+  EXPECT_FALSE(result.summary("test")->incomplete.empty());
   EXPECT_NE(dump.find("spatial: proven=0 violation=0 unresolved=2"),
             std::string::npos)
       << dump;
@@ -321,7 +325,9 @@ TEST(DynamicExtents, SideEffectingDimensionsCannotProveStorage) {
   )c",
                               {.dumpStream = &stream});
   ASSERT_TRUE(result.ast);
-  EXPECT_GT(countId(result, core::diag::AnalysisIncomplete), 0U);
+  // RFC 0030 §15 item 3: the gap is the summary's (a declaration is no
+  // site), and the access is not proven.
+  EXPECT_FALSE(result.summary("test")->incomplete.empty());
   EXPECT_NE(dump.find("spatial: proven=0 violation=0 unresolved=1"),
             std::string::npos)
       << dump;

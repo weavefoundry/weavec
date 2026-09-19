@@ -2,6 +2,9 @@
 // RFC 0006 regression cases, amended by RFC 0015: selected cells retain
 // their history across independent updates, scalar writes and joins.
 // Distinct unresolved scalar indices are not proof of disjointness.
+// RFC 0030 (*Diagnostics*, §15 item 3): `analysis-incomplete` is removed; each
+// such pin now has the ledger row that replaces it (`UNRESOLVED`), and is
+// listed in test/cases/KNOWN-DIFFERENCES.md.
 #include "Inputs/prelude.h"
 
 // Reported: same witness.
@@ -57,7 +60,7 @@ void null_out(char **a, int n) {
     free(a[i]);
     a[i] = NULL;
   }
-  use(a[0]); // BUG: analysis-incomplete possible
+  use(a[0]); // BUG: analysis-incomplete possible // UNRESOLVED: temporal:unanalysed
 }
 
 void incremented(char **a, int i) {

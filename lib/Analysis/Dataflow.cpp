@@ -542,7 +542,7 @@ core::AnalysisState FunctionDataflow::initialState() {
                      .offset = core::PointerOffset::zero(),
                      .location = locate(param->getLocation()),
                      .declared = true,
-                     .lowerBound = true});
+                     .extentClass = core::ExtentClass::Declared});
   }
   for (const auto &[path, targets] : callbackBindings) {
     const auto input = contextPlace(path, state);
@@ -1503,13 +1503,17 @@ void FunctionDataflow::checkOutlivedLoans(
 std::optional<core::SpatialRecord>
 FunctionDataflow::storageRecordOf(const PlaceRef &storage,
                                   const core::PointerOffset &offset) {
-  // `buf[*]` from array decay or `&buf[i]` is the array's storage; `&x` and
-  // `&s.f` are the variable's or the field's.
+  // `buf[*]` from array decay or `&buf[i]` is the array's storage; `&x` is
+  // the variable's. RFC 0030 §7.4: `&s.f`, `&m[i][j]` and the decay of
+  // `s.arr` or `m[i]` have the extent of the complete object, as
+  // `__builtin_object_size` mode 0 does.
   core::PlaceId place = storage.place;
   if (!places.isBase(place) && places.step(place) == core::PathStep::Index)
     place = *places.parent(place);
   if (places.innermostDeref(place))
     return std::nullopt;
+  if (!places.isBase(place))
+    return completeStorageRecordOf(storage, offset);
   const auto *decl = dyn_cast_if_present<ValueDecl>(builder.declFor(place));
   if (decl == nullptr)
     return std::nullopt;
@@ -1550,10 +1554,23 @@ void FunctionDataflow::checkInvalidRelease(
     return;
   const std::string verb =
       reason == core::MoveReason::Freed ? "released" : "passed as owned";
-  // RFC 0030 §3.4: the spatial facet of the releasing site. A definite
-  // finding (the pointer exactly aliases storage, a literal or an interior
-  // position on every path) is an error; a possible one a warning.
-  const SiteInfo *site = siteFor(at, core::Facet::Spatial);
+  // RFC 0030 §3.4: the spatial facet of the releasing site (the call's
+  // own: a callee that releases its argument is no site of this kind). A
+  // definite finding (the pointer exactly aliases storage, a literal or an
+  // interior position on every path) is an error; a possible one a
+  // warning. Without a finding (§15 item 4) the release is proven when the
+  // engine knows the value is the start of an allocation (a null pointer,
+  // an allocation's result, a resource this function holds at offset
+  // zero), and `unknown-index` otherwise: where a pointer from a caller,
+  // a field or an unknown callee points in its object is not known here
+  // (a static callee's caller may pass `&x`, which its call reports).
+  const SiteInfo *site = accessSite(at, core::Facet::Spatial);
+  const auto settle = [&](bool known) {
+    decide(site, core::Facet::Spatial,
+           known ? core::FacetDecision::proven()
+                 : core::FacetDecision::unresolvedFor(
+                       core::UnresolvedReason::UnknownIndex));
+  };
   const auto emit = [&](core::Diagnostic diagnostic, bool definite) {
     decide(site, core::Facet::Spatial,
            definite ? core::FacetDecision::violation()
@@ -1629,8 +1646,12 @@ void FunctionDataflow::checkInvalidRelease(
   // storage itself.
   if (origin.kind == ValueOrigin::Kind::Borrow && origin.place) {
     const core::PlaceId storage = origin.place->place;
-    if (!isStorageOfVariable(storage))
+    // `&n->link`: a position inside a heap object, which the releaser may
+    // compose back to its start (an intrusive list).
+    if (!isStorageOfVariable(storage)) {
+      settle(/*known=*/false);
       return;
+    }
     const core::PlaceId root = places.root(storage);
     if (builder.isLiteralPlace(root)) {
       emit(makeError(core::diag::InvalidRelease, "a string literal is " + verb,
@@ -1648,15 +1669,27 @@ void FunctionDataflow::checkInvalidRelease(
     emit(std::move(diagnostic), /*definite=*/true);
     return;
   }
-  if (!ref || origin.kind != ValueOrigin::Kind::Copy || !origin.place)
+  // A null pointer releases nothing; a fresh allocation is its start.
+  if (!ref || origin.kind != ValueOrigin::Kind::Copy || !origin.place) {
+    settle(origin.kind == ValueOrigin::Kind::Null ||
+           origin.kind == ValueOrigin::Kind::Alloc);
     return;
+  }
   const core::PlaceId place = ref->place;
-  // A place already dead is reported as a double free or use-after-move.
-  if (findMoved(place, state, ref->element))
+  // Where the released value points: the holder's offset composed with the
+  // argument's arithmetic and the releaser's (RFC 0011).
+  const auto spatial = state.spatial.recordOf(place);
+  const core::PointerOffset holder =
+      spatial ? spatial->offset : core::PointerOffset::zero();
+  const core::PointerOffset step = origin.offset.plus(calleeOffset);
+  const core::PointerOffset value = holder.plus(step);
+  const auto record = state.resources.recordOf(place);
+  // A place already dead is reported as a double free or use-after-move;
+  // annotated borrows are RFC 0003's `annotation-mismatch`.
+  if (findMoved(place, state, ref->element) || borrowedParamFor(place, state)) {
+    settle(record && value.isZero());
     return;
-  // Annotated borrows are RFC 0003's `annotation-mismatch`.
-  if (borrowedParamFor(place, state))
-    return;
+  }
   const std::string subject = nameOf(place);
   // 1, 2: the place holds a loan on a variable's storage or a literal, on
   // every path (definite) or on some.
@@ -1672,27 +1705,21 @@ void FunctionDataflow::checkInvalidRelease(
   // start, and is not reported. Only a release cares where the pointer
   // points: ownership handed over through `&n->link` (an intrusive list)
   // is the whole object's, and the releaser composes the offset back.
-  if (reason != core::MoveReason::Freed)
+  if (reason != core::MoveReason::Freed || value.isZero()) {
+    settle(record && value.isZero());
     return;
-  const auto record = state.resources.recordOf(place);
-  if (!record)
-    return;
-  const auto spatial = state.spatial.recordOf(place);
-  const core::PointerOffset holder =
-      spatial ? spatial->offset : core::PointerOffset::zero();
-  const core::PointerOffset step = origin.offset.plus(calleeOffset);
-  const core::PointerOffset value = holder.plus(step);
-  if (value.isZero())
-    return;
+  }
   // Arithmetic the checker could not follow, in the argument (`free(s -
   // hdrsize(s))`) or in the releaser (`sdsfree` doing the same; `json_decref`
   // reaching one of several container types), may well land on the start:
   // no report. Only a pointer the holder itself lost track of (`free(q)`
-  // with `q = strchr(p, c)`) is reported at an unknown offset.
-  if (step.isIndefinite())
+  // with `q = strchr(p, c)`) is reported at an unknown offset. Nor is a
+  // pointer into an object this function did not allocate.
+  if (!record || step.isIndefinite() ||
+      (value.isIndefinite() && holder.isIndefinite() && !step.isZero())) {
+    settle(/*known=*/false);
     return;
-  if (value.isIndefinite() && holder.isIndefinite() && !step.isZero())
-    return;
+  }
   reportInterior(subject, *record, value);
 }
 
@@ -3193,8 +3220,11 @@ void FunctionDataflow::handleExpr(const Expr &expr,
           role = Role::Consume;
       }
     }
-    if (role == Role::Ignore)
+    if (role == Role::Ignore) {
+      if (arrayLoopExprs.contains(&expr))
+        decideLoopBodySite(expr, state);
       return;
+    }
     const auto ref = builder.resolve(expr);
     if (!ref) {
       // `((T *)(uintptr_t)x)->f`: a dereference of a raw value that lives
@@ -3204,13 +3234,29 @@ void FunctionDataflow::handleExpr(const Expr &expr,
           reportRawOperation(
               "dereference of raw pointer outside an unsafe region", "",
               *record, expr);
+        return;
       }
+      // RFC 0030 §15 item 4: an access through a pointer that lives in no
+      // place (`((char *)&ts->contents)[n]`) still has its facets.
+      decideUnplacedAccess(expr, role, state);
       return;
     }
     // RFC 0011, *Bounds checks*: the object read or written must be big
     // enough for the access.
     if (role == Role::Read || role == Role::Write || role == Role::ReadWrite)
       checkBounds(expr, state);
+    // RFC 0030 *Diagnostics*: a store through a pointer into a string
+    // literal.
+    if (role == Role::Write || role == Role::ReadWrite)
+      if (const auto access = accessOf(expr); access && access->base)
+        checkLiteralWrite(*access->base, expr,
+                          accessSite(PlaceBuilder::stripTransparent(expr),
+                                     core::Facet::Spatial),
+                          state);
+    // RFC 0030 §15 item 4: the accesses the path makes on its way (they are
+    // interior nodes, handled here), and a consumed argument's own load
+    // (`free(a[i])` reads `a[i]`).
+    decidePathBounds(expr, role == Role::Consume, state);
     switch (role) {
     case Role::Read:
       doRead(*ref, expr, state, /*includeSelf=*/true);
@@ -3779,6 +3825,7 @@ void FunctionDataflow::handleAssign(const BinaryOperator &assign,
   doMutationCheck(lhs->place, assign, state);
   checkAnnotationOnWrite(*lhs, assign, state);
   recordAccess(lhs->place, /*write=*/true, state);
+  noteReinterpretingStore(*assign.getLHS(), *lhs, state);
 
   const QualType type = assign.getLHS()->getType();
   if (type->isPointerType()) {
@@ -3807,7 +3854,7 @@ void FunctionDataflow::handleAssign(const BinaryOperator &assign,
       }
       state.join(before, &places);
       state.incompleteHeap.insert(lhs->place);
-      reportIncomplete("unresolved array element update", assign);
+      decideIncomplete("unresolved array element update", assign);
       return;
     }
     // This function's own whole write: the caller's value there is gone on
@@ -4183,8 +4230,10 @@ void FunctionDataflow::initRecord(core::PlaceId dest, const InitListExpr &init,
 
 void FunctionDataflow::handleCall(const CallExpr &call,
                                   core::AnalysisState &state) {
-  if (arrayCleanupCalls.contains(&call))
+  if (arrayCleanupCalls.contains(&call)) {
+    decideLoopBodySite(call, state);
     return;
+  }
   numericInputsReady.erase(&call);
   lastCall.reset();
   if (handleCheckedIntegerCall(call, state))
@@ -4214,6 +4263,12 @@ void FunctionDataflow::handleCall(const CallExpr &call,
   }
   // RFC 0030 §2.1: the exit a call that does not return stands for.
   decideExit(call, core::FacetDecision::proven());
+  // §15 item 4: a library call's requirements, against the facts before
+  // the call's own effects.
+  if (publishing()) {
+    decideLibraryRequirements(call, state);
+    decideDeclaredRequirements(call, state);
+  }
   const auto effects = classifyCall(call, summaries);
   if (!effects) {
     prepareNumericCall(call, core::FunctionSummary{}, state);
@@ -5628,6 +5683,17 @@ void FunctionDataflow::doRead(const PlaceRef &ref, const Expr &at,
     if (const auto hit = findMoved(deref.pointer, state, deref.element)) {
       if (reportMoved)
         reportUseOfMoved(deref.pointer, *hit, where != nullptr ? *where : at);
+      // RFC 0030 §15 item 4: the site's null facet is still decided by
+      // what is known of the pointer (the use is the finding here; nothing
+      // else is reported or refined).
+      if (where != nullptr) {
+        const auto record = nullnessAt(deref.pointer, state);
+        decide(siteFor(*where, core::Facet::Null,
+                       /*operand=*/!isa<CallExpr>(*where)),
+               core::Facet::Null,
+               record && !record->mayBeNull() ? core::FacetDecision::proven()
+                                              : core::FacetDecision::checked());
+      }
       return;
     }
     // Dereferencing a raw pointer (RFC 0004, *Raw pointers*, rule 1).
@@ -5640,10 +5706,22 @@ void FunctionDataflow::doRead(const PlaceRef &ref, const Expr &at,
     }
     // RFC 0030 §3.1: no record, the object is live (under the entry
     // assumptions and §9.4). Stage S3-B3 adds `may-alias-released` and the
-    // unknown-callee records.
-    if (where != nullptr)
+    // unknown-callee records. §15 item 4: a pointer made by
+    // reinterpretation says nothing about the object it points to.
+    if (where != nullptr) {
+      const bool reinterpreted = state.reinterpreted.contains(deref.pointer);
+      const core::FacetDecision decision =
+          reinterpreted ? core::FacetDecision::unresolvedFor(
+                              core::UnresolvedReason::RawCast,
+                              "'" + nameOf(deref.pointer) +
+                                  "' was made from a non-pointer value")
+                        : core::FacetDecision::proven();
       decide(siteFor(*where, core::Facet::Temporal, /*operand=*/true),
-             core::Facet::Temporal, core::FacetDecision::proven());
+             core::Facet::Temporal, decision);
+      if (reinterpreted)
+        decide(siteFor(*where, core::Facet::Spatial, /*operand=*/true),
+               core::Facet::Spatial, decision);
+    }
     // Dereferencing a pointer that may be null (RFC 0008, *Nullness*).
     checkDereference(deref.pointer, where != nullptr ? *where : at, state);
   }
@@ -5926,6 +6004,39 @@ void FunctionDataflow::doMutationCheck(core::PlaceId place, const Expr &at,
   report(std::move(diagnostic));
 }
 
+/// Whether the pointer value `value` is converted, on its way from the
+/// place or storage it comes from, between pointers to elements of
+/// different sizes (`void` counting as unknown).
+static bool changesElementSize(const Expr &value, const ASTContext &context) {
+  const Expr *e = &value;
+  for (unsigned depth = 0; depth < 32 && e != nullptr; ++depth) {
+    e = e->IgnoreParens();
+    if (const auto *cast = dyn_cast<CastExpr>(e)) {
+      const QualType to = cast->getType();
+      const QualType from = cast->getSubExpr()->getType();
+      if (to->isPointerType() && from->isPointerType() &&
+          byteSizeOf(to->getPointeeType(), context) !=
+              byteSizeOf(from->getPointeeType(), context))
+        return true;
+      e = cast->getSubExpr();
+      continue;
+    }
+    if (const auto *binary = dyn_cast<BinaryOperator>(e)) {
+      if (binary->getOpcode() == BO_Comma) {
+        e = binary->getRHS();
+        continue;
+      }
+      if (binary->getType()->isPointerType() && binary->isAdditiveOp()) {
+        e = binary->getLHS()->getType()->isPointerType() ? binary->getLHS()
+                                                         : binary->getRHS();
+        continue;
+      }
+    }
+    return false;
+  }
+  return false;
+}
+
 void FunctionDataflow::applyPointerAssign(core::PlaceId dest,
                                           const ValueOrigin &given,
                                           const Expr &at, bool constPointee,
@@ -5942,6 +6053,37 @@ void FunctionDataflow::applyPointerAssign(core::PlaceId dest,
   if (const auto *assign = dyn_cast<BinaryOperator>(rhs);
       assign && assign->isAssignmentOp())
     rhs = assign->getRHS();
+  // RFC 0030 §2.3 `raw-cast`: a value made by reinterpretation keeps that
+  // origin through copies; any other value replaces it (settled when the
+  // assignment is done, as it forgets what the place held).
+  const bool reinterpretedValue =
+      isa<VAArgExpr>(rhs->IgnoreParenCasts()) ||
+      (given.kind == ValueOrigin::Kind::Copy && given.place &&
+       state.reinterpreted.contains(given.place->place));
+  const auto settleReinterpreted = llvm::scope_exit([&] {
+    if (reinterpretedValue)
+      state.reinterpreted.insert(dest);
+    else
+      state.reinterpreted.erase(dest);
+    // A record counts its offset in elements of its pointer's pointee: a
+    // value converted between pointers to elements of different sizes on
+    // its way here (`(char *)(a + 2)`) is somewhere inside the object in
+    // these units (§7.4 counts bytes; a rescaled offset is future work).
+    if (!changesElementSize(*rhs, context))
+      return;
+    if (auto record = state.spatial.recordOf(dest)) {
+      const bool elements =
+          record->offset.isElements() ||
+          (record->boundsOffset && record->boundsOffset->isElements());
+      if (!elements)
+        return;
+      if (record->offset.isElements())
+        record->offset = core::PointerOffset::inside();
+      if (record->boundsOffset && record->boundsOffset->isElements())
+        record->boundsOffset = core::PointerOffset::inside();
+      state.spatial.set(dest, std::move(*record));
+    }
+  });
   QualType valueType = rhs->IgnoreParenCasts()->getType();
   if (valueType->isPointerType())
     objectView = summaries.objectView(valueType->getPointeeType());
@@ -7033,6 +7175,17 @@ const SiteInfo *FunctionDataflow::siteFor(const Stmt &at, core::Facet facet,
   return nullptr;
 }
 
+const SiteInfo *FunctionDataflow::accessSite(const Expr &access,
+                                             core::Facet facet) {
+  if (!publishing())
+    return nullptr;
+  const SiteIndex &sites = ledger.siteIndex();
+  for (const core::SiteId id : sites.sitesOf(access))
+    if (ledger.applies(id, facet))
+      return sites.info(id);
+  return nullptr;
+}
+
 void FunctionDataflow::decide(const SiteInfo *site, core::Facet facet,
                               const core::FacetDecision &decision) {
   if (site == nullptr || !publishing())
@@ -7097,9 +7250,22 @@ FunctionDataflow::expressionTerm(const NumericExpression &expression,
     return placeTerm(*key, readsThrough);
   const auto &root = expression.all().back();
   const auto operands = expression.operands();
-  if (root.kind == core::IntegerNodeKind::Convert && operands.size() == 1)
+  // §7.4 *Arithmetic*, §10.2: the term helpers compute in 64 bits, so a
+  // value the program truncated or wrapped in a narrower type has no term:
+  // the check would compare against more than the program computed. (A
+  // 64-bit product that wrapped saturates in the helper, and a negative
+  // signed leaf counts as 0: both fail closed for an extent.)
+  if (root.kind == core::IntegerNodeKind::Convert && operands.size() == 1) {
+    if (root.type.width < operands.front().type().width)
+      return std::nullopt;
     return expressionTerm(operands.front(), readsThrough);
+  }
   if (root.kind != core::IntegerNodeKind::Operation || operands.size() != 2)
+    return std::nullopt;
+  if (root.type.width < 64 &&
+      (currentState == nullptr ||
+       !operationDoesNotOverflow(root.op, operands[0], operands[1], root.type,
+                                 *currentState)))
     return std::nullopt;
   auto lhs = expressionTerm(operands[0], readsThrough);
   auto rhs = lhs ? expressionTerm(operands[1], readsThrough) : std::nullopt;
@@ -7114,143 +7280,6 @@ FunctionDataflow::expressionTerm(const NumericExpression &expression,
     return WitnessTerm::mul(std::move(*lhs), std::move(*rhs));
   default:
     return std::nullopt;
-  }
-}
-
-std::optional<CheckWitness>
-FunctionDataflow::indexWitness(const KnownExtent &known) {
-  // §14 `witness`: an index below the whole elements of an object the
-  // pointer points to the start of, counted by a constant or a place the
-  // record still speaks about (a write to it would have dropped the extent,
-  // `SpatialTracker::dropExtentsOn`). A place read through a pointer needs
-  // that pointer known non-null here (§10.3 rule 5).
-  if (!known.unit || *known.unit <= 0 || !known.offset.isZero())
-    return std::nullopt;
-  const std::int64_t unit = *known.unit;
-  std::optional<WitnessTerm> extent;
-  std::optional<core::PlaceId> readsThrough;
-  if (known.have.isConstant()) {
-    // Whole elements: `i < have / unit` is `(i + 1) * unit <= have`.
-    if (known.have.constant >= 0)
-      extent = WitnessTerm::ofConstant(known.have.constant / unit);
-  } else if (known.have.constant == 0 && known.have.scale > 0) {
-    const core::PlaceId place = *known.have.place;
-    const std::int64_t scale = known.have.scale;
-    const auto numeric = numericExpressions.find(place);
-    if (numeric == numericExpressions.end()) {
-      if (scale % unit == 0)
-        extent = placeTerm(place, readsThrough);
-      if (extent && scale != unit)
-        extent = WitnessTerm::mul(std::move(*extent),
-                                  WitnessTerm::ofConstant(scale / unit));
-    } else if (scale % unit == 0) {
-      // A computed quantity (`n * sizeof *p`, RFC 0017).
-      extent = expressionTerm(numeric->second, readsThrough);
-      if (extent && scale != unit)
-        extent = WitnessTerm::mul(std::move(*extent),
-                                  WitnessTerm::ofConstant(scale / unit));
-    } else if (scale == 1) {
-      // `x * k` bytes with `k` a multiple of the element: `x * (k / unit)`.
-      const auto &root = numeric->second.all().back();
-      const auto operands = numeric->second.operands();
-      if (root.kind == core::IntegerNodeKind::Operation &&
-          root.op == core::IntegerOp::Multiply && operands.size() == 2)
-        for (std::size_t i = 0; i < 2 && !extent; ++i)
-          if (const auto k = operands[1 - i].constantValue())
-            if (const auto factor = k->signedValue();
-                factor && *factor > 0 && *factor % unit == 0)
-              if (auto count = expressionTerm(operands[i], readsThrough))
-                extent = *factor == unit
-                             ? std::move(*count)
-                             : WitnessTerm::mul(
-                                   std::move(*count),
-                                   WitnessTerm::ofConstant(*factor / unit));
-    }
-  }
-  if (!extent)
-    return std::nullopt;
-  return CheckWitness{
-      .shape = CheckWitness::Shape::Index,
-      .extent = std::move(extent),
-      .extentClass = known.lowerBound ? core::ExtentClass::Declared
-                                      : core::ExtentClass::Exact,
-      .unmodified = true,
-      .accessesSafe =
-          !readsThrough || (currentState != nullptr &&
-                            currentState->nulls.isNonNull(*readsThrough))};
-}
-
-void FunctionDataflow::decideSpatial(const SiteInfo *site,
-                                     const core::SpatialCheck &check,
-                                     const KnownExtent *known,
-                                     const core::Affine *need) {
-  (void)need;
-  if (site == nullptr || !publishing())
-    return;
-  // A check against the extent the engine knows (§14 `witness`): an index
-  // below a constant or a variable count of elements, for an access at the
-  // start of its object. Without one the planner falls back to what the
-  // declarations give, or finds the check inexpressible.
-  const auto checked = [&] {
-    decide(site, core::Facet::Spatial, core::FacetDecision::checked());
-    if (known != nullptr)
-      if (auto witness = indexWitness(*known))
-        ledger.witness(*site->stmt, core::Facet::Spatial, std::move(*witness));
-  };
-  switch (check.outcome) {
-  case core::SpatialOutcome::Proven:
-    decide(site, core::Facet::Spatial, core::FacetDecision::proven());
-    return;
-  case core::SpatialOutcome::Violation: {
-    // §3.3: a violation against an exact extent is the caller's error; a
-    // boundary value that may be past the end, or a declared or inferred
-    // extent the object may exceed, is checked.
-    const bool definiteKind =
-        check.violation &&
-        (check.violation->kind == core::BoundsVerdict::Kind::OutOfBounds ||
-         check.violation->kind == core::BoundsVerdict::Kind::BeforeStart ||
-         check.violation->kind == core::BoundsVerdict::Kind::AtLeastPastEnd);
-    if (definiteKind && known != nullptr && !known->lowerBound) {
-      decide(site, core::Facet::Spatial, core::FacetDecision::violation());
-      return;
-    }
-    checked();
-    return;
-  }
-  case core::SpatialOutcome::Unresolved:
-    break;
-  }
-  // The extent is known but not where in it the access lands: a check.
-  if (check.reason == core::SpatialReason::UnknownIndex && known != nullptr) {
-    checked();
-    return;
-  }
-  // What the declarations give still makes a check (§2.6).
-  if (site->spatialCheckable()) {
-    decide(site, core::Facet::Spatial, core::FacetDecision::checked());
-    return;
-  }
-  switch (check.reason) {
-  case core::SpatialReason::UnknownExtent:
-  case core::SpatialReason::InterfaceRequirement:
-    decide(site, core::Facet::Spatial,
-           core::FacetDecision::unresolvedFor(
-               core::UnresolvedReason::UnknownExtent));
-    return;
-  case core::SpatialReason::UnknownOffset:
-    decide(site, core::Facet::Spatial,
-           core::FacetDecision::unresolvedFor(
-               core::UnresolvedReason::UnknownIndex));
-    return;
-  case core::SpatialReason::UnknownIndex:
-  case core::SpatialReason::Arithmetic:
-  case core::SpatialReason::UnsupportedExpression:
-  case core::SpatialReason::None:
-    decide(site, core::Facet::Spatial,
-           core::FacetDecision::unresolvedFor(
-               core::UnresolvedReason::Unanalysed,
-               std::string(core::toString(check.reason))));
-    return;
   }
 }
 
@@ -8118,13 +8147,25 @@ FunctionDataflow::knownExtentOf(const Access &access,
   const auto record = spatialRecordAt(ref->place, state);
   if (!record || !record->extent)
     return std::nullopt;
+  core::PointerOffset offset = record->boundsOffset.value_or(record->offset);
+  // A record counts its offset in elements of its own pointer's pointee; a
+  // conversion to a pointer of another element size on the way to the
+  // access (`((char *)p)[i]`) leaves the position unknown in these units.
+  if (offset.isElements())
+    if (const QualType held = access.base->IgnoreParenCasts()->getType();
+        held->isPointerType() &&
+        byteSizeOf(held->getPointeeType(), context) !=
+            byteSizeOf(access.base->getType()->getPointeeType(), context))
+      offset = core::PointerOffset::inside();
   return KnownExtent{.have = *record->extent,
                      .origin = record->location,
                      .pointer = ref->place,
-                     .offset = record->boundsOffset.value_or(record->offset),
+                     .offset = offset,
                      .unit = std::nullopt,
                      .declared = record->declared,
-                     .lowerBound = record->lowerBound};
+                     .extentClass = record->extentClass,
+                     .base = access.base,
+                     .fromMember = record->boundsOffset.has_value()};
 }
 
 std::string FunctionDataflow::spellIndex(const Expr *index,
@@ -8143,27 +8184,47 @@ std::string FunctionDataflow::spellIndex(const Expr *index,
   return nameOf(*affine.place);
 }
 
-bool FunctionDataflow::reportBounds(
-    const core::Affine &need, const KnownExtent &known, const Expr &at,
-    std::string_view subject, std::string_view accessed, const Expr *index,
-    const CallExpr *call, const core::AnalysisState &state, bool lowerBound,
-    std::optional<core::Affine> accessStart) {
-  const Expr &site = call ? static_cast<const Expr &>(*call) : at;
-  recordSpatialCheck(site, {.reason = core::SpatialReason::UnknownExtent});
-  // RFC 0030 §3.3: an element access decides its site's spatial facet here;
-  // a call's requirements are records of their own (stage S3-B2), so only a
-  // definite violation of one is decided.
-  const SiteInfo *access =
-      call == nullptr ? siteFor(at, core::Facet::Spatial) : nullptr;
-  const auto unknownOffset = [&] {
-    decideSpatial(
-        access,
-        core::SpatialCheck{.outcome = core::SpatialOutcome::Unresolved,
-                           .reason = core::SpatialReason::UnknownOffset,
-                           .violation = std::nullopt},
-        &known, nullptr);
-    return false;
-  };
+/// The byte offset of the member array `at` subscripts (`w->payload[8]`,
+/// `s.hdr.name[i]`) in the object its outermost base designates, or
+/// nothing.
+std::optional<std::int64_t>
+FunctionDataflow::memberArrayOffset(const Expr &at) const {
+  const auto *subscript = dyn_cast<ArraySubscriptExpr>(&at);
+  if (subscript == nullptr)
+    return std::nullopt;
+  const Expr *base = &PlaceBuilder::stripTransparent(*subscript->getBase());
+  // A true flexible member (`data[]`) was always measured in the whole
+  // allocation.
+  if (!isa<MemberExpr>(base) || !isa_and_nonnull<ConstantArrayType>(
+                                    context.getAsArrayType(base->getType())))
+    return std::nullopt;
+  std::int64_t offset = 0;
+  for (unsigned depth = 0; depth < 16; ++depth) {
+    const auto *member = dyn_cast<MemberExpr>(base);
+    if (member == nullptr)
+      return offset;
+    const auto *field = dyn_cast<FieldDecl>(member->getMemberDecl());
+    if (field == nullptr || field->isBitField() ||
+        !field->getParent()->isCompleteDefinition())
+      return std::nullopt;
+    const std::uint64_t bits = context.getFieldOffset(field);
+    if (bits % context.getCharWidth() != 0)
+      return std::nullopt;
+    offset += static_cast<std::int64_t>(bits / context.getCharWidth());
+    if (member->isArrow())
+      return offset;
+    base = &PlaceBuilder::stripTransparent(*member->getBase());
+  }
+  return std::nullopt;
+}
+
+std::optional<FunctionDataflow::BoundsEvaluation>
+FunctionDataflow::evaluateBounds(const core::Affine &need,
+                                 const KnownExtent &known, const Expr &at,
+                                 const CallExpr *call,
+                                 const core::AnalysisState &state,
+                                 std::optional<core::Affine> accessStart) {
+  BoundsEvaluation result;
   // A call that needs no bytes at all (`tablerehash(tb->hash, 0, n)` with
   // `requires-extent{vect: osize*8}`) is satisfied by any object; only an
   // element access counts its own bytes, so only there does a need at or
@@ -8172,9 +8233,11 @@ bool FunctionDataflow::reportBounds(
     const auto start =
         foldAffine(accessStart.value_or(core::Affine::ofConstant(0)), state);
     if (foldAffine(need, state) == start) {
-      recordSpatialCheck(site, {.outcome = core::SpatialOutcome::Proven,
-                                .reason = core::SpatialReason::None});
-      return false;
+      result.check = {.outcome = core::SpatialOutcome::Proven,
+                      .reason = core::SpatialReason::None,
+                      .violation = std::nullopt};
+      result.nothingNeeded = true;
+      return result;
     }
   }
   if (call && !accessStart)
@@ -8184,28 +8247,28 @@ bool FunctionDataflow::reportBounds(
   core::Affine total = need;
   if (known.offset.isElements()) {
     if (!known.unit)
-      return unknownOffset();
+      return std::nullopt;
     std::int64_t shift = 0;
     if (__builtin_mul_overflow(known.offset.elements, *known.unit, &shift))
-      return unknownOffset();
+      return std::nullopt;
     const auto shifted = total.shifted(shift);
     if (!shifted)
-      return unknownOffset();
+      return std::nullopt;
     total = *shifted;
+    result.shift = shift;
     if (accessStart) {
       accessStart = accessStart->shifted(shift);
       if (!accessStart)
-        return unknownOffset();
+        return std::nullopt;
     }
   } else if (!known.offset.isZero()) {
-    return unknownOffset();
+    return std::nullopt;
   }
   core::Affine n = foldAffine(std::optional(total), state).value_or(total);
   // The need as written, for the message.
-  const core::Affine spelled = n;
+  result.spelled = n;
   core::Affine h =
       foldAffine(std::optional(known.have), state).value_or(known.have);
-  bool convertedUpperBound = false;
   if (h.place && h.scale > 0)
     if (const auto symbolic = numericExpressions.find(*h.place);
         symbolic != numericExpressions.end())
@@ -8214,23 +8277,21 @@ bool FunctionDataflow::reportBounds(
         if (const auto scaled = upper->times(h.scale))
           if (const auto shifted = scaled->shifted(h.constant)) {
             h = *shifted;
-            convertedUpperBound = true;
+            result.convertedUpperBound = true;
           }
-  std::optional<core::Relation> between;
   // RFC 0012, *Offset relations*: under `i REL n + k` the need `s*i + c` is
   // `s*(i - k) + c + s*k` for a value `i - k REL n`: the verdict is taken on
   // the shifted need, and `k` is added back to spell the boundary.
-  std::int64_t relationOffset = 0;
   if (n.place && h.place && *n.place != *h.place) {
     if (const auto edge = state.relations.edgeBetween(*n.place, *h.place)) {
       std::int64_t shift = 0;
       if (edge->offset == 0) {
-        between = edge->relation;
+        result.between = edge->relation;
       } else if (!__builtin_mul_overflow(n.scale, edge->offset, &shift)) {
         if (const auto shifted = n.shifted(shift)) {
           n = *shifted;
-          between = edge->relation;
-          relationOffset = edge->offset;
+          result.between = edge->relation;
+          result.relationOffset = edge->offset;
         }
       }
     }
@@ -8250,16 +8311,16 @@ bool FunctionDataflow::reportBounds(
       .haveAtLeast = atLeast(h),
       .needBoundaryWitness =
           n.place && state.relations.atMost(*n.place).has_value()};
-  auto verdict = core::boundsVerdict(n, h, between, bounds);
+  auto verdict = core::boundsVerdict(n, h, result.between, bounds);
   core::SpatialCheck check;
-  if (!convertedUpperBound) {
+  if (!result.convertedUpperBound) {
     const auto bytes = byteSizeOf(at.getType(), context);
     auto start = bytes ? total.shifted(-*bytes) : std::nullopt;
     if (call)
       start = accessStart.value_or(core::Affine::ofConstant(0));
     if (start) {
       *start = foldAffine(*start, state);
-      check = core::checkSpatialBounds(*start, n, h, between, bounds,
+      check = core::checkSpatialBounds(*start, n, h, result.between, bounds,
                                        atLeast(*start));
       if (check.violation)
         verdict = check.violation;
@@ -8269,8 +8330,63 @@ bool FunctionDataflow::reportBounds(
     check = {.outcome = core::SpatialOutcome::Violation,
              .reason = core::SpatialReason::None,
              .violation = verdict};
-  recordSpatialCheck(site, check);
-  decideSpatial(access, check, &known, &n);
+  result.check = check;
+  result.verdict = verdict;
+  result.need = n;
+  result.have = h;
+  return result;
+}
+
+bool FunctionDataflow::reportBounds(
+    const core::Affine &need, const KnownExtent &known, const Expr &at,
+    std::string_view subject, std::string_view accessed, const Expr *index,
+    const CallExpr *call, const core::AnalysisState &state, bool lowerBound,
+    std::optional<core::Affine> accessStart) {
+  const Expr &site = call ? static_cast<const Expr &>(*call) : at;
+  recordSpatialCheck(site, {.reason = core::SpatialReason::UnknownExtent});
+  // RFC 0030 §3.3: an element access decides its site's spatial facet here;
+  // a call's requirements are records of their own (§15 item 4,
+  // `decideLibraryRequirements`), so only a definite violation of one is
+  // decided.
+  const SiteInfo *access =
+      call == nullptr ? accessSite(at, core::Facet::Spatial) : nullptr;
+  const auto evaluation =
+      evaluateBounds(need, known, at, call, state, accessStart);
+  if (!evaluation) {
+    decideSpatial(
+        access,
+        core::SpatialCheck{.outcome = core::SpatialOutcome::Unresolved,
+                           .reason = core::SpatialReason::UnknownOffset,
+                           .violation = std::nullopt},
+        &known);
+    return false;
+  }
+  if (evaluation->nothingNeeded) {
+    recordSpatialCheck(site, evaluation->check);
+    return false;
+  }
+  const core::Affine &n = evaluation->need;
+  // A message about an access through a member of the object measures from
+  // the member's start, as it did when the member bounded it (`tail[2]` with
+  // `tail = p->data` 16 bytes into a 24-byte object: an object of 8 bytes;
+  // `w->payload[8]` for a trailing `payload`).
+  std::int64_t messageShift = 0;
+  if (call == nullptr) {
+    if (known.fromMember)
+      messageShift = evaluation->shift;
+    else if (const auto offset = memberArrayOffset(at))
+      messageShift = *offset;
+  }
+  const core::Affine spelled =
+      evaluation->spelled.shifted(-messageShift).value_or(evaluation->spelled);
+  const core::Affine h =
+      evaluation->have.shifted(-messageShift).value_or(evaluation->have);
+  const auto &between = evaluation->between;
+  const std::int64_t relationOffset = evaluation->relationOffset;
+  const bool convertedUpperBound = evaluation->convertedUpperBound;
+  const auto &verdict = evaluation->verdict;
+  recordSpatialCheck(site, evaluation->check);
+  decideSpatial(access, evaluation->check, &known);
   if (!verdict)
     return false;
   // RFC 0030 §3.3: `out-of-bounds` is definite only: every value the facts
@@ -8281,7 +8397,7 @@ bool FunctionDataflow::reportBounds(
       verdict->kind == core::BoundsVerdict::Kind::OutOfBounds ||
       verdict->kind == core::BoundsVerdict::Kind::BeforeStart ||
       verdict->kind == core::BoundsVerdict::Kind::AtLeastPastEnd;
-  if (!definiteKind || known.lowerBound)
+  if (!definiteKind || !known.exact())
     return true;
   const SiteInfo *reportedSite =
       call != nullptr ? siteFor(*call, core::Facet::Spatial) : access;
@@ -8438,6 +8554,44 @@ bool FunctionDataflow::reportBounds(
   return true;
 }
 
+void FunctionDataflow::decidePathBounds(const Expr &root, bool self,
+                                        core::AnalysisState &state) {
+  if (!publishing())
+    return;
+  const bool outer = boundsDecisionOnly;
+  boundsDecisionOnly = true;
+  const auto restore =
+      llvm::scope_exit([this, outer] { boundsDecisionOnly = outer; });
+  const auto decideAt = [&](const Expr &access) {
+    if (accessSite(access, core::Facet::Spatial) != nullptr)
+      checkBounds(access, state);
+  };
+  const Expr *cursor = &PlaceBuilder::stripTransparent(root);
+  if (self)
+    decideAt(*cursor);
+  // The accesses below the root on its place path: each is loaded (or, for
+  // an array lvalue, subscripted) on the way to the root's own access.
+  for (unsigned depth = 0; depth < 64; ++depth) {
+    const Expr *next = nullptr;
+    if (const auto *member = dyn_cast<MemberExpr>(cursor)) {
+      next = member->getBase();
+    } else if (const auto *subscript = dyn_cast<ArraySubscriptExpr>(cursor)) {
+      next = subscript->getBase();
+    } else if (const auto *unary = dyn_cast<UnaryOperator>(cursor);
+               unary != nullptr && unary->getOpcode() == UO_Deref) {
+      const Expr &operand =
+          PlaceBuilder::stripTransparent(*unary->getSubExpr());
+      next = PlaceBuilder::pointerOperandOfArithmetic(operand);
+      if (next == nullptr)
+        next = &operand;
+    }
+    if (next == nullptr)
+      return;
+    cursor = &PlaceBuilder::stripTransparent(*next);
+    decideAt(*cursor);
+  }
+}
+
 void FunctionDataflow::checkBounds(const Expr &lvalue,
                                    core::AnalysisState &state) {
   const Expr &e = PlaceBuilder::stripTransparent(lvalue);
@@ -8457,7 +8611,7 @@ void FunctionDataflow::checkBounds(const Expr &lvalue,
           index->values.minimum()->bits > (type->mask() - unit) / unit) {
         recordSpatialCheck(e, {.outcome = core::SpatialOutcome::Violation,
                                .reason = core::SpatialReason::None});
-        const SiteInfo *site = siteFor(e, core::Facet::Spatial);
+        const SiteInfo *site = accessSite(e, core::Facet::Spatial);
         decide(site, core::Facet::Spatial, core::FacetDecision::violation());
         report(makeError(
                    core::diag::OutOfBounds,
@@ -8470,24 +8624,22 @@ void FunctionDataflow::checkBounds(const Expr &lvalue,
   }
   if (checkVariableArray(e, state))
     return;
-  auto access = accessOf(e);
-  if (!access)
-    return;
   const auto size = byteSizeOf(e.getType(), context);
   if (!size)
     return;
-  const auto end = access->start.shifted(*size);
-  if (!end)
-    return;
-  access->end = *end;
-  const std::string subject = "'" + spellIndex(&e, access->end) + "'";
 
-  // `s.name[8]`, `r->name[i]`: an array of known size is an object of its
-  // own inside whatever holds it; the subscript is checked against it first.
+  // `s.name[8]`, `r->name[i]`, `m[i][j]`: an array of known size is an
+  // object of its own inside whatever holds it; the subscript is checked
+  // against it first (RFC 0030 §7.4: a direct subscript of a non-flexible
+  // array lvalue). A trailing member array is flexible at
+  // `-fstrict-flex-arrays=0` whatever its bound: it spans the rest of the
+  // allocation, never its declaration.
   if (const auto *subscript = dyn_cast<ArraySubscriptExpr>(&e)) {
     const Expr &base = PlaceBuilder::stripTransparent(*subscript->getBase());
     if (isa_and_nonnull<ConstantArrayType>(
-            context.getAsArrayType(base.getType()))) {
+            context.getAsArrayType(base.getType())) &&
+        !base.isFlexibleArrayMemberLike(
+            context, context.getLangOpts().getStrictFlexArraysLevel())) {
       std::optional<core::Affine> need =
           scaledIndex(builder, *subscript->getIdx(), size);
       if (need)
@@ -8505,21 +8657,46 @@ void FunctionDataflow::checkBounds(const Expr &lvalue,
                                 .offset = {},
                                 .unit = std::nullopt,
                                 .declared = true};
-        if (reportBounds(*need, known, e, subject, spellIndex(&base, *need),
-                         subscript->getIdx(), nullptr, state))
+        if (reportBounds(*need, known, e, "'" + spellIndex(&e, *need) + "'",
+                         spellIndex(&base, *need), subscript->getIdx(), nullptr,
+                         state))
           return;
       }
     }
   }
+  auto access = accessOf(e);
+  // `m[i][j]` has no single offset in `m`: its row's bound (above) and the
+  // row's own site (`m[i]`) bound it.
+  if (!access)
+    return;
+  // RFC 0030 §15 item 4: a pointer made by reinterpretation has no extent
+  // the engine knows of.
+  if (access->base != nullptr)
+    if (const auto ref = builder.resolvePointerValue(*access->base);
+        ref && ref->element.isWhole() &&
+        state.reinterpreted.contains(ref->place)) {
+      decide(accessSite(e, core::Facet::Spatial), core::Facet::Spatial,
+             core::FacetDecision::unresolvedFor(
+                 core::UnresolvedReason::RawCast,
+                 "'" + nameOf(ref->place) +
+                     "' was made from a non-pointer value"));
+      return;
+    }
+  const auto end = access->start.shifted(*size);
+  if (!end)
+    return;
+  access->end = *end;
+  const std::string subject = "'" + spellIndex(&e, access->end) + "'";
+
   auto known = knownExtentOf(*access, state);
   if (!known) {
     recordSpatialCheck(e, {.reason = core::SpatialReason::UnknownExtent});
     decideSpatial(
-        siteFor(e, core::Facet::Spatial),
+        accessSite(e, core::Facet::Spatial),
         core::SpatialCheck{.outcome = core::SpatialOutcome::Unresolved,
                            .reason = core::SpatialReason::UnknownExtent,
                            .violation = std::nullopt},
-        nullptr, nullptr);
+        nullptr);
     if (access->base != nullptr) {
       if (const auto ref = builder.resolvePointerValue(*access->base);
           ref && ref->element.isWhole())
@@ -8644,7 +8821,7 @@ void FunctionDataflow::noteExtentRequirement(
     core::PlaceId pointer, const core::Affine &need,
     const core::AnalysisState &state, const core::PlaceGuard *extra,
     std::optional<core::Affine> start) {
-  if (!recording())
+  if (!recording() || boundsDecisionOnly)
     return;
   const auto path = stableSummaryPathOf(pointer);
   if (!path || !path->isParam() || !path->isRoot())
@@ -8731,6 +8908,45 @@ void FunctionDataflow::noteExtentRequirement(
                                                   .start = projectedStart});
 }
 
+std::optional<FunctionDataflow::Access>
+FunctionDataflow::argumentAccessOf(const Expr &argument) {
+  if (!argument.getType()->isPointerType())
+    return std::nullopt;
+  const Expr &arg = PlaceBuilder::stripTransparent(argument);
+  // What the argument points at, and where in it: `buf`, `&buf[2]`,
+  // `&s.f`, `p`, `p + 1`.
+  const Expr &decayed = *argument.IgnoreParenImpCasts();
+  if (const auto *addr = dyn_cast<UnaryOperator>(&arg);
+      addr != nullptr && addr->getOpcode() == UO_AddrOf)
+    return accessOf(*addr->getSubExpr());
+  if (decayed.getType()->isArrayType())
+    return accessOf(decayed);
+  if (const Expr *pointer = PlaceBuilder::pointerOperandOfArithmetic(arg)) {
+    const auto *binary = cast<BinaryOperator>(&arg);
+    const Expr &index =
+        *(pointer == binary->getLHS() ? binary->getRHS() : binary->getLHS());
+    auto scaled =
+        scaledIndex(builder, index,
+                    byteSizeOf(pointer->getType()->getPointeeType(), context));
+    if (scaled && binary->getOpcode() == BO_Sub)
+      scaled = scaled->times(-1);
+    if (!scaled)
+      return std::nullopt;
+    return Access{.base = &PlaceBuilder::stripTransparent(*pointer),
+                  .storage = nullptr,
+                  .start = *scaled,
+                  .end = *scaled,
+                  .index = &index};
+  }
+  if (PlaceBuilder::isPlaceExpr(arg))
+    return Access{.base = &arg,
+                  .storage = nullptr,
+                  .start = core::Affine::ofConstant(0),
+                  .end = core::Affine::ofConstant(0),
+                  .index = nullptr};
+  return std::nullopt;
+}
+
 void FunctionDataflow::checkRequiredExtents(
     const CallExpr &call, const core::FunctionSummary &summary,
     const core::AnalysisState &state) {
@@ -8738,43 +8954,7 @@ void FunctionDataflow::checkRequiredExtents(
     if (param >= call.getNumArgs())
       continue;
     const Expr &arg = PlaceBuilder::stripTransparent(*call.getArg(param));
-    if (!call.getArg(param)->getType()->isPointerType())
-      continue;
-    // What the argument points at, and where in it: `buf`, `&buf[2]`,
-    // `&s.f`, `p`, `p + 1`.
-    std::optional<Access> pointed;
-    const Expr &decayed = *call.getArg(param)->IgnoreParenImpCasts();
-    if (const auto *addr = dyn_cast<UnaryOperator>(&arg);
-        addr != nullptr && addr->getOpcode() == UO_AddrOf) {
-      pointed = accessOf(*addr->getSubExpr());
-    } else if (decayed.getType()->isArrayType()) {
-      pointed = accessOf(decayed);
-    } else if (const Expr *pointer =
-                   PlaceBuilder::pointerOperandOfArithmetic(arg)) {
-      const auto *binary = cast<BinaryOperator>(&arg);
-      const Expr &index =
-          *(pointer == binary->getLHS() ? binary->getRHS() : binary->getLHS());
-      auto scaled = scaledIndex(
-          builder, index,
-          byteSizeOf(pointer->getType()->getPointeeType(), context));
-      if (!scaled)
-        continue;
-      if (binary->getOpcode() == BO_Sub)
-        scaled = scaled->times(-1);
-      if (!scaled)
-        continue;
-      pointed = Access{.base = &PlaceBuilder::stripTransparent(*pointer),
-                       .storage = nullptr,
-                       .start = *scaled,
-                       .end = *scaled,
-                       .index = &index};
-    } else if (PlaceBuilder::isPlaceExpr(arg)) {
-      pointed = Access{.base = &arg,
-                       .storage = nullptr,
-                       .start = core::Affine::ofConstant(0),
-                       .end = core::Affine::ofConstant(0),
-                       .index = nullptr};
-    }
+    const auto pointed = argumentAccessOf(*call.getArg(param));
     if (!pointed)
       continue;
     auto known = knownExtentOf(*pointed, state);
@@ -8794,7 +8974,7 @@ void FunctionDataflow::checkRequiredExtents(
       const auto start =
           first ? byteSum(pointed->start, *first, state) : std::nullopt;
       if (!total || !start) {
-        reportIncomplete("unsupported extent interval projection", call);
+        decideIncomplete("unsupported extent interval projection", call);
         continue;
       }
       if (!known || known->declared) {
@@ -10418,9 +10598,9 @@ void FunctionDataflow::finalizeSummary(const core::AnalysisState *exitState) {
   const auto captureViews =
       llvm::scope_exit([&] { inferred.objectViews = builder.objectViews; });
   if (summaries.incompleteFunctions.contains(function.getCanonicalDecl()))
-    reportIncomplete("summary iteration limit reached", *function.getBody());
+    decideIncomplete("summary iteration limit reached", *function.getBody());
   if (convergenceFailed)
-    reportIncomplete("function dataflow iteration limit reached",
+    decideIncomplete("function dataflow iteration limit reached",
                      *function.getBody());
   // RFC 0012, *Sized fields*: what this function's stores say.
   finalizeSizedFields(exitState);

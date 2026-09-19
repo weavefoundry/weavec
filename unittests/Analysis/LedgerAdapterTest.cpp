@@ -448,14 +448,14 @@ void fine(char *p) { p[0] = 1; free(p); }
   EXPECT_EQ(outcomes(piped.ledger, "h")[1],
             "p[0] spatial=unresolved/unknown-extent null=checked "
             "temporal=unresolved/may-released");
-  // The release's own spatial facet is stage S3-B2's.
+  // §15 item 4: where a parameter points in its allocation is not known.
   EXPECT_EQ(outcomes(piped.ledger, "twice")[1],
-            "free(p) spatial=unresolved/unanalysed "
+            "free(p) spatial=unresolved/unknown-index "
             "temporal=unresolved/may-released");
   EXPECT_EQ(outcomes(piped.ledger, "fine"),
             (Lines{"p[0] spatial=unresolved/unknown-extent null=checked "
                    "temporal=proven",
-                   "free(p) spatial=unresolved/unanalysed temporal=proven",
+                   "free(p) spatial=unresolved/unknown-index temporal=proven",
                    "} temporal=proven"}));
   ASSERT_EQ(piped.ledger.diagnostics.size(), 3U);
   EXPECT_EQ(piped.ledger.diagnostics[0].certainty, core::Certainty::Definite);

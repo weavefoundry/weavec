@@ -206,6 +206,13 @@ private:
                        const core::FunctionSummary &summary,
                        core::AnalysisState &state);
   std::set<const clang::CallExpr *> arrayCleanupCalls;
+  /// The expressions of the bodies of those loops, which the loop's model
+  /// replaces (`Role::Ignore`); RFC 0030 §15 item 4 still decides their
+  /// sites (`decideLoopBodySite`).
+  std::set<const clang::Expr *> arrayLoopExprs;
+  /// §15 item 4: the facets of a site in the body of an array fill or
+  /// cleanup loop, from the state inside the loop, without its effects.
+  void decideLoopBodySite(const clang::Expr &expr, core::AnalysisState &state);
   std::set<const clang::BinaryOperator *> arrayCleanupStores;
   std::map<std::pair<const clang::Expr *, std::size_t>, core::PlaceId>
       arrayReleaseSites;
@@ -583,6 +590,9 @@ private:
   bool edgeInfeasible = false;
   /// Whether `sitesByOperand` is built (RFC 0030 §14).
   bool sitesByOperandBuilt = false;
+  /// Set while `decidePathBounds` (and the other decision-only bounds
+  /// passes) run: no requirement, dump count or incompleteness is recorded.
+  bool boundsDecisionOnly = false;
   /// Per block: whether it calls a function that never returns, declared
   /// (`hasNoReturnElement`) or inferred (RFC 0009); computed on first use.
   std::vector<std::optional<bool>> neverReturnsCache;
@@ -991,6 +1001,13 @@ private:
   /// size of the variable, array or field borrowed, when it is complete.
   [[nodiscard]] std::optional<core::SpatialRecord>
   storageRecordOf(const PlaceRef &storage, const core::PointerOffset &offset);
+  /// RFC 0030 §7.4: the record of a pointer into a variable's sub-object
+  /// (`&s.f`, `&m[i][j]`, `s.arr` decayed): the complete variable's extent,
+  /// and where in it the pointer points, in elements of what it points to
+  /// (somewhere inside when a subscript on the way is not known).
+  [[nodiscard]] std::optional<core::SpatialRecord>
+  completeStorageRecordOf(const PlaceRef &storage,
+                          const core::PointerOffset &offset);
   /// True if `place` is the storage of a local variable or parameter (not
   /// memory behind a pointer, a global or the literal place): what RFC
   /// 0011's deferred lifetime check watches die.
@@ -1114,9 +1131,23 @@ private:
                         core::AnalysisState &state);
   bool handleMemoryCopy(const clang::CallExpr &call, const CallEffects &effects,
                         core::AnalysisState &state);
-  void reportIncomplete(const std::string &reason, const clang::Stmt &at);
+  /// RFC 0030 §2.3 `raw-cast`: a non-pointer store to `lvalue` (resolved to
+  /// `written`) that rewrites bytes of a pointer object, or a union member
+  /// beside a pointer member, leaves those pointers reinterpreted.
+  void noteReinterpretingStore(const clang::Expr &lvalue,
+                               const PlaceRef &written,
+                               core::AnalysisState &state);
+  /// RFC 0030 §15 item 3: the engine could not model `at`. The summary
+  /// records `reason` as an incompleteness, and the facet the construct
+  /// feeds (spatial for integer and extent modelling, temporal otherwise)
+  /// of the site `at` stands for, or of the innermost site around it, is
+  /// `unresolved` with the reason `core::incompletenessReason` gives and
+  /// `reason` as the detail. Nothing is reported.
+  void decideIncomplete(const std::string &reason, const clang::Stmt &at);
+  /// The facet an incompleteness leaves undecidable: what the construct the
+  /// engine could not model feeds.
+  [[nodiscard]] static core::Facet incompleteFacet(llvm::StringRef reason);
   std::map<const clang::CallExpr *, core::PlaceId> memorySnapshots;
-  std::set<std::pair<const clang::Stmt *, std::string>> incompleteReports;
 
   void copyRecord(core::PlaceId dest, const clang::Expr &value,
                   core::AnalysisState &state);
@@ -1260,6 +1291,10 @@ private:
   /// The access `lvalue` makes (`p[i]`, `*(p + i)`, `p->f`, `s.a[i]`,
   /// `q->buf[i]`), or nothing when its shape is not one the check reads.
   [[nodiscard]] std::optional<Access> accessOf(const clang::Expr &lvalue);
+  /// What a pointer argument points at, and where in it (`buf`, `&buf[2]`,
+  /// `&s.f`, `p`, `p + 1`), as an access of no bytes yet.
+  [[nodiscard]] std::optional<Access>
+  argumentAccessOf(const clang::Expr &argument);
   /// Reports `out-of-bounds` when the object `lvalue` reads or writes is
   /// known to be too small (RFC 0011, *Bounds checks*), and records the
   /// requirement when it is a parameter's of unknown extent.
@@ -1278,15 +1313,54 @@ private:
     /// Whether `origin` is a declaration (a variable, a `WEAVEC_SIZED_BY`
     /// parameter) rather than an allocation, for the note.
     bool declared = false;
-    /// RFC 0030 §7.1: the extent is a declared or inferred kind, a lower
-    /// bound on the object (`SpatialRecord::lowerBound`).
-    bool lowerBound = false;
+    /// RFC 0030 §7.1: exact, declared or a lower bound
+    /// (`SpatialRecord::extentClass`).
+    core::ExtentClass extentClass = core::ExtentClass::Exact;
+    /// The pointer expression the access measured from (`Access::base`),
+    /// when it is one.
+    const clang::Expr *base = nullptr;
+    /// The pointer was made from a member of the object (`p->data`), whose
+    /// own start a message measures from (RFC 0030 §7.4 bounds it by the
+    /// whole object).
+    bool fromMember = false;
+
+    [[nodiscard]] bool exact() const noexcept {
+      return extentClass == core::ExtentClass::Exact;
+    }
   };
   [[nodiscard]] std::optional<KnownExtent>
   knownExtentOf(const Access &access, const core::AnalysisState &state);
   /// `affine` with a constant the facts know substituted for its place.
   [[nodiscard]] static core::Affine
   foldAffine(const core::Affine &affine, const core::AnalysisState &state);
+  /// What comparing an access's need with a known extent found.
+  struct BoundsEvaluation {
+    core::SpatialCheck check;
+    std::optional<core::BoundsVerdict> verdict;
+    /// The need and the have as compared (folded; the need shifted by an
+    /// offset relation), and the need as written, for messages.
+    core::Affine need;
+    core::Affine have;
+    core::Affine spelled;
+    std::optional<core::Relation> between;
+    std::int64_t relationOffset = 0;
+    /// The have was an allocation's size expression, bounded above.
+    bool convertedUpperBound = false;
+    /// Bytes from the object's start to where the pointer points.
+    std::int64_t shift = 0;
+    /// A call that needs nothing at all.
+    bool nothingNeeded = false;
+  };
+  [[nodiscard]] std::optional<std::int64_t>
+  memberArrayOffset(const clang::Expr &at) const;
+  /// Compares `need` bytes (from the start of the access, `accessStart` for
+  /// a call) against `known`, without reporting or deciding anything.
+  /// Nothing when the pointer's offset takes the access out of the check.
+  [[nodiscard]] std::optional<BoundsEvaluation>
+  evaluateBounds(const core::Affine &need, const KnownExtent &known,
+                 const clang::Expr &at, const clang::CallExpr *call,
+                 const core::AnalysisState &state,
+                 std::optional<core::Affine> accessStart = std::nullopt);
   /// Compares `need` against `known.have` under the facts and reports with
   /// `subject` (`'p[i]'`, `'memcpy' accesses`) when they decide against it.
   /// Returns whether something was reported.
@@ -1666,7 +1740,7 @@ private:
   [[nodiscard]] core::SourceLocation locate(const clang::Stmt &stmt) const;
   [[nodiscard]] core::SourceLocation locate(clang::SourceLocation loc) const;
   /// A diagnostic whose id is about no facet (`leak`, `invalid-annotation`,
-  /// `analysis-incomplete`, ...): definite when it is an error.
+  /// ...): definite when it is an error.
   void report(core::Diagnostic diagnostic);
   /// A diagnostic with its certainty, linked to `site` and `facet` when
   /// given. Its severity is `diag::defaultSeverity(id, certainty)`.
@@ -1682,16 +1756,62 @@ private:
   /// exit). Null when there is none, or when this run does not publish.
   [[nodiscard]] const SiteInfo *
   siteFor(const clang::Stmt &at, core::Facet facet, bool operand = false);
+  /// The site the access `access` itself stands for, with `facet`: no
+  /// operand or enclosing site (a member read `s.f` inside `g(s.f)` decides
+  /// nothing about the call). Null when there is none, or when this run
+  /// does not publish.
+  [[nodiscard]] const SiteInfo *accessSite(const clang::Expr &access,
+                                           core::Facet facet);
+  /// RFC 0030 §15 item 4: decides the spatial facets of the accesses on the
+  /// path of `root` that the engine handles at the root: the interior
+  /// loads (`v->items` in `v->items[i]`, `a[i]` in `a[i]->f`) and the
+  /// subscripts of array lvalues (`m[i]` in `m[i][j]`), and `root` itself
+  /// when `self` (a consumed argument, `free(a[i])`). Decision only: the
+  /// summary's requirements and the dump's counts are not touched.
+  void decidePathBounds(const clang::Expr &root, bool self,
+                        core::AnalysisState &state);
+  /// §15 item 4: the facets of an access whose place the builder cannot
+  /// name (its pointer is a conversion or arithmetic over one): spatial by
+  /// the bounds check, temporal and null by the pointer it derives from.
+  void decideUnplacedAccess(const clang::Expr &access, Role role,
+                            core::AnalysisState &state);
   /// One decision about one facet of `site` (§2.5: records merge by rank).
   void decide(const SiteInfo *site, core::Facet facet,
               const core::FacetDecision &decision);
   /// The same for the exit site `stmt` stands for: a `return`, the function
   /// body, or a call that does not return.
   void decideExit(const clang::Stmt &stmt, const core::FacetDecision &decision);
-  /// §14 `witness`: an index check of an access against `known`, when its
+  /// §7.4: the width a dereference of a `T *` needs and a Single pointer to
+  /// `T` guarantees: `sizeof(T)`, or for a struct with a flexible trailing
+  /// array member (every trailing array at `-fstrict-flex-arrays=0`), the
+  /// member's offset. Nothing for an incomplete or variably sized type.
+  [[nodiscard]] std::optional<std::int64_t>
+  objectWidthOf(clang::QualType type) const;
+  /// §14: `have` bytes as a term over C names here: a constant, or a place
+  /// (or the quantity the program computed into one, RFC 0017) scaled and
+  /// shifted. A field read through a pointer names that pointer in
+  /// `readsThrough` (§10.3 rule 5).
+  [[nodiscard]] std::optional<WitnessTerm>
+  extentTerm(const core::Affine &have,
+             std::optional<core::PlaceId> &readsThrough);
+  /// §7.4 *Arithmetic*: `have` bytes as whole elements of `unit` bytes:
+  /// exactly when the facts divide it (`n` for `malloc(n * sizeof *p)`),
+  /// else the byte value rounded down (`bytes / 4`).
+  [[nodiscard]] std::optional<WitnessTerm>
+  countTerm(const core::Affine &have, std::int64_t unit,
+            std::optional<core::PlaceId> &readsThrough);
+  /// A place that holds the start of the object `known.pointer` points
+  /// into, unchanged since (a definite alias at its start), for a span
+  /// check's base.
+  [[nodiscard]] std::optional<WitnessTerm>
+  objectBaseTerm(const KnownExtent &known,
+                 std::optional<core::PlaceId> &readsThrough);
+  /// §14 `witness`: the check of the access `site` against `known`: an
+  /// index below the whole elements of an object the pointer points to the
+  /// start of, or a span inside the object a cursor points into, when the
   /// terms have C names here.
   [[nodiscard]] std::optional<CheckWitness>
-  indexWitness(const KnownExtent &known);
+  accessWitness(const SiteInfo &site, const KnownExtent &known);
   /// `place` as a term: a variable, or a field below at most one
   /// dereference (the pointer it reads through goes to `readsThrough`).
   [[nodiscard]] std::optional<WitnessTerm>
@@ -1699,10 +1819,61 @@ private:
   [[nodiscard]] std::optional<WitnessTerm>
   expressionTerm(const core::IntegerExpression<core::PlaceId> &expression,
                  std::optional<core::PlaceId> &readsThrough);
-  /// §3.3: the spatial decision of an access against `known`, with the
-  /// witness a check needs when it is checked (published with it).
+  /// §3.3: the spatial decision of an access against `known` (whose check,
+  /// `check`, already compared the access's need with it), with the witness
+  /// a check needs when it is checked (published with it). §7.1: a lower
+  /// bound decides only what it covers.
   void decideSpatial(const SiteInfo *site, const core::SpatialCheck &check,
-                     const KnownExtent *known, const core::Affine *need);
+                     const KnownExtent *known);
+  /// Whether the pointer `pointer` points into a string literal: on every
+  /// path (true), on some (false), or nothing known of one (nothing).
+  [[nodiscard]] std::optional<bool>
+  pointsToLiteral(const clang::Expr &pointer, const core::AnalysisState &state);
+  /// RFC 0030 *Diagnostics*: a write through a pointer into a string literal
+  /// has no writable byte. Decides `site`'s spatial facet (a violation with
+  /// `out-of-bounds` when on every path, `unknown-extent` otherwise) and
+  /// returns whether the pointer may point into one.
+  bool checkLiteralWrite(const clang::Expr &pointer, const clang::Expr &at,
+                         const SiteInfo *site,
+                         const core::AnalysisState &state);
+  /// One spatial requirement of a call on one of its arguments (§2.5).
+  struct ArgumentRequirement {
+    unsigned argument = 0;
+    /// `Bytes`: `need` bytes behind the argument; `String`: a terminator
+    /// within its object (§10.3 rule 2).
+    enum class Kind : std::uint8_t { Bytes, String };
+    Kind kind = Kind::Bytes;
+    /// The bytes needed, when the facts give them, and as a C term.
+    std::optional<core::Affine> need = std::nullopt;
+    std::optional<WitnessTerm> needTerm = std::nullopt;
+    /// The call writes through the argument.
+    bool writes = false;
+    /// §7.4: a `str` destination is bounded by its member.
+    bool memberBound = false;
+    /// An object only the library makes and reads (`FILE`).
+    bool libraryObject = false;
+  };
+  /// §2.5, §3.3: one spatial requirement record per requirement of `call`
+  /// (whose site is `site`), each decided from the facts before the call,
+  /// with the length or string witness its check needs.
+  void
+  decideArgumentRequirements(const clang::CallExpr &call, const SiteInfo &site,
+                             llvm::ArrayRef<ArgumentRequirement> requirements,
+                             const core::AnalysisState &state);
+  /// §15 item 4: the requirements of the `LibrarySpec` row that governs
+  /// `call` (a LibCall site), and its `disjoint` clauses.
+  void decideLibraryRequirements(const clang::CallExpr &call,
+                                 const core::AnalysisState &state);
+  /// §15 item 12: the declared requirements (§7.2) of a Call site's
+  /// callee on its arguments.
+  void decideDeclaredRequirements(const clang::CallExpr &call,
+                                  const core::AnalysisState &state);
+  /// The row term `term` of `match` as a value known at `call` (bytes,
+  /// elements or a length as the term says), or nothing.
+  [[nodiscard]] std::optional<core::Affine>
+  libraryValue(const core::LibTerm &term, const clang::CallExpr &call,
+               const core::LibraryMatch &match,
+               const core::AnalysisState &state);
   /// Per pointer operand (stripped of transparent casts), the sites of this
   /// function it is the operand of; built on first use.
   llvm::DenseMap<const clang::Expr *, llvm::SmallVector<const SiteInfo *, 1>>

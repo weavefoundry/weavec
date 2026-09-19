@@ -119,6 +119,17 @@ struct SiteInfo {
   /// Call-like sites: the arguments with a null requirement.
   // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
   std::vector<ArgumentNeed> arguments = {};
+  /// Call sites: the arguments whose parameter has a declared shape (§7.2),
+  /// with the kind and the parameter's pointee.
+  struct DeclaredShape {
+    std::uint8_t argument = 0;
+    // NOLINTNEXTLINE(readability-redundant-member-init): designated init
+    core::PointerKind kind = {};
+    // NOLINTNEXTLINE(readability-redundant-member-init): designated init
+    clang::QualType pointee = {};
+  };
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
+  std::vector<DeclaredShape> declaredShapes = {};
   /// The expansion range of the site's source text.
   // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
   clang::SourceLocation begin = {};

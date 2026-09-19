@@ -352,7 +352,7 @@ void FunctionDataflow::checkIntegerOperation(const Expr &expr,
   if (!expr.getType()->isIntegerType())
     return;
   if (!integerTypeOf(expr.getType(), context)) {
-    reportIncomplete("unsupported integer width greater than 64 bits", expr);
+    decideIncomplete("unsupported integer width greater than 64 bits", expr);
     return;
   }
   const auto *binary = dyn_cast<BinaryOperator>(&expr);
@@ -448,7 +448,7 @@ FunctionDataflow::integerBounds(core::PlaceId place,
 
 void FunctionDataflow::recordSpatialCheck(const Expr &at,
                                           core::SpatialCheck check) {
-  if (!recording())
+  if (!recording() || boundsDecisionOnly)
     return;
   auto [it, added] = spatialChecks.try_emplace(&at, check);
   if (added || it->second.outcome == core::SpatialOutcome::Violation)
@@ -501,7 +501,7 @@ FunctionDataflow::translateIntegerGuard(const core::PathGuard &guard,
           return numericInput(call, path, type, state);
         });
     if (!mapped) {
-      reportIncomplete("unsupported numeric condition projection", call);
+      decideIncomplete("unsupported numeric condition projection", call);
       auto &unknown = integerStatementResults[&call];
       if (!unknown) {
         unknown = places.create("unresolved-integer-condition@" +

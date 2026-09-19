@@ -1161,6 +1161,7 @@ void Walker::addCallSites(const clang::CallExpr &call, Context ctx) {
   FacetSet facets;
   core::SiteKind kind = core::SiteKind::Call;
   std::vector<ArgumentNeed> needs;
+  std::vector<SiteInfo::DeclaredShape> shapes;
   const clang::Expr *operand = nullptr;
   bool nullSystemApi = false;
   bool spatialSystemApi = false;
@@ -1241,6 +1242,14 @@ void Walker::addCallSites(const clang::CallExpr &call, Context ctx) {
       if (param->hasShape()) {
         facets.spatial = true;
         spatialOnlySystem = spatialOnlySystem && param->shapeFromSystemHeader();
+        if (!param->shapeFromSystemHeader())
+          shapes.push_back(SiteInfo::DeclaredShape{
+              .argument = static_cast<std::uint8_t>(i),
+              .kind = param->kind,
+              .pointee =
+                  i < callee->getNumParams()
+                      ? callee->getParamDecl(i)->getType()->getPointeeType()
+                      : clang::QualType()});
       }
       const clang::Expr *arg = call.getArg(i);
       if (!param->isNonnull() || !arg->getType()->isPointerType() ||
@@ -1272,6 +1281,7 @@ void Walker::addCallSites(const clang::CallExpr &call, Context ctx) {
   site.info.library = match;
   site.info.operand = operand;
   site.info.arguments = std::move(needs);
+  site.info.declaredShapes = std::move(shapes);
   site.info.nullSystemApi = nullSystemApi;
   site.info.spatialSystemApi = spatialSystemApi;
   site.info.nonDefaultAddressSpace = inNonDefaultAddressSpace(operand);
@@ -1628,6 +1638,7 @@ bool Walker::isSimple(const WitnessTerm &term) const {
   case WitnessTerm::Kind::Add:
   case WitnessTerm::Kind::Sub:
   case WitnessTerm::Kind::Mul:
+  case WitnessTerm::Kind::Div:
     return std::ranges::all_of(term.operands, [this](const WitnessTerm &side) {
       return isSimple(side);
     });
@@ -1928,7 +1939,8 @@ SiteIndex SiteCollector::collect() {
 
     core::FunctionLedger row;
     row.name = function->getNameAsString();
-    const core::SourceLocation where = toCoreLocation(sm, function->getLocation());
+    const core::SourceLocation where =
+        toCoreLocation(sm, function->getLocation());
     row.file = where.file;
     row.line = where.line;
     row.linkage = function->isExternallyVisible() ? core::Linkage::External

@@ -142,6 +142,19 @@ TEST(PendingOutcome, GuardOfJoinsTheRemainingClassesGuards) {
   EXPECT_FALSE(unguarded.guardOf(P).has_value());
 }
 
+// RFC 0030 §2.3 `raw-cast`: a pointer reinterpreted on some path is
+// reinterpreted after the join; forgetting the place clears it.
+TEST(AnalysisState, JoinUnionsReinterpretedPointers) {
+  AnalysisState a;
+  AnalysisState b;
+  b.reinterpreted.insert(PlaceId{3});
+  EXPECT_TRUE(a.join(b));
+  EXPECT_TRUE(a.reinterpreted.contains(PlaceId{3}));
+  EXPECT_FALSE(a.join(b)) << "fixpoint";
+  a.forget(PlaceId{3});
+  EXPECT_FALSE(a.reinterpreted.contains(PlaceId{3}));
+}
+
 TEST(AnalysisState, JoinUnionsConsumed) {
   const SummaryPath p = SummaryPath::param(0);
   AnalysisState left;

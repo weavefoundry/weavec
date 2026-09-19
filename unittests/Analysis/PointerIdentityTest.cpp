@@ -426,11 +426,14 @@ TEST(PointerIdentity, APartialPointerCopyReportsLostCoverage) {
 void partial(int **dest, int **source) { memcpy(dest, source, 1); }
 )c");
   ASSERT_TRUE(result.ast);
-  EXPECT_EQ(test::ids(result.diagnostics),
-            std::vector<std::string>{"analysis-incomplete"});
-  EXPECT_EQ(result.diagnostics.diagnostics()[0].message,
-            "analysis is incomplete: unsupported memory copy of "
-            "pointer-containing storage");
+  // RFC 0030 §15 item 3: no diagnostic; the copy's temporal facet is a
+  // reinterpretation the engine did not follow.
+  EXPECT_TRUE(result.diagnostics.empty())
+      << ::testing::PrintToString(test::messages(result.diagnostics));
+  EXPECT_EQ(test::incomplete(result),
+            std::vector<std::string>{
+                "5: temporal raw-cast: unsupported memory copy of "
+                "pointer-containing storage"});
   EXPECT_FALSE(result.summary("partial")->incomplete.empty());
 }
 
@@ -450,7 +453,7 @@ static void drop(struct box *b) { free(b->p); }
 void bad(int *p) { struct box b[1] = {{p}}; drop(b); use(b[0].p); }
 )c");
   ASSERT_TRUE(result.ast);
-  EXPECT_EQ(countId(result, core::diag::AnalysisIncomplete), 0U);
+  EXPECT_EQ(test::incomplete(result).size(), 0U);
   EXPECT_EQ(countId(result, core::diag::UseAfterFree), 1U);
 }
 
@@ -472,7 +475,7 @@ static void drop_field(void *object) { struct first *a = object; free(a->p); }
 void boundary(struct second *b) { drop_field(b); }
 )c");
   ASSERT_TRUE(result.ast);
-  EXPECT_EQ(countId(result, core::diag::AnalysisIncomplete), 1U);
+  EXPECT_EQ(test::incomplete(result).size(), 1U);
 }
 
 TEST(PointerIdentity, CompatibleErasedAndEmbeddedRecordViewsRemainChecked) {
@@ -482,7 +485,7 @@ static void drop_field(void *object) { struct first *a = object; free(a->p); }
 void bad(struct outer *b) { void *erased = &b->in; drop_field(erased); use(b->in.p); }
 )c");
   ASSERT_TRUE(result.ast);
-  EXPECT_EQ(countId(result, core::diag::AnalysisIncomplete), 0U);
+  EXPECT_EQ(test::incomplete(result).size(), 0U);
   EXPECT_EQ(countId(result, core::diag::UseAfterFree), 1U);
 }
 
@@ -499,7 +502,7 @@ void boundary(struct first *a, struct second *b) {
 }
 )c");
   ASSERT_TRUE(result.ast);
-  EXPECT_GT(countId(result, core::diag::AnalysisIncomplete), 0U);
+  EXPECT_GT(test::incomplete(result).size(), 0U);
 }
 
 TEST(PointerIdentity, InvalidCTestFixturesCannotReturnACleanAnalysis) {

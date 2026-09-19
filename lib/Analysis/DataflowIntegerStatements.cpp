@@ -27,7 +27,7 @@ void FunctionDataflow::handleIntegerCompound(const CompoundAssignOperator &expr,
   const auto op = integerOpOf(expr.getOpcode());
   if (!storage || !computation || !rhs || !op) {
     forgetScalar(ref->place, state, &expr);
-    reportIncomplete("unsupported compound integer assignment", expr);
+    decideIncomplete("unsupported compound integer assignment", expr);
     return;
   }
   const auto old =

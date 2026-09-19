@@ -61,12 +61,16 @@ struct CheckPathStep {
 
 /// §10.1: an extra operand of a check.
 ///
-///   constant | place | sizeof(type) | a + b | a - b | a * b
+///   constant | place | sizeof(type) | a + b | a - b | a * b | a / k
 ///   | strnlen(pointer, bound)
 ///
 /// `+`, `-` and `*` are evaluated by the prelude's term helpers over 64-bit
 /// integers, saturating in the direction that fails closed (§10.2), never
-/// by C's own arithmetic.
+/// by C's own arithmetic. `a / k` divides by a positive constant, rounding
+/// down: it only turns a byte extent into an element count (§7.4:
+/// `index(i, bytes / 4)` for an allocation of `bytes` bytes whose element
+/// count the facts do not give), where rounding down fails closed and
+/// nothing can overflow.
 struct CheckTerm {
   enum class Kind : std::uint8_t {
     Constant,
@@ -75,6 +79,8 @@ struct CheckTerm {
     Add,
     Sub,
     Mul,
+    /// `operands[0] / operands[1]`, the second a positive constant.
+    Div,
     StrNLen,
   };
 
@@ -86,8 +92,8 @@ struct CheckTerm {
   /// `Place`: the member and dereference steps below the handle.
   // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
   std::vector<CheckPathStep> path = {};
-  /// `Add`, `Sub`, `Mul`: the two sides; `StrNLen`: the pointer and the
-  /// bound.
+  /// `Add`, `Sub`, `Mul`, `Div`: the two sides; `StrNLen`: the pointer and
+  /// the bound.
   // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
   std::vector<CheckTerm> operands = {};
 
@@ -98,12 +104,14 @@ struct CheckTerm {
   [[nodiscard]] static CheckTerm add(CheckTerm lhs, CheckTerm rhs);
   [[nodiscard]] static CheckTerm sub(CheckTerm lhs, CheckTerm rhs);
   [[nodiscard]] static CheckTerm mul(CheckTerm lhs, CheckTerm rhs);
+  /// `lhs / divisor`, rounding down; `divisor` must be positive.
+  [[nodiscard]] static CheckTerm div(CheckTerm lhs, std::int64_t divisor);
   [[nodiscard]] static CheckTerm strnlen(CheckTerm pointer, CheckTerm bound);
 
   /// Each kind has exactly the fields and operand count it uses.
   [[nodiscard]] bool isWellFormed() const noexcept;
   /// A debugging spelling: `42`, `$3->len`, `*$3`, `sizeof(#7)`,
-  /// `($1 + 4)`, `strnlen($2, 16)`.
+  /// `($1 + 4)`, `($1 / 4)`, `strnlen($2, 16)`.
   [[nodiscard]] std::string toString() const;
 
   friend bool operator==(const CheckTerm &, const CheckTerm &) = default;

@@ -78,6 +78,10 @@ WitnessTerm WitnessTerm::mul(WitnessTerm lhs, WitnessTerm rhs) {
   return binaryTerm(Kind::Mul, std::move(lhs), std::move(rhs));
 }
 
+WitnessTerm WitnessTerm::div(WitnessTerm lhs, std::int64_t divisor) {
+  return binaryTerm(Kind::Div, std::move(lhs), ofConstant(divisor));
+}
+
 WitnessTerm WitnessTerm::strLen(WitnessTerm pointer) {
   WitnessTerm term;
   term.kind = Kind::StrLen;
@@ -106,7 +110,8 @@ std::string WitnessTerm::toString() const {
     return "sizeof(" + type.getAsString() + ")";
   case Kind::Add:
   case Kind::Sub:
-  case Kind::Mul: {
+  case Kind::Mul:
+  case Kind::Div: {
     if (operands.size() != 2)
       return "<malformed>";
     const char *op = " * ";
@@ -114,6 +119,8 @@ std::string WitnessTerm::toString() const {
       op = " + ";
     else if (kind == Kind::Sub)
       op = " - ";
+    else if (kind == Kind::Div)
+      op = " / ";
     std::string text = "(" + operands[0].toString();
     text += op;
     text += operands[1].toString();
@@ -252,6 +259,18 @@ public:
       if (term.kind == WitnessTerm::Kind::Sub)
         return core::CheckTerm::sub(std::move(*lhs), std::move(*rhs));
       return core::CheckTerm::mul(std::move(*lhs), std::move(*rhs));
+    }
+    case WitnessTerm::Kind::Div: {
+      // Rounding down is safe only for an extent (a have), which is all
+      // the engine divides (§7.4).
+      if (term.operands.size() != 2 ||
+          term.operands[1].kind != WitnessTerm::Kind::Constant ||
+          term.operands[1].constant <= 0)
+        return fail("it divides by something other than a positive constant");
+      auto lhs = build(term.operands[0], have);
+      if (!lhs)
+        return std::nullopt;
+      return core::CheckTerm::div(std::move(*lhs), term.operands[1].constant);
     }
     case WitnessTerm::Kind::StrLen: {
       // Rule 2: `strlen(p)` is `__weavec_strnlen(p, have)`.

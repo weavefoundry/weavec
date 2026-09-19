@@ -59,6 +59,18 @@ std::span<const TrustReason> allTrustReasons() noexcept {
   return AllTrustReasons;
 }
 
+UnresolvedReason
+incompletenessReason(std::string_view incompleteness) noexcept {
+  if (incompleteness.starts_with("incompatible or unknown object view") ||
+      incompleteness == "unsupported memory copy of pointer-containing storage")
+    return UnresolvedReason::RawCast;
+  if (incompleteness.find("limit") != std::string_view::npos)
+    return UnresolvedReason::Budget;
+  if (incompleteness.starts_with("unrepresentable"))
+    return UnresolvedReason::Inexpressible;
+  return UnresolvedReason::Unanalysed;
+}
+
 std::string_view toString(SiteKind kind) noexcept {
   switch (kind) {
   case SiteKind::Deref:

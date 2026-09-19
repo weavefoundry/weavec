@@ -405,6 +405,8 @@ bool AnalysisState::join(const AnalysisState &other, const PlaceTable *places,
   }
   for (const PlaceId root : other.incompleteHeap)
     changed |= incompleteHeap.insert(root).second;
+  for (const PlaceId place : other.reinterpreted)
+    changed |= reinterpreted.insert(place).second;
   for (auto it = incoming.begin(); it != incoming.end();) {
     const auto theirs = other.incoming.find(it->first);
     if (theirs == other.incoming.end() || theirs->second != it->second) {
@@ -665,6 +667,7 @@ void AnalysisState::forget(PlaceId place) {
   definiteHeapWrites.erase(place);
   heapLocalObjects.erase(place);
   incompleteHeap.erase(place);
+  reinterpreted.erase(place);
   // Pending outputs and the remaining guarded domains still need a scan.
   dropOtherGuardsOn(*this, place);
 }

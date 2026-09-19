@@ -493,12 +493,14 @@ TEST(Dataflow, ArrayIndicesSurviveChangesToTheirVariables) {
     }
   )c");
   ASSERT_TRUE(result.ast);
-  EXPECT_EQ(
-      messages(result.diagnostics),
-      (Strings{
-          "8: analysis is incomplete: array cleanup membership is unresolved",
-          "18: use of 'a[i]' after it may have been freed",
-          "22: use of 'a[i+1]' after it was freed"}));
+  EXPECT_EQ(messages(result.diagnostics),
+            (Strings{"18: use of 'a[i]' after it may have been freed",
+                     "22: use of 'a[i+1]' after it was freed"}));
+  // RFC 0030 §15 item 3: the cleanup the engine could not follow leaves the
+  // use after it unresolved rather than reporting it.
+  EXPECT_EQ(test::incomplete(result),
+            (Strings{"8: temporal unanalysed: array cleanup membership is "
+                     "unresolved"}));
 }
 
 TEST(Dataflow, ArrayConsumptionSurvivesDifferentSelectionsAtJoins) {
