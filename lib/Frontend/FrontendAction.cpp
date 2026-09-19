@@ -11,6 +11,7 @@
 #include "weavec/Analysis/LedgerAdapter.h"
 #include "weavec/Analysis/UnitPipeline.h"
 #include "weavec/Frontend/ClangDiagnosticSink.h"
+#include "weavec/Frontend/LedgerOutput.h"
 
 #include "clang/AST/ASTConsumer.h"
 #include "clang/AST/ASTContext.h"
@@ -41,6 +42,7 @@ UnitResult analyzeTranslationUnit(clang::ASTContext &context,
     pipeline.engine.dependencies = &result.dependencies;
   pipeline.database = options.database;
   pipeline.discoverOnly = options.discoverOnly;
+  pipeline.config = options.config;
   pipeline.buildLedger = !options.silent;
   core::DiagnosticCollector collected;
   analysis::UnitPipelineResult unit =
@@ -115,6 +117,9 @@ UnitResult analyzeRetainedUnit(clang::ASTUnit &ast,
   printer.BeginSourceFile(ast.getLangOpts(), &ast.getPreprocessor());
   auto result =
       analyzeTranslationUnit(ast.getASTContext(), diagnostics, options);
+  // RFC 0030 §1 step 5: the unit ledger and the summary line.
+  if (result.ledger)
+    emitUnitLedger(result.ledger->ledger, ast, options);
   if (diagnostics.hasErrorOccurred() && result.errors == 0)
     result.errors = 1;
   printer.EndSourceFile();
@@ -147,6 +152,9 @@ public:
   void HandleTranslationUnit(clang::ASTContext &context) override {
     auto result =
         analyzeTranslationUnit(context, compiler.getDiagnostics(), options);
+    // RFC 0030 §1 step 5: the unit ledger and the summary line.
+    if (result.ledger)
+      emitUnitLedger(result.ledger->ledger, compiler, options);
     if (options.onResult)
       options.onResult(std::move(result));
   }

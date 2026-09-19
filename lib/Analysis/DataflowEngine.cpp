@@ -27,7 +27,7 @@ std::optional<core::Facet> facetOfDiagnostic(std::string_view id) {
   if (id == core::diag::OutOfBounds || id == core::diag::InvalidRelease ||
       id == core::diag::UnsafeOperation)
     return core::Facet::Spatial;
-  if (id == rfc0030::ContradictedAssumption)
+  if (id == core::diag::ContradictedAssumption)
     return core::Facet::Assertion;
   return std::nullopt;
 }

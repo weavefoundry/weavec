@@ -478,8 +478,8 @@ void LedgerAdapter::reportRequireLevel() {
           continue;
         core::Diagnostic diagnostic{
             .severity = core::Severity::Error,
-            .id = unresolved ? rfc0030::UnresolvedOperation
-                             : rfc0030::UncheckedOperation,
+            .id = unresolved ? core::diag::UnresolvedOperation
+                             : core::diag::UncheckedOperation,
             .message = {},
             .location = site->location,
             .notes = {},

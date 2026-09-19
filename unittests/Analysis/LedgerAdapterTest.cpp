@@ -328,7 +328,7 @@ int g(int *p) { return *p; }
   (void)strict.finish();
   Lines unchecked;
   for (const core::Diagnostic &diagnostic : strict.diagnostics())
-    if (diagnostic.id == rfc0030::UncheckedOperation)
+    if (diagnostic.id == core::diag::UncheckedOperation)
       unchecked.push_back(diagnostic.message);
   EXPECT_EQ(
       unchecked,

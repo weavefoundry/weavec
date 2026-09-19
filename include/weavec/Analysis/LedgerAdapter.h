@@ -60,18 +60,6 @@
 
 namespace weavec::analysis {
 
-/// The diagnostic ids RFC 0030 adds, spelled exactly as `core::diag` spells
-/// them once `Core/Diagnostic.h` carries them (another stage adds them
-/// there); until then the Analysis layer uses these.
-namespace rfc0030 {
-inline constexpr std::string_view UnresolvedOperation = "unresolved-operation";
-inline constexpr std::string_view UncheckedOperation = "unchecked-operation";
-inline constexpr std::string_view ContradictedAssumption =
-    "contradicted-assumption";
-inline constexpr std::string_view AllocationFailure = "allocation-failure";
-inline constexpr std::string_view UnanalyzedInput = "unanalyzed-input";
-} // namespace rfc0030
-
 /// §9.4: what the engine knows at a boundary about the places reachable
 /// from the function's parameters and globals.
 struct BoundaryFacts {

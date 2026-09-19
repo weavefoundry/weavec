@@ -1928,7 +1928,9 @@ SiteIndex SiteCollector::collect() {
 
     core::FunctionLedger row;
     row.name = function->getNameAsString();
-    row.line = toCoreLocation(sm, function->getLocation()).line;
+    const core::SourceLocation where = toCoreLocation(sm, function->getLocation());
+    row.file = where.file;
+    row.line = where.line;
     row.linkage = function->isExternallyVisible() ? core::Linkage::External
                                                   : core::Linkage::Internal;
     row.callsSetjmp = walker.callsSetjmp;
