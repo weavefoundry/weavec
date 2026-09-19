@@ -30,4 +30,9 @@ weavec_add_library(
           Traversal.cpp
           Summary.cpp
           SummarySteps.cpp
-          SummaryIO.cpp)
+          SummaryIO.cpp
+          # RFC 0030: the ledger, pointer kinds, check plans and slots.
+          CheckPlan.cpp
+          FnSlots.cpp
+          Ledger.cpp
+          PointerKind.cpp)

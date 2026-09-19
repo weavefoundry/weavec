@@ -26,4 +26,9 @@ weavec_add_unittest(
           TraversalTest.cpp
           SummaryIOTest.cpp
           SummaryTest.cpp
+          # RFC 0030.
+          CheckPlanTest.cpp
+          FnSlotsTest.cpp
+          LedgerTest.cpp
+          PointerKindTest.cpp
   DEPS weavec::Core)
