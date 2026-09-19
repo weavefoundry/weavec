@@ -1887,22 +1887,69 @@ or `str` requires a Single value (one element of its pointee type), and a
 `fn` parameter without a callback clause is only stored or compared.
 
 ```
-entry  ::= NAME '(' params ')' '->' result { clause } ';'
-params ::= [ param { ',' param } ] [ ',' '...' ]
-param  ::= 'int' | 'fn' [ ':' callback ] | 'other' | access { ':' pflag }
-access ::= 'r' | 'w' | 'rw' | 'none'
-pflag  ::= 'bytes(' term ')' | 'str' | 'null-ok' | 'null-if-zero(' term ')'
-         | 'release(' FAMILY ')' | 'realloc(' FAMILY ')' | 'retain(' STATE ')' | 'escape'
-callback ::= 'sync(' INT { ',' INT } ')' | 'entry(' [ INT ] ')' | 'at-exit'
-result ::= 'void' | 'int' | 'noreturn' | rkind { ':' rflag }
-rkind  ::= 'fresh(' FAMILY ')' | 'static(' STATE ')' | 'arg(' INT ')' | 'interior(' INT ')'
-         | 'interior-state(' STATE ')' | 'ptr'
-rflag  ::= 'extent(' term ')' | 'null-on-failure' | 'nonnull' | 'null-ok' | 'zero-init'
-         | 'no-zero-init'
-clause ::= 'disjoint(' INT ',' INT ',' term ')' | 'invalidates(' STATE ')' | 'reads(' STATE ')'
-         | 'exits' | 'returns-twice' | 'printf(' INT ',' INT ')' | 'scanf(' INT ',' INT ')'
-         | 'chk(' NAME ':' INT { ',' INT } ')'
+directive ::= 'header' NAME ';' | 'header' DIR '/*' ';' | 'builtins' ';'
+entry    ::= NAME '(' params ')' '->' result { clause } ';'
+params   ::= [ param { ',' param } ] [ ',' '...' ]
+param    ::= 'int' | 'other' | 'fn' { ':' fflag } | access { ':' pflag }
+fflag    ::= callback | 'null-ok'
+access   ::= 'r' | 'w' | 'rw' | 'none'
+pflag    ::= 'bytes(' term ')' | 'count(' term ')' | 'str' | 'null-ok'
+           | 'null-if-zero(' term ')' | 'release(' FAMILY ')'
+           | 'realloc(' FAMILY ')' | 'retain(' STATE ')' | 'escape'
+           | 'init(' FAMILY ')' | 'fini(' FAMILY ')' | 'out(' value ')' | callback
+callback ::= 'sync(' [ INT { ',' INT } ] ')' | 'entry(' [ INT ] ')' | 'at-exit'
+result   ::= 'void' | 'int' [ ':value(' term ')' ] | 'noreturn' | value
+value    ::= rkind { ':' rflag }
+rkind    ::= 'fresh(' FAMILY ')' | 'static(' STATE ')' | 'arg(' INT ')'
+           | 'interior(' INT ')' | 'interior-state(' STATE ')' | 'ptr'
+rflag    ::= 'extent(' term ')' | 'null-on-failure' | 'nonnull' | 'null-ok'
+           | 'zero-init' | 'no-zero-init' | 'str' | 'replaces'
+           | 'or-fresh(' FAMILY ')' | 'or-static(' STATE ')' | 'offset(' term ')'
+           | 'zero-filled'
+clause   ::= 'disjoint(' INT ',' INT ',' term ')' | 'copies(' INT ',' INT ',' term ')'
+           | 'fills(' INT ',' term ',' term ')' | 'writes-str(' INT [ ',' term ] ')'
+           | 'invalidates(' STATE ')' | 'reads(' STATE ')' | 'exits'
+           | 'returns-twice' | 'printf(' INT ',' INT ')' | 'scanf(' INT ',' INT ')'
+           | 'chk(' NAME ':' INT { ',' INT } ')'
+term     ::= INT | 'a' N | 'strlen(a' N ')' | 'fmtlen(a' N ')' | MACRO
+           | term '*' term | term '+' term | term '-' INT
+           | 'min(' term ',' term ')' | '(' term ')'
 ```
+
+**Amendment (S4 preparation).** Writing the full table showed that the
+first grammar could not express several effects that the `name ==` sites
+of §8 encode, so these constructs were added; the header comment of
+`LibrarySpec.txt` documents each one and is kept in step with this list:
+
+- `header NAME;`, `header DIR/*;` and `builtins;` directives. They define
+  the §5.2 header list and set each following entry's header.
+- `count(t)`, a requirement in elements rather than bytes (the wide
+  functions), and `MACRO` terms such as `BUFSIZ` and `PATH_MAX`, evaluated
+  in the calling unit. The never-defined `__WEAVEC_UNBOUNDED` marks a
+  requirement that is never proven or checked (`gets`).
+- `out(v)`: the argument points to a pointer slot into which the call
+  stores `v` (`asprintf`, `strtol`'s end pointer); `replaces` consumes the
+  slot's previous value first (`getline`).
+- `init(F)` and `fini(F)`: the object behind the argument acquires or ends a
+  resource of family `F` while its own storage stays valid (`regcomp`,
+  `regfree`, `glob`, `globfree`), so `fini` on a local is not an invalid
+  release.
+- `arg(N):or-fresh(F)` and `arg(N):or-static(S)`: when argument `N` is null
+  the result is fresh (`realpath(p, NULL)`, `getcwd(NULL, n)`) or static
+  (`tmpnam(NULL)`).
+- String and copy facts that the engine's string and memory transfer used
+  to hard-code: `copies(d,s,t)`, `fills(d,v,t)`, `writes-str(d[,t])`,
+  `int:value(t)` (`strlen` returns `strlen(a0)`), `offset(t)` on interior
+  results (`stpcpy`), `str` on string results and `zero-filled` on
+  `calloc`.
+- Overloads chosen by signature (glibc and BSD `qsort_r`, GNU and XSI
+  `strerror_r`), `fn:null-ok` (`signal(SIG_DFL)`), an empty `sync()` for a
+  callback that receives only the library's own storage (`nftw`), and
+  callback flags on pointer parameters for function pointers stored in the
+  pointee (`sigaction`'s `act`).
+
+The C++ schema in `include/weavec/Core/LibrarySpec.h` extends §8.1 with the
+corresponding fields and is authoritative for them.
 
 `entry(N)` means that argument `N` of the call is passed to the target;
 `entry()` means the target receives no pointer from the call (`signal`).
@@ -2304,7 +2351,12 @@ under a pragma that silences `-Weverything`. The prelude uses no macros
 spells sizes as `__typeof__(sizeof 0)` and 64-bit values as
 `unsigned long long`/`long long`, and calls only builtins. The trap
 reason is the template name, which is also what the `TRAP` markers of §17.3
-match. In trap mode (abridged; `A` stands for
+match. **Amendment (S2).** Because the helpers are `nodebug`, the
+debugger attributes the trap to the access's own source line and column, but
+the reason string that `__builtin_verbose_trap` places in debug info is lost
+with the helper's frame. The location is the more useful of the two, so
+`nodebug` stays; report mode and the verify category still name the
+template. In trap mode (abridged; `A` stands for
 `static __inline__ __attribute__((always_inline, nodebug, unused))`):
 
 ```c
@@ -2536,7 +2588,21 @@ Deferral is required. Without it, CodeGen has already emitted external
 functions by the time the analysis runs; the prototype showed that only
 lazily emitted static functions received their checks. The consumer is
 used for every C code-generating action, whatever the checks mode. With
-`-fweavec-checks=none` it changes nothing (gate G7). It is not installed
+`-fweavec-checks=none` it changes nothing (gate G7).
+
+**Amendment (S2).** "Changes nothing" holds for the corpus (gate G7: 153
+TUs × 3 configurations byte-identical), not for every C input. Because the
+replay sees the finished AST, CodeGen observes redeclarations that follow a
+recorded callback. Three differences were found in hand-written units:
+a C99 or GNU `inline` definition that a later `extern` declaration makes
+external is emitted at a different position in the object; a tentative
+array completed after its first use likewise; and `weak_import`,
+`availability` or `visibility` on a later redeclaration now also applies to
+earlier references (an `extern_weak` or `hidden` reference). The first two
+change only symbol order. The third follows the declaration's final
+attributes, as a non-incremental compiler would; it is documented in
+`DeferredCodeGenConsumer.h`, and matching the eager order exactly would need
+CodeGen internals, which is left to RFC 0031 if it matters in practice. It is not installed
 for `-E`, `-fsyntax-only`, dependency-only actions, or C++/Objective-C
 inputs, which pass through to Clang unchanged.
 
@@ -2728,7 +2794,7 @@ A3 is about code outside *U* and this one is about *U*'s own reads.
     "source": "cJSON.c", "object": "cJSON.o", "target": "arm64-apple-macosx15.0",
     "summary": {…},
     "functions": [{
-      "name": "cJSON_Delete", "line": 253, "linkage": "external",
+      "name": "cJSON_Delete", "file": "cJSON.c", "line": 253, "linkage": "external",
       "overBudget": false, "requireSafe": false, "setjmp": false,
       "sites": [{
         "ordinal": 0, "kind": "deref", "line": 258, "column": 21, "text": "item->next",
@@ -2757,6 +2823,10 @@ Field rules:
 
 - `text` is the site's source text with whitespace removed, truncated to
   80 bytes.
+- `file` on a function is the root-relative path of the file that holds
+  its definition, which differs from the unit's `source` for a function
+  defined in a header. Sites take their function's file. (Amendment, S3:
+  without it, sites of header functions had ambiguous line numbers.)
 - `check` is present on checked facets. In verify mode, proven facets
   that received a check carry `"check": {"template": …, "proven": true}`.
 - `requirements` lists, for LibCall, Release and call-site facets, one

@@ -27,7 +27,7 @@ Examples:
   scripts/codegen-identity.py --weavec-cc build/release/bin/weavec-cc \\
       --list test/corpus/identity.txt --min 100
   scripts/codegen-identity.py --weavec-cc build/w3/bin/weavec-cc \\
-      --root ../weavec/build/corpus --list scripts/identity-candidates.txt \\
+      --root build/corpus --list test/corpus/identity.txt \\
       --config='-O1' -- -DNDEBUG
 
 The exit status is 0 when every compared object is identical, no
