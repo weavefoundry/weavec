@@ -8,8 +8,8 @@
 // line, from libweavec_chk.a, behave the same.
 //
 // RUN: rm -rf %t && mkdir -p %t
-// RUN: %weavec_prelude --mode=verify -o %t/verify.h
-// RUN: %weavec_prelude --mode=report -o %t/report.h
+// RUN: %weavec_cc -fweavec-print-prelude -fweavec-checks=verify -o %t/verify.h
+// RUN: %weavec_cc -fweavec-print-prelude -fweavec-checks=report -o %t/report.h
 // RUN: %clang -std=c11 -Wall -Wextra -Werror -O0 -include %t/verify.h %s -o %t/trap0
 // RUN: %clang -std=c11 -Wall -Wextra -Werror -O2 -include %t/verify.h %s -o %t/trap2
 // RUN: %t/trap0 | FileCheck --check-prefix=PASS %s

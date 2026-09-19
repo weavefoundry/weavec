@@ -76,14 +76,56 @@ TEST(DiagnosticIds, PointerValidityIdsAreKnown) {
   for (const std::string_view id :
        {diag::NullDereference, diag::UseOfUninitialized, diag::InvalidRelease})
     EXPECT_TRUE(diag::isKnown(id)) << id;
-  EXPECT_EQ(diag::All.size(), 19U);
+  EXPECT_EQ(diag::All.size(), 22U);
 }
 
 TEST(DiagnosticIds, SpatialSafetyIdIsKnown) {
-  // RFC 0011, *Diagnostics*.
+  // RFC 0011, *Diagnostics*; RFC 0030 §3.3: an error, and only definite.
   EXPECT_EQ(diag::OutOfBounds, "out-of-bounds");
   EXPECT_TRUE(diag::isKnown(diag::OutOfBounds));
-  EXPECT_FALSE(diag::isWarningByDefault(diag::OutOfBounds));
+  EXPECT_EQ(diag::defaultSeverity(diag::OutOfBounds, Certainty::Definite),
+            Severity::Error);
+  EXPECT_EQ(diag::defaultSeverity(diag::OutOfBounds, Certainty::Possible),
+            Severity::Error);
+}
+
+TEST(DiagnosticIds, ProveOrTrapIdsAreKnown) {
+  // RFC 0030, *Diagnostics*: the five added ids and their severities.
+  EXPECT_EQ(diag::ContradictedAssumption, "contradicted-assumption");
+  EXPECT_EQ(diag::AllocationFailure, "allocation-failure");
+  EXPECT_EQ(diag::UnresolvedOperation, "unresolved-operation");
+  EXPECT_EQ(diag::UncheckedOperation, "unchecked-operation");
+  EXPECT_EQ(diag::UnanalyzedInput, "unanalyzed-input");
+  for (const std::string_view id :
+       {diag::ContradictedAssumption, diag::UnresolvedOperation,
+        diag::UncheckedOperation}) {
+    EXPECT_TRUE(diag::isKnown(id)) << id;
+    EXPECT_EQ(diag::defaultSeverity(id, Certainty::Definite), Severity::Error)
+        << id;
+    EXPECT_TRUE(diag::isEnabledByDefault(id)) << id;
+  }
+  for (const std::string_view id :
+       {diag::AllocationFailure, diag::UnanalyzedInput}) {
+    EXPECT_TRUE(diag::isKnown(id)) << id;
+    EXPECT_EQ(diag::defaultSeverity(id, Certainty::Definite), Severity::Warning)
+        << id;
+  }
+  EXPECT_FALSE(diag::isEnabledByDefault(diag::AllocationFailure));
+  EXPECT_TRUE(diag::isEnabledByDefault(diag::UnanalyzedInput));
+  // A temporal id is an error when definite and a warning when possible.
+  EXPECT_EQ(diag::defaultSeverity(diag::UseAfterFree, Certainty::Definite),
+            Severity::Error);
+  EXPECT_EQ(diag::defaultSeverity(diag::UseAfterFree, Certainty::Possible),
+            Severity::Warning);
+  // Checked mode's ids are gone.
+  EXPECT_TRUE(diag::isRemoved("checking-incomplete"));
+  EXPECT_TRUE(diag::isRemoved("checking-failed"));
+  EXPECT_FALSE(diag::isKnown("checking-failed"));
+}
+
+TEST(Diagnostic, CertaintyDefaultsToDefinite) {
+  const Diagnostic diagnostic{};
+  EXPECT_EQ(diagnostic.certainty, Certainty::Definite);
 }
 
 TEST(Severity, ToString) {

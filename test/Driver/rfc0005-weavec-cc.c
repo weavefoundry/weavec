@@ -27,7 +27,8 @@
 // RUN: FileCheck --check-prefix=DEFERRED %s < %t/bnd.o.weavec
 // RUN: not %weavec_cc %t/node.o %t/bnd.o -o %t/prog3 2>&1 | FileCheck --check-prefix=BOUNDARY %s
 //
-// A sidecar older than its object is stale: ignored with a warning, and the
+// A sidecar older than its object is stale: the input is named in the link's
+// `unanalyzed-input` warning (RFC 0030 §13.2), and the
 // object is unknown code, so nothing is checked and the link goes ahead.
 // RUN: touch -t 203001010000 %t/main.o
 // RUN: %weavec_cc %t/node.o %t/main.o -o %t/prog4 2>&1 | FileCheck --check-prefix=STALE %s
@@ -109,5 +110,5 @@ int main(void) {
 }
 #endif
 
-// STALE: weavec-cc: warning: ignoring '{{.*}}main.o.weavec': older than '{{.*}}main.o'
+// STALE: weavec-cc: warning: link input '{{.*}}main.o' has a stale WeaveC record ('{{.*}}main.o.weavec' is older than the object); calls into it are trusted [weavec::unanalyzed-input]
 // STALE-NOT: error:

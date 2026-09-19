@@ -236,6 +236,22 @@ struct PendingRow {
 };
 } // namespace
 
+/// §12.1: the file that holds a function's definition; the unit's source
+/// unless the producer recorded another.
+static const std::string &functionFile(const UnitLedger &unit,
+                                       const FunctionLedger &function) {
+  return function.file.empty() ? unit.source : function.file;
+}
+
+/// The file of a site: its own location's, else its function's (§12.1:
+/// sites take their function's file).
+static const std::string &siteFile(const UnitLedger &unit,
+                                   const FunctionLedger &function,
+                                   const core::Site &site) {
+  return site.location.file.empty() ? functionFile(unit, function)
+                                    : site.location.file;
+}
+
 static Fingerprints computeFingerprints(const Ledger &ledger,
                                         const PathMapper &paths) {
   // Rows group by (path, function, key, normalised message).
@@ -254,8 +270,7 @@ static Fingerprints computeFingerprints(const Ledger &ledger,
       unitRows[f].resize(function.sites.size());
       for (std::size_t s = 0; s < function.sites.size(); ++s) {
         const core::Site &site = function.sites[s];
-        const std::string path = paths(
-            site.location.file.empty() ? unit.source : site.location.file);
+        const std::string path = paths(siteFile(unit, function, site));
         const std::string message =
             normalizeFingerprintMessage(core::siteText(site.text));
         for (const Facet facet : core::AllFacets) {
@@ -636,6 +651,7 @@ std::string renderLedgerJson(const Ledger &ledger,
                 const FunctionLedger &function = unit.functions[f];
                 json.object([&] {
                   json.attribute("name", utf8(function.name));
+                  json.attribute("file", paths(functionFile(unit, function)));
                   json.attribute("line", function.line);
                   json.attribute("linkage",
                                  spelled(core::toString(function.linkage)));
@@ -894,12 +910,9 @@ std::string renderLedgerSarif(const Ledger &ledger,
                       });
                       json.attributeArray("locations", [&] {
                         json.object([&] {
-                          writeSarifLocation(json,
-                                             paths(site.location.file.empty()
-                                                       ? unit.source
-                                                       : site.location.file),
-                                             site.location.line,
-                                             site.location.column);
+                          writeSarifLocation(
+                              json, paths(siteFile(unit, function, site)),
+                              site.location.line, site.location.column);
                         });
                       });
                       json.attributeObject("partialFingerprints", [&] {

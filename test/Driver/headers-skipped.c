@@ -1,9 +1,10 @@
-// Definitions in included headers are not analysed unless --analyze-headers.
-// RUN: %weavec %s -- 2>&1 | count 0
-// RUN: not %weavec --analyze-headers %s -- 2>&1 | FileCheck %s
+// Definitions in included headers are not analysed yet. RFC 0030 §5.6
+// removes --analyze-headers and analyses every emitted function, headers
+// included; this test is then inverted (headers-analysed.c).
+// RUN: %weavec %s -- 2>&1 | FileCheck --allow-empty --check-prefix=QUIET %s
+// QUIET-NOT: {{warning|error}}:
 #include "../Inputs/prelude.h"
 #include "Inputs/buggy-header.h"
 
 void fine(void) {}
 
-// CHECK: buggy-header.h:{{[0-9]+}}:{{[0-9]+}}: error: 'p' is freed twice [weavec::double-free]

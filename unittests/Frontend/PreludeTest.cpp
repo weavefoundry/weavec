@@ -183,6 +183,22 @@ TEST(PreludeTest, CompilesUnderEveryStandardWithEveryWarning) {
       }
     }
   }
+  // The `__builtin_trap()` form, for compilers without
+  // `__builtin_verbose_trap`, which `weavec-cc -fweavec-print-prelude` never
+  // prints.
+  PreludeOptions plain;
+  plain.zeroInit = false;
+  plain.verboseTrap = false;
+  const std::string unit =
+      buildCheckPrelude(plain) + "int main(void) { return 0; }\n";
+  for (const char *standard : {"-std=c89", "-std=c2x"}) {
+    EXPECT_TRUE(clang::tooling::runToolOnCodeWithArgs(
+        std::make_unique<clang::SyntaxOnlyAction>(), unit,
+        {standard, "-pedantic-errors", "-Weverything", "-Werror", "-target",
+         "arm64-apple-macosx14.0.0"},
+        "unit.c"))
+        << "plain " << standard;
+  }
 }
 
 } // namespace weavec::frontend

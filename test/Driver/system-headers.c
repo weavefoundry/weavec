@@ -1,7 +1,8 @@
 // Real system and builtin headers must resolve without extra flags: weavec
 // points Clang at the resource directory of the installation it was built
 // against.
-// RUN: %weavec %s -- 2>&1 | count 0
+// RUN: %weavec %s -- 2>&1 | FileCheck --allow-empty --check-prefix=QUIET %s
+// QUIET-NOT: {{warning|error}}:
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>

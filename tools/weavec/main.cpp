@@ -14,20 +14,27 @@
 //                                       program; RFC 0005)
 //
 // Warning control follows the compiler's spelling: -Wno-weavec-<id>,
-// -Werror=weavec-<id>, -Wno-error=weavec. The drop-in compiler driver is
-// `weavec-cc`.
+// -Werror=weavec-<id>, -Wno-error=weavec. RFC 0030 §16: the ledger
+// (--ledger, --ledger-format), the require level (--require), the budget
+// (--budget) and --no-zero-init model a `weavec-cc` build with the default
+// checks, and the summary line is always printed. The drop-in compiler
+// driver is `weavec-cc`.
 //
 //===----------------------------------------------------------------------===//
 
 #include "weavec/Config/Version.h"
+#include "weavec/Core/Ledger.h"
 #include "weavec/Frontend/AnalysisStats.h"
 #include "weavec/Frontend/DiagnosticControl.h"
 #include "weavec/Frontend/FrontendAction.h"
+#include "weavec/Frontend/LedgerOutput.h"
+#include "weavec/Frontend/LedgerWriter.h"
 #include "weavec/Frontend/ProgramAnalysis.h"
 #include "weavec/Frontend/ResourceDir.h"
 
 #include "clang/Tooling/ArgumentsAdjusters.h"
 #include "clang/Tooling/CommonOptionsParser.h"
+#include "clang/Tooling/CompilationDatabase.h"
 #include "clang/Tooling/Tooling.h"
 
 #include "llvm/ADT/STLExtras.h"
@@ -35,6 +42,9 @@
 #include "llvm/Support/InitLLVM.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
@@ -47,38 +57,49 @@ namespace cl = llvm::cl;
 // NOLINTBEGIN(cppcoreguidelines-avoid-non-const-global-variables)
 cl::OptionCategory weavecCategory("weavec options");
 
-cl::opt<bool> reportUnannotated(
-    "report-unannotated",
-    cl::desc("Warn about unannotated pointer parameters and results of "
-             "exported functions, offering the inferred annotation as a "
-             "fix-it, and about calls to unannotated functions from system "
-             "headers"),
-    cl::init(false), cl::cat(weavecCategory));
-
 cl::opt<std::string>
     analysisStatsPath("analysis-stats",
                       cl::desc("Write analysis work statistics JSON"),
                       cl::cat(weavecCategory));
 
-cl::opt<bool> strictExterns(
-    "strict-externs",
-    cl::desc("Treat calls into unchecked code (no definition, annotation or "
-             "library summary) as raw operations: an error outside "
-             "WEAVEC_UNSAFE regions, and their pointer results are raw"),
-    cl::init(false), cl::cat(weavecCategory));
+cl::opt<std::string> ledgerPath(
+    "ledger",
+    cl::desc("Write the ledger of every outcome: to this file, or, for a "
+             "directory (a value ending in '/'), one <source>.ledger.json "
+             "per source"),
+    cl::value_desc("path"), cl::cat(weavecCategory));
 
-cl::opt<bool> exclusiveBorrows(
-    "exclusive-borrows",
-    cl::desc("Enforce Rust's exclusivity rule in full: a second mutable "
-             "borrow, a shared borrow of a mutably borrowed object or a write "
-             "to a borrowed object is a conflicting-borrow. By default only "
-             "freeing, moving or reallocating a borrowed object is"),
-    cl::init(false), cl::cat(weavecCategory));
+cl::opt<weavec::frontend::LedgerFormat>
+    ledgerFormat("ledger-format", cl::desc("The ledger's format"),
+                 cl::values(clEnumValN(weavec::frontend::LedgerFormat::Json,
+                                       "json", "weavec-ledger JSON (default)"),
+                            clEnumValN(weavec::frontend::LedgerFormat::Sarif,
+                                       "sarif", "SARIF 2.1.0")),
+                 cl::init(weavec::frontend::LedgerFormat::Json),
+                 cl::cat(weavecCategory));
 
-cl::opt<bool> analyzeHeaders(
-    "analyze-headers",
-    cl::desc("Also analyse function definitions found in included headers"),
-    cl::init(false), cl::cat(weavecCategory));
+cl::opt<weavec::core::RequireLevel> requireLevel(
+    "require",
+    cl::desc("Make facets that are not proven errors (unresolved-operation, "
+             "unchecked-operation)"),
+    cl::values(clEnumValN(weavec::core::RequireLevel::None, "none",
+                          "no requirement (default)"),
+               clEnumValN(weavec::core::RequireLevel::Checked, "checked",
+                          "every facet proven or checkable"),
+               clEnumValN(weavec::core::RequireLevel::Proven, "proven",
+                          "every facet proven")),
+    cl::init(weavec::core::RequireLevel::None), cl::cat(weavecCategory));
+
+cl::opt<std::uint64_t>
+    budget("budget",
+           cl::desc("Block transfers per function before its analysis stops "
+                    "(0: unlimited)"),
+           cl::init(weavec::core::DefaultBudget), cl::cat(weavecCategory));
+
+cl::opt<bool> noZeroInit("no-zero-init",
+                         cl::desc("Model a build without zero-initialisation "
+                                  "(-fno-weavec-zero-init)"),
+                         cl::init(false), cl::cat(weavecCategory));
 
 cl::opt<bool> dumpAnalysis(
     "dump-analysis",
@@ -102,6 +123,7 @@ cl::extrahelp moreHelp(
     "\nWarning control: -Wno-weavec-<id> disables a warning, -Wweavec-<id>\n"
     "re-enables it, -Werror=weavec[-<id>] and -Wno-error=weavec[-<id>] change\n"
     "severities. Errors cannot be disabled, only lowered to warnings.\n"
+    "-Wweavec-allocation-failure enables the one id that is off by default.\n"
     "\nWeaveC brings inferred ownership and borrowing to existing C code.\n"
     "See https://github.com/weavefoundry/weavec for documentation.\n");
 
@@ -143,6 +165,70 @@ static bool extractWarningFlags(int &argc, const char **argv,
   }
   argc = kept;
   return true;
+}
+
+/// An option `CommonOptionsParser` registers itself (`-p`, `--extra-arg`,
+/// `--extra-arg-before`) and keeps no accessor for.
+template <typename Option>
+static const Option *commonOption(llvm::StringRef name) {
+  const auto &options = cl::getRegisteredOptions();
+  const auto found = options.find(name);
+  // The parser registers each of these names with exactly this type.
+  return found == options.end() ? nullptr
+                                : static_cast<const Option *>(found->second);
+}
+
+/// RFC 0030 §16: the database of `-p` for a run that names no source.
+/// `CommonOptionsParser` loads none then (`cl::ZeroOrMore`), so it is loaded
+/// here, with `--extra-arg-before` and `--extra-arg` applied as the parser
+/// applies them. Null, with `error` set, when there is none.
+static std::unique_ptr<clang::tooling::CompilationDatabase>
+loadBuildDatabase(std::string &error) {
+  const auto *buildPath = commonOption<cl::opt<std::string>>("p");
+  if (buildPath == nullptr || buildPath->getValue().empty()) {
+    error = "no compilation database with sources; give -p <build-dir> or "
+            "list the files";
+    return nullptr;
+  }
+  std::string message;
+  std::unique_ptr<clang::tooling::CompilationDatabase> database =
+      clang::tooling::CompilationDatabase::autoDetectFromDirectory(
+          buildPath->getValue(), message);
+  if (!database) {
+    // As for `-p` with a source, the directory's parents are searched too.
+    error = "no compilation database in '" + buildPath->getValue() +
+            "' or any parent directory";
+    return nullptr;
+  }
+  auto adjusted =
+      std::make_unique<clang::tooling::ArgumentsAdjustingCompilations>(
+          std::move(database));
+  const auto extraArgs = [](llvm::StringRef name) {
+    std::vector<std::string> args;
+    if (const auto *list = commonOption<cl::list<std::string>>(name))
+      args.assign(list->begin(), list->end());
+    return args;
+  };
+  adjusted->appendArgumentsAdjuster(clang::tooling::getInsertArgumentAdjuster(
+      extraArgs("extra-arg-before"),
+      clang::tooling::ArgumentInsertPosition::BEGIN));
+  adjusted->appendArgumentsAdjuster(clang::tooling::getInsertArgumentAdjuster(
+      extraArgs("extra-arg"), clang::tooling::ArgumentInsertPosition::END));
+  return adjusted;
+}
+
+/// Whether a compile command asks for `-fdiagnostics-format=sarif` (the last
+/// format given wins, as in Clang).
+static bool asksForSarif(const std::vector<std::string> &command) {
+  llvm::StringRef format;
+  for (std::size_t i = 0; i < command.size(); ++i) {
+    llvm::StringRef arg = command[i];
+    if (arg.consume_front("-fdiagnostics-format="))
+      format = arg;
+    else if (arg == "-fdiagnostics-format" && i + 1 < command.size())
+      format = command[++i];
+  }
+  return format.equals_insensitive("sarif");
 }
 
 /// The argument adjusters every parse gets: the annotation header and the
@@ -201,6 +287,9 @@ int main(int argc, const char **argv) {
   if (!extractWarningFlags(argc, argv, control))
     return 1;
 
+  // With `--`, the parser's database is the fixed one that follows it.
+  const bool fixedDatabase =
+      std::find(argv, argv + argc, llvm::StringRef("--")) != argv + argc;
   auto expectedParser = clang::tooling::CommonOptionsParser::create(
       argc, argv, weavecCategory, cl::ZeroOrMore,
       "weavec: memory-safety analysis for C");
@@ -209,20 +298,45 @@ int main(int argc, const char **argv) {
     return 1;
   }
   clang::tooling::CommonOptionsParser &parser = *expectedParser;
-  const clang::tooling::CompilationDatabase &compilations =
-      parser.getCompilations();
 
+  // Without a source the parser loads no database (and has none to give
+  // unless `--` built the fixed one): `--whole-program -p <dir>` loads it
+  // here and analyses every file it lists.
   std::vector<std::string> sources = parser.getSourcePathList();
+  std::unique_ptr<clang::tooling::CompilationDatabase> buildDatabase;
   if (sources.empty()) {
     if (!wholeProgram) {
       llvm::errs() << "weavec: error: no input files\n";
       return 1;
     }
-    sources = compilations.getAllFiles();
+    std::string error = "no compilation database with sources; give -p "
+                        "<build-dir> or list the files";
+    if (!fixedDatabase)
+      buildDatabase = loadBuildDatabase(error);
+    if (buildDatabase)
+      sources = buildDatabase->getAllFiles();
     if (sources.empty()) {
-      llvm::errs() << "weavec: error: no compilation database with sources; "
-                      "give -p <build-dir> or list the files\n";
+      if (buildDatabase)
+        error = "the compilation database lists no files";
+      llvm::errs() << "weavec: error: " << error << '\n';
       return 1;
+    }
+  }
+  const clang::tooling::CompilationDatabase &compilations =
+      buildDatabase ? *buildDatabase : parser.getCompilations();
+
+  // RFC 0030 §16: the tool's runs build their SourceManager before Clang
+  // attaches a SARIF document writer to its printer, so Clang's SARIF
+  // output would crash them. WeaveC's own SARIF is the ledger's.
+  for (const std::string &source : sources) {
+    for (const clang::tooling::CompileCommand &command :
+         compilations.getCompileCommands(source)) {
+      if (asksForSarif(command.CommandLine)) {
+        llvm::errs() << "weavec: error: -fdiagnostics-format=sarif is not "
+                        "supported; write the ledger as SARIF with "
+                        "--ledger=<path> --ledger-format=sarif\n";
+        return 1;
+      }
     }
   }
 
@@ -230,17 +344,38 @@ int main(int argc, const char **argv) {
     llvm::errs() << "weavec: error: analysis statistics require a path\n";
     return 1;
   }
+  // §16: one file receives one ledger; a directory one per source.
+  if (!wholeProgram && sources.size() > 1 && !ledgerPath.empty() &&
+      !weavec::frontend::isLedgerDirectory(ledgerPath)) {
+    llvm::errs() << "weavec: error: '--ledger=" << ledgerPath
+                 << "' would receive " << sources.size()
+                 << " ledgers; name a directory (ending in '/') to get one "
+                    "ledger per source\n";
+    return 1;
+  }
   weavec::core::AnalysisStats stats;
   weavec::frontend::FrontendOptions options;
   options.analysis.stats = analysisStatsPath.empty() ? nullptr : &stats;
   options.analysisStatsPath = analysisStatsPath.getValue();
-  options.analysis.reportUnannotated = reportUnannotated;
-  options.analysis.strictExterns = strictExterns;
-  options.analysis.exclusiveBorrows = exclusiveBorrows;
   if (dumpAnalysis)
     options.analysis.dumpStream = &llvm::outs();
-  options.mainFileOnly = !analyzeHeaders;
   options.control = control;
+  // §16: the ledger models a `weavec-cc` build with the default checks, and
+  // the summary line, always printed, says they are not enforced.
+  options.config = weavec::core::LedgerConfig{
+      .checks = weavec::core::ChecksMode::Trap,
+      .zeroInit = !noZeroInit,
+      .require = requireLevel,
+      .budget = budget,
+  };
+  // With --whole-program, --ledger names the program ledger, which the
+  // program analysis writes (`emitProgramLedger`), not a ledger per unit.
+  options.ledgerOutput = weavec::frontend::LedgerOutputOptions{
+      .path = wholeProgram ? std::string() : ledgerPath.getValue(),
+      .format = ledgerFormat,
+      .summary = true,
+      .checksEnforced = false,
+  };
 
   const std::vector<clang::tooling::ArgumentsAdjuster> adjusters =
       makeAdjusters(argv[0]);

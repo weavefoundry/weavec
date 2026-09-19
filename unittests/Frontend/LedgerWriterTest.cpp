@@ -129,7 +129,8 @@ TEST(LedgerWriter, GoldenUnitLedger) {
       R"("target":"arm64-apple-macosx15.0","summary":{)" +
       counts +
       R"(,"a5":{"nonLoweredAllocations":0,"bypassedDeclarations":0}},)"
-      R"("functions":[{"name":"cJSON_Delete","line":253,"linkage":"external",)"
+      R"("functions":[{"name":"cJSON_Delete","file":"src/cJSON.c","line":253,)"
+      R"("linkage":"external",)"
       R"("overBudget":false,"requireSafe":false,"setjmp":false,)"
       R"("sites":[{"ordinal":0,"kind":"deref","line":258,"column":21,)"
       R"("text":"item->next","boundary":null,"callee":null,"facets":{)"
@@ -223,6 +224,26 @@ TEST(LedgerWriter, OrdinalsCountEqualRowsInLineOrder) {
   EXPECT_EQ(
       moved.units[0].functions[0].sites[1].facet(Facet::Spatial)->fingerprint,
       expected(0));
+}
+
+TEST(LedgerWriter, HeaderFunctionsCarryTheirFile) {
+  // §12.1 (S3 amendment): a function defined in a header names its file,
+  // and its sites, which carry no file of their own, take it, in the JSON,
+  // the fingerprints and SARIF.
+  core::Ledger ledger = cjsonLedger();
+  core::FunctionLedger &function = ledger.units[0].functions[0];
+  function.file = "/proj/include/buffer.h";
+  function.sites[0].location.file.clear();
+  const std::string json = renderLedgerJson(ledger, {.indent = 0});
+  EXPECT_NE(json.find(R"("name":"cJSON_Delete","file":"include/buffer.h",)"),
+            std::string::npos);
+  assignFingerprints(ledger);
+  EXPECT_EQ(function.sites[0].facet(Facet::Spatial)->fingerprint,
+            computeFingerprint("deref/spatial/proven", "include/buffer.h",
+                               "cJSON_Delete", "item->next", 0));
+  const std::string sarif = renderLedgerSarif(ledger, {.indent = 0});
+  EXPECT_NE(sarif.find(R"("uri":"include/buffer.h","uriBaseId":"SRCROOT")"),
+            std::string::npos);
 }
 
 /// A program ledger with requirements, a violation, diagnostics, a path

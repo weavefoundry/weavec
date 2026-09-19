@@ -11,7 +11,9 @@ weavec_add_library(
           ProgramAnalysis.cpp
           ResourceDir.cpp
           Sidecar.cpp
-          # RFC 0030: the ledger writers and the format-28 unit record.
+          # RFC 0030: the ledger writers, where ledgers and summary lines
+          # go, and the format-28 unit record.
+          LedgerOutput.cpp
           LedgerWriter.cpp
           UnitRecord.cpp
   PUBLIC_DEPS weavec::Analysis

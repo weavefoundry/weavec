@@ -5,11 +5,11 @@
  * comments only.
  *
  * RUN: rm -rf %t && mkdir -p %t
- * RUN: %weavec_prelude --mode=trap -o %t/trap.h
- * RUN: %weavec_prelude --mode=report -o %t/report.h
- * RUN: %weavec_prelude --mode=verify -o %t/verify.h
- * RUN: %weavec_prelude --mode=none -o %t/none.h
- * RUN: %weavec_prelude --mode=trap --no-zero-init --no-verbose-trap -o %t/plain.h
+ * RUN: %weavec_cc -fweavec-print-prelude -o %t/trap.h
+ * RUN: %weavec_cc -fweavec-print-prelude -fweavec-checks=report -o %t/report.h
+ * RUN: %weavec_cc -fweavec-print-prelude -fweavec-checks=verify -o %t/verify.h
+ * RUN: %weavec_cc -fweavec-print-prelude -fweavec-checks=none -o %t/none.h
+ * RUN: %weavec_cc -fweavec-print-prelude -fno-weavec-zero-init -o %t/plain.h
  *
  * RUN: %clang -std=c89 -pedantic-errors -Weverything -Werror -fsyntax-only -include %t/trap.h %s
  * RUN: %clang -std=c99 -pedantic-errors -Weverything -Werror -fsyntax-only -include %t/trap.h %s
@@ -71,9 +71,11 @@
  * VERIFY: __weavec_prv_index
  * VERIFY: __builtin_verbose_trap("weavec.proven", "index");
  *
- * PLAIN: __builtin_trap();
- * PLAIN-NOT: __builtin_verbose_trap
+ * PLAIN: __builtin_verbose_trap("weavec", "nonnull");
  * PLAIN-NOT: __weavec_malloc_zero
+ *
+ * The __builtin_trap() form, for compilers without __builtin_verbose_trap,
+ * is compiled by PreludeTest.
  */
 
 int main(void) { return 0; }

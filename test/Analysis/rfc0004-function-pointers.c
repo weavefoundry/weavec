@@ -3,7 +3,6 @@
 // the join of every address-taken function of that type in the translation
 // unit; with neither it is a checking boundary like an unannotated extern.
 // RUN: not %weavec %s -- 2>&1 | FileCheck %s
-// RUN: not %weavec --strict-externs %s -- 2>&1 | FileCheck --check-prefix=STRICT %s
 #include "../Inputs/prelude.h"
 #include <weavec.h>
 
@@ -79,8 +78,6 @@ void boundary(int (*cmp)(const void *, const void *), char *a, char *b) {
   // CHECK-NEXT: {{.*}}^
   // CHECK-NEXT: rfc0004-function-pointers.c:[[@LINE-3]]:3: note: annotate the parameters of its function type with WEAVEC_OWNED, WEAVEC_BORROWED, WEAVEC_MUT or WEAVEC_RAW, or pass a known function pointer
   cmp(b, a);
-  // STRICT: rfc0004-function-pointers.c:[[@LINE-5]]:3: error: unchecked call through 'cmp' outside an unsafe region [weavec::unsafe-operation]
-  // STRICT: rfc0004-function-pointers.c:[[@LINE-2]]:3: error: unchecked call through 'cmp' outside an unsafe region [weavec::unsafe-operation]
 }
 
 // An unresolvable callee that is not a place.
@@ -90,7 +87,6 @@ void boundary_without_place(void) {
   // CHECK: rfc0004-function-pointers.c:[[@LINE+1]]:20: warning: call through a function pointer is not checked
   struct node *n = get_hook()();
   use(n);
-  // STRICT: rfc0004-function-pointers.c:[[@LINE-2]]:20: error: unchecked call through a function pointer outside an unsafe region [weavec::unsafe-operation]
 }
 
 // CHECK: 3 warnings and 5 errors generated.

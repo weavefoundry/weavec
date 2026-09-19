@@ -117,8 +117,8 @@ enum class TrustReason : std::uint8_t {
 };
 inline constexpr std::size_t TrustReasonCount = 7;
 
-/// §3: every diagnostic is definite (an error) or possible.
-enum class Certainty : std::uint8_t { Definite, Possible };
+// §3 `Certainty` (definite or possible) is defined in `Diagnostic.h`, since
+// `core::Diagnostic` carries it too.
 
 /// §7.6, §14: a unit's verdict on a field-invariant candidate.
 enum class Verdict : std::uint8_t { Holds, Violated, Unknown };
@@ -446,6 +446,11 @@ struct Site {
 struct FunctionLedger {
   // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
   std::string name = {};
+  /// §12.1 `file`: the file that holds the definition, which differs from
+  /// the unit's source for a function defined in a header. Its sites take
+  /// this file. Empty means the unit's source.
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
+  std::string file = {};
   std::uint32_t line = 0;
   Linkage linkage = Linkage::External;
   bool overBudget = false;

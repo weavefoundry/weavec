@@ -5,7 +5,8 @@
 // RUN: %weavec --whole-program %s %S/Inputs/node.c -- -I%S/Inputs 2>&1 | FileCheck %s
 // RUN: %weavec --whole-program %s %S/Inputs/node.c -- -I%S/Inputs 2>&1 | FileCheck --check-prefix=ONCE %s
 // RUN: %weavec --whole-program %s %S/Inputs/node.c -- -I%S/Inputs 2>&1 | grep "call to 'blob_open' is not checked" | count 1
-// RUN: %weavec --whole-program -Wno-weavec-annotation-required %s %S/Inputs/node.c -- -I%S/Inputs 2>&1 | count 0
+// RUN: %weavec --whole-program -Wno-weavec-annotation-required %s %S/Inputs/node.c -- -I%S/Inputs 2>&1 | FileCheck --allow-empty --check-prefix=QUIET %s
+// QUIET-NOT: {{warning|error}}:
 #include "../Inputs/prelude.h"
 #include "node.h"
 

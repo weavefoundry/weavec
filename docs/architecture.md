@@ -76,7 +76,7 @@ encoding 12, summary format 26 and sidecar format 27 (RFC 0029).
 | `Summary.h`        | `FunctionSummary`: what a function does to its interface. `SummaryPath` (`param(i)`/`global(g)`/`result` plus deref/field/index steps), `PlaceEffect` (read/written/freed/moved, with the release family of a consumption, `replaced` when every consuming path reinitialised the place, `element` when every consume went through an element access — RFC 0008 — and `when`, the `PathGuard` under which alone the consume happens — RFC 0009), `Store` (value written into caller-visible memory), `ValueSource` (fresh — with its release family and, when known, its extent —/copy/borrow/null/raw/unknown, each at a `PointerOffset` from its root and with a `when` guard — RFC 0011; alternatives that differ only in their guard are merged by `addReturn`/`addStore`), `neverReturns` (the exit is unreachable; joins by conjunction, RFC 0009), `outcomes` (per `Outcome` class — `Null`, `NonNull`, `Zero`, `Positive`, `Negative` — the consumption that holds on the paths returning it; RFC 0006), `nullOn` (per class, the caller places that are null; RFC 0007), `nonNullOn` and `requiresNonNull` (per class, the caller places that are non-null; the parameters the function dereferences untested; RFC 0008), `requiresExtent` (per parameter, the `PathAffine` extent the body needs behind it, RFC 0011), with `join`, `remapGlobals` and the derived `consumes`/`consumesUnconditionally`/`borrowKind`/`inferredKind`/`freshReturnFamily` queries. |
 | `SummaryIO.h`      | The stable text form of a `FunctionSummary` (`summary` ... `end` records; RFC 0005): `printSummary`/`parseSummary` with callbacks that name and resolve globals, so the format is Clang-free and the on-disk sidecar format is defined here. |
 | `Scc.h`            | Tarjan's strongly connected components over an adjacency list, in reverse topological order; used for the call graph inside a unit and for the unit graph of a program. |
-| `Diagnostic.h`     | `Diagnostic`, stable ids in `diag::` (with `All`, `isKnown`, `isWarningByDefault`), `FixItHint`, `DiagnosticSink`, and an in-memory `DiagnosticCollector`. |
+| `Diagnostic.h`     | `Diagnostic`, stable ids in `diag::` (with `All`, `isKnown`, `Removed`, `isRemoved`, `defaultSeverity(id, certainty)` and `isEnabledByDefault`), `Certainty`, `FixItHint`, `DiagnosticSink`, and an in-memory `DiagnosticCollector`. |
 | `SourceLocation.h` | Frontend-neutral positions with an `opaque` slot for the frontend's native encoding.           |
 
 The core never sees a `clang::VarDecl`; it sees a `PlaceId`. It never sees a
@@ -210,9 +210,14 @@ argument-conditional summaries and inferred `noreturn` by
   Clang's own (carets, colours, `-fdiagnostics-format=`,
   `-fdiagnostics-parseable-fixits`, `-Werror`, ...). `DiagnosticControl`
   applies `-Wno-weavec-<id>`, `-Wno-error=weavec-<id>`, `-Werror=weavec`
-  and friends before the sink sees a diagnostic; `FilteringSink` drops
-  diagnostics already reported by an earlier step and repeats of a boundary
-  warning within a program.
+  and friends before the sink sees a diagnostic, by the default severity
+  of its id and certainty (RFC 0030); `FilteringSink` drops diagnostics
+  already reported by an earlier step and repeats of a boundary warning
+  within a program.
+- `LedgerOutput.h` completes a unit or program ledger (producer, root,
+  configuration, the unit's identity), writes it where `-fweavec-ledger`
+  says through `LedgerWriter`, and prints the summary line (RFC 0030 §12).
+  The WeaveC consumer calls `emitUnitLedger` once per unit.
 - `ProgramAnalysis` is the whole-program algorithm over an abstract
   `ProgramUnit` (something that can parse a unit and run an action over
   it): discover every unit's exports, build the unit graph (who imports
@@ -242,21 +247,24 @@ or `weavec -p build/ file.c` with a compilation database. It injects
 `#include <weavec.h>`. `--whole-program` analyses every file given (or every
 file of the compilation database) as one program. `--dump-analysis` prints
 the inferred facts and summary per function for debugging (and, in
-whole-program mode, the program database); `--report-unannotated` offers
-fix-its for exported functions; `--strict-externs` makes every call into
-unknown code a raw operation, so it is an error outside a `WEAVEC_UNSAFE`
-region. `-Wno-weavec-<id>` and the other `-W` spellings are accepted.
+whole-program mode, the program database). `--ledger`, `--ledger-format`,
+`--require`, `--budget` and `--no-zero-init` model a `weavec-cc` build
+(RFC 0030 §16). `-Wno-weavec-<id>` and the other `-W` spellings are
+accepted.
 
 `weavec-cc` is the drop-in compiler: `CC=weavec-cc make`. Compile steps
 analyse the unit alone and write `<object>.weavec`; the link step reads the
 sidecars, re-analyses the units whose results depend on other units, reports
-what only the program could know, and refuses to link on an error. WeaveC's
-own flags are `-fweavec`/`-fno-weavec`, `-fweavec-strict`,
-`-fweavec-report-unannotated`, `-fweavec-analyze-headers`,
-`-fweavec-dump-analysis`, `-fweavec-exclusive-borrows`,
+what only the program could know, names the link inputs without a WeaveC
+record (`unanalyzed-input`), and refuses to link on an error. WeaveC's own
+flags (`weavec-cc --help-weavec`) are `-fweavec`/`-fno-weavec`,
+`-fweavec-checks=`, `-f[no-]weavec-zero-init`, `-fweavec-require=`,
+`-fweavec-ledger=`, `-fweavec-ledger-format=`, `-f[no-]weavec-summary`,
+`-fweavec-budget=`, `-fweavec-print-prelude`, `-fweavec-dump-analysis`,
 `-fweavec-link`/`-fno-weavec-link` and the `-W` spellings; everything else
 is Clang's. The design is
-[RFC 0005](rfcs/0005-whole-program-analysis.md).
+[RFC 0005](rfcs/0005-whole-program-analysis.md), with the command line of
+[RFC 0030](rfcs/0030-prove-or-trap.md) §16.
 
 ## Heap postconditions and value snapshots
 

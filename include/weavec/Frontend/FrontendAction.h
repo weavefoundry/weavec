@@ -19,6 +19,7 @@
 #include "weavec/Analysis/FunctionAnalysis.h"
 #include "weavec/Analysis/ProgramDatabase.h"
 #include "weavec/Frontend/DiagnosticControl.h"
+#include "weavec/Frontend/LedgerOutput.h"
 
 #include "clang/AST/ASTConsumer.h"
 #include "clang/Frontend/ASTUnit.h"
@@ -69,9 +70,18 @@ struct FrontendOptions {
   // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
   std::string analysisStatsPath = {};
   /// Only analyse declarations in the main file (not in included headers).
+  /// RFC 0030 §5.6 removed `--analyze-headers`, the flag that cleared it.
   bool mainFileOnly = true;
   /// `-W` overrides applied before a diagnostic reaches Clang.
   DiagnosticControl control;
+  // RFC 0030 (S3-C, begin): the configuration the ledger records and the
+  // analysis plans with (`-fweavec-checks`, `-f[no-]weavec-zero-init`,
+  // `-fweavec-require`, `-fweavec-budget`; `--require`, `--budget` and
+  // `--no-zero-init` in `weavec`), and where the unit ledger and the
+  // summary line go (`emitUnitLedger` in LedgerOutput.h).
+  core::LedgerConfig config;
+  LedgerOutputOptions ledgerOutput;
+  // RFC 0030 (S3-C, end).
 
   // RFC 0005, whole-program analysis. Every pointer must outlive the run.
 

@@ -10,7 +10,9 @@
 
 #include "weavec/Config/Version.h"
 #include "weavec/Frontend/AnalysisStats.h"
+#include "weavec/Frontend/ClangDiagnosticSink.h"
 #include "weavec/Frontend/DeferredCodeGenConsumer.h"
+#include "weavec/Frontend/LedgerOutput.h"
 #include "weavec/Frontend/ProgramAnalysis.h"
 #include "weavec/Frontend/ResourceDir.h"
 #include "weavec/Frontend/Sidecar.h"
@@ -31,11 +33,14 @@
 #include "clang/Frontend/TextDiagnosticBuffer.h"
 #include "clang/Frontend/TextDiagnosticPrinter.h"
 #include "clang/FrontendTool/Utils.h"
+#include "clang/Options/Options.h"
 
 #include "llvm/ADT/IntrusiveRefCntPtr.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/Option/Arg.h"
+#include "llvm/Option/ArgList.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Path.h"
@@ -44,14 +49,18 @@
 #include "llvm/Support/VirtualFileSystem.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/TargetParser/Host.h"
+#include "llvm/TargetParser/Triple.h"
 
 #include <array>
+#include <cstddef>
+#include <cstdint>
 #include <deque>
 #include <map>
 #include <memory>
 #include <optional>
 #include <set>
 #include <string>
+#include <system_error>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -62,19 +71,79 @@ namespace weavec::frontend {
 // Flags
 //===----------------------------------------------------------------------===//
 
-bool DriverOptions::consume(llvm::StringRef arg, std::string &error) {
-  if (arg.starts_with("-fweavec-analysis-stats=")) {
-    const auto [flag, argument] = arg.split('=');
-    if (argument.empty()) {
-      error = "missing value for '" + flag.str() + "'";
-    } else {
-      analysisStatsPath = argument.str();
-      if (!stats)
-        stats = std::make_shared<core::AnalysisStats>();
-    }
-    spellings.push_back(arg.str());
+/// `invalid value 'x' in '-fweavec-checks=x'; expected trap, ...`.
+static std::string invalidValue(llvm::StringRef arg, llvm::StringRef value,
+                                llvm::StringRef expected) {
+  return "invalid value '" + value.str() + "' in '" + arg.str() +
+         "'; expected " + expected.str();
+}
+
+/// The WeaveC flags spelled `<flag>=<value>`. True if `arg` is one; `error`
+/// then says what is wrong with it, if anything.
+static bool consumeValueFlag(DriverOptions &options, llvm::StringRef arg,
+                             std::string &error) {
+  static constexpr std::array<llvm::StringLiteral, 7> Names{
+      "-fweavec-analysis-stats", "-fweavec-checks",        "-fweavec-require",
+      "-fweavec-ledger",         "-fweavec-ledger-format", "-fweavec-budget",
+      "-fweavec-print-prelude"};
+  const auto [flag, value] = arg.split('=');
+  if (!llvm::is_contained(Names, flag))
+    return false;
+  if (flag == arg || value.empty()) {
+    error = "missing value for '" + flag.str() + "'";
     return true;
   }
+  if (flag == "-fweavec-print-prelude") {
+    // Not forwarded: the driver prints the prelude and exits.
+    if (value == "inline")
+      options.printPrelude = PreludeForm::Inline;
+    else if (value == "out-of-line")
+      options.printPrelude = PreludeForm::OutOfLine;
+    else
+      error = invalidValue(arg, value, "inline or out-of-line");
+    return true;
+  }
+  if (flag == "-fweavec-analysis-stats") {
+    options.analysisStatsPath = value.str();
+    if (!options.stats)
+      options.stats = std::make_shared<core::AnalysisStats>();
+  } else if (flag == "-fweavec-checks") {
+    if (const std::optional<core::ChecksMode> mode =
+            core::parseChecksMode(value))
+      options.checks = *mode;
+    else
+      error = invalidValue(arg, value, "trap, report, verify or none");
+  } else if (flag == "-fweavec-require") {
+    if (const std::optional<core::RequireLevel> level =
+            core::parseRequireLevel(value))
+      options.require = *level;
+    else
+      error = invalidValue(arg, value, "none, checked or proven");
+  } else if (flag == "-fweavec-ledger") {
+    options.ledger = value.str();
+  } else if (flag == "-fweavec-ledger-format") {
+    if (const std::optional<LedgerFormat> format = parseLedgerFormat(value))
+      options.ledgerFormat = *format;
+    else
+      error = invalidValue(arg, value, "json or sarif");
+  } else if (flag == "-fweavec-budget") {
+    std::uint64_t budget = 0;
+    if (value.getAsInteger(10, budget))
+      error = invalidValue(arg, value, "a number of block transfers");
+    else
+      options.budget = budget;
+  }
+  options.spellings.push_back(arg.str());
+  return true;
+}
+
+bool DriverOptions::consume(llvm::StringRef arg, std::string &error) {
+  if (arg == "-fweavec-print-prelude") {
+    printPrelude = PreludeForm::Inline;
+    return true;
+  }
+  if (consumeValueFlag(*this, arg, error))
+    return true;
   bool value = true;
   llvm::StringRef name = arg;
   if (name.consume_front("-fno-")) {
@@ -91,42 +160,95 @@ bool DriverOptions::consume(llvm::StringRef arg, std::string &error) {
     llvm::StringLiteral name;
     bool DriverOptions::*member;
   };
-  static constexpr std::array<Flag, 7> Flags{{
+  static constexpr std::array<Flag, 3> Flags{{
       {.name = "weavec", .member = &DriverOptions::enabled},
-      {.name = "weavec-strict", .member = &DriverOptions::strict},
-      {.name = "weavec-exclusive-borrows",
-       .member = &DriverOptions::exclusiveBorrows},
-      {.name = "weavec-report-unannotated",
-       .member = &DriverOptions::reportUnannotated},
-      {.name = "weavec-analyze-headers",
-       .member = &DriverOptions::analyzeHeaders},
       {.name = "weavec-dump-analysis", .member = &DriverOptions::dumpAnalysis},
       {.name = "weavec-link", .member = &DriverOptions::link},
   }};
-  const auto *const found =
-      llvm::find_if(Flags, [name](const Flag &f) { return name == f.name; });
-  if (found == Flags.end()) {
+  // Switches whose default depends on other flags.
+  struct Switch {
+    llvm::StringLiteral name;
+    std::optional<bool> DriverOptions::*member;
+  };
+  static constexpr std::array<Switch, 2> Switches{{
+      {.name = "weavec-zero-init", .member = &DriverOptions::zeroInit},
+      {.name = "weavec-summary", .member = &DriverOptions::summary},
+  }};
+  if (const auto *const found = llvm::find_if(
+          Flags, [name](const Flag &f) { return name == f.name; });
+      found != Flags.end()) {
+    this->*found->member = value;
+  } else if (const auto *const toggled = llvm::find_if(
+                 Switches, [name](const Switch &s) { return name == s.name; });
+             toggled != Switches.end()) {
+    this->*toggled->member = value;
+  } else {
     if (!name.starts_with("weavec"))
       return false;
     error = "unknown WeaveC flag '" + arg.str() + "'";
     return true;
   }
-  this->*found->member = value;
   spellings.push_back(arg.str());
   return true;
+}
+
+bool DriverOptions::zeroInitialises() const {
+  return checks != core::ChecksMode::None && zeroInit.value_or(true);
 }
 
 FrontendOptions DriverOptions::toFrontendOptions() const {
   FrontendOptions options;
   options.analysis.stats = stats.get();
   options.analysisStatsPath = analysisStatsPath;
-  options.analysis.strictExterns = strict;
-  options.analysis.exclusiveBorrows = exclusiveBorrows;
-  options.analysis.reportUnannotated = reportUnannotated;
   options.analysis.dumpStream = dumpAnalysis ? &llvm::outs() : nullptr;
-  options.mainFileOnly = !analyzeHeaders;
   options.control = control;
+  options.config = core::LedgerConfig{.checks = checks,
+                                      .zeroInit = zeroInitialises(),
+                                      .require = require,
+                                      .budget = budget};
+  options.ledgerOutput = LedgerOutputOptions{
+      .path = ledger,
+      .format = ledgerFormat,
+      .summary = summary,
+      .checksEnforced = ChecksAreEmitted && checks != core::ChecksMode::None};
   return options;
+}
+
+llvm::StringRef driverFlagsHelp() {
+  return R"(WeaveC flags of weavec-cc (RFC 0030); every other flag is Clang's.
+
+  -fweavec, -fno-weavec
+      Analyse, check and zero-initialise (the default), or compile as plain
+      Clang.
+  -fweavec-checks=trap|report|verify|none
+      What unproven spatial and null obligations become (default: trap).
+  -fweavec-zero-init, -fno-weavec-zero-init
+      Zero-initialise locals and heap allocations (default: on unless
+      -fweavec-checks=none).
+  -fweavec-require=none|checked|proven
+      Make every unresolved facet an error (checked), and every checked one
+      too (proven). Default: none.
+  -fweavec-ledger=<path>
+      Write the unit ledger (compile) or the program ledger (link). A
+      directory (a value ending in '/') receives <object>.ledger.json per
+      unit and <output>.ledger.json per link; a file receives one ledger.
+  -fweavec-ledger-format=json|sarif
+      The ledger's format (default: json).
+  -fweavec-summary, -fno-weavec-summary
+      Print the summary line on stderr (default: when a ledger is written).
+  -fweavec-budget=<n>
+      Block transfers per function before its analysis stops (0: unlimited).
+  -fweavec-link, -fno-weavec-link
+      Run the whole-program step before linking (default: on).
+  -fweavec-print-prelude
+      Print the check prelude of the -fweavec-checks mode and exit.
+  -fweavec-dump-analysis, -fweavec-analysis-stats=<path>
+      Debugging output: the inferred facts, and work statistics as JSON.
+  -Wno-weavec-<id>, -Wweavec-<id>, -Werror=weavec[-<id>],
+  -Wno-error=weavec[-<id>], -Wweavec, -Wno-weavec
+      Control WeaveC's diagnostics. Errors can be lowered, not disabled;
+      -Wweavec-allocation-failure enables the one id that is off by default.
+)";
 }
 
 //===----------------------------------------------------------------------===//
@@ -390,6 +512,10 @@ private:
       invocation->getFileSystemOpts().WorkingDir = cwd;
     // Only the analysis runs; nothing is written.
     invocation->getFrontendOpts().OutputFile.clear();
+    // RFC 0030 §16: whatever format the compile asked for, the re-analysis
+    // renders text, which the link relays; a SARIF printer here would need
+    // a document writer nobody attaches.
+    invocation->getDiagnosticOpts().setFormat(clang::DiagnosticOptions::Clang);
     if (invocation->getHeaderSearchOpts().ResourceDir.empty())
       invocation->getHeaderSearchOpts().ResourceDir = getClangResourceDir();
 
@@ -412,6 +538,23 @@ struct LinkInput {
   UnitRecord record;
 };
 
+/// RFC 0030 §13.2: a link input without a valid WeaveC record.
+struct UnanalyzedInput {
+  /// The input as the command line names it: the source for an object
+  /// compiled by the same invocation, the file a `-l` resolved to.
+  std::string name;
+  /// Why its record is not valid; empty when it has none.
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
+  std::string stale = {};
+};
+
+/// The inputs of one link: those with a valid record, and those without
+/// one that are not the platform's own.
+struct LinkInputs {
+  std::vector<LinkInput> analysed;
+  std::vector<UnanalyzedInput> unanalyzed;
+};
+
 } // namespace
 
 static bool newerThan(llvm::StringRef a, llvm::StringRef b) {
@@ -422,38 +565,218 @@ static bool newerThan(llvm::StringRef a, llvm::StringRef b) {
   return statusA.getLastModificationTime() > statusB.getLastModificationTime();
 }
 
-/// Reads the sidecar of every object on the link line.
-static std::vector<LinkInput>
-collectLinkInputs(const clang::driver::Command &link) {
-  std::vector<LinkInput> inputs;
+/// `path` absolute, without `.` and `..`, and without symbolic links when it
+/// exists.
+static std::string canonicalPath(llvm::StringRef path) {
+  llvm::SmallString<256> real;
+  if (!llvm::sys::fs::real_path(path, real))
+    return real.str().str();
+  llvm::SmallString<256> absolute(path);
+  std::ignore = llvm::sys::fs::make_absolute(absolute);
+  llvm::sys::path::remove_dots(absolute, /*remove_dot_dot=*/true);
+  return absolute.str().str();
+}
+
+/// Whether `path` is `root` or inside it; both canonical.
+static bool isUnder(llvm::StringRef path, llvm::StringRef root) {
+  return !root.empty() && path.starts_with(root) &&
+         (path.size() == root.size() ||
+          llvm::sys::path::is_separator(path[root.size()]));
+}
+
+/// The SDK or sysroot of the link: `--sysroot`, else `-isysroot`, which
+/// `weavec-cc` passes on Apple platforms when the command line does not.
+static std::string linkSysroot(const clang::driver::Compilation &compilation) {
+  const llvm::opt::ArgList &args = compilation.getArgs();
+  if (const llvm::opt::Arg *sysroot =
+          args.getLastArg(clang::options::OPT__sysroot_EQ))
+    return sysroot->getValue();
+  if (const llvm::opt::Arg *sysroot =
+          args.getLastArg(clang::options::OPT_isysroot))
+    return sysroot->getValue();
+  return compilation.getDriver().SysRoot;
+}
+
+/// §13.2, §5.2: the directories whose objects and libraries are the
+/// platform's: the toolchain's file and library paths, its resource
+/// directory, and the SDK or sysroot (`/usr/lib` and `/lib` without one).
+static std::vector<std::string>
+systemRoots(const clang::driver::Compilation &compilation) {
+  const clang::driver::ToolChain &toolChain = compilation.getDefaultToolChain();
+  std::vector<std::string> roots;
+  const auto add = [&roots](llvm::StringRef path) {
+    if (!path.empty() && path != "/")
+      roots.push_back(canonicalPath(path));
+  };
+  for (const std::string &path : toolChain.getFilePaths())
+    add(path);
+  for (const std::string &path : toolChain.getLibraryPaths())
+    add(path);
+  add(compilation.getDriver().ResourceDir);
+  const std::string sysroot = linkSysroot(compilation);
+  if (!sysroot.empty() && sysroot != "/") {
+    add(sysroot);
+  } else {
+    for (const llvm::StringRef path :
+         {"/usr/lib", "/usr/lib64", "/lib", "/lib64"})
+      add(path);
+  }
+  return roots;
+}
+
+/// The file `-l<name>` names, found as the linker finds it: the `-L`
+/// directories in order, then the toolchain's file paths, then the SDK or
+/// sysroot; in each directory the target's shared forms before the archive.
+/// `-l:<file>` names the file itself.
+static std::optional<std::string>
+resolveLibrary(llvm::StringRef name,
+               const clang::driver::Compilation &compilation) {
+  const clang::driver::ToolChain &toolChain = compilation.getDefaultToolChain();
+  std::vector<std::string> directories =
+      compilation.getArgs().getAllArgValues(clang::options::OPT_L);
+  for (const std::string &path : toolChain.getFilePaths())
+    directories.push_back(path);
+  const std::string sysroot = linkSysroot(compilation);
+  for (const llvm::StringRef sub : {"usr/lib", "usr/local/lib", "lib"}) {
+    llvm::SmallString<256> path(sysroot.empty() ? "/" : sysroot);
+    llvm::sys::path::append(path, sub);
+    directories.push_back(path.str().str());
+  }
+  std::vector<std::string> candidates;
+  if (name.consume_front(":")) {
+    candidates.push_back(name.str());
+  } else {
+    const std::string stem = "lib" + name.str();
+    if (toolChain.getTriple().isOSDarwin())
+      candidates = {stem + ".tbd", stem + ".dylib", stem + ".a"};
+    else
+      candidates = {stem + ".so", stem + ".a"};
+  }
+  for (const std::string &directory : directories) {
+    for (const std::string &candidate : candidates) {
+      llvm::SmallString<256> path(directory);
+      llvm::sys::path::append(path, candidate);
+      if (llvm::sys::fs::exists(path))
+        return path.str().str();
+    }
+  }
+  return std::nullopt;
+}
+
+/// Reads the record of every input on the link line, and names every other
+/// input that is not the platform's (§13.2): objects, archives and shared
+/// libraries without a record, records that are stale or unreadable, and
+/// what `-l` finds outside the system directories. A `-l` the linker
+/// cannot resolve is left to it.
+static LinkInputs
+collectLinkInputs(const clang::driver::Compilation &compilation,
+                  const clang::driver::Command &link) {
+  LinkInputs inputs;
+  const std::vector<std::string> roots = systemRoots(compilation);
+  const auto isSystem = [&roots](llvm::StringRef path) {
+    const std::string canonical = canonicalPath(path);
+    return llvm::any_of(roots, [&canonical](const std::string &root) {
+      return isUnder(canonical, root);
+    });
+  };
+  const auto isTemporary = [&compilation](llvm::StringRef path) {
+    return llvm::any_of(compilation.getTempFiles(),
+                        [path](const char *temporary) {
+                          return path == llvm::StringRef(temporary);
+                        });
+  };
+  const auto addUnanalyzed = [&inputs](UnanalyzedInput input) {
+    if (llvm::none_of(inputs.unanalyzed, [&input](const UnanalyzedInput &seen) {
+          return seen.name == input.name;
+        }))
+      inputs.unanalyzed.push_back(std::move(input));
+  };
   for (const clang::driver::InputInfo &input : link.getInputInfos()) {
+    // `-l` and other linker arguments are read from the command line below:
+    // some toolchains (Darwin's) keep only the files among a link's inputs.
     if (!input.isFilename())
       continue;
     const std::string object = input.getFilename();
+    const std::string name =
+        isTemporary(object) ? std::string(input.getBaseInput()) : object;
     const std::string path = sidecarPathFor(object);
-    if (!llvm::sys::fs::exists(path))
+    if (!llvm::sys::fs::exists(path)) {
+      if (!isSystem(object))
+        addUnanalyzed(UnanalyzedInput{.name = name});
       continue;
+    }
     std::string error;
     std::optional<UnitRecord> record = readSidecar(path, &error);
     if (!record) {
-      llvm::errs() << "weavec-cc: warning: ignoring '" << path << "': " << error
-                   << '\n';
+      std::string stale = "'" + path + "': ";
+      stale += error;
+      addUnanalyzed(UnanalyzedInput{.name = name, .stale = std::move(stale)});
       continue;
     }
     if (newerThan(object, path)) {
-      llvm::errs() << "weavec-cc: warning: ignoring '" << path
-                   << "': older than '" << object << "'\n";
+      addUnanalyzed(UnanalyzedInput{
+          .name = name, .stale = "'" + path + "' is older than the object"});
       continue;
     }
-    inputs.push_back(LinkInput{.object = object, .record = std::move(*record)});
+    inputs.analysed.push_back(
+        LinkInput{.object = object, .record = std::move(*record)});
+  }
+  for (const llvm::opt::Arg *arg :
+       compilation.getArgs().filtered(clang::options::OPT_l)) {
+    const std::optional<std::string> library =
+        resolveLibrary(arg->getValue(), compilation);
+    if (library && !isSystem(*library))
+      addUnanalyzed(UnanalyzedInput{.name = *library});
   }
   return inputs;
 }
 
+/// §13.2: one `unanalyzed-input` warning per link naming every input
+/// without a valid record, subject to the `-W` flags. False when they made
+/// it an error.
+static bool reportUnanalyzedInputs(llvm::ArrayRef<UnanalyzedInput> inputs,
+                                   const DiagnosticControl &control,
+                                   clang::DiagnosticsEngine &diags) {
+  if (inputs.empty())
+    return true;
+  const auto describe = [](const UnanalyzedInput &input) {
+    return "link input '" + input.name +
+           (input.stale.empty()
+                ? "' has no WeaveC record"
+                : "' has a stale WeaveC record (" + input.stale + ")");
+  };
+  core::Diagnostic diagnostic{.severity = core::Severity::Warning,
+                              .certainty = core::Certainty::Definite,
+                              .id = core::diag::UnanalyzedInput,
+                              .message = {},
+                              .location = {},
+                              .notes = {},
+                              .fixits = {}};
+  if (inputs.size() == 1) {
+    diagnostic.message =
+        describe(inputs.front()) + "; calls into it are trusted";
+  } else {
+    diagnostic.message = std::to_string(inputs.size()) +
+                         " link inputs have no WeaveC record; calls into "
+                         "them are trusted";
+    for (const UnanalyzedInput &input : inputs)
+      diagnostic.addNote(describe(input), {});
+  }
+  ClangDiagnosticSink clangSink(diags);
+  FilteringSink sink(clangSink, control);
+  sink.report(diagnostic);
+  return sink.errors() == 0;
+}
+
 /// The whole-program step: true if the link may proceed.
-static bool runLinkStep(const clang::driver::Command &link,
-                        const DriverOptions &weavec, const char *argv0) {
-  std::vector<LinkInput> inputs = collectLinkInputs(link);
+static bool runLinkStep(const clang::driver::Compilation &compilation,
+                        const clang::driver::Command &link,
+                        const DriverOptions &weavec,
+                        clang::DiagnosticsEngine &diags, const char *argv0) {
+  LinkInputs linkInputs = collectLinkInputs(compilation, link);
+  if (!reportUnanalyzedInputs(linkInputs.unanalyzed, weavec.control, diags))
+    return false;
+  std::vector<LinkInput> &inputs = linkInputs.analysed;
   if (inputs.empty())
     return true;
 
@@ -478,7 +801,12 @@ static bool runLinkStep(const clang::driver::Command &link,
       witnessed[witness.field].push_back(i);
   }
 
-  ProgramAnalysis program(weavec.toFrontendOptions());
+  // The units' ledgers and summary lines are the compile step's; the link
+  // writes only the program's (§13.2 step 6).
+  FrontendOptions unitOptions = weavec.toFrontendOptions();
+  unitOptions.ledgerOutput.path.clear();
+  unitOptions.ledgerOutput.summary = false;
+  ProgramAnalysis program(std::move(unitOptions));
   for (unsigned i = 0; i < inputs.size(); ++i) {
     UnitRecord &record = inputs[i].record;
     const analysis::UnitExports &exports = record.exports;
@@ -590,6 +918,81 @@ static void printVersion(llvm::raw_ostream &os) {
   os << ")\n  built with LLVM " << WEAVEC_LLVM_VERSION_STRING << "\n";
 }
 
+/// The prelude's name for a `-fweavec-checks` mode.
+static CheckMode preludeMode(core::ChecksMode checks) {
+  switch (checks) {
+  case core::ChecksMode::Trap:
+    return CheckMode::Trap;
+  case core::ChecksMode::Report:
+    return CheckMode::Report;
+  case core::ChecksMode::Verify:
+    return CheckMode::Verify;
+  case core::ChecksMode::None:
+    return CheckMode::None;
+  }
+  return CheckMode::Trap;
+}
+
+/// `-fweavec-print-prelude` (§10.9): the prelude of the `-fweavec-checks`
+/// mode, with the zero-initialisation helpers unless it is off, for the
+/// target of `--target=` or `-target` (the default one otherwise), to the
+/// file of `-o` or to stdout. Every other argument is ignored.
+static int printPrelude(const DriverOptions &weavec,
+                        llvm::ArrayRef<const char *> args) {
+  std::string triple = llvm::sys::getDefaultTargetTriple();
+  std::string output = "-";
+  for (std::size_t i = 1; i < args.size(); ++i) {
+    llvm::StringRef arg = args[i];
+    if (arg.consume_front("--target="))
+      triple = arg.str();
+    else if ((arg == "-target" || arg == "--target") && i + 1 < args.size())
+      triple = args[++i];
+    else if (arg == "-o" && i + 1 < args.size())
+      output = args[++i];
+  }
+  PreludeOptions options;
+  options.mode = preludeMode(weavec.checks);
+  options.zeroInit = weavec.zeroInitialises();
+  options.usableSize =
+      usableSizeQueryFor(llvm::Triple(llvm::Triple::normalize(triple)));
+  options.form = weavec.printPrelude.value_or(PreludeForm::Inline);
+  std::error_code error;
+  llvm::raw_fd_ostream out(output, error);
+  if (error) {
+    llvm::errs() << "weavec-cc: error: cannot write '" << output
+                 << "': " << error.message() << '\n';
+    return 1;
+  }
+  out << buildCheckPrelude(options);
+  return 0;
+}
+
+/// The ledgers one invocation writes (§16): one per compile job of a C
+/// source, and one at the link when the whole-program step runs.
+static std::size_t countLedgers(const clang::driver::Compilation &compilation,
+                                const DriverOptions &weavec) {
+  std::size_t count = 0;
+  for (const clang::driver::Command &job : compilation.getJobs()) {
+    const clang::driver::Action::ActionClass kind = job.getSource().getKind();
+    if (kind == clang::driver::Action::LinkJobClass) {
+      count += weavec.link ? 1 : 0;
+      continue;
+    }
+    if (job.getArguments().empty() ||
+        llvm::StringRef(job.getArguments().front()) != "-cc1" ||
+        kind == clang::driver::Action::PreprocessJobClass ||
+        kind == clang::driver::Action::PrecompileJobClass)
+      continue;
+    if (llvm::any_of(job.getInputInfos(),
+                     [](const clang::driver::InputInfo &input) {
+                       return input.getType() == clang::driver::types::TY_C ||
+                              input.getType() == clang::driver::types::TY_PP_C;
+                     }))
+      ++count;
+  }
+  return count;
+}
+
 int runCc1(llvm::ArrayRef<const char *> argv, const char *argv0) {
   return runCc1Job(argv, argv0);
 }
@@ -625,6 +1028,10 @@ int runDriver(llvm::ArrayRef<const char *> argv, void *mainAddress) {
       continue;
     }
     const llvm::StringRef text(arg);
+    if (text == "--help-weavec") {
+      llvm::outs() << driverFlagsHelp();
+      return 0;
+    }
     if (text == "--version")
       printVersion(llvm::outs());
     if (text == "-###")
@@ -635,6 +1042,8 @@ int runDriver(llvm::ArrayRef<const char *> argv, void *mainAddress) {
       hasSource = true;
     clangArgs.push_back(arg);
   }
+  if (weavec.printPrelude)
+    return printPrelude(weavec, clangArgs);
 
   const auto add = [&](std::string arg) {
     owned.push_back(std::move(arg));
@@ -685,6 +1094,17 @@ int runDriver(llvm::ArrayRef<const char *> argv, void *mainAddress) {
       driver.BuildCompilation(clangArgs));
   if (!compilation || diags.hasErrorOccurred())
     return 1;
+  if (weavec.enabled && !weavec.ledger.empty() &&
+      !isLedgerDirectory(weavec.ledger)) {
+    if (const std::size_t count = countLedgers(*compilation, weavec);
+        count > 1) {
+      llvm::errs() << "weavec-cc: error: '-fweavec-ledger=" << weavec.ledger
+                   << "' would receive " << count
+                   << " ledgers; name a directory (ending in '/') to get one "
+                      "ledger per unit and per link\n";
+      return 1;
+    }
+  }
   if (printJobsOnly) {
     compilation->getJobs().Print(llvm::errs(), "\n", /*Quote=*/true);
     return 0;
@@ -704,7 +1124,7 @@ int runDriver(llvm::ArrayRef<const char *> argv, void *mainAddress) {
     const bool isLink =
         job.getSource().getKind() == clang::driver::Action::LinkJobClass;
     if (isLink && weavec.enabled && weavec.link &&
-        !runLinkStep(job, weavec, executable.c_str())) {
+        !runLinkStep(*compilation, job, weavec, diags, executable.c_str())) {
       status = 1;
       break;
     }

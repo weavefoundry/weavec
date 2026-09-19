@@ -1,5 +1,5 @@
 // RFC 0016: callee operation diagnostics from upstream context requests.
-// RUN: not %weavec --strict-externs --whole-program %s %S/Inputs/rfc0016-callee.c -- 2>&1 | FileCheck %s
+// RUN: not %weavec --whole-program %s %S/Inputs/rfc0016-callee.c -- 2>&1 | FileCheck %s
 #include "../Inputs/prelude.h"
 void release_then_write(char *, char *);
 void write_then_release(char *, char *);

@@ -1,5 +1,6 @@
 // RFC 0016: callers with related pointers retain safe ordering and replacement.
-// RUN: %weavec --strict-externs %s -- 2>&1 | count 0
+// RUN: %weavec %s -- 2>&1 | FileCheck --allow-empty --check-prefix=QUIET %s
+// QUIET-NOT: {{warning|error}}:
 #include "../Inputs/prelude.h"
 
 static void before(char *a, char *b) { *b = 1; free(a); }

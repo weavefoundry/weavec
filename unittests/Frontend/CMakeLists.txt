@@ -2,6 +2,7 @@ weavec_add_unittest(
   WeaveCFrontendTests
   SOURCES DeferredCodeGenConsumerTest.cpp
           DiagnosticControlTest.cpp
+          LedgerOutputTest.cpp
           LedgerWriterTest.cpp
           PreludeTest.cpp
           ProgramAnalysisTest.cpp
