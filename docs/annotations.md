@@ -528,8 +528,8 @@ These labels describe whether the bounded projection was truncated. A
 still be unknown. Projection follows at most eight steps and 128 field
 alternatives; more than eight alternatives for one cell widen it to unknown.
 The [evaluation suite](../test/evaluation/README.md) retains the original bug
-and clean populations; the [RFC 0017 report](validation-rfc0017.md)
-records detection of both retained product and VLA cases, with 44/44 original
+and clean populations; the RFC 0017 validation report (removed by RFC 0030)
+recorded detection of both retained product and VLA cases, with 44/44 original
 bugs detected and 32/32 original clean cases.
 
 ## Related pointer arguments
@@ -568,8 +568,8 @@ An unresolved required relationship, unavailable view or exceeded context
 bound reports `analysis-incomplete` and retains ordinary call effects.
 Calls whose inputs have no established interacting relationship still use
 generic summaries; silence does not prove arbitrary pointers disjoint.
-The [validation report](validation-rfc0016.md) records the supported matrix
-and remaining coverage limits. These context records are retained in the
+The RFC 0016 validation report (removed by RFC 0030) recorded the supported
+matrix and remaining coverage limits. These context records are retained in the
 current format 24 sidecars; rebuild older objects before link analysis. Checked
 mode also specializes exact scalar inputs and fields under the same context
 limits (RFC 0019).
@@ -660,9 +660,10 @@ unrestricted aliases, byte-encoded pointers, GC invariants and concurrency
 remain outside the supported model.
 
 RFC 0017 introduced summary and sidecar format **13**. Current summary format
-**23** and sidecar format **24** require rebuilding older objects. The [RFC 0017 validation report](validation-rfc0017.md) records
-passing regression and sanitizer suites, corpus coverage, performance costs
-and remaining false positives.
+**23** and sidecar format **24** require rebuilding older objects. The RFC 0017
+validation report (removed by RFC 0030) recorded passing regression and
+sanitizer suites, corpus coverage, performance costs and remaining false
+positives.
 No runtime instrumentation, `--verify` flag or verification certificate is
 introduced.
 

@@ -22,7 +22,7 @@ than an unchecked cast. Existing unknown alternatives and limits remain visible.
 The project owner explicitly requested drafting the RFC first and then implementing
 the milestone end to end. The initial Accepted status recorded that authorization,
 not an independent review or a merge. All amended acceptance gates now pass;
-the [validation record](../validation-rfc0022.md) publishes the measurements,
+the validation record (removed by RFC 0030) publishes the measurements,
 exact diagnostic changes and the demonstrated baseline false-proof correction.
 
 ## Motivation

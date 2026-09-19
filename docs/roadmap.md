@@ -4,6 +4,10 @@ Rough ordering of the major pieces of work. This page is the one-screen view;
 the design detail and the reasoning live in the [RFCs](rfcs/README.md) each
 milestone links to. Everything here is subject to change as we learn.
 
+The per-RFC validation records and machine-readable results that milestones
+14–27 mention were removed by [RFC 0030](rfcs/0030-prove-or-trap.md); they
+remain in the repository history at tag `v0.10.0`.
+
 ## Milestone 0 — Scaffolding (done)
 
 Model: [RFC 0001 — Ownership, borrowing and lifetimes](rfcs/0001-ownership-model.md)
@@ -353,7 +357,7 @@ Design: [RFC 0015](rfcs/0015-array-and-container-ownership.md).
 - [x] Format 11 summaries/sidecars, bounded import validation and global remapping.
 - [x] Unit, integration and fixed evaluation pairs, including compiler link tests.
 - [x] Pinned before/after corpus counts, location-level triage and measured
-      performance in the [validation report](validation-rfc0015.md).
+      performance in the validation report.
 
 Unknown overlap can still produce conservative temporal reports. Arbitrary
 strides, partial pointer representations, compositions that require retaining
@@ -375,7 +379,7 @@ Design: [RFC 0016](rfcs/0016-compositional-call-checking.md).
 - [x] Inline/helper/cross-file evaluation pairs, compiler link tests,
       malformed-context and resource-limit regression coverage.
 - [x] Published validation and pinned corpus changes, including precision
-      limits and analysis cost in [the report](validation-rfc0016.md).
+      limits and analysis cost in the report.
 
 Calls with no established interacting relationship retain generic checking.
 An absent alias edge does not prove disjointness. Enumerating arbitrary input
@@ -390,7 +394,7 @@ Design: [RFC 0017](rfcs/0017-c-integer-semantics-and-spatial-safety.md).
 - [x] Target-width conversions, unsigned wrap, guarded arithmetic and checked
       products in spatial requirements and helper contracts.
 - [x] Numeric outputs, format 13 summaries/sidecars and fixed regression pairs.
-- [x] Published [validation](validation-rfc0017.md) with preserved evaluations.
+- [x] Published validation with preserved evaluations.
 
 ## Milestone 17 — Compositional safety contracts and checked code
 
@@ -404,9 +408,9 @@ Design: [RFC 0018](rfcs/0018-checked-code-and-safety-contracts.md).
 - [x] Format 14 summaries/sidecars, input/object binding and deferred link checks.
 - [x] Frozen checked cases and compiler integration alongside unchanged
       ordinary evaluations.
-- [ ] Final ordinary-mode performance signoff; see the
-      [validation report](validation-rfc0018.md) for the completed correctness
-      checks, coverage results and pending quiet measurement window.
+- [ ] Final ordinary-mode performance signoff; the validation report recorded
+      the completed correctness checks, coverage results and pending quiet
+      measurement window.
 
 The [checked-code guide](checked-code.md) describes the supported conditional
 source guarantee. Unsupported semantics remain incomplete; general recursive
@@ -423,8 +427,7 @@ Design: [RFC 0020](rfcs/0020-scalable-modular-checked-analysis.md).
 - [x] Compact report version 3 with a version 2 decoder.
 - [x] Optional validated translation-unit checkpoints and diagnostic replay.
 - [x] Sidecar format 16 preprocessing bindings for checked object validation.
-- [x] Complete the frozen evaluation and publish measured cold/warm corpus gates
-      ([validation](validation-rfc0020.md), [results](../scripts/corpus/rfc0020-results.json)).
+- [x] Complete the frozen evaluation and publish measured cold/warm corpus gates.
 
 ## Milestone 20 — Practical C traversal (complete)
 
@@ -439,9 +442,7 @@ Design: [RFC 0021](rfcs/0021-practical-c-traversal.md) (Implemented).
 - [x] Preserve every baseline-complete selected function, increasing the total
       from 99 to 120, and validate all 51 warm unit hits without function analyses.
 - [x] Pass full Debug/sanitizer suites and ordinary runtime/memory gates;
-      publish [validation](validation-rfc0021.md),
-      [measured results](../scripts/corpus/rfc0021-results.json) and
-      [diagnostic changes](../scripts/corpus/rfc0021-diagnostics.jsonl).
+      publish validation, measured results and diagnostic changes.
 
 ## Milestone 21 — Checked C interfaces (complete)
 
@@ -457,10 +458,8 @@ Design: [RFC 0022](rfcs/0022-checked-c-interfaces.md) (Implemented).
       with strict context remapping and persistent reuse regression cases.
 - [x] Pass correctness, real-source and measured performance gates; retain
       119/120 baseline-complete identities, reject one demonstrated false proof,
-      and gain five complete contracts. Publish the
-      [validation](validation-rfc0022.md),
-      [measured results](../scripts/corpus/rfc0022-results.json) and
-      [exact diagnostic changes](../scripts/corpus/rfc0022-diagnostics.jsonl).
+      and gain five complete contracts. Publish the validation, measured
+      results and exact diagnostic changes.
 
 Generic callback interfaces may remain incomplete until their actual bindings
 are known. General recursive heaps, arbitrary type punning, asynchronous callback
@@ -481,8 +480,7 @@ Design: [RFC 0023](rfcs/0023-inductive-container-contracts.md).
 - [x] Frozen closed callers, unchanged cJSON traversal clients, independent
       graph/release oracles, and complete Debug/ASan/UBSan suites.
 - [x] Exact corpus preservation, canonical cache equivalence and ordinary
-      runtime/memory gates, with published [validation](validation-rfc0023.md)
-      and [measured results](../scripts/corpus/rfc0023-results.json).
+      runtime/memory gates, with published validation and measured results.
 
 Derived outputs describe subsets of their input chains. RFC 0027 adds separate
 whole-footprint conservation for supported transformations and finite recursive
@@ -503,7 +501,7 @@ Design: [RFC 0024](rfcs/0024-checked-runtime-contracts.md).
 - [x] Full Debug/ASan/UBSan suites and unchanged-source clients; retain the
       cJSON string-comparison client as a visible incomplete case.
 - [x] Publish exact corpus preservation, cache equivalence and measured
-      runtime/memory gates in the [validation record](validation-rfc0024.md).
+      runtime/memory gates in the validation record.
 
 Direct variadic extraction, record-embedded or escaping argument lists,
 positional/wide formats, `%n`, scanning and unbound dynamic formats remain
@@ -526,7 +524,7 @@ Design: [RFC 0025](rfcs/0025-case-sensitive-checked-contracts.md).
       sidecars and checked encoding 7, including compact reports and caches.
 - [x] Complete the frozen source, object, upstream and adversarial populations,
       full Debug/ASan/UBSan suites, corpus preservation and cost validation;
-      publish the [validation record](validation-rfc0025.md).
+      publish the validation record.
 
 Aggregate union members, representation punning, anonymous member promotion,
 volatile/atomic union storage and unrestricted symbolic execution remain
@@ -541,7 +539,7 @@ Design: [RFC 0026](rfcs/0026-growable-buffer-contracts.md).
 - [x] Preserve failure outcomes and distinguish pointer-element ownership from
       initialization; transport proofs through sources, objects and checkpoints.
 - [x] Validate the fixed and unchanged Jansson populations, corpus preservation
-      and cost gates; publish the [validation record](validation-rfc0026.md).
+      and cost gates; publish the validation record.
 
 ## Milestone 26 — Recursive object ownership
 
@@ -556,8 +554,7 @@ Design: [RFC 0027](rfcs/0027-recursive-object-ownership.md).
 - [x] Transport contracts through sources, compiler objects and validated caches;
       check unchanged cJSON lifecycle clients and an independent heap oracle.
 - [x] Complete all preservation and performance gates and publish the final
-      [validation record](validation-rfc0027.md) and
-      [machine-readable evidence](../scripts/corpus/rfc0027-results.json).
+      validation record and machine-readable evidence.
 
 General graphs, shared recursive ownership, mutual recursive cleanup and full
 parser/printer verification remain separate work.
@@ -578,8 +575,7 @@ Design: [RFC 0028](rfcs/0028-opaque-objects-and-library-state.md).
       public-header clients through source units and separate compiler objects;
       complete Debug/ASan/UBSan, strict lint and fixed-evaluation checks.
 - [x] Complete corpus preservation, cache replay and isolated cost gates;
-      publish the final [validation record](validation-rfc0028.md) and
-      [machine-readable evidence](../scripts/corpus/rfc0028-results.json).
+      publish the final validation record and machine-readable evidence.
 
 Unsupported private types, richer conditional release forwarding, reassigned
 entry-parameter projection and arbitrary shared graphs remain incomplete.

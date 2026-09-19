@@ -38,4 +38,4 @@ Read [safety guarantees](/reference/guarantees/) before relying on a checked res
 
 ## Project status
 
-WeaveC is early software. Source releases are available; portable prebuilt binaries and package-manager distribution are future work. APIs and serialized analysis formats can change between minor versions. The [roadmap](/project/roadmap/) and [validation records](/internals/validation/) describe implementation progress and remaining limitations.
+WeaveC is early software. Source releases are available; portable prebuilt binaries and package-manager distribution are future work. APIs and serialized analysis formats can change between minor versions. The [roadmap](/project/roadmap/) describes implementation progress and remaining limitations.

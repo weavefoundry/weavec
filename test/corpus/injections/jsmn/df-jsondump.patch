@@ -1,0 +1,12 @@
+--- a/example/jsondump.c
++++ b/example/jsondump.c
+@@ -99,6 +99,9 @@
+     }
+     if (r == 0) {
+       if (eof_expected != 0) {
++        free(js);
++        free(tok);
++        free(js); /* INJECTED: double free */
+         return 0;
+       } else {
+         fprintf(stderr, "fread(): unexpected EOF\n");

@@ -22,8 +22,8 @@ The owner requested this RFC first and then implementation end to end.
 Acceptance after drafting records that authorization; it does not imply an
 independent review or a merged RFC pull request.
 
-Implementation and acceptance evidence are recorded in the
-[validation document](../validation-rfc0025.md).
+Implementation and acceptance evidence were recorded in the
+validation document (removed by RFC 0030).
 
 ## Motivation
 

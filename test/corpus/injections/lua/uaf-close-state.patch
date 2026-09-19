@@ -1,0 +1,10 @@
+--- a/lstate.c
++++ b/lstate.c
+@@ -272,6 +272,7 @@
+   freestack(L);
+   lua_assert(gettotalbytes(g) == sizeof(global_State));
+   (*g->frealloc)(g->ud, g, sizeof(global_State), 0);  /* free main block */
++  g->ud = NULL; /* INJECTED: use after free */
+ }
+ 
+ 

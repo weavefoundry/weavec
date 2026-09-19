@@ -376,9 +376,9 @@ the summary; compiler sidecars use the same format and inference.
 ## Target integers and compositional bounds (RFC 0017)
 
 [RFC 0017](rfcs/0017-c-integer-semantics-and-spatial-safety.md) specifies
-the target-integer and spatial model. The
-[validation report](validation-rfc0017.md) records correctness checks,
-corpus diagnostics, performance measurements and supported boundaries.
+the target-integer and spatial model. Its validation report (removed by
+RFC 0030) recorded correctness checks, corpus diagnostics, performance
+measurements and supported boundaries.
 
 Core represents types from one through 64 bits, signedness and boolean
 conversion behavior. `IntegerValue` stores an unsigned bit pattern;

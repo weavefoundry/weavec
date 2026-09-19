@@ -384,7 +384,7 @@ callback values settle before final reporting, and immutable layout keys are
 cached for the lifetime of their Clang AST. Top-level cv-qualification and
 array-to-pointer decay preserve a record's layout.
 
-The [validation report](../validation-rfc0014.md) records the full acceptance
+The validation report (removed by RFC 0030) records the full acceptance
 runs and corpus tradeoffs: 637 passing CTest entries in both Debug and
 ASan/UBSan; 67/67 retained recall detections; 18/20 fixed evaluation bugs with
 8/8 clean cases and the original two misses retained. All corpus executions

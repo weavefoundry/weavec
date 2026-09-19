@@ -22,7 +22,7 @@ recursive convergence, compiler replay, coverage and real-project cost.
 The owner authorized drafting the RFC first, followed by implementation end
 to end. Acceptance records that authorization; it does not imply independent
 review, commit or merge. Implementation and all acceptance checks are complete
-in this change. The [validation report](../validation-rfc0020.md) records the
+in this change. The validation report (removed by RFC 0030) records the
 evidence.
 
 ## Motivation

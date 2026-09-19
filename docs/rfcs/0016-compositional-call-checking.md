@@ -23,7 +23,7 @@ contexts expose incomplete coverage rather than silently asserting safety.
 This RFC was drafted before implementation. The project owner explicitly
 requested drafting the recommended RFC and then implementing it end to end.
 Acceptance recorded that authorization to proceed; it does not claim a
-separate review or merge. The [validation report](../validation-rfc0016.md)
+separate review or merge. The validation report (removed by RFC 0030)
 records the completed implementation, tests and measured tradeoffs.
 
 ## Motivation

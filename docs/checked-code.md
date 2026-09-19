@@ -407,9 +407,9 @@ remain outside the model.
 
 Summary format 26 and sidecar format 27 require rebuilding older compiler
 objects. Persistent caches validate executable, source, preprocessing and
-callee dependencies before reusing a container contract. See the
-[validation report](validation-rfc0023.md) for the frozen acceptance population,
-real-source callers and measured cost.
+callee dependencies before reusing a container contract. The RFC 0023
+validation report (removed by RFC 0030) recorded the frozen acceptance
+population, real-source callers and measured cost.
 
 ## Recursive object ownership
 
@@ -466,8 +466,9 @@ that evidence from verified constructors and preserves supported private hook
 state across separate translation units, as described below.
 Summary format 26, sidecar format 27 and checked encoding 12 reject
 older metadata; rebuild old objects. Expanded JSON version 2 and compact version
-3 retain their existing meanings. See [validation](validation-rfc0027.md) for
-fixed populations, counterexamples, test results and cost observations.
+3 retain their existing meanings. The RFC 0027 validation record (removed by
+RFC 0030) recorded fixed populations, counterexamples, test results and cost
+observations.
 
 ## Growable buffers and vectors
 
@@ -817,10 +818,10 @@ nonstandard floating modes prevent this inference.
 Run the frozen primary, independent serializer, reader, transport, object and cache
 populations with `scripts/checked-workflows.py`. The separate `upstream`
 population retains the broader cJSON parse/print acceptance goals. Those goals
-are not implied by passing the smaller workflows; consult the RFC 0029
-validation record for outstanding coverage. These changes do not establish
-arbitrary recursive construction, general floating-point conversion safety or
-a complete cJSON library certificate.
+are not implied by passing the smaller workflows; the RFC 0029 validation
+record (removed by RFC 0030) listed outstanding coverage. These changes do not
+establish arbitrary recursive construction, general floating-point conversion
+safety or a complete cJSON library certificate.
 
 RFC 0029 also supports a recursive byte writer taking immutable byte input, an
 unsigned remaining count and a pointer to a discovered buffer record. A checked

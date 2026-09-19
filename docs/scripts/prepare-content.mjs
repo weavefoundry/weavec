@@ -131,7 +131,6 @@ await split(
 await whole('docs/incremental-analysis.md', 'guides/incremental-analysis');
 await whole('docs/development.md', 'contributing/development');
 await whole('docs/roadmap.md', 'project/roadmap');
-await whole('docs/development-history.md', 'project/development-history', { pagefind: false });
 await whole('docs/rfcs/README.md', 'rfcs/process');
 pages.at(-1).title = 'The RFC process';
 pages.at(-1).body = pages.at(-1).body.split('## Index')[0];
@@ -158,21 +157,6 @@ for (const filename of (await readdir(path.join(docs, 'rfcs'))).sort()) {
     href: `/${route}/`,
   });
 }
-
-const validations = [];
-for (const filename of (await readdir(docs)).sort()) {
-  if (!/^validation-rfc\d+\.md$/.test(filename)) continue;
-  const route = `internals/validation/${filename.replace('validation-', '').replace('.md', '')}`;
-  await whole(`docs/${filename}`, route, { pagefind: false });
-  validations.push(`- [${pages.at(-1).title}](/${route}/)`);
-}
-add(
-  'docs/scripts/prepare-content.mjs',
-  'internals/validation',
-  'Validation records',
-  'These records document the evidence behind specific changes: fixed test populations, real-code evaluations, remaining limits, and measured analysis cost. Results describe the revisions and populations named in each record.\n\n' +
-    validations.join('\n'),
-);
 
 // Each diagnostic keeps its exact source description and gains a focused remedy.
 const diagnosticPage = pages.find((page) => page.route === 'reference/diagnostics');

@@ -1,0 +1,10 @@
+--- a/deflate.c
++++ b/deflate.c
+@@ -1299,6 +1299,7 @@
+ 
+     /* Deallocate in reverse order of allocations: */
+     TRY_FREE(strm, strm->state->pending_buf);
++    TRY_FREE(strm, strm->state->pending_buf); /* INJECTED: double free */
+     TRY_FREE(strm, strm->state->head);
+     TRY_FREE(strm, strm->state->prev);
+     TRY_FREE(strm, strm->state->window);

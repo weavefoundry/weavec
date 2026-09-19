@@ -1,0 +1,16 @@
+{
+  "schema": "weavec-corpus-triage",
+  "version": 1,
+  "_comment": [
+    "Triage of the corpus findings (RFC 0030, section 17.5), checked by scripts/corpus-gate.py.",
+    "Every definite error and every possible temporal warning that a run reports needs an entry",
+    "{fingerprint, config, id, certainty, file, line, verdict, note}: fingerprint is the ledger's",
+    "(section 12.3), certainty is definite or possible, verdict is \"true\" or \"false\", and note",
+    "says why. An untriaged finding fails the gate; a definite error triaged false fails G9; an",
+    "entry no finding of its config matches is reported as stale without failing. A build config",
+    "that must build despite a triaged-true definite error lists -Wno-error=weavec-<id> with the",
+    "same fingerprint under `lowered` in manifest.json. Entries appear once the RFC 0030 compiler",
+    "writes ledgers (S3); v0.10.0's findings have no fingerprints and are not triaged here."
+  ],
+  "entries": []
+}

@@ -313,7 +313,7 @@ contiguous mutable containers while preserving C source and pointer ABI.
 
 Internal representation and discovery heuristics may change while preserving
 these semantics and acceptance populations. The realized coverage and cost
-are recorded in the [validation report](../validation-rfc0026.md), including the
+were recorded in the validation report (removed by RFC 0030), including the
 absence of a broad-corpus completion gain and the runtime-buffer/helper gains.
 A change to semantic scope or required acceptance must amend
 this RFC explicitly before its implementation; a fixture cannot simply be

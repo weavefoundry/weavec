@@ -325,8 +325,9 @@ non-LTO executables and measurements separately; do not mix their observations
 into the new medians. The frozen baseline identities and every acceptance limit
 remain unchanged.
 
-Publish `docs/validation-rfc0027.md` and machine-readable evidence. The RFC moves
-to Implemented only when the detailed design and acceptance gates are complete.
+Publish `docs/validation-rfc0027.md` (removed by RFC 0030) and machine-readable
+evidence. The RFC moves to Implemented only when the detailed design and
+acceptance gates are complete.
 
 The final cost investigation may optimize alias queries without changing their
 results: reuse the original place when its parent has no relevant alias

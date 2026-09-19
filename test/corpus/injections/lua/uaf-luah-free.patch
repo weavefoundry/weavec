@@ -1,0 +1,10 @@
+--- a/ltable.c
++++ b/ltable.c
+@@ -822,6 +822,7 @@
+   freehash(L, t);
+   resizearray(L, t, t->asize, 0);
+   luaM_free(L, t);
++  t->flags = 0; /* INJECTED: use after free */
+ }
+ 
+ 

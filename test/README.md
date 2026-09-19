@@ -18,7 +18,7 @@ test/
 ```
 
 Run everything with `ninja check-weavec-lit` (or `ctest -L integration`), or a
-single test with `lit -v build/dev/test/Analysis/use-after-free.c`.
+single test with `lit -v build/dev/test/Analysis/rfc0008-null.c`.
 
 Each test is a `.c` file whose first lines contain `// RUN:` commands. The
 `%weavec` substitution expands to the built binary with the annotation header

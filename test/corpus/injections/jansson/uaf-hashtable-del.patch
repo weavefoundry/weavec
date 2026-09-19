@@ -1,0 +1,13 @@
+--- a/src/hashtable.c
++++ b/src/hashtable.c
+@@ -117,9 +117,9 @@
+ 
+     list_remove(&pair->list);
+     list_remove(&pair->ordered_list);
+-    json_decref(pair->value);
+ 
+     jsonp_free(pair);
++    json_decref(pair->value); /* INJECTED: use after free */
+     hashtable->size--;
+ 
+     return 0;

@@ -96,8 +96,8 @@ Additional rules:
   exercising the core logic and a lit test (in `test/`) exercising the
   end-to-end diagnostic. Lit tests that pin behaviour specified by an RFC
   carry its number in the filename (`test/Analysis/rfc0002-*.c`).
-  False-positive fixes need a regression test in `test/Analysis/clean.c` or a
-  new file.
+  False-positive fixes need a regression case under `test/cases/` (a `// CLEAN`
+  file; see `test/cases/README.md`).
 
 ## Commit messages
 
@@ -121,8 +121,7 @@ and `chore` normally do not trigger a release. Optional scopes include `core`,
 
 Python Semantic Release generates `CHANGELOG.md` from the commit history;
 do not edit it manually. Document behavior and migration guidance in the
-relevant guides and commit/PR descriptions. The earlier hand-written notes
-are preserved in [the development history](docs/development-history.md).
+relevant guides and commit/PR descriptions.
 
 ## Reporting bugs
 

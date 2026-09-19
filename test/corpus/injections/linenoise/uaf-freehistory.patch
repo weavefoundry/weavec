@@ -1,0 +1,10 @@
+--- a/linenoise.c
++++ b/linenoise.c
+@@ -2247,6 +2247,7 @@
+         for (j = 0; j < history_len; j++)
+             free(history[j]);
+         free(history);
++        history[0] = NULL; /* INJECTED: use after free */
+     }
+ }
+ 

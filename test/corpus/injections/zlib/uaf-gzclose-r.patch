@@ -1,0 +1,12 @@
+--- a/gzread.c
++++ b/gzread.c
+@@ -661,8 +661,8 @@
+     }
+     err = state->err == Z_BUF_ERROR ? Z_BUF_ERROR : Z_OK;
+     gz_error(state, Z_OK, NULL);
+-    free(state->path);
+     ret = close(state->fd);
+     free(state);
++    free(state->path); /* INJECTED: use after free */
+     return ret ? Z_ERRNO : err;
+ }

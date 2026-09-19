@@ -420,7 +420,7 @@ null or fresh allocations; releases distinguish retained pointer values from
 cleared cells. Joins and lost interface guards weaken strong writes. Summary
 parsing, global remapping and compiler sidecar round trips cover each record.
 
-The [validation report](../validation-rfc0015.md) records acceptance checks,
+The validation report (removed by RFC 0030) records acceptance checks,
 the fixed evaluation, pinned corpus changes and measured costs.
 
 ## Unresolved questions

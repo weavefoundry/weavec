@@ -1,0 +1,12 @@
+--- a/example/jsondump.c
++++ b/example/jsondump.c
+@@ -125,7 +125,8 @@
+         goto again;
+       }
+     } else {
+-      dump(js, tok, p.toknext, 0);
++      free(tok);
++      dump(js, tok, p.toknext, 0); /* INJECTED: use after free */
+       eof_expected = 1;
+     }
+   }

@@ -1,0 +1,10 @@
+--- a/cJSON.c
++++ b/cJSON.c
+@@ -263,6 +263,7 @@
+         if (!(item->type & cJSON_IsReference) && (item->valuestring != NULL))
+         {
+             global_hooks.deallocate(item->valuestring);
++            global_hooks.deallocate(item->valuestring); /* INJECTED: double free */
+             item->valuestring = NULL;
+         }
+         if (!(item->type & cJSON_StringIsConst) && (item->string != NULL))

@@ -1,0 +1,12 @@
+--- a/cJSON_Utils.c
++++ b/cJSON_Utils.c
+@@ -231,8 +231,8 @@
+                     cJSON_free(full_pointer);
+                     return NULL;
+                 }
+-                sprintf((char*)full_pointer, "/%lu%s", (unsigned long)child_index, target_pointer); /* /<array_index><path> */
+                 cJSON_free(target_pointer);
++                sprintf((char*)full_pointer, "/%lu%s", (unsigned long)child_index, target_pointer); /* INJECTED: use after free */
+ 
+                 return (char*)full_pointer;
+             }

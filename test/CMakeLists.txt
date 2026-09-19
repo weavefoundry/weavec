@@ -558,3 +558,4 @@ add_dependencies(check-weavec check-weavec-lit)
 add_test(NAME lit COMMAND "${WEAVEC_LIT}" ${WEAVEC_LIT_ARGS}
                           "${CMAKE_CURRENT_BINARY_DIR}")
 set_tests_properties(lit PROPERTIES LABELS "integration")
+add_subdirectory(cases)

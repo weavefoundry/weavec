@@ -95,7 +95,7 @@ sidecars. Run one with
 ### Integration tests (`test/`)
 
 lit + FileCheck; see [`test/README.md`](../test/README.md). Run a single test
-with `lit -v build/dev/test/Analysis/use-after-free.c`. Every diagnostic change
+with `lit -v build/dev/test/Analysis/rfc0008-null.c`. Every diagnostic change
 should be covered by a lit test because they pin the exact user-visible output.
 `test/WholeProgram/` runs several files through `%weavec --whole-program`
 (shared inputs in `test/WholeProgram/Inputs/`); `test/Driver/` drives
@@ -159,9 +159,7 @@ registry credentials involved. The first feature release is `0.1.0`;
 Keep squash-merge titles in Conventional Commit form and describe user-visible
 changes in the relevant guides and commit/PR descriptions. `CHANGELOG.md` is
 created on the first release and regenerated solely by semantic-release;
-do not edit it manually. The earlier
-hand-written implementation and migration notes are archived in
-[development-history.md](development-history.md).
+do not edit it manually.
 
 The workflow first prepares everything locally: it stamps
 `project(... VERSION ...)` in `CMakeLists.txt`, regenerates `CHANGELOG.md` from
@@ -173,8 +171,7 @@ The commit and tag are pushed atomically, so a concurrent update or rejected
 push cannot publish just one of them. A GitHub draft receives the source
 archive and `SHA256SUMS` before it is made public. Release notes link to the
 versioned generated changelog and include its entry inline when it fits GitHub's
-body limit. The archived hand-written history is linked separately and included
-in every source archive.
+body limit.
 
 Repository setup: Actions needs permission to write repository contents,
 and the release identity needs to be allowed to push its release commit to

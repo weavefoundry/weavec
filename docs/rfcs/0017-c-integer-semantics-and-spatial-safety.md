@@ -28,7 +28,7 @@ The project owner requested drafting this RFC first and then implementing the
 recommended milestone end to end. Acceptance records that authorization after
 the design is written; it does not claim an independent RFC review or merge.
 The implementation and validation are complete in the working tree. The
-[validation report](../validation-rfc0017.md) records the passing correctness
+validation report (removed by RFC 0030) records the passing correctness
 checks, exceeded performance targets and remaining corpus false positives.
 
 ## Motivation

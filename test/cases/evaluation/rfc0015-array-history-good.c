@@ -1,0 +1,6 @@
+// RFC 0015: fixed bug/clean pair; see the evaluation manifest.
+// CLEAN
+#include "Inputs/prelude.h"
+void *memcpy(void *, const void *, size_t);
+void *memmove(void *, const void *, size_t);
+void run(char **a) { free(a[0]); free(a[1]); a[2][0]=1; }

@@ -57,8 +57,7 @@ cmake --preset dev && cmake --build --preset dev && ctest --preset dev
    than anonymous namespaces); `.clang-tidy` enforces it.
 6. Use Conventional Commit PR titles and document user-visible changes in the
    relevant guides. `CHANGELOG.md` is generated solely by semantic-release;
-   do not edit it manually. Pre-0.1.0 notes are archived in
-   `docs/development-history.md`.
+   do not edit it manually.
 7. Do not commit generated files (`build/`, `compile_commands.json`).
 8. Changes to `Core`, checker rules, annotations or diagnostic ids reference
    the RFC that specifies them (in the PR and, for lit tests, in the

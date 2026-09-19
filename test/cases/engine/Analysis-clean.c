@@ -1,0 +1,40 @@
+// Engine pin converted from test/Analysis/clean.c; markers are the v0.10.0 golden diagnostics.
+// CLEAN
+// Well-formed ownership patterns must not produce any diagnostics.
+#include "Inputs/prelude.h"
+
+void alloc_use_free(void) {
+  int *p = malloc(sizeof(int));
+  if (!p)
+    return;
+  *p = 1;
+  use(p);
+  free(p);
+}
+
+void reassign_after_free(void) {
+  int *p = malloc(4);
+  free(p);
+  p = malloc(8);
+  use(p);
+  free(p);
+  p = NULL;
+  use(p);
+}
+
+void free_on_one_path_only(int c) {
+  int *p = malloc(4);
+  if (c) {
+    use(p);
+  } else {
+    free(p);
+    p = NULL;
+  }
+  use(p);
+  free(p); /* the other path's block; free(NULL) on the first (RFC 0007) */
+}
+
+void unrelated_pointers(int *a, int *b) {
+  free(a);
+  use(b);
+}

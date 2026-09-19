@@ -1,0 +1,10 @@
+--- a/example.c
++++ b/example.c
+@@ -125,6 +125,7 @@
+             printf("Unreconized command: %s\n", line);
+         }
+         free(line);
++        linenoiseFree(line); /* INJECTED: double free */
+     }
+     return 0;
+ }

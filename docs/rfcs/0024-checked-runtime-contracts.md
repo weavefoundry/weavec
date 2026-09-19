@@ -8,8 +8,8 @@
 
 The project owner authorized drafting this RFC followed by end-to-end
 implementation in the same task. Its scope was accepted before checker changes.
-The completed acceptance results are in the
-[validation record](../validation-rfc0024.md).
+The completed acceptance results were in the
+validation record (removed by RFC 0030).
 
 ## Summary
 

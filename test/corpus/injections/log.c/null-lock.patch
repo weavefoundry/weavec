@@ -1,0 +1,11 @@
+--- a/src/log.c
++++ b/src/log.c
+@@ -82,7 +82,7 @@
+ 
+ 
+ static void lock(void)   {
+-  if (L.lock) { L.lock(true, L.udata); }
++  L.lock(true, L.udata); /* INJECTED: calls the optional lock without a null test */
+ }
+ 
+ 

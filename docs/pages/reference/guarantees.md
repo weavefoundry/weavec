@@ -38,6 +38,6 @@ The result does not certify unselected code, external libraries, the compiler im
 
 ## Inspect the evidence
 
-Start with [reading a report](/guides/reports/), then review [current checked limits](/reference/checked-limits/) and the relevant [validation record](/internals/validation/).
+Start with [reading a report](/guides/reports/), then review [current checked limits](/reference/checked-limits/).
 
 The authoritative contract is [RFC 0018](/rfcs/0018-checked-code-and-safety-contracts/), with practical checked memory behavior extended by [RFC 0019](/rfcs/0019-practical-checked-memory-contracts/) and subsequent RFCs.

@@ -116,7 +116,6 @@ export default defineConfig({
             item('Roadmap', 'project/roadmap'),
             item('Architecture', 'internals/architecture'),
             item('RFC library', 'rfcs'),
-            item('Validation records', 'internals/validation'),
             item('Contributing', 'contributing/overview'),
             item('Developer guide', 'contributing/development'),
             item('Website guide', 'contributing/website'),

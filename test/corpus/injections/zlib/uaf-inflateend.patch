@@ -1,0 +1,10 @@
+--- a/inflate.c
++++ b/inflate.c
+@@ -1159,6 +1159,7 @@
+     state = (struct inflate_state FAR *)strm->state;
+     if (state->window != Z_NULL) ZFREE(strm, state->window);
+     ZFREE(strm, strm->state);
++    state->wsize = 0; /* INJECTED: use after free */
+     strm->state = Z_NULL;
+     Tracev((stderr, "inflate: end\n"));
+     return Z_OK;

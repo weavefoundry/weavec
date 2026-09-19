@@ -1,0 +1,11 @@
+--- a/cJSON.c
++++ b/cJSON.c
+@@ -361,7 +361,7 @@
+     }
+ 
+     memcpy(number_c_string, buffer_at_offset(input_buffer), number_string_length);
+-    number_c_string[number_string_length] = '\0';
++    number_c_string[number_string_length + 1] = '\0'; /* INJECTED: one past the allocation */
+ 
+     if (has_decimal_point)
+     {

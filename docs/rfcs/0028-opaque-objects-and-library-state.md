@@ -422,9 +422,8 @@ all 51 warm units must reuse with zero function analyses and equivalent reports.
 Run isolated cost observations after builds/tests stop and retain failed
 observations. Do not increase semantic budgets to satisfy a positive fixture.
 
-Implementation and acceptance results are recorded in the
-[validation record](../validation-rfc0028.md) and
-[machine-readable evidence](../../scripts/corpus/rfc0028-results.json).
+Implementation and acceptance results were recorded in the
+validation record and machine-readable evidence (both removed by RFC 0030).
 
 ## Annotation surface
 

@@ -33,7 +33,6 @@ Pagefind creates its search index during the production build. Validate search i
 | `docs/annotations.md`                | Authoritative annotation and diagnostic reference.               |
 | `docs/checked-code.md`               | Authoritative checked-code guide, split into focused site pages. |
 | `docs/rfcs/`                         | Authoritative design records and their statuses.                 |
-| `docs/validation-*.md`               | Evidence and limits for specific RFCs.                           |
 | `docs/architecture.md`               | Architecture source, split by section for the site.              |
 | `docs/data/diagnostic-remedies.json` | Practical resolution guidance for each diagnostic.               |
 | `docs/examples/`                     | Tutorial source files included directly in published examples.   |

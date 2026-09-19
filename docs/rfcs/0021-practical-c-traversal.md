@@ -21,7 +21,7 @@ Jansson UTF and cJSON minifier interfaces with positive and adversarial callers.
 
 The owner requested an RFC first followed by end-to-end implementation.
 Drafting and acceptance preceded implementation under that authorization.
-The [validation record](../validation-rfc0021.md) documents every acceptance
+The validation record (removed by RFC 0030) documents every acceptance
 gate and the remaining coverage limits. This status records the completed
 implementation and validation; independent review and merge are separate.
 

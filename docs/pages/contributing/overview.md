@@ -29,7 +29,7 @@ Start with the [RFC process](/rfcs/process/#process) and [RFC library](/rfcs/). 
 - Every new diagnostic needs a stable ID, an annotation-reference entry, a unit test, and a lit test pinning its exact message.
 - Use Conventional Commit titles and update the relevant user guide.
 - Run formatting and required checks. Generated build outputs are not source files.
-- Leave `CHANGELOG.md` to semantic-release; document earlier historical context in the development history only when appropriate.
+- Leave `CHANGELOG.md` to semantic-release; do not edit it manually.
 
 ## Improve these docs
 

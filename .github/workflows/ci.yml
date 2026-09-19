@@ -144,22 +144,25 @@ jobs:
       - name: Recall
         run: python3 scripts/recall.py --weavec "build/${{ matrix.preset }}/bin/weavec"
 
-      # RFC 0014: fixed source revisions exercise real callback-heavy code.
-      # Counts are retained for review; parse errors, crashes, timeouts and
-      # nonconvergence fail the gate on both release platforms.
+      # RFC 0030 (section 17.5): per-file compiles and whole-program analyses of
+      # the pinned corpus configurations in test/corpus/, checked against the
+      # ratchet in test/corpus/expected.json and the triage in
+      # test/corpus/triage.json. The weekly Corpus workflow runs --full.
       - name: Pinned corpus
         if: matrix.preset == 'ci-release'
         run: |
-          python3 scripts/corpus.py --weavec "build/${{ matrix.preset }}/bin/weavec" \
-            --manifest scripts/corpus/rfc0014.json --timeout 120 \
-            --measure-memory --json corpus-rfc0014.json
+          python3 scripts/corpus-gate.py --quick \
+            --weavec "build/${{ matrix.preset }}/bin/weavec" \
+            --weavec-cc "build/${{ matrix.preset }}/bin/weavec-cc" \
+            --only log.c --only cJSON-program --only linenoise-program \
+            --only jansson --json corpus-gate-quick.json
 
       - name: Upload pinned corpus results
         if: always() && matrix.preset == 'ci-release'
         uses: actions/upload-artifact@v7
         with:
-          name: corpus-rfc0014-${{ matrix.os }}
-          path: corpus-rfc0014.json
+          name: corpus-gate-quick-${{ matrix.os }}
+          path: corpus-gate-quick.json
           if-no-files-found: ignore
 
       - name: Smoke-test install
