@@ -1269,7 +1269,7 @@ bool LibrarySpecParser::parseClause(LibraryEntry &entry,
     const auto dst = index("argument index");
     if (!dst)
       return false;
-    LibStringWrite write{.dst = *dst};
+    LibStringWrite write{.dst = *dst, .length = std::nullopt};
     if (accept(',')) {
       write.length = clauseTerm(clause);
       if (!write.length)
@@ -1387,7 +1387,9 @@ bool LibrarySpecParser::parseEntry(std::string rowName) {
     return fail("an entry must follow a 'header' or 'builtins' line");
   if (underPattern)
     return fail("an entry must follow a concrete 'header', not a pattern");
-  LibraryEntry entry{.name = std::move(rowName), .header = header};
+  LibraryEntry entry;
+  entry.name = std::move(rowName);
+  entry.header = header;
   entry.line = line->lines.front();
   if (!expect('(', "after the function name"))
     return false;

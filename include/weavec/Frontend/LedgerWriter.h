@@ -50,7 +50,8 @@ parseLedgerFormat(std::string_view text);
 struct LedgerWriteOptions {
   /// The directory relative paths in the ledger are relative to (the
   /// compile job's); empty means the process's working directory.
-  std::string workingDirectory;
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
+  std::string workingDirectory = {};
   /// JSON indentation; 0 writes a single line.
   unsigned indent = 2;
   /// SARIF `invocations[0].executionSuccessful`: no internal error occurred.

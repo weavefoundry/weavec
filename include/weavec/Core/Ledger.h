@@ -196,14 +196,22 @@ parseLedgerScope(std::string_view text);
 /// *Diagnostics*): the pointer, the callee, the slot, the function, the
 /// detail, the place, and the two owners of `second-owner`.
 struct PhraseArguments {
-  std::string_view pointer;
-  std::string_view callee;
-  std::string_view slot;
-  std::string_view function;
-  std::string_view detail;
-  std::string_view place;
-  std::string_view first;
-  std::string_view second;
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
+  std::string_view pointer = {};
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
+  std::string_view callee = {};
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
+  std::string_view slot = {};
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
+  std::string_view function = {};
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
+  std::string_view detail = {};
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
+  std::string_view place = {};
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
+  std::string_view first = {};
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
+  std::string_view second = {};
 };
 
 /// The phrase of `reason` with its placeholders spelled literally, for

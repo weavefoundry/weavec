@@ -263,7 +263,11 @@ static LibrarySpec parseOk(std::string_view text) {
 static const LibraryEntry &row(std::string_view name) {
   const LibraryEntry *entry = LibrarySpec::shipped().find(name);
   EXPECT_NE(entry, nullptr) << name;
-  static const LibraryEntry Missing{.name = "<missing>"};
+  static const LibraryEntry Missing = [] {
+    LibraryEntry entry;
+    entry.name = "<missing>";
+    return entry;
+  }();
   return entry != nullptr ? *entry : Missing;
 }
 
