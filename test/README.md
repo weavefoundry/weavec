@@ -10,6 +10,8 @@ test/
   Annotations/   the weavec.h macros and annotation handling
   Driver/        command-line behaviour of weavec and weavec-cc (compile,
                  link, sidecars, -fweavec-*/-W flags)
+  Prelude/       the RFC 0030 check prelude: compiled under every standard
+                 and mode, and its helpers and runtimes run
   WholeProgram/  several files analysed as one program (RFC 0005), with
                  their shared sources under WholeProgram/Inputs/
   Inputs/        shared headers/fixtures (not run as tests)

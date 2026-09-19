@@ -3,9 +3,11 @@ weavec_add_library(
   Frontend
   SOURCES AnalysisStats.cpp
           ClangDiagnosticSink.cpp
+          DeferredCodeGenConsumer.cpp
           DiagnosticControl.cpp
           Driver.cpp
           FrontendAction.cpp
+          Prelude.cpp
           ProgramAnalysis.cpp
           ResourceDir.cpp
           Sidecar.cpp

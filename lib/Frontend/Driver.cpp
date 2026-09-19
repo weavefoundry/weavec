@@ -10,6 +10,7 @@
 
 #include "weavec/Config/Version.h"
 #include "weavec/Frontend/AnalysisStats.h"
+#include "weavec/Frontend/DeferredCodeGenConsumer.h"
 #include "weavec/Frontend/ProgramAnalysis.h"
 #include "weavec/Frontend/ResourceDir.h"
 #include "weavec/Frontend/Sidecar.h"
@@ -149,8 +150,17 @@ protected:
                     llvm::StringRef inFile) override {
     std::vector<std::unique_ptr<clang::ASTConsumer>> consumers;
     consumers.push_back(createWeaveCConsumer(compiler, options));
-    if (auto inner = WrapperFrontendAction::CreateASTConsumer(compiler, inFile))
+    if (auto inner =
+            WrapperFrontendAction::CreateASTConsumer(compiler, inFile)) {
+      // RFC 0030, section 10.5 (begin): a code-generating action gets the
+      // code generator behind DeferredCodeGenConsumer, so the analysis runs
+      // before any code is emitted; other actions keep the multiplexer.
+      if (isCodeGenAction(compiler.getFrontendOpts().ProgramAction))
+        return createDeferredCodeGenConsumer(std::move(consumers.front()),
+                                             std::move(inner));
+      // RFC 0030, section 10.5 (end).
       consumers.push_back(std::move(inner));
+    }
     return std::make_unique<clang::MultiplexConsumer>(std::move(consumers));
   }
 
