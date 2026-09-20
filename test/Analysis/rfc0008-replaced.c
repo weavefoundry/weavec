@@ -90,7 +90,10 @@ int tidy(void) {
 // The summary vocabulary (RFC 0008, *Summary text format*): `replaced` among
 // the flags, `result` as a store root.
 // DUMP: function 'grow':
-// DUMP: summary: v->cap: read|written; v->items: written|moved(free)|replaced; stores{v->items = fresh(free) extent=mul(u64(v->cap+8), 4)} returns{} requires{v} outcome zero{} null{v->items} stored{} outcome positive{v->items: moved(free) replaced} notnull{v->items} stored{v->items}
+// RFC 0030 §8.2: `realloc` may free on its null class when the size is zero,
+// and `4 * (v->cap + 8)` wraps to zero for some `cap`: the failure class moves
+// the items too, without replacing them.
+// DUMP: summary: v->cap: read|written; v->items: written|moved(free); stores{v->items = fresh(free) extent=mul(u64(v->cap+8), 4)} returns{} requires{v} outcome zero{v->items: moved(free)} null{v->items} stored{} outcome positive{v->items: moved(free) replaced} notnull{v->items} stored{v->items}
 // RFC 0017: cap names the entry value in the allocation snapshot, before += 8.
 // DUMP-NEXT: heap v->items complete{result = fresh(free) extent=mul(u64(v->cap+8), 4)}
 // DUMP: function 'reset':

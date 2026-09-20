@@ -74,9 +74,7 @@ struct RelationEdge {
 
 class RelationTracker {
 public:
-  /// RFC 0021: retain both sides of a bounded mathematical difference.
-  /// Ordinary analysis keeps the historical single-edge representation.
-  void trackDifferences() noexcept { differenceBounds = true; }
+  /// Every pair known, as a list of `(min, max)` and its edge.
   [[nodiscard]] std::vector<
       std::pair<std::pair<PlaceId, PlaceId>, RelationEdge>>
   allBounds() const;
@@ -145,8 +143,7 @@ public:
   /// edge spells it), an upper bound only when both sides know one, as the
   /// larger, a lower bound as the smaller; a place bounded on either side
   /// stays bounded. Returns whether this changed.
-  bool join(const RelationTracker &other, bool keepDifferenceBound = false,
-            bool widenDifferences = false);
+  bool join(const RelationTracker &other);
 
   [[nodiscard]] bool empty() const noexcept {
     return pairs.empty() && distinct.empty() && bounded.empty() &&
@@ -204,8 +201,6 @@ private:
 
   // Keyed on `(min, max)`; the edge is stated `min REL max + offset`.
   std::map<std::pair<PlaceId, PlaceId>, RelationEdge> pairs;
-  std::map<std::pair<PlaceId, PlaceId>, RelationEdge> complementaryPairs;
-  bool differenceBounds = false;
   std::set<std::pair<PlaceId, PlaceId>> distinct;
   std::set<PlaceId> bounded;
   /// `place <= upper[place]`.

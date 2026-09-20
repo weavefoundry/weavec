@@ -1,0 +1,10 @@
+--- a/lfunc.c
++++ b/lfunc.c
+@@ -290,6 +290,7 @@
+   }
+   luaM_freearray(L, f->p, cast_sizet(f->sizep));
+   luaM_freearray(L, f->k, cast_sizet(f->sizek));
++  luaM_freearray(L, f->k, cast_sizet(f->sizek)); /* INJECTED: double free */
+   luaM_freearray(L, f->locvars, cast_sizet(f->sizelocvars));
+   luaM_freearray(L, f->upvalues, cast_sizet(f->sizeupvalues));
+   luaM_free(L, f);

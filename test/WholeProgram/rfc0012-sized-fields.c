@@ -2,20 +2,24 @@
 // `(struct vec.items, struct vec.cap, 4)` and nothing in the program refutes
 // it, so a reader in another unit is checked against the count; `struct
 // view.raw` is stored from a caller's pointer once, which refutes it.
+// RFC 0030 §3.3: an inferred count is a lower bound on the object, so an
+// access past it is a checked facet, never a definite `out-of-bounds` (the
+// §7.6 field invariants of stage S6 can make it exact).
 //
-// RUN: not %weavec --whole-program %s %S/Inputs/vec.c -- -I%S/Inputs 2>&1 | FileCheck %s
-// RUN: not %weavec --whole-program --dump-analysis %s %S/Inputs/vec.c -- -I%S/Inputs 2>/dev/null | FileCheck --check-prefix=DUMP %s
+// RUN: %weavec --whole-program %s %S/Inputs/vec.c -- -I%S/Inputs 2>&1 | FileCheck %s
+// RUN: %weavec --whole-program --dump-analysis %s %S/Inputs/vec.c -- -I%S/Inputs 2>/dev/null | FileCheck --check-prefix=DUMP %s
 //
 // Alone, nothing witnesses the pair: nothing is reported.
 // RUN: %weavec %s -- -I%S/Inputs 2>&1 | FileCheck --allow-empty --check-prefix=ALONE %s
 //
-// The same through weavec-cc: the sidecar carries the witnesses and the
-// refutations, including the multiplication type (RFC 0017, format 13).
+// The same through weavec-cc: the unit record carries the witnesses and
+// the refutations, including the multiplication type (RFC 0017).
 // RUN: rm -rf %t && mkdir -p %t
 // RUN: %weavec_cc -c %S/Inputs/vec.c -o %t/vec.o -I%S/Inputs 2>&1 | count 0
 // RUN: %weavec_cc -c %s -o %t/main.o -I%S/Inputs 2>&1 | count 0
-// RUN: FileCheck --check-prefix=SIDECAR %s < %t/vec.o.weavec
-// RUN: FileCheck --check-prefix=LOADS %s < %t/main.o.weavec
+// RUN: %weavec --dump-record=%t/vec.o.weavec | FileCheck --check-prefix=RECORD %s
+// RUN: %weavec --dump-record=%t/main.o.weavec | FileCheck --check-prefix=LOADS %s
+// The program has no `main`, so only the system linker fails.
 // RUN: not %weavec_cc %t/vec.o %t/main.o -o %t/prog 2>&1 | FileCheck %s
 #include "../Inputs/prelude.h"
 #include "vec.h"
@@ -25,15 +29,25 @@
 // DUMP-NEXT: sized-field 'struct view.raw' by 'struct view.len' * 4 in u64
 // DUMP-NEXT: unsized-field 'struct view.raw'
 
-// SIDECAR: weavec-summaries 27
-// SIDECAR-DAG: sized-field struct~vec.items struct~vec.cap 4 u64
-// SIDECAR-DAG: sized-field struct~view.raw struct~view.len 4 u64
-// SIDECAR-DAG: unsized-field struct~view.raw
+// RECORD: "sizedFields": {
+// RECORD-NEXT: "witnesses": [
+// RECORD-NEXT: {
+// RECORD-NEXT: "field": "struct vec.items",
+// RECORD-NEXT: "count": "struct vec.cap",
+// RECORD-NEXT: "scale": 4,
+// RECORD-NEXT: "productType": "u64"
+// RECORD: "field": "struct view.raw",
+// RECORD-NEXT: "count": "struct view.len",
+// RECORD-NEXT: "scale": 4,
+// RECORD-NEXT: "productType": "u64"
+// RECORD: "unsizedFields": [
+// RECORD-NEXT: "struct view.raw"
 
 // This unit looked the fields up without deciding anything: the link step
 // knows to analyse it again once another unit witnesses the pair.
-// LOADS-DAG: loads-field struct~vec.items
-// LOADS-DAG: loads-field struct~view.raw
+// LOADS: "sizedFieldLoads": [
+// LOADS-NEXT: "struct vec.items",
+// LOADS-NEXT: "struct view.raw"
 
 // ALONE-NOT: error:
 // ALONE-NOT: out-of-bounds
@@ -52,15 +66,13 @@ int sum(struct vec *v) {
 // undecided (`n <= cap` is not known here).
 int last(struct vec *v) {
   int x = v->items[v->n];
-  // CHECK: rfc0012-sized-fields.c:[[@LINE+1]]:10: error: 'v->items[v->cap]' is out of bounds: the access exceeds the allocation's converted size [weavec::out-of-bounds]
   return v->items[v->cap] + x;
-  // CHECK: vec.h:9:8: note: 'v->items' is declared here
+  // CHECK-NOT: out-of-bounds
 }
 
 // A loop to the count inclusive.
 void zero(struct vec *v) {
   for (size_t i = 0; i <= v->cap; i++)
-    // CHECK: rfc0012-sized-fields.c:[[@LINE+1]]:5: error: 'v->items[i]' may be out of bounds: the access exceeds the allocation's converted size [weavec::out-of-bounds]
     v->items[i] = 0;
 }
 

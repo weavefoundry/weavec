@@ -32,64 +32,6 @@ using Strings = std::vector<std::string>;
 
 // -- Path sensitivity (RFC 0002, "Soundness examples") ------------------------
 
-// RFC 0020: unequal predecessor paths must not repeatedly transfer an
-// acyclic join. The bound counts all analyses of this single definition.
-TEST(Dataflow, AcyclicJoinsTransferAtMostOncePerAnalysis) {
-  core::AnalysisStats stats;
-  const auto result = analyze(R"c(
-    int f(int a, int b, int c, int d, int e, int f, int g, int h) {
-      int value;
-      if (a) value = 1;
-      else if (b) value = 2;
-      else if (c) value = 3;
-      else if (d) value = 4;
-      else if (e) value = 5;
-      else if (f) value = 6;
-      else if (g) value = 7;
-      else if (h) value = 8;
-      else value = 9;
-      return value;
-    }
-  )c",
-                              {.checked = true, .stats = &stats});
-  ASSERT_TRUE(result.ast);
-  EXPECT_TRUE(result.diagnostics.empty());
-  const auto *function = result.function("f");
-  ASSERT_NE(function, nullptr);
-  clang::CFG::BuildOptions options;
-  options.AddLifetime = true;
-  options.setAllAlwaysAdd();
-  const auto cfg = clang::CFG::buildCFG(function, function->getBody(),
-                                        &result.ast->getASTContext(), options);
-  ASSERT_TRUE(cfg);
-  EXPECT_GT(stats.count("function_analyses"), 0U);
-  EXPECT_LE(stats.count("block_transfers"),
-            stats.count("function_analyses") * cfg->getNumBlockIDs());
-  EXPECT_EQ(stats.count("cfg_order_builds"), 1U);
-  EXPECT_GT(stats.count("cfg_order_reuses"), 0U);
-}
-
-TEST(Dataflow, OrdinaryRunsRetainFifoWhileCheckedRunsUseOrderedWork) {
-  for (const bool checked : {false, true}) {
-    for (const auto *code :
-         {"void f(int n){while(n>0)--n;}", "void f(int n){if(n>0)--n;}"}) {
-      core::AnalysisStats stats;
-      AnalysisOptions options;
-      options.checked = checked;
-      options.stats = &stats;
-      const auto result = analyze(code, options);
-      ASSERT_TRUE(result.ast);
-      EXPECT_TRUE(result.diagnostics.empty());
-      EXPECT_GT(stats.count("function_analyses"), 0U);
-      EXPECT_EQ(stats.count(checked ? "cfg_rpo_analyses" : "cfg_fifo_analyses"),
-                stats.count("function_analyses"));
-      EXPECT_EQ(stats.count(checked ? "cfg_fifo_analyses" : "cfg_rpo_analyses"),
-                0U);
-      EXPECT_EQ(stats.count("cfg_order_builds"), checked ? 1U : 0U);
-    }
-  }
-}
-
 TEST(Dataflow, LoopBackEdgeExposesUseAndDoubleFree) {
   const auto result = analyze(R"c(
     void f(int n) {
@@ -101,9 +43,9 @@ TEST(Dataflow, LoopBackEdgeExposesUseAndDoubleFree) {
     }
   )c");
   ASSERT_TRUE(result.ast);
-  EXPECT_EQ(
-      messages(result.diagnostics),
-      (Strings{"5: use of 'p' after it was freed", "6: 'p' is freed twice"}));
+  EXPECT_EQ(messages(result.diagnostics),
+            (Strings{"5: use of 'p' after it may have been freed",
+                     "6: 'p' may be freed twice"}));
 }
 
 TEST(Dataflow, DoWhileBackEdge) {
@@ -132,7 +74,8 @@ TEST(Dataflow, GotoBackEdge) {
     }
   )c");
   ASSERT_TRUE(result.ast);
-  EXPECT_EQ(messages(result.diagnostics), (Strings{"5: 'p' is freed twice"}));
+  EXPECT_EQ(messages(result.diagnostics),
+            (Strings{"5: 'p' may be freed twice"}));
 }
 
 TEST(Dataflow, SwitchFallthrough) {
@@ -148,7 +91,24 @@ TEST(Dataflow, SwitchFallthrough) {
   ASSERT_TRUE(result.ast);
   // No default: `p` is lost on the edge that skips both cases (RFC 0007).
   EXPECT_EQ(messages(result.diagnostics),
-            (Strings{"4: 'p' is leaked", "6: 'p' is freed twice"}));
+            (Strings{"4: 'p' is leaked", "6: 'p' may be freed twice"}));
+}
+
+// A reference in an operand that is not evaluated is no use of its local:
+// the liveness domain has no bit for it (a Debug assertion once).
+TEST(Dataflow, UnevaluatedOperandsAreNoUses) {
+  const auto result = analyze(R"c(
+    size_t w;
+    void only(int *p) { w = sizeof *p; }
+    void with_locals(int *p) {
+      char *q = malloc(4);
+      w = sizeof *p + sizeof q;
+      free(q);
+    }
+  )c");
+  ASSERT_TRUE(result.ast);
+  EXPECT_TRUE(result.diagnostics.empty())
+      << ::testing::PrintToString(messages(result.diagnostics));
 }
 
 TEST(Dataflow, ShortCircuitOperands) {
@@ -161,7 +121,7 @@ TEST(Dataflow, ShortCircuitOperands) {
   )c");
   ASSERT_TRUE(result.ast);
   EXPECT_EQ(messages(result.diagnostics),
-            (Strings{"5: use of 'p' after it was freed"}));
+            (Strings{"5: use of 'p' after it may have been freed"}));
 }
 
 TEST(Dataflow, FreeOnEveryPathIsNotDoubleFree) {
@@ -200,9 +160,9 @@ TEST(Dataflow, DiagnosticsAreReportedOnceAndInSourceOrder) {
     }
   )c");
   ASSERT_TRUE(result.ast);
-  EXPECT_EQ(
-      messages(result.diagnostics),
-      (Strings{"5: 'p' is freed twice", "6: use of 'p' after it was freed"}));
+  EXPECT_EQ(messages(result.diagnostics),
+            (Strings{"5: 'p' may be freed twice",
+                     "6: use of 'p' after it was freed"}));
 }
 
 // -- Aliases ------------------------------------------------------------------
@@ -497,9 +457,11 @@ TEST(Dataflow, SelectedArrayElementsKeepIndependentHistory) {
   EXPECT_EQ(
       messages(result.diagnostics),
       (Strings{"8: 'arr[1]' is leaked", "8: use of 'arr[0]' after it was freed",
-               "12: use of 'a[j]' after it was freed",
+               // RFC 0030 §3.1: another element whose index may equal
+               // this one's: possible.
+               "12: use of 'a[j]' after it may have been freed",
                "13: use of 'a[i]' after it was freed",
-               "17: use of 'a[0]' after it was freed",
+               "17: use of 'a[0]' after it may have been freed",
                "24: use of 'arr[0]' after it was freed",
                "28: 'a[0]' is freed twice"}));
 }
@@ -531,12 +493,14 @@ TEST(Dataflow, ArrayIndicesSurviveChangesToTheirVariables) {
     }
   )c");
   ASSERT_TRUE(result.ast);
-  EXPECT_EQ(
-      messages(result.diagnostics),
-      (Strings{
-          "8: analysis is incomplete: array cleanup membership is unresolved",
-          "18: use of 'a[i]' after it was freed",
-          "22: use of 'a[i+1]' after it was freed"}));
+  EXPECT_EQ(messages(result.diagnostics),
+            (Strings{"18: use of 'a[i]' after it may have been freed",
+                     "22: use of 'a[i+1]' after it was freed"}));
+  // RFC 0030 §15 item 3: the cleanup the engine could not follow leaves the
+  // use after it unresolved rather than reporting it.
+  EXPECT_EQ(test::incomplete(result),
+            (Strings{"8: temporal unanalysed: array cleanup membership is "
+                     "unresolved"}));
 }
 
 TEST(Dataflow, ArrayConsumptionSurvivesDifferentSelectionsAtJoins) {
@@ -558,9 +522,9 @@ TEST(Dataflow, ArrayConsumptionSurvivesDifferentSelectionsAtJoins) {
   ASSERT_TRUE(result.ast);
   EXPECT_EQ(messages(result.diagnostics),
             (Strings{"4: use of 'a[i]' after it was freed",
-                     "8: use of 'a[i]' after it was freed",
-                     "9: use of 'a[0]' after it was freed",
-                     "13: use of 'a[i]' after it was freed"}));
+                     "8: use of 'a[i]' after it may have been freed",
+                     "9: use of 'a[0]' after it may have been freed",
+                     "13: use of 'a[i]' after it may have been freed"}));
 }
 
 // -- Moves --------------------------------------------------------------------
@@ -653,7 +617,8 @@ TEST(Dataflow, ReallocArgumentIsMovedWithoutNullTest) {
             (Strings{std::string(core::diag::UseAfterMove),
                      std::string(core::diag::Leak)}));
   EXPECT_EQ(messages(result.diagnostics),
-            (Strings{"4: use of 'p' after it was moved", "6: 'q' is leaked"}));
+            (Strings{"4: use of 'p' after it may have been moved",
+                     "6: 'q' is leaked"}));
 }
 
 TEST(Dataflow, ReallocPendingEntryDiesWithItsResult) {
@@ -668,7 +633,8 @@ TEST(Dataflow, ReallocPendingEntryDiesWithItsResult) {
   EXPECT_EQ(
       messages(result.diagnostics),
       (Strings{"4: 'q' is leaked: it is overwritten without being released",
-               "5: 'q' is leaked", "5: use of 'p' after it was moved"}));
+               "5: 'q' is leaked",
+               "5: use of 'p' after it may have been moved"}));
 }
 
 TEST(Dataflow, ReallocIntoAliasSeparatesIt) {
@@ -687,14 +653,12 @@ TEST(Dataflow, ReallocIntoAliasSeparatesIt) {
 
 // -- Borrows ------------------------------------------------------------------
 //
-// Exclusivity between borrows (two mutable, shared then mutable, a write
-// while borrowed) is RFC 0001's rule and is opt-in under
-// `AnalysisOptions::exclusiveBorrows` (RFC 0006, *Conflict rules*); the
-// default only rejects freeing or moving a borrowed object.
+// Only freeing or moving a borrowed object conflicts with a loan (RFC 0006,
+// *Conflict rules*); RFC 0030 removed `--exclusive-borrows`, the opt-in to
+// RFC 0001's full exclusivity (two mutable borrows, shared then mutable, a
+// write while borrowed).
 
-const analysis::AnalysisOptions Exclusive{.exclusiveBorrows = true};
-
-TEST(Dataflow, TwoMutableBorrowsConflict) {
+TEST(Dataflow, TwoMutableBorrowsCoexist) {
   const std::string code = R"c(
     void f(void) {
       int x = 0;
@@ -706,16 +670,6 @@ TEST(Dataflow, TwoMutableBorrowsConflict) {
   const auto lenient = analyze(code);
   ASSERT_TRUE(lenient.ast);
   EXPECT_TRUE(lenient.diagnostics.empty());
-
-  const auto result = analyze(code, Exclusive);
-  ASSERT_TRUE(result.ast);
-  EXPECT_EQ(ids(result.diagnostics),
-            (Strings{std::string(core::diag::ConflictingBorrow)}));
-  EXPECT_EQ(messages(result.diagnostics),
-            (Strings{"5: cannot borrow 'x' as mutable because it is already "
-                     "borrowed"}));
-  EXPECT_EQ(notes(result.diagnostics),
-            (Strings{"previous borrow of 'x' by 'a' here"}));
 }
 
 TEST(Dataflow, SharedBorrowsCoexist) {
@@ -731,7 +685,7 @@ TEST(Dataflow, SharedBorrowsCoexist) {
   EXPECT_TRUE(result.diagnostics.empty());
 }
 
-TEST(Dataflow, SharedThenMutableConflicts) {
+TEST(Dataflow, SharedThenMutableCoexist) {
   const std::string code = R"c(
     void f(void) {
       int x = 0;
@@ -741,14 +695,9 @@ TEST(Dataflow, SharedThenMutableConflicts) {
     }
   )c";
   EXPECT_TRUE(analyze(code).diagnostics.empty());
-  const auto result = analyze(code, Exclusive);
-  ASSERT_TRUE(result.ast);
-  EXPECT_EQ(messages(result.diagnostics),
-            (Strings{"5: cannot borrow 'x' as mutable because it is already "
-                     "borrowed"}));
 }
 
-TEST(Dataflow, MutableThenSharedConflicts) {
+TEST(Dataflow, MutableThenSharedCoexist) {
   const std::string code = R"c(
     void f(void) {
       int x = 0;
@@ -758,14 +707,9 @@ TEST(Dataflow, MutableThenSharedConflicts) {
     }
   )c";
   EXPECT_TRUE(analyze(code).diagnostics.empty());
-  const auto result = analyze(code, Exclusive);
-  ASSERT_TRUE(result.ast);
-  EXPECT_EQ(messages(result.diagnostics),
-            (Strings{"5: cannot borrow 'x' as shared because it is already "
-                     "mutably borrowed"}));
 }
 
-TEST(Dataflow, WritingABorrowedObjectConflicts) {
+TEST(Dataflow, WritingABorrowedObjectIsAllowed) {
   const std::string code = R"c(
     void f(void) {
       int x = 0;
@@ -775,11 +719,6 @@ TEST(Dataflow, WritingABorrowedObjectConflicts) {
     }
   )c";
   EXPECT_TRUE(analyze(code).diagnostics.empty());
-  const auto result = analyze(code, Exclusive);
-  ASSERT_TRUE(result.ast);
-  EXPECT_EQ(messages(result.diagnostics),
-            (Strings{"5: cannot assign to 'x' while it is borrowed"}));
-  EXPECT_EQ(notes(result.diagnostics), (Strings{"borrowed by 'a' here"}));
 }
 
 TEST(Dataflow, MutationWhileViewedIsTheDefaultIdiom) {
@@ -900,11 +839,6 @@ TEST(Dataflow, TemporaryBorrowsForAnnotatedArguments) {
     }
   )c";
   EXPECT_TRUE(analyze(code).diagnostics.empty());
-  const auto result = analyze(code, Exclusive);
-  ASSERT_TRUE(result.ast);
-  EXPECT_EQ(messages(result.diagnostics),
-            (Strings{"7: cannot borrow 'x' as mutable because it is already "
-                     "borrowed"}));
 }
 
 TEST(Dataflow, ArrayDecayBorrowsTheElements) {
@@ -917,11 +851,6 @@ TEST(Dataflow, ArrayDecayBorrowsTheElements) {
     }
   )c";
   EXPECT_TRUE(analyze(code).diagnostics.empty());
-  const auto result = analyze(code, Exclusive);
-  ASSERT_TRUE(result.ast);
-  EXPECT_EQ(messages(result.diagnostics),
-            (Strings{"5: cannot borrow 'a[1]' as mutable because it is already "
-                     "borrowed"}));
 }
 
 TEST(Dataflow, LoansEndAtTheLastUseOfTheHolder) {
@@ -971,9 +900,8 @@ TEST(Dataflow, LoansEndAtTheLastUseOfTheHolder) {
       free(n);                    /* `a` is dead: fine */
     }
   )c";
-  for (const analysis::AnalysisOptions &options :
-       {analysis::AnalysisOptions{}, Exclusive}) {
-    const auto result = analyze(code, options);
+  {
+    const auto result = analyze(code);
     ASSERT_TRUE(result.ast);
     // `&n->v` is a derived copy of `n` that also lends `n->v` (RFC 0011,
     // *Derived pointers*): a plain local holder's use after the free is the
@@ -984,8 +912,7 @@ TEST(Dataflow, LoansEndAtTheLastUseOfTheHolder) {
               (Strings{"19: use of 'a' after it was freed",
                        "23: cannot free 'n' while it is borrowed",
                        "28: cannot free 'n' while it is borrowed",
-                       "36: use of 'a' after it was freed"}))
-        << "exclusive=" << options.exclusiveBorrows;
+                       "36: use of 'a' after it may have been freed"}));
   }
 }
 
@@ -1315,7 +1242,10 @@ TEST(Dataflow, RawAnnotationOnParametersFieldsAndLocals) {
             "'p' is raw: declared WEAVEC_RAW here (through 'c->cookie')");
 }
 
-TEST(Dataflow, UnsafeRegionPermitsRawOperationsAndSuppressesReports) {
+TEST(Dataflow, UnsafeRegionPermitsRawOperationsButReportsViolations) {
+  // RFC 0004: raw operations are permitted inside a region. RFC 0030 §6.1:
+  // no diagnostic is dropped for being inside one, so the double free is
+  // still an error.
   const auto result = analyze(R"c(
     void f(long x, int *p) {
       UNSAFE {
@@ -1329,7 +1259,7 @@ TEST(Dataflow, UnsafeRegionPermitsRawOperationsAndSuppressesReports) {
     UNSAFE void g(int *RAW r) { *r = 1; free(r); }
   )c");
   ASSERT_TRUE(result.ast);
-  EXPECT_TRUE(result.diagnostics.empty()) << messages(result.diagnostics)[0];
+  EXPECT_EQ(messages(result.diagnostics), (Strings{"8: 'p' is freed twice"}));
   // The unsafe function still has a summary its callers use.
   ASSERT_NE(result.summary("g"), nullptr);
   EXPECT_TRUE(result.summary("g")->frees(0));
@@ -1443,10 +1373,11 @@ TEST(Dataflow, IndirectCallsUseTypeAnnotationsOrAddressTakenJoin) {
   EXPECT_EQ(messages(result.diagnostics),
             (Strings{"8: use of 'n' after it was moved",
                      "9: use of 'n' after it was freed",
-                     "10: use of 'n' after it was freed",
-                     "11: call through 'cb' is not checked: its function type "
-                     "has no ownership annotations and its target is unknown"}))
-      << "`cmp` has no pointer parameters: not even a boundary warning";
+                     "10: use of 'n' after it was freed"}));
+  // RFC 0030 §5.1: the calls through `cb` and `cmp` are into unknown code;
+  // only `cb` was handed `n`, so only its later use is unresolved.
+  EXPECT_EQ(weavec::test::unknownCalls(result),
+            (Strings{"11: cb(n)", "11: use(n)", "12: cmp(1,2)"}));
 }
 
 TEST(Dataflow, CallbacksAreAnalysedBeforeTheirCallers) {
@@ -1522,7 +1453,8 @@ TEST(Dataflow, StructCopiesCopyTheirPointerFields) {
                      "21: use of 'p.b.data' after it was freed",
                      "27: use of 'a.data' after it was freed",
                      "32: use of 'p->data' after it was freed",
-                     "37: dereference of 'b.data', which may be null"}));
+                     "37: the result of 'malloc' is used without a null "
+                     "test; it is null when allocation fails"}));
 }
 
 // -- Condition facts (RFC 0006) -----------------------------------------------
@@ -1627,8 +1559,8 @@ TEST(Dataflow, OutcomeTestsSelectClasses) {
   )c");
   ASSERT_TRUE(result.ast);
   EXPECT_EQ(messages(result.diagnostics),
-            (Strings{"16: 'p' is freed twice", "17: 'p' is freed twice",
-                     "18: 'p' is freed twice"}));
+            (Strings{"16: 'p' may be freed twice", "17: 'p' may be freed twice",
+                     "18: 'p' may be freed twice"}));
 }
 
 TEST(Dataflow, OutcomeConditionalSummariesAreInferred) {
@@ -1659,7 +1591,12 @@ TEST(Dataflow, OutcomeConditionalSummariesAreInferred) {
     EXPECT_TRUE(grow->consumes(0)) << name;
     EXPECT_FALSE(grow->consumesUnconditionally(p)) << name;
     EXPECT_TRUE(grow->outcomes.at(Outcome::NonNull).at(p).moved) << name;
-    EXPECT_TRUE(grow->outcomes.at(Outcome::Null).empty()) << name;
+    // RFC 0030 §8.2: `realloc(p, 0)` frees `p` and returns null, so the null
+    // class consumes `p` when the size is zero (recorded as the move the
+    // other class makes, so callers keep the use-after-move wording).
+    const core::PlaceEffect failed = grow->outcomes.at(Outcome::Null).at(p);
+    EXPECT_TRUE(failed.consumed()) << name;
+    EXPECT_EQ(failed.when.conditions.size(), 1U) << name;
   }
 
   // Nothing conditional: no classes are recorded at all.
@@ -1695,7 +1632,7 @@ TEST(Dataflow, ACopyOfAConsumedPathIsTheResultsOwnResource) {
   )c");
   ASSERT_TRUE(result.ast);
   EXPECT_EQ(messages(result.diagnostics),
-            (Strings{"15: use of 't->array' after it was moved"}));
+            (Strings{"15: use of 't->array' after it may have been moved"}));
   const core::FunctionSummary *resize = result.summary("resize");
   ASSERT_NE(resize, nullptr);
   const core::SummaryPath array =

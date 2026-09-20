@@ -1,12 +1,12 @@
 # RFC 0022: Compositional checked interfaces for opaque pointers and callbacks
 
-- **Status**: Implemented
+- **Status**: Superseded
 - **Authors**: WeaveC authors
 - **Created**: 2026-09-11
 - **Tracking issue**: TBD
-- **Supersedes / superseded by**: Extends RFCs 0014/0016's callback and
-  contextual analysis, RFCs 0018/0019's checked interfaces, and RFC 0020's
-  dependency-safe transport. Qualifies RFC 0018's pointer-cast exclusion.
+- **Supersedes / superseded by**: Superseded by RFC 0030
+
+> Superseded by [RFC 0030](0030-prove-or-trap.md).
 
 ## Summary
 
@@ -22,7 +22,7 @@ than an unchecked cast. Existing unknown alternatives and limits remain visible.
 The project owner explicitly requested drafting the RFC first and then implementing
 the milestone end to end. The initial Accepted status recorded that authorization,
 not an independent review or a merge. All amended acceptance gates now pass;
-the [validation record](../validation-rfc0022.md) publishes the measurements,
+the validation record (removed by RFC 0030) publishes the measurements,
 exact diagnostic changes and the demonstrated baseline false-proof correction.
 
 ## Motivation

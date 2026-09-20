@@ -51,89 +51,16 @@ void FunctionDataflow::recordNumericOutputs(const Expr *value,
   const auto projectedGuard = summaryGuardOf(guard);
   const bool guardComplete = integerGuardComplete(guard, state) &&
                              summaryGuardComplete(guard, projectedGuard);
-  const auto *returnedCall =
-      value ? dyn_cast<CallExpr>(value->IgnoreParenImpCasts()) : nullptr;
-  if (returnedCall &&
-      !ASTContext::hasSameType(value->getType(), returnedCall->getType()))
-    returnedCall = nullptr;
-  std::set<std::optional<core::Outcome>> classes{std::nullopt};
-  if (options.checkContracts && value && value->getType()->isIntegerType()) {
-    classes.clear();
-    if (const auto fact = scalarFactOf(*value, state))
-      for (const auto outcome : fact->classes)
-        classes.insert(outcome);
-    if (classes.empty()) {
-      classes = {core::Outcome::Zero, core::Outcome::Positive};
-      if (value->getType()->isSignedIntegerType())
-        classes.insert(core::Outcome::Negative);
-    }
-  }
   const auto record = [&](const core::SummaryPath &path,
                           const std::optional<NumericExpression> &expression) {
     core::NumericOutput output;
     if (guardComplete)
       output.when = projectedGuard;
-    // RFC 0019: forgetting an unexportable guard may add return cases. A
-    // constant remains a sound possible value on the widened cases; an
-    // expression whose evaluation depends on that guard does not.
-    const bool total =
-        options.checkContracts && expression &&
-        !expression
-             ->evaluate([](core::PlaceId, core::IntegerType type) {
-               return core::IntegerRange::full(type);
-             })
-             .mayBeInvalid;
-    if (expression && (guardComplete || total))
+    if (expression && guardComplete)
       output.value = summaryIntegerExpression(*expression);
-    if (total)
-      for (const auto &store : inferred.stores)
-        output.when.drop(store.dest);
     if (expression && !output.value)
       inferred.incomplete.insert("unsupported numeric output projection");
-    for (const auto outcome : classes) {
-      auto selected = output;
-      selected.on = outcome;
-      std::optional<core::ValueFact> fact;
-      if (outcome && returnedCall && lastCall &&
-          lastCall->call == returnedCall) {
-        if (path.isResult()) {
-          if (const auto site = numericCallOutcomeFacts.find(returnedCall);
-              site != numericCallOutcomeFacts.end())
-            if (const auto result =
-                    site->second.find(core::SummaryPath::result());
-                result != site->second.end())
-              if (const auto entry = result->second.find(*outcome);
-                  entry != result->second.end())
-                fact = entry->second;
-        } else {
-          auto narrowed = lastCall->pending;
-          narrowed.select({*outcome});
-          for (const auto &[place, established] : narrowed.factsInAll())
-            if (callerVisiblePath(place) == path)
-              fact = established;
-        }
-      }
-      if (fact && fact->constant) {
-        std::optional<core::IntegerType> type;
-        if (path.isResult() && value)
-          type = integerTypeOf(value->getType(), context);
-        else if (const auto target = contextPlace(path, state))
-          type = integerTypeOf(target->second, context);
-        if (type) {
-          selected.value = core::IntegerExpression<core::SummaryPath>::constant(
-              core::IntegerValue::ofBits(
-                  *type, static_cast<std::uint64_t>(*fact->constant)));
-          selected.when = {};
-        }
-      }
-      if (fact && fact->integer)
-        if (const auto exact = fact->integer->constant()) {
-          selected.value =
-              core::IntegerExpression<core::SummaryPath>::constant(*exact);
-          selected.when = {};
-        }
-      inferred.addNumericOutput(path, std::move(selected));
-    }
+    inferred.addNumericOutput(path, std::move(output));
   };
   if (value && value->getType()->isIntegerType()) {
     auto expression = integerExpressionOf(*value, state);
@@ -240,11 +167,6 @@ void FunctionDataflow::prepareNumericCall(const CallExpr &call,
     std::map<core::Outcome, core::IntegerRange> byOutcome;
     std::set<core::Outcome> unknownOutcomes;
     std::set<core::Outcome> outcomes;
-    if (options.checkContracts)
-      for (const auto &[outcome, effects] : summary.outcomes) {
-        (void)effects;
-        outcomes.insert(outcome);
-      }
     for (const auto &output : outputs)
       if (output.on)
         outcomes.insert(*output.on);
@@ -385,7 +307,7 @@ void FunctionDataflow::finishNumericCall(const CallExpr &call,
       writtenScalarPaths.insert(*path);
   }
   if (conflict)
-    reportIncomplete("conflicting numeric outputs for aliased storage", call);
+    decideIncomplete("conflicting numeric outputs for aliased storage", call);
   const auto conditional = numericCallOutcomeFacts.find(&call);
   if (!conflict && conditional != numericCallOutcomeFacts.end()) {
     if (!lastCall || lastCall->call != &call) {

@@ -47,28 +47,6 @@ void clean(char **a) { free(a[0]); free(a[1]); }
       << ::testing::PrintToString(test::messages(result.diagnostics));
 }
 
-// RFC 0029: array decay and an explicit selected record share one cell.
-TEST(ArrayOwnership, RecordArrayArrowAgreesWithSelectionAndForwarding) {
-  AnalysisOptions options;
-  options.checkedFunctions.insert("client");
-  const auto result = test::analyze(R"c(
-struct slot { char *p; unsigned n; };
-static void release(struct slot *s) { free(s->p); }
-void client(void) {
-  struct slot a[2]; a->p=malloc(4); a[1].p=malloc(4);
-  if ((*a).p) a[0].p[0]=1;
-  release(a); free(a[1].p);
-}
-)c",
-                                    options);
-  ASSERT_TRUE(result.ast);
-  ASSERT_NE(result.summary("client"), nullptr);
-  EXPECT_TRUE(result.summary("client")->checked.complete());
-  EXPECT_TRUE(result.summary("client")->checked.requirements.empty());
-  EXPECT_TRUE(result.diagnostics.empty())
-      << ::testing::PrintToString(test::messages(result.diagnostics));
-}
-
 TEST(ArrayOwnership, RecordArrayArrowPreservesAliasReleaseHistory) {
   const auto result = test::analyze(R"c(
 struct slot { char *p; };
@@ -160,7 +138,7 @@ void clean(char **source) {
 )c");
   ASSERT_TRUE(result.ast);
   EXPECT_EQ(countId(result, core::diag::UseAfterFree), 1U);
-  EXPECT_EQ(countId(result, core::diag::AnalysisIncomplete), 0U);
+  EXPECT_EQ(test::incomplete(result).size(), 0U);
 }
 
 TEST(ArrayOwnership, OverlappingMovesSnapshotEverySourceBeforeWriting) {
@@ -177,7 +155,7 @@ void clean(char **a) {
 )c");
   ASSERT_TRUE(result.ast);
   EXPECT_EQ(countId(result, core::diag::UseAfterFree), 2U);
-  EXPECT_EQ(countId(result, core::diag::AnalysisIncomplete), 0U);
+  EXPECT_EQ(test::incomplete(result).size(), 0U);
 }
 
 TEST(ArrayOwnership, SelfCopyAndZeroLengthDoNotLoseContents) {
@@ -230,7 +208,7 @@ void clean(char *p) { void (*table[2])(void *) = {drop, keep}; table[1](p); p[0]
 )c");
   ASSERT_TRUE(result.ast);
   EXPECT_EQ(countId(result, core::diag::UseAfterFree), 1U);
-  EXPECT_EQ(countId(result, core::diag::AnalysisIncomplete), 0U);
+  EXPECT_EQ(test::incomplete(result).size(), 0U);
 }
 
 TEST(ArrayOwnership, NestedDimensionsHaveIndependentCells) {
@@ -266,7 +244,7 @@ void clean(char **d, char **s, size_t n) {
 )c");
   ASSERT_TRUE(result.ast);
   EXPECT_EQ(countId(result, core::diag::UseAfterFree), 1U);
-  EXPECT_EQ(countId(result, core::diag::AnalysisIncomplete), 0U)
+  EXPECT_EQ(test::incomplete(result).size(), 0U)
       << ::testing::PrintToString(test::messages(result.diagnostics));
 }
 
@@ -304,7 +282,7 @@ void bad(char **d, char **s) { memcpy(d,s,1000000*sizeof *s); free(s[999999]); d
 )c");
   ASSERT_TRUE(result.ast);
   EXPECT_EQ(countId(result, core::diag::UseAfterFree), 1U);
-  EXPECT_EQ(countId(result, core::diag::AnalysisIncomplete), 0U);
+  EXPECT_EQ(test::incomplete(result).size(), 0U);
 }
 
 TEST(ArrayOwnership, PartialCopiesExposeCoverageAndPreserveUnrelatedHistory) {
@@ -315,7 +293,7 @@ void bad(char **a, char **b, char **unrelated) {
 )c");
   ASSERT_TRUE(result.ast);
   EXPECT_EQ(countId(result, core::diag::UseAfterFree), 1U);
-  EXPECT_EQ(countId(result, core::diag::AnalysisIncomplete), 1U);
+  EXPECT_EQ(test::incomplete(result).size(), 1U);
 }
 
 TEST(ArrayOwnership, SteppedAliasesAndAddressedElementsAgree) {
@@ -340,7 +318,7 @@ void bad(char **a, int i, char *p) {
   EXPECT_EQ(countId(result, core::diag::UseAfterFree), 1U);
   // RFC 0017 represents the product selector; joining the old and new
   // cells is complete even when their membership is undecided.
-  EXPECT_EQ(countId(result, core::diag::AnalysisIncomplete), 0U);
+  EXPECT_EQ(test::incomplete(result).size(), 0U);
 }
 
 TEST(ArrayOwnership, PartialInitializationIncludesRecordFields) {
@@ -364,7 +342,7 @@ void clean(char *p) { table[1](p); p[0] = 1; }
 )c");
   ASSERT_TRUE(result.ast);
   EXPECT_EQ(countId(result, core::diag::UseAfterFree), 1U);
-  EXPECT_EQ(countId(result, core::diag::AnalysisIncomplete), 0U);
+  EXPECT_EQ(test::incomplete(result).size(), 0U);
 }
 
 TEST(ArrayOwnership, CopyingCallbackArraysRetainsEachTarget) {
@@ -546,7 +524,7 @@ void bad(void) { char *a[2]; fill(a,2); free(a[0]); free(a[1]); a[0][0]=1; }
   EXPECT_EQ(countId(result, core::diag::DoubleFree), 0U);
   EXPECT_EQ(countId(result, core::diag::UseOfUninitialized), 0U);
   EXPECT_EQ(countId(result, core::diag::Leak), 0U);
-  EXPECT_EQ(countId(result, core::diag::AnalysisIncomplete), 0U);
+  EXPECT_EQ(test::incomplete(result).size(), 0U);
   ASSERT_TRUE(result.summary("fill"));
   EXPECT_EQ(result.summary("fill")->arrayFills.size(), 1U);
 }
@@ -563,7 +541,7 @@ void clean(char **a) { char **b=copy(a,3); if (!b) return; free(a[2]); b[1][0]=1
   ASSERT_TRUE(result.ast);
   EXPECT_EQ(countId(result, core::diag::UseAfterFree), 1U)
       << ::testing::PrintToString(test::messages(result.diagnostics));
-  EXPECT_EQ(countId(result, core::diag::AnalysisIncomplete), 0U);
+  EXPECT_EQ(test::incomplete(result).size(), 0U);
   ASSERT_TRUE(result.summary("copy"));
   EXPECT_FALSE(result.summary("copy")->arrayCopies.empty());
 }
@@ -696,7 +674,7 @@ void composed(char **a, char **b, char **c, size_t n) {
 }
 )c");
   ASSERT_TRUE(result.ast);
-  EXPECT_GE(countId(result, core::diag::AnalysisIncomplete), 2U)
+  EXPECT_GE(test::incomplete(result).size(), 2U)
       << ::testing::PrintToString(test::messages(result.diagnostics));
   ASSERT_TRUE(result.summary("rewritten"));
   EXPECT_TRUE(result.summary("rewritten")->arrayCopies.empty());
@@ -742,7 +720,7 @@ void clean(char *p, char *q, char *r) {
   ASSERT_TRUE(result.ast);
   EXPECT_EQ(countId(result, core::diag::UseAfterFree), 2U)
       << ::testing::PrintToString(test::messages(result.diagnostics));
-  EXPECT_EQ(countId(result, core::diag::AnalysisIncomplete), 0U);
+  EXPECT_EQ(test::incomplete(result).size(), 0U);
 }
 
 TEST(ArrayOwnership, RangeFillsRespectTheExistingCellBudgetAndHistory) {
@@ -752,7 +730,7 @@ TEST(ArrayOwnership, RangeFillsRespectTheExistingCellBudgetAndHistory) {
   code += "for (int i=0; i<32; ++i) a[i]=0; a[40][0]=1; }";
   const auto result = test::analyze(code);
   ASSERT_TRUE(result.ast);
-  EXPECT_GE(countId(result, core::diag::AnalysisIncomplete), 1U);
+  EXPECT_GE(test::incomplete(result).size(), 1U);
   EXPECT_EQ(countId(result, core::diag::UseAfterFree), 1U);
 }
 

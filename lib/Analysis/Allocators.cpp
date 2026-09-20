@@ -45,6 +45,7 @@ std::optional<CallEffects> classifyCall(const CallExpr &call,
   CallEffects effects;
   effects.summary = resolved->summary;
   effects.source = resolved->source;
+  effects.library = resolved->library;
   effects.producesOwned = effects.summary->returnsFresh();
 
   const auto params = static_cast<unsigned>(pointerParams.size());
@@ -61,16 +62,6 @@ std::optional<CallEffects> classifyCall(const CallExpr &call,
       effects.borrowedArgs.emplace_back(i, *kind);
   }
   return effects;
-}
-
-bool isKnownAllocator(const FunctionDecl &function) {
-  const core::FunctionSummary *builtin = builtinSummary(function);
-  return builtin != nullptr && builtin->returnsFresh();
-}
-
-bool isKnownReleaser(const FunctionDecl &function) {
-  const core::FunctionSummary *builtin = builtinSummary(function);
-  return builtin != nullptr && builtin->frees(0);
 }
 
 } // namespace weavec::analysis

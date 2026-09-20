@@ -1,1 +1,0 @@
-Frozen before candidate 65. A read interval is nominated by an evaluated comparison between a byte-pointer distance from an unchanged input base and an unchanged unsigned input count. Any inferred initialized-interval premise is an explicit caller obligation. Parameter order supplies no evidence.

@@ -168,7 +168,10 @@ void bad(int *p) { Callback fn = choose(); forward(fn, p); use(p); }
 )c");
   ASSERT_TRUE(result.ast);
   EXPECT_EQ(countId(result, core::diag::UseAfterFree), 1U);
-  EXPECT_EQ(countId(result, core::diag::AnnotationRequired), 0U);
+  // RFC 0030 §9.3: `invoke`'s own pass resolves `fn` through its parameter
+  // slot, which holds `drop` and is open (`invoke`'s callers are outside a
+  // per-TU compile): the call is `trusted(extern-contract)`, not unresolved.
+  EXPECT_TRUE(test::unknownCalls(result).empty());
 }
 
 TEST(PointerIdentity,
@@ -192,7 +195,7 @@ void bad(int *p) { struct hook a = {keep, p}; install(&a); struct hook b = a; b.
 )c");
   ASSERT_TRUE(result.ast);
   EXPECT_EQ(countId(result, core::diag::UseAfterFree), 1U);
-  EXPECT_EQ(countId(result, core::diag::AnnotationRequired), 0U);
+  EXPECT_EQ(test::unknownCalls(result), std::vector<std::string>{});
 }
 
 // RFC 0028: copy-only setters need extra contexts for checked heap outputs;
@@ -208,16 +211,7 @@ void bad(int *p) { struct hook h = {keep}; install(&h, drop); h.fn(p); free(p); 
   ASSERT_NE(ordinary.summary("install"), nullptr);
   EXPECT_TRUE(ordinary.summary("install")->callbackInputs.empty());
   EXPECT_EQ(countId(ordinary, core::diag::DoubleFree), 1U);
-  EXPECT_EQ(countId(ordinary, core::diag::AnnotationRequired), 0U);
-
-  AnalysisOptions options;
-  options.checked = true;
-  const auto checked = test::analyze(source, options);
-  ASSERT_TRUE(checked.ast);
-  ASSERT_NE(checked.summary("install"), nullptr);
-  EXPECT_TRUE(checked.summary("install")->callbackInputs.contains(
-      core::SummaryPath::param(1)));
-  EXPECT_EQ(countId(checked, core::diag::DoubleFree), 1U);
+  EXPECT_EQ(test::unknownCalls(ordinary), std::vector<std::string>{});
 }
 
 TEST(PointerIdentity, UnknownTargetsRemainUnknownDespiteAddressTakenFunctions) {
@@ -226,13 +220,8 @@ void (*unrelated)(void *) = keep;
 void boundary(void (*fn)(void *), void *p) { fn(p); }
 )c");
   ASSERT_TRUE(result.ast);
-  EXPECT_EQ(countId(result, core::diag::AnnotationRequired), 1U);
-  const auto strict = test::analyze(std::string(Callbacks) + R"c(
-void boundary(void (*fn)(void *), void *p) { fn(p); }
-)c",
-                                    AnalysisOptions{.strictExterns = true});
-  ASSERT_TRUE(strict.ast);
-  EXPECT_EQ(countId(strict, core::diag::UnsafeOperation), 1U);
+  // RFC 0030 §5.1: the call through `fn` is into unknown code.
+  EXPECT_EQ(test::unknownCalls(result).size(), 1U);
 }
 
 TEST(PointerIdentity, ConditionalTargetsKeepAllPossibleEffects) {
@@ -252,7 +241,10 @@ void bad(int *p, int select, void (*unknown)(void *)) {
 )c");
   ASSERT_TRUE(result.ast);
   EXPECT_EQ(countId(result, core::diag::UseAfterFree), 1U);
-  EXPECT_EQ(countId(result, core::diag::AnnotationRequired), 1U);
+  // RFC 0030 §9.3: `fn`'s slot holds `drop` and is open, because `bad`
+  // passes a pointer from outside: the call takes `drop`'s effects and is
+  // `trusted(extern-contract)`, which names the open source.
+  EXPECT_TRUE(test::unknownCalls(result).empty());
 }
 
 TEST(PointerIdentity, UnknownAssignmentDoesNotResurrectAGlobalInitializer) {
@@ -261,7 +253,7 @@ void (*global)(void *) = keep;
 void boundary(void (*unknown)(void *), int *p) { global = unknown; global(p); }
 )c");
   ASSERT_TRUE(result.ast);
-  EXPECT_EQ(countId(result, core::diag::AnnotationRequired), 1U);
+  EXPECT_EQ(test::unknownCalls(result).size(), 1U);
 }
 
 TEST(PointerIdentity,
@@ -329,9 +321,10 @@ void clean(int *p, int *q) { release_same(p, q); if (p != q)
   use(p); }
 )c");
   ASSERT_TRUE(result.ast);
-  EXPECT_EQ(test::messages(result.diagnostics),
-            (std::vector<std::string>{"3: use of 'p' after it was freed",
-                                      "3: use of 'q' after it was freed"}));
+  EXPECT_EQ(
+      test::messages(result.diagnostics),
+      (std::vector<std::string>{"3: use of 'p' after it may have been freed",
+                                "3: use of 'q' after it may have been freed"}));
 }
 
 TEST(PointerIdentity, OverwrittenComparisonOperandsUseTheIncomingValues) {
@@ -402,7 +395,7 @@ void bad(int *p) { void (*fn)(void *) = drop, (*copy)(void *); memcpy(&copy, &fn
 )c");
   ASSERT_TRUE(result.ast);
   EXPECT_EQ(countId(result, core::diag::UseAfterFree), 1U);
-  EXPECT_EQ(countId(result, core::diag::AnnotationRequired), 0U);
+  EXPECT_EQ(test::unknownCalls(result), std::vector<std::string>{});
 }
 
 TEST(PointerIdentity, CompleteCopiesThroughHelpersExportPointerStores) {
@@ -434,11 +427,14 @@ TEST(PointerIdentity, APartialPointerCopyReportsLostCoverage) {
 void partial(int **dest, int **source) { memcpy(dest, source, 1); }
 )c");
   ASSERT_TRUE(result.ast);
-  EXPECT_EQ(test::ids(result.diagnostics),
-            std::vector<std::string>{"analysis-incomplete"});
-  EXPECT_EQ(result.diagnostics.diagnostics()[0].message,
-            "analysis is incomplete: unsupported memory copy of "
-            "pointer-containing storage");
+  // RFC 0030 §15 item 3: no diagnostic; the copy's temporal facet is a
+  // reinterpretation the engine did not follow.
+  EXPECT_TRUE(result.diagnostics.empty())
+      << ::testing::PrintToString(test::messages(result.diagnostics));
+  EXPECT_EQ(test::incomplete(result),
+            std::vector<std::string>{
+                "5: temporal raw-cast: unsupported memory copy of "
+                "pointer-containing storage"});
   EXPECT_FALSE(result.summary("partial")->incomplete.empty());
 }
 
@@ -458,7 +454,7 @@ static void drop(struct box *b) { free(b->p); }
 void bad(int *p) { struct box b[1] = {{p}}; drop(b); use(b[0].p); }
 )c");
   ASSERT_TRUE(result.ast);
-  EXPECT_EQ(countId(result, core::diag::AnalysisIncomplete), 0U);
+  EXPECT_EQ(test::incomplete(result).size(), 0U);
   EXPECT_EQ(countId(result, core::diag::UseAfterFree), 1U);
 }
 
@@ -480,7 +476,7 @@ static void drop_field(void *object) { struct first *a = object; free(a->p); }
 void boundary(struct second *b) { drop_field(b); }
 )c");
   ASSERT_TRUE(result.ast);
-  EXPECT_EQ(countId(result, core::diag::AnalysisIncomplete), 1U);
+  EXPECT_EQ(test::incomplete(result).size(), 1U);
 }
 
 TEST(PointerIdentity, CompatibleErasedAndEmbeddedRecordViewsRemainChecked) {
@@ -490,7 +486,7 @@ static void drop_field(void *object) { struct first *a = object; free(a->p); }
 void bad(struct outer *b) { void *erased = &b->in; drop_field(erased); use(b->in.p); }
 )c");
   ASSERT_TRUE(result.ast);
-  EXPECT_EQ(countId(result, core::diag::AnalysisIncomplete), 0U);
+  EXPECT_EQ(test::incomplete(result).size(), 0U);
   EXPECT_EQ(countId(result, core::diag::UseAfterFree), 1U);
 }
 
@@ -507,7 +503,7 @@ void boundary(struct first *a, struct second *b) {
 }
 )c");
   ASSERT_TRUE(result.ast);
-  EXPECT_GT(countId(result, core::diag::AnalysisIncomplete), 0U);
+  EXPECT_GT(test::incomplete(result).size(), 0U);
 }
 
 TEST(PointerIdentity, InvalidCTestFixturesCannotReturnACleanAnalysis) {

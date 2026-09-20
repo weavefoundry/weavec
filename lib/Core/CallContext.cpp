@@ -55,9 +55,7 @@ bool CallContext::addAlias(ContextAlias alias) {
   for (const auto &existing : aliases)
     if (existing.first == alias.first && existing.second == alias.second)
       return existing == alias;
-  if (aliases.size() + facts.size() + separations.size() + orders.size() +
-          nonNan.size() >=
-      MaxCallContextFacts)
+  if (aliases.size() + facts.size() + separations.size() >= MaxCallContextFacts)
     return false;
   const auto [it, inserted] = aliases.insert(std::move(alias));
   if (valid())
@@ -68,19 +66,8 @@ bool CallContext::addAlias(ContextAlias alias) {
 }
 
 bool CallContext::valid() const {
-  for (const auto &path : immutableBytes)
-    if (!bytes.contains(path))
-      return false;
-  std::size_t byteCount = 0;
-  for (const auto &[path, value] : bytes) {
-    if (!validContextPath(path) || value.empty() ||
-        value.size() > MaxCallContextFacts - byteCount)
-      return false;
-    byteCount += value.size();
-  }
   if (empty() ||
-      aliases.size() + facts.size() + separations.size() + orders.size() +
-              byteCount + immutableBytes.size() + nonNan.size() >
+      aliases.size() + facts.size() + separations.size() >
           MaxCallContextFacts ||
       callbacks.size() > MaxCallbackContexts)
     return false;
@@ -133,34 +120,8 @@ bool CallContext::valid() const {
     paths.insert(a);
     paths.insert(b);
   }
-  auto ordered = orders;
-  for (const auto &[a, b] : orders) {
-    if (a == b || !validContextPath(a) || !validContextPath(b) ||
-        !definite.mayAlias(idOf(a), idOf(b)))
-      return false;
-    paths.insert(a);
-    paths.insert(b);
-    for (const auto &path : {a, b})
-      if (const auto fact = facts.find(path);
-          fact != facts.end() && (!fact->second.isPointer() ||
-                                  fact->second.classes.contains(Outcome::Null)))
-        return false;
-  }
   if (paths.size() > MaxCallContextPaths)
     return false;
-  // Close at most 32 paths, then reject an order contradicted by an exact
-  // displacement, including contradictions reached through other orders.
-  if (!orders.empty())
-    for (const auto &middle : paths)
-      for (const auto &a : paths)
-        for (const auto &b : paths)
-          if (ordered.contains({a, middle}) && ordered.contains({middle, b}))
-            ordered.emplace(a, b);
-  for (const auto &[a, b] : ordered)
-    if (const auto offset = definite.offsetOf(idOf(b), idOf(a));
-        offset &&
-        ((offset->isElements() && offset->elements > 0) || offset->isField()))
-      return false;
   for (const auto &alias : aliases)
     if (alias.definite && !alias.sameShare &&
         sameShares.mayAlias(idOf(alias.first), idOf(alias.second)))
@@ -176,34 +137,6 @@ bool CallContext::valid() const {
           fact.disjointFrom(otherFact))
         return false;
   }
-  for (const auto &[path, value] : bytes) {
-    (void)value;
-    paths.insert(path);
-    if (const auto fact = facts.find(path);
-        fact != facts.end() && (!fact->second.isPointer() ||
-                                fact->second.classes.contains(Outcome::Null)))
-      return false;
-    for (const auto &[other, contents] : bytes) {
-      if (!(path < other))
-        continue;
-      const auto offset = definite.offsetOf(idOf(other), idOf(path));
-      if (!offset || (!offset->isZero() && !offset->isElements()))
-        continue;
-      for (std::size_t i = 0; i < value.size(); ++i) {
-        std::int64_t index = 0;
-        if (!__builtin_add_overflow(static_cast<std::int64_t>(i),
-                                    offset->elements, &index) &&
-            index >= 0 && std::cmp_less(index, contents.size()) &&
-            value[i] != contents[static_cast<std::size_t>(index)])
-          return false;
-      }
-    }
-  }
-  for (const auto &path : nonNan)
-    if (!validContextPath(path) || !path.isParam() || !path.isRoot() ||
-        facts.contains(path) || paths.contains(path) ||
-        callbacks.contains(path))
-      return false;
   return paths.size() <= MaxCallContextPaths;
 }
 
@@ -269,28 +202,6 @@ std::optional<CallContext> remapCallContext(const CallContext &context,
   for (const auto &[path, fact] : context.facts) {
     const auto mapped = pathOf(path);
     if (!mapped || !result.facts.emplace(*mapped, fact).second)
-      return std::nullopt;
-  }
-  for (const auto &[path, value] : context.bytes) {
-    const auto mapped = pathOf(path);
-    if (!mapped || !result.bytes.emplace(*mapped, value).second)
-      return std::nullopt;
-  }
-  for (const auto &path : context.immutableBytes) {
-    const auto mapped = pathOf(path);
-    if (!mapped || !result.immutableBytes.insert(*mapped).second)
-      return std::nullopt;
-  }
-  for (const auto &path : context.nonNan) {
-    const auto mapped = pathOf(path);
-    if (!mapped || !result.nonNan.insert(*mapped).second)
-      return std::nullopt;
-  }
-  for (const auto &[a, b] : context.orders) {
-    const auto first = pathOf(a);
-    const auto second = pathOf(b);
-    if (!first || !second || first == second ||
-        !result.orders.emplace(*first, *second).second)
       return std::nullopt;
   }
   return result.valid() ? std::optional(result) : std::nullopt;
@@ -467,16 +378,8 @@ std::string printCallContext(const CallContext &context,
            (alias.definite ? "1" : "0") + (alias.sameShare ? "1" : "0"));
   for (const auto &[a, b] : context.separations)
     append("d:" + path(a) + ':' + path(b));
-  for (const auto &[a, b] : context.orders)
-    append("o:" + path(a) + ':' + path(b));
   for (const auto &[p, fact] : context.facts)
     append("v:" + path(p) + ':' + encodeContextText(fact.toString()));
-  for (const auto &[p, value] : context.bytes)
-    append("b:" + path(p) + ':' + encodeContextText(value));
-  for (const auto &p : context.immutableBytes)
-    append("k:" + path(p));
-  for (const auto &p : context.nonNan)
-    append("n:" + path(p));
   return result;
 }
 
@@ -541,34 +444,11 @@ std::optional<CallContext> parseCallContext(std::string_view text,
       const auto b = pathOf(fields[2]);
       if (!a || !b || !(*a < *b) || !result.separations.emplace(*a, *b).second)
         return std::nullopt;
-    } else if (fields[0] == "o" && fields.size() == 3) {
-      const auto a = pathOf(fields[1]);
-      const auto b = pathOf(fields[2]);
-      if (!a || !b || a == b || !result.orders.emplace(*a, *b).second)
-        return std::nullopt;
     } else if (fields[0] == "v" && fields.size() == 3) {
       const auto path = pathOf(fields[1]);
       const auto decoded = decodeContextText(fields[2]);
       const auto fact = decoded ? ValueFact::parse(*decoded) : std::nullopt;
       if (!path || !fact || !result.facts.emplace(*path, *fact).second)
-        return std::nullopt;
-    } else if (fields[0] == "b" && fields.size() == 3) {
-      if (fields[2].size() > 2 * MaxCallContextFacts)
-        return std::nullopt;
-      const auto path = pathOf(fields[1]);
-      const auto value = decodeContextText(fields[2], true);
-      if (!path || !value || value->empty() ||
-          value->size() > MaxCallContextFacts ||
-          encodeContextText(*value) != fields[2] ||
-          !result.bytes.emplace(*path, *value).second)
-        return std::nullopt;
-    } else if (fields[0] == "k" && fields.size() == 2) {
-      const auto path = pathOf(fields[1]);
-      if (!path || !result.immutableBytes.insert(*path).second)
-        return std::nullopt;
-    } else if (fields[0] == "n" && fields.size() == 2) {
-      const auto path = pathOf(fields[1]);
-      if (!path || !result.nonNan.insert(*path).second)
         return std::nullopt;
     } else {
       return std::nullopt;

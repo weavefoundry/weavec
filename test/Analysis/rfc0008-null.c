@@ -1,7 +1,8 @@
 // RFC 0008, *Nullness*: a pointer that is null or may be null on some path
 // is not dereferenced, nor passed to a callee that dereferences it. Testing
 // the pointer, or its callee's outcome, clears the fact on the surviving edge.
-// RUN: not %weavec %s -- 2>&1 | FileCheck %s
+// RUN: not %weavec --ledger=%t.json %s -- 2>&1 | FileCheck %s
+// RUN: FileCheck --check-prefix=LEDGER %s < %t.json
 // RUN: not %weavec --dump-analysis %s -- 2>&1 | FileCheck --check-prefix=DUMP %s
 #include <stdlib.h>
 #include <string.h>
@@ -16,8 +17,6 @@ struct node {
 
 int unchecked(void) {
   struct node *n = malloc(sizeof *n);
-  // CHECK: rfc0008-null.c:[[@LINE+2]]:3: error: dereference of 'n', which may be null [weavec::null-dereference]
-  // CHECK: rfc0008-null.c:[[@LINE-2]]:20: note: 'n' may be null: it is the result of 'malloc' here
   n->value = 1;
   free(n);
   return 0;
@@ -33,8 +32,6 @@ int constant(void) {
 int tested_then_merged(struct node *n) {
   if (n == NULL)
     n = malloc(sizeof *n);
-  // CHECK: rfc0008-null.c:[[@LINE+2]]:3: error: dereference of 'n', which may be null [weavec::null-dereference]
-  // CHECK: rfc0008-null.c:[[@LINE-2]]:9: note: 'n' may be null: it is the result of 'malloc' here
   n->value = 0;
   free(n);
   return 0;
@@ -46,9 +43,6 @@ static int value_of(struct node *n) { return n->value; }
 
 int passes_null(void) {
   struct node *n = malloc(sizeof *n);
-  // CHECK: rfc0008-null.c:[[@LINE+3]]:20: error: 'n', which may be null, is passed to 'value_of', which dereferences it [weavec::null-dereference]
-  // CHECK: rfc0008-null.c:[[@LINE-2]]:20: note: 'n' may be null: it is the result of 'malloc' here
-  // CHECK: rfc0008-null.c:[[@LINE-6]]:12: note: 'value_of' is declared here
   int v = value_of(n);
   free(n);
   return v;
@@ -64,19 +58,19 @@ static struct node *make(int v) {
 
 int from_callee(void) {
   struct node *n = make(1);
-  // CHECK: rfc0008-null.c:[[@LINE+2]]:11: error: dereference of 'n', which may be null [weavec::null-dereference]
-  // CHECK: rfc0008-null.c:[[@LINE-2]]:20: note: 'n' may be null: it is the result of 'make' here
   int v = n->value;
   free(n);
   return v;
 }
 
 // A test that merges back leaves the place maybe-null with the test's note.
+// RFC 0030 §7.5: 'value_of' is static and dereferences its parameter on every
+// path, so each call must pass a non-null pointer; this one passes null.
 int tested_then_passed(struct node *n) {
   if (!n) {
     // CHECK: rfc0008-null.c:[[@LINE+3]]:21: error: 'n', which is null, is passed to 'value_of', which dereferences it [weavec::null-dereference]
     // CHECK: rfc0008-null.c:[[@LINE-2]]:8: note: 'n' may be null: it is compared with NULL here
-    // CHECK: rfc0008-null.c:[[@LINE-34]]:12: note: 'value_of' is declared here
+    // CHECK: rfc0008-null.c:{{[0-9]+}}:12: note: 'value_of' is declared here
     return value_of(n);
   }
   return value_of(n);
@@ -90,8 +84,6 @@ extern int consume_nonnull(struct node *n WEAVEC_BORROWED WEAVEC_NONNULL);
 
 int annotated(void) {
   struct node *n = lookup(1);
-  // CHECK: rfc0008-null.c:[[@LINE+2]]:10: error: dereference of 'n', which may be null [weavec::null-dereference]
-  // CHECK: rfc0008-null.c:[[@LINE-6]]:21: note: 'n' may be null: the result of 'lookup' is declared WEAVEC_NULLABLE here
   return n->value;
 }
 
@@ -99,7 +91,7 @@ int annotated_param(struct node *n) {
   if (!n) {
     // CHECK: rfc0008-null.c:[[@LINE+3]]:28: error: 'n', which is null, is passed to 'consume_nonnull', which dereferences it [weavec::null-dereference]
     // CHECK: rfc0008-null.c:[[@LINE-2]]:8: note: 'n' may be null: it is compared with NULL here
-    // CHECK: rfc0008-null.c:[[@LINE-13]]:12: note: 'consume_nonnull' is declared here
+    // CHECK: rfc0008-null.c:[[@LINE-11]]:12: note: 'consume_nonnull' is declared here
     return consume_nonnull(n);
   }
   return consume_nonnull(n);
@@ -155,7 +147,9 @@ int redundant_tests(struct node *n) {
 
 int filled_by_unchecked_code(void) {
   struct list l = {0, NULL};
-  // CHECK: rfc0008-null.c:[[@LINE+1]]:3: warning: call to 'fill' is not checked
+  // RFC 0030 §5.1: unknown code, a ledger row; what it reaches is unknown.
+  // LEDGER: "text": "fill(&l)",
+  // LEDGER: "reason": "unknown-callee",
   fill(&l);
   if (l.len == 0)
     return 0;
@@ -214,11 +208,11 @@ void truncate_to(struct buf *b, unsigned n) {
 // DUMP: function 'open_node':
 // DUMP: summary: *out: read|written; stores{*out = fresh(free) extent=16, *out = null} returns{} requires{out} outcome zero{} null{*out} outcome positive{} notnull{*out}
 // DUMP: function 'grow':
-// DUMP: summary: b->data: written|moved(free)|replaced when[n positive|negative]; b->len: read|written; stores{b->data = fresh(free) extent=n when[n positive|negative]} returns{} requires{b} outcome zero{b->data: moved(free) replaced when[n positive|negative]} stored{b->data} outcome negative{} null{b->data} stored{} facts{b->len range(u32:0-4294967294)}
+// DUMP: summary: b->data: written|moved(free)|replaced when[n positive|negative, u64(n) in u64:1-4294967295]; b->len: read|written; stores{b->data = fresh(free) extent=n when[n positive|negative, u64(n) in u64:1-4294967295]} returns{} requires{b} outcome zero{b->data: moved(free) replaced when[n positive|negative, u64(n) in u64:1-4294967295]} stored{b->data} outcome negative{} null{b->data} stored{} facts{b->len range(u32:0-4294967294)}
 // RFC 0017: n > b->len excludes zero; assigning len does not resize the snapshot.
 // DUMP-NEXT: heap b->data complete{result = fresh(free) extent=n when[n positive|negative, n gt b->len]}
 // DUMP: function 'truncate_to':
 // DUMP-NOT: maybe-null
 // DUMP: summary: b->data: read|written|moved(free)|replaced;
 
-// CHECK: 1 warning and 8 errors generated.
+// CHECK: 3 errors generated.

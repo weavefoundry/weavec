@@ -47,23 +47,7 @@ FunctionDataflow::fieldPlaceOf(core::PlaceId place) {
   const auto parent = places.parent(place);
   if (!parent)
     return std::nullopt;
-  // RFC 0012, *Annotation surface*: the annotation goes on a pointer field;
-  // on anything else it is reported once, at the field, when the field is
-  // first touched.
-  if (!field->getType()->isPointerType() && phase == Phase::Final &&
-      emitDiagnostics && !getAnnotations(*field).sizedBy.empty() &&
-      summaries.noteInvalidSizedField(*field)) {
-    report(core::Diagnostic{
-        .severity = core::Severity::Warning,
-        .id = core::diag::InvalidAnnotation,
-        .message = "field '" + field->getNameAsString() +
-                   "' is declared WEAVEC_SIZED_BY(" +
-                   getAnnotations(*field).sizedBy + ") but is not a pointer",
-        .location = locate(field->getLocation()),
-        .notes = {},
-        .fixits = {},
-    });
-  }
+  // A malformed annotation is `AttributeReader`'s `invalid-annotation`.
   return FieldPlace{
       .object = *parent, .field = field, .key = fieldKeyOf(*field, context)};
 }
@@ -94,26 +78,6 @@ FunctionDataflow::sizedFieldPlaceOf(core::PlaceId place) {
           .unit = sized->unit,
           .annotated = true};
     }
-    if (phase == Phase::Final && emitDiagnostics &&
-        summaries.noteInvalidSizedField(decl)) {
-      std::string record = "the record";
-      if (const RecordDecl *parent = decl.getParent();
-          parent != nullptr && parent->getIdentifier() != nullptr) {
-        record = "'" + std::string(parent->isUnion() ? "union " : "struct ") +
-                 parent->getNameAsString() + "'";
-      }
-      report(core::Diagnostic{
-          .severity = core::Severity::Warning,
-          .id = core::diag::InvalidAnnotation,
-          .message = "field '" + decl.getNameAsString() +
-                     "' is declared WEAVEC_SIZED_BY(" + annotations.sizedBy +
-                     ") but '" + annotations.sizedBy +
-                     "' is not an integer field of " + record,
-          .location = locate(decl.getLocation()),
-          .notes = {},
-          .fixits = {},
-      });
-    }
     return std::nullopt;
   }
   // Else what the program's stores agree on (RFC 0012, "Inference").
@@ -139,14 +103,14 @@ FunctionDataflow::spatialRecordAt(core::PlaceId place,
     return record;
   const auto field = fieldPlaceOf(place);
   if (!field || !field->field->getType()->isPointerType())
-    return std::nullopt;
+    return slotRecordAt(place);
   // An unannotated field looked up here is one a pair the program confirms
   // later would decide: the unit says so in its exports.
   if (!field->key.empty() && getAnnotations(*field->field).sizedBy.empty())
     summaries.noteSizedFieldLoad(field->key);
   const auto sized = sizedFieldPlaceOf(place);
   if (!sized)
-    return std::nullopt;
+    return slotRecordAt(place);
   auto extent = core::Affine::ofPlace(sized->count, sized->unit);
   if (sized->productType) {
     const auto *count =
@@ -179,7 +143,12 @@ FunctionDataflow::spatialRecordAt(core::PlaceId place,
   return core::SpatialRecord{.extent = extent,
                              .offset = {},
                              .location = locate(field->field->getLocation()),
-                             .declared = true};
+                             .declared = true,
+                             // RFC 0030 §7.1: a declared kind. An RFC 0012
+                             // inferred count is checked against as one too
+                             // until S6's §7.6 invariants replace it (exact
+                             // when they survive).
+                             .extentClass = core::ExtentClass::Declared};
 }
 
 std::pair<std::optional<core::Affine>, std::optional<core::IntegerType>>
@@ -220,8 +189,9 @@ bool FunctionDataflow::checkSizedFieldStore(core::PlaceId dest,
                                             const core::AnalysisState &state) {
   // RFC 0012, *Sized fields*, "Stores": the count's bytes are the need, the
   // stored value's extent is what there is; only a decided shortfall is a
-  // mismatch (a larger object, or an undecided one, is not).
-  if (!record.extent || !record.offset.isZero())
+  // mismatch (a larger object, or an undecided one, is not), and only an
+  // exact extent decides one (RFC 0030 §7.1).
+  if (!record.extent || !record.offset.isZero() || !record.exact())
     return false;
   const core::Affine need =
       foldAffine(core::Affine::ofPlace(sized.count, sized.unit), state);

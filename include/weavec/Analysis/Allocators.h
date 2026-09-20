@@ -9,7 +9,7 @@
 // Classifies calls by their ownership effect (RFC 0002, *Events*; RFC 0003,
 // *Applying a summary at a call*). The effects come from the callee's
 // summary, which `SummaryStore` resolves from annotations, the body in this
-// translation unit, or the shipped C library table.
+// translation unit or the program, or the `LibrarySpec` table.
 //
 //===----------------------------------------------------------------------===//
 
@@ -37,6 +37,8 @@ struct CallEffects {
   SummarySnapshot summary;
   /// Where the summary came from.
   SummarySource source = SummarySource::Inferred;
+  /// `Library`: the `LibrarySpec` row that governs the call (RFC 0030 §8).
+  std::optional<core::LibraryMatch> library;
   /// The call may return a fresh owned allocation.
   bool producesOwned = false;
   /// Arguments whose ownership the callee takes (released or moved).
@@ -63,14 +65,6 @@ struct CallEffects {
 /// 0004) through a function pointer.
 [[nodiscard]] std::optional<CallEffects>
 classifyCall(const clang::CallExpr &call, SummaryStore &summaries);
-
-/// True if `function` is a C library function that returns a fresh
-/// allocation (`malloc`, `calloc`, `realloc`, `strdup`, `fopen`, ...).
-[[nodiscard]] bool isKnownAllocator(const clang::FunctionDecl &function);
-
-/// True if `function` is a C library function that releases its first
-/// argument (`free`, `fclose`).
-[[nodiscard]] bool isKnownReleaser(const clang::FunctionDecl &function);
 
 } // namespace weavec::analysis
 

@@ -1,1 +1,0 @@
-Frozen before candidate 66. The source establishes a zero byte at the original pointer, then reads a distinct byte through an adjusted pointer. Carrying the first byte value across that adjustment would hide an actual out-of-bounds stack write. The unchanged-pointer case has the same cell and must remain accepted.

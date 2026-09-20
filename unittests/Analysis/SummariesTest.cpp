@@ -14,7 +14,7 @@
 #include "weavec/Analysis/Summaries.h"
 
 #include "TestUtils.h"
-#include "weavec/Core/CheckedIO.h"
+#include "weavec/Analysis/KindTable.h"
 
 #include "clang/AST/RecursiveASTVisitor.h"
 
@@ -56,48 +56,6 @@ static Parsed parse(const std::string &code) {
 }
 
 namespace {
-
-TEST(Summaries, BufferDiscoveryCachesMissesOnlyWithinItsASTLifetime) {
-  const auto parsed = parse(R"c(
-    struct buffer { char *data; unsigned long length, capacity; };
-    void buffer_cache_probe(struct buffer *b);
-  )c");
-  ASSERT_TRUE(parsed.ast);
-  const auto *function = parsed.fn("buffer_cache_probe");
-  ASSERT_NE(function, nullptr);
-  const auto *record =
-      function->getParamDecl(0)->getType()->getPointeeType()->getAsRecordDecl();
-  ASSERT_NE(record, nullptr);
-  SummaryStore store;
-  store.setContext(&parsed.ast->getASTContext());
-  unsigned discoveries = 0;
-  const auto absent = [&]() -> std::optional<core::BufferShape> {
-    ++discoveries;
-    return std::nullopt;
-  };
-  EXPECT_FALSE(store.bufferShape(*record, absent));
-  EXPECT_FALSE(store.bufferShape(*record, absent));
-  EXPECT_EQ(discoveries, 1U);
-  store.setContext(&parsed.ast->getASTContext());
-  EXPECT_FALSE(store.bufferShape(*record, absent));
-  EXPECT_EQ(discoveries, 1U);
-  // An AST can be destroyed and another allocated at the same address. End
-  // of context must retire cached misses as well as positive descriptors.
-  store.setContext(nullptr);
-  store.setContext(&parsed.ast->getASTContext());
-  const core::BufferShape shape{
-      .object = {.bytes = 24, .alignment = 8, .identity = "record:buffer"},
-      .data = {.name = "data", .offset = 0, .bytes = 8},
-      .length = {.name = "length", .offset = 8, .bytes = 8},
-      .capacity = {.name = "capacity", .offset = 16, .bytes = 8}};
-  const auto present = [&]() -> std::optional<core::BufferShape> {
-    ++discoveries;
-    return shape;
-  };
-  EXPECT_EQ(store.bufferShape(*record, present), shape);
-  EXPECT_EQ(store.bufferShape(*record, absent), shape);
-  EXPECT_EQ(discoveries, 2U);
-}
 
 TEST(Summaries, AnnotationsDeriveASummary) {
   const auto parsed = parse(R"c(
@@ -168,8 +126,10 @@ TEST(Summaries, LookupOrder) {
 
   const auto builtin = store.lookup(*parsed.fn("calloc"));
   ASSERT_TRUE(builtin);
-  EXPECT_EQ(builtin->source, SummarySource::Builtin);
-  EXPECT_TRUE(builtin->summary->returns.contains(ValueSource::fresh("free")));
+  EXPECT_EQ(builtin->source, SummarySource::Library);
+  ASSERT_TRUE(builtin->library);
+  EXPECT_EQ(builtin->library->entry->name, "calloc");
+  EXPECT_EQ(builtin->summary->freshReturnFamily(), "free");
 
   const auto annotated = store.lookup(*parsed.fn("take"));
   ASSERT_TRUE(annotated);
@@ -459,17 +419,35 @@ TEST(Summaries, PrivateStorageHasStableInvisibleForeignAdapters) {
   EXPECT_FALSE(remote.importName("missing", ctx));
 }
 
-// -- Builtins -----------------------------------------------------------------
+// -- The library table (RFC 0030 §8) ------------------------------------------
 
-TEST(Builtins, TableCoversTheAllocatorList) {
-  const std::vector<llvm::StringRef> names = builtinNames();
-  for (const char *expected :
-       {"malloc", "calloc", "realloc", "free", "strdup", "strndup",
-        "aligned_alloc", "fopen", "fclose", "strchr", "memcpy", "strtol"})
-    EXPECT_TRUE(llvm::is_contained(names, expected)) << expected;
+/// The summary the `LibrarySpec` row governing `function` states, or
+/// nothing when no row governs it.
+static std::optional<core::FunctionSummary>
+libraryOf(const clang::FunctionDecl *function) {
+  if (function == nullptr)
+    return std::nullopt;
+  const auto match =
+      governingLibraryEntry(*function, core::LibrarySpec::shipped());
+  if (!match)
+    return std::nullopt;
+  return librarySummaryOf(*match, *function);
 }
 
-TEST(Builtins, Entries) {
+TEST(LibrarySummaries, TableCoversTheAllocatorList) {
+  for (const char *expected :
+       {"malloc",  "calloc",         "realloc",       "free",
+        "strdup",  "strndup",        "aligned_alloc", "fopen",
+        "fclose",  "strchr",         "memcpy",        "strtol",
+        "getline", "asprintf",       "popen",         "pclose",
+        "opendir", "closedir",       "readdir",       "mmap",
+        "munmap",  "getaddrinfo",    "freeaddrinfo",  "pthread_create",
+        "read",    "write",          "strtok_r",      "regcomp",
+        "regfree", "posix_memalign", "reallocarray",  "realpath"})
+    EXPECT_NE(core::LibrarySpec::shipped().find(expected), nullptr) << expected;
+}
+
+TEST(LibrarySummaries, Entries) {
   const auto parsed = parse(R"c(
     typedef struct FILE FILE;
     FILE *fopen(const char *, const char *);
@@ -484,19 +462,22 @@ TEST(Builtins, Entries) {
   )c");
   ASSERT_TRUE(parsed.ast);
 
-  const auto *fopenSummary = builtinSummary(*parsed.fn("fopen"));
-  ASSERT_NE(fopenSummary, nullptr);
-  EXPECT_TRUE(fopenSummary->returns.contains(ValueSource::fresh("fclose")));
+  const auto fopenSummary = libraryOf(parsed.fn("fopen"));
+  ASSERT_TRUE(fopenSummary);
+  EXPECT_TRUE(fopenSummary->returnsFresh());
+  EXPECT_EQ(fopenSummary->freshReturnFamily(), "fclose");
+  EXPECT_TRUE(fopenSummary->mayReturnNull());
   EXPECT_EQ(fopenSummary->borrowKind(0), core::BorrowKind::Shared);
 
-  const auto *fcloseSummary = builtinSummary(*parsed.fn("fclose"));
-  ASSERT_NE(fcloseSummary, nullptr);
+  const auto fcloseSummary = libraryOf(parsed.fn("fclose"));
+  ASSERT_TRUE(fcloseSummary);
   EXPECT_TRUE(fcloseSummary->frees(0));
+  EXPECT_TRUE(fcloseSummary->requiresParam(0));
 
   // RFC 0008, *Nullness*: a pointer into an argument may also be null (not
   // found); a whole-argument copy (`memcpy`) is exactly the argument.
-  const auto *strchrSummary = builtinSummary(*parsed.fn("strchr"));
-  ASSERT_NE(strchrSummary, nullptr);
+  const auto strchrSummary = libraryOf(parsed.fn("strchr"));
+  ASSERT_TRUE(strchrSummary);
   EXPECT_EQ(
       strchrSummary->returns,
       (std::set<ValueSource>{ValueSource::interiorCopy(SummaryPath::param(0)),
@@ -504,15 +485,20 @@ TEST(Builtins, Entries) {
   EXPECT_EQ(strchrSummary->borrowKind(0), core::BorrowKind::Shared);
   EXPECT_TRUE(strchrSummary->requiresParam(0)) << "reads through it";
 
-  const auto *memcpySummary = builtinSummary(*parsed.fn("memcpy"));
-  ASSERT_NE(memcpySummary, nullptr);
+  const auto memcpySummary = libraryOf(parsed.fn("memcpy"));
+  ASSERT_TRUE(memcpySummary);
   EXPECT_EQ(memcpySummary->borrowKind(0), core::BorrowKind::Mutable);
   EXPECT_EQ(memcpySummary->borrowKind(1), core::BorrowKind::Shared);
   EXPECT_EQ(memcpySummary->returns,
             std::set<ValueSource>{ValueSource::copy(SummaryPath::param(0))});
+  // §8.3: null-if-zero is a requirement the engine lifts for a zero length.
+  EXPECT_TRUE(memcpySummary->requiresParam(0));
+  ASSERT_TRUE(memcpySummary->requiresExtent.contains(0));
+  EXPECT_EQ(memcpySummary->requiresExtent.at(0).begin()->need,
+            core::PathAffine::ofPath(SummaryPath::param(2)));
 
-  const auto *strtolSummary = builtinSummary(*parsed.fn("strtol"));
-  ASSERT_NE(strtolSummary, nullptr);
+  const auto strtolSummary = libraryOf(parsed.fn("strtol"));
+  ASSERT_TRUE(strtolSummary);
   EXPECT_TRUE(strtolSummary->returns.empty());
   ASSERT_EQ(strtolSummary->stores.size(), 1U);
   EXPECT_EQ(strtolSummary->stores.begin()->dest, SummaryPath::param(1).deref());
@@ -523,73 +509,32 @@ TEST(Builtins, Entries) {
   EXPECT_TRUE(strtolSummary->requiresParam(0));
   EXPECT_FALSE(strtolSummary->requiresParam(1)) << "`endptr` may be null";
 
-  const auto *strlenSummary = builtinSummary(*parsed.fn("strlen"));
-  ASSERT_NE(strlenSummary, nullptr);
+  const auto strlenSummary = libraryOf(parsed.fn("strlen"));
+  ASSERT_TRUE(strlenSummary);
   EXPECT_EQ(strlenSummary->borrowKind(0), core::BorrowKind::Shared);
   EXPECT_TRUE(strlenSummary->returns.empty());
 
-  const auto *bsearchSummary = builtinSummary(*parsed.fn("bsearch"));
-  ASSERT_NE(bsearchSummary, nullptr);
+  const auto bsearchSummary = libraryOf(parsed.fn("bsearch"));
+  ASSERT_TRUE(bsearchSummary);
   EXPECT_EQ(
       bsearchSummary->returns,
       (std::set<ValueSource>{ValueSource::interiorCopy(SummaryPath::param(1)),
                              ValueSource::null()}));
 
-  const auto *getenvSummary = builtinSummary(*parsed.fn("getenv"));
-  ASSERT_NE(getenvSummary, nullptr);
-  EXPECT_TRUE(getenvSummary->returns.empty()) << "static storage: unknown";
+  // Static storage is a value the summary cannot name (the engine gives it
+  // its hidden state slot at the call).
+  const auto getenvSummary = libraryOf(parsed.fn("getenv"));
+  ASSERT_TRUE(getenvSummary);
+  EXPECT_EQ(
+      getenvSummary->returns,
+      (std::set<ValueSource>{ValueSource::unknown(), ValueSource::null()}));
+  EXPECT_FALSE(getenvSummary->returnsFresh());
 
-  EXPECT_EQ(builtinSummary(*parsed.fn("strdup")), nullptr)
-      << "a file-local function is not libc";
+  EXPECT_FALSE(libraryOf(parsed.fn("strdup")))
+      << "the program's own strdup is not the row's";
 }
 
-// -- POSIX / GNU / BSD entries (RFC 0004, "The library table") ----------------
-
-TEST(Builtins, TableHasNoDuplicatesAndCoversPosix) {
-  std::vector<llvm::StringRef> names = builtinNames();
-  EXPECT_GE(names.size(), 200U);
-  std::ranges::sort(names);
-  EXPECT_EQ(std::ranges::adjacent_find(names), names.end())
-      << "duplicate entry: "
-      << (std::ranges::adjacent_find(names) == names.end()
-              ? ""
-              : std::ranges::adjacent_find(names)->str());
-  for (const char *expected : {"getline",
-                               "asprintf",
-                               "popen",
-                               "pclose",
-                               "opendir",
-                               "closedir",
-                               "readdir",
-                               "mmap",
-                               "munmap",
-                               "getaddrinfo",
-                               "freeaddrinfo",
-                               "dlopen",
-                               "dlclose",
-                               "pthread_create",
-                               "pthread_mutex_lock",
-                               "read",
-                               "write",
-                               "open",
-                               "stat",
-                               "localtime_r",
-                               "strtok_r",
-                               "strlcpy",
-                               "inet_ntop",
-                               "regcomp",
-                               "regfree",
-                               "iconv_open",
-                               "iconv_close",
-                               "posix_memalign",
-                               "reallocarray",
-                               "realpath",
-                               "__errno_location",
-                               "__error"})
-    EXPECT_TRUE(llvm::is_contained(names, expected)) << expected;
-}
-
-TEST(Builtins, PosixEntries) {
+TEST(LibrarySummaries, PosixEntries) {
   const auto parsed = parse(R"c(
     typedef struct FILE FILE;
     typedef struct DIR DIR;
@@ -617,50 +562,61 @@ TEST(Builtins, PosixEntries) {
   )c");
   ASSERT_TRUE(parsed.ast);
 
-  const auto *getlineSummary = builtinSummary(*parsed.fn("getline"));
-  ASSERT_NE(getlineSummary, nullptr);
+  // `getline` reallocates the buffer it is given: the old one is consumed
+  // and replaced by the fresh one it stores.
+  const auto getlineSummary = libraryOf(parsed.fn("getline"));
+  ASSERT_TRUE(getlineSummary);
   EXPECT_EQ(getlineSummary->borrowKind(0), core::BorrowKind::Mutable);
   EXPECT_EQ(getlineSummary->borrowKind(2), core::BorrowKind::Mutable);
   ASSERT_EQ(getlineSummary->stores.size(), 1U);
   EXPECT_EQ(getlineSummary->stores.begin()->dest,
             SummaryPath::param(0).deref());
-  EXPECT_EQ(getlineSummary->stores.begin()->value, ValueSource::fresh("free"));
+  EXPECT_TRUE(getlineSummary->stores.begin()->value.isFresh());
+  EXPECT_EQ(getlineSummary->stores.begin()->value.family, "free");
+  const core::PlaceEffect replaced =
+      getlineSummary->effectOf(SummaryPath::param(0).deref());
+  EXPECT_TRUE(replaced.moved && replaced.replaced);
 
-  const auto *asprintfSummary = builtinSummary(*parsed.fn("asprintf"));
-  ASSERT_NE(asprintfSummary, nullptr);
+  // `null-on-failure` out values are stored on the success class only.
+  const auto asprintfSummary = libraryOf(parsed.fn("asprintf"));
+  ASSERT_TRUE(asprintfSummary);
+  ASSERT_EQ(asprintfSummary->stores.size(), 1U);
   EXPECT_EQ(asprintfSummary->stores.begin()->dest,
             SummaryPath::param(0).deref());
-  EXPECT_EQ(asprintfSummary->stores.begin()->value, ValueSource::fresh("free"));
-  EXPECT_EQ(builtinSummary(*parsed.fn("posix_memalign"))->stores,
-            asprintfSummary->stores);
+  EXPECT_TRUE(asprintfSummary->stores.begin()->value.isFresh());
+  EXPECT_TRUE(asprintfSummary->storesOn.at(core::Outcome::Zero)
+                  .contains(SummaryPath::param(0).deref()));
+  EXPECT_TRUE(asprintfSummary->nullOn.at(core::Outcome::Negative)
+                  .contains(SummaryPath::param(0).deref()));
+  const auto memalign = libraryOf(parsed.fn("posix_memalign"));
+  ASSERT_TRUE(memalign);
+  ASSERT_EQ(memalign->stores.size(), 1U);
+  EXPECT_EQ(memalign->stores.begin()->value.extent,
+            core::PathAffine::ofPath(SummaryPath::param(2)));
 
-  EXPECT_TRUE(builtinSummary(*parsed.fn("popen"))
-                  ->returns.contains(ValueSource::fresh("pclose")));
-  EXPECT_TRUE(builtinSummary(*parsed.fn("pclose"))->frees(0));
-  EXPECT_TRUE(builtinSummary(*parsed.fn("opendir"))
-                  ->returns.contains(ValueSource::fresh("closedir")));
-  EXPECT_TRUE(builtinSummary(*parsed.fn("closedir"))->frees(0));
+  EXPECT_EQ(libraryOf(parsed.fn("popen"))->freshReturnFamily(), "pclose");
+  EXPECT_TRUE(libraryOf(parsed.fn("pclose"))->frees(0));
+  EXPECT_EQ(libraryOf(parsed.fn("opendir"))->freshReturnFamily(), "closedir");
+  EXPECT_TRUE(libraryOf(parsed.fn("closedir"))->frees(0));
   EXPECT_EQ(
-      builtinSummary(*parsed.fn("readdir"))->returns,
+      libraryOf(parsed.fn("readdir"))->returns,
       (std::set<ValueSource>{ValueSource::interiorCopy(SummaryPath::param(0)),
                              ValueSource::null()}))
       << "the entry lives in the stream; null at the end";
-  EXPECT_TRUE(builtinSummary(*parsed.fn("mmap"))
-                  ->returns.contains(ValueSource::fresh("munmap")));
-  EXPECT_TRUE(builtinSummary(*parsed.fn("munmap"))->frees(0));
+  EXPECT_EQ(libraryOf(parsed.fn("mmap"))->freshReturnFamily(), "munmap");
+  EXPECT_TRUE(libraryOf(parsed.fn("munmap"))->frees(0));
 
-  const auto *gaiSummary = builtinSummary(*parsed.fn("getaddrinfo"));
-  ASSERT_NE(gaiSummary, nullptr);
+  const auto gaiSummary = libraryOf(parsed.fn("getaddrinfo"));
+  ASSERT_TRUE(gaiSummary);
   EXPECT_EQ(gaiSummary->borrowKind(2), core::BorrowKind::Shared);
   EXPECT_EQ(gaiSummary->stores.begin()->dest, SummaryPath::param(3).deref());
-  EXPECT_EQ(gaiSummary->stores.begin()->value,
-            ValueSource::fresh("freeaddrinfo"));
-  EXPECT_TRUE(builtinSummary(*parsed.fn("freeaddrinfo"))->frees(0));
+  EXPECT_EQ(gaiSummary->stores.begin()->value.family, "freeaddrinfo");
+  EXPECT_TRUE(libraryOf(parsed.fn("freeaddrinfo"))->frees(0));
 
   // RFC 0006, *Alias exactness*: a pointer *into* the argument is an
   // interior copy; the argument itself is an exact one.
-  const auto *strtokSummary = builtinSummary(*parsed.fn("strtok_r"));
-  ASSERT_NE(strtokSummary, nullptr);
+  const auto strtokSummary = libraryOf(parsed.fn("strtok_r"));
+  ASSERT_TRUE(strtokSummary);
   EXPECT_EQ(
       strtokSummary->returns,
       (std::set<ValueSource>{ValueSource::interiorCopy(SummaryPath::param(0)),
@@ -671,131 +627,80 @@ TEST(Builtins, PosixEntries) {
 
   // Returns its buffer argument, or null on failure (RFC 0008, table
   // nullability).
-  EXPECT_EQ(builtinSummary(*parsed.fn("localtime_r"))->returns,
+  EXPECT_EQ(libraryOf(parsed.fn("localtime_r"))->returns,
             (std::set<ValueSource>{ValueSource::copy(SummaryPath::param(1)),
                                    ValueSource::null()}));
-  EXPECT_TRUE(builtinSummary(*parsed.fn("localtime"))->returns.empty())
-      << "static storage: unknown";
+  EXPECT_FALSE(libraryOf(parsed.fn("localtime"))->returnsFresh())
+      << "static storage";
 
   // RFC 0006, *Outcome-conditional summaries*: `reallocarray` consumes its
-  // argument only when it returns non-null.
-  const auto *reallocarraySummary = builtinSummary(*parsed.fn("reallocarray"));
-  ASSERT_NE(reallocarraySummary, nullptr);
+  // argument when it returns non-null, and (§8.2) on the null class only
+  // when the size `a1 * a2` is zero.
+  const auto reallocarraySummary = libraryOf(parsed.fn("reallocarray"));
+  ASSERT_TRUE(reallocarraySummary);
   EXPECT_TRUE(reallocarraySummary->consumes(0));
   EXPECT_FALSE(
       reallocarraySummary->consumesUnconditionally(SummaryPath::param(0)));
   EXPECT_TRUE(reallocarraySummary->outcomes.at(core::Outcome::NonNull)
                   .at(SummaryPath::param(0))
                   .moved);
-  EXPECT_TRUE(reallocarraySummary->outcomes.at(core::Outcome::Null).empty());
+  const core::PlaceEffect nullClass =
+      reallocarraySummary->outcomes.at(core::Outcome::Null)
+          .at(SummaryPath::param(0));
+  EXPECT_TRUE(nullClass.freed);
+  EXPECT_EQ(nullClass.when.integers.size(), 1U) << "a1 * a2 == 0";
   EXPECT_TRUE(reallocarraySummary->returns.contains(ValueSource::null()));
 
-  const auto *createSummary = builtinSummary(*parsed.fn("pthread_create"));
-  ASSERT_NE(createSummary, nullptr);
+  const auto createSummary = libraryOf(parsed.fn("pthread_create"));
+  ASSERT_TRUE(createSummary);
   EXPECT_EQ(createSummary->borrowKind(0), core::BorrowKind::Mutable);
-  EXPECT_FALSE(createSummary->borrowKind(3).has_value())
-      << "the start routine's argument is out of scope (threads)";
+  EXPECT_FALSE(createSummary->borrowKind(3).has_value());
+  EXPECT_TRUE(createSummary->effectOf(SummaryPath::param(3)).escaped)
+      << "the thread keeps its argument";
 
-  EXPECT_EQ(builtinSummary(*parsed.fn("read"))->borrowKind(1),
+  EXPECT_EQ(libraryOf(parsed.fn("read"))->borrowKind(1),
             core::BorrowKind::Mutable);
-  EXPECT_EQ(builtinSummary(*parsed.fn("write"))->borrowKind(1),
+  EXPECT_EQ(libraryOf(parsed.fn("write"))->borrowKind(1),
             core::BorrowKind::Shared);
 }
 
-// RFC 0012: the `_FORTIFY_SOURCE` forms of the `printf` family have their
-// own rows (the flag and size sit before the format), and the sized ones
-// accept a null destination as `snprintf(NULL, 0, ...)` does.
-TEST(Builtins, FortifiedPrintfRowsMatchThePlainOnes) {
+// RFC 0030 §8: a fortified alias has its row's effects on the arguments its
+// `chk` clause maps (the flag and size sit before a `printf` format).
+TEST(LibrarySummaries, FortifiedAliasesRemapArguments) {
   const auto parsed = parse(R"c(
     typedef __builtin_va_list va_list;
     void format_all(char *d, unsigned long n, va_list ap) {
       __builtin___sprintf_chk(d, 0, n, "%d", 1);
       __builtin___snprintf_chk(d, n, 0, n, "%d", 1);
       __builtin___vsnprintf_chk(d, n, 0, n, "%d", ap);
+      __builtin___memcpy_chk(d, d + 1, n, n);
     }
   )c");
   ASSERT_TRUE(parsed.ast);
 
-  const auto *sprintfChk =
-      builtinSummary(*parsed.fn("__builtin___sprintf_chk"));
-  ASSERT_NE(sprintfChk, nullptr);
+  const auto sprintfChk = libraryOf(parsed.fn("__builtin___sprintf_chk"));
+  ASSERT_TRUE(sprintfChk);
   EXPECT_TRUE(sprintfChk->requiresParam(0)) << "sprintf writes through it";
   EXPECT_TRUE(sprintfChk->requiresParam(3)) << "the format, shifted";
+  EXPECT_FALSE(sprintfChk->requiresParam(1)) << "the flag is dropped";
 
-  const auto *snprintfChk =
-      builtinSummary(*parsed.fn("__builtin___snprintf_chk"));
-  ASSERT_NE(snprintfChk, nullptr);
-  EXPECT_FALSE(snprintfChk->requiresParam(0))
-      << "a null destination with a zero size measures the output";
+  // `snprintf(NULL, 0, ...)` measures the output: null-if-zero (§8.3).
+  const auto snprintfChk = libraryOf(parsed.fn("__builtin___snprintf_chk"));
+  ASSERT_TRUE(snprintfChk);
+  EXPECT_TRUE(snprintfChk->requiresParam(0));
   EXPECT_TRUE(snprintfChk->requiresParam(4));
+  EXPECT_EQ(snprintfChk->requiresExtent.at(0).begin()->need,
+            core::PathAffine::ofPath(SummaryPath::param(1)));
 
-  const auto *vsnprintfChk =
-      builtinSummary(*parsed.fn("__builtin___vsnprintf_chk"));
-  ASSERT_NE(vsnprintfChk, nullptr);
-  EXPECT_FALSE(vsnprintfChk->requiresParam(0));
+  const auto vsnprintfChk = libraryOf(parsed.fn("__builtin___vsnprintf_chk"));
+  ASSERT_TRUE(vsnprintfChk);
   EXPECT_TRUE(vsnprintfChk->requiresParam(4));
-}
 
-TEST(Summaries, VerifiedRecursiveOutputsNeedPremisesAfterWidening) {
-  // RFC 0027: restoring a proved induction output cannot restore a premise
-  // discarded when the widened entry requirements reach their fixed bound.
-  const auto parsed = parse("struct node; void cleanup(struct node *p);");
-  ASSERT_TRUE(parsed.ast);
-  const auto *function = parsed.fn("cleanup");
-  ASSERT_NE(function, nullptr);
-  const core::ContainerShape shape{
-      .object = {.bytes = 8, .alignment = 8, .identity = "record:node"},
-      .link = {.name = "next", .offset = 0, .bytes = 8},
-      .initialized = {{.name = "next", .offset = 0, .bytes = 8}},
-      .payloads = {},
-      .family = "free",
-      .access = core::ContainerAccess::Release};
-  const auto input = SummaryPath::param(0);
-  for (const std::size_t count :
-       {core::MaxSafetyRequirements - 1, core::MaxSafetyRequirements}) {
-    SCOPED_TRACE(count);
-    SummaryStore store;
-    core::FunctionSummary previous;
-    previous.checked.computed = true;
-    for (std::size_t i = 0; i < count; ++i)
-      previous.checked.require(
-          {.kind = core::CheckedRequirementKind::Valid,
-           .path = input.deref().field("member" + std::to_string(i)),
-           .other = {},
-           .family = {}});
-    previous.addEffect(input, {.freed = true});
-    core::FunctionSummary verified;
-    verified.checked.computed = true;
-    verified.checked.require({.kind = core::CheckedRequirementKind::Container,
-                              .path = input,
-                              .other = {},
-                              .family = shape.encode()});
-    verified.checked.establish(
-        {.kind = core::CheckedRequirementKind::ContainerConsumed,
-         .path = input,
-         .other = input,
-         .family = shape.encode()});
-    verified.addEffect(input, {.written = true});
-    ASSERT_TRUE(verified.checked.complete());
-    ASSERT_EQ(core::parseCheckedContract(
-                  core::printCheckedContract(verified.checked, {}), {}),
-              verified.checked);
-    ASSERT_TRUE(store.setInferred(*function, previous));
-    ASSERT_TRUE(store.setInferred(*function, verified, true, true));
-    const auto *summary = store.inferredFor(*function);
-    ASSERT_NE(summary, nullptr);
-    const auto &contract = summary->checked;
-    const bool exhausted = count == core::MaxSafetyRequirements;
-    EXPECT_EQ(contract.limited, exhausted);
-    EXPECT_EQ(contract.complete(), !exhausted);
-    EXPECT_EQ(contract.requirements.size(), core::MaxSafetyRequirements);
-    EXPECT_EQ(contract.establishes.size(), exhausted ? 0U : 1U);
-    EXPECT_TRUE(summary->effects.at(input).freed);
-    EXPECT_TRUE(summary->effects.at(input).written);
-    EXPECT_EQ(core::parseCheckedContract(
-                  core::printCheckedContract(contract, {}), {}),
-              contract);
-  }
+  const auto memcpyChk = libraryOf(parsed.fn("__builtin___memcpy_chk"));
+  ASSERT_TRUE(memcpyChk);
+  EXPECT_EQ(memcpyChk->borrowKind(0), core::BorrowKind::Mutable);
+  EXPECT_EQ(memcpyChk->borrowKind(1), core::BorrowKind::Shared);
+  EXPECT_FALSE(memcpyChk->borrowKind(3).has_value()) << "the object size";
 }
 
 TEST(Summaries, RecursiveApproximationsRetainEarlierGuardedEffects) {

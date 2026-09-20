@@ -1,5 +1,10 @@
 // RFC 0015: exhausted selection budgets preserve earlier temporal evidence.
-// RUN: not %weavec %s -- 2>&1 | FileCheck %s
+// RFC 0030 §15 item 3: the exhausted budget is no diagnostic; the element
+// access where it ran out is `unresolved(budget)` in the ledger.
+// RUN: not %weavec --ledger=%t.json %s -- 2>&1 | FileCheck %s
+// RUN: FileCheck --check-prefix=LEDGER %s < %t.json
+// LEDGER: "reason": "budget",
+// LEDGER-NEXT: "detail": "array element limit reached",
 #include "../Inputs/prelude.h"
 void bounded(char **a) {
   free(a[0]);
@@ -34,7 +39,7 @@ void bounded(char **a) {
   use(a[29]);
   use(a[30]);
   use(a[31]);
-  // CHECK: warning: analysis is incomplete: array element limit reached [weavec::analysis-incomplete]
+  // CHECK-NOT: analysis is incomplete
   use(a[32]);
   // CHECK: rfc0015-limits.c:[[@LINE+1]]:3: error: use of 'a[0]' after it was freed [weavec::use-after-free]
   a[0][0]=1;

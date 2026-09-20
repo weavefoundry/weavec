@@ -37,71 +37,40 @@ using namespace clang;
 
 namespace weavec::analysis {
 
-// -- The string functions of the library table --------------------------------
+// -- The string rows of the library table -------------------------------------
 
-namespace {
-
-/// A call to a library function, as the string rules know it: the plain
-/// name (`strcpy` for `__builtin___strcpy_chk`) and whether it is the
-/// `_FORTIFY_SOURCE` form, whose `*printf` members insert a flag and a size
-/// before the format.
-struct StringCallee {
-  llvm::StringRef name;
-  bool checked = false;
-};
-
-/// A library function that reads an argument up to its terminator: the
-/// argument indices, as a bit mask.
-struct SeekingRead {
-  llvm::StringLiteral name;
-  unsigned arguments;
-
-  constexpr SeekingRead(llvm::StringLiteral fn, unsigned mask)
-      : name(fn), arguments(mask) {}
-};
-
-} // namespace
-
-// clang-format off
-static constexpr auto SeekingReads = std::to_array<SeekingRead>({
-    {"strcpy", 0b10},   {"stpcpy", 0b10},  {"strcat", 0b11},   {"strdup", 0b1},
-    {"strchr", 0b1},    {"strrchr", 0b1},  {"strstr", 0b11},   {"strpbrk", 0b11},
-    {"strspn", 0b11},   {"strcspn", 0b11}, {"strcmp", 0b11},   {"strcoll", 0b11},
-    {"strcasecmp", 0b11}, {"strlen", 0b1}, {"puts", 0b1},      {"fputs", 0b1},
-    {"perror", 0b1},    {"system", 0b1},   {"getenv", 0b1},    {"atoi", 0b1},
-    {"atol", 0b1},      {"atoll", 0b1},    {"atof", 0b1},      {"strtol", 0b1},
-    {"strtoll", 0b1},   {"strtoul", 0b1},  {"strtoull", 0b1},  {"strtod", 0b1},
-    {"strtof", 0b1},    {"strtold", 0b1},  {"fopen", 0b11},    {"open", 0b1},
-    {"access", 0b1},    {"stat", 0b1},     {"lstat", 0b1},     {"unlink", 0b1},
-    {"remove", 0b1},    {"rename", 0b11},  {"mkdir", 0b1},     {"rmdir", 0b1},
-    {"chdir", 0b1},     {"opendir", 0b1},  {"strtok", 0b11},   {"strxfrm", 0b10},
-    {"printf", 0b1},    {"fprintf", 0b10}, {"sprintf", 0b10},  {"snprintf", 0b100},
-});
-// clang-format on
-
-static std::optional<StringCallee> stringCalleeOf(llvm::StringRef name) {
-  if (name.empty())
-    return std::nullopt;
-  StringCallee result;
-  if (name.consume_front("__builtin___"))
-    result.checked = name.consume_back("_chk");
-  else
-    name.consume_front("__builtin_");
-  result.name = name;
-  return result;
+/// The call argument that carries row argument `rowArg` of `library`, or
+/// null (RFC 0030 §8: a fortified alias's arguments are remapped).
+static const Expr *rowArgumentOf(const CallExpr &call,
+                                 const core::LibraryMatch &library,
+                                 unsigned rowArg) {
+  const int index = library.callArgument(rowArg);
+  if (index < 0 || static_cast<unsigned>(index) >= call.getNumArgs())
+    return nullptr;
+  return call.getArg(static_cast<unsigned>(index));
 }
 
-/// The index of the format argument of a `*printf` function, or nothing
-/// for anything else.
-static std::optional<unsigned> formatIndexOf(const StringCallee &callee) {
-  if (callee.name == "printf")
-    return 0;
-  if (callee.name == "fprintf" || callee.name == "sprintf" ||
-      callee.name == "vsprintf" || callee.name == "vfprintf")
-    return callee.checked ? 3 : 1;
-  if (callee.name == "snprintf" || callee.name == "vsnprintf")
-    return callee.checked ? 4 : 2;
-  return std::nullopt;
+/// The call argument of a `printf`-family row's format, when the conversions
+/// can be matched against the arguments (not a `v…` function).
+static std::optional<unsigned>
+formatIndexOf(const CallExpr &call, const core::LibraryMatch &library) {
+  const auto &format = library.entry->format;
+  if (!format || format->kind != core::LibFormat::Kind::Printf ||
+      format->vaList)
+    return std::nullopt;
+  const int index = library.callArgument(format->format);
+  if (index < 0 || static_cast<unsigned>(index) >= call.getNumArgs())
+    return std::nullopt;
+  return static_cast<unsigned>(index);
+}
+
+/// `strlen(aN) + 1`: the extent of a string the row duplicates (`strdup`).
+static std::optional<unsigned> duplicatedArgument(const core::LibTerm &term) {
+  if (term.kind != core::LibTerm::Kind::Sum || term.operands.size() != 2 ||
+      term.operands[0].kind != core::LibTerm::Kind::StringLength ||
+      term.operands[1] != core::LibTerm::constant(1))
+    return std::nullopt;
+  return term.operands[0].arg;
 }
 
 /// The string literal behind ordinary storage-preserving pointer casts.
@@ -192,7 +161,8 @@ FunctionDataflow::stringSubjectOf(const Expr &arg,
                                    .pointer = key,
                                    .offset = {},
                                    .unit = 1,
-                                   .declared = record->declared};
+                                   .declared = record->declared,
+                                   .extentClass = record->extentClass};
     }
     return subject;
   }
@@ -520,157 +490,173 @@ FunctionDataflow::formatNeedOf(const CallExpr &call, unsigned formatIndex,
 void FunctionDataflow::applyStringEffects(const CallExpr &call,
                                           const core::FunctionSummary &summary,
                                           core::AnalysisState &state) {
-  const std::string libraryName = resolvedLibraryName(call);
-  const auto callee = stringCalleeOf(libraryName);
-  const llvm::StringRef name = callee ? callee->name : llvm::StringRef();
-  const auto argument = [&call](unsigned index) -> const Expr * {
-    return index < call.getNumArgs() ? call.getArg(index) : nullptr;
+  // RFC 0030 §8: what the row states about strings: `writes-str(d, t)`,
+  // `copies(d, s, t)`, `fills(d, v, t)`, `int:value(strlen(aN))` and a
+  // duplicate's `extent(strlen(aN)+1)`. The values are the arguments'
+  // before the call: evaluated before anything is dropped.
+  const core::LibraryMatch *library = resolvedLibrary(call);
+  const auto argument = [&](unsigned rowArg) -> const Expr * {
+    return library != nullptr ? rowArgumentOf(call, *library, rowArg) : nullptr;
   };
-  // What the sources say before anything is dropped: `strcat` reads the
-  // destination's own length.
-  const Expr *dest = argument(0);
-  const Expr *source = argument(1);
-  const auto destBefore = dest != nullptr ? stringLengthOf(*dest, state)
-                                          : std::optional<core::Affine>();
-  const auto sourceLength = source != nullptr ? stringLengthOf(*source, state)
-                                              : std::optional<core::Affine>();
-  const auto destSubject = dest != nullptr ? stringSubjectOf(*dest, state)
-                                           : std::optional<StringSubject>();
+  struct Update {
+    const Expr *dest = nullptr;
+    std::optional<StringSubject> subject;
+    enum class Kind : std::uint8_t { Length, Unterminated, LengthPlace } kind;
+    std::optional<core::Affine> length;
+  };
+  std::vector<Update> updates;
+  const auto subjectOf = [&](const Expr *expr) {
+    return expr != nullptr ? stringSubjectOf(*expr, state)
+                           : std::optional<StringSubject>();
+  };
+  // `n + offset >= extent(d)`: the write covers the object to its end.
+  const auto coversObject = [&](const std::optional<StringSubject> &subject,
+                                const core::Affine &count) -> bool {
+    if (!subject || !subject->extent)
+      return false;
+    const auto end = count.shifted(subject->offset);
+    return end && decideAtLeast(*end, subject->extent->have, state) == true;
+  };
+  const core::LibraryEntry *row = library != nullptr ? library->entry : nullptr;
+  if (row != nullptr) {
+    for (const core::LibStringWrite &write : row->writesString) {
+      const Expr *dest = argument(write.dst);
+      if (dest == nullptr || !write.length)
+        continue;
+      bool lowerBound = false;
+      const auto length =
+          stringTermValue(*write.length, call, *library, state, lowerBound);
+      if (length && !lowerBound)
+        updates.push_back(
+            {dest, subjectOf(dest), Update::Kind::Length, length});
+    }
+    for (const core::LibCopy &copy : row->copies) {
+      // `n` bytes from a string of `len` bytes (`strncpy` copies
+      // `min(n, len + 1)`): no terminator among them when `len >= n`, so a
+      // copy that fills the object leaves none; the whole string and its
+      // terminator when `len < n`.
+      const core::LibTerm *bound = &copy.length;
+      if (bound->kind == core::LibTerm::Kind::Min &&
+          bound->operands.size() == 2)
+        bound = &bound->operands[0];
+      const Expr *dest = argument(copy.dst);
+      const Expr *source = argument(copy.src);
+      const Expr *count = bound->kind == core::LibTerm::Kind::Argument
+                              ? argument(bound->arg)
+                              : nullptr;
+      if (dest == nullptr || source == nullptr || count == nullptr)
+        continue;
+      const auto sourceLength = stringLengthOf(*source, state);
+      const auto n = builder.affineOf(*count);
+      if (!sourceLength || !n)
+        continue;
+      const auto subject = subjectOf(dest);
+      const auto atLeast = decideAtLeast(*sourceLength, *n, state);
+      if (atLeast == true && coversObject(subject, *n))
+        updates.push_back({dest, subject, Update::Kind::Unterminated, {}});
+      else if (atLeast == false)
+        updates.push_back({dest, subject, Update::Kind::Length, sourceLength});
+    }
+    for (const core::LibFill &fill : row->fills) {
+      const Expr *dest = argument(fill.dst);
+      const Expr *count = fill.length.kind == core::LibTerm::Kind::Argument
+                              ? argument(fill.length.arg)
+                              : nullptr;
+      std::optional<std::int64_t> byte;
+      if (fill.value.kind == core::LibTerm::Kind::Constant)
+        byte = fill.value.value;
+      else if (const Expr *value =
+                   fill.value.kind == core::LibTerm::Kind::Argument
+                       ? argument(fill.value.arg)
+                       : nullptr)
+        byte = integerConstant(*value, context);
+      if (dest == nullptr || count == nullptr || !byte)
+        continue;
+      const auto n = builder.affineOf(*count);
+      if (!n)
+        continue;
+      const auto subject = subjectOf(dest);
+      if (*byte != 0) {
+        if (coversObject(subject, *n))
+          updates.push_back({dest, subject, Update::Kind::Unterminated, {}});
+      } else if (subject && subject->offset == 0 &&
+                 decideAtLeast(*n, core::Affine::ofConstant(1), state) ==
+                     true) {
+        updates.push_back(
+            {dest, subject, Update::Kind::Length, core::Affine::ofConstant(0)});
+      }
+    }
+    // RFC 0012, *Length places*: `strlen(s)`'s value, and the length a
+    // duplicate (`strdup(s)`) measures, is the length place of the string.
+    std::optional<unsigned> measured;
+    if (row->result.value &&
+        row->result.value->kind == core::LibTerm::Kind::StringLength)
+      measured = row->result.value->arg;
+    else if (row->result.kind == core::LibraryResult::Kind::Fresh &&
+             row->result.extent)
+      measured = duplicatedArgument(*row->result.extent);
+    if (const Expr *string = measured ? argument(*measured) : nullptr;
+        string != nullptr &&
+        string->IgnoreParenImpCasts()->getType()->isPointerType() &&
+        byteSizeOf(string->IgnoreParenImpCasts()->getType()->getPointeeType(),
+                   context) == 1)
+      updates.push_back(
+          {string, subjectOf(string), Update::Kind::LengthPlace, {}});
+  }
 
   // 1. Every object the callee writes loses what was known about its
-  //    string; the rules below say what is known now.
+  //    string; the updates say what is known now.
   for (unsigned i = 0; i < call.getNumArgs(); ++i) {
     if (!summary.effectOf(core::SummaryPath::param(i).deref()).written)
       continue;
     if (const auto subject = stringSubjectOf(*call.getArg(i), state))
       dropStringFact(subject->key, state);
   }
-  if (!callee || !dest)
-    return;
 
-  // The object-level length a length `seen` from the destination's offset
-  // establishes: `offset + seen`.
-  const auto objectLength =
-      [&destSubject](const core::Affine &seen) -> std::optional<core::Affine> {
-    return seen.shifted(destSubject->offset);
-  };
-  const auto setLength = [&](const core::Affine &seen) {
-    if (!destSubject)
-      return;
-    if (const auto length = objectLength(seen)) {
+  for (const Update &update : updates) {
+    const auto &subject = update.subject;
+    if (!subject)
+      continue;
+    if (update.kind == Update::Kind::Unterminated) {
+      setStringFact(subject->key,
+                    core::StringFact{.length = std::nullopt,
+                                     .unterminated = true,
+                                     .location = locate(call)},
+                    state);
+      continue;
+    }
+    if (update.kind == Update::Kind::Length) {
+      const auto length = update.length->shifted(subject->offset);
+      if (!length)
+        continue;
       // A string the object provably cannot hold (`length + 1 > extent`):
       // the call was reported, and what the object holds now is anyone's
       // guess. Unknown, so the report is the one and not the first.
-      if (destSubject->extent) {
+      if (subject->extent) {
         if (const auto end = length->shifted(1);
-            end &&
-            decideAtLeast(*end, destSubject->extent->have, state) == true &&
-            decideAtLeast(destSubject->extent->have, *end, state) != true) {
-          dropStringFact(destSubject->key, state);
-          return;
+            end && decideAtLeast(*end, subject->extent->have, state) == true &&
+            decideAtLeast(subject->extent->have, *end, state) != true) {
+          dropStringFact(subject->key, state);
+          continue;
         }
       }
-      setStringFact(destSubject->key,
+      setStringFact(subject->key,
                     core::StringFact{.length = length,
                                      .unterminated = false,
                                      .location = locate(call)},
                     state);
+      continue;
     }
-  };
-  const auto setUnterminated = [&] {
-    if (!destSubject)
-      return;
-    setStringFact(destSubject->key,
-                  core::StringFact{.length = std::nullopt,
-                                   .unterminated = true,
-                                   .location = locate(call)},
-                  state);
-  };
-  // `n + offset >= extent(d)`: the write covers the object to its end.
-  const auto coversObject = [&](const core::Affine &count) -> bool {
-    if (!destSubject || !destSubject->extent)
-      return false;
-    const auto end = count.shifted(destSubject->offset);
-    if (!end)
-      return false;
-    return decideAtLeast(*end, destSubject->extent->have, state) == true;
-  };
-
-  if (name == "strcpy" || name == "stpcpy") {
-    if (sourceLength)
-      setLength(*sourceLength);
-    return;
-  }
-  if (name == "strcat") {
-    if (destBefore && sourceLength) {
-      if (const auto sum = sumOf(*destBefore, *sourceLength))
-        setLength(*sum);
-    }
-    return;
-  }
-  if (name == "sprintf" || name == "vsprintf") {
-    // RFC 0024 records initialized output and termination separately. The
-    // number of emitted bytes is not strlen when a %c emits an embedded NUL.
-    if (options.checkContracts)
-      return;
-    if (const auto index = formatIndexOf(*callee)) {
-      if (const auto need = formatNeedOf(call, *index, state);
-          need && need->exact && name == "sprintf")
-        setLength(need->lower);
-    }
-    return;
-  }
-  if (name == "strncpy" || name == "memcpy" || name == "memmove") {
-    // `n` bytes from a string of `len` bytes: no terminator among them
-    // when `len >= n`, so a copy that fills the object leaves none; the
-    // whole string and its terminator when `len < n`.
-    const Expr *count = argument(2);
-    if (count == nullptr || !sourceLength)
-      return;
-    const auto n = builder.affineOf(*count);
-    if (!n)
-      return;
-    const auto atLeast = decideAtLeast(*sourceLength, *n, state);
-    if (atLeast == true) {
-      if (coversObject(*n))
-        setUnterminated();
-    } else if (atLeast == false) {
-      setLength(*sourceLength);
-    }
-    return;
-  }
-  if (name == "memset") {
-    const Expr *value = argument(1);
-    const Expr *count = argument(2);
-    if (value == nullptr || count == nullptr)
-      return;
-    const auto byte = integerConstant(*value, context);
-    const auto n = builder.affineOf(*count);
-    if (!byte || !n)
-      return;
-    if (*byte != 0) {
-      if (coversObject(*n))
-        setUnterminated();
-    } else if (destSubject && destSubject->offset == 0 &&
-               decideAtLeast(*n, core::Affine::ofConstant(1), state) == true) {
-      setLength(core::Affine::ofConstant(0));
-    }
-    return;
-  }
-  if (name == "strlen" || name == "strdup") {
-    // RFC 0012, *Length places*: the call's value is the length place of
-    // the string; when the length is already known the place equals it,
-    // otherwise the place *is* the length from here on. `strdup` measures
-    // its argument the same way (its result's extent is read from the fact
-    // when the result is assigned).
-    if (!destSubject)
-      return;
-    const core::PlaceId length = builder.lengthPlace(destSubject->key);
-    const auto fact = stringFactOf(*dest, state);
+    // The length place: when the length is already known the place equals
+    // it, otherwise the place *is* the length from here on.
+    const core::PlaceId length = builder.lengthPlace(subject->key);
+    const auto fact = stringFactOf(*update.dest, state);
     if (fact && fact->unterminated)
-      return;
+      continue;
     state.relations.forget(length);
     state.scalars.forget(length);
+    const core::ValueFact natural =
+        core::ValueFact::of({core::Outcome::Zero, core::Outcome::Positive});
     if (fact && fact->length) {
       const core::Affine known = foldAffine(*fact->length, state);
       if (known.isConstant()) {
@@ -678,31 +664,73 @@ void FunctionDataflow::applyStringEffects(const CallExpr &call,
       } else if (*known.place != length && known.scale == 1) {
         state.relations.learn(length, core::Relation::Equal, *known.place,
                               known.constant);
-        state.scalars.set(length,
-                          core::ValueFact::of(
-                              {core::Outcome::Zero, core::Outcome::Positive}));
+        state.scalars.set(length, natural);
       } else if (*known.place != length) {
-        state.scalars.set(length,
-                          core::ValueFact::of(
-                              {core::Outcome::Zero, core::Outcome::Positive}));
+        state.scalars.set(length, natural);
       }
-      return;
+      continue;
     }
-    state.scalars.set(length, core::ValueFact::of({core::Outcome::Zero,
-                                                   core::Outcome::Positive}));
-    setLength(core::Affine::ofPlace(length));
-    return;
+    state.scalars.set(length, natural);
+    if (const auto end = core::Affine::ofPlace(length).shifted(subject->offset))
+      setStringFact(subject->key,
+                    core::StringFact{.length = end,
+                                     .unterminated = false,
+                                     .location = locate(call)},
+                    state);
+  }
+}
+
+std::optional<core::Affine> FunctionDataflow::stringTermValue(
+    const core::LibTerm &term, const CallExpr &call,
+    const core::LibraryMatch &library, const core::AnalysisState &state,
+    bool &lowerBound) {
+  const auto operand = [&](std::size_t i) -> std::optional<core::Affine> {
+    return i < term.operands.size()
+               ? stringTermValue(term.operands[i], call, library, state,
+                                 lowerBound)
+               : std::nullopt;
+  };
+  switch (term.kind) {
+  case core::LibTerm::Kind::FormatLength: {
+    const auto index = formatIndexOf(call, library);
+    if (!index || library.callArgument(term.arg) != static_cast<int>(*index))
+      return std::nullopt;
+    const auto need = formatNeedOf(call, *index, state);
+    if (!need)
+      return std::nullopt;
+    lowerBound = lowerBound || !need->exact;
+    return need->lower;
+  }
+  case core::LibTerm::Kind::Sum: {
+    const auto lhs = operand(0);
+    const auto rhs = operand(1);
+    return lhs && rhs ? sumOf(*lhs, *rhs) : std::nullopt;
+  }
+  case core::LibTerm::Kind::Difference: {
+    const auto lhs = operand(0);
+    return lhs ? lhs->shifted(-term.value) : std::nullopt;
+  }
+  default:
+    return libraryValue(term, call, library, state);
   }
 }
 
 std::optional<std::pair<core::Affine, core::StringFact>>
 FunctionDataflow::duplicatedStringOf(const CallExpr &call,
                                      const core::AnalysisState &state) {
-  const std::string libraryName = resolvedLibraryName(call);
-  const auto callee = stringCalleeOf(libraryName);
-  if (!callee || callee->name != "strdup" || call.getNumArgs() != 1)
+  // A fresh string of `strlen(aN) + 1` bytes (`strdup`): the length of
+  // argument N, when it is known.
+  const core::LibraryMatch *library = resolvedLibrary(call);
+  if (library == nullptr ||
+      library->entry->result.kind != core::LibraryResult::Kind::Fresh ||
+      !library->entry->result.extent)
     return std::nullopt;
-  const auto length = stringLengthOf(*call.getArg(0), state);
+  const auto duplicated = duplicatedArgument(*library->entry->result.extent);
+  const Expr *string =
+      duplicated ? rowArgumentOf(call, *library, *duplicated) : nullptr;
+  if (string == nullptr)
+    return std::nullopt;
+  const auto length = stringLengthOf(*string, state);
   if (!length)
     return std::nullopt;
   const auto extent = length->shifted(1);
@@ -721,18 +749,49 @@ void FunctionDataflow::checkStringArguments(
   (void)summary;
   if (!recording())
     return;
-  const std::string libraryName = resolvedLibraryName(call);
-  const auto callee = stringCalleeOf(libraryName);
-  if (!callee)
+  const core::LibraryMatch *library = resolvedLibrary(call);
+  if (library == nullptr)
     return;
-  const llvm::StringRef name = callee->name;
-  const auto argument = [&call](unsigned index) -> const Expr * {
-    return index < call.getNumArgs() ? call.getArg(index) : nullptr;
-  };
+  const core::LibraryEntry &row = *library->entry;
 
-  // 1. Terminator-seeking reads of an object with no terminator.
-  const auto checkSeekingRead = [&](unsigned index) -> bool {
-    const Expr *arg = argument(index);
+  // 0. RFC 0030 §8.2: a literal format reads at most the variadic arguments
+  //    passed (too few is a read past them); a format that is no literal
+  //    leaves the call's spatial facet inexpressible.
+  if (row.format) {
+    const int format = library->callArgument(row.format->format);
+    const int first = library->callArgument(row.format->first);
+    const StringLiteral *text =
+        format >= 0 && static_cast<unsigned>(format) < call.getNumArgs()
+            ? literalOf(*call.getArg(static_cast<unsigned>(format)))
+            : nullptr;
+    const SiteInfo *site = siteFor(call, core::Facet::Spatial);
+    const auto passed =
+        first >= 0 && call.getNumArgs() > static_cast<unsigned>(first)
+            ? call.getNumArgs() - static_cast<unsigned>(first)
+            : 0U;
+    const auto reads =
+        text != nullptr && text->getCharByteWidth() == 1 && !row.format->vaList
+            ? core::formatArgumentCount(text->getString(), row.format->kind)
+            : std::nullopt;
+    if (text == nullptr) {
+      decide(site, core::Facet::Spatial,
+             core::FacetDecision::unresolvedFor(
+                 core::UnresolvedReason::Inexpressible,
+                 "the format of " + calleeName(call) + " is not a literal"));
+    } else if (reads && *reads > passed) {
+      decide(site, core::Facet::Spatial, core::FacetDecision::violation());
+      report(makeError(core::diag::OutOfBounds,
+                       "format string of " + calleeName(call) + " reads " +
+                           std::to_string(*reads) + " arguments but " +
+                           std::to_string(passed) + " are passed",
+                       call),
+             core::Certainty::Definite, site, core::Facet::Spatial);
+    }
+  }
+
+  // 1. Terminator-seeking reads of an object with no terminator: the row's
+  //    `str` arguments and the `%s` arguments of a literal format.
+  const auto checkSeekingRead = [&](const Expr *arg) -> bool {
     if (arg == nullptr)
       return false;
     const auto fact = stringFactOf(*arg, state);
@@ -749,71 +808,57 @@ void FunctionDataflow::checkStringArguments(
     if (fact->location.isValid())
       diagnostic.addNote(object + " is left without a terminator here",
                          fact->location);
-    report(std::move(diagnostic));
+    // RFC 0030 §3.3: the object holds no NUL on every path: definite.
+    const SiteInfo *site = siteFor(call, core::Facet::Spatial);
+    decide(site, core::Facet::Spatial, core::FacetDecision::violation());
+    report(std::move(diagnostic), core::Certainty::Definite, site,
+           core::Facet::Spatial);
     return true;
   };
-  for (const SeekingRead &entry : SeekingReads) {
-    if (entry.name != name)
-      continue;
-    for (unsigned index = 0; index < call.getNumArgs() && index < 32; ++index) {
-      if ((entry.arguments & (1U << index)) != 0 && checkSeekingRead(index))
-        return;
-    }
-  }
-  std::optional<FormatNeed> format;
-  if (const auto formatIndex = formatIndexOf(*callee)) {
-    format = formatNeedOf(call, *formatIndex, state);
-    if (format && !options.checkContracts) {
-      for (const unsigned index : format->stringArguments) {
-        if (checkSeekingRead(index))
+  for (unsigned rowArg = 0; rowArg < row.params.size(); ++rowArg)
+    if (row.params[rowArg].string &&
+        checkSeekingRead(rowArgumentOf(call, *library, rowArg)))
+      return;
+  const auto formatIndex = formatIndexOf(call, *library);
+  if (formatIndex)
+    if (const auto format = formatNeedOf(call, *formatIndex, state))
+      for (const unsigned index : format->stringArguments)
+        if (checkSeekingRead(index < call.getNumArgs() ? call.getArg(index)
+                                                       : nullptr))
           return;
-      }
-    }
-  }
 
-  // 2. The needs of the copying functions against the destination.
-  const Expr *dest = argument(0);
-  if (dest == nullptr)
-    return;
-  std::optional<core::Affine> need;
-  bool lowerBound = false;
-  if (name == "strcpy" || name == "stpcpy") {
-    if (const Expr *source = argument(1)) {
-      if (const auto length = stringLengthOf(*source, state))
-        need = length->shifted(1);
+  // 2. A destination whose need is a string's length or a format's output
+  //    (`strcpy`, `stpcpy`, `strcat`, `sprintf`) against its extent.
+  for (unsigned rowArg = 0; rowArg < row.params.size(); ++rowArg) {
+    const core::LibraryParam &param = row.params[rowArg];
+    if (!param.bytes ||
+        (!param.bytes->mentions(core::LibTerm::Kind::StringLength) &&
+         !param.bytes->mentions(core::LibTerm::Kind::FormatLength)))
+      continue;
+    const Expr *dest = rowArgumentOf(call, *library, rowArg);
+    if (dest == nullptr)
+      continue;
+    bool lowerBound = false;
+    const auto need =
+        stringTermValue(*param.bytes, call, *library, state, lowerBound);
+    if (!need)
+      continue;
+    const auto subject = stringSubjectOf(*dest, state);
+    if (!subject)
+      continue;
+    const auto total = need->shifted(subject->offset);
+    if (!total)
+      continue;
+    if (!subject->extent) {
+      // RFC 0012, *String checks*: a constant need on a parameter of unknown
+      // extent is what this function requires of its caller.
+      if (total->isConstant() && !lowerBound)
+        noteExtentRequirement(subject->key, *total, state);
+      continue;
     }
-  } else if (name == "strcat") {
-    const Expr *source = argument(1);
-    const auto before = stringLengthOf(*dest, state);
-    const auto added =
-        source != nullptr ? stringLengthOf(*source, state) : std::nullopt;
-    if (before && added) {
-      if (const auto sum = sumOf(*before, *added))
-        need = sum->shifted(1);
-    }
-  } else if (name == "sprintf" && format) {
-    need = format->lower.shifted(1);
-    lowerBound = !format->exact;
-  } else {
-    return;
+    reportBounds(*total, *subject->extent, *dest, {}, subject->name, nullptr,
+                 &call, state, lowerBound);
   }
-  if (!need)
-    return;
-  const auto subject = stringSubjectOf(*dest, state);
-  if (!subject)
-    return;
-  const auto total = need->shifted(subject->offset);
-  if (!total)
-    return;
-  if (!subject->extent) {
-    // RFC 0012, *String checks*: a constant need on a parameter of unknown
-    // extent is what this function requires of its caller.
-    if (total->isConstant() && !lowerBound)
-      noteExtentRequirement(subject->key, *total, state);
-    return;
-  }
-  reportBounds(*total, *subject->extent, *dest, {}, subject->name, nullptr,
-               &call, state, lowerBound);
 }
 
 // -- Stores and initialisers --------------------------------------------------

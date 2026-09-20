@@ -1,0 +1,10 @@
+--- a/sds.c
++++ b/sds.c
+@@ -887,6 +887,7 @@
+     while(count--)
+         sdsfree(tokens[count]);
+     s_free(tokens);
++    s_free(tokens); /* INJECTED: double free */
+ }
+ 
+ /* Append to the sds string "s" an escaped string representation where

@@ -1,0 +1,11 @@
+--- a/src/dump.c
++++ b/src/dump.c
+@@ -238,7 +238,7 @@
+             char buffer[MAX_INTEGER_STR_LENGTH];
+             int size;
+ 
+-            size = snprintf(buffer, MAX_INTEGER_STR_LENGTH, "%" JSON_INTEGER_FORMAT,
++            size = snprintf(buffer, MAX_INTEGER_STR_LENGTH + 1, "%" JSON_INTEGER_FORMAT, /* INJECTED: size one larger than the buffer */
+                             json_integer_value(json));
+             if (size < 0 || size >= MAX_INTEGER_STR_LENGTH)
+                 return -1;

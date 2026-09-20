@@ -18,8 +18,7 @@ namespace weavec::analysis {
 
 core::IntegerRange
 FunctionDataflow::integerRangeAt(core::PlaceId place, core::IntegerType type,
-                                 const core::AnalysisState &state,
-                                 unsigned equalityDepth) {
+                                 const core::AnalysisState &state) {
   auto range = core::IntegerRange::full(type);
   if (builder.isLengthPlace(place)) {
     const auto sizeType = integerTypeOf(context.getSizeType(), context);
@@ -34,9 +33,6 @@ FunctionDataflow::integerRangeAt(core::PlaceId place, core::IntegerType type,
       range = core::IntegerRange::full(*storage).converted(type);
   if (const auto fact = state.scalars.factOf(place))
     range = range.intersect(fact->inType(type));
-  if (checkedZeroInteger(place, state))
-    range = range.intersect(
-        core::IntegerRange::singleton(core::IntegerValue::ofBits(type, 0)));
   const auto restrict = [&](std::optional<std::int64_t> bound,
                             core::IntegerOp op) {
     if (!bound)
@@ -68,52 +64,8 @@ FunctionDataflow::integerRangeAt(core::PlaceId place, core::IntegerType type,
     auto otherRange = core::IntegerRange::full(*otherType);
     if (const auto fact = state.scalars.factOf(other))
       otherRange = otherRange.intersect(fact->inType(*otherType));
-    if (equalityDepth == 0 && state.safety &&
-        edge->relation == core::Relation::Equal &&
-        checkedLoopCounters.contains(place) &&
-        checkedLoopCounters.contains(other))
-      otherRange = otherRange.intersect(
-          integerRangeAt(other, *otherType, state, equalityDepth + 1));
     if (otherRange.empty())
       continue;
-    // RFC 0026: size_t's upper half is not representable by signedValue().
-    // Keep mathematical relation bounds in unsigned target order, so len<cap
-    // excludes SIZE_MAX before incrementing len. No wrapped bound is used.
-    if (state.safety && !type.isSigned && !otherType->isSigned) {
-      const auto restrictUnsigned = [&](std::uint64_t value, int extra,
-                                        core::IntegerOp operation) {
-        std::int64_t delta = 0;
-        if (__builtin_add_overflow(edge->offset, extra, &delta))
-          return;
-        if (delta < 0) {
-          const auto magnitude =
-              std::uint64_t{0} - static_cast<std::uint64_t>(delta);
-          if (value < magnitude)
-            return;
-          value -= magnitude;
-        } else {
-          if (__builtin_add_overflow(value, static_cast<std::uint64_t>(delta),
-                                     &value))
-            return;
-        }
-        if (value <= type.mask())
-          range = range.satisfying(
-              operation, core::IntegerRange::singleton(
-                             core::IntegerValue::ofBits(type, value)));
-      };
-      if (edge->relation == core::Relation::Less ||
-          edge->relation == core::Relation::LessEqual ||
-          edge->relation == core::Relation::Equal)
-        restrictUnsigned(otherRange.maximum()->bits,
-                         edge->relation == core::Relation::Less ? -1 : 0,
-                         core::IntegerOp::LessEqual);
-      if (edge->relation == core::Relation::Greater ||
-          edge->relation == core::Relation::GreaterEqual ||
-          edge->relation == core::Relation::Equal)
-        restrictUnsigned(otherRange.minimum()->bits,
-                         edge->relation == core::Relation::Greater ? 1 : 0,
-                         core::IntegerOp::GreaterEqual);
-    }
     const auto shifted = [&](std::optional<std::int64_t> value,
                              int extra) -> std::optional<std::int64_t> {
       if (!value || __builtin_add_overflow(*value, edge->offset, &*value) ||
@@ -172,8 +124,6 @@ std::optional<core::IntegerRangeEvaluation> FunctionDataflow::integerRangeOf(
                 : unknown();
   }
   if (const auto *binary = dyn_cast<BinaryOperator>(e)) {
-    if (const auto pointer = checkedPointerRange(*binary, state))
-      return core::IntegerRangeEvaluation{.values = *pointer};
     if (binary->getOpcode() == BO_Assign || binary->getOpcode() == BO_Comma)
       return child(*binary->getRHS());
     if (binary->isCompoundAssignmentOp()) {
@@ -209,8 +159,20 @@ std::optional<core::IntegerRangeEvaluation> FunctionDataflow::integerRangeOf(
         (*op == core::IntegerOp::Add || *op == core::IntegerOp::Subtract ||
          *op == core::IntegerOp::Multiply)) {
       const auto expression = integerExpressionOf(*binary, state);
-      if (expression)
-        result = evaluateNumericExpression(*expression, state);
+      if (expression) {
+        auto symbolic = evaluateNumericExpression(*expression, state);
+        // Both forms describe this expression, and neither subsumes the
+        // other: the symbolic form relates the operands to one another
+        // through the recorded conditions, while the interval form reads
+        // each operand's own fact — which, for a reassigned parameter, is
+        // the only place the narrowing lives (the symbolic form reads that
+        // parameter's entry snapshot, which no later test narrows). Keep
+        // both (RFC 0009, *Scalar facts in the state*).
+        if (!symbolic.mayBeInvalid && !result.mayBeInvalid &&
+            symbolic.values.type == result.values.type)
+          symbolic.values = symbolic.values.intersect(result.values);
+        result = symbolic;
+      }
     }
     if (lhs->mayBeInvalid || rhs->mayBeInvalid) {
       result.values = core::IntegerRange::full(result.values.type);
@@ -298,8 +260,6 @@ std::optional<core::IntegerRangeEvaluation> FunctionDataflow::integerRangeOf(
         .mayBeInvalid = a->mayBeInvalid || b->mayBeInvalid};
   }
   if (PlaceBuilder::isPlaceExpr(*e)) {
-    if (const auto bytes = checkedByteRange(*e, state))
-      return core::IntegerRangeEvaluation{.values = bytes->converted(*type)};
     if (const auto *ref = dyn_cast<DeclRefExpr>(e);
         ref && isa<EnumConstantDecl>(ref->getDecl())) {
       const auto &value = cast<EnumConstantDecl>(ref->getDecl())->getInitVal();
@@ -322,7 +282,7 @@ std::optional<core::IntegerRangeEvaluation> FunctionDataflow::integerRangeOf(
     }
     return unknown();
   }
-  if (weavec::analysis::PlaceBuilder::strlenArgumentOf(*e))
+  if (builder.strlenArgumentOf(*e))
     if (const auto length = builder.legacyAffineOf(*e);
         length && length->place && length->scale == 1 && length->constant == 0)
       return core::IntegerRangeEvaluation{
@@ -404,7 +364,7 @@ void FunctionDataflow::checkIntegerOperation(const Expr &expr,
   if (!expr.getType()->isIntegerType())
     return;
   if (!integerTypeOf(expr.getType(), context)) {
-    reportIncomplete("unsupported integer width greater than 64 bits", expr);
+    decideIncomplete("unsupported integer width greater than 64 bits", expr);
     return;
   }
   const auto *binary = dyn_cast<BinaryOperator>(&expr);
@@ -439,21 +399,8 @@ bool FunctionDataflow::refineIntegerComparison(const Expr &lhs,
   const auto left = builder.scalarOperand(lhs);
   const auto right = builder.scalarOperand(rhs);
   const auto trusted = [&](const PlaceBuilder::ScalarOperand &read) {
-    if (!read.place || !places.innermostDeref(read.place->place) ||
-        !memoryContext.empty())
-      return true;
-    const auto memory = checkedScalarMemory(read.place->place, state);
-    if (!memory || !memory->extent || !checkedValid(*memory, state) ||
-        !checkedInitialized(*memory, state) ||
-        !checkedInterval(memory->begin, memory->end, *memory->extent, state))
-      return false;
-    const auto *local = builder.varForPlace(places.root(memory->storage));
-    if (local && local->hasLocalStorage() &&
-        !places.innermostDeref(memory->storage))
-      return true;
-    return std::ranges::any_of(checkedObjects, [&](const auto &entry) {
-      return entry.second == memory->storage;
-    });
+    return !read.place || !places.innermostDeref(read.place->place) ||
+           !memoryContext.empty();
   };
   if (narrowed.empty()) {
     if (trusted(left) && trusted(right))
@@ -496,12 +443,6 @@ FunctionDataflow::integerBounds(core::PlaceId place,
   const auto fact = state.scalars.factOf(place);
   if (!type && fact && fact->integer)
     type = fact->integer->type;
-  if (!type && state.safety &&
-      (checkedTerminatorInputs.contains(place) ||
-       std::ranges::any_of(checkedCoordinates, [&](const auto &entry) {
-         return entry.second == place;
-       })))
-    type = core::IntegerType{.width = 64, .isSigned = false};
   if (!type)
     return {lower, upper};
   const auto range = integerRangeAt(place, *type, state);
@@ -519,7 +460,7 @@ FunctionDataflow::integerBounds(core::PlaceId place,
 
 void FunctionDataflow::recordSpatialCheck(const Expr &at,
                                           core::SpatialCheck check) {
-  if (!recording())
+  if (!recording() || boundsDecisionOnly)
     return;
   auto [it, added] = spatialChecks.try_emplace(&at, check);
   if (added || it->second.outcome == core::SpatialOutcome::Violation)
@@ -533,61 +474,12 @@ void FunctionDataflow::recordSpatialCheck(const Expr &at,
     it->second = check;
 }
 
-static std::optional<core::IntegerExpression<core::PlaceId>>
-traversalConditionExpression(const Expr &expr, PlaceBuilder &builder,
-                             ASTContext &context, unsigned depth = 0) {
-  using Expression = core::IntegerExpression<core::PlaceId>;
-  if (depth == 12 || expr.HasSideEffects(context))
-    return std::nullopt;
-  const auto type = integerTypeOf(expr.getType(), context);
-  if (!type)
-    return std::nullopt;
-  const auto *value = expr.IgnoreParens();
-  if (const auto *cast = dyn_cast<CastExpr>(value)) {
-    const auto input = traversalConditionExpression(
-        *cast->getSubExpr(), builder, context, depth + 1);
-    return input ? input->converted(*type) : std::nullopt;
-  }
-  if (const auto *ref = dyn_cast<DeclRefExpr>(value))
-    if (const auto *var = dyn_cast<VarDecl>(ref->getDecl()))
-      return Expression::input(builder.placeForVar(*var), *type);
-  if (const auto *literal = dyn_cast<IntegerLiteral>(value))
-    return Expression::constant(core::IntegerValue::ofBits(
-        *type, literal->getValue().getLimitedValue()));
-  if (const auto *binary = dyn_cast<BinaryOperator>(value)) {
-    const auto op = integerOpOf(binary->getOpcode());
-    const auto a = traversalConditionExpression(*binary->getLHS(), builder,
-                                                context, depth + 1);
-    const auto b = traversalConditionExpression(*binary->getRHS(), builder,
-                                                context, depth + 1);
-    if (op && a && b)
-      return Expression::operation(
-          *op, *a, *b, context.getLangOpts().isSignedOverflowDefined());
-  }
-  return std::nullopt;
-}
-
 void FunctionDataflow::recordIntegerCondition(const Expr &lhs,
                                               core::IntegerOp op,
                                               const Expr &rhs,
                                               core::AnalysisState &state) {
-  auto a = integerExpressionOf(lhs, state);
-  auto b = integerExpressionOf(rhs, state);
-  const auto difference = [](const Expr &expr) {
-    const auto *binary = dyn_cast<BinaryOperator>(expr.IgnoreParenImpCasts());
-    return binary && binary->getOpcode() == BO_Sub &&
-           expr.getType()->isUnsignedIntegerType();
-  };
-  bool traversal = false;
-  if (state.safety && (difference(lhs) || difference(rhs))) {
-    const auto directA = traversalConditionExpression(lhs, builder, context);
-    const auto directB = traversalConditionExpression(rhs, builder, context);
-    if (directA && directB) {
-      a = directA;
-      b = directB;
-      traversal = true;
-    }
-  }
+  const auto a = integerExpressionOf(lhs, state);
+  const auto b = integerExpressionOf(rhs, state);
   if (!a || !b) {
     state.numericConditionsIncomplete = true;
     return;
@@ -598,7 +490,7 @@ void FunctionDataflow::recordIntegerCondition(const Expr &lhs,
           predicate.evaluate([&](core::PlaceId place, core::IntegerType type) {
             return integerRangeAt(place, type, state);
           });
-      known && *known && !traversal)
+      known && *known)
     return;
   if (state.numericConditions.size() >= core::MaxGuardConjuncts &&
       !std::ranges::binary_search(state.numericConditions.integers,
@@ -621,7 +513,7 @@ FunctionDataflow::translateIntegerGuard(const core::PathGuard &guard,
           return numericInput(call, path, type, state);
         });
     if (!mapped) {
-      reportIncomplete("unsupported numeric condition projection", call);
+      decideIncomplete("unsupported numeric condition projection", call);
       auto &unknown = integerStatementResults[&call];
       if (!unknown) {
         unknown = places.create("unresolved-integer-condition@" +

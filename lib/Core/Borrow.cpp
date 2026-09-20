@@ -82,9 +82,12 @@ void BorrowState::addLoanUnchecked(const Loan &loan) {
     live.insert(at, loan);
     return;
   }
-  // The same borrow from another site: one record, the earliest site.
+  // The same borrow from another site: one record, the earliest site. It
+  // holds on every path through here if the new record does (RFC 0030).
+  const bool allPaths = at->allPaths || loan.allPaths;
   if (locationKey(loan) < locationKey(*at))
     *at = loan;
+  at->allPaths = allPaths;
 }
 
 std::optional<BorrowConflict> BorrowState::checkMove(PlaceId place) const {
@@ -139,6 +142,12 @@ void BorrowState::copyHolder(PlaceId from, PlaceId to,
   }
 }
 
+void BorrowState::weakenHolder(PlaceId holder) {
+  for (Loan &loan : live)
+    if (loan.holder == holder)
+      loan.allPaths = false;
+}
+
 std::vector<Loan> BorrowState::heldBy(PlaceId holder) const {
   std::vector<Loan> result;
   for (const Loan &loan : live) {
@@ -149,51 +158,58 @@ std::vector<Loan> BorrowState::heldBy(PlaceId holder) const {
 }
 
 bool BorrowState::join(const BorrowState &other) {
-  if (other.live.empty())
-    return false;
-  if (live.empty()) {
-    live = other.live;
-    return true;
-  }
   // Both sides hold one loan per borrow, sorted by borrow then site. The
-  // union keeps one per borrow, at the earliest site. At the fixpoint
-  // nothing is new; find that out first, without copying a loan (each
-  // carries a file name).
-  const auto absorbs = [](const Loan &mine, const Loan &theirs) {
-    return sameBorrow(mine, theirs) && locationKey(mine) <= locationKey(theirs);
+  // union keeps one per borrow, at the earliest site; a borrow on one side
+  // only holds on some paths (RFC 0030 §3.1). At the fixpoint nothing is
+  // new; find that out first, without copying a loan (each carries a file
+  // name).
+  const auto hereOnly = [&](auto mine, auto theirs) {
+    return theirs == other.live.end() ||
+           (mine != live.end() && borrowKey(*mine) < borrowKey(*theirs));
+  };
+  const auto thereOnly = [&](auto mine, auto theirs) {
+    return mine == live.end() || borrowKey(*theirs) < borrowKey(*mine);
   };
   {
     auto mine = live.begin();
-    bool covered = true;
-    for (const Loan &theirs : other.live) {
-      while (mine != live.end() && borrowKey(*mine) < borrowKey(theirs))
+    auto theirs = other.live.begin();
+    bool unchanged = true;
+    while (unchanged && (mine != live.end() || theirs != other.live.end())) {
+      if (hereOnly(mine, theirs)) {
+        unchanged = !mine->allPaths;
         ++mine;
-      if (mine == live.end() || !absorbs(*mine, theirs)) {
-        covered = false;
-        break;
+      } else if (thereOnly(mine, theirs)) {
+        unchanged = false;
+      } else {
+        unchanged = locationKey(*mine) <= locationKey(*theirs) &&
+                    (!mine->allPaths || theirs->allPaths);
+        ++mine;
+        ++theirs;
       }
     }
-    if (covered)
+    if (unchanged)
       return false;
   }
   std::vector<Loan> merged;
   merged.reserve(live.size() + other.live.size());
   auto mine = live.begin();
   auto theirs = other.live.begin();
-  while (mine != live.end() && theirs != other.live.end()) {
-    if (sameBorrow(*mine, *theirs)) {
+  while (mine != live.end() || theirs != other.live.end()) {
+    if (hereOnly(mine, theirs)) {
+      merged.push_back(*mine++);
+      merged.back().allPaths = false;
+    } else if (thereOnly(mine, theirs)) {
+      merged.push_back(*theirs++);
+      merged.back().allPaths = false;
+    } else {
+      const bool allPaths = mine->allPaths && theirs->allPaths;
       merged.push_back(locationKey(*mine) <= locationKey(*theirs) ? *mine
                                                                   : *theirs);
+      merged.back().allPaths = allPaths;
       ++mine;
       ++theirs;
-    } else if (borrowKey(*mine) < borrowKey(*theirs)) {
-      merged.push_back(*mine++);
-    } else {
-      merged.push_back(*theirs++);
     }
   }
-  merged.insert(merged.end(), mine, live.end());
-  merged.insert(merged.end(), theirs, other.live.end());
   live = std::move(merged);
   return true;
 }

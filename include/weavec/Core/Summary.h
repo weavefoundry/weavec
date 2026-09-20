@@ -29,7 +29,6 @@
 #include "weavec/Core/Offset.h"
 #include "weavec/Core/Ownership.h"
 #include "weavec/Core/Place.h"
-#include "weavec/Core/Safety.h"
 #include "weavec/Core/Scalar.h"
 
 #include <algorithm>
@@ -64,9 +63,16 @@ struct PathElem {
   PathStep step = PathStep::Field;
   std::string field;
 
-  friend bool operator==(const PathElem &, const PathElem &) = default;
-  friend std::strong_ordering operator<=>(const PathElem &,
-                                          const PathElem &) = default;
+  // The defaulted comparisons, with the name compared in line.
+  friend bool operator==(const PathElem &a, const PathElem &b) noexcept {
+    return a.step == b.step && sameText(a.field, b.field);
+  }
+  friend std::strong_ordering operator<=>(const PathElem &a,
+                                          const PathElem &b) noexcept {
+    if (const auto order = a.step <=> b.step; order != 0)
+      return order;
+    return compareText(a.field, b.field);
+  }
 };
 
 /// RFC 0028: immutable shared steps, with prefixes and explicit detaching
@@ -173,8 +179,6 @@ using PathGuard = GuardOn<SummaryPath>;
 /// path + constant` bytes, or `constant` alone. `xmalloc(n)` returns an
 /// object of `param 0 * 1 + 0` bytes; `make_node()` one of `sizeof(struct
 /// node)`.
-enum class AffineQuantity : std::uint8_t { Integer, Terminator };
-
 struct PathAffine {
   // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
   std::optional<SummaryPath> path = {};
@@ -184,7 +188,6 @@ struct PathAffine {
   // RFC 0017: an actual C value, followed by mathematical byte scaling.
   // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
   std::optional<IntegerExpression<SummaryPath>> expression = {};
-  AffineQuantity quantity = AffineQuantity::Integer;
 
   [[nodiscard]] static PathAffine
   ofExpression(IntegerExpression<SummaryPath> value, std::int64_t scale = 1,
@@ -199,14 +202,6 @@ struct PathAffine {
   ofPath(SummaryPath path, std::int64_t scale = 1, std::int64_t constant = 0) {
     return PathAffine{
         .path = std::move(path), .scale = scale, .constant = constant};
-  }
-  [[nodiscard]] static PathAffine ofTerminator(SummaryPath path,
-                                               std::int64_t scale = 1,
-                                               std::int64_t constant = 0) {
-    return {.path = std::move(path),
-            .scale = scale,
-            .constant = constant,
-            .quantity = AffineQuantity::Terminator};
   }
   [[nodiscard]] bool isConstant() const noexcept {
     return !path && !expression;
@@ -248,157 +243,6 @@ struct ExtentRequirement {
                                           const ExtentRequirement &) = default;
 };
 
-/// RFC 0018: sufficient conditions, separate from reachable bug witnesses.
-enum class CheckedRequirementKind : std::uint8_t {
-  Valid,
-  Extent,
-  Initialized,
-  Release,
-  Separated,
-  Writable,
-  Terminated,
-  Copied,
-  SumFits,
-  Zeroed,
-  /// RFC 0021: inclusive byte displacement from the entry pointer in other.
-  Position,
-  /// RFC 0021: advance(path) <= advance(other) + end.constant.
-  Progress,
-  /// RFC 0022: family encodes the required target object view.
-  ObjectType,
-  /// RFC 0023: family encodes a sufficient linked-container predicate.
-  Container,
-  /// RFC 0023: disjoint node/payload footprints, not just distinct heads.
-  ContainerSeparated,
-  /// RFC 0023: output capability derives from the call-entry chain in other.
-  ContainerDerived,
-  /// RFC 0023: output has a fresh, separated owned allocation footprint.
-  ContainerFresh,
-  /// RFC 0023: the output is a saved successor, separate from the input head.
-  ContainerTail,
-  /// RFC 0024: format plus trailing pack (begin >= 0) or list (begin=-1).
-  FormatArguments,
-  /// RFC 0024: sufficient initialized, unconsumed va_list input.
-  ArgumentList,
-  /// RFC 0024: input list cannot be traversed again after this call.
-  ArgumentListConsumed,
-  TerminatedWithin,
-  /// RFC 0024: named environmental stream; paths and bounds are unused.
-  StandardStream,
-  /// RFC 0025: independent initialized member view of overlapping storage.
-  UnionMember,
-  /// RFC 0026: current contiguous container invariant.
-  Buffer,
-  BufferPreserved,
-  BufferAppended,
-  /// RFC 0027: output path contains exactly the entry footprint in other.
-  ContainerPreserved,
-  /// RFC 0027: every allocation in the entry footprint in path was released.
-  ContainerConsumed,
-  /// RFC 0027: output path + output other partition the entry in begin.path.
-  ContainerPartition,
-  /// RFC 0027: output path is the union of entry other and entry begin.path.
-  ContainerCombined,
-  /// RFC 0028: the entry parameter's single allocation was definitely freed.
-  AllocationConsumed,
-  /// RFC 0029: synchronous allocator/releaser behavior of an entry callback.
-  CallbackAllocate,
-  CallbackRelease,
-  /// RFC 0029: live initialized byte interval [path, other).
-  InitializedSpan,
-  /// RFC 0029: nonnegative integer result bounded by an entry byte span.
-  CountWithinSpan,
-  /// RFC 0029: initialized bytes from entry other to the final path position.
-  InitializedAdvance,
-  /// RFC 0029: unchanged entry head plus a disjoint fresh allocation region.
-  ContainerExtended
-};
-struct CheckedRequirement {
-  CheckedRequirementKind kind = CheckedRequirementKind::Valid;
-  SummaryPath path;
-  SummaryPath other;
-  PathAffine begin = PathAffine::ofConstant(0);
-  PathAffine end = PathAffine::ofConstant(0);
-  std::string family;
-  /// RFC 0019: sufficient input implication or established output condition.
-  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
-  PathGuard when = {};
-  /// Only output facts may be restricted to a returning outcome.
-  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
-  std::optional<Outcome> on = {};
-  /// RFC 0022: memory output holds when its final destination pointer is
-  /// non-null.
-  bool ifNonNull = false;
-  friend auto operator<=>(const CheckedRequirement &,
-                          const CheckedRequirement &) = default;
-};
-
-/// RFC 0021: copied contracts retain immutable requirement/output storage.
-/// Mutations detach; no iterator permits changes to a shared entry.
-class CheckedRequirements {
-public:
-  using Set = std::set<CheckedRequirement>;
-  using ConstIterator = Set::const_iterator;
-  CheckedRequirements() = default;
-  CheckedRequirements(std::initializer_list<CheckedRequirement> entries);
-  [[nodiscard]] ConstIterator begin() const { return entries().begin(); }
-  [[nodiscard]] ConstIterator end() const { return entries().end(); }
-  [[nodiscard]] bool empty() const { return entries().empty(); }
-  [[nodiscard]] std::size_t size() const { return entries().size(); }
-  [[nodiscard]] bool contains(const CheckedRequirement &entry) const {
-    return entries().contains(entry);
-  }
-  std::pair<ConstIterator, bool> insert(CheckedRequirement entry);
-  void clear() { values.reset(); }
-  void assign(Set entries);
-  void intersect(const CheckedRequirements &other);
-  friend bool operator==(const CheckedRequirements &left,
-                         const CheckedRequirements &right) {
-    return left.values == right.values || left.entries() == right.entries();
-  }
-
-private:
-  [[nodiscard]] const Set &entries() const;
-  Set &writable();
-  std::shared_ptr<Set> values;
-};
-
-struct CheckedContract {
-  /// Frontend canonical C function type. Empty only for synthetic Core values.
-  std::string signature;
-  bool computed = false;
-  bool selected = false;
-  bool deferred = false;
-  bool limited = false;
-  CheckedRequirements requirements;
-  CheckedRequirements establishes;
-  SafetyLedger obligations;
-  /// RFC 0025: optional selector discovery, never proof or an entry premise.
-  std::set<SummaryPath> caseInputs;
-
-  void noteCaseInput(const SummaryPath &path);
-
-  void require(CheckedRequirement requirement);
-  void establish(CheckedRequirement requirement);
-  /// RFC 0027: dependent outputs need premises retained within contract bounds.
-  [[nodiscard]] bool
-  hasContainerOutputPremises(const CheckedRequirement &post) const;
-  void discardUnrepresentedContainerOutputs();
-  void join(const CheckedContract &other);
-  [[nodiscard]] bool complete() const {
-    return computed && !limited && !deferred && obligations.complete();
-  }
-  friend bool operator==(const CheckedContract &,
-                         const CheckedContract &) = default;
-};
-[[nodiscard]] std::string_view toString(CheckedRequirementKind value) noexcept;
-[[nodiscard]] std::optional<CheckedRequirementKind>
-parseCheckedRequirementKind(std::string_view value);
-/// RFC 0023: retain every input premise when joining derived chain outputs.
-[[nodiscard]] std::optional<CheckedRequirement>
-joinContainerOutput(const CheckedRequirement &first,
-                    const CheckedRequirement &second);
-
 /// What the callee may do to the object at a summary path.
 struct PlaceEffect {
   /// The object is loaded from (through a dereference of the root).
@@ -437,6 +281,23 @@ struct PlaceEffect {
   /// The caller marks its argument escaped, as it does for a value a
   /// `store` copies (RFC 0007, *Escape*). A may-fact: joins by disjunction.
   bool escaped = false;
+  /// RFC 0030 §5.1: the value at the path was handed to code WeaveC cannot
+  /// see (an unknown callee, inline assembly, an open slot, or a callee
+  /// whose summary is incomplete or over budget), which may have released,
+  /// retained or replaced it and written what it reaches. The caller applies
+  /// the unknown-callee default to its value: a release record of unknown
+  /// origin, never diagnosed, and nothing known below it. A may-fact: joins
+  /// by disjunction.
+  bool unknown = false;
+  /// RFC 0030 §9.1: the consume was widened when the case was derived — a
+  /// guard conjunct the summary cannot name was dropped, or the classes
+  /// were folded together under the two-case limit — so it is claimed on
+  /// paths the callee does not consume on. Sound for proofs, never for a
+  /// definite finding: a record a caller makes from it stays `conditional`
+  /// even after a test of the result selects its class (§3.1), so it can
+  /// only ever give a possible warning. Meaningful only when `freed` or
+  /// `moved` is set. A may-fact: joins by disjunction.
+  bool lossy = false;
   /// The release family of the consume (RFC 0007): the canonical releaser
   /// the resource ends up with (`free`, `fclose`, ...); empty when unknown.
   /// Meaningful only when `freed` or `moved` is set.
@@ -459,7 +320,7 @@ struct PlaceEffect {
   PointerOffset at = {};
 
   [[nodiscard]] bool empty() const noexcept {
-    return !read && !written && !freed && !moved && !escaped;
+    return !read && !written && !freed && !moved && !escaped && !unknown;
   }
   [[nodiscard]] bool consumed() const noexcept { return freed || moved; }
   /// Anything that changes the object: a caller must hold no loan on it.
@@ -720,7 +581,6 @@ struct ArrayRelease {
 /// The interface behaviour of one function (RFC 0003, *Summaries*).
 class FunctionSummary {
 public:
-  CheckedContract checked;
   /// RFC 0014: explicit reasons why this summary is incomplete.
   std::set<std::string> incomplete;
   /// RFC 0014: interface paths whose function values specialize this body.

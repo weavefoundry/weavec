@@ -32,10 +32,12 @@ void g(void) {}
 // resources and their release family show in the exit state (RFC 0007), and
 // what is known about nullness in `nulls{}` (RFC 0008): the unchecked
 // `malloc` result may be null, so the store may be null too, and reading
-// `p->buf` requires `p` (and proves it non-null from there on).
+// `p->buf` requires `p` (and proves it non-null from there on). Its spatial
+// facet is proven by `p`'s Single default (RFC 0030 §7.3), a lower bound of
+// one `struct s`.
 // CHECK-LABEL: function 'h':
 // CHECK: exit: moved{} loans{} aliases{} raw{} owned{gp@[[@LINE+5]]:{{[0-9]+}} allocated free} nulls{p@[[@LINE+6]]:{{[0-9]+}} nonnull, gp@[[@LINE+5]]:{{[0-9]+}} maybe-null}
-// CHECK-NEXT: spatial: proven=0 violation=0 unresolved=1 [unknown extent: 1]
+// CHECK-NEXT: spatial: proven=1 violation=0 unresolved=0
 // CHECK-NEXT: summary: p->buf: read; stores{gp = fresh(free) extent=4, gp = null} returns{copy p->buf} requires{p}
 static int *gp;
 int *h(struct s *p) {

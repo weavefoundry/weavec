@@ -1,1 +1,0 @@
-Frozen against candidate81a before preserving actual constant-array byte contents across complete helpers with represented writes to other input and global objects. A const pointer alone supplies no such premise. Actual content changes, writing a constant object, an uninitialized object, a wrong byte, and an unknown call remain negative.

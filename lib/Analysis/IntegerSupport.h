@@ -16,6 +16,7 @@
 #include "clang/AST/Expr.h"
 #include "clang/AST/OperationKinds.h"
 #include "clang/AST/Type.h"
+#include "clang/Basic/Builtins.h"
 
 #include <optional>
 
@@ -28,27 +29,40 @@ inline std::uint64_t unsignedMagnitude(std::int64_t value) {
 
 [[nodiscard]] inline std::optional<core::IntegerOp>
 checkedIntegerOp(const clang::CallExpr &call) {
+  // The value rule of the overflow-checking compiler builtins, by their
+  // builtin id (RFC 0030 §8: their rows give only the write through the
+  // result pointer).
   const auto *callee = call.getDirectCallee();
-  if (!callee || !callee->getIdentifier() || callee->getBuiltinID() == 0 ||
-      call.getNumArgs() != 3)
+  if (!callee || call.getNumArgs() != 3)
     return std::nullopt;
-  auto name = callee->getName();
-  if (!name.consume_front("__builtin_") || !name.consume_back("_overflow"))
+  switch (callee->getBuiltinID()) {
+  case clang::Builtin::BI__builtin_add_overflow:
+  case clang::Builtin::BI__builtin_sadd_overflow:
+  case clang::Builtin::BI__builtin_saddl_overflow:
+  case clang::Builtin::BI__builtin_saddll_overflow:
+  case clang::Builtin::BI__builtin_uadd_overflow:
+  case clang::Builtin::BI__builtin_uaddl_overflow:
+  case clang::Builtin::BI__builtin_uaddll_overflow:
+    return core::IntegerOp::Add;
+  case clang::Builtin::BI__builtin_sub_overflow:
+  case clang::Builtin::BI__builtin_ssub_overflow:
+  case clang::Builtin::BI__builtin_ssubl_overflow:
+  case clang::Builtin::BI__builtin_ssubll_overflow:
+  case clang::Builtin::BI__builtin_usub_overflow:
+  case clang::Builtin::BI__builtin_usubl_overflow:
+  case clang::Builtin::BI__builtin_usubll_overflow:
+    return core::IntegerOp::Subtract;
+  case clang::Builtin::BI__builtin_mul_overflow:
+  case clang::Builtin::BI__builtin_smul_overflow:
+  case clang::Builtin::BI__builtin_smull_overflow:
+  case clang::Builtin::BI__builtin_smulll_overflow:
+  case clang::Builtin::BI__builtin_umul_overflow:
+  case clang::Builtin::BI__builtin_umull_overflow:
+  case clang::Builtin::BI__builtin_umulll_overflow:
+    return core::IntegerOp::Multiply;
+  default:
     return std::nullopt;
-  if (name.starts_with("sadd") || name.starts_with("ssub") ||
-      name.starts_with("smul") || name.starts_with("uadd") ||
-      name.starts_with("usub") || name.starts_with("umul"))
-    name = name.drop_front();
-  std::optional<core::IntegerOp> op;
-  if (name.consume_front("add"))
-    op = core::IntegerOp::Add;
-  else if (name.consume_front("sub"))
-    op = core::IntegerOp::Subtract;
-  else if (name.consume_front("mul"))
-    op = core::IntegerOp::Multiply;
-  if (!name.empty() && name != "l" && name != "ll")
-    return std::nullopt;
-  return op;
+  }
 }
 
 [[nodiscard]] inline std::optional<core::IntegerType>

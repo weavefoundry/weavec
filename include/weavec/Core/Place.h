@@ -36,6 +36,31 @@
 
 namespace weavec::core {
 
+/// `a == b` for the short names of places and summaries (field names,
+/// callee names), compared in line: a call to `memcmp` per name dominated
+/// the comparisons of summary paths and records.
+[[nodiscard]] inline bool sameText(std::string_view a,
+                                   std::string_view b) noexcept {
+  if (a.size() != b.size())
+    return false;
+  for (std::size_t i = 0; i < a.size(); ++i)
+    if (a[i] != b[i])
+      return false;
+  return true;
+}
+
+/// `a <=> b` as `std::string` orders them (bytes as unsigned characters,
+/// then length), compared in line (see `sameText`).
+[[nodiscard]] inline std::strong_ordering
+compareText(std::string_view a, std::string_view b) noexcept {
+  const std::size_t common = a.size() < b.size() ? a.size() : b.size();
+  for (std::size_t i = 0; i < common; ++i)
+    if (a[i] != b[i])
+      return static_cast<unsigned char>(a[i]) <=>
+             static_cast<unsigned char>(b[i]);
+  return a.size() <=> b.size();
+}
+
 /// Opaque identifier for a place within one analysis unit.
 struct PlaceId {
   std::uint32_t value = 0;

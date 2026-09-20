@@ -46,7 +46,7 @@ TEST(DiagnosticCollector, CountsBySeverity) {
   EXPECT_FALSE(collector.hasErrors());
 
   collector.report(Diagnostic{.severity = Severity::Warning,
-                              .id = diag::AnnotationRequired,
+                              .id = diag::Leak,
                               .message = "w",
                               .location = {},
                               .notes = {},
@@ -76,14 +76,62 @@ TEST(DiagnosticIds, PointerValidityIdsAreKnown) {
   for (const std::string_view id :
        {diag::NullDereference, diag::UseOfUninitialized, diag::InvalidRelease})
     EXPECT_TRUE(diag::isKnown(id)) << id;
-  EXPECT_EQ(diag::All.size(), 19U);
+  // RFC 0030, *Diagnostics*: 15 kept ids and 5 added ones.
+  EXPECT_EQ(diag::All.size(), 20U);
 }
 
 TEST(DiagnosticIds, SpatialSafetyIdIsKnown) {
-  // RFC 0011, *Diagnostics*.
+  // RFC 0011, *Diagnostics*; RFC 0030 §3.3: an error, and only definite.
   EXPECT_EQ(diag::OutOfBounds, "out-of-bounds");
   EXPECT_TRUE(diag::isKnown(diag::OutOfBounds));
-  EXPECT_FALSE(diag::isWarningByDefault(diag::OutOfBounds));
+  EXPECT_EQ(diag::defaultSeverity(diag::OutOfBounds, Certainty::Definite),
+            Severity::Error);
+  EXPECT_EQ(diag::defaultSeverity(diag::OutOfBounds, Certainty::Possible),
+            Severity::Error);
+}
+
+TEST(DiagnosticIds, ProveOrTrapIdsAreKnown) {
+  // RFC 0030, *Diagnostics*: the five added ids and their severities.
+  EXPECT_EQ(diag::ContradictedAssumption, "contradicted-assumption");
+  EXPECT_EQ(diag::AllocationFailure, "allocation-failure");
+  EXPECT_EQ(diag::UnresolvedOperation, "unresolved-operation");
+  EXPECT_EQ(diag::UncheckedOperation, "unchecked-operation");
+  EXPECT_EQ(diag::UnanalyzedInput, "unanalyzed-input");
+  for (const std::string_view id :
+       {diag::ContradictedAssumption, diag::UnresolvedOperation,
+        diag::UncheckedOperation}) {
+    EXPECT_TRUE(diag::isKnown(id)) << id;
+    EXPECT_EQ(diag::defaultSeverity(id, Certainty::Definite), Severity::Error)
+        << id;
+    EXPECT_TRUE(diag::isEnabledByDefault(id)) << id;
+  }
+  for (const std::string_view id :
+       {diag::AllocationFailure, diag::UnanalyzedInput}) {
+    EXPECT_TRUE(diag::isKnown(id)) << id;
+    EXPECT_EQ(diag::defaultSeverity(id, Certainty::Definite), Severity::Warning)
+        << id;
+  }
+  EXPECT_FALSE(diag::isEnabledByDefault(diag::AllocationFailure));
+  EXPECT_TRUE(diag::isEnabledByDefault(diag::UnanalyzedInput));
+  // A temporal id is an error when definite and a warning when possible.
+  EXPECT_EQ(diag::defaultSeverity(diag::UseAfterFree, Certainty::Definite),
+            Severity::Error);
+  EXPECT_EQ(diag::defaultSeverity(diag::UseAfterFree, Certainty::Possible),
+            Severity::Warning);
+  // Checked mode's ids are gone, and so are the two RFC 0030 replaces with
+  // ledger rows (`unresolved(unanalysed | budget | ...)`, and
+  // `unresolved(unknown-callee)` with a fix-it).
+  for (const std::string_view id :
+       {"checking-incomplete", "checking-failed", "analysis-incomplete",
+        "annotation-required"}) {
+    EXPECT_TRUE(diag::isRemoved(id)) << id;
+    EXPECT_FALSE(diag::isKnown(id)) << id;
+  }
+}
+
+TEST(Diagnostic, CertaintyDefaultsToDefinite) {
+  const Diagnostic diagnostic{};
+  EXPECT_EQ(diagnostic.certainty, Certainty::Definite);
 }
 
 TEST(Severity, ToString) {

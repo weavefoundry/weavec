@@ -63,23 +63,7 @@ void FunctionDataflow::snapshotScalar(core::PlaceId place,
       state.numericConditions.integers, [place](const auto &predicate) {
         return predicate.lhs.dependsOn(place) || predicate.rhs.dependsOn(place);
       });
-  const bool positionsAffected =
-      state.safety &&
-      std::ranges::any_of(state.safety->positions, [&](const auto &entry) {
-        return entry.second.offset.place == place ||
-               (entry.second.extent && entry.second.extent->place == place);
-      });
-  // RFC 0026 retains the old initialized prefix while buffer counts change.
-  // Other functions keep the existing dependency-invalidation behavior.
-  const bool rangesAffected =
-      state.safety && !bufferObjects.empty() &&
-      std::ranges::any_of(state.safety->memory, [place](const auto &entry) {
-        return std::ranges::any_of(entry.second, [place](const auto &range) {
-          return range.begin.place == place || range.end.place == place;
-        });
-      });
-  if (affected.empty() && !valuesAffected && !conditionsAffected &&
-      !positionsAffected && !rangesAffected)
+  if (affected.empty() && !valuesAffected && !conditionsAffected)
     return;
 
   // Fold constants before allocating a symbolic name. A snapshot is interned
@@ -168,15 +152,6 @@ void FunctionDataflow::snapshotScalar(core::PlaceId place,
           state.relations.learn(pair.first, edge.relation, *snapshot,
                                 edge.offset);
       }
-      if (state.safety)
-        for (const auto &[pair, edge] : state.relations.allBounds()) {
-          if (pair.first == place)
-            state.relations.learn(*snapshot, edge.relation, pair.second,
-                                  edge.offset);
-          else if (pair.second == place)
-            state.relations.learn(pair.first, edge.relation, *snapshot,
-                                  edge.offset);
-        }
       if (const auto bound = state.relations.atMost(place))
         state.relations.learnAtMost(*snapshot, *bound);
       if (const auto bound = state.relations.atLeast(place))
@@ -234,46 +209,6 @@ void FunctionDataflow::snapshotScalar(core::PlaceId place,
     if (record.string)
       capture(record.string->length);
     state.spatial.set(holder, std::move(record));
-  }
-  if (positionsAffected) {
-    // Capture can retire the preceding generation of a snapshot. Work on a
-    // copy, then install only entries still present after that retirement.
-    const auto positions = state.safety->positions;
-    for (auto [holder, position] : positions) {
-      std::optional<core::Affine> offset = position.offset;
-      capture(offset);
-      capture(position.extent);
-      if (offset && state.safety->positions.contains(holder)) {
-        position.offset = *offset;
-        state.safety->positions[holder] = position;
-      }
-    }
-  }
-  if (rangesAffected) {
-    // Initialized bytes refer to the old scalar value too. Capturing a new
-    // snapshot generation can invalidate existing ranges; never restore a
-    // range that depended on that retired generation (RFC 0026).
-    const auto memory = state.safety->memory;
-    for (const auto &[storage, ranges] : memory) {
-      for (auto range : ranges) {
-        if (range.begin.place != place && range.end.place != place)
-          continue;
-        if (!range.when.trivial())
-          continue;
-        std::optional<core::Affine> begin = range.begin;
-        std::optional<core::Affine> end = range.end;
-        capture(begin);
-        capture(end);
-        if (!begin || !end ||
-            (snapshot &&
-             ((range.begin.place == snapshot && range.begin.place != place) ||
-              (range.end.place == snapshot && range.end.place != place))))
-          continue;
-        range.begin = *begin;
-        range.end = *end;
-        state.safety->initialize(storage, range);
-      }
-    }
   }
 }
 

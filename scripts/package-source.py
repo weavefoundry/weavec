@@ -29,7 +29,7 @@ def main():
     )
     with tarfile.open(archive) as source:
         for name in ("CMakeLists.txt", "CMakePresets.json", "README.md", "LICENSE",
-                     "resources/include/weavec.h", "CHANGELOG.md", "docs/development-history.md"):
+                     "resources/include/weavec.h", "CHANGELOG.md"):
             if not source.getmember(prefix + name).isfile():
                 raise SystemExit(f"Missing source file: {name}")
         cmake = source.extractfile(prefix + "CMakeLists.txt").read().decode()

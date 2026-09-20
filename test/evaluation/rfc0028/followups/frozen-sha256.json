@@ -1,6 +1,0 @@
-{
-  "array-during-lifetime-good.c": "5ed25659297a39351a7dfbde397b9343fa111770cab9abe3b5fcf59eead145f6",
-  "manifest.json": "15d4178304d4e3ebb2ba032b044a2f6c3a6f1e17d5220b00ec51e78369d716c7",
-  "wrapper-head-only-bad.c": "81dfb5f6dddd26c93a52188a2bbb15c280c7ce818f29237df35fbf34ee15ea1e",
-  "wrapper-independent-good.c": "cd4c5b021c59f5f96a1ff962c945029e9c840786b18fc0fcba63f412f56bcebe"
-}

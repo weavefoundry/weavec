@@ -1,7 +1,7 @@
 // RFC 0013: reachable child ownership, aliases, sizes and strings survive calls.
 // RUN: not %weavec %s -- -ferror-limit=0 2>&1 | FileCheck %s
 // RUN: not %weavec --dump-analysis %s -- 2>/dev/null | FileCheck --check-prefix=DUMP %s
-#include "../evaluation/Inputs/heap.c"
+#include "../cases/evaluation/Inputs/heap.c"
 
 // DUMP-LABEL: function 'string_box':
 // DUMP: heap result complete{result->data = fresh(free) extent=4 length=3}

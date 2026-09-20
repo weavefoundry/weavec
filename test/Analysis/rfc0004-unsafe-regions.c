@@ -1,6 +1,7 @@
 // RFC 0004, "Unsafe regions": a WEAVEC_UNSAFE block or function body is
-// analysed, its raw operations are permitted and nothing inside it is
-// reported, but its effects flow out and are checked in the code around it.
+// analysed, its raw operations are permitted, and its effects flow out and
+// are checked in the code around it. RFC 0030 §6.1: no diagnostic is dropped
+// for being inside a region; a definite temporal violation there is an error.
 // RUN: not %weavec %s -- 2>&1 | FileCheck %s
 // RUN: not %weavec --dump-analysis %s -- 2>/dev/null | FileCheck --check-prefix=DUMP %s
 #include "../Inputs/prelude.h"
@@ -24,15 +25,15 @@ void permitted(uintptr_t x) {
 WEAVEC_UNSAFE void whole_function(struct node *WEAVEC_RAW r) {
   r->v = 1;
   free(r);
-  free(r); /* wrong, but the author has taken responsibility */
+  free(r); // CHECK: rfc0004-unsafe-regions.c:[[@LINE]]:3: error: 'r' is freed twice [weavec::double-free]
 }
 
-// Nothing inside is reported ...
+// Nothing inside is suppressed ...
 void suppressed(struct node *p) {
   free(p);
   WEAVEC_UNSAFE {
-    use(p);
-    free(p);
+    use(p); // CHECK: rfc0004-unsafe-regions.c:[[@LINE]]:9: error: use of 'p' after it was freed [weavec::use-after-free]
+    free(p); // CHECK: rfc0004-unsafe-regions.c:[[@LINE]]:5: error: 'p' is freed twice [weavec::double-free]
   }
 }
 
@@ -60,8 +61,8 @@ void caller(struct node *n) {
   use(n);
 }
 
-// A bodyless WEAVEC_UNSAFE declaration still means "trust me, no effects"
-// (RFC 0003).
+// A bodyless WEAVEC_UNSAFE declaration is no ownership contract: the callee is
+// unknown (RFC 0030 §5.1), and the use after it is unresolved, not reported.
 WEAVEC_UNSAFE void vouched(void *p);
 void trusts(struct node *n) {
   vouched(n);
@@ -78,7 +79,7 @@ void nested(uintptr_t x) {
   }
 }
 
-// CHECK: 3 errors generated.
+// CHECK: 6 errors generated.
 
 // The dump shows the raw component of the state and a `raw` kind.
 // DUMP-LABEL: function 'whole_function' (unsafe):

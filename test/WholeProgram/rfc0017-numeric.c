@@ -1,5 +1,5 @@
 // RFC 0017: numeric results, output values and access intervals compose.
-// RUN: not %weavec --strict-externs --whole-program %s %S/Inputs/rfc0017-numeric.c -- -ferror-limit=0 2>&1 | FileCheck %s
+// RUN: not %weavec --whole-program %s %S/Inputs/rfc0017-numeric.c -- -ferror-limit=0 2>&1 | FileCheck %s
 #include "../Inputs/prelude.h"
 unsigned char narrow(unsigned);
 void narrow_out(unsigned, unsigned char *);

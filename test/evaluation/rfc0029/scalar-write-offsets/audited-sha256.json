@@ -1,8 +1,0 @@
-{
-  "heap-wrong-base-byte.c": "3bea322945fed9ed9e11b07a0e66e56be2a5cad7c8f1f83817c848763b6e4401",
-  "heap-unreachable-write.c": "d7282e75af503b68adb2abcad140ff865d823df36cab6db39bfe140dbeffdffc",
-  "extended-manifest.json": "e7f2efc46eb36207a47009bc4cf52d54482d3fe1b6b9c4f399facdcc6af52ae8",
-  "advanced-read.c": "ee8c69cf355131f668e013a4d12fd50a9dcfc0433f79a5f5d4af4829f59b2aad",
-  "advanced-manifest.json": "889dc3050049db22b5eae0605860c68d45b51bf73a0b7b58d6710aadc84376fb",
-  "audited-manifest.json": "0b142f85bb76a24f4f3773d3735ab3a6e08232d70c6598ec280fa54ce2327c2a"
-}

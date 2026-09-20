@@ -1,0 +1,10 @@
+--- a/gzwrite.c
++++ b/gzwrite.c
+@@ -690,6 +690,7 @@
+             free(state->out);
+         }
+         free(state->in);
++        free(state->in); /* INJECTED: double free */
+     }
+     gz_error(state, Z_OK, NULL);
+     free(state->path);

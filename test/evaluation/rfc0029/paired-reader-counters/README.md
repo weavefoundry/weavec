@@ -1,1 +1,0 @@
-RFC 0029 discovered counting regression frozen before equal-constant counter relations: count a strict reader prefix through a switch and outgoing goto, allocate and copy it, then terminate it. Counter changes, nonzero initial counts and altered index strides must not acquire the equality.

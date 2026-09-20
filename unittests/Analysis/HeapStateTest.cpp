@@ -196,8 +196,7 @@ TEST(HeapState, FinalNullAndNullableFields) {
     }
   )c");
   ASSERT_TRUE(result.ast);
-  EXPECT_EQ(ids(result.diagnostics),
-            (Strings{"null-dereference", "null-dereference"}));
+  EXPECT_EQ(ids(result.diagnostics), (Strings{"null-dereference"}));
 }
 
 TEST(HeapState, StringsCrossConstructorsAndForwarders) {

@@ -302,8 +302,9 @@ TEST(SignatureInference, RecursionReachesAFixpoint) {
 }
 
 TEST(SignatureInference, UnsafeAndAnnotatedDefinitions) {
-  // RFC 0004 supersedes RFC 0003 here: an unsafe body is analysed (silently)
-  // and its summary is consulted by callers like any other.
+  // RFC 0004 supersedes RFC 0003 here: an unsafe body is analysed and its
+  // summary is consulted by callers like any other. RFC 0030 §6.1: its
+  // definite temporal violations are errors too.
   const auto result = analyze(std::string(Types) + R"c(
     UNSAFE static void unsafe_free(struct node *n) { free(n); free(n); }
     static void annotated(struct node *OWNED n) { use(n); }
@@ -318,21 +319,25 @@ TEST(SignatureInference, UnsafeAndAnnotatedDefinitions) {
   ASSERT_NE(result.summary("unsafe_free"), nullptr);
   EXPECT_TRUE(result.summary("unsafe_free")->frees(0));
   EXPECT_EQ(messages(result.diagnostics),
-            (Strings{"3: 'n' is leaked", "6: use of 'a' after it was freed",
+            (Strings{"2: 'n' is freed twice", "3: 'n' is leaked",
+                     "6: use of 'a' after it was freed",
                      "8: use of 'b' after it was moved"}))
-      << "the double free inside the unsafe body is not reported; the owned "
-         "parameter `annotated` never releases is (RFC 0007)";
+      << "the owned parameter `annotated` never releases is leaked (RFC 0007)";
 }
 
-TEST(SignatureInference, UnsafeDeclarationWithoutBodyIsAnEmptySummary) {
-  // RFC 0003: `WEAVEC_UNSAFE` on a bodyless declaration asks for the empty
-  // summary rather than the boundary warning.
+TEST(SignatureInference, UnsafeDeclarationWithoutBodyIsAnUnknownCallee) {
+  // RFC 0003 let `WEAVEC_UNSAFE` on a bodyless declaration ask for the empty
+  // summary rather than the boundary warning. RFC 0030 §5.1: it is not an
+  // ownership contract, so the callee is unknown: no diagnostic, and the
+  // later use is unresolved.
   const auto result = analyze(R"c(
     UNSAFE void vouched(void *p);
     void f(char *p) { vouched(p); use(p); }
   )c");
   ASSERT_TRUE(result.ast);
   EXPECT_TRUE(result.diagnostics.empty()) << messages(result.diagnostics)[0];
+  EXPECT_EQ(weavec::test::unknownCalls(result),
+            (Strings{"3: vouched(p)", "3: use(p)"}));
 }
 
 // -- Applying a summary at a call (RFC 0003, "Soundness") ---------------------
@@ -593,7 +598,8 @@ TEST(SignatureInference, ConditionalEffectsAreMayEffects) {
   // `f` is clean of use-after-free; on the path where `free_if` declined,
   // nobody releases `p` (RFC 0007).
   EXPECT_EQ(messages(result.diagnostics),
-            (Strings{"7: 'p' is leaked", "12: use of 'p' after it was freed",
+            (Strings{"7: 'p' is leaked",
+                     "12: use of 'p' after it may have been freed",
                      "17: use of 'p' after it was freed"}));
   const core::FunctionSummary *summary = result.summary("free_if");
   ASSERT_NE(summary, nullptr);
@@ -608,7 +614,8 @@ TEST(SignatureInference, ConditionalEffectsAreMayEffects) {
 }
 
 TEST(SignatureInference, BorrowForTheCall) {
-  // Exclusivity between borrows is opt-in (RFC 0006, *Conflict rules*).
+  // Only a release or move conflicts with a loan (RFC 0006, *Conflict
+  // rules*; RFC 0030 removed `--exclusive-borrows`).
   const std::string code = std::string(Types) + R"c(
     static int get(const struct node *n) { return n->v; }
     static void set(struct node *n) { n->v = 1; }
@@ -616,7 +623,7 @@ TEST(SignatureInference, BorrowForTheCall) {
       struct node x;
       const struct node *r = &x;
       get(&x);          /* shared while shared: fine */
-      set(&x);          /* mutable while shared: conflict when exclusive */
+      set(&x);          /* mutable while shared: fine */
       use(r);
     }
     void g(struct node *n) {
@@ -628,12 +635,6 @@ TEST(SignatureInference, BorrowForTheCall) {
   const auto lenient = analyze(code);
   ASSERT_TRUE(lenient.ast);
   EXPECT_TRUE(lenient.diagnostics.empty());
-
-  const auto exclusive = analyze(code, {.exclusiveBorrows = true});
-  ASSERT_TRUE(exclusive.ast);
-  EXPECT_EQ(messages(exclusive.diagnostics),
-            (Strings{"8: cannot borrow 'x' as mutable because it is already "
-                     "borrowed"}));
 }
 
 TEST(SignatureInference, UnresolvableArgumentsAreDropped) {
@@ -650,16 +651,12 @@ TEST(SignatureInference, UnresolvableArgumentsAreDropped) {
     }
   )c");
   ASSERT_TRUE(result.ast);
-  // The two unresolvable indirect calls are checking boundaries and warn
-  // once per function type (RFC 0004, *Boundaries*); nothing is an error.
-  EXPECT_EQ(ids(result.diagnostics),
-            (Strings{"annotation-required", "annotation-required"}));
-  EXPECT_EQ(
-      messages(result.diagnostics),
-      (Strings{"8: call through 'make' is not checked: its function type "
-               "has no ownership annotations and its target is unknown",
-               "9: call through 'drop' is not checked: its function "
-               "type has no ownership annotations and its target is unknown"}));
+  // The two unresolvable indirect calls are into unknown code: no
+  // diagnostic, and their Call sites are `unresolved(unknown-callee)` (RFC
+  // 0030 §5.1).
+  EXPECT_TRUE(result.diagnostics.empty());
+  EXPECT_EQ(weavec::test::unknownCalls(result),
+            (Strings{"8: make()", "9: drop(n)", "10: use(n)"}));
 }
 
 TEST(SignatureInference, CopiedLoansAreLifetimeChecked) {
@@ -762,9 +759,14 @@ TEST(SignatureInference, CallersTrustTheAnnotation) {
             (Strings{"2: 'n' is annotated WEAVEC_BORROWED but is freed here"}));
 }
 
-// -- annotation-required (RFC 0003, "annotation-required, revised") -----------
+// -- Unknown callees (RFC 0030 §5.1)
+// --------------------------------------------
 
-TEST(SignatureInference, UnknownExternalCalleeWarnsOnce) {
+TEST(SignatureInference, UnknownExternalCalleeIsAnUnresolvedCall) {
+  // RFC 0030 removed `annotation-required`: a call to a function with no
+  // body, summary, table entry or ownership contract is a Call site whose
+  // temporal facet is `unresolved(unknown-callee)`, with a suggestion, and
+  // no diagnostic.
   const auto result = analyze(R"c(
     void mystery(void *p);
     int pure(int x);
@@ -777,101 +779,25 @@ TEST(SignatureInference, UnknownExternalCalleeWarnsOnce) {
     }
   )c");
   ASSERT_TRUE(result.ast);
-  EXPECT_EQ(ids(result.diagnostics),
-            Strings(2, std::string(core::diag::AnnotationRequired)));
-  EXPECT_EQ(messages(result.diagnostics),
-            (Strings{"6: call to 'mystery' is not checked: it has no "
-                     "definition or ownership annotations here",
-                     "9: call to 'maker' is not checked: it has no definition "
-                     "or ownership annotations here"}));
-  EXPECT_EQ(notes(result.diagnostics, 0),
-            (Strings{"'mystery' is declared here",
-                     "annotate its pointer parameters with WEAVEC_OWNED, "
-                     "WEAVEC_BORROWED, WEAVEC_MUT or WEAVEC_RAW, or define it "
-                     "in this program"}));
-  EXPECT_EQ(result.diagnostics.diagnostics()[0].notes[0].location.line, 2U);
-  EXPECT_EQ(result.diagnostics.diagnostics()[0].severity,
-            core::Severity::Warning);
-}
-
-TEST(SignatureInference, StrictExternsMakesUncheckedCallsRawOperations) {
-  // RFC 0004, "Boundaries": under --strict-externs an unchecked call is a
-  // raw operation, so it is an error outside and permitted inside an unsafe
-  // region, and its result is a raw pointer.
-  AnalysisOptions options;
-  options.strictExterns = true;
-  const auto result = analyze(R"c(
-    void mystery(void *p);
-    void *maker(void);
-    void f(char *p) { mystery(p); mystery(p); }
-    void g(void) {
-      char *q;
-      UNSAFE { q = maker(); }
-      *q = 1;
-    }
-  )c",
-                              options);
-  ASSERT_TRUE(result.ast);
+  EXPECT_TRUE(result.diagnostics.empty()) << messages(result.diagnostics)[0];
   EXPECT_EQ(
-      ids(result.diagnostics),
-      (Strings{"unsafe-operation", "unsafe-operation", "unsafe-operation"}));
-  EXPECT_EQ(
-      messages(result.diagnostics),
-      (Strings{"4: unchecked call to 'mystery' outside an unsafe region",
-               "4: unchecked call to 'mystery' outside an unsafe region",
-               "8: dereference of raw pointer 'q' outside an unsafe region"}));
-  EXPECT_EQ(result.diagnostics.diagnostics()[0].severity,
-            core::Severity::Error);
-  EXPECT_EQ(notes(result.diagnostics, 2),
-            (Strings{"'q' is raw: returned by a call into unchecked code "
-                     "('maker') here",
-                     "move this operation into a WEAVEC_UNSAFE block or "
-                     "function, or assert the pointer's ownership first"}));
-}
-
-TEST(SignatureInference, ReportUnannotatedOffersTheInferredAnnotation) {
-  AnalysisOptions options;
-  options.reportUnannotated = true;
-  const auto result = analyze(std::string(Types) + R"c(
-    void frees(struct node *n) { free(n); }
-    void reads(const struct node *n, int k) { use(n); }
-    void writes(struct node *n) { n->v = 1; }
-    void *makes(void) { return malloc(4); }
-    int *borrows(struct node *n) { return &n->v; }
-    void untouched(int *p) {}
-    static void helper(struct node *n) { free(n); }
-    void done(struct node *OWNED n, int *MUT q) { free(n); *q = 1; }
-    int main(int argc, char **argv) { return argc; }
-  )c",
-                              options);
-  ASSERT_TRUE(result.ast);
-  EXPECT_EQ(ids(result.diagnostics),
-            Strings(7, std::string(core::diag::AnnotationRequired)));
-  // NOLINTNEXTLINE(bugprone-suspicious-missing-comma): wrapped literals
-  EXPECT_EQ(
-      messages(result.diagnostics),
-      (Strings{"2: pointer parameter 'n' of 'frees' is inferred WEAVEC_OWNED; "
-               "add the annotation to its declaration",
-               "3: pointer parameter 'n' of 'reads' is inferred "
-               "WEAVEC_BORROWED; add the annotation to its declaration",
-               "4: pointer parameter 'n' of 'writes' is inferred WEAVEC_MUT; "
-               "add the annotation to its declaration",
-               "5: return value of 'makes' is inferred WEAVEC_OWNED; add the "
-               "annotation to its declaration",
-               "6: pointer parameter 'n' of 'borrows' is inferred "
-               "WEAVEC_BORROWED; add the annotation to its declaration",
-               "6: return value of 'borrows' is inferred WEAVEC_BORROWED; add "
-               "the annotation to its declaration",
-               "7: pointer parameter 'p' has no inferable ownership; annotate "
-               "it with WEAVEC_OWNED, WEAVEC_BORROWED or WEAVEC_MUT"}))
-      << "static helpers, annotated positions and main are not reported";
-
-  const core::Diagnostic &frees = result.diagnostics.diagnostics()[0];
-  ASSERT_EQ(frees.fixits.size(), 1U);
-  EXPECT_EQ(frees.fixits[0].insertion, "WEAVEC_OWNED ");
-  EXPECT_EQ(frees.fixits[0].location, frees.location);
-  EXPECT_TRUE(result.diagnostics.diagnostics()[6].fixits.empty())
-      << "nothing to suggest when inference is empty";
+      weavec::test::unknownCalls(result),
+      (Strings{"6: mystery(p)", "7: mystery(p)", "8: pure(1)", "9: maker()"}));
+  // The suggestion names the parameter the callee may keep or free.
+  const core::Site *first = nullptr;
+  for (const core::Site &site :
+       result.planned.ledger.units.front().functions.front().sites)
+    if (site.text == "mystery(p)" && first == nullptr)
+      first = &site;
+  ASSERT_NE(first, nullptr);
+  const core::FacetRecord *temporal = first->facet(core::Facet::Temporal);
+  ASSERT_NE(temporal, nullptr);
+  EXPECT_EQ(temporal->decision.detail,
+            "declare 'mystery' with WEAVEC_BORROWED on 'p' if it neither "
+            "keeps nor frees it");
+  ASSERT_TRUE(temporal->fixit.has_value());
+  EXPECT_EQ(temporal->fixit->insertion, "WEAVEC_BORROWED ");
+  EXPECT_EQ(temporal->fixit->location.line, 2U);
 }
 
 // -- Driver
@@ -884,9 +810,8 @@ TEST(SignatureInference, FilteredFunctionsStillContributeSummaries) {
   )c");
   ASSERT_TRUE(result.ast);
   // Re-run with a filter that hides the helper's own bug.
-  core::DiagnosticCollector filtered;
-  TranslationUnitAnalyzer analyzer(result.ast->getASTContext(), filtered);
-  analyzer.run(
+  const core::DiagnosticCollector filtered = weavec::test::analyzeFiltered(
+      result.ast->getASTContext(),
       [](const clang::FunctionDecl &fn) { return fn.getName() == "f"; });
   EXPECT_EQ(messages(filtered), (Strings{"3: use of 'n' after it was freed"}));
   EXPECT_EQ(

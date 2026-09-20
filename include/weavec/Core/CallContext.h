@@ -34,25 +34,11 @@ struct CallContext {
   CallbackBindings callbacks;
   std::set<ContextAlias> aliases;
   std::set<std::pair<SummaryPath, SummaryPath>> separations;
-  /// RFC 0021: first <= second in one byte array at call entry. These
-  /// directed facts do not assert an exact displacement or ownership share.
-  std::set<std::pair<SummaryPath, SummaryPath>> orders;
   std::map<SummaryPath, ValueFact> facts;
-  /// Exact initialized bytes beginning at the input pointer's entry value.
-  /// Payload bytes consume the existing MaxCallContextFacts budget.
-  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
-  std::map<SummaryPath, std::string> bytes = {};
-  /// The captured bytes belong to an actual const-qualified array object.
-  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
-  std::set<SummaryPath> immutableBytes = {};
-  /// RFC 0029: actual by-value floating arguments known to exclude NaN.
-  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
-  std::set<SummaryPath> nonNan = {};
 
   [[nodiscard]] bool empty() const noexcept {
     return callbacks.empty() && aliases.empty() && separations.empty() &&
-           orders.empty() && facts.empty() && bytes.empty() &&
-           immutableBytes.empty() && nonNan.empty();
+           facts.empty();
   }
   /// Canonicalizes the pair, without weakening a conflicting existing fact.
   /// False means the context cannot be represented; callers must not use it.

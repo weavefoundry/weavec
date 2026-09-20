@@ -18,48 +18,44 @@
 #include "weavec/Analysis/Summaries.h"
 #include "weavec/Core/AnalysisStats.h"
 #include "weavec/Core/Diagnostic.h"
+#include "weavec/Core/Ledger.h"
 
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/Decl.h"
 
 #include "llvm/Support/raw_ostream.h"
 
+#include <cstdint>
 #include <set>
 #include <string>
 
+namespace weavec::core {
+class SlotSolution;
+} // namespace weavec::core
+
 namespace weavec::analysis {
+
+class SlotCollection;
+
+class KindInferenceResult;
+class KindTable;
+class LedgerAdapter;
 
 /// Tunables for the analyses.
 struct AnalysisOptions {
-  /// RFC 0018: compute contracts; select all reported or named definitions.
-  bool checkContracts = false;
-  bool checked = false;
-  bool checkedMainFileOnly = true;
-  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
-  std::set<std::string> checkedFunctions = {};
-  bool deferCheckedCalls = false;
-  /// `--report-unannotated` (RFC 0003): for every exported function
-  /// definition, report pointer parameters and results without an
-  /// annotation, offering the inferred one as a fix-it; and include callees
-  /// declared in system headers in the external-boundary
-  /// `annotation-required` report.
-  bool reportUnannotated = false;
-  /// `--strict-externs` (RFC 0004, *Boundaries*): a call into code with no
-  /// definition, annotation or library summary is a raw operation. It is an
-  /// `unsafe-operation` error outside an unsafe region and its pointer
-  /// result is raw, instead of the RFC 0003 once-per-callee warning.
-  bool strictExterns = false;
-  /// RFC 0005, *`weavec-cc`*, compile step: record the callees that are
-  /// boundaries (for the unit's exports) but do not emit the
-  /// `annotation-required` warning for them; the link step decides whether
-  /// the program defines them.
-  bool deferBoundary = false;
-  /// `--exclusive-borrows` (RFC 0006, *Conflict rules*): enforce RFC 0001's
-  /// exclusivity rule in full, so a second mutable borrow, a shared borrow
-  /// of a mutably borrowed place, or a direct write to a borrowed place is
-  /// a `conflicting-borrow`. By default only freeing, moving or
-  /// reallocating a borrowed object conflicts with a live loan.
-  bool exclusiveBorrows = false;
+  /// RFC 0030 §5.5: the CFG block transfers one run of `FunctionDataflow`
+  /// may make over one function body, fixpoint and final pass together
+  /// (`-fweavec-budget`, `--budget`); 0 is unlimited. The context runs of
+  /// one function share a second budget of the same size.
+  std::uint64_t budget = core::DefaultBudget;
+  /// RFC 0030 §11: locals and the lowered allocations are zero-initialised
+  /// (not `-fno-weavec-zero-init`). Without it a possibly uninitialised
+  /// pointer's null facet is `unresolved(no-zero-init)`.
+  bool zeroInit = true;
+  /// RFC 0030 §3.1: the unit follows C's effective-type rules; under
+  /// `-fno-strict-aliasing` every two pointee types may designate one
+  /// object (`may-alias-released`).
+  bool strictAliasing = true;
   /// If set, print the inferred facts for every analysed function
   /// (`--dump-analysis`): places and their kinds, lifetimes, and the state
   /// at function exit. Intended for debugging and lit tests; the format is
@@ -70,6 +66,19 @@ struct AnalysisOptions {
   /// Optional immutable preparation owned by the current retained AST.
   // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
   std::shared_ptr<FunctionPreparationCache> preparation = {};
+  /// RFC 0030 §7, §15 item 14: the unit's kinds, which seed extents and
+  /// nullness at parameter entry, at slot loads and at call results, and
+  /// the §7.5 requirements; null for none (every pointer then starts with
+  /// nothing known, as before S6).
+  const KindTable *kinds = nullptr;
+  const KindInferenceResult *inferred = nullptr;
+  /// RFC 0030 §9.3: the unit's function-pointer slots and the solution the
+  /// indirect calls are resolved through (the unit's own in a per-TU
+  /// compile, the program's at link and in `--whole-program`). Null for
+  /// none: every indirect call is then judged by its flow-sensitive
+  /// targets alone.
+  const SlotCollection *slots = nullptr;
+  const core::SlotSolution *slotSolution = nullptr;
 };
 
 /// Runs every WeaveC check over a single function definition.
@@ -82,7 +91,10 @@ struct AnalysisOptions {
 /// `TranslationUnitAnalyzer` orders functions so callees come first.
 class FunctionAnalyzer {
 public:
-  FunctionAnalyzer(clang::ASTContext &ctx, core::DiagnosticSink &diagSink,
+  /// Everything the analysis publishes, its diagnostics included, goes
+  /// through `ledgerAdapter` (RFC 0030 §14): the authoritative one for the
+  /// reporting pass, a discarding one for fixpoint rounds.
+  FunctionAnalyzer(clang::ASTContext &ctx, LedgerAdapter &ledgerAdapter,
                    AnalysisOptions analysisOptions = {});
 
   /// Analyzes `function`, which must have a body, resolving callees from
@@ -98,7 +110,7 @@ public:
 
 private:
   clang::ASTContext &context;
-  core::DiagnosticSink &sink;
+  LedgerAdapter &ledger;
   AnalysisOptions options;
 };
 

@@ -1,0 +1,12 @@
+--- a/linenoise.c
++++ b/linenoise.c
+@@ -2314,8 +2314,8 @@
+             tocopy = len;
+         }
+         memset(new,0,sizeof(char*)*len);
+-        memcpy(new,history+(history_len-tocopy), sizeof(char*)*tocopy);
+         free(history);
++        memcpy(new,history+(history_len-tocopy), sizeof(char*)*tocopy); /* INJECTED: use after free */
+         history = new;
+     }
+     history_max_len = len;

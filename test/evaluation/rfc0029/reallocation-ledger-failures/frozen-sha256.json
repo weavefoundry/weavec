@@ -1,9 +1,0 @@
-{
-  "failure-leak.c": "cf2caad7cc11f277ed1bff22657cb6fa3b5739ee8422359151efe1408453cf75",
-  "lost-result.c": "566ef91c6d88c316a636698ff5899f9a5e3a5f412a6d804821157bdfb4dc88d7",
-  "manifest.json": "1199bddb6bf9c6cba69b679e159870e97f602bc658cabe233c81bc867e68ea1d",
-  "null-input.c": "99050029d111d7a6f6df8ea4efd355a0101dd2a2bd934d12f8ccc71b8e74cd60",
-  "overwrite-failure.c": "1351d69a600fc13ccdbcfa42b12b63b5bce21790684a27f519d4aa3db69984b8",
-  "stale-release.c": "1eab800e38867c560a3ad6539ea368c37daf57de74635aa198cf4fb91e0af012",
-  "zero-size.c": "98304b580a0308fe5eefc38c6b5b8db17013079c2ff7206e3ab8549fc6fc87e4"
-}

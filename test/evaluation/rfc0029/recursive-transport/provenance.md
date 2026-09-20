@@ -1,1 +1,0 @@
-Frozen after the source constructor proof was developed, before the first separate-source, object or checkpoint analysis of this population. It combines runtime-sized recursive construction, traversal and destruction in one imported library. The negative clients preserve short-input and uninitialized-input obligations.

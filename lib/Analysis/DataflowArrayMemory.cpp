@@ -219,7 +219,6 @@ bool FunctionDataflow::handleArrayCopy(const CallExpr &call,
     return false;
   checkRequiredArguments(call, *effects.summary, state);
   checkRequiredExtents(call, *effects.summary, state);
-  doMutationCheck(dest->storage, call, state);
   arrayTypes[source->storage] = source->element;
   arrayTypes[dest->storage] = dest->element;
   std::vector<std::pair<core::PlaceId, core::PlaceId>> cells;
@@ -260,13 +259,20 @@ bool FunctionDataflow::handleArrayCopy(const CallExpr &call,
 void FunctionDataflow::captureArrayReallocation(const CallExpr &call,
                                                 const CallEffects &effects,
                                                 core::AnalysisState &state) {
-  const auto name = resolvedLibraryName(call);
-  if (name.empty() || effects.source != SummarySource::Builtin ||
-      call.getNumArgs() < 2)
+  // RFC 0030 §8: a row that reallocates its first argument into a fresh
+  // result (`realloc`, `reallocarray`).
+  const core::LibraryMatch *library = resolvedLibrary(call);
+  if (library == nullptr || effects.source != SummarySource::Library ||
+      library->entry->result.kind != core::LibraryResult::Kind::Fresh ||
+      library->entry->params.empty() ||
+      library->entry->params.front().effect !=
+          core::LibraryParam::Effect::Realloc)
     return;
-  if (name != "realloc" && name != "reallocarray")
+  const int argument = library->callArgument(0);
+  if (argument < 0 || static_cast<unsigned>(argument) >= call.getNumArgs())
     return;
-  const auto source = builder.resolvePointerValue(*call.getArg(0));
+  const auto source = builder.resolvePointerValue(
+      *call.getArg(static_cast<unsigned>(argument)));
   if (!source)
     return;
   const auto storage = places.deref(source->place);

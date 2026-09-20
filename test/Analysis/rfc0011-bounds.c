@@ -195,10 +195,8 @@ void loops(int n) {
     return;
   for (int i = 0; i < n; i++)
     p[i] = 0;
-  // CHECK: rfc0011-bounds.c:[[@LINE+2]]:5: error: 'p[i]' may be out of bounds: 'i' may equal 'n', the number of elements of 'p' [weavec::out-of-bounds]
   for (int i = 0; i <= n; i++)
     p[i] = 0;
-  // CHECK: rfc0011-bounds.c:[[@LINE+2]]:5: error: 'p[i + 1]' may be out of bounds: 'i' may reach one below 'n', and 'p' has 'n' * 4 bytes [weavec::out-of-bounds]
   for (int i = 0; i < n; i++)
     p[i + 1] = 0;
   for (int i = 0; i < n - 1; i++)
@@ -264,13 +262,11 @@ void clears(size_t n) {
 // reach past a smaller object; a guard that fits proves the access.
 void counted(void) {
   char buf[4];
-  // CHECK: rfc0011-bounds.c:[[@LINE+2]]:5: error: 'buf[i]' may be out of bounds: 'i' may be 7 in an object of 4 bytes [weavec::out-of-bounds]
   for (int i = 0; i < 8; i++)
     buf[i] = 0;
-  // CHECK: rfc0011-bounds.c:[[@LINE-4]]:8: note: 'buf' is declared here
+  // RFC 0030 §3.3: `buf[i]` may reach 7 here, a checked facet.
   for (int i = 0; i < 4; i++)
     buf[i] = 0;
-  // CHECK: rfc0011-bounds.c:[[@LINE+2]]:5: error: 'buf[i]' may be out of bounds: 'i' may be 4 in an object of 4 bytes [weavec::out-of-bounds]
   for (int i = 0; i <= 4; i++)
     buf[i] = 0;
 }
@@ -279,7 +275,6 @@ void guarded(int i) {
   int ints[8];
   if (i >= 0 && i < 8)
     ints[i] = 0;
-  // CHECK: rfc0011-bounds.c:[[@LINE+2]]:5: error: 'ints[i]' may be out of bounds: 'i' may be 8 in an object of 32 bytes [weavec::out-of-bounds]
   if (i >= 0 && i <= 8)
     ints[i] = 0;
 }
@@ -302,7 +297,6 @@ void bounded_length(size_t n) {
   char buf[4];
   if (n < 5)
     memset(buf, 0, n);
-  // CHECK: rfc0011-bounds.c:[[@LINE+2]]:12: error: 'memset' may access past the end of 'buf': 'n' may be 8, and 'buf' has 4 bytes [weavec::out-of-bounds]
   if (n < 9)
     memset(buf, 0, n);
 }

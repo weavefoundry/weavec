@@ -519,6 +519,11 @@ set an `inUnsafe` flag per CFG element instead of skipping the element;
 it. A `WEAVEC_UNSAFE` function sets the flag for the whole body.
 `FunctionAnalyzer::analyze` no longer returns early for unsafe functions.
 
+> **Amended by [RFC 0030](0030-prove-or-trap.md).** Point 3 is withdrawn: no
+> diagnostic is dropped inside a region. Spatial and null facets there are
+> `trusted(unsafe)` with no checks (raw sites: every facet); temporal state is
+> tracked and reported as outside, and definite violations stay errors (§6.1).
+
 ### Boundaries: indirect calls and unknown code
 
 RFC 0003 defines a *boundary*: a callee with no summary. It made a call
@@ -580,6 +585,11 @@ an indirect call with no signature:
   This is what RFC 0003 asked for ("once `unsafe-operation` exists the
   strict mode should switch to `Raw` results rather than an error at the
   call"), and it is Rust's FFI rule: `extern` functions are `unsafe fn`.
+
+> **Amended by [RFC 0030](0030-prove-or-trap.md).** A boundary call gets the
+> unknown-callee default of §5.1 (a system API only borrows, §5.2; an open slot
+> with no known target uses reason `callback`, §9.3), not `annotation-required`;
+> `--strict-externs` and its `unsafe-operation` forms are removed (§16).
 
 ### The library table
 

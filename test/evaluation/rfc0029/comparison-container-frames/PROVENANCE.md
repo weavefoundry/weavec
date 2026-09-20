@@ -1,1 +1,0 @@
-Frozen against candidate84d before modeled read-only comparisons preserve established container predicates. Positives compare an independent initialized input before forwarding the live forest to a separately inferred reader. Negatives retain actual read bounds, initialization, stale allocation and unknown-call obligations.

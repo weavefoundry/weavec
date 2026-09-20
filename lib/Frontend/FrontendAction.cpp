@@ -8,104 +8,186 @@
 
 #include "weavec/Frontend/FrontendAction.h"
 
-#include "weavec/Analysis/Annotations.h"
-#include "weavec/Analysis/TranslationUnitAnalysis.h"
-#include "weavec/Core/SafetyEntryPool.h"
-#include "weavec/Frontend/CheckedArtifacts.h"
+#include "weavec/Analysis/LedgerAdapter.h"
+#include "weavec/Analysis/UnitPipeline.h"
 #include "weavec/Frontend/ClangDiagnosticSink.h"
+#include "weavec/Frontend/LedgerOutput.h"
+#include "weavec/Frontend/Prelude.h"
+#include "weavec/Frontend/RecordFacts.h"
+#include "weavec/Frontend/ZeroInit.h"
 
 #include "clang/AST/ASTConsumer.h"
 #include "clang/AST/ASTContext.h"
+#include "clang/Basic/TargetInfo.h"
 #include "clang/Frontend/ASTUnit.h"
 #include "clang/Frontend/CompilerInstance.h"
 #include "clang/Frontend/TextDiagnosticPrinter.h"
 
-#include "llvm/ADT/SmallString.h"
-#include "llvm/Support/FileSystem.h"
-
+#include <array>
+#include <string_view>
 #include <utility>
 
 namespace weavec::frontend {
 
-UnitResult replayUnitResult(UnitResult result,
-                            clang::DiagnosticsEngine &diagnostics,
-                            const FrontendOptions &options) {
-  ClangDiagnosticSink clangSink(diagnostics);
-  FilteringSink sink(clangSink, options.control, options.alreadyReported,
-                     options.boundaryOnce, options.onlyIds);
-  if (!options.silent)
-    for (const auto &diagnostic : result.diagnostics)
-      sink.report(diagnostic);
-  const bool failure =
-      !options.silent &&
-      CheckedReport::failed(result.exports, options.analysis.deferCheckedCalls);
-  if (!options.silent && options.checkedReport)
-    options.checkedReport->record(result.exports);
-  if (failure)
-    diagnostics.Report(diagnostics.getCustomDiagID(
-        clang::DiagnosticsEngine::Error,
-        "checked safety requirements were not established"));
-  result.reported = sink.reported();
-  result.errors = sink.errors() + (failure ? 1 : 0);
-  result.warnings = sink.warnings();
-  return result;
+// RFC 0030 (S5, begin): lowered violations and zero-initialisation.
+
+/// The ids whose error reports a violation of `facet` (§3, §3.4).
+static llvm::ArrayRef<std::string_view> violationIds(core::Facet facet) {
+  static constexpr std::array Temporal{
+      core::diag::UseAfterFree,       core::diag::UseAfterMove,
+      core::diag::DoubleFree,         core::diag::MismatchedRelease,
+      core::diag::ConflictingBorrow,  core::diag::LifetimeTooShort,
+      core::diag::AnnotationMismatch,
+  };
+  static constexpr std::array Null{
+      core::diag::NullDereference,
+      core::diag::UseOfUninitialized,
+      core::diag::AnnotationMismatch,
+  };
+  static constexpr std::array Spatial{
+      core::diag::OutOfBounds,
+      core::diag::InvalidRelease,
+      core::diag::UnsafeOperation,
+      core::diag::AnnotationMismatch,
+  };
+  static constexpr std::array Assertion{
+      core::diag::ContradictedAssumption,
+      core::diag::AnnotationMismatch,
+  };
+  switch (facet) {
+  case core::Facet::Temporal:
+    return Temporal;
+  case core::Facet::Null:
+    return Null;
+  case core::Facet::Spatial:
+    return Spatial;
+  case core::Facet::Assertion:
+    return Assertion;
+  }
+  return {};
 }
+
+/// §3.4: a definite violation whose error the `-W` flags lower to a warning
+/// still traps, since the unit then produces an object. The planner asks
+/// per facet; an id of the facet lowered is enough, since a violation whose
+/// error stands fails the compile before any check is emitted.
+static std::function<bool(core::SiteId, core::Facet)>
+loweredViolations(const DiagnosticControl &control) {
+  return [control](core::SiteId /*site*/, core::Facet facet) {
+    for (const std::string_view id : violationIds(facet)) {
+      const core::Diagnostic probe{.severity = core::Severity::Error,
+                                   .certainty = core::Certainty::Definite,
+                                   .id = id,
+                                   .message = {},
+                                   .location = {},
+                                   .notes = {},
+                                   .fixits = {}};
+      const std::optional<core::Diagnostic> shown = control.apply(probe);
+      if (shown && shown->severity == core::Severity::Warning)
+        return true;
+    }
+    return false;
+  };
+}
+
+/// §11: which references the unit lowers, and the ledger's A5 counts.
+static std::shared_ptr<ZeroInitPlan>
+zeroInitPlanOf(clang::ASTContext &context, const FrontendOptions &options) {
+  // A freestanding unit's allocator is not the C library's, whose calloc
+  // and usable-size query the wrappers call.
+  const UsableSizeQuery query =
+      usableSizeQueryFor(context.getTargetInfo().getTriple());
+  const bool heap =
+      query != UsableSizeQuery::None && !context.getLangOpts().Freestanding;
+  return std::make_shared<ZeroInitPlan>(
+      planZeroInit(context, core::LibrarySpec::shipped(),
+                   options.config.checks != core::ChecksMode::None &&
+                       options.config.zeroInit,
+                   ZeroInitOptions{.heap = heap, .stack = true}));
+}
+
+// RFC 0030 (S5, end).
 
 UnitResult analyzeTranslationUnit(clang::ASTContext &context,
                                   clang::DiagnosticsEngine &diagnostics,
                                   const FrontendOptions &options) {
-  core::SafetyEntryPool explanations(options.analysis.stats);
-  analysis::AnalysisOptions analysisOptions = options.analysis;
-  analysisOptions.checkedMainFileOnly = options.mainFileOnly;
-  if (options.silent)
-    analysisOptions.dumpStream = nullptr;
-  core::DiagnosticCollector collected;
-  analysis::TranslationUnitAnalyzer analyzer(context, collected,
-                                             analysisOptions);
-  analyzer.setDatabase(options.database);
+  // RFC 0030 §1 steps 2 and 3: kinds, sites, the engine through the ledger
+  // adapter, planning; the diagnostics come back in the engine's order.
   UnitResult result;
-  const bool trackImports =
-      options.database != nullptr || !options.analysisCache.empty();
-  if (trackImports)
-    analyzer.summaries().beginDependencies(result.dependencies);
+  analysis::UnitPipelineOptions pipeline;
+  pipeline.engine.analysis = options.analysis;
+  // RFC 0030 §5.5: the budget the ledger records is the one the engine
+  // counts against.
+  pipeline.engine.budget = options.config.budget;
+  pipeline.engine.zeroInit = options.analysis.zeroInit;
+  pipeline.engine.strictAliasing = options.analysis.strictAliasing;
+  if (options.silent)
+    pipeline.engine.analysis.dumpStream = nullptr;
+  // RFC 0030 §5.6: every emitted function is analysed and reported, those
+  // of user headers included (the engine asks the unit's sites); a silent
+  // round reports nothing.
+  if (options.silent)
+    pipeline.engine.shouldReport = [](const clang::FunctionDecl &) {
+      return false;
+    };
+  if (options.database != nullptr)
+    pipeline.engine.dependencies = &result.dependencies;
+  pipeline.database = options.database;
+  pipeline.discoverOnly = options.discoverOnly;
+  pipeline.config = options.config;
+  pipeline.buildLedger = !options.silent;
+  pipeline.lowered = loweredViolations(options.control);
+  core::DiagnosticCollector collected;
+  analysis::UnitPipelineResult unit =
+      analysis::runUnitAnalysis(context, pipeline, collected);
+  result.exports = std::move(unit.exports);
+  result.ledger = std::move(unit.ledger);
   if (options.discoverOnly) {
-    result.exports = analyzer.discover();
-    if (trackImports)
-      analyzer.summaries().endDependencies();
+    // RFC 0030 §13.2 step 2: the whole-program driver solves the slots of
+    // every unit before it analyses any.
+    if (options.collectInterface)
+      result.interface = std::make_shared<const record::InterfaceFacts>(
+          record::collectSlotFacts(context));
     return result;
   }
-  const clang::SourceManager &sm = context.getSourceManager();
-  analyzer.run([&](const clang::FunctionDecl &function) {
-    return !options.silent &&
-           (!options.mainFileOnly || sm.isInMainFile(function.getLocation()) ||
-            options.analysis.checkedFunctions.contains(
-                function.getNameAsString()) ||
-            analysis::getAnnotations(function).checked);
-  });
-  result.exports = analyzer.exports();
-  if (options.bindCheckedInputs || !result.exports.checkedDefinitions.empty() ||
-      !options.analysisCache.empty()) {
-    for (auto file = sm.fileinfo_begin(); file != sm.fileinfo_end(); ++file) {
-      const auto buffer = file->second->getBufferIfLoaded();
-      if (!buffer)
-        continue;
-      llvm::SmallString<256> absolute;
-      const auto name = file->first.getName();
-      if (llvm::sys::fs::real_path(name, absolute))
-        absolute = name;
-      result.exports.checkedInputs[absolute.str().str()] =
-          checkedDigest(buffer->getBuffer());
-    }
+  // RFC 0030 §11: the zero-initialisation plan, decided before anything is
+  // emitted so that the ledger's A5 counts are known when it is written.
+  if (result.ledger && !result.ledger->ledger.units.empty()) {
+    result.zeroInit = zeroInitPlanOf(context, options);
+    result.ledger->ledger.units.front().a5 = result.zeroInit->a5;
   }
-  result.diagnostics = collected.diagnostics();
-  if (trackImports)
-    analyzer.summaries().endDependencies();
-  return replayUnitResult(std::move(result), diagnostics, options);
+  // RFC 0030 §13.1: what the unit record carries beyond the summaries.
+  if (options.collectInterface && !options.silent) {
+    std::uint64_t lowered = 0;
+    if (result.zeroInit)
+      lowered = static_cast<std::uint64_t>(std::ranges::count_if(
+          result.zeroInit->rewrites, [](const ZeroInitRewrite &rewrite) {
+            return rewrite.kind != ZeroInitRewrite::Kind::Alloca;
+          }));
+    const record::FactsInput input{
+        .exports = result.exports,
+        .sites = result.ledger ? result.ledger->sites.get() : nullptr,
+        .loweredAllocations = lowered,
+        .library = nullptr,
+        .kinds = unit.kinds.get()};
+    result.interface = std::make_shared<const record::InterfaceFacts>(
+        record::collectInterfaceFacts(context, input));
+  }
+
+  ClangDiagnosticSink clangSink(diagnostics);
+  FilteringSink sink(clangSink, options.control, options.alreadyReported,
+                     options.onlyIds);
+  if (!options.silent)
+    for (const auto &diagnostic : collected.diagnostics())
+      sink.report(diagnostic);
+  result.reported = sink.reported();
+  result.errors = sink.errors();
+  result.warnings = sink.warnings();
+  return result;
 }
 
 UnitResult analyzeRetainedUnit(clang::ASTUnit &ast,
-                               const FrontendOptions &options,
-                               const UnitResult *checkpoint) {
+                               const FrontendOptions &options) {
   auto &diagnostics = ast.getDiagnostics();
   auto *previous = diagnostics.getClient();
   auto owned = diagnostics.takeClient();
@@ -155,9 +237,11 @@ UnitResult analyzeRetainedUnit(clang::ASTUnit &ast,
   diagnostics.setClient(&printer, false);
   diagnostics.Reset(true);
   printer.BeginSourceFile(ast.getLangOpts(), &ast.getPreprocessor());
-  auto result = checkpoint ? replayUnitResult(*checkpoint, diagnostics, options)
-                           : analyzeTranslationUnit(ast.getASTContext(),
-                                                    diagnostics, options);
+  auto result =
+      analyzeTranslationUnit(ast.getASTContext(), diagnostics, options);
+  // RFC 0030 §1 step 5: the unit ledger and the summary line.
+  if (result.ledger)
+    emitUnitLedger(result.ledger->ledger, ast, options);
   if (diagnostics.hasErrorOccurred() && result.errors == 0)
     result.errors = 1;
   printer.EndSourceFile();
@@ -186,10 +270,17 @@ public:
       : compiler(compiler), options(std::move(opts)) {
     if (options.analysis.stats)
       options.analysis.stats->add("unit_parses");
+    // RFC 0030 §3.1: under `-fno-strict-aliasing` any two pointee types may
+    // designate one object.
+    options.analysis.strictAliasing =
+        !compiler.getCodeGenOpts().RelaxedAliasing;
   }
   void HandleTranslationUnit(clang::ASTContext &context) override {
     auto result =
         analyzeTranslationUnit(context, compiler.getDiagnostics(), options);
+    // RFC 0030 §1 step 5: the unit ledger and the summary line.
+    if (result.ledger)
+      emitUnitLedger(result.ledger->ledger, compiler, options);
     if (options.onResult)
       options.onResult(std::move(result));
   }

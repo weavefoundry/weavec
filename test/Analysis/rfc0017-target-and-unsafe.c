@@ -1,4 +1,6 @@
-// RFC 0017: target width, signed wrapping mode and suppressed diagnostics.
+// RFC 0017: target width, signed wrapping mode, and diagnostics inside an
+// unsafe region (RFC 0030 §6.1: no diagnostic is dropped for being inside
+// one).
 // RUN: not %weavec %s -- -fwrapv -ferror-limit=0 2>&1 | FileCheck %s
 // RUN: not %weavec %s -- -target i386-unknown-linux-gnu -fwrapv -ferror-limit=0 2>&1 | FileCheck %s
 #include "../Inputs/prelude.h"
@@ -36,8 +38,9 @@ void unsafe_effects(void) {
   if(n==0) *p=1;
 }
 
-WEAVEC_UNSAFE int suppressed(int n) {
+WEAVEC_UNSAFE int inside_unsafe(int n) {
   if(n!=-1)return 0;
+  // CHECK: error: invalid integer operation: invalid signed left shift [weavec::invalid-integer-operation]
   return n<<1;
 }
-// CHECK: 4 errors generated.
+// CHECK: 5 errors generated.

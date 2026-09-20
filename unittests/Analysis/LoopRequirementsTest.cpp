@@ -185,7 +185,7 @@ TEST(LoopRequirements, IncrementMustFitTheIndexStorageType) {
 }
 
 TEST(LoopRequirements, CanonicalMinimaStillComposeThroughWrappers) {
-  const auto result = analyze(R"c(
+  static constexpr const char *Callees = R"c(
     void fill(char *p, unsigned n, unsigned cap) {
       for (unsigned i = 0; i < n && i < cap; ++i) p[i] = 0;
     }
@@ -196,15 +196,24 @@ TEST(LoopRequirements, CanonicalMinimaStillComposeThroughWrappers) {
     void constant_min(char *p, unsigned n) {
       for (unsigned i = 0; i < n && i < 2; i++) p[i] = 0;
     }
+  )c";
+  const auto result = analyze(Callees);
+  ASSERT_TRUE(result.ast);
+  // RFC 0030 §13.2 step 4: a minimum is none of the §7.5 rules, so the
+  // callers' unit checks nothing; the link step reports the summaries'.
+  const auto linked = analyzeAtLink(Callees, R"c(
+    void wrapper(char *p, unsigned n, unsigned cap);
+    void explicit_min(char *p, unsigned n, unsigned cap);
+    void constant_min(char *p, unsigned n);
     void good(void) {
       char two[2]; wrapper(two, 10, 2); wrapper(two, 2, 10);
       explicit_min(two, 10, 2); constant_min(two, 10);
     }
     void bad(void) { char two[2]; wrapper(two, 3, 3); explicit_min(two, 3, 3); }
   )c");
-  ASSERT_TRUE(result.ast);
-  EXPECT_EQ(countId(result, core::diag::OutOfBounds), 2U)
-      << ::testing::PrintToString(messages(result.diagnostics));
+  ASSERT_TRUE(linked.ast);
+  EXPECT_EQ(countId(linked, core::diag::OutOfBounds), 2U)
+      << ::testing::PrintToString(messages(linked.diagnostics));
   for (const auto *name : {"fill", "wrapper", "explicit_min", "constant_min"}) {
     SCOPED_TRACE(name);
     const auto *summary = result.summary(name);

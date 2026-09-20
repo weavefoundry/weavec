@@ -74,6 +74,11 @@ bool NullTracker::join(const NullTracker &other) {
       continue;
     }
     NullRecord &mine = it->second;
+    // RFC 0030 §3.2: an allocation's result on either side.
+    if (theirs.allocatorSource && !mine.allocatorSource) {
+      mine.allocatorSource = true;
+      changed = true;
+    }
     if (mine.state == Nullness::NonNull && theirs.state == Nullness::NonNull)
       continue;
     if (theirs.state == Nullness::NonNull) {
@@ -90,7 +95,9 @@ bool NullTracker::join(const NullTracker &other) {
       // Non-null here, null or maybe there: the other side's record, with
       // the promise that the paths outside its guard (this side) are
       // non-null unless that side already broke it.
+      const bool allocator = mine.allocatorSource;
       mine = theirs;
+      mine.allocatorSource = mine.allocatorSource || allocator;
       mine.state = Nullness::MaybeNull;
       if (theirs.state == Nullness::Null)
         mine.otherwiseNonNull = true;

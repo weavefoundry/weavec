@@ -12,6 +12,7 @@
 
 #include "clang/Basic/SourceManager.h"
 
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/ScopeExit.h"
 
 using namespace clang;
@@ -72,39 +73,6 @@ QualType SummaryStore::interfaceType(std::string_view view) {
   if (!type.isNull() && type->isRecordType())
     objectViewCache[type->getAsRecordDecl()] = view;
   return type;
-}
-
-static std::string globalSymbol(const VarDecl &var) {
-  return var.isExternallyVisible() ? var.getNameAsString()
-                                   : privateStorageName(var);
-}
-
-static std::string globalTargetKey(const Expr &expr, const ASTContext *ctx) {
-  const Expr *e = expr.IgnoreParenImpCasts();
-  if (const auto *ref = dyn_cast<DeclRefExpr>(e)) {
-    const auto *var = dyn_cast<VarDecl>(ref->getDecl());
-    return var && var->hasGlobalStorage() ? globalSymbol(*var) : std::string{};
-  }
-  if (const auto *member = dyn_cast<MemberExpr>(e)) {
-    std::string base = globalTargetKey(*member->getBase(), ctx);
-    return base.empty()
-               ? base
-               : base + "." + member->getMemberDecl()->getNameAsString();
-  }
-  if (const auto *index = dyn_cast<ArraySubscriptExpr>(e)) {
-    std::string base = globalTargetKey(*index->getBase(), ctx);
-    if (base.empty())
-      return base;
-    Expr::EvalResult value;
-    if (ctx && index->getIdx()->EvaluateAsInt(value, *ctx) &&
-        value.Val.getInt().isSignedIntN(64))
-      return base + "[][" + std::to_string(value.Val.getInt().getSExtValue()) +
-             "]";
-    return base + "[]";
-  }
-  if (const auto *unary = dyn_cast<UnaryOperator>(e))
-    return globalTargetKey(*unary->getSubExpr(), ctx);
-  return {};
 }
 
 static const Expr *globalInitializer(const Expr &expr, unsigned depth = 0) {
@@ -175,153 +143,11 @@ static core::CallTargets constantTargets(const Expr &expr, unsigned depth = 0) {
   return {};
 }
 
-core::CallTargets
-SummaryStore::targetsForGlobal(const core::SummaryPath &path) const {
-  if (!path.isGlobal())
-    return {};
-  const auto *global = globalTable.declFor(path.index);
-  if (!global)
-    return {};
-  std::string name = globalTable.callbackName(path.index);
-  for (const auto &step : path.steps) {
-    if (step.step == core::PathStep::Field)
-      name += "." + step.field;
-    else if (step.step == core::PathStep::Index)
-      name += "[" + step.field + "]";
-    else
-      return {};
-  }
-  const auto &local = exportedCallbackGlobals();
-  core::CallTargets result;
-  if (const auto it = local.find(name); it != local.end())
-    result = it->second;
-  if (database) {
-    if (const auto it = database->callbackGlobals.find(name);
-        it != database->callbackGlobals.end())
-      result.join(it->second);
-  }
-  return result;
-}
-
 core::CallTargets SummaryStore::staticTargets(const Expr &expr,
                                               unsigned depth) {
-  const auto key = globalTargetKey(expr, context);
-  core::CallTargets result;
-  if (!key.empty()) {
-    const auto &local = exportedCallbackGlobals();
-    if (const auto it = local.find(key); it != local.end())
-      result.join(it->second);
-    if (database) {
-      if (const auto it = database->callbackGlobals.find(key);
-          it != database->callbackGlobals.end())
-        result.join(it->second);
-    }
-  }
-  if (!result.empty())
-    return result;
+  // RFC 0030 §9.3: what a global can hold is the solved slot's business
+  // (the engine asks it); here only the constant initialisers speak.
   return constantTargets(expr, depth);
-}
-
-const std::map<std::string, core::CallTargets> &
-SummaryStore::exportedCallbackGlobals() const {
-  noteDependency("@callback-globals");
-  if (callbackGlobalCache)
-    return *callbackGlobalCache;
-  std::map<std::string, core::CallTargets> result;
-  if (!context) {
-    callbackGlobalCache.emplace();
-    return *callbackGlobalCache;
-  }
-  std::function<void(QualType, const Expr *, const std::string &, unsigned)>
-      visit;
-  visit = [&](QualType type, const Expr *value, const std::string &name,
-              unsigned depth) {
-    if (depth > core::MaxHeapPathDepth)
-      return;
-    if (type->isFunctionPointerType()) {
-      auto targets = value ? constantTargets(*value)
-                           : core::CallTargets{.functions = {},
-                                               .unknown = false,
-                                               .null = true};
-      result[name].join(targets.empty() ? core::CallTargets::any() : targets);
-      return;
-    }
-    const auto *init =
-        value ? dyn_cast<InitListExpr>(value->IgnoreParenImpCasts()) : nullptr;
-    if (const auto *array = type->getAsArrayTypeUnsafe()) {
-      if (init) {
-        unsigned index = 0;
-        for (const auto *item : init->inits()) {
-          visit(array->getElementType(), item, name + "[]", depth + 1);
-          if (index < core::MaxArrayCells)
-            visit(array->getElementType(), item,
-                  name + "[][" + std::to_string(index) + "]", depth + 1);
-          ++index;
-        }
-      } else {
-        visit(array->getElementType(), nullptr, name + "[]", depth + 1);
-      }
-    } else if (const auto *record = type->getAsRecordDecl()) {
-      for (const auto *field : record->fields()) {
-        if (!init || field->getFieldIndex() < init->getNumInits())
-          visit(field->getType(),
-                init ? init->getInit(field->getFieldIndex()) : nullptr,
-                name + "." + field->getNameAsString(), depth + 1);
-      }
-    }
-  };
-  for (const auto *decl : context->getTranslationUnitDecl()->decls()) {
-    if (const auto *var = dyn_cast<VarDecl>(decl);
-        var && var->hasGlobalStorage() &&
-        (var->hasInit() || !var->hasExternalStorage()))
-      visit(var->getType(), var->getInit(), globalSymbol(*var), 0);
-  }
-  for (const auto &[function, summary] : inferred) {
-    for (const auto &store : summary->stores) {
-      if (!store.dest.isGlobal())
-        continue;
-      const auto *global = globalTable.declFor(store.dest.index);
-      if (!global)
-        continue;
-      std::string name = globalTable.callbackName(store.dest.index);
-      QualType type = global->getType();
-      for (const auto &step : store.dest.steps) {
-        if (type.isNull())
-          break;
-        if (step.step == core::PathStep::Field) {
-          name += "." + step.field;
-          const auto *record = type->getAsRecordDecl();
-          type = QualType{};
-          if (record)
-            for (const auto *field : record->fields())
-              if (field->getName() == step.field) {
-                type = field->getType();
-                break;
-              }
-        } else if (step.step == core::PathStep::Index) {
-          name += "[" + step.field + "]";
-          if (!step.field.empty())
-            continue;
-          const auto *array = type->getAsArrayTypeUnsafe();
-          type = array ? array->getElementType() : QualType{};
-        } else {
-          type = QualType{};
-          break;
-        }
-      }
-      if (type.isNull() || !type->isFunctionPointerType())
-        continue;
-      auto &targets = result[name];
-      if (store.value.kind == core::ValueSource::Kind::Function)
-        targets.join(store.value.targets);
-      else if (store.value.kind == core::ValueSource::Kind::Null)
-        targets.null = true;
-      else
-        targets.unknown = true;
-    }
-  }
-  callbackGlobalCache = std::move(result);
-  return *callbackGlobalCache;
 }
 
 std::string callableSymbol(const FunctionDecl &function) {
@@ -365,11 +191,24 @@ std::optional<ResolvedSummary> SummaryStore::lookupCall(const CallExpr &call) {
   return lookupIndirect(call);
 }
 
-std::optional<ResolvedSummary> SummaryStore::specialize(
-    const FunctionDecl &function, const core::CallbackBindings &bindings,
-    const AnalysisOptions &options, core::DiagnosticSink *sink) {
-  if (activeRecursiveContracts.members.contains(function.getCanonicalDecl()))
+std::optional<std::uint64_t>
+SummaryStore::contextBudget(const FunctionDecl &definition,
+                            const AnalysisOptions &options) const {
+  if (options.budget == 0)
+    return 0;
+  const auto spent = contextTransfers.find(definition.getCanonicalDecl());
+  const std::uint64_t used =
+      spent == contextTransfers.end() ? 0 : spent->second;
+  if (used >= options.budget)
     return std::nullopt;
+  return options.budget - used;
+}
+
+std::optional<ResolvedSummary>
+SummaryStore::specialize(const FunctionDecl &function,
+                         const core::CallbackBindings &bindings,
+                         const AnalysisOptions &options,
+                         std::vector<core::Diagnostic> *diagnostics) {
   if (bindings.empty())
     return lookup(function);
   const std::string symbol = callableSymbol(function);
@@ -414,17 +253,26 @@ std::optional<ResolvedSummary> SummaryStore::specialize(
     activeContexts.insert(contextKey);
     const auto release =
         llvm::scope_exit([&] { activeContexts.erase(contextKey); });
-    core::DiagnosticCollector collected;
+    // RFC 0030 §5.5: the context runs of one function share a budget.
+    const auto budget = contextBudget(*definition, options);
+    if (!budget)
+      return std::nullopt;
+    LedgerAdapter collected(function.getASTContext(),
+                            LedgerAdapter::Mode::Collecting);
     AnalysisOptions nestedOptions = options;
     nestedOptions.dumpStream = nullptr;
+    nestedOptions.budget = *budget;
     FunctionDataflow analysis(function.getASTContext(), *definition, collected,
                               nestedOptions, *this, true);
     analysis.callbackBindings = bindings;
     analysis.run();
+    contextTransfers[definition->getCanonicalDecl()] += analysis.transfers();
+    if (analysis.overBudget())
+      return std::nullopt;
     auto summary = std::move(analysis).summary();
     applyContract(function, summary);
     specialized[contextKey] = publishSummary(std::move(summary));
-    specializedDiagnostics[contextKey] = std::move(collected).diagnostics();
+    specializedDiagnostics[contextKey] = collected.diagnostics();
     callbackDependencies[contextKey] = std::move(dependencies);
     auto &snapshot = callbackVersions[contextKey];
     snapshot = dependencySnapshot();
@@ -434,10 +282,8 @@ std::optional<ResolvedSummary> SummaryStore::specialize(
       options.stats->add("specialization_hits");
     inheritDependencies(callbackDependencies[contextKey]);
   }
-  if (sink) {
-    for (const auto &diagnostic : specializedDiagnostics[contextKey])
-      sink->report(diagnostic);
-  }
+  if (diagnostics != nullptr)
+    llvm::append_range(*diagnostics, specializedDiagnostics[contextKey]);
   return ResolvedSummary{.summary = specialized.at(contextKey),
                          .source = SummarySource::Inferred};
 }

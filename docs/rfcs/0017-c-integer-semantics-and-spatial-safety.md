@@ -24,11 +24,15 @@ nor a whole-program verification certificate. Existing unsupported alias,
 concurrency, collector, arbitrary-byte and unrestricted traversal models remain
 outside its guarantee.
 
+> **Amended by [RFC 0030](0030-prove-or-trap.md).** By default `weavec-cc` now
+> inserts trapping checks for the unproven spatial and null obligations it can
+> express, and zero-initialises locals and heap allocations (§10–§11).
+
 The project owner requested drafting this RFC first and then implementing the
 recommended milestone end to end. Acceptance records that authorization after
 the design is written; it does not claim an independent RFC review or merge.
 The implementation and validation are complete in the working tree. The
-[validation report](../validation-rfc0017.md) records the passing correctness
+validation report (removed by RFC 0030) records the passing correctness
 checks, exceeded performance targets and remaining corpus false positives.
 
 ## Motivation
@@ -362,6 +366,10 @@ exhausted limits, consistent with RFCs 0014–0016. A merely unknown arbitrary
 index retains the current diagnostic policy; its spatial outcome is
 unresolved in the dump. This milestone introduces no `--verify` flag and does
 not claim that the absence of incomplete warnings establishes verification.
+
+> **Amended by [RFC 0030](0030-prove-or-trap.md).** `analysis-incomplete` is
+> removed: what it reported is now an `unresolved` ledger row with a reason from
+> a closed list (`unanalysed`, `budget`, …) plus the summary line (§2.3, §12).
 
 ### 7. Summary format and compiler transport
 

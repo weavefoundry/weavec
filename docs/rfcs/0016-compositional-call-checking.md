@@ -23,7 +23,7 @@ contexts expose incomplete coverage rather than silently asserting safety.
 This RFC was drafted before implementation. The project owner explicitly
 requested drafting the recommended RFC and then implementing it end to end.
 Acceptance recorded that authorization to proceed; it does not claim a
-separate review or merge. The [validation report](../validation-rfc0016.md)
+separate review or merge. The validation report (removed by RFC 0030)
 records the completed implementation, tests and measured tradeoffs.
 
 ## Motivation
@@ -45,6 +45,10 @@ The first is a use-after-free and the second a double-free. The inline forms
 are diagnosed. The same gap occurs through aliased output parameters and
 through different records whose child pointers contain the same allocation.
 The use-after-free has been confirmed with AddressSanitizer.
+
+> **Amended by [RFC 0030](0030-prove-or-trap.md).** `--strict-externs` is
+> removed, subsumed by the sound defaults of §5 and the require levels of §6.3
+> (§16).
 
 A safe helper `void write_then_release(char *a, char *b) { *b = 1; free(a); }`
 exports the same aggregate summary as the first helper. Aggregate flags cannot
@@ -345,6 +349,10 @@ with existing release notes and a call-context note when available.
 unrepresentable input paths, unavailable contexts, and context/depth limits.
 These reasons require exact-message lit coverage. They do not assert that the
 program contains a memory bug.
+
+> **Amended by [RFC 0030](0030-prove-or-trap.md).** `analysis-incomplete` is
+> removed: what it reported is now an `unresolved` ledger row with a reason from
+> a closed list (`unanalysed`, `budget`, …) plus the summary line (§2.3, §12).
 
 ## Drawbacks
 

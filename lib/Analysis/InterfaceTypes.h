@@ -20,5 +20,11 @@ describeInterfaceType(clang::QualType root, const clang::ASTContext &context);
 materializeInterfaceType(const core::InterfaceType &description,
                          clang::ASTContext &context);
 [[nodiscard]] std::string privateStorageName(const clang::VarDecl &var);
+/// The declared name of the variable a private-storage identity stands for
+/// (RFC 0028 §2 encodes it in the identity). Empty when `name` is not one.
+/// Diagnostics about another unit's private storage name it this way: the
+/// proxy the analysis builds for it is internal and must never be named in
+/// a message.
+[[nodiscard]] std::string privateStorageVariable(llvm::StringRef name);
 } // namespace weavec::analysis
 #endif

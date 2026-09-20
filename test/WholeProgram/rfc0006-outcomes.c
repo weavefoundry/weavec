@@ -1,14 +1,16 @@
 // RFC 0006: outcome-conditional summaries inferred in one unit are applied
 // in another, through the whole-program database (RFC 0005).
 //
-// RUN: not %weavec --whole-program %s %S/Inputs/grow.c -- 2>&1 | FileCheck %s
-// RUN: not %weavec --whole-program --dump-analysis %s %S/Inputs/grow.c -- 2>&1 | FileCheck --check-prefix=DUMP %s
+// RUN: %weavec --whole-program %s %S/Inputs/grow.c -- 2>&1 | FileCheck %s
+// RUN: %weavec --whole-program --dump-analysis %s %S/Inputs/grow.c -- 2>&1 | FileCheck --check-prefix=DUMP %s
 #include "../Inputs/prelude.h"
 
 char *grow(char *p, size_t n);
 int try_take(char *p, int c);
 
-// DUMP: function 'grow': param 0: moved(free); stores{} returns{fresh(free) extent param 1 scale 1 plus 0, null} outcome null{} outcome nonnull{param 0: moved(free)}
+// The null class moves `p` too when the size is zero (RFC 0030 §8.2; this
+// dump does not print guards).
+// DUMP: function 'grow': param 0: moved(free); stores{} returns{fresh(free) extent param 1 scale 1 plus 0, null} outcome null{param 0: moved(free)} outcome nonnull{param 0: moved(free)}
 // DUMP: function 'try_take': param 0: freed(free); stores{} returns{} outcome zero{param 0: freed(free)} outcome negative{}
 
 // Clean: the tests select the classes that did not consume.
@@ -30,15 +32,15 @@ void guarded(char *p, int c) {
 void wrong_side(char *p, int c) {
   int rc = try_take(p, c);
   if (rc == 0)
-    // CHECK: rfc0006-outcomes.c:[[@LINE+1]]:5: error: 'p' is freed twice [weavec::double-free]
+    // CHECK: rfc0006-outcomes.c:[[@LINE+1]]:5: warning: 'p' may be freed twice [weavec::double-free]
     free(p);
 }
 
 void untested(char *p) {
   char *q = grow(p, 8);
-  // CHECK: rfc0006-outcomes.c:[[@LINE+1]]:7: error: use of 'p' after it was moved [weavec::use-after-move]
+  // CHECK: rfc0006-outcomes.c:[[@LINE+1]]:7: warning: use of 'p' after it may have been moved [weavec::use-after-move]
   use(p);
   free(q);
 }
 
-// CHECK: 2 errors generated.
+// CHECK: 2 warnings generated.

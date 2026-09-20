@@ -682,12 +682,8 @@ TEST(Bounds, RelationsFromConditions) {
   EXPECT_EQ(
       messages(result.diagnostics),
       (Strings{
-          std::string{
-              "5: 'p[i]' may be out of bounds: 'i' may equal 'n', the number "
-              "of elements of 'p'"},
-          std::string{
-              "6: 'p[i + 1]' may be out of bounds: 'i' may reach one below "
-              "'n', and 'p' has 'n' * 4 bytes"},
+          // RFC 0030 §3.3: a boundary value that may be past the end is a
+          // checked facet, not a diagnostic.
           std::string{
               "14: 'p[i]' is out of bounds: 'i' is at least 'n', the number "
               "of elements of 'p'"},
@@ -745,27 +741,11 @@ TEST(Bounds, ConstantUpperBounds) {
   EXPECT_EQ(
       messages(result.diagnostics),
       (Strings{
-          std::string{
-              "3: 'buf[i]' may be out of bounds: 'i' may be 7 in an object "
-              "of 4 bytes"},
-          std::string{
-              "5: 'buf[i]' may be out of bounds: 'i' may be 4 in an object "
-              "of 4 bytes"},
-          std::string{
-              "10: 'buf[i]' may be out of bounds: 'i' may be 8 in an object "
-              "of 8 bytes"},
-          std::string{
-              "16: 'buf[j]' may be out of bounds: 'j' may be 7 in an object "
-              "of 4 bytes"},
-          std::string{
-              "20: 'ints[i]' may be out of bounds: 'i' may be 4 in an object "
-              "of 16 bytes"},
+          // RFC 0030 §3.3: the boundary a constant bound allows is a checked
+          // facet; only an access past the end for every value is an error.
           std::string{
               "27: 'p[4]' is out of bounds: index 4 of an object of 'n' "
-              "bytes"},
-          std::string{
-              "32: 'memset' may access past the end of 'buf': 'n' may be 8, "
-              "and 'buf' has 4 bytes"}}));
+              "bytes"}}));
 }
 
 // A write to the counter or the index forgets what was known about them.
@@ -972,10 +952,10 @@ TEST(SizedBy, GivesAParameterAnExtentAndARequirement) {
   ASSERT_TRUE(result.ast);
   EXPECT_EQ(
       messages(result.diagnostics),
-      (Strings{
-          "3: 'p[n]' is out of bounds: 'n' is the number of elements of 'p'",
-          "9: 'fill' requires 8 bytes behind 'buf', which has 4 bytes"}));
-  EXPECT_EQ(notes(result.diagnostics, 0), Strings{"'p' is declared here"});
+      (Strings{"9: 'fill' requires 8 bytes behind 'buf', which has 4 bytes"}));
+  // RFC 0030 §3.3: `p[n]` is past the declared count, a lower bound on the
+  // object: checked, not an error.
+  EXPECT_EQ(notes(result.diagnostics, 0), Strings{"'buf' is declared here"});
   // The annotation is a requirement callers see (the resolved summary).
   const auto resolved = [&result](const char *name) {
     const clang::FunctionDecl *fn = result.function(name);
@@ -1002,14 +982,14 @@ TEST(SizedBy, MalformedAnnotationsAreReported) {
     void no_such(char *SIZED_BY(m) p, int n) { (void)p; (void)n; }
   )c");
   ASSERT_TRUE(result.ast);
+  // RFC 0030 §7.2: `AttributeReader` reports them, in its wording.
   EXPECT_EQ(
       messages(result.diagnostics),
-      (Strings{
-          "1: 'x' is declared WEAVEC_SIZED_BY(n) but is not a pointer",
-          "2: 'p' is declared WEAVEC_SIZED_BY(q) but 'q' is not an integer "
-          "parameter",
-          "3: 'p' is declared WEAVEC_SIZED_BY(m) but 'm' is not an integer "
-          "parameter"}));
+      (Strings{"1: 'x' is declared WEAVEC_SIZED_BY(n) but is not a pointer",
+               "2: 'q' in WEAVEC_SIZED_BY is not an integer parameter or "
+               "field",
+               "3: 'm' in WEAVEC_SIZED_BY does not name a parameter or "
+               "field"}));
   EXPECT_EQ(ids(result.diagnostics),
             (Strings{"invalid-annotation", "invalid-annotation",
                      "invalid-annotation"}));
@@ -1018,7 +998,9 @@ TEST(SizedBy, MalformedAnnotationsAreReported) {
 // -- Whole-program (RFC 0011, *Extents in summaries*) -------------------------
 
 // Extents and requirements cross the summary: a wrapper's caller knows the
-// size, and a callee's need is checked against a caller's allocation.
+// size, and a callee's need is checked against a caller's allocation. RFC
+// 0030 §7.5: the call checks a static callee's must-access requirement; one
+// that only a further call gives (`deeper`) is none of R1-R5.
 TEST(ExtentRequirements, ComposeThroughWrappers) {
   const auto result = analyze(std::string(Types) + R"c(
     static char *xmalloc(size_t n) {
@@ -1027,14 +1009,14 @@ TEST(ExtentRequirements, ComposeThroughWrappers) {
       return p;
     }
     static void put7(char *b) { b[7] = 0; }
-    static void via_wrapper(void) {
+    void via_wrapper(void) {
       char *p = xmalloc(4);
       p[4] = 0;
       put7(p);
       free(p);
     }
     static void deeper(char *b) { put7(b); }
-    static void via_deeper(void) {
+    void via_deeper(void) {
       char *p = xmalloc(4);
       deeper(p);
       free(p);
@@ -1044,8 +1026,7 @@ TEST(ExtentRequirements, ComposeThroughWrappers) {
   EXPECT_EQ(
       messages(result.diagnostics),
       (Strings{"9: 'p[4]' is out of bounds: index 4 of an object of 4 bytes",
-               "10: 'put7' requires 8 bytes behind 'p', which has 4 bytes",
-               "16: 'deeper' requires 8 bytes behind 'p', which has 4 bytes"}));
+               "10: 'put7' requires 8 bytes behind 'p', which has 4 bytes"}));
 }
 
 } // namespace

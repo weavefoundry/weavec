@@ -98,6 +98,7 @@ void PlaceEffect::join(const PlaceEffect &other) {
   freed = freed || other.freed;
   moved = moved || other.moved;
   escaped = escaped || other.escaped;
+  unknown = unknown || other.unknown;
   if (!other.consumed())
     return;
   if (!wasConsumed) {
@@ -105,10 +106,14 @@ void PlaceEffect::join(const PlaceEffect &other) {
     replaced = other.replaced;
     element = other.element;
     share = other.share;
+    lossy = other.lossy;
     when = other.when;
     at = other.at;
     return;
   }
+  // RFC 0030 §9.1: a widened side widens the join (it is claimed on the
+  // paths the other side claims and on the ones it invented).
+  lossy = lossy || other.lossy;
   if (family != other.family)
     family.clear();
   // Released at two different offsets: the caller cannot compose either.
@@ -614,18 +619,13 @@ void FunctionSummary::join(const FunctionSummary &other) {
   // In particular, numeric output insertion can erase an existing alternative.
   if (this == &other)
     return;
-  // Equal interface facts are already a fixed point. Explanation routes do
-  // not participate in semantic equality, so still apply their canonical join
-  // (RFC 0020) instead of rebuilding all of the ownership maps.
-  if (*this == other) {
-    checked.join(other.checked);
+  // Equal interface facts are already a fixed point.
+  if (*this == other)
     return;
-  }
   // The empty summary is the bottom of the lattice (a join of candidates
   // starts from it): the other side's classes are the answer.
   const bool wasEmpty = empty();
   const bool otherEmpty = other.empty();
-  checked.join(other.checked);
   for (const auto &[path, outputs] : other.numericOutputs) {
     if (!wasEmpty && !numericOutputs.contains(path))
       addNumericOutput(path, NumericOutput{});
@@ -730,6 +730,17 @@ void FunctionSummary::join(const FunctionSummary &other) {
   // side: a side that knows nothing about outcomes may return any class
   // with any of its effects, which the per-class maps cannot express.
   if (outcomes.empty() || other.outcomes.empty()) {
+    // RFC 0030 §9.1: `effects` is the union over the classes, and it is the
+    // per-class entries that qualify a consume (`realloc` records
+    // `p: moved(free)` with the guard only on its null class). Folding the
+    // classes away leaves that union claimed on paths the other side does
+    // not consume on, so every consume it holds is widened here, exactly as
+    // the two-case limit widens one. Without it, joining a candidate that
+    // knows no classes turns the other's guarded release into a must-fact.
+    if (!outcomes.empty() || !other.outcomes.empty())
+      for (auto &[path, effect] : effects)
+        if (effect.consumed())
+          effect.lossy = true;
     outcomes.clear();
     nullOn.clear();
     nonNullOn.clear();
@@ -818,32 +829,6 @@ void FunctionSummary::join(const FunctionSummary &other) {
     joinEffects(mine, theirs, false);
   }
   normalizeStoresOn();
-}
-
-static bool checkedUsesGlobals(const CheckedRequirement &requirement) {
-  const auto expression = [](const IntegerExpression<SummaryPath> &value) {
-    return std::ranges::any_of(value.all(), [](const auto &node) {
-      return node.key && node.key->isGlobal();
-    });
-  };
-  const auto affine = [&](const PathAffine &value) {
-    return value.expression ? expression(*value.expression)
-                            : value.path && value.path->isGlobal();
-  };
-  const auto &guard = requirement.when;
-  return requirement.path.isGlobal() || requirement.other.isGlobal() ||
-         affine(requirement.begin) || affine(requirement.end) ||
-         std::ranges::any_of(
-             guard.conditions,
-             [](const auto &entry) { return entry.first.isGlobal(); }) ||
-         std::ranges::any_of(guard.pointers,
-                             [](const auto &entry) {
-                               return entry.first.first.isGlobal() ||
-                                      entry.first.second.isGlobal();
-                             }) ||
-         std::ranges::any_of(guard.integers, [&](const auto &predicate) {
-           return expression(predicate.lhs) || expression(predicate.rhs);
-         });
 }
 
 FunctionSummary remapGlobals(const FunctionSummary &summary,
@@ -943,40 +928,6 @@ FunctionSummary remapGlobals(const FunctionSummary &summary,
   };
 
   FunctionSummary result;
-  result.checked = summary.checked;
-  result.checked.caseInputs.clear();
-  for (const auto &input : summary.checked.caseInputs)
-    if (const auto mapped = remapPath(input))
-      result.checked.noteCaseInput(*mapped);
-  const auto remapChecked = [&](auto &requirements) {
-    // RFC 0021: parameter/result-only contracts retain their immutable set.
-    // Inspect every path-bearing field, including nested numeric premises,
-    // before skipping the global remap and its otherwise redundant copies.
-    if (!std::ranges::any_of(requirements, checkedUsesGlobals))
-      return;
-    std::set<CheckedRequirement> mapped;
-    for (auto requirement : requirements) {
-      const auto path = remapPath(requirement.path);
-      const auto other = remapPath(requirement.other);
-      const auto begin = remapAffine(requirement.begin);
-      const auto end = remapAffine(requirement.end);
-      const auto when = remapGuard(requirement.when);
-      if (!path || !other || !begin || !end ||
-          when.size() != requirement.when.size()) {
-        result.checked.limited = true;
-        continue;
-      }
-      requirement.path = *path;
-      requirement.other = *other;
-      requirement.begin = *begin;
-      requirement.end = *end;
-      requirement.when = when;
-      mapped.insert(std::move(requirement));
-    }
-    requirements.assign(std::move(mapped));
-  };
-  remapChecked(result.checked.requirements);
-  remapChecked(result.checked.establishes);
   result.incomplete = summary.incomplete;
   const auto mapArrayGuard = [&](PathGuard &guard, bool &definite) {
     auto mapped = remapGuard(guard);

@@ -337,6 +337,11 @@ order, first match wins:
 4. **Default for everything else**: no effects, `returns = {Unknown}`. The
    call is recorded so `annotation-required` fires once for the callee.
 
+> **Amended by [RFC 0030](0030-prove-or-trap.md).** Item 4 is replaced. An
+> unknown callee may release, retain or replace each pointer argument without
+> an ownership contract; later uses are `unresolved(unknown-callee)` (§5.1).
+> System APIs outside the table borrow and are `trusted(system-api)` (§5.2).
+
 ### Applying a summary at a call (`FunctionDataflow`)
 
 Each `Path` is resolved against the call's arguments to a caller place:
@@ -469,6 +474,11 @@ is replaced by two:
    inferable ownership" wording when it did not. This is the "annotate at
    ABI boundaries" workflow from the roadmap: run once with the flag, apply
    the fix-its, and the TU is documented for its callers in other TUs.
+
+> **Amended by [RFC 0030](0030-prove-or-trap.md).** `annotation-required` is
+> removed; unknown callees get `unresolved(unknown-callee)` rows with fix-its
+> (§5.1). Also removed: `--report-unannotated` (replaced by ledger fix-its) and
+> `--strict-externs` (subsumed by §5 and the require levels of §6.3).
 
 ### Debug output
 

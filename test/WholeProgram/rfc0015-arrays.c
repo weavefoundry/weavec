@@ -2,17 +2,17 @@
 // RUN: not %weavec --whole-program %s %S/Inputs/array15.c -- 2>&1 | FileCheck %s
 // RUN: rm -rf %t && mkdir -p %t
 // RUN: %weavec_cc -c %S/Inputs/array15.c -o %t/library.o 2>&1 | count 0
-// RUN: %weavec_cc -Wno-weavec-annotation-required -c %s -o %t/caller.o 2>&1 | count 0
-// RUN: FileCheck --check-prefix=SIDECAR %s < %t/library.o.weavec
+// RUN: %weavec_cc -c %s -o %t/caller.o 2>&1 | count 0
+// RUN: %weavec --dump-record=%t/library.o.weavec | FileCheck --check-prefix=RECORD %s
 // RUN: not %weavec_cc %t/library.o %t/caller.o -o %t/program 2>&1 | FileCheck %s
 #include "Inputs/array15.h"
 
-// SIDECAR: weavec-summaries 27
+// RECORD: "format": 28,
 // RFC 0017: memcpy's element count is the wrapped byte product divided by 8.
-// SIDECAR-DAG: array-copy param 0 * from param 1 * dest-begin 0 source-begin 0 count expr u64,c,8;u64,v,706172616d2032;u64,mul;u64,c,8;u64,div scale 1 plus 0 bytes 8 view pointer definite when cmp u64,c,8;u64,v,706172616d2032;u64,mul;u64,c,8;u64,div in u64:0-2305843009213693951
-// SIDECAR-DAG: array-copy result * from param 0 * dest-begin 0 source-begin 0 count expr u64,c,8;u64,v,706172616d2031;u64,mul;u64,c,8;u64,div scale 1 plus 0 bytes 8 view pointer definite when cmp u64,c,8;u64,v,706172616d2031;u64,mul;u64,c,8;u64,div in u64:0-2305843009213693951
-// SIDECAR-DAG: array-release param 0 * begin 0 count param 1 scale 1 plus 0 cleared definite
-// SIDECAR-DAG: array-fill param 0 * count param 1 scale 1 plus 0 malloc 4 definite
+// RECORD-DAG: array-copy param 0 * from param 1 * dest-begin 0 source-begin 0 count expr u64,c,8;u64,v,706172616d2032;u64,mul;u64,c,8;u64,div scale 1 plus 0 bytes 8 view pointer definite when cmp u64,c,8;u64,v,706172616d2032;u64,mul;u64,c,8;u64,div in u64:0-2305843009213693951
+// RECORD-DAG: array-copy result * from param 0 * dest-begin 0 source-begin 0 count expr u64,c,8;u64,v,706172616d2031;u64,mul;u64,c,8;u64,div scale 1 plus 0 bytes 8 view pointer definite when cmp u64,c,8;u64,v,706172616d2031;u64,mul;u64,c,8;u64,div in u64:0-2305843009213693951
+// RECORD-DAG: array-release param 0 * begin 0 count param 1 scale 1 plus 0 cleared definite
+// RECORD-DAG: array-fill param 0 * count param 1 scale 1 plus 0 malloc 4 definite
 
 void selected(char **a) {
   array15_drop(a,0); array15_drop(a,1);

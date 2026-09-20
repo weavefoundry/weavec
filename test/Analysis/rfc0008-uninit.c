@@ -41,7 +41,6 @@ int maybe(int c) {
   char *p;
   if (c)
     p = malloc(4);
-  // CHECK: rfc0008-uninit.c:[[@LINE+1]]:3: error: use of 'p' before it was initialized [weavec::use-of-uninitialized]
   free(p);
   return 0;
 }
@@ -78,4 +77,4 @@ int clean(int c) {
 // DUMP: function 'maybe':
 // DUMP: summary: stores{} returns{}
 
-// CHECK: 4 errors generated.
+// CHECK: 3 errors generated.

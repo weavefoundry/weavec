@@ -170,10 +170,8 @@ TEST(ResourceLifecycle, EscapesAreNotLeaks) {
     }
   )c");
   ASSERT_TRUE(result.ast);
-  // Only the boundary warnings for the unknown callees.
-  EXPECT_EQ(ids(result.diagnostics),
-            (Strings{"annotation-required", "annotation-required",
-                     "annotation-required"}));
+  // Nothing: the unknown callees are ledger rows (RFC 0030 §5.1).
+  EXPECT_TRUE(result.diagnostics.empty()) << messages(result.diagnostics)[0];
 }
 
 // `tb = &L->strt; tb->hash = fresh`: the store lands in the caller's object
@@ -351,6 +349,10 @@ TEST(ResourceLifecycle, NullTestsClearTheRecordOnTheNullEdge) {
 }
 
 TEST(ResourceLifecycle, ReallocFailurePathIsNotALeak) {
+  // RFC 0030 §8.2: the null class of `realloc` keeps its argument when the
+  // size is not zero, and frees it when it is (`realloc(p, 0)`): freeing it
+  // again after a failure is a possible double free when the size may be
+  // zero.
   const auto result = analyze(R"c(
     void grow(char *OWNED p, size_t n) {
       char *q = realloc(p, n);
@@ -363,9 +365,42 @@ TEST(ResourceLifecycle, ReallocFailurePathIsNotALeak) {
       *pp = q;
       return 0;
     }
+    void grow_by(char *OWNED p) {
+      char *q = realloc(p, 16);
+      if (!q) { free(p); return; }
+      free(q);
+    }
   )c");
   ASSERT_TRUE(result.ast);
-  EXPECT_EQ(messages(result.diagnostics), Strings{});
+  EXPECT_EQ(messages(result.diagnostics), Strings{"4: 'p' may be freed twice"});
+}
+
+TEST(ResourceLifecycle, FreopenBorrowsItsStream) {
+  // ISO C 7.21.5.4: `freopen` returns its stream reopened, or null with the
+  // stream closed. The `LibrarySpec` row (RFC 0030 §8) cannot say "released
+  // on the null class": the stream is borrowed and the result is the stream
+  // or null, so losing the only name on the null path reads as a leak (a
+  // warning), and closing the stream after a failure is not reported.
+  const auto result = analyze(std::string(Libc) + R"c(
+    FILE *freopen(const char *, const char *, FILE *);
+    int reopen(const char *path) {
+      FILE *f = fopen(path, "r");
+      if (!f) return -1;
+      f = freopen(path, "rb", f);
+      if (!f) return -2;
+      return fclose(f);
+    }
+    void closed_twice(const char *path) {
+      FILE *f = fopen(path, "r");
+      if (!f) return;
+      if (!freopen(path, "rb", f)) { fclose(f); return; }
+      fclose(f);
+    }
+  )c");
+  ASSERT_TRUE(result.ast);
+  EXPECT_EQ(messages(result.diagnostics),
+            Strings{"6: 'f' is leaked: it is overwritten without being "
+                    "released"});
 }
 
 // -- Mismatched releases (RFC 0007, *Release families*) -----------------------
@@ -524,9 +559,12 @@ TEST(ResourceLifecycle, TwoSummaryPathsNamingOneCellAreOneRelease) {
   ASSERT_TRUE(result.ast);
   // RFC 0016 retains aggregate release deduplication. This recursive heap
   // projection cannot establish every requested input relationship yet.
-  EXPECT_EQ(ids(result.diagnostics), Strings{"analysis-incomplete"});
-  EXPECT_EQ(messages(result.diagnostics)[0],
-            "12: analysis is incomplete: unresolved call alias relationship");
+  // RFC 0030 §15 item 3: the call's use of the projection is unresolved.
+  EXPECT_TRUE(result.diagnostics.empty())
+      << ::testing::PrintToString(messages(result.diagnostics));
+  EXPECT_EQ(test::incomplete(result),
+            Strings{"12: temporal unanalysed: unresolved call alias "
+                    "relationship"});
 }
 
 TEST(ResourceLifecycle, MemoryBelowAFreedObjectGoesWithItsContainer) {
@@ -543,7 +581,7 @@ TEST(ResourceLifecycle, MemoryBelowAFreedObjectGoesWithItsContainer) {
   ASSERT_TRUE(result.ast);
   // One report per object, not one per field the callee frees along with it.
   EXPECT_EQ(messages(result.diagnostics),
-            (Strings{"8: 'o' is freed twice", "9: 'o' is freed twice"}));
+            (Strings{"8: 'o' is freed twice", "9: 'o' may be freed twice"}));
   // The recursive call names `o->child`; what `del` frees below that is not
   // this function's to describe, so the summary does not grow one level per
   // fixpoint iteration.
@@ -618,9 +656,8 @@ TEST(ResourceLifecycle, AnEscapedAliasMeansTheResourceEscaped) {
     }
   )c");
   ASSERT_TRUE(result.ast);
-  EXPECT_EQ(messages(result.diagnostics),
-            (Strings{"7: call to 'keep' is not checked: it has no definition "
-                     "or ownership annotations here"}));
+  // No leak; the unknown callee itself is a ledger row (RFC 0030 §5.1).
+  EXPECT_TRUE(result.diagnostics.empty()) << messages(result.diagnostics)[0];
 }
 
 TEST(ResourceLifecycle, AFreedElementDoesNotReleaseWhatAnotherElementHolds) {

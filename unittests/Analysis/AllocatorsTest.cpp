@@ -74,7 +74,9 @@ TEST(Allocators, MallocProducesOwned) {
   EXPECT_EQ(use->borrowedArgs[0].second, core::BorrowKind::Shared);
   const auto effects = parsed.classify(1);
   ASSERT_TRUE(effects);
-  EXPECT_EQ(effects->source, SummarySource::Builtin);
+  EXPECT_EQ(effects->source, SummarySource::Library);
+  ASSERT_TRUE(effects->library);
+  EXPECT_EQ(effects->library->entry->name, "malloc");
   EXPECT_TRUE(effects->producesOwned);
   EXPECT_TRUE(effects->consumedArgs.empty());
 }
@@ -142,21 +144,31 @@ TEST(Allocators, IndirectAndStaticCallsAreNotRecognised) {
   EXPECT_FALSE(parsed.classify(0)) << "indirect call";
   EXPECT_FALSE(parsed.classify(1)) << "static helper, not analysed";
   EXPECT_FALSE(parsed.classify(3)) << "file-local strdup is not libc";
-  EXPECT_FALSE(isKnownAllocator(*parsed.calls[3]->getDirectCallee()));
+  EXPECT_FALSE(parsed.store.libraryMatch(*parsed.calls[3]->getDirectCallee()))
+      << "a program's own strdup is not the row's (RFC 0030 §8)";
 }
 
 TEST(Allocators, KnownNames) {
-  const auto parsed = parseCalls(R"c(
+  // RFC 0030 §8: the rows that govern the calls say what allocates and what
+  // releases.
+  auto parsed = parseCalls(R"c(
     void *calloc(size_t, size_t);
     char *strdup(const char *);
     void f(void) { use(calloc(1, 1)); use(strdup("")); free(0); }
   )c");
   ASSERT_EQ(parsed.calls.size(), 5U);
-  EXPECT_TRUE(isKnownAllocator(*parsed.calls[1]->getDirectCallee()));
-  EXPECT_TRUE(isKnownAllocator(*parsed.calls[3]->getDirectCallee()));
-  EXPECT_FALSE(isKnownAllocator(*parsed.calls[4]->getDirectCallee()));
-  EXPECT_TRUE(isKnownReleaser(*parsed.calls[4]->getDirectCallee()));
-  EXPECT_FALSE(isKnownReleaser(*parsed.calls[0]->getDirectCallee()));
+  const auto rowOf = [&parsed](std::size_t index) {
+    const auto effects = parsed.classify(index);
+    return effects && effects->library ? effects->library->entry : nullptr;
+  };
+  ASSERT_NE(rowOf(1), nullptr);
+  EXPECT_TRUE(rowOf(1)->allocates());
+  ASSERT_NE(rowOf(3), nullptr);
+  EXPECT_TRUE(rowOf(3)->allocates());
+  ASSERT_NE(rowOf(4), nullptr);
+  EXPECT_FALSE(rowOf(4)->allocates());
+  EXPECT_TRUE(rowOf(4)->releases());
+  EXPECT_EQ(rowOf(0), nullptr) << "`use` is annotated, not a row";
 }
 
 } // namespace

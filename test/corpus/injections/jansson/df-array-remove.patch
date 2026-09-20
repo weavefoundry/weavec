@@ -1,0 +1,10 @@
+--- a/src/value.c
++++ b/src/value.c
+@@ -594,6 +594,7 @@
+         return -1;
+ 
+     json_decref(array->table[index]);
++    json_decref(array->table[index]); /* INJECTED: extra release */
+ 
+     /* If we're removing the last element, nothing has to be moved */
+     if (index < array->entries - 1)

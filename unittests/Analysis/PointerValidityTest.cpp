@@ -50,11 +50,11 @@ TEST(NullDereference, UncheckedAllocatorResult) {
   )c");
   ASSERT_TRUE(result.ast);
   EXPECT_EQ(messages(result.diagnostics),
-            (Strings{"4: dereference of 'n', which may be null"}))
+            (Strings{"4: the result of 'malloc' is used without a null test; "
+                     "it is null when allocation fails"}))
       << "one bad pointer reports once";
-  EXPECT_EQ(ids(result.diagnostics), (Strings{"null-dereference"}));
-  EXPECT_EQ(notes(result.diagnostics),
-            (Strings{"'n' may be null: it is the result of 'malloc' here"}));
+  EXPECT_EQ(ids(result.diagnostics), (Strings{"allocation-failure"}));
+  EXPECT_EQ(notes(result.diagnostics), (Strings{"allocated here"}));
 }
 
 TEST(NullDereference, ConstantNull) {
@@ -121,8 +121,7 @@ TEST(NullDereference, TestedThenMergedIsMaybeNull) {
   )c");
   ASSERT_TRUE(result.ast);
   EXPECT_EQ(messages(result.diagnostics),
-            (Strings{"5: dereference of 'n', which may be null",
-                     "9: dereference of 'n', which is null"}));
+            (Strings{"9: dereference of 'n', which is null"}));
   EXPECT_EQ(notes(result.diagnostics, 0),
             (Strings{"'n' may be null: it is compared with NULL here"}));
 }
@@ -221,11 +220,13 @@ TEST(NullDereference, UncheckedCalleesMayWriteWhatTheyReach) {
     }
   )c");
   ASSERT_TRUE(result.ast);
-  EXPECT_EQ(ids(result.diagnostics),
-            (Strings{"annotation-required", "annotation-required",
-                     "null-dereference"}));
-  EXPECT_EQ(messages(result.diagnostics)[2],
-            "18: dereference of 'p', which is null");
+  // RFC 0030 §5.1: the calls into unknown code report nothing; the value
+  // passed by value keeps its nullness.
+  EXPECT_EQ(messages(result.diagnostics),
+            (Strings{"18: dereference of 'p', which is null"}));
+  EXPECT_EQ(
+      test::unknownCalls(result),
+      (Strings{"7: fill(&lc)", "12: fill((structlc*)&p)", "17: look(p)"}));
 }
 
 TEST(NullDereference, UnknownPointersAreTrusted) {
@@ -238,8 +239,9 @@ TEST(NullDereference, UnknownPointersAreTrusted) {
     int external(void) { return lookup(1)->v; }
   )c");
   ASSERT_TRUE(result.ast);
-  EXPECT_EQ(ids(result.diagnostics), (Strings{"annotation-required"}))
-      << "only the RFC 0003 boundary warning";
+  EXPECT_TRUE(result.diagnostics.empty()) << messages(result.diagnostics)[0];
+  // RFC 0030 §5.1: the call to `lookup` is into unknown code.
+  EXPECT_EQ(test::unknownCalls(result), (Strings{"5: lookup(1)"}));
 }
 
 TEST(NullDereference, DereferencesBecomeRequirements) {
@@ -247,7 +249,7 @@ TEST(NullDereference, DereferencesBecomeRequirements) {
     static int get(struct node *n) { return n->v; }
     static int tolerant(struct node *n) { return n ? n->v : 0; }
     static int later(struct node *n, int c) { if (c) return 0; return n->v; }
-    static int via_copy(struct node *n) { struct node *m = n; return m->v; }
+    int via_copy(struct node *n) { struct node *m = n; return m->v; }
     void pass_null(void) { get(NULL); }
     void pass_maybe(void) {
       struct node *n = malloc(sizeof *n);
@@ -259,14 +261,12 @@ TEST(NullDereference, DereferencesBecomeRequirements) {
     void pass_unknown(struct node *n) { get(n); }
   )c");
   ASSERT_TRUE(result.ast);
+  // RFC 0030 §7.5: `get` is static and must-accesses `n`, so every direct
+  // call checks its argument; a null one is the call's violation. (The
+  // summary's `requires` stays a may-fact, `later`'s included.)
   EXPECT_EQ(messages(result.diagnostics),
-            (Strings{"6: a null pointer is passed to 'get', which dereferences "
-                     "it",
-                     "9: 'n', which may be null, is passed to 'get', which "
+            (Strings{"6: a null pointer is passed to 'get', which "
                      "dereferences it"}));
-  EXPECT_EQ(notes(result.diagnostics, 1),
-            (Strings{"'n' may be null: it is the result of 'malloc' here",
-                     "'get' is declared here"}));
   EXPECT_TRUE(result.summary("get")->requiresParam(0));
   EXPECT_FALSE(result.summary("tolerant")->requiresParam(0));
   EXPECT_TRUE(result.summary("later")->requiresParam(0))
@@ -305,12 +305,12 @@ TEST(NullDereference, CalleeResultsCarryNullness) {
   )c");
   ASSERT_TRUE(result.ast);
   EXPECT_EQ(messages(result.diagnostics),
-            (Strings{"15: dereference of 'n', which may be null",
-                     "25: dereference of the result of 'make', which may be "
-                     "null"}))
+            (Strings{"15: the result of 'make' is used without a null test; it "
+                     "is null when allocation fails",
+                     "25: the result of 'make' is used without a null test; it "
+                     "is null when allocation fails"}))
       << "the direct dereference of a call result is checked too";
-  EXPECT_EQ(notes(result.diagnostics, 0),
-            (Strings{"'n' may be null: it is the result of 'make' here"}));
+  EXPECT_EQ(notes(result.diagnostics, 0), (Strings{"allocated here"}));
   EXPECT_TRUE(result.summary("make")->mayReturnNull());
   EXPECT_FALSE(result.summary("make_or_die")->mayReturnNull())
       << "the null path ends in the wrapper";
@@ -340,9 +340,9 @@ TEST(NullDereference, OutParametersFollowTheOutcome) {
   )c");
   ASSERT_TRUE(result.ast);
   EXPECT_EQ(messages(result.diagnostics),
-            (Strings{"16: dereference of 'n', which may be null"}));
-  EXPECT_EQ(notes(result.diagnostics),
-            (Strings{"'n' may be null: it is set by 'make' here"}));
+            (Strings{"16: the result of 'make' is used without a null test; it "
+                     "is null when allocation fails"}));
+  EXPECT_EQ(notes(result.diagnostics), (Strings{"allocated here"}));
   const core::FunctionSummary *make = result.summary("make");
   ASSERT_NE(make, nullptr);
   EXPECT_EQ(make->nonNullOn.at(core::Outcome::Positive),
@@ -422,14 +422,13 @@ TEST(NullDereference, TableEntries) {
     void free_null(void) { free(NULL); }
   )c");
   ASSERT_TRUE(result.ast);
-  EXPECT_EQ(messages(result.diagnostics),
-            (Strings{"8: dereference of 'c', which may be null",
-                     "16: 'd', which may be null, is passed to 'memcpy', "
-                     "which dereferences it",
-                     "19: a null pointer is passed to 'fclose', which "
-                     "dereferences it"}));
-  EXPECT_EQ(notes(result.diagnostics, 0),
-            (Strings{"'c' may be null: it is the result of 'strchr' here"}));
+  EXPECT_EQ(
+      messages(result.diagnostics),
+      (Strings{
+          "16: the result of 'malloc' is used without a null test; it is null "
+          "when allocation fails",
+          "19: a null pointer is passed to 'fclose', which dereferences it"}));
+  EXPECT_EQ(notes(result.diagnostics, 0), (Strings{"allocated here"}));
 }
 
 TEST(NullDereference, NullnessFollowsTheValue) {
@@ -454,7 +453,8 @@ TEST(NullDereference, NullnessFollowsTheValue) {
   ASSERT_TRUE(result.ast);
   EXPECT_EQ(messages(result.diagnostics),
             (Strings{"4: dereference of 'n->next', which is null",
-                     "9: dereference of 'm', which may be null"}));
+                     "9: the result of 'malloc' is used without a null test; "
+                     "it is null when allocation fails"}));
 }
 
 // -- Annotations --------------------------------------------------------------
@@ -470,18 +470,11 @@ TEST(NullDereference, NullableAnnotation) {
     int result_checked(void) { const char *p = lookup(1); return p ? *p : 0; }
   )c");
   ASSERT_TRUE(result.ast);
-  EXPECT_EQ(messages(result.diagnostics),
-            (Strings{"2: dereference of 'n', which may be null",
-                     "6: dereference of the result of 'lookup', which may be "
-                     "null",
-                     "7: dereference of 'p', which may be null"}))
+  EXPECT_EQ(messages(result.diagnostics), (Strings{}))
       << "a nullable parameter imposes nothing on callers; a nullable result "
          "is nullable whatever the body says";
-  EXPECT_EQ(notes(result.diagnostics, 0),
-            (Strings{"'n' is declared WEAVEC_NULLABLE here"}));
-  EXPECT_EQ(notes(result.diagnostics, 2),
-            (Strings{"'p' may be null: the result of 'lookup' is declared "
-                     "WEAVEC_NULLABLE here"}));
+  EXPECT_EQ(notes(result.diagnostics, 0), (Strings{}));
+  EXPECT_EQ(notes(result.diagnostics, 2), (Strings{}));
   EXPECT_FALSE(result.summary("body")->requiresParam(0))
       << "the body is checked instead";
   const auto lookup =
@@ -492,8 +485,10 @@ TEST(NullDereference, NullableAnnotation) {
 
 TEST(NullDereference, AnnotationsOnUncheckedCallees) {
   // RFC 0008, *Annotation surface*: neither annotation says anything about
-  // ownership, so an otherwise unannotated declaration is still a boundary
-  // (RFC 0003), but what they do say holds.
+  // ownership, so an otherwise unannotated declaration is still an unknown
+  // callee (RFC 0030 §5.1), but what they do say holds. RFC 0030 §3.2: a
+  // result that may be null is a checked facet; a null argument where the
+  // declaration requires non-null is definite.
   const auto result = analyze(std::string(Types) + R"c(
     char *NULLABLE lookup(int k);
     void need(struct node *NONNULL n);
@@ -501,16 +496,11 @@ TEST(NullDereference, AnnotationsOnUncheckedCallees) {
     void argument(void) { need(NULL); }
   )c");
   ASSERT_TRUE(result.ast);
-  EXPECT_EQ(ids(result.diagnostics),
-            (Strings{"annotation-required", "null-dereference",
-                     "annotation-required", "null-dereference"}));
-  EXPECT_EQ(messages(result.diagnostics)[1],
-            "4: dereference of the result of 'lookup', which may be null");
-  EXPECT_EQ(notes(result.diagnostics, 1),
-            (Strings{"the result of 'lookup' is declared WEAVEC_NULLABLE "
-                     "here"}));
-  EXPECT_EQ(messages(result.diagnostics)[3],
-            "5: a null pointer is passed to 'need', which dereferences it");
+  EXPECT_EQ(messages(result.diagnostics),
+            (Strings{"5: a null pointer is passed to 'need', which "
+                     "dereferences it"}));
+  EXPECT_EQ(test::unknownCalls(result),
+            (Strings{"4: lookup(1)", "5: need(NULL)"}));
 }
 
 TEST(NullDereference, NonNullAnnotation) {
@@ -527,11 +517,11 @@ TEST(NullDereference, NonNullAnnotation) {
     int result_local(void) { struct node *n = wrapped(); int v = n->v; free(n); return v; }
   )c");
   ASSERT_TRUE(result.ast);
-  EXPECT_EQ(messages(result.diagnostics),
-            (Strings{"5: a null pointer is passed to 'need', which "
-                     "dereferences it",
-                     "7: 'n', which may be null, is passed to 'need', which "
-                     "dereferences it"}))
+  EXPECT_EQ(
+      messages(result.diagnostics),
+      (Strings{"5: a null pointer is passed to 'need', which dereferences it",
+               "7: the result of 'malloc' is used without a null test; it is "
+               "null when allocation fails"}))
       << "a NONNULL parameter is required even when the body tests it; a "
          "NONNULL result is trusted even when the body says otherwise";
   const auto wrapped =
@@ -577,11 +567,9 @@ TEST(UseOfUninitialized, LocalsAndFields) {
                      "5: use of 'p' before it was initialized",
                      "6: use of 'b.data' before it was initialized",
                      "7: use of 'o.inner.data' before it was initialized",
-                     "8: use of 'p' before it was initialized",
-                     "9: use of 'p' before it was initialized",
-                     "9: use of 'p' before it was initialized"}))
-      << "a copy reports at the copy, once; a may-uninitialised value "
-         "reports";
+                     "8: use of 'p' before it was initialized"}))
+      << "a copy reports at the copy, once; a may-uninitialised value is "
+         "made defined by zero-initialisation (RFC 0030 §3.1)";
   EXPECT_EQ(ids(result.diagnostics)[0], "use-of-uninitialized");
   EXPECT_EQ(notes(result.diagnostics), (Strings{"'p' is declared here"}));
 }
@@ -673,7 +661,7 @@ TEST(InvalidRelease, InteriorPointers) {
                "allocation",
                "5: 'p' is released but points 1 element past the start of its "
                "allocation",
-               "10: 'q' is released but does not point to the start of its "
+               "10: 'q' is released but may not point to the start of its "
                "allocation"}))
       << "`p + 0` is `p`; a known offset is named (RFC 0011)";
   EXPECT_EQ(notes(result.diagnostics), (Strings{"allocated here"}));
@@ -710,8 +698,8 @@ TEST(InvalidRelease, DoesNotRepeatForTheSameStorage) {
   )c");
   ASSERT_TRUE(result.ast);
   EXPECT_EQ(messages(result.diagnostics),
-            (Strings{"6: 'p' is released but points to 'buf', which is not a "
-                     "heap object"}))
+            (Strings{"6: 'p' is released but may point to 'buf', which is not "
+                     "a heap object"}))
       << "may point at the stack: reported";
 }
 
@@ -745,7 +733,9 @@ TEST(ReplacedValues, ConsumeThenOverwriteIsStillAConsume) {
   EXPECT_TRUE(items.moved);
   EXPECT_TRUE(items.replaced)
       << "on every path that consumed it the place was reinitialised; the "
-         "failure path consumed nothing (RFC 0008, the realloc row)";
+         "failure path consumed nothing (RFC 0008, the realloc row; RFC 0030 "
+         "§8.2: its zero-size release stays in a function without result "
+         "classes)";
 }
 
 TEST(ReplacedValues, UnconditionalReplacement) {

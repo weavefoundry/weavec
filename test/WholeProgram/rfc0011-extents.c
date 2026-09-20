@@ -1,6 +1,6 @@
 // RFC 0011, *Extents in summaries*: an allocation's extent, a callee's
 // requirement on a parameter's extent, and the offset a callee releases at
-// all cross translation units, in-process and through the sidecar.
+// all cross translation units, in-process and through the unit record.
 //
 // RUN: not %weavec --whole-program %s %S/Inputs/buffers.c -- -I%S/Inputs 2>&1 | FileCheck %s
 // RUN: not %weavec --whole-program --dump-analysis %s %S/Inputs/buffers.c -- -I%S/Inputs 2>/dev/null | FileCheck --check-prefix=DUMP %s
@@ -8,11 +8,11 @@
 // Alone, the calls are unchecked boundaries: nothing is reported.
 // RUN: %weavec %s -- -I%S/Inputs 2>&1 | FileCheck --check-prefix=ALONE %s
 //
-// The same through weavec-cc: the sidecar carries all three (format 8).
+// The same through weavec-cc: the unit record carries all three.
 // RUN: rm -rf %t && mkdir -p %t
 // RUN: %weavec_cc -c %S/Inputs/buffers.c -o %t/buffers.o -I%S/Inputs 2>&1 | count 0
 // RUN: %weavec_cc -c %s -o %t/main.o -I%S/Inputs 2>&1 | count 0
-// RUN: FileCheck --check-prefix=SIDECAR %s < %t/buffers.o.weavec
+// RUN: %weavec --dump-record=%t/buffers.o.weavec | FileCheck --check-prefix=RECORD %s
 // RUN: not %weavec_cc %t/buffers.o %t/main.o -o %t/prog 2>&1 | FileCheck %s
 #include "../Inputs/prelude.h"
 #include "buffers.h"
@@ -23,15 +23,14 @@
 // DUMP: function 'buffer_put8': param 0 *: written; stores{} returns{} requires{param 0} requires-extent{param 0: 8}
 // DUMP: function 'wrapped_release': param 0: freed(free),at(-struct~wrapped.payload); stores{} returns{}
 
-// SIDECAR: weavec-summaries 27
-// SIDECAR: function buffer_fill
-// SIDECAR: requires-extent 0 param 1 scale 1 plus 0 when param 1 positive|negative
-// SIDECAR: function buffer_new
-// SIDECAR: return fresh(free) extent param 0 scale 1 plus 0
-// SIDECAR: function buffer_put8
-// SIDECAR: requires-extent 0 8
-// SIDECAR: function wrapped_release
-// SIDECAR: effect param 0 freed(free),at(-struct~wrapped.payload)
+// RECORD: "name": "buffer_fill",
+// RECORD: "summary": "{{.*}}requires-extent 0 param 1 scale 1 plus 0 when param 1 positive|negative\n
+// RECORD: "name": "buffer_new",
+// RECORD: "summary": "{{.*}}return fresh(free) extent param 0 scale 1 plus 0\n
+// RECORD: "name": "buffer_put8",
+// RECORD: "summary": "{{.*}}requires-extent 0 8\n
+// RECORD: "name": "wrapped_release",
+// RECORD: "summary": "{{.*}}effect param 0 freed(free),at(-struct~wrapped.payload)
 
 // ALONE-NOT: error:
 // ALONE-NOT: out-of-bounds

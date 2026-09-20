@@ -40,8 +40,6 @@ enum class RawReason : std::uint8_t {
   LoadedThroughRaw,
   /// Returned or stored by a callee whose summary says `raw`.
   Callee,
-  /// Returned by a call into code with no summary (`--strict-externs`).
-  UnknownCallee,
 };
 
 struct RawRecord {
@@ -52,8 +50,8 @@ struct RawRecord {
   /// propagated by a copy (`q = p`), so notes can say "(through 'p')".
   std::optional<PlaceId> via;
   /// Free-form detail for notes, filled in by the analysis layer: the
-  /// callee for `Callee`/`UnknownCallee`, the pointer's name for
-  /// `LoadedThroughRaw`. Empty otherwise.
+  /// callee for `Callee`, the pointer's name for `LoadedThroughRaw`.
+  /// Empty otherwise.
   std::string detail;
 
   friend bool operator==(const RawRecord &, const RawRecord &) = default;

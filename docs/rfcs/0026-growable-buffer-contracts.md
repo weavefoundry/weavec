@@ -1,11 +1,12 @@
 # RFC 0026: Inferred relational contracts for growable buffers and vectors
 
-- **Status**: Implemented
+- **Status**: Superseded
 - **Authors**: WeaveC authors
 - **Created**: 2026-09-13
 - **Tracking issue**: TBD
-- **Supersedes / superseded by**: Extends RFCs 0015, 0017, 0019 and 0021;
-  extends RFC 0025's checked interfaces beyond concrete input cases.
+- **Supersedes / superseded by**: Superseded by RFC 0030
+
+> Superseded by [RFC 0030](0030-prove-or-trap.md).
 
 ## Summary
 
@@ -313,7 +314,7 @@ contiguous mutable containers while preserving C source and pointer ABI.
 
 Internal representation and discovery heuristics may change while preserving
 these semantics and acceptance populations. The realized coverage and cost
-are recorded in the [validation report](../validation-rfc0026.md), including the
+were recorded in the validation report (removed by RFC 0030), including the
 absence of a broad-corpus completion gain and the runtime-buffer/helper gains.
 A change to semantic scope or required acceptance must amend
 this RFC explicitly before its implementation; a fixture cannot simply be

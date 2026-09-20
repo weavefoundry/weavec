@@ -92,6 +92,36 @@ TEST(SpatialTracker, JoinKeepsWhatBothSidesAgreeOn) {
   EXPECT_FALSE(same.join(other));
 }
 
+// RFC 0030 §7.1: an extent joined from an exact and a declared record is
+// only declared, and one joined with a lower bound only a lower bound.
+TEST(SpatialTracker, JoinKeepsTheWeakerExtentClass) {
+  const SpatialRecord exact{.extent = Affine::ofConstant(16),
+                            .offset = PointerOffset::zero(),
+                            .location = {}};
+  SpatialRecord declared = exact;
+  declared.extentClass = ExtentClass::Declared;
+  SpatialRecord lower = exact;
+  lower.extentClass = ExtentClass::LowerBound;
+  EXPECT_TRUE(exact.exact());
+  EXPECT_FALSE(declared.exact());
+
+  SpatialTracker a;
+  a.set(P, exact);
+  SpatialTracker b;
+  b.set(P, declared);
+  EXPECT_TRUE(a.join(b));
+  EXPECT_EQ(a.recordOf(P)->extentClass, ExtentClass::Declared);
+  EXPECT_FALSE(a.join(b)) << "fixpoint";
+  SpatialTracker c;
+  c.set(P, lower);
+  EXPECT_TRUE(a.join(c));
+  EXPECT_EQ(a.recordOf(P)->extentClass, ExtentClass::LowerBound);
+  SpatialTracker d;
+  d.set(P, exact);
+  EXPECT_FALSE(a.join(d)) << "the weaker class stays";
+  EXPECT_EQ(a.recordOf(P)->extentClass, ExtentClass::LowerBound);
+}
+
 // RFC 0020: the optimized join must preserve the former pad-then-join
 // operation, including its witnesses and exact change detection.
 TEST(SpatialTracker, AbsentObjectJoinMatchesPaddingReference) {

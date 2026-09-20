@@ -20,6 +20,7 @@
 
 #include "weavec/Core/Offset.h"
 #include "weavec/Core/Place.h"
+#include "weavec/Core/PointerKind.h"
 #include "weavec/Core/Relation.h"
 #include "weavec/Core/SourceLocation.h"
 
@@ -97,6 +98,19 @@ struct SpatialRecord {
   /// Whether `location` is a declaration (a variable's storage, an
   /// annotated parameter) rather than an allocation.
   bool declared = false;
+  /// RFC 0030 §7.1: how the extent bounds the object. `Exact`: an array's
+  /// or an allocation's size. `Declared`: `WEAVEC_SIZED_BY` on a parameter
+  /// or a field, which a check may compare against. `LowerBound`: an RFC
+  /// 0012 inferred sized field, which discharges only the accesses it
+  /// covers. Either of the last two is a lower bound on the object, which
+  /// may be larger, so an access past it is never a definite
+  /// `out-of-bounds`. A join keeps the weaker class.
+  ExtentClass extentClass = ExtentClass::Exact;
+
+  /// Only an exact extent can make an access a violation (§3.3).
+  [[nodiscard]] bool exact() const noexcept {
+    return extentClass == ExtentClass::Exact;
+  }
   /// RFC 0012: the string the object holds, when anything is known.
   // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
   std::optional<StringFact> string = {};

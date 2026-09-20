@@ -1,15 +1,17 @@
 # RFC 0024: Checked C runtime contracts and variadic interfaces
 
-- **Status**: Implemented
+- **Status**: Superseded
 - **Authors**: WeaveC authors
 - **Created**: 2026-09-12
 - **Tracking issue**: Local implementation requested by the project owner
-- **Supersedes / superseded by**: Extends RFCs 0018, 0019 and 0022
+- **Supersedes / superseded by**: Superseded by RFC 0030
+
+> Superseded by [RFC 0030](0030-prove-or-trap.md).
 
 The project owner authorized drafting this RFC followed by end-to-end
 implementation in the same task. Its scope was accepted before checker changes.
-The completed acceptance results are in the
-[validation record](../validation-rfc0024.md).
+The completed acceptance results were in the
+validation record (removed by RFC 0030).
 
 ## Summary
 

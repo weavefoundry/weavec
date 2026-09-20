@@ -1,2 +1,0 @@
-int decode(const unsigned char *,const unsigned char *,unsigned char **);
-int main(void){const unsigned char in[2]={1,2};unsigned char a[2]={0,0};unsigned char *p=a+2;return decode(in,in+2,&p);}

@@ -14,6 +14,8 @@
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/Support/Casting.h"
 
+#include <utility>
+
 namespace weavec::analysis {
 
 std::optional<Annotation> parseAnnotation(llvm::StringRef text) {
@@ -27,8 +29,6 @@ std::optional<Annotation> parseAnnotation(llvm::StringRef text) {
     return Annotation::MutBorrowed;
   if (text == spelling::Raw)
     return Annotation::Raw;
-  if (text == spelling::Checked)
-    return Annotation::Checked;
   if (text == spelling::Unsafe)
     return Annotation::Unsafe;
   if (text == spelling::Nullable)
@@ -43,6 +43,10 @@ std::optional<Annotation> parseAnnotation(llvm::StringRef text) {
     return Annotation::Refcount;
   if (text == spelling::Assume)
     return Annotation::Assume;
+  if (text == spelling::String)
+    return Annotation::String;
+  if (text == spelling::RequireSafe)
+    return Annotation::RequireSafe;
   if (text.starts_with(spelling::FamilyPrefix)) {
     const llvm::StringRef family =
         text.drop_front(spelling::FamilyPrefix.size());
@@ -52,29 +56,28 @@ std::optional<Annotation> parseAnnotation(llvm::StringRef text) {
     });
     return wellFormed ? Annotation::Family : Annotation::Invalid;
   }
-  if (text.starts_with(spelling::SizedByPrefix)) {
-    const llvm::StringRef name =
-        text.drop_front(spelling::SizedByPrefix.size());
+  // `weavec.sized_by.<n>`, `weavec.counted_by.<n>`, `weavec.ended_by.<q>`:
+  // the name is an identifier (the macro stringises its argument).
+  for (const auto &[prefix, annotation] :
+       {std::pair{spelling::SizedByPrefix, Annotation::SizedBy},
+        std::pair{spelling::CountedByPrefix, Annotation::CountedBy},
+        std::pair{spelling::EndedByPrefix, Annotation::EndedBy}}) {
+    if (!text.starts_with(prefix))
+      continue;
+    const llvm::StringRef name = text.drop_front(prefix.size());
     const bool wellFormed =
         !name.empty() && !llvm::isDigit(name.front()) &&
         llvm::all_of(name, [](char c) { return llvm::isAlnum(c) || c == '_'; });
-    return wellFormed ? Annotation::SizedBy : Annotation::Invalid;
+    return wellFormed ? annotation : Annotation::Invalid;
   }
   return Annotation::Invalid;
 }
 
-/// The family `weavec.family.<f>` names, or empty for any other payload.
-static llvm::StringRef familyOf(llvm::StringRef text) {
-  if (!text.starts_with(spelling::FamilyPrefix))
+/// The name after `prefix` in `text`, or empty for any other payload.
+static llvm::StringRef nameAfter(llvm::StringRef text, llvm::StringRef prefix) {
+  if (!text.starts_with(prefix))
     return {};
-  return text.drop_front(spelling::FamilyPrefix.size());
-}
-
-/// The parameter `weavec.sized_by.<n>` names, or empty for any other payload.
-static llvm::StringRef sizedByOf(llvm::StringRef text) {
-  if (!text.starts_with(spelling::SizedByPrefix))
-    return {};
-  return text.drop_front(spelling::SizedByPrefix.size());
+  return text.drop_front(prefix.size());
 }
 
 static void apply(AnnotationSet &set, Annotation annotation) {
@@ -90,9 +93,6 @@ static void apply(AnnotationSet &set, Annotation annotation) {
     break;
   case Annotation::Raw:
     set.raw = true;
-    break;
-  case Annotation::Checked:
-    set.checked = true;
     break;
   case Annotation::Unsafe:
     set.unsafe = true;
@@ -115,8 +115,16 @@ static void apply(AnnotationSet &set, Annotation annotation) {
   case Annotation::Assume:
     set.assume = true;
     break;
+  case Annotation::String:
+    set.string = true;
+    break;
+  case Annotation::RequireSafe:
+    set.requireSafe = true;
+    break;
   case Annotation::Family:
   case Annotation::SizedBy:
+  case Annotation::CountedBy:
+  case Annotation::EndedBy:
     // The name itself is applied by the caller, which has the payload.
     break;
   case Annotation::Invalid:
@@ -135,13 +143,15 @@ static void applyFamily(AnnotationSet &set, llvm::StringRef family) {
     set.invalid = true;
 }
 
-/// Sets the size parameter, or marks the set invalid when two differ.
-static void applySizedBy(AnnotationSet &set, llvm::StringRef name) {
+/// Sets the name an extent annotation carries (`sizedBy`, `countedBy` or
+/// `endedBy`), or marks the set invalid when two differ.
+static void applyName(AnnotationSet &set, std::string &slot,
+                      llvm::StringRef name) {
   if (name.empty())
     return;
-  if (set.sizedBy.empty())
-    set.sizedBy = name.str();
-  else if (set.sizedBy != name)
+  if (slot.empty())
+    slot = name.str();
+  else if (slot != name)
     set.invalid = true;
 }
 
@@ -151,16 +161,20 @@ void AnnotationSet::merge(const AnnotationSet &other) {
   mutBorrowed = mutBorrowed || other.mutBorrowed;
   raw = raw || other.raw;
   unsafe = unsafe || other.unsafe;
-  checked = checked || other.checked;
   nullable = nullable || other.nullable;
   nonNull = nonNull || other.nonNull;
   retains = retains || other.retains;
   releases = releases || other.releases;
   refcount = refcount || other.refcount;
   assume = assume || other.assume;
+  string = string || other.string;
+  requireSafe = requireSafe || other.requireSafe;
+  frees = frees || other.frees;
   invalid = invalid || other.invalid;
   applyFamily(*this, other.family);
-  applySizedBy(*this, other.sizedBy);
+  applyName(*this, sizedBy, other.sizedBy);
+  applyName(*this, countedBy, other.countedBy);
+  applyName(*this, endedBy, other.endedBy);
 }
 
 AnnotationSet getAnnotations(const clang::Decl &decl) {
@@ -170,10 +184,15 @@ AnnotationSet getAnnotations(const clang::Decl &decl) {
     if (!parsed)
       continue;
     apply(set, *parsed);
+    const llvm::StringRef text = attr->getAnnotation();
     if (*parsed == Annotation::Family)
-      applyFamily(set, familyOf(attr->getAnnotation()));
+      applyFamily(set, nameAfter(text, spelling::FamilyPrefix));
     if (*parsed == Annotation::SizedBy)
-      applySizedBy(set, sizedByOf(attr->getAnnotation()));
+      applyName(set, set.sizedBy, nameAfter(text, spelling::SizedByPrefix));
+    if (*parsed == Annotation::CountedBy)
+      applyName(set, set.countedBy, nameAfter(text, spelling::CountedByPrefix));
+    if (*parsed == Annotation::EndedBy)
+      applyName(set, set.endedBy, nameAfter(text, spelling::EndedByPrefix));
   }
   return set;
 }

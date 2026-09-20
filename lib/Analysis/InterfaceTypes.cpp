@@ -23,6 +23,20 @@
 using namespace clang;
 namespace weavec::analysis {
 
+/// The identity is `@weavec-state:<source>:<declaration>:<offset>:<name>`,
+/// each field hex-encoded, with the macro expansion chain appended.
+std::string privateStorageVariable(llvm::StringRef name) {
+  llvm::SmallVector<llvm::StringRef, 8> fields;
+  name.split(fields, ':');
+  if (fields.size() < 5 || fields.front() != "@weavec-state")
+    return {};
+  const llvm::StringRef encoded = fields[4];
+  if (encoded.empty() || (encoded.size() % 2) != 0 ||
+      !llvm::all_of(encoded, [](char c) { return llvm::isHexDigit(c); }))
+    return {};
+  return llvm::fromHex(encoded);
+}
+
 std::string privateStorageName(const VarDecl &var) {
   const auto &sm = var.getASTContext().getSourceManager();
   const auto file = sm.getFileEntryRefForID(sm.getMainFileID());

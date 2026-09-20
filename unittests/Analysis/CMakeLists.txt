@@ -1,13 +1,6 @@
 weavec_add_unittest(
   WeaveCAnalysisTests
-  SOURCES CheckedCodeTest.cpp
-          UnionCasesTest.cpp
-          RuntimeContractsTest.cpp
-          ContainerTest.cpp
-          RecursiveContainerTest.cpp
-          RecursiveContractsTest.cpp
-          BufferTest.cpp
-          AllocatorsTest.cpp
+  SOURCES AllocatorsTest.cpp
           AnnotationsTest.cpp
           ArrayOwnershipTest.cpp
           CallContextTest.cpp
@@ -30,5 +23,13 @@ weavec_add_unittest(
           ValueConditionalTest.cpp
           LoopRequirementsTest.cpp
           GuardCompletenessTest.cpp
-          TraversalTest.cpp
+          AttributeReaderTest.cpp
+          KindInferenceTest.cpp
+          SlotCollectorTest.cpp
+          SiteCollectorTest.cpp
+          CheckPlannerTest.cpp
+          LedgerAdapterTest.cpp
+          EngineDecisionsTest.cpp
+          SoundDefaultsTest.cpp
+          KindSeedingTest.cpp
   DEPS weavec::Analysis weavec::Frontend)

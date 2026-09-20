@@ -1,9 +1,7 @@
 // RFC 0004, "The library table": the shipped table covers the POSIX and
 // common GNU/BSD functions real programs call, so checked code that uses them
-// neither warns (default) nor errors (--strict-externs), and their ownership
-// effects are modelled.
+// does not warn, and their ownership effects are modelled.
 // RUN: not %weavec %s -- 2>&1 | FileCheck %s
-// RUN: not %weavec --strict-externs %s -- 2>&1 | FileCheck %s
 #include <dirent.h>
 #include <dlfcn.h>
 #include <errno.h>

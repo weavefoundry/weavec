@@ -77,6 +77,9 @@ jobs:
           - name: Linux / Clang / Debug + ASan/UBSan
             os: ubuntu-24.04
             preset: ci-debug
+            # RFC 0030 (gate H1): the test/cases suites build, diagnose and
+            # write ledgers under ASan, without running the case programs.
+            configure-args: -DWEAVEC_CASES_ARGS=--no-run
           - name: Linux / Clang / Release
             os: ubuntu-24.04
             preset: ci-release
@@ -125,41 +128,55 @@ jobs:
           max-size: ${{ env.CCACHE_MAXSIZE }}
 
       - name: Configure
-        run: cmake --preset "${{ matrix.preset }}"
+        run: cmake --preset "${{ matrix.preset }}" ${{ matrix.configure-args }}
 
       - name: Build
         run: cmake --build --preset "${{ matrix.preset }}"
 
+      # Unit, lit and the test/cases suites (one cases-<suite> test per
+      # directory of test/cases, RFC 0030 section 17.4), in parallel.
       - name: Test
         env:
           ASAN_OPTIONS: detect_leaks=0:strict_string_checks=1
           UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
-        run: ctest --preset "${{ matrix.preset }}"
+        run: ctest --preset "${{ matrix.preset }}" -j "$(getconf _NPROCESSORS_ONLN)"
 
       - name: Documentation examples
-        run: python3 docs/scripts/check-examples.py --weavec "build/${{ matrix.preset }}/bin/weavec"
+        env:
+          ASAN_OPTIONS: detect_leaks=0
+        run: |
+          python3 docs/scripts/check-examples.py \
+            --weavec "build/${{ matrix.preset }}/bin/weavec" \
+            --weavec-cc "build/${{ matrix.preset }}/bin/weavec-cc"
 
-      # ctest already ran the recall set; run it once more here so the
-      # per-CWE table is in the log (RFC 0011, *Recall check*).
-      - name: Recall
-        run: python3 scripts/recall.py --weavec "build/${{ matrix.preset }}/bin/weavec"
+      # RFC 0030 gate H2: no checked-mode residue, no library names compared
+      # outside the LibrarySpec table, no corpus project names in lib/, the
+      # engine seam, and the Dataflow and library line budgets.
+      - name: Repository hygiene
+        if: runner.os == 'Linux' && matrix.preset == 'ci-release'
+        run: |
+          python3 scripts/test_check_hygiene.py
+          python3 scripts/check-hygiene.py
 
-      # RFC 0014: fixed source revisions exercise real callback-heavy code.
-      # Counts are retained for review; parse errors, crashes, timeouts and
-      # nonconvergence fail the gate on both release platforms.
+      # RFC 0030 (section 17.5): per-file compiles and whole-program analyses of
+      # the pinned corpus configurations in test/corpus/, checked against the
+      # ratchet in test/corpus/expected.json and the triage in
+      # test/corpus/triage.json. The weekly Corpus workflow runs --full.
       - name: Pinned corpus
         if: matrix.preset == 'ci-release'
         run: |
-          python3 scripts/corpus.py --weavec "build/${{ matrix.preset }}/bin/weavec" \
-            --manifest scripts/corpus/rfc0014.json --timeout 120 \
-            --measure-memory --json corpus-rfc0014.json
+          python3 scripts/corpus-gate.py --quick \
+            --weavec "build/${{ matrix.preset }}/bin/weavec" \
+            --weavec-cc "build/${{ matrix.preset }}/bin/weavec-cc" \
+            --only log.c --only cJSON-program --only linenoise-program \
+            --only jansson --json corpus-gate-quick.json
 
       - name: Upload pinned corpus results
         if: always() && matrix.preset == 'ci-release'
         uses: actions/upload-artifact@v7
         with:
-          name: corpus-rfc0014-${{ matrix.os }}
-          path: corpus-rfc0014.json
+          name: corpus-gate-quick-${{ matrix.os }}
+          path: corpus-gate-quick.json
           if-no-files-found: ignore
 
       - name: Smoke-test install
@@ -181,6 +198,7 @@ jobs:
           path: |
             build/${{ matrix.preset }}/Testing/Temporary/LastTest.log
             build/${{ matrix.preset }}/test/**/Output/**
+            build/${{ matrix.preset }}/test/cases/cases-*.json
           if-no-files-found: ignore
 
   # ---------------------------------------------------------------------------

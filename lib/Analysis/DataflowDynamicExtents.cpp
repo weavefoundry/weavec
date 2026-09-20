@@ -137,14 +137,14 @@ void FunctionDataflow::captureVariableArrayType(TypeSourceInfo *info,
     // Until individual evaluated results are available, forget the entire
     // declaration's dimensions rather than re-evaluating their side effects.
     if (sideEffects) {
-      reportIncomplete("side-effecting variable array dimensions", *bound);
+      decideIncomplete("side-effecting variable array dimensions", *bound);
       continue;
     }
     const auto actual = integerRangeOf(*bound, state);
     const auto expression = integerExpressionOf(*bound, state);
     if (!actual || !expression || actual->mayBeInvalid ||
         actual->values.empty()) {
-      reportIncomplete("unsupported variable array dimension", *bound);
+      decideIncomplete("unsupported variable array dimension", *bound);
       continue;
     }
     if (const auto maximum = actual->values.maximum();
@@ -158,12 +158,12 @@ void FunctionDataflow::captureVariableArrayType(TypeSourceInfo *info,
     const auto minimum = actual->values.minimum();
     if (!minimum || minimum->negative() || minimum->bits == 0 ||
         !conversionPreserves(actual->values, *sizeType)) {
-      reportIncomplete("unrepresentable variable array dimension", *bound);
+      decideIncomplete("unrepresentable variable array dimension", *bound);
       continue;
     }
     const auto converted = expression->converted(*sizeType);
     if (!converted) {
-      reportIncomplete("unsupported variable array dimension", *bound);
+      decideIncomplete("unsupported variable array dimension", *bound);
       continue;
     }
     state.scalars.set(count->second, core::ValueFact::ofInteger(
@@ -192,7 +192,7 @@ void FunctionDataflow::captureVariableArray(core::PlaceId place,
          type = array->getElementType()) {
       const auto *variable = dyn_cast<VariableArrayType>(array);
       if (variable && variable->getSizeExpr()) {
-        reportIncomplete("unrepresentable variable array byte extent",
+        decideIncomplete("unrepresentable variable array byte extent",
                          *variable->getSizeExpr());
         break;
       }
@@ -265,7 +265,7 @@ bool FunctionDataflow::checkVariableArray(const Expr &expr,
     const auto end = index ? index->shifted(1) : std::nullopt;
     if (!index || !end) {
       check.reason = core::SpatialReason::Arithmetic;
-      reportIncomplete("unsupported variable array access", access);
+      decideIncomplete("unsupported variable array access", access);
     } else if (dimension) {
       const auto start = foldAffine(*index, state);
       const auto need = foldAffine(*end, state);
@@ -282,7 +282,13 @@ bool FunctionDataflow::checkVariableArray(const Expr &expr,
                                         .needAtLeast = lo,
                                         .haveAtLeast = haveLo},
                                        boundsOf(start).first);
-      if (check.outcome == core::SpatialOutcome::Violation) {
+      // RFC 0030 §3.3: definite only (the dimension is an exact extent);
+      // a boundary value that may be past it is a checked facet.
+      if (check.outcome == core::SpatialOutcome::Violation && check.violation &&
+          (check.violation->kind == core::BoundsVerdict::Kind::OutOfBounds ||
+           check.violation->kind == core::BoundsVerdict::Kind::BeforeStart ||
+           check.violation->kind ==
+               core::BoundsVerdict::Kind::AtLeastPastEnd)) {
         auto diagnostic =
             makeError(core::diag::OutOfBounds,
                       "'" + spellIndex(&access, need) +
@@ -292,7 +298,10 @@ bool FunctionDataflow::checkVariableArray(const Expr &expr,
           diagnostic.addNote("the dimension is evaluated here", locate(*bound));
         else
           diagnostic.addNote("the array is declared here", locate(base));
-        report(std::move(diagnostic));
+        const SiteInfo *site = accessSite(access, core::Facet::Spatial);
+        decide(site, core::Facet::Spatial, core::FacetDecision::violation());
+        report(std::move(diagnostic), core::Certainty::Definite, site,
+               core::Facet::Spatial);
       }
     }
     // Every enclosing subscript and the full byte product must fit. Keep
@@ -305,16 +314,125 @@ bool FunctionDataflow::checkVariableArray(const Expr &expr,
         check = {.reason = core::SpatialReason::UnknownExtent};
     }
     recordSpatialCheck(access, check);
+    // §3.3 for what is not a definite violation (the extent is the exact
+    // dimension, so a check against it falls back to the declarations).
+    if (check.outcome != core::SpatialOutcome::Violation)
+      decideSpatial(accessSite(access, core::Facet::Spatial), check, nullptr);
+    else if (!check.violation ||
+             (check.violation->kind != core::BoundsVerdict::Kind::OutOfBounds &&
+              check.violation->kind != core::BoundsVerdict::Kind::BeforeStart &&
+              check.violation->kind !=
+                  core::BoundsVerdict::Kind::AtLeastPastEnd))
+      decide(accessSite(access, core::Facet::Spatial), core::Facet::Spatial,
+             core::FacetDecision::checked());
     return check;
   };
   visit(visit, expr);
   return true;
 }
 
+std::optional<core::SpatialRecord>
+FunctionDataflow::completeStorageRecordOf(const PlaceRef &storage,
+                                          const core::PointerOffset &offset) {
+  // The path from the variable to the storage, outermost first.
+  std::vector<core::PlaceId> path;
+  for (core::PlaceId cursor = storage.place; !places.isBase(cursor);
+       cursor = *places.parent(cursor))
+    path.push_back(cursor);
+  std::ranges::reverse(path);
+  const core::PlaceId root = places.root(storage.place);
+  const VarDecl *var = builder.varForPlace(root);
+  if (var == nullptr || isa<ParmVarDecl>(var))
+    return std::nullopt;
+  QualType type = var->getType();
+  std::optional<core::Affine> extent;
+  if (type->isVariableArrayType()) {
+    const auto record =
+        currentState ? currentState->spatial.recordOf(root) : std::nullopt;
+    if (!record || !record->extent)
+      return std::nullopt;
+    extent = record->extent;
+  } else if (const auto size = byteSizeOf(type, context)) {
+    extent = core::Affine::ofConstant(*size);
+  } else {
+    return std::nullopt;
+  }
+  // Where the sub-object starts, in bytes, while every step is a field; a
+  // subscript on the way makes it somewhere inside.
+  bool known = true;
+  std::int64_t bytes = 0;
+  for (const core::PlaceId step : path) {
+    if (places.step(step) == core::PathStep::Field) {
+      const RecordDecl *record = type->getAsRecordDecl();
+      const FieldDecl *selected = nullptr;
+      if (record != nullptr && record->isCompleteDefinition())
+        for (const FieldDecl *field : record->fields())
+          if (field->getName() == llvm::StringRef(places.fieldName(step))) {
+            selected = field;
+            break;
+          }
+      if (selected == nullptr || selected->isBitField())
+        return core::SpatialRecord{.extent = extent,
+                                   .offset = core::PointerOffset::inside(),
+                                   .location = locate(var->getLocation()),
+                                   .declared = true,
+                                   .boundsOffset =
+                                       core::PointerOffset::inside()};
+      const std::uint64_t bits = context.getFieldOffset(selected);
+      if (bits % context.getCharWidth() != 0 ||
+          __builtin_add_overflow(
+              bytes, static_cast<std::int64_t>(bits / context.getCharWidth()),
+              &bytes))
+        known = false;
+      type = selected->getType();
+    } else if (places.step(step) == core::PathStep::Index) {
+      const auto *array = context.getAsArrayType(type);
+      if (array == nullptr)
+        return std::nullopt;
+      // The element the storage names is not known here (a decay names
+      // its first; `&a[3]` counts in `offset`).
+      if (step != path.back())
+        known = false;
+      type = array->getElementType();
+    } else {
+      return std::nullopt;
+    }
+  }
+  // What the pointer points to: the storage's element when it names an
+  // array's elements, else the storage itself.
+  QualType element = type;
+  if (!path.empty() && places.step(path.back()) != core::PathStep::Index)
+    if (const auto *array = context.getAsArrayType(type))
+      element = array->getElementType();
+  const auto unit = byteSizeOf(element, context);
+  core::PointerOffset position = core::PointerOffset::inside();
+  if (known && unit && *unit > 0 && bytes % *unit == 0) {
+    position = core::PointerOffset::ofElements(bytes / *unit);
+    if (offset.isElements() || offset.isZero())
+      position = position.plus(offset);
+    else
+      position = core::PointerOffset::inside();
+  }
+  return core::SpatialRecord{.extent = extent,
+                             .offset = position,
+                             .location = locate(var->getLocation()),
+                             .declared = true,
+                             .boundsOffset = std::nullopt};
+}
+
 core::SpatialRecord
 FunctionDataflow::subobjectRecord(const core::SpatialRecord &record,
                                   core::PlaceId source,
                                   const core::PointerOffset &step) {
+  // RFC 0030 §7.4: a pointer made by `&member` or by the decay of a member
+  // array has the extent of the complete object, as
+  // `__builtin_object_size` mode 0 does: `memset(&s->first, 0, sizeof *s)`
+  // and a copy into `(char *)&ts->contents` are in bounds, and a trailing
+  // array (flexible at `-fstrict-flex-arrays=0`, whatever its bound) spans
+  // the rest of the allocation. Only a direct subscript of a non-flexible
+  // member array uses the member's bound (`checkBounds`). The bounds count
+  // from the complete object's start: the member's byte offset, in
+  // elements of what the new pointer points to.
   auto result = record.derived(step);
   if (!step.isField() || step.negative || !record.extent ||
       !record.boundsOffset.value_or(record.offset).isZero())
@@ -357,23 +475,18 @@ FunctionDataflow::subobjectRecord(const core::SpatialRecord &record,
     type = selected->getType();
     last = selected;
   }
-  if (!last || !type->isArrayType())
+  if (!last)
     return result;
-  const auto tail = record.extent->shifted(-offset);
-  if (!tail)
-    return result;
-  if (type->isIncompleteArrayType()) {
-    if (!last->getParent()->hasFlexibleArrayMember())
-      return result;
-    result.extent = tail;
-  } else {
-    const auto fixed = byteSizeOf(type, context);
-    // A fixed subobject cannot widen a backing allocation that is too small.
-    if (!fixed || !tail->isConstant())
-      return result;
-    result.extent = core::Affine::ofConstant(std::min(*fixed, tail->constant));
-  }
-  result.boundsOffset = core::PointerOffset::zero();
+  // What the new pointer points to: an array member's element (it decays),
+  // or the member itself.
+  QualType element = type;
+  if (const auto *array = context.getAsArrayType(type))
+    element = array->getElementType();
+  const auto unit = byteSizeOf(element, context);
+  if (!unit || *unit <= 0 || offset % *unit != 0)
+    result.boundsOffset = core::PointerOffset::inside();
+  else
+    result.boundsOffset = core::PointerOffset::ofElements(offset / *unit);
   return result;
 }
 

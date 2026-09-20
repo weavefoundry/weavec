@@ -1,0 +1,580 @@
+{
+  "schema": "weavec-corpus-expected",
+  "version": 1,
+  "_comment": [
+    "The corpus ratchet of RFC 0030, section 17.5, written by scripts/corpus-gate.py --update",
+    "(or --update-from a results file measured elsewhere, for example by CI). For each platform,",
+    "configs.<config> records the per-file compiles (units) and, for wholeProgram configs, the",
+    "whole-program analysis (program): errors, warnings, ledger outcome counts,",
+    "unresolvedShare.spatialNull, cpuSeconds and workCounters; --full adds traps and --bench",
+    "overhead. Counts and shares must match exactly: a worse value fails, and so does a better",
+    "one until --update records it. cpuSeconds and overhead may exceed the record by 10% on the",
+    "machine that recorded them (not compared elsewhere), work counters by 2%. The platforms stay",
+    "empty until the RFC 0030 compiler writes ledgers (S3); legacy holds v0.10.0's numbers for S0",
+    "and S1."
+  ],
+  "platforms": {
+    "darwin-arm64": {
+      "machine": "darwin-arm64 Apple M3 x8",
+      "producer": "weavec-cc version 0.10.0-dev (d3b083049601-dirty)",
+      "updated": "2026-09-20",
+      "configs": {
+        "cJSON": {
+          "units": {
+            "errors": 0,
+            "warnings": 0,
+            "ledger": {
+              "sites": 1221,
+              "proven": 1896,
+              "checked": 82,
+              "violation": 0,
+              "unresolved": 671,
+              "trusted": 17
+            },
+            "unresolvedShare": {
+              "spatialNull": 0.231
+            },
+            "cpuSeconds": 0.36,
+            "workCounters": {
+              "blockTransfers": 9621,
+              "functions": 113,
+              "sites": 1221
+            }
+          },
+          "traps": 0,
+          "overhead": 1.1364
+        },
+        "cJSON-program": {
+          "units": {
+            "errors": 0,
+            "warnings": 0,
+            "ledger": {
+              "sites": 1745,
+              "proven": 2582,
+              "checked": 128,
+              "violation": 0,
+              "unresolved": 942,
+              "trusted": 17
+            },
+            "unresolvedShare": {
+              "spatialNull": 0.2176
+            },
+            "cpuSeconds": 0.63,
+            "workCounters": {
+              "blockTransfers": 14998,
+              "functions": 151,
+              "sites": 1745
+            }
+          },
+          "program": {
+            "errors": 0,
+            "warnings": 0,
+            "ledger": {
+              "sites": 1745,
+              "proven": 2581,
+              "checked": 120,
+              "violation": 0,
+              "unresolved": 955,
+              "trusted": 17
+            },
+            "unresolvedShare": {
+              "spatialNull": 0.2262
+            },
+            "cpuSeconds": 1.33,
+            "workCounters": {
+              "blockTransfers": 36168,
+              "functions": 151,
+              "sites": 1745
+            }
+          }
+        },
+        "jansson": {
+          "units": {
+            "errors": 0,
+            "warnings": 0,
+            "ledger": {
+              "sites": 2391,
+              "proven": 2907,
+              "checked": 269,
+              "violation": 0,
+              "unresolved": 1193,
+              "trusted": 13
+            },
+            "unresolvedShare": {
+              "spatialNull": 0.2158
+            },
+            "cpuSeconds": 1.25,
+            "workCounters": {
+              "blockTransfers": 16191,
+              "functions": 236,
+              "sites": 2391
+            }
+          },
+          "program": {
+            "errors": 0,
+            "warnings": 18,
+            "ledger": {
+              "sites": 2391,
+              "proven": 2994,
+              "checked": 269,
+              "violation": 0,
+              "unresolved": 1161,
+              "trusted": 14
+            },
+            "unresolvedShare": {
+              "spatialNull": 0.2356
+            },
+            "cpuSeconds": 2.82,
+            "workCounters": {
+              "blockTransfers": 50506,
+              "functions": 236,
+              "sites": 2391
+            }
+          },
+          "traps": 0
+        },
+        "jsmn": {
+          "units": {
+            "errors": 0,
+            "warnings": 3,
+            "ledger": {
+              "sites": 384,
+              "proven": 773,
+              "checked": 52,
+              "violation": 0,
+              "unresolved": 105,
+              "trusted": 3
+            },
+            "unresolvedShare": {
+              "spatialNull": 0.1773
+            },
+            "cpuSeconds": 0.33,
+            "workCounters": {
+              "blockTransfers": 3944,
+              "functions": 17,
+              "sites": 384
+            }
+          },
+          "traps": 0
+        },
+        "linenoise": {
+          "units": {
+            "errors": 0,
+            "warnings": 1,
+            "ledger": {
+              "sites": 1121,
+              "proven": 1847,
+              "checked": 126,
+              "violation": 0,
+              "unresolved": 291,
+              "trusted": 13
+            },
+            "unresolvedShare": {
+              "spatialNull": 0.1425
+            },
+            "cpuSeconds": 0.23,
+            "workCounters": {
+              "blockTransfers": 4914,
+              "functions": 85,
+              "sites": 1121
+            }
+          }
+        },
+        "linenoise-program": {
+          "units": {
+            "errors": 0,
+            "warnings": 1,
+            "ledger": {
+              "sites": 1181,
+              "proven": 1908,
+              "checked": 136,
+              "violation": 0,
+              "unresolved": 323,
+              "trusted": 14
+            },
+            "unresolvedShare": {
+              "spatialNull": 0.1467
+            },
+            "cpuSeconds": 0.31,
+            "workCounters": {
+              "blockTransfers": 5424,
+              "functions": 88,
+              "sites": 1181
+            }
+          },
+          "program": {
+            "errors": 0,
+            "warnings": 6,
+            "ledger": {
+              "sites": 1181,
+              "proven": 1964,
+              "checked": 139,
+              "violation": 0,
+              "unresolved": 269,
+              "trusted": 14
+            },
+            "unresolvedShare": {
+              "spatialNull": 0.1505
+            },
+            "cpuSeconds": 0.62,
+            "workCounters": {
+              "blockTransfers": 11620,
+              "functions": 88,
+              "sites": 1181
+            }
+          },
+          "traps": 0
+        },
+        "log.c": {
+          "units": {
+            "errors": 0,
+            "warnings": 0,
+            "ledger": {
+              "sites": 74,
+              "proven": 127,
+              "checked": 14,
+              "violation": 0,
+              "unresolved": 9,
+              "trusted": 4
+            },
+            "unresolvedShare": {
+              "spatialNull": 0.0753
+            },
+            "cpuSeconds": 0.06,
+            "workCounters": {
+              "blockTransfers": 201,
+              "functions": 12,
+              "sites": 74
+            }
+          }
+        },
+        "lua": {
+          "units": {
+            "errors": 0,
+            "warnings": 3,
+            "ledger": {
+              "sites": 14578,
+              "proven": 16911,
+              "checked": 3322,
+              "violation": 0,
+              "unresolved": 9623,
+              "trusted": 40
+            },
+            "unresolvedShare": {
+              "spatialNull": 0.1797
+            },
+            "cpuSeconds": 6.76,
+            "workCounters": {
+              "blockTransfers": 72230,
+              "functions": 1157,
+              "sites": 14578
+            }
+          },
+          "program": {
+            "errors": 1,
+            "warnings": 624,
+            "ledger": {
+              "sites": 14578,
+              "proven": 15945,
+              "checked": 3318,
+              "violation": 1,
+              "unresolved": 10929,
+              "trusted": 39
+            },
+            "unresolvedShare": {
+              "spatialNull": 0.1801
+            },
+            "cpuSeconds": 308.83,
+            "workCounters": {
+              "blockTransfers": 595735,
+              "functions": 1157,
+              "sites": 14578
+            }
+          },
+          "traps": 0,
+          "overhead": 1.4801
+        },
+        "printf": {
+          "units": {
+            "errors": 1,
+            "warnings": 0,
+            "ledger": {
+              "sites": 148,
+              "proven": 106,
+              "checked": 32,
+              "violation": 1,
+              "unresolved": 121,
+              "trusted": 0
+            },
+            "unresolvedShare": {
+              "spatialNull": 0.3835
+            },
+            "cpuSeconds": 0.12,
+            "workCounters": {
+              "blockTransfers": 6388,
+              "functions": 20,
+              "sites": 148
+            }
+          }
+        },
+        "sds": {
+          "units": {
+            "errors": 0,
+            "warnings": 14,
+            "ledger": {
+              "sites": 464,
+              "proven": 447,
+              "checked": 95,
+              "violation": 0,
+              "unresolved": 310,
+              "trusted": 5
+            },
+            "unresolvedShare": {
+              "spatialNull": 0.4977
+            },
+            "cpuSeconds": 0.2,
+            "workCounters": {
+              "blockTransfers": 3790,
+              "functions": 49,
+              "sites": 464
+            }
+          },
+          "traps": 0
+        },
+        "zlib": {
+          "units": {
+            "errors": 0,
+            "warnings": 0,
+            "ledger": {
+              "sites": 4880,
+              "proven": 7202,
+              "checked": 565,
+              "violation": 0,
+              "unresolved": 4601,
+              "trusted": 14
+            },
+            "unresolvedShare": {
+              "spatialNull": 0.2593
+            },
+            "cpuSeconds": 3.96,
+            "workCounters": {
+              "blockTransfers": 55764,
+              "functions": 156,
+              "sites": 4880
+            }
+          },
+          "program": {
+            "errors": 0,
+            "warnings": 0,
+            "ledger": {
+              "sites": 4880,
+              "proven": 7359,
+              "checked": 559,
+              "violation": 0,
+              "unresolved": 4518,
+              "trusted": 35
+            },
+            "unresolvedShare": {
+              "spatialNull": 0.2676
+            },
+            "cpuSeconds": 7.59,
+            "workCounters": {
+              "blockTransfers": 140668,
+              "functions": 156,
+              "sites": 4880
+            }
+          },
+          "traps": 0,
+          "overhead": 1.01
+        }
+      }
+    }
+  },
+  "legacy": {
+    "_comment": [
+      "v0.10.0 (golden) semantics, recorded with the golden binaries by corpus-gate.py --legacy",
+      "--update: quick holds each config's diagnostic tally and the SHA-256 of its sorted",
+      "diagnostics; injections holds whether each injection is reported at its line. S0",
+      "reproduces them (--quick --legacy, --inject --legacy), and S1's binaries must too."
+    ],
+    "quick": {
+      "platform": "darwin-arm64",
+      "producer": "weavec version 0.10.0-dev (e0e2bd68bcae)",
+      "recorded": "2026-09-18",
+      "configs": {
+        "sds": {
+          "units": 1,
+          "byId": {
+            "analysis-incomplete": 25,
+            "double-free": 3,
+            "leak": 12,
+            "null-dereference": 12
+          },
+          "bugClaims": 27,
+          "digest": "sha256:1a65e999d8dbcf2663b12a42c05a4340e8f93b850e8909064486bfc53074b171"
+        },
+        "cJSON": {
+          "units": 1,
+          "byId": {
+            "analysis-incomplete": 4,
+            "annotation-required": 11,
+            "null-dereference": 4
+          },
+          "bugClaims": 4,
+          "digest": "sha256:b1a1d449df12a350b8855617c919fdbd35cec53ff71b1d3f06675315a8bdca80"
+        },
+        "cJSON-program": {
+          "units": 1,
+          "byId": {
+            "analysis-incomplete": 5,
+            "annotation-required": 4,
+            "null-dereference": 26
+          },
+          "bugClaims": 26,
+          "digest": "sha256:4ae27e63e9c2befcf95c54e017ef91c86ab2fe73b5f476b612170a6a2e0912a5"
+        },
+        "jsmn": {
+          "units": 2,
+          "byId": {
+            "analysis-incomplete": 1,
+            "leak": 6
+          },
+          "bugClaims": 6,
+          "digest": "sha256:bdf57e94b021dde154b8e6f4b874ee9fd713ac063fec2ebc2b097beff34dd4f1"
+        },
+        "log.c": {
+          "units": 1,
+          "byId": {
+            "annotation-required": 2
+          },
+          "bugClaims": 0,
+          "digest": "sha256:5636cf7a8a8ef17b43befdcceee037db4cdafd568133fafb0460c0be427f2962"
+        },
+        "printf": {
+          "units": 1,
+          "byId": {
+            "analysis-incomplete": 13,
+            "annotation-required": 6
+          },
+          "bugClaims": 0,
+          "digest": "sha256:a63926a1d86816efca17a70e99fb9bdb8fd9bf0fe84a8950842e4ba6596fbe59"
+        },
+        "linenoise": {
+          "units": 1,
+          "byId": {
+            "analysis-incomplete": 19,
+            "annotation-required": 3,
+            "double-free": 1,
+            "null-dereference": 4
+          },
+          "bugClaims": 5,
+          "digest": "sha256:79154fd2a24741467ea5e44c92fea4be307dd6be49353eed7284db83cd813098"
+        },
+        "linenoise-program": {
+          "units": 1,
+          "byId": {
+            "analysis-incomplete": 20,
+            "annotation-required": 3,
+            "double-free": 5,
+            "leak": 1,
+            "null-dereference": 4
+          },
+          "bugClaims": 10,
+          "digest": "sha256:2b582449668cc36eb08010277ee420ca0e5eeb0d20d5f4d02aa3606fe2d819dd"
+        },
+        "zlib": {
+          "units": 1,
+          "byId": {
+            "analysis-incomplete": 60,
+            "annotation-required": 3,
+            "leak": 3,
+            "null-dereference": 29
+          },
+          "bugClaims": 32,
+          "digest": "sha256:aa644499d73427ecf3265bc83812160d9baac9f0f947d202a6856f7ce23084c5"
+        },
+        "lua": {
+          "units": 1,
+          "byId": {
+            "analysis-incomplete": 3990,
+            "annotation-required": 5,
+            "invalid-release": 1,
+            "lifetime-too-short": 2,
+            "null-dereference": 104
+          },
+          "bugClaims": 107,
+          "digest": "sha256:6bda164a8081d301257508e76da0598a6986d97298dd7e438109f39c19abd8c7"
+        },
+        "jansson": {
+          "units": 1,
+          "byId": {
+            "analysis-incomplete": 102,
+            "annotation-required": 3,
+            "double-free": 47,
+            "invalid-release": 2,
+            "null-dereference": 3,
+            "use-after-free": 32
+          },
+          "bugClaims": 84,
+          "digest": "sha256:02813322ab6aac691cc65db75406621a1aa38c206db7c83fc24605d921602f52"
+        }
+      },
+      "totals": {
+        "units": 12,
+        "byId": {
+          "analysis-incomplete": 4239,
+          "annotation-required": 40,
+          "double-free": 56,
+          "invalid-release": 3,
+          "leak": 22,
+          "lifetime-too-short": 2,
+          "null-dereference": 186,
+          "use-after-free": 32
+        },
+        "bugClaims": 301
+      }
+    },
+    "injections": {
+      "platform": "darwin-arm64",
+      "producer": "weavec version 0.10.0-dev (e0e2bd68bcae)",
+      "recorded": "2026-09-18",
+      "results": {
+        "sds-uaf-sdsfree": true,
+        "sds-df-freesplitres": true,
+        "sds-uaf-makeroomfor": true,
+        "cjson-uaf-delete": true,
+        "cjson-df-valuestring": true,
+        "cjson-oob-number": false,
+        "cjsonprog-uaf-findpointer": true,
+        "cjsonprog-df-overwrite": true,
+        "jsmn-uaf-jsondump": true,
+        "jsmn-df-jsondump": true,
+        "logc-oob-callbacks": true,
+        "logc-null-lock": false,
+        "printf-oob-pow10": false,
+        "linenoise-uaf-freehistory": true,
+        "linenoise-uaf-setmaxlen": true,
+        "lnprog-uaf-example": true,
+        "lnprog-df-example": true,
+        "zlib-df-deflateend": true,
+        "zlib-uaf-inflateend": true,
+        "zlib-uaf-gzclose-r": true,
+        "zlib-df-gzclose-w": true,
+        "zlib-oob-inflate-order": true,
+        "lua-uaf-luah-free": false,
+        "lua-df-freeproto": false,
+        "lua-uaf-lua-c": true,
+        "lua-uaf-close-state": false,
+        "jansson-df-strbuffer-close": true,
+        "jansson-df-array-remove": true,
+        "jansson-uaf-delete-string": true,
+        "jansson-uaf-hashtable-del": true,
+        "jansson-len-dump-integer": true
+      },
+      "summary": {
+        "reported": 25,
+        "total": 31
+      }
+    }
+  }
+}

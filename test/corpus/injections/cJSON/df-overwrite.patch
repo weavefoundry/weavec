@@ -1,0 +1,10 @@
+--- a/cJSON_Utils.c
++++ b/cJSON_Utils.c
+@@ -799,6 +799,7 @@
+     if (root->child != NULL)
+     {
+         cJSON_Delete(root->child);
++        cJSON_Delete(root->child); /* INJECTED: double free */
+     }
+ 
+     memcpy(root, &replacement, sizeof(cJSON));

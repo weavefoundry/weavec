@@ -1,1 +1,0 @@
-Frozen against candidate77f before publishing a fresh payload through a local allocation alias. The independent recursive lifecycle includes helper-returned allocation, duplicated ownership, interior and released pointers, and a lost allocation.

@@ -60,8 +60,6 @@ std::string_view toString(RawReason reason) noexcept {
     return "loaded-through-raw";
   case RawReason::Callee:
     return "callee";
-  case RawReason::UnknownCallee:
-    return "unknown-callee";
   }
   return "<invalid>";
 }

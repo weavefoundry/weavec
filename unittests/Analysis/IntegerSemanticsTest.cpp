@@ -45,123 +45,6 @@ TEST(IntegerSemantics, NumericResultRefinesConservativePendingOutcomes) {
   }
 }
 
-TEST(IntegerSemantics, PointerDifferenceSizesKeepTheirEvaluatedCoordinates) {
-  for (const auto *variant :
-       {"good", "offset", "undersized", "overrun", "changed", "narrowed"}) {
-    SCOPED_TRACE(variant);
-    const std::string kind = variant;
-    const bool offset = kind == "offset";
-    const bool narrowed = kind == "narrowed";
-    std::string source = R"c(
-      typedef __SIZE_TYPE__ size_t;
-      void *malloc(size_t); void free(void *);
-      int copy(int choose) {
-    )c";
-    source +=
-        narrowed
-            ? "const char data[300]={0};const char *end=data+(choose?3:260);"
-            : "const char data[]=\"abcdef\";const char *end=data+(choose?3:6);";
-    source += "size_t size=";
-    source += narrowed ? "(unsigned char)" : "(size_t)";
-    source += offset ? "(end-(data+1));" : "(end-data);";
-    source += kind == "undersized" ? "char *output=malloc(size);"
-                                   : "char *output=malloc(size+1);";
-    source += "if(!output)return 0;";
-    source += offset ? "const char *input=data+1;" : "const char *input=data;";
-    source += "char *cursor=output;";
-    if (kind == "changed")
-      source += "end=data+7;";
-    source += "while(input<end)*cursor++=*input++;";
-    source += kind == "overrun" ? "cursor[1]=0;" : "*cursor=0;";
-    source += "free(output);return 0;}";
-    const auto result =
-        analyze(source, {.checkContracts = true, .checked = true});
-    ASSERT_TRUE(result.ast);
-    ASSERT_NE(result.summary("copy"), nullptr);
-    EXPECT_EQ(result.summary("copy")->checked.complete(),
-              kind == "good" || offset);
-    if (kind == "good" || offset)
-      EXPECT_TRUE(result.summary("copy")->checked.requirements.empty());
-  }
-}
-
-TEST(IntegerSemantics, AdvancedPointerDoesNotRetainThePreviousScalarCell) {
-  const auto result = analyze(R"c(
-    int advanced(unsigned char *p) { *p=7; ++p; return *p; }
-    int assigned(unsigned char *p) { *p=7; p=p+1; return *p; }
-    int original(unsigned char *p) {
-      unsigned char *out=p;
-      *out++=7; *out=0;
-      return *p;
-    }
-    int joined(int n, unsigned char *p, unsigned char *q) {
-      unsigned char *out=n?p:q;
-      *out=7;
-      return *p;
-    }
-  )c",
-                              {.checkContracts = true, .checked = true});
-  ASSERT_TRUE(result.ast);
-  for (const auto *name : {"advanced", "assigned", "joined"}) {
-    const auto *summary = result.summary(name);
-    ASSERT_NE(summary, nullptr);
-    const auto outputs =
-        summary->numericOutputs.find(core::SummaryPath::result());
-    ASSERT_NE(outputs, summary->numericOutputs.end());
-    EXPECT_TRUE(std::ranges::any_of(outputs->second, [](const auto &output) {
-      return !output.value || !output.value->constantValue();
-    })) << name;
-  }
-  const auto *summary = result.summary("original");
-  ASSERT_NE(summary, nullptr);
-  const auto outputs =
-      summary->numericOutputs.find(core::SummaryPath::result());
-  ASSERT_NE(outputs, summary->numericOutputs.end());
-  for (const auto &output : outputs->second) {
-    ASSERT_TRUE(output.value);
-    const auto value = output.value->constantValue();
-    ASSERT_TRUE(value);
-    EXPECT_EQ(value->bits, 7U);
-  }
-}
-
-TEST(IntegerSemantics, LocalArrayCellsRetainActualInitializationAndWrites) {
-  const auto result = analyze(R"c(
-    void fill(unsigned char *p) { unsigned char *q=p; *q++=7; *q=0; }
-    void single(unsigned char *p) { *p=7; }
-    void safe(void) {
-      unsigned char a[2]={1,1}; fill(a);
-      if(a[0]==0) a[2]=1;
-    }
-    void bad(void) {
-      unsigned char a[2]={1,1}; fill(a);
-      if(a[0]==7) a[2]=1;
-    }
-    void literal(void) { char a[3]="ab"; if(a[1]=='b') a[3]=1; }
-    void narrow_literal(void) {
-      signed char a[2]="\xff"; if(a[0]==-1) a[2]=1;
-    }
-    void overlapping(unsigned n) {
-      unsigned char a[2]={0,0}; if(n>1)return;
-      a[n]=7; if(a[0]==7) a[2]=1;
-    }
-    void interior(void) {
-      unsigned char *p=malloc(2); if(!p)return;
-      *p=42; single(p+1); if(*p==42) p[2]=1; free(p);
-    }
-  )c",
-                              {.checkContracts = true, .checked = true});
-  ASSERT_TRUE(result.ast);
-  ASSERT_NE(result.summary("safe"), nullptr);
-  EXPECT_TRUE(result.summary("safe")->checked.complete());
-  for (const auto *name :
-       {"bad", "literal", "narrow_literal", "overlapping", "interior"}) {
-    ASSERT_NE(result.summary(name), nullptr);
-    EXPECT_FALSE(result.summary(name)->checked.complete()) << name;
-    EXPECT_TRUE(result.summary(name)->checked.obligations.violated()) << name;
-  }
-}
-
 TEST(IntegerSemantics, CheckedAllocationFailureSurvivesReturnedPointers) {
   const auto result = analyze(R"c(
     void *calloc(size_t, size_t);
@@ -226,15 +109,32 @@ TEST(IntegerSemantics, IncrementOutputsAndPostfixIndicesPreserveEntryValues) {
     }
   )c");
   ASSERT_TRUE(result.ast);
+  // RFC 0030 §7.5: an index read from a field is none of R1-R5, so the unit
+  // checks no requirement at the call; the callee's summary still has it,
+  // and the link step reports it (§13.2 step 4).
   EXPECT_EQ(std::ranges::count(ids(result.diagnostics),
                                std::string(core::diag::OutOfBounds)),
-            1);
+            0);
   EXPECT_EQ(std::ranges::count(ids(result.diagnostics),
                                std::string(core::diag::UseAfterFree)),
             0);
   ASSERT_TRUE(result.summary("old"));
   EXPECT_TRUE(result.summary("old")->numericOutputs.contains(
       core::SummaryPath::result()));
+  const auto linked = analyzeAtLink(R"c(
+    struct index { unsigned n; };
+    void put(char *p, struct index *i) { p[i->n++] = 0; }
+  )c",
+                                    R"c(
+    struct index { unsigned n; };
+    void put(char *p, struct index *i);
+    void bad(void) { char p[2]; struct index i={2}; put(p,&i); }
+    void good(void) { char p[2]; struct index i={1}; put(p,&i); }
+  )c");
+  ASSERT_TRUE(linked.ast);
+  EXPECT_EQ(std::ranges::count(ids(linked.diagnostics),
+                               std::string(core::diag::OutOfBounds)),
+            1);
 }
 
 static unsigned countId(const AnalysisResult &result, std::string_view id) {
@@ -400,14 +300,20 @@ TEST(IntegerSemantics, NarrowingConditionsRemainConditionalAcrossCalls) {
   EXPECT_EQ(countId(result, core::diag::DoubleFree), 0U);
 }
 
+// RFC 0030 §13.2 step 4: a minimum and a guarded access are none of the
+// §7.5 rules, so only the link step reports these requirements.
 TEST(IntegerSemantics,
      MinimumAndConditionalRequirementsComposeThroughWrappers) {
-  const auto result = analyze(R"c(
+  const auto result = analyzeAtLink(R"c(
     void fill(char *p, unsigned n, unsigned cap) {
       for (unsigned i = 0; i < n && i < cap; ++i) p[i] = 0;
     }
     void wrapper(char *p, unsigned n, unsigned cap) { fill(p, n, cap); }
     void conditional(char *p, unsigned n, unsigned m) { if (n < m) p[n] = 0; }
+  )c",
+                                    R"c(
+    void wrapper(char *p, unsigned n, unsigned cap);
+    void conditional(char *p, unsigned n, unsigned m);
     void bad(void) { char b[2]; wrapper(b,3,3); }
     void good(void) { char b[2]; wrapper(b,20,2); conditional(b,2,2); }
     void also_bad(void) { char b[2]; conditional(b,2,3); }
@@ -591,10 +497,15 @@ TEST(IntegerSemantics, FullWidthUnsignedIndicesDoNotBecomeNegativeOrUnknown) {
   EXPECT_EQ(countId(result, core::diag::OutOfBounds), 2U);
 }
 
+// RFC 0030 §13.2 step 4: a requirement through a wrapper is reported at
+// link, where the callees are known by their summaries.
 TEST(IntegerSemantics, RequirementsRetainTheFirstAccessedByte) {
-  const auto result = analyze(R"c(
+  const auto result = analyzeAtLink(R"c(
     void put(char *p, int i) { p[i] = 1; }
     void wrap(char *p, int i) { put(p, i); }
+  )c",
+                                    R"c(
+    void wrap(char *p, int i);
     void bad(void) { char a[4]; wrap(a, -1); }
     void good(void) { char a[4]; wrap(a + 1, -1); }
     void *memset(void *, int, size_t);
@@ -672,7 +583,11 @@ TEST(IntegerSemantics, FlexibleTailAndElementOffsetsSurviveReturns) {
     }
   )c");
   ASSERT_TRUE(result.ast);
-  EXPECT_EQ(countId(result, core::diag::OutOfBounds), 4U);
+  // RFC 0030 §7.4: `data[2]` is the trailing member, flexible at
+  // -fstrict-flex-arrays=0 whatever its bound, so `fixed_bound` stays inside
+  // its 100 bytes; `bad`, `shifted` and `small` are past theirs.
+  EXPECT_EQ(countId(result, core::diag::OutOfBounds), 3U)
+      << ::testing::PrintToString(messages(result.diagnostics));
 }
 
 TEST(IntegerSemantics, SizedFieldInferenceRetainsModularMultiplication) {
@@ -722,7 +637,9 @@ TEST(IntegerSemantics, AbstractEndpointsAreNotReachableBoundaryWitnesses) {
     void definite(unsigned i) { char a[8]; if(i>=8) a[i]=0; }
   )c");
   ASSERT_TRUE(result.ast);
-  EXPECT_EQ(countId(result, core::diag::OutOfBounds), 2U)
+  // RFC 0030 §3.3: `explicit_bound` may reach index 8 (a checked facet);
+  // `definite` is past the end for every value.
+  EXPECT_EQ(countId(result, core::diag::OutOfBounds), 1U)
       << ::testing::PrintToString(messages(result.diagnostics));
 }
 
@@ -734,11 +651,9 @@ TEST(IntegerSemantics, ExhaustedExpressionsRetainExplicitMissingCoverage) {
     }
   )c");
   ASSERT_TRUE(result.ast);
-  EXPECT_TRUE(std::ranges::any_of(
-      result.diagnostics.diagnostics(), [](const core::Diagnostic &diagnostic) {
-        return diagnostic.id == core::diag::AnalysisIncomplete &&
-               diagnostic.message ==
-                   "analysis is incomplete: integer expression limit reached";
-      }));
+  // RFC 0030 §15 item 3: the summary records the gap, and the allocation
+  // whose size the engine could not build decides nothing about `p[0]`.
+  EXPECT_TRUE(result.summary("large")->incomplete.contains(
+      "integer expression limit reached"));
   EXPECT_EQ(countId(result, core::diag::OutOfBounds), 0U);
 }

@@ -190,16 +190,6 @@ static void copyHeapCell(core::PlaceId source, core::PlaceId target,
                            ? std::optional(state.numericValues.at(source))
                            : std::nullopt;
   state.forget(target);
-  if (state.safety) {
-    if (state.safety->initialized.contains(source))
-      state.safety->initialized.insert(target);
-    if (state.safety->pointers.contains(source))
-      state.safety->pointers.insert(target);
-    // RFC 0023: copying a field cannot revive a consumed pointer value.
-    if (state.safety->invalidatedPointers.contains(source))
-      state.safety->invalidatedPointers.insert(target);
-    state.safety->copyMemory(source, target);
-  }
   if (numeric && !numeric->dependsOn(target))
     state.numericValues.insert_or_assign(target, *numeric);
   state.kinds[target] = state.kindOf(source);
@@ -235,10 +225,10 @@ static void copyHeapCell(core::PlaceId source, core::PlaceId target,
     state.incoming[target] = input->second;
   state.pointerFacts.copyPointer(source, target);
   state.loans.copyHolder(source, target);
-  if (const auto moved = state.moves.recordOf(source))
-    state.moves.markMoved(target, moved->reason, moved->location,
-                          moved->via.value_or(source), moved->element,
-                          moved->family, moved->ownValue, moved->guard);
+  if (auto moved = state.moves.recordOf(source)) {
+    moved->via = moved->via.value_or(source);
+    state.moves.copyRecord(target, std::move(*moved));
+  }
 }
 
 void FunctionDataflow::mirrorHeapWrite(core::PlaceId place,
@@ -269,7 +259,7 @@ void FunctionDataflow::mirrorHeapWrite(core::PlaceId place,
       if (state.kindOf(child) == core::OwnershipKind::Unknown &&
           !state.resources.holds(child) && !state.nulls.recordOf(child) &&
           !state.spatial.has(child) && !state.scalars.factOf(child) &&
-          !state.raw.isRaw(child) && !state.moves.recordOf(child) &&
+          !state.raw.isRaw(child) && state.moves.find(child) == nullptr &&
           state.loans.heldBy(child).empty())
         continue;
       const auto target = places.translate(child, place, mirror);
@@ -470,7 +460,9 @@ FunctionDataflow::describeHeap(core::PlaceId root, bool pointer,
       if (at != nullptr) {
         for (const core::Loan &loan : state.loans.heldBy(field)) {
           if (!lifetimes.outlives(loan.lifetime, callerLifetime)) {
-            reportLifetimeTooShort(field, loan.place, *at, /*returned=*/true);
+            reportLifetimeTooShort(field, loan.place, *at, /*returned=*/true,
+                                   loan.allPaths ? core::Certainty::Definite
+                                                 : core::Certainty::Possible);
             break;
           }
         }
@@ -663,7 +655,7 @@ void FunctionDataflow::copyHeapValue(core::PlaceId source, core::PlaceId target,
     if (state.kindOf(child) == core::OwnershipKind::Unknown &&
         !state.resources.holds(child) && !state.nulls.recordOf(child) &&
         !state.spatial.has(child) && !state.scalars.factOf(child) &&
-        !state.raw.isRaw(child) && !state.moves.recordOf(child) &&
+        !state.raw.isRaw(child) && state.moves.find(child) == nullptr &&
         !state.callTargets.contains(child) && !state.incoming.contains(child) &&
         state.loans.heldBy(child).empty())
       continue;
@@ -871,11 +863,11 @@ void FunctionDataflow::captureHeapInputs(const clang::CallExpr &call,
 }
 
 void FunctionDataflow::retireHeapInputs(core::AnalysisState &state) {
-  auto live = resultHeapInputs;
+  std::set<core::PlaceId> retained;
   const auto retain = [&](const core::PendingOutcome &outcome) {
     for (const auto &store : outcome.stores) {
       if (store.oldValue)
-        live.insert(*store.oldValue);
+        retained.insert(*store.oldValue);
     }
   };
   for (const auto &[holder, outcome] : state.pending)
@@ -885,12 +877,20 @@ void FunctionDataflow::retireHeapInputs(core::AnalysisState &state) {
   // Entry snapshots are implementation temporaries, not additional program
   // owners. Keeping settled calls' aliases alive would form a clique of all
   // old outputs in a loop (RFC 0013, Boundedness and performance).
+  // Only a snapshot with a kind here is retired: walk both ordered sets
+  // together (again from the next place after a retirement, which forgets).
+  auto kind = state.kinds.begin();
   for (const auto input : pointerSnapshots) {
-    if (live.contains(input) || state.arrayRanges.contains(input) ||
-        !state.kinds.contains(input))
+    while (kind != state.kinds.end() && kind->first < input)
+      ++kind;
+    if (kind == state.kinds.end())
+      break;
+    if (kind->first != input || resultHeapInputs.contains(input) ||
+        retained.contains(input) || state.arrayRanges.contains(input))
       continue;
     forgetBelow(input, state);
     state.forget(input);
+    kind = state.kinds.upper_bound(input);
   }
 }
 
@@ -1085,10 +1085,6 @@ void FunctionDataflow::applyHeapResult(core::PlaceId dest,
                                        core::AnalysisState &state) {
   if (materializingHeap)
     return;
-  const auto checkedResult = llvm::scope_exit([&] {
-    if (options.checkContracts)
-      applyCheckedResult(dest, call, state);
-  });
   applyArrayReallocation(dest, call, state);
   const auto effects = classifyCall(call, summaries);
   if (!effects)

@@ -480,6 +480,11 @@ Newly emitted (ids already reserved by RFC 0001):
 | `lifetime-too-short` | error    | `'<p>' may outlive '<x>', which it points to`                           | `'<x>' is declared here`; `'<x>' goes out of scope here` (omitted for returns) |
 | `lifetime-too-short` | error    | `returned pointer may outlive '<x>', which it points to` (for `return &x`) | `'<x>' is declared here`                             |
 
+> **Amended by [RFC 0030](0030-prove-or-trap.md).** Severity now follows
+> certainty (RFC 0030, §3 and *Diagnostics*): each id in this section is an
+> error only when the finding is definite, and a warning when it is possible,
+> with "may" wording for `use-after-free`, `double-free` and `use-after-move`.
+
 Wording decision: the messages keep the *borrow* vocabulary. The annotation
 names (`WEAVEC_BORROWED`), the id (`conflicting-borrow`) and RFC 0001 all
 already commit to it, and a user who meets the word in the header should

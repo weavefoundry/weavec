@@ -672,6 +672,10 @@ Two new identifiers.
   used: the record travels with copies), or `'<p>' is declared WEAVEC_OWNED
   here` for a parameter or field.
 
+  > **Amended by [RFC 0030](0030-prove-or-trap.md).** `leak` is always a warning
+  > and is never definite (§3.4, §8.4); a leak is never part of the guarantee
+  > (*Soundness*).
+
 - `mismatched-release` (**error**): `'<p>' is released with '<free>' but
   must be released with '<fclose>'` at the release, where both names are
   family names (the canonical releaser, even when the release went through
@@ -788,6 +792,9 @@ void wrapper(char *p) { xfree(p); }                               /* xfree calls
 - **Whether `main` should be exempt.** Many programs leak deliberately at
   exit. This RFC does not exempt it (`-Wno-weavec-leak` exists); the
   corpus decides.
+  > **Amended by [RFC 0030](0030-prove-or-trap.md).** Resolved: a leak is not
+  > reported for resources live at a `return` from `main` or at an `exits` call
+  > (`exit`, `_Exit`, `quick_exit`, `abort`) (§8.4).
 - **Leaks inside unsafe regions.** A resource acquired inside a
   `WEAVEC_UNSAFE` block and lost outside it is reported outside; one lost
   inside is not. Consistent with RFC 0004, but whether users expect the

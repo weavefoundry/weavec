@@ -1,0 +1,234 @@
+{
+  "schema": "weavec-corpus-manifest",
+  "version": 1,
+  "_comment": [
+    "The corpus of RFC 0030, section 17.5, read by scripts/corpus-gate.py; test/corpus/README.md",
+    "documents every field. Each project is pinned to a 40-hex `sha` and checked out once into",
+    "<workdir>/<project>. Each config names the files it analyses (`compile`: per-file",
+    "weavec-cc -c, and weavec --whole-program over all of them when `wholeProgram` is true;",
+    "--legacy runs the v0.10.0 weavec tool exactly as scripts/corpus.py did). `build`, `test`",
+    "and `bench` commands run under /bin/sh in a fresh copy of the checkout with CC set to the",
+    "compiler (a wrapper around weavec-cc, or the reference compiler), JOBS to the parallelism,",
+    "SUPPORT to test/corpus/support/<project> and BENCH to test/corpus/bench. `{support}` in",
+    "compile arguments expands to the same support directory. `lowered` holds the only allowed",
+    "-Wno-error=weavec-<id> flags, each next to the fingerprint of its triaged-true definite",
+    "error. `gates` carries the limits of gates G9-G15."
+  ],
+  "gates": {
+    "referenceMachine": "darwin-arm64 Apple M3 x8",
+    "G9": {
+      "maxDefiniteErrors": 10,
+      "mustReport": [
+        {
+          "config": "zlib",
+          "file": "test/minigzip.c",
+          "line": 568,
+          "ids": ["double-free", "use-after-free"],
+          "note": "minigzip's repeated fclose(stdout): gz_uncompress closes stdout on every iteration of the -c -d loop (v0.10.0: error, double-free)"
+        }
+      ]
+    },
+    "G10": {"maxPossibleTemporal": 60, "maxPossibleTemporalPerConfig": {"jansson": 20}},
+    "G12": {"minReportedShare": 0.9},
+    "G13": {"maxUnitUnresolvedShare": {"linenoise": 0.25, "cJSON": 0.25, "sds": 0.6}},
+    "G14": {"maxOverhead": {"lua": 1.1, "zlib": 1.1, "cJSON": 1.15}},
+    "G15": {
+      "maxProgramCpuSeconds": {"lua": 214},
+      "maxBuildStepWallSeconds": {"zlib": {"step": "make -j8", "seconds": 5.4}},
+      "maxOverBudgetShare": 0.01
+    }
+  },
+  "projects": [
+    {
+      "name": "sds",
+      "url": "https://github.com/antirez/sds.git",
+      "sha": "5347739b1581fcba74fd5cab1fc21d2aef317d71",
+      "support": [],
+      "configs": [
+        {
+          "name": "sds",
+          "notes": "Simple dynamic strings: realloc-heavy, returns owned pointers with a header offset. The test is the library's own sds-test (SDS_TEST_MAIN).",
+          "compile": {"files": ["sds.c"], "args": ["-std=c99", "-I."]},
+          "build": ["make sds-test CC=\"$CC\""],
+          "test": ["./sds-test"]
+        }
+      ]
+    },
+    {
+      "name": "cJSON",
+      "url": "https://github.com/DaveGamble/cJSON.git",
+      "sha": "fb16e5cf358798aabb049655975cde8427101056",
+      "support": [],
+      "configs": [
+        {
+          "name": "cJSON",
+          "notes": "Tree of malloc'd nodes freed recursively; custom allocator hooks via function pointers. The build is the project's CMake build with the unity tests and cJSON_Utils; ENABLE_CUSTOM_COMPILER_FLAGS=Off drops its -Werror, which would promote any compiler's new warnings.",
+          "compile": {"files": ["cJSON.c"], "args": ["-std=c89", "-I."]},
+          "build": [
+            "cmake -S . -B out -DCMAKE_C_COMPILER=\"$CC\" -DCMAKE_BUILD_TYPE=Release -DENABLE_CJSON_TEST=On -DENABLE_CJSON_UTILS=On -DENABLE_CUSTOM_COMPILER_FLAGS=Off -DBUILD_SHARED_LIBS=Off",
+            "cmake --build out -j \"$JOBS\""
+          ],
+          "test": ["ctest --test-dir out --output-on-failure -V -j \"$JOBS\""],
+          "bench": {
+            "name": "cjson-parse-print",
+            "build": [
+              "\"$CC\" -O2 -std=c89 -I. -c cJSON.c -o bench-cJSON.o",
+              "\"$CC\" -O2 -std=c89 -I. -c \"$BENCH/cjson-bench.c\" -o bench-main.o",
+              "\"$CC\" -O2 -o cjson-bench bench-main.o bench-cJSON.o -lm"
+            ],
+            "command": "./cjson-bench 30",
+            "repeat": 7
+          }
+        },
+        {
+          "name": "cJSON-program",
+          "notes": "cJSON_Utils.c calls into cJSON.c (cJSON_free, cJSON_Delete, cJSON_Duplicate, ...); analysed as one program. Built and tested with the cJSON config.",
+          "compile": {"files": ["cJSON.c", "cJSON_Utils.c"], "args": ["-std=c89", "-I."]},
+          "wholeProgram": true
+        }
+      ]
+    },
+    {
+      "name": "jsmn",
+      "url": "https://github.com/zserge/jsmn.git",
+      "sha": "25647e692c7906b96ffd2b05ca54c097948e879c",
+      "support": [],
+      "configs": [
+        {
+          "name": "jsmn",
+          "notes": "Header-only parser; the examples are the translation units. The tests are the project's four test/tests.c builds (make test compiles and runs them).",
+          "compile": {"files": ["example/simple.c", "example/jsondump.c"], "args": ["-std=c99", "-I."]},
+          "build": ["make simple_example jsondump CC=\"$CC\""],
+          "test": ["make test CC=\"$CC\""]
+        }
+      ]
+    },
+    {
+      "name": "log.c",
+      "url": "https://github.com/rxi/log.c.git",
+      "sha": "f9ea34994bd58ed342d2245cd4110bb5c6790153",
+      "support": [],
+      "configs": [
+        {
+          "name": "log.c",
+          "notes": "Callbacks stored in a global table; FILE* borrowed across calls. No build system and no tests: the per-file compile is the build.",
+          "compile": {"files": ["src/log.c"], "args": ["-std=c99", "-Isrc", "-DLOG_USE_COLOR"]}
+        }
+      ]
+    },
+    {
+      "name": "printf",
+      "url": "https://github.com/mpaland/printf.git",
+      "sha": "d3b984684bb8a8bdc48cc7a1abecb93ce59bbe3e",
+      "support": [],
+      "configs": [
+        {
+          "name": "printf",
+          "notes": "Pointer arithmetic over caller buffers with no allocation: a false-positive canary. Its test suite is C++ (test/test_suite.cpp includes printf.c into a C++ unit), outside WeaveC, so the per-file compile is the build.",
+          "compile": {"files": ["printf.c"], "args": ["-std=c99", "-I."]},
+          "lowered": [
+            {
+              "flag": "-Wno-error=weavec-unsafe-operation",
+              "fingerprint": "0d55ecbe3d965f3386c387e46d1c3bd8",
+              "note": "printf.c:911 launders '&out_fct_wrap' through uintptr_t, which needs WEAVEC_UNSAFE (triaged true). Without lowering it the error drops printf.o and the printf-oob-pow10 injection driver cannot be built at all."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "linenoise",
+      "url": "https://github.com/antirez/linenoise.git",
+      "sha": "a473823d74b93eab2ba83480df16ed37617493f2",
+      "support": [],
+      "configs": [
+        {
+          "name": "linenoise",
+          "notes": "History as a global array of strdup'd strings; strdup/free through helpers.",
+          "compile": {"files": ["linenoise.c"], "args": ["-std=c99", "-I.", "-D_GNU_SOURCE"]}
+        },
+        {
+          "name": "linenoise-program",
+          "notes": "example.c installs the completion and hints callbacks linenoise.c calls through pointers, and frees what linenoise() returns. The build is the project's Makefile (linenoise-example); the test is its pseudo-terminal harness linenoise-test, which drives linenoise-example (102 checks, about 20 s).",
+          "compile": {"files": ["linenoise.c", "example.c"], "args": ["-std=c99", "-I.", "-D_GNU_SOURCE"]},
+          "wholeProgram": true,
+          "build": ["make linenoise-example CC=\"$CC\""],
+          "test": ["make test CC=\"$CC\""],
+          "testTimeout": 300
+        }
+      ]
+    },
+    {
+      "name": "zlib",
+      "url": "https://github.com/madler/zlib.git",
+      "sha": "da607da739fa6047df13e66a2af6b8bec7c2a498",
+      "support": [],
+      "configs": [
+        {
+          "name": "zlib",
+          "notes": "Allocation through zalloc/zfree function pointers stored in the stream; windows and tables freed in deflateEnd/inflateEnd; gz* wraps FILE-like state. The build is zlib's own ./configure && make -j8 (static and shared example and minigzip); the test is make test.",
+          "compile": {
+            "files": ["adler32.c", "compress.c", "crc32.c", "deflate.c", "infback.c", "inffast.c", "inflate.c", "inftrees.c", "trees.c", "uncompr.c", "zutil.c", "gzclose.c", "gzlib.c", "gzread.c", "gzwrite.c"],
+            "args": ["-std=c99", "-I.", "-DHAVE_UNISTD_H", "-DHAVE_STDARG_H"]
+          },
+          "wholeProgram": true,
+          "build": ["CC=\"$CC\" ./configure", "make -j8"],
+          "test": ["make test"],
+          "bench": {
+            "name": "zlib-minigzip",
+            "build": ["CC=\"$CC\" CFLAGS=-O2 ./configure --static", "make -j\"$JOBS\" minigzip"],
+            "input": "python3 \"$BENCH/zlib-input.py\" \"$INPUT\" --mib 64 --sha256 022ae1f8b846add8965f30fb7e5f150e1f4861b740423dad57bf4cc7ec4e8a20",
+            "command": "./minigzip < \"$INPUT\" > bench.gz && ./minigzip -d < bench.gz > /dev/null",
+            "check": "./minigzip -d < bench.gz | cmp - \"$INPUT\"",
+            "repeat": 7
+          }
+        }
+      ]
+    },
+    {
+      "name": "lua",
+      "url": "https://github.com/lua/lua.git",
+      "sha": "7579fc9d7ed90240487251dfb69168f8e64e9294",
+      "support": ["lua/subset.lua"],
+      "configs": [
+        {
+          "name": "lua",
+          "notes": "A garbage-collected VM. realloc through the l_alloc function pointer, a 968-block interpreter loop with computed goto (luaV_execute), linked stacks of locals in the parser. The build is the developer makefile with POSIX and dlopen (as LUA_USE_LINUX, which also suits macOS) and without the Linux-only -Wl,-E; the test is the named testes subset below, run by support/lua/subset.lua in user mode. Left out: files.lua (needs /dev/full, missing on macOS), main.lua (stand-alone interpreter tests, skipped in user mode anyway), big.lua and heavy.lua (long), and the T-library tests (need a build with ltests.h).",
+          "compile": {"files": ["l*.c"], "args": ["-std=c99", "-I.", "-DLUA_USE_POSIX"]},
+          "wholeProgram": true,
+          "link": {"args": ["-lm", "-ldl"]},
+          "build": ["make -j\"$JOBS\" CC=\"$CC\" MYCFLAGS=\"-std=c99 -DLUA_USE_POSIX -DLUA_USE_DLOPEN\" MYLDFLAGS= MYLIBS=-ldl"],
+          "test": ["cd testes && ../lua \"$SUPPORT/subset.lua\" gc.lua db.lua calls.lua strings.lua literals.lua tpack.lua attrib.lua gengc.lua locals.lua constructs.lua code.lua cstack.lua nextvar.lua pm.lua utf8.lua api.lua memerr.lua events.lua vararg.lua closure.lua coroutine.lua goto.lua errors.lua math.lua sort.lua bitwise.lua verybig.lua"],
+          "bench": {
+            "name": "lua-bench",
+            "build": ["make -j\"$JOBS\" CC=\"$CC\" MYCFLAGS=\"-std=c99 -DLUA_USE_POSIX -DLUA_USE_DLOPEN\" MYLDFLAGS= MYLIBS=-ldl"],
+            "command": "./lua \"$BENCH/lua-bench.lua\"",
+            "repeat": 7
+          }
+        }
+      ]
+    },
+    {
+      "name": "jansson",
+      "url": "https://github.com/akheron/jansson.git",
+      "sha": "851a2145e3256f2e67e5dfe24b0e456bf198b741",
+      "support": ["jansson/jansson_config.h", "jansson/jansson_private_config.h"],
+      "configs": [
+        {
+          "name": "jansson",
+          "notes": "A reference-counted JSON library: json_incref/json_decref keep json_t::refcount with __atomic_add_fetch/__atomic_sub_fetch (inline in jansson.h), json_decref frees through json_delete in value.c, containers take a share of what is stored in them. The per-file compiles use the configured headers in support/jansson; the build is the project's CMake build, which configures its own; the test is its CTest suite (API tests and the valid/invalid/encoding suites through json_process).",
+          "compile": {
+            "files": ["src/dump.c", "src/error.c", "src/hashtable.c", "src/hashtable_seed.c", "src/load.c", "src/memory.c", "src/pack_unpack.c", "src/strbuffer.c", "src/strconv.c", "src/utf.c", "src/value.c", "src/version.c"],
+            "args": ["-std=c99", "-Isrc", "-I{support}", "-DHAVE_CONFIG_H"]
+          },
+          "wholeProgram": true,
+          "build": [
+            "cmake -S . -B out -DCMAKE_C_COMPILER=\"$CC\" -DCMAKE_BUILD_TYPE=Release -DJANSSON_BUILD_DOCS=OFF -DJANSSON_EXAMPLES=OFF",
+            "cmake --build out -j \"$JOBS\""
+          ],
+          "test": ["ctest --test-dir out --output-on-failure -V -j \"$JOBS\""]
+        }
+      ]
+    }
+  ]
+}
