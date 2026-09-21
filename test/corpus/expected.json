@@ -388,6 +388,168 @@
           "overhead": 1.01
         }
       }
+    },
+    "linux-x86_64": {
+      "machine": "linux-x86_64 AMD EPYC 7763 64-Core Processor x4",
+      "producer": "weavec-cc version 0.10.0-dev (d03eb7326b65)",
+      "updated": "2026-09-21",
+      "configs": {
+        "cJSON-program": {
+          "units": {
+            "errors": 0,
+            "warnings": 0,
+            "ledger": {
+              "sites": 1709,
+              "proven": 2576,
+              "checked": 127,
+              "violation": 0,
+              "unresolved": 939,
+              "trusted": 19
+            },
+            "unresolvedShare": {
+              "spatialNull": 0.2183
+            },
+            "cpuSeconds": 1.88,
+            "workCounters": {
+              "blockTransfers": 14594,
+              "functions": 151,
+              "sites": 1709
+            }
+          },
+          "program": {
+            "errors": 0,
+            "warnings": 0,
+            "ledger": {
+              "sites": 1709,
+              "proven": 2575,
+              "checked": 119,
+              "violation": 0,
+              "unresolved": 952,
+              "trusted": 19
+            },
+            "unresolvedShare": {
+              "spatialNull": 0.2269
+            },
+            "cpuSeconds": 4.25,
+            "workCounters": {
+              "blockTransfers": 34994,
+              "functions": 151,
+              "sites": 1709
+            }
+          }
+        },
+        "jansson": {
+          "units": {
+            "errors": 0,
+            "warnings": 0,
+            "ledger": {
+              "sites": 2337,
+              "proven": 2978,
+              "checked": 235,
+              "violation": 0,
+              "unresolved": 1112,
+              "trusted": 13
+            },
+            "unresolvedShare": {
+              "spatialNull": 0.2176
+            },
+            "cpuSeconds": 2.75,
+            "workCounters": {
+              "blockTransfers": 16124,
+              "functions": 236,
+              "sites": 2337
+            }
+          },
+          "program": {
+            "errors": 0,
+            "warnings": 18,
+            "ledger": {
+              "sites": 2337,
+              "proven": 3064,
+              "checked": 235,
+              "violation": 0,
+              "unresolved": 1081,
+              "trusted": 14
+            },
+            "unresolvedShare": {
+              "spatialNull": 0.2375
+            },
+            "cpuSeconds": 8.91,
+            "workCounters": {
+              "blockTransfers": 49929,
+              "functions": 236,
+              "sites": 2337
+            }
+          }
+        },
+        "linenoise-program": {
+          "units": {
+            "errors": 0,
+            "warnings": 1,
+            "ledger": {
+              "sites": 1146,
+              "proven": 1906,
+              "checked": 145,
+              "violation": 0,
+              "unresolved": 323,
+              "trusted": 15
+            },
+            "unresolvedShare": {
+              "spatialNull": 0.1446
+            },
+            "cpuSeconds": 0.92,
+            "workCounters": {
+              "blockTransfers": 5348,
+              "functions": 88,
+              "sites": 1146
+            }
+          },
+          "program": {
+            "errors": 0,
+            "warnings": 6,
+            "ledger": {
+              "sites": 1146,
+              "proven": 1963,
+              "checked": 148,
+              "violation": 0,
+              "unresolved": 268,
+              "trusted": 15
+            },
+            "unresolvedShare": {
+              "spatialNull": 0.1484
+            },
+            "cpuSeconds": 1.77,
+            "workCounters": {
+              "blockTransfers": 11609,
+              "functions": 88,
+              "sites": 1146
+            }
+          }
+        },
+        "log.c": {
+          "units": {
+            "errors": 0,
+            "warnings": 0,
+            "ledger": {
+              "sites": 74,
+              "proven": 123,
+              "checked": 14,
+              "violation": 0,
+              "unresolved": 9,
+              "trusted": 4
+            },
+            "unresolvedShare": {
+              "spatialNull": 0.0769
+            },
+            "cpuSeconds": 0.09,
+            "workCounters": {
+              "blockTransfers": 192,
+              "functions": 12,
+              "sites": 74
+            }
+          }
+        }
+      }
     }
   },
   "legacy": {
