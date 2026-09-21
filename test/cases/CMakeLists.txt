@@ -15,6 +15,17 @@ set(WEAVEC_CASES_ARGS
     CACHE STRING "Extra scripts/run-cases.py options for the cases-* tests")
 separate_arguments(_weavec_cases_args UNIX_COMMAND "${WEAVEC_CASES_ARGS}")
 
+# Each suite compiles and runs its cases in parallel, so it is not a
+# single-processor test. Without PROCESSORS, `ctest -j N` starts N suites that
+# each fork another N workers, and on a small runner the machine is
+# oversubscribed badly enough that a program which should finish in
+# milliseconds misses the runner's per-run timeout. Telling CTest what each
+# suite costs keeps the total near the core count; --jobs holds the two
+# numbers together.
+set(WEAVEC_CASES_JOBS
+    2
+    CACHE STRING "Workers inside each cases-* test, and its CTest PROCESSORS")
+
 file(
   GLOB _weavec_case_suites
   LIST_DIRECTORIES true
@@ -31,13 +42,16 @@ foreach(suite IN LISTS _weavec_case_suites)
     COMMAND
       "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/run-cases.py"
       --weavec "$<TARGET_FILE:weavec>" --weavec-cc "$<TARGET_FILE:weavec-cc>"
-      --filter "${suite}/**" --json
+      --filter "${suite}/**" --jobs "${WEAVEC_CASES_JOBS}" --json
       "${CMAKE_CURRENT_BINARY_DIR}/cases-${suite}.json" ${_weavec_cases_args})
-  set_tests_properties(cases-${suite} PROPERTIES LABELS "integration;cases"
-                                                 TIMEOUT 900)
+  set_tests_properties(
+    cases-${suite} PROPERTIES LABELS "integration;cases" TIMEOUT 900 PROCESSORS
+                              "${WEAVEC_CASES_JOBS}")
 endforeach()
 
 add_test(NAME cases-runner-harness
          COMMAND "${Python3_EXECUTABLE}"
                  "${PROJECT_SOURCE_DIR}/scripts/test_run_cases.py")
-set_tests_properties(cases-runner-harness PROPERTIES LABELS "unit")
+# The harness drives the same compile-and-run pipeline over fixtures.
+set_tests_properties(cases-runner-harness PROPERTIES LABELS "unit" PROCESSORS
+                                                     "${WEAVEC_CASES_JOBS}")

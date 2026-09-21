@@ -118,7 +118,10 @@ EXPECTATION_MARKERS = frozenset(("CLEAN", "EXPECT-LEDGER")) | LINE_MARKERS
 COMPARISONS = ("==", "!=", "<=", ">=", "<", ">")
 
 COMPILE_TIMEOUT = 120.0
-RUN_TIMEOUT = 10.0
+# A case's program does its work in milliseconds; this bounds a hang, and is
+# generous because CI shares a small runner between suites, where a process can
+# wait a long time to be scheduled before it runs at all.
+RUN_TIMEOUT = 30.0
 ASAN_TIMEOUT = 60.0
 TRAP_SIGNALS = frozenset(s for s in (getattr(signal, "SIGTRAP", None),
                                      getattr(signal, "SIGILL", None)) if s is not None)

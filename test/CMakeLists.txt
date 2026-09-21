@@ -81,6 +81,13 @@ set(WEAVEC_LIT_ARGS
     "-sv"
     CACHE STRING "Arguments passed to lit")
 
+# lit runs its tests in parallel, so like the cases suites it is not a
+# single-processor test: CTest has to know what it costs, or `ctest -j N`
+# oversubscribes the machine and the tests that run programs time out.
+set(WEAVEC_LIT_JOBS
+    4
+    CACHE STRING "Workers inside the lit test, and its CTest PROCESSORS")
+
 add_custom_target(
   check-weavec-lit
   COMMAND "${WEAVEC_LIT}" ${WEAVEC_LIT_ARGS} "${CMAKE_CURRENT_BINARY_DIR}"
@@ -90,7 +97,8 @@ add_custom_target(
 add_dependencies(check-weavec check-weavec-lit)
 
 # Expose the lit suite to CTest as a single test so `ctest` runs everything.
-add_test(NAME lit COMMAND "${WEAVEC_LIT}" ${WEAVEC_LIT_ARGS}
-                          "${CMAKE_CURRENT_BINARY_DIR}")
-set_tests_properties(lit PROPERTIES LABELS "integration")
+add_test(NAME lit COMMAND "${WEAVEC_LIT}" ${WEAVEC_LIT_ARGS} -j
+                          "${WEAVEC_LIT_JOBS}" "${CMAKE_CURRENT_BINARY_DIR}")
+set_tests_properties(lit PROPERTIES LABELS "integration" PROCESSORS
+                                    "${WEAVEC_LIT_JOBS}")
 add_subdirectory(cases)
