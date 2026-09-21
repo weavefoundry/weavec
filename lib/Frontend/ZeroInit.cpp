@@ -27,6 +27,7 @@
 
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -70,6 +71,8 @@ static const clang::DeclRefExpr *calleeReference(const clang::CallExpr &call) {
   return nullptr;
 }
 
+namespace {
+
 /// Every piece of code of the unit, and every function reference in it.
 class CodeWalker {
 public:
@@ -77,7 +80,10 @@ public:
 
   void walkUnit() {
     walkDeclContext(context.getTranslationUnitDecl());
-    // Blocks append their bodies as they are found.
+    // Blocks append their bodies as they are found, so `code` grows while
+    // this loop runs and `size()` must be re-read every iteration; a
+    // range-based for would cache the end and walk invalidated iterators.
+    // NOLINTNEXTLINE(modernize-loop-convert)
     for (std::size_t i = 0; i < code.size(); ++i)
       walkCode(Code(code[i]));
   }
@@ -175,6 +181,8 @@ private:
   }
 };
 
+} // namespace
+
 //===----------------------------------------------------------------------===//
 // Rows
 //===----------------------------------------------------------------------===//
@@ -228,8 +236,9 @@ static bool definesAllocator(const clang::FunctionDecl &function,
 
 /// The wrapper with the callee's own signature, when there is one: by the
 /// builtin the declaration is, or for a reallocating row by its arity.
-static std::string sameSignatureWrapper(const clang::FunctionDecl &function,
-                                        const core::LibraryEntry &row) {
+static std::string_view
+sameSignatureWrapper(const clang::FunctionDecl &function,
+                     const core::LibraryEntry &row) {
   switch (function.getBuiltinID()) {
   case clang::Builtin::BImalloc:
   case clang::Builtin::BI__builtin_malloc:
@@ -267,8 +276,9 @@ static bool hasHelperType(clang::ASTContext &context,
                           llvm::StringRef name) {
   const HelperSignature *signature = findHelperSignature(name);
   return signature != nullptr &&
-         context.hasSameType(function.getType(),
-                             helperFunctionType(context, *signature, false));
+         clang::ASTContext::hasSameType(
+             function.getType(),
+             helperFunctionType(context, *signature, false));
 }
 
 /// An operand the lowering evaluates a second time: side-effect free and
@@ -354,7 +364,7 @@ lowering(clang::ASTContext &context, const Reference &found,
     return std::nullopt;
   ZeroInitRewrite rewrite{
       .reference = found.reference, .call = found.call, .owner = found.owner};
-  const std::string same = sameSignatureWrapper(function, row);
+  const std::string_view same = sameSignatureWrapper(function, row);
   const bool sameType = !same.empty() && hasHelperType(context, function, same);
   const core::LibraryResult &result = row.result;
   const bool stack = result.kind == core::LibraryResult::Kind::Fresh &&
@@ -364,7 +374,8 @@ lowering(clang::ASTContext &context, const Reference &found,
     if (!options.heap || stack || !sameType)
       return std::nullopt;
     rewrite.kind = ZeroInitRewrite::Kind::AddressOf;
-    rewrite.helper = same + "_fn";
+    rewrite.helper = same;
+    rewrite.helper += "_fn";
     return rewrite;
   }
   const clang::CallExpr &call = *found.call;
@@ -445,10 +456,11 @@ lowering(clang::ASTContext &context, const Reference &found,
         findHelperSignature("__weavec_posix_memalign_zero");
     if (signature == nullptr || match.alias != nullptr ||
         call.getNumArgs() != row.params.size() ||
-        !context.hasSameType(context.getPointerType(function.getType()),
-                             helperFunctionType(context, *signature, false)
-                                 ->castAs<clang::FunctionProtoType>()
-                                 ->getParamType(0)))
+        !clang::ASTContext::hasSameType(
+            context.getPointerType(function.getType()),
+            helperFunctionType(context, *signature, false)
+                ->castAs<clang::FunctionProtoType>()
+                ->getParamType(0)))
       return std::nullopt;
     rewrite.kind = ZeroInitRewrite::Kind::PassCallee;
     rewrite.helper = "__weavec_posix_memalign_zero";

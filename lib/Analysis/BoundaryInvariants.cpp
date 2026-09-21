@@ -54,7 +54,12 @@ static std::string classOfOperand(const Expr *operand) {
       const std::string what = field->getNameAsString();
       if (name.empty() || what.empty())
         return {};
-      return record->getKindName().str() + " " + name + "." + what;
+      std::string spelled = record->getKindName().str();
+      spelled += ' ';
+      spelled += name;
+      spelled += '.';
+      spelled += what;
+      return spelled;
     }
     if (const auto *reference = dyn_cast<DeclRefExpr>(at)) {
       const auto *var = dyn_cast<VarDecl>(reference->getDecl());

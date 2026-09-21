@@ -859,8 +859,12 @@ collectLinkInputs(const clang::driver::Compilation &compilation,
     // digest, whose payload cannot be read, or that was written for another
     // object is stale.
     const auto stale = [&](const std::string &why) {
+      std::string reported = "'";
+      reported += path;
+      reported += "': ";
+      reported += why;
       addUnanalyzed(
-          UnanalyzedInput{.name = name, .stale = "'" + path + "': " + why});
+          UnanalyzedInput{.name = name, .stale = std::move(reported)});
     };
     std::string reason;
     std::optional<record::UnitRecord> unit = record::readRecord(path, reason);

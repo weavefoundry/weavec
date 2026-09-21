@@ -35,6 +35,10 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <algorithm>
+#include <bit>
+#include <cstdint>
+
 using namespace clang;
 
 namespace weavec::analysis {
@@ -124,12 +128,11 @@ void FunctionDataflow::markUnknownBelow(core::PlaceId object,
 }
 
 void FunctionDataflow::noteEstablished(core::PlaceId place,
-                                       core::AnalysisState &state) const {
+                                       core::AnalysisState &state) {
   // Nothing to shield from while no record of unknown origin stands.
   if (!state.moves.hasUnknownOrigin())
     return;
-  const auto at = std::lower_bound(state.established.begin(),
-                                   state.established.end(), place);
+  const auto at = std::ranges::lower_bound(state.established, place);
   if (at == state.established.end() || *at != place)
     state.established.insert(at, place);
 }
@@ -143,8 +146,7 @@ FunctionDataflow::inheritedUnknown(core::PlaceId place,
   if (!holdsPointer(place).value_or(true))
     return std::nullopt;
   const auto established = [&state](core::PlaceId at) {
-    return std::binary_search(state.established.begin(),
-                              state.established.end(), at);
+    return std::ranges::binary_search(state.established, at);
   };
   // Upwards through the place tree, and sideways to the other names of the
   // same cell: `m = o->m; consume(o); m->in` reaches `o`'s record through
@@ -758,6 +760,9 @@ bool FunctionDataflow::isOwningPlace(core::PlaceId place) {
       llvm::DenseSet<const Decl *> slots;
       explicit Releases(const SummaryStore &store) : summaries(store) {}
       const SummaryStore &summaries;
+      // RecursiveASTVisitor dispatches to this name by CRTP, not by
+      // override; hiding the base's is how the visitor is written.
+      // NOLINTNEXTLINE(bugprone-derived-method-shadowing-base-method)
       bool VisitCallExpr(CallExpr *call) {
         const FunctionDecl *callee = call->getDirectCallee();
         const auto row =
@@ -796,7 +801,7 @@ std::uint64_t FunctionDataflow::pointeeTypeKey(core::PlaceId pointer) const {
   if (pointee->isVoidType() || pointee->isCharType() ||
       pointee->isIncompleteType())
     return core::AnalysisState::AnyType;
-  return reinterpret_cast<std::uintptr_t>(pointee.getTypePtr());
+  return std::bit_cast<std::uintptr_t>(pointee.getTypePtr());
 }
 
 void FunctionDataflow::noteRelease(core::PlaceId released,

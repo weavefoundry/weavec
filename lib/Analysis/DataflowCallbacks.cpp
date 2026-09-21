@@ -184,7 +184,7 @@ core::CallTargets FunctionDataflow::functionTargets(const Expr &expr,
         slotted && !slotted->empty())
       return *slotted;
   }
-  auto staticValue = summaries.staticTargets(*e);
+  auto staticValue = SummaryStore::staticTargets(*e);
   if (!staticValue.empty())
     return staticValue;
   if (const auto *ref = dyn_cast<DeclRefExpr>(e)) {

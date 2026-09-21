@@ -278,7 +278,7 @@ core::FunctionSummary librarySummaryOf(const core::LibraryMatch &match,
     else if (param.count)
       if (const auto unit = elementBytes(callee, *index))
         need = affineTerm(*param.count, match, *unit);
-    if (need && !(need->isConstant() && need->constant <= 0))
+    if (need && (!need->isConstant() || need->constant > 0))
       summary.addRequirement(*index, core::ExtentRequirement{
                                          .need = std::move(*need), .when = {}});
     // `out(v)`: the call stores `v` through the argument; a null-ok

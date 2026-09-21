@@ -60,6 +60,11 @@
 
 namespace weavec::analysis {
 
+// Members are grouped by concern, not packed: one instance exists per
+// function (or context specialisation) analysed, never in a hot loop, so
+// the padding costs nothing measurable and regrouping would lose the
+// grouping that makes ~130 members navigable.
+// NOLINTNEXTLINE(clang-analyzer-optin.performance.Padding)
 class FunctionDataflow {
 public:
   /// `summaries` supplies callee summaries and receives this function's
@@ -1281,7 +1286,7 @@ private:
   inheritedUnknown(core::PlaceId place, const core::AnalysisState &state) const;
   /// §5.1: `place` holds a value this function gave it, so it and what lies
   /// below it no longer inherit an unknown object's record.
-  void noteEstablished(core::PlaceId place, core::AnalysisState &state) const;
+  static void noteEstablished(core::PlaceId place, core::AnalysisState &state);
   /// Whether `object` lies above `place` in the place tree.
   [[nodiscard]] bool isBelow(core::PlaceId place, core::PlaceId object) const;
   /// §5.1: the places one call's unknown effects mark and the objects whose

@@ -263,8 +263,8 @@ public:
   /// RFC 0029: the final pass of a settled recursive component rechecks
   /// ordinary value outcomes against its converged may-effects.
   bool refreshingRecursiveValueOutcomes = false;
-  [[nodiscard]] core::CallTargets staticTargets(const clang::Expr &expr,
-                                                unsigned depth = 0);
+  [[nodiscard]] static core::CallTargets staticTargets(const clang::Expr &expr,
+                                                       unsigned depth = 0);
   [[nodiscard]] std::optional<ResolvedSummary>
   lookupCall(const clang::CallExpr &call);
   void registerCallable(const clang::FunctionDecl &function);

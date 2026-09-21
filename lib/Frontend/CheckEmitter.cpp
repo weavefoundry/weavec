@@ -46,6 +46,16 @@ namespace weavec::frontend {
 using HelperType = HelperSignature::Type;
 using Entry = core::CheckPlanEntry;
 
+/// The analysis hands the emitter `const` AST nodes: it only reads the tree.
+/// The emitter owns it (§10.6) and rewrites it in place, so every node it is
+/// given has to come back as a mutable one. That is the only place the const
+/// is dropped.
+template <typename Node>
+static Node *mutableNode(const Node *node) {
+  // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
+  return const_cast<Node *>(node);
+}
+
 //===----------------------------------------------------------------------===//
 // The helpers' signatures (§10.2, §10.9, §11)
 //===----------------------------------------------------------------------===//
@@ -193,6 +203,10 @@ const HelperSignature *findHelperSignature(llvm::StringRef name) {
   return nullptr;
 }
 
+// A `const ASTContext &` here would have to travel up through `typeOf` into
+// the public `helperFunctionType`, and from there into every caller's
+// translation unit.
+// NOLINTNEXTLINE(misc-const-correctness)
 static clang::QualType prototype(clang::ASTContext &context,
                                  clang::QualType result,
                                  llvm::ArrayRef<clang::QualType> params) {
@@ -271,10 +285,6 @@ namespace {
 /// the maximum, a have (an extent) to zero.
 enum class Direction : std::uint8_t { Need, Have };
 
-Direction opposite(Direction direction) {
-  return direction == Direction::Need ? Direction::Have : Direction::Need;
-}
-
 /// What one site's rewrites share.
 struct SiteContext {
   const analysis::SiteInfo *info = nullptr;
@@ -287,11 +297,17 @@ struct SiteContext {
   std::string text;
 };
 
+} // namespace
+
+static Direction opposite(Direction direction) {
+  return direction == Direction::Need ? Direction::Have : Direction::Need;
+}
+
 /// §10.4: the order of one site's rewrites. Operand, index and argument
 /// wraps come first (on one operand `nonnull` innermost, then `index`),
 /// then the replacements of the access or the call, then the checks
 /// sequenced before the call.
-int phase(const Entry &entry) {
+static int phase(const Entry &entry) {
   switch (entry.placement) {
   case Entry::Placement::WrapOperand:
   case Entry::Placement::WrapIndex:
@@ -306,7 +322,7 @@ int phase(const Entry &entry) {
   return 2;
 }
 
-int nesting(const Entry &entry) {
+static int nesting(const Entry &entry) {
   if (entry.form == Entry::Form::Violation)
     return 3;
   switch (entry.kind) {
@@ -322,8 +338,6 @@ int nesting(const Entry &entry) {
   }
   return 2;
 }
-
-} // namespace
 
 class CheckEmitter::Impl {
 public:
@@ -363,7 +377,7 @@ private:
   /// Child to parent, over the semantic form; a root maps to null.
   llvm::DenseMap<clang::Stmt *, clang::Stmt *> parents;
   /// A root to the declaration that holds it.
-  llvm::DenseMap<clang::Stmt *, clang::Decl *> roots;
+  llvm::DenseMap<const clang::Stmt *, clang::Decl *> roots;
   llvm::DenseMap<const clang::Decl *, bool> mapped;
   /// A logical position (an original node) to what stands there now, when
   /// it was wrapped or replaced.
@@ -450,7 +464,7 @@ private:
 //===----------------------------------------------------------------------===//
 
 clang::FunctionDecl *CheckEmitter::Impl::lookupFunction(llvm::StringRef name) {
-  clang::TranslationUnitDecl *unit = context.getTranslationUnitDecl();
+  const clang::TranslationUnitDecl *unit = context.getTranslationUnitDecl();
   const clang::DeclarationName declName(&context.Idents.get(name));
   clang::FunctionDecl *found = nullptr;
   for (clang::NamedDecl *decl : unit->lookup(declName))
@@ -506,7 +520,7 @@ clang::FunctionDecl *CheckEmitter::Impl::builtin(llvm::StringRef name,
     return declared;
   // Declared as Sema declares a builtin on first use; Sema's own entry point
   // needs the translation unit's scope, which is gone at the end of the unit.
-  clang::IdentifierInfo &identifier = context.Idents.get(name);
+  const clang::IdentifierInfo &identifier = context.Idents.get(name);
   const unsigned id = identifier.getBuiltinID();
   if (id == 0)
     return nullptr;
@@ -543,13 +557,13 @@ void CheckEmitter::Impl::mapOwner(const clang::Decl *owner) {
   if (owner == nullptr || mapped.contains(owner))
     return;
   mapped[owner] = true;
-  auto *decl = const_cast<clang::Decl *>(owner);
+  auto *decl = mutableNode(owner);
   clang::Stmt *root = nullptr;
-  if (auto *function = llvm::dyn_cast<clang::FunctionDecl>(decl)) {
+  if (const auto *function = llvm::dyn_cast<clang::FunctionDecl>(decl)) {
     const clang::FunctionDecl *definition = nullptr;
     root = function->getBody(definition);
-    decl = const_cast<clang::FunctionDecl *>(definition);
-  } else if (auto *block = llvm::dyn_cast<clang::BlockDecl>(decl)) {
+    decl = mutableNode(definition);
+  } else if (const auto *block = llvm::dyn_cast<clang::BlockDecl>(decl)) {
     root = block->getBody();
   } else if (auto *variable = llvm::dyn_cast<clang::VarDecl>(decl)) {
     root = variable->getInit();
@@ -601,7 +615,8 @@ void CheckEmitter::Impl::adopt(clang::Stmt *node) {
 
 /// The variable whose initialiser `node` is, when `parent` is its
 /// declaration statement.
-static clang::VarDecl *initialised(clang::Stmt *parent, clang::Stmt *node) {
+static clang::VarDecl *initialised(clang::Stmt *parent,
+                                   const clang::Stmt *node) {
   auto *statement = llvm::dyn_cast_or_null<clang::DeclStmt>(parent);
   if (statement == nullptr)
     return nullptr;
@@ -663,7 +678,7 @@ bool CheckEmitter::Impl::place(clang::Stmt *node, clang::Stmt *replacement) {
   adopt(replacement);
   // A variable whose initialiser changed below its top must not keep a
   // constant evaluation of the old one.
-  clang::Stmt *below = replacement;
+  const clang::Stmt *below = replacement;
   for (clang::Stmt *at = parents.lookup(replacement);;
        below = at, at = parents.lookup(at)) {
     if (at == nullptr) {
@@ -707,7 +722,7 @@ clang::Stmt *CheckEmitter::Impl::attempt(Build &&build) {
   const clang::Sema::SFINAETrap trap(sema, /*WithAccessChecking=*/true);
   const clang::DiagnosticErrorTrap errors(diags);
   const bool before = diags.hasErrorOccurred();
-  clang::Stmt *built = build();
+  clang::Stmt *built = std::forward<Build>(build)();
   if (built == nullptr || trap.hasErrorOccurred() ||
       errors.hasErrorOccurred() || diags.hasErrorOccurred() != before)
     return nullptr;
@@ -730,7 +745,7 @@ clang::Expr *CheckEmitter::Impl::castTo(clang::Expr *expr, clang::QualType type,
                                         clang::CastKind kind) {
   if (expr == nullptr)
     return nullptr;
-  if (context.hasSameType(expr->getType(), type))
+  if (clang::ASTContext::hasSameType(expr->getType(), type))
     return expr;
   // `expr` is a helper call, never an implicit cast Sema could merge into.
   const clang::ExprResult cast = sema.ImpCastExprToType(expr, type, kind);
@@ -775,9 +790,9 @@ clang::ExprResult CheckEmitter::Impl::comma(clang::Expr *lhs, clang::Expr *rhs,
 
 clang::Expr *CheckEmitter::Impl::placeLvalue(const core::CheckTerm &term,
                                              const SiteContext &site) {
-  auto *decl = const_cast<clang::ValueDecl *>(
-      site.handles != nullptr ? site.handles->resolvePlace(term.handle)
-                              : nullptr);
+  auto *decl = mutableNode(site.handles != nullptr
+                               ? site.handles->resolvePlace(term.handle)
+                               : nullptr);
   if (decl == nullptr)
     return nullptr;
   // The place is a parameter or a local of the function being rewritten
@@ -796,7 +811,7 @@ clang::Expr *CheckEmitter::Impl::placeLvalue(const core::CheckTerm &term,
       // §10.3 rule 5: a read through a pointer the term checks itself.
       if (step.checked) {
         const clang::QualType type = pointer.get()->getType();
-        clang::Expr *args[] = {pointer.get()};
+        std::array<clang::Expr *, 1> args = {pointer.get()};
         const clang::ExprResult checked =
             callHelper("__weavec_chk_nonnull", args, site.loc, &site);
         clang::Expr *typed =
@@ -868,7 +883,7 @@ clang::Expr *CheckEmitter::Impl::term(const core::CheckTerm &term,
       return value.get();
     // A signed leaf enters through need_s or have_s: a negative count is
     // the maximum as a need and 0 as a have.
-    clang::Expr *args[] = {value.get()};
+    std::array<clang::Expr *, 1> args = {value.get()};
     const clang::ExprResult entered = callHelper(
         need ? "__weavec_need_s" : "__weavec_have_s", args, loc, nullptr);
     return usable(entered) ? entered.get() : nullptr;
@@ -893,12 +908,16 @@ clang::Expr *CheckEmitter::Impl::term(const core::CheckTerm &term,
     const Direction right = term.kind == core::CheckTerm::Kind::Sub
                                 ? opposite(direction)
                                 : direction;
-    clang::Expr *args[] = {this->term(term.operands[0], direction, site),
-                           this->term(term.operands[1], right, site)};
+    std::array<clang::Expr *, 2> args = {
+        this->term(term.operands[0], direction, site),
+        this->term(term.operands[1], right, site)};
     std::string name = need ? "__weavec_need_" : "__weavec_have_";
-    name += term.kind == core::CheckTerm::Kind::Add   ? "add"
-            : term.kind == core::CheckTerm::Kind::Sub ? "sub"
-                                                      : "mul";
+    if (term.kind == core::CheckTerm::Kind::Add)
+      name += "add";
+    else if (term.kind == core::CheckTerm::Kind::Sub)
+      name += "sub";
+    else
+      name += "mul";
     const clang::ExprResult result = callHelper(name, args, loc, nullptr);
     return usable(result) ? result.get() : nullptr;
   }
@@ -925,8 +944,9 @@ clang::Expr *CheckEmitter::Impl::term(const core::CheckTerm &term,
   case core::CheckTerm::Kind::StrNLen: {
     if (term.operands.size() != 2)
       return nullptr;
-    clang::Expr *args[] = {pointerTerm(term.operands[0], site),
-                           this->term(term.operands[1], Direction::Have, site)};
+    std::array<clang::Expr *, 2> args = {
+        pointerTerm(term.operands[0], site),
+        this->term(term.operands[1], Direction::Have, site)};
     const clang::ExprResult result =
         callHelper("__weavec_strnlen", args, loc, &site);
     return usable(result) ? result.get() : nullptr;
@@ -961,54 +981,60 @@ clang::ExprResult CheckEmitter::Impl::checkCall(const Entry &entry,
       return clang::ExprError();
     if (entry.form == Entry::Form::Function) {
       // The callee operand, as `void (*)(void)` and back (§10.2).
-      clang::Expr *args[] = {
+      std::array<clang::Expr *, 1> args = {
           castTo(moved, typeOf(context, HelperType::FunctionPointer),
                  clang::CK_BitCast)};
       return callHelper(name, args, loc, &site);
     }
     if (entry.form == Entry::Form::IfNonZero) {
-      clang::Expr *args[] = {moved, operand(0, Direction::Need)};
+      std::array<clang::Expr *, 2> args = {moved, operand(0, Direction::Need)};
       return callHelper(name, args, loc, &site);
     }
     // §7.5, §10.4: a requirement's guard is the zero-length form's length,
     // computed as a have so that a guard that fails saturates at zero.
     if (entry.guard && entry.placement == Entry::Placement::WrapArgument) {
-      clang::Expr *args[] = {moved, term(*entry.guard, Direction::Have, site)};
+      std::array<clang::Expr *, 2> args = {
+          moved, term(*entry.guard, Direction::Have, site)};
       return callHelper(name + "_n", args, loc, &site);
     }
-    clang::Expr *args[] = {moved};
+    std::array<clang::Expr *, 1> args = {moved};
     return callHelper(name, args, loc, &site);
   }
   case Entry::Template::Index: {
     // WrapIndex wraps the subscript; WrapOperand checks the element at 0.
     clang::Expr *index =
         moved != nullptr ? moved : literal(0, context.UnsignedLongLongTy, loc);
-    clang::Expr *args[] = {index, operand(0, Direction::Have)};
+    std::array<clang::Expr *, 2> args = {index, operand(0, Direction::Have)};
     return callHelper(name, args, loc, &site);
   }
   case Entry::Template::Span: {
     if (moved == nullptr)
       return clang::ExprError();
-    clang::Expr *args[] = {moved, literal(0, context.LongLongTy, loc),
-                           pointer(0), operand(1, Direction::Have),
-                           operand(2, Direction::Need)};
+    std::array<clang::Expr *, 5> args = {
+        moved, literal(0, context.LongLongTy, loc), pointer(0),
+        operand(1, Direction::Have), operand(2, Direction::Need)};
     return callHelper(name, args, loc, &site);
   }
   case Entry::Template::Len: {
     if (entry.placement == Entry::Placement::WrapArgument) {
-      clang::Expr *args[] = {moved, operand(0, Direction::Have)};
+      std::array<clang::Expr *, 2> args = {moved, operand(0, Direction::Have)};
       return callHelper(name, args, loc, &site);
     }
-    clang::Expr *args[] = {operand(0, Direction::Need),
-                           operand(1, Direction::Have)};
+    // This form does not take the operand, so `moved` is left unused; the
+    // ASTContext owns the node and releases its arena.
+    // NOLINTBEGIN(clang-analyzer-cplusplus.NewDeleteLeaks)
+    std::array<clang::Expr *, 2> args = {operand(0, Direction::Need),
+                                         operand(1, Direction::Have)};
     return callHelper(name, args, loc, &site);
+    // NOLINTEND(clang-analyzer-cplusplus.NewDeleteLeaks)
   }
   case Entry::Template::Disjoint: {
-    clang::Expr *args[] = {moved, pointer(0), operand(1, Direction::Need)};
+    std::array<clang::Expr *, 3> args = {moved, pointer(0),
+                                         operand(1, Direction::Need)};
     return callHelper(name, args, loc, &site);
   }
   case Entry::Template::Assert: {
-    clang::Expr *args[] = {moved};
+    std::array<clang::Expr *, 1> args = {moved};
     return callHelper(name, args, loc, &site);
   }
   }
@@ -1024,7 +1050,7 @@ clang::ExprResult CheckEmitter::Impl::checkCall(const Entry &entry,
 /// creates for `span`, else the site's operand.
 static clang::Stmt *operandOf(const Entry &entry,
                               const analysis::SiteInfo &info) {
-  auto *stmt = const_cast<clang::Stmt *>(info.stmt);
+  auto *stmt = mutableNode(info.stmt);
   if (entry.kind == Entry::Template::Nonnull &&
       entry.form == Entry::Form::Function) {
     auto *call = llvm::dyn_cast_or_null<clang::CallExpr>(stmt);
@@ -1034,7 +1060,7 @@ static clang::Stmt *operandOf(const Entry &entry,
       (info.kind == core::SiteKind::PtrArith ||
        info.kind == core::SiteKind::Cast))
     return stmt;
-  return const_cast<clang::Expr *>(info.operand);
+  return mutableNode(info.operand);
 }
 
 bool CheckEmitter::Impl::wrapValue(const Entry &entry, clang::Stmt *target,
@@ -1066,16 +1092,19 @@ bool CheckEmitter::Impl::wrapValue(const Entry &entry, clang::Stmt *target,
     const clang::ExprResult check = checkCall(entry, nullptr, site);
     if (!usable(check))
       return nullptr;
+    // ASTContext owns the nodes a rejected rewrite leaves behind (§10.6).
+    // NOLINTBEGIN(clang-analyzer-cplusplus.NewDeleteLeaks)
     const clang::ExprResult sequenced =
         comma(check.get(), paren(current, site.loc), site.loc);
     return usable(sequenced) ? sequenced.get() : nullptr;
+    // NOLINTEND(clang-analyzer-cplusplus.NewDeleteLeaks)
   });
   return wrapper != nullptr && wrapAt(target, wrapper);
 }
 
 bool CheckEmitter::Impl::wrapArgument(const Entry &entry, SiteContext &site) {
-  auto *call = llvm::dyn_cast_or_null<clang::CallExpr>(
-      const_cast<clang::Stmt *>(site.info->stmt));
+  auto *call =
+      llvm::dyn_cast_or_null<clang::CallExpr>(mutableNode(site.info->stmt));
   if (call == nullptr || entry.argument >= call->getNumArgs())
     return false;
   clang::Expr *current = call->getArg(entry.argument);
@@ -1098,15 +1127,15 @@ bool CheckEmitter::Impl::replaceAccess(const Entry &entry, SiteContext &site) {
   // place and the access itself stays.
   if (info.kind != core::SiteKind::Index || info.index == nullptr)
     return wrapValue(entry, operandOf(entry, info), site);
-  auto *access = const_cast<clang::Stmt *>(info.stmt);
+  auto *access = mutableNode(info.stmt);
   clang::Expr *base = nullptr;
   clang::Expr *index = nullptr;
   if (auto *subscript = llvm::dyn_cast<clang::ArraySubscriptExpr>(access)) {
     base = subscript->getBase();
     index = subscript->getIdx();
-  } else if (auto *deref = llvm::dyn_cast<clang::UnaryOperator>(access);
+  } else if (const auto *deref = llvm::dyn_cast<clang::UnaryOperator>(access);
              deref != nullptr && deref->getOpcode() == clang::UO_Deref) {
-    auto *sum = llvm::dyn_cast<clang::BinaryOperator>(
+    const auto *sum = llvm::dyn_cast<clang::BinaryOperator>(
         deref->getSubExpr()->IgnoreParens());
     if (sum == nullptr || sum->getOpcode() != clang::BO_Add)
       return false;
@@ -1121,10 +1150,11 @@ bool CheckEmitter::Impl::replaceAccess(const Entry &entry, SiteContext &site) {
     // `p[i]` becomes `*(T *)__weavec_chk_span(p, i, base, bytes, width)`:
     // `p` and `i` are evaluated once and the address is formed only after
     // the check.
-    clang::Expr *args[] = {paren(base, site.loc), paren(index, site.loc),
-                           pointerTerm(entry.operands[0], site),
-                           term(entry.operands[1], Direction::Have, site),
-                           term(entry.operands[2], Direction::Need, site)};
+    std::array<clang::Expr *, 5> args = {
+        paren(base, site.loc), paren(index, site.loc),
+        pointerTerm(entry.operands[0], site),
+        term(entry.operands[1], Direction::Have, site),
+        term(entry.operands[2], Direction::Need, site)};
     const clang::ExprResult check =
         callHelper(core::helperName(entry), args, site.loc, &site);
     if (!usable(check))
@@ -1140,7 +1170,7 @@ bool CheckEmitter::Impl::replaceAccess(const Entry &entry, SiteContext &site) {
 }
 
 bool CheckEmitter::Impl::beforeCall(const Entry &entry, SiteContext &site) {
-  auto *stmt = const_cast<clang::Stmt *>(site.info->stmt);
+  auto *stmt = mutableNode(site.info->stmt);
   const clang::SourceLocation loc = site.loc;
   // The check, and its §7.5 guard: `(guard ? check : 0)`.
   const auto guarded = [&]() -> clang::Expr * {
@@ -1165,9 +1195,12 @@ bool CheckEmitter::Impl::beforeCall(const Entry &entry, SiteContext &site) {
     if (clang::Expr *value = ret->getRetValue()) {
       // `return v;` becomes `return (check, v);`.
       clang::Stmt *wrapper = attempt([&]() -> clang::Stmt * {
+        // ASTContext owns the nodes a rejected rewrite leaves behind (§10.6).
+        // NOLINTBEGIN(clang-analyzer-cplusplus.NewDeleteLeaks)
         const clang::ExprResult sequenced =
             comma(guarded(), paren(value, loc), loc);
         return usable(sequenced) ? sequenced.get() : nullptr;
+        // NOLINTEND(clang-analyzer-cplusplus.NewDeleteLeaks)
       });
       return wrapper != nullptr && place(value, wrapper);
     }
@@ -1206,16 +1239,19 @@ bool CheckEmitter::Impl::beforeCall(const Entry &entry, SiteContext &site) {
     return false;
   // `f(a)` becomes `(check, f(a))`, of the call's type and category.
   clang::Stmt *wrapper = attempt([&]() -> clang::Stmt * {
+    // ASTContext owns the nodes a rejected rewrite leaves behind (§10.6).
+    // NOLINTBEGIN(clang-analyzer-cplusplus.NewDeleteLeaks)
     const clang::ExprResult sequenced =
         comma(guarded(), paren(current, loc), loc);
     return usable(sequenced) ? sequenced.get() : nullptr;
+    // NOLINTEND(clang-analyzer-cplusplus.NewDeleteLeaks)
   });
   return wrapper != nullptr && wrapAt(call, wrapper);
 }
 
 bool CheckEmitter::Impl::replaceCall(const Entry &entry, SiteContext &site) {
-  auto *call = llvm::dyn_cast_or_null<clang::CallExpr>(
-      const_cast<clang::Stmt *>(site.info->stmt));
+  auto *call =
+      llvm::dyn_cast_or_null<clang::CallExpr>(mutableNode(site.info->stmt));
   if (call == nullptr)
     return false;
   const clang::SourceLocation loc = site.loc;
@@ -1272,7 +1308,7 @@ bool CheckEmitter::Impl::replaceCall(const Entry &entry, SiteContext &site) {
           sema.BuildCallExpr(nullptr, callee, loc, args, loc);
       if (!usable(bounded))
         return nullptr;
-      clang::Expr *checkArgs[] = {
+      std::array<clang::Expr *, 2> checkArgs = {
           bounded.get(), term(entry.operands[0], Direction::Have, site)};
       const clang::ExprResult check =
           callHelper(core::helperName(entry), checkArgs, loc, &site);
@@ -1291,7 +1327,7 @@ bool CheckEmitter::Impl::apply(const Entry &entry, SiteContext &site) {
   case Entry::Placement::WrapOperand:
     return wrapValue(entry, operandOf(entry, *site.info), site);
   case Entry::Placement::WrapIndex:
-    return wrapValue(entry, const_cast<clang::Expr *>(site.info->index), site);
+    return wrapValue(entry, mutableNode(site.info->index), site);
   case Entry::Placement::WrapArgument:
     return wrapArgument(entry, site);
   case Entry::Placement::ReplaceAccess:
@@ -1365,8 +1401,7 @@ bool CheckEmitter::Impl::emit(const core::CheckPlan &plan,
              std::make_pair(phase(*b), nesting(*b));
     });
     // Sema builds the rewrites as if inside the function.
-    clang::Sema::ContextRAII inFunction(
-        sema, const_cast<clang::FunctionDecl *>(function.decl));
+    clang::Sema::ContextRAII inFunction(sema, mutableNode(function.decl));
     for (const Entry *entry : entries) {
       if (!apply(*entry, site)) {
         internalError(site.loc, site.text, /*zeroInit=*/false);
@@ -1397,8 +1432,8 @@ clang::Expr *CheckEmitter::Impl::rebuild(const clang::Expr *expr,
       return clang::IntegerLiteral::Create(
           context, value->extOrTrunc(context.getIntWidth(type)), type, loc);
   if (const auto *ref = llvm::dyn_cast<clang::DeclRefExpr>(e)) {
-    auto *variable = const_cast<clang::VarDecl *>(
-        llvm::dyn_cast<clang::VarDecl>(ref->getDecl()));
+    auto *variable =
+        mutableNode(llvm::dyn_cast<clang::VarDecl>(ref->getDecl()));
     if (variable == nullptr || variable->getType().isVolatileQualified())
       return nullptr;
     return clang::DeclRefExpr::Create(context, clang::NestedNameSpecifierLoc(),
@@ -1453,8 +1488,8 @@ clang::Expr *CheckEmitter::Impl::rebuild(const clang::Expr *expr,
 }
 
 bool CheckEmitter::Impl::lowerOne(const ZeroInitRewrite &rewrite) {
-  auto *reference = const_cast<clang::DeclRefExpr *>(rewrite.reference);
-  auto *call = const_cast<clang::CallExpr *>(rewrite.call);
+  auto *reference = mutableNode(rewrite.reference);
+  auto *call = mutableNode(rewrite.call);
   const clang::SourceLocation loc =
       call != nullptr ? call->getBeginLoc() : reference->getBeginLoc();
   switch (rewrite.kind) {
@@ -1467,7 +1502,8 @@ bool CheckEmitter::Impl::lowerOne(const ZeroInitRewrite &rewrite) {
       name.consume_back("_fn");
     clang::FunctionDecl *wrapper = helper(name);
     if (reference == nullptr || wrapper == nullptr ||
-        !context.hasSameType(wrapper->getType(), reference->getType()))
+        !clang::ASTContext::hasSameType(wrapper->getType(),
+                                        reference->getType()))
       return false;
     clang::Stmt *replacement = attempt([&]() -> clang::Stmt * {
       return sema.BuildDeclRefExpr(wrapper, wrapper->getType(),
@@ -1491,8 +1527,8 @@ bool CheckEmitter::Impl::lowerOne(const ZeroInitRewrite &rewrite) {
         clang::Expr *size = rebuild(rewrite.operand, loc);
         if (memset == nullptr || size == nullptr)
           return nullptr;
-        clang::Expr *args[] = {paren(current, loc),
-                               literal(0, context.IntTy, loc), size};
+        std::array<clang::Expr *, 3> args = {
+            paren(current, loc), literal(0, context.IntTy, loc), size};
         clang::Expr *callee = sema.BuildDeclRefExpr(memset, memset->getType(),
                                                     clang::VK_LValue, loc);
         const clang::ExprResult zeroed =
@@ -1546,7 +1582,7 @@ bool CheckEmitter::Impl::lowerZeroInit(const ZeroInitPlan &plan) {
       owner = llvm::dyn_cast<clang::Decl>(variable->getDeclContext());
     if (const auto *function =
             llvm::dyn_cast_or_null<clang::FunctionDecl>(owner))
-      inFunction.emplace(sema, const_cast<clang::FunctionDecl *>(function));
+      inFunction.emplace(sema, mutableNode(function));
     if (!lowerOne(rewrite)) {
       const clang::Stmt &at =
           rewrite.call != nullptr

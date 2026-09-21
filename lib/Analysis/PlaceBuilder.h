@@ -527,7 +527,7 @@ private:
   // A cached path is dropped only by a conflicting registration, which
   // clears them all, so the bound is only about memory: a large interpreter
   // loop names over 100,000 places.
-  static constexpr std::size_t MaxCachedSummaryPaths = std::size_t{1} << 20;
+  static constexpr std::size_t MaxCachedSummaryPaths = std::size_t{1} << 20U;
   llvm::DenseMap<std::uint32_t, std::optional<core::SummaryPath>> summaryPaths;
   std::vector<const clang::VarDecl *> order;
   std::optional<core::PlaceId> literal;

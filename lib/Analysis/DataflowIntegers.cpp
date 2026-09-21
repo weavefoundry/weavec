@@ -171,7 +171,7 @@ std::optional<core::IntegerRangeEvaluation> FunctionDataflow::integerRangeOf(
         if (!symbolic.mayBeInvalid && !result.mayBeInvalid &&
             symbolic.values.type == result.values.type)
           symbolic.values = symbolic.values.intersect(result.values);
-        result = symbolic;
+        result = std::move(symbolic);
       }
     }
     if (lhs->mayBeInvalid || rhs->mayBeInvalid) {

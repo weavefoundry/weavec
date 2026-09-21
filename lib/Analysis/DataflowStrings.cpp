@@ -527,8 +527,10 @@ void FunctionDataflow::applyStringEffects(const CallExpr &call,
       const auto length =
           stringTermValue(*write.length, call, *library, state, lowerBound);
       if (length && !lowerBound)
-        updates.push_back(
-            {dest, subjectOf(dest), Update::Kind::Length, length});
+        updates.push_back({.dest = dest,
+                           .subject = subjectOf(dest),
+                           .kind = Update::Kind::Length,
+                           .length = length});
     }
     for (const core::LibCopy &copy : row->copies) {
       // `n` bytes from a string of `len` bytes (`strncpy` copies
@@ -538,7 +540,7 @@ void FunctionDataflow::applyStringEffects(const CallExpr &call,
       const core::LibTerm *bound = &copy.length;
       if (bound->kind == core::LibTerm::Kind::Min &&
           bound->operands.size() == 2)
-        bound = &bound->operands[0];
+        bound = bound->operands.data();
       const Expr *dest = argument(copy.dst);
       const Expr *source = argument(copy.src);
       const Expr *count = bound->kind == core::LibTerm::Kind::Argument
@@ -553,9 +555,15 @@ void FunctionDataflow::applyStringEffects(const CallExpr &call,
       const auto subject = subjectOf(dest);
       const auto atLeast = decideAtLeast(*sourceLength, *n, state);
       if (atLeast == true && coversObject(subject, *n))
-        updates.push_back({dest, subject, Update::Kind::Unterminated, {}});
+        updates.push_back({.dest = dest,
+                           .subject = subject,
+                           .kind = Update::Kind::Unterminated,
+                           .length = {}});
       else if (atLeast == false)
-        updates.push_back({dest, subject, Update::Kind::Length, sourceLength});
+        updates.push_back({.dest = dest,
+                           .subject = subject,
+                           .kind = Update::Kind::Length,
+                           .length = sourceLength});
     }
     for (const core::LibFill &fill : row->fills) {
       const Expr *dest = argument(fill.dst);
@@ -578,12 +586,17 @@ void FunctionDataflow::applyStringEffects(const CallExpr &call,
       const auto subject = subjectOf(dest);
       if (*byte != 0) {
         if (coversObject(subject, *n))
-          updates.push_back({dest, subject, Update::Kind::Unterminated, {}});
+          updates.push_back({.dest = dest,
+                             .subject = subject,
+                             .kind = Update::Kind::Unterminated,
+                             .length = {}});
       } else if (subject && subject->offset == 0 &&
                  decideAtLeast(*n, core::Affine::ofConstant(1), state) ==
                      true) {
-        updates.push_back(
-            {dest, subject, Update::Kind::Length, core::Affine::ofConstant(0)});
+        updates.push_back({.dest = dest,
+                           .subject = subject,
+                           .kind = Update::Kind::Length,
+                           .length = core::Affine::ofConstant(0)});
       }
     }
     // RFC 0012, *Length places*: `strlen(s)`'s value, and the length a
@@ -600,8 +613,10 @@ void FunctionDataflow::applyStringEffects(const CallExpr &call,
         string->IgnoreParenImpCasts()->getType()->isPointerType() &&
         byteSizeOf(string->IgnoreParenImpCasts()->getType()->getPointeeType(),
                    context) == 1)
-      updates.push_back(
-          {string, subjectOf(string), Update::Kind::LengthPlace, {}});
+      updates.push_back({.dest = string,
+                         .subject = subjectOf(string),
+                         .kind = Update::Kind::LengthPlace,
+                         .length = {}});
   }
 
   // 1. Every object the callee writes loses what was known about its

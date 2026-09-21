@@ -36,7 +36,9 @@ struct UnitDecls {
   std::map<std::string, const clang::VarDecl *, std::less<>> variables;
 };
 
-UnitDecls unitDecls(const clang::ASTContext &context) {
+} // namespace
+
+static UnitDecls unitDecls(const clang::ASTContext &context) {
   UnitDecls decls;
   for (const clang::Decl *decl : context.getTranslationUnitDecl()->decls()) {
     if (const auto *function = llvm::dyn_cast<clang::FunctionDecl>(decl)) {
@@ -47,21 +49,22 @@ UnitDecls unitDecls(const clang::ASTContext &context) {
       // The definition, when there is one, else the first declaration.
       if (known == nullptr || function->doesThisDeclarationHaveABody())
         known = function;
-    } else if (const auto *variable = llvm::dyn_cast<clang::VarDecl>(decl)) {
-      if (variable->getIdentifier() != nullptr)
-        decls.variables.try_emplace(variable->getNameAsString(), variable);
+    } else if (const auto *variable = llvm::dyn_cast<clang::VarDecl>(decl);
+               variable != nullptr && variable->getIdentifier() != nullptr) {
+      decls.variables.try_emplace(variable->getNameAsString(), variable);
     }
   }
   return decls;
 }
 
-bool isPointer(clang::QualType type) {
+static bool isPointer(clang::QualType type) {
   return type->isPointerType() || type->isArrayType();
 }
 
 /// A kind some declaration outside the system headers states (§7.2 levels
 /// 1 and 2): the declared shape, or `unknown` with a declared `nonnull`.
-std::optional<std::string> declaredKind(const analysis::KindEntry *entry) {
+static std::optional<std::string>
+declaredKind(const analysis::KindEntry *entry) {
   if (entry == nullptr)
     return std::nullopt;
   const auto userLevel = [](const std::optional<analysis::KindLevel> &level) {
@@ -80,7 +83,8 @@ std::optional<std::string> declaredKind(const analysis::KindEntry *entry) {
 }
 
 /// The ownership annotation `set` states, spelled as the macro.
-std::optional<std::string> ownershipOf(const analysis::AnnotationSet &set) {
+static std::optional<std::string>
+ownershipOf(const analysis::AnnotationSet &set) {
   if (set.owned)
     return "WEAVEC_OWNED";
   if (set.borrowed)
@@ -96,7 +100,7 @@ std::optional<std::string> ownershipOf(const analysis::AnnotationSet &set) {
   return std::nullopt;
 }
 
-bool isShapeBeyondSingle(core::PointerShape shape) {
+static bool isShapeBeyondSingle(core::PointerShape shape) {
   return shape == core::PointerShape::Counted ||
          shape == core::PointerShape::Sized ||
          shape == core::PointerShape::EndedBy ||
@@ -105,8 +109,8 @@ bool isShapeBeyondSingle(core::PointerShape shape) {
 
 /// §13.2 step 5: the bytes one element of `pointee` takes, or 0 when it has
 /// no known size (`void`, an incomplete or dependent type).
-std::uint64_t elementBytes(clang::QualType pointee,
-                           const clang::ASTContext &context) {
+static std::uint64_t elementBytes(clang::QualType pointee,
+                                  const clang::ASTContext &context) {
   if (pointee.isNull() || pointee->isIncompleteType() ||
       pointee->isDependentType() || pointee->isFunctionType())
     return 0;
@@ -117,7 +121,7 @@ std::uint64_t elementBytes(clang::QualType pointee,
 /// §13.1 `imports[].calls[].evidence[].exact`: the argument is a whole
 /// object at offset 0, so `bytes` is its size and not a lower bound. A
 /// complete array, a string literal, or the address of a complete object.
-bool isExactExtent(const clang::Expr &argument) {
+static bool isExactExtent(const clang::Expr &argument) {
   const clang::Expr *expr = argument.IgnoreParens();
   while (const auto *cast = llvm::dyn_cast<clang::ImplicitCastExpr>(expr)) {
     if (cast->getCastKind() == clang::CK_ArrayToPointerDecay) {
@@ -146,9 +150,9 @@ bool isExactExtent(const clang::Expr &argument) {
          !variable->getType()->isArrayType();
 }
 
-FunctionInterface functionInterface(const clang::FunctionDecl &function,
-                                    const analysis::KindTable &kinds,
-                                    const clang::SourceManager &sm) {
+static FunctionInterface functionInterface(const clang::FunctionDecl &function,
+                                           const analysis::KindTable &kinds,
+                                           const clang::SourceManager &sm) {
   FunctionInterface facts;
   for (unsigned i = 0; i < function.getNumParams(); ++i) {
     const clang::ParmVarDecl *param = function.getParamDecl(i);
@@ -157,7 +161,7 @@ FunctionInterface functionInterface(const clang::FunctionDecl &function,
       facts.params.emplace_back();
       continue;
     }
-    facts.params.push_back(spellKind(entry->kind));
+    facts.params.emplace_back(spellKind(entry->kind));
     if (entry->reliesOnSingle)
       facts.reliesOnSingle.push_back(i);
     if (entry->enforcement != analysis::RequirementEnforcement::CallerContract)
@@ -185,8 +189,8 @@ FunctionInterface functionInterface(const clang::FunctionDecl &function,
   return facts;
 }
 
-DeclaredInterface declaredInterface(const clang::FunctionDecl &function,
-                                    const analysis::KindTable &kinds) {
+static DeclaredInterface declaredInterface(const clang::FunctionDecl &function,
+                                           const analysis::KindTable &kinds) {
   DeclaredInterface declared;
   const clang::FunctionDecl *latest = function.getMostRecentDecl();
   for (unsigned i = 0; i < latest->getNumParams(); ++i) {
@@ -217,8 +221,9 @@ DeclaredInterface declaredInterface(const clang::FunctionDecl &function,
 
 /// The declaration the link step blames: the first one, in source order,
 /// with a WeaveC annotation on it or its parameters, else the first one.
-const clang::FunctionDecl *blamedDeclaration(const clang::FunctionDecl &f,
-                                             const clang::SourceManager &sm) {
+static const clang::FunctionDecl *
+blamedDeclaration(const clang::FunctionDecl &f,
+                  const clang::SourceManager &sm) {
   const clang::FunctionDecl *blamed = nullptr;
   for (const clang::FunctionDecl *redecl : f.redecls()) {
     bool annotated = analysis::getAnnotations(*redecl).any();
@@ -233,7 +238,7 @@ const clang::FunctionDecl *blamedDeclaration(const clang::FunctionDecl &f,
 }
 
 /// The unit's function-pointer slots (§9.3), with local slots eliminated.
-SlotFacts slotFacts(const analysis::SlotCollection &slots) {
+static SlotFacts slotFacts(const analysis::SlotCollection &slots) {
   SlotFacts facts;
   facts.rows = slots.exported().rows();
   facts.unit = slots.unit();
@@ -244,8 +249,6 @@ SlotFacts slotFacts(const analysis::SlotCollection &slots) {
   facts.escapedStatics = rules.escapedStatics;
   return facts;
 }
-
-} // namespace
 
 /// §7.3 slot kinds of the fields of structs declared in user headers, and of
 /// the external pointer variables: what other units may store into.

@@ -30,6 +30,8 @@
 #include <algorithm>
 #include <map>
 #include <set>
+#include <string>
+#include <string_view>
 #include <utility>
 
 namespace weavec::frontend {
@@ -48,7 +50,7 @@ static std::string absoluteFrom(llvm::StringRef path, llvm::StringRef base) {
     if (joined.empty())
       std::ignore = llvm::sys::fs::current_path(joined);
     llvm::sys::path::append(joined, path);
-    absolute = joined;
+    absolute = std::move(joined);
   }
   llvm::sys::path::remove_dots(absolute, /*remove_dot_dot=*/true);
   return absolute.str().str();
@@ -129,13 +131,11 @@ void dumpProgramSlots(const core::SlotSolution &slots, llvm::raw_ostream &os) {
 // Step 3: declarations
 //===----------------------------------------------------------------------===//
 
-namespace {
-
 /// The member that defines `name` with external linkage, other than
 /// `except`.
-std::optional<std::size_t> definerOf(std::span<const ProgramMember> members,
-                                     const std::string &name,
-                                     std::size_t except) {
+static std::optional<std::size_t>
+definerOf(std::span<const ProgramMember> members, const std::string &name,
+          std::size_t except) {
   for (std::size_t m = 0; m < members.size(); ++m) {
     if (m == except)
       continue;
@@ -149,7 +149,8 @@ std::optional<std::size_t> definerOf(std::span<const ProgramMember> members,
 
 /// Whether the callee keeps a copy of argument `param` in memory the caller
 /// can reach after the call.
-bool storesArgument(const core::FunctionSummary &summary, std::uint32_t param) {
+static bool storesArgument(const core::FunctionSummary &summary,
+                           std::uint32_t param) {
   const core::SummaryPath root = core::SummaryPath::param(param);
   if (summary.effectOf(root).escaped)
     return true;
@@ -159,19 +160,19 @@ bool storesArgument(const core::FunctionSummary &summary, std::uint32_t param) {
   });
 }
 
-std::string quoted(const std::string &text) {
-  return "'" + text + "'";
+/// Not named `quoted`: with a `std::string_view` argument, argument-dependent
+/// lookup would also find `std::quoted`, which returns a stream manipulator.
+static std::string quotedName(std::string_view text) {
+  return "'" + std::string(text) + "'";
 }
 
 /// The spelling of parameter `index` in messages.
-std::string parameterName(const record::DeclaredInterface &declared,
-                          std::size_t index) {
+static std::string parameterName(const record::DeclaredInterface &declared,
+                                 std::size_t index) {
   if (index < declared.params.size() && !declared.params[index].name.empty())
-    return quoted(declared.params[index].name);
+    return quotedName(declared.params[index].name);
   return "parameter " + std::to_string(index + 1);
 }
-
-} // namespace
 
 namespace {
 
@@ -182,8 +183,10 @@ struct Finding {
   std::string done;
 };
 
+} // namespace
+
 /// §13.2 step 3 for one import against its definition.
-std::vector<Finding>
+static std::vector<Finding>
 contradictions(const record::ImportInterface &import,
                const analysis::ExportedFunction &function,
                const record::FunctionInterface *definition) {
@@ -213,9 +216,11 @@ contradictions(const record::ImportInterface &import,
         verb = "takes ownership of";
       else if (storesArgument(summary, index))
         verb = "stores";
-      if (!verb.empty())
+      if (!verb.empty()) {
+        verb.append(" ").append(name);
         findings.push_back(
-            Finding{.declared = *param.ownership, .done = verb + " " + name});
+            Finding{.declared = *param.ownership, .done = std::move(verb)});
+      }
     }
     if (!param.kind)
       continue;
@@ -256,14 +261,12 @@ contradictions(const record::ImportInterface &import,
   return findings;
 }
 
-core::SourceLocation absoluteLocation(core::SourceLocation location,
-                                      llvm::StringRef base) {
+static core::SourceLocation absoluteLocation(core::SourceLocation location,
+                                             llvm::StringRef base) {
   location.file = absoluteFrom(location.file, base);
   location.opaque = 0;
   return location;
 }
-
-} // namespace
 
 DeclarationCheck verifyDeclarations(std::span<const ProgramMember> members,
                                     llvm::StringRef cwd) {
@@ -292,8 +295,8 @@ DeclarationCheck verifyDeclarations(std::span<const ProgramMember> members,
             .severity = core::Severity::Error,
             .certainty = core::Certainty::Definite,
             .id = core::diag::AnnotationMismatch,
-            .message = quoted(name) + " is declared " + finding.declared +
-                       " here but its definition in " + quoted(file) + " " +
+            .message = quotedName(name) + " is declared " + finding.declared +
+                       " here but its definition in " + quotedName(file) + " " +
                        finding.done,
             .location = import.location
                             ? absoluteLocation(*import.location, member.cwd)
@@ -357,14 +360,12 @@ DeclarationCheck verifyDeclarations(std::span<const ProgramMember> members,
 // Step 5: exported requirements at cross-unit callers
 //===----------------------------------------------------------------------===//
 
-namespace {
-
 /// An extent term evaluated at one call, from the constants the caller's
 /// record kept for the arguments. `param n` reads argument `n`; a field
 /// root, or an argument that was not a constant, is unknown. Terms are
 /// mathematical integers, overflow-checked (§10.2).
-std::optional<std::int64_t> termAt(const core::ExtentTerm &term,
-                                   const record::ImportCall &call) {
+static std::optional<std::int64_t> termAt(const core::ExtentTerm &term,
+                                          const record::ImportCall &call) {
   if (term.isConstant())
     return term.offset;
   if (term.path->root != core::ExtentPath::Root::Param)
@@ -379,8 +380,8 @@ std::optional<std::int64_t> termAt(const core::ExtentTerm &term,
 /// Whether the requirement's guard holds at this call: a loop that runs
 /// zero times accesses nothing (§7.5 R2). None when it cannot be decided,
 /// which includes R3's comparison of two pointer parameters.
-std::optional<bool> guardHolds(const analysis::RequirementGuard &guard,
-                               const record::ImportCall &call) {
+static std::optional<bool> guardHolds(const analysis::RequirementGuard &guard,
+                                      const record::ImportCall &call) {
   const std::optional<std::int64_t> lhs = termAt(guard.lhs, call);
   const std::optional<std::int64_t> rhs = termAt(guard.rhs, call);
   if (!lhs || !rhs)
@@ -393,9 +394,9 @@ std::optional<bool> guardHolds(const analysis::RequirementGuard &guard,
 /// The bytes a requirement needs of the argument at this call. `ended-by`
 /// and `nul-terminated` are not decidable from the caller's record, so they
 /// stay unknown.
-std::optional<std::int64_t> neededBytes(const core::PointerKind &kind,
-                                        std::uint64_t element,
-                                        const record::ImportCall &call) {
+static std::optional<std::int64_t> neededBytes(const core::PointerKind &kind,
+                                               std::uint64_t element,
+                                               const record::ImportCall &call) {
   if (!core::hasExtent(kind.shape))
     return std::nullopt;
   const std::optional<std::int64_t> extent = termAt(kind.extent, call);
@@ -410,6 +411,8 @@ std::optional<std::int64_t> neededBytes(const core::PointerKind &kind,
   return llvm::checkedMul(*extent, static_cast<std::int64_t>(element));
 }
 
+namespace {
+
 /// One requirement decided at one call.
 struct Verdict {
   core::SiteOutcome outcome = core::SiteOutcome::Unresolved;
@@ -417,15 +420,26 @@ struct Verdict {
   std::optional<std::uint64_t> have = std::nullopt;
 };
 
-Verdict decideRequirement(const record::ExportedRequirement &requirement,
-                          const core::PointerKind &kind,
-                          const record::ImportCall &call) {
+/// How the visible calls decided one requirement.
+struct Tally {
+  std::uint64_t calls = 0;
+  std::uint64_t met = 0;
+  bool violated = false;
+};
+
+} // namespace
+
+static Verdict decideRequirement(const record::ExportedRequirement &requirement,
+                                 const core::PointerKind &kind,
+                                 const record::ImportCall &call) {
   const std::optional<analysis::RequirementGuard> guard =
       requirement.guard ? analysis::RequirementGuard::parse(*requirement.guard)
                         : std::nullopt;
-  const std::optional<bool> holds =
-      requirement.guard ? (guard ? guardHolds(*guard, call) : std::nullopt)
-                        : std::optional(true);
+  // No guard states no condition, so the requirement always applies; a
+  // guard that would not parse leaves it undecided.
+  std::optional<bool> holds = true;
+  if (requirement.guard)
+    holds = guard ? guardHolds(*guard, call) : std::nullopt;
   if (holds == false)
     return Verdict{.outcome = core::SiteOutcome::Proven};
   const std::optional<std::int64_t> need =
@@ -441,7 +455,7 @@ Verdict decideRequirement(const record::ExportedRequirement &requirement,
   // question, which §7.5 never trusts; the extent stays undecided here.
   if (argument.null || !argument.bytes)
     return Verdict{.outcome = core::SiteOutcome::Unresolved, .need = need};
-  if (*argument.bytes >= static_cast<std::uint64_t>(*need))
+  if (std::cmp_greater_equal(*argument.bytes, *need))
     return Verdict{.outcome = core::SiteOutcome::Proven,
                    .need = need,
                    .have = argument.bytes};
@@ -458,19 +472,10 @@ Verdict decideRequirement(const record::ExportedRequirement &requirement,
 /// Whether callers outside the members can reach the definition: a
 /// requirement is then never discharged, however the visible callers
 /// decide it.
-bool reachableFromOutside(const analysis::ExportedFunction &function,
-                          const LinkShape &shape) {
+static bool reachableFromOutside(const analysis::ExportedFunction &function,
+                                 const LinkShape &shape) {
   return function.addressTaken || !shape.executable || shape.exportDynamic;
 }
-
-/// How the visible calls decided one requirement.
-struct Tally {
-  std::uint64_t calls = 0;
-  std::uint64_t met = 0;
-  bool violated = false;
-};
-
-} // namespace
 
 RequirementCheck verifyRequirements(std::span<const ProgramMember> members,
                                     const LinkShape &shape) {
@@ -514,7 +519,7 @@ RequirementCheck verifyRequirements(std::span<const ProgramMember> members,
           if (verdict.have)
             decision.have = std::to_string(*verdict.have) + " bytes";
           const std::string what =
-              quoted(name) + " requires " + kind->toString() + " of " +
+              quotedName(name) + " requires " + kind->toString() + " of " +
               parameterName(import.declared, requirement.param) +
               " from its callers";
           switch (verdict.outcome) {
@@ -529,7 +534,7 @@ RequirementCheck verifyRequirements(std::span<const ProgramMember> members,
             // the requirement needed and what the call gave.
             tally[r].violated = true;
             decision.decision = core::FacetDecision::violation(
-                quoted(name) + " accesses " +
+                quotedName(name) + " accesses " +
                 decision.need.value_or("more bytes") + " of the argument for " +
                 parameterName(import.declared, requirement.param) +
                 ", which is " + decision.have.value_or("shorter") + " long");
@@ -594,14 +599,12 @@ std::string allocatorWarning(std::span<const ProgramMember> members,
 // Step 6: the program ledger
 //===----------------------------------------------------------------------===//
 
-namespace {
-
-void absolutize(core::SourceLocation &location, llvm::StringRef base) {
+static void absolutize(core::SourceLocation &location, llvm::StringRef base) {
   location.file = absoluteFrom(location.file, base);
   location.opaque = 0;
 }
 
-void absolutize(core::UnitLedger &unit, llvm::StringRef base) {
+static void absolutize(core::UnitLedger &unit, llvm::StringRef base) {
   unit.source = absoluteFrom(unit.source, base);
   for (core::FunctionLedger &function : unit.functions) {
     function.file = absoluteFrom(function.file, base);
@@ -614,13 +617,15 @@ void absolutize(core::UnitLedger &unit, llvm::StringRef base) {
   }
 }
 
-void absolutize(core::LedgerDiagnostic &diagnostic, llvm::StringRef base) {
+static void absolutize(core::LedgerDiagnostic &diagnostic,
+                       llvm::StringRef base) {
   absolutize(diagnostic.location, base);
   for (core::LedgerNote &note : diagnostic.notes)
     absolutize(note.location, base);
 }
 
-core::LedgerDiagnostic ledgerDiagnostic(const core::Diagnostic &diagnostic) {
+static core::LedgerDiagnostic
+ledgerDiagnostic(const core::Diagnostic &diagnostic) {
   core::LedgerDiagnostic entry;
   entry.id = std::string(diagnostic.id);
   entry.severity = diagnostic.severity;
@@ -638,7 +643,7 @@ core::LedgerDiagnostic ledgerDiagnostic(const core::Diagnostic &diagnostic) {
 
 /// A member that was not run keeps what its compile reported, which its
 /// record names without messages.
-std::vector<core::LedgerDiagnostic>
+static std::vector<core::LedgerDiagnostic>
 reportedDiagnostics(const ProgramMember &member) {
   std::vector<core::LedgerDiagnostic> diagnostics;
   for (const ReportedDiagnostic &reported : member.payload.reported) {
@@ -656,8 +661,8 @@ reportedDiagnostics(const ProgramMember &member) {
   return diagnostics;
 }
 
-core::FunctionLedger *functionNamed(core::UnitLedger &unit,
-                                    const std::string &name) {
+static core::FunctionLedger *functionNamed(core::UnitLedger &unit,
+                                           const std::string &name) {
   const auto it =
       std::ranges::find_if(unit.functions, [&](const core::FunctionLedger &f) {
         return f.name == name;
@@ -665,14 +670,14 @@ core::FunctionLedger *functionNamed(core::UnitLedger &unit,
   return it == unit.functions.end() ? nullptr : &*it;
 }
 
-constexpr std::array<core::Facet, 3> RecordFacets{
+static constexpr std::array<core::Facet, 3> RecordFacets{
     core::Facet::Spatial, core::Facet::Null, core::Facet::Assertion};
 
 /// §13.2 step 6: the spatial, null and assertion facets of `rows`, which
 /// decided the emitted code, over those of the run. A function whose sites
 /// the run does not match takes the record's rows whole.
-void copyRecordFacets(core::UnitLedger &unit,
-                      std::span<const record::FunctionRows> rows) {
+static void copyRecordFacets(core::UnitLedger &unit,
+                             std::span<const record::FunctionRows> rows) {
   for (const record::FunctionRows &recorded : rows) {
     const core::UnitLedger compact = record::unitLedgerOf(
         std::span<const record::FunctionRows>(&recorded, 1));
@@ -726,8 +731,8 @@ void copyRecordFacets(core::UnitLedger &unit,
 /// §7.3, §13.2 step 5: a cross-unit call whose argument for a
 /// `reliesOnSingle` parameter was not Single-valid gets the Call site's
 /// `unresolved(unknown-extent)` spatial row. Returns the rows added.
-std::uint64_t addRelianceRows(core::Ledger &ledger,
-                              std::span<const ProgramMember> members) {
+static std::uint64_t addRelianceRows(core::Ledger &ledger,
+                                     std::span<const ProgramMember> members) {
   std::uint64_t added = 0;
   for (std::size_t m = 0; m < members.size(); ++m) {
     for (const auto &[name, import] : members[m].payload.facts.imports) {
@@ -757,7 +762,7 @@ std::uint64_t addRelianceRows(core::Ledger &ledger,
         core::FacetRecord &spatial = site->addFacet(core::Facet::Spatial);
         spatial.decide(core::FacetDecision::unresolvedFor(
             core::UnresolvedReason::UnknownExtent,
-            quoted(name) + " relies on the argument for " +
+            quotedName(name) + " relies on the argument for " +
                 parameterName(import.declared, *unsingle) +
                 " pointing to at least one element, which is not known "
                 "here"));
@@ -771,7 +776,8 @@ std::uint64_t addRelianceRows(core::Ledger &ledger,
 /// Whether every call to `name` inside its own unit establishes what the
 /// callee needs: a spatial facet that is unresolved or a violation there
 /// leaves the requirement assumed, so it is not discharged (§13.2 step 5).
-bool localCallersMeet(const core::UnitLedger &unit, const std::string &name) {
+static bool localCallersMeet(const core::UnitLedger &unit,
+                             const std::string &name) {
   for (const core::FunctionLedger &function : unit.functions)
     for (const core::Site &site : function.sites) {
       if (site.kind != core::SiteKind::Call || site.callee != name)
@@ -788,8 +794,9 @@ bool localCallersMeet(const core::UnitLedger &unit, const std::string &name) {
 /// §13.2 step 5: the rows `verifyRequirements` decided, at the callers'
 /// Call sites, and the `trusted(caller-contract)` rows its verdicts
 /// discharge in the definitions.
-void addRequirementRows(core::Ledger &ledger, const RequirementCheck &check,
-                        std::span<const core::Ledger *const> runs) {
+static void addRequirementRows(core::Ledger &ledger,
+                               const RequirementCheck &check,
+                               std::span<const core::Ledger *const> runs) {
   for (const RequirementDecision &row : check.decisions) {
     if (row.member >= ledger.units.size())
       continue;
@@ -834,8 +841,9 @@ void addRequirementRows(core::Ledger &ledger, const RequirementCheck &check,
 /// in every function that calls the function (in the declaring member), and
 /// in every function that calls one of those, transitively, the proven and
 /// trusted temporal facets become `unresolved(unknown-callee)`.
-void downgradeContradicted(core::Ledger &ledger,
-                           std::span<const Contradiction> contradictions) {
+static void
+downgradeContradicted(core::Ledger &ledger,
+                      std::span<const Contradiction> contradictions) {
   using Key = std::pair<std::size_t, std::string>;
   std::map<Key, std::string> tainted;
   // External functions some unit calls by name, with the detail to use.
@@ -873,11 +881,11 @@ void downgradeContradicted(core::Ledger &ledger,
             continue;
           const auto local = tainted.find(Key{u, site.callee});
           const auto external = taintedExternal.find(site.callee);
-          const std::string *detail =
-              local != tainted.end()
-                  ? &local->second
-                  : (external != taintedExternal.end() ? &external->second
-                                                       : nullptr);
+          const std::string *detail = nullptr;
+          if (local != tainted.end())
+            detail = &local->second;
+          else if (external != taintedExternal.end())
+            detail = &external->second;
           if (detail != nullptr && taint(u, function, *detail)) {
             changed = true;
             break;
@@ -907,8 +915,8 @@ void downgradeContradicted(core::Ledger &ledger,
 /// §13.2 step 1: with an input without a record in the link, a call into a
 /// function no record defines is `trusted(external-unit)`, not an unknown
 /// callee.
-void trustExternalUnits(core::Ledger &ledger,
-                        std::span<const ProgramMember> members) {
+static void trustExternalUnits(core::Ledger &ledger,
+                               std::span<const ProgramMember> members) {
   std::set<std::string> defined;
   for (const ProgramMember &member : members)
     for (const auto &[name, function] : member.payload.exports.functions)
@@ -927,7 +935,7 @@ void trustExternalUnits(core::Ledger &ledger,
           continue;
         temporal->decision = core::FacetDecision::trustedFor(
             core::TrustReason::ExternalUnit,
-            quoted(site.callee) +
+            quotedName(site.callee) +
                 " is defined by a link input without a WeaveC record");
       }
     }
@@ -935,10 +943,10 @@ void trustExternalUnits(core::Ledger &ledger,
 }
 
 /// §13.2 step 5: the A1 and A3 counts the records support.
-core::Assumptions assumptionsOf(std::span<const ProgramMember> members,
-                                const LinkShape &shape,
-                                std::uint64_t relianceRows,
-                                std::uint64_t verified) {
+static core::Assumptions assumptionsOf(std::span<const ProgramMember> members,
+                                       const LinkShape &shape,
+                                       std::uint64_t relianceRows,
+                                       std::uint64_t verified) {
   core::Assumptions assumptions;
   for (const ProgramMember &member : members) {
     for (const auto &[name, function] : member.payload.exports.functions) {
@@ -985,8 +993,6 @@ core::Assumptions assumptionsOf(std::span<const ProgramMember> members,
   assumptions.a3.inputsWithoutRecords = shape.inputsWithoutRecords;
   return assumptions;
 }
-
-} // namespace
 
 core::Ledger composeProgramLedger(const ProgramLedgerInput &input) {
   core::Ledger ledger;
@@ -1064,7 +1070,7 @@ core::Ledger composeProgramLedger(const ProgramLedgerInput &input) {
 //===----------------------------------------------------------------------===//
 
 struct LinkDiagnosticPrinter::Engines {
-  explicit Engines(const std::string &prefix)
+  explicit Engines(std::string prefix)
       : locatedPrinter(llvm::errs(), options),
         located(llvm::makeIntrusiveRefCnt<clang::DiagnosticIDs>(), options,
                 &locatedPrinter, /*ShouldOwnClient=*/false),
@@ -1075,7 +1081,7 @@ struct LinkDiagnosticPrinter::Engines {
         locatedSink(located), unlocatedSink(unlocated) {
     located.setSourceManager(&sources);
     locatedPrinter.BeginSourceFile(language, nullptr);
-    unlocatedPrinter.setPrefix(prefix);
+    unlocatedPrinter.setPrefix(std::move(prefix));
   }
   Engines(const Engines &) = delete;
   Engines &operator=(const Engines &) = delete;
@@ -1096,7 +1102,7 @@ struct LinkDiagnosticPrinter::Engines {
 };
 
 LinkDiagnosticPrinter::LinkDiagnosticPrinter(std::string prefix)
-    : engines(std::make_unique<Engines>(prefix)) {}
+    : engines(std::make_unique<Engines>(std::move(prefix))) {}
 
 LinkDiagnosticPrinter::~LinkDiagnosticPrinter() = default;
 

@@ -64,8 +64,8 @@ MoveTracker::markMoved(PlaceId place, MoveReason reason,
 }
 
 const MoveTracker::Store &MoveTracker::tallies() const {
-  static const Store none;
-  return records ? *records : none;
+  static const Store Empty;
+  return records ? *records : Empty;
 }
 
 MoveTracker::Store &MoveTracker::edit() {
@@ -211,8 +211,8 @@ void MoveTracker::reinitializeAll(std::vector<PlaceId> places) {
   Store &store = edit();
   for (auto bucket = store.buckets.begin(); bucket != store.buckets.end();) {
     const auto &entries = bucket->second->entries;
-    if (std::none_of(entries.begin(), entries.end(),
-                     [&](const Entry &entry) { return named(entry.first); })) {
+    if (std::ranges::none_of(
+            entries, [&](const Entry &entry) { return named(entry.first); })) {
       ++bucket;
       continue;
     }
@@ -404,9 +404,12 @@ static bool joinRecord(MoveRecord &mine, const MoveRecord &record) {
   // it cannot lift the other side's `local` (RFC 0030 §9.4/§5.1). With both
   // sides known (or both unknown) the flag joins by conjunction: the record
   // may be exported as soon as one path reached it through an owning name.
-  const bool local = mine.unknownOrigin != record.unknownOrigin
-                         ? (mine.unknownOrigin ? record.local : mine.local)
-                         : (mine.local && record.local);
+  const auto joinLocal = [&] {
+    if (mine.unknownOrigin == record.unknownOrigin)
+      return mine.local && record.local;
+    return mine.unknownOrigin ? record.local : mine.local;
+  };
+  const bool local = joinLocal();
   const bool unknownOrigin = mine.unknownOrigin && record.unknownOrigin;
   const bool callback = mine.callback && record.callback;
   if (mine.allPaths != allPaths || mine.conditional != conditional ||
@@ -503,7 +506,7 @@ static void probeJoin(const MoveEntries &mine, const MoveEntries &theirs,
 /// The guarded records of a bucket both sides share, joined with
 /// themselves (see `JoinProbe`).
 static bool sharedGuardsChange(const MoveEntries &entries) {
-  return std::any_of(entries.begin(), entries.end(), [](const auto &entry) {
+  return std::ranges::any_of(entries, [](const auto &entry) {
     if (entry.second.guard.trivial())
       return false;
     MoveRecord joined = entry.second;

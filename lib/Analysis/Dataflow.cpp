@@ -7457,7 +7457,12 @@ std::string FunctionDataflow::placeClassOf(core::PlaceId place) const {
       const std::string member = field->getNameAsString();
       if (name.empty() || member.empty())
         return {};
-      return record->getKindName().str() + " " + name + "." + member;
+      std::string spelled = record->getKindName().str();
+      spelled += ' ';
+      spelled += name;
+      spelled += '.';
+      spelled += member;
+      return spelled;
     }
     if (const auto *var = dyn_cast_or_null<VarDecl>(decl);
         var != nullptr && var->hasGlobalStorage())
@@ -10430,9 +10435,10 @@ void FunctionDataflow::recordConsume(core::PlaceId target,
     else
       state.consumedOn.insert_or_assign(*path, guard);
   } else if (const auto it = state.consumedOn.find(*path);
-             it != state.consumedOn.end()) {
-    if (guard.trivial() || (it->second.join(guard) && it->second.trivial()))
-      state.consumedOn.erase(it);
+             it != state.consumedOn.end() &&
+             (guard.trivial() ||
+              (it->second.join(guard) && it->second.trivial()))) {
+    state.consumedOn.erase(it);
   }
 }
 

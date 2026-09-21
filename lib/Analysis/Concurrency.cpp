@@ -155,9 +155,9 @@ private:
                                     const auto &self) -> void {
       if (stmt == nullptr)
         return;
-      if (const auto *ref = dyn_cast<DeclRefExpr>(stmt))
-        if (isa<FunctionDecl>(ref->getDecl()))
-          addTarget(ref);
+      if (const auto *ref = dyn_cast<DeclRefExpr>(stmt);
+          ref != nullptr && isa<FunctionDecl>(ref->getDecl()))
+        addTarget(ref);
       for (const Stmt *child : stmt->children())
         self(child, self);
     };

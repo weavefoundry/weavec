@@ -57,6 +57,7 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -110,14 +111,15 @@ struct HelperSignature {
   llvm::StringLiteral name;
   Type result = Type::Void;
   /// At most five parameters; `Type::Void` ends the list.
-  Type params[5] = {Type::Void, Type::Void, Type::Void, Type::Void, Type::Void};
+  std::array<Type, 5> params = {Type::Void, Type::Void, Type::Void, Type::Void,
+                                Type::Void};
   /// A check helper: report mode appends (file, line, column).
   bool reports = false;
 };
 
 class CheckEmitter {
 public:
-  CheckEmitter(clang::Sema &sema, CheckEmitterOptions options = {});
+  explicit CheckEmitter(clang::Sema &sema, CheckEmitterOptions options = {});
   ~CheckEmitter();
   CheckEmitter(const CheckEmitter &) = delete;
   CheckEmitter &operator=(const CheckEmitter &) = delete;
