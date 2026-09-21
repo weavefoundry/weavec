@@ -17,6 +17,14 @@
 // RFC 0017: the expression uses entry cap, before vec_grow updates the field.
 // DUMP-NEXT: heap param 0 *.items complete{result = fresh(free) extent expr i32,c,8;i32,v,706172616d2030202a2e636170;i32,add;u64,cast;u64,c,4;u64,mul scale 1 plus 0}
 // DUMP: function 'vec_reset': param 0 *.items: written,freed(free),replaced; stores{param 0 *.items = null} returns{} requires{param 0}
+// The summary goes to stderr and the dump to stdout, and `2>&1` joins them on
+// one descriptor. The summary must land after the whole dump, never inside a
+// dump line: only draining the dump stream first orders two buffered streams
+// over one descriptor (LedgerOutput.cpp, printSummary). Without that the point
+// they interleave at is the point some buffer happened to fill, which differs
+// between libcs -- on glibc it fell inside the 'vec_grow' line above.
+// DUMP: program slots:
+// DUMP: weavec: program program: {{[0-9]+}} sites in 2 units:
 
 int replaced_copy(struct vec *v) {
   int *old = v->items;

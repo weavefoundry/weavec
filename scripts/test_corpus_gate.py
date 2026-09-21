@@ -673,15 +673,22 @@ FAKE_CC = r"""#!PYTHON
 # With FAKE_TRAP set, trap and verify builds get -DWEAVEC_FAKE_TRAP and report
 # builds -DWEAVEC_FAKE_REPORT, which the test program turns into a trap or a
 # report-mode line.
+#
+# The real weavec-cc is a Clang driver, so corpus-gate.py hands it Clang's own
+# options (-ferror-limit=) alongside the -fweavec ones. The system cc here is
+# whatever /usr/bin/cc is: Clang on macOS but GCC on Linux, which errors out on
+# an unknown -f option. This stand-in therefore consumes the Clang-only options
+# as the real driver would, and forwards only what any C compiler accepts.
 import json, os, sys
 args = sys.argv[1:]
+driver_only = ("-fweavec", "-fno-weavec", "-Wno-error=weavec", "-ferror-limit=")
 checks, ledger, rest = "trap", None, []
 for a in args:
     if a.startswith("-fweavec-checks="):
         checks = a.split("=", 1)[1]
     elif a.startswith("-fweavec-ledger="):
         ledger = a.split("=", 1)[1]
-    elif not a.startswith(("-fweavec", "-fno-weavec", "-Wno-error=weavec")):
+    elif not a.startswith(driver_only):
         rest.append(a)
 sources = [a for a in rest if a.endswith(".c")]
 out = rest[rest.index("-o") + 1] if "-o" in rest else "a.out"
@@ -804,6 +811,11 @@ class FullEndToEndTest(unittest.TestCase):
         status, output = self.run_gate("--full", "--update")
         self.assertEqual(status, 1, output)
         self.assertIn("untriaged possible double-free", output)
+        # --update writes nothing once an analysis, build or run has failed, and
+        # the status is 1 either way. Assert the write here, with the gate's log:
+        # without it the read below dies on a FileNotFoundError naming no reason.
+        self.assertTrue(self.expected.exists(),
+                        f"--update wrote no {self.expected.name}; gate output:\n{output}")
         configs = json.loads(self.expected.read_text())["platforms"][gate.platform_key()]["configs"]
         self.assertEqual(configs["built"]["traps"], 0)
         self.assertEqual(configs["built"]["units"]["warnings"], 1)

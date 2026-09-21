@@ -343,7 +343,7 @@ static void collectCalls(const analysis::SiteIndex &sites,
             if (const auto value = argument->getIntegerConstantExpr(context))
               if (const std::optional<std::int64_t> number =
                       value->tryExtValue())
-                evidence.value = *number;
+                evidence.value = number;
         }
         entry.evidence.push_back(evidence);
       }

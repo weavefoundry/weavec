@@ -22,6 +22,7 @@
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/VirtualFileSystem.h"
+#include "llvm/Support/raw_ostream.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -154,6 +155,17 @@ static bool writeFor(const core::Ledger &ledger, llvm::StringRef artifact,
 static void printSummary(const core::Ledger &ledger, llvm::StringRef name,
                          const LedgerOutputOptions &options,
                          llvm::raw_ostream &summaryStream) {
+  // The summary is one whole line on `summaryStream` (stderr), while the
+  // analysis dump of `--dump-analysis` (`-fweavec-dump-analysis`) goes to the
+  // buffered `llvm::outs()`. A caller that joins the two onto one file
+  // descriptor -- `2>&1 | FileCheck`, a terminal, a log -- sees two
+  // independently buffered streams over one descriptor, which interleave
+  // wherever a buffer happens to fill rather than at a line boundary. The
+  // buffer size follows the destination's `st_blksize`, so on glibc, where a
+  // pipe reports 4 KiB, the flush lands mid-line and the summary is written
+  // into the middle of a dump line. Draining the dump stream first fixes the
+  // order: the whole dump, then the summary.
+  llvm::outs().flush();
   const core::SummaryLineOptions line{
       .checksEnforced = options.checksEnforced &&
                         ledger.config.checks != core::ChecksMode::None};

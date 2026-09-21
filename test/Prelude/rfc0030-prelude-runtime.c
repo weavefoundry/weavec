@@ -60,6 +60,13 @@
 // LIBRARY: library: 0 failures
 // LIBREPORT: weavec: runtime check failed: index at library.c:12:34
 
+// glibc declares posix_memalign only under a POSIX feature test, and -std=c11
+// asks for strict ISO C. Darwin declares it either way and uses
+// _DARWIN_C_SOURCE for its own extensions, so this stays out of its headers.
+#if !defined(__APPLE__)
+#define _POSIX_C_SOURCE 200112L
+#endif
+
 #include <errno.h>
 #include <signal.h>
 #include <stdint.h>
@@ -72,7 +79,9 @@
 #define USABLE(p) malloc_size(p)
 #else
 #include <malloc.h>
-#define USABLE(p) malloc_usable_size(p)
+// glibc takes `void *` where Darwin takes `const void *`; the callers below
+// only read through the pointer, and the usable size does not depend on it.
+#define USABLE(p) malloc_usable_size((void *)(p))
 #endif
 
 // The report family takes the site; the trap family does not.

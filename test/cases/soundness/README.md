@@ -34,10 +34,19 @@ WEAVEC_GOLDEN_DIR=<golden> scripts/run-cases.py --legacy --filter 'soundness/**'
   projected reasons are in the table; the markers do not pin them.
 - `NEUTRALISED: zero-init` marks 08 and 32 (uninitialised scalars, outside
   every facet).
-- `ASAN` marks the 75 bug probes the ASan oracle confirms
+- `ASAN` marks the 74 bug probes the ASan oracle confirms
   (`-fsanitize=address,array-bounds` with `detect_stack_use_after_return=1`)
-  and every correct twin. The ten bug probes without it are listed with the
-  reason in the table.
+  and every correct twin. The eleven bug probes without it are listed with the
+  reason in the table. Ten of those reasons are inherent to the probe; the
+  eleventh, `25c_static_result_bug`, is the one whose bug is libc-dependent.
+  It held its `ASAN` marker until PR #37, where it failed on Linux: Darwin's
+  `setenv` releases the entry it replaces when the new value does not fit, so
+  ASan sees a heap-use-after-free, but glibc never frees a published
+  `"NAME=value"` string (`__add_to_environ` overwrites the slot and keeps the
+  old string), precisely because callers may still hold a `getenv` result, so
+  there is no use-after-free on Linux to report. The `BUG` marker stays, and
+  the probe still counts towards G4: WeaveC cannot know which libc the program
+  will be linked against, so it must report the read either way.
 - `RUN-INPUT` gives the arguments that reach the bug (06, 07, 07b, 18, 19,
   29, 31, 34, 49, c09) and, for the twins, the same inputs.
 - `UNITS`: 38 links `38_extern_impl.c`, which the link step must verify.
@@ -113,7 +122,7 @@ possible leak they cannot yet shake: `03_double_free_loop_ok` and
 | `24_flexible_array_bug` | 11: out-of-bounds | SILENT | trap | heap-buffer-overflow @11 |
 | `25_strtok_static_bug` | 9: use-after-free | SILENT | definite error | — (strtok reads the freed buffer inside libc) |
 | `25b_string_literal_write_bug` | 6: out-of-bounds | SILENT | definite error | BUS @6 |
-| `25c_static_result_bug` | 9: use-after-free | SILENT | possible warning | heap-use-after-free @9 |
+| `25c_static_result_bug` | 16: use-after-free | SILENT | possible warning | — (libc-dependent: heap-use-after-free @16 on Darwin, nothing on glibc) |
 | `26_container_uaf_bug` | 14: `MISS` (was 8: use-after-free) | MISLABEL | still reported | heap-use-after-free @14 |
 | `27_struct_return_dangling_bug` | 7: lifetime-too-short | CAUGHT | still reported | stack-use-after-return @11 |
 | `28_free_non_heap_bug` | 7: invalid-release | CAUGHT | still reported | attempting free @3 |

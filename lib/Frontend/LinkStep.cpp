@@ -405,7 +405,7 @@ static std::optional<std::int64_t> neededBytes(const core::PointerKind &kind,
   if (*extent <= 0)
     return 0;
   if (kind.shape == core::PointerShape::Sized)
-    return *extent;
+    return extent;
   if (kind.shape != core::PointerShape::Counted || element == 0)
     return std::nullopt;
   return llvm::checkedMul(*extent, static_cast<std::int64_t>(element));

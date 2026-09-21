@@ -534,7 +534,7 @@ private:
   }
   static std::optional<std::uint64_t> unsignedOf(const llvm::json::Value &v) {
     if (const auto value = v.getAsUINT64())
-      return *value;
+      return value;
     if (const auto value = v.getAsInteger(); value && *value >= 0)
       return static_cast<std::uint64_t>(*value);
     return std::nullopt;
@@ -802,7 +802,7 @@ bool PayloadReader::readImport(const llvm::json::Object &json,
         const std::optional<std::int64_t> number = value->getAsInteger();
         if (!number)
           return fail(at2 + ".value", "expected an integer");
-        argument.value = *number;
+        argument.value = number;
       }
       call.evidence.push_back(argument);
     }
