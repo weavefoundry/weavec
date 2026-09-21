@@ -320,7 +320,7 @@
         "sds": {
           "units": {
             "errors": 0,
-            "warnings": 14,
+            "warnings": 6,
             "ledger": {
               "sites": 464,
               "proven": 447,

@@ -143,7 +143,8 @@ Rules the grammar leaves implicit, as the runner enforces them:
    collected: each `TRAP` must be matched by line and template, and a failure on
    any other line fails the case. When no run is possible (`TOOL`,
    `--no-run`, `--no-emission`, no `main`), a `TRAP` is matched instead by a
-   *checked* facet at its line whose `check.template` is the template; when the
+   facet at its line carrying a check whose `check.template` is the template —
+   `checked`, or `violation` for a lowered definite violation (§3.4); when the
    build stopped at an error, a `TRAP` on the line of a `BUG` satisfied by that
    error is not required.
 5. **ASan oracle** (`--asan` or `ASAN`). All units are built with
@@ -177,8 +178,9 @@ A `BUG` marker is satisfied by, in order:
 - a matched `TRAP` on the same line whose template enforces the id's facet
   (null: `nonnull`; spatial: `index`, `span`, `len`, `disjoint`; assertion:
   `assert`) or is `violation` (a lowered violation, any facet);
-- with `--no-emission`, `TOOL` or `--no-run`, a *checked* matching facet on the
-  line, for null and spatial ids (gate G3's rule);
+- with `--no-emission`, `TOOL` or `--no-run`, a matching facet on the line that
+  carries a check, for null and spatial ids (gate G3's rule): `checked`, or
+  `violation` for a definite violation §3.4 lowered and still guarded;
 - a matched `UNRESOLVED`, `TRUSTED` or `NOT-PROVEN` marker on the same line:
   the author accepts a ledger row as the report of this bug;
 - a `NEUTRALISED` marker on the line, when zero-initialisation is in effect

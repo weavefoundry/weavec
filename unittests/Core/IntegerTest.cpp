@@ -199,7 +199,11 @@ TEST(IntegerRanges, CanonicalParsingAndJoins) {
   EXPECT_EQ(a.widened(b),
             IntegerRange::between(integer(I8, -4), integer(I8, 127)));
   EXPECT_EQ(a.widened(a), a);
-  EXPECT_TRUE(IntegerRange::fromRanks(U8, {{1, 1}, {3, 3}, {5, 5}}).isFull());
+  // More pieces than the representation keeps collapse to their hull, not to
+  // the whole type: `{1, 3, 5}` still excludes 0 and everything above 5.
+  const auto pieces = IntegerRange::fromRanks(U8, {{1, 1}, {3, 3}, {5, 5}});
+  EXPECT_FALSE(pieces.isFull());
+  EXPECT_EQ(pieces, IntegerRange::between(integer(U8, 1), integer(U8, 5)));
   for (const auto *const text :
        {"u65:0-1", "u8:0-256", "u8:3-2", "u8:1-1,2-2", "u8:1-1,3-3,5-5",
         "u8:01-2", "u8:1-2,", "u8:0-1junk"})

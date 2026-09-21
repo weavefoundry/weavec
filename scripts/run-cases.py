@@ -1059,13 +1059,18 @@ def evaluate(case: Case, ev: Evidence) -> dict:
             stopped = any(d.severity == "error" and d.id == bug.value[0] for bug in case.bugs
                           if located(bug.file, bug.line) == at for d in index["diagnostics"].get(at, []))
             if ev.ledger_proxy and ledger_available:
+                # A guarded site carries a check. Section 3.4 lowers a definite
+                # violation to a warning but still guards it, and its row keeps
+                # the outcome `violation`, so the check, not the outcome, is
+                # what stands in for the run here.
                 ok = stopped or any(
-                    rec.get("outcome") == "checked" and (rec.get("check") or {}).get("template") == trap.value
+                    rec.get("outcome") in ("checked", "violation")
+                    and (rec.get("check") or {}).get("template") == trap.value
                     for r in index["rows"].get(at, []) for facet in r.facets
                     for rec in facet_records(r, facet))
                 if not ok:
-                    failures.append(f"{loc(trap)}: TRAP {trap.value}: no checked facet with that "
-                                    f"template in the ledger")
+                    failures.append(f"{loc(trap)}: TRAP {trap.value}: no facet at that line carries "
+                                    f"a check with that template in the ledger")
             else:
                 ok = False
                 if not stopped:

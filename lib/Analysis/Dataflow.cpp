@@ -569,6 +569,23 @@ core::AnalysisState FunctionDataflow::initialState() {
   for (const auto *param : function.parameters())
     if (param->getType()->isVariablyModifiedType())
       captureVariableArray(builder.placeForVar(*param), *param, state);
+  // RFC 0030 §11: a local whose declaration a jump can bypass holds garbage
+  // from entry, not a zero, because the declaration is where the
+  // initialisation would have run (`switch (k) { int *p; case 1: *p; }`).
+  // The statement, when a path does reach it, marks the same fact again;
+  // a path that jumps past it keeps this one.
+  if (const Stmt *body = function.getBody(); body != nullptr)
+    for (const VarDecl *var : bypassedDeclarations(*body)) {
+      bypassedDecls.insert(var);
+      if (!isUninitializedLocal(*var))
+        continue;
+      const core::PlaceId place = builder.placeForVar(*var);
+      const core::SourceLocation where = locate(var->getLocation());
+      if (var->getType()->isPointerType())
+        state.moves.markMoved(place, core::MoveReason::Uninitialized, where);
+      else if (const RecordDecl *record = var->getType()->getAsRecordDecl())
+        markUninitializedFields(place, *record, where, state);
+    }
   return state;
 }
 
@@ -1296,6 +1313,16 @@ void FunctionDataflow::checkOverwrite(core::PlaceId dest, const Expr &at,
                                       core::AnalysisState &state) {
   if (!state.resources.holds(dest))
     return;
+  // RFC 0030 §7.4: the alternative state of a weakened array write says what
+  // `a[k]` would hold had the store to `a[i]` gone there. It is the engine's
+  // device for an index it cannot resolve, not a path of the program: the
+  // cell loses what it held in that alternative, and the join leaves it
+  // *may*-owned, but a store that may never have happened is not a leak to
+  // report. `for (i) a[i] = malloc(n);` would otherwise name every cell.
+  if (weakeningArrayWrite) {
+    state.resources.clear(dest);
+    return;
+  }
   checkLeaks(
       {dest}, [dest](core::PlaceId place) { return place == dest; },
       LeakForm::Overwritten, locate(at), state);
@@ -4592,6 +4619,15 @@ void FunctionDataflow::applySummary(const CallExpr &call,
     }
   }
 
+  //    RFC 0030 §7.4: a cleanup loop the callee ran (`for (i) free(v[i]);`)
+  //    walks the container before anything the call frees, and the container
+  //    is one of the things it may free (`free_all` ends with `free(v)`).
+  //    Applying the range after the consumption below would read `v` as the
+  //    same call had already freed it and report a use after free of every
+  //    correct caller; a summary records no order between its effects, so
+  //    the range goes first, which is the order a correct callee has.
+  applyArrayReleases(call, summary, state);
+
   // 1. Consumption: the arguments themselves, the caller's memory below them
   //    (`free(b->data)` in the callee) and globals, deepest path first so a
   //    caller's copy of a freed field is marked before the object holding
@@ -4796,7 +4832,6 @@ void FunctionDataflow::applySummary(const CallExpr &call,
           localEvents.emplace_back(target, before->second);
       }
   notePendingOutcome(call, summary, consumedTargets, std::move(localEvents));
-  applyArrayReleases(call, summary, state);
 
   //    A callee that overwrote an object (`memcpy(root, &tmp, n)`) leaves
   //    nothing known about what lies below it (RFC 0006, *`written` forgets
@@ -7634,6 +7669,13 @@ FunctionDataflow::temporalDecisionFor(const core::MoveRecord &record,
           : core::UnresolvedReason::MayReleased);
 }
 
+bool FunctionDataflow::declarationBypassed(core::PlaceId place) {
+  if (bypassedDecls.empty())
+    return false;
+  const VarDecl *variable = builder.varForPlace(places.root(place));
+  return variable != nullptr && bypassedDecls.contains(variable);
+}
+
 void FunctionDataflow::reportUseOfMoved(core::PlaceId used, const MovedHit &hit,
                                         const Expr &at) {
   const core::Certainty certainty =
@@ -7647,13 +7689,16 @@ void FunctionDataflow::reportUseOfMoved(core::PlaceId used, const MovedHit &hit,
         siteFor(at, core::Facet::Null, /*operand=*/!isa<CallExpr>(at));
     if (!definite) {
       // §11: without zero-initialisation the value may be garbage, which a
-      // null check cannot catch.
+      // null check cannot catch. Zero-initialisation runs where the
+      // declaration runs, so it does not reach one a jump can bypass
+      // (`switch (k) { int *p; case 1: return *p; }`): such a place keeps
+      // the reason even when zero-init is on.
+      const bool zeroed = options.zeroInit && !declarationBypassed(hit.target);
       decide(site, core::Facet::Null,
-             options.zeroInit
-                 ? core::FacetDecision::checked()
-                 : core::FacetDecision::unresolvedFor(
-                       core::UnresolvedReason::NoZeroInit,
-                       "'" + nameOf(used) + "' may be uninitialised"));
+             zeroed ? core::FacetDecision::checked()
+                    : core::FacetDecision::unresolvedFor(
+                          core::UnresolvedReason::NoZeroInit,
+                          "'" + nameOf(used) + "' may be uninitialised"));
       return;
     }
     decide(site, core::Facet::Null, core::FacetDecision::violation());

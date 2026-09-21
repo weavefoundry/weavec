@@ -3,6 +3,7 @@ weavec_add_library(
   Analysis
   SOURCES Allocators.cpp
           Annotations.cpp
+          BypassedDeclarations.cpp
           LibrarySummaries.cpp
           ClangLocation.cpp
           InterfaceTypes.cpp

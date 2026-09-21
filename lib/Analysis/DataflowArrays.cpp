@@ -537,7 +537,10 @@ void FunctionDataflow::weakenOverlappingArrayWrites(
     auto alternative = state;
     auto *previousState = currentState;
     currentState = &alternative;
+    const bool wasWeakening = weakeningArrayWrite;
+    weakeningArrayWrite = true;
     applyPointerAssign(*target, origin, at, constPointee, alternative);
+    weakeningArrayWrite = wasWeakening;
     currentState = previousState;
     state.join(alternative, &places);
   }

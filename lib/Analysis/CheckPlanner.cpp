@@ -17,7 +17,10 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cstdint>
 #include <limits>
+#include <map>
+#include <optional>
 #include <string>
 #include <utility>
 
@@ -624,8 +627,18 @@ public:
       return true;
     case core::Facet::Null:
       return nullChecks(requirement, out, failure);
-    case core::Facet::Spatial:
-      return spatialChecks(witnesses, out, failure);
+    case core::Facet::Spatial: {
+      pendingLengthHave.reset();
+      if (!spatialChecks(witnesses, out, failure))
+        return false;
+      // The record is planned: its `len` check is in force, so another
+      // record of this site may read a string length bounded by that have.
+      if (pendingLengthHave)
+        lengthHaves.insert_or_assign(pendingLengthHave->first,
+                                     std::move(pendingLengthHave->second));
+      pendingLengthHave.reset();
+      return true;
+    }
     case core::Facet::Temporal:
       return fail(failure, "temporal facets are never checked");
     }
@@ -636,6 +649,10 @@ private:
   const CheckPlanner &planner;
   const SiteInfo &site;
   PlaceHandleTable &handles;
+  /// Per argument, the have of a `len` check this site has planned.
+  std::map<std::uint8_t, core::CheckTerm> lengthHaves;
+  /// The one the record being planned would add, once it is known to hold.
+  std::optional<std::pair<std::uint8_t, core::CheckTerm>> pendingLengthHave;
 
   /// §10.4: the unit declares the bounded writer that lowers `writer`.
   [[nodiscard]] bool
@@ -732,6 +749,18 @@ private:
     return std::move(expressed.term);
   }
 
+  /// §10.3 rule 2: the have a `strlen` term of a record other than the
+  /// length record itself is read with — the have of the `len` check this
+  /// site already planned for the same argument, which runs before the call.
+  [[nodiscard]] std::optional<core::CheckTerm>
+  lengthHave(std::optional<std::uint8_t> argument) const {
+    if (!argument)
+      return std::nullopt;
+    const auto found = lengthHaves.find(*argument);
+    return found == lengthHaves.end() ? std::nullopt
+                                      : std::optional(found->second);
+  }
+
   bool spatialChecks(llvm::ArrayRef<CheckWitness> witnesses,
                      std::vector<Entry> &out, std::string &failure) {
     if (witnesses.empty())
@@ -803,6 +832,11 @@ private:
         auto need = term(witness.need, witness, failure, have);
         if (!need)
           return false;
+        // The check runs before the call, so from here on the copy is known
+        // to fit: another record of this site may bound a `strlen` of its
+        // own by this have (§10.3 rule 2).
+        if (witness.argument && !witness.guard)
+          pendingLengthHave = {*witness.argument, *have};
         Entry entry = makeEntry(Entry::Template::Len, Entry::Form::Plain,
                                 Entry::Placement::BeforeCall,
                                 {std::move(*need), std::move(*have)});
@@ -826,7 +860,15 @@ private:
         // be a named place (§10.3 rule 1), not a computed value.
         if (other->kind != core::CheckTerm::Kind::Place)
           return fail(failure, "the other pointer has no name here");
-        auto length = term(witness.need, witness, failure);
+        // §10.3 rule 2: a `strlen` in the length is read as
+        // `__weavec_strnlen(p, have)`, and the have of an overlapping copy
+        // is the destination's own extent — the `len` witness of the same
+        // argument (`strcpy`'s `strlen(a1) + 1` against `sizeof buf`).
+        // `lengthHave` answers only once that length check is planned, and
+        // it runs before the call, so wherever the overlap check runs the
+        // copy is known to fit and the bounded length is the true one.
+        auto length =
+            term(witness.need, witness, failure, lengthHave(witness.argument));
         if (!length)
           return false;
         out.push_back(makeEntry(Entry::Template::Disjoint, Entry::Form::Plain,

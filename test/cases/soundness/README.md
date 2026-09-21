@@ -60,6 +60,18 @@ a new definite error (13), a runtime trap (12), a possible warning (2), a
 ledger row only (18, with the projected reason) and neutralised (2). Line
 numbers are those of the files here.
 
+Three probes carry a `MISS` marker instead of their `BUG`, because the build
+does not reach the projection and the reason is not a marker to be tightened
+but an engine gap each file records in full: `07_strcpy_stack_overflow_bug`
+(the `len` term would name `argv[1]`, which §10.3 rule 1 cannot spell),
+`26_container_uaf_bug` (the filling loop is not the contiguous-fill shape, so
+the read reports `use-of-uninitialized` instead) and `41_many_cells_uaf_bug`
+(64 cells exceed `core::MaxArrayCells`). All three keep their `ASAN` marker,
+and none of the three has the matching facet proven at its line, so gate G4's
+silent count is still 0. Two clean twins carry `ALLOW: leak` for a false
+possible leak they cannot yet shake: `03_double_free_loop_ok` and
+`26_container_uaf_ok`.
+
 | Probe | `BUG` (line: id) | v0.10.0 | Projected | ASan (first in-case frame) |
 | --- | --- | --- | --- | --- |
 | `01_uaf_field_alias_bug` | 15: use-after-free | CAUGHT | still reported | heap-use-after-free @15 |
@@ -73,7 +85,7 @@ numbers are those of the files here.
 | `04_iter_invalidation_realloc_bug` | 14: use-after-move | CAUGHT | still reported | heap-use-after-free @14 |
 | `05_oob_while_offbyone_bug` | 7: out-of-bounds | CAUGHT | still reported | index 8 out of bounds @7 |
 | `06_int_overflow_malloc_bug` | 11: out-of-bounds | SILENT | trap | heap-buffer-overflow @11 |
-| `07_strcpy_stack_overflow_bug` | 9: out-of-bounds | SILENT | trap | stack-buffer-overflow @9 |
+| `07_strcpy_stack_overflow_bug` | 21: `MISS` (was 9: out-of-bounds) | SILENT | trap | stack-buffer-overflow @21 |
 | `07b_sprintf_stack_overflow_bug` | 7: out-of-bounds | SILENT | trap | stack-buffer-overflow @7 |
 | `08_uninit_index_bug` | 7: use-of-uninitialized | SILENT | neutralised | — (uninitialised scalar (MSan class)) |
 | `09_type_confusion_voidp_bug` | 11: out-of-bounds | SILENT | definite error | heap-buffer-overflow @6 |
@@ -102,7 +114,7 @@ numbers are those of the files here.
 | `25_strtok_static_bug` | 9: use-after-free | SILENT | definite error | — (strtok reads the freed buffer inside libc) |
 | `25b_string_literal_write_bug` | 6: out-of-bounds | SILENT | definite error | BUS @6 |
 | `25c_static_result_bug` | 9: use-after-free | SILENT | possible warning | heap-use-after-free @9 |
-| `26_container_uaf_bug` | 8: use-after-free | MISLABEL | still reported | heap-use-after-free @8 |
+| `26_container_uaf_bug` | 14: `MISS` (was 8: use-after-free) | MISLABEL | still reported | heap-use-after-free @14 |
 | `27_struct_return_dangling_bug` | 7: lifetime-too-short | CAUGHT | still reported | stack-use-after-return @11 |
 | `28_free_non_heap_bug` | 7: invalid-release | CAUGHT | still reported | attempting free @3 |
 | `29_negative_index_bug` | 9: out-of-bounds | SILENT | trap | index -1 out of bounds @9 |
@@ -117,7 +129,7 @@ numbers are those of the files here.
 | `38_lying_annotation_bug` | 6: annotation-mismatch definite | SILENT | definite error | heap-use-after-free @12 |
 | `39_false_assume_bug` | 8: contradicted-assumption | SILENT | trap | index 11 out of bounds @9 |
 | `40_struct_copy_uaf_bug` | 13: use-after-free | CAUGHT | still reported | heap-use-after-free @13 |
-| `41_many_cells_uaf_bug` | 8: use-after-free | MISLABEL | still reported | heap-use-after-free @8 |
+| `41_many_cells_uaf_bug` | 15: `MISS` (was 8: use-after-free) | MISLABEL | still reported | heap-use-after-free @15 |
 | `41b_late_iteration_uaf_bug` | 11: use-after-free | CAUGHT | still reported | heap-use-after-free @11 |
 | `41c_deep_call_chain_bug` | 15: use-after-free | CAUGHT | still reported | heap-use-after-free @15 |
 | `41d_many_branches_bug` | 14: use-after-free | CAUGHT | still reported | heap-use-after-free @14 |

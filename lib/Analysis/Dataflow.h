@@ -19,6 +19,7 @@
 #include "PlaceBuilder.h"
 #include "weavec/Analysis/Allocators.h"
 #include "weavec/Analysis/Annotations.h"
+#include "weavec/Analysis/BypassedDeclarations.h"
 #include "weavec/Analysis/FunctionAnalysis.h"
 #include "weavec/Analysis/LedgerAdapter.h"
 #include "weavec/Analysis/SiteCollector.h"
@@ -299,6 +300,9 @@ private:
   bool materializingArray = false;
   bool materializingArrayFill = false;
   bool materializingArrayRelease = false;
+  /// Inside the alternative state of `weakenOverlappingArrayWrites`: a store
+  /// that may not have gone to this cell (§7.4).
+  bool weakeningArrayWrite = false;
   const bool emitDiagnostics;
 
   [[nodiscard]] std::optional<core::PlaceGuard>
@@ -2172,6 +2176,12 @@ private:
                       core::Certainty certainty);
   void reportUseOfMoved(core::PlaceId used, const MovedHit &hit,
                         const clang::Expr &at);
+  /// RFC 0030 §11: whether `place`'s declaration is one a jump of this
+  /// function can bypass, which zero-initialisation does not reach.
+  [[nodiscard]] bool declarationBypassed(core::PlaceId place);
+  /// `bypassedDeclarations` of this function's body, filled by
+  /// `initialState`.
+  llvm::DenseSet<const clang::VarDecl *> bypassedDecls;
   /// RFC 0030 §3.4: definite when the escaping value exactly aliases the
   /// dying storage (on every path); a returned one is about the exit's
   /// temporal facet (`may-dangle` when possible).
