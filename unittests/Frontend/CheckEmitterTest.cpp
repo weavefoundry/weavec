@@ -505,9 +505,8 @@ int print(int x) { char b[4]; return sprintf(b, "%d", x); }
             std::string::npos)
       << text;
   // BeforeCall.
-  EXPECT_NE(
-      text.find("__weavec_chk_len(n, 8ULL) , (memset(b, 0, n));"),
-      std::string::npos)
+  EXPECT_NE(text.find("__weavec_chk_len(n, 8ULL) , (memset(b, 0, n));"),
+            std::string::npos)
       << text;
   // ReplaceCall, both uses.
   EXPECT_NE(text.find("__weavec_chk_assert(((n > 0) != 0));"),

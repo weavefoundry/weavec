@@ -140,7 +140,8 @@ private:
   /// taking a const one, and `routine` for the OpenACC reference.
   struct Call {
     Kind kind = Kind::TopLevelDecl;
-    // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
+    // NOLINTNEXTLINE(readability-redundant-member-init): designated-init
+    // default
     clang::DeclGroupRef group = {};
     clang::Decl *decl = nullptr;
     const clang::Decl *constDecl = nullptr;

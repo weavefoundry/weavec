@@ -6,6 +6,6 @@ int main(int argc, char **argv) {
   if (argc < 2) return 0;
   int n = atoi(argv[1]);
   char vla[n];
-  vla[n] = 0; // BUG: out-of-bounds
+  vla[n] = 0; // BUG: out-of-bounds // TRAP: span
   return vla[0];
 }

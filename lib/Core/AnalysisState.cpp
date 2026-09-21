@@ -267,10 +267,9 @@ bool PendingOutcome::unite(const PendingOutcome &other) {
     return false;
   // Across calls a shared class's guards are joined below, so only one call
   // has to agree with itself here.
-  if (sameCall &&
-      (!agrees(guardedBy, other.guardedBy) ||
-       !agrees(releasedBy, other.releasedBy) ||
-       !agrees(replacedBy, other.replacedBy)))
+  if (sameCall && (!agrees(guardedBy, other.guardedBy) ||
+                   !agrees(releasedBy, other.releasedBy) ||
+                   !agrees(replacedBy, other.replacedBy)))
     return false;
   const auto mineGuards = guardedBy;
   const auto mineReleased = releasedBy;
@@ -306,9 +305,8 @@ bool PendingOutcome::unite(const PendingOutcome &other) {
       std::vector<std::pair<PlaceId, PlaceGuard>> joined;
       if (mine != mineGuards.end() && theirs != other.guardedBy.end()) {
         for (const auto &[place, guard] : mine->second) {
-          const auto match =
-              std::ranges::find_if(theirs->second, [place = place](
-                                                       const auto &entry) {
+          const auto match = std::ranges::find_if(
+              theirs->second, [place = place](const auto &entry) {
                 return entry.first == place;
               });
           if (match == theirs->second.end())
@@ -679,8 +677,7 @@ bool AnalysisState::join(const AnalysisState &other, const PlaceTable *places,
   if (!established.empty()) {
     const std::size_t before = established.size();
     std::erase_if(established, [&other](PlaceId place) {
-      return !std::binary_search(other.established.begin(),
-                                 other.established.end(), place);
+      return !std::ranges::binary_search(other.established, place);
     });
     changed = changed || established.size() != before;
   }

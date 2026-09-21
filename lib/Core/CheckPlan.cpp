@@ -100,8 +100,10 @@ static std::string placeText(std::uint64_t handle,
     if (step.kind == CheckPathStep::Kind::Deref) {
       if (pendingDeref)
         text.insert(0, 1, '*');
-      if (step.checked)
-        text = "nonnull(" + text + ")";
+      if (step.checked) {
+        text.insert(0, "nonnull(");
+        text += ')';
+      }
       pendingDeref = true;
       continue;
     }

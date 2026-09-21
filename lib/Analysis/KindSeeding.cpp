@@ -745,10 +745,9 @@ void FunctionDataflow::snapshotExtentsBelow(core::PlaceId place,
   llvm::SmallVector<core::PlaceId, 2> counts;
   for (const auto &[holder, record] : state.spatial.all()) {
     const std::optional<core::PlaceId> count =
-        record.extent && record.extent->place ? record.extent->place
-        : record.string && record.string->length
-            ? record.string->length->place
-            : std::nullopt;
+        record.extent && record.extent->place    ? record.extent->place
+        : record.string && record.string->length ? record.string->length->place
+                                                 : std::nullopt;
     if (count && places.isDescendantOf(*count, place) &&
         !llvm::is_contained(counts, *count))
       counts.push_back(*count);

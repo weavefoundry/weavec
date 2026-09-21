@@ -6,5 +6,5 @@ int main(int argc, char **argv) {
   char buf[4] = {0};
   int i = argc + 10;
   WEAVEC_ASSUME(i < 4); // BUG: contradicted-assumption // TRAP: assert
-  return buf[i];
+  return buf[i]; // TRAP: index
 }

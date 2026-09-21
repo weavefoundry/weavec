@@ -69,7 +69,7 @@ struct PathElem {
   }
   friend std::strong_ordering operator<=>(const PathElem &a,
                                           const PathElem &b) noexcept {
-    if (const auto order = a.step <=> b.step; order != 0)
+    if (const auto order = a.step <=> b.step; std::is_neq(order))
       return order;
     return compareText(a.field, b.field);
   }

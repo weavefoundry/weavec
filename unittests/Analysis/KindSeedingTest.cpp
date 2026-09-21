@@ -200,8 +200,7 @@ int calls(int k, unsigned m) {
   // The guard is false here, so the requirement needs nothing.
   EXPECT_EQ(facetOf(piped, "calls", "upto(0,-1)", core::Facet::Spatial),
             "proven");
-  EXPECT_EQ(facetOf(piped, "calls", "upto(0,-1)", core::Facet::Null),
-            "proven");
+  EXPECT_EQ(facetOf(piped, "calls", "upto(0,-1)", core::Facet::Null), "proven");
   // An unsigned bound is exact: `0 < m` is the term `m`.
   EXPECT_EQ(facetOf(piped, "calls", "under(four,m)", core::Facet::Spatial),
             "checked:len");
