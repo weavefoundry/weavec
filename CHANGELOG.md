@@ -1,6 +1,15 @@
 # CHANGELOG
 
 
+## v0.11.0 (2026-09-22)
+
+### Features
+
+- Prove or trap every memory-safety operation
+  ([#37](https://github.com/weavefoundry/weavec/pull/37),
+  [`bdbd0a9`](https://github.com/weavefoundry/weavec/commit/bdbd0a941d7ad47af1bbf8df64b5f16957e8b029))
+
+
 ## v0.10.0 (2026-09-18)
 
 ### Documentation
