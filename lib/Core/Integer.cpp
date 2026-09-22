@@ -326,8 +326,12 @@ IntegerRange IntegerRange::fromRanks(IntegerType type,
     }
     result.intervals.push_back(range);
   }
+  // Too many pieces to keep: the hull of what is left, never the whole type.
+  // `{-3, -1, 1, 3}` collapses to `[-3, 3]`, which still refutes `x == 12345`;
+  // dropping to the full type would forget every bound the branches gave.
   if (result.intervals.size() > MaxIntegerIntervals)
-    result.intervals = {{.lower = 0, .upper = type.mask()}};
+    result.intervals = {{.lower = result.intervals.front().lower,
+                         .upper = result.intervals.back().upper}};
   return result;
 }
 

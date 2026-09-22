@@ -1,11 +1,12 @@
 // RFC 0007, *Diagnostics*: `leak` is a warning that can be disabled or
-// promoted; `mismatched-release` is an error that can only be lowered.
+// promoted; a definite `mismatched-release` is an error that can only be
+// lowered (RFC 0030: disabling the id drops only its possible findings).
 // RUN: %weavec %s -- 2>&1 | FileCheck --check-prefix=DEFAULT %s
-// RUN: %weavec -Wno-weavec-leak %s -- 2>&1 | count 0
+// RUN: %weavec -Wno-weavec-leak %s -- 2>&1 | FileCheck --allow-empty --check-prefix=QUIET %s
 // RUN: not %weavec -Werror=weavec-leak %s -- 2>&1 | FileCheck --check-prefix=RAISED %s
 // RUN: not %weavec %s -- -DMISMATCH 2>&1 | FileCheck --check-prefix=MISMATCH %s
 // RUN: %weavec -Wno-error=weavec-mismatched-release %s -- -DMISMATCH 2>&1 | FileCheck --check-prefix=LOWERED %s
-// RUN: not %weavec -Wno-weavec-mismatched-release %s -- -DMISMATCH 2>&1 | FileCheck --check-prefix=REFUSED %s
+// RUN: not %weavec -Wno-weavec-mismatched-release %s -- -DMISMATCH 2>&1 | FileCheck --check-prefix=MISMATCH %s
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -29,4 +30,4 @@ void leak(void) {
 }
 #endif
 
-// REFUSED: error: '-Wno-weavec-mismatched-release': 'mismatched-release' is an error and cannot be disabled; use -Wno-error=weavec-mismatched-release to make it a warning
+// QUIET-NOT: {{warning|error}}:

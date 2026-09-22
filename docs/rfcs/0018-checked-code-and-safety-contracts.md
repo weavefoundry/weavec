@@ -1,12 +1,12 @@
 # RFC 0018: Compositional safety contracts and checked code
 
-- **Status**: Accepted
+- **Status**: Superseded
 - **Authors**: WeaveC authors
 - **Created**: 2026-09-07
 - **Tracking issue**: TBD
-- **Supersedes / superseded by**: Amends RFCs 0003 and 0005's summaries and
-  compilation boundaries, RFC 0004's unsafe reporting, and RFCs 0011–0017's
-  coverage accounting. The ordinary diagnostic policies remain available.
+- **Supersedes / superseded by**: Superseded by RFC 0030
+
+> Superseded by [RFC 0030](0030-prove-or-trap.md).
 
 ## Summary
 

@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import sharp from 'sharp';
-import { repository, sections, rewriteMarkdown } from './content.mjs';
+import { repository, sections, rewriteMarkdown, rfcStatus } from './content.mjs';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const docs = path.join(root, 'docs');
@@ -91,28 +91,6 @@ const stale = new Set(
 );
 
 await split(
-  'docs/checked-code.md',
-  {
-    'Select functions': 'guides/select-functions',
-    'Build through the compiler': 'guides/checked-builds',
-    'Understand contracts': 'guides/contracts',
-    'Check traversals and cursor helpers': 'guides/traversals',
-    'Check input cases and union members': 'guides/cases-and-unions',
-    'Read a report': 'guides/reports',
-    'Check opaque pointers and callback interfaces': 'guides/callbacks',
-    'Current limits': 'reference/checked-limits',
-    'Linked containers': 'guides/linked-containers',
-    'Recursive object ownership': 'guides/recursive-ownership',
-    'Growable buffers and vectors': 'guides/growable-buffers',
-    'C runtime contracts': 'guides/runtime-contracts',
-    'Opaque objects and private library state': 'guides/opaque-objects',
-    'Composing recursive and stateful helpers (RFC 0029)': 'guides/composing-helpers',
-  },
-  'guides/checked-code',
-  'Checked code',
-);
-
-await split(
   'docs/annotations.md',
   {
     Placement: 'reference/annotation-placement',
@@ -122,16 +100,13 @@ await split(
     'C integers and dynamic bounds': 'guides/integers-and-bounds',
     'Controlling diagnostics': 'reference/diagnostic-controls',
     'Compatibility with other annotation schemes': 'reference/annotation-compatibility',
-    'Checked selection (RFC 0018)': 'reference/checked-annotations',
   },
   'reference/annotations',
   'Annotations',
 );
 
-await whole('docs/incremental-analysis.md', 'guides/incremental-analysis');
 await whole('docs/development.md', 'contributing/development');
 await whole('docs/roadmap.md', 'project/roadmap');
-await whole('docs/development-history.md', 'project/development-history', { pagefind: false });
 await whole('docs/rfcs/README.md', 'rfcs/process');
 pages.at(-1).title = 'The RFC process';
 pages.at(-1).body = pages.at(-1).body.split('## Index')[0];
@@ -148,7 +123,7 @@ for (const filename of (await readdir(path.join(docs, 'rfcs'))).sort()) {
   if (!/^\d{4}-/.test(filename) || filename.startsWith('0000')) continue;
   const source = `docs/rfcs/${filename}`;
   const body = await read(source);
-  const status = body.match(/\*\*Status\*\*:\s*(.+)/)?.[1]?.trim() || 'Draft';
+  const status = rfcStatus(body);
   const route = `rfcs/${filename.replace(/\.md$/, '')}`;
   await whole(source, route, { rfcStatus: status });
   rfcs.push({
@@ -159,21 +134,6 @@ for (const filename of (await readdir(path.join(docs, 'rfcs'))).sort()) {
   });
 }
 
-const validations = [];
-for (const filename of (await readdir(docs)).sort()) {
-  if (!/^validation-rfc\d+\.md$/.test(filename)) continue;
-  const route = `internals/validation/${filename.replace('validation-', '').replace('.md', '')}`;
-  await whole(`docs/${filename}`, route, { pagefind: false });
-  validations.push(`- [${pages.at(-1).title}](/${route}/)`);
-}
-add(
-  'docs/scripts/prepare-content.mjs',
-  'internals/validation',
-  'Validation records',
-  'These records document the evidence behind specific changes: fixed test populations, real-code evaluations, remaining limits, and measured analysis cost. Results describe the revisions and populations named in each record.\n\n' +
-    validations.join('\n'),
-);
-
 // Each diagnostic keeps its exact source description and gains a focused remedy.
 const diagnosticPage = pages.find((page) => page.route === 'reference/diagnostics');
 const remedies = JSON.parse(await read('docs/data/diagnostic-remedies.json'));
@@ -182,7 +142,7 @@ const diagnosticRows = diagnosticPage.body
   .filter((line) => /^\| `[^`]+`\s*\|/.test(line));
 const diagnosticIndex = [];
 for (const line of diagnosticRows) {
-  const match = line.match(/^\| `([^`]+)`\s*\|\s*(\w+)\s*\|\s*(.*?)\s*\|$/);
+  const match = line.match(/^\| `([^`]+)`\s*\|\s*([^|]*?)\s*\|\s*(.*?)\s*\|$/);
   if (!match) throw new Error(`Cannot parse diagnostic: ${line}`);
   const [, id, severity, description] = match;
   const remedy = remedies[id];
@@ -191,14 +151,14 @@ for (const line of diagnosticRows) {
     'docs/annotations.md',
     `reference/diagnostics/${id}`,
     id,
-    `Default severity: **${severity}** · Identifier: \`weavec::${id}\`\n\n## What it means\n\n${description}\n\n## How to resolve it\n\n${remedy}\n\n## Related reference\n\n[Diagnostic controls](/reference/diagnostic-controls/) · [Checked guarantees](/reference/guarantees/)`,
+    `Default severity: **${severity}** · Identifier: \`weavec::${id}\`\n\n## What it means\n\n${description}\n\n## How to resolve it\n\n${remedy}\n\n## Related reference\n\n[Diagnostic controls](/reference/diagnostic-controls/) · [Guarantees](/reference/guarantees/)`,
   );
   diagnosticIndex.push(`| [\`${id}\`](/reference/diagnostics/${id}/) | ${severity} |`);
 }
 diagnosticPage.body =
   '<span id="diagnostics"></span>\n\nEvery WeaveC diagnostic ends with a stable identifier such as `[weavec::use-after-free]`. Open an entry for its exact meaning, conditions, and resolution guidance.\n\n| Diagnostic | Default severity |\n| --- | --- |\n' +
   diagnosticIndex.join('\n') +
-  '\n\nStart with the first diagnostic and follow its source notes. A failed checked obligation remains a failure even if its ordinary diagnostic is lowered to a warning. See [diagnostic controls](/reference/diagnostic-controls/).';
+  '\n\nSeverity follows certainty: a finding that holds on every path is an error, and a temporal finding that holds on some paths only is a warning. A null dereference or out-of-bounds access that is only possible is not reported; `weavec-cc` checks it at run time instead, and the [ledger](/reference/cli/#ledger-and-summary-line) records it. Start with the first diagnostic and follow its source notes. See [diagnostic controls](/reference/diagnostic-controls/) and the [safety guarantees](/reference/guarantees/).';
 
 try {
   await whole('CHANGELOG.md', 'project/releases');
@@ -265,7 +225,7 @@ for (const page of pages) {
     content = rewriteMarkdown(raw, page.source, routes);
   } else {
     const lastUpdated = commitDate(page.source);
-    const description = `${page.title} — WeaveC documentation for inferred ownership, borrowing, and checked C code.`;
+    const description = `${page.title} — WeaveC documentation for inferred ownership, borrowing, and runtime-checked memory safety in C.`;
     const frontmatter = {
       title: page.title,
       description,

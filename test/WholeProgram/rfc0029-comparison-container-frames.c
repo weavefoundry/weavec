@@ -1,3 +1,0 @@
-// RUN: %weavec --whole-program --checked-function=main %S/../evaluation/rfc0029/comparison-container-frames-reviewed/bounded.c %S/../evaluation/rfc0029/comparison-container-frames-reviewed/bounded-inspect.c %S/../evaluation/rfc0029/comparison-container-frames-reviewed/reader.c --
-// RUN: not %weavec --whole-program --checked-function=main %S/../evaluation/rfc0029/comparison-container-frames-reviewed/uninitialized.c %S/../evaluation/rfc0029/comparison-container-frames-reviewed/uninitialized-inspect.c %S/../evaluation/rfc0029/comparison-container-frames-reviewed/reader.c -- 2>&1 | FileCheck %s
-// CHECK: cannot establish checked safety:

@@ -34,80 +34,6 @@ static CallContext equalInputs() {
   return result;
 }
 
-TEST(CallContext, ExactBytesRoundTripAndRetainEveryPremise) {
-  CallContext input;
-  input.bytes[SummaryPath::param(0)] = std::string("a\0\n\xff", 4);
-  input.bytes[SummaryPath::global(0)] = "xyz";
-  ASSERT_TRUE(input.valid());
-  const auto text = printCallContext(input, contextGlobalName);
-  EXPECT_EQ(parseCallContext(text, resolveContextGlobal), input);
-  EXPECT_FALSE(
-      parseCallContext(text + ";b:706172616d2030:00", resolveContextGlobal));
-  const auto mapped =
-      remapCallContext(input, [](std::uint32_t) { return std::optional(1U); });
-  ASSERT_TRUE(mapped);
-  EXPECT_EQ(mapped->bytes.at(SummaryPath::global(1)), "xyz");
-  EXPECT_FALSE(remapCallContext(
-      input, [](std::uint32_t) { return std::optional<std::uint32_t>{}; }));
-  input.bytes[SummaryPath::param(0)] = std::string(MaxCallContextFacts, 'x');
-  EXPECT_FALSE(input.valid());
-  input.bytes.clear();
-  input.bytes[SummaryPath::param(0)] = "abc";
-  input.bytes[SummaryPath::param(1)] = "xbc";
-  EXPECT_FALSE(input.addAlias({.first = SummaryPath::param(0),
-                               .second = SummaryPath::param(1),
-                               .offset = {}}));
-}
-
-TEST(CallContext, ImmutableBytesRequireTheirPayloadAndRetainStrictIdentity) {
-  CallContext input;
-  const auto path = SummaryPath::global(0);
-  input.immutableBytes.insert(path);
-  EXPECT_FALSE(input.valid());
-  input.bytes[path] = "abc";
-  ASSERT_TRUE(input.valid());
-  const auto encoded = printCallContext(input, contextGlobalName);
-  EXPECT_EQ(parseCallContext(encoded, resolveContextGlobal), input);
-  EXPECT_FALSE(parseCallContext(encoded + encoded.substr(encoded.rfind(';')),
-                                resolveContextGlobal));
-  const auto mapped =
-      remapCallContext(input, [](std::uint32_t) { return std::optional(1U); });
-  ASSERT_TRUE(mapped);
-  EXPECT_TRUE(mapped->immutableBytes.contains(SummaryPath::global(1)));
-  EXPECT_FALSE(remapCallContext(
-      input, [](std::uint32_t) { return std::optional<std::uint32_t>{}; }));
-  input.bytes[path] = std::string(MaxCallContextFacts, 'a');
-  EXPECT_FALSE(input.valid());
-}
-
-TEST(CallContext, ExactByteAliasesCheckTheActualOffsetAndStrictEncoding) {
-  CallContext input;
-  input.bytes[SummaryPath::param(0)] = "bc";
-  input.bytes[SummaryPath::param(1)] = "abcd";
-  ASSERT_TRUE(input.addAlias({.first = SummaryPath::param(0),
-                              .second = SummaryPath::param(1),
-                              .offset = PointerOffset::ofElements(1)}));
-  const auto encoded = printCallContext(input, contextGlobalName);
-  EXPECT_EQ(parseCallContext(encoded, resolveContextGlobal), input);
-  input.bytes[SummaryPath::param(0)] = "bd";
-  EXPECT_FALSE(input.valid());
-  input.bytes[SummaryPath::param(0)] = "bc";
-  input.bytes[SummaryPath::param(1)] = "xabc";
-  EXPECT_FALSE(input.valid());
-  CallContext bytes;
-  bytes.bytes[SummaryPath::param(0)] = "a";
-  const auto text = printCallContext(bytes, contextGlobalName);
-  const auto payload = text.substr(0, text.rfind(':') + 1);
-  for (const auto *bad : {"", "0", "gg", "AF"})
-    EXPECT_FALSE(parseCallContext(payload + bad, resolveContextGlobal)) << bad;
-  EXPECT_FALSE(
-      parseCallContext(payload + std::string(130, '0'), resolveContextGlobal));
-  bytes.bytes[SummaryPath::param(0)] = std::string(MaxCallContextFacts, 'x');
-  EXPECT_TRUE(bytes.valid());
-  bytes.facts[SummaryPath::param(1)] = ValueFact::ofConstant(0);
-  EXPECT_FALSE(bytes.valid());
-}
-
 TEST(CallContext, GlobalCallbackBindingsRoundTripAndRemapEveryPremise) {
   CallContext input;
   auto targets = CallTargets::function("module.c#allocate");
@@ -130,64 +56,6 @@ TEST(CallContext, GlobalCallbackBindingsRoundTripAndRemapEveryPremise) {
                           CallTargets::function("other"));
   EXPECT_FALSE(
       remapCallContext(input, [](std::uint32_t) { return std::optional(0U); }));
-}
-
-TEST(CallContext, TraversalOrdersRoundTripRemapAndRequireDefiniteIdentity) {
-  const auto a = SummaryPath::param(0).deref();
-  const auto b = SummaryPath::global(0);
-  CallContext input;
-  EXPECT_TRUE(input.addAlias({.first = a,
-                              .second = b,
-                              .offset = PointerOffset::unknown(),
-                              .definite = true,
-                              .sameShare = false}));
-  input.orders.emplace(a, b);
-  EXPECT_TRUE(input.valid());
-  const auto encoded = printCallContext(input, contextGlobalName);
-  EXPECT_EQ(parseCallContext(encoded, resolveContextGlobal), input);
-  const auto mapped =
-      remapCallContext(input, [](std::uint32_t) { return std::optional(1U); });
-  ASSERT_TRUE(mapped);
-  EXPECT_TRUE(mapped->orders.contains({a, SummaryPath::global(1)}));
-  EXPECT_FALSE(remapCallContext(
-      input, [](std::uint32_t) { return std::optional<std::uint32_t>{}; }));
-  auto bad = input;
-  bad.aliases.clear();
-  EXPECT_FALSE(bad.valid());
-  bad = input;
-  auto alias = *bad.aliases.begin();
-  bad.aliases.clear();
-  alias.definite = false;
-  bad.aliases.insert(alias);
-  EXPECT_FALSE(bad.valid());
-  bad = input;
-  bad.orders.emplace(a, a);
-  EXPECT_FALSE(bad.valid());
-  bad = input;
-  bad.facts[b] = ValueFact::of(Outcome::Null);
-  EXPECT_FALSE(bad.valid());
-  const auto order = encoded.substr(encoded.find(";o:"));
-  EXPECT_FALSE(parseCallContext(encoded + order, resolveContextGlobal));
-}
-
-TEST(CallContext, TraversalOrderClosureRejectsContradictoryExactOffsets) {
-  const auto a = SummaryPath::param(0);
-  const auto b = SummaryPath::param(1);
-  const auto c = SummaryPath::param(2);
-  CallContext input;
-  EXPECT_TRUE(input.addAlias(
-      {.first = a, .second = b, .offset = PointerOffset::ofElements(1)}));
-  EXPECT_TRUE(input.addAlias(
-      {.first = b, .second = c, .offset = PointerOffset::unknown()}));
-  input.orders.emplace(a, c);
-  EXPECT_TRUE(input.valid());
-  input.orders.emplace(c, b);
-  EXPECT_FALSE(input.valid());
-  input.orders.clear();
-  input.orders.emplace(b, a);
-  EXPECT_TRUE(input.valid());
-  input.orders.emplace(a, b);
-  EXPECT_FALSE(input.valid());
 }
 
 TEST(CallContext, CanonicalOrderingReversesTheOffset) {
@@ -547,36 +415,4 @@ TEST(CallContext, GlobalRemappingCannotCollapseTwoPremises) {
 
 } // namespace weavec::core
 
-namespace weavec::core {
-TEST(CallContext, NonNanParametersRetainStrictIdentityAndBounds) {
-  CallContext input;
-  input.nonNan.insert(SummaryPath::param(0));
-  ASSERT_TRUE(input.valid());
-  const auto encoded = printCallContext(input, contextGlobalName);
-  EXPECT_EQ(parseCallContext(encoded, resolveContextGlobal), input);
-  EXPECT_EQ(
-      remapCallContext(
-          input, [](std::uint32_t) { return std::optional<std::uint32_t>{}; }),
-      input);
-  EXPECT_FALSE(
-      parseCallContext(encoded + ";n:706172616d2030", resolveContextGlobal));
-  input.facts[SummaryPath::param(0)] = ValueFact::ofConstant(1);
-  EXPECT_FALSE(input.valid());
-  input.facts.clear();
-  input.bytes[SummaryPath::param(0)] = "a";
-  EXPECT_FALSE(input.valid());
-  input.bytes.clear();
-  input.nonNan = {SummaryPath::param(0).deref()};
-  EXPECT_FALSE(input.valid());
-  input.nonNan = {SummaryPath::global(0)};
-  EXPECT_FALSE(input.valid());
-  input.nonNan = {SummaryPath::result()};
-  EXPECT_FALSE(input.valid());
-  input.nonNan.clear();
-  for (unsigned i = 0; i < MaxCallContextFacts; ++i)
-    input.nonNan.insert(SummaryPath::param(i));
-  EXPECT_TRUE(input.valid());
-  input.nonNan.insert(SummaryPath::param(MaxCallContextFacts));
-  EXPECT_FALSE(input.valid());
-}
-} // namespace weavec::core
+namespace weavec::core {} // namespace weavec::core

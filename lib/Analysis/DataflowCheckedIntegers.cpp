@@ -26,12 +26,11 @@ bool FunctionDataflow::handleCheckedIntegerCall(const CallExpr &call,
   const auto a = integerRangeOf(*call.getArg(0), state);
   const auto b = integerRangeOf(*call.getArg(1), state);
   if (!pointee || !type || !a || !b) {
-    reportIncomplete("unsupported checked integer output", call);
+    decideIncomplete("unsupported checked integer output", call);
     forgetNullnessReachable(builder.classifyValue(*call.getArg(2)), state);
     return true;
   }
   doRead(*pointee, call, state, false);
-  doMutationCheck(pointee->place, call, state);
   checkAnnotationOnWrite(*pointee, call, state);
   recordAccess(pointee->place, true, state);
   auto values = core::evaluateCheckedInteger(*op, a->values, b->values, *type);
@@ -89,21 +88,28 @@ bool FunctionDataflow::handleCheckedIntegerCall(const CallExpr &call,
   return true;
 }
 
-void FunctionDataflow::specializeIntegerBuiltin(const CallExpr &call,
-                                                core::FunctionSummary &summary,
-                                                core::AnalysisState &state) {
-  const auto *callee = call.getDirectCallee();
-  if (!callee || !callee->getIdentifier())
+void FunctionDataflow::specializeIntegerBuiltin(
+    const CallExpr &call, const core::LibraryMatch &library,
+    core::FunctionSummary &summary, core::AnalysisState &state) {
+  // A fresh result whose extent is the product of two arguments (`calloc`,
+  // `reallocarray`): the size is their checked product.
+  const core::LibraryResult &row = library.entry->result;
+  if (row.kind != core::LibraryResult::Kind::Fresh || !row.extent ||
+      row.extent->kind != core::LibTerm::Kind::Product ||
+      row.extent->operands.size() != 2 ||
+      row.extent->operands[0].kind != core::LibTerm::Kind::Argument ||
+      row.extent->operands[1].kind != core::LibTerm::Kind::Argument)
     return;
-  const auto name = callee->getName();
-  if (name != "calloc" && name != "reallocarray")
+  const int firstArg = library.callArgument(row.extent->operands[0].arg);
+  const int secondArg = library.callArgument(row.extent->operands[1].arg);
+  if (firstArg < 0 || secondArg < 0 ||
+      static_cast<unsigned>(std::max(firstArg, secondArg)) >= call.getNumArgs())
     return;
-  const unsigned first = name == "calloc" ? 0 : 1;
-  if (call.getNumArgs() != first + 2)
-    return;
+  const auto first = static_cast<unsigned>(firstArg);
+  const auto second = static_cast<unsigned>(secondArg);
   const auto type = integerTypeOf(context.getSizeType(), context);
   const auto a = integerRangeOf(*call.getArg(first), state);
-  const auto b = integerRangeOf(*call.getArg(first + 1), state);
+  const auto b = integerRangeOf(*call.getArg(second), state);
   if (!type || !a || !b || a->mayBeInvalid || b->mayBeInvalid ||
       a->values.empty() || b->values.empty())
     return;
@@ -122,7 +128,7 @@ void FunctionDataflow::specializeIntegerBuiltin(const CallExpr &call,
   const auto product = Expression::operation(
       core::IntegerOp::Multiply,
       Expression::input(core::SummaryPath::param(first), *type),
-      Expression::input(core::SummaryPath::param(first + 1), *type));
+      Expression::input(core::SummaryPath::param(second), *type));
   if (!product)
     return;
   auto returns = std::move(summary.returns);
@@ -135,7 +141,7 @@ void FunctionDataflow::specializeIntegerBuiltin(const CallExpr &call,
       if (const auto overflow = Expression::overflow(
               core::IntegerOp::Multiply,
               Expression::input(core::SummaryPath::param(first), *type),
-              Expression::input(core::SummaryPath::param(first + 1), *type),
+              Expression::input(core::SummaryPath::param(second), *type),
               *type))
         value.when.requireInteger(
             {.lhs = *overflow,

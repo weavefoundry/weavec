@@ -49,7 +49,6 @@ void read_line(void *f) {
 void clear(char *WEAVEC_SIZED_BY(n) p, size_t n, size_t m) {
   if (m <= n)
     memset(p, 0, m);
-  // CHECK: rfc0011-requirements.c:[[@LINE+2]]:12: error: 'memset' accesses 'm' bytes of 'p', which has 'n' bytes ('m' is above 'n') [weavec::out-of-bounds]
   if (m > n)
     memset(p, 0, m);
 }
@@ -135,7 +134,10 @@ void calls(void) {
   put_le8(big);
   int four[4];
   either(four, 4);
-  // CHECK: rfc0011-requirements.c:[[@LINE+1]]:10: error: 'either' requires 64 bytes behind 'four', which has 16 bytes [weavec::out-of-bounds]
+  // RFC 0030 §7.5: `i < n && i < 16` is no canonical counted loop, so the
+  // summary's may-requirement is no longer reported at the call; the
+  // access in `either` is `unresolved(unknown-extent)` instead.
+  // CHECK-NOT: 'either' requires
   either(four, 100);
   char *heap = malloc(4);
   if (!heap)
@@ -152,10 +154,13 @@ void calls(void) {
   fill(ints, 0);
   clears(small, 0);
   on_zero(small, 1);
-  // CHECK: rfc0011-requirements.c:[[@LINE+1]]:11: error: 'on_zero' requires 8 bytes behind 'small', which has 4 bytes [weavec::out-of-bounds]
+  // RFC 0030 §7.5: an access under a branch is no must-access, and a
+  // `LibrarySpec` byte requirement is none of R1-R5: neither call is checked
+  // against a requirement (the callees' accesses are unresolved instead).
+  // CHECK-NOT: 'on_zero' requires
   on_zero(small, 0);
   clears(small, 4);
-  // CHECK: rfc0011-requirements.c:[[@LINE+1]]:10: error: 'clears' requires 5 bytes behind 'small', which has 4 bytes [weavec::out-of-bounds]
+  // CHECK-NOT: 'clears' requires
   clears(small, 5);
   free(heap);
 }
@@ -190,7 +195,10 @@ void via_wrappers(void) {
   char *p = xmalloc(4);
   // CHECK: rfc0011-requirements.c:[[@LINE+1]]:3: error: 'p[4]' is out of bounds: index 4 of an object of 4 bytes [weavec::out-of-bounds]
   p[4] = 0;
-  // CHECK: rfc0011-requirements.c:[[@LINE+1]]:10: error: 'deeper' requires 8 bytes behind 'p', which has 4 bytes [weavec::out-of-bounds]
+  // RFC 0030 §7.5: a callee's requirement does not compose into its caller's
+  // (R1-R5 name accesses and string library calls only), so this call is not
+  // checked; `deeper`'s own call of `put7` is the Call site that is.
+  // CHECK-NOT: 'deeper' requires
   deeper(p);
   free(p);
 }

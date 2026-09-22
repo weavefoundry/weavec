@@ -1,5 +1,0 @@
-{
-  "manifest.json": "097e4bf37179bc3442726f7b1b4168c01a9bbaab0fba84177654f675005c0337",
-  "unreachable-write.c": "1512dedc92c03fe5e4d5dfb59ac6f9142a067472448ea8558efdab794d9e3aed",
-  "wrong-base-byte.c": "ad319d7bdf072162092c3bf382964b9c1d4d714ea1199b863adccde05a21e50a"
-}

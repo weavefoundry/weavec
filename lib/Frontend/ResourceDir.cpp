@@ -70,6 +70,28 @@ std::string findResourceIncludeDir(const char *argv0, void *mainAddr) {
   return {};
 }
 
+std::string findRuntimeLibrary(const char *argv0, void *mainAddr,
+                               const std::string &name) {
+  // NOLINTNEXTLINE(concurrency-mt-unsafe) -- read once at startup.
+  if (const char *env = std::getenv("WEAVEC_RESOURCE_DIR")) {
+    llvm::SmallString<256> path(env);
+    llvm::sys::path::append(path, name);
+    if (llvm::sys::fs::exists(path))
+      return path.str().str();
+  }
+  const std::string exe = llvm::sys::fs::getMainExecutable(argv0, mainAddr);
+  if (exe.empty())
+    return {};
+  // <prefix>/bin/weavec-cc -> <prefix>/lib/weavec/<name>; the build tree
+  // has the same layout.
+  llvm::SmallString<256> path(llvm::sys::path::parent_path(exe));
+  llvm::sys::path::append(path, "..", WEAVEC_RESOURCE_DIR_RELATIVE, name);
+  llvm::sys::path::remove_dots(path, /*remove_dot_dot=*/true);
+  if (llvm::sys::fs::exists(path))
+    return path.str().str();
+  return {};
+}
+
 std::string getClangResourceDir() {
   const llvm::StringRef dir(WEAVEC_CLANG_RESOURCE_DIR);
   if (dir.empty() || !llvm::sys::fs::is_directory(dir))

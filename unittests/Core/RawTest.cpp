@@ -53,11 +53,11 @@ TEST(RawTracker, ClearForgets) {
 
 TEST(RawTracker, CopyPropagatesRecordWithVia) {
   RawTracker tracker;
-  ASSERT_TRUE(tracker.markRaw(PlaceId{0}, RawReason::UnknownCallee, at(1)));
+  ASSERT_TRUE(tracker.markRaw(PlaceId{0}, RawReason::Callee, at(1)));
   RawRecord copied = *tracker.rawAt(PlaceId{0});
   copied.via = PlaceId{0};
   ASSERT_TRUE(tracker.markRaw(PlaceId{1}, copied));
-  EXPECT_EQ(tracker.rawAt(PlaceId{1})->reason, RawReason::UnknownCallee);
+  EXPECT_EQ(tracker.rawAt(PlaceId{1})->reason, RawReason::Callee);
   EXPECT_EQ(tracker.rawAt(PlaceId{1})->via, PlaceId{0});
 }
 
@@ -94,7 +94,6 @@ TEST(RawReason, StableSpellings) {
   EXPECT_EQ(toString(RawReason::Declared), "declared");
   EXPECT_EQ(toString(RawReason::LoadedThroughRaw), "loaded-through-raw");
   EXPECT_EQ(toString(RawReason::Callee), "callee");
-  EXPECT_EQ(toString(RawReason::UnknownCallee), "unknown-callee");
 }
 
 } // namespace

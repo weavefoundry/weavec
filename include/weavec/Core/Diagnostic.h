@@ -20,6 +20,7 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -35,6 +36,12 @@ enum class Severity : std::uint8_t {
 
 [[nodiscard]] std::string_view toString(Severity severity) noexcept;
 
+/// RFC 0030 §3: every diagnostic is definite (a violation on every path the
+/// analysis considers) or possible. The default severity of most ids
+/// depends on it (`diag::defaultSeverity`). Its JSON spelling and parser are
+/// in `Ledger.h`.
+enum class Certainty : std::uint8_t { Definite, Possible };
+
 /// Stable identifiers for every diagnostic WeaveC can emit. These are part of
 /// the user-facing contract (they appear in output and can be used to filter),
 /// so treat renames as breaking changes.
@@ -45,7 +52,6 @@ inline constexpr std::string_view UseAfterMove = "use-after-move";
 inline constexpr std::string_view ConflictingBorrow = "conflicting-borrow";
 inline constexpr std::string_view LifetimeTooShort = "lifetime-too-short";
 inline constexpr std::string_view UnsafeOperation = "unsafe-operation";
-inline constexpr std::string_view AnnotationRequired = "annotation-required";
 inline constexpr std::string_view AnnotationMismatch = "annotation-mismatch";
 inline constexpr std::string_view InvalidAnnotation = "invalid-annotation";
 /// RFC 0007: an owned resource whose every holder went out of reach without
@@ -54,8 +60,9 @@ inline constexpr std::string_view Leak = "leak";
 /// RFC 0007: a resource released (or moved into a consuming parameter) by a
 /// function of a different release family than the one that produced it.
 inline constexpr std::string_view MismatchedRelease = "mismatched-release";
-/// RFC 0008: a dereference of a pointer that is, or may be, null; or such a
-/// pointer passed to a callee that dereferences its parameter.
+/// RFC 0008: a dereference of a pointer that is null; or such a pointer
+/// passed to a callee that dereferences its parameter. RFC 0030 §3.2: only
+/// definite; a pointer that may be null gets a checked null facet instead.
 inline constexpr std::string_view NullDereference = "null-dereference";
 /// RFC 0008: a read of a pointer variable or a pointer field of a local
 /// record before any assignment reaches it.
@@ -66,39 +73,37 @@ inline constexpr std::string_view UseOfUninitialized = "use-of-uninitialized";
 inline constexpr std::string_view InvalidRelease = "invalid-release";
 /// RFC 0011: an access through a pointer, or a library call over a buffer,
 /// that reaches past the extent of the object the pointer points into on
-/// every value the facts allow (or, with `may` wording, on a boundary value
-/// a relation permits).
+/// every value the facts allow. RFC 0030 §3.3: only definite, against an
+/// exact extent; the `may` forms are checked facets.
 inline constexpr std::string_view OutOfBounds = "out-of-bounds";
 /// RFC 0017: a definitely invalid operation in the target integer type.
 inline constexpr std::string_view InvalidIntegerOperation =
     "invalid-integer-operation";
-/// RFC 0014: an operation lost analysis coverage.
-inline constexpr std::string_view AnalysisIncomplete = "analysis-incomplete";
+/// RFC 0030 §6.2: a `WEAVEC_ASSUME(e)` the analysis refutes.
+inline constexpr std::string_view ContradictedAssumption =
+    "contradicted-assumption";
+/// RFC 0030 §3.2, §8.4: an allocation's result used without a null test.
+/// The only id that is off by default (`-Wweavec-allocation-failure`).
+inline constexpr std::string_view AllocationFailure = "allocation-failure";
+/// RFC 0030 §6.3: under `-fweavec-require=checked|proven` or
+/// `WEAVEC_REQUIRE_SAFE`, a facet that is neither proven nor checkable.
+inline constexpr std::string_view UnresolvedOperation = "unresolved-operation";
+/// RFC 0030 §6.3: under `-fweavec-require=proven`, a facet that relies on a
+/// runtime check.
+inline constexpr std::string_view UncheckedOperation = "unchecked-operation";
+/// RFC 0030 §13.2: the link inputs without a valid WeaveC record, named in
+/// one warning per link.
+inline constexpr std::string_view UnanalyzedInput = "unanalyzed-input";
 
 /// Every id, for validating user input (`-Wweavec-<id>`).
-inline constexpr std::string_view CheckingIncomplete = "checking-incomplete";
-inline constexpr std::string_view CheckingFailed = "checking-failed";
-
-inline constexpr std::array<std::string_view, 19> All{
-    CheckingIncomplete,
-    CheckingFailed,
-    UseAfterFree,
-    DoubleFree,
-    UseAfterMove,
-    ConflictingBorrow,
-    LifetimeTooShort,
-    UnsafeOperation,
-    AnnotationRequired,
-    AnnotationMismatch,
-    InvalidAnnotation,
-    Leak,
-    MismatchedRelease,
-    NullDereference,
-    UseOfUninitialized,
-    InvalidRelease,
-    OutOfBounds,
-    AnalysisIncomplete,
-    InvalidIntegerOperation,
+inline constexpr std::array All{
+    UseAfterFree,           DoubleFree,        UseAfterMove,
+    ConflictingBorrow,      LifetimeTooShort,  UnsafeOperation,
+    AnnotationMismatch,     InvalidAnnotation, Leak,
+    MismatchedRelease,      NullDereference,   UseOfUninitialized,
+    InvalidRelease,         OutOfBounds,       InvalidIntegerOperation,
+    ContradictedAssumption, AllocationFailure, UnresolvedOperation,
+    UncheckedOperation,     UnanalyzedInput,
 };
 
 [[nodiscard]] constexpr bool isKnown(std::string_view id) noexcept {
@@ -106,12 +111,57 @@ inline constexpr std::array<std::string_view, 19> All{
       All, [id](const std::string_view known) { return known == id; });
 }
 
-/// The severity the checker emits `id` with unless the user overrides it
-/// (RFC 0005, *Flags*): `annotation-required`, `invalid-annotation` and
-/// `leak` (RFC 0007) are warnings, everything else is an error.
-[[nodiscard]] constexpr bool isWarningByDefault(std::string_view id) noexcept {
-  return id == AnnotationRequired || id == InvalidAnnotation || id == Leak ||
-         id == AnalysisIncomplete;
+/// Ids RFC 0030 removed (*Diagnostics*). A `-W` flag naming one is an error,
+/// `unknown WeaveC diagnostic '<id>' (removed by RFC 0030)`; no alias is
+/// kept. `analysis-incomplete` became `unresolved(unanalysed | budget | ...)`
+/// ledger rows, `annotation-required` became `unresolved(unknown-callee)`
+/// rows with fix-its (§5.1).
+inline constexpr std::array Removed{
+    std::string_view("analysis-incomplete"),
+    std::string_view("annotation-required"),
+    std::string_view("checking-incomplete"),
+    std::string_view("checking-failed"),
+};
+
+[[nodiscard]] constexpr bool isRemoved(std::string_view id) noexcept {
+  return std::ranges::any_of(
+      Removed, [id](const std::string_view removed) { return removed == id; });
+}
+
+/// The severity `id` has unless the user overrides it (RFC 0030,
+/// *Diagnostics*): an error when definite and a warning when possible,
+/// except that
+///   - `leak`, `invalid-annotation`, `allocation-failure` and
+///     `unanalyzed-input` are always warnings, and
+///   - `null-dereference`, `use-of-uninitialized` and `out-of-bounds`
+///     (reported only when definite), `unsafe-operation`,
+///     `annotation-mismatch`, `invalid-integer-operation`,
+///     `contradicted-assumption`, `unresolved-operation` and
+///     `unchecked-operation` are always errors, as is an unknown id.
+[[nodiscard]] constexpr Severity defaultSeverity(std::string_view id,
+                                                 Certainty certainty) noexcept {
+  constexpr std::array AlwaysWarnings{
+      Leak,
+      InvalidAnnotation,
+      AllocationFailure,
+      UnanalyzedInput,
+  };
+  constexpr std::array ByCertainty{
+      UseAfterFree,     DoubleFree,        UseAfterMove,   ConflictingBorrow,
+      LifetimeTooShort, MismatchedRelease, InvalidRelease,
+  };
+  if (std::ranges::find(AlwaysWarnings, id) != AlwaysWarnings.end())
+    return Severity::Warning;
+  if (certainty == Certainty::Possible &&
+      std::ranges::find(ByCertainty, id) != ByCertainty.end())
+    return Severity::Warning;
+  return Severity::Error;
+}
+
+/// False only for `allocation-failure`, which is reported only under
+/// `-Wweavec-allocation-failure` (or `-Wweavec`).
+[[nodiscard]] constexpr bool isEnabledByDefault(std::string_view id) noexcept {
+  return id != AllocationFailure;
 }
 } // namespace diag
 
@@ -127,6 +177,9 @@ struct FixItHint {
 /// A single diagnostic, optionally accompanied by explanatory notes.
 struct Diagnostic {
   Severity severity = Severity::Error;
+  /// RFC 0030 §3. With `id`, it decides the default severity and whether
+  /// `-Wno-weavec[-<id>]` can drop the diagnostic (`diag::defaultSeverity`).
+  Certainty certainty = Certainty::Definite;
   /// One of the identifiers in `weavec::core::diag`.
   std::string_view id;
   std::string message;

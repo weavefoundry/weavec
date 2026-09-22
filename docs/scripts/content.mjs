@@ -25,6 +25,11 @@ export function sections(markdown) {
   }));
 }
 
+// The status an RFC declares in its header block (`- **Status**: Superseded`).
+export function rfcStatus(markdown) {
+  return markdown.match(/\*\*Status\*\*:\s*(.+)/)?.[1]?.trim() || 'Draft';
+}
+
 export function rewriteUrl(url, source, routes) {
   if (!url || /^(?:[a-z][a-z\d+.-]*:|\/\/)/i.test(url) || url.startsWith('/')) return url;
   const hashIndex = url.indexOf('#');

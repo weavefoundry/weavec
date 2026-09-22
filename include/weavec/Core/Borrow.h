@@ -42,6 +42,9 @@ struct Loan {
   LifetimeId lifetime;
   SourceLocation location;
   PlaceId holder;
+  /// RFC 0030 §3.1: the loan holds on every path that reaches here (every
+  /// predecessor merged since it was made had it).
+  bool allPaths = true;
 
   friend bool operator==(const Loan &, const Loan &) = default;
 };
@@ -113,8 +116,13 @@ public:
   /// Loans held by `holder`.
   [[nodiscard]] std::vector<Loan> heldBy(PlaceId holder) const;
 
+  /// RFC 0030 §3.1: `holder` holds its loans on some paths only (its value
+  /// is one of several alternatives).
+  void weakenHolder(PlaceId holder);
+
   /// Set union with `other`: a loan live on either incoming path is live.
-  /// Returns whether this state changed.
+  /// RFC 0030 §3.1: a loan on one side only loses `allPaths`. Returns
+  /// whether this state changed.
   bool join(const BorrowState &other);
 
   /// The live loans, ascending by place, then holder.

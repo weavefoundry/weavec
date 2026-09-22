@@ -497,6 +497,11 @@ New ids, all errors by default:
 | `invalid-release`     | `'<p>' is released but points to a string literal`                                                      | —                                                                                      |
 | `invalid-release`     | `'<p>' is released but does not point to the start of its allocation`                                   | `allocated here`                                                                       |
 
+> **Amended by [RFC 0030](0030-prove-or-trap.md).** `null-dereference` and
+> `use-of-uninitialized` are errors only when definite. The "may be null" forms
+> are removed: `weavec-cc` inserts a trapping check instead (§3.2), and
+> zero-initialisation makes possibly-uninitialised pointers null (§11).
+
 Triggers are the snippets under *Soundness*. Each gets a unit test and a lit
 test under `test/Analysis/rfc0008-*.c`.
 
@@ -673,6 +678,9 @@ Where the code refines the design above:
   annotations are honoured: the result is `MaybeNull` (`Declared`) and a
   `WEAVEC_NONNULL` parameter is a requirement. Nullness annotations alone
   do not make a declaration "annotated" for `annotation-required`.
+  > **Amended by [RFC 0030](0030-prove-or-trap.md).** `annotation-required` is
+  > removed; such a callee gets the unknown-callee default (§5.1), because
+  > nullness annotations only decide null facets and never lift that default.
 - **`_FORTIFY_SOURCE`.** `__builtin___memcpy_chk` and friends resolve to
   the table entry of the function they wrap (`memcpy`), so `requires`
   applies to them and their declaration note is omitted (they are implicit).

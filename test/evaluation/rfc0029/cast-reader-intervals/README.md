@@ -1,1 +1,0 @@
-RFC 0029 discovered regression: transparent byte-pointer casts around reader cursor arithmetic must retain the evaluated byte offset and original storage extent. Frozen before the projection repair; scaled offsets, forged capacity and uninitialized data remain independently checked. No upstream source is changed.

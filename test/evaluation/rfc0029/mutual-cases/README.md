@@ -1,1 +1,0 @@
-Frozen before candidate29 case-limit refinement. A concrete mutual call chain can reach a complete base case without traversing a cycle. The separately selected generic SCC remains exhausted. Null input and an unresolved cycle retain their actual errors. Baseline candidate28.

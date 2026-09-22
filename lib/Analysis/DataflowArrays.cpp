@@ -92,7 +92,7 @@ FunctionDataflow::boundedArrayCell(core::PlaceId storage,
       ++cells;
   if (cells >= core::MaxArrayCells) {
     state.incompleteHeap.insert(storage);
-    reportIncomplete("array element limit reached", at);
+    decideIncomplete("array element limit reached", at);
     return std::nullopt;
   }
   return places.element(storage, key);
@@ -215,7 +215,7 @@ PlaceRef FunctionDataflow::selectArrayElement(PlaceRef storage,
   }
   if (!index || (index->place && index->scale != 1)) {
     state.incompleteHeap.insert(storage.place);
-    reportIncomplete("unresolved array element selection", at);
+    decideIncomplete("unresolved array element selection", at);
     storage.element = core::ElementWitness::unknown();
     return storage;
   }
@@ -362,7 +362,7 @@ void FunctionDataflow::snapshotArrayIndex(core::PlaceId place, const Expr *at,
     if (!existing && std::cmp_greater_equal(count, core::MaxArrayCells)) {
       state.incompleteHeap.insert(array);
       if (at)
-        reportIncomplete("array index snapshot element limit reached", *at);
+        decideIncomplete("array index snapshot element limit reached", *at);
       // The old value must remain possibly consumed even if a later write
       // reinitializes the same syntactic selector with the new index value.
       auto moved = state.moves.recordOf(cell);
@@ -372,21 +372,19 @@ void FunctionDataflow::snapshotArrayIndex(core::PlaceId place, const Expr *at,
             moved = record;
             break;
           }
-      if (moved)
-        state.moves.markMoved(array, moved->reason, moved->location, moved->via,
-                              core::ElementWitness::unknown(), moved->family,
-                              moved->ownValue, moved->guard);
+      if (moved) {
+        moved->element = core::ElementWitness::unknown();
+        state.moves.copyRecord(array, std::move(*moved));
+      }
       continue;
     }
     const auto old = existing.value_or(places.element(array, selectorKey));
     const auto previous = state.moves.recordOf(old);
     copyHeapValue(cell, old, state);
     if (previous) {
-      state.moves.markMoved(old, previous->reason, previous->location,
-                            previous->via, previous->element, previous->family,
-                            previous->ownValue, previous->guard);
+      state.moves.copyRecord(old, *previous);
       if (at)
-        reportIncomplete("array index snapshot generation is ambiguous", *at);
+        decideIncomplete("array index snapshot generation is ambiguous", *at);
     }
     state.forget(cell);
     for (const auto child : places.descendants(cell))
@@ -401,42 +399,6 @@ void FunctionDataflow::initializeArray(core::PlaceId storage, QualType type,
   const auto *array = context.getAsConstantArrayType(type);
   if (!array)
     return;
-  if (state.safety &&
-      (decl.hasLocalStorage() ||
-       (decl.isStaticLocal() && array->getElementType().isConstQualified())) &&
-      init && array->getElementType()->isCharType() &&
-      !array->getElementType().isVolatileQualified() &&
-      context.getCharWidth() == 8 &&
-      array->getSize().getLimitedValue(65) <= 64) {
-    const auto size = array->getSize().getZExtValue();
-    const auto *literal = dyn_cast<StringLiteral>(init->IgnoreParenImpCasts());
-    const auto *values = dyn_cast<InitListExpr>(init->IgnoreParenImpCasts());
-    std::string bytes;
-    bool known = literal != nullptr || values != nullptr;
-    for (std::uint64_t i = 0; known && i < size; ++i) {
-      std::uint64_t byte = 0;
-      if (literal && i < literal->getLength()) {
-        byte = literal->getCodeUnit(static_cast<unsigned>(i));
-      } else if (values && i < values->getNumInits()) {
-        const auto value =
-            integerRangeOf(*values->getInit(static_cast<unsigned>(i)), state);
-        const auto exact = value && !value->mayBeInvalid
-                               ? value->values.constant()
-                               : std::nullopt;
-        known = exact.has_value();
-        if (exact)
-          byte = exact->bits;
-      }
-      bytes.push_back(static_cast<char>(byte & 255U));
-    }
-    if (known && !bytes.empty())
-      state.safety->initialize(
-          storage,
-          {.begin = {},
-           .end = core::Affine::ofConstant(static_cast<std::int64_t>(size)),
-           .bytes = std::move(bytes),
-           .immutableBytes = array->getElementType().isConstQualified()});
-  }
   const bool scalar =
       decl.hasLocalStorage() && array->getElementType()->isIntegerType() &&
       !array->getElementType().isVolatileQualified() &&
@@ -477,7 +439,7 @@ void FunctionDataflow::initializeArray(core::PlaceId storage, QualType type,
                              decl.hasGlobalStorage());
   }
   if (count > core::MaxArrayCells && init)
-    reportIncomplete("array initializer exceeds element limit", *init);
+    decideIncomplete("array initializer exceeds element limit", *init);
 }
 
 void FunctionDataflow::initializeArrayValue(core::PlaceId cell, QualType type,
@@ -488,7 +450,7 @@ void FunctionDataflow::initializeArrayValue(core::PlaceId cell, QualType type,
   if (places.depth(cell) >= PlaceBuilder::MaxPlaceDepth) {
     state.incompleteHeap.insert(cell);
     if (value)
-      reportIncomplete("array initializer exceeds path limit", *value);
+      decideIncomplete("array initializer exceeds path limit", *value);
     return;
   }
   if (type->isArrayType()) {
@@ -575,7 +537,10 @@ void FunctionDataflow::weakenOverlappingArrayWrites(
     auto alternative = state;
     auto *previousState = currentState;
     currentState = &alternative;
+    const bool wasWeakening = weakeningArrayWrite;
+    weakeningArrayWrite = true;
     applyPointerAssign(*target, origin, at, constPointee, alternative);
+    weakeningArrayWrite = wasWeakening;
     currentState = previousState;
     state.join(alternative, &places);
   }
@@ -638,7 +603,8 @@ void FunctionDataflow::checkArrayTraversal(core::PlaceId storage,
                           .pointer = parent,
                           .offset = spatial->offset,
                           .unit = size,
-                          .declared = spatial->declared};
+                          .declared = spatial->declared,
+                          .extentClass = spatial->extentClass};
   } else if (const auto *decl = builder.varForPlace(*parent);
              decl && decl->getType()->isArrayType()) {
     if (const auto extent = byteSizeOf(decl->getType(), context))

@@ -1,6 +1,6 @@
 ---
 title: Troubleshooting
-description: Resolve installation problems, missing compilation flags, stale sidecars, and incomplete checked results.
+description: Resolve installation problems, missing compilation flags, runtime traps, unresolved ledger rows, and link inputs without WeaveC records.
 ---
 
 ## CMake cannot find LLVM or Clang
@@ -29,17 +29,27 @@ Resolve Clang parse errors before interpreting analysis results.
 
 ## A helper's behavior is not visible
 
-Analyze its source with the caller using `--whole-program`, or use the compiler driver through the final link. An unannotated declaration alone does not provide the body contract of an unavailable function.
+Analyze its source with the caller using `--whole-program`, or use the compiler driver through the final link. An unannotated declaration alone does not describe an unavailable function: WeaveC assumes it may free, keep or replace its pointer arguments, and the ledger lists the affected operations as `unresolved(unknown-callee)` with a suggested annotation.
 
-For callbacks, ensure the actual targets are represented. A matching function-pointer type is not a substitute for a known target or accurate type contract.
+For callbacks, ensure the actual targets are stored somewhere the program can see. A function-pointer type alone does not say which function a call reaches.
 
-## A checked build reports stale metadata
+## A program built with weavec-cc traps
 
-Rebuild both the object and its sidecar from the current source, headers, flags, and WeaveC version. Do not pair an older object with a new source-only analysis. Removing an optional analysis cache is safe; deleting required object metadata is not a way to establish a checked dependency.
+A trap (`SIGTRAP` or `SIGILL`) means a runtime check failed: a null dereference or an out-of-bounds access was about to happen. Rebuild with `-fweavec-checks=report` and rerun; each failed check prints `weavec: runtime check failed: <template> at <file>:<line>:<column>` and the program continues, so one run shows every failing site. The ledger row at that line says what was checked.
 
-## A clean ordinary run fails in checked mode
+Usually the trap is a real bug. Sometimes the code relies on undefined behavior that happens to work, such as reading one element past an array; fix it, or move the operation into a narrow `WEAVEC_UNSAFE` region. Declared extents are enforced too: a call that passes less than a `WEAVEC_COUNTED_BY(n)` parameter promises can trap at the call.
 
-This can be expected. Ordinary diagnostics find supported violations; checked mode also rejects missing evidence. Read the reported obligation, then establish the missing fact or isolate the trusted boundary. See [safety guarantees](/reference/guarantees/).
+## The ledger has many unresolved rows
+
+Read `summary.unresolvedReasons` in the ledger. `unknown-callee` rows go away when the callee's definition is linked in or its declaration states its ownership; `unknown-extent` rows need a declared extent (`WEAVEC_COUNTED_BY`, `WEAVEC_ENDED_BY`, `WEAVEC_STRING`); `budget` rows name a function that exceeded the analysis budget (`-fweavec-budget`). See [adopt WeaveC incrementally](/guides/adoption/).
+
+## The link warns about an unanalyzed input
+
+`unanalyzed-input` names the link inputs that have no valid WeaveC record: objects from another compiler, static archives, shared libraries, and objects whose record is stale. Calls into them are trusted. Rebuild the objects with `weavec-cc`; keep each `.o.weavec` record beside its object. Archives and shared libraries do not carry records yet.
+
+## A require level rejects the build
+
+`-fweavec-require=checked` makes every unresolved operation an `unresolved-operation` error, and `-fweavec-require=proven` also makes every runtime-checked operation an `unchecked-operation` error. The message names the reason. Resolve it as above or lower the level for that component. A spatial or null operation that is correct for reasons WeaveC cannot see can go in a reviewed `WEAVEC_UNSAFE` region: its facets become trusted, which every level allows.
 
 ## Report an issue
 

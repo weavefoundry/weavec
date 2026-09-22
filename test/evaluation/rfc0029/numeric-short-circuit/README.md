@@ -1,1 +1,0 @@
-Frozen before candidate 63. Candidate 62a rejects both equivalent short-circuit positives and all three unsafe counterparts. SHA256SUMS retains the original pre-change inventory; frozen-sha256.json is its exact JSON translation for the workflow runner. The condition operands may preserve the already-visited prefix but may not assume a strict body bound.

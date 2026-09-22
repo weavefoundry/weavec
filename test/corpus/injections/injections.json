@@ -1,0 +1,508 @@
+{
+  "schema": "weavec-corpus-injections",
+  "version": 1,
+  "_comment": [
+    "Injected bugs for gate G12 (RFC 0030, section 17.5): scripts/corpus-gate.py --inject",
+    "applies each patch to a copy of the config's pinned checkout and checks that the bug",
+    "is reported at `file`:`line` (the line that carries the INJECTED comment).",
+    "`expect.ids` (+ `severity`: error, warning or any) is met by a diagnostic with one of",
+    "the ids at that line; `expect.trap` (+ `run`) by a report-mode check failure with that",
+    "template at that line while `run` executes in the built copy. An entry with both is met",
+    "by either. `mode` is unit (the patched file alone) or whole-program (weavec",
+    "--whole-program over the config's files, and a weavec-cc link where the config has",
+    "`link`). `required` entries must be reported for G12 to pass; `dossier` records what",
+    "the v0.10.0 measurement found (caught or missed) where it measured the same bug."
+  ],
+  "injections": [
+    {
+      "id": "sds-uaf-sdsfree",
+      "config": "sds",
+      "patch": "sds/uaf-sdsfree.patch",
+      "file": "sds.c",
+      "line": 168,
+      "expect": {
+        "ids": [
+          "use-after-free"
+        ],
+        "severity": "any"
+      },
+      "mode": "unit",
+      "description": "writes the string after sdsfree released its header allocation (s_free of s - header)",
+      "dossier": "caught"
+    },
+    {
+      "id": "sds-df-freesplitres",
+      "config": "sds",
+      "patch": "sds/df-freesplitres.patch",
+      "file": "sds.c",
+      "line": 890,
+      "expect": {
+        "ids": [
+          "double-free"
+        ],
+        "severity": "any"
+      },
+      "mode": "unit",
+      "description": "frees the token vector twice in sdsfreesplitres",
+      "dossier": "caught"
+    },
+    {
+      "id": "sds-uaf-makeroomfor",
+      "config": "sds",
+      "patch": "sds/uaf-makeroomfor.patch",
+      "file": "sds.c",
+      "line": 241,
+      "expect": {
+        "ids": [
+          "use-after-free"
+        ],
+        "severity": "any"
+      },
+      "mode": "unit",
+      "description": "sdsMakeRoomFor frees the old header allocation before copying the string out of it"
+    },
+    {
+      "id": "cjson-uaf-delete",
+      "config": "cJSON",
+      "patch": "cJSON/uaf-delete.patch",
+      "file": "cJSON.c",
+      "line": 274,
+      "expect": {
+        "ids": [
+          "use-after-free"
+        ],
+        "severity": "any"
+      },
+      "mode": "unit",
+      "description": "cJSON_Delete writes the item after freeing it through the global_hooks.deallocate hook",
+      "dossier": "caught"
+    },
+    {
+      "id": "cjson-df-valuestring",
+      "config": "cJSON",
+      "patch": "cJSON/df-valuestring.patch",
+      "file": "cJSON.c",
+      "line": 266,
+      "expect": {
+        "ids": [
+          "double-free"
+        ],
+        "severity": "any"
+      },
+      "mode": "unit",
+      "description": "cJSON_Delete frees the value string twice through the deallocate hook"
+    },
+    {
+      "id": "cjson-oob-number",
+      "config": "cJSON",
+      "patch": "cJSON/oob-number.patch",
+      "file": "cJSON.c",
+      "line": 364,
+      "expect": {
+        "ids": [
+          "out-of-bounds"
+        ],
+        "severity": "any",
+        "trap": "index",
+        "run": "ctest --test-dir out --output-on-failure"
+      },
+      "mode": "unit",
+      "description": "parse_number terminates its number_string_length + 1 byte copy one byte past the end"
+    },
+    {
+      "id": "cjsonprog-uaf-findpointer",
+      "config": "cJSON-program",
+      "patch": "cJSON/uaf-findpointer.patch",
+      "file": "cJSON_Utils.c",
+      "line": 235,
+      "expect": {
+        "ids": [
+          "use-after-free"
+        ],
+        "severity": "any"
+      },
+      "mode": "whole-program",
+      "description": "cJSONUtils_FindPointerFromObjectTo frees the child path (cJSON_free, defined in cJSON.c) before formatting it"
+    },
+    {
+      "id": "cjsonprog-df-overwrite",
+      "config": "cJSON-program",
+      "patch": "cJSON/df-overwrite.patch",
+      "file": "cJSON_Utils.c",
+      "line": 802,
+      "expect": {
+        "ids": [
+          "double-free"
+        ],
+        "severity": "any"
+      },
+      "mode": "whole-program",
+      "description": "overwrite_item deletes the child tree twice (cJSON_Delete is defined in cJSON.c)"
+    },
+    {
+      "id": "jsmn-uaf-jsondump",
+      "config": "jsmn",
+      "patch": "jsmn/uaf-jsondump.patch",
+      "file": "example/jsondump.c",
+      "line": 129,
+      "expect": {
+        "ids": [
+          "use-after-free"
+        ],
+        "severity": "any"
+      },
+      "mode": "unit",
+      "description": "jsondump frees the token array and then dumps it"
+    },
+    {
+      "id": "jsmn-df-jsondump",
+      "config": "jsmn",
+      "patch": "jsmn/df-jsondump.patch",
+      "file": "example/jsondump.c",
+      "line": 104,
+      "expect": {
+        "ids": [
+          "double-free"
+        ],
+        "severity": "any"
+      },
+      "mode": "unit",
+      "description": "jsondump's end-of-input cleanup frees the input buffer twice"
+    },
+    {
+      "id": "logc-oob-callbacks",
+      "config": "log.c",
+      "patch": "log.c/oob-callbacks.patch",
+      "file": "src/log.c",
+      "line": 157,
+      "expect": {
+        "ids": [
+          "out-of-bounds"
+        ],
+        "severity": "any",
+        "trap": "index",
+        "run": "\"$CC\" -std=c99 -Isrc -DLOG_USE_COLOR -o inj-driver \"$INJECTION_DIR/driver.c\" src/log.c && ./inj-driver"
+      },
+      "mode": "unit",
+      "description": "log_log's callback loop reads one entry past the callback table when all slots are in use"
+    },
+    {
+      "id": "logc-null-lock",
+      "config": "log.c",
+      "patch": "log.c/null-lock.patch",
+      "file": "src/log.c",
+      "line": 85,
+      "expect": {
+        "ids": [
+          "null-dereference"
+        ],
+        "severity": "any",
+        "trap": "nonnull",
+        "run": "\"$CC\" -std=c99 -Isrc -DLOG_USE_COLOR -o inj-driver \"$INJECTION_DIR/driver.c\" src/log.c && ./inj-driver"
+      },
+      "mode": "unit",
+      "description": "lock() calls the optional lock callback without testing it, which is null unless log_set_lock was called"
+    },
+    {
+      "id": "printf-oob-pow10",
+      "config": "printf",
+      "patch": "printf/oob-pow10.patch",
+      "file": "printf.c",
+      "line": 384,
+      "expect": {
+        "ids": [
+          "out-of-bounds"
+        ],
+        "severity": "any",
+        "trap": "index",
+        "run": "\"$CC\" -std=c99 -I. -o inj-driver \"$INJECTION_DIR/driver.c\" printf.c -lm && ./inj-driver"
+      },
+      "mode": "unit",
+      "description": "_ftoa's precision limit is off by one, so a precision of 10 reads pow10[10]"
+    },
+    {
+      "id": "linenoise-uaf-freehistory",
+      "config": "linenoise",
+      "patch": "linenoise/uaf-freehistory.patch",
+      "file": "linenoise.c",
+      "line": 2250,
+      "expect": {
+        "ids": [
+          "use-after-free"
+        ],
+        "severity": "any"
+      },
+      "mode": "unit",
+      "description": "freeHistory clears the first entry of the history array after freeing the array",
+      "dossier": "caught"
+    },
+    {
+      "id": "linenoise-uaf-setmaxlen",
+      "config": "linenoise",
+      "patch": "linenoise/uaf-setmaxlen.patch",
+      "file": "linenoise.c",
+      "line": 2318,
+      "expect": {
+        "ids": [
+          "use-after-free"
+        ],
+        "severity": "any"
+      },
+      "mode": "unit",
+      "description": "linenoiseHistorySetMaxLen frees the old history array before copying the entries out of it"
+    },
+    {
+      "id": "lnprog-uaf-example",
+      "config": "linenoise-program",
+      "patch": "linenoise/uaf-example.patch",
+      "file": "example.c",
+      "line": 128,
+      "expect": {
+        "ids": [
+          "use-after-free"
+        ],
+        "severity": "any"
+      },
+      "mode": "whole-program",
+      "description": "example.c reads the line after releasing it with linenoiseFree, defined in linenoise.c"
+    },
+    {
+      "id": "lnprog-df-example",
+      "config": "linenoise-program",
+      "patch": "linenoise/df-example.patch",
+      "file": "example.c",
+      "line": 128,
+      "expect": {
+        "ids": [
+          "double-free"
+        ],
+        "severity": "any"
+      },
+      "mode": "whole-program",
+      "description": "example.c releases the line twice: free, then linenoiseFree from linenoise.c"
+    },
+    {
+      "id": "zlib-df-deflateend",
+      "config": "zlib",
+      "patch": "zlib/df-deflateend.patch",
+      "file": "deflate.c",
+      "line": 1302,
+      "expect": {
+        "ids": [
+          "double-free"
+        ],
+        "severity": "any"
+      },
+      "mode": "whole-program",
+      "description": "deflateEnd frees the pending buffer twice through the stream's zfree function pointer"
+    },
+    {
+      "id": "zlib-uaf-inflateend",
+      "config": "zlib",
+      "patch": "zlib/uaf-inflateend.patch",
+      "file": "inflate.c",
+      "line": 1162,
+      "expect": {
+        "ids": [
+          "use-after-free"
+        ],
+        "severity": "any"
+      },
+      "mode": "whole-program",
+      "description": "inflateEnd writes the state through its local alias after freeing it with zfree"
+    },
+    {
+      "id": "zlib-uaf-gzclose-r",
+      "config": "zlib",
+      "patch": "zlib/uaf-gzclose-r.patch",
+      "file": "gzread.c",
+      "line": 666,
+      "expect": {
+        "ids": [
+          "use-after-free"
+        ],
+        "severity": "any"
+      },
+      "mode": "whole-program",
+      "description": "gzclose_r frees the path through the state after freeing the state"
+    },
+    {
+      "id": "zlib-df-gzclose-w",
+      "config": "zlib",
+      "patch": "zlib/df-gzclose-w.patch",
+      "file": "gzwrite.c",
+      "line": 693,
+      "expect": {
+        "ids": [
+          "double-free"
+        ],
+        "severity": "any"
+      },
+      "mode": "whole-program",
+      "description": "gzclose_w frees the input buffer twice"
+    },
+    {
+      "id": "zlib-oob-inflate-order",
+      "config": "zlib",
+      "patch": "zlib/oob-inflate-order.patch",
+      "file": "inflate.c",
+      "line": 808,
+      "expect": {
+        "ids": [
+          "out-of-bounds"
+        ],
+        "severity": "any",
+        "trap": "index",
+        "run": "./example"
+      },
+      "mode": "whole-program",
+      "description": "inflate's code-length loop runs one step too far and reads order[19] for every dynamic block"
+    },
+    {
+      "id": "lua-uaf-luah-free",
+      "config": "lua",
+      "patch": "lua/uaf-luah-free.patch",
+      "file": "ltable.c",
+      "line": 825,
+      "expect": {
+        "ids": [
+          "use-after-free"
+        ],
+        "severity": "any"
+      },
+      "mode": "whole-program",
+      "description": "luaH_free writes the table after luaM_free released it through g->frealloc",
+      "required": true,
+      "dossier": "missed"
+    },
+    {
+      "id": "lua-df-freeproto",
+      "config": "lua",
+      "patch": "lua/df-freeproto.patch",
+      "file": "lfunc.c",
+      "line": 293,
+      "expect": {
+        "ids": [
+          "double-free"
+        ],
+        "severity": "any"
+      },
+      "mode": "whole-program",
+      "description": "luaF_freeproto frees the constant array twice through luaM_freearray (g->frealloc)",
+      "required": true,
+      "dossier": "missed"
+    },
+    {
+      "id": "lua-uaf-lua-c",
+      "config": "lua",
+      "patch": "lua/uaf-lua-c.patch",
+      "file": "lua.c",
+      "line": 593,
+      "expect": {
+        "ids": [
+          "use-after-free"
+        ],
+        "severity": "any"
+      },
+      "mode": "whole-program",
+      "description": "a helper in lua.c reads a malloc'd copy of the prompt after freeing it (plain malloc/free)",
+      "dossier": "caught"
+    },
+    {
+      "id": "lua-uaf-close-state",
+      "config": "lua",
+      "patch": "lua/uaf-close-state.patch",
+      "file": "lstate.c",
+      "line": 275,
+      "expect": {
+        "ids": [
+          "use-after-free"
+        ],
+        "severity": "any"
+      },
+      "mode": "whole-program",
+      "description": "close_state writes the global state after freeing the main block through g->frealloc"
+    },
+    {
+      "id": "jansson-df-strbuffer-close",
+      "config": "jansson",
+      "patch": "jansson/df-strbuffer-close.patch",
+      "file": "src/strbuffer.c",
+      "line": 37,
+      "expect": {
+        "ids": [
+          "double-free"
+        ],
+        "severity": "any"
+      },
+      "mode": "whole-program",
+      "description": "strbuffer_close frees the buffer a second time outside the null test",
+      "dossier": "caught"
+    },
+    {
+      "id": "jansson-df-array-remove",
+      "config": "jansson",
+      "patch": "jansson/df-array-remove.patch",
+      "file": "src/value.c",
+      "line": 597,
+      "expect": {
+        "ids": [
+          "double-free",
+          "use-after-free"
+        ],
+        "severity": "any"
+      },
+      "mode": "whole-program",
+      "description": "json_array_remove releases the removed element's reference twice",
+      "dossier": "caught"
+    },
+    {
+      "id": "jansson-uaf-delete-string",
+      "config": "jansson",
+      "patch": "jansson/uaf-delete-string.patch",
+      "file": "src/value.c",
+      "line": 822,
+      "expect": {
+        "ids": [
+          "use-after-free"
+        ],
+        "severity": "any"
+      },
+      "mode": "whole-program",
+      "description": "json_delete_string writes the string after freeing it through jsonp_free",
+      "dossier": "caught"
+    },
+    {
+      "id": "jansson-uaf-hashtable-del",
+      "config": "jansson",
+      "patch": "jansson/uaf-hashtable-del.patch",
+      "file": "src/hashtable.c",
+      "line": 122,
+      "expect": {
+        "ids": [
+          "use-after-free"
+        ],
+        "severity": "any"
+      },
+      "mode": "whole-program",
+      "description": "hashtable_do_del releases the pair's value after freeing the pair"
+    },
+    {
+      "id": "jansson-len-dump-integer",
+      "config": "jansson",
+      "patch": "jansson/len-dump-integer.patch",
+      "file": "src/dump.c",
+      "line": 241,
+      "expect": {
+        "ids": [
+          "out-of-bounds"
+        ],
+        "severity": "any",
+        "trap": "len",
+        "run": "ctest --test-dir out --output-on-failure -R '^test_'"
+      },
+      "mode": "whole-program",
+      "description": "do_dump passes snprintf a size one larger than its integer buffer"
+    }
+  ]
+}

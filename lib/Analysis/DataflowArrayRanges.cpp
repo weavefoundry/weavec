@@ -108,7 +108,7 @@ void FunctionDataflow::materializeArrayCell(core::PlaceId storage,
     if (!sourceIndex || type.isNull() ||
         range.materialized.size() >= core::MaxArrayCells) {
       state.incompleteHeap.insert(storage);
-      reportIncomplete("unsupported array range selection", at);
+      decideIncomplete("unsupported array range selection", at);
       continue;
     }
     const auto input = places.element(range.snapshot, sourceIndex->toString());
@@ -118,7 +118,7 @@ void FunctionDataflow::materializeArrayCell(core::PlaceId storage,
       if (range.captured.size() >= core::MaxArrayCells) {
         range.sourceLive = false;
         state.incompleteHeap.insert(storage);
-        reportIncomplete("array source snapshot limit reached", at);
+        decideIncomplete("array source snapshot limit reached", at);
         continue;
       }
       snapshotArrayCell(cell, places.element(range.snapshot, index.toString()),
@@ -128,7 +128,7 @@ void FunctionDataflow::materializeArrayCell(core::PlaceId storage,
     if (!range.captured.contains(*sourceIndex)) {
       if (!range.sourceLive || range.captured.size() >= core::MaxArrayCells) {
         state.incompleteHeap.insert(storage);
-        reportIncomplete("array source snapshot is incomplete", at);
+        decideIncomplete("array source snapshot is incomplete", at);
         continue;
       }
       const auto source =
@@ -162,7 +162,7 @@ void FunctionDataflow::materializeArrayCell(core::PlaceId storage,
       state.join(*before, &places);
       if (!numericCount) {
         state.incompleteHeap.insert(storage);
-        reportIncomplete("array range membership is unresolved", at);
+        decideIncomplete("array range membership is unresolved", at);
       }
       // join may invalidate references into a map when future domains grow;
       // no access through `range` follows the join.
@@ -180,7 +180,7 @@ void FunctionDataflow::materializeArrayCell(core::PlaceId storage,
     if (range.captured.size() >= core::MaxArrayCells) {
       range.sourceLive = false;
       state.incompleteHeap.insert(range.destination);
-      reportIncomplete("array source snapshot limit reached", at);
+      decideIncomplete("array source snapshot limit reached", at);
       continue;
     }
     const auto input = places.element(range.snapshot, index.toString());
@@ -205,7 +205,7 @@ bool FunctionDataflow::installArrayRange(const ArrayBuffer &dest,
   if (std::ranges::count_if(state.arrayRanges, [&](const auto &entry) {
         return entry.second.destination == dest.storage;
       }) >= static_cast<std::ptrdiff_t>(core::MaxArrayRanges)) {
-    reportIncomplete("array range limit reached", call);
+    decideIncomplete("array range limit reached", call);
     state.incompleteHeap.insert(dest.storage);
     return false;
   }
@@ -223,7 +223,7 @@ bool FunctionDataflow::installArrayRange(const ArrayBuffer &dest,
   arrayTypes[snapshot] = source.element;
   if (state.arrayRanges.contains(snapshot)) {
     state.incompleteHeap.insert(dest.storage);
-    reportIncomplete("array range snapshot generation is ambiguous", call);
+    decideIncomplete("array range snapshot generation is ambiguous", call);
     definite = false;
   }
   core::ArrayRange range{.destination = dest.storage,
@@ -243,7 +243,7 @@ bool FunctionDataflow::installArrayRange(const ArrayBuffer &dest,
   if (composedSource) {
     range.sourceLive = false;
     state.incompleteHeap.insert(dest.storage);
-    reportIncomplete("symbolic array copy composition is incomplete", call);
+    decideIncomplete("symbolic array copy composition is incomplete", call);
   }
   const auto output = stableSummaryPathOf(dest.storage);
   const auto input = stableSummaryPathOf(source.storage);
@@ -280,7 +280,7 @@ bool FunctionDataflow::installArrayRange(const ArrayBuffer &dest,
       // still holds its entry value. Concrete copied cells remain useful.
       range.exported.reset();
       state.incompleteHeap.insert(dest.storage);
-      reportIncomplete("array source was changed before the copied range",
+      decideIncomplete("array source was changed before the copied range",
                        call);
     }
     snapshotArrayCell(cell, places.element(snapshot, selector->toString()),
@@ -293,7 +293,7 @@ bool FunctionDataflow::installArrayRange(const ArrayBuffer &dest,
   for (auto it = state.arrayRanges.begin(); it != state.arrayRanges.end();) {
     if (it->second.destination == dest.storage) {
       state.incompleteHeap.insert(dest.storage);
-      reportIncomplete(
+      decideIncomplete(
           "overlapping symbolic array ranges require a wider relation", call);
       it = state.arrayRanges.erase(it);
     } else {
@@ -345,7 +345,7 @@ void FunctionDataflow::applyArrayRanges(const CallExpr &call,
       dest = PlaceRef{.place = found->second, .derefs = {}, .element = {}};
     }
     if (!dest || !source || !destBegin || !sourceBegin || !count) {
-      reportIncomplete("unresolved array range at call", call);
+      decideIncomplete("unresolved array range at call", call);
       continue;
     }
     const auto destType = arrayElementType(dest->place);
@@ -364,7 +364,7 @@ void FunctionDataflow::applyArrayRanges(const CallExpr &call,
                             .explicitArray = true},
                            *count, call, state, ordinal++,
                            copy.definite && when.trivial()))
-      reportIncomplete("incompatible or unsupported array range at call", call);
+      decideIncomplete("incompatible or unsupported array range at call", call);
   }
 }
 

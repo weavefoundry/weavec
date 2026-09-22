@@ -3,41 +3,12 @@ weavec_add_library(
   Analysis
   SOURCES Allocators.cpp
           Annotations.cpp
-          Builtins.cpp
-          RuntimeModels.cpp
-          DataflowRuntime.cpp
-          DataflowFormats.cpp
-          DataflowArgumentLists.cpp
+          BypassedDeclarations.cpp
+          LibrarySummaries.cpp
           ClangLocation.cpp
           InterfaceTypes.cpp
           Dataflow.cpp
-          DataflowContainers.cpp
-          DataflowContainerTransfer.cpp
-          DataflowContainerContracts.cpp
-          DataflowFootprints.cpp
-          DataflowFloating.cpp
-          DataflowSafety.cpp
-          FloatingCastSupport.cpp
-          DataflowBuffers.cpp
-          DataflowBufferDiscovery.cpp
-          DataflowRecursiveConstruction.cpp
-          DataflowRecursiveExtension.cpp
-          DataflowRecursiveWriting.cpp
-          DataflowBufferContracts.cpp
-          DataflowCases.cpp
-          DataflowUnions.cpp
-          DataflowObjectTypes.cpp
-          DataflowCheckedCallbacks.cpp
-          DataflowSafetyMemory.cpp
-          DataflowSafetyCalls.cpp
-          DataflowSafetyContracts.cpp
-          DataflowSafetyLoops.cpp
-          DataflowPointerOperations.cpp
-          DataflowTraversalRelations.cpp
-          DataflowCursors.cpp
-          DataflowSpans.cpp
-          DataflowStringTraversal.cpp
-          DataflowByteContents.cpp
+          DataflowIntervalProofs.cpp
           DataflowArrays.cpp
           DataflowArrayMemory.cpp
           DataflowArrayRanges.cpp
@@ -54,8 +25,12 @@ weavec_add_library(
           DataflowHeap.cpp
           DataflowMemory.cpp
           DataflowViews.cpp
+          DataflowWitnesses.cpp
+          DataflowLibraryRequirements.cpp
+          DataflowLibraryEffects.cpp
+          KindSeeding.cpp
           DataflowCallbacks.cpp
-          DataflowCallbackContracts.cpp
+          DataflowUnknown.cpp
           CallbackSummaries.cpp
           CallContextSummaries.cpp
           DataflowCallContext.cpp
@@ -68,9 +43,24 @@ weavec_add_library(
           Summaries.cpp
           SummaryDependencies.cpp
           TranslationUnitAnalysis.cpp
-          RecursiveContracts.cpp
           DataflowLoopRequirements.cpp
           DataflowGuardCompleteness.cpp
+          KindTable.cpp
+          AttributeReader.cpp
+          KindInference.cpp
+          KindInferenceCollect.cpp
+          KindInferenceDump.cpp
+          KindInferenceFields.cpp
+          KindInferenceMustAccess.cpp
+          SlotCollector.cpp
+          Concurrency.cpp
+          SiteCollector.cpp
+          CheckPlanner.cpp
+          BoundaryInvariants.cpp
+          LedgerAdapter.cpp
+          SafetyEngine.cpp
+          DataflowEngine.cpp
+          UnitPipeline.cpp
   PUBLIC_DEPS weavec::Core
   USES_LLVM)
 

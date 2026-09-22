@@ -1,0 +1,10 @@
+--- a/cJSON.c
++++ b/cJSON.c
+@@ -271,6 +271,7 @@
+             item->string = NULL;
+         }
+         global_hooks.deallocate(item);
++        item->type = 0; /* INJECTED: use after free */
+         item = next;
+     }
+ }

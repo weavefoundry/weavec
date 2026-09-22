@@ -14,10 +14,12 @@
 //   weavec-cc foo.o bar.o -o prog
 //   CC=weavec-cc make
 //
-// WeaveC's flags: -fweavec / -fno-weavec, -fweavec-strict,
-// -fweavec-exclusive-borrows, -fweavec-report-unannotated,
-// -fweavec-analyze-headers,
-// -fweavec-dump-analysis, -fno-weavec-link, -W[no-]weavec-<id>,
+// WeaveC's flags (RFC 0030 §16; `weavec-cc --help-weavec` lists them):
+// -f[no-]weavec, -fweavec-checks=, -f[no-]weavec-zero-init,
+// -fweavec-require=, -fweavec-ledger=, -fweavec-ledger-format=,
+// -f[no-]weavec-summary, -fweavec-budget=, -f[no-]weavec-link,
+// -fweavec-print-prelude, -fweavec-dump-analysis,
+// -fweavec-analysis-stats=, -W[no-]weavec[-<id>] and
 // -W[no-]error=weavec[-<id>]. Everything else is Clang's.
 //
 //===----------------------------------------------------------------------===//

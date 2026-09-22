@@ -1,12 +1,12 @@
 # RFC 0029: Compositional invariants for recursive C workflows
 
-- **Status**: Accepted
+- **Status**: Superseded
 - **Authors**: WeaveC authors
 - **Created**: 2026-09-16
 - **Tracking issue**: TBD
-- **Supersedes / superseded by**: Extends RFCs 0017–0028; supersedes RFC
-  0026's exact two-counter discovery restriction and RFC 0027's direct,
-  single-parameter cleanup induction restriction where the rules below apply.
+- **Supersedes / superseded by**: Superseded by RFC 0030
+
+> Superseded by [RFC 0030](0030-prove-or-trap.md).
 
 ## Summary
 

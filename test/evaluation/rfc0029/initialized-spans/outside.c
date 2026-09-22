@@ -1,2 +1,0 @@
-int pair(const unsigned char *, const unsigned char *);
-int main(void) { const unsigned char a[2] = {1,2}; return pair(a,a+3); }

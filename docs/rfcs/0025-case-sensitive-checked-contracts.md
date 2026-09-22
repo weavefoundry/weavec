@@ -1,12 +1,12 @@
 # RFC 0025: Case-sensitive checked contracts and discriminated C objects
 
-- **Status**: Implemented
+- **Status**: Superseded
 - **Authors**: WeaveC authors
 - **Created**: 2026-09-12
 - **Tracking issue**: TBD
-- **Supersedes / superseded by**: Extends RFCs 0016 and 0019's caller
-  contexts, RFC 0018's checked operation inventory, and RFC 0022's object
-  views. Amends the blanket exclusion of union storage in RFC 0018.
+- **Supersedes / superseded by**: Superseded by RFC 0030
+
+> Superseded by [RFC 0030](0030-prove-or-trap.md).
 
 ## Summary
 
@@ -22,8 +22,8 @@ The owner requested this RFC first and then implementation end to end.
 Acceptance after drafting records that authorization; it does not imply an
 independent review or a merged RFC pull request.
 
-Implementation and acceptance evidence are recorded in the
-[validation document](../validation-rfc0025.md).
+Implementation and acceptance evidence were recorded in the
+validation document (removed by RFC 0030).
 
 ## Motivation
 

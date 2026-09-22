@@ -1,1 +1,0 @@
-Frozen before symbolic same-array byte difference inference, against candidate76c. Runtime selects the scan endpoint. Offset variant checks nonzero array origin. Negatives cover missing terminator space, extra output, post-allocation cursor change, and different-array subtraction.

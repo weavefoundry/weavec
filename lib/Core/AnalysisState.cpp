@@ -36,6 +36,8 @@ std::vector<PlaceId> PendingOutcome::select(const std::set<Outcome> &selected) {
   for (auto it = consumedBy.begin(); it != consumedBy.end();) {
     if (!selected.contains(it->first)) {
       guardedBy.erase(it->first);
+      releasedBy.erase(it->first);
+      replacedBy.erase(it->first);
       it = consumedBy.erase(it);
       continue;
     }
@@ -97,33 +99,42 @@ inAllClasses(const std::map<Outcome, std::vector<PlaceId>> &consumedBy,
   return result;
 }
 
+/// The places of `consumedBy` that every consuming class lists in `per`.
+static std::vector<PlaceId>
+inEveryConsumer(const PendingOutcome &pending,
+                const std::map<Outcome, std::vector<PlaceId>> &per) {
+  std::vector<PlaceId> result;
+  for (const PlaceId place : pending.places()) {
+    bool any = false;
+    bool all = true;
+    for (const auto &[outcome, consumed] : pending.consumedBy) {
+      if (std::ranges::find(consumed, place) == consumed.end())
+        continue;
+      any = true;
+      const auto listed = per.find(outcome);
+      all = all && listed != per.end() &&
+            std::ranges::find(listed->second, place) != listed->second.end();
+    }
+    if (any && all)
+      result.push_back(place);
+  }
+  return result;
+}
+
+std::vector<PlaceId> PendingOutcome::releasedInAll() const {
+  return inEveryConsumer(*this, releasedBy);
+}
+
+std::vector<PlaceId> PendingOutcome::replacedInAll() const {
+  return inEveryConsumer(*this, replacedBy);
+}
+
 std::vector<PlaceId> PendingOutcome::nullInAll() const {
   return inAllClasses(consumedBy, nullOn);
 }
 
 std::vector<PlaceId> PendingOutcome::nonNullInAll() const {
   return inAllClasses(consumedBy, nonNullOn);
-}
-
-std::vector<std::pair<PlaceId, InitializedRange>>
-PendingOutcome::initializedInAll() const {
-  std::vector<std::pair<PlaceId, InitializedRange>> result;
-  bool first = true;
-  for (const auto &[outcome, consumed] : consumedBy) {
-    (void)consumed;
-    const auto found = initializedOn.find(outcome);
-    if (found == initializedOn.end())
-      return {};
-    if (first) {
-      result = found->second;
-      first = false;
-    } else {
-      std::erase_if(result, [&](const auto &fact) {
-        return std::ranges::find(found->second, fact) == found->second.end();
-      });
-    }
-  }
-  return result;
 }
 
 std::vector<std::pair<PlaceId, ValueFact>> PendingOutcome::factsInAll() const {
@@ -160,47 +171,188 @@ std::vector<std::pair<PlaceId, ValueFact>> PendingOutcome::factsInAll() const {
 }
 
 bool PendingOutcome::unite(const PendingOutcome &other) {
-  if (location != other.location || callee != other.callee ||
-      returned != other.returned || unheldOnly != other.unheldOnly)
+  // `callee` and `location` name the call in a note: they are the outcome's
+  // provenance, not part of what it says about the caller's places. Two
+  // different calls can leave every class in the same state, and a test of
+  // the result then decides the same thing whichever of them produced it.
+  // What a retraction acts on must still match on both: the events it
+  // restores and the places the result may be.
+  const bool sameCall = location == other.location && callee == other.callee;
+  if (localEvents != other.localEvents || returned != other.returned ||
+      unheldOnly != other.unheldOnly)
     return false;
-  for (const auto &[outcome, consumed] : consumedBy) {
-    (void)consumed;
-    if (!other.consumedBy.contains(outcome))
-      continue;
-    const auto ours = initializedOn.find(outcome);
-    const auto theirs = other.initializedOn.find(outcome);
-    if ((ours == initializedOn.end()) !=
-            (theirs == other.initializedOn.end()) ||
-        (ours != initializedOn.end() && ours->second != theirs->second))
+  // Two narrowings of one call keep its per-class facts as recorded, so the
+  // classes each side kept can be unioned. Two calls have agreed on nothing:
+  // a class's null, non-null and integer facts, and its stores, hold on the
+  // paths of the call that established them, so taking one side's would
+  // claim them on the other's.
+  if (!sameCall && (nullOn != other.nullOn || nonNullOn != other.nonNullOn ||
+                    factOn != other.factOn || stores != other.stores))
+    return false;
+  // RFC 0030 §9.1: a class a side's call consumes nothing on has nothing to
+  // contribute to it, and must not erase what the other side established.
+  // `p = alloc(n); if (!p && n > 0) p = alloc(n);` merges two results, and
+  // the retry's null class frees nothing: `n == 0` is the only freeing
+  // condition, and `notePendingOutcome` drops a consume whose guard the
+  // arguments refute. Dropping the whole outcome there costs the caller the
+  // first call's guarded release, and with it every `replaced` derived from
+  // it, leaving a bare unguarded consume on every class.
+  //
+  // The speaking side's consumption stands for such a class, but only where
+  // every place it claims there is guarded. The guard is *why* the silent
+  // side consumes nothing, so the union claims the consume only on paths
+  // that refute it; and §3.1 keeps a guarded consume from settling into a
+  // certainty once a test of the result selects the class, so the union can
+  // never become a definite finding no path supports.
+  const auto silentOn = [](const PendingOutcome &side, Outcome outcome) {
+    const auto it = side.consumedBy.find(outcome);
+    return it == side.consumedBy.end() || it->second.empty();
+  };
+  const auto guardsEvery = [](const PendingOutcome &side, Outcome outcome) {
+    const auto consumed = side.consumedBy.find(outcome);
+    const auto guards = side.guardedBy.find(outcome);
+    if (consumed == side.consumedBy.end() || guards == side.guardedBy.end())
       return false;
-  }
-  // A class both sides kept was narrowed from the same recording: it must
-  // say the same on both.
+    return std::ranges::all_of(consumed->second, [&](PlaceId place) {
+      return std::ranges::any_of(guards->second, [place](const auto &guard) {
+        return guard.first == place && !guard.second.trivial();
+      });
+    });
+  };
+  // The classes only one side speaks for, the ones this side is silent on
+  // among them, and the ones both speak for.
+  std::set<Outcome> oneSided;
+  std::set<Outcome> adopted;
+  std::set<Outcome> shared;
+  const auto classify = [&](Outcome outcome) {
+    const bool mineSilent = silentOn(*this, outcome);
+    const bool theirsSilent = silentOn(other, outcome);
+    if (mineSilent == theirsSilent) {
+      if (!mineSilent)
+        shared.insert(outcome);
+      return;
+    }
+    if (mineSilent && guardsEvery(other, outcome)) {
+      oneSided.insert(outcome);
+      adopted.insert(outcome);
+    } else if (!mineSilent && guardsEvery(*this, outcome)) {
+      oneSided.insert(outcome);
+    }
+  };
+  for (const auto &[outcome, places] : consumedBy)
+    classify(outcome);
+  for (const auto &[outcome, places] : other.consumedBy)
+    classify(outcome);
+  // A class both sides speak for was narrowed from equivalent recordings, so
+  // it must name the same places on both.
   const auto agrees = [](const auto &mine, const auto &theirs) {
     return std::ranges::all_of(theirs, [&mine](const auto &entry) {
       const auto it = mine.find(entry.first);
       return it == mine.end() || it->second == entry.second;
     });
   };
-  if (!agrees(consumedBy, other.consumedBy) ||
-      !agrees(guardedBy, other.guardedBy) || !agrees(nullOn, other.nullOn) ||
-      !agrees(nonNullOn, other.nonNullOn) || !agrees(factOn, other.factOn))
+  const auto without = [&oneSided](const auto &side) {
+    std::remove_cvref_t<decltype(side)> kept;
+    for (const auto &[outcome, entry] : side) {
+      if (!oneSided.contains(outcome))
+        kept.emplace(outcome, entry);
+    }
+    return kept;
+  };
+  if (sameCall ? !agrees(consumedBy, other.consumedBy)
+               : without(consumedBy) != without(other.consumedBy))
     return false;
-  const auto merge = [](auto &mine, const auto &theirs) {
-    for (const auto &[outcome, entry] : theirs)
-      mine.try_emplace(outcome, entry);
+  if (!agrees(nullOn, other.nullOn) || !agrees(nonNullOn, other.nonNullOn) ||
+      !agrees(factOn, other.factOn))
+    return false;
+  // Across calls a shared class's guards are joined below, so only one call
+  // has to agree with itself here.
+  if (sameCall && (!agrees(guardedBy, other.guardedBy) ||
+                   !agrees(releasedBy, other.releasedBy) ||
+                   !agrees(replacedBy, other.replacedBy)))
+    return false;
+  const auto mineGuards = guardedBy;
+  const auto mineReleased = releasedBy;
+  const auto mineReplaced = replacedBy;
+  const auto merge = [&adopted](auto &mine, const auto &theirs) {
+    for (const auto &[outcome, entry] : theirs) {
+      const auto [it, inserted] = mine.try_emplace(outcome, entry);
+      if (!inserted && adopted.contains(outcome))
+        it->second = entry;
+    }
+    // Nothing of this side's silence survives on a class it hands over.
+    for (const Outcome outcome : adopted)
+      if (!theirs.contains(outcome))
+        mine.erase(outcome);
   };
   merge(consumedBy, other.consumedBy);
   merge(guardedBy, other.guardedBy);
+  merge(releasedBy, other.releasedBy);
+  merge(replacedBy, other.replacedBy);
   merge(nullOn, other.nullOn);
   merge(nonNullOn, other.nonNullOn);
   merge(factOn, other.factOn);
-  merge(initializedOn, other.initializedOn);
+  // On a class both calls consume, the consume happens when either side's
+  // guard holds, so the guards join. A place in `consumedBy` with no
+  // `guardedBy` entry is consumed whatever the arguments at that call — the
+  // recording drops a guard the arguments already satisfy — so a side that
+  // does not name it joins to nothing and the entry goes. What `releasedBy`
+  // and `replacedBy` say is a must-fact about the class: what both say.
+  if (!sameCall) {
+    for (const Outcome outcome : shared) {
+      const auto mine = mineGuards.find(outcome);
+      const auto theirs = other.guardedBy.find(outcome);
+      std::vector<std::pair<PlaceId, PlaceGuard>> joined;
+      if (mine != mineGuards.end() && theirs != other.guardedBy.end()) {
+        for (const auto &[place, guard] : mine->second) {
+          const auto match = std::ranges::find_if(
+              theirs->second, [place = place](const auto &entry) {
+                return entry.first == place;
+              });
+          if (match == theirs->second.end())
+            continue;
+          PlaceGuard both = guard;
+          both.join(match->second);
+          if (!both.trivial())
+            joined.emplace_back(place, std::move(both));
+        }
+      }
+      if (joined.empty())
+        guardedBy.erase(outcome);
+      else
+        guardedBy[outcome] = std::move(joined);
+      const auto keepBoth = [&outcome](auto &into, const auto &mineSide,
+                                       const auto &theirsSide) {
+        const auto a = mineSide.find(outcome);
+        const auto b = theirsSide.find(outcome);
+        if (a == mineSide.end() || b == theirsSide.end()) {
+          into.erase(outcome);
+          return;
+        }
+        std::vector<PlaceId> both;
+        for (const PlaceId place : a->second)
+          if (std::ranges::find(b->second, place) != b->second.end())
+            both.push_back(place);
+        if (both.empty())
+          into.erase(outcome);
+        else
+          into[outcome] = std::move(both);
+      };
+      keepBoth(releasedBy, mineReleased, other.releasedBy);
+      keepBoth(replacedBy, mineReplaced, other.replacedBy);
+    }
+  }
   // A store one side retracted (on none of its classes) is back with the
   // classes it happens on.
   for (const PendingStore &store : other.stores) {
     if (std::ranges::find(stores, store) == stores.end())
       stores.push_back(store);
+  }
+  // The note can name neither call, so it names no call rather than the
+  // wrong one; every site that would add it tests the location first.
+  if (!sameCall) {
+    location = {};
+    callee.clear();
   }
   return true;
 }
@@ -239,8 +391,6 @@ bool PendingOutcome::settled() const {
 
 bool AnalysisState::join(const AnalysisState &other, const PlaceTable *places,
                          bool widenScalars) {
-  const auto leftSafetyGuard = safety ? pathGuard() : PlaceGuard{};
-  const auto rightSafetyGuard = other.safety ? other.pathGuard() : PlaceGuard{};
   const auto isNull = [](PlaceId place, const AnalysisState &state) {
     return state.resources.isNull(place) ||
            state.nulls.stateOf(place) == Nullness::Null;
@@ -289,6 +439,8 @@ bool AnalysisState::join(const AnalysisState &other, const PlaceTable *places,
   changed |= std::erase_if(distinctObjects, [&](const auto &pair) {
                return !other.distinctObjects.contains(pair);
              }) != 0;
+  for (const auto &pair : other.testedAliases)
+    changed |= testedAliases.insert(pair).second;
   changed |= raw.join(other.raw);
   changed |= resources.join(other.resources);
   changed |= nulls.join(other.nulls);
@@ -302,8 +454,7 @@ bool AnalysisState::join(const AnalysisState &other, const PlaceTable *places,
                return found == other.numericValues.end() ||
                       found->second != entry.second;
              }) != 0;
-  changed |=
-      relations.join(other.relations, safety && other.safety, widenScalars);
+  changed |= relations.join(other.relations);
   changed |= pointerFacts.join(other.pointerFacts);
   for (auto &[key, range] : filledArrayRanges) {
     const auto found = other.filledArrayRanges.find(key);
@@ -441,6 +592,23 @@ bool AnalysisState::join(const AnalysisState &other, const PlaceTable *places,
   }
   for (const PlaceId root : other.incompleteHeap)
     changed |= incompleteHeap.insert(root).second;
+  for (const PlaceId place : other.reinterpreted)
+    changed |= reinterpreted.insert(place).second;
+  // RFC 0030 §3.1: released on some path; stored since on every path.
+  for (const std::uint64_t type : other.releasedTypes)
+    changed |= releasedTypes.insert(type).second;
+  if (other.releasedUnowned && !releasedUnowned) {
+    releasedUnowned = true;
+    changed = true;
+  }
+  for (auto it = storedSinceRelease.begin(); it != storedSinceRelease.end();) {
+    if (other.storedSinceRelease.contains(*it)) {
+      ++it;
+    } else {
+      it = storedSinceRelease.erase(it);
+      changed = true;
+    }
+  }
   for (auto it = incoming.begin(); it != incoming.end();) {
     const auto theirs = other.incoming.find(it->first);
     if (theirs == other.incoming.end() || theirs->second != it->second) {
@@ -473,9 +641,8 @@ bool AnalysisState::join(const AnalysisState &other, const PlaceTable *places,
     if (added) {
       changed = true;
     } else {
-      const auto before = it->second;
-      it->second.join(guard);
-      changed |= before != it->second;
+      // `GuardOn::join` reports exactly whether the guard changed.
+      changed |= it->second.join(guard);
     }
   }
 
@@ -505,6 +672,45 @@ bool AnalysisState::join(const AnalysisState &other, const PlaceTable *places,
     ++it;
   }
 
+  // RFC 0030 §5.1: a place only one path gave a value to is not
+  // established after the join, so it inherits again.
+  if (!established.empty()) {
+    const std::size_t before = established.size();
+    std::erase_if(established, [&other](PlaceId place) {
+      return !std::ranges::binary_search(other.established, place);
+    });
+    changed = changed || established.size() != before;
+  }
+  // RFC 0030 §9.1: the place-level guards follow their effects, so they are
+  // joined against the consumption as it stands *before* the merge below. A
+  // path only one side consumed keeps that side's guard; one both sides
+  // consumed keeps what the two agree on, so a second, unguarded consume
+  // leaves nothing for a `return` to key on.
+  for (auto it = consumedOn.begin(); it != consumedOn.end();) {
+    if (!other.consumed.contains(it->first)) {
+      ++it;
+      continue;
+    }
+    const auto theirs = other.consumedOn.find(it->first);
+    if (theirs == other.consumedOn.end()) {
+      it = consumedOn.erase(it);
+      changed = true;
+      continue;
+    }
+    if (it->second.join(theirs->second)) {
+      changed = true;
+      if (it->second.trivial()) {
+        it = consumedOn.erase(it);
+        continue;
+      }
+    }
+    ++it;
+  }
+  for (const auto &[path, guard] : other.consumedOn) {
+    if (consumed.contains(path))
+      continue;
+    changed |= consumedOn.try_emplace(path, guard).second;
+  }
   for (const auto &[path, effect] : other.consumed) {
     auto [it, inserted] = consumed.try_emplace(path, effect);
     if (inserted) {
@@ -516,17 +722,38 @@ bool AnalysisState::join(const AnalysisState &other, const PlaceTable *places,
     changed |= it->second != before;
   }
 
-  // Stored on some path (RFC 0010).
-  for (const SummaryPath &path : other.stored)
-    changed |= stored.insert(path).second;
+  // Stored on some path (RFC 0010). Both sets are ordered: one merge
+  // unless the other side is much smaller.
+  if (other.stored.size() * 8 < stored.size()) {
+    for (const SummaryPath &path : other.stored)
+      changed |= stored.insert(path).second;
+  } else {
+    auto at = stored.begin();
+    for (const SummaryPath &path : other.stored) {
+      while (at != stored.end() && *at < path)
+        ++at;
+      if (at != stored.end() && !(path < *at)) {
+        ++at;
+        continue;
+      }
+      at = std::next(stored.insert(at, path));
+      changed = true;
+    }
+  }
 
   // Overwritten on every path: what the other side did not overwrite goes.
-  for (auto it = overwritten.begin(); it != overwritten.end();) {
-    if (!other.overwritten.contains(*it)) {
-      it = overwritten.erase(it);
-      changed = true;
-    } else {
-      ++it;
+  // A merge of the two ordered sets.
+  {
+    auto theirs = other.overwritten.begin();
+    for (auto it = overwritten.begin(); it != overwritten.end();) {
+      while (theirs != other.overwritten.end() && *theirs < *it)
+        ++theirs;
+      if (theirs == other.overwritten.end() || *it < *theirs) {
+        it = overwritten.erase(it);
+        changed = true;
+      } else {
+        ++it;
+      }
     }
   }
 
@@ -541,15 +768,6 @@ bool AnalysisState::join(const AnalysisState &other, const PlaceTable *places,
       it->second = joined;
       changed = true;
     }
-  }
-  if (safety && other.safety) {
-    changed |= safety->join(*other.safety, leftSafetyGuard, rightSafetyGuard);
-  } else if (safety) {
-    changed |= safety->join(SafetyState{});
-  } else if (other.safety) {
-    safety.emplace();
-    safety->join(*other.safety);
-    changed = true;
   }
   return changed;
 }
@@ -641,18 +859,6 @@ static void dropOtherGuardsOn(AnalysisState &state, PlaceId place) {
                     [place](const auto &fact) { return fact.first == place; });
     }
   }
-  if (state.safety)
-    for (auto &[result, outcome] : state.pending) {
-      (void)result;
-      for (auto &[cls, facts] : outcome.initializedOn) {
-        (void)cls;
-        std::erase_if(facts, [&](const auto &fact) {
-          return fact.first == place || fact.second.begin.place == place ||
-                 fact.second.end.place == place ||
-                 fact.second.when.dependsOn(place);
-        });
-      }
-    }
   state.numericConditions.drop(place);
   std::erase_if(state.numericValues, [place](const auto &entry) {
     return entry.first == place || entry.second.dependsOn(place);
@@ -664,10 +870,6 @@ static void dropOtherGuardsOn(AnalysisState &state, PlaceId place) {
 }
 
 void AnalysisState::dropGuardsOn(PlaceId place) {
-  // RFC 0018: a write cannot reinterpret an earlier initialized interval
-  // using the new value of its index or count (including callee outputs).
-  if (safety)
-    safety->forgetDependency(place);
   dropOtherGuardsOn(*this, place);
 }
 
@@ -678,11 +880,6 @@ void AnalysisState::dropGuardsOn(std::vector<PlaceId> places) {
     dropGuardsOn(places.front());
     return;
   }
-  // Keep checked invalidation in its original order. The other guarded
-  // domains do not consume safety facts (RFCs 0020 and 0027).
-  if (safety)
-    for (const auto place : places)
-      safety->forgetDependency(place);
   std::ranges::sort(places);
   const auto matches = [&](PlaceId place) {
     return std::ranges::binary_search(places, place);
@@ -694,17 +891,6 @@ void AnalysisState::dropGuardsOn(std::vector<PlaceId> places) {
       std::erase_if(facts,
                     [&](const auto &fact) { return matches(fact.first); });
     }
-    if (safety)
-      for (auto &[cls, facts] : outcome.initializedOn) {
-        (void)cls;
-        std::erase_if(facts, [&](const auto &fact) {
-          return matches(fact.first) ||
-                 (fact.second.begin.place &&
-                  matches(*fact.second.begin.place)) ||
-                 (fact.second.end.place && matches(*fact.second.end.place)) ||
-                 fact.second.when.dependsOnIf(matches);
-        });
-      }
   }
   numericConditions.dropIf(matches);
   std::erase_if(numericValues, [&](const auto &entry) {
@@ -716,53 +902,58 @@ void AnalysisState::dropGuardsOn(std::vector<PlaceId> places) {
   nulls.dropGuardsIf(matches);
 }
 
-void AnalysisState::forgetZeroedMemory() {
-  if (!safety)
-    return;
-  safety->forgetZeros();
-  for (auto &[result, outcome] : pending) {
-    (void)result;
-    for (auto &[cls, facts] : outcome.initializedOn) {
-      (void)cls;
-      std::erase_if(facts, [](const auto &fact) {
-        return fact.second.zeroed || fact.second.numericText ||
-               fact.second.terminatedWithin;
-      });
-    }
-  }
+/// Everything `forget` clears about `place` but the guard conjuncts.
+static void forgetFacts(AnalysisState &state, PlaceId place) {
+  state.numericWrites.insert(place);
+  state.moves.reinitialize(place);
+  state.aliases.separate(place);
+  state.definiteAliases.separate(place);
+  std::erase_if(state.testedAliases, [place](const auto &pair) {
+    return pair.first == place || pair.second == place;
+  });
+  std::erase_if(state.distinctObjects, [place](const auto &pair) {
+    return pair.first == place || pair.second == place;
+  });
+  state.loans.dropHolder(place);
+  state.loans.release(place);
+  state.pending.erase(place);
+  state.kinds.erase(place);
+  state.raw.clear(place);
+  state.resources.forget(place);
+  state.nulls.forget(place);
+  state.scalars.forget(place);
+  state.spatial.forget(place);
+  state.relations.forget(place);
+  state.callTargets.erase(place);
+  state.objectViews.erase(place);
+  state.incoming.erase(place);
+  state.heapWriteGuards.erase(place);
+  state.heapInputEscapes.erase(place);
+  state.definiteHeapWrites.erase(place);
+  state.heapLocalObjects.erase(place);
+  state.incompleteHeap.erase(place);
+  state.reinterpreted.erase(place);
+  state.storedSinceRelease.erase(place);
 }
 
 void AnalysisState::forget(PlaceId place) {
-  if (safety)
-    safety->forget(place);
-  numericWrites.insert(place);
-  moves.reinitialize(place);
-  aliases.separate(place);
-  definiteAliases.separate(place);
-  std::erase_if(distinctObjects, [place](const auto &pair) {
-    return pair.first == place || pair.second == place;
-  });
-  loans.dropHolder(place);
-  loans.release(place);
-  pending.erase(place);
-  kinds.erase(place);
-  raw.clear(place);
-  resources.forget(place);
-  nulls.forget(place);
-  scalars.forget(place);
-  spatial.forget(place);
-  relations.forget(place);
-  callTargets.erase(place);
-  objectViews.erase(place);
-  incoming.erase(place);
-  heapWriteGuards.erase(place);
-  heapInputEscapes.erase(place);
-  definiteHeapWrites.erase(place);
-  heapLocalObjects.erase(place);
-  incompleteHeap.erase(place);
-  // RFC 0020: safety->forget above already invalidated safety dependencies.
+  forgetFacts(*this, place);
   // Pending outputs and the remaining guarded domains still need a scan.
   dropOtherGuardsOn(*this, place);
+}
+
+void AnalysisState::forget(std::vector<PlaceId> places) {
+  // `forgetFacts` reads no record: erase them in one pass.
+  moves.reinitializeAll(places);
+  for (const PlaceId place : places)
+    forgetFacts(*this, place);
+  dropGuardsOn(std::move(places));
+}
+
+void AnalysisState::noteRelease(std::uint64_t type, bool owned) {
+  releasedTypes.insert(type);
+  releasedUnowned = releasedUnowned || !owned;
+  storedSinceRelease.clear();
 }
 
 } // namespace weavec::core

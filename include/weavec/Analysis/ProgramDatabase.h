@@ -18,7 +18,9 @@
 #define WEAVEC_ANALYSIS_PROGRAMDATABASE_H
 
 #include "weavec/Core/CallContext.h"
+#include "weavec/Core/FnSlots.h"
 #include "weavec/Core/Interface.h"
+#include "weavec/Core/Ledger.h"
 #include "weavec/Core/Summary.h"
 
 #include "clang/AST/ASTContext.h"
@@ -74,8 +76,6 @@ public:
   share() const {
     return value ? value : emptyPublication();
   }
-  [[nodiscard]] static ExportedSummary
-  fromShared(std::shared_ptr<const core::FunctionSummary> summary);
 
   friend bool operator==(const ExportedSummary &left,
                          const ExportedSummary &right) {
@@ -156,11 +156,35 @@ struct SizedFieldFacts {
   confirmed(std::string_view field) const;
   [[nodiscard]] std::optional<SizedFieldWitness>
   confirmedWitness(std::string_view field) const;
+  /// `confirmedWitness` of the union of `a` and `b`, without building it
+  /// (the engine asks this per access while a unit's facts are in force).
+  [[nodiscard]] static std::optional<SizedFieldWitness>
+  confirmedWitnessOfBoth(const SizedFieldFacts &a, const SizedFieldFacts &b,
+                         std::string_view field);
   /// Every confirmed pair, as witnesses.
   [[nodiscard]] std::set<SizedFieldWitness> confirmedPairs() const;
 
   friend bool operator==(const SizedFieldFacts &,
                          const SizedFieldFacts &) = default;
+};
+
+/// RFC 0030 §9.4, §13.1 `boundaries`: one `dangling-escape` or
+/// `second-owner` row of a unit, with the place class it concerns, for
+/// program-wide propagation (§13.2 step 5).
+struct BoundaryRow {
+  /// The unit's main source; empty inside the unit's own record.
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
+  std::string unit = {};
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
+  std::string function = {};
+  /// The boundary's site ordinal within `function`.
+  std::uint32_t site = 0;
+  core::UnresolvedReason reason = core::UnresolvedReason::DanglingEscape;
+  /// A global `g`, or a field path `<struct>.<field>...`.
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
+  std::string placeClass = {};
+
+  friend auto operator<=>(const BoundaryRow &, const BoundaryRow &) = default;
 };
 
 /// Everything one translation unit contributes to, and needs from, the
@@ -170,15 +194,8 @@ struct UnitExports {
   core::InterfaceTypes objectInterfaces;
   /// The main source file, for messages and the dump.
   std::string source;
-  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
-  std::string checkedTarget = {};
-  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
-  std::map<std::string, std::string> checkedInputs = {};
-  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
-  std::map<std::string, core::CheckedContract> checkedDefinitions = {};
   std::map<std::string, std::set<core::CallContext>> memoryRequests;
   std::map<std::string, std::set<core::CallbackBindings>> callbackRequests;
-  std::map<std::string, core::CallTargets> callbackGlobals;
   /// Exported definitions by linkage name.
   std::map<std::string, ExportedFunction> functions;
   /// Names the summaries above use for global roots.
@@ -205,11 +222,26 @@ struct UnitExports {
   /// program later confirms for one of them means the unit is analysed once
   /// more. Sidecar line `loads-field <key>`.
   std::set<std::string> sizedFieldLoads;
+  /// RFC 0030 §9.4: the unit's boundary rows, for the program-wide
+  /// propagation of §13.2 step 5. Filled after the engine, from what
+  /// `BoundaryInvariants` made of the boundaries the engine published.
+  std::vector<BoundaryRow> boundaries;
 
   /// True if the exported summaries (and count fields, and sized-field
   /// facts) are the same; the fixpoint test of RFC 0005's whole-program
   /// algorithm.
   [[nodiscard]] bool sameSummariesAs(const UnitExports &other) const;
+};
+
+/// RFC 0030 §13.2: what the link step (and `weavec --whole-program`) knows
+/// about the whole program beyond the summaries, for the engine's runs over
+/// its units: the function-pointer slots solved over every unit (step 2,
+/// §9.3) and every unit's boundary rows (step 5, §9.4).
+struct ProgramFacts {
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
+  core::SlotSolution slots = {};
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
+  std::vector<BoundaryRow> boundaries = {};
 };
 
 /// The canonical spelling of a function type that identifies indirect-call
@@ -231,6 +263,10 @@ class ProgramDatabase {
 public:
   core::InterfaceTypes globalInterfaces;
   core::InterfaceTypes objectInterfaces;
+  /// RFC 0030 §13.2: the program's solved slots and boundary rows, set by
+  /// the whole-program driver for every run it makes; null otherwise (and
+  /// never cleared by `clear`). Copies share it.
+  std::shared_ptr<const ProgramFacts> programFacts = nullptr;
   /// RFC 0020: identity of the summaries and global numbering used by
   /// importInto. Copies share it until a mutating operation starts.
   [[nodiscard]] const std::shared_ptr<const char> &importGeneration() const {
@@ -252,7 +288,6 @@ public:
                 const clang::ASTContext &context, GlobalTable &table) const;
   [[nodiscard]] std::optional<core::CallContext>
   exportContext(const core::CallContext &input, const GlobalTable &table) const;
-  std::map<std::string, core::CallTargets> callbackGlobals;
   [[nodiscard]] const core::FunctionSummary *
   findCallable(std::string_view symbol) const;
   [[nodiscard]] const core::FunctionSummary *
@@ -312,12 +347,6 @@ public:
   /// Sorted names of every exported function, then every type key with
   /// candidates, in the RFC 0003 dump spelling (for `--dump-analysis`).
   void dump(llvm::raw_ostream &os) const;
-
-  /// RFC 0020: canonicalizable projection of imported facts consulted by a
-  /// component. Global facts and context requests are conservative shared
-  /// dependencies; function lookups include absence as well as presence.
-  [[nodiscard]] UnitExports
-  checkpointInputs(const std::set<std::string> &dependencies) const;
 
 private:
   using PublishedSummary = std::shared_ptr<const core::FunctionSummary>;

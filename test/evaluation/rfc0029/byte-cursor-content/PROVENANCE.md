@@ -1,1 +1,0 @@
-Frozen before byte-content inference changes. Baseline: completed Debug candidate72k. Known bytes may refine branches only while actual initialized storage and its contents survive. Mutation, partial initialization and actual escape-marker bytes retain unsafe accesses. The generic helper has no trusted contract.

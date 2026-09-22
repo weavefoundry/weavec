@@ -50,6 +50,62 @@ TEST(ParseAnnotation, RecognisesSizedBy) {
   EXPECT_EQ(parseAnnotation("weavec.sized_by.n + 1"), Annotation::Invalid);
 }
 
+// RFC 0030, *Annotation surface*: the extent macros, `WEAVEC_STRING` and
+// `WEAVEC_REQUIRE_SAFE`; `WEAVEC_CHECKED` is gone.
+TEST(ParseAnnotation, RecognisesKindSpellings) {
+  EXPECT_EQ(parseAnnotation("weavec.counted_by.len"), Annotation::CountedBy);
+  EXPECT_EQ(parseAnnotation("weavec.ended_by.end"), Annotation::EndedBy);
+  EXPECT_EQ(parseAnnotation("weavec.string"), Annotation::String);
+  EXPECT_EQ(parseAnnotation("weavec.require_safe"), Annotation::RequireSafe);
+  EXPECT_EQ(parseAnnotation("weavec.counted_by."), Annotation::Invalid);
+  EXPECT_EQ(parseAnnotation("weavec.counted_by.2n"), Annotation::Invalid);
+  EXPECT_EQ(parseAnnotation("weavec.ended_by.p + 1"), Annotation::Invalid);
+  EXPECT_EQ(parseAnnotation("weavec.checked"), Annotation::Invalid);
+  EXPECT_EQ(spelling::CountedByPrefix, "weavec.counted_by.");
+  EXPECT_EQ(spelling::EndedByPrefix, "weavec.ended_by.");
+}
+
+TEST(GetAnnotations, CollectsKindAnnotations) {
+  auto ast = clang::tooling::buildASTFromCodeWithArgs(
+      R"c(
+      __attribute__((annotate("weavec.require_safe")))
+      void f(char *__attribute__((annotate("weavec.counted_by.n"))) p,
+             unsigned long n,
+             const char *__attribute__((annotate("weavec.string"))) s,
+             int *__attribute__((annotate("weavec.ended_by.e"))) b,
+             int *e,
+             int *__attribute__((annotate("weavec.counted_by.n")))
+             __attribute__((annotate("weavec.counted_by.m"))) torn,
+             unsigned long m);
+      )c",
+      {"-x", "c"}, "input.c");
+  ASSERT_TRUE(ast);
+  const clang::FunctionDecl *f = nullptr;
+  for (const clang::Decl *d :
+       ast->getASTContext().getTranslationUnitDecl()->decls())
+    if (const auto *fn = llvm::dyn_cast<clang::FunctionDecl>(d))
+      f = fn;
+  ASSERT_NE(f, nullptr);
+  const AnnotationSet onFunction = getAnnotations(*f);
+  EXPECT_TRUE(onFunction.requireSafe);
+  EXPECT_TRUE(onFunction.any());
+  EXPECT_FALSE(onFunction.extent());
+  const AnnotationSet p = getAnnotations(*f->getParamDecl(0));
+  EXPECT_EQ(p.countedBy, "n");
+  EXPECT_TRUE(p.extent());
+  EXPECT_FALSE(p.ownership());
+  EXPECT_TRUE(getAnnotations(*f->getParamDecl(2)).string);
+  EXPECT_EQ(getAnnotations(*f->getParamDecl(3)).endedBy, "e");
+  const AnnotationSet torn = getAnnotations(*f->getParamDecl(5));
+  EXPECT_TRUE(torn.invalid) << "two counts contradict";
+  AnnotationSet merged;
+  merged.merge(p);
+  merged.merge(getAnnotations(*f->getParamDecl(2)));
+  EXPECT_EQ(merged.countedBy, "n");
+  EXPECT_TRUE(merged.string);
+  EXPECT_FALSE(merged.invalid);
+}
+
 TEST(GetAnnotations, CollectsSizedBy) {
   auto ast = clang::tooling::buildASTFromCodeWithArgs(
       R"c(

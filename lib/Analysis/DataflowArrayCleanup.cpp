@@ -66,8 +66,10 @@ void FunctionDataflow::collectArrayCleanupLoops(const Stmt *stmt) {
   const auto ignorePlaces = [this](auto &&self, const Stmt *body) -> void {
     if (!body)
       return;
-    if (const auto *expr = dyn_cast<Expr>(body))
+    if (const auto *expr = dyn_cast<Expr>(body)) {
       roles[expr] = Role::Ignore;
+      arrayLoopExprs.insert(expr);
+    }
     for (const auto *child : body->children())
       self(self, child);
   };
@@ -97,11 +99,18 @@ void FunctionDataflow::collectArrayCleanupLoops(const Stmt *stmt) {
                            context, Expr::NPC_ValueDependentIsNotNull) != 0U;
       const auto *allocation = dyn_cast<CallExpr>(value);
       if (allocation && allocation->getDirectCallee() &&
-          allocation->getDirectCallee()->getName() == "malloc" &&
           allocation->getNumArgs() == 1) {
+        // RFC 0030 §8: a heap allocator of its one argument's bytes
+        // (`malloc`).
         const auto effects = classifyCall(*allocation, summaries);
+        const core::LibraryEntry *row =
+            effects && effects->library ? effects->library->entry : nullptr;
         bytes = integerConstant(*allocation->getArg(0), context);
-        supported = effects && effects->source == SummarySource::Builtin &&
+        supported = row != nullptr && row->params.size() == 1 &&
+                    row->result.kind == core::LibraryResult::Kind::Fresh &&
+                    row->result.family == core::HeapFamily &&
+                    row->result.extent &&
+                    *row->result.extent == core::LibTerm::argument(0) &&
                     bytes && *bytes >= 0;
       }
       if (supported) {
@@ -118,11 +127,15 @@ void FunctionDataflow::collectArrayCleanupLoops(const Stmt *stmt) {
     }
   }
   const auto *release = dyn_cast<CallExpr>(statements.front());
-  if (!release || release->getNumArgs() != 1 || !release->getDirectCallee() ||
-      release->getDirectCallee()->getName() != "free")
+  if (!release || release->getNumArgs() != 1 || !release->getDirectCallee())
     return;
+  // A heap releaser of its one argument (`free`).
   const auto effects = classifyCall(*release, summaries);
-  if (!effects || effects->source != SummarySource::Builtin)
+  const core::LibraryEntry *row =
+      effects && effects->library ? effects->library->entry : nullptr;
+  if (row == nullptr || row->params.size() != 1 ||
+      row->params.front().effect != core::LibraryParam::Effect::Release ||
+      row->params.front().family != core::HeapFamily)
     return;
   const auto *element =
       dyn_cast<ArraySubscriptExpr>(release->getArg(0)->IgnoreParenImpCasts());
@@ -177,7 +190,7 @@ void FunctionDataflow::completeArrayCleanupLoop(const CFGBlock &from,
       fillArrayRange(buffer->storage, *count, operation.bytes,
                      *operation.assignment, state);
     } else {
-      reportIncomplete("unsupported contiguous array fill",
+      decideIncomplete("unsupported contiguous array fill",
                        *operation.assignment);
     }
     return;
@@ -190,18 +203,12 @@ void FunctionDataflow::completeArrayCleanupLoop(const CFGBlock &from,
   const auto count = foldAffine(builder.affineOf(*cleanup.count), state);
   if (!buffer || !count || !buffer->start.isConstant() ||
       buffer->start.constant != 0) {
-    reportIncomplete("unsupported contiguous array cleanup", *cleanup.release);
+    decideIncomplete("unsupported contiguous array cleanup", *cleanup.release);
     return;
   }
   releaseArrayRange(buffer->storage,
                     {.begin = core::ArrayIndex::constant(0), .count = *count},
                     cleanup.cleared, *cleanup.release, state);
-  if (state.safety)
-    if (const auto ref = builder.resolve(*cleanup.element->getBase()))
-      if (auto fact = state.safety->buffers.values.find(ref->place);
-          fact != state.safety->buffers.values.end())
-        fact->second.shape.ownsElements =
-            count->isConstant() && count->constant == 0;
 }
 
 void FunctionDataflow::releaseArrayRange(core::PlaceId storage,
@@ -231,7 +238,7 @@ void FunctionDataflow::releaseArrayRange(core::PlaceId storage,
   if (site == arrayReleaseSites.end()) {
     if (arrayReleaseSites.size() >= core::MaxArrayRanges) {
       state.incompleteHeap.insert(storage);
-      reportIncomplete("array release range limit reached", at);
+      decideIncomplete("array release range limit reached", at);
       return;
     }
     site = arrayReleaseSites
@@ -279,11 +286,11 @@ void FunctionDataflow::materializeArrayRelease(core::PlaceId storage,
       continue;
     if (membership == core::ArrayRelation::Unknown) {
       state.incompleteHeap.insert(storage);
-      reportIncomplete("array cleanup membership is unresolved", at);
+      decideIncomplete("array cleanup membership is unresolved", at);
     }
     if (range.materialized.size() >= core::MaxArrayCells) {
       state.incompleteHeap.insert(storage);
-      reportIncomplete("array cleanup element limit reached", at);
+      decideIncomplete("array cleanup element limit reached", at);
       continue;
     }
     // The loop's own selected body place may already have a record from a
@@ -298,7 +305,7 @@ void FunctionDataflow::materializeArrayRelease(core::PlaceId storage,
         previous->reason != core::MoveReason::Freed ||
         (previous->via && previous->via != cell))
       (void)doConsume(ref, core::MoveReason::Freed, *site->second, state,
-                      "free", true);
+                      core::HeapFamily, true);
     range.materialized.insert(index);
     if (range.cleared && range.definite) {
       ValueOrigin nil;
@@ -325,7 +332,7 @@ void FunctionDataflow::applyArrayReleases(const CallExpr &call,
     const auto count =
         foldAffine(builder.affineFromPath(release.count, call), state);
     if (!storage || !begin || !count || (begin->place && begin->scale != 1)) {
-      reportIncomplete("unresolved array cleanup at call", call);
+      decideIncomplete("unresolved array cleanup at call", call);
       continue;
     }
     const auto index =

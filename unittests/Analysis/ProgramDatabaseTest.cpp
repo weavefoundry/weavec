@@ -113,10 +113,11 @@ TEST(UnitExports, DiscoverySkipsAnalysis) {
     void f(void *p) { other(p); hook(1); }
   )c");
   ASSERT_TRUE(unit.ast);
-  core::DiagnosticCollector sink;
+  analysis::LedgerAdapter sink(unit.ast->getASTContext(),
+                               analysis::LedgerAdapter::Mode::Collecting);
   analysis::TranslationUnitAnalyzer fresh(unit.ast->getASTContext(), sink);
   const UnitExports skeleton = fresh.discover();
-  EXPECT_TRUE(sink.empty());
+  EXPECT_TRUE(sink.diagnostics().empty());
   EXPECT_EQ(skeleton.functions.size(), 1U);
   EXPECT_TRUE(skeleton.functions.at("f").summary.get() ==
               core::FunctionSummary{});
@@ -124,15 +125,14 @@ TEST(UnitExports, DiscoverySkipsAnalysis) {
   EXPECT_EQ(skeleton.indirectTypes, (std::set<std::string>{"void (int)"}));
 }
 
-TEST(UnitExports, RecordsBoundariesAndDefersTheirWarnings) {
-  AnalysisOptions options;
-  options.deferBoundary = true;
+TEST(UnitExports, RecordsBoundaries) {
+  // RFC 0030 §5.1: the calls into code the unit cannot see are recorded for
+  // the link step, and report nothing (they are ledger rows).
   const auto unit = analyze(R"c(
     void other(void *p);
     void (*hook)(void *);
     void f(void *p) { other(p); hook(p); }
-  )c",
-                            options);
+  )c");
   ASSERT_TRUE(unit.ast);
   EXPECT_TRUE(unit.diagnostics.empty());
   const UnitExports exports = unit.analyzer->exports();
@@ -234,11 +234,9 @@ TEST(ExportedSummary,
     EXPECT_TRUE(original.get().effectOf(SummaryPath::param(1)).written);
   }
   EXPECT_TRUE(retained.get().frees(0));
-  EXPECT_EQ(ExportedSummary::fromShared(retained.share()).share(),
-            retained.share());
 }
 
-TEST(ProgramDatabase, ExportAndCheckpointIndexesReuseTheImmutablePublication) {
+TEST(ProgramDatabase, ExportIndexesReuseTheImmutablePublication) {
   UnitExports exports;
   core::FunctionSummary value;
   value.addEffect(SummaryPath::param(0), {.freed = true});
@@ -253,99 +251,10 @@ TEST(ProgramDatabase, ExportAndCheckpointIndexesReuseTheImmutablePublication) {
   EXPECT_EQ(database.find("release"), owner.get());
   EXPECT_EQ(database.findCallable("release"), owner.get());
   EXPECT_EQ(database.candidates(function.typeKey), owner.get());
-  const auto checkpoint = database.checkpointInputs({"release"});
-  ASSERT_EQ(checkpoint.functions.size(), 3U);
-  for (const auto &[name, entry] : checkpoint.functions)
-    EXPECT_EQ(entry.summary.share(), owner) << name;
   function.summary.assign({});
   exports = {};
   EXPECT_TRUE(database.find("release")->frees(0));
   EXPECT_TRUE(retained.functions.at("release").summary.get().frees(0));
-  database.clear();
-  for (const auto &[name, entry] : checkpoint.functions)
-    EXPECT_TRUE(entry.summary.get().frees(0)) << name;
-}
-
-TEST(ProgramDatabase, SpecializedPublicationsRetainKeysAndNormalizeJoins) {
-  UnitExports unit;
-  core::CallContext input;
-  input.facts[SummaryPath::param(1)] = core::ValueFact::ofConstant(0);
-  core::CallContext otherInput;
-  otherInput.facts[SummaryPath::param(1)] = core::ValueFact::ofConstant(1);
-  const core::CallbackBindings callbacks{
-      {SummaryPath::param(2), core::CallTargets::function("drop")}};
-  core::FunctionSummary value;
-  value.addEffect(SummaryPath::param(0), {.freed = true, .family = "free"});
-  ExportedSummary publication(value);
-  auto &function = unit.functions["release"];
-  function.memorySpecializations[input] = publication;
-  function.specializations[callbacks] = publication;
-  ProgramDatabase database;
-  database.add(unit);
-  EXPECT_EQ(database.findMemorySpecialization("release", input),
-            publication.share().get());
-  EXPECT_EQ(database.findSpecialization("release", callbacks),
-            publication.share().get());
-  EXPECT_EQ(database.findMemorySpecialization("release", otherInput), nullptr);
-  const ProgramDatabase retained = database;
-  core::FunctionSummary changed;
-  changed.addEffect(SummaryPath::param(0), {.written = true});
-  function.memorySpecializations[input].assign(changed);
-  function.memorySpecializations[otherInput].assign(changed);
-  database.add(unit);
-  core::FunctionSummary expected;
-  expected.join(value);
-  expected.join(changed);
-  EXPECT_EQ(*database.findMemorySpecialization("release", input), expected);
-  EXPECT_FALSE(retained.findMemorySpecialization("release", input)
-                   ->effectOf(SummaryPath::param(0))
-                   .written);
-  EXPECT_FALSE(
-      database.findMemorySpecialization("release", otherInput)->frees(0));
-  // The old join normalizes metadata that is irrelevant to a read-only effect.
-  core::FunctionSummary unnormalized;
-  unnormalized.effects[SummaryPath::param(0)] = {.read = true,
-                                                 .family = "unused"};
-  unit.functions["read"].memorySpecializations[input].assign(unnormalized);
-  database.add(unit);
-  core::FunctionSummary normalized;
-  normalized.join(unnormalized);
-  EXPECT_NE(normalized, unnormalized);
-  EXPECT_EQ(*database.findMemorySpecialization("read", input), normalized);
-  EXPECT_NE(
-      database.findMemorySpecialization("read", input),
-      unit.functions.at("read").memorySpecializations.at(input).share().get());
-  // Equal semantic facts still need their canonical explanation join.
-  const auto proof = [](std::string reason) {
-    core::FunctionSummary result;
-    result.checked.computed = true;
-    result.checked.obligations.add(
-        {.property = core::SafetyProperty::Initialization,
-         .outcome = core::SafetyOutcome::Unresolved,
-         .location = {.file = "proof.c", .line = 1, .column = 1, .opaque = 0},
-         .function = "proof",
-         .subject = "p",
-         .reason = std::move(reason),
-         .calls = {}});
-    return result;
-  };
-  const auto later = proof("z explanation");
-  const auto earlier = proof("a explanation");
-  EXPECT_EQ(later, earlier);
-  unit.functions["proof"].memorySpecializations[input].assign(later);
-  database.add(unit);
-  const ProgramDatabase beforeProof = database;
-  unit.functions["proof"].memorySpecializations[input].assign(earlier);
-  database.add(unit);
-  core::FunctionSummary mergedProof;
-  mergedProof.join(later);
-  mergedProof.join(earlier);
-  EXPECT_TRUE(database.findMemorySpecialization("proof", input)
-                  ->checked.obligations.sameExplanationsAs(
-                      mergedProof.checked.obligations));
-  EXPECT_FALSE(beforeProof.findMemorySpecialization("proof", input)
-                   ->checked.obligations.sameExplanationsAs(
-                       mergedProof.checked.obligations));
 }
 
 TEST(ProgramDatabase, UnchangedRemappedValuesRetainPublicationsUnderNewKeys) {
@@ -382,13 +291,6 @@ TEST(ProgramDatabase, UnchangedRemappedValuesRetainPublicationsUnderNewKeys) {
             publication.share());
   EXPECT_TRUE(
       unit.functions.at("release").memorySpecializations.contains(input));
-  database.add(numbered);
-  const auto checkpoint = database.checkpointInputs({"release"});
-  for (const auto &[name, entry] : checkpoint.functions)
-    for (const auto &[context, summary] : entry.memorySpecializations) {
-      EXPECT_EQ(context, mappedInput) << name;
-      EXPECT_EQ(summary.share(), publication.share()) << name;
-    }
 }
 
 TEST(ProgramDatabase, CandidateGroupJoinsPreserveIndividualPublications) {
@@ -469,12 +371,6 @@ TEST(ProgramDatabase, SharedIndexesRetainRenumberedGlobalEffects) {
     EXPECT_EQ(summary->effects.size(), 1U);
     EXPECT_TRUE(summary->effectOf(expected).freed);
   }
-  const auto checkpoint = db.checkpointInputs({"f", "other.c#g"});
-  ASSERT_EQ(checkpoint.functions.size(), 4U);
-  for (const auto &[name, function] : checkpoint.functions) {
-    EXPECT_EQ(function.summary.get().effects.size(), 1U) << name;
-    EXPECT_TRUE(function.summary.get().effectOf(expected).freed) << name;
-  }
 }
 
 /// The node unit's exports, kept alive for the database.
@@ -482,8 +378,18 @@ struct NodeProgram {
   test::AnalysisResult unit = analyze(NodeUnit);
   ProgramDatabase db;
   NodeProgram() {
-    if (unit.ast)
-      db.add(unit.analyzer->exports());
+    if (!unit.ast)
+      return;
+    db.add(unit.analyzer->exports());
+    // RFC 0030 §9.3, §13.2 step 2: at link the slots are solved over every
+    // unit's constraints, and the client reads the solution through the
+    // program database. The program is not closed here (the client's own
+    // record is not among them), so its slots stay open.
+    auto facts = std::make_shared<analysis::ProgramFacts>();
+    core::SlotRules rules = unit.harness->kinds->slots.rules();
+    rules.scope = core::SlotScope::Link;
+    facts->slots = unit.harness->kinds->slots.exported().solve(rules);
+    db.programFacts = std::move(facts);
   }
 };
 
@@ -546,7 +452,10 @@ TEST(ProgramDatabase, CalleeDefinedInAnotherUnitIsChecked) {
   EXPECT_TRUE(resolved->summary->frees(0));
 }
 
-TEST(ProgramDatabase, NoBoundaryWarningForProgramDefinitions) {
+TEST(ProgramDatabase, ProgramDefinitionsAreNotUnknownCallees) {
+  // RFC 0030 §5.1: in a per-unit analysis the calls into other units are
+  // unknown callees; with the program's database only the callee no unit
+  // defines stays one. None of them is a diagnostic.
   NodeProgram program;
   ASSERT_TRUE(program.unit.ast);
   const std::string code = std::string(ClientHeader) + R"c(
@@ -560,19 +469,15 @@ TEST(ProgramDatabase, NoBoundaryWarningForProgramDefinitions) {
   )c";
   const auto alone = analyze(code);
   ASSERT_TRUE(alone.ast);
-  // Alone: node_new, other and node_free are all boundaries.
-  EXPECT_EQ(alone.diagnostics.size(), 3U);
+  EXPECT_TRUE(alone.diagnostics.empty());
+  EXPECT_EQ(test::unknownCalls(alone).size(), 3U);
   const auto together = analyzeInProgram(code, &program.db);
   ASSERT_TRUE(together.ast);
-  ASSERT_EQ(ids(together.diagnostics),
-            (std::vector<std::string>{"annotation-required"}));
-  EXPECT_EQ(messages(together.diagnostics)[0],
-            "14: call to 'other' is not checked: it has no definition or "
-            "ownership annotations here");
-  EXPECT_EQ(test::notes(together.diagnostics)[1],
-            "annotate its pointer parameters with WEAVEC_OWNED, "
-            "WEAVEC_BORROWED, WEAVEC_MUT or WEAVEC_RAW, or define it in this "
-            "program");
+  EXPECT_TRUE(together.diagnostics.empty());
+  // `other` may have released `n`, so the known release after it is
+  // unresolved too (§3.1, *A known release after an unknown one*).
+  EXPECT_EQ(test::unknownCalls(together),
+            (std::vector<std::string>{"14: other(n)", "15: node_free(n)"}));
 }
 
 TEST(ProgramDatabase, IndirectCandidatesFromOtherUnits) {
@@ -734,15 +639,10 @@ TEST(ProgramDatabase, ContextRebuildAgreesWithGlobalRenumbering) {
   callbacks[SummaryPath::global(0)] = core::CallTargets::function("allocate");
   unit.callbackRequests["helper"].insert(callbacks);
   function.specializations[callbacks].assign(function.summary.get());
-  ProgramDatabase direct;
-  direct.add(prefix);
-  direct.add(unit);
   ProgramDatabase rebuilt;
   rebuilt.add(prefix);
   const auto numbered = rebuilt.renumbered(unit);
   rebuilt.add(numbered);
-  EXPECT_TRUE(direct.checkpointInputs({"helper"})
-                  .sameSummariesAs(rebuilt.checkpointInputs({"helper"})));
   ASSERT_EQ(rebuilt.requestsFor("helper").size(), 1U);
   const auto &mappedCallbacks = *rebuilt.requestsFor("helper").begin();
   EXPECT_TRUE(mappedCallbacks.contains(SummaryPath::global(1)));
@@ -764,9 +664,6 @@ TEST(ProgramDatabase, ContextRebuildAgreesWithGlobalRenumbering) {
   auto unchanged = consuming.renumbered(std::move(moved));
   EXPECT_TRUE(unchanged.sameSummariesAs(numbered));
   EXPECT_EQ(unchanged.globals, numbered.globals);
-  consuming.add(unchanged);
-  EXPECT_TRUE(consuming.checkpointInputs({"helper"})
-                  .sameSummariesAs(direct.checkpointInputs({"helper"})));
 }
 
 TEST(ProgramDatabase, ProgramDefinitionOutranksTheLibraryTable) {

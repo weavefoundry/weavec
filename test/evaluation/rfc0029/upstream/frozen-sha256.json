@@ -1,7 +1,0 @@
-{
-  "parse-delete.c": "4c8a12cb39dec01f3fba0857b0f00e6ea057396ead670a620b20237050046e93",
-  "parse-double-bad.c": "ea45f4379ac922401ae30b53fd105250532a04a3b03e2985a520abbe20232208",
-  "print-delete.c": "a65e5408a0c7b542e317654ee085c9f7300d710edf29430ff0592bcecca4d162",
-  "manifest.json": "cf33f89e9ec3efedf6708a3bf318df0f2832e8764d173f9146eae3f66a746ff5",
-  "upstream-identity.json": "3aa0f5db2be2097c3f6f12ea1eb63ef004ed6df7b97df59f75ed07f5ba847980"
-}

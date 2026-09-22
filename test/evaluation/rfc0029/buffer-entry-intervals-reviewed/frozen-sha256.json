@@ -1,9 +1,0 @@
-{
-  "full-physical.c": "fcb5789c92529050ee2b77af39eb5e69aca52d89f86f9281c8c985a246103bea",
-  "manifest.json": "f8cf49287a24d2c22b9ca2463d822822ef5a453ac115f014f8523b00a0c3942e",
-  "past-physical.c": "9d944c949026a145fcb05885f1165d518dcbcffeb9a9e69cd487faae6bfdac70",
-  "replaced-short.c": "877dcc638f662f7376d38b8e56247f1d45d0c6c8eb62fe8a63014513bbbabbfc",
-  "short-physical.c": "fc4ab5653ec94960e8a87feb136262689eda22407496a797d42367a81c46d713",
-  "spare-physical.c": "b287fa9c12df0bd6ef61585da93bf6d690dfe2d8d1bf6f1683d8a172169b43f4",
-  "uninitialized-tail.c": "8d44d9d9dc9082e8f7882609b9caa99bbabac9ed2d76565647aa18ce8a32caa5"
-}

@@ -8,9 +8,7 @@
 
 #include "weavec/Analysis/TranslationUnitAnalysis.h"
 
-#include "weavec/Analysis/ClangLocation.h"
 #include "weavec/Analysis/ProgramDatabase.h"
-#include "weavec/Core/Ownership.h"
 #include "weavec/Core/Scc.h"
 
 #include "clang/AST/RecursiveASTVisitor.h"
@@ -20,7 +18,6 @@
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/ScopeExit.h"
-#include "llvm/Support/FormatVariadic.h"
 
 #include <algorithm>
 #include <string>
@@ -93,9 +90,11 @@ private:
 } // namespace
 
 TranslationUnitAnalyzer::TranslationUnitAnalyzer(
-    ASTContext &ctx, core::DiagnosticSink &diagSink,
+    ASTContext &ctx, LedgerAdapter &ledgerAdapter,
     AnalysisOptions analysisOptions)
-    : context(ctx), sink(diagSink), options(std::move(analysisOptions)) {
+    : context(ctx), ledger(ledgerAdapter),
+      discarding(ctx, LedgerAdapter::Mode::Discarding),
+      options(std::move(analysisOptions)) {
   store.setContext(&context);
   if (options.preparation)
     store.prepared = options.preparation;
@@ -103,9 +102,15 @@ TranslationUnitAnalyzer::TranslationUnitAnalyzer(
 }
 
 void TranslationUnitAnalyzer::collectDefinitions(const DeclContext &dc) {
+  const SourceManager &sm = context.getSourceManager();
   for (const Decl *decl : dc.decls()) {
     if (const auto *function = dyn_cast<FunctionDecl>(decl)) {
-      if (function->doesThisDeclarationHaveABody())
+      // RFC 0030 §10.2: the check prelude `weavec-cc` appends to the
+      // predefines is WeaveC's own code: never analysed (its calls, such as
+      // `malloc_size`, would otherwise enter every unit's interface).
+      if (function->doesThisDeclarationHaveABody() &&
+          !sm.isWrittenInBuiltinFile(
+              sm.getExpansionLoc(function->getLocation())))
         definitions.push_back(function);
       continue;
     }
@@ -143,9 +148,12 @@ std::vector<std::vector<unsigned>> TranslationUnitAnalyzer::buildCallGraph() {
         adjacency[i].push_back(it->second);
       } else if (callee->isExternallyVisible() &&
                  callee->getIdentifier() != nullptr &&
-                 !callee->getName().starts_with("__builtin_") &&
+                 (callee->getBuiltinID() == 0 ||
+                  context.BuiltinInfo.isPredefinedLibFunction(
+                      callee->getBuiltinID())) &&
                  seenExternal.insert(canonical).second) {
-        // Compiler builtins are never defined by another unit.
+        // Compiler builtins are never defined by another unit (a library
+        // builtin such as `memcpy` may be).
         externalCallees.push_back(canonical);
       }
     };
@@ -208,10 +216,6 @@ UnitExports TranslationUnitAnalyzer::skeletonExports() const {
     result.source = entry->getName().str();
 
   for (const FunctionDecl *function : definitions) {
-    if (getAnnotations(*function).checked) {
-      auto &contract = result.checkedDefinitions[function->getNameAsString()];
-      contract.selected = true;
-    }
     if (function->isMain() || function->getIdentifier() == nullptr)
       continue;
     const bool external = function->isExternallyVisible();
@@ -241,7 +245,6 @@ UnitExports TranslationUnitAnalyzer::skeletonExports() const {
   for (const FunctionDecl *callee : externalCallees)
     result.imports.insert(callee->getNameAsString());
   result.indirectTypes = indirectTypeKeys;
-  result.callbackGlobals = store.exportedCallbackGlobals();
   return result;
 }
 
@@ -253,7 +256,6 @@ UnitExports TranslationUnitAnalyzer::discover() {
 
 UnitExports TranslationUnitAnalyzer::exports() {
   UnitExports result = skeletonExports();
-  result.checkedTarget = context.getTargetInfo().getTriple().str();
   const GlobalTable &table = store.globals();
   // RFC 0028: supported private roots retain identity and representation.
   const core::GlobalIdMap byName = [&](std::uint32_t id) {
@@ -261,90 +263,16 @@ UnitExports TranslationUnitAnalyzer::exports() {
     return name ? std::optional(result.globals.idFor(*name)) : std::nullopt;
   };
   const auto exportSummary = [&](const core::FunctionSummary &summary) {
-    const auto privateGlobal = [&](const core::SummaryPath &path) {
-      if (!path.isGlobal())
-        return false;
-      const auto *global = table.declFor(path.index);
-      return global != nullptr && !table.portableName(path.index);
-    };
-    const auto privateExpression = [&](const auto &expression) {
-      return std::ranges::any_of(expression.all(), [&](const auto &node) {
-        return node.key && privateGlobal(*node.key);
-      });
-    };
-    const auto privateCondition = [&](const auto &entry) {
-      return privateGlobal(entry.first);
-    };
-    const auto privatePointers = [&](const auto &entry) {
-      return privateGlobal(entry.first.first) ||
-             privateGlobal(entry.first.second);
-    };
-    const auto privateInteger = [&](const auto &predicate) {
-      return privateExpression(predicate.lhs) ||
-             privateExpression(predicate.rhs);
-    };
-    const auto privateAntecedent = [&](const auto &requirement) {
-      const auto &guard = requirement.when;
-      return std::ranges::any_of(guard.conditions, privateCondition) ||
-             std::ranges::any_of(guard.pointers, privatePointers) ||
-             std::ranges::any_of(guard.integers, privateInteger);
-    };
-    // RFC 0019: a private output fact has no cross-unit consumer. Omit the
-    // entire fact, retaining strict remapping of every requirement and every
-    // premise attached to a public or result output.
-    const auto privateOutput = [&](const auto &post) {
-      return privateGlobal(post.path);
-    };
-    const bool privateOutputs =
-        std::ranges::any_of(summary.checked.establishes, privateOutput);
-    const bool privateRequirements =
-        std::ranges::any_of(summary.checked.requirements, privateAntecedent);
-    if (!summary.checked.computed || (!privateOutputs && !privateRequirements))
-      return core::remapGlobals(summary, byName);
-    auto portable = summary;
-    if (privateOutputs) {
-      core::CheckedRequirements::Set outputs;
-      for (const auto &post : portable.checked.establishes)
-        if (!privateOutput(post))
-          outputs.insert(post);
-      portable.checked.establishes.assign(std::move(outputs));
-    }
-    if (privateRequirements) {
-      // RFC 0021: weaken only the antecedent, thereby strengthening a
-      // sufficient requirement. Preserve the local conditional contract and
-      // keep strict remapping of required properties and every output premise.
-      core::CheckedRequirements::Set requirements;
-      const auto discard = [](auto &entries, const auto &privateEntry) {
-        for (auto it = entries.begin(); it != entries.end();)
-          if (privateEntry(*it))
-            it = entries.erase(it);
-          else
-            ++it;
-      };
-      for (auto requirement : portable.checked.requirements) {
-        discard(requirement.when.conditions, privateCondition);
-        discard(requirement.when.pointers, privatePointers);
-        discard(requirement.when.integers, privateInteger);
-        requirements.insert(std::move(requirement));
-      }
-      portable.checked.requirements.assign(std::move(requirements));
-    }
-    return core::remapGlobals(portable, byName);
+    return core::remapGlobals(summary, byName);
   };
   for (const FunctionDecl *function : definitions) {
     const auto resolved = store.lookup(*function);
     if (!resolved)
       continue;
     const auto it = result.functions.find(function->getNameAsString());
-    if (it == result.functions.end() && !resolved->summary->checked.computed)
+    if (it == result.functions.end())
       continue;
-    // RFC 0020: the checked definition and exported summary use the same
-    // portable result. A second remap discovers no additional global names.
-    auto portable = exportSummary(*resolved->summary);
-    if (portable.checked.computed)
-      result.checkedDefinitions[function->getNameAsString()] = portable.checked;
-    if (it != result.functions.end())
-      it->second.summary.assign(std::move(portable));
+    it->second.summary.assign(exportSummary(*resolved->summary));
   }
   for (std::string &name : store.unknownCalleeNames())
     result.unknownCallees.insert(std::move(name));
@@ -386,80 +314,35 @@ UnitExports TranslationUnitAnalyzer::exports() {
   return result;
 }
 
-static void validateCheckedDeclarations(const DeclContext &dc,
-                                        ASTContext &context,
-                                        core::DiagnosticSink &sink) {
-  for (const Decl *decl : dc.decls()) {
-    if (isa<FunctionDecl>(decl))
-      continue; // FunctionAnalyzer checks parameters and local declarations.
-    if (const auto *named = dyn_cast<NamedDecl>(decl);
-        named && getAnnotations(*named).checked)
-      sink.report({.severity = core::Severity::Error,
-                   .id = core::diag::InvalidAnnotation,
-                   .message = "WEAVEC_CHECKED requires a function declaration",
-                   .location = toCoreLocation(context.getSourceManager(),
-                                              named->getLocation()),
-                   .notes = {},
-                   .fixits = {}});
-    if (const auto *nested = dyn_cast<DeclContext>(decl))
-      validateCheckedDeclarations(*nested, context, sink);
-  }
-}
-
 void TranslationUnitAnalyzer::run(
     llvm::function_ref<bool(const FunctionDecl &)> shouldReport) {
   prepare();
-  validateCheckedDeclarations(*context.getTranslationUnitDecl(), context, sink);
-  options.checkContracts =
-      options.checkContracts || options.checked ||
-      !options.checkedFunctions.empty() ||
-      std::ranges::any_of(definitions, [](const FunctionDecl *fn) {
-        return getAnnotations(*fn).checked;
-      });
 
   const std::vector<std::vector<unsigned>> adjacency = buildCallGraph();
   const std::vector<std::vector<unsigned>> components =
       core::stronglyConnectedComponents(adjacency);
-  if (options.checkContracts)
-    for (unsigned index = 0; index < components.size(); ++index)
-      for (const auto member : components[index]) {
-        store.recursiveComponents[definitions[member]->getCanonicalDecl()] =
-            index;
-        if (components[index].size() > 1 ||
-            std::ranges::find(adjacency[member], member) !=
-                adjacency[member].end())
-          store.recursiveFunctions.insert(
-              definitions[member]->getCanonicalDecl());
-      }
 
-  // RFC 0012, *Sized fields*, "Two passes in a unit": the first pass takes
-  // inferred sized fields from the program database only; every report is
-  // remembered so the second pass emits only what is new.
-  RememberingSink remembered(sink);
+  // RFC 0012, *Sized fields*: the rounds below take inferred sized fields
+  // from the program database only, while they collect the unit's own
+  // witnesses. Every round publishes into a discarding adapter (RFC 0030
+  // §2.6).
   store.setUnitSizedFactsInForce(false);
-  FunctionAnalyzer analyzer(context, remembered, options);
+  FunctionAnalyzer silent(context, discarding, options);
   std::vector<const FunctionDecl *> reported;
   for (const auto *function : definitions)
     if (shouldReport(*function))
       reported.push_back(function);
-  // RFC 0014: stores in a later function can change the target of a global
-  // used by an earlier helper. Settle these entry values before reporting.
-  for (unsigned round = 0; round < MaxFixpointRounds; ++round) {
-    if (options.stats)
-      options.stats->add("unit_fixpoint_rounds");
-    const auto globalsBefore = store.exportedCallbackGlobals();
-    for (const std::vector<unsigned> &component : components) {
-      const bool recursive =
-          component.size() > 1 ||
-          llvm::is_contained(adjacency[component.front()], component.front());
-      analyzeComponent(component, recursive, analyzer,
-                       [](const FunctionDecl &) { return false; });
-    }
-    if (globalsBefore == store.exportedCallbackGlobals())
-      break;
-    if (round + 1 == MaxFixpointRounds)
-      for (const auto *function : definitions)
-        store.markIncomplete(*function);
+  // RFC 0030 §9.3: what a global function-pointer slot can hold is settled
+  // before the engine runs, by the slot solver, so one silent pass over the
+  // components is enough (this replaces RFC 0014's callback-global
+  // fixpoint).
+  if (options.stats)
+    options.stats->add("unit_fixpoint_rounds");
+  for (const std::vector<unsigned> &component : components) {
+    const bool recursive =
+        component.size() > 1 ||
+        llvm::is_contained(adjacency[component.front()], component.front());
+    analyzeComponent(component, recursive, silent);
   }
   for (const FunctionDecl *function : definitions) {
     const std::string symbol = callableSymbol(*function);
@@ -489,203 +372,77 @@ void TranslationUnitAnalyzer::run(
     for (const auto &input : memory)
       (void)store.specializeMemory(symbol, input, options, nullptr);
   }
-  for (const FunctionDecl *function : reported) {
-    const std::string symbol = callableSymbol(*function);
-    const auto requests = store.callbackRequests[symbol];
-    const auto memory = store.memoryRequests[symbol];
-    const bool selectedDefinition =
-        options.checkContracts &&
-        ((options.checked &&
-          (!options.checkedMainFileOnly ||
-           context.getSourceManager().isInMainFile(function->getLocation()))) ||
-         options.checkedFunctions.contains(function->getNameAsString()) ||
-         getAnnotations(*function).checked);
-    if (!memory.empty()) {
-      if (options.dumpStream) {
-        core::DiagnosticCollector ignored;
-        FunctionAnalyzer describe(context, ignored, options);
-        describe.analyze(
-            *function, store, true,
-            recursiveFunctions.contains(function->getCanonicalDecl()));
-        for (const auto &input : memory) {
-          *options.dumpStream
-              << "  call-context " << symbol
-              << (input.reportDiagnostics ? " checked" : " unsafe") << "\n";
-          const core::GlobalNamer names = [&](std::uint32_t id) {
-            const auto *global = store.globals().declFor(id);
-            return global ? global->getNameAsString() : "<unmapped>";
-          };
-          for (const auto &alias : input.aliases)
-            *options.dumpStream
-                << "    " << core::printSummaryPath(alias.first, names) << " = "
-                << core::printSummaryPath(alias.second, names) << " @"
-                << alias.offset.toString()
-                << (alias.definite ? " definite" : " possible")
-                << (alias.sameShare ? " same-share" : " distinct-shares")
-                << "\n";
-          for (const auto &[first, second] : input.separations)
-            *options.dumpStream
-                << "    " << core::printSummaryPath(first, names)
-                << " distinct-object " << core::printSummaryPath(second, names)
-                << "\n";
-          for (const auto &[path, fact] : input.facts)
-            *options.dumpStream << "    " << core::printSummaryPath(path, names)
-                                << " " << fact.toString() << "\n";
-          if (const auto selected =
-                  store.specializeMemory(symbol, input, options, nullptr))
-            *options.dumpStream
-                << core::printSummary(*selected->summary, names);
-        }
-      }
-      analyzer.validate(*function);
-      bool needsGenericCheck = selectedDefinition;
-      for (const auto &input : memory)
-        if (!store.specializeMemory(symbol, input, options, &remembered) &&
-            input.reportDiagnostics)
-          needsGenericCheck = true;
-      if (needsGenericCheck)
-        analyzer.analyze(
-            *function, store, true,
-            recursiveFunctions.contains(function->getCanonicalDecl()));
-      for (const auto &bindings : requests)
-        if (std::ranges::none_of(memory, [&](const auto &input) {
-              return input.callbacks == bindings;
-            }))
-          (void)store.specialize(*function, bindings, options, &remembered);
-    } else if (requests.empty()) {
-      analyzer.analyze(
-          *function, store, true,
-          recursiveFunctions.contains(function->getCanonicalDecl()));
-    } else {
-      analyzer.validate(*function);
-      if (selectedDefinition)
-        analyzer.analyze(
-            *function, store, true,
-            recursiveFunctions.contains(function->getCanonicalDecl()));
-      for (const auto &bindings : requests)
-        (void)store.specialize(*function, bindings, options, &remembered);
-    }
-    if (options.reportUnannotated)
-      reportUnannotatedInterface(*function);
-  }
-  reportConfirmedSizedFields(reported, remembered.seen());
-  // The sized-field reporting pass can invalidate contexts as well.
-  // Reporting can refine generic imports. Rebuild every requested result
-  // against the final store before exporting it, including nested requests.
-  if (!options.checkContracts)
-    return;
-  for (unsigned round = 0; round < core::MaxCallContextDepth; ++round) {
-    const auto requests = store.memoryRequests;
-    for (const auto &[symbol, contexts] : requests)
-      for (const auto &input : contexts)
-        (void)store.specializeMemory(symbol, input, options, nullptr);
-    if (requests == store.memoryRequests)
-      break;
-  }
-}
 
-void TranslationUnitAnalyzer::RememberingSink::report(
-    const core::Diagnostic &diagnostic) {
-  if (keys.insert(keyOf(diagnostic)).second)
-    inner.report(diagnostic);
-}
-
-TranslationUnitAnalyzer::DiagnosticKey
-TranslationUnitAnalyzer::RememberingSink::keyOf(
-    const core::Diagnostic &diagnostic) {
-  return DiagnosticKey{std::string(diagnostic.id), diagnostic.location.file,
-                       diagnostic.location.line, diagnostic.location.column,
-                       diagnostic.message};
-}
-
-namespace {
-
-/// Whether a function body names any of a set of fields.
-class FieldUseFinder : public RecursiveASTVisitor<FieldUseFinder> {
-public:
-  explicit FieldUseFinder(const llvm::DenseSet<const FieldDecl *> &of)
-      : fields(of) {}
-  bool found = false;
-
-  // NOLINTNEXTLINE(readability-identifier-naming,bugprone-derived-method-shadowing-base-method)
-  bool VisitMemberExpr(MemberExpr *member) {
-    if (const auto *field = dyn_cast<FieldDecl>(member->getMemberDecl());
-        field != nullptr && fields.contains(field->getCanonicalDecl()))
-      found = true;
-    return !found;
-  }
-
-private:
-  const llvm::DenseSet<const FieldDecl *> &fields;
-};
-
-/// Every field of a named record declared in the unit whose key is one of
-/// `keys`.
-class FieldsByKeyCollector : public RecursiveASTVisitor<FieldsByKeyCollector> {
-public:
-  FieldsByKeyCollector(const std::set<std::string> &wanted,
-                       const ASTContext &ctx)
-      : keys(wanted), context(ctx) {}
-  llvm::DenseSet<const FieldDecl *> fields;
-
-  // NOLINTNEXTLINE(readability-identifier-naming,bugprone-derived-method-shadowing-base-method)
-  bool VisitFieldDecl(FieldDecl *field) {
-    if (field->getType()->isPointerType() &&
-        keys.contains(fieldKeyOf(*field, context)))
-      fields.insert(field->getCanonicalDecl());
-    return true;
-  }
-
-private:
-  const std::set<std::string> &keys;
-  const ASTContext &context;
-};
-
-} // namespace
-
-void TranslationUnitAnalyzer::reportConfirmedSizedFields(
-    llvm::ArrayRef<const FunctionDecl *> reported,
-    const std::set<DiagnosticKey> &alreadyReported) {
-  // The fields the unit's own witnesses confirm that the database alone
-  // did not (RFC 0012, *Sized fields*, "Two passes in a unit").
-  const SizedFieldFacts &unit = store.sizedFieldFacts();
-  if (unit.witnesses.empty() || reported.empty())
-    return;
-  std::set<std::string> newlyConfirmed;
-  for (const SizedFieldWitness &witness : unit.witnesses) {
-    if (store.confirmedSizedBy(witness.field))
-      continue;
-    store.setUnitSizedFactsInForce(true);
-    const bool confirmed = store.confirmedSizedBy(witness.field).has_value();
-    store.setUnitSizedFactsInForce(false);
-    if (confirmed)
-      newlyConfirmed.insert(witness.field);
-  }
-  if (newlyConfirmed.empty())
-    return;
-  FieldsByKeyCollector collector(newlyConfirmed, context);
-  collector.TraverseDecl(context.getTranslationUnitDecl());
-  if (collector.fields.empty())
-    return;
-
-  // Only a load of a confirmed field can change anything, and only into an
-  // `out-of-bounds` report; nothing else of the second run is emitted.
+  // RFC 0030 §2.6, §15 item 18: the one authoritative pass over each
+  // reported function, the context-insensitive analysis of the body CodeGen
+  // emits for every caller, with the unit's sized-field facts in force (the
+  // RFC 0012 second reporting pass is folded into it). A call that requests
+  // a context run reports that run's findings, linked to the call.
   store.setUnitSizedFactsInForce(true);
-  core::DiagnosticCollector collected;
-  FunctionAnalyzer analyzer(context, collected, options);
+  FunctionAnalyzer authoritative(context, ledger, options);
   for (const FunctionDecl *function : reported) {
-    FieldUseFinder finder(collector.fields);
-    finder.TraverseStmt(function->getBody());
-    if (!finder.found)
-      continue;
-    analyzer.analyze(*function, store, /*emitDiagnostics=*/true,
-                     recursiveFunctions.contains(function->getCanonicalDecl()));
+    ledger.beginFunction(*function);
+    authoritative.analyze(
+        *function, store, /*emitDiagnostics=*/true,
+        recursiveFunctions.contains(function->getCanonicalDecl()));
+    if (options.dumpStream)
+      dumpMemoryContexts(*function);
   }
-  for (const core::Diagnostic &diagnostic : collected.diagnostics()) {
-    if (diagnostic.id != core::diag::OutOfBounds ||
-        alreadyReported.contains(RememberingSink::keyOf(diagnostic)))
-      continue;
-    sink.report(diagnostic);
+  for (const FunctionDecl *function : reported)
+    reportUnclaimedContexts(*function);
+}
+
+void TranslationUnitAnalyzer::dumpMemoryContexts(const FunctionDecl &function) {
+  const std::string symbol = callableSymbol(function);
+  const auto memory = store.memoryRequests[symbol];
+  for (const auto &input : memory) {
+    *options.dumpStream << "  call-context " << symbol
+                        << (input.reportDiagnostics ? " checked" : " unsafe")
+                        << "\n";
+    const core::GlobalNamer names = [&](std::uint32_t id) {
+      const auto *global = store.globals().declFor(id);
+      return global ? global->getNameAsString() : "<unmapped>";
+    };
+    for (const auto &alias : input.aliases)
+      *options.dumpStream << "    "
+                          << core::printSummaryPath(alias.first, names) << " = "
+                          << core::printSummaryPath(alias.second, names) << " @"
+                          << alias.offset.toString()
+                          << (alias.definite ? " definite" : " possible")
+                          << (alias.sameShare ? " same-share"
+                                              : " distinct-shares")
+                          << "\n";
+    for (const auto &[first, second] : input.separations)
+      *options.dumpStream << "    " << core::printSummaryPath(first, names)
+                          << " distinct-object "
+                          << core::printSummaryPath(second, names) << "\n";
+    for (const auto &[path, fact] : input.facts)
+      *options.dumpStream << "    " << core::printSummaryPath(path, names)
+                          << " " << fact.toString() << "\n";
+    if (const auto selected =
+            store.specializeMemory(symbol, input, options, nullptr))
+      *options.dumpStream << core::printSummary(*selected->summary, names);
+  }
+}
+
+void TranslationUnitAnalyzer::reportUnclaimedContexts(
+    const FunctionDecl &function) {
+  const std::string symbol = callableSymbol(function);
+  std::vector<core::Diagnostic> found;
+  const auto memory = store.memoryRequests[symbol];
+  for (const auto &input : memory)
+    if (!store.claimedMemoryContexts.contains({symbol, input}))
+      (void)store.specializeMemory(symbol, input, options, &found);
+  const auto requests = store.callbackRequests[symbol];
+  for (const auto &bindings : requests)
+    if (std::ranges::none_of(
+            memory,
+            [&](const auto &input) { return input.callbacks == bindings; }) &&
+        !store.claimedCallbackContexts.contains({symbol, bindings}))
+      (void)store.specialize(function, bindings, options, &found);
+  for (core::Diagnostic &diagnostic : found) {
+    const core::Certainty certainty = diagnostic.certainty;
+    ledger.report(std::move(diagnostic), certainty);
   }
 }
 
@@ -721,34 +478,17 @@ bool TranslationUnitAnalyzer::analyzeSilently(const FunctionDecl &function,
 
 void TranslationUnitAnalyzer::analyzeComponent(
     const std::vector<unsigned> &component, bool recursive,
-    FunctionAnalyzer &analyzer,
-    llvm::function_ref<bool(const FunctionDecl &)> shouldReport) {
+    FunctionAnalyzer &analyzer) {
   if (recursive) {
     for (const unsigned member : component)
       recursiveFunctions.insert(definitions[member]->getCanonicalDecl());
   }
-  const bool verifiedGroup = recursive && options.checkContracts &&
-                             verifyRecursiveContractGroup(component);
-  const bool previousApproximation = store.checkingRecursiveApproximation;
-  store.checkingRecursiveApproximation = recursive && !verifiedGroup;
-  const auto restoreApproximation = llvm::scope_exit(
-      [&] { store.checkingRecursiveApproximation = previousApproximation; });
   bool settled = false;
-  if (recursive && !verifiedGroup) {
+  if (recursive) {
     // Start every member at the bottom summary and iterate silently until
     // nothing changes; the final, reporting run then sees the fixpoint.
-    for (const unsigned member : component) {
-      core::FunctionSummary initial;
-      if (options.checkContracts) {
-        // RFC 0019: recursive call obligations start optimistically and grow
-        // with local obligations and input requirements. No recursive memory
-        // postcondition is assumed: establishes remains empty.
-        initial.checked.computed = true;
-        initial.checked.signature =
-            functionTypeKey(definitions[member]->getType(), context);
-      }
-      store.setInferred(*definitions[member], std::move(initial));
-    }
+    for (const unsigned member : component)
+      store.setInferred(*definitions[member], core::FunctionSummary{});
     for (unsigned round = 0; round < MaxFixpointRounds; ++round) {
       if (options.stats)
         options.stats->add("function_fixpoint_rounds");
@@ -768,116 +508,15 @@ void TranslationUnitAnalyzer::analyzeComponent(
   }
 
   const bool previousRefresh = store.refreshingRecursiveValueOutcomes;
-  store.refreshingRecursiveValueOutcomes =
-      recursive && settled && !verifiedGroup;
+  store.refreshingRecursiveValueOutcomes = recursive && settled;
   const auto restoreRefresh = llvm::scope_exit(
       [&] { store.refreshingRecursiveValueOutcomes = previousRefresh; });
   for (const unsigned member : component) {
     const FunctionDecl &function = *definitions[member];
-    const bool report = shouldReport(function);
     if (store.refreshingRecursiveValueOutcomes)
       silentAnalyses.erase(function.getCanonicalDecl());
-    if (report)
-      analyzer.analyze(function, store, true, /*widenSummary=*/recursive);
-    else
-      analyzeSilently(function, analyzer, recursive);
-    if (report && options.reportUnannotated)
-      reportUnannotatedInterface(function);
+    analyzeSilently(function, analyzer, recursive);
   }
-}
-
-static const char *macroFor(core::OwnershipKind kind) {
-  switch (kind) {
-  case core::OwnershipKind::Owned:
-    return "WEAVEC_OWNED";
-  case core::OwnershipKind::Shared:
-    return "WEAVEC_BORROWED";
-  case core::OwnershipKind::Mutable:
-    return "WEAVEC_MUT";
-  case core::OwnershipKind::Raw:
-    return "WEAVEC_RAW";
-  case core::OwnershipKind::Unknown:
-    break;
-  }
-  return nullptr;
-}
-
-void TranslationUnitAnalyzer::reportUnannotatedInterface(
-    const FunctionDecl &function) {
-  // Only the exported surface: a `static` helper's callers are all here and
-  // already checked against its inferred summary, and nobody annotates
-  // `main`.
-  if (!function.isGlobal() || function.isMain() ||
-      getAnnotations(function).unsafe)
-    return;
-  const core::FunctionSummary *summary = store.inferredFor(function);
-  if (summary == nullptr)
-    return;
-
-  const SourceManager &sm = context.getSourceManager();
-  const SignatureAnnotations annotations = collectAnnotations(function);
-  const std::string name = function.getNameAsString();
-
-  for (unsigned i = 0; i < function.getNumParams(); ++i) {
-    const ParmVarDecl *param = function.getParamDecl(i);
-    // A nullness annotation alone says nothing about ownership (RFC 0008).
-    if (!param->getType()->isPointerType() ||
-        (i < annotations.params.size() &&
-         (annotations.params[i].ownership() || annotations.params[i].invalid)))
-      continue;
-    const std::string paramName = param->getNameAsString();
-    const core::SourceLocation at = toCoreLocation(sm, param->getLocation());
-    if (const char *macro = macroFor(summary->inferredKind(i))) {
-      core::Diagnostic diagnostic{
-          .severity = core::Severity::Warning,
-          .id = core::diag::AnnotationRequired,
-          .message = llvm::formatv("pointer parameter '{0}' of '{1}' is "
-                                   "inferred {2}; add the annotation to its "
-                                   "declaration",
-                                   paramName, name, macro)
-                         .str(),
-          .location = at,
-          .notes = {},
-          .fixits = {},
-      };
-      if (!paramName.empty())
-        diagnostic.addFixIt(at, std::string(macro) + " ");
-      sink.report(diagnostic);
-      continue;
-    }
-    sink.report(core::Diagnostic{
-        .severity = core::Severity::Warning,
-        .id = core::diag::AnnotationRequired,
-        .message = "pointer parameter '" + paramName +
-                   "' has no inferable ownership; annotate it with "
-                   "WEAVEC_OWNED, WEAVEC_BORROWED or WEAVEC_MUT",
-        .location = at,
-        .notes = {},
-        .fixits = {},
-    });
-  }
-
-  if (!function.getReturnType()->isPointerType() ||
-      annotations.result.ownership() || annotations.result.invalid ||
-      annotations.result.unsafe)
-    return;
-  const char *macro = macroFor(summary->inferredReturnKind());
-  if (macro == nullptr)
-    return;
-  const core::SourceLocation at = toCoreLocation(sm, function.getLocation());
-  core::Diagnostic diagnostic{
-      .severity = core::Severity::Warning,
-      .id = core::diag::AnnotationRequired,
-      .message = llvm::formatv("return value of '{0}' is inferred {1}; add "
-                               "the annotation to its declaration",
-                               name, macro)
-                     .str(),
-      .location = at,
-      .notes = {},
-      .fixits = {},
-  };
-  diagnostic.addFixIt(at, std::string(macro) + " ");
-  sink.report(diagnostic);
 }
 
 } // namespace weavec::analysis

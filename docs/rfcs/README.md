@@ -64,17 +64,18 @@ decision is a new RFC that supersedes the relevant section.
 | [0015](0015-array-and-container-ownership.md) | Array elements, range operations, and container ownership | Implemented |
 | [0016](0016-compositional-call-checking.md) | Compositional call checking under caller alias relationships | Implemented |
 | [0017](0017-c-integer-semantics-and-spatial-safety.md) | C integer semantics and compositional spatial safety | Implemented |
-| [0018](0018-checked-code-and-safety-contracts.md) | Compositional safety contracts and checked code | Accepted |
-| [0019](0019-practical-checked-memory-contracts.md) | Practical checked memory contracts for buffers and heap objects | Implemented |
-| [0020](0020-scalable-modular-checked-analysis.md) | Scalable modular checked analysis | Implemented |
-| [0021](0021-practical-c-traversal.md) | Practical C traversal and inductive buffer contracts | Implemented |
-| [0022](0022-checked-c-interfaces.md) | Compositional checked interfaces for opaque pointers and callbacks | Implemented |
-| [0023](0023-inductive-container-contracts.md) | Inductive ownership contracts for linked containers | Implemented |
-| [0024](0024-checked-runtime-contracts.md) | Checked C runtime contracts and variadic interfaces | Implemented |
-| [0025](0025-case-sensitive-checked-contracts.md) | Case-sensitive checked contracts and discriminated C objects | Implemented |
-| [0026](0026-growable-buffer-contracts.md) | Inferred relational contracts for growable buffers and vectors | Implemented |
-| [0027](0027-recursive-object-ownership.md) | Recursive object ownership and complete cleanup contracts | Implemented |
-| [0028](0028-opaque-objects-and-library-state.md) | Inferred contracts for opaque objects and private library state | Implemented |
-| [0029](0029-compositional-recursive-workflows.md) | Compositional invariants for recursive C workflows | Accepted |
+| [0018](0018-checked-code-and-safety-contracts.md) | Compositional safety contracts and checked code | Superseded |
+| [0019](0019-practical-checked-memory-contracts.md) | Practical checked memory contracts for buffers and heap objects | Superseded |
+| [0020](0020-scalable-modular-checked-analysis.md) | Scalable modular checked analysis | Superseded |
+| [0021](0021-practical-c-traversal.md) | Practical C traversal and inductive buffer contracts | Superseded |
+| [0022](0022-checked-c-interfaces.md) | Compositional checked interfaces for opaque pointers and callbacks | Superseded |
+| [0023](0023-inductive-container-contracts.md) | Inductive ownership contracts for linked containers | Superseded |
+| [0024](0024-checked-runtime-contracts.md) | Checked C runtime contracts and variadic interfaces | Superseded |
+| [0025](0025-case-sensitive-checked-contracts.md) | Case-sensitive checked contracts and discriminated C objects | Superseded |
+| [0026](0026-growable-buffer-contracts.md) | Inferred relational contracts for growable buffers and vectors | Superseded |
+| [0027](0027-recursive-object-ownership.md) | Recursive object ownership and complete cleanup contracts | Superseded |
+| [0028](0028-opaque-objects-and-library-state.md) | Inferred contracts for opaque objects and private library state | Superseded |
+| [0029](0029-compositional-recursive-workflows.md) | Compositional invariants for recursive C workflows | Superseded |
+| [0030](0030-prove-or-trap.md) | Prove or trap: one safety semantics with compiler-enforced checks | Accepted |
 
 The [roadmap](../roadmap.md) links each milestone to the RFCs that define it.

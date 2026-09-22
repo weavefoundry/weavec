@@ -25,7 +25,7 @@ void FunctionDataflow::fillArrayRange(core::PlaceId storage, core::Affine count,
     return;
   checkArrayTraversal(storage, count, at, state);
   if (count.place && count.scale != 1) {
-    reportIncomplete("unsupported contiguous array fill", at);
+    decideIncomplete("unsupported contiguous array fill", at);
     return;
   }
   if (recording()) {
@@ -42,7 +42,7 @@ void FunctionDataflow::fillArrayRange(core::PlaceId storage, core::Affine count,
   if (site == arrayFillSites.end()) {
     if (arrayFillSites.size() >= core::MaxArrayRanges) {
       state.incompleteHeap.insert(storage);
-      reportIncomplete("array fill range limit reached", at);
+      decideIncomplete("array fill range limit reached", at);
       return;
     }
     site = arrayFillSites
@@ -92,10 +92,24 @@ void FunctionDataflow::materializeArrayFill(core::PlaceId storage,
         span.contains(index, state.scalars, state.relations);
     if (membership == core::ArrayRelation::No)
       continue;
+    // RFC 0030 §7.4: the fill says what the cells held when it ran, and it
+    // is materialized onto a cell the first time one is selected. A cell
+    // this path already knows a value for holds that value, whether it
+    // came from the fill or from a store since: putting the fill's value
+    // back would forget the store. `for (i) a[i] = NULL;` then
+    // `for (i) { a[i] = make(); use(a[i]); }` reads what `make` returned,
+    // not the null the first loop left — the second store weakens every
+    // represented cell (the index resolves to none of them), so the cells
+    // are *may*-written, which the record already says.
+    if (state.definiteHeapWrites.contains(cell) || state.nulls.recordOf(cell) ||
+        state.resources.recordOf(cell)) {
+      range.materialized.insert(index);
+      continue;
+    }
     const auto site = arrayFillExpressions.find(key);
     if (site == arrayFillExpressions.end() ||
         range.materialized.size() >= core::MaxArrayCells) {
-      reportIncomplete("array fill selection limit reached", at);
+      decideIncomplete("array fill selection limit reached", at);
       state.incompleteHeap.insert(storage);
       continue;
     }
@@ -143,7 +157,7 @@ void FunctionDataflow::materializeArrayFill(core::PlaceId storage,
     range.materialized.insert(index);
     if (before) {
       state.join(*before, &places);
-      reportIncomplete("array fill membership is unresolved", at);
+      decideIncomplete("array fill membership is unresolved", at);
       state.incompleteHeap.insert(storage);
     }
   }
@@ -172,7 +186,7 @@ void FunctionDataflow::applyArrayFills(const CallExpr &call,
     const auto count =
         foldAffine(builder.affineFromPath(fill.count, call), state);
     if (!storage || !count) {
-      reportIncomplete("unresolved array fill at call", call);
+      decideIncomplete("unresolved array fill at call", call);
       continue;
     }
     fillArrayRange(storage->place, *count, fill.bytes, call, state, ordinal++,

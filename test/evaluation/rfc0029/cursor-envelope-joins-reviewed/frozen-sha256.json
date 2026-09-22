@@ -1,9 +1,0 @@
-{
-  "README.md": "c902e61a6510a62e56db1a6114c84a0b4d8fccd955fa654f7a32d133fdf3dbd3",
-  "good.c": "b5c7781d1e4435509dbceafcf29584d7737c0f17416e5cf1c605a8ef644e3718",
-  "helper.c": "0ded3e71899a4083d0224bfbb47d33677c3fac17f508d1f272e02f6b66efaff4",
-  "manifest.json": "d9994c21ca5ae6700ba3e03b0204e8311b198f11ac05569ce8f779017ceea8dc",
-  "over-capacity.c": "356ece5a3b544ecf2218f4eb48e8bfccd05378cb39e697d8059f3c5d2fd4afd3",
-  "over-step.c": "93b21f8324f941afee265fc53fceb4972f0f6f0066cf6cb278c4ac1ea31b7372",
-  "uninitialized.c": "3937ed56e95e38606ac472ae57936b80bf96e7b64d7b5708d22cdc9675f56a8e"
-}

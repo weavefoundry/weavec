@@ -1,19 +1,20 @@
 // RFC 0008, *Diagnostics*: `null-dereference`, `use-of-uninitialized` and
 // `invalid-release` are errors by default; each can be lowered to a warning
-// but not disabled.
+// but not disabled. RFC 0030: `invalid-release` is a warning when only
+// possible, so -Wno-weavec-invalid-release is accepted and drops just those.
 // RUN: not %weavec %s -- 2>&1 | FileCheck --check-prefix=DEFAULT %s
 // RUN: %weavec -Wno-error=weavec-null-dereference -Wno-error=weavec-use-of-uninitialized -Wno-error=weavec-invalid-release %s -- 2>&1 | FileCheck --check-prefix=LOWERED %s
 // RUN: not %weavec -Wno-weavec-null-dereference %s -- 2>&1 | FileCheck --check-prefix=REFUSED-NULL %s
 // RUN: not %weavec -Wno-weavec-use-of-uninitialized %s -- 2>&1 | FileCheck --check-prefix=REFUSED-UNINIT %s
-// RUN: not %weavec -Wno-weavec-invalid-release %s -- 2>&1 | FileCheck --check-prefix=REFUSED-RELEASE %s
+// RUN: not %weavec -Wno-weavec-invalid-release %s -- 2>&1 | FileCheck --check-prefix=DEFAULT %s
 #include <stdlib.h>
 
+// RFC 0030 §3.2: only a definite null dereference is a diagnostic.
 int null_deref(void) {
-  int *p = malloc(sizeof *p);
-  // DEFAULT: rfc0008-flags.c:[[@LINE+2]]:12: error: dereference of 'p', which may be null [weavec::null-dereference]
-  // LOWERED: rfc0008-flags.c:[[@LINE+1]]:12: warning: dereference of 'p', which may be null [weavec::null-dereference]
+  int *p = NULL;
+  // DEFAULT: rfc0008-flags.c:[[@LINE+2]]:12: error: dereference of 'p', which is null [weavec::null-dereference]
+  // LOWERED: rfc0008-flags.c:[[@LINE+1]]:12: warning: dereference of 'p', which is null [weavec::null-dereference]
   int v = *p;
-  free(p);
   return v;
 }
 
@@ -33,4 +34,3 @@ void release(void) {
 
 // REFUSED-NULL: error: '-Wno-weavec-null-dereference': 'null-dereference' is an error and cannot be disabled; use -Wno-error=weavec-null-dereference to make it a warning
 // REFUSED-UNINIT: error: '-Wno-weavec-use-of-uninitialized': 'use-of-uninitialized' is an error and cannot be disabled; use -Wno-error=weavec-use-of-uninitialized to make it a warning
-// REFUSED-RELEASE: error: '-Wno-weavec-invalid-release': 'invalid-release' is an error and cannot be disabled; use -Wno-error=weavec-invalid-release to make it a warning

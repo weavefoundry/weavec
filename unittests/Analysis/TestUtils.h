@@ -9,10 +9,16 @@
 #ifndef WEAVEC_UNITTESTS_ANALYSIS_TESTUTILS_H
 #define WEAVEC_UNITTESTS_ANALYSIS_TESTUTILS_H
 
+#include "weavec/Analysis/AttributeReader.h"
 #include "weavec/Analysis/FunctionAnalysis.h"
+#include "weavec/Analysis/KindInference.h"
+#include "weavec/Analysis/KindTable.h"
+#include "weavec/Analysis/LedgerAdapter.h"
+#include "weavec/Analysis/SiteCollector.h"
 #include "weavec/Analysis/Summaries.h"
 #include "weavec/Analysis/TranslationUnitAnalysis.h"
 #include "weavec/Core/Diagnostic.h"
+#include "weavec/Core/LibrarySpec.h"
 #include "weavec/Core/Summary.h"
 
 #include "clang/AST/ASTContext.h"
@@ -21,6 +27,7 @@
 #include "clang/Tooling/Tooling.h"
 
 #include <memory>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -30,8 +37,8 @@ namespace weavec::test {
 /// Minimal prelude so tests can call `free`/`malloc` without system headers.
 /// `OWNED`/`BORROWED`/`MUT`/`RAW`/`UNSAFE` spell the annotations without
 /// `weavec.h`. `use` is the opaque "look at this pointer" helper; it is
-/// annotated because an unannotated external function warns by default (RFC
-/// 0003).
+/// annotated because an unannotated external function is an unknown callee
+/// (RFC 0030 §5.1), which may have freed what it was handed.
 inline constexpr const char *Prelude = R"c(
 typedef unsigned long size_t;
 void *malloc(size_t);
@@ -58,12 +65,60 @@ void poke(void *MUT p);
 #line 1
 )c";
 
+/// RFC 0030 §14: what the engine publishes through, for one unit: the
+/// declared kinds, the sites and the authoritative adapter.
+struct UnitLedgerHarness {
+  /// The kinds as `UnitPipeline` builds them (§7), which seed the engine.
+  std::shared_ptr<const analysis::UnitKinds> kinds;
+  analysis::SiteIndex sites;
+  std::unique_ptr<analysis::LedgerAdapter> ledger;
+
+  explicit UnitLedgerHarness(clang::ASTContext &context) {
+    const core::LibrarySpec &library = core::LibrarySpec::shipped();
+    kinds = analysis::UnitKinds::build(context, library);
+    sites = analysis::SiteCollector(context, kinds->table, library,
+                                    &kinds->inferred, &kinds->slots,
+                                    &kinds->solution)
+                .collect();
+    ledger = std::make_unique<analysis::LedgerAdapter>(context, sites);
+    for (core::Diagnostic &diagnostic : analysis::kindProblemDiagnostics(
+             kinds->table, context.getSourceManager()))
+      ledger->report(std::move(diagnostic), core::Certainty::Possible);
+  }
+
+  /// `options` with the unit's kinds and slots, as `DataflowEngine` passes
+  /// them.
+  [[nodiscard]] analysis::AnalysisOptions
+  withKinds(analysis::AnalysisOptions options) const {
+    options.kinds = &kinds->table;
+    options.inferred = &kinds->inferred;
+    // RFC 0030 §9.3: the unit's own solution resolves its indirect calls.
+    options.slots = &kinds->slots;
+    options.slotSolution = &kinds->solution;
+    return options;
+  }
+
+  /// Completes the ledger (which checks it is complete) and copies the
+  /// diagnostics, in publication order, into `collector`.
+  analysis::PlannedLedger finish(core::DiagnosticCollector &collector) const {
+    analysis::PlannedLedger planned = ledger->finish();
+    for (const core::Diagnostic &diagnostic : ledger->diagnostics())
+      collector.report(diagnostic);
+    return planned;
+  }
+};
+
 /// Parses `code` (prepended with `Prelude`) as C and runs the analyzer over
 /// the translation unit, collecting core diagnostics and summaries.
 struct AnalysisResult {
+  /// `analyzeAtLink`: the other unit's exports, which the analyzer reads.
+  std::shared_ptr<analysis::ProgramDatabase> database;
   std::unique_ptr<clang::ASTUnit> ast;
   core::DiagnosticCollector diagnostics;
+  std::unique_ptr<UnitLedgerHarness> harness;
   std::unique_ptr<analysis::TranslationUnitAnalyzer> analyzer;
+  /// The completed unit ledger (RFC 0030 §12).
+  analysis::PlannedLedger planned;
 
   /// The function definition named `name`, or null.
   [[nodiscard]] const clang::FunctionDecl *
@@ -108,17 +163,105 @@ analyzeInProgram(const std::string &code,
   }
 
   clang::ASTContext &context = result.ast->getASTContext();
+  result.harness = std::make_unique<UnitLedgerHarness>(context);
   result.analyzer = std::make_unique<analysis::TranslationUnitAnalyzer>(
-      context, result.diagnostics, options);
+      context, *result.harness->ledger, result.harness->withKinds(options));
   if (database != nullptr)
     result.analyzer->setDatabase(database);
   result.analyzer->run();
+  result.planned = result.harness->finish(result.diagnostics);
   return result;
+}
+
+/// Runs a fresh analyzer over `context`, reporting only the functions
+/// `shouldReport` accepts, and returns its diagnostics.
+inline core::DiagnosticCollector analyzeFiltered(
+    clang::ASTContext &context,
+    llvm::function_ref<bool(const clang::FunctionDecl &)> shouldReport,
+    const analysis::AnalysisOptions &options = {}) {
+  UnitLedgerHarness harness(context);
+  analysis::TranslationUnitAnalyzer analyzer(context, *harness.ledger,
+                                             harness.withKinds(options));
+  analyzer.run(shouldReport);
+  core::DiagnosticCollector collected;
+  (void)harness.finish(collected);
+  return collected;
 }
 
 inline AnalysisResult analyze(const std::string &code,
                               const analysis::AnalysisOptions &options = {}) {
   return analyzeInProgram(code, nullptr, options);
+}
+
+/// RFC 0030 §13.2 step 4: `callers`, re-analysed at link with the exports
+/// of the unit `callees` in the program database, so that each callee
+/// defined there is known by its summary alone (what the link step reports
+/// about a callee's requirement is an error there).
+inline AnalysisResult analyzeAtLink(const std::string &callees,
+                                    const std::string &callers) {
+  const AnalysisResult defined = analyze(callees);
+  auto database = std::make_shared<analysis::ProgramDatabase>();
+  if (defined.analyzer)
+    database->add(defined.analyzer->exports());
+  AnalysisResult result = analyzeInProgram(callers, database.get());
+  result.database = std::move(database);
+  return result;
+}
+
+/// RFC 0030 §15 item 3: where the engine could not model a construct, as
+/// `"<line>: <facet> <reason>: <what>"` for every unresolved facet whose
+/// detail is an incompleteness some function's summary records, in ledger
+/// order. (Before RFC 0030 each was an `analysis-incomplete` warning.)
+inline std::vector<std::string> incomplete(const AnalysisResult &result) {
+  std::vector<std::string> out;
+  if (!result.ast)
+    return out;
+  std::set<std::string> recorded;
+  for (const clang::Decl *decl :
+       result.ast->getASTContext().getTranslationUnitDecl()->decls()) {
+    const auto *fn = llvm::dyn_cast<clang::FunctionDecl>(decl);
+    if (fn == nullptr || !fn->doesThisDeclarationHaveABody())
+      continue;
+    if (const core::FunctionSummary *summary = result.summary(fn->getName()))
+      recorded.insert(summary->incomplete.begin(), summary->incomplete.end());
+  }
+  for (const core::UnitLedger &unit : result.planned.ledger.units)
+    for (const core::FunctionLedger &function : unit.functions)
+      for (const core::Site &site : function.sites)
+        for (const core::Facet facet : core::AllFacets) {
+          const core::FacetRecord *record = site.facet(facet);
+          if (record == nullptr ||
+              record->outcome() != core::SiteOutcome::Unresolved ||
+              !recorded.contains(record->decision.detail))
+            continue;
+          out.push_back(std::to_string(site.location.line) + ": " +
+                        std::string(core::toString(facet)) + " " +
+                        std::string(record->decision.reasonText()) + ": " +
+                        record->decision.detail);
+        }
+  return out;
+}
+
+/// RFC 0030 §5.1: the call sites whose temporal facet is
+/// `unresolved(unknown-callee)` (a call into code the analysis cannot see),
+/// as `"<line>: <site text>"` in ledger order. (Before RFC 0030 such a callee
+/// was an `annotation-required` warning, once per callee.)
+inline std::vector<std::string> unknownCalls(const AnalysisResult &result) {
+  std::vector<std::string> out;
+  for (const core::UnitLedger &unit : result.planned.ledger.units)
+    for (const core::FunctionLedger &function : unit.functions)
+      for (const core::Site &site : function.sites) {
+        const core::FacetRecord *record = site.facet(core::Facet::Temporal);
+        if (site.kind == core::SiteKind::Call &&
+            site.boundary == core::Boundary::Call && record != nullptr &&
+            (record->decision.unresolved ==
+                 core::UnresolvedReason::UnknownCallee ||
+             // RFC 0030 §9.3: an indirect call with no known target is the
+             // same default under the reason `callback`.
+             record->decision.unresolved == core::UnresolvedReason::Callback))
+          out.push_back(std::to_string(site.location.line) + ": " + site.text);
+      }
+  return out;
 }
 
 /// Returns the ids of all reported (non-note) diagnostics, in order.

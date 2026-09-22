@@ -1,0 +1,10 @@
+--- a/src/strbuffer.c
++++ b/src/strbuffer.c
+@@ -34,6 +34,7 @@
+ void strbuffer_close(strbuffer_t *strbuff) {
+     if (strbuff->value)
+         jsonp_free(strbuff->value);
++    jsonp_free(strbuff->value); /* INJECTED: double free */
+ 
+     strbuff->size = 0;
+     strbuff->length = 0;

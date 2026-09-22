@@ -1,1 +1,0 @@
-Frozen before writer inference changes, against candidate24 Release 5e223b65df861ed030d2bd1ac99aee430b602b396956e6eefe5b5d380e6276bd. See ../recursive-writer/audit.md for the original inventory audit. Aliasing is a conservative separation-premise rejection, not a claim that every overlapping byte copy is unsafe.

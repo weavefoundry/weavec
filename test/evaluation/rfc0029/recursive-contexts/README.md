@@ -1,1 +1,0 @@
-RFC0029 bounded recursive context nomination. Frozen before implementing the filter. Thirty-six unrelated mutable-output initial values must not consume every context slot before a concrete input selector is available. The generic recursive definition remains incomplete. This changes no proof premises or context budgets. Baseline candidate27c.

@@ -117,13 +117,21 @@ TEST(GuardCompleteness, NumericReturnsAndStoresLoseIncompleteProjections) {
   }
 }
 
+// RFC 0030 §13.2 step 4: a guarded access is none of the §7.5 rules, so
+// the link step reports the summary's requirement.
 TEST(GuardCompleteness, RetainedScalarFactsCanImplyANumericPredicate) {
-  const auto result = analyze(R"c(
+  static constexpr const char *Callee = R"c(
     void fits(char *p, unsigned a, unsigned b, unsigned c, unsigned d,
               unsigned e, unsigned f, unsigned g, unsigned n) {
       if (!a || !b || !c || !d || !e || !f || !g) return;
       if (n == 3) p[n] = 0;
     }
+  )c";
+  const auto result = analyze(Callee);
+  ASSERT_TRUE(result.ast);
+  const auto linked = analyzeAtLink(Callee, R"c(
+    void fits(char *p, unsigned a, unsigned b, unsigned c, unsigned d,
+              unsigned e, unsigned f, unsigned g, unsigned n);
     void good(void) {
       char four[4]; fits(four, 1,1,1,1,1,1,1, 3);
     }
@@ -131,9 +139,8 @@ TEST(GuardCompleteness, RetainedScalarFactsCanImplyANumericPredicate) {
       char three[3]; fits(three, 1,1,1,1,1,1,1, 3);
     }
   )c");
-  ASSERT_TRUE(result.ast);
-  EXPECT_EQ(countId(result, core::diag::OutOfBounds), 1U)
-      << ::testing::PrintToString(messages(result.diagnostics));
+  EXPECT_EQ(countId(linked, core::diag::OutOfBounds), 1U)
+      << ::testing::PrintToString(messages(linked.diagnostics));
   const auto *summary = result.summary("fits");
   ASSERT_NE(summary, nullptr);
   EXPECT_TRUE(summary->requiresExtent.contains(0));
@@ -142,16 +149,20 @@ TEST(GuardCompleteness, RetainedScalarFactsCanImplyANumericPredicate) {
 }
 
 TEST(GuardCompleteness, CanonicalLoopBoundaryCanExcludeItsIndexPredicate) {
-  const auto result = analyze(R"c(
+  static constexpr const char *Callee = R"c(
     void fill(char *p, unsigned n, unsigned cap) {
       for (unsigned i = 0; i < n && i < cap; ++i) p[i] = 0;
     }
+  )c";
+  const auto result = analyze(Callee);
+  ASSERT_TRUE(result.ast);
+  const auto linked = analyzeAtLink(Callee, R"c(
+    void fill(char *p, unsigned n, unsigned cap);
     void good(void) { char two[2]; fill(two, 10, 2); }
     void bad(void) { char two[2]; fill(two, 3, 3); }
   )c");
-  ASSERT_TRUE(result.ast);
-  EXPECT_EQ(countId(result, core::diag::OutOfBounds), 1U)
-      << ::testing::PrintToString(messages(result.diagnostics));
+  EXPECT_EQ(countId(linked, core::diag::OutOfBounds), 1U)
+      << ::testing::PrintToString(messages(linked.diagnostics));
   const auto *summary = result.summary("fill");
   ASSERT_NE(summary, nullptr);
   EXPECT_TRUE(summary->requiresExtent.contains(0));

@@ -1,12 +1,12 @@
 # RFC 0021: Practical C traversal and inductive buffer contracts
 
-- **Status**: Implemented
+- **Status**: Superseded
 - **Authors**: WeaveC authors
 - **Created**: 2026-09-09
 - **Tracking issue**: TBD
-- **Supersedes / superseded by**: Extends RFCs 0017–0019's pointer,
-  numeric, initialization and checked contract models. RFC 0020 continues
-  to govern reuse, accounting and validated checkpoints.
+- **Supersedes / superseded by**: Superseded by RFC 0030
+
+> Superseded by [RFC 0030](0030-prove-or-trap.md).
 
 ## Summary
 
@@ -21,7 +21,7 @@ Jansson UTF and cJSON minifier interfaces with positive and adversarial callers.
 
 The owner requested an RFC first followed by end-to-end implementation.
 Drafting and acceptance preceded implementation under that authorization.
-The [validation record](../validation-rfc0021.md) documents every acceptance
+The validation record (removed by RFC 0030) documents every acceptance
 gate and the remaining coverage limits. This status records the completed
 implementation and validation; independent review and merge are separate.
 

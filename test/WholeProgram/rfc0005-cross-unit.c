@@ -1,7 +1,6 @@
 // RFC 0005: with --whole-program, a call to a function defined in another
 // unit is checked against that definition's summary instead of being a
-// boundary. Bugs that need two files are found, and no `annotation-required`
-// is reported for callees the program defines.
+// boundary. Bugs that need two files are found.
 //
 // RUN: not %weavec --whole-program %s %S/Inputs/node.c -- -I%S/Inputs 2>&1 | FileCheck %s
 // RUN: not %weavec --whole-program %s %S/Inputs/node.c -- -I%S/Inputs 2>&1 | FileCheck --check-prefix=NONE %s
@@ -11,14 +10,15 @@
 // RUN: not %weavec --whole-program %S/Inputs/node.c %s -- -I%S/Inputs 2>&1 | FileCheck %s
 //
 // Without --whole-program the same file is its own program and the calls
-// are boundaries (RFC 0003), so nothing is an error.
+// are into unknown code (RFC 0030 §5.1): ledger rows, and nothing is
+// reported.
 // RUN: %weavec %s -- -I%S/Inputs 2>&1 | FileCheck --check-prefix=ALONE %s
 #include "../Inputs/prelude.h"
 #include "node.h"
 
-// NONE-NOT: annotation-required
-// ALONE: warning: call to 'node_new' is not checked
-// ALONE-NOT: error:
+// NONE-NOT: warning: call
+// ALONE-NOT: {{warning|error}}:
+// ALONE: 0 errors, 0 warnings
 
 int double_release(void) {
   struct node *n = node_new();

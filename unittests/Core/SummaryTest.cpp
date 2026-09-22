@@ -528,33 +528,6 @@ TEST(FunctionSummary, JoinIsUnion) {
   EXPECT_EQ(other, joined);
 }
 
-// RFC 0003's idempotent join still retains RFC 0020's explanation tie-break.
-TEST(FunctionSummary, EqualFactsJoinKeepsCanonicalExplanations) {
-  FunctionSummary a;
-  const auto p = SummaryPath::param(0);
-  a.addEffect(p.deref().field("value"), PlaceEffect{.written = true});
-  a.addReturn(ValueSource::copy(p));
-  a.checked.computed = true;
-  const SafetyObligation origin{
-      .property = SafetyProperty::Call,
-      .outcome = SafetyOutcome::Unresolved,
-      .location = {.file = "caller.c", .line = 1},
-      .function = "caller",
-      .subject = "callee",
-      .reason = "missing evidence",
-      .calls = {{.file = "z.c", .line = 2}, {.file = "origin.c", .line = 3}}};
-  a.checked.obligations.add(origin);
-  FunctionSummary b = a;
-  auto shorter = origin;
-  shorter.calls = {{.file = "origin.c", .line = 3}};
-  b.checked.obligations.add(shorter);
-  ASSERT_EQ(a, b);
-  ASSERT_FALSE(a.checked.obligations.sameExplanationsAs(b.checked.obligations));
-  a.join(b);
-  EXPECT_EQ(a, b);
-  EXPECT_TRUE(a.checked.obligations.sameExplanationsAs(b.checked.obligations));
-}
-
 // RFC 0006, *Outcome-conditional summaries*.
 TEST(FunctionSummary, OutcomesJoinPerClassAndDecideConditionality) {
   const SummaryPath p = SummaryPath::param(0);
@@ -941,6 +914,16 @@ TEST(ValueSource, KindNames) {
   EXPECT_EQ(toString(ValueSource::Kind::Null), "null");
   EXPECT_EQ(toString(ValueSource::Kind::Unknown), "unknown");
   EXPECT_EQ(toString(ValueSource::Kind::Raw), "raw");
+}
+
+// RFC 0030 §5.1: `unknown` is a may-fact.
+TEST(PlaceEffect, UnknownEffectJoinsByDisjunction) {
+  PlaceEffect effect{.read = true};
+  EXPECT_FALSE(effect.unknown);
+  effect.join(PlaceEffect{.unknown = true});
+  EXPECT_TRUE(effect.unknown);
+  EXPECT_FALSE(effect.consumed());
+  EXPECT_FALSE(PlaceEffect{.unknown = true}.empty());
 }
 
 } // namespace

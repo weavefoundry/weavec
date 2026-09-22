@@ -10,6 +10,7 @@
 
 #include "InterfaceTypes.h"
 #include "weavec/Analysis/Annotations.h"
+#include "weavec/Analysis/KindTable.h"
 #include "weavec/Analysis/ProgramDatabase.h"
 
 #include "clang/Basic/SourceManager.h"
@@ -19,6 +20,7 @@
 // Defines `LazyGenerationalUpdatePtr::makeValue`, which `Redeclarable`
 // walks (`getCanonicalDecl`, `redecls()`) instantiate here.
 #include "clang/AST/ASTContext.h"
+#include "clang/AST/Attr.h"
 #include "clang/AST/Expr.h"
 
 #include "llvm/ADT/STLExtras.h"
@@ -29,280 +31,6 @@
 using namespace clang;
 
 namespace weavec::analysis {
-
-std::vector<const FieldDecl *>
-SummaryStore::recursiveLinks(const RecordDecl &record) {
-  const auto importedLinks = [&] {
-    std::vector<const FieldDecl *> result;
-    if (!context)
-      return result;
-    // Imported descriptors nominate fields without changing during one
-    // database generation. Preserve every observed dependency on reuse;
-    // replacing or mutating the database invalidates these candidates.
-    const auto generation = database ? database->importGeneration() : nullptr;
-    if (recursiveLinkGeneration != generation) {
-      importedRecursiveLinkCache.clear();
-      recursiveLinkGeneration = generation;
-    }
-    if (const auto found = importedRecursiveLinkCache.find(&record);
-        found != importedRecursiveLinkCache.end()) {
-      inheritDependencies(found->second.dependencies);
-      if (stats)
-        stats->add("recursive_link_import_hits");
-      return found->second.fields;
-    }
-    if (stats)
-      stats->add("recursive_link_import_misses");
-    Dependencies dependencies;
-    beginDependencies(dependencies);
-    for (const auto *decl : context->getTranslationUnitDecl()->decls()) {
-      const auto *fn = dyn_cast<FunctionDecl>(decl);
-      if (!fn || fn->getDefinition() ||
-          std::ranges::none_of(fn->parameters(), [&](const auto *param) {
-            return param->getType()->isPointerType() &&
-                   param->getType()->getPointeeType()->getAsRecordDecl() ==
-                       &record;
-          }))
-        continue;
-      const auto imported = lookup(*fn);
-      if (!imported || imported->source != SummarySource::Program)
-        continue;
-      for (const auto &requirement : imported->summary->checked.requirements) {
-        if (requirement.kind != core::CheckedRequirementKind::Container)
-          continue;
-        const auto shape = core::ContainerShape::decode(requirement.family);
-        if (!shape)
-          continue;
-        // Imported predicates only nominate local fields. The current target
-        // layout and all actual memory facts are checked when it is folded.
-        for (const auto *field : record.fields())
-          if (field->getType()->isPointerType() &&
-              field->getType()->getPointeeType()->getAsRecordDecl() ==
-                  &record &&
-              shape->recursiveLink(field->getNameAsString()) &&
-              std::ranges::find(result, field) == result.end())
-            result.push_back(field);
-      }
-    }
-    std::ranges::sort(result, {},
-                      [](const auto *field) { return field->getFieldIndex(); });
-    endDependencies();
-    if (importedRecursiveLinkCache.size() < 256)
-      importedRecursiveLinkCache.emplace(
-          &record,
-          ImportedRecursiveLinks{.fields = result,
-                                 .dependencies = std::move(dependencies)});
-    return result;
-  };
-  if (const auto found = recursiveLinkCache.find(&record);
-      found != recursiveLinkCache.end())
-    return found->second.empty() ? importedLinks() : found->second;
-  std::set<const FieldDecl *> links;
-  const auto fieldOf = [&](const Expr *expr) -> const FieldDecl * {
-    const auto *member =
-        expr ? dyn_cast<MemberExpr>(expr->IgnoreParenImpCasts()) : nullptr;
-    const auto *field =
-        member ? dyn_cast<FieldDecl>(member->getMemberDecl()) : nullptr;
-    if (!field || field->getParent() != &record ||
-        !field->getType()->isPointerType() ||
-        field->getType()->getPointeeType()->getAsRecordDecl() != &record)
-      return nullptr;
-    return field;
-  };
-  if (context)
-    for (const auto *decl : context->getTranslationUnitDecl()->decls()) {
-      const auto *fn = dyn_cast<FunctionDecl>(decl);
-      if (!fn || !fn->doesThisDeclarationHaveABody() ||
-          std::ranges::none_of(fn->parameters(), [&](const auto *param) {
-            const auto type = param->getType();
-            return type->isPointerType() &&
-                   type->getPointeeType()->getAsRecordDecl() == &record;
-          }))
-        continue;
-      std::set<const FieldDecl *> children;
-      std::set<const FieldDecl *> cursors;
-      std::vector<const Stmt *> work{fn->getBody()};
-      for (std::size_t i = 0; i < work.size() && work.size() <= 65536; ++i) {
-        const auto *stmt = work[i];
-        if (!stmt)
-          continue;
-        // Only actual recursive peers nominate a mutual recursive edge.
-        // An unrelated child destructor can otherwise hide the full topology
-        // supplied by an imported contract in a separate-source client.
-        if (const auto *call = dyn_cast<CallExpr>(stmt))
-          if (const auto *callee = call->getDirectCallee();
-              callee &&
-              (callee->getCanonicalDecl() == fn->getCanonicalDecl() ||
-               (recursiveComponents.contains(fn->getCanonicalDecl()) &&
-                recursiveComponents.contains(callee->getCanonicalDecl()) &&
-                recursiveComponents.at(fn->getCanonicalDecl()) ==
-                    recursiveComponents.at(callee->getCanonicalDecl()))))
-            for (const auto *argument : call->arguments())
-              if (const auto *field = fieldOf(argument))
-                children.insert(field);
-        if (const auto *assignment = dyn_cast<BinaryOperator>(stmt);
-            assignment && assignment->getOpcode() == BO_Assign &&
-            isa<DeclRefExpr>(assignment->getLHS()->IgnoreParenImpCasts()))
-          if (const auto *field = fieldOf(assignment->getRHS()))
-            cursors.insert(field);
-        if (const auto *decls = dyn_cast<DeclStmt>(stmt))
-          for (const auto *local : decls->decls())
-            if (const auto *var = dyn_cast<VarDecl>(local);
-                var && var->hasInit())
-              if (const auto *field = fieldOf(var->getInit()))
-                cursors.insert(field);
-        for (const auto *child : stmt->children())
-          work.push_back(child);
-      }
-      if (work.size() > 65536)
-        continue;
-      if (!children.empty()) {
-        links.insert(children.begin(), children.end());
-        links.insert(cursors.begin(), cursors.end());
-      }
-    }
-  std::vector<const FieldDecl *> result(links.begin(), links.end());
-  std::ranges::sort(result, {},
-                    [](const auto *field) { return field->getFieldIndex(); });
-  if (recursiveLinkCache.size() < 256)
-    recursiveLinkCache.emplace(&record, result);
-  return result.empty() ? importedLinks() : result;
-}
-
-SummaryStore::ContainerFields
-SummaryStore::containerFields(const RecordDecl &record) {
-  if (!context)
-    return {};
-  const auto generation = database ? database->importGeneration() : nullptr;
-  if (containerPayloadGeneration != generation) {
-    containerPayloadCache.clear();
-    containerPayloadGeneration = generation;
-  }
-  if (const auto found = containerPayloadCache.find(&record);
-      found != containerPayloadCache.end()) {
-    inheritDependencies(found->second.dependencies);
-    return found->second.fields;
-  }
-  std::set<const FieldDecl *> fields;
-  std::map<std::string, core::ContainerCondition> ownership;
-  std::set<std::string> conflicting;
-  Dependencies dependencies;
-  beginDependencies(dependencies);
-  for (const auto *decl : context->getTranslationUnitDecl()->decls()) {
-    const auto *fn = dyn_cast<FunctionDecl>(decl);
-    if (!fn || std::ranges::none_of(fn->parameters(), [&](const auto *param) {
-          return param->getType()->isPointerType() &&
-                 param->getType()->getPointeeType()->getAsRecordDecl() ==
-                     &record;
-        }))
-      continue;
-    if (fn->doesThisDeclarationHaveABody()) {
-      std::vector<const Stmt *> work{fn->getBody()};
-      for (std::size_t i = 0; i < work.size() && work.size() <= 65536; ++i) {
-        const auto *stmt = work[i];
-        if (!stmt)
-          continue;
-        if (const auto *call = dyn_cast<CallExpr>(stmt);
-            call && call->getNumArgs() == 1)
-          if (const auto *callee = call->getDirectCallee();
-              callee && callee->getName() == "free" && !callee->hasBody())
-            if (const auto *member = dyn_cast<MemberExpr>(
-                    call->getArg(0)->IgnoreParenImpCasts()))
-              if (const auto *field =
-                      dyn_cast<FieldDecl>(member->getMemberDecl());
-                  field && field->getParent() == &record &&
-                  field->getType()->isPointerType() &&
-                  field->getType()->getPointeeType()->getAsRecordDecl() !=
-                      &record)
-                fields.insert(field);
-        for (const auto *child : stmt->children())
-          work.push_back(child);
-      }
-      continue;
-    }
-    if (fn->getDefinition())
-      continue;
-    const auto imported = lookup(*fn);
-    if (!imported || imported->source != SummarySource::Program)
-      continue;
-    for (const auto &requirement : imported->summary->checked.requirements) {
-      if (requirement.kind != core::CheckedRequirementKind::Container)
-        continue;
-      const auto shape = core::ContainerShape::decode(requirement.family);
-      if (!shape)
-        continue;
-      for (const auto &[name, condition] : shape->ownership) {
-        const auto [found, inserted] = ownership.emplace(name, condition);
-        if (!inserted && found->second != condition)
-          conflicting.insert(name);
-      }
-      for (const auto &payload : shape->payloads)
-        if (payload.family == "free")
-          for (const auto *field : record.fields())
-            if (field->getType()->isPointerType() &&
-                field->getName() == payload.field.name &&
-                field->getType()->getPointeeType()->getAsRecordDecl() !=
-                    &record)
-              fields.insert(field);
-    }
-  }
-  endDependencies();
-  std::vector<const FieldDecl *> result(fields.begin(), fields.end());
-  std::ranges::sort(result, {},
-                    [](const auto *field) { return field->getFieldIndex(); });
-  for (const auto &name : conflicting)
-    ownership.erase(name);
-  ContainerFields candidates{.payloads = std::move(result),
-                             .ownership = std::move(ownership)};
-  if (containerPayloadCache.size() < 256)
-    containerPayloadCache.emplace(
-        &record,
-        ImportedContainerFields{.fields = candidates,
-                                .dependencies = std::move(dependencies)});
-  return candidates;
-}
-
-std::optional<core::BufferShape> SummaryStore::bufferShape(
-    const RecordDecl &record,
-    const std::function<std::optional<core::BufferShape>()> &discover) {
-  if (const auto found = bufferShapeCache.find(&record);
-      found != bufferShapeCache.end())
-    return found->second;
-  auto result = discover();
-  // Cache saturation changes cost only; discovery still runs on a miss.
-  if (bufferShapeCache.size() < 256)
-    bufferShapeCache.emplace(&record, result);
-  return result;
-}
-
-const SummaryStore::RecursiveContractGroup *
-SummaryStore::recursiveContractGroup(const FunctionDecl &caller) const {
-  const auto *from = caller.getCanonicalDecl();
-  if (activeRecursiveContracts.members.contains(from))
-    return &activeRecursiveContracts;
-  const auto group = verifiedRecursiveContracts.find(from);
-  return group == verifiedRecursiveContracts.end() ? nullptr : &group->second;
-}
-
-bool SummaryStore::recursiveContractPeer(const FunctionDecl &caller,
-                                         const FunctionDecl &callee) const {
-  const auto *group = recursiveContractGroup(caller);
-  return group != nullptr && group->members.contains(callee.getCanonicalDecl());
-}
-
-std::map<std::string, core::ContainerCondition>
-SummaryStore::containerOwnership(
-    const RecordDecl &record,
-    const std::function<std::map<std::string, core::ContainerCondition>()>
-        &discover) {
-  if (const auto found = containerOwnershipCache.find(&record);
-      found != containerOwnershipCache.end())
-    return found->second;
-  auto result = discover();
-  if (containerOwnershipCache.size() < 256)
-    containerOwnershipCache.emplace(&record, result);
-  return result;
-}
 
 // -- GlobalTable --------------------------------------------------------------
 
@@ -416,9 +144,16 @@ GlobalTable::importName(llvm::StringRef name, const ASTContext &context,
   const auto type = materializeInterfaceType(*metadata->second, arena);
   if (type.isNull())
     return std::nullopt;
-  auto *proxy = VarDecl::Create(arena, context.getTranslationUnitDecl(), {}, {},
-                                &context.Idents.get("__weavec_private_storage"),
-                                type, nullptr, SC_Extern);
+  // RFC 0028 §2: the analysis storage stands for another unit's private
+  // variable. It carries that variable's own name, because the proxy is
+  // internal and a diagnostic about it must name something the reader can
+  // find in the program.
+  std::string shown = privateStorageVariable(name);
+  if (shown.empty())
+    shown = "private storage";
+  auto *proxy =
+      VarDecl::Create(arena, context.getTranslationUnitDecl(), {}, {},
+                      &context.Idents.get(shown), type, nullptr, SC_Extern);
   proxy->setImplicit();
   const auto id = remember(*proxy);
   storageProxies.emplace(id, name.str());
@@ -450,6 +185,50 @@ bool SignatureAnnotations::anyOwnership() const noexcept {
          });
 }
 
+/// RFC 0030 §7.2: `malloc` and the `ownership_*` attributes outside system
+/// headers are ownership contracts: a fresh result of family `m`, and an
+/// argument released (`ownership_takes`) or retained (`ownership_holds`). A
+/// WeaveC annotation on the same position wins (precedence level 1).
+static void applyOwnershipAttributes(const FunctionDecl &redecl,
+                                     SignatureAnnotations &collected) {
+  const SourceManager &sm = redecl.getASTContext().getSourceManager();
+  if (sm.isInSystemHeader(redecl.getLocation()))
+    return;
+  const auto owns = [](const AnnotationSet &set) {
+    return set.owned || set.borrowed || set.mutBorrowed || set.raw || set.frees;
+  };
+  if (redecl.hasAttr<RestrictAttr>() &&
+      redecl.getReturnType()->isPointerType() && !owns(collected.result)) {
+    collected.result.owned = true;
+    collected.result.family = std::string(core::HeapFamily);
+  }
+  for (const auto *attr : redecl.specific_attrs<OwnershipAttr>()) {
+    const std::string family = attr->getModule() != nullptr
+                                   ? attr->getModule()->getName().str()
+                                   : std::string();
+    if (attr->getOwnKind() == OwnershipAttr::Returns) {
+      if (!owns(collected.result)) {
+        collected.result.owned = true;
+        collected.result.family = family;
+      }
+      continue;
+    }
+    for (const ParamIdx index : attr->args()) {
+      if (!index.isValid() || index.getASTIndex() >= collected.params.size())
+        continue;
+      AnnotationSet &param = collected.params[index.getASTIndex()];
+      if (owns(param) || param.retains || param.releases)
+        continue;
+      if (attr->getOwnKind() == OwnershipAttr::Holds) {
+        param.retains = true;
+      } else {
+        param.frees = true;
+        param.family = family;
+      }
+    }
+  }
+}
+
 SignatureAnnotations collectAnnotations(const FunctionDecl &function) {
   SignatureAnnotations collected;
   collected.params.resize(function.getNumParams());
@@ -461,6 +240,8 @@ SignatureAnnotations collectAnnotations(const FunctionDecl &function) {
          i < redecl->getNumParams() && i < collected.params.size(); ++i)
       collected.params[i].merge(getAnnotations(*redecl->getParamDecl(i)));
   }
+  for (const FunctionDecl *redecl : function.redecls())
+    applyOwnershipAttributes(*redecl, collected);
   return collected;
 }
 
@@ -541,7 +322,12 @@ static void applyAnnotations(core::FunctionSummary &summary,
       continue;
     const AnnotationSet &set = params[i];
     const core::SummaryPath root = core::SummaryPath::param(i);
-    if (set.owned) {
+    if (set.frees) {
+      // RFC 0030 §7.2 `ownership_takes(m, i)`: the callee releases it.
+      eraseRoot(i, /*includeStores=*/true);
+      summary.addEffect(root,
+                        core::PlaceEffect{.freed = true, .family = set.family});
+    } else if (set.owned) {
       // Whatever happens to a consumed object is the callee's business. The
       // body's release family survives so `xfree(fopen(...))` is reported;
       // `WEAVEC_OWNED_BY(f)` names it outright (RFC 0010).
@@ -967,13 +753,7 @@ SummaryStore::confirmedSizedWitness(std::string_view field) const {
     return program != nullptr ? program->confirmedWitness(field) : std::nullopt;
   if (program == nullptr || program->empty())
     return sizedFields.confirmedWitness(field);
-  SizedFieldFacts both = sizedFields;
-  both.merge(*program);
-  return both.confirmedWitness(field);
-}
-
-bool SummaryStore::noteInvalidSizedField(const FieldDecl &field) {
-  return invalidSizedFields.insert(field.getCanonicalDecl()).second;
+  return SizedFieldFacts::confirmedWitnessOfBoth(sizedFields, *program, field);
 }
 
 const std::set<std::string> &SummaryStore::knownCountKeys() const noexcept {
@@ -981,11 +761,11 @@ const std::set<std::string> &SummaryStore::knownCountKeys() const noexcept {
 }
 
 bool SummaryStore::setInferred(const FunctionDecl &function,
-                               core::FunctionSummary summary, bool widen,
-                               bool verifiedInduction) {
+                               core::FunctionSummary summary, bool widen) {
   const FunctionDecl *canonical = key(function);
   merged.erase(canonical);
   mergedSource.erase(canonical);
+  mergedLibrary.erase(canonical);
   // RFC 0010: the count fields this function releases through are known
   // counts for every function of the unit (and, exported, of the program).
   for (const core::SummaryPath &count : summary.counts) {
@@ -993,24 +773,9 @@ bool SummaryStore::setInferred(const FunctionDecl &function,
       addKnownCount(std::move(*countKey));
   }
   const auto previous = inferred.find(canonical);
-  const auto globalStores = [](const core::FunctionSummary &value) {
-    std::vector<core::Store> result;
-    for (const auto &store : value.stores)
-      if (store.dest.isGlobal())
-        result.push_back(store);
-    return result;
-  };
-  const bool globalsChanged =
-      previous == inferred.end()
-          ? !globalStores(summary).empty()
-          : globalStores(*previous->second) != globalStores(summary);
   if (previous == inferred.end()) {
     inferred.emplace(canonical, publishSummary(std::move(summary)));
     mergedIndirect.clear();
-    if (globalsChanged) {
-      callbackGlobalCache.reset();
-      invalidateDependency("@callback-globals");
-    }
     invalidateDependency(callableSymbol(function));
     if (stats)
       stats->add("summary_changes");
@@ -1024,8 +789,8 @@ bool SummaryStore::setInferred(const FunctionDecl &function,
     if (refreshingRecursiveValueOutcomes) {
       // Earlier SCC approximations are not additional returning executions.
       // This body was rechecked against settled conservative effects. Keep
-      // only its actual value guarantees; checked memory outputs and
-      // every may-effect still use their existing widening (RFC 0029).
+      // only its actual value guarantees; every may-effect still uses its
+      // existing widening (RFC 0029).
       if (!joined.outcomes.empty()) {
         joined.nullOn = summary.nullOn;
         joined.nonNullOn = summary.nonNullOn;
@@ -1036,22 +801,11 @@ bool SummaryStore::setInferred(const FunctionDecl &function,
           values != summary.numericOutputs.end())
         joined.numericOutputs.emplace(result, values->second);
     }
-    // RFC 0027: these outputs were verified against private proper-child
-    // induction hypotheses. They do not come from the optimistic SCC seed.
-    // Continue widening ordinary may-effects and retaining every obligation.
-    if (verifiedInduction && summary.checked.complete()) {
-      joined.checked.establishes = summary.checked.establishes;
-      joined.checked.discardUnrepresentedContainerOutputs();
-    }
     summary = std::move(joined);
   }
   if (*previous->second == summary)
     return false;
   previous->second = publishSummary(std::move(summary));
-  if (globalsChanged) {
-    callbackGlobalCache.reset();
-    invalidateDependency("@callback-globals");
-  }
   invalidateDependency(callableSymbol(function));
   if (stats)
     stats->add("summary_changes");
@@ -1088,13 +842,29 @@ void SummaryStore::applyContract(const FunctionDecl &function,
   applySizedByAnnotations(summary, function);
 }
 
+std::optional<core::LibraryMatch>
+SummaryStore::libraryMatch(const FunctionDecl &callee) const {
+  if (!callee.isGlobal())
+    return std::nullopt;
+  // §8: a program's own definition wins over the row, at link too.
+  if (database != nullptr && callee.getIdentifier() != nullptr &&
+      database->defines(callee.getName()))
+    return std::nullopt;
+  return governingLibraryEntry(callee, *librarySpec);
+}
+
 std::optional<ResolvedSummary>
 SummaryStore::lookup(const FunctionDecl &callee) {
   noteDependency(callableSymbol(callee));
   const FunctionDecl *canonical = key(callee);
-  if (const auto it = merged.find(canonical); it != merged.end())
+  if (const auto it = merged.find(canonical); it != merged.end()) {
+    const auto row = mergedLibrary.find(canonical);
     return ResolvedSummary{.summary = it->second,
-                           .source = mergedSource.at(canonical)};
+                           .source = mergedSource.at(canonical),
+                           .library = row != mergedLibrary.end()
+                                          ? std::optional(row->second)
+                                          : std::nullopt};
+  }
 
   const SignatureAnnotations annotations = collectAnnotations(callee);
   const core::FunctionSummary *inferredBody = inferredFor(callee);
@@ -1126,26 +896,25 @@ SummaryStore::lookup(const FunctionDecl &callee) {
   }
 
   if (!haveBody && !annotated) {
-    const core::FunctionSummary *builtin = builtinSummary(callee);
-    if (builtin == nullptr)
+    // RFC 0030 §8: the `LibrarySpec` row, under the declaration's nullness
+    // and extent annotations.
+    const auto row = libraryMatch(callee);
+    if (!row)
       return std::nullopt;
-    if (!nullness && !sized)
-      // The library table has process lifetime; this alias needs no control
-      // block.
-      return ResolvedSummary{.summary =
-                                 SummarySnapshot{SummarySnapshot{}, builtin},
-                             .source = SummarySource::Builtin};
-    core::FunctionSummary adjusted = *builtin;
-    applyNullnessAnnotations(adjusted, shapeOf(callee), annotations.result,
-                             annotations.params);
+    core::FunctionSummary adjusted = librarySummaryOf(*row, callee);
+    if (nullness)
+      applyNullnessAnnotations(adjusted, shapeOf(callee), annotations.result,
+                               annotations.params);
     if (sized)
       applySizedByAnnotations(adjusted, callee);
     const auto it =
         merged.try_emplace(canonical, publishSummary(std::move(adjusted)))
             .first;
-    mergedSource[canonical] = SummarySource::Builtin;
+    mergedSource[canonical] = SummarySource::Library;
+    mergedLibrary.insert_or_assign(canonical, *row);
     return ResolvedSummary{.summary = it->second,
-                           .source = SummarySource::Builtin};
+                           .source = SummarySource::Library,
+                           .library = row};
   }
 
   core::FunctionSummary result;

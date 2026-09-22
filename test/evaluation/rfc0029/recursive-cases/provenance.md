@@ -1,1 +1,0 @@
-Frozen before case-local exhaustion handling. Candidate24 Release and candidate25 have the same existing case-limit handling. The zero-tag case executes no recursive call; the generic summary exhausts its fixed-point budget. A case must prove its own operations and still reject a null access, unknown selector or independently selected generic definition.

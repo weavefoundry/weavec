@@ -52,7 +52,7 @@ void twice_null(struct L *L) {
 
 void unknown(struct L *L, const char *b) {
   writer(L, b);
-  // CHECK: [[@LINE+1]]:3: error: 'L->stack' is freed twice [weavec::double-free]
+  // CHECK: [[@LINE+1]]:3: warning: 'L->stack' may be freed twice [weavec::double-free]
   writer(L, b);
 }
 

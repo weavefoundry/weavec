@@ -1,20 +1,26 @@
 # weavec::Frontend -- Clang FrontendAction / libTooling integration.
 weavec_add_library(
   Frontend
-  SOURCES AnalysisCache.cpp
-          InputIdentity.cpp
-          AnalysisStats.cpp
-          CheckedArtifacts.cpp
-          CheckedReport.cpp
-          CompactReport.cpp
-          CheckpointExplanations.cpp
+  SOURCES AnalysisStats.cpp
           ClangDiagnosticSink.cpp
+          DeferredCodeGenConsumer.cpp
           DiagnosticControl.cpp
           Driver.cpp
           FrontendAction.cpp
+          Prelude.cpp
           ProgramAnalysis.cpp
           ResourceDir.cpp
-          Sidecar.cpp
+          # RFC 0030: the ledger writers, where ledgers and summary lines
+          # go, the format-28 unit record and the link step.
+          LedgerOutput.cpp
+          LedgerWriter.cpp
+          LinkStep.cpp
+          RecordFacts.cpp
+          RecordPayload.cpp
+          UnitRecord.cpp
+          # RFC 0030 S5: the check rewrites and zero-initialisation.
+          CheckEmitter.cpp
+          ZeroInit.cpp
   PUBLIC_DEPS weavec::Analysis
   USES_LLVM)
 

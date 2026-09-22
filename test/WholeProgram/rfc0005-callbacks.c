@@ -5,16 +5,22 @@
 //
 // RUN: not %weavec --whole-program %s %S/Inputs/handlers.c -- 2>&1 | FileCheck %s
 //
-// Alone, the call through `h` has no candidates: it is a boundary, reported
-// once per function type, and nothing is an error.
-// RUN: %weavec %s -- 2>&1 | FileCheck --check-prefix=ALONE %s
+// Alone, the call through `h` has no candidates: it is a call into unknown
+// code (RFC 0030 §5.1), a ledger row, and nothing is reported.
+// RUN: %weavec --ledger=%t.json %s -- 2>&1 | FileCheck --check-prefix=ALONE %s
+// RUN: FileCheck --check-prefix=LEDGER %s < %t.json
 #include "../Inputs/prelude.h"
 
 void (*get_handler(void))(void *);
 
-// ALONE: warning: call to 'get_handler' is not checked
-// ALONE: warning: call through 'h' is not checked: its function type has no ownership annotations and its target is unknown [weavec::annotation-required]
-// ALONE-NOT: error:
+// ALONE-NOT: {{warning|error}}:
+// ALONE: 0 errors, 0 warnings
+// LEDGER: "text": "get_handler()",
+// LEDGER: "reason": "unknown-callee",
+// RFC 0030 §9.3: an indirect call through a slot with no known target.
+// LEDGER: "text": "h(buf)",
+// LEDGER: "reason": "callback",
+// LEDGER-NEXT: "detail": "the target of 'h' is unknown; annotate the parameters of its function type",
 
 int run(void) {
   char *buf = malloc(4);

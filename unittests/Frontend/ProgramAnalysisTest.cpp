@@ -120,9 +120,12 @@ struct Program {
 
   /// The analysis of the last `run`, for inspecting its database.
   std::unique_ptr<ProgramAnalysis> analysis;
+  /// RFC 0030 §13.2: as `weavec --whole-program` runs it.
+  bool interfaces = false;
 
   ProgramAnalysis::Result run() {
     analysis = std::make_unique<ProgramAnalysis>(options);
+    analysis->collectInterfaces(interfaces);
     for (const std::string &file : files)
       analysis->addUnit(std::make_unique<InMemoryUnit>(file, fs, recorder));
     return analysis->run();
@@ -161,7 +164,7 @@ int main(void) {
   EXPECT_FALSE(db.defines("main"));
 }
 
-TEST(ProgramAnalysis, NoBoundaryWarningForCalleesTheProgramDefines) {
+TEST(ProgramAnalysis, NoWarningForUnknownCallees) {
   Program program;
   program.add("a.c", "void take(char *p) { free(p); }\n");
   program.add("b.c", R"c(
@@ -179,14 +182,10 @@ void g(void) { blob_close(malloc(1)); }
 )c");
   const ProgramAnalysis::Result result = program.run();
   EXPECT_EQ(result.errors, 0U) << llvm::join(program.recorder.lines, "\n");
-  // `take` is defined in a.c: no warning. `blob_close` is defined nowhere:
-  // one warning for the program, not one per calling unit.
-  EXPECT_EQ(result.warnings, 1U);
-  ASSERT_EQ(program.recorder.lines.size(), 1U)
-      << llvm::join(program.recorder.lines, "\n");
-  EXPECT_EQ(program.recorder.lines[0],
-            "/src/b.c:7: warning: call to 'blob_close' is not checked: it has "
-            "no definition or ownership annotations here");
+  // `take` is defined in a.c. `blob_close` is defined nowhere: an unknown
+  // callee, which RFC 0030 §5.1 records as a ledger row, not a warning.
+  EXPECT_EQ(result.warnings, 0U) << llvm::join(program.recorder.lines, "\n");
+  EXPECT_TRUE(program.recorder.lines.empty());
 }
 
 TEST(ProgramAnalysis, MutuallyDependentUnitsReachAFixpoint) {
@@ -240,6 +239,51 @@ int run(void) {
   EXPECT_EQ(program.recorder.lines,
             (std::vector<std::string>{
                 "/src/loop.c:7: error: use of 'buf' after it was freed"}));
+}
+
+// RFC 0030 §13.2: `weavec --whole-program` keeps each unit's last ledger
+// and interface facts, and solves the slots of every unit together before
+// any runs (a hook stored in one unit, called through in another).
+TEST(ProgramAnalysis, WholeProgramRunsSolveSlotsAndKeepTheirLedgers) {
+  Program program;
+  program.interfaces = true;
+  program.header("hook.h", R"c(
+typedef void (*release_fn)(void *);
+struct ops { release_fn release; };
+void set_release(release_fn f);
+void run(void *p);
+)c");
+  program.add("lib.c", R"c(
+#include "hook.h"
+static struct ops the_ops;
+void set_release(release_fn f) { the_ops.release = f; }
+void run(void *p) { the_ops.release(p); }
+)c");
+  program.add("main.c", R"c(
+#include "hook.h"
+static void drop(void *p) { free(p); }
+int main(void) {
+  set_release(drop);
+  run(malloc(4));
+  return 0;
+}
+)c");
+  const auto result = program.run();
+  EXPECT_TRUE(result.failed.empty());
+  const auto &facts = program.analysis->facts();
+  ASSERT_TRUE(facts);
+  const core::SlotKey field = core::SlotKey::field("struct ops", "release");
+  EXPECT_EQ(facts->slots.targets(field),
+            std::set<std::string>{"/src/main.c:drop"});
+  EXPECT_TRUE(facts->slots.isClosed(field));
+  ASSERT_EQ(program.analysis->unitCount(), 2U);
+  for (std::size_t unit = 0; unit < 2; ++unit) {
+    EXPECT_NE(program.analysis->ledgerOf(unit), nullptr) << unit;
+    EXPECT_NE(program.analysis->interfaceOf(unit), nullptr) << unit;
+    EXPECT_NE(program.analysis->exportsOf(unit), nullptr) << unit;
+  }
+  // The database every run saw carries them.
+  EXPECT_EQ(program.analysis->database().programFacts, facts);
 }
 
 TEST(ProgramAnalysis, UnparsableUnitsAreReportedNotFatal) {
@@ -467,6 +511,10 @@ void (*get(void))(void *) { return release; }
 
 TEST(ProgramAnalysis, ExternGlobalCallbackStoresReachOtherUnits) {
   Program program;
+  // RFC 0030 §9.3: what a global function-pointer slot holds across units
+  // is the program's solved slots, which `weavec --whole-program` and the
+  // link step build from every unit's interface facts.
+  program.interfaces = true;
   program.add("caller.c", R"c(
 static void keep(void *p) { (void)p; }
 void (*hook)(void *) = keep;
@@ -633,7 +681,9 @@ void test(void) { char *p = malloc(4); if (p) safe(p); p = malloc(4); if (p) bad
       << ::testing::PrintToString(program.recorder.lines);
 }
 
-TEST(ProgramAnalysis, UnsafeCrossUnitRequestsDoNotProduceDelayedReports) {
+TEST(ProgramAnalysis, UnsafeCrossUnitRequestsReportLikeAnyOther) {
+  // RFC 0030 §6.1: a context run requested from inside an unsafe region
+  // reports its findings, as one from outside does.
   Program program;
   program.add("callee.c", "void zap(char *a, char *b) { free(a); *b = 1; }");
   program.add("caller.c", R"c(
@@ -646,7 +696,7 @@ void test(void) {
   const auto result = program.run();
   EXPECT_TRUE(result.failed.empty());
   EXPECT_TRUE(result.nonConverging.empty());
-  EXPECT_EQ(result.errors, 0U)
+  EXPECT_EQ(result.errors, 1U)
       << ::testing::PrintToString(program.recorder.lines);
   EXPECT_EQ(result.warnings, 0U)
       << ::testing::PrintToString(program.recorder.lines);
@@ -655,6 +705,8 @@ void test(void) {
 TEST(ProgramAnalysis,
      KnownIndirectTargetsCarryMemoryRequestsBackToTheirDefiner) {
   Program program;
+  // RFC 0030 §9.3: as above, the program's solved slots.
+  program.interfaces = true;
   program.add("callee.c", R"c(
 void zap(char *a, char *b) { free(a); *b = 1; }
 void (*callback)(char *, char *) = zap;

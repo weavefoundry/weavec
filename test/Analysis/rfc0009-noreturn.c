@@ -1,8 +1,8 @@
 // RFC 0009, *Inferred `noreturn`*: a function whose exit is unreachable is
 // summarised `never-returns`, transitively through wrappers, and a call to it
 // ends the path like a call to a function declared `noreturn` does.
-// RUN: not %weavec %s -- 2>&1 | FileCheck %s
-// RUN: not %weavec --dump-analysis %s -- 2>&1 | FileCheck --check-prefix=DUMP %s
+// RUN: %weavec %s -- 2>&1 | FileCheck %s
+// RUN: %weavec --dump-analysis %s -- 2>&1 | FileCheck --check-prefix=DUMP %s
 #include "../Inputs/prelude.h"
 #include <weavec.h>
 
@@ -97,10 +97,10 @@ void check_returns(int bad) {
     free(q);
     check(bad);
   }
-  // CHECK: rfc0009-noreturn.c:[[@LINE+1]]:7: error: use of 'q' after it was freed [weavec::use-after-free]
+  // CHECK: rfc0009-noreturn.c:[[@LINE+1]]:7: warning: use of 'q' after it may have been freed [weavec::use-after-free]
   use(q);
-  // CHECK: rfc0009-noreturn.c:[[@LINE+1]]:3: error: 'q' is freed twice [weavec::double-free]
+  // CHECK: rfc0009-noreturn.c:[[@LINE+1]]:3: warning: 'q' may be freed twice [weavec::double-free]
   free(q);
 }
 
-// CHECK: 2 errors generated.
+// CHECK: 2 warnings generated.

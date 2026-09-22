@@ -1,9 +1,0 @@
-{
-  "failed-cleanup.c": "577fea68a611cff75f3acacd86137c71504d8c43a7c2444e1031febc369bc422",
-  "nondecreasing.c": "e89a6179521443e4e076e1e106b0c6936880a09949b49f3a8cd867615df63d1b",
-  "README.md": "57a39083851691beac1f09dada2832eadfbfbdd758daf58279e2c137de8bb06c",
-  "lost-child.c": "c232f62eb73b4682a8a2507527fbe2d775eb40a94b7ed1e443d3a4c797ddc87f",
-  "recursive.c": "9c6d6e4a89a1bec01a73f0edf3f1c7b40ffc534eb78d7e1b8032f5fd04f10d2f",
-  "manifest.json": "46f0e117aceef5216f47c47dccb6fd09a202539903221400fb2685fb16870c05",
-  "duplicate-child.c": "e496ee9cef899cdb217c5d9fd18f74cf227ca34bc8222132d88d1aa5a8d15fd3"
-}

@@ -1,1 +1,0 @@
-RFC0029 zero-byte integer recovery. Frozen before implementation, baseline candidate29b. Only complete, current zero representations authorize zero; partial memset, a later direct/helper write and another record cell preserve their actual obligations. No pointer-null inference is required.

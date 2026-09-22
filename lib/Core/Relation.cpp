@@ -206,16 +206,7 @@ void RelationTracker::learn(PlaceId lhs, Relation relation, PlaceId rhs,
     pairs.emplace(key, *canonical);
     return;
   }
-  auto mine = differenceOf(it->second);
-  if (mine)
-    if (const auto extra = complementaryPairs.find(key);
-        extra != complementaryPairs.end())
-      if (const auto bounds = differenceOf(extra->second)) {
-        if (bounds->lo)
-          mine->lo = bounds->lo;
-        if (bounds->hi)
-          mine->hi = bounds->hi;
-      }
+  const auto mine = differenceOf(it->second);
   const auto theirs = differenceOf(*canonical);
   if (mine && theirs) {
     Difference both;
@@ -229,28 +220,17 @@ void RelationTracker::learn(PlaceId lhs, Relation relation, PlaceId rhs,
       both.hi = mine->hi ? mine->hi : theirs->hi;
     if (const auto narrowed = edgeOf(both)) {
       it->second = *narrowed;
-      complementaryPairs.erase(key);
-      return;
-    }
-    if (differenceBounds && both.lo && both.hi && *both.lo < *both.hi) {
-      it->second = *edgeOf({.lo = {}, .hi = both.hi});
-      complementaryPairs[key] = *edgeOf({.lo = both.lo, .hi = {}});
       return;
     }
   }
   // A contradiction, or bounds on both sides one edge cannot spell: the
   // second fact wins.
   it->second = *canonical;
-  complementaryPairs.erase(key);
 }
 
 std::vector<std::pair<std::pair<PlaceId, PlaceId>, RelationEdge>>
 RelationTracker::allBounds() const {
-  std::vector<std::pair<std::pair<PlaceId, PlaceId>, RelationEdge>> result(
-      pairs.begin(), pairs.end());
-  result.insert(result.end(), complementaryPairs.begin(),
-                complementaryPairs.end());
-  return result;
+  return {pairs.begin(), pairs.end()};
 }
 
 std::optional<RelationEdge> RelationTracker::directly(PlaceId lhs,
@@ -380,9 +360,6 @@ bool RelationTracker::conditions(PlaceId place) const {
 }
 
 void RelationTracker::forget(PlaceId place) {
-  std::erase_if(complementaryPairs, [place](const auto &entry) {
-    return entry.first.first == place || entry.first.second == place;
-  });
   std::erase_if(distinct, [place](const auto &pair) {
     return pair.first == place || pair.second == place;
   });
@@ -397,11 +374,7 @@ void RelationTracker::forget(PlaceId place) {
   }
 }
 
-bool RelationTracker::join(const RelationTracker &other,
-                           bool keepDifferenceBound, bool widenDifferences) {
-  differenceBounds |= keepDifferenceBound;
-  const auto previousComplements = complementaryPairs;
-  std::map<std::pair<PlaceId, PlaceId>, RelationEdge> joinedComplements;
+bool RelationTracker::join(const RelationTracker &other) {
   bool changed = std::erase_if(distinct, [&](const auto &pair) {
                    return !other.different(pair.first, pair.second);
                  }) != 0;
@@ -409,21 +382,8 @@ bool RelationTracker::join(const RelationTracker &other,
     const auto theirs = other.pairs.find(it->first);
     std::optional<RelationEdge> joined;
     if (theirs != other.pairs.end()) {
-      auto mine = differenceOf(it->second);
-      auto yours = differenceOf(theirs->second);
-      const auto include = [](auto &bounds, const auto &extras,
-                              const auto &key) {
-        if (bounds)
-          if (const auto extra = extras.find(key); extra != extras.end())
-            if (const auto added = differenceOf(extra->second)) {
-              if (added->lo)
-                bounds->lo = added->lo;
-              if (added->hi)
-                bounds->hi = added->hi;
-            }
-      };
-      include(mine, complementaryPairs, it->first);
-      include(yours, other.complementaryPairs, it->first);
+      const auto mine = differenceOf(it->second);
+      const auto yours = differenceOf(theirs->second);
       if (mine && yours) {
         // The hull: a bound both sides have, as the looser one.
         Difference hull;
@@ -431,22 +391,7 @@ bool RelationTracker::join(const RelationTracker &other,
           hull.lo = std::min(*mine->lo, *yours->lo);
         if (mine->hi && yours->hi)
           hull.hi = std::max(*mine->hi, *yours->hi);
-        if (keepDifferenceBound && widenDifferences) {
-          if (hull.lo && mine->lo && *hull.lo < *mine->lo)
-            hull.lo =
-                *hull.lo >= 0 ? std::optional<std::int64_t>(0) : std::nullopt;
-          if (hull.hi && mine->hi && *hull.hi > *mine->hi)
-            hull.hi =
-                *hull.hi <= 0 ? std::optional<std::int64_t>(0) : std::nullopt;
-        }
         joined = edgeOf(hull);
-        // RFC 0021: retain both bounds of a checked difference interval.
-        if (!joined && keepDifferenceBound && hull.hi) {
-          if (hull.lo)
-            joinedComplements[it->first] = *edgeOf({.lo = hull.lo, .hi = {}});
-          hull.lo.reset();
-          joined = edgeOf(hull);
-        }
       }
     }
     if (!joined) {
@@ -460,8 +405,6 @@ bool RelationTracker::join(const RelationTracker &other,
     }
     ++it;
   }
-  complementaryPairs = std::move(joinedComplements);
-  changed |= complementaryPairs != previousComplements;
   for (const PlaceId place : other.bounded)
     changed |= bounded.insert(place).second;
   for (auto it = upper.begin(); it != upper.end();) {
@@ -472,12 +415,7 @@ bool RelationTracker::join(const RelationTracker &other,
       continue;
     }
     if (theirs->second > it->second) {
-      if (keepDifferenceBound && widenDifferences && theirs->second > 0) {
-        it = upper.erase(it);
-        changed = true;
-        continue;
-      }
-      it->second = keepDifferenceBound && widenDifferences ? 0 : theirs->second;
+      it->second = theirs->second;
       changed = true;
     }
     ++it;
@@ -490,12 +428,7 @@ bool RelationTracker::join(const RelationTracker &other,
       continue;
     }
     if (theirs->second < it->second) {
-      if (keepDifferenceBound && widenDifferences && theirs->second < 0) {
-        it = lower.erase(it);
-        changed = true;
-        continue;
-      }
-      it->second = keepDifferenceBound && widenDifferences ? 0 : theirs->second;
+      it->second = theirs->second;
       changed = true;
     }
     ++it;

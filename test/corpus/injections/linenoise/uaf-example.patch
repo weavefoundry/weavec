@@ -1,0 +1,12 @@
+--- a/example.c
++++ b/example.c
+@@ -124,7 +124,8 @@
+         } else if (line[0] == '/') {
+             printf("Unreconized command: %s\n", line);
+         }
+-        free(line);
++        linenoiseFree(line);
++        if (line[0] == '/') printf("last command: %s\n", line); /* INJECTED: use after free */
+     }
+     return 0;
+ }

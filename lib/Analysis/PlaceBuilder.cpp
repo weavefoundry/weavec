@@ -15,6 +15,7 @@
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/ExprCXX.h"
 #include "clang/AST/OperationKinds.h"
+#include "clang/Basic/Builtins.h"
 
 #include "llvm/ADT/APSInt.h"
 #include "llvm/ADT/STLExtras.h"
@@ -116,6 +117,24 @@ core::PlaceId PlaceBuilder::literalPlace() {
   return *literal;
 }
 
+core::PlaceId PlaceBuilder::statePlace(std::string_view slot) {
+  if (const auto it = statePlaces.find(slot); it != statePlaces.end())
+    return it->second;
+  const core::PlaceId id = places.create("<" + std::string(slot) + ">");
+  statePlaces.emplace(std::string(slot), id);
+  stateSlots.insert(id.value);
+  return id;
+}
+
+core::PlaceId PlaceBuilder::framePlace(const CallExpr &call) {
+  if (const auto it = framePlaces.find(&call); it != framePlaces.end())
+    return it->second;
+  const core::PlaceId id = places.create("<alloca>");
+  framePlaces.emplace(&call, id);
+  frameSlots.insert(id.value);
+  return id;
+}
+
 core::PlaceId PlaceBuilder::lengthPlace(core::PlaceId string) {
   if (const auto it = lengthPlaces.find(string.value); it != lengthPlaces.end())
     return it->second;
@@ -124,14 +143,6 @@ core::PlaceId PlaceBuilder::lengthPlace(core::PlaceId string) {
   lengthPlaces.try_emplace(string.value, id);
   lengthOwners.try_emplace(id.value, string);
   return id;
-}
-
-std::optional<core::PlaceId>
-PlaceBuilder::stringOfLengthPlace(core::PlaceId place) const {
-  const auto it = lengthOwners.find(place.value);
-  if (it == lengthOwners.end())
-    return std::nullopt;
-  return it->second;
 }
 
 std::optional<core::PlaceId> PlaceBuilder::stringPlaceOf(const Expr &expr) {
@@ -180,18 +191,26 @@ const Expr *PlaceBuilder::strlenArgumentOf(const Expr &expr) {
     e = cast->getSubExpr()->IgnoreParens();
   }
   const auto *call = dyn_cast<CallExpr>(e);
-  if (call == nullptr || call->getNumArgs() != 1)
+  if (call == nullptr)
     return nullptr;
   const FunctionDecl *callee = call->getDirectCallee();
-  if (callee == nullptr || !callee->isGlobal())
+  if (callee == nullptr)
     return nullptr;
-  const IdentifierInfo *ident = callee->getIdentifier();
-  if (ident == nullptr)
+  // RFC 0030 §8: a row whose value is the length of a narrow string
+  // argument (`strlen`: `int:value(strlen(a0))`).
+  const auto library = summaries.libraryMatch(*callee);
+  if (!library || !library->entry->result.value ||
+      library->entry->result.value->kind != core::LibTerm::Kind::StringLength)
     return nullptr;
-  const llvm::StringRef name = ident->getName();
-  if (name != "strlen" && name != "__builtin_strlen")
+  const int index = library->callArgument(library->entry->result.value->arg);
+  if (index < 0 || static_cast<unsigned>(index) >= call->getNumArgs())
     return nullptr;
-  return call->getArg(0);
+  const Expr *string = call->getArg(static_cast<unsigned>(index));
+  const QualType type = string->IgnoreParenImpCasts()->getType();
+  if (!type->isPointerType() || type->getPointeeType()->isIncompleteType() ||
+      context.getTypeSizeInChars(type->getPointeeType()).getQuantity() != 1)
+    return nullptr;
+  return string;
 }
 
 /// RFC 0012: the bytes before the first NUL of a narrow string literal.
@@ -681,7 +700,7 @@ ValueOrigin PlaceBuilder::originFromUnguardedSource(
       return withOffset(std::move(origin), source.offset);
     }
     // The same for a path below an argument or a global (`t->array =
-    // resizearray(L, t, ...)` in Lua): a copy of a resource the callee
+    // resizearray(L, t, ...)`): a copy of a resource the callee
     // consumed is that resource, not a dangling pointer to it (RFC 0006,
     // *Interactions*). A copy of a path *freed* on some class only
     // (`state->x.next = state->out` in a body whose error path frees
@@ -689,7 +708,7 @@ ValueOrigin PlaceBuilder::originFromUnguardedSource(
     // (`== -1`) cannot retract the class: the value is not tracked (RFC
     // 0007, *Applying a summary: deepest paths first*). A path the callee
     // consumed *and replaced* (`p->buffer = realloc(p->buffer, n); return
-    // p->buffer + p->offset;`, cJSON's `ensure`) holds the new value, and
+    // p->buffer + p->offset;`, a parser's `ensure`) holds the new value, and
     // the copy is of that: an ordinary copy of the caller's place (RFC
     // 0008, *Replaced values*).
     if (const core::PlaceEffect effect = of.effectOf(*source.path);
@@ -744,19 +763,6 @@ std::optional<std::int64_t> integerConstant(const Expr &expr,
       !expr.EvaluateAsInt(result, context) || !result.Val.isInt())
     return std::nullopt;
   return mathematicalValue(result.Val.getInt());
-}
-
-std::optional<std::int64_t> integerConvertedTo(std::int64_t value,
-                                               QualType type,
-                                               const ASTContext &context) {
-  if (!type->isIntegerType())
-    return std::nullopt;
-  llvm::APSInt converted(
-      llvm::APInt(64, static_cast<std::uint64_t>(value), /*isSigned=*/true),
-      /*isUnsigned=*/false);
-  converted = converted.extOrTrunc(context.getIntWidth(type));
-  converted.setIsUnsigned(type->isUnsignedIntegerType());
-  return mathematicalValue(converted);
 }
 
 /// An integer type, looking through `_Atomic` (RFC 0010: a count may be an
@@ -873,33 +879,49 @@ PlaceBuilder::adjustmentOf(const Expr &expr) {
                       .operand = atomic->getPtr()};
   }
   // `__sync_fetch_and_add(&x, 1)` and friends are calls to builtins, which
-  // Sema rewrites to the sized form (`__sync_fetch_and_add_4`).
+  // Sema rewrites to the sized form (`__sync_fetch_and_add_4`): a value rule
+  // of the compiler builtins, by their builtin id.
   if (const auto *call = dyn_cast<CallExpr>(e)) {
     const FunctionDecl *callee = call->getDirectCallee();
-    if (callee == nullptr || callee->getBuiltinID() == 0 ||
-        call->getNumArgs() < 2)
-      return std::nullopt;
-    llvm::StringRef name = callee->getName();
-    if (!name.consume_front("__sync_"))
+    if (callee == nullptr || call->getNumArgs() < 2)
       return std::nullopt;
     bool add = false;
     bool yieldsOld = false;
-    if (name.consume_front("fetch_and_add")) {
+    switch (callee->getBuiltinID()) {
+    case Builtin::BI__sync_fetch_and_add:
+    case Builtin::BI__sync_fetch_and_add_1:
+    case Builtin::BI__sync_fetch_and_add_2:
+    case Builtin::BI__sync_fetch_and_add_4:
+    case Builtin::BI__sync_fetch_and_add_8:
+    case Builtin::BI__sync_fetch_and_add_16:
       add = true;
       yieldsOld = true;
-    } else if (name.consume_front("add_and_fetch")) {
+      break;
+    case Builtin::BI__sync_add_and_fetch:
+    case Builtin::BI__sync_add_and_fetch_1:
+    case Builtin::BI__sync_add_and_fetch_2:
+    case Builtin::BI__sync_add_and_fetch_4:
+    case Builtin::BI__sync_add_and_fetch_8:
+    case Builtin::BI__sync_add_and_fetch_16:
       add = true;
-    } else if (name.consume_front("fetch_and_sub")) {
+      break;
+    case Builtin::BI__sync_fetch_and_sub:
+    case Builtin::BI__sync_fetch_and_sub_1:
+    case Builtin::BI__sync_fetch_and_sub_2:
+    case Builtin::BI__sync_fetch_and_sub_4:
+    case Builtin::BI__sync_fetch_and_sub_8:
+    case Builtin::BI__sync_fetch_and_sub_16:
       yieldsOld = true;
-    } else if (!name.consume_front("sub_and_fetch")) {
+      break;
+    case Builtin::BI__sync_sub_and_fetch:
+    case Builtin::BI__sync_sub_and_fetch_1:
+    case Builtin::BI__sync_sub_and_fetch_2:
+    case Builtin::BI__sync_sub_and_fetch_4:
+    case Builtin::BI__sync_sub_and_fetch_8:
+    case Builtin::BI__sync_sub_and_fetch_16:
+      break;
+    default:
       return std::nullopt;
-    }
-    // Only the size suffix (`_4`) may follow.
-    if (!name.empty()) {
-      const bool sizeSuffix = name.consume_front("_") && !name.empty() &&
-                              llvm::all_of(name, llvm::isDigit);
-      if (!sizeSuffix)
-        return std::nullopt;
     }
     const auto k = integerConstant(*call->getArg(1), context);
     if (!k || *k != 1)
@@ -1004,9 +1026,46 @@ PlaceBuilder::ScalarOperand PlaceBuilder::scalarOperand(const Expr &expr) {
 }
 
 std::optional<core::PlaceGuard>
-PlaceBuilder::translateGuard(const core::PathGuard &guard,
-                             const CallExpr &call) {
+PlaceBuilder::translateGuard(const core::PathGuard &guard, const CallExpr &call,
+                             bool *dropped) {
   core::PlaceGuard translated;
+  /// What an argument's own value says about its identity: nothing, a fresh
+  /// allocation, or an allocator's result, which is that allocation or null.
+  enum class Freshness : std::uint8_t { No, Fresh, OrNull };
+  // RFC 0030 §9.1: a conjunct this call cannot name (an argument that is no
+  // place of the caller's) leaves the guard weaker than the callee's, so
+  // what it guards is claimed on paths the callee does not take. The caller
+  // is told, and keeps the effect out of any definite finding.
+  const auto drop = [dropped] {
+    if (dropped != nullptr)
+      *dropped = true;
+  };
+  // RFC 0030 §3.1, *Aliases of a released object*: place identity can decide
+  // a pointer conjunct here. An argument that is a fresh allocation holds a
+  // value no other argument of the same call can name, so the two are equal
+  // only if an allocator that may fail returned null and the other argument
+  // is null too — which is a conjunct the caller's own facts decide. The
+  // allocation must be the whole value: a pointer *into* it (`f(p, alloc()
+  // + 1)`) can equal another argument.
+  const auto wholeAllocation = [](const ValueOrigin &value) {
+    return value.kind == ValueOrigin::Kind::Alloc && value.offset.isZero();
+  };
+  const auto freshness = [&](const core::SummaryPath &path) {
+    Freshness result = Freshness::No;
+    if (!path.isParam() || !path.isRoot() || path.index >= call.getNumArgs())
+      return result;
+    const ValueOrigin value = classifyValue(*call.getArg(path.index));
+    if (wholeAllocation(value))
+      return Freshness::Fresh;
+    // An allocator's result is the allocation or null (`c ? alloc : null`).
+    if (value.kind == ValueOrigin::Kind::Conditional &&
+        std::ranges::any_of(value.alternatives, wholeAllocation) &&
+        std::ranges::all_of(value.alternatives, [&](const ValueOrigin &arm) {
+          return wholeAllocation(arm) || arm.kind == ValueOrigin::Kind::Null;
+        }))
+      result = Freshness::OrNull;
+    return result;
+  };
   for (const auto &[pair, equal] : guard.pointers) {
     const auto resolveInput =
         [&](const core::SummaryPath &path) -> std::optional<core::PlaceId> {
@@ -1017,10 +1076,34 @@ PlaceBuilder::translateGuard(const core::PathGuard &guard,
       const auto ref = resolveSummaryPath(path, call);
       return ref ? std::optional(ref->place) : std::nullopt;
     };
+    const Freshness first = freshness(pair.first);
+    const Freshness fresh =
+        first != Freshness::No ? first : freshness(pair.second);
+    const core::SummaryPath &other =
+        first != Freshness::No ? pair.second : pair.first;
+    if (fresh != Freshness::No && other.isParam() && other.isRoot() &&
+        other.index < call.getNumArgs()) {
+      if (fresh == Freshness::Fresh) {
+        if (equal)
+          return std::nullopt;
+        continue;
+      }
+      if (equal) {
+        // Equal only if the allocation failed and the other one is null.
+        if (const auto ref = resolvePointerValue(*call.getArg(other.index)))
+          translated.require(ref->place,
+                             core::ValueFact::of(core::Outcome::Null));
+        else
+          drop();
+        continue;
+      }
+    }
     const auto a = resolveInput(pair.first);
     const auto b = resolveInput(pair.second);
-    if (!a || !b)
+    if (!a || !b) {
+      drop();
       continue;
+    }
     if (*a == *b) {
       if (!equal)
         return std::nullopt;
@@ -1030,8 +1113,10 @@ PlaceBuilder::translateGuard(const core::PathGuard &guard,
   }
   for (const auto &[path, fact] : guard.conditions) {
     if (path.isParam() && path.isRoot()) {
-      if (path.index >= call.getNumArgs())
+      if (path.index >= call.getNumArgs()) {
+        drop();
         continue;
+      }
       const Expr &arg = *call.getArg(path.index);
       if (arg.getType()->isPointerType()) {
         // A null constant or an address decides a pointer conjunct on the
@@ -1048,10 +1133,14 @@ PlaceBuilder::translateGuard(const core::PathGuard &guard,
         }
         if (const auto ref = resolvePointerValue(arg))
           translated.require(ref->place, fact);
+        else
+          drop();
         continue;
       }
-      if (!arg.getType()->isIntegerType())
+      if (!arg.getType()->isIntegerType()) {
+        drop();
         continue;
+      }
       if (integerFact) {
         if (const auto actual = integerFact(arg)) {
           if (actual->disjointFrom(fact))
@@ -1082,11 +1171,15 @@ PlaceBuilder::translateGuard(const core::PathGuard &guard,
           if (!mapped)
             return std::nullopt;
           translated.conjoin(*mapped);
+        } else {
+          drop();
         }
         continue;
       }
-      if (!operand.place)
+      if (!operand.place) {
+        drop();
         continue;
+      }
       core::ValueFact onPlace = fact;
       if (operand.scaled)
         onPlace.constant.reset();
@@ -1095,12 +1188,18 @@ PlaceBuilder::translateGuard(const core::PathGuard &guard,
     }
     if (const auto ref = resolveSummaryPath(path, call))
       translated.require(ref->place, fact);
+    else
+      drop();
   }
-  if (!guard.integers.empty() && integerGuard) {
-    const auto numeric = integerGuard(guard, call);
-    if (!numeric)
-      return std::nullopt;
-    translated.conjoin(*numeric);
+  if (!guard.integers.empty()) {
+    if (!integerGuard) {
+      drop();
+    } else {
+      const auto numeric = integerGuard(guard, call);
+      if (!numeric)
+        return std::nullopt;
+      translated.conjoin(*numeric);
+    }
   }
   return translated;
 }
@@ -1160,9 +1259,6 @@ const Expr *PlaceBuilder::pointerOperandOfArithmetic(const Expr &expr) {
 
 std::optional<PlaceRef> PlaceBuilder::resolvePointerValue(const Expr &expr) {
   const Expr &stripped = stripTransparent(expr);
-  if (pointerResult)
-    if (const auto result = pointerResult(stripped))
-      return result;
   // `free(s - header)` releases the object `s` points into (RFC 0004,
   // *Pointer identity*): the argument names `s`'s object, at another offset.
   if (const Expr *pointer = pointerOperandOfArithmetic(stripped))
@@ -1447,14 +1543,50 @@ ValueOrigin PlaceBuilder::classifyValue(const Expr &expr) {
   if (const auto *call = dyn_cast<CallExpr>(e)) {
     const auto effects = classifyCall(*call, summaries);
     if (!effects) {
-      // Unchecked code: under strict mode its result is raw (RFC 0004,
-      // *Boundaries*); by default nothing is known about it beyond what its
-      // declaration says about nullness (RFC 0008), hence the call.
-      if (strictExterns)
-        return makeRaw(core::RawReason::UnknownCallee, call);
+      // Unchecked code: nothing is known about the result beyond what its
+      // declaration says about nullness (RFC 0008), hence the call; it has
+      // no ownership (RFC 0030 §5.1).
       ValueOrigin opaque;
       opaque.call = call;
       return opaque;
+    }
+    // RFC 0030 §8.2: static storage and the value hidden state retains
+    // are copies of the slot's place, which `invalidates(S)` can end.
+    if (const core::LibraryResult *row =
+            effects->library ? &effects->library->entry->result : nullptr;
+        row != nullptr &&
+        (row->kind == core::LibraryResult::Kind::Static ||
+         row->kind == core::LibraryResult::Kind::InteriorState)) {
+      ValueOrigin slot = makeOrigin(ValueOrigin::Kind::Copy,
+                                    PlaceRef{.place = statePlace(row->state),
+                                             .derefs = {},
+                                             .element = {}},
+                                    call);
+      if (row->kind == core::LibraryResult::Kind::InteriorState)
+        slot.offset = core::PointerOffset::unknown();
+      if (row->null == core::LibraryResult::Null::Never)
+        return slot;
+      ValueOrigin origin = makeOrigin(ValueOrigin::Kind::Conditional);
+      origin.call = call;
+      origin.alternatives = {
+          std::move(slot),
+          makeOrigin(ValueOrigin::Kind::Null, std::nullopt, call)};
+      return origin;
+    }
+    // `alloca(n)`: storage of the frame, `n` bytes (§8.2 `fresh(stack)`).
+    if (const core::LibraryResult *row =
+            effects->library ? &effects->library->entry->result : nullptr;
+        row != nullptr && row->kind == core::LibraryResult::Kind::Fresh &&
+        row->family == core::StackFamily) {
+      ValueOrigin origin = makeOrigin(
+          ValueOrigin::Kind::Borrow,
+          PlaceRef{.place = framePlace(*call), .derefs = {}, .element = {}},
+          call);
+      if (row->extent && row->extent->kind == core::LibTerm::Kind::Argument)
+        if (const int size = effects->library->callArgument(row->extent->arg);
+            size >= 0 && static_cast<unsigned>(size) < call->getNumArgs())
+          origin.extent = affineOf(*call->getArg(static_cast<unsigned>(size)));
+      return origin;
     }
     const core::FunctionSummary &summary = *effects->summary;
     if (summary.returns.empty())
@@ -1716,7 +1848,7 @@ PlaceBuilder::derivationOf(const Expr &lvalue) {
       // Every member of a union starts where the union does: `&u->m` is `u`
       // (RFC 0011, *Deriving a pointer*), so the step adds nothing to the
       // offset. `(&cast_u(o))->th` is `o` itself, `&cast_u(o)->th.stack` is
-      // `o` at `lua_State.stack`.
+      // `o` at `State.stack`.
       const ValueDecl &decl = *member->getMemberDecl();
       if (isUnionMember(decl)) {
         if (!fields.empty() && fieldsRecord.isNull())
@@ -1968,7 +2100,7 @@ core::PointerOffset PlaceBuilder::arithmeticStepOf(const BinaryOperator &binary,
 std::optional<core::Affine>
 PlaceBuilder::affineFromPath(const core::PathAffine &affine,
                              const CallExpr &call) {
-  if (affine.expression || affine.quantity == core::AffineQuantity::Terminator)
+  if (affine.expression)
     return expressionFromPath ? expressionFromPath(affine, call) : std::nullopt;
   if (!affine.path)
     return core::Affine::ofConstant(affine.constant);
@@ -2003,23 +2135,28 @@ PlaceBuilder::affineFromPath(const core::PathAffine &affine,
 std::optional<core::Affine>
 PlaceBuilder::productExtentOf(const CallExpr &call) {
   // `calloc(n, size)` and `reallocarray(p, n, size)` allocate a product the
-  // summary format cannot spell; it is affine when one factor is constant.
+  // summary format cannot spell (their rows' `extent(a0*a1)`); it is
+  // affine when one factor is constant.
   const FunctionDecl *callee = call.getDirectCallee();
-  if (callee == nullptr || !callee->isGlobal() ||
-      callee->getIdentifier() == nullptr)
+  if (callee == nullptr)
     return std::nullopt;
-  const llvm::StringRef name = callee->getName();
-  unsigned first = 0;
-  if (name == "calloc")
-    first = 0;
-  else if (name == "reallocarray")
-    first = 1;
-  else
+  const auto library = summaries.libraryMatch(*callee);
+  if (!library)
     return std::nullopt;
-  if (call.getNumArgs() < first + 2)
+  const core::LibraryResult &result = library->entry->result;
+  if (result.kind != core::LibraryResult::Kind::Fresh || !result.extent ||
+      result.extent->kind != core::LibTerm::Kind::Product ||
+      result.extent->operands.size() != 2 ||
+      result.extent->operands[0].kind != core::LibTerm::Kind::Argument ||
+      result.extent->operands[1].kind != core::LibTerm::Kind::Argument)
     return std::nullopt;
-  const auto lhs = affineOf(*call.getArg(first));
-  const auto rhs = affineOf(*call.getArg(first + 1));
+  const int first = library->callArgument(result.extent->operands[0].arg);
+  const int second = library->callArgument(result.extent->operands[1].arg);
+  if (first < 0 || second < 0 ||
+      static_cast<unsigned>(std::max(first, second)) >= call.getNumArgs())
+    return std::nullopt;
+  const auto lhs = affineOf(*call.getArg(static_cast<unsigned>(first)));
+  const auto rhs = affineOf(*call.getArg(static_cast<unsigned>(second)));
   if (!lhs || !rhs)
     return std::nullopt;
   if (rhs->isConstant() && rhs->constant > 0)

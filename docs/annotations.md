@@ -1,7 +1,8 @@
 # Annotations reference
 
-WeaveC annotations live in the `weavec.h` header, which `weavec` puts on the
-system include path automatically (`#include <weavec.h>`). Every macro expands
+WeaveC annotations live in the `weavec.h` header, which `weavec` and
+`weavec-cc` put on the system include path automatically
+(`#include <weavec.h>`). Every macro expands
 to `__attribute__((annotate("weavec.<name>")))` under Clang and to nothing
 under compilers without the `annotate` attribute, so annotated code stays
 portable C.
@@ -12,15 +13,19 @@ portable C.
 | `WEAVEC_BORROWED` | pointer parameters, returns, variables, fields | Shared, read-only borrow. The referent outlives the borrow.              |
 | `WEAVEC_MUT`      | pointer parameters, returns, variables, fields | Exclusive, mutable borrow.                                               |
 | `WEAVEC_RAW`      | pointer parameters, returns, variables, fields, function-pointer types | No guarantee at all: the checker tracks the pointer but any dereference, release or transfer of ownership must happen inside a `WEAVEC_UNSAFE` region. |
-| `WEAVEC_UNSAFE`   | function declarations, compound statements     | An *unsafe region*: raw operations are permitted and nothing inside is reported, but ownership still flows through it and out of it. |
+| `WEAVEC_UNSAFE`   | function declarations, compound statements     | An *unsafe region* ([RFC 0030](rfcs/0030-prove-or-trap.md) §6.1): raw pointers and spatial and null operations inside it are trusted, and no runtime checks are inserted there. Temporal state is still tracked: possible temporal findings are warnings as elsewhere, and definite violations remain errors. Ownership still flows through it and out of it. |
 | `WEAVEC_NULLABLE` | pointer parameters, returns, variables, fields | The pointer may be null ([RFC 0008](rfcs/0008-pointer-validity.md)). On a parameter: the body must test it before dereferencing it, and callers may pass null. On a return type: callers must test the result. On a variable or field: every load is treated as maybe-null until it is tested. Says nothing about ownership; combine with `WEAVEC_OWNED`/`WEAVEC_BORROWED`/`WEAVEC_MUT` as needed. |
-| `WEAVEC_NONNULL`  | pointer parameters, returns, variables, fields | The pointer is never null ([RFC 0008](rfcs/0008-pointer-validity.md)). On a parameter: callers must pass a pointer the checker knows is non-null, even if the body never dereferences it. On a return type: callers need not test the result. On a variable or field: it is never reported as null. Says nothing about ownership. |
+| `WEAVEC_NONNULL`  | pointer parameters, returns, variables, fields | The pointer is never null ([RFC 0008](rfcs/0008-pointer-validity.md)). On a parameter: an argument that may be null is checked at the call ([RFC 0030](rfcs/0030-prove-or-trap.md)), and a definitely null one is an error, even if the body never dereferences it. On a return type: callers need not test the result. On a variable or field: it is never reported as null. Says nothing about ownership. |
 | `WEAVEC_RETAINS`  | pointer parameters             | The callee takes a reference on the argument's object ([RFC 0010](rfcs/0010-shared-ownership.md)): the caller's pointer gains a *share*, which the next copy of it carries away. On a declaration with no body whose result has the parameter's type and no ownership annotation, the result is a copy of the argument (the shape of `g_object_ref`). |
 | `WEAVEC_RELEASES` | pointer parameters             | The callee releases one reference ([RFC 0010](rfcs/0010-shared-ownership.md)): the argument's name is dead afterwards; other shares of the object are untouched. |
 | `WEAVEC_REFCOUNT` | integer fields                 | The field is a reference count ([RFC 0010](rfcs/0010-shared-ownership.md)): a share taken through it and never released is a `leak` even when no function in the program releases through it. Inference recognises the field by its increments and decrements regardless. |
 | `WEAVEC_OWNED_BY(f)` | pointer parameters and returns, next to `WEAVEC_OWNED` | The release family is `f` ([RFC 0010](rfcs/0010-shared-ownership.md)): `struct handle *handle_open(void) WEAVEC_OWNED WEAVEC_OWNED_BY(handle_close);` makes `free(handle_open())` a `mismatched-release`. Without `WEAVEC_OWNED` it is an `invalid-annotation`. |
-| `WEAVEC_SIZED_BY(n)` | pointer parameters, pointer fields | On a parameter: the caller passes at least `n` elements behind the pointer (bytes for `void *`), `n` being another parameter of the same function by name ([RFC 0011](rfcs/0011-spatial-safety.md)): `void fill(char *WEAVEC_SIZED_BY(len) buf, size_t len);`. Inside the body the parameter has that extent, so `buf[len]` is `out-of-bounds`; at every call the argument must have at least that many, so `fill(small, 8)` on `char small[4]` is `out-of-bounds`. On a field: the object holds at least `n` elements behind the pointer, `n` being another integer field of the same struct by name ([RFC 0012](rfcs/0012-spatial-safety-strings-and-fields.md)): `struct buf { char *WEAVEC_SIZED_BY(cap) data; size_t cap; };`. Every function that loads the field sees that extent (`b->data[b->cap]` is `out-of-bounds`, `for (i = 0; i <= b->cap; i++) b->data[i]` may be), and a store into the field of an object the count says is too small is an `annotation-mismatch` (`b->data = malloc(4); b->cap = 8;`, in either order). Says nothing about ownership or nullness; combine with the others as needed. On a non-pointer, or naming a parameter or field that does not exist or is not an integer: `invalid-annotation`. |
-| `WEAVEC_ASSUME(expr)` | statements                | `expr` holds from here on, as if the code below were inside `if (expr)` ([RFC 0012](rfcs/0012-spatial-safety-strings-and-fields.md)): `WEAVEC_ASSUME(b->len < b->cap);` lets the checker prove `d[b->len]` in bounds on `malloc(b->cap)`, `WEAVEC_ASSUME(p != NULL)` removes a `null-dereference`. Trusted like every annotation: an assumption the checker's facts contradict ends the path (nothing below it is analysed), and a false one hides reports. `expr` must be side-effect free; it is evaluated under WeaveC and is an unevaluated operand (`sizeof`) under every other compiler. |
+| `WEAVEC_SIZED_BY(n)` | pointer parameters, pointer fields | A synonym of `WEAVEC_COUNTED_BY(n)` ([RFC 0030](rfcs/0030-prove-or-trap.md) §7.2): `n` counts elements (bytes for `void` and character pointees), unlike Clang's byte-counting `sized_by`. It keeps its [RFC 0011](rfcs/0011-spatial-safety.md) and [RFC 0012](rfcs/0012-spatial-safety-strings-and-fields.md) meaning (`void fill(char *WEAVEC_SIZED_BY(len) buf, size_t len);`, `struct buf { char *WEAVEC_SIZED_BY(cap) data; size_t cap; };`): inside the body the parameter has that extent, so `buf[len]` is `out-of-bounds`; a call with a smaller object is `out-of-bounds`; a store into the field of an object the count says is too small is an `annotation-mismatch`. Calls and accesses through the pointer that are not proven are checked at run time. New code should use `WEAVEC_COUNTED_BY`. On a non-pointer, or naming nothing or a non-integer: `invalid-annotation`. |
+| `WEAVEC_COUNTED_BY(n)` | pointer parameters, pointer fields | At least `n` elements (bytes for `void` and character pointees) are accessible from the pointer: the kind `counted(n)` (`sized(n)`) of [RFC 0030](rfcs/0030-prove-or-trap.md) §7.2. `n` names a sibling parameter or field by name, in any position, so the count may follow the pointer (`void fill(char *WEAVEC_COUNTED_BY(len) buf, size_t len);`, `struct buf { char *WEAVEC_COUNTED_BY(cap) data; size_t cap; };`). The kind is checked at every call and every store, and accesses through the pointer are proven against it or checked at run time. A name that resolves to nothing or to a non-integer is an `invalid-annotation`, and the kind is dropped. |
+| `WEAVEC_ENDED_BY(q)` | pointer parameters, pointer fields | `[p, q)` lies in one object, `q` naming a sibling pointer parameter or field by name, in any position: the kind `ended-by(q)` ([RFC 0030](rfcs/0030-prove-or-trap.md) §7.2). `size_t sum(const int *WEAVEC_ENDED_BY(end) p, const int *end);`. A name that resolves to nothing or to a non-pointer is an `invalid-annotation`. |
+| `WEAVEC_STRING`   | pointer parameters, returns, fields | The pointer is NUL-terminated within its object (a zero element lies at or after it): the kind `nul-terminated` ([RFC 0030](rfcs/0030-prove-or-trap.md) §7.2). `size_t name_len(const char *WEAVEC_STRING name);`. On a non-pointer or a variable: `invalid-annotation`. |
+| `WEAVEC_REQUIRE_SAFE` | function definitions | Holds the function's operations to `-fweavec-require=checked` whatever the command line says ([RFC 0030](rfcs/0030-prove-or-trap.md) §6.3): each must be proven safe or guarded by a runtime check, and anything else is an `unresolved-operation` error. `WEAVEC_REQUIRE_SAFE int parse(const char *WEAVEC_STRING s) { ... }`. It replaces `WEAVEC_CHECKED`, which `weavec.h` no longer defines. On anything but a function: `invalid-annotation`. |
+| `WEAVEC_ASSUME(expr)` | statements                | `expr` holds from here on, as if the code below were inside `if (expr)` ([RFC 0012](rfcs/0012-spatial-safety-strings-and-fields.md)): `WEAVEC_ASSUME(b->len < b->cap);` lets the checker prove `d[b->len]` in bounds on `malloc(b->cap)`. The assumption itself is not trusted ([RFC 0030](rfcs/0030-prove-or-trap.md) §6.2): when the analysis proves `expr` nothing is added; when it refutes it, that is a `contradicted-assumption` error; otherwise `weavec-cc` replaces the call with a runtime assertion that traps when `expr` is false. The analysis assumes `expr` after it in every case. `expr` must be side-effect free; it is evaluated under WeaveC and is an unevaluated operand (`sizeof`) under every other compiler. |
 | `WEAVEC_ENABLED`  | (macro, not an attribute)      | `1` when the TU is being processed by `weavec`, else `0`.                |
 
 Annotations on a function-pointer type describe whatever is called through it
@@ -39,12 +44,16 @@ An annotation on the declarator of a function pointer (the typedef name, the
 field or the parameter) describes the *result* of calls through it; the
 annotations inside its parameter list describe the arguments.
 
-Without a type contract, calls use the actual function-pointer values that
-reach them ([RFC 0014](rfcs/0014-pointer-identity-and-call-effects.md)). A helper
-can be checked with distinct callback bindings; a same-type function elsewhere
-in the program does not provide an unknown callback's behavior. Global target
-values include possible writes from analyzed functions, while a known store
-at a call updates that caller's state. Unknown alternatives remain boundaries.
+Without a type contract, a call through a function pointer uses the functions
+the program stores into that pointer's *slot* (a field, global, parameter or
+result; [RFC 0030](rfcs/0030-prove-or-trap.md) §9.3): one known target is
+analysed as a direct call, several as the join of their summaries. A
+same-type function elsewhere in the program does not provide an unknown
+callback's behavior. A slot that can also receive values from outside the
+program keeps its known targets for temporal facts, trusted as
+`extern-contract`; a slot with no known target is treated as an unknown
+callee, with reason `callback`. `weavec --whole-program` and the link step
+solve the slots across units.
 
 ## Placement
 
@@ -72,21 +81,24 @@ WEAVEC_UNSAFE void poke_hardware(volatile uint32_t *reg) { *reg = 1; }
 For blocks, before the opening brace:
 
 ```c
-void f(int *p) {
-  free(p);
+void reset_device(uintptr_t base) {
   WEAVEC_UNSAFE {
-    /* p is dangling here; we know the allocator keeps the page mapped. */
-    log_address(p);
+    /* base is the device's mapped register block. */
+    *(volatile uint32_t *)base = 1;
   }
 }
 ```
 
-An unsafe region is a boundary, not a hole: the checker still analyses what
-happens inside it (so a `free` inside the block is a free as far as the code
-after it is concerned, and the function's summary is still inferred) and only
-stops *reporting* there. It is also the only place a `WEAVEC_RAW` pointer may
-be dereferenced, released or handed to an owning parameter, and the place to
-assert what a raw pointer really is:
+An unsafe region is a boundary, not a hole ([RFC 0030](rfcs/0030-prove-or-trap.md)
+§6.1). The checker still analyses what happens inside it: a `free` inside the
+block is a free as far as the code after it is concerned, and the function's
+summary is still inferred. Inside the region, spatial and null operations
+and raw pointers are trusted (`trusted(unsafe)` in the ledger) and get no
+runtime checks. Nothing is suppressed: temporal findings are reported as
+anywhere else, definite violations remain errors, and `WEAVEC_ASSUME` keeps
+its runtime assertion. The region is also the only place a `WEAVEC_RAW`
+pointer may be dereferenced, released or handed to an owning parameter, and
+the place to assert what a raw pointer really is:
 
 ```c
 struct node *WEAVEC_OWNED node_from_handle(uintptr_t h) {
@@ -109,9 +121,7 @@ cascade. See [RFC 0004](rfcs/0004-unsafe-boundaries.md), *Laundering*.
   results and function-pointer results);
 - a load through a raw pointer (`raw->next` is raw too);
 - the result of a callee whose body returns or stores a raw value, or whose
-  declaration says `WEAVEC_RAW`;
-- under `--strict-externs`, every pointer that passes through a call the
-  checker cannot resolve (see `annotation-required`).
+  declaration says `WEAVEC_RAW`.
 
 Copying, comparing and converting a raw pointer back to an integer are fine
 anywhere; passing it to a callee's `WEAVEC_RAW` parameter is fine too. Only a
@@ -122,65 +132,68 @@ callee that reads or writes through it is a *raw operation*.
 
 Every WeaveC diagnostic ends with a stable identifier in brackets, e.g.
 `[weavec::use-after-free]`. The IDs are defined in
-`include/weavec/Core/Diagnostic.h`; RFC 0017 adds
-`weavec::core::diag::InvalidIntegerOperation`, spelled
-`invalid-integer-operation`, with error severity.
+`include/weavec/Core/Diagnostic.h`. Severity follows certainty
+([RFC 0030](rfcs/0030-prove-or-trap.md) §3): a finding that holds on every
+path is an error, and a temporal finding that holds on some paths only is a
+warning with "may" wording. A null dereference or out-of-bounds access that
+is only possible is not diagnosed: the operation is a *checked* facet, and
+`weavec-cc` inserts a runtime check for it. RFC 0030 removed
+`analysis-incomplete`, `annotation-required`, `checking-incomplete` and
+`checking-failed`; what they reported is now an `unresolved` ledger row with
+a reason.
 
 | Identifier            | Severity | Emitted when                                                          |
 | --------------------- | -------- | --------------------------------------------------------------------- |
-| `checking-incomplete` | error | A selected function has an unresolved safety obligation: `cannot establish checked safety: <reason>`. |
-| `checking-failed` | error | A selected function contains a demonstrated violation: `checked safety failed: <reason>`. |
-| `use-after-free`      | error    | A pointer (or any alias of it) is used after being passed to `free`. Note: `freed here` / `freed here (through '<q>')`. After a share release ([RFC 0010](rfcs/0010-shared-ownership.md)): `use of '<p>' after its reference was released`, note `reference released here`. |
-| `double-free`         | error    | A pointer (or any alias of it) is passed to `free` twice without reassignment. Note: `previously freed here [(through '<q>')]`. Two share releases of one name ([RFC 0010](rfcs/0010-shared-ownership.md)): `'<p>' is released twice`, note `previously released here`. |
-| `use-after-move`      | error    | A pointer is used after being passed to a `WEAVEC_OWNED` parameter, to `realloc`, or to a function that moves it (on every path, or on the paths whose result the caller has not ruled out; [RFC 0006](rfcs/0006-precision.md)). Note: `moved here`. |
-| `conflicting-borrow`  | error    | An object is freed or moved while a live pointer into it exists: `cannot free '<p>' while it is borrowed`, `cannot move '<p>' while it is borrowed`. Note: `borrowed by '<q>' here`. A pointer is *live* until its last use ([RFC 0006](rfcs/0006-precision.md)). Not reported for a pointer *derived* from `<p>` (`q = &p->f`, `q = p + 1`): that is a name for the same object, and its later use is a `use-after-free` ([RFC 0011](rfcs/0011-spatial-safety.md)). With `--exclusive-borrows` (`-fweavec-exclusive-borrows`), RFC 0001's exclusivity rules are enforced too: `cannot borrow '<x>' as mutable because it is already borrowed`, `... as shared because it is already mutably borrowed`, `cannot assign to '<x>' while it is borrowed`; the note names the other pointer. |
-| `lifetime-too-short`  | error    | A pointer may outlive what it points to: `'<p>' may outlive '<x>', which it points to` (stored into an outer scope, a global or through a parameter) or `returned pointer may outlive '<x>', which it points to`. Notes: where `<x>` is declared and where it goes out of scope. Reported at the store, but decided when `<x>` dies ([RFC 0011](rfcs/0011-spatial-safety.md)): a store undone before then (`ls->fs = fs.prev`), or into a holder that is dead by then, is not reported. |
-| `unsafe-operation`    | error    | A raw operation outside a `WEAVEC_UNSAFE` region ([RFC 0004](rfcs/0004-unsafe-boundaries.md)): `dereference of raw pointer '<p>' outside an unsafe region`, `'<f>' dereferences raw pointer '<p>' ...` (also `releases`, `takes ownership of`), `raw pointer '<p>' is assigned to '<q>', which is declared WEAVEC_OWNED, outside an unsafe region` (any safe annotation), `raw pointer is returned from a function whose return type is annotated WEAVEC_OWNED outside an unsafe region`, and with `--strict-externs`, `unchecked call to '<f>' outside an unsafe region` / `unchecked call through '<fp>' ...`. Notes: why the pointer is raw (`'<p>' is raw: cast from an integer here`, `declared WEAVEC_RAW here`, `loaded through raw pointer '<q>' here`, `handed out by '<f>' here`, `returned by a call into unchecked code ('<f>') here`, each optionally `(through '<alias>')`) and `move this operation into a WEAVEC_UNSAFE block or function, or assert the pointer's ownership first`. |
-| `mismatched-release`  | error    | A resource is released (or moved into a consuming parameter) by a function of another release family ([RFC 0007](rfcs/0007-resource-lifecycle.md)): `'<p>' is released with 'free' but must be released with 'fclose'`. Both names are family names, the canonical releaser of the allocator (`malloc`/`strdup`/`realloc` → `free`, `fopen` → `fclose`, `opendir` → `closedir`, ...), even when the release went through a wrapper defined in the program. Note: `allocated here`. |
-| `leak`                | warning  | An owned resource is lost without being released, moved or stored where the caller can see it ([RFC 0007](rfcs/0007-resource-lifecycle.md)): `'<p>' is leaked` at the point its last holder goes out of reach (a `return`, a scope end, the statement after its last use); `'<p>' is leaked: it is overwritten without being released` at the assignment; `'<b>->p' is leaked when '<b>' is freed` (also `'*a' is leaked when 'a' is freed`) at the release of a container whose `WEAVEC_OWNED` field, or a field this function stored an owned value into, still owns something; `result of '<f>' is leaked` at a discarded allocating call. Notes: `allocated here`, `'<p>' is declared WEAVEC_OWNED here` for a parameter or field, or `reference taken here` for a share retained by a count increment and dropped ([RFC 0010](rfcs/0010-shared-ownership.md); reported only through a *known count*: a field some function in the program releases through, or one annotated `WEAVEC_REFCOUNT`). Not reported: pointers handed to callees the checker cannot follow or cast to integers (they are *escaped*), resources kept by globals or `static` locals when the function returns, blocks that end in a `noreturn` call, fields of an object this function allocated, and the old block after a failed in-place `realloc`. |
-| `null-dereference`    | error    | A pointer that is null, or may be null, on some path reaching here is dereferenced ([RFC 0008](rfcs/0008-pointer-validity.md)): `dereference of '<p>', which may be null` / `dereference of '<p>', which is null`; or passed to a callee that dereferences its parameter without testing it (a `requires` fact in the callee's summary, or `WEAVEC_NONNULL` on its declaration): `'<p>', which may be null, is passed to '<f>', which dereferences it` (also `which is null`, `a null pointer is passed to '<f>' ...`). The note says why: `'<p>' may be null: it is the result of '<f>' here` (every allocator in the shipped table, every searching function and every function the program defines whose body can return null), `'<p>' may be null: it is set by '<f>' here` (a callee's store), `'<p>' is assigned NULL here`, `'<p>' may be null: it is compared with NULL here` (tested, and the null edge merged back), `'<p>' is declared WEAVEC_NULLABLE here` / `the result of '<f>' is declared WEAVEC_NULLABLE here`; for a call, also `'<f>' is declared here`. Not reported: pointers with no fact (parameters, loaded fields, results of unchecked code), dereferences inside an unsafe region, and a second dereference of the same pointer. |
-| `use-of-uninitialized`| error    | A pointer variable, or a pointer field of a record variable, declared without an initialiser is read, dereferenced, copied or released before it is assigned ([RFC 0008](rfcs/0008-pointer-validity.md)): `use of '<p>' before it was initialized` (also `'<s>.f'`). Note: `'<p>' is declared here`. Any assignment, a callee's store (`init(&p)`), a mutable borrow for a call, `memset` or a whole-object write initialises it; `static` and address-taken variables are not tracked. |
-| `invalid-release`     | error    | A releaser (or a consuming parameter) is handed a pointer that is not the start of a heap allocation ([RFC 0008](rfcs/0008-pointer-validity.md)): `'<p>' is released but points to '<x>', which is not a heap object` (a stack or static variable, an array, a field of one; `'<x>' is released but is not a heap object` when `<p>` is `<x>` itself), `'<p>' is released but points to a string literal`, `'<p>' is released but points 4 elements past the start of its allocation` / `points to field 'in' of its allocation` / `does not point to the start of its allocation` (`p + 1`, `strchr(p, c)`, `p++`, `&o->in`; the offset is named when the checker knows it, [RFC 0011](rfcs/0011-spatial-safety.md)). Notes: `'<x>' is declared here` / `allocated here`. |
-| `out-of-bounds`       | error    | An access reaches past the object it is in, or before its start ([RFC 0011](rfcs/0011-spatial-safety.md)). Direct accesses: `'<p>[<i>]' is out of bounds: index <k> of an object of <n> bytes` (both constant; the index is spelled as written, with its folded value in parentheses when that differs), `'<p>[<i>]' is out of bounds: '<i>' is the number of elements of '<p>'` / `'<i>' is at least '<n>', the number of elements of '<p>'` / `'<i>' is above '<n>', ...` (the index related to the count by a condition), `'<p>[<i>]' may be out of bounds: '<i>' may equal '<n>', the number of elements of '<p>'` (`i <= n`: the boundary is one past) / `'<i>' may reach one below '<n>', and '<p>' has <n> * 4 bytes` (`p[i + 1]` under `i < n`), `'<p>[<i>]' may be out of bounds: '<i>' may be 7 in an object of 4 bytes` (the index bounded above by a constant: `for (i = 0; i < 8; i++)`), `'<p>[<i>]' is out of bounds: index <k> is before the start of '<p>'`. Library calls with a buffer and a length (`memcpy`, `memmove`, `memset`, `memcmp`, `fgets`, `snprintf`, `read`, `write`, `strncpy`, ...): `'memcpy' accesses 16 bytes of '<p>', which has 8 bytes` and the relational forms (`'memset' accesses 'm' bytes of 'p', which has 'n' bytes ('m' is above 'n')`, `'memset' may access past the end of 'buf': 'n' may be 8, and 'buf' has 4 bytes`). A callee's requirement at the call: `'put7' requires 8 bytes behind '<p>', which has 4 bytes`. Notes: `'<p>' is allocated here` / `'<p>' is declared here` / `the object behind '<p>' is declared here`. Extents come from allocations (`malloc(n)`, `calloc(n, sz)`, `realloc(p, n)`, and every function in the program that returns one: `xmalloc(n)` returns `fresh extent=n`), from the declared size of a variable, an array or an array member, from string literals, from `WEAVEC_SIZED_BY` on a parameter, and from the count of a sized field ([RFC 0012](rfcs/0012-spatial-safety-strings-and-fields.md)), declared or inferred (`'b->data[b->cap]' is out of bounds: 'b->cap' is the number of elements of 'b->data'`, note `'b->data' is declared here`). Strings (RFC 0012): a copy that needs the length plus the terminator is checked like a length (`'strcpy' accesses 6 bytes of 'buf', which has 4 bytes`, `'strcpy' accesses 'strlen(s)' + 1 bytes of 'd', which has 'strlen(s)' bytes` on `malloc(strlen(s))`, `'strcat' accesses 5 bytes of 'buf', which has 4 bytes` counting what `buf` already holds, `'sprintf' accesses at least 5 bytes of 'buf', which has 4 bytes` from the format's minimum), and a terminator-seeking read (`strlen`, `strcpy`'s source, `strcat`'s, `puts`, `printf("%s")`) of an object the checker knows has no terminator (`strncpy` that filled it, `char a[4] = "abcd"`, `memset(a, 'x', sizeof a)`) is `'strlen' reads past the end of 'name', which is not NUL-terminated`, note `'name' is left without a terminator here`. Relations one step further (RFC 0012): `'a[i + 1]' may be out of bounds: 'i' may reach one below 'n', and 'a' has 'n' * 4 bytes` under `i <= n - 1`, `'buf[i]' is out of bounds: 'i' is at least 8 in an object of 8 bytes` under `i >= 8`. RFC 0017 also checks actual converted or wrapped allocation sizes, represented products, VLA dimensions and allocated flexible-array tails; a dimension violation can say `'<access>' is out of bounds for its variable array dimension`, and a caller interval can say `'<callee>' requires '<p>' before its start`. Unresolved indices, unknown sizes or offsets, unsupported field layouts and unknown string lengths do not by themselves produce this error or establish safety. |
+| `use-after-free`      | error / warning | A pointer (or any alias of it) is used after being passed to `free`. An error when the release happened on every path to the use; otherwise a warning with "may" wording ([RFC 0030](rfcs/0030-prove-or-trap.md) §3.1): `use of '<p>' after it may have been freed`, note `freed here on some paths`. Note: `freed here` / `freed here (through '<q>')`. After a share release ([RFC 0010](rfcs/0010-shared-ownership.md)): `use of '<p>' after its reference was released` (`... may have been released`), note `reference released here`. A release by code WeaveC cannot see (an unknown callee, inline assembly) is never reported: the use is an `unresolved(unknown-callee)` ledger row (§5.1). |
+| `double-free`         | error / warning | A pointer (or any alias of it) is passed to `free` twice without reassignment: `'<p>' is freed twice`, or, when the first release happened on some paths only, `'<p>' may be freed twice` ([RFC 0030](rfcs/0030-prove-or-trap.md) §3.1). Note: `previously freed here [on some paths] [(through '<q>')]`. Two share releases of one name ([RFC 0010](rfcs/0010-shared-ownership.md)): `'<p>' is released twice` (`may be released twice`), note `previously released here`. |
+| `use-after-move`      | error / warning | A pointer is used after being passed to a `WEAVEC_OWNED` parameter, to `realloc`, or to a function that moves it (on every path, or on the paths whose result the caller has not ruled out; [RFC 0006](rfcs/0006-precision.md)). Note: `moved here`. On some paths only: `use of '<p>' after it may have been moved`, a warning ([RFC 0030](rfcs/0030-prove-or-trap.md) §3.1). |
+| `conflicting-borrow`  | error / warning | An object is freed or moved while a live pointer into it exists: `cannot free '<p>' while it is borrowed`, `cannot move '<p>' while it is borrowed`. Note: `borrowed by '<q>' here`. A pointer is *live* until its last use ([RFC 0006](rfcs/0006-precision.md)). Not reported for a pointer *derived* from `<p>` (`q = &p->f`, `q = p + 1`): that is a name for the same object, and its later use is a `use-after-free` ([RFC 0011](rfcs/0011-spatial-safety.md)). An error when the loan holds on every path and the release or move happens whenever the call does, otherwise a warning ([RFC 0030](rfcs/0030-prove-or-trap.md) §3.1). RFC 0030 removed `--exclusive-borrows`, the opt-in to RFC 0001's full exclusivity rules. |
+| `lifetime-too-short`  | error / warning | A pointer may outlive what it points to: `'<p>' may outlive '<x>', which it points to` (stored into an outer scope, a global or through a parameter) or `returned pointer may outlive '<x>', which it points to`. Notes: where `<x>` is declared and where it goes out of scope. Reported at the store, but decided when `<x>` dies ([RFC 0011](rfcs/0011-spatial-safety.md)): a store undone before then (`ls->fs = fs.prev`), or into a holder that is dead by then, is not reported. `alloca` storage belongs to the frame ([RFC 0030](rfcs/0030-prove-or-trap.md) §8.2), so returning it is reported here too. An error when the escape happens on every path, otherwise a warning ([RFC 0030](rfcs/0030-prove-or-trap.md) §3.4). |
+| `unsafe-operation`    | error    | A raw operation outside a `WEAVEC_UNSAFE` region ([RFC 0004](rfcs/0004-unsafe-boundaries.md)): `dereference of raw pointer '<p>' outside an unsafe region`, `'<f>' dereferences raw pointer '<p>' ...` (also `releases`, `takes ownership of`), `raw pointer '<p>' is assigned to '<q>', which is declared WEAVEC_OWNED, outside an unsafe region` (any safe annotation), `raw pointer is returned from a function whose return type is annotated WEAVEC_OWNED outside an unsafe region`. [RFC 0030](rfcs/0030-prove-or-trap.md) §16 removed the `--strict-externs` forms (`unchecked call to '<f>' outside an unsafe region`, `unchecked call through '<fp>' ...`) along with the flag; an unknown callee is now an `unresolved(unknown-callee)` ledger row instead (§5.1). Notes: why the pointer is raw (`'<p>' is raw: cast from an integer here`, `declared WEAVEC_RAW here`, `loaded through raw pointer '<q>' here`, `handed out by '<f>' here`, each optionally `(through '<alias>')`) and `move this operation into a WEAVEC_UNSAFE block or function, or assert the pointer's ownership first`. |
+| `mismatched-release`  | error / warning | A resource is released (or moved into a consuming parameter) by a function of another release family ([RFC 0007](rfcs/0007-resource-lifecycle.md)): `'<p>' is released with 'free' but must be released with 'fclose'`. Both names are family names, the canonical releaser of the allocator (`malloc`/`strdup`/`realloc` → `free`, `fopen` → `fclose`, `opendir` → `closedir`, ...), even when the release went through a wrapper defined in the program. Note: `allocated here`. |
+| `leak`                | warning  | An owned resource is lost without being released, moved or stored where the caller can see it ([RFC 0007](rfcs/0007-resource-lifecycle.md)): `'<p>' is leaked` at the point its last holder goes out of reach (a `return`, a scope end, the statement after its last use); `'<p>' is leaked: it is overwritten without being released` at the assignment; `'<b>->p' is leaked when '<b>' is freed` (also `'*a' is leaked when 'a' is freed`) at the release of a container whose `WEAVEC_OWNED` field, or a field this function stored an owned value into, still owns something; `result of '<f>' is leaked` at a discarded allocating call. Notes: `allocated here`, `'<p>' is declared WEAVEC_OWNED here` for a parameter or field, or `reference taken here` for a share retained by a count increment and dropped ([RFC 0010](rfcs/0010-shared-ownership.md); reported only through a *known count*: a field some function in the program releases through, or one annotated `WEAVEC_REFCOUNT`). Not reported: pointers handed to callees the checker cannot follow or cast to integers (they are *escaped*), resources kept by globals or `static` locals when the function returns, blocks that end in a `noreturn` or `exits` call, what is still held at a `return` from `main` ([RFC 0030](rfcs/0030-prove-or-trap.md) §8.4: the process is ending, so it is not a leak), fields of an object this function allocated, and the old block after a failed in-place `realloc`. A warning whatever the certainty ([RFC 0030](rfcs/0030-prove-or-trap.md), *Diagnostics*); `-Werror=weavec-leak` still promotes it. |
+| `null-dereference`    | error    | A pointer that is null on every path reaching here is dereferenced ([RFC 0008](rfcs/0008-pointer-validity.md)): `dereference of '<p>', which is null`; or passed to a callee whose declaration or library entry requires it non-null: `'<p>', which is null, is passed to '<f>', which dereferences it` (also `a null pointer is passed to '<f>' ...`). The note says why: `'<p>' is assigned NULL here`, `'<p>' is declared WEAVEC_NULLABLE here` / `the result of '<f>' is declared WEAVEC_NULLABLE here`; for a call, also `'<f>' is declared here`. [RFC 0030](rfcs/0030-prove-or-trap.md) §3.2 removed the "may be null" forms: a pointer that may be null has a *checked* null facet (a `nonnull` check in the enforcing modes), and an allocation's result used untested is `allocation-failure` (off by default). |
+| `use-of-uninitialized`| error    | A pointer variable, or a pointer field of a record variable, declared without an initialiser is read, dereferenced, copied or released before it is assigned ([RFC 0008](rfcs/0008-pointer-validity.md)): `use of '<p>' before it was initialized` (also `'<s>.f'`). Note: `'<p>' is declared here`. Any assignment, a callee's store (`init(&p)`), a mutable borrow for a call, `memset` or a whole-object write initialises it; `static` and address-taken variables are not tracked. Reported only when it holds on every path ([RFC 0030](rfcs/0030-prove-or-trap.md), *Diagnostics*): a use that is uninitialised on some paths only is defined by zero-initialisation, which the enforcing modes turn on, and produces no diagnostic. |
+| `invalid-release`     | error / warning | A releaser (or a consuming parameter) is handed a pointer that is not the start of a heap allocation ([RFC 0008](rfcs/0008-pointer-validity.md)): `'<p>' is released but points to '<x>', which is not a heap object` (a stack or static variable, an array, a field of one; `'<x>' is released but is not a heap object` when `<p>` is `<x>` itself), `'<p>' is released but points to a string literal`, `'<p>' is released but points 4 elements past the start of its allocation` / `points to field 'in' of its allocation` / `does not point to the start of its allocation` (`p + 1`, `strchr(p, c)`, `p++`, `&o->in`; the offset is named when the checker knows it, [RFC 0011](rfcs/0011-spatial-safety.md)). Notes: `'<x>' is declared here` / `allocated here`. When that holds on some paths only, a warning ([RFC 0030](rfcs/0030-prove-or-trap.md) §3.1): `'<p>' is released but may point to <x>, which is not a heap object`, and for an interior pointer at an unknown offset `'<p>' is released but may not point to the start of its allocation`. A release the callee may not perform — one it makes only on some result class, under a guard on the arguments, or from a widened case ([RFC 0030](rfcs/0030-prove-or-trap.md) §3.4, §9.1) — makes the finding possible whatever the argument is, which is where the `may be released` forms come from: `a string literal may be released`, `'<x>' may be released but is not a heap object`. |
+| `out-of-bounds`       | error    | An access reaches past the object it is in, or before its start, on every value the facts allow, against an exact extent ([RFC 0011](rfcs/0011-spatial-safety.md); RFC 0030 §3.3: the `may be out of bounds` and `may access past the end` forms of the earlier RFCs are gone — those are *checked* facets now, and produce no diagnostic). Direct accesses: `'<p>[<i>]' is out of bounds: index <k> of an object of <n> bytes` (both constant; the index is spelled as written, with its folded value in parentheses when that differs), `'<p>[<i>]' is out of bounds: '<i>' is the number of elements of '<p>'` / `'<i>' is at least '<n>', the number of elements of '<p>'` / `'<i>' is above '<n>', ...` (the index related to the count by a condition), `'<p>[<i>]' is out of bounds: it reaches <k> bytes into '<p>', which has <n> bytes` (an index the facts pin only through a relation), `'<p>[<i>]' is out of bounds: index <k> is before the start of '<p>'` (`it lies before the start of '<p>'` when no index is named). Library calls with a buffer and a length (`memcpy`, `memmove`, `memset`, `memcmp`, `fgets`, `snprintf`, `read`, `write`, `strncpy`, ...): `'memcpy' accesses 16 bytes of '<p>', which has 8 bytes` and the relational form `'memset' accesses 'm' bytes of 'p', which has 'n' bytes ('m' is above 'n')`. A callee's requirement at the call: `'put7' requires 8 bytes behind '<p>', which has 4 bytes`. Three further definite forms ([RFC 0030](rfcs/0030-prove-or-trap.md), *Diagnostics*): `write through '<p>', which points to a string literal`; `format string of '<f>' reads <n> arguments but <m> are passed`; and `'<f>' copies <n> bytes between overlapping ranges of '<obj>'`, note `'<obj>' is declared here`. Notes: `'<p>' is allocated here` / `'<p>' is declared here` / `the object behind '<p>' is declared here`. Extents come from allocations (`malloc(n)`, `calloc(n, sz)`, `realloc(p, n)`, and every function in the program that returns one: `xmalloc(n)` returns `fresh extent=n`), from the declared size of a variable, an array or an array member, from string literals, from `WEAVEC_SIZED_BY` on a parameter, and from the count of a sized field ([RFC 0012](rfcs/0012-spatial-safety-strings-and-fields.md)), declared or inferred (`'b->data[b->cap]' is out of bounds: 'b->cap' is the number of elements of 'b->data'`, note `'b->data' is declared here`). Strings (RFC 0012): a copy that needs the length plus the terminator is checked like a length (`'strcpy' accesses 6 bytes of 'buf', which has 4 bytes`, `'strcpy' accesses 'strlen(s)' + 1 bytes of 'd', which has 'strlen(s)' bytes` on `malloc(strlen(s))`, `'strcat' accesses 5 bytes of 'buf', which has 4 bytes` counting what `buf` already holds, `'sprintf' accesses at least 5 bytes of 'buf', which has 4 bytes` from the format's minimum), and a terminator-seeking read (`strlen`, `strcpy`'s source, `strcat`'s, `puts`, `printf("%s")`) of an object the checker knows has no terminator (`strncpy` that filled it, `char a[4] = "abcd"`, `memset(a, 'x', sizeof a)`) is `'strlen' reads past the end of 'name', which is not NUL-terminated`, note `'name' is left without a terminator here`. Relations one step further (RFC 0012): `'buf[i]' is out of bounds: 'i' is at least 8 in an object of 8 bytes` under `i >= 8`. RFC 0017 also checks actual converted or wrapped allocation sizes, represented products, VLA dimensions and allocated flexible-array tails; a dimension violation can say `'<access>' is out of bounds for its variable array dimension`, and a caller interval can say `'<callee>' requires '<p>' before its start`. Unresolved indices, unknown sizes or offsets, unsupported field layouts and unknown string lengths do not by themselves produce this error or establish safety. |
 | `invalid-integer-operation` | error | A definitely invalid supported integer operation ([RFC 0017](rfcs/0017-c-integer-semantics-and-spatial-safety.md)). Message: `invalid integer operation: <reason>`, at the source operation. Reasons: `signed integer overflow`, `division by zero`, `signed division overflow`, `invalid shift count`, `invalid signed left shift`, and `nonpositive variable array dimension`. Possibly invalid arithmetic is conservative, without a definite-error claim or using undefined behavior to discard a reachable path. |
-| `analysis-incomplete` | warning | An operation could not be modeled completely ([RFC 0014](rfcs/0014-pointer-identity-and-call-effects.md)). Message: `analysis is incomplete: <reason>`. Reasons identify unsupported copies of pointer-containing storage, incompatible or unknown object views, unavailable callback contexts, and exhausted function or summary iterations. [RFC 0015](rfcs/0015-array-and-container-ownership.md) adds unresolved array selections/updates, incomplete symbolic composition, unavailable source snapshots, uncertain range membership and element/range limits. [RFC 0016](rfcs/0016-compositional-call-checking.md) adds `unresolved call alias relationship`, `unrepresentable call context input path`, `call context input path limit reached`, `call context relationship limit reached`, and `call context unavailable or limit reached`. [RFC 0017](rfcs/0017-c-integer-semantics-and-spatial-safety.md) adds unsupported numeric widths, expressions, conditions, outputs and extent projections; examples include `unsupported integer width greater than 64 bits`, `unsupported numeric output projection`, `unsupported numeric condition projection`, `unsupported extent requirement condition` and `unrepresentable variable array byte extent`. A represented symbolic array copy can join copied and untouched contents without warning solely because membership is undecided. Known effects still apply; this warning describes missing coverage, rather than proving that the operation itself is invalid. |
-| `annotation-mismatch` | error    | A definition contradicts its own annotation: `'<p>' is annotated WEAVEC_BORROWED but is freed here` (also `WEAVEC_MUT`; also `moved`, `written through`; also `... but '<p>->f' is freed here` for a path under the parameter), `function returns a borrow but its return type is annotated WEAVEC_OWNED`, `function returns a fresh allocation but its return type is annotated WEAVEC_BORROWED` (or `WEAVEC_MUT`). Notes: `'<p>' is annotated here` / `annotated here`; `'<q>' is a copy of '<p>'` when through an alias. Callers keep trusting the annotation. A store into a `WEAVEC_SIZED_BY(g)` field of an object smaller than `g` says ([RFC 0012](rfcs/0012-spatial-safety-strings-and-fields.md)): `'b->data' is declared WEAVEC_SIZED_BY(cap) but is given 4 bytes where 'b->cap' says 8` (at the store, or at the write to the count when that comes second; `says at least 8` under a lower bound, `says 'n' elements of 4 bytes` for a non-byte element), note `'b->data' is declared here`. An object of unknown size, a larger one, or null is not reported. |
-| `annotation-required` | warning  | **On by default:** `call to '<f>' is not checked: it has no definition or ownership annotations here`, once per callee per program (RFC 0005: a definition in any unit analysed together with this one counts; alone, the unit is the program), for a callee with pointer parameters or a pointer result that has no body in the program, no annotations and no libc entry; callees from system headers are exempt. Notes: `'<f>' is declared here`, `annotate its pointer parameters with WEAVEC_OWNED, WEAVEC_BORROWED, WEAVEC_MUT or WEAVEC_RAW, or define it in this program`. Likewise `call through '<fp>' is not checked: its function type has no ownership annotations and no function of that type has its address taken in this program`, once per function-pointer type. With `--strict-externs` these calls are `unsafe-operation` errors instead (at every call site, including callees from system headers), and their pointer result is raw. **With `--report-unannotated`:** every exported (non-`static`) definition additionally gets `pointer parameter '<p>' of '<f>' is inferred WEAVEC_OWNED; add the annotation to its declaration` (or `WEAVEC_BORROWED` / `WEAVEC_MUT`; `return value of '<f>' is inferred ...`) with a fix-it that inserts the annotation, or `pointer parameter '<p>' has no inferable ownership; annotate it with WEAVEC_OWNED, WEAVEC_BORROWED or WEAVEC_MUT` when the body gives no evidence. |
-| `invalid-annotation`  | warning  | A `weavec.*` annotation WeaveC does not recognise, `WEAVEC_NULLABLE` and `WEAVEC_NONNULL` on the same declaration, `WEAVEC_RETAINS` and `WEAVEC_RELEASES` on the same declaration, `WEAVEC_OWNED_BY(f)` without `WEAVEC_OWNED` ([RFC 0010](rfcs/0010-shared-ownership.md)), `WEAVEC_SIZED_BY(n)` on a non-pointer or naming no integer parameter (`'<p>' is declared WEAVEC_SIZED_BY(n) but is not a pointer` / `... but 'n' is not an integer parameter`, [RFC 0011](rfcs/0011-spatial-safety.md)), `WEAVEC_SIZED_BY(g)` on a field that is not a pointer or whose `g` is no integer field of the record (`field 'data' is declared WEAVEC_SIZED_BY(cap) but 'cap' is not an integer field of 'struct buf'` / `field 'n' is declared WEAVEC_SIZED_BY(cap) but is not a pointer`, once per unit, when the field is first used), or `weavec.assume` on any function but `weavec.h`'s (`'weavec.assume' is not an annotation for 'f'`, [RFC 0012](rfcs/0012-spatial-safety-strings-and-fields.md)). Reported on definitions. |
+| `annotation-mismatch` | error    | A definition contradicts its own annotation: `'<p>' is annotated WEAVEC_BORROWED but is freed here` (also `WEAVEC_MUT`; also `moved`, `written through`; also `... but '<p>->f' is freed here` for a path under the parameter), `function returns a borrow but its return type is annotated WEAVEC_OWNED`, `function returns a fresh allocation but its return type is annotated WEAVEC_BORROWED` (or `WEAVEC_MUT`). Notes: `'<p>' is annotated here` / `annotated here`; `'<q>' is a copy of '<p>'` when through an alias. Callers keep trusting the annotation. A store into a `WEAVEC_SIZED_BY(g)` field of an object smaller than `g` says ([RFC 0012](rfcs/0012-spatial-safety-strings-and-fields.md)): `'b->data' is declared WEAVEC_SIZED_BY(cap) but is given 4 bytes where 'b->cap' says 8` (at the store, or at the write to the count when that comes second; `says at least 8` under a lower bound, `says 'n' elements of 4 bytes` for a non-byte element), note `'b->data' is declared here`. An object of unknown size, a larger one, or null is not reported. The id also covers *relied-upon* interface facts, and the link step adds two forms of its own ([RFC 0030](rfcs/0030-prove-or-trap.md) §13.2): `'<f>' is declared <annotation> here but its definition in '<file>' <frees/stores/...> '<param>'`, and `store to '<S>.<field>' breaks '<invariant>', which '<unit>' relies on`. |
+| `invalid-annotation`  | warning  | A `weavec.*` annotation WeaveC does not recognise (including `weavec.checked`, which [RFC 0030](rfcs/0030-prove-or-trap.md) removed), a `WEAVEC_COUNTED_BY(n)`, `WEAVEC_SIZED_BY(n)` or `WEAVEC_ENDED_BY(q)` whose name resolves to no sibling parameter or field or to one of the wrong type (`'n' in WEAVEC_COUNTED_BY does not name a parameter or field`, `'q' in WEAVEC_COUNTED_BY is not an integer parameter or field`, `'n' in WEAVEC_ENDED_BY is not a pointer parameter or field`; the kind is dropped), an extent macro or `WEAVEC_STRING` on a non-pointer (`'x' is declared WEAVEC_COUNTED_BY(n) but is not a pointer`) or on a variable, `WEAVEC_REQUIRE_SAFE` on anything but a function (`WEAVEC_REQUIRE_SAFE on 'x', which is not a function`), two declared kinds of one parameter or field that disagree (`conflicting kinds for 'p': ...`; the weaker is used, [RFC 0030](rfcs/0030-prove-or-trap.md) §7.2), `WEAVEC_NULLABLE` and `WEAVEC_NONNULL` on the same declaration, `WEAVEC_RETAINS` and `WEAVEC_RELEASES` on the same declaration, `WEAVEC_OWNED_BY(f)` without `WEAVEC_OWNED` ([RFC 0010](rfcs/0010-shared-ownership.md)), `WEAVEC_SIZED_BY(n)` on a non-pointer or naming no integer parameter (`'<p>' is declared WEAVEC_SIZED_BY(n) but is not a pointer` / `... but 'n' is not an integer parameter`, [RFC 0011](rfcs/0011-spatial-safety.md)), `WEAVEC_SIZED_BY(g)` on a field that is not a pointer or whose `g` is no integer field of the record (`field 'data' is declared WEAVEC_SIZED_BY(cap) but 'cap' is not an integer field of 'struct buf'` / `field 'n' is declared WEAVEC_SIZED_BY(cap) but is not a pointer`, once per unit, when the field is first used), or `weavec.assume` on any function but `weavec.h`'s (`'weavec.assume' is not an annotation for 'f'`, [RFC 0012](rfcs/0012-spatial-safety-strings-and-fields.md)). Reported on definitions. |
+| `contradicted-assumption` | error | A `WEAVEC_ASSUME(e)` the analysis refutes ([RFC 0030](rfcs/0030-prove-or-trap.md) §6.2): `assumption '<e>' is false here`, with the note `'<x>' is <value> here` at the source of the fact. Minimal trigger: `char b[4] = {0}; int i = 10; WEAVEC_ASSUME(i < 4); return b[i];`. An assumption the analysis neither proves nor refutes becomes a runtime `assert` check in the enforcing modes, and the analysis assumes `e` after it in every case. |
+| `allocation-failure` | warning | **Off by default**; `-Wweavec-allocation-failure` (or `-Wweavec`) enables it ([RFC 0030](rfcs/0030-prove-or-trap.md) §3.2, §8.4). The result of an allocating call is used without a null test: `the result of '<f>' is used without a null test; it is null when allocation fails`, note `allocated here`. Minimal trigger: `char *p = malloc(8); p[0] = 1;`. The dereference itself is a checked null facet either way, so in the enforcing modes a failed allocation traps instead of writing through null. |
+| `unresolved-operation` | error | Only under `-fweavec-require=checked` or `-fweavec-require=proven` (`--require` in `weavec`), or in a function declared `WEAVEC_REQUIRE_SAFE` ([RFC 0030](rfcs/0030-prove-or-trap.md) §6.3): a facet that is neither proven nor checkable. Message: `<operation> is neither proven nor checkable: <reason phrase> [<reason>]`, for example `access 'b[1000]' is neither proven nor checkable: the extent of 'b' is unknown [unknown-extent]`. `<operation>` is `access '<text>'`, `dereference of '<p>'`, `call to '<f>'`, `release of '<p>'`, `conversion of '<p>' to '<T>'` or `boundary of '<fn>'`, and the reason is one of the closed list of RFC 0030 §2.3. Minimal trigger: `char *get(void); int f(void) { return get()[1000]; }` with `-fweavec-require=checked`. Trusted facets are allowed at every level. |
+| `unchecked-operation` | error | Only under `-fweavec-require=proven` (`--require=proven` in `weavec`; [RFC 0030](rfcs/0030-prove-or-trap.md) §6.3): a facet that relies on a runtime check. Message: `<operation> relies on a runtime <template> check`, the template being `nonnull`, `index`, `span`, `len`, `disjoint` or `assert`, with a note naming what the proof lacked, such as `nothing is known about the nullness of 'p'`. Minimal trigger: `int f(int *p) { return *p; }` with `-fweavec-require=proven`. |
+| `unanalyzed-input` | warning | At link, once per link ([RFC 0030](rfcs/0030-prove-or-trap.md) §13.2): every link input that is not the platform's (it lies outside the toolchain, SDK and sysroot library directories) and has no valid WeaveC record: an object another compiler produced, an archive, a shared library, a library `-l` finds, or an object whose record is older than it. Message: `link input '<path>' has no WeaveC record; calls into it are trusted`, or `link input '<path>' has a stale WeaveC record (<why>); calls into it are trusted`; with several inputs, `<n> link inputs have no WeaveC record; calls into them are trusted`, with one note per input. Minimal trigger: `weavec-cc -c a.c; clang -c b.c; weavec-cc a.o b.o`. |
+
+Removed identifiers ([RFC 0030](rfcs/0030-prove-or-trap.md), *Diagnostics*): `analysis-incomplete` is now an `unresolved` ledger row whose reason says what the engine could not model (`unanalysed`, `budget`, `raw-cast`, `inexpressible`); `annotation-required` is an `unresolved(unknown-callee)` row on the call, with a fix-it that suggests the annotation (§5.1); `checking-incomplete` and `checking-failed` went with checked mode. A `-W` flag naming one is an error: `unknown WeaveC diagnostic '<id>' (removed by RFC 0030)`.
 
 The identifiers are defined in `include/weavec/Core/Diagnostic.h`
 (`weavec::core::diag`). Renaming one is a breaking change. The rules behind
-them are specified by [RFC 0001](rfcs/0001-ownership-model.md),
-[RFC 0002](rfcs/0002-intraprocedural-checking.md),
-[RFC 0003](rfcs/0003-signature-inference.md),
-[RFC 0004](rfcs/0004-unsafe-boundaries.md),
-[RFC 0006](rfcs/0006-precision.md),
-[RFC 0007](rfcs/0007-resource-lifecycle.md),
-[RFC 0008](rfcs/0008-pointer-validity.md) and
-[RFC 0009](rfcs/0009-value-conditional-behaviour.md) (which adds no
-diagnostic; it shrinks the set of programs that trigger the existing ones).
+them are specified by [RFC 0001](rfcs/0001-ownership-model.md) through
+[RFC 0017](rfcs/0017-c-integer-semantics-and-spatial-safety.md), as amended
+by [RFC 0030](rfcs/0030-prove-or-trap.md), which sets their severities and
+adds the last five. [RFC 0009](rfcs/0009-value-conditional-behaviour.md)
+adds no diagnostic; it shrinks the set of programs that trigger the
+existing ones.
 
-Fix-its are emitted through Clang, so `-fdiagnostics-parseable-fixits` and
-editor integrations that apply Clang fix-its work unchanged:
-
-```
-$ weavec --report-unannotated buffer.c --
-buffer.c:12:27: warning: pointer parameter 'b' of 'buffer_free' is inferred WEAVEC_OWNED; add the annotation to its declaration [weavec::annotation-required]
-   12 | void buffer_free(struct buffer *b) { free(b->data); free(b); }
-      |                                 ^
-      |                                 WEAVEC_OWNED
-```
+Annotation suggestions are ledger fix-its rather than diagnostics: the row
+of a call to a function WeaveC cannot see suggests the ownership annotation
+that would resolve it, such as `WEAVEC_BORROWED` on a parameter the callee
+neither keeps nor frees. Write the ledger with `-fweavec-ledger=` (or
+`weavec --ledger=`) to read them.
 
 ## What the checker understands
 
 - **Ownership sources**: `malloc`, `calloc`, `realloc`, `strdup`, `strndup`,
   `aligned_alloc`, `fopen`, `opendir`, `getaddrinfo`, `asprintf`, `getline`,
-  `mmap`, `pthread_create`, ... (the shipped libc/POSIX table, about 490
-  functions from `<stdlib.h>`, `<stdio.h>`, `<string.h>`, `<unistd.h>`,
-  `<fcntl.h>`, `<dirent.h>`, `<sys/mman.h>`, `<netdb.h>`, `<pthread.h>`,
-  `<time.h>`, `<pwd.h>`, `<grp.h>`, `<regex.h>`, `<dlfcn.h>`, `<wchar.h>`
-  and friends), any function whose return type carries `WEAVEC_OWNED`, and
-  any function defined in the program whose body returns a fresh
+  `mmap`, ... (the library table `lib/Core/LibrarySpec.txt`,
+  [RFC 0030](rfcs/0030-prove-or-trap.md) §8, which describes functions from
+  `<stdlib.h>`, `<stdio.h>`, `<string.h>`, `<unistd.h>`, `<fcntl.h>`,
+  `<dirent.h>`, `<sys/mman.h>`, `<netdb.h>`, `<pthread.h>`, `<time.h>`,
+  `<pwd.h>`, `<grp.h>`, `<regex.h>`, `<dlfcn.h>`, `<wchar.h>` and friends,
+  with their aliases and fortified forms), any function whose return type
+  carries `WEAVEC_OWNED` or Clang's `malloc`/`ownership_returns` attribute,
+  and any function defined in the program whose body returns a fresh
   allocation.
 - **Releases and moves**: `free`, `fclose`, `closedir`, `freeaddrinfo`,
   `munmap`, `regfree`, `dlclose`, ..., passing a pointer to a
@@ -221,16 +234,17 @@ buffer.c:12:27: warning: pointer parameter 'b' of 'buffer_free' is inferred WEAV
   next use is reported.
 - **Calls through function pointers**: the callee's signature is taken from
   the annotations on the function-pointer type (typedef, field or parameter)
-  when it has any; otherwise from the join of the summaries of every
-  function of that type whose address is taken anywhere in the program
-  (`ops.drop = node_free;`, `qsort(a, n, sz, cmp)`), so a call through
-  `ops->drop` frees what `node_free` frees. Pointers with neither are
-  reported once per type as `annotation-required`.
+  when it has any; otherwise from the functions the program stores into the
+  pointer's slot (`ops.drop = node_free;`, a callback argument such as
+  `qsort(a, n, sz, cmp)`; [RFC 0030](rfcs/0030-prove-or-trap.md) §9.3), so a
+  call through `ops->drop` frees what `node_free` frees. A slot with no
+  known target is treated as an unknown callee (below), with reason
+  `callback`.
 - **The program**: with `weavec file.c --` the program is that one file;
   with `weavec --whole-program` or `weavec-cc` it is every file analysed or
   linked together, and a callee defined in another file is checked from
-  its body there (a definition wins over the libc table, so a program that
-  defines its own `strdup` is checked against its own). A whole-struct
+  its body there (a definition wins over the library table, so a program
+  that defines its own `strdup` is checked against its own). A whole-struct
   copy `b = a` copies the facts of every pointer field, so `b = a;
   free(a.data); b.data[0]` is a use after free.
 - **Effects through parameters**: a callee that frees `b->data`, writes
@@ -253,20 +267,30 @@ buffer.c:12:27: warning: pointer parameter 'b' of 'buffer_free' is inferred WEAV
   knows when a pointer is null (`p = NULL`) or may be null (the result of
   `malloc`, `strchr`, `fopen`, `getenv`, ... or of any function in the
   program that can return null; a pointer compared with null whose null
-  edge merged back). Dereferencing it, or passing it to a callee whose body
-  dereferences the parameter without testing it, is a `null-dereference`.
+  edge merged back). Dereferencing a pointer that is null on every path
+  from a non-allocator source, or passing it to a callee whose body
+  dereferences the parameter without testing it, is a `null-dereference`
+  error; any other dereference that is not proven non-null is a *checked*
+  facet, guarded by a runtime check in `weavec-cc`
+  ([RFC 0030](rfcs/0030-prove-or-trap.md) §3.2).
   Every test idiom clears the fact on the non-null edge (`if (!p) return;`,
   `if (p && p->x)`, `p ? p->x : 0`, `while ((q = f()) != NULL)`,
   `__builtin_expect`), for the pointer and its copies; a callee's outcome
   does too (`if (!make(&p)) return -1; p[0]` is clean when `make` returns
   `*out != NULL`). Pointers the checker knows nothing about (parameters,
-  loaded fields, results of unchecked code) are trusted; `WEAVEC_NULLABLE`
-  and `WEAVEC_NONNULL` say otherwise. Summaries record which parameters a
+  loaded fields, results of unknown callees) are not assumed non-null: their
+  dereferences are checked. `WEAVEC_NONNULL` moves the obligation to the
+  callers, which are checked at the call. Summaries record which parameters a
   function requires non-null (`requires{s}`) and the classes on which an
   out-parameter is non-null (`notnull{*out}`).
 - **Uninitialised pointers** ([RFC 0008](rfcs/0008-pointer-validity.md)):
   `char *p;` and the pointer fields of `struct buf b;` hold nothing until
-  they are assigned; using them first is a `use-of-uninitialized`.
+  they are assigned; using them first on every path is a
+  `use-of-uninitialized` error. In the enforcing modes locals are
+  zero-initialised, so a pointer that may be uninitialised is null and its
+  dereference is checked; with `-fno-weavec-zero-init`, or when a jump
+  bypasses the declaration, its null facet is `unresolved(no-zero-init)`
+  ([RFC 0030](rfcs/0030-prove-or-trap.md) §11).
 - **Invalid releases** ([RFC 0008](rfcs/0008-pointer-validity.md)):
   `free` (or any releaser, or a consuming parameter) of a pointer to a
   stack or static object, a string literal, or the middle of an allocation
@@ -380,7 +404,11 @@ buffer.c:12:27: warning: pointer parameter 'b' of 'buffer_free' is inferred WEAV
   `malloc(n)`), a relation learnt from a condition (`i < n`, `i <= n`, `i >=
   n`, also through one copy `j = i`), or a constant bound (`i < 8`) — and
   a pointer's own offset is added (`p = buf + 4; p[4]` on eight bytes). A
-  write to the index or the counter forgets what was known. A callee that
+  write to the index or the counter forgets what was known. An access that
+  is out of bounds for every value the facts allow, against an exact extent,
+  is an `out-of-bounds` error; one that is not proven is checked at run time
+  when its bound can be named at the site, and `unresolved` otherwise
+  ([RFC 0030](rfcs/0030-prove-or-trap.md) §3.3, §7). A callee that
   accesses more of a parameter than its type promises (`b[7]` on `char *b`,
   `for (i = 0; i < n; i++) b[i]`, `for (i = 0; i < 8; i++) b[i]`,
   `memset(b, 0, n)`) is summarised with a *requirement* on that parameter's
@@ -388,8 +416,8 @@ buffer.c:12:27: warning: pointer parameter 'b' of 'buffer_free' is inferred WEAV
   against what the argument has and passed on through wrappers. RFC 0017
   retains representable numeric conditions such as `if (n > 4) b[4]`, the
   first accessed byte, and bounded product or minimum expressions. An
-  unsupported condition makes coverage incomplete; dropping it cannot create
-  an unconditional caller error.
+  unsupported condition leaves the access unresolved; dropping it cannot
+  create an unconditional caller error.
 - **Strings** ([RFC 0012](rfcs/0012-spatial-safety-strings-and-fields.md)):
   beside its extent an object carries what is known of the string it
   holds — its length (a constant, or `strlen(s)` as a place of its own, or
@@ -429,7 +457,9 @@ buffer.c:12:27: warning: pointer parameter 'b' of 'buffer_free' is inferred WEAV
 - **Assumptions** ([RFC 0012](rfcs/0012-spatial-safety-strings-and-fields.md)):
   `WEAVEC_ASSUME(expr)` applies `expr` as the true edge of `if (expr)`
   would — a null test, a relation, a bound, a constant, an outcome of a
-  call — and ends the path when the facts contradict it.
+  call. It is not trusted ([RFC 0030](rfcs/0030-prove-or-trap.md) §6.2): an
+  assumption the facts contradict is a `contradicted-assumption` error, and
+  one they neither prove nor refute becomes a runtime assertion.
 - **Result provenance**: a callee that returns one of its arguments or a
   pointer into one (`strchr`, `next_of(n)`, `&n->v`) makes the result an
   alias or a borrow of that argument in the caller, so freeing the argument
@@ -452,7 +482,7 @@ buffer.c:12:27: warning: pointer parameter 'b' of 'buffer_free' is inferred WEAV
   taken last until the holder is reassigned. Copying a pointer that holds
   a loan into a longer-lived pointer is checked like creating the loan
   there. Two live pointers into one object, or writing an object another
-  pointer views, are accepted by default; `--exclusive-borrows` rejects
+  pointer views, are accepted; RFC 0030 removed the option that rejected
   them as RFC 0001 does.
 - **Places**: `p`, `s.f`, `p->f`, `*pp`, `p->a->b`, file-scope variables;
   all elements of an array share one place, written `a[*]` in diagnostics
@@ -481,21 +511,39 @@ buffer.c:12:27: warning: pointer parameter 'b' of 'buffer_free' is inferred WEAV
   comparisons and conversions to integers are fine) but dereferencing,
   releasing or handing it to an owning parameter outside a `WEAVEC_UNSAFE`
   region is an `unsafe-operation`. Unsafe regions are analysed like any
-  other code with their diagnostics suppressed, so a `free` inside one is
-  still a free afterwards.
-- **Unchecked calls**: a call to a function with no body here, no annotations
-  and no libc entry borrows its pointer arguments for the call, retains
-  nothing, and returns an unknown value (this is what `annotation-required`
-  reports). With `--strict-externs` the call is an `unsafe-operation` unless
-  it is inside an unsafe region; its arguments are left alone and its
-  pointer result is raw.
+  other code, so a `free` inside one is still a free afterwards; inside
+  them spatial and null operations are trusted and unchecked, and nothing
+  is suppressed ([RFC 0030](rfcs/0030-prove-or-trap.md) §6.1).
+- **Unknown callees**: a call to a function with no body in the program, no
+  library-table entry and no ownership contract, not declared in a C
+  library, POSIX or platform header, may release, keep or replace every
+  pointer argument without an ownership annotation, and everything
+  reachable through it ([RFC 0030](rfcs/0030-prove-or-trap.md) §5.1). Later
+  uses are not reported; their temporal facets are
+  `unresolved(unknown-callee)`, and the call's ledger row suggests the
+  annotation that would resolve it. Its result has unknown nullness and no
+  ownership. A function declared in a platform header but missing from the
+  table borrows its arguments for the call; its rows are
+  `trusted(system-api)` (§5.2). In a per-file compile, calls into other
+  files are unknown until the link step applies their definitions.
+
+`weavec --dump-kinds file.c -- <flags>` prints, instead of analysing, each
+unit's pointer kinds ([RFC 0030](rfcs/0030-prove-or-trap.md) §7): the declared
+kind of every parameter, result, field and variable of the main file with its
+precedence level, the inferred defaults, slot kinds (and the stores that
+demoted them) and must-access requirements, the `WEAVEC_REQUIRE_SAFE`
+functions, the annotation problems and fix-it suggestions, the store groups
+and §7.6 field candidates, and the unit's function-pointer slots (§9.3) with
+the resolution of each indirect call. The format is unstable.
 
 `weavec --dump-analysis file.c -- <flags>` prints the inferred places,
 lifetimes, exit state (including which places hold raw pointers, and why,
 which hold an owned resource, with its release family, and which are null,
 maybe-null or known non-null) and summary of every analysed function; with `--whole-program` it ends with
 the program database (every exported summary). `weavec-cc` writes each
-unit's exported summaries to `<object>.weavec` in the same text form.
+unit's record to `<object>.weavec`: format 28, framed JSON whose payload
+carries the exported summaries in the same text form
+([RFC 0030](rfcs/0030-prove-or-trap.md) §13.1).
 
 ### Constructors, returned fields and allocation-time sizes
 
@@ -527,10 +575,8 @@ These labels describe whether the bounded projection was truncated. A
 `complete` description is not a proof of safety: fields and extents can
 still be unknown. Projection follows at most eight steps and 128 field
 alternatives; more than eight alternatives for one cell widen it to unknown.
-The [evaluation suite](../test/evaluation/README.md) retains the original bug
-and clean populations; the [RFC 0017 report](validation-rfc0017.md)
-records detection of both retained product and VLA cases, with 44/44 original
-bugs detected and 32/32 original clean cases.
+The original evaluation's bug and clean programs are kept as cases under
+`test/cases/evaluation/` (see [test/cases](../test/cases/README.md)).
 
 ## Related pointer arguments
 
@@ -561,26 +607,28 @@ Errors name the operation in the helper, with a note at the originating call
 when available. `--dump-analysis` displays `call-context` entries containing
 relative aliases, distinct objects, entry facts and the resulting summary.
 Facts describe values on entry; subsequent writes still update or invalidate
-them. `WEAVEC_UNSAFE` retains effects and suppresses contextual reports from
-that call, including delayed checking in another file.
+them. A call inside a `WEAVEC_UNSAFE` region is checked the same way; the
+region no longer suppresses these reports ([RFC 0030](rfcs/0030-prove-or-trap.md)
+§6.1).
 
 An unresolved required relationship, unavailable view or exceeded context
-bound reports `analysis-incomplete` and retains ordinary call effects.
-Calls whose inputs have no established interacting relationship still use
-generic summaries; silence does not prove arbitrary pointers disjoint.
-The [validation report](validation-rfc0016.md) records the supported matrix
-and remaining coverage limits. These context records are retained in the
-current format 24 sidecars; rebuild older objects before link analysis. Checked
-mode also specializes exact scalar inputs and fields under the same context
-limits (RFC 0019).
+bound leaves the affected facets unresolved (`unanalysed`) in the ledger and
+retains ordinary call effects. Calls whose inputs have no established
+interacting relationship still use generic summaries; silence does not prove
+arbitrary pointers disjoint, and the temporal facet of a use through a
+pointer that may alias a released object is not proven
+(`unresolved(may-alias-released)`). The context records travel in the
+format-28 unit record, so call-context checking works across compiler
+objects; rebuild older objects before link analysis.
 
 ## C integers and dynamic bounds
 
 [RFC 0017](rfcs/0017-c-integer-semantics-and-spatial-safety.md) adds no
 annotation spellings. `WEAVEC_SIZED_BY(n)` still counts elements (`void *`
-counts bytes), and `WEAVEC_ASSUME` still supplies a trusted invariant. Both
-use the expressions' actual C types. Neither contract changes an allocation's
-size or establishes whole-program verification.
+counts bytes), and `WEAVEC_ASSUME` supplies an invariant that is proven,
+refuted or checked at run time ([RFC 0030](rfcs/0030-prove-or-trap.md)
+§6.2). Both use the expressions' actual C types. Neither contract changes an
+allocation's size.
 
 Integer interpretation now affects temporal checks as well as bounds. On an
 eight-bit-char target, this narrowing cannot hide the use-after-free:
@@ -618,7 +666,7 @@ create a small successful allocation, and failed `reallocarray` retains its
 input object.
 
 Numeric returns and out-parameters retain representable expressions and guards
-through helpers, translation units and compiler sidecars. Access requirements
+through helpers, translation units and unit records. Access requirements
 retain lower bounds and numeric conditions. A supported zero-based unit-stride
 loop with `i < n && i < cap` can require `min(n, cap)` elements; equivalent
 explicit minimum expressions also compose. Early-exit and other unsupported
@@ -629,42 +677,40 @@ size operand does not resize an earlier allocation or output snapshot.
 VLA dimensions are captured at declaration time, including supported nested
 dimensions and subsequent `sizeof` of that array. A later write to the bound
 variable does not change the existing array. A definitely nonpositive dimension
-is `invalid-integer-operation`; an unrepresentable byte extent remains
-incomplete. Flexible-array member bounds come from the backing allocation minus
+is `invalid-integer-operation`; an unrepresentable byte extent leaves the
+access unresolved. Flexible-array member bounds come from the backing allocation minus
 the target's field offset, with the member's element size. A sibling count
 cannot invent tail storage. Tail pointers preserve the enclosing allocation's
 lifetime and release identity, while fixed-array subobjects retain their own
 bounds. Inferred sized fields preserve the C type of count multiplication,
 including its possible wrap.
 
-The dump reports `spatial: proven=<n> violation=<n> unresolved=<n>` per
-function, with unresolved reason counts. `proven` covers the full represented
-access, including its lower bound; `violation` follows the existing definite
-or supported reachable-boundary policy; `unresolved` means the check was not
-decided. Reasons include `unknown extent`, `unknown pointer offset`,
-`unknown index bounds`, `unrepresentable byte arithmetic`,
-`unsupported numeric expression` and `caller requirement`. A requirement still
-needs its callers checked. Counts are independent of diagnostic suppression:
-`WEAVEC_UNSAFE` retains numeric effects and spatial outcomes while suppressing
-reports, and changing warning severity does not turn an unresolved access into
-a proof.
+The ledger records each access's spatial outcome
+([RFC 0030](rfcs/0030-prove-or-trap.md) §2): `proven` covers the full
+represented access, including its lower bound; `violation` is an access out
+of bounds for every value the facts allow against an exact extent; `checked`
+is an access guarded by a runtime check; `unresolved` carries a reason such
+as `unknown-extent`, `unknown-index` or `inexpressible`. A requirement a
+callee places on its parameter is checked at its callers. Outcomes are
+independent of diagnostic controls: changing a warning's severity does not
+turn an unresolved access into a proof.
 
 Ranges retain at most two intervals; symbolic expressions have at most 64
 nodes and depth 12, and guards at most eight conjuncts including numeric
 predicates. Numeric outputs retain at most eight alternatives. Unsupported
-projection or exhausted bounds can report `analysis-incomplete`; an arbitrary
-unknown index alone remains unresolved without a new bounds error. General
+projection or exhausted bounds leave the affected facets unresolved
+(`unanalysed`); an arbitrary unknown index alone is checked at run time or
+unresolved, without a new bounds error. General
 nonlinear inequalities, arbitrary induction/strides, integers wider than 64
 bits, unsupported union/type-punning and pointer-provenance operations,
 unrestricted aliases, byte-encoded pointers, GC invariants and concurrency
 remain outside the supported model.
 
-RFC 0017 introduced summary and sidecar format **13**. Current summary format
-**23** and sidecar format **24** require rebuilding older objects. The [RFC 0017 validation report](validation-rfc0017.md) records
-passing regression and sanitizer suites, corpus coverage, performance costs
-and remaining false positives.
-No runtime instrumentation, `--verify` flag or verification certificate is
-introduced.
+RFC 0017 introduced summary format **13**. The current summary format is
+**27**, carried in format-28 unit records
+([RFC 0030](rfcs/0030-prove-or-trap.md) §13); rebuild older objects. RFC 0017
+added no runtime instrumentation; under RFC 0030, `weavec-cc` checks at run
+time the accesses these rules leave unproven when their bounds can be named.
 
 ## Controlling diagnostics
 
@@ -672,130 +718,31 @@ introduced.
 
 | Flag                          | Effect                                                                                            |
 | ----------------------------- | ------------------------------------------------------------------------------------------------- |
-| `-Wno-weavec-<id>`            | Disable a diagnostic whose default severity is *warning* (`annotation-required`, `invalid-annotation`, `leak`, `analysis-incomplete`). Refused for an error (including `null-dereference`, `use-of-uninitialized`, `invalid-release`, `out-of-bounds` and `invalid-integer-operation`; lower those with `-Wno-error=`). |
-| `-Wweavec-<id>`               | Re-enable it.                                                                                     |
+| `-Wno-weavec-<id>`            | Disable the diagnostics of `<id>` whose default severity is *warning*: all of `leak`, `invalid-annotation`, `allocation-failure` and `unanalyzed-input`, and the possible (warning) findings of `use-after-free`, `double-free`, `use-after-move`, `conflicting-borrow`, `lifetime-too-short`, `mismatched-release` and `invalid-release`, whose definite findings stay errors ([RFC 0030](rfcs/0030-prove-or-trap.md) §3). Refused for an id that is always an error (`null-dereference`, `use-of-uninitialized`, `out-of-bounds`, `unsafe-operation`, `annotation-mismatch`, `invalid-integer-operation`, `contradicted-assumption`, `unresolved-operation`, `unchecked-operation`; lower those with `-Wno-error=`), and for an id RFC 0030 removed (`analysis-incomplete`, `annotation-required`, `checking-incomplete`, `checking-failed`): naming one in any `-W` flag is an error. |
+| `-Wweavec-<id>`               | Re-enable it. `-Wweavec-allocation-failure` enables the one id that is off by default; `-Wweavec` enables every id.                                      |
 | `-Wno-error=weavec-<id>`      | Report an error as a warning (the migration path for a codebase that wants to build while it works through the reports). |
 | `-Werror=weavec-<id>`         | Report a warning as an error.                                                                     |
 | `-Wno-weavec`, `-Wno-error=weavec`, `-Werror=weavec` | The same for every WeaveC id (`-Wno-weavec` leaves the errors alone).                  |
 
-The soundness statement assumes default severities. `weavec-cc` additionally
-takes `-fno-weavec` (compile only), `-fweavec-strict` (`--strict-externs`),
-`-fweavec-report-unannotated`, `-fweavec-analyze-headers`,
-`-fweavec-dump-analysis`, `-fweavec-exclusive-borrows`
-(`--exclusive-borrows`) and `-fno-weavec-link` (skip the link-time
-whole-program step).
+The guarantee ([RFC 0030](rfcs/0030-prove-or-trap.md), *Soundness*) does
+not depend on these flags, except that a violation lowered with
+`-Wno-error=` is compiled behind a check that traps. `weavec-cc` additionally
+takes `-fno-weavec` (compile only), `-fweavec-checks=`, `-f[no-]weavec-zero-init`,
+`-fweavec-require=` (`--require`), `-fweavec-ledger=` (`--ledger`),
+`-fweavec-ledger-format=` (`--ledger-format`), `-f[no-]weavec-summary`,
+`-fweavec-budget=` (`--budget`), `-fweavec-print-prelude`,
+`-fweavec-dump-analysis` and `-fno-weavec-link` (skip the link-time
+whole-program step); `weavec-cc --help-weavec` lists them. RFC 0030 §16
+removes, with no aliases, the checked-mode flags (`-fweavec-checked`,
+`-fweavec-checked-function=`, `-fweavec-checked-report=`,
+`-fweavec-checked-report-format=` and their `weavec` spellings),
+`-fweavec-strict` (`--strict-externs`), `-fweavec-report-unannotated`,
+`-fweavec-analyze-headers`, `-fweavec-analysis-cache=` (`--analysis-cache`)
+and `-fweavec-exclusive-borrows` (`--exclusive-borrows`). An unknown
+`-fweavec-*` flag is an error.
 
 ## Compatibility with other annotation schemes
 
 `annotate` payloads that do not start with `weavec.` are ignored, so WeaveC
 coexists with GSL (`gsl::owner`), Clang's own attributes, and project-specific
 annotations.
-
-## Checked selection (RFC 0018)
-
-`WEAVEC_CHECKED` attaches to a function declaration or definition and requests
-checking of its body. It supplies no trusted contract for an external body.
-`weavec --checked` selects input definitions; `--checked-function=name` can
-be repeated. The compiler equivalents are `-fweavec-checked` and
-`-fweavec-checked-function=name`. `--checked-report=path` (or the compiler's
-`-fweavec-checked-report=path`) writes versioned JSON and computes contracts
-without selecting additional functions. See [checked code](checked-code.md).
-
-The two checking diagnostics are errors by default and support the same
-`-W` controls as other IDs. Selected checking still fails when a diagnostic
-is demoted or suppressed: the proof status is independent of presentation.
-
-RFC 0019 extends inferred memory contracts without adding annotations or
-diagnostic IDs. `checking-incomplete` reasons include `read interval must be
-initialized`, `access interval must fit its object`, `callee initialized safety
-precondition must hold`, and `memcpy intervals must be disjoint`. String calls
-also require a represented initialized terminator. Missing evidence remains
-distinct from a concrete `checking-failed` violation. Conditional memory and
-numeric output facts use summary format 23, sidecar format 24 and checked JSON version 2 (or compact version 3);
-rebuild older objects before link analysis.
-
-RFC 0021 adds traversal contracts without new annotation spellings or IDs.
-Reasons include `pointer difference or ordering needs shared-object evidence`,
-`pointer difference must fit target ptrdiff_t and element size`,
-`formed pointer must remain within its object or one past it`,
-`pointer arithmetic requires live non-null storage`, and
-`traversal requires an initialized terminated prefix`. The last describes
-an inferred caller requirement. A failed caller may report
-`callee terminated safety precondition must hold`. The checked ledger retains
-separate bounds, initialization, validity and arithmetic obligations; an
-unresolved relationship does not assert a concrete invalid execution.
-Exhaustion remains explicit as `traversal variable limit reached`,
-`traversal invariant candidate limit reached`, or
-`traversal relational limit reached`. Diagnostic demotion does not make a
-limited contract complete.
-
-### Inductive chain diagnostics (RFC 0023)
-
-Container inference adds no annotation or diagnostic identifier.
-`checking-incomplete` can report `callee container chain precondition must hold`
-or `callee requires disjoint container footprints`. The former requires actual
-live, initialized nodes with the requested read/write/release capability; the
-latter requires disjoint whole node and owned-payload footprints. Pointer
-inequality alone is insufficient. Cycles and unknown links do not satisfy a
-finite chain. Existing invalid-release, use-after-free and leak diagnostics
-remain active alongside these obligations. See [linked containers](checked-code.md#linked-containers).
-
-### Recursive ownership diagnostics (RFC 0027)
-
-No new annotations or diagnostic ids are introduced. `checking-incomplete` can
-report `callee recursive ownership precondition must hold` for an unproved tree
-or forest, `container operation loses part of the owned allocation footprint`
-when cleanup or transfer is incomplete, and `recursive cleanup does not establish
-complete input footprint consumption` when a proposed recursive destructor
-cannot discharge its induction hypothesis. These messages describe failed proof
-obligations; ordinary `leak`, `invalid-release`, `double-free` and
-`use-after-free` checks remain active. A relation limit reports `allocation
-footprint relation limit reached` and cannot produce a complete contract. See
-[recursive object ownership](checked-code.md#recursive-object-ownership).
-
-### Runtime diagnostics (RFC 0024)
-
-Runtime contracts reuse the two checking identifiers. Missing evidence can
-report `runtime input interval must be initialized`, `runtime access interval
-must fit its object`, `runtime string requires an initialized terminator`, or
-`runtime operation requires a live C stream`. Format reasons distinguish a
-missing argument, an incorrect promoted type, unsupported syntax, insufficient
-capacity and overlapping input/output. Fortified output also checks its
-object-size bound.
-
-List diagnostics distinguish an inactive or consumed cursor (`variadic traversal
-requires an active unconsumed argument list`), an invalid start/copy/end operation,
-and an outstanding cleanup (`locally started or copied argument list requires
-va_end`). Raw byte writes and scope exit cannot discharge that obligation.
-A proven null dereference reports `checking-failed` with `dereference requires
-a non-null pointer`. No annotation or warning suppression grants runtime safety.
-Implicit output also requires a live standard stream, including through
-helpers that do not spell the stream argument.
-See [C runtime contracts](checked-code.md#c-runtime-contracts).
-
-RFC 0025 adds the `checking-incomplete` reason
-`read requires an initialized compatible union member`. This requirement is
-independent of pointee lifetime, initialized bytes, bounds and ownership. A tag
-comparison cannot establish it. Unrepresented union storage reports
-`union storage cannot be represented`; a call whose input member path cannot
-be resolved reports `union member requirement cannot be instantiated`.
-No new annotation spelling or diagnostic identifier is introduced.
-
-RFC 0026 adds buffer explanations under `checking-incomplete`:
-`callee buffer allocation extent and initialized-prefix precondition must hold`
-requires an established current buffer invariant;
-`callee buffer backing storage requires allocation release permission`
-distinguishes borrowed storage from an allocation the callee may release.
-`owned buffer elements require complete release or transfer before container mutation`
-preserves the independently owned pointee obligations. Initialized pointer
-bytes alone cannot discharge them. See
-[growable buffers](checked-code.md#growable-buffers-and-vectors).
-
-RFC 0028 carries these obligations across opaque public headers and private
-library state without new annotation spellings or diagnostic identifiers.
-Missing object evidence, incompatible layouts and unestablished private values
-retain incomplete checking; representation metadata alone grants no memory
-permission. Double cleanup and stale borrows retain their lifetime and ownership
-diagnostics across source units and compiler objects. See
-[opaque objects and private library state](checked-code.md#opaque-objects-and-private-library-state)
-for supported interfaces and required initialization.

@@ -1,1 +1,0 @@
-Frozen before the RFC 0029 read-only span-pair separation exemption. Writing a distinct output does not require two read-only endpoints of one input span to be separate arrays. Output permissions and bounds remain independent caller obligations.

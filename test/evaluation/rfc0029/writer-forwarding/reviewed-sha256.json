@@ -1,7 +1,0 @@
-{
-  "audit.md": "888cb19b97cd50e3b34ea314fcf09fb0626d8a2326cc932fe6a7bb0b1cce1ba9",
-  "reviewed-manifest.json": "6dc83dcd822a0009adba2cbfe7812441c53075486ef44afda88d0fa62d8f6e68",
-  "reviewed-skip.c": "753535cc036dd184e6ee7f79ec44b505d333bdbb62428a723b7e133dfde3c05b",
-  "reviewed-write.c": "35a586ab51b5b99fdfa1185c8380f802809952e9cdea67551b3fc31aab7cb612",
-  "reviewed-wrong-byte.c": "dabc0b5dfbc7d7dd293fa64151d78c7e4227448c7ba49bd313432255a614e8d9"
-}

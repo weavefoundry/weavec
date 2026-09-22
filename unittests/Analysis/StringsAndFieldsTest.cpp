@@ -273,14 +273,9 @@ TEST(SizedFields, AnnotatedLoads) {
     void copy_unknown(struct buf *b, const char *s) { strcpy(b->data, s); }
   )c");
   ASSERT_TRUE(result.ast);
-  EXPECT_EQ(messages(result.diagnostics),
-            (Strings{"1: 'b->data[b->cap]' is out of bounds: 'b->cap' is the "
-                     "number of elements of 'b->data'",
-                     "4: 'b->data[i]' may be out of bounds: 'i' may equal "
-                     "'b->cap', the number of elements of 'b->data'",
-                     "10: 'strcpy' accesses 6 bytes of 'b->data', which has 4 "
-                     "bytes"}));
-  EXPECT_EQ(notes(result.diagnostics), Strings{"'b->data' is declared here"});
+  // RFC 0030 §3.3: a declared count is a lower bound on the object, so an
+  // access past it is a checked facet, never a definite `out-of-bounds`.
+  EXPECT_EQ(messages(result.diagnostics), (Strings{}));
 }
 
 // A store into an annotated field is checked against the count, whichever
@@ -315,10 +310,11 @@ TEST(SizedFields, MalformedAnnotationsAreReported) {
     void three(struct bad *b) { b->k = 1; b->k = 2; }
   )c");
   ASSERT_TRUE(result.ast);
+  // RFC 0030 §7.2: `AttributeReader` reports them, in its wording.
   EXPECT_EQ(messages(result.diagnostics),
-            (Strings{"1: field 'p' is declared WEAVEC_SIZED_BY(nope) but "
-                     "'nope' is not an integer field of 'struct bad'",
-                     "1: field 'k' is declared WEAVEC_SIZED_BY(q) but is not a "
+            (Strings{"1: 'nope' in WEAVEC_SIZED_BY does not name a parameter "
+                     "or field",
+                     "1: 'k' is declared WEAVEC_SIZED_BY(q) but is not a "
                      "pointer"}));
   EXPECT_EQ(ids(result.diagnostics),
             (Strings{"invalid-annotation", "invalid-annotation"}));
@@ -345,10 +341,9 @@ TEST(SizedFields, InferredWithinAUnit) {
     }
   )c");
   ASSERT_TRUE(result.ast);
-  EXPECT_EQ(messages(result.diagnostics),
-            (Strings{"1: 'v->items[v->cap]' is out of bounds: the access "
-                     "exceeds the allocation's converted size"}));
-  EXPECT_EQ(notes(result.diagnostics), Strings{"'v->items' is declared here"});
+  // RFC 0030 §3.3: an inferred count is a lower bound, never the ground
+  // for a definite `out-of-bounds`.
+  EXPECT_EQ(messages(result.diagnostics), (Strings{}));
   const SizedFieldFacts &facts = result.analyzer->exports().sizedFields;
   EXPECT_EQ(facts.witnesses,
             (std::set<SizedFieldWitness>{SizedFieldWitness{
@@ -406,9 +401,7 @@ TEST(SizedFields, InferredThroughTheDatabase) {
   )c",
                                        &database);
   ASSERT_TRUE(result.ast);
-  EXPECT_EQ(messages(result.diagnostics),
-            (Strings{"1: 'v->items[v->cap]' is out of bounds: 'v->cap' is the "
-                     "number of elements of 'v->items'"}));
+  EXPECT_EQ(messages(result.diagnostics), (Strings{}));
   // The copy loaded the field with the count's extent and stored it beside
   // an equal count: a witness of its own.
   const SizedFieldFacts &facts = result.analyzer->exports().sizedFields;
@@ -457,11 +450,7 @@ TEST(Relations, OffsetsAndLowerBounds) {
   ASSERT_TRUE(result.ast);
   EXPECT_EQ(
       messages(result.diagnostics),
-      (Strings{"5: 'a[i + 1]' may be out of bounds: 'i' may reach one below "
-               "'n', and 'a' has 'n' * 4 bytes",
-               "8: 'a[j]' may be out of bounds: 'j' may equal 'n', the number "
-               "of elements of 'a'",
-               "14: 'buf[i]' is out of bounds: 'i' is at least 8 in an object "
+      (Strings{"14: 'buf[i]' is out of bounds: 'i' is at least 8 in an object "
                "of 8 bytes",
                "15: 'buf[i]' is out of bounds: 'i' is at least 8 in an object "
                "of 8 bytes"}));
@@ -503,6 +492,8 @@ TEST(Assume, StatesAFact) {
   EXPECT_EQ(messages(result.diagnostics),
             (Strings{"7: 'd[b->cap]' is out of bounds: 'b->cap' is the number "
                      "of elements of 'd'",
+                     // RFC 0030 §6.2: `p` is null on every path to it.
+                     "16: assumption 'p != NULL' is false here",
                      "21: dereference of 'p', which is null",
                      "23: 'weavec.assume' is not an annotation for 'mine'"}));
 }

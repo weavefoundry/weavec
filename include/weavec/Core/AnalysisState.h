@@ -36,6 +36,7 @@
 #include "weavec/Core/Spatial.h"
 #include "weavec/Core/Summary.h"
 
+#include <cstdint>
 #include <map>
 #include <optional>
 #include <set>
@@ -96,6 +97,23 @@ struct PendingOutcome {
   /// on the class whatever the arguments.
   // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
   std::map<Outcome, std::vector<std::pair<PlaceId, PlaceGuard>>> guardedBy = {};
+  /// RFC 0030 §8.2: per class, the consumes of `consumedBy` that release
+  /// the place rather than move it (`realloc`'s null class when the size is
+  /// zero, against its non-null class's move).
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
+  std::map<Outcome, std::vector<PlaceId>> releasedBy = {};
+  /// Per class, the cells whose value the class consumed and replaced: they
+  /// hold a new value on that class (RFC 0008, *Replaced values*).
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
+  std::map<Outcome, std::vector<PlaceId>> replacedBy = {};
+  /// RFC 0030 §8.2, §11: for a `LibrarySpec` row's call, the consumed places
+  /// whose flow-sensitive consume event (`AnalysisState::consumed`) the call
+  /// changed, with the event before the call (none: the call made it). A
+  /// guarded consume of one (the zero-size release of `realloc(F)`) that no
+  /// summary term expresses, or in a function without result classes, stays
+  /// local to this function (`MoveRecord::local`), and the event is restored.
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
+  std::vector<std::pair<PlaceId, std::optional<PlaceEffect>>> localEvents = {};
   /// Places whose value the callee may return as its non-null result
   /// (`if (c) { free(p); return NULL; } return p;`). One of them that is
   /// reinstated on the non-null edge *is* the result: the holder of the
@@ -150,13 +168,6 @@ struct PendingOutcome {
   /// returning the class.
   // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
   std::map<Outcome, std::vector<std::pair<PlaceId, ValueFact>>> factOn = {};
-  /// RFC 0019: must-initialized storage on every return of a class.
-  // NOLINTBEGIN(readability-redundant-member-init): aggregate default
-  std::map<Outcome, std::vector<std::pair<PlaceId, InitializedRange>>>
-      initializedOn = {};
-  // NOLINTEND(readability-redundant-member-init)
-  [[nodiscard]] std::vector<std::pair<PlaceId, InitializedRange>>
-  initializedInAll() const;
   /// The callee as spelled in messages (`'make'`) and the call's location,
   /// for the note on a place `nullOn` makes null.
   // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
@@ -164,6 +175,12 @@ struct PendingOutcome {
   // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
   SourceLocation location = {};
 
+  /// The places every remaining class that consumes them releases (none
+  /// moves them). Call after `select`.
+  [[nodiscard]] std::vector<PlaceId> releasedInAll() const;
+  /// The cells every remaining class that consumes them replaced. Call after
+  /// `select`.
+  [[nodiscard]] std::vector<PlaceId> replacedInAll() const;
   /// The places null in every class still possible; empty when no class is.
   [[nodiscard]] std::vector<PlaceId> nullInAll() const;
   /// The places non-null in every class still possible; empty when no class
@@ -209,9 +226,6 @@ struct PendingOutcome {
 };
 
 struct AnalysisState {
-  /// RFC 0018: optional positive evidence for checked code.
-  /// RFC 0018: ordinary analysis never constructs the optional proof domain.
-  std::optional<SafetyState> safety;
   /// Places whose resource has been released or moved out.
   MoveTracker moves;
   /// Live borrows.
@@ -224,14 +238,44 @@ struct AnalysisState {
   /// RFC 0016: entry pointer values known to designate distinct objects.
   /// Unequal addresses alone do not establish this relation.
   std::set<std::pair<PlaceId, PlaceId>> distinctObjects;
+  /// RFC 0030 §3.1, *Aliases of a released object*: the exact alias edges a
+  /// pointer-equality test put in `aliases`, ordered pairs. No copy made
+  /// these two names hold the same value: they do so exactly while the test
+  /// holds, and a join that drops the test from the path guard leaves the
+  /// edge behind without it. A release through such an edge is recorded
+  /// under the identity rather than claimed on every path. Joins by union:
+  /// an edge only one side tested is untested on the other, where it is
+  /// absent. `definiteAliases` and the path guard both override it, so a
+  /// later copy of one name into the other makes the pair proved again.
+  std::set<std::pair<PlaceId, PlaceId>> testedAliases;
   /// Calls whose consumption depends on their result, keyed by the place
   /// the result was stored in (RFC 0006). Entries are dropped on any
   /// reassignment of the result.
   std::map<PlaceId, PendingOutcome> pending;
+  /// RFC 0030 §5.1 (the lazy default): places this function has given a
+  /// value to while some place above them holds a release record of unknown
+  /// origin, sorted. Such a record stands for every place below it — that
+  /// is what "the callee may have released or replaced what this pointer
+  /// reaches" means — so the places below it are not marked one by one, and
+  /// a place the function names only *after* the call is covered too. A
+  /// place listed here, and what lies below it, holds a value of this
+  /// function's again and inherits nothing. A must-fact: joins by
+  /// intersection, so a place only one path gave a value to is unknown
+  /// after the join.
+  std::vector<PlaceId> established;
   /// Consumption of the function's own interface (parameter roots and, per
   /// RFC 0003, paths under reassigned parameters) on the current path; the
   /// flow-sensitive record outcome classes are derived from (RFC 0006).
   std::map<SummaryPath, PlaceEffect> consumed;
+  /// RFC 0030 §9.1: the guard each entry of `consumed` happened under,
+  /// still over *places*, so that a `return` naming a local can read the
+  /// conjuncts on that local off it. `PlaceEffect::when` has already lost
+  /// them: it names only what the caller can see. Joined exactly like
+  /// `consumed`: a path consumed on one side only keeps its guard, one
+  /// consumed on both keeps what the two guards agree on, so a second,
+  /// unguarded consume leaves nothing to key on. Entries exist only for
+  /// paths in `consumed` with a guard that is not trivial.
+  std::map<SummaryPath, PlaceGuard> consumedOn;
   /// Caller-visible paths whose value on entry has been replaced on *every*
   /// path reaching here (RFC 0008, *Replaced values*): a release of what the
   /// place holds now is not a release of the caller's value (`b->data =
@@ -291,9 +335,34 @@ struct AnalysisState {
   std::set<PlaceId> heapLocalObjects;
   /// RFC 0013: roots whose heap projection lost facts at a bound.
   std::set<PlaceId> incompleteHeap;
+  /// RFC 0030 §2.3 `raw-cast`: pointer places whose value may have been
+  /// made by reinterpretation on some path (a byte-wise or partial store
+  /// into the pointer object, a union member whose last write was a
+  /// non-pointer member, `va_arg`), so nothing the engine knows of pointers
+  /// describes it. Joins by union; a plain assignment clears it.
+  std::set<PlaceId> reinterpreted;
+  /// RFC 0030 §3.1, *Aliases of a released object*: what was released on
+  /// some path so far, as the pointee types of the released objects (an
+  /// opaque key per type; `AnyType` for a character, `void` or unknown
+  /// type, which may designate any object). Joins by union.
+  std::set<std::uint64_t> releasedTypes;
+  /// Some release so far was of a value not loaded from an owning place
+  /// (§9.4): the owner-uniqueness assumption cannot separate it. Joins by
+  /// disjunction.
+  bool releasedUnowned = false;
+  /// Pointer places whose value was stored, on every path, since the last
+  /// release and is not a copy of an older value: it is not a released
+  /// object. Joins by intersection; a release empties it.
+  std::set<PlaceId> storedSinceRelease;
   std::map<PlaceId, ArrayRange> arrayRanges;
   std::map<PlaceId, ReleasedArrayRange> releasedArrayRanges;
   std::map<PlaceId, FilledArrayRange> filledArrayRanges;
+
+  /// The key of a type that may designate any object (`releasedTypes`).
+  static constexpr std::uint64_t AnyType = 0;
+  /// §3.1: an object of pointee type `type` was released on this path; it
+  /// was loaded from an owning place when `owned`.
+  void noteRelease(std::uint64_t type, bool owned);
 
   /// Component-wise join with the state of another incoming edge. Returns
   /// whether this state changed, so the fixpoint engine need not copy and
@@ -333,7 +402,6 @@ struct AnalysisState {
   /// RFC 0027: the same invalidation for any order of possibly repeated keys.
   /// Takes ownership so subtree callers can reuse their descendant vector.
   void dropGuardsOn(std::vector<PlaceId> places);
-  void forgetZeroedMemory();
 
   /// True if `path`, or an object containing it, is in `overwritten`: the
   /// value the caller's memory held there on entry is gone on every path.
@@ -345,6 +413,9 @@ struct AnalysisState {
   /// every guard conjunct about it. Used when the place is (re)initialised
   /// or goes out of scope. Descendants are the caller's responsibility.
   void forget(PlaceId place);
+  /// `forget` for each of `places`, with one scan of the guards for all of
+  /// them (a subtree).
+  void forget(std::vector<PlaceId> places);
 
   friend bool operator==(const AnalysisState &,
                          const AnalysisState &) = default;

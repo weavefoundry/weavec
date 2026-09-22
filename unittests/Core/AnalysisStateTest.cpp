@@ -142,6 +142,46 @@ TEST(PendingOutcome, GuardOfJoinsTheRemainingClassesGuards) {
   EXPECT_FALSE(unguarded.guardOf(P).has_value());
 }
 
+// RFC 0030 §2.3 `raw-cast`: a pointer reinterpreted on some path is
+// reinterpreted after the join; forgetting the place clears it.
+TEST(AnalysisState, JoinUnionsReinterpretedPointers) {
+  AnalysisState a;
+  AnalysisState b;
+  b.reinterpreted.insert(PlaceId{3});
+  EXPECT_TRUE(a.join(b));
+  EXPECT_TRUE(a.reinterpreted.contains(PlaceId{3}));
+  EXPECT_FALSE(a.join(b)) << "fixpoint";
+  a.forget(PlaceId{3});
+  EXPECT_FALSE(a.reinterpreted.contains(PlaceId{3}));
+}
+
+// RFC 0030 §3.1, *Aliases of a released object*: what was released on some
+// path joins by union, a release not loaded from an owning place by
+// disjunction, and what was stored since the last release on every path by
+// intersection; a release forgets what was stored before it.
+TEST(AnalysisState, JoinTracksReleasesForAliases) {
+  AnalysisState a;
+  AnalysisState b;
+  a.storedSinceRelease = {PlaceId{1}, PlaceId{2}};
+  b.storedSinceRelease = {PlaceId{2}};
+  b.noteRelease(7, /*owned=*/true);
+  EXPECT_TRUE(b.storedSinceRelease.empty());
+  b.storedSinceRelease.insert(PlaceId{2});
+  EXPECT_TRUE(a.join(b));
+  EXPECT_EQ(a.releasedTypes, std::set<std::uint64_t>{7});
+  EXPECT_FALSE(a.releasedUnowned);
+  EXPECT_EQ(a.storedSinceRelease, std::set<PlaceId>{PlaceId{2}});
+  EXPECT_FALSE(a.join(b)) << "fixpoint";
+
+  AnalysisState c;
+  c.noteRelease(AnalysisState::AnyType, /*owned=*/false);
+  EXPECT_TRUE(a.join(c));
+  EXPECT_EQ(a.releasedTypes,
+            (std::set<std::uint64_t>{AnalysisState::AnyType, 7}));
+  EXPECT_TRUE(a.releasedUnowned);
+  EXPECT_TRUE(a.storedSinceRelease.empty());
+}
+
 TEST(AnalysisState, JoinUnionsConsumed) {
   const SummaryPath p = SummaryPath::param(0);
   AnalysisState left;
@@ -468,82 +508,6 @@ TEST(AnalysisState, DropGuardsOnReachesEveryTracker) {
   // Nothing was refuted; the records are all still there.
   EXPECT_TRUE(state.learn(X, ValueFact::of(Outcome::Zero)).reinstated.empty());
   EXPECT_TRUE(state.moves.isMoved(P));
-}
-
-// RFC 0027: the sequential single-place implementation is the reference.
-TEST(AnalysisState, BatchedGuardInvalidationMatchesEverySequentialSubset) {
-  for (const bool checked : {false, true}) {
-    AnalysisState original;
-    if (checked)
-      original.safety.emplace();
-    for (unsigned i = 0; i < 6; ++i) {
-      const PlaceId a{i};
-      const PlaceId b{(i + 1) % 6};
-      const PlaceId c{(i + 2) % 6};
-      const PlaceId holder{i + 20};
-      PlaceGuard guard;
-      guard.require(a, ValueFact::nonZero());
-      guard.require(b, ValueFact::ofConstant(7));
-      guard.requirePointer(a, c, true);
-      guard.requireInteger({.lhs = IntegerExpression<PlaceId>::input(b, {}),
-                            .op = IntegerOp::Less,
-                            .rhs = IntegerExpression<PlaceId>::input(c, {})});
-      original.moves.markMoved(holder, MoveReason::Freed, at(i + 1), {},
-                               ElementWitness::whole(), "free", false, guard);
-      original.resources.hold(holder, {.origin = ResourceOrigin::Allocated,
-                                       .location = at(i + 1),
-                                       .family = "free",
-                                       .guard = guard});
-      original.nulls.set(holder, {.state = Nullness::Null,
-                                  .location = at(i + 1),
-                                  .reason = NullReason::AssignedNull,
-                                  .detail = {},
-                                  .guard = guard});
-      original.numericValues.emplace(a,
-                                     IntegerExpression<PlaceId>::input(b, {}));
-      original.numericValues.emplace(holder,
-                                     IntegerExpression<PlaceId>::input(c, {}));
-      original.numericConditions.requireInteger(guard.integers.front());
-      original.pointerFacts.requirePointer(a, c, false);
-      auto &pending = original.pending[holder];
-      pending.factOn[Outcome::Positive] = {{a, ValueFact::nonZero()},
-                                           {holder, ValueFact::nonZero()}};
-      pending.initializedOn[Outcome::Positive] = {
-          {holder, {.begin = Affine::ofPlace(a), .end = Affine::ofPlace(b)}},
-          {holder, {.begin = {}, .end = Affine::ofConstant(8), .when = guard}},
-          {c, {.begin = {}, .end = Affine::ofConstant(4)}},
-          {holder, {.begin = {}, .end = Affine::ofConstant(4)}}};
-      original.loans.addLoanUnchecked(loanOn(a, holder));
-      if (checked) {
-        original.safety->paths.push_back(guard);
-        original.safety->initialize(holder, {.begin = Affine::ofPlace(a),
-                                             .end = Affine::ofPlace(b),
-                                             .when = guard});
-      }
-    }
-    const AnalysisState snapshot = original;
-    for (unsigned mask = 0; mask < 64; ++mask) {
-      SCOPED_TRACE(mask);
-      std::vector<PlaceId> keys;
-      for (unsigned bit = 0; bit < 6; ++bit)
-        if ((mask & (1U << bit)) != 0)
-          keys.push_back(PlaceId{bit});
-      AnalysisState expected = original;
-      for (const auto key : keys)
-        expected.dropGuardsOn(key);
-      AnalysisState actual = original;
-      actual.dropGuardsOn(keys);
-      EXPECT_EQ(actual, expected);
-      // Order and duplicates do not alter the meaning of the invalidation.
-      auto repeated = keys;
-      repeated.insert(repeated.end(), keys.begin(), keys.end());
-      std::ranges::reverse(repeated);
-      actual = original;
-      actual.dropGuardsOn(std::move(repeated));
-      EXPECT_EQ(actual, expected);
-      EXPECT_EQ(original, snapshot);
-    }
-  }
 }
 
 } // namespace weavec::core

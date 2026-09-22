@@ -1,5 +1,0 @@
-/* RFC 0021: frozen traversal acceptance case. */
-#include <stddef.h>
-#include <stdlib.h>
-static void fill(char *p, unsigned n) { for(unsigned i=1;i<n;++i) p[i]=1; }
-int main(void) { char a[4]; fill(a,4); return a[0]; }

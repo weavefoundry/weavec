@@ -1,9 +1,11 @@
 // RFC 0006, *Outcome-conditional summaries*: a callee that consumes its
 // argument only on the paths returning some class of value is summarised
 // per class, and a caller's test of the result retracts the consumption on
-// the edge where it did not happen. `realloc` is the built-in instance.
-// RUN: not %weavec %s -- 2>&1 | FileCheck %s
-// RUN: not %weavec --dump-analysis %s -- 2>&1 | FileCheck --check-prefix=DUMP %s
+// the edge where it did not happen. `realloc` is the library instance: it
+// moves its argument on the non-null class and, when the size is zero, on
+// the null class as well (RFC 0030 §8.2).
+// RUN: %weavec %s -- 2>&1 | FileCheck %s
+// RUN: %weavec --dump-analysis %s -- 2>&1 | FileCheck --check-prefix=DUMP %s
 #include "../Inputs/prelude.h"
 
 struct node {
@@ -30,7 +32,7 @@ static char *grow(char *p, size_t n) {
   return q;
 }
 // DUMP: function 'grow':
-// DUMP: summary: p: moved(free); stores{} returns{fresh(free) extent=n, null} outcome null{} outcome nonnull{p: moved(free)}
+// DUMP: summary: p: moved(free); stores{} returns{fresh(free) extent=n, null} outcome null{p: moved(free) when[n zero]} outcome nonnull{p: moved(free)}
 // DUMP: function 'guarded':
 // DUMP: summary: n: freed(free); stores{} returns{}
 
@@ -86,7 +88,7 @@ static char *resize(struct table *t, size_t n) {
   return realloc(t->array, n);
 }
 // DUMP: function 'resize':
-// DUMP: summary: t->array: read|moved(free) when[n ne t->n]; t->n: read; stores{} returns{fresh(free) extent=n when[n ne t->n], copy t->array when[n eq t->n], null when[n ne t->n]} requires{t} outcome null{} outcome nonnull{t->array: moved(free) when[n ne t->n]}
+// DUMP: summary: t->array: read|moved(free) when[n ne t->n]; t->n: read; stores{} returns{fresh(free) extent=n when[n ne t->n], copy t->array when[n eq t->n], null when[n ne t->n]} requires{t} outcome null{t->array: moved(free) when[n zero, n ne t->n]} outcome nonnull{t->array: moved(free) when[n ne t->n]}
 
 void resized(struct table *t, size_t n) {
   char *na = resize(t, n);
@@ -100,19 +102,19 @@ void resized(struct table *t, size_t n) {
 void wrong_branch(struct node *n, int c) {
   int rc = try_take(n, c);
   if (rc == 0)
-    // CHECK: rfc0006-outcomes.c:[[@LINE+1]]:9: error: use of 'n' after it was freed [weavec::use-after-free]
+    // CHECK: rfc0006-outcomes.c:[[@LINE+1]]:9: warning: use of 'n' after it may have been freed [weavec::use-after-free]
     use(n);
 }
 
 void untested(struct node *n, int c) {
   try_take(n, c);
-  // CHECK: rfc0006-outcomes.c:[[@LINE+1]]:3: error: use of 'n' after it was freed [weavec::use-after-free]
+  // CHECK: rfc0006-outcomes.c:[[@LINE+1]]:3: warning: use of 'n' after it may have been freed [weavec::use-after-free]
   n->v = 1;
 }
 
 void realloc_untested(char *p) {
   char *q = realloc(p, 16);
-  // CHECK: rfc0006-outcomes.c:[[@LINE+1]]:3: error: use of 'p' after it was moved [weavec::use-after-move]
+  // CHECK: rfc0006-outcomes.c:[[@LINE+1]]:3: warning: use of 'p' after it may have been moved [weavec::use-after-move]
   free(p);
   // CHECK: rfc0006-outcomes.c:[[@LINE+1]]:3: warning: 'q' is leaked [weavec::leak]
   use(q);
@@ -124,8 +126,8 @@ void result_overwritten(char *p) {
   q = malloc(2);
   // CHECK: rfc0006-outcomes.c:[[@LINE+1]]:3: warning: 'q' is leaked [weavec::leak]
   if (q == NULL)
-    // CHECK: rfc0006-outcomes.c:[[@LINE+1]]:5: error: use of 'p' after it was moved [weavec::use-after-move]
+    // CHECK: rfc0006-outcomes.c:[[@LINE+1]]:5: warning: use of 'p' after it may have been moved [weavec::use-after-move]
     free(p);
 }
 
-// CHECK: 3 warnings and 4 errors generated.
+// CHECK: 7 warnings generated.

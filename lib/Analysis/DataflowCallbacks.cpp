@@ -7,23 +7,92 @@
 //===----------------------------------------------------------------------===//
 
 #include "Dataflow.h"
+#include "weavec/Analysis/DataflowEngine.h"
 #include "weavec/Analysis/Summaries.h"
 
 using namespace clang;
 
 namespace weavec::analysis {
 
-std::string FunctionDataflow::resolvedLibraryName(const CallExpr &call) const {
+const core::LibraryMatch *
+FunctionDataflow::resolvedLibrary(const CallExpr &call) const {
   const auto source = callSources.find(&call);
-  if (source == callSources.end() || source->second != SummarySource::Builtin)
+  if (source == callSources.end() || source->second != SummarySource::Library)
+    return nullptr;
+  const auto row = callLibraries.find(&call);
+  return row == callLibraries.end() ? nullptr : &row->second;
+}
+
+/// RFC 0030 §9.3: the summary store's name for a function the slots name.
+/// A slot spells a function with internal linkage `<unit>:<name>`, the store
+/// `<unit>#<name>`; a definition in this unit is asked for its own name.
+static std::string slotSymbol(const SlotCollection &slots,
+                              const std::string &target) {
+  if (const clang::FunctionDecl *definition = slots.function(target))
+    return callableSymbol(*definition);
+  const std::size_t at = target.rfind(':');
+  if (at == std::string::npos)
+    return target;
+  return target.substr(0, at) + "#" + target.substr(at + 1);
+}
+
+const core::SlotSolution *FunctionDataflow::solvedSlots() const {
+  // §9.3: at link and in `--whole-program` the slots are solved over every
+  // unit's constraints and reach the engine through the program database;
+  // a per-TU compile has only the unit's own solution. (The §7.3 slot kinds
+  // stay the unit's either way: spatial and null outcomes are decided per
+  // TU and copied verbatim at link, §1.)
+  if (const ProgramDatabase *database = summaries.programDatabase();
+      database != nullptr && database->programFacts)
+    return &database->programFacts->slots;
+  return options.slotSolution;
+}
+
+core::CallResolution
+FunctionDataflow::slotResolutionOf(const CallExpr &call) const {
+  const core::SlotSolution *solution = solvedSlots();
+  if (options.slots == nullptr || solution == nullptr)
     return {};
-  if (const auto *direct = call.getDirectCallee())
-    return direct->getNameAsString();
-  const auto targets = callTargetsSeen.find(&call);
-  if (targets == callTargetsSeen.end() || targets->second.unknown ||
-      targets->second.null || targets->second.functions.size() != 1)
+  const auto slot = options.slots->calleeSlot(call);
+  if (!slot)
     return {};
-  return *targets->second.functions.begin();
+  return solution->resolveCall(*slot);
+}
+
+std::optional<core::CallTargets>
+FunctionDataflow::slotTargetsOf(core::PlaceId place) const {
+  const core::SlotSolution *solution = solvedSlots();
+  if (options.slots == nullptr || solution == nullptr)
+    return std::nullopt;
+  const auto *decl = dyn_cast_or_null<ValueDecl>(builder.declFor(place));
+  if (decl == nullptr)
+    return std::nullopt;
+  // Only a slot that holds function pointers has targets; every other
+  // global and field would answer "open" and say nothing.
+  QualType held = decl->getType();
+  while (const clang::ArrayType *array = context.getAsArrayType(held))
+    held = array->getElementType();
+  if (!held->isFunctionPointerType())
+    return std::nullopt;
+  const auto slot = options.slots->slotOf(*decl);
+  if (!slot)
+    return std::nullopt;
+  const std::set<std::string> &solved = solution->targets(*slot);
+  core::CallTargets result;
+  // An open slot can hold a value the solver never saw (§9.3), and so, as
+  // far as a caller is concerned, does one with more targets than a
+  // `CallTargets` can name.
+  result.unknown =
+      solution->isOpen(*slot) || solved.size() > core::MaxCallTargets;
+  if (solved.size() > core::MaxCallTargets)
+    return result;
+  for (const std::string &target : solved) {
+    if (target == core::UnknownFunction)
+      result.unknown = true;
+    else
+      result.functions.insert(slotSymbol(*options.slots, target));
+  }
+  return result;
 }
 
 core::CallTargets
@@ -54,13 +123,10 @@ FunctionDataflow::originTargets(const ValueOrigin &origin,
     if (const auto it = state.callTargets.find(origin.place->place);
         it != state.callTargets.end())
       return it->second;
-    if (const auto *decl =
-            dyn_cast_or_null<ValueDecl>(builder.declFor(origin.place->place));
-        decl && decl->getType()->isFunctionPointerType()) {
-      if (const auto path = builder.summaryPathOf(origin.place->place);
-          path && path->isGlobal())
-        return summaries.targetsForGlobal(*path);
-    }
+    // RFC 0030 §9.3: the slots say what a global or a field can hold.
+    if (const auto slotted = slotTargetsOf(origin.place->place);
+        slotted && !slotted->empty())
+      return *slotted;
   }
   return {};
 }
@@ -107,20 +173,18 @@ core::CallTargets FunctionDataflow::functionTargets(const Expr &expr,
       input.kind = ValueOrigin::Kind::Copy;
       input.place = *place;
       const auto source = sourceValueOf(input, state, true);
-      auto path = source.path;
-      if (!path && options.checkContracts)
-        if (const auto global = builder.summaryPathOf(place->place);
-            global && global->isGlobal() && !state.isOverwritten(*global))
-          path = global;
-      if (path &&
-          (path->isParam() || (options.checkContracts && path->isGlobal())) &&
-          recording())
+      const auto &path = source.path;
+      if (path && path->isParam() && recording())
         inferred.callbackInputs.insert(*path);
     }
     if (found != state.callTargets.end())
       return found->second;
+    // RFC 0030 §9.3: the solved slot of a global or a field.
+    if (const auto slotted = slotTargetsOf(place->place);
+        slotted && !slotted->empty())
+      return *slotted;
   }
-  auto staticValue = summaries.staticTargets(*e);
+  auto staticValue = SummaryStore::staticTargets(*e);
   if (!staticValue.empty())
     return staticValue;
   if (const auto *ref = dyn_cast<DeclRefExpr>(e)) {
@@ -157,22 +221,19 @@ FunctionDataflow::resolveCall(const CallExpr &call) {
       cached != callSummaries.end()) {
     if (!cached->second)
       return std::nullopt;
+    const core::LibraryMatch *row = resolvedLibrary(call);
     return ResolvedSummary{.summary = cached->second,
-                           .source = callSources.at(&call)};
+                           .source = callSources.at(&call),
+                           .library = row != nullptr ? std::optional(*row)
+                                                     : std::nullopt};
   }
-  checkedCallAlternatives.erase(&call);
   const FunctionDecl *direct = call.getDirectCallee();
   if (!currentState)
     return direct ? summaries.lookup(*direct) : summaries.lookupIndirect(call);
   core::AnalysisState &state = *currentState;
-  if (auto hypothesis = recursiveInputCall(call, state)) {
-    callSummaries[&call] = hypothesis;
-    callSources[&call] = SummarySource::Inferred;
-    return ResolvedSummary{.summary = std::move(hypothesis),
-                           .source = SummarySource::Inferred};
-  }
   std::shared_ptr<const core::FunctionSummary> result;
   SummarySource source = SummarySource::Inferred;
+  std::optional<core::LibraryMatch> library;
   const auto captureCallbacks = [&](const core::FunctionSummary &summary) {
     core::CallbackBindings bindings;
     for (const auto &path : summary.callbackInputs) {
@@ -184,10 +245,8 @@ FunctionDataflow::resolveCall(const CallExpr &call) {
         const auto it = state.callTargets.find(place->place);
         if (it != state.callTargets.end())
           bindings[path] = it->second;
-        else if (actualPath && actualPath->isGlobal())
-          bindings[path] = summaries.targetsForGlobal(*actualPath);
-        else if (path.isGlobal())
-          bindings[path] = summaries.targetsForGlobal(path);
+        else if (const auto slotted = slotTargetsOf(place->place))
+          bindings[path] = *slotted;
         else
           bindings[path] = core::CallTargets::any();
         if (bindings[path].empty())
@@ -200,91 +259,59 @@ FunctionDataflow::resolveCall(const CallExpr &call) {
     // RFC 0022: replaying the generic unresolved global set adds no
     // target or nullness premise. Keep its dependency, not a duplicate
     // specialization whose entry state would resolve the same set.
-    std::erase_if(bindings, [&](const auto &binding) {
+    std::erase_if(bindings, [](const auto &binding) {
       return binding.first.isGlobal() && binding.second.unknown &&
-             binding.second == summaries.targetsForGlobal(binding.first);
+             binding.second.functions.empty();
     });
     return bindings;
   };
   const auto contextualize =
       [&](std::string_view symbol,
-          std::shared_ptr<const core::FunctionSummary> base,
-          std::optional<core::CallContext> prepared = std::nullopt) {
+          std::shared_ptr<const core::FunctionSummary> base) {
         // Path resolution validates this target's object views before using
         // its footprint. The final contextual result replaces this below.
         auto &snapshot = callSummaries[&call];
         snapshot = std::move(base);
-        auto bindings = prepared ? std::move(prepared)
-                                 : captureCallContext(call, *snapshot, state);
+        auto bindings = captureCallContext(call, *snapshot, state);
         if (!bindings)
           return snapshot;
         if (const auto callbacks = callbackContexts.find(&call);
             callbacks != callbackContexts.end())
           bindings->callbacks = callbacks->second;
         memoryContexts[&call] = *bindings;
-        core::DiagnosticCollector collected;
+        // RFC 0030 §2.6: the context run's findings are this call's.
+        const bool reporting = recording() && emitDiagnostics;
+        std::vector<core::Diagnostic> found;
         const auto specialized = summaries.specializeMemory(
-            symbol, *bindings, options,
-            recording() && emitDiagnostics && !inUnsafe ? &collected : nullptr);
-        // RFC 0029: a failed precision attempt cannot replace a complete
-        // generic proof. Its unchanged requirements still apply at this call.
-        if (options.checkContracts && snapshot->checked.complete() &&
-            (!specialized || !specialized->summary->checked.complete())) {
-          memoryContexts.erase(&call);
-          return snapshot;
-        }
-        for (auto diagnostic : collected.diagnostics()) {
-          diagnostic.addNote("called here with related pointer arguments",
-                             locate(call));
-          report(std::move(diagnostic));
-        }
+            symbol, *bindings, options, reporting ? &found : nullptr);
+        if (reporting && !ledger.isDiscarding())
+          summaries.claimedMemoryContexts.insert(
+              {std::string(symbol), *bindings});
+        reportContextFindings(call, std::move(found),
+                              "called here with related pointer arguments");
         if (!specialized) {
-          reportIncomplete("call context unavailable or limit reached", call);
+          decideIncomplete("call context unavailable or limit reached", call);
           return snapshot;
         }
+        // RFC 0030 §15 item 3: what the context run could not model (it
+        // decides no rows of its own, §2.6) leaves this call's use of its
+        // summary unresolved.
+        for (const std::string &reason : specialized->summary->incomplete)
+          if (incompleteFacet(reason) == core::Facet::Temporal) {
+            decideIncomplete(reason, call);
+            break;
+          }
         return summaries.retainSummary(*specialized);
       };
   if (direct) {
     if (const auto base = summaries.lookup(*direct)) {
       result = summaries.retainSummary(*base);
       source = base->source;
-      std::optional<core::CallContext> combinedInputs;
+      library = base->library;
       auto bindings = captureCallbacks(*result);
-      const bool behavioral =
-          result->checked.complete() && !result->callbackInputs.empty() &&
-          std::ranges::all_of(result->callbackInputs, [&](const auto &path) {
-            if (!path.isParam() || !path.isRoot())
-              return false;
-            const auto binding = bindings.find(path);
-            if (binding == bindings.end() || binding->second.null)
-              return false;
-            return std::ranges::any_of(
-                result->checked.requirements, [&](const auto &requirement) {
-                  if (requirement.path != path ||
-                      !(requirement.kind ==
-                            core::CheckedRequirementKind::CallbackAllocate ||
-                        requirement.kind ==
-                            core::CheckedRequirementKind::CallbackRelease))
-                    return false;
-                  return std::ranges::all_of(
-                      binding->second.functions, [&](const auto &symbol) {
-                        const auto actual = summaries.lookupSymbol(symbol);
-                        const auto expected =
-                            requirement.kind == core::CheckedRequirementKind::
-                                                    CallbackAllocate
-                                ? "malloc"
-                                : "free";
-                        return actual &&
-                               actual->source == SummarySource::Builtin &&
-                               symbol == expected;
-                      });
-                });
-          });
-      if (!result->callbackInputs.empty() && !behavioral) {
-        // A behavioral contract is one sufficient interface. A known target
-        // with another protocol (e.g. a void(void*) writer) still uses its
-        // actual body and memory effects, rather than acquiring release
-        // semantics from its C prototype.
+      if (!result->callbackInputs.empty()) {
+        // A known target supplies its actual body and memory effects
+        // (RFC 0014), rather than release semantics from its C prototype.
         const bool known =
             !bindings.empty() &&
             std::ranges::any_of(bindings, [](const auto &binding) {
@@ -292,26 +319,12 @@ FunctionDataflow::resolveCall(const CallExpr &call) {
             });
         if (known) {
           callbackContexts[&call] = bindings;
-          if (options.checkContracts) {
-            // RFC 0029: both sets of actual entry premises belong to one
-            // body check. A callback-only preliminary run can otherwise
-            // populate nested cases for selectors the caller already knows.
-            callSummaries[&call] = result;
-            combinedInputs = captureCallContext(call, *result, state);
-            if (combinedInputs) {
-              combinedInputs->callbacks = bindings;
-              if (options.stats)
-                options.stats->add("combined_callback_case_requests");
-            }
-          }
-          if (!combinedInputs) {
-            if (const auto specialized =
-                    summaries.specialize(*direct, bindings, options, nullptr)) {
-              result = summaries.retainSummary(*specialized);
-            } else {
-              reportIncomplete("callback context unavailable or limit reached",
-                               call);
-            }
+          if (const auto specialized =
+                  summaries.specialize(*direct, bindings, options, nullptr)) {
+            result = summaries.retainSummary(*specialized);
+          } else {
+            decideIncomplete("callback context unavailable or limit reached",
+                             call);
           }
         }
       }
@@ -319,38 +332,67 @@ FunctionDataflow::resolveCall(const CallExpr &call) {
           direct->getDefinition() != nullptr ||
           (summaries.programDatabase() != nullptr &&
            summaries.programDatabase()->defines(direct->getName()));
-      if (!behavioral && (source == SummarySource::Inferred ||
-                          source == SummarySource::Program ||
-                          (source == SummarySource::Annotation && knownBody))) {
+      if (source == SummarySource::Inferred ||
+          source == SummarySource::Program ||
+          (source == SummarySource::Annotation && knownBody)) {
         summaries.registerCallable(*direct);
-        result = contextualize(callableSymbol(*direct), std::move(result),
-                               std::move(combinedInputs));
+        result = contextualize(callableSymbol(*direct), std::move(result));
       }
       if (!memoryContexts.contains(&call) && callbackContexts.contains(&call) &&
-          recording() && emitDiagnostics && !inUnsafe &&
-          memoryContext.reportDiagnostics)
+          recording() && emitDiagnostics && memoryContext.reportDiagnostics) {
+        std::vector<core::Diagnostic> found;
         (void)summaries.specialize(*direct, callbackContexts.at(&call), options,
-                                   &sink);
+                                   &found);
+        if (!ledger.isDiscarding())
+          summaries.claimedCallbackContexts.insert(
+              {callableSymbol(*direct), callbackContexts.at(&call)});
+        // RFC 0030 §2.6: a context run's finding names the call.
+        reportContextFindings(call, std::move(found),
+                              "called here with function pointer arguments");
+      }
     }
   } else {
     auto targets = functionTargets(*call.getCallee(), state);
     if (const auto place = builder.resolvePointerValue(*call.getCallee());
         place && state.nulls.isNonNull(place->place))
       targets.null = false;
+    // RFC 0030 §9.3: the solved slot decides the call. Its targets are
+    // flow-insensitive, so they speak only where the flow-sensitive ones
+    // say nothing; the four behaviours follow from the slot's kind.
+    const core::CallResolution resolution = slotResolutionOf(call);
+    callResolutions[&call] = resolution;
+    // What this function has watched the callee operand hold is exact and
+    // wins: `g = unknown; g(p);` calls the value just stored, whatever the
+    // flow-insensitive slot may also hold.
+    bool tracked = false;
+    if (const auto operand = builder.resolvePointerValue(*call.getCallee()))
+      tracked = state.callTargets.contains(operand->place);
+    if (!tracked && targets.unknown && !resolution.targets.empty() &&
+        resolution.kind != core::IndirectCallKind::OpenUnknown &&
+        // A slot with more targets than a `CallTargets` can name says
+        // little and costs a summary join and a context run per target:
+        // the §5.1 default is both sound and cheaper.
+        resolution.targets.size() <= core::MaxCallTargets) {
+      for (const std::string &target : resolution.targets) {
+        if (target == core::UnknownFunction)
+          continue;
+        if (const clang::FunctionDecl *definition =
+                options.slots->function(target))
+          summaries.registerCallable(*definition);
+        targets.functions.insert(slotSymbol(*options.slots, target));
+      }
+      // Closed: every value the slot can hold is here. Open with known
+      // targets: as closed for temporal facts, which is what the summaries
+      // below carry; the call's own facet says the values come from
+      // outside (`openCallTemporalDecision`).
+      targets.unknown = false;
+    }
     callTargetsSeen[&call] = targets;
     // An explicit type contract can cover an unresolved target. Known
     // targets still supply their actual effects when there is no contract.
     if (const auto contract = summaries.lookupIndirect(call)) {
       result = summaries.retainSummary(*contract);
       source = contract->source;
-    } else if (const auto required =
-                   targets.functions.empty() && targets.unknown && !targets.null
-                       ? requiredCallback(call, state)
-                       : nullptr;
-               required) {
-      result = required;
-      // RFC 0029: this is a sufficient entry requirement, never a trusted
-      // target or a replacement for checking a known callback implementation.
     } else {
       bool returns = false;
       std::optional<SummarySource> singleSource;
@@ -361,11 +403,14 @@ FunctionDataflow::resolveCall(const CallExpr &call) {
           targets.unknown = true;
           continue;
         }
-        if (targets.functions.size() == 1 && !targets.unknown && !targets.null)
+        if (targets.functions.size() == 1 && !targets.unknown &&
+            !targets.null) {
           singleSource = target->source;
+          library = target->library;
+        }
         auto targetSummary = summaries.retainSummary(*target);
         callbackContexts.erase(&call);
-        if (target->source != SummarySource::Builtin &&
+        if (target->source != SummarySource::Library &&
             !targetSummary->callbackInputs.empty()) {
           auto bindings = captureCallbacks(*targetSummary);
           const bool known =
@@ -379,7 +424,7 @@ FunctionDataflow::resolveCall(const CallExpr &call) {
                       *definition, bindings, options, nullptr))
                 targetSummary = summaries.retainSummary(*specialized);
               else
-                reportIncomplete(
+                decideIncomplete(
                     "callback context unavailable or limit reached", call);
             } else {
               core::CallContext callbackContext;
@@ -388,18 +433,14 @@ FunctionDataflow::resolveCall(const CallExpr &call) {
                       symbol, callbackContext, options, nullptr))
                 targetSummary = summaries.retainSummary(*specialized);
               else
-                reportIncomplete(
+                decideIncomplete(
                     "callback context unavailable or limit reached", call);
             }
           }
         }
-        auto actual = target->source == SummarySource::Builtin
+        auto actual = target->source == SummarySource::Library
                           ? std::move(targetSummary)
                           : contextualize(symbol, std::move(targetSummary));
-        if (options.checkContracts && targets.functions.size() > 1)
-          checkedCallAlternatives[&call].emplace(
-              symbol,
-              ResolvedSummary{.summary = actual, .source = target->source});
         returns |= !actual->neverReturns;
         if (!result) {
           result = std::move(actual);
@@ -427,42 +468,62 @@ FunctionDataflow::resolveCall(const CallExpr &call) {
       }
       if (singleSource && !targets.unknown && !targets.null)
         source = *singleSource;
-      const bool separateChecking =
-          options.checkContracts &&
-          std::ranges::any_of(
-              checkedCallAlternatives[&call], [](const auto &entry) {
-                return entry.second.source == SummarySource::Builtin ||
-                       !entry.second.summary->checked.computed ||
-                       entry.second.summary->neverReturns;
-              });
-      if (!separateChecking)
-        checkedCallAlternatives.erase(&call);
-      if (separateChecking && result && targets.functions.size() > 1 &&
-          !targets.unknown && !targets.null &&
-          checkedCallAlternatives[&call].size() == targets.functions.size()) {
-        if (!joined)
-          joined = std::make_shared<core::FunctionSummary>(*result);
-        // Every actual target is checked at this call. The generic join must
-        // not preserve a user target's must-output across an unchecked builtin.
-        joined->checked.computed = true;
-        joined->checked.signature =
-            functionTypeKey(call.getCallee()->getType(), context);
-        joined->checked.establishes.clear();
-        result = joined;
+      // §9.3: spatial and null facts of the result never come from an open
+      // slot, because they are decided per TU and copied verbatim at link
+      // (§1). The result takes the §7.3 default for a function outside the
+      // unit instead.
+      if (result && resolution.kind == core::IndirectCallKind::OpenKnown &&
+          !result->returns.empty()) {
+        auto opened = std::make_shared<core::FunctionSummary>(*result);
+        opened->returns.clear();
+        result = std::move(opened);
       }
     }
   }
-  if (result && source == SummarySource::Builtin) {
+  if (result && source == SummarySource::Library && library) {
     auto specialized = std::make_shared<core::FunctionSummary>(*result);
-    specializeIntegerBuiltin(call, *specialized, state);
+    specializeIntegerBuiltin(call, *library, *specialized, state);
     result = std::move(specialized);
   }
+  if (source != SummarySource::Library)
+    library.reset();
   callSources[&call] = source;
+  if (library)
+    callLibraries.insert_or_assign(&call, *library);
+  else
+    callLibraries.erase(&call);
   auto &cached = callSummaries[&call];
   cached = std::move(result);
   if (!cached)
     return std::nullopt;
-  return ResolvedSummary{.summary = cached, .source = source};
+  return ResolvedSummary{
+      .summary = cached, .source = source, .library = library};
+}
+
+void FunctionDataflow::reportContextFindings(
+    const CallExpr &call, std::vector<core::Diagnostic> found,
+    std::string_view note) {
+  if (found.empty())
+    return;
+  const SiteInfo *site = siteFor(call, core::Facet::Temporal);
+  for (core::Diagnostic &diagnostic : found) {
+    const core::Certainty certainty = diagnostic.certainty;
+    const std::optional<core::Facet> facet = facetOfDiagnostic(diagnostic.id);
+    const bool temporal = facet == core::Facet::Temporal;
+    // The call's temporal facet: a violation when the finding is definite
+    // in the context, `may-released` (or `may-moved`) when possible.
+    if (temporal)
+      decide(site, core::Facet::Temporal,
+             certainty == core::Certainty::Definite
+                 ? core::FacetDecision::violation()
+                 : core::FacetDecision::unresolvedFor(
+                       diagnostic.id == core::diag::UseAfterMove
+                           ? core::UnresolvedReason::MayMoved
+                           : core::UnresolvedReason::MayReleased));
+    if (!note.empty())
+      diagnostic.addNote(std::string(note), locate(call));
+    report(std::move(diagnostic), certainty, temporal ? site : nullptr, facet);
+  }
 }
 
 } // namespace weavec::analysis

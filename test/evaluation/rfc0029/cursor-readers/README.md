@@ -1,1 +1,0 @@
-RFC 0029 reader-cursor population frozen before the reader predicate implementation. The helper is selected independently for positive and mutated generic contracts. Closed callers must establish full initialized input and cursor bounds. Partial returns may preserve the cursor invariant but promise no fixed amount consumed. The baseline is candidate26.

@@ -8,6 +8,8 @@
 
 #include "weavec/Core/Moves.h"
 
+#include "weavec/Core/AnalysisState.h"
+
 #include <gtest/gtest.h>
 
 namespace weavec::core {
@@ -91,8 +93,10 @@ TEST(MoveTracker, OwnValueIsAMustFactAcrossJoins) {
   ASSERT_FALSE(ownAgain.markMoved(PlaceId{0}, MoveReason::Freed, at(1), {},
                                   ElementWitness::whole(), "free",
                                   /*ownValue=*/true));
-  EXPECT_TRUE(ownAgain.join(untouched) == false)
-      << "the other side has no record: nothing to learn";
+  EXPECT_TRUE(ownAgain.join(untouched))
+      << "RFC 0030: the record now holds on some paths only";
+  EXPECT_FALSE(ownAgain.join(untouched))
+      << "the other side has no record: nothing more to learn";
   EXPECT_TRUE(ownAgain.movedAt(PlaceId{0})->ownValue)
       << "a path that never touched the place says nothing about whose "
          "value was consumed";
@@ -283,8 +287,11 @@ TEST(MoveTracker, JoinWeakensGuardsToWhatBothSidesAgreeOn) {
   EXPECT_EQ(left.recordOf(PlaceId{0})->guard,
             when(PlaceId{1}, ValueFact::of(Outcome::Positive)));
 
-  // Present on one side only: the record keeps its own guard.
+  // Present on one side only: the record keeps its own guard (and holds on
+  // some paths only, RFC 0030).
   MoveTracker none;
+  EXPECT_TRUE(left.join(none));
+  EXPECT_FALSE(left.recordOf(PlaceId{0})->allPaths);
   EXPECT_FALSE(left.join(none));
   EXPECT_EQ(left.recordOf(PlaceId{0})->guard,
             when(PlaceId{1}, ValueFact::of(Outcome::Positive)));
@@ -326,6 +333,220 @@ TEST(MoveTracker, SecondMoveUnderAGuardIsStillADoubleMove) {
   tracker.setGuard(PlaceId{0}, when(PlaceId{1}, ValueFact::nonZero()));
   EXPECT_EQ(tracker.recordOf(PlaceId{0})->guard,
             when(PlaceId{1}, ValueFact::nonZero()));
+}
+
+// RFC 0030 §3.1: path coverage. A record on one side of a join only reached
+// the join on some paths.
+TEST(MoveTracker, JoinClearsAllPathsForOneSidedRecords) {
+  MoveTracker a;
+  MoveTracker b;
+  ASSERT_FALSE(a.markMoved(PlaceId{0}, MoveReason::Freed, at(1)));
+  ASSERT_FALSE(b.markMoved(PlaceId{0}, MoveReason::Freed, at(2)));
+  ASSERT_FALSE(b.markMoved(PlaceId{1}, MoveReason::Freed, at(3)));
+  ASSERT_FALSE(a.markMoved(PlaceId{2}, MoveReason::Moved, at(4)));
+  EXPECT_TRUE(a.recordOf(PlaceId{2})->allPaths) << "a new record";
+
+  EXPECT_TRUE(a.join(b));
+  EXPECT_TRUE(a.recordOf(PlaceId{0})->allPaths) << "on both sides";
+  EXPECT_FALSE(a.recordOf(PlaceId{1})->allPaths) << "on the other side only";
+  EXPECT_FALSE(a.recordOf(PlaceId{2})->allPaths) << "on this side only";
+  EXPECT_FALSE(a.join(b)) << "the bits settle, so the fixpoint ends";
+
+  EXPECT_TRUE(a.recordOf(PlaceId{0})->isDefinite());
+  EXPECT_FALSE(a.recordOf(PlaceId{1})->isDefinite());
+}
+
+TEST(MoveTracker, JoinOfCertaintyBits) {
+  const auto conditional = MoveOrigin{.conditional = true};
+  const auto unknown = MoveOrigin{.unknownOrigin = true};
+  MoveTracker a;
+  MoveTracker b;
+  // `conditional` when either side is.
+  ASSERT_FALSE(a.markMoved(PlaceId{0}, MoveReason::Freed, at(1), {},
+                           ElementWitness::whole(), "free", false, {},
+                           conditional));
+  ASSERT_FALSE(b.markMoved(PlaceId{0}, MoveReason::Freed, at(2)));
+  // `unknownOrigin` only when both are, and a disagreement costs `allPaths`.
+  ASSERT_FALSE(a.markMoved(PlaceId{1}, MoveReason::Freed, at(3), {},
+                           ElementWitness::whole(), "", false, {}, unknown));
+  ASSERT_FALSE(b.markMoved(PlaceId{1}, MoveReason::Freed, at(4)));
+  ASSERT_FALSE(a.markMoved(PlaceId{2}, MoveReason::Freed, at(5), {},
+                           ElementWitness::whole(), "", false, {}, unknown));
+  ASSERT_FALSE(b.markMoved(PlaceId{2}, MoveReason::Freed, at(6), {},
+                           ElementWitness::whole(), "", false, {}, unknown));
+  EXPECT_TRUE(a.join(b));
+
+  const auto first = a.recordOf(PlaceId{0});
+  EXPECT_TRUE(first->conditional);
+  EXPECT_TRUE(first->allPaths);
+  EXPECT_FALSE(first->isDefinite()) << "a conditional record is possible";
+  const auto second = a.recordOf(PlaceId{1});
+  EXPECT_FALSE(second->unknownOrigin);
+  EXPECT_FALSE(second->allPaths);
+  const auto third = a.recordOf(PlaceId{2});
+  EXPECT_TRUE(third->unknownOrigin);
+  EXPECT_FALSE(third->allPaths)
+      << "the unknown-callee default holds on some paths only (§5.1)";
+  EXPECT_FALSE(third->isDefinite()) << "never diagnosed";
+}
+
+// RFC 0030 §5.1, §3.1: the unknown-callee default marks a place only when it
+// has no record, and a known consume replaces such a record.
+TEST(MoveTracker, UnknownDefaultMarksOnlyUnmovedPlacesAndGivesWay) {
+  MoveTracker tracker;
+  ASSERT_FALSE(tracker.markMoved(PlaceId{0}, MoveReason::Freed, at(1)));
+  EXPECT_FALSE(tracker.markUnknown(PlaceId{0}, at(2)))
+      << "a known record stays";
+  EXPECT_TRUE(tracker.markUnknown(PlaceId{1}, at(3)));
+  const auto unknown = tracker.recordOf(PlaceId{1});
+  ASSERT_TRUE(unknown);
+  EXPECT_EQ(unknown->reason, MoveReason::Freed);
+  EXPECT_TRUE(unknown->unknownOrigin);
+  EXPECT_FALSE(unknown->allPaths);
+  EXPECT_FALSE(unknown->isDefinite());
+
+  EXPECT_FALSE(tracker.eraseUnknown(PlaceId{0})) << "only an unknown record";
+  EXPECT_TRUE(tracker.eraseUnknown(PlaceId{1}));
+  EXPECT_FALSE(tracker.recordOf(PlaceId{1}));
+  // The known consume that replaced it is definite.
+  ASSERT_FALSE(tracker.markMoved(PlaceId{1}, MoveReason::Freed, at(4)));
+  EXPECT_TRUE(tracker.recordOf(PlaceId{1})->isDefinite());
+}
+
+TEST(MoveTracker, ResultTestSettlesConditionalUnlessLossy) {
+  MoveTracker tracker;
+  ASSERT_FALSE(tracker.markMoved(PlaceId{0}, MoveReason::Freed, at(1), {},
+                                 ElementWitness::whole(), "free", false, {},
+                                 MoveOrigin{.conditional = true}));
+  ASSERT_FALSE(tracker.markMoved(PlaceId{1}, MoveReason::Freed, at(2), {},
+                                 ElementWitness::whole(), "free", false, {},
+                                 MoveOrigin{.lossy = true}));
+  EXPECT_TRUE(tracker.recordOf(PlaceId{1})->conditional)
+      << "a lossy effect is conditional";
+  tracker.settleConditional(PlaceId{0});
+  tracker.settleConditional(PlaceId{1});
+  EXPECT_FALSE(tracker.recordOf(PlaceId{0})->conditional);
+  EXPECT_TRUE(tracker.recordOf(PlaceId{0})->isDefinite());
+  EXPECT_TRUE(tracker.recordOf(PlaceId{1})->conditional)
+      << "a lossy effect is never settled";
+}
+
+TEST(MoveTracker, TheGuardsPathFactsDoNotWeakenCertainty) {
+  MoveTracker tracker;
+  // `if (n) { free(p); use(p); }`: the record carries the path's fact, which
+  // held where it was made.
+  ASSERT_FALSE(tracker.markMoved(PlaceId{0}, MoveReason::Freed, at(1), {},
+                                 ElementWitness::whole(), "free", false,
+                                 when(PlaceId{1}, ValueFact::nonZero())));
+  EXPECT_TRUE(tracker.recordOf(PlaceId{0})->isDefinite());
+  // A callee's condition the call left open is `conditional`.
+  ASSERT_FALSE(tracker.markMoved(PlaceId{2}, MoveReason::Freed, at(2), {},
+                                 ElementWitness::whole(), "free", false,
+                                 when(PlaceId{1}, ValueFact::nonZero()),
+                                 MoveOrigin{.conditional = true}));
+  EXPECT_FALSE(tracker.recordOf(PlaceId{2})->isDefinite());
+}
+
+TEST(MoveTracker, AnUnconditionalSecondConsumeHoldsOnEveryPath) {
+  MoveTracker a;
+  MoveTracker none;
+  ASSERT_FALSE(a.markMoved(PlaceId{0}, MoveReason::Freed, at(1), {},
+                           ElementWitness::whole(), "free", false,
+                           when(PlaceId{1}, ValueFact::nonZero())));
+  EXPECT_TRUE(a.join(none));
+  EXPECT_FALSE(a.recordOf(PlaceId{0})->allPaths);
+  a.reaffirm(PlaceId{0}, {});
+  const auto record = a.recordOf(PlaceId{0});
+  EXPECT_TRUE(record->allPaths);
+  EXPECT_TRUE(record->guard.trivial()) << "the facts of the second consume";
+  EXPECT_TRUE(record->isDefinite());
+}
+
+TEST(MoveTracker, ACopiedRecordKeepsItsCertainty) {
+  MoveTracker tracker;
+  ASSERT_TRUE(tracker.markUnknown(PlaceId{0}, at(1), "consume"));
+  ASSERT_FALSE(tracker.copyRecord(PlaceId{1}, *tracker.recordOf(PlaceId{0})));
+  const auto copy = tracker.recordOf(PlaceId{1});
+  ASSERT_TRUE(copy);
+  EXPECT_TRUE(copy->unknownOrigin);
+  EXPECT_FALSE(copy->allPaths);
+  EXPECT_EQ(copy->origin, "consume");
+  // A second record for the same element keeps the first, as markMoved.
+  EXPECT_TRUE(tracker.copyRecord(PlaceId{1}, MoveRecord{}));
+  EXPECT_TRUE(tracker.recordOf(PlaceId{1})->unknownOrigin);
+}
+
+TEST(MoveTracker, TheReleaseOfAnOwnValueDoesNotHideAnUnknownRecord) {
+  // One path released the value the function itself stored (`ownValue`),
+  // another handed the caller's value to unknown code: the join is the
+  // unknown record, whichever side it is on.
+  for (const bool unknownFirst : {false, true}) {
+    MoveTracker own;
+    ASSERT_FALSE(own.markMoved(PlaceId{0}, MoveReason::Freed, at(1), {},
+                               ElementWitness::whole(), "free",
+                               /*ownValue=*/true));
+    MoveTracker unknown;
+    ASSERT_TRUE(unknown.markUnknown(PlaceId{0}, at(2), "report"));
+    MoveTracker &into = unknownFirst ? unknown : own;
+    const MoveTracker &from = unknownFirst ? own : unknown;
+    EXPECT_EQ(into.join(from), !unknownFirst);
+    const auto record = into.recordOf(PlaceId{0});
+    ASSERT_TRUE(record);
+    EXPECT_TRUE(record->unknownOrigin);
+    EXPECT_FALSE(record->ownValue);
+    EXPECT_FALSE(record->allPaths);
+    EXPECT_EQ(record->location.line, 2U);
+    EXPECT_FALSE(into.join(from)) << "a fixpoint";
+  }
+}
+
+TEST(MoveTracker, AKnownRecordJoinedIntoAnUnknownOneBringsItsPosition) {
+  MoveTracker unknown;
+  ASSERT_TRUE(unknown.markUnknown(PlaceId{0}, at(1), "consume"));
+  EXPECT_TRUE(unknown.recordOf(PlaceId{0})->location.file.empty())
+      << "never diagnosed: no file name to copy";
+  MoveTracker known;
+  ASSERT_FALSE(known.markMoved(PlaceId{0}, MoveReason::Freed, at(2), {},
+                               ElementWitness::whole(), "free", false,
+                               when(PlaceId{1}, ValueFact::nonZero())));
+  EXPECT_TRUE(unknown.join(known));
+  const auto record = unknown.recordOf(PlaceId{0});
+  ASSERT_TRUE(record);
+  EXPECT_FALSE(record->unknownOrigin);
+  EXPECT_FALSE(record->allPaths);
+  EXPECT_EQ(record->location.line, 2U);
+  EXPECT_EQ(record->family, "free");
+  EXPECT_TRUE(record->guard.trivial()) << "the unknown side had no guard";
+  EXPECT_FALSE(unknown.join(known)) << "a fixpoint";
+}
+
+// RFC 0030 §8.2: a move whose selected classes release the place reads as
+// a release; the bit joins by disjunction and never changes the reason.
+TEST(MoveTracker, ASelectedReleaseMarksTheMoveReleased) {
+  MoveTracker moved;
+  ASSERT_FALSE(moved.markMoved(PlaceId{0}, MoveReason::Moved, at(1)));
+  MoveTracker released = moved;
+  released.setReleased(PlaceId{0});
+  EXPECT_TRUE(released.recordOf(PlaceId{0})->released);
+  EXPECT_EQ(released.recordOf(PlaceId{0})->reason, MoveReason::Moved);
+  moved.join(released);
+  EXPECT_TRUE(moved.recordOf(PlaceId{0})->released);
+  // A release is a release already.
+  MoveTracker freed;
+  ASSERT_FALSE(freed.markMoved(PlaceId{0}, MoveReason::Freed, at(1)));
+  freed.setReleased(PlaceId{0});
+  EXPECT_FALSE(freed.recordOf(PlaceId{0})->released);
+}
+
+// RFC 0030 §8.2: the places every remaining class releases.
+TEST(PendingOutcome, ReleasedInAllFollowsTheSelectedClasses) {
+  PendingOutcome pending;
+  pending.consumedBy[Outcome::NonNull] = {PlaceId{0}};
+  pending.consumedBy[Outcome::Null] = {PlaceId{0}};
+  pending.releasedBy[Outcome::Null] = {PlaceId{0}};
+  EXPECT_TRUE(pending.releasedInAll().empty()) << "the non-null class moves";
+  (void)pending.select({Outcome::Null});
+  EXPECT_EQ(pending.releasedInAll(), std::vector<PlaceId>{PlaceId{0}});
 }
 
 } // namespace

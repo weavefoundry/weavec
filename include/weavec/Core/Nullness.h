@@ -80,6 +80,11 @@ struct NullRecord {
   /// than unknown (`p = NULL; if (n > 0) { p = malloc(n); if (!p) return; }
   /// if (n > 0) *p;`).
   bool otherwiseNonNull = false;
+  /// RFC 0030 §3.2: the value is (or, joined, may be) the result of a call
+  /// that allocates: a `LibrarySpec` allocator or a callee whose summary
+  /// `returnsFresh()`. Its null is an allocation failure, never a definite
+  /// `null-dereference`. Preserved by copies and tests; joins by `||`.
+  bool allocatorSource = false;
 
   [[nodiscard]] bool mayBeNull() const noexcept {
     return state != Nullness::NonNull;
@@ -116,7 +121,8 @@ public:
   /// no fact is no fact. The record kept for a `MaybeNull` result is the one
   /// that said null (this side first); its guard is what the null sides'
   /// guards agree on, and it is `otherwiseNonNull` when every side that was
-  /// not null was `NonNull` (RFC 0009). Returns whether this tracker changed.
+  /// not null was `NonNull` (RFC 0009). `allocatorSource` joins by `||`
+  /// (RFC 0030 §3.2). Returns whether this tracker changed.
   bool join(const NullTracker &other);
 
   /// `place` now satisfies `fact` (a condition edge): every null record's

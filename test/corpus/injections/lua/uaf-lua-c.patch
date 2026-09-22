@@ -1,0 +1,22 @@
+--- a/lua.c
++++ b/lua.c
+@@ -585,10 +585,19 @@
+ /*
+ ** Prompt the user, read a line, and push it into the Lua stack.
+ */
++static int injected_first (const char *s) {
++  char *p = (char *)malloc(strlen(s) + 1);
++  if (p == NULL) return 0;
++  strcpy(p, s);
++  free(p);
++  return p[0]; /* INJECTED: use after free */
++}
++
+ static int pushline (lua_State *L, int firstline) {
+   char buffer[LUA_MAXINPUT];
+   size_t l;
+   const char *prmt = get_prompt(L, firstline);
++  (void)injected_first(prmt);
+   char *b = lua_readline(buffer, prmt);
+   lua_pop(L, 1);  /* remove prompt */
+   if (b == NULL)

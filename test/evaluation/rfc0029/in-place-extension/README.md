@@ -1,1 +1,0 @@
-Frozen before in-place construction changes. A runtime-depth constructor extends an already owned initialized head with a fresh child forest; failed recursive children must be released. Counterparts lose the child, attach it twice, omit failure cleanup, or fail the required recursive progress proof. This inventory does not infer acceptance from a finite successful execution.

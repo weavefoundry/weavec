@@ -719,6 +719,11 @@ the macro is `((void)sizeof((expr) != 0))`, an unevaluated operand, so
 `expr` is neither run nor a source of unused-variable warnings.
 `weavec.assume` on anything but that function is `invalid-annotation`.
 
+> **Amended by [RFC 0030](0030-prove-or-trap.md).** `WEAVEC_ASSUME(e)` is no
+> longer trusted: it is proven, a `contradicted-assumption` error when refuted,
+> or replaced by a runtime assertion (§6.2). The analysis still assumes `e`
+> afterwards.
+
 ### Summary and sidecar format (Core, Frontend)
 
 The summary text format is unchanged at version 7: no new line kinds

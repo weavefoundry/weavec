@@ -6,6 +6,10 @@
 - **Tracking issue**: TBD
 - **Supersedes / superseded by**: —
 
+> The guarantee statement in *Soundness* is replaced by
+> [RFC 0030](0030-prove-or-trap.md#soundness), *Soundness*. The model this
+> RFC defines (kinds, moves, loans, lifetimes) is unchanged.
+
 > This RFC was retro-fitted from the original `docs/design/ownership-model.md`
 > design notes when the RFC process was introduced. It records the model the
 > scaffolding was built against; the parts marked *deferred* are owned by
@@ -62,6 +66,11 @@ anything. The guarantee it commits later RFCs to is:
 > after its owned resource was released or moved, every double release, every
 > violation of the aliasing rules below, and every borrow that may outlive its
 > referent — subject to the assumptions listed.
+
+> **Amended by [RFC 0030](0030-prove-or-trap.md#soundness).** Its *Soundness*
+> states the current guarantee: one per translation unit compiled by `weavec-cc`
+> in an enforcing mode, under assumptions A1–A5, with every facet of every
+> operation recorded as proven, checked, violation, unresolved or trusted.
 
 **Bugs in scope of the guarantee** (owned by RFC 0002 and successors):
 

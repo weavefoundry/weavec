@@ -8,8 +8,8 @@
 //
 // Resolves a callee to its `core::FunctionSummary` (RFC 0003, *The
 // translation-unit driver*), in this order: annotations on the declaration,
-// the summary inferred from its body in this TU, the shipped table for the
-// C standard library, or nothing (an unannotated external function). For a
+// the summary inferred from its body in this TU or the program, the
+// `LibrarySpec` row (RFC 0030 §8), or nothing (an unknown callee). For a
 // call through a function pointer (RFC 0014): a type contract, otherwise the
 // actual target values supplied by dataflow. Type-wide candidates schedule
 // inference but never determine a call's effects.
@@ -22,9 +22,8 @@
 #include "weavec/Analysis/Annotations.h"
 #include "weavec/Analysis/ProgramDatabase.h"
 #include "weavec/Core/AnalysisStats.h"
-#include "weavec/Core/Buffer.h"
-#include "weavec/Core/Container.h"
 #include "weavec/Core/Diagnostic.h"
+#include "weavec/Core/LibrarySpec.h"
 #include "weavec/Core/Summary.h"
 
 #include "clang/AST/Decl.h"
@@ -101,8 +100,9 @@ enum class SummarySource : std::uint8_t {
   /// Inferred from the callee's body in another unit of the program (RFC
   /// 0005, *The program database*).
   Program,
-  /// The shipped table for the C standard library.
-  Builtin,
+  /// A `LibrarySpec` row (RFC 0030 §8): the C library, POSIX, platform and
+  /// compiler functions the table models.
+  Library,
 };
 
 class ProgramDatabase;
@@ -113,6 +113,9 @@ using SummarySnapshot = std::shared_ptr<const core::FunctionSummary>;
 struct ResolvedSummary {
   SummarySnapshot summary;
   SummarySource source = SummarySource::Inferred;
+  /// `Library`: the row that governs the call, and the alias it was reached
+  /// through (RFC 0030 §8).
+  std::optional<core::LibraryMatch> library = std::nullopt;
 };
 
 /// Annotations on a function's signature, collected over every
@@ -138,7 +141,7 @@ struct SignatureAnnotations {
 /// the bytes per element of the pointer (1 for `void *` and incomplete
 /// pointees). Nothing when the parameter is not annotated, or the annotation
 /// is malformed (`n` is not an integer parameter, `param` not a pointer):
-/// `FunctionAnalyzer` reports that as `invalid-annotation`.
+/// `AttributeReader` reports that as `invalid-annotation` (RFC 0030 §7.2).
 struct SizedBy {
   const clang::ParmVarDecl *count = nullptr;
   std::int64_t unit = 1;
@@ -151,7 +154,7 @@ sizedByOf(const clang::FunctionDecl &function, unsigned param);
 /// per element of the pointer (1 for `void *` and incomplete pointees).
 /// Nothing when the field is not annotated or the annotation is malformed
 /// (`g` not an integer field of the same record, `field` not a pointer):
-/// the checker reports that as `invalid-annotation`.
+/// `AttributeReader` reports that as `invalid-annotation` (RFC 0030 §7.2).
 struct SizedField {
   const clang::FieldDecl *count = nullptr;
   std::int64_t unit = 1;
@@ -193,13 +196,14 @@ indirectCalleeType(const clang::CallExpr &call);
 [[nodiscard]] const clang::Decl *
 indirectCalleeDecl(const clang::CallExpr &call);
 
-/// The shipped summary for a C standard library function, matched by global
-/// name as RFC 0002 matches allocators; null for anything else.
-[[nodiscard]] const core::FunctionSummary *
-builtinSummary(const clang::FunctionDecl &function);
-
-/// The names in the builtin table, for documentation and tests.
-[[nodiscard]] std::vector<llvm::StringRef> builtinNames();
+/// RFC 0030 §8: the summary the `LibrarySpec` row `match` states for calls
+/// to `callee`, in `callee`'s parameter positions (a fortified alias's
+/// arguments remapped onto the row's). What the row states beyond a summary
+/// (hidden state, callbacks, strings, copies, formats) the engine reads from
+/// the row at the call.
+[[nodiscard]] core::FunctionSummary
+librarySummaryOf(const core::LibraryMatch &match,
+                 const clang::FunctionDecl &callee);
 
 /// RFC 0010, *Retaining*: the key of a count field, the canonical spelling
 /// of the record type `object` followed by the field path (`struct obj.rc`,
@@ -211,7 +215,7 @@ builtinSummary(const clang::FunctionDecl &function);
                                         const clang::ASTContext &context);
 
 /// Holds inferred summaries for one translation unit and answers callee
-/// lookups by combining them with annotations and the builtin table.
+/// lookups by combining them with annotations and the `LibrarySpec` table.
 class SummaryStore {
 public:
   core::InterfaceTypes objectInterfaces;
@@ -242,45 +246,25 @@ public:
   using CallResolver =
       std::function<std::optional<ResolvedSummary>(const clang::CallExpr &)>;
   CallResolver callResolver;
-  [[nodiscard]] core::CallTargets
-  targetsForGlobal(const core::SummaryPath &path) const;
   std::set<const clang::FunctionDecl *> incompleteFunctions;
-  /// Immutable call-graph component identities used only for role nomination.
-  /// Membership supplies no induction hypothesis or completed contract.
-  std::map<const clang::FunctionDecl *, unsigned> recursiveComponents;
-  std::set<const clang::FunctionDecl *> recursiveFunctions;
-  /// RFC 0029: provisional recursive effects do not nominate scalar cases.
-  bool checkingRecursiveApproximation = false;
-  /// RFC 0029: the existing final pass rechecks ordinary value outcomes
-  /// against converged may-effects; this supplies no checked memory output.
+  /// RFC 0030 §3.1, §9.4: the owning slots of the unit (fields and globals
+  /// some function releases a value loaded from), computed on first use by
+  /// `FunctionDataflow`.
+  std::optional<llvm::DenseSet<const clang::Decl *>> owningSlots;
+  /// RFC 0030 §5.5: the block transfers the context-specialised runs of each
+  /// function have spent, against their shared budget.
+  std::map<const clang::FunctionDecl *, std::uint64_t> contextTransfers;
+  /// §5.5: the budget left to one more context run of `definition`, or
+  /// nothing once the runs so far have exhausted it (further contexts use
+  /// the default-context summary).
+  [[nodiscard]] std::optional<std::uint64_t>
+  contextBudget(const clang::FunctionDecl &definition,
+                const AnalysisOptions &options) const;
+  /// RFC 0029: the final pass of a settled recursive component rechecks
+  /// ordinary value outcomes against its converged may-effects.
   bool refreshingRecursiveValueOutcomes = false;
-  /// RFC 0029: private hypotheses are visible only while validating their
-  /// group. Completed groups contain immutable same-TU bodies, never imports.
-  struct RecursiveContractGroup {
-    std::set<const clang::FunctionDecl *> members;
-    bool releases = true;
-    bool constructs = false;
-    bool extendsHead = false;
-    bool writes = false;
-    bool mutableReader = false;
-    const clang::FieldDecl *readerData = nullptr;
-    const clang::FieldDecl *readerCount = nullptr;
-  };
-  RecursiveContractGroup activeRecursiveContracts;
-  std::map<const clang::FunctionDecl *, RecursiveContractGroup>
-      verifiedRecursiveContracts;
-  std::set<const clang::FunctionDecl *> failedRecursiveProgress;
-  // Value distinguishes failed writer outputs from construction outputs.
-  std::map<const clang::FunctionDecl *, bool> failedRecursiveOutputs;
-  [[nodiscard]] const RecursiveContractGroup *
-  recursiveContractGroup(const clang::FunctionDecl &caller) const;
-  [[nodiscard]] bool
-  recursiveContractPeer(const clang::FunctionDecl &caller,
-                        const clang::FunctionDecl &callee) const;
-  [[nodiscard]] core::CallTargets staticTargets(const clang::Expr &expr,
-                                                unsigned depth = 0);
-  [[nodiscard]] const std::map<std::string, core::CallTargets> &
-  exportedCallbackGlobals() const;
+  [[nodiscard]] static core::CallTargets staticTargets(const clang::Expr &expr,
+                                                       unsigned depth = 0);
   [[nodiscard]] std::optional<ResolvedSummary>
   lookupCall(const clang::CallExpr &call);
   void registerCallable(const clang::FunctionDecl &function);
@@ -290,15 +274,19 @@ public:
   callable(std::string_view symbol) const;
   [[nodiscard]] std::optional<ResolvedSummary>
   lookupSymbol(std::string_view symbol);
+  /// A context-specialised run of `function` (RFC 0014, RFC 0016). It
+  /// decides no ledger rows (RFC 0030 §2.6); its diagnostics, each with its
+  /// certainty, are appended to `diagnostics` when given, for the call that
+  /// requested the run to report.
   [[nodiscard]] std::optional<ResolvedSummary>
   specialize(const clang::FunctionDecl &function,
              const core::CallbackBindings &bindings,
              const AnalysisOptions &options,
-             core::DiagnosticSink *sink = nullptr);
+             std::vector<core::Diagnostic> *diagnostics = nullptr);
   [[nodiscard]] std::optional<ResolvedSummary>
   specializeMemory(std::string_view symbol, const core::CallContext &bindings,
                    const AnalysisOptions &options,
-                   core::DiagnosticSink *sink = nullptr);
+                   std::vector<core::Diagnostic> *diagnostics = nullptr);
   using MemoryContextKey = std::pair<std::string, core::CallContext>;
   std::map<std::string, std::set<core::CallContext>> memoryRequests;
   std::map<MemoryContextKey, SummarySnapshot> memorySpecialized;
@@ -311,51 +299,44 @@ public:
   std::map<ContextKey, SummarySnapshot> specialized;
   std::map<ContextKey, std::vector<core::Diagnostic>> specializedDiagnostics;
   std::set<ContextKey> activeContexts;
+  /// RFC 0030 §2.6: the context runs whose findings a call in an
+  /// authoritative pass reported, linked to the call; the rest are reported
+  /// after every authoritative pass, linked to nothing.
+  std::set<MemoryContextKey> claimedMemoryContexts;
+  std::set<ContextKey> claimedCallbackContexts;
   std::map<std::string, const clang::FunctionDecl *> callables;
-  mutable std::optional<std::map<std::string, core::CallTargets>>
-      callbackGlobalCache;
 
   /// Records the summary inferred for `function`'s body, replacing any
   /// previous one, or joining the previous approximation when `widen` is
   /// requested by a recursive component (RFC 0017). Returns whether changed.
   bool setInferred(const clang::FunctionDecl &function,
-                   core::FunctionSummary summary, bool widen = false,
-                   bool verifiedInduction = false);
+                   core::FunctionSummary summary, bool widen = false);
 
   /// The current inferred summary, or null. This raw observer lasts until
   /// that function's next setInferred; resolved calls retain their version.
   [[nodiscard]] const core::FunctionSummary *
   inferredFor(const clang::FunctionDecl &function) const;
 
-  /// RFC 0026: cache only immutable descriptor discovery, including misses.
-  /// No flow facts or proof outcomes are shared through this cache.
-  [[nodiscard]] std::optional<core::BufferShape> bufferShape(
-      const clang::RecordDecl &record,
-      const std::function<std::optional<core::BufferShape>()> &discover);
-  /// RFC 0027: immutable topology discovery, never a flow-sensitive proof.
-  [[nodiscard]] std::vector<const clang::FieldDecl *>
-  recursiveLinks(const clang::RecordDecl &record);
-  struct ContainerFields {
-    std::vector<const clang::FieldDecl *> payloads;
-    std::map<std::string, core::ContainerCondition> ownership;
-  };
-  /// RFC 0029: nominations retain imported summary dependencies.
-  [[nodiscard]] ContainerFields
-  containerFields(const clang::RecordDecl &record);
-  [[nodiscard]] std::map<std::string, core::ContainerCondition>
-  containerOwnership(
-      const clang::RecordDecl &record,
-      const std::function<std::map<std::string, core::ContainerCondition>()>
-          &discover);
-
   /// Immutable Clang record layouts, cached for this AST's lifetime.
   [[nodiscard]] std::string_view objectView(clang::QualType type);
 
   /// Resolves `callee` (RFC 0003 order). Returns an empty optional for a
-  /// callee nothing is known about: no annotations, no body analysed here,
-  /// not in the builtin table.
+  /// callee nothing is known about: no annotations, no body analysed here or
+  /// in the program, no `LibrarySpec` row.
   [[nodiscard]] std::optional<ResolvedSummary>
   lookup(const clang::FunctionDecl &callee);
+
+  /// RFC 0030 §8: the library table the engine consults (the shipped one
+  /// unless a test sets another).
+  [[nodiscard]] const core::LibrarySpec &library() const noexcept {
+    return *librarySpec;
+  }
+  void setLibrary(const core::LibrarySpec &spec) { librarySpec = &spec; }
+  /// §8: the row that governs calls to `callee`: its name or an alias names
+  /// a row that accepts the declaration, and neither this unit nor the
+  /// program defines a function of that name.
+  [[nodiscard]] std::optional<core::LibraryMatch>
+  libraryMatch(const clang::FunctionDecl &callee) const;
 
   /// Resolves an explicit function-pointer type contract. RFC 0014's actual
   /// target effects are resolved by lookupCall through the active dataflow;
@@ -381,11 +362,6 @@ public:
       objectViewCache.clear();
       objectInterfaces.clear();
       interfaceAdapters.clear();
-      bufferShapeCache.clear();
-      recursiveLinkCache.clear();
-      importedRecursiveLinkCache.clear();
-      containerPayloadCache.clear();
-      containerOwnershipCache.clear();
     }
     context = unitContext;
   }
@@ -460,9 +436,6 @@ public:
   confirmedSizedBy(std::string_view field) const;
   [[nodiscard]] std::optional<SizedFieldWitness>
   confirmedSizedWitness(std::string_view field) const;
-  /// Records that `invalid-annotation` was reported for `field`; returns
-  /// true the first time (the report is once per unit).
-  bool noteInvalidSizedField(const clang::FieldDecl &field);
 
 private:
   std::map<std::string, clang::QualType, std::less<>> interfaceAdapters;
@@ -490,6 +463,9 @@ private:
   std::map<const clang::FunctionDecl *, SummarySnapshot> inferred;
   std::map<const clang::FunctionDecl *, SummarySnapshot> merged;
   std::map<const clang::FunctionDecl *, SummarySource> mergedSource;
+  /// The rows of the `Library` entries of `merged`.
+  std::map<const clang::FunctionDecl *, core::LibraryMatch> mergedLibrary;
+  const core::LibrarySpec *librarySpec = &core::LibrarySpec::shipped();
   /// Indirect summaries, keyed by the canonical function type and the
   /// declaration whose annotations were applied (null if none).
   std::map<std::pair<const clang::Type *, const clang::Decl *>, SummarySnapshot>
@@ -503,32 +479,10 @@ private:
   std::shared_ptr<const char> interfaceGeneration;
   const clang::ASTContext *context = nullptr;
   std::map<const clang::RecordDecl *, std::string> objectViewCache;
-  std::map<const clang::RecordDecl *, std::optional<core::BufferShape>>
-      bufferShapeCache;
-  std::map<const clang::RecordDecl *, std::vector<const clang::FieldDecl *>>
-      recursiveLinkCache;
-  struct ImportedRecursiveLinks {
-    std::vector<const clang::FieldDecl *> fields;
-    Dependencies dependencies;
-  };
-  std::shared_ptr<const char> recursiveLinkGeneration;
-  std::map<const clang::RecordDecl *, ImportedRecursiveLinks>
-      importedRecursiveLinkCache;
-  std::shared_ptr<const char> containerPayloadGeneration;
-  struct ImportedContainerFields {
-    ContainerFields fields;
-    Dependencies dependencies;
-  };
-  std::map<const clang::RecordDecl *, ImportedContainerFields>
-      containerPayloadCache;
-  std::map<const clang::RecordDecl *,
-           std::map<std::string, core::ContainerCondition>>
-      containerOwnershipCache;
   std::set<std::string> knownCounts;
   SizedFieldFacts sizedFields;
   std::set<std::string> sizedLoads;
   bool unitSizedFactsInForce = false;
-  llvm::DenseSet<const clang::FieldDecl *> invalidSizedFields;
 
   /// The database summary for `callee`, imported into this unit, if the
   /// program defines it elsewhere.

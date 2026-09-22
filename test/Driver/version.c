@@ -5,5 +5,9 @@
 // CHECK-NEXT: built with LLVM {{[0-9]+\.}}
 //
 // HELP: weavec options
-// HELP-DAG: --report-unannotated
-// HELP-DAG: --analyze-headers
+// HELP-DAG: --ledger=<path>
+// HELP-DAG: --ledger-format
+// HELP-DAG: --require
+// HELP-DAG: --budget
+// HELP-DAG: --no-zero-init
+// HELP-NOT: --report-unannotated

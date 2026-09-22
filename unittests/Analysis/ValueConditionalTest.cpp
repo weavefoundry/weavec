@@ -136,11 +136,11 @@ TEST(ValueConditional, UncorrelatedTestsStillReport) {
   // `copied_variable`: `d = c` copies a fact, not a relation; with nothing
   // known about `c` at the copy the later test says nothing about the move.
   EXPECT_EQ(messages(result.diagnostics),
-            (Strings{"4: use of 'p' after it was freed",
-                     "9: use of 'p' after it was freed",
-                     "13: use of 'p' after it was freed",
-                     "17: use of 'p' after it was freed",
-                     "23: use of 'p' after it was freed"}));
+            (Strings{"4: use of 'p' after it may have been freed",
+                     "9: use of 'p' after it may have been freed",
+                     "13: use of 'p' after it may have been freed",
+                     "17: use of 'p' after it may have been freed",
+                     "23: use of 'p' after it may have been freed"}));
 }
 
 // RFC 0009, *Assumptions*: a class is that of the mathematical value, and a
@@ -198,14 +198,9 @@ TEST(ValueConditional, UnsignedComparisonsAreDecidedInTheirType) {
   )c");
   ASSERT_TRUE(result.ast);
   // RFC 0017: `dead` and unsigned comparison with zero both have dead edges.
-  const auto mayBeNull = [](const char *line) {
-    return std::string(line) +
-           ": 'p', which may be null, is passed to 'touch', which "
-           "dereferences it";
-  };
-  EXPECT_EQ(messages(result.diagnostics),
-            (Strings{mayBeNull("7"), mayBeNull("20"), mayBeNull("26"),
-                     mayBeNull("32"), mayBeNull("38")}));
+  // RFC 0030 §3.2: `touch`'s requirement is a may-fact, so a pointer that
+  // may be null passed to it is no diagnostic either way.
+  EXPECT_EQ(messages(result.diagnostics), (Strings{}));
 }
 
 TEST(ValueConditional, GuardedResourcesAreNotLeakedOnRefutedEdges) {
@@ -262,7 +257,7 @@ TEST(ValueConditional, FactsAboutCallerMemoryAndBorrowedLocals) {
   // reads but does not write `b->owned`, so the fact survives the call and
   // `use(p)` is dead code; nothing is reported there.
   EXPECT_EQ(messages(result.diagnostics),
-            (Strings{"12: use of 'p' after it was freed"}));
+            (Strings{"12: use of 'p' after it may have been freed"}));
   EXPECT_EQ(
       result.summary("field")
           ->effectOf(SummaryPath::param(0).deref().field("data"))
@@ -370,14 +365,16 @@ TEST(ValueConditional, CallersSelectEffectsByArgument) {
   EXPECT_EQ(messages(result.diagnostics),
             (Strings{
                 // `shrink`: the discarded result is null, not a leak; the
-                // block was freed.
-                "11: use of 'p' after it was freed",
+                // block was freed. RFC 0030 §3.1: `realloc`'s class does not
+                // consume here, and the argument's selection of a case is
+                // stage S7's (§9.1), so it is possible until then.
+                "11: use of 'p' after it may have been freed",
                 // `unknown_size`: may have been freed.
-                "16: use of 'p' after it was freed",
+                "16: use of 'p' after it may have been freed",
                 // `free_heap`: the flag selects the free.
                 "32: use of 'b.data' after it was freed",
                 // `unknown_flag`: nothing known about the flag.
-                "36: use of 'b->data' after it was freed",
+                "36: use of 'b->data' after it may have been freed",
                 // `store_local`: the store happens for a non-null argument.
                 "41: 's->msg' may outlive 'local', which it points to",
             }));
@@ -424,8 +421,8 @@ TEST(ValueConditional, OutcomeClassesKeepTheirGuards) {
             when(SummaryPath::param(3), ValueFact::ofConstant(0)));
   EXPECT_TRUE(alloc->outcomes.at(Outcome::Null).at(ptr).freed);
   EXPECT_TRUE(alloc->outcomes.at(Outcome::NonNull).at(ptr).moved);
-  EXPECT_EQ(alloc->outcomes.at(Outcome::NonNull).at(ptr).when,
-            when(SummaryPath::param(3), ValueFact::nonZero()));
+  EXPECT_EQ(alloc->outcomes.at(Outcome::NonNull).at(ptr).when.conditions,
+            when(SummaryPath::param(3), ValueFact::nonZero()).conditions);
 
   // The wrapper's null edge keeps the guard: on it `block` is gone only
   // when `nsize` is zero. Merging that edge with the non-null one keeps the
@@ -537,7 +534,7 @@ TEST(ValueConditional, CallersOfAGuardedUnreplacedConsumeSelectByArgument) {
                 // `twice_null`: the null argument selects the freeing arm.
                 "24: 'L->stack' is freed twice",
                 // `unknown`: nothing known about `b`, so it may.
-                "28: 'L->stack' is freed twice",
+                "28: 'L->stack' may be freed twice",
             }));
 }
 
@@ -614,9 +611,9 @@ TEST(ValueConditional, NeverReturnsIsInferredTransitively) {
   EXPECT_FALSE(result.summary("check")->neverReturns);
   EXPECT_FALSE(result.summary("loop_out")->neverReturns);
   EXPECT_FALSE(result.summary("good_path")->neverReturns);
-  EXPECT_EQ(
-      messages(result.diagnostics),
-      (Strings{"16: use of 'q' after it was freed", "17: 'q' is freed twice"}));
+  EXPECT_EQ(messages(result.diagnostics),
+            (Strings{"16: use of 'q' after it may have been freed",
+                     "17: 'q' may be freed twice"}));
 }
 
 TEST(ValueConditional, NeverReturnsCrossesUnits) {

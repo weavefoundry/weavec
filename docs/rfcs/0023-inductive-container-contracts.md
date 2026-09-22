@@ -1,18 +1,18 @@
 # RFC 0023: Inductive ownership contracts for linked containers
 
-- **Status**: Implemented
+- **Status**: Superseded
 - **Authors**: WeaveC authors
 - **Created**: 2026-09-11
 - **Tracking issue**: TBD
-- **Supersedes / superseded by**: Extends RFC 0013's finite heap descriptions,
-  RFC 0015's container ownership, and RFCs 0018–0022's compositional checked
-  contracts. Preserves RFC 0020's dependency and artifact validation rules.
+- **Supersedes / superseded by**: Superseded by RFC 0030
+
+> Superseded by [RFC 0030](0030-prove-or-trap.md).
 
 The project owner requested this RFC first and then implementation end to end.
 The initial Accepted status recorded authorization to implement this design;
 it does not claim an independent review, an RFC pull request, or a merge. The status
 is now Implemented after the acceptance population and validation gates below
-passed; see [the validation record](../validation-rfc0023.md). Implementation
+passed; see the validation record (removed by RFC 0030). Implementation
 discoveries that change these rules are recorded here before the corresponding
 code changes.
 
@@ -334,7 +334,8 @@ must finish within 600 seconds per project. All 51 unchanged warm units must
 reuse checkpoints with zero function analyses, preserving canonical reports and
 diagnostic sets. Measure constructed-list families to ensure proof work does not
 scale by unrolling runtime lengths. Publish all outcomes and remaining limits in
-`docs/validation-rfc0023.md` and a machine-readable results artifact.
+`docs/validation-rfc0023.md` (removed by RFC 0030) and a machine-readable
+results artifact.
 
 ## Annotation surface
 

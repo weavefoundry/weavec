@@ -17,8 +17,9 @@ import lit.formats
 config.name = "WeaveC"
 config.test_format = lit.formats.ShTest(execute_external=False)
 config.suffixes = [".c"]
-# `recall/` is the recall set, run by scripts/recall.py (RFC 0011), not lit.
-config.excludes = ["Inputs", "recall", "evaluation", "CMakeLists.txt", "README.md"]
+# `cases/` and `corpus/` are run by scripts/run-cases.py and
+# scripts/corpus-gate.py (RFC 0030 sections 15 and 17), not lit.
+config.excludes = ["Inputs", "cases", "corpus", "CMakeLists.txt", "README.md"]
 
 config.test_source_root = os.path.dirname(__file__)
 config.test_exec_root = os.path.join(config.weavec_obj_root, "test")
@@ -35,6 +36,16 @@ if not os.path.exists(weavec_cc):
 
 # Longer names first so `%weavec_cc` is not rewritten as `%weavec` + `_cc`.
 config.substitutions.append(("%weavec_cc", weavec_cc))
+# RFC 0030: the runtime archives. The check prelude is printed by
+# `%weavec_cc -fweavec-print-prelude`.
+config.substitutions.append(
+    ("%weavec_rt", os.path.join(config.weavec_lib_dir, "libweavec_rt.a"))
+)
+config.substitutions.append(
+    ("%weavec_chk", os.path.join(config.weavec_lib_dir, "libweavec_chk.a"))
+)
+# The reference compiler: the clang of the LLVM WeaveC is built against.
+config.substitutions.append(("%clang", config.clang or "clang"))
 config.substitutions.append(("%weavec", weavec))
 config.substitutions.append(
     ("%resource_dir", os.path.join(config.weavec_resource_dir, "include"))

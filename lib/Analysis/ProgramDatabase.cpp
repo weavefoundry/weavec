@@ -30,55 +30,6 @@ using namespace clang;
 
 namespace weavec::analysis {
 
-UnitExports ProgramDatabase::checkpointInputs(
-    const std::set<std::string> &dependencies) const {
-  // RFC 0020: synthetic names travel through function-name metadata. Type
-  // spellings and source-qualified symbols can contain whitespace; encode
-  // their bytes without conflating the three lookup namespaces.
-  const auto encodedName = [](llvm::StringRef kind, llvm::StringRef name) {
-    return kind.str() + ':' + llvm::toHex(name);
-  };
-  UnitExports result;
-  result.globalInterfaces = globalInterfaces;
-  result.objectInterfaces = objectInterfaces;
-  result.globals = globalNames;
-  result.countFields.insert(countFields.begin(), countFields.end());
-  result.sizedFields = sizedFields;
-  result.callbackGlobals = callbackGlobals;
-  for (const auto &[symbol, requests] : callbackRequests)
-    result.callbackRequests[symbol] = requests;
-  for (const auto &[symbol, requests] : memoryRequests)
-    result.memoryRequests[symbol] = requests;
-  for (const auto &symbol : dependencies) {
-    if (symbol.starts_with('@'))
-      continue;
-    result.imports.insert(symbol);
-    const auto callable = encodedName("callable", symbol);
-    if (const auto summary = callableSummaries.find(symbol);
-        summary != callableSummaries.end())
-      result.functions[callable].summary =
-          ExportedSummary::fromShared(summary->second);
-    // External and callable lookup tables need not contain the same join.
-    if (const auto summary = functions.find(symbol); summary != functions.end())
-      result.functions[encodedName("external", symbol)].summary =
-          ExportedSummary::fromShared(summary->second);
-    for (const auto &[key, summary] : contextSummaries)
-      if (key.first == symbol)
-        result.functions[callable].specializations[key.second] =
-            ExportedSummary::fromShared(summary);
-    for (const auto &[key, summary] : memorySummaries)
-      if (key.first == symbol)
-        result.functions[callable].memorySpecializations[key.second] =
-            ExportedSummary::fromShared(summary);
-  }
-  // Candidate-set changes can introduce a dependency that did not previously
-  // exist. Conservatively retain every type bucket in the identity.
-  for (const auto &[type, summary] : candidateSummaries)
-    result.functions[encodedName("indirect", type)].summary =
-        ExportedSummary::fromShared(summary);
-  return result;
-}
-
 // -- GlobalNames --------------------------------------------------------------
 
 std::uint32_t GlobalNames::idFor(llvm::StringRef name) {
@@ -125,26 +76,16 @@ void ExportedSummary::assign(core::FunctionSummary summary) {
   value = std::make_shared<const core::FunctionSummary>(std::move(summary));
 }
 
-ExportedSummary ExportedSummary::fromShared(
-    std::shared_ptr<const core::FunctionSummary> summary) {
-  assert(summary && "an exported summary must have a publication");
-  ExportedSummary result;
-  result.value = std::move(summary);
-  return result;
-}
-
 // -- UnitExports --------------------------------------------------------------
 
 bool UnitExports::sameSummariesAs(const UnitExports &other) const {
   if (globalInterfaces != other.globalInterfaces ||
       objectInterfaces != other.objectInterfaces)
     return false;
-  if (callbackGlobals != other.callbackGlobals ||
-      callbackRequests != other.callbackRequests ||
+  if (callbackRequests != other.callbackRequests ||
       memoryRequests != other.memoryRequests)
     return false;
-  return checkedDefinitions == other.checkedDefinitions &&
-         functions == other.functions && globals == other.globals &&
+  return functions == other.functions && globals == other.globals &&
          countFields == other.countFields && sizedFields == other.sizedFields;
 }
 
@@ -187,6 +128,36 @@ SizedFieldFacts::confirmedWitness(std::string_view field) const {
   }
   if (!found || unsizedPairs.contains(UnsizedPair{.field = std::string(field),
                                                   .count = found->count}))
+    return std::nullopt;
+  return found;
+}
+
+std::optional<SizedFieldWitness>
+SizedFieldFacts::confirmedWitnessOfBoth(const SizedFieldFacts &a,
+                                        const SizedFieldFacts &b,
+                                        std::string_view field) {
+  const std::string key(field);
+  if (a.unsizedFields.contains(key) || b.unsizedFields.contains(key))
+    return std::nullopt;
+  // Exactly one distinct witness in the union: equal witnesses of both sides
+  // are one.
+  std::optional<SizedFieldWitness> found;
+  const SizedFieldWitness first{.field = key,
+                                .count = {},
+                                .scale =
+                                    std::numeric_limits<std::int64_t>::min()};
+  for (const SizedFieldFacts *facts : {&a, &b}) {
+    for (auto it = facts->witnesses.lower_bound(first);
+         it != facts->witnesses.end() && it->field == field; ++it) {
+      if (found && *found != *it)
+        return std::nullopt;
+      found = *it;
+    }
+  }
+  if (!found)
+    return std::nullopt;
+  const UnsizedPair pair{.field = key, .count = found->count};
+  if (a.unsizedPairs.contains(pair) || b.unsizedPairs.contains(pair))
     return std::nullopt;
   return found;
 }
@@ -273,19 +244,11 @@ static core::FunctionSummary renumber(const core::FunctionSummary &summary,
   });
 }
 
-static bool samePublishedValue(const core::FunctionSummary &left,
-                               const core::FunctionSummary &right) {
-  return left == right &&
-         left.checked.obligations.sameExplanationsAs(right.checked.obligations);
-}
-
 static ExportedSummary renumberPublication(const ExportedSummary &summary,
                                            const GlobalNames &from,
                                            GlobalNames &to) {
   auto mapped = renumber(summary.get(), from, to);
-  return samePublishedValue(mapped, summary.get())
-             ? summary
-             : ExportedSummary(std::move(mapped));
+  return mapped == summary.get() ? summary : ExportedSummary(std::move(mapped));
 }
 
 void ProgramDatabase::add(const UnitExports &unit) {
@@ -349,12 +312,6 @@ UnitExports ProgramDatabase::renumbered(const UnitExports &unit) {
   generation = std::make_shared<const char>(0);
   UnitExports result = unit;
   if (!globalNames.extendTo(unit.globals)) {
-    for (auto &[name, contract] : result.checkedDefinitions) {
-      (void)name;
-      core::FunctionSummary wrapper;
-      wrapper.checked = contract;
-      contract = renumber(wrapper, unit.globals, globalNames).checked;
-    }
     for (auto &[name, function] : result.functions) {
       function.summary =
           renumberPublication(function.summary, unit.globals, globalNames);
@@ -419,8 +376,6 @@ void ProgramDatabase::addCallbackInformation(const UnitExports &unit) {
   // exports with this table. Preserve that representation for contexts too;
   // remapping every unchanged context used to dominate large components.
   const bool sameNumbering = globalNames.extendTo(unit.globals);
-  for (const auto &[name, targets] : unit.callbackGlobals)
-    callbackGlobals[name].join(targets);
   const core::GlobalIdMap map = [&](std::uint32_t id) {
     return id < unit.globals.size()
                ? std::optional(globalNames.idFor(unit.globals.nameOf(id)))
@@ -468,7 +423,7 @@ void ProgramDatabase::addCallbackInformation(const UnitExports &unit) {
           joined = *publication;
         joined.join(*incoming);
         const auto unchanged = [&](const auto &owner) {
-          return owner && samePublishedValue(joined, *owner);
+          return owner && joined == *owner;
         };
         if (unchanged(publication))
           continue;
@@ -508,7 +463,6 @@ void ProgramDatabase::clear() {
   callableSummaries.clear();
   contextSummaries.clear();
   callbackRequests.clear();
-  callbackGlobals.clear();
   candidateSummaries.clear();
   globalNames = GlobalNames{};
   countFields.clear();

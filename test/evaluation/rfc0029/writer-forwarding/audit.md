@@ -1,1 +1,0 @@
-The initial inventory added a forwarding helper but accidentally left main calling render directly. The reviewed sources exercise forward, with the same positive and negative byte writes. Both inventories and baseline outcomes are retained; the reviewed inventory was frozen before the descriptor-discovery change.

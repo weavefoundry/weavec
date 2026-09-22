@@ -1,1 +1,0 @@
-Frozen before permitting exact bytes from immutable static local array initializers. Completed Debug73l is the immutable baseline. Mutable static storage receives no initializer-content premise; changed contents and actual escape bytes remain rejected.

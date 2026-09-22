@@ -41,9 +41,9 @@ void formats(int x) {
 // -- Length places -------------------------------------------------------------
 
 // `strlen(s)` is a place; the allocation's extent and the copy's need are
-// both stated in it.
+// both stated in it. (`s` is Single by RFC 0030 §7.3: at least one byte.)
 // DUMP-LABEL: function 'short_by_one':
-// DUMP: scalars{strlen(s) zero|positive} spatial{s string=len(strlen(s))}
+// DUMP: scalars{strlen(s) zero|positive} spatial{s extent=1 string=len(strlen(s))}
 void short_by_one(const char *s) {
   char *d = malloc(strlen(s));
   if (!d)

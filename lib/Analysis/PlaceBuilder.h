@@ -35,8 +35,11 @@
 
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <optional>
+#include <set>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace weavec::analysis {
@@ -51,14 +54,6 @@ struct CallEffects;
 /// signed would make `SIZE_MAX` negative.
 [[nodiscard]] std::optional<std::int64_t>
 integerConstant(const clang::Expr &expr, const clang::ASTContext &context);
-
-/// The mathematical value `value` has once converted to the integer type
-/// `type` (C's usual arithmetic conversions: modulo 2^N for an unsigned
-/// type, two's-complement truncation for a signed one), if an `int64_t` holds
-/// it. `case -1:` on an `unsigned` scrutinee selects `UINT_MAX`.
-[[nodiscard]] std::optional<std::int64_t>
-integerConvertedTo(std::int64_t value, clang::QualType type,
-                   const clang::ASTContext &context);
 
 /// A place denoted by an lvalue expression together with the pointer places
 /// that had to be dereferenced to reach it (each of those is *read* by the
@@ -175,8 +170,6 @@ public:
   legacyAffineOf(const clang::Expr &expr);
   std::function<std::optional<core::ValueFact>(const clang::Expr &)>
       integerFact;
-  /// RFC 0021: evaluated pointer expressions with checked CFG result slots.
-  std::function<std::optional<PlaceRef>(const clang::Expr &)> pointerResult;
   std::function<bool(const core::SummaryPath &, const clang::CallExpr &)>
       validatePath;
 
@@ -207,6 +200,21 @@ public:
   [[nodiscard]] core::PlaceId literalPlace();
 
   /// True if `place` is the string-literal place.
+  /// RFC 0030 §8.2: the synthetic global place `<S>` for the hidden state
+  /// slot `S` of the library table (`<environ>`, `<strtok>`), created on
+  /// first use. A `static(S)` result is a copy of it, an
+  /// `interior-state(S)` result a copy into it.
+  [[nodiscard]] core::PlaceId statePlace(std::string_view slot);
+  /// RFC 0030 §8.2: the storage an `alloca`-like call (`fresh(stack)`)
+  /// makes in the frame, one synthetic place per call.
+  [[nodiscard]] core::PlaceId framePlace(const clang::CallExpr &call);
+  [[nodiscard]] bool isFramePlace(core::PlaceId place) const {
+    return frameSlots.contains(place.value);
+  }
+  /// True if `place` is a hidden state slot.
+  [[nodiscard]] bool isStatePlace(core::PlaceId place) const {
+    return stateSlots.contains(place.value);
+  }
   [[nodiscard]] bool isLiteralPlace(core::PlaceId place) const noexcept {
     return literal && *literal == place;
   }
@@ -225,9 +233,6 @@ public:
       return std::nullopt;
     return it->second;
   }
-  /// The string place a length place was made for, if `place` is one.
-  [[nodiscard]] std::optional<core::PlaceId>
-  stringOfLengthPlace(core::PlaceId place) const;
   [[nodiscard]] bool isLengthPlace(core::PlaceId place) const {
     return lengthOwners.contains(place.value);
   }
@@ -240,11 +245,11 @@ public:
   [[nodiscard]] std::optional<core::PlaceId>
   stringPlaceOf(const clang::Expr &expr);
 
-  /// RFC 0012: the argument of `strlen(E)` (or `__builtin_strlen`) when
-  /// `expr` is such a call through parentheses and integral casts; null
+  /// RFC 0012: the string argument of a call whose `LibrarySpec` row gives
+  /// its value as the argument's length (`strlen(E)`,
+  /// `__builtin_strlen(E)`), through parentheses and integral casts; null
   /// otherwise.
-  [[nodiscard]] static const clang::Expr *
-  strlenArgumentOf(const clang::Expr &expr);
+  [[nodiscard]] const clang::Expr *strlenArgumentOf(const clang::Expr &expr);
 
   /// Resolves an lvalue expression to a place path, or `std::nullopt` if it
   /// is opaque or not a place at all.
@@ -268,9 +273,6 @@ public:
   /// a field step), for locating notes; null when unknown.
   [[nodiscard]] const clang::NamedDecl *declFor(core::PlaceId place) const;
 
-  /// Under `--strict-externs`, a call into code with no summary yields a raw
-  /// result rather than an unknown one (RFC 0004, *Boundaries*).
-  void setStrictExterns(bool strict) noexcept { strictExterns = strict; }
   /// RFC 0013: an incoming value returned after its interface cell changed.
   using IncomingLookup = std::function<std::optional<core::PlaceId>(
       const clang::CallExpr &, const core::SummaryPath &)>;
@@ -322,8 +324,8 @@ public:
   /// State for `lookupSummaryPath` over a run of paths in summary order at
   /// one call: consecutive paths share a root and a prefix, so the root is
   /// classified once and the previous chain of places is extended rather
-  /// than rebuilt (a Lua summary names dozens of written fields below one
-  /// state pointer, applied at thousands of calls).
+  /// than rebuilt (an interpreter summary names dozens of written fields
+  /// below one state pointer, applied at thousands of calls).
   struct PathLookupCache {
     std::optional<core::SummaryPath> last;
     /// `chain[k]` is the place after `k` steps past `firstStep` of `last`;
@@ -360,7 +362,8 @@ public:
   /// constant argument refutes a conjunct: the guarded effect does not
   /// happen at this call.
   [[nodiscard]] std::optional<core::PlaceGuard>
-  translateGuard(const core::PathGuard &guard, const clang::CallExpr &call);
+  translateGuard(const core::PathGuard &guard, const clang::CallExpr &call,
+                 bool *dropped = nullptr);
 
   /// The integer place an integer-valued expression reads, looking through
   /// parentheses, casts and multiplication by a positive constant (whose
@@ -514,7 +517,6 @@ private:
   core::PlaceTable &places;
   SummaryStore &summaries;
   const clang::ASTContext &context;
-  bool strictExterns = false;
   IncomingLookup incomingLookup;
   llvm::DenseMap<const clang::VarDecl *, core::PlaceId> varPlaces;
   llvm::DenseMap<std::uint32_t, const clang::VarDecl *> placeVars;
@@ -522,10 +524,17 @@ private:
   // Variable bindings and negative local/synthetic roots are immutable.
   // Positive paths omit state-dependent selectors and replay conflicting
   // object-view registrations by invalidating the cache.
-  static constexpr std::size_t MaxCachedSummaryPaths = 4096;
+  // A cached path is dropped only by a conflicting registration, which
+  // clears them all, so the bound is only about memory: a large interpreter
+  // loop names over 100,000 places.
+  static constexpr std::size_t MaxCachedSummaryPaths = std::size_t{1} << 20U;
   llvm::DenseMap<std::uint32_t, std::optional<core::SummaryPath>> summaryPaths;
   std::vector<const clang::VarDecl *> order;
   std::optional<core::PlaceId> literal;
+  std::map<std::string, core::PlaceId, std::less<>> statePlaces;
+  std::set<std::uint32_t> stateSlots;
+  std::map<const clang::CallExpr *, core::PlaceId> framePlaces;
+  std::set<std::uint32_t> frameSlots;
   /// RFC 0012: string place -> its length place, and back.
   llvm::DenseMap<std::uint32_t, core::PlaceId> lengthPlaces;
   llvm::DenseMap<std::uint32_t, core::PlaceId> lengthOwners;

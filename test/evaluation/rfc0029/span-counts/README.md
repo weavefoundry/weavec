@@ -1,1 +1,0 @@
-Frozen before RFC 0029 count-within-span outputs. A bounded count from a complete helper must retain its relation to the supplied entry endpoints. Generic and concrete callers, including a short early-return input, are positive. A false produced count and uninitialized input remain rejected. No result implies initialized output or processed contents.
