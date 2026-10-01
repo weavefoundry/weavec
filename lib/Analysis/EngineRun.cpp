@@ -29,6 +29,7 @@
 #include <mutex>
 #include <set>
 #include <string_view>
+#include <utility>
 
 using namespace clang;
 
@@ -41,8 +42,11 @@ core::Handle typeHandle(QualType type) noexcept {
 }
 
 QualType typeOfHandle(core::Handle handle) noexcept {
+  // NOLINTBEGIN(cppcoreguidelines-pro-type-reinterpret-cast,performance-no-int-to-ptr):
+  // a type handle is the type's opaque pointer.
   return QualType::getFromOpaquePtr(
       reinterpret_cast<void *>(static_cast<std::uintptr_t>(handle)));
+  // NOLINTEND(cppcoreguidelines-pro-type-reinterpret-cast,performance-no-int-to-ptr)
 }
 
 /// The largest number of times one field may repeat in an entry path before
@@ -182,7 +186,7 @@ core::ObjectId FunctionRun::callResultObject(const Expr &site, QualType pointee,
 static core::Handle stateHandle(const std::string &slot) {
   static std::mutex lock;
   static std::set<std::string> slots;
-  std::lock_guard<std::mutex> guard(lock);
+  std::scoped_lock guard(lock);
   return handleOf(&*slots.insert(slot).first);
 }
 
@@ -215,10 +219,12 @@ core::ObjectId FunctionRun::unknownObject() const {
 /// The field at byte `offset` of `type`, descending into nested records and
 /// arrays, with its byte offset; for an array, the element type at the
 /// offset with no field.
+namespace {
 struct FieldAt {
   const FieldDecl *field = nullptr;
   QualType type;
 };
+} // namespace
 
 static std::optional<FieldAt> fieldAt(const ASTContext &context, QualType type,
                                       std::int64_t offset) {
@@ -248,7 +254,7 @@ static std::optional<FieldAt> fieldAt(const ASTContext &context, QualType type,
     const FieldDecl *found = nullptr;
     std::int64_t foundOffset = 0;
     for (const FieldDecl *field : record->fields()) {
-      std::int64_t fieldOffset = static_cast<std::int64_t>(
+      auto fieldOffset = static_cast<std::int64_t>(
           layout.getFieldOffset(field->getFieldIndex()) /
           context.getCharWidth());
       QualType fieldType = field->getType();
@@ -381,7 +387,7 @@ core::ObjectId FunctionRun::childEntryObject(const core::HeapState &state,
         prefix.steps.pushBack(elem);
       }
       childKey.kind = core::ObjectKind::EntrySummary;
-      childKey.path = prefix;
+      childKey.path = std::move(prefix);
       info.singular = false;
       // §4.5 D3 below the k-limit: a summary reached through an owning slot
       // of an entry object stands for objects owned below it (a load through
@@ -396,7 +402,7 @@ core::ObjectId FunctionRun::childEntryObject(const core::HeapState &state,
       childKey.parent = owner;
       info.ownedFrom = owner;
     } else {
-      childKey.path = path;
+      childKey.path = std::move(path);
       if (key.isConcrete() && childKey.kind == core::ObjectKind::Entry)
         info.heldIn = std::make_pair(parent, key.offset);
     }
@@ -423,15 +429,15 @@ static std::optional<core::Extent> extentOfKind(const ASTContext &context,
   if (kind == nullptr) {
     // The A1/A3 Single default: one element.
     if (width)
-      return core::Extent{core::Term::of(*width),
-                          core::ExtentClass::LowerBound};
+      return core::Extent{.bytes = core::Term::of(*width),
+                          .cls = core::ExtentClass::LowerBound};
     return std::nullopt;
   }
   switch (kind->kind.shape) {
   case core::PointerShape::Single:
     if (width)
-      return core::Extent{core::Term::of(*width),
-                          core::ExtentClass::LowerBound};
+      return core::Extent{.bytes = core::Term::of(*width),
+                          .cls = core::ExtentClass::LowerBound};
     return std::nullopt;
   case core::PointerShape::Counted:
   case core::PointerShape::Sized:
@@ -441,7 +447,8 @@ static std::optional<core::Extent> extentOfKind(const ASTContext &context,
       core::ExtentClass cls =
           kind->extentClass.value_or(core::ExtentClass::LowerBound);
       return core::Extent{
-          core::Term::of(kind->kind.extent.offset * elementSize), cls};
+          .bytes = core::Term::of(kind->kind.extent.offset * elementSize),
+          .cls = cls};
     }
     return std::nullopt;
   default:
@@ -492,7 +499,7 @@ core::Sym FunctionRun::entryValue(core::HeapState &state, QualType type,
                 base + static_cast<std::int64_t>(
                            layout.getFieldOffset(sibling->getFieldIndex()) /
                            context.getCharWidth())};
-        core::Sym count;
+        core::Sym count = core::ZeroSym;
         if (auto existing = heap.read(state, parent, siblingKey))
           count = *existing;
         else
@@ -510,7 +517,8 @@ core::Sym FunctionRun::entryValue(core::HeapState &state, QualType type,
             core::Term::ofSym(count, kind->kind.extent.scale * elementSize,
                               kind->kind.extent.offset * elementSize);
         core::Extent extent{
-            bytes, kind->extentClass.value_or(core::ExtentClass::Declared)};
+            .bytes = bytes,
+            .cls = kind->extentClass.value_or(core::ExtentClass::Declared)};
         // RFC 0030 §7.6: an inferred invariant holds as C computes `f *
         // sizeof *d`, which may wrap: the bytes are that product's value,
         // never more than the term (RFC 0031 *Implementation amendments*).
@@ -518,7 +526,7 @@ core::Sym FunctionRun::entryValue(core::HeapState &state, QualType type,
             bytes.scale > 1) {
           auto top = state.zone.upper(count);
           __int128 most =
-              top ? static_cast<__int128>(*top) * bytes.scale + bytes.constant
+              top ? (static_cast<__int128>(*top) * bytes.scale) + bytes.constant
                   : static_cast<__int128>(INT64_MAX) + 1;
           if (!top || most > INT64_MAX) {
             core::SymInfo product{.type = core::SymInfo::Type::Int,
@@ -558,10 +566,14 @@ core::Sym FunctionRun::entryValue(core::HeapState &state, QualType type,
     core::Sym sym = heap.fresh(state, value);
     if (integer.width <= 63 || !integer.isSigned) {
       if (integer.isSigned) {
-        std::int64_t hi = (std::int64_t{1} << (integer.width - 1)) - 1;
+        std::int64_t hi =
+            static_cast<std::int64_t>(std::uint64_t{1} << (integer.width - 1)) -
+            1;
         state.zone.addRange(sym, -hi - 1, hi);
       } else if (integer.width < 63) {
-        state.zone.addRange(sym, 0, (std::int64_t{1} << integer.width) - 1);
+        state.zone.addRange(
+            sym, 0,
+            static_cast<std::int64_t>(std::uint64_t{1} << integer.width) - 1);
       } else {
         state.zone.addRange(sym, 0, std::nullopt);
       }
@@ -595,20 +607,19 @@ bool FunctionRun::typesMayAlias(core::Handle first, core::Handle second) const {
     const RecordDecl *record = outer->getAsRecordDecl();
     if (record == nullptr || !record->isCompleteDefinition())
       return false;
-    for (const FieldDecl *field : record->fields()) {
+    return llvm::any_of(record->fields(), [&](const FieldDecl *field) {
       QualType type = field->getType().getCanonicalType();
       if (context.typesAreCompatible(type.getUnqualifiedType(),
                                      inner.getUnqualifiedType()))
         return true;
-      if (const auto *array = context.getAsArrayType(type))
-        if (context.typesAreCompatible(
-                array->getElementType().getUnqualifiedType(),
-                inner.getUnqualifiedType()))
-          return true;
-      if (type->isRecordType() && type != outer.getCanonicalType())
-        return true; // nested aggregates: conservatively yes
-    }
-    return false;
+      if (const auto *array = context.getAsArrayType(type);
+          array != nullptr && context.typesAreCompatible(
+                                  array->getElementType().getUnqualifiedType(),
+                                  inner.getUnqualifiedType()))
+        return true;
+      // (Nested aggregates: conservatively yes.)
+      return type->isRecordType() && type != outer.getCanonicalType();
+    });
   };
   return contains(a, b) || contains(b, a);
 }
@@ -652,7 +663,7 @@ static const FunctionDecl *initializedFunction(const ASTContext &context,
         if (field->isBitField() ||
             field->getFieldIndex() >= list->getNumInits())
           continue;
-        std::int64_t at = static_cast<std::int64_t>(
+        auto at = static_cast<std::int64_t>(
             layout.getFieldOffset(field->getFieldIndex()) /
             context.getCharWidth());
         std::int64_t size =
@@ -686,7 +697,6 @@ core::Sym FunctionRun::unwritten(core::HeapState &state, core::ObjectId object,
                                  core::CellKey key,
                                  const core::SymInfo &hint) const {
   ++materialisations;
-  auto &self = const_cast<FunctionRun &>(*this);
   // Bytes rewritten on some paths only: the value the cell would read
   // otherwise, or an unknown one.
   if (const core::ObjectState &weak = heap.ensure(state, object);
@@ -710,7 +720,7 @@ core::Sym FunctionRun::unwritten(core::HeapState &state, core::ObjectId object,
       state.objects.at(object).cells.set(key, merged);
     return merged;
   }
-  core::ObjectState &target = heap.ensure(state, object);
+  const core::ObjectState &target = heap.ensure(state, object);
   const core::ObjectInfo &info = objects.info(object);
   QualType objectType = info.type != 0 ? typeOfHandle(info.type) : QualType();
   std::optional<FieldAt> at;
@@ -734,11 +744,11 @@ core::Sym FunctionRun::unwritten(core::HeapState &state, core::ObjectId object,
   // (RFC 0030 §5.1), whatever the object's kind.
   if (target.forgets(key) && info.key.kind != core::ObjectKind::Focus) {
     core::SymInfo unknown;
-    unknown.type = hint.type != core::SymInfo::Type::Unknown
-                       ? hint.type
-                       : (!cellType.isNull() && cellType->isPointerType()
-                              ? core::SymInfo::Type::Pointer
-                              : core::SymInfo::Type::Int);
+    unknown.type = hint.type;
+    if (unknown.type == core::SymInfo::Type::Unknown)
+      unknown.type = !cellType.isNull() && cellType->isPointerType()
+                         ? core::SymInfo::Type::Pointer
+                         : core::SymInfo::Type::Int;
     unknown.ctype = !cellType.isNull() ? typeHandle(cellType) : hint.ctype;
     if (unknown.type == core::SymInfo::Type::Pointer) {
       core::ObjectId any = unknownObject();
@@ -751,16 +761,16 @@ core::Sym FunctionRun::unwritten(core::HeapState &state, core::ObjectId object,
   case core::ObjectKind::Literal: {
     // A string literal's bytes (RFC 0012).
     const auto *expr = fromHandle<Expr>(info.key.handle);
-    const StringLiteral *literal = dyn_cast_or_null<StringLiteral>(expr);
+    const auto *literal = dyn_cast_or_null<StringLiteral>(expr);
     if (const auto *predefined = dyn_cast_or_null<PredefinedExpr>(expr))
       literal = predefined->getFunctionName();
     if (literal != nullptr && literal->getCharByteWidth() == 1 &&
         !key.isSummary() && key.offset >= 0 &&
-        key.offset <= static_cast<std::int64_t>(literal->getByteLength()) &&
+        std::cmp_less_equal(key.offset, literal->getByteLength()) &&
         !cellType.isNull() && cellType->isIntegerType() &&
         context.getTypeSizeInChars(cellType).getQuantity() == 1) {
       llvm::StringRef bytes = literal->getBytes();
-      char byte = key.offset < static_cast<std::int64_t>(bytes.size())
+      char byte = std::cmp_less(key.offset, bytes.size())
                       ? bytes[static_cast<std::size_t>(key.offset)]
                       : '\0';
       std::int64_t number = cellType->isUnsignedIntegerType()
@@ -811,7 +821,7 @@ core::Sym FunctionRun::unwritten(core::HeapState &state, core::ObjectId object,
     if (value == core::ZeroSym)
       value = cellType.isNull()
                   ? heap.fresh(state, core::SymInfo{.type = hint.type})
-                  : self.entryValue(state, cellType, object, key, field);
+                  : entryValue(state, cellType, object, key, field);
     return setCell(value);
   }
   case core::ObjectKind::Local:
@@ -821,16 +831,16 @@ core::Sym FunctionRun::unwritten(core::HeapState &state, core::ObjectId object,
         entryPathOf(objects, object, function, unit)) {
       // A parameter passed by value: its members are entry values.
       if (!cellType.isNull())
-        return setCell(self.entryValue(state, cellType, object, key, field));
+        return setCell(entryValue(state, cellType, object, key, field));
     }
     if (target.zeroed || info.key.kind == core::ObjectKind::Local ||
         target.uninitialised) {
       core::SymInfo zero;
-      zero.type = hint.type != core::SymInfo::Type::Unknown
-                      ? hint.type
-                      : (!cellType.isNull() && cellType->isPointerType()
-                             ? core::SymInfo::Type::Pointer
-                             : core::SymInfo::Type::Int);
+      zero.type = hint.type;
+      if (zero.type == core::SymInfo::Type::Unknown)
+        zero.type = !cellType.isNull() && cellType->isPointerType()
+                        ? core::SymInfo::Type::Pointer
+                        : core::SymInfo::Type::Int;
       zero.ctype = !cellType.isNull() ? typeHandle(cellType) : hint.ctype;
       bool uninit = !target.zeroed;
       // RFC 0030 §5.4: in a function that calls `setjmp`, a `longjmp` may
@@ -872,7 +882,7 @@ core::Sym FunctionRun::unwritten(core::HeapState &state, core::ObjectId object,
   };
   if (!cellType.isNull() &&
       (cellType->isPointerType() || cellType->isIntegralOrEnumerationType()))
-    return entryCell(self.entryValue(state, cellType, object, key, field));
+    return entryCell(entryValue(state, cellType, object, key, field));
   core::SymInfo unknown;
   unknown.type = hint.type;
   unknown.ctype = hint.ctype;
@@ -914,8 +924,7 @@ void FunctionRun::dropDeadLocals(core::HeapState &state, unsigned block) const {
     const VarDecl *var = variableOf(info);
     // (A parameter's holder and a fixed local are read at the exits.)
     if (var == nullptr || isa<ParmVarDecl>(var) ||
-        std::find(fixedLocals.begin(), fixedLocals.end(), var) !=
-            fixedLocals.end())
+        std::ranges::find(fixedLocals, var) != fixedLocals.end())
       continue;
     auto index = localIndex.find(var->getCanonicalDecl());
     if (index == localIndex.end() || index->second >= live.size() ||
@@ -1016,7 +1025,7 @@ void FunctionRun::checkLeaks(core::HeapState &state, const Stmt &at,
     if (var == nullptr) {
       // A compound literal lives to the end of its block; a call's record
       // result is a temporary of its statement, dead at an exit.
-      if (!(atExit || point == LeakPoint::Scope) ||
+      if ((!atExit && point != LeakPoint::Scope) ||
           !(info.key.expression &&
             isa_and_nonnull<CallExpr>(fromHandle<Stmt>(info.key.handle))))
         rootIds.push_back(id);
@@ -1105,7 +1114,9 @@ void FunctionRun::checkLeaks(core::HeapState &state, const Stmt &at,
       message = "result of '" + callee + "' is leaked";
     } else if (point == LeakPoint::Release && !released.empty() &&
                name != released) {
-      message = "'" + name + "' is leaked when '" + released + "' is freed";
+      message = ("'" + llvm::Twine(name) + "' is leaked when '" + released +
+                 "' is freed")
+                    .str();
     } else {
       message = "'" + name + "' is leaked";
     }
@@ -1199,12 +1210,15 @@ void FunctionRun::buildCfg() {
     llvm::DenseMap<const Expr *, const Expr *> &arms;
     explicit ArmCollector(llvm::DenseMap<const Expr *, const Expr *> &out)
         : arms(out) {}
+    // NOLINTBEGIN(readability-identifier-naming,bugprone-derived-method-shadowing-base-method):
+    // RecursiveASTVisitor's CRTP hooks are found by name.
     bool VisitAbstractConditionalOperator(AbstractConditionalOperator *op) {
       // (The CFG evaluates an arm's parentheses as the expression inside.)
       arms[op->getTrueExpr()->IgnoreParens()] = op;
       arms[op->getFalseExpr()->IgnoreParens()] = op;
       return true;
     }
+    // NOLINTEND(readability-identifier-naming,bugprone-derived-method-shadowing-base-method)
   };
   ArmCollector(arms).TraverseStmt(function.getBody());
   // RFC 0017: dimensions of a declaration with an initializer are taken
@@ -1224,11 +1238,15 @@ void FunctionRun::buildCfg() {
         // The initializer's nodes; the first of them the block evaluates.
         struct Nodes : RecursiveASTVisitor<Nodes> {
           llvm::DenseSet<const Stmt *> all;
+          // NOLINTBEGIN(readability-identifier-naming,bugprone-derived-method-shadowing-base-method):
+          // RecursiveASTVisitor's CRTP hooks are found by name.
           bool VisitStmt(Stmt *s) {
             all.insert(s);
             return true;
           }
+          // NOLINTEND(readability-identifier-naming,bugprone-derived-method-shadowing-base-method)
         } nodes;
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast): visitor API
         nodes.TraverseStmt(const_cast<Expr *>(var->getInit()));
         for (const CFGElement &candidate : *block)
           if (auto first = candidate.getAs<CFGStmt>();
@@ -1263,7 +1281,7 @@ void FunctionRun::buildCfg() {
             // logical operator, whose untaken side keeps its last value.)
             const auto *logical = dyn_cast<BinaryOperator>(parent);
             if (!isa<AbstractConditionalOperator>(parent) &&
-                !(logical != nullptr && logical->isLogicalOp()))
+                (logical == nullptr || !logical->isLogicalOp()))
               consumedBy[block->getBlockID()].push_back(handleOf(expr));
           }
       }
@@ -1370,6 +1388,8 @@ void FunctionRun::buildCfg() {
   struct LocalCollector : public RecursiveASTVisitor<LocalCollector> {
     std::vector<const VarDecl *> vars;
     llvm::DenseSet<const VarDecl *> taken;
+    // NOLINTBEGIN(readability-identifier-naming,bugprone-derived-method-shadowing-base-method):
+    // RecursiveASTVisitor's CRTP hooks are found by name.
     bool VisitVarDecl(VarDecl *var) {
       if (!var->hasGlobalStorage())
         vars.push_back(var);
@@ -1385,15 +1405,15 @@ void FunctionRun::buildCfg() {
             taken.insert(var);
       return true;
     }
+    // NOLINTEND(readability-identifier-naming,bugprone-derived-method-shadowing-base-method)
   };
   LocalCollector locals;
   for (const ParmVarDecl *param : function.parameters())
     locals.vars.push_back(param);
   locals.TraverseStmt(function.getBody());
   for (const VarDecl *var : locals.vars)
-    localIndex.try_emplace(var->getCanonicalDecl(),
-                           static_cast<unsigned>(localIndex.size()));
-  addressTaken.resize(static_cast<unsigned>(localIndex.size()));
+    localIndex.try_emplace(var->getCanonicalDecl(), localIndex.size());
+  addressTaken.resize(localIndex.size());
   for (const VarDecl *var : locals.taken)
     if (auto it = localIndex.find(var->getCanonicalDecl());
         it != localIndex.end())
@@ -1405,6 +1425,8 @@ void FunctionRun::buildCfg() {
         if (const auto *var = dyn_cast<VarDecl>(ref->getDecl()))
           written.insert(var->getCanonicalDecl());
     }
+    // NOLINTBEGIN(readability-identifier-naming,bugprone-derived-method-shadowing-base-method):
+    // RecursiveASTVisitor's CRTP hooks are found by name.
     bool VisitBinaryOperator(BinaryOperator *op) {
       if (op->isAssignmentOp())
         note(op->getLHS());
@@ -1415,6 +1437,7 @@ void FunctionRun::buildCfg() {
         note(op->getSubExpr());
       return true;
     }
+    // NOLINTEND(readability-identifier-naming,bugprone-derived-method-shadowing-base-method)
   };
   ParamWrites writes;
   writes.TraverseStmt(function.getBody());
@@ -1451,10 +1474,13 @@ void FunctionRun::buildCfg() {
     class Declarations : public RecursiveASTVisitor<Declarations> {
     public:
       std::vector<const DeclStmt *> found;
+      // NOLINTBEGIN(readability-identifier-naming,bugprone-derived-method-shadowing-base-method):
+      // RecursiveASTVisitor's CRTP hooks are found by name.
       bool VisitDeclStmt(DeclStmt *decl) {
         found.push_back(decl);
         return true;
       }
+      // NOLINTEND(readability-identifier-naming,bugprone-derived-method-shadowing-base-method)
     } declarations;
     declarations.TraverseStmt(function.getBody());
     for (const DeclStmt *decl : declarations.found) {
@@ -1487,16 +1513,15 @@ void FunctionRun::buildCfg() {
       for (const CFGElement &element : *block)
         if (auto stmt = element.getAs<CFGStmt>())
           elements.insert(stmt->getStmt());
-    auto width = static_cast<unsigned>(localIndex.size());
+    auto width = localIndex.size();
     std::vector<llvm::BitVector> liveIn(cfg->getNumBlockIDs(),
                                         llvm::BitVector(width));
     // (To the fixpoint, blocks from the exit back: the live-in sets decide
     // which locals a block's state keeps, `dropDeadLocals`.)
     std::vector<const CFGBlock *> backward(cfg->begin(), cfg->end());
-    std::sort(backward.begin(), backward.end(),
-              [](const CFGBlock *a, const CFGBlock *b) {
-                return a->getBlockID() < b->getBlockID();
-              });
+    std::ranges::sort(backward, [](const CFGBlock *a, const CFGBlock *b) {
+      return a->getBlockID() < b->getBlockID();
+    });
     bool changed = true;
     while (changed) {
       changed = false;
@@ -1505,8 +1530,8 @@ void FunctionRun::buildCfg() {
         for (const CFGBlock::AdjacentBlock &succ : block->succs())
           if (const CFGBlock *reachable = succ.getReachableBlock())
             current |= liveIn[reachable->getBlockID()];
-        for (auto it = block->rbegin(); it != block->rend(); ++it) {
-          auto stmt = it->getAs<CFGStmt>();
+        for (const CFGElement &element : llvm::reverse(*block)) {
+          auto stmt = element.getAs<CFGStmt>();
           if (!stmt)
             continue;
           liveAfterStmt[stmt->getStmt()] = current;
@@ -1615,8 +1640,8 @@ void FunctionRun::initialState(core::HeapState &state) {
     core::ObjectId holder = variableObject(*param);
     core::ObjectState &holderState = heap.ensure(state, holder);
     if (auto size = transfer.sizeOf(param->getType()))
-      holderState.extent =
-          core::Extent{core::Term::of(*size), core::ExtentClass::Exact};
+      holderState.extent = core::Extent{.bytes = core::Term::of(*size),
+                                        .cls = core::ExtentClass::Exact};
     QualType type = param->getType().getCanonicalType();
     if (type->isIntegralOrEnumerationType()) {
       paramValues[i] =
@@ -1769,7 +1794,7 @@ static void seedContextGlobals(FunctionRun &run, core::HeapState &state,
     core::SymInfo hint;
     hint.type = core::SymInfo::Type::Pointer;
     core::CellKey repKey{.offset = cell.repCell};
-    core::Sym repValue;
+    core::Sym repValue = core::ZeroSym;
     if (auto held = heap.read(state, *repObject, repKey))
       repValue = *held;
     else
@@ -1789,7 +1814,7 @@ static void seedContextGlobals(FunctionRun &run, core::HeapState &state,
     core::SymInfo hint;
     hint.type = core::SymInfo::Type::Pointer;
     hint.ctype = typeHandle(rep->getType());
-    core::Sym repValue;
+    core::Sym repValue = core::ZeroSym;
     if (auto held = heap.read(state, repObject, core::CellKey{}))
       repValue = *held;
     else
@@ -1861,6 +1886,7 @@ static const Expr *nullTested(const Expr *condition,
         binary != nullptr &&
         (binary->getOpcode() == BO_EQ || binary->getOpcode() == BO_NE)) {
       auto isNull = [&](const Expr *e) {
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast): Clang API
         return e->isNullPointerConstant(const_cast<ASTContext &>(context),
                                         Expr::NPC_ValueDependentIsNotNull) !=
                Expr::NPCK_NotNull;
@@ -2016,21 +2042,19 @@ public:
   explicit ConstantCollector(const ASTContext &context) : context(context) {}
   std::set<std::int64_t> values;
 
+  // NOLINTBEGIN(readability-identifier-naming,bugprone-derived-method-shadowing-base-method):
   // RecursiveASTVisitor's CRTP hooks are found by name.
-  // NOLINTNEXTLINE(readability-identifier-naming)
   bool VisitIntegerLiteral(IntegerLiteral *literal) {
     if (literal->getValue().getActiveBits() <= 62)
       add(static_cast<std::int64_t>(literal->getValue().getZExtValue()));
     return true;
   }
-  // NOLINTNEXTLINE(readability-identifier-naming)
   bool VisitUnaryExprOrTypeTraitExpr(UnaryExprOrTypeTraitExpr *trait) {
     Expr::EvalResult value;
     if (!trait->isValueDependent() && trait->EvaluateAsInt(value, context))
       add(value.Val.getInt().getExtValue());
     return true;
   }
-  // NOLINTNEXTLINE(readability-identifier-naming)
   bool VisitVarDecl(VarDecl *var) {
     if (const ConstantArrayType *array =
             context.getAsConstantArrayType(var->getType())) {
@@ -2041,6 +2065,7 @@ public:
     }
     return true;
   }
+  // NOLINTEND(readability-identifier-naming,bugprone-derived-method-shadowing-base-method)
 
 private:
   const ASTContext &context;
@@ -2069,6 +2094,7 @@ std::vector<std::int64_t> FunctionRun::wideningThresholds(unsigned head) const {
     for (const CFGBlock *block : *cfg)
       if (body->second.test(block->getBlockID()))
         if (const Stmt *condition = block->getTerminatorCondition(false))
+          // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast): visitor API
           collector.TraverseStmt(const_cast<Stmt *>(condition));
   }
   return {collector.values.begin(), collector.values.end()};
@@ -2223,13 +2249,10 @@ RunResult FunctionRun::run() {
       if (loopHead[succ] && changed)
         ++visits[succ];
       const unsigned joinLimit = std::max<unsigned>(
-          MaxJoinsPerBlock,
-          JoinsPerPredecessor *
-              static_cast<unsigned>(blockById(succ)->pred_size()));
+          MaxJoinsPerBlock, JoinsPerPredecessor * blockById(succ)->pred_size());
       const unsigned visitLimit = std::max<unsigned>(
           MaxVisitsPerBlock,
-          VisitsPerPredecessor *
-              static_cast<unsigned>(blockById(succ)->pred_size()));
+          VisitsPerPredecessor * blockById(succ)->pred_size());
       if (visits[succ] > visitLimit || joinsAt[succ] > joinLimit ||
           joined.syms.size() > MaxStateSymbols) {
         overBudget = true;

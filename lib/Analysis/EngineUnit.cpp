@@ -81,8 +81,10 @@ void ObjectEngine::dump(const FunctionDecl &function, llvm::raw_ostream &os) {
       if (!line.empty())
         os << "  " << line << '\n';
   }
-  if (unit && std::getenv("WEAVEC_ENGINE_DUMP") != nullptr &&
-      std::string_view(std::getenv("WEAVEC_ENGINE_DUMP")) == "3")
+  if (!unit)
+    return;
+  const char *level = std::getenv("WEAVEC_ENGINE_DUMP");
+  if (level != nullptr && std::string_view(level) == "3")
     unit->dump(function, os);
 }
 
@@ -185,6 +187,8 @@ class CalleeCollector : public RecursiveASTVisitor<CalleeCollector> {
 public:
   explicit CalleeCollector(const EngineInput &input) : input(input) {}
   std::set<const FunctionDecl *> callees;
+  // NOLINTBEGIN(readability-identifier-naming,bugprone-derived-method-shadowing-base-method):
+  // RecursiveASTVisitor's CRTP hooks are found by name.
   bool VisitCallExpr(CallExpr *call) {
     if (const FunctionDecl *callee = call->getDirectCallee()) {
       callees.insert(callee->getCanonicalDecl());
@@ -208,6 +212,7 @@ public:
       callees.insert(fn->getCanonicalDecl());
     return true;
   }
+  // NOLINTEND(readability-identifier-naming,bugprone-derived-method-shadowing-base-method)
 
 private:
   const EngineInput &input;
@@ -222,6 +227,8 @@ public:
       : library(library), kinds(kinds), slots(slots) {}
 
   // (The function whose body is being visited.)
+  // NOLINTBEGIN(readability-identifier-naming,bugprone-derived-method-shadowing-base-method):
+  // RecursiveASTVisitor's CRTP hooks are found by name.
   bool TraverseFunctionDecl(FunctionDecl *function) {
     const FunctionDecl *outer = enclosing;
     enclosing = function->doesThisDeclarationHaveABody() ? function : outer;
@@ -251,10 +258,11 @@ public:
     std::vector<unsigned> released;
     if (auto match = governingLibraryEntry(*callee, library)) {
       for (unsigned i = 0; i < call->getNumArgs(); ++i)
-        if (const core::LibraryParam *param = match->param(i))
-          if (param->effect == core::LibraryParam::Effect::Release ||
-              param->effect == core::LibraryParam::Effect::Realloc)
-            released.push_back(i);
+        if (const core::LibraryParam *param = match->param(i);
+            param != nullptr &&
+            (param->effect == core::LibraryParam::Effect::Release ||
+             param->effect == core::LibraryParam::Effect::Realloc))
+          released.push_back(i);
     } else if (const OwnershipContract *contract = kinds.ownership(*callee)) {
       for (const auto &argument : contract->arguments)
         if (!argument.retains)
@@ -268,10 +276,13 @@ public:
     if (released.empty() && callee->hasBody())
       for (unsigned i = 0; i < call->getNumArgs(); ++i)
         if (call->getArg(i)->getType()->isPointerType())
-          handed.push_back(Handed{callee->getCanonicalDecl(), i,
-                                  call->getArg(i), enclosing});
+          handed.push_back(Handed{.callee = callee->getCanonicalDecl(),
+                                  .index = i,
+                                  .arg = call->getArg(i),
+                                  .caller = enclosing});
     return true;
   }
+  // NOLINTEND(readability-identifier-naming,bugprone-derived-method-shadowing-base-method)
   void finish() {
     // RFC 0030 §9.4: a slot is owning when some function releases a value
     // loaded from it, itself or through a function it hands the value to
@@ -380,6 +391,8 @@ private:
 /// no other reference reaches holds its initializer for the whole run.
 class GlobalReads : public RecursiveASTVisitor<GlobalReads> {
 public:
+  // NOLINTBEGIN(readability-identifier-naming,bugprone-derived-method-shadowing-base-method,readability-convert-member-functions-to-static):
+  // RecursiveASTVisitor's CRTP hooks are found by name.
   bool VisitDeclRefExpr(DeclRefExpr *ref) {
     if (const auto *var = dyn_cast<VarDecl>(ref->getDecl());
         var != nullptr && var->hasGlobalStorage())
@@ -414,6 +427,7 @@ public:
   bool TraverseUnaryExprOrTypeTraitExpr(UnaryExprOrTypeTraitExpr *) {
     return true; // Unevaluated (a variable-length operand has no global).
   }
+  // NOLINTEND(readability-identifier-naming,bugprone-derived-method-shadowing-base-method,readability-convert-member-functions-to-static)
 
   std::vector<const DeclRefExpr *> references;
   llvm::DenseSet<const DeclRefExpr *> reads;
@@ -606,6 +620,8 @@ public:
 
   // Pre-order: a call is visited before the reference that names its
   // callee, so that reference is known to be no address taken.
+  // NOLINTBEGIN(readability-identifier-naming,bugprone-derived-method-shadowing-base-method):
+  // RecursiveASTVisitor's CRTP hooks are found by name.
   bool VisitCallExpr(CallExpr *call) {
     if (const FunctionDecl *callee = call->getDirectCallee()) {
       called.insert(callee->getCanonicalDecl());
@@ -625,6 +641,7 @@ public:
       addressTaken.insert(fn->getCanonicalDecl());
     return true;
   }
+  // NOLINTEND(readability-identifier-naming,bugprone-derived-method-shadowing-base-method)
 
 private:
   const ASTContext &context;

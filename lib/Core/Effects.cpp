@@ -8,6 +8,8 @@
 
 #include "weavec/Core/Effects.h"
 
+#include <array>
+
 namespace weavec::core {
 
 /// A path with its root spelled: `paramN`, `globalN` or `result`.
@@ -123,7 +125,9 @@ std::string ValueDesc::toString() const {
   case Kind::Dangling:
     return "dangling";
   case Kind::Unknown:
-    return raw ? (rawSome ? "unknown raw-some" : "unknown raw") : "unknown";
+    if (!raw)
+      return "unknown";
+    return rawSome ? "unknown raw-some" : "unknown raw";
   case Kind::Function: {
     std::string out = "function";
     for (std::size_t i = 0; i < functions.size(); ++i)
@@ -161,13 +165,13 @@ std::string toText(const FunctionEffects &effects) {
     if (result.paramZero)
       out += " and param " + std::to_string(result.paramZero->first) +
              (result.paramZero->second ? " =0" : " !=0");
-    out += "\n";
+    out += '\n';
   }
   for (const PathEffect &effect : effects.effects) {
-    static constexpr const char *Names[] = {"release", "move",     "unknown",
-                                            "escape",  "share -1", "share +1"};
-    out += "  " + std::string(Names[static_cast<int>(effect.kind)]) + " " +
-           pathText(effect.path);
+    static constexpr std::array<const char *, 6> Names = {
+        "release", "move", "unknown", "escape", "share -1", "share +1"};
+    out += "  " + std::string(Names.at(static_cast<std::size_t>(effect.kind))) +
+           " " + pathText(effect.path);
     if (effect.elements)
       out += " elements " + effect.elements->toString();
     if (!effect.family.empty())

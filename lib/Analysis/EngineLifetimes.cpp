@@ -662,7 +662,7 @@ void Transfer::callBoundary(const CallExpr &call,
 //===----------------------------------------------------------------------===//
 
 /// Decides the temporal facet of the exit site of `exit`.
-static void decideExit(FunctionRun &run, const Stmt &exit,
+static void decideExit(const FunctionRun &run, const Stmt &exit,
                        const core::FacetDecision &decision) {
   const SiteIndex &sites = run.ledger().siteIndex();
   auto id = sites.findExit(exit);
@@ -1124,10 +1124,11 @@ bool Transfer::assumption(const CallExpr &call) {
     core::HeapState fails = state;
     bool canFail = assume(run, fails, condition, false, 0);
     if (id && run.ledger().applies(*id, core::Facet::Assertion)) {
-      core::FacetDecision decision = !canHold ? core::FacetDecision::violation()
-                                     : !canFail
-                                         ? core::FacetDecision::proven()
-                                         : core::FacetDecision::checked();
+      core::FacetDecision decision = core::FacetDecision::checked();
+      if (!canHold)
+        decision = core::FacetDecision::violation();
+      else if (!canFail)
+        decision = core::FacetDecision::proven();
       run.ledger().decideAs(call, core::SiteKind::Assume, std::nullopt,
                             core::Facet::Assertion, decision);
     }

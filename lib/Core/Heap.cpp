@@ -156,22 +156,18 @@ ReleaseRecord joinRecords(const ReleaseRecord &left,
   // Only the parameter facts both releases had.
   out.paramGuard.clear();
   for (const auto &fact : left.paramGuard)
-    if (std::find(right.paramGuard.begin(), right.paramGuard.end(), fact) !=
-        right.paramGuard.end())
+    if (std::ranges::find(right.paramGuard, fact) != right.paramGuard.end())
       out.paramGuard.push_back(fact);
   out.entryGuard.clear();
-  std::set_intersection(left.entryGuard.begin(), left.entryGuard.end(),
-                        right.entryGuard.begin(), right.entryGuard.end(),
-                        std::back_inserter(out.entryGuard));
+  std::ranges::set_intersection(left.entryGuard, right.entryGuard,
+                                std::back_inserter(out.entryGuard));
   out.pairGuard.clear();
   for (const ParamPairTest &fact : left.pairGuard)
-    if (std::find(right.pairGuard.begin(), right.pairGuard.end(), fact) !=
-        right.pairGuard.end())
+    if (std::ranges::find(right.pairGuard, fact) != right.pairGuard.end())
       out.pairGuard.push_back(fact);
   out.nonNullLocals.clear();
-  std::set_intersection(left.nonNullLocals.begin(), left.nonNullLocals.end(),
-                        right.nonNullLocals.begin(), right.nonNullLocals.end(),
-                        std::back_inserter(out.nonNullLocals));
+  std::ranges::set_intersection(left.nonNullLocals, right.nonNullLocals,
+                                std::back_inserter(out.nonNullLocals));
   return out;
 }
 
@@ -179,19 +175,22 @@ ReleaseRecord joinRecords(const ReleaseRecord &left,
 // Symbols and objects
 //===----------------------------------------------------------------------===//
 
+// NOLINTNEXTLINE(readability-convert-member-functions-to-static): Heap API
 Sym Heap::fresh(HeapState &state, SymInfo info) const {
   Sym sym = state.nextSym++;
   state.syms.set(sym, std::move(info));
   return sym;
 }
 
+// NOLINTNEXTLINE(readability-convert-member-functions-to-static): Heap API
 const SymInfo &Heap::info(const HeapState &state, Sym sym) const {
-  static const SymInfo none;
+  static const SymInfo None;
   if (const SymInfo *found = state.syms.find(sym))
     return *found;
-  return none;
+  return None;
 }
 
+// NOLINTNEXTLINE(readability-convert-member-functions-to-static): Heap API
 SymInfo &Heap::infoMut(HeapState &state, Sym sym) const {
   return state.syms.at(sym);
 }
@@ -229,18 +228,20 @@ Sym Heap::pointer(HeapState &state, std::vector<Target> targets,
                   PointerNull null, std::string name) const {
   SymInfo info;
   info.type = SymInfo::Type::Pointer;
-  std::sort(targets.begin(), targets.end());
-  targets.erase(std::unique(targets.begin(), targets.end()), targets.end());
+  std::ranges::sort(targets);
+  targets.erase(std::ranges::unique(targets).begin(), targets.end());
   info.targets = std::move(targets);
   info.null = null;
   info.name = std::move(name);
   return fresh(state, std::move(info));
 }
 
+// NOLINTNEXTLINE(readability-convert-member-functions-to-static): Heap API
 ObjectState &Heap::object(HeapState &state, ObjectId id) const {
   return state.objects.at(id);
 }
 
+// NOLINTNEXTLINE(readability-convert-member-functions-to-static): Heap API
 ObjectState &Heap::ensure(HeapState &state, ObjectId id) const {
   return state.objects.at(id);
 }
@@ -250,10 +251,12 @@ ObjectState &Heap::ensure(HeapState &state, ObjectId id) const {
 //===----------------------------------------------------------------------===//
 
 /// Lower and upper bounds of a term, from the zone.
+namespace {
 struct TermRange {
   std::optional<__int128> lo;
   std::optional<__int128> hi;
 };
+} // namespace
 
 static TermRange rangeOf(const Zone &zone, const Term &term) {
   TermRange out;
@@ -268,21 +271,23 @@ static TermRange rangeOf(const Zone &zone, const Term &term) {
   auto hi = zone.upper(term.var);
   if (term.scale > 0) {
     if (lo)
-      out.lo = static_cast<__int128>(*lo) * term.scale + term.constant;
+      out.lo = (static_cast<__int128>(*lo) * term.scale) + term.constant;
     if (hi)
-      out.hi = static_cast<__int128>(*hi) * term.scale + term.constant;
+      out.hi = (static_cast<__int128>(*hi) * term.scale) + term.constant;
   } else {
     if (hi)
-      out.lo = static_cast<__int128>(*hi) * term.scale + term.constant;
+      out.lo = (static_cast<__int128>(*hi) * term.scale) + term.constant;
     if (lo)
-      out.hi = static_cast<__int128>(*lo) * term.scale + term.constant;
+      out.hi = (static_cast<__int128>(*lo) * term.scale) + term.constant;
   }
   return out;
 }
 
 /// Whether `left <= right` holds for every value (`Proven`), for no value
 /// (`Refuted`) or neither.
+namespace {
 enum class Order : std::uint8_t { Proven, Refuted, Unknown };
+} // namespace
 
 static Order compareTerms(const Zone &zone, const Term &left,
                           const Term &right) {
@@ -367,7 +372,7 @@ std::optional<CellKey> CellKey::at(const Term &offset) {
     return std::nullopt;
   if (offset.isConstant())
     return CellKey{.offset = offset.constant, .stride = 0, .index = ZeroSym};
-  if (offset.scale <= 0 || offset.scale > (1 << 20))
+  if (offset.scale <= 0 || offset.scale > std::int64_t{1U << 20U})
     return std::nullopt;
   return CellKey{.offset = offset.constant,
                  .stride = static_cast<std::uint32_t>(offset.scale),
@@ -461,9 +466,11 @@ static bool differentValues(const HeapState &state, Sym a, Sym b) {
     return false;
   __int128 difference = deltaA - deltaB;
   if (ai->intType->width < 64)
-    difference %= static_cast<__int128>(1) << ai->intType->width;
+    difference %= static_cast<__int128>(static_cast<unsigned __int128>(1)
+                                        << ai->intType->width);
   else
-    difference %= static_cast<__int128>(1) << 64;
+    difference %=
+        static_cast<__int128>(static_cast<unsigned __int128>(1) << 64U);
   return difference != 0;
 }
 
@@ -482,10 +489,12 @@ static std::optional<bool> sameOffset(const HeapState &state, const Term &a,
 /// The element index of the cell at byte `offset` among the elements at
 /// `position`. `at` is false when the cell is not at that position, and
 /// unset when that is not known.
+namespace {
 struct ElementIndex {
   std::optional<bool> at;
   Term index = Term::unknown();
 };
+} // namespace
 
 static ElementIndex elementIndex(const CellKey &position, const Term &offset) {
   ElementIndex out;
@@ -546,6 +555,7 @@ static bool rangesDisjoint(const Zone &zone, const Segment &a,
          compareTerms(zone, b.to, a.from) == Order::Proven;
 }
 
+// NOLINTNEXTLINE(readability-convert-member-functions-to-static): Heap API
 std::optional<bool> Heap::contains(const HeapState &state,
                                    const CellKey &position, const Term &from,
                                    const Term &to, const Term &offset) const {
@@ -560,6 +570,7 @@ std::optional<bool> Heap::contains(const HeapState &state,
   return std::nullopt;
 }
 
+// NOLINTNEXTLINE(readability-convert-member-functions-to-static): Heap API
 std::optional<bool> Heap::sameCell(const HeapState &state, const Term &first,
                                    const Term &second) const {
   return sameOffset(state, first, second);
@@ -569,6 +580,7 @@ std::optional<bool> Heap::sameCell(const HeapState &state, const Term &first,
 // Memory
 //===----------------------------------------------------------------------===//
 
+// NOLINTNEXTLINE(readability-convert-member-functions-to-static): Heap API
 std::optional<Sym> Heap::read(const HeapState &state, ObjectId object,
                               CellKey key) const {
   const ObjectState *found = state.objects.find(object);
@@ -611,12 +623,10 @@ static void uniteEntryOrigins(SymInfo &out, const SymInfo &a,
   } else {
     out.entryOrigins.clear();
     out.entryOrigins.reserve(a.entryOrigins.size() + b.entryOrigins.size());
-    std::set_union(a.entryOrigins.begin(), a.entryOrigins.end(),
-                   b.entryOrigins.begin(), b.entryOrigins.end(),
-                   std::back_inserter(out.entryOrigins));
-    out.entryOrigins.erase(
-        std::unique(out.entryOrigins.begin(), out.entryOrigins.end()),
-        out.entryOrigins.end());
+    std::ranges::set_union(a.entryOrigins, b.entryOrigins,
+                           std::back_inserter(out.entryOrigins));
+    out.entryOrigins.erase(std::ranges::unique(out.entryOrigins).begin(),
+                           out.entryOrigins.end());
   }
   out.entryOriginsLost = a.entryOriginsLost || b.entryOriginsLost;
   if (out.entryOrigins.size() > MaxEntryOrigins) {
@@ -643,8 +653,8 @@ Sym Heap::mergeWeak(HeapState &state, Sym left, Sym right) const {
     if (!out.top) {
       out.targets = a.targets;
       out.targets.insert(out.targets.end(), b.targets.begin(), b.targets.end());
-      std::sort(out.targets.begin(), out.targets.end());
-      out.targets.erase(std::unique(out.targets.begin(), out.targets.end()),
+      std::ranges::sort(out.targets);
+      out.targets.erase(std::ranges::unique(out.targets).begin(),
                         out.targets.end());
       if (out.targets.size() > 8) {
         out.targets.clear();
@@ -679,17 +689,16 @@ Sym Heap::mergeWeak(HeapState &state, Sym left, Sym right) const {
       out.foreignFunctions.insert(out.foreignFunctions.end(),
                                   b.foreignFunctions.begin(),
                                   b.foreignFunctions.end());
-      std::sort(out.foreignFunctions.begin(), out.foreignFunctions.end());
+      std::ranges::sort(out.foreignFunctions);
       out.foreignFunctions.erase(
-          std::unique(out.foreignFunctions.begin(), out.foreignFunctions.end()),
+          std::ranges::unique(out.foreignFunctions).begin(),
           out.foreignFunctions.end());
       out.functions = a.functions;
       out.functions.insert(out.functions.end(), b.functions.begin(),
                            b.functions.end());
-      std::sort(out.functions.begin(), out.functions.end());
-      out.functions.erase(
-          std::unique(out.functions.begin(), out.functions.end()),
-          out.functions.end());
+      std::ranges::sort(out.functions);
+      out.functions.erase(std::ranges::unique(out.functions).begin(),
+                          out.functions.end());
       if (out.functions.size() > 32) {
         out.functions.clear();
         out.functionsKnown = false;
@@ -946,7 +955,7 @@ void Heap::write(HeapState &state, ObjectId objectId, CellKey key, Sym value,
 
 void Heap::writeSummary(HeapState &state, ObjectId objectId, CellKey key,
                         Sym value) const {
-  ObjectState &target = state.objects.at(objectId);
+  const ObjectState &target = state.objects.at(objectId);
   Sym old = ZeroSym;
   if (const Sym *existing = target.cells.find(key))
     old = *existing;
@@ -1049,7 +1058,7 @@ void Heap::evictSegments(HeapState &state, ObjectId objectId,
       // (What an evicted one shadowed, the older ranges after it, may hold
       // its value.)
       for (std::size_t j = i + 1; j < segments.size(); ++j)
-        if (!(j < evict.size() && evict[j]) &&
+        if ((j >= evict.size() || !evict[j]) &&
             !rangesDisjoint(state.zone, segments[j], segments[i]))
           segments[j].value =
               mergeWeak(state, segments[j].value, segments[i].value);
@@ -1087,7 +1096,7 @@ void Heap::trimSegments(HeapState &state, ObjectId objectId) const {
 }
 
 bool Heap::foldCell(HeapState &state, ObjectId objectId, CellKey key) const {
-  ObjectState &target = state.objects.at(objectId);
+  const ObjectState &target = state.objects.at(objectId);
   if (target.stride == 0 || key.isSummary())
     return false;
   auto held = read(state, objectId, key);
@@ -1244,9 +1253,9 @@ Sym Heap::copiedElement(HeapState &state, const Segment &segment,
   const auto entryOf = std::make_pair(source, *key);
   if (key->isConcrete()) {
     // The entry value itself, where a load of it left it.
-    if (const Sym *held = state.objects.at(source).cells.find(*key))
-      if (info(state, *held).entryOf == entryOf)
-        return *held;
+    if (const Sym *held = state.objects.at(source).cells.find(*key);
+        held != nullptr && info(state, *held).entryOf == entryOf)
+      return *held;
     std::vector<Sym> found;
     for (const auto &[sym, symInfo] : state.syms)
       if (symInfo.entryOf == entryOf)
@@ -1287,10 +1296,10 @@ void Heap::weakenCells(HeapState &state, ObjectId objectId, std::int64_t from,
     bool within = true;
     if (size && !key.isSummary()) {
       Term offset = key.byteTerm();
-      within = !(compareTerms(state.zone, offset.plusConstant(1),
-                              Term::of(from)) == Order::Proven ||
-                 compareTerms(state.zone, Term::of(from + *size), offset) ==
-                     Order::Proven);
+      within = compareTerms(state.zone, offset.plusConstant(1),
+                            Term::of(from)) != Order::Proven &&
+               compareTerms(state.zone, Term::of(from + *size), offset) !=
+                   Order::Proven;
     }
     if (within)
       inside.emplace_back(key, sym);
@@ -1335,7 +1344,7 @@ addForgotten(std::vector<std::pair<std::int64_t, std::int64_t>> &ranges,
   }
   if (!placed)
     out.emplace_back(from, to);
-  std::sort(out.begin(), out.end());
+  std::ranges::sort(out);
   ranges = std::move(out);
 }
 
@@ -1348,7 +1357,7 @@ inRanges(const std::vector<std::pair<std::int64_t, std::int64_t>> &ranges,
     return false;
   if (!key.isConcrete())
     return true;
-  return std::any_of(ranges.begin(), ranges.end(), [&](const auto &r) {
+  return std::ranges::any_of(ranges, [&](const auto &r) {
     return r.first <= key.offset && key.offset < r.second;
   });
 }
@@ -1373,10 +1382,11 @@ intersectRanges(const std::vector<std::pair<std::int64_t, std::int64_t>> &a,
       if (from < to)
         out.emplace_back(from, to);
     }
-  std::sort(out.begin(), out.end());
+  std::ranges::sort(out);
   return out;
 }
 
+// NOLINTNEXTLINE(readability-convert-member-functions-to-static): Heap API
 void Heap::forgetCells(HeapState &state, ObjectId objectId, std::int64_t from,
                        std::optional<std::int64_t> size) const {
   if (!state.objects.contains(objectId))
@@ -1389,10 +1399,9 @@ void Heap::forgetCells(HeapState &state, ObjectId objectId, std::int64_t from,
       return true;
     Term offset = key.byteTerm();
     // Kept only when it must lie outside the bytes forgotten.
-    return !(compareTerms(zone, offset.plusConstant(1), Term::of(from)) ==
-                 Order::Proven ||
-             compareTerms(zone, Term::of(from + *size), offset) ==
-                 Order::Proven);
+    return compareTerms(zone, offset.plusConstant(1), Term::of(from)) !=
+               Order::Proven &&
+           compareTerms(zone, Term::of(from + *size), offset) != Order::Proven;
   });
   // What the forgotten bytes hold is unknown: an unwritten cell there no
   // longer reads as the zero or uninitialised value of the object's
@@ -1418,9 +1427,9 @@ void Heap::forgetCells(HeapState &state, ObjectId objectId, std::int64_t from,
     Term start = segment.from;
     Term end = segment.to;
     start.scale *= stride;
-    start.constant = start.constant * stride + segment.position.offset;
+    start.constant = (start.constant * stride) + segment.position.offset;
     end.scale *= stride;
-    end.constant = end.constant * stride + segment.position.offset;
+    end.constant = (end.constant * stride) + segment.position.offset;
     if (compareTerms(zone, end, Term::of(from)) == Order::Proven ||
         compareTerms(zone, Term::of(from + *size), start) == Order::Proven)
       kept.push_back(segment);
@@ -1571,8 +1580,7 @@ bool Heap::assumePointersEqual(HeapState &state, Sym first, Sym second,
   if (second < first)
     std::swap(first, second);
   PointerFact fact{.first = first, .second = second, .equal = equal};
-  state.pointerFacts.insert(std::lower_bound(state.pointerFacts.begin(),
-                                             state.pointerFacts.end(), fact),
+  state.pointerFacts.insert(std::ranges::lower_bound(state.pointerFacts, fact),
                             fact);
   return true;
 }
@@ -1632,8 +1640,8 @@ TemporalVerdict Heap::temporal(const HeapState &state, Sym pointer) const {
       return false;
     if (releaser == pointer)
       return false;
-    return std::find(value.ancestors.begin(), value.ancestors.end(),
-                     releaser) != value.ancestors.end();
+    return std::ranges::find(value.ancestors, releaser) !=
+           value.ancestors.end();
   };
   for (const Target &target : value.targets) {
     const ObjectState *object = state.objects.find(target.object);
@@ -1706,6 +1714,7 @@ TemporalVerdict Heap::temporal(const HeapState &state, Sym pointer) const {
   return verdict;
 }
 
+// NOLINTNEXTLINE(readability-convert-member-functions-to-static): Heap API
 std::optional<bool> Heap::lessEqual(const HeapState &state, const Term &left,
                                     const Term &right) const {
   switch (compareTerms(state.zone, left, right)) {
@@ -1992,6 +2001,7 @@ static void stripSyms(ObjectState &object, Visit visit) {
   sym(object.releasedBy);
 }
 
+// NOLINTNEXTLINE(readability-convert-member-functions-to-static): Heap API
 bool Heap::equivalent(const HeapState &a, const HeapState &b) const {
   if (a.unreachable != b.unreachable || a.syms.size() != b.syms.size() ||
       a.objects.size() != b.objects.size() ||
@@ -2060,6 +2070,7 @@ bool Heap::equivalent(const HeapState &a, const HeapState &b) const {
   if (!unify(a.result, b.result))
     return false;
   // What each symbol pair says, and the symbols that names.
+  // NOLINTNEXTLINE(modernize-loop-convert): unifying appends to the work list
   for (std::size_t done = 0; done < work.size(); ++done) {
     auto [x, y] = work[done];
     const SymInfo *ix = a.syms.find(x);
@@ -2102,7 +2113,7 @@ bool Heap::equivalent(const HeapState &a, const HeapState &b) const {
                             .equal = fact.equal};
     facts.push_back(renamedFact);
   }
-  std::sort(facts.begin(), facts.end());
+  std::ranges::sort(facts);
   if (!(facts == b.pointerFacts))
     return false;
   if (a.mergedLoads.size() != b.mergedLoads.size())
@@ -2111,10 +2122,10 @@ bool Heap::equivalent(const HeapState &a, const HeapState &b) const {
     MergedLoad x = a.mergedLoads[i];
     const MergedLoad &y = b.mergedLoads[i];
     auto map = [&](Sym s) {
+      if (s == ZeroSym)
+        return ZeroSym;
       auto it = forward.find(s);
-      return s == ZeroSym          ? ZeroSym
-             : it != forward.end() ? it->second
-                                   : Sym{~0U};
+      return it != forward.end() ? it->second : Sym{~0U};
     };
     x.firstValue = map(x.firstValue);
     x.secondValue = map(x.secondValue);
@@ -2172,8 +2183,8 @@ void Heap::collect(HeapState &state, const std::vector<ObjectId> &roots,
           else if (object.record)
             merged.record = object.record;
           for (ObjectId candidate : object.candidates)
-            if (std::find(merged.candidates.begin(), merged.candidates.end(),
-                          candidate) == merged.candidates.end())
+            if (std::ranges::find(merged.candidates, candidate) ==
+                merged.candidates.end())
               merged.candidates.push_back(candidate);
           merged.releasedBy = ZeroSym;
           state.objects.set(dead, merged);
@@ -2403,7 +2414,7 @@ private:
   /// `Heap::join`'s `keepBelow`.
   Sym keepBelow = ZeroSym;
   static std::uint64_t keyOf(Sym a, Sym b) {
-    return (static_cast<std::uint64_t>(a) << 32) | b;
+    return (static_cast<std::uint64_t>(a) << 32U) | b;
   }
   std::unordered_map<std::uint64_t, Sym> results;
   /// The first result pairing each side's symbol with the other side's.
@@ -2433,12 +2444,14 @@ private:
     static_assert(PMap<Sym, SymInfo>::StableValues);
     const SymInfo *a = p.hasLeft ? left.syms.find(p.left) : nullptr;
     const SymInfo *b = p.hasRight ? right.syms.find(p.right) : nullptr;
-    static const SymInfo none;
+    static const SymInfo None;
     if (p.hasLeft && a == nullptr)
-      a = &none;
+      a = &None;
     if (p.hasRight && b == nullptr)
-      b = &none;
+      b = &None;
     if (a == nullptr || b == nullptr) {
+      // (`pair` makes no pair without a side.)
+      // NOLINTNEXTLINE(clang-analyzer-core.NonNullParamChecker): one is set
       SymInfo joined = a == nullptr ? renamed(*b, false) : renamed(*a, true);
       if (joined.release && oneSidedCells.contains(p.result))
         joined.release->allPaths = false;
@@ -2558,19 +2571,16 @@ private:
         joined.foreignFunctions.insert(joined.foreignFunctions.end(),
                                        b->foreignFunctions.begin(),
                                        b->foreignFunctions.end());
-        std::sort(joined.foreignFunctions.begin(),
-                  joined.foreignFunctions.end());
+        std::ranges::sort(joined.foreignFunctions);
         joined.foreignFunctions.erase(
-            std::unique(joined.foreignFunctions.begin(),
-                        joined.foreignFunctions.end()),
+            std::ranges::unique(joined.foreignFunctions).begin(),
             joined.foreignFunctions.end());
         joined.functions = a->functions;
         joined.functions.insert(joined.functions.end(), b->functions.begin(),
                                 b->functions.end());
-        std::sort(joined.functions.begin(), joined.functions.end());
-        joined.functions.erase(
-            std::unique(joined.functions.begin(), joined.functions.end()),
-            joined.functions.end());
+        std::ranges::sort(joined.functions);
+        joined.functions.erase(std::ranges::unique(joined.functions).begin(),
+                               joined.functions.end());
         if (joined.functions.size() > 32) {
           joined.functions.clear();
           joined.functionsKnown = false;
@@ -2682,7 +2692,7 @@ static void alignCells(const Heap &heap, HeapState &left, HeapState &right,
         if (vague(right, key) && left.objects.find(id)->stride != 0) {
           heap.evictCell(left, id, key);
         } else {
-          SymInfo hint = heap.info(left, sym);
+          const SymInfo &hint = heap.info(left, sym);
           heap.load(right, id, key, hint);
         }
         changed = true;
@@ -2693,7 +2703,7 @@ static void alignCells(const Heap &heap, HeapState &left, HeapState &right,
         if (vague(left, key) && right.objects.find(id)->stride != 0) {
           heap.evictCell(right, id, key);
         } else {
-          SymInfo hint = heap.info(right, sym);
+          const SymInfo &hint = heap.info(right, sym);
           heap.load(left, id, key, hint);
         }
         changed = true;
@@ -2786,7 +2796,7 @@ static void alignSelected(const Heap &heap, HeapState &left, HeapState &right,
                      const std::vector<std::pair<CellKey, Sym>> &keys) {
       for (const auto &[key, sym] : keys) {
         if (shared.contains(key.index)) {
-          SymInfo hint = heap.info(from, sym);
+          const SymInfo &hint = heap.info(from, sym);
           heap.load(to, id, key, hint);
         } else {
           heap.evictCell(from, id, key);
@@ -2908,8 +2918,8 @@ public:
       }
       out.insert(out.end(), tail.rbegin(), tail.rend());
     }
-    std::sort(evictLeft.begin(), evictLeft.end());
-    std::sort(evictRight.begin(), evictRight.end());
+    std::ranges::sort(evictLeft);
+    std::ranges::sort(evictRight);
     return evictLeft.empty() && evictRight.empty();
   }
 
@@ -3176,9 +3186,7 @@ static ObjectState joinObjectAttributes(const ObjectState &a,
   out.record = joinObjectRecords(a, b);
   if (!isReleasedLife(a.life))
     out.releaseOffset = b.releaseOffset;
-  else if (!isReleasedLife(b.life))
-    out.releaseOffset = a.releaseOffset;
-  else if (a.releaseOffset == b.releaseOffset)
+  else if (!isReleasedLife(b.life) || a.releaseOffset == b.releaseOffset)
     out.releaseOffset = a.releaseOffset;
   out.family = a.family == b.family ? a.family : std::string();
   // An object one side never made is owned where the other side made it.
@@ -3209,10 +3217,9 @@ static ObjectState joinObjectAttributes(const ObjectState &a,
   out.lastUse = a.lastUse != 0 ? a.lastUse : b.lastUse;
   out.candidates = a.candidates;
   for (ObjectId candidate : b.candidates)
-    if (std::find(out.candidates.begin(), out.candidates.end(), candidate) ==
-        out.candidates.end())
+    if (std::ranges::find(out.candidates, candidate) == out.candidates.end())
       out.candidates.push_back(candidate);
-  std::sort(out.candidates.begin(), out.candidates.end());
+  std::ranges::sort(out.candidates);
   return out;
 }
 
@@ -3303,10 +3310,10 @@ static HeapState combineStates(const Heap &heap, ObjectTable &table,
           // The cell at `stride * (scale * s + value) + offset`.
           Term index = boundTerm(match.index);
           auto stride = static_cast<std::int64_t>(match.position.stride);
-          CellKey key{.offset = match.position.offset + stride * index.constant,
-                      .stride =
-                          static_cast<std::uint32_t>(stride * index.scale),
-                      .index = index.var};
+          CellKey key{
+              .offset = match.position.offset + (stride * index.constant),
+              .stride = static_cast<std::uint32_t>(stride * index.scale),
+              .index = index.var};
           result.cells.set(key, pairing.pair(*a->cells.find(match.left),
                                              *b->cells.find(match.right)));
         }
@@ -3411,13 +3418,13 @@ static HeapState combineStates(const Heap &heap, ObjectTable &table,
       const bool implicit = onlyKind == ObjectKind::Global ||
                             onlyKind == ObjectKind::Entry ||
                             onlyKind == ObjectKind::EntrySummary;
-      for (const auto &[key, sym] : only->cells)
+      for (const auto &[key, sym] : only->cells) {
+        const Sym onLeft = isLeft ? sym : ZeroSym;
+        const Sym onRight = isLeft ? ZeroSym : sym;
         result.cells.set(renameKey(key, isLeft, !isLeft),
-                         implicit
-                             ? (isLeft ? pairing.pairOneSided(sym, ZeroSym)
-                                       : pairing.pairOneSided(ZeroSym, sym))
-                             : (isLeft ? pairing.pair(sym, ZeroSym)
-                                       : pairing.pair(ZeroSym, sym)));
+                         implicit ? pairing.pairOneSided(onLeft, onRight)
+                                  : pairing.pair(onLeft, onRight));
+      }
       for (Segment &segment : result.segments) {
         segment.from = isLeft ? pairing.pairTerm(segment.from, nullptr)
                               : pairing.pairTermRight(segment.from);
@@ -3513,14 +3520,13 @@ static HeapState combineStates(const Heap &heap, ObjectTable &table,
     };
     addCandidates(plan.leftObject, *lo);
     addCandidates(plan.rightObject, *ro);
-    std::sort(focusState.candidates.begin(), focusState.candidates.end());
+    std::ranges::sort(focusState.candidates);
     focusState.candidates.erase(
-        std::unique(focusState.candidates.begin(), focusState.candidates.end()),
+        std::ranges::unique(focusState.candidates).begin(),
         focusState.candidates.end());
-    focusState.candidates.erase(std::remove(focusState.candidates.begin(),
-                                            focusState.candidates.end(),
-                                            plan.focus),
-                                focusState.candidates.end());
+    focusState.candidates.erase(
+        std::ranges::remove(focusState.candidates, plan.focus).begin(),
+        focusState.candidates.end());
     std::set<CellKey> keys;
     for (const auto &[k, s] : lo->cells)
       keys.insert(k);
@@ -3622,8 +3628,7 @@ static HeapState combineStates(const Heap &heap, ObjectTable &table,
       for (const EntryTest &test : made.entryTests) {
         EntryTest opposite = test;
         opposite.zero = !opposite.zero;
-        if (std::binary_search(other.entryTests.begin(), other.entryTests.end(),
-                               opposite)) {
+        if (std::ranges::binary_search(other.entryTests, opposite)) {
           object.existsIfEntry = test;
           break;
         }
@@ -3711,11 +3716,11 @@ static HeapState combineStates(const Heap &heap, ObjectTable &table,
         auto l = stored(left, id, key);
         auto r = stored(right, id, key);
         std::optional<EntryTest> guard;
-        if (l == true && r == false)
+        if (l == true && r == false) {
           guard = opposite(left, right);
-        else if (l == false && r == true)
+        } else if (l == false && r == true) {
           guard = opposite(right, left);
-        else if (l == true && r == true) {
+        } else if (l == true && r == true) {
           auto a = guardOf(left.objects.find(id), key);
           auto b = guardOf(right.objects.find(id), key);
           if (a && b && *a == *b)
@@ -3732,9 +3737,8 @@ static HeapState combineStates(const Heap &heap, ObjectTable &table,
   }
 
   // Entry tests both sides decided alike (they name cells, not symbols).
-  std::set_intersection(left.entryTests.begin(), left.entryTests.end(),
-                        right.entryTests.begin(), right.entryTests.end(),
-                        std::back_inserter(out.entryTests));
+  std::ranges::set_intersection(left.entryTests, right.entryTests,
+                                std::back_inserter(out.entryTests));
 
   // RFC 0014: a pointer comparison both sides decided alike, over the
   // symbols that pair their operands.
@@ -3845,16 +3849,14 @@ std::string Heap::dump(const HeapState &state) const {
       os << " }";
     }
     os << "\n";
-    for (const Segment &segment : object.segments)
+    for (const Segment &segment : object.segments) {
       os << "    [" << spellTerm(segment.from) << ".." << spellTerm(segment.to)
          << ")*" << segment.position.stride << "+" << segment.position.offset
-         << " = " << name(segment.value)
-         << (info(state, segment.value).release
-                 ? (info(state, segment.value).release->definite()
-                        ? " released"
-                        : " may-released")
-                 : "")
-         << "\n";
+         << " = " << name(segment.value);
+      if (const auto &release = info(state, segment.value).release)
+        os << (release->definite() ? " released" : " may-released");
+      os << "\n";
+    }
     for (const auto &[key, sym] : object.cells) {
       if (key.isSelected())
         os << "    [" << key.stride << "*" << name(key.index) << "+"
@@ -3870,9 +3872,12 @@ std::string Heap::dump(const HeapState &state) const {
           os << " top";
         for (const Target &t : value.targets)
           os << " o" << t.object << "+" << spellTerm(t.offset);
-        os << (value.null == PointerNull::Null      ? " null"
-               : value.null == PointerNull::NonNull ? " nonnull"
-                                                    : " maybe-null");
+        if (value.null == PointerNull::Null)
+          os << " null";
+        else if (value.null == PointerNull::NonNull)
+          os << " nonnull";
+        else
+          os << " maybe-null";
         if (value.release)
           os << (value.release->definite() ? " released" : " may-released");
       }

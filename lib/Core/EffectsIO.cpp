@@ -9,6 +9,7 @@
 #include "weavec/Core/EffectsIO.h"
 
 #include <algorithm>
+#include <array>
 #include <charconv>
 #include <map>
 #include <set>
@@ -27,17 +28,17 @@ static bool plainChar(char c) {
 }
 
 static std::string encode(std::string_view text) {
-  static constexpr char Hex[] = "0123456789ABCDEF";
+  static constexpr std::string_view Hex = "0123456789ABCDEF";
   std::string out;
   for (char c : text) {
     if (plainChar(c)) {
       out += c;
       continue;
     }
-    auto byte = static_cast<unsigned char>(c);
+    unsigned byte = static_cast<unsigned char>(c);
     out += '%';
-    out += Hex[byte >> 4];
-    out += Hex[byte & 0xF];
+    out += Hex[byte >> 4U];
+    out += Hex[byte & 0xFU];
   }
   return out;
 }
@@ -87,7 +88,7 @@ static std::vector<std::string_view> split(std::string_view text, char by) {
 /// `key=value` → value, when `token` starts with `key=`.
 static std::optional<std::string_view> valueOf(std::string_view token,
                                                std::string_view key) {
-  if (token.size() > key.size() && token.substr(0, key.size()) == key &&
+  if (token.size() > key.size() && token.starts_with(key) &&
       token[key.size()] == '=')
     return token.substr(key.size() + 1);
   return std::nullopt;
@@ -354,12 +355,12 @@ static std::optional<EffectCase> parseCase(std::string_view text) {
                     .entryZero = std::move(entry)};
 }
 
-static constexpr const char *ValueKinds[] = {"null",    "fresh",   "path",
-                                             "static",  "int",     "dangling",
-                                             "unknown", "function"};
+static constexpr std::array<const char *, 8> ValueKinds = {
+    "null", "fresh",    "path",    "static",
+    "int",  "dangling", "unknown", "function"};
 
 static std::string printValue(const ValueDesc &value) {
-  std::string out = ValueKinds[static_cast<int>(value.kind)];
+  std::string out = ValueKinds.at(static_cast<std::size_t>(value.kind));
   if (!value.family.empty())
     out += " family=" + encode(value.family);
   if (value.extent)
@@ -399,8 +400,8 @@ parseValue(const std::vector<std::string_view> &tokens) {
     return std::nullopt;
   ValueDesc value;
   bool known = false;
-  for (int k = 0; k < static_cast<int>(std::size(ValueKinds)); ++k)
-    if (tokens[0] == ValueKinds[k]) {
+  for (std::size_t k = 0; k < ValueKinds.size(); ++k)
+    if (tokens[0] == ValueKinds.at(k)) {
       value.kind = static_cast<ValueDesc::Kind>(k);
       known = true;
     }
@@ -466,8 +467,8 @@ parseValue(const std::vector<std::string_view> &tokens) {
   return value;
 }
 
-static constexpr const char *EffectKinds[] = {"release", "move",   "unknown",
-                                              "escape",  "share-", "share+"};
+static constexpr std::array<const char *, 6> EffectKinds = {
+    "release", "move", "unknown", "escape", "share-", "share+"};
 
 //===----------------------------------------------------------------------===//
 // Print and parse
@@ -491,7 +492,8 @@ std::string printEffects(const FunctionEffects &effects) {
   if (effects.unknownGlobals)
     out += "unknown-globals\n";
   for (const PathEffect &effect : effects.effects) {
-    out += "effect " + std::string(EffectKinds[static_cast<int>(effect.kind)]) +
+    out += "effect " +
+           std::string(EffectKinds.at(static_cast<std::size_t>(effect.kind))) +
            " " + printPath(effect.path) + " when=" + printCase(effect.when);
     if (!effect.family.empty())
       out += " family=" + encode(effect.family);
@@ -505,7 +507,7 @@ std::string printEffects(const FunctionEffects &effects) {
       out += " offset=" + std::to_string(effect.offset);
     if (effect.elements)
       out += " elements=" + printRange(*effect.elements);
-    out += "\n";
+    out += '\n';
   }
   for (const StoreEffect &store : effects.stores) {
     out += "store " + printPath(store.dest) + " when=" + printCase(store.when);
@@ -539,7 +541,7 @@ std::string printEffects(const FunctionEffects &effects) {
       out += " nul-from=" + printTerm(*string.nulFrom);
     if (string.contents)
       out += " contents=" + std::to_string(*string.contents);
-    out += "\n";
+    out += '\n';
   }
   for (const SummaryPath &path : effects.reads)
     out += "reads " + printPath(path) + "\n";
@@ -566,8 +568,7 @@ std::optional<FunctionEffects> parseEffects(std::string_view text,
     // The value after `::`.
     std::vector<std::string_view> head = tokens;
     std::vector<std::string_view> tail;
-    if (auto it = std::find(tokens.begin(), tokens.end(), "::");
-        it != tokens.end()) {
+    if (auto it = std::ranges::find(tokens, "::"); it != tokens.end()) {
       head.assign(tokens.begin(), it);
       tail.assign(it + 1, tokens.end());
     }
@@ -592,8 +593,8 @@ std::optional<FunctionEffects> parseEffects(std::string_view text,
     } else if (kind == "effect" && head.size() >= 4) {
       PathEffect effect;
       bool known = false;
-      for (int k = 0; k < static_cast<int>(std::size(EffectKinds)); ++k)
-        if (head[1] == EffectKinds[k]) {
+      for (std::size_t k = 0; k < EffectKinds.size(); ++k)
+        if (head[1] == EffectKinds.at(k)) {
           effect.kind = static_cast<PathEffect::Kind>(k);
           known = true;
         }
@@ -773,10 +774,10 @@ FunctionEffects joinEffects(const FunctionEffects &left,
   };
   for (const PathEffect &effect : left.effects) {
     PathEffect joined = effect;
-    auto other = std::find_if(right.effects.begin(), right.effects.end(),
-                              [&](const PathEffect &candidate) {
-                                return sameEffect(effect, candidate);
-                              });
+    auto other =
+        std::ranges::find_if(right.effects, [&](const PathEffect &candidate) {
+          return sameEffect(effect, candidate);
+        });
     if (other == right.effects.end()) {
       joined.may = true;
     } else {
@@ -786,10 +787,9 @@ FunctionEffects joinEffects(const FunctionEffects &left,
     out.effects.push_back(std::move(joined));
   }
   for (const PathEffect &effect : right.effects)
-    if (std::none_of(left.effects.begin(), left.effects.end(),
-                     [&](const PathEffect &candidate) {
-                       return sameEffect(effect, candidate);
-                     })) {
+    if (std::ranges::none_of(left.effects, [&](const PathEffect &candidate) {
+          return sameEffect(effect, candidate);
+        })) {
       PathEffect joined = effect;
       joined.may = true;
       out.effects.push_back(std::move(joined));
@@ -801,10 +801,10 @@ FunctionEffects joinEffects(const FunctionEffects &left,
   };
   for (const StoreEffect &store : left.stores) {
     StoreEffect joined = store;
-    auto other = std::find_if(right.stores.begin(), right.stores.end(),
-                              [&](const StoreEffect &candidate) {
-                                return samePlace(store, candidate);
-                              });
+    auto other =
+        std::ranges::find_if(right.stores, [&](const StoreEffect &candidate) {
+          return samePlace(store, candidate);
+        });
     if (other == right.stores.end()) {
       joined.may = true;
     } else {
@@ -817,10 +817,9 @@ FunctionEffects joinEffects(const FunctionEffects &left,
     out.stores.push_back(std::move(joined));
   }
   for (const StoreEffect &store : right.stores)
-    if (std::none_of(left.stores.begin(), left.stores.end(),
-                     [&](const StoreEffect &candidate) {
-                       return samePlace(store, candidate);
-                     })) {
+    if (std::ranges::none_of(left.stores, [&](const StoreEffect &candidate) {
+          return samePlace(store, candidate);
+        })) {
       StoreEffect joined = store;
       joined.may = true;
       out.stores.push_back(std::move(joined));
@@ -831,11 +830,10 @@ FunctionEffects joinEffects(const FunctionEffects &left,
   // widening join would otherwise add the same allocation each round), when
   // no store names that object.
   auto named = [&](const FunctionEffects &effects, std::uint32_t object) {
-    return std::any_of(effects.stores.begin(), effects.stores.end(),
-                       [&](const StoreEffect &store) {
-                         return store.value.kind == ValueDesc::Kind::Fresh &&
-                                store.value.object == object;
-                       });
+    return std::ranges::any_of(effects.stores, [&](const StoreEffect &store) {
+      return store.value.kind == ValueDesc::Kind::Fresh &&
+             store.value.object == object;
+    });
   };
   auto sameUpToObject = [](const ResultEffect &a, const ResultEffect &b) {
     if (a.value.kind != ValueDesc::Kind::Fresh ||
@@ -848,20 +846,16 @@ FunctionEffects joinEffects(const FunctionEffects &left,
   };
   out.results.clear();
   for (const ResultEffect &result : left.results)
-    if (std::none_of(out.results.begin(), out.results.end(),
-                     [&](const ResultEffect &kept) {
-                       return sameUpToObject(kept, result) &&
-                              (kept == result ||
-                               !named(left, result.value.object));
-                     }))
+    if (std::ranges::none_of(out.results, [&](const ResultEffect &kept) {
+          return sameUpToObject(kept, result) &&
+                 (kept == result || !named(left, result.value.object));
+        }))
       out.results.push_back(result);
   for (const ResultEffect &result : right.results)
-    if (std::none_of(out.results.begin(), out.results.end(),
-                     [&](const ResultEffect &kept) {
-                       return kept == result ||
-                              (sameUpToObject(kept, result) &&
-                               !named(right, result.value.object));
-                     }))
+    if (std::ranges::none_of(out.results, [&](const ResultEffect &kept) {
+          return kept == result || (sameUpToObject(kept, result) &&
+                                    !named(right, result.value.object));
+        }))
       out.results.push_back(result);
   // A guarantee both give.
   for (const auto &[resultClass, paths] : left.nonNullOn) {
@@ -869,14 +863,13 @@ FunctionEffects joinEffects(const FunctionEffects &left,
     if (other == right.nonNullOn.end())
       continue;
     for (const SummaryPath &path : paths)
-      if (std::find(other->second.begin(), other->second.end(), path) !=
-          other->second.end())
+      if (std::ranges::find(other->second, path) != other->second.end())
         out.nonNullOn[resultClass].push_back(path);
   }
   auto unite = [](std::vector<SummaryPath> a,
                   const std::vector<SummaryPath> &b) {
     for (const SummaryPath &path : b)
-      if (std::find(a.begin(), a.end(), path) == a.end())
+      if (std::ranges::find(a, path) == a.end())
         a.push_back(path);
     return a;
   };
@@ -884,8 +877,7 @@ FunctionEffects joinEffects(const FunctionEffects &left,
   out.writes = unite(left.writes, right.writes);
   // A string fact both sides give.
   for (const StringEffect &string : left.strings)
-    if (std::find(right.strings.begin(), right.strings.end(), string) !=
-        right.strings.end())
+    if (std::ranges::find(right.strings, string) != right.strings.end())
       out.strings.push_back(string);
   return out;
 }
@@ -907,10 +899,9 @@ FunctionEffects widenEffects(const FunctionEffects &previous,
           !effect.elements)
         covering.push_back(effect.path);
   auto covered = [&](const SummaryPath &path, bool orEqual) {
-    return std::any_of(
-        covering.begin(), covering.end(), [&](const SummaryPath &cover) {
-          return cover.isProperPrefixOf(path) || (orEqual && cover == path);
-        });
+    return std::ranges::any_of(covering, [&](const SummaryPath &cover) {
+      return cover.isProperPrefixOf(path) || (orEqual && cover == path);
+    });
   };
   auto fold = [&](FunctionEffects effects) {
     std::erase_if(effects.effects, [&](const PathEffect &effect) {

@@ -52,12 +52,14 @@ static ParamShape shapeOf(const CallExpr &call) {
   return shape;
 }
 
+namespace {
 /// The row whose effects are being applied, for the terms that read the
 /// call itself (`strlen`, `fmtlen`).
 struct RowCall {
   const CallExpr *call = nullptr;
   const core::LibraryMatch *match = nullptr;
 };
+} // namespace
 
 /// A library term over the call's arguments as a domain term, when it is
 /// linear in one argument.
@@ -266,8 +268,8 @@ core::Sym CallApplier::callResultValue(QualType type) {
   core::ObjectState &objectState = heap.ensure(state, object);
   if (!objectState.extent)
     if (auto width = transfer.sizeOf(pointee))
-      objectState.extent =
-          core::Extent{core::Term::of(*width), core::ExtentClass::LowerBound};
+      objectState.extent = core::Extent{.bytes = core::Term::of(*width),
+                                        .cls = core::ExtentClass::LowerBound};
   core::SymInfo info;
   info.type = core::SymInfo::Type::Pointer;
   info.targets = {core::Target{.object = object}};
@@ -337,7 +339,8 @@ core::Sym CallApplier::freshAllocation(const std::string &family,
   fresh.uninitialised = !zeroed && wrapped;
   fresh.havocked = !zeroed && !wrapped;
   if (extent && extent->known)
-    fresh.extent = core::Extent{*extent, core::ExtentClass::Exact};
+    fresh.extent =
+        core::Extent{.bytes = *extent, .cls = core::ExtentClass::Exact};
   state.objects.set(recent, fresh);
   core::SymInfo info;
   info.type = core::SymInfo::Type::Pointer;
@@ -389,6 +392,7 @@ void Transfer::havocArgument(const CallExpr &call, core::Sym pointer,
   if (info.type != core::SymInfo::Type::Pointer)
     return;
   std::vector<core::ObjectId> start;
+  start.reserve(info.targets.size());
   for (const core::Target &target : info.targets)
     start.push_back(target.object);
   std::vector<core::ObjectId> reached =
@@ -407,8 +411,7 @@ void Transfer::havocArgument(const CallExpr &call, core::Sym pointer,
       continue;
     core::ObjectKind kind = run.table().info(id).key.kind;
     core::ObjectState &object = state.objects.at(id);
-    if (!constPointee ||
-        std::find(start.begin(), start.end(), id) == start.end()) {
+    if (!constPointee || std::ranges::find(start, id) == start.end()) {
       object.cells = {};
       object.havocked = true;
       object.nulWithin.reset();
@@ -424,7 +427,7 @@ void Transfer::havocArgument(const CallExpr &call, core::Sym pointer,
 
 void CallApplier::syncCallback(unsigned row, const core::LibCallback &callback,
                                const std::vector<core::Sym> &callArgs) {
-  UnitRun &unit = run.unitRun();
+  const UnitRun &unit = run.unitRun();
   std::vector<const FunctionDecl *> targets = transfer.syncTargets(args[row]);
   bool handedArguments = targets.empty();
   core::FunctionEffects possible;
@@ -519,6 +522,7 @@ void CallApplier::writeReachable(unsigned index) {
   if (info.type != core::SymInfo::Type::Pointer)
     return;
   std::vector<core::ObjectId> start;
+  start.reserve(info.targets.size());
   for (const core::Target &target : info.targets)
     start.push_back(target.object);
   for (core::ObjectId id : reachableFrom(heap, state, start)) {
@@ -540,7 +544,7 @@ void CallApplier::writeReachable(unsigned index) {
 /// RFC 0030 §7.2: the extent a callee's declared result kind gives its
 /// result (`alloc_size(i[, j])`: argument `i` bytes, times argument `j`).
 static std::optional<core::Extent>
-declaredResultExtent(Transfer &transfer, const KindEntry &entry,
+declaredResultExtent(const Transfer &transfer, const KindEntry &entry,
                      const CallExpr &call, const std::vector<core::Sym> &args) {
   if (!entry.hasShape() || entry.shapeFromSystemHeader() ||
       (entry.kind.shape != core::PointerShape::Sized &&
@@ -573,14 +577,15 @@ declaredResultExtent(Transfer &transfer, const KindEntry &entry,
     }
     std::int64_t scale = extent.scale * unit;
     bytes.scale *= scale;
-    bytes.constant = bytes.constant * scale + extent.offset * unit;
+    bytes.constant = (bytes.constant * scale) + (extent.offset * unit);
     if (bytes.isConstant())
       bytes.scale = 0;
   }
   if (!bytes.known)
     return std::nullopt;
-  return core::Extent{bytes,
-                      entry.extentClass.value_or(core::ExtentClass::Declared)};
+  return core::Extent{
+      .bytes = bytes,
+      .cls = entry.extentClass.value_or(core::ExtentClass::Declared)};
 }
 
 core::Sym CallApplier::applyUnknown(bool callback, const FunctionDecl *callee) {
@@ -744,8 +749,8 @@ static std::vector<std::int64_t> pointerOffsets(const ASTContext &context,
         return;
       std::int64_t first = std::max<std::int64_t>(0, (from - base) / step);
       auto count = static_cast<std::int64_t>(array->getSize().getZExtValue());
-      for (std::int64_t i = first; i < count && base + i * step < to; ++i)
-        self(self, element, base + i * step, depth + 1);
+      for (std::int64_t i = first; i < count && base + (i * step) < to; ++i)
+        self(self, element, base + (i * step), depth + 1);
       return;
     }
     if (const RecordDecl *record = t->getAsRecordDecl();
@@ -793,7 +798,7 @@ void CallApplier::copyCells(unsigned dst, unsigned src,
       least = bytes.constant;
     } else if (bytes.scale > 0) {
       if (auto lo = state.zone.lower(bytes.var))
-        least = *lo * bytes.scale + bytes.constant;
+        least = (*lo * bytes.scale) + bytes.constant;
     }
     std::int64_t count = least && *least > 0 ? *least / *size : 0;
     bool exactLength = bytes.isConstant() && count <= 64;
@@ -816,8 +821,8 @@ void CallApplier::copyCells(unsigned dst, unsigned src,
           Address cell;
           cell.targets = {
               core::Target{.object = source,
-                           .offset = core::Term::of(s + e * *size + offset)}};
-          copied.emplace_back(d + e * *size + offset, type,
+                           .offset = core::Term::of(s + (e * *size) + offset)}};
+          copied.emplace_back(d + (e * *size) + offset, type,
                               transfer.load(cell, type, nullptr));
         }
       // A cell the length covers in part holds a value made of bytes of
@@ -827,12 +832,12 @@ void CallApplier::copyCells(unsigned dst, unsigned src,
         if (offset >= partial)
           continue;
         std::int64_t width = transfer.sizeOf(type).value_or(*size);
-        std::int64_t at = d + count * *size + offset;
+        std::int64_t at = d + (count * *size) + offset;
         if (offset + width <= partial) {
           Address cell;
           cell.targets = {core::Target{
               .object = source,
-              .offset = core::Term::of(s + count * *size + offset)}};
+              .offset = core::Term::of(s + (count * *size) + offset)}};
           copied.emplace_back(at, type, transfer.load(cell, type, nullptr));
           continue;
         }
@@ -1025,7 +1030,9 @@ void CallApplier::fillCells(unsigned dst, const core::LibTerm &value,
     if (fill.isConstant() && target.offset.isConstant() && bytes.isConstant() &&
         bytes.constant > 0 && bytes.constant <= 64 && single) {
       core::Sym byte = transfer.constant(
-          static_cast<signed char>(fill.constant & 0xff), context.CharTy);
+          static_cast<signed char>(static_cast<std::uint64_t>(fill.constant) &
+                                   0xffU),
+          context.CharTy);
       for (std::int64_t at = 0; at < bytes.constant; ++at)
         heap.write(state, target.object,
                    core::CellKey{.offset = target.offset.constant + at}, byte,
@@ -1149,13 +1156,13 @@ core::Sym CallApplier::rowResult(const core::LibraryResult &result,
         // the zero-initialisation wrapper, which asks for one byte instead:
         // the build the analysis models fails without freeing.)
         std::optional<bool> zero;
-        if (wrappedRealloc)
+        if (wrappedRealloc) {
           zero = false;
-        else if (result.extent) {
+        } else if (result.extent) {
           core::Term size = termOfLibTerm(transfer, *result.extent, args);
-          if (size.isConstant())
+          if (size.isConstant()) {
             zero = size.constant == 0;
-          else if (size.known && size.var != core::ZeroSym) {
+          } else if (size.known && size.var != core::ZeroSym) {
             // The bounds of `scale * var + constant`.
             auto varLo = state.zone.lower(size.var);
             auto varHi = state.zone.upper(size.var);
@@ -1183,7 +1190,7 @@ core::Sym CallApplier::rowResult(const core::LibraryResult &result,
           onFailure.kind = core::PendingCase::Kind::Release;
           onFailure.classes = {"null"};
           onFailure.subject = realloced;
-          onFailure.record = record;
+          onFailure.record = std::move(record);
           onFailure.record.reason = core::ReleaseRecord::Reason::Freed;
           onFailure.record.conditional = zero != true;
           heap.infoMut(state, value).pending.push_back(onFailure);
@@ -1256,7 +1263,8 @@ core::Sym CallApplier::rowResult(const core::LibraryResult &result,
         core::Term bytes =
             termOfLibTerm(transfer, *result.extent, args, rowCall);
         if (bytes.known)
-          storage.extent = core::Extent{bytes, core::ExtentClass::Declared};
+          storage.extent =
+              core::Extent{.bytes = bytes, .cls = core::ExtentClass::Declared};
       }
       core::SymInfo info;
       info.type = core::SymInfo::Type::Pointer;
@@ -1327,6 +1335,7 @@ core::Sym CallApplier::applyLibrary(const core::LibraryMatch &match) {
   };
   // `writes-str` lengths are over the values before the call (RFC 0030 §8).
   std::vector<core::Term> written;
+  written.reserve(entry.writesString.size());
   for (const core::LibStringWrite &write : entry.writesString)
     written.push_back(
         write.length ? termOfLibTerm(transfer, *write.length, args, rowCall)
@@ -1359,6 +1368,7 @@ core::Sym CallApplier::applyLibrary(const core::LibraryMatch &match) {
       continue;
     const core::SymInfo &info = heap.info(state, args[write.dst]);
     std::vector<core::ObjectId> targets;
+    targets.reserve(info.targets.size());
     for (const core::Target &target : info.targets)
       targets.push_back(target.object);
     for (const core::Target &target : info.targets) {
@@ -1432,10 +1442,11 @@ core::Sym CallApplier::applyLibrary(const core::LibraryMatch &match) {
         Address cell;
         cell.targets = {target};
         transfer.store(cell, transfer.unknownValue(scalar), scalar, nullptr);
-      } else if (bytes && target.offset.isConstant())
+      } else if (bytes && target.offset.isConstant()) {
         heap.forgetCells(state, target.object, target.offset.constant, *bytes);
-      else
+      } else {
         heap.forgetCells(state, target.object, 0, std::nullopt);
+      }
       state.objects.at(target.object).uninitialised = false;
       state.objects.at(target.object).stored = true;
     }
@@ -1655,17 +1666,18 @@ core::Sym CallApplier::applyAnnotated(const std::vector<AnnotationSet> &params,
     const AnnotationSet &set = params[i];
     std::string family =
         set.family.empty() ? std::string(core::HeapFamily) : set.family;
-    if (set.owned || set.frees)
+    if (set.owned || set.frees) {
       releaseArgument(i, family,
                       set.frees ? core::ReleaseRecord::Reason::Freed
                                 : core::ReleaseRecord::Reason::Moved);
-    else if (set.releases)
+    } else if (set.releases) {
       releaseArgument(i, family, core::ReleaseRecord::Reason::ShareReleased);
-    else if (set.retains || set.raw) {
+    } else if (set.retains || set.raw) {
       // RFC 0007 *Escape*, RFC 0004: kept by the callee, or handed over as
       // a raw pointer the analysis does not follow.
       const core::SymInfo &info = heap.info(state, args[i]);
       std::vector<core::ObjectId> targets;
+      targets.reserve(info.targets.size());
       for (const core::Target &target : info.targets)
         targets.push_back(target.object);
       for (core::ObjectId id : targets)
@@ -1686,7 +1698,7 @@ core::Sym CallApplier::applyAnnotated(const std::vector<AnnotationSet> &params,
 }
 
 core::Sym CallApplier::applyDirect(const FunctionDecl &callee) {
-  UnitRun &unit = run.unitRun();
+  const UnitRun &unit = run.unitRun();
   const FunctionDecl *canonical = callee.getCanonicalDecl();
   // A summary of the unit (or, at link, of the program); for a call whose
   // context the general summary does not describe, the context's (§6.6).
@@ -1964,7 +1976,7 @@ singleTarget(core::Heap &heap, const core::HeapState &state, core::Sym sym) {
 
 /// §6.6: the context of a call to `definition`: which of its entry objects
 /// the arguments make the same, and the integer arguments the caller knows.
-static AliasContext contextOf(FunctionRun &run, core::Heap &heap,
+static AliasContext contextOf(const FunctionRun &run, core::Heap &heap,
                               const core::HeapState &state,
                               const ParamShape &definition,
                               const std::vector<core::Sym> &args) {
@@ -2154,10 +2166,10 @@ static bool dependsOnInputs(const core::FunctionEffects &effects) {
   for (const core::StoreEffect &store : effects.stores)
     if (vague(store.value) || store.may)
       return true;
-  for (const core::PathEffect &effect : effects.effects)
-    if (effect.may || effect.lossy || effect.when.paramZero)
-      return true;
-  return false;
+  return std::ranges::any_of(
+      effects.effects, [](const core::PathEffect &effect) {
+        return effect.may || effect.lossy || effect.when.paramZero;
+      });
 }
 
 /// §6.6 *Amendment (numeric contexts)*: the integers the objects of pointer
@@ -2195,7 +2207,7 @@ const core::FunctionEffects *
 Transfer::remoteContext(const CallExpr &call, const FunctionDecl &callee,
                         const std::vector<core::Sym> &args,
                         const core::FunctionEffects &general) {
-  UnitRun &unit = run.unitRun();
+  const UnitRun &unit = run.unitRun();
   if (unit.hasBody(callee) || !callee.isExternallyVisible() ||
       callee.getIdentifier() == nullptr ||
       call.getNumArgs() != callee.getNumParams())
@@ -2238,14 +2250,15 @@ Transfer::remoteContext(const CallExpr &call, const std::string &callee,
     for (core::Handle handle : value.functions)
       if (const auto *fn = fromHandle<FunctionDecl>(handle))
         names.push_back(unit.portableName(*fn));
-    std::sort(names.begin(), names.end());
-    names.erase(std::unique(names.begin(), names.end()), names.end());
+    std::ranges::sort(names);
+    auto repeated = std::ranges::unique(names);
+    names.erase(repeated.begin(), repeated.end());
     callContext.callbacks.emplace_back(i, std::move(names));
   }
   bool numeric =
       !callContext.cells.empty() ||
-      std::any_of(callContext.constants.begin(), callContext.constants.end(),
-                  [](const auto &value) { return value.has_value(); });
+      std::ranges::any_of(callContext.constants,
+                          [](const auto &value) { return value.has_value(); });
   if (callContext.trivial() && callContext.callbacks.empty() &&
       !(numeric && dependsOnInputs(general)))
     return nullptr;
@@ -2297,7 +2310,8 @@ Transfer::contextSummary(const CallExpr &call, const FunctionDecl &callee,
     class GlobalReads : public RecursiveASTVisitor<GlobalReads> {
     public:
       std::set<const VarDecl *> globals;
-      // NOLINTNEXTLINE(readability-identifier-naming)
+      // RecursiveASTVisitor's CRTP hooks are found by name.
+      // NOLINTNEXTLINE(readability-identifier-naming,bugprone-derived-method-shadowing-base-method)
       bool VisitDeclRefExpr(DeclRefExpr *ref) {
         if (const auto *var = dyn_cast<VarDecl>(ref->getDecl());
             var != nullptr && var->hasGlobalStorage() &&
@@ -2336,9 +2350,9 @@ Transfer::contextSummary(const CallExpr &call, const FunctionDecl &callee,
   }
   bool numeric =
       !callContext.cells.empty() || !callContext.globalCells.empty() ||
-      std::any_of(callContext.constants.begin(), callContext.constants.end(),
-                  [](const auto &value) { return value.has_value(); });
-  if (!(callContext.trivial() && !numeric) &&
+      std::ranges::any_of(callContext.constants,
+                          [](const auto &value) { return value.has_value(); });
+  if ((!callContext.trivial() || numeric) &&
       (!callContext.trivial() || dependsOnInputs(general))) {
     auto &known = unit.contextSummaries[definition->getCanonicalDecl()];
     auto found = known.find(callContext);

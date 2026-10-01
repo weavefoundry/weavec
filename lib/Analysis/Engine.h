@@ -54,6 +54,8 @@
 namespace weavec::analysis::engine {
 
 /// Opaque handles for Clang entities (RFC 0031 §2).
+// NOLINTBEGIN(cppcoreguidelines-pro-type-reinterpret-cast,performance-no-int-to-ptr):
+// a handle is the address of the node it names.
 [[nodiscard]] inline core::Handle handleOf(const void *pointer) noexcept {
   return static_cast<core::Handle>(reinterpret_cast<std::uintptr_t>(pointer));
 }
@@ -61,6 +63,7 @@ template <typename T>
 [[nodiscard]] inline const T *fromHandle(core::Handle handle) noexcept {
   return reinterpret_cast<const T *>(static_cast<std::uintptr_t>(handle));
 }
+// NOLINTEND(cppcoreguidelines-pro-type-reinterpret-cast,performance-no-int-to-ptr)
 /// The variable a `Local` or `Global` object is; null for any other, and
 /// for a local an expression makes (`ObjectKey::expression`), whose handle
 /// is no declaration.
@@ -224,9 +227,9 @@ std::vector<core::ObjectId> reachableFrom(const core::Heap &heap,
 /// One analysis of one function body.
 class FunctionRun final : public core::HeapOracle {
 public:
-  FunctionRun(UnitRun &unit, const clang::FunctionDecl &function,
-              LedgerAdapter &out, RunMode mode,
-              const AliasContext *context = nullptr, unsigned depth = 0);
+  FunctionRun(UnitRun &unitRun, const clang::FunctionDecl &fn,
+              LedgerAdapter &adapter, RunMode runMode,
+              const AliasContext *alias = nullptr, unsigned depth = 0);
   ~FunctionRun() override;
   FunctionRun(const FunctionRun &) = delete;
   FunctionRun &operator=(const FunctionRun &) = delete;
@@ -576,7 +579,7 @@ private:
   using ElementKey =
       std::pair<core::SummaryPath, std::optional<core::ElementRange>>;
   template <typename Describe>
-  void describeElements(const core::HeapState &state, core::ObjectId object,
+  void describeElements(const core::HeapState &state, core::ObjectId id,
                         const core::ObjectState &contents,
                         const core::SummaryPath &objectPath, Describe &describe,
                         std::map<ElementKey, std::string> &releases,
@@ -1074,7 +1077,7 @@ private:
 /// library, the kinds, the options.
 class UnitRun {
 public:
-  UnitRun(const EngineInput &input, LedgerAdapter &authoritative);
+  UnitRun(const EngineInput &engineInput, LedgerAdapter &adapter);
 
   void analyzeAll(
       const std::function<bool(const clang::FunctionDecl &)> &shouldReport);

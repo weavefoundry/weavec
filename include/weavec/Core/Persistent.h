@@ -44,6 +44,7 @@ class PMap {
     if constexpr (Boxed)
       return *slot;
     else
+      // NOLINTNEXTLINE(bugprone-return-const-ref-from-parameter): a stored slot
       return slot;
   }
   static Slot slotOf(Value value) {
@@ -62,18 +63,21 @@ public:
   /// Iterates the entries in key order as (key, value) reference pairs.
   class ConstIterator {
   public:
+    // NOLINTBEGIN(readability-identifier-naming): the standard library's names
     using iterator_category = std::forward_iterator_tag;
     using value_type = std::pair<Key, Value>;
     using difference_type = std::ptrdiff_t;
     using reference = Reference;
+    // NOLINTEND(readability-identifier-naming)
     struct Arrow {
       Reference entry;
       const Reference *operator->() const { return &entry; }
     };
+    // NOLINTNEXTLINE(readability-identifier-naming): a standard library name
     using pointer = Arrow;
 
     ConstIterator() = default;
-    explicit ConstIterator(typename Storage::const_iterator at) : at(at) {}
+    explicit ConstIterator(Storage::const_iterator at) : at(at) {}
     Reference operator*() const { return {at->first, valueOf(at->second)}; }
     Arrow operator->() const { return Arrow{**this}; }
     ConstIterator &operator++() {
@@ -90,7 +94,7 @@ public:
     }
 
   private:
-    typename Storage::const_iterator at{};
+    Storage::const_iterator at{};
   };
 
   PMap() = default;
@@ -112,10 +116,10 @@ public:
   }
   [[nodiscard]] bool empty() const noexcept { return size() == 0; }
   [[nodiscard]] ConstIterator begin() const {
-    return ConstIterator(data ? data->cbegin() : empty_().cbegin());
+    return ConstIterator(data ? data->cbegin() : emptyStorage().cbegin());
   }
   [[nodiscard]] ConstIterator end() const {
-    return ConstIterator(data ? data->cend() : empty_().cend());
+    return ConstIterator(data ? data->cend() : emptyStorage().cend());
   }
 
   /// The value at `key`, or null.
@@ -186,7 +190,7 @@ public:
         });
     if (first == data->end())
       return;
-    std::size_t from = static_cast<std::size_t>(first - data->begin());
+    auto from = static_cast<std::size_t>(first - data->begin());
     Storage &storage = writable();
     storage.erase(
         std::remove_if(storage.begin() + static_cast<std::ptrdiff_t>(from),
@@ -225,19 +229,18 @@ public:
 private:
   std::shared_ptr<Storage> data;
 
-  static const Storage &empty_() {
-    static const Storage storage;
-    return storage;
+  static const Storage &emptyStorage() {
+    static const Storage Empty;
+    return Empty;
   }
-  static typename Storage::const_iterator lowerBound(const Storage &storage,
-                                                     const Key &key) {
+  static Storage::const_iterator lowerBound(const Storage &storage,
+                                            const Key &key) {
     return std::lower_bound(storage.begin(), storage.end(), key,
                             [](const Stored &entry, const Key &probe) {
                               return Less{}(entry.first, probe);
                             });
   }
-  static typename Storage::iterator lowerBoundMutable(Storage &storage,
-                                                      const Key &key) {
+  static Storage::iterator lowerBoundMutable(Storage &storage, const Key &key) {
     return std::lower_bound(storage.begin(), storage.end(), key,
                             [](const Stored &entry, const Key &probe) {
                               return Less{}(entry.first, probe);

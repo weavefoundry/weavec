@@ -59,7 +59,8 @@ public:
   static constexpr std::size_t MaxRelational = 64;
   /// Bounds between two symbols from here up are not kept (§4.4
   /// *Amendment (zone cost)*).
-  static constexpr std::int64_t LooseRelation = std::int64_t{1} << 31;
+  static constexpr std::int64_t LooseRelation =
+      static_cast<std::int64_t>(std::uint64_t{1} << 31U);
 
   Zone() = default;
 

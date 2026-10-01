@@ -2091,7 +2091,9 @@ disagree, the amendment holds.
   and owners below the k-limit, 20,040 and 65,276, so the engine's budget
   becomes 20,500; with the iteration order, the carried values' liveness
   and the cost bounds of this round, 20,373 and 65,872, so the second
-  becomes 66,000.
+  becomes 66,000; made clean under CI's clang-tidy (braces, split
+  declarations, suppressions with their reasons), 20,535 and 66,102, so
+  the budgets become 21,000 and 66,500.
 
 ## Drawbacks
 

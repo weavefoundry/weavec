@@ -104,8 +104,8 @@ ROOT = Path(__file__).resolve().parent.parent
 # ---------------------------------------------------------------------------
 
 # Recorded by RFC 0031 stage S7 (see the module docstring).
-ENGINE_LINE_LIMIT = 20_500
-LIBRARY_LINE_LIMIT = 66_000
+ENGINE_LINE_LIMIT = 21_000
+LIBRARY_LINE_LIMIT = 66_500
 
 # retired-name
 RETIRED_CHECKED_NAMES = ("SafetyState", "CheckedContract", "checkContracts", "--checked")

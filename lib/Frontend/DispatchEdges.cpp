@@ -25,9 +25,12 @@
 
 namespace weavec::frontend {
 
+// NOLINTBEGIN(readability-convert-member-functions-to-static): the pass
+// manager calls `run` on an instance.
 llvm::PreservedAnalyses
 SplitDispatchEdges::run(llvm::Function &function,
                         llvm::FunctionAnalysisManager & /*analyses*/) {
+  // NOLINTEND(readability-convert-member-functions-to-static)
   // The edges first: splitting changes the predecessor lists walked here.
   std::vector<std::pair<llvm::Instruction *, unsigned>> edges;
   for (llvm::BasicBlock &block : function) {

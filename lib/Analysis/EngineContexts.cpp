@@ -35,8 +35,9 @@ static std::string escapeName(llvm::StringRef name) {
     if (c == '%' || c == ' ' || c == ',' || c == ':' || c == '=' || c == ';') {
       static constexpr const char *Hex = "0123456789ABCDEF";
       out += '%';
-      out += Hex[(static_cast<unsigned char>(c) >> 4) & 0xF];
-      out += Hex[static_cast<unsigned char>(c) & 0xF];
+      const unsigned byte = static_cast<unsigned char>(c);
+      out += Hex[(byte >> 4U) & 0xFU];
+      out += Hex[byte & 0xFU];
     } else {
       out += c;
     }
@@ -86,7 +87,7 @@ contextKeyText(const AliasContext &context,
     callbacks += std::to_string(param) + ":";
     for (std::size_t i = 0; i < names.size(); ++i)
       callbacks += (i == 0 ? "" : ",") + escapeName(names[i]);
-    callbacks += ";";
+    callbacks += ';';
   }
   std::string globals;
   for (const auto &[var, rep, offset] : context.globals)

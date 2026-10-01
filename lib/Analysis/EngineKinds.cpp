@@ -154,7 +154,7 @@ FunctionRun::paramExtent(unsigned index, const std::vector<core::Sym> &values,
     }
     if (!bytes)
       return std::nullopt;
-    return core::Extent{*bytes, cls};
+    return core::Extent{.bytes = *bytes, .cls = cls};
   };
   std::optional<core::Extent> extent;
   nonnull = entry->kind.nullability == core::Nullability::Nonnull &&
@@ -182,8 +182,8 @@ FunctionRun::paramExtent(unsigned index, const std::vector<core::Sym> &values,
   // caller passes a cursor to relies on nothing (§7.3).
   if (!extent && (entry->hasShape() || entry->shapeFromSystemHeader()))
     if (auto width = singleWidth(context, pointee))
-      extent =
-          core::Extent{core::Term::of(*width), core::ExtentClass::LowerBound};
+      extent = core::Extent{.bytes = core::Term::of(*width),
+                            .cls = core::ExtentClass::LowerBound};
   return extent;
 }
 
@@ -318,7 +318,7 @@ void Transfer::decideCallKinds(const CallExpr &call, const SiteInfo &site,
     if (!value.known)
       return value;
     value.scale *= term.scale;
-    value.constant = value.constant * term.scale + term.offset;
+    value.constant = (value.constant * term.scale) + term.offset;
     if (value.isConstant())
       value.scale = 0;
     return value;
@@ -375,8 +375,7 @@ void Transfer::decideCallKinds(const CallExpr &call, const SiteInfo &site,
     QualType pointee = callee->getParamDecl(i)->getType()->getPointeeType();
     auto unit = elementBytes(context, pointee);
     // §7.3: a callee that relies on Single, passed a possible cursor.
-    if (std::find(site.reliance.begin(), site.reliance.end(), i) !=
-        site.reliance.end())
+    if (std::ranges::find(site.reliance, i) != site.reliance.end())
       if (auto bytes = singleWidth(context, pointee)) {
         ArgRequirement row;
         row.argument = i;
@@ -393,7 +392,7 @@ void Transfer::decideCallKinds(const CallExpr &call, const SiteInfo &site,
       if (unit && !param->kind.extent.isConstant() &&
           param->kind.extent.path->root == core::ExtentPath::Root::Param)
         if (auto span = between(i, param->kind.extent.path->param)) {
-          std::int64_t bytes = *span + param->kind.extent.offset * *unit;
+          std::int64_t bytes = *span + (param->kind.extent.offset * *unit);
           out.need = core::Term::of(bytes);
           if (bytes >= 0)
             out.needTerm = WitnessTerm::ofConstant(bytes);
@@ -459,7 +458,7 @@ void Transfer::decideCallKinds(const CallExpr &call, const SiteInfo &site,
         if (unit && !kind.extent.isConstant() &&
             kind.extent.path->root == core::ExtentPath::Root::Param)
           if (auto span = between(i, kind.extent.path->param)) {
-            std::int64_t bytes = *span + kind.extent.offset * *unit;
+            std::int64_t bytes = *span + (kind.extent.offset * *unit);
             out.need = core::Term::of(bytes);
             if (bytes >= 0)
               out.needTerm = WitnessTerm::ofConstant(bytes);

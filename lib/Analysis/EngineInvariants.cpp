@@ -36,30 +36,29 @@ public:
   bool writes = false;
   bool reads = false;
 
-  // NOLINTNEXTLINE(readability-identifier-naming)
+  // NOLINTBEGIN(readability-identifier-naming,bugprone-derived-method-shadowing-base-method):
+  // RecursiveASTVisitor's CRTP hooks are found by name.
   bool VisitBinaryOperator(BinaryOperator *op) {
     if (op->isAssignmentOp())
       noteWrite(op->getLHS());
     return true;
   }
-  // NOLINTNEXTLINE(readability-identifier-naming)
   bool VisitUnaryOperator(UnaryOperator *op) {
     if (op->isIncrementDecrementOp())
       noteWrite(op->getSubExpr());
     return true;
   }
-  // NOLINTNEXTLINE(readability-identifier-naming)
   bool VisitInitListExpr(InitListExpr *init) {
     if (const RecordDecl *record = init->getType()->getAsRecordDecl())
       writes = writes || records.contains(record->getDefinition());
     return true;
   }
-  // NOLINTNEXTLINE(readability-identifier-naming)
   bool VisitMemberExpr(MemberExpr *member) {
     if (const auto *field = dyn_cast<FieldDecl>(member->getMemberDecl()))
       reads = reads || fields.contains(field);
     return true;
   }
+  // NOLINTEND(readability-identifier-naming,bugprone-derived-method-shadowing-base-method)
 
 private:
   const std::set<const FieldDecl *> &fields;

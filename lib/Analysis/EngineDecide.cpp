@@ -24,15 +24,16 @@
 
 #include <algorithm>
 #include <functional>
+#include <utility>
 
 using namespace clang;
 
 namespace weavec::analysis::engine {
 
-namespace {
-core::Diagnostic makeDiagnostic(std::string_view id, std::string message,
-                                const ASTContext &context, SourceLocation at,
-                                core::Severity severity) {
+static core::Diagnostic makeDiagnostic(std::string_view id, std::string message,
+                                       const ASTContext &context,
+                                       SourceLocation at,
+                                       core::Severity severity) {
   core::Diagnostic diagnostic;
   diagnostic.id = id;
   diagnostic.message = std::move(message);
@@ -41,8 +42,8 @@ core::Diagnostic makeDiagnostic(std::string_view id, std::string message,
   return diagnostic;
 }
 
-void addNote(core::Diagnostic &diagnostic, std::string message,
-             const core::SourceLocation &at) {
+static void addNote(core::Diagnostic &diagnostic, std::string message,
+                    const core::SourceLocation &at) {
   if (!at.isValid())
     return;
   diagnostic.addNote(std::move(message), at);
@@ -50,8 +51,8 @@ void addNote(core::Diagnostic &diagnostic, std::string message,
 
 /// The object width of `type` (RFC 0030 §7.4): `sizeof`, or the offset of a
 /// flexible trailing array member.
-std::optional<std::int64_t> objectWidth(const ASTContext &context,
-                                        QualType type) {
+static std::optional<std::int64_t> objectWidth(const ASTContext &context,
+                                               QualType type) {
   if (type.isNull() || type->isIncompleteType() || type->isVoidType() ||
       type->isFunctionType())
     return type.isNull() || !type->isVoidType()
@@ -82,10 +83,9 @@ std::optional<std::int64_t> objectWidth(const ASTContext &context,
   return size;
 }
 
-std::string inQuotes(const std::string &name) {
+static std::string inQuotes(const std::string &name) {
   return "'" + name + "'";
 }
-} // namespace
 
 /// The members that lead from the start of a `type` object to the integer
 /// or pointer at `offset` (`inner.cap`); none through arrays, unions and
@@ -141,7 +141,7 @@ std::string messageSpelling(const WitnessTerm &term) {
   for (const core::CheckPathStep &step : term.path) {
     if (step.kind == core::CheckPathStep::Kind::Deref) {
       if (pendingDeref)
-        text = "*" + text;
+        text.insert(text.begin(), '*');
       pendingDeref = true;
       continue;
     }
@@ -169,10 +169,10 @@ std::optional<WitnessTerm> Transfer::nameOf(core::Sym sym, bool extent,
     const VarDecl *var = variableOf(info);
     if (var == nullptr || var->getType().isVolatileQualified())
       continue;
-    if (const core::Sym *held = object.cells.find(core::CellKey{}))
-      if (*held == sym && !var->getType()->isRecordType() &&
-          !var->getType()->isArrayType())
-        return WitnessTerm::ofPlace(*var);
+    if (const core::Sym *held = object.cells.find(core::CellKey{});
+        held != nullptr && *held == sym && !var->getType()->isRecordType() &&
+        !var->getType()->isArrayType())
+      return WitnessTerm::ofPlace(*var);
   }
   // A member of a local struct (`s.cap`), or of the object a local pointer
   // points to the start of (`b->cap`), whose cell holds the symbol. A read
@@ -304,20 +304,17 @@ std::optional<std::string> Transfer::spellAmount(core::Term bytes,
                             ? *info.defined->constant
                             : -*info.defined->constant;
     bytes = core::Term::ofSym(info.defined->left, bytes.scale,
-                              bytes.constant + bytes.scale * step);
+                              bytes.constant + (bytes.scale * step));
   }
   if (bytes.isConstant())
     return std::to_string(bytes.constant) + " bytes";
   // A need prefers the name its value was made under (`strlen(s)`), an
   // extent the C place that holds it.
   const std::string &made = heap.info(state, bytes.var).name;
-  std::string spelled;
-  if (own && !made.empty())
-    spelled = made;
-  else if (auto name = nameOf(bytes.var, /*extent=*/true))
-    spelled = messageSpelling(*name);
-  else
-    spelled = made;
+  std::string spelled = made;
+  if (!own || made.empty())
+    if (auto name = nameOf(bytes.var, /*extent=*/true))
+      spelled = messageSpelling(*name);
   if (spelled.empty())
     return std::nullopt;
   std::string text = "'" + spelled + "'";
@@ -412,7 +409,7 @@ public:
     // callers pass, so no requirement covers its spatial facet.
     if ((site.kind == core::SiteKind::Deref ||
          site.kind == core::SiteKind::Index) &&
-        !(facet == core::Facet::Spatial && mayBeNegativeIndex()))
+        (facet != core::Facet::Spatial || !mayBeNegativeIndex()))
       decision = transfer.covered(site, facet, std::move(decision));
     out.decideAs(*site.stmt, site.kind, site.boundary, facet, decision);
   }
@@ -454,11 +451,11 @@ void Decider::nullOf(core::Sym pointer, const Expr &operand) {
   std::string name = transfer.spell(operand);
   if (value.uninit && value.null == core::PointerNull::Null) {
     decide(core::Facet::Null, core::FacetDecision::violation());
-    report(
-        makeDiagnostic(core::diag::UseOfUninitialized,
-                       "use of " + inQuotes(name) + " before it was initialized",
-                       context, operand.getBeginLoc(), core::Severity::Error),
-        core::Certainty::Definite, core::Facet::Null);
+    report(makeDiagnostic(
+               core::diag::UseOfUninitialized,
+               "use of " + inQuotes(name) + " before it was initialized",
+               context, operand.getBeginLoc(), core::Severity::Error),
+           core::Certainty::Definite, core::Facet::Null);
     return;
   }
   switch (value.null) {
@@ -627,7 +624,8 @@ void Decider::temporalOf(core::Sym pointer, const Expr &operand,
           (record.reason == Reason::ShareReleased ? "released" : "freed") +
           " twice";
     else if (record.reason == Reason::ShareReleased)
-      message = "use of " + inQuotes(name) + " after its reference was released";
+      message =
+          "use of " + inQuotes(name) + " after its reference was released";
     else
       message = "use of " + inQuotes(name) + " after it was " + verbFor(record);
     core::Diagnostic diagnostic = makeDiagnostic(
@@ -946,9 +944,10 @@ void Decider::spatialOf(core::Sym pointer, std::int64_t width,
       if (info.key.kind == core::ObjectKind::Local ||
           info.key.kind == core::ObjectKind::Global)
         addNote(diagnostic,
-                spelled == info.name ? inQuotes(spelled) + " is declared here"
-                                     : "the object behind " + inQuotes(spelled) +
-                                           " is declared here",
+                spelled == info.name
+                    ? inQuotes(spelled) + " is declared here"
+                    : "the object behind " + inQuotes(spelled) +
+                          " is declared here",
                 info.created);
       else if (info.key.kind == core::ObjectKind::HeapRecent ||
                info.key.kind == core::ObjectKind::HeapOld)
@@ -1313,16 +1312,18 @@ bool Decider::memberBound(std::int64_t width) {
   std::string spelled = transfer.spell(*member);
   if (lower == false || upper == false) {
     decide(core::Facet::Spatial, core::FacetDecision::violation());
+    std::string where;
+    if (lower == false)
+      where = " is before the start of " + inQuotes(spelled);
+    else if (array == nullptr && !state.zone.constant(transfer.vlaCount(*vla)))
+      where = " is past the end of " + inQuotes(spelled);
+    else if (width > 0)
+      where = " of an object of " + std::to_string(count * width) + " bytes";
+    else
+      where = " of an array of " + std::to_string(count) + " elements";
     core::Diagnostic diagnostic = makeDiagnostic(
         core::diag::OutOfBounds,
-        subject + " is out of bounds: index " + indexText(*site.index) +
-            (lower == false ? " is before the start of " + inQuotes(spelled)
-             : array == nullptr && !state.zone.constant(transfer.vlaCount(*vla))
-                 ? " is past the end of " + inQuotes(spelled)
-             : width > 0
-                 ? " of an object of " + std::to_string(count * width) +
-                       " bytes"
-                 : " of an array of " + std::to_string(count) + " elements"),
+        subject + " is out of bounds: index " + indexText(*site.index) + where,
         context, site.stmt->getBeginLoc(), core::Severity::Error);
     if (field != nullptr)
       addNote(diagnostic, inQuotes(spelled) + " is declared here",
@@ -1427,11 +1428,11 @@ void Decider::release(core::Sym pointer, const std::string &family) {
   // Raw pointers (RFC 0004): a release asserts ownership, which needs an
   // unsafe region (not for one raw through some of a call's functions).
   if (raw && !value.rawSome && run.isPublishing()) {
-    std::string callee =
-        site.library
-            ? inQuotes(site.library->entry->name)
-            : (site.callee != nullptr ? inQuotes(site.callee->getNameAsString())
-                                      : std::string("a function pointer"));
+    std::string callee = "a function pointer";
+    if (site.library)
+      callee = inQuotes(site.library->entry->name);
+    else if (site.callee != nullptr)
+      callee = inQuotes(site.callee->getNameAsString());
     core::Diagnostic diagnostic =
         makeDiagnostic(core::diag::UnsafeOperation,
                        callee + " releases raw pointer " + inQuotes(name) +
@@ -1657,7 +1658,7 @@ Transfer::ReleaseCheck Transfer::releaseCheck(core::Sym pointer,
       offset = target.offset.constant;
     else if (target.offset.known)
       if (auto c = state.zone.constant(target.offset.var))
-        offset = target.offset.scale * *c + target.offset.constant;
+        offset = (target.offset.scale * *c) + target.offset.constant;
     // A parameter some caller passes a cursor (its kind is Unknown, §7.3)
     // may point anywhere into its allocation.
     bool cursor = false;
@@ -1686,11 +1687,17 @@ Transfer::ReleaseCheck Transfer::releaseCheck(core::Sym pointer,
             out.noteAt = info.created;
           }
         } else if (literal) {
-          out.message = "'" + subject + "' is " + verb +
-                        " but points to a string literal";
+          out.message = "'" + subject;
+          out.message += "' is ";
+          out.message += verb;
+          out.message += " but points to a string literal";
         } else {
-          out.message = "'" + subject + "' is " + verb + " but points to '" +
-                        storage + "', which is not a heap object";
+          out.message = "'" + subject;
+          out.message += "' is ";
+          out.message += verb;
+          out.message += " but points to '";
+          out.message += storage;
+          out.message += "', which is not a heap object";
           out.note = "'" + storage + "' is declared here";
           out.noteAt = info.created;
         }
@@ -1723,15 +1730,20 @@ Transfer::ReleaseCheck Transfer::releaseCheck(core::Sym pointer,
                      const ASTRecordLayout &layout =
                          context.getASTRecordLayout(record);
                      for (const FieldDecl *f : record->fields())
-                       if (static_cast<std::int64_t>(
+                       if (std::cmp_equal(
                                layout.getFieldOffset(f->getFieldIndex()) /
-                               context.getCharWidth()) == *offset)
+                                   context.getCharWidth(),
+                               *offset))
                          return f->getNameAsString();
                      return std::nullopt;
                    }()) {
           where = "points to field '" + *field + "' of its allocation";
         }
-        out.message = "'" + subject + "' is " + verb + " but " + where;
+        out.message = "'" + subject;
+        out.message += "' is ";
+        out.message += verb;
+        out.message += " but ";
+        out.message += where;
         out.note = "allocated here";
         out.noteAt = info.created;
       }
@@ -1742,9 +1754,12 @@ Transfer::ReleaseCheck Transfer::releaseCheck(core::Sym pointer,
       // Somewhere in its object (`strchr(p, 'x')`): possibly not its start.
       allInvalid = false;
       anyInvalid = true;
-      if (out.message.empty())
-        out.message = "'" + subject + "' is " + verb +
-                      " but may not point to the start of its allocation";
+      if (out.message.empty()) {
+        out.message = "'" + subject;
+        out.message += "' is ";
+        out.message += verb;
+        out.message += " but may not point to the start of its allocation";
+      }
     } else {
       allInvalid = false;
     }
@@ -1765,6 +1780,8 @@ Transfer::ReleaseCheck Transfer::releaseCheck(core::Sym pointer,
   return out;
 }
 
+// Declared a const member in Engine.h.
+// NOLINTNEXTLINE(readability-convert-member-functions-to-static)
 void Transfer::addNullNote(core::Diagnostic &diagnostic,
                            const core::SymInfo &value,
                            const std::string &name) const {
@@ -1773,7 +1790,8 @@ void Transfer::addNullNote(core::Diagnostic &diagnostic,
   const core::NullOrigin &origin = *value.nullOrigin;
   switch (origin.reason) {
   case core::NullOrigin::Reason::Assigned:
-    addNote(diagnostic, inQuotes(name) + " is assigned NULL here", origin.where);
+    addNote(diagnostic, inQuotes(name) + " is assigned NULL here",
+            origin.where);
     return;
   case core::NullOrigin::Reason::Tested:
     addNote(diagnostic,
@@ -2091,13 +2109,13 @@ bool Transfer::calleeReleases(const CallExpr &call, core::Sym calleeValue,
                    core::LibraryParam::Effect::Release;
       // RFC 0031 §5.4 (a declared contract), RFC 0010: a declaration whose
       // parameter is `WEAVEC_OWNED` or `WEAVEC_RELEASES` releases it.
-      for (const FunctionDecl *redecl : target.redecls())
-        if (index < redecl->getNumParams()) {
-          AnnotationSet set = getAnnotations(*redecl->getParamDecl(index));
-          if (set.owned || set.frees || set.releases)
-            return true;
-        }
-      return false;
+      return std::ranges::any_of(
+          target.redecls(), [&](const FunctionDecl *redecl) {
+            if (index >= redecl->getNumParams())
+              return false;
+            AnnotationSet set = getAnnotations(*redecl->getParamDecl(index));
+            return set.owned || set.frees || set.releases;
+          });
     }
     const core::SummaryPath released = core::SummaryPath::param(index).deref();
     for (const core::PathEffect &effect : effects->effects) {
@@ -2127,10 +2145,10 @@ bool Transfer::calleeReleases(const CallExpr &call, core::Sym calleeValue,
   };
   // Some target may release it; every target must, to say it does.
   if (possibly)
-    return std::any_of(targets.begin(), targets.end(),
-                       [&](const FunctionDecl *fn) { return releases(*fn); });
-  return std::all_of(targets.begin(), targets.end(),
-                     [&](const FunctionDecl *fn) { return releases(*fn); });
+    return std::ranges::any_of(
+        targets, [&](const FunctionDecl *fn) { return releases(*fn); });
+  return std::ranges::all_of(
+      targets, [&](const FunctionDecl *fn) { return releases(*fn); });
 }
 
 /// Whether ownership annotations on `callee`'s declarations cover every
@@ -2155,7 +2173,7 @@ void Transfer::decideCall(const CallExpr &call,
                           core::Sym calleeValue) {
   const SiteIndex &sites = run.sites();
   const FunctionDecl *direct = call.getDirectCallee();
-  UnitRun &unit = run.unitRun();
+  const UnitRun &unit = run.unitRun();
   // RFC 0003: what the callee's annotations do to this function's own.
   if (run.isPublishing())
     checkCallAnnotations(call, args);
@@ -2185,12 +2203,10 @@ void Transfer::decideCall(const CallExpr &call,
           return c && *c == 0;
         }
         case WitnessTerm::Kind::Mul:
-          return std::any_of(term.operands.begin(), term.operands.end(),
-                             isZero);
+          return std::ranges::any_of(term.operands, isZero);
         case WitnessTerm::Kind::Add:
           return !term.operands.empty() &&
-                 std::all_of(term.operands.begin(), term.operands.end(),
-                             isZero);
+                 std::ranges::all_of(term.operands, isZero);
         default:
           return false;
         }
@@ -2214,8 +2230,7 @@ void Transfer::decideCall(const CallExpr &call,
         }
         case WitnessTerm::Kind::Mul:
           return !term.operands.empty() &&
-                 std::all_of(term.operands.begin(), term.operands.end(),
-                             isNonZero);
+                 std::ranges::all_of(term.operands, isNonZero);
         default:
           return false;
         }
@@ -2223,18 +2238,18 @@ void Transfer::decideCall(const CallExpr &call,
       bool nonZeroLength = !need.allowedIfZero ||
                            (need.unlessZero && isNonZero(*need.unlessZero));
       if (value.null == core::PointerNull::NonNull ||
-          (need.allowedIfZero && need.unlessZero && isZero(*need.unlessZero)))
+          (need.allowedIfZero && need.unlessZero && isZero(*need.unlessZero))) {
         decision = core::FacetDecision::proven();
-      else if (need.systemApi)
+      } else if (need.systemApi) {
         decision =
             core::FacetDecision::trustedFor(core::TrustReason::SystemApi);
-      else if (value.null == core::PointerNull::Null && nonZeroLength &&
-               !value.allocatorSource) {
+      } else if (value.null == core::PointerNull::Null && nonZeroLength &&
+                 !value.allocatorSource) {
         decision = core::FacetDecision::violation();
         std::string callee =
             direct != nullptr
                 ? inQuotes(info->library ? info->library->entry->name
-                                       : direct->getNameAsString())
+                                         : direct->getNameAsString())
                 : "a function pointer";
         run.report(
             nullArgument(*call.getArg(need.argument), value, callee, direct),
@@ -2273,9 +2288,9 @@ void Transfer::decideCall(const CallExpr &call,
             unknownTarget = true;
         if (unknownTarget)
           open = core::FacetDecision::unresolvedFor(
-              core::UnresolvedReason::Callback, "the callback of " +
-                                                    inQuotes(match.entry->name) +
-                                                    " is not known here");
+              core::UnresolvedReason::Callback,
+              "the callback of " + inQuotes(match.entry->name) +
+                  " is not known here");
         else if (match.entry->trustsLibrarySpec())
           open =
               core::FacetDecision::trustedFor(core::TrustReason::LibrarySpec);
@@ -2292,8 +2307,8 @@ void Transfer::decideCall(const CallExpr &call,
     const bool releaseSite =
         info->kind == core::SiteKind::Release ||
         (info->kind == core::SiteKind::Raw && isa<CallExpr>(info->stmt));
-    if (!releaseSite && !(info->kind == core::SiteKind::Call &&
-                          info->boundary == core::Boundary::Exit))
+    if (!releaseSite && (info->kind != core::SiteKind::Call ||
+                         info->boundary != core::Boundary::Exit))
       for (unsigned i = 0; i < call.getNumArgs() && i < args.size(); ++i) {
         const Expr &arg = *call.getArg(i);
         if (!arg.getType()->isPointerType() || args[i] == core::ZeroSym)
@@ -2425,11 +2440,8 @@ void Transfer::decideCall(const CallExpr &call,
           decider.decide(core::Facet::Temporal, core::FacetDecision::proven());
         } else if (const OwnershipContract *contract =
                        unit.input.kinds.ownership(*direct);
-                   contract != nullptr && !contract->empty()) {
-          decider.decide(core::Facet::Temporal,
-                         core::FacetDecision::trustedFor(
-                             core::TrustReason::ExternContract));
-        } else if (declaresEveryPointer(*direct, call, unit.library())) {
+                   (contract != nullptr && !contract->empty()) ||
+                   declaresEveryPointer(*direct, call, unit.library())) {
           // RFC 0003, RFC 0030 §5.1: ownership annotations on every pointer
           // parameter are the callee's contract.
           decider.decide(core::Facet::Temporal,
@@ -2460,16 +2472,16 @@ void Transfer::decideCall(const CallExpr &call,
         }
       } else {
         const core::SymInfo &target = heap.info(state, calleeValue);
+        const bool functionsKnown =
+            target.type == core::SymInfo::Type::Function &&
+            target.functionsKnown && !target.functions.empty();
         std::optional<core::CallResolution> resolution;
-        if (!(target.type == core::SymInfo::Type::Function &&
-              target.functionsKnown && !target.functions.empty()))
+        if (!functionsKnown)
           resolution = slotResolution(call);
-        if (target.type == core::SymInfo::Type::Function &&
-            target.functionsKnown && !target.functions.empty())
-          decider.decide(core::Facet::Temporal, core::FacetDecision::proven());
-        else if (resolution &&
-                 (resolution->kind == core::IndirectCallKind::ClosedSingle ||
-                  resolution->kind == core::IndirectCallKind::ClosedJoin))
+        if (functionsKnown ||
+            (resolution &&
+             (resolution->kind == core::IndirectCallKind::ClosedSingle ||
+              resolution->kind == core::IndirectCallKind::ClosedJoin)))
           decider.decide(core::Facet::Temporal, core::FacetDecision::proven());
         else if (resolution)
           if (auto decision = core::openCallTemporalDecision(*resolution))

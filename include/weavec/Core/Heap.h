@@ -126,6 +126,7 @@ struct ObjectInfo {
   /// §4.5 D2: loaded from an owning place.
   bool fromOwningSlot = false;
   /// For messages: the object as the program spells it (`p->next`, `buf`).
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
   std::string name = {};
   /// Where it was created (allocation site, declaration).
   SourceLocation created = {};
@@ -284,6 +285,7 @@ struct ReleaseRecord {
     /// An open slot without targets (RFC 0030 §9.3).
     Callback,
   };
+  // NOLINTBEGIN(readability-redundant-member-init): designated-init defaults
   Reason reason = Reason::Freed;
   SourceLocation where = {};
   /// The release family (RFC 0007), empty when unknown.
@@ -311,6 +313,7 @@ struct ReleaseRecord {
   /// the release (sorted handles): an exit returning one of them as null
   /// did not release.
   std::vector<Handle> nonNullLocals = {};
+  // NOLINTEND(readability-redundant-member-init)
 
   [[nodiscard]] bool unknownOrigin() const noexcept {
     return reason == Reason::UnknownCallee || reason == Reason::Callback;
@@ -347,6 +350,7 @@ struct PendingCase {
   Kind kind = Kind::Release;
   /// The classes of the result under which the effect holds (`null`,
   /// `nonnull`, `zero`, `positive`, `negative`).
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
   std::vector<std::string> classes = {};
   /// The symbol the effect applies to, and what happens to it.
   Sym subject = ZeroSym;
@@ -426,6 +430,7 @@ struct NullOrigin {
   };
   Reason reason = Reason::Assigned;
   SourceLocation where = {};
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
   std::string detail = {};
 
   friend bool operator==(const NullOrigin &, const NullOrigin &) = default;
@@ -434,8 +439,11 @@ struct NullOrigin {
 /// The most entry places a value records it was computed from.
 inline constexpr std::size_t MaxEntryOrigins = 8;
 
+// (The fields stay in the groups they are documented in.)
+// NOLINTNEXTLINE(clang-analyzer-optin.performance.Padding): documented order
 struct SymInfo {
   enum class Type : std::uint8_t { Unknown, Int, Pointer, Function };
+  // NOLINTBEGIN(readability-redundant-member-init): designated-init defaults
   Type type = Type::Unknown;
 
   // Integers.
@@ -533,6 +541,7 @@ struct SymInfo {
   bool entryOriginsLost = false;
   /// The operation that computed this integer, when one did (§5.3).
   std::optional<SymDefinition> defined = std::nullopt;
+  // NOLINTEND(readability-redundant-member-init)
 
   friend bool operator==(const SymInfo &, const SymInfo &) = default;
 };
@@ -596,6 +605,7 @@ struct Extent {
 };
 
 struct ObjectState {
+  // NOLINTBEGIN(readability-redundant-member-init): designated-init defaults
   PMap<CellKey, Sym> cells;
   /// Element ranges, newest first: an element is described by its own cell
   /// if it has one, else by the first segment that must contain it (§4.2
@@ -671,6 +681,7 @@ struct ObjectState {
   /// The statement that last used a pointer to this object (a frontend
   /// handle), where a leak is reported.
   Handle lastUse = 0;
+  // NOLINTEND(readability-redundant-member-init)
 
   /// Whether an unwritten cell at `key` reads as a fresh unknown value.
   [[nodiscard]] bool forgets(const CellKey &key) const;
@@ -810,6 +821,7 @@ public:
 
   // Objects.
   ObjectState &object(HeapState &state, ObjectId id) const;
+  // NOLINTNEXTLINE(readability-convert-member-functions-to-static): Heap API
   [[nodiscard]] const ObjectState *findObject(const HeapState &state,
                                               ObjectId id) const {
     return state.objects.find(id);

@@ -25,6 +25,7 @@
 #include <set>
 #include <string_view>
 #include <tuple>
+#include <utility>
 
 using namespace clang;
 
@@ -57,36 +58,34 @@ static std::vector<core::ResultClass> classesOf(const core::Heap &heap,
     auto lo = state.zone.lower(state.result);
     auto hi = state.zone.upper(state.result);
     if (!lo || *lo < 0)
-      if (!hi || *hi < 0 || true)
-        if (!hi || *hi < 0 || (lo && *lo < 0) || !lo)
-          classes.push_back(ResultClass::Negative);
+      classes.push_back(ResultClass::Negative);
     if ((!lo || *lo <= 0) && (!hi || *hi >= 0))
       classes.push_back(ResultClass::Zero);
     if (!hi || *hi > 0)
       classes.push_back(ResultClass::Positive);
     if (hi && *hi < 0)
-      classes.erase(
-          std::remove(classes.begin(), classes.end(), ResultClass::Zero),
-          classes.end());
+      std::erase(classes, ResultClass::Zero);
     if (lo && *lo >= 0)
-      classes.erase(
-          std::remove(classes.begin(), classes.end(), ResultClass::Negative),
-          classes.end());
+      std::erase(classes, ResultClass::Negative);
     return classes;
   }
   return {};
 }
 
+namespace {
 /// The effect a path's object got on one exit.
 struct ExitEffect {
-  core::PathEffect::Kind kind;
-  bool may;
+  core::PathEffect::Kind kind = {};
+  bool may = false;
   std::string family;
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
   std::vector<std::pair<std::uint32_t, bool>> guard = {};
   /// A release's offset into the object; none when not a constant.
   std::optional<std::int64_t> offset = 0;
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
   std::vector<core::ParamPairTest> pairs = {};
 };
+} // namespace
 
 /// The field name at `offset` of `type`, or `#<offset>`.
 static std::string fieldNameAt(const ASTContext &context, QualType type,
@@ -96,9 +95,9 @@ static std::string fieldNameAt(const ASTContext &context, QualType type,
         record != nullptr && record->isCompleteDefinition()) {
       const ASTRecordLayout &layout = context.getASTRecordLayout(record);
       for (const FieldDecl *field : record->fields())
-        if (static_cast<std::int64_t>(
-                layout.getFieldOffset(field->getFieldIndex()) /
-                context.getCharWidth()) == offset &&
+        if (std::cmp_equal(layout.getFieldOffset(field->getFieldIndex()) /
+                               context.getCharWidth(),
+                           offset) &&
             !field->getName().empty())
           return field->getNameAsString();
     }
@@ -118,7 +117,7 @@ core::SummaryPath cellPath(const ASTContext &context, QualType type,
     const FieldDecl *found = nullptr;
     std::int64_t at = 0;
     for (const FieldDecl *field : record->fields()) {
-      std::int64_t start = static_cast<std::int64_t>(
+      auto start = static_cast<std::int64_t>(
           layout.getFieldOffset(field->getFieldIndex()) /
           context.getCharWidth());
       QualType fieldType = field->getType();
@@ -128,7 +127,7 @@ core::SummaryPath cellPath(const ASTContext &context, QualType type,
               : static_cast<std::int64_t>(
                     context.getTypeSizeInChars(fieldType).getQuantity());
       if (offset < start ||
-          (offset >= start + size && !(size == 0 && offset == start)))
+          (offset >= start + size && (size != 0 || offset != start)))
         continue;
       if (found == nullptr || fieldType->isPointerType()) {
         found = field;
@@ -251,6 +250,8 @@ namespace {
 class ParameterWrites : public RecursiveASTVisitor<ParameterWrites> {
 public:
   std::set<const VarDecl *> written;
+  // RecursiveASTVisitor's CRTP hooks are found by name.
+  // NOLINTBEGIN(readability-identifier-naming,bugprone-derived-method-shadowing-base-method)
   bool VisitBinaryOperator(BinaryOperator *op) {
     if (op->isAssignmentOp())
       note(op->getLHS());
@@ -261,6 +262,7 @@ public:
       note(op->getSubExpr());
     return true;
   }
+  // NOLINTEND(readability-identifier-naming,bugprone-derived-method-shadowing-base-method)
 
 private:
   void note(const Expr *expr) {
@@ -284,7 +286,7 @@ FunctionRun::parameterTerm(const core::HeapState &state,
         .path = std::nullopt, .scale = 1, .constant = term.constant};
   if (auto value = state.zone.constant(term.var)) {
     __int128 folded =
-        static_cast<__int128>(term.scale) * *value + term.constant;
+        (static_cast<__int128>(term.scale) * *value) + term.constant;
     if (!fits(folded))
       return std::nullopt;
     return core::PathTerm{.path = std::nullopt,
@@ -294,6 +296,7 @@ FunctionRun::parameterTerm(const core::HeapState &state,
   if (!unchangedParams) {
     ParameterWrites writes;
     if (const Stmt *body = function.getBody())
+      // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast): Clang's API
       writes.TraverseStmt(const_cast<Stmt *>(body));
     std::vector<bool> unchanged;
     for (const ParmVarDecl *param : function.parameters())
@@ -321,7 +324,7 @@ FunctionRun::parameterTerm(const core::HeapState &state,
     if (!offset)
       continue;
     __int128 constant = static_cast<__int128>(term.constant) +
-                        static_cast<__int128>(term.scale) * *offset;
+                        (static_cast<__int128>(term.scale) * *offset);
     if (!fits(constant))
       return std::nullopt;
     return core::PathTerm{.path = core::SummaryPath::param(i),
@@ -361,7 +364,7 @@ void FunctionRun::describeElements(
             static_cast<std::int64_t>(position.stride))
       if (const RecordDecl *record = element->getAsRecordDecl();
           record != nullptr && record->isCompleteDefinition() &&
-          objectPath.steps.size() > 0 &&
+          !objectPath.steps.empty() &&
           objectPath.steps.back().step == core::PathStep::Deref &&
           element == type) {
         const ASTRecordLayout &layout = context.getASTRecordLayout(record);
@@ -370,15 +373,15 @@ void FunctionRun::describeElements(
           if (array == nullptr || field->getName().empty())
             continue;
           QualType member = array->getElementType();
-          std::int64_t start = static_cast<std::int64_t>(
+          auto start = static_cast<std::int64_t>(
               layout.getFieldOffset(field->getFieldIndex()) /
               context.getCharWidth());
-          std::int64_t size = static_cast<std::int64_t>(
+          auto size = static_cast<std::int64_t>(
               context.getTypeSizeInChars(field->getType()).getQuantity());
-          std::int64_t stride = static_cast<std::int64_t>(
+          auto stride = static_cast<std::int64_t>(
               context.getTypeSizeInChars(member).getQuantity());
-          if (stride != static_cast<std::int64_t>(position.stride) ||
-              size <= 0 || stride <= 0)
+          if (std::cmp_not_equal(stride, position.stride) || size <= 0 ||
+              stride <= 0)
             continue;
           // The element of the member the position's first byte falls in.
           std::int64_t within = position.offset - start;
@@ -418,15 +421,13 @@ void FunctionRun::describeElements(
     if (value.type != core::SymInfo::Type::Pointer || value.top ||
         value.targets.empty())
       return false;
-    for (const core::Target &target : value.targets) {
+    return std::ranges::all_of(value.targets, [&](const core::Target &target) {
       const core::ObjectInfo &pointee =
           objects.info(objects.liveVersion(target.object));
-      if (pointee.key.kind != core::ObjectKind::Entry ||
-          !objectPath.isProperPrefixOf(pointee.key.path) ||
-          pointee.key.path.steps.size() > objectPath.steps.size() + 3)
-        return false;
-    }
-    return true;
+      return pointee.key.kind == core::ObjectKind::Entry &&
+             objectPath.isProperPrefixOf(pointee.key.path) &&
+             pointee.key.path.steps.size() <= objectPath.steps.size() + 3;
+    });
   };
   auto note = [&](const core::CellKey &position,
                   std::optional<std::pair<core::Term, core::Term>> bounds,
@@ -482,6 +483,7 @@ void FunctionRun::describeElements(
   }
 }
 
+// NOLINTNEXTLINE(readability-function-size): one pass over the exits' views
 core::FunctionEffects FunctionRun::deriveEffects() {
   core::FunctionEffects effects;
   if (exits.empty()) {
@@ -535,12 +537,10 @@ core::FunctionEffects FunctionRun::deriveEffects() {
         std::vector<core::ObjectId> undone;
         for (const auto &[id, object] : refined.objects)
           if (object.record &&
-              std::any_of(guarding.begin(), guarding.end(),
-                          [&](core::Handle var) {
-                            return std::binary_search(
-                                object.record->nonNullLocals.begin(),
-                                object.record->nonNullLocals.end(), var);
-                          }))
+              std::ranges::any_of(guarding, [&](core::Handle var) {
+                return std::ranges::binary_search(object.record->nonNullLocals,
+                                                  var);
+              }))
             undone.push_back(id);
         for (core::ObjectId id : undone) {
           core::ObjectState &object = refined.objects.at(id);
@@ -642,7 +642,7 @@ core::FunctionEffects FunctionRun::deriveEffects() {
               if (bytes.isConstant())
                 folded = bytes.constant;
               else if (auto c = state.zone.constant(bytes.var))
-                folded = bytes.scale * *c + bytes.constant;
+                folded = (bytes.scale * *c) + bytes.constant;
             }
             if (folded)
               desc.extent = core::PathTerm{
@@ -756,10 +756,9 @@ core::FunctionEffects FunctionRun::deriveEffects() {
       for (core::Handle handle : value.functions)
         if (const auto *fn = fromHandle<FunctionDecl>(handle))
           desc.functions.push_back(unit.portableName(*fn));
-      std::sort(desc.functions.begin(), desc.functions.end());
-      desc.functions.erase(
-          std::unique(desc.functions.begin(), desc.functions.end()),
-          desc.functions.end());
+      std::ranges::sort(desc.functions);
+      auto repeated = std::ranges::unique(desc.functions);
+      desc.functions.erase(repeated.begin(), repeated.end());
       return desc;
     }
     // A function pointer a parameter held at entry (a setter's `h->fn =
@@ -840,8 +839,8 @@ core::FunctionEffects FunctionRun::deriveEffects() {
       view.contentOf[path] = dest;
     }
   };
-  bool dumpExits = std::getenv("WEAVEC_ENGINE_DUMP") != nullptr &&
-                   std::string_view(std::getenv("WEAVEC_ENGINE_DUMP")) == "2";
+  const char *dumpLevel = std::getenv("WEAVEC_ENGINE_DUMP");
+  bool dumpExits = dumpLevel != nullptr && std::string_view(dumpLevel) == "2";
   for (const core::HeapState &exit : split) {
     freshIndex.clear();
     if (dumpExits)
@@ -904,25 +903,26 @@ core::FunctionEffects FunctionRun::deriveEffects() {
       bool unknown = object.life == core::Life::UnknownReleased;
       std::string family = object.record ? object.record->family : "";
       if (unknown) {
-        view.byPath[*path] =
-            ExitEffect{core::PathEffect::Kind::Unknown, true, ""};
+        view.byPath[*path] = ExitEffect{
+            .kind = core::PathEffect::Kind::Unknown, .may = true, .family = ""};
       } else if (released || mayReleased) {
         bool moved = object.record && object.record->reason ==
                                           core::ReleaseRecord::Reason::Moved;
         view.byPath[*path] = ExitEffect{
-            moved ? core::PathEffect::Kind::Move
-                  : core::PathEffect::Kind::Release,
-            !released || !info.singular ||
-                (object.record && object.record->conditional),
-            family,
-            object.record ? object.record->paramGuard
-                          : std::vector<std::pair<std::uint32_t, bool>>{},
-            object.releaseOffset,
-            object.record ? object.record->pairGuard
-                          : std::vector<core::ParamPairTest>{}};
+            .kind = moved ? core::PathEffect::Kind::Move
+                          : core::PathEffect::Kind::Release,
+            .may = !released || !info.singular ||
+                   (object.record && object.record->conditional),
+            .family = family,
+            .guard = object.record
+                         ? object.record->paramGuard
+                         : std::vector<std::pair<std::uint32_t, bool>>{},
+            .offset = object.releaseOffset,
+            .pairs = object.record ? object.record->pairGuard
+                                   : std::vector<core::ParamPairTest>{}};
       } else if (object.escaped) {
-        view.byPath[*path] =
-            ExitEffect{core::PathEffect::Kind::Escape, false, ""};
+        view.byPath[*path] = ExitEffect{
+            .kind = core::PathEffect::Kind::Escape, .may = false, .family = ""};
       }
       // Bytes written without cells to show for them (a `memcpy` into the
       // object, a store at an unknown offset): an unknown value stored at
@@ -1223,11 +1223,9 @@ core::FunctionEffects FunctionRun::deriveEffects() {
         if (!present[e] && !relevant[e])
           continue;
         const auto &tests = split[e].entryTests;
-        auto it = std::find_if(tests.begin(), tests.end(),
-                               [&](const core::EntryTest &test) {
-                                 return test.object == candidate.object &&
-                                        test.key == candidate.key;
-                               });
+        auto it = std::ranges::find_if(tests, [&](const core::EntryTest &test) {
+          return test.object == candidate.object && test.key == candidate.key;
+        });
         holds = it != tests.end() &&
                 it->zero == (present[e] ? candidate.zero : !candidate.zero);
       }
@@ -1424,9 +1422,10 @@ core::FunctionEffects FunctionRun::deriveEffects() {
         (each.kind == core::ValueDesc::Kind::Null ? nullClasses : freshClasses)
             .insert(view.classes.begin(), view.classes.end());
       }
-      bool disjoint = std::none_of(
-          nullClasses.begin(), nullClasses.end(),
-          [&](core::ResultClass c) { return freshClasses.contains(c); });
+      bool disjoint =
+          std::ranges::none_of(nullClasses, [&](core::ResultClass c) {
+            return freshClasses.contains(c);
+          });
       if (!nullClasses.empty() && !freshClasses.empty() && disjoint)
         store.absentOn.assign(nullClasses.begin(), nullClasses.end());
     }
@@ -1493,13 +1492,12 @@ core::FunctionEffects FunctionRun::deriveEffects() {
       store.dest = path;
       store.bytes = range;
       // (Definite when every exit rewrote them on every path.)
-      store.may =
-          !std::all_of(views.begin(), views.end(), [&](const ExitView &view) {
-            auto it = view.forgotten.find(path);
-            return it != view.forgotten.end() &&
-                   it->second.contains(
-                       std::make_tuple(range.first, range.second, false));
-          });
+      store.may = !std::ranges::all_of(views, [&](const ExitView &view) {
+        auto it = view.forgotten.find(path);
+        return it != view.forgotten.end() &&
+               it->second.contains(
+                   std::make_tuple(range.first, range.second, false));
+      });
       effects.stores.push_back(store);
     }
   }
@@ -1625,10 +1623,10 @@ core::FunctionEffects FunctionRun::deriveEffects() {
   std::size_t freshExits = 0;
   // A record result is described on every exit or not at all (a caller
   // reads the fields no store names as never written).
-  bool records =
-      returnType->isRecordType() &&
-      std::all_of(views.begin(), views.end(),
-                  [](const ExitView &view) { return view.recordResult; });
+  bool records = returnType->isRecordType() &&
+                 std::ranges::all_of(views, [](const ExitView &view) {
+                   return view.recordResult;
+                 });
   auto describesResult = [&](const ExitView &view) {
     return (records && view.recordResult) ||
            (view.result && view.result->kind == core::ValueDesc::Kind::Fresh);
@@ -1762,7 +1760,7 @@ static QualType fieldStepType(const ASTContext &context, QualType type,
   const RecordDecl *record = type.isNull() ? nullptr : type->getAsRecordDecl();
   if (record == nullptr || !record->isCompleteDefinition()) {
     if (!name.starts_with("#") || type.isNull())
-      return QualType();
+      return {};
     // A byte offset into an array: its element's scalar there. Inside a
     // scalar (the high word of a `double` a union also holds as two
     // integers), what the callee wrote there has no type here; past its end
@@ -1771,7 +1769,7 @@ static QualType fieldStepType(const ASTContext &context, QualType type,
         offset > 0 &&
         offset < static_cast<std::int64_t>(
                      context.getTypeSizeInChars(type).getQuantity()))
-      return QualType();
+      return {};
     QualType leaf = type;
     while (const auto *array = context.getAsArrayType(leaf))
       leaf = array->getElementType();
@@ -1780,13 +1778,13 @@ static QualType fieldStepType(const ASTContext &context, QualType type,
   const ASTRecordLayout &layout = context.getASTRecordLayout(record);
   for (const FieldDecl *field : record->fields()) {
     if (name.starts_with("#")
-            ? static_cast<std::int64_t>(
-                  layout.getFieldOffset(field->getFieldIndex()) /
-                  context.getCharWidth()) == offset
+            ? std::cmp_equal(layout.getFieldOffset(field->getFieldIndex()) /
+                                 context.getCharWidth(),
+                             offset)
             : field->getName() == name)
       return field->getType();
   }
-  return QualType();
+  return {};
 }
 
 namespace {
@@ -2054,7 +2052,7 @@ PathResolver::elementsAt(const core::SummaryPath &path) {
 /// among elements of `stride` bytes.
 static std::optional<std::pair<core::CellKey, core::Term>>
 elementBase(const core::Term &offset, std::int64_t stride) {
-  if (!offset.known || stride <= 0 || stride > (1 << 20))
+  if (!offset.known || stride <= 0 || std::cmp_greater(stride, 1U << 20U))
     return std::nullopt;
   std::int64_t position = ((offset.constant % stride) + stride) % stride;
   core::CellKey key{.offset = position,
@@ -2075,11 +2073,12 @@ PathResolver::anyElementAt(const core::SummaryPath &path) {
   if (!elements || elements->cellType.isNull())
     return std::nullopt;
   core::SymInfo hint;
-  hint.type = elements->cellType->isPointerType()
-                  ? core::SymInfo::Type::Pointer
-                  : (transfer.integerType(elements->cellType)
-                         ? core::SymInfo::Type::Int
-                         : core::SymInfo::Type::Unknown);
+  if (elements->cellType->isPointerType())
+    hint.type = core::SymInfo::Type::Pointer;
+  else if (transfer.integerType(elements->cellType))
+    hint.type = core::SymInfo::Type::Int;
+  else
+    hint.type = core::SymInfo::Type::Unknown;
   hint.ctype = typeHandle(elements->cellType);
   core::Sym value = core::ZeroSym;
   for (const core::Target &target : elements->targets) {
@@ -2251,15 +2250,13 @@ bool Transfer::pendingOnNullArgument(const std::vector<core::Sym> &args,
   for (const core::PendingCase &pending : argument.pending) {
     if (pending.kind != core::PendingCase::Kind::Release ||
         pending.record.where != where ||
-        std::find(pending.classes.begin(), pending.classes.end(), "nonnull") !=
-            pending.classes.end())
+        std::ranges::find(pending.classes, "nonnull") != pending.classes.end())
       continue;
     const core::SymInfo *subject = state.syms.find(pending.subject);
     if (subject == nullptr)
       continue;
     for (const core::Target &target : subject->targets)
-      if (std::find(targets.begin(), targets.end(), target.object) !=
-          targets.end())
+      if (std::ranges::find(targets, target.object) != targets.end())
         return true;
   }
   return false;
@@ -2278,6 +2275,7 @@ bool Transfer::lostView(const CallExpr &call,
   // The unknown-callee default over what the argument reaches (RFC 0030
   // §5.1): any of it may be what the callee released.
   std::vector<core::ObjectId> start;
+  start.reserve(root.targets.size());
   for (const core::Target &target : root.targets)
     start.push_back(target.object);
   core::ReleaseRecord record;
@@ -2336,6 +2334,7 @@ core::Sym Transfer::pathValue(core::Sym at, const core::ValueDesc &desc,
   return value;
 }
 
+// NOLINTNEXTLINE(readability-function-size): one pass over the summary
 core::Sym Transfer::instantiate(const CallExpr &call,
                                 const core::FunctionEffects &effects,
                                 const std::vector<core::Sym> &args) {
@@ -2363,23 +2362,25 @@ core::Sym Transfer::instantiate(const CallExpr &call,
     allocated.owned = owned;
     allocated.zeroed = desc.zeroed;
     core::Term extent = core::Term::unknown();
-    if (desc.extent && !desc.extent->path)
+    if (desc.extent && !desc.extent->path) {
       extent = core::Term::of(desc.extent->constant);
-    else if (desc.extent && desc.extent->path && desc.extent->path->isParam() &&
-             desc.extent->path->steps.empty() &&
-             desc.extent->path->index < args.size()) {
+    } else if (desc.extent && desc.extent->path &&
+               desc.extent->path->isParam() &&
+               desc.extent->path->steps.empty() &&
+               desc.extent->path->index < args.size()) {
       core::Term base = termOf(args[desc.extent->path->index]);
       if (base.known) {
         base.scale *= desc.extent->scale;
         base.constant =
-            base.constant * desc.extent->scale + desc.extent->constant;
+            (base.constant * desc.extent->scale) + desc.extent->constant;
         if (base.isConstant())
           base.scale = 0;
         extent = base;
       }
     }
     if (extent.known)
-      allocated.extent = core::Extent{extent, core::ExtentClass::Exact};
+      allocated.extent =
+          core::Extent{.bytes = extent, .cls = core::ExtentClass::Exact};
     state.objects.set(object, allocated);
     created[desc.object] = object;
     return object;
@@ -2531,7 +2532,7 @@ core::Sym Transfer::instantiate(const CallExpr &call,
       return base;
     __int128 scale = static_cast<__int128>(base.scale) * term.scale;
     __int128 constant =
-        static_cast<__int128>(base.constant) * term.scale + term.constant;
+        (static_cast<__int128>(base.constant) * term.scale) + term.constant;
     if (scale < INT64_MIN || scale > INT64_MAX || constant < INT64_MIN ||
         constant > INT64_MAX)
       return core::Term::unknown();
@@ -2750,8 +2751,8 @@ core::Sym Transfer::instantiate(const CallExpr &call,
       // RFC 0031 §5.5: the callee releases an argument that is no start of
       // a heap object (`release(&x)`), reported at the call.
       if (effect.kind == core::PathEffect::Kind::Release && !indexed &&
-          !(valuePath.isParam() && valuePath.isRoot() &&
-            valuePath.index < call.getNumArgs()))
+          (!valuePath.isParam() || !valuePath.isRoot() ||
+           valuePath.index >= call.getNumArgs()))
         calleeRelease(call, *value, valuePath,
                       !effect.may && effect.when.always() && !effect.lossy);
       if (effect.kind == core::PathEffect::Kind::Release && !indexed &&
@@ -2888,7 +2889,7 @@ core::Sym Transfer::instantiate(const CallExpr &call,
       if (!effect.when.classes.empty()) {
         core::PendingCase pending;
         for (core::ResultClass c : effect.when.classes)
-          pending.classes.push_back(std::string(core::toString(c)));
+          pending.classes.emplace_back(core::toString(c));
         pending.subject = *value;
         pending.record = record;
         pending.record.conditional = effect.may || effect.lossy;
@@ -2910,6 +2911,7 @@ core::Sym Transfer::instantiate(const CallExpr &call,
         break;
       const core::SymInfo &info = heap.info(state, *value);
       std::vector<core::ObjectId> objects;
+      objects.reserve(info.targets.size());
       for (const core::Target &target : info.targets)
         objects.push_back(target.object);
       // The code the callee could not see had the object, and so every
@@ -2943,6 +2945,7 @@ core::Sym Transfer::instantiate(const CallExpr &call,
       if (value) {
         const core::SymInfo &info = heap.info(state, *value);
         std::vector<core::ObjectId> objects;
+        objects.reserve(info.targets.size());
         for (const core::Target &target : info.targets)
           objects.push_back(target.object);
         for (core::ObjectId id : objects)
@@ -3026,12 +3029,13 @@ core::Sym Transfer::instantiate(const CallExpr &call,
   // are their contents.
   std::map<const core::StoreEffect *, core::Sym> freshStored;
   std::vector<const core::StoreEffect *> byDepth;
+  byDepth.reserve(selected.size());
   for (const core::StoreEffect &store : selected)
     byDepth.push_back(&store);
-  std::stable_sort(byDepth.begin(), byDepth.end(),
-                   [](const core::StoreEffect *a, const core::StoreEffect *b) {
-                     return a->dest.steps.size() < b->dest.steps.size();
-                   });
+  std::ranges::stable_sort(
+      byDepth, [](const core::StoreEffect *a, const core::StoreEffect *b) {
+        return a->dest.steps.size() < b->dest.steps.size();
+      });
   for (const core::StoreEffect *pointer : byDepth) {
     const core::StoreEffect &store = *pointer;
     if (store.value.kind != core::ValueDesc::Kind::Fresh)
@@ -3138,9 +3142,9 @@ core::Sym Transfer::instantiate(const CallExpr &call,
              {core::ResultClass::Null, core::ResultClass::NonNull,
               core::ResultClass::Zero, core::ResultClass::Positive,
               core::ResultClass::Negative})
-          if (std::find(store.when.classes.begin(), store.when.classes.end(),
-                        c) == store.when.classes.end())
-            absent.classes.push_back(std::string(core::toString(c)));
+          if (std::ranges::find(store.when.classes, c) ==
+              store.when.classes.end())
+            absent.classes.emplace_back(core::toString(c));
         absent.subject = value;
         heap.infoMut(state, result).pending.push_back(absent);
       }
@@ -3155,11 +3159,9 @@ core::Sym Transfer::instantiate(const CallExpr &call,
              {core::ResultClass::Null, core::ResultClass::NonNull,
               core::ResultClass::Zero, core::ResultClass::Positive,
               core::ResultClass::Negative})
-          (std::find(store.absentOn.begin(), store.absentOn.end(), c) !=
-                   store.absentOn.end()
-               ? absent
-               : made)
-              .classes.push_back(std::string(core::toString(c)));
+          (std::ranges::find(store.absentOn, c) != store.absentOn.end() ? absent
+                                                                        : made)
+              .classes.emplace_back(core::toString(c));
         absent.subject = value;
         made.subject = value;
         heap.infoMut(state, result).pending.push_back(absent);
@@ -3218,8 +3220,9 @@ core::Sym Transfer::instantiate(const CallExpr &call,
                  write.cell->targets[0].offset.constant}]
             .push_back(write.value);
     for (auto &[at, values] : landing) {
-      std::sort(values.begin(), values.end());
-      values.erase(std::unique(values.begin(), values.end()), values.end());
+      std::ranges::sort(values);
+      auto repeated = std::ranges::unique(values);
+      values.erase(repeated.begin(), repeated.end());
       if (values.size() < 2)
         continue;
       core::Sym joined = values.front();
@@ -3312,9 +3315,9 @@ core::Sym Transfer::instantiate(const CallExpr &call,
           storePastObject(
               call, store, elements->targets[0], elements->targets[0].offset,
               static_cast<__int128>(callers[0].range->first.offset) +
-                  static_cast<__int128>(from.constant) * elements->stride,
+                  (static_cast<__int128>(from.constant) * elements->stride),
               static_cast<__int128>(callers[0].range->first.offset) +
-                  static_cast<__int128>(to.constant - 1) * elements->stride +
+                  (static_cast<__int128>(to.constant - 1) * elements->stride) +
                   cellBytes(context, elements->cellType, elements->stride));
       for (const CallerRange &caller : callers) {
         if (caller.range) {
@@ -3387,7 +3390,7 @@ core::Sym Transfer::instantiate(const CallExpr &call,
         core::PendingCase pending;
         pending.kind = core::PendingCase::Kind::Stored;
         for (core::ResultClass c : store.when.classes)
-          pending.classes.push_back(std::string(core::toString(c)));
+          pending.classes.emplace_back(core::toString(c));
         pending.subject = value;
         pending.stored = stored;
         pending.previous = old;

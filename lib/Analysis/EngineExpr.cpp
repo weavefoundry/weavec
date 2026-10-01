@@ -21,7 +21,9 @@
 #include "clang/Lex/Lexer.h"
 
 #include <algorithm>
+#include <array>
 #include <set>
+#include <utility>
 
 using namespace clang;
 
@@ -105,7 +107,7 @@ std::optional<core::Sym> Transfer::bytesOf(QualType type, const Expr &at) {
   auto element = bytesOf(array->getElementType(), at);
   if (!element)
     return std::nullopt;
-  core::Sym count;
+  core::Sym count = core::ZeroSym;
   if (const auto *vla = dyn_cast<VariableArrayType>(array)) {
     if (vla->getSizeExpr() == nullptr)
       return std::nullopt;
@@ -158,7 +160,8 @@ static bool leavesOf(const ASTContext &context, QualType type,
       return false;
     for (std::uint64_t i = 0; i < count; ++i)
       if (!leavesOf(context, element,
-                    base + static_cast<std::int64_t>(i) * size, out, depth + 1))
+                    base + (static_cast<std::int64_t>(i) * size), out,
+                    depth + 1))
         return false;
     return true;
   }
@@ -229,12 +232,13 @@ typeRange(const core::IntegerType &type) {
   if (type.isSigned) {
     if (type.width >= 64)
       return {INT64_MIN, INT64_MAX};
-    std::int64_t hi = (std::int64_t{1} << (type.width - 1)) - 1;
+    std::int64_t hi =
+        static_cast<std::int64_t>(std::uint64_t{1} << (type.width - 1)) - 1;
     return {-hi - 1, hi};
   }
   if (type.width >= 63)
     return {0, std::nullopt};
-  return {0, (std::int64_t{1} << type.width) - 1};
+  return {0, static_cast<std::int64_t>(std::uint64_t{1} << type.width) - 1};
 }
 
 core::Sym Transfer::constant(std::int64_t value, QualType type) {
@@ -373,9 +377,7 @@ std::string Transfer::spell(const Expr &expr) const {
   CharSourceRange range = CharSourceRange::getTokenRange(e->getSourceRange());
   std::string text =
       Lexer::getSourceText(range, sm, context.getLangOpts()).str();
-  text.erase(std::remove_if(text.begin(), text.end(),
-                            [](char c) { return c == '\n' || c == '\t'; }),
-             text.end());
+  std::erase_if(text, [](char c) { return c == '\n' || c == '\t'; });
   return text;
 }
 
@@ -454,6 +456,7 @@ void Transfer::element(const CFGElement &element) {
   }
 }
 
+// NOLINTNEXTLINE(readability-convert-member-functions-to-static): block hook
 void Transfer::finishBlock(const CFGBlock &block) {
   (void)block;
 }
@@ -619,17 +622,18 @@ core::Sym Transfer::load(const Address &address, QualType type,
     return unknownValue(type);
   core::Sym result = core::ZeroSym;
   core::SymInfo hint;
-  hint.type = type->isPointerType()
-                  ? (type->getPointeeType()->isFunctionType()
-                         ? core::SymInfo::Type::Function
-                         : core::SymInfo::Type::Pointer)
-                  : (integerType(type) ? core::SymInfo::Type::Int
-                                       : core::SymInfo::Type::Unknown);
+  if (type->isPointerType())
+    hint.type = type->getPointeeType()->isFunctionType()
+                    ? core::SymInfo::Type::Function
+                    : core::SymInfo::Type::Pointer;
+  else
+    hint.type = integerType(type) ? core::SymInfo::Type::Int
+                                  : core::SymInfo::Type::Unknown;
   hint.ctype = typeHandle(type);
   for (const core::Target &target : address.targets) {
     heap.ensure(state, target.object);
     std::optional<core::CellKey> key = cellKeyOf(target.offset);
-    core::Sym value;
+    core::Sym value = core::ZeroSym;
     if (!key) {
       // An unknown offset: any cell of the object.
       value = unknownValue(type);
@@ -781,7 +785,7 @@ void Transfer::store(const Address &address, core::Sym value, QualType type,
     if (auto width = sizeOf(type))
       stringStored(target.object, target.offset, *width, value);
     else
-      stringStored(target.object, target.offset, 1 << 20, value);
+      stringStored(target.object, target.offset, 1U << 20U, value);
     bool weak = !strong || key->isSummary();
     run.writtenCells.insert({target.object, *key});
     if (weak && !heap.read(state, target.object, *key)) {
@@ -813,6 +817,7 @@ void Transfer::store(const Address &address, core::Sym value, QualType type,
     if (visible) {
       const core::SymInfo &stored = heap.info(state, value);
       std::vector<core::ObjectId> targets;
+      targets.reserve(stored.targets.size());
       for (const core::Target &t : stored.targets)
         targets.push_back(t.object);
       for (core::ObjectId id : targets)
@@ -909,7 +914,7 @@ std::vector<core::Handle> Transfer::nonNullLocals() const {
         heap.info(state, *value).null == core::PointerNull::NonNull)
       held.push_back(handleOf(var));
   }
-  std::sort(held.begin(), held.end());
+  std::ranges::sort(held);
   return held;
 }
 
@@ -957,7 +962,7 @@ void Transfer::checkLeaks(core::Sym overwritten, const Stmt &at) {
   std::vector<core::ObjectId> reachable =
       heap.reachableObjects(state, run.roots(state));
   for (core::ObjectId id : owned) {
-    if (std::find(reachable.begin(), reachable.end(), id) != reachable.end())
+    if (std::ranges::find(reachable, id) != reachable.end())
       continue;
     std::string name = state.objects.at(id).holder;
     if (name.empty())
@@ -1020,7 +1025,7 @@ void Transfer::initialize(const Address &address, QualType type,
           break;
         const Expr *fieldInit = list->getInit(record->isUnion() ? 0 : index);
         ++index;
-        std::int64_t offset = static_cast<std::int64_t>(
+        auto offset = static_cast<std::int64_t>(
             layout.getFieldOffset(field->getFieldIndex()) /
             context.getCharWidth());
         Address fieldAddress = address;
@@ -1084,8 +1089,7 @@ void Transfer::initialize(const Address &address, QualType type,
         std::size_t nul = bytes.find('\0');
         if (nul == llvm::StringRef::npos && count < *size)
           nul = static_cast<std::size_t>(count);
-        if (nul != llvm::StringRef::npos &&
-            static_cast<std::int64_t>(nul) < *size) {
+        if (nul != llvm::StringRef::npos && std::cmp_less(nul, *size)) {
           object.nulWithin =
               target.offset.plusConstant(static_cast<std::int64_t>(nul));
           object.nulFrom = target.offset;
@@ -1097,6 +1101,7 @@ void Transfer::initialize(const Address &address, QualType type,
       object.forgotten.clear();
       object.mayForgotten.clear();
       std::vector<core::Sym> chars;
+      chars.reserve(static_cast<std::size_t>(std::max<std::int64_t>(count, 0)));
       for (std::int64_t i = 0; i < count; ++i)
         chars.push_back(
             constant(element->isUnsignedIntegerType()
@@ -1197,10 +1202,11 @@ void Transfer::declare(const VarDecl &var) {
   QualType type = var.getType();
   if (const auto *vla = context.getAsVariableArrayType(type)) {
     if (auto bytes = bytesOf(type, *vla->getSizeExpr()))
-      fresh.extent = core::Extent{termOf(*bytes), core::ExtentClass::Exact};
+      fresh.extent = core::Extent{.bytes = termOf(*bytes),
+                                  .cls = core::ExtentClass::Exact};
   } else if (auto size = sizeOf(type)) {
-    fresh.extent =
-        core::Extent{core::Term::of(*size), core::ExtentClass::Exact};
+    fresh.extent = core::Extent{.bytes = core::Term::of(*size),
+                                .cls = core::ExtentClass::Exact};
   }
   state.objects.set(object, fresh);
   if (const Expr *init = var.getInit()) {
@@ -1354,7 +1360,7 @@ core::Sym Transfer::pointerAdd(core::Sym pointer, core::Sym index,
   bool variable = isa<UnaryOperator>(at) ||
                   (indexExpr != nullptr && !indexExpr->isValueDependent() &&
                    !indexExpr->isIntegerConstantExpr(context));
-  if (variable && size > 0 && size <= (1 << 20))
+  if (variable && size > 0 && std::cmp_less_equal(size, 1U << 20U))
     for (const core::Target &target : base.targets)
       if (state.objects.contains(target.object) &&
           state.objects.at(target.object).stride == 0)
@@ -1390,8 +1396,8 @@ ExprResult Transfer::evaluateUncached(const Expr &expr) {
     literal.readonly = true;
     // Its bytes are the literal's (EngineStrings.cpp, FunctionRun::unwritten).
     if (auto size = sizeOf(expr.getType()))
-      literal.extent =
-          core::Extent{core::Term::of(*size), core::ExtentClass::Exact};
+      literal.extent = core::Extent{.bytes = core::Term::of(*size),
+                                    .cls = core::ExtentClass::Exact};
     Address address;
     address.targets = {core::Target{.object = object}};
     result.address = address;
@@ -1405,8 +1411,8 @@ ExprResult Transfer::evaluateUncached(const Expr &expr) {
       core::ObjectState &variable = heap.ensure(state, object);
       if (!variable.extent)
         if (auto size = sizeOf(var->getType()))
-          variable.extent =
-              core::Extent{core::Term::of(*size), core::ExtentClass::Exact};
+          variable.extent = core::Extent{.bytes = core::Term::of(*size),
+                                         .cls = core::ExtentClass::Exact};
       Address address;
       address.targets = {core::Target{.object = object}};
       result.address = address;
@@ -1555,15 +1561,15 @@ ExprResult Transfer::evaluateUncached(const Expr &expr) {
       core::ObjectState fresh;
       fresh.havocked = true;
       if (auto size = sizeOf(expr.getType()))
-        fresh.extent =
-            core::Extent{core::Term::of(*size), core::ExtentClass::Exact};
+        fresh.extent = core::Extent{.bytes = core::Term::of(*size),
+                                    .cls = core::ExtentClass::Exact};
       state.objects.set(object, fresh);
       temporary = Address{};
       temporary->targets = {core::Target{.object = object}};
     }
     result.value = call(cast<CallExpr>(expr));
     if (temporary)
-      result.address = temporary;
+      result.address = std::move(temporary);
     return result;
   }
   case Stmt::UnaryExprOrTypeTraitExprClass: {
@@ -1600,8 +1606,8 @@ ExprResult Transfer::evaluateUncached(const Expr &expr) {
     core::ObjectId object = run.literalObject(expr);
     core::ObjectState fresh;
     if (auto size = sizeOf(expr.getType()))
-      fresh.extent =
-          core::Extent{core::Term::of(*size), core::ExtentClass::Exact};
+      fresh.extent = core::Extent{.bytes = core::Term::of(*size),
+                                  .cls = core::ExtentClass::Exact};
     state.objects.set(object, fresh);
     Address address;
     address.targets = {core::Target{.object = object}};
@@ -1760,13 +1766,13 @@ core::Sym Transfer::evaluateCast(const CastExpr &castExpr) {
       const core::Sym base = operand.address->base;
       const std::vector<core::Sym> above = heap.info(state, base).ancestors;
       core::SymInfo &derived = heap.infoMut(state, loaded);
-      if (std::find(derived.ancestors.begin(), derived.ancestors.end(), base) ==
+      if (std::ranges::find(derived.ancestors, base) ==
           derived.ancestors.end()) {
         derived.ancestors.insert(derived.ancestors.begin(), base);
         for (core::Sym ancestor : above)
           if (derived.ancestors.size() < 8 &&
-              std::find(derived.ancestors.begin(), derived.ancestors.end(),
-                        ancestor) == derived.ancestors.end())
+              std::ranges::find(derived.ancestors, ancestor) ==
+                  derived.ancestors.end())
             derived.ancestors.push_back(ancestor);
         if (derived.ancestors.size() > 8)
           derived.ancestors.resize(8);
@@ -1891,8 +1897,6 @@ core::Sym Transfer::evaluateCast(const CastExpr &castExpr) {
     return out;
   }
   case CK_ToVoid:
-    (void)valueOf(sub);
-    return unknownValue(type);
   default:
     (void)valueOf(sub);
     return unknownValue(type);
@@ -1914,7 +1918,7 @@ core::Sym Transfer::evaluateUnary(const UnaryOperator &op) {
                         ? loadBitField(address, valueType, *bitField, &op)
                         : load(address, valueType, &op);
     bool increment = op.isIncrementOp();
-    core::Sym updated;
+    core::Sym updated = core::ZeroSym;
     if (valueType->isPointerType()) {
       core::Sym one = constant(1, context.IntTy);
       std::int64_t size = sizeOf(valueType->getPointeeType()).value_or(1);
@@ -2012,14 +2016,19 @@ static bool commutative(core::IntegerOp op) {
 static __int128 typeMin(const core::IntegerType &type) {
   if (type.isBoolean || !type.isSigned)
     return 0;
-  return -(static_cast<__int128>(1) << (type.width - 1));
+  return -static_cast<__int128>(static_cast<unsigned __int128>(1)
+                                << (type.width - 1));
 }
 static __int128 typeMax(const core::IntegerType &type) {
   if (type.isBoolean)
     return 1;
   if (type.isSigned)
-    return (static_cast<__int128>(1) << (type.width - 1)) - 1;
-  return (static_cast<__int128>(1) << type.width) - 1;
+    return static_cast<__int128>(static_cast<unsigned __int128>(1)
+                                 << (type.width - 1)) -
+           1;
+  return static_cast<__int128>(static_cast<unsigned __int128>(1)
+                               << type.width) -
+         1;
 }
 
 /// An integer value as a mathematical integer.
@@ -2102,7 +2111,8 @@ static std::optional<__int128> wrapShift(__int128 lo, __int128 hi,
                                          const core::IntegerType &type) {
   if (type.isBoolean || type.width == 0 || type.width > 64)
     return std::nullopt;
-  __int128 modulus = static_cast<__int128>(1) << type.width;
+  auto modulus =
+      static_cast<__int128>(static_cast<unsigned __int128>(1) << type.width);
   __int128 k = floorDiv(lo - typeMin(type), modulus);
   if (floorDiv(hi - typeMin(type), modulus) != k)
     return std::nullopt;
@@ -2177,7 +2187,7 @@ exactRange(core::IntegerOp op, std::pair<__int128, __int128> left,
         // (Beyond 128 bits, saturated: the type's limits clip it below.)
         if (__builtin_mul_overflow(x, y, &product)) {
           const auto most =
-              static_cast<__int128>(~static_cast<unsigned __int128>(0) >> 1);
+              static_cast<__int128>(~static_cast<unsigned __int128>(0) >> 1U);
           product = (x < 0) != (y < 0) ? -most - 1 : most;
         }
         lo = first ? product : std::min(lo, product);
@@ -2389,7 +2399,7 @@ core::Sym Transfer::storeBitField(const Address &address, core::Sym value,
   const std::uint64_t start = context.getASTRecordLayout(field.getParent())
                                   .getFieldOffset(field.getFieldIndex());
   const auto bytes = static_cast<std::int64_t>(
-      (start % charWidth + field.getBitWidthValue() + charWidth - 1) /
+      ((start % charWidth) + field.getBitWidthValue() + charWidth - 1) /
       charWidth);
   for (const core::Target &target : address.targets)
     if (target.offset.isConstant())
@@ -2461,9 +2471,10 @@ core::Sym Transfer::arithmetic(BinaryOperatorKind kind, core::Sym left,
     exact = fits(lo1 - hi2, hi1 - lo2);
     break;
   case core::IntegerOp::Multiply: {
-    __int128 products[4] = {lo1 * lo2, lo1 * hi2, hi1 * lo2, hi1 * hi2};
-    exact = fits(*std::min_element(products, products + 4),
-                 *std::max_element(products, products + 4));
+    const std::array<__int128, 4> products = {lo1 * lo2, lo1 * hi2, hi1 * lo2,
+                                              hi1 * hi2};
+    exact = fits(*std::ranges::min_element(products),
+                 *std::ranges::max_element(products));
     break;
   }
   case core::IntegerOp::Divide:
@@ -2501,10 +2512,9 @@ core::Sym Transfer::arithmetic(BinaryOperatorKind kind, core::Sym left,
   if (additive && !evaluation.alwaysInvalid &&
       (c2 || (c1 && *op == core::IntegerOp::Add))) {
     core::Sym base = c2 ? left : right;
-    __int128 delta =
-        c2 ? (*op == core::IntegerOp::Add ? static_cast<__int128>(*c2)
-                                          : -static_cast<__int128>(*c2))
-           : static_cast<__int128>(*c1);
+    auto delta = static_cast<__int128>(c2 ? *c2 : *c1);
+    if (c2 && *op != core::IntegerOp::Add)
+      delta = -delta;
     auto [lo, hi] = boundsOf(state, base, *integer);
     std::optional<__int128> moved = wrapShift(lo + delta, hi + delta, *integer);
     if (moved && *moved != 0 && integer->isSigned && !wrapSigned)
@@ -2656,7 +2666,7 @@ core::Sym Transfer::evaluateAssign(const BinaryOperator &op) {
   const Expr &lhs = *op.getLHS();
   QualType type = lhs.getType();
   Address address = addressOf(lhs);
-  core::Sym value;
+  core::Sym value = core::ZeroSym;
   if (op.getOpcode() == BO_Assign) {
     if (type->isRecordType()) {
       // A record assignment copies the cells.
@@ -2664,9 +2674,8 @@ core::Sym Transfer::evaluateAssign(const BinaryOperator &op) {
       if (const auto *cast = dyn_cast<ImplicitCastExpr>(rhs);
           cast != nullptr && cast->getCastKind() == CK_LValueToRValue)
         rhs = cast->getSubExpr();
-      if (rhs->isGLValue())
-        if (copyRecord(address, addressOf(*rhs), type))
-          return unknownValue(type);
+      if (rhs->isGLValue() && copyRecord(address, addressOf(*rhs), type))
+        return unknownValue(type);
       ExprResult source = evaluate(*op.getRHS());
       if (source.address && source.address->targets.size() == 1 &&
           address.targets.size() == 1 &&
@@ -2842,8 +2851,9 @@ core::Sym Transfer::evaluateBinary(const BinaryOperator &op) {
 //===----------------------------------------------------------------------===//
 
 /// The result classes a value may still have.
-static std::set<std::string>
-possibleClasses(core::Heap &heap, const core::HeapState &state, core::Sym sym) {
+static std::set<std::string> possibleClasses(const core::Heap &heap,
+                                             const core::HeapState &state,
+                                             core::Sym sym) {
   const core::SymInfo &info = heap.info(state, sym);
   if (info.type == core::SymInfo::Type::Pointer) {
     switch (info.null) {
@@ -2892,7 +2902,7 @@ static void replaceHeld(core::HeapState &state, core::Sym from, core::Sym to) {
 /// out is undone, unless another selected case releases the same value.
 static void resolvePending(FunctionRun &run, core::HeapState &state,
                            core::Sym sym) {
-  core::Heap &heap = run.domain();
+  const core::Heap &heap = run.domain();
   const core::SymInfo *info = state.syms.find(sym);
   if (info == nullptr || info->pending.empty())
     return;
@@ -2904,8 +2914,7 @@ static void resolvePending(FunctionRun &run, core::HeapState &state,
     bool all = true;
     bool none = true;
     for (const std::string &c : possible) {
-      bool in = std::find(pending.classes.begin(), pending.classes.end(), c) !=
-                pending.classes.end();
+      bool in = std::ranges::find(pending.classes, c) != pending.classes.end();
       all = all && in;
       none = none && !in;
     }
@@ -2927,15 +2936,12 @@ static void resolvePending(FunctionRun &run, core::HeapState &state,
       kept.push_back(pending);
   }
   auto releasedBySelected = [&](core::Sym subject) {
-    for (const core::PendingCase &pending : selected)
-      if (pending.subject == subject &&
-          pending.kind == core::PendingCase::Kind::Release)
-        return true;
-    for (const core::PendingCase &pending : kept)
-      if (pending.subject == subject &&
-          pending.kind == core::PendingCase::Kind::Release)
-        return true;
-    return false;
+    auto releases = [&](const core::PendingCase &pending) {
+      return pending.subject == subject &&
+             pending.kind == core::PendingCase::Kind::Release;
+    };
+    return std::ranges::any_of(selected, releases) ||
+           std::ranges::any_of(kept, releases);
   };
   for (const core::PendingCase &pending : excluded)
     if (pending.kind == core::PendingCase::Kind::Stored)
@@ -2949,6 +2955,7 @@ static void resolvePending(FunctionRun &run, core::HeapState &state,
     if (subject.release && subject.release->where == pending.record.where)
       subject.release.reset();
     std::vector<core::ObjectId> targets;
+    targets.reserve(subject.targets.size());
     for (const core::Target &target : subject.targets)
       targets.push_back(target.object);
     for (core::ObjectId id : targets) {
@@ -2996,6 +3003,7 @@ static void resolvePending(FunctionRun &run, core::HeapState &state,
     core::SymInfo &subject = heap.infoMut(state, pending.subject);
     subject.release.reset();
     std::vector<core::ObjectId> targets;
+    targets.reserve(subject.targets.size());
     for (const core::Target &target : subject.targets)
       targets.push_back(target.object);
     for (core::ObjectId id : targets)
@@ -3067,7 +3075,7 @@ bool Transfer::refine(FunctionRun &run, core::HeapState &state,
     std::erase_if(tests, [&](const core::EntryTest &other) {
       return other.object == test.object && other.key == test.key;
     });
-    tests.insert(std::lower_bound(tests.begin(), tests.end(), test), test);
+    tests.insert(std::ranges::lower_bound(tests, test), test);
   }
   return true;
 }
@@ -3128,7 +3136,7 @@ void Transfer::settlePending(FunctionRun &run, core::HeapState &state,
 
 bool Transfer::selectClass(FunctionRun &run, core::HeapState &state,
                            core::Sym sym, core::ResultClass resultClass) {
-  core::Heap &heap = run.domain();
+  const core::Heap &heap = run.domain();
   const core::SymInfo &info = heap.info(state, sym);
   bool feasible = true;
   switch (resultClass) {
@@ -3170,7 +3178,7 @@ bool Transfer::refineCondition(FunctionRun &run, core::HeapState &state,
   constexpr std::size_t MaxConditionDepth = 64;
   std::vector<core::Sym> &open = run.openConditions;
   if (open.size() >= MaxConditionDepth ||
-      std::find(open.begin(), open.end(), condition) != open.end())
+      std::ranges::find(open, condition) != open.end())
     return true;
   struct Nested {
     std::vector<core::Sym> &open;
@@ -3194,6 +3202,7 @@ bool Transfer::refineCondition(FunctionRun &run, core::HeapState &state,
       // `result->f` stores, RFC 0013).
       if (p.allocatorSource) {
         std::vector<core::ObjectId> work;
+        work.reserve(p.targets.size());
         for (const core::Target &target : p.targets)
           work.push_back(target.object);
         std::set<core::ObjectId> seen;

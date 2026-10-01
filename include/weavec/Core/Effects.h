@@ -46,6 +46,7 @@ parseResultClass(std::string_view text);
 /// optionally narrowed by a parameter's zero test. An empty class list is
 /// `always`.
 struct EffectCase {
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
   std::vector<ResultClass> classes = {};
   /// `param N =0` (true) or `!=0` (false).
   std::optional<std::pair<std::uint32_t, bool>> paramZero = std::nullopt;
@@ -105,6 +106,7 @@ struct PathEffect {
   };
   Kind kind = Kind::Release;
   SummaryPath path = {};
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
   std::string family = {};
   EffectCase when = {};
   /// Holds on some paths only (a possible effect).
@@ -146,6 +148,7 @@ struct ValueDesc {
     /// `functions` names (portable names), a callback handed out.
     Function,
   };
+  // NOLINTBEGIN(readability-redundant-member-init): designated-init defaults
   Kind kind = Kind::Unknown;
   std::string family = {};
   std::optional<PathTerm> extent = std::nullopt;
@@ -174,6 +177,7 @@ struct ValueDesc {
   /// `rawSome`, raw through some of a call's functions (`SymInfo::rawSome`).
   bool raw = false;
   bool rawSome = false;
+  // NOLINTEND(readability-redundant-member-init)
 
   [[nodiscard]] std::string toString() const;
   friend bool operator==(const ValueDesc &, const ValueDesc &) = default;
@@ -197,6 +201,7 @@ struct StoreEffect {
   /// RFC 0031 §6.3: `value` is a new object the callee made on every result
   /// class but these, where it stored null instead: on them the object was
   /// never made (`*out = malloc(n); return *out != NULL;`).
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
   std::vector<ResultClass> absentOn = {};
   /// An `unknown` value over the bytes `[first, second)` of the object
   /// `dest` names, counted from where its pointer points: the callee
@@ -229,6 +234,7 @@ struct StringEffect {
 /// One alternative of the result, on the classes it has.
 struct ResultEffect {
   ValueDesc value = {};
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
   std::vector<ResultClass> classes = {};
   /// Arises only when parameter N is zero (true) or non-zero (false): a
   /// call whose argument is known to fail the test never gets it.
@@ -241,6 +247,7 @@ struct ResultEffect {
 /// A function's summary (RFC 0031 §6.1).
 struct FunctionEffects {
   enum class Returns : std::uint8_t { Always, May, Never };
+  // NOLINTBEGIN(readability-redundant-member-init): designated-init defaults
   Returns returns = Returns::Always;
   /// Set when the summary may under-approximate the function (RFC 0030
   /// §5.5): callers add the unknown-callee default.
@@ -259,6 +266,7 @@ struct FunctionEffects {
   /// any global, the caller's unit's included: a call forgets what the
   /// caller's globals hold, as a call of unknown code does.
   bool unknownGlobals = false;
+  // NOLINTEND(readability-redundant-member-init)
 
   [[nodiscard]] bool empty() const noexcept {
     return effects.empty() && stores.empty() && results.empty() &&

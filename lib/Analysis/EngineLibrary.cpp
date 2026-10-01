@@ -126,8 +126,10 @@ static std::optional<WitnessTerm> libraryTerm(const core::LibTerm &term,
   return std::nullopt;
 }
 
+namespace {
 /// How a term's value relates to the true one; `None` when it is neither.
 enum class TermBound : std::uint8_t { Exact, AtMost, AtLeast, None };
+} // namespace
 
 static TermBound combineBounds(TermBound a, TermBound b) {
   if (a == b || b == TermBound::Exact)
@@ -371,8 +373,8 @@ void Transfer::decideArguments(const CallExpr &call, const SiteInfo &site,
           member != nullptr && isa_and_nonnull<ConstantArrayType>(
                                    member->getType()->getAsArrayTypeUnsafe()))
         if (auto size = sizeOf(member->getType())) {
-          extent =
-              core::Extent{core::Term::of(*size), core::ExtentClass::Declared};
+          extent = core::Extent{.bytes = core::Term::of(*size),
+                                .cls = core::ExtentClass::Declared};
           start = core::Term::of(0);
           haveTerm = WitnessTerm::ofConstant(*size);
         }
@@ -384,9 +386,9 @@ void Transfer::decideArguments(const CallExpr &call, const SiteInfo &site,
         start = value.targets[0].offset;
         std::optional<WitnessTerm> total;
         const core::Term &bytes = extent->bytes;
-        if (bytes.isConstant())
+        if (bytes.isConstant()) {
           total = WitnessTerm::ofConstant(bytes.constant);
-        else if (auto name = nameOf(bytes.var, /*extent=*/true)) {
+        } else if (auto name = nameOf(bytes.var, /*extent=*/true)) {
           total = std::move(*name);
           if (bytes.scale != 1)
             total = WitnessTerm::mul(std::move(*total),
@@ -493,22 +495,26 @@ void Transfer::decideArguments(const CallExpr &call, const SiteInfo &site,
                                 : "";
         // Measured from the object's start, as its extent is.
         core::Term reach = end ? *end : need;
-        std::string message = library
-                                  ? callee + " accesses " + least +
-                                        spellBytes(reach, true).value_or("?") +
-                                        " of " + object + ", which has " +
-                                        spellBytes(extent->bytes).value_or("?")
-                                  : callee + " requires " + least +
-                                        spellBytes(reach, true).value_or("?") +
-                                        " behind " + object + ", which has " +
-                                        spellBytes(extent->bytes).value_or("?");
+        std::string message = callee;
+        message += library ? " accesses " : " requires ";
+        message += least;
+        message += spellBytes(reach, true).value_or("?");
+        message += library ? " of " : " behind ";
+        message += object;
+        message += ", which has ";
+        message += spellBytes(extent->bytes).value_or("?");
         // One value under two names: `('strlen(s)' equals 'n')`.
         if (!need.isConstant() && !extent->bytes.isConstant() &&
             need.var == extent->bytes.var) {
           std::string made = nameFor(need.var, true);
           std::string held = nameFor(need.var, false);
-          if (!made.empty() && !held.empty() && made != held)
-            message += " ('" + made + "' equals '" + held + "')";
+          if (!made.empty() && !held.empty() && made != held) {
+            message += " ('";
+            message += made;
+            message += "' equals '";
+            message += held;
+            message += "')";
+          }
         }
         core::Diagnostic diagnostic;
         diagnostic.id = core::diag::OutOfBounds;
@@ -764,9 +770,12 @@ void Transfer::decideLibraryCall(const CallExpr &call, const SiteInfo &site,
       std::string object = run.table().info(a.targets[0].object).name;
       core::Diagnostic diagnostic;
       diagnostic.id = core::diag::OutOfBounds;
-      diagnostic.message =
-          callee + " copies " + std::to_string(length.constant) +
-          " bytes between overlapping ranges of '" + object + "'";
+      diagnostic.message = callee;
+      diagnostic.message += " copies ";
+      diagnostic.message += std::to_string(length.constant);
+      diagnostic.message += " bytes between overlapping ranges of '";
+      diagnostic.message += object;
+      diagnostic.message += '\'';
       diagnostic.location =
           toCoreLocation(context.getSourceManager(), call.getBeginLoc());
       diagnostic.addNote("'" + object + "' is declared here",

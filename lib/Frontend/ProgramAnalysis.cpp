@@ -29,10 +29,10 @@
 namespace weavec::frontend {
 
 ProgramAnalysis::ProgramAnalysis(FrontendOptions opts)
-    : options(std::move(opts)) {
-  // A unit may run again after it reported (to serve a context): its summary
-  // line is its last run's, printed when the program is done.
-  unitSummaries = options.ledgerOutput.printsSummary();
+    : options(std::move(opts)),
+      // A unit may run again after it reported (to serve a context): its
+      // summary line is its last run's, printed when the program is done.
+      unitSummaries(options.ledgerOutput.printsSummary()) {
   options.ledgerOutput.summary = false;
 }
 
@@ -459,11 +459,11 @@ ProgramAnalysis::Result ProgramAnalysis::run() {
 /// Whether `exports` defines the function named `portable`.
 static bool definesName(const analysis::UnitExports &exports,
                         const std::string &portable) {
-  for (const auto &[name, function] : exports.functions)
-    if ((function.external && name == portable) ||
-        (!function.external && exports.source + "#" + name == portable))
-      return true;
-  return false;
+  return std::ranges::any_of(exports.functions, [&](const auto &entry) {
+    const auto &[name, function] = entry;
+    return (function.external && name == portable) ||
+           (!function.external && exports.source + "#" + name == portable);
+  });
 }
 
 bool ProgramAnalysis::runsDefinitionOf(const std::string &portable) const {

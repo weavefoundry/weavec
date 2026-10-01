@@ -22,6 +22,8 @@
 #include "clang/AST/RecordLayout.h"
 #include "clang/Basic/SourceManager.h"
 
+#include <utility>
+
 using namespace clang;
 
 namespace weavec::analysis::engine {
@@ -32,7 +34,7 @@ literalBytes(const core::ObjectInfo &info) {
   if (info.key.kind != core::ObjectKind::Literal)
     return std::nullopt;
   const auto *expr = fromHandle<Expr>(info.key.handle);
-  const StringLiteral *literal = dyn_cast_or_null<StringLiteral>(expr);
+  const auto *literal = dyn_cast_or_null<StringLiteral>(expr);
   if (const auto *predefined = dyn_cast_or_null<PredefinedExpr>(expr))
     literal = predefined->getFunctionName();
   if (literal == nullptr || literal->getCharByteWidth() != 1)
@@ -129,9 +131,9 @@ Transfer::Byte Transfer::byteAt(core::ObjectId id, std::int64_t offset) const {
     return Byte::Unknown;
   const core::ObjectInfo &info = run.table().info(id);
   if (auto bytes = literalBytes(info)) {
-    if (offset > static_cast<std::int64_t>(bytes->size()))
+    if (std::cmp_greater(offset, bytes->size()))
       return Byte::Unknown;
-    if (offset == static_cast<std::int64_t>(bytes->size()))
+    if (std::cmp_equal(offset, bytes->size()))
       return Byte::Zero;
     return (*bytes)[static_cast<std::size_t>(offset)] == '\0' ? Byte::Zero
                                                               : Byte::NonZero;
@@ -358,9 +360,12 @@ void Transfer::stringStored(core::ObjectId id, const core::Term &offset,
 // Formats (RFC 0012, RFC 0030 §8.2)
 //===----------------------------------------------------------------------===//
 
+// NOLINTBEGIN(readability-convert-member-functions-to-static): the other
+// engine files call it through the instance.
 Transfer::FormatFacts
 Transfer::formatFacts(const CallExpr &call,
                       const core::LibraryMatch &match) const {
+  // NOLINTEND(readability-convert-member-functions-to-static)
   FormatFacts out;
   const auto &format = match.entry->format;
   if (!format || format->kind != core::LibFormat::Kind::Printf)

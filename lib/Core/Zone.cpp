@@ -186,7 +186,7 @@ void Zone::forget(Sym x) {
 void Zone::restrictTo(const std::function<bool(Sym)> &keep) {
   if (bottom)
     return;
-  bool dropped = rows.size() != 0 && [&] {
+  bool dropped = !rows.empty() && [&] {
     for (const auto &[u, row] : rows) {
       if (u != ZeroSym && !keep(u))
         return true;
@@ -231,13 +231,13 @@ std::vector<Sym> Zone::symbols() const {
     for (const auto &[y, c] : row)
       all.push_back(y);
   }
-  std::sort(all.begin(), all.end());
-  all.erase(std::unique(all.begin(), all.end()), all.end());
+  std::ranges::sort(all);
+  all.erase(std::ranges::unique(all).begin(), all.end());
   return all;
 }
 
 void Zone::assign(std::vector<std::tuple<Sym, Sym, std::int64_t>> entries) {
-  std::sort(entries.begin(), entries.end());
+  std::ranges::sort(entries);
   std::vector<std::pair<Sym, PMap<Sym, std::int64_t>>> built;
   std::vector<Sym> related;
   for (std::size_t i = 0; i < entries.size();) {
@@ -254,7 +254,7 @@ void Zone::assign(std::vector<std::tuple<Sym, Sym, std::int64_t>> entries) {
     built.emplace_back(x, PMap<Sym, std::int64_t>::fromSorted(std::move(row)));
   }
   rows = PMap<Sym, PMap<Sym, std::int64_t>>::fromSorted(std::move(built));
-  std::sort(related.begin(), related.end());
+  std::ranges::sort(related);
   std::vector<std::pair<Sym, std::uint32_t>> counts;
   for (Sym sym : related)
     if (!counts.empty() && counts.back().first == sym)
@@ -305,9 +305,9 @@ void Zone::enforceLimit() {
   order.reserve(degrees.size());
   for (const auto &[sym, bounds] : degrees)
     order.emplace_back(bounds, sym);
-  std::sort(order.begin(), order.end());
+  std::ranges::sort(order);
   std::set<Sym> demote;
-  const std::size_t keep = MaxRelational - MaxRelational / 4;
+  const std::size_t keep = MaxRelational - (MaxRelational / 4);
   for (std::size_t i = 0; i + keep < order.size(); ++i)
     demote.insert(order[i].second);
   // One pass over the rows: a demoted symbol's row keeps its bound against
@@ -359,30 +359,30 @@ Zone Zone::closure(const Zone &zone, const std::vector<Sym> &symbols) {
   for (std::size_t i = 0; i < n; ++i)
     for (std::size_t j = 0; j < n; ++j) {
       if (i == j) {
-        d[i * n + j] = 0;
+        d[(i * n) + j] = 0;
       } else if (auto c = zone.bound(nodes[i], nodes[j])) {
-        d[i * n + j] = *c;
+        d[(i * n) + j] = *c;
       }
     }
   for (std::size_t k = 0; k < n; ++k)
     for (std::size_t i = 0; i < n; ++i) {
-      const std::int64_t ik = d[i * n + k];
+      const std::int64_t ik = d[(i * n) + k];
       if (ik == None)
         continue;
       for (std::size_t j = 0; j < n; ++j) {
-        const std::int64_t kj = d[k * n + j];
+        const std::int64_t kj = d[(k * n) + j];
         if (kj == None)
           continue;
         const __int128 sum = static_cast<__int128>(ik) + kj;
         if (sum < INT64_MIN || sum >= None)
           continue;
-        std::int64_t &ij = d[i * n + j];
+        std::int64_t &ij = d[(i * n) + j];
         if (ij == None || sum < ij)
           ij = static_cast<std::int64_t>(sum);
       }
     }
   for (std::size_t i = 0; i < n; ++i)
-    if (d[i * n + i] < 0) {
+    if (d[(i * n) + i] < 0) {
       out.setBottom();
       return out;
     }
@@ -396,11 +396,11 @@ Zone Zone::closure(const Zone &zone, const std::vector<Sym> &symbols) {
   }
   for (std::size_t i = 1; i < n; ++i)
     for (std::size_t j = 1; j < n; ++j) {
-      if (i == j || d[i * n + j] == None)
+      if (i == j || d[(i * n) + j] == None)
         continue;
       auto zero = out.implied(nodes[i], nodes[j]);
-      if (d[i * n + j] < LooseRelation && (!zero || d[i * n + j] < *zero))
-        out.setRaw(nodes[i], nodes[j], d[i * n + j]);
+      if (d[(i * n) + j] < LooseRelation && (!zero || d[(i * n) + j] < *zero))
+        out.setRaw(nodes[i], nodes[j], d[(i * n) + j]);
     }
   out.enforceLimit();
   return out;
@@ -431,7 +431,7 @@ Zone Zone::combine(const Zone &left, const Zone &right,
     for (const SymPair &pair : pairs)
       if (isLeft ? pair.hasLeft : pair.hasRight)
         used.push_back(isLeft ? pair.left : pair.right);
-    std::sort(used.begin(), used.end());
+    std::ranges::sort(used);
     std::vector<Sym> shared;
     for (std::size_t i = 1; i < used.size(); ++i)
       if (used[i] == used[i - 1] &&
@@ -443,8 +443,8 @@ Zone Zone::combine(const Zone &left, const Zone &right,
   const std::vector<Sym> rightShared = sharedOn(false);
   auto bounded = [](const std::vector<Sym> &syms,
                     const std::vector<Sym> &shared, Sym sym) {
-    return std::binary_search(syms.begin(), syms.end(), sym) ||
-           std::binary_search(shared.begin(), shared.end(), sym);
+    return std::ranges::binary_search(syms, sym) ||
+           std::ranges::binary_search(shared, sym);
   };
   for (const SymPair &pair : pairs) {
     SymPair copy = pair;
@@ -457,8 +457,10 @@ Zone Zone::combine(const Zone &left, const Zone &right,
   }
   // Each side's stored bounds against zero, per entry of `all`.
   const std::size_t count = all.size();
-  std::vector<std::optional<std::int64_t>> upLeft(count), downLeft(count),
-      upRight(count), downRight(count);
+  std::vector<std::optional<std::int64_t>> upLeft(count);
+  std::vector<std::optional<std::int64_t>> downLeft(count);
+  std::vector<std::optional<std::int64_t>> upRight(count);
+  std::vector<std::optional<std::int64_t>> downRight(count);
   for (std::size_t i = 1; i < count; ++i) {
     if (all[i].hasLeft) {
       upLeft[i] = left.stored(all[i].left, ZeroSym);
@@ -514,8 +516,12 @@ Zone Zone::combine(const Zone &left, const Zone &right,
           result = *lb;
         else if (!relational)
           result = nextThreshold(*rb);
+        else if (*rb <= -1)
+          result = -1;
+        else if (*rb <= 0)
+          result = 0;
         else if (*rb <= 1)
-          result = *rb <= -1 ? -1 : *rb <= 0 ? 0 : 1;
+          result = 1;
       }
     } else if (leftApplies || rightApplies) {
       // Only one side has both values. A bound against zero, or between
@@ -533,11 +539,14 @@ Zone Zone::combine(const Zone &left, const Zone &right,
   // Bounds against zero first: whether a relation says more than they do
   // depends on them.
   std::vector<std::tuple<Sym, Sym, std::int64_t>> entries;
-  std::vector<std::optional<std::int64_t>> outUp(count), outDown(count);
+  std::vector<std::optional<std::int64_t>> outUp(count);
+  std::vector<std::optional<std::int64_t>> outDown(count);
   for (std::size_t i = 1; i < count; ++i) {
-    if ((outUp[i] = combined(i, 0)))
+    outUp[i] = combined(i, 0);
+    if (outUp[i])
       entries.emplace_back(all[i].result, ZeroSym, *outUp[i]);
-    if ((outDown[i] = combined(0, i)))
+    outDown[i] = combined(0, i);
+    if (outDown[i])
       entries.emplace_back(ZeroSym, all[i].result, *outDown[i]);
   }
   // Relations: those a side stores, those between results sharing a
@@ -554,11 +563,11 @@ Zone Zone::combine(const Zone &left, const Zone &right,
     if (all[i].hasRight)
       rightBy.emplace_back(all[i].right, i);
   }
-  std::sort(leftBy.begin(), leftBy.end());
-  std::sort(rightBy.begin(), rightBy.end());
+  std::ranges::sort(leftBy);
+  std::ranges::sort(rightBy);
   auto usersOf = [](const Index &by, Sym sym) {
-    return std::equal_range(
-        by.begin(), by.end(), std::make_pair(sym, std::size_t{0}),
+    return std::ranges::equal_range(
+        by, std::make_pair(sym, std::size_t{0}),
         [](const auto &x, const auto &y) { return x.first < y.first; });
   };
   std::vector<std::pair<std::uint32_t, std::uint32_t>> candidates;
@@ -602,9 +611,13 @@ Zone Zone::combine(const Zone &left, const Zone &right,
     };
     // (-1, 0, 1: how the upper bound of a, or the lower bound of b, moves
     // from the left side to the right; 2 when a side has none.)
-    std::vector<std::size_t> upUp, upDown, downUp, downDown;
+    std::vector<std::size_t> upUp;
+    std::vector<std::size_t> upDown;
+    std::vector<std::size_t> downUp;
+    std::vector<std::size_t> downDown;
     // (Widening: bounds that fall or rise the other way.)
-    std::vector<std::size_t> upperFalls, lowerRises;
+    std::vector<std::size_t> upperFalls;
+    std::vector<std::size_t> lowerRises;
     for (std::size_t i = 1; i < count; ++i) {
       const SymPair &p = all[i];
       if (!p.hasLeft || !p.hasRight)
@@ -657,9 +670,9 @@ Zone Zone::combine(const Zone &left, const Zone &right,
       // Lower bounds (right side) descending: those with `upper(a) -
       // lower(b) <= 1` come first.
       std::vector<std::size_t> byLower = downUp;
-      std::sort(
-          byLower.begin(), byLower.end(),
-          [&](std::size_t x, std::size_t y) { return lowerR(x) > lowerR(y); });
+      std::ranges::sort(byLower, [&](std::size_t x, std::size_t y) {
+        return lowerR(x) > lowerR(y);
+      });
       for (std::size_t i : upUp) {
         const std::int64_t up = upperR(i);
         for (std::size_t j : byLower) {
@@ -679,9 +692,9 @@ Zone Zone::combine(const Zone &left, const Zone &right,
           candidates.emplace_back(i, j);
       // Upper bounds (right side) ascending, for the moving lower bounds.
       std::vector<std::size_t> byUpper = upDown;
-      std::sort(
-          byUpper.begin(), byUpper.end(),
-          [&](std::size_t x, std::size_t y) { return upperR(x) < upperR(y); });
+      std::ranges::sort(byUpper, [&](std::size_t x, std::size_t y) {
+        return upperR(x) < upperR(y);
+      });
       for (std::size_t j : downDown) {
         const std::int64_t low = lowerR(j);
         for (std::size_t i : byUpper) {
@@ -693,9 +706,8 @@ Zone Zone::combine(const Zone &left, const Zone &right,
       }
     }
   }
-  std::sort(candidates.begin(), candidates.end());
-  candidates.erase(std::unique(candidates.begin(), candidates.end()),
-                   candidates.end());
+  std::ranges::sort(candidates);
+  candidates.erase(std::ranges::unique(candidates).begin(), candidates.end());
   for (const auto &[ia, ib] : candidates) {
     if (all[ia].result == all[ib].result)
       continue;
