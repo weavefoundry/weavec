@@ -82,7 +82,7 @@ std::optional<std::int64_t> objectWidth(const ASTContext &context,
   return size;
 }
 
-std::string quoted(const std::string &name) {
+std::string inQuotes(const std::string &name) {
   return "'" + name + "'";
 }
 } // namespace
@@ -456,7 +456,7 @@ void Decider::nullOf(core::Sym pointer, const Expr &operand) {
     decide(core::Facet::Null, core::FacetDecision::violation());
     report(
         makeDiagnostic(core::diag::UseOfUninitialized,
-                       "use of " + quoted(name) + " before it was initialized",
+                       "use of " + inQuotes(name) + " before it was initialized",
                        context, operand.getBeginLoc(), core::Severity::Error),
         core::Certainty::Definite, core::Facet::Null);
     return;
@@ -470,7 +470,7 @@ void Decider::nullOf(core::Sym pointer, const Expr &operand) {
       decide(core::Facet::Null, core::FacetDecision::violation());
       core::Diagnostic diagnostic =
           makeDiagnostic(core::diag::NullDereference,
-                         "dereference of " + quoted(name) + ", which is null",
+                         "dereference of " + inQuotes(name) + ", which is null",
                          context, operand.getBeginLoc(), core::Severity::Error);
       transfer.addNullNote(diagnostic, value, name);
       report(std::move(diagnostic), core::Certainty::Definite,
@@ -489,7 +489,7 @@ void Decider::nullOf(core::Sym pointer, const Expr &operand) {
         (!run.unitRun().input.options.zeroInit || run.isBypassed(operand))) {
       decide(core::Facet::Null, core::FacetDecision::unresolvedFor(
                                     core::UnresolvedReason::NoZeroInit,
-                                    quoted(name) + " may be uninitialised"));
+                                    inQuotes(name) + " may be uninitialised"));
       return;
     }
     if (site.nullSystemApi) {
@@ -523,7 +523,7 @@ void Decider::readsState(const std::string &slot) {
                                           core::UnresolvedReason::MayReleased));
   core::Diagnostic diagnostic = makeDiagnostic(
       core::diag::UseAfterFree,
-      "use of " + quoted(name) +
+      "use of " + inQuotes(name) +
           (definite ? " after it was freed" : " after it may have been freed"),
       context, site.stmt->getBeginLoc(),
       definite ? core::Severity::Error : core::Severity::Warning);
@@ -580,7 +580,7 @@ void Decider::temporalOf(core::Sym pointer, const Expr &operand,
     if (some)
       text += " on some paths";
     if (!record.via.empty() && record.via != name)
-      text += " (through " + quoted(record.via) + ")";
+      text += " (through " + inQuotes(record.via) + ")";
     addNote(diagnostic, text, record.where);
   };
   switch (verdict.kind) {
@@ -620,16 +620,16 @@ void Decider::temporalOf(core::Sym pointer, const Expr &operand,
     const core::ReleaseRecord &record = *verdict.record;
     std::string message;
     if (isRelease && record.reason == Reason::Moved)
-      message = "use of " + quoted(name) + " after it was moved";
+      message = "use of " + inQuotes(name) + " after it was moved";
     else if (isRelease)
       message =
-          quoted(name) + " is " +
+          inQuotes(name) + " is " +
           (record.reason == Reason::ShareReleased ? "released" : "freed") +
           " twice";
     else if (record.reason == Reason::ShareReleased)
-      message = "use of " + quoted(name) + " after its reference was released";
+      message = "use of " + inQuotes(name) + " after its reference was released";
     else
-      message = "use of " + quoted(name) + " after it was " + verbFor(record);
+      message = "use of " + inQuotes(name) + " after it was " + verbFor(record);
     core::Diagnostic diagnostic = makeDiagnostic(
         idFor(record), message, context,
         isRelease ? site.stmt->getBeginLoc() : operand.getBeginLoc(),
@@ -649,11 +649,11 @@ void Decider::temporalOf(core::Sym pointer, const Expr &operand,
                      : core::UnresolvedReason::MayReleased));
     std::string message;
     if (isRelease && moved)
-      message = "use of " + quoted(name) + " after it may have been moved";
+      message = "use of " + inQuotes(name) + " after it may have been moved";
     else if (isRelease)
-      message = quoted(name) + " may be freed twice";
+      message = inQuotes(name) + " may be freed twice";
     else
-      message = "use of " + quoted(name) + " after it may have been " +
+      message = "use of " + inQuotes(name) + " after it may have been " +
                 (moved ? "moved" : "freed");
     core::Diagnostic diagnostic = makeDiagnostic(
         idFor(record), message, context,
@@ -668,7 +668,7 @@ void Decider::temporalOf(core::Sym pointer, const Expr &operand,
     decide(core::Facet::Temporal,
            core::FacetDecision::unresolvedFor(
                core::UnresolvedReason::MayAliasReleased,
-               quoted(name) + " may point into an object released earlier"));
+               inQuotes(name) + " may point into an object released earlier"));
     return;
   case Kind::UnknownCallee:
     // (The detail names the code that may have released it; at a call the
@@ -809,7 +809,7 @@ void Decider::spatialOf(core::Sym pointer, std::int64_t width,
     // A lowered violation traps with the `violation` template (RFC 0030
     // §3.4).
     decide(core::Facet::Spatial, core::FacetDecision::violation());
-    std::string subject = quoted(transfer.spell(*cast<Expr>(site.stmt)));
+    std::string subject = inQuotes(transfer.spell(*cast<Expr>(site.stmt)));
     // The object: an array member's is the object it is a member of.
     const Expr *objectExpr =
         site.operand != nullptr ? site.operand->IgnoreParenImpCasts() : nullptr;
@@ -819,7 +819,7 @@ void Decider::spatialOf(core::Sym pointer, std::int64_t width,
       objectExpr = member->getBase()->IgnoreParenImpCasts();
     }
     std::string object = objectExpr != nullptr
-                             ? quoted(transfer.spell(*objectExpr))
+                             ? inQuotes(transfer.spell(*objectExpr))
                              : "the object";
     std::string message;
     // An amount of bytes as the program spells it: `5 bytes`, `'n' + 2
@@ -899,12 +899,12 @@ void Decider::spatialOf(core::Sym pointer, std::int64_t width,
       std::string indexName = name(indexTerm.var);
       if (!countName.empty() && count == indexTerm.var) {
         countClause =
-            quoted(countName) + " is the number of elements of " + object;
+            inQuotes(countName) + " is the number of elements of " + object;
       } else if (!countName.empty() && !indexName.empty()) {
         std::string relation = " is at least ";
         if (auto gap = state.zone.bound(count, indexTerm.var); gap && *gap < 0)
           relation = " is above ";
-        countClause = quoted(indexName) + relation + quoted(countName) +
+        countClause = inQuotes(indexName) + relation + inQuotes(countName) +
                       ", the number of elements of " + object;
       }
     }
@@ -924,7 +924,7 @@ void Decider::spatialOf(core::Sym pointer, std::int64_t width,
              state.zone.lower(indexTerm.var) && transfer.nameOf(indexTerm.var))
       // RFC 0012: `'i' is at least 8 in an object of 8 bytes`.
       message = subject + " is out of bounds: " +
-                quoted(messageSpelling(*transfer.nameOf(indexTerm.var))) +
+                inQuotes(messageSpelling(*transfer.nameOf(indexTerm.var))) +
                 " is at least " +
                 std::to_string(*state.zone.lower(indexTerm.var)) +
                 " in an object of " + *extent;
@@ -946,13 +946,13 @@ void Decider::spatialOf(core::Sym pointer, std::int64_t width,
       if (info.key.kind == core::ObjectKind::Local ||
           info.key.kind == core::ObjectKind::Global)
         addNote(diagnostic,
-                spelled == info.name ? quoted(spelled) + " is declared here"
-                                     : "the object behind " + quoted(spelled) +
+                spelled == info.name ? inQuotes(spelled) + " is declared here"
+                                     : "the object behind " + inQuotes(spelled) +
                                            " is declared here",
                 info.created);
       else if (info.key.kind == core::ObjectKind::HeapRecent ||
                info.key.kind == core::ObjectKind::HeapOld)
-        addNote(diagnostic, quoted(spelled) + " is allocated here",
+        addNote(diagnostic, inQuotes(spelled) + " is allocated here",
                 info.created);
     }
     report(std::move(diagnostic), core::Certainty::Definite,
@@ -1018,7 +1018,7 @@ bool Decider::writesLiteral(core::Sym pointer, const Expr &operand) {
   }
   decide(core::Facet::Spatial, core::FacetDecision::violation());
   report(makeDiagnostic(core::diag::OutOfBounds,
-                        "write through " + quoted(transfer.spell(operand)) +
+                        "write through " + inQuotes(transfer.spell(operand)) +
                             ", which points to a string literal",
                         context, site.stmt->getBeginLoc(),
                         core::Severity::Error),
@@ -1106,7 +1106,7 @@ void Decider::access() {
     core::Diagnostic diagnostic = makeDiagnostic(
         core::diag::UnsafeOperation,
         "dereference of raw pointer " +
-            (spelled.empty() ? std::string() : quoted(spelled) + " ") +
+            (spelled.empty() ? std::string() : inQuotes(spelled) + " ") +
             "outside an unsafe region",
         context,
         operand != nullptr ? operand->getBeginLoc() : site.stmt->getBeginLoc(),
@@ -1309,23 +1309,23 @@ bool Decider::memberBound(std::int64_t width) {
   std::optional<bool> upper =
       bound.known ? heap.lessEqual(state, index.plusConstant(1), bound)
                   : std::nullopt;
-  std::string subject = quoted(transfer.spell(*cast<Expr>(site.stmt)));
+  std::string subject = inQuotes(transfer.spell(*cast<Expr>(site.stmt)));
   std::string spelled = transfer.spell(*member);
   if (lower == false || upper == false) {
     decide(core::Facet::Spatial, core::FacetDecision::violation());
     core::Diagnostic diagnostic = makeDiagnostic(
         core::diag::OutOfBounds,
         subject + " is out of bounds: index " + indexText(*site.index) +
-            (lower == false ? " is before the start of " + quoted(spelled)
+            (lower == false ? " is before the start of " + inQuotes(spelled)
              : array == nullptr && !state.zone.constant(transfer.vlaCount(*vla))
-                 ? " is past the end of " + quoted(spelled)
+                 ? " is past the end of " + inQuotes(spelled)
              : width > 0
                  ? " of an object of " + std::to_string(count * width) +
                        " bytes"
                  : " of an array of " + std::to_string(count) + " elements"),
         context, site.stmt->getBeginLoc(), core::Severity::Error);
     if (field != nullptr)
-      addNote(diagnostic, quoted(spelled) + " is declared here",
+      addNote(diagnostic, inQuotes(spelled) + " is declared here",
               toCoreLocation(context.getSourceManager(), field->getLocation()));
     report(std::move(diagnostic), core::Certainty::Definite,
            core::Facet::Spatial);
@@ -1414,8 +1414,8 @@ void Decider::release(core::Sym pointer, const std::string &family) {
       decide(core::Facet::Temporal, core::FacetDecision::violation());
       core::Diagnostic diagnostic = makeDiagnostic(
           core::diag::MismatchedRelease,
-          quoted(name) + " is released with " + quoted(family) +
-              " but must be released with " + quoted(object->family),
+          inQuotes(name) + " is released with " + inQuotes(family) +
+              " but must be released with " + inQuotes(object->family),
           context, site.stmt->getBeginLoc(), core::Severity::Error);
       addNote(diagnostic, "allocated here",
               run.table().info(value.targets[0].object).created);
@@ -1429,12 +1429,12 @@ void Decider::release(core::Sym pointer, const std::string &family) {
   if (raw && !value.rawSome && run.isPublishing()) {
     std::string callee =
         site.library
-            ? quoted(site.library->entry->name)
-            : (site.callee != nullptr ? quoted(site.callee->getNameAsString())
+            ? inQuotes(site.library->entry->name)
+            : (site.callee != nullptr ? inQuotes(site.callee->getNameAsString())
                                       : std::string("a function pointer"));
     core::Diagnostic diagnostic =
         makeDiagnostic(core::diag::UnsafeOperation,
-                       callee + " releases raw pointer " + quoted(name) +
+                       callee + " releases raw pointer " + inQuotes(name) +
                            " outside an unsafe region",
                        context, operand->getBeginLoc(), core::Severity::Error);
     if (value.raw)
@@ -1516,12 +1516,12 @@ void Decider::conflictingBorrow(core::Sym pointer) {
       std::string name = transfer.spell(*site.operand);
       core::Diagnostic diagnostic = makeDiagnostic(
           core::diag::ConflictingBorrow,
-          "cannot free " + quoted(name) + " while it is borrowed", context,
+          "cannot free " + inQuotes(name) + " while it is borrowed", context,
           site.stmt->getBeginLoc(),
           definite ? core::Severity::Error : core::Severity::Warning);
       const FunctionRun::FrameStore *stored = run.borrowStore(id, key);
       if (stored != nullptr && !stored->holder.empty())
-        addNote(diagnostic, "borrowed by " + quoted(stored->holder) + " here",
+        addNote(diagnostic, "borrowed by " + inQuotes(stored->holder) + " here",
                 toCoreLocation(context.getSourceManager(),
                                stored->at->getBeginLoc()));
       report(std::move(diagnostic),
@@ -1773,11 +1773,11 @@ void Transfer::addNullNote(core::Diagnostic &diagnostic,
   const core::NullOrigin &origin = *value.nullOrigin;
   switch (origin.reason) {
   case core::NullOrigin::Reason::Assigned:
-    addNote(diagnostic, quoted(name) + " is assigned NULL here", origin.where);
+    addNote(diagnostic, inQuotes(name) + " is assigned NULL here", origin.where);
     return;
   case core::NullOrigin::Reason::Tested:
     addNote(diagnostic,
-            quoted(name) + " may be null: it is compared with NULL here",
+            inQuotes(name) + " may be null: it is compared with NULL here",
             origin.where);
     return;
   case core::NullOrigin::Reason::Allocated:
@@ -1798,7 +1798,7 @@ core::Diagnostic Transfer::nullArgument(const Expr &arg,
   core::Diagnostic diagnostic =
       makeDiagnostic(core::diag::NullDereference,
                      (name.empty() ? std::string("a null pointer")
-                                   : quoted(name) + ", which is null,") +
+                                   : inQuotes(name) + ", which is null,") +
                          " is passed to " + callee + ", which dereferences it",
                      context, arg.getBeginLoc(), core::Severity::Error);
   addNullNote(diagnostic, value, name);
@@ -1819,7 +1819,7 @@ void Transfer::allocationFailure(const core::SymInfo &value, const Expr &at,
   if (value.nullOrigin &&
       value.nullOrigin->reason == core::NullOrigin::Reason::Allocated) {
     if (!value.nullOrigin->detail.empty())
-      callee = "the result of " + quoted(value.nullOrigin->detail);
+      callee = "the result of " + inQuotes(value.nullOrigin->detail);
     allocated = value.nullOrigin->where;
   }
   core::Diagnostic diagnostic = makeDiagnostic(
@@ -1853,7 +1853,7 @@ void Decider::unknownCall(const CallExpr &call, bool callback) {
       break;
     }
   if (callee == nullptr) {
-    detail = "the target of " + quoted(transfer.spell(*call.getCallee())) +
+    detail = "the target of " + inQuotes(transfer.spell(*call.getCallee())) +
              " is unknown; annotate the parameters of its function type";
   } else if (uncovered && *uncovered < callee->getNumParams()) {
     std::string name = callee->getNameAsString();
@@ -2010,15 +2010,15 @@ void Transfer::decideExitSite(const Stmt &stmt, bool isReturn) {
         if (const auto *ref =
                 dyn_cast<DeclRefExpr>(ret.getRetValue()->IgnoreParenImpCasts());
             ref != nullptr && isa<VarDecl>(ref->getDecl()))
-          holder = quoted(ref->getDecl()->getNameAsString());
+          holder = inQuotes(ref->getDecl()->getNameAsString());
       core::Diagnostic diagnostic = makeDiagnostic(
           core::diag::LifetimeTooShort,
-          holder + " may outlive " + quoted(local) + ", which it points to",
+          holder + " may outlive " + inQuotes(local) + ", which it points to",
           run.ast(),
           ret.getRetValue() != nullptr ? ret.getRetValue()->getBeginLoc()
                                        : ret.getBeginLoc(),
           definite ? core::Severity::Error : core::Severity::Warning);
-      addNote(diagnostic, quoted(local) + " is declared here", declared);
+      addNote(diagnostic, inQuotes(local) + " is declared here", declared);
       run.report(std::move(diagnostic),
                  definite ? core::Certainty::Definite
                           : core::Certainty::Possible,
@@ -2233,7 +2233,7 @@ void Transfer::decideCall(const CallExpr &call,
         decision = core::FacetDecision::violation();
         std::string callee =
             direct != nullptr
-                ? quoted(info->library ? info->library->entry->name
+                ? inQuotes(info->library ? info->library->entry->name
                                        : direct->getNameAsString())
                 : "a function pointer";
         run.report(
@@ -2274,7 +2274,7 @@ void Transfer::decideCall(const CallExpr &call,
         if (unknownTarget)
           open = core::FacetDecision::unresolvedFor(
               core::UnresolvedReason::Callback, "the callback of " +
-                                                    quoted(match.entry->name) +
+                                                    inQuotes(match.entry->name) +
                                                     " is not known here");
         else if (match.entry->trustsLibrarySpec())
           open =
@@ -2369,7 +2369,7 @@ void Transfer::decideCall(const CallExpr &call,
           std::string name = spell(callee);
           core::Diagnostic diagnostic = makeDiagnostic(
               core::diag::NullDereference,
-              "dereference of " + quoted(name) + ", which is null", run.ast(),
+              "dereference of " + inQuotes(name) + ", which is null", run.ast(),
               callee.getBeginLoc(), core::Severity::Error);
           addNullNote(diagnostic, target, name);
           decider.report(std::move(diagnostic), core::Certainty::Definite,
@@ -2406,10 +2406,10 @@ void Transfer::decideCall(const CallExpr &call,
                   : std::string();
           core::Diagnostic diagnostic = makeDiagnostic(
               core::diag::UnsafeOperation,
-              quoted(direct->getNameAsString()) +
+              inQuotes(direct->getNameAsString()) +
                   (set.owned ? " takes ownership of raw pointer "
                              : " dereferences raw pointer ") +
-                  (name.empty() ? std::string() : quoted(name) + " ") +
+                  (name.empty() ? std::string() : inQuotes(name) + " ") +
                   "outside an unsafe region",
               run.ast(), argument.getBeginLoc(), core::Severity::Error);
           addNote(diagnostic, rawNote(value, name), value.rawAt);
