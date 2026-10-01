@@ -319,7 +319,7 @@ FunctionRun::parameterTerm(const core::HeapState &state,
       auto up = state.zone.bound(term.var, *held);
       auto down = state.zone.bound(*held, term.var);
       if (up && down && *down != INT64_MIN && *up == -*down)
-        offset = *up;
+        offset = up;
     }
     if (!offset)
       continue;
@@ -457,7 +457,7 @@ void FunctionRun::describeElements(
       else if (contents.stored)
         stores[{*path, std::nullopt}] =
             core::ValueDesc{.kind = core::ValueDesc::Kind::Path,
-                            .path = *path,
+                            .path = path,
                             .maybeNull = held.nullJoined};
       return;
     }
@@ -3270,7 +3270,7 @@ core::Sym Transfer::instantiate(const CallExpr &call,
           size = store.bytes->second - store.bytes->first;
         } else if (auto bytes = sizeOf(write.cellType); bytes && *bytes > 0) {
           from = target.offset.constant;
-          size = *bytes;
+          size = bytes;
         }
       }
       if (weak)
