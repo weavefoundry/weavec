@@ -12,10 +12,11 @@ proven, checked by a runtime check it inserts, a definite violation (an
 error), or unresolved or trusted with a reason. Three C++ libraries:
 `weavec::Core` (the model, the ledger, pointer kinds, the library table;
 **no Clang/LLVM includes allowed**), `weavec::Analysis` (Clang AST → core
-facts: sites, kinds, the engine behind the `SafetyEngine` seam, the check
-planner; the only layer that includes both), `weavec::Frontend` (deferred
-CodeGen, check emission, zero-initialisation, ledger writers, unit records,
-whole-program orchestration, the compiler driver, diagnostics bridging).
+facts: sites, kinds, the object engine behind the `SafetyEngine` seam in
+`lib/Analysis/Engine*.cpp`, the check planner; the only layer that includes
+both), `weavec::Frontend` (deferred CodeGen, check emission,
+zero-initialisation, ledger writers, unit records, whole-program
+orchestration, the compiler driver, diagnostics bridging).
 `runtime/` holds the small C runtime for report mode and precompiled
 headers. `tools/weavec` is a libTooling CLI; `tools/weavec-cc` is a drop-in C
 compiler (Clang's driver with WeaveC inside) that inserts the checks and
@@ -24,15 +25,18 @@ analyses the whole program at link time. Full picture:
 `docs/rfcs/`. Read `0001-ownership-model.md` first, then
 `0030-prove-or-trap.md`, which is the current model: it replaces RFC 0001's
 guarantee, amends RFCs 0002–0017 where they say so, and supersedes RFCs
-0018–0029. There is no checked mode.
+0018–0029. Then `0031-object-engine.md`, which replaced the engine behind
+the seam, the summary format (30) and the unit record format (29); read its
+*Implementation amendments* too. There is no checked mode.
 
 ## Before touching the model or the checker
 
-Design decisions for `Core`, the checker (the engine behind `SafetyEngine`,
-today `FunctionDataflow` in `lib/Analysis/Dataflow*.cpp`), the ledger and
-its outcomes and reasons, `LibrarySpec.txt`, `weavec.h`, diagnostic ids,
-the inserted checks, and what crosses translation units (exports, the
-program database, the unit record) are recorded as RFCs in `docs/rfcs/`.
+Design decisions for `Core`, the checker (the engine behind `SafetyEngine`:
+`ObjectEngine` in `lib/Analysis/Engine*.cpp` over the domain in
+`include/weavec/Core/Heap.h`), the ledger and its outcomes and reasons,
+`LibrarySpec.txt`, `weavec.h`, diagnostic ids, the inserted checks, and
+what crosses translation units (exports, the program database, the unit
+record) are recorded as RFCs in `docs/rfcs/`.
 **Read the relevant RFC before changing any of these**, and treat it as
 authoritative over comments in the code. If the change you are about to
 make is not covered by an Accepted RFC, or contradicts one, stop and write
@@ -81,11 +85,10 @@ cmake --preset dev && cmake --build --preset dev && ctest --preset dev
    (`test/cases/<area>/…`, `test/Emission/<feature>-*.c`); existing
    `rfcNNNN-` names may stay.
 9. Keep the engine seam and the library table clean (gate H2,
-   `scripts/check-hygiene.py`): only `DataflowEngine.cpp`,
-   `FunctionAnalysis.cpp`, `CallbackSummaries.cpp`,
-   `CallContextSummaries.cpp`, `KindSeeding.cpp` and the `Dataflow*.cpp`
-   files include `Dataflow.h`; `FunctionDataflow` publishes only through `LedgerAdapter`
-   and never receives a `DiagnosticSink`; library behaviour goes in
+   `scripts/check-hygiene.py`; RFC 0031 §2): only the `Engine*.cpp` files
+   include the engine's private header `lib/Analysis/Engine.h`; the engine
+   publishes only through `LedgerAdapter` and never receives a
+   `DiagnosticSink`; library behaviour goes in
    `lib/Core/LibrarySpec.txt`, never in `name == "…"` tests; nothing under
    `lib/` names a corpus project; library code stays within its line
    budget.
@@ -95,25 +98,27 @@ cmake --preset dev && cmake --build --preset dev && ctest --preset dev
 | Task                                 | Look at                                                |
 | ------------------------------------ | ------------------------------------------------------ |
 | Propose a model / checker change     | `docs/rfcs/README.md`, `docs/rfcs/0000-template.md`    |
-| Add a checker rule                   | After an RFC, behind the seam: the engine (`lib/Analysis/Dataflow*.cpp`, run by `DataflowEngine`) publishes only through `LedgerAdapter` (`include/weavec/Analysis/LedgerAdapter.h`, `SafetyEngine.h`) |
+| Add a checker rule                   | After an RFC, behind the seam: the object engine (`lib/Analysis/Engine*.cpp`, `ObjectEngine`; decisions in `EngineDecide.cpp`) publishes only through `LedgerAdapter` (`include/weavec/Analysis/LedgerAdapter.h`, `SafetyEngine.h`) |
+| Change the abstract domain (objects, cells, symbols, zone, joins) | `include/weavec/Core/{Heap,Zone,Persistent}.h`, `lib/Core/Heap.cpp`, `lib/Core/Zone.cpp` (unit tests in `unittests/Core/HeapTest.cpp`) |
 | Change outcomes, reasons, the summary line | `lib/Core/Ledger.cpp`, `lib/Analysis/LedgerAdapter.cpp` (defaults, rollup) |
 | Change which sites exist             | `lib/Analysis/SiteCollector.cpp`                       |
-| Change pointer kinds / how annotations become kinds | `lib/Core/PointerKind.cpp`, `lib/Analysis/AttributeReader.cpp`, `lib/Analysis/KindInference*.cpp`; what the engine takes from them: `lib/Analysis/KindSeeding.cpp` |
+| Change pointer kinds / how annotations become kinds | `lib/Core/PointerKind.cpp`, `lib/Analysis/AttributeReader.cpp`, `lib/Analysis/KindInference*.cpp`; what the engine takes from them: `lib/Analysis/EngineKinds.cpp` |
 | Change which checks are inserted     | `lib/Analysis/CheckPlanner.cpp` (plan), `lib/Frontend/CheckEmitter.cpp` and `Prelude.cpp` (emission), `runtime/` |
 | Change zero-initialisation           | `lib/Frontend/ZeroInit.cpp`                            |
-| Map an expression to a place         | `lib/Analysis/PlaceBuilder.cpp`                        |
-| Model a C library function / allocator / releaser | `lib/Core/LibrarySpec.txt` (one unit test per row in `unittests/Core/LibrarySpecTest.cpp`), `lib/Analysis/Allocators.cpp` |
+| Evaluate an expression / map an lvalue to an address | `lib/Analysis/EngineExpr.cpp` (`Transfer::evaluate`, `Transfer::addressOf`) |
+| Model a C library function / allocator / releaser | `lib/Core/LibrarySpec.txt` (one unit test per row in `unittests/Core/LibrarySpecTest.cpp`); how the engine applies a row: `lib/Analysis/EngineCalls.cpp` (effects), `lib/Analysis/EngineLibrary.cpp` (argument requirements) |
 | Change function-pointer slots        | `lib/Core/FnSlots.cpp`, `lib/Analysis/SlotCollector.cpp` |
-| Change how a callee's summary is found | `lib/Analysis/Summaries.cpp` (`SummaryStore`, RFC 0003/0005) |
-| Change the TU driver / call graph    | `lib/Analysis/TranslationUnitAnalysis.cpp`, `lib/Analysis/UnitPipeline.cpp` |
-| Change what a unit exports / the program database | `lib/Analysis/ProgramDatabase.cpp` (RFC 0005) |
-| Change the summary text format       | `lib/Core/SummaryIO.cpp` (versioned; round-trip tests) |
+| Change how a callee's summary is found | `lib/Analysis/EngineCalls.cpp` (`CallApplier::applyDirect`), `UnitRun::summaryOf` in `lib/Analysis/EngineUnit.cpp` (RFC 0031 §5.4) |
+| Change how a summary is derived or applied | `lib/Analysis/EngineSummary.cpp` (RFC 0031 §6), `include/weavec/Core/Effects.h` |
+| Change the TU driver / call graph    | `lib/Analysis/EngineUnit.cpp` (`UnitRun`), `lib/Analysis/UnitPipeline.cpp` |
+| Change what a unit exports / the program database | `UnitRun::exports` in `lib/Analysis/EngineUnit.cpp`, `lib/Analysis/ProgramDatabase.cpp` (RFC 0005, RFC 0031 §7) |
+| Change the summary text format       | `lib/Core/EffectsIO.cpp` (format 30; round-trip tests in `unittests/Core/EffectsIOTest.cpp`) |
 | Change the whole-program algorithm / link step | `lib/Frontend/ProgramAnalysis.cpp`, `lib/Frontend/Driver.cpp` |
-| Change the unit record (`foo.o.weavec`) | `lib/Frontend/UnitRecord.cpp` (format 28; the schema fingerprint follows the codec's field table), `lib/Frontend/Sidecar.cpp` |
+| Change the unit record (`foo.o.weavec`) | `lib/Frontend/UnitRecord.cpp` (format 29; the schema fingerprint follows the codec's field table), `lib/Frontend/RecordPayload.cpp` (the field table) |
 | Change the ledger JSON / SARIF       | `lib/Frontend/LedgerWriter.cpp`, `lib/Frontend/LedgerOutput.cpp` |
 | Change `weavec-cc` (driver, cc1 wrapping, link step) | `lib/Frontend/Driver.cpp`, `tools/weavec-cc/main.cpp` |
 | Change `-W` / `-fweavec-*` handling  | `lib/Frontend/DiagnosticControl.cpp`, `DriverOptions` in `Driver.h` |
-| Debug what the checker inferred      | `weavec --dump-analysis file.c --`; `weavec --dump-kinds file.c --`; `weavec --ledger=out.json file.c --`; `weavec --whole-program --dump-analysis a.c b.c --` |
+| Debug what the checker inferred      | `weavec --dump-analysis file.c --`; `weavec --dump-kinds file.c --`; `weavec --ledger=out.json file.c --`; `weavec --whole-program --dump-analysis a.c b.c --`; `WEAVEC_ENGINE_DUMP=1` prints every summary on stderr, `=2` adds each run's exit states, `=3` each block's entry state instead (`lib/Analysis/EngineUnit.cpp`, `EngineSummary.cpp`, `EngineRun.cpp`) |
 | Add or run a test case               | `test/cases/README.md`, `scripts/run-cases.py`         |
 | Measure precision on real code       | `scripts/corpus-gate.py`, `test/corpus/` (README, manifest, expected ratchet, triage) |
 | Change how diagnostics are rendered  | `lib/Frontend/ClangDiagnosticSink.cpp`                 |

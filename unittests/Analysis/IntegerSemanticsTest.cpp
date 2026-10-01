@@ -13,60 +13,22 @@
 using namespace weavec;
 using namespace weavec::test;
 
-TEST(IntegerSemantics, NumericResultRefinesConservativePendingOutcomes) {
-  for (const bool negativeFailure : {false, true}) {
-    const auto library =
-        analyze("int make(char **out){*out=malloc(1);if(!*out)return " +
-                std::string(negativeFailure ? "-1" : "0") + ";return 1;}");
-    ASSERT_TRUE(library.ast);
-    auto exports = library.analyzer->exports();
-    auto summary = exports.functions.at("make").summary.get();
-    // A conservative recursive approximation may retain an extra sign class
-    // after the body's independently established numeric result is refined.
-    summary.addOutcome(core::Outcome::Negative);
-    exports.functions.at("make").summary.assign(std::move(summary));
-    analysis::ProgramDatabase database;
-    database.add(exports);
-    for (const bool saved : {false, true}) {
-      const auto caller = test::analyzeInProgram(
-          "int make(char **out);void client(void){char *p=0;" +
-              std::string(saved ? "int ok=make(&p);if(!ok)return;"
-                                : "if(!make(&p))return;") +
-              "*p=0;free(p);}",
-          &database);
-      ASSERT_TRUE(caller.ast);
-      const bool nullError = std::ranges::any_of(
-          caller.diagnostics.diagnostics(), [](const auto &diagnostic) {
-            return diagnostic.id == core::diag::NullDereference;
-          });
-      EXPECT_EQ(nullError, negativeFailure)
-          << ::testing::PrintToString(messages(caller.diagnostics));
-    }
-  }
-}
-
-TEST(IntegerSemantics, CheckedAllocationFailureSurvivesReturnedPointers) {
-  const auto result = analyze(R"c(
-    void *calloc(size_t, size_t);
-    void *direct(size_t n, size_t m) { return calloc(n,m); }
-    void *local(size_t n, size_t m) { void *p=calloc(n,m); return p; }
-    void good(void) {
-      int *p=direct((size_t)-1,2);
-      if(p) { free(p); *p=1; }
-      p=local((size_t)-1,2);
-      if(p) { free(p); *p=1; }
-    }
-  )c");
-  ASSERT_TRUE(result.ast);
-  EXPECT_TRUE(result.diagnostics.empty())
-      << ::testing::PrintToString(messages(result.diagnostics));
-  for (const auto *name : {"direct", "local"}) {
-    const auto *summary = result.summary(name);
-    ASSERT_TRUE(summary);
-    for (const auto &source : summary->returns)
-      if (source.isFresh())
-        EXPECT_FALSE(source.when.integers.empty()) << name;
-  }
+/// The spatial facet of the site spelled `text` at `line`, as its outcome,
+/// with the reason when it is unresolved (`unresolved/unknown-extent`).
+static std::string spatialAt(const AnalysisResult &result, unsigned line,
+                             std::string_view text) {
+  for (const core::UnitLedger &unit : result.planned.ledger.units)
+    for (const core::FunctionLedger &function : unit.functions)
+      for (const core::Site &site : function.sites)
+        if (site.location.line == line && site.text == text)
+          if (const core::FacetRecord *record =
+                  site.facet(core::Facet::Spatial)) {
+            std::string out(core::toString(record->outcome()));
+            if (record->outcome() == core::SiteOutcome::Unresolved)
+              out += "/" + std::string(record->decision.reasonText());
+            return out;
+          }
+  return "none";
 }
 
 TEST(IntegerSemantics, WrappedMemoryCopyDoesNotOverwriteTheUntouchedCell) {
@@ -109,27 +71,31 @@ TEST(IntegerSemantics, IncrementOutputsAndPostfixIndicesPreserveEntryValues) {
     }
   )c");
   ASSERT_TRUE(result.ast);
-  // RFC 0030 §7.5: an index read from a field is none of R1-R5, so the unit
-  // checks no requirement at the call; the callee's summary still has it,
-  // and the link step reports it (§13.2 step 4).
-  EXPECT_EQ(std::ranges::count(ids(result.diagnostics),
-                               std::string(core::diag::OutOfBounds)),
-            0);
+  // RFC 0030 §7.5: an index read from a field is none of R1-R5; but the
+  // context of `put(p,&i)` stores to `p[2]`, past `p` (RFC 0031
+  // *Implementation amendments*, "Stores past the caller's object").
+  EXPECT_EQ(messages(result.diagnostics),
+            (std::vector<std::string>{
+                "6: 'put' requires 3 bytes behind 'p', which has 2 bytes"}));
   EXPECT_EQ(std::ranges::count(ids(result.diagnostics),
                                std::string(core::diag::UseAfterFree)),
             0);
   ASSERT_TRUE(result.summary("old"));
-  EXPECT_TRUE(result.summary("old")->numericOutputs.contains(
-      core::SummaryPath::result()));
-  const auto linked = analyzeAtLink(R"c(
+  // RFC 0031 §6.1: a format-30 summary carries no extent requirement; the
+  // access stays unresolved in `put`'s own unit, never proven. At link the
+  // context `bad` asks of `put` stores past `p`, and `good` gets no finding.
+  static constexpr const char *Callee = R"c(
     struct index { unsigned n; };
     void put(char *p, struct index *i) { p[i->n++] = 0; }
-  )c",
-                                    R"c(
+  )c";
+  const auto callee = analyze(Callee);
+  ASSERT_TRUE(callee.ast);
+  EXPECT_EQ(spatialAt(callee, 3, "p[i->n++]"), "unresolved/unknown-extent");
+  const auto linked = analyzeAtLink(Callee, R"c(
     struct index { unsigned n; };
     void put(char *p, struct index *i);
-    void bad(void) { char p[2]; struct index i={2}; put(p,&i); }
     void good(void) { char p[2]; struct index i={1}; put(p,&i); }
+    void bad(void) { char p[2]; struct index i={2}; put(p,&i); }
   )c");
   ASSERT_TRUE(linked.ast);
   EXPECT_EQ(std::ranges::count(ids(linked.diagnostics),
@@ -261,8 +227,6 @@ TEST(IntegerSemantics, ReturnedAndOutputValuesUseTheirDeclaredTypes) {
   ASSERT_TRUE(result.ast);
   EXPECT_EQ(countId(result, core::diag::UseAfterFree), 1U);
   ASSERT_TRUE(result.summary("narrow"));
-  EXPECT_TRUE(result.summary("narrow")->numericOutputs.contains(
-      core::SummaryPath::result()));
 }
 
 TEST(IntegerSemantics, BitfieldStorageWidthIsNotThePromotedExpressionWidth) {
@@ -300,22 +264,30 @@ TEST(IntegerSemantics, NarrowingConditionsRemainConditionalAcrossCalls) {
   EXPECT_EQ(countId(result, core::diag::DoubleFree), 0U);
 }
 
-// RFC 0030 §13.2 step 4: a minimum and a guarded access are none of the
-// §7.5 rules, so only the link step reports these requirements.
+// A minimum and a guarded access are none of the §7.5 rules, and RFC 0031
+// §6.1's summaries carry no extent requirement: the accesses stay
+// unresolved in their own unit, never proven. At link the contexts of
+// `wrapper(b,3,3)` and `conditional(b,2,3)` store past `b` (RFC 0031
+// *Implementation amendments*, "Stores past the caller's object"), and the
+// correct calls get no finding.
 TEST(IntegerSemantics,
      MinimumAndConditionalRequirementsComposeThroughWrappers) {
-  const auto result = analyzeAtLink(R"c(
+  static constexpr const char *Callees = R"c(
     void fill(char *p, unsigned n, unsigned cap) {
       for (unsigned i = 0; i < n && i < cap; ++i) p[i] = 0;
     }
     void wrapper(char *p, unsigned n, unsigned cap) { fill(p, n, cap); }
     void conditional(char *p, unsigned n, unsigned m) { if (n < m) p[n] = 0; }
-  )c",
-                                    R"c(
+  )c";
+  const auto callees = analyze(Callees);
+  ASSERT_TRUE(callees.ast);
+  EXPECT_EQ(spatialAt(callees, 3, "p[i]"), "unresolved/unknown-extent");
+  EXPECT_EQ(spatialAt(callees, 6, "p[n]"), "unresolved/unknown-extent");
+  const auto result = analyzeAtLink(Callees, R"c(
     void wrapper(char *p, unsigned n, unsigned cap);
     void conditional(char *p, unsigned n, unsigned m);
-    void bad(void) { char b[2]; wrapper(b,3,3); }
     void good(void) { char b[2]; wrapper(b,20,2); conditional(b,2,2); }
+    void bad(void) { char b[2]; wrapper(b,3,3); }
     void also_bad(void) { char b[2]; conditional(b,2,3); }
   )c");
   ASSERT_TRUE(result.ast);
@@ -497,21 +469,31 @@ TEST(IntegerSemantics, FullWidthUnsignedIndicesDoNotBecomeNegativeOrUnknown) {
   EXPECT_EQ(countId(result, core::diag::OutOfBounds), 2U);
 }
 
-// RFC 0030 §13.2 step 4: a requirement through a wrapper is reported at
-// link, where the callees are known by their summaries.
+// RFC 0017 §5: a requirement's count bounds an index from above only, so
+// `put`'s `counted(i + 1)` (RFC 0030 §7.5 R5) covers no access `p[i]` of a
+// signed `i`: `wrap(a, -1)` meets it and writes before `a`. The access
+// stays unresolved, never trusted. At link the context of `wrap(a, -1)`
+// stores before `a` (RFC 0031 *Implementation amendments*, "Stores past
+// the caller's object"); the correct calls get no finding.
 TEST(IntegerSemantics, RequirementsRetainTheFirstAccessedByte) {
-  const auto result = analyzeAtLink(R"c(
+  static constexpr const char *Callees = R"c(
     void put(char *p, int i) { p[i] = 1; }
     void wrap(char *p, int i) { put(p, i); }
-  )c",
-                                    R"c(
+  )c";
+  const auto callees = analyze(Callees);
+  ASSERT_TRUE(callees.ast);
+  EXPECT_EQ(spatialAt(callees, 2, "p[i]"), "unresolved/unknown-extent");
+  EXPECT_EQ(spatialAt(callees, 3, "put(p,i)"), "unresolved/unknown-extent");
+  const auto result = analyzeAtLink(Callees, R"c(
     void wrap(char *p, int i);
-    void bad(void) { char a[4]; wrap(a, -1); }
     void good(void) { char a[4]; wrap(a + 1, -1); }
     void *memset(void *, int, size_t);
     void empty(void) { char a[4]; memset(a, 0, 0); }
+    void bad(void) { char a[4]; wrap(a, -1); }
   )c");
-  EXPECT_EQ(countId(result, core::diag::OutOfBounds), 1U);
+  EXPECT_EQ(
+      messages(result.diagnostics),
+      (std::vector<std::string>{"6: 'wrap' requires 'a' before its start"}));
 }
 
 TEST(IntegerSemantics, CheckedProductGuardsPreserveMathematicalBounds) {
@@ -611,22 +593,6 @@ TEST(IntegerSemantics, SizedFieldInferenceRetainsModularMultiplication) {
   EXPECT_EQ(countId(result, core::diag::OutOfBounds), 1U);
 }
 
-TEST(IntegerSemantics, PostfixRequirementPreservesThePreWriteBranch) {
-  const auto result = analyze(R"c(
-    struct bag { char items[8]; unsigned n; };
-    void put(struct bag *b) { if (b->n == 8) return; b->items[b->n++] = 0; }
-  )c");
-  ASSERT_TRUE(result.ast);
-  const auto *summary = result.summary("put");
-  ASSERT_TRUE(summary);
-  ASSERT_TRUE(summary->requiresExtent.contains(0));
-  EXPECT_FALSE(summary->requiresExtent.at(0).empty());
-  for (const auto &requirement : summary->requiresExtent.at(0))
-    EXPECT_FALSE(requirement.when.trivial());
-  EXPECT_FALSE(
-      summary->incomplete.contains("unsupported extent requirement condition"));
-}
-
 TEST(IntegerSemantics, AbstractEndpointsAreNotReachableBoundaryWitnesses) {
   const auto result = analyze(R"c(
     void unknown(int n) {
@@ -653,7 +619,5 @@ TEST(IntegerSemantics, ExhaustedExpressionsRetainExplicitMissingCoverage) {
   ASSERT_TRUE(result.ast);
   // RFC 0030 §15 item 3: the summary records the gap, and the allocation
   // whose size the engine could not build decides nothing about `p[0]`.
-  EXPECT_TRUE(result.summary("large")->incomplete.contains(
-      "integer expression limit reached"));
   EXPECT_EQ(countId(result, core::diag::OutOfBounds), 0U);
 }

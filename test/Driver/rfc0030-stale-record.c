@@ -1,4 +1,5 @@
-// RFC 0030 §13.1: a reader accepts only a format-28 record with this
+// RFC 0030 §13.1: a reader accepts only a format-29 record (RFC 0031 §7,
+// *Implementation amendments*, "The unit record") with this
 // schema's fingerprint and a valid digest, written for the object next to
 // it. Anything else is a stale record: the link names the input in its one
 // `unanalyzed-input` warning with the reason, treats the object as unknown
@@ -24,7 +25,7 @@
 //
 // Another format: byte 8 is the low byte of the format.
 // RUN: cp %t/good.weavec %t/b.o.weavec
-// RUN: printf '\033' | dd of=%t/b.o.weavec bs=1 seek=8 conv=notrunc 2>/dev/null
+// RUN: printf '\034' | dd of=%t/b.o.weavec bs=1 seek=8 conv=notrunc 2>/dev/null
 // RUN: %weavec_cc %t/main.o %t/b.o -o %t/p3 2>&1 | FileCheck --check-prefix=FORMAT %s
 //
 // A truncated record.
@@ -41,7 +42,7 @@
 // RUN: %t/p6
 
 // DUMP: {
-// DUMP-NEXT: "format": 28,
+// DUMP-NEXT: "format": 29,
 // DUMP-NEXT: "header": {
 // DUMP: "object": {
 // DUMP-NEXT: "path": "{{.*}}b.o",
@@ -56,7 +57,7 @@
 // DIGEST: weavec-cc: warning: link input '{{.*}}b.o' has a stale WeaveC record ('{{.*}}b.o.weavec': digest mismatch); calls into it are trusted [weavec::unanalyzed-input]
 // DUMP-DIGEST: weavec: error: '{{.*}}b.o.weavec' is a stale WeaveC record (digest mismatch)
 // SCHEMA: weavec-cc: warning: link input '{{.*}}b.o' has a stale WeaveC record ('{{.*}}b.o.weavec': schema fingerprint mismatch (written by another WeaveC)); calls into it are trusted [weavec::unanalyzed-input]
-// FORMAT: weavec-cc: warning: link input '{{.*}}b.o' has a stale WeaveC record ('{{.*}}b.o.weavec': format 27, expected 28); calls into it are trusted [weavec::unanalyzed-input]
+// FORMAT: weavec-cc: warning: link input '{{.*}}b.o' has a stale WeaveC record ('{{.*}}b.o.weavec': format 28, expected 29); calls into it are trusted [weavec::unanalyzed-input]
 // TRUNCATED: weavec-cc: warning: link input '{{.*}}b.o' has a stale WeaveC record ('{{.*}}b.o.weavec': length mismatch {{.*}}); calls into it are trusted [weavec::unanalyzed-input]
 // MAGIC: weavec-cc: warning: link input '{{.*}}b.o' has a stale WeaveC record ('{{.*}}b.o.weavec': not a WeaveC record (bad magic)); calls into it are trusted [weavec::unanalyzed-input]
 

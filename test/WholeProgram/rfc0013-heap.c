@@ -8,9 +8,14 @@
 #include "../Inputs/prelude.h"
 #include "Inputs/heap13.h"
 
-// RECORD: "format": 28,
-// RECORD: heap result complete\n  heap-field result at result *.data fresh(free) extent 4
-// RECORD: heap-field result at result *.data copy param 0
+// The record's format-30 summaries (RFC 0031 *Summary format 30*, *The
+// unit record*): `heap13_new`'s result owns a fresh 4-byte block in `data`,
+// and `heap13_wrap`'s result holds its argument there.
+// RECORD: "format": 29,
+// RECORD: "name": "heap13_new",
+// RECORD: "effects": "{{.*}}store r*.data when=-:- :: fresh family=free extent=4 {{.*}}result classes=nonnull :: fresh family=free extent=8
+// RECORD: "name": "heap13_wrap",
+// RECORD: "effects": "{{.*}}store r*.data when=-:- :: path path=p0 offset=0
 
 void overflow(void) {
   struct heap13_box *b = heap13_new(); if (!b) return;
@@ -20,7 +25,9 @@ void overflow(void) {
 }
 void leak(void) {
   struct heap13_box *b = heap13_new(); if (!b) return;
-  // CHECK: rfc0013-heap.c:[[@LINE+1]]:3: warning: 'b->data' is leaked when 'b' is freed [weavec::leak]
+  // The object engine names the leaked block by the call that made it
+  // (RFC 0031 §5.8).
+  // CHECK: rfc0013-heap.c:[[@LINE+1]]:3: warning: result of 'heap13_new' is leaked [weavec::leak]
   free(b);
 }
 void alias(void) {

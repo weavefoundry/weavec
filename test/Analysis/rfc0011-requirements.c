@@ -55,19 +55,25 @@ void clear(char *WEAVEC_SIZED_BY(n) p, size_t n, size_t m) {
 
 // -- Requirements inferred from a body ---------------------------------------
 
+// Format 30 carries no `requires-extent` (RFC 0031 §6.1): the requirement of
+// a must-access is the Call site's (RFC 0030 §7.5), and the summaries below
+// pin the accesses themselves, as stores at a constant byte offset or over an
+// element range (RFC 0031 §4.9, *Summaries*).
 // A constant access past the pointee's size.
 // DUMP-LABEL: function 'put7':
-// DUMP: summary: *b: written; stores{} returns{} requires{b} requires-extent{b: 8 start 7}
+// DUMP: store param0->#7 := int [0, 0]
 static void put7(char *b) { b[7] = 0; }
 
 // A symbolic one, in the parameter that indexes it.
 // DUMP-LABEL: function 'put_n':
-// DUMP: summary: *b: written; stores{} returns{} requires{b} requires-extent{b: n+1 start n}
+// DUMP: store *param0[*] elements [param1, param1 plus 1) := int [0, 0]
 static void put_n(char *b, size_t n) { b[n] = 0; }
 
-// A loop below a parameter: the boundary is the requirement.
+// A loop below a parameter: the boundary is the requirement. The `int`
+// counter's range is not exported (RFC 0031 §4.9, *Known limits*), so the
+// store is to some elements.
 // DUMP-LABEL: function 'fill':
-// DUMP: summary: *b: written; stores{} returns{} requires{b} requires-extent{b: n*4 when[n positive]}
+// DUMP: store *param0[*] := int [0, 0] may
 static void fill(int *b, int n) {
   for (int i = 0; i < n; i++)
     b[i] = 0;
@@ -75,19 +81,21 @@ static void fill(int *b, int n) {
 
 // What the type promises is not a requirement.
 // DUMP-LABEL: function 'first':
-// DUMP: summary: o->k: written; stores{} returns{} requires{o}
+// DUMP: store param0->k := int [1, 1]
 static void first(struct outer *o) { o->k = 1; }
 
 // RFC 0017: requirements keep both class guards and typed ordering guards,
-// and record the first byte accessed as well as the end of the access.
+// and record the first byte accessed as well as the end of the access. An
+// access under a test of an integer parameter is a possible store in
+// format 30 (RFC 0031 §6.1).
 // DUMP-LABEL: function 'on_zero':
-// DUMP: summary: *b: written; stores{} returns{} requires{b} requires-extent{b: 8 start 7 when[n =0]}
+// DUMP: store param0->#7 := int [0, 0] may
 static void on_zero(char *b, int n) {
   if (n == 0)
     b[7] = 0;
 }
 // DUMP-LABEL: function 'guarded':
-// DUMP: summary: *b: written; stores{} returns{} requires{b} requires-extent{b: 5 start 4 when[n range(i32:2147483653-4294967295)]}
+// DUMP: store param0->#4 := int [0, 0] may
 static void guarded(char *b, int n) {
   if (n > 4)
     b[4] = 0;
@@ -95,25 +103,25 @@ static void guarded(char *b, int n) {
 
 // A library call on a parameter is a requirement in its length.
 // DUMP-LABEL: function 'clears':
-// DUMP: summary: *b: written; stores{} returns{} requires{b} requires-extent{b: n}
+// DUMP: store *param0 := unknown
 static void clears(void *b, size_t n) { memset(b, 0, n); }
 
 // A local index bounded above by a constant needs the boundary. RFC 0017
 // represents a loop bounded by both a constant and a parameter with min.
 // DUMP-LABEL: function 'put8':
-// DUMP: summary: *b: written; stores{} returns{} requires{b} requires-extent{b: 8}
+// DUMP: store *param0[*] elements [0, 8) := int [0, 0]
 static void put8(char *b) {
   for (int i = 0; i < 8; i++)
     b[i] = 0;
 }
 // DUMP-LABEL: function 'put_le8':
-// DUMP: summary: *b: written; stores{} returns{} requires{b} requires-extent{b: 9}
+// DUMP: store *param0[*] elements [0, 9) := int [0, 0]
 static void put_le8(char *b) {
   for (int i = 0; i <= 8; i++)
     b[i] = 0;
 }
 // DUMP-LABEL: function 'either':
-// DUMP: summary: *b: written; stores{} returns{} requires{b} requires-extent{b: min(16, u64(n))*4 when[n positive]}
+// DUMP: store *param0[*] := int [0, 0] may
 static void either(int *b, int n) {
   for (int i = 0; i < n && i < 16; i++)
     b[i] = 0;
@@ -134,10 +142,11 @@ void calls(void) {
   put_le8(big);
   int four[4];
   either(four, 4);
-  // RFC 0030 §7.5: `i < n && i < 16` is no canonical counted loop, so the
-  // summary's may-requirement is no longer reported at the call; the
-  // access in `either` is `unresolved(unknown-extent)` instead.
-  // CHECK-NOT: 'either' requires
+  // RFC 0030 §7.5: `i < n && i < 16` is no canonical counted loop, so no
+  // requirement comes from it; but the context of `either(four, 100)`
+  // writes `b[0..16)` on every return, past `four` (RFC 0031
+  // *Implementation amendments*, "Stores past the caller's object").
+  // CHECK: rfc0011-requirements.c:[[@LINE+1]]:10: error: 'either' requires 64 bytes behind 'four', which has 16 bytes [weavec::out-of-bounds]
   either(four, 100);
   char *heap = malloc(4);
   if (!heap)
@@ -156,11 +165,15 @@ void calls(void) {
   on_zero(small, 1);
   // RFC 0030 §7.5: an access under a branch is no must-access, and a
   // `LibrarySpec` byte requirement is none of R1-R5: neither call is checked
-  // against a requirement (the callees' accesses are unresolved instead).
-  // CHECK-NOT: 'on_zero' requires
+  // against a requirement.
+  // But the context of `on_zero(small, 0)` takes the branch and stores to
+  // `b[7]` on every return (RFC 0031 *Implementation amendments*, "Stores
+  // past the caller's object").
+  // CHECK: rfc0011-requirements.c:[[@LINE+1]]:11: error: 'on_zero' requires 8 bytes behind 'small', which has 4 bytes [weavec::out-of-bounds]
   on_zero(small, 0);
   clears(small, 4);
-  // CHECK-NOT: 'clears' requires
+  // And the context of `clears(small, 5)` has `memset` write five bytes.
+  // CHECK: rfc0011-requirements.c:[[@LINE+1]]:10: error: 'clears' requires 5 bytes behind 'small', which has 4 bytes [weavec::out-of-bounds]
   clears(small, 5);
   free(heap);
 }
@@ -177,7 +190,7 @@ void at_offset(void) {
 
 // The extent of a wrapped allocation reaches the caller.
 // DUMP-LABEL: function 'xmalloc':
-// DUMP: summary: stores{} returns{fresh(free) extent=n}
+// DUMP: result fresh#0 free extent param0 zeroed when nonnull
 static char *xmalloc(size_t n) {
   char *p = malloc(n);
   if (!p)
@@ -188,7 +201,7 @@ static char *xmalloc(size_t n) {
 // A callee's requirement on what this function passes through is this
 // function's requirement.
 // DUMP-LABEL: function 'deeper':
-// DUMP: summary: *b: written; stores{} returns{} requires{b} requires-extent{b: 8 start 7}
+// DUMP: store param0->#7 := int [0, 0]
 static void deeper(char *b) { put7(b); }
 
 void via_wrappers(void) {
@@ -196,9 +209,10 @@ void via_wrappers(void) {
   // CHECK: rfc0011-requirements.c:[[@LINE+1]]:3: error: 'p[4]' is out of bounds: index 4 of an object of 4 bytes [weavec::out-of-bounds]
   p[4] = 0;
   // RFC 0030 §7.5: a callee's requirement does not compose into its caller's
-  // (R1-R5 name accesses and string library calls only), so this call is not
-  // checked; `deeper`'s own call of `put7` is the Call site that is.
-  // CHECK-NOT: 'deeper' requires
+  // (R1-R5 name accesses and string library calls only); but `deeper`
+  // stores to `b[7]` on every return, past `p` (RFC 0031 *Implementation
+  // amendments*, "Stores past the caller's object").
+  // CHECK: rfc0011-requirements.c:[[@LINE+1]]:10: error: 'deeper' requires 8 bytes behind 'p', which has 4 bytes [weavec::out-of-bounds]
   deeper(p);
   free(p);
 }

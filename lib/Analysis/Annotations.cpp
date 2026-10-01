@@ -8,7 +8,11 @@
 
 #include "weavec/Analysis/Annotations.h"
 
+#include "weavec/Core/LibrarySpec.h"
+
+#include "clang/AST/ASTContext.h"
 #include "clang/AST/TypeLoc.h"
+#include "clang/Basic/SourceManager.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringExtras.h"
@@ -289,6 +293,72 @@ collectFunctionTypeAnnotations(const clang::Decl &decl) {
     out.params.clear();
   }
   return out;
+}
+
+bool SignatureAnnotations::anyOwnership() const noexcept {
+  return result.ownership() || llvm::any_of(params, [](const AnnotationSet &s) {
+           return s.ownership();
+         });
+}
+
+/// RFC 0030 §7.2: `malloc` and the `ownership_*` attributes outside system
+/// headers are ownership contracts: a fresh result of family `m`, and an
+/// argument released (`ownership_takes`) or retained (`ownership_holds`). A
+/// WeaveC annotation on the same position wins (precedence level 1).
+static void applyOwnershipAttributes(const clang::FunctionDecl &redecl,
+                                     SignatureAnnotations &collected) {
+  const clang::SourceManager &sm = redecl.getASTContext().getSourceManager();
+  if (sm.isInSystemHeader(redecl.getLocation()))
+    return;
+  const auto owns = [](const AnnotationSet &set) {
+    return set.owned || set.borrowed || set.mutBorrowed || set.raw || set.frees;
+  };
+  if (redecl.hasAttr<clang::RestrictAttr>() &&
+      redecl.getReturnType()->isPointerType() && !owns(collected.result)) {
+    collected.result.owned = true;
+    collected.result.family = std::string(core::HeapFamily);
+  }
+  for (const auto *attr : redecl.specific_attrs<clang::OwnershipAttr>()) {
+    const std::string family = attr->getModule() != nullptr
+                                   ? attr->getModule()->getName().str()
+                                   : std::string();
+    if (attr->getOwnKind() == clang::OwnershipAttr::Returns) {
+      if (!owns(collected.result)) {
+        collected.result.owned = true;
+        collected.result.family = family;
+      }
+      continue;
+    }
+    for (const clang::ParamIdx index : attr->args()) {
+      if (!index.isValid() || index.getASTIndex() >= collected.params.size())
+        continue;
+      AnnotationSet &param = collected.params[index.getASTIndex()];
+      if (owns(param) || param.retains || param.releases)
+        continue;
+      if (attr->getOwnKind() == clang::OwnershipAttr::Holds) {
+        param.retains = true;
+      } else {
+        param.frees = true;
+        param.family = family;
+      }
+    }
+  }
+}
+
+SignatureAnnotations collectAnnotations(const clang::FunctionDecl &function) {
+  SignatureAnnotations collected;
+  collected.params.resize(function.getNumParams());
+  for (const clang::FunctionDecl *redecl : function.redecls()) {
+    const AnnotationSet onFunction = getAnnotations(*redecl);
+    collected.result.merge(onFunction);
+    collected.unsafe = collected.unsafe || onFunction.unsafe;
+    for (unsigned i = 0;
+         i < redecl->getNumParams() && i < collected.params.size(); ++i)
+      collected.params[i].merge(getAnnotations(*redecl->getParamDecl(i)));
+  }
+  for (const clang::FunctionDecl *redecl : function.redecls())
+    applyOwnershipAttributes(*redecl, collected);
+  return collected;
 }
 
 } // namespace weavec::analysis

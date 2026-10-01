@@ -39,7 +39,10 @@
 #include "../Inputs/prelude.h"
 #include "node.h"
 
-// RECORD: "format": 28,
+// The record is format 29: each function's summary is its format-30 text in
+// the field `effects` (RFC 0031 *Implementation amendments*, "The unit
+// record" and "Summary format 30").
+// RECORD: "format": 29,
 // RECORD: "source": "{{.*}}node.c",
 // RECORD-NEXT: "cwd": "{{.+}}",
 // RECORD-NEXT: "command": [
@@ -49,26 +52,26 @@
 // RECORD-NEXT: "path": "{{.*}}node.o",
 // RECORD-NEXT: "digest": "sha256:{{[0-9a-f]+}}"
 // RECORD: "functions": [
+// `node_free` releases `n` and `n->name` where `n` is not null.
 // RECORD: "name": "node_free",
 // RECORD-NEXT: "linkage": "external",
 // RECORD-NEXT: "addressTaken": false,
 // RECORD-NEXT: "typeKey": "void (struct node *)",
-// RECORD-NEXT: "summary": "summary\n  object-view param 0 * {{.*}}\n  effect param 0 freed(free)\n  effect param 0 *.name freed(free){{.*}}\nend\n",
-// RECORD: "acceptsMemory": true,
+// RECORD-NEXT: "effects": "returns always\neffect release p0* when=-:0!=0 family=free\neffect release p0*.name* when=-:0!=0 family=free\nreads p0*\n",
+// `node_new` returns a fresh `free` allocation or null.
 // RECORD: "name": "node_new",
 // RECORD-NEXT: "linkage": "external",
 // RECORD-NEXT: "addressTaken": false,
 // RECORD-NEXT: "typeKey": "struct node *(void)",
-// RECORD-NEXT: "summary": "summary\n{{.*}}  return fresh(free){{.*}}\n  return null\nend\n",
+// RECORD-NEXT: "effects": "returns always\n{{.*}}result classes=null,nonnull :: fresh family=free extent=16{{.*}}\n",
 // RECORD: "name": "node_set_name",
 // RECORD: "typeKey": "void (struct node *, char *)",
-// RECORD-NEXT: "summary": "summary\n  object-view param 0 * {{.*}}\n  effect param 0 *.name written,freed(free),replaced\n  store param 0 *.name copy param 1\n{{.*}}  requires 0\nend\n",
+// RECORD-NEXT: "effects": "returns always\neffect release p0*.name* when=-:- family=free\nstore p0*.name when=-:- :: path path=p1 offset=0{{.*}}\n",
+// `node_vp` returns `n` itself, at the offset of `v` (0; RFC 0011).
 // RECORD: "name": "node_vp",
 // RECORD: "typeKey": "int *(struct node *)",
-// RECORD-NEXT: "summary": "summary\n  object-view param 0 * {{.*}}\n  return copy param 0 @+struct~node.v\n  requires 0\nend\n",
+// RECORD-NEXT: "effects": "returns always\nresult classes=nonnull :: path path=p0 offset=0\nnonnull-on nonnull p0\n",
 // RECORD: "imports": [
-// RECORD: "name": "free",
-// RECORD: "name": "malloc",
 // RECORD: "sites": [
 // RECORD: "function": "node_new",
 
@@ -80,13 +83,21 @@
 // MAIN-NEXT: "function": "main",
 // MAIN: "name": "node_new",
 // MAIN: "name": "node_vp",
-// MAIN: "unknown": [
-// MAIN: "node_free",
 // MAIN: "reported": [],
 
-// DEFERRED: "unknown": [
-// DEFERRED-NEXT: "blob_close",
-// DEFERRED-NEXT: "blob_open",
+// The callees no unit defines are recorded as imports with their calls;
+// the link step finds no definition for them. (The record's `unknown` list
+// is no longer filled by the object engine.)
+// DEFERRED: "imports": [
+// DEFERRED-NEXT: {
+// DEFERRED-NEXT: "name": "blob_close",
+// DEFERRED: "calls": [
+// DEFERRED-NEXT: {
+// DEFERRED-NEXT: "function": "main",
+// DEFERRED: "name": "blob_open",
+// DEFERRED: "calls": [
+// DEFERRED-NEXT: {
+// DEFERRED-NEXT: "function": "main",
 
 #ifdef BOUNDARY
 struct blob;
@@ -109,7 +120,9 @@ int main(void) {
     return 1;
   int *p = node_vp(n);
   node_free(n);
-  // LINK: rfc0005-weavec-cc.c:[[@LINE+1]]:3: error: 'n' is freed twice [weavec::double-free]
+  // `node_free` reads `n->name` before it frees `n`, so the first violation
+  // of the second call is that read, a use after free (RFC 0031 §6.3).
+  // LINK: rfc0005-weavec-cc.c:[[@LINE+1]]:13: error: use of 'n' after it was freed [weavec::use-after-free]
   node_free(n);
   // `node_vp` returns a copy of `n` at the field `v` (RFC 0011).
   // LINK: rfc0005-weavec-cc.c:[[@LINE+1]]:11: error: use of 'p' after it was freed [weavec::use-after-free]

@@ -1,4 +1,4 @@
-//===- UnitRecord.h - The format-28 unit record (RFC 0030) -----*- C++ -*-===//
+//===- UnitRecord.h - The format-29 unit record (RFC 0031) ------*- C++ -*-===//
 //
 // Part of WeaveC, under the Apache License v2.0 with LLVM Exceptions.
 // See LICENSE for license information.
@@ -12,7 +12,7 @@
 //
 //   offset    size  field
 //   0         8     magic 89 57 56 43 0D 0A 1A 0A ("\x89WVC\r\n\x1a\n")
-//   8         4     format, little-endian u32 = 28
+//   8         4     format, little-endian u32 = 29
 //   12        4     flags, u32 = 0 (readers reject non-zero)
 //   16        32    schema fingerprint (below)
 //   48        8     header length H, u64
@@ -59,7 +59,7 @@ namespace weavec::frontend::record {
 
 inline constexpr std::array<std::uint8_t, 8> Magic{0x89, 'W',  'V',  'C',
                                                    '\r', '\n', 0x1A, '\n'};
-inline constexpr std::uint32_t FormatVersion = 28;
+inline constexpr std::uint32_t FormatVersion = 29;
 /// Bytes before the header: magic, format, flags, schema fingerprint and the
 /// two lengths.
 inline constexpr std::size_t PrefixSize = 64;

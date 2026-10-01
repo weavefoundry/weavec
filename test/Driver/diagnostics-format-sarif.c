@@ -7,7 +7,7 @@
 // RUN: not %weavec_cc -fdiagnostics-format=sarif -c %s -o %t/bug.o -DBUG 2>&1 | FileCheck --check-prefix=SARIF %s
 // RUN: %weavec_cc -fdiagnostics-format=sarif -c %S/../WholeProgram/Inputs/node.c -o %t/node.o -I%S/../WholeProgram/Inputs > %t/node.log 2>&1
 // RUN: %weavec_cc -fdiagnostics-format=sarif -c %s -o %t/main.o -I%S/../WholeProgram/Inputs > %t/main.log 2>&1
-// RUN: not %weavec_cc %t/node.o %t/main.o -o %t/prog 2>&1 | FileCheck --check-prefix=LINK %s
+// RUN: %weavec_cc %t/node.o %t/main.o -o %t/prog 2>&1 | FileCheck --check-prefix=LINK %s
 //
 // weavec's runs create their SourceManager before Clang would attach the
 // SARIF printer's document writer, so the tool refuses the flag and points
@@ -39,7 +39,12 @@ int use_after_free(void) {
 int main(void) {
   struct node *n = node_new();
   node_free(n);
-  // LINK: diagnostics-format-sarif.c:[[@LINE+1]]:3: error: 'n' is freed twice [weavec::double-free]
+  // `node_new` may return null, so `node_free`'s release (keyed by its
+  // argument not being null) is possible at each call: a possible double
+  // free, not the old engine's definite one (RFC 0031
+  // *Pending cases and exit splitting*; test/cases/KNOWN-DIFFERENCES.md,
+  // *Lit tests*). It is a warning, so the link succeeds.
+  // LINK: diagnostics-format-sarif.c:[[@LINE+1]]:3: warning: 'n' may be freed twice [weavec::double-free]
   node_free(n);
   // LINK-NOT: "version"
   return 0;

@@ -1,6 +1,6 @@
 # RFC 0030: Prove or trap — one safety semantics with compiler-enforced checks
 
-- **Status**: Accepted
+- **Status**: Implemented (as amended by [RFC 0031](0031-object-engine.md), which replaced its engine, took over its gates G10, G14 and G15, and amended G10's limit to 65)
 - **Authors**: WeaveC authors
 - **Created**: 2026-09-18
 - **Tracking issue**: TBD

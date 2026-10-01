@@ -35,9 +35,12 @@ int caller(void) {
   if (!p)
     return 0;
   p[0] = 1;
+  // The call's own facet is about `p`, which is live here: RFC 0031 §5.4
+  // decides it from the caller's state, so it is proven; what `walk` did is
+  // the unknown-callee default after the call.
   // LEDGER: "text": "walk(p,4)",
-  // LEDGER: "outcome": "unresolved",
-  // LEDGER-NEXT: "reason": "budget",
+  // LEDGER: "temporal": {
+  // LEDGER-NEXT: "outcome": "proven",
   int s = walk(p, 4);
   // LEDGER: "text": "p[0]",
   // LEDGER: "temporal": {

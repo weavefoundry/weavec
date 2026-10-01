@@ -536,14 +536,15 @@ functions, the annotation problems and fix-it suggestions, the store groups
 and §7.6 field candidates, and the unit's function-pointer slots (§9.3) with
 the resolution of each indirect call. The format is unstable.
 
-`weavec --dump-analysis file.c -- <flags>` prints the inferred places,
-lifetimes, exit state (including which places hold raw pointers, and why,
-which hold an owned resource, with its release family, and which are null,
-maybe-null or known non-null) and summary of every analysed function; with `--whole-program` it ends with
-the program database (every exported summary). `weavec-cc` writes each
-unit's record to `<object>.weavec`: format 28, framed JSON whose payload
-carries the exported summaries in the same text form
-([RFC 0030](rfcs/0030-prove-or-trap.md) §13.1).
+`weavec --dump-analysis file.c -- <flags>` is the object engine's dump
+([RFC 0031](rfcs/0031-object-engine.md) §12): its states, with each
+object's kind, extent and life, the symbols its cells hold (targets,
+nullness, release records, raw origin) and the zone; with
+`--whole-program` it ends with the program database (every exported
+summary). The format is unstable. `weavec-cc` writes each unit's record to
+`<object>.weavec`: format 29, framed JSON whose payload carries each
+exported function's summary in summary format 30
+([RFC 0030](rfcs/0030-prove-or-trap.md) §13.1, RFC 0031 §7).
 
 ### Constructors, returned fields and allocation-time sizes
 
@@ -566,15 +567,15 @@ an output leaves the caller's incoming value and bounds intact.
 
 An allocation uses the size's value at allocation time. With
 `size_t n = 4; char *p = malloc(n); n = 8;`, a non-null `p` still has four
-bytes. Symbolic sizes can retain their relationship to an unchanged count
-copy after reassignment. Snapshot reuse in loops can lose precision, but
-cannot resize an older object to a later count.
+bytes: the analysis names values, not variables, so the extent stays the
+value `n` had when `malloc` ran, and a copy of it that is not reassigned
+still relates to it. Reassigning the size cannot resize an older object to
+a later count.
 
-`--dump-analysis` prints each heap description as `complete` or `incomplete`.
-These labels describe whether the bounded projection was truncated. A
-`complete` description is not a proof of safety: fields and extents can
-still be unknown. Projection follows at most eight steps and 128 field
-alternatives; more than eight alternatives for one cell widen it to unknown.
+A function's summary describes the cells of the objects it returns or
+stores, and of the new objects those cells point to, up to three levels
+deep ([RFC 0031](rfcs/0031-object-engine.md) §6.1, *Implementation
+amendments*); a cell it does not describe carries no facts to its callers.
 The original evaluation's bug and clean programs are kept as cases under
 `test/cases/evaluation/` (see [test/cases](../test/cases/README.md)).
 
@@ -598,28 +599,29 @@ static void write_then_release(char *a, char *b) {
 
 The checker also distinguishes `reset(&p, &p)` from `reset(&p, &q)` when
 both cells initially contain one allocation: replacing `*out` changes the
-first cell, while a saved copy can still refer to the released value. Supported
-record fields, selected elements, globals and actual callback targets carry
-the same contextual checking across files and compiler objects. An ownership
-annotation on a known definition does not skip its body checks.
+first cell, while a saved copy can still refer to the released value. A
+global that points into an argument's object is part of the relationship,
+and so are the call's constant integer arguments, so the helper is checked
+on the branch the call takes. An ownership annotation on a known definition
+does not skip its body checks.
 
-Errors name the operation in the helper, with a note at the originating call
-when available. `--dump-analysis` displays `call-context` entries containing
-relative aliases, distinct objects, entry facts and the resulting summary.
-Facts describe values on entry; subsequent writes still update or invalidate
-them. A call inside a `WEAVEC_UNSAFE` region is checked the same way; the
-region no longer suppresses these reports ([RFC 0030](rfcs/0030-prove-or-trap.md)
-§6.1).
+Errors name the operation in the helper, with the note "called here with
+related pointer arguments" at the originating call. Facts describe values
+on entry; subsequent writes still update or invalidate them. A call inside a
+`WEAVEC_UNSAFE` region is checked the same way; the region no longer
+suppresses these reports ([RFC 0030](rfcs/0030-prove-or-trap.md) §6.1).
 
-An unresolved required relationship, unavailable view or exceeded context
-bound leaves the affected facets unresolved (`unanalysed`) in the ledger and
-retains ordinary call effects. Calls whose inputs have no established
-interacting relationship still use generic summaries; silence does not prove
-arbitrary pointers disjoint, and the temporal facet of a use through a
-pointer that may alias a released object is not proven
-(`unresolved(may-alias-released)`). The context records travel in the
-format-28 unit record, so call-context checking works across compiler
-objects; rebuild older objects before link analysis.
+This checking is local to a translation unit: a helper is re-checked under
+its caller's relationship when both are in the same unit, at most 16
+relationships per helper ([RFC 0031](rfcs/0031-object-engine.md) §6.6,
+*Implementation amendments*). Other calls use the helper's summary, which
+is derived for parameters that may point to the same object unless the
+analysis can tell them apart; silence does not prove arbitrary pointers
+disjoint, and the temporal facet of a use through a pointer that may alias
+a released object is not proven (`unresolved(may-alias-released)`). Unit
+records carry no call contexts, and a helper specialised for the one
+callback a call passes is not checked separately: a call through a callback
+parameter uses every target the program passes to it.
 
 ## C integers and dynamic bounds
 
@@ -665,14 +667,17 @@ product fits. `calloc` and `reallocarray` use checked products: overflow cannot
 create a small successful allocation, and failed `reallocarray` retains its
 input object.
 
-Numeric returns and out-parameters retain representable expressions and guards
-through helpers, translation units and unit records. Access requirements
+Numeric returns and out-parameters travel through helpers, translation units
+and unit records as integer ranges, or relative to a value the caller
+passed, keyed by the result's class or a parameter's zero test (summary
+format 30). Access requirements
 retain lower bounds and numeric conditions. A supported zero-based unit-stride
 loop with `i < n && i < cap` can require `min(n, cap)` elements; equivalent
 explicit minimum expressions also compose. Early-exit and other unsupported
 loops do not produce inferred must-requirements: a bound that the loop might
 reach cannot be treated as storage every caller must provide. Reassigning a
-size operand does not resize an earlier allocation or output snapshot.
+size operand does not resize an earlier allocation or change a value already
+stored.
 
 VLA dimensions are captured at declaration time, including supported nested
 dimensions and subsequent `sizeof` of that array. A later write to the bound
@@ -695,20 +700,23 @@ callee places on its parameter is checked at its callers. Outcomes are
 independent of diagnostic controls: changing a warning's severity does not
 turn an unresolved access into a proof.
 
-Ranges retain at most two intervals; symbolic expressions have at most 64
-nodes and depth 12, and guards at most eight conjuncts including numeric
-predicates. Numeric outputs retain at most eight alternatives. Unsupported
-projection or exhausted bounds leave the affected facets unresolved
-(`unanalysed`); an arbitrary unknown index alone is checked at run time or
-unresolved, without a new bounds error. General
+Ranges retain at most two intervals. Relations between values are kept
+for at most 64 values per program point, and the rest keep only their
+ranges; a pointer names at most eight objects, and an array object keeps at
+most 32 elements selected by a variable index and four ranges of elements
+per element position ([RFC 0031](rfcs/0031-object-engine.md) §4). Exceeding
+a limit loses precision, never soundness; a construct the analysis does not
+model leaves the affected facets unresolved (`unanalysed`), and an
+arbitrary unknown index alone is checked at run time or unresolved, without
+a new bounds error. General
 nonlinear inequalities, arbitrary induction/strides, integers wider than 64
 bits, unsupported union/type-punning and pointer-provenance operations,
 unrestricted aliases, byte-encoded pointers, GC invariants and concurrency
 remain outside the supported model.
 
 RFC 0017 introduced summary format **13**. The current summary format is
-**27**, carried in format-28 unit records
-([RFC 0030](rfcs/0030-prove-or-trap.md) §13); rebuild older objects. RFC 0017
+**30**, carried in format-29 unit records
+([RFC 0031](rfcs/0031-object-engine.md) §7); rebuild older objects. RFC 0017
 added no runtime instrumentation; under RFC 0030, `weavec-cc` checks at run
 time the accesses these rules leave unproven when their bounds can be named.
 

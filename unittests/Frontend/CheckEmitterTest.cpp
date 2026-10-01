@@ -479,7 +479,7 @@ int snprintf(char *, unsigned long, const char *, ...);
 int deref(int *p) { return *p; }
 int at(int i) { int a[10] = {0}; return a[i]; }
 unsigned long argument(const char *s) { return strlen(s); }
-int access(int n, int i) { int v[n]; v[0] = 0; return v[i]; }
+int access(int n, int i) { if (n <= 0) return 0; int v[n]; v[0] = 0; return v[i]; }
 void before(unsigned long n) { char b[8]; memset(b, 0, n); }
 void assume(int n) { WEAVEC_ASSUME(n > 0); }
 int print(int x) { char b[4]; return sprintf(b, "%d", x); }
@@ -501,7 +501,7 @@ int print(int x) { char b[4]; return sprintf(b, "%d", x); }
       << text;
   // ReplaceAccess: `v[i]` becomes a dereference of the checked address.
   EXPECT_NE(text.find("return *__weavec_chk_span((v), (i), v, sizeof(int[n]), "
-                      "sizeof(int));"),
+                      "4ULL);"),
             std::string::npos)
       << text;
   // BeforeCall.
@@ -516,7 +516,8 @@ int print(int x) { char b[4]; return sprintf(b, "%d", x); }
                       "(\"%d\"), (x)), 4ULL);"),
             std::string::npos)
       << text;
-  EXPECT_EQ(out.inserted, 8U) << text;
+  // (`v[0]` is proven: `n` is positive at the declaration.)
+  EXPECT_EQ(out.inserted, 7U) << text;
 }
 
 // §10.6: stores, compound assignment, `++`, `&`, `->` and array decay all

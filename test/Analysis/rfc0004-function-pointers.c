@@ -26,7 +26,8 @@ typedef WEAVEC_OWNED struct node *(*maker_t)(void);
 void owned_result(maker_t make) {
   struct node *n = make();
   free(n);
-  // CHECK: rfc0004-function-pointers.c:[[@LINE+1]]:7: error: use of 'n' after it was freed [weavec::use-after-free]
+  // CHECK: rfc0004-function-pointers.c:[[@LINE+2]]:7: error: use of 'n' after it was freed [weavec::use-after-free]
+  // LEDGER: "text": "use(n)",
   use(n);
 }
 
@@ -67,7 +68,8 @@ void through_callback(void (*cb)(struct node *), struct node *n) {
   // the §5.1 default with the reason `callback`.
   // LEDGER: "text": "cb(n)",
   // LEDGER: "reason": "callback",
-  // LEDGER-NEXT: "detail": "the target of 'cb' is unknown; annotate the parameters of its function type",
+  // The detail names the slot the value came from (RFC 0030 §9.3).
+  // LEDGER-NEXT: "detail": "values stored by 'through_callback' parameter 0",
   cb(n); /* RFC 0014: a type match alone does not identify this value. */
   use(n);
 }
@@ -81,6 +83,9 @@ void boundary(int (*cmp)(const void *, const void *), char *a, char *b) {
   // LEDGER: "text": "cmp(a,b)",
   // LEDGER: "reason": "callback",
   cmp(a, b);
+  // The first call may have released `a` and `b` (RFC 0031 §5.4, per
+  // object), through a callback (RFC 0030 §9.3), which is what the second
+  // call's facet reports.
   // LEDGER: "text": "cmp(b,a)",
   // LEDGER: "reason": "callback",
   cmp(b, a);
@@ -92,7 +97,7 @@ static struct node *(*get_hook(void))(void) { return hook; }
 void boundary_without_place(void) {
   // LEDGER: "text": "get_hook()()",
   // LEDGER: "reason": "callback",
-  // LEDGER-NEXT: "detail": "the target of a function pointer is unknown; annotate the parameters of its function type",
+  // LEDGER-NEXT: "detail": "the target of 'get_hook()' is unknown; annotate the parameters of its function type",
   struct node *n = get_hook()();
   use(n);
 }

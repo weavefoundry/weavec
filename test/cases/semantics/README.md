@@ -4,6 +4,12 @@ Each case pins one rule of RFC 0030 (`docs/rfcs/0030-prove-or-trap.md`): the
 worked examples of §4, the review cases §17.2 names, and a few cases per rule
 of §5–§11. `test/cases/README.md` has the marker grammar and the runner.
 
+`objects/` is RFC 0031's (`docs/rfcs/0031-object-engine.md`, §11.1): the
+object domain's cases, added in its stage S0. Their first line cites RFC 0031
+and their `STAGE` names RFC 0031's stages (S2 intraprocedural engine, S4
+temporal completeness); they are not counted in the table below. Several fail
+on v0.11.0's engine by design (see the `objects/` table).
+
 Every file starts with two comment lines:
 
 ```c
@@ -156,6 +162,7 @@ One row per case: the section it pins, its stage, and what it expects (`BUG` ids
 | `no-site-unevaluated.c` | §2.1 | S3 | clean; rows |
 | `nonnull-destructor.c` | §5.1 | S3 | clean; rows |
 | `setjmp.c` | §5.4 | S3 | trap nonnull; rows |
+| `setjmp-assigned-after.c` | §5.4 | S7 | clean |
 | `system-api-borrow.c` | §5.2 | S3 | clean; rows |
 | `unknown-then-free.c` | §5.1 and §3.1 | S3 | use-after-free definite; rows |
 
@@ -221,22 +228,29 @@ One row per case: the section it pins, its stage, and what it expects (`BUG` ids
 | Case | Pins | Stage | Expects |
 | --- | --- | --- | --- |
 | `cast-end-sentinel.c` | §7.4 | S3 | clean; ASan |
+| `null-follows-arithmetic.c` | RFC 0031 amendment (nullness through arithmetic) | S7 | rows; tool |
 | `flat-walk.c` | §7.4 | S3 | clean; ASan |
 | `flexible-smaller-than-sizeof.c` | §7.4 | S3 | clean; ASan |
 | `member-address-memcpy.c` | §7.4 | S3 | clean; ASan |
 | `member-address-memset.c` | §7.4 | S3 | clean; ASan |
 | `subarray-subscript.c` | §7.4 | S3 | out-of-bounds; trap index; ASan |
 | `trailing-array-upvals.c` | §7.4 | S3 | clean; rows; ASan |
+| `null-after-checked-access.c` | §3.2 | S7 | clean; rows (one null facet checked); tool |
 
 ### `library/`
 
 | Case | Pins | Stage | Expects |
 | --- | --- | --- | --- |
 | `guard-ok.c` | §9.2 | S4 | trap nonnull |
+| `fill-shared-unknown-object.c` | RFC 0031 §4.1 (weak writes) | S7 | clean; tool |
 | `longjmp-noreturn.c` | §8.3 | S4 | rows |
 | `memcpy-null-empty.c` | §8.3 | S4 | clean; ASan |
 | `realloc-zero-definite.c` | §8.2 (realloc) | S4 | double-free definite |
 | `realloc-zero-possible.c` | §8.2 (realloc) | S4 | double-free possible |
+| `realloc-wrapper-failure-keeps.c` | §8.2, §11 (RFC 0031 amendment) | S7 | clean; rows |
+| `stdout-closed-twice.c` | §5.1 (RFC 0031 amendment) | S7 | double-free possible; tool |
+| `library-filled-result.c` | §11 | S7 | clean; tool |
+| `release-at-unknown-offset.c` | (RFC 0031 amendment) | S7 | clean (a possible `invalid-release`); ASan |
 | `regfree-local.c` | §8.2 | S4 | clean; ASan |
 | `releasers.c` | §8.3 | S4 | use-after-free definite |
 | `static-results.c` | §8.3 | S4 | clean; ASan |
@@ -252,6 +266,9 @@ One row per case: the section it pins, its stage, and what it expects (`BUG` ids
 | --- | --- | --- | --- |
 | `fp-memcpy-open.c` | §8 and §9.3 | S7 | rows |
 | `fp-memcpy.c` | §8 and §9.3 | S7 | out-of-bounds; trap len; ASan |
+| `hook-freed-twice.c` | §9.3 | S7 | double-free; tool |
+| `hook-raw-on-some-targets.c` | §9.3 (RFC 0031 amendment) | S7 | clean; rows |
+| `operand-before-hook-call.c` | §5.4 (RFC 0031 amendment) | S7 | clean |
 | `open-slot-callback.c` | §9.3 and §5.1 | S7 | trap nonnull; rows |
 
 ### `boundary/`
@@ -260,6 +277,9 @@ One row per case: the section it pins, its stage, and what it expects (`BUG` ids
 | --- | --- | --- | --- |
 | `atexit-reader.c` | §9.4 and §5.3 | S7 | use-after-free; rows; ASan |
 | `remember-free-peek.c` | §9.4 | S7 | use-after-free; rows; ASan |
+| `global-written-by-unknown-code.c` | §5.1 (RFC 0031 amendment) | S7 | clean; tool |
+| `incomplete-summary-writes-arguments.c` | §5.5 | S7 | clean |
+| `global-reread-after-unknown-code.c` | §5.1 (RFC 0031 amendment) | S7 | rows; tool |
 
 ### `aliasing/`
 
@@ -296,3 +316,52 @@ One row per case: the section it pins, its stage, and what it expects (`BUG` ids
 | `memcpy-zero-then-deref.c` | §8.3 | S5 | trap nonnull; `-O2` |
 | `negative-count.c` | §10.2 | S6 | trap index |
 | `qsort-wrapping-size.c` | §10.2 | S5 | out-of-bounds; trap len; ASan |
+
+### `temporal/`
+
+| Case | Pins | Stage | Expects |
+| --- | --- | --- | --- |
+| `fill-then-store.c` | §7.4 | S8 | clean |
+| `flag-selected-release.c` | §3.4 | S8 | clean |
+| `guarded-alias-release.c` | §3.1 | S8 | clean |
+| `identity-guarded-share.c` | §9.1 | S8 | clean |
+| `nonzero-size-across-join.c` | RFC 0009 | S8 | clean |
+| `nonzero-size-after-reassign.c` | RFC 0009 | S8 | clean |
+| `unknown-callee-resets-frame.c` | RFC 0031 §6.3, §4.6 | S7 | clean |
+| `unknown-effect-reaches-frame.c` | RFC 0031 §6.3 | S7 | clean |
+| `possible-rewrite-stays-possible.c` | RFC 0031 §6.3 | S7 | lifetime-too-short possible |
+| `free-then-guarded-wrapper.c` | §3.1 | S7 | double-free definite; tool |
+
+### `objects/` (RFC 0031)
+
+"v0.11.0" is what the v0.11.0 engine (`build/release`, `--asan`) gives at S0.
+
+| Case | Pins | Stage | Expects | v0.11.0 |
+| --- | --- | --- | --- | --- |
+| `strong-update.c` | §4.2, I1 | S2 | clean; ASan | fails: false leak of `bx.buf` |
+| `strong-update-stale_bug.c` | §4.2, I1, I3 | S2 | use-after-free; rows; ASan | fails: temporal proven (silent) |
+| `weak-update.c` | §4.1, I1, I4 | S2 | clean; rows (no null facet checked or unresolved); ASan | passes |
+| `weak-update_bug.c` | §4.1, I1, I4 | S2 | null-dereference; trap nonnull; ASan | fails: null proven, SEGV |
+| `recency-loop.c` | §4.2 recency | S2 | clean; rows (no temporal facet unresolved); ASan | passes |
+| `recency-loop_bug.c` | §4.2 recency | S2 | use-after-free; rows; ASan | passes (warning) |
+| `list-destructor.c` | §4.5 D3/D6, §4.6 | S4 | clean; rows (no temporal facet unresolved); ASan | fails: 2 may-alias-released |
+| `tree-destructor.c` | §4.5 D3, §6.4 | S4 | clean; rows (no temporal facet unresolved); ASan | fails: 7 unresolved |
+| `materialise-pop.c` | §4.6 | S4 | clean; rows (no temporal facet unresolved); ASan | passes |
+| `materialise-head_bug.c` | §4.6 | S4 | use-after-free; rows; ASan | passes (error) |
+| `owner-cycle_bug.c` | §8, A3 | S4 | use-after-free at the call; rows; ASan | passes (row) |
+| `array-summary-cells.c` | §4.2 summary cells | S2 | clean; ASan | fails: false leaks |
+| `array-summary-cells_bug.c` | §4.2 summary cells | S2 | use-after-free; rows; ASan | fails: false use-of-uninitialized error, temporal proven |
+| `union-pointer-bits.c` | §4.2 unions, RFC 0030 §2.3 | S2 | clean; rows (spatial raw-cast); ASan | passes |
+| `byte-copy-struct.c` | §4.2 byte-wise writes | S2 | clean; ASan | passes |
+| `byte-copy-struct_bug.c` | §4.2 byte-wise writes | S2 | use-after-free; rows; ASan | passes (error) |
+| `union-high-word-store.c` | stores past the caller's object (amendment) | S7 | clean; ASan | passes |
+| `member-array-elements.c` | §4.9 summaries | S7 | clean; ASan | — |
+| `member-array-record-fields.c` | §4.9 summaries | S7 | clean; ASan | — |
+| `optional-out-elements.c` | §4.9 summaries | S7 | clean; ASan | — |
+| `guarded-null-out.c` | §6.1 | S7 | clean; ASan | — |
+
+Two expectations the grammar can only state per file: the destructors and
+`materialise-pop.c` are *proven* (RFC 0031 §4.6), which `EXPECT-LEDGER:
+/summary/facets/temporal/unresolved == 0` pins for the whole program, and
+`weak-update.c`'s dereferences are proven, pinned as no null facet checked or
+unresolved. A line marker cannot require a facet to be proven.

@@ -11,9 +11,17 @@
 #include <stdlib.h>
 #include "handle.h"
 
-// DUMP: function 'log_close': param 0: freed(fclose); stores{} returns{}
-// DUMP: function 'log_open': param 0 *: read; stores{} returns{fresh(fclose), null} requires{param 0}
-// DUMP: function 'xfree': param 0: freed(free); stores{} returns{}
+// The families in the format-30 summaries (RFC 0031 *Summary format 30*).
+// DUMP: program:
+// DUMP: function 'log_close':
+// DUMP-NEXT: always-returns
+// DUMP-NEXT: release *param0 fclose when param 0 !=0
+// DUMP-NEXT: function 'log_open':
+// DUMP-NEXT: always-returns
+// DUMP-NEXT: result fresh#0 fclose {{.*}}maybe-null when null nonnull
+// DUMP: function 'xfree':
+// DUMP-NEXT: always-returns
+// DUMP-NEXT: release *param0 free when always
 
 void wrong_family(const char *path) {
   FILE *f = log_open(path);

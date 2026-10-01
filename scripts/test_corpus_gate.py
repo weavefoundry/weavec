@@ -148,6 +148,9 @@ class ProcessTest(unittest.TestCase):
 class ManifestTest(unittest.TestCase):
     CONFIGS = ["sds", "cJSON", "cJSON-program", "jsmn", "log.c", "printf", "linenoise", "linenoise-program",
                "zlib", "lua", "jansson"]
+    # RFC 0031, section 11.2.
+    HELD_OUT = ["bzip2", "hiredis", "http-parser", "inih", "libyaml", "lz4", "miniz", "mujs", "sqlite", "tinyexpr",
+                "utf8proc"]
 
     def write(self, directory: Path, data: dict) -> Path:
         path = directory / "manifest.json"
@@ -162,10 +165,11 @@ class ManifestTest(unittest.TestCase):
 
     def test_repository_manifest(self):
         manifest = gate.load_manifest(CORPUS / "manifest.json", CORPUS / "support")
-        self.assertEqual(sorted(c.name for c in manifest.configs), sorted(self.CONFIGS))
+        self.assertEqual(sorted(c.name for c in manifest.original), sorted(self.CONFIGS))
+        self.assertEqual(sorted(c.name for c in manifest.configs), sorted(self.CONFIGS + self.HELD_OUT))
         for project in manifest.projects:
             self.assertRegex(project.sha, r"^[0-9a-f]{40}$")
-        whole = {c.name for c in manifest.configs if c.whole_program}
+        whole = {c.name for c in manifest.original if c.whole_program}
         self.assertEqual(whole, {"cJSON-program", "linenoise-program", "zlib", "lua", "jansson"})
         with_tests = {c.name for c in manifest.configs if c.test}
         self.assertTrue({"sds", "cJSON", "jsmn", "zlib", "lua", "jansson"} <= with_tests)
@@ -184,6 +188,67 @@ class ManifestTest(unittest.TestCase):
                 self.assertIn(lowered["fingerprint"], triaged_true,
                               f"{config.name} lowers {lowered['flag']} for a finding that is not "
                               f"triaged true; section 17.5 allows it only there")
+
+    def test_repository_held_out_configs(self):
+        """RFC 0031, section 11.2: the eleven held-out projects, built and (but sqlite and mujs) tested."""
+        manifest = gate.load_manifest(CORPUS / "manifest.json", CORPUS / "support")
+        held = {c.name: c for c in manifest.configs if c.held_out}
+        self.assertEqual(sorted(held), self.HELD_OUT)
+        for name, config in held.items():
+            self.assertEqual(config.project.name, name)
+            self.assertTrue(config.build, f"{name}: a held-out config builds as shipped (G5)")
+            self.assertIsNone(config.bench)
+            self.assertEqual(bool(config.test), name not in ("sqlite", "mujs"),
+                             f"{name}: sqlite and mujs are compile-and-time only")
+        self.assertEqual(held["mujs"].files, ["one.c"])
+        self.assertIn("sqlite3.c", held["sqlite"].files)
+        spec = manifest.gates["heldOut"]
+        self.assertEqual(spec["G5"]["maxFalseDefiniteErrors"], 0)
+        # RFC 0031 *Gates carried forward*: the share is a ratchet, and the
+        # build ratio is reported, not limited.
+        self.assertEqual(spec["G6"]["maxTemporalUnresolvedShare"], 0.5)
+        self.assertNotIn("maxBuildCpuRatio", spec["G12"])
+        self.assertEqual({k: v["file"] for k, v in spec["G12"]["maxUnitCost"].items()},
+                         {"mujs": "one.c", "sqlite": "sqlite3.c"})
+        for limits in spec["G12"]["maxUnitCost"].values():
+            self.assertEqual((limits["cpuSeconds"], limits["maxRssMiB"]), (900, 4096))
+            self.assertIn(limits["file"], held["mujs"].files + held["sqlite"].files)
+
+    def test_held_out_field(self):
+        with tempfile.TemporaryDirectory() as directory:
+            d = Path(directory)
+            manifest = gate.load_manifest(self.write(d, self.minimal(heldOut=True)), d)
+            self.assertTrue(manifest.configs[0].held_out)
+            self.assertEqual(manifest.original, [])
+            self.assertFalse(gate.load_manifest(self.write(d, self.minimal()), d).configs[0].held_out)
+            with self.assertRaisesRegex(gate.GateError, "heldOut must be true or false"):
+                gate.load_manifest(self.write(d, self.minimal(heldOut="yes")), d)
+            with self.assertRaisesRegex(gate.GateError, "has no bench"):
+                gate.load_manifest(self.write(d, self.minimal(heldOut=True, bench={"build": ["x"], "command": "y"})),
+                                   d)
+
+    def test_held_out_selection(self):
+        with tempfile.TemporaryDirectory() as directory:
+            d = Path(directory)
+            data = self.minimal()
+            data["projects"][0]["configs"].append({"name": "h", "heldOut": True, "compile": {"files": ["a.c"]}})
+            manifest = gate.load_manifest(self.write(d, data), d)
+            names = lambda configs: [c.name for c in configs]
+            self.assertEqual(names(gate.select_configs(manifest, [], False)), ["p"])
+            self.assertEqual(names(gate.select_configs(manifest, [], True)), ["p", "h"])
+            # A config named by --only runs whatever the default.
+            self.assertEqual(names(gate.select_configs(manifest, ["h"], False)), ["h"])
+
+        def default(*argv):
+            return gate.with_held_out(gate.parse_args(list(argv)))
+        self.assertFalse(default("--quick"))
+        self.assertTrue(default("--full"))
+        self.assertTrue(default("--quick", "--held-out"))
+        self.assertFalse(default("--full", "--no-held-out"))
+        self.assertFalse(default("--inject"))
+        self.assertFalse(default("--full", "--legacy"))
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            gate.parse_args(["--quick", "--legacy", "--held-out"])
 
     def test_invalid_manifests(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -324,6 +389,15 @@ class LedgerTest(unittest.TestCase):
         self.assertEqual([(d.file, d.line) for d in found], [("a.c", 2)])
 
 
+class TemporalShareTest(unittest.TestCase):
+    def test_temporal_share(self):
+        analysis = gate.Analysis(kind="units")
+        self.assertIsNone(analysis.temporal_share)
+        gate.add_ledger(analysis, ledger(summary(proven=6, unresolved=3, violation=1)), Path("/p"))
+        self.assertEqual(analysis.temporal_share, 0.3)
+        self.assertEqual(analysis.measured()["unresolvedShare"]["temporal"], 0.3)
+
+
 class RatchetTest(unittest.TestCase):
     def analysis(self, **kw):
         base = {"errors": 0, "warnings": 2, "ledger": {"sites": 100, "proven": 60, "checked": 30, "violation": 0,
@@ -386,6 +460,28 @@ class RatchetTest(unittest.TestCase):
         self.assertTrue(self.compare({"program": self.analysis()}, {"units": self.analysis()}).missing)
         # A section this run did not measure is not compared.
         self.assertFalse(self.compare({"overhead": 1.0}, {"units": self.analysis(), "overhead": 1.0}).failed)
+
+    def test_held_out_configs_need_no_record_until_update(self):
+        result = gate.compare_ratchet({"h": {"units": self.analysis()}}, self.expected(), "plat", "m", {"h"})
+        self.assertFalse(result.failed, result)
+        self.assertTrue(any("held-out" in n for n in result.notes))
+        self.assertTrue(gate.compare_ratchet({"h": {"units": self.analysis()}}, self.expected(), "plat", "m").missing)
+        # Not even a platform section yet: a note while only held-out configs were measured.
+        self.assertFalse(gate.compare_ratchet({"h": {}}, {"platforms": {}}, "plat", "m", {"h"}).failed)
+        self.assertTrue(gate.compare_ratchet({"h": {}, "c": {}}, {"platforms": {}}, "plat", "m", {"h"}).missing)
+        # Once recorded, a held-out config ratchets like the others.
+        recorded = gate.compare_ratchet({"h": {"units": self.analysis(errors=1)}},
+                                        self.expected(h={"units": self.analysis()}), "plat", "m", {"h"})
+        self.assertTrue(recorded.regressions)
+
+    def test_temporal_share_ratchets_once_recorded(self):
+        before = self.analysis()
+        now = self.analysis(**{"unresolvedShare.temporal": 0.4})
+        self.assertFalse(self.compare({"units": now}, {"units": before}).failed)
+        before = self.analysis(**{"unresolvedShare.temporal": 0.3})
+        self.assertTrue(self.compare({"units": now}, {"units": before}).regressions)
+        self.assertTrue(self.compare({"units": before}, {"units": now}).improvements)
+        self.assertFalse(self.compare({"units": before}, {"units": before}).failed)
 
     def test_update_merges_one_platform(self):
         expected = {"schema": "weavec-corpus-expected", "version": 1, "legacy": {"quick": {"x": 1}},
@@ -487,7 +583,10 @@ class InjectionTest(unittest.TestCase):
         injections = gate.load_injections(CORPUS / "injections" / "injections.json", manifest)
         self.assertGreaterEqual(len(injections), 28)
         projects = {manifest.config(i.config).project.name for i in injections}
-        self.assertEqual(projects, {p.name for p in manifest.projects})
+        # Every original project has injections; the held-out ones (RFC 0031,
+        # section 11.2) are measured as shipped, never patched.
+        self.assertEqual(projects, {c.project.name for c in manifest.original})
+        self.assertFalse([i.id for i in injections if manifest.config(i.config).held_out])
         required = {i.id: i for i in injections if i.required}
         self.assertEqual(set(required), {"lua-uaf-luah-free", "lua-df-freeproto"})
         for inj in required.values():
@@ -548,6 +647,9 @@ if ledger:
               for k in ("spatial", "null", "temporal", "assertion")}
     facets["null"]["proven"] = 8
     facets["null"]["unresolved"] = 2 + extra
+    if os.environ.get("FAKE_TEMPORAL"):
+        unresolved, proven = map(int, os.environ["FAKE_TEMPORAL"].split(","))
+        facets["temporal"]["unresolved"], facets["temporal"]["proven"] = unresolved, proven
     summary = {"sites": 10 + extra, "facets": facets, "errors": sum(d["severity"] == "error" for d in diagnostics),
                "warnings": sum(d["severity"] == "warning" for d in diagnostics), "functions": 3, "overBudget": []}
     with open(ledger, "w") as out:
@@ -666,6 +768,87 @@ class EndToEndTest(unittest.TestCase):
         self.assertEqual(status, 0, output)
         configs = json.loads(self.expected.read_text())["platforms"][platform]["configs"]
         self.assertEqual(configs["one"]["units"]["ledger"]["unresolved"], 10)
+
+
+class HeldOutEndToEndTest(unittest.TestCase):
+    """RFC 0031, section 11.2: held-out configs next to the original ones."""
+
+    run_gate = EndToEndTest.run_gate
+
+    def setUp(self):
+        EndToEndTest.setUp(self)
+        manifest = json.loads(self.manifest.read_text())
+        manifest["projects"][0]["configs"].append(
+            {"name": "held", "heldOut": True, "compile": {"files": ["*.c"], "args": []}})
+        # The original configs have two definite errors (a.c:1 in each), the
+        # held-out one a third, which G9 must not count.
+        manifest["gates"] = {"G9": {"maxDefiniteErrors": 2},
+                             "heldOut": {"G6": {"maxTemporalUnresolvedShare": 0.5}}}
+        self.manifest.write_text(json.dumps(manifest))
+        os.environ["FAKE_TEMPORAL"] = "1,1"
+        self.addCleanup(os.environ.pop, "FAKE_TEMPORAL", None)
+
+    def write_triage(self, held_verdict=None):
+        entries = []
+        for name in ("one", "whole"):
+            entries.append({"fingerprint": "fp-a.c-1", "config": name, "id": "double-free",
+                            "certainty": "definite", "file": "a.c", "line": 1, "verdict": "true", "note": "n"})
+            entries.append({"fingerprint": "fp-b.c-2", "config": name, "id": "double-free",
+                            "certainty": "possible", "file": "b.c", "line": 2, "verdict": "true", "note": "n"})
+        if held_verdict:
+            entries.append({"fingerprint": "fp-a.c-1", "config": "held", "id": "double-free",
+                            "certainty": "definite", "file": "a.c", "line": 1, "verdict": held_verdict,
+                            "note": "n"})
+        self.triage.write_text(json.dumps({"schema": "weavec-corpus-triage", "version": 1, "entries": entries}))
+
+    def test_held_out_configs(self):
+        self.write_triage()
+        status, output = self.run_gate("--quick", "--update")
+        self.assertEqual(status, 0, output)
+        platform = gate.platform_key()
+        recorded = json.loads(self.expected.read_text())["platforms"][platform]["configs"]
+        self.assertEqual(sorted(recorded), ["one", "whole"])  # --quick leaves the held-out config out
+        self.assertEqual(recorded["one"]["units"]["unresolvedShare"]["temporal"], 0.5)
+        self.assertNotIn("held-out configs", output)
+        # With --held-out: its definite error needs a verdict, its possible
+        # warning does not, and G9 does not count it.
+        status, output = self.run_gate("--quick", "--held-out")
+        self.assertEqual(status, 1, output)
+        self.assertIn("untriaged definite double-free in held-out held at a.c:1", output)
+        self.assertNotIn("untriaged possible", output)
+        self.write_triage(held_verdict="true")
+        status, output = self.run_gate("--quick", "--held-out", "--json", str(self.root / "r.json"))
+        self.assertEqual(status, 0, output)
+        self.assertIn("held-out config not recorded", output)
+        self.assertIn("held-out configs (RFC 0031, section 11.2):", output)
+        results = json.loads((self.root / "r.json").read_text())
+        self.assertEqual(results["heldOutConfigs"], ["held"])
+        self.assertEqual(results["gates"]["G9"]["detail"]["definiteErrors"], 2)
+        self.assertEqual(results["gates"]["G9"]["status"], "pass")
+        self.assertEqual(results["gates"]["rfc0031.G5"]["status"], "pass")
+        self.assertEqual(results["gates"]["rfc0031.G6"]["detail"]["temporalShare"], 0.5)
+        self.assertEqual(results["gates"]["rfc0031.G6"]["status"], "pass")
+        row = results["heldOut"]["configs"]["held"]
+        self.assertEqual((row["definiteErrors"], row["possibleTemporal"]), (1, 1))
+        self.assertEqual(sorted(row["unitCosts"]), ["a.c", "b.c"])
+        # A definite error triaged false fails G5; a share above the limit fails G6.
+        self.write_triage(held_verdict="false")
+        os.environ["FAKE_TEMPORAL"] = "3,1"
+        status, output = self.run_gate("--quick", "--held-out", "--json", str(self.root / "r.json"))
+        self.assertEqual(status, 1, output)
+        results = json.loads((self.root / "r.json").read_text())
+        self.assertEqual(results["gates"]["rfc0031.G5"]["status"], "fail")
+        self.assertEqual(results["gates"]["rfc0031.G6"]["status"], "fail")
+        # --update records the held-out config; from then on it ratchets.
+        os.environ["FAKE_TEMPORAL"] = "1,1"
+        self.write_triage(held_verdict="true")
+        status, output = self.run_gate("--quick", "--held-out", "--update")
+        self.assertEqual(status, 0, output)
+        self.assertIn("held", json.loads(self.expected.read_text())["platforms"][platform]["configs"])
+        os.environ["FAKE_TEMPORAL"] = "2,1"
+        status, output = self.run_gate("--quick", "--only", "held")
+        self.assertEqual(status, 1, output)
+        self.assertIn("held.units.unresolvedShare.temporal: 0.5 -> 0.6667 (worse)", output)
 
 
 FAKE_CC = r"""#!PYTHON
@@ -838,6 +1021,27 @@ class FullEndToEndTest(unittest.TestCase):
         status, output = self.run_gate("--full", trap=True)
         self.assertEqual(status, 0, output)
         self.assertIn("trapped only at triaged-true definite errors", output)
+
+    def test_held_out_build_is_timed_against_the_reference(self):
+        manifest = json.loads(self.manifest.read_text())
+        manifest["projects"][0]["configs"][0]["heldOut"] = True
+        manifest["gates"]["heldOut"] = {"G12": {"maxBuildCpuRatio": 1000}}
+        self.manifest.write_text(json.dumps(manifest))
+        self.triage_entries()
+        status, output = self.run_gate("--full", "--json", str(self.root / "r.json"))
+        self.assertEqual(status, 0, output)
+        results = json.loads((self.root / "r.json").read_text())
+        builds = results["configs"]["built"]["builds"]
+        self.assertEqual(sorted(builds), ["reference", "report", "trap"])
+        self.assertEqual(builds["reference"]["tests"], [])  # timed, not tested
+        self.assertEqual(results["gates"]["rfc0031.G5"]["status"], "pass")
+        self.assertIn("built.buildCpuRatio", results["gates"]["rfc0031.G12"]["detail"])
+        self.assertEqual(results["gates"]["G11"]["status"], "skip")  # RFC 0030's counts the original configs
+        # A trap in a held-out test suite fails G5.
+        status, output = self.run_gate("--full", "--json", str(self.root / "r.json"), trap=True)
+        self.assertEqual(status, 1, output)
+        results = json.loads((self.root / "r.json").read_text())
+        self.assertEqual(results["gates"]["rfc0031.G5"]["status"], "fail")
 
     def test_reference_only(self):
         # The synthetic trap injection only prints a report line; ASan has nothing to find in it.

@@ -3,6 +3,8 @@
 // The same code as realloc-zero-definite.c with a size the caller does not know: the null
 // class releases 'p' only when the size is zero, so the record is conditional and the free
 // is a possible double free, a warning. The program builds; the run's size is non-zero.
+// Without zero-initialisation, as realloc-zero-definite.c.
+// FLAGS: -fno-weavec-zero-init
 // RUN-INPUT:
 #include <stdlib.h>
 

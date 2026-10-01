@@ -58,7 +58,7 @@ public:
     const auto factory = createWeaveCActionFactory(options);
     return run(*factory);
   }
-  /// Release preparation and its AST after analysis returns. The orchestrator
+  /// Release its AST after analysis returns. The orchestrator
   /// only requests this when no analysis dump is being written.
   virtual bool releaseAST() { return false; }
 };
@@ -93,6 +93,13 @@ public:
   void addUnit(std::unique_ptr<ProgramUnit> unit,
                std::optional<analysis::UnitExports> known = std::nullopt,
                std::set<ReportedDiagnostic> reported = {});
+
+  /// Adds a unit whose compile-time view stands (`known`, `reported`), run
+  /// again only to serve a context another unit asks of it (RFC 0031 §7
+  /// *Amendment (cross-unit contexts)*).
+  void addServingUnit(std::unique_ptr<ProgramUnit> unit,
+                      analysis::UnitExports known,
+                      std::set<ReportedDiagnostic> reported = {});
 
   /// Adds the exports of a unit that is part of the program but is not
   /// analysed again (an object whose compile-time view already stands).
@@ -147,8 +154,8 @@ public:
   /// sequence is monotone in the finite summary lattice and settles.
   static constexpr unsigned WidenAfter = 6;
   /// The widening step: joins each of `exports`' function summaries with
-  /// the same function's summary in a member's `previous` exports (both
-  /// numbered by one database), and unions the count fields.
+  /// the same function's summary in a member's `previous` exports (when
+  /// both number globals alike), and unions the count fields.
   static void widen(analysis::UnitExports &exports,
                     const analysis::UnitExports &previous);
 
@@ -157,12 +164,11 @@ private:
     std::unique_ptr<ProgramUnit> unit;
     std::optional<analysis::UnitExports> exports;
     std::set<ReportedDiagnostic> reported;
-    /// RFC 0012, *Sized fields*: the pairs the database confirmed when the
-    /// unit was last reported on; more at the end means another pass.
-    std::set<analysis::SizedFieldWitness> sizedPairsSeen;
-    // Default for designated initialization.
-    // NOLINTNEXTLINE(readability-redundant-member-init)
-    std::set<std::string> dependencies = {};
+    /// Run only to serve contexts (`addServingUnit`), until it has.
+    bool dormant = false;
+    /// The last run was held for a context (`FrontendOptions::holdFor`):
+    /// the unit has not reported.
+    bool held = false;
     /// RFC 0030 §13.2: the ledger of the last reporting run and the
     /// interface facts collected (at discovery, then by the last reporting
     /// run).
@@ -176,9 +182,13 @@ private:
   std::vector<Unit> units;
   std::vector<analysis::UnitExports> fixed;
   analysis::ProgramDatabase settled;
+  /// RFC 0031 §7: the context requests whose definers have run for them.
+  std::set<analysis::ContextRequest> attempted;
   std::shared_ptr<const analysis::ProgramFacts> programFacts;
   bool interfaces = false;
   bool ledgers = false;
+  /// The units' summary lines, printed after the last run.
+  bool unitSummaries = false;
   /// `weavec --whole-program`: the program facts from what discovery
   /// collected.
   void solveDiscoveredSlots();
@@ -195,14 +205,21 @@ private:
   void analyzeAcyclic(unsigned index, Result &result);
   void analyzeCyclic(const std::vector<unsigned> &component, Result &result);
   void analyzeComponent(const std::vector<unsigned> &component, Result &result);
-  /// Records what a reporting run of `unit` against `db` produced: its
-  /// exports, the diagnostics shown, the sized-field pairs in force.
-  void settle(Unit &unit, const analysis::ProgramDatabase &db,
-              UnitResult run) const;
-  /// RFC 0012, *Sized fields*, "Inference": one more reporting pass over
-  /// every unit analysed before the program confirmed a pair it may load;
-  /// only what is new is shown.
-  void reportConfirmedSizedFields(Result &result);
+  /// RFC 0031 §7 *Amendment (cross-unit contexts)*: runs the units that
+  /// define what other units asked contexts of, then the units the served
+  /// contexts change, until every request is served; then every unit still
+  /// held reports.
+  void serveContexts(Result &result);
+  /// Whether a unit this analysis runs defines `portable` (a function's
+  /// portable name).
+  [[nodiscard]] bool runsDefinitionOf(const std::string &portable) const;
+  /// The hold of a reporting run: a context asked of a unit this analysis
+  /// runs, not yet served.
+  [[nodiscard]] std::function<bool(const analysis::ContextRequest &)>
+  holdForUnserved() const;
+  /// Records what a reporting run of `unit` produced: its exports and the
+  /// diagnostics shown.
+  void settle(Unit &unit, UnitResult run) const;
   /// `settled` plus the exports of a cyclic component's members.
   [[nodiscard]] analysis::ProgramDatabase
   databaseFor(const std::vector<analysis::UnitExports> &members) const;
@@ -231,8 +248,6 @@ private:
   std::vector<std::unique_ptr<clang::ASTUnit>> asts;
   bool attemptedParse = false;
   bool multipleCommands = false;
-  std::shared_ptr<analysis::FunctionPreparationCache> preparation =
-      std::make_shared<analysis::FunctionPreparationCache>();
 };
 
 } // namespace weavec::frontend

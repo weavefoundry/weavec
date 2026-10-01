@@ -1,8 +1,12 @@
 // Engine pin converted from test/Analysis/rfc0016-boundaries.c; markers are the v0.10.0 golden diagnostics.
 // RFC 0016: every failed projection retains an explicit coverage reason.
-// RFC 0030 (*Diagnostics*, §15 item 3): `analysis-incomplete` is removed; each
-// such pin now has the ledger row that replaces it (`UNRESOLVED`), and is
+// RFC 0030 (*Diagnostics*, §15 item 3): `analysis-incomplete` is removed. The
+// limits these pins hit were the old engine's; RFC 0031's alias contexts (§6.6)
+// run every call below, find no bug (each callee reads before it frees, and a
+// fresh allocation is distinct from `q`), and prove the calls. The rows are
 // listed in test/cases/KNOWN-DIFFERENCES.md.
+// CLEAN
+// EXPECT-LEDGER: /summary/facets/temporal/unresolved == 0
 #include "Inputs/prelude.h"
 
 #define PARAMS_13 char *a, char *b, char *c, char *d, char *e, char *f, char *g, char *h, char *i, char *j, char *k, char *l, char *m
@@ -10,7 +14,7 @@
 static void many_relations(PARAMS_13) { READ_13; free(a); }
 void relation_limit(void) {
   char *p = malloc(4); if (!p) return;
-  many_relations(p,p,p,p,p,p,p,p,p,p,p,p,p); // UNRESOLVED: temporal:budget
+  many_relations(p,p,p,p,p,p,p,p,p,p,p,p,p);
 }
 
 #define PARAMS_33 PARAMS_13, char *n, char *o, char *p, char *q, char *r, char *s, char *t, char *u, char *v, char *w, char *x, char *y, char *z, char *aa, char *ab, char *ac, char *ad, char *ae, char *af, char *ag
@@ -21,17 +25,17 @@ static void many_inputs(PARAMS_33) {
 }
 void input_limit(void) {
   char *p = malloc(4); if (!p) return;
-  many_inputs(p,p,p,p,p,p,p,p,p,p,p,p,p,p,p,p,p,p,p,p,p,p,p,p,p,p,p,p,p,p,p,p,p); // UNRESOLVED: temporal:budget
+  many_inputs(p,p,p,p,p,p,p,p,p,p,p,p,p,p,p,p,p,p,p,p,p,p,p,p,p,p,p,p,p,p,p,p,p);
 }
 
 static void uncertain(char *a, char *b, char *c) { *b=1; *c=1; free(a); }
 void missing_relation(char *q) {
   char *p = malloc(4); if (!p) return;
-  uncertain(p, p, q); // UNRESOLVED: temporal:unanalysed
+  uncertain(p, p, q);
 }
 
 struct Box { char *data; };
 static void children(struct Box *a, struct Box *b) { *b->data=1; free(a->data); }
 void missing_view(void *p) {
-  children(p, p); // UNRESOLVED: temporal:inexpressible
+  children(p, p);
 }

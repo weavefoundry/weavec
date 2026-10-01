@@ -176,8 +176,6 @@ TEST(NumericInputs, GlobalFieldDependenciesAreCapturedBeforeTheirWrites) {
 }
 
 TEST(NumericInputs, ReusedCallInputDoesNotResizeAnEarlierAllocation) {
-  std::string dump;
-  llvm::raw_string_ostream stream(dump);
   const auto result = analyze(R"c(
     char *make(unsigned n) { return malloc(n * 2u); }
     void repeat(void) {
@@ -193,16 +191,13 @@ TEST(NumericInputs, ReusedCallInputDoesNotResizeAnEarlierAllocation) {
       }
       free(first);
     }
-  )c",
-                              {.dumpStream = &stream});
+  )c");
   ASSERT_TRUE(result.ast);
-  const auto start = dump.find("function 'repeat':");
-  ASSERT_NE(start, std::string::npos) << dump;
   // At the only access, first is the earlier two-byte allocation. Widening
   // can lose that extent, but it must not use the new four-byte allocation
   // to prove this access safe.
-  EXPECT_NE(dump.substr(start).find("spatial: proven=0"), std::string::npos)
-      << dump;
+  EXPECT_EQ(facetCounts(result, core::Facet::Spatial).substr(0, 17),
+            "spatial: proven=0");
 }
 
 TEST(NumericInputs, AliasedOutputPathsRespectTheCalleesStatementOrder) {
@@ -247,8 +242,4 @@ TEST(NumericInputs, DuplicateProjectedFactsRetainNumericOutputs) {
   ASSERT_TRUE(result.ast);
   EXPECT_EQ(countId(result, core::diag::OutOfBounds), 1U)
       << ::testing::PrintToString(messages(result.diagnostics));
-  const auto *summary = result.summary("outputs");
-  ASSERT_NE(summary, nullptr);
-  EXPECT_FALSE(
-      summary->incomplete.contains("unsupported numeric output projection"));
 }

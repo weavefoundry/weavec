@@ -21,18 +21,21 @@ static struct obj *obj_new(void) {
   return o;
 }
 
-// The returning ref: `increment` on the count, the argument copied out.
+// The returning ref: a store to the count, the argument copied out.
 // DUMP-LABEL: function 'obj_ref':
-// DUMP: summary: o->rc: read|written; stores{} returns{copy o} requires{o} increments{o->rc}
+// DUMP: result path param0 when nonnull
+// DUMP: store param0->rc := int
 static struct obj *obj_ref(struct obj *o) {
   o->rc++;
   return o;
 }
 
-// The unref: a share release, spelled `freed(free),share`, and the count it
-// releases through.
+// The unref: a release guarded by the count. The object engine does not infer
+// RFC 0010 count functions yet, so it is a possible release of `o` and its
+// name (RFC 0031 §5.5; test/cases/KNOWN-DIFFERENCES.md).
 // DUMP-LABEL: function 'obj_unref':
-// DUMP: summary: o: freed(free),share; o->rc: read|written; stores{} returns{} requires{o} decrements{o->rc} counts{o->rc}
+// DUMP: release *param0 free may when always
+// DUMP: release *param0->name free may when always
 static void obj_unref(struct obj *o) {
   if (--o->rc == 0) {
     free(o->name);
@@ -43,19 +46,19 @@ static void obj_unref(struct obj *o) {
 // The other spellings of the decrement (RFC 0010, *Recognising increments
 // and decrements*).
 // DUMP-LABEL: function 'unref_post':
-// DUMP: summary: o: freed(free),share; o->rc: read|written; stores{} returns{} requires{o} decrements{o->rc} counts{o->rc}
+// DUMP: release *param0 free may when always
 static void unref_post(struct obj *o) {
   if (o->rc-- == 1)
     free(o);
 }
 // DUMP-LABEL: function 'unref_atomic':
-// DUMP: summary: o: freed(free),share; o->rc: read|written; stores{} returns{} requires{o} decrements{o->rc} counts{o->rc}
+// DUMP: release *param0 free may when always
 static void unref_atomic(struct obj *o) {
   if (__atomic_fetch_sub(&o->rc, 1, __ATOMIC_ACQ_REL) == 1)
     free(o);
 }
 // DUMP-LABEL: function 'unref_sync':
-// DUMP: summary: o: freed(free),share; o->rc: read|written; stores{} returns{} requires{o} decrements{o->rc} counts{o->rc}
+// DUMP: release *param0 free may when always
 static void unref_sync(struct obj *o) {
   if (__sync_sub_and_fetch(&o->rc, 1) == 0)
     free(o);
@@ -63,7 +66,7 @@ static void unref_sync(struct obj *o) {
 
 // A free not guarded by the count reaching zero is a plain free.
 // DUMP-LABEL: function 'not_a_release':
-// DUMP: summary: o: freed(free); o->rc: read|written; stores{} returns{} requires{o} decrements{o->rc}
+// DUMP: release *param0 free when always
 static void not_a_release(struct obj *o) {
   o->rc--;
   free(o);
@@ -100,14 +103,21 @@ int stored_share(struct holder *h) {
 
 // Clean: a share retained on a parameter is the caller's business; a
 // release of a share this function does not own is a discipline.
+// Without RFC 0010 count inference the object engine gives a possible use
+// after free here: a warning on correct code (RFC 0031 §5.5;
+// test/cases/KNOWN-DIFFERENCES.md, *Lit tests*).
 void keep(struct obj *o) { obj_ref(o); }
 int retained_then_released(struct obj *o) {
   obj_ref(o);
   obj_unref(o);
+  // CHECK: rfc0010-refcount.c:[[@LINE+1]]:10: warning: use of 'o' after it may have been freed [weavec::use-after-free]
   return o->rc;
 }
 
-// Bugs.
+// Bugs. The counts below are known where each call is made, so each call is
+// analysed with them (RFC 0031 §6.6, *Amendment (numeric contexts)*) and the
+// releases are definite frees: the third unref's first access of the freed
+// object is its read of `o->rc`, a use before the second release.
 int one_release_too_many(void) {
   struct obj *a = obj_new();
   if (!a)
@@ -115,9 +125,9 @@ int one_release_too_many(void) {
   obj_ref(a);
   obj_unref(a);
   obj_unref(a);
-  // CHECK: rfc0010-refcount.c:[[@LINE+1]]:3: error: 'a' is released twice [weavec::double-free]
+  // CHECK: rfc0010-refcount.c:[[@LINE+1]]:13: error: use of 'a' after it was freed [weavec::use-after-free]
   obj_unref(a);
-  // CHECK: rfc0010-refcount.c:[[@LINE-3]]:3: note: previously released here
+  // CHECK: rfc0010-refcount.c:[[@LINE-3]]:3: note: freed here
   return 0;
 }
 
@@ -126,15 +136,20 @@ int use_after_last(void) {
   if (!a)
     return -1;
   obj_unref(a);
-  // CHECK: rfc0010-refcount.c:[[@LINE+1]]:10: error: use of 'a' after its reference was released [weavec::use-after-free]
+  // CHECK: rfc0010-refcount.c:[[@LINE+1]]:10: error: use of 'a' after it was freed [weavec::use-after-free]
   return a->rc;
-  // CHECK: rfc0010-refcount.c:[[@LINE-3]]:3: note: reference released here
+  // CHECK: rfc0010-refcount.c:[[@LINE-3]]:3: note: freed here
 }
 
+// The old engine reported a definite use after the share release. Without
+// count inference the object engine reports a possible use after free: an
+// error became a warning, the facet is still not proven (RFC 0031 §5.5;
+// test/cases/KNOWN-DIFFERENCES.md, *Lit tests*).
 int released_borrow(struct obj *o) {
   obj_unref(o);
-  // CHECK: rfc0010-refcount.c:[[@LINE+1]]:10: error: use of 'o' after its reference was released [weavec::use-after-free]
+  // CHECK: rfc0010-refcount.c:[[@LINE+1]]:10: warning: use of 'o' after it may have been freed [weavec::use-after-free]
   return o->rc;
+  // CHECK: rfc0010-refcount.c:[[@LINE-3]]:3: note: freed here on some paths
 }
 
 int plain_free_kills_shares(void) {
@@ -142,8 +157,9 @@ int plain_free_kills_shares(void) {
   if (!a)
     return -1;
   struct obj *b = obj_ref(a);
-  // RFC 0013: obj_new's owned name is visible through the result.
-  // CHECK: rfc0010-refcount.c:[[@LINE+1]]:3: warning: 'a->name' is leaked when 'a' is freed [weavec::leak]
+  // RFC 0013: obj_new's owned name is visible through the result; the object
+  // engine names it by the call that made it (RFC 0031 §5.8, §5.11).
+  // CHECK: rfc0010-refcount.c:[[@LINE+1]]:3: warning: result of 'obj_new' is leaked [weavec::leak]
   free(a);
   // CHECK: rfc0010-refcount.c:[[@LINE+1]]:10: error: use of 'b' after it was freed [weavec::use-after-free]
   return b->rc;
@@ -159,17 +175,22 @@ int caller_loses_share(void) {
     return -1;
   keep(a);
   obj_unref(a);
-  // CHECK: rfc0010-refcount.c:[[@LINE+1]]:10: warning: 'a' is leaked [weavec::leak]
+  // `a` keeps the share `keep` took, and with it `a->name`, which the object
+  // engine reports too (the second leak, named by the call that made it).
+  // CHECK: rfc0010-refcount.c:[[@LINE+2]]:10: warning: 'a' is leaked [weavec::leak]
+  // CHECK: rfc0010-refcount.c:[[@LINE+1]]:10: warning: result of 'obj_new' is leaked [weavec::leak]
   return 0;
 }
 struct list {
   struct obj *head;
 };
+// The old engine reported `'p' is leaked` (note: reference taken here) at the
+// `obj_ref`. The object engine does not infer the count, so a share taken on
+// a borrowed object is not an owned object and its leak is not reported: a
+// lost warning (RFC 0031 §5.5; test/cases/KNOWN-DIFFERENCES.md, *Lit tests*).
 void local_retained(struct list *l) {
   struct obj *p = l->head;
-  // CHECK: rfc0010-refcount.c:[[@LINE+1]]:3: warning: 'p' is leaked [weavec::leak]
   obj_ref(p);
-  // CHECK: rfc0010-refcount.c:[[@LINE-1]]:3: note: reference taken here
 }
 
 // A field nobody releases through is not a count: no leak.
@@ -182,4 +203,4 @@ void not_a_count(struct sized *s) {
   t->len++;
 }
 
-// CHECK: 3 warnings and 4 errors generated.
+// CHECK: 5 warnings and 3 errors generated.

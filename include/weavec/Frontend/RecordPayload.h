@@ -159,6 +159,9 @@ struct ImportCall {
   std::vector<std::optional<bool>> args = {};
   // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
   std::vector<ArgumentEvidence> evidence = {};
+  /// Where the call is, for the link step's report of a requirement it
+  /// violates (RFC 0030 §13.2 step 5).
+  std::optional<core::SourceLocation> location = std::nullopt;
 
   friend bool operator==(const ImportCall &, const ImportCall &) = default;
 };

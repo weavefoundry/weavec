@@ -8,9 +8,10 @@ The per-RFC validation records and generated results of earlier milestones
 were removed by [RFC 0030](rfcs/0030-prove-or-trap.md); they remain in the
 repository history at tag `v0.10.0`.
 
-## Now: RFC 0030 — Prove or trap (in progress)
+## Done: RFC 0030 — Prove or trap
 
-Design: [RFC 0030 — Prove or trap](rfcs/0030-prove-or-trap.md) (Accepted).
+Design: [RFC 0030 — Prove or trap](rfcs/0030-prove-or-trap.md)
+(Implemented, as amended by RFC 0031).
 One safety semantics: every spatial, null and temporal facet of every
 operation is proven, checked by a runtime check `weavec-cc` inserts, a
 definite violation, or unresolved or trusted with a reason, all recorded in
@@ -46,32 +47,58 @@ section. Checked mode (RFCs 0018–0029) is deleted. The stages land on the
       lazy in the same stage: one record per object, inherited by places
       named after the call, which closed a case where a place first named
       after an unknown call could be proven.
-- [ ] **S8 Link and wrap-up.** Format-28 unit records, the link step
+- [x] **S8 Link and wrap-up.** Format-28 unit records, the link step
       (declaration verification, reliance checks, `unanalyzed-input`), CLI
       cleanup, documentation, RFC statuses and CI wiring.
 
-The RFC becomes Implemented when every acceptance gate (G1–G15, H1–H3)
-passes on the final tree.
+Its open gates G10, G14 and G15 were taken over, and closed, by RFC 0031.
 
-## Next: RFC 0031 — Residual enforcement and precision (planned)
+## Done: RFC 0031 — The object engine
 
-Sized by the ledger's unresolved-reason histogram:
+Design: [RFC 0031 — The object engine](rfcs/0031-object-engine.md)
+(Implemented). Replaced the path-based engine behind the RFC 0030 seam with an
+engine whose facts live on abstract objects and symbolic values, so every
+alias sees every fact by construction, and replaced its summaries (format
+30) and unit records (format 29). It is aimed at the false proofs of
+v0.11.0, the false definite errors measured on eleven held-out projects and
+the analysis-time blow-ups on large files, and it takes over RFC 0030's
+open gates G10, G14 and G15. The stages landed on the
+`rfc0031-object-engine` branch and ship as one change; the decisions made
+while implementing them are recorded in the RFC's *Implementation
+amendments*:
 
-- a replacement engine behind the `SafetyEngine` seam (semantic IR,
-  symbolic heap, relational domain);
-- a temporal runtime backstop: a quarantine allocator, and Arm MTE or Apple
-  MIE where the hardware allows;
-- an ABI-compatible heap-bounds runtime for the residual `unknown-extent`
-  sites, such as header-before-pointer strings and `container_of`;
-- precision where the histogram shows it pays: state machines, guard
-  functions, array cells;
+- [x] **S0 Tests first.** Alias probes, held-out repros, object-domain
+      cases and the held-out corpus configs.
+- [x] **S1 Domain.** Symbols, objects, cells, the zone, distinctness,
+      joins, widening, garbage collection and materialisation, in Core.
+- [x] **S2 Intraprocedural engine** with site decisions and witnesses.
+- [x] **S3 Calls** and format-30 summaries.
+- [x] **S4 Temporal completeness.**
+- [x] **S5 Records and link** (unit record format 29).
+- [x] **S6 Delete** the old engine and its trackers.
+- [x] **S7 Fixes and cost.**
+
+Three numeric targets were not met and are carried forward as future work,
+with what was measured kept as a ratchet (the RFC's *Gates carried forward*
+amendment): the unresolved shares of G6 (to RFC 0032), the build-cost bound
+of G12 (to RFC 0033) and G4's count of possible temporal warnings.
+
+## Next: RFC 0032 — Runtime enforcement (planned)
+
+Sized by the ledger's unresolved-reason histogram once proofs are sound:
+
+- an ABI-compatible allocator with O(1) object lookup, so residual
+  `unknown-extent` facets become checks against the runtime extent;
+- a temporal runtime backstop: liveness checks with a quarantine, and Arm
+  MTE or Apple MIE where the hardware allows;
 - proof-dependency tracking, for a sharper blame property.
 
-## Next: RFC 0032 — Adoption (planned)
+## Next: RFC 0033 — Adoption (planned)
 
-- Format-28 records embedded in object sections, so archives, shared
+- Format-29 records embedded in object sections, so archives, shared
   libraries, ccache and LTO carry them.
-- Fingerprinted baselines and reasoned suppressions.
+- Fingerprinted baselines, reasoned suppressions and waivers for accepted
+  definite errors.
 - `weavec.toml`, with path scoping and API overlays.
 - `weavec suggest --apply` for the ledger's fix-its.
 - A vendored `weavec.h`.

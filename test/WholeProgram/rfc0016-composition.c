@@ -1,5 +1,12 @@
 // RFC 0016: callee operation diagnostics from upstream context requests.
-// RUN: not %weavec --whole-program %s %S/Inputs/rfc0016-callee.c -- 2>&1 | FileCheck %s
+//
+// RFC 0031 §7 *Amendment (cross-unit contexts)*: `bad` passes one object
+// twice, asks the callee's unit for that context, and the callee's unit
+// reports what the context finds there, with a note that another unit made
+// the call.
+//
+// RUN: not %weavec --whole-program --ledger=%t.json %s %S/Inputs/rfc0016-callee.c -- 2>&1 | FileCheck %s
+// RUN: FileCheck --check-prefix=LEDGER %s < %t.json
 #include "../Inputs/prelude.h"
 void release_then_write(char *, char *);
 void write_then_release(char *, char *);
@@ -15,4 +22,13 @@ void good(void) {
 }
 // CHECK: rfc0016-callee.c:4:4: error: use of 'b' after it was freed [weavec::use-after-free]
 // CHECK: rfc0016-callee.c:3:3: note: freed here (through 'a')
+// CHECK: rfc0016-callee.c:2:6: note: called from another unit with related pointer arguments
 // CHECK: 1 error generated.
+// CHECK: weavec: program program: {{.*}}; 1 error, 0 warnings;
+// The callee's row records the violation the context found.
+// LEDGER: "source": "{{.*}}Inputs/rfc0016-callee.c",
+// LEDGER: "line": 4,
+// LEDGER-NEXT: "column": 3,
+// LEDGER-NEXT: "text": "*b",
+// LEDGER: "temporal": {
+// LEDGER-NEXT: "outcome": "violation",

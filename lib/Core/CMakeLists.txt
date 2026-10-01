@@ -4,38 +4,21 @@
 # only is what allows the model to be reused outside the Clang integration.
 weavec_add_library(
   Core
-  SOURCES AliasRelation.cpp
-          AnalysisState.cpp
-          Array.cpp
-          Borrow.cpp
-          CallContext.cpp
-          CallTargets.cpp
-          CheckPlan.cpp
-          CheckedInteger.cpp
+  SOURCES CheckPlan.cpp
           Diagnostic.cpp
+          Effects.cpp
+          EffectsIO.cpp
           FnSlots.cpp
+          Heap.cpp
           Integer.cpp
-          Interface.cpp
           Ledger.cpp
           LibrarySpec.cpp
-          Lifetime.cpp
-          Moves.cpp
-          Nullness.cpp
-          Offset.cpp
           Ownership.cpp
-          Place.cpp
+          Path.cpp
           PointerKind.cpp
-          Raw.cpp
-          Relation.cpp
-          Resource.cpp
-          Scalar.cpp
           Scc.cpp
           SourceLocation.cpp
-          Spatial.cpp
-          Summary.cpp
-          SummaryIO.cpp
-          SummarySteps.cpp
-          Traversal.cpp)
+          Zone.cpp)
 
 # RFC 0030 §8: the library table is embedded in the library as a byte array.
 # Generated at configure time; CMAKE_CONFIGURE_DEPENDS re-runs the configure

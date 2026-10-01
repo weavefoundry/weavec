@@ -157,6 +157,9 @@ int filled_by_unchecked_code(void) {
 }
 
 // A pointer that a callee's outcome makes non-null: the `notnull` fact.
+// `open_node`'s allocation was never made on its zero class and is non-null
+// on the other (RFC 0031 §6.3, `absent-on`): the failing branch leaks
+// nothing.
 static int open_node(struct node **out) {
   *out = malloc(sizeof **out);
   return *out != NULL;
@@ -196,23 +199,30 @@ void truncate_to(struct buf *b, unsigned n) {
   b->data[n] = 0;
 }
 
-// The summary vocabulary: `requires{...}`, `null` among the returns, and
-// `null{...}` / `notnull{...}` per outcome class (RFC 0008, *Summary text
-// format*).
+// The summary vocabulary (RFC 0031 §6.1, format 30): `nonnull-on` per
+// result class for a parameter the function dereferences (the old
+// `requires{...}`), a `maybe-null` result or store (the old `null` among the
+// returns), and effects and stores per result class.
 // DUMP: function 'value_of':
-// DUMP: summary: n->value: read; stores{} returns{} requires{n}
+// DUMP: nonnull-on zero param0
+// DUMP-NEXT: nonnull-on positive param0
+// DUMP-NEXT: nonnull-on negative param0
 // DUMP: function 'make':
-// DUMP: summary: stores{} returns{fresh(free) extent=16, null}
+// DUMP: result fresh#0 free extent 16 zeroed maybe-null when null nonnull
 // DUMP: function 'redundant_tests':
-// DUMP: summary: n->next: read; n->next->value: read; n->value: read|written; stores{} returns{}
+// DUMP: result int [0, 0] when zero
+// DUMP-NOT: nonnull-on zero
 // DUMP: function 'open_node':
-// DUMP: summary: *out: read|written; stores{*out = fresh(free) extent=16, *out = null} returns{} requires{out} outcome zero{} null{*out} outcome positive{} notnull{*out}
+// DUMP: store *param0 := fresh#0 free extent 16 zeroed maybe-null
+// DUMP: nonnull-on zero param0
 // DUMP: function 'grow':
-// DUMP: summary: b->data: written|moved(free)|replaced when[n positive|negative, u64(n) in u64:1-4294967295]; b->len: read|written; stores{b->data = fresh(free) extent=n when[n positive|negative, u64(n) in u64:1-4294967295]} returns{} requires{b} outcome zero{b->data: moved(free) replaced when[n positive|negative, u64(n) in u64:1-4294967295]} stored{b->data} outcome negative{} null{b->data} stored{} facts{b->len range(u32:0-4294967294)}
-// RFC 0017: n > b->len excludes zero; assigning len does not resize the snapshot.
-// DUMP-NEXT: heap b->data complete{result = fresh(free) extent=n when[n positive|negative, n gt b->len]}
+// DUMP: result int [-1, -1] when negative
+// DUMP: move *param0->data free may when result zero
+// The replacement is stored only once `realloc` succeeded: not maybe-null.
+// DUMP-NOT: maybe-null
+// DUMP: store param0->data := fresh#0 free extent param1{{( zeroed)?}} may{{$}}
 // DUMP: function 'truncate_to':
 // DUMP-NOT: maybe-null
-// DUMP: summary: b->data: read|written|moved(free)|replaced;
+// DUMP: move *param0->data free may when always
 
 // CHECK: 3 errors generated.

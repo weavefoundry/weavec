@@ -73,13 +73,13 @@ with a few deliberate deviations, all enforced by `.clang-format` / `.clang-tidy
 | Element                 | Convention             | Example                         |
 | ----------------------- | ---------------------- | ------------------------------- |
 | Namespaces              | `lower_case`           | `weavec::core`                  |
-| Types                   | `CamelCase`            | `BorrowState`, `PlaceId`        |
-| Functions and methods   | `camelBack`            | `addLoan`, `toCoreLocation`     |
+| Types                   | `CamelCase`            | `HeapState`, `ObjectId`         |
+| Functions and methods   | `camelBack`            | `addressOf`, `toCoreLocation`   |
 | Variables and members   | `camelBack`            | `placeOf`, `tracker`            |
 | Enumerators             | `CamelCase`            | `OwnershipKind::Shared`         |
 | Compile-time constants  | `CamelCase`            | `diag::UseAfterFree`, `Prelude` |
 | Macros                  | `UPPER_CASE`           | `WEAVEC_OWNED`                  |
-| Header guards           | `WEAVEC_<PATH>_H`      | `WEAVEC_CORE_BORROW_H`          |
+| Header guards           | `WEAVEC_<PATH>_H`      | `WEAVEC_CORE_HEAP_H`            |
 
 Additional rules:
 

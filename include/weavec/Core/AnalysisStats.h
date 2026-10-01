@@ -23,6 +23,11 @@ struct AnalysisStats {
   void add(std::string_view name, std::uint64_t count = 1) {
     counters[std::string(name)] += count;
   }
+  /// Raises the counter `name` to `value` (a maximum).
+  void atLeast(std::string_view name, std::uint64_t value) {
+    std::uint64_t &counter = counters[std::string(name)];
+    counter = counter < value ? value : counter;
+  }
   [[nodiscard]] std::uint64_t count(std::string_view name) const {
     const auto it = counters.find(name);
     return it == counters.end() ? 0 : it->second;

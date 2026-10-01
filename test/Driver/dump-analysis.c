@@ -1,6 +1,9 @@
-// --dump-analysis prints the inferred places and exit state per function.
-// The format is a debugging aid and may change; this pins only its shape.
+// --dump-analysis prints each analysed function's format-30 summary
+// (RFC 0031 §6.1, *Summary format 30*). The format is a debugging aid and may
+// change; this pins only its shape and the facts each function is about.
 // RUN: %weavec --dump-analysis %s -- | FileCheck %s
+// RUN: %weavec --ledger=%t.json %s --
+// RUN: FileCheck --check-prefix=LEDGER %s < %t.json
 // RUN: %weavec --help | FileCheck --check-prefix=HELP %s
 #include "../Inputs/prelude.h"
 
@@ -8,13 +11,14 @@ struct s {
   int *buf;
 };
 
-// The release under `if (c)` is guarded by `c` being non-zero, in the state
-// and in the summary's `when` clause (RFC 0009).
+// The release under `if (c)` is guarded by `c` being non-zero: the summary
+// keys it by the parameter's zero test (RFC 0009; RFC 0031 *Pending cases
+// and exit splitting*: no result class separates it, so it is `lossy`).
 // CHECK-LABEL: function 'f':
-// CHECK-NEXT: places:{{.*}}p (param, unknown){{.*}}a (local, mutable)
-// CHECK-NEXT: lifetimes:{{.*}}caller
-// CHECK-NEXT: exit: moved{p->buf@[[@LINE+6]]:{{[0-9]+}} freed(free) when[c positive|negative]} loans{} aliases{} raw{} owned{}
-// CHECK-NEXT: summary: p->buf: freed(free) when[c positive|negative]; stores{} returns{}
+// CHECK-NEXT: summary:
+// CHECK-NEXT: always-returns
+// CHECK-NEXT: release *param0->buf free lossy may when param 1 !=0
+// CHECK-NOT: release
 void f(struct s *p, int c) {
   int x = 0;
   int *a = &x;
@@ -23,34 +27,43 @@ void f(struct s *p, int c) {
   use(a);
 }
 
+// A function with no effects has a summary of one line.
 // CHECK-LABEL: function 'g':
-// CHECK: exit: moved{} loans{} aliases{} raw{} owned{}
-// CHECK-NEXT: summary: stores{} returns{}
+// CHECK-NEXT: summary:
+// CHECK-NEXT: always-returns
+// CHECK-NOT: {{[a-z]}}
 void g(void) {}
 
-// The summary is the function's interface as inferred (RFC 0003); owned
-// resources and their release family show in the exit state (RFC 0007), and
-// what is known about nullness in `nulls{}` (RFC 0008): the unchecked
-// `malloc` result may be null, so the store may be null too, and reading
-// `p->buf` requires `p` (and proves it non-null from there on). Its spatial
-// facet is proven by `p`'s Single default (RFC 0030 §7.3), a lower bound of
-// one `struct s`.
+// The summary is the function's interface as inferred (RFC 0003): the
+// unchecked `malloc` result stored in `gp` is a fresh object of the `free`
+// family with an extent of 4 bytes that may be null (RFC 0007, RFC 0008);
+// the result is a copy of `p->buf`, and every exit dereferenced `p`.
 // CHECK-LABEL: function 'h':
-// CHECK: exit: moved{} loans{} aliases{} raw{} owned{gp@[[@LINE+5]]:{{[0-9]+}} allocated free} nulls{p@[[@LINE+6]]:{{[0-9]+}} nonnull, gp@[[@LINE+5]]:{{[0-9]+}} maybe-null}
-// CHECK-NEXT: spatial: proven=1 violation=0 unresolved=0
-// CHECK-NEXT: summary: p->buf: read; stores{gp = fresh(free) extent=4, gp = null} returns{copy p->buf} requires{p}
+// CHECK-NEXT: summary:
+// CHECK-NEXT: always-returns
+// CHECK-NEXT: result path param0->buf when null nonnull
+// CHECK-NEXT: store global0 := fresh#0 free extent 4{{.*}} maybe-null
+// CHECK-NEXT: nonnull-on null param0
+// CHECK-NEXT: nonnull-on nonnull param0
+// Reading `p->buf` is spatially proven by `p`'s Single default (RFC 0030
+// §7.3), a lower bound of one `struct s`.
+// LEDGER: "name": "h",
+// LEDGER: "kind": "deref",
+// LEDGER-NEXT: "line": [[@LINE+7]],
+// LEDGER: "text": "p->buf",
+// LEDGER: "spatial": {
+// LEDGER-NEXT: "outcome": "proven",
 static int *gp;
 int *h(struct s *p) {
   gp = malloc(4);
   return p->buf;
 }
 
-// Raw places show their kind, the raw component says why (RFC 0004), and
-// `raw` is a value source in the summary.
+// A pointer made from an integer is a raw value in the summary (RFC 0004).
 // CHECK-LABEL: function 'launder':
-// CHECK-NEXT: places:{{.*}}r (param, raw)
-// CHECK: exit: moved{} loans{} aliases{} raw{r@[[@LINE+3]]:{{[0-9]+}} integer-cast} owned{}
-// CHECK-NEXT: summary: stores{} returns{raw}
+// CHECK-NEXT: summary:
+// CHECK-NEXT: always-returns
+// CHECK-NEXT: result unknown raw maybe-null when null nonnull
 char *launder(char *r, unsigned long x) {
   r = (char *)x;
   return r;

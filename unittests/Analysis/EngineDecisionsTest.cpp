@@ -78,10 +78,11 @@ struct Piped {
 };
 } // namespace
 
-static Piped pipe(const test::CollectedUnit &unit) {
+static Piped pipe(const test::CollectedUnit &unit,
+                  const UnitPipelineOptions &options = {}) {
   core::DiagnosticCollector collected;
   const UnitPipelineResult result =
-      runUnitAnalysis(unit.context(), UnitPipelineOptions{}, collected);
+      runUnitAnalysis(unit.context(), options, collected);
   Piped out;
   for (const core::Diagnostic &d : collected.diagnostics())
     out.diagnostics.push_back(std::to_string(d.location.line) + ": " +
@@ -109,7 +110,8 @@ TEST(EngineDecisions, InteriorAndConsumedAccessesAreDecided) {
   const auto unit = collectUnit(R"c(
 struct vec { int *items; int n; };
 int at(struct vec *v, int i) { return v->items[i]; }
-void drop(char **a, int i) { free(a[i]); }
+void drop(char **a, unsigned i) { free(a[i]); }
+void dropSigned(char **a, int i) { free(a[i]); }
 int local(void) { struct vec v = {0, 0}; struct vec *p = &v; return p->n; }
 )c");
   const Piped piped = pipe(unit);
@@ -122,6 +124,11 @@ int local(void) { struct vec v = {0, 0}; struct vec *p = &v; return p->n; }
             "v->items spatial=proven null=checked:nonnull temporal=proven");
   EXPECT_EQ(row(piped, "drop", "a[i]"),
             "a[i] spatial=trusted/caller-contract null=checked:nonnull "
+            "temporal=proven");
+  // RFC 0017 §5: a count bounds an index from above only; `dropSigned(a,
+  // -1)` meets `counted(0)` and still reads before `a`.
+  EXPECT_EQ(row(piped, "dropSigned", "a[i]"),
+            "a[i] spatial=unresolved/unknown-extent null=checked:nonnull "
             "temporal=proven");
   EXPECT_EQ(row(piped, "local", "p->n"),
             "p->n spatial=proven null=proven temporal=proven");
@@ -168,12 +175,14 @@ void none(char *d, const char *s) { memcpy(d, s, 0); }
   const Piped piped = pipe(unit);
   EXPECT_TRUE(piped.diagnostics.empty())
       << ::testing::PrintToString(piped.diagnostics);
-  // The destination is checked against its 16 bytes, the source's extent is
-  // unknown, and the two may overlap: a checked record is planned even when
-  // another requirement of the call is unresolved (§2.5).
+  // The destination is checked against its 16 bytes and the source's
+  // extent is unknown: a checked record is planned even when another
+  // requirement of the call is unresolved (§2.5). The two cannot overlap:
+  // `buf` is this activation's own storage, which no caller's pointer
+  // reaches (RFC 0031 §4.5 D4).
   EXPECT_EQ(row(piped, "copy", "memcpy(buf,src,n)"),
             "memcpy(buf,src,n) spatial=unresolved/unknown-extent{"
-            "a0=checked:len,a1=unresolved/unknown-extent,a0=checked:disjoint} "
+            "a0=checked:len,a1=unresolved/unknown-extent,a0=proven} "
             "null=checked:nonnull{a1=checked:nonnull} temporal=proven");
   // Arrays in scope have no null or temporal facet (§2.1).
   EXPECT_EQ(row(piped, "fits", "strcpy(buf,\"hello\")"),
@@ -284,15 +293,19 @@ int flat(void) {
 char bytes(void) { int a[10] = {0}; char *c = (char *)(a + 2); return c[35]; }
 )c");
   const Piped piped = pipe(unit);
-  EXPECT_TRUE(piped.diagnostics.empty())
-      << ::testing::PrintToString(piped.diagnostics);
+  // `c` starts 8 bytes into `a`'s 40, so `c[35]` reaches byte 44: the
+  // object engine's byte offsets make it definite (RFC 0031 §5.2).
+  EXPECT_EQ(piped.diagnostics,
+            (Lines{"8: error: 'c[35]' is out of bounds: index 35 of an object "
+                   "of 40 bytes"}));
   EXPECT_EQ(row(piped, "walk", "p[i]"),
             "p[i] spatial=checked:span null=proven temporal=proven");
+  // `k < 12` keeps `q` within the 48 bytes of `m`, the complete object
+  // (RFC 0030 §7.4): proven.
   EXPECT_EQ(row(piped, "flat", "q[k]"),
-            "q[k] spatial=checked:span null=proven temporal=proven");
-  // Not proven from `a`'s element offset in chars; the span measures it.
+            "q[k] spatial=proven null=proven temporal=proven");
   EXPECT_EQ(row(piped, "bytes", "c[35]"),
-            "c[35] spatial=checked:span null=proven temporal=proven");
+            "c[35] spatial=violation null=proven temporal=proven");
 }
 
 // §7.4: a trailing array member is flexible whatever its bound; a pointer
@@ -315,13 +328,18 @@ void flexible(int n) { struct fixed *b = malloc(sizeof *b + 4 * (size_t)n); if (
                    "object of 16 bytes"}));
   EXPECT_EQ(row(piped, "trailing", "b->data[2]"),
             "b->data[2] spatial=proven temporal=proven");
+  // (`g` was tested, and `g->items` is an address inside it: non-null.)
   EXPECT_EQ(row(piped, "decayed", "p[4]"),
-            "p[4] spatial=proven null=checked:nonnull temporal=proven");
+            "p[4] spatial=proven null=proven temporal=proven");
   EXPECT_EQ(row(piped, "member", "p[1]"),
             "p[1] spatial=proven null=proven temporal=proven");
-  // The flexible member's elements up to the end of the allocation.
+  // The flexible member's elements up to the end of the allocation. The
+  // extent `sizeof *b + 4 * (size_t)n` goes through a conversion of `n`,
+  // which no witness spells yet: no check can be planned, so the facet is
+  // unresolved, never proven (KNOWN-DIFFERENCES.md, *Unit tests*; with a
+  // `size_t` count it is checked).
   EXPECT_EQ(row(piped, "flexible", "b->data[5]"),
-            "b->data[5] spatial=checked:index temporal=proven");
+            "b->data[5] spatial=unresolved/inexpressible temporal=proven");
 }
 
 // -- RFC 0030 §8, §5.3: the library table in the engine (S4) ----------------
@@ -586,10 +604,14 @@ int append(struct buf *b, size_t len) {
   return b->data[1];
 }
 )c");
-  const Piped piped = pipe(unit);
+  // (Without zero-initialisation, whose wrapper never asks for zero bytes.)
+  UnitPipelineOptions plain;
+  plain.engine.zeroInit = false;
+  const Piped piped = pipe(unit, plain);
   EXPECT_EQ(piped.diagnostics,
             (Lines{"8: warning: use of 'b->data' after it may have been "
                    "freed"}));
+  EXPECT_EQ(pipe(unit).diagnostics, Lines{});
 }
 
 // §8.2: an exported zero-size release is a guarded consume of the null
@@ -622,9 +644,15 @@ int stale_void(struct vec *v) {
 }
 )c");
   const Piped piped = pipe(unit);
+  // `grow` returns nothing to test: its caller cannot tell the moving
+  // class from the failing one, which keeps the block (the size, 400, is
+  // not zero, which the call's numeric context shows, so the block is not
+  // freed), so the use after it is possible (RFC 0031 §6.1: a void
+  // function's exits join into possible effects).
   EXPECT_EQ(piped.diagnostics,
             (Lines{"18: error: use of 'first' after it was moved",
-                   "23: error: use of 'first' after it was moved"}));
+                   "23: warning: use of 'first' after it may have been "
+                   "moved"}));
 }
 
 } // namespace

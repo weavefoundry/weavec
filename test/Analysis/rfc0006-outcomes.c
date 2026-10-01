@@ -4,8 +4,8 @@
 // the edge where it did not happen. `realloc` is the library instance: it
 // moves its argument on the non-null class and, when the size is zero, on
 // the null class as well (RFC 0030 §8.2).
-// RUN: %weavec %s -- 2>&1 | FileCheck %s
-// RUN: %weavec --dump-analysis %s -- 2>&1 | FileCheck --check-prefix=DUMP %s
+// RUN: not %weavec %s -- 2>&1 | FileCheck %s
+// RUN: not %weavec --dump-analysis %s -- 2>&1 | FileCheck --check-prefix=DUMP %s
 #include "../Inputs/prelude.h"
 
 struct node {
@@ -20,9 +20,13 @@ static int try_take(struct node *n, int c) {
   }
   return -1;
 }
-// DUMP: function 'try_take':
-// The release happens only when `c` is non-zero: RFC 0009 records the guard.
-// DUMP: summary: n: freed(free) when[c positive|negative]; stores{} returns{} outcome zero{n: freed(free) when[c positive|negative]} outcome negative{}
+// The release happens only when `c` is non-zero: each result class carries
+// the parameter test its exits pass, and the release is keyed by the class
+// (RFC 0031 §6.1 and *Implementation amendments*, *Pending cases*).
+// DUMP-LABEL: function 'try_take':
+// DUMP: result int [-1, -1] when negative and param 1 =0
+// DUMP-NEXT: result int [0, 0] when zero and param 1 !=0
+// DUMP-NEXT: release *param0 free when result zero
 
 // Consumes `p` only when it returns non-null (a `realloc` wrapper).
 static char *grow(char *p, size_t n) {
@@ -31,10 +35,15 @@ static char *grow(char *p, size_t n) {
     return NULL;
   return q;
 }
-// DUMP: function 'grow':
-// DUMP: summary: p: moved(free); stores{} returns{fresh(free) extent=n, null} outcome null{p: moved(free) when[n zero]} outcome nonnull{p: moved(free)}
-// DUMP: function 'guarded':
-// DUMP: summary: n: freed(free); stores{} returns{}
+// `realloc` moves its argument into the result on the nonnull class; on the
+// null class it keeps it (the zero-initialisation wrapper never asks for
+// zero bytes, RFC 0031 *Implementation amendments*).
+// DUMP-LABEL: function 'grow':
+// DUMP: result null when null
+// DUMP-NEXT: result fresh#0 free extent param1 zeroed when nonnull
+// DUMP-NEXT: move *param0 free when result nonnull
+// DUMP-LABEL: function 'guarded':
+// DUMP: release *param0 free when always
 
 // Clean: the test selects the class that did not consume.
 void guarded(struct node *n, int c) {
@@ -87,8 +96,13 @@ static char *resize(struct table *t, size_t n) {
     return t->array;
   return realloc(t->array, n);
 }
-// DUMP: function 'resize':
-// DUMP: summary: t->array: read|moved(free) when[n ne t->n]; t->n: read; stores{} returns{fresh(free) extent=n when[n ne t->n], copy t->array when[n eq t->n], null when[n ne t->n]} requires{t} outcome null{t->array: moved(free) when[n zero, n ne t->n]} outcome nonnull{t->array: moved(free) when[n ne t->n]}
+// The result is the fresh block, null, or `t->array` itself; the move of
+// `t->array` is keyed by the result class, and possible because the
+// `n == t->n` exit returns the array unmoved.
+// DUMP-LABEL: function 'resize':
+// DUMP: result fresh#0 free extent param1 zeroed when nonnull and param 0 !=0
+// DUMP-NEXT: result path param0->array when null nonnull and param 0 !=0
+// DUMP-NEXT: move *param0->array free may when result nonnull
 
 void resized(struct table *t, size_t n) {
   char *na = resize(t, n);
@@ -101,8 +115,10 @@ void resized(struct table *t, size_t n) {
 // Reported: the selected class consumed, or nothing was tested.
 void wrong_branch(struct node *n, int c) {
   int rc = try_take(n, c);
+  // `try_take` returns 0 only after freeing `n`, so on this edge the release
+  // is certain (RFC 0031 §6.3, the result class selects the effect).
   if (rc == 0)
-    // CHECK: rfc0006-outcomes.c:[[@LINE+1]]:9: warning: use of 'n' after it may have been freed [weavec::use-after-free]
+    // CHECK: rfc0006-outcomes.c:[[@LINE+1]]:9: error: use of 'n' after it was freed [weavec::use-after-free]
     use(n);
 }
 
@@ -124,10 +140,12 @@ void result_overwritten(char *p) {
   char *q = realloc(p, 8);
   // CHECK: rfc0006-outcomes.c:[[@LINE+1]]:3: warning: 'q' is leaked: it is overwritten without being released [weavec::leak]
   q = malloc(2);
-  // CHECK: rfc0006-outcomes.c:[[@LINE+1]]:3: warning: 'q' is leaked [weavec::leak]
+  // Reported at the branch that takes the leaking path (RFC 0031
+  // *Implementation amendments*, *Leaks on some paths*).
+  // CHECK: rfc0006-outcomes.c:[[@LINE+1]]:7: warning: 'q' is leaked [weavec::leak]
   if (q == NULL)
     // CHECK: rfc0006-outcomes.c:[[@LINE+1]]:5: warning: use of 'p' after it may have been moved [weavec::use-after-move]
     free(p);
 }
 
-// CHECK: 7 warnings generated.
+// CHECK: 6 warnings and 1 error generated.

@@ -23,6 +23,7 @@
 #include "clang/Frontend/CompilerInstance.h"
 #include "clang/Frontend/TextDiagnosticPrinter.h"
 
+#include <algorithm>
 #include <array>
 #include <string_view>
 #include <utility>
@@ -114,15 +115,19 @@ UnitResult analyzeTranslationUnit(clang::ASTContext &context,
   // RFC 0030 §1 steps 2 and 3: kinds, sites, the engine through the ledger
   // adapter, planning; the diagnostics come back in the engine's order.
   UnitResult result;
+  // As Clang's own analyzer does: a unit that failed to parse is not
+  // analysed (its records may have no layout).
+  if (diagnostics.hasUncompilableErrorOccurred()) {
+    result.errors = 1;
+    return result;
+  }
   analysis::UnitPipelineOptions pipeline;
-  pipeline.engine.analysis = options.analysis;
+  pipeline.engine = options.engine;
   // RFC 0030 §5.5: the budget the ledger records is the one the engine
   // counts against.
   pipeline.engine.budget = options.config.budget;
-  pipeline.engine.zeroInit = options.analysis.zeroInit;
-  pipeline.engine.strictAliasing = options.analysis.strictAliasing;
   if (options.silent)
-    pipeline.engine.analysis.dumpStream = nullptr;
+    pipeline.engine.dumpStream = nullptr;
   // RFC 0030 §5.6: every emitted function is analysed and reported, those
   // of user headers included (the engine asks the unit's sites); a silent
   // round reports nothing.
@@ -130,8 +135,6 @@ UnitResult analyzeTranslationUnit(clang::ASTContext &context,
     pipeline.engine.shouldReport = [](const clang::FunctionDecl &) {
       return false;
     };
-  if (options.database != nullptr)
-    pipeline.engine.dependencies = &result.dependencies;
   pipeline.database = options.database;
   pipeline.discoverOnly = options.discoverOnly;
   pipeline.config = options.config;
@@ -142,6 +145,13 @@ UnitResult analyzeTranslationUnit(clang::ASTContext &context,
       analysis::runUnitAnalysis(context, pipeline, collected);
   result.exports = std::move(unit.exports);
   result.ledger = std::move(unit.ledger);
+  if (options.holdFor && !options.silent)
+    result.held =
+        std::ranges::any_of(result.exports.contextRequests, options.holdFor);
+  if (result.held) {
+    result.ledger = nullptr;
+    return result;
+  }
   if (options.discoverOnly) {
     // RFC 0030 §13.2 step 2: the whole-program driver solves the slots of
     // every unit before it analyses any.
@@ -268,12 +278,11 @@ class WeaveCConsumer final : public clang::ASTConsumer {
 public:
   WeaveCConsumer(clang::CompilerInstance &compiler, FrontendOptions opts)
       : compiler(compiler), options(std::move(opts)) {
-    if (options.analysis.stats)
-      options.analysis.stats->add("unit_parses");
+    if (options.engine.stats)
+      options.engine.stats->add("unit_parses");
     // RFC 0030 §3.1: under `-fno-strict-aliasing` any two pointee types may
     // designate one object.
-    options.analysis.strictAliasing =
-        !compiler.getCodeGenOpts().RelaxedAliasing;
+    options.engine.strictAliasing = !compiler.getCodeGenOpts().RelaxedAliasing;
   }
   void HandleTranslationUnit(clang::ASTContext &context) override {
     auto result =

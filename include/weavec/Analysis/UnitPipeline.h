@@ -13,8 +13,8 @@
 //     completes the kinds (§7.3–§7.6) (`UnitKinds::build`); the problems
 //     the declarations have are the first diagnostics;
 //   - `SiteCollector` enumerates the sites of every emitted function (§2.6);
-//   - the engine (`DataflowEngine`) runs through `LedgerAdapter`, seeded by
-//     the kinds (§15 item 14);
+//   - the engine (`ObjectEngine`, RFC 0031) runs through `LedgerAdapter`,
+//     seeded by the kinds (§15 item 14);
 //   - `LedgerAdapter::finish` fills the defaults, applies the ledger-side
 //     rules and plans the checks;
 //   - the diagnostics are reported to the caller's sink in the order the

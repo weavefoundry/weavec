@@ -2,7 +2,9 @@
 // offsets*: `i <= n - 1` and `j = i + 1` are relations with an offset, `i >=
 // 8` is a lower bound, and both decide bounds checks.
 // RUN: not %weavec %s -- -ferror-limit=0 2>&1 | FileCheck %s
-// RUN: not %weavec --dump-analysis %s -- 2>/dev/null | FileCheck --check-prefix=DUMP %s
+// `--dump-analysis` printed the old engine's exit relations; the object
+// engine's dump is the format-30 summary (RFC 0031 §6.1), which has no state
+// of by-value parameters, so `bound` below checks its bound by an access.
 #include "../Inputs/prelude.h"
 
 // -- Offsets ------------------------------------------------------------------
@@ -41,7 +43,6 @@ void copies(size_t n, size_t i) {
 
 // -- Lower bounds -------------------------------------------------------------
 
-// DUMP-LABEL: function 'lower':
 void lower(size_t i) {
   char buf[8];
   if (i >= 8)
@@ -62,10 +63,11 @@ void lower(size_t i) {
 }
 
 // The bound is in the state: `i >= 8` on the edge where `i < 8` fails (the
-// other path never returns, so the exit state is that edge's).
-// DUMP-LABEL: function 'bound':
-// DUMP: relations{i >= 8}
+// other path never returns, so the state after the test is that edge's).
 void bound(size_t i) {
+  char buf[8];
   if (i < 8)
     __builtin_trap();
+  // CHECK: rfc0012-relations.c:[[@LINE+1]]:3: error: 'buf[i]' is out of bounds: 'i' is at least 8 in an object of 8 bytes [weavec::out-of-bounds]
+  buf[i] = 0;
 }

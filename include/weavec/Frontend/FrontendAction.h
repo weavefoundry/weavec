@@ -16,8 +16,8 @@
 #ifndef WEAVEC_FRONTEND_FRONTENDACTION_H
 #define WEAVEC_FRONTEND_FRONTENDACTION_H
 
-#include "weavec/Analysis/FunctionAnalysis.h"
 #include "weavec/Analysis/ProgramDatabase.h"
+#include "weavec/Analysis/SafetyEngine.h"
 #include "weavec/Frontend/DiagnosticControl.h"
 #include "weavec/Frontend/LedgerOutput.h"
 
@@ -47,14 +47,13 @@ struct InterfaceFacts;
 /// What one run of the consumer over a unit produced (RFC 0005).
 struct UnitResult {
   analysis::UnitExports exports;
-  /// The callee summaries the unit's analysis read (RFC 0020), so a cyclic
-  /// component re-runs only the members an export change can affect.
-  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
-  std::set<std::string> dependencies = {};
   /// The diagnostics shown for the unit in this run.
   std::set<ReportedDiagnostic> reported;
   std::size_t errors = 0;
   std::size_t warnings = 0;
+  /// Nothing was reported: the run asked a context `FrontendOptions::holdFor`
+  /// holds for.
+  bool held = false;
   /// RFC 0030: the unit's ledger and check plan (§14); null for a silent or
   /// discovery run.
   // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
@@ -80,7 +79,9 @@ UnitResult analyzeRetainedUnit(clang::ASTUnit &ast,
 
 /// User-configurable behaviour of the frontend action.
 struct FrontendOptions {
-  analysis::AnalysisOptions analysis;
+  /// The engine's options: the dump stream, statistics, the budget,
+  /// zero-initialisation and strict aliasing.
+  analysis::EngineOptions engine;
   // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
   std::string analysisStatsPath = {};
   /// `-W` overrides applied before a diagnostic reaches Clang.
@@ -107,6 +108,11 @@ struct FrontendOptions {
   const std::set<std::string_view> *onlyIds = nullptr;
   /// Analyse but report nothing (a fixpoint round).
   bool silent = false;
+  /// RFC 0031 §7 *Amendment (cross-unit contexts)*: when set, a run that
+  /// asks a context this accepts (one another unit is yet to serve) reports
+  /// nothing and publishes no ledger, and says so in `UnitResult::held`;
+  /// the run after the context is served reports.
+  std::function<bool(const analysis::ContextRequest &)> holdFor;
   /// Collect the unit's definitions, imports and indirect types without
   /// analysing anything; `onResult` receives exports with empty summaries.
   bool discoverOnly = false;

@@ -533,12 +533,12 @@ int main(int argc, const char **argv) {
   }
   weavec::core::AnalysisStats stats;
   weavec::frontend::FrontendOptions options;
-  options.analysis.stats = analysisStatsPath.empty() ? nullptr : &stats;
+  options.engine.stats = analysisStatsPath.empty() ? nullptr : &stats;
   options.analysisStatsPath = analysisStatsPath.getValue();
   if (dumpAnalysis)
-    options.analysis.dumpStream = &llvm::outs();
-  options.analysis.zeroInit = !noZeroInit;
-  options.analysis.budget = budget;
+    options.engine.dumpStream = &llvm::outs();
+  options.engine.zeroInit = !noZeroInit;
+  options.engine.budget = budget;
   options.control = control;
   // §16: the ledger models a `weavec-cc` build with the default checks, and
   // the summary line, always printed, says they are not enforced.
@@ -582,7 +582,7 @@ int main(int argc, const char **argv) {
     const bool finished =
         finishProgram(program, compilations, sources, options);
     const bool statsOK = weavec::frontend::writeAnalysisStats(
-        analysisStatsPath, options.analysis.stats);
+        analysisStatsPath, options.engine.stats);
     return result.ok() && finished && statsOK ? 0 : 1;
   }
 
@@ -595,6 +595,6 @@ int main(int argc, const char **argv) {
   const int status =
       tool.run(weavec::frontend::createWeaveCActionFactory(options).get());
   const bool statsOK = weavec::frontend::writeAnalysisStats(
-      analysisStatsPath, options.analysis.stats);
+      analysisStatsPath, options.engine.stats);
   return status == 0 && statsOK ? 0 : 1;
 }

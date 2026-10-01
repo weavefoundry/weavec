@@ -1,0 +1,802 @@
+//===- EngineLibrary.cpp - Library-call requirements (object engine) ------===//
+//
+// Part of WeaveC, under the Apache License v2.0 with LLVM Exceptions.
+// See LICENSE for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+//
+// RFC 0030 §8 and §3.3, over the object domain (RFC 0031 §5.4): each buffer
+// argument of a `LibrarySpec` row is a requirement record on the call's
+// spatial facet — its need in bytes against what the argument points into —
+// proven, checked with a `len` witness, a violation against an exact
+// extent, or unresolved; `disjoint` rows compare the two ranges.
+//
+//===----------------------------------------------------------------------===//
+
+#include "Engine.h"
+#include "weavec/Analysis/ClangLocation.h"
+
+#include "clang/Basic/SourceManager.h"
+
+using namespace clang;
+
+namespace weavec::analysis::engine {
+
+const Expr &pointedObject(const Expr &argument) {
+  // (`buf` for `&buf[3]` and `buf + 2`.)
+  const Expr *base = argument.IgnoreParenImpCasts();
+  for (int depth = 0; depth < 8; ++depth) {
+    if (const auto *unary = dyn_cast<UnaryOperator>(base);
+        unary != nullptr && unary->getOpcode() == UO_AddrOf) {
+      base = unary->getSubExpr()->IgnoreParenImpCasts();
+      continue;
+    }
+    if (const auto *subscript = dyn_cast<ArraySubscriptExpr>(base)) {
+      base = subscript->getBase()->IgnoreParenImpCasts();
+      continue;
+    }
+    if (const auto *binary = dyn_cast<BinaryOperator>(base);
+        binary != nullptr && binary->isAdditiveOp() &&
+        binary->getLHS()->getType()->isPointerType()) {
+      base = binary->getLHS()->IgnoreParenImpCasts();
+      continue;
+    }
+    break;
+  }
+  return *base;
+}
+
+/// The pointee of an argument before its implicit conversions.
+static std::optional<QualType> accessedElement(const Expr &argument) {
+  QualType type = argument.IgnoreParenImpCasts()->getType();
+  QualType pointee;
+  if (type->isPointerType())
+    pointee = type->getPointeeType();
+  else if (const auto *array = type->getAsArrayTypeUnsafe())
+    pointee = array->getElementType();
+  else
+    return std::nullopt;
+  if (pointee->isVoidType() || pointee->isIncompleteType() ||
+      pointee->isFunctionType() || !pointee->isConstantSizeType())
+    return std::nullopt;
+  return pointee;
+}
+
+static const Expr *rowArgument(const CallExpr &call,
+                               const core::LibraryMatch &match,
+                               unsigned rowArg) {
+  int index = match.callArgument(rowArg);
+  if (index < 0 || static_cast<unsigned>(index) >= call.getNumArgs())
+    return nullptr;
+  return call.getArg(static_cast<unsigned>(index));
+}
+
+/// A row term as C at the call: the arguments as written (§10.3).
+static std::optional<WitnessTerm> libraryTerm(const core::LibTerm &term,
+                                              const CallExpr &call,
+                                              const core::LibraryMatch &match) {
+  auto operand = [&](std::size_t i) -> std::optional<WitnessTerm> {
+    if (i >= term.operands.size())
+      return std::nullopt;
+    return libraryTerm(term.operands[i], call, match);
+  };
+  switch (term.kind) {
+  case core::LibTerm::Kind::Constant:
+    return WitnessTerm::ofConstant(term.value);
+  case core::LibTerm::Kind::Argument:
+    if (const Expr *arg = rowArgument(call, match, term.arg))
+      return WitnessTerm::ofExpr(*arg);
+    return std::nullopt;
+  case core::LibTerm::Kind::StringLength:
+    if (const Expr *arg = rowArgument(call, match, term.arg)) {
+      // A literal's length is a constant (RFC 0012).
+      if (const auto *literal =
+              dyn_cast<StringLiteral>(arg->IgnoreParenImpCasts());
+          literal != nullptr && literal->getCharByteWidth() == 1)
+        return WitnessTerm::ofConstant(static_cast<std::int64_t>(
+            literal->getBytes()
+                .take_until([](char c) { return c == '\0'; })
+                .size()));
+      return WitnessTerm::strLen(WitnessTerm::ofExpr(*arg));
+    }
+    return std::nullopt;
+  case core::LibTerm::Kind::Product:
+  case core::LibTerm::Kind::Sum: {
+    auto lhs = operand(0);
+    auto rhs = operand(1);
+    if (!lhs || !rhs)
+      return std::nullopt;
+    return term.kind == core::LibTerm::Kind::Product
+               ? WitnessTerm::mul(std::move(*lhs), std::move(*rhs))
+               : WitnessTerm::add(std::move(*lhs), std::move(*rhs));
+  }
+  case core::LibTerm::Kind::Difference: {
+    auto lhs = operand(0);
+    if (!lhs)
+      return std::nullopt;
+    return WitnessTerm::sub(std::move(*lhs),
+                            WitnessTerm::ofConstant(term.value));
+  }
+  case core::LibTerm::Kind::FormatLength:
+  case core::LibTerm::Kind::Macro:
+  case core::LibTerm::Kind::Min:
+    return std::nullopt;
+  }
+  return std::nullopt;
+}
+
+/// How a term's value relates to the true one; `None` when it is neither.
+enum class TermBound : std::uint8_t { Exact, AtMost, AtLeast, None };
+
+static TermBound combineBounds(TermBound a, TermBound b) {
+  if (a == b || b == TermBound::Exact)
+    return a;
+  if (a == TermBound::Exact)
+    return b;
+  return TermBound::None;
+}
+
+/// A row term over the call's argument values, with how it relates to the
+/// true value (every row term is monotone in its operands).
+static core::Term valueTerm(Transfer &transfer, const core::LibTerm &term,
+                            const CallExpr &call,
+                            const core::LibraryMatch &match,
+                            const std::vector<core::Sym> &args,
+                            TermBound &bound) {
+  using Kind = core::LibTerm::Kind;
+  auto operand = [&](std::size_t i) {
+    return i < term.operands.size()
+               ? valueTerm(transfer, term.operands[i], call, match, args, bound)
+               : core::Term::unknown();
+  };
+  switch (term.kind) {
+  case Kind::Constant:
+    return core::Term::of(term.value);
+  case Kind::Argument: {
+    int index = match.callArgument(term.arg);
+    if (index < 0 || static_cast<unsigned>(index) >= args.size() ||
+        args[static_cast<unsigned>(index)] == core::ZeroSym)
+      return core::Term::unknown();
+    return transfer.termOf(args[static_cast<unsigned>(index)]);
+  }
+  case Kind::StringLength: {
+    // RFC 0012: the length the string facts give, exactly or at most.
+    int index = match.callArgument(term.arg);
+    if (index < 0 || static_cast<unsigned>(index) >= args.size())
+      return core::Term::unknown();
+    Transfer::StringFacts facts =
+        transfer.stringFacts(args[static_cast<unsigned>(index)]);
+    if (facts.length == Transfer::StringFacts::Length::Unknown)
+      return core::Term::unknown();
+    if (facts.length == Transfer::StringFacts::Length::AtMost)
+      bound = combineBounds(bound, TermBound::AtMost);
+    return facts.term;
+  }
+  case Kind::Product: {
+    core::Term a = operand(0);
+    core::Term b = operand(1);
+    if (!a.known || !b.known)
+      return core::Term::unknown();
+    if (a.isConstant() && b.isConstant()) {
+      if (a.constant < 0 || b.constant < 0)
+        bound = combineBounds(bound, TermBound::None);
+      return core::Term::of(a.constant * b.constant);
+    }
+    const core::Term &k = a.isConstant() ? a : b;
+    const core::Term &x = a.isConstant() ? b : a;
+    if (!k.isConstant())
+      return core::Term::unknown();
+    if (k.constant < 0)
+      bound = combineBounds(bound, TermBound::None);
+    return core::Term::ofSym(x.var, x.scale * k.constant,
+                             x.constant * k.constant);
+  }
+  case Kind::Sum: {
+    auto sum = operand(0).plus(operand(1));
+    return sum ? *sum : core::Term::unknown();
+  }
+  case Kind::Difference:
+    return operand(0).plusConstant(-term.value);
+  case Kind::FormatLength: {
+    // A literal format's least output; exact when nothing in it varies.
+    Transfer::FormatFacts format = transfer.formatFacts(call, match);
+    if (!format.literal)
+      return core::Term::unknown();
+    if (!format.exact)
+      bound = combineBounds(bound, TermBound::AtLeast);
+    return core::Term::of(format.lower);
+  }
+  case Kind::Min: {
+    core::Term a = operand(0);
+    core::Term b = operand(1);
+    if (!a.known || !b.known)
+      return core::Term::unknown();
+    if (a.isConstant() && b.isConstant())
+      return core::Term::of(std::min(a.constant, b.constant));
+    if (transfer.domain().lessEqual(transfer.heapState(), a, b).value_or(false))
+      return a;
+    if (transfer.domain().lessEqual(transfer.heapState(), b, a).value_or(false))
+      return b;
+    return core::Term::unknown();
+  }
+  case Kind::Macro:
+    return core::Term::unknown();
+  }
+  return core::Term::unknown();
+}
+
+/// §8: the `str` family, whose destination is bounded by its member.
+static bool isStringFamily(llvm::StringRef name) {
+  return name.starts_with("str") || name.starts_with("stp") ||
+         name.starts_with("wcs");
+}
+
+void Transfer::decideArguments(const CallExpr &call, const SiteInfo &site,
+                               const std::vector<ArgRequirement> &requirements,
+                               const std::vector<core::Sym> &args,
+                               bool library) {
+  if (!run.isPublishing())
+    return;
+  LedgerAdapter &ledger = run.ledger();
+  auto spellTerm = [&](const core::Term &term) -> std::optional<std::string> {
+    if (!term.known)
+      return std::nullopt;
+    if (term.isConstant())
+      return std::to_string(term.constant);
+    auto name = nameOf(term.var);
+    std::string text = name ? name->toString() : "?";
+    if (term.scale != 1)
+      text += "*" + std::to_string(term.scale);
+    if (term.constant != 0)
+      text +=
+          (term.constant > 0 ? "+" : "-") +
+          std::to_string(term.constant > 0 ? term.constant : -term.constant);
+    return text;
+  };
+  // The requirement being decided, for §7.5's cover of an unresolved one.
+  const ArgRequirement *current = nullptr;
+  auto publish = [&](unsigned argument, core::FacetDecision decision,
+                     std::optional<std::string> need,
+                     std::optional<std::string> have,
+                     std::optional<CheckWitness> witness) {
+    if (decision.outcome == core::SiteOutcome::Unresolved &&
+        current != nullptr && argument < args.size())
+      if (auto covered =
+              coveredArgument(call, args[argument],
+                              current->kind == ArgRequirement::Kind::String)) {
+        decision = *covered;
+        witness.reset();
+      }
+    core::Requirement record;
+    record.argument = argument;
+    record.need = std::move(need);
+    record.have = std::move(have);
+    record.decision = std::move(decision);
+    if (witness)
+      witness->argument = static_cast<std::uint8_t>(argument);
+    ledger.requirement(call, core::Facet::Spatial, std::move(record),
+                       std::move(witness));
+  };
+  // An amount for messages: `6 bytes`, `'n' bytes`, `'strlen(s)' + 1 bytes`.
+  auto nameFor = [&](core::Sym sym, bool own) -> std::string {
+    const std::string &made = heap.info(state, sym).name;
+    if (own && !made.empty())
+      return made;
+    if (auto place = nameOf(sym, /*extent=*/true))
+      return messageSpelling(*place);
+    return made;
+  };
+  auto spellBytes = [&](const core::Term &term, bool own = false) {
+    return spellAmount(term, own);
+  };
+  // Where the object the argument points into came from.
+  auto addObjectNote = [&](core::Diagnostic &diagnostic, const Expr &argument,
+                           const core::SymInfo &pointer) {
+    if (pointer.targets.size() != 1)
+      return;
+    const core::ObjectInfo &info = run.table().info(pointer.targets[0].object);
+    if (!info.created.isValid())
+      return;
+    std::string spelled = spell(argument);
+    switch (info.key.kind) {
+    case core::ObjectKind::Local:
+    case core::ObjectKind::Global:
+      diagnostic.addNote(spelled == info.name
+                             ? "'" + spelled + "' is declared here"
+                             : "the object behind '" + spelled +
+                                   "' is declared here",
+                         info.created);
+      break;
+    case core::ObjectKind::HeapRecent:
+    case core::ObjectKind::HeapOld:
+      diagnostic.addNote("'" + spelled + "' is allocated here", info.created);
+      break;
+    default:
+      break;
+    }
+  };
+  std::string callee;
+  if (site.library)
+    callee = "'" + site.library->entry->name + "'";
+  else if (const FunctionDecl *direct = call.getDirectCallee())
+    callee = "'" + direct->getNameAsString() + "'";
+  else
+    callee = "a function pointer";
+  for (const ArgRequirement &requirement : requirements) {
+    current = &requirement;
+    unsigned i = requirement.argument;
+    if (i >= call.getNumArgs() || i >= args.size())
+      continue;
+    const Expr &argument = *call.getArg(i);
+    core::Sym pointer = args[i];
+    const core::SymInfo value = heap.info(state, pointer);
+    const core::Term &need = requirement.need;
+    std::optional<WitnessTerm> needTerm = requirement.needTerm;
+    // A zero-length argument may be null (§5.4).
+    if (value.null == core::PointerNull::Null) {
+      publish(i, core::FacetDecision::proven(), spellTerm(need), std::nullopt,
+              std::nullopt);
+      continue;
+    }
+    // Writing into a string literal.
+    if (requirement.writes && value.targets.size() == 1 &&
+        run.table().info(value.targets[0].object).key.kind ==
+            core::ObjectKind::Literal) {
+      publish(i, core::FacetDecision::violation(), std::nullopt,
+              std::string("0"), std::nullopt);
+      core::Diagnostic diagnostic;
+      diagnostic.id = core::diag::OutOfBounds;
+      diagnostic.message = "write through '" + spell(argument) +
+                           "', which points to a string literal";
+      diagnostic.location =
+          toCoreLocation(context.getSourceManager(), argument.getBeginLoc());
+      run.report(std::move(diagnostic), core::Certainty::Definite, &call,
+                 core::Facet::Spatial);
+      continue;
+    }
+    if (requirement.kind == ArgRequirement::Kind::Bytes && need.isConstant() &&
+        need.constant <= 0) {
+      publish(i, core::FacetDecision::proven(), spellTerm(need), std::nullopt,
+              std::nullopt);
+      continue;
+    }
+    // What the argument points into.
+    std::optional<core::Extent> extent;
+    core::Term start = core::Term::unknown();
+    std::optional<WitnessTerm> haveTerm;
+    if (requirement.memberBound)
+      if (const auto *member =
+              dyn_cast<MemberExpr>(argument.IgnoreParenImpCasts());
+          member != nullptr && isa_and_nonnull<ConstantArrayType>(
+                                   member->getType()->getAsArrayTypeUnsafe()))
+        if (auto size = sizeOf(member->getType())) {
+          extent =
+              core::Extent{core::Term::of(*size), core::ExtentClass::Declared};
+          start = core::Term::of(0);
+          haveTerm = WitnessTerm::ofConstant(*size);
+        }
+    if (!extent && value.targets.size() == 1 && !value.top) {
+      const core::ObjectState *object =
+          heap.findObject(state, value.targets[0].object);
+      if (object != nullptr && object->extent && object->extent->bytes.known) {
+        extent = object->extent;
+        start = value.targets[0].offset;
+        std::optional<WitnessTerm> total;
+        const core::Term &bytes = extent->bytes;
+        if (bytes.isConstant())
+          total = WitnessTerm::ofConstant(bytes.constant);
+        else if (auto name = nameOf(bytes.var, /*extent=*/true)) {
+          total = std::move(*name);
+          if (bytes.scale != 1)
+            total = WitnessTerm::mul(std::move(*total),
+                                     WitnessTerm::ofConstant(bytes.scale));
+          if (bytes.constant > 0)
+            total = WitnessTerm::add(std::move(*total),
+                                     WitnessTerm::ofConstant(bytes.constant));
+          else if (bytes.constant < 0)
+            total = WitnessTerm::sub(std::move(*total),
+                                     WitnessTerm::ofConstant(-bytes.constant));
+        }
+        if (total && start.isConstant())
+          haveTerm =
+              start.constant == 0
+                  ? std::move(total)
+                  : WitnessTerm::sub(std::move(*total),
+                                     WitnessTerm::ofConstant(start.constant));
+      }
+    }
+    std::optional<std::string> haveText =
+        extent ? spellTerm(extent->bytes) : std::nullopt;
+    if (requirement.kind == ArgRequirement::Kind::String) {
+      if (requirement.argvElement) {
+        if (!requirement.formatArgument)
+          publish(i,
+                  core::FacetDecision::trustedFor(core::TrustReason::SystemApi),
+                  std::nullopt, std::nullopt, std::nullopt);
+        continue;
+      }
+      // RFC 0012: a NUL known inside the object ends the string there; no
+      // NUL to the end of an exact extent is a read past it.
+      Transfer::StringFacts facts = stringFacts(pointer);
+      if (facts.length != Transfer::StringFacts::Length::Unknown && extent &&
+          heap.lessEqual(state, facts.nulAt.plusConstant(1), extent->bytes)
+              .value_or(false)) {
+        publish(i, core::FacetDecision::proven(), std::nullopt, haveText,
+                std::nullopt);
+        continue;
+      }
+      if (facts.unterminated && extent &&
+          extent->cls == core::ExtentClass::Exact) {
+        publish(i, core::FacetDecision::violation(), std::nullopt, haveText,
+                std::nullopt);
+        core::Diagnostic diagnostic;
+        diagnostic.id = core::diag::OutOfBounds;
+        diagnostic.severity = core::Severity::Error;
+        diagnostic.message = callee + " reads past the end of '" +
+                             spell(argument) + "', which is not NUL-terminated";
+        diagnostic.location =
+            toCoreLocation(context.getSourceManager(), argument.getBeginLoc());
+        // Where the bytes that have no terminator were written.
+        if (value.targets.size() == 1)
+          if (auto written = run.byteWrites.find(value.targets[0].object);
+              written != run.byteWrites.end())
+            diagnostic.addNote("'" + spell(argument) +
+                                   "' is left without a terminator here",
+                               written->second);
+        run.report(std::move(diagnostic), core::Certainty::Definite, &call,
+                   core::Facet::Spatial);
+        continue;
+      }
+      if (requirement.formatArgument)
+        continue;
+      if (!extent) {
+        publish(i,
+                core::FacetDecision::unresolvedFor(
+                    core::UnresolvedReason::UnknownExtent),
+                std::nullopt, std::nullopt, std::nullopt);
+        continue;
+      }
+      needTerm =
+          WitnessTerm::add(WitnessTerm::strLen(WitnessTerm::ofExpr(argument)),
+                           WitnessTerm::ofConstant(1));
+    } else if (!extent) {
+      publish(i,
+              core::FacetDecision::unresolvedFor(
+                  core::UnresolvedReason::UnknownExtent),
+              spellTerm(need), std::nullopt, std::nullopt);
+      continue;
+    } else if (need.known) {
+      auto end = start.plus(need);
+      std::optional<bool> fits =
+          end ? heap.lessEqual(state, *end, extent->bytes) : std::nullopt;
+      std::optional<bool> nonNegative =
+          start.known ? heap.lessEqual(state, core::Term::of(0), start)
+                      : std::nullopt;
+      // A need known only as a bound proves one way and violates the other.
+      bool atMost = requirement.bound != ArgRequirement::Bound::AtLeast;
+      bool atLeast = requirement.bound != ArgRequirement::Bound::AtMost;
+      if (fits.value_or(false) && nonNegative.value_or(false) && atMost) {
+        publish(i, core::FacetDecision::proven(), spellTerm(need), haveText,
+                std::nullopt);
+        continue;
+      }
+      if (fits && !*fits && atLeast &&
+          extent->cls == core::ExtentClass::Exact && requirement.enforced &&
+          !requirement.guard) {
+        publish(i, core::FacetDecision::violation(), spellTerm(need), haveText,
+                std::nullopt);
+        run.requirementViolated.insert(&call);
+        std::string object = "'" + spell(pointedObject(argument)) + "'";
+        std::string least = requirement.bound == ArgRequirement::Bound::AtLeast
+                                ? "at least "
+                                : "";
+        // Measured from the object's start, as its extent is.
+        core::Term reach = end ? *end : need;
+        std::string message = library
+                                  ? callee + " accesses " + least +
+                                        spellBytes(reach, true).value_or("?") +
+                                        " of " + object + ", which has " +
+                                        spellBytes(extent->bytes).value_or("?")
+                                  : callee + " requires " + least +
+                                        spellBytes(reach, true).value_or("?") +
+                                        " behind " + object + ", which has " +
+                                        spellBytes(extent->bytes).value_or("?");
+        // One value under two names: `('strlen(s)' equals 'n')`.
+        if (!need.isConstant() && !extent->bytes.isConstant() &&
+            need.var == extent->bytes.var) {
+          std::string made = nameFor(need.var, true);
+          std::string held = nameFor(need.var, false);
+          if (!made.empty() && !held.empty() && made != held)
+            message += " ('" + made + "' equals '" + held + "')";
+        }
+        core::Diagnostic diagnostic;
+        diagnostic.id = core::diag::OutOfBounds;
+        diagnostic.message = std::move(message);
+        diagnostic.location =
+            toCoreLocation(context.getSourceManager(), argument.getBeginLoc());
+        addObjectNote(diagnostic, argument, value);
+        run.report(std::move(diagnostic), core::Certainty::Definite, &call,
+                   core::Facet::Spatial);
+        continue;
+      }
+      // (A bound is no need to check against: a format's least output is
+      // checked through its bounded writer.)
+      if (need.isConstant() && !needTerm &&
+          requirement.bound == ArgRequirement::Bound::Exact)
+        needTerm = WitnessTerm::ofConstant(need.constant);
+    }
+    if (requirement.rowOnly || !core::isCheckOperand(extent->cls)) {
+      publish(i,
+              core::FacetDecision::unresolvedFor(
+                  core::UnresolvedReason::UnknownExtent),
+              spellTerm(need), haveText, std::nullopt);
+      continue;
+    }
+    if (!haveTerm || (!needTerm && !requirement.format)) {
+      publish(i,
+              core::FacetDecision::unresolvedFor(
+                  core::UnresolvedReason::Inexpressible,
+                  "the requirement has no C spelling here"),
+              spellTerm(need), haveText, std::nullopt);
+      continue;
+    }
+    publish(i, core::FacetDecision::checked(), spellTerm(need), haveText,
+            CheckWitness{.shape = CheckWitness::Shape::Length,
+                         .extent = std::move(haveTerm),
+                         .extentClass = extent->cls,
+                         .need = std::move(needTerm),
+                         .unmodified = true,
+                         .accessesSafe = true,
+                         .guard = requirement.guard});
+  }
+}
+
+void Transfer::decideLibraryCall(const CallExpr &call, const SiteInfo &site,
+                                 const std::vector<core::Sym> &args) {
+  if (!site.library || !run.isPublishing())
+    return;
+  const core::LibraryMatch &match = *site.library;
+  LedgerAdapter &ledger = run.ledger();
+  // RFC 0030 §9.3: through an open slot the row decides temporal facts
+  // only; what the function really stored there needs is unknown.
+  if (call.getDirectCallee() == nullptr)
+    if (auto resolution = slotResolution(call);
+        resolution &&
+        (resolution->kind == core::IndirectCallKind::OpenKnown ||
+         resolution->kind == core::IndirectCallKind::OpenUnknown)) {
+      if (ledger.applies(site.id, core::Facet::Spatial))
+        ledger.decideAs(
+            call, site.kind, site.boundary, core::Facet::Spatial,
+            core::FacetDecision::unresolvedFor(
+                core::UnresolvedReason::Callback,
+                resolution->open ? resolution->open->detail : std::string()));
+      return;
+    }
+  const bool stringRow = isStringFamily(match.entry->name);
+  auto spellTerm = [&](const core::Term &term) -> std::optional<std::string> {
+    if (!term.known)
+      return std::nullopt;
+    if (term.isConstant())
+      return std::to_string(term.constant);
+    auto name = nameOf(term.var);
+    return name ? name->toString() : std::string("?");
+  };
+  auto publish = [&](unsigned argument, core::FacetDecision decision,
+                     std::optional<std::string> need,
+                     std::optional<std::string> have,
+                     std::optional<CheckWitness> witness) {
+    core::Requirement record;
+    record.argument = argument;
+    record.need = std::move(need);
+    record.have = std::move(have);
+    record.decision = std::move(decision);
+    if (witness)
+      witness->argument = static_cast<std::uint8_t>(argument);
+    ledger.requirement(call, core::Facet::Spatial, std::move(record),
+                       std::move(witness));
+  };
+  std::string callee = "'" + match.entry->name + "'";
+  std::vector<ArgRequirement> requirements;
+  for (unsigned i = 0; i < call.getNumArgs() && i < args.size(); ++i) {
+    const core::LibraryParam *param = match.param(i);
+    if (param == nullptr || param->type != core::LibraryParam::Type::Pointer)
+      continue;
+    bool sized = param->bytes || param->count;
+    if (param->access == core::LibraryParam::Access::None && !sized &&
+        !param->string)
+      continue;
+    const Expr &argument = *call.getArg(i);
+    bool writes = param->access == core::LibraryParam::Access::Write ||
+                  param->access == core::LibraryParam::Access::ReadWrite;
+    std::optional<QualType> element = accessedElement(argument);
+    if (sized || !param->string) {
+      ArgRequirement requirement;
+      requirement.argument = i;
+      requirement.writes = writes;
+      requirement.memberBound = stringRow && writes;
+      requirement.enforced = true;
+      requirement.format = match.entry->format.has_value();
+      TermBound bound = TermBound::Exact;
+      if (param->bytes) {
+        requirement.need =
+            valueTerm(*this, *param->bytes, call, match, args, bound);
+        requirement.needTerm = libraryTerm(*param->bytes, call, match);
+      } else if (param->count && element) {
+        auto size = sizeOf(*element).value_or(1);
+        core::Term count =
+            valueTerm(*this, *param->count, call, match, args, bound);
+        if (count.known)
+          requirement.need =
+              count.isConstant()
+                  ? core::Term::of(count.constant * size)
+                  : core::Term::ofSym(count.var, count.scale * size,
+                                      count.constant * size);
+        if (auto countTerm = libraryTerm(*param->count, call, match))
+          requirement.needTerm = WitnessTerm::mul(
+              std::move(*countTerm), WitnessTerm::sizeOf(*element));
+      } else if (!param->count && element) {
+        if (auto size = sizeOf(*element)) {
+          requirement.need = core::Term::of(*size);
+          requirement.needTerm = WitnessTerm::sizeOf(*element);
+        }
+      } else {
+        // An object only the library makes and reads (`FILE`): A3.
+        publish(i, core::FacetDecision::proven(), std::nullopt, std::nullopt,
+                std::nullopt);
+        continue;
+      }
+      if (bound == TermBound::None)
+        requirement.need = core::Term::unknown();
+      else if (bound == TermBound::AtMost)
+        requirement.bound = ArgRequirement::Bound::AtMost;
+      else if (bound == TermBound::AtLeast)
+        requirement.bound = ArgRequirement::Bound::AtLeast;
+      requirements.push_back(std::move(requirement));
+    }
+    if (param->string) {
+      ArgRequirement requirement;
+      requirement.argument = i;
+      requirement.kind = ArgRequirement::Kind::String;
+      requirement.writes = writes;
+      requirement.memberBound = stringRow && writes;
+      requirement.argvElement = isArgvElement(argument);
+      requirements.push_back(std::move(requirement));
+    }
+  }
+  // A literal `printf` format: each `%s` argument is a string the call
+  // reads (RFC 0012), and the conversions read no more arguments than are
+  // passed (RFC 0030 §8.2).
+  Transfer::FormatFacts format = formatFacts(call, match);
+  if (format.literal) {
+    for (unsigned argument : format.strings) {
+      if (argument >= call.getNumArgs() || argument >= args.size() ||
+          !call.getArg(argument)->getType()->isPointerType())
+        continue;
+      ArgRequirement requirement;
+      requirement.argument = argument;
+      requirement.kind = ArgRequirement::Kind::String;
+      requirement.argvElement = isArgvElement(*call.getArg(argument));
+      requirement.formatArgument = true;
+      requirements.push_back(std::move(requirement));
+    }
+    if (format.reads && *format.reads > format.passed) {
+      core::Diagnostic diagnostic;
+      diagnostic.id = core::diag::OutOfBounds;
+      diagnostic.severity = core::Severity::Error;
+      diagnostic.message = "format string of " + callee + " reads " +
+                           std::to_string(*format.reads) + " arguments but " +
+                           std::to_string(format.passed) + " are passed";
+      diagnostic.location =
+          toCoreLocation(context.getSourceManager(), call.getBeginLoc());
+      run.report(std::move(diagnostic), core::Certainty::Definite, &call,
+                 core::Facet::Spatial);
+    }
+  } else if (match.entry->format) {
+    // A format that is no literal: which arguments its conversions read,
+    // and as what, is not known here (RFC 0030 §8.2).
+    int at = match.callArgument(match.entry->format->format);
+    if (at >= 0)
+      publish(static_cast<unsigned>(at),
+              core::FacetDecision::unresolvedFor(
+                  core::UnresolvedReason::Inexpressible,
+                  "the format is not a string literal"),
+              std::nullopt, std::nullopt, std::nullopt);
+  }
+  decideArguments(call, site, requirements, args, /*library=*/true);
+  // `disjoint(d, s, n)` (§3.3).
+  for (const core::LibDisjoint &disjoint : match.entry->disjoint) {
+    int first = match.callArgument(disjoint.first);
+    int second = match.callArgument(disjoint.second);
+    if (first < 0 || second < 0 ||
+        static_cast<unsigned>(std::max(first, second)) >= args.size())
+      continue;
+    auto argument = static_cast<unsigned>(first);
+    const Expr &other = *call.getArg(static_cast<unsigned>(second));
+    TermBound lengthBound = TermBound::Exact;
+    core::Term length =
+        valueTerm(*this, disjoint.length, call, match, args, lengthBound);
+    if (lengthBound != TermBound::Exact)
+      length = core::Term::unknown();
+    std::optional<std::string> needText = spellTerm(length);
+    const core::SymInfo a = heap.info(state, args[argument]);
+    const core::SymInfo b =
+        heap.info(state, args[static_cast<unsigned>(second)]);
+    if (length.isConstant() && length.constant <= 0) {
+      publish(argument, core::FacetDecision::proven(), needText, std::nullopt,
+              std::nullopt);
+      continue;
+    }
+    bool distinct =
+        !a.top && !b.top && !a.targets.empty() && !b.targets.empty();
+    if (distinct)
+      for (const core::Target &x : a.targets)
+        for (const core::Target &y : b.targets)
+          if (heap.mayOverlap(state, x.object, y.object))
+            distinct = false;
+    auto isLiteral = [&](const core::SymInfo &info) {
+      return info.targets.size() == 1 &&
+             run.table().info(info.targets[0].object).key.kind ==
+                 core::ObjectKind::Literal;
+    };
+    if (distinct || isLiteral(a) || isLiteral(b)) {
+      publish(argument, core::FacetDecision::proven(), needText, std::nullopt,
+              std::nullopt);
+      continue;
+    }
+    // One object at known offsets: overlap is decided.
+    if (a.targets.size() == 1 && b.targets.size() == 1 &&
+        a.targets[0].object == b.targets[0].object &&
+        run.table().info(a.targets[0].object).singular &&
+        a.targets[0].offset.isConstant() && b.targets[0].offset.isConstant() &&
+        length.isConstant()) {
+      std::int64_t gap =
+          a.targets[0].offset.constant - b.targets[0].offset.constant;
+      if (gap < 0)
+        gap = -gap;
+      if (gap >= length.constant) {
+        publish(argument, core::FacetDecision::proven(), needText, std::nullopt,
+                std::nullopt);
+        continue;
+      }
+      publish(argument, core::FacetDecision::violation(), needText,
+              std::nullopt, std::nullopt);
+      std::string object = run.table().info(a.targets[0].object).name;
+      core::Diagnostic diagnostic;
+      diagnostic.id = core::diag::OutOfBounds;
+      diagnostic.message =
+          callee + " copies " + std::to_string(length.constant) +
+          " bytes between overlapping ranges of '" + object + "'";
+      diagnostic.location =
+          toCoreLocation(context.getSourceManager(), call.getBeginLoc());
+      diagnostic.addNote("'" + object + "' is declared here",
+                         run.table().info(a.targets[0].object).created);
+      run.report(std::move(diagnostic), core::Certainty::Definite, &call,
+                 core::Facet::Spatial);
+      continue;
+    }
+    std::optional<WitnessTerm> lengthTerm;
+    if (length.isConstant())
+      lengthTerm = WitnessTerm::ofConstant(length.constant);
+    else
+      lengthTerm = libraryTerm(disjoint.length, call, match);
+    if (!lengthTerm) {
+      publish(argument,
+              core::FacetDecision::unresolvedFor(
+                  core::UnresolvedReason::Inexpressible,
+                  "the length has no C spelling here"),
+              needText, std::nullopt, std::nullopt);
+      continue;
+    }
+    publish(
+        argument, core::FacetDecision::checked(), needText, std::nullopt,
+        CheckWitness{.shape = CheckWitness::Shape::Disjoint,
+                     .extentClass = core::ExtentClass::Exact,
+                     .need = std::move(lengthTerm),
+                     .other = WitnessTerm::ofExpr(*other.IgnoreParenImpCasts()),
+                     .unmodified = true,
+                     .accessesSafe = true});
+  }
+}
+
+} // namespace weavec::analysis::engine

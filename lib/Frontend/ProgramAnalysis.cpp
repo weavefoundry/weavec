@@ -10,8 +10,10 @@
 
 #include "weavec/Analysis/LedgerAdapter.h"
 #include "weavec/Core/Diagnostic.h"
+#include "weavec/Core/EffectsIO.h"
 #include "weavec/Core/Scc.h"
 #include "weavec/Frontend/AnalysisStats.h"
+#include "weavec/Frontend/LedgerOutput.h"
 #include "weavec/Frontend/LinkStep.h"
 
 #include "llvm/ADT/STLExtras.h"
@@ -27,15 +29,28 @@
 namespace weavec::frontend {
 
 ProgramAnalysis::ProgramAnalysis(FrontendOptions opts)
-    : options(std::move(opts)) {}
+    : options(std::move(opts)) {
+  // A unit may run again after it reported (to serve a context): its summary
+  // line is its last run's, printed when the program is done.
+  unitSummaries = options.ledgerOutput.printsSummary();
+  options.ledgerOutput.summary = false;
+}
 
 void ProgramAnalysis::addUnit(std::unique_ptr<ProgramUnit> unit,
                               std::optional<analysis::UnitExports> known,
                               std::set<ReportedDiagnostic> reported) {
   units.push_back(Unit{.unit = std::move(unit),
                        .exports = std::move(known),
+                       .reported = std::move(reported)});
+}
+
+void ProgramAnalysis::addServingUnit(std::unique_ptr<ProgramUnit> unit,
+                                     analysis::UnitExports known,
+                                     std::set<ReportedDiagnostic> reported) {
+  units.push_back(Unit{.unit = std::move(unit),
+                       .exports = std::move(known),
                        .reported = std::move(reported),
-                       .sizedPairsSeen = {}});
+                       .dormant = true});
 }
 
 void ProgramAnalysis::addExports(analysis::UnitExports exports) {
@@ -52,8 +67,8 @@ void ProgramAnalysis::trimRetainedUnits() {
   while (boundedRetention && retainedUnits.size() > 1) {
     auto *oldest = retainedUnits.front();
     retainedUnits.erase(retainedUnits.begin());
-    if (oldest->releaseAST() && options.analysis.stats)
-      options.analysis.stats->add("unit_evictions");
+    if (oldest->releaseAST() && options.engine.stats)
+      options.engine.stats->add("unit_evictions");
   }
 }
 
@@ -64,10 +79,11 @@ ProgramAnalysis::runUnit(ProgramUnit &unit, const FrontendOptions &overrides) {
   run.alreadyReported = overrides.alreadyReported;
   run.onlyIds = overrides.onlyIds;
   run.silent = overrides.silent;
+  run.holdFor = overrides.holdFor;
   run.discoverOnly = overrides.discoverOnly;
   run.collectInterface = overrides.collectInterface;
   if (run.silent)
-    run.analysis.dumpStream = nullptr;
+    run.engine.dumpStream = nullptr;
 
   std::optional<UnitResult> result;
   run.onResult = [&result](UnitResult r) { result = std::move(r); };
@@ -80,11 +96,7 @@ ProgramAnalysis::runUnit(ProgramUnit &unit, const FrontendOptions &overrides) {
     // so the run is not reported clean.
     result->errors = 1;
   }
-  for (auto &entry : units)
-    if (entry.unit.get() == &unit)
-      entry.dependencies.insert(result->dependencies.begin(),
-                                result->dependencies.end());
-  if (!writeAnalysisStats(run.analysisStatsPath, run.analysis.stats, false))
+  if (!writeAnalysisStats(run.analysisStatsPath, run.engine.stats, false))
     return std::nullopt;
   return result;
 }
@@ -92,12 +104,9 @@ ProgramAnalysis::runUnit(ProgramUnit &unit, const FrontendOptions &overrides) {
 /// Exports with every summary at the bottom: the start of a fixpoint.
 static analysis::UnitExports skeleton(const analysis::UnitExports &exports) {
   analysis::UnitExports result = exports;
-  for (auto &[name, function] : result.functions) {
-    function.summary = analysis::ExportedSummary{};
-    function.memorySpecializations.clear();
-  }
+  for (auto &[name, function] : result.functions)
+    function.effects = core::FunctionEffects{};
   result.unknownCallees.clear();
-  result.unknownIndirectTypes.clear();
   return result;
 }
 
@@ -121,15 +130,8 @@ std::vector<std::vector<unsigned>> ProgramAnalysis::unitGraph() const {
       continue;
     std::vector<unsigned> &edges = adjacency[i];
     for (const std::string &name : units[i].exports->imports) {
-      if (const auto it = definers.find(name); it != definers.end()) {
+      if (const auto it = definers.find(name); it != definers.end())
         edges.insert(edges.end(), it->second.begin(), it->second.end());
-        // RFC 0014/0016: callback and memory contexts travel from caller to
-        // definer, so these units converge together before either is reported.
-        for (const unsigned definer : it->second)
-          if (units[definer].exports->functions.at(name).acceptsCallbacks ||
-              units[definer].exports->functions.at(name).acceptsMemoryContexts)
-            adjacency[definer].push_back(i);
-      }
     }
     for (const std::string &key : units[i].exports->indirectTypes) {
       if (const auto it = candidates.find(key); it != candidates.end()) {
@@ -160,12 +162,13 @@ static void announce(llvm::raw_ostream *dump, const ProgramUnit &unit) {
 
 void ProgramAnalysis::analyzeAcyclic(unsigned index, Result &result) {
   Unit &unit = units[index];
-  announce(options.analysis.dumpStream, *unit.unit);
+  announce(options.engine.dumpStream, *unit.unit);
 
   FrontendOptions overrides;
   overrides.database = &settled;
   overrides.alreadyReported = &unit.reported;
   overrides.collectInterface = interfaces;
+  overrides.holdFor = holdForUnserved();
   std::optional<UnitResult> run = runUnit(*unit.unit, overrides);
   if (!run) {
     result.failed.push_back(unit.unit->name());
@@ -177,155 +180,32 @@ void ProgramAnalysis::analyzeAcyclic(unsigned index, Result &result) {
   result.errors += run->errors;
   result.warnings += run->warnings;
   settled.add(run->exports);
-  settle(unit, settled, std::move(*run));
+  settle(unit, std::move(*run));
 }
 
-void ProgramAnalysis::settle(Unit &unit, const analysis::ProgramDatabase &db,
-                             UnitResult run) const {
+void ProgramAnalysis::settle(Unit &unit, UnitResult run) const {
   unit.exports = std::move(run.exports);
+  unit.held = run.held;
   unit.reported.insert(run.reported.begin(), run.reported.end());
-  unit.sizedPairsSeen = db.sizedFieldFacts().confirmedPairs();
   // RFC 0030 §2.6: only the last reporting run publishes.
-  if (run.ledger && (ledgers || interfaces))
+  if (run.ledger && (ledgers || interfaces || unitSummaries))
     unit.ledger = std::make_shared<const core::Ledger>(run.ledger->ledger);
   if (run.interface)
     unit.interface = std::move(run.interface);
 }
 
-void ProgramAnalysis::reportConfirmedSizedFields(Result &result) {
-  // A unit reported on before the program confirmed a pair (the witnesses
-  // came from units it does not call, so the unit order did not put them
-  // first), and that looked up the extent of the pair's field, is analysed
-  // once more against the whole program and shows what it did not show
-  // before. The pass is one: a witness the pass itself adds can only widen
-  // the next program's view (RFC 0012, *Sized fields*, "Inference").
-  const std::set<analysis::SizedFieldWitness> confirmed =
-      settled.sizedFieldFacts().confirmedPairs();
-  if (confirmed.empty())
-    return;
-  // A synthesised extent enables bounds reports and nothing else; the run
-  // is against a fuller database than the first, which is not this pass's
-  // business to report on (RFC 0012, *Two passes in a unit*).
-  static const std::set<std::string_view> OnlyBounds{core::diag::OutOfBounds};
-  for (Unit &unit : units) {
-    if (!unit.exports)
-      continue;
-    const bool more = llvm::any_of(
-        confirmed, [&unit](const analysis::SizedFieldWitness &pair) {
-          return !unit.sizedPairsSeen.contains(pair) &&
-                 unit.exports->sizedFieldLoads.contains(pair.field);
-        });
-    if (!more)
-      continue;
-    announce(options.analysis.dumpStream, *unit.unit);
-    FrontendOptions overrides;
-    overrides.database = &settled;
-    overrides.alreadyReported = &unit.reported;
-    overrides.onlyIds = &OnlyBounds;
-    overrides.collectInterface = interfaces;
-    std::optional<UnitResult> run = runUnit(*unit.unit, overrides);
-    if (!run) {
-      result.failed.push_back(unit.unit->name());
-      continue;
-    }
-    result.errors += run->errors;
-    result.warnings += run->warnings;
-    settled.add(run->exports);
-    settle(unit, settled, std::move(*run));
-  }
-}
-
 void ProgramAnalysis::widen(analysis::UnitExports &exports,
                             const analysis::UnitExports &previous) {
-  for (auto &[name, function] : exports.functions) {
-    const auto before = previous.functions.find(name);
-    if (before != previous.functions.end()) {
-      auto joined = function.summary.get();
-      joined.join(before->second.summary.get());
-      function.summary.assign(std::move(joined));
-      for (const auto &[input, summary] : before->second.memorySpecializations)
-        if (function.memorySpecializations.contains(input) ||
-            function.memorySpecializations.size() < core::MaxMemoryContexts) {
-          auto specialized = function.memorySpecializations[input].get();
-          specialized.join(summary.get());
-          function.memorySpecializations[input].assign(std::move(specialized));
-        }
-    }
-  }
-  for (const auto &[symbol, requests] : previous.memoryRequests)
-    for (const auto &input : requests)
-      if (exports.memoryRequests[symbol].size() < core::MaxMemoryContexts)
-        exports.memoryRequests[symbol].insert(input);
+  // Summaries join by global id, which means the same only under one table.
+  if (!(exports.globals == previous.globals))
+    return;
+  for (auto &[name, function] : exports.functions)
+    if (const auto before = previous.functions.find(name);
+        before != previous.functions.end())
+      function.effects =
+          core::joinEffects(function.effects, before->second.effects);
   exports.countFields.insert(previous.countFields.begin(),
                              previous.countFields.end());
-  // RFC 0012: sized-field facts widen the same way; a refutation once
-  // seen stays.
-  exports.sizedFields.merge(previous.sizedFields);
-}
-
-/// RFC 0020: component edges carry summaries and context requests in opposite
-/// directions. Compute changed inputs once, retaining no copied summaries.
-static auto changedUnitInputs(const analysis::UnitExports &before,
-                              const analysis::UnitExports &after) {
-  struct InputChanges {
-    bool globals;
-    std::set<std::string> functions;
-    std::set<std::string> indirectTypes;
-    std::set<std::string> requests;
-
-    bool affects(const analysis::UnitExports &consumer,
-                 const std::set<std::string> &dependencies) const {
-      if (globals)
-        return true;
-      for (const auto &symbol : functions)
-        if (dependencies.contains(symbol) || consumer.imports.contains(symbol))
-          return true;
-      for (const auto &type : indirectTypes)
-        if (consumer.indirectTypes.contains(type))
-          return true;
-      return std::ranges::any_of(consumer.functions, [&](const auto &entry) {
-        const auto &[name, function] = entry;
-        const auto symbol =
-            function.external ? name : consumer.source + "#" + name;
-        return requests.contains(symbol);
-      });
-    }
-  };
-  InputChanges changes{.globals = before.globals != after.globals ||
-                                  before.countFields != after.countFields ||
-                                  before.sizedFields != after.sizedFields,
-                       .functions = {},
-                       .indirectTypes = {},
-                       .requests = {}};
-  const auto changed = [](const auto &a, const auto &b, const auto &visit) {
-    for (const auto &[key, value] : a) {
-      const auto found = b.find(key);
-      if (found == b.end() || found->second != value)
-        visit(key, value);
-    }
-  };
-  const auto functions = [&](const auto &unit, const auto &other) {
-    changed(unit.functions, other.functions,
-            [&](const auto &name, const auto &function) {
-              changes.functions.insert(
-                  function.external ? name : unit.source + "#" + name);
-              if (function.addressTaken && !function.typeKey.empty())
-                changes.indirectTypes.insert(function.typeKey);
-            });
-  };
-  functions(before, after);
-  functions(after, before);
-  const auto requests = [&](const auto &a, const auto &b) {
-    changed(a, b, [&](const auto &symbol, const auto &values) {
-      (void)values;
-      changes.requests.insert(symbol);
-    });
-  };
-  requests(before.callbackRequests, after.callbackRequests);
-  requests(after.callbackRequests, before.callbackRequests);
-  requests(before.memoryRequests, after.memoryRequests);
-  requests(after.memoryRequests, before.memoryRequests);
-  return changes;
 }
 
 void ProgramAnalysis::analyzeCyclic(const std::vector<unsigned> &component,
@@ -340,20 +220,14 @@ void ProgramAnalysis::analyzeCyclic(const std::vector<unsigned> &component,
     current.push_back(skeleton(*units[member].exports));
 
   // Each member sees the newest exports of every other member; the database
-  // is rebuilt only after some member's exports changed, which in the last
-  // round (and for most of the members of a large one) is never. Members
-  // are kept numbered by the database's own table, so a rebuild copies
-  // their summaries instead of renumbering each of them.
+  // is rebuilt only after some member's exports changed.
   analysis::ProgramDatabase db = databaseFor(current);
-  for (analysis::UnitExports &member : current)
-    member = db.renumbered(std::move(member));
 
   // RFC 0010, *Whole-program fixpoint*: a member whose inputs did not change
-  // since it last ran produces the same exports, so only members with a
-  // changed dependency are re-run. The dependencies are the unit graph's
-  // edges restricted to the group (`imports` and `indirectTypes` against
-  // the members' definitions); a member with no known dependency inside the
-  // group runs once.
+  // since it last ran produces the same exports, so only the members that
+  // depend on a changed one are re-run: the unit graph's edges restricted to
+  // the group (`imports` and `indirectTypes` against the members'
+  // definitions). A member with no dependency inside the group runs once.
   const std::vector<std::vector<unsigned>> adjacency = unitGraph();
   std::map<unsigned, unsigned> position;
   for (unsigned k = 0; k < component.size(); ++k)
@@ -416,8 +290,8 @@ void ProgramAnalysis::analyzeCyclic(const std::vector<unsigned> &component,
   bool stale = false;
   bool changed = true;
   for (unsigned round = 0; round < MaxRounds && changed; ++round) {
-    if (options.analysis.stats)
-      options.analysis.stats->add("program_fixpoint_rounds");
+    if (options.engine.stats)
+      options.engine.stats->add("program_fixpoint_rounds");
     changed = false;
     for (const unsigned k : schedule) {
       if (broken[k] || !dirty[k])
@@ -440,34 +314,19 @@ void ProgramAnalysis::analyzeCyclic(const std::vector<unsigned> &component,
         result.failed.push_back(units[component[k]].unit->name());
         continue;
       }
-      // Both sides are numbered by the database's table (`renumbered` only
-      // ever appends to it), so the summaries alone decide the fixpoint.
-      analysis::UnitExports exports = db.renumbered(std::move(run->exports));
+      analysis::UnitExports exports = std::move(run->exports);
       // RFC 0011, *Whole-program widening*: a group that oscillates (a
       // must-fact one member drops makes another add one back) is joined
       // towards what every round agreed on; `join` only ever weakens.
       if (round >= WidenAfter)
         widen(exports, current[k]);
-      if (!exports.sameSummariesAs(current[k])) {
+      // (The contexts are served after the fixpoint, `serveContexts`.)
+      if (!exports.sameFunctionsAs(current[k])) {
         changed = true;
         stale = true;
-        const auto inputs = changedUnitInputs(current[k], exports);
-        for (unsigned dependent = 0; dependent < component.size();
-             ++dependent) {
-          if (dependent == k || broken[dependent])
-            continue;
-          const auto &consumer = units[component[dependent]];
-          const bool graphEdge = llvm::is_contained(dependents[k], dependent);
-          const bool affected =
-              consumer.dependencies.empty()
-                  ? graphEdge
-                  : inputs.affects(current[dependent], consumer.dependencies);
-          if (affected) {
+        for (const unsigned dependent : dependents[k])
+          if (!broken[dependent])
             dirty[dependent] = true;
-          } else if (graphEdge && options.analysis.stats) {
-            options.analysis.stats->add("unit_invalidation_skips");
-          }
-        }
         current[k] = std::move(exports);
       }
     }
@@ -488,11 +347,12 @@ void ProgramAnalysis::analyzeCyclic(const std::vector<unsigned> &component,
     Unit &unit = units[component[k]];
     if (broken[k])
       continue;
-    announce(options.analysis.dumpStream, *unit.unit);
+    announce(options.engine.dumpStream, *unit.unit);
     FrontendOptions overrides;
     overrides.database = &db;
     overrides.alreadyReported = &unit.reported;
     overrides.collectInterface = interfaces;
+    overrides.holdFor = holdForUnserved();
     std::optional<UnitResult> run = runUnit(*unit.unit, overrides);
     if (!run) {
       broken[k] = true;
@@ -501,7 +361,7 @@ void ProgramAnalysis::analyzeCyclic(const std::vector<unsigned> &component,
     }
     result.errors += run->errors;
     result.warnings += run->warnings;
-    settle(unit, db, std::move(*run));
+    settle(unit, std::move(*run));
     // The unit now owns its completed export; the approximation has no
     // remaining reader. Keep failed members' previous exports below.
     current[k] = analysis::UnitExports{};
@@ -519,6 +379,11 @@ void ProgramAnalysis::analyzeComponent(const std::vector<unsigned> &component,
                                        Result &result) {
   if (component.size() == 1 && !units[component.front()].exports)
     return;
+  // (A serving unit calls into no other unit: a component of its own.)
+  if (component.size() == 1 && units[component.front()].dormant) {
+    settled.add(*units[component.front()].exports);
+    return;
+  }
   if (component.size() == 1)
     analyzeAcyclic(component.front(), result);
   else
@@ -529,6 +394,7 @@ ProgramAnalysis::Result ProgramAnalysis::run() {
   Result result;
   settled.clear();
   settled.programFacts = programFacts;
+  attempted.clear();
   boundedRetention = false;
   retainedUnits.clear();
   for (const analysis::UnitExports &exports : fixed)
@@ -556,7 +422,7 @@ ProgramAnalysis::Result ProgramAnalysis::run() {
 
   // RFC 0020: after discovery, keep one retained AST at a time unless an
   // analysis dump needs them all.
-  boundedRetention = options.analysis.dumpStream == nullptr;
+  boundedRetention = options.engine.dumpStream == nullptr;
   // Include ASTs retained by a previous invocation of this ProgramAnalysis.
   retainedUnits.clear();
   for (const auto &unit : units)
@@ -567,14 +433,128 @@ ProgramAnalysis::Result ProgramAnalysis::run() {
        core::stronglyConnectedComponents(adjacency)) {
     analyzeComponent(component, result);
   }
-  reportConfirmedSizedFields(result);
+  serveContexts(result);
+  if (unitSummaries) {
+    LedgerOutputOptions summaryOnly = options.ledgerOutput;
+    summaryOnly.path.clear();
+    summaryOnly.summary = true;
+    for (const Unit &unit : units) {
+      if (!unit.ledger || unit.ledger->units.empty())
+        continue;
+      core::Ledger ledger = *unit.ledger;
+      (void)emitUnitLedger(ledger,
+                           UnitIdentity{.source = ledger.units.front().source},
+                           options.config, summaryOnly);
+    }
+  }
 
-  if (llvm::raw_ostream *dump = options.analysis.dumpStream) {
+  if (llvm::raw_ostream *dump = options.engine.dumpStream) {
     settled.dump(*dump);
     if (programFacts)
       dumpProgramSlots(programFacts->slots, *dump);
   }
   return result;
+}
+
+/// Whether `exports` defines the function named `portable`.
+static bool definesName(const analysis::UnitExports &exports,
+                        const std::string &portable) {
+  for (const auto &[name, function] : exports.functions)
+    if ((function.external && name == portable) ||
+        (!function.external && exports.source + "#" + name == portable))
+      return true;
+  return false;
+}
+
+bool ProgramAnalysis::runsDefinitionOf(const std::string &portable) const {
+  return std::ranges::any_of(units, [&](const Unit &unit) {
+    return unit.exports && definesName(*unit.exports, portable);
+  });
+}
+
+std::function<bool(const analysis::ContextRequest &)>
+ProgramAnalysis::holdForUnserved() const {
+  return [this](const analysis::ContextRequest &request) {
+    return settled.contextEffects(request) == nullptr &&
+           !attempted.contains(request) && runsDefinitionOf(request.callee);
+  };
+}
+
+void ProgramAnalysis::serveContexts(Result &result) {
+  static constexpr unsigned MaxContextRounds = 8;
+  // The database of every unit's newest exports.
+  auto rebuild = [&] {
+    settled.clear();
+    settled.programFacts = programFacts;
+    for (const analysis::UnitExports &exports : fixed)
+      settled.add(exports);
+    for (const Unit &unit : units)
+      if (unit.exports)
+        settled.add(*unit.exports);
+  };
+  auto reportingRun = [&](unsigned index, bool hold) -> std::optional<bool> {
+    rebuild();
+    Unit &unit = units[index];
+    announce(options.engine.dumpStream, *unit.unit);
+    FrontendOptions overrides;
+    overrides.database = &settled;
+    overrides.alreadyReported = &unit.reported;
+    overrides.collectInterface = interfaces;
+    if (hold)
+      overrides.holdFor = holdForUnserved();
+    std::optional<UnitResult> run = runUnit(*unit.unit, overrides);
+    if (!run) {
+      result.failed.push_back(unit.unit->name());
+      return std::nullopt;
+    }
+    result.errors += run->errors;
+    result.warnings += run->warnings;
+    const analysis::UnitExports before = std::move(*unit.exports);
+    unit.dormant = false;
+    settle(unit, std::move(*run));
+    return !unit.exports->sameSummariesAs(before);
+  };
+  const std::vector<std::vector<unsigned>> adjacency = unitGraph();
+  std::vector<std::vector<unsigned>> dependents(units.size());
+  for (unsigned i = 0; i < units.size(); ++i)
+    for (const unsigned definer : adjacency[i])
+      dependents[definer].push_back(i);
+  const std::vector<std::vector<unsigned>> order =
+      core::stronglyConnectedComponents(adjacency);
+  std::set<unsigned> pending;
+  for (unsigned round = 0; round < MaxContextRounds; ++round) {
+    rebuild();
+    // Requests no unit has served yet: their definers run, once per
+    // request (one the definer cannot serve stays unserved).
+    for (const analysis::ContextRequest &request : settled.requests())
+      if (settled.contextEffects(request) == nullptr &&
+          attempted.insert(request).second)
+        for (unsigned i = 0; i < units.size(); ++i)
+          if (units[i].exports &&
+              definesName(*units[i].exports, request.callee))
+            pending.insert(i);
+    if (pending.empty())
+      break;
+    std::set<unsigned> next;
+    for (const std::vector<unsigned> &component : order)
+      for (const unsigned index : component) {
+        if (!pending.contains(index) || !units[index].exports)
+          continue;
+        const std::optional<bool> changed = reportingRun(index, true);
+        // Its callers use the contexts it now serves, or its new summaries:
+        // those still held report, the others see what changed.
+        if (changed && *changed)
+          for (const unsigned dependent : dependents[index])
+            next.insert(dependent);
+      }
+    pending = std::move(next);
+  }
+  // Every unit still held reports now, with whatever is served.
+  for (const std::vector<unsigned> &component : order)
+    for (const unsigned index : component)
+      if (units[index].held && units[index].exports)
+        (void)reportingRun(index, false);
+  rebuild();
 }
 
 void ProgramAnalysis::solveDiscoveredSlots() {
@@ -633,30 +613,33 @@ bool CompilationDatabaseUnit::run(
 bool CompilationDatabaseUnit::analyze(const FrontendOptions &options) {
   if (!attemptedParse) {
     attemptedParse = true;
-    core::AnalysisTimer timer(options.analysis.stats, "parsing");
+    core::AnalysisTimer timer(options.engine.stats, "parsing");
     clang::tooling::ClangTool tool(compilations, {source});
     for (const auto &adjuster : adjusters)
       tool.appendArgumentsAdjuster(adjuster);
-    if (options.analysis.stats)
-      options.analysis.stats->add("unit_parses");
-    if (tool.buildASTs(asts) != 0 || asts.empty()) {
+    if (options.engine.stats)
+      options.engine.stats->add("unit_parses");
+    // (A unit that failed to parse is not analysed: see
+    // `analyzeTranslationUnit`.)
+    if (tool.buildASTs(asts) != 0 || asts.empty() ||
+        llvm::any_of(asts, [](const std::unique_ptr<clang::ASTUnit> &ast) {
+          return ast->getDiagnostics().hasUncompilableErrorOccurred();
+        })) {
       asts.clear();
       return false;
     }
     multipleCommands = asts.size() != 1;
     if (multipleCommands)
       asts.clear();
-  } else if (options.analysis.stats) {
-    options.analysis.stats->add("unit_reuses");
+  } else if (options.engine.stats) {
+    options.engine.stats->add("unit_reuses");
   }
   if (multipleCommands)
     return ProgramUnit::analyze(options);
   if (asts.empty())
     return false;
   auto &ast = *asts.front();
-  auto run = options;
-  run.analysis.preparation = preparation;
-  auto result = analyzeRetainedUnit(ast, run);
+  auto result = analyzeRetainedUnit(ast, options);
   if (options.onResult)
     options.onResult(std::move(result));
   return true;
@@ -665,7 +648,6 @@ bool CompilationDatabaseUnit::analyze(const FrontendOptions &options) {
 bool CompilationDatabaseUnit::releaseAST() {
   if (asts.empty())
     return false;
-  preparation->functions.clear();
   // ClangTool fills this vector in uninstrumented LLVM. Discard its backing
   // storage too, so reparsing cannot reuse ASan-poisoned spare capacity.
   decltype(asts){}.swap(asts);

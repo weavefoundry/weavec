@@ -31,10 +31,15 @@ void lines(FILE *f) {
 // `asprintf` too.
 void formatted(int n) {
   char *s;
+  // A false positive the object engine accepts (RFC 0031 *Accepted false
+  // positives*, §5.8): the table's `null-on-failure` buffer is not tied to
+  // the negative result, so the failure path keeps a possible allocation
+  // (reported after the function's other findings).
   if (asprintf(&s, "%d", n) < 0)
     return;
   free(s);
-  // CHECK: rfc0004-posix.c:[[@LINE+1]]:3: error: 's' is freed twice [weavec::double-free]
+  // CHECK: rfc0004-posix.c:[[@LINE+2]]:3: error: 's' is freed twice [weavec::double-free]
+  // CHECK: rfc0004-posix.c:[[@LINE-3]]:5: warning: result of 'asprintf' is leaked [weavec::leak]
   free(s);
 }
 
@@ -45,9 +50,10 @@ void listing(const char *path) {
     return;
   struct dirent *e = readdir(d);
   closedir(d);
-  // CHECK: rfc0004-posix.c:[[@LINE+1]]:8: error: use of 'e' after it was freed [weavec::use-after-free]
+  // RFC 0031 §5.11: the name is the operand as written at the site.
+  // CHECK: rfc0004-posix.c:[[@LINE+1]]:8: error: use of 'e->d_name' after it was freed [weavec::use-after-free]
   puts(e->d_name);
-  // CHECK: rfc0004-posix.c:[[@LINE-3]]:3: note: freed here (through 'd')
+  // CHECK: rfc0004-posix.c:[[@LINE-4]]:3: note: freed here (through 'd')
 }
 
 // Mappings, address lists and dynamic library handles are owned.
@@ -106,4 +112,4 @@ int everyday(const char *path, char *buf, size_t n) {
   return 0;
 }
 
-// CHECK: 4 errors generated.
+// CHECK: 1 warning and 4 errors generated.

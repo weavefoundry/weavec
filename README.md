@@ -201,7 +201,7 @@ docs/             Architecture, RFCs (docs/rfcs/), roadmap, and the weavec.com s
 cmake/            Build-system modules
 ```
 
-The layering rule is strict: `Core` must not include anything from `clang/` or `llvm/`. `Analysis` is the only layer that knows about both worlds, and only the engine behind the `SafetyEngine` seam sees the dataflow internals. See [docs/architecture.md](docs/architecture.md).
+The layering rule is strict: `Core` must not include anything from `clang/` or `llvm/`. `Analysis` is the only layer that knows about both worlds, and only the object engine behind the `SafetyEngine` seam (`lib/Analysis/Engine*.cpp`) sees its own internals. See [docs/architecture.md](docs/architecture.md).
 
 ## Contributing
 

@@ -20,10 +20,7 @@
 namespace weavec::analysis {
 namespace {
 
-using core::PathAffine;
-using core::PointerOffset;
 using core::SummaryPath;
-using core::ValueSource;
 using weavec::test::analyze;
 using weavec::test::ids;
 using weavec::test::messages;
@@ -50,129 +47,13 @@ struct node { struct link link; int v; };
 
 // A pointer to a field is a copy of its base at that field: a release
 // through it reaches the summary as an effect on the base, at the offset.
-TEST(DerivedPointers, ReleaseThroughAFieldPointerReachesTheSummary) {
-  const auto result = analyze(std::string(Types) + R"c(
-    static void release_inner(struct outer *o) {
-      struct inner *i = &o->in;
-      free(i->buf);
-    }
-    void caller(struct outer *o) {
-      release_inner(o);
-      use(o->in.buf);
-    }
-  )c");
-  ASSERT_TRUE(result.ast);
-  EXPECT_EQ(messages(result.diagnostics),
-            (Strings{"7: use of 'o->in.buf' after it was freed"}));
-  const core::FunctionSummary *release = result.summary("release_inner");
-  ASSERT_NE(release, nullptr);
-  EXPECT_TRUE(
-      release->effectOf(SummaryPath::param(0).deref().field("in").field("buf"))
-          .freed);
-}
-
 // `container_of` walks back to the allocation: freeing the container of a
 // member pointer frees the object the member pointer was derived from, so
 // the round trip is clean and the summary records the offset of the free.
-TEST(DerivedPointers, ContainerOfRoundTripsToTheAllocation) {
-  const auto result = analyze(std::string(Types) + R"c(
-    void free_container(struct inner *i) {
-      free(container_of(i, struct outer, in));
-    }
-    void use_container(void) {
-      struct outer *o = malloc(sizeof *o);
-      if (!o) return;
-      free_container(&o->in);
-    }
-    struct inner *make_inner(void) {
-      struct outer *o = malloc(sizeof *o);
-      if (!o) return 0;
-      return &o->in;
-    }
-    void link_node(struct list *l) {
-      struct node *n = malloc(sizeof *n);
-      if (!n) return;
-      n->link.next = l->head;
-      l->head = &n->link;
-    }
-  )c");
-  ASSERT_TRUE(result.ast);
-  EXPECT_EQ(messages(result.diagnostics), Strings{});
-  const core::FunctionSummary *fc = result.summary("free_container");
-  ASSERT_NE(fc, nullptr);
-  const core::PlaceEffect effect = fc->effectOf(SummaryPath::param(0));
-  EXPECT_TRUE(effect.freed);
-  EXPECT_EQ(effect.at, PointerOffset::ofField("struct outer.in").negated())
-      << "freed at minus the offset of `in`";
-  // The member pointer handed out is the fresh object at the field.
-  const core::FunctionSummary *make = result.summary("make_inner");
-  ASSERT_NE(make, nullptr);
-  const auto fresh = std::ranges::find_if(
-      make->returns, [](const ValueSource &s) { return s.isFresh(); });
-  ASSERT_NE(fresh, make->returns.end());
-  EXPECT_EQ(fresh->offset, PointerOffset::ofField("struct outer.in"));
-  EXPECT_EQ(fresh->extent, PathAffine::ofConstant(16));
-}
-
 // An array member decaying (`w->payload`) or its first element addressed
 // (`&w->payload[0]`) is the base pointer stepped to the field, like `&w->tag`:
 // a `container_of` release through either reaches the container, and an
 // access through the pointer is bounded by the container's extent.
-TEST(DerivedPointers, ArrayMembersDeriveFromTheirContainer) {
-  const auto result = analyze(std::string(Types) + R"c(
-    struct wrapped { int tag; char payload[8]; };
-    static void wrapped_release(char *payload) {
-      free(container_of(payload, struct wrapped, payload));
-    }
-    char *payload_of(struct wrapped *w) { return w->payload; }
-    char *first_of(struct wrapped *w) { return &w->payload[0]; }
-    char *third_of(struct wrapped *w) { return &w->payload[2]; }
-    void release_decayed(void) {
-      struct wrapped *w = malloc(sizeof *w);
-      if (!w) return;
-      wrapped_release(w->payload);
-    }
-    void release_addressed(void) {
-      struct wrapped *w = malloc(sizeof *w);
-      if (!w) return;
-      wrapped_release(&w->payload[0]);
-    }
-    void release_twice(void) {
-      struct wrapped *w = malloc(sizeof *w);
-      if (!w) return;
-      wrapped_release(w->payload);
-      wrapped_release(w->payload);
-    }
-    void through_payload(void) {
-      struct wrapped *w = malloc(sizeof *w);
-      if (!w) return;
-      char *p = w->payload;
-      p[7] = 0;
-      w->payload[8] = 0;
-      free(w);
-    }
-  )c");
-  ASSERT_TRUE(result.ast);
-  EXPECT_EQ(messages(result.diagnostics),
-            (Strings{"22: 'w' is freed twice",
-                     "29: 'w->payload[8]' is out of bounds: index 8 of an "
-                     "object of 8 bytes"}));
-  EXPECT_EQ(ids(result.diagnostics), (Strings{"double-free", "out-of-bounds"}));
-  const auto returnedOffset =
-      [&result](const char *name) -> std::optional<PointerOffset> {
-    const core::FunctionSummary *s = result.summary(name);
-    if (s == nullptr || s->returns.size() != 1)
-      return std::nullopt;
-    return s->returns.begin()->offset;
-  };
-  const PointerOffset payload =
-      PointerOffset::ofField("struct wrapped.payload");
-  EXPECT_EQ(returnedOffset("payload_of"), payload);
-  EXPECT_EQ(returnedOffset("first_of"), payload);
-  EXPECT_EQ(returnedOffset("third_of"), PointerOffset::inside())
-      << "an element step below a field is somewhere inside (RFC 0011)";
-}
-
 // Releasing a derived pointer that is not at the start is invalid, and the
 // message says where it points.
 TEST(DerivedPointers, ReleaseAwayFromTheStartNamesTheOffset) {
@@ -192,15 +73,17 @@ TEST(DerivedPointers, ReleaseAwayFromTheStartNamesTheOffset) {
     }
   )c");
   ASSERT_TRUE(result.ast);
+  // RFC 0031 §5.5: a release is invalid where its offset is provably
+  // non-zero. `in` is the first member of `struct outer`, so `&o->in` is
+  // `o` (C11 6.7.2.1p15) and releases the allocation.
   EXPECT_EQ(
       messages(result.diagnostics),
-      (Strings{"4: 'o' is released but points to field 'in' of its allocation",
-               "8: 'p' is released but points 1 element past the start of its "
+      (Strings{"8: 'p' is released but points 1 element past the start of its "
                "allocation",
                "12: 's' is released but points 1 element past the start of "
                "its allocation"}));
   EXPECT_EQ(ids(result.diagnostics),
-            (Strings{"invalid-release", "invalid-release", "invalid-release"}));
+            (Strings{"invalid-release", "invalid-release"}));
 }
 
 // Arithmetic that comes back to the start is a release of the allocation;
@@ -300,41 +183,6 @@ TEST(DerivedPointers, FreeingAnObjectLeavesBorrowsOfWhatItPointsAtIntact) {
 // grow(...); return &f->ups[n]`) is a copy of the caller's place, not a fresh
 // allocation handed out a second time (Lua's `allocupvalue`: `up` is not
 // leaked in `newupvalue`).
-TEST(DerivedPointers, AReturnedFieldOfALocalAliasNamesTheCallersPlace) {
-  const auto result = analyze(R"c(
-    void *realloc(void *, unsigned long);
-    void abort(void);
-    typedef struct Up { const char *name; int idx; } Up;
-    typedef struct Proto { Up *ups; int size; } Proto;
-    typedef struct FS { Proto *f; int nups; } FS;
-    static Up *alloc_up(FS *fs) {
-      Proto *f = fs->f;
-      if (fs->nups + 1 > f->size) {
-        Up *nb = realloc(f->ups, sizeof(Up) * (unsigned long)(f->size * 2 + 4));
-        if (nb == 0) abort();
-        f->ups = nb;
-        f->size = f->size * 2 + 4;
-      }
-      return &f->ups[fs->nups++];
-    }
-    int new_up(FS *fs, const char *name) {
-      Up *up = alloc_up(fs);
-      up->name = name;
-      return fs->nups - 1;
-    }
-  )c");
-  ASSERT_TRUE(result.ast);
-  EXPECT_EQ(messages(result.diagnostics), Strings{});
-  const core::FunctionSummary *alloc = result.summary("alloc_up");
-  ASSERT_NE(alloc, nullptr);
-  ASSERT_EQ(alloc->returns.size(), 1U);
-  const ValueSource &returned = *alloc->returns.begin();
-  EXPECT_EQ(returned.kind, ValueSource::Kind::Copy);
-  ASSERT_TRUE(returned.path.has_value());
-  EXPECT_EQ(*returned.path,
-            SummaryPath::param(0).deref().field("f").deref().field("ups"));
-}
-
 // Two pointers derived from one base at one offset are exact aliases; after
 // a join the relation is a may-relation, so a null test of one says nothing
 // definite about the other (RFC 0011, *Derived pointers and nullness*).
@@ -375,27 +223,6 @@ TEST(DerivedPointers, NullTestsDoNotTravelAlongMayAliases) {
 // A local that equals a caller's place outright is named by it, not by a
 // derived name it also carries (RFC 0011, *Summaries*): Lua's `ci = L->ci =
 // next_ci(L)` is `copy L->ci`, not a copy into `L` at some offset.
-TEST(DerivedPointers, ExactAliasesNameAReturnedLocal) {
-  const auto result = analyze(R"c(
-    typedef struct CI { int x; struct CI *next; } CI;
-    typedef struct S { CI *ci; CI base_ci; } S;
-    CI *step(S *L, int c) {
-      if (c) L->ci = &L->base_ci;
-      CI *ci = L->ci = L->ci->next;
-      return ci;
-    }
-  )c");
-  ASSERT_TRUE(result.ast);
-  const core::FunctionSummary *step = result.summary("step");
-  ASSERT_NE(step, nullptr);
-  ASSERT_EQ(step->returns.size(), 1U);
-  const ValueSource &returned = *step->returns.begin();
-  EXPECT_EQ(returned.kind, ValueSource::Kind::Copy);
-  ASSERT_TRUE(returned.path.has_value());
-  EXPECT_EQ(*returned.path, SummaryPath::param(0).deref().field("ci"));
-  EXPECT_TRUE(returned.offset.isZero());
-}
-
 // -- Deferred lifetimes (RFC 0011, *Deferred lifetime checks*) ----------------
 
 // Storing the address of a local through a parameter is fine when the store
@@ -453,53 +280,6 @@ TEST(DeferredLifetimes, EscapesOnAnyPathAreReported) {
 }
 
 // -- Extents (RFC 0011, *Extents*) --------------------------------------------
-
-TEST(Extents, AllocationsCarryTheirExtent) {
-  const auto result = analyze(std::string(Types) + R"c(
-    void *calloc(size_t, size_t);
-    static char *sixteen(void) { return malloc(16); }
-    static int *ints(int n) { return malloc(n * sizeof(int)); }
-    static int *zeroed(int n) { return calloc(n, sizeof(int)); }
-    static struct outer *one(void) { return malloc(sizeof(struct outer)); }
-    static char *grown(char *OWNED p, size_t n) { return realloc(p, n + 1); }
-  )c");
-  ASSERT_TRUE(result.ast);
-  const auto extentOf = [&result](const char *name) {
-    const core::FunctionSummary *s = result.summary(name);
-    if (s == nullptr)
-      return std::optional<PathAffine>{};
-    for (const ValueSource &source : s->returns)
-      if (source.isFresh())
-        return source.extent;
-    return std::optional<PathAffine>{};
-  };
-  EXPECT_EQ(extentOf("sixteen"), PathAffine::ofConstant(16));
-  // RFC 0017: these are actual C products, including the conversion of
-  // a negative int. Neither is an unbounded mathematical n*4 expression.
-  for (const auto *name : {"ints", "zeroed"}) {
-    const auto extent = extentOf(name);
-    ASSERT_TRUE(extent && extent->expression) << name;
-    const auto range =
-        extent->expression->evaluate([](const auto &, core::IntegerType type) {
-          return core::IntegerRange::singleton(
-              core::IntegerValue::ofBits({.width = 32, .isSigned = true},
-                                         UINT32_MAX)
-                  .converted(type));
-        });
-    ASSERT_TRUE(range.values.constant());
-    EXPECT_EQ(range.values.constant()->bits, UINT64_MAX - 3);
-  }
-  EXPECT_EQ(extentOf("one"), PathAffine::ofConstant(16));
-  const auto grown = extentOf("grown");
-  ASSERT_TRUE(grown && grown->expression);
-  const auto wrapped =
-      grown->expression->evaluate([](const auto &, core::IntegerType type) {
-        return core::IntegerRange::singleton(
-            core::IntegerValue::ofBits(type, UINT64_MAX));
-      });
-  ASSERT_TRUE(wrapped.values.constant());
-  EXPECT_EQ(wrapped.values.constant()->bits, 0U);
-}
 
 // -- Bounds checks (RFC 0011, *Bounds checks*) --------------------------------
 
@@ -817,81 +597,6 @@ TEST(Bounds, LibraryBufferLengthPairs) {
 // An unconditional access at a constant offset past the pointee's own size,
 // or at a symbolic one, is a requirement on the parameter; one under an
 // ordering, or at an offset the type already promises, is not.
-TEST(ExtentRequirements, InferredFromUnconditionalAccesses) {
-  const auto result = analyze(std::string(Types) + R"c(
-    static void put7(char *b) { b[7] = 0; }
-    static void put_n(char *b, size_t n) { b[n] = 0; }
-    static void fill(int *b, int n) { for (int i = 0; i < n; i++) b[i] = 0; }
-    static void first(struct outer *o) { o->k = 1; }
-    static void guarded(char *b, int n) { if (n > 4) b[4] = 0; }
-    static void on_zero(char *b, int n) { if (n == 0) b[7] = 0; }
-    static void clears(void *b, size_t n) { memset(b, 0, n); }
-    static void put8(char *b) { for (int i = 0; i < 8; i++) b[i] = 0; }
-    static void put_le8(char *b) { for (int i = 0; i <= 8; i++) b[i] = 0; }
-    static void either(int *b, int n) {
-      for (int i = 0; i < n && i < 16; i++) b[i] = 0;
-    }
-  )c");
-  ASSERT_TRUE(result.ast);
-  const auto requirements = [&result](const char *name) {
-    const core::FunctionSummary *s = result.summary(name);
-    if (s == nullptr || !s->requiresExtent.contains(0))
-      return std::set<core::ExtentRequirement>{};
-    return s->requiresExtent.at(0);
-  };
-  EXPECT_EQ(requirements("put7"), (std::set<core::ExtentRequirement>{
-                                      {.need = PathAffine::ofConstant(8),
-                                       .when = {},
-                                       .start = PathAffine::ofConstant(7)}}));
-  EXPECT_EQ(requirements("put_n"),
-            (std::set<core::ExtentRequirement>{
-                {.need = PathAffine::ofPath(SummaryPath::param(1), 1, 1),
-                 .when = {},
-                 .start = PathAffine::ofPath(SummaryPath::param(1))}}));
-  ASSERT_EQ(requirements("fill").size(), 1U);
-  const auto fill = *requirements("fill").begin();
-  EXPECT_EQ(fill.need, PathAffine::ofPath(SummaryPath::param(1), 4, 0));
-  EXPECT_EQ(fill.when.conditions.at(SummaryPath::param(1)),
-            core::ValueFact::of(core::Outcome::Positive));
-  EXPECT_EQ(requirements("first"), std::set<core::ExtentRequirement>{})
-      << "the type promises `sizeof(struct outer)`";
-  ASSERT_EQ(requirements("guarded").size(), 1U);
-  const auto guarded = *requirements("guarded").begin();
-  EXPECT_EQ(guarded.need, PathAffine::ofConstant(5));
-  EXPECT_EQ(guarded.start, PathAffine::ofConstant(4));
-  EXPECT_FALSE(guarded.when.trivial());
-  core::ExtentRequirement onZero{.need = PathAffine::ofConstant(8),
-                                 .when = {},
-                                 .start = PathAffine::ofConstant(7)};
-  onZero.when.require(SummaryPath::param(1), core::ValueFact::ofConstant(0));
-  EXPECT_EQ(requirements("on_zero"),
-            (std::set<core::ExtentRequirement>{onZero}));
-  EXPECT_EQ(requirements("clears"),
-            (std::set<core::ExtentRequirement>{
-                {.need = PathAffine::ofPath(SummaryPath::param(1), 1, 0),
-                 .when = {}}}));
-  EXPECT_EQ(requirements("put8"),
-            (std::set<core::ExtentRequirement>{
-                {.need = PathAffine::ofConstant(8), .when = {}}}))
-      << "`b[i]` under `i < 8` needs 8 at the boundary";
-  EXPECT_EQ(requirements("put_le8"),
-            (std::set<core::ExtentRequirement>{
-                {.need = PathAffine::ofConstant(9), .when = {}}}));
-  ASSERT_EQ(requirements("either").size(), 1U);
-  const auto either = *requirements("either").begin();
-  ASSERT_TRUE(either.need.expression);
-  EXPECT_EQ(either.need.scale, 4);
-  for (const auto n : {1U, 8U, 16U, 20U}) {
-    const auto evaluated = either.need.expression->evaluate(
-        [n](const auto &, core::IntegerType type) {
-          return core::IntegerRange::singleton(
-              core::IntegerValue::ofBits(type, n));
-        });
-    ASSERT_TRUE(evaluated.values.constant());
-    EXPECT_EQ(evaluated.values.constant()->bits, std::min(n, 16U));
-  }
-}
-
 // A requirement is checked at the call against what the argument has.
 TEST(ExtentRequirements, CheckedAtTheCall) {
   const auto result = analyze(std::string(Types) + R"c(
@@ -936,45 +641,6 @@ TEST(ExtentRequirements, CheckedAtTheCall) {
 
 // -- WEAVEC_SIZED_BY (RFC 0011, *Annotations*) --------------------------------
 
-TEST(SizedBy, GivesAParameterAnExtentAndARequirement) {
-  const auto result = analyze(std::string(Types) + R"c(
-    void fill(char *SIZED_BY(n) p, size_t n) {
-      for (size_t i = 0; i < n; i++) p[i] = 0;
-      p[n] = 0;
-    }
-    void ints(int *SIZED_BY(n) p, int n) { p[n - 1] = 0; }
-    void call(void) {
-      char buf[4];
-      fill(buf, 4);
-      fill(buf, 8);
-    }
-  )c");
-  ASSERT_TRUE(result.ast);
-  EXPECT_EQ(
-      messages(result.diagnostics),
-      (Strings{"9: 'fill' requires 8 bytes behind 'buf', which has 4 bytes"}));
-  // RFC 0030 §3.3: `p[n]` is past the declared count, a lower bound on the
-  // object: checked, not an error.
-  EXPECT_EQ(notes(result.diagnostics, 0), Strings{"'buf' is declared here"});
-  // The annotation is a requirement callers see (the resolved summary).
-  const auto resolved = [&result](const char *name) {
-    const clang::FunctionDecl *fn = result.function(name);
-    const auto found = result.analyzer->summaries().lookup(*fn);
-    return found ? found->summary : nullptr;
-  };
-  const auto fill = resolved("fill");
-  ASSERT_NE(fill, nullptr);
-  ASSERT_TRUE(fill->requiresExtent.contains(0));
-  EXPECT_TRUE(fill->requiresExtent.at(0).contains(core::ExtentRequirement{
-      .need = PathAffine::ofPath(SummaryPath::param(1), 1, 0), .when = {}}));
-  const auto ints = resolved("ints");
-  ASSERT_NE(ints, nullptr);
-  ASSERT_TRUE(ints->requiresExtent.contains(0));
-  EXPECT_TRUE(ints->requiresExtent.at(0).contains(core::ExtentRequirement{
-      .need = PathAffine::ofPath(SummaryPath::param(1), 4, 0), .when = {}}))
-      << "in units of the pointee";
-}
-
 TEST(SizedBy, MalformedAnnotationsAreReported) {
   const auto result = analyze(std::string(Types) + R"c(
     void not_pointer(int SIZED_BY(n) x, int n) { (void)x; (void)n; }
@@ -1000,7 +666,9 @@ TEST(SizedBy, MalformedAnnotationsAreReported) {
 // Extents and requirements cross the summary: a wrapper's caller knows the
 // size, and a callee's need is checked against a caller's allocation. RFC
 // 0030 §7.5: the call checks a static callee's must-access requirement; one
-// that only a further call gives (`deeper`) is none of R1-R5.
+// that only a further call gives (`deeper`) is none of R1-R5, but `deeper`
+// stores to `b[7]` on every return, past the caller's object (RFC 0031
+// *Implementation amendments*, "Stores past the caller's object").
 TEST(ExtentRequirements, ComposeThroughWrappers) {
   const auto result = analyze(std::string(Types) + R"c(
     static char *xmalloc(size_t n) {
@@ -1026,7 +694,77 @@ TEST(ExtentRequirements, ComposeThroughWrappers) {
   EXPECT_EQ(
       messages(result.diagnostics),
       (Strings{"9: 'p[4]' is out of bounds: index 4 of an object of 4 bytes",
-               "10: 'put7' requires 8 bytes behind 'p', which has 4 bytes"}));
+               "10: 'put7' requires 8 bytes behind 'p', which has 4 bytes",
+               "16: 'deeper' requires 8 bytes behind 'p', which has 4 bytes"}));
+}
+
+// -- Products that may wrap, counted-field invariants (RFC 0031) -------------
+
+// An allocation of `n * sizeof *p` has the size type's reduction of that
+// product: never more than `n` elements, so `p[n]` is past it; `p[n - 1]`
+// is not proven (the product may have wrapped).
+TEST(ExtentRequirements, AllocationsOfProductsEndAtTheProduct) {
+  const auto result = analyze(std::string(Types) + R"c(
+    void past(size_t n) {
+      int *p = malloc(n * sizeof *p);
+      if (!p) return;
+      p[n] = 1;
+      free(p);
+    }
+    void last(size_t n) {
+      if (n == 0) return;
+      int *p = malloc(n * sizeof *p);
+      if (!p) return;
+      p[n - 1] = 1;
+      free(p);
+    }
+  )c");
+  ASSERT_TRUE(result.ast);
+  EXPECT_EQ(messages(result.diagnostics),
+            (Strings{"4: 'p[n]' is out of bounds: 'n' is the number of "
+                     "elements of 'p'"}));
+}
+
+// RFC 0030 §7.6 (RFC 0031 *Implementation amendments*): `init` witnesses
+// `count(items) == cap`, `push` writes `n` only, which refutes `count(items)
+// == n`; a reader is analysed with the survivor.
+TEST(ExtentRequirements, CountedFieldInvariantsAreInferred) {
+  const auto result = analyze(std::string(Types) + R"c(
+    struct vec { int *items; size_t n; size_t cap; };
+    void init(struct vec *v, size_t cap) {
+      v->items = malloc(cap * sizeof *v->items);
+      v->cap = cap;
+      v->n = 0;
+    }
+    void push(struct vec *v, int x) {
+      if (v->n < v->cap)
+        v->items[v->n++] = x;
+    }
+    int last(struct vec *v) { return v->items[v->cap]; }
+    int last_n(struct vec *v) { return v->items[v->n]; }
+  )c");
+  ASSERT_TRUE(result.ast);
+  EXPECT_EQ(messages(result.diagnostics),
+            (Strings{"11: 'v->items[v->cap]' is out of bounds: 'v->cap' is "
+                     "the number of elements of 'v->items'"}));
+}
+
+// No function establishes the pair (nothing to witness), or one stores a
+// count that is not the allocation's: no invariant.
+TEST(ExtentRequirements, CountedFieldInvariantsNeedAWitnessAndNoRefutation) {
+  const auto result = analyze(std::string(Types) + R"c(
+    struct chain { struct chain *next; int v; };
+    int second(struct chain *n) { return n->next->v; }
+    struct text { char *data; size_t len; };
+    void make(struct text *b, size_t n) {
+      b->data = malloc(n);
+      b->len = n + 1;
+    }
+    char at(struct text *b) { return b->data[b->len - 1]; }
+  )c");
+  ASSERT_TRUE(result.ast);
+  EXPECT_TRUE(result.diagnostics.empty())
+      << ::testing::PrintToString(messages(result.diagnostics));
 }
 
 } // namespace

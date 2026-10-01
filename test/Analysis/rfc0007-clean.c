@@ -101,8 +101,13 @@ int checked4(void) {
   }
   return 0;
 }
+// Not clean: when `c` is zero the block is neither returned nor freed. The
+// object engine reports the leak at the return (RFC 0031 §5.8); the old
+// engine missed it.
 char *handed_out_or_null(int c) {
   char *p = malloc(8);
+  // QUIET: rfc0007-clean.c:[[@LINE+2]]:18: warning: 'p' is leaked [weavec::leak]
+  // QUIET-NOT: {{warning|error}}:
   return c ? p : NULL;
 }
 
@@ -292,4 +297,11 @@ void with_ctx(void) {
   register_cb(cb, ctx);
 }
 
-// BOUNDARY: "diagnostics": []
+// The only diagnostic is the leak in `handed_out_or_null`.
+// BOUNDARY: "diagnostics": [
+// BOUNDARY-NEXT: {
+// BOUNDARY-NEXT: "id": "leak",
+// BOUNDARY: "function": "handed_out_or_null",
+// BOUNDARY: "fingerprint":
+// BOUNDARY-NEXT: }
+// BOUNDARY-NEXT: ]

@@ -1,50 +1,10 @@
 # weavec::Analysis -- bridges Clang's AST to the core ownership model.
 weavec_add_library(
   Analysis
-  SOURCES Allocators.cpp
-          Annotations.cpp
+  SOURCES Annotations.cpp
           BypassedDeclarations.cpp
-          LibrarySummaries.cpp
           ClangLocation.cpp
-          InterfaceTypes.cpp
-          Dataflow.cpp
-          DataflowIntervalProofs.cpp
-          DataflowArrays.cpp
-          DataflowArrayMemory.cpp
-          DataflowArrayRanges.cpp
-          DataflowArrayCleanup.cpp
-          DataflowArrayFill.cpp
-          DataflowIntegers.cpp
-          DataflowIntegerExpressions.cpp
-          DataflowIntegerStatements.cpp
-          DataflowCheckedIntegers.cpp
-          DataflowIntegerProofs.cpp
-          DataflowNumericOutputs.cpp
-          DataflowNumericInputs.cpp
-          DataflowDynamicExtents.cpp
-          DataflowHeap.cpp
-          DataflowMemory.cpp
-          DataflowViews.cpp
-          DataflowWitnesses.cpp
-          DataflowLibraryRequirements.cpp
-          DataflowLibraryEffects.cpp
-          KindSeeding.cpp
-          DataflowCallbacks.cpp
-          DataflowUnknown.cpp
-          CallbackSummaries.cpp
-          CallContextSummaries.cpp
-          DataflowCallContext.cpp
-          DataflowValues.cpp
-          DataflowSizedFields.cpp
-          DataflowStrings.cpp
-          FunctionAnalysis.cpp
-          PlaceBuilder.cpp
           ProgramDatabase.cpp
-          Summaries.cpp
-          SummaryDependencies.cpp
-          TranslationUnitAnalysis.cpp
-          DataflowLoopRequirements.cpp
-          DataflowGuardCompleteness.cpp
           KindTable.cpp
           AttributeReader.cpp
           KindInference.cpp
@@ -59,7 +19,20 @@ weavec_add_library(
           BoundaryInvariants.cpp
           LedgerAdapter.cpp
           SafetyEngine.cpp
-          DataflowEngine.cpp
+          # RFC 0031.
+          EngineAnnotations.cpp
+          EngineCalls.cpp
+          EngineContexts.cpp
+          EngineDecide.cpp
+          EngineExpr.cpp
+          EngineInvariants.cpp
+          EngineKinds.cpp
+          EngineLibrary.cpp
+          EngineLifetimes.cpp
+          EngineRun.cpp
+          EngineStrings.cpp
+          EngineSummary.cpp
+          EngineUnit.cpp
           UnitPipeline.cpp
   PUBLIC_DEPS weavec::Core
   USES_LLVM)

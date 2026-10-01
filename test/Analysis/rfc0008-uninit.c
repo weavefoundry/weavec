@@ -17,8 +17,9 @@ struct buf {
 
 void local(void) {
   char *p;
-  // CHECK: rfc0008-uninit.c:[[@LINE+2]]:3: error: use of 'p' before it was initialized [weavec::use-of-uninitialized]
-  // CHECK: rfc0008-uninit.c:[[@LINE-2]]:9: note: 'p' is declared here
+  // RFC 0031 §5.9: the use is the released operand, not the call.
+  // CHECK: rfc0008-uninit.c:[[@LINE+2]]:8: error: use of 'p' before it was initialized [weavec::use-of-uninitialized]
+  // CHECK: rfc0008-uninit.c:[[@LINE-3]]:9: note: 'p' is declared here
   free(p);
 }
 
@@ -73,8 +74,13 @@ int clean(int c) {
 
 // The record never reaches a summary: only locals can be uninitialised.
 // DUMP: function 'local':
-// DUMP: summary: stores{} returns{}
+// DUMP-NEXT: summary:
+// DUMP-NEXT: always-returns
+// DUMP-NEXT: function 'field':
 // DUMP: function 'maybe':
-// DUMP: summary: stores{} returns{}
+// DUMP-NEXT: summary:
+// DUMP-NEXT: always-returns
+// DUMP-NEXT: result int [0, 0] when zero
+// DUMP-NEXT: function 'init':
 
 // CHECK: 3 errors generated.

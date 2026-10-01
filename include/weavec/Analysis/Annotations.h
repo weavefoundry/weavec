@@ -198,6 +198,25 @@ struct AnnotationSet {
 /// Collects WeaveC annotations from `decl`.
 [[nodiscard]] AnnotationSet getAnnotations(const clang::Decl &decl);
 
+/// Annotations on a function's signature, collected over every
+/// redeclaration so a prototype in a header annotates the definition in the
+/// source file.
+struct SignatureAnnotations {
+  AnnotationSet result;
+  std::vector<AnnotationSet> params;
+  bool unsafe = false;
+
+  /// True if the result or any parameter carries an ownership annotation
+  /// (`WEAVEC_OWNED`, `WEAVEC_BORROWED`, `WEAVEC_MUT` or `WEAVEC_RAW`).
+  [[nodiscard]] bool anyOwnership() const noexcept;
+};
+
+/// The signature annotations of `function` (RFC 0003), with RFC 0030 §7.2's
+/// `malloc` and `ownership_*` attributes outside system headers read as
+/// ownership contracts where no WeaveC annotation states one.
+[[nodiscard]] SignatureAnnotations
+collectAnnotations(const clang::FunctionDecl &function);
+
 /// Returns true if `stmt` is an attributed statement carrying `weavec.unsafe`.
 [[nodiscard]] bool isUnsafeBlock(const clang::Stmt &stmt);
 

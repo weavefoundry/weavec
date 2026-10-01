@@ -49,18 +49,22 @@ int after(void) {
 }
 
 // WEAVEC_REFCOUNT: the field is a count even though nothing here releases
-// through it, so the share the local takes and drops is a leak.
+// through it, so the share the local takes and drops is a leak. The object
+// engine does not read WEAVEC_REFCOUNT: the increment is an integer store
+// that leaves the caller's count unknown, no share is taken and no leak is
+// reported (test/cases/KNOWN-DIFFERENCES.md, *Lit tests*). A leak is never
+// a facet (RFC 0030 §3.4), so no outcome is lost.
 struct node {
   int WEAVEC_REFCOUNT refs;
   struct node *next;
 };
 // DUMP-LABEL: function 'retain_local':
-// DUMP: summary: n->next: read; n->next->refs: read|written; stores{} returns{} requires{n} increments{n->next->refs}
+// DUMP-NEXT: summary:
+// DUMP-NEXT: always-returns
+// DUMP-NEXT: store param0->next->refs := int [-2147483648, 2147483647]
 void retain_local(struct node *n) {
   struct node *p = n->next;
-  // CHECK: rfc0010-annotations.c:[[@LINE+1]]:3: warning: 'p' is leaked [weavec::leak]
   p->refs++;
-  // CHECK: rfc0010-annotations.c:[[@LINE-1]]:3: note: reference taken here
 }
 struct sized {
   int len;
@@ -98,4 +102,4 @@ void both(struct gobj *WEAVEC_RETAINS WEAVEC_RELEASES o) { use(o); }
 // CHECK: rfc0010-annotations.c:[[@LINE+1]]:16: warning: 'family_alone' is declared WEAVEC_OWNED_BY(handle_close) without WEAVEC_OWNED [weavec::invalid-annotation]
 struct handle *family_alone(void) WEAVEC_OWNED_BY(handle_close) { return NULL; }
 
-// CHECK: 3 warnings and 3 errors generated.
+// CHECK: 2 warnings and 3 errors generated.

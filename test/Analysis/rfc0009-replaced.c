@@ -25,10 +25,12 @@ static void append(struct L *L, const char *b) {
 }
 
 // Lua's `str_writer`: a null block finishes (the stack is freed for good),
-// anything else appends (the stack is freed and replaced). The consume the
-// caller sees is guarded on the null; the store keeps its own guard.
+// anything else appends (the stack is freed and replaced). Format 30 (RFC
+// 0031 §6.1) releases the entry value, which both arms free, and keys the
+// store of the replacement by the block's zero test.
 // DUMP-LABEL: function 'writer':
-// DUMP: summary: L->stack: written|freed(free) when[b null]; *b: read; stores{L->stack = fresh(free) extent=8 when[b nonnull], L->stack = null when[b nonnull]} returns{} requires{L}
+// DUMP: release *param0->stack free when always
+// DUMP-NEXT: store param0->stack := fresh#0 free extent 8 {{.*}}when param 1 !=0
 void writer(struct L *L, const char *b) {
   if (b == NULL)
     finish(L);
@@ -57,10 +59,12 @@ void unknown(struct L *L, const char *b) {
 }
 
 // `via` consumes `L->stack` through a local alias and its callee stores a
-// new value there: the caller's place is replaced, but no store names it in
-// the caller's terms.
+// new value there: the caller's place is replaced, and the object engine's
+// store names it in the caller's terms (RFC 0031 §6.1, paths from the entry
+// heap).
 // DUMP-LABEL: function 'via':
-// DUMP: summary: L->stack: written|freed(free)|replaced; stores{} returns{}
+// DUMP: release *param0->stack free when always
+// DUMP-NEXT: store param0->stack := fresh#0 free extent 8
 static void through(struct W *w) {
   free(w->L->stack);
   w->L->stack = malloc(8);
@@ -76,8 +80,8 @@ static void via(struct L *L) {
 // value `via` left.
 // DUMP-LABEL: function 'cascade':
 // RFC 0013: the final allocation written through the local alias reaches callers.
-// DUMP: summary: L->stack: written|freed(free)|replaced; stores{} returns{} requires{L}
-// DUMP-NEXT: heap L->stack complete{result = fresh(free) extent=8, result = null}
+// DUMP: release *param0->stack free when always
+// DUMP-NEXT: store param0->stack := fresh#0 free extent 8
 void cascade(struct L *L) {
   free(L->stack);
   // CHECK: [[@LINE+1]]:3: error: 'L->stack' is freed twice [weavec::double-free]

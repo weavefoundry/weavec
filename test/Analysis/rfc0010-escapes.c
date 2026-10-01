@@ -32,9 +32,13 @@ struct table {
 };
 
 // `p->value = value` has no caller-visible destination; `value` escapes, and
-// so does the old head, which lives on in the new node's `next`.
+// so does the old head, which lives on in the new node's `next`. The object
+// engine names both homes: the new node's contents are stores below the
+// stored object (RFC 0031 §6.3, *Amendment (heap outputs)*).
 // DUMP-LABEL: function 'table_set':
-// DUMP: summary: t->first: read|written|escaped; value: escaped; stores{t->first = fresh(free) extent=16}
+// DUMP: store param0->first := fresh#0 free extent 16 zeroed when result zero
+// DUMP-NEXT: store (new) param0->first->next := path param0->first
+// DUMP-NEXT: store (new) param0->first->value := path param1
 static int table_set(struct table *t, struct obj *value) {
   struct pair *p = malloc(sizeof *p);
   if (!p)
@@ -48,7 +52,9 @@ static int table_set(struct table *t, struct obj *value) {
 // The wrapper that releases on failure: `escaped` and the conditional share
 // release both reach the caller.
 // DUMP-LABEL: function 'table_set_new':
-// DUMP: summary: t->first: written|escaped; value: freed(free),share|escaped;
+// DUMP: release *param1 free may when result negative and param 1 !=0
+// DUMP: store param0->first := fresh#0 free extent 16 zeroed when result zero
+// DUMP: store (new) param0->first->value := path param1
 static int table_set_new(struct table *t, struct obj *value) {
   if (!value)
     return -1;
@@ -60,11 +66,14 @@ static int table_set_new(struct table *t, struct obj *value) {
 }
 
 // The share-taking wrapper: `obj_ref(value)` is `value` or null, so `param 1`
-// of the callee resolves to `value` and its increment, decrement and escape
-// compose.
+// of the callee resolves to `value` and its count update, release and escape
+// compose. The object engine does not infer RFC 0010 count functions yet, so
+// the share release is a possible release of `value` (RFC 0031 §5.5;
+// test/cases/KNOWN-DIFFERENCES.md).
 // DUMP-LABEL: function 'table_set_shared':
-// DUMP: summary: t->first: written|escaped; value: escaped; value->rc: written;
-// DUMP-SAME: increments{value->rc} decrements{value->rc}
+// DUMP: release *param1 free may when result negative
+// DUMP: store param1->rc := int
+// DUMP: store (new) param0->first->value := path param1
 static int table_set_shared(struct table *t, struct obj *value) {
   return table_set_new(t, obj_ref(value));
 }
@@ -90,9 +99,10 @@ int shares_into_table(struct table *t, void *it) {
   return 0;
 }
 
-// A node on the stack dies with the call: no escape.
+// A node on the stack dies with the call: no escape (no store the caller
+// could see).
 // DUMP-LABEL: function 'use_locally':
-// DUMP-NOT: escaped
+// DUMP-NOT: store
 // DUMP-LABEL: function 'still_leaks':
 struct ctx {
   struct obj *o;
@@ -108,6 +118,7 @@ int still_leaks(void) {
   struct obj *a = malloc(sizeof *a);
   if (!a)
     return -1;
+  // CHECK-NOT: leaked
   // CHECK: rfc0010-escapes.c:[[@LINE+1]]:3: warning: 'a' is leaked [weavec::leak]
   return use_locally(a);
 }

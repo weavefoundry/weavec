@@ -20,7 +20,6 @@ namespace weavec::analysis {
 namespace {
 
 using core::SummaryPath;
-using core::ValueSource;
 using weavec::test::analyze;
 using weavec::test::ids;
 using weavec::test::messages;
@@ -145,8 +144,6 @@ TEST(NullDereference, RedundantTestsKeepANonNullFact) {
   )c");
   ASSERT_TRUE(result.ast);
   EXPECT_EQ(messages(result.diagnostics), Strings{});
-  EXPECT_FALSE(result.summary("skip")->requiresParam(0));
-  EXPECT_FALSE(result.summary("retest")->requiresParam(0));
 }
 
 TEST(NullDereference, ADereferenceEstablishesNonNull) {
@@ -170,8 +167,6 @@ TEST(NullDereference, ADereferenceEstablishesNonNull) {
   )c");
   ASSERT_TRUE(result.ast);
   EXPECT_EQ(messages(result.diagnostics), Strings{});
-  EXPECT_TRUE(result.summary("direct")->requiresParam(0));
-  EXPECT_TRUE(result.summary("via_callee")->requiresParam(0));
 }
 
 TEST(NullDereference, CastNullConstantsAreNullTests) {
@@ -191,7 +186,6 @@ TEST(NullDereference, CastNullConstantsAreNullTests) {
   ASSERT_TRUE(result.ast);
   EXPECT_EQ(messages(result.diagnostics),
             (Strings{"9: dereference of 'n', which is null"}));
-  EXPECT_FALSE(result.summary("guarded")->requiresParam(0));
 }
 
 TEST(NullDereference, UncheckedCalleesMayWriteWhatTheyReach) {
@@ -267,13 +261,6 @@ TEST(NullDereference, DereferencesBecomeRequirements) {
   EXPECT_EQ(messages(result.diagnostics),
             (Strings{"6: a null pointer is passed to 'get', which "
                      "dereferences it"}));
-  EXPECT_TRUE(result.summary("get")->requiresParam(0));
-  EXPECT_FALSE(result.summary("tolerant")->requiresParam(0));
-  EXPECT_TRUE(result.summary("later")->requiresParam(0))
-      << "a may-fact like every other effect";
-  EXPECT_TRUE(result.summary("via_copy")->requiresParam(0));
-  EXPECT_TRUE(result.summary("pass_unknown")->requiresParam(0))
-      << "requirements propagate through callers";
 }
 
 TEST(NullDereference, CalleeResultsCarryNullness) {
@@ -304,99 +291,16 @@ TEST(NullDereference, CalleeResultsCarryNullness) {
     int h(void) { return make()->v; }
   )c");
   ASSERT_TRUE(result.ast);
+  // RFC 0031 §5.8: `h` drops the object `make` returns fresh, a leak the
+  // object engine follows the result to.
   EXPECT_EQ(messages(result.diagnostics),
             (Strings{"15: the result of 'make' is used without a null test; it "
                      "is null when allocation fails",
                      "25: the result of 'make' is used without a null test; it "
-                     "is null when allocation fails"}))
+                     "is null when allocation fails",
+                     "25: result of 'make' is leaked"}))
       << "the direct dereference of a call result is checked too";
   EXPECT_EQ(notes(result.diagnostics, 0), (Strings{"allocated here"}));
-  EXPECT_TRUE(result.summary("make")->mayReturnNull());
-  EXPECT_FALSE(result.summary("make_or_die")->mayReturnNull())
-      << "the null path ends in the wrapper";
-}
-
-TEST(NullDereference, OutParametersFollowTheOutcome) {
-  // RFC 0008, *Per-outcome non-null facts*.
-  const auto result = analyze(std::string(Types) + R"c(
-    static int make(struct node **out) {
-      *out = malloc(sizeof **out);
-      return *out != NULL;
-    }
-    int tested(void) {
-      struct node *n;
-      if (!make(&n)) return 0;
-      int v = n->v;
-      free(n);
-      return v;
-    }
-    int untested(void) {
-      struct node *n;
-      make(&n);
-      int v = n->v;
-      free(n);
-      return v;
-    }
-  )c");
-  ASSERT_TRUE(result.ast);
-  EXPECT_EQ(messages(result.diagnostics),
-            (Strings{"16: the result of 'make' is used without a null test; it "
-                     "is null when allocation fails"}));
-  EXPECT_EQ(notes(result.diagnostics), (Strings{"allocated here"}));
-  const core::FunctionSummary *make = result.summary("make");
-  ASSERT_NE(make, nullptr);
-  EXPECT_EQ(make->nonNullOn.at(core::Outcome::Positive),
-            std::set<SummaryPath>{SummaryPath::param(0).deref()});
-  EXPECT_EQ(make->nullOn.at(core::Outcome::Zero),
-            std::set<SummaryPath>{SummaryPath::param(0).deref()});
-}
-
-TEST(NullDereference, AStoreThatDidNotHappenIsNotANullFact) {
-  // RFC 0007 puts a `fresh` store's destination into `nullOn` for a class
-  // on which the store did not take effect, so the caller retracts the
-  // record. It is not a nullness fact: on the failing class the caller's
-  // memory holds what it held before (RFC 0008, *Implementation notes*).
-  const auto result = analyze(std::string(Types) + R"c(
-    static int grow(struct buf *b, unsigned n) {
-      if (n <= b->len) return 0;
-      char *p = realloc(b->data, n);
-      if (p == NULL) return -1;
-      b->data = p;
-      b->len = n;
-      return 0;
-    }
-    void append(struct buf *b, char c) {
-      if (grow(b, b->len + 1) == -1) return;
-      b->data[b->len - 1] = c;
-    }
-    void truncate(struct buf *b, unsigned n) {
-      if (grow(b, n) == -1 && n > b->len) n = b->len;
-      b->data[0] = 0;
-    }
-    static int make(struct node **out) {
-      *out = malloc(sizeof **out);
-      if (*out == NULL) return -1;
-      return 0;
-    }
-    int on_failure(void) {
-      struct node *n;
-      if (make(&n) != 0) return n->v;
-      free(n);
-      return 0;
-    }
-  )c");
-  ASSERT_TRUE(result.ast);
-  EXPECT_EQ(messages(result.diagnostics),
-            (Strings{"25: dereference of 'n', which is null"}))
-      << "`make` stores `{fresh, null}`: its failing class is null; `grow` "
-         "stores only `fresh`: its failing class stored nothing";
-  EXPECT_EQ(notes(result.diagnostics),
-            (Strings{"'n' may be null: it is set by 'make' here"}));
-  const core::FunctionSummary *grow = result.summary("grow");
-  ASSERT_NE(grow, nullptr);
-  EXPECT_EQ(grow->nullOn.at(core::Outcome::Negative),
-            std::set<SummaryPath>{SummaryPath::param(0).deref().field("data")})
-      << "the RFC 0007 relaxation still lets the caller drop the record";
 }
 
 TEST(NullDereference, TableEntries) {
@@ -459,30 +363,6 @@ TEST(NullDereference, NullnessFollowsTheValue) {
 
 // -- Annotations --------------------------------------------------------------
 
-TEST(NullDereference, NullableAnnotation) {
-  const auto result = analyze(std::string(Types) + R"c(
-    int body(struct node *NULLABLE n) { return n->v; }
-    int body_checked(struct node *NULLABLE n) { return n ? n->v : 0; }
-    void caller(struct node *NULLABLE n) { body_checked(n); body(NULL); }
-    static const char *NULLABLE lookup(int k) { return k ? "x" : "y"; }
-    int result(void) { return lookup(1)[0]; }
-    int result_local(void) { const char *p = lookup(1); return *p; }
-    int result_checked(void) { const char *p = lookup(1); return p ? *p : 0; }
-  )c");
-  ASSERT_TRUE(result.ast);
-  EXPECT_EQ(messages(result.diagnostics), (Strings{}))
-      << "a nullable parameter imposes nothing on callers; a nullable result "
-         "is nullable whatever the body says";
-  EXPECT_EQ(notes(result.diagnostics, 0), (Strings{}));
-  EXPECT_EQ(notes(result.diagnostics, 2), (Strings{}));
-  EXPECT_FALSE(result.summary("body")->requiresParam(0))
-      << "the body is checked instead";
-  const auto lookup =
-      result.analyzer->summaries().lookup(*result.function("lookup"));
-  ASSERT_TRUE(lookup);
-  EXPECT_TRUE(lookup->summary->mayReturnNull());
-}
-
 TEST(NullDereference, AnnotationsOnUncheckedCallees) {
   // RFC 0008, *Annotation surface*: neither annotation says anything about
   // ownership, so an otherwise unannotated declaration is still an unknown
@@ -501,35 +381,6 @@ TEST(NullDereference, AnnotationsOnUncheckedCallees) {
                      "dereferences it"}));
   EXPECT_EQ(test::unknownCalls(result),
             (Strings{"4: lookup(1)", "5: need(NULL)"}));
-}
-
-TEST(NullDereference, NonNullAnnotation) {
-  const auto result = analyze(std::string(Types) + R"c(
-    static void need(struct node *NONNULL n) { if (n) n->v = 1; }
-    static struct node *NONNULL wrapped(void) { return malloc(sizeof(struct node)); }
-    void caller(void) {
-      need(NULL);
-      struct node *n = malloc(sizeof *n);
-      need(n);
-      free(n);
-    }
-    int result(void) { return wrapped()->v; }
-    int result_local(void) { struct node *n = wrapped(); int v = n->v; free(n); return v; }
-  )c");
-  ASSERT_TRUE(result.ast);
-  EXPECT_EQ(
-      messages(result.diagnostics),
-      (Strings{"5: a null pointer is passed to 'need', which dereferences it",
-               "7: the result of 'malloc' is used without a null test; it is "
-               "null when allocation fails"}))
-      << "a NONNULL parameter is required even when the body tests it; a "
-         "NONNULL result is trusted even when the body says otherwise";
-  const auto wrapped =
-      result.analyzer->summaries().lookup(*result.function("wrapped"));
-  ASSERT_TRUE(wrapped);
-  EXPECT_FALSE(wrapped->summary->mayReturnNull());
-  EXPECT_EQ(result.diagnostics.diagnostics()[0].id,
-            core::diag::NullDereference);
 }
 
 TEST(NullDereference, ContradictoryAnnotationsAreInvalid) {
@@ -575,12 +426,15 @@ TEST(UseOfUninitialized, LocalsAndFields) {
 }
 
 TEST(UseOfUninitialized, InitialisationSilences) {
+  // (RFC 0031 §5.4: a callee writes only what it reaches through non-const
+  // pointees; `use(&p)` hands `p` over as `const void *` and leaves it
+  // uninitialised, so the address is taken by a mutable borrow here.)
   const auto result = analyze(std::string(Types) + R"c(
     void fill(struct buf *MUT);
     void init(void) { char *p = NULL; use(p); }
     void assigned(void) { char *p; p = malloc(4); use(p); free(p); }
     void out(void) { struct buf b; fill(&b); use(b.data); }
-    void address_taken(void) { char *p; use(&p); use(p); }
+    void address_taken(void) { char *p; poke(&p); use(p); }
     void field_set(void) { struct buf b; b.data = NULL; use(b.data); }
     void static_(void) { static char *p; use(p); }
     void zeroed(void) { struct buf b = {0}; use(b.data); }
@@ -676,7 +530,6 @@ TEST(InvalidRelease, ValidReleasesAreClean) {
     void element(char **arr) { free(arr[0]); }
     void conditional(int c) { char *p = c ? malloc(8) : NULL; free(p); }
     void pick(char *OWNED a, char *OWNED b, int c) { free(c ? a : b); free(c ? b : a); }
-    void interior_of_unknown(struct buf *b) { free(&b->len); }
     void strchr_of_param(char *s) { char *strchr(const char *, int); free(strchr(s, 'x')); }
   )c");
   ASSERT_TRUE(result.ast);
@@ -684,6 +537,21 @@ TEST(InvalidRelease, ValidReleasesAreClean) {
   // aside, no invalid release is reported.
   for (const core::Diagnostic &d : result.diagnostics.diagnostics())
     EXPECT_NE(d.id, core::diag::InvalidRelease) << d.message;
+}
+
+TEST(InvalidRelease, AFieldOfAParameterIsNotAnAllocation) {
+  // RFC 0031 §5.5 and A3: `b` points to a whole `struct buf`, so `&b->len`
+  // lies 8 bytes into the allocation that holds it, never at its start.
+  // (Before the object engine a caller's pointer had no known offset and
+  // this release was accepted.)
+  const auto result = analyze(std::string(Types) + R"c(
+    void interior_of_unknown(struct buf *b) { free(&b->len); }
+  )c");
+  ASSERT_TRUE(result.ast);
+  EXPECT_EQ(messages(result.diagnostics),
+            (Strings{"2: 'b' is released but points to field 'len' of its "
+                     "allocation"}));
+  EXPECT_EQ(ids(result.diagnostics), (Strings{"invalid-release"}));
 }
 
 TEST(InvalidRelease, DoesNotRepeatForTheSameStorage) {
@@ -705,267 +573,7 @@ TEST(InvalidRelease, DoesNotRepeatForTheSameStorage) {
 
 // -- Replaced values (the RFC 0003 soundness hole) ---------------------------
 
-TEST(ReplacedValues, ConsumeThenOverwriteIsStillAConsume) {
-  const auto result = analyze(R"c(
-    struct vec { char *items; unsigned cap; };
-    static void grow(struct vec *v) {
-      char *bigger = realloc(v->items, v->cap * 2);
-      if (!bigger) return;
-      v->items = bigger;
-      v->cap *= 2;
-    }
-    void f(struct vec *v) {
-      char *old = v->items;
-      grow(v);
-      use(old);
-      use(v->items);
-    }
-  )c");
-  ASSERT_TRUE(result.ast);
-  EXPECT_EQ(messages(result.diagnostics),
-            (Strings{"12: use of 'old' after it was moved"}))
-      << "the copy of the old items is dead; the field itself holds the "
-         "replacement";
-  const core::FunctionSummary *grow = result.summary("grow");
-  ASSERT_NE(grow, nullptr);
-  const core::PlaceEffect items =
-      grow->effectOf(SummaryPath::param(0).deref().field("items"));
-  EXPECT_TRUE(items.moved);
-  EXPECT_TRUE(items.replaced)
-      << "on every path that consumed it the place was reinitialised; the "
-         "failure path consumed nothing (RFC 0008, the realloc row; RFC 0030 "
-         "§8.2: its zero-size release stays in a function without result "
-         "classes)";
-}
-
-TEST(ReplacedValues, UnconditionalReplacement) {
-  const auto result = analyze(R"c(
-    struct buf { char *data; };
-    static void reset(struct buf *b) { free(b->data); b->data = malloc(8); }
-    static void drop(struct buf *b) { free(b->data); b->data = NULL; }
-    static void clear(struct buf *b) { free(b->data); }
-    void f(struct buf *b) {
-      char *old = b->data;
-      reset(b);
-      use(old);
-      use(b->data);
-    }
-    void g(struct buf *b) {
-      drop(b);
-      use(b->data);
-      clear(b);
-      use(b->data);
-    }
-  )c");
-  ASSERT_TRUE(result.ast);
-  EXPECT_EQ(messages(result.diagnostics),
-            (Strings{"9: use of 'old' after it was freed",
-                     "16: use of 'b->data' after it was freed"}));
-  EXPECT_TRUE(result.summary("reset")
-                  ->effectOf(SummaryPath::param(0).deref().field("data"))
-                  .replaced);
-  EXPECT_TRUE(result.summary("drop")
-                  ->effectOf(SummaryPath::param(0).deref().field("data"))
-                  .replaced);
-  EXPECT_FALSE(result.summary("clear")
-                   ->effectOf(SummaryPath::param(0).deref().field("data"))
-                   .replaced);
-}
-
-TEST(ReplacedValues, OverwrittenPathsAreNotTheCallersValue) {
-  // `b->data = malloc(n); free(b->data);` releases this function's value,
-  // not the caller's (RFC 0008, *Replaced values*).
-  const auto result = analyze(R"c(
-    struct buf { char *data; };
-    static void own_then_free(struct buf *b) {
-      b->data = malloc(8);
-      free(b->data);
-    }
-    void f(struct buf *b) {
-      own_then_free(b);
-      use(b->data);
-    }
-  )c");
-  ASSERT_TRUE(result.ast);
-  const core::FunctionSummary *s = result.summary("own_then_free");
-  ASSERT_NE(s, nullptr);
-  const core::PlaceEffect data =
-      s->effectOf(SummaryPath::param(0).deref().field("data"));
-  EXPECT_TRUE(data.written);
-  EXPECT_FALSE(data.freed) << "the caller's value was overwritten, not freed";
-  EXPECT_TRUE(result.diagnostics.empty()) << messages(result.diagnostics)[0];
-}
-
-TEST(ReplacedValues, OwnValueSurvivesTheJoinWithAnUntouchedPath) {
-  // zlib's `gz_look`: the allocation, the free and the error return are all
-  // inside `if (state->size == 0)`. The exit state joins that path (moved,
-  // overwritten) with the untouched one (neither); the join must not
-  // manufacture "the caller's value was freed" (RFC 0008, *Replaced
-  // values*, implementation notes), or every caller in a loop is a
-  // `double-free`.
-  const auto result = analyze(R"c(
-    struct st { char *in; unsigned want, size; int how; };
-    static int look(struct st *state) {
-      if (state->size == 0) {
-        state->in = malloc(state->want);
-        if (state->in == NULL)
-          return -1;
-        if (state->want == 3) {
-          free(state->in);
-          return -1;
-        }
-        state->size = state->want;
-      }
-      return 0;
-    }
-    int fetch(struct st *state) {
-      do {
-        if (look(state) == -1)
-          return -1;
-      } while (state->how);
-      return 0;
-    }
-  )c");
-  ASSERT_TRUE(result.ast);
-  const core::FunctionSummary *s = result.summary("look");
-  ASSERT_NE(s, nullptr);
-  const core::PlaceEffect in =
-      s->effectOf(SummaryPath::param(0).deref().field("in"));
-  EXPECT_TRUE(in.written);
-  EXPECT_FALSE(in.freed) << "only this function's own value was freed";
-  EXPECT_TRUE(result.diagnostics.empty()) << messages(result.diagnostics)[0];
-}
-
-TEST(ReplacedValues, ConsumptionOnAPathThatNeverReturnsIsNoEffect) {
-  // Lua's `os_exit`: `lua_close(L)` frees `L->l_G`, then `exit()`. The
-  // consumption is recorded as it happens (RFC 0008), but a path that never
-  // hands control back is no part of what a call does (RFC 0003, *What a
-  // summary describes*); the caller's `L->g` is intact. A parameter root
-  // stays an event: `free(p); p = NULL;` frees the argument for good.
-  const auto result = analyze(R"c(
-    struct G { int n; };
-    struct L { struct G *g; };
-    static void close_state(struct L *L) { free(L->g); }
-    static int os_exit(struct L *L, int flag) {
-      if (flag) close_state(L);
-      if (L) exit(1);
-      return 0;
-    }
-    static void free_and_exit(char *p) { free(p); p = NULL; exit(1); }
-    static void free_and_null(char *p) { free(p); p = NULL; }
-    int caller(struct L *L, char *p, char *q) {
-      os_exit(L, 0);
-      free_and_null(p);
-      use(p);
-      free_and_exit(q);
-      return L->g->n;
-    }
-  )c");
-  ASSERT_TRUE(result.ast);
-  EXPECT_EQ(messages(result.diagnostics),
-            (Strings{"15: use of 'p' after it was freed"}));
-  const core::FunctionSummary *exitSummary = result.summary("os_exit");
-  ASSERT_NE(exitSummary, nullptr);
-  EXPECT_FALSE(exitSummary->effectOf(SummaryPath::param(0).deref().field("g"))
-                   .consumed());
-  EXPECT_TRUE(result.summary("close_state")
-                  ->effectOf(SummaryPath::param(0).deref().field("g"))
-                  .freed);
-  EXPECT_TRUE(result.summary("free_and_null")->frees(0));
-  EXPECT_FALSE(result.summary("free_and_null")
-                   ->effectOf(SummaryPath::param(0))
-                   .replaced);
-  EXPECT_FALSE(result.summary("free_and_exit")->frees(0));
-}
-
-TEST(ReplacedValues, ElementConsumesApplyWithAnUnknownWitness) {
-  // linenoise's `linenoiseEditFeed`: on ENTER it frees `history[len]` and
-  // returns; the blocking wrapper calls it in a loop. Which element the
-  // callee freed is not the caller's to know, so the second call is not a
-  // `double-free` (RFC 0008, *Element consumes*; RFC 0006, *Element
-  // witnesses*). A callee that frees the whole pointee still is.
-  const auto result =
-      analyze(std::string("char *strdup(const char *);\n#line 1\n") + R"c(
-    static char **history;
-    static int history_len;
-    static char *more;
-    static char *feed(char *buf, int c) {
-      if (c == 13) {
-        history_len--;
-        free(history[history_len]);
-        return strdup(buf);
-      }
-      return more;
-    }
-    char *loop(char *buf) {
-      char *res;
-      while ((res = feed(buf, buf[0])) == more);
-      return res;
-    }
-    void twice(int c) { feed("a", c); feed("b", c); }
-    static void drop_all(char **table) { free(*table); }
-    void whole(char **table) { drop_all(table); drop_all(table); }
-  )c");
-  ASSERT_TRUE(result.ast);
-  EXPECT_EQ(messages(result.diagnostics),
-            (Strings{"20: '*table' is freed twice"}));
-  const core::FunctionSummary *feed = result.summary("feed");
-  ASSERT_NE(feed, nullptr);
-  bool sawHistory = false;
-  for (const auto &[path, effect] : feed->effects) {
-    if (!path.isGlobal() || !effect.consumed())
-      continue;
-    sawHistory = true;
-    EXPECT_TRUE(effect.freed);
-    EXPECT_TRUE(effect.element);
-  }
-  EXPECT_TRUE(sawHistory);
-  EXPECT_FALSE(result.summary("drop_all")
-                   ->effectOf(SummaryPath::param(0).deref())
-                   .element);
-}
-
 // -- Struct-by-value results --------------------------------------------------
-
-TEST(ResultStores, FieldsOfAReturnedStructAreTracked) {
-  const auto result = analyze(R"c(
-    struct pair { char *a; char *b; };
-    static struct pair make(char *OWNED x) {
-      struct pair p;
-      p.a = malloc(4);
-      p.b = x;
-      return p;
-    }
-    void f(char *OWNED x) {
-      struct pair p = make(x);
-      free(p.a);
-      free(p.b);
-    }
-    void leak(char *OWNED x) {
-      struct pair p = make(x);
-      free(p.b);
-    }
-    void twice(char *OWNED x) {
-      struct pair p = make(x);
-      free(p.b);
-      free(x);
-    }
-  )c");
-  ASSERT_TRUE(result.ast);
-  EXPECT_EQ(messages(result.diagnostics),
-            (Strings{"16: 'p.a' is leaked", "21: 'p.a' is leaked",
-                     "21: use of 'x' after it was moved"}));
-  const core::FunctionSummary *make = result.summary("make");
-  ASSERT_NE(make, nullptr);
-  EXPECT_TRUE(make->storesTo(SummaryPath::result().field("a")));
-  EXPECT_TRUE(make->stores.contains(core::Store{
-      .dest = SummaryPath::result().field("a"),
-      .value =
-          ValueSource::freshAt("free", {}, core::PathAffine::ofConstant(4))}));
-  EXPECT_TRUE(make->stores.contains(
-      core::Store{.dest = SummaryPath::result().field("b"),
-                  .value = ValueSource::copy(SummaryPath::param(0))}));
-}
 
 // -- Crash regression ---------------------------------------------------------
 

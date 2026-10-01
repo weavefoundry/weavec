@@ -254,10 +254,10 @@ void walk(node *item) {
 }
 )c");
   const Piped piped = pipe(unit);
+  // (RFC 0031 §5.2 decides temporal facets at sites: the copy `q = p`
+  // accesses no memory, the use through `q` does.)
   EXPECT_EQ(piped.diagnostics,
-            (Lines{"4: warning: use of 'p' after it may have been freed "
-                   "[freed here on some paths]",
-                   "4: warning: use of 'q' after it may have been freed "
+            (Lines{"4: warning: use of 'q' after it may have been freed "
                    "[freed here on some paths (through 'p')]"}));
   EXPECT_EQ(row(piped, "unknown", "q[0]"),
             "q[0] spatial=proven null=checked:nonnull "

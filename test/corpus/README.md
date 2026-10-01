@@ -7,12 +7,12 @@ replaces `scripts/corpus.py` and `scripts/corpus/`.
 
 | File | What it holds |
 | --- | --- |
-| `manifest.json` | The 9 projects (url, 40-hex `sha`, `support` files) and their 11 configs: `compile` (files and arguments), `wholeProgram`, `build`, `test`, `bench`, `link`, `lowered`; and `gates`, the limits of gates G9–G15 |
+| `manifest.json` | The 9 projects (url, 40-hex `sha`, `support` files) and their 11 configs: `compile` (files and arguments), `wholeProgram`, `build`, `test`, `bench`, `link`, `lowered`; the 11 held-out projects of RFC 0031 (`heldOut`, below); and `gates`, the limits of gates G9–G15 and, under `heldOut`, of RFC 0031's G5, G6 and G12 |
 | `expected.json` | The ratchet, per platform and config (written by `--update`), and `legacy`, v0.10.0's numbers for S0 and S1 |
 | `triage.json` | A verdict for every definite error and possible temporal warning |
 | `injections/` | `injections.json` and one patch per injected bug, by project, plus drivers the trap injections build |
 | `bench/` | `lua-bench.lua`, the `cjson-bench.c` driver and `zlib-input.py`, the generator of the 64 MiB zlib input |
-| `support/` | Files a checkout needs that it does not have: jansson's configured headers (`{support}` in compile arguments) and the Lua `testes` subset driver |
+| `support/` | Files a checkout needs that it does not have: jansson's, bzip2's, libyaml's and miniz's generated headers (`{support}` in compile arguments), the Lua `testes` subset driver, bzip2's makefile, hiredis's test wrapper and utf8proc's test-data fetcher |
 
 ## The configs
 
@@ -45,6 +45,51 @@ stand-alone interpreter tests, skipped in user mode anyway), `big.lua` and
 `heavy.lua` (long), and the internal tests (they need a build with
 `ltests.h`).
 
+## The held-out configs (RFC 0031, section 11.2)
+
+Eleven projects WeaveC was never tuned on, each pinned by SHA with its own
+build and test suite and marked `"heldOut": true`. Their triage entries record
+verdicts only; no engine rule may be motivated by them (gate H2 already
+forbids naming a corpus project under `lib/`).
+
+| Config | Files | Whole program | Build | Test |
+| --- | --- | --- | --- | --- |
+| bzip2 | the library and `bzip2.c` (`-I{support}` for `bz_version.h`) | yes | `support/bzip2/bzip2.mk` (the checkout has only CMake and Meson): `libbz2.a`, `bzip2`, `bzip2-direct`, `bzip2recover` | the six-sample round trip for both `bzip2` binaries |
+| hiredis | the library and `test.c` | yes | `make static hiredis-test` (no SSL, `-Werror` as shipped) | `test.sh` against a `redis-server` it starts (needs `redis-server` on `PATH`), through `support/hiredis/run-tests.sh`, which tolerates only the two connection-error tests that fail on Darwin with any compiler |
+| http-parser | `http_parser.c test.c` | yes | `make test_g test_fast bench` | `test_g`, `test_fast` |
+| inih | `ini.c tests/unittest.c` | yes | `ini.o` | `tests/unittest.sh` (15 configurations), then the tracked baselines must be unchanged |
+| libyaml | `src/*.c` (`-I{support}` for `config.h`) | yes | CMake with tests | CTest and the `run-*` programs over `examples/*.yaml` |
+| lz4 | the five `lib/` files | | `lib-release lz4-release` and the test programs | `tests/` `check`, 20 s each of `fuzzer` and `frametest`, `decompress-partial` |
+| miniz | the four library files (`-I{support}` for `miniz_export.h`) | | CMake with the examples | examples 1, 2 and 6, and round trips of `miniz_zip.c` through examples 5 and 3 |
+| mujs | `one.c` (every source in one unit) | | `build/release/mujs`, `mujs-pp` | none (compile and time only) |
+| sqlite | `sqlite3.c shell.c` | | both units and the shell | none (compile and time only) |
+| tinyexpr | `tinyexpr.c smoke.c` | yes | `smoke smoke_pr example example2 example3 repl` | the smoke tests, the examples, one `repl` expression |
+| utf8proc | `utf8proc.c` | | `libutf8proc.a` and the test programs | the table tests and the Unicode 18.0.0 conformance files, which `support/utf8proc/fetch-test-data.sh` downloads once into `$CACHE` and checks by SHA-256 |
+
+- **Selection.** `--full` runs them; `--quick` and the other modes leave them
+  out, so the PR-time run stays fast, unless `--held-out` is given.
+  `--no-held-out` leaves them out of `--full`; a config named by `--only` runs
+  either way. `--legacy` never runs them (v0.10.0 was not measured on them).
+- **Gates.** They are reported in a section of their own at the end of the
+  run (`heldOut` in `--json`) and gated by RFC 0031 (`gates.heldOut`), not by
+  G9, G10 and G11, which count the original configs:
+  `rfc0031.G5`, no definite error triaged false and, with `--full`, every
+  build and test suite passes with no trap; `rfc0031.G6`, their unresolved
+  temporal share together (program ledgers where a whole-program analysis
+  exists, unit ledgers otherwise) at most 0.50, the value at RFC 0031's close
+  kept as a ratchet; `rfc0031.G12`, `one.c` and `sqlite3.c` each compiled
+  within 900 CPU seconds and 4 GiB (with `--full` each held-out config is
+  also built, not tested, with the reference compiler, and the ratio of the
+  two builds' CPU times is reported, not limited: RFC 0031, *Gates carried
+  forward*). G15's over-budget share counts them with the original configs
+  (RFC 0031 G11).
+- **Triage.** Every definite error needs an entry; possible temporal
+  warnings are counted in their section but need none.
+- **Ratchet.** A held-out config without an `expected.json` record is a note,
+  not a failure, until `--update` records it; from then on it ratchets like
+  the others. Every analysis now also records `unresolvedShare.temporal`,
+  compared once a record has it.
+
 ## Running it
 
 Checkouts live in `build/corpus/<project>` (`--workdir`). A missing one is
@@ -73,6 +118,10 @@ scripts/corpus-gate.py --bench ...                 # G14
 # The build, test and bench commands with the reference compiler only, and
 # the trap injections under ASan (checks that their run commands reach them).
 scripts/corpus-gate.py --full --reference-only --cc "$(brew --prefix llvm)/bin/clang"
+
+# RFC 0031's held-out configs: in --full by default, in --quick on request.
+scripts/corpus-gate.py --quick --held-out --only bzip2 hiredis
+scripts/corpus-gate.py --full --no-held-out ...
 ```
 
 The binaries default to `build/release/bin`, then `build/dev/bin`; with
@@ -198,8 +247,9 @@ Any other `-Wno-error`, `-Wno-weavec…` or `-w` in a config is rejected.
 and an injection's `run` are `/bin/sh -c` commands run in the copy's root,
 with `CC`, `JOBS` (from `--jobs`), `SRC` (the copy), `SUPPORT`
 (`support/<project>`), `BENCH` (`bench/`), `INPUT` (the generated benchmark
-input) and `INJECTION_DIR` (`injections/<project>`); `CFLAGS`, `CPPFLAGS`,
-`LDFLAGS` and `MAKEFLAGS` are cleared.
+input) and `INJECTION_DIR` (`injections/<project>`), and for builds and tests
+`CACHE` (`<workdir>/.cache/<project>`, kept between runs, for downloaded test
+data); `CFLAGS`, `CPPFLAGS`, `LDFLAGS` and `MAKEFLAGS` are cleared.
 
 ## Adding an injection
 

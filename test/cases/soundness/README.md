@@ -88,6 +88,7 @@ possible leak they cannot yet shake: `03_double_free_loop_ok` and
 | `02b_uaf_global_direct_bug` | 10: use-after-free | CAUGHT | still reported | heap-use-after-free @10 |
 | `02c_uaf_global_free_in_helper_bug` | 7: use-after-free | SILENT | row: dangling-escape | heap-use-after-free @7 |
 | `02d_uaf_heap_field_helper_bug` | 6: use-after-free | SILENT | row: dangling-escape | heap-use-after-free @6 |
+| `02g_uaf_heap_field_copied_helper_bug` | 9: use-after-free | — | row: dangling-escape | heap-use-after-free @9 |
 | `02e_uaf_heap_field_direct_bug` | 11: use-after-free | CAUGHT | still reported | heap-use-after-free @11 |
 | `02f_uaf_param_read_helper_bug` | 9: use-after-free | CAUGHT | still reported | heap-use-after-free @3 |
 | `03_double_free_loop_bug` | 10: double-free | CAUGHT | still reported | attempting double-free @10 |
@@ -178,3 +179,35 @@ measured): `03_double_free_loop_ok` (two leaks), `13b_uaf_callback_registry_ok`
 error) and `41e_infeasible_double_free_fp` (a double-free error). Gate G5
 requires all 28 to build without errors and run their `RUN-INPUT`s without a
 trap.
+
+## Alias probes (RFC 0031)
+
+RFC 0031's *Motivation* probes (`build/rfc31/probes/p3.c`–`p7ctl.c`), added in
+its stage S0 (§11.1): 11 bug programs (`alias-*_bug.c`, each probe function
+with a `main`, the ASan-reported line marked) and a correct twin for each
+(`alias-*_ok.c`, `CLEAN` and `ASAN`). They are not among the 113 above. Gate
+G1 of RFC 0031 requires each bug probe to be reported (error, warning, trap or
+non-proven row); the ASan oracle enforces the non-proven part (G4 of RFC
+0030). The use-after-free lines also read the live cell or box the freed
+pointer is loaded from (`(*alias)->v`, `q->a->v`), whose temporal facet is
+legitimately proven, so they cannot carry `NOT-PROVEN: temporal` (a line
+marker judges every row of its line); their `BUG` needs a diagnostic, which
+the RFC projects (the values are exact, so definite errors). The spatial and
+null probes carry the `TRAP` a check would give.
+
+"v0.11.0" is the S0 run of the v0.11.0 engine (`build/release`, `--asan`).
+
+| Probe | Source | `BUG` (line: id) | v0.11.0 | Twin on v0.11.0 |
+| --- | --- | --- | --- | --- |
+| `alias-uaf-heap-cell_bug` | p3 `a1` (control, no alias) | 13: use-after-free | error | clean |
+| `alias-uaf-stack-cell_bug` | p3 `a2` | 19: use-after-free | silent, temporal proven | clean |
+| `alias-uaf-heap-cell-alias_bug` | p3 `a3` | 18: use-after-free | silent, temporal proven | clean |
+| `alias-uaf-alias-before-store_bug` | p3 `a4` | 16: use-after-free | error | clean |
+| `alias-uaf-heap-box-field_bug` | p4 `b1` | 17: use-after-free | silent, temporal proven | clean |
+| `alias-uaf-stack-box-field_bug` | p4 `b2` | 17: use-after-free | silent, temporal proven | clean |
+| `alias-oob-box-field_bug` | p5 `s1` | 12: out-of-bounds, trap index | error | clean |
+| `alias-null-box-field_bug` | p5 `s2` | 16: null-dereference, trap nonnull | silent, null proven (SEGV) | false null-dereference error |
+| `alias-oob-replaced-buffer_bug` | p6 | 17: out-of-bounds, trap index | silent, spatial proven; false double-free error at 19 | false double-free error |
+| `alias-oob-replaced-buffer-kept_bug` | p7 | 18: out-of-bounds, trap index | silent, spatial proven | clean |
+| `alias-oob-replaced-buffer-direct_bug` | p7ctl (control, no alias) | 17: out-of-bounds, trap index | error | clean |
+

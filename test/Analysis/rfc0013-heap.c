@@ -4,7 +4,8 @@
 #include "../cases/evaluation/Inputs/heap.c"
 
 // DUMP-LABEL: function 'string_box':
-// DUMP: heap result complete{result->data = fresh(free) extent=4 length=3}
+// DUMP: store result->data := fresh#1 free extent 4
+// DUMP: string *result->data nul-within 3 from 0
 
 void overflow(void) {
   struct box *b = box_new(); if (!b) return;
@@ -14,7 +15,9 @@ void overflow(void) {
 }
 void leak(void) {
   struct box *b = box_new(); if (!b) return;
-  // CHECK: rfc0013-heap.c:[[@LINE+1]]:3: warning: 'b->data' is leaked when 'b' is freed [weavec::leak]
+  // RFC 0031 §5.8, §5.11: the leak is reported where freeing 'b' drops the
+  // last reference to the data, named as it was created.
+  // CHECK: rfc0013-heap.c:[[@LINE+1]]:3: warning: result of 'box_new' is leaked [weavec::leak]
   free(b);
 }
 void alias(void) {

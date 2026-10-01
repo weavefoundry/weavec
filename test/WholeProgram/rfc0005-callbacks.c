@@ -17,10 +17,12 @@ void (*get_handler(void))(void *);
 // ALONE: 0 errors, 0 warnings
 // LEDGER: "text": "get_handler()",
 // LEDGER: "reason": "unknown-callee",
-// RFC 0030 §9.3: an indirect call through a slot with no known target.
+// RFC 0030 §9.3: an indirect call through a slot with no known target. The
+// object engine takes the slot solution (RFC 0031 *Indirect calls at link*),
+// whose detail names the open source of the slot.
 // LEDGER: "text": "h(buf)",
 // LEDGER: "reason": "callback",
-// LEDGER-NEXT: "detail": "the target of 'h' is unknown; annotate the parameters of its function type",
+// LEDGER-NEXT: "detail": "the result of 'get_handler', which has no body here",
 
 int run(void) {
   char *buf = malloc(4);

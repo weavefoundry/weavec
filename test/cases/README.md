@@ -13,10 +13,10 @@ must be reported, checked or left unproven.
 | `pairs/` | the 24 RFC 0017 cases (12 bug/clean pairs) |
 | `recall/<CWE>/` | the recall pins (67, as the retired `scripts/recall.py` counted them) |
 | `engine/` | ordinary-era lit engine pins, reduced to (line, id) from the golden run |
-| `soundness/` | the 113 soundness probes (85 bug, 28 correct) and their extra units; see its README |
-| `repros/` | the 12 root-cause false-positive repros, with their intended RFC 0030 expectations |
+| `soundness/` | the 113 soundness probes (85 bug, 28 correct) and their extra units, and RFC 0031's 22 alias probes (`alias-*`: 11 bug, 11 correct); see its README |
+| `repros/` | the 12 root-cause false-positive repros, with their intended RFC 0030 expectations, and RFC 0031's 8 held-out repros (`ooc-*`) |
 | `proofs/` | salvaged cases that once caught a false proof (`SOURCES.md` gives their origin) |
-| `semantics/<feature>/` | new cases per RFC 0030 feature |
+| `semantics/<feature>/` | new cases per RFC 0030 feature; `semantics/objects/` is RFC 0031's object domain (§11.1) |
 
 `GOLDEN.md` describes the golden v0.10.0 binaries and `KNOWN-DIFFERENCES.md`
 lists the engine pins the RFC 0030 build no longer reproduces.
