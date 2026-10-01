@@ -2967,7 +2967,7 @@ private:
       return std::nullopt;
     if (bound.isConstant()) {
       auto value = zone.constant(sym);
-      if (!value)
+      if (!value || *value == INT64_MIN)
         return std::nullopt;
       return checkedAdd(bound.constant, -*value);
     }
@@ -2977,7 +2977,7 @@ private:
       return bound.constant;
     auto upper = zone.bound(bound.var, sym);
     auto lower = zone.bound(sym, bound.var);
-    if (!upper || !lower || *upper != -*lower)
+    if (!upper || !lower || *lower == INT64_MIN || *upper != -*lower)
       return std::nullopt;
     return checkedAdd(*upper, bound.constant);
   }

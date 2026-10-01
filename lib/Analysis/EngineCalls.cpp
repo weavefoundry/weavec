@@ -1443,7 +1443,7 @@ core::Sym CallApplier::applyLibrary(const core::LibraryMatch &match) {
         cell.targets = {target};
         transfer.store(cell, transfer.unknownValue(scalar), scalar, nullptr);
       } else if (bytes && target.offset.isConstant()) {
-        heap.forgetCells(state, target.object, target.offset.constant, *bytes);
+        heap.forgetCells(state, target.object, target.offset.constant, bytes);
       } else {
         heap.forgetCells(state, target.object, 0, std::nullopt);
       }

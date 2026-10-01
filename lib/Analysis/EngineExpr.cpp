@@ -1671,8 +1671,7 @@ ExprResult Transfer::evaluateUncached(const Expr &expr) {
       for (const core::Target &target : info.targets) {
         heap.ensure(state, target.object);
         if (bytes && target.offset.isConstant())
-          heap.forgetCells(state, target.object, target.offset.constant,
-                           *bytes);
+          heap.forgetCells(state, target.object, target.offset.constant, bytes);
         else
           heap.forgetCells(state, target.object, 0, std::nullopt);
         state.objects.at(target.object).stored = true;
@@ -2471,10 +2470,18 @@ core::Sym Transfer::arithmetic(BinaryOperatorKind kind, core::Sym left,
     exact = fits(lo1 - hi2, hi1 - lo2);
     break;
   case core::IntegerOp::Multiply: {
-    const std::array<__int128, 4> products = {lo1 * lo2, lo1 * hi2, hi1 * lo2,
-                                              hi1 * hi2};
-    exact = fits(*std::ranges::min_element(products),
-                 *std::ranges::max_element(products));
+    // (Bounds of 64-bit types: a product may not fit 128 bits either.)
+    bool wraps = false;
+    auto product = [&](__int128 x, __int128 y) {
+      __int128 result = 0;
+      wraps = __builtin_mul_overflow(x, y, &result) || wraps;
+      return result;
+    };
+    const std::array<__int128, 4> products = {
+        product(lo1, lo2), product(lo1, hi2), product(hi1, lo2),
+        product(hi1, hi2)};
+    exact = !wraps && fits(*std::ranges::min_element(products),
+                           *std::ranges::max_element(products));
     break;
   }
   case core::IntegerOp::Divide:
@@ -3473,20 +3480,37 @@ bool Transfer::refineCondition(FunctionRun &run, core::HeapState &state,
     ok = ok && state.zone.addLE(x, y, c);
     // A linear operand (`i + 1 < n`) refines its base too.
     const core::SymInfo &xi = heap.info(state, x);
+    // (A bound 64 bits cannot hold is not added.)
+    std::int64_t shifted = 0;
     if (ok && xi.linear && xi.linear->scale == 1 &&
-        xi.linear->var != core::ZeroSym)
-      ok = state.zone.addLE(xi.linear->var, y, c - xi.linear->constant);
+        xi.linear->var != core::ZeroSym &&
+        !__builtin_sub_overflow(c, xi.linear->constant, &shifted))
+      ok = state.zone.addLE(xi.linear->var, y, shifted);
     const core::SymInfo &yi = heap.info(state, y);
     if (ok && yi.linear && yi.linear->scale == 1 &&
-        yi.linear->var != core::ZeroSym)
-      ok = state.zone.addLE(x, yi.linear->var, c + yi.linear->constant);
+        yi.linear->var != core::ZeroSym &&
+        !__builtin_add_overflow(c, yi.linear->constant, &shifted))
+      ok = state.zone.addLE(x, yi.linear->var, shifted);
   };
   if (cond.rightIsConstant) {
     std::int64_t c = cond.constant;
+    // `x <= c - 1` and `x >= c + 1`, `x >= c`, where 64 bits hold the bound.
+    auto below = [&] {
+      if (c != INT64_MIN)
+        le(cond.left, core::ZeroSym, c - 1);
+    };
+    auto above = [&] {
+      if (c != INT64_MAX)
+        le(core::ZeroSym, cond.left, -(c + 1));
+    };
+    auto atLeast = [&] {
+      if (c != INT64_MIN)
+        le(core::ZeroSym, cond.left, -c);
+    };
     switch (op) {
     case Op::Eq:
       le(cond.left, core::ZeroSym, c);
-      le(core::ZeroSym, cond.left, -c);
+      atLeast();
       break;
     case Op::Ne: {
       auto lo = state.zone.lower(cond.left);
@@ -3494,22 +3518,22 @@ bool Transfer::refineCondition(FunctionRun &run, core::HeapState &state,
       if (lo && hi && *lo == c && *hi == c)
         return false;
       if (lo && *lo == c)
-        le(core::ZeroSym, cond.left, -(c + 1));
+        above();
       else if (hi && *hi == c)
-        le(cond.left, core::ZeroSym, c - 1);
+        below();
       break;
     }
     case Op::Lt:
-      le(cond.left, core::ZeroSym, c - 1);
+      below();
       break;
     case Op::Le:
       le(cond.left, core::ZeroSym, c);
       break;
     case Op::Gt:
-      le(core::ZeroSym, cond.left, -(c + 1));
+      above();
       break;
     case Op::Ge:
-      le(core::ZeroSym, cond.left, -c);
+      atLeast();
       break;
     case Op::NonZero:
     case Op::And:

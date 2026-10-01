@@ -814,48 +814,50 @@
     },
     "linux-x86_64": {
       "machine": "linux-x86_64 AMD EPYC 7763 64-Core Processor x4",
-      "producer": "weavec-cc version 0.10.0-dev (d03eb7326b65)",
-      "updated": "2026-09-21",
+      "producer": "weavec-cc version 0.11.0-dev (0787786ad519)",
+      "updated": "2026-09-30",
       "configs": {
         "cJSON-program": {
           "units": {
             "errors": 0,
-            "warnings": 0,
+            "warnings": 4,
             "ledger": {
               "sites": 1709,
-              "proven": 2576,
-              "checked": 127,
+              "proven": 2627,
+              "checked": 122,
               "violation": 0,
-              "unresolved": 939,
-              "trusted": 19
+              "unresolved": 894,
+              "trusted": 18
             },
             "unresolvedShare": {
-              "spatialNull": 0.2183
+              "spatialNull": 0.2143,
+              "temporal": 0.2797
             },
-            "cpuSeconds": 1.88,
+            "cpuSeconds": 3.37,
             "workCounters": {
-              "blockTransfers": 14594,
+              "blockTransfers": 12232,
               "functions": 151,
               "sites": 1709
             }
           },
           "program": {
             "errors": 0,
-            "warnings": 0,
+            "warnings": 10,
             "ledger": {
               "sites": 1709,
-              "proven": 2575,
-              "checked": 119,
+              "proven": 2694,
+              "checked": 114,
               "violation": 0,
-              "unresolved": 952,
-              "trusted": 19
+              "unresolved": 839,
+              "trusted": 18
             },
             "unresolvedShare": {
-              "spatialNull": 0.2269
+              "spatialNull": 0.2139,
+              "temporal": 0.2469
             },
-            "cpuSeconds": 4.25,
+            "cpuSeconds": 7.36,
             "workCounters": {
-              "blockTransfers": 34994,
+              "blockTransfers": 24545,
               "functions": 151,
               "sites": 1709
             }
@@ -867,39 +869,41 @@
             "warnings": 0,
             "ledger": {
               "sites": 2337,
-              "proven": 2978,
-              "checked": 235,
+              "proven": 2802,
+              "checked": 198,
               "violation": 0,
-              "unresolved": 1112,
-              "trusted": 13
+              "unresolved": 1322,
+              "trusted": 16
             },
             "unresolvedShare": {
-              "spatialNull": 0.2176
+              "spatialNull": 0.2153,
+              "temporal": 0.3965
             },
-            "cpuSeconds": 2.75,
+            "cpuSeconds": 2.71,
             "workCounters": {
-              "blockTransfers": 16124,
+              "blockTransfers": 11397,
               "functions": 236,
               "sites": 2337
             }
           },
           "program": {
             "errors": 0,
-            "warnings": 18,
+            "warnings": 34,
             "ledger": {
               "sites": 2337,
-              "proven": 3064,
-              "checked": 235,
+              "proven": 3082,
+              "checked": 205,
               "violation": 0,
-              "unresolved": 1081,
-              "trusted": 14
+              "unresolved": 1095,
+              "trusted": 12
             },
             "unresolvedShare": {
-              "spatialNull": 0.2375
+              "spatialNull": 0.2206,
+              "temporal": 0.2793
             },
-            "cpuSeconds": 8.91,
+            "cpuSeconds": 16.25,
             "workCounters": {
-              "blockTransfers": 49929,
+              "blockTransfers": 62639,
               "functions": 236,
               "sites": 2337
             }
@@ -908,42 +912,44 @@
         "linenoise-program": {
           "units": {
             "errors": 0,
-            "warnings": 1,
+            "warnings": 9,
             "ledger": {
               "sites": 1146,
-              "proven": 1906,
-              "checked": 145,
+              "proven": 1874,
+              "checked": 134,
               "violation": 0,
-              "unresolved": 323,
-              "trusted": 15
+              "unresolved": 368,
+              "trusted": 13
             },
             "unresolvedShare": {
-              "spatialNull": 0.1446
+              "spatialNull": 0.1279,
+              "temporal": 0.1895
             },
-            "cpuSeconds": 0.92,
+            "cpuSeconds": 0.76,
             "workCounters": {
-              "blockTransfers": 5348,
+              "blockTransfers": 3751,
               "functions": 88,
               "sites": 1146
             }
           },
           "program": {
             "errors": 0,
-            "warnings": 6,
+            "warnings": 9,
             "ledger": {
               "sites": 1146,
-              "proven": 1963,
-              "checked": 148,
+              "proven": 1893,
+              "checked": 135,
               "violation": 0,
-              "unresolved": 268,
-              "trusted": 15
+              "unresolved": 353,
+              "trusted": 13
             },
             "unresolvedShare": {
-              "spatialNull": 0.1484
+              "spatialNull": 0.1332,
+              "temporal": 0.1668
             },
-            "cpuSeconds": 1.77,
+            "cpuSeconds": 2.34,
             "workCounters": {
-              "blockTransfers": 11609,
+              "blockTransfers": 12791,
               "functions": 88,
               "sites": 1146
             }
@@ -955,18 +961,19 @@
             "warnings": 0,
             "ledger": {
               "sites": 74,
-              "proven": 123,
-              "checked": 14,
+              "proven": 117,
+              "checked": 18,
               "violation": 0,
-              "unresolved": 9,
+              "unresolved": 11,
               "trusted": 4
             },
             "unresolvedShare": {
-              "spatialNull": 0.0769
+              "spatialNull": 0.044,
+              "temporal": 0.1186
             },
-            "cpuSeconds": 0.09,
+            "cpuSeconds": 0.08,
             "workCounters": {
-              "blockTransfers": 192,
+              "blockTransfers": 330,
               "functions": 12,
               "sites": 74
             }
