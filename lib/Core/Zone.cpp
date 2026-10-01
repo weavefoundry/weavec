@@ -513,7 +513,7 @@ Zone Zone::combine(const Zone &left, const Zone &right,
         // round.
         bool relational = a.result != ZeroSym && b.result != ZeroSym;
         if (*rb <= *lb)
-          result = *lb;
+          result = lb;
         else if (!relational)
           result = nextThreshold(*rb);
         else if (*rb <= -1)
@@ -665,8 +665,11 @@ Zone Zone::combine(const Zone &left, const Zone &right,
         for (std::size_t j : downDown)
           candidates.emplace_back(i, j);
     } else {
+      // NOLINTBEGIN(clang-analyzer-core.uninitialized.UndefReturn)
+      // (the lists above hold only entries bounded on the right side)
       auto upperR = [&](std::size_t i) { return *upRight[i]; };
       auto lowerR = [&](std::size_t j) { return *negated(downRight[j]); };
+      // NOLINTEND(clang-analyzer-core.uninitialized.UndefReturn)
       // Lower bounds (right side) descending: those with `upper(a) -
       // lower(b) <= 1` come first.
       std::vector<std::size_t> byLower = downUp;
