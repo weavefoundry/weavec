@@ -1,6 +1,15 @@
 # CHANGELOG
 
 
+## v0.12.0 (2026-10-02)
+
+### Features
+
+- Replace the analysis engine with a sound object model
+  ([#40](https://github.com/weavefoundry/weavec/pull/40),
+  [`01bb1d2`](https://github.com/weavefoundry/weavec/commit/01bb1d22191894e228fd7e7cca1dfac5d6eda3c2))
+
+
 ## v0.11.0 (2026-09-22)
 
 ### Features
