@@ -158,7 +158,7 @@ for (const line of diagnosticRows) {
 diagnosticPage.body =
   '<span id="diagnostics"></span>\n\nEvery WeaveC diagnostic ends with a stable identifier such as `[weavec::use-after-free]`. Open an entry for its exact meaning, conditions, and resolution guidance.\n\n| Diagnostic | Default severity |\n| --- | --- |\n' +
   diagnosticIndex.join('\n') +
-  '\n\nSeverity follows certainty: a finding that holds on every path is an error, and a temporal finding that holds on some paths only is a warning. A null dereference or out-of-bounds access that is only possible is not reported; `weavec-cc` checks it at run time instead, and the [ledger](/reference/cli/#ledger-and-summary-line) records it. Start with the first diagnostic and follow its source notes. See [diagnostic controls](/reference/diagnostic-controls/) and the [safety guarantees](/reference/guarantees/).';
+  '\n\nSeverity follows certainty: a finding that holds on every path is an error, and a temporal finding that holds on some paths only is a warning, which an enforcing build with the runtime prints only where no guard covers the operation (`-Wweavec-possible` prints it anyway). A null dereference or out-of-bounds access that is only possible is not reported; `weavec-cc` checks or guards it at run time instead, and the [ledger](/reference/cli/#ledger-and-summary-line) records it. Start with the first diagnostic and follow its source notes. See [diagnostic controls](/reference/diagnostic-controls/) and the [safety guarantees](/reference/guarantees/).';
 
 try {
   await whole('CHANGELOG.md', 'project/releases');

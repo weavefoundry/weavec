@@ -1,0 +1,10 @@
+--- a/sds.c
++++ b/sds.c
+@@ -776,6 +776,7 @@
+     }
+     if (start && newlen) memmove(s, s+start, newlen);
+     s[newlen] = 0;
++    s[len+1] = 0; /* INJECTED: one byte past the end of a string that has no spare room */
+     sdssetlen(s,newlen);
+ }
+ 

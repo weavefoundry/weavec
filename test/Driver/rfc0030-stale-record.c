@@ -1,4 +1,4 @@
-// RFC 0030 §13.1: a reader accepts only a format-29 record (RFC 0031 §7,
+// RFC 0030 §13.1: a reader accepts only a format-30 record (RFC 0032 §10,
 // *Implementation amendments*, "The unit record") with this
 // schema's fingerprint and a valid digest, written for the object next to
 // it. Anything else is a stale record: the link names the input in its one
@@ -42,7 +42,7 @@
 // RUN: %t/p6
 
 // DUMP: {
-// DUMP-NEXT: "format": 29,
+// DUMP-NEXT: "format": 30,
 // DUMP-NEXT: "header": {
 // DUMP: "object": {
 // DUMP-NEXT: "path": "{{.*}}b.o",
@@ -57,7 +57,7 @@
 // DIGEST: weavec-cc: warning: link input '{{.*}}b.o' has a stale WeaveC record ('{{.*}}b.o.weavec': digest mismatch); calls into it are trusted [weavec::unanalyzed-input]
 // DUMP-DIGEST: weavec: error: '{{.*}}b.o.weavec' is a stale WeaveC record (digest mismatch)
 // SCHEMA: weavec-cc: warning: link input '{{.*}}b.o' has a stale WeaveC record ('{{.*}}b.o.weavec': schema fingerprint mismatch (written by another WeaveC)); calls into it are trusted [weavec::unanalyzed-input]
-// FORMAT: weavec-cc: warning: link input '{{.*}}b.o' has a stale WeaveC record ('{{.*}}b.o.weavec': format 28, expected 29); calls into it are trusted [weavec::unanalyzed-input]
+// FORMAT: weavec-cc: warning: link input '{{.*}}b.o' has a stale WeaveC record ('{{.*}}b.o.weavec': format 28, expected 30); calls into it are trusted [weavec::unanalyzed-input]
 // TRUNCATED: weavec-cc: warning: link input '{{.*}}b.o' has a stale WeaveC record ('{{.*}}b.o.weavec': length mismatch {{.*}}); calls into it are trusted [weavec::unanalyzed-input]
 // MAGIC: weavec-cc: warning: link input '{{.*}}b.o' has a stale WeaveC record ('{{.*}}b.o.weavec': not a WeaveC record (bad magic)); calls into it are trusted [weavec::unanalyzed-input]
 

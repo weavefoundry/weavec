@@ -147,7 +147,7 @@ class CleanTreeTest(TreeTest):
         self.assertEqual((result.library_entries, result.library_aliases), (5, 3))
         code, output = self.run_main()
         self.assertEqual(code, 0)
-        self.assertTrue(output.startswith("Summary (RFC 0030 and 0031, gate H2)\n"), output)
+        self.assertTrue(output.startswith("Summary (RFC 0030 and 0031, gate H2; RFC 0032, gate H1)\n"), output)
         self.assertEqual(output.splitlines()[-1], "H2: PASS (0 violations)")
 
     def test_walk_skips_build_and_tool_output(self):
@@ -475,8 +475,24 @@ class LineLimitTest(TreeTest):
 
     def test_the_real_limits_are_multiples_of_500(self):
         """Measured plus about 10%, rounded up (the module docstring)."""
-        for limit in (hygiene.ENGINE_LINE_LIMIT, hygiene.LIBRARY_LINE_LIMIT):
+        for limit in (hygiene.ENGINE_LINE_LIMIT, hygiene.LIBRARY_LINE_LIMIT, hygiene.RUNTIME_LINE_LIMIT):
             self.assertEqual(limit % 500, 0)
+
+    def test_runtime_total_leaves_out_its_tests(self):
+        """RFC 0032 gate H1: the runtime is counted apart, without runtime/test/."""
+        for path, data in (("runtime/weavec_alloc.c", b"a\nb\nc\n"), ("runtime/weavec_rt.h", b"h\n"),
+                           ("runtime/CMakeLists.txt", b"x\n"), ("runtime/test/rt_test.c", b"t\n" * 50)):
+            (self.root / path).parent.mkdir(parents=True, exist_ok=True)
+            (self.root / path).write_bytes(data)
+        result = hygiene.run_checks(self.root)
+        self.assertEqual(result.runtime_lines, {"runtime/CMakeLists.txt": 1, "runtime/weavec_alloc.c": 3,
+                                                "runtime/weavec_rt.h": 1})
+        self.assertEqual(result.count("runtime-lines"), 0)
+        self.assertNotIn("runtime/weavec_alloc.c", result.library_lines)
+        with mock.patch.object(hygiene, "RUNTIME_LINE_LIMIT", 4):
+            self.assertEqual(self.found("runtime-lines"), [
+                ("runtime/**", None, "5 lines in 3 files, 1 over the limit of 4"),
+            ])
 
     def test_library_total_counts_every_text_file_under_lib_include_and_tools(self):
         for top in ("lib", "include", "tools"):
@@ -519,7 +535,7 @@ class MainTest(TreeTest):
         self.assertEqual(lines[0], "docs/pages/reference/cli.md:2: retired-name: '--checked' at column 1")
         self.assertRegex(lines[1], r"^\{lib,include,tools\}/\*\*: library-lines: "
                                    r"\d+ lines in 10 files, \d+ over the limit of 10$")
-        self.assertEqual(lines[2:4], ["", "Summary (RFC 0030 and 0031, gate H2)"])
+        self.assertEqual(lines[2:4], ["", "Summary (RFC 0030 and 0031, gate H2; RFC 0032, gate H1)"])
         self.assertRegex(output, r"\n  files: +14 from a directory walk \(not a git work tree\); "
                                  r"skipped 0 binary, 0 unreadable\n")
         self.assertRegex(output, r"\n  LibrarySpec: +5 entries, 3 chk aliases, and their __builtin_ spellings\n")
@@ -532,6 +548,8 @@ class MainTest(TreeTest):
         self.assertRegex(output, r"\n  engine-lines +0  ")
         self.assertRegex(output, r"\n  library-name-test +0  ")
         self.assertRegex(output, r"\n  library-lines +1  ")
+        self.assertRegex(output, r"\n  runtime lines: +0 / 4,000 \(0 files under runtime/, runtime/test/ excluded\)\n")
+        self.assertRegex(output, r"\n  runtime-lines +0  ")
         self.assertEqual(lines[-1], "H2: FAIL (2 violations)")
         document = json.loads(out.read_text())
         self.assertFalse(document["passed"])

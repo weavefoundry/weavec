@@ -25,8 +25,8 @@ This declaration marks a trusted operation. Its caller must ensure that the addr
 Inside a `WEAVEC_UNSAFE` function or block:
 
 - raw operations are permitted, and their facets are recorded as `trusted(unsafe)`;
-- spatial and null facets are `trusted(unsafe)`, and no runtime checks are inserted;
-- temporal state is tracked exactly as outside the region: a use after a definite free is still an error, and a possible one is still a warning;
+- spatial and null facets are `trusted(unsafe)`, and neither runtime checks nor spatial guards are inserted for them;
+- temporal state is tracked exactly as outside the region: a use after a definite free is still an error, and a possible one is a warning or, in a `weavec-cc` build with the runtime, a guarded facet like any other;
 - a definite spatial or null violation is still an error;
 - `WEAVEC_ASSUME` keeps its runtime assertion: the region trusts raw memory operations, not assumptions.
 
@@ -36,10 +36,12 @@ Nothing inside a region is suppressed. What the region does to the surrounding c
 
 Every trusted facet is listed in the ledger with its reason, so the regions are easy to review and count. Prefer an interface that states the actual ownership and lifetime expectations, and keep each region to the operation that needs it. Document why each trusted operation is valid and who maintains that assumption when the code changes.
 
-`-fweavec-require=checked` and `-fweavec-require=proven` allow trusted facets: trust is explicit and listed, not hidden. A result that depends on trusted code is conditional on that code meeting its obligations; see [safety guarantees](/reference/guarantees/).
+Every level of `-fweavec-require` (`guarded`, `checked`, `proven`) allows trusted facets: trust is explicit and listed, not hidden. A result that depends on trusted code is conditional on that code meeting its obligations; see [safety guarantees](/reference/guarantees/).
 
 ## Assumptions are checked
 
 `WEAVEC_ASSUME(expr)` tells the analysis a fact it cannot derive. It is not trusted: when the analysis proves `expr`, nothing changes; when it refutes it, the assumption is a `contradicted-assumption` error; otherwise `weavec-cc` replaces it with a runtime assertion that traps when `expr` is false. The analysis assumes `expr` afterwards in every case.
 
-See [annotation placement](/reference/annotation-placement/) and [RFC 0004](/rfcs/0004-unsafe-boundaries/), as amended by [RFC 0030](/rfcs/0030-prove-or-trap/), for the precise contract.
+A region is also where code goes that is correct but trips a guard: reading a word at a time past the end of a string's allocation, or using the slack an allocator leaves after a block. The region removes the spatial guard, not the allocator: a `free` inside it is still validated by the runtime.
+
+See [annotation placement](/reference/annotation-placement/) and [RFC 0004](/rfcs/0004-unsafe-boundaries/), as amended by [RFC 0030](/rfcs/0030-prove-or-trap/) and [RFC 0032](/rfcs/0032-runtime-enforcement/), for the precise contract.

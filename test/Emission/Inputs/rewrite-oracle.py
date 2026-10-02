@@ -11,6 +11,11 @@ reference Clang and `-include` of the prelude `weavec-cc
 information (`opt -S --strip-debug`) and the lines that name the source file,
 and must then be equal; otherwise the script prints a diff and fails.
 
+The oracle pins one rewrite at a time, so unless FLAGS name
+`-fweavec-runtime` both sides are built with `-fno-weavec-runtime`: no guard
+(RFC 0032) and no object registration. A test of those passes
+`-fweavec-runtime` and writes them into its expected file.
+
 FLAGS go to both compilers, except the WeaveC flags among them
 (`-fweavec-*`, `-fno-weavec-*`, `-W...weavec...`), which go only to
 `weavec-cc` and its prelude. The reference compile also gets what
@@ -62,6 +67,8 @@ def main():
     args = parser.parse_args()
     flags = [flag for flag in args.flags if flag != "--"]
     weavec_flags = [flag for flag in flags if is_weavec_flag(flag)]
+    if "-fweavec-runtime" not in weavec_flags:
+        weavec_flags.append("-fno-weavec-runtime")
     common = [flag for flag in flags if not is_weavec_flag(flag)]
 
     os.makedirs(os.path.join(args.work, "sdk"), exist_ok=True)

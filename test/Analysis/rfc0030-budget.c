@@ -2,9 +2,9 @@
 // than its budget stops; its operations take the §2.6 defaults with reason
 // `budget`, the summary line and the ledger list it, and its callers apply
 // the unknown-callee default at its calls.
-// RUN: %weavec --budget=12 --ledger=%t.json %s -- 2>&1 | FileCheck %s
+// RUN: %weavec --no-runtime --budget=12 --ledger=%t.json %s -- 2>&1 | FileCheck %s
 // RUN: FileCheck --check-prefix=LEDGER %s < %t.json
-// RUN: %weavec --budget=0 --ledger=%t.full.json %s -- 2>&1 | FileCheck --check-prefix=FULL %s
+// RUN: %weavec --no-runtime --budget=0 --ledger=%t.full.json %s -- 2>&1 | FileCheck --check-prefix=FULL %s
 #include <stdlib.h>
 
 // CHECK: rfc0030-budget.c: {{.*}}; 1 function over budget (walk)

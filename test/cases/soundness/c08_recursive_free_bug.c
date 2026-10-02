@@ -8,5 +8,5 @@ int main(void) {
   a->l = calloc(1, sizeof *a);
   struct t *keep = a->l;
   t_free(a);
-  return keep ? keep->v : 0; // BUG: use-after-free
+  return keep ? keep->v : 0; // BUG: use-after-free // TRAP: live
 }

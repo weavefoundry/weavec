@@ -3,7 +3,7 @@
 #include <stdlib.h>
 struct s { char *buf; };
 static void drop(struct s *o) { free(o->buf); }
-static int peek(struct s *o) { return o->buf[0]; } // BUG: use-after-free // UNRESOLVED: temporal:dangling-escape
+static int peek(struct s *o) { return o->buf[0]; } // BUG: use-after-free // UNRESOLVED: temporal:dangling-escape // TRAP: live
 int main(void) {
   struct s o;
   o.buf = malloc(8);

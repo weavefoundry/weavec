@@ -88,7 +88,8 @@ TEST(PreludeTest, UsesNoMacrosNorLineComments) {
     llvm::SmallVector<llvm::StringRef, 256> lines;
     llvm::StringRef(text).split(lines, '\n');
     for (const llvm::StringRef line : lines)
-      if (line.contains("__weavec_") && line.ends_with("{"))
+      if (!line.starts_with(" ") && line.contains("__weavec_") &&
+          line.ends_with("{"))
         EXPECT_TRUE(line.starts_with("static __inline__ __attribute__") ||
                     (line.starts_with("static __attribute__((unused, "
                                       "nodebug))") &&

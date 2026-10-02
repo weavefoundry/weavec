@@ -28,6 +28,11 @@ WEAVEC_GOLDEN_DIR=<golden> scripts/run-cases.py --legacy --filter 'soundness/**'
   RFC's Diagnostics table). The ASan column below gives the faulting line.
 - `definite` is pinned only where G4 requires an error: 38, 45 and c03.
 - `TRAP` pins the projected template on the 12 probes projected to trap.
+  Since RFC 0032, 16 further probes carry the `TRAP` of the runtime guard
+  that now stops their bug when it runs (`live`, `object` or `release`):
+  02, 02c, 02d, 02g, 03, 13b, 14, 16, 33, 34, 41b, 42, 44, 47, c01 and c08.
+  Their `BUG`, `NOT-PROVEN` and `UNRESOLVED` markers are unchanged: an
+  `UNRESOLVED` marker is also met by a guarded facet with that reason.
 - `NOT-PROVEN: <facet>` sits beside the `BUG` of the 18 probes projected
   to be reported by a ledger row only: the row satisfies their `BUG`
   marker, as G4 counts it, but a diagnostic or trap would too. Their
@@ -211,3 +216,20 @@ null probes carry the `TRAP` a check would give.
 | `alias-oob-replaced-buffer-kept_bug` | p7 | 18: out-of-bounds, trap index | silent, spatial proven | clean |
 | `alias-oob-replaced-buffer-direct_bug` | p7ctl (control, no alias) | 17: out-of-bounds, trap index | error | clean |
 
+### Element cells at a boundary (RFC 0032)
+
+Three more pairs, added with RFC 0032 (its *Motivation* and *Implementation
+amendments*, 1), pin a false proof found while measuring it: a callee stores
+its parameter into an element of an array, the caller frees the object, and
+another function reads the element. Before the fix every site was proven,
+because the place class of an element cell at a boundary was not that of
+the array that holds it. Each bug probe now has the read and the call that
+relies on the broken boundary not proven (`NOT-PROVEN: temporal` on both
+lines), and the `live` guard traps at the read; each twin is `CLEAN` and
+`ASAN`.
+
+| Probe | The element | `BUG` (line: id) |
+| --- | --- | --- |
+| `alias-global-element-const_bug` | `g[1]` of a global array, a constant index | 13: use-after-free, trap live |
+| `alias-global-element-index_bug` | `g[n++]`, a counter the callee keeps (a weak store) | 13: use-after-free, trap live |
+| `alias-record-element_bug` | `r->slot[1]`, an array member of a record | 10: use-after-free, trap live |

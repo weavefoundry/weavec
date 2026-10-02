@@ -3,7 +3,7 @@
 // compiled by the reference Clang with the printed prelude.
 //
 // RUN: %rewrite_oracle %s %S/Inputs/rewrite-oracle-span-vla.expected.c %t
-// RUN: %weavec --ledger=%t.json %s --
+// RUN: %weavec --no-runtime --ledger=%t.json %s --
 // RUN: FileCheck %s < %t.json
 
 // RFC 0031 *Implementation amendments*, "Variable-length arrays": `n` may be

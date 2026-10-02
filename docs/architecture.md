@@ -4,17 +4,23 @@ WeaveC is a memory-safety checker for C and a drop-in C compiler, built on
 Clang and LLVM. [RFC 0030](rfcs/0030-prove-or-trap.md), *Prove or trap*,
 defines its design. Each safety *facet* (spatial, null, temporal) of every
 memory operation, or *site*, gets exactly one outcome in the *ledger*:
-proven, checked by a compiler-inserted runtime check, a definite violation
-(a build error), or unresolved or trusted with a reason from a closed list.
-`weavec-cc` inserts the checks into the AST through Sema before a deferred
-CodeGen, with no ABI change. Temporal safety stays static: possible temporal
-bugs are warnings and ledger rows, never runtime checks.
-[RFC 0031](rfcs/0031-object-engine.md), *The object engine*, replaced the
-engine behind RFC 0030's seam: its facts live on abstract objects and
-symbolic values, so a fact made through one alias is seen through every
-other.
+proven, checked by a compiler-inserted runtime check, guarded by a check
+against the runtime's object table, a definite violation (a build error), or
+unresolved or trusted with a reason from a closed list. `weavec-cc` inserts
+the checks into the AST through Sema before a deferred CodeGen, with no ABI
+change. [RFC 0031](rfcs/0031-object-engine.md), *The object engine*,
+replaced the engine behind RFC 0030's seam: its facts live on abstract
+objects and symbolic values, so a fact made through one alias is seen
+through every other.
+[RFC 0032](rfcs/0032-runtime-enforcement.md), *Runtime enforcement*, added
+the runtime every enforcing build links: an allocator that keeps each heap
+object's extent and liveness, a table of the stack and global objects the
+units register, and the *guards* that turn an unresolved spatial or temporal
+facet with a pointer operand into the sixth outcome, `guarded`. A static
+temporal check still does not exist: a temporal facet is proven, guarded, a
+violation, or unresolved.
 
-The code is three C++ libraries, two thin command-line tools and a small C
+The code is three C++ libraries, two thin command-line tools and a C
 runtime. The arrows point from a layer to what it may depend on.
 
 ```
@@ -43,9 +49,10 @@ runtime. The arrows point from a layer to what it may depend on.
         └────────────────────┘
 ```
 
-`runtime/` is C code that `weavec-cc` links into user programs, only for
-report mode and for precompiled-header and module builds. It depends on
-nothing above. The layering rule is strict:
+`runtime/` is C code that `weavec-cc` links into user programs: into every
+enforcing link unless the runtime is off (see *The runtime*). It depends on
+nothing above and includes no WeaveC header but its own. The layering rule
+is strict:
 
 - Core includes nothing from `clang/` or `llvm/`. It is the one library
   built without their include paths.
@@ -58,8 +65,8 @@ nothing above. The layering rule is strict:
   engine's internals. The rest of the code names the engine only as
   `ObjectEngine` behind `SafetyEngine`.
 
-RFC 0030 and RFC 0031 are implemented in stages. This page describes their
-design; the [roadmap](roadmap.md) says which stages have landed. Checked mode
+RFCs 0030, 0031 and 0032 are implemented in stages. This page describes
+their design; the [roadmap](roadmap.md) says which stages have landed. Checked mode
 (RFCs 0018–0029) was removed by RFC 0030 and remains in the repository
 history at tag `v0.10.0`. The path-based engine that RFC 0030 kept, released
 in v0.11.0, was deleted by RFC 0031 together with its Core trackers and its
@@ -79,10 +86,10 @@ resolves to Clang declarations.
 
 | Header | Purpose |
 | --- | --- |
-| `Ledger.h` | Sites, facets and outcomes (RFC 0030 §2): `SiteKind`, `Facet`, `SiteOutcome`, the closed reason lists with their JSON spellings and phrases, merging by rank, the defaults for undecided facets, `UnitLedger` and `Ledger` with requirement records, diagnostics and the A1–A5 assumption counts, the `summary` rollup and the summary line. |
+| `Ledger.h` | Sites, facets and outcomes (RFC 0030 §2, RFC 0032 §1): `SiteKind`, `Facet`, `SiteOutcome` (six, with `Guarded`), the closed reason lists with their JSON spellings and phrases, merging by rank, the defaults for undecided facets, `CheckTemplate`, `RequireLevel`, `RuntimeUse` (`config.runtime`: on, off, or mixed for a program whose units differ), `UnitLedger` and `Ledger` with requirement records, diagnostics and the A1–A5 assumption counts, the `summary` rollup and the summary line. |
 | `PointerKind.h` | The kind lattice (§7.1): `single`, `counted(e)`, `sized(e)`, `ended-by(q)`, `nul-terminated` or `unknown`, with nullability, a source (declared, inferred, default) and an `ExtentTerm` over a sibling parameter or field. Every kind is a lower bound. `ExtentClass` says whether an extent is exact, declared or a lower bound; only the first two may be check operands, and only an exact extent can make an access a violation. |
 | `LibrarySpec.h`, [`LibrarySpec.txt`](../lib/Core/LibrarySpec.txt) | The one declarative table of C library, POSIX, platform and builtin functions (§8), and its parser: per argument, the access, required length, nullability, ownership effect, release family, state slots and callback clause; per call, the result, disjointness, `exits`/`noreturn`, format arguments and fortified aliases. It also lists the platform headers of §5.2. CMake embeds the text, and it replaces the three library models of v0.10.0. |
-| `CheckPlan.h` | Checks as pure data (§10.1): per checked requirement record or lowered violation, a template (`nonnull`, `index`, `span`, `len`, `disjoint`, `assert`), a form, a placement, an optional guard and `CheckTerm` operands. |
+| `CheckPlan.h` | Checks as pure data (§10.1): per checked requirement record, lowered violation or guarded facet, a template (`nonnull`, `index`, `span`, `len`, `disjoint`, `assert`, and RFC 0032's guards `object`, `live`, `release`), a form, a placement, an optional guard term and `CheckTerm` operands. `isGuard` tells the three guard templates from the static checks. |
 | `FnSlots.h` | Function-pointer slots (§9.3): the constraints `f ∈ S`, `S ⊆ T` and `open(S)` over field, global, parameter, result and local slots, and the solver that computes each slot's targets and whether it is closed. |
 
 A site is one operation in one emitted function, identified by
@@ -91,7 +98,9 @@ A site is one operation in one emitted function, identified by
 a function exit), `assume` or `raw` (§2.1), and a facet exists only where it
 has meaning. `assume` sites have a fourth facet, *assertion*. Records of one
 facet merge by rank within one pass:
-`violation > unresolved > checked > trusted > proven`. The unresolved reasons
+`violation > unresolved > guarded > checked > trusted > proven`. A guarded
+facet keeps the unresolved reason the engine gave it (`FacetDecision`'s
+`unresolved` is set for both outcomes). The unresolved reasons
 are `unknown-extent`, `unknown-index`, `inexpressible`, `may-released`,
 `may-moved`, `may-alias-released`, `may-invalid-release`,
 `may-mismatched-release`, `may-dangle`, `may-conflict`, `unknown-callee`,
@@ -154,7 +163,7 @@ and `lossy` bits; an effect on array elements carries its element range
 (§4.9). `EffectsIO.h` defines the stable, Clang-free text form, summary
 format 30: one item per line (`returns`, `incomplete`, `effect`, `store`,
 `result`, `nonnull-on`, `reads`, `writes`), and every field round-trips.
-The format-29 unit record carries each function's summary in this form.
+The unit record carries each function's summary in this form.
 Pointer kinds are not part of the summary: the record carries them beside
 it.
 
@@ -215,6 +224,36 @@ After the engine, these components complete the ledger:
   exact or declared extent; otherwise the record is
   `unresolved(inexpressible)`. Planning is pure and runs in every mode, so
   the ledger does not depend on whether checks are emitted.
+  With `PlannerOptions::runtime`, a second pass over each site,
+  `planGuards` (RFC 0032 §6), then turns what is still unresolved into
+  `guarded`, with a plan entry, where a guard exists:
+
+  | Site | Facet | Guard | Placement |
+  | --- | --- | --- | --- |
+  | Deref, Raw (not a library call) | spatial | `object`, with the offset and width of the bytes the access touches (`accessBytes`: the member chain above the dereference, a bit-field's bytes) | wraps the pointer operand |
+  | Index (`p[i]`, `*(p + i)`) | spatial | `object`, with the element size, offset and width | replaces the access |
+  | Deref, Index, Raw | temporal | `live`; the site's `object` guard instead when it has one | wraps the pointer operand |
+  | LibCall, Call (the call boundary) | spatial, per unresolved requirement record with an `Object` witness | `object` in the form `Need` (`object_n`, the bytes the call needs) or `String` (`object_s`) | wraps the argument |
+  | LibCall | temporal | `live` for each pointer argument the row reads or writes and borrows; none where the argument has an `object` guard | wraps the argument |
+  | Release, and a Raw site that is a library call, of the heap family | spatial, temporal | `release` | wraps the released argument |
+
+  A facet whose reason is `no-zero-init`, `second-owner`, `may-conflict` or
+  `may-dangle` is not guarded, nor is a site in a constant expression, a
+  shared operand or a non-default address space. PtrArith, Cast and
+  IntToPtr sites, the temporal facet of a Call site, the temporal facet of
+  a variadic library row, and a requirement that binds only under a guard
+  term stay unresolved. The engine supplies the need of a call argument's
+  guard as a witness of shape `Object` (`EngineLibrary.cpp`); a
+  requirement that an argument points to a whole record of the program's
+  own type gets none (RFC 0032 *Implementation amendments*, 5). An
+  unresolved `disjoint` requirement whose length is a string's is guarded
+  with the `disjoint` template, its length read inside the string's own
+  object (`CheckTerm::ObjStrLen`). A guard never replaces a static check.
+  In verify mode the same pass plans guards with `proven` set for the
+  proven temporal facets of those sites, and for the proven spatial facets
+  of accesses and releases that carry no static verify check and that the
+  types alone do not prove, so `summary.verifyChecked.temporal` is no
+  longer always 0.
 - `LedgerAdapter`, `SafetyEngine` and `ObjectEngine` form the seam
   described in *The engine seam*.
 
@@ -223,7 +262,9 @@ pipeline for one unit. It builds the kinds and the unit's slot solution,
 collects the sites, runs `ObjectEngine` through an authoritative
 `LedgerAdapter` (a discarding one for a silent fixpoint round), calls
 `finish`, and reports the diagnostics in publication order, followed by the
-require-level errors. A discovery-only run returns the unit's exports
+require-level errors. `UnitPipelineOptions::dropGuardedPossible` is how the
+compiler asks `finish` to leave out the possible findings its guards
+enforce. A discovery-only run returns the unit's exports
 (`ObjectEngine::discover`) without analysing it. The §7.6 field candidates
 it passes are empty. The Frontend calls it through
 `analyzeTranslationUnit`.
@@ -246,11 +287,11 @@ private header `lib/Analysis/Engine.h`:
 | `EngineCalls.cpp` | `CallApplier`: callee resolution and the effects of summaries, contracts, library rows, platform declarations and unknown callees; indirect calls; alias contexts (§5.4, §6.6). |
 | `EngineSummary.cpp` | Summary derivation at the exits and instantiation at calls (§6.2, §6.3). |
 | `EngineDecide.cpp` | `Decider`: the temporal, null and spatial facets of every site, releases, invalid releases and conflicting borrows, with witnesses (§5.2, §5.3, §5.5). |
-| `EngineLibrary.cpp`, `EngineStrings.cpp` | The requirement records of `LibrarySpec` arguments, `disjoint` ranges and format calls; RFC 0012's string facts over objects. |
+| `EngineLibrary.cpp`, `EngineStrings.cpp` | The requirement records of `LibrarySpec` arguments, `disjoint` ranges and format calls, and the `Object` witness a guard of an unresolved requirement compares (RFC 0032 §6); RFC 0012's string facts over objects. |
 | `EngineKinds.cpp` | What the kinds give the engine: parameter extents and nullness at entry, the accesses a must-access requirement covers, and the requirement records at calls (RFC 0030 §7.2–§7.5). |
 | `EngineContexts.cpp` | Contexts across units: the portable keys of the contexts a call asks of another unit's function, and the runs that serve the contexts other units asked (§7 *Amendment (cross-unit contexts)*). |
 | `EngineInvariants.cpp` | Counted-field invariants: Houdini over `KindInference`'s candidates, and the functions that read a standing invariant's field analysed again with it (RFC 0030 §7.6, restored by RFC 0031). |
-| `EngineLifetimes.cpp` | Frame storage whose lifetime ended, the boundary facts of calls and exits, `WEAVEC_ASSUME`, raw-pointer laundering (§5.6, §5.7). |
+| `EngineLifetimes.cpp` | Frame storage whose lifetime ended, the boundary facts of calls and exits with their place classes (the class of a cell is the field that holds it, `fieldHolding`, so an element of an array is of its array's class), `WEAVEC_ASSUME`, raw-pointer laundering (§5.6, §5.7). |
 | `EngineAnnotations.cpp` | `annotation-mismatch` of a definition against its own declaration (RFC 0003 reconciliation, RFC 0012 sized-field stores). |
 | `EngineIntegers.h` | Target integer types of Clang types and bit-fields, the overflow builtins and operators (RFC 0017). |
 
@@ -458,17 +499,18 @@ checks, writes ledgers and unit records, and runs the link step.
 | --- | --- |
 | `FrontendAction.h` | `WeaveCAction`, an `ASTFrontendAction` for libTooling, and `createWeaveCConsumer`, which `weavec-cc` runs at the end of each unit; both run `UnitPipeline`. Every emitted function is analysed, including `static inline` functions from user headers (§5.6). |
 | `DeferredCodeGenConsumer` | Sits in front of CodeGen in every C code-generating action (§10.5). It forwards Sema set-up at once and records every other callback. At the end of the unit it runs the analysis and `CheckEmitter`, then replays the callbacks in order. Without deferral, CodeGen emits external functions before the analysis runs. It overrides every `ASTConsumer` and `SemaConsumer` virtual of LLVM 23, a list on the LLVM-upgrade checklist. |
-| `CheckEmitter` | Applies the `CheckPlan` through Sema (§10.6): `BuildCallExpr` to the helper, `ImpCastExprToType` back to the operand's type so a dereference stays an lvalue, `BuildBinOp` with a comma for a check before a call. User expressions are never evaluated twice. A rewrite Sema rejects leaves the subtree unchanged and fails the compile with an internal error. It also applies the zero-initialisation lowering. |
-| `Prelude` | The helpers the rewrites call, injected into the predefines buffer (§10.2): `static`, `always_inline`, `nodebug` functions for the six templates and their forms, term helpers that saturate toward failure, and the allocation wrappers. Trap mode calls `__builtin_verbose_trap("weavec", <template>)`, report mode `__weavec_rt_report`, and verify mode adds `__weavec_prv_*` with the category `weavec.proven`. PCH and module builds declare the helpers `extern` instead (§10.9). |
+| `CheckEmitter` | Applies the `CheckPlan` through Sema (§10.6): `BuildCallExpr` to the helper, `ImpCastExprToType` back to the operand's type so a dereference stays an lvalue, `BuildBinOp` with a comma for a check before a call. User expressions are never evaluated twice. A rewrite Sema rejects leaves the subtree unchanged and fails the compile with an internal error. It also applies the zero-initialisation lowering, gives the guards of a function their range cache (`planCache`, `declareCaches`; see *The runtime*), and registers the unit's stack and global objects (`registerObjects`). |
+| `ObjectRegistration` | `planObjects` (RFC 0032 §4, §5): which locals and parameters of each emitted function escape and are entered into the runtime's stack list, which calls return twice and are wrapped, and which globals the unit defines and describes. The plan is pure; `CheckEmitter::registerObjects` applies it. |
+| `Prelude` | The helpers the rewrites call, injected into the predefines buffer (§10.2): `static`, `always_inline`, `nodebug` functions for the six templates and their forms, term helpers that saturate toward failure, and the allocation wrappers. With the runtime it also declares the runtime's entry points and the arena descriptor, and defines the guard helpers (`object`, `object_c`, `object_n`, `object_s`, `live`, `live_c`, `release`) and the stack-object helpers. Trap mode calls `__builtin_verbose_trap("weavec", <template>)`, report mode `__weavec_rt_report`, and verify mode adds `__weavec_prv_*` with the category `weavec.proven`. PCH and module builds declare the helpers `extern` instead (§10.9). |
 | `ZeroInit` | Plans the zero-initialisation of the allocation family (§11): calls to `LibrarySpec` entries with the `zero-init` flag become wrappers that zero the usable region, and `alloca` gets a `memset`. The plan is pure, so the ledger's A5 counts precede any rewrite. A unit that defines an allocator lowers nothing. |
-| `LedgerWriter` | JSON (`weavec-ledger`, version 1) and SARIF 2.1.0 renderings of a ledger (§12), the `weavec-fp/1` fingerprints (a truncated SHA-256 of key, root-relative path, function, normalised message and ordinal), the fingerprint root and atomic writes. |
+| `LedgerWriter` | JSON (`weavec-ledger`, version 2: `LedgerSchemaVersion`) and SARIF 2.1.0 renderings of a ledger (§12, RFC 0032 §10), the `weavec-fp/1` fingerprints (a truncated SHA-256 of key, root-relative path, function, normalised message and ordinal), the fingerprint root and atomic writes. |
 | `LedgerOutput` | Completes a unit or program ledger with the producer, root, configuration and the unit's source, object and target; applies the `-W` flags so the ledger counts what was reported; writes it where `-fweavec-ledger` says (a file, or a directory receiving one ledger per unit and per link) through a temporary file renamed into place; and prints the summary line under `-fweavec-summary`, whenever a ledger is written, and always in `weavec`. |
-| `UnitRecord` | The format-29 codec (§13.1, RFC 0031 §7): framing, a typed header, and a payload checked against the codec's field table, whose SHA-256 is the schema fingerprint. The encoder refuses values the table does not describe; the decoder rejects missing, unknown and mistyped keys. |
+| `UnitRecord` | The format-30 codec (§13.1, RFC 0031 §7, RFC 0032 §10): framing, a typed header, and a payload checked against the codec's field table, whose SHA-256 is the schema fingerprint. The encoder refuses values the table does not describe; the decoder rejects missing, unknown and mistyped keys. |
 | `ProgramAnalysis` | The whole-program algorithm of RFC 0005 over an abstract `ProgramUnit`: discover every unit's exports, order the units by strongly connected component, analyse acyclic units once and cyclic groups to a fixpoint, and publish in the last round only. It hosts the link step. |
 | `RecordFacts` | Builds a unit's interface facts for the record from the components that run before the engine: the kinds, reliance flags and exported requirements of its definitions, the declared kinds and ownership annotations of its imports, the slot constraints with local slots eliminated, and the Call site of each import call with what the caller knows about each argument (§13.2 step 5). |
 | `RecordPayload` | The payload codec's field table: the authoritative list of payload keys and their types, and the source of the schema fingerprint. |
 | `LinkStep` | The parts of the link step that work on what the records say (§13.2), independent of how they were found: solving the program's function-pointer slots, verifying every import's declared annotations and kinds against the defining unit, deciding each exported requirement at the callers in other units (`verifyRequirements`: their Call rows, the A1 `verified` count, and the discharge of `trusted(caller-contract)` in a closed program), the reliance rows and the A1/A3 counts, the allocator warning of §11, and the program's boundary rows. |
-| `Driver` | `weavec-cc`: Clang's driver plans the jobs, each `-cc1` job runs in-process behind `DeferredCodeGenConsumer`, compile jobs write the record, and link jobs run the link step before the linker. |
+| `Driver` | `weavec-cc`: Clang's driver plans the jobs, each `-cc1` job runs in-process behind `DeferredCodeGenConsumer`, compile jobs write the record, and link jobs run the link step before the linker. It decides whether a build uses the runtime (`runtimeObstacle`) and puts the runtime's archives on the link line (`addRuntimeLibraries`, `dropAllocatorIfDefined`). |
 | `DispatchEdges` | `SplitDispatchEdges` (RFC 0031 §9.2): an LLVM function pass that splits every critical edge into a block ending in `indirectbr` with more than 8 predecessors, so a computed-goto interpreter keeps its dispatch replication when checks supply edges into it. `weavec-cc` registers it through `CodeGenOptions::PassBuilderCallbacks` at `OptimizerLastEP`, only for optimised units whose checks are emitted, so `-fweavec-checks=none` objects stay Clang's. |
 | `DiagnosticControl` | Applies the `-W` flags by each diagnostic's id and certainty. An error can be lowered but never disabled, and a flag naming a removed id is refused. `FilteringSink` drops what an earlier step already reported. |
 | `ClangDiagnosticSink` | Forwards `core::Diagnostic`s, with notes and fix-its, to Clang's `DiagnosticsEngine`, so they render exactly like Clang's own. |
@@ -480,26 +522,172 @@ JSON and SHA-256 implementation would duplicate LLVM's.
 
 ## The runtime
 
-`runtime/` holds the only code WeaveC links into user programs. It is C,
-installed under `lib/weavec` next to `weavec.h`. The default trap mode needs
-none of it, because its checks are the prelude's inline helpers.
+`runtime/` holds the only code WeaveC links into user programs
+([RFC 0032](rfcs/0032-runtime-enforcement.md)). It is C, built for the host
+into three archives installed under `lib/weavec` next to `weavec.h`.
+[`weavec_rt.h`](../runtime/weavec_rt.h) is its internal interface, shared by
+its sources and its test and not installed; compiled code reaches it only
+through the entry points the prelude declares and through the standard
+allocation functions.
 
-- [`weavec_rt.c`](../runtime/weavec_rt.c) builds `libweavec_rt.a`, whose
-  `__weavec_rt_report` serves `-fweavec-checks=report`. A failed check
-  prints `weavec: runtime check failed: <template> at <file>:<line>:<column>`
-  once per site and the program goes on, or aborts under
-  `WEAVEC_RT_ABORT=1`. The case runner attributes traps through this output.
-- [`weavec_chk.c`](../runtime/weavec_chk.c) and
-  [`weavec_chk_report.c`](../runtime/weavec_chk_report.c) build
-  `libweavec_chk.a`, the out-of-line helpers for precompiled-header and
-  module builds (§10.9), generated from the prelude by
-  `weavec-cc -fweavec-print-prelude=out-of-line`. The report family carries a
-  `_report` suffix, because one archive cannot define two signatures under
-  one name.
+| Archive | Sources | Holds |
+| --- | --- | --- |
+| `libweavec_rt.a` | [`weavec_alloc.c`](../runtime/weavec_alloc.c), [`weavec_objects.c`](../runtime/weavec_objects.c), [`weavec_report.c`](../runtime/weavec_report.c) | The arena allocator (`__weavec_rt_alloc`, `__weavec_rt_free`, `__weavec_rt_realloc`, `__weavec_rt_size`), the object table over heap, stack and global objects (`__weavec_rt_find`), the guards' out-of-line entry points, and `__weavec_rt_report` and `__weavec_rt_fatal`. |
+| `libweavec_alloc.a` | [`weavec_malloc.c`](../runtime/weavec_malloc.c) | The standard allocation functions over the arena, for the image the archive is linked into. `malloc`, `calloc`, `realloc` and `free` are strong definitions; the others (`reallocarray`, `aligned_alloc`, `posix_memalign`, `valloc`, `free_sized`, `free_aligned_sized`, and `malloc_size`, `malloc_good_size`, `reallocf` on Darwin or `memalign`, `pvalloc`, `malloc_usable_size` elsewhere) are weak, so a program's own shim over `malloc` replaces them and keeps the arena. |
+| `libweavec_chk.a` | [`weavec_chk.c`](../runtime/weavec_chk.c), [`weavec_chk_report.c`](../runtime/weavec_chk_report.c) | The prelude's helpers, guards included, as real functions for precompiled-header and module builds (§10.9), generated from the prelude by `weavec-cc -fweavec-print-prelude=out-of-line`. The report family carries a `_report` suffix, because one archive cannot define two signatures under one name. |
 
-`weavec-cc` links `libweavec_rt.a` in report mode, and adds `libweavec_chk.a`
-to every checked link for the host; its members are linked only when a PCH
-or module build referenced them.
+### The allocator and the object table
+
+The allocator reserves one arena at first use: one region of
+2^32 bytes (2^30 when that reservation fails) per size class, followed by
+the metadata. The classes are 16 to 128 bytes in steps of 16, then four per
+doubling up to 2^30 bytes. A request takes a slot of the smallest class
+strictly larger than it, so at least one byte after every object belongs to
+no object. Each slot has one 32-bit word of metadata, `size << 2 | state`,
+with the states never allocated, live, free and dead; free lists and the
+quarantine queues live in the metadata, never in freed memory. The object a
+pointer points into, its requested size and whether it is live therefore
+follow from the pointer by arithmetic and one load. Every block is
+zero-filled. A released slot is *dead* and waits in a quarantine (64 MiB by
+default, `WEAVEC_RT_QUARANTINE=<bytes>` in the environment) before it is
+recycled; a reallocation that leaves its size class releases the old block
+the same way. A request no class can hold is mapped on its own as a *huge
+block* and kept in a table. The allocator validates every release itself:
+a release of an interior pointer, of a dead or free slot, or of a stack or
+global object ends the program through `__weavec_rt_fatal`
+(`weavec: invalid release of <pointer>: <why>`). A pointer it does not own
+goes to the next allocator (the pointer's own malloc zone on Darwin,
+`__libc_free` and `__libc_realloc` or the next `free` and `realloc` in
+lookup order elsewhere). On Darwin the arena is also registered as a malloc
+zone, so that another image that frees or reallocates an arena block
+reaches the runtime.
+
+`__weavec_rt_find` answers what a pointer points into: an arena slot, a
+huge block, a stack object of the calling thread, or a global object;
+otherwise the pointer is *untracked*, and every guard passes on it
+(assumption A6 of RFC 0032). A pointer into the arena that points to no
+live block is into a dead object.
+
+- **Stack objects** are kept per thread, ordered by frame. An entry is
+  trusted only while its frame can still be live: entering, leaving,
+  rewinding and looking up drop the entries of deeper frames, which is how
+  a `longjmp` that skipped the cleanups is absorbed.
+- **Global objects** come from descriptors `{address, size}` that each unit
+  emits into one section (`__DATA,__weavec_glob` on Mach-O,
+  `weavec_globals` on ELF). A constructor in each image hands its section
+  to `__weavec_rt_globals_add`; the table is sorted before the next lookup.
+
+### Guards
+
+A guard is a prelude helper wrapped around a pointer operand or an argument,
+or replacing a subscript, exactly as a static check is (§10.4). Three
+templates exist:
+
+| Template | Helper | Passes when |
+| --- | --- | --- |
+| `object` | `__weavec_chk_object(p, i, step, off, width)` | the `width` bytes at `p + off + i * step` lie inside the live tracked object `p` points into, or `p` is untracked |
+| `object` (form `Need`) | `__weavec_chk_object_n(p, need)` | `need` bytes from `p` lie inside its object; a need of 0 passes without a lookup |
+| `object` (form `String`) | `__weavec_chk_object_s(p)` | the string's terminator lies inside `p`'s object |
+| `live` | `__weavec_chk_live(p)` | `p` does not point into a dead tracked object |
+| `release` | `__weavec_chk_release(p)` | `p` is null, the start of a live heap object, or untracked |
+
+A guard reaches the runtime in three steps:
+
+1. **Inline arena lookup.** The prelude declares the arena's descriptor
+   (`__weavec_rt_heap`: base, size, metadata base, region shift, class
+   table). For a pointer inside the arena, `object` and `live` compute the
+   region and slot and load the slot word in the helper itself, with no
+   call.
+2. **Range caches** (RFC 0032 *Implementation amendments*, 2). A function
+   that guards a pointer inside a loop gets a local array
+   `__weavec_ranges` of four words per entry, `{lo, len, state, expect}`,
+   cleared on entry, with at most 64 entries. An entry belongs to the local
+   variable the guards read their pointer from, or to one site. The cached
+   helpers `object_c` and `live_c` pass without a lookup when the access
+   lies in `[lo, lo + len)` and the 32-bit word at `state` still reads
+   `expect`: for an arena block `state` is the block's own slot word, for
+   anything else the runtime's epoch `__weavec_rt_epoch`, which changes
+   when a huge block is mapped or unmapped or a table of globals is added.
+   A loop that calls nothing (`isQuietLoop`) checks the state of its
+   entries once on the way in (`__weavec_range_check`), and its guards do
+   not read it. A unit whose helpers are external has no range cache.
+3. **Out-of-line entry points.** Any other pointer, and a cache miss
+   outside the arena, call the runtime: `__weavec_rt_object`,
+   `__weavec_rt_string`, `__weavec_rt_live`, `__weavec_rt_release_ok`, and
+   for a cached guard `__weavec_rt_object_range` and
+   `__weavec_rt_live_range`, which answer the range to remember by value.
+   `__weavec_rt_strlen` reads a string's length inside its own object, for
+   a need that is a string's length.
+
+A failed guard traps with `__builtin_verbose_trap("weavec", "<template>")`
+in trap mode, or with the category `weavec.proven` for a verify guard of a
+proven facet. In report mode it calls `__weavec_rt_report`, which prints
+`weavec: runtime check failed: <template> at <file>:<line>:<column>` once
+per site and goes on (or aborts under `WEAVEC_RT_ABORT=1`); a `release`
+guard that only reported skips the release. The case runner and the corpus
+gate attribute traps through this output.
+
+### Registering stack and global objects
+
+`planObjects` decides, from the AST alone, what a unit registers, and
+`CheckEmitter::registerObjects` adds the code after the checks are emitted:
+
+- An *escaping local* (a variable of automatic storage, parameters
+  included, that is not `register`, and whose address is taken or which is
+  or holds an array that decays to a pointer anywhere but as the base of a
+  subscript) gets a synthesized variable `__weavec_frame_<n>` declared
+  right after it, whose initialiser calls `__weavec_stack_enter` and whose
+  `cleanup` attribute calls `__weavec_stack_leave`; a parameter is entered
+  at the start of the body. An object declared in a nested scope is entered
+  with the flag `WeavecRtScoped`, and the objects of a function with
+  automatic storage the plan does not register (compound literals,
+  `alloca`) with `WeavecRtLoose`.
+- A function that calls a returns-twice function registers no local; each
+  such call is wrapped in `__weavec_stack_rewind`, which drops the entries
+  of the frames a `longjmp` abandoned.
+- Every variable of static storage duration the unit defines (static locals
+  and tentative definitions included; not thread-locals, weak definitions,
+  variables in a named section or a non-default address space, or types
+  that are incomplete or have a flexible array member) gets a descriptor
+  `__weavec_global_<n>`, handed to CodeGen behind the unit's own
+  declarations through `newTopLevelDecls`.
+
+The stack helpers take the frame of the function they are inlined into, so
+a unit built with a precompiled header or modules, whose helpers are
+external, registers no stack object. `-fno-weavec-stack-objects` and
+`-fno-weavec-global-objects` turn either registration off for a unit.
+
+### Linking, and when the runtime is off
+
+`addRuntimeLibraries` adds the archives to every link job of an enforcing
+build (`-fweavec-checks` other than `none`) that targets the host, before
+the first `-l` library of the line: `-u malloc` and `libweavec_alloc.a`
+when the build enforces guards, then `libweavec_chk.a`, then
+`libweavec_rt.a`, and `-lpthread` on Linux. An archive member is linked
+only when referenced, except the allocator's, which `-u` forces in.
+
+The runtime is off, as if `-fno-weavec-runtime` had been given, when
+`runtimeObstacle` finds a reason on the command line: `-ffreestanding`;
+`-nostdlib`, `-nodefaultlibs` or `-nolibc`; a sanitizer that replaces the
+allocator (`address`, `hwaddress`, `kernel-address`, `memory`, `thread`,
+`leak`); or a target other than 64-bit Darwin or Linux. A link then prints
+one note saying why. Without the runtime no guard is planned, facets that
+would be guarded stay `unresolved`, nothing is registered, and
+`libweavec_alloc.a` is not linked; `config.runtime` is `false` in the
+ledger and the record.
+
+When an input of the link defines a symbol that `libweavec_alloc.a`
+defines strongly (`allocatorDefinedBy` reads the set from the archive
+itself), `dropAllocatorIfDefined` takes the archive and its `-u` off the
+line and prints a note: the program keeps its allocator, its heap is
+untracked, and releases are not validated. Guards and the stack and global
+objects still work.
+
+`WEAVEC_RT_STATS=1` in the environment of a program makes the runtime print
+its counters on standard error at exit, one line per counter as
+`weavec: runtime: <n> <what>` (allocations, releases, recycled slots, huge
+blocks, lookups by kind, range requests and ranges kept, stack objects
+entered). The counters are not synchronised.
 
 ## `tools/weavec` and `tools/weavec-cc`
 
@@ -509,14 +697,18 @@ source, every file of the database). It injects
 `-isystem <resource-dir>/include` and `-D__WEAVEC__=1`, so user code can
 `#include <weavec.h>`. `--whole-program` analyses the files as one program.
 It always prints the summary line; `--ledger`, `--ledger-format`,
-`--require`, `--budget` and `--no-zero-init` model a `weavec-cc` build with
-the default checks. `--dump-analysis` and `--dump-kinds` are debugging aids.
+`--require`, `--budget`, `--no-zero-init` and `--no-runtime` model a
+`weavec-cc` build with the default checks. Its ledger describes the
+enforcing build with the runtime, so it plans guards unless `--no-runtime`
+is given. `--dump-analysis` and `--dump-kinds` are debugging aids.
 
 `weavec-cc` is the drop-in compiler: `CC=weavec-cc make`. Its own flags,
 which `weavec-cc --help-weavec` lists, choose the checks mode
-(`-fweavec-checks=trap|report|verify|none`), zero-initialisation, the
-require level, the ledger, the summary line and the budget; everything else
-is Clang's. The design is [RFC 0005](rfcs/0005-whole-program-analysis.md),
+(`-fweavec-checks=trap|report|verify|none`), the runtime
+(`-f[no-]weavec-runtime`, `-f[no-]weavec-stack-objects`,
+`-f[no-]weavec-global-objects`), zero-initialisation, the require level
+(`-fweavec-require=none|guarded|checked|proven`), the ledger, the summary
+line and the budget; everything else is Clang's. The design is [RFC 0005](rfcs/0005-whole-program-analysis.md),
 with the command line of RFC 0030 §16. The checked-mode flags, the analysis
 cache, `--strict-externs`, `--exclusive-borrows`, `--analyze-headers` and
 `--report-unannotated` are gone, with no aliases.
@@ -534,19 +726,31 @@ cache, `--strict-externs`, `--exclusive-borrows`, `--analyze-headers` and
    `BoundaryInvariants` consumes what it published (the field-invariant
    rounds are cut; see `KindInference` above).
    `LedgerAdapter::finish` fills the defaults, propagates
-   boundary rows and plans the checks. This step runs in every mode.
+   boundary rows and plans the checks; the planner's guard pass then turns
+   the guardable unresolved facets into `guarded` (only the planner makes
+   that outcome: the engine publishes `unresolved` with a reason, as
+   before). This step runs in every mode.
 3. Definite violations are reported as errors and possible temporal findings
-   as warnings, with the require-level errors under `-fweavec-require`.
+   as warnings, with the require-level errors under `-fweavec-require`. In a
+   build that enforces its guards (checks and the runtime on),
+   `LedgerAdapter::dropGuardedPossible` first removes the possible findings
+   linked to a guarded facet from the diagnostics and from the ledger; the
+   row keeps its reason. `-Wweavec-possible` keeps them.
 4. After an error, the callbacks are replayed unchanged and CodeGen drops the
    module. Otherwise, when checks are on, `CheckEmitter` applies the plan and
-   the zero-initialisation lowering, and then the callbacks are replayed.
-5. The object is written, then the format-29 record to `<object>.weavec`, the
+   the zero-initialisation lowering and, with the runtime, registers the
+   unit's stack and global objects; then the callbacks are replayed,
+   followed by the descriptors the registration added.
+5. The object is written, then the format-30 record to `<object>.weavec`, the
    unit ledger to `-fweavec-ledger` if given, and the summary line under
    `-fweavec-summary` or `-fweavec-ledger`.
 
 `weavec` runs steps 1–3 and 5 without CodeGen, per source or as one program
 with `--whole-program`, and writes no object and no record. Its summary line
-says `checkable (not enforced)` where a `weavec-cc` build would check.
+says `checkable (not enforced)` where a `weavec-cc` build would check and
+`guardable (not enforced)` where one would guard, as does a `weavec-cc`
+build with `-fweavec-checks=none`; without the runtime the guardable count
+is 0 and the facets are counted as unresolved.
 
 Refinement is split by facet. Spatial, null and assertion outcomes are
 decided once per unit, because they decide the emitted code, and the link
@@ -580,17 +784,21 @@ linker; `weavec --whole-program` uses the same `ProgramAnalysis`.
    assertion facets, the Call rows of step 5 and the temporal facets of
    step 4.
 
-What no record covers stays listed under assumptions A1 and A3. Archives,
-shared libraries and ccache do not carry records yet (RFC 0032), but every
-link names the gap.
+Each unit's rows follow the flags it was compiled with, which its record's
+header carries; the program ledger's `config.runtime` is `true`, `false`,
+or `"mixed"` when the units were compiled differently.
 
-A unit record (§13.1) is one self-delimiting file, so that RFC 0032 can
-place it verbatim into an object section:
+What no record covers stays listed under assumptions A1 and A3. Archives,
+shared libraries and ccache do not carry records yet (planned as RFC 0033),
+but every link names the gap.
+
+A unit record (§13.1) is one self-delimiting file, so that it can later be
+placed verbatim into an object section:
 
 | Offset | Size | Field |
 | --- | --- | --- |
 | 0 | 8 | magic `89 57 56 43 0D 0A 1A 0A` |
-| 8 | 8 | format `u32` = 29, then flags `u32` = 0, little-endian |
+| 8 | 8 | format `u32` = 30, then flags `u32` = 0, little-endian |
 | 16 | 32 | schema fingerprint: SHA-256 of the codec's field table |
 | 48 | 16 | header length `H` and payload length `P`, `u64` each |
 | 64 | `H` + `P` | header and payload, UTF-8 JSON |
@@ -607,13 +815,15 @@ boundary place classes, one compact row per site, the diagnostics already
 reported and the §11 `a5` counts, but no evidence. Format 29 carries the
 summaries in format 30 and drops the fields only the old engine read
 (`summary`, `contexts`, `unknownIndirect`, `sizedFields`, `sizedFieldLoads`
-and `interfaces`; RFC 0031 §7). `lib/Frontend/RecordPayload.cpp`'s field
+and `interfaces`; RFC 0031 §7). Format 30 adds the `guarded/<reason>`
+facet cell of a site row and the header's `config.runtime` (RFC 0032 §10).
+`lib/Frontend/RecordPayload.cpp`'s field
 table is the authoritative list, and the schema fingerprint is derived from
 it. The
 field-invariant verdicts stay empty while §7.6 is cut; the boundary rows
 carry `BoundaryInvariants`'s findings to the link, where they propagate
 program-wide.
-Readers accept only format 29 with a matching schema fingerprint and a valid
+Readers accept only format 30 with a matching schema fingerprint and a valid
 digest. Anything else is a stale record, and the input counts as having
 none.
 
@@ -631,7 +841,9 @@ the `LibrarySpec`, the unit's slot constraints and their solution (local,
 or program-wide at link through the database's program facts), the
 `ProgramDatabase` at link, the field candidates assumed at entry, and
 `EngineOptions` (budget, zero-initialisation, require level, verify mode,
-strict aliasing, the functions to report, dump stream and statistics).
+strict aliasing, the functions to report, dump stream and statistics). The
+engine does not know whether the build has a runtime: `guarded` is made
+after it has published.
 `LedgerAdapter` is the only channel back:
 
 | Method | Carries |
@@ -642,11 +854,11 @@ strict aliasing, the functions to report, dump stream and statistics).
 | `suggest` | the annotation a row's fix-it offers; the first suggestion of a pass stands |
 | `requirement` | one requirement record of a LibCall, Release or Call facet, kept with its own outcome and check |
 | `report` | a diagnostic with its certainty, linked to its site and facet |
-| `witness` | what a check needs: the extent and whether it is exact or declared, the base, the offset or index, library lengths |
+| `witness` | what a check needs: the extent and whether it is exact or declared, the base, the offset or index, library lengths; in the shape `Object`, what a guard of an unresolved requirement compares (the need, or that the argument is a string), which never serves a static check |
 | `boundary` | the places reachable from parameters and globals that may hold released pointers or aliased owners, with place classes; an owning cycle is an aliased-owner fact with its `cycle` flag (RFC 0031 §8) |
 | `overBudget` | a function that exceeded its budget |
 | `storeVerdict` | a store group's verdict on a field-invariant candidate: holds, violated or unknown (kept for §7.6; the object engine publishes none) |
-| `finish` | fills the defaults, applies the unsafe, `setjmp`, concurrency and boundary rules and the field-invariant upgrades, plans the checks, and returns the `PlannedLedger` |
+| `finish` | fills the defaults, applies the unsafe, `setjmp`, concurrency and boundary rules and the field-invariant upgrades, plans the checks and, with the runtime, the guards, drops the possible findings the build enforces instead (`dropGuardedPossible`), reports the require-level errors, and returns the `PlannedLedger` |
 
 An adapter is authoritative, discarding (summary rounds and early link
 rounds keep nothing) or collecting (alias-context runs decide no row and
@@ -784,13 +996,16 @@ breaking change. There are 20:
 | `use-after-free`, `double-free`, `use-after-move`, `conflicting-borrow`, `lifetime-too-short`, `mismatched-release`, `invalid-release` | error when definite, warning when possible |
 | `null-dereference`, `use-of-uninitialized`, `out-of-bounds` | error, reported only when definite |
 | `unsafe-operation`, `annotation-mismatch`, `invalid-integer-operation`, `contradicted-assumption` | error |
-| `unresolved-operation` | error, only under `-fweavec-require=checked` or `proven`, or in a `WEAVEC_REQUIRE_SAFE` function |
+| `unresolved-operation` | error, only under `-fweavec-require=guarded`, `checked` or `proven`, or in a `WEAVEC_REQUIRE_SAFE` function; `guarded` allows guarded facets, the others report them as "guarded at run time only" |
 | `unchecked-operation` | error, only under `-fweavec-require=proven` |
 | `leak`, `invalid-annotation`, `unanalyzed-input` | warning |
 | `allocation-failure` | warning, off by default (`-Wweavec-allocation-failure`) |
 
 `diag::defaultSeverity(id, certainty)` gives these severities. Possible null
-and spatial findings are checked facets rather than diagnostics. `-Werror`
+and spatial findings are checked facets rather than diagnostics. A possible
+temporal finding on a facet the build guards is not reported unless
+`-Wweavec-possible` is given (RFC 0032 §9); the `weavec` tool, which
+enforces nothing, reports it. `-Werror`
 in project flags does not promote WeaveC warnings; `-Werror=weavec[-<id>]`
 does. An error can be lowered with `-Wno-error=weavec-<id>` but not
 disabled, and a lowered violation still traps. RFC 0030 removed
@@ -808,12 +1023,22 @@ disabled, and a lowered violation still traps. RFC 0030 removed
   checks that the decision is not proven, and `EffectsIOTest.cpp`
   round-trips summary format 30. The Analysis tests run `ObjectEngine` over
   snippets (`unittests/Analysis/TestUtils.h`).
+- **The runtime test** ([`runtime/test/rt_test.c`](../runtime/test/rt_test.c),
+  CTest `runtime`) is one C program linked with `libweavec_rt.a` and
+  `libweavec_alloc.a`, so its `malloc` is the arena's. It tests the size
+  classes, alignment, reallocation, the quarantine, invalid releases (in
+  child processes that must die), huge blocks, foreign pointers, the stack
+  list under `longjmp` and deep recursion, the global table, strings,
+  threads and `fork`.
 - **Lit tests** (`test/Analysis`, `test/Annotations`, `test/Driver`,
   `test/WholeProgram`, `test/Prelude`, `test/Emission`) pin exact messages
-  and driver behaviour; `test/Emission` holds the rewrite-oracle pairs.
+  and driver behaviour; `test/Emission` holds the rewrite-oracle pairs,
+  those of the guards, the range cache and the object registrations among
+  them (`runtime-oracle-*.c`), and `test/Driver/runtime-*.c` pins the
+  runtime's flags, link line and fallbacks.
 - **`test/cases`** is one tree of executable C cases by feature, with
-  expectations as line-comment markers (`BUG`, `TRAP`, `UNRESOLVED`,
-  `CLEAN`, …; see its [README](../test/cases/README.md)).
+  expectations as line-comment markers (`BUG`, `TRAP`, `GUARDED`,
+  `UNRESOLVED`, `CLEAN`, …; see its [README](../test/cases/README.md)).
   [`scripts/run-cases.py`](../scripts/run-cases.py) builds each case with
   `weavec-cc`, checks its diagnostics and ledgers, and runs it in trap and
   report mode, optionally under an ASan oracle. CTest registers one
@@ -826,14 +1051,18 @@ disabled, and a lowered violation still traps. RFC 0030 removed
   every pull request, and `--full` (builds, the projects' own test suites,
   injected bugs, benchmarks) weekly and for releases. `expected.json` is a
   ratchet, and `triage.json` holds a verdict for every definite error and
-  possible temporal warning. See its [README](../test/corpus/README.md).
+  possible temporal warning, and the guard failures of a test suite that
+  were triaged as true bugs. See its [README](../test/corpus/README.md).
 
 [`scripts/codegen-identity.py`](../scripts/codegen-identity.py) implements
 gate G7: with `-fweavec-checks=none`, objects are byte-identical to Clang's.
 `scripts/check-hygiene.py` implements gate H2: no checked-mode remnants
 outside `docs/rfcs/`, no libc name comparisons outside the library table,
-the seam rules and the line budgets. `run-cases.py` measures G1–G6,
-`test/Emission` G8, and `corpus-gate.py` G9–G15.
+the seam rules and the line budgets, the runtime's own among them (RFC 0032
+gate H1). `run-cases.py` measures G1–G6, `test/Emission` G8, and
+`corpus-gate.py` G9–G15 and RFC 0032's `rfc0032.R4` (the unresolved share
+of each facet); G14 now bounds the run-time cost with the runtime, without
+it, and the peak memory.
 
 ## Build structure
 
@@ -848,8 +1077,11 @@ the seam rules and the line budgets. `run-cases.py` measures G1–G6,
   paths, and Core is not one of them.
 - `lib/Core/CMakeLists.txt` embeds `LibrarySpec.txt` as a byte array at
   configure time; editing the table re-runs the configure step.
-- `runtime/CMakeLists.txt` builds both archives into the build tree's
-  `lib/weavec`, generating the helper bodies with the freshly built
-  `weavec-cc`.
+- `runtime/CMakeLists.txt` builds the three archives into the build tree's
+  `lib/weavec`, generating the helper bodies of `libweavec_chk.a` with the
+  freshly built `weavec-cc`. `libweavec_rt.a` and `libweavec_alloc.a` are
+  always compiled with `-O2` and without the allocation builtins, whatever
+  the build type. With `WEAVEC_BUILD_TESTS` it also builds `weavec_rt_test`,
+  which `test/CMakeLists.txt` registers as the CTest `runtime`.
 - A CMake package config (`find_package(WeaveC)`) exports `weavec::Core`,
   `weavec::Analysis` and `weavec::Frontend` to external tools.

@@ -67,6 +67,13 @@ CheckTerm CheckTerm::strnlen(CheckTerm pointer, CheckTerm bound) {
   return binary(Kind::StrNLen, std::move(pointer), std::move(bound));
 }
 
+CheckTerm CheckTerm::objStrLen(CheckTerm pointer) {
+  CheckTerm term;
+  term.kind = Kind::ObjStrLen;
+  term.operands.push_back(std::move(pointer));
+  return term;
+}
+
 bool CheckTerm::isWellFormed() const noexcept {
   switch (kind) {
   case Kind::Constant:
@@ -87,6 +94,8 @@ bool CheckTerm::isWellFormed() const noexcept {
   case Kind::Div:
     return path.empty() && operands.size() == 2 && operands[0].isWellFormed() &&
            operands[1].kind == Kind::Constant && operands[1].constant > 0;
+  case Kind::ObjStrLen:
+    return path.empty() && operands.size() == 1 && operands[0].isWellFormed();
   }
   return false;
 }
@@ -131,6 +140,7 @@ static std::string_view operatorText(CheckTerm::Kind kind) noexcept {
   case CheckTerm::Kind::Place:
   case CheckTerm::Kind::SizeOf:
   case CheckTerm::Kind::StrNLen:
+  case CheckTerm::Kind::ObjStrLen:
     break;
   }
   return " ? ";
@@ -162,6 +172,10 @@ std::string CheckTerm::toString() const {
       return "<malformed>";
     return "strnlen(" + operands[0].toString() + ", " + operands[1].toString() +
            ")";
+  case Kind::ObjStrLen:
+    if (operands.size() != 1)
+      return "<malformed>";
+    return "objstrlen(" + operands[0].toString() + ")";
   }
   return "<malformed>";
 }
@@ -180,6 +194,12 @@ std::string_view toString(Template kind) noexcept {
     return "disjoint";
   case Template::Assert:
     return "assert";
+  case Template::Object:
+    return "object";
+  case Template::Live:
+    return "live";
+  case Template::Release:
+    return "release";
   }
   return "<invalid>";
 }
@@ -196,6 +216,10 @@ std::string_view toString(Form form) noexcept {
     return "result";
   case Form::Violation:
     return "violation";
+  case Form::Need:
+    return "need";
+  case Form::String:
+    return "string";
   }
   return "<invalid>";
 }
@@ -259,6 +283,25 @@ std::optional<std::size_t> operandCount(Template kind, Form form,
     if (form == Form::Plain && placement == Placement::ReplaceCall)
       return 0;
     return std::nullopt;
+  case Template::Object:
+    if (form == Form::Plain && placement == Placement::WrapOperand)
+      return 2;
+    if (form == Form::Plain && placement == Placement::ReplaceAccess)
+      return 3;
+    if (form == Form::Need && placement == Placement::WrapArgument)
+      return 1;
+    if (form == Form::String && placement == Placement::WrapArgument)
+      return 0;
+    return std::nullopt;
+  case Template::Live:
+    if (form == Form::Plain && (placement == Placement::WrapOperand ||
+                                placement == Placement::WrapArgument))
+      return 0;
+    return std::nullopt;
+  case Template::Release:
+    if (form == Form::Plain && placement == Placement::WrapOperand)
+      return 0;
+    return std::nullopt;
   }
   return std::nullopt;
 }
@@ -290,8 +333,20 @@ CheckTemplate ledgerTemplate(const CheckPlanEntry &entry) noexcept {
     return CheckTemplate::Disjoint;
   case Template::Assert:
     return CheckTemplate::Assert;
+  case Template::Object:
+    return CheckTemplate::Object;
+  case Template::Live:
+    return CheckTemplate::Live;
+  case Template::Release:
+    return CheckTemplate::Release;
   }
   return CheckTemplate::Violation;
+}
+
+bool isGuard(const CheckPlanEntry &entry) noexcept {
+  return entry.form != Form::Violation &&
+         (entry.kind == Template::Object || entry.kind == Template::Live ||
+          entry.kind == Template::Release);
 }
 
 FacetCheck facetCheck(const CheckPlanEntry &entry) noexcept {
@@ -313,6 +368,12 @@ std::string helperName(const CheckPlanEntry &entry) {
   case Form::Result:
     name += "_r";
     break;
+  case Form::Need:
+    name += "_n";
+    break;
+  case Form::String:
+    name += "_s";
+    break;
   case Form::Plain:
   case Form::Violation:
     break;
@@ -327,13 +388,19 @@ static int nestingRank(Template kind) noexcept {
     return 0;
   case Template::Index:
     return 1;
+  // RFC 0032 §6: a guard never sees the null a `nonnull` check stops; a
+  // `live` guard is inside an `object` guard of the same operand.
+  case Template::Live:
+  case Template::Release:
+    return 2;
   case Template::Span:
   case Template::Len:
   case Template::Disjoint:
   case Template::Assert:
-    return 2;
+  case Template::Object:
+    return 3;
   }
-  return 2;
+  return 3;
 }
 
 void CheckPlan::sort() {

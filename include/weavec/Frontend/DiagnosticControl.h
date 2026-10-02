@@ -79,6 +79,13 @@ public:
   /// skip the work behind such an id.
   [[nodiscard]] bool isEnabled(std::string_view id) const;
 
+  /// RFC 0032 §9: `-Wweavec-possible` and `-Wno-weavec-possible`, or none
+  /// when neither was given. `possible` is not a diagnostic id: it decides
+  /// whether possible findings on guarded facets are reported.
+  [[nodiscard]] std::optional<bool> possibleFindings() const noexcept {
+    return possible;
+  }
+
   friend bool operator==(const DiagnosticControl &,
                          const DiagnosticControl &) = default;
 
@@ -94,6 +101,7 @@ private:
   /// the one they name.
   bool enableAll = false;
   std::map<std::string, bool, std::less<>> enabledIds;
+  std::optional<bool> possible;
 };
 
 /// Where a diagnostic was emitted, for deduplication between the compile

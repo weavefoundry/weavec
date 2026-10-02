@@ -49,7 +49,14 @@ Seven checks, one per bullet of H2 (its fourth bullet is split in two):
                      an RFC amendment that records the measurement. RFC 0031
                      stage S7 recorded them: the measurement at the end of S7
                      (19,654 and 64,367 lines), rounded up to a multiple of
-                     500.
+                     500. RFC 0032 (gate H1, Implementation amendments)
+                     raised the library limit to 69,000 for the planner's
+                     guards, the range caches, object registration and the
+                     driver's runtime handling (68,744 lines measured).
+  runtime-lines      the C runtime (runtime/, its tests under runtime/test/
+                     excluded) totals at most 4,000 lines (RFC 0032 gate H1).
+                     It is counted apart from the libraries: it is linked
+                     into compiled programs, not into the compiler.
 
 The word rule of corpus-word: an occurrence counts when it is not immediately
 preceded or followed by an ASCII letter or digit, and case matters.
@@ -103,9 +110,11 @@ ROOT = Path(__file__).resolve().parent.parent
 # Gate H2 (RFC 0030, Acceptance gates, Hygiene; RFC 0031, section 2)
 # ---------------------------------------------------------------------------
 
-# Recorded by RFC 0031 stage S7 (see the module docstring).
+# Recorded by RFC 0031 stage S7 and RFC 0032 gate H1 (see the module
+# docstring).
 ENGINE_LINE_LIMIT = 21_000
-LIBRARY_LINE_LIMIT = 66_500
+LIBRARY_LINE_LIMIT = 69_000
+RUNTIME_LINE_LIMIT = 4_000
 
 # retired-name
 RETIRED_CHECKED_NAMES = ("SafetyState", "CheckedContract", "checkContracts", "--checked")
@@ -147,6 +156,9 @@ LIBRARY_DIRS = ("lib", "include", "tools")
 # What a total's violation line shows in place of a path.
 ENGINE_TOTAL = "lib/Analysis/Engine*.{h,cpp}"
 LIBRARY_TOTAL = "{lib,include,tools}/**"
+RUNTIME_DIRS = ("runtime",)
+RUNTIME_TESTS = "runtime/test/"
+RUNTIME_TOTAL = "runtime/**"
 
 CHECKS = (
     ("retired-name", "checked-mode or old-engine names outside docs/rfcs/"),
@@ -156,13 +168,14 @@ CHECKS = (
     ("engine-sink", "the engine naming a DiagnosticSink"),
     ("engine-lines", "lib/Analysis/Engine*.{h,cpp} over their line limit"),
     ("library-lines", "lib/, include/ and tools/ over their line limit"),
+    ("runtime-lines", "runtime/ (without runtime/test/) over its line limit"),
 )
 
 # ---------------------------------------------------------------------------
 # File selection
 # ---------------------------------------------------------------------------
 
-SCANNED_DIRS = ("lib", "include", "tools", "docs")
+SCANNED_DIRS = ("lib", "include", "tools", "docs", "runtime")
 WALK_SKIPPED_DIRS = frozenset(("node_modules", "dist", ".generated", ".astro", "test-results",
                                "playwright-report", "__pycache__", ".git"))
 WALK_SKIPPED_PREFIX = "build"
@@ -192,6 +205,7 @@ class Result:
     library_aliases: Optional[int] = None
     engine_lines: dict[str, int] = dataclasses.field(default_factory=dict)
     library_lines: dict[str, int] = dataclasses.field(default_factory=dict)
+    runtime_lines: dict[str, int] = dataclasses.field(default_factory=dict)
     violations: list[Violation] = dataclasses.field(default_factory=list)
 
     def add(self, check: str, path: str, line: Optional[int], message: str) -> None:
@@ -683,9 +697,18 @@ def check_library_lines(tree: Tree, result: Result) -> None:
                    _over_limit(total, LIBRARY_LINE_LIMIT, len(result.library_lines)))
 
 
+def check_runtime_lines(tree: Tree, result: Result) -> None:
+    for file in tree.files(RUNTIME_DIRS, exclude=(RUNTIME_TESTS,)):
+        result.runtime_lines[file.path] = file.lines
+    total = sum(result.runtime_lines.values())
+    if total > RUNTIME_LINE_LIMIT:
+        result.add("runtime-lines", RUNTIME_TOTAL, None,
+                   _over_limit(total, RUNTIME_LINE_LIMIT, len(result.runtime_lines)))
+
+
 CHECK_FUNCTIONS = (check_retired_names, check_library_name_tests, check_corpus_words,
                    check_engine_includes, check_engine_sink, check_engine_lines,
-                   check_library_lines)
+                   check_library_lines, check_runtime_lines)
 
 
 # ---------------------------------------------------------------------------
@@ -708,8 +731,9 @@ def summary_lines(result: Result) -> list[str]:
     source = "git ls-files" if result.file_source == "git" else "a directory walk (not a git work tree)"
     engine = sum(result.engine_lines.values())
     library = sum(result.library_lines.values())
+    runtime = sum(result.runtime_lines.values())
     lines = [
-        "Summary (RFC 0030 and 0031, gate H2)",
+        "Summary (RFC 0030 and 0031, gate H2; RFC 0032, gate H1)",
         f"  files:          {result.files:,} from {source}; skipped {len(result.binary)} binary, "
         f"{len(result.unreadable)} unreadable",
     ]
@@ -721,6 +745,8 @@ def summary_lines(result: Result) -> list[str]:
     lines.append(f"  library lines:  {library:,} / {LIBRARY_LINE_LIMIT:,} "
                  f"({len(result.library_lines):,} code files under lib/, include/ and tools/, "
                  f"{LIBRARY_SPEC} excluded)")
+    lines.append(f"  runtime lines:  {runtime:,} / {RUNTIME_LINE_LIMIT:,} "
+                 f"({len(result.runtime_lines):,} files under runtime/, {RUNTIME_TESTS} excluded)")
     width = max(len(check) for check, _ in CHECKS)
     for check, description in CHECKS:
         lines.append(f"  {check:<{width}} {result.count(check):>6}  {description}")
@@ -745,6 +771,8 @@ def document(result: Result) -> dict:
                        "files": result.engine_lines},
             "library": {"total": sum(result.library_lines.values()), "limit": LIBRARY_LINE_LIMIT,
                         "files": len(result.library_lines)},
+            "runtime": {"total": sum(result.runtime_lines.values()), "limit": RUNTIME_LINE_LIMIT,
+                        "files": result.runtime_lines},
         },
         "checks": {check: {"description": description, "violations": result.count(check)}
                    for check, description in CHECKS},

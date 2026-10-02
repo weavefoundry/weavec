@@ -982,6 +982,12 @@ public:
   /// RFC 0030 §5.7: an `asm` statement applies the unknown-callee default
   /// to its pointer operands.
   void inlineAssembly(const clang::GCCAsmStmt &assembly);
+  /// The call a `cleanup` attribute makes when `var`'s scope ends.
+  void cleanupFunction(const clang::VarDecl &var);
+  /// What an unknown callee may do to the objects reachable from `start`;
+  /// with `mayOwn`, it may have taken over what they own.
+  void unknownEffect(const std::vector<core::ObjectId> &start,
+                     const core::ReleaseRecord &record, bool mayOwn);
   /// A truth value (a comparison, a logical operator, `!`, a scalar) with a
   /// condition refinement can decide, evaluated afresh here; none when the
   /// expression is none of these.

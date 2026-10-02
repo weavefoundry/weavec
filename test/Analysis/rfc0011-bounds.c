@@ -2,9 +2,9 @@
 // gives an object its extent; an access at a constant or symbolic offset
 // the extent cannot hold is `out-of-bounds`, with the index as written and
 // the object's origin in a note.
-// RUN: not %weavec --ledger=%t.json %s -- -ferror-limit=0 2>&1 | FileCheck %s
+// RUN: not %weavec --no-runtime --ledger=%t.json %s -- -ferror-limit=0 2>&1 | FileCheck %s
 // RUN: FileCheck --check-prefix=LEDGER %s < %t.json
-// RUN: not %weavec --dump-analysis %s -- 2>/dev/null | FileCheck --check-prefix=DUMP %s
+// RUN: not %weavec --no-runtime --dump-analysis %s -- 2>/dev/null | FileCheck --check-prefix=DUMP %s
 #include "../Inputs/prelude.h"
 #include <weavec.h>
 

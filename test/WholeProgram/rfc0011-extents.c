@@ -8,13 +8,13 @@
 // caller's object").
 //
 // RUN: rm -rf %t && mkdir -p %t
-// RUN: not %weavec --whole-program %s %S/Inputs/buffers.c -- -I%S/Inputs 2>&1 | FileCheck %s
-// RUN: not %weavec --whole-program --ledger=%t/program.json %s %S/Inputs/buffers.c -- -I%S/Inputs 2>/dev/null
+// RUN: not %weavec --no-runtime --whole-program %s %S/Inputs/buffers.c -- -I%S/Inputs 2>&1 | FileCheck %s
+// RUN: not %weavec --no-runtime --whole-program --ledger=%t/program.json %s %S/Inputs/buffers.c -- -I%S/Inputs 2>/dev/null
 // RUN: FileCheck --check-prefix=LEDGER %s < %t/program.json
-// RUN: not %weavec --whole-program --dump-analysis %s %S/Inputs/buffers.c -- -I%S/Inputs 2>/dev/null | FileCheck --check-prefix=DUMP %s
+// RUN: not %weavec --no-runtime --whole-program --dump-analysis %s %S/Inputs/buffers.c -- -I%S/Inputs 2>/dev/null | FileCheck --check-prefix=DUMP %s
 //
 // Alone, the calls are unchecked boundaries: nothing is reported.
-// RUN: %weavec %s -- -I%S/Inputs 2>&1 | FileCheck --check-prefix=ALONE %s
+// RUN: %weavec --no-runtime %s -- -I%S/Inputs 2>&1 | FileCheck --check-prefix=ALONE %s
 //
 // The same through weavec-cc: the unit record carries all three.
 // RUN: %weavec_cc -c %S/Inputs/buffers.c -o %t/buffers.o -I%S/Inputs 2>&1 | count 0
@@ -38,7 +38,7 @@
 // DUMP-NEXT: always-returns
 // DUMP-NEXT: release *param0 free offset -4 when always
 
-// RECORD: "format": 29,
+// RECORD: "format": 30,
 // RECORD: "name": "buffer_fill",
 // RECORD: "effects": "{{.*}}store p0*[] when=-:- elements=0,p1@1@0 :: int lo=0 hi=0\nreads p0*\nwrites p0*\n",
 // RECORD: "kind": "counted(param 1 scale 1 plus 0) nonnull",

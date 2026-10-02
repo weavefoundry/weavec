@@ -11,7 +11,7 @@ repository history at tag `v0.10.0`.
 ## Done: RFC 0030 — Prove or trap
 
 Design: [RFC 0030 — Prove or trap](rfcs/0030-prove-or-trap.md)
-(Implemented, as amended by RFC 0031).
+(Implemented, as amended by RFCs 0031 and 0032).
 One safety semantics: every spatial, null and temporal facet of every
 operation is proven, checked by a runtime check `weavec-cc` inserts, a
 definite violation, or unresolved or trusted with a reason, all recorded in
@@ -83,19 +83,45 @@ with what was measured kept as a ratchet (the RFC's *Gates carried forward*
 amendment): the unresolved shares of G6 (to RFC 0032), the build-cost bound
 of G12 (to RFC 0033) and G4's count of possible temporal warnings.
 
-## Next: RFC 0032 — Runtime enforcement (planned)
+## Done: RFC 0032 — Runtime enforcement
 
-Sized by the ledger's unresolved-reason histogram once proofs are sound:
+Design: [RFC 0032 — Runtime enforcement](rfcs/0032-runtime-enforcement.md)
+(Implemented, with its cost gate amended). Every enforcing build links a
+runtime whose allocator keeps each heap object's extent and liveness
+findable from a pointer, and which tracks escaping stack objects and
+globals. Unresolved spatial and temporal facets with a pointer operand
+become *guarded*: checked against that object table, with a quarantine as
+the temporal backstop. `verify` mode monitors temporal proofs too. The
+stages landed on the `rfc0032-runtime-enforcement` branch and ship as one
+change; the decisions made while implementing them are recorded in the
+RFC's *Implementation amendments*:
 
-- an ABI-compatible allocator with O(1) object lookup, so residual
-  `unknown-extent` facets become checks against the runtime extent;
-- a temporal runtime backstop: liveness checks with a quarantine, and Arm
-  MTE or Apple MIE where the hardware allows;
-- proof-dependency tracking, for a sharper blame property.
+- [x] **S0 Tests first.**
+- [x] **S1 The runtime**: allocator, quarantine, stack list, global table.
+- [x] **S2 Core**: the `guarded` outcome, ledger version 2, record format 30.
+- [x] **S3 Access guards**: planner, prelude, emitter, driver.
+- [x] **S4 Stack and global objects.**
+- [x] **S5 Library calls and releases.**
+- [x] **S6 Verify mode and the false proof through array elements** (a
+      boundary rule, not a summary: amendment 1).
+- [x] **S7 Possible findings, the runner, the corpus gate, documentation.**
+- [x] **S8 Gates and cost.**
+
+One target was not met and is carried forward (amendment 3): the default
+mode's cost. cJSON runs at 1.66× the reference compiler's build, zlib at
+1.85× and the Lua benchmark at 5.94× (the RFC set 2.0×, 1.5× and 2.0×);
+without the runtime the three are at 1.14×, 1.00× and 1.11×. The cost is
+the number of guards a program executes, so the next step is removing
+guards before they run.
+
+Left for later RFCs: static guard elimination (dominated guards, one guard
+for a block's accesses through one pointer, hoisting), proof-dependency
+tracking for a sharper blame property, hardware tagging (Arm MTE, Apple
+MIE), and the boundary facets of call sites.
 
 ## Next: RFC 0033 — Adoption (planned)
 
-- Format-29 records embedded in object sections, so archives, shared
+- Format-30 records embedded in object sections, so archives, shared
   libraries, ccache and LTO carry them.
 - Fingerprinted baselines, reasoned suppressions and waivers for accepted
   definite errors.

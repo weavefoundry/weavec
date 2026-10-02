@@ -573,6 +573,7 @@ RequirementCheck verifyRequirements(std::span<const ProgramMember> members,
                 ", which is " + decision.have.value_or("shorter") + " long");
             break;
           case core::SiteOutcome::Checked:
+          case core::SiteOutcome::Guarded:
           case core::SiteOutcome::Unresolved:
           case core::SiteOutcome::Trusted:
             decision.decision = core::FacetDecision::unresolvedFor(

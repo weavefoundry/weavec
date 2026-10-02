@@ -12,7 +12,7 @@ int work(int fail) {
   return 0;
 err:
   free(b);
-  free(a); // BUG: double-free
+  free(a); // BUG: double-free // TRAP: release
   return -1;
 }
 int main(int argc, char **argv) { (void)argv; return work(argc > 1); }

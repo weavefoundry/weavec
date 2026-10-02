@@ -13,5 +13,5 @@ int main(void) {
   p[0] = 1;
   g_victim = p;
   qsort(xs, 2, sizeof xs[0], cmp);
-  return p[0]; // BUG: use-after-free
+  return p[0]; // BUG: use-after-free // TRAP: live
 }

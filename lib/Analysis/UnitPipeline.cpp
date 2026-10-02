@@ -75,6 +75,7 @@ UnitPipelineResult runUnitAnalysis(clang::ASTContext &context,
   adapterOptions.source = mainSource(context);
   adapterOptions.target = context.getTargetInfo().getTriple().str();
   adapterOptions.lowered = options.lowered;
+  adapterOptions.dropGuardedPossible = options.dropGuardedPossible;
   // §5.3: G, what threads and signal handlers share, before the engine runs.
   if (options.buildLedger) {
     auto share = std::make_shared<const ConcurrencyShare>(

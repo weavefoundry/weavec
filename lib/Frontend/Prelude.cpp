@@ -25,6 +25,7 @@ namespace weavec::frontend {
 //   $V     a parameterless helper's parameter list (`void` or report's)
 //   $F(t)  the failure for template `t`: a trap or a report
 //   $U     the usable-size query
+//   $R     the frame of the function a stack helper is called from
 //
 // Only block comments: `//` is an error under -std=c89 -pedantic-errors.
 
@@ -148,6 +149,227 @@ $A unsigned long long __weavec_have_mul(unsigned long long a, unsigned long long
   return __builtin_mul_overflow(a, b, &r) ? 0 : r;
 }
 )C";
+
+/// RFC 0032, section 3: the guards, which ask the runtime's object table.
+/// Both families have them. An arena pointer is looked up inline (section
+/// 2.1's arithmetic and one load); a guard with a range cache (section 13)
+/// first asks the cache in its function's frame.
+static constexpr llvm::StringLiteral GuardHelpers = R"C(
+/* Guards (RFC 0032, section 3). The `width` bytes at p + off + i * step lie
+ * inside the live tracked object p points into; an untracked p passes. */
+$A void *$Nobject$S(const volatile void *p, long long i, unsigned long long step,
+                    unsigned long long off, unsigned long long width$P) {
+  __typeof__(sizeof 0) a = (__typeof__(sizeof 0))p - __weavec_rt_heap.base;
+  if (__builtin_expect(a < __weavec_rt_heap.bytes, 1)) {
+    unsigned shift = __weavec_rt_heap.shift;
+    const struct __weavec_rt_class *c = &__weavec_rt_heap.table[a >> shift];
+    unsigned long long in = a & (((__typeof__(sizeof 0))1 << shift) - 1);
+    unsigned long long slot = in >> c->shift;
+    long long delta = 0, at = 0;
+    unsigned word;
+    if (c->magic != 0)
+      slot = (slot * c->magic) >> 32;
+    word = ((const unsigned *)(__weavec_rt_heap.meta + ((a >> shift) << (shift - 2))))[slot];
+    if (__builtin_expect((word & 3) != 1 || __builtin_mul_overflow(i, (long long)step, &delta) ||
+                         __builtin_add_overflow((long long)(in - slot * c->size + off), delta, &at) ||
+                         at < 0 || width > (word >> 2) ||
+                         (unsigned long long)at > (word >> 2) - width, 0))
+      $F(object);
+  } else if (__builtin_expect(__weavec_rt_object((const void *)p, i, step, off, width), 0))
+    $F(object);
+  return (char *)p + (long long)((unsigned long long)i * step);
+}
+/* object, with a range cache {lo, len, state, expect} in the caller's frame:
+ * the bytes of [lo, lo + len) pass while the word at `state` reads `expect`.
+ * An empty cache has len 0, so its state is never read. A `quiet` guard is in
+ * a loop that calls nothing and that checked the cache's state on the way
+ * in: nothing can end an object the cache holds, so its state is not read. */
+$A void *$Nobject_c$S(const volatile void *p, long long i, unsigned long long step,
+                      unsigned long long off, unsigned long long width,
+                      unsigned long long *c, int quiet$P) {
+  long long delta = 0;
+  if (__builtin_expect(!__builtin_mul_overflow(i, (long long)step, &delta), 1)) {
+    unsigned long long d = (unsigned long long)p + off + (unsigned long long)delta - c[0];
+    if (__builtin_expect((unsigned long long)p - c[0] <= c[1] && d <= c[1] && width <= c[1] - d &&
+                         width != 0 && (quiet || *(const unsigned *)c[2] == (unsigned)c[3]), 1))
+      return (char *)p + delta;
+  }
+  {
+    __typeof__(sizeof 0) a = (__typeof__(sizeof 0))p - __weavec_rt_heap.base;
+    if (__builtin_expect(a < __weavec_rt_heap.bytes, 1)) {
+      /* An arena pointer: looked up here, and its block remembered. */
+      unsigned shift = __weavec_rt_heap.shift;
+      const struct __weavec_rt_class *k = &__weavec_rt_heap.table[a >> shift];
+      unsigned long long in = a & (((__typeof__(sizeof 0))1 << shift) - 1);
+      unsigned long long slot = in >> k->shift;
+      const unsigned *state;
+      long long at = 0;
+      unsigned word;
+      if (k->magic != 0)
+        slot = (slot * k->magic) >> 32;
+      state = (const unsigned *)(__weavec_rt_heap.meta + ((a >> shift) << (shift - 2))) + slot;
+      word = *state;
+      if (__builtin_expect((word & 3) != 1 || __builtin_mul_overflow(i, (long long)step, &delta) ||
+                           __builtin_add_overflow((long long)(in - slot * k->size + off), delta, &at) ||
+                           at < 0 || width > (word >> 2) ||
+                           (unsigned long long)at > (word >> 2) - width, 0)) {
+        /* Where a failure is only reported, the next guard asks again. */
+        c[1] = 0;
+        $F(object);
+      } else {
+        c[0] = (unsigned long long)p - (in - slot * k->size);
+        c[1] = word >> 2;
+        c[2] = (unsigned long long)state;
+        c[3] = word;
+      }
+    } else {
+      struct __weavec_rt_range r = __weavec_rt_object_range((const void *)p, i, step, off, width,
+                                                           __builtin_frame_address(0));
+      c[0] = r.lo;
+      c[1] = r.len;
+      c[2] = (unsigned long long)r.state;
+      c[3] = r.expect;
+      if (__builtin_expect(r.failed != 0, 0))
+        $F(object);
+    }
+  }
+  return (char *)p + (long long)((unsigned long long)i * step);
+}
+/* object, for a call's argument: `need` bytes from p; none needs no object. */
+$A void *$Nobject_n$S(const volatile void *p, unsigned long long need$P) {
+  if (__builtin_expect(need != 0 && __weavec_rt_object((const void *)p, 0, 0, 0, need), 0))
+    $F(object);
+  return (void *)p;
+}
+/* object, for a string argument: its terminator lies inside p's object. */
+$A char *$Nobject_s$S(const char *p$P) {
+  if (__builtin_expect(__weavec_rt_string(p), 0))
+    $F(object);
+  return (char *)p;
+}
+/* p does not point into a dead tracked object. */
+$A void *$Nlive$S(const volatile void *p$P) {
+  __typeof__(sizeof 0) a = (__typeof__(sizeof 0))p - __weavec_rt_heap.base;
+  if (__builtin_expect(a < __weavec_rt_heap.bytes, 1)) {
+    unsigned shift = __weavec_rt_heap.shift;
+    const struct __weavec_rt_class *c = &__weavec_rt_heap.table[a >> shift];
+    unsigned long long slot = (a & (((__typeof__(sizeof 0))1 << shift) - 1)) >> c->shift;
+    if (c->magic != 0)
+      slot = (slot * c->magic) >> 32;
+    if (__builtin_expect((((const unsigned *)(__weavec_rt_heap.meta +
+                                              ((a >> shift) << (shift - 2))))[slot] & 3) != 1, 0))
+      $F(live);
+  } else if (__builtin_expect(__weavec_rt_live((const void *)p), 0))
+    $F(live);
+  return (void *)p;
+}
+/* live, with a range cache. */
+$A void *$Nlive_c$S(const volatile void *p, unsigned long long *c, int quiet$P) {
+  if (__builtin_expect((unsigned long long)p - c[0] < c[1] &&
+                       (quiet || *(const unsigned *)c[2] == (unsigned)c[3]), 1))
+    return (void *)p;
+  {
+    __typeof__(sizeof 0) a = (__typeof__(sizeof 0))p - __weavec_rt_heap.base;
+    if (__builtin_expect(a < __weavec_rt_heap.bytes, 1)) {
+      unsigned shift = __weavec_rt_heap.shift;
+      const struct __weavec_rt_class *k = &__weavec_rt_heap.table[a >> shift];
+      unsigned long long in = a & (((__typeof__(sizeof 0))1 << shift) - 1);
+      unsigned long long slot = in >> k->shift;
+      const unsigned *state;
+      unsigned word;
+      if (k->magic != 0)
+        slot = (slot * k->magic) >> 32;
+      state = (const unsigned *)(__weavec_rt_heap.meta + ((a >> shift) << (shift - 2))) + slot;
+      word = *state;
+      if (__builtin_expect((word & 3) != 1, 0)) {
+        c[1] = 0;
+        $F(live);
+      } else {
+        /* The block's own bytes, not its slot's: an `object` guard that
+         * shares the cache takes the length for the object's. A pointer
+         * into the slot's spare bytes is looked up each time. */
+        c[0] = (unsigned long long)p - (in - slot * k->size);
+        c[1] = word >> 2;
+        c[2] = (unsigned long long)state;
+        c[3] = word;
+      }
+    } else {
+      struct __weavec_rt_range r = __weavec_rt_live_range((const void *)p, __builtin_frame_address(0));
+      c[0] = r.lo;
+      c[1] = r.len;
+      c[2] = (unsigned long long)r.state;
+      c[3] = r.expect;
+      if (__builtin_expect(r.failed != 0, 0))
+        $F(live);
+    }
+  }
+  return (void *)p;
+}
+/* p may be released: null, the start of a live heap object, or untracked.
+ * Where a failure is only reported, the release is skipped. */
+$A void *$Nrelease$S(const volatile void *p$P) {
+  int bad = __weavec_rt_release_ok((const void *)p);
+  if (__builtin_expect(bad, 0)) {
+    $F(release);
+    return (void *)0;
+  }
+  return (void *)p;
+}
+)C";
+
+/// RFC 0032, sections 4.2 and 6: the stack-object helpers and the string
+/// length a guard's need reads. `__weavec_chk_*` builds only.
+static constexpr llvm::StringLiteral RuntimeHelpers = R"C(
+/* The length of the string at s, read inside s's own object. */
+$A unsigned long long __weavec_obj_strlen(const char *s) {
+  return __weavec_rt_strlen(s);
+}
+/* Stack objects (RFC 0032, section 4.2): a local whose address escapes is
+ * entered where it is declared and left where its scope ends. */
+$A void *__weavec_stack_enter(void *base, __typeof__(sizeof 0) size, int flags) {
+  return __weavec_rt_stack_enter(base, size, $R, flags);
+}
+$A void __weavec_stack_leave(void **slot) {
+  __weavec_rt_stack_leave(*slot, $R);
+}
+/* On the way into a loop that calls nothing: a range cache the loop's guards
+ * use without reading its state holds nothing unless its state stands. */
+$A void __weavec_range_check(unsigned long long *c) {
+  if (c[1] != 0 && *(const unsigned *)c[2] != (unsigned)c[3])
+    c[1] = 0;
+}
+/* After a returns-twice call returns, deeper frames are gone. */
+$A int __weavec_stack_rewind(int result) {
+  __weavec_rt_stack_rewind($R);
+  return result;
+}
+)C";
+
+/// The runtime entry points the helpers above call.
+static constexpr llvm::StringLiteral RuntimeDeclarations =
+    "struct __weavec_rt_class { unsigned size, magic, shift, capacity; };\n"
+    "struct __weavec_rt_heap_t { __typeof__(sizeof 0) base, bytes, meta; "
+    "unsigned shift, classes; struct __weavec_rt_class table[100]; };\n"
+    "extern struct __weavec_rt_heap_t __weavec_rt_heap;\n"
+    "struct __weavec_rt_range { unsigned long long lo, len; const unsigned "
+    "*state; unsigned long long expect, failed; };\n"
+    "extern struct __weavec_rt_range __weavec_rt_object_range(const void *, "
+    "long long, unsigned long long, unsigned long long, unsigned long long, "
+    "void *);\n"
+    "extern struct __weavec_rt_range __weavec_rt_live_range(const void *, void "
+    "*);\n"
+    "extern int __weavec_rt_object(const void *, long long, unsigned long "
+    "long, "
+    "unsigned long long, unsigned long long);\n"
+    "extern int __weavec_rt_string(const char *);\n"
+    "extern unsigned long long __weavec_rt_strlen(const char *);\n"
+    "extern int __weavec_rt_live(const void *);\n"
+    "extern int __weavec_rt_release_ok(const void *);\n"
+    "extern void *__weavec_rt_stack_enter(void *, __typeof__(sizeof 0), void "
+    "*, "
+    "int);\n"
+    "extern void __weavec_rt_stack_leave(void *, void *);\n"
+    "extern void __weavec_rt_stack_rewind(void *);\n";
 
 /// Section 11. Only builtins and the usable-size query: the prelude must
 /// not declare a library function a unit may declare differently.
@@ -321,6 +543,12 @@ static std::string render(llvm::StringRef text, const Style &style) {
     case 'U':
       out += style.usable.str();
       break;
+    case 'R':
+      // Inlined, a helper's frame is its caller's. Out of line it would be
+      // the helper's own, so units built with a precompiled header register
+      // no stack object (`CheckEmitter`).
+      out += "__builtin_frame_address(0)";
+      break;
     case 'F': {
       const std::size_t close = text.find(')');
       failure(text.substr(1, close - 1), style, out);
@@ -388,18 +616,26 @@ std::string buildCheckPrelude(const PreludeOptions &options) {
   if (report)
     out += "extern void __weavec_rt_report(const char *, const char *, "
            "unsigned, unsigned);\n";
+  if (options.runtime)
+    out += RuntimeDeclarations.str();
   out += render(CheckHelpers, check).substr(1);
   out += render(CheckHelpersViolation, check).substr(1);
+  if (options.runtime)
+    out += render(GuardHelpers, check).substr(1);
   if (options.mode == CheckMode::Verify) {
     Style proven = check;
     proven.prefix = "__weavec_prv_";
     proven.category = "weavec.proven";
     out += render(CheckHelpers, proven).substr(1);
+    if (options.runtime)
+      out += render(GuardHelpers, proven).substr(1);
   }
   // Out of line, the report object holds only the report helpers; the rest
   // come from the trap object of the same archive.
   if (!(outOfLine && report)) {
     out += render(TermHelpers, check).substr(1);
+    if (options.runtime)
+      out += render(RuntimeHelpers, check).substr(1);
     if (options.zeroInit && outOfLine) {
       out += "#ifdef WEAVEC_CHK_USABLE\n";
       out += render(ZeroInitHelpers, check).substr(1);
@@ -448,8 +684,9 @@ llvm::StringRef checkModeName(CheckMode mode) {
   llvm_unreachable("unknown check mode");
 }
 
-static constexpr std::array<llvm::StringLiteral, 7> Templates{
-    "nonnull", "index", "span", "len", "disjoint", "assert", "violation"};
+static constexpr std::array<llvm::StringLiteral, 10> Templates{
+    "nonnull", "index",     "span",   "len",  "disjoint",
+    "assert",  "violation", "object", "live", "release"};
 
 llvm::ArrayRef<llvm::StringLiteral> checkTemplates() {
   return Templates;

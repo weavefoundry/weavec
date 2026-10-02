@@ -1,6 +1,6 @@
 # RFC 0030: Prove or trap — one safety semantics with compiler-enforced checks
 
-- **Status**: Implemented (as amended by [RFC 0031](0031-object-engine.md), which replaced its engine, took over its gates G10, G14 and G15, and amended G10's limit to 65)
+- **Status**: Implemented (as amended by [RFC 0031](0031-object-engine.md), which replaced its engine, took over its gates G10, G14 and G15, and amended G10's limit to 65; and by [RFC 0032](0032-runtime-enforcement.md), which adds the outcome `guarded`, a runtime in every enforcing build, guards for temporal facets, the require level `guarded` and ledger version 2. Where this text says "RFC 0032" for records in object sections, baselines and archives, it means the adoption RFC, which is now planned as RFC 0033)
 - **Authors**: WeaveC authors
 - **Created**: 2026-09-18
 - **Tracking issue**: TBD

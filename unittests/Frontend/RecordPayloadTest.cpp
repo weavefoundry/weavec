@@ -247,12 +247,26 @@ TEST(RecordPayload, SiteRowsAreTheLedgerWithoutEvidence) {
       .decide(core::FacetDecision::unresolvedFor(
           core::UnresolvedReason::UnknownCallee, "'g' may have freed 'p'"));
   function.sites.push_back(site);
+  // RFC 0032 §10: a guarded facet crosses as `guarded/<reason>`.
+  core::Site access;
+  access.ordinal = 1;
+  access.kind = core::SiteKind::Deref;
+  access.location = at("src/a.h", 5, 10);
+  access.text = "*p";
+  access.addFacet(core::Facet::Temporal)
+      .decide(core::FacetDecision::guardedFor(
+          core::UnresolvedReason::MayReleased, "'g' may have freed 'p'"));
+  function.sites.push_back(access);
   unit.functions.push_back(function);
   const std::vector<FunctionRows> rows = siteRows(unit);
   ASSERT_EQ(rows.size(), 1U);
   EXPECT_EQ(rows[0].file, "src/a.h");
   EXPECT_EQ(rows[0].linkage, core::Linkage::Internal);
-  ASSERT_EQ(rows[0].rows.size(), 1U);
+  ASSERT_EQ(rows[0].rows.size(), 2U);
+  const auto &guarded = rows[0].rows[1].facets.at(
+      static_cast<std::size_t>(core::Facet::Temporal));
+  ASSERT_TRUE(guarded);
+  EXPECT_EQ(guarded->compact(), "guarded/may-released");
   const auto &temporal = rows[0].rows[0].facets.at(
       static_cast<std::size_t>(core::Facet::Temporal));
   ASSERT_TRUE(temporal);
@@ -268,6 +282,12 @@ TEST(RecordPayload, SiteRowsAreTheLedgerWithoutEvidence) {
   ASSERT_TRUE(rebuilt.facet(core::Facet::Temporal));
   EXPECT_TRUE(rebuilt.facet(core::Facet::Temporal)->decided);
   EXPECT_FALSE(rebuilt.facet(core::Facet::Spatial));
+  const core::Site &rebuiltAccess = back.functions[0].sites.at(1);
+  ASSERT_TRUE(rebuiltAccess.facet(core::Facet::Temporal));
+  EXPECT_EQ(rebuiltAccess.facet(core::Facet::Temporal)->outcome(),
+            core::SiteOutcome::Guarded);
+  EXPECT_EQ(rebuiltAccess.facet(core::Facet::Temporal)->decision.unresolved,
+            core::UnresolvedReason::MayReleased);
 }
 
 TEST(RecordPayload, WhatCannotBeReadIsNamed) {

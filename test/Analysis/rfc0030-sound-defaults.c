@@ -1,10 +1,10 @@
 // RFC 0030 §5 and §3.1: the defaults for code the analysis cannot see. None
 // of them is a diagnostic; they are ledger rows, and errors only under a
 // require level.
-// RUN: %weavec --ledger=%t.json %s -- 2>&1 | FileCheck --check-prefix=QUIET %s
+// RUN: %weavec --no-runtime --ledger=%t.json %s -- 2>&1 | FileCheck --check-prefix=QUIET %s
 // RUN: FileCheck --check-prefix=LEDGER %s < %t.json
-// RUN: not %weavec --require=checked %s -- 2>&1 | FileCheck --check-prefix=REQUIRE %s
-// RUN: %weavec --no-zero-init --ledger=%t.nozero.json %s -- 2>&1
+// RUN: not %weavec --no-runtime --require=checked %s -- 2>&1 | FileCheck --check-prefix=REQUIRE %s
+// RUN: %weavec --no-runtime --no-zero-init --ledger=%t.nozero.json %s -- 2>&1
 // RUN: FileCheck --check-prefix=NOZERO %s < %t.nozero.json
 #include <stdlib.h>
 #include <sys/ioctl.h>

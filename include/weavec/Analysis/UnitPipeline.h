@@ -61,6 +61,8 @@ struct UnitPipelineOptions {
   const core::LibrarySpec *library = nullptr;
   /// §3.4: whether a facet's violation was lowered to a warning.
   std::function<bool(core::SiteId, core::Facet)> lowered = nullptr;
+  /// RFC 0032 §9: possible findings on guarded facets are not reported.
+  bool dropGuardedPossible = false;
 };
 
 struct UnitPipelineResult {

@@ -10,7 +10,7 @@ unsigned consume(struct cursor *c) {
   while (c->position < c->end) {
     // RFC 0030 §7.3: 'c' is Single by A1, so the loads of c->data and c->position
     // on the next line are proven; the subscript, the false proof, is not.
-    sum += c->data[c->position]; // UNRESOLVED: spatial:unknown-extent
+    sum += c->data[c->position]; // UNRESOLVED: spatial:unknown-extent // TRAP: object
     c->position++;
   }
   return sum;

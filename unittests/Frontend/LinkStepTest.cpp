@@ -640,7 +640,8 @@ TEST(LinkStep, AssumptionsCountWhatTheRecordsCannotVerify) {
   EXPECT_EQ(assumptions.a3.unverified, 2U);
   EXPECT_EQ(core::summaryLine(ledger, "prog"),
             "weavec: program prog: 0 sites in 2 units: 0 proven, 0 checked, "
-            "0 unresolved, 0 trusted; 0 errors, 0 warnings; unverified: 1 "
+            "0 guarded, 0 unresolved, 0 trusted; 0 errors, 0 warnings; "
+            "unverified: 1 "
             "exported requirement (A1), 2 header invariants (A3)");
 }
 

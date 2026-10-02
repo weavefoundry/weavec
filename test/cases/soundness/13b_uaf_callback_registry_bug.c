@@ -14,5 +14,5 @@ int main(void) {
   p[0] = 1;
   on_exit_hook(drop, p);
   run_hooks();
-  return p[0]; // BUG: use-after-free
+  return p[0]; // BUG: use-after-free // TRAP: live
 }

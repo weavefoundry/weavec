@@ -4,8 +4,8 @@
 // a callee another unit of the program defines is known to the whole-program
 // analysis (in a per-unit analysis it is unknown too).
 //
-// RUN: %weavec --whole-program %s %S/Inputs/node.c -- -I%S/Inputs 2>&1 | FileCheck %s
-// RUN: %weavec --ledger=%t.json %s -- -I%S/Inputs 2>&1 | FileCheck --check-prefix=ALONE %s
+// RUN: %weavec --no-runtime --whole-program %s %S/Inputs/node.c -- -I%S/Inputs 2>&1 | FileCheck %s
+// RUN: %weavec --no-runtime --ledger=%t.json %s -- -I%S/Inputs 2>&1 | FileCheck --check-prefix=ALONE %s
 // RUN: FileCheck --check-prefix=LEDGER %s < %t.json
 #include "../Inputs/prelude.h"
 #include "node.h"
@@ -16,9 +16,9 @@ void blob_close(struct blob *b);
 
 // CHECK-NOT: warning:
 // Whole program: only the four calls to the `blob_` functions.
-// CHECK: rfc0005-boundary-once.c: 9 sites: 5 proven, 0 checkable (not enforced), 4 unresolved, 0 trusted; 0 errors, 0 warnings
+// CHECK: rfc0005-boundary-once.c: 9 sites: 5 proven, 0 checkable (not enforced), 0 guardable (not enforced), 4 unresolved, 0 trusted; 0 errors, 0 warnings
 // ALONE-NOT: warning:
-// ALONE: rfc0005-boundary-once.c: 9 sites: 3 proven, 0 checkable (not enforced), 6 unresolved, 0 trusted; 0 errors, 0 warnings
+// ALONE: rfc0005-boundary-once.c: 9 sites: 3 proven, 0 checkable (not enforced), 0 guardable (not enforced), 6 unresolved, 0 trusted; 0 errors, 0 warnings
 
 void first_caller(void) {
   // LEDGER: "text": "blob_open(\"x\")",

@@ -1,0 +1,17 @@
+--- a/sds.c
++++ b/sds.c
+@@ -397,12 +397,13 @@
+  * references must be substituted with the new pointer returned by the call. */
+ sds sdscatlen(sds s, const void *t, size_t len) {
+     size_t curlen = sdslen(s);
++    sds old = s;
+ 
+     s = sdsMakeRoomFor(s,len);
+     if (s == NULL) return NULL;
+     memcpy(s+curlen, t, len);
+     sdssetlen(s, curlen+len);
+-    s[curlen+len] = '\0';
++    s[curlen+len] = (char)(old[0] & 0); /* INJECTED: reads the string sdsMakeRoomFor may have moved */
+     return s;
+ }
+ 

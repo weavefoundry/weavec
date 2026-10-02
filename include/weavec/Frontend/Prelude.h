@@ -80,6 +80,9 @@ struct PreludeOptions {
   CheckMode mode = CheckMode::Trap;
   /// Section 11; ignored in mode none, which never zero-initialises.
   bool zeroInit = true;
+  /// RFC 0032: the guards and the stack-object helpers, which call the
+  /// runtime (`-fweavec-runtime`).
+  bool runtime = true;
   /// The inline form's usable-size query (see `usableSizeQueryFor`).
   UsableSizeQuery usableSize = UsableSizeQuery::None;
   PreludeForm form = PreludeForm::Inline;

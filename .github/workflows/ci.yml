@@ -149,10 +149,10 @@ jobs:
             --weavec "build/${{ matrix.preset }}/bin/weavec" \
             --weavec-cc "build/${{ matrix.preset }}/bin/weavec-cc"
 
-      # RFC 0030 gate H2 (as RFC 0031 amends it): no checked-mode or old-engine
-      # residue, no library names compared outside the LibrarySpec table, no
-      # corpus project names in lib/, the engine seam, and the engine and
-      # library line budgets.
+      # RFC 0030 gate H2 (as RFCs 0031 and 0032 amend it): no checked-mode or
+      # old-engine residue, no library names compared outside the LibrarySpec
+      # table, no corpus project names in lib/, the engine seam, and the
+      # engine, library and runtime line budgets.
       - name: Repository hygiene
         if: runner.os == 'Linux' && matrix.preset == 'ci-release'
         run: |

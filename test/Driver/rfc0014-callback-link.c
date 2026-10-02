@@ -15,7 +15,7 @@
 // at link, the call through the callback parameter takes the parameter's
 // slot solution (RFC 0030 §9.3), which is `drop`, so the client's read
 // after `invoke(drop, p)` is a use after free.
-// RECORD: "format": 29,
+// RECORD: "format": 30,
 // RECORD: "name": "invoke",
 // RECORD-NEXT: "linkage": "external",
 // RECORD-NEXT: "addressTaken": false,

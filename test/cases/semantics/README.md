@@ -10,6 +10,14 @@ and their `STAGE` names RFC 0031's stages (S2 intraprocedural engine, S4
 temporal completeness); they are not counted in the table below. Several fail
 on v0.11.0's engine by design (see the `objects/` table).
 
+`runtime/` is RFC 0032's (`docs/rfcs/0032-runtime-enforcement.md`, §12):
+the guards, the allocator's validation of releases and the stack and global
+objects, as a bug that must trap and a correct twin that must not, with the
+rules of its *Accepted false positives* as `CLEAN` cases. Their first line
+cites RFC 0032 and their `STAGE` names RFC 0032's stages (S3 access guards,
+S4 stack and global objects, S5 library calls and releases); they are not
+counted in the table below either (see the `runtime/` table).
+
 Every file starts with two comment lines:
 
 ```c
@@ -365,3 +373,55 @@ Two expectations the grammar can only state per file: the destructors and
 /summary/facets/temporal/unresolved == 0` pins for the whole program, and
 `weak-update.c`'s dereferences are proven, pinned as no null facet checked or
 unresolved. A line marker cannot require a facet to be proven.
+
+### `runtime/` (RFC 0032)
+
+`GUARDED` rows are ledger rows whose facet is guarded; the twins carry them
+too, so a twin shows that its guard is present and passes. The cases run
+with the runtime, as every default build does, except `no-runtime_bug.c`.
+
+| Case | Pins | Stage | Expects |
+| --- | --- | --- | --- |
+| `heap-index-field_bug.c` | §3, §6 (a subscript of unknown extent) | S3 | out-of-bounds; trap object; guarded spatial; ASan |
+| `heap-index-field_ok.c` | §3, §6 | S3 | clean; guarded spatial; ASan |
+| `uaf-container_bug.c` | §3, §2.4 (a pointer into a released block) | S3 | use-after-free; trap object; guarded temporal; ASan |
+| `uaf-container_ok.c` | §3 | S3 | clean (a `leak` allowed); guarded temporal; ASan |
+| `realloc-stale_bug.c` | §2.3 (a reallocation that moves) | S3 | use-after-move possible; trap object; guarded temporal; ASan |
+| `realloc-stale_ok.c` | §2.3 | S3 | clean; ASan |
+| `callback-table_bug.c` | §3 (a use after free through a table of callbacks) | S3 | use-after-free; trap object; rows; ASan |
+| `callback-table_ok.c` | §3 | S3 | clean; ASan |
+| `header-before_ok.c` | *Accepted false positives* (an interior pointer and a negative index) | S3 | clean; guarded spatial; ASan |
+| `partial-struct_ok.c` | *Accepted false positives* (the bytes an access touches) | S3 | clean; guarded spatial; ASan |
+| `untracked-literal_ok.c` | A6 (untracked memory passes) | S3 | clean; guarded spatial; ASan |
+| `no-runtime_bug.c` | §2.6 (nothing is guarded without the runtime) | S3 | a `MISS`; rows (`config.runtime` false, 0 guarded, spatial `inexpressible`); `-fno-weavec-runtime` |
+| `stack-cursor_bug.c` | §4 (an escaping local is a tracked object) | S4 | out-of-bounds; trap object; guarded spatial; ASan |
+| `stack-cursor_ok.c` | §4 | S4 | clean; guarded spatial; ASan |
+| `longjmp-frames_ok.c` | §4.3 (entries of frames a `longjmp` abandoned) | S4 | clean; guarded spatial |
+| `one-past-end_ok.c` | §3 *One past the end* (heap, stack and globals) | S4 | clean; guarded spatial; ASan |
+| `global-view_bug.c` | §5 (a global the unit defines) | S4 | out-of-bounds; trap object; guarded spatial; ASan |
+| `global-view_ok.c` | §5 | S4 | clean; guarded spatial; ASan |
+| `global-static-local_bug.c` | §5 (a static local) | S4 | out-of-bounds; trap object; guarded spatial; ASan |
+| `global-static-local_ok.c` | §5 | S4 | clean; guarded spatial; ASan |
+| `libcall-bytes_bug.c` | §6 (a library call's byte requirement) | S5 | out-of-bounds; trap object; guarded spatial; ASan |
+| `libcall-bytes_ok.c` | §6 (and a zero-length copy) | S5 | clean; guarded spatial; ASan |
+| `libcall-string_bug.c` | §6 (a string requirement) | S5 | out-of-bounds; trap object; guarded spatial; ASan |
+| `libcall-string_ok.c` | §6 | S5 | clean; guarded spatial; ASan |
+| `release-interior_bug.c` | §3 (a release of an interior pointer) | S5 | invalid-release; trap release; guarded spatial; ASan |
+| `release-interior_ok.c` | §3 | S5 | clean (a possible `invalid-release` allowed); guarded spatial; ASan |
+| `release-twice_bug.c` | §2.3, §3 (a second release) | S5 | double-free possible at the call; trap release in the callee; ASan |
+| `release-twice_ok.c` | §2.3, §3 | S5 | clean (a possible `double-free` allowed: a boundary facet is not guarded); ASan |
+| `access-difference_bug.c` | §3, amendment 13 (the address the access uses: `*(p - k)`, `(p - k)->f`, `p[-k]`, a pointer walked backwards, `*--p`), six runs | S3 | out-of-bounds; trap object; guarded spatial; ASan |
+| `access-difference_ok.c` | §3, amendment 13 (the first and last element of each shape) | S3 | clean; ASan |
+| `access-sum_bug.c` | §3 (`*(p + k)`, `(p + k)->f`, `*(k + p)`, `(*(p + k)).f`, a derived local, `p += k`, a pointer walked forwards, `*p++`), eight runs | S3 | out-of-bounds; trap object; guarded spatial; ASan |
+| `access-sum_ok.c` | §3 | S3 | clean; ASan |
+| `access-subscript_bug.c` | §3 (`p[k].f`, `(&p[k])->f`, two levels, a struct store, a compound assignment, a loop with a range cache), six runs | S3 | out-of-bounds; trap object; guarded spatial; ASan |
+| `access-subscript_ok.c` | §3 | S3 | clean; ASan |
+| `cache-shared_bug.c` | §13, amendment 2 (a `live` and an `object` guard share a cache entry, which holds the object's bytes, not its slot's); a second unit | S8 | out-of-bounds; trap object; guarded spatial; ASan |
+| `cache-shared_ok.c` | §13 | S8 | clean; guarded spatial; ASan |
+| `cleanup-function_bug.c` | RFC 0030 §5.1, amendment 19 (a `cleanup` attribute's call is an unknown callee; its loop is not quiet) | S8 | use-after-free; trap live; guarded temporal; ASan |
+| `cleanup-function_ok.c` | amendment 19 | S8 | clean; ASan |
+| `stack-inlined-literal_ok.c` | §4.3, amendment 21 (looseness is the frame's; `-O2`) | S8 | clean |
+| `stack-vla-again_bug.c` | §13, amendment 21 (a variable-length array declared again by a `goto` is not cached) | S8 | out-of-bounds; trap object; guarded spatial; ASan |
+| `stack-vla-again_ok.c` | §13 | S8 | clean; guarded spatial; ASan |
+| `stack-underflow_bug.c` | §3, amendment 21 (a negative index from the start of a stack object) | S8 | out-of-bounds; trap object; guarded spatial; ASan |
+| `stack-underflow_ok.c` | §3 | S8 | clean; guarded spatial; ASan |

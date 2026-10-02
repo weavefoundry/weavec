@@ -41,6 +41,6 @@ WeaveC checks release, move and reallocation conflicts with live borrows (`confl
 
 ## Ownership is one part of safety
 
-Ownership decides the temporal facet of an operation: whether the object is still alive. Whether the pointer is non-null and whether the access stays inside the object are separate facets. A `malloc` result can be null, and an index can run past the allocation. WeaveC proves these facets where it can; otherwise `weavec-cc` checks them at run time, or the ledger lists them as unresolved. See [safety guarantees](/reference/guarantees/).
+Ownership decides the temporal facet of an operation: whether the object is still alive. Whether the pointer is non-null and whether the access stays inside the object are separate facets. A `malloc` result can be null, and an index can run past the allocation. WeaveC proves these facets where it can; otherwise `weavec-cc` checks them at run time, guards them against its runtime's table of objects, or the ledger lists them as unresolved. The temporal facet has the same fallback: where ownership does not prove the object alive, a guard traps on a heap object that has been freed and is still in the runtime's quarantine, and every `free` is validated by the runtime's allocator. See [safety guarantees](/reference/guarantees/).
 
 For the model's precise semantics, read [RFC 0001](/rfcs/0001-ownership-model/). For syntax, use the [annotation reference](/reference/annotations/).

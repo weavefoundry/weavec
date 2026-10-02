@@ -1,0 +1,10 @@
+--- a/cJSON.c
++++ b/cJSON.c
+@@ -926,6 +926,7 @@
+ 
+     /* zero terminate the output */
+     *output_pointer = '\0';
++    output_pointer[2] = '\0'; /* INJECTED: one byte past the allocation of a string without escapes */
+ 
+     item->type = cJSON_String;
+     item->valuestring = (char*)output;

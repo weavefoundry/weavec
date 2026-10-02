@@ -22,7 +22,7 @@ _SPEC.loader.exec_module(rc)
 def ledger(source, sites, scope="unit", summary=None, root=None):
     """A minimal weavec-ledger document with one function holding `sites`."""
     return {
-        "schema": "weavec-ledger", "version": 1, "scope": scope, "root": root or "/",
+        "schema": "weavec-ledger", "version": 2, "scope": scope, "root": root or "/",
         "summary": summary or {"errors": 0, "warnings": 0},
         "units": [{"source": str(source), "functions": [{"name": "f", "line": 1, "sites": sites}]}],
         "diagnostics": [],

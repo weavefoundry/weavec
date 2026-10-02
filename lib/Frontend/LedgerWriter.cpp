@@ -360,6 +360,7 @@ static void writeOutcomeCounts(llvm::json::OStream &json,
                                const core::OutcomeCounts &counts) {
   json.attribute("proven", counts.proven);
   json.attribute("checked", counts.checked);
+  json.attribute("guarded", counts.guarded);
   json.attribute("violation", counts.violation);
   json.attribute("unresolved", counts.unresolved);
   json.attribute("trusted", counts.trusted);
@@ -384,16 +385,32 @@ static void writeSummary(llvm::json::OStream &json,
             core::toString(reason),
             summary.unresolvedReasons.at(static_cast<std::size_t>(reason)));
     });
+    // RFC 0032 §10: why the guarded facets are not proven.
+    json.attributeObject("guardedReasons", [&] {
+      for (const core::UnresolvedReason reason : core::allUnresolvedReasons())
+        json.attribute(
+            core::toString(reason),
+            summary.guardedReasons.at(static_cast<std::size_t>(reason)));
+    });
     json.attributeObject("trustedReasons", [&] {
       for (const core::TrustReason reason : core::allTrustReasons())
         json.attribute(
             core::toString(reason),
             summary.trustedReasons.at(static_cast<std::size_t>(reason)));
     });
-    json.attributeObject("unresolvedShare", [&] {
-      json.attributeBegin("spatialNull");
-      json.rawValue(formatShare(summary.spatialNullShare()));
+    const auto share = [&](std::string_view key, double value) {
+      json.attributeBegin(key);
+      json.rawValue(formatShare(value));
       json.attributeEnd();
+    };
+    json.attributeObject("unresolvedShare", [&] {
+      share("spatialNull", summary.spatialNullShare());
+      for (const Facet facet : {Facet::Spatial, Facet::Null, Facet::Temporal})
+        share(core::toString(facet), summary.unresolvedShare(facet));
+    });
+    json.attributeObject("guardedShare", [&] {
+      for (const Facet facet : {Facet::Spatial, Facet::Null, Facet::Temporal})
+        share(core::toString(facet), summary.guardedShare(facet));
     });
     json.attribute("errors", summary.errors);
     json.attribute("warnings", summary.warnings);
@@ -404,10 +421,10 @@ static void writeSummary(llvm::json::OStream &json,
     });
     if (verify) {
       json.attribute("verifyChecks", summary.verifyChecks);
-      // Gate G6: the verify coverage of the proven spatial and null facets.
+      // RFC 0030 G6, RFC 0032 R1: the verify coverage of the proven facets.
       json.attributeObject("verifyCoverage", [&] {
         for (const core::Facet facet :
-             {core::Facet::Spatial, core::Facet::Null})
+             {core::Facet::Spatial, core::Facet::Null, core::Facet::Temporal})
           json.attributeObject(core::toString(facet), [&] {
             const auto which = static_cast<std::size_t>(facet);
             json.attribute("proven", summary.facets.at(which).proven);
@@ -466,11 +483,12 @@ static void writeRequirement(llvm::json::OStream &json,
   });
 }
 
-/// Violations, unresolved and trusted facets carry every key; proven and
-/// checked ones only those with content (§12.1's example).
+/// Violations, unresolved, guarded and trusted facets carry every key;
+/// proven and checked ones only those with content (§12.1's example).
 static bool carriesEveryKey(SiteOutcome outcome) noexcept {
   return outcome == SiteOutcome::Violation ||
-         outcome == SiteOutcome::Unresolved || outcome == SiteOutcome::Trusted;
+         outcome == SiteOutcome::Unresolved ||
+         outcome == SiteOutcome::Guarded || outcome == SiteOutcome::Trusted;
 }
 
 static void writeFacet(llvm::json::OStream &json, const FacetRecord &record,
@@ -622,7 +640,7 @@ std::string renderLedgerJson(const Ledger &ledger,
     llvm::json::OStream json(os, options.indent);
     json.object([&] {
       json.attribute("schema", "weavec-ledger");
-      json.attribute("version", 1);
+      json.attribute("version", LedgerSchemaVersion);
       json.attributeObject("producer", [&] {
         json.attribute("name", utf8(ledger.producer.name));
         json.attribute("version", utf8(ledger.producer.version));
@@ -632,6 +650,13 @@ std::string renderLedgerJson(const Ledger &ledger,
       json.attribute("root", utf8(paths.rootPath()));
       json.attributeObject("config", [&] {
         json.attribute("checks", spelled(core::toString(ledger.config.checks)));
+        // RFC 0032 §10: true, false, or "mixed" for a program whose units
+        // differ.
+        if (ledger.config.runtime == core::RuntimeUse::Mixed)
+          json.attribute("runtime", "mixed");
+        else
+          json.attribute("runtime",
+                         ledger.config.runtime == core::RuntimeUse::On);
         json.attribute("zeroInit", ledger.config.zeroInit);
         json.attribute("require",
                        spelled(core::toString(ledger.config.require)));
@@ -765,6 +790,8 @@ public:
       add(std::move(id));
     for (const core::UnresolvedReason reason : core::allUnresolvedReasons())
       add("unresolved/" + std::string(core::toString(reason)));
+    for (const core::UnresolvedReason reason : core::allUnresolvedReasons())
+      add("guarded/" + std::string(core::toString(reason)));
     for (const core::TrustReason reason : core::allTrustReasons())
       add("trusted/" + std::string(core::toString(reason)));
   }
@@ -902,19 +929,20 @@ std::string renderLedgerSarif(const Ledger &ledger,
                     const FacetRecord *record = site.facet(facet);
                     if (record == nullptr ||
                         (record->outcome() != SiteOutcome::Unresolved &&
+                         record->outcome() != SiteOutcome::Guarded &&
                          record->outcome() != SiteOutcome::Trusted) ||
                         record->decision.reasonText().empty())
                       continue;
-                    const bool unresolved =
-                        record->outcome() == SiteOutcome::Unresolved;
+                    const bool trusted =
+                        record->outcome() == SiteOutcome::Trusted;
                     const std::string ruleId =
-                        std::string(unresolved ? "unresolved/" : "trusted/") +
+                        std::string(core::toString(record->outcome())) + "/" +
                         std::string(record->decision.reasonText());
                     json.object([&] {
                       json.attribute("ruleId", ruleId);
                       json.attribute("ruleIndex", rules.indexOf(ruleId));
-                      json.attribute("level", unresolved ? "note" : "none");
-                      json.attribute("kind", unresolved ? "open" : "review");
+                      json.attribute("level", trusted ? "none" : "note");
+                      json.attribute("kind", trusted ? "review" : "open");
                       json.attributeObject("message", [&] {
                         json.attribute("text",
                                        facetMessage(site, facet, *record));

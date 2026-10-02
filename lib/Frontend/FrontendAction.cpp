@@ -140,6 +140,7 @@ UnitResult analyzeTranslationUnit(clang::ASTContext &context,
   pipeline.config = options.config;
   pipeline.buildLedger = !options.silent;
   pipeline.lowered = loweredViolations(options.control);
+  pipeline.dropGuardedPossible = options.dropGuardedPossible;
   core::DiagnosticCollector collected;
   analysis::UnitPipelineResult unit =
       analysis::runUnitAnalysis(context, pipeline, collected);

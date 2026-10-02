@@ -119,6 +119,10 @@ struct SiteInfo {
   const clang::Expr *operand = nullptr;
   /// Index sites: the subscript.
   const clang::Expr *index = nullptr;
+  /// `*(p - i)`: the difference, the address the access uses. The operand
+  /// is `p` and there is no index (no index check wraps `-i`), so a guard
+  /// of the object table (RFC 0032 §3) wraps this instead. Null elsewhere.
+  const clang::Expr *address = nullptr;
   /// Call-like sites: the direct callee.
   const clang::FunctionDecl *callee = nullptr;
   /// LibCall, Release (and a Raw release): the row that governs the call.

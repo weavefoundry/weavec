@@ -15,17 +15,17 @@
 // through weavec-cc's link step alike.
 //
 // RUN: rm -rf %t && mkdir -p %t
-// RUN: %weavec --whole-program --ledger=%t/program.json %s %S/Inputs/vec.c -- -I%S/Inputs 2>&1 | FileCheck %s
+// RUN: %weavec --no-runtime --whole-program --ledger=%t/program.json %s %S/Inputs/vec.c -- -I%S/Inputs 2>&1 | FileCheck %s
 // RUN: FileCheck --check-prefix=LEDGER %s < %t/program.json
 //
 // Alone, nothing witnesses the pair: nothing is reported.
-// RUN: %weavec %s -- -I%S/Inputs 2>&1 | FileCheck --allow-empty --check-prefix=ALONE %s
+// RUN: %weavec --no-runtime %s -- -I%S/Inputs 2>&1 | FileCheck --allow-empty --check-prefix=ALONE %s
 //
 // The same through weavec-cc.
-// RUN: %weavec_cc -c %S/Inputs/vec.c -o %t/vec.o -I%S/Inputs 2>&1 | count 0
-// RUN: %weavec_cc -c %s -o %t/main.o -I%S/Inputs 2>&1 | count 0
+// RUN: %weavec_cc -fno-weavec-runtime -c %S/Inputs/vec.c -o %t/vec.o -I%S/Inputs 2>&1 | count 0
+// RUN: %weavec_cc -fno-weavec-runtime -c %s -o %t/main.o -I%S/Inputs 2>&1 | count 0
 // The program has no `main`, so only the system linker fails.
-// RUN: not %weavec_cc -fweavec-ledger=%t/cc.json %t/vec.o %t/main.o -o %t/prog 2>&1 | FileCheck %s
+// RUN: not %weavec_cc -fno-weavec-runtime -fweavec-ledger=%t/cc.json %t/vec.o %t/main.o -o %t/prog 2>&1 | FileCheck %s
 // RUN: FileCheck --check-prefix=LEDGER %s < %t/cc.json
 #include "../Inputs/prelude.h"
 #include "vec.h"

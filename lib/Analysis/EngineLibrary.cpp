@@ -318,6 +318,47 @@ void Transfer::decideArguments(const CallExpr &call, const SiteInfo &site,
       break;
     }
   };
+  // RFC 0032 §6: what a guard of an unresolved requirement compares against
+  // the runtime's extent. Only a need the callee is known to access may trap:
+  // a reliance row and an upper bound may not.
+  auto objectWitness = [&](const ArgRequirement &requirement,
+                           const std::optional<WitnessTerm> &needTerm)
+      -> std::optional<CheckWitness> {
+    if (requirement.rowOnly || requirement.formatArgument ||
+        requirement.argvElement || (!requirement.enforced && !library))
+      return std::nullopt;
+    // A callee's inferred requirement counts whole elements of the
+    // pointee. For a record that is more than the callee touches when the
+    // object was allocated without its unused tail (a variant, a string
+    // header), and a guard of it would trap falsely (RFC 0032, *Accepted
+    // false positives*); the callee's own accesses are guarded by the bytes
+    // they touch.
+    if (!library && requirement.argument < call.getNumArgs()) {
+      QualType pointee =
+          call.getArg(requirement.argument)->getType()->getPointeeType();
+      if (!pointee.isNull() && pointee->isRecordType())
+        return std::nullopt;
+    }
+    CheckWitness witness{.shape = CheckWitness::Shape::Object,
+                         .unmodified = true,
+                         .accessesSafe = true,
+                         .guard = requirement.guard};
+    if (requirement.kind == ArgRequirement::Kind::String) {
+      witness.string = true;
+      return witness;
+    }
+    // The row's term, spelled over the call's arguments, is the need itself,
+    // whatever the engine knows of its value. A value alone is a need only
+    // when it is exact or a lower bound.
+    if (needTerm)
+      witness.need = *needTerm;
+    else if (requirement.need.isConstant() && requirement.need.constant > 0 &&
+             requirement.bound != ArgRequirement::Bound::AtMost)
+      witness.need = WitnessTerm::ofConstant(requirement.need.constant);
+    else
+      return std::nullopt;
+    return witness;
+  };
   std::string callee;
   if (site.library)
     callee = "'" + site.library->entry->name + "'";
@@ -456,7 +497,8 @@ void Transfer::decideArguments(const CallExpr &call, const SiteInfo &site,
         publish(i,
                 core::FacetDecision::unresolvedFor(
                     core::UnresolvedReason::UnknownExtent),
-                std::nullopt, std::nullopt, std::nullopt);
+                std::nullopt, std::nullopt,
+                objectWitness(requirement, std::nullopt));
         continue;
       }
       needTerm =
@@ -466,7 +508,8 @@ void Transfer::decideArguments(const CallExpr &call, const SiteInfo &site,
       publish(i,
               core::FacetDecision::unresolvedFor(
                   core::UnresolvedReason::UnknownExtent),
-              spellTerm(need), std::nullopt, std::nullopt);
+              spellTerm(need), std::nullopt,
+              objectWitness(requirement, needTerm));
       continue;
     } else if (need.known) {
       auto end = start.plus(need);
@@ -532,11 +575,19 @@ void Transfer::decideArguments(const CallExpr &call, const SiteInfo &site,
           requirement.bound == ArgRequirement::Bound::Exact)
         needTerm = WitnessTerm::ofConstant(need.constant);
     }
+    // A string requirement that reached here has its length as the need;
+    // a guard of it reads the string itself.
+    const auto guardWitness = [&] {
+      return objectWitness(requirement,
+                           requirement.kind == ArgRequirement::Kind::String
+                               ? std::nullopt
+                               : needTerm);
+    };
     if (requirement.rowOnly || !core::isCheckOperand(extent->cls)) {
       publish(i,
               core::FacetDecision::unresolvedFor(
                   core::UnresolvedReason::UnknownExtent),
-              spellTerm(need), haveText, std::nullopt);
+              spellTerm(need), haveText, guardWitness());
       continue;
     }
     if (!haveTerm || (!needTerm && !requirement.format)) {
@@ -544,7 +595,7 @@ void Transfer::decideArguments(const CallExpr &call, const SiteInfo &site,
               core::FacetDecision::unresolvedFor(
                   core::UnresolvedReason::Inexpressible,
                   "the requirement has no C spelling here"),
-              spellTerm(need), haveText, std::nullopt);
+              spellTerm(need), haveText, guardWitness());
       continue;
     }
     publish(i, core::FacetDecision::checked(), spellTerm(need), haveText,

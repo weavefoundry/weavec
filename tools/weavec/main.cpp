@@ -100,6 +100,8 @@ cl::opt<weavec::core::RequireLevel> requireLevel(
              "unchecked-operation)"),
     cl::values(clEnumValN(weavec::core::RequireLevel::None, "none",
                           "no requirement (default)"),
+               clEnumValN(weavec::core::RequireLevel::Guarded, "guarded",
+                          "every facet proven, checkable or guardable"),
                clEnumValN(weavec::core::RequireLevel::Checked, "checked",
                           "every facet proven or checkable"),
                clEnumValN(weavec::core::RequireLevel::Proven, "proven",
@@ -111,6 +113,11 @@ cl::opt<std::uint64_t>
            cl::desc("Block transfers per function before its analysis stops "
                     "(default: 50000; 0: unlimited)"),
            cl::init(weavec::core::DefaultBudget), cl::cat(weavecCategory));
+
+cl::opt<bool> noRuntime("no-runtime",
+                        cl::desc("Model a build without the runtime "
+                                 "(-fno-weavec-runtime): nothing is guarded"),
+                        cl::init(false), cl::cat(weavecCategory));
 
 cl::opt<bool> noZeroInit("no-zero-init",
                          cl::desc("Model a build without zero-initialisation "
@@ -544,6 +551,9 @@ int main(int argc, const char **argv) {
   // the summary line, always printed, says they are not enforced.
   options.config = weavec::core::LedgerConfig{
       .checks = weavec::core::ChecksMode::Trap,
+      // RFC 0032 §6: and with the runtime, unless --no-runtime.
+      .runtime = noRuntime ? weavec::core::RuntimeUse::Off
+                           : weavec::core::RuntimeUse::On,
       .zeroInit = !noZeroInit,
       .require = requireLevel,
       .budget = budget,

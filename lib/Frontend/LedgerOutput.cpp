@@ -166,9 +166,13 @@ static void printSummary(const core::Ledger &ledger, llvm::StringRef name,
   // into the middle of a dump line. Draining the dump stream first fixes the
   // order: the whole dump, then the summary.
   llvm::outs().flush();
+  const bool checksEnforced =
+      options.checksEnforced && ledger.config.checks != core::ChecksMode::None;
+  // RFC 0032 §1: guards need the runtime too.
   const core::SummaryLineOptions line{
-      .checksEnforced = options.checksEnforced &&
-                        ledger.config.checks != core::ChecksMode::None};
+      .checksEnforced = checksEnforced,
+      .guardsEnforced =
+          checksEnforced && ledger.config.runtime != core::RuntimeUse::Off};
   summaryStream << core::summaryLine(ledger, name, line) << '\n';
   summaryStream.flush();
 }

@@ -1,4 +1,4 @@
-//===- Ledger.h - Per-site safety outcomes (RFC 0030) ----------*- C++ -*-===//
+//===- Ledger.h - Per-site safety outcomes (RFC 0030, RFC 0032) -*- C++ -*-===//
 //
 // Part of WeaveC, under the Apache License v2.0 with LLVM Exceptions.
 // See LICENSE for license information.
@@ -68,17 +68,23 @@ inline constexpr std::array<Facet, FacetCount> AllFacets{
 
 /// §2.2. Named `SiteOutcome` because `core::Outcome` is the RFC 0006 result
 /// class.
+///
+/// RFC 0032 §1 adds `Guarded`: not proven and not statically checkable, but
+/// checked at run time against the runtime's object table (its clause (G)).
+/// Only the planner makes a facet guarded, from an unresolved one, and the
+/// facet keeps its unresolved reason.
 enum class SiteOutcome : std::uint8_t {
   Proven,
   Checked,
+  Guarded,
   Violation,
   Unresolved,
   Trusted,
 };
-inline constexpr std::size_t SiteOutcomeCount = 5;
+inline constexpr std::size_t SiteOutcomeCount = 6;
 inline constexpr std::array<SiteOutcome, SiteOutcomeCount> AllSiteOutcomes{
-    SiteOutcome::Proven, SiteOutcome::Checked, SiteOutcome::Violation,
-    SiteOutcome::Unresolved, SiteOutcome::Trusted};
+    SiteOutcome::Proven,    SiteOutcome::Checked,    SiteOutcome::Guarded,
+    SiteOutcome::Violation, SiteOutcome::Unresolved, SiteOutcome::Trusted};
 
 /// §2.3: why a facet is neither proven nor checkable. Closed: adding a
 /// reason requires an RFC.
@@ -130,7 +136,10 @@ enum class Boundary : std::uint8_t { Call, Exit };
 enum class Linkage : std::uint8_t { External, Internal };
 
 /// §12.1 `check.template`: the six templates of §10.1 plus `violation`, the
-/// unconditional trap of a lowered violation (§3.4, §10.2).
+/// unconditional trap of a lowered violation (§3.4, §10.2), and the three
+/// guards of RFC 0032 §3: `object` (the access lies inside the live tracked
+/// object its pointer points into), `live` (the pointer does not point into a
+/// dead tracked object) and `release` (the pointer may be released).
 enum class CheckTemplate : std::uint8_t {
   Nonnull,
   Index,
@@ -139,13 +148,30 @@ enum class CheckTemplate : std::uint8_t {
   Disjoint,
   Assert,
   Violation,
+  Object,
+  Live,
+  Release,
 };
+inline constexpr std::size_t CheckTemplateCount = 10;
+
+/// Whether `kind` is a guard of RFC 0032: a check against the runtime's
+/// object table rather than against a bound the code states.
+[[nodiscard]] constexpr bool isGuard(CheckTemplate kind) noexcept {
+  return kind == CheckTemplate::Object || kind == CheckTemplate::Live ||
+         kind == CheckTemplate::Release;
+}
 
 /// §10.7 `-fweavec-checks=`.
 enum class ChecksMode : std::uint8_t { Trap, Report, Verify, None };
 
-/// §6.3 `-fweavec-require=`.
-enum class RequireLevel : std::uint8_t { None, Checked, Proven };
+/// §6.3 `-fweavec-require=`. RFC 0032 §1 adds `Guarded`: unresolved facets
+/// are errors, guarded ones are allowed; `Checked` forbids both.
+enum class RequireLevel : std::uint8_t { None, Guarded, Checked, Proven };
+
+/// RFC 0032 §2.6, §10: whether the units of a ledger were compiled with the
+/// runtime (`config.runtime`: true, false, or "mixed" for a program whose
+/// units differ).
+enum class RuntimeUse : std::uint8_t { Off, On, Mixed };
 
 /// §12.1 `scope`.
 enum class LedgerScope : std::uint8_t { Unit, Program };
@@ -165,6 +191,7 @@ enum class LedgerScope : std::uint8_t { Unit, Program };
 [[nodiscard]] std::string_view toString(ChecksMode mode) noexcept;
 [[nodiscard]] std::string_view toString(RequireLevel level) noexcept;
 [[nodiscard]] std::string_view toString(LedgerScope scope) noexcept;
+[[nodiscard]] std::string_view toString(RuntimeUse use) noexcept;
 
 [[nodiscard]] std::optional<SiteKind> parseSiteKind(std::string_view text);
 [[nodiscard]] std::optional<Facet> parseFacet(std::string_view text);
@@ -256,6 +283,12 @@ enum class OperationForm : std::uint8_t {
 [[nodiscard]] std::string
 unresolvedOperationMessage(std::string_view operation, UnresolvedReason reason,
                            const PhraseArguments &arguments);
+/// `unresolved-operation` for a guarded facet under
+/// `-fweavec-require=checked` (RFC 0032, *Diagnostics*): `<operation> is
+/// guarded at run time only: <reason phrase> [<reason>]`.
+[[nodiscard]] std::string
+guardedOperationMessage(std::string_view operation, UnresolvedReason reason,
+                        const PhraseArguments &arguments);
 /// `unchecked-operation`: `<operation> relies on a runtime <template> check`.
 [[nodiscard]] std::string uncheckedOperationMessage(std::string_view operation,
                                                     CheckTemplate check);
@@ -264,7 +297,7 @@ unresolvedOperationMessage(std::string_view operation, UnresolvedReason reason,
 // Merging by rank (§2.5)
 //===----------------------------------------------------------------------===//
 
-/// violation > unresolved > checked > trusted > proven.
+/// violation > unresolved > guarded > checked > trusted > proven.
 [[nodiscard]] constexpr int outcomeRank(SiteOutcome outcome) noexcept {
   switch (outcome) {
   case SiteOutcome::Proven:
@@ -273,10 +306,12 @@ unresolvedOperationMessage(std::string_view operation, UnresolvedReason reason,
     return 1;
   case SiteOutcome::Checked:
     return 2;
-  case SiteOutcome::Unresolved:
+  case SiteOutcome::Guarded:
     return 3;
-  case SiteOutcome::Violation:
+  case SiteOutcome::Unresolved:
     return 4;
+  case SiteOutcome::Violation:
+    return 5;
   }
   return 0;
 }
@@ -287,11 +322,12 @@ unresolvedOperationMessage(std::string_view operation, UnresolvedReason reason,
   return outcomeRank(b) > outcomeRank(a) ? b : a;
 }
 
-/// One record about one facet: an outcome and, for `unresolved` and
-/// `trusted`, its reason, with a free-text detail (§12.1 `detail`).
+/// One record about one facet: an outcome and, for `unresolved`, `guarded`
+/// and `trusted`, its reason, with a free-text detail (§12.1 `detail`).
 struct FacetDecision {
   SiteOutcome outcome = SiteOutcome::Proven;
-  /// Set exactly when `outcome` is `Unresolved`.
+  /// Set exactly when `outcome` is `Unresolved` or `Guarded`: why the facet
+  /// is not proven (a guarded facet keeps the reason, RFC 0032 §1).
   std::optional<UnresolvedReason> unresolved = std::nullopt;
   /// Set exactly when `outcome` is `Trusted`.
   std::optional<TrustReason> trusted = std::nullopt;
@@ -303,6 +339,8 @@ struct FacetDecision {
   [[nodiscard]] static FacetDecision violation(std::string detail = {});
   [[nodiscard]] static FacetDecision unresolvedFor(UnresolvedReason reason,
                                                    std::string detail = {});
+  [[nodiscard]] static FacetDecision guardedFor(UnresolvedReason reason,
+                                                std::string detail = {});
   [[nodiscard]] static FacetDecision trustedFor(TrustReason reason,
                                                 std::string detail = {});
 
@@ -581,6 +619,11 @@ inline constexpr std::uint64_t DefaultBudget = 50000;
 /// §12.1 `config`.
 struct LedgerConfig {
   ChecksMode checks = ChecksMode::Trap;
+  /// RFC 0032: guards are planned, and the unit registers its objects. The
+  /// frontends turn it on (`weavec-cc` unless `-fno-weavec-runtime`,
+  /// `weavec` unless `--no-runtime`); a bare pipeline runs without, so that
+  /// its ledger says what the engine decided.
+  RuntimeUse runtime = RuntimeUse::Off;
   bool zeroInit = true;
   RequireLevel require = RequireLevel::None;
   /// Block transfers per function; 0 means unlimited.
@@ -696,6 +739,7 @@ void sortDiagnostics(Ledger &ledger);
 struct OutcomeCounts {
   std::uint64_t proven = 0;
   std::uint64_t checked = 0;
+  std::uint64_t guarded = 0;
   std::uint64_t violation = 0;
   std::uint64_t unresolved = 0;
   std::uint64_t trusted = 0;
@@ -703,7 +747,7 @@ struct OutcomeCounts {
   void add(SiteOutcome outcome, std::uint64_t count = 1) noexcept;
   [[nodiscard]] std::uint64_t of(SiteOutcome outcome) const noexcept;
   [[nodiscard]] std::uint64_t total() const noexcept {
-    return proven + checked + violation + unresolved + trusted;
+    return proven + checked + guarded + violation + unresolved + trusted;
   }
   OutcomeCounts &operator+=(const OutcomeCounts &other) noexcept;
   friend bool operator==(const OutcomeCounts &,
@@ -722,6 +766,9 @@ struct LedgerSummary {
   /// Unresolved and trusted facets by reason, indexed by the enumerators.
   // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
   std::array<std::uint64_t, UnresolvedReasonCount> unresolvedReasons = {};
+  /// RFC 0032 §10: guarded facets by the reason they are not proven.
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
+  std::array<std::uint64_t, UnresolvedReasonCount> guardedReasons = {};
   // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
   std::array<std::uint64_t, TrustReasonCount> trustedReasons = {};
   std::uint64_t errors = 0;
@@ -732,14 +779,18 @@ struct LedgerSummary {
   /// Proven facets that received a verify-mode check (§10.7).
   std::uint64_t verifyChecks = 0;
   /// The same, by facet. With `facets[f].proven` it is the verify coverage
-  /// of the proven facets that gate G6 asks the ledger to report; temporal
-  /// facets are never checked, so theirs stays 0.
+  /// of the proven facets that gate G6 asks the ledger to report. A proven
+  /// temporal facet is monitored by a `live` guard (RFC 0032 §6).
   // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
   std::array<std::uint64_t, FacetCount> verifyChecked = {};
 
   /// §12.1 `unresolvedShare.spatialNull`: unresolved spatial and null facets
   /// over all spatial and null facets; 0 when there are none.
   [[nodiscard]] double spatialNullShare() const noexcept;
+  /// RFC 0032 §1: the unresolved, and the guarded, facets of `facet` over
+  /// all of its facets; 0 when there are none.
+  [[nodiscard]] double unresolvedShare(Facet facet) const noexcept;
+  [[nodiscard]] double guardedShare(Facet facet) const noexcept;
 
   /// Adds every function, site and facet of `unit`.
   void addUnit(const UnitLedger &unit);
@@ -763,10 +814,13 @@ struct SummaryLineOptions {
   /// False with `-fweavec-checks=none` and in `weavec`, where "checked"
   /// reads `checkable (not enforced)`.
   bool checksEnforced = true;
+  /// False when no guard is emitted (checks off, or no runtime): "guarded"
+  /// then reads `guardable (not enforced)` (RFC 0032 §1).
+  bool guardsEnforced = true;
 };
 
 /// §12.4, unit form:
-/// `weavec: cJSON.c: 4,210 sites: 3,050 proven, 980 checked, 150
+/// `weavec: cJSON.c: 4,210 sites: 3,050 proven, 980 checked, 120 guarded, 30
 /// unresolved, 30 trusted; 0 errors, 2 warnings`, with `; 1 function over
 /// budget (<name>)` appended when a function is over budget. A violation
 /// count, which the RFC's example (with none) does not show, is listed

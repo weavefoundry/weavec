@@ -23,6 +23,8 @@ weavec_add_library(
           # RFC 0030 S5: the check rewrites and zero-initialisation.
           CheckEmitter.cpp
           ZeroInit.cpp
+          # RFC 0032 §4, §5: which stack and global objects are registered.
+          ObjectRegistration.cpp
   PUBLIC_DEPS weavec::Analysis
   USES_LLVM)
 
@@ -39,6 +41,9 @@ weavec_link_llvm(
   Option
   Core
   Analysis
+  # RFC 0032 §2.6: the symbols of a link's inputs (a program-defined
+  # allocator).
+  Object
   Passes
   TransformUtils)
 weavec_link_clang(

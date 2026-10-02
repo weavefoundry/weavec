@@ -15,7 +15,9 @@
 |* build time: the trap and verify families, the term helpers and, where the
 |* C library has a usable-size query, the zero-initialisation wrappers. The
 |* report family is in weavec_chk_report.c, a separate member, so that only
-|* report builds need libweavec_rt.a.
+|* report builds pull in the runtime's report function. The guard helpers
+|* (RFC 0032) of every family call the runtime's object table, which
+|* libweavec_rt.a holds: it follows this archive on every enforcing link.
 |*
 |* The host compiler that builds WeaveC compiles this file; without
 |* __builtin_verbose_trap the helpers use __builtin_trap().

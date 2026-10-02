@@ -14,7 +14,7 @@ struct scanner { char *pos; };
 
 static void advance(char **pp, int k) { *pp += k; }
 
-int peekc(struct scanner *s) { return s->pos[0]; } // BUG: out-of-bounds // UNRESOLVED: spatial:unknown-extent
+int peekc(struct scanner *s) { return s->pos[0]; } // BUG: out-of-bounds // UNRESOLVED: spatial:unknown-extent // TRAP: object
 
 int main(int argc, char **argv) {
   struct scanner s;

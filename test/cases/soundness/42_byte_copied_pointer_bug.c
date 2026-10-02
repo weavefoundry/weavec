@@ -12,5 +12,5 @@ int main(void) {
   unsigned char *src = (unsigned char *)&p, *dst = (unsigned char *)&q;
   for (size_t i = 0; i < sizeof p; i++) dst[i] = src[i];
   free(p);
-  return q[0]; // BUG: use-after-free // UNRESOLVED: temporal:raw-cast
+  return q[0]; // BUG: use-after-free // UNRESOLVED: temporal:raw-cast // TRAP: object
 }

@@ -8,7 +8,7 @@
 // ASAN
 #include <stdlib.h>
 
-void h(char *p, int c) { if (c) free(p); p[0] = 1; } // BUG: use-after-free possible // UNRESOLVED: temporal:may-released
+void h(char *p, int c) { if (c) free(p); p[0] = 1; } // BUG: use-after-free possible // UNRESOLVED: temporal:may-released // TRAP: live
 
 int main(int argc, char **argv) {
   char *p = malloc(8);

@@ -17,7 +17,7 @@ int main(void) {
   char *p = malloc(4); if (p) release_then_write(p, p);
   return 0;
 }
-// FORMAT: "format": 29,
+// FORMAT: "format": 30,
 // FORMAT: "name": "release_then_write",
 // FORMAT: "effects": "returns always\neffect release p0* when=-:- family=free\nstore p1* when=-:- :: int lo=1 hi=1\nwrites p1*\n",
 // LINK: rfc0016-callee.c:4:4: error: use of 'b' after it was freed [weavec::use-after-free]

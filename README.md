@@ -5,9 +5,9 @@
 [![CI](https://github.com/weavefoundry/weavec/actions/workflows/ci.yml/badge.svg)](https://github.com/weavefoundry/weavec/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0%20WITH%20LLVM--exception-blue.svg)](LICENSE)
 
-A mostly source-compatible C compiler that brings Rust-style memory safety to existing C code through inferred ownership and borrowing. For every memory operation it compiles, WeaveC proves what it can, inserts a runtime check for the null and bounds obligations it cannot prove, and records everything else with a reason. It is built on Clang/LLVM, which does the parsing, code generation and platform support; WeaveC adds ownership inference, borrow and lifetime checking, check insertion and the safety ledger, in C++ libraries kept separate from the Clang integration.
+A mostly source-compatible C compiler that brings Rust-style memory safety to existing C code through inferred ownership and borrowing. For every memory operation it compiles, WeaveC proves what it can, inserts a runtime check for the null and bounds obligations it cannot prove but can state, guards what is left against a small runtime that knows each object's extent and whether it is still alive, and records everything else with a reason. It is built on Clang/LLVM, which does the parsing, code generation and platform support; WeaveC adds ownership inference, borrow and lifetime checking, check insertion and the safety ledger, in C++ libraries kept separate from the Clang integration.
 
-> **Status:** WeaveC is early, v0.x software: flags, diagnostics and on-disk formats can change between minor versions. [RFC 0030](docs/rfcs/0030-prove-or-trap.md), *Prove or trap*, defines the model described here and is being implemented; the [roadmap](docs/roadmap.md) tracks progress.
+> **Status:** WeaveC is early, v0.x software: flags, diagnostics and on-disk formats can change between minor versions. [RFC 0030](docs/rfcs/0030-prove-or-trap.md), *Prove or trap*, defines the model described here, and [RFC 0032](docs/rfcs/0032-runtime-enforcement.md), *Runtime enforcement*, adds the runtime and the `guarded` outcome; the [roadmap](docs/roadmap.md) tracks progress.
 
 ## Quick look
 
@@ -63,12 +63,12 @@ example.c:20:10: error: returned pointer may outlive 'x', which it points to [we
 example.c:19:7: note: 'x' is declared here
    19 |   int x = 0;
       |       ^
-weavec: example.c: 11 sites: 6 proven, 1 checkable (not enforced), 2 violations, 2 unresolved, 0 trusted; 2 errors, 1 warning
+weavec: example.c: 11 sites: 6 proven, 1 checkable (not enforced), 2 guardable (not enforced), 2 violations, 0 unresolved, 0 trusted; 2 errors, 1 warning
 2 warnings and 2 errors generated.
 Error while processing example.c.
 ```
 
-Definite bugs are errors; a use-after-free on some paths only is a warning. The first warning is Clang's own. The last line summarises the file's *ledger*, which records an outcome for each safety facet (spatial, null, temporal) of every memory operation (*site*): proven, checked, a violation, or unresolved or trusted with a reason. The line counts each site by its worst facet. `table[i]` is counted as checkable: `weavec` only analyses, and `weavec-cc`, the compiler, turns it into a check that traps when `i` is negative.
+Definite bugs are errors; a use-after-free on some paths only is a warning. The first warning is Clang's own. The last line summarises the file's *ledger*, which records one of six outcomes for each safety facet (spatial, null, temporal) of every memory operation (*site*): proven, checked, guarded, a violation, or unresolved or trusted with a reason. The line counts each site by its worst facet. `table[i]` is counted as checkable, and the read in `maybe` and the `free` in `node_free` as guardable: `weavec` only analyses. `weavec-cc`, the compiler, turns the first into a check that traps when `i` is negative, and the other two into guards: the read traps if `n` was freed, and the `free` traps unless its argument is null or the start of a live heap block.
 
 Annotations (`WEAVEC_OWNED`, `WEAVEC_BORROWED`, `WEAVEC_MUT`, `WEAVEC_RAW`, `WEAVEC_UNSAFE`, `WEAVEC_NULLABLE`, `WEAVEC_NONNULL`, `WEAVEC_COUNTED_BY(n)`, `WEAVEC_ENDED_BY(q)`, `WEAVEC_STRING`, `WEAVEC_REQUIRE_SAFE`, `WEAVEC_ASSUME(e)` and the reference-counting forms) state contracts where inference needs help. They expand to nothing on other compilers, so annotated code remains plain, portable C. See [docs/annotations.md](docs/annotations.md).
 
@@ -79,21 +79,27 @@ For a translation unit compiled by `weavec-cc` in an enforcing mode (the default
 - **(S)** if its spatial facet is proven or checked, it accesses only bytes inside the object its pointer was derived from, or the program traps first;
 - **(N)** if its null facet is proven or checked, it does not dereference null, or the program traps first;
 - **(T)** if its temporal facet is proven, the object is still alive, and a release releases a live allocation once;
+- **(G)** if a facet is guarded (the default; not with `-fno-weavec-runtime`) and the pointer points into an object the runtime tracks (a heap block from the image's allocator, a local whose address escapes, a global), the object is live and the access stays inside it, or the program traps first; a guarded release is of null or the start of a live heap block, or the program traps;
 - **(V)** a definite violation never reaches the object unguarded: it fails the build, or, if lowered with `-Wno-error`, traps.
 
-These hold under five assumptions: **A1** callers outside the unit pass arguments that meet what it relies on; **A2** trusted callees (platform functions, the library table, declared contracts, code without WeaveC records) behave as their contracts say; **A3** other code leaves reachable pointers null or pointing to live objects, with owners unique; **A4** no other thread, signal handler or `longjmp` changes the memory outside sites marked for it; **A5** the allocator answers its usable-size query consistently, and memory from sources WeaveC does not zero is written before pointers are read from it. If a memory-safety violation happens anyway, then a check trapped first, or the ledger shows an unresolved or trusted facet (or an assumption at the unit's interface) that it rests on, or WeaveC has a bug, which `verify` mode monitors. Temporal bugs are not checked at run time. The full statement, what is caught and what is not, is in [the guarantees reference](docs/pages/reference/guarantees.md) and [RFC 0030, *Soundness*](docs/rfcs/0030-prove-or-trap.md#soundness).
+These hold under six assumptions: **A1** callers outside the unit pass arguments that meet what it relies on; **A2** trusted callees (platform functions, the library table, declared contracts, code without WeaveC records) behave as their contracts say; **A3** other code leaves reachable pointers null or pointing to live objects, with owners unique; **A4** no other thread, signal handler or `longjmp` changes the memory outside sites marked for it; **A5** the allocator answers its usable-size query consistently, and memory from sources WeaveC does not zero is written before pointers are read from it; **A6** a pointer a guard finds outside every tracked object points to a live object that the access stays inside. If a memory-safety violation happens anyway, then a check trapped first, or the ledger shows an unresolved, trusted or guarded facet (or an assumption at the unit's interface) that it rests on, or WeaveC has a bug, which `verify` mode monitors.
+
+(G) is weaker than (S) and (T), which is why the ledger counts guarded facets apart from checked ones. A guard asks which object the pointer points into now, so arithmetic that carries a pointer out of one tracked object and into another live one passes at a plain dereference (a subscript `p[i]` is checked against the object that contains `p`). A freed heap block is caught only while it is in the quarantine (64 MiB by default); after its storage is reused the guard sees the new object. Memory the runtime does not track (string literals, `alloca` blocks, memory from other allocators or from code built without the runtime) passes. The full statement, what is caught and what is not, is in [the guarantees reference](docs/pages/reference/guarantees.md), [RFC 0030, *Soundness*](docs/rfcs/0030-prove-or-trap.md#soundness) and [RFC 0032, *Soundness*](docs/rfcs/0032-runtime-enforcement.md#soundness).
 
 ## Modes
 
-| `-fweavec-checks=` | Unproven null and bounds obligations | Zero-init | Guarantee |
-| --- | --- | --- | --- |
-| `trap` (default) | checked; a failed check traps | on | yes |
-| `report` | checked; a failed check prints `weavec: runtime check failed: …` and continues (links `libweavec_rt.a`) | on | only with `WEAVEC_RT_ABORT=1` |
-| `verify` | checked; proven facets are also checked where expressible, so a `weavec.proven` trap exposes a wrong proof | on | yes |
-| `none` | nothing: the object is what Clang would produce | off | no |
+| `-fweavec-checks=` | Unproven obligations | Zero-init | Runtime | Guarantee |
+| --- | --- | --- | --- | --- |
+| `trap` (default) | checked or guarded; a failed check or guard traps | on | linked | yes |
+| `report` | checked or guarded; a failure prints `weavec: runtime check failed: …` and the program continues | on | linked | only with `WEAVEC_RT_ABORT=1` |
+| `verify` | checked or guarded; proven facets are also checked or guarded where possible, so a `weavec.proven` trap exposes a wrong proof | on | linked | yes |
+| `none` | nothing: the object is what Clang would produce | off | not linked | no |
+
+- **The runtime.** Every enforcing link carries `libweavec_rt.a` (the object table: heap blocks with their exact sizes and a quarantine for freed ones, locals whose address escapes, globals) and `libweavec_alloc.a`, which defines `malloc`, `calloc`, `realloc` and `free` for the image. `-fno-weavec-runtime` builds without them: nothing is guarded, and the facets that would be stay `unresolved`. `weavec-cc` also builds without the runtime, and prints a note at the link, under a sanitizer that replaces the allocator, with `-ffreestanding` or `-nostdlib`, and on targets other than 64-bit Darwin and Linux; a program that defines `malloc` itself keeps its allocator, and its heap is untracked.
 
 - **Zero-initialisation.** In the checking modes, locals and the standard allocation calls are zero-initialised, so an uninitialised pointer is null and its checked dereference traps. `-fno-weavec-zero-init` turns it off.
-- **Require levels.** `-fweavec-require=checked` makes every unresolved facet an `unresolved-operation` error; `-fweavec-require=proven` also makes every checked facet an `unchecked-operation` error. Trusted facets are allowed at every level. `WEAVEC_REQUIRE_SAFE` holds one function to `checked`.
+- **Require levels.** `-fweavec-require=guarded` makes every unresolved facet an `unresolved-operation` error; `-fweavec-require=checked` makes every guarded facet one too; `-fweavec-require=proven` also makes every checked facet an `unchecked-operation` error. Trusted facets are allowed at every level. `WEAVEC_REQUIRE_SAFE` holds one function to `checked`.
+- **Possible findings.** A use-after-free or double free on some paths only is a warning in `weavec`. In an enforcing `weavec-cc` build with the runtime, such a finding on a guarded facet is not printed, because the guard traps if it happens; `-Wweavec-possible` prints it.
 - **Ledger.** `-fweavec-ledger=<path>` writes every site and facet with its outcome, reason, fix-it and a stable fingerprint, as JSON or, with `-fweavec-ledger-format=sarif`, SARIF 2.1.0. `-fweavec-summary` prints the one-line summary, which `weavec` always prints.
 
 ## Using it as the compiler
@@ -109,21 +115,50 @@ weavec-cc node.o main.o -o prog        # reads the records, analyses the program
 
 A bug inside one file is reported when that file is compiled; a bug that needs two files is reported when they are linked, and an error stops the link. Link inputs without a WeaveC record (archives, shared libraries, objects from another compiler) are named in one `unanalyzed-input` warning.
 
-The checks are ordinary C inserted before code generation, with no ABI change and no runtime library in the default mode. With `lookup` from the quick look in a program that passes it `atoi(argv[1])`:
+The checks and guards are ordinary C inserted before code generation, with no change to pointer representation or ABI; the guards call the runtime the link adds. With `lookup` from the quick look in a program that passes it `atoi(argv[1])`:
 
 ```
 $ weavec-cc -fweavec-summary lookup.c -o lookup
-weavec: lookup.c: 7 sites: 5 proven, 2 checked, 0 unresolved, 0 trusted; 0 errors, 0 warnings
-weavec: program lookup: 7 sites in 1 unit: 5 proven, 2 checked, 0 unresolved, 0 trusted; 0 errors, 0 warnings; unverified: 0 exported requirements (A1), 0 header invariants (A3)
+weavec: lookup.c: 8 sites: 6 proven, 2 checked, 0 guarded, 0 unresolved, 0 trusted; 0 errors, 0 warnings
+weavec: program lookup: 8 sites in 1 unit: 6 proven, 2 checked, 0 guarded, 0 unresolved, 0 trusted; 0 errors, 0 warnings; unverified: 0 exported requirements (A1), 0 header invariants (A3)
 $ ./lookup 2
 30
 $ ./lookup -1; echo "exit status $?"
 exit status 133
 ```
 
-The negative index stops the program with `SIGTRAP` (or `SIGILL`, depending on the target) at the access, instead of reading past the table. Other flags: `-fno-weavec` (plain Clang), `-fno-weavec-link` (skip the link-time step), `-fweavec-budget=<n>` (per-function analysis budget), `-Wno-error=weavec-<id>` (lower an error to a warning while migrating), `-Werror=weavec`. `weavec-cc --help-weavec` lists them all.
+The negative index stops the program with `SIGTRAP` (or `SIGILL`, depending on the target) at the access, instead of reading past the table. Where the code states no bound, a guard asks the runtime. Here `main` allocates four `int`s for `v.data` and calls `get` with `atoi(argv[1])`:
 
-The tooling form analyses a compilation database without building: `weavec --whole-program -p build/` (all sources) or `weavec --whole-program a.c b.c -- -Iinclude`. Without `--whole-program`, `weavec file.c --` checks one file. Both take `--ledger`, `--ledger-format` and `--require`.
+```c
+struct vec { int *data; size_t len; };
+int get(struct vec *v, size_t i) { return v->data[i]; }
+```
+
+```
+$ weavec-cc -fweavec-summary vec.c -o vec
+weavec: vec.c: 11 sites: 8 proven, 2 checked, 1 guarded, 0 unresolved, 0 trusted; 0 errors, 0 warnings
+weavec: program vec: 11 sites in 1 unit: 8 proven, 2 checked, 1 guarded, 0 unresolved, 0 trusted; 0 errors, 0 warnings; unverified: 0 exported requirements (A1), 0 header invariants (A3)
+$ ./vec 1000; echo "exit status $?"
+exit status 133
+```
+
+The extent of `v->data` is unknown to the analysis (`unknown-extent`), so the access is `guarded`: the runtime finds the 16-byte block and the guard traps before the read.
+
+Other flags: `-fno-weavec` (plain Clang), `-fno-weavec-link` (skip the link-time step), `-fweavec-budget=<n>` (per-function analysis budget), `-Wno-error=weavec-<id>` (lower an error to a warning while migrating), `-Werror=weavec`. `weavec-cc --help-weavec` lists them all.
+
+The tooling form analyses a compilation database without building: `weavec --whole-program -p build/` (all sources) or `weavec --whole-program a.c b.c -- -Iinclude`. Without `--whole-program`, `weavec file.c --` checks one file. Both take `--ledger`, `--ledger-format`, `--require` and `--no-runtime` (model a build with `-fno-weavec-runtime`).
+
+### What the runtime costs
+
+Guards run on every execution of the operations they cover, and the allocator replaces the system's. Measured on the benchmarks of the corpus (user CPU time, and peak memory in the default mode, relative to the same program built by the reference Clang; [RFC 0032](docs/rfcs/0032-runtime-enforcement.md#implementation-amendments), amendment 3):
+
+| Benchmark | Default (runtime) | `-fno-weavec-runtime` | Peak memory (default) |
+| --- | --- | --- | --- |
+| cJSON parse/print | 1.66× | 1.14× | 0.59× |
+| zlib minigzip | 1.85× | 1.00× | 1.09× |
+| Lua bench | 5.94× | 1.11× | 1.61× |
+
+Interpreters and tight loops over pointers pay the most: Lua's dispatch loop executes roughly one guard for every two instructions of the unguarded program. Code that cannot pay this builds with `-fno-weavec-runtime`; its facets that would be guarded are then `unresolved` and not enforced, and a use of a freed object is not caught at run time.
 
 ## Building
 
@@ -188,7 +223,7 @@ include/weavec/   Public C++ headers
   Frontend/       Clang integration: deferred CodeGen, check emission, zero-init, ledger writers,
                   unit records, the whole-program step, the compiler driver
 lib/              Implementations, mirroring include/ (lib/Core/LibrarySpec.txt is the library table)
-runtime/          The small C runtime: report-mode reporting and out-of-line check helpers
+runtime/          The C runtime: the allocator and object table, failure reports, out-of-line check helpers
 tools/weavec/     The analysis tool (libTooling; --whole-program for a compilation database)
 tools/weavec-cc/  The drop-in compiler driver (Clang's driver with WeaveC inside)
 resources/        weavec.h, the C-facing annotation header (installed to lib/weavec/include)

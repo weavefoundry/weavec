@@ -11,7 +11,7 @@
 struct node { struct node *next; int v; };
 void free_list(struct node *p) {
   while (p) {
-    struct node *next = p->next;
+    struct node *next = p->next; // TRAP: object
     free(p);
     p = next;
   }
