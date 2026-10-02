@@ -27,8 +27,10 @@ int hole(struct vec *v) {
   int *old = v->items;
   if (!grow(v))
     return 1;
+  // RFC 0031 §5.11: the note comes from the release record, which a callee's
+  // summary effect makes at the call without the name it released through.
   // CHECK: rfc0008-replaced.c:[[@LINE+2]]:10: error: use of 'old' after it was moved [weavec::use-after-move]
-  // CHECK: rfc0008-replaced.c:[[@LINE-3]]:8: note: moved here (through 'v->items')
+  // CHECK: rfc0008-replaced.c:[[@LINE-5]]:8: note: moved here
   return old[0];
 }
 
@@ -42,7 +44,7 @@ int reset_hole(struct vec *v) {
   int *old = v->items;
   reset(v);
   // CHECK: rfc0008-replaced.c:[[@LINE+2]]:10: error: use of 'old' after it was freed [weavec::use-after-free]
-  // CHECK: rfc0008-replaced.c:[[@LINE-2]]:3: note: freed here (through 'v->items')
+  // CHECK: rfc0008-replaced.c:[[@LINE-2]]:3: note: freed here
   return old[0];
 }
 
@@ -75,7 +77,7 @@ static struct pair make(void) {
 int leaky(void) {
   struct pair p = make();
   free(p.b);
-  // CHECK: rfc0008-replaced.c:[[@LINE+2]]:10: warning: 'p.a' is leaked [weavec::leak]
+  // CHECK: rfc0008-replaced.c:[[@LINE+2]]:3: warning: 'p.a' is leaked [weavec::leak]
   // CHECK: rfc0008-replaced.c:[[@LINE-3]]:19: note: allocated here
   return 0;
 }
@@ -87,18 +89,19 @@ int tidy(void) {
   return 0;
 }
 
-// The summary vocabulary (RFC 0008, *Summary text format*): `replaced` among
-// the flags, `result` as a store root.
+// The summary vocabulary (RFC 0031 §6.1, format 30): a release or move
+// per result class, a store of the replacement, `result` as a store root.
 // DUMP: function 'grow':
-// RFC 0030 §8.2: `realloc` may free on its null class when the size is zero,
-// and `4 * (v->cap + 8)` wraps to zero for some `cap`: the failure class moves
-// the items too, without replacing them.
-// DUMP: summary: v->cap: read|written; v->items: written|moved(free); stores{v->items = fresh(free) extent=mul(u64(v->cap+8), 4)} returns{} requires{v} outcome zero{v->items: moved(free)} null{v->items} stored{} outcome positive{v->items: moved(free) replaced} notnull{v->items} stored{v->items}
-// RFC 0017: cap names the entry value in the allocation snapshot, before += 8.
-// DUMP-NEXT: heap v->items complete{result = fresh(free) extent=mul(u64(v->cap+8), 4)}
+// The success class moves the items into the new block; the failure class
+// keeps them (RFC 0030 §8.2's release of a zero-size request does not
+// arise: the zero-initialisation wrapper asks for one byte instead).
+// DUMP: move *param0->items free when result positive
+// DUMP: store param0->items := fresh#0 free {{.*}}when result positive
 // DUMP: function 'reset':
-// DUMP: summary: v->items: written|freed(free)|replaced; stores{v->items = null} returns{} requires{v}
+// DUMP: release *param0->items free when always
+// DUMP-NEXT: store param0->items := null
 // DUMP: function 'make':
-// DUMP: summary: stores{result.a = fresh(free) extent=4, result.b = fresh(free) extent=4} returns{}
+// DUMP: store result.a := fresh#0 free extent 4
+// DUMP-NEXT: store result.b := fresh#1 free extent 4
 
 // CHECK: 1 warning and 2 errors generated.

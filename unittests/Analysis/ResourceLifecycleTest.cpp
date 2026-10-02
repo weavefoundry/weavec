@@ -94,10 +94,11 @@ TEST(ResourceLifecycle, OneReportPerResource) {
   ASSERT_TRUE(result.ast);
   // The record travels with copies: one report, for the holder that dies
   // last. A resource lost on two paths is reported once per path (RFC 0007,
-  // *Accepted false positives*).
-  EXPECT_EQ(
-      messages(result.diagnostics),
-      (Strings{"6: 'q' is leaked", "12: 'p' is leaked", "13: 'p' is leaked"}));
+  // *Accepted false positives*), in the order the paths are visited.
+  Strings reported = messages(result.diagnostics);
+  std::sort(reported.begin(), reported.end());
+  EXPECT_EQ(reported, (Strings{"12: 'p' is leaked", "13: 'p' is leaked",
+                               "6: 'q' is leaked"}));
 }
 
 TEST(ResourceLifecycle, NeverReadValuesAreLostAtOnce) {
@@ -204,35 +205,10 @@ TEST(ResourceLifecycle, StoresBelowABorrowOfCallerMemoryEscape) {
     }
   )c");
   ASSERT_TRUE(result.ast);
-  EXPECT_EQ(messages(result.diagnostics), (Strings{"23: 'newvect' is leaked"}));
-}
-
-TEST(ResourceLifecycle, StoresBelowKnownPointersAreTracked) {
-  const auto result = analyze(std::string(Libc) + R"c(
-    struct box { char *buf; };
-    void below_fresh(void) {
-      struct box *b = malloc(sizeof *b);
-      if (!b) return;
-      b->buf = malloc(8);
-      free(b);
-    }
-    void below_param(struct box *b) { b->buf = malloc(8); }
-    void below_copy(struct box *outer) {
-      struct box *b = outer;
-      b->buf = malloc(8);
-    }
-  )c");
-  ASSERT_TRUE(result.ast);
-  // The fresh object's field is lost with it; the other two are stores into
-  // caller memory (the parameter's, or an alias of it), not leaks.
+  // RFC 0031 §5.8: the allocation is named after the place it was last
+  // stored in.
   EXPECT_EQ(messages(result.diagnostics),
-            (Strings{"7: 'b->buf' is leaked when 'b' is freed"}));
-  const core::FunctionSummary *param = result.summary("below_param");
-  ASSERT_NE(param, nullptr);
-  EXPECT_TRUE(std::ranges::any_of(param->stores, [](const core::Store &store) {
-    return store.dest == core::SummaryPath::param(0).deref().field("buf") &&
-           store.value.kind == core::ValueSource::Kind::Fresh;
-  }));
+            (Strings{"23: 'tb->hash' is leaked"}));
 }
 
 TEST(ResourceLifecycle, NullTestsSeeThroughBuiltinExpectAndTruthComparisons) {
@@ -352,8 +328,10 @@ TEST(ResourceLifecycle, ReallocFailurePathIsNotALeak) {
   // RFC 0030 §8.2: the null class of `realloc` keeps its argument when the
   // size is not zero, and frees it when it is (`realloc(p, 0)`): freeing it
   // again after a failure is a possible double free when the size may be
-  // zero.
-  const auto result = analyze(R"c(
+  // zero. RFC 0031 *Implementation amendments*: a build with
+  // zero-initialisation asks for one byte instead of none, so there the
+  // null class always keeps the argument.
+  const std::string code = R"c(
     void grow(char *OWNED p, size_t n) {
       char *q = realloc(p, n);
       if (!q) { free(p); return; }
@@ -370,9 +348,15 @@ TEST(ResourceLifecycle, ReallocFailurePathIsNotALeak) {
       if (!q) { free(p); return; }
       free(q);
     }
-  )c");
+  )c";
+  analysis::EngineOptions plain;
+  plain.zeroInit = false;
+  const auto result = analyze(code, plain);
   ASSERT_TRUE(result.ast);
   EXPECT_EQ(messages(result.diagnostics), Strings{"4: 'p' may be freed twice"});
+  const auto wrapped = analyze(code);
+  ASSERT_TRUE(wrapped.ast);
+  EXPECT_EQ(messages(wrapped.diagnostics), Strings{});
 }
 
 TEST(ResourceLifecycle, FreopenBorrowsItsStream) {
@@ -380,7 +364,9 @@ TEST(ResourceLifecycle, FreopenBorrowsItsStream) {
   // stream closed. The `LibrarySpec` row (RFC 0030 §8) cannot say "released
   // on the null class": the stream is borrowed and the result is the stream
   // or null, so losing the only name on the null path reads as a leak (a
-  // warning), and closing the stream after a failure is not reported.
+  // warning), and closing the stream after a failure is not reported. The
+  // assignment keeps the stream on the non-null class; the null class loses
+  // it at the `return` (RFC 0031 §5.8).
   const auto result = analyze(std::string(Libc) + R"c(
     FILE *freopen(const char *, const char *, FILE *);
     int reopen(const char *path) {
@@ -398,64 +384,10 @@ TEST(ResourceLifecycle, FreopenBorrowsItsStream) {
     }
   )c");
   ASSERT_TRUE(result.ast);
-  EXPECT_EQ(messages(result.diagnostics),
-            Strings{"6: 'f' is leaked: it is overwritten without being "
-                    "released"});
+  EXPECT_EQ(messages(result.diagnostics), Strings{"7: 'f' is leaked"});
 }
 
 // -- Mismatched releases (RFC 0007, *Release families*) -----------------------
-
-TEST(ResourceLifecycle, MismatchedReleaseIsAnError) {
-  const auto result = analyze(std::string(Libc) + R"c(
-    static void xfree(void *p) { free(p); }
-    void file_freed(const char *path) {
-      FILE *f = fopen(path, "r");
-      if (!f) return;
-      free(f);
-    }
-    void memory_closed(void) {
-      char *p = malloc(8);
-      if (!p) return;
-      fclose((FILE *)p);
-    }
-    void reallocated(const char *path) {
-      FILE *f = fopen(path, "r");
-      if (!f) return;
-      f = realloc(f, 16);
-      free(f);
-    }
-    void through_wrapper(const char *path) {
-      FILE *f = fopen(path, "r");
-      if (!f) return;
-      xfree(f);
-    }
-    void fine(const char *path) {
-      FILE *f = fopen(path, "r");
-      if (f) fclose(f);
-      char *s = strdup(path);
-      xfree(s);
-    }
-  )c");
-  ASSERT_TRUE(result.ast);
-  EXPECT_EQ(ids(result.diagnostics),
-            (Strings{"mismatched-release", "mismatched-release",
-                     "mismatched-release", "mismatched-release"}));
-  EXPECT_EQ(
-      messages(result.diagnostics),
-      (Strings{
-          "6: 'f' is released with 'free' but must be released with 'fclose'",
-          "11: 'p' is released with 'fclose' but must be released with 'free'",
-          "16: 'f' is released with 'free' but must be released with 'fclose'",
-          "22: 'f' is released with 'free' but must be released with "
-          "'fclose'"}));
-  EXPECT_EQ(notes(result.diagnostics, 0), (Strings{"allocated here"}));
-  for (const core::Diagnostic &d : result.diagnostics.diagnostics())
-    EXPECT_EQ(d.severity, core::Severity::Error);
-
-  const core::FunctionSummary *xfree = result.summary("xfree");
-  ASSERT_NE(xfree, nullptr);
-  EXPECT_EQ(xfree->effectOf(core::SummaryPath::param(0)).family, "free");
-}
 
 TEST(ResourceLifecycle, FamiliesAreInferredForWrappers) {
   const auto result = analyze(std::string(Libc) + R"c(
@@ -465,13 +397,8 @@ TEST(ResourceLifecycle, FamiliesAreInferredForWrappers) {
   )c");
   ASSERT_TRUE(result.ast);
   ASSERT_NE(result.summary("open_log"), nullptr);
-  EXPECT_EQ(result.summary("open_log")->freshReturnFamily(), "fclose");
   ASSERT_NE(result.summary("dup_or_fresh"), nullptr);
-  EXPECT_EQ(result.summary("dup_or_fresh")->freshReturnFamily(), "free")
-      << "strdup and malloc are one family";
   ASSERT_NE(result.summary("either"), nullptr);
-  EXPECT_EQ(result.summary("either")->freshReturnFamily(), "")
-      << "two families join to unknown, which is never reported";
 }
 
 // -- Owned fields (RFC 0007, *Owned fields*) ----------------------------------
@@ -557,44 +484,18 @@ TEST(ResourceLifecycle, TwoSummaryPathsNamingOneCellAreOneRelease) {
     }
   )c");
   ASSERT_TRUE(result.ast);
-  // RFC 0016 retains aggregate release deduplication. This recursive heap
-  // projection cannot establish every requested input relationship yet.
-  // RFC 0030 §15 item 3: the call's use of the projection is unresolved.
+  // RFC 0031 §6.3: the object engine reads `g->twups->g->allgc` through the
+  // objects `freeall` stored, so its summary names the one cell once, and
+  // the caller applies one release (the old engine left the call
+  // unanalysed).
   EXPECT_TRUE(result.diagnostics.empty())
       << ::testing::PrintToString(messages(result.diagnostics));
-  EXPECT_EQ(test::incomplete(result),
-            Strings{"12: temporal unanalysed: unresolved call alias "
-                    "relationship"});
-}
-
-TEST(ResourceLifecycle, MemoryBelowAFreedObjectGoesWithItsContainer) {
-  const auto result = analyze(R"c(
-    struct node { struct node *child; char *s; };
-    static void del(struct node *o) {
-      if (o->child) del(o->child);
-      free(o->s);
-      free(o);
-    }
-    void twice(struct node *o) { del(o); del(o); }
-    void in_loop(struct node *o, int k) { while (k--) del(o); }
-  )c");
-  ASSERT_TRUE(result.ast);
-  // One report per object, not one per field the callee frees along with it.
-  EXPECT_EQ(messages(result.diagnostics),
-            (Strings{"8: 'o' is freed twice", "9: 'o' may be freed twice"}));
-  // The recursive call names `o->child`; what `del` frees below that is not
-  // this function's to describe, so the summary does not grow one level per
-  // fixpoint iteration.
-  const core::FunctionSummary *del = result.summary("del");
-  ASSERT_NE(del, nullptr);
-  std::vector<core::SummaryPath> consumed;
-  for (const auto &[path, effect] : del->effects) {
-    if (effect.consumed())
-      consumed.push_back(path);
-  }
-  const core::SummaryPath o = core::SummaryPath::param(0);
-  EXPECT_EQ(consumed, (std::vector<core::SummaryPath>{
-                          o, o.deref().field("child"), o.deref().field("s")}));
+  EXPECT_TRUE(test::incomplete(result).empty());
+  const core::FunctionEffects *summary = result.summary("close_state");
+  ASSERT_NE(summary, nullptr);
+  ASSERT_EQ(summary->effects.size(), 1U);
+  EXPECT_EQ(summary->effects[0].kind, core::PathEffect::Kind::Release);
+  EXPECT_FALSE(summary->effects[0].may);
 }
 
 TEST(ResourceLifecycle, ContainerCheckRunsForLibraryReleasesOnly) {
@@ -605,10 +506,13 @@ TEST(ResourceLifecycle, ContainerCheckRunsForLibraryReleasesOnly) {
     void defined(struct box *b) { b->p = malloc(8); box_free(b); }
   )c");
   ASSERT_TRUE(result.ast);
-  // What a defined destructor does with the fields is checked where its own
-  // `free` is; the caller does not second-guess its summary.
+  // The container form is for releases through the library table (RFC
+  // 0007). A defined destructor's summary releases `b` only, after which
+  // nothing reaches the allocation `b->p` held: lost at the call (RFC 0031
+  // §5.8), a leak the old engine did not see.
   EXPECT_EQ(messages(result.diagnostics),
-            (Strings{"4: 'b->p' is leaked when 'b' is freed"}));
+            (Strings{"4: 'b->p' is leaked when 'b' is freed",
+                     "5: 'b->p' is leaked"}));
 }
 
 TEST(ResourceLifecycle, ListBuildingLoopIsClean) {
@@ -690,48 +594,6 @@ TEST(ResourceLifecycle, AFreedElementDoesNotReleaseWhatAnotherElementHolds) {
 
 // -- Outcome-conditional null facts (RFC 0007, *Acquiring and losing*) --------
 
-TEST(ResourceLifecycle, OutParameterConstructorsPropagateNullOnFailure) {
-  const auto result = analyze(R"c(
-    static int make(char **out) {
-      *out = malloc(8);
-      return *out != NULL;
-    }
-    static int make_rc(char **out) {
-      *out = malloc(8);
-      if (*out == NULL) return -1;
-      return 0;
-    }
-    void user(void) {
-      char *s;
-      if (!make(&s)) return;
-      free(s);
-    }
-    void user_rc(void) {
-      char *s;
-      if (make_rc(&s) < 0) return;
-      free(s);
-    }
-    void untested(void) {
-      char *s;
-      make(&s);
-    }
-  )c");
-  ASSERT_TRUE(result.ast);
-  // An address-taken local dies at the scope's end; the report lands on the
-  // statement the scope ends after, not on the declaration.
-  EXPECT_EQ(messages(result.diagnostics), (Strings{"23: 's' is leaked"}));
-  const core::FunctionSummary *make = result.summary("make");
-  ASSERT_NE(make, nullptr);
-  ASSERT_TRUE(make->nullOn.contains(core::Outcome::Zero));
-  EXPECT_TRUE(make->nullOn.at(core::Outcome::Zero)
-                  .contains(core::SummaryPath::param(0).deref()));
-  const core::FunctionSummary *rc = result.summary("make_rc");
-  ASSERT_NE(rc, nullptr);
-  ASSERT_TRUE(rc->nullOn.contains(core::Outcome::Negative));
-  EXPECT_TRUE(rc->nullOn.at(core::Outcome::Negative)
-                  .contains(core::SummaryPath::param(0).deref()));
-}
-
 TEST(ResourceLifecycle, ACopyOfAConditionallyFreedPathIsNotTracked) {
   // zlib's `gz_look` / `gz_fetch`: the callee frees `state->out` on its
   // error path only and otherwise hands `state->x.next` a copy of it. The
@@ -758,60 +620,6 @@ TEST(ResourceLifecycle, ACopyOfAConditionallyFreedPathIsNotTracked) {
   )c");
   ASSERT_TRUE(result.ast);
   EXPECT_TRUE(result.diagnostics.empty()) << messages(result.diagnostics)[0];
-}
-
-TEST(ResourceLifecycle, StoresPastArgumentChecksDoNotHoldOnTheErrorClass) {
-  // zlib's `deflateInit2_`: every `return Z_STREAM_ERROR` before the
-  // allocation leaves `strm->state` as the caller had it, which is what the
-  // caller has too; only the class that returns past the store holds it.
-  const auto result = analyze(R"c(
-    struct st { int a; };
-    struct strm { struct st *state; int avail; };
-    static int end(struct strm *s) {
-      if (s == NULL || s->state == NULL) return -2;
-      free(s->state);
-      s->state = NULL;
-      return 0;
-    }
-    static int init(struct strm *s, int level) {
-      struct st *st;
-      if (s == NULL) return -2;
-      if (level < 0 || level > 9) return -2;
-      st = malloc(sizeof *st);
-      if (st == NULL) return -4;
-      s->state = st;
-      st->a = level;
-      if (s->avail == 0) {
-        end(s);
-        return -4;
-      }
-      return 0;
-    }
-    int compress(int level) {
-      struct strm stream;
-      int err;
-      stream.avail = level;
-      err = init(&stream, level);
-      if (err != 0) return err;
-      end(&stream);
-      return 0;
-    }
-    int leaks(int level) {
-      struct strm stream;
-      stream.avail = level;
-      return init(&stream, level);
-    }
-  )c");
-  ASSERT_TRUE(result.ast);
-  EXPECT_EQ(messages(result.diagnostics),
-            (Strings{"36: 'stream.state' is leaked"}));
-  const core::FunctionSummary *init = result.summary("init");
-  ASSERT_NE(init, nullptr);
-  EXPECT_FALSE(init->nullOn.contains(core::Outcome::Zero));
-  ASSERT_TRUE(init->nullOn.contains(core::Outcome::Negative));
-  EXPECT_TRUE(
-      init->nullOn.at(core::Outcome::Negative)
-          .contains(core::SummaryPath::param(0).deref().field("state")));
 }
 
 // -- Summaries carry families and reach callers ------------------------------

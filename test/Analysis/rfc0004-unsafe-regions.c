@@ -81,9 +81,11 @@ void nested(uintptr_t x) {
 
 // CHECK: 6 errors generated.
 
-// The dump shows the raw component of the state and a `raw` kind.
-// DUMP-LABEL: function 'whole_function' (unsafe):
-// DUMP-NEXT: places: r (param, raw)
-// DUMP: exit: moved{r@[[@LINE-60]]:3 freed(free){{( when\[r->v =1\])?}}} loans{} aliases{} raw{r@[[@LINE-62]]:{{[0-9]+}} declared} owned{}
-// DUMP-LABEL: function 'raw_escapes':
-// DUMP-NEXT: places: x (param) n (local, raw)
+// The dump is the format-30 summary (RFC 0031 §6.1, §12): a release inside
+// a region flows out of the function like any other.
+// DUMP-LABEL: function 'whole_function':
+// DUMP: release *param0 free when always
+// DUMP-LABEL: function 'escapes':
+// DUMP: release *param0 free when always
+// DUMP-LABEL: function 'release':
+// DUMP: release *param0 free when always

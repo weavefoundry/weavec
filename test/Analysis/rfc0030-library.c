@@ -46,7 +46,9 @@ int sort_unknown(int (*order)(const void *, const void *)) {
   return xs[0];
 }
 // LEDGER: "reason": "callback",
-// LEDGER-NEXT: "detail": "the target of the callback of 'qsort' is unknown"
+// The object engine words the detail itself (RFC 0031 §5.4); the reason is
+// RFC 0030's.
+// LEDGER-NEXT: "detail": "the callback of 'qsort' is not known here"
 
 char *frame(void) {
   char *p = alloca(8);

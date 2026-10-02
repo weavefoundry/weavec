@@ -12,48 +12,60 @@ struct buf {
   int owned;
 };
 
-// Clean: two tests of one integer are one test.
+// Correct code: two tests of one integer are one test. The old engine
+// carried the test as a guard on the move in its state and proved these
+// uses. The object engine keys a release by the parameter's test only in the
+// summary (RFC 0031 *Implementation amendments*, *Pending cases and exit
+// splitting*, `paramGuard`, spelled `lossy ... when param <i> ...`); in the
+// state the object is `may-released` after the join, so each use is a
+// possible finding: RFC 0030's accepted correlated-conditions false positive
+// (*Accepted false positives and false traps*, probe 41e), which RFC 0031
+// *Accepted false positives* keeps.
 
 // DUMP-LABEL: function 'truthy':
-// DUMP: exit: moved{p@[[@LINE+4]]:5 freed(free) when[c positive|negative]}
-// DUMP-NEXT: summary: p: freed(free) when[c positive|negative]; *p: read; stores{} returns{}
+// DUMP: release *param1 free lossy may when param 0 !=0
 void truthy(int c, char *p) {
   if (c)
     free(p);
   if (!c)
+    // CHECK: rfc0009-scalars.c:[[@LINE+1]]:9: warning: use of 'p' after it may have been freed [weavec::use-after-free]
     use(p);
 }
 
 // DUMP-LABEL: function 'eqzero':
-// DUMP: exit: moved{p@[[@LINE+4]]:5 freed(free) when[n =0]}
-// DUMP-NEXT: summary: p: freed(free) when[n =0]; *p: read; stores{} returns{}
+// DUMP: release *param1 free lossy may when param 0 =0
 void eqzero(int n, char *p) {
   if (n == 0)
     free(p);
   if (n != 0)
+    // CHECK: rfc0009-scalars.c:[[@LINE+1]]:9: warning: use of 'p' after it may have been freed [weavec::use-after-free]
     use(p);
 }
 
+// A parameter test is a zero test: `n > 0` and `n == 3` key the release by
+// `n != 0`, lossily (RFC 0031 §6.1).
 // DUMP-LABEL: function 'sign':
-// DUMP: exit: moved{p@[[@LINE+3]]:5 freed(free) when[n positive]}
+// DUMP: release *param1 free lossy may when param 0 !=0
 void sign(int n, char *p) {
   if (n > 0)
     free(p);
   if (n <= 0)
+    // CHECK: rfc0009-scalars.c:[[@LINE+1]]:9: warning: use of 'p' after it may have been freed [weavec::use-after-free]
     use(p);
 }
 
 // DUMP-LABEL: function 'constant':
-// DUMP: exit: moved{p@[[@LINE+3]]:5 freed(free) when[n =3]}
+// DUMP: release *param1 free lossy may when param 0 !=0
 void constant(int n, char *p) {
   if (n == 3)
     free(p);
   if (n == 4)
+    // CHECK: rfc0009-scalars.c:[[@LINE+1]]:9: warning: use of 'p' after it may have been freed [weavec::use-after-free]
     use(p);
 }
 
 // DUMP-LABEL: function 'switched':
-// DUMP: exit: moved{p@[[@LINE+4]]:5 freed(free) when[n =0]}
+// DUMP: release *param1 free lossy may when param 0 =0
 void switched(int n, char *p) {
   switch (n) {
   case 0:
@@ -64,6 +76,7 @@ void switched(int n, char *p) {
   }
   switch (n) {
   case 1:
+    // CHECK: rfc0009-scalars.c:[[@LINE+1]]:9: warning: use of 'p' after it may have been freed [weavec::use-after-free]
     use(p);
     break;
   default:
@@ -74,8 +87,7 @@ void switched(int n, char *p) {
 // A local assigned a constant: the `if (c)` edge is infeasible and the move
 // never happens. The summary says nothing about `c` (it is not the caller's).
 // DUMP-LABEL: function 'local_constant':
-// DUMP: exit: moved{p@[[@LINE+7]]:3 freed(free)}
-// DUMP-NEXT: summary: p: freed(free); *p: read; stores{} returns{}
+// DUMP: release *param0 free when always
 void local_constant(char *p) {
   int c = 0;
   if (c)
@@ -84,13 +96,14 @@ void local_constant(char *p) {
   free(p);
 }
 
-// A field of the caller's object.
+// A field of the caller's object: no parameter test keys the release.
 // DUMP-LABEL: function 'field':
-// DUMP: summary: b->data: read|freed(free) when[b->owned positive|negative]; *b->data: read; b->owned: read; stores{} returns{} requires{b}
+// DUMP: release *param0->data free may when always
 void field(struct buf *b) {
   if (b->owned)
     free(b->data);
   if (!b->owned)
+    // CHECK: rfc0009-scalars.c:[[@LINE+1]]:9: warning: use of 'b->data' after it may have been freed [weavec::use-after-free]
     use(b->data);
 }
 
@@ -134,12 +147,15 @@ void computed(int n, char *p) {
     use(p);
 }
 
-// Reported: a guarded resource whose guard nothing refutes is still lost.
+// Reported: a guarded resource whose guard nothing refutes is still lost,
+// at the branch that allocated it (RFC 0031 *Implementation amendments*,
+// *Leaks on some paths*).
 int leaked(int c) {
   char *p = NULL;
   if (c)
+    // CHECK: rfc0009-scalars.c:[[@LINE+2]]:5: warning: 'p' is leaked [weavec::leak]
+    // CHECK: rfc0009-scalars.c:[[@LINE+1]]:9: note: allocated here
     p = malloc(8);
-  // CHECK: rfc0009-scalars.c:[[@LINE+1]]:3: warning: 'p' is leaked [weavec::leak]
   return 0;
 }
 
@@ -192,4 +208,4 @@ void dead(void) {
   free(p);
 }
 
-// CHECK: 4 warnings generated.
+// CHECK: 10 warnings generated.

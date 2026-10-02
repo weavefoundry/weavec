@@ -12,7 +12,9 @@
     "SUPPORT to test/corpus/support/<project> and BENCH to test/corpus/bench. `{support}` in",
     "compile arguments expands to the same support directory. `lowered` holds the only allowed",
     "-Wno-error=weavec-<id> flags, each next to the fingerprint of its triaged-true definite",
-    "error. `gates` carries the limits of gates G9-G15."
+    "error. `gates` carries the limits of gates G9-G15, and `gates.heldOut` those of RFC 0031's",
+    "G5, G6 and G12 for the configs marked `heldOut` (RFC 0031, section 11.2: the eleven held-out",
+    "projects, run by --full and by --held-out)."
   ],
   "gates": {
     "referenceMachine": "darwin-arm64 Apple M3 x8",
@@ -28,7 +30,7 @@
         }
       ]
     },
-    "G10": {"maxPossibleTemporal": 60, "maxPossibleTemporalPerConfig": {"jansson": 20}},
+    "G10": {"maxPossibleTemporal": 65, "maxPossibleTemporalPerConfig": {"jansson": 20}},
     "G12": {"minReportedShare": 0.9},
     "G13": {"maxUnitUnresolvedShare": {"linenoise": 0.25, "cJSON": 0.25, "sds": 0.6}},
     "G14": {"maxOverhead": {"lua": 1.1, "zlib": 1.1, "cJSON": 1.15}},
@@ -36,6 +38,17 @@
       "maxProgramCpuSeconds": {"lua": 214},
       "maxBuildStepWallSeconds": {"zlib": {"step": "make -j8", "seconds": 5.4}},
       "maxOverBudgetShare": 0.01
+    },
+    "heldOut": {
+      "_comment": "RFC 0031's gates over the configs marked heldOut (section 11.2), which G9 and G10 do not count: G5 (no definite error triaged false; with --full every build and test suite passes with no trap), G6 (their unresolved temporal share together, program ledgers where a whole-program analysis exists and unit ledgers otherwise) and G12 (the single-unit compiles of mujs one.c and sqlite3.c; the weavec-cc build's CPU time against the reference compiler's is reported, not limited). G6's limit is the ratchet of RFC 0031's *Gates carried forward*. G15's over-budget share counts them with the original configs (RFC 0031 G11).",
+      "G5": {"maxFalseDefiniteErrors": 0, "maxTraps": 0},
+      "G6": {"maxTemporalUnresolvedShare": 0.5},
+      "G12": {
+        "maxUnitCost": {
+          "mujs": {"file": "one.c", "cpuSeconds": 900, "maxRssMiB": 4096},
+          "sqlite": {"file": "sqlite3.c", "cpuSeconds": 900, "maxRssMiB": 4096}
+        }
+      }
     }
   },
   "projects": [
@@ -125,14 +138,7 @@
         {
           "name": "printf",
           "notes": "Pointer arithmetic over caller buffers with no allocation: a false-positive canary. Its test suite is C++ (test/test_suite.cpp includes printf.c into a C++ unit), outside WeaveC, so the per-file compile is the build.",
-          "compile": {"files": ["printf.c"], "args": ["-std=c99", "-I."]},
-          "lowered": [
-            {
-              "flag": "-Wno-error=weavec-unsafe-operation",
-              "fingerprint": "0d55ecbe3d965f3386c387e46d1c3bd8",
-              "note": "printf.c:911 launders '&out_fct_wrap' through uintptr_t, which needs WEAVEC_UNSAFE (triaged true). Without lowering it the error drops printf.o and the printf-oob-pow10 injection driver cannot be built at all."
-            }
-          ]
+          "compile": {"files": ["printf.c"], "args": ["-std=c99", "-I."]}
         }
       ]
     },
@@ -227,6 +233,256 @@
             "cmake --build out -j \"$JOBS\""
           ],
           "test": ["ctest --test-dir out --output-on-failure -V -j \"$JOBS\""]
+        }
+      ]
+    },
+    {
+      "name": "bzip2",
+      "url": "https://github.com/libarchive/bzip2.git",
+      "sha": "1ea1ac188ad4b9cb662e3f8314673c63df95a589",
+      "support": ["bzip2/bzip2.mk", "bzip2/bz_version.h"],
+      "configs": [
+        {
+          "name": "bzip2",
+          "heldOut": true,
+          "notes": "Block-sorting compressor. BZ2_bzDecompressInit links a heap DState and the caller's (often stack) bz_stream both ways (s->strm = strm; strm->state = s) and BZ2_bzDecompressEnd frees the state through the stream's allocator hooks (bzalloc/bzfree function pointers). The pinned checkout has CMake and Meson builds only; the build is support/bzip2/bzip2.mk, which mimics the classic Makefile (libbz2.a, bzip2 linked against it and against the objects directly, bzip2recover), and the test is its six-sample round trip for both bzip2 binaries. The per-file compiles use support/bzip2/bz_version.h, which the build generates.",
+          "compile": {
+            "files": [
+              "blocksort.c",
+              "huffman.c",
+              "crctable.c",
+              "randtable.c",
+              "compress.c",
+              "decompress.c",
+              "bzlib.c",
+              "bzip2.c"
+            ],
+            "args": ["-I.", "-I{support}", "-D_FILE_OFFSET_BITS=64", "-DBZ_UNIX=1", "-DBZ_LCCWIN32=0"]
+          },
+          "wholeProgram": true,
+          "build": [
+            "cp \"$SUPPORT/bzip2.mk\" Makefile.gate",
+            "make -j\"$JOBS\" -f Makefile.gate CC=\"$CC\" all"
+          ],
+          "test": ["make -f Makefile.gate CC=\"$CC\" test"]
+        }
+      ]
+    },
+    {
+      "name": "hiredis",
+      "url": "https://github.com/redis/hiredis.git",
+      "sha": "058ebcdf36c5b05b759c613564fb958ec363c90f",
+      "support": ["hiredis/run-tests.sh"],
+      "configs": [
+        {
+          "name": "hiredis",
+          "heldOut": true,
+          "notes": "Redis client: replies are trees freed through a function-pointer table (redisReplyObjectFunctions), commands are formatted into malloc'd strings through out-parameters (redisFormatCommand(&cmd, ...)). The build is the project's Makefile (static library and hiredis-test, without SSL, -Werror as shipped); the test is test.sh, which starts a redis-server on a free port and runs hiredis-test against it (it needs redis-server on PATH), through support/hiredis/run-tests.sh, which tolerates only the two connection-error tests that fail on Darwin with any compiler.",
+          "compile": {
+            "files": ["alloc.c", "async.c", "hiredis.c", "net.c", "read.c", "sds.c", "sockcompat.c", "test.c"],
+            "args": ["-std=c99", "-I."]
+          },
+          "wholeProgram": true,
+          "build": ["make -j\"$JOBS\" CC=\"$CC\" USE_SSL=0 static hiredis-test"],
+          "test": ["sh \"$SUPPORT/run-tests.sh\""],
+          "testTimeout": 600
+        }
+      ]
+    },
+    {
+      "name": "http-parser",
+      "url": "https://github.com/nodejs/http-parser.git",
+      "sha": "ec8b5ee63f0e51191ea43bb0c6eac7bfbff3141d",
+      "support": [],
+      "configs": [
+        {
+          "name": "http-parser",
+          "heldOut": true,
+          "notes": "A callback-driven HTTP parser over caller buffers; the tests keep global pointers to the current message and settings (current_pause_parser points to a local of parse_pause). The build is the project's Makefile (test_g: strict, -O0; test_fast: -O3; bench), -Werror as shipped; the test runs test_g and test_fast (bench is built, not run: about 25 s of throughput measurement).",
+          "compile": {"files": ["http_parser.c", "test.c"], "args": ["-I.", "-DHTTP_PARSER_STRICT=0"]},
+          "wholeProgram": true,
+          "build": ["make -j\"$JOBS\" CC=\"$CC\" test_g test_fast bench"],
+          "test": ["./test_g", "./test_fast"]
+        }
+      ]
+    },
+    {
+      "name": "inih",
+      "url": "https://github.com/benhoyt/inih.git",
+      "sha": "2bbdec4a366c8c39746ee0982e7ca0febbb044b6",
+      "support": [],
+      "configs": [
+        {
+          "name": "inih",
+          "heldOut": true,
+          "notes": "INI parser: a line buffer on the stack or the heap (INI_USE_STACK, INI_ALLOW_REALLOC), callbacks per name/value pair. The build compiles ini.c; the test is tests/unittest.sh, which builds and runs 15 configurations of the unit tests and writes their output over the tracked baselines, which must then be unchanged.",
+          "compile": {"files": ["ini.c", "tests/unittest.c"], "args": ["-I."]},
+          "wholeProgram": true,
+          "build": ["\"$CC\" -Wall -c ini.c -o ini.o"],
+          "test": ["cd tests && CC=\"$CC\" bash ./unittest.sh && git diff --exit-code -- ."]
+        }
+      ]
+    },
+    {
+      "name": "libyaml",
+      "url": "https://github.com/yaml/libyaml.git",
+      "sha": "90a56d4500aa1a1798514c5cb55c3ad4cb095f94",
+      "support": ["libyaml/config.h"],
+      "configs": [
+        {
+          "name": "libyaml",
+          "heldOut": true,
+          "notes": "YAML parser and emitter: growable buffers described by start/pointer/end triples that yaml_string_extend, yaml_stack_extend and yaml_queue_extend rebase after realloc through out-parameters; a token queue and event and document trees. The build is the project's CMake build with its tests; the test is CTest (version, reader, nesting) and the run-scanner, run-parser, run-loader, run-emitter and run-dumper programs over examples/*.yaml, each of which must report SUCCESS or PASSED for the file (run-parser, given no option, also parses its own argv[0] and reports that as a failure). The per-file compiles use support/libyaml/config.h, which CMake generates.",
+          "compile": {
+            "files": ["src/*.c"],
+            "args": ["-Iinclude", "-I{support}", "-DHAVE_CONFIG_H", "-DYAML_DECLARE_STATIC"]
+          },
+          "wholeProgram": true,
+          "build": [
+            "cmake -S . -B out -DCMAKE_C_COMPILER=\"$CC\" -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON",
+            "cmake --build out -j \"$JOBS\""
+          ],
+          "test": [
+            "ctest --test-dir out --output-on-failure -j \"$JOBS\"",
+            "for f in examples/*.yaml; do for t in run-scanner run-parser run-loader run-emitter run-dumper; do out/$t \"$f\" > \"out/$t.log\" || exit 1; cat \"out/$t.log\"; grep -F \"'$f'\" \"out/$t.log\" | grep -Eq 'SUCCESS|PASSED' || exit 1; done; done"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "lz4",
+      "url": "https://github.com/lz4/lz4.git",
+      "sha": "0774d05537f9762f838f7ab541b7765f1a729cb5",
+      "support": [],
+      "configs": [
+        {
+          "name": "lz4",
+          "heldOut": true,
+          "notes": "LZ4 compression: hot copy loops over caller buffers (LZ4_memcpy_using_offset copies within one stack buffer, LZ4_wildCopy8 past the end of the match), frame and HC contexts with custom allocators. The build is the library and the lz4 CLI (lib-release, lz4-release) and the test programs; the test is tests/Makefile's check (the essential CLI tests) and 20 s each of fuzzer and frametest, and decompress-partial.",
+          "compile": {
+            "files": ["lib/lz4.c", "lib/lz4hc.c", "lib/lz4frame.c", "lib/lz4file.c", "lib/xxhash.c"],
+            "args": ["-std=c99", "-Ilib"]
+          },
+          "build": [
+            "make -j\"$JOBS\" CC=\"$CC\" lib-release lz4-release",
+            "make -j\"$JOBS\" -C tests CC=\"$CC\" lz4 datagen fuzzer frametest fullbench decompress-partial"
+          ],
+          "test": [
+            "make -C tests CC=\"$CC\" check test-fuzzer test-frametest test-decompress-partial FUZZER_TIME=-T20s"
+          ],
+          "testTimeout": 1800
+        }
+      ]
+    },
+    {
+      "name": "miniz",
+      "url": "https://github.com/richgel999/miniz.git",
+      "sha": "77d0dce8627735138c51770d1799a1ef48f2117d",
+      "support": ["miniz/miniz_export.h"],
+      "configs": [
+        {
+          "name": "miniz",
+          "heldOut": true,
+          "notes": "Deflate/inflate and ZIP archives: compressor state machines over caller buffers, archive readers and writers with pluggable read/write/alloc callbacks (mz_zip_file_write_func writes a NULL buffer of 0 bytes for an empty entry). The build is the project's CMake build with the examples; the test runs example1, example2 and example6, and round-trips miniz_zip.c through example5 (tdefl/tinfl streaming) and example3 (the buffer API). The per-file compiles use support/miniz/miniz_export.h, which CMake generates.",
+          "compile": {
+            "files": ["miniz.c", "miniz_tdef.c", "miniz_tinfl.c", "miniz_zip.c"],
+            "args": ["-I.", "-I{support}"]
+          },
+          "build": [
+            "cmake -S . -B out -DCMAKE_C_COMPILER=\"$CC\" -DCMAKE_BUILD_TYPE=Release -DBUILD_EXAMPLES=ON -DBUILD_TESTS=OFF",
+            "cmake --build out -j \"$JOBS\""
+          ],
+          "test": [
+            "./bin/example1 > /dev/null",
+            "./bin/example2 > /dev/null",
+            "./bin/example6 > /dev/null",
+            "./bin/example5 c miniz_zip.c out/gate.c5 && ./bin/example5 d out/gate.c5 out/gate.out5 && cmp out/gate.out5 miniz_zip.c",
+            "./bin/example3 c miniz_zip.c out/gate.c3 && ./bin/example3 d out/gate.c3 out/gate.out3 && cmp out/gate.out3 miniz_zip.c"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "mujs",
+      "url": "https://codeberg.org/ccxvii/mujs.git",
+      "sha": "8a32c397b28fe45747ac4e9e4f3dca049825eda7",
+      "support": [],
+      "configs": [
+        {
+          "name": "mujs",
+          "heldOut": true,
+          "notes": "A JavaScript interpreter with a mark-and-sweep GC, a bytecode compiler and a backtracking regexp engine. Compile-and-time only (RFC 0031, section 11.2, gate G12): the per-file compile is the single-unit one.c, which includes every source file, and the build is the project's release interpreter and pretty-printer; the test262 suite is not run by the gate.",
+          "compile": {"files": ["one.c"], "args": ["-std=c99"]},
+          "build": ["make -j\"$JOBS\" CC=\"$CC\" HAVE_READLINE=no build/release/mujs build/release/mujs-pp"]
+        }
+      ]
+    },
+    {
+      "name": "sqlite",
+      "url": "https://github.com/azadkuh/sqlite-amalgamation.git",
+      "sha": "15d0ff10ebc7e7225eced1de84bb52137000899b",
+      "support": [],
+      "configs": [
+        {
+          "name": "sqlite",
+          "heldOut": true,
+          "notes": "The SQLite amalgamation (sqlite3.c, about 260,000 lines in one unit) and its shell. Compile-and-time only (RFC 0031, section 11.2, gate G12): single-threaded, no extension loading; the build compiles both units and links the shell; no test suite is run.",
+          "compile": {
+            "files": ["sqlite3.c", "shell.c"],
+            "args": ["-DSQLITE_THREADSAFE=0", "-DSQLITE_OMIT_LOAD_EXTENSION"]
+          },
+          "build": [
+            "\"$CC\" -O2 -DSQLITE_THREADSAFE=0 -DSQLITE_OMIT_LOAD_EXTENSION -c sqlite3.c -o sqlite3.o",
+            "\"$CC\" -O2 -DSQLITE_THREADSAFE=0 -DSQLITE_OMIT_LOAD_EXTENSION -c shell.c -o shell.o",
+            "\"$CC\" -O2 -o sqlite3 shell.o sqlite3.o -lm"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "tinyexpr",
+      "url": "https://github.com/codeplea/tinyexpr.git",
+      "sha": "c3b2f32eee61762f4c9d89c2c08cf34556a4a780",
+      "support": [],
+      "configs": [
+        {
+          "name": "tinyexpr",
+          "heldOut": true,
+          "notes": "An expression parser and evaluator: te_expr trees with an anonymous union of value, bound variable and function, parameters in a trailing array, freed recursively. The build is the project's Makefile (smoke and smoke_pr run themselves as they are built, the examples and repl); the test reruns the smoke tests and the examples and evaluates one expression in repl (bench is left out: about 10 s).",
+          "compile": {"files": ["tinyexpr.c", "smoke.c"], "args": ["-I."]},
+          "wholeProgram": true,
+          "build": ["make -j\"$JOBS\" CC=\"$CC\" smoke smoke_pr example example2 example3 repl"],
+          "test": [
+            "./smoke",
+            "./smoke_pr",
+            "./example > /dev/null",
+            "./example2 > /dev/null",
+            "./example3 > /dev/null",
+            "echo 'sqrt(5^2+7^2+11^2+(8-2)^2)' | ./repl"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "utf8proc",
+      "url": "https://github.com/JuliaStrings/utf8proc.git",
+      "sha": "4bfe012cb879a58a70715526e9db6a49486df571",
+      "support": ["utf8proc/fetch-test-data.sh"],
+      "configs": [
+        {
+          "name": "utf8proc",
+          "heldOut": true,
+          "notes": "Unicode normalization, case mapping and grapheme segmentation over caller buffers, with large generated property tables (utf8proc_data.c, included into utf8proc.c). The build is the project's Makefile (the static library and the test programs); the test runs the table tests and the Unicode 18.0.0 normalization and grapheme-break conformance files, which support/utf8proc/fetch-test-data.sh downloads once into $CACHE and checks against their SHA-256.",
+          "compile": {"files": ["utf8proc.c"], "args": ["-std=c99", "-I.", "-DUTF8PROC_EXPORTS"]},
+          "build": [
+            "make -j\"$JOBS\" CC=\"$CC\" libutf8proc.a test/normtest test/graphemetest test/case test/custom test/charwidth test/misc test/maxdecomposition test/valid test/iterate"
+          ],
+          "test": [
+            "sh \"$SUPPORT/fetch-test-data.sh\"",
+            "for t in charwidth misc valid iterate case custom maxdecomposition; do test/$t || exit 1; done",
+            "test/normtest data/NormalizationTest.txt",
+            "test/graphemetest data/GraphemeBreakTest.txt"
+          ]
         }
       ]
     }

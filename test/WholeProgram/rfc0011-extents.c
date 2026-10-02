@@ -1,15 +1,22 @@
-// RFC 0011, *Extents in summaries*: an allocation's extent, a callee's
-// requirement on a parameter's extent, and the offset a callee releases at
-// all cross translation units, in-process and through the unit record.
+// RFC 0011, *Extents in summaries*: an allocation's extent, the extent of
+// what a callee writes through a parameter, and the offset a callee releases
+// at all cross translation units, in-process and through the unit record.
 //
+// RFC 0031 §6.1: format-30 summaries carry no extent requirements; a store
+// the callee makes on every return, outside the caller's object, is an
+// error at the call (RFC 0031 *Implementation amendments*, "Stores past the
+// caller's object").
+//
+// RUN: rm -rf %t && mkdir -p %t
 // RUN: not %weavec --whole-program %s %S/Inputs/buffers.c -- -I%S/Inputs 2>&1 | FileCheck %s
+// RUN: not %weavec --whole-program --ledger=%t/program.json %s %S/Inputs/buffers.c -- -I%S/Inputs 2>/dev/null
+// RUN: FileCheck --check-prefix=LEDGER %s < %t/program.json
 // RUN: not %weavec --whole-program --dump-analysis %s %S/Inputs/buffers.c -- -I%S/Inputs 2>/dev/null | FileCheck --check-prefix=DUMP %s
 //
 // Alone, the calls are unchecked boundaries: nothing is reported.
 // RUN: %weavec %s -- -I%S/Inputs 2>&1 | FileCheck --check-prefix=ALONE %s
 //
 // The same through weavec-cc: the unit record carries all three.
-// RUN: rm -rf %t && mkdir -p %t
 // RUN: %weavec_cc -c %S/Inputs/buffers.c -o %t/buffers.o -I%S/Inputs 2>&1 | count 0
 // RUN: %weavec_cc -c %s -o %t/main.o -I%S/Inputs 2>&1 | count 0
 // RUN: %weavec --dump-record=%t/buffers.o.weavec | FileCheck --check-prefix=RECORD %s
@@ -18,19 +25,30 @@
 #include "buffers.h"
 
 // DUMP: program:
-// DUMP: function 'buffer_fill': param 0 *: written; stores{} returns{} requires{param 0} requires-extent{param 0: param 1 scale 1 plus 0 when param 1 positive|negative}
-// DUMP: function 'buffer_new': stores{} returns{fresh(free) extent param 0 scale 1 plus 0, null}
-// DUMP: function 'buffer_put8': param 0 *: written; stores{} returns{} requires{param 0} requires-extent{param 0: 8}
-// DUMP: function 'wrapped_release': param 0: freed(free),at(-struct~wrapped.payload); stores{} returns{}
+// DUMP: function 'buffer_fill':
+// DUMP-NEXT: always-returns
+// DUMP-NEXT: store *param0[*] elements [0, param1) := int [0, 0]
+// DUMP-NEXT: function 'buffer_new':
+// DUMP-NEXT: always-returns
+// DUMP-NEXT: result fresh#0 free extent param0 {{.*}}when null nonnull
+// DUMP-NEXT: function 'buffer_put8':
+// DUMP-NEXT: always-returns
+// DUMP-NEXT: store *param0[*] elements [0, 8) := int [0, 7]
+// DUMP: function 'wrapped_release':
+// DUMP-NEXT: always-returns
+// DUMP-NEXT: release *param0 free offset -4 when always
 
+// RECORD: "format": 29,
 // RECORD: "name": "buffer_fill",
-// RECORD: "summary": "{{.*}}requires-extent 0 param 1 scale 1 plus 0 when param 1 positive|negative\n
+// RECORD: "effects": "{{.*}}store p0*[] when=-:- elements=0,p1@1@0 :: int lo=0 hi=0\nreads p0*\nwrites p0*\n",
+// RECORD: "kind": "counted(param 1 scale 1 plus 0) nonnull",
 // RECORD: "name": "buffer_new",
-// RECORD: "summary": "{{.*}}return fresh(free) extent param 0 scale 1 plus 0\n
+// RECORD: "effects": "{{.*}}result classes=null,nonnull :: fresh family=free extent=p0@1@0 {{.*}}\n",
 // RECORD: "name": "buffer_put8",
-// RECORD: "summary": "{{.*}}requires-extent 0 8\n
+// RECORD: "effects": "{{.*}}store p0*[] when=-:- elements=0,8 :: int lo=0 hi=7\nreads p0*\nwrites p0*\n",
+// RECORD: "kind": "counted(8) nonnull",
 // RECORD: "name": "wrapped_release",
-// RECORD: "summary": "{{.*}}effect param 0 freed(free),at(-struct~wrapped.payload)
+// RECORD: "effects": "{{.*}}effect release p0* when=-:- family=free offset=-4\n",
 
 // ALONE-NOT: error:
 // ALONE-NOT: out-of-bounds
@@ -50,9 +68,9 @@ void short_alloc(void) {
   char *b = buffer_new(4);
   if (!b)
     return;
-  // CHECK: rfc0011-extents.c:[[@LINE+1]]:15: error: 'buffer_put8' requires 8 bytes behind 'b', which has 4 bytes [weavec::out-of-bounds]
+  // CHECK: rfc0011-extents.c:[[@LINE+2]]:15: error: 'buffer_put8' requires 8 bytes behind 'b', which has 4 bytes [weavec::out-of-bounds]
+  // CHECK: rfc0011-extents.c:[[@LINE-4]]:13: note: 'b' is allocated here
   buffer_put8(b);
-  // CHECK: rfc0011-extents.c:[[@LINE-5]]:13: note: 'b' is allocated here
   free(b);
 }
 
@@ -60,7 +78,12 @@ void short_alloc(void) {
 void short_fill(void) {
   char buf[16];
   buffer_fill(buf, 16);
-  // CHECK: rfc0011-extents.c:[[@LINE+1]]:15: error: 'buffer_fill' requires 17 bytes behind 'buf', which has 16 bytes [weavec::out-of-bounds]
+  // CHECK: rfc0011-extents.c:[[@LINE+6]]:15: error: 'buffer_fill' requires 17 bytes behind 'buf', which has 16 bytes [weavec::out-of-bounds]
+  // LEDGER: "text": "buffer_fill(buf,17)",
+  // LEDGER: "spatial": {
+  // LEDGER-NEXT: "outcome": "violation",
+  // LEDGER-NEXT: "reason": null,
+  // LEDGER-NEXT: "detail": "'buffer_fill' requires 17 bytes behind 'buf', which has 16 bytes",
   buffer_fill(buf, 17);
 }
 
@@ -90,6 +113,7 @@ void release_wrapped_twice(void) {
   if (!w)
     return;
   wrapped_release(w->payload);
-  // CHECK: rfc0011-extents.c:[[@LINE+1]]:3: error: 'w' is freed twice [weavec::double-free]
+  // The report names the argument the callee released through.
+  // CHECK: rfc0011-extents.c:[[@LINE+1]]:3: error: 'w->payload' is freed twice [weavec::double-free]
   wrapped_release(w->payload);
 }

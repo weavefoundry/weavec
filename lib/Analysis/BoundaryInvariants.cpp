@@ -89,27 +89,25 @@ static std::string classOfOperand(const Expr *operand) {
   return {};
 }
 
-BoundaryVerdicts
-checkBoundaryInvariants(const SiteIndex &sites,
-                        llvm::ArrayRef<PublishedBoundary> published,
-                        llvm::ArrayRef<BoundaryRow> program) {
+BoundaryVerdicts checkBoundaryInvariants(
+    const SiteIndex &sites, llvm::ArrayRef<PublishedBoundary> published,
+    llvm::ArrayRef<BoundaryRow> program,
+    const std::map<core::SiteId, std::set<std::string>> &relied) {
   BoundaryVerdicts verdicts;
   // The classes whose entry assumption a boundary breaks, with the reason
   // that broke them. A class broken both ways takes `dangling-escape`: a
   // released pointer is the stronger statement.
   std::set<std::string> dangling;
   std::set<std::string> shared;
+  // (RFC 0031 amends §9.4 point 3: a broken field class no longer breaks
+  // the record that holds it. A value loaded from the field and kept in a
+  // local is found by where the engine says it came from, `relied`.)
   const auto note = [&](core::UnresolvedReason reason, const std::string &of) {
     if (of.empty())
       return;
     std::set<std::string> &into =
         reason == core::UnresolvedReason::DanglingEscape ? dangling : shared;
     into.insert(of);
-    // A broken field class breaks the object that holds it: a load of the
-    // field goes through the object, so a proof about either rests on the
-    // invariant the boundary broke.
-    if (const std::size_t field = of.rfind('.'); field != std::string::npos)
-      into.insert(of.substr(0, field));
   };
   for (const BoundaryRow &row : program)
     note(row.reason, row.placeClass);
@@ -148,7 +146,9 @@ checkBoundaryInvariants(const SiteIndex &sites,
       verdicts.decisions.push_back(
           {.site = at,
            .reason = core::UnresolvedReason::SecondOwner,
-           .detail = "'" + first.names + "' may own the same object"});
+           .detail = first.cycle
+                         ? "'" + first.names + "' closes an owning cycle"
+                         : "'" + first.names + "' may own the same object"});
     }
     for (const BoundaryFacts::SharedOwners &row : boundary.facts.sharedOwners) {
       note(core::UnresolvedReason::SecondOwner, row.placeClass);
@@ -172,21 +172,31 @@ checkBoundaryInvariants(const SiteIndex &sites,
       if (info.operand == nullptr)
         continue;
       const core::SiteId id = info.id;
-      const std::string of = classOfOperand(info.operand);
-      if (of.empty())
-        continue;
-      if (dangling.contains(of))
+      // The class the operand is spelled from, and those of the places the
+      // engine's proof took its value from.
+      std::vector<std::string> classes;
+      if (std::string of = classOfOperand(info.operand); !of.empty())
+        classes.push_back(std::move(of));
+      if (auto it = relied.find(id); it != relied.end())
+        classes.insert(classes.end(), it->second.begin(), it->second.end());
+      const auto brokenBy = [&](const std::set<std::string> &broken) {
+        for (const std::string &of : classes)
+          if (broken.contains(of))
+            return of;
+        return std::string();
+      };
+      if (std::string of = brokenBy(dangling); !of.empty())
         verdicts.decisions.push_back(
             {.site = id,
              .reason = core::UnresolvedReason::DanglingEscape,
              .detail = "a pointer held in '" + of +
                        "' may be gone where the object is handed on",
              .propagated = true});
-      else if (shared.contains(of))
+      else if (std::string owned = brokenBy(shared); !owned.empty())
         verdicts.decisions.push_back(
             {.site = id,
              .reason = core::UnresolvedReason::SecondOwner,
-             .detail = "'" + of + "' may not be the only owner",
+             .detail = "'" + owned + "' may not be the only owner",
              .propagated = true});
     }
   return verdicts;

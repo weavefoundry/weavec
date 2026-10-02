@@ -40,7 +40,7 @@
 // escape. Everything else follows the solver's seed rules.
 //
 // Like every §14 component outside the engine, this one depends on no part
-// of `FunctionDataflow`.
+// of the engine (RFC 0031 §2).
 //
 //===----------------------------------------------------------------------===//
 

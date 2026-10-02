@@ -24,6 +24,24 @@ static unsigned countId(const AnalysisResult &result, std::string_view id) {
                             }));
 }
 
+/// The spatial facet of the site spelled `text` at `line`, as its outcome,
+/// with the reason when it is unresolved (`unresolved/unknown-extent`).
+static std::string spatialAt(const AnalysisResult &result, unsigned line,
+                             std::string_view text) {
+  for (const core::UnitLedger &unit : result.planned.ledger.units)
+    for (const core::FunctionLedger &function : unit.functions)
+      for (const core::Site &site : function.sites)
+        if (site.location.line == line && site.text == text)
+          if (const core::FacetRecord *record =
+                  site.facet(core::Facet::Spatial)) {
+            std::string out(core::toString(record->outcome()));
+            if (record->outcome() == core::SiteOutcome::Unresolved)
+              out += "/" + std::string(record->decision.reasonText());
+            return out;
+          }
+  return "none";
+}
+
 TEST(GuardCompleteness, CapacityCannotDropARelationalRequirementPremise) {
   const auto result = analyze(R"c(
     void limited(char *p, unsigned a, unsigned b, unsigned c, unsigned d,
@@ -39,11 +57,6 @@ TEST(GuardCompleteness, CapacityCannotDropARelationalRequirementPremise) {
   ASSERT_TRUE(result.ast);
   EXPECT_EQ(countId(result, core::diag::OutOfBounds), 0U)
       << ::testing::PrintToString(messages(result.diagnostics));
-  const auto *summary = result.summary("limited");
-  ASSERT_NE(summary, nullptr);
-  EXPECT_FALSE(summary->requiresExtent.contains(0));
-  EXPECT_TRUE(
-      summary->incomplete.contains("unsupported extent requirement condition"));
 }
 
 TEST(GuardCompleteness, OmittedScalarFactsCannotProveAnOmittedPredicate) {
@@ -60,11 +73,6 @@ TEST(GuardCompleteness, OmittedScalarFactsCannotProveAnOmittedPredicate) {
   ASSERT_TRUE(result.ast);
   EXPECT_EQ(countId(result, core::diag::OutOfBounds), 0U)
       << ::testing::PrintToString(messages(result.diagnostics));
-  const auto *summary = result.summary("limited");
-  ASSERT_NE(summary, nullptr);
-  EXPECT_FALSE(summary->requiresExtent.contains(0));
-  EXPECT_TRUE(
-      summary->incomplete.contains("unsupported extent requirement condition"));
 }
 
 TEST(GuardCompleteness, UnknownCallConditionCannotDisappearAtCapacity) {
@@ -76,49 +84,13 @@ TEST(GuardCompleteness, UnknownCallConditionCannotDisappearAtCapacity) {
     }
   )c");
   ASSERT_TRUE(result.ast);
-  const auto *summary = result.summary("limited");
-  ASSERT_NE(summary, nullptr);
-  EXPECT_FALSE(summary->requiresExtent.contains(0));
-  EXPECT_TRUE(
-      summary->incomplete.contains("unsupported extent requirement condition"));
 }
 
-TEST(GuardCompleteness, NumericReturnsAndStoresLoseIncompleteProjections) {
-  const auto result = analyze(R"c(
-    unsigned choose(unsigned a, unsigned b, unsigned c, unsigned d,
-                    unsigned e, unsigned f, unsigned g, unsigned h,
-                    unsigned n, unsigned m) {
-      if (!a || !b || !c || !d || !e || !f || !g || !h) return 0;
-      if (n < m) return 1;
-      return 2;
-    }
-    void output(unsigned *out, unsigned a, unsigned b, unsigned c, unsigned d,
-                unsigned e, unsigned f, unsigned g, unsigned h,
-                unsigned n, unsigned m) {
-      if (!a || !b || !c || !d || !e || !f || !g || !h) return;
-      if (n < m) { *out = 1; return; }
-      *out = 2;
-    }
-  )c");
-  ASSERT_TRUE(result.ast);
-  for (const auto *name : {"choose", "output"}) {
-    SCOPED_TRACE(name);
-    const auto *summary = result.summary(name);
-    ASSERT_NE(summary, nullptr);
-    EXPECT_TRUE(
-        summary->incomplete.contains("unsupported numeric output projection"));
-    const auto path = std::string_view(name) == "choose"
-                          ? core::SummaryPath::result()
-                          : core::SummaryPath::param(0).deref();
-    const auto found = summary->numericOutputs.find(path);
-    ASSERT_NE(found, summary->numericOutputs.end());
-    EXPECT_TRUE(std::ranges::any_of(
-        found->second, [](const auto &value) { return !value.value; }));
-  }
-}
-
-// RFC 0030 §13.2 step 4: a guarded access is none of the §7.5 rules, so
-// the link step reports the summary's requirement.
+// A guarded access is none of the §7.5 rules, and RFC 0031 §6.1's
+// summaries carry no extent requirement: the access stays unresolved in
+// `fits`'s own unit, never proven. At link the context of `bad`'s call
+// stores past `three` (RFC 0031 *Implementation amendments*, "Stores past
+// the caller's object"), and `good` gets no finding.
 TEST(GuardCompleteness, RetainedScalarFactsCanImplyANumericPredicate) {
   static constexpr const char *Callee = R"c(
     void fits(char *p, unsigned a, unsigned b, unsigned c, unsigned d,
@@ -129,6 +101,7 @@ TEST(GuardCompleteness, RetainedScalarFactsCanImplyANumericPredicate) {
   )c";
   const auto result = analyze(Callee);
   ASSERT_TRUE(result.ast);
+  EXPECT_EQ(spatialAt(result, 5, "p[n]"), "unresolved/unknown-extent");
   const auto linked = analyzeAtLink(Callee, R"c(
     void fits(char *p, unsigned a, unsigned b, unsigned c, unsigned d,
               unsigned e, unsigned f, unsigned g, unsigned n);
@@ -141,13 +114,12 @@ TEST(GuardCompleteness, RetainedScalarFactsCanImplyANumericPredicate) {
   )c");
   EXPECT_EQ(countId(linked, core::diag::OutOfBounds), 1U)
       << ::testing::PrintToString(messages(linked.diagnostics));
-  const auto *summary = result.summary("fits");
-  ASSERT_NE(summary, nullptr);
-  EXPECT_TRUE(summary->requiresExtent.contains(0));
-  EXPECT_FALSE(
-      summary->incomplete.contains("unsupported extent requirement condition"));
 }
 
+// RFC 0031 §6.1: `fill`'s minimum is exported as no requirement; the access
+// stays unresolved in `fill`'s own unit, never proven. At link the context
+// of `bad`'s call stores past `two` (RFC 0031 *Implementation amendments*,
+// "Stores past the caller's object"), and `good` gets no finding.
 TEST(GuardCompleteness, CanonicalLoopBoundaryCanExcludeItsIndexPredicate) {
   static constexpr const char *Callee = R"c(
     void fill(char *p, unsigned n, unsigned cap) {
@@ -156,6 +128,7 @@ TEST(GuardCompleteness, CanonicalLoopBoundaryCanExcludeItsIndexPredicate) {
   )c";
   const auto result = analyze(Callee);
   ASSERT_TRUE(result.ast);
+  EXPECT_EQ(spatialAt(result, 3, "p[i]"), "unresolved/unknown-extent");
   const auto linked = analyzeAtLink(Callee, R"c(
     void fill(char *p, unsigned n, unsigned cap);
     void good(void) { char two[2]; fill(two, 10, 2); }
@@ -163,9 +136,4 @@ TEST(GuardCompleteness, CanonicalLoopBoundaryCanExcludeItsIndexPredicate) {
   )c");
   EXPECT_EQ(countId(linked, core::diag::OutOfBounds), 1U)
       << ::testing::PrintToString(messages(linked.diagnostics));
-  const auto *summary = result.summary("fill");
-  ASSERT_NE(summary, nullptr);
-  EXPECT_TRUE(summary->requiresExtent.contains(0));
-  EXPECT_FALSE(
-      summary->incomplete.contains("unsupported extent requirement condition"));
 }

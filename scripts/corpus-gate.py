@@ -4,7 +4,10 @@
 RFC 0030, section 17.5. Reads test/corpus/ (manifest.json, expected.json,
 triage.json, injections/, bench/, support/) and runs the 11 corpus configs
 (sds, cJSON, jsmn, log.c, printf, linenoise, cJSON-program, zlib, lua,
-linenoise-program, jansson). test/corpus/README.md documents the files.
+linenoise-program, jansson) and, per RFC 0031 section 11.2, the 11 held-out
+configs marked "heldOut" (bzip2, hiredis, http-parser, inih, libyaml, lz4,
+miniz, mujs, sqlite, tinyexpr, utf8proc). test/corpus/README.md documents the
+files.
 
 Modes (combine freely; at least one, or --update-from):
 
@@ -39,6 +42,15 @@ Modifiers:
   --update          rewrite expected.json from this run (the sections the
                     run measured); --update-from RESULTS does the same from
                     a --json file written elsewhere (for example CI).
+  --held-out / --no-held-out
+                    include or leave out the held-out configs (RFC 0031,
+                    section 11.2). By default --full includes them and the
+                    other modes leave them out, so the PR-time --quick run
+                    stays fast; a config named by --only always runs. They
+                    are reported in a section of their own, gated by RFC
+                    0031's G5, G6 and G12 (manifest gates.heldOut) instead of
+                    G9 and G10, and need no expected.json entry until
+                    --update records one.
 
 Examples:
 
@@ -151,6 +163,11 @@ EXACT_FIELDS: tuple[tuple[tuple[str, ...], str], ...] = (
     (("ledger", "unresolved"), "lower"),
     (("ledger", "trusted"), "lower"),
     (("unresolvedShare", "spatialNull"), "lower"),
+)
+# Exact fields compared only once a record has them: RFC 0031 G6's temporal
+# share, recorded by the first --update after it was added.
+OPTIONAL_EXACT_FIELDS: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("unresolvedShare", "temporal"), "lower"),
 )
 BUDGET_FIELDS: tuple[tuple[tuple[str, ...], float, float, bool], ...] = (
     # (path, relative tolerance, absolute slack, machine-dependent). The slack
@@ -432,6 +449,7 @@ class Config:
     link: dict | None = None
     lowered: list[dict] = dataclasses.field(default_factory=list)
     notes: str = ""
+    held_out: bool = False  # RFC 0031, section 11.2
 
 
 @dataclasses.dataclass
@@ -446,6 +464,11 @@ class Manifest:
             if config.name == name:
                 return config
         raise KeyError(name)
+
+    @property
+    def original(self) -> list[Config]:
+        """The configs RFC 0030's gates count: every config but the held-out ones."""
+        return [c for c in self.configs if not c.held_out]
 
 
 SHA_RE = re.compile(r"[0-9a-f]{40}")
@@ -489,12 +512,17 @@ def load_manifest(path: Path, support_root: Path) -> Manifest:
                 bench = Bench(name=b.get("name", cname), build=list(b.get("build", [])),
                               command=b.get("command", ""), repeat=int(b.get("repeat", 7)),
                               input=b.get("input"), check=b.get("check"))
+            held_out = c.get("heldOut", False)
+            if not isinstance(held_out, bool):
+                problems.append(f"config {cname}: heldOut must be true or false")
+            elif held_out and bench is not None:
+                problems.append(f"config {cname}: a held-out config has no bench (RFC 0031, section 11.2)")
             config = Config(
                 name=cname, project=project, files=list(compile_.get("files", [])),
                 args=list(compile_.get("args", [])), whole_program=bool(c.get("wholeProgram", False)),
                 build=list(c.get("build", [])), test=list(c.get("test", [])),
                 test_timeout=c.get("testTimeout"), bench=bench, link=c.get("link"),
-                lowered=list(c.get("lowered", [])), notes=c.get("notes", ""))
+                lowered=list(c.get("lowered", [])), notes=c.get("notes", ""), held_out=held_out is True)
             problems.extend(check_lowering(config))
             project.configs.append(config)
             configs.append(config)
@@ -544,9 +572,22 @@ def expand_files(root: Path, patterns: Iterable[str]) -> list[Path]:
     return files
 
 
-def select_configs(manifest: Manifest, only: list[str]) -> list[Config]:
+def with_held_out(args: argparse.Namespace) -> bool:
+    """Whether a run without --only includes the held-out configs (RFC 0031, section 11.2).
+
+    --full runs them; the PR-time --quick run, and the other modes, leave them
+    out unless --held-out asks for them. --legacy never has them: v0.10.0 was
+    not measured on them.
+    """
+    if args.held_out is not None:
+        return args.held_out
+    return bool(args.full) and not args.legacy
+
+
+def select_configs(manifest: Manifest, only: list[str], held_out: bool = True) -> list[Config]:
+    """The configs named by --only, else every config, the held-out ones only when asked."""
     if not only:
-        return list(manifest.configs)
+        return [c for c in manifest.configs if held_out or not c.held_out]
     known = {c.name for c in manifest.configs}
     unknown = sorted(set(only) - known)
     if unknown:
@@ -925,9 +966,20 @@ class Analysis:
     seconds: float = 0.0
     failures: list[str] = dataclasses.field(default_factory=list)
     ledgers: int = 0
+    # Per-file CPU seconds and peak resident size of the units analysis
+    # (RFC 0031 G12's single-unit limits).
+    unit_costs: dict = dataclasses.field(default_factory=dict)
 
     def outcome_total(self, outcome: str) -> int:
         return sum(self.facets[f][outcome] for f in FACETS)
+
+    @property
+    def temporal_share(self) -> float | None:
+        """Unresolved temporal facets over all temporal facets (RFC 0031 G6)."""
+        total = sum(self.facets["temporal"].values())
+        if total == 0:
+            return None
+        return round(self.facets["temporal"]["unresolved"] / total, 4)
 
     @property
     def spatial_null_share(self) -> float | None:
@@ -943,7 +995,7 @@ class Analysis:
             "errors": self.errors,
             "warnings": self.warnings,
             "ledger": {"sites": self.sites, **{o: self.outcome_total(o) for o in OUTCOMES}},
-            "unresolvedShare": {"spatialNull": self.spatial_null_share},
+            "unresolvedShare": {"spatialNull": self.spatial_null_share, "temporal": self.temporal_share},
             "cpuSeconds": round(self.cpu, 2),
             "workCounters": {"blockTransfers": self.block_transfers, "functions": self.functions,
                              "sites": self.sites},
@@ -956,6 +1008,7 @@ class Analysis:
             "overBudget": sorted(set(self.over_budget)),
             "unresolvedReasons": dict(sorted(self.unresolved_reasons.items())),
             "ledgers": self.ledgers,
+            "unitCosts": self.unit_costs,
             "seconds": round(self.seconds, 2),
             "failures": self.failures,
             "diagnostics": [d.to_json() for d in self.diagnostics],
@@ -1069,6 +1122,8 @@ def quick_units(binaries: Binaries, config: Config, root: Path, files: list[Path
         text_diags, clang_errors = parse_diagnostics(result.output, root)
         failure = classify_failure(result, text_diags, clang_errors)
         rel = file.relative_to(root).as_posix()
+        analysis.unit_costs[rel] = {"cpuSeconds": round(result.cpu, 2), "seconds": round(result.seconds, 2),
+                                    "maxRssMiB": round(result.maxrss / 2 ** 20, 1) if result.maxrss else None}
         if failure:
             analysis.failures.append(f"{rel}: {failure}")
             continue
@@ -1147,6 +1202,15 @@ def compare_analysis(label: str, measured: dict, recorded: dict, same_machine: b
             result.regressions.append(f"{name}: {before} -> {now} (worse)")
         else:
             result.improvements.append(f"{name}: {before} -> {now} (better; run --update to ratchet it in)")
+    for path, direction in OPTIONAL_EXACT_FIELDS:
+        now, before = get_path(measured, path), get_path(recorded, path)
+        if before is None or now is None or now == before:
+            continue
+        name = f"{label}.{'.'.join(path)}"
+        if (now > before) == (direction == "lower"):
+            result.regressions.append(f"{name}: {before} -> {now} (worse)")
+        else:
+            result.improvements.append(f"{name}: {before} -> {now} (better; run --update to ratchet it in)")
     for path, tolerance, slack, machine_dependent in BUDGET_FIELDS:
         now, before = get_path(measured, path), get_path(recorded, path)
         name = f"{label}.{'.'.join(path)}"
@@ -1161,20 +1225,32 @@ def compare_analysis(label: str, measured: dict, recorded: dict, same_machine: b
             result.over_budget.append(f"{name}: {before} -> {now} (more than {tolerance:.0%} over)")
 
 
-def compare_ratchet(measured: dict[str, dict], expected: dict, platform: str, machine: str) -> RatchetResult:
-    """Check measured config sections against expected.json for this platform."""
+def compare_ratchet(measured: dict[str, dict], expected: dict, platform: str, machine: str,
+                    held_out: Iterable[str] = ()) -> RatchetResult:
+    """Check measured config sections against expected.json for this platform.
+
+    A held-out config (RFC 0031, section 11.2) that has no record yet is a
+    note, not a failure: --update records it, and from then on it ratchets
+    like the others.
+    """
     result = RatchetResult()
+    held_out = set(held_out)
     section = (expected.get("platforms") or {}).get(platform)
     if section is None:
-        result.missing.append(f"no expectations recorded for {platform}; run with --update (or "
-                              f"--update-from a results file measured on {platform})")
+        message = (f"no expectations recorded for {platform}; run with --update (or "
+                   f"--update-from a results file measured on {platform})")
+        (result.missing if set(measured) - held_out else result.notes).append(message)
         return result
     same_machine = section.get("machine") == machine
     recorded_configs = section.get("configs") or {}
     for name, now in measured.items():
         before = recorded_configs.get(name)
         if before is None:
-            result.missing.append(f"{name}: not recorded for {platform}")
+            if name in held_out:
+                result.notes.append(f"{name}: held-out config not recorded for {platform} yet; "
+                                    f"--update records it")
+            else:
+                result.missing.append(f"{name}: not recorded for {platform}")
             continue
         for kind in ANALYSIS_KINDS:
             if kind not in now:
@@ -1725,7 +1801,8 @@ class Gate:
         self.support_root = args.support_dir
         self.bench_dir = args.bench_dir
         self.manifest = load_manifest(args.manifest, self.support_root)
-        self.configs = select_configs(self.manifest, args.only)
+        self.configs = select_configs(self.manifest, args.only, with_held_out(args))
+        self.held_out = {c.name for c in self.configs if c.held_out}
         self.platform = platform_key()
         self.machine = machine_key()
         self.failures: list[str] = []
@@ -1737,6 +1814,7 @@ class Gate:
             "modes": [m for m in ("quick", "full", "inject", "bench") if getattr(args, m)],
             "legacy": args.legacy, "compareGolden": args.compare_golden, "checks": args.checks,
             "referenceOnly": args.reference_only, "configs": {}, "gates": {},
+            "heldOutConfigs": sorted(c.name for c in self.configs if c.held_out),
         }
         self.checkouts: dict[str, Path] = {}
         self.tracked: dict[str, set[str]] = {}
@@ -2017,13 +2095,22 @@ class Gate:
             checkout = self.checkout(config)
             entry = self.config_entry(config)
             runs = {}
-            for mode in modes:
+            config_modes = list(modes)
+            if config.held_out and modes != ["reference"] and modes != ["legacy"] and self.binaries.reference_cc:
+                # RFC 0031 G12: the build's CPU time against the reference compiler's.
+                config_modes.append("reference")
+            cache = self.args.workdir / ".cache" / config.project.name
+            cache.mkdir(parents=True, exist_ok=True)
+            for mode in config_modes:
                 compiler, flags = self.wrapper_flags(mode, config)
                 with_ledger = mode in ("trap", "verify")
                 log(f"[{config.name}] {mode} build with {compiler}")
+                # The reference build of a held-out config only times the build.
+                no_tests = [] if mode == "reference" and mode not in modes else None
                 build = run_build(config, mode, compiler, flags, checkout, self.run_dir / "builds" / config.name,
                                   self.support_root, self.bench_dir, self.jobs, self.args.build_timeout,
-                                  self.args.keep, self.tracked[config.project.name], with_ledger)
+                                  self.args.keep, self.tracked[config.project.name], with_ledger,
+                                  run_commands=no_tests, extra_env={"CACHE": str(cache)})
                 runs[mode] = build
                 for failure in build.failures:
                     self.fail(f"{config.name} ({mode}): {failure}", tool=True)
@@ -2093,6 +2180,10 @@ class Gate:
             if unknown:
                 raise GateError(f"unknown injection(s): {', '.join(sorted(unknown))}")
             injections = [i for i in injections if i.id in wanted]
+        if not injections:
+            # For example a run of held-out configs only: they are never patched.
+            log("injections: none for the selected configs")
+            return
         if not self.args.legacy and not self.args.reference_only:
             probe_ledger_support(self.binaries, self.run_dir / "probe")
         log(f"injections: {len(injections)} ({'legacy' if self.args.legacy else 'reference' if self.args.reference_only else 'current'} semantics)")
@@ -2458,15 +2549,23 @@ class Gate:
                     ok14 &= ratio <= limit
             self.gate("G14", ok14 if detail14 else None, detail14)
         if self.args.full:
-            traps = {name: m.get("traps") for name, m in self.measured.items() if "traps" in m}
+            traps = {name: m.get("traps") for name, m in self.measured.items()
+                     if "traps" in m and name not in self.held_out}
             self.gate("G6" if self.args.checks == "verify" else "G11",
                       all(t == 0 for t in traps.values()) if traps else None, traps)
+        if self.held_out:
+            self.evaluate_held_out()
 
     def evaluate_findings_and_analyses(self) -> None:
-        all_configs = len(self.configs) == len(self.manifest.configs)
+        # RFC 0030's gates (G9, G10) count the original configs; the held-out
+        # ones are gated by RFC 0031's (evaluate_held_out).
+        selected = {c.name for c in self.configs}
+        all_configs = all(c.name in selected for c in self.manifest.original)
         gates = self.manifest.gates
-        triage = check_triage(self.findings, self.triage_entries, {c.name for c in self.configs})
+        original = [f for f in self.findings if f["config"] not in self.held_out]
+        triage = check_triage(original, self.triage_entries, selected - self.held_out)
         self.results["triage"] = triage.to_json()
+        self.check_held_out_triage()
         for finding in triage.untriaged:
             self.fail(f"untriaged {finding['certainty']} {finding['id']} in {finding['config']} at "
                       f"{finding['file']}:{finding['line']} (fingerprint {finding['fingerprint'] or 'none'}): "
@@ -2523,6 +2622,7 @@ class Gate:
                                                          "note": "not the reference machine; compare with "
                                                                  "the golden binary's time"}
         functions = over_budget = 0
+        # RFC 0031 G11: over the original and the held-out configs together.
         for name in self.measured:
             for kind in ANALYSIS_KINDS:
                 analysis = self.results["configs"].get(name, {}).get("analyses", {}).get(kind)
@@ -2546,6 +2646,118 @@ class Gate:
             if limit is not None:
                 ok15 &= step["seconds"] <= limit
         self.gate("G15", ok15 if detail15 else None, detail15)
+    # ---- held-out configs (RFC 0031, section 11.2) ----
+
+    def check_held_out_triage(self) -> None:
+        """Definite errors of held-out configs need a verdict; possible warnings are only counted.
+
+        RFC 0031 G5 allows no definite error triaged false. The held-out
+        triage entries may record verdicts only (section 11.2), so the
+        possible temporal warnings, which G4 bounds for the original configs,
+        are reported here but need no entry.
+        """
+        if not self.held_out:
+            return
+        findings = [f for f in self.findings if f["config"] in self.held_out]
+        triage = check_triage(findings, self.triage_entries, self.held_out)
+        triage.untriaged = [f for f in triage.untriaged if f["certainty"] == "definite"]
+        self.held_out_triage = triage
+        self.results.setdefault("heldOut", {})["triage"] = triage.to_json()
+        for finding in triage.untriaged:
+            self.fail(f"untriaged definite {finding['id']} in held-out {finding['config']} at "
+                      f"{finding['file']}:{finding['line']} (fingerprint {finding['fingerprint'] or 'none'}): "
+                      f"{finding['message']}")
+        for problem in triage.invalid:
+            self.fail(f"triage: {problem}")
+
+    def held_out_rows(self) -> dict[str, dict]:
+        """One summary row per selected held-out config."""
+        rows: dict[str, dict] = {}
+        triage = getattr(self, "held_out_triage", None)
+        for config in self.configs:
+            if not config.held_out:
+                continue
+            entry = self.results["configs"].get(config.name, {})
+            units = (entry.get("analyses") or {}).get("units") or {}
+            # RFC 0031 G6: the program ledger where a whole-program analysis
+            # exists, the unit ledgers otherwise.
+            shares = (entry.get("analyses") or {}).get("program") or units
+            facets = (shares.get("facets") or {}).get("temporal") or {}
+            builds = entry.get("builds") or {}
+            checked = builds.get(self.args.checks) or builds.get("reference") or {}
+            reference = builds.get("reference") or {}
+            ratio = None
+            weavec_cpu = sum(s["cpu"] for s in checked.get("steps", [])) if checked is not reference else None
+            reference_cpu = sum(s["cpu"] for s in reference.get("steps", []))
+            if weavec_cpu is not None and reference_cpu > 0 and checked.get("built") and reference.get("built"):
+                ratio = round(weavec_cpu / reference_cpu, 2)
+            rows[config.name] = {
+                "errors": units.get("errors"), "warnings": units.get("warnings"),
+                "temporalUnresolved": facets.get("unresolved"), "temporalTotal": sum(facets.values()) if facets else None,
+                "temporalShare": (shares.get("unresolvedShare") or {}).get("temporal"),
+                "definiteErrors": sum(1 for f in (triage.definite_errors if triage else []) if f["config"] == config.name),
+                "falseDefiniteErrors": sum(1 for f in (triage.false_errors if triage else [])
+                                           if f["config"] == config.name),
+                "untriagedDefiniteErrors": sum(1 for f in (triage.untriaged if triage else [])
+                                               if f["config"] == config.name and f["certainty"] == "definite"),
+                "possibleTemporal": sum(1 for f in (triage.possible_temporal if triage else [])
+                                        if f["config"] == config.name),
+                "built": checked.get("built") if config.build and checked else None,
+                "testsPassed": checked.get("testsPassed") if checked else None,
+                "traps": entry.get("traps"),
+                "buildCpuRatio": ratio,
+                "unitCosts": units.get("unitCosts") or {},
+            }
+        return rows
+
+    def evaluate_held_out(self) -> None:
+        """RFC 0031's gates over the held-out configs: G5, G6 and G12 (manifest gates.heldOut)."""
+        spec = self.manifest.gates.get("heldOut", {})
+        rows = self.held_out_rows()
+        self.results.setdefault("heldOut", {})["configs"] = rows
+        g5 = spec.get("G5", {})
+        detail5 = {}
+        ok5 = True
+        for name, row in rows.items():
+            detail5[name] = {k: row[k] for k in ("definiteErrors", "falseDefiniteErrors", "built", "testsPassed",
+                                                 "traps")}
+            ok5 &= row["falseDefiniteErrors"] <= g5.get("maxFalseDefiniteErrors", 0)
+            if self.args.full:
+                # RFC 0031 G5: a build that stops at definite errors is kept
+                # only when each of them is triaged true.
+                stopped_by_true_errors = (row["built"] is False and row["definiteErrors"] > 0
+                                          and not row["falseDefiniteErrors"]
+                                          and not row["untriagedDefiniteErrors"])
+                ok5 &= (row["built"] is not False or stopped_by_true_errors) and row["testsPassed"] is not False
+                ok5 &= (row["traps"] or 0) <= g5.get("maxTraps", 0)
+        self.gate("rfc0031.G5", ok5 if rows else None, detail5)
+        g6 = spec.get("G6", {})
+        unresolved = sum(r["temporalUnresolved"] or 0 for r in rows.values())
+        total = sum(r["temporalTotal"] or 0 for r in rows.values())
+        share = round(unresolved / total, 4) if total else None
+        limit6 = g6.get("maxTemporalUnresolvedShare")
+        self.gate("rfc0031.G6", None if share is None or limit6 is None else share <= limit6,
+                  {"temporalShare": share, "limit": limit6, "unresolved": unresolved, "total": total,
+                   "perConfig": {n: r["temporalShare"] for n, r in rows.items()}})
+        g12 = spec.get("G12", {})
+        detail12 = {}
+        ok12 = True
+        max_ratio = g12.get("maxBuildCpuRatio")
+        for name, row in rows.items():
+            if row["buildCpuRatio"] is not None and max_ratio is not None:
+                detail12[f"{name}.buildCpuRatio"] = {"ratio": row["buildCpuRatio"], "limit": max_ratio}
+                ok12 &= row["buildCpuRatio"] <= max_ratio
+        for name, limits in (g12.get("maxUnitCost") or {}).items():
+            cost = (rows.get(name) or {}).get("unitCosts", {}).get(limits.get("file"))
+            if not cost:
+                continue
+            detail12[f"{name}.{limits['file']}"] = {**cost, "limits": {k: v for k, v in limits.items() if k != "file"}}
+            if "cpuSeconds" in limits:
+                ok12 &= cost["cpuSeconds"] <= limits["cpuSeconds"]
+            if "maxRssMiB" in limits and cost.get("maxRssMiB") is not None:
+                ok12 &= cost["maxRssMiB"] <= limits["maxRssMiB"]
+        self.gate("rfc0031.G12", ok12 if detail12 else None, detail12)
+
     def must_report(self, entries: list[dict]) -> list[dict] | None:
         if not self.args.full:
             return None
@@ -2595,7 +2807,7 @@ class Gate:
             write_json(self.args.expected, merged)
             log(f"updated {self.args.expected} ({self.platform}: {', '.join(sorted(self.measured))})")
             return
-        result = compare_ratchet(self.measured, expected, self.platform, self.machine)
+        result = compare_ratchet(self.measured, expected, self.platform, self.machine, self.held_out)
         self.results["ratchet"] = result.to_json()
         for kind in ("regressions", "improvements", "changes", "over_budget", "missing"):
             for item in getattr(result, kind):
@@ -2625,9 +2837,9 @@ class Gate:
             configs = quick.setdefault("configs", {})
             for name, tally in self.legacy_tallies.items():
                 configs[name] = {k: tally[k] for k in ("units", "byId", "bugClaims", "digest")}
-            ordered = [c.name for c in self.manifest.configs if c.name in configs]
+            ordered = [c.name for c in self.manifest.original if c.name in configs]
             quick["configs"] = {name: configs[name] for name in ordered}
-            if len(quick["configs"]) == len(self.manifest.configs):
+            if len(quick["configs"]) == len(self.manifest.original):
                 quick["totals"] = legacy_totals(quick["configs"])
             log(f"updated the legacy quick baseline ({len(self.legacy_tallies)} configs)")
         if getattr(self, "legacy_injection_runs", None) is not None:
@@ -2695,6 +2907,9 @@ class Gate:
             write_json(a.json, self.results)
             log(f"wrote {a.json}")
         print()
+        if self.held_out and not a.legacy:
+            print_held_out_summary(self.results.get("heldOut", {}).get("configs") or self.held_out_rows(),
+                                   self.results["gates"])
         if self.failures:
             print(f"corpus gate: FAIL ({len(self.failures)} problem(s))")
             for failure in self.failures[:40]:
@@ -2727,6 +2942,26 @@ def print_legacy_table(configs: list[Config], tallies: dict[str, dict], totals: 
     clang = sum(t["clangErrors"] for t in tallies.values())
     print(f"{'total':<{name_w}}  {totals['units']:>5} {seconds:>7.1f}s {clang:>5} {totals['bugClaims']:>5}  {cells}")
     print(f"bug claims (every id but {', '.join(sorted(COVERAGE_IDS))}): {totals['bugClaims']}")
+
+
+def print_held_out_summary(rows: dict[str, dict], gates: dict) -> None:
+    """The held-out configs' own section of the summary (RFC 0031, section 11.2)."""
+    print("held-out configs (RFC 0031, section 11.2):")
+    def cell(value, fmt="{}"):
+        return "-" if value is None else fmt.format(value)
+    width = max([len("config")] + [len(n) for n in rows])
+    print(f"  {'config':<{width}}  {'errors':>6} {'warnings':>8} {'temporal':>8} {'definite':>8} "
+          f"{'false':>5} {'built':>5} {'tests':>5} {'traps':>5} {'cpu x':>6}")
+    for name, r in rows.items():
+        built = cell(r.get("built"), "{}").replace("True", "yes").replace("False", "NO")
+        tests = cell(r.get("testsPassed"), "{}").replace("True", "pass").replace("False", "FAIL")
+        print(f"  {name:<{width}}  {cell(r.get('errors')):>6} {cell(r.get('warnings')):>8} "
+              f"{cell(r.get('temporalShare'), '{:.3f}'):>8} {cell(r.get('definiteErrors')):>8} "
+              f"{cell(r.get('falseDefiniteErrors')):>5} {built:>5} {tests:>5} {cell(r.get('traps')):>5} "
+              f"{cell(r.get('buildCpuRatio'), '{:.2f}'):>6}")
+    for name in ("rfc0031.G5", "rfc0031.G6", "rfc0031.G12"):
+        if name in gates:
+            print(f"  gate {name}: {gates[name]['status']}")
 
 
 def print_injection_table(runs: list[InjectionRun]) -> None:
@@ -2791,6 +3026,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     sel = ap.add_argument_group("selection and resources")
     sel.add_argument("--only", action="append", nargs="+", default=[], metavar="CONFIG",
                      help="run only these configs (repeatable)")
+    sel.add_argument("--held-out", action=argparse.BooleanOptionalAction, default=None,
+                     help="include (or with --no-held-out leave out) the held-out configs of RFC 0031, "
+                          "section 11.2 (default: included by --full, left out otherwise; --only overrides)")
     sel.add_argument("--injection", action="append", default=[], metavar="ID", help="run only this injection")
     sel.add_argument("--jobs", type=int, default=os.cpu_count() or 4, help="parallel processes (default: CPUs)")
     sel.add_argument("--timeout", type=float, default=1800, help="seconds per analysis process (default 1800)")
@@ -2816,6 +3054,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         ap.error("choose a mode: --quick, --full, --inject, --bench, --compare-golden or --update-from")
     if args.legacy and args.bench:
         ap.error("--bench measures the RFC 0030 compiler; it has no --legacy form")
+    if args.legacy and args.held_out:
+        ap.error("--held-out has no --legacy form: v0.10.0 was never measured on the held-out configs")
     if args.reference_only and (args.quick or args.compare_golden or args.legacy):
         ap.error("--reference-only runs builds, tests, benchmarks and injection checks only")
     if args.update and (args.compare_golden and not (args.quick or args.full or args.inject or args.bench)):

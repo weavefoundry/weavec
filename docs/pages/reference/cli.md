@@ -45,7 +45,7 @@ An unknown `-fweavec-*` flag is an error.
 | `--require=none\|checked\|proven`   | As `-fweavec-require`.                                                                                                                                |
 | `--budget=<n>`                      | As `-fweavec-budget`.                                                                                                                                 |
 | `--no-zero-init`                    | Model a build with `-fno-weavec-zero-init`.                                                                                                           |
-| `--dump-analysis`                   | Print inferred places, lifetimes, exit states and summaries (unstable format).                                                                        |
+| `--dump-analysis`                   | Print the analysis engine's states and the summaries it inferred (unstable format).                                                                   |
 | `--dump-kinds`                      | Print each unit's pointer kinds, must-access requirements, store groups, field candidates and function-pointer slots instead of analysing (unstable). |
 | `--dump-record=<path>`              | Print the unit record at `<path>` (an `<object>.weavec` that `weavec-cc` wrote) as JSON and exit; a stale record is an error that says why.           |
 | `--analysis-stats=<path>`           | Write analysis work statistics as JSON.                                                                                                               |

@@ -648,6 +648,23 @@ TEST(LibrarySpecTest, ModelFixesOfSection83) {
   zeroLength("snprintf", 0, "a1");
   zeroLength("strncpy", 0, "a2");
   zeroLength("strncpy", 1, "a2");
+  // RFC 0031 §5.4 *Zero-length arguments*: every row whose length may be
+  // zero.
+  zeroLength("fread", 0, "a1*a2");
+  zeroLength("fread_unlocked", 0, "a1*a2");
+  zeroLength("fwrite", 0, "a1*a2");
+  zeroLength("fwrite_unlocked", 0, "a1*a2");
+  zeroLength("strncmp", 0, "a2");
+  zeroLength("strncmp", 1, "a2");
+  zeroLength("strncasecmp", 0, "a2");
+  zeroLength("strncasecmp", 1, "a2");
+  zeroLength("strncasecmp_l", 0, "a2");
+  zeroLength("strncasecmp_l", 1, "a2");
+  zeroLength("strncat", 1, "a2");
+  zeroLength("strnlen", 0, "a1");
+  zeroLength("memchr", 0, "a2");
+  zeroLength("memrchr", 0, "a2");
+  zeroLength("vsnprintf", 0, "a1");
   // Static storage with the right lifetime.
   EXPECT_EQ(row("getenv").result.kind, Kind::Static);
   EXPECT_EQ(row("getenv").result.state, "environ");
@@ -828,8 +845,10 @@ static constexpr auto StringExpectations = std::to_array<Expectation>({
      "fills=0/a1/a2"},
     {"memcmp", "R bytes=a2 nullable-if=a2, R bytes=a2 nullable-if=a2, int",
      "int", ""},
-    {"memchr", "R bytes=a2, int, int", "interior=0 nullable", ""},
-    {"memrchr", "R bytes=a2, int, int", "interior=0 nullable", ""},
+    {"memchr", "R bytes=a2 nullable-if=a2, int, int", "interior=0 nullable",
+     ""},
+    {"memrchr", "R bytes=a2 nullable-if=a2, int, int", "interior=0 nullable",
+     ""},
     {"rawmemchr", "R bytes=__WEAVEC_UNBOUNDED, int", "interior=0 nonnull", ""},
     {"memmem", "R bytes=a1, int, R bytes=a3, int", "interior=0 nullable", ""},
     {"mempcpy", "W bytes=a2, R bytes=a2, int", "interior=0 nonnull offset=a2",
@@ -864,7 +883,7 @@ static constexpr auto StringExpectations = std::to_array<Expectation>({
      "chk=__builtin___strcat_chk:0/1/-1 chk=__strcat_chk:0/1/-1"},
     {"strncat",
      "RW str bytes=strlen(a0)+min(a2,strlen(a1))+1, "
-     "R bytes=min(a2,strlen(a1)+1), int",
+     "R bytes=min(a2,strlen(a1)+1) nullable-if=a2, int",
      "arg=0 nonnull",
      "disjoint=0/1/strlen(a0)+min(a2,strlen(a1))+1 "
      "writes-str=0/strlen(a0)+min(a2,strlen(a1)) "
@@ -875,12 +894,13 @@ static constexpr auto StringExpectations = std::to_array<Expectation>({
     {"strlcat", "RW bytes=a2 nullable-if=a2, R str, int", "int",
      "chk=__builtin___strlcat_chk:0/1/2/-1 chk=__strlcat_chk:0/1/2/-1"},
     {"strlen", "R str", "int value=strlen(a0)", ""},
-    {"strnlen", "R bytes=min(a1,strlen(a0)+1), int",
+    {"strnlen", "R bytes=min(a1,strlen(a0)+1) nullable-if=a1, int",
      "int value=min(a1,strlen(a0))", ""},
     {"strcmp", "R str, R str", "int", ""},
     {"strncmp",
-     "R bytes=min(a2,strlen(a0)+1), R bytes=min(a2,strlen(a1)+1), int", "int",
-     ""},
+     "R bytes=min(a2,strlen(a0)+1) nullable-if=a2, "
+     "R bytes=min(a2,strlen(a1)+1) nullable-if=a2, int",
+     "int", ""},
     {"strcoll", "R str, R str", "int", ""},
     {"strcoll_l", "R str, R str, none", "int", ""},
     {"strxfrm", "W bytes=a2 nullable-if=a2, R str, int", "int", ""},
@@ -914,11 +934,13 @@ static constexpr auto StringExpectations = std::to_array<Expectation>({
     {"rindex", "R str, int", "interior=0 nullable", ""},
     {"strcasecmp", "R str, R str", "int", ""},
     {"strncasecmp",
-     "R bytes=min(a2,strlen(a0)+1), R bytes=min(a2,strlen(a1)+1), int", "int",
-     ""},
+     "R bytes=min(a2,strlen(a0)+1) nullable-if=a2, "
+     "R bytes=min(a2,strlen(a1)+1) nullable-if=a2, int",
+     "int", ""},
     {"strcasecmp_l", "R str, R str, none", "int", ""},
     {"strncasecmp_l",
-     "R bytes=min(a2,strlen(a0)+1), R bytes=min(a2,strlen(a1)+1), int, none",
+     "R bytes=min(a2,strlen(a0)+1) nullable-if=a2, "
+     "R bytes=min(a2,strlen(a1)+1) nullable-if=a2, int, none",
      "int", ""},
     {"ffs", "int", "int", ""},
     {"ffsl", "int", "int", ""},
@@ -977,12 +999,13 @@ static constexpr auto StdioExpectations = std::to_array<Expectation>({
     {"gets", "W bytes=__WEAVEC_UNBOUNDED", "arg=0 nullable",
      "chk=__gets_chk:0/-1"},
     {"fgetln", "RW, W", "interior=0 nullable", ""},
-    {"fread", "W bytes=a1*a2, int, int, RW", "int",
+    {"fread", "W bytes=a1*a2 nullable-if=a1*a2, int, int, RW", "int",
      "chk=__fread_chk:0/-1/1/2/3"},
-    {"fread_unlocked", "W bytes=a1*a2, int, int, RW", "int",
+    {"fread_unlocked", "W bytes=a1*a2 nullable-if=a1*a2, int, int, RW", "int",
      "chk=__fread_unlocked_chk:0/-1/1/2/3"},
-    {"fwrite", "R bytes=a1*a2, int, int, RW", "int", ""},
-    {"fwrite_unlocked", "R bytes=a1*a2, int, int, RW", "int", ""},
+    {"fwrite", "R bytes=a1*a2 nullable-if=a1*a2, int, int, RW", "int", ""},
+    {"fwrite_unlocked", "R bytes=a1*a2 nullable-if=a1*a2, int, int, RW", "int",
+     ""},
     {"puts", "R str", "int", ""},
     {"fputs", "R str, RW", "int", ""},
     {"perror", "R str nullable", "void", ""},

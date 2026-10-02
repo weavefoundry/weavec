@@ -5,6 +5,8 @@ weavec_add_library(
           ClangDiagnosticSink.cpp
           DeferredCodeGenConsumer.cpp
           DiagnosticControl.cpp
+          # RFC 0031 §9.2: the dispatch edge split.
+          DispatchEdges.cpp
           Driver.cpp
           FrontendAction.cpp
           Prelude.cpp
@@ -31,7 +33,14 @@ target_compile_definitions(
           "WEAVEC_CLANG_RESOURCE_DIR=\"${WEAVEC_CLANG_RESOURCE_DIR}\""
           "WEAVEC_CLANG_EXECUTABLE=\"${WEAVEC_CLANG_EXECUTABLE}\"")
 
-weavec_link_llvm(weavecFrontend Support Option)
+weavec_link_llvm(
+  weavecFrontend
+  Support
+  Option
+  Core
+  Analysis
+  Passes
+  TransformUtils)
 weavec_link_clang(
   weavecFrontend
   clangTooling

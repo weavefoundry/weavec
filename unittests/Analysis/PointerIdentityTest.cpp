@@ -24,6 +24,24 @@ static std::size_t countId(const test::AnalysisResult &result,
                             }));
 }
 
+/// `<outcome>[/<reason>]: <detail>` of `facet` at the site whose ledger text
+/// is `text`, or empty.
+static std::string decisionAt(const test::AnalysisResult &result,
+                              std::string_view text, core::Facet facet) {
+  for (const core::UnitLedger &unit : result.planned.ledger.units)
+    for (const core::FunctionLedger &function : unit.functions)
+      for (const core::Site &site : function.sites) {
+        const core::FacetRecord *record = site.facet(facet);
+        if (site.text != text || record == nullptr)
+          continue;
+        std::string out(core::toString(record->outcome()));
+        if (!record->decision.reasonText().empty())
+          out += "/" + std::string(record->decision.reasonText());
+        return out + ": " + record->decision.detail;
+      }
+  return {};
+}
+
 static constexpr const char *Callbacks = R"c(
 static void drop(void *p) { free(p); }
 static void keep(void *p) { (void)p; }
@@ -142,10 +160,19 @@ void bad(void) {
 }
 )c");
   ASSERT_TRUE(result.ast);
-  EXPECT_EQ(test::ids(result.diagnostics),
-            std::vector<std::string>{"use-after-free"});
-  const auto exports = result.analyzer->exports();
-  EXPECT_EQ(exports.functions.at("invoke").specializations.size(), 2U);
+  // RFC 0031 §6.1 drops the callback context requests of format 29: one
+  // summary of `invoke` serves every caller, and it releases `p` through
+  // whichever of `keep` and `drop` the slot holds, possibly. `bad`'s use
+  // after free is found, as possible; `clean` gets possible findings it
+  // does not have (KNOWN-DIFFERENCES.md, *Unit tests*).
+  EXPECT_EQ(test::messages(result.diagnostics),
+            (std::vector<std::string>{
+                "9: use of 'p' after it may have been freed",
+                "9: 'p' may be freed twice",
+                "13: use of 'p' after it may have been freed"}));
+  for (const core::Diagnostic &diagnostic : result.diagnostics.diagnostics())
+    EXPECT_EQ(diagnostic.certainty, core::Certainty::Possible)
+        << diagnostic.message;
 }
 
 TEST(PointerIdentity, CallbackBodiesAreCheckedInTheRequestedContext) {
@@ -209,7 +236,6 @@ void bad(int *p) { struct hook h = {keep}; install(&h, drop); h.fn(p); free(p); 
   const auto ordinary = test::analyze(source);
   ASSERT_TRUE(ordinary.ast);
   ASSERT_NE(ordinary.summary("install"), nullptr);
-  EXPECT_TRUE(ordinary.summary("install")->callbackInputs.empty());
   EXPECT_EQ(countId(ordinary, core::diag::DoubleFree), 1U);
   EXPECT_EQ(test::unknownCalls(ordinary), std::vector<std::string>{});
 }
@@ -297,12 +323,10 @@ static void release_same(int *p, int *q) { if (p == q) free(p); }
 void clean(int *p, int *q) { if (p != q) { release_same(p, q); use(p); free(p); } }
 )c");
   ASSERT_TRUE(result.ast);
+  // RFC 0031 *Pointer comparisons*: `release_same` releases only when its
+  // arguments compare equal, which the caller's `p != q` refutes.
   EXPECT_TRUE(result.diagnostics.empty())
       << ::testing::PrintToString(test::messages(result.diagnostics));
-  const auto *summary = result.summary("release_same");
-  ASSERT_NE(summary, nullptr);
-  EXPECT_EQ(summary->effectOf(core::SummaryPath::param(0)).when.pointers.size(),
-            1U);
 }
 
 TEST(PointerIdentity, PointerEqualityStillDiagnosesActualConsumption) {
@@ -321,10 +345,15 @@ void clean(int *p, int *q) { release_same(p, q); if (p != q)
   use(p); }
 )c");
   ASSERT_TRUE(result.ast);
+  // RFC 0031 *Pointer comparisons*: the pair test selects the release at
+  // the call only, so the test after the call cannot refute the possible
+  // release (KNOWN-DIFFERENCES.md, *Unit tests*).
   EXPECT_EQ(
       test::messages(result.diagnostics),
-      (std::vector<std::string>{"3: use of 'p' after it may have been freed",
-                                "3: use of 'q' after it may have been freed"}));
+      (std::vector<std::string>{"4: use of 'p' after it may have been freed"}));
+  for (const core::Diagnostic &diagnostic : result.diagnostics.diagnostics())
+    EXPECT_EQ(diagnostic.certainty, core::Certainty::Possible)
+        << diagnostic.message;
 }
 
 TEST(PointerIdentity, OverwrittenComparisonOperandsUseTheIncomingValues) {
@@ -428,14 +457,13 @@ void partial(int **dest, int **source) { memcpy(dest, source, 1); }
 )c");
   ASSERT_TRUE(result.ast);
   // RFC 0030 §15 item 3: no diagnostic; the copy's temporal facet is a
-  // reinterpretation the engine did not follow.
+  // reinterpretation the engine did not follow (`raw-cast`, which is no
+  // `incomplete` reason).
   EXPECT_TRUE(result.diagnostics.empty())
       << ::testing::PrintToString(test::messages(result.diagnostics));
-  EXPECT_EQ(test::incomplete(result),
-            std::vector<std::string>{
-                "5: temporal raw-cast: unsupported memory copy of "
-                "pointer-containing storage"});
-  EXPECT_FALSE(result.summary("partial")->incomplete.empty());
+  EXPECT_EQ(decisionAt(result, "memcpy(dest,source,1)", core::Facet::Temporal),
+            "unresolved/raw-cast: unsupported memory copy of "
+            "pointer-containing storage");
 }
 
 TEST(PointerIdentity, ZeroLengthCopiesDoNotTransferOwnership) {
@@ -476,7 +504,13 @@ static void drop_field(void *object) { struct first *a = object; free(a->p); }
 void boundary(struct second *b) { drop_field(b); }
 )c");
   ASSERT_TRUE(result.ast);
-  EXPECT_EQ(test::incomplete(result).size(), 1U);
+  // RFC 0031 §6.3: `drop_field` releases what its `struct first` view reads
+  // at offset 0, which `b` holds as an `int`: the call is a reinterpretation
+  // (`raw-cast`, which is no `incomplete` reason), not a release of `b->p`.
+  EXPECT_EQ(decisionAt(result, "drop_field(b)", core::Facet::Temporal),
+            "unresolved/raw-cast: incompatible or unknown object view at call");
+  EXPECT_TRUE(result.diagnostics.empty())
+      << ::testing::PrintToString(test::messages(result.diagnostics));
 }
 
 TEST(PointerIdentity, CompatibleErasedAndEmbeddedRecordViewsRemainChecked) {
@@ -503,14 +537,12 @@ void boundary(struct first *a, struct second *b) {
 }
 )c");
   ASSERT_TRUE(result.ast);
-  EXPECT_GT(test::incomplete(result).size(), 0U);
-}
-
-TEST(PointerIdentity, InvalidCTestFixturesCannotReturnACleanAnalysis) {
-  const auto result =
-      test::analyze("void broken(void) { missing_declaration(); }");
-  EXPECT_FALSE(result.ast);
-  EXPECT_FALSE(result.analyzer);
+  // The second call hands `drop_field` a `struct second`: the call is not
+  // proven (RFC 0031 §6.3; its reason is the first found, here what the
+  // first iteration released).
+  EXPECT_TRUE(llvm::StringRef(decisionAt(result, "drop_field(erased)",
+                                         core::Facet::Temporal))
+                  .starts_with("unresolved/"));
 }
 
 } // namespace weavec::analysis

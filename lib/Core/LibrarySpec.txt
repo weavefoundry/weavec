@@ -495,8 +495,8 @@ memset_explicit (w:bytes(a2):null-if-zero(a2), int, int) -> arg(0) \
     fills(0,a1,a2);
 memcmp (r:bytes(a2):null-if-zero(a2), r:bytes(a2):null-if-zero(a2), int) \
     -> int;
-memchr (r:bytes(a2), int, int) -> interior(0):null-ok;
-memrchr (r:bytes(a2), int, int) -> interior(0):null-ok;
+memchr (r:bytes(a2):null-if-zero(a2), int, int) -> interior(0):null-ok;
+memrchr (r:bytes(a2):null-if-zero(a2), int, int) -> interior(0):null-ok;
 # GNU: searches without a bound for a byte the caller promises is there.
 rawmemchr (r:bytes(__WEAVEC_UNBOUNDED), int) -> interior(0):nonnull;
 memmem (r:bytes(a1), int, r:bytes(a3), int) -> interior(0):null-ok;
@@ -528,7 +528,7 @@ strcat (rw:bytes(strlen(a0)+strlen(a1)+1):str, r:str) -> arg(0) \
     writes-str(0,strlen(a0)+strlen(a1)) \
     chk(__builtin___strcat_chk: 0,1,-1) chk(__strcat_chk: 0,1,-1);
 strncat (rw:bytes(strlen(a0)+min(a2,strlen(a1))+1):str, \
-    r:bytes(min(a2,strlen(a1)+1)), int) -> arg(0) \
+    r:bytes(min(a2,strlen(a1)+1)):null-if-zero(a2), int) -> arg(0) \
     disjoint(0,1,strlen(a0)+min(a2,strlen(a1))+1) \
     writes-str(0,strlen(a0)+min(a2,strlen(a1))) \
     chk(__builtin___strncat_chk: 0,1,2,-1) chk(__strncat_chk: 0,1,2,-1);
@@ -539,10 +539,10 @@ strlcpy (w:bytes(a2):null-if-zero(a2), r:str, int) -> int:value(strlen(a1)) \
 strlcat (rw:bytes(a2):null-if-zero(a2), r:str, int) -> int \
     chk(__builtin___strlcat_chk: 0,1,2,-1) chk(__strlcat_chk: 0,1,2,-1);
 strlen (r:str) -> int:value(strlen(a0));
-strnlen (r:bytes(min(a1,strlen(a0)+1)), int) -> int:value(min(a1,strlen(a0)));
+strnlen (r:bytes(min(a1,strlen(a0)+1)):null-if-zero(a1), int) -> int:value(min(a1,strlen(a0)));
 strcmp (r:str, r:str) -> int;
-strncmp (r:bytes(min(a2,strlen(a0)+1)), r:bytes(min(a2,strlen(a1)+1)), int) \
-    -> int;
+strncmp (r:bytes(min(a2,strlen(a0)+1)):null-if-zero(a2), \
+    r:bytes(min(a2,strlen(a1)+1)):null-if-zero(a2), int) -> int;
 strcoll (r:str, r:str) -> int;
 strcoll_l (r:str, r:str, none) -> int;
 strxfrm (w:bytes(a2):null-if-zero(a2), r:str, int) -> int;
@@ -578,11 +578,11 @@ bcmp (r:bytes(a2), r:bytes(a2), int) -> int;
 index (r:str, int) -> interior(0):null-ok;
 rindex (r:str, int) -> interior(0):null-ok;
 strcasecmp (r:str, r:str) -> int;
-strncasecmp (r:bytes(min(a2,strlen(a0)+1)), r:bytes(min(a2,strlen(a1)+1)), \
-    int) -> int;
+strncasecmp (r:bytes(min(a2,strlen(a0)+1)):null-if-zero(a2), \
+    r:bytes(min(a2,strlen(a1)+1)):null-if-zero(a2), int) -> int;
 strcasecmp_l (r:str, r:str, none) -> int;
-strncasecmp_l (r:bytes(min(a2,strlen(a0)+1)), \
-    r:bytes(min(a2,strlen(a1)+1)), int, none) -> int;
+strncasecmp_l (r:bytes(min(a2,strlen(a0)+1)):null-if-zero(a2), \
+    r:bytes(min(a2,strlen(a1)+1)):null-if-zero(a2), int, none) -> int;
 ffs (int) -> int;
 ffsl (int) -> int;
 ffsll (int) -> int;
@@ -643,11 +643,11 @@ fgets (w:bytes(a1), int, rw) -> arg(0):null-ok writes-str(0) \
 gets (w:bytes(__WEAVEC_UNBOUNDED)) -> arg(0):null-ok chk(__gets_chk: 0,-1);
 # BSD: the line is in the stream's buffer, not terminated.
 fgetln (rw, w) -> interior(0):null-ok;
-fread (w:bytes(a1*a2), int, int, rw) -> int chk(__fread_chk: 0,-1,1,2,3);
-fread_unlocked (w:bytes(a1*a2), int, int, rw) -> int \
+fread (w:bytes(a1*a2):null-if-zero(a1*a2), int, int, rw) -> int chk(__fread_chk: 0,-1,1,2,3);
+fread_unlocked (w:bytes(a1*a2):null-if-zero(a1*a2), int, int, rw) -> int \
     chk(__fread_unlocked_chk: 0,-1,1,2,3);
-fwrite (r:bytes(a1*a2), int, int, rw) -> int;
-fwrite_unlocked (r:bytes(a1*a2), int, int, rw) -> int;
+fwrite (r:bytes(a1*a2):null-if-zero(a1*a2), int, int, rw) -> int;
+fwrite_unlocked (r:bytes(a1*a2):null-if-zero(a1*a2), int, int, rw) -> int;
 puts (r:str) -> int;
 fputs (r:str, rw) -> int;
 perror (r:str:null-ok) -> void;

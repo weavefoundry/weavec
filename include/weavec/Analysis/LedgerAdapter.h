@@ -40,7 +40,7 @@
 #include "weavec/Core/CheckPlan.h"
 #include "weavec/Core/Diagnostic.h"
 #include "weavec/Core/Ledger.h"
-#include "weavec/Core/Summary.h"
+#include "weavec/Core/Path.h"
 
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/Decl.h"
@@ -52,6 +52,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <memory>
 #include <optional>
 #include <set>
@@ -95,6 +96,9 @@ struct BoundaryFacts {
     /// How the two places are spelled here, for the row's detail.
     // NOLINTNEXTLINE(readability-redundant-member-init): designated init
     std::string names = {};
+    /// RFC 0031 §8: `first` owns an object its own object is reachable
+    /// from through owning cells (an owning cycle; `second` is `first`).
+    bool cycle = false;
   };
   // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
   std::vector<Dangling> dangling = {};
@@ -259,6 +263,10 @@ public:
   /// Caller-visible places at a call or exit that may hold released
   /// pointers or aliased owners (§9.4).
   void boundary(const clang::Stmt &site, BoundaryFacts facts);
+  /// §9.4 as RFC 0031 amends it: the proven temporal facet of `site` rests
+  /// on the entry assumption of a place of `placeClass` (its pointer is a
+  /// value that place held at entry, or derived from one).
+  void reliesOn(core::SiteId site, std::string placeClass);
   /// A function body exceeded its budget (§5.5).
   void overBudget(const clang::FunctionDecl &function);
   /// A store verdict for a field-invariant candidate (§7.6).
@@ -289,6 +297,10 @@ public:
   boundaries() const noexcept {
     return boundaryList;
   }
+  [[nodiscard]] const std::map<core::SiteId, std::set<std::string>> &
+  reliances() const noexcept {
+    return relied;
+  }
   [[nodiscard]] const std::vector<PublishedVerdict> &
   storeVerdicts() const noexcept {
     return verdictList;
@@ -314,13 +326,16 @@ private:
   const clang::FunctionDecl *current = nullptr;
   llvm::DenseSet<std::uint32_t> overBudgetFunctions;
   std::vector<core::Diagnostic> emitted;
-  /// (id, file, line, column, message) of what `emitted` holds.
-  std::set<std::tuple<std::string, std::string, std::uint32_t, std::uint32_t,
-                      std::string>>
+  /// (id, file, line, column, message) of what `emitted` holds, with its
+  /// index among the ledger's diagnostics when it was published there.
+  std::map<std::tuple<std::string, std::string, std::uint32_t, std::uint32_t,
+                      std::string>,
+           std::optional<std::uint32_t>>
       emittedKeys;
   std::vector<core::LedgerDiagnostic> ledgerDiagnostics;
   std::vector<Orphan> orphans;
   std::vector<PublishedBoundary> boundaryList;
+  std::map<core::SiteId, std::set<std::string>> relied;
   std::vector<PublishedVerdict> verdictList;
   std::vector<BoundaryDecision> boundaryRows;
   bool finished = false;
@@ -331,6 +346,11 @@ private:
   void decideAt(std::optional<core::SiteId> id, const clang::Stmt &stmt,
                 core::Facet facet, const core::FacetDecision &decision);
   /// Records a diagnostic, linked to a facet of a site when given.
+  /// Links the ledger diagnostic `index` to its site's facet (a violation
+  /// when it is a definite error).
+  void link(std::uint32_t index, const core::Diagnostic &diagnostic,
+            core::Certainty certainty, std::optional<core::SiteId> id,
+            std::optional<core::Facet> facet);
   void publish(core::Diagnostic diagnostic, core::Certainty certainty,
                std::optional<core::SiteId> id,
                std::optional<core::Facet> facet);

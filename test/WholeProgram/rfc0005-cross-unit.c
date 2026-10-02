@@ -20,16 +20,26 @@
 // ALONE-NOT: {{warning|error}}:
 // ALONE: 0 errors, 0 warnings
 
+// `node_new` may return null and `node_free` releases only a non-null
+// argument, so the bug is definite once `n` is tested (RFC 0031 §6.2:
+// `release *param0 free when param 0 !=0`); untested, it is a warning. The
+// callee reads `n->name` before it frees `n`, so the first invalid
+// operation of the second call is that read: a use after free of the
+// argument, reported at it.
 int double_release(void) {
   struct node *n = node_new();
+  if (!n)
+    return 1;
   node_free(n);
-  // CHECK: rfc0005-cross-unit.c:[[@LINE+1]]:3: error: 'n' is freed twice [weavec::double-free]
+  // CHECK: rfc0005-cross-unit.c:[[@LINE+1]]:13: error: use of 'n' after it was freed [weavec::use-after-free]
   node_free(n);
   return 0;
 }
 
 int dangling_field_pointer(void) {
   struct node *n = node_new();
+  if (!n)
+    return 1;
   int *p = node_vp(n);
   node_free(n);
   // `node_vp` returns a copy of `n` at the field `v` (RFC 0011): the

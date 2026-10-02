@@ -175,6 +175,12 @@ void LedgerAdapter::boundary(const clang::Stmt &site, BoundaryFacts facts) {
         PublishedBoundary{.site = *id, .facts = std::move(facts)});
 }
 
+void LedgerAdapter::reliesOn(core::SiteId site, std::string placeClass) {
+  if (isDiscarding() || placeClass.empty())
+    return;
+  relied[site].insert(std::move(placeClass));
+}
+
 void LedgerAdapter::boundaryDecisions(std::vector<BoundaryDecision> decisions) {
   if (isDiscarding())
     return;
@@ -254,28 +260,41 @@ void LedgerAdapter::publish(core::Diagnostic diagnostic,
   const auto index = static_cast<std::uint32_t>(ledgerDiagnostics.size());
   if (id) {
     entry.function = unit.functions[id->function].name;
-    // §3.4 and (V): a definite error is a violation of its facet, whatever
-    // path reported it. The facet is made to apply when the site kind would
-    // not otherwise carry it (a callee's requirement at a Call site), so the
-    // planner guards the site when the error is lowered with -Wno-error.
-    if (facet && certainty == core::Certainty::Definite &&
-        diagnostic.severity == core::Severity::Error) {
-      if (core::Site *site = unit.site(*id))
-        site->addFacet(*facet).decide(
-            core::FacetDecision::violation(diagnostic.message));
-    }
-    core::FacetRecord *linked = facet ? record(*id, *facet) : nullptr;
-    if (linked != nullptr) {
+    if (facet && record(*id, *facet) != nullptr) {
       entry.site = id->ordinal;
       entry.facet = facet;
-      if (!linked->diagnostic)
-        linked->diagnostic = index;
     }
   } else {
     entry.function = functionNameAt(diagnostic.location);
   }
   ledgerDiagnostics.push_back(std::move(entry));
+  link(index, diagnostic, certainty, id, facet);
+  emittedKeys[{std::string(diagnostic.id), diagnostic.location.file,
+               diagnostic.location.line, diagnostic.location.column,
+               diagnostic.message}] = index;
   emitted.push_back(std::move(diagnostic));
+}
+
+void LedgerAdapter::link(std::uint32_t index,
+                         const core::Diagnostic &diagnostic,
+                         core::Certainty certainty,
+                         std::optional<core::SiteId> id,
+                         std::optional<core::Facet> facet) {
+  if (!id)
+    return;
+  // §3.4 and (V): a definite error is a violation of its facet, whatever
+  // path reported it. The facet is made to apply when the site kind would
+  // not otherwise carry it (a callee's requirement at a Call site), so the
+  // planner guards the site when the error is lowered with -Wno-error.
+  if (facet && certainty == core::Certainty::Definite &&
+      diagnostic.severity == core::Severity::Error) {
+    if (core::Site *site = unit.site(*id))
+      site->addFacet(*facet).decide(
+          core::FacetDecision::violation(diagnostic.message));
+  }
+  core::FacetRecord *linked = facet ? record(*id, *facet) : nullptr;
+  if (linked != nullptr && !linked->diagnostic)
+    linked->diagnostic = index;
 }
 
 /// The facet a definite error of `id` is a violation of (§3, §17.3's
@@ -301,11 +320,16 @@ void LedgerAdapter::report(core::Diagnostic diagnostic,
   if (mode == Mode::Discarding)
     return;
   diagnostic.certainty = certainty;
-  if (!emittedKeys
-           .emplace(std::string(diagnostic.id), diagnostic.location.file,
-                    diagnostic.location.line, diagnostic.location.column,
-                    diagnostic.message)
-           .second)
+  auto [seen, fresh] = emittedKeys.try_emplace(
+      {std::string(diagnostic.id), diagnostic.location.file,
+       diagnostic.location.line, diagnostic.location.column,
+       diagnostic.message},
+      std::nullopt);
+  // Reported again (a function analysed once more, §7.6): the rows the new
+  // run published link to the diagnostic the first one made.
+  const std::optional<std::uint32_t> known =
+      fresh ? std::nullopt : seen->second;
+  if (!fresh && !known)
     return;
   if (mode == Mode::Collecting) {
     emitted.push_back(std::move(diagnostic));
@@ -332,6 +356,10 @@ void LedgerAdapter::report(core::Diagnostic diagnostic,
                                   diagnostic.location.opaque));
     if (facet && at.isValid())
       id = sites.innermostAt(at, std::nullopt, context.getSourceManager());
+  }
+  if (known) {
+    link(*known, diagnostic, certainty, id, facet);
+    return;
   }
   publish(std::move(diagnostic), certainty, id, facet);
 }

@@ -1,10 +1,11 @@
 // RFC 0015: exhausted selection budgets preserve earlier temporal evidence.
-// RFC 0030 §15 item 3: the exhausted budget is no diagnostic; the element
-// access where it ran out is `unresolved(budget)` in the ledger.
+// RFC 0030 §15 item 3: an exhausted budget is no diagnostic. The object
+// engine has no array element limit: `a` is one entry object whose elements
+// are cells by offset (RFC 0031 §4.6, §4.9), so all 33 accesses are within
+// budget and none is `unresolved(budget)`.
 // RUN: not %weavec --ledger=%t.json %s -- 2>&1 | FileCheck %s
 // RUN: FileCheck --check-prefix=LEDGER %s < %t.json
-// LEDGER: "reason": "budget",
-// LEDGER-NEXT: "detail": "array element limit reached",
+// LEDGER-NOT: "reason": "budget",
 #include "../Inputs/prelude.h"
 void bounded(char **a) {
   free(a[0]);

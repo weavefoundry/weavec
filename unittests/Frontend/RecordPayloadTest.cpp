@@ -8,7 +8,6 @@
 
 #include "weavec/Frontend/RecordPayload.h"
 
-#include "weavec/Core/SummaryIO.h"
 #include "weavec/Frontend/UnitRecord.h"
 
 #include <gtest/gtest.h>
@@ -20,10 +19,7 @@
 namespace weavec::frontend::record {
 namespace {
 
-using core::FunctionSummary;
-using core::PlaceEffect;
 using core::SummaryPath;
-using core::ValueSource;
 
 core::SourceLocation at(std::string file, std::uint32_t line,
                         std::uint32_t column) {
@@ -38,43 +34,24 @@ Payload fullPayload() {
   analysis::UnitExports &exports = payload.exports;
   exports.source = "src/node.c";
   const std::uint32_t cache = exports.globals.idFor("g_cache");
-  FunctionSummary freeSummary;
-  freeSummary.addEffect(SummaryPath::param(0), PlaceEffect{.freed = true});
-  freeSummary.addEffect(SummaryPath::global(cache), PlaceEffect{.freed = true});
+  core::FunctionEffects freeSummary;
+  freeSummary.effects.push_back(
+      core::PathEffect{.kind = core::PathEffect::Kind::Release,
+                       .path = SummaryPath::param(0).deref(),
+                       .family = "free"});
+  freeSummary.effects.push_back(
+      core::PathEffect{.kind = core::PathEffect::Kind::Release,
+                       .path = SummaryPath::global(cache).deref(),
+                       .family = "free",
+                       .may = true});
   analysis::ExportedFunction &node = exports.functions["node_free"];
-  node.summary.assign(freeSummary);
+  node.effects = freeSummary;
   node.typeKey = "void (struct node *)";
   node.addressTaken = true;
-  node.acceptsCallbacks = true;
-  const core::CallbackBindings bindings{
-      {SummaryPath::param(0), core::CallTargets::function("drop")}};
-  node.specializations[bindings].assign(freeSummary);
-  core::CallContext context;
-  context.facts[SummaryPath::param(1)] = core::ValueFact::ofConstant(3);
-  node.memorySpecializations[context].assign(freeSummary);
-  exports.memoryRequests["node_free"].insert(context);
-  exports.callbackRequests["node_free"].insert(bindings);
   exports.imports = {"blob_open"};
   exports.indirectTypes = {"void (void *)"};
   exports.unknownCallees = {"blob_open"};
-  exports.unknownIndirectTypes = {"int (struct opaque *)"};
   exports.countFields = {"struct node.rc"};
-  exports.sizedFields.witnesses = {analysis::SizedFieldWitness{
-      .field = "struct vec.items",
-      .count = "struct vec.cap",
-      .scale = 4,
-      .productType = core::IntegerType{.width = 64, .isSigned = false}}};
-  exports.sizedFields.unsizedFields = {"struct node.next"};
-  exports.sizedFields.unsizedPairs = {analysis::UnsizedPair{
-      .field = "struct vec.items", .count = "struct vec.n"}};
-  exports.sizedFieldLoads = {"struct node.children"};
-  core::InterfaceNode integer;
-  integer.kind = core::InterfaceKind::Integer;
-  integer.bytes = 4;
-  integer.alignment = 4;
-  integer.name = "unsigned int";
-  exports.globalInterfaces["g_count"] = core::InterfaceType{{integer}};
-  exports.objectInterfaces["view"] = core::InterfaceType{{integer}};
 
   InterfaceFacts &facts = payload.facts;
   facts.functions["node_free"] =
@@ -102,7 +79,8 @@ Payload fullPayload() {
           .site = 2,
           .args = {false},
           .evidence = {ArgumentEvidence{
-              .bytes = 16, .exact = true, .null = false, .value = 7}}}}};
+              .bytes = 16, .exact = true, .null = false, .value = 7}},
+          .location = at("src/main.c", 12, 5)}}};
   facts.slots = SlotFacts{
       .rows = {core::SlotRow{.slot = core::SlotKey::field("struct ops", "cb"),
                              .targets = {"drop"},
@@ -195,15 +173,7 @@ TEST(RecordPayload, EverythingRoundTrips) {
   EXPECT_EQ(read->exports.imports, original.exports.imports);
   EXPECT_EQ(read->exports.indirectTypes, original.exports.indirectTypes);
   EXPECT_EQ(read->exports.unknownCallees, original.exports.unknownCallees);
-  EXPECT_EQ(read->exports.unknownIndirectTypes,
-            original.exports.unknownIndirectTypes);
-  EXPECT_EQ(read->exports.memoryRequests, original.exports.memoryRequests);
-  EXPECT_EQ(read->exports.callbackRequests, original.exports.callbackRequests);
   EXPECT_EQ(read->exports.countFields, original.exports.countFields);
-  EXPECT_EQ(read->exports.sizedFields, original.exports.sizedFields);
-  EXPECT_EQ(read->exports.sizedFieldLoads, original.exports.sizedFieldLoads);
-  EXPECT_EQ(read->exports.globalInterfaces, original.exports.globalInterfaces);
-  EXPECT_EQ(read->exports.objectInterfaces, original.exports.objectInterfaces);
   EXPECT_EQ(read->facts, original.facts);
   EXPECT_EQ(read->sites, original.sites);
   EXPECT_EQ(read->reported, original.reported);
@@ -212,39 +182,34 @@ TEST(RecordPayload, EverythingRoundTrips) {
   EXPECT_EQ(toJson(*read), toJson(original));
 }
 
-TEST(RecordPayload, SummariesKeepHeapGraphsArrayRangesAndGlobalOrder) {
+TEST(RecordPayload, SummariesKeepElementRangesAndGlobalOrder) {
   Payload payload;
   payload.exports.source = "src/lib.c";
   // RFC 0022: the global table keeps the producer's order, unused names
-  // included, so callback bindings and contexts keep their keys.
+  // included, so the summaries keep their global ids.
   const std::uint32_t unused = payload.exports.globals.idFor("unused");
   const std::uint32_t zHook = payload.exports.globals.idFor("z_hook");
-  const std::uint32_t aHook = payload.exports.globals.idFor("a_hook");
-  FunctionSummary summary;
-  summary.callbackInputs.insert(SummaryPath::global(zHook));
-  summary.callbackInputs.insert(SummaryPath::global(aHook));
-  auto &graph = summary.heap[SummaryPath::result()];
-  auto child =
-      ValueSource::freshAt("free", {}, core::PathAffine::ofConstant(4));
-  child.stringLength = core::PathAffine::ofConstant(3);
-  graph.addField(core::Store{.dest = SummaryPath::result().deref().field("a"),
-                             .value = child});
-  graph.incomplete = true;
-  summary.arrayReleases.insert({.storage = SummaryPath::param(0).deref(),
-                                .begin = core::PathAffine::ofConstant(0),
-                                .count = core::PathAffine::ofConstant(3),
-                                .when = {},
-                                .cleared = true,
-                                .definite = false});
-  summary.addEffect(SummaryPath::param(0).deref().indexed("$1+2"),
-                    PlaceEffect{.read = true});
-  payload.exports.functions["make"].summary.assign(summary);
+  core::FunctionEffects summary;
+  summary.stores.push_back(core::StoreEffect{
+      .dest = SummaryPath::result().deref().field("a"),
+      .value = core::ValueDesc{.kind = core::ValueDesc::Kind::Fresh,
+                               .family = "free",
+                               .extent = core::PathTerm{.constant = 4},
+                               .object = 1}});
+  summary.effects.push_back(core::PathEffect{
+      .kind = core::PathEffect::Kind::Release,
+      .path = SummaryPath::param(0).deref().indexed().deref(),
+      .family = "free",
+      .elements = core::ElementRange{.from = core::PathTerm{.constant = 0},
+                                     .to = core::PathTerm{.constant = 3}}});
+  summary.reads = {SummaryPath::global(zHook).deref()};
+  payload.exports.functions["make"].effects = summary;
   std::string error;
   const std::optional<Payload> read = throughRecord(payload, error);
   ASSERT_TRUE(read) << error;
   EXPECT_EQ(read->exports.globals.find("unused"), unused);
   EXPECT_EQ(read->exports.globals.find("z_hook"), zHook);
-  EXPECT_EQ(read->exports.functions.at("make").summary.get(), summary);
+  EXPECT_EQ(read->exports.functions.at("make").effects, summary);
 }
 
 TEST(RecordPayload, KindsCarryTheirSource) {
@@ -324,8 +289,8 @@ TEST(RecordPayload, WhatCannotBeReadIsNamed) {
             }),
             "payload.functions[0].linkage: unknown linkage 'weak'");
   EXPECT_EQ(reason([&](llvm::json::Object &json) {
-              function(json)["summary"] = "summary\n  effect\nend\n";
-            }).rfind("payload.functions[0].summary: ", 0),
+              function(json)["effects"] = "returns always\neffect bogus";
+            }).rfind("payload.functions[0].effects: ", 0),
             0U);
   EXPECT_EQ(reason([&](llvm::json::Object &json) {
               (*function(json).getObject("kinds"))["result"] = "single";
@@ -351,21 +316,6 @@ TEST(RecordPayload, WhatCannotBeReadIsNamed) {
             }),
             "payload.sites[0].rows[0][4]: malformed facet 'unresolved'");
   EXPECT_EQ(reason([](llvm::json::Object &json) {
-              auto &entry =
-                  *(*json.getObject("interfaces")->getArray("globals"))[0]
-                       .getAsObject();
-              entry["type"] = "zz";
-            }),
-            "payload.interfaces.globals[0].type: invalid interface encoding");
-  EXPECT_EQ(reason([](llvm::json::Object &json) {
-              auto &entry =
-                  *(*json.getObject("sizedFields")->getArray("witnesses"))[0]
-                       .getAsObject();
-              entry["productType"] = "i64";
-            }),
-            "payload.sizedFields.witnesses[0].productType: malformed "
-            "product type 'i64'");
-  EXPECT_EQ(reason([](llvm::json::Object &json) {
               auto &entry = *(*json.getArray("imports"))[0].getAsObject();
               auto &param =
                   *(*entry.getObject("declared")->getArray("params"))[0]
@@ -380,18 +330,6 @@ TEST(RecordPayload, WhatCannotBeReadIsNamed) {
             }),
             "payload.boundaries[0].reason: not a boundary reason: "
             "'unknown-callee'");
-}
-
-TEST(RecordPayload, ContextRequestsAreBounded) {
-  Payload payload;
-  for (unsigned i = 0; i <= MaxContextRequests; ++i) {
-    core::CallContext input;
-    input.facts[SummaryPath::param(0)] = core::ValueFact::ofConstant(i);
-    payload.exports.memoryRequests["invoke"].insert(input);
-  }
-  std::string error;
-  EXPECT_FALSE(payloadFromJson(toJson(payload), "a.c", error));
-  EXPECT_EQ(error.substr(error.find(": ") + 2), "too many memory requests");
 }
 
 } // namespace weavec::frontend::record

@@ -3,6 +3,7 @@ weavec_add_unittest(
   SOURCES CheckEmitterTest.cpp
           DeferredCodeGenConsumerTest.cpp
           DiagnosticControlTest.cpp
+          DispatchEdgesTest.cpp
           LedgerOutputTest.cpp
           LedgerWriterTest.cpp
           LinkStepTest.cpp
@@ -19,3 +20,6 @@ weavec_add_unittest(
 target_compile_definitions(
   WeaveCFrontendTests
   PRIVATE "WEAVEC_CLANG_INCLUDE_DIRS=\"${CLANG_INCLUDE_DIRS}\"")
+
+# RFC 0031 §9.2: the edge-split test parses IR.
+weavec_link_llvm(WeaveCFrontendTests AsmParser)

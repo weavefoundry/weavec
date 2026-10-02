@@ -8,7 +8,7 @@
 
 #include "weavec/Frontend/RecordPayload.h"
 
-#include "weavec/Core/SummaryIO.h"
+#include "weavec/Core/EffectsIO.h"
 #include "weavec/Frontend/UnitRecord.h"
 
 #include "llvm/ADT/StringExtras.h"
@@ -150,26 +150,10 @@ static llvm::json::Array strings(const Range &range) {
   return array;
 }
 
-static std::string hexOf(std::string_view bytes) {
-  return llvm::toHex(llvm::StringRef(bytes.data(), bytes.size()),
-                     /*LowerCase=*/true);
-}
-
-static llvm::json::Array interfacesJson(const core::InterfaceTypes &types) {
-  llvm::json::Array array;
-  for (const auto &[name, type] : types) {
-    llvm::json::Object entry;
-    entry["name"] = utf8(name);
-    entry["type"] = type ? llvm::json::Value(hexOf(type->encode()))
-                         : llvm::json::Value(nullptr);
-    array.push_back(std::move(entry));
-  }
-  return array;
-}
-
-static llvm::json::Object functionJson(
-    const std::string &name, const analysis::ExportedFunction &function,
-    const FunctionInterface *interface, const core::GlobalNamer &names) {
+static llvm::json::Object
+functionJson(const std::string &name,
+             const analysis::ExportedFunction &function,
+             const FunctionInterface *interface) {
   static const FunctionInterface None;
   const FunctionInterface &facts = interface != nullptr ? *interface : None;
   llvm::json::Object json;
@@ -177,7 +161,7 @@ static llvm::json::Object functionJson(
   json["linkage"] = function.external ? "external" : "internal";
   json["addressTaken"] = function.addressTaken;
   json["typeKey"] = utf8(function.typeKey);
-  json["summary"] = core::printSummary(function.summary.get(), names);
+  json["effects"] = core::printEffects(function.effects);
   llvm::json::Array params;
   for (const std::optional<std::string> &kind : facts.params)
     params.push_back(orNull(kind));
@@ -200,26 +184,6 @@ static llvm::json::Object functionJson(
   }
   json["requirements"] = std::move(requirements);
   json["location"] = locationOrNull(facts.location);
-  llvm::json::Array callbacks;
-  for (const auto &[bindings, summary] : function.specializations) {
-    llvm::json::Object entry;
-    entry["bindings"] = core::printCallbackBindings(bindings, names);
-    entry["summary"] = core::printSummary(summary.get(), names);
-    callbacks.push_back(std::move(entry));
-  }
-  llvm::json::Array memory;
-  for (const auto &[context, summary] : function.memorySpecializations) {
-    llvm::json::Object entry;
-    entry["context"] = core::printCallContext(context, names);
-    entry["summary"] = core::printSummary(summary.get(), names);
-    memory.push_back(std::move(entry));
-  }
-  llvm::json::Object contexts;
-  contexts["acceptsCallbacks"] = function.acceptsCallbacks;
-  contexts["acceptsMemory"] = function.acceptsMemoryContexts;
-  contexts["callbacks"] = std::move(callbacks);
-  contexts["memory"] = std::move(memory);
-  json["contexts"] = std::move(contexts);
   return json;
 }
 
@@ -263,6 +227,7 @@ static llvm::json::Object importJson(const std::string &name,
                   : llvm::json::Value(nullptr);
     entry["args"] = std::move(args);
     entry["evidence"] = std::move(evidence);
+    entry["location"] = locationOrNull(call.location);
     calls.push_back(std::move(entry));
   }
   llvm::json::Object json;
@@ -327,9 +292,6 @@ static llvm::json::Array slotRowsJson(std::span<const core::SlotRow> rows) {
 llvm::json::Object toJson(const Payload &payload) {
   const analysis::UnitExports &exports = payload.exports;
   const InterfaceFacts &facts = payload.facts;
-  const core::GlobalNamer names = [&exports](std::uint32_t id) {
-    return exports.globals.nameOf(id).str();
-  };
   llvm::json::Object json;
 
   llvm::json::Array functions;
@@ -337,8 +299,7 @@ llvm::json::Object toJson(const Payload &payload) {
     const auto interface = facts.functions.find(name);
     functions.push_back(functionJson(
         name, function,
-        interface == facts.functions.end() ? nullptr : &interface->second,
-        names));
+        interface == facts.functions.end() ? nullptr : &interface->second));
   }
   json["functions"] = std::move(functions);
 
@@ -369,7 +330,6 @@ llvm::json::Object toJson(const Payload &payload) {
   json["imports"] = std::move(imports);
   json["indirect"] = strings(exports.indirectTypes);
   json["unknown"] = strings(exports.unknownCallees);
-  json["unknownIndirect"] = strings(exports.unknownIndirectTypes);
   json["slots"] = slotRowsJson(facts.slots.rows);
   json["slotRules"] = slotRulesJson(facts.slots);
 
@@ -399,61 +359,7 @@ llvm::json::Object toJson(const Payload &payload) {
   }
   json["invariants"] = std::move(invariants);
 
-  llvm::json::Array memoryRequests;
-  for (const auto &[symbol, requests] : exports.memoryRequests) {
-    for (const core::CallContext &context : requests) {
-      llvm::json::Object entry;
-      entry["function"] = utf8(symbol);
-      entry["context"] = core::printCallContext(context, names);
-      memoryRequests.push_back(std::move(entry));
-    }
-  }
-  llvm::json::Array callbackRequests;
-  for (const auto &[symbol, requests] : exports.callbackRequests) {
-    for (const core::CallbackBindings &bindings : requests) {
-      llvm::json::Object entry;
-      entry["function"] = utf8(symbol);
-      entry["bindings"] = core::printCallbackBindings(bindings, names);
-      callbackRequests.push_back(std::move(entry));
-    }
-  }
-  llvm::json::Object contexts;
-  contexts["memoryRequests"] = std::move(memoryRequests);
-  contexts["callbackRequests"] = std::move(callbackRequests);
-  json["contexts"] = std::move(contexts);
-
   json["countFields"] = strings(exports.countFields);
-  llvm::json::Array witnesses;
-  for (const analysis::SizedFieldWitness &witness :
-       exports.sizedFields.witnesses) {
-    llvm::json::Object entry;
-    entry["field"] = utf8(witness.field);
-    entry["count"] = utf8(witness.count);
-    entry["scale"] = witness.scale;
-    entry["productType"] =
-        witness.productType ? llvm::json::Value(witness.productType->toString())
-                            : llvm::json::Value(nullptr);
-    witnesses.push_back(std::move(entry));
-  }
-  llvm::json::Array pairs;
-  for (const analysis::UnsizedPair &pair : exports.sizedFields.unsizedPairs) {
-    llvm::json::Object entry;
-    entry["field"] = utf8(pair.field);
-    entry["count"] = utf8(pair.count);
-    pairs.push_back(std::move(entry));
-  }
-  llvm::json::Object sized;
-  sized["witnesses"] = std::move(witnesses);
-  sized["unsizedFields"] = strings(exports.sizedFields.unsizedFields);
-  sized["unsizedPairs"] = std::move(pairs);
-  json["sizedFields"] = std::move(sized);
-  json["sizedFieldLoads"] = strings(exports.sizedFieldLoads);
-
-  llvm::json::Object interfaces;
-  interfaces["globals"] = interfacesJson(exports.globalInterfaces);
-  interfaces["objects"] = interfacesJson(exports.objectInterfaces);
-  json["interfaces"] = std::move(interfaces);
-
   llvm::json::Array boundaries;
   for (const analysis::BoundaryRow &row : facts.boundaries) {
     llvm::json::Object entry;
@@ -498,9 +404,6 @@ class PayloadReader {
 public:
   PayloadReader(std::string_view source, std::string &error) : error(error) {
     payload.exports.source = std::string(source);
-    resolve = [this](std::string_view name) {
-      return std::optional(payload.exports.globals.idFor(name));
-    };
   }
 
   bool read(const llvm::json::Object &json);
@@ -509,7 +412,6 @@ public:
 private:
   Payload payload;
   std::string &error;
-  core::GlobalResolver resolve;
 
   bool fail(const std::string &where, const std::string &what) {
     error = where + ": " + what;
@@ -570,16 +472,6 @@ private:
     out = std::move(location);
     return true;
   }
-  bool summary(const llvm::json::Object &json, const std::string &where,
-               analysis::ExportedSummary &out) {
-    std::string problem;
-    const auto parsed =
-        core::parseSummary(text(json, "summary"), resolve, &problem);
-    if (!parsed)
-      return fail(where + ".summary", problem.empty() ? "malformed" : problem);
-    out.assign(*parsed);
-    return true;
-  }
   bool kind(const std::optional<std::string> &spelling,
             const std::string &where) {
     if (spelling && !parseKind(*spelling))
@@ -595,9 +487,7 @@ private:
   bool readImport(const llvm::json::Object &json, const std::string &where);
   bool readSlots(const llvm::json::Object &json);
   bool readKindsAndInvariants(const llvm::json::Object &json);
-  bool readContexts(const llvm::json::Object &json);
-  bool readFieldFacts(const llvm::json::Object &json);
-  bool readInterfaces(const llvm::json::Object &json);
+  bool readCountFields(const llvm::json::Object &json);
   bool readRows(const llvm::json::Object &json);
   bool readRest(const llvm::json::Object &json);
 };
@@ -638,8 +528,13 @@ bool PayloadReader::readFunction(const llvm::json::Object &json,
   function.external = linkage == "external";
   function.addressTaken = *json.getBoolean("addressTaken");
   function.typeKey = text(json, "typeKey");
-  if (!summary(json, where, function.summary))
-    return false;
+  {
+    std::string problem;
+    auto effects = core::parseEffects(text(json, "effects"), &problem);
+    if (!effects)
+      return fail(where + ".effects", problem);
+    function.effects = std::move(*effects);
+  }
 
   FunctionInterface facts;
   const llvm::json::Object &kinds = *json.getObject("kinds");
@@ -681,46 +576,6 @@ bool PayloadReader::readFunction(const llvm::json::Object &json,
   if (!location(*json.get("location"), where + ".location", facts.location))
     return false;
 
-  const llvm::json::Object &contexts = *json.getObject("contexts");
-  function.acceptsCallbacks = *contexts.getBoolean("acceptsCallbacks");
-  function.acceptsMemoryContexts = *contexts.getBoolean("acceptsMemory");
-  const llvm::json::Array &callbacks = array(contexts, "callbacks");
-  if (callbacks.size() > core::MaxCallbackContexts)
-    return fail(where + ".contexts.callbacks", "too many specializations");
-  for (std::size_t i = 0; i < callbacks.size(); ++i) {
-    const std::string at =
-        where + ".contexts.callbacks[" + std::to_string(i) + "]";
-    const llvm::json::Object &entry = object(callbacks[i]);
-    const auto bindings =
-        core::parseCallbackBindings(text(entry, "bindings"), resolve);
-    if (!bindings)
-      return fail(at + ".bindings", "malformed callback bindings");
-    analysis::ExportedSummary specialized;
-    if (!summary(entry, at, specialized))
-      return false;
-    if (!function.specializations.emplace(*bindings, std::move(specialized))
-             .second)
-      return fail(at, "duplicate callback specialization");
-  }
-  const llvm::json::Array &memory = array(contexts, "memory");
-  if (memory.size() > core::MaxMemoryContexts)
-    return fail(where + ".contexts.memory", "too many specializations");
-  for (std::size_t i = 0; i < memory.size(); ++i) {
-    const std::string at =
-        where + ".contexts.memory[" + std::to_string(i) + "]";
-    const llvm::json::Object &entry = object(memory[i]);
-    const auto context =
-        core::parseCallContext(text(entry, "context"), resolve);
-    if (!context)
-      return fail(at + ".context", "malformed call context");
-    analysis::ExportedSummary specialized;
-    if (!summary(entry, at, specialized))
-      return false;
-    if (!function.memorySpecializations
-             .emplace(*context, std::move(specialized))
-             .second)
-      return fail(at, "duplicate memory specialization");
-  }
   payload.exports.functions.emplace(name, std::move(function));
   if (facts != FunctionInterface{})
     payload.facts.functions.emplace(name, std::move(facts));
@@ -806,6 +661,9 @@ bool PayloadReader::readImport(const llvm::json::Object &json,
       }
       call.evidence.push_back(argument);
     }
+    if (const llvm::json::Value *place = entry.get("location");
+        place != nullptr && !location(*place, at + ".location", call.location))
+      return false;
     facts.calls.push_back(std::move(call));
   }
   payload.exports.imports.insert(name);
@@ -913,115 +771,10 @@ bool PayloadReader::readKindsAndInvariants(const llvm::json::Object &json) {
   return true;
 }
 
-bool PayloadReader::readContexts(const llvm::json::Object &json) {
-  analysis::UnitExports &exports = payload.exports;
-  const llvm::json::Object &contexts = *json.getObject("contexts");
-  const llvm::json::Array &memory = array(contexts, "memoryRequests");
-  for (std::size_t i = 0; i < memory.size(); ++i) {
-    const std::string where =
-        "payload.contexts.memoryRequests[" + std::to_string(i) + "]";
-    const llvm::json::Object &entry = object(memory[i]);
-    const std::string symbol = text(entry, "function");
-    const auto context =
-        core::parseCallContext(text(entry, "context"), resolve);
-    if (symbol.empty() || !context)
-      return fail(where, "malformed memory request");
-    auto &requests = exports.memoryRequests[symbol];
-    if (!requests.insert(*context).second)
-      return fail(where, "duplicate memory request");
-    if (requests.size() > MaxContextRequests)
-      return fail(where, "too many memory requests");
-  }
-  const llvm::json::Array &callbacks = array(contexts, "callbackRequests");
-  for (std::size_t i = 0; i < callbacks.size(); ++i) {
-    const std::string where =
-        "payload.contexts.callbackRequests[" + std::to_string(i) + "]";
-    const llvm::json::Object &entry = object(callbacks[i]);
-    const std::string symbol = text(entry, "function");
-    const auto bindings =
-        core::parseCallbackBindings(text(entry, "bindings"), resolve);
-    if (symbol.empty() || !bindings)
-      return fail(where, "malformed callback request");
-    auto &requests = exports.callbackRequests[symbol];
-    if (!requests.insert(*bindings).second)
-      return fail(where, "duplicate callback request");
-    if (requests.size() > MaxContextRequests)
-      return fail(where, "too many callback requests");
-  }
-  return true;
-}
-
-bool PayloadReader::readFieldFacts(const llvm::json::Object &json) {
-  analysis::UnitExports &exports = payload.exports;
+bool PayloadReader::readCountFields(const llvm::json::Object &json) {
   for (const llvm::json::Value &key : array(json, "countFields"))
-    exports.countFields.insert(key.getAsString()->str());
-  const llvm::json::Object &sized = *json.getObject("sizedFields");
-  const llvm::json::Array &witnesses = array(sized, "witnesses");
-  for (std::size_t i = 0; i < witnesses.size(); ++i) {
-    const std::string where =
-        "payload.sizedFields.witnesses[" + std::to_string(i) + "]";
-    const llvm::json::Object &entry = object(witnesses[i]);
-    analysis::SizedFieldWitness witness{.field = text(entry, "field"),
-                                        .count = text(entry, "count"),
-                                        .scale = 0,
-                                        .productType = std::nullopt};
-    const auto scale = entry.getInteger("scale");
-    if (!scale || *scale <= 0 || witness.field.empty() || witness.count.empty())
-      return fail(where, "malformed sized-field witness");
-    witness.scale = *scale;
-    if (const auto type = optionalText(entry, "productType")) {
-      witness.productType = core::IntegerType::parse(*type);
-      if (!witness.productType || witness.productType->isSigned ||
-          witness.productType->isBoolean ||
-          static_cast<std::uint64_t>(*scale) > witness.productType->mask())
-        return fail(where + ".productType",
-                    "malformed product type '" + *type + "'");
-    }
-    exports.sizedFields.witnesses.insert(std::move(witness));
-  }
-  for (const llvm::json::Value &field : array(sized, "unsizedFields"))
-    exports.sizedFields.unsizedFields.insert(field.getAsString()->str());
-  for (const llvm::json::Value &pair : array(sized, "unsizedPairs"))
-    exports.sizedFields.unsizedPairs.insert(
-        analysis::UnsizedPair{.field = text(object(pair), "field"),
-                              .count = text(object(pair), "count")});
-  for (const llvm::json::Value &key : array(json, "sizedFieldLoads"))
-    exports.sizedFieldLoads.insert(key.getAsString()->str());
+    payload.exports.countFields.insert(key.getAsString()->str());
   return true;
-}
-
-bool PayloadReader::readInterfaces(const llvm::json::Object &json) {
-  const llvm::json::Object &interfaces = *json.getObject("interfaces");
-  const auto read = [&](llvm::StringRef key, core::InterfaceTypes &into) {
-    const llvm::json::Array &entries = array(interfaces, key);
-    const std::string where = "payload.interfaces." + key.str();
-    if (entries.size() > MaxInterfaces)
-      return fail(where,
-                  "more than " + std::to_string(MaxInterfaces) + " interfaces");
-    for (std::size_t i = 0; i < entries.size(); ++i) {
-      const std::string at = where + "[" + std::to_string(i) + "]";
-      const llvm::json::Object &entry = object(entries[i]);
-      const std::string name = text(entry, "name");
-      if (name.empty() || into.contains(name))
-        return fail(at, "empty or duplicate interface identity");
-      const auto encoded = optionalText(entry, "type");
-      if (!encoded) {
-        into.emplace(name, std::nullopt);
-        continue;
-      }
-      std::string bytes;
-      if (encoded->size() > core::MaxInterfaceBytes * 2 ||
-          !llvm::tryGetFromHex(*encoded, bytes) || hexOf(bytes) != *encoded)
-        return fail(at + ".type", "invalid interface encoding");
-      const auto type = core::InterfaceType::decode(bytes);
-      if (!type)
-        return fail(at + ".type", "invalid interface storage description");
-      into.emplace(name, *type);
-    }
-    return true;
-  };
-  return read("globals", payload.exports.globalInterfaces) &&
-         read("objects", payload.exports.objectInterfaces);
 }
 
 bool PayloadReader::readRows(const llvm::json::Object &json) {
@@ -1080,8 +833,6 @@ bool PayloadReader::readRest(const llvm::json::Object &json) {
     exports.indirectTypes.insert(key.getAsString()->str());
   for (const llvm::json::Value &name : array(json, "unknown"))
     exports.unknownCallees.insert(name.getAsString()->str());
-  for (const llvm::json::Value &key : array(json, "unknownIndirect"))
-    exports.unknownIndirectTypes.insert(key.getAsString()->str());
   const llvm::json::Array &reported = array(json, "reported");
   for (std::size_t i = 0; i < reported.size(); ++i) {
     const std::string where = "payload.reported[" + std::to_string(i) + "]";
@@ -1111,8 +862,8 @@ bool PayloadReader::readRest(const llvm::json::Object &json) {
 }
 
 bool PayloadReader::read(const llvm::json::Object &json) {
-  // The global names first: the summaries and contexts spell roots by them,
-  // and the ids keep the producer's order (RFC 0022).
+  // The global names first: the summaries spell roots by their ids, which
+  // keep the producer's order (RFC 0022).
   if (!readGlobals(array(json, "globals")))
     return false;
   const llvm::json::Array &functions = array(json, "functions");
@@ -1126,8 +877,7 @@ bool PayloadReader::read(const llvm::json::Object &json) {
                     "payload.imports[" + std::to_string(i) + "]"))
       return false;
   return readSlots(json) && readKindsAndInvariants(json) &&
-         readContexts(json) && readFieldFacts(json) && readInterfaces(json) &&
-         readRows(json) && readRest(json);
+         readCountFields(json) && readRows(json) && readRest(json);
 }
 
 std::optional<Payload> payloadFromJson(const llvm::json::Object &json,

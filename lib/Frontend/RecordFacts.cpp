@@ -322,6 +322,10 @@ static void collectCalls(const analysis::SiteIndex &sites,
       if (import == facts.imports.end() || call == nullptr)
         continue;
       ImportCall entry{.function = caller, .site = site.id.ordinal, .args = {}};
+      entry.location = analysis::toCoreLocation(context.getSourceManager(),
+                                                call->getBeginLoc());
+      // (A record carries no frontend handle.)
+      entry.location->opaque = 0;
       const unsigned params = site.callee->getNumParams();
       const unsigned count = site.callee->hasPrototype()
                                  ? std::min(params, call->getNumArgs())

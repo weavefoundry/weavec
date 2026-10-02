@@ -134,7 +134,7 @@ TEST(UnitRecord, FramingFollowsTheLayout) {
   ASSERT_TRUE(bytes) << error;
   const llvm::StringRef view = *bytes;
   EXPECT_EQ(view.take_front(8), llvm::StringRef("\x89WVC\r\n\x1a\n", 8));
-  EXPECT_EQ(readLittleEndian(view, 8, 4), 28U);
+  EXPECT_EQ(readLittleEndian(view, 8, 4), 29U);
   EXPECT_EQ(readLittleEndian(view, 12, 4), 0U);
   const auto schema = schemaFingerprint();
   EXPECT_TRUE(std::equal(schema.begin(), schema.end(),
@@ -192,8 +192,8 @@ TEST(UnitRecord, EmittedKeysMatchTheFieldTable) {
   for (const std::string path :
        {"header.config.budget", "payload.sites[].rows[]",
         "payload.imports[].calls[].args[]", "payload.invariants[].store.line",
-        "payload.functions[].contexts.memory[].summary",
-        "payload.slotRules.escapedStatics[]", "payload.a5.allocator"})
+        "payload.functions[].effects", "payload.slotRules.escapedStatics[]",
+        "payload.a5.allocator"})
     EXPECT_TRUE(std::ranges::binary_search(schemaPaths(), path)) << path;
 }
 
@@ -201,7 +201,7 @@ TEST(UnitRecord, SchemaFingerprintIsTheTableHash) {
   const std::string text = schemaText();
   const auto expected = llvm::SHA256::hash(llvm::arrayRefFromStringRef(text));
   EXPECT_EQ(schemaFingerprint(), expected);
-  EXPECT_EQ(text.rfind("weavec-record-schema\nsummary-format:29\n"
+  EXPECT_EQ(text.rfind("weavec-record-schema\nsummary-format:30\n"
                        "header:object{producer:object{"
                        "name:string,version:string,revision:string},"
                        "source:string,cwd:string,command:array<string>,"
@@ -238,8 +238,8 @@ TEST(UnitRecord, AnythingElseIsStale) {
   EXPECT_EQ(reason(magic), "not a WeaveC record (bad magic)");
   EXPECT_EQ(reason(llvm::StringRef(good).take_front(80)),
             "truncated record (80 bytes)");
-  EXPECT_EQ(reason(frame(header, payload, 27)), "format 27, expected 28");
-  EXPECT_EQ(reason(frame(header, payload, 28, 1)), "unsupported flags 0x1");
+  EXPECT_EQ(reason(frame(header, payload, 28)), "format 28, expected 29");
+  EXPECT_EQ(reason(frame(header, payload, 29, 1)), "unsupported flags 0x1");
   std::string schema = good;
   schema[20] = static_cast<char>(static_cast<unsigned char>(schema[20]) ^ 1U);
   EXPECT_EQ(reason(schema),
@@ -295,7 +295,7 @@ TEST(UnitRecord, EncodeRejectsWhatTheTableDoesNotDescribe) {
   EXPECT_EQ(error, "payload.functions[0]: missing key 'linkage'");
   EXPECT_FALSE(
       validate(llvm::json::Value(emptyPayload()), payloadSchema(), "payload"));
-  EXPECT_EQ(emptyPayload().size(), 20U);
+  EXPECT_EQ(emptyPayload().size(), 15U);
   const FieldSpec nullable{
       .name = "x", .type = FieldType::String, .nullable = true, .members = {}};
   EXPECT_FALSE(validate(nullptr, nullable, "x"));

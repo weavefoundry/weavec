@@ -5,10 +5,11 @@
 // OUTPUT: weavec: error: cannot write analysis statistics '{{.*}}.stats.json/unwritable'
 // EMPTY: weavec: error: analysis statistics require a path
 // STATS: "version":1
-// STATS-SAME: "cfg_builds":1,
-// STATS-SAME: "cfg_reuses":1,
-// STATS-SAME: "function:{{[^"]+}}#main":2,
-// STATS-SAME: "function_analyses":2,
+// STATS-SAME: "unit_parses":1
 // STATS-SAME: "final":true
 // RFC 0020: work counts describe actual execution; explicit output errors fail.
+// The object engine (RFC 0031 §12) does not yet record its own counters
+// (block transfers, joins, materialisations), so only the driver's count of
+// parsed units is pinned; the old engine's CFG and per-function counters are
+// gone with it (RFC 0031 §10).
 int main(void) { return 0; }

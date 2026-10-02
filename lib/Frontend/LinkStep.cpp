@@ -9,7 +9,6 @@
 #include "weavec/Frontend/LinkStep.h"
 
 #include "weavec/Analysis/KindTable.h"
-#include "weavec/Core/Summary.h"
 #include "weavec/Frontend/ClangDiagnosticSink.h"
 #include "weavec/Frontend/LedgerWriter.h"
 
@@ -147,16 +146,52 @@ definerOf(std::span<const ProgramMember> members, const std::string &name,
   return std::nullopt;
 }
 
+/// What a definition's summary (RFC 0031 §6) says about argument `param`.
+static bool hasEffect(const core::FunctionEffects &effects,
+                      core::PathEffect::Kind kind, std::uint32_t param) {
+  const core::SummaryPath object = core::SummaryPath::param(param).deref();
+  return std::ranges::any_of(effects.effects, [&](const core::PathEffect &e) {
+    return e.kind == kind && e.path == object;
+  });
+}
+
 /// Whether the callee keeps a copy of argument `param` in memory the caller
 /// can reach after the call.
-static bool storesArgument(const core::FunctionSummary &summary,
+static bool storesArgument(const core::FunctionEffects &effects,
                            std::uint32_t param) {
   const core::SummaryPath root = core::SummaryPath::param(param);
-  if (summary.effectOf(root).escaped)
+  if (hasEffect(effects, core::PathEffect::Kind::Escape, param))
     return true;
-  return std::ranges::any_of(summary.stores, [&](const core::Store &store) {
-    return store.value.kind == core::ValueSource::Kind::Copy &&
-           store.value.path == root;
+  return std::ranges::any_of(effects.stores, [&](const core::StoreEffect &s) {
+    return s.value.kind == core::ValueDesc::Kind::Path && s.value.path &&
+           *s.value.path == root;
+  });
+}
+
+/// The result's non-null alternatives are all new objects.
+static bool returnsOnlyFresh(const core::FunctionEffects &effects) {
+  bool any = false;
+  for (const core::ResultEffect &result : effects.results) {
+    if (result.value.kind == core::ValueDesc::Kind::Null)
+      continue;
+    if (result.value.kind != core::ValueDesc::Kind::Fresh)
+      return false;
+    any = true;
+  }
+  return any;
+}
+
+/// The result may point into memory the caller already had.
+static bool returnsBorrowed(const core::FunctionEffects &effects) {
+  return std::ranges::any_of(effects.results, [](const core::ResultEffect &r) {
+    return r.value.kind == core::ValueDesc::Kind::Path ||
+           r.value.kind == core::ValueDesc::Kind::Static;
+  });
+}
+
+static bool mayReturnNull(const core::FunctionEffects &effects) {
+  return std::ranges::any_of(effects.results, [](const core::ResultEffect &r) {
+    return r.value.kind == core::ValueDesc::Kind::Null || r.value.maybeNull;
   });
 }
 
@@ -191,7 +226,7 @@ contradictions(const record::ImportInterface &import,
                const analysis::ExportedFunction &function,
                const record::FunctionInterface *definition) {
   std::vector<Finding> findings;
-  const core::FunctionSummary &summary = function.summary.get();
+  const core::FunctionEffects &summary = function.effects;
   const record::DeclaredInterface &declared = import.declared;
   const auto definedKind =
       [&](std::size_t index) -> std::optional<core::PointerKind> {
@@ -210,9 +245,9 @@ contradictions(const record::ImportInterface &import,
     if (param.ownership == "WEAVEC_BORROWED" ||
         param.ownership == "WEAVEC_MUT") {
       std::string verb;
-      if (summary.frees(index))
+      if (hasEffect(summary, core::PathEffect::Kind::Release, index))
         verb = "frees";
-      else if (summary.consumes(index))
+      else if (hasEffect(summary, core::PathEffect::Kind::Move, index))
         verb = "takes ownership of";
       else if (storesArgument(summary, index))
         verb = "stores";
@@ -240,21 +275,19 @@ contradictions(const record::ImportInterface &import,
                   .done = "declares " + name + " " + defined->toString()});
   }
   if (declared.ownership == "WEAVEC_OWNED") {
-    const core::OwnershipKind kind = summary.inferredReturnKind();
-    if (kind == core::OwnershipKind::Shared ||
-        kind == core::OwnershipKind::Mutable)
+    if (returnsBorrowed(summary))
       findings.push_back(Finding{.declared = "WEAVEC_OWNED",
                                  .done = "returns a borrowed pointer"});
   } else if ((declared.ownership == "WEAVEC_BORROWED" ||
               declared.ownership == "WEAVEC_MUT") &&
-             summary.returnsOnlyFresh()) {
+             returnsOnlyFresh(summary)) {
     findings.push_back(Finding{.declared = *declared.ownership,
                                .done = "returns a fresh allocation"});
   }
   if (declared.result) {
     const auto stated = core::PointerKind::parse(*declared.result);
     if (stated && stated->nullability == core::Nullability::Nonnull &&
-        summary.mayReturnNull())
+        mayReturnNull(summary))
       findings.push_back(Finding{.declared = "to return " + *declared.result,
                                  .done = "may return null"});
   }

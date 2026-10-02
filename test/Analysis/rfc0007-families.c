@@ -67,10 +67,12 @@ void fine(const char *path) {
 }
 
 // The inferred summaries carry the family (RFC 0007, *Summary text format*).
-// DUMP: function 'xfree':
-// DUMP: summary: p: freed(free); stores{} returns{}
-// DUMP: function 'opens':
-// DUMP: summary: *path: read; stores{} returns{fresh(fclose), null} requires{path}
+// In format 30 (RFC 0031 §6.1) the family is the effect's and the fresh
+// value's.
+// DUMP-LABEL: function 'xfree':
+// DUMP: release *param0 free when always
+// DUMP-LABEL: function 'opens':
+// DUMP: result fresh#0 fclose {{.*}}when null nonnull
 FILE *opens(const char *path) { return fopen(path, "r"); }
 
 // CHECK: 5 errors generated.

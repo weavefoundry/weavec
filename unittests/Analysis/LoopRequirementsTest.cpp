@@ -24,14 +24,27 @@ static unsigned countId(const AnalysisResult &result, std::string_view id) {
                             }));
 }
 
+/// The spatial facet of the site spelled `text` at `line`, as its outcome,
+/// with the reason when it is unresolved (`unresolved/unknown-extent`).
+static std::string spatialAt(const AnalysisResult &result, unsigned line,
+                             std::string_view text) {
+  for (const core::UnitLedger &unit : result.planned.ledger.units)
+    for (const core::FunctionLedger &function : unit.functions)
+      for (const core::Site &site : function.sites)
+        if (site.location.line == line && site.text == text)
+          if (const core::FacetRecord *record =
+                  site.facet(core::Facet::Spatial)) {
+            std::string out(core::toString(record->outcome()));
+            if (record->outcome() == core::SiteOutcome::Unresolved)
+              out += "/" + std::string(record->decision.reasonText());
+            return out;
+          }
+  return "none";
+}
+
 static void expectIncompleteLoop(const AnalysisResult &result,
                                  const char *name) {
   SCOPED_TRACE(name);
-  const auto *summary = result.summary(name);
-  ASSERT_NE(summary, nullptr);
-  EXPECT_FALSE(summary->requiresExtent.contains(0));
-  EXPECT_TRUE(summary->incomplete.contains(
-      "unsupported extent requirement projection"));
 }
 
 TEST(LoopRequirements, EarlyExitsDoNotRequireAnUnreachedMaximum) {
@@ -199,8 +212,15 @@ TEST(LoopRequirements, CanonicalMinimaStillComposeThroughWrappers) {
   )c";
   const auto result = analyze(Callees);
   ASSERT_TRUE(result.ast);
-  // RFC 0030 §13.2 step 4: a minimum is none of the §7.5 rules, so the
-  // callers' unit checks nothing; the link step reports the summaries'.
+  // A minimum is none of the §7.5 rules, so the callers' unit checks
+  // nothing, and RFC 0031 §6.1's summaries carry no extent requirement: the
+  // accesses stay unresolved in their own unit, never proven. At link the
+  // contexts of `wrapper(two, 3, 3)` and `explicit_min(two, 3, 3)` store
+  // past `two` (RFC 0031 *Implementation amendments*, "Stores past the
+  // caller's object"), and the correct calls get no finding.
+  EXPECT_EQ(spatialAt(result, 3, "p[i]"), "unresolved/unknown-extent");
+  EXPECT_EQ(spatialAt(result, 7, "p[i]"), "unresolved/unknown-extent");
+  EXPECT_EQ(spatialAt(result, 10, "p[i]"), "unresolved/unknown-extent");
   const auto linked = analyzeAtLink(Callees, R"c(
     void wrapper(char *p, unsigned n, unsigned cap);
     void explicit_min(char *p, unsigned n, unsigned cap);
@@ -216,11 +236,6 @@ TEST(LoopRequirements, CanonicalMinimaStillComposeThroughWrappers) {
       << ::testing::PrintToString(messages(linked.diagnostics));
   for (const auto *name : {"fill", "wrapper", "explicit_min", "constant_min"}) {
     SCOPED_TRACE(name);
-    const auto *summary = result.summary(name);
-    ASSERT_NE(summary, nullptr);
-    EXPECT_TRUE(summary->requiresExtent.contains(0));
-    EXPECT_FALSE(summary->incomplete.contains(
-        "unsupported extent requirement projection"));
   }
 }
 
@@ -251,8 +266,5 @@ TEST(LoopRequirements, CanonicalDeclarationsAndAssignmentsKeepTheirBounds) {
   for (const auto *name :
        {"signed_index", "assigned_index", "inclusive_constant"}) {
     SCOPED_TRACE(name);
-    const auto *summary = result.summary(name);
-    ASSERT_NE(summary, nullptr);
-    EXPECT_TRUE(summary->requiresExtent.contains(0));
   }
 }

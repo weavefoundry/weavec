@@ -57,7 +57,7 @@
 // such function of the unit). Indirect and unknown callees never are.
 //
 // Like every §14 component outside the engine, this one depends on no part
-// of `FunctionDataflow`.
+// of the engine (RFC 0031 §2).
 //
 //===----------------------------------------------------------------------===//
 

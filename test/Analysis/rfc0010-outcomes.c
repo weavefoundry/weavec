@@ -18,8 +18,15 @@ struct bag {
 // caller's memory alone and carries the test that failed.
 // RFC 0017: the requirement uses entry n, before the postfix increment. The
 // eight-byte slot starts at n*8 and ends at n*8+8; the typed guard excludes 8.
+// The object engine exports the store through the variable index `b->n` as a
+// possible store to some element, without the result class that makes it
+// (RFC 0031 §4.9, *Summaries*: a range whose bounds cannot be expressed is
+// exported as a possible effect on some elements); a store at a constant
+// index keeps `when result zero`.
 // DUMP-LABEL: function 'bag_put':
-// DUMP: summary: b->items[*]: written; b->n: read|written; stores{b->items[*] = copy s} returns{} requires{b} requires-extent{b: b->n*8+8 start b->n*8 when[b->n in i32:0-2147483655,2147483657-4294967295]} outcome zero{} stored{b->items[*]} outcome negative{} stored{} facts{b->n =8} increments{b->n}
+// DUMP: result int [-1, -1] when negative
+// DUMP: result int [0, 0] when zero
+// DUMP: store param0->items[*] := path param1 may
 static int bag_put(struct bag *b, char *s) {
   if (b->n == 8)
     return -1;
@@ -45,8 +52,12 @@ int put_and_forget(struct bag *b) {
   char *s = malloc(8);
   if (!s)
     return -1;
+  // The old engine reported `'s' is leaked` on the failure edge below. The
+  // object engine's summary of `bag_put` stores `s` into the bag possibly on
+  // every class (above), so on that edge `s` may have escaped and no leak is
+  // reported: a lost warning, never a proof (test/cases/KNOWN-DIFFERENCES.md,
+  // *Lit tests*).
   if (bag_put(b, s) < 0)
-    // CHECK: rfc0010-outcomes.c:[[@LINE+1]]:5: warning: 's' is leaked [weavec::leak]
     return -1;
   return 0;
 }
@@ -57,14 +68,22 @@ struct obj {
   int rc;
 };
 
-// The wrapped decrement: `*r` is zero exactly on the positive class.
+// The wrapped decrement: `*r` is zero exactly on the positive class. The
+// comparison splits the exit by its truth (RFC 0031 *Pending cases and exit
+// splitting*); the written count is exported as an interval, not per class
+// (RFC 0031 §6.1 drops the per-outcome integer facts of format 29).
 // DUMP-LABEL: function 'dec_and_test':
-// DUMP: summary: *r: read|written; stores{} returns{} requires{r} outcome zero{} facts{*r positive|negative} outcome positive{} facts{*r =0} decrements{*r}
+// DUMP: result int [0, 0] when zero and param 0 !=0
+// DUMP: result int [1, 1] when positive and param 0 !=0
+// DUMP: store *param0 := int [-2147483648, 2147483647]
 static int dec_and_test(int *r) { return --*r == 0; }
 
-// Through the helper, the unref is still a share release through `o->rc`.
+// Through the helper, the unref releases `o` when the count reaches zero.
+// The object engine does not infer RFC 0010 count functions yet, so it is a
+// possible release (RFC 0031 §5.5; test/cases/KNOWN-DIFFERENCES.md).
 // DUMP-LABEL: function 'obj_unref':
-// DUMP: summary: o: freed(free),share; o->rc: written; stores{} returns{} requires{o} decrements{o->rc} counts{o->rc}
+// DUMP: release *param0 free may when always
+// DUMP: store param0->rc := int
 static void obj_unref(struct obj *o) {
   if (dec_and_test(&o->rc))
     free(o);
@@ -83,7 +102,12 @@ int twice(void) {
   if (!a)
     return -1;
   obj_unref(a);
-  // CHECK: rfc0010-outcomes.c:[[@LINE+1]]:3: error: 'a' is released twice [weavec::double-free]
+  // `a->rc` is 1, so the first call frees `a`; the second call's first access
+  // is the read of `o->rc` in `dec_and_test`, a use of the freed object before
+  // its second release (RFC 0031 §6.6, *Amendment (numeric contexts)*: the
+  // call is analysed with the count the caller knows; with an unknown count
+  // the finding is a warning).
+  // CHECK: rfc0010-outcomes.c:[[@LINE+1]]:13: error: use of 'a' after it was freed [weavec::use-after-free]
   obj_unref(a);
   return 0;
 }
@@ -94,7 +118,9 @@ struct box {
   char *p;
 };
 // DUMP-LABEL: function 'fill':
-// DUMP: summary: b->filled: written; b->p: written; stores{b->p = copy p when[p nonnull]} returns{} requires{b} outcome zero{} notnull{b->p} stored{b->p} facts{b->filled =1} outcome negative{} stored{} facts{b->filled =0}
+// DUMP: result int [-1, -1] when negative
+// DUMP: result int [0, 0] when zero
+// DUMP: store param0->p := path param1 when result zero
 static int fill(struct box *b, char *p) {
   if (!p) {
     b->filled = 0;
@@ -116,4 +142,4 @@ void consumer(struct box *b) {
   }
 }
 
-// CHECK: 1 warning and 1 error generated.
+// CHECK: 1 error generated.

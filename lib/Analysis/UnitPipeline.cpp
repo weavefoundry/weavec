@@ -10,15 +10,16 @@
 
 #include "weavec/Analysis/BoundaryInvariants.h"
 #include "weavec/Analysis/Concurrency.h"
-#include "weavec/Analysis/DataflowEngine.h"
 #include "weavec/Analysis/KindInference.h"
 #include "weavec/Analysis/KindTable.h"
+#include "weavec/Analysis/ObjectEngine.h"
 #include "weavec/Analysis/SiteCollector.h"
 
 #include "clang/Basic/SourceManager.h"
 #include "clang/Basic/TargetInfo.h"
 
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -36,14 +37,27 @@ UnitPipelineResult runUnitAnalysis(clang::ASTContext &context,
                                    const UnitPipelineOptions &options,
                                    core::DiagnosticSink &out) {
   UnitPipelineResult result;
-  if (options.discoverOnly) {
-    result.exports =
-        DataflowEngine::discover(context, options.engine, options.database);
-    return result;
-  }
   const core::LibrarySpec &library = options.library != nullptr
                                          ? *options.library
                                          : core::LibrarySpec::shipped();
+  if (options.discoverOnly) {
+    // RFC 0005 discovery: what the unit defines and calls, nothing more.
+    static const std::vector<FieldCandidate> NoAssumptions;
+    const SiteIndex noSites;
+    const KindTable noKinds;
+    const core::FnSlots noSlots;
+    result.exports = ObjectEngine::discover(EngineInput{
+        .context = context,
+        .sites = noSites,
+        .kinds = noKinds,
+        .library = library,
+        .slots = noSlots,
+        .database = options.database,
+        .fieldAssumptions = NoAssumptions,
+        .options = options.engine,
+    });
+    return result;
+  }
 
   // §1 step 2: kinds, then sites, before any engine fact. Every round needs
   // the kinds, which seed the engine's extents (§15 item 14), so that a
@@ -96,9 +110,18 @@ UnitPipelineResult runUnitAnalysis(clang::ASTContext &context,
       .slotSolution = &kinds->solution,
       .options = options.engine,
   };
-  DataflowEngine engine;
+  ObjectEngine engine;
   engine.analyzeUnit(input, adapter);
   result.exports = engine.exports();
+  // `--dump-analysis`: the main file's functions, in source order.
+  if (llvm::raw_ostream *dump = options.engine.dumpStream) {
+    const clang::SourceManager &sm = context.getSourceManager();
+    for (const clang::Decl *decl : context.getTranslationUnitDecl()->decls())
+      if (const auto *fn = llvm::dyn_cast<clang::FunctionDecl>(decl);
+          fn != nullptr && fn->doesThisDeclarationHaveABody() &&
+          sm.isInMainFile(sm.getExpansionLoc(fn->getLocation())))
+        engine.dump(*fn, *dump);
+  }
 
   // §1 step 2, §9.4: the boundary invariants judge what the engine
   // published, and `finish` records their rows and propagation. At link the
@@ -108,8 +131,8 @@ UnitPipelineResult runUnitAnalysis(clang::ASTContext &context,
     llvm::ArrayRef<BoundaryRow> program;
     if (options.database != nullptr && options.database->programFacts)
       program = options.database->programFacts->boundaries;
-    BoundaryVerdicts verdicts =
-        checkBoundaryInvariants(*sites, adapter.boundaries(), program);
+    BoundaryVerdicts verdicts = checkBoundaryInvariants(
+        *sites, adapter.boundaries(), program, adapter.reliances());
     result.exports.boundaries = std::move(verdicts.exported);
     adapter.boundaryDecisions(std::move(verdicts.decisions));
   }

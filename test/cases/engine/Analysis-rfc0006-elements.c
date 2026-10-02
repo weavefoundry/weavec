@@ -60,7 +60,7 @@ void null_out(char **a, int n) {
     free(a[i]);
     a[i] = NULL;
   }
-  use(a[0]); // UNRESOLVED: temporal:unanalysed
+  use(a[0]); // NOT-PROVEN: temporal
 }
 
 void incremented(char **a, int i) {

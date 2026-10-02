@@ -1,25 +1,18 @@
 weavec_add_unittest(
   WeaveCAnalysisTests
-  SOURCES AllocatorsTest.cpp
-          AnnotationsTest.cpp
+  SOURCES AnnotationsTest.cpp
           ArrayOwnershipTest.cpp
-          CallContextTest.cpp
-          DataflowTest.cpp
           DynamicExtentsTest.cpp
-          FunctionAnalysisTest.cpp
           HeapStateTest.cpp
           IntegerSemanticsTest.cpp
-          InterfaceTypesTest.cpp
           NumericInputsTest.cpp
           PointerValidityTest.cpp
           PointerIdentityTest.cpp
           ProgramDatabaseTest.cpp
           ResourceLifecycleTest.cpp
           SharedOwnershipTest.cpp
-          SignatureInferenceTest.cpp
           SpatialSafetyTest.cpp
           StringsAndFieldsTest.cpp
-          SummariesTest.cpp
           ValueConditionalTest.cpp
           LoopRequirementsTest.cpp
           GuardCompletenessTest.cpp
@@ -31,5 +24,4 @@ weavec_add_unittest(
           LedgerAdapterTest.cpp
           EngineDecisionsTest.cpp
           SoundDefaultsTest.cpp
-          KindSeedingTest.cpp
   DEPS weavec::Analysis weavec::Frontend)

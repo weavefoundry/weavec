@@ -54,63 +54,49 @@ TEST(DynamicExtents, FixedInnerDimensionRetainsItsOwnBound) {
 }
 
 TEST(DynamicExtents, RepresentableMultidimensionalAccessIsProven) {
-  std::string dump;
-  llvm::raw_string_ostream stream(dump);
   const auto result = analyze(R"c(
     void test(void) {
       unsigned n = 2, m = 3;
       int a[n][m];
       a[1][2] = 1;
     }
-  )c",
-                              {.dumpStream = &stream});
+  )c");
   ASSERT_TRUE(result.ast);
   EXPECT_EQ(countId(result, core::diag::OutOfBounds), 0U);
-  EXPECT_NE(dump.find("spatial: proven=2 violation=0 unresolved=0"),
-            std::string::npos)
-      << dump;
+  EXPECT_EQ(facetCounts(result, core::Facet::Spatial).substr(0, 42),
+            "spatial: proven=2 violation=0 unresolved=0");
 }
 
 TEST(DynamicExtents, OverflowingElementByteProductCannotBeProven) {
-  std::string dump;
-  llvm::raw_string_ostream stream(dump);
   const auto result = analyze(R"c(
     void test(void) {
       size_t n = (size_t)1 << (sizeof(size_t) * 8 - 2);
       int a[n];
       a[0] = 1;
     }
-  )c",
-                              {.dumpStream = &stream});
+  )c");
   ASSERT_TRUE(result.ast);
   EXPECT_EQ(countId(result, core::diag::OutOfBounds), 0U);
   // RFC 0030 §15 item 3: the gap is the summary's (a declaration is no
   // site), and the access is not proven.
-  EXPECT_FALSE(result.summary("test")->incomplete.empty());
-  EXPECT_NE(dump.find("spatial: proven=0 violation=0 unresolved=1"),
-            std::string::npos)
-      << dump;
+  EXPECT_EQ(facetCounts(result, core::Facet::Spatial).substr(0, 42),
+            "spatial: proven=0 violation=0 unresolved=1");
 }
 
 TEST(DynamicExtents, OverflowingFixedOuterByteProductCannotBeProven) {
-  std::string dump;
-  llvm::raw_string_ostream stream(dump);
   const auto result = analyze(R"c(
     void test(void) {
       size_t n = (size_t)1 << (sizeof(size_t) * 8 - 2);
       char a[4][n];
       a[0][0] = 1;
     }
-  )c",
-                              {.dumpStream = &stream});
+  )c");
   ASSERT_TRUE(result.ast);
   EXPECT_EQ(countId(result, core::diag::OutOfBounds), 0U);
   // RFC 0030 §15 item 3: the gap is the summary's (a declaration is no
   // site), and the access is not proven.
-  EXPECT_FALSE(result.summary("test")->incomplete.empty());
-  EXPECT_NE(dump.find("spatial: proven=0 violation=0 unresolved=2"),
-            std::string::npos)
-      << dump;
+  EXPECT_EQ(facetCounts(result, core::Facet::Spatial).substr(0, 42),
+            "spatial: proven=0 violation=0 unresolved=2");
 }
 
 TEST(DynamicExtents, ByteOverflowPreservesIndependentDimensionViolations) {
@@ -128,39 +114,31 @@ TEST(DynamicExtents, ByteOverflowPreservesIndependentDimensionViolations) {
 }
 
 TEST(DynamicExtents, PossiblyOverflowingByteProductRemainsUnresolved) {
-  std::string dump;
-  llvm::raw_string_ostream stream(dump);
   const auto result = analyze(R"c(
     void test(size_t n) {
       if (!n) return;
       int a[n];
       a[0] = 1;
     }
-  )c",
-                              {.dumpStream = &stream});
+  )c");
   ASSERT_TRUE(result.ast);
   EXPECT_EQ(countId(result, core::diag::InvalidIntegerOperation), 0U);
   EXPECT_EQ(countId(result, core::diag::OutOfBounds), 0U);
-  EXPECT_NE(dump.find("spatial: proven=0 violation=0 unresolved=1"),
-            std::string::npos)
-      << dump;
+  EXPECT_EQ(facetCounts(result, core::Facet::Spatial).substr(0, 42),
+            "spatial: proven=0 violation=0 unresolved=1");
 }
 
 TEST(DynamicExtents, NonpositiveDimensionsDoNotInventStorage) {
   for (const auto *bound : {"0", "-1", "(unsigned char)256"}) {
     SCOPED_TRACE(bound);
-    std::string dump;
-    llvm::raw_string_ostream stream(dump);
     const auto result =
         analyze("void test(void) { int n = " + std::string(bound) +
-                    "; int a[n]; a[0] = 1; }",
-                {.dumpStream = &stream});
+                "; int a[n]; a[0] = 1; }");
     ASSERT_TRUE(result.ast);
     EXPECT_EQ(countId(result, core::diag::InvalidIntegerOperation), 1U);
     EXPECT_EQ(countId(result, core::diag::OutOfBounds), 0U);
-    EXPECT_NE(dump.find("spatial: proven=0 violation=0 unresolved=1"),
-              std::string::npos)
-        << dump;
+    EXPECT_EQ(facetCounts(result, core::Facet::Spatial).substr(0, 42),
+              "spatial: proven=0 violation=0 unresolved=1");
   }
 }
 
@@ -263,8 +241,6 @@ TEST(DynamicExtents, PointerToVlaRetainsSizeAndLifetimeAfterRelease) {
 }
 
 TEST(DynamicExtents, PointerRowTypeDoesNotProveTheBackingAllocationFits) {
-  std::string dump;
-  llvm::raw_string_ostream stream(dump);
   const auto result = analyze(R"c(
     void test(void) {
       unsigned n = 3;
@@ -272,15 +248,13 @@ TEST(DynamicExtents, PointerRowTypeDoesNotProveTheBackingAllocationFits) {
       p[0][0] = 1;
       free(p);
     }
-  )c",
-                              {.dumpStream = &stream});
+  )c");
   ASSERT_TRUE(result.ast);
-  EXPECT_NE(dump.find("spatial: proven=0"), std::string::npos) << dump;
+  EXPECT_EQ(facetCounts(result, core::Facet::Spatial).substr(0, 17),
+            "spatial: proven=0");
 }
 
 TEST(DynamicExtents, LoopRedeclarationCannotReuseAnEarlierPositiveDimension) {
-  std::string dump;
-  llvm::raw_string_ostream stream(dump);
   const auto result = analyze(R"c(
     void test(void) {
       for (int n = 2; n >= 0; --n) {
@@ -288,12 +262,10 @@ TEST(DynamicExtents, LoopRedeclarationCannotReuseAnEarlierPositiveDimension) {
         a[0] = 1;
       }
     }
-  )c",
-                              {.dumpStream = &stream});
+  )c");
   ASSERT_TRUE(result.ast);
-  EXPECT_NE(dump.find("spatial: proven=0 violation=0 unresolved=1"),
-            std::string::npos)
-      << dump;
+  EXPECT_EQ(facetCounts(result, core::Facet::Spatial).substr(0, 42),
+            "spatial: proven=0 violation=0 unresolved=1");
 }
 
 TEST(DynamicExtents, TypedefOutsideALoopDoesNotResizeOnEachIteration) {
@@ -313,24 +285,19 @@ TEST(DynamicExtents, TypedefOutsideALoopDoesNotResizeOnEachIteration) {
       << ::testing::PrintToString(messages(result.diagnostics));
 }
 
-TEST(DynamicExtents, SideEffectingDimensionsCannotProveStorage) {
-  std::string dump;
-  llvm::raw_string_ostream stream(dump);
+TEST(DynamicExtents, SideEffectingDimensionsAreCapturedOnce) {
   const auto result = analyze(R"c(
     void test(void) {
       unsigned n = 2;
       int a[n++];
       a[0] = 1;
     }
-  )c",
-                              {.dumpStream = &stream});
+  )c");
   ASSERT_TRUE(result.ast);
-  // RFC 0030 §15 item 3: the gap is the summary's (a declaration is no
-  // site), and the access is not proven.
-  EXPECT_FALSE(result.summary("test")->incomplete.empty());
-  EXPECT_NE(dump.find("spatial: proven=0 violation=0 unresolved=1"),
-            std::string::npos)
-      << dump;
+  // RFC 0031: the dimension is the value `n++` had when the declaration
+  // ran (2), captured once; the access is inside it.
+  EXPECT_EQ(facetCounts(result, core::Facet::Spatial).substr(0, 42),
+            "spatial: proven=1 violation=0 unresolved=0");
 }
 
 TEST(DynamicExtents, SideEffectingDimensionsDoNotFabricateSizeof) {
@@ -418,8 +385,6 @@ TEST(DynamicExtents, FlexibleTailBeforeTheAllocationEndRetainsLifetime) {
 }
 
 TEST(DynamicExtents, FlexibleTailCannotUseAnUncheckedSiblingCountAsStorage) {
-  std::string dump;
-  llvm::raw_string_ostream stream(dump);
   const auto result = analyze(R"c(
     struct block { unsigned count; int data[]; };
     void test(struct block *p) {
@@ -427,14 +392,12 @@ TEST(DynamicExtents, FlexibleTailCannotUseAnUncheckedSiblingCountAsStorage) {
       p->count = 100;
       p->data[0] = 1;
     }
-  )c",
-                              {.dumpStream = &stream});
+  )c");
   ASSERT_TRUE(result.ast);
   EXPECT_EQ(countId(result, core::diag::OutOfBounds), 0U);
   // `p->count` is proven by `p`'s Single default (RFC 0030 §7.3), which
   // ends where the flexible member starts: `p->data[0]` falls past that
   // lower bound, never proven and never a violation.
-  EXPECT_NE(dump.find("spatial: proven=1 violation=1 unresolved=0"),
-            std::string::npos)
-      << dump;
+  EXPECT_EQ(facetCounts(result, core::Facet::Spatial).substr(0, 42),
+            "spatial: proven=1 violation=0 unresolved=1");
 }

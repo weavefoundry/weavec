@@ -38,16 +38,18 @@ ProgramMember member(std::string source) {
 
 /// `name` defined in `unit` with external linkage and `summary`.
 void define(ProgramMember &unit, const std::string &name,
-            core::FunctionSummary summary,
+            core::FunctionEffects summary,
             record::FunctionInterface facts = {}) {
-  unit.payload.exports.functions[name].summary.assign(std::move(summary));
+  unit.payload.exports.functions[name].effects = std::move(summary);
   unit.payload.facts.functions[name] = std::move(facts);
 }
 
-core::FunctionSummary freesParam(std::uint32_t param) {
-  core::FunctionSummary summary;
-  summary.addEffect(core::SummaryPath::param(param),
-                    core::PlaceEffect{.freed = true});
+core::FunctionEffects freesParam(std::uint32_t param) {
+  core::FunctionEffects summary;
+  summary.effects.push_back(
+      core::PathEffect{.kind = core::PathEffect::Kind::Release,
+                       .path = core::SummaryPath::param(param).deref(),
+                       .family = "free"});
   return summary;
 }
 
@@ -222,7 +224,7 @@ TEST(LinkStep, ALyingDeclarationIsAnErrorAtTheDeclaration) {
 
   // A definition that keeps its word is not reported.
   std::vector<ProgramMember> honest{caller, member("impl.c")};
-  define(honest[1], "inspect", core::FunctionSummary{});
+  define(honest[1], "inspect", core::FunctionEffects{});
   EXPECT_TRUE(verifyDeclarations(honest, "/work").diagnostics.empty());
   // Nor is a declaration no other unit defines.
   EXPECT_TRUE(verifyDeclarations(std::vector<ProgramMember>{caller}, "/work")
@@ -238,9 +240,14 @@ TEST(LinkStep, ResultContractsAreVerified) {
       .location = at("main.c", 2, 7),
       .calls = {}};
   ProgramMember callee = member("get.c");
-  core::FunctionSummary summary;
-  summary.addReturn(core::ValueSource::borrow(core::SummaryPath::param(0)));
-  summary.addReturn(core::ValueSource::null());
+  core::FunctionEffects summary;
+  summary.results.push_back(core::ResultEffect{
+      .value = core::ValueDesc{.kind = core::ValueDesc::Kind::Path,
+                               .path = core::SummaryPath::param(0)},
+      .classes = {core::ResultClass::NonNull}});
+  summary.results.push_back(core::ResultEffect{
+      .value = core::ValueDesc{.kind = core::ValueDesc::Kind::Null},
+      .classes = {core::ResultClass::Null}});
   define(callee, "get", summary);
   const DeclarationCheck check =
       verifyDeclarations(std::vector<ProgramMember>{caller, callee}, "/work");
@@ -356,7 +363,7 @@ TEST(LinkStep, CrossUnitCallsWithoutASingleArgumentGetACallRow) {
                           .facets = {std::nullopt, std::nullopt,
                                      FacetDecision::proven(), std::nullopt}}}}};
   ProgramMember callee = member("use.c");
-  define(callee, "use", core::FunctionSummary{},
+  define(callee, "use", core::FunctionEffects{},
          record::FunctionInterface{.params = {"default single nullable"},
                                    .result = std::nullopt,
                                    .reliesOnSingle = {0},
@@ -435,7 +442,7 @@ TEST(LinkStep, CallsIntoInputsWithoutRecordsAreTrusted) {
         FacetDecision::unresolvedFor(core::UnresolvedReason::UnknownCallee)}},
       core::Linkage::External)});
   ProgramMember other = member("known.c");
-  define(other, "known", core::FunctionSummary{});
+  define(other, "known", core::FunctionEffects{});
   const std::vector<ProgramMember> members{unit, other};
   const std::vector<const core::Ledger *> runs{&run, nullptr};
   const core::Ledger ledger = composeProgramLedger(ProgramLedgerInput{
@@ -464,7 +471,7 @@ TEST(LinkStep, ExportedRequirementsAreDecidedAtTheCallersInOtherUnits) {
   // from a whole array (violated), and a pointer of unknown width
   // (unresolved).
   ProgramMember callee = member("fill.c");
-  define(callee, "fill", core::FunctionSummary{},
+  define(callee, "fill", core::FunctionEffects{},
          record::FunctionInterface{
              .params = {"default single nullable", std::nullopt},
              .result = std::nullopt,
@@ -592,7 +599,7 @@ TEST(LinkStep, AUnitThatDefinesTheAllocatorIsNamed) {
 
 TEST(LinkStep, AssumptionsCountWhatTheRecordsCannotVerify) {
   ProgramMember a = member("a.c");
-  define(a, "fill", core::FunctionSummary{},
+  define(a, "fill", core::FunctionEffects{},
          record::FunctionInterface{
              .params = {"default single nullable"},
              .result = std::nullopt,

@@ -10,22 +10,22 @@
 #define WEAVEC_UNITTESTS_ANALYSIS_TESTUTILS_H
 
 #include "weavec/Analysis/AttributeReader.h"
-#include "weavec/Analysis/FunctionAnalysis.h"
 #include "weavec/Analysis/KindInference.h"
 #include "weavec/Analysis/KindTable.h"
 #include "weavec/Analysis/LedgerAdapter.h"
+#include "weavec/Analysis/ObjectEngine.h"
+#include "weavec/Analysis/ProgramDatabase.h"
 #include "weavec/Analysis/SiteCollector.h"
-#include "weavec/Analysis/Summaries.h"
-#include "weavec/Analysis/TranslationUnitAnalysis.h"
 #include "weavec/Core/Diagnostic.h"
+#include "weavec/Core/Effects.h"
 #include "weavec/Core/LibrarySpec.h"
-#include "weavec/Core/Summary.h"
 
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/Decl.h"
 #include "clang/Frontend/ASTUnit.h"
 #include "clang/Tooling/Tooling.h"
 
+#include <functional>
 #include <memory>
 #include <set>
 #include <string>
@@ -72,6 +72,7 @@ struct UnitLedgerHarness {
   std::shared_ptr<const analysis::UnitKinds> kinds;
   analysis::SiteIndex sites;
   std::unique_ptr<analysis::LedgerAdapter> ledger;
+  std::vector<analysis::FieldCandidate> noAssumptions;
 
   explicit UnitLedgerHarness(clang::ASTContext &context) {
     const core::LibrarySpec &library = core::LibrarySpec::shipped();
@@ -86,16 +87,23 @@ struct UnitLedgerHarness {
       ledger->report(std::move(diagnostic), core::Certainty::Possible);
   }
 
-  /// `options` with the unit's kinds and slots, as `DataflowEngine` passes
-  /// them.
-  [[nodiscard]] analysis::AnalysisOptions
-  withKinds(analysis::AnalysisOptions options) const {
-    options.kinds = &kinds->table;
-    options.inferred = &kinds->inferred;
-    // RFC 0030 §9.3: the unit's own solution resolves its indirect calls.
-    options.slots = &kinds->slots;
-    options.slotSolution = &kinds->solution;
-    return options;
+  /// The engine's input for the unit, as `UnitPipeline` builds it.
+  [[nodiscard]] analysis::EngineInput
+  input(clang::ASTContext &context, const analysis::ProgramDatabase *database,
+        const analysis::EngineOptions &options) const {
+    return analysis::EngineInput{
+        .context = context,
+        .sites = sites,
+        .kinds = kinds->table,
+        .library = core::LibrarySpec::shipped(),
+        .slots = kinds->slots.constraints(),
+        .database = database,
+        .fieldAssumptions = noAssumptions,
+        .inferred = &kinds->inferred,
+        .slotCollection = &kinds->slots,
+        .slotSolution = &kinds->solution,
+        .options = options,
+    };
   }
 
   /// Completes the ledger (which checks it is complete) and copies the
@@ -108,15 +116,17 @@ struct UnitLedgerHarness {
   }
 };
 
-/// Parses `code` (prepended with `Prelude`) as C and runs the analyzer over
+/// Parses `code` (prepended with `Prelude`) as C and runs the engine over
 /// the translation unit, collecting core diagnostics and summaries.
 struct AnalysisResult {
-  /// `analyzeAtLink`: the other unit's exports, which the analyzer reads.
+  /// `analyzeAtLink`: the other unit's exports, which the engine reads.
   std::shared_ptr<analysis::ProgramDatabase> database;
   std::unique_ptr<clang::ASTUnit> ast;
   core::DiagnosticCollector diagnostics;
   std::unique_ptr<UnitLedgerHarness> harness;
-  std::unique_ptr<analysis::TranslationUnitAnalyzer> analyzer;
+  std::unique_ptr<analysis::ObjectEngine> engine;
+  /// The unit's exports (RFC 0031 §7).
+  analysis::UnitExports exports;
   /// The completed unit ledger (RFC 0030 §12).
   analysis::PlannedLedger planned;
 
@@ -134,13 +144,13 @@ struct AnalysisResult {
     return nullptr;
   }
 
-  /// The inferred summary of the function named `name`, or null.
-  [[nodiscard]] const core::FunctionSummary *
+  /// The summary of the function named `name`, or null.
+  [[nodiscard]] const core::FunctionEffects *
   summary(llvm::StringRef name) const {
     const clang::FunctionDecl *fn = function(name);
-    if (fn == nullptr || !analyzer)
+    if (fn == nullptr || !engine)
       return nullptr;
-    return analyzer->summaries().inferredFor(*fn);
+    return engine->summaryOf(*fn);
   }
 };
 
@@ -149,7 +159,7 @@ struct AnalysisResult {
 inline AnalysisResult
 analyzeInProgram(const std::string &code,
                  const analysis::ProgramDatabase *database,
-                 const analysis::AnalysisOptions &options = {},
+                 const analysis::EngineOptions &options = {},
                  const std::string &fileName = "input.c") {
   AnalysisResult result;
   // `-w`: Clang's own warnings (e.g. -Wreturn-stack-address) are noise here.
@@ -164,67 +174,64 @@ analyzeInProgram(const std::string &code,
 
   clang::ASTContext &context = result.ast->getASTContext();
   result.harness = std::make_unique<UnitLedgerHarness>(context);
-  result.analyzer = std::make_unique<analysis::TranslationUnitAnalyzer>(
-      context, *result.harness->ledger, result.harness->withKinds(options));
-  if (database != nullptr)
-    result.analyzer->setDatabase(database);
-  result.analyzer->run();
+  result.engine = std::make_unique<analysis::ObjectEngine>();
+  result.engine->analyzeUnit(result.harness->input(context, database, options),
+                             *result.harness->ledger);
+  result.exports = result.engine->exports();
   result.planned = result.harness->finish(result.diagnostics);
   return result;
 }
 
-/// Runs a fresh analyzer over `context`, reporting only the functions
+/// Runs a fresh engine over `context`, reporting only the functions
 /// `shouldReport` accepts, and returns its diagnostics.
-inline core::DiagnosticCollector analyzeFiltered(
-    clang::ASTContext &context,
-    llvm::function_ref<bool(const clang::FunctionDecl &)> shouldReport,
-    const analysis::AnalysisOptions &options = {}) {
+inline core::DiagnosticCollector
+analyzeFiltered(clang::ASTContext &context,
+                std::function<bool(const clang::FunctionDecl &)> shouldReport,
+                analysis::EngineOptions options = {}) {
   UnitLedgerHarness harness(context);
-  analysis::TranslationUnitAnalyzer analyzer(context, *harness.ledger,
-                                             harness.withKinds(options));
-  analyzer.run(shouldReport);
+  options.shouldReport = std::move(shouldReport);
+  analysis::ObjectEngine engine;
+  engine.analyzeUnit(harness.input(context, nullptr, options), *harness.ledger);
   core::DiagnosticCollector collected;
   (void)harness.finish(collected);
   return collected;
 }
 
 inline AnalysisResult analyze(const std::string &code,
-                              const analysis::AnalysisOptions &options = {}) {
+                              const analysis::EngineOptions &options = {}) {
   return analyzeInProgram(code, nullptr, options);
 }
 
 /// RFC 0030 §13.2 step 4: `callers`, re-analysed at link with the exports
 /// of the unit `callees` in the program database, so that each callee
 /// defined there is known by its summary alone (what the link step reports
-/// about a callee's requirement is an error there).
+/// about a callee's requirement is an error there). The contexts `callers`
+/// ask are served by `callees` first (RFC 0031 §7 *Amendment (cross-unit
+/// contexts)*), as the link step serves them.
 inline AnalysisResult analyzeAtLink(const std::string &callees,
                                     const std::string &callers) {
   const AnalysisResult defined = analyze(callees);
   auto database = std::make_shared<analysis::ProgramDatabase>();
-  if (defined.analyzer)
-    database->add(defined.analyzer->exports());
+  database->add(defined.exports);
   AnalysisResult result = analyzeInProgram(callers, database.get());
+  if (!result.exports.contextRequests.empty()) {
+    analysis::ProgramDatabase asked;
+    asked.add(result.exports);
+    const AnalysisResult serving = analyzeInProgram(callees, &asked);
+    database = std::make_shared<analysis::ProgramDatabase>();
+    database->add(serving.exports);
+    result = analyzeInProgram(callers, database.get());
+  }
   result.database = std::move(database);
   return result;
 }
 
 /// RFC 0030 §15 item 3: where the engine could not model a construct, as
 /// `"<line>: <facet> <reason>: <what>"` for every unresolved facet whose
-/// detail is an incompleteness some function's summary records, in ledger
-/// order. (Before RFC 0030 each was an `analysis-incomplete` warning.)
+/// reason is `budget` or `unanalysed`, in ledger order. (Before RFC 0030
+/// each was an `analysis-incomplete` warning.)
 inline std::vector<std::string> incomplete(const AnalysisResult &result) {
   std::vector<std::string> out;
-  if (!result.ast)
-    return out;
-  std::set<std::string> recorded;
-  for (const clang::Decl *decl :
-       result.ast->getASTContext().getTranslationUnitDecl()->decls()) {
-    const auto *fn = llvm::dyn_cast<clang::FunctionDecl>(decl);
-    if (fn == nullptr || !fn->doesThisDeclarationHaveABody())
-      continue;
-    if (const core::FunctionSummary *summary = result.summary(fn->getName()))
-      recorded.insert(summary->incomplete.begin(), summary->incomplete.end());
-  }
   for (const core::UnitLedger &unit : result.planned.ledger.units)
     for (const core::FunctionLedger &function : unit.functions)
       for (const core::Site &site : function.sites)
@@ -232,7 +239,9 @@ inline std::vector<std::string> incomplete(const AnalysisResult &result) {
           const core::FacetRecord *record = site.facet(facet);
           if (record == nullptr ||
               record->outcome() != core::SiteOutcome::Unresolved ||
-              !recorded.contains(record->decision.detail))
+              (record->decision.unresolved != core::UnresolvedReason::Budget &&
+               record->decision.unresolved !=
+                   core::UnresolvedReason::Unanalysed))
             continue;
           out.push_back(std::to_string(site.location.line) + ": " +
                         std::string(core::toString(facet)) + " " +
@@ -262,6 +271,67 @@ inline std::vector<std::string> unknownCalls(const AnalysisResult &result) {
           out.push_back(std::to_string(site.location.line) + ": " + site.text);
       }
   return out;
+}
+
+/// RFC 0031 §6.1: releases and stores through an element (`[*]`) step.
+inline bool throughElement(const core::SummaryPath &path) {
+  for (const core::PathElem &elem : path.steps)
+    if (elem.step == core::PathStep::Index)
+      return true;
+  return false;
+}
+inline std::size_t elementReleases(const core::FunctionEffects &effects) {
+  std::size_t count = 0;
+  for (const core::PathEffect &effect : effects.effects)
+    if (effect.kind == core::PathEffect::Kind::Release &&
+        throughElement(effect.path))
+      ++count;
+  return count;
+}
+inline std::size_t elementStores(const core::FunctionEffects &effects) {
+  std::size_t count = 0;
+  for (const core::StoreEffect &store : effects.stores)
+    if (throughElement(store.dest))
+      ++count;
+  return count;
+}
+
+/// The ledger's counts for `facet` over the unit, as `"<facet>: proven=P
+/// violation=V unresolved=U"`, where `violation` counts the facets that
+/// need a check (checked, or a definite violation) and `unresolved` the
+/// rest: the spelling of the analysis dump before RFC 0031.
+inline std::string facetCounts(const AnalysisResult &result,
+                               core::Facet facet) {
+  unsigned proven = 0;
+  unsigned violation = 0;
+  unsigned unresolved = 0;
+  for (const core::UnitLedger &unit : result.planned.ledger.units)
+    for (const core::FunctionLedger &function : unit.functions)
+      for (const core::Site &site : function.sites) {
+        // The dump counted the accesses' spatial facets only.
+        if (facet == core::Facet::Spatial &&
+            site.kind != core::SiteKind::Deref &&
+            site.kind != core::SiteKind::Index)
+          continue;
+        if (const core::FacetRecord *record = site.facet(facet)) {
+          switch (record->outcome()) {
+          case core::SiteOutcome::Proven:
+            ++proven;
+            break;
+          case core::SiteOutcome::Violation:
+          case core::SiteOutcome::Checked:
+            ++violation;
+            break;
+          default:
+            ++unresolved;
+            break;
+          }
+        }
+      }
+  return std::string(core::toString(facet)) +
+         ": proven=" + std::to_string(proven) +
+         " violation=" + std::to_string(violation) +
+         " unresolved=" + std::to_string(unresolved);
 }
 
 /// Returns the ids of all reported (non-note) diagnostics, in order.

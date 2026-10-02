@@ -11,9 +11,8 @@
     "that must build despite a triaged-true definite error lists -Wno-error=weavec-<id> with the",
     "same fingerprint under `lowered` in manifest.json.",
     "Entries appear once the RFC 0030 compiler writes ledgers (S3); v0.10.0's findings have no",
-    "fingerprints and are not triaged here. Lua's possible temporal warnings (the G10 cascade on the",
-    "'lua_State *L' parameter) are not triaged yet: the population is still moving and G10 fails on the",
-    "count alone."
+    "fingerprints and are not triaged here. Entries a run no longer matches are removed when the",
+    "population is re-triaged (RFC 0031 stage S7 did so for the original configs)."
   ],
   "entries": [
     {
@@ -25,36 +24,6 @@
       "line": 546,
       "verdict": "false",
       "note": "FALSE POSITIVE, and no longer a definite one. The site is cJSON's `ensure` (cJSON.c:490): `newbuffer = p->hooks.reallocate(p->buffer, newsize); if (newbuffer == NULL) p->hooks.deallocate(p->buffer);`. RFC 0030 section 8.2 makes `realloc(p, 0)` a release of `p`, so this is a double free exactly when `newsize` can be zero. It cannot: `needed += p->offset + 1` is followed by `if (needed <= p->length) return ...` with `p->length` unsigned, so the fall-through has `needed >= 1` (a wrapped `needed` is `0 <= p->length` and takes the early return), and the two arms then give `newsize = INT_MAX` or `newsize = needed * 2` with `needed <= INT_MAX / 2`. The engine now follows that argument: the per-file compile of cJSON.c is clean, and so is a standalone copy of `ensure` with the hooks bound (scratchpad/cv/e1.c). What is left is the tests build, where tests/misc_tests.c includes cJSON.c and adds `failing_realloc` (it returns NULL and releases nothing) as a second candidate for the `reallocate` slot. `realloc`'s summary carries its release guard on its result classes, and a candidate with no class-dependent consumption keeps no classes, so joining the two folds the classes away and the guard with them; the consume survives as a widened one (RFC 0030 section 9.1), which is why this is a possible finding and not an error. Reduction: scratchpad/cv/e5.c, and the regression test test/Analysis/rfc0030-slot-candidate-classes.c. Closing it needs the join to keep the informed side's classes when the other side consumes nothing."
-    },
-    {
-      "fingerprint": "c364d567f67a864d634b50fc1fcafea4",
-      "config": "cJSON",
-      "id": "use-after-free",
-      "certainty": "possible",
-      "file": "cJSON.c",
-      "line": 1291,
-      "verdict": "false",
-      "note": "FALSE POSITIVE, an infeasible path. cJSON.c:1284 frees `buffer->buffer` and 1285 sets it to NULL, then 1288 returns; the `fail:` label at 1290 is reached only from the `goto fail` at 1278, before either. The engine joins the two and loses both the `= NULL` at 1285 and the `!= NULL` test at 1291."
-    },
-    {
-      "fingerprint": "0c71b7618f5b89ee11cba868b4972f18",
-      "config": "cJSON",
-      "id": "double-free",
-      "certainty": "possible",
-      "file": "cJSON.c",
-      "line": 1293,
-      "verdict": "false",
-      "note": "FALSE POSITIVE, an infeasible path. cJSON.c:1284 frees `buffer->buffer` and 1285 sets it to NULL, then 1288 returns; the `fail:` label at 1290 is reached only from the `goto fail` at 1278, before either. The engine joins the two and loses both the `= NULL` at 1285 and the `!= NULL` test at 1291."
-    },
-    {
-      "fingerprint": "b08191739722b9bccf6bcbf6e3bb8000",
-      "config": "cJSON",
-      "id": "double-free",
-      "certainty": "possible",
-      "file": "tests/cjson_add.c",
-      "line": 212,
-      "verdict": "false",
-      "note": "FALSE POSITIVE, family B (a summarised collection). The two `cJSON_AddBoolToObject(root, ...)` calls add two different children; the engine summarises the child list as one cell, so the second call's failure path reads as releasing the same object again. Nothing is released twice: `cJSON_Delete(root)` frees the list once at the end of the test."
     },
     {
       "fingerprint": "662173e9eef2d3934e5c4009086c91b0",
@@ -177,426 +146,6 @@
       "note": "FALSE POSITIVE, correlated conditions (RFC 0030 Soundness: 'Possible temporal warnings can be false'). `cjson_functions_should_not_crash_with_null_pointers` passes NULL to every entry point; each callee tests its arguments and returns false without deleting anything (the test asserts exactly that), so `item` is released once, by `cJSON_Delete(item)` at tests/misc_tests.c:489. The engine cannot relate the callee's NULL test to the argument it was given."
     },
     {
-      "fingerprint": "01e52744a2081af14c6a185ce6cd34da",
-      "config": "cJSON",
-      "id": "use-after-free",
-      "certainty": "possible",
-      "file": "tests/misc_tests.c",
-      "line": 505,
-      "verdict": "false",
-      "note": "FALSE POSITIVE. `cJSON_SetValuestring` refuses an overlapping string: cJSON.c:454-457 compares the ranges and returns NULL without touching `object->valuestring`, which is what `TEST_ASSERT_NULL(str2)` on the next line asserts. `str` is still valid at tests/misc_tests.c:505."
-    },
-    {
-      "fingerprint": "f2d0f6ab51cacb38607208780d1fa8f4",
-      "config": "jansson",
-      "id": "use-after-free",
-      "certainty": "possible",
-      "file": "src/dump.c",
-      "line": 448,
-      "verdict": "false",
-      "note": "FALSE POSITIVE, family A (a failed realloc). The rule behind it is right and is RFC 0030 section 8.2's: `q = realloc(p, n); if (!q) free(p);` is a genuine double free when `n` can be zero, because glibc's realloc frees `p` and returns NULL for a zero size, and the engine reports it exactly when it cannot prove `n != 0` (scratchpad/g9/r1.c: the same code with `realloc(p, 16)` or behind `if (n == 0) return;` is clean). What makes the corpus instances false is reachability: at each of these sites the size is provably non-zero, and the engine's arithmetic is what falls short. dump.c:441 passes `strbuff.length + 1` as the new size, which is at least one, and the code does not release `result` on failure at all (`if (new_result) result = new_result;`), so neither half of the pattern is present."
-    },
-    {
-      "fingerprint": "e394c195bef36d143be60ada400d8006",
-      "config": "jansson",
-      "id": "double-free",
-      "certainty": "possible",
-      "file": "src/load.c",
-      "line": 735,
-      "verdict": "false",
-      "note": "FALSE POSITIVE, family C (jansson's `json == value` guard). json_object_setn_new_nocheck decrefs `value` on the `json == value` path (src/value.c:132-135), and json_object_setn_nocheck increfs first, so even a self-referential call nets to zero. The engine takes the guard's alias as a must fact and marks param 0 released at every caller. Same root cause as the definite error at src/value.c:418."
-    },
-    {
-      "fingerprint": "a7f449dbc3c6dea282c2fbdcb4d8d050",
-      "config": "jansson",
-      "id": "double-free",
-      "certainty": "possible",
-      "file": "src/pack_unpack.c",
-      "line": 269,
-      "verdict": "false",
-      "note": "FALSE POSITIVE, family C (jansson's `json == value` guard). json_object_setn_new_nocheck decrefs `value` on the `json == value` path (src/value.c:132-135), and json_object_setn_nocheck increfs first, so even a self-referential call nets to zero. The engine takes the guard's alias as a must fact and marks param 0 released at every caller. Same root cause as the definite error at src/value.c:418."
-    },
-    {
-      "fingerprint": "4bb49e176f74b65bb569b3933727f67c",
-      "config": "jansson",
-      "id": "use-after-free",
-      "certainty": "possible",
-      "file": "src/pack_unpack.c",
-      "line": 282,
-      "verdict": "false",
-      "note": "FALSE POSITIVE, family C (jansson's `json == value` guard). json_object_setn_new_nocheck decrefs `value` on the `json == value` path (src/value.c:132-135), and json_object_setn_nocheck increfs first, so even a self-referential call nets to zero. The engine takes the guard's alias as a must fact and marks param 0 released at every caller. Same root cause as the definite error at src/value.c:418."
-    },
-    {
-      "fingerprint": "f5b24979b7684af54ba3c9badabcb0f7",
-      "config": "jansson",
-      "id": "double-free",
-      "certainty": "possible",
-      "file": "src/pack_unpack.c",
-      "line": 285,
-      "verdict": "false",
-      "note": "FALSE POSITIVE, family C (jansson's `json == value` guard). json_object_setn_new_nocheck decrefs `value` on the `json == value` path (src/value.c:132-135), and json_object_setn_nocheck increfs first, so even a self-referential call nets to zero. The engine takes the guard's alias as a must fact and marks param 0 released at every caller. Same root cause as the definite error at src/value.c:418."
-    },
-    {
-      "fingerprint": "551f2a3a34954748c04fb6cf1fe6f608",
-      "config": "jansson",
-      "id": "use-after-free",
-      "certainty": "possible",
-      "file": "src/value.c",
-      "line": 218,
-      "verdict": "false",
-      "note": "FALSE POSITIVE, family C (jansson's `json == value` guard). json_object_setn_new_nocheck decrefs `value` on the `json == value` path (src/value.c:132-135), and json_object_setn_nocheck increfs first, so even a self-referential call nets to zero. The engine takes the guard's alias as a must fact and marks param 0 released at every caller. Same root cause as the definite error at src/value.c:418."
-    },
-    {
-      "fingerprint": "b7748a650c16e0f49bd4163a2e190adf",
-      "config": "jansson",
-      "id": "double-free",
-      "certainty": "possible",
-      "file": "src/value.c",
-      "line": 219,
-      "verdict": "false",
-      "note": "FALSE POSITIVE, family C (jansson's `json == value` guard). json_object_setn_new_nocheck decrefs `value` on the `json == value` path (src/value.c:132-135), and json_object_setn_nocheck increfs first, so even a self-referential call nets to zero. The engine takes the guard's alias as a must fact and marks param 0 released at every caller. Same root cause as the definite error at src/value.c:418."
-    },
-    {
-      "fingerprint": "1b0fd723b67858102e42a73a858eaa75",
-      "config": "jansson",
-      "id": "use-after-free",
-      "certainty": "possible",
-      "file": "src/value.c",
-      "line": 234,
-      "verdict": "false",
-      "note": "FALSE POSITIVE, family C (jansson's `json == value` guard). json_object_setn_new_nocheck decrefs `value` on the `json == value` path (src/value.c:132-135), and json_object_setn_nocheck increfs first, so even a self-referential call nets to zero. The engine takes the guard's alias as a must fact and marks param 0 released at every caller. Same root cause as the definite error at src/value.c:418."
-    },
-    {
-      "fingerprint": "feb6d85427d52cef2d5983352a0e8565",
-      "config": "jansson",
-      "id": "double-free",
-      "certainty": "possible",
-      "file": "src/value.c",
-      "line": 235,
-      "verdict": "false",
-      "note": "FALSE POSITIVE, family C (jansson's `json == value` guard). json_object_setn_new_nocheck decrefs `value` on the `json == value` path (src/value.c:132-135), and json_object_setn_nocheck increfs first, so even a self-referential call nets to zero. The engine takes the guard's alias as a must fact and marks param 0 released at every caller. Same root cause as the definite error at src/value.c:418."
-    },
-    {
-      "fingerprint": "c30bac5bb9db54f114d2ad685cb467e4",
-      "config": "jansson",
-      "id": "double-free",
-      "certainty": "possible",
-      "file": "src/value.c",
-      "line": 386,
-      "verdict": "false",
-      "note": "FALSE POSITIVE, family C (jansson's `json == value` guard). json_object_setn_new_nocheck decrefs `value` on the `json == value` path (src/value.c:132-135), and json_object_setn_nocheck increfs first, so even a self-referential call nets to zero. The engine takes the guard's alias as a must fact and marks param 0 released at every caller. Same root cause as the definite error at src/value.c:418."
-    },
-    {
-      "fingerprint": "2b3f6169ec753da75d1a6a600a0b64ca",
-      "config": "jansson",
-      "id": "use-after-free",
-      "certainty": "possible",
-      "file": "src/value.c",
-      "line": 388,
-      "verdict": "false",
-      "note": "FALSE POSITIVE, family C (jansson's `json == value` guard). json_object_setn_new_nocheck decrefs `value` on the `json == value` path (src/value.c:132-135), and json_object_setn_nocheck increfs first, so even a self-referential call nets to zero. The engine takes the guard's alias as a must fact and marks param 0 released at every caller. Same root cause as the definite error at src/value.c:418."
-    },
-    {
-      "fingerprint": "8c4022aff6c3ff1af45cb09c7f4b1cf2",
-      "config": "jansson",
-      "id": "double-free",
-      "certainty": "possible",
-      "file": "src/value.c",
-      "line": 418,
-      "verdict": "false",
-      "note": "FALSE POSITIVE, family C (a release guarded by a pointer-equality test). `json_object_setn_new_nocheck` releases its fourth argument when `json == value` (value.c:132), and on that path the release is also a release of `json`. The summary now carries the identity - `json: freed,share when[json == value]` - so the claim is truthful, but `do_deep_copy` can return its own argument (the JSON_TRUE / JSON_FALSE / JSON_NULL singletons at value.c:1120), so the engine cannot refute `result == value` at value.c:416 and the consume stands as a possible one. It is infeasible in fact: `result` is a fresh `json_object()` from value.c:401 and the fourth argument is a copy of an element of `object`, never `result` itself. This was a definite `double-free` before RFC 0030 section 9.1's widening was applied to a guard conjunct a call cannot name; scratchpad/g9/j5.c is the reduction."
-    },
-    {
-      "fingerprint": "f26d78d799031a0d4986d82cb96f0977",
-      "config": "jansson",
-      "id": "double-free",
-      "certainty": "possible",
-      "file": "src/value.c",
-      "line": 455,
-      "verdict": "false",
-      "note": "FALSE POSITIVE, family B (array of owned pointers). The loop releases distinct elements `a[i]`, each exactly once; the engine summarises the array as one cell `a[*]`, so the second iteration reads as a second release of the same object."
-    },
-    {
-      "fingerprint": "7d79a1b12674866f2c885027d901830a",
-      "config": "jansson",
-      "id": "use-after-free",
-      "certainty": "possible",
-      "file": "src/value.c",
-      "line": 550,
-      "verdict": "false",
-      "note": "FALSE POSITIVE, family A (a failed realloc). The rule behind it is right and is RFC 0030 section 8.2's: `q = realloc(p, n); if (!q) free(p);` is a genuine double free when `n` can be zero, because glibc's realloc frees `p` and returns NULL for a zero size, and the engine reports it exactly when it cannot prove `n != 0` (scratchpad/g9/r1.c: the same code with `realloc(p, 16)` or behind `if (n == 0) return;` is clean). What makes the corpus instances false is reachability: at each of these sites the size is provably non-zero, and the engine's arithmetic is what falls short. value.c:522 passes `new_size * sizeof(json_t *)`, and `json_array_grow` returns early when `array->entries + amount <= array->size`, so `amount >= 1` on the path that reallocates and `new_size = max(array->size + amount, array->size * 2) >= 1`: the size is at least `sizeof(json_t *)`."
-    },
-    {
-      "fingerprint": "88293fc9d7d6b4fc348316da001cd0e7",
-      "config": "jansson",
-      "id": "use-after-free",
-      "certainty": "possible",
-      "file": "src/value.c",
-      "line": 580,
-      "verdict": "false",
-      "note": "FALSE POSITIVE, family A (a failed realloc). The rule behind it is right and is RFC 0030 section 8.2's: `q = realloc(p, n); if (!q) free(p);` is a genuine double free when `n` can be zero, because glibc's realloc frees `p` and returns NULL for a zero size, and the engine reports it exactly when it cannot prove `n != 0` (scratchpad/g9/r1.c: the same code with `realloc(p, 16)` or behind `if (n == 0) return;` is clean). What makes the corpus instances false is reachability: at each of these sites the size is provably non-zero, and the engine's arithmetic is what falls short. value.c:522 passes `new_size * sizeof(json_t *)`, and `json_array_grow` returns early when `array->entries + amount <= array->size`, so `amount >= 1` on the path that reallocates and `new_size = max(array->size + amount, array->size * 2) >= 1`: the size is at least `sizeof(json_t *)`."
-    },
-    {
-      "fingerprint": "3ccd5e9585324398504aff5c4b83e1a7",
-      "config": "jansson",
-      "id": "double-free",
-      "certainty": "possible",
-      "file": "src/value.c",
-      "line": 616,
-      "verdict": "false",
-      "note": "FALSE POSITIVE, family B (array of owned pointers). The loop releases distinct elements `a[i]`, each exactly once; the engine summarises the array as one cell `a[*]`, so the second iteration reads as a second release of the same object."
-    },
-    {
-      "fingerprint": "793eeceb2567b162db988bd8fb16d635",
-      "config": "jansson",
-      "id": "use-after-free",
-      "certainty": "possible",
-      "file": "src/value.c",
-      "line": 637,
-      "verdict": "false",
-      "note": "FALSE POSITIVE, family A (a failed realloc). The rule behind it is right and is RFC 0030 section 8.2's: `q = realloc(p, n); if (!q) free(p);` is a genuine double free when `n` can be zero, because glibc's realloc frees `p` and returns NULL for a zero size, and the engine reports it exactly when it cannot prove `n != 0` (scratchpad/g9/r1.c: the same code with `realloc(p, 16)` or behind `if (n == 0) return;` is clean). What makes the corpus instances false is reachability: at each of these sites the size is provably non-zero, and the engine's arithmetic is what falls short. value.c:522 passes `new_size * sizeof(json_t *)`, and `json_array_grow` returns early when `array->entries + amount <= array->size`, so `amount >= 1` on the path that reallocates and `new_size = max(array->size + amount, array->size * 2) >= 1`: the size is at least `sizeof(json_t *)`."
-    },
-    {
-      "fingerprint": "c785d82f5c78adea90fdc7d5af7a8ace",
-      "config": "jsmn",
-      "id": "double-free",
-      "certainty": "possible",
-      "file": "example/jsondump.c",
-      "line": 17,
-      "verdict": "false",
-      "note": "FALSE POSITIVE, family A (a failed realloc). The rule behind it is right and is RFC 0030 section 8.2's: `q = realloc(p, n); if (!q) free(p);` is a genuine double free when `n` can be zero, because glibc's realloc frees `p` and returns NULL for a zero size, and the engine reports it exactly when it cannot prove `n != 0` (scratchpad/g9/r1.c: the same code with `realloc(p, 16)` or behind `if (n == 0) return;` is clean). What makes the corpus instances false is reachability: at each of these sites the size is provably non-zero, and the engine's arithmetic is what falls short. jsmn's `realloc_it` (jsondump.c:14) is a `static inline` wrapper reported on its own parameter `size`, which nothing here constrains; both callers pass a non-zero size (`jslen + r + 1` with `r >= 1` at jsondump.c:109, and `sizeof(*tok) * tokcount` with `tokcount` starting at 128 and doubling at jsondump.c:121), so no execution of this program reaches a zero size. The helper's own contract does admit one, and its comment documents exactly the pattern that is then a double free, so a caller that passed zero would have a real bug: this is the one family-A site where `true` is arguable."
-    },
-    {
-      "fingerprint": "f654c573a8bb77bed69aaa9d31346e11",
-      "config": "linenoise",
-      "id": "double-free",
-      "certainty": "possible",
-      "file": "linenoise.c",
-      "line": 2313,
-      "verdict": "false",
-      "note": "FALSE POSITIVE, family B (array of owned pointers). The loop releases distinct elements `a[i]`, each exactly once; the engine summarises the array as one cell `a[*]`, so the second iteration reads as a second release of the same object."
-    },
-    {
-      "fingerprint": "7f2def1db500c433873b7024935e4cad",
-      "config": "linenoise-program",
-      "id": "double-free",
-      "certainty": "possible",
-      "file": "example.c",
-      "line": 78,
-      "verdict": "false",
-      "note": "FALSE POSITIVE, family B (a loop releasing distinct elements). A cleanup loop releases a different `history[i]` on each iteration, but the engine reads them as one summarised cell and so as a second release of the same object. linenoise's `history` is another unit's file-static, which this unit reaches through the analysis storage RFC 0028 section 2 gives it; that storage now carries the variable's own name, so the message names `history` instead of the internal proxy."
-    },
-    {
-      "fingerprint": "840476a66c6477a37c19fcd0cd804e8a",
-      "config": "linenoise-program",
-      "id": "double-free",
-      "certainty": "possible",
-      "file": "example.c",
-      "line": 78,
-      "verdict": "false",
-      "note": "FALSE POSITIVE, family B (a loop releasing distinct elements). A cleanup loop releases a different `history[i]` on each iteration, but the engine reads them as one summarised cell and so as a second release of the same object. linenoise's `history` is another unit's file-static, which this unit reaches through the analysis storage RFC 0028 section 2 gives it; that storage now carries the variable's own name, so the message names `history` instead of the internal proxy."
-    },
-    {
-      "fingerprint": "4c25a2abb97563a2f451dfbf9b88d6b2",
-      "config": "linenoise-program",
-      "id": "double-free",
-      "certainty": "possible",
-      "file": "example.c",
-      "line": 114,
-      "verdict": "false",
-      "note": "FALSE POSITIVE, family B (a loop releasing distinct elements). A cleanup loop releases a different `history[i]` on each iteration, but the engine reads them as one summarised cell and so as a second release of the same object. linenoise's `history` is another unit's file-static, which this unit reaches through the analysis storage RFC 0028 section 2 gives it; that storage now carries the variable's own name, so the message names `history` instead of the internal proxy."
-    },
-    {
-      "fingerprint": "1467ff7ba0ae0594cff860ca60f17116",
-      "config": "linenoise-program",
-      "id": "double-free",
-      "certainty": "possible",
-      "file": "example.c",
-      "line": 119,
-      "verdict": "false",
-      "note": "FALSE POSITIVE, family B (a loop releasing distinct elements). A cleanup loop releases a different `history[i]` on each iteration, but the engine reads them as one summarised cell and so as a second release of the same object. linenoise's `history` is another unit's file-static, which this unit reaches through the analysis storage RFC 0028 section 2 gives it; that storage now carries the variable's own name, so the message names `history` instead of the internal proxy."
-    },
-    {
-      "fingerprint": "f654c573a8bb77bed69aaa9d31346e11",
-      "config": "linenoise-program",
-      "id": "double-free",
-      "certainty": "possible",
-      "file": "linenoise.c",
-      "line": 2313,
-      "verdict": "false",
-      "note": "FALSE POSITIVE, family B (array of owned pointers). The loop releases distinct elements `a[i]`, each exactly once; the engine summarises the array as one cell `a[*]`, so the second iteration reads as a second release of the same object."
-    },
-    {
-      "fingerprint": "3d99f15041986c302a9e3de7b26a7a6f",
-      "config": "lua",
-      "id": "use-after-free",
-      "certainty": "definite",
-      "file": "lapi.c",
-      "line": 1110,
-      "verdict": "false",
-      "note": "FALSE POSITIVE. `ci = L->ci` is captured at lapi.c:1100 and used at 1110-1111 after `luaD_call` at 1109. Lua only ever frees CallInfos *after* the current one: `luaE_shrinkCI` starts at `L->ci->next` (lstate.c:110) and `luaE_freeCI` the same, and `luaD_call` restores `L->ci` before returning. So the captured `ci` is never the node that is freed. The engine folds the release of a later node in the CallInfo list onto the captured pointer."
-    },
-    {
-      "fingerprint": "850cca5e6848a86baa30969b764b9914",
-      "config": "lua",
-      "id": "use-after-free",
-      "certainty": "definite",
-      "file": "lapi.c",
-      "line": 1111,
-      "verdict": "false",
-      "note": "FALSE POSITIVE. `ci = L->ci` is captured at lapi.c:1100 and used at 1110-1111 after `luaD_call` at 1109. Lua only ever frees CallInfos *after* the current one: `luaE_shrinkCI` starts at `L->ci->next` (lstate.c:110) and `luaE_freeCI` the same, and `luaD_call` restores `L->ci` before returning. So the captured `ci` is never the node that is freed. The engine folds the release of a later node in the CallInfo list onto the captured pointer."
-    },
-    {
-      "fingerprint": "94fef4d6dfb83817a668fe2a34ef3811",
-      "config": "lua",
-      "id": "use-after-free",
-      "certainty": "definite",
-      "file": "ldo.c",
-      "line": 653,
-      "verdict": "false",
-      "note": "FALSE POSITIVE, the `lua_State *L` cascade (the population gate G10 is about), here crossing from a possible warning into a definite error. Lua never frees the thread it is running on: `luaE_freethread` frees `fromstate(L1)` for a *dead, collectible* thread, and `close_state` frees the whole `global_State` block only at shutdown; `luaD_closeprotected`, `luaD_reallocstack`, `checkstackp` and `prepCallInfo` move the *stack array*, not the `lua_State`. The engine reaches the frees through the resolved `frealloc` slot and lands them on the parameter root of every function in the VM's one strongly connected component (scratchpad/s7b-handoff.md diagnoses the same cascade)."
-    },
-    {
-      "fingerprint": "b7c4029d726434be7166dcf44b3b80f7",
-      "config": "lua",
-      "id": "use-after-free",
-      "certainty": "definite",
-      "file": "lstate.c",
-      "line": 321,
-      "verdict": "false",
-      "note": "FALSE POSITIVE, the `lua_State *L` cascade (the population gate G10 is about), here crossing from a possible warning into a definite error. Lua never frees the thread it is running on: `luaE_freethread` frees `fromstate(L1)` for a *dead, collectible* thread, and `close_state` frees the whole `global_State` block only at shutdown; `luaD_closeprotected`, `luaD_reallocstack`, `checkstackp` and `prepCallInfo` move the *stack array*, not the `lua_State`. The engine reaches the frees through the resolved `frealloc` slot and lands them on the parameter root of every function in the VM's one strongly connected component (scratchpad/s7b-handoff.md diagnoses the same cascade)."
-    },
-    {
-      "fingerprint": "e09b57d10b5c0735bda7784bc9cc292b",
-      "config": "lua",
-      "id": "use-after-free",
-      "certainty": "definite",
-      "file": "lstate.c",
-      "line": 321,
-      "verdict": "false",
-      "note": "FALSE POSITIVE, the `lua_State *L` cascade (the population gate G10 is about), here crossing from a possible warning into a definite error. Lua never frees the thread it is running on: `luaE_freethread` frees `fromstate(L1)` for a *dead, collectible* thread, and `close_state` frees the whole `global_State` block only at shutdown; `luaD_closeprotected`, `luaD_reallocstack`, `checkstackp` and `prepCallInfo` move the *stack array*, not the `lua_State`. The engine reaches the frees through the resolved `frealloc` slot and lands them on the parameter root of every function in the VM's one strongly connected component (scratchpad/s7b-handoff.md diagnoses the same cascade)."
-    },
-    {
-      "fingerprint": "48f2e3f88be4f0e23f8ee2dcca65dafa",
-      "config": "lua",
-      "id": "use-after-free",
-      "certainty": "definite",
-      "file": "lstate.c",
-      "line": 323,
-      "verdict": "false",
-      "note": "FALSE POSITIVE, the `lua_State *L` cascade (the population gate G10 is about), here crossing from a possible warning into a definite error. Lua never frees the thread it is running on: `luaE_freethread` frees `fromstate(L1)` for a *dead, collectible* thread, and `close_state` frees the whole `global_State` block only at shutdown; `luaD_closeprotected`, `luaD_reallocstack`, `checkstackp` and `prepCallInfo` move the *stack array*, not the `lua_State`. The engine reaches the frees through the resolved `frealloc` slot and lands them on the parameter root of every function in the VM's one strongly connected component (scratchpad/s7b-handoff.md diagnoses the same cascade)."
-    },
-    {
-      "fingerprint": "f3d7951c67e72d11981b94ba8ee3b6ea",
-      "config": "lua",
-      "id": "use-after-free",
-      "certainty": "definite",
-      "file": "lstate.c",
-      "line": 323,
-      "verdict": "false",
-      "note": "FALSE POSITIVE, the `lua_State *L` cascade (the population gate G10 is about), here crossing from a possible warning into a definite error. Lua never frees the thread it is running on: `luaE_freethread` frees `fromstate(L1)` for a *dead, collectible* thread, and `close_state` frees the whole `global_State` block only at shutdown; `luaD_closeprotected`, `luaD_reallocstack`, `checkstackp` and `prepCallInfo` move the *stack array*, not the `lua_State`. The engine reaches the frees through the resolved `frealloc` slot and lands them on the parameter root of every function in the VM's one strongly connected component (scratchpad/s7b-handoff.md diagnoses the same cascade)."
-    },
-    {
-      "fingerprint": "5350782bd8af217c404f264982d4129c",
-      "config": "lua",
-      "id": "use-after-free",
-      "certainty": "definite",
-      "file": "lstate.c",
-      "line": 324,
-      "verdict": "false",
-      "note": "FALSE POSITIVE, the `lua_State *L` cascade (the population gate G10 is about), here crossing from a possible warning into a definite error. Lua never frees the thread it is running on: `luaE_freethread` frees `fromstate(L1)` for a *dead, collectible* thread, and `close_state` frees the whole `global_State` block only at shutdown; `luaD_closeprotected`, `luaD_reallocstack`, `checkstackp` and `prepCallInfo` move the *stack array*, not the `lua_State`. The engine reaches the frees through the resolved `frealloc` slot and lands them on the parameter root of every function in the VM's one strongly connected component (scratchpad/s7b-handoff.md diagnoses the same cascade)."
-    },
-    {
-      "fingerprint": "b7386484c12f65085556a883af9a0f06",
-      "config": "lua",
-      "id": "use-after-free",
-      "certainty": "definite",
-      "file": "lstate.c",
-      "line": 324,
-      "verdict": "false",
-      "note": "FALSE POSITIVE, the `lua_State *L` cascade (the population gate G10 is about), here crossing from a possible warning into a definite error. Lua never frees the thread it is running on: `luaE_freethread` frees `fromstate(L1)` for a *dead, collectible* thread, and `close_state` frees the whole `global_State` block only at shutdown; `luaD_closeprotected`, `luaD_reallocstack`, `checkstackp` and `prepCallInfo` move the *stack array*, not the `lua_State`. The engine reaches the frees through the resolved `frealloc` slot and lands them on the parameter root of every function in the VM's one strongly connected component (scratchpad/s7b-handoff.md diagnoses the same cascade)."
-    },
-    {
-      "fingerprint": "db5f4c6a9b52bc6319ede68ce53fd268",
-      "config": "lua",
-      "id": "invalid-release",
-      "certainty": "definite",
-      "file": "lstate.c",
-      "line": 387,
-      "verdict": "false",
-      "note": "FALSE POSITIVE. In this Lua the main thread lives inside the global state: `typedef struct LX { lu_byte extra_[]; lua_State l; }` (lstate.h:318) and `global_State` holds `LX mainth` (lstate.h:371), with `L = &g->mainth.l` (lstate.c:347). close_state frees the block through `g`, the start of the allocation returned at lstate.c:345: `(*g->frealloc)(g->ud, g, sizeof(global_State), 0)` (lstate.c:274). `L` itself is never handed to a releaser, so nothing releases an interior pointer. The engine folds the release of `g` onto `L`, which points into the same allocation, and then reports the interior offset."
-    },
-    {
-      "fingerprint": "853f8c49208201a31d115d884a0e39f6",
-      "config": "lua",
-      "id": "invalid-release",
-      "certainty": "definite",
-      "file": "lstate.c",
-      "line": 399,
-      "verdict": "false",
-      "note": "FALSE POSITIVE. In this Lua the main thread lives inside the global state: `typedef struct LX { lu_byte extra_[]; lua_State l; }` (lstate.h:318) and `global_State` holds `LX mainth` (lstate.h:371), with `L = &g->mainth.l` (lstate.c:347). close_state frees the block through `g`, the start of the allocation returned at lstate.c:345: `(*g->frealloc)(g->ud, g, sizeof(global_State), 0)` (lstate.c:274). `L` itself is never handed to a releaser, so nothing releases an interior pointer. The engine folds the release of `g` onto `L`, which points into the same allocation, and then reports the interior offset."
-    },
-    {
-      "fingerprint": "0d55ecbe3d965f3386c387e46d1c3bd8",
-      "config": "printf",
-      "id": "unsafe-operation",
-      "certainty": "definite",
-      "file": "printf.c",
-      "line": 911,
-      "verdict": "true",
-      "note": "By design (RFC 0030 Soundness, 'Accepted false positives and false traps'): `(char*)(uintptr_t)&out_fct_wrap` launders a pointer through an integer, so the model cannot establish its provenance and the pointer is raw. The RFC says such code needs WEAVEC_UNSAFE. printf is a per-file compile config, so no -Wno-error is needed (17.5: a definite error is recorded against its TU)."
-    },
-    {
-      "fingerprint": "6e350edb1fd341b5fc611bb4d8873efa",
-      "config": "sds",
-      "id": "double-free",
-      "certainty": "possible",
-      "file": "sds.c",
-      "line": 877,
-      "verdict": "false",
-      "note": "FALSE POSITIVE, family B (array of owned pointers). The loop releases distinct elements `a[i]`, each exactly once; the engine summarises the array as one cell `a[*]`, so the second iteration reads as a second release of the same object."
-    },
-    {
-      "fingerprint": "a94e97bf344649eb54c1e4d9b975b7b3",
-      "config": "sds",
-      "id": "use-after-free",
-      "certainty": "possible",
-      "file": "sds.c",
-      "line": 877,
-      "verdict": "false",
-      "note": "FALSE POSITIVE, family B (array of owned pointers). The loop releases distinct elements `a[i]`, each exactly once; the engine summarises the array as one cell `a[*]`, so the second iteration reads as a second release of the same object."
-    },
-    {
-      "fingerprint": "4db81b14e55242343b8c9f18b543bb9c",
-      "config": "sds",
-      "id": "double-free",
-      "certainty": "possible",
-      "file": "sds.c",
-      "line": 878,
-      "verdict": "false",
-      "note": "FALSE POSITIVE, family B (array of owned pointers). The loop releases distinct elements `a[i]`, each exactly once; the engine summarises the array as one cell `a[*]`, so the second iteration reads as a second release of the same object."
-    },
-    {
-      "fingerprint": "8ce04109e5a43de74c4527f70f59f5df",
-      "config": "sds",
-      "id": "double-free",
-      "certainty": "possible",
-      "file": "sds.c",
-      "line": 888,
-      "verdict": "false",
-      "note": "FALSE POSITIVE, family B (array of owned pointers). The loop releases distinct elements `a[i]`, each exactly once; the engine summarises the array as one cell `a[*]`, so the second iteration reads as a second release of the same object."
-    },
-    {
-      "fingerprint": "7f4370afe249a8c7a52a1319f9a55bd5",
-      "config": "sds",
-      "id": "double-free",
-      "certainty": "possible",
-      "file": "sds.c",
-      "line": 1076,
-      "verdict": "false",
-      "note": "FALSE POSITIVE, family B (array of owned pointers). The loop releases distinct elements `a[i]`, each exactly once; the engine summarises the array as one cell `a[*]`, so the second iteration reads as a second release of the same object."
-    },
-    {
       "fingerprint": "07afb1010e8f4f42ec3e6c96c4c8fa49",
       "config": "zlib",
       "id": "double-free",
@@ -615,6 +164,536 @@
       "line": 579,
       "verdict": "true",
       "note": "TRUE POSITIVE, and RFC 0030 G9 requires it to be reported. minigzip's `do { ... } while (--argc)` loop calls `gz_uncompress(file, stdout)` (test/minigzip.c:568) on every argument, and `gz_uncompress` ends with `fclose(out)`, so stdout is closed once per argument; line 579's `gzdopen(fileno(stdout), outmode)` then reads a stream a previous iteration's `gzclose` already closed. Upstream bug, unchanged at the pinned SHA."
+    },
+    {
+      "fingerprint": "2ee09b6e94e228c8d676cfd6abc23756",
+      "config": "jsmn",
+      "id": "use-after-move",
+      "certainty": "possible",
+      "file": "example/jsondump.c",
+      "line": 109,
+      "verdict": "false",
+      "note": "FALSE POSITIVE, family A (a failed realloc). `js = realloc_it(js, jslen + r + 1)` (example/jsondump.c:109) replaces `js` with the wrapper's result, and line 110 returns when that result is NULL, so every later use of `js` (113, 117, 128, and the argument at 109 on the next iteration) reads the buffer the successful realloc just returned; the old pointer is never read again. The size is at least 2 (`r >= 1` after the `r == 0` return at 100), so realloc cannot release `js` and return NULL. What the analysis probably loses is the separation between `realloc_it`'s two exits once its summary is applied (argument moved into a non-null result, or argument released and NULL returned; `js` also starts NULL, which makes the first call a malloc), so the moved state of the argument sticks to the reassigned `js` even past the null test."
+    },
+    {
+      "fingerprint": "f16604f80b9d35789d3a1a068803f962",
+      "config": "jsmn",
+      "id": "use-after-move",
+      "certainty": "possible",
+      "file": "example/jsondump.c",
+      "line": 113,
+      "verdict": "false",
+      "note": "FALSE POSITIVE, family A (a failed realloc). `js = realloc_it(js, jslen + r + 1)` (example/jsondump.c:109) replaces `js` with the wrapper's result, and line 110 returns when that result is NULL, so every later use of `js` (113, 117, 128, and the argument at 109 on the next iteration) reads the buffer the successful realloc just returned; the old pointer is never read again. The size is at least 2 (`r >= 1` after the `r == 0` return at 100), so realloc cannot release `js` and return NULL. What the analysis probably loses is the separation between `realloc_it`'s two exits once its summary is applied (argument moved into a non-null result, or argument released and NULL returned; `js` also starts NULL, which makes the first call a malloc), so the moved state of the argument sticks to the reassigned `js` even past the null test."
+    },
+    {
+      "fingerprint": "b2c4bf8ba44843231531a7137eae0ff2",
+      "config": "jsmn",
+      "id": "use-after-move",
+      "certainty": "possible",
+      "file": "example/jsondump.c",
+      "line": 117,
+      "verdict": "false",
+      "note": "FALSE POSITIVE, family A (a failed realloc). `js = realloc_it(js, jslen + r + 1)` (example/jsondump.c:109) replaces `js` with the wrapper's result, and line 110 returns when that result is NULL, so every later use of `js` (113, 117, 128, and the argument at 109 on the next iteration) reads the buffer the successful realloc just returned; the old pointer is never read again. The size is at least 2 (`r >= 1` after the `r == 0` return at 100), so realloc cannot release `js` and return NULL. What the analysis probably loses is the separation between `realloc_it`'s two exits once its summary is applied (argument moved into a non-null result, or argument released and NULL returned; `js` also starts NULL, which makes the first call a malloc), so the moved state of the argument sticks to the reassigned `js` even past the null test."
+    },
+    {
+      "fingerprint": "d7300e9baf4431aeaca38af9d7d5e100",
+      "config": "jsmn",
+      "id": "use-after-move",
+      "certainty": "possible",
+      "file": "example/jsondump.c",
+      "line": 128,
+      "verdict": "false",
+      "note": "FALSE POSITIVE, family A (a failed realloc). `js = realloc_it(js, jslen + r + 1)` (example/jsondump.c:109) replaces `js` with the wrapper's result, and line 110 returns when that result is NULL, so every later use of `js` (113, 117, 128, and the argument at 109 on the next iteration) reads the buffer the successful realloc just returned; the old pointer is never read again. The size is at least 2 (`r >= 1` after the `r == 0` return at 100), so realloc cannot release `js` and return NULL. What the analysis probably loses is the separation between `realloc_it`'s two exits once its summary is applied (argument moved into a non-null result, or argument released and NULL returned; `js` also starts NULL, which makes the first call a malloc), so the moved state of the argument sticks to the reassigned `js` even past the null test."
+    },
+    {
+      "fingerprint": "084b327e1f9f99c57edcd9e2d6bb3b8f",
+      "config": "linenoise",
+      "id": "double-free",
+      "certainty": "possible",
+      "file": "linenoise.c",
+      "line": 709,
+      "verdict": "false",
+      "note": "FALSE POSITIVE, family B (array of owned pointers). `freeCompletions` (linenoise.c:706) frees `lc->cvec[i]` once for each `i < lc->len`, and each element is a distinct `malloc` copy stored by `linenoiseAddCompletion` (linenoise.c:847, `lc->cvec[lc->len++] = copy`). The engine summarises the array as one cell `cvec[*]`, so the second iteration reads as a second release of the same object."
+    },
+    {
+      "fingerprint": "084b327e1f9f99c57edcd9e2d6bb3b8f",
+      "config": "linenoise-program",
+      "id": "double-free",
+      "certainty": "possible",
+      "file": "linenoise.c",
+      "line": 709,
+      "verdict": "false",
+      "note": "FALSE POSITIVE, family B (array of owned pointers). `freeCompletions` (linenoise.c:706) frees `lc->cvec[i]` once for each `i < lc->len`, and each element is a distinct `malloc` copy stored by `linenoiseAddCompletion` (linenoise.c:847, `lc->cvec[lc->len++] = copy`). The engine summarises the array as one cell `cvec[*]`, so the second iteration reads as a second release of the same object."
+    },
+    {
+      "fingerprint": "3fb62d2b82b153c0ebdddc2aa95535cf",
+      "config": "cJSON-program",
+      "id": "double-free",
+      "certainty": "possible",
+      "file": "cJSON_Utils.c",
+      "line": 878,
+      "verdict": "false",
+      "note": "FALSE POSITIVE. In `apply_patch`'s root-replacement case, `overwrite_item(object, *value)` (cJSON_Utils.c:869) frees `object->string` at 793 and then `memcpy(root, &replacement, sizeof(cJSON))` at 804 overwrites the whole struct, so `object->string` now holds the duplicate's key, a fresh `cJSON_strdup` made by `cJSON_Duplicate` (cJSON.c, `cJSON_Duplicate_rec`); line 878 frees that new string, once. The analysis apparently does not let the struct-sized `memcpy` from the by-value `replacement` parameter overwrite the `string` field, so the pointer freed at 793 still appears to be in `object->string`."
+    },
+    {
+      "fingerprint": "d13c283c6dc8580f75f3b7608c21d06f",
+      "config": "jansson",
+      "id": "double-free",
+      "certainty": "possible",
+      "file": "src/hashtable.c",
+      "line": 135,
+      "verdict": "false",
+      "note": "FALSE POSITIVE, family B (a loop releasing distinct elements). `hashtable_do_clear` (src/hashtable.c:128) walks the ordered list of pairs and drops each pair's reference to its value once, then frees that pair; each pair owns one reference, so a value stored under two keys has a reference count of two and is deleted only by the second `json_decref`. The engine summarises the list nodes (reached through `list_to_pair`) as one object and treats `json_decref` as a release rather than a reference drop, so the second iteration reads as a second release of the same `pair->value`."
+    },
+    {
+      "fingerprint": "1e15cb902ccc99bcd62a4d17a268bce0",
+      "config": "jansson",
+      "id": "double-free",
+      "certainty": "possible",
+      "file": "src/pack_unpack.c",
+      "line": 269,
+      "verdict": "false",
+      "note": "FALSE POSITIVE, correlated conditions. In `pack_object` `value` is released at src/pack_unpack.c:267 only when `s->has_error` is set, and handed to `json_object_setn_new_nocheck` at 269 only when it is clear; nothing between the two tests writes `s->has_error` (`json_decref` does not see `s`), so exactly one of them runs per iteration, and `value` is reassigned by `pack` on the next one. `json_object_setn_new_nocheck`'s own `json == value` release is infeasible here because `object` is the fresh `json_object()` of this call and `value` comes from the caller's arguments. The engine keeps both paths, probably because it does not correlate the two loads of `s->has_error` (family C, the `json == value` guard, is the other candidate)."
+    },
+    {
+      "fingerprint": "cb852a5754d1c45bf8922c951e5ff5b8",
+      "config": "jansson",
+      "id": "double-free",
+      "certainty": "possible",
+      "file": "src/pack_unpack.c",
+      "line": 321,
+      "verdict": "false",
+      "note": "FALSE POSITIVE, correlated conditions. In `pack_array` `value` is released at src/pack_unpack.c:319 only when `s->has_error` is set, and handed to `json_array_append_new` at 321 only when it is clear; nothing between the two tests writes `s->has_error`, so exactly one of them runs per iteration, and `value` is reassigned by `pack` on the next one. `json_array_append_new`'s `json == value` release is infeasible because `array` is the fresh `json_array()` of this call. The engine keeps both paths, probably because it does not correlate the two loads of `s->has_error` (family C, the `json == value` guard, is the other candidate)."
+    },
+    {
+      "fingerprint": "7d47a1e46b786236447139ebdccc0acf",
+      "config": "jansson",
+      "id": "double-free",
+      "certainty": "possible",
+      "file": "src/value.c",
+      "line": 455,
+      "verdict": "false",
+      "note": "FALSE POSITIVE, family B (array of owned pointers). `json_delete_array` (src/value.c:451) drops the reference held by each slot `array->table[i]`, `i < entries`, once; each slot owns one reference, so a value appended twice has a reference count of two and survives the first `json_decref`. The engine summarises the table as one cell `table[*]` and reads `json_decref` as a release, so the second iteration reads as a second release of the same object."
+    },
+    {
+      "fingerprint": "8a1fb94d4ecba29ad22405b556d0c233",
+      "config": "jansson",
+      "id": "double-free",
+      "certainty": "possible",
+      "file": "src/value.c",
+      "line": 616,
+      "verdict": "false",
+      "note": "FALSE POSITIVE, family B (array of owned pointers). `json_array_clear` (src/value.c:607) drops the reference held by each slot `array->table[i]`, `i < entries`, once, then sets `entries = 0`; each slot owns one reference, so a value appended twice has a reference count of two and survives the first `json_decref`. The engine summarises the table as one cell `table[*]` and reads `json_decref` as a release, so the second iteration reads as a second release of the same object."
+    },
+    {
+      "fingerprint": "0df099f6a3709567c3f35d3cdcba4b01",
+      "config": "cJSON",
+      "id": "double-free",
+      "certainty": "possible",
+      "file": "tests/misc_tests.c",
+      "line": 348,
+      "verdict": "false",
+      "note": "FALSE POSITIVE. cJSON_ReplaceItemViaPointer frees only the item it replaces; the test then compares and dereferences the neighbours, which stay in the array. The analysis cannot tell the replaced item from its siblings (the list is walked through focus objects), so each later use of a sibling may be of the freed one."
+    },
+    {
+      "fingerprint": "41aae91c843dd131a204d0250ba20366",
+      "config": "cJSON",
+      "id": "double-free",
+      "certainty": "possible",
+      "file": "tests/misc_tests.c",
+      "line": 354,
+      "verdict": "false",
+      "note": "FALSE POSITIVE. cJSON_ReplaceItemViaPointer frees only the item it replaces; the test then compares and dereferences the neighbours, which stay in the array. The analysis cannot tell the replaced item from its siblings (the list is walked through focus objects), so each later use of a sibling may be of the freed one."
+    },
+    {
+      "fingerprint": "62ba13bc249fb12073ee3e1f344f6993",
+      "config": "cJSON",
+      "id": "double-free",
+      "certainty": "possible",
+      "file": "tests/misc_tests.c",
+      "line": 469,
+      "verdict": "false",
+      "note": "FALSE POSITIVE. cJSON_Delete frees item->string and item->valuestring only when the type flags cJSON_StringIsConst / cJSON_IsReference are clear; the analysis does not correlate the release with the flag bits, so the strings a reference or a constant-string item shares may look released twice."
+    },
+    {
+      "fingerprint": "b8a34451b1e893da31c4d25a553754c6",
+      "config": "cJSON",
+      "id": "double-free",
+      "certainty": "possible",
+      "file": "tests/misc_tests.c",
+      "line": 480,
+      "verdict": "false",
+      "note": "FALSE POSITIVE. cJSON_Delete frees item->string and item->valuestring only when the type flags cJSON_StringIsConst / cJSON_IsReference are clear; the analysis does not correlate the release with the flag bits, so the strings a reference or a constant-string item shares may look released twice."
+    },
+    {
+      "fingerprint": "ca95855bd868c081febb18e85442b90a",
+      "config": "cJSON",
+      "id": "double-free",
+      "certainty": "possible",
+      "file": "tests/misc_tests.c",
+      "line": 603,
+      "verdict": "false",
+      "note": "FALSE POSITIVE. A reference item (cJSON_CreateObjectReference / ArrayReference) shares its child with the original; cJSON_Delete skips the children of an item whose type has cJSON_IsReference. The analysis does not tie the release to that flag, so deleting the original and then the reference may free the child twice."
+    },
+    {
+      "fingerprint": "bdb05eab129facd042d836c3ff749f84",
+      "config": "cJSON",
+      "id": "double-free",
+      "certainty": "possible",
+      "file": "tests/misc_tests.c",
+      "line": 621,
+      "verdict": "false",
+      "note": "FALSE POSITIVE. A reference item (cJSON_CreateObjectReference / ArrayReference) shares its child with the original; cJSON_Delete skips the children of an item whose type has cJSON_IsReference. The analysis does not tie the release to that flag, so deleting the original and then the reference may free the child twice."
+    },
+    {
+      "fingerprint": "71a9d84a1f1b6de2fd59c78a082ea068",
+      "config": "cJSON",
+      "id": "double-free",
+      "certainty": "possible",
+      "file": "tests/misc_tests.c",
+      "line": 781,
+      "verdict": "false",
+      "note": "FALSE POSITIVE. A reference item (cJSON_CreateObjectReference / ArrayReference) shares its child with the original; cJSON_Delete skips the children of an item whose type has cJSON_IsReference. The analysis does not tie the release to that flag, so deleting the original and then the reference may free the child twice."
+    },
+    {
+      "fingerprint": "d8b2c318507643fe41133367497c7157",
+      "config": "cJSON",
+      "id": "double-free",
+      "certainty": "possible",
+      "file": "tests/old_utils_tests.c",
+      "line": 134,
+      "verdict": "false",
+      "note": "FALSE POSITIVE. object1/object3 and their children were built by cJSON_Create*/cJSON_AddItemToObject and are deleted once each; the earlier cJSON_Delete(object) walks a list whose items the analysis cannot tell apart from these (list-walking destructor, RFC 0031 unresolved question), so the later deletes may look like second frees."
+    },
+    {
+      "fingerprint": "4d8f26f92669010a926637b79d0a5929",
+      "config": "cJSON",
+      "id": "double-free",
+      "certainty": "possible",
+      "file": "tests/old_utils_tests.c",
+      "line": 135,
+      "verdict": "false",
+      "note": "FALSE POSITIVE. object1/object3 and their children were built by cJSON_Create*/cJSON_AddItemToObject and are deleted once each; the earlier cJSON_Delete(object) walks a list whose items the analysis cannot tell apart from these (list-walking destructor, RFC 0031 unresolved question), so the later deletes may look like second frees."
+    },
+    {
+      "fingerprint": "4958c275e78c065ccb7054de0a65b8d4",
+      "config": "cJSON",
+      "id": "use-after-free",
+      "certainty": "possible",
+      "file": "tests/misc_tests.c",
+      "line": 344,
+      "verdict": "false",
+      "note": "FALSE POSITIVE. cJSON_ReplaceItemViaPointer frees only the item it replaces; the test then compares and dereferences the neighbours, which stay in the array. The analysis cannot tell the replaced item from its siblings (the list is walked through focus objects), so each later use of a sibling may be of the freed one."
+    },
+    {
+      "fingerprint": "acec9f1a504193fb01b9d8b52dff84bf",
+      "config": "cJSON",
+      "id": "use-after-free",
+      "certainty": "possible",
+      "file": "tests/misc_tests.c",
+      "line": 351,
+      "verdict": "false",
+      "note": "FALSE POSITIVE. cJSON_ReplaceItemViaPointer frees only the item it replaces; the test then compares and dereferences the neighbours, which stay in the array. The analysis cannot tell the replaced item from its siblings (the list is walked through focus objects), so each later use of a sibling may be of the freed one."
+    },
+    {
+      "fingerprint": "b8379446c2e72d72cb34f183f4ca8d2e",
+      "config": "cJSON",
+      "id": "use-after-free",
+      "certainty": "possible",
+      "file": "tests/misc_tests.c",
+      "line": 354,
+      "verdict": "false",
+      "note": "FALSE POSITIVE. cJSON_ReplaceItemViaPointer frees only the item it replaces; the test then compares and dereferences the neighbours, which stay in the array. The analysis cannot tell the replaced item from its siblings (the list is walked through focus objects), so each later use of a sibling may be of the freed one."
+    },
+    {
+      "fingerprint": "88082110cf455480a2b50125cdfd916d",
+      "config": "cJSON",
+      "id": "use-after-free",
+      "certainty": "possible",
+      "file": "tests/misc_tests.c",
+      "line": 486,
+      "verdict": "false",
+      "note": "FALSE POSITIVE. cJSON_Delete frees item->string and item->valuestring only when the type flags cJSON_StringIsConst / cJSON_IsReference are clear; the analysis does not correlate the release with the flag bits, so the strings a reference or a constant-string item shares may look released twice."
+    },
+    {
+      "fingerprint": "f110a0c664484e91ad163be5b3500df1",
+      "config": "cJSON",
+      "id": "use-after-free",
+      "certainty": "possible",
+      "file": "tests/print_array.c",
+      "line": 61,
+      "verdict": "false",
+      "note": "FALSE POSITIVE. The print buffer is a local array with noalloc = true: ensure() reallocates (and frees) the buffer only when noalloc is false, which the analysis does not correlate with the release, so the array read after printing may look freed."
+    },
+    {
+      "fingerprint": "62e2ada2f03c235b39709a9dd6f6b9b9",
+      "config": "cJSON",
+      "id": "use-after-free",
+      "certainty": "possible",
+      "file": "tests/print_array.c",
+      "line": 65,
+      "verdict": "false",
+      "note": "FALSE POSITIVE. The print buffer is a local array with noalloc = true: ensure() reallocates (and frees) the buffer only when noalloc is false, which the analysis does not correlate with the release, so the array read after printing may look freed."
+    },
+    {
+      "fingerprint": "c375726d1fc5c3dff3252cc3d7babede",
+      "config": "cJSON",
+      "id": "use-after-free",
+      "certainty": "possible",
+      "file": "tests/print_object.c",
+      "line": 62,
+      "verdict": "false",
+      "note": "FALSE POSITIVE. As print_array.c: a noalloc print buffer (a local array) is never reallocated, which the analysis does not correlate with ensure()'s release."
+    },
+    {
+      "fingerprint": "b88afb15ab7b700bb01a1b1163f0a02b",
+      "config": "cJSON",
+      "id": "use-after-free",
+      "certainty": "possible",
+      "file": "tests/print_object.c",
+      "line": 66,
+      "verdict": "false",
+      "note": "FALSE POSITIVE. As print_array.c: a noalloc print buffer (a local array) is never reallocated, which the analysis does not correlate with ensure()'s release."
+    },
+    {
+      "fingerprint": "05cff602a41f412cf8b02e1bed40fb40",
+      "config": "cJSON",
+      "id": "use-after-free",
+      "certainty": "possible",
+      "file": "tests/print_string.c",
+      "line": 38,
+      "verdict": "false",
+      "note": "FALSE POSITIVE. As print_array.c: a noalloc print buffer (a local array) is never reallocated, which the analysis does not correlate with ensure()'s release."
+    },
+    {
+      "fingerprint": "b95bc6ee6bdb5498627b0bacce69299d",
+      "config": "cJSON",
+      "id": "use-after-move",
+      "certainty": "possible",
+      "file": "cJSON.c",
+      "line": 1293,
+      "verdict": "false",
+      "note": "FALSE POSITIVE, an infeasible path. print() frees buffer->buffer at 1284 and sets it to NULL at 1285 before returning at 1288; the fail: label is reached only from the goto at 1278, before either. The join of the two paths loses the = NULL and the != NULL test at 1291."
+    },
+    {
+      "fingerprint": "876d7a9e6ffb8ac59b1753e42d9412db",
+      "config": "lua",
+      "id": "use-after-move",
+      "certainty": "possible",
+      "file": "ldo.c",
+      "line": 343,
+      "verdict": "false",
+      "note": "FALSE POSITIVE. luaD_reallocstack passes the old stack pointer to correctstack, which only subtracts it from the stack slots' offsets (pointer arithmetic, relstack/correctstack); the old block is never read after the reallocation moved it."
+    },
+    {
+      "fingerprint": "78176fe7b33176491fdf0f6472b36bc2",
+      "config": "lua",
+      "id": "use-after-move",
+      "certainty": "possible",
+      "file": "ldo.c",
+      "line": 349,
+      "verdict": "false",
+      "note": "FALSE POSITIVE. luaD_reallocstack passes the old stack pointer to correctstack, which only subtracts it from the stack slots' offsets (pointer arithmetic, relstack/correctstack); the old block is never read after the reallocation moved it."
+    },
+    {
+      "fingerprint": "cf3e75b1001e8245fee204fc2b3537d7",
+      "config": "lua",
+      "id": "use-after-move",
+      "certainty": "possible",
+      "file": "lmem.c",
+      "line": 182,
+      "verdict": "false",
+      "note": "FALSE POSITIVE. luaM_realloc_ calls tryagain with the block only when firsttry returned NULL for a non-zero size: a failed reallocation, which keeps the block (l_alloc is realloc, and a zero size never reaches here). The analysis does not tie the move to the non-null result through the allocator function pointer."
+    },
+    {
+      "fingerprint": "ac735f1bab706c78f0015a90859612f0",
+      "config": "lua",
+      "id": "use-after-move",
+      "certainty": "possible",
+      "file": "lobject.c",
+      "line": 572,
+      "verdict": "false",
+      "note": "FALSE POSITIVE. addstr2buff reallocates buff->b only when it no longer points to the static space (buff->b == buff->space selects a fresh allocation instead), and stores the new block before any further use; the analysis joins the two arms and keeps the old value possibly moved."
+    },
+    {
+      "fingerprint": "f644a75a5dbbad1ebdbd8aeba0b805cc",
+      "config": "lua",
+      "id": "use-after-move",
+      "certainty": "possible",
+      "file": "lobject.c",
+      "line": 601,
+      "verdict": "false",
+      "note": "FALSE POSITIVE. &buff is the address of luaO_pushvfstring's local BuffFS, which is never freed; addstr2buff's reallocation moves buff->b, and because buff->b may point into buff itself (its static space) the analysis takes the move for a possible move of buff. The code reallocates only when buff->b is not the static space."
+    },
+    {
+      "fingerprint": "0cff98c429a8c929be9327312c43aa46",
+      "config": "lua",
+      "id": "use-after-move",
+      "certainty": "possible",
+      "file": "lobject.c",
+      "line": 606,
+      "verdict": "false",
+      "note": "FALSE POSITIVE. &buff is the address of luaO_pushvfstring's local BuffFS, which is never freed; addstr2buff's reallocation moves buff->b, and because buff->b may point into buff itself (its static space) the analysis takes the move for a possible move of buff. The code reallocates only when buff->b is not the static space."
+    },
+    {
+      "fingerprint": "a3d2d97d9077f6a8470dbe780935fad4",
+      "config": "lua",
+      "id": "use-after-move",
+      "certainty": "possible",
+      "file": "lobject.c",
+      "line": 611,
+      "verdict": "false",
+      "note": "FALSE POSITIVE. &buff is the address of luaO_pushvfstring's local BuffFS, which is never freed; addstr2buff's reallocation moves buff->b, and because buff->b may point into buff itself (its static space) the analysis takes the move for a possible move of buff. The code reallocates only when buff->b is not the static space."
+    },
+    {
+      "fingerprint": "1778623d51088d557886f6714e57672f",
+      "config": "lua",
+      "id": "use-after-move",
+      "certainty": "possible",
+      "file": "lobject.c",
+      "line": 617,
+      "verdict": "false",
+      "note": "FALSE POSITIVE. &buff is the address of luaO_pushvfstring's local BuffFS, which is never freed; addstr2buff's reallocation moves buff->b, and because buff->b may point into buff itself (its static space) the analysis takes the move for a possible move of buff. The code reallocates only when buff->b is not the static space."
+    },
+    {
+      "fingerprint": "2730531e792486393001b69a628babf9",
+      "config": "lua",
+      "id": "use-after-move",
+      "certainty": "possible",
+      "file": "lobject.c",
+      "line": 623,
+      "verdict": "false",
+      "note": "FALSE POSITIVE. &buff is the address of luaO_pushvfstring's local BuffFS, which is never freed; addstr2buff's reallocation moves buff->b, and because buff->b may point into buff itself (its static space) the analysis takes the move for a possible move of buff. The code reallocates only when buff->b is not the static space."
+    },
+    {
+      "fingerprint": "4629a2030e97ca5ba791887a11138ea2",
+      "config": "lua",
+      "id": "use-after-move",
+      "certainty": "possible",
+      "file": "lobject.c",
+      "line": 629,
+      "verdict": "false",
+      "note": "FALSE POSITIVE. &buff is the address of luaO_pushvfstring's local BuffFS, which is never freed; addstr2buff's reallocation moves buff->b, and because buff->b may point into buff itself (its static space) the analysis takes the move for a possible move of buff. The code reallocates only when buff->b is not the static space."
+    },
+    {
+      "fingerprint": "3a2c5f0ec794a03c3208b090dbdc830c",
+      "config": "lua",
+      "id": "use-after-move",
+      "certainty": "possible",
+      "file": "lobject.c",
+      "line": 636,
+      "verdict": "false",
+      "note": "FALSE POSITIVE. &buff is the address of luaO_pushvfstring's local BuffFS, which is never freed; addstr2buff's reallocation moves buff->b, and because buff->b may point into buff itself (its static space) the analysis takes the move for a possible move of buff. The code reallocates only when buff->b is not the static space."
+    },
+    {
+      "fingerprint": "4bec1d917193b3a87ab1897fc2bb1739",
+      "config": "lua",
+      "id": "use-after-move",
+      "certainty": "possible",
+      "file": "lobject.c",
+      "line": 643,
+      "verdict": "false",
+      "note": "FALSE POSITIVE. &buff is the address of luaO_pushvfstring's local BuffFS, which is never freed; addstr2buff's reallocation moves buff->b, and because buff->b may point into buff itself (its static space) the analysis takes the move for a possible move of buff. The code reallocates only when buff->b is not the static space."
+    },
+    {
+      "fingerprint": "fec91099a720fc7917c882456a75bb72",
+      "config": "lua",
+      "id": "use-after-move",
+      "certainty": "possible",
+      "file": "lobject.c",
+      "line": 647,
+      "verdict": "false",
+      "note": "FALSE POSITIVE. &buff is the address of luaO_pushvfstring's local BuffFS, which is never freed; addstr2buff's reallocation moves buff->b, and because buff->b may point into buff itself (its static space) the analysis takes the move for a possible move of buff. The code reallocates only when buff->b is not the static space."
+    },
+    {
+      "fingerprint": "3938678f600e41273a79302ac80d0c6d",
+      "config": "lua",
+      "id": "use-after-move",
+      "certainty": "possible",
+      "file": "lobject.c",
+      "line": 651,
+      "verdict": "false",
+      "note": "FALSE POSITIVE. &buff is the address of luaO_pushvfstring's local BuffFS, which is never freed; addstr2buff's reallocation moves buff->b, and because buff->b may point into buff itself (its static space) the analysis takes the move for a possible move of buff. The code reallocates only when buff->b is not the static space."
+    },
+    {
+      "fingerprint": "9ff458f76f3f0c1694feab5a687f39c0",
+      "config": "lua",
+      "id": "use-after-move",
+      "certainty": "possible",
+      "file": "lobject.c",
+      "line": 657,
+      "verdict": "false",
+      "note": "FALSE POSITIVE. &buff is the address of luaO_pushvfstring's local BuffFS, which is never freed; addstr2buff's reallocation moves buff->b, and because buff->b may point into buff itself (its static space) the analysis takes the move for a possible move of buff. The code reallocates only when buff->b is not the static space."
+    },
+    {
+      "fingerprint": "60d09d0bad5daac927099485a1cd85ab",
+      "config": "lua",
+      "id": "use-after-move",
+      "certainty": "possible",
+      "file": "lobject.c",
+      "line": 658,
+      "verdict": "false",
+      "note": "FALSE POSITIVE. &buff is the address of luaO_pushvfstring's local BuffFS, which is never freed; addstr2buff's reallocation moves buff->b, and because buff->b may point into buff itself (its static space) the analysis takes the move for a possible move of buff. The code reallocates only when buff->b is not the static space."
+    },
+    {
+      "fingerprint": "368eb1d5e87dfc860ddb7a874b5211b5",
+      "config": "sqlite",
+      "id": "unsafe-operation",
+      "certainty": "definite",
+      "file": "sqlite3.c",
+      "line": 127325,
+      "verdict": "true",
+      "note": "TRUE under the model's rules. `zP4 = x.p4type==P4_INT32 ? SQLITE_INT_TO_PTR(x.p4.i) : x.p4.z;` makes `zP4` a pointer from an integer on one arm (RFC 0004 raw, `(void*)(intptr_t)X`), and `sqlite3VdbeAddOp4` hands it to `sqlite3VdbeChangeP4`, which reads through it when `n` (here `x.p4type`) is a string or blob type and only stores it back as an integer for P4_INT32. RFC 0004 (Passing to a dereferencing callee, and its drawback 'A raw pointer passed to a callee that only might dereference it'): the check is against the callee's summary, whose effects are may-effects, so the call is the dereference. At run time the P4_INT32 path never dereferences it; the finding is the RFC's documented coarseness, not a memory error."
+    },
+    {
+      "fingerprint": "7e3aa44178b812263e52fd0ab417f2b5",
+      "config": "sqlite",
+      "id": "unsafe-operation",
+      "certainty": "definite",
+      "file": "sqlite3.c",
+      "line": 157755,
+      "verdict": "true",
+      "note": "TRUE under the model's rules. `sqlite3VdbeChangeP4(v, -1, SQLITE_INT_TO_PTR(n), P4_INT32)` passes a pointer made from an integer (RFC 0004 raw) to a callee that reads through `zP4` for other `n` (`vdbeChangeP4Full` copies it when `n > 0`). RFC 0004 (Passing to a dereferencing callee, and its drawback 'A raw pointer passed to a callee that only might dereference it'): the check is against the callee's summary, whose effects are may-effects, so the call is the dereference. With P4_INT32 the callee only converts it back (`SQLITE_PTR_TO_INT`)."
+    },
+    {
+      "fingerprint": "f7748d60b9e55d8094f95c5ddb57e2b4",
+      "config": "sqlite",
+      "id": "unsafe-operation",
+      "certainty": "definite",
+      "file": "sqlite3.c",
+      "line": 170850,
+      "verdict": "true",
+      "note": "TRUE under the model's rules. `sqlite3_wal_hook(db, sqlite3WalDefaultHook, SQLITE_INT_TO_PTR(nFrame))` passes a pointer made from an integer (RFC 0004 raw) as the hook's context argument; `sqlite3_wal_hook` stores it and the WAL code later passes it to the installed hook, which may dereference it (the summary follows the slot's unknown targets). RFC 0004 (Passing to a dereferencing callee, and its drawback 'A raw pointer passed to a callee that only might dereference it'): the check is against the callee's summary, whose effects are may-effects, so the call is the dereference. `sqlite3WalDefaultHook` converts it back with `SQLITE_PTR_TO_INT` and never dereferences it."
+    },
+    {
+      "fingerprint": "0c0e7454a697a5dacae3ec4b58be9c72",
+      "config": "cJSON",
+      "id": "use-after-free",
+      "certainty": "possible",
+      "file": "tests/parse_array.c",
+      "line": 88,
+      "verdict": "false",
+      "note": "FALSE POSITIVE. The test reuses the file's global `static cJSON item[1]`: `reset(item)` releases the previous child tree (`cJSON_Delete(item->child)`) and zeroes `item`, and `assert_parse_array` then parses into it again, so `item->child` is a new list. `parse_array`'s summary cannot describe the new objects (they come from `global_hooks.allocate`, a hook), so the caller's view of the new child is the unknown object, which also stands for the child `reset` released: a release of an object that stands for several is a possible one, and every later use through it a possible use after free. Closing it needs undescribed summary values that are not all one object (a per-call object was tried and introduced leak reports, RFC 0031 *Gate status*)."
+    },
+    {
+      "fingerprint": "5fe71c7ceb9097f10fd240006a5c158d",
+      "config": "cJSON",
+      "id": "use-after-free",
+      "certainty": "possible",
+      "file": "tests/parse_array.c",
+      "line": 136,
+      "verdict": "false",
+      "note": "FALSE POSITIVE. The test reuses the file's global `static cJSON item[1]`: `reset(item)` releases the previous child tree (`cJSON_Delete(item->child)`) and zeroes `item`, and `assert_parse_array` then parses into it again, so `item->child` is a new list. `parse_array`'s summary cannot describe the new objects (they come from `global_hooks.allocate`, a hook), so the caller's view of the new child is the unknown object, which also stands for the child `reset` released: a release of an object that stands for several is a possible one, and every later use through it a possible use after free. Closing it needs undescribed summary values that are not all one object (a per-call object was tried and introduced leak reports, RFC 0031 *Gate status*)."
+    },
+    {
+      "fingerprint": "ac0327381e57278e101a4ab9b1142933",
+      "config": "cJSON",
+      "id": "use-after-free",
+      "certainty": "possible",
+      "file": "tests/parse_array.c",
+      "line": 138,
+      "verdict": "false",
+      "note": "FALSE POSITIVE. The test reuses the file's global `static cJSON item[1]`: `reset(item)` releases the previous child tree (`cJSON_Delete(item->child)`) and zeroes `item`, and `assert_parse_array` then parses into it again, so `item->child` is a new list. `parse_array`'s summary cannot describe the new objects (they come from `global_hooks.allocate`, a hook), so the caller's view of the new child is the unknown object, which also stands for the child `reset` released: a release of an object that stands for several is a possible one, and every later use through it a possible use after free. Closing it needs undescribed summary values that are not all one object (a per-call object was tried and introduced leak reports, RFC 0031 *Gate status*)."
     }
   ]
 }

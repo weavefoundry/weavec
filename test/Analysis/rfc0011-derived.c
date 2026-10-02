@@ -21,7 +21,7 @@ struct node { struct link link; int v; };
 
 // The release through `i` is a release of `o->in.buf` in the summary.
 // DUMP-LABEL: function 'release_inner':
-// DUMP: summary: o->in.buf: freed(free); stores{} returns{} requires{o}
+// DUMP: release *param0->in.buf free when always
 static void release_inner(struct outer *o) {
   struct inner *i = &o->in;
   free(i->buf);
@@ -49,9 +49,11 @@ void through_field(void) {
 // -- container_of -------------------------------------------------------------
 
 // Freed at minus the offset of `in`: the summary says so, and the caller
-// composes it with the field pointer it passed.
+// composes it with the field pointer it passed. The object engine names
+// offsets in bytes (RFC 0031 *Implementation amendments*, *Interior
+// releases*), and `in` is at byte 0, so the release is at the start.
 // DUMP-LABEL: function 'free_container':
-// DUMP: summary: i: freed(free)@-struct outer.in; stores{} returns{}
+// DUMP: release *param0 free when always
 void free_container(struct inner *i) {
   free(container_of(i, struct outer, in));
 }
@@ -64,9 +66,11 @@ void use_container(void) {
   free_container(&o->in);
 }
 
-// Clean: the member pointer handed out is the fresh object at the field.
+// Clean: the member pointer handed out is the fresh object at the field
+// (byte 0, so no offset).
 // DUMP-LABEL: function 'make_inner':
-// DUMP: summary: stores{} returns{fresh(free) @+struct outer.in extent=16, null}
+// DUMP: result null when null
+// DUMP: result fresh#0 free extent 16 zeroed when nonnull
 struct inner *make_inner(void) {
   struct outer *o = malloc(sizeof *o);
   if (!o)
@@ -88,33 +92,46 @@ void link_node(struct list *l) {
 
 // -- Releases away from the start ---------------------------------------------
 
+// The old engine reported `free(&o->in)` as `points to field 'in'`. `in` is
+// the first member, so `&o->in` is the allocation's start and the release is
+// valid: RFC 0031 §5.5 makes a release invalid only at an offset that is
+// provably non-zero. A field past the start keeps the message.
 void field_release(void) {
   struct outer *o = malloc(sizeof *o);
   if (!o)
     return;
-  // CHECK: rfc0011-derived.c:[[@LINE+1]]:3: error: 'o' is released but points to field 'in' of its allocation [weavec::invalid-release]
-  free(&o->in);
+  // CHECK: rfc0011-derived.c:[[@LINE+1]]:3: error: 'o' is released but points to field 'k' of its allocation [weavec::invalid-release]
+  free(&o->k);
   // CHECK: rfc0011-derived.c:[[@LINE-5]]:21: note: allocated here
+}
+
+// Clean: the first member is at the start.
+void first_field_release(void) {
+  struct outer *o = malloc(sizeof *o);
+  if (!o)
+    return;
+  free(&o->in);
 }
 
 // Clean: `p - 3` is `s` again, and the summary says `s` is freed at zero.
 // DUMP-LABEL: function 'rebase':
-// DUMP: summary: s: freed(free); stores{} returns{}
+// DUMP: release *param0 free when always
 void rebase(char *WEAVEC_OWNED s) {
   char *p = s + 3;
   free(p - 3);
 }
 
 // DUMP-LABEL: function 'bad_rebase':
-// DUMP: summary: s: freed(free)@+1; stores{} returns{}
+// DUMP: release *param0 free offset 1 when always
 void bad_rebase(char *WEAVEC_OWNED s) {
   char *p = s + 3;
   // CHECK: rfc0011-derived.c:[[@LINE+1]]:3: error: 'p' is released but points 1 element past the start of its allocation [weavec::invalid-release]
   free(p - 2);
 }
 
+// Four `int` elements are 16 bytes.
 // DUMP-LABEL: function 'stepped':
-// DUMP: summary: s: freed(free)@+4; stores{} returns{}
+// DUMP: release *param0 free offset 16 when always
 void stepped(int *WEAVEC_OWNED s) {
   s += 4;
   // CHECK: rfc0011-derived.c:[[@LINE+1]]:3: error: 's' is released but points 4 elements past the start of its allocation [weavec::invalid-release]
@@ -150,7 +167,8 @@ typedef struct state { frame *ci; frame base_ci; } state;
 
 // A callee returning `&L->base_ci` hands out `L` at that field.
 // DUMP-LABEL: function 'precall':
-// DUMP: summary: stores{} returns{copy L @+struct state.base_ci when[c =0], null when[c positive|negative]} requires{L}
+// DUMP: result null when null and param 1 !=0
+// DUMP: result path param0 offset 8 when nonnull
 frame *precall(state *L, int c) {
   if (c)
     return NULL;
@@ -177,9 +195,12 @@ startfunc:
 }
 
 // A local that equals a caller's place is named by it, not by the derived
-// name it may also carry (Lua's `ci = L->ci = next_ci(L)`).
+// name it may also carry (Lua's `ci = L->ci = next_ci(L)`). `L->ci` ends as
+// `L->base_ci.next` or the entry `L->ci->next`, which no one format-30 value
+// spells (RFC 0031 §6.1), so the store and the result are `unknown`.
 // DUMP-LABEL: function 'next_frame':
-// DUMP: summary: L->base_ci.next: read; L->ci: read|written; L->ci->next: read; stores{L->ci = copy L @+struct state.base_ci when[c positive|negative], L->ci = copy L->ci->next} returns{copy-post L->ci} requires{L}
+// DUMP: result unknown maybe-null when null nonnull
+// DUMP: store param0->ci := unknown
 frame *next_frame(state *L, int c) {
   if (c)
     L->ci = &L->base_ci;

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests for scripts/check-hygiene.py (RFC 0030, gate H2).
+"""Tests for scripts/check-hygiene.py (RFC 0030 gate H2, as RFC 0031 amends it).
 
 Each test builds a small fake WeaveC tree in a temporary directory. Those
 trees are not git work trees, so the checker walks them; GitSelectionTest
@@ -44,57 +44,43 @@ builtins;
 __builtin_expect (int, int) -> int;
 """
 
-DATAFLOW_H = """\
-#ifndef WEAVEC_LIB_ANALYSIS_DATAFLOW_H
-#define WEAVEC_LIB_ANALYSIS_DATAFLOW_H
+ENGINE_H = """\
+#ifndef WEAVEC_LIB_ANALYSIS_ENGINE_H
+#define WEAVEC_LIB_ANALYSIS_ENGINE_H
 
-#include "weavec/Analysis/FunctionAnalysis.h"
 #include "weavec/Analysis/LedgerAdapter.h"
+#include "weavec/Analysis/ObjectEngine.h"
 
 namespace weavec::analysis {
 
-/// Everything goes through `ledgerAdapter`; see RFC 0030 section 14.
-class FunctionDataflow {
+/// Publishes only through `ledgerAdapter`, never a DiagnosticSink.
+class FunctionRun {
 public:
-  FunctionDataflow(clang::ASTContext &ctx, LedgerAdapter &ledgerAdapter,
-                   const AnalysisOptions &analysisOptions, bool emitDiags);
-  void run();
-
-private:
-  // Not a DiagnosticSink: the adapter reports. A closing brace: }
-  const char *closing = "}";
-  const AnalysisOptions &options;
+  FunctionRun(clang::ASTContext &ctx, LedgerAdapter &ledgerAdapter);
+  const char *why = "no DiagnosticSink here";
   // MEMBERS
 };
 
-void describe(const FunctionDataflow &dataflow);
-
 } // namespace weavec::analysis
 
-#endif // WEAVEC_LIB_ANALYSIS_DATAFLOW_H
+#endif // WEAVEC_LIB_ANALYSIS_ENGINE_H
 """
 
-DATAFLOW_CPP = """\
-#include "Dataflow.h"
+ENGINE_RUN_CPP = """\
+#include "Engine.h"
 
 using namespace weavec::analysis;
 
-FunctionDataflow::FunctionDataflow(ASTContext &ctx, LedgerAdapter &ledgerAdapter,
-                                   const AnalysisOptions &analysisOptions,
-                                   bool emitDiags)
-    : options(analysisOptions) {}
-
-void FunctionDataflow::run() {}
+FunctionRun::FunctionRun(clang::ASTContext &ctx, LedgerAdapter &ledgerAdapter) {}
 """
 
-FUNCTION_ANALYSIS_H = """\
+OBJECT_ENGINE_H = """\
 #pragma once
-namespace weavec::analysis {
-struct AnalysisOptions {
-  bool strictExterns = false;
-  // OPTIONS
+#include "weavec/Analysis/SafetyEngine.h"
+class ObjectEngine : public SafetyEngine {
+public:
+  void run(LedgerAdapter &ledgerAdapter) override;
 };
-} // namespace weavec::analysis
 """
 
 # A tree that passes every check.
@@ -102,17 +88,19 @@ CLEAN_TREE = {
     "lib/CMakeLists.txt": "add_subdirectory(Core)\nadd_subdirectory(Analysis)\n",
     "lib/Core/LibrarySpec.txt": LIBRARY_SPEC,
     "lib/Core/LibrarySpec.cpp": 'bool isFree(std::string_view n) { return n == "free"; }\n',
-    "lib/Analysis/Dataflow.h": DATAFLOW_H,
-    "lib/Analysis/Dataflow.cpp": DATAFLOW_CPP,
+    "lib/Analysis/Engine.h": ENGINE_H,
+    "lib/Analysis/EngineRun.cpp": ENGINE_RUN_CPP,
     "lib/Analysis/LedgerAdapter.cpp": '#include "weavec/Analysis/LedgerAdapter.h"\n',
     "include/weavec/Analysis/LedgerAdapter.h": (
         '#pragma once\n#include "weavec/Core/Diagnostic.h"\n'
         "// The adapter owns the sink: that is the seam.\n"
         "class LedgerAdapter {\n  weavec::core::DiagnosticSink &sink;\n};\n"),
-    "include/weavec/Analysis/FunctionAnalysis.h": FUNCTION_ANALYSIS_H,
+    "include/weavec/Analysis/ObjectEngine.h": OBJECT_ENGINE_H,
+    "include/weavec/Analysis/SafetyEngine.h": "#pragma once\nclass SafetyEngine {};\n",
     "include/weavec/Core/Diagnostic.h": "#pragma once\nclass DiagnosticSink {};\n",
     "tools/weavec/main.cpp": "int main() { return 0; }\n",
     "docs/rfcs/0030-prove-or-trap.md": "The --checked flag and SafetyState are retired.\n",
+    "docs/rfcs/0031-object-engine.md": "Replaces FunctionDataflow and DataflowEngine.\n",
     "docs/pages/reference/cli.md": "# CLI\n\nweavec [options] files\n",
 }
 
@@ -159,7 +147,7 @@ class CleanTreeTest(TreeTest):
         self.assertEqual((result.library_entries, result.library_aliases), (5, 3))
         code, output = self.run_main()
         self.assertEqual(code, 0)
-        self.assertTrue(output.startswith("Summary (RFC 0030, gate H2)\n"), output)
+        self.assertTrue(output.startswith("Summary (RFC 0030 and 0031, gate H2)\n"), output)
         self.assertEqual(output.splitlines()[-1], "H2: PASS (0 violations)")
 
     def test_walk_skips_build_and_tool_output(self):
@@ -192,6 +180,23 @@ class RetiredNameTest(TreeTest):
             ("lib/Core/Safety.cpp", 2, "'SafetyState' at column 1"),
             ("lib/Core/Safety.cpp", 2, "'CheckedContract' at column 16"),
             ("tools/weavec/Options.cpp", 1, "'checkContracts' at column 6"),
+        ])
+
+    def test_old_engine_names(self):
+        self.write("lib/Analysis/Old.cpp", "SummaryStore store; FunctionSummary summary;\n")
+        self.write("tools/weavec/main.cpp", "// TranslationUnitAnalyzer, FunctionAnalyzer\n")
+        self.write("docs/development.md", "Run DataflowEngine.\n")
+        self.write("docs/architecture.md", "The engine: `FunctionDataflow`, and --checked.\n")
+        self.write("docs/rfcs/0030-prove-or-trap.md", "FunctionDataflow stays in RFC text.\n")
+        result = hygiene.run_checks(self.root)
+        self.assertEqual([(v.path, v.line, v.message) for v in result.violations], [
+            ("docs/architecture.md", 1, "'FunctionDataflow' at column 14"),
+            ("docs/architecture.md", 1, "'--checked' at column 37"),
+            ("docs/development.md", 1, "'DataflowEngine' at column 5"),
+            ("lib/Analysis/Old.cpp", 1, "'SummaryStore' at column 1"),
+            ("lib/Analysis/Old.cpp", 1, "'FunctionSummary' at column 21"),
+            ("tools/weavec/main.cpp", 1, "'TranslationUnitAnalyzer' at column 4"),
+            ("tools/weavec/main.cpp", 1, "'FunctionAnalyzer' at column 29"),
         ])
 
 
@@ -319,24 +324,48 @@ class CorpusWordTest(TreeTest):
         ])
 
 
-class DataflowIncludeTest(TreeTest):
-    def test_direct_includes_resolved_or_not(self):
+class EngineIncludeTest(TreeTest):
+    def test_only_engine_sources_include_engine_h(self):
+        for allowed in ("lib/Analysis/EngineCalls.cpp", "lib/Analysis/ObjectEngine.cpp"):
+            self.write(allowed, '#include "Engine.h"\n')
+        self.write("lib/Analysis/SafetyEngine.cpp", '#include "Engine.h"\n')
+        self.write("lib/Analysis/EngineIntegers.h", '#include "Engine.h"\n')  # a header
+        self.write("lib/Analysis/Sub/EngineWalk.cpp", '#include "../Engine.h"\n')  # not in lib/Analysis
+        self.write("lib/Frontend/Driver.cpp", "#include <weavec/Analysis/Engine.h>\n")
+        self.write("lib/Analysis/UnitPipeline.cpp", """
+            // #include "Engine.h"
+            #include "weavec/Analysis/ObjectEngine.h"
+            #include "weavec/Analysis/SafetyEngine.h"
+            """)
+        self.write("tools/weavec/main.cpp", '#include "../../lib/Analysis/Engine.h"\n')  # not scanned
+        self.assertEqual(self.found("engine-include"), [
+            ("lib/Analysis/EngineIntegers.h", 1,
+             "includes Engine.h directly: lib/Analysis/EngineIntegers.h:1 -> lib/Analysis/Engine.h"),
+            ("lib/Analysis/SafetyEngine.cpp", 1,
+             "includes Engine.h directly: lib/Analysis/SafetyEngine.cpp:1 -> lib/Analysis/Engine.h"),
+            ("lib/Analysis/Sub/EngineWalk.cpp", 1,
+             "includes Engine.h directly: lib/Analysis/Sub/EngineWalk.cpp:1 -> lib/Analysis/Engine.h"),
+            ("lib/Frontend/Driver.cpp", 1,
+             "includes Engine.h directly: lib/Frontend/Driver.cpp:1 -> <weavec/Analysis/Engine.h>"),
+        ])
+
+    def test_direct_includes_by_new_components_resolved_or_not(self):
         self.write("lib/Analysis/SiteCollector.cpp", """
             #include "weavec/Analysis/SiteCollector.h"
-            #include "Dataflow.h"
+            #include "Engine.h"
             """)
         self.write("include/weavec/Analysis/CheckPlanner.h", """
             #pragma once
-            #  include <weavec/Analysis/Dataflow.h>
+            #  include <weavec/Engine/Engine.h>
             """)
-        self.assertEqual(self.found("dataflow-include"), [
-            ("include/weavec/Analysis/CheckPlanner.h", 2, "includes Dataflow.h directly: "
-             "include/weavec/Analysis/CheckPlanner.h:2 -> <weavec/Analysis/Dataflow.h>"),
-            ("lib/Analysis/SiteCollector.cpp", 2, "includes Dataflow.h directly: "
-             "lib/Analysis/SiteCollector.cpp:2 -> lib/Analysis/Dataflow.h"),
+        self.assertEqual(self.found("engine-include"), [
+            ("include/weavec/Analysis/CheckPlanner.h", 2, "includes Engine.h directly: "
+             "include/weavec/Analysis/CheckPlanner.h:2 -> <weavec/Engine/Engine.h>"),
+            ("lib/Analysis/SiteCollector.cpp", 2, "includes Engine.h directly: "
+             "lib/Analysis/SiteCollector.cpp:2 -> lib/Analysis/Engine.h"),
         ])
 
-    def test_transitive_include_reports_the_chain(self):
+    def test_transitive_include_by_a_new_component_reports_the_chain(self):
         self.write("lib/Analysis/KindInferenceFields.cpp", """
             // Field invariants.
 
@@ -344,106 +373,70 @@ class DataflowIncludeTest(TreeTest):
             """)
         self.write("lib/Analysis/KindInferenceImpl.h", """
             #pragma once
-            #include "weavec/Analysis/Engine.h"
+            #include "weavec/Analysis/Bridge.h"
             """)
-        self.write("include/weavec/Analysis/Engine.h", """
+        self.write("include/weavec/Analysis/Bridge.h", """
             #pragma once
             #include "weavec/Analysis/LedgerAdapter.h"
 
-            #include "Dataflow.h"
+            #include "Engine.h"
             """)
-        self.assertEqual(self.found("dataflow-include"), [
-            ("lib/Analysis/KindInferenceFields.cpp", 3, "includes Dataflow.h transitively: "
+        self.assertEqual(self.found("engine-include"), [
+            ("include/weavec/Analysis/Bridge.h", 4, "includes Engine.h directly: "
+             "include/weavec/Analysis/Bridge.h:4 -> lib/Analysis/Engine.h"),
+            ("lib/Analysis/KindInferenceFields.cpp", 3, "includes Engine.h transitively: "
              "lib/Analysis/KindInferenceFields.cpp:3 -> lib/Analysis/KindInferenceImpl.h:2 -> "
-             "include/weavec/Analysis/Engine.h:4 -> lib/Analysis/Dataflow.h"),
-            ("lib/Analysis/KindInferenceImpl.h", 2, "includes Dataflow.h transitively: "
-             "lib/Analysis/KindInferenceImpl.h:2 -> include/weavec/Analysis/Engine.h:4 -> "
-             "lib/Analysis/Dataflow.h"),
+             "include/weavec/Analysis/Bridge.h:4 -> lib/Analysis/Engine.h"),
+            ("lib/Analysis/KindInferenceImpl.h", 2, "includes Engine.h transitively: "
+             "lib/Analysis/KindInferenceImpl.h:2 -> include/weavec/Analysis/Bridge.h:4 -> "
+             "lib/Analysis/Engine.h"),
         ])
 
-    def test_other_files_comments_and_cycles_do_not_count(self):
-        self.write("lib/Analysis/DataflowEngine.cpp", '#include "Dataflow.h"\n')
+    def test_other_headers_comments_and_cycles_do_not_count(self):
         self.write("lib/Analysis/SlotCollector.cpp", """
-            // #include "Dataflow.h"
-            /* #include "Dataflow.h" */
+            // #include "Engine.h"
+            /* #include "Engine.h" */
             #include "Cycle.h"
-            #include "DataflowTypes.h"
+            #include "EngineTypes.h"
+            #include "weavec/Analysis/ObjectEngine.h"
             """)
         self.write("lib/Analysis/Cycle.h", '#include "SlotCollector.h"\n#include "Cycle.h"\n')
         self.write("lib/Analysis/SlotCollector.h", '#include "Cycle.h"\n')
-        self.write("lib/Analysis/DataflowTypes.h", "#pragma once\nstruct Access {};\n")
-        self.assertEqual(self.found("dataflow-include"), [])
+        self.write("lib/Analysis/EngineTypes.h", "#pragma once\nstruct Access {};\n")
+        self.assertEqual(self.found("engine-include"), [])
 
 
-class DataflowSinkTest(TreeTest):
-    def test_a_sink_in_the_class_body(self):
-        # Line 17 has a '}' in a comment and line 18 one in a string: neither
-        # ends the class, so the members after them are still inside it.
-        self.edit("lib/Analysis/Dataflow.h", "  // MEMBERS\n",
+class EngineSinkTest(TreeTest):
+    def test_a_sink_in_the_engine(self):
+        self.edit("lib/Analysis/Engine.h", "  // MEMBERS\n",
                   "  core::DiagnosticSink &sink;\n  struct Pending { ClangDiagnosticSink *clang; };\n")
-        self.assertEqual(self.found("dataflow-sink"), [
-            ("lib/Analysis/Dataflow.h", 20, "class FunctionDataflow names DiagnosticSink"),
-            ("lib/Analysis/Dataflow.h", 21, "class FunctionDataflow names ClangDiagnosticSink"),
-        ])
-
-    def test_a_sink_outside_the_class_is_allowed(self):
-        self.edit("lib/Analysis/Dataflow.h", "void describe(const FunctionDataflow &dataflow);",
-                  "void describe(const FunctionDataflow &dataflow, core::DiagnosticSink &sink);\n"
-                  "struct Report { core::DiagnosticSink *sink; };")
-        self.write("lib/Analysis/DataflowReport.cpp", "void report(core::DiagnosticSink &sink) {}\n")
-        self.assertEqual(self.found("dataflow-sink"), [])
-
-    def test_a_constructor_definition_taking_a_sink(self):
-        self.write("lib/Analysis/DataflowSetup.cpp", """
-            #include "Dataflow.h"
-            FunctionDataflow::FunctionDataflow(core::DiagnosticSink &sink,
-                                               bool emitDiags) {}
-            FunctionDataflow::~FunctionDataflow() { DiagnosticSink *unused = nullptr; }
+        self.write("lib/Analysis/EngineCalls.cpp", """
+            #include "Engine.h"
+            void call(DiagnosticSink &sink) {}
             """)
-        self.assertEqual(self.found("dataflow-sink"), [
-            ("lib/Analysis/DataflowSetup.cpp", 2, "FunctionDataflow::FunctionDataflow takes DiagnosticSink"),
+        self.write("lib/Analysis/ObjectEngine.cpp", 'ObjectEngine::ObjectEngine(DiagnosticSink *s) {}\n')
+        self.edit("include/weavec/Analysis/ObjectEngine.h", "public:\n",
+                  "public:\n  explicit ObjectEngine(core::DiagnosticSink &sink);\n")
+        self.assertEqual(self.found("engine-sink"), [
+            ("include/weavec/Analysis/ObjectEngine.h", 5, "the engine names DiagnosticSink"),
+            ("lib/Analysis/Engine.h", 14, "the engine names DiagnosticSink"),
+            ("lib/Analysis/Engine.h", 15, "the engine names ClangDiagnosticSink"),
+            ("lib/Analysis/EngineCalls.cpp", 2, "the engine names DiagnosticSink"),
+            ("lib/Analysis/ObjectEngine.cpp", 1, "the engine names DiagnosticSink"),
         ])
 
-    def test_structs_that_a_constructor_takes(self):
-        self.edit("include/weavec/Analysis/FunctionAnalysis.h", "  // OPTIONS\n",
-                  "  core::DiagnosticSink *sink = nullptr;\n")
-        self.edit("lib/Analysis/Dataflow.h", "void describe(const FunctionDataflow &dataflow);",
-                  "struct DataflowInputs {\n  DiagnosticSink &sink;\n};\n"
-                  "struct Unrelated { DiagnosticSink *sink; };")
-        self.edit("lib/Analysis/Dataflow.h", "bool emitDiags);",
-                  "bool emitDiags,\n                   const DataflowInputs &inputs);")
-        self.write("include/weavec/Frontend/PrinterOptions.h", "struct PrinterOptions { DiagnosticSink *s; };\n")
-        taken = "which a FunctionDataflow constructor takes, names DiagnosticSink"
-        self.assertEqual(self.found("dataflow-sink"), [
-            ("include/weavec/Analysis/FunctionAnalysis.h", 5, f"AnalysisOptions, {taken}"),
-            ("lib/Analysis/Dataflow.h", 25, f"DataflowInputs, {taken}"),
-        ])
+    def test_a_sink_outside_the_engine_is_allowed(self):
+        for path in ("lib/Analysis/SafetyEngine.cpp", "lib/Analysis/Sub/EngineReport.cpp",
+                     "lib/Frontend/EngineDriver.cpp", "include/weavec/Analysis/EngineOptions.h",
+                     "tools/weavec/Engine.cpp"):
+            self.write(path, "void report(core::DiagnosticSink &sink) {}\n")
+        self.assertEqual(self.found("engine-sink"), [])
 
-    def test_a_missing_class_is_a_violation(self):
-        self.write("lib/Analysis/Dataflow.h",
-                   "#pragma once\nclass FunctionDataflow;\nfriend class FunctionDataflow;\n")
-        self.assertEqual(self.found("dataflow-sink"),
-                         [("lib/Analysis/Dataflow.h", None, "cannot find class FunctionDataflow")])
-        (self.root / "lib/Analysis/Dataflow.h").unlink()
-        self.assertEqual(self.found("dataflow-sink"), [
-            ("lib/Analysis/Dataflow.h", None,
-             "cannot find class FunctionDataflow (lib/Analysis/Dataflow.h is missing or unreadable)"),
+    def test_a_missing_engine_header_is_a_violation(self):
+        (self.root / "lib/Analysis/Engine.h").unlink()
+        self.assertEqual(self.found("engine-sink"), [
+            ("lib/Analysis/Engine.h", None, "missing or unreadable, so the engine cannot be checked"),
         ])
-
-    def test_class_heads(self):
-        bare = hygiene.lex_c(textwrap.dedent("""
-            struct [[nodiscard]] alignas(8) A { int x; };
-            enum class B { One };
-            template <class T> struct C : public Base<T> { T value; };
-            struct D *make() { return nullptr; }
-            class E;
-            class LLVM_LIBRARY_VISIBILITY F final : public A { const char *s = "{"; };
-            struct ns::G { };
-            """)).bare
-        definitions = hygiene.class_definitions(bare)
-        self.assertEqual([name for name, _, _ in definitions], ["A", "C", "F", "G"])
-        name, opening, closing = definitions[2]
-        self.assertEqual(bare[opening:closing + 2], '{ const char *s = " "; };')
 
     def test_lexing_keeps_offsets_and_lines(self):
         text = 'a = "x{"; // }\nb = \'}\'; /* {\n */ c = R"(})";\n'
@@ -460,24 +453,30 @@ class LineLimitTest(TreeTest):
         for data, lines in ((b"", 0), (b"\n", 1), (b"a", 1), (b"a\nb", 2), (b"a\nb\n", 2), (b"\n\n", 2)):
             self.assertEqual(hygiene.count_lines(data), lines, data)
 
-    def test_dataflow_total(self):
-        (self.root / "lib/Analysis/DataflowEngine.cpp").write_bytes(b"a\nb\nc")  # 3 lines
-        (self.root / "include/weavec/Analysis/DataflowEngine.h").write_bytes(b"x\n")  # 1 line
-        self.write("lib/Analysis/NotDataflow.cpp", "one\n")
-        self.write("lib/Analysis/Dataflow.txt", "one\n")
-        self.write("tools/weavec/DataflowTool.cpp", "one\n")
-        total = 27 + 10 + 3 + 1  # Dataflow.h, Dataflow.cpp, DataflowEngine.cpp, DataflowEngine.h
-        with mock.patch.object(hygiene, "DATAFLOW_LINE_LIMIT", total):
+    def test_engine_total(self):
+        (self.root / "lib/Analysis/EngineCalls.cpp").write_bytes(b"a\nb\nc")  # 3 lines
+        (self.root / "lib/Analysis/EngineIntegers.h").write_bytes(b"x\n")  # 1 line
+        for other in ("lib/Analysis/SafetyEngine.cpp", "lib/Analysis/Engine.txt",
+                      "lib/Analysis/Sub/EngineWalk.cpp", "include/weavec/Analysis/EngineOptions.h",
+                      "tools/weavec/EngineTool.cpp"):
+            self.write(other, "one\n")
+        total = 19 + 5 + 3 + 1  # Engine.h, EngineRun.cpp, EngineCalls.cpp, EngineIntegers.h
+        with mock.patch.object(hygiene, "ENGINE_LINE_LIMIT", total):
             result = hygiene.run_checks(self.root)
-        self.assertEqual(result.dataflow_lines, {
-            "include/weavec/Analysis/DataflowEngine.h": 1, "lib/Analysis/Dataflow.cpp": 10,
-            "lib/Analysis/Dataflow.h": 27, "lib/Analysis/DataflowEngine.cpp": 3,
+        self.assertEqual(result.engine_lines, {
+            "lib/Analysis/Engine.h": 19, "lib/Analysis/EngineCalls.cpp": 3,
+            "lib/Analysis/EngineIntegers.h": 1, "lib/Analysis/EngineRun.cpp": 5,
         })
-        self.assertEqual(result.count("dataflow-lines"), 0)
-        with mock.patch.object(hygiene, "DATAFLOW_LINE_LIMIT", total - 1):
-            self.assertEqual(self.found("dataflow-lines"), [
-                ("{lib,include}/**/Dataflow*.{h,cpp}", None, "41 lines in 4 files, 1 over the limit of 40"),
+        self.assertEqual(result.count("engine-lines"), 0)
+        with mock.patch.object(hygiene, "ENGINE_LINE_LIMIT", total - 1):
+            self.assertEqual(self.found("engine-lines"), [
+                ("lib/Analysis/Engine*.{h,cpp}", None, "28 lines in 4 files, 1 over the limit of 27"),
             ])
+
+    def test_the_real_limits_are_multiples_of_500(self):
+        """Measured plus about 10%, rounded up (the module docstring)."""
+        for limit in (hygiene.ENGINE_LINE_LIMIT, hygiene.LIBRARY_LINE_LIMIT):
+            self.assertEqual(limit % 500, 0)
 
     def test_library_total_counts_every_text_file_under_lib_include_and_tools(self):
         for top in ("lib", "include", "tools"):
@@ -519,15 +518,18 @@ class MainTest(TreeTest):
         lines = output.splitlines()
         self.assertEqual(lines[0], "docs/pages/reference/cli.md:2: retired-name: '--checked' at column 1")
         self.assertRegex(lines[1], r"^\{lib,include,tools\}/\*\*: library-lines: "
-                                   r"\d+ lines in 9 files, \d+ over the limit of 10$")
-        self.assertEqual(lines[2:4], ["", "Summary (RFC 0030, gate H2)"])
-        self.assertRegex(output, r"\n  files: +12 from a directory walk \(not a git work tree\); "
+                                   r"\d+ lines in 10 files, \d+ over the limit of 10$")
+        self.assertEqual(lines[2:4], ["", "Summary (RFC 0030 and 0031, gate H2)"])
+        self.assertRegex(output, r"\n  files: +14 from a directory walk \(not a git work tree\); "
                                  r"skipped 0 binary, 0 unreadable\n")
         self.assertRegex(output, r"\n  LibrarySpec: +5 entries, 3 chk aliases, and their __builtin_ spellings\n")
-        self.assertRegex(output, r"\n  Dataflow lines: 37 / 26,500 \(2 Dataflow\*\.\{h,cpp\} files\)\n")
-        self.assertRegex(output, r"\n  library lines: +\d+ / 10 \(9 code files under lib/, include/ and "
+        self.assertRegex(output, r"\n  engine lines: +24 / 21,000 \(2 lib/Analysis/Engine\*\.\{h,cpp\} files\)\n")
+        self.assertRegex(output, r"\n  library lines: +\d+ / 10 \(10 code files under lib/, include/ and "
                                  r"tools/, lib/Core/LibrarySpec\.txt excluded\)\n")
-        self.assertRegex(output, r"\n  retired-name +1  SafetyState")
+        self.assertRegex(output, r"\n  retired-name +1  checked-mode or old-engine names")
+        self.assertRegex(output, r"\n  engine-include +0  ")
+        self.assertRegex(output, r"\n  engine-sink +0  ")
+        self.assertRegex(output, r"\n  engine-lines +0  ")
         self.assertRegex(output, r"\n  library-name-test +0  ")
         self.assertRegex(output, r"\n  library-lines +1  ")
         self.assertEqual(lines[-1], "H2: FAIL (2 violations)")
@@ -539,11 +541,12 @@ class MainTest(TreeTest):
             "check": "retired-name", "path": "docs/pages/reference/cli.md", "line": 2,
             "message": "'--checked' at column 1"})
         self.assertIsNone(document["violations"][1]["line"])
-        self.assertEqual(document["lines"]["dataflow"], {
-            "total": 37, "limit": hygiene.DATAFLOW_LINE_LIMIT,
-            "files": {"lib/Analysis/Dataflow.cpp": 10, "lib/Analysis/Dataflow.h": 27}})
+        self.assertEqual(document["version"], 2)
+        self.assertEqual(document["lines"]["engine"], {
+            "total": 24, "limit": hygiene.ENGINE_LINE_LIMIT,
+            "files": {"lib/Analysis/Engine.h": 19, "lib/Analysis/EngineRun.cpp": 5}})
         self.assertEqual(document["lines"]["library"]["limit"], 10)
-        self.assertEqual(document["lines"]["library"]["files"], 9)
+        self.assertEqual(document["lines"]["library"]["files"], 10)
 
     def test_usage_errors_exit_2(self):
         with contextlib.redirect_stderr(io.StringIO()) as errors:

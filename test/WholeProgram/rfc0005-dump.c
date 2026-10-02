@@ -7,17 +7,38 @@
 #include "../Inputs/prelude.h"
 #include "node.h"
 
-// RFC 0016 puts caller and definer in one context-request component.
-// CHECK: unit '{{.*}}rfc0005-dump.c':
-// CHECK: function 'release':
-// CHECK-NEXT: places:
+// Dependencies come first: node.c defines what this unit calls (RFC 0031
+// §7; the RFC 0016 context-request components are gone, §6.1). Each unit
+// prints its functions' format-30 summaries (RFC 0031 *Summary format 30*).
 // CHECK: unit '{{.*}}node.c':
+// CHECK-NEXT: function 'node_new':
+// CHECK-NEXT: summary:
 // CHECK: function 'node_free':
+// CHECK: unit '{{.*}}rfc0005-dump.c':
+// CHECK-NEXT: function 'release':
+// CHECK-NEXT: summary:
 // CHECK: program:
-// CHECK: function 'node_free': param 0: freed(free); param 0 *.name: freed(free); stores{} returns{}
-// CHECK: function 'node_new': stores{} returns{fresh(free) extent 16, null}
-// CHECK: function 'node_set_name': param 0 *.name: written,freed(free),replaced; stores{param 0 *.name = copy param 1} returns{} requires{param 0}
-// CHECK: function 'node_vp': stores{} returns{copy param 0 @+struct~node.v} requires{param 0}
-// CHECK: function 'release': param 0: freed(free); stores{} returns{}
+// CHECK-NEXT: function 'node_free':
+// CHECK-NEXT: always-returns
+// CHECK-NEXT: release *param0 free when param 0 !=0
+// CHECK-NEXT: release *param0->name free when param 0 !=0
+// CHECK-NEXT: function 'node_new':
+// CHECK-NEXT: always-returns
+// CHECK-NEXT: result fresh#0 free extent 16 {{.*}}maybe-null when null nonnull
+// CHECK-NEXT: store result->name := null
+// CHECK-NEXT: function 'node_set_name':
+// CHECK-NEXT: always-returns
+// CHECK-NEXT: release *param0->name free when always
+// CHECK-NEXT: store param0->name := path param1
+// CHECK-NEXT: function 'node_vp':
+// CHECK-NEXT: always-returns
+// CHECK-NEXT: result path param0 when nonnull
+// CHECK-NEXT: nonnull-on nonnull param0
+// `node_free` releases only a non-null argument, so `release` releases its
+// own argument possibly (the key `param 0 !=0` is not carried over).
+// CHECK-NEXT: function 'release':
+// CHECK-NEXT: always-returns
+// CHECK-NEXT: release *param0 free {{(may )?}}when
+// CHECK-NEXT: release *param0->name free {{(may )?}}when
 
 void release(struct node *n) { node_free(n); }

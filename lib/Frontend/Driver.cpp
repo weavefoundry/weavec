@@ -13,6 +13,7 @@
 #include "weavec/Frontend/CheckEmitter.h"
 #include "weavec/Frontend/ClangDiagnosticSink.h"
 #include "weavec/Frontend/DeferredCodeGenConsumer.h"
+#include "weavec/Frontend/DispatchEdges.h"
 #include "weavec/Frontend/LedgerOutput.h"
 #include "weavec/Frontend/LinkStep.h"
 #include "weavec/Frontend/ProgramAnalysis.h"
@@ -205,13 +206,13 @@ bool DriverOptions::zeroInitialises() const {
 
 FrontendOptions DriverOptions::toFrontendOptions() const {
   FrontendOptions options;
-  options.analysis.stats = stats.get();
+  options.engine.stats = stats.get();
   options.analysisStatsPath = analysisStatsPath;
-  options.analysis.dumpStream = dumpAnalysis ? &llvm::outs() : nullptr;
+  options.engine.dumpStream = dumpAnalysis ? &llvm::outs() : nullptr;
   // RFC 0030 §3.2, §11: the ledger describes the enforcing build, which
   // zero-initialises unless `-fno-weavec-zero-init` says otherwise.
-  options.analysis.zeroInit = zeroInit.value_or(true);
-  options.analysis.budget = budget;
+  options.engine.zeroInit = zeroInit.value_or(true);
+  options.engine.budget = budget;
   options.control = control;
   options.config = core::LedgerConfig{.checks = checks,
                                       .zeroInit = zeroInitialises(),
@@ -323,6 +324,11 @@ protected:
     };
     std::unique_ptr<clang::ASTConsumer> analysis =
         createWeaveCConsumer(compiler, analysisOptions);
+    // RFC 0031 §9.2: a unit whose checks are emitted keeps its dispatch
+    // blocks' predecessors duplicable. Registered before the code generator
+    // is made, which reads the callbacks when it runs the pipeline.
+    if (emitsChecks(compiler))
+      registerDispatchEdgeSplit(compiler.getCodeGenOpts());
     std::unique_ptr<clang::ASTConsumer> inner =
         WrapperFrontendAction::CreateASTConsumer(compiler, inFile);
     if (!inner)
@@ -602,9 +608,9 @@ public:
       auto invocation = createInvocation();
       if (!invocation)
         return false;
-      core::AnalysisTimer timer(options.analysis.stats, "parsing");
-      if (options.analysis.stats)
-        options.analysis.stats->add("unit_parses");
+      core::AnalysisTimer timer(options.engine.stats, "parsing");
+      if (options.engine.stats)
+        options.engine.stats->add("unit_parses");
       diagOptions = std::make_shared<clang::DiagnosticOptions>(
           invocation->getDiagnosticOpts());
       auto diagnostics = llvm::makeIntrusiveRefCnt<clang::DiagnosticsEngine>(
@@ -619,13 +625,12 @@ public:
         ast.reset();
         return false;
       }
-    } else if (options.analysis.stats) {
-      options.analysis.stats->add("unit_reuses");
+    } else if (options.engine.stats) {
+      options.engine.stats->add("unit_reuses");
     }
     if (!ast)
       return false;
     auto current = options;
-    current.analysis.preparation = preparation;
     // The unit is analysed as it was compiled.
     current.config = config;
     auto result = analyzeRetainedUnit(*ast, current);
@@ -637,7 +642,6 @@ public:
   bool releaseAST() override {
     if (!ast)
       return false;
-    preparation->functions.clear();
     ast.reset();
     diagOptions.reset();
     attemptedParse = false;
@@ -680,8 +684,6 @@ private:
   bool attemptedParse = false;
   std::shared_ptr<clang::DiagnosticOptions> diagOptions;
   std::unique_ptr<clang::ASTUnit> ast;
-  std::shared_ptr<analysis::FunctionPreparationCache> preparation =
-      std::make_shared<analysis::FunctionPreparationCache>();
   std::string display;
   std::vector<std::string> args;
   std::string cwd;
@@ -969,10 +971,9 @@ static bool needsAnalysis(llvm::ArrayRef<ProgramMember> members,
         return true;
     return false;
   };
-  if (!exports.unknownCallees.empty() || !exports.unknownIndirectTypes.empty())
+  if (!exports.unknownCallees.empty())
     return true;
-  // A callee, an indirect-call candidate, a sized-field witness or a caller
-  // with call contexts in another unit.
+  // A callee or an indirect-call candidate in another unit.
   if (llvm::any_of(exports.imports, [&](const std::string &name) {
         return other([&](const analysis::UnitExports &unit) {
           const auto it = unit.functions.find(name);
@@ -985,28 +986,6 @@ static bool needsAnalysis(llvm::ArrayRef<ProgramMember> members,
           return llvm::any_of(unit.functions, [&](const auto &entry) {
             return entry.second.addressTaken && entry.second.typeKey == key;
           });
-        });
-      }))
-    return true;
-  if (llvm::any_of(exports.sizedFieldLoads, [&](const std::string &key) {
-        return other([&](const analysis::UnitExports &unit) {
-          return llvm::any_of(unit.sizedFields.witnesses,
-                              [&](const analysis::SizedFieldWitness &w) {
-                                return w.field == key;
-                              });
-        });
-      }))
-    return true;
-  // RFC 0016: a locally complete definition can acquire new contextual
-  // obligations from another object.
-  if (llvm::any_of(exports.functions, [&](const auto &entry) {
-        const auto &[symbol, function] = entry;
-        if (!function.acceptsMemoryContexts && !function.acceptsCallbacks)
-          return false;
-        return other([&](const analysis::UnitExports &caller) {
-          return (function.external && caller.imports.contains(symbol)) ||
-                 (function.addressTaken && !function.typeKey.empty() &&
-                  caller.indirectTypes.contains(function.typeKey));
         });
       }))
     return true;
@@ -1087,6 +1066,18 @@ static bool runLinkStep(const clang::driver::Compilation &compilation,
                                                 argv0),
                       payload.exports, payload.reported);
       analysed[i] = added++;
+    } else if (!header.command.empty() &&
+               llvm::any_of(payload.exports.functions, [](const auto &entry) {
+                 return entry.second.external || entry.second.addressTaken;
+               })) {
+      // Another unit may ask a context of its functions (RFC 0031 §7).
+      const std::string name =
+          header.source.empty() ? inputs[i].object : header.source;
+      program.addServingUnit(std::make_unique<Cc1Unit>(name, header.command,
+                                                       header.cwd,
+                                                       header.config, argv0),
+                             payload.exports, payload.reported);
+      ++added;
     } else {
       program.addExports(payload.exports);
     }
@@ -1106,6 +1097,28 @@ static bool runLinkStep(const clang::driver::Compilation &compilation,
   // units, and the allocator (the rest of the step is part of the program
   // ledger).
   const RequirementCheck requirements = verifyRequirements(members, shape);
+  // RFC 0030 §2.2: a violated requirement is an error, at the call (the
+  // caller's own run cannot see the callee's requirement, RFC 0031 §6.1).
+  for (const RequirementDecision &decision : requirements.decisions) {
+    if (decision.decision.outcome != core::SiteOutcome::Violation)
+      continue;
+    std::optional<core::SourceLocation> at;
+    if (const auto import = members[decision.member].payload.facts.imports.find(
+            decision.callee);
+        import != members[decision.member].payload.facts.imports.end())
+      for (const record::ImportCall &call : import->second.calls)
+        if (call.function == decision.function && call.site == decision.site)
+          at = call.location;
+    if (!at)
+      continue;
+    core::Diagnostic diagnostic;
+    diagnostic.id = core::diag::OutOfBounds;
+    diagnostic.severity = core::Severity::Error;
+    diagnostic.message = decision.decision.detail;
+    diagnostic.location = *at;
+    sink.report(diagnostic);
+    linkDiagnostics.push_back(std::move(diagnostic));
+  }
   if (const std::optional<AllocatorFinding> allocator =
           allocatorDefinedBy(members))
     llvm::errs() << "weavec-cc: warning: "
@@ -1256,6 +1269,31 @@ static std::size_t countLedgers(const clang::driver::Compilation &compilation,
       ++count;
   }
   return count;
+}
+
+/// Clang's Darwin link job names `<weavec-cc>/../lib/libLTO.dylib` as
+/// `-lto_library`, which is not installed beside weavec-cc (and current
+/// linkers warn about it): without it the linker uses its own, as it did
+/// when it ignored the missing one. (Not the one of the Clang WeaveC was
+/// built with: objects built by the system compiler, the runtime archives
+/// among them, may carry bitcode only the linker's own reads.)
+static void dropMissingLtoLibrary(clang::driver::Compilation &compilation) {
+  for (clang::driver::Command &job : compilation.getJobs()) {
+    if (job.getSource().getKind() != clang::driver::Action::LinkJobClass)
+      continue;
+    const llvm::opt::ArgStringList &old = job.getArguments();
+    llvm::opt::ArgStringList args;
+    for (std::size_t i = 0; i < old.size(); ++i) {
+      if (llvm::StringRef(old[i]) == "-lto_library" && i + 1 < old.size() &&
+          !llvm::sys::fs::exists(old[i + 1])) {
+        ++i;
+        continue;
+      }
+      args.push_back(old[i]);
+    }
+    if (args.size() != old.size())
+      job.replaceArguments(args);
+  }
 }
 
 /// RFC 0030 §10.7, §10.9: appends the runtime archives to every link job.
@@ -1418,6 +1456,7 @@ int runDriver(llvm::ArrayRef<const char *> argv, void *mainAddress) {
   if (weavec.enabled && weavec.checks != core::ChecksMode::None &&
       !addRuntimeLibraries(*compilation, weavec, argv[0], mainAddress))
     return 1;
+  dropMissingLtoLibrary(*compilation);
   if (printJobsOnly) {
     compilation->getJobs().Print(llvm::errs(), "\n", /*Quote=*/true);
     return 0;

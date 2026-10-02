@@ -8,20 +8,18 @@
 //
 // What one translation unit exports to the rest of the program and the
 // database that collects those exports (RFC 0005, *Programs, units and
-// exports* and *The program database*). Summaries in exports and in the
-// database name globals through a `GlobalNames` table rather than a unit's
-// `GlobalTable`, so they mean the same thing in every unit.
+// exports* and *The program database*; RFC 0031 §7). Summaries in exports
+// and in the database name globals through a `GlobalNames` table, so they
+// mean the same thing in every unit.
 //
 //===----------------------------------------------------------------------===//
 
 #ifndef WEAVEC_ANALYSIS_PROGRAMDATABASE_H
 #define WEAVEC_ANALYSIS_PROGRAMDATABASE_H
 
-#include "weavec/Core/CallContext.h"
+#include "weavec/Core/Effects.h"
 #include "weavec/Core/FnSlots.h"
-#include "weavec/Core/Interface.h"
 #include "weavec/Core/Ledger.h"
-#include "weavec/Core/Summary.h"
 
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/Type.h"
@@ -39,22 +37,13 @@
 
 namespace weavec::analysis {
 
-class GlobalTable;
-
-/// Interns global variable names for the summaries of an export set or a
-/// database, mirroring `GlobalTable` without a Clang declaration behind
-/// each id.
+/// Names of the globals a set of summaries refers to, by id.
 class GlobalNames {
 public:
   [[nodiscard]] std::uint32_t idFor(llvm::StringRef name);
   [[nodiscard]] std::optional<std::uint32_t> find(llvm::StringRef name) const;
   [[nodiscard]] llvm::StringRef nameOf(std::uint32_t id) const;
   [[nodiscard]] std::size_t size() const noexcept { return names.size(); }
-
-  /// If one table is a prefix of the other (ids agree wherever both have
-  /// them), makes this the longer one and returns true; otherwise leaves it
-  /// unchanged and returns false.
-  bool extendTo(const GlobalNames &other);
 
   friend bool operator==(const GlobalNames &, const GlobalNames &) = default;
 
@@ -63,109 +52,24 @@ private:
   std::map<std::string, std::uint32_t, std::less<>> ids;
 };
 
-/// RFC 0028: an immutable publication with value equality. Replacing one
-/// handle never changes the contents observed by another export or database.
-class ExportedSummary {
-public:
-  ExportedSummary() = default;
-  explicit ExportedSummary(core::FunctionSummary summary);
-
-  void assign(core::FunctionSummary summary);
-  [[nodiscard]] const core::FunctionSummary &get() const { return *share(); }
-  [[nodiscard]] const std::shared_ptr<const core::FunctionSummary> &
-  share() const {
-    return value ? value : emptyPublication();
-  }
-
-  friend bool operator==(const ExportedSummary &left,
-                         const ExportedSummary &right) {
-    return left.value == right.value || left.get() == right.get();
-  }
-
-private:
-  // A default or moved-from handle denotes the same immutable empty value.
-  [[nodiscard]] static const std::shared_ptr<const core::FunctionSummary> &
-  emptyPublication();
-  std::shared_ptr<const core::FunctionSummary> value;
-};
-
 /// One function a unit exports.
 struct ExportedFunction {
-  /// The summary a caller in the exporting unit would see (annotations
-  /// applied), with globals numbered by the unit's `GlobalNames`.
-  ExportedSummary summary;
-  std::map<core::CallbackBindings, ExportedSummary> specializations;
+  /// The format-30 summary (RFC 0031 §6), with globals numbered by the
+  /// unit's `GlobalNames`.
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
+  core::FunctionEffects effects = {};
   /// `functionTypeKey` of the definition; empty if the type has no stable
   /// spelling (an anonymous record is involved).
-  std::string typeKey;
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
+  std::string typeKey = {};
   /// External linkage: callable by name from another unit.
   bool external = true;
   /// Its address is taken somewhere in the unit: reachable through a
   /// pointer of its type from another unit.
   bool addressTaken = false;
-  bool acceptsCallbacks = false;
-  bool acceptsMemoryContexts = false;
-  // NOLINTNEXTLINE(readability-redundant-member-init)
-  std::map<core::CallContext, ExportedSummary> memorySpecializations = {};
 
   friend bool operator==(const ExportedFunction &,
                          const ExportedFunction &) = default;
-};
-
-/// RFC 0012, *Sized fields*: one function's evidence that the pointer field
-/// `field` (a count-field key, `struct buf.data`) is as long as the sibling
-/// integer field `count` says, in units of `scale` bytes.
-struct SizedFieldWitness {
-  std::string field;
-  std::string count;
-  std::int64_t scale = 1;
-  // RFC 0017: an inferred count may be multiplied in a target C type.
-  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
-  std::optional<core::IntegerType> productType = {};
-
-  friend auto operator<=>(const SizedFieldWitness &,
-                          const SizedFieldWitness &) = default;
-};
-
-/// RFC 0012: a `(field, count)` pair some function's writes contradict.
-struct UnsizedPair {
-  std::string field;
-  std::string count;
-
-  friend auto operator<=>(const UnsizedPair &, const UnsizedPair &) = default;
-};
-
-/// RFC 0012, *Sized fields*: what a unit (or the database) knows about
-/// which pointer fields are counted by which sibling fields.
-struct SizedFieldFacts {
-  std::set<SizedFieldWitness> witnesses;
-  /// Pointer fields some function stores a value into whose extent is no
-  /// sibling's value: never sized.
-  std::set<std::string> unsizedFields;
-  /// Pairs whose count is written without the pointer being stored.
-  std::set<UnsizedPair> unsizedPairs;
-
-  void merge(const SizedFieldFacts &other);
-  void clear();
-  [[nodiscard]] bool empty() const noexcept {
-    return witnesses.empty() && unsizedFields.empty() && unsizedPairs.empty();
-  }
-  /// The count and scale `field` is confirmed sized by: its witnesses are
-  /// exactly one `(count, scale)`, and no refutation names it.
-  [[nodiscard]] std::optional<std::pair<std::string, std::int64_t>>
-  confirmed(std::string_view field) const;
-  [[nodiscard]] std::optional<SizedFieldWitness>
-  confirmedWitness(std::string_view field) const;
-  /// `confirmedWitness` of the union of `a` and `b`, without building it
-  /// (the engine asks this per access while a unit's facts are in force).
-  [[nodiscard]] static std::optional<SizedFieldWitness>
-  confirmedWitnessOfBoth(const SizedFieldFacts &a, const SizedFieldFacts &b,
-                         std::string_view field);
-  /// Every confirmed pair, as witnesses.
-  [[nodiscard]] std::set<SizedFieldWitness> confirmedPairs() const;
-
-  friend bool operator==(const SizedFieldFacts &,
-                         const SizedFieldFacts &) = default;
 };
 
 /// RFC 0030 §9.4, §13.1 `boundaries`: one `dangling-escape` or
@@ -187,15 +91,25 @@ struct BoundaryRow {
   friend auto operator<=>(const BoundaryRow &, const BoundaryRow &) = default;
 };
 
-/// Everything one translation unit contributes to, and needs from, the
-/// program.
+/// RFC 0031 §6.6, §7 *Amendment (cross-unit contexts)*: a caller's request
+/// that a function another unit defines be analysed in the context of a
+/// call: the arguments it makes one object, the integers it knows (and the
+/// integers their objects hold), and the callbacks it passes.
+struct ContextRequest {
+  /// The callee's portable name (its own for external linkage,
+  /// `<source>#<name>` otherwise).
+  std::string callee;
+  /// The context, spelled by the engine (`contextKeyText`).
+  std::string key;
+
+  friend auto operator<=>(const ContextRequest &,
+                          const ContextRequest &) = default;
+};
+
+/// What a unit exports (RFC 0031 §7).
 struct UnitExports {
-  core::InterfaceTypes globalInterfaces;
-  core::InterfaceTypes objectInterfaces;
   /// The main source file, for messages and the dump.
   std::string source;
-  std::map<std::string, std::set<core::CallContext>> memoryRequests;
-  std::map<std::string, std::set<core::CallbackBindings>> callbackRequests;
   /// Exported definitions by linkage name.
   std::map<std::string, ExportedFunction> functions;
   /// Names the summaries above use for global roots.
@@ -205,32 +119,28 @@ struct UnitExports {
   /// Type keys of the unit's indirect calls.
   std::set<std::string> indirectTypes;
   /// Callees `imports` contains for which the unit had no summary at all
-  /// (the boundary of RFC 0003), plus indirect type keys with no
-  /// candidates: what `annotation-required` would have warned about.
+  /// (the boundary of RFC 0003).
   std::set<std::string> unknownCallees;
-  std::set<std::string> unknownIndirectTypes;
   /// RFC 0010, *Leaks of shares*: the count-field keys (`struct obj.rc`)
   /// some function of the unit releases a share through, or that are
-  /// annotated `WEAVEC_REFCOUNT`. Sidecar line `count-field <key>`.
+  /// annotated `WEAVEC_REFCOUNT`.
   std::set<std::string> countFields;
-  /// RFC 0012, *Sized fields*: the unit's witnesses and refutations.
-  /// Sidecar lines `sized-field <f> <g> <scale>` and `unsized-field <f>
-  /// [<g>]`.
-  SizedFieldFacts sizedFields;
-  /// RFC 0012, *Sized fields*: the keys of the unannotated pointer fields
-  /// some bounds check of the unit looked up the extent of. A pair the
-  /// program later confirms for one of them means the unit is analysed once
-  /// more. Sidecar line `loads-field <key>`.
-  std::set<std::string> sizedFieldLoads;
   /// RFC 0030 §9.4: the unit's boundary rows, for the program-wide
   /// propagation of §13.2 step 5. Filled after the engine, from what
   /// `BoundaryInvariants` made of the boundaries the engine published.
   std::vector<BoundaryRow> boundaries;
 
-  /// True if the exported summaries (and count fields, and sized-field
-  /// facts) are the same; the fixpoint test of RFC 0005's whole-program
-  /// algorithm.
+  /// The contexts this unit's calls into other units asked for.
+  std::set<ContextRequest> contextRequests;
+  /// The summaries of this unit's functions in the contexts other units
+  /// asked for, globals numbered by `globals`.
+  std::map<ContextRequest, core::FunctionEffects> contextEffects;
+  /// True if the exported summaries (and count fields) are the same; the
+  /// fixpoint test of RFC 0005's whole-program algorithm.
   [[nodiscard]] bool sameSummariesAs(const UnitExports &other) const;
+  /// The same, leaving out the contexts asked and served (RFC 0031 §7):
+  /// what a cyclic component's fixpoint iterates on.
+  [[nodiscard]] bool sameFunctionsAs(const UnitExports &other) const;
 };
 
 /// RFC 0030 §13.2: what the link step (and `weavec --whole-program`) knows
@@ -261,63 +171,38 @@ struct ProgramFacts {
 /// The exports of every unit of a program except the one being analysed.
 class ProgramDatabase {
 public:
-  core::InterfaceTypes globalInterfaces;
-  core::InterfaceTypes objectInterfaces;
   /// RFC 0030 §13.2: the program's solved slots and boundary rows, set by
   /// the whole-program driver for every run it makes; null otherwise (and
   /// never cleared by `clear`). Copies share it.
   std::shared_ptr<const ProgramFacts> programFacts = nullptr;
-  /// RFC 0020: identity of the summaries and global numbering used by
-  /// importInto. Copies share it until a mutating operation starts.
-  [[nodiscard]] const std::shared_ptr<const char> &importGeneration() const {
-    return generation;
-  }
+
   /// Adds a unit's exports. A name defined by more than one unit gets the
   /// join of the definitions' summaries (RFC 0005, *Accepted false
-  /// positives*). Summaries numbered by a table this one extends, or that
-  /// extends this one (see `renumbered`), are copied rather than renumbered.
+  /// positives*); the globals are renumbered into `globals()`.
   void add(const UnitExports &unit);
-  void addCallbackInformation(const UnitExports &unit);
-  [[nodiscard]] const core::FunctionSummary *
-  findMemorySpecialization(std::string_view symbol,
-                           const core::CallContext &context) const;
-  [[nodiscard]] const std::set<core::CallContext> &
-  memoryRequestsFor(std::string_view symbol) const;
-  [[nodiscard]] std::optional<core::CallContext>
-  importContext(const core::CallContext &input,
-                const clang::ASTContext &context, GlobalTable &table) const;
-  [[nodiscard]] std::optional<core::CallContext>
-  exportContext(const core::CallContext &input, const GlobalTable &table) const;
-  [[nodiscard]] const core::FunctionSummary *
-  findCallable(std::string_view symbol) const;
-  [[nodiscard]] const core::FunctionSummary *
-  findSpecialization(std::string_view symbol,
-                     const core::CallbackBindings &bindings) const;
-  [[nodiscard]] const std::set<core::CallbackBindings> &
-  requestsFor(std::string_view symbol) const;
-
-  /// `unit` with its summaries numbered by this database's table, which is
-  /// extended with any names it did not have; the result's `globals` is a
-  /// copy of `globals()`. Rebuilding a database from such exports is a copy
-  /// per summary instead of a renumbering, which is what the whole-program
-  /// fixpoint does once per changed member (RFC 0005, *Performance*).
-  [[nodiscard]] UnitExports renumbered(const UnitExports &unit);
-  /// Consume exports with existing database numbering without copying them.
-  [[nodiscard]] UnitExports renumbered(UnitExports &&unit);
   void clear();
-  [[nodiscard]] bool empty() const noexcept { return functions.empty(); }
+  [[nodiscard]] bool empty() const noexcept { return byName.empty(); }
 
   /// Whether some unit defines `name` with external linkage.
   [[nodiscard]] bool defines(llvm::StringRef name) const;
 
-  /// The joined summary of `name`'s external definitions, with globals
-  /// numbered by `globals()`; null if no unit defines it.
-  [[nodiscard]] const core::FunctionSummary *find(llvm::StringRef name) const;
-
-  /// The joined summary of every address-taken function of type `typeKey`,
-  /// or null if there is none.
-  [[nodiscard]] const core::FunctionSummary *
-  candidates(llvm::StringRef typeKey) const;
+  /// The joined summary of `name`'s external definitions, or of every
+  /// address-taken function of type `typeKey`, with globals numbered by
+  /// `globals()`; null if there is none.
+  [[nodiscard]] const core::FunctionEffects *
+  findEffects(llvm::StringRef name) const;
+  [[nodiscard]] const core::FunctionEffects *
+  candidateEffects(llvm::StringRef typeKey) const;
+  /// The summary of `request`'s callee in its context, when its unit ran
+  /// it; the contexts other units asked of `callee`.
+  [[nodiscard]] const core::FunctionEffects *
+  contextEffects(const ContextRequest &request) const;
+  [[nodiscard]] std::vector<std::string>
+  requestsFor(llvm::StringRef callee) const;
+  /// Every context some unit asked for.
+  [[nodiscard]] const std::set<ContextRequest> &requests() const noexcept {
+    return requested;
+  }
 
   [[nodiscard]] const GlobalNames &globals() const noexcept {
     return globalNames;
@@ -332,42 +217,17 @@ public:
     return countFields;
   }
 
-  /// RFC 0012: the sized-field facts of every unit, unioned.
-  [[nodiscard]] const SizedFieldFacts &sizedFieldFacts() const noexcept {
-    return sizedFields;
-  }
-
-  /// Rewrites a database summary for use in the unit `context` describes:
-  /// each global root becomes the unit's external-linkage variable of that
-  /// name, interned in `table`, or is dropped if the unit declares none.
-  [[nodiscard]] core::FunctionSummary
-  importInto(const core::FunctionSummary &summary,
-             const clang::ASTContext &context, GlobalTable &table) const;
-
   /// Sorted names of every exported function, then every type key with
-  /// candidates, in the RFC 0003 dump spelling (for `--dump-analysis`).
+  /// candidates, with their summaries (for `--dump-analysis`).
   void dump(llvm::raw_ostream &os) const;
 
 private:
-  using PublishedSummary = std::shared_ptr<const core::FunctionSummary>;
-  std::shared_ptr<const char> generation = std::make_shared<const char>(0);
-  std::map<std::pair<std::string, core::CallContext>, PublishedSummary>
-      memorySummaries;
-  std::map<std::string, std::set<core::CallContext>, std::less<>>
-      memoryRequests;
-  // RFC 0020: indexes and copied databases share immutable publications.
-  // Joining another definition builds a private replacement first.
-  std::map<std::string, PublishedSummary, std::less<>> functions;
-  std::map<std::string, PublishedSummary, std::less<>> callableSummaries;
-  std::map<std::pair<std::string, core::CallbackBindings>, PublishedSummary>
-      contextSummaries;
-  std::map<std::string, std::set<core::CallbackBindings>, std::less<>>
-      callbackRequests;
-
-  std::map<std::string, PublishedSummary, std::less<>> candidateSummaries;
   GlobalNames globalNames;
+  std::map<std::string, core::FunctionEffects, std::less<>> byName;
+  std::map<std::string, core::FunctionEffects, std::less<>> byType;
   std::set<std::string, std::less<>> countFields;
-  SizedFieldFacts sizedFields;
+  std::map<ContextRequest, core::FunctionEffects> byContext;
+  std::set<ContextRequest> requested;
 };
 
 } // namespace weavec::analysis

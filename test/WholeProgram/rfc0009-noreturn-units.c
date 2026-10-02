@@ -12,12 +12,17 @@ void die(const char *msg);
 void fail(int code);
 void check(int ok);
 
+// The format-30 summaries (RFC 0031 *Summary format 30*): `check` may
+// return, so it is not `never-returns`.
 // DUMP-LABEL: function 'die':
-// DUMP: summary: never-returns; *msg: read; stores{} returns{}
+// DUMP-NEXT: summary:
+// DUMP-NEXT: never-returns
 // DUMP-LABEL: function 'fail':
-// DUMP: summary: never-returns; stores{} returns{}
+// DUMP-NEXT: summary:
+// DUMP-NEXT: never-returns
 // DUMP-LABEL: function 'check':
-// DUMP: summary: stores{} returns{}
+// DUMP-NEXT: summary:
+// DUMP-NEXT: {{always-returns|may-not-return}}
 
 // Clean with the program: the bad path never reaches the use.
 void good(int bad) {

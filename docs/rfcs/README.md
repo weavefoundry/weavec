@@ -76,6 +76,7 @@ decision is a new RFC that supersedes the relevant section.
 | [0027](0027-recursive-object-ownership.md) | Recursive object ownership and complete cleanup contracts | Superseded |
 | [0028](0028-opaque-objects-and-library-state.md) | Inferred contracts for opaque objects and private library state | Superseded |
 | [0029](0029-compositional-recursive-workflows.md) | Compositional invariants for recursive C workflows | Superseded |
-| [0030](0030-prove-or-trap.md) | Prove or trap: one safety semantics with compiler-enforced checks | Accepted |
+| [0030](0030-prove-or-trap.md) | Prove or trap: one safety semantics with compiler-enforced checks | Implemented |
+| [0031](0031-object-engine.md) | The object engine: a sound heap abstraction behind the engine seam | Implemented |
 
 The [roadmap](../roadmap.md) links each milestone to the RFCs that define it.

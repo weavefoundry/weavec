@@ -106,7 +106,9 @@ void calls(size_t n) {
   (void)ended(four, four + 4); // ROWS: calls:[[@LINE]] ended(four,four+4) spatial=proven
   // CHECK: rfc0030-declared-kinds.c:[[@LINE+1]]:15: error: 'ended' requires 20 bytes behind 'four', which has 16 bytes [weavec::out-of-bounds]
   (void)ended(four, four + 5);
-  (void)string(b); // ROWS: calls:[[@LINE]] string(b) spatial=checked:len
+  // RFC 0031 §4.3 (string fact): `b` holds "abc" and its terminator, so the string the
+  // call requires is proven.
+  (void)string(b); // ROWS: calls:[[@LINE]] string(b) spatial=proven
   (void)nonnull(n ? four : 0); // ROWS: calls:[[@LINE]] nonnull(n?four:0) null=checked:nonnull
   // CHECK: rfc0030-declared-kinds.c:[[@LINE+1]]:14: error: 'sum4' requires 16 bytes behind 'three', which has 12 bytes [weavec::out-of-bounds]
   (void)sum4(three);

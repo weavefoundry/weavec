@@ -26,7 +26,7 @@
 // the rows and the propagation; the link step (§13.2 step 5) supplies the
 // other units' rows, so the propagation is program-wide there.
 //
-// This component runs after the engine and never includes `Dataflow.h`
+// This component runs after the engine and never includes `Engine.h`
 // (gate H2).
 //
 //===----------------------------------------------------------------------===//
@@ -41,6 +41,8 @@
 
 #include "llvm/ADT/ArrayRef.h"
 
+#include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -60,11 +62,13 @@ struct BoundaryVerdicts {
 
 /// §9.4: judges what the engine published at the unit's boundaries and
 /// works out the propagation. `program` holds the other units' rows at
-/// link, and is empty when a unit is compiled on its own.
-[[nodiscard]] BoundaryVerdicts
-checkBoundaryInvariants(const SiteIndex &sites,
-                        llvm::ArrayRef<PublishedBoundary> published,
-                        llvm::ArrayRef<BoundaryRow> program);
+/// link, and is empty when a unit is compiled on its own. `relied` names,
+/// by site, the place classes whose entry assumption the engine's proof of
+/// its temporal facet rests on (`LedgerAdapter::reliesOn`).
+[[nodiscard]] BoundaryVerdicts checkBoundaryInvariants(
+    const SiteIndex &sites, llvm::ArrayRef<PublishedBoundary> published,
+    llvm::ArrayRef<BoundaryRow> program,
+    const std::map<core::SiteId, std::set<std::string>> &relied = {});
 
 } // namespace weavec::analysis
 

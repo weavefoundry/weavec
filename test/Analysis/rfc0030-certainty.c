@@ -121,10 +121,18 @@ static struct held *hold(char *text, int own) {
 void possible_release(void) {
   char buf[8];
   buf[0] = 0;
-  // CHECK: rfc0030-certainty.c:[[@LINE+1]]:8: warning: a string literal may be released [weavec::invalid-release]
+  // The object engine keeps the constant `own` of each call (RFC 0031
+  // *Implementation amendments*, *Alias contexts* and *Pending cases*): with
+  // `own == 0` `hold` releases only its own copy, so no release of the
+  // literal or of `buf` is claimed at all. Freeing only the holder leaks
+  // that copy (§5.8), which the old engine did not see.
+  // CHECK-NOT: invalid-release
+  // CHECK: rfc0030-certainty.c:[[@LINE+1]]:3: warning: result of 'hold' is leaked [weavec::leak]
   free(hold("abc", 0));
-  // CHECK: rfc0030-certainty.c:[[@LINE+1]]:8: warning: 'buf' may be released but is not a heap object [weavec::invalid-release]
+  // CHECK-NOT: invalid-release
+  // CHECK: rfc0030-certainty.c:[[@LINE+1]]:3: warning: result of 'hold' is leaked [weavec::leak]
   free(hold(buf, 0));
+  // CHECK-NOT: invalid-release
 }
 
 // -Wno-weavec-use-after-free drops the possible warnings; errors stay.

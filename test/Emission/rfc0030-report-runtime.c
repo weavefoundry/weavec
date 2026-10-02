@@ -45,7 +45,13 @@ static int pick(int i) {
   // REPORT-NEXT: weavec: runtime check failed: index at {{.*}}rfc0030-report-runtime.c:[[#@LINE+1]]:10
   return table[i];
 }
+// RFC 0031 *Implementation amendments*, "Variable-length arrays": a
+// dimension that may be zero or negative gives `v` no extent and `v[i]` no
+// check, so the test of `n` is what keeps the span check here
+// (test/cases/KNOWN-DIFFERENCES.md, *Lit tests*).
 static int stack(int n, int i) {
+  if (n < 1)
+    return 0;
   int v[n];
   for (int k = 0; k < n; ++k)
     v[k] = k;

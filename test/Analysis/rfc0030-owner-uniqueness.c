@@ -38,9 +38,21 @@ static void drop(struct holder *h) {
 // The release is `h->cur`'s, not `h`'s: the summary must say so, and the
 // unknown callee in between must not turn the local record on `h` into an
 // exported one.
+// In format 30 (RFC 0031 §6.1) `drop` releases the chain from `h->cur`, never
+// `*h`. In `walk` the unknown callee leaves `h->cur` unknown, so what `drop`
+// frees through it is the unknown-callee default on what `h` reaches
+// (RFC 0030 §5.1); still no release of `*h` itself.
+// DUMP-LABEL: function 'drop':
+// DUMP-NOT: release *param0 free
+// DUMP: release *param0->cur free may when always
+// DUMP-NOT: release *param0 free
+// DUMP: store param0->cur := null
 // DUMP-LABEL: function 'walk':
-// DUMP: summary: {{.*}}h->count: {{[a-z|]*}}written{{.*}}h->cur: {{[a-z|]*}}freed(free){{[a-z|]*}}replaced
-// DUMP-NOT: summary: h: {{[a-z|]*}}freed
+// DUMP-NOT: release *param0 free
+// DUMP: store param0->count := int
+// DUMP-NEXT: store param0->cur := null
+// DUMP-NOT: release *param0 free
+// DUMP-LABEL: function 'use':
 void walk(struct holder *h) {
   reset(h);
   opaque(h);

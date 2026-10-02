@@ -8,22 +8,21 @@
 //
 // RFC 0030 §14: what an engine gets for one unit (`EngineInput`) and what it
 // implements (`SafetyEngine`). Everything an engine produces flows through
-// `LedgerAdapter`, so RFC 0031 can replace `FunctionDataflow` (today's
-// engine, `DataflowEngine`) without touching the ledger, the kinds, the
-// library table, the planner, the emitter, the formats or the tests.
+// `LedgerAdapter`, which let RFC 0031 replace the engine (today's is
+// `ObjectEngine`) without touching the ledger, the kinds, the library table,
+// the planner or the emitter.
 //
 //===----------------------------------------------------------------------===//
 
 #ifndef WEAVEC_ANALYSIS_SAFETYENGINE_H
 #define WEAVEC_ANALYSIS_SAFETYENGINE_H
 
-#include "weavec/Analysis/FunctionAnalysis.h"
 #include "weavec/Analysis/KindInference.h"
 #include "weavec/Analysis/KindTable.h"
 #include "weavec/Analysis/LedgerAdapter.h"
 #include "weavec/Analysis/ProgramDatabase.h"
 #include "weavec/Analysis/SiteCollector.h"
-#include "weavec/Analysis/Summaries.h"
+#include "weavec/Core/AnalysisStats.h"
 #include "weavec/Core/FnSlots.h"
 #include "weavec/Core/Ledger.h"
 #include "weavec/Core/LibrarySpec.h"
@@ -41,10 +40,10 @@ namespace weavec::analysis {
 
 /// An engine's tunables (§14).
 struct EngineOptions {
-  /// `FunctionDataflow`'s own tunables: `dumpStream`, `stats`, the budget
-  /// (§5.5), zero-initialisation (§11) and strict aliasing (§3.1).
-  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
-  AnalysisOptions analysis = {};
+  /// `--dump-analysis`: the engine's state per function (unstable format).
+  llvm::raw_ostream *dumpStream = nullptr;
+  /// RFC 0020: optional invocation-owned work accounting.
+  core::AnalysisStats *stats = nullptr;
   /// §5.5: block transfers per function body; 0 is unlimited.
   std::uint64_t budget = core::DefaultBudget;
   /// §11: locals and allocations are zero-initialised.
@@ -59,8 +58,6 @@ struct EngineOptions {
   /// The functions whose diagnostics are reported; empty reports every
   /// emitted function, the ones `EngineInput::sites` holds (§2.6, §5.6).
   std::function<bool(const clang::FunctionDecl &)> shouldReport = nullptr;
-  /// RFC 0020: receives the callee summaries the unit's analysis read.
-  SummaryStore::Dependencies *dependencies = nullptr;
 };
 
 /// Everything an engine gets for one unit (§14).

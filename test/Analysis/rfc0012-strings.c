@@ -3,7 +3,10 @@
 // object holds, where the knowledge comes from, and the copies and reads it
 // checks against it.
 // RUN: not %weavec %s -- -ferror-limit=0 2>&1 | FileCheck %s
-// RUN: not %weavec --dump-analysis %s -- 2>/dev/null | FileCheck --check-prefix=DUMP %s
+// `--dump-analysis` printed the old engine's scalar and spatial state; the
+// object engine's dump is the format-30 summary (RFC 0031 §6.1), which holds
+// no state of a function's locals, so the length place is checked through
+// the diagnostics that state it.
 #include "../Inputs/prelude.h"
 
 size_t strlen(const char *s);
@@ -42,8 +45,6 @@ void formats(int x) {
 
 // `strlen(s)` is a place; the allocation's extent and the copy's need are
 // both stated in it. (`s` is Single by RFC 0030 §7.3: at least one byte.)
-// DUMP-LABEL: function 'short_by_one':
-// DUMP: scalars{strlen(s) zero|positive} spatial{s extent=1 string=len(strlen(s))}
 void short_by_one(const char *s) {
   char *d = malloc(strlen(s));
   if (!d)

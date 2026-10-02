@@ -13,14 +13,16 @@ static jmp_buf env;
 
 // Unannotated wrappers around `abort` and `longjmp`.
 // DUMP-LABEL: function 'die':
-// DUMP: summary: never-returns; *msg: read; stores{} returns{}
+// DUMP-NEXT: summary:
+// DUMP-NEXT: never-returns
 static void die(const char *msg) {
   use(msg);
   abort();
 }
 
 // DUMP-LABEL: function 'fail':
-// DUMP: summary: never-returns; stores{} returns{}
+// DUMP-NEXT: summary:
+// DUMP-NEXT: never-returns
 static void fail(int code) {
   if (code > 3)
     die("big");
@@ -28,13 +30,15 @@ static void fail(int code) {
 }
 
 // DUMP-LABEL: function 'throw_':
-// DUMP: summary: never-returns; stores{} returns{}
+// DUMP-NEXT: summary:
+// DUMP-NEXT: never-returns
 static void throw_(int code) {
   longjmp(env, code);
 }
 
 // DUMP-LABEL: function 'spin':
-// DUMP: summary: never-returns; stores{} returns{}
+// DUMP-NEXT: summary:
+// DUMP-NEXT: never-returns
 static void spin(void) {
   for (;;)
     ;
@@ -42,7 +46,8 @@ static void spin(void) {
 
 // Returns on some paths: not `never-returns` (*Future work*).
 // DUMP-LABEL: function 'check':
-// DUMP: summary: stores{} returns{}
+// DUMP-NOT: never-returns
+// DUMP: function 'good_path':
 static void check(int ok) {
   if (!ok)
     die("bad");
@@ -78,6 +83,9 @@ void no_leak_after_die(int bad) {
 }
 
 // Clean: code after the call is dead.
+// DUMP-LABEL: function 'dead_tail':
+// DUMP-NEXT: summary:
+// DUMP-NEXT: never-returns
 void dead_tail(char *p) {
   free(p);
   die("x");

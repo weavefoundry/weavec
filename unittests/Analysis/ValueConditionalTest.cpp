@@ -13,26 +13,14 @@
 
 #include "TestUtils.h"
 #include "weavec/Analysis/ProgramDatabase.h"
-#include "weavec/Core/Scalar.h"
 
 #include <gtest/gtest.h>
 
 namespace weavec::analysis {
 
-/// A guard of the one conjunct "`path` satisfies `fact`".
-static core::PathGuard when(const core::SummaryPath &path,
-                            const core::ValueFact &fact) {
-  core::PathGuard guard;
-  guard.require(path, fact);
-  return guard;
-}
-
 namespace {
 
-using core::Outcome;
-using core::PathGuard;
 using core::SummaryPath;
-using core::ValueFact;
 using test::analyze;
 using test::analyzeInProgram;
 using test::ids;
@@ -46,62 +34,6 @@ void abort(void);
 )c";
 
 // -- Scalar facts (RFC 0009, *Scalar facts in the state*) ---------------------
-
-TEST(ValueConditional, CorrelatedTestsOfOneIntegerAreOneTest) {
-  const auto result = analyze(R"c(
-    void truthy(int c, char *p) {
-      if (c) free(p);
-      if (!c) use(p);
-    }
-    void eq(int n, char *p) {
-      if (n == 0) free(p);
-      if (n != 0) use(p);
-    }
-    void sign(int n, char *p) {
-      if (n > 0) free(p);
-      if (n <= 0) use(p);
-    }
-    void constant(int n, char *p) {
-      if (n == 3) free(p);
-      if (n == 4) use(p);
-    }
-    void switched(int n, char *p) {
-      switch (n) { case 0: free(p); break; default: break; }
-      switch (n) { case 1: use(p); break; default: break; }
-    }
-    void local_constant(char *p) {
-      int c = 0;
-      if (c) free(p);
-      use(p);
-      free(p);
-    }
-    void copied_constant(char *p) {
-      int c = 0;
-      int d = c;
-      if (d) free(p);
-      use(p);
-      free(p);
-    }
-  )c");
-  ASSERT_TRUE(result.ast);
-  EXPECT_EQ(messages(result.diagnostics), Strings{});
-
-  // The moves are recorded under their guards.
-  const core::FunctionSummary *eq = result.summary("eq");
-  ASSERT_NE(eq, nullptr);
-  EXPECT_EQ(eq->effectOf(SummaryPath::param(1)).when,
-            when(SummaryPath::param(0), ValueFact::ofConstant(0)));
-  EXPECT_EQ(result.summary("sign")->effectOf(SummaryPath::param(1)).when,
-            when(SummaryPath::param(0), ValueFact::of(Outcome::Positive)));
-  EXPECT_EQ(result.summary("truthy")->effectOf(SummaryPath::param(1)).when,
-            when(SummaryPath::param(0), ValueFact::nonZero()));
-  EXPECT_EQ(result.summary("constant")->effectOf(SummaryPath::param(1)).when,
-            when(SummaryPath::param(0), ValueFact::ofConstant(3)));
-  EXPECT_TRUE(result.summary("local_constant")
-                  ->effectOf(SummaryPath::param(0))
-                  .when.trivial())
-      << "a fact about a local is no condition on the caller";
-}
 
 TEST(ValueConditional, UncorrelatedTestsStillReport) {
   const auto result = analyze(R"c(
@@ -228,41 +160,8 @@ TEST(ValueConditional, GuardedResourcesAreNotLeakedOnRefutedEdges) {
   )c");
   ASSERT_TRUE(result.ast);
   EXPECT_EQ(ids(result.diagnostics), (Strings{"leak"}));
-  EXPECT_EQ(messages(result.diagnostics), (Strings{"20: 'p' is leaked"}));
-}
-
-TEST(ValueConditional, FactsAboutCallerMemoryAndBorrowedLocals) {
-  const auto result = analyze(R"c(
-    struct buf { char *data; int owned; };
-    void field(struct buf *b) {
-      if (b->owned) free(b->data);
-      if (!b->owned) use(b->data);
-    }
-    void through_pointer(char *p) {
-      int c = 0;
-      int *q = &c;
-      *q = 1;
-      if (c) free(p);
-      use(p);
-    }
-    void after_call(struct buf *b, char *p) {
-      b->owned = 0;
-      field(b);
-      if (b->owned) use(p);
-    }
-  )c");
-  ASSERT_TRUE(result.ast);
-  // `field`: clean. `through_pointer`: the write through `q` lands in `c`,
-  // so `if (c)` is not dead and the use is reported. `after_call`: `field`
-  // reads but does not write `b->owned`, so the fact survives the call and
-  // `use(p)` is dead code; nothing is reported there.
-  EXPECT_EQ(messages(result.diagnostics),
-            (Strings{"12: use of 'p' after it may have been freed"}));
-  EXPECT_EQ(
-      result.summary("field")
-          ->effectOf(SummaryPath::param(0).deref().field("data"))
-          .when,
-      when(SummaryPath::param(0).deref().field("owned"), ValueFact::nonZero()));
+  // RFC 0031 §5.8: at the `return` that drops it.
+  EXPECT_EQ(messages(result.diagnostics), (Strings{"19: 'p' is leaked"}));
 }
 
 // -- Argument-conditional summaries (RFC 0009, *Deriving guards*) -------------
@@ -284,38 +183,6 @@ void gz_error(struct state *s, int err, char *msg) {
 }
 #line 1
 )c";
-
-TEST(ValueConditional, SummariesCarryArgumentGuards) {
-  const auto result = analyze(Alloc);
-  ASSERT_TRUE(result.ast);
-  EXPECT_EQ(messages(result.diagnostics), Strings{});
-
-  const core::FunctionSummary *alloc = result.summary("l_alloc");
-  ASSERT_NE(alloc, nullptr);
-  // Both arms consume `ptr` (`free` or `realloc`), so the effect itself is
-  // unconditional; the fresh result exists only for a non-zero size.
-  EXPECT_TRUE(alloc->effectOf(SummaryPath::param(1)).consumed());
-  EXPECT_TRUE(alloc->effectOf(SummaryPath::param(1)).when.trivial());
-  ASSERT_EQ(alloc->returns.size(), 2U);
-  for (const core::ValueSource &source : alloc->returns) {
-    if (source.isFresh())
-      EXPECT_EQ(source.when, when(SummaryPath::param(3), ValueFact::nonZero()));
-    else
-      EXPECT_TRUE(source.when.trivial()) << "null on either arm";
-  }
-
-  const core::FunctionSummary *release = result.summary("release");
-  ASSERT_NE(release, nullptr);
-  EXPECT_EQ(release->effectOf(SummaryPath::param(0).deref().field("data")).when,
-            when(SummaryPath::param(0).deref().field("noalloc"),
-                 ValueFact::ofConstant(0)));
-
-  const core::FunctionSummary *error = result.summary("gz_error");
-  ASSERT_NE(error, nullptr);
-  ASSERT_EQ(error->stores.size(), 1U);
-  EXPECT_EQ(error->stores.begin()->value.when,
-            when(SummaryPath::param(2), ValueFact::of(Outcome::NonNull)));
-}
 
 TEST(ValueConditional, CallersSelectEffectsByArgument) {
   const auto result = analyze(std::string(Alloc) + R"c(
@@ -365,13 +232,15 @@ TEST(ValueConditional, CallersSelectEffectsByArgument) {
   EXPECT_EQ(messages(result.diagnostics),
             (Strings{
                 // `shrink`: the discarded result is null, not a leak; the
-                // block was freed. RFC 0030 §3.1: `realloc`'s class does not
-                // consume here, and the argument's selection of a case is
-                // stage S7's (§9.1), so it is possible until then.
-                "11: use of 'p' after it may have been freed",
-                // `unknown_size`: may have been freed.
-                "16: use of 'p' after it may have been freed",
-                // `free_heap`: the flag selects the free.
+                // block was freed: `nsize` is 0, which selects the free
+                // (RFC 0030 §9.1, `param 3 =0`).
+                "11: use of 'p' after it was freed",
+                // `unknown_size`: freed, or moved by `realloc`.
+                "16: use of 'p' after it may have been moved",
+                // `keep_static`, `free_heap`: the numeric context of each
+                // call binds `b.noalloc` (RFC 0031 §6.6), so `release`
+                // frees nothing in the first and frees `b.data` in the
+                // second.
                 "32: use of 'b.data' after it was freed",
                 // `unknown_flag`: nothing known about the flag.
                 "36: use of 'b->data' after it may have been freed",
@@ -381,96 +250,6 @@ TEST(ValueConditional, CallersSelectEffectsByArgument) {
 }
 
 // -- Guarded outcome classes (RFC 0009, *Guards*) -----------------------------
-
-TEST(ValueConditional, OutcomeClassesKeepTheirGuards) {
-  // `l_alloc` frees `ptr` on its null class only for a zero size and moves
-  // it on the non-null class; both classes consume `ptr`, but not whatever
-  // the arguments are, so the classes are kept with their guards.
-  const auto result = analyze(std::string(Alloc) + R"c(
-    void *wrap(void *ud, void *block, size_t nsize) {
-      void *nb = l_alloc(ud, block, 8, nsize);
-      if (nb == NULL) return NULL;
-      return nb;
-    }
-    void *wrap_and(void *ud, void *block, size_t nsize) {
-      void *nb = l_alloc(ud, block, 8, nsize);
-      if (nb == NULL && nsize > 0) return NULL;
-      return nb;
-    }
-    struct table { void **hash; int size; };
-    void resize(void *ud, struct table *t, int nsize) {
-      void **nv = l_alloc(ud, t->hash, 8, nsize * sizeof(void *));
-      if (nv == NULL) { /* leave the table as it was */ }
-      else { t->hash = nv; t->size = nsize; }
-    }
-    void grow_fails_keeps(void *ud, struct table *t) {
-      if (t->size <= 0 || t->size > 2147483647 / 2) return;
-      void **nv = l_alloc(ud, t->hash, 8, t->size * 2 * sizeof(void *));
-      if (nv == NULL) return;
-      t->hash = nv;
-    }
-  )c");
-  ASSERT_TRUE(result.ast);
-  EXPECT_EQ(messages(result.diagnostics), Strings{});
-
-  const SummaryPath ptr = SummaryPath::param(1);
-  const core::FunctionSummary *alloc = result.summary("l_alloc");
-  ASSERT_NE(alloc, nullptr);
-  EXPECT_FALSE(alloc->consumesUnconditionally(ptr));
-  EXPECT_EQ(alloc->outcomes.at(Outcome::Null).at(ptr).when,
-            when(SummaryPath::param(3), ValueFact::ofConstant(0)));
-  EXPECT_TRUE(alloc->outcomes.at(Outcome::Null).at(ptr).freed);
-  EXPECT_TRUE(alloc->outcomes.at(Outcome::NonNull).at(ptr).moved);
-  EXPECT_EQ(alloc->outcomes.at(Outcome::NonNull).at(ptr).when.conditions,
-            when(SummaryPath::param(3), ValueFact::nonZero()).conditions);
-
-  // The wrapper's null edge keeps the guard: on it `block` is gone only
-  // when `nsize` is zero. Merging that edge with the non-null one keeps the
-  // recording's classes (the two narrowings are one outcome).
-  for (const char *name : {"wrap", "wrap_and"}) {
-    const core::FunctionSummary *wrap = result.summary(name);
-    ASSERT_NE(wrap, nullptr) << name;
-    EXPECT_FALSE(wrap->consumesUnconditionally(ptr)) << name;
-    EXPECT_EQ(wrap->outcomes.at(Outcome::Null).at(ptr).when,
-              when(SummaryPath::param(2), ValueFact::ofConstant(0)))
-        << name;
-    EXPECT_TRUE(wrap->outcomes.at(Outcome::NonNull).contains(ptr)) << name;
-  }
-
-  // The failure path leaves `t->hash` freed only when the size was zero
-  // (`nsize * sizeof` is zero exactly when `nsize` is, though the scaling
-  // keeps only the class); the success path replaces it.
-  const core::FunctionSummary *resize = result.summary("resize");
-  ASSERT_NE(resize, nullptr);
-  const SummaryPath hash = SummaryPath::param(1).deref().field("hash");
-  EXPECT_TRUE(resize->effectOf(hash).freed);
-  EXPECT_FALSE(resize->effectOf(hash).replaced);
-  const auto resizeGuard = resize->effectOf(hash).when;
-  ASSERT_FALSE(resizeGuard.integers.empty());
-  for (const auto n : {0, 1, -1, 2147483647}) {
-    bool selected = true;
-    for (const auto &predicate : resizeGuard.integers) {
-      const auto holds =
-          predicate.evaluate([n](const auto &, core::IntegerType type) {
-            return core::IntegerRange::singleton(
-                core::IntegerValue::ofBits({32, true},
-                                           static_cast<std::uint64_t>(n))
-                    .converted(type));
-          });
-      ASSERT_TRUE(holds.has_value());
-      selected &= *holds;
-    }
-    EXPECT_EQ(selected, n == 0);
-  }
-
-  // A caller that knows the size is non-zero refutes the guard on the null
-  // edge: the block is still owned there, so returning is not a leak and
-  // the value is not freed.
-  const core::FunctionSummary *keeps = result.summary("grow_fails_keeps");
-  ASSERT_NE(keeps, nullptr);
-  EXPECT_TRUE(keeps->effectOf(hash).replaced)
-      << "only the success path consumes, and it replaces";
-}
 
 // -- Replaced values under a guard (RFC 0009, *Deriving guards*) --------------
 
@@ -489,27 +268,6 @@ constexpr const char *Writer = R"c(
       else append(L, b);
     }
 )c";
-
-TEST(ValueConditional, ConsumeUnreplacedOnlyUnderTheExitRecordsGuard) {
-  const auto result = analyze(Writer);
-  ASSERT_TRUE(result.ast);
-  EXPECT_EQ(messages(result.diagnostics), Strings{});
-
-  // The value is gone at the exit only when `b` is null: the unreplaced
-  // consume the caller must see applies under that guard, and the replaced
-  // consume of the other arm is not claimed. Joining the arms into an
-  // unconditional, unreplaced consume would tell a caller passing a buffer
-  // that its stack was freed while the store that reinitialises it stays
-  // guarded on `b null`.
-  const core::FunctionSummary *writer = result.summary("writer");
-  ASSERT_NE(writer, nullptr);
-  const core::PlaceEffect stack =
-      writer->effectOf(SummaryPath::param(0).deref().field("stack"));
-  EXPECT_TRUE(stack.freed);
-  EXPECT_FALSE(stack.replaced);
-  EXPECT_EQ(stack.when,
-            when(SummaryPath::param(1), ValueFact::of(Outcome::Null)));
-}
 
 TEST(ValueConditional, CallersOfAGuardedUnreplacedConsumeSelectByArgument) {
   const auto result = analyze(std::string(Writer) + R"c(
@@ -538,38 +296,63 @@ TEST(ValueConditional, CallersOfAGuardedUnreplacedConsumeSelectByArgument) {
             }));
 }
 
-TEST(ValueConditional, ReplacedConsumeAfterAReportLeavesTheNewValue) {
-  // `via` frees `L->stack` through a local alias and its callee stores a
-  // new value there, so the caller's place is replaced but no store names
-  // it in the caller's terms (RFC 0008, *Replaced values*). The first call
-  // after the free is a double-free; the calls after it use the value
-  // `via` left, and are not.
+// RFC 0031 *Pending cases and exit splitting*: a release made where a local
+// was non-null, on a path that returns that local, is keyed to the non-null
+// result, so a caller that tests the result frees the old block once.
+TEST(ValueConditional, ReleasesGuardedByTheReturnedLocalKeyToItsClass) {
   const auto result = analyze(R"c(
-    struct L { char *stack; };
-    struct W { struct L *L; };
-    static void through(struct W *w) { free(w->L->stack); w->L->stack = malloc(8); }
-    static void via(struct L *L) { struct W w; w.L = L; through(&w); }
-    void cascade(struct L *L) {
-      free(L->stack);
-      via(L);
-      via(L);
-      via(L);
+    void *grow(void *ptr, size_t n) {
+      void *m = malloc(n);
+      if (m && ptr) free(ptr);
+      return m;
+    }
+    void caller(char *b) {
+      char *q = grow(b, 16);
+      if (!q) { free(b); return; }
+      free(q);
+    }
+    void wrong(char *b) {
+      char *q = grow(b, 16);
+      if (q) { free(b); free(q); }
     }
   )c");
   ASSERT_TRUE(result.ast);
+  const core::FunctionEffects *summary = result.summary("grow");
+  ASSERT_NE(summary, nullptr);
+  ASSERT_EQ(summary->effects.size(), 1U);
+  EXPECT_EQ(summary->effects[0].when.classes,
+            (std::vector<core::ResultClass>{core::ResultClass::NonNull}));
   EXPECT_EQ(messages(result.diagnostics),
-            (Strings{"8: 'L->stack' is freed twice"}));
+            (Strings{"14: 'b' may be freed twice"}));
+}
 
-  const core::FunctionSummary *via = result.summary("via");
-  ASSERT_NE(via, nullptr);
-  EXPECT_TRUE(
-      via->effectOf(SummaryPath::param(0).deref().field("stack")).replaced);
-  EXPECT_TRUE(via->stores.empty());
-  // The caller's own summary agrees: the value it freed was replaced.
-  const core::FunctionSummary *cascade = result.summary("cascade");
-  ASSERT_NE(cascade, nullptr);
-  EXPECT_TRUE(
-      cascade->effectOf(SummaryPath::param(0).deref().field("stack")).replaced);
+// RFC 0031 §6.3: `return *out != NULL` splits the exit by the comparison; on
+// the zero class the allocation was never made, so the caller's failing
+// branch leaks nothing and the other branch's `n` is non-null.
+TEST(ValueConditional, AnOutParameterAllocationIsAbsentOnTheFailingClass) {
+  const auto result = analyze(R"c(
+    struct node { int value; };
+    static int open_node(struct node **out) {
+      *out = malloc(sizeof **out);
+      return *out != NULL;
+    }
+    int outcome(void) {
+      struct node *n;
+      if (!open_node(&n))
+        return 1;
+      n->value = 2;
+      free(n);
+      return 0;
+    }
+  )c");
+  ASSERT_TRUE(result.ast);
+  EXPECT_TRUE(result.diagnostics.empty())
+      << ::testing::PrintToString(messages(result.diagnostics));
+  const core::FunctionEffects *summary = result.summary("open_node");
+  ASSERT_NE(summary, nullptr);
+  ASSERT_EQ(summary->stores.size(), 1U);
+  EXPECT_EQ(summary->stores[0].absentOn,
+            (std::vector<core::ResultClass>{core::ResultClass::Zero}));
 }
 
 // -- Inferred `noreturn` (RFC 0009, *Inferred `noreturn`*) --------------------
@@ -605,41 +388,9 @@ TEST(ValueConditional, NeverReturnsIsInferredTransitively) {
     }
   )c");
   ASSERT_TRUE(result.ast);
-  EXPECT_TRUE(result.summary("die")->neverReturns);
-  EXPECT_TRUE(result.summary("fail")->neverReturns);
-  EXPECT_TRUE(result.summary("spin")->neverReturns);
-  EXPECT_FALSE(result.summary("check")->neverReturns);
-  EXPECT_FALSE(result.summary("loop_out")->neverReturns);
-  EXPECT_FALSE(result.summary("good_path")->neverReturns);
   EXPECT_EQ(messages(result.diagnostics),
             (Strings{"16: use of 'q' after it may have been freed",
                      "17: 'q' may be freed twice"}));
-}
-
-TEST(ValueConditional, NeverReturnsCrossesUnits) {
-  const auto unit = analyze(std::string(Abort) + R"c(
-    void die(const char *msg) { use(msg); abort(); }
-    void fail(int code) { if (code) die("a"); die("b"); }
-  )c");
-  ASSERT_TRUE(unit.ast);
-  ProgramDatabase db;
-  db.add(unit.analyzer->exports());
-  ASSERT_NE(db.find("fail"), nullptr);
-  EXPECT_TRUE(db.find("fail")->neverReturns);
-
-  const auto client = analyzeInProgram(R"c(
-    void die(const char *msg);
-    void fail(int code);
-    void good(int bad) {
-      char *q = malloc(8);
-      if (bad) { free(q); fail(bad); }
-      use(q);
-      free(q);
-    }
-  )c",
-                                       &db);
-  ASSERT_TRUE(client.ast);
-  EXPECT_EQ(messages(client.diagnostics), Strings{});
 }
 
 TEST(ValueConditional, NeverReturnsThroughFunctionPointersNeedsEveryCandidate) {

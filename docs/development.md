@@ -85,13 +85,17 @@ Build targets of note:
 ### Unit tests (`unittests/`)
 
 GoogleTest, one binary per library (`WeaveCCoreTests`, `WeaveCAnalysisTests`,
-`WeaveCFrontendTests`). Core tests exercise the model directly; Analysis
-tests parse snippets with `clang::tooling::buildASTFromCodeWithArgs` and
+`WeaveCFrontendTests`). Core tests exercise the model directly, including
+the object engine's domain (`HeapTest.cpp`, one test per invariant I1–I6 of
+RFC 0031 §4.7) and the round trip of summary format 30
+(`EffectsIOTest.cpp`); Analysis tests parse snippets with
+`clang::tooling::buildASTFromCodeWithArgs`, run `ObjectEngine` over them and
 collect diagnostics with `core::DiagnosticCollector` (`TestUtils.h` has
-`analyzeInProgram` for a snippet checked against another unit's exports);
-Frontend tests run `ProgramAnalysis` and the link step over in-memory units
-and round-trip format-28 unit records. Run one with
-`build/dev/unittests/WeaveCCoreTests --gtest_filter='Borrow*'`.
+`analyze`, `analyzeInProgram` for a snippet checked against another unit's
+exports, and `analyzeAtLink`, and the result gives each function's
+`core::FunctionEffects`); Frontend tests run `ProgramAnalysis` and the link
+step over in-memory units and round-trip format-29 unit records. Run one
+with `build/dev/unittests/WeaveCCoreTests --gtest_filter='Heap*'`.
 
 ### Integration tests (`test/`)
 
@@ -161,16 +165,27 @@ editor integration.
 - `weavec-cc` runs its `-cc1` jobs in-process, so `lldb -- build/dev/bin/
   weavec-cc -c file.c` stops in the analysis directly; `weavec-cc -###
   file.c` prints the jobs Clang's driver planned. A unit's record is
-  `<object>.weavec` next to the object: format 28, a framed JSON header
+  `<object>.weavec` next to the object: format 29, a framed JSON header
   (producer, source, `-cc1` command, target, configuration, object digest)
-  and payload (summaries, kinds, imports, slots, site outcomes), with a
-  schema fingerprint and a SHA-256 digest (RFC 0030 §13.1). The link step
+  and payload (format-30 summaries, kinds, imports, slots, site outcomes),
+  with a schema fingerprint and a SHA-256 digest (RFC 0030 §13.1, RFC 0031
+  §7); `weavec --dump-record=<path>` prints it as JSON. The link step
   re-runs the recorded command.
 - Write the ledger (`weavec --ledger=out.json file.c --`) and read the rows
   at the line in question: their facets, outcomes, reasons and fix-its say
   what was decided and why.
-- `weavec --whole-program --dump-analysis a.c b.c --` prints each unit's
-  dump in analysis order and then the joined program database.
+- `weavec --whole-program --dump-analysis a.c b.c --` names each unit in
+  analysis order and then prints the joined program database (every
+  exported summary) and the program's function-pointer slots.
+- The object engine prints its own state to stderr when
+  `WEAVEC_ENGINE_DUMP` is set (`lib/Analysis/EngineUnit.cpp`,
+  `EngineSummary.cpp`, `EngineRun.cpp`): any value prints the summary of
+  every function the unit analyses and of every summary it imports from the
+  program database; `2` also prints each run's exit states, and `3` each
+  run's block entry states (objects, cells, symbols and the zone), as
+  `ObjectEngine::dump` does. `WEAVEC_ENGINE_TRACE` prints every block visit
+  of the fixpoint with the states it sends and the joins it makes. Both are
+  unstable and verbose; use them on a reduced case.
 - `weavec --dump-kinds file.c --` prints the unit's RFC 0030 pointer kinds
   (declared and inferred, with must-access requirements, slot demotions,
   store groups and §7.6 candidates) and its function-pointer slots, without

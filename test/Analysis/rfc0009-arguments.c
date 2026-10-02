@@ -22,8 +22,13 @@ struct state {
 // outcome class keeps its guard (RFC 0009, *Guards*): the null class frees
 // `ptr` only for a zero size, so a caller that tests the result and knows
 // the size is non-zero still owns the block.
+// Format 30 (RFC 0031 §6.1) keys each effect by the result class and the
+// size parameter's zero test.
 // DUMP-LABEL: function 'l_alloc':
-// DUMP: summary: ptr: freed(free)|moved(free); stores{} returns{fresh(free) extent=nsize when[nsize positive|negative], null} outcome null{ptr: freed(free) when[nsize =0]} outcome nonnull{ptr: moved(free) when[nsize positive|negative, nsize in u64:1-18446744073709551615]}
+// DUMP: result null when null
+// DUMP-NEXT: result fresh#0 free extent param3 {{.*}}when nonnull and param 3 !=0
+// DUMP-NEXT: release *param1 free when result null and param 3 =0
+// DUMP-NEXT: move *param1 free when result nonnull
 void *l_alloc(void *ud, void *ptr, size_t osize, size_t nsize) {
   (void)ud;
   (void)osize;
@@ -36,8 +41,12 @@ void *l_alloc(void *ud, void *ptr, size_t osize, size_t nsize) {
 
 // Lua's `luaS_resize` shape: on failure the table is left as it was, which
 // is a dangling `hash` only when the size was zero (the block was freed).
+// The summary text joins the size-zero release into the move and keeps the
+// replacement a possible store (RFC 0031 *Implementation amendments*, *Stores
+// that keep the entry value possible*); `nsize * 8` is no parameter test.
 // DUMP-LABEL: function 'resize_table':
-// DUMP: summary: t->hash: written|freed(free) when[mul(8, u64(nsize)) in u64:0-0, mul(8, u64(nsize)) in u64:0-17179869176,18446744056529682432-18446744073709551608]; t->size: written; stores{t->hash = fresh(free) extent=mul(8, u64(nsize)) when[mul(8, u64(nsize)) in u64:0-17179869176,18446744056529682432-18446744073709551608]} returns{} requires{t}
+// DUMP: move *param1->hash free when always
+// DUMP-NEXT: store param1->hash := fresh#0 free {{.*}}may
 struct table {
   void **hash;
   int size;
@@ -53,8 +62,11 @@ void resize_table(void *ud, struct table *t, int nsize) {
 }
 
 // cJSON's `printbuffer` shape: the free depends on a flag in the object.
+// The flag is no result class or parameter test, so the release is possible
+// in the summary text; a caller whose record decides the flag gets the exact
+// effect (`keep_static`, `free_heap`).
 // DUMP-LABEL: function 'release':
-// DUMP: summary: b->data: freed(free) when[b->noalloc =0]; b->noalloc: read; stores{} returns{} requires{b}
+// DUMP: release *param0->data free may when always
 void release(struct buf *b) {
   if (!b->noalloc)
     free(b->data);
@@ -62,7 +74,7 @@ void release(struct buf *b) {
 
 // zlib's `gz_error`: the store depends on the argument being non-null.
 // DUMP-LABEL: function 'gz_error':
-// DUMP: summary: s->err: written; s->msg: written; stores{s->msg = copy msg when[msg nonnull]} returns{} requires{s}
+// DUMP: store param0->msg := path param2 when param 2 !=0
 void gz_error(struct state *s, int err, char *msg) {
   s->err = err;
   if (msg != NULL)
@@ -124,17 +136,21 @@ void store_null(struct state *s) {
 // Reported callers.
 
 // The discarded result is null here, not a leak; the block itself is gone.
+// A zero size decides `l_alloc`'s parameter test, so the release is certain
+// (RFC 0031 *Implementation amendments*, *Pending cases and exit splitting*).
 void shrink(void *ud) {
   char *p = malloc(8);
   l_alloc(ud, p, 8, 0);
-  // CHECK: rfc0009-arguments.c:[[@LINE+1]]:7: warning: use of 'p' after it may have been freed [weavec::use-after-free]
+  // CHECK: rfc0009-arguments.c:[[@LINE+1]]:7: error: use of 'p' after it was freed [weavec::use-after-free]
   use(p);
 }
 
 void unknown_size(void *ud, size_t n) {
   char *p = malloc(8);
   char *q = l_alloc(ud, p, 8, n);
-  // CHECK: rfc0009-arguments.c:[[@LINE+1]]:7: warning: use of 'p' after it may have been freed [weavec::use-after-free]
+  // Freed for a zero size, moved when `realloc` succeeds, live when it fails:
+  // the untested result names the move of the non-null class (RFC 0031 §6.1).
+  // CHECK: rfc0009-arguments.c:[[@LINE+1]]:7: warning: use of 'p' after it may have been moved [weavec::use-after-move]
   use(p);
   free(q);
 }
@@ -160,4 +176,4 @@ void store_local(struct state *s) {
   gz_error(s, 1, local);
 }
 
-// CHECK: 3 warnings and 2 errors generated.
+// CHECK: 2 warnings and 3 errors generated.

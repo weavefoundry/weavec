@@ -8,7 +8,6 @@
 
 #include "TestUtils.h"
 #include "weavec/Analysis/ProgramDatabase.h"
-#include "weavec/Core/SummaryIO.h"
 
 #include <gtest/gtest.h>
 
@@ -17,6 +16,32 @@ namespace weavec::analysis {
 using weavec::test::analyze;
 using weavec::test::ids;
 using Strings = std::vector<std::string>;
+
+/// `<outcome>[/<reason>]` of `facet` at the site whose ledger text is
+/// `text`, or empty when there is none.
+static std::string outcomeAt(const test::AnalysisResult &result,
+                             std::string_view text, core::Facet facet) {
+  for (const core::UnitLedger &unit : result.planned.ledger.units)
+    for (const core::FunctionLedger &function : unit.functions)
+      for (const core::Site &site : function.sites) {
+        const core::FacetRecord *record = site.facet(facet);
+        if (site.text != text || record == nullptr)
+          continue;
+        std::string out(core::toString(record->outcome()));
+        if (!record->decision.reasonText().empty())
+          out += "/" + std::string(record->decision.reasonText());
+        return out;
+      }
+  return {};
+}
+
+/// No diagnostic is an error (a definite finding).
+static bool noErrors(const test::AnalysisResult &result) {
+  for (const core::Diagnostic &diagnostic : result.diagnostics.diagnostics())
+    if (diagnostic.severity == core::Severity::Error)
+      return false;
+  return true;
+}
 
 static constexpr const char *Box = R"c(
   struct box { char *data; };
@@ -28,37 +53,6 @@ static constexpr const char *Box = R"c(
     return b;
   }
 )c";
-
-TEST(HeapState, ConstructorPreservesChildBoundsAndOwnership) {
-  const auto result = analyze(std::string(Box) + R"c(
-    void overflow(void) {
-      struct box *b = make();
-      if (!b) return;
-      b->data[4] = 0;
-      free(b->data); free(b);
-    }
-    void leak(void) {
-      struct box *b = make();
-      if (b) free(b);
-    }
-    void clean(void) {
-      struct box *b = make();
-      if (!b) return;
-      b->data[3] = 0;
-      free(b->data); free(b);
-    }
-  )c");
-  ASSERT_TRUE(result.ast);
-  EXPECT_EQ(ids(result.diagnostics), (Strings{"out-of-bounds", "leak"}));
-  const auto *summary = result.summary("make");
-  ASSERT_NE(summary, nullptr);
-  ASSERT_TRUE(summary->heap.contains(core::SummaryPath::result()));
-  const auto &graph = summary->heap.at(core::SummaryPath::result());
-  ASSERT_EQ(graph.fields.size(), 1U);
-  EXPECT_EQ(graph.fields.begin()->value.extent,
-            core::PathAffine::ofConstant(4));
-  EXPECT_TRUE(graph.valid());
-}
 
 TEST(HeapState, ReturnedArgumentAliasRetainsIdentity) {
   const auto result = analyze(R"c(
@@ -83,33 +77,6 @@ TEST(HeapState, ReturnedArgumentAliasRetainsIdentity) {
   )c");
   ASSERT_TRUE(result.ast);
   EXPECT_EQ(ids(result.diagnostics), Strings{"use-after-free"});
-}
-
-TEST(HeapState, IndependentCallsAndSharedChild) {
-  const auto result = analyze(R"c(
-    struct pair { char *a, *b; struct pair *self; };
-    struct pair *make(void) {
-      struct pair *p = malloc(sizeof *p); if (!p) return NULL;
-      p->a = malloc(8); if (!p->a) { free(p); return NULL; }
-      p->b = p->a; p->self = p; return p;
-    }
-    void good(void) {
-      struct pair *a = make(), *b = make();
-      if (a) { a->b[7] = 0; free(a->a); free(a); }
-      if (b) { b->a[7] = 0; free(b->b); free(b); }
-    }
-    void bad(void) {
-      struct pair *p = make(); if (!p) return;
-      free(p->a); p->b[0] = 0; free(p);
-    }
-  )c");
-  ASSERT_TRUE(result.ast);
-  EXPECT_EQ(ids(result.diagnostics), Strings{"use-after-free"});
-  const auto *summary = result.summary("make");
-  ASSERT_NE(summary, nullptr);
-  const auto &graph = summary->heap.at(core::SummaryPath::result());
-  EXPECT_TRUE(graph.valid());
-  EXPECT_LE(graph.fields.size(), 3U);
 }
 
 TEST(HeapState, AllocationSizeUsesItsOldValue) {
@@ -196,7 +163,10 @@ TEST(HeapState, FinalNullAndNullableFields) {
     }
   )c");
   ASSERT_TRUE(result.ast);
-  EXPECT_EQ(ids(result.diagnostics), (Strings{"null-dereference"}));
+  // `null_field` dereferences the null `empty` leaves; `nullable_field`
+  // dereferences an allocation `maybe` did not test (RFC 0030 §3.2).
+  EXPECT_EQ(ids(result.diagnostics),
+            (Strings{"null-dereference", "allocation-failure"}));
 }
 
 TEST(HeapState, StringsCrossConstructorsAndForwarders) {
@@ -269,28 +239,6 @@ TEST(HeapState, ReplacementPreservesOldAliasesAndFinalFields) {
   ASSERT_TRUE(result.ast);
   EXPECT_EQ(ids(result.diagnostics),
             (Strings{"use-after-free", "use-after-free"}));
-}
-
-TEST(HeapState, CrossUnitConstructorKeepsGraph) {
-  const auto library = analyze(Box);
-  ASSERT_TRUE(library.ast);
-  ProgramDatabase database;
-  database.add(library.analyzer->exports());
-  const auto caller = weavec::test::analyzeInProgram(R"c(
-    struct box { char *data; };
-    struct box *make(void);
-    void bad(void) {
-      struct box *b = make(); if (!b) return;
-      b->data[4] = 0; free(b->data); free(b);
-    }
-    void good(void) {
-      struct box *b = make(); if (!b) return;
-      b->data[3] = 0; free(b->data); free(b);
-    }
-  )c",
-                                                     &database);
-  ASSERT_TRUE(caller.ast);
-  EXPECT_EQ(ids(caller.diagnostics), Strings{"out-of-bounds"});
 }
 
 TEST(HeapState, EscapingLocalBorrowAndReleaseFamilies) {
@@ -410,32 +358,6 @@ TEST(HeapState, RawFieldStaysRaw) {
   EXPECT_EQ(ids(result.diagnostics), Strings{"unsafe-operation"});
 }
 
-TEST(HeapState, RecursiveProjectionIsBoundedAndMarkedIncomplete) {
-  const auto result = analyze(R"c(
-    struct node { struct node *next; char *data; };
-    struct node *make(unsigned depth) {
-      struct node *n = malloc(sizeof *n); if (!n) return NULL;
-      n->data = malloc(4);
-      n->next = depth ? make(depth - 1) : NULL;
-      return n;
-    }
-    struct node *forward(unsigned depth) { return make(depth); }
-    struct node *local(unsigned depth) { struct node *p = make(depth), *q = p; return q; }
-  )c");
-  ASSERT_TRUE(result.ast);
-  for (const char *name : {"make", "forward", "local"}) {
-    const auto *summary = result.summary(name);
-    ASSERT_NE(summary, nullptr);
-    ASSERT_TRUE(summary->heap.contains(core::SummaryPath::result()));
-    const auto &graph = summary->heap.at(core::SummaryPath::result());
-    EXPECT_TRUE(graph.incomplete) << name;
-    EXPECT_TRUE(graph.valid()) << name;
-    EXPECT_LE(graph.fields.size(), core::MaxHeapFields);
-    for (const auto &field : graph.fields)
-      EXPECT_LE(field.dest.steps.size(), core::MaxHeapPathDepth);
-  }
-}
-
 TEST(HeapState, RecordResultsAndCopiesPreserveSharedChildBounds) {
   const auto result = analyze(R"c(
     struct pair { char *a, *b; };
@@ -478,37 +400,6 @@ TEST(HeapState, AssignmentAndConditionalConstructorKeepChildBounds) {
   )c");
   ASSERT_TRUE(result.ast);
   EXPECT_EQ(ids(result.diagnostics), Strings{"out-of-bounds"});
-}
-
-TEST(HeapState, SeveralOutputsAndTheReturnShareOneObjectGraph) {
-  const auto result = analyze(R"c(
-    struct box { char *data; };
-    struct box *publish(struct box **a, struct box **b) {
-      struct box *p = malloc(sizeof *p);
-      if (p) p->data = malloc(4);
-      *a = p; *b = p; return p;
-    }
-    void good(void) {
-      struct box *a, *b, *c = publish(&a, &b); if (!c) return;
-      if (b->data) b->data[3] = 0;
-      free(a->data); free(c);
-    }
-    void bad(void) {
-      struct box *a, *b, *c = publish(&a, &b); if (!c) return;
-      if (b->data) b->data[4] = 0;
-      free(a->data); free(c);
-    }
-  )c");
-  ASSERT_TRUE(result.ast);
-  EXPECT_EQ(ids(result.diagnostics), Strings{"out-of-bounds"});
-  const auto *summary = result.summary("publish");
-  ASSERT_NE(summary, nullptr);
-  const auto printed =
-      core::printSummary(*summary, [](std::uint32_t) { return "g"; });
-  std::string error;
-  EXPECT_TRUE(core::parseSummary(
-      printed, [](std::string_view) { return 0U; }, &error))
-      << error << printed;
 }
 
 TEST(HeapState, APublishedRootAndItsExplicitChildStoreAllocateOnce) {
@@ -586,6 +477,8 @@ TEST(HeapState, LazyPublicationKeepsItsEntryGuardAcrossTheCall) {
     }
   )c");
   ASSERT_TRUE(result.ast);
+  // RFC 0031 *Entry tests*: `ensure` publishes `g` when `g` was null at
+  // entry, which the second call's `g` is not.
   EXPECT_EQ(ids(result.diagnostics), Strings{"use-after-free"});
 }
 
@@ -609,7 +502,15 @@ TEST(HeapState, AFieldWriteAfterConditionalPublicationStillRuns) {
     }
   )c");
   ASSERT_TRUE(result.ast);
-  EXPECT_EQ(ids(result.diagnostics), Strings{"out-of-bounds"});
+  // RFC 0031 *Entry tests*: `set` publishes `g` exactly when `g` was null
+  // at entry, but its store to `g->data` runs after that join, and the exit
+  // that failed to allocate a new box stores nothing, so no entry test
+  // separates it: the store is possible, and the access may reach the old,
+  // freed data of unknown extent (KNOWN-DIFFERENCES.md, *Unit tests*).
+  EXPECT_EQ(outcomeAt(result, "g->data[4]", core::Facet::Spatial),
+            "unresolved/unknown-index");
+  EXPECT_TRUE(result.diagnostics.empty())
+      << ::testing::PrintToString(test::messages(result.diagnostics));
 }
 
 TEST(HeapState, ReturningAnExtractedPointerUsesTheEntryCell) {
@@ -654,7 +555,13 @@ TEST(HeapState, AReturnedRecordSharesAPublishedGlobalObject) {
     }
   )c");
   ASSERT_TRUE(result.ast);
-  EXPECT_EQ(ids(result.diagnostics), Strings{"use-after-free"});
+  // RFC 0031 §6.1: `get`'s returned `p` is `g` after a possible publication
+  // (the entry value or a new box), which no value of the summary spells, so
+  // the caller cannot tell `a.p` is `g`: the use is not proven, but no
+  // longer a definite use after free (KNOWN-DIFFERENCES.md, *Unit tests*).
+  EXPECT_EQ(outcomeAt(result, "g->data[0]", core::Facet::Temporal),
+            "unresolved/may-alias-released");
+  EXPECT_TRUE(noErrors(result));
 }
 
 TEST(HeapState, ATraversalAfterPublicationDoesNotGuardTheEarlierWrite) {
@@ -713,37 +620,6 @@ TEST(HeapState, SwapBasedReplacementPreservesBothEntryValues) {
             (Strings{"out-of-bounds", "use-after-free"}));
 }
 
-TEST(HeapState, KnownFinalValuesSurviveWidenedConsumptionEffects) {
-  const auto library = analyze(R"c(
-    struct box { char *data; };
-    void reset(struct box *b) { free(b->data); b->data = malloc(4); }
-  )c");
-  ASSERT_TRUE(library.ast);
-  auto exports = library.analyzer->exports();
-  auto summary = exports.functions.at("reset").summary.get();
-  const auto path = core::SummaryPath::param(0).deref().field("data");
-  // A recursive join can lose the legacy must-replaced flag while retaining
-  // an independently known final value. The old input is still consumed.
-  summary.effects.at(path).replaced = false;
-  exports.functions.at("reset").summary.assign(std::move(summary));
-  ProgramDatabase database;
-  database.add(exports);
-  const auto caller = weavec::test::analyzeInProgram(R"c(
-    struct box { char *data; }; void reset(struct box *);
-    void good(void) {
-      struct box b = {malloc(8)}; reset(&b);
-      if (b.data) b.data[3] = 0; free(b.data);
-    }
-    void stale(void) {
-      struct box b = {malloc(8)}; if (!b.data) return;
-      char *old = b.data; reset(&b); old[0] = 0; free(b.data);
-    }
-  )c",
-                                                     &database);
-  ASSERT_TRUE(caller.ast);
-  EXPECT_EQ(ids(caller.diagnostics), Strings{"use-after-free"});
-}
-
 TEST(HeapState, ConsumptionOfCopiedInputsDoesNotConsumeOldDestinations) {
   const auto result = analyze(R"c(
     struct box { char *data; };
@@ -762,14 +638,6 @@ TEST(HeapState, ConsumptionOfCopiedInputsDoesNotConsumeOldDestinations) {
   )c");
   ASSERT_TRUE(result.ast);
   EXPECT_EQ(ids(result.diagnostics), Strings{"double-free"});
-  const auto *summary = result.summary("helper");
-  ASSERT_NE(summary, nullptr);
-  EXPECT_TRUE(
-      summary->effectOf(core::SummaryPath::param(0).deref().field("data"))
-          .consumed());
-  EXPECT_FALSE(
-      summary->effectOf(core::SummaryPath::param(1).deref().field("data"))
-          .consumed());
 }
 
 TEST(HeapState, LocalAliasSwapsSnapshotBothIncomingCells) {
@@ -796,49 +664,6 @@ TEST(HeapState, LocalAliasSwapsSnapshotBothIncomingCells) {
   EXPECT_EQ(ids(result.diagnostics), Strings{"out-of-bounds"});
 }
 
-TEST(HeapState, ConstructorCleanupDoesNotConsumeOldCallerFields) {
-  const auto result = analyze(R"c(
-    struct inner { char *data, *next; char area[8]; };
-    struct box { struct inner *state; };
-    void reset(struct box *b) { b->state->next = b->state->area; }
-    int create(struct box *b, int fail) {
-      struct inner *p = malloc(sizeof *p); if (!p) return -1;
-      b->state = p; p->data = NULL; reset(b);
-      if (fail) { free(p); b->state = NULL; return -1; }
-      return 0;
-    }
-    void good(void) {
-      struct box b = {NULL};
-      if (create(&b, 0)) return;
-      free(b.state);
-    }
-    void incoming(struct box *b, char *p) {
-      b->state = malloc(sizeof *b->state); if (!b->state) return;
-      b->state->data = p; free(b->state->data);
-      free(b->state); b->state = NULL;
-    }
-    void maybe_existing(struct box *b, int replace) {
-      if (replace) {
-        b->state = malloc(sizeof *b->state); if (!b->state) return;
-        b->state->data = NULL;
-      }
-      free(b->state->data);
-    }
-  )c");
-  ASSERT_TRUE(result.ast);
-  EXPECT_TRUE(result.diagnostics.empty());
-  const auto child =
-      core::SummaryPath::param(0).deref().field("state").deref().field("next");
-  EXPECT_FALSE(result.summary("create")->effectOf(child).consumed());
-  EXPECT_TRUE(result.summary("incoming")->consumes(1));
-  EXPECT_TRUE(
-      result.summary("maybe_existing")
-          ->effectOf(
-              core::SummaryPath::param(0).deref().field("state").deref().field(
-                  "data"))
-          .consumed());
-}
-
 TEST(HeapState, WritesThroughLocalAndEmbeddedAliasesAreFinalOutputs) {
   const auto result = analyze(R"c(
     struct box { char *data; }; struct outer { struct box box; };
@@ -861,61 +686,6 @@ TEST(HeapState, WritesThroughLocalAndEmbeddedAliasesAreFinalOutputs) {
   )c");
   ASSERT_TRUE(result.ast);
   EXPECT_EQ(ids(result.diagnostics), Strings{"out-of-bounds"});
-}
-
-TEST(HeapState, UnknownFinalValuesRetainNoIntermediateBound) {
-  const auto library = analyze(R"c(
-    struct box { char *data; };
-    void reset(struct box *b) { b->data = malloc(4); }
-  )c");
-  ASSERT_TRUE(library.ast);
-  auto exports = library.analyzer->exports();
-  auto summary = exports.functions.at("reset").summary.get();
-  const auto path = core::SummaryPath::param(0).deref().field("data");
-  summary.heap.at(path).fields.clear();
-  summary.heap.at(path).addField(
-      core::Store{.dest = core::SummaryPath::result(),
-                  .value = core::ValueSource::unknown()});
-  exports.functions.at("reset").summary.assign(std::move(summary));
-  ProgramDatabase database;
-  database.add(exports);
-  const auto caller = weavec::test::analyzeInProgram(R"c(
-    struct box { char *data; }; void reset(struct box *);
-    void unknown_size(void) {
-      struct box b = {0}; reset(&b);
-      if (b.data) b.data[7] = 0; free(b.data);
-    }
-  )c",
-                                                     &database);
-  ASSERT_TRUE(caller.ast);
-  EXPECT_EQ(ids(caller.diagnostics), Strings{});
-}
-
-TEST(HeapState, UnknownFinalValuesDoNotProveDisjointnessFromCopyAlternatives) {
-  const auto library = analyze(R"c(
-    void publish(char **out, char *p) { *out = p; }
-  )c");
-  ASSERT_TRUE(library.ast);
-  auto exports = library.analyzer->exports();
-  auto summary = exports.functions.at("publish").summary.get();
-  const auto path = core::SummaryPath::param(0).deref();
-  summary.heap.at(path).fields.clear();
-  summary.heap.at(path).addField(
-      core::Store{.dest = core::SummaryPath::result(),
-                  .value = core::ValueSource::unknown()});
-  exports.functions.at("publish").summary.assign(std::move(summary));
-  ProgramDatabase database;
-  database.add(exports);
-  const auto caller = weavec::test::analyzeInProgram(R"c(
-    void publish(char **, char *);
-    void bad(void) {
-      char *p = malloc(4); if (!p) return;
-      char *out; publish(&out, p); free(p); out[0] = 0;
-    }
-  )c",
-                                                     &database);
-  ASSERT_TRUE(caller.ast);
-  EXPECT_EQ(ids(caller.diagnostics), Strings{"use-after-free"});
 }
 
 } // namespace weavec::analysis

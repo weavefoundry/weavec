@@ -20,8 +20,10 @@ int null_deref(void) {
 
 void uninit(void) {
   char *p;
-  // DEFAULT: rfc0008-flags.c:[[@LINE+2]]:3: error: use of 'p' before it was initialized [weavec::use-of-uninitialized]
-  // LOWERED: rfc0008-flags.c:[[@LINE+1]]:3: warning: use of 'p' before it was initialized [weavec::use-of-uninitialized]
+  // RFC 0031 §5.9: the object engine reports the use of the uninitialised
+  // value at the operand `p`, not at the call.
+  // DEFAULT: rfc0008-flags.c:[[@LINE+2]]:8: error: use of 'p' before it was initialized [weavec::use-of-uninitialized]
+  // LOWERED: rfc0008-flags.c:[[@LINE+1]]:8: warning: use of 'p' before it was initialized [weavec::use-of-uninitialized]
   free(p);
 }
 

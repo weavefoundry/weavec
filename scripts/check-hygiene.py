@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
-"""Check repository hygiene: gate H2 of RFC 0030 (docs/rfcs/0030-prove-or-trap.md).
+"""Check repository hygiene: gate H2 of RFC 0030 (docs/rfcs/0030-prove-or-trap.md)
+as RFC 0031 (docs/rfcs/0031-object-engine.md, section 2) moves it to the object engine.
 
 Seven checks, one per bullet of H2 (its fourth bullet is split in two):
 
   retired-name       0 occurrences of SafetyState, CheckedContract,
-                     checkContracts or --checked in lib/, tools/ and docs/
-                     outside docs/rfcs/ (superseded RFCs keep their text).
-                     Plain case-sensitive substrings: --checked-report counts.
+                     checkContracts or --checked, or of the old engine's
+                     FunctionDataflow, DataflowEngine, TranslationUnitAnalyzer,
+                     FunctionAnalyzer, SummaryStore or FunctionSummary, in
+                     lib/, tools/ and docs/ outside docs/rfcs/ (superseded
+                     RFCs keep their text). Plain case-sensitive substrings:
+                     --checked-report counts.
   library-name-test  0 `== "NAME"` or `"NAME" ==` comparisons (any whitespace
                      around ==) in the C and C++ sources (.h .hpp .cpp .cc .c
                      .def .inc) of lib/, include/ and tools/ outside
@@ -17,41 +21,46 @@ Seven checks, one per bullet of H2 (its fourth bullet is split in two):
   corpus-word        0 occurrences of the words cJSON, jansson, linenoise,
                      jsmn, zlib, lua, Lua, sds and minigzip in any file under
                      lib/, comments included (the word rule is below).
-  dataflow-include   no file of a new component (section 1: every file under
-                     lib/ or include/ whose name starts with SiteCollector,
-                     AttributeReader, KindInference, SlotCollector,
-                     BoundaryInvariants, CheckPlanner or LedgerAdapter)
-                     includes Dataflow.h, directly or through the project
-                     headers it includes. The include chain is reported.
-  dataflow-sink      FunctionDataflow receives no DiagnosticSink: none is
-                     named in the body of class FunctionDataflow in
-                     lib/Analysis/Dataflow.h, in the parameter list of a
-                     FunctionDataflow::FunctionDataflow definition in
-                     lib/Analysis/Dataflow*.cpp, or in a struct that a
-                     FunctionDataflow constructor takes (see below). A missing
-                     class is a violation too.
-  dataflow-lines     Dataflow*.h and Dataflow*.cpp under lib/ and include/
-                     total at most 26,500 lines.
+  engine-include     only lib/Analysis/Engine*.cpp and
+                     lib/Analysis/ObjectEngine.cpp include Engine.h (the
+                     engine's private header): no other file under lib/ or
+                     include/ includes a header whose last path component is
+                     Engine.h. Nor does a file of a new component (RFC 0030
+                     section 1: every file under lib/ or include/ whose name
+                     starts with SiteCollector, AttributeReader,
+                     KindInference, SlotCollector, BoundaryInvariants,
+                     CheckPlanner or LedgerAdapter) include it through the
+                     project headers it includes. The include chain is
+                     reported.
+  engine-sink        the engine receives no DiagnosticSink (it publishes only
+                     through LedgerAdapter): no identifier containing
+                     DiagnosticSink (ClangDiagnosticSink too) in
+                     lib/Analysis/Engine*.{h,cpp}, lib/Analysis/ObjectEngine.cpp
+                     or include/weavec/Analysis/ObjectEngine.h, comments and
+                     string literals ignored. A missing lib/Analysis/Engine.h
+                     is a violation.
+  engine-lines       lib/Analysis/Engine*.h and lib/Analysis/Engine*.cpp
+                     (EngineIntegers.h included) total at most 20,500 lines.
   library-lines      the code under lib/, include/ and tools/ totals at most
-                     88,000 lines. lib/Core/LibrarySpec.txt does not count:
+                     65,500 lines. lib/Core/LibrarySpec.txt does not count:
                      it is a declarative table, and its growth is coverage,
                      not sprawl. Both limits are ratchets (RFC 0030 gate H2):
                      they are lowered as code is deleted, and raised only by
-                     an RFC amendment that records the measurement.
+                     an RFC amendment that records the measurement. RFC 0031
+                     stage S7 recorded them: the measurement at the end of S7
+                     (19,654 and 64,367 lines), rounded up to a multiple of
+                     500.
 
 The word rule of corpus-word: an occurrence counts when it is not immediately
 preceded or followed by an ASCII letter or digit, and case matters.
 Underscores and other punctuation are boundaries, so cJSON_IsString, lua_State
 and <zlib.h> are violations, while evaluation, sdsnew, LUA and Zlib are not.
 
-dataflow-sink ignores comments and string literals, and counts any identifier
-that contains DiagnosticSink (ClangDiagnosticSink too). A struct that a
-FunctionDataflow constructor takes is checked when its name ends in "Options"
-(wherever a header under lib/ or include/ defines it) or when
-lib/Analysis/Dataflow.h defines it. dataflow-include ignores commented-out
-includes; it resolves an include against the including file's directory,
-lib/Analysis/ and include/, follows only files under lib/ and include/, and
-counts every include whose last component is Dataflow.h, resolved or not.
+engine-include ignores commented-out includes; it resolves an include against
+the including file's directory, lib/Analysis/ and include/, follows only files
+under lib/ and include/, and counts every include whose last component is
+Engine.h, resolved or not (SafetyEngine.h and ObjectEngine.h are other
+headers).
 
 Files come from `git ls-files --cached --others --exclude-standard`, so ignored
 build output (docs/node_modules, docs/dist, docs/.astro, ...) is never read
@@ -91,16 +100,23 @@ from typing import Callable, Container, Iterator, Optional
 ROOT = Path(__file__).resolve().parent.parent
 
 # ---------------------------------------------------------------------------
-# Gate H2 (RFC 0030, Acceptance gates, Hygiene)
+# Gate H2 (RFC 0030, Acceptance gates, Hygiene; RFC 0031, section 2)
 # ---------------------------------------------------------------------------
 
-DATAFLOW_LINE_LIMIT = 26_500
-LIBRARY_LINE_LIMIT = 88_000
+# Recorded by RFC 0031 stage S7 (see the module docstring).
+ENGINE_LINE_LIMIT = 21_000
+LIBRARY_LINE_LIMIT = 66_500
 
 # retired-name
-RETIRED_NAMES = ("SafetyState", "CheckedContract", "checkContracts", "--checked")
+RETIRED_CHECKED_NAMES = ("SafetyState", "CheckedContract", "checkContracts", "--checked")
+# The old engine's (RFC 0031 section 1).
+RETIRED_ENGINE_NAMES = ("FunctionDataflow", "DataflowEngine", "TranslationUnitAnalyzer",
+                        "FunctionAnalyzer", "SummaryStore", "FunctionSummary")
+RETIRED_NAMES = RETIRED_CHECKED_NAMES + RETIRED_ENGINE_NAMES
 RETIRED_NAME_DIRS = ("lib", "tools", "docs")
 RETIRED_NAME_EXEMPT = ("docs/rfcs/",)
+# The pages that still describe the old engine until the rewrite that RFC
+# 0031 section 10 asks for lands. Remove each one as it is rewritten.
 # library-name-test (section 8)
 LIBRARY_SPEC = "lib/Core/LibrarySpec.txt"
 LIBRARY_SPEC_PREFIX = "lib/Core/LibrarySpec"
@@ -111,36 +127,34 @@ SOURCE_SUFFIXES = (".h", ".hpp", ".cpp", ".cc", ".c", ".def", ".inc")
 # corpus-word (the corpus projects of section 17.5)
 CORPUS_WORDS = ("cJSON", "jansson", "linenoise", "jsmn", "zlib", "lua", "Lua", "sds", "minigzip")
 CORPUS_WORD_DIRS = ("lib",)
-# dataflow-include (sections 1 and 14)
+# engine-include (RFC 0030 sections 1 and 14, RFC 0031 section 2)
 NEW_COMPONENTS = ("SiteCollector", "AttributeReader", "KindInference", "SlotCollector",
                   "BoundaryInvariants", "CheckPlanner", "LedgerAdapter")
 COMPONENT_DIRS = ("lib", "include")
-DATAFLOW_HEADER = "Dataflow.h"
+ENGINE_HEADER = "Engine.h"
+ENGINE_DIR = "lib/Analysis"
+ENGINE_INCLUDERS = ("Engine*.cpp", "ObjectEngine.cpp")  # in ENGINE_DIR
 # Searched after the including file's directory.
 INCLUDE_PATH = ("lib/Analysis", "include")
-# dataflow-sink (section 14)
-DATAFLOW_CLASS = "FunctionDataflow"
-DATAFLOW_CLASS_HEADER = "lib/Analysis/Dataflow.h"
-DATAFLOW_SOURCE_DIR = "lib/Analysis"
-DATAFLOW_SOURCE_PATTERN = "Dataflow*.cpp"
+# engine-sink (RFC 0030 section 14)
+ENGINE_PRIVATE_HEADER = "lib/Analysis/Engine.h"
+ENGINE_SINK_PATTERNS = ("Engine*.h", "Engine*.cpp", "ObjectEngine.cpp")  # in ENGINE_DIR
+ENGINE_PUBLIC_HEADER = "include/weavec/Analysis/ObjectEngine.h"
 DIAGNOSTIC_SINK = "DiagnosticSink"
-OPTIONS_SUFFIX = "Options"
-HEADER_SUFFIXES = (".h", ".hpp")
-# dataflow-lines and library-lines (section 18, The line budget)
-DATAFLOW_PATTERNS = ("Dataflow*.h", "Dataflow*.cpp")
-DATAFLOW_DIRS = ("lib", "include")
+# engine-lines and library-lines (RFC 0030 section 18, The line budget)
+ENGINE_LINE_PATTERNS = ("Engine*.h", "Engine*.cpp")  # in ENGINE_DIR
 LIBRARY_DIRS = ("lib", "include", "tools")
 # What a total's violation line shows in place of a path.
-DATAFLOW_TOTAL = "{lib,include}/**/Dataflow*.{h,cpp}"
+ENGINE_TOTAL = "lib/Analysis/Engine*.{h,cpp}"
 LIBRARY_TOTAL = "{lib,include,tools}/**"
 
 CHECKS = (
-    ("retired-name", "SafetyState, CheckedContract, checkContracts or --checked outside docs/rfcs/"),
+    ("retired-name", "checked-mode or old-engine names outside docs/rfcs/"),
     ("library-name-test", '== "<name>" against a LibrarySpec name outside lib/Core/LibrarySpec*'),
     ("corpus-word", "cJSON, jansson, linenoise, jsmn, zlib, lua, Lua, sds, minigzip in lib/"),
-    ("dataflow-include", "a new component (section 1) including Dataflow.h"),
-    ("dataflow-sink", "FunctionDataflow receiving a DiagnosticSink"),
-    ("dataflow-lines", "Dataflow*.{h,cpp} over their line limit"),
+    ("engine-include", "Engine.h included outside Engine*.cpp and ObjectEngine.cpp"),
+    ("engine-sink", "the engine naming a DiagnosticSink"),
+    ("engine-lines", "lib/Analysis/Engine*.{h,cpp} over their line limit"),
     ("library-lines", "lib/, include/ and tools/ over their line limit"),
 )
 
@@ -176,7 +190,7 @@ class Result:
     unreadable: list[str] = dataclasses.field(default_factory=list)
     library_entries: Optional[int] = None
     library_aliases: Optional[int] = None
-    dataflow_lines: dict[str, int] = dataclasses.field(default_factory=dict)
+    engine_lines: dict[str, int] = dataclasses.field(default_factory=dict)
     library_lines: dict[str, int] = dataclasses.field(default_factory=dict)
     violations: list[Violation] = dataclasses.field(default_factory=list)
 
@@ -329,17 +343,7 @@ _C_TOKEN = re.compile(
 _NOT_NEWLINE = re.compile(r"[^\n]")
 _INCLUDE = re.compile(r'^[ \t]*#[ \t]*(?:include|include_next|import)[ \t]*(?:<([^>\n]*)>|"([^"\n]*)")',
                       re.M)
-_CLASS_KEYWORD = re.compile(r"\b(?:class|struct)\b")
-_ENUM_BEFORE = re.compile(r"\benum\s*\Z")
-_CLASS_HEAD_END = re.compile(r"[{};]")
-_CLASS_ATTRIBUTE = re.compile(r"\[\[.*?\]\]|\b(?:alignas|__declspec)\s*\([^()]*\)"
-                              r"|\b__attribute__\s*\(\((?:[^()]|\([^()]*\))*\)\)", re.S)
-# [macros] name [final] [: bases]; the name may be qualified.
-_CLASS_HEAD = re.compile(r"\s*(?:[A-Za-z_]\w*\s+)*?(?P<name>(?:[A-Za-z_]\w*\s*::\s*)*[A-Za-z_]\w*)"
-                         r"\s*(?:final\s*)?(?::(?!:)[^{]*)?", re.S)
 _IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
-_BRACE = re.compile(r"[{}]")
-_PARENTHESIS = re.compile(r"[()]")
 _WHITESPACE = " \t\r\n\f\v"
 
 
@@ -409,47 +413,6 @@ def resolve_include(including: str, path: str, known: Container[str]) -> Optiona
         if candidate in known:
             return candidate
     return None
-
-
-def matching_brace(text: str, opening: int) -> int:
-    """The offset of the '}' that closes the '{' at `opening` (the end of the
-    text when it is unbalanced)."""
-    depth = 0
-    for brace in _BRACE.finditer(text, opening):
-        depth += 1 if brace.group() == "{" else -1
-        if depth == 0:
-            return brace.start()
-    return len(text)
-
-
-def parenthesized(text: str, opening: int) -> str:
-    """The text inside the '(' at `opening` and its matching ')'."""
-    depth = 0
-    for parenthesis in _PARENTHESIS.finditer(text, opening):
-        depth += 1 if parenthesis.group() == "(" else -1
-        if depth == 0:
-            return text[opening + 1:parenthesis.start()]
-    return text[opening + 1:]
-
-
-def class_definitions(bare: str) -> list[tuple[str, int, int]]:
-    """(unqualified name, offset of '{', offset of the matching '}') of each
-    class or struct defined in `bare` (no comments or literals)."""
-    found = []
-    opened = set()
-    for keyword in _CLASS_KEYWORD.finditer(bare):
-        if _ENUM_BEFORE.search(bare, max(0, keyword.start() - 32), keyword.start()):
-            continue
-        end = _CLASS_HEAD_END.search(bare, keyword.end())
-        if end is None or end.group() != "{" or end.start() in opened:
-            continue
-        head = _CLASS_HEAD.fullmatch(_CLASS_ATTRIBUTE.sub(" ", bare[keyword.end():end.start()]))
-        if head is None:
-            continue
-        opened.add(end.start())
-        name = head.group("name").split("::")[-1].strip()
-        found.append((name, end.start(), matching_brace(bare, end.start())))
-    return found
 
 
 def identifiers_containing(text: str, word: str) -> list[tuple[int, str]]:
@@ -611,21 +574,30 @@ def check_corpus_words(tree: Tree, result: Result) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Checks 4 and 5: the engine seam (section 14, "Two rules keep the seam honest")
+# Checks 4 and 5: the engine seam (RFC 0030 section 14, "Two rules keep the
+# seam honest"; RFC 0031 section 2)
 # ---------------------------------------------------------------------------
+
+
+def _in_engine_dir(path: str, patterns: tuple[str, ...]) -> bool:
+    """Whether `path` is directly in ENGINE_DIR and its name matches one of
+    `patterns`."""
+    name = posixpath.basename(path)
+    return (posixpath.dirname(path) == ENGINE_DIR
+            and any(fnmatch.fnmatchcase(name, pattern) for pattern in patterns))
 
 
 def _shortest_chain(start: str, includes: Callable[[str], list[tuple[int, str, str]]],
                     resolve: Callable[[str, str], Optional[str]]) -> Optional[list[str]]:
-    """The shortest include chain from `start` to Dataflow.h: `path:line` for
-    each include followed, then Dataflow.h as resolved (or as spelled)."""
+    """The shortest include chain from `start` to Engine.h: `path:line` for
+    each include followed, then Engine.h as resolved (or as spelled)."""
     parents: dict[str, Optional[tuple[str, int]]] = {start: None}
     queue = collections.deque([start])
     while queue:
         node = queue.popleft()
         for line, spelling, included in includes(node):
             target = resolve(node, included)
-            if posixpath.basename(included) == DATAFLOW_HEADER:
+            if posixpath.basename(included) == ENGINE_HEADER:
                 hops = [f"{node}:{line}", target or spelling]
                 while parents[node] is not None:
                     node, parent_line = parents[node]
@@ -637,7 +609,7 @@ def _shortest_chain(start: str, includes: Callable[[str], list[tuple[int, str, s
     return None
 
 
-def check_dataflow_includes(tree: Tree, result: Result) -> None:
+def check_engine_includes(tree: Tree, result: Result) -> None:
     files = {file.path: file for file in tree.files(COMPONENT_DIRS)}
     directives: dict[str, list[tuple[int, str, str]]] = {}
     chains: dict[str, Optional[list[str]]] = {}
@@ -651,73 +623,34 @@ def check_dataflow_includes(tree: Tree, result: Result) -> None:
         return resolve_include(including, path, files)
 
     for path in files:
-        if not posixpath.basename(path).startswith(NEW_COMPONENTS):
-            continue
+        if _in_engine_dir(path, ENGINE_INCLUDERS):
+            continue  # no new component's name starts with Engine
+        component = posixpath.basename(path).startswith(NEW_COMPONENTS)
         for line, spelling, included in includes(path):
             target = resolve(path, included)
-            if posixpath.basename(included) == DATAFLOW_HEADER:
-                result.add("dataflow-include", path, line,
-                           f"includes Dataflow.h directly: {path}:{line} -> {target or spelling}")
+            if posixpath.basename(included) == ENGINE_HEADER:
+                result.add("engine-include", path, line,
+                           f"includes Engine.h directly: {path}:{line} -> {target or spelling}")
                 continue
-            if target is None:
+            if not component or target is None:
                 continue
             if target not in chains:
                 chains[target] = _shortest_chain(target, includes, resolve)
             if chains[target] is not None:
                 chain = " -> ".join([f"{path}:{line}", *chains[target]])
-                result.add("dataflow-include", path, line, f"includes Dataflow.h transitively: {chain}")
+                result.add("engine-include", path, line, f"includes Engine.h transitively: {chain}")
 
 
-def check_dataflow_sink(tree: Tree, result: Result) -> None:
-    check = "dataflow-sink"
-    header = tree.get(DATAFLOW_CLASS_HEADER)
-    bare = header.lexed.bare if header is not None else ""
-    definitions = class_definitions(bare)
-    bodies = [(opening, closing) for name, opening, closing in definitions if name == DATAFLOW_CLASS]
-    if not bodies:
-        missing = "" if header is not None else f" ({DATAFLOW_CLASS_HEADER} is missing or unreadable)"
-        result.add(check, DATAFLOW_CLASS_HEADER, None, f"cannot find class {DATAFLOW_CLASS}{missing}")
-    # Constructor declarations in the class, then definitions in the sources.
-    declaration = re.compile(rf"(?<![\w~:]){re.escape(DATAFLOW_CLASS)}\s*\(")
-    parameter_lists = []
-    for opening, closing in bodies:
-        body = bare[opening:closing]
-        for offset, name in identifiers_containing(body, DIAGNOSTIC_SINK):
-            result.add(check, DATAFLOW_CLASS_HEADER, line_at(bare, opening + offset),
-                       f"class {DATAFLOW_CLASS} names {name}")
-        parameter_lists.extend(parenthesized(body, match.end() - 1)
-                               for match in declaration.finditer(body))
-    definition = re.compile(rf"\b{re.escape(DATAFLOW_CLASS)}\s*::\s*{re.escape(DATAFLOW_CLASS)}\s*\(")
-    for source in tree.files((DATAFLOW_SOURCE_DIR,)):
-        if (posixpath.dirname(source.path) != DATAFLOW_SOURCE_DIR
-                or not fnmatch.fnmatchcase(posixpath.basename(source.path), DATAFLOW_SOURCE_PATTERN)):
-            continue
-        source_bare = source.lexed.bare
-        for match in definition.finditer(source_bare):
-            parameters = parenthesized(source_bare, match.end() - 1)
-            parameter_lists.append(parameters)
-            for _, name in identifiers_containing(parameters, DIAGNOSTIC_SINK):
-                result.add(check, source.path, line_at(source_bare, match.start()),
-                           f"{DATAFLOW_CLASS}::{DATAFLOW_CLASS} takes {name}")
-    # The structs a constructor takes: options structs, and types that
-    # Dataflow.h itself defines.
-    local = {name for name, _, _ in definitions} - {DATAFLOW_CLASS}
-    taken = {word for parameters in parameter_lists for word in _IDENTIFIER.findall(parameters)
-             if word != DATAFLOW_CLASS and (word.endswith(OPTIONS_SUFFIX) or word in local)}
-    if not taken:
-        return
+def check_engine_sink(tree: Tree, result: Result) -> None:
+    if tree.get(ENGINE_PRIVATE_HEADER) is None:
+        result.add("engine-sink", ENGINE_PRIVATE_HEADER, None,
+                   "missing or unreadable, so the engine cannot be checked")
     for file in tree.files(COMPONENT_DIRS):
-        if not file.path.endswith(HEADER_SUFFIXES):
+        if not (_in_engine_dir(file.path, ENGINE_SINK_PATTERNS) or file.path == ENGINE_PUBLIC_HEADER):
             continue
-        file_bare = file.lexed.bare
-        for name, opening, closing in class_definitions(file_bare):
-            if name not in taken or not (name.endswith(OPTIONS_SUFFIX) or file.path == DATAFLOW_CLASS_HEADER):
-                continue
-            if file.path == DATAFLOW_CLASS_HEADER and any(o < opening < c for o, c in bodies):
-                continue  # nested in the class: reported above
-            for offset, sink in identifiers_containing(file_bare[opening:closing], DIAGNOSTIC_SINK):
-                result.add(check, file.path, line_at(file_bare, opening + offset),
-                           f"{name}, which a {DATAFLOW_CLASS} constructor takes, names {sink}")
+        bare = file.lexed.bare
+        for offset, name in identifiers_containing(bare, DIAGNOSTIC_SINK):
+            result.add("engine-sink", file.path, line_at(bare, offset), f"the engine names {name}")
 
 
 # ---------------------------------------------------------------------------
@@ -729,15 +662,14 @@ def _over_limit(total: int, limit: int, files: int) -> str:
     return f"{total:,} lines in {files:,} files, {total - limit:,} over the limit of {limit:,}"
 
 
-def check_dataflow_lines(tree: Tree, result: Result) -> None:
-    for file in tree.files(DATAFLOW_DIRS):
-        name = posixpath.basename(file.path)
-        if any(fnmatch.fnmatchcase(name, pattern) for pattern in DATAFLOW_PATTERNS):
-            result.dataflow_lines[file.path] = file.lines
-    total = sum(result.dataflow_lines.values())
-    if total > DATAFLOW_LINE_LIMIT:
-        result.add("dataflow-lines", DATAFLOW_TOTAL, None,
-                   _over_limit(total, DATAFLOW_LINE_LIMIT, len(result.dataflow_lines)))
+def check_engine_lines(tree: Tree, result: Result) -> None:
+    for file in tree.files((ENGINE_DIR,)):
+        if _in_engine_dir(file.path, ENGINE_LINE_PATTERNS):
+            result.engine_lines[file.path] = file.lines
+    total = sum(result.engine_lines.values())
+    if total > ENGINE_LINE_LIMIT:
+        result.add("engine-lines", ENGINE_TOTAL, None,
+                   _over_limit(total, ENGINE_LINE_LIMIT, len(result.engine_lines)))
 
 
 def check_library_lines(tree: Tree, result: Result) -> None:
@@ -752,7 +684,7 @@ def check_library_lines(tree: Tree, result: Result) -> None:
 
 
 CHECK_FUNCTIONS = (check_retired_names, check_library_name_tests, check_corpus_words,
-                   check_dataflow_includes, check_dataflow_sink, check_dataflow_lines,
+                   check_engine_includes, check_engine_sink, check_engine_lines,
                    check_library_lines)
 
 
@@ -774,18 +706,18 @@ def run_checks(root: Path) -> Result:
 
 def summary_lines(result: Result) -> list[str]:
     source = "git ls-files" if result.file_source == "git" else "a directory walk (not a git work tree)"
-    dataflow = sum(result.dataflow_lines.values())
+    engine = sum(result.engine_lines.values())
     library = sum(result.library_lines.values())
     lines = [
-        "Summary (RFC 0030, gate H2)",
+        "Summary (RFC 0030 and 0031, gate H2)",
         f"  files:          {result.files:,} from {source}; skipped {len(result.binary)} binary, "
         f"{len(result.unreadable)} unreadable",
     ]
     if result.library_entries is not None:
         lines.append(f"  LibrarySpec:    {result.library_entries:,} entries, {result.library_aliases:,} chk "
                      f"aliases, and their {BUILTIN_PREFIX} spellings")
-    lines.append(f"  Dataflow lines: {dataflow:,} / {DATAFLOW_LINE_LIMIT:,} "
-                 f"({len(result.dataflow_lines):,} Dataflow*.{{h,cpp}} files)")
+    lines.append(f"  engine lines:   {engine:,} / {ENGINE_LINE_LIMIT:,} "
+                 f"({len(result.engine_lines):,} {ENGINE_DIR}/Engine*.{{h,cpp}} files)")
     lines.append(f"  library lines:  {library:,} / {LIBRARY_LINE_LIMIT:,} "
                  f"({len(result.library_lines):,} code files under lib/, include/ and tools/, "
                  f"{LIBRARY_SPEC} excluded)")
@@ -802,15 +734,15 @@ def document(result: Result) -> dict:
     """The results as JSON."""
     return {
         "schema": "weavec-hygiene",
-        "version": 1,
+        "version": 2,
         "root": str(result.root),
         "passed": not result.violations,
         "files": {"source": result.file_source, "count": result.files,
                   "binarySkipped": result.binary, "unreadable": result.unreadable},
         "librarySpec": {"entries": result.library_entries, "aliases": result.library_aliases},
         "lines": {
-            "dataflow": {"total": sum(result.dataflow_lines.values()), "limit": DATAFLOW_LINE_LIMIT,
-                         "files": result.dataflow_lines},
+            "engine": {"total": sum(result.engine_lines.values()), "limit": ENGINE_LINE_LIMIT,
+                       "files": result.engine_lines},
             "library": {"total": sum(result.library_lines.values()), "limit": LIBRARY_LINE_LIMIT,
                         "files": len(result.library_lines)},
         },

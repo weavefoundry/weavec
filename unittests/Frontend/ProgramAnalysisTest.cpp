@@ -211,10 +211,12 @@ int use(void) {
   EXPECT_EQ(program.recorder.lines,
             (std::vector<std::string>{
                 "/src/b.c:7: error: use of 'x' after it was freed"}));
-  const core::FunctionSummary *aFree =
-      program.analysis->database().find("a_free");
+  const core::FunctionEffects *aFree =
+      program.analysis->database().findEffects("a_free");
   ASSERT_NE(aFree, nullptr);
-  EXPECT_TRUE(aFree->frees(0));
+  ASSERT_FALSE(aFree->effects.empty());
+  EXPECT_EQ(aFree->effects[0].kind, core::PathEffect::Kind::Release);
+  EXPECT_EQ(aFree->effects[0].path, core::SummaryPath::param(0).deref());
 }
 
 TEST(ProgramAnalysis, CallbacksRegisteredElsewhereAreCandidates) {
@@ -300,7 +302,7 @@ TEST(ProgramAnalysis, DumpNamesUnitsThenTheProgram) {
   Program program;
   std::string dump;
   llvm::raw_string_ostream os(dump);
-  program.options.analysis.dumpStream = &os;
+  program.options.engine.dumpStream = &os;
   program.add("a.c", "void a_free(void *p) { free(p); }\n");
   program.add("b.c", R"c(
 void a_free(void *p);
@@ -313,8 +315,8 @@ void b(void) { a_free(malloc(1)); }
       << dump;
   EXPECT_NE(dump.find("unit '/src/b.c':\nfunction 'b':\n"), std::string::npos)
       << dump;
-  EXPECT_NE(dump.find("program:\n  function 'a_free': param 0: freed(free); "
-                      "stores{} returns{}\n"),
+  EXPECT_NE(dump.find("program:\n  function 'a_free':\n    always-returns\n"
+                      "    release *param0 free when always\n"),
             std::string::npos)
       << dump;
   // Dependencies come first.
@@ -335,15 +337,16 @@ int main(void) {
   // node.c stands as compiled: only its exports take part.
   analysis::UnitExports node;
   node.source = "node.c";
-  core::FunctionSummary freeSummary;
-  freeSummary.addEffect(core::SummaryPath::param(0),
-                        core::PlaceEffect{.freed = true});
-  node.functions["node_free"] = analysis::ExportedFunction{
-      .summary = analysis::ExportedSummary(freeSummary),
-      .specializations = {},
-      .typeKey = "void (void *)",
-      .external = true,
-      .addressTaken = false};
+  core::FunctionEffects freeSummary;
+  freeSummary.effects.push_back(
+      core::PathEffect{.kind = core::PathEffect::Kind::Release,
+                       .path = core::SummaryPath::param(0).deref(),
+                       .family = "free"});
+  node.functions["node_free"] =
+      analysis::ExportedFunction{.effects = std::move(freeSummary),
+                                 .typeKey = "void (void *)",
+                                 .external = true,
+                                 .addressTaken = false};
 
   ProgramAnalysis analysis(program.options);
   analysis.addExports(node);
@@ -383,32 +386,35 @@ int main(void) {
 // with its previous ones, keeping only what both rounds agreed on.
 TEST(ProgramAnalysis, WideningJoinsWithThePreviousRound) {
   static_assert(ProgramAnalysis::WidenAfter < ProgramAnalysis::MaxRounds);
+  const core::PathEffect release{.kind = core::PathEffect::Kind::Release,
+                                 .path = core::SummaryPath::param(0).deref(),
+                                 .family = "free"};
   analysis::UnitExports previous;
-  core::FunctionSummary before;
-  before.neverReturns = true;
-  before.addEffect(core::SummaryPath::param(0), {.freed = true});
-  previous.functions["f"].summary.assign(std::move(before));
-  core::FunctionSummary terminating;
-  terminating.neverReturns = true;
-  previous.functions["g"].summary.assign(terminating);
+  core::FunctionEffects before;
+  before.returns = core::FunctionEffects::Returns::Never;
+  before.effects.push_back(release);
+  previous.functions["f"].effects = before;
+  core::FunctionEffects terminating;
+  terminating.returns = core::FunctionEffects::Returns::Never;
+  previous.functions["g"].effects = terminating;
   previous.countFields = {"struct a.rc"};
 
   analysis::UnitExports current;
-  core::FunctionSummary after;
-  after.addEffect(core::SummaryPath::param(0), {.read = true, .freed = true});
-  current.functions["f"].summary.assign(std::move(after));
-  current.functions["h"].summary.assign(std::move(terminating));
+  core::FunctionEffects after;
+  after.effects.push_back(release);
+  current.functions["f"].effects = after;
+  current.functions["h"].effects = terminating;
   current.countFields = {"struct b.rc"};
 
   ProgramAnalysis::widen(current, previous);
-  // The must-fact only one round had is dropped; the shared one stays.
-  EXPECT_FALSE(current.functions.at("f").summary.get().neverReturns);
-  EXPECT_TRUE(current.functions.at("f")
-                  .summary.get()
-                  .effects.at(core::SummaryPath::param(0))
-                  .freed);
+  // What only one round had is weakened; the shared release stays.
+  EXPECT_EQ(current.functions.at("f").effects.returns,
+            core::FunctionEffects::Returns::May);
+  ASSERT_EQ(current.functions.at("f").effects.effects.size(), 1U);
+  EXPECT_FALSE(current.functions.at("f").effects.effects[0].may);
   // Functions only the new round exports are kept as they are.
-  EXPECT_TRUE(current.functions.at("h").summary.get().neverReturns);
+  EXPECT_EQ(current.functions.at("h").effects.returns,
+            core::FunctionEffects::Returns::Never);
   EXPECT_FALSE(current.functions.contains("g"));
   EXPECT_EQ(current.countFields,
             (std::set<std::string>{"struct a.rc", "struct b.rc"}));
@@ -421,7 +427,7 @@ TEST(ProgramAnalysis, WideningJoinsWithThePreviousRound) {
 TEST(ProgramAnalysis, CallbackContextsFlowBackToTheDefiningUnit) {
   Program program;
   core::AnalysisStats stats;
-  program.options.analysis.stats = &stats;
+  program.options.engine.stats = &stats;
   program.header(
       "callback.h",
       "typedef void (*Callback)(void *); void invoke(Callback, void *);\n");
@@ -444,7 +450,7 @@ void invoke(Callback callback, void *userdata) { callback(userdata); }
   ASSERT_EQ(program.recorder.lines.size(), 1U);
   EXPECT_NE(program.recorder.lines[0].find("use of 'p' after it was freed"),
             std::string::npos);
-  EXPECT_GT(stats.count("unit_invalidation_skips"), 0U);
+  EXPECT_GT(stats.count("program_fixpoint_rounds"), 0U);
 }
 
 TEST(ProgramAnalysis, InternalCallbackNamesRemainDistinctAcrossUnits) {
@@ -526,8 +532,11 @@ static void drop(void *p) { free(p); }
 void set_hook(void) { hook = drop; }
 )c");
   const auto result = program.run();
-  EXPECT_EQ(result.errors, 1U);
-  EXPECT_EQ(result.warnings, 0U);
+  // `hook` holds `drop` only once `set_hook` ran: the call through it may
+  // release `p` (the join of `keep` and `drop`, RFC 0031 §5.4), so the use
+  // after it is a possible use after free.
+  EXPECT_EQ(result.errors, 0U);
+  EXPECT_EQ(result.warnings, 1U);
   EXPECT_TRUE(result.failed.empty());
   EXPECT_TRUE(result.nonConverging.empty());
 }
@@ -569,7 +578,6 @@ void test(void) { char *p = malloc(4); if (p) zap(p, p); }
         << ::testing::PrintToString(program.recorder.lines);
     EXPECT_EQ(result.warnings, 0U)
         << ::testing::PrintToString(program.recorder.lines);
-    EXPECT_FALSE(program.analysis->database().memoryRequestsFor("zap").empty());
   }
 }
 

@@ -38,15 +38,20 @@ void f(char *p) {
   // LEDGER: "text": "annotated(p)",
   // LEDGER: "reason": "unknown-callee",
   annotated(p);
-  // No fix-it into a system header; the detail names the first unknown code
-  // that may have freed `p` (`mystery`).
+  // No fix-it into a system header. The detail is the unknown callee's own
+  // suggestion (RFC 0031 §5.1), not the earlier unknown code (`mystery`)
+  // that may have freed `p`.
   // LEDGER: "text": "vendor_touch(p)",
   // LEDGER: "reason": "unknown-callee",
-  // LEDGER-NEXT: "detail": "mystery",
+  // LEDGER-NEXT: "detail": "declare 'vendor_touch' with WEAVEC_BORROWED on 'p' if it neither keeps nor frees it",
   // LEDGER-NEXT: "fixit": null,
   vendor_touch(p);
+  // `use` borrows its argument, but the argument points into memory an
+  // unknown callee made: unresolved, not trusted to `use`'s contract (RFC
+  // 0031 *Implementation amendments*, "Memory the analysis knows nothing
+  // about").
   // LEDGER: "text": "use(maker())",
-  // LEDGER: "reason": "extern-contract",
+  // LEDGER: "reason": "unknown-callee",
   // LEDGER: "text": "maker()",
   // LEDGER: "reason": "unknown-callee",
   // LEDGER-NEXT: "detail": "declare the result of 'maker' WEAVEC_OWNED or WEAVEC_BORROWED, or define 'maker' in this program",

@@ -11,7 +11,6 @@
 #include "weavec/Analysis/Annotations.h"
 #include "weavec/Analysis/ClangLocation.h"
 #include "weavec/Analysis/KindInference.h"
-#include "weavec/Analysis/Summaries.h"
 
 #include "clang/AST/Attr.h"
 #include "clang/AST/Expr.h"

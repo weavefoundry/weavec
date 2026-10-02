@@ -2,7 +2,8 @@
 // gives an object its extent; an access at a constant or symbolic offset
 // the extent cannot hold is `out-of-bounds`, with the index as written and
 // the object's origin in a note.
-// RUN: not %weavec %s -- -ferror-limit=0 2>&1 | FileCheck %s
+// RUN: not %weavec --ledger=%t.json %s -- -ferror-limit=0 2>&1 | FileCheck %s
+// RUN: FileCheck --check-prefix=LEDGER %s < %t.json
 // RUN: not %weavec --dump-analysis %s -- 2>/dev/null | FileCheck --check-prefix=DUMP %s
 #include "../Inputs/prelude.h"
 #include <weavec.h>
@@ -25,7 +26,7 @@ void declared(void) {
 
 // The extent of the allocation is in the summary of what returns it.
 // DUMP-LABEL: function 'eight':
-// DUMP: summary: stores{} returns{fresh(free) extent=8, null}
+// DUMP: result fresh#0 free extent 8 zeroed maybe-null when null nonnull
 static char *eight(void) { return malloc(8); }
 
 void heap(void) {
@@ -73,7 +74,7 @@ void member_array(struct rec *r) {
   r->name[7] = 0;
   // CHECK: rfc0011-bounds.c:[[@LINE+1]]:3: error: 'r->name[8]' is out of bounds: index 8 of an object of 8 bytes [weavec::out-of-bounds]
   r->name[8] = 0;
-  // CHECK: rfc0011-bounds.c:13:19: note: 'r->name' is declared here
+  // CHECK: rfc0011-bounds.c:14:19: note: 'r->name' is declared here
 }
 
 // -- Before the start ---------------------------------------------------------
@@ -128,11 +129,18 @@ void walked(void) {
 
 // RFC 0017 keeps the conversion to size_t in allocation summaries. Callers
 // below guard positive counts so their examples retain mathematical extents.
+// The old engine's summaries carried `extent=mul(4, u64(n))`. Format 30 has no
+// numeric output expressions (RFC 0031 §6.1), and `n * sizeof(int)` of an
+// `int` (converted, it may wrap) is no extent term over `n` (RFC 0031 §6.2;
+// as the *Variable-length arrays* amendment says, a byte size that may wrap is
+// no extent), so the results below have none: the accesses through them that
+// the old engine reported are `unresolved(unknown-extent)`, never proven
+// (test/cases/KNOWN-DIFFERENCES.md, *Lit tests*).
 // DUMP-LABEL: function 'ints':
-// DUMP: summary: stores{} returns{fresh(free) extent=mul(4, u64(n)), null}
+// DUMP: result fresh#0 free zeroed maybe-null when null nonnull
 static int *ints(int n) { return malloc(n * sizeof(int)); }
 // DUMP-LABEL: function 'zeroed':
-// DUMP: summary: stores{} returns{fresh(free) extent=mul(4, u64(n)) when[overflow-mul-u64(4, u64(n)) eq 0], null}
+// DUMP: result fresh#0 free zeroed maybe-null when null nonnull
 static int *zeroed(int n) { return calloc(n, sizeof(int)); }
 
 void at_n(int n) {
@@ -142,7 +150,13 @@ void at_n(int n) {
   if (!p)
     return;
   p[n - 1] = 0;
-  // CHECK: rfc0011-bounds.c:[[@LINE+1]]:3: error: 'p[n]' is out of bounds: 'n' is the number of elements of 'p' [weavec::out-of-bounds]
+  // Old engine: error: 'p[n]' is out of bounds: 'n' is the number of elements
+  // of 'p'. Object engine: no extent through `ints` (above).
+  // LEDGER: "line": [[@LINE+5]],
+  // LEDGER-NEXT: "column": 3,
+  // LEDGER-NEXT: "text": "p[n]",
+  // LEDGER: "spatial": {
+  // LEDGER-NEXT: "outcome": "unresolved",
   p[n] = 0;
   free(p);
 }
@@ -212,13 +226,25 @@ void guards(int i, int n) {
     return;
   if (i < n)
     p[i] = 1;
-  // CHECK: rfc0011-bounds.c:[[@LINE+2]]:5: error: 'p[i]' is out of bounds: 'i' is at least 'n', the number of elements of 'p' [weavec::out-of-bounds]
+  // Old engine: the three accesses below were errors ('i' is at least 'n' /
+  // above 'n', the number of elements of 'p'). Object engine: no extent
+  // through `ints` (above), so they are not proven.
+  // LEDGER: "line": [[@LINE+5]],
+  // LEDGER-NEXT: "column": 5,
+  // LEDGER: "spatial": {
+  // LEDGER-NEXT: "outcome": "unresolved",
   if (i >= n)
     p[i] = 1;
-  // CHECK: rfc0011-bounds.c:[[@LINE+2]]:5: error: 'p[i]' is out of bounds: 'i' is above 'n', the number of elements of 'p' [weavec::out-of-bounds]
+  // LEDGER: "line": [[@LINE+5]],
+  // LEDGER-NEXT: "column": 5,
+  // LEDGER: "spatial": {
+  // LEDGER-NEXT: "outcome": "unresolved",
   if (i > n)
     p[i] = 1;
-  // CHECK: rfc0011-bounds.c:[[@LINE+2]]:5: error: 'p[i]' is out of bounds: 'i' is at least 'n', the number of elements of 'p' [weavec::out-of-bounds]
+  // LEDGER: "line": [[@LINE+5]],
+  // LEDGER-NEXT: "column": 5,
+  // LEDGER: "spatial": {
+  // LEDGER-NEXT: "outcome": "unresolved",
   if (n <= i)
     p[i] = 1;
   free(p);
@@ -232,7 +258,12 @@ void copies(int i, int n) {
   if (!p)
     return;
   int j = i;
-  // CHECK: rfc0011-bounds.c:[[@LINE+2]]:5: error: 'p[i]' is out of bounds: 'entry(i)' is at least 'n', the number of elements of 'p' [weavec::out-of-bounds]
+  // Old engine: error: 'p[i]' is out of bounds: 'entry(i)' is at least 'n'.
+  // Object engine: no extent through `ints` (above), not proven.
+  // LEDGER: "line": [[@LINE+5]],
+  // LEDGER-NEXT: "column": 5,
+  // LEDGER: "spatial": {
+  // LEDGER-NEXT: "outcome": "unresolved",
   if (j >= n)
     p[i] = 1;
   if (i >= n) {

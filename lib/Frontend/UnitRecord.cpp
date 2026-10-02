@@ -9,7 +9,7 @@
 #include "weavec/Frontend/UnitRecord.h"
 
 #include "weavec/Config/Version.h"
-#include "weavec/Core/SummaryIO.h"
+#include "weavec/Core/EffectsIO.h"
 #include "weavec/Frontend/LedgerWriter.h"
 
 #include "llvm/ADT/StringExtras.h"
@@ -115,31 +115,14 @@ static constexpr std::array RequirementFields{
     scalar("param", Integer), scalar("kind", String),
     scalar("guard", String, true), scalar("element", Integer)};
 static constexpr std::array RequirementElement{object({}, RequirementFields)};
-static constexpr std::array CallbackSummaryFields{scalar("bindings", String),
-                                                  scalar("summary", String)};
-static constexpr std::array CallbackSummaryElement{
-    object({}, CallbackSummaryFields)};
-static constexpr std::array MemorySummaryFields{scalar("context", String),
-                                                scalar("summary", String)};
-static constexpr std::array MemorySummaryElement{
-    object({}, MemorySummaryFields)};
-/// RFC 0014 and 0016: the call contexts the definition accepts and the
-/// summaries it was specialised to.
-static constexpr std::array FunctionContextFields{
-    scalar("acceptsCallbacks", Boolean), scalar("acceptsMemory", Boolean),
-    array("callbacks", CallbackSummaryElement),
-    array("memory", MemorySummaryElement)};
 static constexpr std::array FunctionFields{
-    scalar("name", String),
-    scalar("linkage", String),
-    scalar("addressTaken", Boolean),
-    scalar("typeKey", String),
-    scalar("summary", String),
-    object("kinds", KindsFields),
+    scalar("name", String), scalar("linkage", String),
+    scalar("addressTaken", Boolean), scalar("typeKey", String),
+    // RFC 0031 §7: the format-30 summary.
+    scalar("effects", String), object("kinds", KindsFields),
     array("reliesOnSingle", IntegerElement),
     array("requirements", RequirementElement),
-    object("location", LocationFields, true),
-    object("contexts", FunctionContextFields)};
+    object("location", LocationFields, true)};
 static constexpr std::array FunctionElement{object({}, FunctionFields)};
 
 // payload.globals and payload.imports
@@ -161,7 +144,8 @@ static constexpr std::array EvidenceFields{
 static constexpr std::array EvidenceElement{object({}, EvidenceFields)};
 static constexpr std::array CallFields{
     scalar("function", String), scalar("site", Integer, true),
-    array("args", NullableBooleanElement), array("evidence", EvidenceElement)};
+    array("args", NullableBooleanElement), array("evidence", EvidenceElement),
+    object("location", LocationFields, true)};
 static constexpr std::array CallElement{object({}, CallFields)};
 static constexpr std::array ImportFields{
     scalar("name", String), object("declared", DeclaredFields),
@@ -187,34 +171,6 @@ static constexpr std::array InvariantFields{
     scalar("template", String), scalar("verdict", String),
     scalar("relied", Boolean),  object("store", LocationFields, true)};
 static constexpr std::array InvariantElement{object({}, InvariantFields)};
-
-// The RFC 0010, 0012, 0014, 0016 and 0028 facts, carried unchanged.
-static constexpr std::array MemoryRequestFields{scalar("function", String),
-                                                scalar("context", String)};
-static constexpr std::array MemoryRequestElement{
-    object({}, MemoryRequestFields)};
-static constexpr std::array CallbackRequestFields{scalar("function", String),
-                                                  scalar("bindings", String)};
-static constexpr std::array CallbackRequestElement{
-    object({}, CallbackRequestFields)};
-static constexpr std::array ContextFields{
-    array("memoryRequests", MemoryRequestElement),
-    array("callbackRequests", CallbackRequestElement)};
-static constexpr std::array WitnessFields{
-    scalar("field", String), scalar("count", String), scalar("scale", Integer),
-    scalar("productType", String, true)};
-static constexpr std::array WitnessElement{object({}, WitnessFields)};
-static constexpr std::array PairFields{scalar("field", String),
-                                       scalar("count", String)};
-static constexpr std::array PairElement{object({}, PairFields)};
-static constexpr std::array SizedFieldFields{
-    array("witnesses", WitnessElement), array("unsizedFields", StringElement),
-    array("unsizedPairs", PairElement)};
-static constexpr std::array InterfaceFields{scalar("name", String),
-                                            scalar("type", String, true)};
-static constexpr std::array InterfaceElement{object({}, InterfaceFields)};
-static constexpr std::array InterfacesFields{
-    array("globals", InterfaceElement), array("objects", InterfaceElement)};
 
 // payload.boundaries, payload.sites, payload.reported and payload.a5
 static constexpr std::array BoundaryFields{
@@ -244,26 +200,15 @@ static constexpr std::array A5Fields{scalar("loweredAllocations", Integer),
                                      scalar("allocator", String, true)};
 
 static constexpr std::array PayloadFields{
-    array("functions", FunctionElement),
-    array("globals", GlobalElement),
-    array("imports", ImportElement),
-    array("indirect", StringElement),
-    array("unknown", StringElement),
-    array("unknownIndirect", StringElement),
-    array("slots", SlotElement),
-    object("slotRules", SlotRuleFields),
-    array("slotKinds", SlotKindElement),
+    array("functions", FunctionElement), array("globals", GlobalElement),
+    array("imports", ImportElement), array("indirect", StringElement),
+    array("unknown", StringElement), array("slots", SlotElement),
+    object("slotRules", SlotRuleFields), array("slotKinds", SlotKindElement),
     array("invariants", InvariantElement),
-    object("contexts", ContextFields),
-    array("countFields", StringElement),
-    object("sizedFields", SizedFieldFields),
-    array("sizedFieldLoads", StringElement),
-    object("interfaces", InterfacesFields),
-    array("boundaries", BoundaryElement),
-    array("sites", SiteElement),
-    array("reported", ReportedElement),
-    scalar("definesAllocator", Boolean),
-    object("a5", A5Fields)};
+    // RFC 0010: count fields, carried unchanged.
+    array("countFields", StringElement), array("boundaries", BoundaryElement),
+    array("sites", SiteElement), array("reported", ReportedElement),
+    scalar("definesAllocator", Boolean), object("a5", A5Fields)};
 static constexpr FieldSpec PayloadSchema = object({}, PayloadFields);
 
 const FieldSpec &headerSchema() noexcept {
@@ -308,11 +253,11 @@ static void appendCanonical(std::string &text, const FieldSpec &spec) {
 }
 
 std::string schemaText() {
-  // The summaries and call contexts are SummaryIO text inside strings: a new
-  // summary format is a new schema too, so a record of the old one is stale
-  // rather than read with its unknown lines skipped.
+  // The summaries are EffectsIO text inside strings: a new summary format
+  // is a new schema too, so a record of the old one is stale rather than
+  // read with its unknown lines skipped.
   std::string text = "weavec-record-schema\nsummary-format:" +
-                     std::to_string(core::SummaryFormatVersion) + "\nheader:";
+                     std::to_string(core::EffectsFormatVersion) + "\nheader:";
   appendCanonical(text, headerSchema());
   text += "\npayload:";
   appendCanonical(text, payloadSchema());
