@@ -1,6 +1,15 @@
 # CHANGELOG
 
 
+## v0.13.0 (2026-10-03)
+
+### Features
+
+- Enforce unresolved facets at run time with an object table
+  ([#41](https://github.com/weavefoundry/weavec/pull/41),
+  [`dc76d9a`](https://github.com/weavefoundry/weavec/commit/dc76d9aadcfac3966b3b4f2a18b942dca71743b6))
+
+
 ## v0.12.0 (2026-10-02)
 
 ### Features
