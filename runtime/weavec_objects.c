@@ -31,6 +31,7 @@
 #include "weavec_rt.h"
 
 #include <pthread.h>
+#include <stddef.h>
 #include <string.h>
 #include <sys/mman.h>
 
@@ -67,10 +68,10 @@ static pthread_key_t stackKey;
 static WeavecRtLock stackKeyLock;
 static int stackKeyReady;
 
-static void releaseStackList(void *entries) {
+static void releaseStackList(void *start) {
   /* The size is in the mapping's first word. */
-  size_t *header = (size_t *)entries;
-  (void)munmap(header, *header);
+  const size_t bytes = *(const size_t *)start;
+  (void)munmap(start, bytes);
 }
 
 static void readStackBounds(StackList *list) {
@@ -112,20 +113,26 @@ static inline StackList *threadList(void) {
   return list;
 }
 
+/* A grown list's mapping: its size, then the entries. */
+typedef struct {
+  size_t bytes;
+  size_t pad;
+  StackEntry entries[];
+} StackMapping;
+
 static int growStackList(StackList *list) {
   const size_t capacity = list->capacity * 2;
-  const size_t bytes = sizeof(size_t) * 2 + capacity * sizeof(StackEntry);
-  size_t *header = (size_t *)mmap(NULL, bytes, PROT_READ | PROT_WRITE,
-                                  MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-  StackEntry *grown;
-  if ((void *)header == MAP_FAILED)
+  const size_t bytes =
+      offsetof(StackMapping, entries) + capacity * sizeof(StackEntry);
+  StackMapping *mapping = (StackMapping *)mmap(
+      NULL, bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  if ((void *)mapping == MAP_FAILED)
     return 0;
-  *header = bytes;
-  grown = (StackEntry *)(header + 2);
-  memcpy(grown, list->entries, list->count * sizeof(StackEntry));
+  mapping->bytes = bytes;
+  memcpy(mapping->entries, list->entries, list->count * sizeof(StackEntry));
   if (list->entries != list->inlineEntries)
-    releaseStackList((size_t *)list->entries - 2);
-  list->entries = grown;
+    releaseStackList((char *)list->entries - offsetof(StackMapping, entries));
+  list->entries = mapping->entries;
   list->capacity = capacity;
   /* The mapping goes when the thread does. */
   weavecRtLock(&stackKeyLock);
@@ -133,7 +140,7 @@ static int growStackList(StackList *list) {
     stackKeyReady = 1;
   weavecRtUnlock(&stackKeyLock);
   if (stackKeyReady)
-    (void)pthread_setspecific(stackKey, header);
+    (void)pthread_setspecific(stackKey, mapping);
   return 1;
 }
 

@@ -35,6 +35,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#if !defined(__APPLE__)
+#include <sys/auxv.h>
+#endif
 
 /* The sites already reported, as 64-bit hashes of (template, file, line,
  * column) in an open-addressing table; 0 marks a free slot. When the table
@@ -92,11 +95,22 @@ static int shouldAbort(void) {
  * one write per line, for a test harness that keeps the output of a passing
  * test to itself. */
 static void logReport(const char *text, size_t size) {
-  const char *path = getenv("WEAVEC_RT_REPORT_LOG");
+  const char *path;
   int fd;
+  /* A set-user-ID or set-group-ID program does not write where its
+   * environment says. */
+#if defined(__APPLE__)
+  if (issetugid())
+    return;
+#else
+  if (getauxval(AT_SECURE) != 0)
+    return;
+#endif
+  path = getenv("WEAVEC_RT_REPORT_LOG");
   if (path == NULL || *path == 0)
     return;
-  fd = open(path, O_WRONLY | O_APPEND | O_CREAT, 0644);
+  fd = open(path, O_WRONLY | O_APPEND | O_CREAT | O_CLOEXEC | O_NOFOLLOW,
+            0644);
   if (fd < 0)
     return;
   {

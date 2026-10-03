@@ -137,7 +137,10 @@ jobs:
       # directory of test/cases, RFC 0030 section 17.4), in parallel.
       - name: Test
         env:
-          ASAN_OPTIONS: detect_leaks=0:strict_string_checks=1
+          # allow_user_poisoning=0: WeaveC is instrumented but the system's
+          # libclang-cpp is not, and LLVM's inline allocator poisons slab
+          # tails in one copy that the other then writes without unpoisoning.
+          ASAN_OPTIONS: detect_leaks=0:strict_string_checks=1:allow_user_poisoning=0
           UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
         # Many tests trap on purpose. Without core dumps, Ubuntu's apport does
         # not take each crash in turn while the next ones wait.
@@ -147,7 +150,7 @@ jobs:
 
       - name: Documentation examples
         env:
-          ASAN_OPTIONS: detect_leaks=0
+          ASAN_OPTIONS: detect_leaks=0:allow_user_poisoning=0
         run: |
           python3 docs/scripts/check-examples.py \
             --weavec "build/${{ matrix.preset }}/bin/weavec" \
