@@ -95,8 +95,9 @@ static constexpr std::array ProducerFields{scalar("name", String),
                                            scalar("version", String),
                                            scalar("revision", String)};
 static constexpr std::array ConfigFields{
-    scalar("checks", String), scalar("zeroInit", Boolean),
-    scalar("require", String), scalar("budget", Integer)};
+    scalar("checks", String), scalar("runtime", Boolean),
+    scalar("zeroInit", Boolean), scalar("require", String),
+    scalar("budget", Integer)};
 static constexpr std::array ObjectFields{scalar("path", String),
                                          scalar("digest", String)};
 static constexpr std::array HeaderFields{object("producer", ProducerFields),
@@ -481,6 +482,7 @@ llvm::json::Value toJson(const RecordHeader &header) {
     command.push_back(utf8(argument));
   llvm::json::Object config;
   config["checks"] = std::string(core::toString(header.config.checks));
+  config["runtime"] = header.config.runtime != core::RuntimeUse::Off;
   config["zeroInit"] = header.config.zeroInit;
   config["require"] = std::string(core::toString(header.config.require));
   config["budget"] = header.config.budget;
@@ -539,6 +541,9 @@ std::optional<RecordHeader> headerFromJson(const llvm::json::Value &value,
     budgetValue = static_cast<std::uint64_t>(*signedBudget);
   }
   header.config = core::LedgerConfig{.checks = *checks,
+                                     .runtime = *config.getBoolean("runtime")
+                                                    ? core::RuntimeUse::On
+                                                    : core::RuntimeUse::Off,
                                      .zeroInit = *config.getBoolean("zeroInit"),
                                      .require = *require,
                                      .budget = *budgetValue};

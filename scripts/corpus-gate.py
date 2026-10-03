@@ -103,6 +103,8 @@ TRIAGE_SCHEMA = "weavec-corpus-triage"
 MANIFEST_SCHEMA = "weavec-corpus-manifest"
 INJECTIONS_SCHEMA = "weavec-corpus-injections"
 LEDGER_SCHEMA = "weavec-ledger"
+# 2 since RFC 0032 (the `guarded` outcome).
+LEDGER_VERSION = 2
 
 # `file:line:col: severity: message [weavec::id]`, as both tools print it.
 DIAG_RE = re.compile(
@@ -145,9 +147,14 @@ TEMPLATE_IDS = {
     "disjoint": {"out-of-bounds"},
     "assert": {"contradicted-assumption"},
     "violation": None,  # any id
+    # RFC 0032 section 3: the guards. Each fails on a dead object as well as
+    # on an access or a release outside one.
+    "object": {"out-of-bounds", "use-after-free", "use-after-move"},
+    "live": {"use-after-free", "use-after-move"},
+    "release": {"double-free", "invalid-release", "use-after-free"},
 }
 FACETS = ("spatial", "null", "temporal", "assertion")
-OUTCOMES = ("proven", "checked", "violation", "unresolved", "trusted")
+OUTCOMES = ("proven", "checked", "guarded", "violation", "unresolved", "trusted")
 TRAP_SIGNALS = (signal.SIGTRAP, signal.SIGILL)
 
 # The ratchet (section 17.5). Exact fields must equal the recorded value: a
@@ -159,6 +166,7 @@ EXACT_FIELDS: tuple[tuple[tuple[str, ...], str], ...] = (
     (("warnings",), "lower"),
     (("ledger", "proven"), "higher"),
     (("ledger", "checked"), "neutral"),
+    (("ledger", "guarded"), "neutral"),
     (("ledger", "violation"), "lower"),
     (("ledger", "unresolved"), "lower"),
     (("ledger", "trusted"), "lower"),
@@ -1019,7 +1027,7 @@ class Analysis:
 def validate_ledger(data: Any, path: Path) -> dict:
     if not isinstance(data, dict) or data.get("schema") != LEDGER_SCHEMA:
         raise ValueError(f"{path}: not a {LEDGER_SCHEMA} document")
-    if data.get("version") != 1:
+    if data.get("version") != LEDGER_VERSION:
         raise ValueError(f"{path}: unsupported ledger version {data.get('version')!r}")
     if not isinstance(data.get("summary"), dict):
         raise ValueError(f"{path}: no summary")
@@ -1267,13 +1275,15 @@ def compare_ratchet(measured: dict[str, dict], expected: dict, platform: str, ma
             elif now["traps"] < before["traps"]:
                 result.improvements.append(f"{name}.traps: {before['traps']} -> {now['traps']} "
                                            f"(better; run --update)")
-        if "overhead" in now and now["overhead"] is not None:
-            if before.get("overhead") is None:
-                result.missing.append(f"{name}.overhead: not recorded (now {now['overhead']})")
+        for field in ("overhead", "overheadNoRuntime", "rssRatio"):
+            if now.get(field) is None:
+                continue
+            if before.get(field) is None:
+                result.missing.append(f"{name}.{field}: not recorded (now {now[field]})")
             elif not same_machine:
-                result.notes.append(f"{name}.overhead: recorded on another machine; not compared")
-            elif now["overhead"] > before["overhead"] * 1.10:
-                result.over_budget.append(f"{name}.overhead: {before['overhead']} -> {now['overhead']} "
+                result.notes.append(f"{name}.{field}: recorded on another machine; not compared")
+            elif now[field] > before[field] * 1.10:
+                result.over_budget.append(f"{name}.{field}: {before[field]} -> {now[field]} "
                                           f"(more than 10% over)")
     return result
 
@@ -1326,6 +1336,28 @@ def load_triage(path: Path) -> list[dict]:
     if data.get("schema") != TRIAGE_SCHEMA or data.get("version") != 1:
         raise GateError(f"{path}: schema must be {TRIAGE_SCHEMA} version 1")
     return list(data.get("entries", []))
+
+
+def load_guard_triage(path: Path) -> list[dict]:
+    """RFC 0032 R3: guard failures in a test suite that were triaged as true bugs.
+
+    Each is {config, file, line, template, verdict, note} under `guardFailures`;
+    only a "true" verdict excuses a failure, and the note is its source evidence.
+    """
+    if not path.exists():
+        return []
+    data = read_json(path)
+    if isinstance(data, list):
+        return []
+    entries = list(data.get("guardFailures", []))
+    for entry in entries:
+        missing = [k for k in ("config", "file", "line", "template", "verdict", "note") if k not in entry]
+        if missing:
+            raise GateError(f"{path}: a guardFailures entry lacks {', '.join(missing)}")
+        if entry["verdict"] != "true":
+            raise GateError(f"{path}: a guardFailures entry must have the verdict \"true\": a false trap "
+                            f"is a bug to fix, not to triage ({entry['config']} {entry['file']}:{entry['line']})")
+    return entries
 
 
 def finding_kind(d: Diagnostic) -> str | None:
@@ -1460,6 +1492,20 @@ def output_tail(text: str, lines: int = 40) -> str:
     return "\n".join(text.rstrip().splitlines()[-lines:])
 
 
+def sanitizer_symbolizer(cc: str) -> dict:
+    """ASAN_SYMBOLIZER_PATH for a sanitizer run: the llvm-symbolizer beside the
+    reference compiler, unless the caller set one. Without it the sanitizer
+    runtime on Darwin runs `atos`, which needs the system's permission to
+    inspect the dying process and waits when a debugger prompt is pending."""
+    if os.environ.get("ASAN_SYMBOLIZER_PATH"):
+        return {}
+    resolved = shutil.which(cc) or cc
+    candidate = Path(resolved).resolve().parent / "llvm-symbolizer"
+    if candidate.is_file() and os.access(candidate, os.X_OK):
+        return {"ASAN_SYMBOLIZER_PATH": str(candidate)}
+    return {}
+
+
 def write_wrapper(path: Path, compiler: str, flags: list[str]) -> str:
     path.parent.mkdir(parents=True, exist_ok=True)
     words = " ".join(shlex.quote(w) for w in [compiler, *flags])
@@ -1494,6 +1540,10 @@ def trap_evidence(result: ProcResult) -> list[str]:
         if TRAP_TEXT_RE.search(line):
             evidence.append(line.strip()[:300])
     return evidence
+
+
+# What the runtime's allocator prints before it traps on a release it refuses.
+INVALID_RELEASE = "weavec: invalid release of "
 
 
 def parse_reports(text: str, root: Path) -> list[dict]:
@@ -1590,6 +1640,10 @@ def run_build(config: Config, mode: str, compiler: str, flags: list[str], checko
         timeout = config.test_timeout or build_timeout
         test_output = []
         passed = True
+        # A harness may keep a passing test's output to itself (CTest without
+        # -V): the runtime also appends every report to this file.
+        report_log = logs / "runtime-reports.log"
+        env = {**env, "WEAVEC_RT_REPORT_LOG": str(report_log)}
         for index, command in enumerate(commands):
             result = run_shell(command, cwd=src, env=env, timeout=timeout)
             log_path = logs / f"test-{index}.log"
@@ -1602,6 +1656,8 @@ def run_build(config: Config, mode: str, compiler: str, flags: list[str], checko
             if not ok:
                 passed = False
         run.tests_passed = passed if commands else None
+        if report_log.exists():
+            test_output.append(report_log.read_text(errors="replace"))
         run.reports = parse_reports("\n".join(test_output), src)
         for report in run.reports:
             report["file"] = normalise_report_file(report["file"])
@@ -1786,6 +1842,11 @@ class BenchRun:
     minimum: dict = dataclasses.field(default_factory=dict)
     outputs: dict = dataclasses.field(default_factory=dict)
     ratio: float | None = None
+    # RFC 0032 R6: the same build without the runtime, and the peak resident
+    # size of the default build over the reference's.
+    ratio_no_runtime: float | None = None
+    rss: dict = dataclasses.field(default_factory=dict)
+    rss_ratio: float | None = None
     failures: list[str] = dataclasses.field(default_factory=list)
 
     def to_json(self) -> dict:
@@ -1823,6 +1884,7 @@ class Gate:
         self.jobs = max(1, args.jobs)
         self.pool = concurrent.futures.ThreadPoolExecutor(max_workers=self.jobs)
         self.triage_entries = load_triage(args.triage)
+        self.guard_triage = load_guard_triage(args.triage)
         self.measured: dict[str, dict] = {}
         self.findings: list[dict] = []
         self.binaries = self.resolve_binaries()
@@ -2089,6 +2151,7 @@ class Gate:
         else:
             modes = [self.args.checks, "report"]
         true_sites = true_error_sites(self.triage_entries)
+        true_sites |= {(e["config"], e["file"], int(e["line"])) for e in self.guard_triage}
         for config in self.configs:
             if not config.build:
                 continue
@@ -2124,7 +2187,7 @@ class Gate:
                     continue
                 if mode in ("trap", "verify") and self.only_true_positives(config, runs, true_sites):
                     self.note(f"{config.name} ({mode}): the test suite trapped only at triaged-true definite "
-                              f"errors (G11 counts them as true positives)")
+                              f"errors and guard failures (G11 counts them as true positives)")
                     continue
                 failed = [t for t in build.tests if not t.ok]
                 self.fail(f"{config.name} ({mode}): test suite failed: " + "; ".join(
@@ -2155,6 +2218,11 @@ class Gate:
         report = runs.get("report")
         reports = report.reports if report else []
         sites = [r for r in reports if (config.name, r["file"], r["line"]) not in true_sites]
+        if report and report.built:
+            seen = {(r["file"], r["line"]) for r in reports}
+            for entry in self.guard_triage:
+                if entry["config"] == config.name and (entry["file"], int(entry["line"])) not in seen:
+                    self.note(f"stale guardFailures entry ({config.name} {entry['file']}:{entry['line']})")
         checked = runs.get(self.args.checks)
         deaths = checked.trap_deaths if checked else []
         for r in sites:
@@ -2369,10 +2437,17 @@ class Gate:
                 if "diagnostic" not in run.via:
                     run.via.append("diagnostic")
         hits = [r for r in build.reports if report_matches(r, inj)]
-        run.halves["trap"] = bool(hits)
+        # RFC 0032 section 2.3: a release behind a function pointer has no
+        # site to guard; the allocator itself refuses it, in every mode, with
+        # `weavec: invalid release of 0x...` and a trap, and names no line.
+        refused = [t.command for t in build.tests if inj.trap == "release" and INVALID_RELEASE in t.tail]
+        run.halves["trap"] = bool(hits or refused)
         if hits:
             run.via.append("trap")
             run.matches.extend({"trap": r} for r in hits)
+        elif refused:
+            run.via.append("trap")
+            run.matches.extend({"invalidRelease": command} for command in refused)
         elif not build.built and not run.matches:
             run.failures.append("the patched build failed without a matching diagnostic: " +
                                 "; ".join(build.failures))
@@ -2398,7 +2473,8 @@ class Gate:
                           with_ledger=False, patch=patch, run_commands=[inj.expect["run"]],
                           extra_env={"INJECTION_DIR": str(injection_dir),
                                      "ASAN_OPTIONS": "detect_leaks=0",
-                                     "UBSAN_OPTIONS": "print_stacktrace=1"})
+                                     "UBSAN_OPTIONS": "print_stacktrace=1",
+                                     **sanitizer_symbolizer(cc)})
         text = ""
         for step in build.tests:
             try:
@@ -2454,11 +2530,14 @@ class Gate:
             repeat = self.args.repeat or bench.repeat
             checkout = self.checkout(config)
             compilers = [("reference", self.binaries.reference_cc)]
-            if not self.args.reference_only:
-                compilers.append(("weavec-cc", self.binaries.weavec_cc))
             run = BenchRun(config=config.name, name=bench.name)
             work = self.run_dir / "bench" / config.name
             remove_tree(work)
+            if not self.args.reference_only:
+                compilers.append(("weavec-cc", self.binaries.weavec_cc))
+                compilers.append(("weavec-cc-no-runtime",
+                                  write_wrapper(work / "bin" / "weavec-cc-no-runtime", self.binaries.weavec_cc,
+                                                ["-fno-weavec-runtime"])))
             env_extra = {}
             if bench.input:
                 input_path = work / "input.bin"
@@ -2496,6 +2575,8 @@ class Gate:
                             break
                         run.times.setdefault(label, []).append(round(result.user, 4))
                         run.outputs.setdefault(label, result.stdout.strip()[:200])
+                        if result.maxrss:
+                            run.rss[label] = min(run.rss.get(label, result.maxrss), result.maxrss)
                     if run.failures:
                         break
                 if bench.check and not run.failures:
@@ -2508,6 +2589,11 @@ class Gate:
                     run.failures.append(f"the builds print different results: {run.outputs}")
                 if "weavec-cc" in run.minimum and run.minimum.get("reference"):
                     run.ratio = round(run.minimum["weavec-cc"] / run.minimum["reference"], 4)
+                if "weavec-cc-no-runtime" in run.minimum and run.minimum.get("reference"):
+                    run.ratio_no_runtime = round(
+                        run.minimum["weavec-cc-no-runtime"] / run.minimum["reference"], 4)
+                if "weavec-cc" in run.rss and run.rss.get("reference"):
+                    run.rss_ratio = round(run.rss["weavec-cc"] / run.rss["reference"], 4)
             if not self.args.keep:
                 remove_tree(work)
             for failure in run.failures:
@@ -2515,9 +2601,15 @@ class Gate:
             self.config_entry(config)["bench"] = run.to_json()
             if run.ratio is not None:
                 self.measured.setdefault(config.name, {})["overhead"] = run.ratio
+            if run.ratio_no_runtime is not None:
+                self.measured.setdefault(config.name, {})["overheadNoRuntime"] = run.ratio_no_runtime
+            if run.rss_ratio is not None:
+                self.measured.setdefault(config.name, {})["rssRatio"] = run.rss_ratio
             log(f"[{config.name}] bench {bench.name}: min user CPU "
                 + ", ".join(f"{k} {v:.3f} s" for k, v in run.minimum.items())
-                + (f"; overhead {run.ratio:.3f}" if run.ratio is not None else ""))
+                + (f"; overhead {run.ratio:.3f}" if run.ratio is not None else "")
+                + (f"; without the runtime {run.ratio_no_runtime:.3f}" if run.ratio_no_runtime is not None else "")
+                + (f"; peak memory {run.rss_ratio:.2f}x" if run.rss_ratio is not None else ""))
 
     # ---- gates and ratchet ----
 
@@ -2539,14 +2631,19 @@ class Gate:
         if analysed:
             self.evaluate_findings_and_analyses()
         if self.args.bench or self.args.full:
-            g14 = gates.get("G14", {}).get("maxOverhead", {})
+            # RFC 0032 R6 set G14's limits: the default build, the build
+            # without the runtime, and the default build's peak memory.
+            g14 = gates.get("G14", {})
             detail14 = {}
             ok14 = True
-            for name, limit in g14.items():
-                ratio = self.measured.get(name, {}).get("overhead")
-                if name in {c.name for c in self.configs} and ratio is not None:
-                    detail14[name] = {"overhead": ratio, "limit": limit}
-                    ok14 &= ratio <= limit
+            selected = {c.name for c in self.configs}
+            for field, key in (("maxOverhead", "overhead"), ("maxOverheadNoRuntime", "overheadNoRuntime"),
+                               ("maxRssRatio", "rssRatio")):
+                for name, limit in (g14.get(field) or {}).items():
+                    ratio = self.measured.get(name, {}).get(key)
+                    if name in selected and ratio is not None:
+                        detail14.setdefault(name, {})[key] = {"value": ratio, "limit": limit}
+                        ok14 &= ratio <= limit
             self.gate("G14", ok14 if detail14 else None, detail14)
         if self.args.full:
             traps = {name: m.get("traps") for name, m in self.measured.items()
@@ -2606,6 +2703,7 @@ class Gate:
                 if share is None or share > limit:
                     ok13 = False
         self.gate("G13", ok13 if detail13 else None, detail13)
+        self.evaluate_unresolved_shares(all_configs)
         g15 = gates.get("G15", {})
         detail15 = {}
         ok15 = True
@@ -2669,6 +2767,40 @@ class Gate:
                       f"{finding['message']}")
         for problem in triage.invalid:
             self.fail(f"triage: {problem}")
+
+    def evaluate_unresolved_shares(self, all_original: bool) -> None:
+        """RFC 0032 R4: the unresolved share of each facet, over the original
+        configs together and over the held-out configs together (the program
+        ledger where a whole-program analysis exists, the unit ledgers
+        otherwise). A group is gated only when all of it was selected."""
+        limits = (self.manifest.gates.get("rfc0032") or {}).get("R4", {}).get("maxUnresolvedShare", {})
+        groups = {"original": [c for c in self.configs if not c.held_out],
+                  "heldOut": [c for c in self.configs if c.held_out]}
+        complete = {"original": all_original,
+                    "heldOut": bool(self.held_out) and all(c.name in {s.name for s in self.configs}
+                                                           for c in self.manifest.configs if c.held_out)}
+        detail: dict = {}
+        ok = True
+        gated = False
+        for group, configs in groups.items():
+            totals = {facet: [0, 0] for facet in limits}
+            for config in configs:
+                analyses = self.results["configs"].get(config.name, {}).get("analyses") or {}
+                facets = (analyses.get("program") or analyses.get("units") or {}).get("facets") or {}
+                for facet in limits:
+                    counts = facets.get(facet) or {}
+                    totals[facet][0] += counts.get("unresolved", 0)
+                    totals[facet][1] += sum(counts.values())
+            shares = {facet: round(u / n, 4) if n else None for facet, (u, n) in totals.items()}
+            detail[group] = {"shares": shares, "complete": complete[group]}
+            if not complete[group]:
+                continue
+            for facet, limit in limits.items():
+                if shares[facet] is not None:
+                    gated = True
+                    ok &= shares[facet] <= limit
+        detail["limits"] = limits
+        self.gate("rfc0032.R4", ok if gated and limits else None, detail)
 
     def held_out_rows(self) -> dict[str, dict]:
         """One summary row per selected held-out config."""

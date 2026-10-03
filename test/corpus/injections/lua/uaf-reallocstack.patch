@@ -1,0 +1,10 @@
+--- a/ldo.c
++++ b/ldo.c
+@@ -346,6 +346,7 @@
+     else return 0;  /* do not raise an error */
+   }
+   L->stack.p = newstack;
++  i = rawtt(s2v(oldstack)); /* INJECTED: reads the stack the reallocation may have moved */
+   correctstack(L, oldstack);  /* change offsets back to pointers */
+   L->stack_last.p = L->stack.p + newsize;
+   for (i = oldsize + EXTRA_STACK; i < newsize + EXTRA_STACK; i++)

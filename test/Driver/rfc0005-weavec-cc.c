@@ -39,10 +39,10 @@
 #include "../Inputs/prelude.h"
 #include "node.h"
 
-// The record is format 29: each function's summary is its format-30 text in
+// The record is format 30: each function's summary is its format-30 text in
 // the field `effects` (RFC 0031 *Implementation amendments*, "The unit
 // record" and "Summary format 30").
-// RECORD: "format": 29,
+// RECORD: "format": 30,
 // RECORD: "source": "{{.*}}node.c",
 // RECORD-NEXT: "cwd": "{{.+}}",
 // RECORD-NEXT: "command": [

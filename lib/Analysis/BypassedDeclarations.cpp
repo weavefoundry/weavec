@@ -49,7 +49,9 @@ namespace {
 /// computed `goto` or a `switch` can jump past.
 class BypassFinder {
 public:
-  explicit BypassFinder(const clang::Stmt &body) { number(&body, nullptr); }
+  BypassFinder(const clang::Stmt &body, bool anyType) : anyType(anyType) {
+    number(&body, nullptr);
+  }
 
   [[nodiscard]] std::vector<const clang::VarDecl *> result() const {
     std::vector<const clang::VarDecl *> bypassed;
@@ -73,6 +75,8 @@ private:
     std::vector<const clang::VarDecl *> variables;
   };
 
+  /// Locals of every type, not only those that may hold a pointer.
+  bool anyType = false;
   unsigned next = 0;
   llvm::DenseMap<const clang::Stmt *, unsigned> order;
   llvm::DenseMap<const clang::LabelDecl *, unsigned> labels;
@@ -109,7 +113,7 @@ private:
         if (const auto *variable = llvm::dyn_cast<clang::VarDecl>(decl);
             variable != nullptr && variable->hasLocalStorage() &&
             !variable->getType()->isVariablyModifiedType() &&
-            mayHoldPointer(variable->getType()))
+            (anyType || mayHoldPointer(variable->getType())))
           variables.push_back(variable);
       if (!variables.empty() && end < last)
         declarations.push_back(Declaration{
@@ -137,7 +141,12 @@ private:
 
 std::vector<const clang::VarDecl *>
 bypassedDeclarations(const clang::Stmt &body) {
-  return BypassFinder(body).result();
+  return BypassFinder(body, /*anyType=*/false).result();
+}
+
+std::vector<const clang::VarDecl *>
+bypassedDeclarationsOfAnyType(const clang::Stmt &body) {
+  return BypassFinder(body, /*anyType=*/true).result();
 }
 
 } // namespace weavec::analysis

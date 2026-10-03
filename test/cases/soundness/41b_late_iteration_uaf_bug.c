@@ -8,7 +8,7 @@ int main(void) {
   int s = 0;
   for (int i = 0; i < 100; i++) {
     if (i == 50) free(p);
-    if (i == 60) s += p[0]; // BUG: use-after-free
+    if (i == 60) s += p[0]; // BUG: use-after-free // TRAP: live
   }
   return s;
 }

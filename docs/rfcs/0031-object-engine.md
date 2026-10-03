@@ -1,6 +1,6 @@
 # RFC 0031: The object engine — a sound heap abstraction behind the engine seam
 
-- **Status**: Implemented
+- **Status**: Implemented (as amended by [RFC 0032](0032-runtime-enforcement.md): unit record format 29 becomes 30, the place class of array-element cells at a boundary (§4.9) is the one RFC 0032's first amendment states, and the part of gate G6 that runtime extents and liveness close is closed there)
 - **Authors**: WeaveC authors
 - **Created**: 2026-09-28
 - **Tracking issue**: TBD

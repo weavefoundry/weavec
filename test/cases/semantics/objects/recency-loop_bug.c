@@ -22,7 +22,7 @@ int main(int argc, char **argv) {
     prev = cur;
   }
   if (old)
-    sum += old->v; // BUG: use-after-free // NOT-PROVEN: temporal
+    sum += old->v; // BUG: use-after-free // NOT-PROVEN: temporal // TRAP: live
   free(prev);
   return sum;
 }

@@ -40,6 +40,7 @@ import fnmatch
 import json
 import os
 import re
+import resource
 import shlex
 import shutil
 import signal
@@ -58,8 +59,12 @@ RESOURCE_INCLUDE = ROOT / "resources" / "include"
 # Vocabulary (RFC 0030 sections 2, 10.2, 17.3 and the Diagnostics section)
 # ---------------------------------------------------------------------------
 
+# The `version` of the ledger JSON this runner reads (2 since RFC 0032).
+LEDGER_VERSION = 2
 FACETS = ("spatial", "null", "temporal", "assertion")
-TEMPLATES = ("nonnull", "index", "span", "len", "disjoint", "assert", "violation")
+TEMPLATES = ("nonnull", "index", "span", "len", "disjoint", "assert", "violation",
+             # RFC 0032 section 3: the guards.
+             "object", "live", "release")
 UNRESOLVED_REASONS = (
     "unknown-extent", "unknown-index", "inexpressible", "may-released", "may-moved",
     "may-alias-released", "may-invalid-release", "may-mismatched-release", "may-dangle",
@@ -70,7 +75,7 @@ TRUST_REASONS = (
     "unsafe", "system-api", "library-spec", "extern-contract", "caller-contract",
     "external-unit", "concurrency",
 )
-OUTCOMES = ("proven", "checked", "violation", "unresolved", "trusted")
+OUTCOMES = ("proven", "checked", "guarded", "violation", "unresolved", "trusted")
 # The ids of v0.10.0 and of RFC 0030; a pin converted from the golden run may
 # name an id that RFC 0030 removes.
 IDS = frozenset((
@@ -95,14 +100,16 @@ FACET_OF_ID = {
 # violation of any facet (section 3.4).
 TEMPLATES_OF_FACET = {
     "null": frozenset(("nonnull", "violation")),
-    "spatial": frozenset(("index", "span", "len", "disjoint", "violation")),
+    # RFC 0032: `object` and `release` guard the spatial facet; all three
+    # guards fail on a dead object, so they enforce the temporal facet too.
+    "spatial": frozenset(("index", "span", "len", "disjoint", "violation", "object", "release")),
     "assertion": frozenset(("assert", "violation")),
-    "temporal": frozenset(("violation",)),
+    "temporal": frozenset(("violation", "live", "object", "release")),
 }
 # Facets whose BUG markers a TRAP on the same line satisfies (section 17.3
 # names null and spatial; assertion is added because WEAVEC_ASSUME checks
-# trap with `assert`).
-TRAPPABLE_FACETS = frozenset(("null", "spatial", "assertion"))
+# trap with `assert`; temporal since RFC 0032's guards).
+TRAPPABLE_FACETS = frozenset(("null", "spatial", "assertion", "temporal"))
 CLASSES = ("error", "warning", "trap", "row", "neutralised", "miss", "silent")
 LEGACY_CLASSES = ("CAUGHT", "SILENT", "SIGNAL", "MISLABEL", "LEAK-ONLY")
 LEGACY_SIGNAL_IDS = frozenset(("analysis-incomplete", "annotation-required",
@@ -110,7 +117,7 @@ LEGACY_SIGNAL_IDS = frozenset(("analysis-incomplete", "annotation-required",
 
 FILE_MARKERS = frozenset(("CLEAN", "ALLOW", "RUN-INPUT", "EXPECT-LEDGER", "FLAGS", "UNITS",
                           "ASAN", "TOOL"))
-LINE_MARKERS = frozenset(("BUG", "TRAP", "UNRESOLVED", "TRUSTED", "NOT-PROVEN",
+LINE_MARKERS = frozenset(("BUG", "TRAP", "UNRESOLVED", "TRUSTED", "NOT-PROVEN", "GUARDED",
                           "NEUTRALISED", "MISS"))
 MARKERS = FILE_MARKERS | LINE_MARKERS
 NO_ARGUMENT_MARKERS = frozenset(("CLEAN", "ASAN", "TOOL"))
@@ -282,7 +289,7 @@ def parse_argument(kind: str, argument: str, directory: Path) -> Any:
         if reason not in reasons:
             raise ValueError(f"unknown {kind.lower()} reason '{reason}'")
         return (facet, reason)
-    if kind == "NOT-PROVEN":
+    if kind in ("NOT-PROVEN", "GUARDED"):
         if argument not in FACETS:
             raise ValueError(f"unknown facet '{argument}'")
         return argument
@@ -837,6 +844,8 @@ class Evidence:
     ran: bool = False
     runs: list[Run] = dataclasses.field(default_factory=list)
     reports: list[CheckReport] = dataclasses.field(default_factory=list)
+    # The reports of each report-mode run, in the order they were printed.
+    report_runs: list[list[CheckReport]] = dataclasses.field(default_factory=list)
     proven_traps: list[str] = dataclasses.field(default_factory=list)
     asan_ran: bool = False
     asan: SanitizerReport | None = None
@@ -909,8 +918,9 @@ def bug_class_and_satisfaction(case: Case, bug: Marker, ev: Evidence,
                     satisfied, reported = "trap", True
         rows = [r for r in index["rows"].get(at, []) if facet and facet in r.facets]
         outcomes = {rec.get("outcome") for r in rows for rec in facet_records(r, facet)[:1]}
-        if satisfied is None and (ev.no_emission or ev.ledger_proxy) and facet in ("null", "spatial") \
-                and "checked" in outcomes:
+        if satisfied is None and (ev.no_emission or ev.ledger_proxy) and (
+                (facet in ("null", "spatial") and "checked" in outcomes)
+                or (facet in ("spatial", "temporal") and "guarded" in outcomes)):
             satisfied, reported = "checked", True
         ledger_match = any(index["ledger_ok"].get(id(m)) for m in index["ledger_markers"].get(at, []))
         if outcomes - {"proven", None} or ledger_match:
@@ -971,7 +981,7 @@ def evaluate(case: Case, ev: Evidence) -> dict:
         at = located(marker.file, marker.line)
         if marker.kind == "TRAP":
             index["traps"][at].append(marker)
-        elif marker.kind in ("UNRESOLVED", "TRUSTED", "NOT-PROVEN"):
+        elif marker.kind in ("UNRESOLVED", "TRUSTED", "NOT-PROVEN", "GUARDED"):
             index["ledger_markers"][at].append(marker)
         elif marker.kind == "NEUTRALISED":
             index["neutralised"][at].append(marker)
@@ -979,13 +989,14 @@ def evaluate(case: Case, ev: Evidence) -> dict:
             index["misses"][at].append(marker)
     ledger_available = bool(ev.ledgers) and not legacy
     if ev.ledger_expected and not ev.ledgers and not legacy:
-        needs_ledger = any(m.kind in ("UNRESOLVED", "TRUSTED", "NOT-PROVEN") for m in case.markers) \
+        needs_ledger = any(m.kind in ("UNRESOLVED", "TRUSTED", "NOT-PROVEN", "GUARDED")
+                           for m in case.markers) \
             or case.expectations
         (failures if needs_ledger else notes).append("the build wrote no ledger")
 
     # Step 3: ledger markers.
     for marker in case.markers:
-        if marker.kind not in ("UNRESOLVED", "TRUSTED", "NOT-PROVEN") or legacy:
+        if marker.kind not in ("UNRESOLVED", "TRUSTED", "NOT-PROVEN", "GUARDED") or legacy:
             continue
         at = located(marker.file, marker.line)
         here = index["rows"].get(at, [])
@@ -999,10 +1010,21 @@ def evaluate(case: Case, ev: Evidence) -> dict:
             if not ok and ledger_available:
                 failures.append(f"{loc(marker)}: NOT-PROVEN {facet}: " + (
                     "the facet is proven" if outcomes else f"no ledger row with a {facet} facet here"))
+        elif marker.kind == "GUARDED":
+            # RFC 0032 section 1: the facet is guarded at run time.
+            facet = marker.value
+            found = [rec.get("outcome") for r in here for rec in facet_records(r, facet)]
+            ok = "guarded" in found
+            if not ok and ledger_available:
+                failures.append(f"{loc(marker)}: GUARDED {facet}: " + (
+                    f"the facet is {', '.join(sorted(set(map(str, found))))}" if found
+                    else f"no ledger row with a {facet} facet here"))
         else:
             facet, reason = marker.value
-            outcome = "unresolved" if marker.kind == "UNRESOLVED" else "trusted"
-            ok = any(rec.get("outcome") == outcome and rec.get("reason") == reason
+            # UNRESOLVED pins the reason a facet is not proven; with the
+            # runtime such a facet is guarded and keeps the reason (RFC 0032).
+            outcomes = ("unresolved", "guarded") if marker.kind == "UNRESOLVED" else ("trusted",)
+            ok = any(rec.get("outcome") in outcomes and rec.get("reason") == reason
                      for r in here for rec in facet_records(r, facet))
             if not ok and ledger_available:
                 found = sorted({f"{rec.get('outcome')}({rec.get('reason')})" if rec.get("reason")
@@ -1067,7 +1089,7 @@ def evaluate(case: Case, ev: Evidence) -> dict:
                 # the outcome `violation`, so the check, not the outcome, is
                 # what stands in for the run here.
                 ok = stopped or any(
-                    rec.get("outcome") in ("checked", "violation")
+                    rec.get("outcome") in ("checked", "guarded", "violation")
                     and (rec.get("check") or {}).get("template") == trap.value
                     for r in index["rows"].get(at, []) for facet in r.facets
                     for rec in facet_records(r, facet))
@@ -1081,13 +1103,43 @@ def evaluate(case: Case, ev: Evidence) -> dict:
                                     f"was built")
         index["trap_ok"][id(trap)] = ok
     if ev.ran:
-        for report in ev.reports:
-            at = (report.file, report.line)
+        def expected(report: CheckReport) -> bool:
             lowered = ev.lowered_ran and report.template == "violation"
-            if not any(t.value == report.template or lowered for t in index["traps"].get(at, [])):
-                failures.append(f"unexpected runtime check failure: {report.template} at "
-                                f"{relative(report.file)}:{report.line}:{report.column}")
-    failures.extend(ev.proven_traps)
+            return any(t.value == report.template or lowered
+                       for t in index["traps"].get((report.file, report.line), []))
+        # In report mode the program goes on past a failed check, with no
+        # guarantee: what fails after an expected failure of the same run is
+        # its consequence (the trap-mode build stopped at the first), and only
+        # a failure before any expected one is unexpected.
+        unexpected: set[CheckReport] = set()
+        for reports in ev.report_runs:
+            matched = False
+            for report in reports:
+                if expected(report):
+                    matched = True
+                elif not matched:
+                    unexpected.add(report)
+        for report in ev.reports:
+            if expected(report):
+                continue
+            where = f"{report.template} at {relative(report.file)}:{report.line}:{report.column}"
+            if report in unexpected or not ev.report_runs:
+                failures.append(f"unexpected runtime check failure: {where}")
+            else:
+                notes.append(f"runtime check failure after an expected one: {where}")
+    # RFC 0032 section 6: verify mode guards proven facets too. A proof that
+    # rests on an entry assumption (A1, A3) fails when a caller breaks the
+    # assumption, and the ledger then blames the row at that caller (the blame
+    # property, case 3). A case whose bug the author accepted as such a row
+    # (a matched ledger marker on a BUG line) therefore expects the trap;
+    # anywhere else a weavec.proven trap is a false proof.
+    bug_lines = {located(bug.file, bug.line) for bug in case.bugs}
+    row_reported = any(index["ledger_ok"].get(id(marker))
+                       for at in bug_lines for marker in index["ledger_markers"].get(at, []))
+    if row_reported:
+        notes.extend(f"{trap} (the consequence of a row the case accepts)" for trap in ev.proven_traps)
+    else:
+        failures.extend(ev.proven_traps)
 
     # Step 2: diagnostics and BUG markers (after the traps they may rely on).
     bug_results = []
@@ -1221,12 +1273,24 @@ class Config:
     work: Path | None = None
 
 
+def no_core_dump() -> None:
+    """In the child: a trap is expected here, so it leaves no core dump. A
+    system that hands every crash to a reporter (apport on Ubuntu) handles
+    them one at a time, and parallel trapping runs then wait on each other
+    past their timeouts."""
+    try:
+        resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+    except (ValueError, OSError):
+        pass
+
+
 def run_process(command: list[str], cwd: Path, timeout: float, stdin: Path | None = None,
                 env: dict | None = None) -> tuple[int | None, str, str, bool]:
     try:
         with open(stdin, "rb") if stdin else open(os.devnull, "rb") as handle:
             completed = subprocess.run(command, cwd=cwd, stdin=handle, capture_output=True,
-                                       timeout=timeout, env=env, check=False)
+                                       timeout=timeout, env=env, check=False,
+                                       preexec_fn=no_core_dump)
         return (completed.returncode, completed.stdout.decode(errors="replace"),
                 completed.stderr.decode(errors="replace"), False)
     except subprocess.TimeoutExpired as expired:
@@ -1242,6 +1306,30 @@ def run_environment(**extra: str) -> dict:
     env.pop("WEAVEC_RT_ABORT", None)
     env.update(extra)
     return env
+
+
+def sanitizer_symbolizer() -> dict:
+    """ASAN_SYMBOLIZER_PATH for a sanitizer run, when llvm-symbolizer is at hand.
+
+    Without it the sanitizer runtime on Darwin runs `atos` against the dying
+    process, which needs the system's permission to inspect another process
+    and waits for it when a debugger prompt is pending. The caller's own
+    setting wins.
+    """
+    if os.environ.get("ASAN_SYMBOLIZER_PATH"):
+        return {}
+    candidates = []
+    if os.environ.get("WEAVEC_LLVM_PREFIX"):
+        candidates.append(Path(os.environ["WEAVEC_LLVM_PREFIX"]) / "bin" / "llvm-symbolizer")
+    found = shutil.which("llvm-symbolizer")
+    if found:
+        candidates.append(Path(found))
+    for brew in ("/opt/homebrew/opt/llvm/bin/llvm-symbolizer", "/usr/local/opt/llvm/bin/llvm-symbolizer"):
+        candidates.append(Path(brew))
+    for candidate in candidates:
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return {"ASAN_SYMBOLIZER_PATH": str(candidate)}
+    return {}
 
 
 def legacy_command(weavec: Path, case: Case) -> list[str]:
@@ -1318,6 +1406,9 @@ def cc_flags(case: Case, cfg: Config, checks: str | None, unit: Path | None) -> 
     plain = "-fno-weavec" in own
     flags: list[str] = []
     if not plain:
+        # RFC 0032 section 9: the cases pin the analysis's possible findings,
+        # which a build that guards the facet does not report by itself.
+        flags.append("-Wweavec-possible")
         if checks and not cfg.no_emission:
             flags.append(f"-fweavec-checks={checks}")
         if cfg.require:
@@ -1375,8 +1466,9 @@ def load_ledgers(ev: Evidence, directory: Path) -> None:
             ev.tool_failures.append(f"ledger {path.name} is not valid JSON: {error}")
             continue
         if not isinstance(ledger, dict) or ledger.get("schema") != "weavec-ledger" or \
-                ledger.get("version") != 1:
-            ev.tool_failures.append(f"ledger {path.name} is not a weavec-ledger version 1 document")
+                ledger.get("version") != LEDGER_VERSION:
+            ev.tool_failures.append(
+                f"ledger {path.name} is not a weavec-ledger version {LEDGER_VERSION} document")
             continue
         ev.ledgers.append(ledger)
 
@@ -1505,7 +1597,8 @@ def run_case(case: Case, cfg: Config) -> dict:
                     ev.run_reported = [bool(parse_reports(run.stderr, temp)) for run in report_runs]
                     seen = set()
                     for run in report_runs:
-                        for report in parse_reports(run.stderr, temp):
+                        ev.report_runs.append(parse_reports(run.stderr, temp))
+                        for report in ev.report_runs[-1]:
                             if report not in seen:
                                 seen.add(report)
                                 ev.reports.append(report)
@@ -1567,7 +1660,7 @@ def run_asan(case: Case, cfg: Config, ev: Evidence, directory: Path) -> None:
     options = "detect_leaks=0:detect_stack_use_after_return=1:abort_on_error=0"
     env = run_environment(
         ASAN_OPTIONS=options + (":" + os.environ["ASAN_OPTIONS"] if os.environ.get("ASAN_OPTIONS") else ""),
-        UBSAN_OPTIONS="print_stacktrace=1:halt_on_error=1")
+        UBSAN_OPTIONS="print_stacktrace=1:halt_on_error=1", **sanitizer_symbolizer())
     ev.asan_ran = True
     for run_input in case.run_inputs or [RunInput((), None)]:
         code, _, err, timed_out = run_process([str(output), *run_input.args], directory, ASAN_TIMEOUT,
@@ -1735,7 +1828,7 @@ def main(argv: list[str] | None = None) -> int:
                         help="cases run at once (default: the CPU count)")
     parser.add_argument("--checks", choices=("trap", "verify"), default="trap",
                         help="the -fweavec-checks mode of the executable build (default: trap)")
-    parser.add_argument("--require", choices=("none", "checked", "proven"),
+    parser.add_argument("--require", choices=("none", "guarded", "checked", "proven"),
                         help="add -fweavec-require to every build")
     parser.add_argument("--asan", action="store_true", help="run the ASan oracle for every case")
     parser.add_argument("--legacy", action="store_true",

@@ -137,22 +137,29 @@ jobs:
       # directory of test/cases, RFC 0030 section 17.4), in parallel.
       - name: Test
         env:
-          ASAN_OPTIONS: detect_leaks=0:strict_string_checks=1
+          # allow_user_poisoning=0: WeaveC is instrumented but the system's
+          # libclang-cpp is not, and LLVM's inline allocator poisons slab
+          # tails in one copy that the other then writes without unpoisoning.
+          ASAN_OPTIONS: detect_leaks=0:strict_string_checks=1:allow_user_poisoning=0
           UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
-        run: ctest --preset "${{ matrix.preset }}" -j "$(getconf _NPROCESSORS_ONLN)"
+        # Many tests trap on purpose. Without core dumps, Ubuntu's apport does
+        # not take each crash in turn while the next ones wait.
+        run: |
+          ulimit -c 0
+          ctest --preset "${{ matrix.preset }}" -j "$(getconf _NPROCESSORS_ONLN)"
 
       - name: Documentation examples
         env:
-          ASAN_OPTIONS: detect_leaks=0
+          ASAN_OPTIONS: detect_leaks=0:allow_user_poisoning=0
         run: |
           python3 docs/scripts/check-examples.py \
             --weavec "build/${{ matrix.preset }}/bin/weavec" \
             --weavec-cc "build/${{ matrix.preset }}/bin/weavec-cc"
 
-      # RFC 0030 gate H2 (as RFC 0031 amends it): no checked-mode or old-engine
-      # residue, no library names compared outside the LibrarySpec table, no
-      # corpus project names in lib/, the engine seam, and the engine and
-      # library line budgets.
+      # RFC 0030 gate H2 (as RFCs 0031 and 0032 amend it): no checked-mode or
+      # old-engine residue, no library names compared outside the LibrarySpec
+      # table, no corpus project names in lib/, the engine seam, and the
+      # engine, library and runtime line budgets.
       - name: Repository hygiene
         if: runner.os == 'Linux' && matrix.preset == 'ci-release'
         run: |

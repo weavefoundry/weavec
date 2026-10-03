@@ -62,7 +62,7 @@ def summary(proven=0, checked=0, violation=0, unresolved=0, trusted=0, errors=0,
 
 
 def ledger(summary_, diagnostics=(), scope="unit"):
-    return {"schema": "weavec-ledger", "version": 1, "scope": scope, "summary": summary_,
+    return {"schema": "weavec-ledger", "version": 2, "scope": scope, "summary": summary_,
             "units": [], "diagnostics": list(diagnostics)}
 
 
@@ -378,7 +378,7 @@ class LedgerTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             gate.validate_ledger({"schema": "x"}, Path("l.json"))
         with self.assertRaises(ValueError):
-            gate.validate_ledger({"schema": "weavec-ledger", "version": 2, "summary": {}}, Path("l.json"))
+            gate.validate_ledger({"schema": "weavec-ledger", "version": 3, "summary": {}}, Path("l.json"))
 
     def test_program_ledger_diagnostics_are_deduplicated(self):
         item = {"id": "use-after-free", "severity": "warning", "certainty": "possible", "file": "/p/a.c",
@@ -588,10 +588,18 @@ class InjectionTest(unittest.TestCase):
         self.assertEqual(projects, {c.project.name for c in manifest.original})
         self.assertFalse([i.id for i in injections if manifest.config(i.config).held_out])
         required = {i.id: i for i in injections if i.required}
-        self.assertEqual(set(required), {"lua-uaf-luah-free", "lua-df-freeproto"})
-        for inj in required.values():
-            self.assertEqual(inj.mode, "whole-program")
-            self.assertEqual(inj.config, "lua")
+        # RFC 0030 G12's two, which need the whole program, and RFC 0032 R2's
+        # eight, each of which names the guard that must stop it when it runs.
+        whole_program = {"lua-uaf-luah-free", "lua-df-freeproto"}
+        runtime = {"sds-oob-range", "sds-uaf-catlen", "cjson-oob-string-terminator", "cjson-uaf-print-realloc",
+                   "zlib-oob-window", "zlib-uaf-window", "lua-oob-newlclosure", "lua-uaf-reallocstack"}
+        self.assertEqual(set(required), whole_program | runtime)
+        for name in whole_program:
+            self.assertEqual(required[name].mode, "whole-program")
+            self.assertEqual(required[name].config, "lua")
+        for name in runtime:
+            self.assertIn(required[name].trap, ("object", "live", "release"))
+            self.assertTrue(required[name].expect.get("run"))
         for inj in injections:
             patch = (CORPUS / "injections" / inj.patch).read_text()
             self.assertIn("INJECTED", patch)
@@ -653,7 +661,7 @@ if ledger:
     summary = {"sites": 10 + extra, "facets": facets, "errors": sum(d["severity"] == "error" for d in diagnostics),
                "warnings": sum(d["severity"] == "warning" for d in diagnostics), "functions": 3, "overBudget": []}
     with open(ledger, "w") as out:
-        json.dump({"schema": "weavec-ledger", "version": 1, "scope": "program" if "--whole-program" in args else "unit",
+        json.dump({"schema": "weavec-ledger", "version": 2, "scope": "program" if "--whole-program" in args else "unit",
                    "summary": summary, "units": [], "diagnostics": diagnostics}, out)
 if stats:
     with open(stats, "w") as out:
@@ -893,7 +901,7 @@ if ledger:
     summary = {"sites": 1, "facets": facets, "errors": 0, "warnings": len(diagnostics), "functions": 1,
                "overBudget": []}
     with open(target, "w") as handle:
-        json.dump({"schema": "weavec-ledger", "version": 1, "scope": "unit" if "-c" in rest else "program",
+        json.dump({"schema": "weavec-ledger", "version": 2, "scope": "unit" if "-c" in rest else "program",
                    "summary": summary, "units": [{"source": s} for s in sources],
                    "diagnostics": diagnostics}, handle)
 if os.environ.get("FAKE_TRAP"):

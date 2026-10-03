@@ -91,7 +91,7 @@ set(WEAVEC_LIT_JOBS
 add_custom_target(
   check-weavec-lit
   COMMAND "${WEAVEC_LIT}" ${WEAVEC_LIT_ARGS} "${CMAKE_CURRENT_BINARY_DIR}"
-  DEPENDS weavec weavec-cc weavec_rt weavec_chk
+  DEPENDS weavec weavec-cc weavec_rt weavec_alloc weavec_chk
   COMMENT "Running WeaveC lit tests"
   USES_TERMINAL)
 add_dependencies(check-weavec check-weavec-lit)
@@ -101,4 +101,10 @@ add_test(NAME lit COMMAND "${WEAVEC_LIT}" ${WEAVEC_LIT_ARGS} -j
                           "${WEAVEC_LIT_JOBS}" "${CMAKE_CURRENT_BINARY_DIR}")
 set_tests_properties(lit PROPERTIES LABELS "integration" PROCESSORS
                                     "${WEAVEC_LIT_JOBS}")
+# RFC 0032, section 12: the runtime's own tests (runtime/test/rt_test.c).
+if(TARGET weavec_rt_test)
+  add_test(NAME runtime COMMAND weavec_rt_test)
+  set_tests_properties(runtime PROPERTIES LABELS "unit")
+endif()
+
 add_subdirectory(cases)

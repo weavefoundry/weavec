@@ -94,6 +94,14 @@ struct FrontendOptions {
   core::LedgerConfig config;
   LedgerOutputOptions ledgerOutput;
   // RFC 0030 (S3-C, end).
+  /// RFC 0032 §9: the build enforces its guards, so a possible finding on a
+  /// guarded facet is not reported (`weavec-cc` with checks and the runtime
+  /// on, without `-Wweavec-possible`).
+  bool dropGuardedPossible = false;
+  /// RFC 0032 §4, §5: register the unit's escaping locals and its globals
+  /// (`-f[no-]weavec-stack-objects`, `-f[no-]weavec-global-objects`).
+  bool stackObjects = true;
+  bool globalObjects = true;
 
   // RFC 0005, whole-program analysis. Every pointer must outlive the run.
 

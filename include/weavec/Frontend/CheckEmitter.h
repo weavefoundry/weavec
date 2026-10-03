@@ -64,6 +64,7 @@
 
 namespace clang {
 class ASTContext;
+class Decl;
 class Sema;
 } // namespace clang
 
@@ -75,6 +76,7 @@ struct PlannedLedger;
 
 namespace weavec::frontend {
 
+struct ObjectPlan;
 struct ZeroInitPlan;
 
 struct CheckEmitterOptions {
@@ -84,6 +86,9 @@ struct CheckEmitterOptions {
   /// The helpers are then declared `extern` in the AST and come from
   /// `libweavec_chk.a`, whose report helpers carry a `_report` suffix.
   bool externalHelpers = false;
+  /// RFC 0032 §13: guards of a pointer the function uses more than once, or
+  /// in a loop, remember the range that passed in a cache in its frame.
+  bool rangeCaches = true;
 };
 
 /// The C type of one prelude helper, for its `extern` declaration (§10.9).
@@ -101,6 +106,8 @@ struct HelperSignature {
     ConstCharPointer,
     CharPointerPointer,
     VoidPointerPointer,
+    /// `unsigned long long *`: a guard's range cache (RFC 0032 §13).
+    UnsignedLongLongPointer,
     /// `void (*)(void)`.
     FunctionPointer,
     /// `void *(*)(size_t, size_t)`.
@@ -110,9 +117,9 @@ struct HelperSignature {
   };
   llvm::StringLiteral name;
   Type result = Type::Void;
-  /// At most five parameters; `Type::Void` ends the list.
-  std::array<Type, 5> params = {Type::Void, Type::Void, Type::Void, Type::Void,
-                                Type::Void};
+  /// At most seven parameters; `Type::Void` ends the list.
+  std::array<Type, 7> params = {Type::Void, Type::Void, Type::Void, Type::Void,
+                                Type::Void, Type::Void, Type::Void};
   /// A check helper: report mode appends (file, line, column).
   bool reports = false;
 };
@@ -138,11 +145,21 @@ public:
   /// Applies the §11 zero-initialisation rewrites. False after an internal
   /// error.
   bool lowerZeroInit(const ZeroInitPlan &plan);
+  /// RFC 0032 §4, §5: registers the unit's stack and global objects with the
+  /// runtime. Run after `emit`. The stack helpers are inlined into their
+  /// callers, so a unit whose helpers are external (§10.9) registers no
+  /// stack object. False after an internal error.
+  bool registerObjects(const ObjectPlan &plan);
+  /// The declarations `registerObjects` added to the unit (the global
+  /// descriptors), which the code generator has not seen.
+  [[nodiscard]] llvm::ArrayRef<clang::Decl *> newTopLevelDecls() const noexcept;
 
   /// Plan entries applied so far.
   [[nodiscard]] std::size_t checksInserted() const noexcept;
   /// Zero-initialisation rewrites applied so far.
   [[nodiscard]] std::size_t zeroInitRewrites() const noexcept;
+  /// Stack objects and global objects registered so far.
+  [[nodiscard]] std::size_t objectsRegistered() const noexcept;
 
   /// Every helper the rewrites can call, with its C signature: what the
   /// `extern` declarations of §10.9 are built from. A unit test compares

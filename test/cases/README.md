@@ -13,10 +13,10 @@ must be reported, checked or left unproven.
 | `pairs/` | the 24 RFC 0017 cases (12 bug/clean pairs) |
 | `recall/<CWE>/` | the recall pins (67, as the retired `scripts/recall.py` counted them) |
 | `engine/` | ordinary-era lit engine pins, reduced to (line, id) from the golden run |
-| `soundness/` | the 113 soundness probes (85 bug, 28 correct) and their extra units, and RFC 0031's 22 alias probes (`alias-*`: 11 bug, 11 correct); see its README |
+| `soundness/` | the 113 soundness probes (85 bug, 28 correct) and their extra units, and 28 alias probes (`alias-*`: 14 bug, 14 correct): RFC 0031's 22 and RFC 0032's 6 (`alias-global-element-*`, `alias-record-element_*`); see its README |
 | `repros/` | the 12 root-cause false-positive repros, with their intended RFC 0030 expectations, and RFC 0031's 8 held-out repros (`ooc-*`) |
 | `proofs/` | salvaged cases that once caught a false proof (`SOURCES.md` gives their origin) |
-| `semantics/<feature>/` | new cases per RFC 0030 feature; `semantics/objects/` is RFC 0031's object domain (§11.1) |
+| `semantics/<feature>/` | new cases per RFC 0030 feature; `semantics/objects/` is RFC 0031's object domain (§11.1); `semantics/runtime/` is RFC 0032's runtime enforcement (43 cases: 19 bugs that must trap or stay unenforced without the runtime, 24 correct programs that must not trap) |
 
 `GOLDEN.md` describes the golden v0.10.0 binaries and `KNOWN-DIFFERENCES.md`
 lists the engine pins the RFC 0030 build no longer reproduces.
@@ -26,8 +26,10 @@ lists the engine pins the RFC 0030 build no longer reproduces.
 ```sh
 scripts/run-cases.py                                  # every case, trap mode
 scripts/run-cases.py --filter 'soundness/**' --asan   # gate G4
-scripts/run-cases.py --checks verify                  # gate G6
+scripts/run-cases.py --asan                           # RFC 0032 gate R1: every suite
+scripts/run-cases.py --checks verify                  # gate G6, and R1 (temporal proofs too)
 scripts/run-cases.py --require checked --filter 'soundness/*_ok.c' --filter 'soundness/*_fp.c'  # gate G5 (the 28 twins)
+scripts/run-cases.py --require guarded                # unresolved facets are errors, guarded ones are not
 scripts/run-cases.py --no-emission                    # before checks are emitted (S3, S4)
 scripts/run-cases.py --no-run                         # build, diagnostics and ledger only
 WEAVEC_GOLDEN_DIR=<dir> scripts/run-cases.py --legacy               # S0: v0.10.0 semantics
@@ -74,9 +76,10 @@ separated by `//`:
 | `CLEAN` | file | no errors, no warnings (except `ALLOW`), no traps, and no death by any other signal |
 | `ALLOW: <id> [<id> ...]` | file | warnings with these ids do not fail `CLEAN`; justify each in a comment |
 | `BUG: <id> [definite\|possible]` | line | a diagnostic with `<id>` on this line; `definite` = error, `possible` = warning, omitted = either |
-| `TRAP: <template>` | line | the program traps here with `nonnull`, `index`, `span`, `len`, `disjoint`, `assert` or `violation` |
+| `TRAP: <template>` | line | the program traps here with `nonnull`, `index`, `span`, `len`, `disjoint`, `assert` or `violation`, or with one of the runtime's guards, `object`, `live` or `release` (RFC 0032 §3) |
 | `RUN-INPUT: <argv...> [< <file>]` | file | run the program with these arguments (shell quoting; the input file is relative to the case); repeatable, each run independent; an empty `RUN-INPUT:` is a run without arguments |
-| `UNRESOLVED: <facet>:<reason>` | line | a ledger row here has that facet unresolved with that reason (§2.3) |
+| `UNRESOLVED: <facet>:<reason>` | line | a ledger row here has that facet unresolved, or guarded, with that reason (§2.3): the marker pins why the facet is not proven, and a guarded facet keeps its reason |
+| `GUARDED: <facet>` | line | a ledger row here has that facet guarded (RFC 0032 §1) |
 | `TRUSTED: <facet>:<reason>` | line | likewise, trusted (§2.4) |
 | `NOT-PROVEN: <facet>` | line | a ledger row here has that facet, and none has it proven |
 | `NEUTRALISED: zero-init` | line | the defect is defined away by zero-initialisation (§11) |
@@ -88,7 +91,11 @@ separated by `//`:
 | `TOOL` | file | analyse with `weavec --ledger` (no build, no run) |
 
 Facets are `spatial`, `null`, `temporal` and `assertion`; reasons are the
-spellings of RFC 0030 §2.3–2.4. Ids are those of v0.10.0 and RFC 0030, so a pin
+spellings of RFC 0030 §2.3–2.4. `UNRESOLVED` does not tell an unresolved
+facet from a guarded one: where the difference matters, add `GUARDED`, or
+pin the count with `EXPECT-LEDGER` (`/summary/guarded == 0`), or build
+without the runtime (`FLAGS: -fno-weavec-runtime`), where nothing is
+guarded. Ids are those of v0.10.0 and RFC 0030, so a pin
 converted from the golden run may name a removed id.
 
 Rules the grammar leaves implicit, as the runner enforces them:
@@ -115,9 +122,14 @@ Rules the grammar leaves implicit, as the runner enforces them:
 ## How a case is judged
 
 1. **Build.** Each unit is compiled with
-   `weavec-cc -c -fweavec-checks=trap|verify [-fweavec-require=...] <FLAGS> -fweavec-ledger=<tmp>/`
+   `weavec-cc -c -Wweavec-possible -fweavec-checks=trap|verify [-fweavec-require=...] <FLAGS> -fweavec-ledger=<tmp>/`
    and the units are linked into `a.out` when one defines `main` (the same flags
-   at link). Without `main`, several analysed units are also given to
+   at link). The runtime is on, as in any default build, so unresolved facets
+   with a guard are `guarded` and the binary carries the guards.
+   `-Wweavec-possible` keeps the possible temporal findings that such a
+   build does not report on guarded facets (RFC 0032 §9), so `BUG: …
+   possible` pins keep testing the analysis; a unit compiled with
+   `-fno-weavec` gets none of these flags. Without `main`, several analysed units are also given to
    `weavec --whole-program --ledger=...`. `TOOL` cases run
    `weavec --ledger=... [--whole-program] <units> -- <compiler flags>`, with the
    weavec-cc flags translated (`-fweavec-require=` to `--require=`, `-W...weavec...`
@@ -129,11 +141,16 @@ Rules the grammar leaves implicit, as the runner enforces them:
    (below). A `CLEAN` case fails on any error and on any warning whose id is not
    in `ALLOW`. Any case fails on an error on a line that has no `BUG`, `MISS` or
    `NEUTRALISED` marker, including an error without a location.
-3. **Ledger.** `UNRESOLVED`, `TRUSTED` and `NOT-PROVEN` are checked against the
-   rows at their line: the merged facet or any of its `requirements` records
-   for the first two. The program ledger is used when the link wrote one,
-   otherwise the unit ledgers. `EXPECT-LEDGER` reads the program ledger, else
-   the main unit's. A case with ledger markers fails when no ledger was written.
+3. **Ledger.** `UNRESOLVED`, `TRUSTED`, `NOT-PROVEN` and `GUARDED` are checked
+   against the rows at their line: the merged facet or any of its
+   `requirements` records for `UNRESOLVED`, `TRUSTED` and `GUARDED`. An
+   `UNRESOLVED` marker matches a record whose outcome is `unresolved` or
+   `guarded` and whose reason is the marker's; a `GUARDED` marker matches a
+   record whose outcome is `guarded`, whatever its reason. The program
+   ledger is used when the link wrote one, otherwise the unit ledgers.
+   `EXPECT-LEDGER` reads the program ledger, else the main unit's. A case
+   with ledger markers fails when no ledger was written. A ledger must be a
+   `weavec-ledger` document of version 2.
 4. **Run**, when the build produced `a.out` (not with `--no-run` or
    `--no-emission`). The trap-mode binary runs once per `RUN-INPUT` (stdin is
    `/dev/null` unless redirected), with a 10 s timeout. Every run must end by
@@ -141,10 +158,13 @@ Rules the grammar leaves implicit, as the runner enforces them:
    are then rebuilt with `-fweavec-checks=report`, the runs repeated, and every
    `weavec: runtime check failed: <template> at <file>:<line>:<col>` line
    collected: each `TRAP` must be matched by line and template, and a failure on
-   any other line fails the case. When no run is possible (`TOOL`,
+   any other line fails the case, unless an expected failure came before it
+   in the same run: in report mode the program goes on past a failed check,
+   so what fails afterwards is its consequence, and is only noted. When no
+   run is possible (`TOOL`,
    `--no-run`, `--no-emission`, no `main`), a `TRAP` is matched instead by a
    facet at its line carrying a check whose `check.template` is the template —
-   `checked`, or `violation` for a lowered definite violation (§3.4); when the
+   `checked`, `guarded`, or `violation` for a lowered definite violation (§3.4); when the
    build stopped at an error, a `TRAP` on the line of a `BUG` satisfied by that
    error is not required.
 5. **ASan oracle** (`--asan` or `ASAN`). All units are built with
@@ -170,16 +190,28 @@ Rules the grammar leaves implicit, as the runner enforces them:
    program's own trap, which step 4 already reports as a note. When the
    report-mode run does report a failed check, `--lldb` asks `lldb` for the
    trap's category (`weavec.proven` or `weavec`); without it such a trap is
-   taken as the unproven check's.
+   taken as the unproven check's. Verify mode also guards proven temporal
+   facets, and proven spatial facets that have no static check, against the
+   runtime (RFC 0032 §6). One exception follows from that (RFC 0032
+   *Implementation amendments*, 4): a proof may rest on an assumption about
+   the function's entry state that a case's own `main` breaks on purpose.
+   When a ledger marker (`UNRESOLVED`, `TRUSTED`, `NOT-PROVEN` or `GUARDED`)
+   on one of the case's `BUG` lines matched, so that the case accepts a
+   ledger row as the report of its bug, the case's `weavec.proven` traps are
+   noted as the consequence of that row instead of failing. In every other
+   case a `weavec.proven` trap fails the run.
 
 A `BUG` marker is satisfied by, in order:
 
 - a diagnostic with its id on its line and the right severity class;
 - a matched `TRAP` on the same line whose template enforces the id's facet
-  (null: `nonnull`; spatial: `index`, `span`, `len`, `disjoint`; assertion:
-  `assert`) or is `violation` (a lowered violation, any facet);
+  (null: `nonnull`; spatial: `index`, `span`, `len`, `disjoint`, `object`,
+  `release`; temporal: `live`, `object`, `release`, since every guard fails
+  on a dead object; assertion: `assert`) or is `violation` (a lowered
+  violation, any facet);
 - with `--no-emission`, `TOOL` or `--no-run`, a matching facet on the line that
-  carries a check, for null and spatial ids (gate G3's rule): `checked`, or
+  carries a check (gate G3's rule): `checked` for null and spatial ids,
+  `guarded` for spatial and temporal ids, or
   `violation` for a definite violation §3.4 lowered and still guarded;
 - a matched `UNRESOLVED`, `TRUSTED` or `NOT-PROVEN` marker on the same line:
   the author accepts a ledger row as the report of this bug;
@@ -264,7 +296,10 @@ in the *Excluded* section of `KNOWN-DIFFERENCES.md`.
 2. Start with a comment saying what the case is about and where it comes from,
    then the file markers, then the code.
 3. Pin every expected finding with `BUG` on the line that must be reported, and
-   every expected trap with `TRAP`; mark a correct program `CLEAN`. Give a
+   every expected trap with `TRAP`; mark a correct program `CLEAN`. Where a
+   guard is the expected enforcement, pin `GUARDED: <facet>` on the line in
+   the bug case and in its correct twin, so the twin shows that the guard
+   is there and passes. Give a
    null or spatial bug that becomes a check a `main` that reaches it (with
    `RUN-INPUT` if it needs arguments), so the executable oracle observes the
    trap, and add `ASAN` when ASan can confirm the bug.

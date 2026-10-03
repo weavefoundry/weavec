@@ -44,7 +44,7 @@ that installed its CMake packages, e.g. a from-source build with
 ```sh
 cmake --preset dev             # Debug, assertions, compile_commands.json
 cmake --build --preset dev
-ctest --preset dev             # unit tests + lit
+ctest --preset dev             # unit tests, the runtime test, lit, the cases
 ```
 
 | Preset           | Purpose                                              |
@@ -77,6 +77,9 @@ Build targets of note:
   `-cc1as`) a `clang` binary; both are recorded at configure time from the
   LLVM install used to build, and can be overridden with
   `WEAVEC_RESOURCE_DIR` and `WEAVEC_CLANG`.
+- `weavec_rt`, `weavec_alloc`, `weavec_chk` — the runtime archives
+  (`libweavec_rt.a`, `libweavec_alloc.a`, `libweavec_chk.a`), in
+  `build/<preset>/lib/weavec/`; `weavec_rt_test` is the runtime's own test.
 - `check-weavec` — build and run all tests.
 - `check-weavec-unit`, `check-weavec-lit` — only one suite.
 
@@ -94,8 +97,36 @@ collect diagnostics with `core::DiagnosticCollector` (`TestUtils.h` has
 `analyze`, `analyzeInProgram` for a snippet checked against another unit's
 exports, and `analyzeAtLink`, and the result gives each function's
 `core::FunctionEffects`); Frontend tests run `ProgramAnalysis` and the link
-step over in-memory units and round-trip format-29 unit records. Run one
+step over in-memory units and round-trip format-30 unit records. The
+sixth outcome `guarded` is covered in `LedgerTest.cpp` (rank, spellings,
+the require level), `LedgerWriterTest.cpp` (the JSON's counts, reasons and
+shares, the SARIF rules) and the planner's guards in
+`CheckPlannerTest.cpp`. Run one
 with `build/dev/unittests/WeaveCCoreTests --gtest_filter='Heap*'`.
+
+### The runtime (`runtime/`)
+
+The runtime is plain C and is built with the host compiler into the build
+tree's `lib/weavec` whatever the preset; `libweavec_rt.a` and
+`libweavec_alloc.a` are always compiled with `-O2`. Its test is one program,
+[`runtime/test/rt_test.c`](../runtime/test/rt_test.c), linked with both
+archives so that its `malloc` is the arena's:
+
+```sh
+ctest --preset dev -R '^runtime$'          # every test
+build/dev/runtime/weavec_rt_test stack longjmp   # only the named tests
+```
+
+The tests are `classes`, `alignment`, `realloc`, `invalid-releases`, `huge`,
+`foreign`, `stack`, `longjmp`, `deep-stack`, `globals`, `strings`,
+`threads`, `fork`, `reuse-is-zero` and `quarantine`. A test that must stop
+the program (an invalid release) runs in a child process, and the parent
+checks how it died. The runtime has platform-specific halves (Darwin's
+malloc zone, glibc's `__libc_free`, the two section-bounds spellings of the
+global table), so a change to it must pass on both Darwin and Linux; CI runs
+the test in its Linux and macOS CTest jobs (RFC 0032 gate R8). The runtime
+includes no WeaveC header but `runtime/weavec_rt.h`, and
+`scripts/check-hygiene.py` holds it to its own line budget.
 
 ### Integration tests (`test/`)
 
@@ -109,18 +140,42 @@ checks `weavec-cc` inserts against hand-written equivalents. New tests are
 named by feature (`test/Emission/<feature>-*.c`); existing `rfcNNNN-` names
 stay.
 
+The rewrite oracle (`test/Emission/Inputs/rewrite-oracle.py`, the
+`%rewrite_oracle` substitution) compiles a source with `weavec-cc` and a
+hand-written expected file with the reference Clang and the printed prelude,
+and requires equal `-O0` IR. It pins one rewrite at a time, so unless a
+test's flags name `-fweavec-runtime` both sides are built with
+`-fno-weavec-runtime`: no guard and no object registration. The tests of the
+runtime's rewrites pass `-fweavec-runtime` and write the guards and
+registrations into their expected file: `test/Emission/runtime-oracle-*.c`
+(the `object` guard of a subscript and of a call argument, `live` and
+`release`, the range cache, stack objects, global descriptors).
+`test/Driver/runtime-flags.c` pins the `guarded` outcome in the summary
+line and the ledger, `config.runtime` (`true`, `false`, `"mixed"`), the
+require levels and `weavec --no-runtime`; `test/Driver/runtime-link.c` pins
+the link line (`-u malloc`, `libweavec_alloc.a`, `libweavec_chk.a`,
+`libweavec_rt.a`), the fallbacks for `-fno-weavec-runtime`,
+`-fweavec-checks=none`, a sanitizer, `-nostdlib` and a program that defines
+the allocator, and the `WEAVEC_RT_STATS` output.
+
 ### Test cases (`test/cases/`)
 
 Executable C cases organised by feature, with their expectations in
 line-comment markers (`// BUG: use-after-free`, `// TRAP: index`,
-`// UNRESOLVED: spatial:unknown-extent`, `// CLEAN`); see
+`// GUARDED: spatial`, `// UNRESOLVED: spatial:unknown-extent`, `// CLEAN`);
+see
 [`test/cases/README.md`](../test/cases/README.md). `scripts/run-cases.py`
 builds each case with `weavec-cc`, checks its diagnostics and ledger, runs
 it, and optionally runs it under ASan. CTest registers one `cases-<suite>`
 test per top-level directory, so `ctest --preset dev -L cases` runs them in
 parallel; the cache variable `WEAVEC_CASES_ARGS` passes runner options (the
 ASan CI job uses `--no-run`). A false-positive fix gets a `// CLEAN` case; a
-new rule gets a case under `test/cases/semantics/<feature>/`.
+new rule gets a case under `test/cases/semantics/<feature>/`. The runtime's
+cases are in `test/cases/semantics/runtime/`: a bug that must trap with
+`object`, `live` or `release` and its correct twin, which must not.
+`scripts/run-cases.py --asan` checks that no line ASan reports has its
+facet proven, and `--checks verify` that no `weavec.proven` trap fires
+(RFC 0032 gate R1).
 
 ### Corpus gate (`test/corpus/`)
 
@@ -130,8 +185,30 @@ in `test/corpus/manifest.json` and compares the results with the ratchet in
 warning needs a verdict in `test/corpus/triage.json`. `--quick` runs on every
 pull request and `--full` (project builds, test suites, injections,
 benchmarks) weekly; see [`test/corpus/README.md`](../test/corpus/README.md).
+RFC 0032 changed three of its gates:
+
+- `--bench` (G14) times three builds of each benchmark: the reference
+  compiler's, the default `weavec-cc` build (with the runtime) and the
+  `weavec-cc -fno-weavec-runtime` build. The manifest's `G14` limits the
+  default build's user CPU (`maxOverhead`: Lua 6.0, zlib 2.0, cJSON 2.0),
+  the build without the runtime (`maxOverheadNoRuntime`: 1.1, 1.1, 1.15) and
+  the default build's peak resident size (`maxRssRatio`: 2.0 each), all over
+  the reference compiler's. Timing is sensitive to load: run it on an idle
+  machine.
+- `rfc0032.R4` limits the unresolved share of each facet over the original
+  configs together and over the held-out configs together: spatial 0.12,
+  null 0.01, temporal 0.20.
+- A guard that fails in a project's test suite is a trap, and fails the
+  run, unless `triage.json`'s `guardFailures` records it as a true bug with
+  its source evidence. The eight injections that only a guard can catch
+  (gate R2) are `required`.
+
 `scripts/check-hygiene.py` checks the repository rules of RFC 0030's gate H2
-and runs in the Linux Release CI job.
+and RFC 0032's gate H1, and runs in the Linux Release CI job. Its line
+budgets are: the libraries (`lib/`, `include/` and `tools/`) at most 69,000 lines
+(`library-lines`, raised by RFC 0032), and the runtime (`runtime/` without
+`runtime/test/`) at most 4,000 (`runtime-lines`), counted apart because it
+is linked into compiled programs, not into the compiler.
 
 ### Sanitizers
 
@@ -165,7 +242,7 @@ editor integration.
 - `weavec-cc` runs its `-cc1` jobs in-process, so `lldb -- build/dev/bin/
   weavec-cc -c file.c` stops in the analysis directly; `weavec-cc -###
   file.c` prints the jobs Clang's driver planned. A unit's record is
-  `<object>.weavec` next to the object: format 29, a framed JSON header
+  `<object>.weavec` next to the object: format 30, a framed JSON header
   (producer, source, `-cc1` command, target, configuration, object digest)
   and payload (format-30 summaries, kinds, imports, slots, site outcomes),
   with a schema fingerprint and a SHA-256 digest (RFC 0030 §13.1, RFC 0031
@@ -190,6 +267,33 @@ editor integration.
   (declared and inferred, with must-access requirements, slot demotions,
   store groups and §7.6 candidates) and its function-pointer slots, without
   running the engine.
+- To see what the runtime did in a compiled program, run it with
+  `WEAVEC_RT_STATS=1`: at exit the runtime prints one line per counter on
+  stderr, `weavec: runtime: <n> <what>` (allocations, releases, recycled
+  slots, huge blocks, lookups and of those heap, stack, global and
+  untracked, range requests, ranges kept, stack objects entered). The
+  counters are not synchronised. `WEAVEC_RT_QUARANTINE=<bytes>` sets the
+  quarantine budget (0 recycles a released block at once).
+- To find which guard fails without stopping at the first, build with
+  `-fweavec-checks=report`: each failed check or guard prints
+  `weavec: runtime check failed: <template> at <file>:<line>:<column>` once
+  per site and the program goes on; `WEAVEC_RT_ABORT=1` aborts at the first.
+  A release the allocator itself rejects (no guard saw it) prints
+  `weavec: invalid release of <pointer>: <why>` and traps.
+  `WEAVEC_RT_REPORT_LOG=<path>` also appends each report line to a file,
+  which is how `scripts/corpus-gate.py` sees the failures of a test that a
+  harness (CTest without `-V`) reports as passed and keeps quiet about.
+- The ASan runs of `scripts/run-cases.py --asan` and of the corpus gate set
+  `ASAN_SYMBOLIZER_PATH` to an `llvm-symbolizer` (from `WEAVEC_LLVM_PREFIX`,
+  the `PATH` or Homebrew, or beside the reference compiler) unless the
+  environment already has one. Without it the sanitizer runtime on macOS
+  runs `atos` against the dying process, which waits for the system's
+  permission to inspect it when a debugger prompt is pending, and every
+  ASan run then hangs until its timeout.
+- `weavec-cc -fno-weavec-runtime` builds without guards, object registration
+  and the allocator, which separates a problem in the runtime from one in
+  the static checks; `-fno-weavec-stack-objects` and
+  `-fno-weavec-global-objects` turn off one kind of registration.
 - For lit failures, `lit -a` prints the full command and output; the test's
   working files are under `build/<preset>/test/<suite>/Output/`.
 

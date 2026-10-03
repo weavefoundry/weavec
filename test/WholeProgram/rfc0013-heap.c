@@ -1,5 +1,5 @@
 // RFC 0013: tool whole-program analysis and the compiler's link step agree.
-// RUN: not %weavec --whole-program %s %S/Inputs/heap13.c -- 2>&1 | FileCheck %s
+// RUN: not %weavec --no-runtime --whole-program %s %S/Inputs/heap13.c -- 2>&1 | FileCheck %s
 // RUN: rm -rf %t && mkdir -p %t
 // RUN: %weavec_cc -c %S/Inputs/heap13.c -o %t/library.o 2>&1 | count 0
 // RUN: %weavec_cc -c %s -o %t/caller.o 2>&1 | count 0
@@ -11,7 +11,7 @@
 // The record's format-30 summaries (RFC 0031 *Summary format 30*, *The
 // unit record*): `heap13_new`'s result owns a fresh 4-byte block in `data`,
 // and `heap13_wrap`'s result holds its argument there.
-// RECORD: "format": 29,
+// RECORD: "format": 30,
 // RECORD: "name": "heap13_new",
 // RECORD: "effects": "{{.*}}store r*.data when=-:- :: fresh family=free extent=4 {{.*}}result classes=nonnull :: fresh family=free extent=8
 // RECORD: "name": "heap13_wrap",

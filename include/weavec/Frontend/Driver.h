@@ -57,7 +57,15 @@ struct DriverOptions {
   /// `-fweavec-zero-init` / `-fno-weavec-zero-init` (§11); unset means on.
   /// Zero-initialisation never applies with `-fweavec-checks=none`.
   std::optional<bool> zeroInit;
-  /// `-fweavec-require=none|checked|proven` (§6.3).
+  /// `-fweavec-runtime` / `-fno-weavec-runtime` (RFC 0032 §7.4): guards,
+  /// object registration and the runtime's allocator; unset means on. The
+  /// driver turns it off for sanitizer builds and freestanding or
+  /// library-less links (RFC 0032 §2.6).
+  std::optional<bool> runtime;
+  /// `-f[no-]weavec-stack-objects`, `-f[no-]weavec-global-objects`.
+  bool stackObjects = true;
+  bool globalObjects = true;
+  /// `-fweavec-require=none|guarded|checked|proven` (§6.3, RFC 0032 §1).
   core::RequireLevel require = core::RequireLevel::None;
   /// `-fweavec-budget=<n>` (§5.5); 0 means unlimited.
   std::uint64_t budget = core::DefaultBudget;
@@ -83,6 +91,15 @@ struct DriverOptions {
   /// Whether the unit is zero-initialised: on unless
   /// `-fno-weavec-zero-init`, and never with `-fweavec-checks=none`.
   [[nodiscard]] bool zeroInitialises() const;
+
+  /// Whether the unit is compiled for the runtime: on unless
+  /// `-fno-weavec-runtime`. The ledger describes the enforcing build, so
+  /// this does not depend on `-fweavec-checks`.
+  [[nodiscard]] bool usesRuntime() const { return runtime.value_or(true); }
+  /// Whether guards are emitted and the runtime linked.
+  [[nodiscard]] bool enforcesGuards() const {
+    return checks != core::ChecksMode::None && usesRuntime();
+  }
 
   /// The frontend options these flags ask for.
   [[nodiscard]] FrontendOptions toFrontendOptions() const;

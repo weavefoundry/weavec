@@ -16,6 +16,7 @@
 #include "weavec/Frontend/DispatchEdges.h"
 #include "weavec/Frontend/LedgerOutput.h"
 #include "weavec/Frontend/LinkStep.h"
+#include "weavec/Frontend/ObjectRegistration.h"
 #include "weavec/Frontend/ProgramAnalysis.h"
 #include "weavec/Frontend/RecordFacts.h"
 #include "weavec/Frontend/RecordPayload.h"
@@ -47,6 +48,11 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/StringSet.h"
+#include "llvm/Object/Archive.h"
+#include "llvm/Object/Binary.h"
+#include "llvm/Object/ObjectFile.h"
+#include "llvm/Object/SymbolicFile.h"
 #include "llvm/Option/Arg.h"
 #include "llvm/Option/ArgList.h"
 #include "llvm/Support/CommandLine.h"
@@ -126,7 +132,7 @@ static bool consumeValueFlag(DriverOptions &options, llvm::StringRef arg,
             core::parseRequireLevel(value))
       options.require = *level;
     else
-      error = invalidValue(arg, value, "none, checked or proven");
+      error = invalidValue(arg, value, "none, guarded, checked or proven");
   } else if (flag == "-fweavec-ledger") {
     options.ledger = value.str();
   } else if (flag == "-fweavec-ledger-format") {
@@ -168,19 +174,23 @@ bool DriverOptions::consume(llvm::StringRef arg, std::string &error) {
     llvm::StringLiteral name;
     bool DriverOptions::*member;
   };
-  static constexpr std::array<Flag, 3> Flags{{
+  static constexpr std::array<Flag, 5> Flags{{
       {.name = "weavec", .member = &DriverOptions::enabled},
       {.name = "weavec-dump-analysis", .member = &DriverOptions::dumpAnalysis},
       {.name = "weavec-link", .member = &DriverOptions::link},
+      {.name = "weavec-stack-objects", .member = &DriverOptions::stackObjects},
+      {.name = "weavec-global-objects",
+       .member = &DriverOptions::globalObjects},
   }};
   // Switches whose default depends on other flags.
   struct Switch {
     llvm::StringLiteral name;
     std::optional<bool> DriverOptions::*member;
   };
-  static constexpr std::array<Switch, 2> Switches{{
+  static constexpr std::array<Switch, 3> Switches{{
       {.name = "weavec-zero-init", .member = &DriverOptions::zeroInit},
       {.name = "weavec-summary", .member = &DriverOptions::summary},
+      {.name = "weavec-runtime", .member = &DriverOptions::runtime},
   }};
   if (const auto *const found = llvm::find_if(
           Flags, [name](const Flag &f) { return name == f.name; });
@@ -214,10 +224,17 @@ FrontendOptions DriverOptions::toFrontendOptions() const {
   options.engine.zeroInit = zeroInit.value_or(true);
   options.engine.budget = budget;
   options.control = control;
-  options.config = core::LedgerConfig{.checks = checks,
-                                      .zeroInit = zeroInitialises(),
-                                      .require = require,
-                                      .budget = budget};
+  options.config = core::LedgerConfig{
+      .checks = checks,
+      .runtime = usesRuntime() ? core::RuntimeUse::On : core::RuntimeUse::Off,
+      .zeroInit = zeroInitialises(),
+      .require = require,
+      .budget = budget};
+  // RFC 0032 §9: a possible finding the build enforces is not a warning.
+  options.dropGuardedPossible = ChecksAreEmitted && enforcesGuards() &&
+                                !control.possibleFindings().value_or(false);
+  options.stackObjects = stackObjects;
+  options.globalObjects = globalObjects;
   options.ledgerOutput = LedgerOutputOptions{
       .path = ledger,
       .format = ledgerFormat,
@@ -237,9 +254,21 @@ llvm::StringRef driverFlagsHelp() {
   -fweavec-zero-init, -fno-weavec-zero-init
       Zero-initialise locals and heap allocations (default: on unless
       -fweavec-checks=none).
-  -fweavec-require=none|checked|proven
-      Make every unresolved facet an error (checked), and every checked one
-      too (proven). Default: none.
+  -fweavec-runtime, -fno-weavec-runtime
+      Guard unresolved facets against the runtime's object table, register
+      stack and global objects, and link the runtime's allocator (default:
+      on; off with sanitizers that replace the allocator, -ffreestanding,
+      -nostdlib and unsupported targets).
+  -fweavec-stack-objects, -fno-weavec-stack-objects
+  -fweavec-global-objects, -fno-weavec-global-objects
+      Register this unit's escaping locals, and its globals, with the
+      runtime (default: on).
+  -fweavec-require=none|guarded|checked|proven
+      Make every unresolved facet an error (guarded), every guarded one too
+      (checked), and every checked one too (proven). Default: none.
+  -Wweavec-possible, -Wno-weavec-possible
+      Report possible temporal findings even where the build guards the
+      facet at run time (default: off in enforcing builds).
   -fweavec-ledger=<path>
       Write the unit ledger (compile) or the program ledger (link). A
       directory (a value ending in '/') receives <object>.ledger.json per
@@ -300,6 +329,7 @@ protected:
     PreludeOptions prelude;
     prelude.mode = preludeModeOf(options.config.checks);
     prelude.zeroInit = options.config.zeroInit;
+    prelude.runtime = options.config.runtime == core::RuntimeUse::On;
     prelude.usableSize = usableSizeQueryFor(compiler.getTarget().getTriple());
     clang::Preprocessor &pp = compiler.getPreprocessor();
     pp.setPredefines(pp.getPredefines() + buildCheckPrelude(prelude));
@@ -339,10 +369,13 @@ protected:
     if (isCodeGenAction(compiler.getFrontendOpts().ProgramAction)) {
       const bool checks = emitsChecks(compiler);
       clang::DiagnosticsEngine &diagnostics = compiler.getDiagnostics();
-      return std::make_unique<DeferredCodeGenConsumer>(
-          std::move(inner),
-          [this, &diagnostics, checks, planned, analysis = std::move(analysis)](
-              clang::ASTContext &context, clang::Sema &sema) {
+      // The consumer the hook hands the declarations it adds to: itself,
+      // which records them behind the unit's own (§10.5).
+      auto self = std::make_shared<clang::ASTConsumer *>(nullptr);
+      auto deferred = std::make_unique<DeferredCodeGenConsumer>(
+          std::move(inner), [this, &diagnostics, checks, planned, self,
+                             analysis = std::move(analysis)](
+                                clang::ASTContext &context, clang::Sema &sema) {
             analysis->HandleTranslationUnit(context);
             // §10.5 step 2: the checks of a unit without errors.
             if (!checks || diagnostics.hasErrorOccurred())
@@ -354,7 +387,20 @@ protected:
               emitter.emit(*planned->ledger);
             if (planned->zeroInit)
               emitter.lowerZeroInit(*planned->zeroInit);
+            // RFC 0032 §4, §5: the unit's stack and global objects.
+            if (options.config.runtime == core::RuntimeUse::On &&
+                planned->ledger && planned->ledger->sites) {
+              emitter.registerObjects(
+                  planObjects(context, *planned->ledger->sites,
+                              core::LibrarySpec::shipped(),
+                              ObjectOptions{.stack = options.stackObjects,
+                                            .globals = options.globalObjects}));
+              for (clang::Decl *added : emitter.newTopLevelDecls())
+                (*self)->HandleTopLevelDecl(clang::DeclGroupRef(added));
+            }
           });
+      *self = deferred.get();
+      return deferred;
     }
     // RFC 0030, sections 10.5 and 10.6 (end).
     std::vector<std::unique_ptr<clang::ASTConsumer>> consumers;
@@ -1054,8 +1100,13 @@ static bool runLinkStep(const clang::driver::Compilation &compilation,
   program.keepLedgers(compose);
   std::vector<std::optional<std::size_t>> analysed(inputs.size());
   std::size_t added = 0;
+  std::set<core::RuntimeUse> runtimeUses;
+  std::string firstGuarded;
   for (std::size_t i = 0; i < inputs.size(); ++i) {
     const record::RecordHeader &header = inputs[i].record.header;
+    runtimeUses.insert(header.config.runtime);
+    if (firstGuarded.empty() && header.config.runtime == core::RuntimeUse::On)
+      firstGuarded = inputs[i].object;
     const record::Payload &payload = members[i].payload;
     if ((compose || needsAnalysis(members, i, facts->slots)) &&
         !header.command.empty()) {
@@ -1123,6 +1174,14 @@ static bool runLinkStep(const clang::driver::Compilation &compilation,
           allocatorDefinedBy(members))
     llvm::errs() << "weavec-cc: warning: "
                  << allocatorWarning(members, *allocator, cwd) << '\n';
+  // RFC 0032 §2.6: guards compiled into a unit ask an object table the link
+  // leaves without its allocator.
+  if (!weavec.usesRuntime() && !firstGuarded.empty())
+    llvm::errs() << "weavec-cc: note: linking without the WeaveC runtime, but '"
+                 << firstGuarded
+                 << "' was compiled with it: the heap is untracked, its "
+                    "guards pass on it and releases are not validated "
+                    "(RFC 0032)\n";
 
   // Step 6.
   bool written = true;
@@ -1142,9 +1201,16 @@ static bool runLinkStep(const clang::driver::Compilation &compilation,
                            .cwd = cwd});
     applyDiagnosticControl(ledger, weavec.control);
     std::string error;
-    written = emitProgramLedger(ledger, linkOutput(link), cwd,
-                                weavec.toFrontendOptions().config, output,
-                                llvm::errs(), &error);
+    // RFC 0032 §10: each unit's rows follow the flags it was compiled with;
+    // the program's `config.runtime` says whether they all agree. A link
+    // without the runtime has no allocator to guard against, whatever its
+    // units were compiled with: the program's guards are not enforced.
+    core::LedgerConfig programConfig = weavec.toFrontendOptions().config;
+    if (programConfig.runtime != core::RuntimeUse::Off && !runtimeUses.empty())
+      programConfig.runtime = runtimeUses.size() > 1 ? core::RuntimeUse::Mixed
+                                                     : *runtimeUses.begin();
+    written = emitProgramLedger(ledger, linkOutput(link), cwd, programConfig,
+                                output, llvm::errs(), &error);
     if (!written)
       llvm::errs() << "weavec-cc: error: cannot write the WeaveC program "
                       "ledger: "
@@ -1231,6 +1297,7 @@ static int printPrelude(const DriverOptions &weavec,
   PreludeOptions options;
   options.mode = preludeMode(weavec.checks);
   options.zeroInit = weavec.zeroInitialises();
+  options.runtime = weavec.usesRuntime();
   options.usableSize =
       usableSizeQueryFor(llvm::Triple(llvm::Triple::normalize(triple)));
   options.form = weavec.printPrelude.value_or(PreludeForm::Inline);
@@ -1296,9 +1363,58 @@ static void dropMissingLtoLibrary(clang::driver::Compilation &compilation) {
   }
 }
 
-/// RFC 0030 §10.7, §10.9: appends the runtime archives to every link job.
-/// The helper archive is host code, so it is added only when the link
-/// targets the host; report mode cannot do without its runtime.
+/// RFC 0032 §2.6: why the unit cannot use the runtime, from the command
+/// line alone; empty when it can.
+static std::string runtimeObstacle(llvm::ArrayRef<const char *> args) {
+  std::string triple = llvm::sys::getDefaultTargetTriple();
+  for (std::size_t i = 1; i < args.size(); ++i) {
+    llvm::StringRef arg = args[i];
+    if (arg == "-ffreestanding")
+      return "-ffreestanding has no hosted C library";
+    if (arg == "-nostdlib" || arg == "-nodefaultlibs" || arg == "-nolibc")
+      return arg.str() + " links no C library";
+    if (arg.starts_with("-fsanitize=")) {
+      llvm::SmallVector<llvm::StringRef, 8> kinds;
+      arg.drop_front(sizeof("-fsanitize=") - 1).split(kinds, ',');
+      for (const llvm::StringRef kind : kinds)
+        if (kind == "address" || kind == "hwaddress" || kind == "memory" ||
+            kind == "thread" || kind == "leak" || kind == "kernel-address")
+          return "-fsanitize=" + kind.str() + " replaces the allocator";
+    }
+    if (arg.consume_front("--target="))
+      triple = arg.str();
+    else if ((arg == "-target" || arg == "--target") && i + 1 < args.size())
+      triple = args[++i];
+  }
+  const llvm::Triple target(llvm::Triple::normalize(triple));
+  if (!target.isArch64Bit() || !(target.isOSDarwin() || target.isOSLinux()))
+    return "the runtime supports 64-bit Darwin and Linux targets";
+  return {};
+}
+
+/// The archives of an enforcing link, and whether the link carries the
+/// runtime's allocator.
+namespace {
+struct RuntimeArchives {
+  std::string helpers;
+  std::string runtime;
+  std::string allocator;
+};
+} // namespace
+
+/// RFC 0030 §10.7, §10.9 and RFC 0032 §7: adds the runtime archives to every
+/// link job, before the first library on its line: a linker takes a symbol
+/// from the first library that defines it, and scans an archive only for
+/// what is undefined so far.
+///
+///   libweavec_alloc.a  the image's allocator (RFC 0032 §2.5), forced in by
+///                      `-u malloc` unless the runtime is off
+///   libweavec_chk.a    out-of-line helpers, for units built with a
+///                      precompiled header or modules
+///   libweavec_rt.a     the object table, the guards and the reports
+///
+/// The archives are host code, so they are added only when the link targets
+/// the host; report mode cannot do without its runtime.
 static bool addRuntimeLibraries(clang::driver::Compilation &compilation,
                                 const DriverOptions &weavec, const char *argv0,
                                 void *mainAddress) {
@@ -1307,34 +1423,200 @@ static bool addRuntimeLibraries(clang::driver::Compilation &compilation,
   const bool native =
       target.getArch() == host.getArch() && target.getOS() == host.getOS();
   const bool report = weavec.checks == core::ChecksMode::Report;
-  std::vector<std::string> archives;
+  RuntimeArchives archives;
   if (native) {
-    std::string helpers =
+    archives.helpers =
         findRuntimeLibrary(argv0, mainAddress, "libweavec_chk.a");
-    if (!helpers.empty())
-      archives.push_back(std::move(helpers));
+    archives.runtime = findRuntimeLibrary(argv0, mainAddress, "libweavec_rt.a");
+    if (weavec.enforcesGuards())
+      archives.allocator =
+          findRuntimeLibrary(argv0, mainAddress, "libweavec_alloc.a");
   }
-  if (report) {
-    std::string runtime =
-        findRuntimeLibrary(argv0, mainAddress, "libweavec_rt.a");
-    if (runtime.empty()) {
-      llvm::errs() << "weavec-cc: error: cannot find libweavec_rt.a, which "
-                      "-fweavec-checks=report links\n";
-      return false;
-    }
-    archives.push_back(std::move(runtime));
+  if (archives.runtime.empty() && (report || weavec.enforcesGuards())) {
+    if (!native && !report)
+      return true;
+    llvm::errs() << "weavec-cc: error: cannot find libweavec_rt.a, which "
+                 << (report ? "-fweavec-checks=report links"
+                            : "an enforcing link carries (-fno-weavec-runtime "
+                              "builds without it)")
+                 << '\n';
+    return false;
   }
-  if (archives.empty())
+  if (archives.helpers.empty() && archives.runtime.empty())
     return true;
+  const auto owned = [&compilation](const std::string &text) {
+    return compilation.getArgs().MakeArgString(text);
+  };
   for (clang::driver::Command &job : compilation.getJobs()) {
     if (job.getSource().getKind() != clang::driver::Action::LinkJobClass)
       continue;
-    llvm::opt::ArgStringList args = job.getArguments();
-    for (const std::string &archive : archives)
-      args.push_back(compilation.getArgs().MakeArgString(archive));
+    const llvm::opt::ArgStringList &old = job.getArguments();
+    llvm::opt::ArgStringList added;
+    if (!archives.allocator.empty()) {
+      added.push_back("-u");
+      added.push_back(target.isOSDarwin() ? "_malloc" : "malloc");
+      added.push_back(owned(archives.allocator));
+    }
+    if (!archives.helpers.empty())
+      added.push_back(owned(archives.helpers));
+    if (!archives.runtime.empty())
+      added.push_back(owned(archives.runtime));
+    // The runtime's thread-local stack list and its fork handlers.
+    if (!archives.runtime.empty() && target.isOSLinux() && !target.isAndroid())
+      added.push_back("-lpthread");
+    // The first library of the line: `-l<name>`, which Darwin's
+    // `-lto_library <path>` is not.
+    const auto *const firstLibrary = llvm::find_if(old, [](const char *arg) {
+      const llvm::StringRef text(arg);
+      return text.starts_with("-l") && text != "-lto_library";
+    });
+    llvm::opt::ArgStringList args(old.begin(), firstLibrary);
+    args.append(added.begin(), added.end());
+    args.append(firstLibrary, old.end());
     job.replaceArguments(args);
   }
   return true;
+}
+
+/// Calls `visit(file)` for the object at `path`, or for each object member of
+/// the archive there, until one answers true. A linked image (a shared
+/// library, an executable) is not visited: its definitions are its own.
+template <typename Visit>
+static bool anyRelocatableObject(const std::string &path, const Visit &visit) {
+  if (!llvm::sys::fs::is_regular_file(path))
+    return false;
+  llvm::Expected<llvm::object::OwningBinary<llvm::object::Binary>> binary =
+      llvm::object::createBinary(path);
+  if (!binary) {
+    llvm::consumeError(binary.takeError());
+    return false;
+  }
+  if (const auto *file =
+          llvm::dyn_cast<llvm::object::SymbolicFile>(binary->getBinary())) {
+    const auto *object = llvm::dyn_cast<llvm::object::ObjectFile>(file);
+    if (object != nullptr && !object->isRelocatableObject())
+      return false;
+    return visit(*file);
+  }
+  const auto *archive =
+      llvm::dyn_cast<llvm::object::Archive>(binary->getBinary());
+  if (archive == nullptr)
+    return false;
+  bool found = false;
+  llvm::Error error = llvm::Error::success();
+  for (const llvm::object::Archive::Child &child : archive->children(error)) {
+    llvm::Expected<std::unique_ptr<llvm::object::Binary>> member =
+        child.getAsBinary();
+    if (!member) {
+      llvm::consumeError(member.takeError());
+      continue;
+    }
+    if (const auto *file =
+            llvm::dyn_cast<llvm::object::SymbolicFile>(member->get());
+        file != nullptr && visit(*file)) {
+      found = true;
+      break;
+    }
+  }
+  llvm::consumeError(std::move(error));
+  return found;
+}
+
+/// Calls `visit(name, weak)` for each global definition of `file` until one
+/// answers true.
+template <typename Visit>
+static bool anyGlobalDefinition(const llvm::object::SymbolicFile &file,
+                                const Visit &visit) {
+  for (const llvm::object::BasicSymbolRef &symbol : file.symbols()) {
+    llvm::Expected<std::uint32_t> flags = symbol.getFlags();
+    if (!flags) {
+      llvm::consumeError(flags.takeError());
+      continue;
+    }
+    if ((*flags & llvm::object::BasicSymbolRef::SF_Undefined) != 0 ||
+        (*flags & llvm::object::BasicSymbolRef::SF_Global) == 0)
+      continue;
+    std::string name;
+    llvm::raw_string_ostream os(name);
+    if (llvm::Error error = symbol.printName(os)) {
+      llvm::consumeError(std::move(error));
+      continue;
+    }
+    if (visit(name, (*flags & llvm::object::BasicSymbolRef::SF_Weak) != 0))
+      return true;
+  }
+  return false;
+}
+
+/// RFC 0032 §2.6: the first input of a link, an object or a member of an
+/// archive, that defines the allocator itself; empty when none does. The
+/// allocator is what libweavec_alloc.a defines strongly: a second definition
+/// of one of those could not be linked with it.
+static std::string allocatorDefinedBy(const clang::driver::Command &link,
+                                      const std::string &ownAllocator) {
+  llvm::StringSet<> allocator;
+  (void)anyRelocatableObject(
+      ownAllocator, [&](const llvm::object::SymbolicFile &file) {
+        return anyGlobalDefinition(file,
+                                   [&](const std::string &name, bool weak) {
+                                     if (!weak)
+                                       allocator.insert(name);
+                                     return false;
+                                   });
+      });
+  if (allocator.empty())
+    return {};
+  for (const clang::driver::InputInfo &input : link.getInputInfos()) {
+    if (!input.isFilename())
+      continue;
+    const std::string path = input.getFilename();
+    if (path == ownAllocator)
+      continue;
+    const bool defines =
+        anyRelocatableObject(path, [&](const llvm::object::SymbolicFile &file) {
+          return anyGlobalDefinition(
+              file, [&](const std::string &name, bool /*weak*/) {
+                return allocator.contains(name);
+              });
+        });
+    if (defines)
+      return path;
+  }
+  return {};
+}
+
+/// RFC 0032 §2.6: a program that defines the allocator keeps it. Takes
+/// libweavec_alloc.a (and the `-u` that forces it) off the link line, and
+/// says once what that means.
+static void
+dropAllocatorIfDefined(const clang::driver::Compilation &compilation,
+                       clang::driver::Command &link) {
+  const llvm::opt::ArgStringList &old = link.getArguments();
+  const auto *const own = llvm::find_if(old, [](const char *arg) {
+    return llvm::sys::path::filename(arg) == "libweavec_alloc.a";
+  });
+  if (own == old.end())
+    return;
+  const std::string definer = allocatorDefinedBy(link, *own);
+  if (definer.empty())
+    return;
+  llvm::opt::ArgStringList args;
+  for (const auto *it = old.begin(); it != old.end(); ++it) {
+    // `-u <malloc>` is the two arguments before the archive.
+    if (it + 2 == own && llvm::StringRef(*it) == "-u") {
+      ++it;
+      continue;
+    }
+    if (it == own)
+      continue;
+    args.push_back(*it);
+  }
+  link.replaceArguments(args);
+  (void)compilation;
+  llvm::errs() << "weavec-cc: note: '" << definer
+               << "' defines the allocator, so the WeaveC runtime's is not "
+                  "linked: the heap is untracked, guards pass on it and "
+                  "releases are not validated (RFC 0032)\n";
 }
 
 int runCc1(llvm::ArrayRef<const char *> argv, const char *argv0) {
@@ -1388,6 +1670,17 @@ int runDriver(llvm::ArrayRef<const char *> argv, void *mainAddress) {
   }
   if (weavec.printPrelude)
     return printPrelude(weavec, clangArgs);
+  // RFC 0032 §2.6: builds the runtime cannot serve go on without it, as
+  // `-fno-weavec-runtime` would; the link says so.
+  std::string runtimeOff;
+  if (weavec.enabled && weavec.checks != core::ChecksMode::None &&
+      !weavec.runtime) {
+    runtimeOff = runtimeObstacle(clangArgs);
+    if (!runtimeOff.empty()) {
+      weavec.runtime = false;
+      weavec.spellings.emplace_back("-fno-weavec-runtime");
+    }
+  }
 
   const auto add = [&](std::string arg) {
     owned.push_back(std::move(arg));
@@ -1449,13 +1742,18 @@ int runDriver(llvm::ArrayRef<const char *> argv, void *mainAddress) {
       return 1;
     }
   }
-  // RFC 0030 §10.7, §10.9: report mode links libweavec_rt.a, and every
-  // checked link libweavec_chk.a, whose out-of-line helpers only units built
-  // with a precompiled header or modules call (an archive member is linked
-  // only when referenced).
+  // RFC 0030 §10.7, §10.9 and RFC 0032 §7: every enforcing link carries the
+  // runtime archives (an archive member is linked only when referenced).
   if (weavec.enabled && weavec.checks != core::ChecksMode::None &&
       !addRuntimeLibraries(*compilation, weavec, argv[0], mainAddress))
     return 1;
+  const bool links = llvm::any_of(
+      compilation->getJobs(), [](const clang::driver::Command &job) {
+        return job.getSource().getKind() == clang::driver::Action::LinkJobClass;
+      });
+  if (!runtimeOff.empty() && links)
+    llvm::errs() << "weavec-cc: note: building without the WeaveC runtime ("
+                 << runtimeOff << "): guardable facets stay unresolved\n";
   dropMissingLtoLibrary(*compilation);
   if (printJobsOnly) {
     compilation->getJobs().Print(llvm::errs(), "\n", /*Quote=*/true);
@@ -1472,9 +1770,12 @@ int runDriver(llvm::ArrayRef<const char *> argv, void *mainAddress) {
   }
 
   int status = 0;
-  for (const clang::driver::Command &job : compilation->getJobs()) {
+  for (clang::driver::Command &job : compilation->getJobs()) {
     const bool isLink =
         job.getSource().getKind() == clang::driver::Action::LinkJobClass;
+    // The objects exist now: a program-defined allocator is visible.
+    if (isLink && weavec.enabled)
+      dropAllocatorIfDefined(*compilation, job);
     if (isLink && weavec.enabled && weavec.link &&
         !runLinkStep(*compilation, job, weavec, executable.c_str())) {
       status = 1;

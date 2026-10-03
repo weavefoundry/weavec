@@ -1,9 +1,9 @@
 ---
 title: Command-line reference
-description: weavec-cc and weavec options for runtime checks, zero-initialisation, require levels, the ledger, budgets and diagnostic controls.
+description: weavec-cc and weavec options for runtime checks, the runtime and its guards, zero-initialisation, require levels, the ledger, budgets and diagnostic controls.
 ---
 
-WeaveC has two tools. `weavec-cc` is Clang's compiler driver with WeaveC inside: it analyses each file as it compiles it, inserts runtime checks, and analyses the program again when it links. `weavec` is a libTooling analysis tool: it runs the same analysis and writes the same ledger without producing objects. The options below are specified by [RFC 0030](/rfcs/0030-prove-or-trap/) §16; `weavec --help` and `weavec-cc --help-weavec` list the ones your build accepts.
+WeaveC has two tools. `weavec-cc` is Clang's compiler driver with WeaveC inside: it analyses each file as it compiles it, inserts runtime checks and guards, analyses the program again when it links, and links the runtime. `weavec` is a libTooling analysis tool: it runs the same analysis and writes the same ledger without producing objects. The options below are specified by [RFC 0030](/rfcs/0030-prove-or-trap/) §16 and [RFC 0032](/rfcs/0032-runtime-enforcement/) §7.4; `weavec --help` and `weavec-cc --help-weavec` list the ones your build accepts.
 
 ## Invocation
 
@@ -18,78 +18,145 @@ weavec --whole-program [options] -p build
 
 ## weavec-cc
 
-| Flag                                                       | Default                          | Meaning                                                                                                                                                      |
-| ---------------------------------------------------------- | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `-fweavec` / `-fno-weavec`                                 | on                               | Analyse, check and zero-initialise. Off compiles as plain Clang.                                                                                             |
-| `-fweavec-checks=trap\|report\|verify\|none`               | `trap`                           | What unproven spatial and null obligations become; see [modes](#check-modes).                                                                                |
-| `-fweavec-zero-init` / `-fno-weavec-zero-init`             | on unless checks are `none`      | Zero-initialise locals (`-ftrivial-auto-var-init=zero`) and the standard allocation calls.                                                                   |
-| `-fweavec-require=none\|checked\|proven`                   | `none`                           | Make unresolved facets (`checked`), or unresolved and checked facets (`proven`), errors; see [require levels](#require-levels).                              |
-| `-fweavec-ledger=<path>`                                   | unset                            | Write the unit ledger when compiling and the program ledger when linking. A value ending in `/` or naming a directory writes one file per unit and per link. |
-| `-fweavec-ledger-format=json\|sarif`                       | `json`                           | The ledger's format.                                                                                                                                         |
-| `-fweavec-summary` / `-fno-weavec-summary`                 | off, on when a ledger is written | Print the one-line summary on stderr.                                                                                                                        |
-| `-fweavec-budget=<n>`                                      | 50,000 (see [budgets](#budgets)) | Per-function limit on analysed CFG block transfers; `0` means unlimited.                                                                                     |
-| `-fweavec-link` / `-fno-weavec-link`                       | on                               | Run the whole-program step when linking.                                                                                                                     |
-| `-fweavec-print-prelude`                                   | off                              | Print the check helpers for the current `-fweavec-checks` mode and exit.                                                                                     |
-| `-fweavec-dump-analysis`, `-fweavec-analysis-stats=<path>` | off                              | Debugging output: the inferred facts (unstable format), and work statistics as JSON.                                                                         |
+| Flag                                                       | Default                          | Meaning                                                                                                                                                                                                                |
+| ---------------------------------------------------------- | -------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `-fweavec` / `-fno-weavec`                                 | on                               | Analyse, check and zero-initialise. Off compiles as plain Clang.                                                                                                                                                       |
+| `-fweavec-checks=trap\|report\|verify\|none`               | `trap`                           | What unproven obligations become; see [modes](#check-modes).                                                                                                                                                           |
+| `-fweavec-zero-init` / `-fno-weavec-zero-init`             | on unless checks are `none`      | Zero-initialise locals (`-ftrivial-auto-var-init=zero`) and the standard allocation calls.                                                                                                                             |
+| `-fweavec-runtime` / `-fno-weavec-runtime`                 | on                               | Guard unresolved facets against the runtime's object table, register stack and global objects, and link the runtime's allocator. Nothing is emitted or linked when checks are `none`; see [the runtime](#the-runtime). |
+| `-fweavec-stack-objects` / `-fno-weavec-stack-objects`     | on                               | Register this unit's locals whose address escapes with the runtime.                                                                                                                                                    |
+| `-fweavec-global-objects` / `-fno-weavec-global-objects`   | on                               | Register this unit's globals with the runtime.                                                                                                                                                                         |
+| `-fweavec-require=none\|guarded\|checked\|proven`          | `none`                           | Make unresolved facets (`guarded`), guarded facets too (`checked`), and checked facets too (`proven`), errors; see [require levels](#require-levels).                                                                  |
+| `-fweavec-ledger=<path>`                                   | unset                            | Write the unit ledger when compiling and the program ledger when linking. A value ending in `/` or naming a directory writes one file per unit and per link.                                                           |
+| `-fweavec-ledger-format=json\|sarif`                       | `json`                           | The ledger's format.                                                                                                                                                                                                   |
+| `-fweavec-summary` / `-fno-weavec-summary`                 | off, on when a ledger is written | Print the one-line summary on stderr.                                                                                                                                                                                  |
+| `-fweavec-budget=<n>`                                      | 50,000 (see [budgets](#budgets)) | Per-function limit on analysed CFG block transfers; `0` means unlimited.                                                                                                                                               |
+| `-fweavec-link` / `-fno-weavec-link`                       | on                               | Run the whole-program step when linking.                                                                                                                                                                               |
+| `-fweavec-print-prelude`                                   | off                              | Print the check helpers for the current `-fweavec-checks` mode and exit.                                                                                                                                               |
+| `-fweavec-dump-analysis`, `-fweavec-analysis-stats=<path>` | off                              | Debugging output: the inferred facts (unstable format), and work statistics as JSON.                                                                                                                                   |
 
 An unknown `-fweavec-*` flag is an error.
 
 ## weavec
 
-| Option                              | Meaning                                                                                                                                               |
-| ----------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--whole-program`                   | Analyse the given sources, or every source of the compilation database, as one program.                                                               |
-| `-p <dir>`                          | Read `compile_commands.json` from `<dir>`.                                                                                                            |
-| `--ledger=<path>`                   | Write the ledger; a directory (a value ending in `/`) receives one ledger per source.                                                                 |
-| `--ledger-format=json\|sarif`       | The ledger's format (default `json`).                                                                                                                 |
-| `--require=none\|checked\|proven`   | As `-fweavec-require`.                                                                                                                                |
-| `--budget=<n>`                      | As `-fweavec-budget`.                                                                                                                                 |
-| `--no-zero-init`                    | Model a build with `-fno-weavec-zero-init`.                                                                                                           |
-| `--dump-analysis`                   | Print the analysis engine's states and the summaries it inferred (unstable format).                                                                   |
-| `--dump-kinds`                      | Print each unit's pointer kinds, must-access requirements, store groups, field candidates and function-pointer slots instead of analysing (unstable). |
-| `--dump-record=<path>`              | Print the unit record at `<path>` (an `<object>.weavec` that `weavec-cc` wrote) as JSON and exit; a stale record is an error that says why.           |
-| `--analysis-stats=<path>`           | Write analysis work statistics as JSON.                                                                                                               |
-| `--extra-arg`, `--extra-arg-before` | Add a compiler argument to every command.                                                                                                             |
+| Option                                     | Meaning                                                                                                                                               |
+| ------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--whole-program`                          | Analyse the given sources, or every source of the compilation database, as one program.                                                               |
+| `-p <dir>`                                 | Read `compile_commands.json` from `<dir>`.                                                                                                            |
+| `--ledger=<path>`                          | Write the ledger; a directory (a value ending in `/`) receives one ledger per source.                                                                 |
+| `--ledger-format=json\|sarif`              | The ledger's format (default `json`).                                                                                                                 |
+| `--require=none\|guarded\|checked\|proven` | As `-fweavec-require`.                                                                                                                                |
+| `--budget=<n>`                             | As `-fweavec-budget`.                                                                                                                                 |
+| `--no-zero-init`                           | Model a build with `-fno-weavec-zero-init`.                                                                                                           |
+| `--no-runtime`                             | Model a build with `-fno-weavec-runtime`: nothing is guarded.                                                                                         |
+| `--dump-analysis`                          | Print the analysis engine's states and the summaries it inferred (unstable format).                                                                   |
+| `--dump-kinds`                             | Print each unit's pointer kinds, must-access requirements, store groups, field candidates and function-pointer slots instead of analysing (unstable). |
+| `--dump-record=<path>`                     | Print the unit record at `<path>` (an `<object>.weavec` that `weavec-cc` wrote) as JSON and exit; a stale record is an error that says why.           |
+| `--analysis-stats=<path>`                  | Write analysis work statistics as JSON.                                                                                                               |
+| `--extra-arg`, `--extra-arg-before`        | Add a compiler argument to every command.                                                                                                             |
 
-The `weavec` ledger models a `weavec-cc` build with the default checks. `weavec` always prints the summary line, and it inserts no checks: its "checkable (not enforced)" facets are the ones `weavec-cc` would check.
+The `weavec` ledger models a `weavec-cc` build with the default checks and the runtime. `weavec` always prints the summary line, and it inserts no checks or guards: its "checkable (not enforced)" and "guardable (not enforced)" facets are the ones `weavec-cc` would check and guard. Because it enforces nothing, it prints every possible temporal finding as a warning.
 
 ## Check modes
 
-| `-fweavec-checks=` | Unproven spatial and null facets                    | Proven facets                                        | Zero-init default | Guarantee                     |
-| ------------------ | --------------------------------------------------- | ---------------------------------------------------- | ----------------- | ----------------------------- |
-| `trap` (default)   | checked; a failed check traps                       | nothing                                              | on                | yes                           |
-| `report`           | checked; a failed check prints a line and continues | nothing                                              | on                | only with `WEAVEC_RT_ABORT=1` |
-| `verify`           | checked; a failed check traps                       | checked too where expressible (`weavec.proven` trap) | on                | yes                           |
-| `none`             | nothing                                             | nothing                                              | off               | no                            |
+| `-fweavec-checks=` | Unproven facets                                                       | Proven facets                                                | Zero-init default | Runtime    | Guarantee                     |
+| ------------------ | --------------------------------------------------------------------- | ------------------------------------------------------------ | ----------------- | ---------- | ----------------------------- |
+| `trap` (default)   | checked or guarded; a failed check or guard traps                     | nothing                                                      | on                | linked     | yes                           |
+| `report`           | checked or guarded; a failure prints a line and the program continues | nothing                                                      | on                | linked     | only with `WEAVEC_RT_ABORT=1` |
+| `verify`           | checked or guarded; a failed check or guard traps                     | checked or guarded too where possible (`weavec.proven` trap) | on                | linked     | yes                           |
+| `none`             | nothing                                                               | nothing                                                      | off               | not linked | no                            |
 
-A trap ends the program with `SIGTRAP` or `SIGILL`, depending on the target. Report mode prints `weavec: runtime check failed: <template> at <file>:<line>:<column>` once per site, where the template is `nonnull`, `index`, `span`, `len`, `disjoint`, `assert` or `violation`, and links `libweavec_rt.a`; with `WEAVEC_RT_ABORT=1` it aborts instead. Verify mode is the soundness monitor: a `weavec.proven` trap means the analysis proved something false. Temporal facets are never checked at run time in any mode.
+A trap ends the program with `SIGTRAP` or `SIGILL`, depending on the target. Report mode prints `weavec: runtime check failed: <template> at <file>:<line>:<column>` once per site and continues; with `WEAVEC_RT_ABORT=1` it aborts instead. The template is one of ten: the checks `nonnull`, `index`, `span`, `len`, `disjoint`, `assert` and `violation`, and the guards `object`, `live` and `release`. After a failed `release` guard in report mode the allocator ignores the release. Verify mode is the soundness monitor: a `weavec.proven` trap means the analysis proved something false. With the runtime it also monitors proven temporal facets, and proven spatial facets that have no static check, through guards.
 
-Precompiled headers and modules keep working: the check helpers are then declared rather than injected, and `weavec-cc` links `libweavec_chk.a`, which defines them out of line. Comparing a function pointer with `malloc` sees the zero-initialising wrapper and becomes false; `-fno-weavec-zero-init` avoids it.
+Precompiled headers and modules keep working: the check helpers are then declared rather than injected, and `weavec-cc` links `libweavec_chk.a`, which defines them out of line; a function compiled from a precompiled header registers no stack objects. Comparing a function pointer with `malloc` sees the zero-initialising wrapper and becomes false; `-fno-weavec-zero-init` avoids it.
+
+## The runtime
+
+Every link in the `trap`, `report` and `verify` modes adds `libweavec_rt.a` and `libweavec_alloc.a` before the system libraries (and `-lpthread` on Linux). The first holds the object table and the guards' entry points; the second defines `malloc`, `calloc`, `realloc`, `free` and the other standard allocation functions for the image. With them, a spatial or temporal facet that the analysis leaves unresolved, at an operation with a pointer operand, becomes `guarded`: a guard looks the pointer up and traps if the access leaves its object or the object is dead. [Safety guarantees](/reference/guarantees/#the-runtime) states what a guard promises and what the runtime costs.
+
+| Guard     | Placed at                                                                                                   | Fails when                                                                                                  |
+| --------- | ----------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `object`  | a dereference, a subscript, an argument of a call that needs a known number of bytes or a terminated string | the pointer points into a tracked object and the bytes accessed do not lie inside it, or the object is dead |
+| `live`    | a dereference, a subscript, a pointer argument of a library call                                            | the pointer points into a dead tracked object                                                               |
+| `release` | the argument of `free` and of the other heap releasers                                                      | the pointer is not null, not the start of a live heap object, and points into a tracked object              |
+
+A guard passes on a pointer the runtime does not track.
+
+| Flag or variable                             | Meaning                                                                                                                                                                                       |
+| -------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `-fno-weavec-runtime`                        | When compiling: no guards and no registration; facets that would be guarded stay `unresolved`, and the ledger's `config.runtime` is `false`. When linking: `libweavec_alloc.a` is not linked. |
+| `-fno-weavec-stack-objects`                  | Do not register this unit's escaping locals. Guards pass on pointers into them.                                                                                                               |
+| `-fno-weavec-global-objects`                 | Do not register this unit's globals. Guards pass on pointers into them.                                                                                                                       |
+| `-Wweavec-possible`, `-Wno-weavec-possible`  | Print possible temporal findings even where the facet is guarded. Off by default in enforcing builds with the runtime; otherwise they are always printed.                                     |
+| `WEAVEC_RT_QUARANTINE=<bytes>` (environment) | The quarantine's budget: how many bytes of freed heap blocks are held before the oldest are reused. Default 64 MiB (67108864); `0` reuses blocks at once.                                     |
+| `WEAVEC_RT_STATS=1` (environment)            | At exit, print the runtime's counters on stderr, one line each, as `weavec: runtime: <n> <what>`.                                                                                             |
+| `WEAVEC_RT_ABORT=1` (environment)            | In report mode, abort at the first failed check or guard.                                                                                                                                     |
+| `WEAVEC_RT_REPORT_LOG=<path>` (environment)  | In report mode, also append every report line to this file. For test harnesses that keep a passing test's output to themselves.                                                               |
+
+The counters of `WEAVEC_RT_STATS=1` are allocations, releases, recycled slots, huge blocks, lookups (and of those heap, stack, global and untracked), range requests, ranges kept and stack objects entered. They are not synchronised between threads.
+
+`weavec-cc` builds without the runtime, as `-fno-weavec-runtime` does, when neither `-fweavec-runtime` nor `-fno-weavec-runtime` was given and the command line has `-ffreestanding`, `-nostdlib`, `-nodefaultlibs` or `-nolibc`, a sanitizer that replaces the allocator (`-fsanitize=address`, `hwaddress`, `memory`, `thread`, `leak` or `kernel-address`), or a target other than 64-bit Darwin or Linux. The link prints one of:
+
+```text
+weavec-cc: note: building without the WeaveC runtime (-fsanitize=address replaces the allocator): guardable facets stay unresolved
+weavec-cc: note: building without the WeaveC runtime (-nostdlib links no C library): guardable facets stay unresolved
+weavec-cc: note: building without the WeaveC runtime (-ffreestanding has no hosted C library): guardable facets stay unresolved
+weavec-cc: note: building without the WeaveC runtime (the runtime supports 64-bit Darwin and Linux targets): guardable facets stay unresolved
+```
+
+When a link input defines `malloc`, `calloc`, `realloc` or `free`, `libweavec_alloc.a` is left off the link and the program keeps its allocator:
+
+```text
+weavec-cc: note: '<input>' defines the allocator, so the WeaveC runtime's is not linked: the heap is untracked, guards pass on it and releases are not validated (RFC 0032)
+```
+
+A link without the runtime whose inputs were compiled with it keeps their guards but leaves them no allocator to ask. The link prints this, and the program ledger records `"runtime": false` and counts those facets as "guardable (not enforced)":
+
+```text
+weavec-cc: note: linking without the WeaveC runtime, but '<input>' was compiled with it: the heap is untracked, its guards pass on it and releases are not validated (RFC 0032)
+```
+
+A program's own definition of another allocation function (`posix_memalign`, `reallocarray`, `malloc_usable_size` and the like) over `malloc` replaces the runtime's and keeps the arena. A `free` that reaches the runtime's allocator without a guard, for example from an object another compiler built, is still validated: an invalid one stops the program with `weavec: invalid release of <address>: <why>` on stderr.
 
 ## Require levels
 
-| Level     | Error for each facet that is | Diagnostic                                    |
-| --------- | ---------------------------- | --------------------------------------------- |
-| `none`    | nothing (the default)        |                                               |
-| `checked` | unresolved                   | `unresolved-operation`                        |
-| `proven`  | unresolved or checked        | `unresolved-operation`, `unchecked-operation` |
+| Level     | Error for each facet that is   | Diagnostic                                    |
+| --------- | ------------------------------ | --------------------------------------------- |
+| `none`    | nothing (the default)          |                                               |
+| `guarded` | unresolved                     | `unresolved-operation`                        |
+| `checked` | unresolved or guarded          | `unresolved-operation`                        |
+| `proven`  | unresolved, guarded or checked | `unresolved-operation`, `unchecked-operation` |
 
-Trusted facets are allowed at every level. `WEAVEC_REQUIRE_SAFE` before a function definition holds that function to `checked` whatever the command line says. A unit that fails its require level produces no object.
+Trusted facets are allowed at every level. An unresolved facet's message reads `<operation> is neither proven nor checkable: <reason phrase> [<reason>]`, a guarded facet's `<operation> is guarded at run time only: <reason phrase> [<reason>]`. Without the runtime nothing is guarded, so `guarded` and `checked` reject the same facets. `WEAVEC_REQUIRE_SAFE` before a function definition holds that function to `checked` whatever the command line says. A unit that fails its require level produces no object.
 
 ## Ledger and summary line
 
-The ledger is JSON (`weavec-ledger`, version 1) or SARIF 2.1.0. It lists every function, every site and every facet with its outcome, the reason for each unresolved or trusted facet, fix-it suggestions, the diagnostics, and a stable fingerprint per facet and per diagnostic that survives edits elsewhere in the file and function. At link it adds what the program relies on under each assumption (A1–A5) and the link inputs without WeaveC records. Output is deterministic.
+The ledger is JSON (`weavec-ledger`, version 2) or SARIF 2.1.0. It lists every function, every site and every facet with its outcome (`proven`, `checked`, `guarded`, `violation`, `unresolved` or `trusted`), the reason for each unresolved, guarded or trusted facet, the check or guard template, fix-it suggestions, the diagnostics, and a stable fingerprint per facet and per diagnostic that survives edits elsewhere in the file and function. At link it adds what the program relies on under each assumption (A1–A5) and the link inputs without WeaveC records. Output is deterministic.
+
+Version 2 added, for the runtime: `config.runtime` (`true`, `false`, or `"mixed"` in a program ledger whose units disagree); a `guarded` count beside every other outcome count; `summary.guardedReasons`, the histogram of reasons over guarded facets, beside `summary.unresolvedReasons`; and `summary.unresolvedShare` and `summary.guardedShare`, the share of facets with that outcome per facet (`spatial`, `null`, `temporal`; `unresolvedShare` also has `spatialNull`). A guarded row keeps the reason the analysis gave:
+
+```json
+"spatial": { "outcome": "guarded", "reason": "unknown-extent", "check": { "template": "object" } }
+```
+
+In SARIF a guarded facet is a `note`-level result with `properties.outcome` set to `guarded`. A possible finding that the build does not print because its facet is guarded is not in the ledger's `diagnostics` either; the row keeps its reason.
 
 The summary line is printed once per unit, and once per link:
 
 ```text
-weavec: cJSON.c: 4,210 sites: 3,050 proven, 980 checked, 150 unresolved, 30 trusted; 0 errors, 2 warnings
+weavec: runtime-flags.c: 4 sites: 2 proven, 1 checked, 1 guarded, 0 unresolved, 0 trusted; 0 errors, 0 warnings
 ```
 
-With `-fweavec-checks=none`, and in `weavec`, "checked" reads "checkable (not enforced)". A non-zero violation count is inserted after it (`…, 980 checked, 2 violations, 150 unresolved, …`), and over-budget functions are appended (`; 1 function over budget (<name>)`). The link's line names the program and its unit count, then the inputs without a WeaveC record and the unverified A1 and A3 counts:
+Each site is counted once, by its worst facet: violation, then unresolved, guarded, checked, trusted, proven. The guarded count is always printed. With `-fweavec-checks=none`, and in `weavec`, "checked" reads "checkable (not enforced)" and "guarded" reads "guardable (not enforced)". With `-fno-weavec-runtime` the guarded count is `0 guardable (not enforced)` and those facets are counted as unresolved:
 
 ```text
-weavec: program minigzip: 9,876 sites in 3 units: …; 0 errors, 1 warning; 1 input without a WeaveC record (libz.a); unverified: 12 exported requirements (A1), 0 header invariants (A3)
+weavec: runtime-flags.c: 4 sites: 2 proven, 1 checked, 0 guardable (not enforced), 1 unresolved, 0 trusted; 0 errors, 0 warnings
+```
+
+A non-zero violation count is inserted after the guarded count (`…, 1 checked, 2 guarded, 2 violations, 0 unresolved, …`), and over-budget functions are appended (`; 1 function over budget (<name>)`). The link's line names the program and its unit count, then the inputs without a WeaveC record, if any (`; 1 input without a WeaveC record (<name>)`), and the unverified A1 and A3 counts:
+
+```text
+weavec: program vec: 11 sites in 1 unit: 8 proven, 2 checked, 1 guarded, 0 unresolved, 0 trusted; 0 errors, 0 warnings; unverified: 0 exported requirements (A1), 0 header invariants (A3)
 ```
 
 In a Makefile, pass a directory so parallel compiles write separate files:
@@ -108,13 +175,14 @@ The default is 50,000 block transfers, calibrated by the rule of RFC 0030 §5.5:
 
 ## Diagnostic controls
 
-| Flag                      | Behavior                                                                                                |
-| ------------------------- | ------------------------------------------------------------------------------------------------------- |
-| `-Wno-weavec-<id>`        | Disable the warnings of `<id>`: always-warning ids and the possible (warning) findings of temporal ids. |
-| `-Wweavec-<id>`           | Enable the warnings of `<id>`; `-Wweavec-allocation-failure` enables the one id that is off by default. |
-| `-Werror=weavec[-<id>]`   | Promote WeaveC warnings, or those of one id, to errors.                                                 |
-| `-Wno-error=weavec-<id>`  | Lower the errors of `<id>` to warnings. A lowered violation is still emitted behind a trapping check.   |
-| `-Wweavec`, `-Wno-weavec` | Enable or disable every WeaveC warning.                                                                 |
+| Flag                                        | Behavior                                                                                                                                |
+| ------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `-Wno-weavec-<id>`                          | Disable the warnings of `<id>`: always-warning ids and the possible (warning) findings of temporal ids.                                 |
+| `-Wweavec-<id>`                             | Enable the warnings of `<id>`; `-Wweavec-allocation-failure` enables the one id that is off by default.                                 |
+| `-Werror=weavec[-<id>]`                     | Promote WeaveC warnings, or those of one id, to errors.                                                                                 |
+| `-Wno-error=weavec-<id>`                    | Lower the errors of `<id>` to warnings. A lowered violation is still emitted behind a trapping check.                                   |
+| `-Wweavec`, `-Wno-weavec`                   | Enable or disable every WeaveC warning.                                                                                                 |
+| `-Wweavec-possible`, `-Wno-weavec-possible` | Not an id but a switch: print, or do not print, possible temporal findings on facets the build guards; see [the runtime](#the-runtime). |
 
 Errors cannot be disabled, only lowered. A flag naming a removed identifier is an error. See the [diagnostic reference](/reference/diagnostics/) for the identifiers and [diagnostic controls](/reference/diagnostic-controls/) for details.
 

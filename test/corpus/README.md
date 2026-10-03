@@ -7,10 +7,10 @@ replaces `scripts/corpus.py` and `scripts/corpus/`.
 
 | File | What it holds |
 | --- | --- |
-| `manifest.json` | The 9 projects (url, 40-hex `sha`, `support` files) and their 11 configs: `compile` (files and arguments), `wholeProgram`, `build`, `test`, `bench`, `link`, `lowered`; the 11 held-out projects of RFC 0031 (`heldOut`, below); and `gates`, the limits of gates G9–G15 and, under `heldOut`, of RFC 0031's G5, G6 and G12 |
+| `manifest.json` | The 9 projects (url, 40-hex `sha`, `support` files) and their 11 configs: `compile` (files and arguments), `wholeProgram`, `build`, `test`, `bench`, `link`, `lowered`; the 11 held-out projects of RFC 0031 (`heldOut`, below); and `gates`, the limits of gates G9–G15 (G14 as RFC 0032 amended it: three limits per benchmark), under `heldOut` of RFC 0031's G5, G6 and G12, and under `rfc0032` of RFC 0032's R4 |
 | `expected.json` | The ratchet, per platform and config (written by `--update`), and `legacy`, v0.10.0's numbers for S0 and S1 |
-| `triage.json` | A verdict for every definite error and possible temporal warning |
-| `injections/` | `injections.json` and one patch per injected bug, by project, plus drivers the trap injections build |
+| `triage.json` | A verdict for every definite error and possible temporal warning, and `guardFailures`: the guard failures of a test suite that were triaged as true bugs |
+| `injections/` | `injections.json` and one patch per injected bug, by project (39; RFC 0032's eight exercise the runtime's guards), plus drivers the trap injections build |
 | `bench/` | `lua-bench.lua`, the `cjson-bench.c` driver and `zlib-input.py`, the generator of the 64 MiB zlib input |
 | `support/` | Files a checkout needs that it does not have: jansson's, bzip2's, libyaml's and miniz's generated headers (`{support}` in compile arguments), the Lua `testes` subset driver, bzip2's makefile, hiredis's test wrapper and utf8proc's test-data fetcher |
 
@@ -110,10 +110,10 @@ scripts/corpus-gate.py --compare-golden --weavec build/release/bin/weavec \
 # The RFC 0030 compiler (from S3): every PR, weekly and release runs.
 scripts/corpus-gate.py --quick --weavec build/release/bin/weavec \
     --weavec-cc build/release/bin/weavec-cc [--only jansson ...] [--json out.json]
-scripts/corpus-gate.py --full ...                  # G9-G15
-scripts/corpus-gate.py --full --checks verify ...  # G6
-scripts/corpus-gate.py --inject ...                # G12
-scripts/corpus-gate.py --bench ...                 # G14
+scripts/corpus-gate.py --full ...                  # G9-G15, rfc0032.R4
+scripts/corpus-gate.py --full --checks verify ...  # G6 (RFC 0032 R1: temporal proofs too)
+scripts/corpus-gate.py --inject ...                # G12 (RFC 0032 R2)
+scripts/corpus-gate.py --bench ...                 # G14 (RFC 0032 R6): idle machine
 
 # The build, test and bench commands with the reference compiler only, and
 # the trap injections under ASan (checks that their run commands reach them).
@@ -138,7 +138,8 @@ every diagnostic included.
   (the *units* analysis) and `weavec --whole-program --ledger=…` for
   `wholeProgram` configs (the *program* analysis). A crash, a timeout, a Clang
   error or a missing ledger fails the run. Then the triage, the ratchet, and
-  gates G9 (count), G10, G13 and G15.
+  gates G9 (count), G10, G13 and G15, and `rfc0032.R4` (below). A ledger
+  must be a `weavec-ledger` document of version 2.
 - **`--full`**: `--quick`, then each config's `build` and `test` commands in a
   copy with `CC` set to a wrapper around `weavec-cc -fweavec-checks=trap
   -fweavec-ledger=<dir>/` (plus the config's `lowered` flags). Ledgers of
@@ -147,8 +148,12 @@ every diagnostic included.
   run. A trap is a death by `SIGTRAP` or `SIGILL` (as the shell, make or
   CTest report it, or as the exit status of the command) or a
   `weavec: runtime check failed:` line in the report-mode rerun
-  (`-fweavec-checks=report`, same commands); a check that fails at the site of
-  a triaged-true definite error does not count (G11). zlib's
+  (`-fweavec-checks=report`, same commands), whether a static check or one
+  of the runtime's guards (`object`, `live`, `release`) failed: the default
+  build links the runtime, so a false trap of a guard fails the run
+  (RFC 0032 gate R3). A check that fails at the site of a triaged-true
+  definite error, or at a site listed in `guardFailures`, does not count
+  (G11). zlib's
   `test/minigzip.c:568` (the repeated `fclose(stdout)`) must be reported
   (G9). Then the injections and the benchmarks.
 - **`--inject`**: applies each patch to a copy and analyses it: the patched
@@ -158,15 +163,41 @@ every diagnostic included.
   report. An injection is reported when a diagnostic with one of its `ids` (and
   its `severity`, unless `any`) is at `file:line`, or, for `trap`
   expectations, when a report-mode build running its `run` command fails a
-  check with that template at that line. G12 needs 90% reported and every
-  `required` injection (the two Lua allocator bugs).
-- **`--bench`**: builds each benchmark with the reference compiler and with
-  `weavec-cc` (no extra flags: the default trap build), runs each once to
+  check with that template at that line. An injection with only a `trap`
+  expectation is met by the run alone. G12 needs 90% reported and every
+  `required` injection: the two Lua allocator bugs, and the eight
+  injections of RFC 0032 that exercise the runtime's guards (below).
+- **`--bench`**: builds each benchmark three times, with the reference
+  compiler, with `weavec-cc` (no extra flags: the default trap build, with
+  the runtime) and with `weavec-cc -fno-weavec-runtime`, runs each once to
   warm up, then `repeat` (7) times interleaved, and takes the minimum user
-  CPU time of each; the ratio is the overhead (G14). The two builds must print
-  the same result, and `check` must pass.
+  CPU time and the minimum peak resident size of each. G14 has three
+  measurements, each a ratio over the reference build, with a limit per
+  benchmark in the manifest:
+
+  | Measurement | Manifest key | Ratchet key | lua | zlib | cJSON |
+  | --- | --- | --- | --- | --- | --- |
+  | user CPU of the default build | `maxOverhead` | `overhead` | 6.0 | 2.0 | 2.0 |
+  | user CPU without the runtime | `maxOverheadNoRuntime` | `overheadNoRuntime` | 1.1 | 1.1 | 1.15 |
+  | peak resident size of the default build | `maxRssRatio` | `rssRatio` | 2.0 | 2.0 | 2.0 |
+
+  These are RFC 0032's gate R6 as its *Implementation amendments* (3) set
+  it; the bounds the RFC first set for Lua (2.0) and zlib (1.5) with the
+  runtime are carried forward as an open gate. The three builds must print
+  the same result, and `check` must pass. The timings need an idle machine.
 - **`--checks verify`**: builds and tests in verify mode; any trap fails (G6),
   and the report-mode rerun tells unproven checks from `weavec.proven` ones.
+  With the runtime, verify mode also guards proven temporal facets, so the
+  run covers temporal proofs (RFC 0032 gate R1).
+
+`rfc0032.R4` is evaluated with the other analysis gates. It adds up, over
+the original configs together and over the held-out configs together (the
+program ledger where a whole-program analysis exists, the unit ledgers
+otherwise), the unresolved facets of each kind over all facets of that kind,
+and compares the shares with `gates.rfc0032.R4.maxUnresolvedShare`: spatial
+0.12, null 0.01, temporal 0.20. A facet the runtime guards is `guarded`, not
+unresolved, so it does not count. A group is gated only when all of its
+configs were selected; the shares are reported either way.
 
 `--legacy` runs v0.10.0's semantics: `weavec` exactly as `scripts/corpus.py`
 ran it (per file, or `--whole-program` over all files; `-ferror-limit=0`;
@@ -207,18 +238,21 @@ platform is reported but not compared.
 
 `platforms.<platform>.configs.<config>` holds, for `units` and `program`:
 `errors`, `warnings`, the `ledger` outcome counts (`sites`, `proven`,
-`checked`, `violation`, `unresolved`, `trusted`),
+`checked`, `guarded`, `violation`, `unresolved`, `trusted`),
 `unresolvedShare.spatialNull` (unresolved spatial and null facets over all
 spatial and null facets), `cpuSeconds` and `workCounters` (`blockTransfers`
 from `-fweavec-analysis-stats`, `functions`, `sites`); and `traps` (`--full`)
-and `overhead` (`--bench`).
+and `overhead`, `overheadNoRuntime` and `rssRatio` (`--bench`: G14's three
+ratios).
 
 - Counts and shares must equal the record. A worse value is a regression; a
   better one (or a changed neutral count such as `checked`) fails too until
   `--update` records it, so a PR that improves the numbers ratchets them in.
-- `cpuSeconds` and `overhead` may exceed the record by 10% on the machine that
-  recorded them (`cpuSeconds` also by up to one second, for timer noise), and
-  are not compared on others. Work counters may exceed it by 2%. `--update`
+- `cpuSeconds`, `overhead`, `overheadNoRuntime` and `rssRatio` may exceed the
+  record by 10% on the machine that recorded them (`cpuSeconds` also by up
+  to one second, for timer noise), and are not compared on others. `guarded`
+  is a neutral count, like `checked`: any change fails until `--update`
+  records it. Work counters may exceed it by 2%. `--update`
   rewrites them.
 - Platforms are recorded separately (system headers change the numbers).
   `--update` records the sections the run measured; `--update-from RESULTS`
@@ -240,6 +274,31 @@ fingerprint:
 ```
 
 Any other `-Wno-error`, `-Wno-weavec…` or `-w` in a config is rejected.
+
+### Guard failures (`guardFailures`)
+
+A guard that fails while a project's own test suite runs is either a false
+trap, which is a bug in WeaveC to fix, or a real bug in the project that
+its tests happen to execute. `guardFailures` (RFC 0032 gate R3,
+*Implementation amendments* 9) lists the second kind:
+
+```json
+{"config": "jansson", "file": "src/lookup3.h", "line": 259,
+ "template": "object", "verdict": "true", "note": "…the source evidence…"}
+```
+
+All six keys are required, and the only verdict is `"true"`: the gate
+refuses to load an entry with any other, so a false trap can never be
+triaged away. The note is the source evidence that the access is a bug. A
+failure at a listed `config`, `file` and `line` is not counted as a trap,
+like one at the site of a triaged-true definite error; an entry that no
+report-mode run names is reported as stale without failing.
+
+There is one group, four entries for jansson's `hashlittle`
+(`src/lookup3.h:259`, `260`, `263`, `264`): its tail switch reads a whole
+32-bit word of the key and masks off the bytes past the key's end. The
+source says so in the comment above the switch, and selects a byte-wise
+tail instead under Valgrind and AddressSanitizer (`NO_MASKING_TRICK`).
 
 ## Commands and their environment
 
@@ -266,7 +325,30 @@ the line where it should be reported, make a `-p1` patch (`a/<file>`,
 A null or spatial bug that should trap names the template and a command that
 reaches it, `"expect": {"ids": ["out-of-bounds"], "severity": "any",
 "trap": "index", "run": "./example"}`; either a diagnostic or the trap
-satisfies it. `--inject --reference-only` checks that the run command
+satisfies it.
+
+A bug the analysis leaves unresolved by design, which only the runtime can
+catch, has an `expect` with a `trap` and a `run` and no `ids`:
+`"expect": {"trap": "object", "run": "./sds-test"}`. It is met only by a
+guard failing at the injected line while `run` executes in the report-mode
+build. RFC 0032 (gate R2, *Implementation amendments* 10) added eight
+`required` injections, two for each of sds, cJSON, zlib and Lua: a write
+past an extent only the allocator knows (`sds-oob-range`,
+`cjson-oob-string-terminator`, `zlib-oob-window`, `lua-oob-newlclosure`,
+all `object`), and a read through a pointer that a reallocation moved or
+that a release behind a function pointer invalidated (`sds-uaf-catlen` and
+`lua-uaf-reallocstack`, `live`; `cjson-uaf-print-realloc` and
+`zlib-uaf-window`, which the analysis already reports and whose entries
+therefore carry `ids` as well). `expect.trap: release` is also met when the
+run dies with the allocator's own `weavec: invalid release of 0x…`: a
+release behind a function pointer has no site to guard, so no line is
+named (`cjson-df-valuestring`). The gate runs every test and injection with
+`WEAVEC_RT_REPORT_LOG` set and reads that file as well as the output, so a
+harness that hides the output of a passing test (CTest without `-V`) does
+not hide a report. A trap satisfies an injection's ids as the guard's
+template allows: `object` stands for `out-of-bounds`, `use-after-free` and
+`use-after-move`; `live` for `use-after-free` and `use-after-move`;
+`release` for `double-free`, `invalid-release` and `use-after-free`. `--inject --reference-only` checks that the run command
 reaches the line (ASan and UBSan, or `_FORTIFY_SOURCE` for `len`).
 `scripts/test_corpus_gate.py` checks that every patch applies to the pinned
 checkouts and puts its marker on its line.

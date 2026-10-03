@@ -3,8 +3,9 @@
 // __weavec_rt_report, which prints
 //   weavec: runtime check failed: <template> at <file>:<line>:<column>
 // once per site and returns (no guarantee), or aborts under WEAVEC_RT_ABORT=1.
-// weavec-cc links libweavec_rt.a itself when the link is given the flag. The
-// case runner and gate G11 attribute traps to lines and templates this way.
+// weavec-cc links libweavec_rt.a itself: every enforcing link carries it
+// (RFC 0032 §7), and a link without checks does not. The case runner and gate
+// G11 attribute traps to lines and templates this way.
 //
 // RUN: rm -rf %t && mkdir -p %t
 // RUN: %weavec_cc -O1 -fweavec-checks=report -Wno-error=weavec-null-dereference %s -o %t/report
@@ -17,14 +18,15 @@
 // RUN: %weavec_cc -fweavec-checks=report %t/report.o -o %t/linked
 // RUN: %t/linked all 2>&1 | FileCheck --check-prefix=REPORT %s
 // RUN: %weavec_cc -fweavec-checks=report -### %t/report.o -o %t/linked 2>&1 | FileCheck --check-prefix=LINK %s
-// RUN: %weavec_cc -### %t/report.o -o %t/linked 2>&1 | FileCheck --check-prefix=TRAPLINK %s
+// RUN: %weavec_cc -### %t/report.o -o %t/linked 2>&1 | FileCheck --check-prefix=LINK %s
+// RUN: %weavec_cc -fweavec-checks=none -### %t/report.o -o %t/linked 2>&1 | FileCheck --check-prefix=NONELINK %s
 //
 // CLEAN-NOT: runtime check failed
 // CLEAN: clean: 8
 // ABORT: weavec: runtime check failed: index at {{.*}}rfc0030-report-runtime.c:{{[0-9]+}}:{{[0-9]+}}
 // ABORT-NOT: done
 // LINK: libweavec_rt.a
-// TRAPLINK-NOT: libweavec_rt.a
+// NONELINK-NOT: libweavec_rt.a
 
 #include <stdio.h>
 #include <string.h>

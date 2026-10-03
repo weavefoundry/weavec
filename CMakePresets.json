@@ -126,7 +126,12 @@
       "execution": { "noTestsAction": "error", "stopOnFailure": false }
     },
     { "name": "dev", "inherits": "test-base", "configurePreset": "dev" },
-    { "name": "dev-asan", "inherits": "test-base", "configurePreset": "dev-asan" },
+    {
+      "name": "dev-asan",
+      "inherits": "test-base",
+      "configurePreset": "dev-asan",
+      "environment": { "ASAN_OPTIONS": "detect_leaks=0:allow_user_poisoning=0" }
+    },
     { "name": "release", "inherits": "test-base", "configurePreset": "release" },
     { "name": "ci-debug", "inherits": "test-base", "configurePreset": "ci-debug" },
     { "name": "ci-release", "inherits": "test-base", "configurePreset": "ci-release" }

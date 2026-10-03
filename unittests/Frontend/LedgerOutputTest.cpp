@@ -123,7 +123,8 @@ TEST(LedgerOutput, WritesAUnitLedgerIntoADirectory) {
       << error;
   // §12.4: the line of a unit whose checks are not enforced.
   EXPECT_EQ(line, "weavec: src/a.c: 1 site: 0 proven, 1 checkable (not "
-                  "enforced), 0 unresolved, 0 trusted; 0 errors, 0 warnings\n");
+                  "enforced), 0 guardable (not enforced), 0 unresolved, 0 "
+                  "trusted; 0 errors, 0 warnings\n");
 
   const std::optional<llvm::json::Value> json =
       readJson(scratch / "ledgers/a.o.ledger.json");
@@ -212,7 +213,8 @@ TEST(LedgerOutput, WritesTheProgramLedgerForTheOutput) {
                                 core::LedgerConfig{}, options, summary));
   EXPECT_EQ(line,
             "weavec: program prog: 1 site in 1 unit: 0 proven, 1 checkable "
-            "(not enforced), 0 unresolved, 0 trusted; 0 errors, 0 warnings; 1 "
+            "(not enforced), 0 guardable (not enforced), 0 unresolved, 0 "
+            "trusted; 0 errors, 0 warnings; 1 "
             "input without a WeaveC record (libz.a); unverified: 0 exported "
             "requirements (A1), 0 header invariants (A3)\n");
   const std::optional<llvm::json::Value> json =

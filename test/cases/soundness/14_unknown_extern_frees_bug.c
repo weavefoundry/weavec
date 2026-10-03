@@ -9,5 +9,5 @@ int main(void) {
   if (!p) return 1;
   p[0] = 1;
   consume_buffer(p);
-  return p[0]; // BUG: use-after-free // NOT-PROVEN: temporal
+  return p[0]; // BUG: use-after-free // NOT-PROVEN: temporal // TRAP: live
 }

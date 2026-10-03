@@ -111,6 +111,11 @@ struct CheckWitness {
     /// `disjoint(d, s, n)`: the first `need` bytes behind the argument and
     /// behind `other` do not overlap.
     Disjoint,
+    /// RFC 0032 §6: what a guard of an *unresolved* requirement compares.
+    /// The argument must have `need` bytes behind it inside its own object
+    /// (or, with `string`, a terminator), an extent only the runtime knows.
+    /// It never serves a static check.
+    Object,
   };
 
   Shape shape = Shape::Index;
@@ -133,6 +138,8 @@ struct CheckWitness {
   std::optional<WitnessTerm> need = std::nullopt;
   /// `Disjoint`: the other pointer.
   std::optional<WitnessTerm> other = std::nullopt;
+  /// `Object`: the need is the string at the argument, with its terminator.
+  bool string = false;
   /// §10.3 rule 4: every place the terms name still holds, at the site, the
   /// value the extent was derived from.
   bool unmodified = false;

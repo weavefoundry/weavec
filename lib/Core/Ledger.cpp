@@ -117,6 +117,8 @@ std::string_view toString(SiteOutcome outcome) noexcept {
     return "proven";
   case SiteOutcome::Checked:
     return "checked";
+  case SiteOutcome::Guarded:
+    return "guarded";
   case SiteOutcome::Violation:
     return "violation";
   case SiteOutcome::Unresolved:
@@ -249,6 +251,12 @@ std::string_view toString(CheckTemplate kind) noexcept {
     return "assert";
   case CheckTemplate::Violation:
     return "violation";
+  case CheckTemplate::Object:
+    return "object";
+  case CheckTemplate::Live:
+    return "live";
+  case CheckTemplate::Release:
+    return "release";
   }
   return "<invalid>";
 }
@@ -271,6 +279,8 @@ std::string_view toString(RequireLevel level) noexcept {
   switch (level) {
   case RequireLevel::None:
     return "none";
+  case RequireLevel::Guarded:
+    return "guarded";
   case RequireLevel::Checked:
     return "checked";
   case RequireLevel::Proven:
@@ -285,6 +295,18 @@ std::string_view toString(LedgerScope scope) noexcept {
     return "unit";
   case LedgerScope::Program:
     return "program";
+  }
+  return "<invalid>";
+}
+
+std::string_view toString(RuntimeUse use) noexcept {
+  switch (use) {
+  case RuntimeUse::Off:
+    return "false";
+  case RuntimeUse::On:
+    return "true";
+  case RuntimeUse::Mixed:
+    return "mixed";
   }
   return "<invalid>";
 }
@@ -343,10 +365,11 @@ std::optional<Linkage> parseLinkage(std::string_view text) {
 
 std::optional<CheckTemplate> parseCheckTemplate(std::string_view text) {
   return parseSpelling(
-      std::array<CheckTemplate, 7>{
+      std::array<CheckTemplate, CheckTemplateCount>{
           CheckTemplate::Nonnull, CheckTemplate::Index, CheckTemplate::Span,
           CheckTemplate::Len, CheckTemplate::Disjoint, CheckTemplate::Assert,
-          CheckTemplate::Violation},
+          CheckTemplate::Violation, CheckTemplate::Object, CheckTemplate::Live,
+          CheckTemplate::Release},
       text);
 }
 
@@ -358,10 +381,10 @@ std::optional<ChecksMode> parseChecksMode(std::string_view text) {
 }
 
 std::optional<RequireLevel> parseRequireLevel(std::string_view text) {
-  return parseSpelling(std::array<RequireLevel, 3>{RequireLevel::None,
-                                                   RequireLevel::Checked,
-                                                   RequireLevel::Proven},
-                       text);
+  return parseSpelling(
+      std::array<RequireLevel, 4>{RequireLevel::None, RequireLevel::Guarded,
+                                  RequireLevel::Checked, RequireLevel::Proven},
+      text);
 }
 
 std::optional<LedgerScope> parseLedgerScope(std::string_view text) {
@@ -506,6 +529,18 @@ std::string unresolvedOperationMessage(std::string_view operation,
   return text;
 }
 
+std::string guardedOperationMessage(std::string_view operation,
+                                    UnresolvedReason reason,
+                                    const PhraseArguments &arguments) {
+  std::string text(operation);
+  text += " is guarded at run time only: ";
+  text += reasonPhrase(reason, arguments);
+  text += " [";
+  text += toString(reason);
+  text += ']';
+  return text;
+}
+
 std::string uncheckedOperationMessage(std::string_view operation,
                                       CheckTemplate check) {
   std::string text(operation);
@@ -539,6 +574,13 @@ FacetDecision FacetDecision::unresolvedFor(UnresolvedReason reason,
                        .detail = std::move(detail)};
 }
 
+FacetDecision FacetDecision::guardedFor(UnresolvedReason reason,
+                                        std::string detail) {
+  return FacetDecision{.outcome = SiteOutcome::Guarded,
+                       .unresolved = reason,
+                       .detail = std::move(detail)};
+}
+
 FacetDecision FacetDecision::trustedFor(TrustReason reason,
                                         std::string detail) {
   return FacetDecision{.outcome = SiteOutcome::Trusted,
@@ -547,7 +589,8 @@ FacetDecision FacetDecision::trustedFor(TrustReason reason,
 }
 
 bool FacetDecision::isWellFormed() const noexcept {
-  return (outcome == SiteOutcome::Unresolved) == unresolved.has_value() &&
+  return (outcome == SiteOutcome::Unresolved ||
+          outcome == SiteOutcome::Guarded) == unresolved.has_value() &&
          (outcome == SiteOutcome::Trusted) == trusted.has_value();
 }
 
@@ -585,6 +628,10 @@ std::optional<FacetDecision> parseCompactFacet(std::string_view text) {
   case SiteOutcome::Unresolved:
     if (const auto parsed = parseUnresolvedReason(reason))
       return FacetDecision::unresolvedFor(*parsed);
+    return std::nullopt;
+  case SiteOutcome::Guarded:
+    if (const auto parsed = parseUnresolvedReason(reason))
+      return FacetDecision::guardedFor(*parsed);
     return std::nullopt;
   case SiteOutcome::Trusted:
     if (const auto parsed = parseTrustReason(reason))
@@ -850,6 +897,9 @@ void OutcomeCounts::add(SiteOutcome outcome, std::uint64_t count) noexcept {
   case SiteOutcome::Checked:
     checked += count;
     return;
+  case SiteOutcome::Guarded:
+    guarded += count;
+    return;
   case SiteOutcome::Violation:
     violation += count;
     return;
@@ -868,6 +918,8 @@ std::uint64_t OutcomeCounts::of(SiteOutcome outcome) const noexcept {
     return proven;
   case SiteOutcome::Checked:
     return checked;
+  case SiteOutcome::Guarded:
+    return guarded;
   case SiteOutcome::Violation:
     return violation;
   case SiteOutcome::Unresolved:
@@ -881,6 +933,7 @@ std::uint64_t OutcomeCounts::of(SiteOutcome outcome) const noexcept {
 OutcomeCounts &OutcomeCounts::operator+=(const OutcomeCounts &other) noexcept {
   proven += other.proven;
   checked += other.checked;
+  guarded += other.guarded;
   violation += other.violation;
   unresolved += other.unresolved;
   trusted += other.trusted;
@@ -896,6 +949,22 @@ double LedgerSummary::spatialNullShare() const noexcept {
     return 0.0;
   return static_cast<double>(spatial.unresolved + null.unresolved) /
          static_cast<double>(all);
+}
+
+double LedgerSummary::unresolvedShare(Facet facet) const {
+  const OutcomeCounts &counts = facets.at(static_cast<std::size_t>(facet));
+  const std::uint64_t all = counts.total();
+  return all == 0 ? 0.0
+                  : static_cast<double>(counts.unresolved) /
+                        static_cast<double>(all);
+}
+
+double LedgerSummary::guardedShare(Facet facet) const {
+  const OutcomeCounts &counts = facets.at(static_cast<std::size_t>(facet));
+  const std::uint64_t all = counts.total();
+  return all == 0
+             ? 0.0
+             : static_cast<double>(counts.guarded) / static_cast<double>(all);
 }
 
 void LedgerSummary::addUnit(const UnitLedger &unit) {
@@ -914,6 +983,10 @@ void LedgerSummary::addUnit(const UnitLedger &unit) {
         if (record->outcome() == SiteOutcome::Unresolved &&
             record->decision.unresolved)
           ++unresolvedReasons.at(
+              static_cast<std::size_t>(*record->decision.unresolved));
+        if (record->outcome() == SiteOutcome::Guarded &&
+            record->decision.unresolved)
+          ++guardedReasons.at(
               static_cast<std::size_t>(*record->decision.unresolved));
         if (record->outcome() == SiteOutcome::Trusted &&
             record->decision.trusted)
@@ -992,13 +1065,15 @@ static std::string joined(std::span<const std::string> items) {
   return text;
 }
 
-/// `3,050 proven, 980 checked, 150 unresolved, 30 trusted`.
+/// `3,050 proven, 980 checked, 120 guarded, 30 unresolved, 30 trusted`.
 static std::string outcomesText(const OutcomeCounts &outcomes,
                                 const SummaryLineOptions &options) {
   std::string text =
       formatThousands(outcomes.proven) + " proven, " +
       formatThousands(outcomes.checked) +
       (options.checksEnforced ? " checked" : " checkable (not enforced)");
+  text += ", " + formatThousands(outcomes.guarded) +
+          (options.guardsEnforced ? " guarded" : " guardable (not enforced)");
   if (outcomes.violation != 0)
     text += ", " + counted(outcomes.violation, "violation");
   text += ", " + formatThousands(outcomes.unresolved) + " unresolved, " +

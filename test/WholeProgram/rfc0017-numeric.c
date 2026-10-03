@@ -1,6 +1,6 @@
 // RFC 0017: numeric results, output values and access intervals compose.
-// RUN: not %weavec --whole-program %s %S/Inputs/rfc0017-numeric.c -- -ferror-limit=0 2>&1 | FileCheck %s
-// RUN: not %weavec --whole-program --ledger=%t.json %s %S/Inputs/rfc0017-numeric.c -- 2>/dev/null
+// RUN: not %weavec --no-runtime --whole-program %s %S/Inputs/rfc0017-numeric.c -- -ferror-limit=0 2>&1 | FileCheck %s
+// RUN: not %weavec --no-runtime --whole-program --ledger=%t.json %s %S/Inputs/rfc0017-numeric.c -- 2>/dev/null
 // RUN: FileCheck --check-prefix=LEDGER %s < %t.json
 //
 // RFC 0031 §6.1: format-30 summaries carry no extent requirements and no

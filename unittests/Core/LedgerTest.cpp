@@ -39,8 +39,9 @@ TEST(Ledger, FacetAndOutcomeSpellings) {
   for (const Facet facet : AllFacets)
     EXPECT_EQ(parseFacet(toString(facet)), facet);
 
-  const std::vector<std::string_view> outcomes{"proven", "checked", "violation",
-                                               "unresolved", "trusted"};
+  // RFC 0032 §6.1: `guarded` sits between `checked` and `violation`.
+  const std::vector<std::string_view> outcomes{
+      "proven", "checked", "guarded", "violation", "unresolved", "trusted"};
   for (std::size_t i = 0; i < SiteOutcomeCount; ++i) {
     EXPECT_EQ(toString(AllSiteOutcomes.at(i)), outcomes[i]);
     EXPECT_EQ(parseSiteOutcome(outcomes[i]), AllSiteOutcomes.at(i));
@@ -200,6 +201,14 @@ TEST(Ledger, RequireLevelMessages) {
       uncheckedOperationMessage(operationText(OperationForm::Dereference, "p"),
                                 CheckTemplate::Nonnull),
       "dereference of 'p' relies on a runtime nonnull check");
+  // RFC 0032, *Diagnostics*: the form for a guarded facet.
+  EXPECT_EQ(guardedOperationMessage(
+                operationText(OperationForm::Access, "v->data[i]"),
+                UnresolvedReason::UnknownExtent, {.pointer = "v->data"}),
+            "access 'v->data[i]' is guarded at run time only: the extent of "
+            "'v->data' is unknown [unknown-extent]");
+  EXPECT_EQ(toString(RequireLevel::Guarded), "guarded");
+  EXPECT_EQ(parseRequireLevel("guarded"), RequireLevel::Guarded);
   EXPECT_EQ(operationText(OperationForm::Conversion, "p", "struct s *"),
             "conversion of 'p' to 'struct s *'");
   EXPECT_EQ(operationText(OperationForm::CallTo, "memcpy"), "call to 'memcpy'");
@@ -209,11 +218,18 @@ TEST(Ledger, RequireLevelMessages) {
 }
 
 TEST(Ledger, RankOrdersOutcomes) {
-  // violation > unresolved > checked > trusted > proven
+  // violation > unresolved > guarded > checked > trusted > proven (RFC 0032
+  // §1 puts `guarded` between the two it sits between in strength).
   EXPECT_GT(outcomeRank(SiteOutcome::Violation),
             outcomeRank(SiteOutcome::Unresolved));
   EXPECT_GT(outcomeRank(SiteOutcome::Unresolved),
+            outcomeRank(SiteOutcome::Guarded));
+  EXPECT_GT(outcomeRank(SiteOutcome::Guarded),
             outcomeRank(SiteOutcome::Checked));
+  EXPECT_EQ(maxByRank(SiteOutcome::Guarded, SiteOutcome::Checked),
+            SiteOutcome::Guarded);
+  EXPECT_EQ(maxByRank(SiteOutcome::Guarded, SiteOutcome::Unresolved),
+            SiteOutcome::Unresolved);
   EXPECT_GT(outcomeRank(SiteOutcome::Checked),
             outcomeRank(SiteOutcome::Trusted));
   EXPECT_GT(outcomeRank(SiteOutcome::Trusted),
@@ -226,6 +242,12 @@ TEST(Ledger, RankOrdersOutcomes) {
 
 TEST(Ledger, DecisionsCarryReasonsOnlyWhereTheyBelong) {
   EXPECT_TRUE(FacetDecision::proven().isWellFormed());
+  // A guarded facet keeps the reason it was unresolved for (RFC 0032 §1).
+  const FacetDecision guarded =
+      FacetDecision::guardedFor(UnresolvedReason::MayReleased, "p");
+  EXPECT_TRUE(guarded.isWellFormed());
+  EXPECT_EQ(guarded.outcome, SiteOutcome::Guarded);
+  EXPECT_EQ(guarded.compact(), "guarded/may-released");
   EXPECT_TRUE(FacetDecision::violation("x").isWellFormed());
   EXPECT_TRUE(
       FacetDecision::unresolvedFor(UnresolvedReason::Budget).isWellFormed());
@@ -249,6 +271,11 @@ TEST(Ledger, CompactFacetsParseStrictly) {
   EXPECT_EQ(parseCompactFacet("trusted/caller-contract"),
             FacetDecision::trustedFor(TrustReason::CallerContract));
   EXPECT_EQ(parseCompactFacet("violation"), FacetDecision::violation());
+  // RFC 0032 §10: the record's cell for a guarded facet keeps its reason.
+  EXPECT_EQ(parseCompactFacet("guarded/may-released"),
+            FacetDecision::guardedFor(UnresolvedReason::MayReleased));
+  EXPECT_FALSE(parseCompactFacet("guarded"));
+  EXPECT_FALSE(parseCompactFacet("guarded/unsafe"));
   EXPECT_FALSE(parseCompactFacet("unresolved"));
   EXPECT_FALSE(parseCompactFacet("unresolved/unsafe"));
   EXPECT_FALSE(parseCompactFacet("trusted/unknown-extent"));
@@ -569,18 +596,26 @@ static LedgerSummary cjsonSummary() {
 TEST(Ledger, UnitSummaryLine) {
   // RFC 0030 §12.4.
   EXPECT_EQ(unitSummaryLine("cJSON.c", cjsonSummary()),
-            "weavec: cJSON.c: 4,210 sites: 3,050 proven, 980 checked, 150 "
-            "unresolved, 30 trusted; 0 errors, 2 warnings");
+            "weavec: cJSON.c: 4,210 sites: 3,050 proven, 980 checked, 0 "
+            "guarded, 150 unresolved, 30 trusted; 0 errors, 2 warnings");
   EXPECT_EQ(
       unitSummaryLine("cJSON.c", cjsonSummary(), {.checksEnforced = false}),
       "weavec: cJSON.c: 4,210 sites: 3,050 proven, 980 checkable (not "
-      "enforced), 150 unresolved, 30 trusted; 0 errors, 2 warnings");
+      "enforced), 0 guarded, 150 unresolved, 30 trusted; 0 errors, 2 warnings");
+  // RFC 0032 §1: without the runtime in the image a guard is not enforced.
+  LedgerSummary guarded = cjsonSummary();
+  guarded.outcomes.guarded = 140;
+  guarded.outcomes.unresolved = 10;
+  EXPECT_EQ(unitSummaryLine("cJSON.c", guarded, {.guardsEnforced = false}),
+            "weavec: cJSON.c: 4,210 sites: 3,050 proven, 980 checked, 140 "
+            "guardable (not enforced), 10 unresolved, 30 trusted; 0 errors, 2 "
+            "warnings");
   LedgerSummary overBudget = cjsonSummary();
   overBudget.overBudget = {"cJSON_ParseWithLengthOpts"};
   EXPECT_EQ(unitSummaryLine("cJSON.c", overBudget),
-            "weavec: cJSON.c: 4,210 sites: 3,050 proven, 980 checked, 150 "
-            "unresolved, 30 trusted; 0 errors, 2 warnings; 1 function over "
-            "budget (cJSON_ParseWithLengthOpts)");
+            "weavec: cJSON.c: 4,210 sites: 3,050 proven, 980 checked, 0 "
+            "guarded, 150 unresolved, 30 trusted; 0 errors, 2 warnings; 1 "
+            "function over budget (cJSON_ParseWithLengthOpts)");
   overBudget.overBudget.emplace_back("print_value");
   EXPECT_NE(unitSummaryLine("cJSON.c", overBudget)
                 .find("; 2 functions over budget (cJSON_ParseWithLengthOpts, "
@@ -595,8 +630,8 @@ TEST(Ledger, SummaryLineListsViolationsAndSingulars) {
   summary.errors = 1;
   summary.warnings = 1;
   EXPECT_EQ(unitSummaryLine("a.c", summary),
-            "weavec: a.c: 1 site: 0 proven, 0 checked, 1 violation, 0 "
-            "unresolved, 0 trusted; 1 error, 1 warning");
+            "weavec: a.c: 1 site: 0 proven, 0 checked, 0 guarded, 1 violation, "
+            "0 unresolved, 0 trusted; 1 error, 1 warning");
 }
 
 TEST(Ledger, ProgramSummaryLine) {
@@ -616,9 +651,9 @@ TEST(Ledger, ProgramSummaryLine) {
                                 .unverifiedInvariants = 0},
                                summary),
             "weavec: program minigzip: 9,876 sites in 3 units: 9,000 proven, "
-            "800 checked, 70 unresolved, 6 trusted; 0 errors, 1 warning; 1 "
-            "input without a WeaveC record (libz.a); unverified: 12 exported "
-            "requirements (A1), 0 header invariants (A3)");
+            "800 checked, 0 guarded, 70 unresolved, 6 trusted; 0 errors, 1 "
+            "warning; 1 input without a WeaveC record (libz.a); unverified: 12 "
+            "exported requirements (A1), 0 header invariants (A3)");
   EXPECT_EQ(programSummaryLine({.program = "p",
                                 .units = 1,
                                 .inputsWithoutRecords = {},
@@ -626,28 +661,30 @@ TEST(Ledger, ProgramSummaryLine) {
                                 .unverifiedInvariants = 1},
                                LedgerSummary{}),
             "weavec: program p: 0 sites in 1 unit: 0 proven, 0 checked, 0 "
-            "unresolved, 0 trusted; 0 errors, 0 warnings; unverified: 1 "
-            "exported requirement (A1), 1 header invariant (A3)");
+            "guarded, 0 unresolved, 0 trusted; 0 errors, 0 warnings; "
+            "unverified: 1 exported requirement (A1), 1 header invariant (A3)");
 }
 
 TEST(Ledger, SummaryLineOfALedgerFollowsItsScope) {
   Ledger ledger = sampleLedger();
-  EXPECT_EQ(summaryLine(ledger, "a.c"),
-            "weavec: a.c: 7 sites: 0 proven, 2 checked, 1 violation, 3 "
-            "unresolved, 1 trusted; 1 error, 1 warning; 1 function over "
-            "budget (g)");
+  EXPECT_EQ(
+      summaryLine(ledger, "a.c"),
+      "weavec: a.c: 7 sites: 0 proven, 2 checked, 0 guarded, 1 violation, "
+      "3 unresolved, 1 trusted; 1 error, 1 warning; 1 function over "
+      "budget (g)");
   ledger.scope = LedgerScope::Program;
   ledger.assumptions = Assumptions{};
   ledger.assumptions->a1.exportedRequirements = 14;
   ledger.assumptions->a1.verified = 11;
   ledger.assumptions->a3.unverified = 2;
   ledger.assumptions->a3.inputsWithoutRecords = {"liblua.a", "libm.a"};
-  EXPECT_EQ(summaryLine(ledger, "lua"),
-            "weavec: program lua: 7 sites in 1 unit: 0 proven, 2 checked, 1 "
-            "violation, 3 unresolved, 1 trusted; 1 error, 1 warning; 1 "
-            "function over budget (g); 2 inputs without a WeaveC record "
-            "(liblua.a, libm.a); unverified: 3 exported requirements (A1), 2 "
-            "header invariants (A3)");
+  EXPECT_EQ(
+      summaryLine(ledger, "lua"),
+      "weavec: program lua: 7 sites in 1 unit: 0 proven, 2 checked, 0 "
+      "guarded, 1 violation, 3 unresolved, 1 trusted; 1 error, 1 warning; "
+      "1 function over budget (g); 2 inputs without a WeaveC record "
+      "(liblua.a, libm.a); unverified: 3 exported requirements (A1), 2 "
+      "header invariants (A3)");
 }
 
 TEST(Ledger, SitesAreFoundById) {

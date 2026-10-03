@@ -134,7 +134,7 @@ TEST(UnitRecord, FramingFollowsTheLayout) {
   ASSERT_TRUE(bytes) << error;
   const llvm::StringRef view = *bytes;
   EXPECT_EQ(view.take_front(8), llvm::StringRef("\x89WVC\r\n\x1a\n", 8));
-  EXPECT_EQ(readLittleEndian(view, 8, 4), 29U);
+  EXPECT_EQ(readLittleEndian(view, 8, 4), 30U);
   EXPECT_EQ(readLittleEndian(view, 12, 4), 0U);
   const auto schema = schemaFingerprint();
   EXPECT_TRUE(std::equal(schema.begin(), schema.end(),
@@ -152,7 +152,8 @@ TEST(UnitRecord, FramingFollowsTheLayout) {
                          R"("cwd":"/work/build","command":["-triple",)",
                          0),
             0U);
-  EXPECT_NE(header.find(R"("config":{"checks":"report","zeroInit":false,)"
+  EXPECT_NE(header.find(R"("config":{"checks":"report","runtime":false,)"
+                        R"("zeroInit":false,)"
                         R"("require":"checked","budget":50000},)"
                         R"("object":{"path":"cJSON.o","digest":"sha256:00"}})"),
             std::string::npos);
@@ -206,7 +207,8 @@ TEST(UnitRecord, SchemaFingerprintIsTheTableHash) {
                        "name:string,version:string,revision:string},"
                        "source:string,cwd:string,command:array<string>,"
                        "target:string,config:object{checks:string,"
-                       "zeroInit:boolean,require:string,budget:integer},"
+                       "runtime:boolean,zeroInit:boolean,require:string,"
+                       "budget:integer},"
                        "object:object{path:string,digest:string}}\n"
                        "payload:object{functions:array<object{name:string,",
                        0),
@@ -238,8 +240,8 @@ TEST(UnitRecord, AnythingElseIsStale) {
   EXPECT_EQ(reason(magic), "not a WeaveC record (bad magic)");
   EXPECT_EQ(reason(llvm::StringRef(good).take_front(80)),
             "truncated record (80 bytes)");
-  EXPECT_EQ(reason(frame(header, payload, 28)), "format 28, expected 29");
-  EXPECT_EQ(reason(frame(header, payload, 29, 1)), "unsupported flags 0x1");
+  EXPECT_EQ(reason(frame(header, payload, 29)), "format 29, expected 30");
+  EXPECT_EQ(reason(frame(header, payload, 30, 1)), "unsupported flags 0x1");
   std::string schema = good;
   schema[20] = static_cast<char>(static_cast<unsigned char>(schema[20]) ^ 1U);
   EXPECT_EQ(reason(schema),

@@ -78,5 +78,6 @@ decision is a new RFC that supersedes the relevant section.
 | [0029](0029-compositional-recursive-workflows.md) | Compositional invariants for recursive C workflows | Superseded |
 | [0030](0030-prove-or-trap.md) | Prove or trap: one safety semantics with compiler-enforced checks | Implemented |
 | [0031](0031-object-engine.md) | The object engine: a sound heap abstraction behind the engine seam | Implemented |
+| [0032](0032-runtime-enforcement.md) | Runtime enforcement: an object table, guarded facets and a temporal backstop | Implemented |
 
 The [roadmap](../roadmap.md) links each milestone to the RFCs that define it.

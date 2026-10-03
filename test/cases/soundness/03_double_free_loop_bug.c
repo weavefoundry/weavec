@@ -7,7 +7,7 @@ int main(int argc, char **argv) {
   if (!p) return 1;
   for (int i = 0; i < argc + 1; i++) {
     if (i > 5) break;
-    free(p); // BUG: double-free
+    free(p); // BUG: double-free // TRAP: release
   }
   return 0;
 }

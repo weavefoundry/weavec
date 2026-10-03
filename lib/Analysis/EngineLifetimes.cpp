@@ -177,20 +177,67 @@ static std::string cellName(const FunctionRun &run, core::ObjectId object,
   return "*" + info.name;
 }
 
+/// The innermost named field of `type` whose storage holds byte `offset`:
+/// through the elements of arrays and the members of nested records. Null
+/// when `type` is no record, or no named field holds the byte.
+static const FieldDecl *fieldHolding(const ASTContext &context, QualType type,
+                                     std::int64_t offset) {
+  const FieldDecl *found = nullptr;
+  for (unsigned depth = 0; depth < 32 && !type.isNull() && offset >= 0;
+       ++depth) {
+    if (const ArrayType *array = context.getAsArrayType(type)) {
+      QualType element = array->getElementType();
+      if (element->isIncompleteType() || !element->isConstantSizeType())
+        break;
+      std::int64_t size = context.getTypeSizeInChars(element).getQuantity();
+      if (size <= 0)
+        break;
+      offset %= size;
+      type = element;
+      continue;
+    }
+    const RecordDecl *record = type->getAsRecordDecl();
+    if (record == nullptr || !record->isCompleteDefinition() ||
+        record->isInvalidDecl())
+      break;
+    const FieldDecl *holder = nullptr;
+    for (const FieldDecl *field : record->fields()) {
+      if (field->isBitField() || field->getType()->isIncompleteType() ||
+          !field->getType()->isConstantSizeType())
+        continue;
+      std::int64_t start = offsetOf(context, *field);
+      std::int64_t size =
+          context.getTypeSizeInChars(field->getType()).getQuantity();
+      if (offset >= start && offset < start + size) {
+        holder = field;
+        break;
+      }
+    }
+    if (holder == nullptr)
+      break;
+    if (!holder->getName().empty() && !record->getName().empty())
+      found = holder;
+    offset -= offsetOf(context, *holder);
+    type = holder->getType();
+  }
+  return found;
+}
+
 std::string cellClass(const FunctionRun &run, core::ObjectId object,
                       core::CellKey key) {
   const core::ObjectInfo &info = run.table().info(object);
   QualType type = info.type != 0 ? typeOfHandle(info.type) : QualType();
-  if (!key.isSummary())
-    if (const FieldDecl *field = fieldStartingAt(run.ast(), type, key.offset)) {
-      const RecordDecl *record = field->getParent();
-      if (record->getName().empty())
-        return {};
-      return record->getKindName().str() + " " + record->getNameAsString() +
-             "." + field->getNameAsString();
-    }
-  if (info.key.kind == core::ObjectKind::Global && key.offset == 0 &&
-      !key.isSummary())
+  // RFC 0030 §9.4: the class of a cell is the field that holds it, and for a
+  // global outside any record the global. An element of an array is of its
+  // array's class (a summary cell's offset is its position in an element):
+  // a dangling pointer stored into `g[1]` or `r->slot[i]` breaks the entry
+  // assumption of every load from that array.
+  if (const FieldDecl *field = fieldHolding(run.ast(), type, key.offset)) {
+    const RecordDecl *record = field->getParent();
+    return record->getKindName().str() + " " + record->getNameAsString() + "." +
+           field->getNameAsString();
+  }
+  if (info.key.kind == core::ObjectKind::Global)
     return info.name;
   return {};
 }
@@ -992,6 +1039,29 @@ void Transfer::inlineAssembly(const GCCAsmStmt &assembly) {
             nullptr);
     }
   }
+  unknownEffect(start, record, /*mayOwn=*/false);
+}
+
+void Transfer::cleanupFunction(const VarDecl &var) {
+  // RFC 0030 §5.1: `__attribute__((cleanup(f)))` calls `f(&var)` where the
+  // variable's scope ends, at no call expression. Until that call is
+  // analysed like any other, it is an unknown callee handed the variable:
+  // it may have released, retained or replaced what the variable reaches.
+  const auto *attribute = var.getAttr<CleanupAttr>();
+  core::ReleaseRecord record;
+  record.reason = core::ReleaseRecord::Reason::UnknownCallee;
+  record.via = attribute != nullptr && attribute->getFunctionDecl() != nullptr
+                   ? attribute->getFunctionDecl()->getNameAsString()
+                   : std::string("a cleanup function");
+  record.where = toCoreLocation(context.getSourceManager(), var.getLocation());
+  record.allPaths = false;
+  // The function was handed the last pointer to what the variable owns:
+  // releasing it is its job, so nothing leaks here.
+  unknownEffect({run.variableObject(var)}, record, /*mayOwn=*/true);
+}
+
+void Transfer::unknownEffect(const std::vector<core::ObjectId> &start,
+                             const core::ReleaseRecord &record, bool mayOwn) {
   std::set<core::ObjectId> seen(start.begin(), start.end());
   std::vector<core::ObjectId> work = start;
   while (!work.empty()) {
@@ -1017,6 +1087,8 @@ void Transfer::inlineAssembly(const GCCAsmStmt &assembly) {
         kind != core::ObjectKind::Function && object.life == core::Life::Live) {
       object.life = core::Life::UnknownReleased;
       object.record = record;
+      if (mayOwn)
+        object.owned = false;
     }
   }
 }

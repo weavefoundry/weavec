@@ -1,12 +1,12 @@
 // RFC 0015: the tool and the compiler's serialized link analysis agree.
 // RUN: rm -rf %t && mkdir -p %t
-// RUN: not %weavec --whole-program %s %S/Inputs/array15.c -- 2>&1 | FileCheck %s
-// RUN: not %weavec --whole-program --ledger=%t/program.json %s %S/Inputs/array15.c -- 2>/dev/null
+// RUN: not %weavec --no-runtime --whole-program %s %S/Inputs/array15.c -- 2>&1 | FileCheck %s
+// RUN: not %weavec --no-runtime --whole-program --ledger=%t/program.json %s %S/Inputs/array15.c -- 2>/dev/null
 // RUN: FileCheck --check-prefix=LEDGER %s < %t/program.json
-// RUN: %weavec_cc -c %S/Inputs/array15.c -o %t/library.o 2>&1 | count 0
-// RUN: %weavec_cc -c %s -o %t/caller.o 2>&1 | count 0
+// RUN: %weavec_cc -fno-weavec-runtime -c %S/Inputs/array15.c -o %t/library.o 2>&1 | count 0
+// RUN: %weavec_cc -fno-weavec-runtime -c %s -o %t/caller.o 2>&1 | count 0
 // RUN: %weavec --dump-record=%t/library.o.weavec | FileCheck --check-prefix=RECORD %s
-// RUN: not %weavec_cc -fweavec-ledger=%t/cc.json %t/library.o %t/caller.o -o %t/program 2>&1 | FileCheck %s
+// RUN: not %weavec_cc -fno-weavec-runtime -fweavec-ledger=%t/cc.json %t/library.o %t/caller.o -o %t/program 2>&1 | FileCheck %s
 // RUN: FileCheck --check-prefix=LEDGER %s < %t/cc.json
 #include "Inputs/array15.h"
 
@@ -14,7 +14,7 @@
 // are stores and releases over `[*]` steps, with an element range where one
 // is known (`array15_drop`, `array15_clear`), and constant indices as byte
 // offsets (`array15_compact`, *Summary paths*).
-// RECORD: "format": 29,
+// RECORD: "format": 30,
 // RECORD-DAG: "effects": "returns always\neffect release p0** when=-:1!=0 family=free may lossy\neffect release p0*[]* when=-:1!=0 family=free may lossy\nstore p0*[] when=-:- elements=0,p1@1@0 :: null\nreads p0*\nwrites p0*\n",
 // RECORD-DAG: "effects": "returns always\nstore r*[] when=-:- :: path path=p0*[] offset=0\n{{.*}}",
 // RECORD-DAG: "effects": "returns always\nstore p0* when=-:- :: path path=p0*.#8 offset=0\nstore p0*.#16 when=-:- :: null\nstore p0*.#8 when=-:- :: path path=p0*.#16 offset=0\nwrites p0*\n",

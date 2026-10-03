@@ -46,7 +46,7 @@
 // RUN: not %weavec_cc -Werror=weavec-checking-failed -fsyntax-only %s 2>&1 | FileCheck --check-prefix=REMOVED-FAILED %s
 
 // ACCEPTED-NOT: error:
-// REQUIRE: weavec-cc: error: invalid value 'always' in '-fweavec-require=always'; expected none, checked or proven
+// REQUIRE: weavec-cc: error: invalid value 'always' in '-fweavec-require=always'; expected none, guarded, checked or proven
 // BUDGET: weavec-cc: error: invalid value 'lots' in '-fweavec-budget=lots'; expected a number of block transfers
 // FORMAT: weavec-cc: error: invalid value 'xml' in '-fweavec-ledger-format=xml'; expected json or sarif
 // EMPTY: weavec-cc: error: missing value for '-fweavec-ledger'

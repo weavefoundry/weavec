@@ -65,7 +65,7 @@ struct CheckPathStep {
 /// §10.1: an extra operand of a check.
 ///
 ///   constant | place | sizeof(type) | a + b | a - b | a * b | a / k
-///   | strnlen(pointer, bound)
+///   | strnlen(pointer, bound) | objstrlen(pointer)
 ///
 /// `+`, `-` and `*` are evaluated by the prelude's term helpers over 64-bit
 /// integers, saturating in the direction that fails closed (§10.2), never
@@ -85,6 +85,10 @@ struct CheckTerm {
     /// `operands[0] / operands[1]`, the second a positive constant.
     Div,
     StrNLen,
+    /// RFC 0032 §6: the length of the string `operands[0]` points to, read
+    /// inside that pointer's own tracked object (the maximum when the object
+    /// holds no terminator): the need of a guard, which has no static bound.
+    ObjStrLen,
   };
 
   Kind kind = Kind::Constant;
@@ -110,6 +114,7 @@ struct CheckTerm {
   /// `lhs / divisor`, rounding down; `divisor` must be positive.
   [[nodiscard]] static CheckTerm div(CheckTerm lhs, std::int64_t divisor);
   [[nodiscard]] static CheckTerm strnlen(CheckTerm pointer, CheckTerm bound);
+  [[nodiscard]] static CheckTerm objStrLen(CheckTerm pointer);
 
   /// Each kind has exactly the fields and operand count it uses.
   [[nodiscard]] bool isWellFormed() const noexcept;
@@ -122,7 +127,7 @@ struct CheckTerm {
 
 /// §10.1: one planned check for one requirement record of one facet.
 struct CheckPlanEntry {
-  /// The six templates of §10.2.
+  /// The six templates of §10.2, and the three guards of RFC 0032 §3.
   enum class Template : std::uint8_t {
     Nonnull,
     Index,
@@ -130,17 +135,25 @@ struct CheckPlanEntry {
     Len,
     Disjoint,
     Assert,
+    Object,
+    Live,
+    Release,
   };
   /// `IfNonZero`: `nonnull` for `null-if-zero` arguments; `Function`:
   /// `nonnull` for the callee operand of an indirect call; `Result`: `len`
   /// over the `snprintf` lowering of `sprintf`; `Violation`: the
   /// unconditional trap of a lowered violation, of any template (§3.4).
+  /// RFC 0032 §3: `Need` is `object` for a call argument that must have
+  /// `need` bytes behind it, `String` for one that must be a terminated
+  /// string inside its object.
   enum class Form : std::uint8_t {
     Plain,
     IfNonZero,
     Function,
     Result,
-    Violation
+    Violation,
+    Need,
+    String
   };
   /// §10.4: where the rewrite goes.
   enum class Placement : std::uint8_t {
@@ -196,6 +209,12 @@ toString(CheckPlanEntry::Placement placement) noexcept;
 ///   len       Result    ReplaceCall                      have
 ///   disjoint  Plain     WrapArgument (d wrapped)         s, n
 ///   assert    Plain     ReplaceCall                      -
+///   object    Plain     WrapOperand                      offset, width
+///   object    Plain     ReplaceAccess                    step, offset, width
+///   object    Need      WrapArgument                     need
+///   object    String    WrapArgument                     -
+///   live      Plain     WrapOperand, WrapArgument        -
+///   release   Plain     WrapOperand                      -
 ///   any       Violation any                              -
 [[nodiscard]] std::optional<std::size_t>
 operandCount(CheckPlanEntry::Template kind, CheckPlanEntry::Form form,
@@ -212,10 +231,13 @@ ledgerTemplate(const CheckPlanEntry &entry) noexcept;
 /// The ledger's `check` object for an entry.
 [[nodiscard]] FacetCheck facetCheck(const CheckPlanEntry &entry) noexcept;
 
+/// Whether the entry is a guard of RFC 0032 (`object`, `live`, `release`).
+[[nodiscard]] bool isGuard(const CheckPlanEntry &entry) noexcept;
+
 /// The prelude helper the entry calls (§10.2): `__weavec_chk_<template>`
-/// with the `_n`, `_fn` and `_r` suffixes of its form, or `__weavec_prv_*`
-/// for a verify check of a proven facet. Empty for the `Violation` form,
-/// which is an inline `__builtin_verbose_trap`.
+/// with the `_n`, `_fn`, `_r` and `_s` suffixes of its form, or
+/// `__weavec_prv_*` for a verify check of a proven facet. Empty for the
+/// `Violation` form, which is an inline `__builtin_verbose_trap`.
 [[nodiscard]] std::string helperName(const CheckPlanEntry &entry);
 
 /// The planned checks of one unit.

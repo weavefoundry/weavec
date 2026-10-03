@@ -17,8 +17,11 @@
 //      `trusted(system-api)` (§5.2);
 //   2. the ledger-side rules of `WEAVEC_UNSAFE` (§6.1) and `setjmp` (§5.4);
 //   3. `CheckPlanner::plan` (§10.1), which turns inexpressible checked
-//      records `unresolved(inexpressible)`;
-//   4. the require-level errors (§6.3), from the planned ledger.
+//      records `unresolved(inexpressible)` and, with the runtime, guardable
+//      unresolved ones `guarded` (RFC 0032 §6);
+//   4. the possible findings the build enforces instead are dropped
+//      (RFC 0032 §9);
+//   5. the require-level errors (§6.3), from the planned ledger.
 //
 // Boundary propagation (§9.4, stage S7), the concurrency rules (§5.3, S4)
 // and the §7.6 upgrades (S6) slot in between 2 and 3; until then their
@@ -168,6 +171,11 @@ struct LedgerAdapterOptions {
   /// §5.3: whether the site's pointer is loaded from a place shared with a
   /// thread or signal entry point (rooted in G).
   std::function<bool(const SiteInfo &)> concurrent = nullptr;
+  /// RFC 0032 §9: the build enforces its guards (checks and the runtime are
+  /// on, and this is the compiler), so a possible finding linked to a
+  /// guarded facet is not reported. False keeps every finding
+  /// (`-Wweavec-possible`, the `weavec` tool, unenforced builds).
+  bool dropGuardedPossible = false;
 };
 
 /// A boundary fact or store verdict as published, with its site.
@@ -362,6 +370,8 @@ private:
   /// §9.4: records the broken boundaries and their propagation.
   void applyBoundaries();
   void appendOrphanRows();
+  /// RFC 0032 §9: drops the possible findings linked to guarded facets.
+  void dropGuardedPossible();
   void reportRequireLevel();
 };
 

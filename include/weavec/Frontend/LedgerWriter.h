@@ -9,7 +9,8 @@
 // RFC 0030 §12: the writers of the ledger's two formats, over `llvm::json`
 // and `llvm::SHA256` (Core may not use LLVM):
 //
-//   - JSON, schema `weavec-ledger` version 1 (§12.1): object keys in the
+//   - JSON, schema `weavec-ledger` version 2 (§12.1, RFC 0032 §10): object keys
+//   in the
 //     order the RFC shows, functions, sites and diagnostics in source order,
 //     paths relative to the fingerprint root with `/` separators (absolute
 //     when outside it);
@@ -41,6 +42,10 @@
 #include <string_view>
 
 namespace weavec::frontend {
+
+/// The `version` of the `weavec-ledger` JSON schema: 2 since RFC 0032 (the
+/// `guarded` outcome, `config.runtime`, the guard templates and shares).
+inline constexpr int LedgerSchemaVersion = 2;
 
 /// `-fweavec-ledger-format=` / `--ledger-format=`.
 enum class LedgerFormat : std::uint8_t { Json, Sarif };

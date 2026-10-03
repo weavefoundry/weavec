@@ -321,6 +321,83 @@ int f(int *p, int *q, int *r, int *t) {
             core::SiteOutcome::Proven);
 }
 
+TEST(CheckPlanner, GuardsUnresolvedFacetsWhenTheRuntimeIsOn) {
+  // RFC 0032 §6: the guard table. An unresolved spatial facet of an access
+  // gets `object` (which answers for the temporal facet too), an unresolved
+  // temporal facet alone gets `live`; without the runtime both stay
+  // unresolved and nothing is planned.
+  const auto unit = collectUnit(R"c(
+struct vec { int *data; unsigned long n; };
+int f(struct vec *v, unsigned long i, int *p, int *q) {
+  return v->data[i] + *p + *q;
+}
+)c");
+  const SiteInfo *index =
+      siteNamed(unit, "f", "v->data[i]", core::SiteKind::Index);
+  const SiteInfo *p = siteNamed(unit, "f", "*p", core::SiteKind::Deref);
+  const SiteInfo *q = siteNamed(unit, "f", "*q", core::SiteKind::Deref);
+  ASSERT_TRUE(index && p && q);
+  const auto planWith = [&](bool runtime, core::UnitLedger &ledger) {
+    ledger.functions = unit.sites.ledgers();
+    core::FunctionLedger &row =
+        ledger.functions[unit.sites.function(*unit.function("f"))->index];
+    decideAll(row, core::FacetDecision::proven());
+    const auto decide = [&](const SiteInfo *site, core::Facet facet,
+                            core::UnresolvedReason reason) {
+      row.sites[site->id.ordinal].facet(facet)->decide(
+          core::FacetDecision::unresolvedFor(reason));
+    };
+    decide(index, core::Facet::Spatial, core::UnresolvedReason::UnknownExtent);
+    decide(index, core::Facet::Temporal, core::UnresolvedReason::MayReleased);
+    decide(p, core::Facet::Temporal, core::UnresolvedReason::MayReleased);
+    decide(q, core::Facet::Spatial, core::UnresolvedReason::UnknownIndex);
+    WitnessTable witnesses;
+    PlaceHandleTable handles;
+    return CheckPlanner(unit.context(), unit.sites, {.runtime = runtime})
+        .plan(ledger, witnesses, handles);
+  };
+
+  core::UnitLedger guardedLedger;
+  const core::CheckPlan plan = planWith(true, guardedLedger);
+  const std::vector<std::string> entries = spell(plan, guardedLedger);
+  const auto has = [&](const std::string &line) {
+    return std::ranges::find(entries, line) != entries.end();
+  };
+  // step 4, offset 0, width 4: the element's bytes.
+  EXPECT_TRUE(has("v->data[i] spatial object/plain/replace-access 4 0 4"));
+  EXPECT_TRUE(has("*p temporal live/plain/wrap-operand"));
+  EXPECT_TRUE(has("*q spatial object/plain/wrap-operand 0 4"));
+  EXPECT_EQ(plan.entries.size(), 3U);
+  for (const Entry &entry : plan.entries) {
+    EXPECT_TRUE(core::isWellFormed(entry));
+    EXPECT_TRUE(core::isGuard(entry));
+  }
+  const core::FunctionLedger &row =
+      guardedLedger.functions[unit.sites.function(*unit.function("f"))->index];
+  const auto compact = [&](const SiteInfo *site, core::Facet facet) {
+    return row.sites[site->id.ordinal].facet(facet)->decision.compact();
+  };
+  EXPECT_EQ(compact(index, core::Facet::Spatial), "guarded/unknown-extent");
+  // The object guard covers the element's lifetime as well.
+  EXPECT_EQ(compact(index, core::Facet::Temporal), "guarded/may-released");
+  EXPECT_EQ(compact(p, core::Facet::Temporal), "guarded/may-released");
+  EXPECT_EQ(compact(q, core::Facet::Spatial), "guarded/unknown-index");
+  EXPECT_EQ(compact(q, core::Facet::Temporal), "proven");
+  EXPECT_EQ(
+      row.sites[p->id.ordinal].facet(core::Facet::Temporal)->check,
+      (core::FacetCheck{.kind = core::CheckTemplate::Live, .proven = false}));
+
+  core::UnitLedger plainLedger;
+  const core::CheckPlan none = planWith(false, plainLedger);
+  EXPECT_TRUE(none.entries.empty());
+  EXPECT_EQ(
+      plainLedger.functions[unit.sites.function(*unit.function("f"))->index]
+          .sites[index->id.ordinal]
+          .facet(core::Facet::Spatial)
+          ->decision.compact(),
+      "unresolved/unknown-extent");
+}
+
 TEST(CheckPlanner, SetjmpDowngradesBecomeSetjmpWhenInexpressible) {
   const auto unit = collectUnit("int f(int *p) { return *p; }\n");
   core::UnitLedger ledger;

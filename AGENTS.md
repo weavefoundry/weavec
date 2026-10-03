@@ -8,34 +8,42 @@ most and where to find the rest.
 WeaveC is a Clang/LLVM-based C compiler and analysis tool that adds inferred
 ownership and borrowing to C. For every safety facet (spatial, null,
 temporal) of every memory operation it records one outcome in a *ledger*:
-proven, checked by a runtime check it inserts, a definite violation (an
-error), or unresolved or trusted with a reason. Three C++ libraries:
+proven, checked by a runtime check it inserts, guarded by a check against
+the runtime's object table, a definite violation (an error), or unresolved
+or trusted with a reason. Three C++ libraries:
 `weavec::Core` (the model, the ledger, pointer kinds, the library table;
 **no Clang/LLVM includes allowed**), `weavec::Analysis` (Clang AST → core
 facts: sites, kinds, the object engine behind the `SafetyEngine` seam in
 `lib/Analysis/Engine*.cpp`, the check planner; the only layer that includes
-both), `weavec::Frontend` (deferred CodeGen, check emission,
-zero-initialisation, ledger writers, unit records, whole-program
-orchestration, the compiler driver, diagnostics bridging).
-`runtime/` holds the small C runtime for report mode and precompiled
-headers. `tools/weavec` is a libTooling CLI; `tools/weavec-cc` is a drop-in C
-compiler (Clang's driver with WeaveC inside) that inserts the checks and
-analyses the whole program at link time. Full picture:
+both), `weavec::Frontend` (deferred CodeGen, check and guard emission, object
+registration, zero-initialisation, ledger writers, unit records,
+whole-program orchestration, the compiler driver, diagnostics bridging).
+`runtime/` is the C runtime every enforcing link carries: the object table
+(heap, stack and global objects), the guards and the reports
+(`libweavec_rt.a`), the arena allocator's `malloc` family
+(`libweavec_alloc.a`), and the out-of-line check helpers for precompiled
+headers (`libweavec_chk.a`). `tools/weavec` is a libTooling CLI;
+`tools/weavec-cc` is a drop-in C compiler (Clang's driver with WeaveC
+inside) that inserts the checks and guards, links the runtime and analyses
+the whole program at link time. Full picture:
 `docs/architecture.md`. Model semantics and the reasoning behind them:
 `docs/rfcs/`. Read `0001-ownership-model.md` first, then
 `0030-prove-or-trap.md`, which is the current model: it replaces RFC 0001's
 guarantee, amends RFCs 0002–0017 where they say so, and supersedes RFCs
 0018–0029. Then `0031-object-engine.md`, which replaced the engine behind
-the seam, the summary format (30) and the unit record format (29); read its
-*Implementation amendments* too. There is no checked mode.
+the seam and the summary format (30); read its *Implementation amendments*
+too. Then `0032-runtime-enforcement.md`, the current amendment of both: the
+`guarded` outcome, the runtime, the guards, ledger JSON version 2 and unit
+record format 30; read its *Implementation amendments* too, which override
+its body. There is no checked mode.
 
 ## Before touching the model or the checker
 
 Design decisions for `Core`, the checker (the engine behind `SafetyEngine`:
 `ObjectEngine` in `lib/Analysis/Engine*.cpp` over the domain in
 `include/weavec/Core/Heap.h`), the ledger and its outcomes and reasons,
-`LibrarySpec.txt`, `weavec.h`, diagnostic ids, the inserted checks, and
-what crosses translation units (exports, the program database, the unit
+`LibrarySpec.txt`, `weavec.h`, diagnostic ids, the inserted checks and
+guards, the runtime (`runtime/`), and what crosses translation units (exports, the program database, the unit
 record) are recorded as RFCs in `docs/rfcs/`.
 **Read the relevant RFC before changing any of these**, and treat it as
 authoritative over comments in the code. If the change you are about to
@@ -52,10 +60,13 @@ cmake --preset dev && cmake --build --preset dev && ctest --preset dev
 ```
 
 - Unit tests: `build/dev/unittests/WeaveC{Core,Analysis,Frontend}Tests`.
+- Runtime test: `ctest --preset dev -R '^runtime$'` (`runtime/test/rt_test.c`,
+  built as `weavec_rt_test`; test names as arguments run only those).
 - Integration tests: `lit -v build/dev/test` (FileCheck-based; see
   `test/README.md`).
 - Test cases: `scripts/run-cases.py [--filter 'soundness/**']` (see
-  `test/cases/README.md`); CTest runs them as `cases-<suite>`.
+  `test/cases/README.md`); CTest runs them as `cases-<suite>`. `--asan` adds
+  the ASan oracle; `--checks verify` fails on any `weavec.proven` trap.
 - Corpus gate: `scripts/corpus-gate.py --quick` (see `test/corpus/README.md`).
 - Hygiene gate: `scripts/check-hygiene.py`.
 - Format: `scripts/format.sh`; check: `scripts/check-format.sh`.
@@ -91,7 +102,9 @@ cmake --preset dev && cmake --build --preset dev && ctest --preset dev
    `DiagnosticSink`; library behaviour goes in
    `lib/Core/LibrarySpec.txt`, never in `name == "…"` tests; nothing under
    `lib/` names a corpus project; library code stays within its line
-   budget.
+   budget, and so does the runtime (`runtime/` without `runtime/test/`,
+   counted apart; RFC 0032 gate H1). The runtime is C and includes no WeaveC
+   header but its own `weavec_rt.h`.
 
 ## Where things are
 
@@ -103,7 +116,12 @@ cmake --preset dev && cmake --build --preset dev && ctest --preset dev
 | Change outcomes, reasons, the summary line | `lib/Core/Ledger.cpp`, `lib/Analysis/LedgerAdapter.cpp` (defaults, rollup) |
 | Change which sites exist             | `lib/Analysis/SiteCollector.cpp`                       |
 | Change pointer kinds / how annotations become kinds | `lib/Core/PointerKind.cpp`, `lib/Analysis/AttributeReader.cpp`, `lib/Analysis/KindInference*.cpp`; what the engine takes from them: `lib/Analysis/EngineKinds.cpp` |
-| Change which checks are inserted     | `lib/Analysis/CheckPlanner.cpp` (plan), `lib/Frontend/CheckEmitter.cpp` and `Prelude.cpp` (emission), `runtime/` |
+| Change which checks are inserted     | `lib/Analysis/CheckPlanner.cpp` (plan), `lib/Frontend/CheckEmitter.cpp` and `Prelude.cpp` (emission) |
+| Change which facets get a guard      | `CheckPlanner::planGuards` in `lib/Analysis/CheckPlanner.cpp` (RFC 0032 §6); the need of a call argument's guard: `objectWitness` in `lib/Analysis/EngineLibrary.cpp`; possible findings dropped on guarded facets: `LedgerAdapter::dropGuardedPossible` |
+| Change the guard helpers / range caches | `lib/Frontend/Prelude.cpp` (`GuardHelpers`, `RuntimeHelpers`, `RuntimeDeclarations`), `lib/Frontend/CheckEmitter.cpp` (`planCache`, `declareCaches`, `isQuietLoop`); oracle tests `test/Emission/runtime-oracle-*.c` |
+| Change stack / global object registration | `lib/Frontend/ObjectRegistration.cpp` (`planObjects`), `CheckEmitter::registerObjects` |
+| Change the runtime (allocator, object table, guards, reports) | `runtime/weavec_alloc.c`, `weavec_malloc.c`, `weavec_objects.c`, `weavec_report.c`, `weavec_rt.h` (the prelude declares the same entry points); its C test `runtime/test/rt_test.c` (CTest `runtime`); cases in `test/cases/semantics/runtime/` |
+| Change the runtime's link line and fallbacks | `lib/Frontend/Driver.cpp` (`addRuntimeLibraries`, `runtimeObstacle`, `allocatorDefinedBy`, `dropAllocatorIfDefined`); `test/Driver/runtime-*.c` |
 | Change zero-initialisation           | `lib/Frontend/ZeroInit.cpp`                            |
 | Evaluate an expression / map an lvalue to an address | `lib/Analysis/EngineExpr.cpp` (`Transfer::evaluate`, `Transfer::addressOf`) |
 | Model a C library function / allocator / releaser | `lib/Core/LibrarySpec.txt` (one unit test per row in `unittests/Core/LibrarySpecTest.cpp`); how the engine applies a row: `lib/Analysis/EngineCalls.cpp` (effects), `lib/Analysis/EngineLibrary.cpp` (argument requirements) |
@@ -114,10 +132,11 @@ cmake --preset dev && cmake --build --preset dev && ctest --preset dev
 | Change what a unit exports / the program database | `UnitRun::exports` in `lib/Analysis/EngineUnit.cpp`, `lib/Analysis/ProgramDatabase.cpp` (RFC 0005, RFC 0031 §7) |
 | Change the summary text format       | `lib/Core/EffectsIO.cpp` (format 30; round-trip tests in `unittests/Core/EffectsIOTest.cpp`) |
 | Change the whole-program algorithm / link step | `lib/Frontend/ProgramAnalysis.cpp`, `lib/Frontend/Driver.cpp` |
-| Change the unit record (`foo.o.weavec`) | `lib/Frontend/UnitRecord.cpp` (format 29; the schema fingerprint follows the codec's field table), `lib/Frontend/RecordPayload.cpp` (the field table) |
-| Change the ledger JSON / SARIF       | `lib/Frontend/LedgerWriter.cpp`, `lib/Frontend/LedgerOutput.cpp` |
+| Change the unit record (`foo.o.weavec`) | `lib/Frontend/UnitRecord.cpp` (format 30; the schema fingerprint follows the codec's field table), `lib/Frontend/RecordPayload.cpp` (the field table) |
+| Change the ledger JSON / SARIF       | `lib/Frontend/LedgerWriter.cpp` (`weavec-ledger` version 2, `LedgerSchemaVersion`), `lib/Frontend/LedgerOutput.cpp` |
 | Change `weavec-cc` (driver, cc1 wrapping, link step) | `lib/Frontend/Driver.cpp`, `tools/weavec-cc/main.cpp` |
 | Change `-W` / `-fweavec-*` handling  | `lib/Frontend/DiagnosticControl.cpp`, `DriverOptions` in `Driver.h` |
+| Debug what the runtime did           | `WEAVEC_RT_STATS=1 ./prog` prints the allocator's and the guards' counters on stderr at exit (`runtime/weavec_report.c`); `-fweavec-checks=report` prints each failed check or guard and goes on |
 | Debug what the checker inferred      | `weavec --dump-analysis file.c --`; `weavec --dump-kinds file.c --`; `weavec --ledger=out.json file.c --`; `weavec --whole-program --dump-analysis a.c b.c --`; `WEAVEC_ENGINE_DUMP=1` prints every summary on stderr, `=2` adds each run's exit states, `=3` each block's entry state instead (`lib/Analysis/EngineUnit.cpp`, `EngineSummary.cpp`, `EngineRun.cpp`) |
 | Add or run a test case               | `test/cases/README.md`, `scripts/run-cases.py`         |
 | Measure precision on real code       | `scripts/corpus-gate.py`, `test/corpus/` (README, manifest, expected ratchet, triage) |

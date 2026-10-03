@@ -1,4 +1,4 @@
-//===- CheckPlanner.cpp - Checks from witnesses (RFC 0030) ----------------===//
+//===- CheckPlanner.cpp - Checks from witnesses (RFC 0030, RFC 0032) ------===//
 //
 // Part of WeaveC, under the Apache License v2.0 with LLVM Exceptions.
 // See LICENSE for license information.
@@ -9,6 +9,7 @@
 #include "weavec/Analysis/CheckPlanner.h"
 
 #include "clang/AST/Expr.h"
+#include "clang/AST/RecordLayout.h"
 #include "clang/AST/RecursiveASTVisitor.h"
 #include "clang/AST/Stmt.h"
 
@@ -232,8 +233,9 @@ class TermBuilder {
 public:
   TermBuilder(const clang::ASTContext &ctx,
               const llvm::DenseSet<const clang::VarDecl *> &addressTakenLocals,
-              PlaceHandleTable &handleTable)
-      : context(ctx), addressTaken(addressTakenLocals), handles(handleTable) {}
+              PlaceHandleTable &handleTable, bool stringsInObject = false)
+      : context(ctx), addressTaken(addressTakenLocals), handles(handleTable),
+        objectStrings(stringsInObject) {}
 
   std::optional<core::CheckTerm>
   build(const WitnessTerm &term, const std::optional<core::CheckTerm> &have) {
@@ -279,11 +281,17 @@ public:
       // Rule 2: `strlen(p)` is `__weavec_strnlen(p, have)`.
       if (term.operands.empty())
         return fail("it is malformed");
-      if (!have)
+      if (!have && !objectStrings)
         return fail("the string length has no bound here");
       auto pointer = build(term.operands.front(), have);
       if (!pointer)
         return std::nullopt;
+      // RFC 0032 §6: without a have, the string's own object bounds it.
+      if (!have) {
+        if (pointer->kind != core::CheckTerm::Kind::Place)
+          return fail("the string has no name here");
+        return core::CheckTerm::objStrLen(std::move(*pointer));
+      }
       return core::CheckTerm::strnlen(std::move(*pointer), *have);
     }
     case WitnessTerm::Kind::Expr:
@@ -301,6 +309,7 @@ private:
   const clang::ASTContext &context;
   const llvm::DenseSet<const clang::VarDecl *> &addressTaken;
   PlaceHandleTable &handles;
+  bool objectStrings;
 
   std::nullopt_t fail(std::string why) {
     if (failure.empty())
@@ -520,7 +529,8 @@ static void checkReadsThrough(core::CheckTerm &term) {
 CheckPlanner::Expression
 CheckPlanner::express(const WitnessTerm &term, const SiteInfo &site,
                       const CheckWitness &witness, PlaceHandleTable &handles,
-                      const std::optional<core::CheckTerm> &have) const {
+                      const std::optional<core::CheckTerm> &have,
+                      bool objectStrings) const {
   static const llvm::DenseSet<const clang::VarDecl *> None;
   const SiteIndex::FunctionSites *function = nullptr;
   if (site.id.function < sites.functions().size())
@@ -529,7 +539,7 @@ CheckPlanner::express(const WitnessTerm &term, const SiteInfo &site,
                       function != nullptr && function->decl != nullptr
                           ? addressTakenIn(*function->decl)
                           : None,
-                      handles);
+                      handles, objectStrings);
   Expression result;
   auto built = builder.build(term, have);
   if (!built) {
@@ -640,7 +650,9 @@ public:
       return true;
     }
     case core::Facet::Temporal:
-      return fail(failure, "temporal facets are never checked");
+      // A temporal facet has no static check; RFC 0032's `live` guard is
+      // planned by `planGuards`.
+      return fail(failure, "a temporal facet has no static check");
     }
     return fail(failure, "the facet has no check");
   }
@@ -877,6 +889,9 @@ private:
                                 *witness.argument));
         break;
       }
+      case CheckWitness::Shape::Object:
+        // RFC 0032 §6: what a guard compares; no static check.
+        return fail(failure, "only the runtime knows the extent");
       }
     }
     return true;
@@ -884,6 +899,392 @@ private:
 };
 
 } // namespace
+
+//===----------------------------------------------------------------------===//
+// Guards (RFC 0032 §6)
+//===----------------------------------------------------------------------===//
+
+const clang::ParentMap *
+CheckPlanner::parentsIn(const clang::FunctionDecl &function) const {
+  std::unique_ptr<clang::ParentMap> &map =
+      parentMaps[function.getCanonicalDecl()];
+  if (!map)
+    if (clang::Stmt *body = function.getBody())
+      map = std::make_unique<clang::ParentMap>(body);
+  return map.get();
+}
+
+/// The size of an object type in bytes, when it is a constant.
+static std::optional<std::int64_t>
+constantSize(const clang::ASTContext &context, clang::QualType type) {
+  if (type.isNull() || type->isDependentType() || type->isIncompleteType() ||
+      type->isFunctionType() || !type->isConstantSizeType())
+    return std::nullopt;
+  return context.getTypeSizeInChars(type).getQuantity();
+}
+
+std::optional<CheckPlanner::AccessBytes>
+CheckPlanner::accessBytes(const SiteInfo &site) const {
+  const auto *access = llvm::dyn_cast_or_null<clang::Expr>(site.stmt);
+  if (access == nullptr || site.id.function >= sites.functions().size())
+    return std::nullopt;
+  const clang::FunctionDecl *function =
+      sites.functions()[site.id.function].decl;
+  const clang::ParentMap *parents =
+      function != nullptr ? parentsIn(*function) : nullptr;
+  AccessBytes bytes;
+  clang::QualType type = access->getType();
+  // A bit-field: the bytes its bits lie in.
+  const auto bitField = [&](const clang::FieldDecl &field,
+                            std::int64_t base) -> AccessBytes {
+    const std::uint64_t first = context.getFieldOffset(&field);
+    const std::uint64_t bits = field.getBitWidthValue();
+    AccessBytes result = bytes;
+    result.offset =
+        base + static_cast<std::int64_t>(first / context.getCharWidth());
+    result.width = static_cast<std::int64_t>(((first % context.getCharWidth()) +
+                                              std::max<std::uint64_t>(bits, 1) +
+                                              context.getCharWidth() - 1) /
+                                             context.getCharWidth());
+    return result;
+  };
+  // The access itself: `p->f` starts at the member; `*p` and `p[i]` at 0.
+  if (const auto *member = llvm::dyn_cast<clang::MemberExpr>(access)) {
+    const auto *field =
+        llvm::dyn_cast<clang::FieldDecl>(member->getMemberDecl());
+    if (field == nullptr || field->getParent()->isInvalidDecl())
+      return std::nullopt;
+    if (field->isBitField())
+      return bitField(*field, 0);
+    bytes.offset = static_cast<std::int64_t>(context.getFieldOffset(field) /
+                                             context.getCharWidth());
+  } else if (site.index != nullptr) {
+    const auto element = constantSize(context, type);
+    if (!element)
+      return std::nullopt;
+    bytes.step = *element;
+  }
+  // The member chain above it narrows the access to the member it names.
+  const clang::Stmt *current = access;
+  for (unsigned depth = 0; parents != nullptr && depth < 64; ++depth) {
+    const clang::Stmt *parent = parents->getParent(current);
+    if (parent == nullptr)
+      break;
+    if (llvm::isa<clang::ParenExpr>(parent)) {
+      current = parent;
+      continue;
+    }
+    const auto *member = llvm::dyn_cast<clang::MemberExpr>(parent);
+    if (member == nullptr || member->isArrow())
+      break;
+    const auto *field =
+        llvm::dyn_cast<clang::FieldDecl>(member->getMemberDecl());
+    if (field == nullptr || field->getParent()->isInvalidDecl())
+      break;
+    if (field->isBitField())
+      return bitField(*field, bytes.offset);
+    bytes.offset += static_cast<std::int64_t>(context.getFieldOffset(field) /
+                                              context.getCharWidth());
+    type = member->getType();
+    current = parent;
+  }
+  const auto width = constantSize(context, type);
+  if (!width)
+    return std::nullopt;
+  bytes.width = *width;
+  return bytes;
+}
+
+/// RFC 0032 §6: the reasons a guard does not answer: they are not about one
+/// object's bounds or liveness at the site.
+static bool guardableReason(core::UnresolvedReason reason) {
+  switch (reason) {
+  case core::UnresolvedReason::NoZeroInit:
+  case core::UnresolvedReason::SecondOwner:
+  case core::UnresolvedReason::MayConflict:
+  case core::UnresolvedReason::MayDangle:
+    return false;
+  default:
+    return true;
+  }
+}
+
+static bool isUnresolvedForGuard(const core::FacetDecision &decision) {
+  return decision.outcome == core::SiteOutcome::Unresolved &&
+         decision.unresolved && guardableReason(*decision.unresolved);
+}
+
+/// `*p`, `p->f`, `p[i]` and `*(p + i)`: what `CheckEmitter` can wrap or
+/// replace in place.
+static bool isReplaceableIndex(const clang::Stmt *stmt) {
+  if (llvm::isa_and_nonnull<clang::ArraySubscriptExpr>(stmt))
+    return true;
+  const auto *deref = llvm::dyn_cast_or_null<clang::UnaryOperator>(stmt);
+  if (deref == nullptr || deref->getOpcode() != clang::UO_Deref)
+    return false;
+  const auto *sum = llvm::dyn_cast<clang::BinaryOperator>(
+      deref->getSubExpr()->IgnoreParens());
+  return sum != nullptr && sum->getOpcode() == clang::BO_Add;
+}
+
+/// The argument of a heap-family release or reallocation (RFC 0032 §6):
+/// what the runtime's allocator can validate.
+static bool releasesHeap(const SiteInfo &site) {
+  if (!site.library || site.library->entry == nullptr)
+    return false;
+  return llvm::any_of(
+      site.library->entry->params, [](const core::LibraryParam &param) {
+        return (param.effect == core::LibraryParam::Effect::Release ||
+                param.effect == core::LibraryParam::Effect::Realloc) &&
+               param.family == core::HeapFamily;
+      });
+}
+
+void CheckPlanner::planGuards(const SiteInfo &site, core::Site &row,
+                              const WitnessTable &witnesses,
+                              PlaceHandleTable &handles,
+                              std::vector<Entry> &planned) const {
+  // RFC 0030 §2.1: no check can serve these sites.
+  if (site.constantExpression || site.sharedOperand ||
+      site.nonDefaultAddressSpace || site.stmt == nullptr)
+    return;
+  const bool verify = options.checks == core::ChecksMode::Verify;
+  // What a facet wants: a guard (it is unresolved), a verify guard (it is
+  // proven and nothing checks it yet), or nothing.
+  enum class Want : std::uint8_t { None, Guard, Verify };
+  const auto wantOf = [&](const core::FacetRecord *record) {
+    if (record == nullptr || !record->decided)
+      return Want::None;
+    if (isUnresolvedForGuard(record->decision))
+      return Want::Guard;
+    if (verify && record->outcome() == core::SiteOutcome::Proven &&
+        !record->check)
+      return Want::Verify;
+    return Want::None;
+  };
+  const auto add = [&](Entry entry, core::Facet facet, bool proven,
+                       std::uint16_t requirement = 0) {
+    entry.site = site.id;
+    entry.facet = facet;
+    entry.requirement = requirement;
+    entry.proven = proven;
+    assert(core::isWellFormed(entry) && "a malformed guard");
+    planned.push_back(std::move(entry));
+    return core::facetCheck(planned.back());
+  };
+  const auto guard = [](core::FacetRecord &record, core::FacetCheck check) {
+    if (record.outcome() == core::SiteOutcome::Unresolved)
+      record.decision = core::FacetDecision::guardedFor(
+          *record.decision.unresolved, std::move(record.decision.detail));
+    record.check = check;
+  };
+  core::FacetRecord *spatial = row.facet(core::Facet::Spatial);
+  core::FacetRecord *temporal = row.facet(core::Facet::Temporal);
+
+  const bool access = site.kind == core::SiteKind::Deref ||
+                      site.kind == core::SiteKind::Index ||
+                      (site.kind == core::SiteKind::Raw && !site.library);
+  if (access) {
+    Want wantSpatial = wantOf(spatial);
+    // The types alone prove these; nothing a guard could add.
+    if (wantSpatial == Want::Verify && site.provenByType)
+      wantSpatial = Want::None;
+    const Want wantTemporal =
+        site.operand != nullptr && site.operand->getType()->isPointerType()
+            ? wantOf(temporal)
+            : Want::None;
+    std::optional<core::FacetCheck> object;
+    if (wantSpatial != Want::None) {
+      const auto bytes = accessBytes(site);
+      const bool proven = wantSpatial == Want::Verify;
+      if (bytes && site.index != nullptr && isReplaceableIndex(site.stmt)) {
+        object = add(makeEntry(Entry::Template::Object, Entry::Form::Plain,
+                               Entry::Placement::ReplaceAccess,
+                               {core::CheckTerm::ofConstant(bytes->step),
+                                core::CheckTerm::ofConstant(bytes->offset),
+                                core::CheckTerm::ofConstant(bytes->width)}),
+                     core::Facet::Spatial, proven);
+      } else if (bytes && site.index == nullptr && site.operand != nullptr &&
+                 site.operand->getType()->isPointerType()) {
+        object = add(makeEntry(Entry::Template::Object, Entry::Form::Plain,
+                               Entry::Placement::WrapOperand,
+                               {core::CheckTerm::ofConstant(bytes->offset),
+                                core::CheckTerm::ofConstant(bytes->width)}),
+                     core::Facet::Spatial, proven);
+      }
+      if (object)
+        guard(*spatial, *object);
+    }
+    if (wantTemporal != Want::None) {
+      const bool proven = wantTemporal == Want::Verify;
+      // An `object` guard of the same family already fails on a dead
+      // object; a verify guard and a real one must not stand in for each
+      // other, or a false proof would look like an ordinary trap.
+      if (object && object->proven == proven)
+        guard(*temporal, *object);
+      else
+        guard(*temporal,
+              add(makeEntry(Entry::Template::Live, Entry::Form::Plain,
+                            Entry::Placement::WrapOperand),
+                  core::Facet::Temporal, proven));
+    }
+    return;
+  }
+
+  // A heap release: the allocator's own validation, at the site.
+  if ((site.kind == core::SiteKind::Release ||
+       (site.kind == core::SiteKind::Raw && site.library)) &&
+      site.operand != nullptr && releasesHeap(site)) {
+    const Want wantSpatial = wantOf(spatial);
+    const Want wantTemporal = wantOf(temporal);
+    for (const Want want : {Want::Verify, Want::Guard}) {
+      if (wantSpatial != want && wantTemporal != want)
+        continue;
+      const core::FacetCheck check = add(
+          makeEntry(Entry::Template::Release, Entry::Form::Plain,
+                    Entry::Placement::WrapOperand),
+          wantTemporal == want ? core::Facet::Temporal : core::Facet::Spatial,
+          want == Want::Verify);
+      for (core::FacetRecord *record : {spatial, temporal}) {
+        if (record == nullptr || wantOf(record) != want)
+          continue;
+        for (core::Requirement &requirement : record->requirements)
+          if (isUnresolvedForGuard(requirement.decision)) {
+            requirement.decision = core::FacetDecision::guardedFor(
+                *requirement.decision.unresolved);
+            requirement.check = check;
+          }
+        guard(*record, check);
+      }
+    }
+    return;
+  }
+
+  const auto *call = llvm::dyn_cast<clang::CallExpr>(site.stmt);
+  if (call == nullptr || !isCallLike(site.kind) ||
+      (site.kind == core::SiteKind::Call &&
+       site.boundary != core::Boundary::Call))
+    return;
+  // Arguments an `object` guard already covers, by whether it is a verify
+  // guard.
+  std::set<std::pair<unsigned, bool>> covered;
+  if (spatial != nullptr && spatial->decided &&
+      !spatial->requirements.empty()) {
+    const llvm::ArrayRef<CheckWitness> all =
+        witnesses.of(site.id, core::Facet::Spatial);
+    std::optional<core::UnresolvedReason> reason;
+    bool left = false;
+    for (std::size_t i = 0; i < spatial->requirements.size(); ++i) {
+      core::Requirement &requirement = spatial->requirements[i];
+      if (requirement.decision.outcome != core::SiteOutcome::Unresolved)
+        continue;
+      const auto index = static_cast<std::uint16_t>(i);
+      const CheckWitness *witness = nullptr;
+      for (const CheckWitness &candidate : all)
+        if (candidate.requirement == std::optional(index) &&
+            (candidate.shape == CheckWitness::Shape::Object ||
+             candidate.shape == CheckWitness::Shape::Disjoint))
+          witness = &candidate;
+      // A requirement that binds only under a guard term has no guard yet:
+      // the helpers take no condition.
+      if (!isUnresolvedForGuard(requirement.decision) || witness == nullptr ||
+          !witness->argument || witness->guard ||
+          *witness->argument >= call->getNumArgs() ||
+          !call->getArg(*witness->argument)->getType()->isPointerType()) {
+        left = true;
+        continue;
+      }
+      std::optional<Entry> entry;
+      if (witness->shape == CheckWitness::Shape::Disjoint) {
+        // An overlap check whose length is a string's: the static check
+        // had no bound to read it with; the guard reads it inside the
+        // string's own object.
+        if (witness->need && witness->other) {
+          auto other = express(*witness->other, site, *witness, handles);
+          auto length = express(*witness->need, site, *witness, handles,
+                                std::nullopt, /*objectStrings=*/true);
+          if (other.term && length.term &&
+              other.term->kind == core::CheckTerm::Kind::Place)
+            entry = makeEntry(Entry::Template::Disjoint, Entry::Form::Plain,
+                              Entry::Placement::WrapArgument,
+                              {std::move(*other.term), std::move(*length.term)},
+                              *witness->argument);
+        }
+      } else if (witness->string) {
+        entry =
+            makeEntry(Entry::Template::Object, Entry::Form::String,
+                      Entry::Placement::WrapArgument, {}, *witness->argument);
+      } else if (witness->need) {
+        auto need = express(*witness->need, site, *witness, handles,
+                            std::nullopt, /*objectStrings=*/true);
+        if (need.term)
+          entry = makeEntry(Entry::Template::Object, Entry::Form::Need,
+                            Entry::Placement::WrapArgument,
+                            {std::move(*need.term)}, *witness->argument);
+      }
+      if (!entry) {
+        left = true;
+        continue;
+      }
+      reason = requirement.decision.unresolved;
+      requirement.check =
+          add(std::move(*entry), core::Facet::Spatial, false, index);
+      requirement.decision = core::FacetDecision::guardedFor(
+          *reason, std::move(requirement.decision.detail));
+      if (witness->shape != CheckWitness::Shape::Disjoint)
+        covered.insert({*witness->argument, false});
+    }
+    // The merged facet follows its records once none is left unresolved.
+    if (reason && !left &&
+        spatial->outcome() == core::SiteOutcome::Unresolved) {
+      spatial->decision = core::FacetDecision::guardedFor(
+          *spatial->decision.unresolved, std::move(spatial->decision.detail));
+      for (const core::Requirement &requirement : spatial->requirements)
+        if (requirement.check &&
+            requirement.decision.outcome == core::SiteOutcome::Guarded) {
+          spatial->check = requirement.check;
+          break;
+        }
+    }
+  }
+
+  // The temporal facet of a library call: every pointer the row reads or
+  // writes through is live. A row whose variadic arguments may be pointers
+  // (the `printf` family) names no such list, and stays unresolved.
+  const Want wantTemporal = wantOf(temporal);
+  if (site.kind != core::SiteKind::LibCall || wantTemporal == Want::None ||
+      !site.library || site.library->entry == nullptr ||
+      site.library->entry->variadic || !temporal->requirements.empty())
+    return;
+  const bool proven = wantTemporal == Want::Verify;
+  std::vector<unsigned> arguments;
+  for (unsigned i = 0; i < call->getNumArgs(); ++i) {
+    const core::LibraryParam *param = site.library->param(i);
+    if (param == nullptr || param->type != core::LibraryParam::Type::Pointer ||
+        !call->getArg(i)->getType()->isPointerType())
+      continue;
+    const bool accessed = param->access != core::LibraryParam::Access::None ||
+                          param->string || param->bytes || param->count;
+    if (accessed && param->effect == core::LibraryParam::Effect::Borrow)
+      arguments.push_back(i);
+  }
+  if (arguments.empty() || arguments.size() > 255)
+    return;
+  std::optional<core::FacetCheck> check;
+  for (const unsigned argument : arguments) {
+    if (covered.contains({argument, proven})) {
+      if (!check)
+        check = core::FacetCheck{.kind = core::CheckTemplate::Object,
+                                 .proven = proven};
+      continue;
+    }
+    check = add(makeEntry(Entry::Template::Live, Entry::Form::Plain,
+                          Entry::Placement::WrapArgument, {},
+                          static_cast<std::uint8_t>(argument)),
+                core::Facet::Temporal, proven);
+  }
+  guard(*temporal, *check);
+}
 
 /// The witnesses of one record: those naming its requirement, or, for the
 /// facet as a whole, those naming none.
@@ -1016,6 +1417,11 @@ core::CheckPlan CheckPlanner::plan(core::UnitLedger &unit,
               break;
             }
       }
+
+      // RFC 0032 §6: what is still unresolved is guarded, where the site has
+      // a pointer operand.
+      if (options.runtime)
+        planGuards(site, *ledgerSite, witnesses, handles, planned);
 
       // §10.4: a span check traps on null, so it replaces the nonnull check
       // of the same operand.

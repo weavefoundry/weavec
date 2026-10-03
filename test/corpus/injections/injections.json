@@ -11,7 +11,14 @@
     "by either. `mode` is unit (the patched file alone) or whole-program (weavec",
     "--whole-program over the config's files, and a weavec-cc link where the config has",
     "`link`). `required` entries must be reported for G12 to pass; `dossier` records what",
-    "the v0.10.0 measurement found (caught or missed) where it measured the same bug."
+    "the v0.10.0 measurement found (caught or missed) where it measured the same bug.",
+    "The entries with only `expect.trap` in object, live or release (RFC 0032, section 12, gate R2)",
+    "are bugs the analysis leaves unresolved by design: a write past an extent only the allocator",
+    "knows, a read through a pointer a reallocation moved, a release behind a function pointer.",
+    "They are met only by the runtime's guard failing at the injected line.",
+    "`expect.trap: release` is also met when the run dies with the allocator's own",
+    "`weavec: invalid release of 0x...` (a release behind a function pointer has no site to guard,",
+    "so no line is named)."
   ],
   "injections": [
     {
@@ -87,10 +94,12 @@
         "ids": [
           "double-free"
         ],
-        "severity": "any"
+        "severity": "any",
+        "trap": "release",
+        "run": "ctest --test-dir out --output-on-failure -R '^(cJSON_test|parse_examples|misc_tests)$'"
       },
       "mode": "unit",
-      "description": "cJSON_Delete frees the value string twice through the deallocate hook"
+      "description": "cJSON_Delete frees the value string twice through the deallocate hook; the analysis of the unit alone does not see through the hook, and the runtime's allocator refuses the second release"
     },
     {
       "id": "cjson-oob-number",
@@ -503,6 +512,127 @@
       },
       "mode": "whole-program",
       "description": "do_dump passes snprintf a size one larger than its integer buffer"
+    },
+    {
+      "id": "sds-oob-range",
+      "config": "sds",
+      "patch": "sds/oob-range.patch",
+      "file": "sds.c",
+      "line": 779,
+      "expect": {
+        "trap": "object",
+        "run": "./sds-test"
+      },
+      "mode": "unit",
+      "required": true,
+      "description": "sdsrange writes one byte past the terminator's byte; for a string with no spare room (alloc == len) that is one past its allocation, which only the runtime knows the size of"
+    },
+    {
+      "id": "sds-uaf-catlen",
+      "config": "sds",
+      "patch": "sds/uaf-catlen.patch",
+      "file": "sds.c",
+      "line": 406,
+      "expect": {
+        "trap": "live",
+        "run": "./sds-test"
+      },
+      "mode": "unit",
+      "required": true,
+      "description": "sdscatlen reads the string through the pointer it had before sdsMakeRoomFor, which reallocates (and here moves) the header allocation when the string has to grow"
+    },
+    {
+      "id": "cjson-oob-string-terminator",
+      "config": "cJSON",
+      "patch": "cJSON/oob-string-terminator.patch",
+      "file": "cJSON.c",
+      "line": 929,
+      "expect": {
+        "trap": "object",
+        "run": "ctest --test-dir out -V -R '^(parse_string|parse_examples|print_string)$'"
+      },
+      "mode": "unit",
+      "required": true,
+      "description": "parse_string writes a byte two past its terminator, which is one byte past its output allocation (the string's length, its opening quote's byte and the terminator) whenever the string has no escape sequence"
+    },
+    {
+      "id": "cjson-uaf-print-realloc",
+      "config": "cJSON",
+      "patch": "cJSON/uaf-print-realloc.patch",
+      "file": "cJSON.c",
+      "line": 1271,
+      "expect": {
+        "ids": [
+          "use-after-move",
+          "use-after-free"
+        ],
+        "severity": "any",
+        "trap": "live",
+        "run": "ctest --test-dir out -V -R '^(parse_string|parse_examples|print_string)$'"
+      },
+      "mode": "unit",
+      "required": true,
+      "description": "print reads the print buffer through buffer->buffer after hooks->reallocate (a function pointer) shrank it, which moves it to a smaller size class"
+    },
+    {
+      "id": "zlib-oob-window",
+      "config": "zlib",
+      "patch": "zlib/oob-window.patch",
+      "file": "inflate.c",
+      "line": 272,
+      "expect": {
+        "trap": "object",
+        "run": "./example"
+      },
+      "mode": "whole-program",
+      "required": true,
+      "description": "updatewindow writes window[wsize], one byte past the sliding window ZALLOC (a function pointer) returned"
+    },
+    {
+      "id": "zlib-uaf-window",
+      "config": "zlib",
+      "patch": "zlib/uaf-window.patch",
+      "file": "inflate.c",
+      "line": 1161,
+      "expect": {
+        "ids": [
+          "use-after-free"
+        ],
+        "severity": "any",
+        "trap": "object",
+        "run": "./example"
+      },
+      "mode": "whole-program",
+      "required": true,
+      "description": "inflateEnd reads the sliding window after ZFREE (a function pointer) released it"
+    },
+    {
+      "id": "lua-oob-newlclosure",
+      "config": "lua",
+      "patch": "lua/oob-newlclosure.patch",
+      "file": "lfunc.c",
+      "line": 40,
+      "expect": {
+        "trap": "object",
+        "run": "./lua -e \"local function f(n) if n == 0 then return 0 end return 1 + f(n - 1) end assert(f(5000) == 5000)\""
+      },
+      "mode": "whole-program",
+      "required": true,
+      "description": "luaF_newLclosure clears upvals[nupvals], one element past the closure's trailing upvalue array"
+    },
+    {
+      "id": "lua-uaf-reallocstack",
+      "config": "lua",
+      "patch": "lua/uaf-reallocstack.patch",
+      "file": "ldo.c",
+      "line": 349,
+      "expect": {
+        "trap": "live",
+        "run": "./lua -e \"local function f(n) if n == 0 then return 0 end return 1 + f(n - 1) end assert(f(5000) == 5000)\""
+      },
+      "mode": "whole-program",
+      "required": true,
+      "description": "luaD_reallocstack reads the first stack slot through the old stack pointer after luaM_reallocvector moved the stack"
     }
   ]
 }

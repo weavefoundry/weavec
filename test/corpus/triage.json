@@ -12,7 +12,46 @@
     "same fingerprint under `lowered` in manifest.json.",
     "Entries appear once the RFC 0030 compiler writes ledgers (S3); v0.10.0's findings have no",
     "fingerprints and are not triaged here. Entries a run no longer matches are removed when the",
-    "population is re-triaged (RFC 0031 stage S7 did so for the original configs)."
+    "population is re-triaged (RFC 0031 stage S7 did so for the original configs).",
+    "`guardFailures` (RFC 0032, gate R3) lists the guard failures of a test suite that were",
+    "triaged as true bugs: {config, file, line, template, verdict, note}, verdict always \"true\"",
+    "and note the source evidence. A failure at such a site is not counted as a trap (G11); an",
+    "entry no report-mode run names is reported as stale without failing. A false trap is never",
+    "triaged: it is a bug in WeaveC."
+  ],
+  "guardFailures": [
+    {
+      "config": "jansson",
+      "file": "src/lookup3.h",
+      "line": 259,
+      "template": "object",
+      "verdict": "true",
+      "note": "TRUE out-of-bounds read, by the source's own account. hashlittle's tail switch reads a whole 32-bit word of the key and masks off the bytes past the key's end (here `c+=k[2]&0xffffff`). The comment above the switch (lookup3.h:240-247) says that the expression \"actually reads beyond the end of the string, but then masks off the part it's not allowed to read\" and that Valgrind \"will still catch it and complain\"; lookup3.h:210-220 defines NO_MASKING_TRICK, which selects the byte-wise tail instead, under VALGRIND and when the compiler reports AddressSanitizer. The key is what hashtable.c passes to hash_str (hashtable.c:38, called at 238, 265, 276 and 303): the caller's key, or a pair's flexible `key` member allocated with offsetof(pair_t, key) + key_len + 1 bytes (hashtable.c:210). When the key's object ends less than a word after the last full word of the key, the read crosses the end of the object. The report-mode run of the CTest suite names these four lines and then passes."
+    },
+    {
+      "config": "jansson",
+      "file": "src/lookup3.h",
+      "line": 260,
+      "template": "object",
+      "verdict": "true",
+      "note": "TRUE out-of-bounds read, by the source's own account. hashlittle's tail switch reads a whole 32-bit word of the key and masks off the bytes past the key's end (here `c+=k[2]&0xffff`). The comment above the switch (lookup3.h:240-247) says that the expression \"actually reads beyond the end of the string, but then masks off the part it's not allowed to read\" and that Valgrind \"will still catch it and complain\"; lookup3.h:210-220 defines NO_MASKING_TRICK, which selects the byte-wise tail instead, under VALGRIND and when the compiler reports AddressSanitizer. The key is what hashtable.c passes to hash_str (hashtable.c:38, called at 238, 265, 276 and 303): the caller's key, or a pair's flexible `key` member allocated with offsetof(pair_t, key) + key_len + 1 bytes (hashtable.c:210). When the key's object ends less than a word after the last full word of the key, the read crosses the end of the object. The report-mode run of the CTest suite names these four lines and then passes."
+    },
+    {
+      "config": "jansson",
+      "file": "src/lookup3.h",
+      "line": 263,
+      "template": "object",
+      "verdict": "true",
+      "note": "TRUE out-of-bounds read, by the source's own account. hashlittle's tail switch reads a whole 32-bit word of the key and masks off the bytes past the key's end (here `b+=k[1]&0xffffff`). The comment above the switch (lookup3.h:240-247) says that the expression \"actually reads beyond the end of the string, but then masks off the part it's not allowed to read\" and that Valgrind \"will still catch it and complain\"; lookup3.h:210-220 defines NO_MASKING_TRICK, which selects the byte-wise tail instead, under VALGRIND and when the compiler reports AddressSanitizer. The key is what hashtable.c passes to hash_str (hashtable.c:38, called at 238, 265, 276 and 303): the caller's key, or a pair's flexible `key` member allocated with offsetof(pair_t, key) + key_len + 1 bytes (hashtable.c:210). When the key's object ends less than a word after the last full word of the key, the read crosses the end of the object. The report-mode run of the CTest suite names these four lines and then passes."
+    },
+    {
+      "config": "jansson",
+      "file": "src/lookup3.h",
+      "line": 264,
+      "template": "object",
+      "verdict": "true",
+      "note": "TRUE out-of-bounds read, by the source's own account. hashlittle's tail switch reads a whole 32-bit word of the key and masks off the bytes past the key's end (here `b+=k[1]&0xffff`). The comment above the switch (lookup3.h:240-247) says that the expression \"actually reads beyond the end of the string, but then masks off the part it's not allowed to read\" and that Valgrind \"will still catch it and complain\"; lookup3.h:210-220 defines NO_MASKING_TRICK, which selects the byte-wise tail instead, under VALGRIND and when the compiler reports AddressSanitizer. The key is what hashtable.c passes to hash_str (hashtable.c:38, called at 238, 265, 276 and 303): the caller's key, or a pair's flexible `key` member allocated with offsetof(pair_t, key) + key_len + 1 bytes (hashtable.c:210). When the key's object ends less than a word after the last full word of the key, the read crosses the end of the object. The report-mode run of the CTest suite names these four lines and then passes."
+    }
   ],
   "entries": [
     {

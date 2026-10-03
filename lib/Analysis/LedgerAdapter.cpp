@@ -571,8 +571,9 @@ static core::CheckTemplate naturalTemplate(core::Facet facet) {
   case core::Facet::Spatial:
     return core::CheckTemplate::Index;
   case core::Facet::Assertion:
-  case core::Facet::Temporal:
     return core::CheckTemplate::Assert;
+  case core::Facet::Temporal:
+    return core::CheckTemplate::Live;
   }
   return core::CheckTemplate::Assert;
 }
@@ -648,7 +649,12 @@ void LedgerAdapter::reportRequireLevel() {
         if (facetRecord == nullptr)
           continue;
         const core::SiteOutcome outcome = facetRecord->outcome();
-        const bool unresolved = outcome == core::SiteOutcome::Unresolved;
+        // RFC 0032 §1: `guarded` allows guarded facets; `checked` and
+        // `proven` do not.
+        const bool guarded = outcome == core::SiteOutcome::Guarded &&
+                             level != core::RequireLevel::Guarded;
+        const bool unresolved =
+            outcome == core::SiteOutcome::Unresolved || guarded;
         const bool unchecked = level == core::RequireLevel::Proven &&
                                outcome == core::SiteOutcome::Checked;
         if (!unresolved && !unchecked)
@@ -675,8 +681,13 @@ void LedgerAdapter::reportRequireLevel() {
               .function = row.name,
               .detail = facetRecord->decision.detail,
           };
-          diagnostic.message = core::unresolvedOperationMessage(
-              operation, *facetRecord->decision.unresolved, arguments);
+          diagnostic.message =
+              guarded
+                  ? core::guardedOperationMessage(
+                        operation, *facetRecord->decision.unresolved, arguments)
+                  : core::unresolvedOperationMessage(
+                        operation, *facetRecord->decision.unresolved,
+                        arguments);
         } else {
           diagnostic.message = core::uncheckedOperationMessage(
               operation, facetRecord->check ? facetRecord->check->kind
@@ -693,6 +704,56 @@ void LedgerAdapter::reportRequireLevel() {
   }
 }
 
+void LedgerAdapter::dropGuardedPossible() {
+  if (!options.dropGuardedPossible)
+    return;
+  // In the authoritative mode `emitted` and `ledgerDiagnostics` are parallel:
+  // `publish` appends to both.
+  assert(emitted.size() == ledgerDiagnostics.size() &&
+         "the diagnostics to report and the ledger's must be parallel");
+  std::vector<std::optional<std::uint32_t>> position(ledgerDiagnostics.size());
+  std::vector<core::Diagnostic> keptEmitted;
+  std::vector<core::LedgerDiagnostic> keptLedger;
+  for (std::size_t i = 0; i < ledgerDiagnostics.size(); ++i) {
+    const core::LedgerDiagnostic &diagnostic = ledgerDiagnostics[i];
+    bool drop = false;
+    if (diagnostic.certainty == core::Certainty::Possible &&
+        diagnostic.severity == core::Severity::Warning && diagnostic.site &&
+        diagnostic.facet) {
+      // The site of a diagnostic is an ordinal within its function.
+      for (const core::FunctionLedger &function : unit.functions) {
+        if (function.name != diagnostic.function)
+          continue;
+        const core::Site *site = function.site(*diagnostic.site);
+        const core::FacetRecord *facet =
+            site != nullptr ? site->facet(*diagnostic.facet) : nullptr;
+        if (facet != nullptr)
+          drop = facet->outcome() == core::SiteOutcome::Guarded;
+      }
+    }
+    if (drop)
+      continue;
+    position[i] = static_cast<std::uint32_t>(keptLedger.size());
+    keptLedger.push_back(diagnostic);
+    if (i < emitted.size())
+      keptEmitted.push_back(emitted[i]);
+  }
+  if (keptLedger.size() == ledgerDiagnostics.size())
+    return;
+  ledgerDiagnostics = std::move(keptLedger);
+  emitted = std::move(keptEmitted);
+  for (auto &[key, index] : emittedKeys)
+    if (index)
+      index = *index < position.size() ? position[*index] : std::nullopt;
+  for (core::FunctionLedger &function : unit.functions)
+    for (core::Site &site : function.sites)
+      for (std::optional<core::FacetRecord> &record : site.facets)
+        if (record && record->diagnostic)
+          record->diagnostic = *record->diagnostic < position.size()
+                                   ? position[*record->diagnostic]
+                                   : std::nullopt;
+}
+
 PlannedLedger LedgerAdapter::finish() {
   PlannedLedger result;
   if (isDiscarding() || finished)
@@ -700,6 +761,7 @@ PlannedLedger LedgerAdapter::finish() {
   finished = true;
   PlannerOptions planner;
   planner.checks = options.config.checks;
+  planner.runtime = options.config.runtime == core::RuntimeUse::On;
   planner.lowered = options.lowered;
   for (const SiteIndex::FunctionSites &function : sites.functions()) {
     core::FunctionLedger &row = unit.functions[function.index];
@@ -712,6 +774,7 @@ PlannedLedger LedgerAdapter::finish() {
   const CheckPlanner checkPlanner(context, sites, std::move(planner));
   result.plan = checkPlanner.plan(unit, witnesses, result.handles);
   appendOrphanRows();
+  dropGuardedPossible();
   reportRequireLevel();
 
   result.ledger.scope = core::LedgerScope::Unit;

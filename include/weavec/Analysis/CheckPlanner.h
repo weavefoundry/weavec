@@ -1,4 +1,4 @@
-//===- CheckPlanner.h - Checks from witnesses (RFC 0030) --------*- C++ -*-===//
+//===- CheckPlanner.h - Checks from witnesses (RFC 0030, 0032) --*- C++ -*-===//
 //
 // Part of WeaveC, under the Apache License v2.0 with LLVM Exceptions.
 // See LICENSE for license information.
@@ -31,6 +31,20 @@
 //             call argument (overlap)          disjoint WrapArgument
 //   assertion WEAVEC_ASSUME                    assert   ReplaceCall
 //
+// RFC 0032 §6 adds a second pass, the *guards*: with the runtime, every
+// facet still `unresolved` whose site has a pointer operand becomes `guarded`,
+// with a check against the runtime's object table:
+//
+//   spatial   dereference                      object   WrapOperand
+//             subscript, *(p + i)              object   ReplaceAccess
+//             call argument (need or string)   object   WrapArgument
+//   temporal  dereference, subscript           live     WrapOperand
+//             library-call argument            live     WrapArgument
+//   both      released argument (heap family)  release  WrapOperand
+//
+// and, in verify mode, the same guards for proven facets that have no
+// static verify check. A guard never replaces a static check.
+//
 // A `span` check traps on null, so it subsumes the `nonnull` check of the
 // same operand. Operands are core terms over opaque handles, which
 // `PlaceHandleTable` resolves back to Clang declarations and types (Core
@@ -48,6 +62,7 @@
 
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/Decl.h"
+#include "clang/AST/ParentMap.h"
 #include "clang/AST/Type.h"
 
 #include "llvm/ADT/ArrayRef.h"
@@ -58,6 +73,7 @@
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <memory>
 #include <optional>
 #include <set>
 #include <string>
@@ -104,6 +120,9 @@ private:
 struct PlannerOptions {
   /// Verify mode plans checks of proven facets that have witnesses.
   core::ChecksMode checks = core::ChecksMode::Trap;
+  /// RFC 0032 §6: the unit is compiled with the runtime, so unresolved
+  /// facets with a pointer operand are guarded.
+  bool runtime = false;
   /// §3.4: whether the violation of a facet was lowered to a warning, so
   /// that the site is guarded anyway. None: nothing was lowered.
   std::function<bool(core::SiteId, core::Facet)> lowered = nullptr;
@@ -133,7 +152,9 @@ public:
 
   /// §10.3: `term` as an extra operand of a check at `site` whose witness
   /// is `witness`, or why it cannot be one. `have` bounds a string length
-  /// (`__weavec_strnlen`, rule 2).
+  /// (`__weavec_strnlen`, rule 2); with `objectStrings` and no `have`, a
+  /// string length is read inside the string's own tracked object instead
+  /// (RFC 0032 §6: the need of a guard).
   struct Expression {
     std::optional<core::CheckTerm> term = std::nullopt;
     /// The rule the term breaks, for the ledger's `detail`.
@@ -143,7 +164,22 @@ public:
   [[nodiscard]] Expression
   express(const WitnessTerm &term, const SiteInfo &site,
           const CheckWitness &witness, PlaceHandleTable &handles,
-          const std::optional<core::CheckTerm> &have = std::nullopt) const;
+          const std::optional<core::CheckTerm> &have = std::nullopt,
+          bool objectStrings = false) const;
+
+  /// RFC 0032 §6: the bytes the access of a Deref, Index or Raw site
+  /// touches, relative to the address its pointer and index give: the
+  /// offset and size of the lvalue the access denotes, through the member
+  /// chain above it (`p->a.b`, `p[i].f`). None when the lvalue's type has
+  /// no constant size.
+  struct AccessBytes {
+    std::int64_t offset = 0;
+    std::int64_t width = 0;
+    /// Index sites: the size of one element.
+    std::int64_t step = 0;
+  };
+  [[nodiscard]] std::optional<AccessBytes>
+  accessBytes(const SiteInfo &site) const;
 
   /// The unit's AST.
   [[nodiscard]] const clang::ASTContext &astContext() const noexcept {
@@ -161,6 +197,18 @@ private:
 
   [[nodiscard]] const llvm::DenseSet<const clang::VarDecl *> &
   addressTakenIn(const clang::FunctionDecl &function) const;
+
+  /// Per function, statement to parent (RFC 0032 §6: the member chain above
+  /// an access).
+  mutable llvm::DenseMap<const clang::FunctionDecl *,
+                         std::unique_ptr<clang::ParentMap>>
+      parentMaps;
+  [[nodiscard]] const clang::ParentMap *
+  parentsIn(const clang::FunctionDecl &function) const;
+  /// RFC 0032 §6: the guards of one site, appended to `planned`.
+  void planGuards(const SiteInfo &site, core::Site &row,
+                  const WitnessTable &witnesses, PlaceHandleTable &handles,
+                  std::vector<core::CheckPlanEntry> &planned) const;
 };
 
 } // namespace weavec::analysis

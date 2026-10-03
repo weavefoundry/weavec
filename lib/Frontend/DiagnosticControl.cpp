@@ -98,6 +98,16 @@ bool DiagnosticControl::parse(llvm::StringRef flag, std::string &error) {
   }
 
   const llvm::StringRef id = request->target.drop_front(sizeof("weavec-") - 1);
+  // RFC 0032 §9: not an id, a switch.
+  if (id == "possible") {
+    if (request->level != Level::Default && request->level != Level::Off) {
+      error = "'" + flag.str() +
+              "': expected -Wweavec-possible or -Wno-weavec-possible";
+      return true;
+    }
+    possible = request->level == Level::Default;
+    return true;
+  }
   if (core::diag::isRemoved(id)) {
     error =
         "unknown WeaveC diagnostic '" + id.str() + "' (removed by RFC 0030)";

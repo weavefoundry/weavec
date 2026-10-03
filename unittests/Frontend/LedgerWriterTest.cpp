@@ -104,25 +104,31 @@ static std::string cjsonFingerprint(llvm::StringRef key) {
 
 TEST(LedgerWriter, GoldenUnitLedger) {
   const std::string counts =
-      R"("sites":1,"proven":0,"checked":0,"violation":0,"unresolved":1,"trusted":0,)"
-      R"("facets":{"spatial":{"proven":1,"checked":0,"violation":0,"unresolved":0,"trusted":0},)"
-      R"("null":{"proven":0,"checked":1,"violation":0,"unresolved":0,"trusted":0},)"
-      R"("temporal":{"proven":0,"checked":0,"violation":0,"unresolved":1,"trusted":0},)"
-      R"("assertion":{"proven":0,"checked":0,"violation":0,"unresolved":0,"trusted":0}},)"
+      R"("sites":1,"proven":0,"checked":0,"guarded":0,"violation":0,"unresolved":1,"trusted":0,)"
+      R"("facets":{"spatial":{"proven":1,"checked":0,"guarded":0,"violation":0,"unresolved":0,"trusted":0},)"
+      R"("null":{"proven":0,"checked":1,"guarded":0,"violation":0,"unresolved":0,"trusted":0},)"
+      R"("temporal":{"proven":0,"checked":0,"guarded":0,"violation":0,"unresolved":1,"trusted":0},)"
+      R"("assertion":{"proven":0,"checked":0,"guarded":0,"violation":0,"unresolved":0,"trusted":0}},)"
       R"("unresolvedReasons":{"unknown-extent":0,"unknown-index":0,"inexpressible":0,)"
       R"("may-released":0,"may-moved":0,"may-alias-released":0,"may-invalid-release":0,)"
       R"("may-mismatched-release":0,"may-dangle":0,"may-conflict":0,"unknown-callee":1,)"
       R"("callback":0,"setjmp":0,"budget":0,"unanalysed":0,"raw-cast":0,)"
       R"("dangling-escape":0,"second-owner":0,"no-zero-init":0},)"
+      R"("guardedReasons":{"unknown-extent":0,"unknown-index":0,"inexpressible":0,)"
+      R"("may-released":0,"may-moved":0,"may-alias-released":0,"may-invalid-release":0,)"
+      R"("may-mismatched-release":0,"may-dangle":0,"may-conflict":0,"unknown-callee":0,)"
+      R"("callback":0,"setjmp":0,"budget":0,"unanalysed":0,"raw-cast":0,)"
+      R"("dangling-escape":0,"second-owner":0,"no-zero-init":0},)"
       R"("trustedReasons":{"unsafe":0,"system-api":0,"library-spec":0,)"
       R"("extern-contract":0,"caller-contract":0,"external-unit":0,"concurrency":0},)"
-      R"("unresolvedShare":{"spatialNull":0},"errors":0,"warnings":0,)"
+      R"("unresolvedShare":{"spatialNull":0,"spatial":0,"null":0,"temporal":1},)"
+      R"("guardedShare":{"spatial":0,"null":0,"temporal":0},"errors":0,"warnings":0,)"
       R"("functions":1,"overBudget":[])";
   const std::string expected =
-      R"({"schema":"weavec-ledger","version":1,)"
+      R"({"schema":"weavec-ledger","version":2,)"
       R"("producer":{"name":"weavec","version":"0.11.0","revision":"abc1234"},)"
       R"("scope":"unit","root":"/proj",)"
-      R"("config":{"checks":"trap","zeroInit":true,"require":"none","budget":50000},)"
+      R"("config":{"checks":"trap","runtime":false,"zeroInit":true,"require":"none","budget":50000},)"
       R"("summary":{)" +
       counts +
       R"(},"units":[{"source":"src/cJSON.c","object":"build/cJSON.o",)"
@@ -163,7 +169,7 @@ TEST(LedgerWriter, SiteTextIsNormalisedOnOutput) {
 TEST(LedgerWriter, PrettyOutputIsIndented) {
   const std::string text = renderLedgerJson(cjsonLedger());
   EXPECT_EQ(
-      text.rfind("{\n  \"schema\": \"weavec-ledger\",\n  \"version\": 1,", 0),
+      text.rfind("{\n  \"schema\": \"weavec-ledger\",\n  \"version\": 2,", 0),
       0U);
   EXPECT_TRUE(llvm::StringRef(text).ends_with("\n}\n"));
   EXPECT_EQ(renderLedger(cjsonLedger(), LedgerFormat::Json), text);
@@ -328,8 +334,9 @@ TEST(LedgerWriter, ProgramLedgerSnippets) {
     EXPECT_NE(text.find(snippet), std::string::npos) << snippet;
   };
   expectSnippet(R"("scope":"program")");
-  expectSnippet(R"("config":{"checks":"verify","zeroInit":true,)"
-                R"("require":"none","budget":50000})");
+  expectSnippet(
+      R"("config":{"checks":"verify","runtime":false,"zeroInit":true,)"
+      R"("require":"none","budget":50000})");
   expectSnippet(
       R"("assumptions":{"A1":{"exportedRequirements":14,"verified":11,)"
       R"("reliesOnSingle":40,"unverifiedCallers":3},"A3":{)"
@@ -356,7 +363,8 @@ TEST(LedgerWriter, ProgramLedgerSnippets) {
   // Gate G6: the verify coverage of the proven spatial and null facets.
   expectSnippet(R"("functions":2,"overBudget":[],"verifyChecks":1,)"
                 R"("verifyCoverage":{"spatial":{"proven":2,"checked":1},)"
-                R"("null":{"proven":0,"checked":0}}})");
+                R"("null":{"proven":0,"checked":0},)"
+                R"("temporal":{"proven":0,"checked":0}}})");
   expectSnippet(
       R"({"id":"use-after-free","severity":"warning","certainty":"possible",)"
       R"("message":"use of 'p' after it may have been freed",)"
@@ -367,7 +375,7 @@ TEST(LedgerWriter, ProgramLedgerSnippets) {
       R"("file":"src/a.c","line":2,"column":1,"function":null,"site":null,)"
       R"("facet":null,"notes":[],"fingerprint":")");
   // One unresolved facet of five spatial and null facets.
-  expectSnippet(R"("unresolvedShare":{"spatialNull":0.2})");
+  expectSnippet(R"("unresolvedShare":{"spatialNull":0.2,)");
   core::Ledger ledger = programLedger();
   assignFingerprints(ledger, {.workingDirectory = "/proj"});
   EXPECT_EQ(ledger.diagnostics[1].fingerprint,
@@ -401,12 +409,14 @@ TEST(LedgerWriter, SarifStructure) {
   EXPECT_EQ(driver.getString("name"), "weavec");
   EXPECT_EQ(driver.getString("semanticVersion"), "0.11.0");
   const llvm::json::Array &rules = *driver.getArray("rules");
-  // Two diagnostic ids, 19 unresolved and 7 trusted reasons.
-  ASSERT_EQ(rules.size(), 2U + 19U + 7U);
+  // Two diagnostic ids, 19 unresolved reasons, the same 19 for guarded
+  // facets (RFC 0032) and 7 trusted reasons.
+  ASSERT_EQ(rules.size(), 2U + 19U + 19U + 7U);
   EXPECT_EQ(objectAt(rules[0]).getString("id"), "invalid-annotation");
   EXPECT_EQ(objectAt(rules[1]).getString("id"), "use-after-free");
   EXPECT_EQ(objectAt(rules[2]).getString("id"), "unresolved/unknown-extent");
-  EXPECT_EQ(objectAt(rules[21]).getString("id"), "trusted/unsafe");
+  EXPECT_EQ(objectAt(rules[21]).getString("id"), "guarded/unknown-extent");
+  EXPECT_EQ(objectAt(rules[40]).getString("id"), "trusted/unsafe");
   EXPECT_EQ(run.getObject("originalUriBaseIds")
                 ->getObject("SRCROOT")
                 ->getString("uri"),

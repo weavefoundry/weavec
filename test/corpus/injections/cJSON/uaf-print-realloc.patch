@@ -1,0 +1,10 @@
+--- a/cJSON.c
++++ b/cJSON.c
+@@ -1268,6 +1268,7 @@
+         if (printed == NULL) {
+             goto fail;
+         }
++        printed[buffer->offset] = (unsigned char)(buffer->buffer[0] & 0); /* INJECTED: reads the buffer realloc may have moved */
+         buffer->buffer = NULL;
+     }
+     else /* otherwise copy the JSON over to a new buffer */

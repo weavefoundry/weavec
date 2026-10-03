@@ -4,8 +4,8 @@
 // neither proven nor checkable is an `unresolved-operation` error there, and
 // only there. It replaces WEAVEC_CHECKED, which weavec.h no longer defines.
 // On anything but a function it is an invalid annotation.
-// RUN: not %weavec %s -- 2>&1 | FileCheck %s
-// RUN: %weavec --dump-kinds %s -- -DDUMP 2>/dev/null | FileCheck --check-prefix=DUMP %s
+// RUN: not %weavec --no-runtime %s -- 2>&1 | FileCheck %s
+// RUN: %weavec --no-runtime --dump-kinds %s -- -DDUMP 2>/dev/null | FileCheck --check-prefix=DUMP %s
 #include <weavec.h>
 
 #ifdef WEAVEC_CHECKED

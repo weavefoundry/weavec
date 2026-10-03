@@ -697,9 +697,15 @@ UnitExports UnitRun::exports() {
       exported.effects = core::renumberGlobals(it->second, toExport);
     exports.functions[fn->getNameAsString()] = std::move(exported);
   }
+  // What the predefines declare is the check prelude's (RFC 0030 §10.2): the
+  // runtime entry points its helpers call are no callee of the program.
+  auto inPredefines = [&](const FunctionDecl &fn) {
+    return sm.isWrittenInBuiltinFile(sm.getExpansionLoc(fn.getLocation()));
+  };
   for (const FunctionDecl *callee : collector.called)
     if (!hasBody(*callee) && callee->isExternallyVisible() &&
-        callee->getIdentifier() != nullptr && callee->getBuiltinID() == 0)
+        callee->getIdentifier() != nullptr && callee->getBuiltinID() == 0 &&
+        !inPredefines(*callee))
       exports.imports.insert(callee->getNameAsString());
   // A function of another unit this one only refers to (a callback it
   // hands out): its summary is what calls through the value apply.

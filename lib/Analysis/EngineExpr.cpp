@@ -449,6 +449,11 @@ void Transfer::element(const CFGElement &element) {
     }
     return;
   }
+  if (auto cleanup = element.getAs<CFGCleanupFunction>()) {
+    if (const VarDecl *var = cleanup->getVarDecl())
+      cleanupFunction(*var);
+    return;
+  }
   if (auto lifetime = element.getAs<CFGLifetimeEnds>()) {
     if (const VarDecl *var = lifetime->getVarDecl())
       lifetimeEnds(*var);

@@ -1,0 +1,10 @@
+--- a/lfunc.c
++++ b/lfunc.c
+@@ -37,6 +37,7 @@
+   LClosure *c = gco2lcl(o);
+   c->p = NULL;
+   c->nupvalues = cast_byte(nupvals);
++  c->upvals[nupvals] = NULL; /* INJECTED: one past the closure's upvalue array */
+   while (nupvals--) c->upvals[nupvals] = NULL;
+   return c;
+ }

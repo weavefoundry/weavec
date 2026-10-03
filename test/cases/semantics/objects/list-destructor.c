@@ -8,8 +8,8 @@
 // (test/cases/KNOWN-DIFFERENCES.md, *Cases*; RFC 0031 *Unresolved questions*).
 // CLEAN
 // ASAN
-// EXPECT-LEDGER: /summary/facets/temporal/unresolved == 2
-// EXPECT-LEDGER: /summary/unresolvedReasons/may-alias-released == 2
+// EXPECT-LEDGER: /summary/facets/temporal/guarded == 2
+// EXPECT-LEDGER: /summary/guardedReasons/may-alias-released == 2
 #include <stdlib.h>
 struct node { struct node *next; int v; };
 void free_list(struct node *p) {

@@ -59,7 +59,8 @@ namespace weavec::frontend::record {
 
 inline constexpr std::array<std::uint8_t, 8> Magic{0x89, 'W',  'V',  'C',
                                                    '\r', '\n', 0x1A, '\n'};
-inline constexpr std::uint32_t FormatVersion = 29;
+/// 30 since RFC 0032: `guarded/<reason>` facet cells and `config.runtime`.
+inline constexpr std::uint32_t FormatVersion = 30;
 /// Bytes before the header: magic, format, flags, schema fingerprint and the
 /// two lengths.
 inline constexpr std::size_t PrefixSize = 64;

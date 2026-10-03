@@ -1007,6 +1007,8 @@ void Walker::walkDeref(const clang::UnaryOperator &deref, Context ctx,
   site.info.index = index;
   site.info.nonDefaultAddressSpace = inNonDefaultAddressSpace(pointer);
   // `*(p - i)`: the offset is `-i`, which no index check wraps.
+  if (offset && index == nullptr)
+    site.info.address = sub;
   if (!facets.spatial || (offset && index == nullptr))
     return;
   if (const clang::Expr *array = decayedArray(pointer)) {

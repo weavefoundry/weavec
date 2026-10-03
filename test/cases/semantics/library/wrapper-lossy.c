@@ -31,7 +31,7 @@ int main(int argc, char **argv) {
     free(p);
     return 1;
   }
-  int c = p[0]; // BUG: use-after-free possible
+  int c = p[0]; // BUG: use-after-free possible // TRAP: live
   free(q);
   return c == 'a' ? 0 : 2;
 }

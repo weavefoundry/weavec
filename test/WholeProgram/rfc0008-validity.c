@@ -2,10 +2,10 @@
 // `notnull` outcomes and interior results travel in the program database, so
 // a caller in this unit is checked against definitions in another.
 //
-// RUN: not %weavec --whole-program %s %S/Inputs/validity.c -- -I%S/Inputs 2>&1 | FileCheck %s
-// RUN: not %weavec --whole-program --ledger=%t.json %s %S/Inputs/validity.c -- -I%S/Inputs 2>/dev/null
+// RUN: not %weavec --no-runtime --whole-program %s %S/Inputs/validity.c -- -I%S/Inputs 2>&1 | FileCheck %s
+// RUN: not %weavec --no-runtime --whole-program --ledger=%t.json %s %S/Inputs/validity.c -- -I%S/Inputs 2>/dev/null
 // RUN: FileCheck --check-prefix=LEDGER %s < %t.json
-// RUN: not %weavec --whole-program --dump-analysis %s %S/Inputs/validity.c -- -I%S/Inputs 2>&1 | FileCheck --check-prefix=DUMP %s
+// RUN: not %weavec --no-runtime --whole-program --dump-analysis %s %S/Inputs/validity.c -- -I%S/Inputs 2>&1 | FileCheck --check-prefix=DUMP %s
 #include <stdlib.h>
 #include <string.h>
 #include "validity.h"
