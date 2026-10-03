@@ -853,8 +853,8 @@
     },
     "linux-x86_64": {
       "machine": "linux-x86_64 AMD EPYC 7763 64-Core Processor x4",
-      "producer": "weavec-cc version 0.11.0-dev (0787786ad519)",
-      "updated": "2026-09-30",
+      "producer": "weavec-cc version 0.12.0-dev (90a3d8090896)",
+      "updated": "2026-10-02",
       "configs": {
         "cJSON-program": {
           "units": {
@@ -864,17 +864,18 @@
               "sites": 1709,
               "proven": 2627,
               "checked": 122,
+              "guarded": 652,
               "violation": 0,
-              "unresolved": 894,
+              "unresolved": 242,
               "trusted": 18
             },
             "unresolvedShare": {
-              "spatialNull": 0.2143,
-              "temporal": 0.2797
+              "spatialNull": 0.0161,
+              "temporal": 0.1255
             },
-            "cpuSeconds": 3.37,
+            "cpuSeconds": 3.56,
             "workCounters": {
-              "blockTransfers": 12232,
+              "blockTransfers": 12450,
               "functions": 151,
               "sites": 1709
             }
@@ -886,15 +887,16 @@
               "sites": 1709,
               "proven": 2694,
               "checked": 114,
+              "guarded": 665,
               "violation": 0,
-              "unresolved": 839,
+              "unresolved": 174,
               "trusted": 18
             },
             "unresolvedShare": {
-              "spatialNull": 0.2139,
-              "temporal": 0.2469
+              "spatialNull": 0.0191,
+              "temporal": 0.0813
             },
-            "cpuSeconds": 7.36,
+            "cpuSeconds": 5.9,
             "workCounters": {
               "blockTransfers": 24545,
               "functions": 151,
@@ -910,17 +912,18 @@
               "sites": 2337,
               "proven": 2802,
               "checked": 198,
+              "guarded": 622,
               "violation": 0,
-              "unresolved": 1322,
+              "unresolved": 700,
               "trusted": 16
             },
             "unresolvedShare": {
-              "spatialNull": 0.2153,
-              "temporal": 0.3965
+              "spatialNull": 0.0451,
+              "temporal": 0.2807
             },
-            "cpuSeconds": 2.71,
+            "cpuSeconds": 3.31,
             "workCounters": {
-              "blockTransfers": 11397,
+              "blockTransfers": 12705,
               "functions": 236,
               "sites": 2337
             }
@@ -932,15 +935,16 @@
               "sites": 2337,
               "proven": 3082,
               "checked": 205,
+              "guarded": 542,
               "violation": 0,
-              "unresolved": 1095,
+              "unresolved": 553,
               "trusted": 12
             },
             "unresolvedShare": {
-              "spatialNull": 0.2206,
-              "temporal": 0.2793
+              "spatialNull": 0.0652,
+              "temporal": 0.1896
             },
-            "cpuSeconds": 16.25,
+            "cpuSeconds": 11.24,
             "workCounters": {
               "blockTransfers": 62639,
               "functions": 236,
@@ -951,22 +955,23 @@
         "linenoise-program": {
           "units": {
             "errors": 0,
-            "warnings": 9,
+            "warnings": 8,
             "ledger": {
               "sites": 1146,
               "proven": 1874,
               "checked": 134,
+              "guarded": 284,
               "violation": 0,
-              "unresolved": 368,
+              "unresolved": 84,
               "trusted": 13
             },
             "unresolvedShare": {
-              "spatialNull": 0.1279,
-              "temporal": 0.1895
+              "spatialNull": 0.0109,
+              "temporal": 0.0681
             },
-            "cpuSeconds": 0.76,
+            "cpuSeconds": 0.87,
             "workCounters": {
-              "blockTransfers": 3751,
+              "blockTransfers": 3969,
               "functions": 88,
               "sites": 1146
             }
@@ -978,15 +983,16 @@
               "sites": 1146,
               "proven": 1893,
               "checked": 135,
+              "guarded": 280,
               "violation": 0,
-              "unresolved": 353,
+              "unresolved": 73,
               "trusted": 13
             },
             "unresolvedShare": {
-              "spatialNull": 0.1332,
-              "temporal": 0.1668
+              "spatialNull": 0.0145,
+              "temporal": 0.0523
             },
-            "cpuSeconds": 2.34,
+            "cpuSeconds": 2.19,
             "workCounters": {
               "blockTransfers": 12791,
               "functions": 88,
@@ -1002,17 +1008,18 @@
               "sites": 74,
               "proven": 117,
               "checked": 18,
+              "guarded": 5,
               "violation": 0,
-              "unresolved": 11,
+              "unresolved": 6,
               "trusted": 4
             },
             "unresolvedShare": {
-              "spatialNull": 0.044,
-              "temporal": 0.1186
+              "spatialNull": 0.022,
+              "temporal": 0.0678
             },
-            "cpuSeconds": 0.08,
+            "cpuSeconds": 0.1,
             "workCounters": {
-              "blockTransfers": 330,
+              "blockTransfers": 439,
               "functions": 12,
               "sites": 74
             }
