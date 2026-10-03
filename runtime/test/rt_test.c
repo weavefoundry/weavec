@@ -27,6 +27,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/resource.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -68,7 +69,10 @@ static int trapsIn(void (*body)(void)) {
   int status = 0;
   const pid_t child = fork();
   if (child == 0) {
-    /* The fatal message is expected. */
+    /* The fatal message is expected, and so is the trap: no core dump (a
+     * system that hands each one to a crash reporter would take seconds). */
+    const struct rlimit none = {0, 0};
+    (void)setrlimit(RLIMIT_CORE, &none);
     (void)freopen("/dev/null", "w", stderr);
     body();
     _exit(0);

@@ -139,7 +139,11 @@ jobs:
         env:
           ASAN_OPTIONS: detect_leaks=0:strict_string_checks=1
           UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
-        run: ctest --preset "${{ matrix.preset }}" -j "$(getconf _NPROCESSORS_ONLN)"
+        # Many tests trap on purpose. Without core dumps, Ubuntu's apport does
+        # not take each crash in turn while the next ones wait.
+        run: |
+          ulimit -c 0
+          ctest --preset "${{ matrix.preset }}" -j "$(getconf _NPROCESSORS_ONLN)"
 
       - name: Documentation examples
         env:

@@ -40,6 +40,7 @@ import fnmatch
 import json
 import os
 import re
+import resource
 import shlex
 import shutil
 import signal
@@ -1272,12 +1273,24 @@ class Config:
     work: Path | None = None
 
 
+def no_core_dump() -> None:
+    """In the child: a trap is expected here, so it leaves no core dump. A
+    system that hands every crash to a reporter (apport on Ubuntu) handles
+    them one at a time, and parallel trapping runs then wait on each other
+    past their timeouts."""
+    try:
+        resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+    except (ValueError, OSError):
+        pass
+
+
 def run_process(command: list[str], cwd: Path, timeout: float, stdin: Path | None = None,
                 env: dict | None = None) -> tuple[int | None, str, str, bool]:
     try:
         with open(stdin, "rb") if stdin else open(os.devnull, "rb") as handle:
             completed = subprocess.run(command, cwd=cwd, stdin=handle, capture_output=True,
-                                       timeout=timeout, env=env, check=False)
+                                       timeout=timeout, env=env, check=False,
+                                       preexec_fn=no_core_dump)
         return (completed.returncode, completed.stdout.decode(errors="replace"),
                 completed.stderr.decode(errors="replace"), False)
     except subprocess.TimeoutExpired as expired:

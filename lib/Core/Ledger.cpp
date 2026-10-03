@@ -951,7 +951,7 @@ double LedgerSummary::spatialNullShare() const noexcept {
          static_cast<double>(all);
 }
 
-double LedgerSummary::unresolvedShare(Facet facet) const noexcept {
+double LedgerSummary::unresolvedShare(Facet facet) const {
   const OutcomeCounts &counts = facets.at(static_cast<std::size_t>(facet));
   const std::uint64_t all = counts.total();
   return all == 0 ? 0.0
@@ -959,7 +959,7 @@ double LedgerSummary::unresolvedShare(Facet facet) const noexcept {
                         static_cast<double>(all);
 }
 
-double LedgerSummary::guardedShare(Facet facet) const noexcept {
+double LedgerSummary::guardedShare(Facet facet) const {
   const OutcomeCounts &counts = facets.at(static_cast<std::size_t>(facet));
   const std::uint64_t all = counts.total();
   return all == 0

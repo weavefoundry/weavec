@@ -789,8 +789,8 @@ struct LedgerSummary {
   [[nodiscard]] double spatialNullShare() const noexcept;
   /// RFC 0032 §1: the unresolved, and the guarded, facets of `facet` over
   /// all of its facets; 0 when there are none.
-  [[nodiscard]] double unresolvedShare(Facet facet) const noexcept;
-  [[nodiscard]] double guardedShare(Facet facet) const noexcept;
+  [[nodiscard]] double unresolvedShare(Facet facet) const;
+  [[nodiscard]] double guardedShare(Facet facet) const;
 
   /// Adds every function, site and facet of `unit`.
   void addUnit(const UnitLedger &unit);

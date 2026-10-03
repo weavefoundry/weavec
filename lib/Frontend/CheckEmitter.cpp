@@ -577,7 +577,7 @@ private:
   clang::VarDecl *frameGuard(const StackObject &object);
   bool enterStackObjects(const clang::FunctionDecl *function,
                          llvm::ArrayRef<const StackObject *> objects);
-  bool rewindAfter(const ReturnsTwiceCall &call);
+  bool rewindAfter(const ReturnsTwiceCall &rewind);
   clang::VarDecl *globalDescriptor(const clang::VarDecl &variable);
 
   //--- Failure ----------------------------------------------------------------
@@ -1966,7 +1966,7 @@ void CheckEmitter::Impl::planCache(
   const clang::QualType type = context.getConstantArrayType(
       context.UnsignedLongLongTy, llvm::APInt(64, 4ULL * count), nullptr,
       clang::ArraySizeModifier::Normal, 0);
-  clang::IdentifierInfo &name = context.Idents.get("__weavec_ranges");
+  const clang::IdentifierInfo &name = context.Idents.get("__weavec_ranges");
   cache.variable = clang::VarDecl::Create(
       context, owner, loc, loc, &name, type,
       context.getTrivialTypeSourceInfo(type, loc), clang::SC_None);
@@ -2120,7 +2120,7 @@ clang::VarDecl *CheckEmitter::Impl::frameGuard(const StackObject &object) {
   clang::FunctionDecl *leave = helper("__weavec_stack_leave");
   if (leave == nullptr)
     return nullptr;
-  clang::IdentifierInfo &name =
+  const clang::IdentifierInfo &name =
       context.Idents.get("__weavec_frame_" + std::to_string(++nextObjectId));
   clang::VarDecl *guard = clang::VarDecl::Create(
       context, function, loc, loc, &name, context.VoidPtrTy,
@@ -2275,7 +2275,7 @@ CheckEmitter::Impl::globalDescriptor(const clang::VarDecl &variable) {
     return nullptr;
   clang::Expr *init = list.get();
   init->setType(type);
-  clang::IdentifierInfo &name =
+  const clang::IdentifierInfo &name =
       context.Idents.get("__weavec_global_" + std::to_string(++nextObjectId));
   clang::VarDecl *descriptor = clang::VarDecl::Create(
       context, unit, loc, loc, &name, type,

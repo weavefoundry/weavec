@@ -1482,7 +1482,7 @@ static bool addRuntimeLibraries(clang::driver::Compilation &compilation,
 /// the archive there, until one answers true. A linked image (a shared
 /// library, an executable) is not visited: its definitions are its own.
 template <typename Visit>
-static bool anyRelocatableObject(const std::string &path, Visit &&visit) {
+static bool anyRelocatableObject(const std::string &path, const Visit &visit) {
   if (!llvm::sys::fs::is_regular_file(path))
     return false;
   llvm::Expected<llvm::object::OwningBinary<llvm::object::Binary>> binary =
@@ -1526,7 +1526,7 @@ static bool anyRelocatableObject(const std::string &path, Visit &&visit) {
 /// answers true.
 template <typename Visit>
 static bool anyGlobalDefinition(const llvm::object::SymbolicFile &file,
-                                Visit &&visit) {
+                                const Visit &visit) {
   for (const llvm::object::BasicSymbolRef &symbol : file.symbols()) {
     llvm::Expected<std::uint32_t> flags = symbol.getFlags();
     if (!flags) {
@@ -1588,8 +1588,9 @@ static std::string allocatorDefinedBy(const clang::driver::Command &link,
 /// RFC 0032 §2.6: a program that defines the allocator keeps it. Takes
 /// libweavec_alloc.a (and the `-u` that forces it) off the link line, and
 /// says once what that means.
-static void dropAllocatorIfDefined(clang::driver::Compilation &compilation,
-                                   clang::driver::Command &link) {
+static void
+dropAllocatorIfDefined(const clang::driver::Compilation &compilation,
+                       clang::driver::Command &link) {
   const llvm::opt::ArgStringList &old = link.getArguments();
   const auto *const own = llvm::find_if(old, [](const char *arg) {
     return llvm::sys::path::filename(arg) == "libweavec_alloc.a";

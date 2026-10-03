@@ -88,6 +88,7 @@ public:
 
   // RecursiveASTVisitor's CRTP hooks are found by name.
   // NOLINTBEGIN(readability-identifier-naming,bugprone-derived-method-shadowing-base-method)
+  // NOLINTNEXTLINE(readability-convert-member-functions-to-static)
   bool TraverseBlockExpr(clang::BlockExpr * /*block*/) { return true; }
 
   bool VisitDeclStmt(clang::DeclStmt *statement) {

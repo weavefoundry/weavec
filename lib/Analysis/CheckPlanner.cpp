@@ -942,7 +942,7 @@ CheckPlanner::accessBytes(const SiteInfo &site) const {
     AccessBytes result = bytes;
     result.offset =
         base + static_cast<std::int64_t>(first / context.getCharWidth());
-    result.width = static_cast<std::int64_t>((first % context.getCharWidth() +
+    result.width = static_cast<std::int64_t>(((first % context.getCharWidth()) +
                                               std::max<std::uint64_t>(bits, 1) +
                                               context.getCharWidth() - 1) /
                                              context.getCharWidth());
