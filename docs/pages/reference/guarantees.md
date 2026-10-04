@@ -3,7 +3,7 @@ title: Safety guarantees and scope
 description: What a translation unit compiled by weavec-cc is guaranteed, what its runtime guards and at what cost, the six assumptions behind it, the blame property, and what stays outside it.
 ---
 
-WeaveC records exactly one outcome for every safety facet of every memory operation it compiles. The guarantee below is stated in terms of those outcomes. It is specified by [RFC 0030, _Soundness_](/rfcs/0030-prove-or-trap/#soundness) and, for the runtime and the guarded outcome, [RFC 0032, _Soundness_](/rfcs/0032-runtime-enforcement/#soundness), which are authoritative; this page restates them.
+WeaveC records exactly one outcome for every safety facet of every memory operation it compiles. The guarantee below is stated in terms of those outcomes. It is specified by [RFC 0030, _Soundness_](/rfcs/0030-prove-or-trap/#soundness) for the runtime and the guarded outcome, [RFC 0032, _Soundness_](/rfcs/0032-runtime-enforcement/#soundness), and, as amended for drop-in use, [RFC 0033, _Soundness_](/rfcs/0033-drop-in-by-default/#soundness), which are authoritative; this page restates them.
 
 ## Outcomes
 
@@ -14,7 +14,7 @@ Each operation site has up to four _facets_: **spatial** (the bytes it touches l
 | `proven`     | The facet holds on every execution, under the assumptions below.                                                                                                                                 |
 | `checked`    | Not proven. A compiler-inserted check traps before the operation if the facet fails.                                                                                                             |
 | `guarded`    | Not proven and not checkable from what the code states. A guard looks the pointer up in the runtime's object table and traps under clause (G) below. The row keeps the reason the analysis gave. |
-| `violation`  | The facet fails on every execution that reaches the site. It is always a build error.                                                                                                            |
+| `violation`  | The facet fails on every execution that reaches the site, by facts the program states. It is always a build error unless lowered.                                                                |
 | `unresolved` | Not proven, checkable or guardable. The ledger gives a reason from a closed list, such as `raw-cast` or `unknown-callee`.                                                                        |
 | `trusted`    | Holds if a named trust assumption holds, such as `unsafe` (a `WEAVEC_UNSAFE` region) or `system-api` (a platform C function).                                                                    |
 
@@ -29,14 +29,14 @@ Let _U_ be a translation unit compiled by `weavec-cc` in an **enforcing mode**: 
 - **(S) Spatial.** If the spatial facet of _s_ is proven or checked, the bytes _s_ accesses lie inside the object its pointer was derived from. For a checked facet, the program instead traps at _s_ before the access.
 - **(N) Null.** If the null facet of _s_ is proven or checked, _s_ does not dereference a null pointer. For a checked facet, the program instead traps first.
 - **(T) Temporal.** If the temporal facet of _s_ is proven, the object _s_ accesses has not been released and its lifetime has not ended. For a release, the object is released at most once and is the start of a live allocation of the releasing family.
-- **(G) Guards.** For a unit compiled with the runtime (the default). If the spatial facet of _s_ is guarded, and the pointer operand of _s_ points into a tracked object _O_ (or, for the base of a subscript, one past its end), then _O_ is live and the bytes _s_ accesses lie inside _O_, or the program traps at _s_ before the access. If the temporal facet of _s_ is guarded and the pointer operand points into a dead tracked object, the program traps at _s_ before the access. A guarded release is of null, of the start of a live heap object (which the release makes dead), or of a pointer to no tracked object; otherwise the program traps.
-- **(V) Violations.** No violation reaches emitted code unguarded. A violation fails the compile; if its error is lowered to a warning with `-Wno-error=weavec-<id>`, the site is emitted behind a check that traps.
+- **(G) Guards.** For a unit compiled with the runtime (the default). If the spatial facet of _s_ is guarded and the bytes _s_ accesses start inside a tracked object _O_, then _O_ is live and the bytes lie inside _O_, or the program traps at _s_ before the access; if they start inside no tracked object but end inside one, or start in a dead tracked object, the program traps at _s_. The address looked up is the address of the access (`p + i * step + offset` for a subscript), not the pointer it starts from. If the temporal facet of _s_ is guarded and the pointer operand points into a dead tracked object, the program traps at _s_ before the access. A guarded release is of null, of the start of a live heap object (which the release makes dead), or of a pointer to no tracked object; otherwise the program traps.
+- **(V) Violations.** No violation reaches emitted code unguarded. A violation fails the compile; if its error is lowered to a warning with `-Wno-error=weavec-<id>`, the site is checked or guarded, and when the build can do neither, it traps unconditionally. A lowered temporal violation, or a violation of a callee's summary or a library row's requirement, is guarded, so it traps when the violation happens and a false one runs as the program would; a spatial or null violation decided at the access from an exact extent keeps its check, or the unconditional trap. Without the runtime every lowered violation without a check traps unconditionally.
 
 `-fweavec-checks=report` without `WEAVEC_RT_ABORT=1` is a rollout aid, not an enforcing mode: a failed check or guard is reported and the access proceeds, so (S), (N) and (G) do not hold for its checked and guarded facets. Its ledger is the same as in trap mode, because the ledger always describes the enforcing build.
 
 (G) is weaker than (S) and (T) in three ways:
 
-1. **Provenance is the pointer's value.** A guard asks which object the pointer points into now, not which object it was derived from. Pointer arithmetic that leaves object _A_ and lands inside live tracked object _B_ passes a guard at a plain dereference. A subscript `p[i]` is checked against the object that contains `p`, so an index that leaves that object traps wherever it lands. Between heap objects there is always at least one byte that belongs to no object, so a walk that leaves a heap object one element at a time, forwards, traps; adjacent stack or global objects have no such gap.
+1. **Provenance is the address accessed.** A guard asks which object the accessed bytes lie in now, not which object the pointer was derived from. Pointer arithmetic that leaves object _A_ and lands inside live tracked object _B_ passes a guard, at a dereference and at a subscript alike; this is what lets a base formed outside a buffer (`base = src - start`) index back into it. Two cases still trap: a subscript or field offset that reaches forwards from inside a live stack or global object into another stack or global object, since those lie next to each other with no gap, and a subscript or offset from a pointer into a live object that lands in memory nothing tracks. Between heap objects there is always at least one byte that belongs to no object, so a walk that leaves a heap object one element at a time, forwards, traps.
 2. **Recycling.** A released heap object stays dead while it is in the quarantine. Once its storage has been given to a new object, a stale pointer finds that object and the guard passes.
 3. **Untracked memory.** A guard passes on a pointer outside every tracked object (assumption A6).
 
@@ -52,7 +52,7 @@ Everything else is untracked, and a guard passes on it: string literals, `alloca
 
 The allocator serves each block from a size class strictly larger than the request, so its extent is exact and one past its end is still inside its slot. It zero-fills every block. Released blocks wait in a first-in, first-out quarantine with a byte budget (64 MiB by default, `WEAVEC_RT_QUARANTINE=<bytes>` in the environment); `malloc_usable_size` and `malloc_size` return the requested size. The allocator itself validates every release in the image, in whichever object the `free` is: a double free, a free of an interior, stack or global pointer, and a `realloc` of a dead block stop the program.
 
-On ELF targets the executable's allocator serves every shared library in the process. On Darwin it serves its own image, and the system libraries keep theirs; blocks that cross between them are handed to the allocator that owns them.
+On ELF targets the executable's allocator serves every shared library in the process. On Darwin one runtime serves the process: the copy the dynamic loader finds first owns the object table, and the runtimes of the other images built by `weavec-cc` forward to it and share its arena. Its malloc zone is promoted to the process's default zone, so the C library's own allocations (`strdup`, `getline`, `asprintf`, `realpath`) are tracked heap objects too; blocks the system allocated before the promotion are handed back to the zone that owns them.
 
 ### What it costs
 
@@ -83,7 +83,7 @@ The guarantee holds under six assumptions:
 - **A5 — initialisation.** In a program that does not use the runtime's allocator, the linked allocator answers the usable-size query (`malloc_usable_size`, `malloc_size`) consistently with its `malloc`; the runtime's allocator zero-fills every block it returns, and needs no such assumption. Pointer-typed memory _U_ reads that did not come from a zero-initialising source (automatic storage whose declaration no jump bypasses, static storage, and the allocation calls `weavec-cc` lowers) was written before _U_ loads it. This covers memory from other allocators, unknown callees and the program's own free lists.
 - **A6 — untracked memory.** A pointer that a guard finds outside every tracked object points to an object the image's WeaveC units did not create (a string literal, an `alloca` block, memory another image or another allocator owns, memory created by a unit built without the runtime), which is live and which the access stays inside.
 
-When `weavec-cc` links objects that carry WeaveC records, the link step verifies A1 and A3 where the callers and stores are visible, and its summary line lists what remains unverified. Link inputs without a record are named in one `unanalyzed-input` warning; calls into them are `trusted(external-unit)`.
+When `weavec-cc` links objects that carry WeaveC records, the link step verifies A1 and A3 where the callers and stores are visible in the records, and its summary line lists what remains unverified. Link inputs without a record are named in one `unanalyzed-input` warning; calls into them are `trusted(external-unit)`.
 
 ## The blame property
 
@@ -105,31 +105,34 @@ At compile time, as errors, when they hold on every path:
 - an access past an object of exact extent that is out of bounds for every value the facts allow, including library calls with a known required length, overlapping `memcpy`/`strcpy`-family copies, writes into string literals and format strings that read more arguments than are passed;
 - a contradicted `WEAVEC_ASSUME`, and a declaration whose annotation contradicts its definition, including across translation units at link.
 
+A violation is reported only when facts the program states establish it on every path: an operation whose meaning C defines, an unconditional callee effect, a library row's requirement, or a declared contract; never a default, such as the effect assumed for an unknown callee. A bug that needs two translation units, such as a use after free whose `free` is in another unit, is reported by `weavec --whole-program` and by a link with `-fweavec-link=analyze`; a default link does not analyse again, and the bug is caught by its guard at run time.
+
 At run time, by a check that traps at the offending access: every dereference whose null outcome is not proven, and every index, cursor dereference and library-call length whose extent is exact or declared and can be named at the site.
 
 At run time, by a guard that traps at the offending operation, within the limits of (G):
 
 - an index or a cursor that leaves a heap block, an escaping local or a global whose extent the code does not state, such as `v->data[i]` or a `char *dst` walked past the caller's `char buf[8]`;
-- a library call such as `memcpy(dst, src, n)` whose `n` exceeds either object, where the extents are unknown statically;
-- a use of a heap object after it was released, including through an alias the analysis could not follow and after a `realloc` moved the block;
+- a library call such as `memcpy(dst, src, n)` whose `n` exceeds either object, where the extents are unknown statically, in its fortified form (`__builtin___memcpy_chk`) too, and with a length the call computes (`memcpy(d, s, strlen(s))`);
+- a `%s` argument of a `printf`-family call with a literal format that is unterminated within its object or already freed;
+- a use of a heap object after it was released, including through an alias the analysis could not follow and after a `realloc` moved the block; on Darwin this includes memory the C library allocated (`strdup`, `getline`);
 - a double free, a free of an interior, stack or global pointer, and a `realloc` of a released block. The allocator validates these for every release in the image, guarded or not.
 
-As warnings, with "may" wording: temporal bugs that happen on some paths only. `weavec` prints all of them. A `weavec-cc` build with the runtime does not print the ones whose facet is guarded, because the guard traps if the bug happens; `-Wweavec-possible` prints them. Leak warnings, and possible findings on facets that stay unresolved, are always printed.
+As warnings, with "may" wording: temporal bugs that happen on some paths only. `weavec` prints all of them. A `weavec-cc` build with the runtime does not print the ones whose facet is guarded, because the guard traps if the bug happens; `-Wweavec-possible` prints them. Possible findings on facets that stay unresolved are always printed. Leak warnings are printed by `weavec`, and by `weavec-cc` only with `-Wweavec-leak` (or `-Wweavec`).
 
 ## What is not caught
 
-- **The three limits of a guard.** A pointer that arithmetic moved from one live tracked object into another, at a plain dereference; a use of a freed heap block after the quarantine recycled its storage; an access through a pointer into memory the runtime does not track.
-- **Under-runs and walks at globals.** A negative index from the start of a global, and a walk off the end of a global one element at a time, pass a guard: the neighbouring bytes may belong to an object the runtime does not track. On the stack and on the heap both trap.
+- **The three limits of a guard.** An access that arithmetic or an index carried from one live tracked object into another, except forwards between stack or global objects at a subscript; a use of a freed heap block after the quarantine recycled its storage; an access through a pointer into memory the runtime does not track.
+- **Under-runs and cursor walks at stack and global objects.** A negative index that lands in another live stack or global object passes a guard, and so does a cursor walked off the end of a global into the next one: at a dereference the guard knows only where the pointer is now. An index that lands in untracked memory traps, and so does a cursor that steps off a heap block or a stack object into bytes no object starts at.
 - **An array type larger than its block.** An access through a pointer to an array, such as `(*pp)[k]` with `pp` of type `int (*)[4]`, is checked against the type's bound. If the block `pp` points to is smaller than the array type, an index inside the type and outside the block is not caught.
 - **Bit-fields at the end of a truncated record.** A guard covers the bytes a bit-field's bits lie in; the generated access may read or write its whole storage unit.
 - **Temporal facets at call boundaries.** The temporal facet of a call site is about every object reachable from the arguments and globals, not about one pointer. It has no guard and stays `unresolved`. The uses that depend on it are guarded only where their own facet is not proven: a callee that receives a pointer to a released object through a typed parameter can have its dereference proven under A1, and then nothing traps.
-- **Pointer arithmetic, casts and integer-to-pointer conversions.** These sites have no guard; the accesses through the resulting pointers do.
+- **Pointer arithmetic, casts and integer-to-pointer conversions.** These sites have no guard; the accesses through the resulting pointers do. A pointer converted from an integer has unknown provenance: its own site is `unresolved(raw-cast)`, and its accesses are guarded, with their null facets checked. A forged pointer that lands in no tracked object passes its guards (A6).
 - **Sub-object overflows.** A check or a guard covers the whole object: an overflow from one field of a struct into the next is inside the object.
 - **Everything, at run time, in a unit built with `-fno-weavec-runtime`** beyond its checks: accesses without an exact or declared extent (a header before the pointer `s[-1]`, `container_of`, a buffer from an unknown callee) are `unresolved(unknown-extent)` or `unresolved(unknown-index)`, and no temporal facet is enforced. Declaring the extent with `WEAVEC_COUNTED_BY` makes such an access checkable with or without the runtime.
-- **Pointers made by reinterpretation** (union punning, byte-wise copies of pointers, `va_arg` of pointer type): `unresolved(raw-cast)`. A pointer converted from an integer is raw and needs a `WEAVEC_UNSAFE` region.
+- **Pointers made by reinterpretation** (union punning, byte-wise copies of pointers, `va_arg` of pointer type): `unresolved(raw-cast)`. Only a pointer declared `WEAVEC_RAW`, or loaded through, derived from or handed out as one, is _raw_ and needs a `WEAVEC_UNSAFE` region to be dereferenced.
 - **Uninitialised scalars.** The enforcing modes define them as zero; with `-fno-weavec-zero-init` they are not covered.
 - **Data races and asynchronous signals** (assumption A4), and **`longjmp` into a dead frame**. A release by another thread or a signal handler while a loop that makes no calls is running is not seen by that loop's guards until the loop is next entered.
-- **Leaks.** A leak is a warning and never part of the guarantee.
+- **Leaks.** A leak is a warning, off by default in `weavec-cc` builds, and never part of the guarantee.
 - **Integer overflow as such, type confusion within an object, floating point and inline assembly.** A size overflow is caught only where it leads to an out-of-bounds access.
 - **Code without WeaveC records** (archives, shared libraries, objects from another compiler): trusted, and named at link.
 

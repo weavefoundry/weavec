@@ -10,8 +10,8 @@
 // RUN: rm -rf %t && mkdir -p %t
 // RUN: %weavec_cc -fweavec-print-prelude -fweavec-checks=verify -o %t/verify.h
 // RUN: %weavec_cc -fweavec-print-prelude -fweavec-checks=report -o %t/report.h
-// RUN: %clang -std=c11 -Wall -Wextra -Werror -O0 -include %t/verify.h %s -o %t/trap0
-// RUN: %clang -std=c11 -Wall -Wextra -Werror -O2 -include %t/verify.h %s -o %t/trap2
+// RUN: %clang -std=c11 -Wall -Wextra -Werror -O0 -include %t/verify.h %s %weavec_rt -o %t/trap0
+// RUN: %clang -std=c11 -Wall -Wextra -Werror -O2 -include %t/verify.h %s %weavec_rt -o %t/trap2
 // RUN: %t/trap0 | FileCheck --check-prefix=PASS %s
 // RUN: %t/trap2 | FileCheck --check-prefix=PASS %s
 //

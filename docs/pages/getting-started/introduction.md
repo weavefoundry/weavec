@@ -5,7 +5,7 @@ description: What WeaveC does, where it fits in a C toolchain, and how it proves
 
 WeaveC brings inferred ownership and borrowing to existing C code. It uses Clang to understand your program, follows how pointers are allocated, shared, moved and released, and reports memory errors with the source locations that explain them. Where it cannot prove an access in bounds or a pointer non-null, the compiler inserts a check that stops the program before the bad access happens. Where the code states no bound to check against, or the object may already have been freed, the compiler inserts a _guard_ that asks a small runtime, linked into the program, which object the pointer points into and whether it is still alive.
 
-You can start with one file. You can also use `weavec-cc` as the compiler in an existing build; it analyses each file as it compiles it and the whole program when it links.
+You can start with one file. You can also use `weavec-cc` as the compiler in an existing build; it analyses each file as it compiles it and checks the files' records against each other when it links.
 
 ## Two ways to use it
 
@@ -30,7 +30,7 @@ Definite bugs are errors. Use-after-free and similar temporal bugs that happen o
 
 ## Start with inference
 
-Function bodies often tell WeaveC enough to infer a contract. A helper that calls `free` consumes its argument. A constructor can describe the memory it returns. Callers are checked against those facts, including across source files when the program is linked.
+Function bodies often tell WeaveC enough to infer a contract. A helper that calls `free` consumes its argument. A constructor can describe the memory it returns. Callers are checked against those facts, including across source files when the program is analysed as a whole (`weavec --whole-program`, or `weavec-cc -fweavec-link=analyze`).
 
 Annotations state a contract where inference needs help, especially at public interfaces: ownership (`WEAVEC_OWNED`, `WEAVEC_BORROWED`), nullability, and extents such as `WEAVEC_COUNTED_BY(n)`, which turns an unknown array size into a checked one. They live in `weavec.h` and expand to nothing under other compilers.
 
@@ -48,4 +48,4 @@ The runtime has a cost: guards run on every execution of the operations they cov
 
 ## Project status
 
-WeaveC is early software. Source releases are available; portable prebuilt binaries and package-manager distribution are future work. Flags, diagnostics and on-disk formats can change between minor versions. The model described here is [RFC 0030](/rfcs/0030-prove-or-trap/), with the runtime and the guarded outcome of [RFC 0032](/rfcs/0032-runtime-enforcement/); the [roadmap](/project/roadmap/) tracks progress.
+WeaveC is early software. Source releases are available; portable prebuilt binaries and package-manager distribution are future work. Flags, diagnostics and on-disk formats can change between minor versions. The model described here is [RFC 0030](/rfcs/0030-prove-or-trap/), with the runtime and the guarded outcome of [RFC 0032](/rfcs/0032-runtime-enforcement/) and the drop-in defaults of [RFC 0033](/rfcs/0033-drop-in-by-default/); the [roadmap](/project/roadmap/) tracks progress.

@@ -1,0 +1,12 @@
+receive count: 0 4 bytes received.
+receive count: 1 4 bytes received.
+receive count: 2 4 bytes received.
+Object no 1:
+[1, true, "example"]
+receive count: 3 4 bytes received.
+receive count: 4 4 bytes received.
+Object no 2:
+"second"
+receive count: 5 1 bytes received.
+Object no 3:
+[42, false]

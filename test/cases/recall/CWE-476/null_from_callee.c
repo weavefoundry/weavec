@@ -21,7 +21,7 @@ void bad(void) {
 
 void bad_passed_on(void) {
   struct node *n = make_node(1);
-  puts((char *)n); // BUG: null-dereference
+  (void)strlen((char *)n); // BUG: null-dereference
   free(n);
 }
 

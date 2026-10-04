@@ -32,10 +32,15 @@ the whole program at link time. Full picture:
 guarantee, amends RFCs 0002–0017 where they say so, and supersedes RFCs
 0018–0029. Then `0031-object-engine.md`, which replaced the engine behind
 the seam and the summary format (30); read its *Implementation amendments*
-too. Then `0032-runtime-enforcement.md`, the current amendment of both: the
-`guarded` outcome, the runtime, the guards, ledger JSON version 2 and unit
-record format 30; read its *Implementation amendments* too, which override
-its body. There is no checked mode.
+too. Then `0032-runtime-enforcement.md`: the `guarded` outcome, the
+runtime, the guards and ledger JSON version 2; read its *Implementation
+amendments* too, which override its body. Then
+`0033-drop-in-by-default.md`, the current amendment of all three: the
+witness rule for definite errors, raw pointers only from `WEAVEC_RAW`, the
+library table's portability rule, guards on the accessed address, the link
+modes (`-fweavec-link=records|analyze|none`), the per-unit budget and unit
+record format 31; its *Implementation amendments* override its body too.
+There is no checked mode.
 
 ## Before touching the model or the checker
 
@@ -131,8 +136,8 @@ cmake --preset dev && cmake --build --preset dev && ctest --preset dev
 | Change the TU driver / call graph    | `lib/Analysis/EngineUnit.cpp` (`UnitRun`), `lib/Analysis/UnitPipeline.cpp` |
 | Change what a unit exports / the program database | `UnitRun::exports` in `lib/Analysis/EngineUnit.cpp`, `lib/Analysis/ProgramDatabase.cpp` (RFC 0005, RFC 0031 §7) |
 | Change the summary text format       | `lib/Core/EffectsIO.cpp` (format 30; round-trip tests in `unittests/Core/EffectsIOTest.cpp`) |
-| Change the whole-program algorithm / link step | `lib/Frontend/ProgramAnalysis.cpp`, `lib/Frontend/Driver.cpp` |
-| Change the unit record (`foo.o.weavec`) | `lib/Frontend/UnitRecord.cpp` (format 30; the schema fingerprint follows the codec's field table), `lib/Frontend/RecordPayload.cpp` (the field table) |
+| Change the whole-program algorithm / link step | `lib/Frontend/ProgramAnalysis.cpp`, `lib/Frontend/Driver.cpp` (`runLinkStep`: records by default, re-analysis under `-fweavec-link=analyze` within `-fweavec-link-budget`; RFC 0033 §7) |
+| Change the unit record (`foo.o.weavec`) | `lib/Frontend/UnitRecord.cpp` (format 31; the schema fingerprint follows the codec's field table), `lib/Frontend/RecordPayload.cpp` (the field table) |
 | Change the ledger JSON / SARIF       | `lib/Frontend/LedgerWriter.cpp` (`weavec-ledger` version 2, `LedgerSchemaVersion`), `lib/Frontend/LedgerOutput.cpp` |
 | Change `weavec-cc` (driver, cc1 wrapping, link step) | `lib/Frontend/Driver.cpp`, `tools/weavec-cc/main.cpp` |
 | Change `-W` / `-fweavec-*` handling  | `lib/Frontend/DiagnosticControl.cpp`, `DriverOptions` in `Driver.h` |

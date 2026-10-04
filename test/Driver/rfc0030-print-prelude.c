@@ -21,16 +21,16 @@
 // RUN: not %weavec_cc -fweavec-print-prelude -fweavec-checks=abort 2>&1 | FileCheck --check-prefix=MODE %s
 //
 // TRAP: #pragma clang diagnostic ignored "-Weverything"
-// TRAP: __builtin_verbose_trap("weavec", "nonnull");
+// TRAP: (__weavec_rt_trapping(), __builtin_verbose_trap("weavec", "nonnull"));
 // TRAP: __weavec_malloc_zero
 // TRAP-NOT: __weavec_prv_
 //
 // REPORT: extern void __weavec_rt_report(const char *, const char *, unsigned, unsigned);
 // REPORT: __weavec_rt_report("nonnull", file, line, column);
 //
-// VERIFY: __builtin_verbose_trap("weavec", "index");
+// VERIFY: (__weavec_rt_trapping(), __builtin_verbose_trap("weavec", "index"));
 // VERIFY: __weavec_prv_index
-// VERIFY: __builtin_verbose_trap("weavec.proven", "index");
+// VERIFY: (__weavec_rt_trapping(), __builtin_verbose_trap("weavec.proven", "index"));
 //
 // NOZERO: __weavec_chk_nonnull
 // NOZERO-NOT: __weavec_malloc_zero

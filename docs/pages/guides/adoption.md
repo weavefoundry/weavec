@@ -18,7 +18,7 @@ See [build integration](/guides/build-integration/) for CMake, Make and compiler
 
 ## 2. Fix the errors, then read the warnings
 
-Errors are definite: the bug happens on every execution that reaches the line. Follow the reported allocation, alias, release or escape and fix the code. Warnings with "may" wording are temporal bugs on some paths only. `weavec` prints all of them. A `weavec-cc` build with the runtime prints only those it cannot guard, such as a possible leak or a finding at a call boundary; the others trap at run time if they happen, and `-Wweavec-possible` prints them at compile time as well. Read the ones you see: a guard catches a use of a freed block only while the block is in the quarantine. Check inferred behavior with `--dump-analysis` when a helper's effect is surprising.
+Errors are definite: the bug happens on every execution that reaches the line. Follow the reported allocation, alias, release or escape and fix the code. Warnings with "may" wording are temporal bugs on some paths only. `weavec` prints all of them. A `weavec-cc` build with the runtime prints only those it cannot guard, such as a finding at a call boundary; the others trap at run time if they happen, and `-Wweavec-possible` prints them at compile time as well. A `weavec-cc` build prints no `leak` warnings unless `-Wweavec-leak` (or `-Wweavec`) asks for them; `weavec` prints them. Read the ones you see: a guard catches a use of a freed block only while the block is in the quarantine. Check inferred behavior with `--dump-analysis` when a helper's effect is surprising.
 
 During migration, you can lower a particular error to a warning:
 
@@ -26,7 +26,7 @@ During migration, you can lower a particular error to a warning:
 weavec-cc -Wno-error=weavec-use-after-free -c src/buffer.c
 ```
 
-This changes only the reporting. The lowered site is still compiled behind a check that traps, and the ledger keeps it as a violation. Remove temporary overrides as the component improves.
+This changes only the reporting, and the ledger keeps the site as a violation. A lowered temporal violation, or a lowered violation of a callee's or library function's requirement, is guarded against the runtime: it traps only if the bug happens, so a false error lowered this way does not stop a correct program. A spatial or null violation decided from an exact extent keeps its check, or traps unconditionally, and so does every lowered violation in a build without the runtime. Remove temporary overrides as the component improves.
 
 ## 3. Read the ledger
 
@@ -38,12 +38,12 @@ weavec --whole-program -p build --ledger=build/ledger/
 
 `summary.unresolvedReasons` in each ledger counts why operations were left unresolved, and `summary.guardedReasons` counts the same reasons for the operations a guard covers. A guarded operation is enforced at run time, within the limits of a guard; resolving its reason turns it into a proof or a check and removes the guard and its cost. The common reasons point at their fixes:
 
-| Reason           | Typical cause                                                  | What helps                                                                                                                                                                               |
-| ---------------- | -------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `unknown-callee` | A call into code WeaveC cannot see may free or keep a pointer. | Link the definition in ([whole-program analysis](/guides/whole-program/)) or declare the callee's ownership (`WEAVEC_BORROWED`, `WEAVEC_OWNED`). The row carries a suggested annotation. |
-| `unknown-extent` | The size of the object behind a pointer is unknown.            | Pass the length and declare it: `WEAVEC_COUNTED_BY(n)`, `WEAVEC_ENDED_BY(end)`, `WEAVEC_STRING`.                                                                                         |
-| `raw-cast`       | The pointer was made from a non-pointer value.                 | Keep such code in a narrow, reviewed [unsafe region](/guides/unsafe/).                                                                                                                   |
-| `budget`         | A function exceeded the analysis budget.                       | Split the function, or raise `-fweavec-budget`.                                                                                                                                          |
+| Reason           | Typical cause                                                      | What helps                                                                                                                                                                                               |
+| ---------------- | ------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `unknown-callee` | A call into code WeaveC cannot see may free or keep a pointer.     | Analyse the definition with the caller ([whole-program analysis](/guides/whole-program/)) or declare the callee's ownership (`WEAVEC_BORROWED`, `WEAVEC_OWNED`). The row carries a suggested annotation. |
+| `unknown-extent` | The size of the object behind a pointer is unknown.                | Pass the length and declare it: `WEAVEC_COUNTED_BY(n)`, `WEAVEC_ENDED_BY(end)`, `WEAVEC_STRING`.                                                                                                         |
+| `raw-cast`       | The pointer was made from a non-pointer value, such as an integer. | Such accesses are guarded; keep code that forges pointers in a narrow, reviewed [unsafe region](/guides/unsafe/).                                                                                        |
+| `budget`         | A function exceeded the analysis budget.                           | Split the function, or raise `-fweavec-budget`.                                                                                                                                                          |
 
 Trusted rows are the assumptions the result rests on, such as platform library calls (`system-api`) and unsafe regions (`unsafe`). Review them rather than eliminate them.
 
@@ -67,4 +67,4 @@ Every operation must then be proven, checked or guarded; the rest are `unresolve
 
 ## 6. Keep the result reproducible
 
-Run the same build in CI, keep the ledger as a build artifact (`-fweavec-ledger-format=sarif` for code-scanning tools), and watch the summary counts. Each ledger row has a fingerprint that survives edits elsewhere in the file, so rows can be compared between runs.
+Run the same build in CI, with `-fweavec-link=analyze` at the link or a `weavec --whole-program` step to report the bugs that span files (a default link does not), keep the ledger as a build artifact (`-fweavec-ledger-format=sarif` for code-scanning tools), and watch the summary counts. Each ledger row has a fingerprint that survives edits elsewhere in the file, so rows can be compared between runs.

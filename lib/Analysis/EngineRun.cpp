@@ -848,6 +848,14 @@ core::Sym FunctionRun::unwritten(core::HeapState &state, core::ObjectId object,
       // as possibly unassigned, not certainly.
       bool jumped =
           uninit && info.key.kind == core::ObjectKind::Local && callsSetjmp();
+      // RFC 0033 §1: a local whose address is taken may be written where
+      // no summary records it (a callee handed `&op_info`); that it was
+      // never written is then no fact the program states, and it reads as
+      // possibly unassigned.
+      if (uninit && info.key.kind == core::ObjectKind::Local)
+        if (const clang::VarDecl *var = localVariable(object);
+            var != nullptr && isPassedToCall(*var))
+          jumped = true;
       if (zero.type == core::SymInfo::Type::Pointer) {
         zero.null = core::PointerNull::Null;
         zero.uninit = uninit && !jumped;
@@ -2168,6 +2176,9 @@ RunResult FunctionRun::run() {
   worklist.emplace(rank[cfg->getEntry().getBlockID()],
                    cfg->getEntry().getBlockID());
   const std::uint64_t budget = unit.input.options.budget;
+  // RFC 0033 §9: this run's share of what the unit has left.
+  const std::uint64_t share = unit.runShare();
+  static const bool Trace = std::getenv("WEAVEC_ENGINE_TRACE") != nullptr;
   auto thresholdsOf = [&](unsigned head) -> const std::vector<std::int64_t> & {
     auto [it, inserted] = thresholds.try_emplace(head);
     if (inserted)
@@ -2200,8 +2211,13 @@ RunResult FunctionRun::run() {
     unsigned id = next->second;
     worklist.erase(next);
     changedByBackEdge[id] = false;
-    if (budget != 0 && ++transfers > budget) {
+    ++unit.unitTransfers;
+    if (budget != 0)
+      ++transfers;
+    if ((budget != 0 && transfers > budget) ||
+        (share != 0 && transfers > share)) {
       overBudget = true;
+      spentBudget = budget != 0 && transfers > budget;
       break;
     }
     const CFGBlock *block = byId[id];
@@ -2209,13 +2225,12 @@ RunResult FunctionRun::run() {
       continue;
     std::vector<std::pair<unsigned, core::HeapState>> outs;
     transferBlock(*block, *entryStates[id], outs);
-    bool trace = std::getenv("WEAVEC_ENGINE_TRACE") != nullptr;
-    if (trace)
+    if (Trace)
       llvm::errs() << "visit B" << id << " -> " << outs.size() << " outs\n";
     for (auto &[succ, state] : outs) {
       dropDeadLocals(state, succ);
       dropDeadValues(state, succ);
-      if (trace)
+      if (Trace)
         llvm::errs() << "  to B" << succ
                      << (entryStates[succ] ? " join" : " first") << "\n"
                      << heap.dump(state);
@@ -2259,7 +2274,7 @@ RunResult FunctionRun::run() {
         worklist.clear();
         break;
       }
-      if (trace)
+      if (Trace)
         llvm::errs() << "  joined at B" << succ << "\n" << heap.dump(joined);
       if (changed) {
         entryStates[succ] = std::move(joined);
@@ -2285,6 +2300,7 @@ RunResult FunctionRun::run() {
   }
   if (overBudget) {
     result.overBudget = true;
+    result.spentBudget = spentBudget;
     result.effects.incomplete = "the analysis budget was exceeded";
     return result;
   }

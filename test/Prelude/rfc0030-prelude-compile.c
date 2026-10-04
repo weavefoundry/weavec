@@ -53,9 +53,9 @@
  *
  * TRAP: #pragma clang diagnostic ignored "-Weverything"
  * TRAP: static __inline__ __attribute__((always_inline, nodebug, unused)) void *__weavec_chk_nonnull(const volatile void *p) {
- * TRAP: __builtin_verbose_trap("weavec", "nonnull");
+ * TRAP: (__weavec_rt_trapping(), __builtin_verbose_trap("weavec", "nonnull"));
  * TRAP: __weavec_chk_violation(void)
- * TRAP: __builtin_verbose_trap("weavec", "violation");
+ * TRAP: (__weavec_rt_trapping(), __builtin_verbose_trap("weavec", "violation"));
  * TRAP: __weavec_need_add
  * TRAP: __weavec_malloc_zero
  * TRAP: #pragma clang diagnostic pop
@@ -67,11 +67,11 @@
  * REPORT-NOT: __builtin_verbose_trap
  *
  * VERIFY: __weavec_chk_index
- * VERIFY: __builtin_verbose_trap("weavec", "index");
+ * VERIFY: (__weavec_rt_trapping(), __builtin_verbose_trap("weavec", "index"));
  * VERIFY: __weavec_prv_index
- * VERIFY: __builtin_verbose_trap("weavec.proven", "index");
+ * VERIFY: (__weavec_rt_trapping(), __builtin_verbose_trap("weavec.proven", "index"));
  *
- * PLAIN: __builtin_verbose_trap("weavec", "nonnull");
+ * PLAIN: (__weavec_rt_trapping(), __builtin_verbose_trap("weavec", "nonnull"));
  * PLAIN-NOT: __weavec_malloc_zero
  *
  * The __builtin_trap() form, for compilers without __builtin_verbose_trap,

@@ -31,6 +31,7 @@
 #include "clang/Frontend/ASTUnit.h"
 #include "clang/Tooling/Tooling.h"
 
+#include <chrono>
 #include <cstddef>
 #include <memory>
 #include <optional>
@@ -70,14 +71,21 @@ public:
     /// Units that could not be parsed or re-run, by name.
     std::vector<std::string> failed;
     /// Cyclic components that did not settle within `MaxRounds`, as lists
-    /// of unit names.
+    /// of unit names: their widened summaries stand (RFC 0033 §7).
     std::vector<std::vector<std::string>> nonConverging;
+    /// RFC 0033 §7: units whose analysis the budget cut; their
+    /// compile-time results stand.
+    std::vector<std::string> unfinished;
     /// WeaveC errors and warnings printed.
     std::size_t errors = 0;
     std::size_t warnings = 0;
 
+    /// RFC 0033 §7: a unit the analysis could not finish, or a group that
+    /// did not converge, keeps what it had; a unit that cannot be parsed
+    /// at all (in `weavec --whole-program`) or an error fails it. The link
+    /// step fails only on an error.
     [[nodiscard]] bool ok() const noexcept {
-      return failed.empty() && nonConverging.empty() && errors == 0;
+      return failed.empty() && errors == 0;
     }
   };
 
@@ -106,6 +114,10 @@ public:
   void addExports(analysis::UnitExports exports);
 
   [[nodiscard]] Result run();
+
+  /// RFC 0033 §7: stop analysing once `seconds` of wall-clock time have
+  /// passed since `run` began; 0 (the default) means no limit.
+  void setBudget(double seconds) { budgetSeconds = seconds; }
 
   /// After `run`: the exports of every unit, joined.
   [[nodiscard]] const analysis::ProgramDatabase &database() const noexcept {
@@ -179,6 +191,10 @@ private:
   };
 
   FrontendOptions options;
+  double budgetSeconds = 0;
+  std::chrono::steady_clock::time_point started;
+  /// Whether the budget has run out.
+  [[nodiscard]] bool exhausted() const;
   std::vector<Unit> units;
   std::vector<analysis::UnitExports> fixed;
   analysis::ProgramDatabase settled;

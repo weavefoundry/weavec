@@ -49,9 +49,15 @@ struct DriverOptions {
   bool enabled = true;
   /// `-fweavec-dump-analysis`.
   bool dumpAnalysis = false;
-  /// `-fweavec-link` / `-fno-weavec-link`: run the whole-program step
-  /// before linking.
-  bool link = true;
+  /// `-fweavec-link=records|analyze|none` (RFC 0033 §7): what the link
+  /// step does before linking.
+  enum class LinkMode : std::uint8_t { Records, Analyze, None };
+  LinkMode link = LinkMode::Records;
+  /// `-fweavec-link-budget=<seconds>`: the wall-clock budget of
+  /// `-fweavec-link=analyze`; 0 means none.
+  double linkBudget = DefaultLinkBudget;
+  /// RFC 0033 §7: the default budget of `-fweavec-link=analyze`.
+  static constexpr double DefaultLinkBudget = 120;
   /// `-fweavec-checks=trap|report|verify|none` (§10.7).
   core::ChecksMode checks = core::ChecksMode::Trap;
   /// `-fweavec-zero-init` / `-fno-weavec-zero-init` (§11); unset means on.
@@ -69,6 +75,9 @@ struct DriverOptions {
   core::RequireLevel require = core::RequireLevel::None;
   /// `-fweavec-budget=<n>` (§5.5); 0 means unlimited.
   std::uint64_t budget = core::DefaultBudget;
+  /// `-fweavec-unit-budget=<n>` (RFC 0033 §9); unset means the default for
+  /// the unit's size, 0 unlimited.
+  std::optional<std::uint64_t> unitBudget;
   /// `-fweavec-ledger=<path>` (§16).
   std::string ledger;
   /// `-fweavec-ledger-format=json|sarif` (§12).
@@ -80,7 +89,13 @@ struct DriverOptions {
   /// prelude of the `-fweavec-checks` mode and exit. The out-of-line form
   /// is what the runtime build compiles into libweavec_chk.a.
   std::optional<PreludeForm> printPrelude;
-  DiagnosticControl control;
+  /// RFC 0033 §8: a build prints no leak warnings unless asked
+  /// (`-Wweavec-leak`); the weavec tool, which only analyses, does.
+  DiagnosticControl control = [] {
+    DiagnosticControl leakOff;
+    leakOff.turnOffByDefault(core::diag::Leak);
+    return leakOff;
+  }();
   /// The flags consumed, in order, for forwarding to `-cc1` jobs.
   std::vector<std::string> spellings;
 

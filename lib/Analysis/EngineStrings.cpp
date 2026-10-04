@@ -404,6 +404,7 @@ Transfer::formatFacts(const CallExpr &call,
       continue;
     }
     bool sized = false;
+    bool precision = false;
     while (i < spec.size() && llvm::StringRef("-+ #0").contains(spec[i]))
       ++i;
     if (i < spec.size() && spec[i] == '*') {
@@ -419,6 +420,7 @@ Transfer::formatFacts(const CallExpr &call,
     if (i < spec.size() && spec[i] == '.') {
       ++i;
       sized = true;
+      precision = true;
       if (i < spec.size() && spec[i] == '*') {
         ++argument;
         ++i;
@@ -438,7 +440,7 @@ Transfer::formatFacts(const CallExpr &call,
       ++argument;
       break;
     case 's': {
-      out.strings.push_back(argument);
+      (precision ? out.bounded : out.strings).push_back(argument);
       std::optional<std::int64_t> length;
       if (argument < call.getNumArgs())
         if (const auto *literal = dyn_cast<StringLiteral>(

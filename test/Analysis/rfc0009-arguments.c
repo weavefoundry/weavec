@@ -172,8 +172,9 @@ void unknown_flag(struct buf *b) {
 
 void store_local(struct state *s) {
   char local[8];
-  // CHECK: rfc0009-arguments.c:[[@LINE+1]]:3: error: 's->msg' may outlive 'local', which it points to [weavec::lifetime-too-short]
+  // RFC 0033 §1: storing the address is no access; a warning.
+  // CHECK: rfc0009-arguments.c:[[@LINE+1]]:3: warning: 's->msg' may outlive 'local', which it points to [weavec::lifetime-too-short]
   gz_error(s, 1, local);
 }
 
-// CHECK: 2 warnings and 3 errors generated.
+// CHECK: 3 warnings and 2 errors generated.

@@ -68,6 +68,7 @@ struct LibTerm {
     Sum,          ///< `operands[0] + operands[1]`
     Difference,   ///< `operands[0] - value`
     Min,          ///< `min(operands[0], operands[1])`
+    Quotient,     ///< `operands[0] / value`, rounded down (RFC 0033 §3)
   };
   Kind kind = Kind::Constant;
   std::int64_t value = 0;
@@ -85,6 +86,7 @@ struct LibTerm {
   [[nodiscard]] static LibTerm sum(LibTerm left, LibTerm right);
   [[nodiscard]] static LibTerm difference(LibTerm left, std::int64_t right);
   [[nodiscard]] static LibTerm min(LibTerm left, LibTerm right);
+  [[nodiscard]] static LibTerm quotient(LibTerm left, std::int64_t divisor);
 
   /// The canonical spelling, which `parse` reads back to an equal term.
   [[nodiscard]] std::string str() const;

@@ -25,8 +25,8 @@ add_custom_command(
   DEPENDS weavec-cc
   COMMENT "Generating the out-of-line check helpers")
 
-add_library(weavec_rt STATIC weavec_alloc.c weavec_objects.c weavec_report.c
-                             weavec_rt.h)
+add_library(weavec_rt STATIC weavec_alloc.c weavec_objects.c weavec_owner.c
+                             weavec_report.c weavec_rt.h)
 add_library(weavec_alloc STATIC weavec_malloc.c weavec_rt.h)
 add_library(weavec_chk STATIC weavec_chk.c weavec_chk_report.c
                               "${_weavec_chk_inc}" "${_weavec_chk_report_inc}")
@@ -38,11 +38,15 @@ foreach(_weavec_runtime IN ITEMS weavec_rt weavec_alloc weavec_chk)
     ${_weavec_runtime} PROPERTIES ARCHIVE_OUTPUT_DIRECTORY
                                   "${WEAVEC_RUNTIME_OUTPUT_DIR}")
   # The archives are linked into executables and shared libraries alike, by
-  # the system linker: position-independent, and never LTO bitcode.
+  # the system linker: position-independent, and never LTO bitcode (the
+  # per-configuration properties too: the top level sets
+  # CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE, which outranks the plain one).
   set_target_properties(
     ${_weavec_runtime}
     PROPERTIES POSITION_INDEPENDENT_CODE ON
                INTERPROCEDURAL_OPTIMIZATION OFF
+               INTERPROCEDURAL_OPTIMIZATION_RELEASE OFF
+               INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO OFF
                C_STANDARD 11)
   if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
     target_compile_options(${_weavec_runtime} PRIVATE -Wall -Wextra)
@@ -72,7 +76,11 @@ if(WEAVEC_BUILD_TESTS)
   target_link_libraries(weavec_rt_test PRIVATE weavec_alloc weavec_rt
                                                Threads::Threads)
   set_target_properties(
-    weavec_rt_test PROPERTIES C_STANDARD 11 INTERPROCEDURAL_OPTIMIZATION OFF)
+    weavec_rt_test
+    PROPERTIES C_STANDARD 11
+               INTERPROCEDURAL_OPTIMIZATION OFF
+               INTERPROCEDURAL_OPTIMIZATION_RELEASE OFF
+               INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO OFF)
   if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
     target_compile_options(weavec_rt_test PRIVATE -w)
   endif()

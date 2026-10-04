@@ -73,8 +73,9 @@ static UnitRecord sampleRecord() {
   sites["line"] = 253;
   sites["linkage"] = "external";
   sites["rows"] = llvm::json::Array{
-      llvm::json::Array{0, "deref", 258, 21, "proven", "checked",
-                        "unresolved/unknown-callee", nullptr}};
+      llvm::json::Array{0, "deref", 258, 21, "proven", "checked@nonnull",
+                        "unresolved/unknown-callee", nullptr, nullptr, nullptr,
+                        nullptr, nullptr, "c->next", nullptr, nullptr}};
   record.payload["sites"] = llvm::json::Array{std::move(sites)};
   record.payload["unknown"] = llvm::json::Array{"blob_open"};
   record.payload["definesAllocator"] = true;
@@ -134,7 +135,7 @@ TEST(UnitRecord, FramingFollowsTheLayout) {
   ASSERT_TRUE(bytes) << error;
   const llvm::StringRef view = *bytes;
   EXPECT_EQ(view.take_front(8), llvm::StringRef("\x89WVC\r\n\x1a\n", 8));
-  EXPECT_EQ(readLittleEndian(view, 8, 4), 30U);
+  EXPECT_EQ(readLittleEndian(view, 8, 4), 31U);
   EXPECT_EQ(readLittleEndian(view, 12, 4), 0U);
   const auto schema = schemaFingerprint();
   EXPECT_TRUE(std::equal(schema.begin(), schema.end(),
@@ -161,8 +162,9 @@ TEST(UnitRecord, FramingFollowsTheLayout) {
             0U);
   EXPECT_NE(payload.find(R"("sites":[{"function":"cJSON_Delete","file":"",)"
                          R"("line":253,"linkage":"external","rows":[[0,)"
-                         R"("deref",258,21,"proven","checked",)"
-                         R"("unresolved/unknown-callee",null]]}],)"
+                         R"("deref",258,21,"proven","checked@nonnull",)"
+                         R"("unresolved/unknown-callee",null,null,null,null,)"
+                         R"(null,"c->next",null,null]]}],)"
                          R"("reported":[],"definesAllocator":true,"a5":{)"),
             std::string::npos);
 }
@@ -216,7 +218,8 @@ TEST(UnitRecord, SchemaFingerprintIsTheTableHash) {
   EXPECT_NE(text.find("sites:array<object{function:string,file:string,"
                       "line:integer,linkage:string,rows:array<tuple("
                       "integer,string,integer,integer,string?,string?,"
-                      "string?,string?)>}>"),
+                      "string?,string?,string?,string?,string?,string?,"
+                      "string,string?,string?)>}>"),
             std::string::npos);
   EXPECT_NE(text.find("store:object{file:string,line:integer,column:integer}?"),
             std::string::npos);
@@ -240,8 +243,8 @@ TEST(UnitRecord, AnythingElseIsStale) {
   EXPECT_EQ(reason(magic), "not a WeaveC record (bad magic)");
   EXPECT_EQ(reason(llvm::StringRef(good).take_front(80)),
             "truncated record (80 bytes)");
-  EXPECT_EQ(reason(frame(header, payload, 29)), "format 29, expected 30");
-  EXPECT_EQ(reason(frame(header, payload, 30, 1)), "unsupported flags 0x1");
+  EXPECT_EQ(reason(frame(header, payload, 30)), "format 30, expected 31");
+  EXPECT_EQ(reason(frame(header, payload, 31, 1)), "unsupported flags 0x1");
   std::string schema = good;
   schema[20] = static_cast<char>(static_cast<unsigned char>(schema[20]) ^ 1U);
   EXPECT_EQ(reason(schema),
@@ -272,7 +275,7 @@ TEST(UnitRecord, AnythingElseIsStale) {
                   .getAsArray()
                   ->pop_back();
             })),
-            "payload.sites[0].rows[0]: expected an array of 8");
+            "payload.sites[0].rows[0]: expected an array of 15");
   std::string badMode = header;
   badMode.replace(badMode.find("\"report\""), 8, "\"fast\"");
   EXPECT_EQ(reason(frame(badMode, payload)),

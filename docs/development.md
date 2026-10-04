@@ -52,7 +52,7 @@ ctest --preset dev             # unit tests, the runtime test, lit, the cases
 | `dev`            | Debug build for day-to-day work                      |
 | `dev-asan`       | Debug + AddressSanitizer + UBSan                     |
 | `dev-tidy`       | Debug with clang-tidy running as part of compilation |
-| `release`        | Optimised, LTO                                       |
+| `release`        | Optimised, LTO (the runtime archives excepted)       |
 | `relwithdebinfo` | Optimised with debug info                            |
 | `ci-*`           | What CI runs: warnings are errors                    |
 
@@ -173,6 +173,11 @@ ASan CI job uses `--no-run`). A false-positive fix gets a `// CLEAN` case; a
 new rule gets a case under `test/cases/semantics/<feature>/`. The runtime's
 cases are in `test/cases/semantics/runtime/`: a bug that must trap with
 `object`, `live` or `release` and its correct twin, which must not.
+`test/cases/semantics/dropin/` (RFC 0033 §11) holds one case per false stop
+and silent miss found on projects WeaveC was not tuned on, with an `_ok`
+twin for a false positive and a `_bug` twin for a miss. The runner builds
+every multi-unit case with `-fweavec-link=analyze` (unless its flags name
+`-fweavec-link=`), so cross-unit expectations keep testing the analysis.
 `scripts/run-cases.py --asan` checks that no line ASan reports has its
 facet proven, and `--checks verify` that no `weavec.proven` trap fires
 (RFC 0032 gate R1).
@@ -185,6 +190,10 @@ in `test/corpus/manifest.json` and compares the results with the ratchet in
 warning needs a verdict in `test/corpus/triage.json`. `--quick` runs on every
 pull request and `--full` (project builds, test suites, injections,
 benchmarks) weekly; see [`test/corpus/README.md`](../test/corpus/README.md).
+Each config has a `set` (RFC 0033 §11): `original`, `heldOut` (RFC 0031),
+`fresh` (eight projects WeaveC was not tuned on, run by `--full` and
+`--held-out`) and `sealed` (five more, run only by `--sealed`, once, for gate
+D2; `--reference-only` builds them with the reference compiler alone).
 RFC 0032 changed three of its gates:
 
 - `--bench` (G14) times three builds of each benchmark: the reference
@@ -242,12 +251,13 @@ editor integration.
 - `weavec-cc` runs its `-cc1` jobs in-process, so `lldb -- build/dev/bin/
   weavec-cc -c file.c` stops in the analysis directly; `weavec-cc -###
   file.c` prints the jobs Clang's driver planned. A unit's record is
-  `<object>.weavec` next to the object: format 30, a framed JSON header
+  `<object>.weavec` next to the object: format 31, a framed JSON header
   (producer, source, `-cc1` command, target, configuration, object digest)
-  and payload (format-30 summaries, kinds, imports, slots, site outcomes),
-  with a schema fingerprint and a SHA-256 digest (RFC 0030 §13.1, RFC 0031
-  §7); `weavec --dump-record=<path>` prints it as JSON. The link step
-  re-runs the recorded command.
+  and payload (format-30 summaries, kinds, imports, slots, every site's
+  ledger row), with a schema fingerprint and a SHA-256 digest (RFC 0030
+  §13.1, RFC 0031 §7, RFC 0033 §7); `weavec --dump-record=<path>` prints it
+  as JSON. A default link reads only the records; `-fweavec-link=analyze`
+  re-runs the recorded command of each unit it analyses again.
 - Write the ledger (`weavec --ledger=out.json file.c --`) and read the rows
   at the line in question: their facets, outcomes, reasons and fix-its say
   what was decided and why.
@@ -280,9 +290,10 @@ editor integration.
   per site and the program goes on; `WEAVEC_RT_ABORT=1` aborts at the first.
   A release the allocator itself rejects (no guard saw it) prints
   `weavec: invalid release of <pointer>: <why>` and traps.
-  `WEAVEC_RT_REPORT_LOG=<path>` also appends each report line to a file,
-  which is how `scripts/corpus-gate.py` sees the failures of a test that a
-  harness (CTest without `-V`) reports as passed and keeps quiet about.
+  `WEAVEC_RT_REPORT_LOG=<path>` appends each report line to a file instead
+  of standard error, which is how `scripts/corpus-gate.py` sees the
+  failures of a test that a harness (CTest without `-V`) reports as passed
+  and keeps quiet about, without changing what the test sees on stderr.
 - The ASan runs of `scripts/run-cases.py --asan` and of the corpus gate set
   `ASAN_SYMBOLIZER_PATH` to an `llvm-symbolizer` (from `WEAVEC_LLVM_PREFIX`,
   the `PATH` or Homebrew, or beside the reference compiler) unless the

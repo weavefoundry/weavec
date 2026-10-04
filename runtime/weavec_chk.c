@@ -27,12 +27,16 @@
 #if defined(__has_builtin)
 #if __has_builtin(__builtin_verbose_trap)
 #define WEAVEC_CHK_TRAP(category, reason)                                      \
-  __builtin_verbose_trap(category, reason)
+  (__weavec_rt_trapping(), __builtin_verbose_trap(category, reason))
 #endif
 #endif
 #ifndef WEAVEC_CHK_TRAP
-#define WEAVEC_CHK_TRAP(category, reason) __builtin_trap()
+#define WEAVEC_CHK_TRAP(category, reason)                                      \
+  (__weavec_rt_trapping(), __builtin_trap())
 #endif
+/* RFC 0033 section 6.1: libweavec_rt.a follows this archive on every
+ * enforcing link. */
+extern void __weavec_rt_trapping(void);
 
 #if defined(__APPLE__)
 #include <malloc/malloc.h>

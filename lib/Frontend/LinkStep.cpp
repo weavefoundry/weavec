@@ -829,8 +829,7 @@ static bool localCallersMeet(const core::UnitLedger &unit,
 /// Call sites, and the `trusted(caller-contract)` rows its verdicts
 /// discharge in the definitions.
 static void addRequirementRows(core::Ledger &ledger,
-                               const RequirementCheck &check,
-                               std::span<const core::Ledger *const> runs) {
+                               const RequirementCheck &check) {
   for (const RequirementDecision &row : check.decisions) {
     if (row.member >= ledger.units.size())
       continue;
@@ -847,11 +846,10 @@ static void addRequirementRows(core::Ledger &ledger,
                                           .check = std::nullopt});
   }
   for (const auto &[member, name] : check.discharged) {
-    // The definition's own unit must have been analysed at link, so that
-    // its own calls to the function are in view: a caller there that does
-    // not establish the requirement leaves it assumed.
-    if (member >= ledger.units.size() || member >= runs.size() ||
-        runs[member] == nullptr)
+    // The definition's own unit's calls to the function must be in view
+    // (its record's rows name their callees, RFC 0033 §7): a caller there
+    // that does not establish the requirement leaves it assumed.
+    if (member >= ledger.units.size())
       continue;
     core::FunctionLedger *definition =
         functionNamed(ledger.units[member], name);
@@ -1083,7 +1081,7 @@ core::Ledger composeProgramLedger(const ProgramLedgerInput &input) {
     ledger.diagnostics.push_back(ledgerDiagnostic(diagnostic));
   const std::uint64_t relianceRows = addRelianceRows(ledger, members);
   if (input.requirements != nullptr)
-    addRequirementRows(ledger, *input.requirements, input.runs);
+    addRequirementRows(ledger, *input.requirements);
   if (!input.shape.inputsWithoutRecords.empty())
     trustExternalUnits(ledger, members);
 

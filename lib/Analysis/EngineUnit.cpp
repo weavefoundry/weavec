@@ -23,6 +23,7 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <limits>
 #include <set>
 
 using namespace clang;
@@ -94,9 +95,23 @@ namespace engine {
 // UnitRun
 //===----------------------------------------------------------------------===//
 
+/// RFC 0033 §9: the default budget of a unit, in block transfers: a few per
+/// site, so that a unit's analysis costs a bounded multiple of its size.
+static constexpr std::uint64_t MinUnitBudget = 200000;
+static constexpr std::uint64_t UnitBudgetPerSite = 6;
+
 UnitRun::UnitRun(const EngineInput &engineInput, LedgerAdapter &adapter)
     : input(engineInput), authoritative(adapter),
-      discarding(engineInput.context, LedgerAdapter::Mode::Discarding) {}
+      discarding(engineInput.context, LedgerAdapter::Mode::Discarding) {
+  if (input.options.unitBudget) {
+    unitBudget = *input.options.unitBudget;
+  } else {
+    std::uint64_t sites = 0;
+    for (const SiteIndex::FunctionSites &function : input.sites.functions())
+      sites += function.sites.size();
+    unitBudget = std::max(MinUnitBudget, UnitBudgetPerSite * sites);
+  }
+}
 
 std::uint32_t UnitRun::globalId(const VarDecl &var) {
   return internGlobal(var);
@@ -371,6 +386,9 @@ private:
         noteVar(*var, depth);
   }
   void noteVar(const VarDecl &var, int depth) {
+    // (Locals copied into each other in a loop: each is followed once.)
+    if (depth > MaxCopyDepth || !followed.insert(&var).second)
+      return;
     auto it = sources.find(&var);
     if (it == sources.end())
       return;
@@ -383,6 +401,8 @@ private:
       slots.insert(source);
     }
   }
+  static constexpr int MaxCopyDepth = 64;
+  llvm::DenseSet<const VarDecl *> followed;
 };
 
 /// RFC 0031 §4.6: the unit's references to variables with static storage
@@ -461,6 +481,32 @@ void UnitRun::computeOwningSlots() {
   collector.finish();
 }
 
+/// `component`'s members in a postorder of the call edges between them.
+static std::vector<unsigned>
+calleesFirst(const std::vector<unsigned> &component,
+             const std::vector<std::vector<unsigned>> &adjacency) {
+  llvm::DenseSet<unsigned> members(component.begin(), component.end());
+  llvm::DenseSet<unsigned> seen;
+  std::vector<unsigned> order;
+  for (unsigned root : component) {
+    if (!seen.insert(root).second)
+      continue;
+    std::vector<std::pair<unsigned, std::size_t>> frames{{root, 0}};
+    while (!frames.empty()) {
+      auto &[node, next] = frames.back();
+      if (next < adjacency[node].size()) {
+        unsigned callee = adjacency[node][next++];
+        if (members.contains(callee) && seen.insert(callee).second)
+          frames.emplace_back(callee, 0);
+        continue;
+      }
+      order.push_back(node);
+      frames.pop_back();
+    }
+  }
+  return order;
+}
+
 void UnitRun::analyzeAll(
     const std::function<bool(const FunctionDecl &)> &shouldReport) {
   computeOwningSlots();
@@ -491,7 +537,13 @@ void UnitRun::analyzeAll(
   }
   std::vector<std::vector<unsigned>> components =
       core::stronglyConnectedComponents(adjacency);
-  for (const std::vector<unsigned> &component : components) {
+  functionsLeft = std::max<std::uint64_t>(1, definitions.size());
+  for (std::vector<unsigned> &component : components) {
+    // A component's members run callees first (a postorder of its own
+    // edges), so a round sees the summaries its callees made in it rather
+    // than the last round's, and fewer rounds settle.
+    if (component.size() > 2)
+      component = calleesFirst(component, adjacency);
     bool recursive = component.size() > 1;
     if (!recursive)
       for (unsigned callee : adjacency[component.front()])
@@ -544,8 +596,15 @@ void UnitRun::analyzeAll(
           if (!dirty.erase(member))
             continue;
           const FunctionDecl *fn = definitions[member];
+          // (One that spent the per-function budget keeps its incomplete
+          // summary: run again, it spends it again. A run cut short by its
+          // share of the unit's budget may get a larger share later.)
+          if (exhausted.contains(fn->getCanonicalDecl()))
+            continue;
           FunctionRun run(*this, *fn, discarding, RunMode::Summary);
           RunResult result = run.run();
+          if (result.spentBudget)
+            exhausted.insert(fn->getCanonicalDecl());
           core::FunctionEffects &slot = summaries[fn->getCanonicalDecl()];
           dropCoveredGlobals(result.effects);
           core::FunctionEffects next =
@@ -577,9 +636,21 @@ void UnitRun::analyzeAll(
       bool report = shouldReport(*fn);
       if (report)
         authoritative.beginFunction(*fn);
-      FunctionRun run(*this, *fn, report ? authoritative : discarding,
-                      report ? RunMode::Authoritative : RunMode::Summary);
-      RunResult result = run.run();
+      // A member whose summary round spent the per-function budget spends
+      // it in its authoritative pass too, which then publishes nothing: it
+      // is over budget without that run.
+      RunResult result;
+      if (exhausted.contains(fn->getCanonicalDecl())) {
+        result.overBudget = true;
+        result.transfers = std::numeric_limits<std::uint64_t>::max();
+        result.effects = summaries[fn->getCanonicalDecl()];
+      } else {
+        FunctionRun run(*this, *fn, report ? authoritative : discarding,
+                        report ? RunMode::Authoritative : RunMode::Summary);
+        result = run.run();
+      }
+      if (functionsLeft > 1)
+        --functionsLeft;
       transfersOf[fn->getCanonicalDecl()] = result.transfers;
       if (result.overBudget) {
         overBudget.insert(fn->getCanonicalDecl());

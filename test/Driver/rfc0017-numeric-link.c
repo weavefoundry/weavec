@@ -4,7 +4,7 @@
 // RUN: %weavec_cc -c %S/../WholeProgram/Inputs/rfc0017-numeric.c -o %t/callee.o
 // RUN: %weavec_cc -c %s -o %t/caller.o
 // RUN: %weavec --dump-record=%t/callee.o.weavec | FileCheck %s --check-prefix=FORMAT
-// RUN: not %weavec_cc %t/caller.o %t/callee.o -o %t/program 2>&1 | FileCheck %s --check-prefix=LINK
+// RUN: not %weavec_cc -fweavec-link=analyze %t/caller.o %t/callee.o -o %t/program 2>&1 | FileCheck %s --check-prefix=LINK
 // RUN: not test -f %t/program
 // RUN: not %weavec --no-runtime --whole-program --ledger=%t/program.json %s %S/../WholeProgram/Inputs/rfc0017-numeric.c -- 2>&1
 // RUN: FileCheck %s --check-prefix=LEDGER < %t/program.json
@@ -55,7 +55,7 @@ int main(void) {
 // LEDGER: "spatial": {
 // LEDGER-NEXT: "outcome": "unresolved",
 // LEDGER-NEXT: "reason": "unknown-extent",
-// FORMAT: "format": 30,
+// FORMAT: "format": 31,
 // FORMAT: "name": "narrow",
 // FORMAT: "effects": "returns always\nresult classes=zero,positive :: int lo=0 hi=255\n",
 // FORMAT: "name": "narrow_out",

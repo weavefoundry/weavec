@@ -1,0 +1,10 @@
+Object no 1:
+[1, true, "example"]
+[1, true, "example"]
+Object no 2:
+"second"
+"second"
+Object no 3:
+[42, false]
+[42, false]
+All msgpack_object in the buffer is consumed.

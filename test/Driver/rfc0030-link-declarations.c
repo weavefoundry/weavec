@@ -9,15 +9,15 @@
 // RUN: rm -rf %t && mkdir -p %t
 // RUN: %weavec_cc -c %s -o %t/main.o 2>&1 | count 0
 // RUN: %weavec_cc -c %S/Inputs/rfc0030-inspect.c -o %t/inspect.o 2>&1 | count 0
-// RUN: not %weavec_cc %t/main.o %t/inspect.o -o %t/prog 2>&1 | FileCheck --check-prefix=LINK %s
+// RUN: not %weavec_cc -fweavec-link=analyze %t/main.o %t/inspect.o -o %t/prog 2>&1 | FileCheck --check-prefix=LINK %s
 // RUN: not ls %t/prog
 // RUN: not %weavec --whole-program %s %S/Inputs/rfc0030-inspect.c -- 2>&1 | FileCheck --check-prefix=LINK %s
 //
-// RUN: not %weavec_cc -fweavec-ledger=%t/ledgers/ %t/main.o %t/inspect.o -o %t/prog 2>&1 | FileCheck --check-prefix=SUMMARY %s
+// RUN: not %weavec_cc -fweavec-link=analyze -fweavec-ledger=%t/ledgers/ %t/main.o %t/inspect.o -o %t/prog 2>&1 | FileCheck --check-prefix=SUMMARY %s
 // RUN: FileCheck --check-prefix=LEDGER %s < %t/ledgers/prog.ledger.json
 //
 // Lowered to a warning, the error lets the link go ahead.
-// RUN: %weavec_cc -Wno-error=weavec-annotation-mismatch %t/main.o %t/inspect.o -o %t/lowered 2>&1 | FileCheck --check-prefix=LOWERED %s
+// RUN: %weavec_cc -fweavec-link=analyze -Wno-error=weavec-annotation-mismatch %t/main.o %t/inspect.o -o %t/lowered 2>&1 | FileCheck --check-prefix=LOWERED %s
 // RUN: ls %t/lowered
 #include <stdlib.h>
 #include <weavec.h>

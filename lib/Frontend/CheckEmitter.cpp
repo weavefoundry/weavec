@@ -83,7 +83,7 @@ constexpr HelperType PM = HelperType::PosixMemalignFunction;
 // The check templates of both families, then the helpers only
 // `__weavec_chk_*` has, the term helpers and the zero-initialisation
 // wrappers. `reports`: report mode appends (file, line, column).
-static constexpr std::array<HelperSignature, 64> Helpers{{
+static constexpr std::array<HelperSignature, 66> Helpers{{
     {.name = "__weavec_chk_nonnull",
      .result = VP,
      .params = {CVP},
@@ -173,6 +173,11 @@ static constexpr std::array<HelperSignature, 64> Helpers{{
      .result = CP,
      .params = {CCP},
      .reports = true},
+    // RFC 0033 §5: a guard wrapping a call's length argument.
+    {.name = "__weavec_chk_object_l",
+     .result = ULL,
+     .params = {CVP, ULL},
+     .reports = true},
     {.name = "__weavec_chk_live",
      .result = VP,
      .params = {CVP},
@@ -210,6 +215,10 @@ static constexpr std::array<HelperSignature, 64> Helpers{{
     {.name = "__weavec_prv_object_s",
      .result = CP,
      .params = {CCP},
+     .reports = true},
+    {.name = "__weavec_prv_object_l",
+     .result = ULL,
+     .params = {CVP, ULL},
      .reports = true},
     {.name = "__weavec_prv_live",
      .result = VP,
@@ -448,6 +457,8 @@ private:
   //--- Declarations -----------------------------------------------------------
 
   llvm::StringMap<clang::FunctionDecl *> helperDecls;
+  /// Functions whose checks call the helpers' copies that are not inlined.
+  llvm::DenseSet<const clang::FunctionDecl *> outOfLine;
 
   /// A function the unit declares by that name, most recent declaration.
   clang::FunctionDecl *lookupFunction(llvm::StringRef name);
@@ -887,6 +898,16 @@ clang::ExprResult CheckEmitter::Impl::callHelper(
     return clang::ExprError();
   llvm::SmallVector<clang::Expr *, 8> all(args.begin(), args.end());
   const HelperSignature *signature = findHelperSignature(name);
+  if (site != nullptr && signature != nullptr && signature->reports &&
+      outOfLine.contains(site->function)) {
+    const std::string copy = (name + "_ool").str();
+    auto [cached, fresh] = helperDecls.try_emplace(copy, nullptr);
+    if (fresh)
+      cached->second = lookupFunction(copy);
+    if (cached->second == nullptr)
+      return clang::ExprError();
+    function = cached->second;
+  }
   if (report && signature != nullptr && signature->reports) {
     // §10.2, report mode: the site's file, line and column.
     const std::string file = site != nullptr ? site->where.file : "";
@@ -1050,9 +1071,10 @@ clang::Expr *CheckEmitter::Impl::term(const core::CheckTerm &term,
   }
   case core::CheckTerm::Kind::Div: {
     // RFC 0030 §10.1 (amended in S3): floor division by a positive
-    // constant, which only an extent (a have) uses; the dividend is never
-    // negative there, so C's unsigned division is exact.
-    if (term.operands.size() != 2 || need)
+    // constant; the dividend is never negative there, so C's unsigned
+    // division is exact. As a need (RFC 0033 §3, select's sets) a dividend
+    // that saturated stays larger than any object after the division.
+    if (term.operands.size() != 2)
       return nullptr;
     const core::CheckTerm &divisor = term.operands[1];
     if (divisor.kind != core::CheckTerm::Kind::Constant ||
@@ -1186,6 +1208,11 @@ clang::ExprResult CheckEmitter::Impl::checkCall(const Entry &entry,
       std::array<clang::Expr *, 1> args = {
           castTo(moved, typeOf(context, HelperType::ConstCharPointer),
                  clang::CK_BitCast)};
+      return callHelper(name, args, loc, &site);
+    }
+    if (entry.form == Entry::Form::Length) {
+      // RFC 0033 §5: the operand is the length; the pointer is a term.
+      std::array<clang::Expr *, 2> args = {pointer(0), moved};
       return callHelper(name, args, loc, &site);
     }
     // The bytes at `offset` of the object the operand points to.
@@ -1597,6 +1624,16 @@ bool CheckEmitter::Impl::emit(const core::CheckPlan &plan,
         mapOwner(sites.functions()[index].decl);
         planCache(sites.functions()[index].decl, infos);
       }
+  }
+  if (!options.externalHelpers) {
+    std::map<std::uint32_t, std::size_t> perFunction;
+    for (const auto &[id, entries] : bySite)
+      perFunction[id.function] += entries.size();
+    for (const auto &[index, count] : perFunction)
+      if (count > options.inlinedHelperCalls &&
+          index < sites.functions().size() &&
+          sites.functions()[index].decl != nullptr)
+        outOfLine.insert(sites.functions()[index].decl);
   }
   bool ok = true;
   for (auto &[id, entries] : bySite) {

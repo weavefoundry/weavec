@@ -98,7 +98,7 @@ static void testClasses(void) {
       return;
     CHECK(inArena(p));
     CHECK(((uintptr_t)p & 15) == 0);
-    found = __weavec_rt_find(p, 0);
+    found = __weavec_rt_find(p);
     CHECK(found.state == WeavecRtTrackedLive);
     CHECK(found.base == (uintptr_t)p);
     CHECK(found.size == size);
@@ -110,10 +110,10 @@ static void testClasses(void) {
     memset(p, 0xa5, size);
     /* Interior, last byte, one past the end. */
     if (size != 0) {
-      CHECK(__weavec_rt_find(p + size - 1, 0).base == (uintptr_t)p);
+      CHECK(__weavec_rt_find(p + size - 1).base == (uintptr_t)p);
       CHECK(__weavec_rt_object(p, (long long)size - 1, 1, 0, 1) == 0);
     }
-    CHECK(__weavec_rt_find(p + size, 0).base == (uintptr_t)p);
+    CHECK(__weavec_rt_find(p + size).base == (uintptr_t)p);
     CHECK(__weavec_rt_object(p, (long long)size, 1, 0, 1) != 0);
     CHECK(__weavec_rt_object(p + size, -1, 1, 0, 1) == (size == 0));
     CHECK(__weavec_rt_object(p, -1, 1, 0, 1) != 0);
@@ -121,14 +121,42 @@ static void testClasses(void) {
     CHECK(__weavec_rt_object(p, 0, 0, 0, size + 1) != 0);
     CHECK(__weavec_rt_size(p) == size);
     free(p);
-    CHECK(__weavec_rt_find(p, 0).state == WeavecRtTrackedDead);
+    CHECK(__weavec_rt_find(p).state == WeavecRtTrackedDead);
   }
+}
+
+/* The program's path, for a test that runs in a copy of itself. */
+static const char *program;
+
+/* The quarantine budget is read when the program starts: a test that needs
+ * none runs in a copy started with WEAVEC_RT_QUARANTINE=0. True in that
+ * copy; in this one, runs it and checks that it passed. */
+static int withoutQuarantine(void) {
+  const char *budget = getenv("WEAVEC_RT_QUARANTINE");
+  pid_t child;
+  int status = 0;
+  if (budget != NULL && strcmp(budget, "0") == 0)
+    return 1;
+  child = fork();
+  if (child == 0) {
+    char *arguments[3];
+    arguments[0] = (char *)program;
+    arguments[1] = (char *)current;
+    arguments[2] = NULL;
+    setenv("WEAVEC_RT_QUARANTINE", "0", 1);
+    execv(program, arguments);
+    _exit(127);
+  }
+  CHECK(child > 0 && waitpid(child, &status, 0) == child &&
+        WIFEXITED(status) && WEXITSTATUS(status) == 0);
+  return 0;
 }
 
 static void testReuseIsZero(void) {
   /* With no quarantine a released slot comes back at once, zeroed. */
   unsigned round;
-  setenv("WEAVEC_RT_QUARANTINE", "0", 1);
+  if (!withoutQuarantine())
+    return;
   for (round = 0; round < 64; ++round) {
     unsigned char *p = (unsigned char *)opaque(malloc(200));
     unsigned i;
@@ -203,13 +231,13 @@ static void testQuarantine(void) {
   void *blocks[Blocks];
   unsigned i;
   void *again;
-  setenv("WEAVEC_RT_QUARANTINE", "0", 1);
+  if (!withoutQuarantine())
+    return;
   for (i = 0; i < Blocks; ++i)
     blocks[i] = opaque(malloc(1000));
   for (i = 0; i < Blocks; ++i)
     free(blocks[i]);
-  /* No budget (set by an earlier test or just now): the newest release is
-   * the first to be reused. */
+  /* No budget: the newest release is the first to be reused. */
   again = opaque(malloc(1000));
   CHECK(__weavec_rt_live(again) == 0);
   free(again);
@@ -279,7 +307,7 @@ static void testHuge(void) {
   if (p == NULL)
     return;
   CHECK(!inArena(p));
-  found = __weavec_rt_find(p + 100, 0);
+  found = __weavec_rt_find(p + 100);
   CHECK(found.state == WeavecRtTrackedLive && found.base == (uintptr_t)p &&
         found.size == size);
   p[0] = 1;
@@ -290,7 +318,7 @@ static void testHuge(void) {
   q = (char *)opaque(realloc(p, 64));
   CHECK(inArena(q) && q[0] == 1);
   /* The released mapping is a dead object, not someone else's memory. */
-  CHECK(__weavec_rt_find(p, 0).state == WeavecRtTrackedDead);
+  CHECK(__weavec_rt_find(p).state == WeavecRtTrackedDead);
   CHECK(__weavec_rt_live(p) != 0);
   free(q);
   p = (char *)opaque(aligned_alloc((size_t)1 << 21, ((size_t)1 << 30) + 1));
@@ -302,12 +330,15 @@ static void testHuge(void) {
 static void testForeign(void) {
   /* Blocks of another allocator go back to it. */
 #if defined(__APPLE__)
-  char *system = (char *)malloc_zone_malloc(malloc_default_zone(), 100);
+  /* (The default zone is the arena's, RFC 0033 section 6.2: another
+   * zone stands for the system's.) */
+  malloc_zone_t *other = malloc_create_zone(0, 0);
+  char *system = (char *)malloc_zone_malloc(other, 100);
   char *line = NULL;
   size_t capacity = 0;
   FILE *file;
   CHECK(!inArena(system));
-  CHECK(__weavec_rt_find(system, 0).state == WeavecRtUntracked);
+  CHECK(__weavec_rt_find(system).state == WeavecRtUntracked);
   CHECK(__weavec_rt_object(system, 1000, 1, 0, 1) == 0);
   CHECK(malloc_size(system) >= 100);
   system = (char *)realloc(system, 5000);
@@ -368,26 +399,26 @@ static __attribute__((noinline)) void innerFrame(const char *outer) {
   CHECK(guardByte(outer, 8) != 0);
   __weavec_rt_stack_leave(mine, frame);
   /* Untracked once its scope ended. */
-  CHECK(__weavec_rt_find(mine, 0).state == WeavecRtUntracked);
+  CHECK(__weavec_rt_find(mine).state == WeavecRtUntracked);
 }
 
 static void testStack(void) {
   char buffer[8] = {0};
   char other[8] = {0};
   void *frame = __builtin_frame_address(0);
-  CHECK(__weavec_rt_find(buffer, 0).state == WeavecRtUntracked);
+  CHECK(__weavec_rt_find(buffer).state == WeavecRtUntracked);
   __weavec_rt_stack_enter(buffer, sizeof buffer, frame, 0);
-  CHECK(__weavec_rt_find(buffer + 3, 0).state == WeavecRtTrackedLive);
-  CHECK(__weavec_rt_find(buffer + 3, 0).base == (uintptr_t)buffer);
+  CHECK(__weavec_rt_find(buffer + 3).state == WeavecRtTrackedLive);
+  CHECK(__weavec_rt_find(buffer + 3).base == (uintptr_t)buffer);
   /* An unregistered neighbour is untracked, unless it starts exactly where
    * the registered one ends (the compiler must not fold the comparison). */
-  CHECK(__weavec_rt_find(other, 0).state == WeavecRtUntracked ||
+  CHECK(__weavec_rt_find(other).state == WeavecRtUntracked ||
         (uintptr_t)opaque(other) == (uintptr_t)opaque(buffer) + 8);
   innerFrame(buffer);
   CHECK(guardByte(buffer, 7) == 0);
   CHECK(__weavec_rt_live(buffer) == 0);
   __weavec_rt_stack_leave(buffer, frame);
-  CHECK(__weavec_rt_find(buffer, 0).state == WeavecRtUntracked);
+  CHECK(__weavec_rt_find(buffer).state == WeavecRtUntracked);
   /* Leaving something that was never entered is ignored. */
   __weavec_rt_stack_leave(other, frame);
 }
@@ -397,7 +428,7 @@ static jmp_buf jump;
 static __attribute__((noinline)) void jumpsOut(void) {
   char lost[32] = {0};
   __weavec_rt_stack_enter(lost, sizeof lost, __builtin_frame_address(0), 0);
-  CHECK(__weavec_rt_find(lost, 0).state == WeavecRtTrackedLive);
+  CHECK(__weavec_rt_find(lost).state == WeavecRtTrackedLive);
   longjmp(jump, 1);
 }
 
@@ -415,7 +446,7 @@ static void testLongjmp(void) {
   }
   /* What `longjmp` skipped is dropped when the `setjmp` returns again. */
   __weavec_rt_stack_rewind(__builtin_frame_address(0));
-  CHECK(__weavec_rt_find((void *)sameDepth(), 0).state == WeavecRtUntracked);
+  CHECK(__weavec_rt_find((void *)sameDepth()).state == WeavecRtUntracked);
 }
 
 static __attribute__((noinline)) void deepFrames(unsigned depth,
@@ -449,7 +480,7 @@ static void testGlobals(void) {
       pairOfGlobals[0], (void *)(uintptr_t)16, pairOfGlobals[1],
       (void *)(uintptr_t)16};
   __weavec_rt_globals_add(descriptors, descriptors + 4);
-  CHECK(__weavec_rt_find(pairOfGlobals[0] + 5, 0).base ==
+  CHECK(__weavec_rt_find(pairOfGlobals[0] + 5).base ==
         (uintptr_t)pairOfGlobals[0]);
   CHECK(guardByte(pairOfGlobals[0], 15) == 0);
   CHECK(guardByte(pairOfGlobals[0], 16) != 0);
@@ -457,7 +488,10 @@ static void testGlobals(void) {
   CHECK(guardByte(pairOfGlobals[1], -1) == 0);
   CHECK(guardByte(pairOfGlobals[1], 0) == 0);
   CHECK(guardByte(pairOfGlobals[1], 16) != 0);
-  CHECK(guardByte(pairOfGlobals[0], -1) == 0);
+  /* RFC 0033 section 4: the byte before the first is another object's, which
+   * a backward index may reach, or nothing's, which it may not. */
+  CHECK(guardByte(pairOfGlobals[0], -1) ==
+        (__weavec_rt_find(pairOfGlobals[0] - 1).state != WeavecRtTrackedLive));
   CHECK(__weavec_rt_string("a literal is untracked") == 0);
 }
 
@@ -553,7 +587,7 @@ static const struct {
     {"strings", testStrings},
     {"threads", testThreads},
     {"fork", testFork},
-    /* These set the quarantine budget, which is read once: last. */
+    /* These run in a copy of the program with no quarantine. */
     {"reuse-is-zero", testReuseIsZero},
     {"quarantine", testQuarantine},
 };
@@ -561,6 +595,7 @@ static const struct {
 int main(int argc, char **argv) {
   unsigned i;
   unsigned ran = 0;
+  program = argv[0];
   for (i = 0; i < sizeof Tests / sizeof Tests[0]; ++i) {
     int selected = argc < 2;
     int a;

@@ -6,7 +6,7 @@
 // RUN: FileCheck %s --check-prefix=EVICT < %t/ordinary.json
 // RUN: %weavec --whole-program --dump-analysis --analysis-stats=%t/dump.json %t/main.c %t/f*.c -- > %t/dump.txt
 // RUN: FileCheck %s --check-prefix=KEEP --implicit-check-not=unit_evictions < %t/dump.json
-// RUN: %weavec_cc -fweavec-analysis-stats=%t/compiler.json %t/main.c %t/f*.c -o %t/program
+// RUN: %weavec_cc -fweavec-link=analyze -fweavec-analysis-stats=%t/compiler.json %t/main.c %t/f*.c -o %t/program
 // RUN: FileCheck %s --check-prefix=EVICT < %t/compiler.json
 
 // EVICT: "unit_evictions":{{[1-9][0-9]*}},

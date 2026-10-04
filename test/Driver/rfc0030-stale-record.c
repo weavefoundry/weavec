@@ -1,4 +1,4 @@
-// RFC 0030 §13.1: a reader accepts only a format-30 record (RFC 0032 §10,
+// RFC 0030 §13.1: a reader accepts only a format-31 record (RFC 0033 §7,
 // *Implementation amendments*, "The unit record") with this
 // schema's fingerprint and a valid digest, written for the object next to
 // it. Anything else is a stale record: the link names the input in its one
@@ -15,34 +15,34 @@
 //
 // A byte of the header changed: the digest no longer matches.
 // RUN: printf 'X' | dd of=%t/b.o.weavec bs=1 seek=100 conv=notrunc 2>/dev/null
-// RUN: %weavec_cc %t/main.o %t/b.o -o %t/p1 2>&1 | FileCheck --check-prefix=DIGEST %s
+// RUN: %weavec_cc -fweavec-link=analyze %t/main.o %t/b.o -o %t/p1 2>&1 | FileCheck --check-prefix=DIGEST %s
 // RUN: not %weavec --dump-record=%t/b.o.weavec 2>&1 | FileCheck --check-prefix=DUMP-DIGEST %s
 //
 // Another schema: byte 16 is the first of the schema fingerprint.
 // RUN: cp %t/good.weavec %t/b.o.weavec
 // RUN: printf 'Z' | dd of=%t/b.o.weavec bs=1 seek=16 conv=notrunc 2>/dev/null
-// RUN: %weavec_cc %t/main.o %t/b.o -o %t/p2 2>&1 | FileCheck --check-prefix=SCHEMA %s
+// RUN: %weavec_cc -fweavec-link=analyze %t/main.o %t/b.o -o %t/p2 2>&1 | FileCheck --check-prefix=SCHEMA %s
 //
 // Another format: byte 8 is the low byte of the format.
 // RUN: cp %t/good.weavec %t/b.o.weavec
 // RUN: printf '\034' | dd of=%t/b.o.weavec bs=1 seek=8 conv=notrunc 2>/dev/null
-// RUN: %weavec_cc %t/main.o %t/b.o -o %t/p3 2>&1 | FileCheck --check-prefix=FORMAT %s
+// RUN: %weavec_cc -fweavec-link=analyze %t/main.o %t/b.o -o %t/p3 2>&1 | FileCheck --check-prefix=FORMAT %s
 //
 // A truncated record.
 // RUN: head -c 100 %t/good.weavec > %t/b.o.weavec
-// RUN: %weavec_cc %t/main.o %t/b.o -o %t/p4 2>&1 | FileCheck --check-prefix=TRUNCATED %s
+// RUN: %weavec_cc -fweavec-link=analyze %t/main.o %t/b.o -o %t/p4 2>&1 | FileCheck --check-prefix=TRUNCATED %s
 //
 // The text sidecar of RFC 0005 is not a record.
 // RUN: echo "weavec-summaries 28" > %t/b.o.weavec
-// RUN: %weavec_cc %t/main.o %t/b.o -o %t/p5 2>&1 | FileCheck --check-prefix=MAGIC %s
+// RUN: %weavec_cc -fweavec-link=analyze %t/main.o %t/b.o -o %t/p5 2>&1 | FileCheck --check-prefix=MAGIC %s
 //
 // The record again: nothing is named, and the program runs.
 // RUN: cp %t/good.weavec %t/b.o.weavec
-// RUN: %weavec_cc %t/main.o %t/b.o -o %t/p6 2>&1 | count 0
+// RUN: %weavec_cc -fweavec-link=analyze %t/main.o %t/b.o -o %t/p6 2>&1 | count 0
 // RUN: %t/p6
 
 // DUMP: {
-// DUMP-NEXT: "format": 30,
+// DUMP-NEXT: "format": 31,
 // DUMP-NEXT: "header": {
 // DUMP: "object": {
 // DUMP-NEXT: "path": "{{.*}}b.o",
@@ -57,7 +57,7 @@
 // DIGEST: weavec-cc: warning: link input '{{.*}}b.o' has a stale WeaveC record ('{{.*}}b.o.weavec': digest mismatch); calls into it are trusted [weavec::unanalyzed-input]
 // DUMP-DIGEST: weavec: error: '{{.*}}b.o.weavec' is a stale WeaveC record (digest mismatch)
 // SCHEMA: weavec-cc: warning: link input '{{.*}}b.o' has a stale WeaveC record ('{{.*}}b.o.weavec': schema fingerprint mismatch (written by another WeaveC)); calls into it are trusted [weavec::unanalyzed-input]
-// FORMAT: weavec-cc: warning: link input '{{.*}}b.o' has a stale WeaveC record ('{{.*}}b.o.weavec': format 28, expected 30); calls into it are trusted [weavec::unanalyzed-input]
+// FORMAT: weavec-cc: warning: link input '{{.*}}b.o' has a stale WeaveC record ('{{.*}}b.o.weavec': format 28, expected 31); calls into it are trusted [weavec::unanalyzed-input]
 // TRUNCATED: weavec-cc: warning: link input '{{.*}}b.o' has a stale WeaveC record ('{{.*}}b.o.weavec': length mismatch {{.*}}); calls into it are trusted [weavec::unanalyzed-input]
 // MAGIC: weavec-cc: warning: link input '{{.*}}b.o' has a stale WeaveC record ('{{.*}}b.o.weavec': not a WeaveC record (bad magic)); calls into it are trusted [weavec::unanalyzed-input]
 

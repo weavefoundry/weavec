@@ -7,7 +7,9 @@ Some C operations depend on knowledge that the analyzer cannot establish: a hard
 
 ## Identify raw operations
 
-Pointers cast from integers, pointers annotated `WEAVEC_RAW`, and values loaded through raw pointers have no safe ownership guarantee. Copying or comparing raw pointers is allowed. Dereferencing, releasing or transferring them into an owning contract outside an unsafe region is an `unsafe-operation` error.
+Pointers annotated `WEAVEC_RAW`, and values loaded through, derived from or handed out as raw pointers, have no safe ownership guarantee. Copying or comparing raw pointers is allowed. Dereferencing, releasing or transferring them into an owning contract outside an unsafe region is an `unsafe-operation` error. A value is raw only when it is raw on every path; one that is raw on some paths only is treated like a pointer of unknown origin.
+
+A pointer converted from an integer (`(struct node *)h`, `(void *)(uintptr_t)n`) is not raw: it is a pointer of unknown provenance. Its accesses are `unresolved(raw-cast)`, and so guarded in a `weavec-cc` build with the runtime and checked for null; they are never an error. Inside a `WEAVEC_UNSAFE` region they are `trusted(unsafe)` like any other spatial or null facet there.
 
 ```c
 #include <stdint.h>
@@ -44,4 +46,4 @@ Every level of `-fweavec-require` (`guarded`, `checked`, `proven`) allows truste
 
 A region is also where code goes that is correct but trips a guard: reading a word at a time past the end of a string's allocation, or using the slack an allocator leaves after a block. The region removes the spatial guard, not the allocator: a `free` inside it is still validated by the runtime.
 
-See [annotation placement](/reference/annotation-placement/) and [RFC 0004](/rfcs/0004-unsafe-boundaries/), as amended by [RFC 0030](/rfcs/0030-prove-or-trap/) and [RFC 0032](/rfcs/0032-runtime-enforcement/), for the precise contract.
+See [annotation placement](/reference/annotation-placement/) and [RFC 0004](/rfcs/0004-unsafe-boundaries/), as amended by [RFC 0030](/rfcs/0030-prove-or-trap/), [RFC 0032](/rfcs/0032-runtime-enforcement/) and [RFC 0033](/rfcs/0033-drop-in-by-default/), for the precise contract.

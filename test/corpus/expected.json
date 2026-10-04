@@ -16,29 +16,29 @@
   "platforms": {
     "darwin-arm64": {
       "machine": "darwin-arm64 Apple M3 x8",
-      "producer": "weavec-cc version 0.11.0-dev (42b4f3b2a3da)",
-      "updated": "2026-10-02",
+      "producer": "weavec-cc version 0.13.0-dev (fb888263bf8c-dirty)",
+      "updated": "2026-10-04",
       "configs": {
         "bzip2": {
           "units": {
             "errors": 0,
-            "warnings": 2,
+            "warnings": 1,
             "ledger": {
               "sites": 5230,
-              "proven": 7357,
-              "checked": 940,
-              "guarded": 3490,
+              "proven": 7321,
+              "checked": 959,
+              "guarded": 3587,
               "violation": 0,
-              "unresolved": 519,
-              "trusted": 30
+              "unresolved": 435,
+              "trusted": 31
             },
             "unresolvedShare": {
-              "spatialNull": 0.0157,
-              "temporal": 0.088
+              "spatialNull": 0.0139,
+              "temporal": 0.0724
             },
-            "cpuSeconds": 7.44,
+            "cpuSeconds": 7.11,
             "workCounters": {
-              "blockTransfers": 31737,
+              "blockTransfers": 32245,
               "functions": 108,
               "sites": 5230
             }
@@ -48,20 +48,20 @@
             "warnings": 9,
             "ledger": {
               "sites": 5230,
-              "proven": 9582,
-              "checked": 885,
-              "guarded": 1524,
+              "proven": 9547,
+              "checked": 899,
+              "guarded": 1596,
               "violation": 0,
-              "unresolved": 334,
+              "unresolved": 280,
               "trusted": 19
             },
             "unresolvedShare": {
-              "spatialNull": 0.0167,
-              "temporal": 0.0451
+              "spatialNull": 0.0156,
+              "temporal": 0.0351
             },
-            "cpuSeconds": 17.4,
+            "cpuSeconds": 14.76,
             "workCounters": {
-              "blockTransfers": 107941,
+              "blockTransfers": 107893,
               "functions": 108,
               "sites": 5230
             }
@@ -71,52 +71,52 @@
         "cJSON": {
           "units": {
             "errors": 0,
-            "warnings": 4,
+            "warnings": 0,
             "ledger": {
               "sites": 1221,
-              "proven": 2120,
-              "checked": 71,
-              "guarded": 374,
+              "proven": 2123,
+              "checked": 68,
+              "guarded": 377,
               "violation": 0,
-              "unresolved": 81,
+              "unresolved": 78,
               "trusted": 20
             },
             "unresolvedShare": {
-              "spatialNull": 0.018,
-              "temporal": 0.0462
+              "spatialNull": 0.0167,
+              "temporal": 0.0454
             },
-            "cpuSeconds": 0.55,
+            "cpuSeconds": 0.57,
             "workCounters": {
-              "blockTransfers": 6799,
+              "blockTransfers": 6808,
               "functions": 113,
               "sites": 1221
             }
           },
           "traps": 0,
-          "overhead": 1.6611,
-          "overheadNoRuntime": 1.1371,
-          "rssRatio": 0.5894
+          "overhead": 1.8856,
+          "overheadNoRuntime": 1.1514,
+          "rssRatio": 0.6478
         },
         "cJSON-program": {
           "units": {
             "errors": 0,
-            "warnings": 4,
+            "warnings": 0,
             "ledger": {
               "sites": 1745,
-              "proven": 2629,
-              "checked": 126,
-              "guarded": 650,
+              "proven": 2632,
+              "checked": 123,
+              "guarded": 659,
               "violation": 0,
-              "unresolved": 244,
+              "unresolved": 235,
               "trusted": 20
             },
             "unresolvedShare": {
-              "spatialNull": 0.0151,
-              "temporal": 0.1275
+              "spatialNull": 0.0136,
+              "temporal": 0.1239
             },
-            "cpuSeconds": 1.29,
+            "cpuSeconds": 1.38,
             "workCounters": {
-              "blockTransfers": 12478,
+              "blockTransfers": 12914,
               "functions": 151,
               "sites": 1745
             }
@@ -126,68 +126,94 @@
             "warnings": 10,
             "ledger": {
               "sites": 1745,
-              "proven": 2696,
-              "checked": 120,
-              "guarded": 663,
+              "proven": 2699,
+              "checked": 115,
+              "guarded": 672,
               "violation": 0,
-              "unresolved": 174,
+              "unresolved": 167,
               "trusted": 20
             },
             "unresolvedShare": {
-              "spatialNull": 0.0171,
-              "temporal": 0.0834
+              "spatialNull": 0.0155,
+              "temporal": 0.081
             },
-            "cpuSeconds": 3.64,
+            "cpuSeconds": 3.16,
             "workCounters": {
-              "blockTransfers": 24601,
+              "blockTransfers": 25237,
               "functions": 151,
               "sites": 1745
             }
           }
         },
+        "expat": {
+          "units": {
+            "errors": 0,
+            "warnings": 3,
+            "ledger": {
+              "sites": 10111,
+              "proven": 13735,
+              "checked": 2159,
+              "guarded": 5187,
+              "violation": 0,
+              "unresolved": 868,
+              "trusted": 81
+            },
+            "unresolvedShare": {
+              "spatialNull": 0.0104,
+              "temporal": 0.0794
+            },
+            "cpuSeconds": 17.06,
+            "workCounters": {
+              "blockTransfers": 74443,
+              "functions": 362,
+              "sites": 10111
+            }
+          },
+          "traps": 0
+        },
         "hiredis": {
           "units": {
             "errors": 0,
-            "warnings": 2,
+            "warnings": 0,
             "ledger": {
               "sites": 5700,
-              "proven": 6191,
-              "checked": 747,
-              "guarded": 2382,
+              "proven": 6172,
+              "checked": 753,
+              "guarded": 2414,
               "violation": 0,
-              "unresolved": 1203,
+              "unresolved": 1178,
               "trusted": 46
             },
             "unresolvedShare": {
-              "spatialNull": 0.0291,
-              "temporal": 0.2196
+              "spatialNull": 0.0273,
+              "temporal": 0.2166
             },
-            "cpuSeconds": 3.0,
+            "cpuSeconds": 3.04,
             "workCounters": {
-              "blockTransfers": 16050,
+              "blockTransfers": 16538,
               "functions": 396,
               "sites": 5700
             }
           },
           "program": {
             "errors": 0,
-            "warnings": 147,
+            "warnings": 146,
             "ledger": {
               "sites": 5700,
-              "proven": 6806,
-              "checked": 673,
-              "guarded": 2160,
+              "proven": 6797,
+              "checked": 678,
+              "guarded": 2181,
               "violation": 0,
-              "unresolved": 998,
+              "unresolved": 975,
               "trusted": 35
             },
             "unresolvedShare": {
-              "spatialNull": 0.0397,
-              "temporal": 0.1619
+              "spatialNull": 0.0375,
+              "temporal": 0.1598
             },
-            "cpuSeconds": 12.02,
+            "cpuSeconds": 10.27,
             "workCounters": {
-              "blockTransfers": 108742,
+              "blockTransfers": 108758,
               "functions": 396,
               "sites": 5700
             }
@@ -200,20 +226,20 @@
             "warnings": 0,
             "ledger": {
               "sites": 2202,
-              "proven": 2574,
-              "checked": 239,
-              "guarded": 745,
+              "proven": 2556,
+              "checked": 273,
+              "guarded": 763,
               "violation": 0,
-              "unresolved": 227,
+              "unresolved": 193,
               "trusted": 1
             },
             "unresolvedShare": {
-              "spatialNull": 0.0107,
-              "temporal": 0.1245
+              "spatialNull": 0.0084,
+              "temporal": 0.1068
             },
-            "cpuSeconds": 2.64,
+            "cpuSeconds": 2.98,
             "workCounters": {
-              "blockTransfers": 17805,
+              "blockTransfers": 17927,
               "functions": 95,
               "sites": 2202
             }
@@ -223,18 +249,18 @@
             "warnings": 0,
             "ledger": {
               "sites": 2202,
-              "proven": 2612,
-              "checked": 244,
-              "guarded": 753,
+              "proven": 2591,
+              "checked": 278,
+              "guarded": 772,
               "violation": 0,
-              "unresolved": 176,
+              "unresolved": 144,
               "trusted": 2
             },
             "unresolvedShare": {
-              "spatialNull": 0.0121,
-              "temporal": 0.0915
+              "spatialNull": 0.0098,
+              "temporal": 0.075
             },
-            "cpuSeconds": 11.59,
+            "cpuSeconds": 9.48,
             "workCounters": {
               "blockTransfers": 67454,
               "functions": 95,
@@ -249,20 +275,20 @@
             "warnings": 0,
             "ledger": {
               "sites": 116,
-              "proven": 107,
+              "proven": 104,
               "checked": 26,
-              "guarded": 48,
+              "guarded": 53,
               "violation": 0,
-              "unresolved": 21,
+              "unresolved": 19,
               "trusted": 2
             },
             "unresolvedShare": {
-              "spatialNull": 0.0286,
-              "temporal": 0.1818
+              "spatialNull": 0.019,
+              "temporal": 0.1717
             },
-            "cpuSeconds": 0.26,
+            "cpuSeconds": 0.25,
             "workCounters": {
-              "blockTransfers": 1488,
+              "blockTransfers": 1580,
               "functions": 13,
               "sites": 116
             }
@@ -272,20 +298,20 @@
             "warnings": 0,
             "ledger": {
               "sites": 116,
-              "proven": 115,
+              "proven": 112,
               "checked": 26,
-              "guarded": 45,
+              "guarded": 49,
               "violation": 0,
-              "unresolved": 17,
+              "unresolved": 16,
               "trusted": 2
             },
             "unresolvedShare": {
-              "spatialNull": 0.0377,
+              "spatialNull": 0.0283,
               "temporal": 0.1313
             },
             "cpuSeconds": 0.5,
             "workCounters": {
-              "blockTransfers": 3391,
+              "blockTransfers": 3271,
               "functions": 13,
               "sites": 116
             }
@@ -298,43 +324,43 @@
             "warnings": 0,
             "ledger": {
               "sites": 2391,
-              "proven": 2741,
-              "checked": 232,
-              "guarded": 677,
+              "proven": 2739,
+              "checked": 233,
+              "guarded": 683,
               "violation": 0,
-              "unresolved": 712,
+              "unresolved": 706,
               "trusted": 20
             },
             "unresolvedShare": {
-              "spatialNull": 0.0447,
-              "temporal": 0.2829
+              "spatialNull": 0.0425,
+              "temporal": 0.2824
             },
-            "cpuSeconds": 2.03,
+            "cpuSeconds": 1.93,
             "workCounters": {
-              "blockTransfers": 12556,
+              "blockTransfers": 13387,
               "functions": 236,
               "sites": 2391
             }
           },
           "program": {
             "errors": 0,
-            "warnings": 34,
+            "warnings": 38,
             "ledger": {
               "sites": 2391,
-              "proven": 3023,
-              "checked": 239,
-              "guarded": 594,
+              "proven": 3012,
+              "checked": 240,
+              "guarded": 607,
               "violation": 0,
-              "unresolved": 566,
+              "unresolved": 562,
               "trusted": 16
             },
             "unresolvedShare": {
-              "spatialNull": 0.0647,
-              "temporal": 0.1934
+              "spatialNull": 0.0626,
+              "temporal": 0.1938
             },
-            "cpuSeconds": 7.83,
+            "cpuSeconds": 5.94,
             "workCounters": {
-              "blockTransfers": 61430,
+              "blockTransfers": 58399,
               "functions": 236,
               "sites": 2391
             }
@@ -349,20 +375,98 @@
               "sites": 384,
               "proven": 772,
               "checked": 36,
-              "guarded": 102,
+              "guarded": 103,
               "violation": 0,
-              "unresolved": 21,
+              "unresolved": 20,
               "trusted": 2
             },
             "unresolvedShare": {
               "spatialNull": 0.0189,
-              "temporal": 0.0284
+              "temporal": 0.0256
             },
             "cpuSeconds": 0.34,
             "workCounters": {
-              "blockTransfers": 2623,
+              "blockTransfers": 2745,
               "functions": 17,
               "sites": 384
+            }
+          },
+          "traps": 0
+        },
+        "libevent": {
+          "units": {
+            "errors": 0,
+            "warnings": 2,
+            "ledger": {
+              "sites": 18276,
+              "proven": 20543,
+              "checked": 2724,
+              "guarded": 9674,
+              "violation": 0,
+              "unresolved": 4533,
+              "trusted": 131
+            },
+            "unresolvedShare": {
+              "spatialNull": 0.036,
+              "temporal": 0.2358
+            },
+            "cpuSeconds": 9.25,
+            "workCounters": {
+              "blockTransfers": 66744,
+              "functions": 1123,
+              "sites": 18276
+            }
+          },
+          "traps": 0
+        },
+        "libsodium": {
+          "units": {
+            "errors": 0,
+            "warnings": 0,
+            "ledger": {
+              "sites": 10255,
+              "proven": 13116,
+              "checked": 304,
+              "guarded": 1025,
+              "violation": 0,
+              "unresolved": 683,
+              "trusted": 141
+            },
+            "unresolvedShare": {
+              "spatialNull": 0.0093,
+              "temporal": 0.1012
+            },
+            "cpuSeconds": 7.81,
+            "workCounters": {
+              "blockTransfers": 30229,
+              "functions": 558,
+              "sites": 10255
+            }
+          },
+          "traps": 0
+        },
+        "libuv": {
+          "units": {
+            "errors": 0,
+            "warnings": 16,
+            "ledger": {
+              "sites": 10684,
+              "proven": 13901,
+              "checked": 1343,
+              "guarded": 3659,
+              "violation": 0,
+              "unresolved": 1594,
+              "trusted": 301
+            },
+            "unresolvedShare": {
+              "spatialNull": 0.0206,
+              "temporal": 0.151
+            },
+            "cpuSeconds": 6.73,
+            "workCounters": {
+              "blockTransfers": 42377,
+              "functions": 818,
+              "sites": 10684
             }
           },
           "traps": 0
@@ -370,23 +474,23 @@
         "libyaml": {
           "units": {
             "errors": 0,
-            "warnings": 13,
+            "warnings": 6,
             "ledger": {
               "sites": 9316,
-              "proven": 13967,
-              "checked": 705,
-              "guarded": 8221,
+              "proven": 13968,
+              "checked": 706,
+              "guarded": 8226,
               "violation": 0,
-              "unresolved": 785,
+              "unresolved": 778,
               "trusted": 0
             },
             "unresolvedShare": {
-              "spatialNull": 0.0062,
-              "temporal": 0.0788
+              "spatialNull": 0.0058,
+              "temporal": 0.0787
             },
-            "cpuSeconds": 7.97,
+            "cpuSeconds": 8.85,
             "workCounters": {
-              "blockTransfers": 40588,
+              "blockTransfers": 41141,
               "functions": 196,
               "sites": 9316
             }
@@ -396,20 +500,20 @@
             "warnings": 74,
             "ledger": {
               "sites": 9316,
-              "proven": 16071,
-              "checked": 663,
-              "guarded": 6422,
+              "proven": 16072,
+              "checked": 664,
+              "guarded": 6426,
               "violation": 0,
-              "unresolved": 563,
+              "unresolved": 557,
               "trusted": 3
             },
             "unresolvedShare": {
-              "spatialNull": 0.0099,
-              "temporal": 0.0472
+              "spatialNull": 0.0096,
+              "temporal": 0.0471
             },
-            "cpuSeconds": 33.41,
+            "cpuSeconds": 32.29,
             "workCounters": {
-              "blockTransfers": 182298,
+              "blockTransfers": 182493,
               "functions": 196,
               "sites": 9316
             }
@@ -419,23 +523,23 @@
         "linenoise": {
           "units": {
             "errors": 0,
-            "warnings": 8,
+            "warnings": 0,
             "ledger": {
               "sites": 1121,
-              "proven": 1763,
-              "checked": 116,
-              "guarded": 280,
+              "proven": 1762,
+              "checked": 123,
+              "guarded": 289,
               "violation": 0,
-              "unresolved": 107,
+              "unresolved": 92,
               "trusted": 11
             },
             "unresolvedShare": {
-              "spatialNull": 0.022,
-              "temporal": 0.0814
+              "spatialNull": 0.0114,
+              "temporal": 0.0804
             },
-            "cpuSeconds": 0.36,
+            "cpuSeconds": 0.31,
             "workCounters": {
-              "blockTransfers": 3283,
+              "blockTransfers": 3336,
               "functions": 85,
               "sites": 1121
             }
@@ -444,46 +548,46 @@
         "linenoise-program": {
           "units": {
             "errors": 0,
-            "warnings": 8,
+            "warnings": 0,
             "ledger": {
               "sites": 1181,
-              "proven": 1812,
-              "checked": 126,
-              "guarded": 300,
+              "proven": 1807,
+              "checked": 133,
+              "guarded": 314,
               "violation": 0,
-              "unresolved": 131,
+              "unresolved": 115,
               "trusted": 12
             },
             "unresolvedShare": {
-              "spatialNull": 0.0234,
-              "temporal": 0.0979
+              "spatialNull": 0.0139,
+              "temporal": 0.095
             },
-            "cpuSeconds": 0.53,
+            "cpuSeconds": 0.41,
             "workCounters": {
-              "blockTransfers": 3896,
+              "blockTransfers": 4010,
               "functions": 88,
               "sites": 1181
             }
           },
           "program": {
             "errors": 0,
-            "warnings": 9,
+            "warnings": 6,
             "ledger": {
               "sites": 1181,
-              "proven": 1831,
-              "checked": 127,
-              "guarded": 296,
+              "proven": 1826,
+              "checked": 134,
+              "guarded": 310,
               "violation": 0,
-              "unresolved": 120,
+              "unresolved": 104,
               "trusted": 12
             },
             "unresolvedShare": {
-              "spatialNull": 0.0269,
-              "temporal": 0.0821
+              "spatialNull": 0.0175,
+              "temporal": 0.0791
             },
-            "cpuSeconds": 0.95,
+            "cpuSeconds": 0.92,
             "workCounters": {
-              "blockTransfers": 12555,
+              "blockTransfers": 12523,
               "functions": 88,
               "sites": 1181
             }
@@ -496,9 +600,9 @@
             "warnings": 0,
             "ledger": {
               "sites": 74,
-              "proven": 121,
+              "proven": 119,
               "checked": 18,
-              "guarded": 5,
+              "guarded": 7,
               "violation": 0,
               "unresolved": 6,
               "trusted": 4
@@ -507,9 +611,9 @@
               "spatialNull": 0.0215,
               "temporal": 0.0656
             },
-            "cpuSeconds": 0.09,
+            "cpuSeconds": 0.08,
             "workCounters": {
-              "blockTransfers": 439,
+              "blockTransfers": 500,
               "functions": 12,
               "sites": 74
             }
@@ -518,23 +622,23 @@
         "lua": {
           "units": {
             "errors": 0,
-            "warnings": 6,
+            "warnings": 1,
             "ledger": {
               "sites": 14578,
-              "proven": 16705,
-              "checked": 2113,
-              "guarded": 7156,
+              "proven": 16693,
+              "checked": 2120,
+              "guarded": 7167,
               "violation": 0,
-              "unresolved": 3906,
+              "unresolved": 3897,
               "trusted": 16
             },
             "unresolvedShare": {
-              "spatialNull": 0.0127,
-              "temporal": 0.28
+              "spatialNull": 0.0125,
+              "temporal": 0.2796
             },
-            "cpuSeconds": 14.02,
+            "cpuSeconds": 11.48,
             "workCounters": {
-              "blockTransfers": 56748,
+              "blockTransfers": 58040,
               "functions": 1157,
               "sites": 14578
             }
@@ -544,28 +648,28 @@
             "warnings": 80,
             "ledger": {
               "sites": 14578,
-              "proven": 18596,
-              "checked": 2058,
-              "guarded": 6389,
+              "proven": 18587,
+              "checked": 2065,
+              "guarded": 6396,
               "violation": 0,
-              "unresolved": 3170,
+              "unresolved": 3162,
               "trusted": 19
             },
             "unresolvedShare": {
-              "spatialNull": 0.0297,
-              "temporal": 0.2019
+              "spatialNull": 0.0295,
+              "temporal": 0.2016
             },
-            "cpuSeconds": 129.7,
+            "cpuSeconds": 126.36,
             "workCounters": {
-              "blockTransfers": 555684,
+              "blockTransfers": 555035,
               "functions": 1157,
               "sites": 14578
             }
           },
           "traps": 0,
-          "overhead": 5.9414,
-          "overheadNoRuntime": 1.1097,
-          "rssRatio": 1.6132
+          "overhead": 6.2492,
+          "overheadNoRuntime": 1.1204,
+          "rssRatio": 1.6145
         },
         "lz4": {
           "units": {
@@ -575,18 +679,18 @@
               "sites": 2925,
               "proven": 4355,
               "checked": 295,
-              "guarded": 739,
+              "guarded": 740,
               "violation": 0,
-              "unresolved": 266,
+              "unresolved": 265,
               "trusted": 0
             },
             "unresolvedShare": {
-              "spatialNull": 0.0193,
+              "spatialNull": 0.019,
               "temporal": 0.0773
             },
-            "cpuSeconds": 3.07,
+            "cpuSeconds": 3.56,
             "workCounters": {
-              "blockTransfers": 14750,
+              "blockTransfers": 15055,
               "functions": 295,
               "sites": 2925
             }
@@ -596,23 +700,23 @@
         "miniz": {
           "units": {
             "errors": 0,
-            "warnings": 1,
+            "warnings": 0,
             "ledger": {
               "sites": 4695,
               "proven": 7777,
-              "checked": 436,
-              "guarded": 1569,
+              "checked": 437,
+              "guarded": 1572,
               "violation": 0,
-              "unresolved": 485,
+              "unresolved": 481,
               "trusted": 46
             },
             "unresolvedShare": {
-              "spatialNull": 0.013,
+              "spatialNull": 0.0124,
               "temporal": 0.0973
             },
-            "cpuSeconds": 4.34,
+            "cpuSeconds": 4.82,
             "workCounters": {
-              "blockTransfers": 27604,
+              "blockTransfers": 27466,
               "functions": 176,
               "sites": 4695
             }
@@ -622,25 +726,77 @@
         "mujs": {
           "units": {
             "errors": 0,
-            "warnings": 107,
+            "warnings": 7,
             "ledger": {
               "sites": 10905,
-              "proven": 12076,
-              "checked": 1637,
-              "guarded": 3294,
+              "proven": 12061,
+              "checked": 1638,
+              "guarded": 3316,
               "violation": 0,
-              "unresolved": 4054,
-              "trusted": 75
+              "unresolved": 4044,
+              "trusted": 76
             },
             "unresolvedShare": {
-              "spatialNull": 0.0793,
-              "temporal": 0.3068
+              "spatialNull": 0.0792,
+              "temporal": 0.3059
             },
-            "cpuSeconds": 12.87,
+            "cpuSeconds": 14.82,
             "workCounters": {
-              "blockTransfers": 71296,
+              "blockTransfers": 67434,
               "functions": 746,
               "sites": 10905
+            }
+          },
+          "traps": 0
+        },
+        "oniguruma": {
+          "units": {
+            "errors": 0,
+            "warnings": 5,
+            "ledger": {
+              "sites": 13137,
+              "proven": 17774,
+              "checked": 2901,
+              "guarded": 6510,
+              "violation": 0,
+              "unresolved": 2172,
+              "trusted": 34
+            },
+            "unresolvedShare": {
+              "spatialNull": 0.0267,
+              "temporal": 0.1443
+            },
+            "cpuSeconds": 37.04,
+            "workCounters": {
+              "blockTransfers": 146383,
+              "functions": 764,
+              "sites": 13137
+            }
+          },
+          "traps": 0
+        },
+        "pcre2": {
+          "units": {
+            "errors": 0,
+            "warnings": 0,
+            "ledger": {
+              "sites": 15650,
+              "proven": 8549,
+              "checked": 9589,
+              "guarded": 21056,
+              "violation": 0,
+              "unresolved": 856,
+              "trusted": 10
+            },
+            "unresolvedShare": {
+              "spatialNull": 0.0036,
+              "temporal": 0.0543
+            },
+            "cpuSeconds": 129.73,
+            "workCounters": {
+              "blockTransfers": 262073,
+              "functions": 187,
+              "sites": 15650
             }
           },
           "traps": 0
@@ -664,11 +820,37 @@
             },
             "cpuSeconds": 0.29,
             "workCounters": {
-              "blockTransfers": 3798,
+              "blockTransfers": 3859,
               "functions": 20,
               "sites": 148
             }
           }
+        },
+        "redis": {
+          "units": {
+            "errors": 0,
+            "warnings": 0,
+            "ledger": {
+              "sites": 40105,
+              "proven": 40515,
+              "checked": 5496,
+              "guarded": 18168,
+              "violation": 0,
+              "unresolved": 11538,
+              "trusted": 449
+            },
+            "unresolvedShare": {
+              "spatialNull": 0.0315,
+              "temporal": 0.2847
+            },
+            "cpuSeconds": 16.72,
+            "workCounters": {
+              "blockTransfers": 135297,
+              "functions": 2248,
+              "sites": 40105
+            }
+          },
+          "traps": 0
         },
         "sds": {
           "units": {
@@ -687,9 +869,9 @@
               "spatialNull": 0.0718,
               "temporal": 0.1341
             },
-            "cpuSeconds": 0.32,
+            "cpuSeconds": 0.26,
             "workCounters": {
-              "blockTransfers": 2353,
+              "blockTransfers": 2414,
               "functions": 49,
               "sites": 464
             }
@@ -698,24 +880,24 @@
         },
         "sqlite": {
           "units": {
-            "errors": 3,
-            "warnings": 189,
+            "errors": 0,
+            "warnings": 98,
             "ledger": {
               "sites": 51972,
-              "proven": 59338,
-              "checked": 10027,
-              "guarded": 37761,
-              "violation": 3,
-              "unresolved": 15158,
-              "trusted": 187
+              "proven": 52822,
+              "checked": 14429,
+              "guarded": 39511,
+              "violation": 0,
+              "unresolved": 15502,
+              "trusted": 208
             },
             "unresolvedShare": {
-              "spatialNull": 0.0619,
-              "temporal": 0.2186
+              "spatialNull": 0.0669,
+              "temporal": 0.2181
             },
-            "cpuSeconds": 519.35,
+            "cpuSeconds": 149.95,
             "workCounters": {
-              "blockTransfers": 1371670,
+              "blockTransfers": 543301,
               "functions": 2693,
               "sites": 51972
             }
@@ -728,20 +910,20 @@
             "warnings": 0,
             "ledger": {
               "sites": 1259,
-              "proven": 1401,
-              "checked": 31,
-              "guarded": 220,
+              "proven": 1449,
+              "checked": 32,
+              "guarded": 193,
               "violation": 0,
-              "unresolved": 343,
+              "unresolved": 321,
               "trusted": 2
             },
             "unresolvedShare": {
               "spatialNull": 0.0914,
-              "temporal": 0.2713
+              "temporal": 0.2466
             },
-            "cpuSeconds": 0.53,
+            "cpuSeconds": 0.48,
             "workCounters": {
-              "blockTransfers": 9734,
+              "blockTransfers": 8466,
               "functions": 76,
               "sites": 1259
             }
@@ -751,20 +933,20 @@
             "warnings": 0,
             "ledger": {
               "sites": 1259,
-              "proven": 1429,
-              "checked": 31,
-              "guarded": 220,
+              "proven": 1477,
+              "checked": 32,
+              "guarded": 193,
               "violation": 0,
-              "unresolved": 322,
+              "unresolved": 300,
               "trusted": 2
             },
             "unresolvedShare": {
               "spatialNull": 0.0971,
-              "temporal": 0.2399
+              "temporal": 0.2152
             },
-            "cpuSeconds": 2.04,
+            "cpuSeconds": 1.48,
             "workCounters": {
-              "blockTransfers": 26493,
+              "blockTransfers": 22323,
               "functions": 76,
               "sites": 1259
             }
@@ -778,8 +960,8 @@
             "ledger": {
               "sites": 300,
               "proven": 350,
-              "checked": 50,
-              "guarded": 139,
+              "checked": 51,
+              "guarded": 138,
               "violation": 0,
               "unresolved": 19,
               "trusted": 0
@@ -788,9 +970,9 @@
               "spatialNull": 0.0264,
               "temporal": 0.041
             },
-            "cpuSeconds": 0.32,
+            "cpuSeconds": 0.39,
             "workCounters": {
-              "blockTransfers": 2688,
+              "blockTransfers": 2749,
               "functions": 38,
               "sites": 300
             }
@@ -803,20 +985,20 @@
             "warnings": 0,
             "ledger": {
               "sites": 4880,
-              "proven": 7157,
-              "checked": 536,
-              "guarded": 4319,
+              "proven": 7155,
+              "checked": 550,
+              "guarded": 4337,
               "violation": 0,
-              "unresolved": 355,
+              "unresolved": 325,
               "trusted": 15
             },
             "unresolvedShare": {
-              "spatialNull": 0.0135,
-              "temporal": 0.0549
+              "spatialNull": 0.0098,
+              "temporal": 0.0547
             },
-            "cpuSeconds": 7.98,
+            "cpuSeconds": 5.43,
             "workCounters": {
-              "blockTransfers": 24765,
+              "blockTransfers": 25673,
               "functions": 156,
               "sites": 4880
             }
@@ -826,28 +1008,54 @@
             "warnings": 6,
             "ledger": {
               "sites": 4880,
-              "proven": 8971,
-              "checked": 521,
-              "guarded": 2623,
+              "proven": 8969,
+              "checked": 536,
+              "guarded": 2642,
               "violation": 0,
-              "unresolved": 323,
+              "unresolved": 291,
               "trusted": 33
             },
             "unresolvedShare": {
-              "spatialNull": 0.0242,
-              "temporal": 0.0289
+              "spatialNull": 0.0203,
+              "temporal": 0.0287
             },
-            "cpuSeconds": 8.67,
+            "cpuSeconds": 6.82,
             "workCounters": {
-              "blockTransfers": 49748,
+              "blockTransfers": 49734,
               "functions": 156,
               "sites": 4880
             }
           },
           "traps": 0,
-          "overhead": 1.8487,
-          "overheadNoRuntime": 1.0036,
-          "rssRatio": 1.0863
+          "overhead": 1.8939,
+          "overheadNoRuntime": 1.0002,
+          "rssRatio": 1.1594
+        },
+        "zstd": {
+          "units": {
+            "errors": 0,
+            "warnings": 0,
+            "ledger": {
+              "sites": 22169,
+              "proven": 31574,
+              "checked": 2485,
+              "guarded": 5225,
+              "violation": 0,
+              "unresolved": 2643,
+              "trusted": 48
+            },
+            "unresolvedShare": {
+              "spatialNull": 0.009,
+              "temporal": 0.1209
+            },
+            "cpuSeconds": 15.95,
+            "workCounters": {
+              "blockTransfers": 113907,
+              "functions": 2868,
+              "sites": 22169
+            }
+          },
+          "traps": 0
         }
       }
     },

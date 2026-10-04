@@ -162,6 +162,7 @@ cl::extrahelp moreHelp(
     "re-enables it, -Werror=weavec[-<id>] and -Wno-error=weavec[-<id>] change\n"
     "severities. Errors cannot be disabled, only lowered to warnings.\n"
     "-Wweavec-allocation-failure enables the one id that is off by default.\n"
+    "(weavec-cc also turns leak off by default; this tool reports it.)\n"
     "\nWeaveC brings inferred ownership and borrowing to existing C code.\n"
     "See https://github.com/weavefoundry/weavec for documentation.\n");
 
@@ -582,12 +583,14 @@ int main(int argc, const char **argv) {
     const weavec::frontend::ProgramAnalysis::Result result = program.run();
     for (const std::string &name : result.failed)
       llvm::errs() << "weavec: error: cannot analyse '" << name << "'\n";
+    // RFC 0033 §7: a group that does not converge keeps its widened
+    // summaries, as a function over budget does.
     for (const std::vector<std::string> &component : result.nonConverging) {
-      llvm::errs() << "weavec: error: whole-program analysis of ";
+      llvm::errs() << "weavec: note: the whole-program analysis of ";
       llvm::interleaveComma(component, llvm::errs(), [](const std::string &n) {
         llvm::errs() << '\'' << n << '\'';
       });
-      llvm::errs() << " did not converge\n";
+      llvm::errs() << " did not converge (its widened summaries are used)\n";
     }
     const bool finished =
         finishProgram(program, compilations, sources, options);

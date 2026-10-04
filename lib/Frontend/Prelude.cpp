@@ -8,6 +8,8 @@
 
 #include "weavec/Frontend/Prelude.h"
 
+#include "weavec/Frontend/CheckEmitter.h"
+
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/Support/ErrorHandling.h"
 
@@ -80,7 +82,8 @@ $A int $Nlen_r$S(int written, unsigned long long have$P) {
 $A void *$Ndisjoint$S(const volatile void *d, const volatile void *s,
                       unsigned long long n$P) {
   unsigned long long a = (unsigned long long)d, b = (unsigned long long)s;
-  if (__builtin_expect(n != 0 && (a < b ? b - a < n : a - b < n), 0))
+  /* (A copy onto itself leaves the bytes as they were: RFC 0033, 1.) */
+  if (__builtin_expect(n != 0 && a != b && (a < b ? b - a < n : a - b < n), 0))
     $F(disjoint);
   return (void *)d;
 }
@@ -155,91 +158,105 @@ $A unsigned long long __weavec_have_mul(unsigned long long a, unsigned long long
 /// 2.1's arithmetic and one load); a guard with a range cache (section 13)
 /// first asks the cache in its function's frame.
 static constexpr llvm::StringLiteral GuardHelpers = R"C(
-/* Guards (RFC 0032, section 3). The `width` bytes at p + off + i * step lie
- * inside the live tracked object p points into; an untracked p passes. */
+/* Guards (RFC 0032, section 3; RFC 0033, section 4). The `width` bytes at
+ * q = p + off + i * step lie inside the live tracked object q points into: an
+ * arena block is looked up here; anything else asks the runtime, which also
+ * looks at where p points. */
 $A void *$Nobject$S(const volatile void *p, long long i, unsigned long long step,
                     unsigned long long off, unsigned long long width$P) {
-  __typeof__(sizeof 0) a = (__typeof__(sizeof 0))p - __weavec_rt_heap.base;
+  long long delta = 0;
+  __typeof__(sizeof 0) a;
+  if (__builtin_expect(__builtin_mul_overflow(i, (long long)step, &delta), 0))
+    $F(object);
+  a = (__typeof__(sizeof 0))p + off + (__typeof__(sizeof 0))delta - __weavec_rt_heap.base;
   if (__builtin_expect(a < __weavec_rt_heap.bytes, 1)) {
     unsigned shift = __weavec_rt_heap.shift;
     const struct __weavec_rt_class *c = &__weavec_rt_heap.table[a >> shift];
     unsigned long long in = a & (((__typeof__(sizeof 0))1 << shift) - 1);
     unsigned long long slot = in >> c->shift;
-    long long delta = 0, at = 0;
+    unsigned long long at;
     unsigned word;
     if (c->magic != 0)
       slot = (slot * c->magic) >> 32;
     word = ((const unsigned *)(__weavec_rt_heap.meta + ((a >> shift) << (shift - 2))))[slot];
-    if (__builtin_expect((word & 3) != 1 || __builtin_mul_overflow(i, (long long)step, &delta) ||
-                         __builtin_add_overflow((long long)(in - slot * c->size + off), delta, &at) ||
-                         at < 0 || width > (word >> 2) ||
-                         (unsigned long long)at > (word >> 2) - width, 0))
+    at = in - slot * c->size;
+    if (__builtin_expect((word & 3) != 1 || width > (word >> 2) || at > (word >> 2) - width, 0))
       $F(object);
   } else if (__builtin_expect(__weavec_rt_object((const void *)p, i, step, off, width), 0))
     $F(object);
-  return (char *)p + (long long)((unsigned long long)i * step);
+  return (char *)p + delta;
 }
 /* object, with a range cache {lo, len, state, expect} in the caller's frame:
  * the bytes of [lo, lo + len) pass while the word at `state` reads `expect`.
- * An empty cache has len 0, so its state is never read. A `quiet` guard is in
- * a loop that calls nothing and that checked the cache's state on the way
- * in: nothing can end an object the cache holds, so its state is not read. */
+ * An arena block passes the bytes inside it whatever p is; any other object
+ * also needs p in it (the runtime looked at p to admit it). An empty cache
+ * has len 0, so its state is never read. A `quiet` guard is in a loop that
+ * calls nothing and that checked the cache's state on the way in: nothing
+ * can end an object the cache holds, so its state is not read. */
 $A void *$Nobject_c$S(const volatile void *p, long long i, unsigned long long step,
                       unsigned long long off, unsigned long long width,
                       unsigned long long *c, int quiet$P) {
   long long delta = 0;
-  if (__builtin_expect(!__builtin_mul_overflow(i, (long long)step, &delta), 1)) {
+  __typeof__(sizeof 0) a;
+  if (__builtin_expect(__builtin_mul_overflow(i, (long long)step, &delta), 0))
+    $F(object);
+  {
     unsigned long long d = (unsigned long long)p + off + (unsigned long long)delta - c[0];
-    if (__builtin_expect((unsigned long long)p - c[0] <= c[1] && d <= c[1] && width <= c[1] - d &&
-                         width != 0 && (quiet || *(const unsigned *)c[2] == (unsigned)c[3]), 1))
+    if (__builtin_expect(d <= c[1] && width <= c[1] - d && width != 0 &&
+                         (c[0] - __weavec_rt_heap.base < __weavec_rt_heap.bytes ||
+                          (unsigned long long)p - c[0] <= c[1]) &&
+                         (quiet || *(const unsigned *)c[2] == (unsigned)c[3]), 1))
       return (char *)p + delta;
   }
-  {
-    __typeof__(sizeof 0) a = (__typeof__(sizeof 0))p - __weavec_rt_heap.base;
-    if (__builtin_expect(a < __weavec_rt_heap.bytes, 1)) {
-      /* An arena pointer: looked up here, and its block remembered. */
-      unsigned shift = __weavec_rt_heap.shift;
-      const struct __weavec_rt_class *k = &__weavec_rt_heap.table[a >> shift];
-      unsigned long long in = a & (((__typeof__(sizeof 0))1 << shift) - 1);
-      unsigned long long slot = in >> k->shift;
-      const unsigned *state;
-      long long at = 0;
-      unsigned word;
-      if (k->magic != 0)
-        slot = (slot * k->magic) >> 32;
-      state = (const unsigned *)(__weavec_rt_heap.meta + ((a >> shift) << (shift - 2))) + slot;
-      word = *state;
-      if (__builtin_expect((word & 3) != 1 || __builtin_mul_overflow(i, (long long)step, &delta) ||
-                           __builtin_add_overflow((long long)(in - slot * k->size + off), delta, &at) ||
-                           at < 0 || width > (word >> 2) ||
-                           (unsigned long long)at > (word >> 2) - width, 0)) {
-        /* Where a failure is only reported, the next guard asks again. */
-        c[1] = 0;
-        $F(object);
-      } else {
-        c[0] = (unsigned long long)p - (in - slot * k->size);
-        c[1] = word >> 2;
-        c[2] = (unsigned long long)state;
-        c[3] = word;
-      }
+  a = (__typeof__(sizeof 0))p + off + (__typeof__(sizeof 0))delta - __weavec_rt_heap.base;
+  if (__builtin_expect(a < __weavec_rt_heap.bytes, 1)) {
+    /* An arena block: looked up here, and remembered. */
+    unsigned shift = __weavec_rt_heap.shift;
+    const struct __weavec_rt_class *k = &__weavec_rt_heap.table[a >> shift];
+    unsigned long long in = a & (((__typeof__(sizeof 0))1 << shift) - 1);
+    unsigned long long slot = in >> k->shift;
+    unsigned long long at;
+    const unsigned *state;
+    unsigned word;
+    if (k->magic != 0)
+      slot = (slot * k->magic) >> 32;
+    state = (const unsigned *)(__weavec_rt_heap.meta + ((a >> shift) << (shift - 2))) + slot;
+    word = *state;
+    at = in - slot * k->size;
+    if (__builtin_expect((word & 3) != 1 || width > (word >> 2) || at > (word >> 2) - width, 0)) {
+      /* Where a failure is only reported, the next guard asks again. */
+      c[1] = 0;
+      $F(object);
     } else {
-      struct __weavec_rt_range r = __weavec_rt_object_range((const void *)p, i, step, off, width,
-                                                           __builtin_frame_address(0));
-      c[0] = r.lo;
-      c[1] = r.len;
-      c[2] = (unsigned long long)r.state;
-      c[3] = r.expect;
-      if (__builtin_expect(r.failed != 0, 0))
-        $F(object);
+      c[0] = __weavec_rt_heap.base + a - at;
+      c[1] = word >> 2;
+      c[2] = (unsigned long long)state;
+      c[3] = word;
     }
+  } else {
+    struct __weavec_rt_range r = __weavec_rt_object_range((const void *)p, i, step, off, width,
+                                                         __builtin_frame_address(0));
+    c[0] = r.lo;
+    c[1] = r.len;
+    c[2] = (unsigned long long)r.state;
+    c[3] = r.expect;
+    if (__builtin_expect(r.failed != 0, 0))
+      $F(object);
   }
-  return (char *)p + (long long)((unsigned long long)i * step);
+  return (char *)p + delta;
 }
 /* object, for a call's argument: `need` bytes from p; none needs no object. */
 $A void *$Nobject_n$S(const volatile void *p, unsigned long long need$P) {
   if (__builtin_expect(need != 0 && __weavec_rt_object((const void *)p, 0, 0, 0, need), 0))
     $F(object);
   return (void *)p;
+}
+/* object, wrapping a call's length argument (RFC 0033, section 5): `need`
+ * bytes from p, which the call reads or writes; the length is returned. */
+$A unsigned long long $Nobject_l$S(const volatile void *p, unsigned long long need$P) {
+  if (__builtin_expect(need != 0 && __weavec_rt_object((const void *)p, 0, 0, 0, need), 0))
+    $F(object);
+  return need;
 }
 /* object, for a string argument: its terminator lies inside p's object. */
 $A char *$Nobject_s$S(const char *p$P) {
@@ -369,7 +386,8 @@ static constexpr llvm::StringLiteral RuntimeDeclarations =
     "*, "
     "int);\n"
     "extern void __weavec_rt_stack_leave(void *, void *);\n"
-    "extern void __weavec_rt_stack_rewind(void *);\n";
+    "extern void __weavec_rt_stack_rewind(void *);\n"
+    "extern void __weavec_rt_trapping(void);\n";
 
 /// Section 11. Only builtins and the usable-size query: the prelude must
 /// not declare a library function a unit may declare differently.
@@ -483,6 +501,9 @@ struct Style {
   bool report = false;
   bool outOfLine = false;
   bool verboseTrap = true;
+  /// RFC 0033 §6.1: the runtime is linked, so a trap first makes sure it
+  /// ends the program.
+  bool trapping = false;
   llvm::StringRef usable;
 };
 
@@ -501,11 +522,13 @@ static void failure(llvm::StringRef reason, const Style &style,
     out += ("WEAVEC_CHK_TRAP(\"" + style.category + "\", \"" + reason + "\")")
                .str();
   else if (style.verboseTrap)
-    out += ("__builtin_verbose_trap(\"" + style.category + "\", \"" + reason +
-            "\")")
+    out += ((style.trapping ? "(__weavec_rt_trapping(), " : "(") +
+            ("__builtin_verbose_trap(\"" + style.category + "\", \"" + reason +
+             "\"))"))
                .str();
   else
-    out += "__builtin_trap()";
+    out += style.trapping ? "(__weavec_rt_trapping(), __builtin_trap())"
+                          : "__builtin_trap()";
 }
 
 /// Replaces the markers of `text` (see the top of the file).
@@ -590,6 +613,88 @@ static llvm::StringRef usableQueryDeclaration(UsableSizeQuery query) {
   llvm_unreachable("unknown usable-size query");
 }
 
+/// The C spelling of a helper's parameter or result type; `name` is the
+/// declarator.
+static std::string declarator(HelperSignature::Type type,
+                              llvm::StringRef name) {
+  using Type = HelperSignature::Type;
+  const auto spelled = [&](llvm::StringRef base) {
+    return (base + (name.empty() ? "" : " ") + name).str();
+  };
+  switch (type) {
+  case Type::Void:
+    return spelled("void");
+  case Type::Int:
+    return spelled("int");
+  case Type::Unsigned:
+    return spelled("unsigned");
+  case Type::LongLong:
+    return spelled("long long");
+  case Type::UnsignedLongLong:
+    return spelled("unsigned long long");
+  case Type::Size:
+    return spelled("__typeof__(sizeof 0)");
+  case Type::VoidPointer:
+    return ("void *" + name).str();
+  case Type::ConstVolatileVoidPointer:
+    return ("const volatile void *" + name).str();
+  case Type::CharPointer:
+    return ("char *" + name).str();
+  case Type::ConstCharPointer:
+    return ("const char *" + name).str();
+  case Type::CharPointerPointer:
+    return ("char **" + name).str();
+  case Type::VoidPointerPointer:
+    return ("void **" + name).str();
+  case Type::UnsignedLongLongPointer:
+    return ("unsigned long long *" + name).str();
+  case Type::FunctionPointer:
+    return spelled("__weavec_fn_t");
+  case Type::AlignedAllocator:
+  case Type::PosixMemalignFunction:
+    break;
+  }
+  llvm_unreachable("no check helper takes an allocator");
+}
+
+/// RFC 0033 *Implementation amendments* (build cost): a copy of each check
+/// and guard helper `prelude` defines, `<name>_ool`, that is not inlined. A
+/// function with more helper calls than
+/// `CheckEmitterOptions::inlinedHelperCalls` calls these: inlined into
+/// thousands of sites, the helpers kept the optimiser on one function for
+/// minutes.
+static std::string outOfLineCopies(llvm::StringRef prelude, bool report) {
+  using Type = HelperSignature::Type;
+  std::string out = "typedef void (*__weavec_fn_t)(void);\n";
+  for (const HelperSignature &helper : CheckEmitter::helperSignatures()) {
+    if (!helper.reports || !prelude.contains((helper.name + "(").str()))
+      continue;
+    std::string parameters;
+    std::string arguments;
+    std::size_t index = 0;
+    for (const Type param : helper.params) {
+      if (param == Type::Void)
+        break;
+      const std::string name = "a" + std::to_string(index++);
+      parameters += (parameters.empty() ? "" : ", ") + declarator(param, name);
+      arguments += (arguments.empty() ? "" : ", ") + name;
+    }
+    if (report) {
+      parameters += (parameters.empty() ? "" : ", ") + ReportParameters.str();
+      arguments +=
+          arguments.empty() ? "file, line, column" : ", file, line, column";
+    }
+    out += "static __attribute__((noinline, nodebug, unused)) ";
+    out += declarator(helper.result,
+                      (helper.name + "_ool(" +
+                       (parameters.empty() ? "void" : parameters) + ")")
+                          .str());
+    out += helper.result == Type::Void ? " { " : " { return ";
+    out += (helper.name + "(" + arguments + "); }\n").str();
+  }
+  return out;
+}
+
 std::string buildCheckPrelude(const PreludeOptions &options) {
   if (options.mode == CheckMode::None)
     return {};
@@ -604,6 +709,7 @@ std::string buildCheckPrelude(const PreludeOptions &options) {
   check.report = report;
   check.outOfLine = outOfLine;
   check.verboseTrap = options.verboseTrap;
+  check.trapping = options.runtime;
   check.usable =
       outOfLine ? "WEAVEC_CHK_USABLE" : usableQueryName(options.usableSize);
 
@@ -647,8 +753,10 @@ std::string buildCheckPrelude(const PreludeOptions &options) {
       out += AddressWrappers.substr(1).str();
     }
   }
-  if (!outOfLine)
+  if (!outOfLine) {
+    out += outOfLineCopies(out, report);
     out += "#pragma clang diagnostic pop\n";
+  }
   return out;
 }
 

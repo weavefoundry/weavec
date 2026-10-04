@@ -10,7 +10,7 @@
 // RUN: FileCheck --check-prefix=LEDGER %s < %t/met.json
 // RUN: %weavec_cc -c %s -o %t/main.o 2>&1 | count 0
 // RUN: %weavec_cc -c %S/Inputs/rfc0030-fill.c -o %t/fill.o 2>&1 | count 0
-// RUN: %weavec_cc -fweavec-ledger=%t/cc.json %t/main.o %t/fill.o -o %t/prog 2>&1 | FileCheck --check-prefix=CC %s
+// RUN: %weavec_cc -fweavec-link=analyze -fweavec-ledger=%t/cc.json %t/main.o %t/fill.o -o %t/prog 2>&1 | FileCheck --check-prefix=CC %s
 // RUN: FileCheck --check-prefix=LEDGER %s < %t/cc.json
 //
 // A call that cannot give the extent leaves the requirement unverified, and

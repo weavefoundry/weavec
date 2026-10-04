@@ -19,8 +19,11 @@ Seven checks, one per bullet of H2 (its fourth bullet is split in two):
                      alias (a fortified form), or the __builtin_ spelling of
                      either. Comparisons inside comments do not count.
   corpus-word        0 occurrences of the words cJSON, jansson, linenoise,
-                     jsmn, zlib, lua, Lua, sds and minigzip in any file under
-                     lib/, comments included (the word rule is below).
+                     jsmn, zlib, lua, Lua, sds and minigzip, and of RFC 0033's
+                     fresh and sealed projects zstd, libuv, oniguruma, redis,
+                     expat, pcre2, libevent, libsodium, libxml2, libpng,
+                     mbedtls, msgpack and yyjson, in any file under lib/,
+                     comments included (the word rule is below).
   engine-include     only lib/Analysis/Engine*.cpp and
                      lib/Analysis/ObjectEngine.cpp include Engine.h (the
                      engine's private header): no other file under lib/ or
@@ -40,9 +43,9 @@ Seven checks, one per bullet of H2 (its fourth bullet is split in two):
                      string literals ignored. A missing lib/Analysis/Engine.h
                      is a violation.
   engine-lines       lib/Analysis/Engine*.h and lib/Analysis/Engine*.cpp
-                     (EngineIntegers.h included) total at most 20,500 lines.
+                     (EngineIntegers.h included) total at most 21,500 lines.
   library-lines      the code under lib/, include/ and tools/ totals at most
-                     65,500 lines. lib/Core/LibrarySpec.txt does not count:
+                     70,000 lines. lib/Core/LibrarySpec.txt does not count:
                      it is a declarative table, and its growth is coverage,
                      not sprawl. Both limits are ratchets (RFC 0030 gate H2):
                      they are lowered as code is deleted, and raised only by
@@ -53,6 +56,10 @@ Seven checks, one per bullet of H2 (its fourth bullet is split in two):
                      raised the library limit to 69,000 for the planner's
                      guards, the range caches, object registration and the
                      driver's runtime handling (68,744 lines measured).
+                     RFC 0033 (gate H1, Implementation amendments) raised
+                     them to 21,500 and 70,000 for the witness rule, the
+                     length guards, the link modes and the unit budget
+                     (21,078 and 69,980 lines measured).
   runtime-lines      the C runtime (runtime/, its tests under runtime/test/
                      excluded) totals at most 4,000 lines (RFC 0032 gate H1).
                      It is counted apart from the libraries: it is linked
@@ -110,10 +117,10 @@ ROOT = Path(__file__).resolve().parent.parent
 # Gate H2 (RFC 0030, Acceptance gates, Hygiene; RFC 0031, section 2)
 # ---------------------------------------------------------------------------
 
-# Recorded by RFC 0031 stage S7 and RFC 0032 gate H1 (see the module
-# docstring).
-ENGINE_LINE_LIMIT = 21_000
-LIBRARY_LINE_LIMIT = 69_000
+# Recorded by RFC 0031 stage S7 and RFC 0032 and 0033 gate H1 (see the
+# module docstring).
+ENGINE_LINE_LIMIT = 21_500
+LIBRARY_LINE_LIMIT = 70_000
 RUNTIME_LINE_LIMIT = 4_000
 
 # retired-name
@@ -133,8 +140,11 @@ LIBRARY_DIRECTIVES = ("header", "builtins")
 BUILTIN_PREFIX = "__builtin_"
 SOURCE_DIRS = ("lib", "include", "tools")
 SOURCE_SUFFIXES = (".h", ".hpp", ".cpp", ".cc", ".c", ".def", ".inc")
-# corpus-word (the corpus projects of section 17.5)
-CORPUS_WORDS = ("cJSON", "jansson", "linenoise", "jsmn", "zlib", "lua", "Lua", "sds", "minigzip")
+# corpus-word (the corpus projects of section 17.5, and RFC 0033 section 11's
+# fresh and sealed projects)
+CORPUS_WORDS = ("cJSON", "jansson", "linenoise", "jsmn", "zlib", "lua", "Lua", "sds", "minigzip",
+                "zstd", "libuv", "oniguruma", "redis", "expat", "pcre2", "libevent", "libsodium",
+                "libxml2", "libpng", "mbedtls", "msgpack", "yyjson")
 CORPUS_WORD_DIRS = ("lib",)
 # engine-include (RFC 0030 sections 1 and 14, RFC 0031 section 2)
 NEW_COMPONENTS = ("SiteCollector", "AttributeReader", "KindInference", "SlotCollector",
@@ -163,7 +173,7 @@ RUNTIME_TOTAL = "runtime/**"
 CHECKS = (
     ("retired-name", "checked-mode or old-engine names outside docs/rfcs/"),
     ("library-name-test", '== "<name>" against a LibrarySpec name outside lib/Core/LibrarySpec*'),
-    ("corpus-word", "cJSON, jansson, linenoise, jsmn, zlib, lua, Lua, sds, minigzip in lib/"),
+    ("corpus-word", "a corpus project's name (cJSON, jansson, ..., zstd, redis, ...) in lib/"),
     ("engine-include", "Engine.h included outside Engine*.cpp and ObjectEngine.cpp"),
     ("engine-sink", "the engine naming a DiagnosticSink"),
     ("engine-lines", "lib/Analysis/Engine*.{h,cpp} over their line limit"),

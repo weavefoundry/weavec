@@ -115,6 +115,8 @@ class UnitRun;
 struct RunResult {
   core::FunctionEffects effects;
   bool overBudget = false;
+  /// Over the per-function budget, not just the run's share of the unit's.
+  bool spentBudget = false;
   std::uint64_t transfers = 0;
 };
 
@@ -338,6 +340,8 @@ private:
   /// §12 `--analysis-stats`: the joins and materialised cells of the run.
   std::uint64_t joins = 0;
   mutable std::uint64_t materialisations = 0;
+  /// Stopped by the per-function budget (`RunResult::spentBudget`).
+  bool spentBudget = false;
   bool overBudget = false;
   bool publishing = false;
   bool inFinalPass = false;
@@ -374,6 +378,7 @@ private:
   mutable llvm::DenseMap<const clang::Decl *, core::ObjectId> localObjects;
   const clang::Stmt *currentElement = nullptr;
   mutable std::unique_ptr<clang::ParentMap> parentMap;
+  mutable std::optional<llvm::DenseSet<const clang::VarDecl *>> passedToCalls;
   mutable std::optional<llvm::DenseSet<const clang::VarDecl *>> bypassed;
 
 public:
@@ -533,6 +538,11 @@ public:
   /// RFC 0030 §11: whether `operand` reads a local whose declaration a
   /// jump can bypass, so zero-initialisation does not reach it.
   [[nodiscard]] bool isBypassed(const clang::Expr &operand) const;
+  /// RFC 0033 §1: whether `expr`'s value is discarded by a `(void)` cast.
+  [[nodiscard]] bool isDiscarded(const clang::Expr &expr) const;
+  /// RFC 0033 §1: whether the function passes the address of `var` (or of
+  /// a member or an element of it) to a call.
+  [[nodiscard]] bool isPassedToCall(const clang::VarDecl &var) const;
   /// RFC 0030 §6.1: whether `stmt` is inside a `WEAVEC_UNSAFE` block or
   /// function.
   [[nodiscard]] bool inUnsafeRegion(const clang::Stmt &stmt) const;
@@ -812,6 +822,13 @@ public:
   callTargets(const clang::CallExpr &call, core::Sym calleeValue) const;
   /// Whether a function `call` may reach reads or writes through its
   /// argument `index` (the summary's `reads` and `writes`), or cannot say.
+  /// RFC 0033 §1: whether every function the call may reach has a
+  /// complete summary that neither reads, writes nor releases through
+  /// argument `index`.
+  [[nodiscard]] bool usesValueOnly(const clang::CallExpr &call,
+                                   core::Sym calleeValue,
+                                   const std::vector<core::Sym> &args,
+                                   unsigned index) const;
   [[nodiscard]] bool calleeTouches(const clang::CallExpr &call,
                                    core::Sym calleeValue, unsigned index) const;
   /// Whether the call's callee releases the object argument `index` points
@@ -880,8 +897,11 @@ public:
     /// The least output without its NUL, and whether it is exact.
     std::int64_t lower = 0;
     bool exact = false;
-    /// The call arguments `%s` reads.
+    /// The call arguments `%s` reads to their terminator.
     std::vector<unsigned> strings;
+    /// RFC 0033 §5: the call arguments a `%.Ns` reads at most N bytes of;
+    /// they need no terminator.
+    std::vector<unsigned> bounded;
   };
   /// The byte a value stored as `width` bytes puts first in memory.
   [[nodiscard]] Byte valueByte(core::Sym sym,
@@ -1107,9 +1127,31 @@ public:
   /// The block transfers each function's last run took (what a context
   /// run of it may cost).
   std::map<const clang::FunctionDecl *, std::uint64_t> transfersOf;
+  /// RFC 0033 §9: the unit's budget of block transfers (0: unlimited),
+  /// what every run in it has spent, and the definitions whose
+  /// authoritative run is still to come.
+  std::uint64_t unitBudget = 0;
+  std::uint64_t unitTransfers = 0;
+  std::uint64_t functionsLeft = 1;
+  /// The block transfers one run may take from what is left: a fair share
+  /// of it, eight times over, so that a few large functions cannot spend
+  /// what the others need; 0 is unlimited.
+  [[nodiscard]] std::uint64_t runShare() const {
+    static constexpr std::uint64_t MinRunShare = 500;
+    if (unitBudget == 0)
+      return 0;
+    const std::uint64_t left =
+        unitBudget > unitTransfers ? unitBudget - unitTransfers : 0;
+    return std::max(MinRunShare,
+                    8 * left / std::max<std::uint64_t>(1, functionsLeft));
+  }
   /// Summaries of the unit's definitions, by canonical declaration.
   std::map<const clang::FunctionDecl *, core::FunctionEffects> summaries;
   std::set<const clang::FunctionDecl *> incomplete;
+  /// Members of a recursive component whose summary round spent the
+  /// per-function budget (RFC 0033 *Implementation amendments*, build
+  /// cost).
+  std::set<const clang::FunctionDecl *> exhausted;
   /// §9.4, §4.5 D2: fields and globals some function releases a value
   /// loaded from.
   llvm::DenseSet<const clang::Decl *> owningSlots;

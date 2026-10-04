@@ -51,6 +51,14 @@
       "template": "object",
       "verdict": "true",
       "note": "TRUE out-of-bounds read, by the source's own account. hashlittle's tail switch reads a whole 32-bit word of the key and masks off the bytes past the key's end (here `b+=k[1]&0xffff`). The comment above the switch (lookup3.h:240-247) says that the expression \"actually reads beyond the end of the string, but then masks off the part it's not allowed to read\" and that Valgrind \"will still catch it and complain\"; lookup3.h:210-220 defines NO_MASKING_TRICK, which selects the byte-wise tail instead, under VALGRIND and when the compiler reports AddressSanitizer. The key is what hashtable.c passes to hash_str (hashtable.c:38, called at 238, 265, 276 and 303): the caller's key, or a pair's flexible `key` member allocated with offsetof(pair_t, key) + key_len + 1 bytes (hashtable.c:210). When the key's object ends less than a word after the last full word of the key, the read crosses the end of the object. The report-mode run of the CTest suite names these four lines and then passes."
+    },
+    {
+      "config": "mbedtls",
+      "file": "library/x509_crt.c",
+      "line": 1415,
+      "template": "object",
+      "verdict": "true",
+      "note": "TRUE out-of-bounds read, in the test helpers. mbedtls_test_ssl_endpoint_certificate_init (tests/src/test_helpers/ssl_helpers.c:688-691) parses the client's EC certificate as `mbedtls_x509_crt_parse(cert->cert, mbedtls_test_cli_crt_ec_der, mbedtls_test_cli_crt_ec_len)`: the DER array with the length of the PEM text (tests/src/certs.c:131 and 297-298; the other three branches pass the matching `_der_len`). The PEM text is longer than the DER bytes, so mbedtls_x509_crt_parse's test `buf[buflen - 1] == '\\0'` (library/x509_crt.c:1415) reads past the end of the global array. The SSL suites' EC client handshakes (\"Handshake, ECDHE-ECDSA-WITH-AES-256-CCM\" and others) reach it; the report-mode run of the CTest suite names this line and then passes."
     }
   ],
   "entries": [
@@ -733,6 +741,46 @@
       "line": 138,
       "verdict": "false",
       "note": "FALSE POSITIVE. The test reuses the file's global `static cJSON item[1]`: `reset(item)` releases the previous child tree (`cJSON_Delete(item->child)`) and zeroes `item`, and `assert_parse_array` then parses into it again, so `item->child` is a new list. `parse_array`'s summary cannot describe the new objects (they come from `global_hooks.allocate`, a hook), so the caller's view of the new child is the unknown object, which also stands for the child `reset` released: a release of an object that stands for several is a possible one, and every later use through it a possible use after free. Closing it needs undescribed summary values that are not all one object (a per-call object was tried and introduced leak reports, RFC 0031 *Gate status*)."
+    },
+    {
+      "fingerprint": "c4ec5c76c9434538f0c6ca4ffdb4347f",
+      "config": "redis",
+      "id": "null-dereference",
+      "certainty": "definite",
+      "file": "src/cluster_legacy.c",
+      "line": 237,
+      "verdict": "true",
+      "note": "TRUE POSITIVE, latent. auxHumanNodenameSetter (src/cluster_legacy.c:231) returns early when `n` is non-null and the name matches, or when `n` is null and `length == 0`; otherwise `if (n) {...} else if (sdslen(n->human_nodename) != 0)` reads `n->human_nodename` with `n` null whenever `length != 0` (line 237, and sdsclear at 238). The callers in the cluster bus code pass a node they looked up, so the branch is not reached in the test suite; the dereference is definite on it."
+    },
+    {
+      "fingerprint": "e45c0d7a34b9813002e8e5d68d1ed538",
+      "config": "redis",
+      "id": "null-dereference",
+      "certainty": "definite",
+      "file": "src/cluster_legacy.c",
+      "line": 238,
+      "verdict": "true",
+      "note": "TRUE POSITIVE, latent. auxHumanNodenameSetter (src/cluster_legacy.c:231) returns early when `n` is non-null and the name matches, or when `n` is null and `length == 0`; otherwise `if (n) {...} else if (sdslen(n->human_nodename) != 0)` reads `n->human_nodename` with `n` null whenever `length != 0` (line 237, and sdsclear at 238). The callers in the cluster bus code pass a node they looked up, so the branch is not reached in the test suite; the dereference is definite on it."
+    },
+    {
+      "fingerprint": "b0cd26ca6a62842ceabce58c8f63069e",
+      "config": "mbedtls",
+      "id": "use-after-free",
+      "certainty": "definite",
+      "file": "framework/tests/programs/metatest.c",
+      "line": 158,
+      "verdict": "true",
+      "note": "TRUE POSITIVE, deliberate. metatest's read_after_free (framework/tests/programs/metatest.c:151) frees `p` and then reads `*p` (comment: 'Undefined behavior (read after free)'): the program exists to check that sanitizers catch it. Lowered so the rest of the build proceeds; the test suite does not run metatest."
+    },
+    {
+      "fingerprint": "2daed3f2a8c327a83a41c73dbc92f836",
+      "config": "mbedtls",
+      "id": "double-free",
+      "certainty": "definite",
+      "file": "framework/tests/programs/metatest.c",
+      "line": 168,
+      "verdict": "true",
+      "note": "TRUE POSITIVE, deliberate. metatest's double_free (framework/tests/programs/metatest.c:161) frees `p` twice (comment: 'Undefined behavior (double free)'), to check that sanitizers catch it."
     }
   ]
 }

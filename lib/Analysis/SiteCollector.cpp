@@ -712,6 +712,25 @@ void Walker::walkStmt(const clang::Stmt *stmt, Context ctx) {
     walkStmt(label->getSubStmt(), ctx);
     return;
   }
+  if (const auto *assembly = llvm::dyn_cast<clang::GCCAsmStmt>(stmt)) {
+    // RFC 0033 *Implementation amendments*: an operand the assembly takes
+    // in memory only (`"+m" (*(uint64_t (*)[16])d)`) is passed by address,
+    // and which of its bytes the assembly touches C does not say: its
+    // lvalue is no access of its whole type. Register operands are loaded.
+    const auto inMemory = [](llvm::StringRef constraint) {
+      return constraint.find_first_of("mQoV") != llvm::StringRef::npos &&
+             constraint.find_first_of("rgiX") == llvm::StringRef::npos;
+    };
+    for (unsigned i = 0; i < assembly->getNumOutputs(); ++i)
+      walkExpr(assembly->getOutputExpr(i), ctx,
+               inMemory(assembly->getOutputConstraint(i)) ? Use::AddressOf
+                                                          : Use::Value);
+    for (unsigned i = 0; i < assembly->getNumInputs(); ++i)
+      walkExpr(assembly->getInputExpr(i), ctx,
+               inMemory(assembly->getInputConstraint(i)) ? Use::AddressOf
+                                                         : Use::Value);
+    return;
+  }
   for (const clang::Stmt *child : stmt->children())
     walkStmt(child, ctx);
 }
@@ -1261,6 +1280,12 @@ Walker::libraryTerm(const core::LibTerm &term, const clang::CallExpr &call,
     return WitnessTerm::sub(std::move(*lhs),
                             WitnessTerm::ofConstant(term.value));
   }
+  case core::LibTerm::Kind::Quotient: {
+    auto lhs = operand(0);
+    if (!lhs)
+      return std::nullopt;
+    return WitnessTerm::div(std::move(*lhs), term.value);
+  }
   // `fmtlen` is never a check term (§8.1); a macro's value and `min` have
   // no C spelling at the call.
   case core::LibTerm::Kind::FormatLength:
@@ -1599,10 +1624,9 @@ bool Walker::hasRawOrigin(const clang::Expr *pointer, unsigned depth) const {
   if (pointer == nullptr || depth > 16)
     return false;
   const clang::Expr *expr = pointer->IgnoreParens();
+  // A pointer converted from an integer is not raw (RFC 0033 §2): only a
+  // declaration makes one.
   while (const auto *cast = llvm::dyn_cast<clang::CastExpr>(expr)) {
-    // Converted from an integer (RFC 0004).
-    if (cast->getCastKind() == clang::CK_IntegralToPointer)
-      return true;
     if (cast->getCastKind() != clang::CK_LValueToRValue &&
         cast->getCastKind() != clang::CK_NoOp &&
         cast->getCastKind() != clang::CK_BitCast)

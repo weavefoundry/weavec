@@ -138,7 +138,7 @@ DiagnosticControl::levelFor(std::string_view id) const {
 }
 
 bool DiagnosticControl::enabledByFlags(std::string_view id) const {
-  if (core::diag::isEnabledByDefault(id))
+  if (core::diag::isEnabledByDefault(id) && !offByDefault.contains(id))
     return true;
   if (const auto it = enabledIds.find(id); it != enabledIds.end())
     return it->second;

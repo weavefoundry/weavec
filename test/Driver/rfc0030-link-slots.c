@@ -12,11 +12,11 @@
 // RUN: %weavec_cc -c %S/Inputs/rfc0030-hook-state.c -o %t/state.o -I%S/Inputs
 // RUN: %weavec_cc -c %s -o %t/main.o -I%S/Inputs
 // RUN: %weavec --dump-record=%t/state.o.weavec | FileCheck --check-prefix=RECORD %s
-// RUN: %weavec_cc -fweavec-dump-analysis %t/state.o %t/main.o -o %t/prog 2>/dev/null | FileCheck --check-prefix=CLOSED %s
+// RUN: %weavec_cc -fweavec-link=analyze -fweavec-dump-analysis %t/state.o %t/main.o -o %t/prog 2>/dev/null | FileCheck --check-prefix=CLOSED %s
 // RUN: %weavec --whole-program --dump-analysis %s %S/Inputs/rfc0030-hook-state.c -- -I%S/Inputs 2>/dev/null | FileCheck --check-prefix=CLOSED %s
 //
 // RUN: %clang -c %s -DOTHER -I%S/Inputs -o %t/other.o
-// RUN: %weavec_cc -fweavec-dump-analysis %t/state.o %t/main.o %t/other.o -o %t/prog2 2>/dev/null | FileCheck --check-prefix=OPEN %s
+// RUN: %weavec_cc -fweavec-link=analyze -fweavec-dump-analysis %t/state.o %t/main.o %t/other.o -o %t/prog2 2>/dev/null | FileCheck --check-prefix=OPEN %s
 #include <stdlib.h>
 #include "rfc0030-hook-state.h"
 
