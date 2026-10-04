@@ -1061,29 +1061,29 @@
     },
     "linux-x86_64": {
       "machine": "linux-x86_64 AMD EPYC 7763 64-Core Processor x4",
-      "producer": "weavec-cc version 0.12.0-dev (90a3d8090896)",
-      "updated": "2026-10-02",
+      "producer": "weavec-cc version 0.13.0-dev (7fa8250197ab)",
+      "updated": "2026-10-04",
       "configs": {
         "cJSON-program": {
           "units": {
             "errors": 0,
-            "warnings": 4,
+            "warnings": 0,
             "ledger": {
               "sites": 1709,
-              "proven": 2627,
-              "checked": 122,
-              "guarded": 652,
+              "proven": 2630,
+              "checked": 119,
+              "guarded": 659,
               "violation": 0,
-              "unresolved": 242,
+              "unresolved": 235,
               "trusted": 18
             },
             "unresolvedShare": {
-              "spatialNull": 0.0161,
-              "temporal": 0.1255
+              "spatialNull": 0.0156,
+              "temporal": 0.1219
             },
-            "cpuSeconds": 3.56,
+            "cpuSeconds": 3.74,
             "workCounters": {
-              "blockTransfers": 12450,
+              "blockTransfers": 12886,
               "functions": 151,
               "sites": 1709
             }
@@ -1093,20 +1093,20 @@
             "warnings": 10,
             "ledger": {
               "sites": 1709,
-              "proven": 2694,
-              "checked": 114,
-              "guarded": 665,
+              "proven": 2697,
+              "checked": 111,
+              "guarded": 670,
               "violation": 0,
-              "unresolved": 174,
+              "unresolved": 169,
               "trusted": 18
             },
             "unresolvedShare": {
-              "spatialNull": 0.0191,
-              "temporal": 0.0813
+              "spatialNull": 0.0186,
+              "temporal": 0.0789
             },
-            "cpuSeconds": 5.9,
+            "cpuSeconds": 6.48,
             "workCounters": {
-              "blockTransfers": 24545,
+              "blockTransfers": 25181,
               "functions": 151,
               "sites": 1709
             }
@@ -1118,43 +1118,43 @@
             "warnings": 0,
             "ledger": {
               "sites": 2337,
-              "proven": 2802,
-              "checked": 198,
-              "guarded": 622,
+              "proven": 2800,
+              "checked": 199,
+              "guarded": 628,
               "violation": 0,
-              "unresolved": 700,
+              "unresolved": 694,
               "trusted": 16
             },
             "unresolvedShare": {
-              "spatialNull": 0.0451,
-              "temporal": 0.2807
+              "spatialNull": 0.0428,
+              "temporal": 0.2802
             },
-            "cpuSeconds": 3.31,
+            "cpuSeconds": 3.46,
             "workCounters": {
-              "blockTransfers": 12705,
+              "blockTransfers": 13536,
               "functions": 236,
               "sites": 2337
             }
           },
           "program": {
             "errors": 0,
-            "warnings": 34,
+            "warnings": 38,
             "ledger": {
               "sites": 2337,
-              "proven": 3082,
-              "checked": 205,
-              "guarded": 542,
+              "proven": 3071,
+              "checked": 206,
+              "guarded": 555,
               "violation": 0,
-              "unresolved": 553,
+              "unresolved": 549,
               "trusted": 12
             },
             "unresolvedShare": {
-              "spatialNull": 0.0652,
-              "temporal": 0.1896
+              "spatialNull": 0.0631,
+              "temporal": 0.1901
             },
-            "cpuSeconds": 11.24,
+            "cpuSeconds": 11.51,
             "workCounters": {
-              "blockTransfers": 62639,
+              "blockTransfers": 59075,
               "functions": 236,
               "sites": 2337
             }
@@ -1163,46 +1163,46 @@
         "linenoise-program": {
           "units": {
             "errors": 0,
-            "warnings": 8,
+            "warnings": 0,
             "ledger": {
               "sites": 1146,
-              "proven": 1874,
+              "proven": 1869,
               "checked": 134,
-              "guarded": 284,
+              "guarded": 288,
               "violation": 0,
-              "unresolved": 84,
+              "unresolved": 85,
               "trusted": 13
             },
             "unresolvedShare": {
-              "spatialNull": 0.0109,
-              "temporal": 0.0681
+              "spatialNull": 0.0138,
+              "temporal": 0.0652
             },
-            "cpuSeconds": 0.87,
+            "cpuSeconds": 0.99,
             "workCounters": {
-              "blockTransfers": 3969,
+              "blockTransfers": 4083,
               "functions": 88,
               "sites": 1146
             }
           },
           "program": {
             "errors": 0,
-            "warnings": 9,
+            "warnings": 6,
             "ledger": {
               "sites": 1146,
-              "proven": 1893,
+              "proven": 1888,
               "checked": 135,
-              "guarded": 280,
+              "guarded": 284,
               "violation": 0,
-              "unresolved": 73,
+              "unresolved": 74,
               "trusted": 13
             },
             "unresolvedShare": {
-              "spatialNull": 0.0145,
-              "temporal": 0.0523
+              "spatialNull": 0.0174,
+              "temporal": 0.0494
             },
-            "cpuSeconds": 2.19,
+            "cpuSeconds": 2.45,
             "workCounters": {
-              "blockTransfers": 12791,
+              "blockTransfers": 12759,
               "functions": 88,
               "sites": 1146
             }
@@ -1214,9 +1214,9 @@
             "warnings": 0,
             "ledger": {
               "sites": 74,
-              "proven": 117,
+              "proven": 115,
               "checked": 18,
-              "guarded": 5,
+              "guarded": 7,
               "violation": 0,
               "unresolved": 6,
               "trusted": 4
@@ -1225,9 +1225,9 @@
               "spatialNull": 0.022,
               "temporal": 0.0678
             },
-            "cpuSeconds": 0.1,
+            "cpuSeconds": 0.12,
             "workCounters": {
-              "blockTransfers": 439,
+              "blockTransfers": 500,
               "functions": 12,
               "sites": 74
             }
