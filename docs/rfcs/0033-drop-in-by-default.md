@@ -778,6 +778,10 @@ disagree, the amendment holds.
    stands for the array's address, which no store changes, so a `%s`
    argument that is a global array (bzip2's `inName`) gets the same
    `strnlen` check as a local one instead of `unresolved(inexpressible)`.
+   A library function the C library's header defines inline to call its
+   checking builtin (glibc's `_FORTIFY_SOURCE` wrappers, which Clang calls
+   an inline builtin declaration) is still governed by its row: the
+   program defines nothing (Darwin spells the same thing as macros).
 6. **The runtime (§6).**
    - *Failure terminates.* The cold path calls `__weavec_rt_trapping()`
      before the trap when the runtime is linked (the prelude cannot declare

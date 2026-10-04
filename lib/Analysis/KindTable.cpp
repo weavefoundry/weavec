@@ -288,8 +288,14 @@ std::optional<core::LibraryMatch>
 governingLibraryEntry(const clang::FunctionDecl &function,
                       const core::LibrarySpec &library) {
   // §8: only when the program does not define the function; per unit, the
-  // program is the unit (the link step decides across units, §13.2).
-  if (function.getIdentifier() == nullptr || function.isDefined())
+  // program is the unit (the link step decides across units, §13.2). An
+  // inline copy of a builtin that defers to the library's (glibc's
+  // `_FORTIFY_SOURCE` wrappers: `memcpy` calling `__builtin___memcpy_chk`)
+  // defines nothing of the program's (RFC 0033 §5).
+  const clang::FunctionDecl *definition = nullptr;
+  if (function.getIdentifier() == nullptr ||
+      (function.isDefined(definition) &&
+       !definition->isInlineBuiltinDeclaration()))
     return std::nullopt;
   const llvm::StringRef name = function.getName();
   const std::string_view callee(name.data(), name.size());
