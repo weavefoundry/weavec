@@ -766,8 +766,13 @@ size_t __weavec_rt_size(const void *p) {
     return 0;
   if (ownedSize(p, &size))
     return size;
-  if (inArena((uintptr_t)p) || maybeHuge((uintptr_t)p))
-    return 0;
+  /* (The huge blocks' address span holds other allocators' blocks too: only
+   * a pointer into one of them is the runtime's.) */
+  {
+    HugeBlock block;
+    if (inArena((uintptr_t)p) || hugeFind((uintptr_t)p, &block))
+      return 0;
+  }
   return nextSize(p);
 }
 

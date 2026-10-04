@@ -944,10 +944,9 @@ bool PayloadReader::readRows(const llvm::json::Object &json) {
       site.text = row[4 + (2 * core::FacetCount)].getAsString()->str();
       if (const llvm::json::Value &boundary = row[5 + (2 * core::FacetCount)];
           boundary.kind() != llvm::json::Value::Null) {
-        const auto parsed = core::parseBoundary(*boundary.getAsString());
-        if (!parsed)
+        site.boundary = core::parseBoundary(*boundary.getAsString());
+        if (!site.boundary)
           return fail(at, "unknown boundary");
-        site.boundary = *parsed;
       }
       if (const llvm::json::Value &callee = row[6 + (2 * core::FacetCount)];
           callee.kind() != llvm::json::Value::Null)
