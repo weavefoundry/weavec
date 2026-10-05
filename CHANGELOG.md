@@ -1,6 +1,20 @@
 # CHANGELOG
 
 
+## v0.14.0 (2026-10-05)
+
+### Documentation
+
+- Polish the README ([#42](https://github.com/weavefoundry/weavec/pull/42),
+  [`6047863`](https://github.com/weavefoundry/weavec/commit/60478632b61f338b891ebe33c1f56650242b3861))
+
+### Features
+
+- Build untuned C projects with default flags
+  ([#43](https://github.com/weavefoundry/weavec/pull/43),
+  [`e3fb58c`](https://github.com/weavefoundry/weavec/commit/e3fb58c448314e64ac583c415cfa1f47306f0281))
+
+
 ## v0.13.0 (2026-10-03)
 
 ### Features
