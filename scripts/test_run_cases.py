@@ -550,6 +550,129 @@ class EvaluationTest(Workspace):
         self.assertEqual((suite["pins"], suite["pinsSatisfied"], suite["classes"]["error"]), (1, 1, 1))
 
 
+class DetectionTest(Workspace):
+    """RFC 0034 section 9: DETECT cases (gate F4) and XFAIL."""
+
+    def detect_case(self, stop_line="return p[n]; // STOP", file_markers="// DETECT: -DFIX"):
+        return self.case("detection/d/prog.c", f"""
+            // A heap overflow and its fixed twin.
+            {file_markers}
+            // RUN-INPUT: 4
+            #include <stdlib.h>
+            int main(int argc, char **argv) {{
+              int n = atoi(argv[1]);
+              char *p = malloc(4);
+              {stop_line}
+            }}
+            """)
+
+    def evidence(self, **kwargs):
+        ev = rc.Evidence("trap")
+        for key, value in kwargs.items():
+            setattr(ev, key, value)
+        return ev
+
+    def report(self, path, line, template="object"):
+        return rc.CheckReport(template, str(path), line, 10)
+
+    def ran(self, path, line=None, trapped=True, template="object"):
+        reports = [self.report(path, line, template)] if line else []
+        return dict(built=True, ran=True, runs=[rc.Run(("4",), -5 if trapped else 0)],
+                    report_runs=[reports], reports=list(reports))
+
+    def test_grammar(self):
+        case = self.detect_case()
+        self.assertEqual(case.errors, [])
+        self.assertEqual(case.detect, ("-DFIX",))
+        self.assertEqual([m.line for m in case.line_markers("STOP")], [8])
+        both = self.detect_case("return p[n]; // STOP // MISS: not caught yet")
+        self.assertEqual(both.errors, [])
+        cases = [
+            ("return p[n]; // STOP: here", "", "marker 'STOP' takes no argument"),
+            ("return p[n]; // STOP", "// DETECT: FIX", "DETECT takes the flags"),
+            ("return p[n]; // STOP", "// DETECT: -DFIX\n// CLEAN", "a DETECT case has no CLEAN markers"),
+            ("return p[n]; // BUG: out-of-bounds", "// DETECT: -DFIX", "a DETECT case has no BUG markers"),
+            ("return p[n]; // MISS: x", "// DETECT: -DFIX", "needs a STOP line"),
+            ("return p[n]; // STOP", "// RFC 0034.", "STOP needs a DETECT file marker"),
+            ("return p[n]; // STOP", "// DETECT: -DFIX\n// DETECT: -DFIX", "DETECT is given more than once"),
+        ]
+        for line, markers, message in cases:
+            broken = self.detect_case(line, markers)
+            self.assertTrue(any(message in e for e in broken.errors), (line, markers, broken.errors))
+        no_main = self.case("detection/e/x.c", "// DETECT: -DFIX\nint f(int *p) { return *p; } // STOP\n")
+        self.assertTrue(any("needs a unit that defines main" in e for e in no_main.errors))
+
+    def test_stops(self):
+        case = self.detect_case()
+        clean_twin = self.evidence(built=True, ran=True, runs=[rc.Run(("4",), 0)], report_runs=[[]])
+        # A trap whose report-mode check is on the STOP line stops the bug.
+        result = rc.evaluate_detection(case, self.evidence(**self.ran(case.path, 8)), clean_twin)
+        self.assertEqual((result["status"], result["class"]), ("pass", "run"))
+        self.assertEqual(result["detection"]["where"], "object at " + rc.relative(case.path) + ":8:10")
+        # A WeaveC error stops it at compile time, wherever it is (noted when not on a STOP line).
+        error = rc.evaluate_detection(case, self.evidence(diagnostics=[self.diag(case.path, 7, "out-of-bounds")]),
+                                      clean_twin)
+        self.assertEqual((error["status"], error["class"]), ("pass", "compile"))
+        self.assertTrue(any("on no STOP line" in n for n in error["notes"]))
+        # Not stops: a check after the bug, a trap the report-mode run does not
+        # attribute (the C library's own), a run that does not trap.
+        for evidence, why in ((self.ran(case.path, 9), "on no STOP line"),
+                              (self.ran(case.path, None), "names no failed check"),
+                              (self.ran(case.path, 8, trapped=False), "but the trap-mode run was exit 0")):
+            missed = rc.evaluate_detection(case, self.evidence(**evidence), clean_twin)
+            self.assertEqual((missed["status"], missed["class"]), ("fail", "miss"))
+            self.assertTrue(any(why in f for f in missed["failures"]), missed["failures"])
+        # A known miss passes silent, and is flagged when it stops.
+        known = self.detect_case("return p[n]; // STOP // MISS: not caught yet")
+        silent = rc.evaluate_detection(known, self.evidence(**self.ran(known.path, None, trapped=False)), clean_twin)
+        self.assertEqual((silent["status"], silent["detection"]["knownMiss"]), ("pass", True))
+        flipped = rc.evaluate_detection(known, self.evidence(**self.ran(known.path, 8)), clean_twin)
+        self.assertEqual((flipped["status"], flipped["detection"]["flip"]), ("pass", True))
+        self.assertTrue(any("remove its MISS marker" in n for n in flipped["notes"]))
+        # The verify build's proven traps fail it (F4: no bug runs past a proven facet).
+        proven = self.evidence(**self.ran(case.path, 8))
+        proven.proven_traps = ["run 4: weavec.proven trap"]
+        self.assertEqual(rc.evaluate_detection(case, proven, clean_twin)["status"], "fail")
+
+    def test_twin_must_not_stop(self):
+        case = self.detect_case()
+        bug = self.evidence(**self.ran(case.path, 8))
+        for twin, why in ((self.evidence(built=False, diagnostics=[self.diag(case.path, 8, "out-of-bounds")]),
+                           "error:"),
+                          (self.evidence(built=True, ran=True, runs=[rc.Run(("4",), -5)], report_runs=[[]]),
+                           "killed by"),
+                          (self.evidence(**self.ran(case.path, 8, trapped=False)), "failed check object"),
+                          (self.evidence(built=False), "no executable was built")):
+            result = rc.evaluate_detection(case, bug, twin)
+            self.assertEqual(result["status"], "fail", why)
+            self.assertFalse(result["detection"]["twinClean"])
+            self.assertTrue(any(f.startswith("the fixed twin (-DFIX) stops") and why in f
+                                for f in result["failures"]), result["failures"])
+
+    def test_summary_and_xfail(self):
+        case = self.detect_case()
+        clean_twin = self.evidence(built=True, ran=True, runs=[rc.Run(("4",), 0)], report_runs=[[]])
+        stop = rc.evaluate_detection(case, self.evidence(**self.ran(case.path, 8)), clean_twin)
+        known = self.detect_case("return p[n]; // STOP // MISS: later")
+        miss = rc.evaluate_detection(known, self.evidence(**self.ran(known.path, None, trapped=False)), clean_twin)
+        summary = rc.summarize([stop, miss])
+        detection = summary["suites"]["detection"]["detection"]
+        self.assertEqual((detection["cases"], detection["stops"], detection["runStops"], detection["knownMisses"],
+                          detection["twinsClean"]), (2, 1, 1, 1, 2))
+        self.assertEqual((summary["total"]["detectionCases"], summary["total"]["detectionStops"]), (2, 1))
+        xfail = self.case("s/x.c", "// CLEAN\n// XFAIL: a false error today\nint main(void) { return 0; }\n")
+        self.assertEqual(xfail.xfail, "a false error today")
+        failing = rc.apply_xfail(xfail, rc.evaluate(xfail, rc.Evidence("trap", diagnostics=[
+            self.diag(xfail.path, 3, "double-free")])))
+        self.assertEqual(failing["status"], "xfail")
+        self.assertEqual(failing["notes"][0], "expected failure: a false error today")
+        passing = rc.apply_xfail(xfail, rc.evaluate(xfail, rc.Evidence("trap")))
+        self.assertEqual(passing["status"], "xpass")
+        counts = rc.summarize([failing, passing])["suites"]["s"]
+        self.assertEqual((counts["xfailed"], counts["xpassed"], counts["failed"]), (1, 1, 0))
+        self.assertTrue(all(r["status"] in rc.PASSING_STATUSES for r in (failing, passing)))
+
+
 FAKE_CC = r'''#!{python}
 """A stand-in weavec-cc driven by <source>.fake.json next to each case file."""
 import json, os, signal, sys

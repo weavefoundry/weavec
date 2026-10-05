@@ -9,6 +9,9 @@ weavec_add_library(
           DispatchEdges.cpp
           Driver.cpp
           FrontendAction.cpp
+          # RFC 0034 §1: the guards the backend canonicalises, merges and
+          # expands.
+          GuardPasses.cpp
           Prelude.cpp
           ProgramAnalysis.cpp
           ResourceDir.cpp

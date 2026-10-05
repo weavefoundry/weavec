@@ -9,13 +9,16 @@
 #include "weavec/Frontend/ObjectRegistration.h"
 
 #include "weavec/Analysis/BypassedDeclarations.h"
+#include "weavec/Analysis/KindTable.h"
 #include "weavec/Analysis/SiteCollector.h"
+#include "weavec/Core/CheckPlan.h"
 #include "weavec/Core/LibrarySpec.h"
 
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/Attr.h"
 #include "clang/AST/Decl.h"
 #include "clang/AST/Expr.h"
+#include "clang/AST/ParentMap.h"
 #include "clang/AST/RecursiveASTVisitor.h"
 #include "clang/AST/Stmt.h"
 #include "clang/Basic/Builtins.h"
@@ -25,6 +28,8 @@
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Casting.h"
+
+#include <algorithm>
 
 namespace weavec::frontend {
 
@@ -68,12 +73,20 @@ static bool hasFlexibleArray(clang::QualType type) {
   return record != nullptr && record->hasFlexibleArrayMember();
 }
 
+/// RFC 0034 §4: the arguments of each call that a guard looks up;
+/// `GuardedArgumentAll` when the guard's operand is not one argument.
+constexpr unsigned GuardedArgumentAll = ~0U;
+using GuardedArguments =
+    llvm::DenseMap<const clang::Stmt *, llvm::DenseSet<unsigned>>;
+
 namespace {
 
 /// What one function body says about its locals.
 class LocalWalker : public clang::RecursiveASTVisitor<LocalWalker> {
 public:
-  explicit LocalWalker(const core::LibrarySpec &spec) : library(spec) {}
+  LocalWalker(clang::Stmt &body, const core::LibrarySpec &spec,
+              const GuardedArguments &guarded)
+      : parents(&body), library(spec), guardedArguments(guarded) {}
 
   /// In declaration order.
   llvm::SmallVector<const clang::VarDecl *, 8> declared;
@@ -129,7 +142,8 @@ public:
     if (cast->getCastKind() != clang::CK_ArrayToPointerDecay ||
         directBases.contains(cast))
       return true;
-    if (const clang::VarDecl *variable = rootLocal(cast->getSubExpr()))
+    if (const clang::VarDecl *variable = rootLocal(cast->getSubExpr());
+        variable != nullptr && reachesGuard(*cast))
       escaping.insert(variable);
     return true;
   }
@@ -137,7 +151,8 @@ public:
   bool VisitUnaryOperator(clang::UnaryOperator *op) {
     if (op->getOpcode() != clang::UO_AddrOf)
       return true;
-    if (const clang::VarDecl *variable = rootLocal(op->getSubExpr()))
+    if (const clang::VarDecl *variable = rootLocal(op->getSubExpr());
+        variable != nullptr && reachesGuard(*op))
       escaping.insert(variable);
     return true;
   }
@@ -168,8 +183,84 @@ public:
   // NOLINTEND(readability-identifier-naming,bugprone-derived-method-shadowing-base-method)
 
 private:
+  /// The body's (the unit's parent map costs a large unit too much).
+  clang::ParentMap parents;
   const core::LibrarySpec &library;
+  const GuardedArguments &guardedArguments;
   llvm::DenseSet<const clang::Expr *> directBases;
+
+  /// Whether the value of `call` is used: not a statement of its own (`memcpy`
+  /// as a statement), nor cast to `void`.
+  bool resultUsed(const clang::CallExpr &call) {
+    const clang::Stmt *at = &call;
+    for (const clang::Stmt *parent = parents.getParent(at); parent != nullptr;
+         at = parent, parent = parents.getParent(at)) {
+      if (llvm::isa<clang::ParenExpr>(parent))
+        continue;
+      if (const auto *cast = llvm::dyn_cast<clang::CastExpr>(parent))
+        return !cast->getType()->isVoidType();
+      return llvm::isa<clang::Expr>(parent) ||
+             llvm::isa<clang::DeclStmt>(parent) ||
+             llvm::isa<clang::ReturnStmt>(parent) ||
+             llvm::isa<clang::IfStmt>(parent) ||
+             llvm::isa<clang::WhileStmt>(parent) ||
+             llvm::isa<clang::ForStmt>(parent) ||
+             llvm::isa<clang::DoStmt>(parent) ||
+             llvm::isa<clang::SwitchStmt>(parent);
+    }
+    return false;
+  }
+
+  /// RFC 0034 §4: whether a guard can look up the local whose address
+  /// `address` is. Not when the address is only an argument of a library
+  /// function (no guard runs inside it) that takes no callback (which a
+  /// guard could run in) and whose call guards none of its arguments.
+  bool reachesGuard(const clang::Expr &address) {
+    const clang::Expr *at = &address;
+    for (unsigned depth = 0; depth < 16; ++depth) {
+      const clang::Stmt *parent = parents.getParent(at);
+      if (parent == nullptr)
+        return true;
+      if (const auto *paren = llvm::dyn_cast<clang::ParenExpr>(parent)) {
+        at = paren;
+        continue;
+      }
+      if (const auto *cast = llvm::dyn_cast<clang::CastExpr>(parent);
+          cast != nullptr && cast->getType()->isPointerType() &&
+          (llvm::isa<clang::ImplicitCastExpr>(cast) ||
+           llvm::isa<clang::CStyleCastExpr>(cast))) {
+        at = cast;
+        continue;
+      }
+      const auto *call = llvm::dyn_cast<clang::CallExpr>(parent);
+      if (call == nullptr || call->getCallee() == at)
+        return true;
+      if (const auto guarded = guardedArguments.find(call);
+          guarded != guardedArguments.end()) {
+        unsigned position = 0;
+        while (position < call->getNumArgs() && call->getArg(position) != at)
+          ++position;
+        if (guarded->second.contains(GuardedArgumentAll) ||
+            guarded->second.contains(position))
+          return true;
+      }
+      const clang::FunctionDecl *callee = call->getDirectCallee();
+      if (callee == nullptr ||
+          !analysis::governingLibraryEntry(*callee, library).has_value())
+        return true;
+      // A library function that returns a pointer may return one into its
+      // argument (`strtok`, `strchr`): when the program keeps it.
+      if (call->getType()->isPointerType() && resultUsed(*call))
+        return true;
+      // (The type as passed: a function's name decays to its pointer.)
+      return std::ranges::any_of(
+          call->arguments(), [](const clang::Expr *argument) {
+            const clang::QualType type = argument->getType();
+            return type->isFunctionPointerType() || type->isBlockPointerType();
+          });
+    }
+    return true;
+  }
 };
 
 } // namespace
@@ -227,8 +318,25 @@ static const clang::VarDecl *definitionOf(const clang::VarDecl &variable) {
 ObjectPlan planObjects(clang::ASTContext &context,
                        const analysis::SiteIndex &sites,
                        const core::LibrarySpec &library,
+                       const core::CheckPlan *checks,
                        const ObjectOptions &options) {
   ObjectPlan plan;
+  // RFC 0034 §4: the arguments a guard looks up, per call.
+  GuardedArguments guardedArguments;
+  if (checks != nullptr)
+    for (const core::CheckPlanEntry &entry : checks->entries)
+      if (entry.kind == core::CheckPlanEntry::Template::Object ||
+          entry.kind == core::CheckPlanEntry::Template::Live ||
+          entry.kind == core::CheckPlanEntry::Template::Release)
+        if (const analysis::SiteInfo *info = sites.info(entry.site);
+            info != nullptr && info->stmt != nullptr &&
+            llvm::isa<clang::CallExpr>(info->stmt))
+          guardedArguments[info->stmt].insert(
+              entry.placement ==
+                          core::CheckPlanEntry::Placement::WrapArgument &&
+                      entry.form != core::CheckPlanEntry::Form::Length
+                  ? entry.argument
+                  : GuardedArgumentAll);
   llvm::DenseSet<const clang::VarDecl *> seenGlobals;
   const auto addGlobal = [&](const clang::VarDecl &variable) {
     const clang::VarDecl *definition = definitionOf(variable);
@@ -243,7 +351,7 @@ ObjectPlan planObjects(clang::ASTContext &context,
     if (function.decl == nullptr || !function.decl->hasBody(definition) ||
         definition == nullptr || definition->hasAttr<clang::NakedAttr>())
       continue;
-    LocalWalker walker(library);
+    LocalWalker walker(*definition->getBody(), library, guardedArguments);
     walker.TraverseStmt(definition->getBody());
     for (const clang::VarDecl *variable : walker.statics)
       addGlobal(*variable);
@@ -300,15 +408,6 @@ ObjectPlan planObjects(clang::ASTContext &context,
                                        .loose = loose,
                                        .scoped = scoped});
     }
-    // A function with storage the list does not know and nothing to enter
-    // still says so: once it is inlined, that storage lies in a frame whose
-    // other objects would otherwise be taken to be all there is (§4.3).
-    if (loose && entered.empty())
-      plan.stack.push_back(StackObject{.variable = nullptr,
-                                       .statement = nullptr,
-                                       .function = definition,
-                                       .loose = true,
-                                       .scoped = false});
   }
 
   if (options.globals) {

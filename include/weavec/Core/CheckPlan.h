@@ -141,22 +141,25 @@ struct CheckPlanEntry {
   };
   /// `IfNonZero`: `nonnull` for `null-if-zero` arguments; `Function`:
   /// `nonnull` for the callee operand of an indirect call; `Result`: `len`
-  /// over the `snprintf` lowering of `sprintf`; `Violation`: the
-  /// unconditional trap of a lowered violation, of any template (§3.4).
-  /// RFC 0032 §3: `Need` is `object` for a call argument that must have
-  /// `need` bytes behind it, `String` for one that must be a terminated
-  /// string inside its object.
+  /// over the `snprintf` lowering of `sprintf`. (RFC 0034 §6.4: a lowered
+  /// violation has no unconditional trap.) RFC 0032 §3: `Need` is `object` for
+  /// a call argument that must have `need` bytes behind it, `String` for one
+  /// that must be a terminated string inside its object.
   enum class Form : std::uint8_t {
     Plain,
     IfNonZero,
     Function,
     Result,
-    Violation,
     Need,
     String,
     /// RFC 0033 §5: wraps a call's length argument, which a guard of the
     /// pointer argument (its operand) checks and returns.
-    Length
+    Length,
+    /// RFC 0034 §5.2: the call is replaced by its row's checked wrapper,
+    /// which computes the need at run time (`object`: the destination's
+    /// room; `disjoint`: the row's overlap clause). Every such entry of one
+    /// call is served by the one replacement.
+    Wrapper
   };
   /// §10.4: where the rewrite goes.
   enum class Placement : std::uint8_t {
@@ -216,6 +219,8 @@ toString(CheckPlanEntry::Placement placement) noexcept;
 ///   object    Plain     ReplaceAccess                    step, offset, width
 ///   object    Need      WrapArgument                     need
 ///   object    String    WrapArgument                     -
+///   object    Wrapper   ReplaceCall                      -
+///   disjoint  Wrapper   ReplaceCall                      -
 ///   live      Plain     WrapOperand, WrapArgument        -
 ///   release   Plain     WrapOperand                      -
 ///   any       Violation any                              -
@@ -240,7 +245,8 @@ ledgerTemplate(const CheckPlanEntry &entry) noexcept;
 /// The prelude helper the entry calls (§10.2): `__weavec_chk_<template>`
 /// with the `_n`, `_fn`, `_r` and `_s` suffixes of its form, or
 /// `__weavec_prv_*` for a verify check of a proven facet. Empty for the
-/// `Violation` form, which is an inline `__builtin_verbose_trap`.
+/// `Violation` form, which is an inline `__builtin_verbose_trap`, and for the
+/// `Wrapper` form, whose helper the call's library row names.
 [[nodiscard]] std::string helperName(const CheckPlanEntry &entry);
 
 /// The planned checks of one unit.

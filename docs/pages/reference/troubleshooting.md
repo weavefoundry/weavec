@@ -83,9 +83,9 @@ The link was given `-fno-weavec-runtime` (or something that implies it, such as 
 
 ## The program is much slower or uses more memory
 
-The default mode links a runtime: every guarded operation looks its pointer up, and freed blocks are held in a 64 MiB quarantine before reuse. The measured cost on the project's benchmarks is 1.66 times the CPU time of a plain Clang build for cJSON, 1.85 for zlib and 5.94 for the Lua interpreter; code that spends its time in tight loops over pointers, as an interpreter does, is at the high end.
+The default mode links a runtime: every guarded operation reads the runtime's shadow memory (one byte per 16 bytes) inline and calls the runtime only when that byte does not decide it, and freed blocks are held in a 16 MiB quarantine before reuse. The measured cost on the project's benchmarks is 1.66 times the CPU time of a plain Clang build for cJSON, 1.85 for zlib and 5.94 for the Lua interpreter; code that spends its time in tight loops over pointers, as an interpreter does, is at the high end.
 
-- Run with `WEAVEC_RT_STATS=1` to see how many lookups the program makes.
+- Run with `WEAVEC_RT_STATS=1` to see how many guards reached the runtime (`slow guards`) and how many lookups the program makes.
 - Read `summary.guardedReasons` in the ledger. Each guarded facet that becomes proven or checked loses its guard: declare extents (`WEAVEC_COUNTED_BY`, `WEAVEC_ENDED_BY`, `WEAVEC_STRING`) for `unknown-extent`, and declare ownership for `unknown-callee`.
 - Set `WEAVEC_RT_QUARANTINE=<bytes>` to shrink the quarantine if memory is the problem. A smaller quarantine catches fewer uses of freed blocks; `0` reuses blocks at once.
 - Build the units that cannot pay with `-fno-weavec-runtime`. Their guardable facets become `unresolved` and are not enforced, and their cost returns to that of the checks alone (1.15, 1.00 and 1.09 times on the same benchmarks).
@@ -100,7 +100,7 @@ Read `summary.unresolvedReasons` in the ledger. In a default build a facet the a
 
 ## A compile or link is slow
 
-Each unit's analysis has a budget, `-fweavec-unit-budget=<n>` block transfers over all of its functions (by default 6 per site, at least 200,000); the functions analysed after it is spent get the over-budget defaults (`unresolved(budget)`, guarded where a guard applies). Lower it for faster builds of very large units, or set `0` for no limit. A default link analyses nothing; `-fweavec-link=analyze` does, within `-fweavec-link-budget=<seconds>` (default 120). When it runs out, or a group of units does not converge, the link goes on with a note and those units keep their compile-time results:
+Each unit's analysis has a budget, `-fweavec-unit-budget=<n>` of work over all of its functions (by default 400 per site, at least 20,000,000; see [budgets](/reference/cli/#budgets)); the functions analysed after it is spent get the over-budget defaults (`unresolved(budget)`, guarded where a guard applies). Lower it for faster builds of very large units, or set `0` for no limit. A default link analyses nothing; `-fweavec-link=analyze` does, within `-fweavec-link-budget=<seconds>` (default 120). When it runs out, or a group of units does not converge, the link goes on with a note and those units keep their compile-time results:
 
 ```text
 weavec-cc: note: the whole-program analysis of 'parser.c' stopped at its budget; their compile-time results stand
@@ -108,7 +108,7 @@ weavec-cc: note: the whole-program analysis of 'parser.c' stopped at its budget;
 
 ## The link warns about an unanalyzed input
 
-`unanalyzed-input` names the link inputs that have no valid WeaveC record: objects from another compiler, static archives, shared libraries, and objects whose record is stale. Calls into them are trusted. Rebuild the objects with `weavec-cc`; keep each `.o.weavec` record beside its object. Archives and shared libraries do not carry records yet.
+`unanalyzed-input` names the link inputs that have no valid WeaveC record: objects from another compiler, static archives, shared libraries, and objects whose record is stale. Calls into them are trusted. Rebuild the objects with `weavec-cc`; keep each `.o.weavec` record beside its object. Archives and shared libraries do not carry records yet: an archive whose objects `weavec-cc` built is named in a note instead (`'libfoo.a' was built by weavec-cc without records: checked and guarded, not analysed with the program`), since its code carries its checks and guards.
 
 ## A require level rejects the build
 

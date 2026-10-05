@@ -39,6 +39,7 @@
 #   access   ::= 'r' | 'w' | 'rw' | 'none'
 #   pflag    ::= 'bytes(' term ')' | 'count(' term ')'+ | 'str' | 'null-ok'
 #              | 'null-if-zero(' term ')' | 'release(' FAMILY ')'
+#              | 'range(' term ')'+
 #              | 'realloc(' FAMILY ')' | 'retain(' STATE ')' | 'escape'
 #              | 'init(' FAMILY ')'+ | 'fini(' FAMILY ')'+
 #              | 'out(' value ')'+ | callback+
@@ -60,6 +61,7 @@
 #              | 'invalidates(' STATE ')' | 'reads(' STATE ')' | 'exits'
 #              | 'returns-twice' | 'printf(' INT ',' INT ')'
 #              | 'scanf(' INT ',' INT ')' | 'chk(' NAME ':' INT { ',' INT } ')'
+#              | 'wrapper(' NAME { ',' ( 'room' | 'source' | 'disjoint' ) } ')'+
 #   term     ::= INT | 'a' N | 'strlen(a' N ')' | 'fmtlen(a' N ')' | MACRO+
 #              | term '*' term | term '+' term | term '-' INT
 #              | term '/' INT+
@@ -79,6 +81,10 @@
 #   null-ok          null is allowed. null-if-zero(t): allowed when t is zero
 #                    (section 8.3). Otherwise null is forbidden.
 #   release(F)       the call releases the pointer, of release family F.
+#   range(t)+        (with release) the call releases the t bytes from the
+#                    pointer (munmap): the object only when they cover it
+#                    from its start, possibly otherwise, and the pointer may
+#                    point anywhere in it (RFC 0034 section 6.3).
 #   realloc(F)       as realloc: released on a non-null result; on a null
 #                    result kept, or released when the result's extent (the
 #                    requested size) is zero; kept when there is no extent.
@@ -166,6 +172,19 @@
 #   printf(f,v), scanf(f,v)
 #                    argument f is the format; v is the first variadic
 #                    argument, or the va_list parameter of a v- function.
+#   wrapper(N, W...)+
+#                    RFC 0034 section 5.2: the prelude's checked wrapper
+#                    __weavec_chk_N may replace the call when a requirement
+#                    it computes has no check or guard of its own (no term
+#                    states it at the site, or a guard would check only a
+#                    lower bound, as for a format's output). It takes the
+#                    row's arguments, then a fortified alias's object size,
+#                    and computes at run time: 'room', the bytes argument 0
+#                    needs, against the room left in the tracked object it
+#                    points into (a format row writes through the bounded
+#                    writer instead and fails when the output did not fit);
+#                    'source', the bytes argument 1 needs (a copy's);
+#                    'disjoint', the row's disjoint clause.
 #   chk(A: i0, i1, ...)
 #                    A is an alias of the entry (a fortified form): its k-th
 #                    argument is the entry's argument i_k, or dropped (-1).
@@ -506,9 +525,10 @@ backtrace_symbols_fd (r:count(a1), int, int) -> void;
 header string.h;
 memcpy (w:bytes(a2):null-if-zero(a2), r:bytes(a2):null-if-zero(a2), int) \
     -> arg(0) disjoint(0,1,a2) copies(0,1,a2) \
+    wrapper(memcpy,room,source,disjoint) \
     chk(__builtin___memcpy_chk: 0,1,2,-1) chk(__memcpy_chk: 0,1,2,-1);
 memmove (w:bytes(a2):null-if-zero(a2), r:bytes(a2):null-if-zero(a2), int) \
-    -> arg(0) copies(0,1,a2) \
+    -> arg(0) copies(0,1,a2) wrapper(memmove,room,source) \
     chk(__builtin___memmove_chk: 0,1,2,-1) chk(__memmove_chk: 0,1,2,-1);
 memset (w:bytes(a2):null-if-zero(a2), int, int) -> arg(0) fills(0,a1,a2) \
     chk(__builtin___memset_chk: 0,1,2,-1) chk(__memset_chk: 0,1,2,-1);
@@ -537,6 +557,7 @@ memccpy (w:bytes(min(a3,strlen(a1)+1)):null-if-zero(a3), \
     chk(__builtin___memccpy_chk: 0,1,2,3,-1);
 strcpy (w:bytes(strlen(a1)+1), r:str) -> arg(0) \
     disjoint(0,1,strlen(a1)+1) writes-str(0,strlen(a1)) \
+    wrapper(strcpy,room,disjoint) \
     chk(__builtin___strcpy_chk: 0,1,-1) chk(__strcpy_chk: 0,1,-1);
 strncpy (w:bytes(a2):null-if-zero(a2), \
     r:bytes(min(a2,strlen(a1)+1)):null-if-zero(a2), int) -> arg(0) \
@@ -545,6 +566,7 @@ strncpy (w:bytes(a2):null-if-zero(a2), \
 stpcpy (w:bytes(strlen(a1)+1), r:str) -> \
     interior(0):offset(strlen(a1)):nonnull \
     disjoint(0,1,strlen(a1)+1) writes-str(0,strlen(a1)) \
+    wrapper(stpcpy,room,disjoint) \
     chk(__builtin___stpcpy_chk: 0,1,-1) chk(__stpcpy_chk: 0,1,-1);
 stpncpy (w:bytes(a2):null-if-zero(a2), \
     r:bytes(min(a2,strlen(a1)+1)):null-if-zero(a2), int) \
@@ -553,7 +575,7 @@ stpncpy (w:bytes(a2):null-if-zero(a2), \
     chk(__builtin___stpncpy_chk: 0,1,2,-1) chk(__stpncpy_chk: 0,1,2,-1);
 strcat (rw:bytes(strlen(a0)+strlen(a1)+1):str, r:str) -> arg(0) \
     disjoint(0,1,strlen(a0)+strlen(a1)+1) \
-    writes-str(0,strlen(a0)+strlen(a1)) \
+    writes-str(0,strlen(a0)+strlen(a1)) wrapper(strcat,room) \
     chk(__builtin___strcat_chk: 0,1,-1) chk(__strcat_chk: 0,1,-1);
 strncat (rw:bytes(strlen(a0)+min(a2,strlen(a1))+1):str, \
     r:bytes(min(a2,strlen(a1)+1)):null-if-zero(a2), int) -> arg(0) \
@@ -689,7 +711,7 @@ fprintf (rw, r:str, ...) -> int printf(1,2) \
     chk(__builtin___fprintf_chk: 0,-1,1,2) chk(__fprintf_chk: 0,-1,1,2);
 dprintf (int, r:str, ...) -> int printf(1,2) chk(__dprintf_chk: 0,-1,1,2);
 sprintf (w:bytes(fmtlen(a1)+1), r:str, ...) -> int:value(fmtlen(a1)) \
-    writes-str(0,fmtlen(a1)) printf(1,2) \
+    writes-str(0,fmtlen(a1)) printf(1,2) wrapper(sprintf,room) \
     chk(__builtin___sprintf_chk: 0,-1,-1,1,2) chk(__sprintf_chk: 0,-1,-1,1,2);
 snprintf (w:bytes(a1):null-if-zero(a1), int, r:str, ...) \
     -> int:value(fmtlen(a2)) writes-str(0,min(a1-1,fmtlen(a2))) printf(2,3) \
@@ -701,7 +723,7 @@ vfprintf (rw, r:str, other) -> int printf(1,2) \
     chk(__builtin___vfprintf_chk: 0,-1,1,2) chk(__vfprintf_chk: 0,-1,1,2);
 vdprintf (int, r:str, other) -> int printf(1,2) chk(__vdprintf_chk: 0,-1,1,2);
 vsprintf (w:bytes(fmtlen(a1)+1), r:str, other) -> int:value(fmtlen(a1)) \
-    writes-str(0,fmtlen(a1)) printf(1,2) \
+    writes-str(0,fmtlen(a1)) printf(1,2) wrapper(vsprintf,room) \
     chk(__builtin___vsprintf_chk: 0,-1,-1,1,2) \
     chk(__vsprintf_chk: 0,-1,-1,1,2);
 vsnprintf (w:bytes(a1):null-if-zero(a1), int, r:str, other) \
@@ -1016,7 +1038,8 @@ header sys/mman.h;
 # mmap fails with MAP_FAILED, not null.
 mmap (none:null-ok, int, int, int, int, int) -> \
     fresh(munmap):extent(a1):nonnull;
-munmap (none:null-ok:release(munmap), int) -> int;
+# munmap may unmap part of a mapping (a guard page): RFC 0034 section 6.3.
+munmap (none:null-ok:release(munmap):range(a1), int) -> int;
 mprotect (none:null-ok, int, int) -> int;
 msync (none:null-ok, int, int) -> int;
 madvise (none:null-ok, int, int) -> int;

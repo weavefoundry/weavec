@@ -16,6 +16,12 @@ every selected case the runner
 5. runs the ASan oracle (`--asan` or an ASAN marker);
 6. with `--checks verify`, fails any case that hits a `weavec.proven` trap.
 
+A DETECT case (RFC 0034 section 9, gate F4) is judged instead by whether its
+bug stops at or before a STOP line, at compile time or by a trap, and whether
+its fixed twin builds and runs clean; `--min-stops N` gates the count. An
+XFAIL case is expected to fail today (XFAIL), and is reported when it passes
+(XPASS); neither fails the run.
+
 `--legacy` applies the same markers with v0.10.0 semantics: diagnostics
 only, from the `weavec` tool of WEAVEC_GOLDEN_DIR, and additionally
 classifies every bug case as CAUGHT, SILENT, SIGNAL, MISLABEL or LEAK-ONLY.
@@ -69,7 +75,7 @@ UNRESOLVED_REASONS = (
     "unknown-extent", "unknown-index", "inexpressible", "may-released", "may-moved",
     "may-alias-released", "may-invalid-release", "may-mismatched-release", "may-dangle",
     "may-conflict", "unknown-callee", "callback", "setjmp", "budget", "unanalysed",
-    "raw-cast", "dangling-escape", "second-owner", "no-zero-init",
+    "raw-cast", "dangling-escape", "second-owner", "no-zero-init", "unconfirmed", "lowered",
 )
 TRUST_REASONS = (
     "unsafe", "system-api", "library-spec", "extern-contract", "caller-contract",
@@ -116,11 +122,17 @@ LEGACY_SIGNAL_IDS = frozenset(("analysis-incomplete", "annotation-required",
                                "checking-incomplete", "checking-failed"))
 
 FILE_MARKERS = frozenset(("CLEAN", "ALLOW", "RUN-INPUT", "EXPECT-LEDGER", "FLAGS", "UNITS",
-                          "ASAN", "TOOL"))
+                          "ASAN", "TOOL",
+                          # RFC 0034 section 9: detection cases, and expected failures.
+                          "DETECT", "XFAIL"))
 LINE_MARKERS = frozenset(("BUG", "TRAP", "UNRESOLVED", "TRUSTED", "NOT-PROVEN", "GUARDED",
-                          "NEUTRALISED", "MISS"))
+                          "NEUTRALISED", "MISS", "STOP"))
 MARKERS = FILE_MARKERS | LINE_MARKERS
-NO_ARGUMENT_MARKERS = frozenset(("CLEAN", "ASAN", "TOOL"))
+NO_ARGUMENT_MARKERS = frozenset(("CLEAN", "ASAN", "TOOL", "STOP"))
+# Markers a detection case (DETECT) cannot have: it is judged by whether its
+# bug stops, not by what is reported where.
+NOT_IN_DETECTION = frozenset(("CLEAN", "ALLOW", "TOOL", "BUG", "TRAP", "UNRESOLVED", "TRUSTED",
+                              "NOT-PROVEN", "GUARDED", "NEUTRALISED", "EXPECT-LEDGER"))
 EXPECTATION_MARKERS = frozenset(("CLEAN", "EXPECT-LEDGER")) | LINE_MARKERS
 COMPARISONS = ("==", "!=", "<=", ">=", "<", ">")
 
@@ -336,6 +348,14 @@ def parse_argument(kind: str, argument: str, directory: Path) -> Any:
             raise ValueError(f"FLAGS: {error}") from None
     if kind == "UNITS":
         return tuple(argument.split())
+    if kind == "DETECT":
+        try:
+            flags = tuple(shlex.split(argument))
+        except ValueError as error:
+            raise ValueError(f"DETECT: {error}") from None
+        if not all(flag.startswith("-") for flag in flags):
+            raise ValueError("DETECT takes the flags that select the fixed twin, e.g. '-DFIX'")
+        return flags
     return argument
 
 
@@ -408,6 +428,10 @@ class Case:
     markers: list[Marker]  # line markers of every unit
     has_main: bool
     errors: list[str]
+    # RFC 0034 section 9: a detection case's twin flags (DETECT), and the reason
+    # a case is expected to fail today (XFAIL).
+    detect: tuple[str, ...] | None = None
+    xfail: str | None = None
 
     def line_markers(self, kind: str) -> list[Marker]:
         return [m for m in self.markers if m.kind == kind]
@@ -494,8 +518,27 @@ def load_case(path: Path, cases_root: Path, parsed: dict[Path, SourceMarkers] | 
         tool=bool(file_markers["TOOL"]), asan=bool(file_markers["ASAN"]),
         run_inputs=[marker.value for marker in file_markers["RUN-INPUT"]],
         expectations=[marker.value for marker in file_markers["EXPECT-LEDGER"]],
-        markers=markers, has_main=any(defines_main(t) for t in texts.values()), errors=errors)
+        markers=markers, has_main=any(defines_main(t) for t in texts.values()), errors=errors,
+        detect=file_markers["DETECT"][0].value if file_markers["DETECT"] else None,
+        xfail="; ".join(m.value for m in file_markers["XFAIL"]) or None)
     kinds = {m.kind for m in main.file_markers} | {m.kind for m in markers}
+    if len(file_markers["DETECT"]) > 1:
+        errors.append(f"{path.name}: DETECT is given more than once")
+    if case.detect is not None:
+        clash = sorted(kinds & NOT_IN_DETECTION)
+        if clash:
+            errors.append(f"{path.name}: a DETECT case has no {', '.join(clash)} markers (its bug lines are STOP)")
+        if not case.has_main:
+            errors.append(f"{path.name}: DETECT needs a unit that defines main")
+        stops = {(m.file, m.line) for m in markers if m.kind == "STOP"}
+        if not stops:
+            errors.append(f"{path.name}: a DETECT case needs a STOP line (where the bug must stop)")
+        for marker in markers:
+            if marker.kind == "MISS" and (marker.file, marker.line) not in stops:
+                errors.append(f"{marker.file.name}:{marker.line}: in a DETECT case MISS marks a STOP line "
+                              f"as a known miss")
+    elif "STOP" in kinds:
+        errors.append(f"{path.name}: STOP needs a DETECT file marker")
     if not kinds & EXPECTATION_MARKERS:
         errors.append(f"{path.name}: no expectation (CLEAN, EXPECT-LEDGER or a line marker)")
     if case.clean and {"BUG", "MISS", "NEUTRALISED", "TRAP"} & kinds:
@@ -1423,7 +1466,7 @@ def cc_flags(case: Case, cfg: Config, checks: str | None, unit: Path | None) -> 
 
 
 def build(case: Case, cfg: Config, ev: Evidence, directory: Path, checks: str | None,
-          ledger: Path | None, extra: list[str], record: bool) -> Path | None:
+          ledger: Path | None, extra: list[str], record: bool, analyze_link: bool = True) -> Path | None:
     """Compile every unit and link them when one defines main; return the executable."""
     directory.mkdir(parents=True, exist_ok=True)
     objects = unit_objects(case, directory)
@@ -1449,7 +1492,8 @@ def build(case: Case, cfg: Config, ev: Evidence, directory: Path, checks: str | 
     command = [str(cfg.weavec_cc), *extra, *cc_flags(case, cfg, checks, None)]
     # RFC 0033 §7: the default link reads records only; the cases pin what
     # the analysis reports across units, so their links analyse again.
-    if len(case.units) > 1 and not any(f.startswith("-fweavec-link") for f in case.flags):
+    # A detection case measures the default build, whose link reads records.
+    if analyze_link and len(case.units) > 1 and not any(f.startswith("-fweavec-link") for f in case.flags):
         command.append("-fweavec-link=analyze")
     if ledger is not None:
         command.append(f"-fweavec-ledger={ledger}{os.sep}")
@@ -1546,9 +1590,29 @@ def only_expected_errors(case: Case, ev: Evidence) -> bool:
     return bool(errors) and all((located(d.file, d.line), d.id) in expected for d in errors)
 
 
+def apply_xfail(case: Case, result: dict) -> dict:
+    """XFAIL: a failing case is an expected failure; a passing one is
+    reported so that its marker is removed (neither fails the run)."""
+    if not case.xfail or result["status"] not in ("pass", "fail"):
+        return result
+    if result["status"] == "fail":
+        result["status"] = "xfail"
+        result["notes"].insert(0, f"expected failure: {case.xfail}")
+    else:
+        result["status"] = "xpass"
+        result["notes"].insert(0, f"XFAIL case passes now: remove its XFAIL marker ({case.xfail})")
+    return result
+
+
 def run_case(case: Case, cfg: Config) -> dict:
     if case.errors:
         return evaluate(case, Evidence("legacy" if cfg.legacy else cfg.checks))
+    if case.detect is not None:
+        return apply_xfail(case, run_detection_case(case, cfg))
+    return apply_xfail(case, run_case_markers(case, cfg))
+
+
+def run_case_markers(case: Case, cfg: Config) -> dict:
     if cfg.legacy:
         return evaluate(case, run_legacy(case, cfg.weavec, cfg))
     start = time.perf_counter()
@@ -1678,6 +1742,162 @@ def run_asan(case: Case, cfg: Config, ev: Evidence, directory: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Detection cases (RFC 0034 section 9, gate F4)
+# ---------------------------------------------------------------------------
+
+# The report-mode builds of a detection case leave the C library's own
+# fortification out, so that the first failure they report is WeaveC's.
+NO_FORTIFY = ["-D_FORTIFY_SOURCE=0"]
+
+
+def detection_runs(case: Case, cfg: Config, ev: Evidence, directory: Path, extra: list[str],
+                   ledger: Path | None = None) -> None:
+    """Build the case (bug, or twin with `extra`) as the default build does,
+    run it, and rebuild it in report mode to name each failed check."""
+    exe = build(case, cfg, ev, directory / "build", cfg.checks, ledger, extra, record=True, analyze_link=False)
+    if ledger is not None:
+        load_ledgers(ev, ledger)
+    ev.built = exe is not None
+    ev.diagnostics = sorted(set(ev.diagnostics))
+    if exe is None:
+        return
+    env = run_environment()
+    ev.runs = run_executable(exe, case, cfg, directory, env, cfg.run_timeout)
+    report_exe = build(case, cfg, ev, directory / "report", "report", None, [*extra, *NO_FORTIFY], record=False,
+                       analyze_link=False)
+    if report_exe is None:
+        ev.tool_failures.append("the report-mode build failed")
+        return
+    ev.ran = True
+    report_runs = run_executable(report_exe, case, cfg, directory, env, cfg.run_timeout)
+    ev.report_runs = [parse_reports(run.stderr, directory) for run in report_runs]
+    ev.run_reported = [bool(reports) for reports in ev.report_runs]
+    for reports in ev.report_runs:
+        for report in reports:
+            if report not in ev.reports:
+                ev.reports.append(report)
+    if cfg.checks == "verify":
+        # F4: no bug runs past a proven facet. A verify-mode trap where the
+        # report-mode run (which has no proven checks) names no failure is a
+        # `weavec.proven` one, unless the build planned no verify check or the
+        # report-mode run traps the same way (the program's own trap).
+        for run, report_run, reports in zip(ev.runs, report_runs, ev.report_runs):
+            if run.trapped and not reports and not report_run.trapped and verify_checks(ev) != 0:
+                ev.proven_traps.append(f"run {shlex.join(run.args) or '(no arguments)'}: weavec.proven trap "
+                                       f"(the verify build trapped where no unproven check failed)")
+
+
+def run_detection_case(case: Case, cfg: Config) -> dict:
+    """A detection case: the bug build must stop at or before a STOP line (a
+    WeaveC error stops the build, or the run traps and the report-mode run's
+    first failure is on a STOP line), and the twin (built with the DETECT
+    flags) must build and run with no error, trap or failed check."""
+    bug, twin = Evidence(cfg.checks), Evidence(cfg.checks)
+    skip = ("--legacy" if cfg.legacy else "--no-run" if cfg.no_run else "--no-emission" if cfg.no_emission
+            else "--require" if cfg.require else None)
+    if skip:
+        result = evaluate_detection(case, bug, twin)
+        result.update(status="skip", failures=[], notes=[f"a detection case needs the default build and its run "
+                                                         f"(not {skip})"])
+        return result
+    start = time.perf_counter()
+    temp = Path(tempfile.mkdtemp(prefix="weavec-case-", dir=cfg.work))
+    try:
+        ledger = None
+        if cfg.checks == "verify":
+            # verify_checks reads the bug build's ledgers: did it plan a verify check?
+            ledger = temp / "ledger"
+            ledger.mkdir()
+        detection_runs(case, cfg, bug, temp / "bug", ["-g"] if cfg.checks == "verify" else [], ledger)
+        detection_runs(case, cfg, twin, temp / "twin", list(case.detect or ()))
+        if cfg.asan or case.asan:
+            run_asan(case, cfg, bug, temp / "asan")
+    finally:
+        if cfg.keep:
+            bug.notes.append(f"kept {temp}")
+        else:
+            shutil.rmtree(temp, ignore_errors=True)
+    bug.seconds = time.perf_counter() - start
+    return evaluate_detection(case, bug, twin)
+
+
+def evaluate_detection(case: Case, bug: Evidence, twin: Evidence) -> dict:
+    """Judge a detection case (pure): did the bug stop, and is the twin clean?"""
+    failures: list[str] = list(case.errors)
+    notes = list(bug.notes)
+    stops = {located(m.file, m.line) for m in case.markers if m.kind == "STOP"}
+    known_miss = [m for m in case.markers if m.kind == "MISS"]
+    failures.extend(bug.tool_failures)
+    failures.extend(f"compiler error: {e}" for e in bug.clang_errors)
+    stop = where = None
+    errors = [d for d in bug.diagnostics if d.severity == "error"]
+    if errors:
+        stop, where = "compile", errors[0].text()
+        if not any((d.file, d.line) in stops for d in errors):
+            notes.append(f"the build stopped at an error on no STOP line: {where}")
+    why_not = "no executable was built" if not bug.built else "the report-mode build was not run"
+    if stop is None and bug.ran:
+        why_not = "the run did not trap"
+        for number, run in enumerate(bug.runs):
+            reports = bug.report_runs[number] if number < len(bug.report_runs) else []
+            first = reports[0] if reports else None
+            if first is not None and (first.file, first.line) in stops and run.trapped:
+                stop = "run"
+                where = f"{first.template} at {relative(first.file)}:{first.line}:{first.column}"
+                break
+            if run.timed_out:
+                why_not = "the run timed out"
+            elif run.trapped and first is None:
+                why_not = f"the run was {run.describe()}, but the report-mode run names no failed check"
+            elif first is not None:
+                where_first = f"{first.template} at {relative(first.file)}:{first.line}"
+                why_not = (f"the first failed check is {where_first}, on no STOP line" if run.trapped
+                           else f"the report-mode run fails {where_first}, but the trap-mode run was "
+                                f"{run.describe()}")
+            else:
+                why_not = f"the run did not trap ({run.describe()})"
+    flip = False
+    if stop is None and not known_miss:
+        failures.append(f"the bug did not stop: {why_not}")
+    elif stop is not None and known_miss:
+        flip = True
+        notes.append(f"known miss now stops ({stop}: {where}): remove its MISS marker")
+    elif stop is None:
+        notes.append(f"known miss ({'; '.join(m.value for m in known_miss)}): {why_not}")
+    failures.extend(bug.proven_traps)
+    # The twin: no error, no trap or other death, no failed check.
+    twin_failures = list(twin.tool_failures) + [f"compiler error: {e}" for e in twin.clang_errors]
+    twin_failures += [f"error: {d.text()}" for d in twin.diagnostics if d.severity == "error"]
+    for number, run in enumerate(twin.runs):
+        if run.timed_out or run.signal is not None:
+            twin_failures.append(f"run {shlex.join(run.args) or '(no arguments)'}: {run.describe()}")
+    for report in twin.reports:
+        twin_failures.append(f"failed check {report.template} at {relative(report.file)}:{report.line}:"
+                             f"{report.column}")
+    if twin.built is False and not twin_failures and case.detect is not None and (bug.built or bug.diagnostics):
+        twin_failures.append("no executable was built")
+    failures.extend(f"the fixed twin ({' '.join(case.detect or ())}) stops: {f}" for f in twin_failures)
+    asan = None
+    if bug.asan_ran:
+        asan = bug.asan.kind if bug.asan else False
+    return {
+        "case": case.rel, "suite": case.suite,
+        "status": "error" if case.errors else "fail" if failures else "pass",
+        "failures": failures, "notes": notes, "kind": "detection",
+        "class": stop or "miss", "bugs": [],
+        "detection": {"stop": stop, "where": where, "knownMiss": bool(known_miss), "flip": flip,
+                      "twinClean": not twin_failures, "asan": asan},
+        "diagnostics": [d.text() for d in bug.diagnostics],
+        "runs": [{"args": list(r.args), "result": r.describe()} for r in bug.runs],
+        "reports": [f"{r.template} at {relative(r.file)}:{r.line}:{r.column}" for r in bug.reports],
+        "twin": {"diagnostics": [d.text() for d in twin.diagnostics],
+                 "runs": [{"args": list(r.args), "result": r.describe()} for r in twin.runs]},
+        "asan": {"report": asan} if bug.asan_ran else None,
+        "commands": bug.commands + twin.commands, "seconds": round(bug.seconds, 3),
+    }
+
+
+# ---------------------------------------------------------------------------
 # --compare-golden
 # ---------------------------------------------------------------------------
 
@@ -1734,17 +1954,45 @@ def format_key(key: tuple) -> str:
 # ---------------------------------------------------------------------------
 
 
+STATUS_COUNTS = {"pass": "passed", "fail": "failed", "error": "errors", "skip": "skipped", "xfail": "xfailed",
+                 "xpass": "xpassed"}
+STATUS_LABELS = {"pass": "PASS", "fail": "FAIL", "error": "ERROR", "skip": "SKIP", "xfail": "XFAIL",
+                 "xpass": "XPASS"}
+# Statuses that do not fail the run: an expected failure, and an XFAIL case
+# that passes now (reported, so that its marker is removed).
+PASSING_STATUSES = ("pass", "skip", "xfail", "xpass")
+
+
 def summarize(results: list[dict]) -> dict:
     suites: dict[str, dict] = {}
     for result in results:
         suite = suites.setdefault(result["suite"], {
-            "cases": 0, "passed": 0, "failed": 0, "errors": 0, "skipped": 0,
+            "cases": 0, "passed": 0, "failed": 0, "errors": 0, "skipped": 0, "xfailed": 0, "xpassed": 0,
             "bugCases": 0, "bugCasesPassed": 0, "classes": {c: 0 for c in CLASSES},
             "pins": 0, "pinsSatisfied": 0, "pinsReported": 0,
             "cleanCases": 0, "cleanPassed": 0, "cleanBuilds": 0})
         suite["cases"] += 1
         status = result["status"]
-        suite[{"pass": "passed", "fail": "failed", "error": "errors", "skip": "skipped"}[status]] += 1
+        suite[STATUS_COUNTS[status]] += 1
+        if result["kind"] == "detection" and status != "skip" and status != "error":
+            # RFC 0034 gate F4: how many bugs stop, and no twin stops.
+            detection = suite.setdefault("detection", {
+                "cases": 0, "stops": 0, "compileStops": 0, "runStops": 0, "knownMisses": 0,
+                "knownMissesStopping": [], "misses": [], "twinsClean": 0, "asanRan": 0, "asanDetected": 0})
+            d = result["detection"]
+            detection["cases"] += 1
+            detection["stops"] += d["stop"] is not None
+            detection["compileStops"] += d["stop"] == "compile"
+            detection["runStops"] += d["stop"] == "run"
+            detection["knownMisses"] += d["knownMiss"]
+            if d["flip"]:
+                detection["knownMissesStopping"].append(result["case"])
+            if d["stop"] is None:
+                detection["misses"].append(result["case"])
+            detection["twinsClean"] += d["twinClean"]
+            if d["asan"] is not None:
+                detection["asanRan"] += 1
+                detection["asanDetected"] += bool(d["asan"])
         if result["kind"] == "bug":
             suite["bugCases"] += 1
             suite["bugCasesPassed"] += status == "pass"
@@ -1764,23 +2012,34 @@ def summarize(results: list[dict]) -> dict:
             suite["pinsSatisfied"] += bug["satisfiedBy"] is not None
             suite["pinsReported"] += bool(bug["reported"])
     total = {k: sum(s[k] for s in suites.values()) for k in
-             ("cases", "passed", "failed", "errors", "skipped")}
+             ("cases", "passed", "failed", "errors", "skipped", "xfailed", "xpassed")}
+    stops = [s["detection"] for s in suites.values() if "detection" in s]
+    if stops:
+        total["detectionCases"] = sum(d["cases"] for d in stops)
+        total["detectionStops"] = sum(d["stops"] for d in stops)
     return {"total": total, "suites": suites}
 
 
 def print_result(result: dict, verbose: bool) -> None:
-    label = {"pass": "PASS", "fail": "FAIL", "error": "ERROR", "skip": "SKIP"}[result["status"]]
+    label = STATUS_LABELS[result["status"]]
     extra = []
     if result.get("legacyClass"):
         extra.append(result["legacyClass"])
     elif result.get("class"):
         extra.append(result["class"])
     print(f"{label:5} {result['case']}" + (f"  [{', '.join(extra)}]" if extra else ""), flush=True)
-    for failure in result["failures"]:
-        print(f"      {failure}")
+    if result["status"] != "xfail" or verbose:
+        for failure in result["failures"]:
+            print(f"      {failure}")
     if verbose:
-        for note in result["notes"]:
-            print(f"      note: {note}")
+        notes = result["notes"]
+    elif result["status"] in ("xfail", "xpass"):
+        notes = result["notes"][:1]  # the XFAIL reason, or that the marker can go
+    else:
+        notes = [n for n in result["notes"] if n.startswith("known miss now stops")]
+    for note in notes:
+        print(f"      note: {note}")
+    if verbose:
         for command in result.get("commands", []):
             print(f"      $ {command}")
 
@@ -1795,6 +2054,8 @@ def print_summary(summary: dict, legacy: bool, compared: bool = False) -> None:
                          f"{suite['errors']} marker errors")
         if suite["skipped"]:
             parts.append(f"{suite['skipped']} {'excluded' if compared else 'skipped'}")
+        if suite["xfailed"] or suite["xpassed"]:
+            parts.append(f"{suite['xfailed']} expected failures, {suite['xpassed']} XFAIL cases passing now")
         if suite["bugCases"] and not compared:
             parts.append(f"bug cases {suite['bugCasesPassed']}/{suite['bugCases']}")
             parts.append(f"pins {suite['pinsSatisfied']}/{suite['pins']} satisfied, "
@@ -1802,6 +2063,17 @@ def print_summary(summary: dict, legacy: bool, compared: bool = False) -> None:
         if suite["cleanCases"] and not compared:
             parts.append(f"clean {suite['cleanPassed']}/{suite['cleanCases']}")
         print(f"{name}: " + "; ".join(parts))
+        if "detection" in suite:
+            d = suite["detection"]
+            line = (f"  detection: {d['stops']}/{d['cases']} bugs stop ({d['compileStops']} at compile time, "
+                    f"{d['runStops']} at run time); {d['knownMisses']} known misses, "
+                    f"{len(d['knownMissesStopping'])} of them stopping now; "
+                    f"{d['twinsClean']}/{d['cases']} fixed twins clean")
+            if d["asanRan"]:
+                line += f"; ASan reports {d['asanDetected']}/{d['asanRan']}"
+            print(line)
+            for case in d["knownMissesStopping"]:
+                print(f"    now stops (remove its MISS marker): {case}")
         if suite["bugCases"]:
             if legacy and "legacyClasses" in suite:
                 print("  v0.10.0 classes: " + ", ".join(
@@ -1811,7 +2083,9 @@ def print_summary(summary: dict, legacy: bool, compared: bool = False) -> None:
                                                 if suite["classes"][c]))
     total = summary["total"]
     print(f"total: {total['passed']}/{total['cases']} cases {verdict}, {total['failed']} "
-          f"{'differ' if compared else 'failed'}, {total['errors']} marker errors, {total['skipped']} skipped")
+          f"{'differ' if compared else 'failed'}, {total['errors']} marker errors, {total['skipped']} skipped"
+          + (f", {total['xfailed']} expected failures, {total['xpassed']} XFAIL cases passing now"
+             if total["xfailed"] or total["xpassed"] else ""))
 
 
 def default_build_dir() -> Path:
@@ -1855,6 +2129,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--lldb", action="store_true",
                         help="with --checks verify, ask lldb for the category of a trap that the "
                              "report-mode run also attributes to an unproven check")
+    parser.add_argument("--min-stops", type=int, metavar="N",
+                        help="fail unless at least N of the selected detection cases stop (RFC 0034 gate F4: "
+                             "--filter 'detection/**' --min-stops 54)")
     parser.add_argument("--verbose", "-v", action="store_true", help="print notes too")
     args = parser.parse_args(argv)
 
@@ -1926,7 +2203,8 @@ def main(argv: list[str] | None = None) -> int:
                     if args.verbose or result["status"] == "skip":
                         for note in result["notes"]:
                             print(f"      note: {note}")
-                elif result["status"] != "pass" or args.verbose:
+                elif result["status"] != "pass" or args.verbose or \
+                        (result.get("detection") or {}).get("flip"):
                     print_result(result, args.verbose)
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
@@ -1952,7 +2230,14 @@ def main(argv: list[str] | None = None) -> int:
         }
         args.json.parent.mkdir(parents=True, exist_ok=True)
         args.json.write_text(json.dumps(document, indent=2) + "\n")
-    return 0 if all(r["status"] in ("pass", "skip") for r in results) else 1
+    ok = all(r["status"] in PASSING_STATUSES for r in results)
+    if args.min_stops is not None:
+        stops = summary["total"].get("detectionStops", 0)
+        cases = summary["total"].get("detectionCases", 0)
+        verdict = "pass" if stops >= args.min_stops else "FAIL"
+        print(f"detection stops: {stops}/{cases} (at least {args.min_stops} wanted): {verdict}")
+        ok = ok and stops >= args.min_stops
+    return 0 if ok else 1
 
 
 if __name__ == "__main__":

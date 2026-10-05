@@ -43,7 +43,9 @@ static constexpr std::array<UnresolvedReason, UnresolvedReasonCount>
                          UnresolvedReason::RawCast,
                          UnresolvedReason::DanglingEscape,
                          UnresolvedReason::SecondOwner,
-                         UnresolvedReason::NoZeroInit};
+                         UnresolvedReason::NoZeroInit,
+                         UnresolvedReason::Unconfirmed,
+                         UnresolvedReason::Lowered};
 
 static constexpr std::array<TrustReason, TrustReasonCount> AllTrustReasons{
     TrustReason::Unsafe,         TrustReason::SystemApi,
@@ -169,6 +171,10 @@ std::string_view toString(UnresolvedReason reason) noexcept {
     return "second-owner";
   case UnresolvedReason::NoZeroInit:
     return "no-zero-init";
+  case UnresolvedReason::Unconfirmed:
+    return "unconfirmed";
+  case UnresolvedReason::Lowered:
+    return "lowered";
   }
   return "<invalid>";
 }
@@ -249,8 +255,6 @@ std::string_view toString(CheckTemplate kind) noexcept {
     return "disjoint";
   case CheckTemplate::Assert:
     return "assert";
-  case CheckTemplate::Violation:
-    return "violation";
   case CheckTemplate::Object:
     return "object";
   case CheckTemplate::Live:
@@ -368,8 +372,7 @@ std::optional<CheckTemplate> parseCheckTemplate(std::string_view text) {
       std::array<CheckTemplate, CheckTemplateCount>{
           CheckTemplate::Nonnull, CheckTemplate::Index, CheckTemplate::Span,
           CheckTemplate::Len, CheckTemplate::Disjoint, CheckTemplate::Assert,
-          CheckTemplate::Violation, CheckTemplate::Object, CheckTemplate::Live,
-          CheckTemplate::Release},
+          CheckTemplate::Object, CheckTemplate::Live, CheckTemplate::Release},
       text);
 }
 
@@ -437,6 +440,10 @@ std::string_view phraseTemplate(UnresolvedReason reason) noexcept {
     return "'<a>' and '<b>' may own the same object here";
   case UnresolvedReason::NoZeroInit:
     return "'<p>' may be uninitialised";
+  case UnresolvedReason::Unconfirmed:
+    return "the finding was not confirmed on a feasible path";
+  case UnresolvedReason::Lowered:
+    return "the violation was lowered and nothing checks it";
   }
   return "<invalid>";
 }
@@ -494,6 +501,10 @@ std::string reasonPhrase(UnresolvedReason reason,
            " may own the same object here";
   case UnresolvedReason::NoZeroInit:
     return pointer + " may be uninitialised";
+  case UnresolvedReason::Unconfirmed:
+    return "the finding was not confirmed on a feasible path";
+  case UnresolvedReason::Lowered:
+    return "the violation was lowered and nothing checks it";
   }
   return "<invalid>";
 }

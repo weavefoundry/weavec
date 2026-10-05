@@ -26,6 +26,7 @@
 #include "clang/Basic/SourceManager.h"
 
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/ScopeExit.h"
 #include "llvm/Support/CheckedArithmetic.h"
 
 #include <functional>
@@ -1160,6 +1161,12 @@ void KindInferenceState::inferMustAccess() {
     }
     if (params.empty())
       continue;
+    // (Built for this definition and dropped after it: a unit's every CFG
+    // at once is more than the unit's AST.)
+    const llvm::scope_exit dropped([&] {
+      cfgs.erase(definition);
+      parentMaps.erase(definition);
+    });
     const FunctionCfg *cfg = cfgOf(*definition);
     if (cfg == nullptr)
       continue;

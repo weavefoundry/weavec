@@ -4,7 +4,7 @@
 void run(size_t n) {
   if (!n) return;
   char local[n];
-  local[n] = 0; // BUG: out-of-bounds // TRAP: index
+  local[n] = 0; // BUG: out-of-bounds // TRAP: object
 }
 // Driver (RFC 0030 section 17.2): executes the defect so the runtime oracle can observe the check.
 int main(void) { run(4); return 0; }

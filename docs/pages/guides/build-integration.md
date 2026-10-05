@@ -81,7 +81,7 @@ Units compiled with and without the runtime can be linked together; the program 
 
 Compiling `buffer.c` produces both `buffer.o` and `buffer.o.weavec`, the unit's WeaveC record. Keep the record beside its object. At link time, WeaveC reads the records, checks each unit's declarations and requirements against the other units and composes the program ledger from their rows, without parsing or analysing any unit again; `-fweavec-link=analyze` also refines the temporal outcomes with the whole program in view (see [whole-program analysis](/guides/whole-program/#analyze-during-linking)). A record says whether its unit was compiled with the runtime.
 
-A link input without a valid record is named in one `unanalyzed-input` warning per link: objects from another compiler, static archives, shared libraries outside the platform's own, and objects whose record is stale (an incompatible record format, or an object that changed after its record was written). Calls into those inputs are trusted, and the ledger lists them. Rebuild objects whose record is stale. Static archives and shared libraries do not carry records yet.
+A link input without a valid record is named in one `unanalyzed-input` warning per link: objects from another compiler, static archives, shared libraries outside the platform's own, and objects whose record is stale (an incompatible record format, or an object that changed after its record was written). Calls into those inputs are trusted, and the ledger lists them. Rebuild objects whose record is stale. Static archives and shared libraries do not carry records yet; an archive whose objects `weavec-cc` built is named in a note rather than the warning, since its code carries its own checks and guards.
 
 ## Add checks to CI
 

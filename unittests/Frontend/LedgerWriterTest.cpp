@@ -113,12 +113,12 @@ TEST(LedgerWriter, GoldenUnitLedger) {
       R"("may-released":0,"may-moved":0,"may-alias-released":0,"may-invalid-release":0,)"
       R"("may-mismatched-release":0,"may-dangle":0,"may-conflict":0,"unknown-callee":1,)"
       R"("callback":0,"setjmp":0,"budget":0,"unanalysed":0,"raw-cast":0,)"
-      R"("dangling-escape":0,"second-owner":0,"no-zero-init":0},)"
+      R"("dangling-escape":0,"second-owner":0,"no-zero-init":0,"unconfirmed":0,"lowered":0},)"
       R"("guardedReasons":{"unknown-extent":0,"unknown-index":0,"inexpressible":0,)"
       R"("may-released":0,"may-moved":0,"may-alias-released":0,"may-invalid-release":0,)"
       R"("may-mismatched-release":0,"may-dangle":0,"may-conflict":0,"unknown-callee":0,)"
       R"("callback":0,"setjmp":0,"budget":0,"unanalysed":0,"raw-cast":0,)"
-      R"("dangling-escape":0,"second-owner":0,"no-zero-init":0},)"
+      R"("dangling-escape":0,"second-owner":0,"no-zero-init":0,"unconfirmed":0,"lowered":0},)"
       R"("trustedReasons":{"unsafe":0,"system-api":0,"library-spec":0,)"
       R"("extern-contract":0,"caller-contract":0,"external-unit":0,"concurrency":0},)"
       R"("unresolvedShare":{"spatialNull":0,"spatial":0,"null":0,"temporal":1},)"
@@ -128,7 +128,7 @@ TEST(LedgerWriter, GoldenUnitLedger) {
       R"({"schema":"weavec-ledger","version":2,)"
       R"("producer":{"name":"weavec","version":"0.11.0","revision":"abc1234"},)"
       R"("scope":"unit","root":"/proj",)"
-      R"("config":{"checks":"trap","runtime":false,"zeroInit":true,"require":"none","budget":50000},)"
+      R"("config":{"checks":"trap","runtime":false,"zeroInit":true,"require":"none","budget":20000000},)"
       R"("summary":{)" +
       counts +
       R"(},"units":[{"source":"src/cJSON.c","object":"build/cJSON.o",)"
@@ -336,7 +336,7 @@ TEST(LedgerWriter, ProgramLedgerSnippets) {
   expectSnippet(R"("scope":"program")");
   expectSnippet(
       R"("config":{"checks":"verify","runtime":false,"zeroInit":true,)"
-      R"("require":"none","budget":50000})");
+      R"("require":"none","budget":20000000})");
   expectSnippet(
       R"("assumptions":{"A1":{"exportedRequirements":14,"verified":11,)"
       R"("reliesOnSingle":40,"unverifiedCallers":3},"A3":{)"
@@ -409,14 +409,14 @@ TEST(LedgerWriter, SarifStructure) {
   EXPECT_EQ(driver.getString("name"), "weavec");
   EXPECT_EQ(driver.getString("semanticVersion"), "0.11.0");
   const llvm::json::Array &rules = *driver.getArray("rules");
-  // Two diagnostic ids, 19 unresolved reasons, the same 19 for guarded
+  // Two diagnostic ids, 21 unresolved reasons, the same 21 for guarded
   // facets (RFC 0032) and 7 trusted reasons.
-  ASSERT_EQ(rules.size(), 2U + 19U + 19U + 7U);
+  ASSERT_EQ(rules.size(), 2U + 21U + 21U + 7U);
   EXPECT_EQ(objectAt(rules[0]).getString("id"), "invalid-annotation");
   EXPECT_EQ(objectAt(rules[1]).getString("id"), "use-after-free");
   EXPECT_EQ(objectAt(rules[2]).getString("id"), "unresolved/unknown-extent");
-  EXPECT_EQ(objectAt(rules[21]).getString("id"), "guarded/unknown-extent");
-  EXPECT_EQ(objectAt(rules[40]).getString("id"), "trusted/unsafe");
+  EXPECT_EQ(objectAt(rules[23]).getString("id"), "guarded/unknown-extent");
+  EXPECT_EQ(objectAt(rules[44]).getString("id"), "trusted/unsafe");
   EXPECT_EQ(run.getObject("originalUriBaseIds")
                 ->getObject("SRCROOT")
                 ->getString("uri"),

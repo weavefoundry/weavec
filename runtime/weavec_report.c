@@ -188,7 +188,7 @@ __attribute__((destructor)) static void printStats(void) {
       "allocations",      "releases",      "recycled slots",
       "huge blocks",      "lookups",       "heap lookups",
       "stack lookups",    "global lookups", "untracked lookups",
-      "range requests",   "ranges kept",   "stack objects entered"};
+      "slow guards",      "stack objects entered"};
   const char *value = getenv("WEAVEC_RT_STATS");
   int i;
   /* (The owner's counters count every image's work.) */

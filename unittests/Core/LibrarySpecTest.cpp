@@ -173,6 +173,8 @@ static std::string renderParam(const LibraryParam &param) {
     text += " finis=" + param.family;
     break;
   }
+  if (param.range)
+    text += " range=" + param.range->str();
   if (param.callback)
     text += " " + renderCallback(*param.callback);
   if (param.out)
@@ -219,6 +221,11 @@ static std::string renderClauses(const LibraryEntry &entry) {
                                       : "scanf=") +
                       std::to_string(entry.format->format) + "/" +
                       std::to_string(entry.format->first));
+  if (entry.wrapper)
+    clauses.push_back("wrapper=" + entry.wrapper->name +
+                      (entry.wrapper->room ? "/room" : "") +
+                      (entry.wrapper->source ? "/source" : "") +
+                      (entry.wrapper->disjoint ? "/disjoint" : ""));
   for (const LibraryChk &alias : entry.chk) {
     std::string text = "chk=" + alias.name + ":";
     for (std::size_t i = 0; i < alias.argumentOf.size(); ++i)
@@ -394,6 +401,8 @@ TEST(LibrarySpecTest, ParserErrorsNameTheLineAndTheProblem) {
        "LibrarySpec.txt:2: 'f': unknown parameter flag 'bytez'"},
       {"header a.h;\nf (r:null-ok:null-if-zero(a1), int) -> int;",
        "conflicting null flags ('null-if-zero')"},
+      {"header a.h;\nf (none:range(a1), int) -> int;",
+       "parameter 0: 'range' needs 'release'"},
       {"header a.h;\nf (w:bytes(a3), int) -> int;",
        "'a3' in parameter 0 names a missing parameter"},
       {"header a.h;\nf (w:bytes(fmtlen(a1)), r:str, ...) -> int;",
@@ -405,6 +414,17 @@ TEST(LibrarySpecTest, ParserErrorsNameTheLineAndTheProblem) {
       {"header a.h;\nf () -> int exits;", "'exits' needs a 'noreturn' result"},
       {"header a.h;\nf () -> void returns-twice;",
        "'returns-twice' needs an 'int' result"},
+      // RFC 0034 §5.2: a wrapper computes what the row states.
+      {"header a.h;\nf (w:bytes(a1), int) -> void wrapper(f,disjoint);",
+       "'wrapper(…, disjoint)' needs a 'disjoint' clause"},
+      {"header a.h;\nf (int, r:str) -> void wrapper(f,room);",
+       "'wrapper(…, room)' needs bytes behind argument 0"},
+      {"header a.h;\nf (w:bytes(a1), int) -> void wrapper(f,room,room);",
+       "expected 'room', 'source' or 'disjoint', once each"},
+      {"header a.h;\nf (w:bytes(a2), int, int) -> void wrapper(f,source);",
+       "'wrapper(…, source)' needs bytes behind argument 1"},
+      {"header a.h;\nf (w:bytes(a1), int) -> void wrapper(f) wrapper(f);",
+       "duplicate clause 'wrapper'"},
       {"header a.h;\nf () -> int", "expected ';' at the end of the entry"},
       {"header a.h;\nf () -> int; g () -> int;",
        "unexpected text after ';' (one entry per line)"},
@@ -741,6 +761,17 @@ TEST(LibrarySpecTest, AccessorsDescribeTheRow) {
   EXPECT_FALSE(row("exit").knownToReturn());
   EXPECT_FALSE(row("longjmp").knownToReturn());
   EXPECT_TRUE(row("strlen").knownToReturn());
+  // RFC 0034 §6.3: a `none` argument without an effect is used as a value.
+  EXPECT_TRUE(row("mmap").usesValueOnly(0));
+  EXPECT_TRUE(row("mprotect").usesValueOnly(0));
+  EXPECT_FALSE(row("mmap").usesValueOnly(1));
+  EXPECT_FALSE(row("munmap").usesValueOnly(0));
+  EXPECT_FALSE(row("free").usesValueOnly(0));
+  EXPECT_FALSE(row("memcpy").usesValueOnly(0));
+  EXPECT_FALSE(row("pthread_create").usesValueOnly(3));
+  EXPECT_FALSE(row("tfind").usesValueOnly(0));
+  EXPECT_TRUE(row("munmap").params[0].range.has_value());
+  EXPECT_FALSE(row("free").params[0].range.has_value());
   EXPECT_TRUE(row("getenv").trustsLibrarySpec());
   EXPECT_TRUE(row("strtok").trustsLibrarySpec());
   EXPECT_TRUE(row("tmpnam").trustsLibrarySpec());
@@ -767,7 +798,8 @@ TEST(LibrarySpecTest, AccessorsDescribeTheRow) {
 // BSD and macOS manuals, in the notation of `renderParam`, `renderValue` and
 // `renderClauses`: parameters are `int`, `other`, `fn[?]` or an access (`none`,
 // `R`, `W`, `RW`) with `str`, `bytes=`, `count=`, `nullable[-if=]`, an effect
-// (`releases=`, `reallocs=`, `retains=`, `escapes`, `inits=`, `finis=`), a
+// (`releases=` [`range=`], `reallocs=`, `retains=`, `escapes`, `inits=`,
+// `finis=`), a
 // callback (`sync=`, `entry=`, `atexit`) and `out=(…)`; results name their
 // kind and always their nullability.
 
@@ -841,11 +873,13 @@ static constexpr auto HeapExpectations = std::to_array<Expectation>({
 static constexpr auto StringExpectations = std::to_array<Expectation>({
     {"memcpy", "W bytes=a2 nullable-if=a2, R bytes=a2 nullable-if=a2, int",
      "arg=0 nonnull",
-     "disjoint=0/1/a2 copies=0/1/a2 chk=__builtin___memcpy_chk:0/1/2/-1 "
+     "disjoint=0/1/a2 copies=0/1/a2 wrapper=memcpy/room/source/disjoint "
+     "chk=__builtin___memcpy_chk:0/1/2/-1 "
      "chk=__memcpy_chk:0/1/2/-1"},
     {"memmove", "W bytes=a2 nullable-if=a2, R bytes=a2 nullable-if=a2, int",
      "arg=0 nonnull",
-     "copies=0/1/a2 chk=__builtin___memmove_chk:0/1/2/-1 "
+     "copies=0/1/a2 wrapper=memmove/room/source "
+     "chk=__builtin___memmove_chk:0/1/2/-1 "
      "chk=__memmove_chk:0/1/2/-1"},
     {"memset", "W bytes=a2 nullable-if=a2, int, int", "arg=0 nonnull",
      "fills=0/a1/a2 chk=__builtin___memset_chk:0/1/2/-1 "
@@ -873,7 +907,8 @@ static constexpr auto StringExpectations = std::to_array<Expectation>({
      "chk=__builtin___memccpy_chk:0/1/2/3/-1"},
     {"strcpy", "W bytes=strlen(a1)+1, R str", "arg=0 nonnull",
      "disjoint=0/1/strlen(a1)+1 writes-str=0/strlen(a1) "
-     "chk=__builtin___strcpy_chk:0/1/-1 chk=__strcpy_chk:0/1/-1"},
+     "wrapper=strcpy/room/disjoint chk=__builtin___strcpy_chk:0/1/-1 "
+     "chk=__strcpy_chk:0/1/-1"},
     {"strncpy",
      "W bytes=a2 nullable-if=a2, R bytes=min(a2,strlen(a1)+1) "
      "nullable-if=a2, int",
@@ -883,7 +918,8 @@ static constexpr auto StringExpectations = std::to_array<Expectation>({
     {"stpcpy", "W bytes=strlen(a1)+1, R str",
      "interior=0 nonnull offset=strlen(a1)",
      "disjoint=0/1/strlen(a1)+1 writes-str=0/strlen(a1) "
-     "chk=__builtin___stpcpy_chk:0/1/-1 chk=__stpcpy_chk:0/1/-1"},
+     "wrapper=stpcpy/room/disjoint chk=__builtin___stpcpy_chk:0/1/-1 "
+     "chk=__stpcpy_chk:0/1/-1"},
     {"stpncpy",
      "W bytes=a2 nullable-if=a2, R bytes=min(a2,strlen(a1)+1) nullable-if=a2, "
      "int",
@@ -892,7 +928,7 @@ static constexpr auto StringExpectations = std::to_array<Expectation>({
      "chk=__builtin___stpncpy_chk:0/1/2/-1 chk=__stpncpy_chk:0/1/2/-1"},
     {"strcat", "RW str bytes=strlen(a0)+strlen(a1)+1, R str", "arg=0 nonnull",
      "disjoint=0/1/strlen(a0)+strlen(a1)+1 "
-     "writes-str=0/strlen(a0)+strlen(a1) "
+     "writes-str=0/strlen(a0)+strlen(a1) wrapper=strcat/room "
      "chk=__builtin___strcat_chk:0/1/-1 chk=__strcat_chk:0/1/-1"},
     {"strncat",
      "RW str bytes=strlen(a0)+min(a2,strlen(a1))+1, "
@@ -1036,7 +1072,7 @@ static constexpr auto StdioExpectations = std::to_array<Expectation>({
     {"dprintf", "int, R str, ...", "int",
      "printf=1/2 chk=__dprintf_chk:0/-1/1/2"},
     {"sprintf", "W bytes=fmtlen(a1)+1, R str, ...", "int value=fmtlen(a1)",
-     "writes-str=0/fmtlen(a1) printf=1/2 "
+     "writes-str=0/fmtlen(a1) printf=1/2 wrapper=sprintf/room "
      "chk=__builtin___sprintf_chk:0/-1/-1/1/2 "
      "chk=__sprintf_chk:0/-1/-1/1/2"},
     {"snprintf", "W bytes=a1 nullable-if=a1, int, R str, ...",
@@ -1052,7 +1088,7 @@ static constexpr auto StdioExpectations = std::to_array<Expectation>({
     {"vdprintf", "int, R str, other", "int",
      "printf=1/2 chk=__vdprintf_chk:0/-1/1/2"},
     {"vsprintf", "W bytes=fmtlen(a1)+1, R str, other", "int value=fmtlen(a1)",
-     "writes-str=0/fmtlen(a1) printf=1/2 "
+     "writes-str=0/fmtlen(a1) printf=1/2 wrapper=vsprintf/room "
      "chk=__builtin___vsprintf_chk:0/-1/-1/1/2 "
      "chk=__vsprintf_chk:0/-1/-1/1/2"},
     {"vsnprintf", "W bytes=a1 nullable-if=a1, int, R str, other",
@@ -1349,7 +1385,7 @@ static constexpr auto SystemExpectations = std::to_array<Expectation>({
     {"timer_delete", "none nullable", "int", ""},
     {"mmap", "none nullable, int, int, int, int, int",
      "fresh=munmap nonnull extent=a1", ""},
-    {"munmap", "none nullable releases=munmap, int", "int", ""},
+    {"munmap", "none nullable releases=munmap range=a1, int", "int", ""},
     {"mprotect", "none nullable, int, int", "int", ""},
     {"msync", "none nullable, int, int", "int", ""},
     {"madvise", "none nullable, int, int", "int", ""},

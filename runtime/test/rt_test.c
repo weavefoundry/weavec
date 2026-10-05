@@ -423,6 +423,75 @@ static void testStack(void) {
   __weavec_rt_stack_leave(other, frame);
 }
 
+/* RFC 0034, section 4: an object off a granule (a parameter's storage) next
+ * to one on a granule. Neither's shadow may hide the other's. */
+static void testMixedNeighbours(void) {
+  char area[64] __attribute__((aligned(16))) = {0};
+  char *const exact = area + 16;
+  char *const mixed = area + 8;
+  void *frame = __builtin_frame_address(0);
+  unsigned g;
+  /* The exact one first, then the mixed one ending where it starts: the
+   * exact one's first granule stays its own, and its leave clears it. */
+  __weavec_rt_stack_enter(exact, 32, frame, 0);
+  __weavec_rt_stack_enter(mixed, 8, frame, 0);
+  CHECK(guardByte(exact, 0) == 0);
+  CHECK(guardByte(exact, 31) == 0);
+  CHECK(guardByte(mixed, 7) == 0);
+  __weavec_rt_stack_leave(mixed, frame);
+  __weavec_rt_stack_leave(exact, frame);
+  if (weavecRtShadowReady())
+    for (g = 1; g < 4; ++g)
+      CHECK(!weavecRtIsObjectByte(*weavecRtShadowOf((uintptr_t)area + 16 * g)));
+  /* The mixed one first, then an exact one sharing its last granule: the
+   * granule stays mixed, so the mixed one's bytes stay reachable. */
+  __weavec_rt_stack_enter(area + 8, 8, frame, 0);
+  __weavec_rt_stack_enter(area, 8, frame, 0);
+  CHECK(guardByte(area + 8, 0) == 0);
+  CHECK(guardByte(area + 8, 7) == 0);
+  CHECK(guardByte(area, 7) == 0);
+  __weavec_rt_stack_leave(area + 8, frame);
+  __weavec_rt_stack_leave(area, frame);
+}
+
+/* Clearing a large range (a thread's whole stack below a `setjmp`) maps
+ * the shadow's whole pages afresh and writes the ends. */
+static void testShadowClear(void) {
+  static char span[4 << 20] __attribute__((aligned(16)));
+  const uintptr_t low = (uintptr_t)span + 8, high = (uintptr_t)span + sizeof span - 8;
+  uintptr_t a;
+  if (!weavecRtShadowReady())
+    return;
+  for (a = low & ~(uintptr_t)15; a < high; a += 4096)
+    *weavecRtShadowOf(a) = 0x41;
+  *weavecRtShadowOf(low) = 0x41;
+  *weavecRtShadowOf(high - 1) = 0x41;
+  weavecRtShadowClear(low, high);
+  for (a = low & ~(uintptr_t)15; a < high; a += 4096)
+    CHECK(*weavecRtShadowOf(a) == 0);
+  CHECK(*weavecRtShadowOf(low) == 0);
+  CHECK(*weavecRtShadowOf(high - 1) == 0);
+}
+
+/* A large exactly encoded object: its runs are logarithmic, so a lookup
+ * anywhere in it finds its start and end, and a guard from its start to
+ * its far end passes. */
+static void testLargeObject(void) {
+  static char big[(1 << 20) + 24] __attribute__((aligned(16)));
+  struct __weavec_rt_found found;
+  if (!weavecRtShadowReady())
+    return;
+  weavecRtShadowObject((uintptr_t)big, sizeof big, 0);
+  found = __weavec_rt_find(big + 700001);
+  CHECK(found.state == WeavecRtTrackedLive);
+  CHECK(found.base == (uintptr_t)big);
+  CHECK(found.size == sizeof big);
+  CHECK(guardByte(big, 0) == 0);
+  CHECK(guardByte(big, (long long)sizeof big - 1) == 0);
+  CHECK(guardByte(big, (long long)sizeof big) != 0);
+  weavecRtShadowClear((uintptr_t)big, (uintptr_t)big + sizeof big);
+}
+
 static jmp_buf jump;
 
 static __attribute__((noinline)) void jumpsOut(void) {
@@ -507,6 +576,28 @@ static void testStrings(void) {
   CHECK(__weavec_rt_string(p) != 0);
 }
 
+/* RFC 0034, section 5.2: the room a checked sprintf may write. */
+static void testRoom(void) {
+  char *p = (char *)opaque(malloc(24));
+  char buffer[16] = {0};
+  void *frame = __builtin_frame_address(0);
+  int untracked = 0;
+  CHECK(__weavec_rt_room(p) == 24);
+  CHECK(__weavec_rt_room(p + 10) == 14);
+  CHECK(__weavec_rt_room(p + 23) == 1);
+  /* One past the end has no room, whatever lies there. */
+  CHECK(__weavec_rt_room(p + 24) == 0 ||
+        __weavec_rt_find(p + 24).base == (uintptr_t)p + 24);
+  free(p);
+  CHECK(__weavec_rt_room(p) == 0);
+  CHECK(__weavec_rt_room(&untracked) == ~0ULL);
+  CHECK(__weavec_rt_room(NULL) == ~0ULL);
+  __weavec_rt_stack_enter(buffer, sizeof buffer, frame, 0);
+  CHECK(__weavec_rt_room(buffer + 4) == 12);
+  __weavec_rt_stack_leave(buffer, frame);
+  CHECK(__weavec_rt_room(buffer + 4) == ~0ULL);
+}
+
 /*===-- Threads and fork ----------------------------------------------------===*/
 
 static void *worker(void *argument) {
@@ -581,10 +672,14 @@ static const struct {
     {"huge", testHuge},
     {"foreign", testForeign},
     {"stack", testStack},
+    {"mixed-neighbours", testMixedNeighbours},
+    {"shadow-clear", testShadowClear},
+    {"large-object", testLargeObject},
     {"longjmp", testLongjmp},
     {"deep-stack", testDeepStack},
     {"globals", testGlobals},
     {"strings", testStrings},
+    {"room", testRoom},
     {"threads", testThreads},
     {"fork", testFork},
     /* These run in a copy of the program with no quarantine. */

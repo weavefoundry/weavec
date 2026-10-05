@@ -650,23 +650,6 @@ static bool isCallLike(core::SiteKind kind) {
          kind == core::SiteKind::Call;
 }
 
-/// The unconditional trap of a lowered violation (§3.4): before the
-/// operation.
-static Entry violationGuard(const SiteInfo &site, core::Facet facet) {
-  Entry::Template kind = Entry::Template::Assert;
-  if (facet == core::Facet::Null)
-    kind = Entry::Template::Nonnull;
-  else if (facet == core::Facet::Spatial)
-    kind = Entry::Template::Index;
-  Entry::Placement placement = Entry::Placement::WrapOperand;
-  if (site.kind == core::SiteKind::Assume)
-    placement = Entry::Placement::ReplaceCall;
-  else if (isCallLike(site.kind) ||
-           (site.kind == core::SiteKind::Raw && site.library.has_value()))
-    placement = Entry::Placement::BeforeCall;
-  return makeEntry(kind, Entry::Form::Violation, placement);
-}
-
 namespace {
 
 /// Plans the checks of one site.
@@ -1060,6 +1043,7 @@ CheckPlanner::accessBytes(const SiteInfo &site) const {
 static bool guardableReason(core::UnresolvedReason reason) {
   switch (reason) {
   case core::UnresolvedReason::NoZeroInit:
+  case core::UnresolvedReason::Lowered:
   case core::UnresolvedReason::SecondOwner:
   case core::UnresolvedReason::MayConflict:
   case core::UnresolvedReason::MayDangle:
@@ -1098,6 +1082,37 @@ static bool releasesHeap(const SiteInfo &site) {
                 param.effect == core::LibraryParam::Effect::Realloc) &&
                param.family == core::HeapFamily;
       });
+}
+
+/// RFC 0034 §5.2: the check the library row's wrapper makes for a spatial
+/// requirement record of a call that is still to be guarded, when the
+/// wrapper computes it and no guard of the record's own (`guarded`) states
+/// it: `object` for the bytes behind argument 0 (also when the only guard
+/// would check a format's least output, a lower bound), `disjoint` for the
+/// row's overlap clause.
+static std::optional<core::CheckPlanEntry::Template>
+wrapperCheck(const SiteInfo &site, const core::Requirement &requirement,
+             const CheckWitness *witness, bool guarded) {
+  using Template = core::CheckPlanEntry::Template;
+  if (site.kind != core::SiteKind::LibCall || !site.library ||
+      site.library->entry == nullptr || !site.library->entry->wrapper ||
+      !requirement.argument)
+    return std::nullopt;
+  const core::LibraryEntry &entry = *site.library->entry;
+  if (witness != nullptr && witness->shape == CheckWitness::Shape::Disjoint)
+    return entry.wrapper->disjoint && !guarded
+               ? std::optional(Template::Disjoint)
+               : std::nullopt;
+  if ((witness != nullptr && witness->string) || (guarded && !entry.format))
+    return std::nullopt;
+  const int destination = site.library->callArgument(0);
+  const int source = site.library->callArgument(1);
+  if ((entry.wrapper->room && destination >= 0 &&
+       std::cmp_equal(*requirement.argument, destination)) ||
+      (entry.wrapper->source && source >= 0 &&
+       std::cmp_equal(*requirement.argument, source)))
+    return Template::Object;
+  return std::nullopt;
 }
 
 void CheckPlanner::planGuards(const SiteInfo &site, core::Site &row,
@@ -1278,16 +1293,15 @@ void CheckPlanner::planGuards(const SiteInfo &site, core::Site &row,
             witness = &candidate;
       // A requirement that binds only under a guard term has no guard yet:
       // the helpers take no condition.
-      if ((!isUnresolvedForGuard(requirement.decision) &&
-           !loweredRequirement) ||
-          witness == nullptr || !witness->argument || witness->guard ||
+      const bool guardable =
+          (isUnresolvedForGuard(requirement.decision) || loweredRequirement) &&
+          (witness == nullptr || !witness->guard);
+      std::optional<Entry> entry;
+      if (!guardable || witness == nullptr || !witness->argument ||
           *witness->argument >= call->getNumArgs() ||
           !call->getArg(*witness->argument)->getType()->isPointerType()) {
-        left = true;
-        continue;
-      }
-      std::optional<Entry> entry;
-      if (witness->shape == CheckWitness::Shape::Disjoint) {
+        // Nothing to guard here; the row's wrapper may still compute it.
+      } else if (witness->shape == CheckWitness::Shape::Disjoint) {
         // An overlap check whose length is a string's: the static check
         // had no bound to read it with; the guard reads it inside the
         // string's own object.
@@ -1334,6 +1348,24 @@ void CheckPlanner::planGuards(const SiteInfo &site, core::Site &row,
                               static_cast<std::uint8_t>(*length));
         }
       }
+      // RFC 0034 §5.2: what no guard states, or states only as a lower
+      // bound, the row's checked wrapper computes at run time. A lowered
+      // violation keeps what RFC 0033 (V) gives it.
+      const std::optional<Entry::Template> wrapped =
+          guardable && !loweredRequirement
+              ? wrapperCheck(site, requirement, witness, entry.has_value())
+              : std::nullopt;
+      // (A wrapper's `object` names the row's argument it checks: 0 the
+      // destination's room, 1 a copy's source.)
+      if (wrapped)
+        entry = makeEntry(
+            *wrapped, Entry::Form::Wrapper, Entry::Placement::ReplaceCall, {},
+            static_cast<std::uint8_t>(
+                *wrapped == Entry::Template::Object && requirement.argument &&
+                        std::cmp_equal(*requirement.argument,
+                                       site.library->callArgument(1))
+                    ? 1
+                    : 0));
       if (!entry) {
         left = true;
         continue;
@@ -1345,7 +1377,9 @@ void CheckPlanner::planGuards(const SiteInfo &site, core::Site &row,
         requirement.decision = core::FacetDecision::guardedFor(
             *reason, std::move(requirement.decision.detail));
       }
-      if (witness->shape != CheckWitness::Shape::Disjoint)
+      if (wrapped == Entry::Template::Object)
+        covered.insert({*requirement.argument, false});
+      else if (!wrapped && witness->shape != CheckWitness::Shape::Disjoint)
         covered.insert({*witness->argument, false});
     }
     // The merged facet follows its records once none is left unresolved.
@@ -1449,15 +1483,9 @@ core::CheckPlan CheckPlanner::plan(core::UnitLedger &unit,
       SitePlanner planner(*this, site, handles);
       std::vector<Entry> planned;
       std::set<core::Facet> loweredFacets;
-      // RFC 0033 (V): a lowered violation the analysis decided from the
-      // program's own model of other code (a temporal fact, a callee's or a
-      // library row's requirement at a call) is guarded, so that it traps
-      // when it happens and a false one runs; one decided at the access
-      // from an exact extent traps whenever it is reached, as before.
-      const auto guardsLowered = [&](const SiteInfo &at, core::Facet facet) {
-        return options.runtime &&
-               (facet == core::Facet::Temporal || isCallLike(at.kind));
-      };
+      // RFC 0034 §6.4: a lowered violation gets the check its witness
+      // states, else the guard its facet would have as a possible finding,
+      // else nothing (`unresolved(lowered)`); never an unconditional trap.
 
       // Plans one record; returns false when it became unresolved.
       const auto planRecord = [&](core::Facet facet,
@@ -1499,19 +1527,10 @@ core::CheckPlan CheckPlanner::plan(core::UnitLedger &unit,
         // proven.
         if (verify)
           return true;
-        if (lowered && guardsLowered(site, facet)) {
-          // RFC 0033 (V): the guard pass guards it if it can; what it
-          // cannot traps unconditionally, below.
-          loweredFacets.insert(facet);
-          return true;
-        }
         if (lowered) {
-          Entry guard = violationGuard(site, facet);
-          guard.site = site.id;
-          guard.facet = facet;
-          guard.requirement = index.value_or(0);
-          check = core::facetCheck(guard);
-          planned.push_back(std::move(guard));
+          // The guard pass guards it if it can; below, what it cannot is
+          // unresolved.
+          loweredFacets.insert(facet);
           return true;
         }
         const bool downgraded =
@@ -1548,23 +1567,16 @@ core::CheckPlan CheckPlanner::plan(core::UnitLedger &unit,
         }
         if (worse)
           record->decide(*worse);
-        // §3.4: a violation of the facet itself (a definite error linked to
-        // it) that no requirement check guards still traps when lowered.
+        // A violation of the facet itself (a definite error linked to it)
+        // that no requirement check guards, lowered: the guard pass, below.
         if (record->outcome() == core::SiteOutcome::Violation &&
             options.lowered && options.lowered(site.id, facet) &&
             llvm::none_of(record->requirements,
                           [](const core::Requirement &requirement) {
                             return requirement.check.has_value();
                           })) {
-          if (guardsLowered(site, facet)) {
-            loweredFacets.insert(facet);
-            continue;
-          }
-          Entry guard = violationGuard(site, facet);
-          guard.site = site.id;
-          guard.facet = facet;
-          record->check = core::facetCheck(guard);
-          planned.push_back(std::move(guard));
+          loweredFacets.insert(facet);
+          continue;
         }
         if (record->outcome() == core::SiteOutcome::Checked && !record->check)
           for (const core::Requirement &requirement : record->requirements)
@@ -1579,8 +1591,8 @@ core::CheckPlan CheckPlanner::plan(core::UnitLedger &unit,
       if (options.runtime)
         planGuards(site, *ledgerSite, witnesses, handles, planned,
                    loweredFacets);
-      // §3.4: a lowered violation no check or guard serves traps before the
-      // operation.
+      // RFC 0034 §6.4: a lowered violation no check or guard serves is
+      // unresolved, and nothing is inserted for it.
       for (const core::Facet facet : loweredFacets) {
         core::FacetRecord *record = ledgerSite->facet(facet);
         if (record == nullptr)
@@ -1600,11 +1612,14 @@ core::CheckPlan CheckPlanner::plan(core::UnitLedger &unit,
                           });
         if (!unguardedRequirement && !unguardedFacet)
           continue;
-        Entry guard = violationGuard(site, facet);
-        guard.site = site.id;
-        guard.facet = facet;
-        record->check = core::facetCheck(guard);
-        planned.push_back(std::move(guard));
+        const auto unresolved =
+            core::FacetDecision::unresolvedFor(core::UnresolvedReason::Lowered);
+        for (core::Requirement &requirement : record->requirements)
+          if (requirement.decision.outcome == core::SiteOutcome::Violation &&
+              !requirement.check)
+            requirement.decision = unresolved;
+        // (Assigned: a violation outranks every other decision.)
+        record->decision = unresolved;
       }
 
       // §10.4: a span check traps on null, so it replaces the nonnull check

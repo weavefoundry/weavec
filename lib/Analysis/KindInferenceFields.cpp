@@ -18,6 +18,7 @@
 #include "clang/Basic/SourceManager.h"
 
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/ScopeExit.h"
 
 #include <cstdint>
 #include <functional>
@@ -283,6 +284,7 @@ void KindInferenceState::collectStoreGroups() {
     }
     if (designators.empty())
       continue;
+    const llvm::scope_exit dropped([&] { cfgs.erase(definition); });
     const FunctionCfg *cfg = cfgOf(*definition);
     if (cfg == nullptr)
       continue;

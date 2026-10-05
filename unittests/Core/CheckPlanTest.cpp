@@ -86,7 +86,6 @@ TEST(CheckPlan, Spellings) {
   EXPECT_EQ(toString(Template::Nonnull), "nonnull");
   EXPECT_EQ(toString(Template::Disjoint), "disjoint");
   EXPECT_EQ(toString(Form::IfNonZero), "if-non-zero");
-  EXPECT_EQ(toString(Form::Violation), "violation");
   EXPECT_EQ(toString(Placement::ReplaceAccess), "replace-access");
   EXPECT_EQ(toString(Placement::BeforeCall), "before-call");
 }
@@ -115,9 +114,6 @@ TEST(CheckPlan, OperandCountsFollowTheTemplates) {
       2U);
   EXPECT_EQ(operandCount(Template::Assert, Form::Plain, Placement::ReplaceCall),
             0U);
-  EXPECT_EQ(
-      operandCount(Template::Index, Form::Violation, Placement::BeforeCall),
-      0U);
   // Combinations §10.2–§10.4 give no meaning.
   EXPECT_FALSE(
       operandCount(Template::Assert, Form::Plain, Placement::WrapOperand));
@@ -129,6 +125,17 @@ TEST(CheckPlan, OperandCountsFollowTheTemplates) {
       operandCount(Template::Nonnull, Form::Function, Placement::WrapArgument));
   EXPECT_FALSE(
       operandCount(Template::Span, Form::Result, Placement::ReplaceAccess));
+  // RFC 0034 §5.2: a checked wrapper replaces the call and takes no term.
+  EXPECT_EQ(
+      operandCount(Template::Object, Form::Wrapper, Placement::ReplaceCall),
+      0U);
+  EXPECT_EQ(
+      operandCount(Template::Disjoint, Form::Wrapper, Placement::ReplaceCall),
+      0U);
+  EXPECT_FALSE(
+      operandCount(Template::Object, Form::Wrapper, Placement::WrapArgument));
+  EXPECT_FALSE(
+      operandCount(Template::Len, Form::Wrapper, Placement::ReplaceCall));
 }
 
 /// `char dst[16]; memcpy(dst, src, n);`: `len(n, 16)` before the call.
@@ -161,9 +168,6 @@ TEST(CheckPlan, LedgerTemplatesAndHelpers) {
   CheckPlanEntry entry = memcpyLen();
   EXPECT_EQ(ledgerTemplate(entry), CheckTemplate::Len);
   EXPECT_EQ(helperName(entry), "__weavec_chk_len");
-  entry.form = Form::Violation;
-  EXPECT_EQ(ledgerTemplate(entry), CheckTemplate::Violation);
-  EXPECT_EQ(helperName(entry), "");
 
   CheckPlanEntry nonnull{.kind = Template::Nonnull,
                          .form = Form::IfNonZero,
@@ -181,6 +185,15 @@ TEST(CheckPlan, LedgerTemplatesAndHelpers) {
   EXPECT_EQ(helperName(verify), "__weavec_prv_index");
   EXPECT_EQ(facetCheck(verify),
             (FacetCheck{.kind = CheckTemplate::Index, .proven = true}));
+  // RFC 0034 §5.2: the row names a wrapper's helper; the ledger keeps the
+  // template it checks.
+  CheckPlanEntry wrapper{.kind = Template::Disjoint,
+                         .form = Form::Wrapper,
+                         .placement = Placement::ReplaceCall};
+  EXPECT_TRUE(isWellFormed(wrapper));
+  EXPECT_EQ(helperName(wrapper), "");
+  EXPECT_EQ(ledgerTemplate(wrapper), CheckTemplate::Disjoint);
+  EXPECT_EQ(toString(Form::Wrapper), "wrapper");
 }
 
 TEST(CheckPlan, SortingIsCanonical) {

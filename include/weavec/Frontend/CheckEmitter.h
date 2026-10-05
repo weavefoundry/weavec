@@ -28,11 +28,11 @@
 //   ReplaceCall    assume   -> __weavec_chk_assert(c)
 //                  sprintf  -> __weavec_chk_len_r(snprintf(d, have, ...), have)
 //
-// On one operand `nonnull` is innermost, then `index`. The unconditional
-// trap of a lowered violation (§3.4) is `__weavec_chk_violation()`, before
-// the operation. In report mode every check helper also receives the site's
-// file, line and column; verify-mode checks of proven facets call the
-// `__weavec_prv_*` family.
+// On one operand `nonnull` is innermost, then `index`. In report mode every
+// check helper also receives the site's file, line and column; verify-mode
+// checks of proven facets call the `__weavec_prv_*` family. The `object` and
+// `live` guards are only declared (RFC 0034 §1.1): the backend expands them
+// (`GuardPasses.h`).
 //
 // Each rewrite runs inside a `Sema::TentativeAnalysisScope`, with an SFINAE
 // trap and a `DiagnosticErrorTrap`. It is rejected when the result is
@@ -86,12 +86,10 @@ struct CheckEmitterOptions {
   /// The helpers are then declared `extern` in the AST and come from
   /// `libweavec_chk.a`, whose report helpers carry a `_report` suffix.
   bool externalHelpers = false;
-  /// RFC 0032 §13: guards of a pointer the function uses more than once, or
-  /// in a loop, remember the range that passed in a cache in its frame.
-  bool rangeCaches = true;
   /// RFC 0033 *Implementation amendments* (build cost): a function with
   /// more plan entries than this calls the prelude's copies of the check
-  /// and guard helpers that are not inlined (`<name>_ool`).
+  /// helpers that are not inlined (`<name>_ool`). The guards the backend
+  /// expands (RFC 0034 §1) have no such copy.
   unsigned inlinedHelperCalls = 4096;
 };
 
@@ -110,14 +108,14 @@ struct HelperSignature {
     ConstCharPointer,
     CharPointerPointer,
     VoidPointerPointer,
-    /// `unsigned long long *`: a guard's range cache (RFC 0032 §13).
-    UnsignedLongLongPointer,
     /// `void (*)(void)`.
     FunctionPointer,
     /// `void *(*)(size_t, size_t)`.
     AlignedAllocator,
     /// `int (*)(void **, size_t, size_t)`.
     PosixMemalignFunction,
+    /// `va_list`.
+    VaList,
   };
   llvm::StringLiteral name;
   Type result = Type::Void;
@@ -126,6 +124,15 @@ struct HelperSignature {
                                 Type::Void, Type::Void, Type::Void};
   /// A check helper: report mode appends (file, line, column).
   bool reports = false;
+  /// RFC 0034 §1.1: a guard the prelude only declares, which the backend
+  /// expands and `libweavec_chk.a` defines; in report mode it is called by
+  /// its `_report` name.
+  bool declared = false;
+  /// RFC 0034 §5.2: a checked wrapper, which replaces a library call; it
+  /// has no copy that is not inlined.
+  bool wrapper = false;
+  /// The parameters are followed by `...` (after report mode's).
+  bool variadic = false;
 };
 
 class CheckEmitter {

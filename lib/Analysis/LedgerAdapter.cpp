@@ -27,7 +27,7 @@ LedgerAdapter::LedgerAdapter(clang::ASTContext &ctx, const SiteIndex &siteIndex,
                              Mode adapterMode)
     : context(ctx), sites(siteIndex), options(std::move(adapterOptions)),
       mode(adapterMode) {
-  if (mode == Mode::Authoritative)
+  if (mode == Mode::Authoritative || mode == Mode::Witness)
     unit.functions = sites.ledgers();
   unit.source = options.source;
   unit.target = options.target;
@@ -100,6 +100,12 @@ void LedgerAdapter::decide(const clang::Stmt &site, core::Facet facet,
                            std::optional<core::UnresolvedReason> unresolved,
                            std::optional<core::TrustReason> trusted,
                            std::string detail) {
+  if (observer)
+    observer(site, facet,
+             core::FacetDecision{.outcome = outcome,
+                                 .unresolved = unresolved,
+                                 .trusted = trusted,
+                                 .detail = detail});
   if (isDiscarding())
     return;
   decideAt(sites.find(site), site, facet,
@@ -113,6 +119,8 @@ void LedgerAdapter::decideAs(const clang::Stmt &site, core::SiteKind kind,
                              std::optional<core::Boundary> boundary,
                              core::Facet facet,
                              const core::FacetDecision &decision) {
+  if (observer)
+    observer(site, facet, decision);
   if (isDiscarding())
     return;
   decideAt(sites.find(site, kind, boundary), site, facet, decision);
@@ -331,7 +339,7 @@ void LedgerAdapter::report(core::Diagnostic diagnostic,
       fresh ? std::nullopt : seen->second;
   if (!fresh && !known)
     return;
-  if (mode == Mode::Collecting) {
+  if (mode == Mode::Collecting || mode == Mode::Witness) {
     emitted.push_back(std::move(diagnostic));
     return;
   }
@@ -362,6 +370,50 @@ void LedgerAdapter::report(core::Diagnostic diagnostic,
     return;
   }
   publish(std::move(diagnostic), certainty, id, facet);
+}
+
+void LedgerAdapter::unconfirm(const clang::Stmt &site, core::Facet facet,
+                              std::string_view id) {
+  if (isDiscarding())
+    return;
+  std::optional<core::SiteId> found = sites.find(site);
+  if (!found)
+    found = sites.findExit(site);
+  const auto unresolved =
+      core::FacetDecision::unresolvedFor(core::UnresolvedReason::Unconfirmed);
+  if (found)
+    if (core::FacetRecord *facetRecord = record(*found, facet);
+        facetRecord != nullptr &&
+        facetRecord->outcome() == core::SiteOutcome::Violation) {
+      // (Assigned: a violation outranks every other decision.)
+      facetRecord->decision = unresolved;
+      for (core::Requirement &requirement : facetRecord->requirements)
+        if (requirement.decision.outcome == core::SiteOutcome::Violation)
+          requirement.decision = unresolved;
+    }
+  const clang::SourceManager &sm = context.getSourceManager();
+  const auto inSite = [&](const core::SourceLocation &location) {
+    const clang::SourceLocation at = toClangLocation(location);
+    return at.isValid() &&
+           contains(sm, site.getSourceRange(), sm.getExpansionLoc(at));
+  };
+  for (core::Diagnostic &diagnostic : emitted) {
+    if (diagnostic.id != id || diagnostic.severity != core::Severity::Error ||
+        !inSite(diagnostic.location))
+      continue;
+    diagnostic.severity = core::Severity::Warning;
+    diagnostic.certainty = core::Certainty::Possible;
+    diagnostic.addNote("not confirmed on a feasible path", diagnostic.location);
+    for (core::LedgerDiagnostic &entry : ledgerDiagnostics)
+      if (entry.id == id && entry.location == diagnostic.location &&
+          entry.message == diagnostic.message) {
+        entry.severity = core::Severity::Warning;
+        entry.certainty = core::Certainty::Possible;
+        entry.notes.push_back(
+            core::LedgerNote{.message = "not confirmed on a feasible path",
+                             .location = diagnostic.location});
+      }
+  }
 }
 
 //===----------------------------------------------------------------------===//

@@ -834,12 +834,36 @@ Sym Heap::readElement(HeapState &state, ObjectId object, CellKey key,
       if (cell.isSummary()) {
         ElementIndex element = elementIndex(cell, offset);
         if (!element.at || *element.at)
-          value = mergeWeak(state, value, sym);
+          value = mergeWeak(state, value, asPointer(state, sym, hint));
       }
   }
   for (Sym sym : possible)
-    value = mergePossible(state, value, sym);
+    value = mergePossible(state, value, asPointer(state, sym, hint));
   return value;
+}
+
+Sym Heap::asPointer(HeapState &state, Sym sym, const SymInfo &hint) const {
+  // A cell of another kind that may be the one a pointer is read from (an
+  // integer member that an element's unbounded index may reach, or that a
+  // loop folded into the element ranges) is read through a cast (§4.2):
+  // any object, so the pointer keeps its own targets beside it (RFC 0034
+  // §6.3, a release in a loop left early).
+  const SymInfo &value = info(state, sym);
+  if (hint.type != SymInfo::Type::Pointer ||
+      (value.type != SymInfo::Type::Int &&
+       value.type != SymInfo::Type::Unknown))
+    return sym;
+  ObjectInfo unknown;
+  unknown.singular = false;
+  unknown.name = "an unknown object";
+  ObjectId any = table.intern(ObjectKey{.kind = ObjectKind::Unknown}, unknown);
+  ensure(state, any);
+  SymInfo cast;
+  cast.type = SymInfo::Type::Pointer;
+  cast.targets = {Target{.object = any}};
+  cast.null = PointerNull::Maybe;
+  cast.rawCast = true;
+  return fresh(state, std::move(cast));
 }
 
 Sym Heap::anyElement(HeapState &state, ObjectId object, CellKey key,
@@ -862,7 +886,7 @@ Sym Heap::anyElement(HeapState &state, ObjectId object, CellKey key,
         members.push_back(segment.value);
   }
   for (Sym sym : members)
-    value = mergeWeak(state, value, sym);
+    value = mergeWeak(state, value, asPointer(state, sym, hint));
   return value;
 }
 
@@ -1837,12 +1861,14 @@ SpatialVerdict Heap::spatialAt(const HeapState &state, Sym pointer,
 // Releases
 //===----------------------------------------------------------------------===//
 
-void Heap::release(HeapState &state, Sym pointer,
-                   const ReleaseRecord &record) const {
+void Heap::release(HeapState &state, Sym pointer, const ReleaseRecord &record,
+                   bool possibly) const {
   SymInfo &value = infoMut(state, pointer);
   value.release = record;
+  if (possibly)
+    value.release->allPaths = false;
   std::vector<Target> targets = value.targets;
-  bool single = targets.size() == 1 && !value.top;
+  bool single = targets.size() == 1 && !value.top && !possibly;
   for (const Target &target : targets) {
     ObjectState &object = state.objects.at(target.object);
     bool strong = single && table.info(target.object).singular;
@@ -2278,6 +2304,37 @@ void Heap::collect(HeapState &state, const std::vector<ObjectId> &roots,
 // Join and widening (§4.8)
 //===----------------------------------------------------------------------===//
 
+/// Whether `sym` (with attributes `info`) is known in `state` not to equal
+/// `c`: an excluded constant, or a zone bound that leaves it out.
+static bool excludes(const HeapState &state, Sym sym, const SymInfo &info,
+                     std::int64_t c) {
+  if ((c == 0 && info.nonZero) || std::ranges::binary_search(info.excluded, c))
+    return true;
+  auto lo = state.zone.lower(sym);
+  auto hi = state.zone.upper(sym);
+  return (lo && *lo > c) || (hi && *hi < c);
+}
+
+/// RFC 0034 §6.2: the constants a joined value is known not to equal are
+/// those both sides exclude (by their own sets or their zone bounds).
+static std::vector<std::int64_t> joinExcluded(const HeapState &left, Sym a,
+                                              const SymInfo &aInfo,
+                                              const HeapState &right, Sym b,
+                                              const SymInfo &bInfo) {
+  std::vector<std::int64_t> out;
+  for (std::int64_t c : aInfo.excluded)
+    if (excludes(right, b, bInfo, c))
+      out.push_back(c);
+  for (std::int64_t c : bInfo.excluded)
+    if (!std::ranges::binary_search(aInfo.excluded, c) &&
+        excludes(left, a, aInfo, c))
+      out.push_back(c);
+  std::ranges::sort(out);
+  if (out.size() > MaxExcluded)
+    out.resize(MaxExcluded);
+  return out;
+}
+
 namespace {
 /// The pairing of two states' symbols into result symbols.
 class Pairing {
@@ -2469,6 +2526,9 @@ private:
     if (joined.type == SymInfo::Type::Int) {
       joined.intType = a->intType ? a->intType : b->intType;
       joined.nonZero = a->nonZero && b->nonZero;
+      // (Nothing to do, the common case, when neither side excludes one.)
+      if (!a->excluded.empty() || !b->excluded.empty())
+        joined.excluded = joinExcluded(left, p.left, *a, right, p.right, *b);
       joined.ctype = a->ctype == b->ctype ? a->ctype : 0;
       // §4.4: intervals beyond the zone join as their hull; a widening
       // forgets one that grew (the type's range).

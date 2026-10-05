@@ -41,6 +41,7 @@
 #include "llvm/ADT/BitVector.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/SparseBitVector.h"
 
 #include <cstdint>
 #include <map>
@@ -118,6 +119,8 @@ struct RunResult {
   /// Over the per-function budget, not just the run's share of the unit's.
   bool spentBudget = false;
   std::uint64_t transfers = 0;
+  /// RFC 0034 §7.1.
+  std::uint64_t work = 0;
 };
 
 /// A place where a value is stored or read: every object and offset an
@@ -263,6 +266,8 @@ private:
   unsigned contextDepth;
   clang::ASTContext &context;
   LedgerAdapter &out;
+  /// Where the run publishes: `out`, or the replay's witness adapter.
+  LedgerAdapter *publishTo;
   RunMode mode;
   mutable core::ObjectTable objects;
   core::Heap heap;
@@ -308,7 +313,7 @@ private:
   /// and the ones some path from each block's entry reads before it
   /// evaluates them again.
   llvm::DenseMap<core::Handle, unsigned> carriedIndex;
-  std::vector<llvm::BitVector> carriedLiveIn;
+  std::vector<llvm::SparseBitVector<>> carriedLiveIn;
   /// Drops from `state`, entering block `block`, the carried expression
   /// values no path from it reads.
   void dropDeadValues(core::HeapState &state, unsigned block) const;
@@ -337,6 +342,9 @@ private:
   /// Exit states, for the summary.
   std::vector<core::HeapState> exits;
   std::uint64_t transfers = 0;
+  /// RFC 0034 §7.1: the run's work, and the states it keeps at entries.
+  std::uint64_t work = 0;
+  std::uint64_t retained = 0;
   /// §12 `--analysis-stats`: the joins and materialised cells of the run.
   std::uint64_t joins = 0;
   mutable std::uint64_t materialisations = 0;
@@ -363,6 +371,25 @@ private:
       declaredOwner;
   /// Diagnostics already reported, keyed by site and id.
   std::set<std::pair<const clang::Stmt *, std::string>> reported;
+  /// RFC 0034 §6.1: the definite errors of the authoritative pass, and
+  /// what the replay saw of each: a path that reports it (`witnessed`), a
+  /// path that reaches its site and decides it otherwise (`countered`).
+  struct Candidate {
+    const clang::Stmt *site = nullptr;
+    core::Facet facet = core::Facet::Temporal;
+    std::string id;
+    core::SourceLocation where;
+    bool witnessed = false;
+    bool countered = false;
+    /// In the block being replayed: reported definitely, decided otherwise.
+    bool reportedHere = false;
+    bool otherwiseHere = false;
+  };
+  std::vector<Candidate> candidates;
+  bool witnessing = false;
+  /// Replays the function along single paths and unconfirms the
+  /// candidates no path confirms.
+  void confirmCandidates();
   /// §4.1: the symbol an integer operation on two symbols last produced, so
   /// the same operation on the same values finds the same value again
   /// (checked against the state before use, EngineExpr.cpp).
@@ -402,7 +429,7 @@ public:
     return fixedLocals;
   }
   [[nodiscard]] RunMode runMode() const noexcept { return mode; }
-  [[nodiscard]] LedgerAdapter &ledger() const noexcept { return out; }
+  [[nodiscard]] LedgerAdapter &ledger() const noexcept { return *publishTo; }
   /// The unit's sites, whatever adapter this run publishes into (a context
   /// run collects into its own, §6.6).
   [[nodiscard]] const SiteIndex &sites() const;
@@ -540,6 +567,8 @@ public:
   [[nodiscard]] bool isBypassed(const clang::Expr &operand) const;
   /// RFC 0033 §1: whether `expr`'s value is discarded by a `(void)` cast.
   [[nodiscard]] bool isDiscarded(const clang::Expr &expr) const;
+  /// `stmt`'s parent in the body (the unit's parent map costs too much).
+  [[nodiscard]] const clang::Stmt *parentOf(const clang::Stmt &stmt) const;
   /// RFC 0033 §1: whether the function passes the address of `var` (or of
   /// a member or an element of it) to a call.
   [[nodiscard]] bool isPassedToCall(const clang::VarDecl &var) const;
@@ -933,10 +962,13 @@ public:
     std::string note;
     core::SourceLocation noteAt = {};
   };
+  /// `anywhere`: the release takes a range (`munmap`, RFC 0034 §6.3), so
+  /// a pointer into a heap object need not point to its start.
   [[nodiscard]] ReleaseCheck releaseCheck(core::Sym pointer,
                                           const std::string &subject,
                                           const clang::Expr &operand,
-                                          const std::string &verb) const;
+                                          const std::string &verb,
+                                          bool anywhere = false) const;
   /// A path below a call's argument as the caller spells it (`b.data` for
   /// `param0->data` with `&b`, `b->data` with `b`), when it can.
   [[nodiscard]] std::optional<std::string>
@@ -1116,6 +1148,11 @@ public:
   LedgerAdapter discarding;
   /// Alias contexts already run, per callee (§6.6), and their count.
   std::map<const clang::FunctionDecl *, std::set<AliasContext>> contextsRun;
+  /// RFC 0034 §6.1: what each context run found, for the replay of a
+  /// caller, which does not run a context twice.
+  std::map<std::pair<const clang::FunctionDecl *, AliasContext>,
+           std::vector<core::Diagnostic>>
+      contextFindings;
   /// §6.6 *Amendment (numeric contexts)*: the summaries derived per callee
   /// and context (none: the run was over budget or incomplete).
   std::map<const clang::FunctionDecl *,
@@ -1127,30 +1164,31 @@ public:
   /// The block transfers each function's last run took (what a context
   /// run of it may cost).
   std::map<const clang::FunctionDecl *, std::uint64_t> transfersOf;
-  /// RFC 0033 §9: the unit's budget of block transfers (0: unlimited),
-  /// what every run in it has spent, and the definitions whose
+  /// RFC 0034 §7.2: the work each function's last run took.
+  std::map<const clang::FunctionDecl *, std::uint64_t> workOf;
+  /// RFC 0033 §1: `onlyValueUses` by definition, parameter and depth.
+  std::map<std::tuple<const clang::FunctionDecl *, unsigned, unsigned>, bool>
+      valueOnly;
+  /// RFC 0033 §9, RFC 0034 §7.1: the unit's budget of work (0:
+  /// unlimited), what every run in it has spent, and the definitions whose
   /// authoritative run is still to come.
   std::uint64_t unitBudget = 0;
-  std::uint64_t unitTransfers = 0;
+  std::uint64_t unitWork = 0;
   std::uint64_t functionsLeft = 1;
-  /// The block transfers one run may take from what is left: a fair share
-  /// of it, eight times over, so that a few large functions cannot spend
-  /// what the others need; 0 is unlimited.
+  /// A run's share of the work left: eight fair shares (0 unlimited).
   [[nodiscard]] std::uint64_t runShare() const {
-    static constexpr std::uint64_t MinRunShare = 500;
-    if (unitBudget == 0)
-      return 0;
-    const std::uint64_t left =
-        unitBudget > unitTransfers ? unitBudget - unitTransfers : 0;
-    return std::max(MinRunShare,
-                    8 * left / std::max<std::uint64_t>(1, functionsLeft));
+    static constexpr std::uint64_t MinRunShare = 100000;
+    const std::uint64_t left = unitBudget - std::min(unitBudget, unitWork);
+    return unitBudget == 0
+               ? 0
+               : std::max(MinRunShare,
+                          8 * left / std::max<std::uint64_t>(1, functionsLeft));
   }
   /// Summaries of the unit's definitions, by canonical declaration.
   std::map<const clang::FunctionDecl *, core::FunctionEffects> summaries;
   std::set<const clang::FunctionDecl *> incomplete;
   /// Members of a recursive component whose summary round spent the
-  /// per-function budget (RFC 0033 *Implementation amendments*, build
-  /// cost).
+  /// per-function budget (RFC 0033 *Implementation amendments*).
   std::set<const clang::FunctionDecl *> exhausted;
   /// §9.4, §4.5 D2: fields and globals some function releases a value
   /// loaded from.

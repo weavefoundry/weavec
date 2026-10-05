@@ -65,6 +65,7 @@ static Node *mutableNode(const Node *node) {
 namespace {
 constexpr HelperType V = HelperType::Void;
 constexpr HelperType I = HelperType::Int;
+constexpr HelperType U = HelperType::Unsigned;
 constexpr HelperType LL = HelperType::LongLong;
 constexpr HelperType ULL = HelperType::UnsignedLongLong;
 constexpr HelperType Z = HelperType::Size;
@@ -74,16 +75,16 @@ constexpr HelperType CP = HelperType::CharPointer;
 constexpr HelperType CCP = HelperType::ConstCharPointer;
 constexpr HelperType CPP = HelperType::CharPointerPointer;
 constexpr HelperType VPP = HelperType::VoidPointerPointer;
-constexpr HelperType ULLP = HelperType::UnsignedLongLongPointer;
 constexpr HelperType FP = HelperType::FunctionPointer;
 constexpr HelperType AA = HelperType::AlignedAllocator;
 constexpr HelperType PM = HelperType::PosixMemalignFunction;
+constexpr HelperType VA = HelperType::VaList;
 } // namespace
 
 // The check templates of both families, then the helpers only
 // `__weavec_chk_*` has, the term helpers and the zero-initialisation
 // wrappers. `reports`: report mode appends (file, line, column).
-static constexpr std::array<HelperSignature, 66> Helpers{{
+static constexpr std::array<HelperSignature, 70> Helpers{{
     {.name = "__weavec_chk_nonnull",
      .result = VP,
      .params = {CVP},
@@ -156,15 +157,12 @@ static constexpr std::array<HelperSignature, 66> Helpers{{
      .result = V,
      .params = {I},
      .reports = true},
-    {.name = "__weavec_chk_violation",
-     .result = V,
-     .params = {},
-     .reports = true},
     // RFC 0032 §3: the guards, in both families.
     {.name = "__weavec_chk_object",
      .result = VP,
      .params = {CVP, LL, ULL, ULL, ULL},
-     .reports = true},
+     .reports = true,
+     .declared = true},
     {.name = "__weavec_chk_object_n",
      .result = VP,
      .params = {CVP, ULL},
@@ -181,33 +179,17 @@ static constexpr std::array<HelperSignature, 66> Helpers{{
     {.name = "__weavec_chk_live",
      .result = VP,
      .params = {CVP},
-     .reports = true},
+     .reports = true,
+     .declared = true},
     {.name = "__weavec_chk_release",
      .result = VP,
      .params = {CVP},
      .reports = true},
-    // RFC 0032 §13: the same with a range cache in the caller's frame.
-    {.name = "__weavec_chk_object_c",
-     .result = VP,
-     .params = {CVP, LL, ULL, ULL, ULL, ULLP, I},
-     .reports = true},
-    {.name = "__weavec_chk_live_c",
-     .result = VP,
-     .params = {CVP, ULLP, I},
-     .reports = true},
-    {.name = "__weavec_range_check", .result = V, .params = {ULLP}},
-    {.name = "__weavec_prv_object_c",
-     .result = VP,
-     .params = {CVP, LL, ULL, ULL, ULL, ULLP, I},
-     .reports = true},
-    {.name = "__weavec_prv_live_c",
-     .result = VP,
-     .params = {CVP, ULLP, I},
-     .reports = true},
     {.name = "__weavec_prv_object",
      .result = VP,
      .params = {CVP, LL, ULL, ULL, ULL},
-     .reports = true},
+     .reports = true,
+     .declared = true},
     {.name = "__weavec_prv_object_n",
      .result = VP,
      .params = {CVP, ULL},
@@ -223,11 +205,50 @@ static constexpr std::array<HelperSignature, 66> Helpers{{
     {.name = "__weavec_prv_live",
      .result = VP,
      .params = {CVP},
-     .reports = true},
+     .reports = true,
+     .declared = true},
     {.name = "__weavec_prv_release",
      .result = VP,
      .params = {CVP},
      .reports = true},
+    // RFC 0034 §5.2: the checked wrappers. After the row's arguments, a
+    // fortified alias's object size and the checks planned.
+    {.name = "__weavec_chk_strcpy",
+     .result = CP,
+     .params = {CP, CCP, ULL, U},
+     .reports = true,
+     .wrapper = true},
+    {.name = "__weavec_chk_stpcpy",
+     .result = CP,
+     .params = {CP, CCP, ULL, U},
+     .reports = true,
+     .wrapper = true},
+    {.name = "__weavec_chk_strcat",
+     .result = CP,
+     .params = {CP, CCP, ULL, U},
+     .reports = true,
+     .wrapper = true},
+    {.name = "__weavec_chk_memcpy",
+     .result = VP,
+     .params = {VP, CVP, Z, ULL, U},
+     .reports = true,
+     .wrapper = true},
+    {.name = "__weavec_chk_memmove",
+     .result = VP,
+     .params = {VP, CVP, Z, ULL, U},
+     .reports = true,
+     .wrapper = true},
+    {.name = "__weavec_chk_vsprintf",
+     .result = I,
+     .params = {CP, CCP, VA, ULL, U},
+     .reports = true,
+     .wrapper = true},
+    {.name = "__weavec_chk_sprintf",
+     .result = I,
+     .params = {CP, CCP, ULL, U},
+     .reports = true,
+     .wrapper = true,
+     .variadic = true},
     // RFC 0032 §4.2, §6: the stack-object helpers and a guard's string need.
     {.name = "__weavec_obj_strlen", .result = ULL, .params = {CCP}},
     {.name = "__weavec_stack_enter", .result = VP, .params = {VP, Z, I}},
@@ -239,12 +260,15 @@ static constexpr std::array<HelperSignature, 66> Helpers{{
      .reports = true},
     {.name = "__weavec_need_s", .result = ULL, .params = {LL}},
     {.name = "__weavec_have_s", .result = ULL, .params = {LL}},
-    {.name = "__weavec_need_add", .result = ULL, .params = {ULL, ULL}},
-    {.name = "__weavec_need_sub", .result = ULL, .params = {ULL, ULL}},
-    {.name = "__weavec_need_mul", .result = ULL, .params = {ULL, ULL}},
-    {.name = "__weavec_have_add", .result = ULL, .params = {ULL, ULL}},
-    {.name = "__weavec_have_sub", .result = ULL, .params = {ULL, ULL}},
-    {.name = "__weavec_have_mul", .result = ULL, .params = {ULL, ULL}},
+    {.name = "__weavec_term_u", .result = LL, .params = {ULL}},
+    {.name = "__weavec_need_add", .result = LL, .params = {LL, LL}},
+    {.name = "__weavec_need_sub", .result = LL, .params = {LL, LL}},
+    {.name = "__weavec_need_mul", .result = LL, .params = {LL, LL}},
+    {.name = "__weavec_need_div", .result = LL, .params = {LL, LL}},
+    {.name = "__weavec_have_add", .result = LL, .params = {LL, LL}},
+    {.name = "__weavec_have_sub", .result = LL, .params = {LL, LL}},
+    {.name = "__weavec_have_mul", .result = LL, .params = {LL, LL}},
+    {.name = "__weavec_have_div", .result = LL, .params = {LL, LL}},
     {.name = "__weavec_zero_tail", .result = VP, .params = {VP, Z}},
     {.name = "__weavec_malloc_zero", .result = VP, .params = {Z}},
     {.name = "__weavec_calloc_zero", .result = VP, .params = {Z, Z}},
@@ -285,8 +309,10 @@ const HelperSignature *findHelperSignature(llvm::StringRef name) {
 // NOLINTNEXTLINE(misc-const-correctness)
 static clang::QualType prototype(clang::ASTContext &context,
                                  clang::QualType result,
-                                 llvm::ArrayRef<clang::QualType> params) {
-  const clang::FunctionProtoType::ExtProtoInfo info;
+                                 llvm::ArrayRef<clang::QualType> params,
+                                 bool variadic = false) {
+  clang::FunctionProtoType::ExtProtoInfo info;
+  info.Variadic = variadic;
   return context.getFunctionType(result, params, info);
 }
 
@@ -318,8 +344,6 @@ static clang::QualType typeOf(clang::ASTContext &context, HelperType type) {
     return context.getPointerType(context.getPointerType(context.CharTy));
   case HelperType::VoidPointerPointer:
     return context.getPointerType(context.VoidPtrTy);
-  case HelperType::UnsignedLongLongPointer:
-    return context.getPointerType(context.UnsignedLongLongTy);
   case HelperType::FunctionPointer:
     return context.getPointerType(prototype(context, context.VoidTy, {}));
   case HelperType::AlignedAllocator: {
@@ -333,6 +357,9 @@ static clang::QualType typeOf(clang::ASTContext &context, HelperType type) {
         prototype(context, context.IntTy,
                   {context.getPointerType(context.VoidPtrTy), size, size}));
   }
+  case HelperType::VaList:
+    // As a parameter: an array `va_list` decays.
+    return context.getAdjustedParameterType(context.getBuiltinVaListType());
   }
   return context.VoidTy;
 }
@@ -350,7 +377,8 @@ clang::QualType helperFunctionType(clang::ASTContext &context,
     params.push_back(context.UnsignedIntTy);
     params.push_back(context.UnsignedIntTy);
   }
-  return prototype(context, typeOf(context, helper.result), params);
+  return prototype(context, typeOf(context, helper.result), params,
+                   helper.variadic);
 }
 
 //===----------------------------------------------------------------------===//
@@ -373,13 +401,10 @@ struct SiteContext {
   core::SourceLocation where;
   /// The site's text, for the internal error.
   std::string text;
-  /// RFC 0032 §13: the function's range cache and the site's entry in it;
-  /// null when the site's guards are not cached.
-  clang::VarDecl *cache = nullptr;
-  unsigned cacheEntry = 0;
-  /// The site is in a loop that calls nothing, which validates the entry
-  /// on the way in.
-  bool cacheQuiet = false;
+  /// RFC 0034 §5.2: the checks the call's wrapper makes (1 the room behind
+  /// the destination, 2 disjointness), and whether it replaced the call.
+  unsigned wrapperChecks = 0;
+  bool wrapped = false;
 };
 
 } // namespace
@@ -408,8 +433,6 @@ static int phase(const Entry &entry) {
 }
 
 static int nesting(const Entry &entry) {
-  if (entry.form == Entry::Form::Violation)
-    return 4;
   switch (entry.kind) {
   case Entry::Template::Nonnull:
     return 0;
@@ -510,17 +533,24 @@ private:
                        clang::SourceLocation loc);
   clang::Expr *castTo(clang::Expr *expr, clang::QualType type,
                       clang::CastKind kind);
-  /// A call of the helper `name`; `site` adds report mode's location.
+  /// A call of the helper `name`; `site` adds report mode's location, and
+  /// `variadic` follows it.
   clang::ExprResult callHelper(llvm::StringRef name,
                                llvm::MutableArrayRef<clang::Expr *> args,
                                clang::SourceLocation loc,
-                               const SiteContext *site);
+                               const SiteContext *site,
+                               llvm::ArrayRef<clang::Expr *> variadic = {});
   clang::ExprResult comma(clang::Expr *lhs, clang::Expr *rhs,
                           clang::SourceLocation loc);
 
   /// §10.2: an extra operand of a check, as C.
   clang::Expr *term(const core::CheckTerm &term, Direction direction,
                     const SiteContext &site);
+  /// A term inside arithmetic: its exact value as `long long`, which
+  /// saturates only on overflow (to LLONG_MAX as a need, LLONG_MIN as a
+  /// have, and stays there).
+  clang::Expr *exact(const core::CheckTerm &term, Direction direction,
+                     const SiteContext &site);
   clang::Expr *pointerTerm(const core::CheckTerm &term,
                            const SiteContext &site);
   clang::Expr *placeLvalue(const core::CheckTerm &term,
@@ -540,6 +570,8 @@ private:
   bool replaceAccess(const Entry &entry, SiteContext &site);
   bool beforeCall(const Entry &entry, SiteContext &site);
   bool replaceCall(const Entry &entry, SiteContext &site);
+  /// RFC 0034 §5.2: the call becomes a call of its row's checked wrapper.
+  bool wrapCall(clang::CallExpr *call, SiteContext &site);
 
   //--- Zero-initialisation ----------------------------------------------------
 
@@ -549,36 +581,6 @@ private:
   clang::Expr *rebuild(const clang::Expr *expr, clang::SourceLocation loc,
                        unsigned depth = 0);
 
-  //--- Range caches (RFC 0032 §13) --------------------------------------------
-
-  /// The cache of each function that has one, and the entry of each of its
-  /// guarded sites.
-  struct FunctionCache {
-    clang::VarDecl *variable = nullptr;
-    llvm::DenseMap<const analysis::SiteInfo *, unsigned> entries;
-    /// The sites in a quiet loop, and the entries each such loop (the
-    /// outermost one) validates on the way in.
-    llvm::DenseSet<const analysis::SiteInfo *> quiet;
-    std::vector<std::pair<clang::Stmt *, std::vector<unsigned>>> loops;
-  };
-  /// Whether `loop` calls nothing and is entered only at its top.
-  bool isQuietLoop(const clang::Stmt *loop);
-  llvm::DenseMap<const clang::Stmt *, bool> quietLoops;
-  /// `__weavec_range_check(&cache[4 * entry])` for each of `entries`.
-  clang::Expr *validateEntries(clang::VarDecl *cache,
-                               llvm::ArrayRef<unsigned> entries,
-                               clang::SourceLocation loc);
-  llvm::DenseMap<const clang::FunctionDecl *, FunctionCache> caches;
-
-  /// Gives `function` a range cache when a pointer it guards is guarded in
-  /// a loop.
-  void planCache(const clang::FunctionDecl *function,
-                 llvm::ArrayRef<const analysis::SiteInfo *> guarded);
-  /// `&cache[4 * entry]`.
-  clang::Expr *cacheEntry(const SiteContext &site);
-  /// Declares and clears the caches at the start of their functions.
-  bool declareCaches();
-
   //--- Object registration (RFC 0032 §4, §5) ----------------------------------
 
   unsigned nextObjectId = 0;
@@ -586,6 +588,8 @@ private:
   /// `__weavec_frame_<n>`: the variable whose initialiser enters `object`
   /// and whose cleanup leaves it.
   clang::VarDecl *frameGuard(const StackObject &object);
+  /// RFC 0034 §4: aligns a registered object to a 16-byte granule.
+  void alignToGranule(clang::VarDecl &variable);
   bool enterStackObjects(const clang::FunctionDecl *function,
                          llvm::ArrayRef<const StackObject *> objects);
   bool rewindAfter(const ReturnsTwiceCall &rewind);
@@ -612,11 +616,12 @@ clang::FunctionDecl *CheckEmitter::Impl::lookupFunction(llvm::StringRef name) {
 }
 
 clang::FunctionDecl *CheckEmitter::Impl::helper(llvm::StringRef name) {
-  // Out of line, report helpers carry a `_report` suffix (§10.9).
+  // Out of line, report helpers carry a `_report` suffix (§10.9), and so do
+  // the guards the prelude only declares (RFC 0034 §1.1).
   const HelperSignature *signature = findHelperSignature(name);
   std::string spelled = name.str();
-  if (options.externalHelpers && report && signature != nullptr &&
-      signature->reports)
+  if (signature != nullptr && report && signature->reports &&
+      (options.externalHelpers || signature->declared))
     spelled += "_report";
   if (const auto cached = helperDecls.find(spelled);
       cached != helperDecls.end())
@@ -892,13 +897,16 @@ clang::Expr *CheckEmitter::Impl::castTo(clang::Expr *expr, clang::QualType type,
 
 clang::ExprResult CheckEmitter::Impl::callHelper(
     llvm::StringRef name, llvm::MutableArrayRef<clang::Expr *> args,
-    clang::SourceLocation loc, const SiteContext *site) {
+    clang::SourceLocation loc, const SiteContext *site,
+    llvm::ArrayRef<clang::Expr *> variadic) {
   clang::FunctionDecl *function = helper(name);
-  if (function == nullptr || llvm::is_contained(args, nullptr))
+  if (function == nullptr || llvm::is_contained(args, nullptr) ||
+      llvm::is_contained(variadic, nullptr))
     return clang::ExprError();
   llvm::SmallVector<clang::Expr *, 8> all(args.begin(), args.end());
   const HelperSignature *signature = findHelperSignature(name);
   if (site != nullptr && signature != nullptr && signature->reports &&
+      !signature->declared && !signature->wrapper &&
       outOfLine.contains(site->function)) {
     const std::string copy = (name + "_ool").str();
     auto [cached, fresh] = helperDecls.try_emplace(copy, nullptr);
@@ -920,6 +928,7 @@ clang::ExprResult CheckEmitter::Impl::callHelper(
     all.push_back(literal(site != nullptr ? site->where.column : 0,
                           context.UnsignedIntTy, loc));
   }
+  all.append(variadic.begin(), variadic.end());
   clang::Expr *callee = sema.BuildDeclRefExpr(function, function->getType(),
                                               clang::VK_LValue, loc);
   return sema.BuildCallExpr(nullptr, callee, loc, all, loc);
@@ -1049,46 +1058,18 @@ clang::Expr *CheckEmitter::Impl::term(const core::CheckTerm &term,
   }
   case core::CheckTerm::Kind::Add:
   case core::CheckTerm::Kind::Sub:
-  case core::CheckTerm::Kind::Mul: {
-    if (term.operands.size() != 2)
-      return nullptr;
-    // The right operand of a subtraction goes the other way.
-    const Direction right = term.kind == core::CheckTerm::Kind::Sub
-                                ? opposite(direction)
-                                : direction;
-    std::array<clang::Expr *, 2> args = {
-        this->term(term.operands[0], direction, site),
-        this->term(term.operands[1], right, site)};
-    std::string name = need ? "__weavec_need_" : "__weavec_have_";
-    if (term.kind == core::CheckTerm::Kind::Add)
-      name += "add";
-    else if (term.kind == core::CheckTerm::Kind::Sub)
-      name += "sub";
-    else
-      name += "mul";
-    const clang::ExprResult result = callHelper(name, args, loc, nullptr);
-    return usable(result) ? result.get() : nullptr;
-  }
+  case core::CheckTerm::Kind::Mul:
   case core::CheckTerm::Kind::Div: {
-    // RFC 0030 §10.1 (amended in S3): floor division by a positive
-    // constant; the dividend is never negative there, so C's unsigned
-    // division is exact. As a need (RFC 0033 §3, select's sets) a dividend
-    // that saturated stays larger than any object after the division.
-    if (term.operands.size() != 2)
+    // Computed exactly over `long long`, and only the result enters through
+    // need_s or have_s: `count + 8` with `count == -5` is 3, as the program
+    // computes it, not the maximum.
+    clang::Expr *value = exact(term, direction, site);
+    if (value == nullptr)
       return nullptr;
-    const core::CheckTerm &divisor = term.operands[1];
-    if (divisor.kind != core::CheckTerm::Kind::Constant ||
-        divisor.constant <= 0)
-      return nullptr;
-    clang::Expr *dividend = this->term(term.operands[0], direction, site);
-    if (dividend == nullptr)
-      return nullptr;
-    clang::Expr *constant =
-        literal(static_cast<std::uint64_t>(divisor.constant),
-                context.UnsignedLongLongTy, loc);
-    const clang::ExprResult quotient =
-        sema.BuildBinOp(nullptr, loc, clang::BO_Div, dividend, constant);
-    return usable(quotient) ? quotient.get() : nullptr;
+    std::array<clang::Expr *, 1> args = {value};
+    const clang::ExprResult entered = callHelper(
+        need ? "__weavec_need_s" : "__weavec_have_s", args, loc, nullptr);
+    return usable(entered) ? entered.get() : nullptr;
   }
   case core::CheckTerm::Kind::StrNLen: {
     if (term.operands.size() != 2)
@@ -1115,6 +1096,95 @@ clang::Expr *CheckEmitter::Impl::term(const core::CheckTerm &term,
   return nullptr;
 }
 
+clang::Expr *CheckEmitter::Impl::exact(const core::CheckTerm &term,
+                                       Direction direction,
+                                       const SiteContext &site) {
+  const clang::SourceLocation loc = site.loc;
+  const bool need = direction == Direction::Need;
+  // A leaf that fits in `long long` enters as itself: the helpers'
+  // parameters convert it. A 64-bit unsigned one enters through term_u.
+  const auto entered = [&](clang::Expr *value) -> clang::Expr * {
+    if (value == nullptr)
+      return nullptr;
+    const clang::QualType type = value->getType();
+    if (type->isSignedIntegerOrEnumerationType() ||
+        context.getTypeSize(type) < context.getTypeSize(context.LongLongTy))
+      return value;
+    std::array<clang::Expr *, 1> args = {value};
+    const clang::ExprResult result =
+        callHelper("__weavec_term_u", args, loc, nullptr);
+    return usable(result) ? result.get() : nullptr;
+  };
+  switch (term.kind) {
+  case core::CheckTerm::Kind::Constant: {
+    const std::uint64_t magnitude =
+        term.constant >= 0 ? static_cast<std::uint64_t>(term.constant)
+                           : 0 - static_cast<std::uint64_t>(term.constant);
+    clang::Expr *value = literal(magnitude, context.LongLongTy, loc);
+    if (term.constant >= 0)
+      return value;
+    const clang::ExprResult negated =
+        sema.CreateBuiltinUnaryOp(loc, clang::UO_Minus, value);
+    return usable(negated) ? negated.get() : nullptr;
+  }
+  case core::CheckTerm::Kind::Place: {
+    clang::Expr *lvalue = placeLvalue(term, site);
+    if (lvalue == nullptr)
+      return nullptr;
+    const clang::ExprResult value =
+        sema.DefaultFunctionArrayLvalueConversion(lvalue);
+    return usable(value) ? entered(value.get()) : nullptr;
+  }
+  case core::CheckTerm::Kind::Add:
+  case core::CheckTerm::Kind::Sub:
+  case core::CheckTerm::Kind::Mul: {
+    if (term.operands.size() != 2)
+      return nullptr;
+    // The right operand of a subtraction goes the other way.
+    const Direction right = term.kind == core::CheckTerm::Kind::Sub
+                                ? opposite(direction)
+                                : direction;
+    std::array<clang::Expr *, 2> args = {
+        exact(term.operands[0], direction, site),
+        exact(term.operands[1], right, site)};
+    std::string name = need ? "__weavec_need_" : "__weavec_have_";
+    if (term.kind == core::CheckTerm::Kind::Add)
+      name += "add";
+    else if (term.kind == core::CheckTerm::Kind::Sub)
+      name += "sub";
+    else
+      name += "mul";
+    const clang::ExprResult result = callHelper(name, args, loc, nullptr);
+    return usable(result) ? result.get() : nullptr;
+  }
+  case core::CheckTerm::Kind::Div: {
+    // RFC 0030 §10.1 (amended in S3): floor division by a positive
+    // constant. As a need (RFC 0033 §3, select's sets) a dividend that
+    // saturated stays larger than any object after the division.
+    if (term.operands.size() != 2)
+      return nullptr;
+    const core::CheckTerm &divisor = term.operands[1];
+    if (divisor.kind != core::CheckTerm::Kind::Constant ||
+        divisor.constant <= 0)
+      return nullptr;
+    std::array<clang::Expr *, 2> args = {
+        exact(term.operands[0], direction, site),
+        literal(static_cast<std::uint64_t>(divisor.constant),
+                context.LongLongTy, loc)};
+    const clang::ExprResult result = callHelper(
+        need ? "__weavec_need_div" : "__weavec_have_div", args, loc, nullptr);
+    return usable(result) ? result.get() : nullptr;
+  }
+  case core::CheckTerm::Kind::SizeOf:
+    // No object's size reaches LLONG_MAX.
+    return this->term(term, direction, site);
+  case core::CheckTerm::Kind::StrNLen:
+  case core::CheckTerm::Kind::ObjStrLen:
+    return entered(this->term(term, direction, site));
+  }
+  return nullptr;
+}
+
 //===----------------------------------------------------------------------===//
 // Checks
 //===----------------------------------------------------------------------===//
@@ -1123,8 +1193,6 @@ clang::ExprResult CheckEmitter::Impl::checkCall(const Entry &entry,
                                                 clang::Expr *wrapped,
                                                 SiteContext &site) {
   const clang::SourceLocation loc = site.loc;
-  if (entry.form == Entry::Form::Violation)
-    return callHelper("__weavec_chk_violation", {}, loc, &site);
   const std::string name = core::helperName(entry);
   const auto operand = [&](std::size_t i, Direction direction) {
     return i < entry.operands.size() ? term(entry.operands[i], direction, site)
@@ -1220,24 +1288,11 @@ clang::ExprResult CheckEmitter::Impl::checkCall(const Entry &entry,
         moved, literal(0, context.LongLongTy, loc),
         literal(0, context.UnsignedLongLongTy, loc),
         operand(0, Direction::Need), operand(1, Direction::Need)};
-    if (site.cache != nullptr &&
-        entry.placement == Entry::Placement::WrapOperand) {
-      args.push_back(cacheEntry(site));
-      args.push_back(literal(site.cacheQuiet ? 1 : 0, context.IntTy, loc));
-      return callHelper(name + "_c", args, loc, &site);
-    }
     return callHelper(name, args, loc, &site);
   }
   case Entry::Template::Live: {
     if (moved == nullptr)
       return clang::ExprError();
-    if (site.cache != nullptr &&
-        entry.placement == Entry::Placement::WrapOperand) {
-      std::array<clang::Expr *, 3> args = {
-          moved, cacheEntry(site),
-          literal(site.cacheQuiet ? 1 : 0, context.IntTy, loc)};
-      return callHelper(name + "_c", args, loc, &site);
-    }
     std::array<clang::Expr *, 1> args = {moved};
     return callHelper(name, args, loc, &site);
   }
@@ -1288,10 +1343,9 @@ bool CheckEmitter::Impl::wrapValue(const Entry &entry, clang::Stmt *target,
   if (current == nullptr)
     return false;
   const clang::QualType type = current->getType();
-  const bool returnsOperand =
-      entry.form != Entry::Form::Violation &&
-      (entry.kind == Entry::Template::Nonnull ||
-       entry.kind == Entry::Template::Span || core::isGuard(entry));
+  const bool returnsOperand = entry.kind == Entry::Template::Nonnull ||
+                              entry.kind == Entry::Template::Span ||
+                              core::isGuard(entry);
   const bool wrapsIndex = entry.placement == Entry::Placement::WrapIndex;
   clang::Stmt *wrapper = attempt([&]() -> clang::Stmt * {
     if (wrapsIndex) {
@@ -1379,12 +1433,7 @@ bool CheckEmitter::Impl::replaceAccess(const Entry &entry, SiteContext &site) {
         term(entry.operands[1], guard ? Direction::Need : Direction::Have,
              site),
         term(entry.operands[2], Direction::Need, site)};
-    std::string name = core::helperName(entry);
-    if (guard && site.cache != nullptr) {
-      args.push_back(cacheEntry(site));
-      args.push_back(literal(site.cacheQuiet ? 1 : 0, context.IntTy, site.loc));
-      name += "_c";
-    }
+    const std::string name = core::helperName(entry);
     const clang::ExprResult check = callHelper(name, args, site.loc, &site);
     if (!usable(check))
       return nullptr;
@@ -1485,17 +1534,16 @@ bool CheckEmitter::Impl::replaceCall(const Entry &entry, SiteContext &site) {
     return false;
   const clang::SourceLocation loc = site.loc;
   clang::Stmt *replacement = nullptr;
-  if (entry.form == Entry::Form::Violation ||
-      entry.kind == Entry::Template::Assert) {
-    // `WEAVEC_ASSUME(e)` becomes `__weavec_chk_assert(e)`; a contradicted
-    // one that was lowered, the unconditional trap.
-    if (entry.form != Entry::Form::Violation && call->getNumArgs() != 1)
+  if (entry.form == Entry::Form::Wrapper) {
+    // One replacement serves every check the wrapper makes.
+    return site.wrapped || wrapCall(call, site);
+  }
+  if (entry.kind == Entry::Template::Assert) {
+    // `WEAVEC_ASSUME(e)` becomes `__weavec_chk_assert(e)`.
+    if (call->getNumArgs() != 1)
       return false;
     replacement = attempt([&]() -> clang::Stmt * {
-      const clang::ExprResult check = checkCall(
-          entry,
-          entry.form == Entry::Form::Violation ? nullptr : call->getArg(0),
-          site);
+      const clang::ExprResult check = checkCall(entry, call->getArg(0), site);
       return usable(check) ? check.get() : nullptr;
     });
   } else if (entry.kind == Entry::Template::Len &&
@@ -1551,6 +1599,72 @@ bool CheckEmitter::Impl::replaceCall(const Entry &entry, SiteContext &site) {
   return replacement != nullptr && replaceNode(call, replacement);
 }
 
+bool CheckEmitter::Impl::wrapCall(clang::CallExpr *call, SiteContext &site) {
+  const std::optional<core::LibraryMatch> &match = site.info->library;
+  if (!match || match->entry == nullptr || !match->entry->wrapper)
+    return false;
+  const core::LibraryEntry &row = *match->entry;
+  const std::string name = "__weavec_chk_" + row.wrapper->name;
+  const HelperSignature *signature = findHelperSignature(name);
+  if (signature == nullptr)
+    return false;
+  // The row's arguments in row order; of a fortified alias's own arguments
+  // (a flag, the object size) the last one is the object size.
+  std::vector<clang::Expr *> rowArguments;
+  clang::Expr *objectSize = nullptr;
+  for (unsigned i = 0; i < call->getNumArgs(); ++i) {
+    const int rowArgument = match->rowArgument(i);
+    if (rowArgument < 0) {
+      objectSize = call->getArg(i);
+      continue;
+    }
+    const auto at = static_cast<std::size_t>(rowArgument);
+    if (at >= rowArguments.size())
+      rowArguments.resize(at + 1, nullptr);
+    rowArguments[at] = call->getArg(i);
+  }
+  const std::size_t fixed = row.params.size();
+  if (rowArguments.size() < fixed ||
+      llvm::is_contained(rowArguments, nullptr) ||
+      (!row.variadic && rowArguments.size() != fixed) ||
+      (objectSize != nullptr && !objectSize->getType()->isIntegerType()))
+    return false;
+  const clang::SourceLocation loc = site.loc;
+  clang::Stmt *replacement = attempt([&]() -> clang::Stmt * {
+    llvm::SmallVector<clang::Expr *, 8> args;
+    for (std::size_t i = 0; i < fixed; ++i) {
+      clang::Expr *argument = paren(rowArguments[i], loc);
+      const HelperSignature::Type param = signature->params.at(i);
+      // The wrapper's own parameter types: the row's classes, which the
+      // declaration matched (`unsigned char *` to `char *`, any length).
+      if (param != HelperSignature::Type::VaList) {
+        const clang::QualType type = typeOf(context, param);
+        argument = castTo(argument, type,
+                          type->isIntegerType() ? clang::CK_IntegralCast
+                                                : clang::CK_BitCast);
+      }
+      args.push_back(argument);
+    }
+    args.push_back(
+        objectSize != nullptr
+            ? castTo(paren(objectSize, loc), context.UnsignedLongLongTy,
+                     clang::CK_IntegralCast)
+            : literal(~std::uint64_t{0}, context.UnsignedLongLongTy, loc));
+    args.push_back(literal(site.wrapperChecks, context.UnsignedIntTy, loc));
+    llvm::SmallVector<clang::Expr *, 8> rest;
+    for (std::size_t i = fixed; i < rowArguments.size(); ++i)
+      rest.push_back(paren(rowArguments[i], loc));
+    const clang::ExprResult wrapped = callHelper(name, args, loc, &site, rest);
+    if (!usable(wrapped))
+      return nullptr;
+    return castTo(wrapped.get(), call->getType(),
+                  call->getType()->isIntegerType() ? clang::CK_IntegralCast
+                                                   : clang::CK_BitCast);
+  });
+  site.wrapped = replacement != nullptr && replaceNode(call, replacement);
+  return site.wrapped;
+}
+
 bool CheckEmitter::Impl::apply(const Entry &entry, SiteContext &site) {
   switch (entry.placement) {
   case Entry::Placement::WrapOperand:
@@ -1596,6 +1710,14 @@ static std::string textOf(const clang::Stmt &stmt,
   return core::siteText(std::string_view(text.data(), text.size()));
 }
 
+/// RFC 0034 §5.2: the bit of a checked wrapper's `what` an entry plans: 1
+/// the destination's room, 2 the operands' disjointness, 4 a copy's source.
+static unsigned wrapperBit(const core::CheckPlanEntry &entry) {
+  if (entry.kind == core::CheckPlanEntry::Template::Disjoint)
+    return 2U;
+  return entry.argument == 1 ? 4U : 1U;
+}
+
 bool CheckEmitter::Impl::emit(const core::CheckPlan &plan,
                               const analysis::SiteIndex &sites,
                               const analysis::PlaceHandleTable &handles,
@@ -1603,28 +1725,6 @@ bool CheckEmitter::Impl::emit(const core::CheckPlan &plan,
   std::map<core::SiteId, std::vector<const Entry *>> bySite;
   for (const Entry &entry : plan.entries)
     bySite[entry.site].push_back(&entry);
-  // RFC 0032 §13: which guarded sites of each function share a range cache.
-  if (options.rangeCaches && !options.externalHelpers) {
-    std::map<std::uint32_t, std::vector<const analysis::SiteInfo *>> guarded;
-    for (const auto &[id, entries] : bySite) {
-      const analysis::SiteInfo *info = sites.info(id);
-      if (info == nullptr || info->stmt == nullptr)
-        continue;
-      if (llvm::any_of(entries, [](const Entry *entry) {
-            return (entry->kind == Entry::Template::Object &&
-                    entry->form == Entry::Form::Plain) ||
-                   (entry->kind == Entry::Template::Live &&
-                    entry->placement == Entry::Placement::WrapOperand);
-          }))
-        guarded[id.function].push_back(info);
-    }
-    for (const auto &[index, infos] : guarded)
-      if (index < sites.functions().size() &&
-          sites.functions()[index].decl != nullptr) {
-        mapOwner(sites.functions()[index].decl);
-        planCache(sites.functions()[index].decl, infos);
-      }
-  }
   if (!options.externalHelpers) {
     std::map<std::uint32_t, std::size_t> perFunction;
     for (const auto &[id, entries] : bySite)
@@ -1657,13 +1757,9 @@ bool CheckEmitter::Impl::emit(const core::CheckPlan &plan,
             ? row->location
             : analysis::toCoreLocation(context.getSourceManager(), site.loc);
     site.text = row != nullptr ? row->text : textOf(*info->stmt, context);
-    if (const auto cached = caches.find(function.decl); cached != caches.end())
-      if (const auto slot = cached->second.entries.find(info);
-          slot != cached->second.entries.end()) {
-        site.cache = cached->second.variable;
-        site.cacheEntry = slot->second;
-        site.cacheQuiet = cached->second.quiet.contains(info);
-      }
+    for (const Entry *entry : entries)
+      if (entry->form == Entry::Form::Wrapper)
+        site.wrapperChecks |= wrapperBit(*entry);
     std::ranges::stable_sort(entries, [](const Entry *a, const Entry *b) {
       return std::make_pair(phase(*a), nesting(*a)) <
              std::make_pair(phase(*b), nesting(*b));
@@ -1679,7 +1775,7 @@ bool CheckEmitter::Impl::emit(const core::CheckPlan &plan,
       ++inserted;
     }
   }
-  return declareCaches() && ok;
+  return ok;
 }
 
 //===----------------------------------------------------------------------===//
@@ -1866,294 +1962,12 @@ bool CheckEmitter::Impl::lowerZeroInit(const ZeroInitPlan &plan) {
 }
 
 //===----------------------------------------------------------------------===//
-// Range caches (RFC 0032 §13)
-//===----------------------------------------------------------------------===//
-
-/// The local or parameter a guarded pointer is read from, when it is one:
-/// guards of one variable share a cache entry.
-static const clang::VarDecl *guardedVariable(const analysis::SiteInfo &info) {
-  const clang::Expr *pointer = info.operand;
-  if (pointer == nullptr)
-    if (const auto *subscript =
-            llvm::dyn_cast_or_null<clang::ArraySubscriptExpr>(info.stmt))
-      pointer = subscript->getBase();
-  if (pointer == nullptr)
-    return nullptr;
-  const auto *ref =
-      llvm::dyn_cast<clang::DeclRefExpr>(pointer->IgnoreParenImpCasts());
-  const auto *variable =
-      ref != nullptr ? llvm::dyn_cast<clang::VarDecl>(ref->getDecl()) : nullptr;
-  return variable != nullptr && variable->hasLocalStorage() ? variable
-                                                            : nullptr;
-}
-
-bool CheckEmitter::Impl::isQuietLoop(const clang::Stmt *loop) {
-  if (const auto known = quietLoops.find(loop); known != quietLoops.end())
-    return known->second;
-  // Nothing in the loop can end an object: no call (a release, a `realloc`,
-  // a callee returning) and no variable whose cleanup function runs when its
-  // scope ends. And no jump enters the loop past the statement that checks
-  // its entries: no label, and no `case` of a `switch` outside it.
-  bool quiet = true;
-  llvm::SmallPtrSet<const clang::Stmt *, 4> switches;
-  llvm::SmallVector<const clang::Stmt *, 32> work = {loop};
-  while (quiet && !work.empty()) {
-    const clang::Stmt *stmt = work.pop_back_val();
-    if (const auto *call = llvm::dyn_cast<clang::CallExpr>(stmt)) {
-      // A compiler builtin that is no library function calls nothing.
-      const unsigned id = call->getBuiltinCallee();
-      quiet = id != 0 && !context.BuiltinInfo.isLibFunction(id) &&
-              !context.BuiltinInfo.isPredefinedLibFunction(id);
-    } else if (llvm::isa<clang::LabelStmt, clang::AddrLabelExpr,
-                         clang::BlockExpr, clang::AsmStmt>(stmt)) {
-      quiet = false;
-    } else if (const auto *declaration =
-                   llvm::dyn_cast<clang::DeclStmt>(stmt)) {
-      quiet = llvm::none_of(declaration->decls(), [](const clang::Decl *decl) {
-        return decl->hasAttr<clang::CleanupAttr>();
-      });
-    } else if (llvm::isa<clang::SwitchCase>(stmt)) {
-      // Statements are visited parents first, so a `switch` inside the loop
-      // is known before its cases.
-      bool inside = false;
-      for (const clang::Stmt *at = parents.lookup(mutableNode(stmt));
-           at != nullptr && at != loop && !inside;
-           at = parents.lookup(mutableNode(at)))
-        inside = switches.contains(at);
-      quiet = inside;
-    } else if (llvm::isa<clang::SwitchStmt>(stmt)) {
-      switches.insert(stmt);
-    }
-    for (const clang::Stmt *child : stmt->children())
-      if (child != nullptr)
-        work.push_back(child);
-  }
-  quietLoops[loop] = quiet;
-  return quiet;
-}
-
-void CheckEmitter::Impl::planCache(
-    const clang::FunctionDecl *function,
-    llvm::ArrayRef<const analysis::SiteInfo *> guarded) {
-  // At most this many entries: a frame pays for clearing them at every call.
-  constexpr unsigned MaxEntries = 64;
-  // Whether `stmt` is in a loop, and the outermost quiet loop it is in.
-  const auto loopsOf = [&](const clang::Stmt *stmt) {
-    std::pair<bool, clang::Stmt *> found = {false, nullptr};
-    for (unsigned depth = 0; stmt != nullptr && depth < 4096; ++depth) {
-      if (llvm::isa<clang::ForStmt, clang::WhileStmt, clang::DoStmt>(stmt)) {
-        found.first = true;
-        if (isQuietLoop(stmt))
-          found.second = mutableNode(stmt);
-      }
-      const auto parent = parents.find(mutableNode(stmt));
-      stmt = parent != parents.end() ? parent->second : nullptr;
-    }
-    return found;
-  };
-  // A key is a variable the guards read their pointer from, or else the
-  // site itself. It earns an entry when it is guarded in a loop.
-  struct Key {
-    bool loop = false;
-    std::vector<std::pair<const analysis::SiteInfo *, clang::Stmt *>> sites;
-  };
-  std::vector<Key> keys;
-  llvm::DenseMap<const clang::VarDecl *, std::size_t> byVariable;
-  for (const analysis::SiteInfo *info : guarded) {
-    const auto [loop, quiet] = loopsOf(info->stmt);
-    std::size_t index = keys.size();
-    if (const clang::VarDecl *variable = guardedVariable(*info)) {
-      const auto [it, fresh] = byVariable.try_emplace(variable, index);
-      index = it->second;
-      if (fresh)
-        keys.emplace_back();
-    } else {
-      keys.emplace_back();
-    }
-    Key &key = keys[index];
-    key.loop = key.loop || loop;
-    key.sites.emplace_back(info, quiet);
-  }
-  FunctionCache cache;
-  unsigned count = 0;
-  llvm::DenseMap<clang::Stmt *, std::size_t> loopIndex;
-  for (const Key &key : keys) {
-    if (!key.loop || count == MaxEntries)
-      continue;
-    for (const auto &[info, quiet] : key.sites) {
-      cache.entries[info] = count;
-      if (quiet == nullptr)
-        continue;
-      cache.quiet.insert(info);
-      const auto [it, fresh] = loopIndex.try_emplace(quiet, cache.loops.size());
-      if (fresh)
-        cache.loops.emplace_back(quiet, std::vector<unsigned>());
-      std::vector<unsigned> &validated = cache.loops[it->second].second;
-      if (validated.empty() || validated.back() != count)
-        validated.push_back(count);
-    }
-    ++count;
-  }
-  if (count == 0)
-    return;
-  // `unsigned long long __weavec_ranges[4 * count]`: {lo, len, state,
-  // expect} per entry.
-  auto *owner = mutableNode(function);
-  const clang::SourceLocation loc = function->getBody()->getBeginLoc();
-  const clang::QualType type = context.getConstantArrayType(
-      context.UnsignedLongLongTy, llvm::APInt(64, 4ULL * count), nullptr,
-      clang::ArraySizeModifier::Normal, 0);
-  const clang::IdentifierInfo &name = context.Idents.get("__weavec_ranges");
-  cache.variable = clang::VarDecl::Create(
-      context, owner, loc, loc, &name, type,
-      context.getTrivialTypeSourceInfo(type, loc), clang::SC_None);
-  cache.variable->setImplicit(true);
-  cache.variable->setIsUsed();
-  cache.variable->setReferenced(true);
-  owner->addHiddenDecl(cache.variable);
-  caches[function] = std::move(cache);
-}
-
-clang::Expr *CheckEmitter::Impl::cacheEntry(const SiteContext &site) {
-  clang::Expr *array = clang::DeclRefExpr::Create(
-      context, clang::NestedNameSpecifierLoc(), clang::SourceLocation(),
-      site.cache, /*RefersToEnclosingVariableOrCapture=*/false, site.loc,
-      site.cache->getType(), clang::VK_LValue);
-  const clang::ExprResult decayed =
-      sema.DefaultFunctionArrayLvalueConversion(array);
-  if (!usable(decayed))
-    return nullptr;
-  if (site.cacheEntry == 0)
-    return decayed.get();
-  const clang::ExprResult entry =
-      sema.BuildBinOp(nullptr, site.loc, clang::BO_Add, decayed.get(),
-                      literal(4ULL * site.cacheEntry, context.IntTy, site.loc));
-  return usable(entry) ? entry.get() : nullptr;
-}
-
-clang::Expr *
-CheckEmitter::Impl::validateEntries(clang::VarDecl *cache,
-                                    llvm::ArrayRef<unsigned> entries,
-                                    clang::SourceLocation loc) {
-  SiteContext site;
-  site.cache = cache;
-  site.loc = loc;
-  clang::Expr *all = nullptr;
-  for (const unsigned entry : entries) {
-    site.cacheEntry = entry;
-    clang::Expr *at = cacheEntry(site);
-    if (at == nullptr)
-      return nullptr;
-    std::array<clang::Expr *, 1> args = {at};
-    const clang::ExprResult valid =
-        callHelper("__weavec_range_check", args, loc, nullptr);
-    if (!usable(valid))
-      return nullptr;
-    if (all == nullptr) {
-      all = valid.get();
-      continue;
-    }
-    const clang::ExprResult both = comma(all, valid.get(), loc);
-    if (!usable(both))
-      return nullptr;
-    all = both.get();
-  }
-  return all;
-}
-
-bool CheckEmitter::Impl::declareCaches() {
-  bool ok = true;
-  for (auto &[function, cache] : caches) {
-    if (cache.variable == nullptr)
-      continue;
-    clang::Sema::ContextRAII inFunction(sema, mutableNode(function));
-    // `{ __weavec_range_check(&ranges[4 * e]), ...; loop }` for each quiet
-    // loop.
-    for (const auto &[loop, entries] : cache.loops) {
-      const clang::SourceLocation at = loop->getBeginLoc();
-      clang::Stmt *entered = attempt([&]() -> clang::Stmt * {
-        clang::Expr *empty = validateEntries(cache.variable, entries, at);
-        if (empty == nullptr)
-          return nullptr;
-        const clang::ExprResult discarded =
-            sema.ActOnFinishFullExpr(empty, at, /*DiscardedValue=*/true);
-        if (!usable(discarded))
-          return nullptr;
-        std::array<clang::Stmt *, 2> statements = {discarded.get(), loop};
-        return clang::CompoundStmt::Create(context, statements,
-                                           clang::FPOptionsOverride(), at,
-                                           loop->getEndLoc());
-      });
-      if (entered == nullptr || !place(loop, entered)) {
-        internalError(at, function->getNameAsString() + "'s range cache",
-                      /*zeroInit=*/false);
-        ok = false;
-      }
-    }
-    auto *body =
-        llvm::dyn_cast_or_null<clang::CompoundStmt>(function->getBody());
-    const clang::SourceLocation loc = cache.variable->getLocation();
-    clang::Stmt *clear =
-        body == nullptr ? nullptr : attempt([&]() -> clang::Stmt * {
-          // `__builtin_memset(__weavec_ranges, 0, sizeof __weavec_ranges)`: an
-          // entry whose length is 0 holds nothing.
-          clang::FunctionDecl *memset = builtin("__builtin_memset", loc);
-          if (memset == nullptr)
-            return nullptr;
-          const auto reference = [&] {
-            return clang::DeclRefExpr::Create(
-                context, clang::NestedNameSpecifierLoc(),
-                clang::SourceLocation(), cache.variable,
-                /*RefersToEnclosingVariableOrCapture=*/false, loc,
-                cache.variable->getType(), clang::VK_LValue);
-          };
-          const clang::ExprResult size = sema.CreateUnaryExprOrTypeTraitExpr(
-              reference(), loc, clang::UETT_SizeOf);
-          if (!usable(size))
-            return nullptr;
-          std::array<clang::Expr *, 3> args = {
-              reference(), literal(0, context.IntTy, loc), size.get()};
-          clang::Expr *callee = sema.BuildDeclRefExpr(memset, memset->getType(),
-                                                      clang::VK_LValue, loc);
-          const clang::ExprResult call =
-              sema.BuildCallExpr(nullptr, callee, loc, args, loc);
-          return usable(call) ? call.get() : nullptr;
-        });
-    if (clear == nullptr) {
-      internalError(function->getLocation(),
-                    function->getNameAsString() + "'s range cache",
-                    /*zeroInit=*/false);
-      ok = false;
-      continue;
-    }
-    llvm::SmallVector<clang::Stmt *, 32> statements;
-    statements.push_back(new (context) clang::DeclStmt(
-        clang::DeclGroupRef(cache.variable), loc, loc));
-    statements.push_back(clear);
-    statements.append(body->body_begin(), body->body_end());
-    clang::Stmt *entered = clang::CompoundStmt::Create(
-        context, statements, body->getStoredFPFeaturesOrDefault(),
-        body->getLBracLoc(), body->getRBracLoc());
-    if (!place(body, entered)) {
-      internalError(function->getLocation(),
-                    function->getNameAsString() + "'s range cache",
-                    /*zeroInit=*/false);
-      ok = false;
-    }
-  }
-  caches.clear();
-  return ok;
-}
-
-//===----------------------------------------------------------------------===//
 // Object registration (RFC 0032 §4, §5)
 //===----------------------------------------------------------------------===//
 
 clang::VarDecl *CheckEmitter::Impl::frameGuard(const StackObject &object) {
   auto *function = mutableNode(object.function);
-  const clang::SourceLocation loc = object.variable != nullptr
-                                        ? object.variable->getLocation()
-                                        : function->getBody()->getBeginLoc();
+  const clang::SourceLocation loc = object.variable->getLocation();
   clang::FunctionDecl *leave = helper("__weavec_stack_leave");
   if (leave == nullptr)
     return nullptr;
@@ -2163,9 +1977,11 @@ clang::VarDecl *CheckEmitter::Impl::frameGuard(const StackObject &object) {
       context, function, loc, loc, &name, context.VoidPtrTy,
       context.getTrivialTypeSourceInfo(context.VoidPtrTy, loc), clang::SC_None);
   guard->setImplicit(true);
-  // The marker of a function with nothing to enter is entered itself.
-  auto *variable =
-      object.variable != nullptr ? mutableNode(object.variable) : guard;
+  auto *variable = mutableNode(object.variable);
+  // RFC 0034 §4: a local on a granule is entered inline and exactly. So is
+  // a parameter passed in registers (CodeGen aligns its spill slot); one
+  // passed in memory keeps the alignment the call gives it.
+  alignToGranule(*variable);
   clang::Stmt *init = attempt([&]() -> clang::Stmt * {
     // `__weavec_stack_enter(&v, sizeof v)`; `sizeof` is evaluated at run time
     // for a variable-length array.
@@ -2201,6 +2017,14 @@ clang::VarDecl *CheckEmitter::Impl::frameGuard(const StackObject &object) {
   guard->setReferenced(true);
   function->addHiddenDecl(guard);
   return guard;
+}
+
+void CheckEmitter::Impl::alignToGranule(clang::VarDecl &variable) {
+  if (context.getDeclAlign(&variable).getQuantity() >= 16)
+    return;
+  clang::Expr *sixteen = literal(16, context.IntTy, variable.getLocation());
+  variable.addAttr(clang::AlignedAttr::CreateImplicit(
+      context, /*IsAlignmentExpr=*/true, sixteen, variable.getSourceRange()));
 }
 
 bool CheckEmitter::Impl::enterStackObjects(
@@ -2356,6 +2180,8 @@ bool CheckEmitter::Impl::registerObjects(const ObjectPlan &plan) {
       }
   }
   for (const clang::VarDecl *global : plan.globals) {
+    // RFC 0034 §2.1: on a granule, the shadow encodes it exactly.
+    alignToGranule(*mutableNode(global));
     clang::VarDecl *descriptor = globalDescriptor(*global);
     if (descriptor == nullptr) {
       internalError(global->getLocation(), global->getNameAsString(),

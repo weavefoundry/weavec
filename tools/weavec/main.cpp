@@ -110,8 +110,9 @@ cl::opt<weavec::core::RequireLevel> requireLevel(
 
 cl::opt<std::uint64_t>
     budget("budget",
-           cl::desc("Block transfers per function before its analysis stops "
-                    "(default: 50000; 0: unlimited)"),
+           cl::desc("Work per function before its analysis stops: the sizes "
+                    "of the states it transfers and joins (default: 20000000; "
+                    "0: unlimited)"),
            cl::init(weavec::core::DefaultBudget), cl::cat(weavecCategory));
 
 cl::opt<bool> noRuntime("no-runtime",

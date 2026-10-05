@@ -20,7 +20,7 @@ void bad_strcat(void) {
 
 void bad_sprintf(int x) {
   char buf[4];
-  sprintf(buf, "%d!!!", x); // BUG: out-of-bounds // TRAP: len
+  sprintf(buf, "%d!!!", x); // BUG: out-of-bounds // TRAP: object
   print_line(buf);
 }
 

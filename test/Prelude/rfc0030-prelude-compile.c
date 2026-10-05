@@ -54,8 +54,6 @@
  * TRAP: #pragma clang diagnostic ignored "-Weverything"
  * TRAP: static __inline__ __attribute__((always_inline, nodebug, unused)) void *__weavec_chk_nonnull(const volatile void *p) {
  * TRAP: (__weavec_rt_trapping(), __builtin_verbose_trap("weavec", "nonnull"));
- * TRAP: __weavec_chk_violation(void)
- * TRAP: (__weavec_rt_trapping(), __builtin_verbose_trap("weavec", "violation"));
  * TRAP: __weavec_need_add
  * TRAP: __weavec_malloc_zero
  * TRAP: #pragma clang diagnostic pop
@@ -63,7 +61,6 @@
  * REPORT: extern void __weavec_rt_report(const char *, const char *, unsigned, unsigned);
  * REPORT: __weavec_chk_nonnull(const volatile void *p, const char *file, unsigned line, unsigned column)
  * REPORT: __weavec_rt_report("nonnull", file, line, column);
- * REPORT: __weavec_chk_violation(const char *file, unsigned line, unsigned column)
  * REPORT-NOT: __builtin_verbose_trap
  *
  * VERIFY: __weavec_chk_index

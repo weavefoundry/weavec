@@ -108,8 +108,12 @@ enum class UnresolvedReason : std::uint8_t {
   DanglingEscape,
   SecondOwner,
   NoZeroInit,
+  /// RFC 0034 §6.1: a definite finding the replay did not confirm.
+  Unconfirmed,
+  /// RFC 0034 §6.4: a lowered violation with no check or guard.
+  Lowered,
 };
-inline constexpr std::size_t UnresolvedReasonCount = 19;
+inline constexpr std::size_t UnresolvedReasonCount = 21;
 
 /// §2.4: the named trust assumption a trusted facet rests on. Closed.
 enum class TrustReason : std::uint8_t {
@@ -147,12 +151,11 @@ enum class CheckTemplate : std::uint8_t {
   Len,
   Disjoint,
   Assert,
-  Violation,
   Object,
   Live,
   Release,
 };
-inline constexpr std::size_t CheckTemplateCount = 10;
+inline constexpr std::size_t CheckTemplateCount = 9;
 
 /// Whether `kind` is a guard of RFC 0032: a check against the runtime's
 /// object table rather than against a bound the code states.
@@ -610,11 +613,9 @@ struct Producer {
   friend bool operator==(const Producer &, const Producer &) = default;
 };
 
-/// The default of `-fweavec-budget` (§5.5): the smallest multiple of 50,000
-/// that is at least four times the 99.9th percentile of per-function block
-/// transfers over the corpus (S3 measured 7,208 over 2,874 functions; the
-/// most, `luaV_execute`, takes 25,518).
-inline constexpr std::uint64_t DefaultBudget = 50000;
+/// The default of `-fweavec-budget` (§5.5, RFC 0034 §7.1): the work of one
+/// function's run, the sizes of the states it transfers and joins summed.
+inline constexpr std::uint64_t DefaultBudget = 20000000;
 
 /// §12.1 `config`.
 struct LedgerConfig {
@@ -626,7 +627,7 @@ struct LedgerConfig {
   RuntimeUse runtime = RuntimeUse::Off;
   bool zeroInit = true;
   RequireLevel require = RequireLevel::None;
-  /// Block transfers per function; 0 means unlimited.
+  /// Work per function's run (RFC 0034 §7.1); 0 means unlimited.
   std::uint64_t budget = DefaultBudget;
 
   friend bool operator==(const LedgerConfig &, const LedgerConfig &) = default;

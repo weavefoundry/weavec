@@ -16,7 +16,8 @@ must be reported, checked or left unproven.
 | `soundness/` | the 113 soundness probes (85 bug, 28 correct) and their extra units, and 28 alias probes (`alias-*`: 14 bug, 14 correct): RFC 0031's 22 and RFC 0032's 6 (`alias-global-element-*`, `alias-record-element_*`); see its README |
 | `repros/` | the 12 root-cause false-positive repros, with their intended RFC 0030 expectations, and RFC 0031's 8 held-out repros (`ooc-*`) |
 | `proofs/` | salvaged cases that once caught a false proof (`SOURCES.md` gives their origin) |
-| `semantics/<feature>/` | new cases per RFC 0030 feature; `semantics/objects/` is RFC 0031's object domain (§11.1); `semantics/runtime/` is RFC 0032's runtime enforcement (43 cases: 19 bugs that must trap or stay unenforced without the runtime, 24 correct programs that must not trap) |
+| `semantics/<feature>/` | new cases per RFC 0030 feature; `semantics/objects/` is RFC 0031's object domain (§11.1); `semantics/runtime/` is RFC 0032's runtime enforcement (43 cases: 19 bugs that must trap or stay unenforced without the runtime, 24 correct programs that must not trap); `semantics/confirm/` is RFC 0034's false stops and silent misses (§9), `semantics/detect-probes/` the three probes written after its detection set |
+| `detection/` | RFC 0034's detection set (gate F4): the 61 blind bug programs of its milestone, each with its fixed twin, one directory per program ([Detection cases](#detection-cases)) |
 
 `GOLDEN.md` describes the golden v0.10.0 binaries and `KNOWN-DIFFERENCES.md`
 lists the engine pins the RFC 0030 build no longer reproduces.
@@ -89,6 +90,9 @@ separated by `//`:
 | `UNITS: <file.c> [<file.c> ...]` | file | further translation units linked with this one, relative to the case |
 | `ASAN` | file | also run the ASan oracle, and require it to report the bug |
 | `TOOL` | file | analyse with `weavec --ledger` (no build, no run) |
+| `DETECT: <flags>` | file | a detection case (below): `<flags>` (e.g. `-DFIX`) select the fixed twin |
+| `STOP` | line | in a `DETECT` case, a line the bug must stop at or before; `STOP // MISS: <reason>` is a known miss |
+| `XFAIL: <reason>` | file | the case is expected to fail today: a failure is `XFAIL`, a pass is `XPASS` (remove the marker); neither fails the run |
 
 Facets are `spatial`, `null`, `temporal` and `assertion`; reasons are the
 spellings of RFC 0030 §2.3–2.4. `UNRESOLVED` does not tell an unresolved
@@ -118,6 +122,66 @@ Rules the grammar leaves implicit, as the runner enforces them:
   marker). `CLEAN` excludes `BUG`, `MISS`, `NEUTRALISED` and `TRAP`; `ALLOW`
   needs `CLEAN`; `ASAN` and `RUN-INPUT` need a unit that defines `main`;
   `TOOL` excludes both.
+
+## Detection cases
+
+A `DETECT` case (RFC 0034 §9, gate F4) is judged by whether its bug
+*stops*, not by what is reported where. It has `STOP` lines (the faulty
+operation; there may be several) and none of `CLEAN`, `ALLOW`, `TOOL`,
+`BUG`, `TRAP`, `NEUTRALISED`, `EXPECT-LEDGER` or the ledger markers; a
+unit must define `main`. The runner builds it twice as the default build
+does (trap mode, the runtime on, its `FLAGS`, the link reading records
+rather than analysing again), once as is (the bug) and once with the
+`DETECT` flags added to every compile and link (the twin), runs each
+build once per `RUN-INPUT`, and rebuilds each in report mode with
+`-D_FORTIFY_SOURCE=0` (so that the first failure reported is WeaveC's,
+not the C library's) to name each failed check.
+
+- **The bug stops** when its build stops at a WeaveC error (anywhere;
+  one on no `STOP` line is noted), or when a run traps (`SIGTRAP` or
+  `SIGILL`) and the first failed check of the same input's report-mode run
+  is on a `STOP` line. A trap whose report-mode run names no check (the C
+  library's own) or names one on another line (a later read) is not a
+  stop. A bug that does not stop fails the case, unless its `STOP` line
+  carries `MISS: <reason>`: a known miss passes silently, and when it
+  stops it is printed as `now stops (remove its MISS marker)`.
+- **The twin must not stop**: no error, no clang error, no run that dies
+  by a signal or times out, and no failed check in its report-mode run.
+  This holds for known misses too.
+- **`--checks verify`** builds both in verify mode: a verify-mode trap of
+  the bug where the report-mode run names no failed check is a
+  `weavec.proven` trap (a bug ran past a proven facet), and fails the case
+  whatever its markers, as F4 asks.
+- **`--asan`** also builds the bug with ASan and counts its reports (gate
+  F6 compares the stops with them).
+- Detection cases are skipped under `--legacy`, `--no-run`,
+  `--no-emission` and `--require`, which do not build or run the default
+  build.
+
+Each suite's summary has a `detection:` line, `54/61 bugs stop (7 at
+compile time, 47 at run time); 7 known misses, 0 of them stopping now;
+61/61 fixed twins clean`, and `--min-stops N` fails the run unless at
+least N of the selected detection cases stop:
+
+```sh
+scripts/run-cases.py --filter 'detection/**' --min-stops 54   # gate F4
+scripts/run-cases.py --filter 'detection/**' --checks verify  # F4: no bug past a proven facet
+```
+
+`detection/NN_<class>_<name>/` holds one program (its `prog.c` or
+`main.c`, any further units named by `UNITS`, its headers and its
+`stdin.txt`) converted from the milestone's `detect/cases/<name>/`: its
+`/* BUG */` comments became `STOP` markers, `args` and `stdin` became
+`RUN-INPUT`, and each case is built with `FLAGS: -O2`, as the milestone
+measured. Five are known misses today (11, 24, 36, 38 and 57, each with
+its reason); `semantics/detect-probes/` holds the three probes (62 is a
+known miss).
+
+`XFAIL` marks a case written for behaviour a later stage brings (RFC 0034's
+`semantics/confirm/` cases, against a tree before §5 and §6): it runs as
+usual, and its result is reported as `XFAIL` while it fails and as `XPASS`
+once it passes, when the marker should go. A marker error is still an
+error.
 
 ## How a case is judged
 

@@ -1,0 +1,66 @@
+/* config.h for the corpus gate's per-file compiles of liblzma: the definitions
+ * xz's CMake build (Release, -DXZ_NLS=OFF) passes to liblzma on darwin-arm64,
+ * written as a header (sysdefs.h includes it under HAVE_CONFIG_H). */
+
+#define HAVE_ARM64_CRC32 1
+#define HAVE_CHECK_CRC32 1
+#define HAVE_CHECK_CRC64 1
+#define HAVE_CHECK_SHA256 1
+#define HAVE_CLOCK_GETTIME 1
+#define HAVE_CLOCK_MONOTONIC 1
+#define HAVE_DECODERS 1
+#define HAVE_DECODER_ARM 1
+#define HAVE_DECODER_ARM64 1
+#define HAVE_DECODER_ARMTHUMB 1
+#define HAVE_DECODER_DELTA 1
+#define HAVE_DECODER_IA64 1
+#define HAVE_DECODER_LZMA1 1
+#define HAVE_DECODER_LZMA2 1
+#define HAVE_DECODER_POWERPC 1
+#define HAVE_DECODER_RISCV 1
+#define HAVE_DECODER_SPARC 1
+#define HAVE_DECODER_X86 1
+#define HAVE_ENCODERS 1
+#define HAVE_ENCODER_ARM 1
+#define HAVE_ENCODER_ARM64 1
+#define HAVE_ENCODER_ARMTHUMB 1
+#define HAVE_ENCODER_DELTA 1
+#define HAVE_ENCODER_IA64 1
+#define HAVE_ENCODER_LZMA1 1
+#define HAVE_ENCODER_LZMA2 1
+#define HAVE_ENCODER_POWERPC 1
+#define HAVE_ENCODER_RISCV 1
+#define HAVE_ENCODER_SPARC 1
+#define HAVE_ENCODER_X86 1
+#define HAVE_FUNC_ATTRIBUTE_CONSTRUCTOR 1
+#define HAVE_INTTYPES_H 1
+#define HAVE_LZIP_DECODER 1
+#define HAVE_MF_BT2 1
+#define HAVE_MF_BT3 1
+#define HAVE_MF_BT4 1
+#define HAVE_MF_HC3 1
+#define HAVE_MF_HC4 1
+#define HAVE_STDBOOL_H 1
+#define HAVE_STDINT_H 1
+#define HAVE_SYSCTLBYNAME 1
+#define HAVE_SYS_PARAM_H 1
+#define HAVE_VISIBILITY 0
+#define HAVE__BOOL 1
+#define HAVE___BUILTIN_ASSUME_ALIGNED 1
+#define HAVE___BUILTIN_BSWAPXX 1
+#define MYTHREAD_POSIX 1
+#define PACKAGE_BUGREPORT "xz@tukaani.org"
+#define PACKAGE_NAME "XZ Utils"
+#define PACKAGE_URL "https://tukaani.org/xz/"
+#define TUKLIB_CPUCORES_SYSCTL 1
+#define TUKLIB_FAST_UNALIGNED_ACCESS 1
+#define TUKLIB_PHYSMEM_SYSCONF 1
+#define TUKLIB_SYMBOL_PREFIX lzma_
+#define _ALL_SOURCE 1
+#define _DARWIN_C_SOURCE 1
+#define _GNU_SOURCE 1
+#define _NETBSD_SOURCE 1
+#define _OPENBSD_SOURCE 1
+#define _POSIX_PTHREAD_SEMANTICS 1
+#define _TANDEM_SOURCE 1
+#define __EXTENSIONS__ 1

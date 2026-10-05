@@ -13,7 +13,7 @@
 int main(void) {
   char *p = malloc(4);
   if (!p) return 1;
-  p[4] = 0; // BUG: out-of-bounds possible // TRAP: violation
+  p[4] = 0; // BUG: out-of-bounds possible // TRAP: index
   free(p);
   return 0;
 }

@@ -781,6 +781,126 @@
       "line": 168,
       "verdict": "true",
       "note": "TRUE POSITIVE, deliberate. metatest's double_free (framework/tests/programs/metatest.c:161) frees `p` twice (comment: 'Undefined behavior (double free)'), to check that sanitizers catch it."
+    },
+    {
+      "fingerprint": "8aca700b1e3a6293f2cad8b0504a4423",
+      "config": "cJSON",
+      "id": "double-free",
+      "certainty": "possible",
+      "file": "tests/misc_tests.c",
+      "line": 466,
+      "verdict": "false",
+      "note": "FALSE POSITIVE, correlated conditions (RFC 0030 Soundness: 'Possible temporal warnings can be false'). `cjson_functions_should_not_crash_with_null_pointers` passes NULL to every entry point; each callee tests its arguments and returns false without deleting anything (the test asserts exactly that), so `item` is released once, by `cJSON_Delete(item)` at tests/misc_tests.c:489. The engine cannot relate the callee's NULL test to the argument it was given."
+    },
+    {
+      "fingerprint": "4ebbd131b9f82b4ec6cd650195dfb51b",
+      "config": "cJSON",
+      "id": "use-after-free",
+      "certainty": "possible",
+      "file": "tests/misc_tests.c",
+      "line": 468,
+      "verdict": "false",
+      "note": "FALSE POSITIVE, correlated conditions (RFC 0030 Soundness: 'Possible temporal warnings can be false'). `cjson_functions_should_not_crash_with_null_pointers` passes NULL to every entry point; each callee tests its arguments and returns false without deleting anything (the test asserts exactly that), so `item` is released once, by `cJSON_Delete(item)` at tests/misc_tests.c:489. The engine cannot relate the callee's NULL test to the argument it was given."
+    },
+    {
+      "fingerprint": "79c866e37712041e8c08f83acb922027",
+      "config": "cJSON",
+      "id": "use-after-free",
+      "certainty": "possible",
+      "file": "tests/misc_tests.c",
+      "line": 469,
+      "verdict": "false",
+      "note": "FALSE POSITIVE, correlated conditions (RFC 0030 Soundness: 'Possible temporal warnings can be false'). `cjson_functions_should_not_crash_with_null_pointers` passes NULL to every entry point; each callee tests its arguments and returns false without deleting anything (the test asserts exactly that), so `item` is released once, by `cJSON_Delete(item)` at tests/misc_tests.c:489. The engine cannot relate the callee's NULL test to the argument it was given."
+    },
+    {
+      "fingerprint": "5078587cdf762871f2a6bcc253e6ac1a",
+      "config": "cJSON",
+      "id": "use-after-free",
+      "certainty": "possible",
+      "file": "tests/misc_tests.c",
+      "line": 470,
+      "verdict": "false",
+      "note": "FALSE POSITIVE, correlated conditions (RFC 0030 Soundness: 'Possible temporal warnings can be false'). `cjson_functions_should_not_crash_with_null_pointers` passes NULL to every entry point; each callee tests its arguments and returns false without deleting anything (the test asserts exactly that), so `item` is released once, by `cJSON_Delete(item)` at tests/misc_tests.c:489. The engine cannot relate the callee's NULL test to the argument it was given."
+    },
+    {
+      "fingerprint": "523eb47bbb4a9dd717ca78af8144eb5b",
+      "config": "cJSON",
+      "id": "use-after-free",
+      "certainty": "possible",
+      "file": "tests/misc_tests.c",
+      "line": 471,
+      "verdict": "false",
+      "note": "FALSE POSITIVE, correlated conditions (RFC 0030 Soundness: 'Possible temporal warnings can be false'). `cjson_functions_should_not_crash_with_null_pointers` passes NULL to every entry point; each callee tests its arguments and returns false without deleting anything (the test asserts exactly that), so `item` is released once, by `cJSON_Delete(item)` at tests/misc_tests.c:489. The engine cannot relate the callee's NULL test to the argument it was given."
+    },
+    {
+      "fingerprint": "a98d558ad06d328cc8ac0172dc61684a",
+      "config": "cJSON",
+      "id": "use-after-free",
+      "certainty": "possible",
+      "file": "tests/misc_tests.c",
+      "line": 472,
+      "verdict": "false",
+      "note": "FALSE POSITIVE, correlated conditions (RFC 0030 Soundness: 'Possible temporal warnings can be false'). `cjson_functions_should_not_crash_with_null_pointers` passes NULL to every entry point; each callee tests its arguments and returns false without deleting anything (the test asserts exactly that), so `item` is released once, by `cJSON_Delete(item)` at tests/misc_tests.c:489. The engine cannot relate the callee's NULL test to the argument it was given."
+    },
+    {
+      "fingerprint": "9964befe67b6e70d9c79abc00b51f677",
+      "config": "cJSON",
+      "id": "use-after-free",
+      "certainty": "possible",
+      "file": "tests/misc_tests.c",
+      "line": 473,
+      "verdict": "false",
+      "note": "FALSE POSITIVE, correlated conditions (RFC 0030 Soundness: 'Possible temporal warnings can be false'). `cjson_functions_should_not_crash_with_null_pointers` passes NULL to every entry point; each callee tests its arguments and returns false without deleting anything (the test asserts exactly that), so `item` is released once, by `cJSON_Delete(item)` at tests/misc_tests.c:489. The engine cannot relate the callee's NULL test to the argument it was given."
+    },
+    {
+      "fingerprint": "fa457b6ec27f0914aa06a07f37dd5d82",
+      "config": "cJSON",
+      "id": "use-after-free",
+      "certainty": "possible",
+      "file": "tests/misc_tests.c",
+      "line": 474,
+      "verdict": "false",
+      "note": "FALSE POSITIVE, correlated conditions (RFC 0030 Soundness: 'Possible temporal warnings can be false'). `cjson_functions_should_not_crash_with_null_pointers` passes NULL to every entry point; each callee tests its arguments and returns false without deleting anything (the test asserts exactly that), so `item` is released once, by `cJSON_Delete(item)` at tests/misc_tests.c:489. The engine cannot relate the callee's NULL test to the argument it was given."
+    },
+    {
+      "fingerprint": "97636e8f5683ad107f9496c5777ac627",
+      "config": "cJSON",
+      "id": "use-after-free",
+      "certainty": "possible",
+      "file": "tests/misc_tests.c",
+      "line": 476,
+      "verdict": "false",
+      "note": "FALSE POSITIVE, correlated conditions (RFC 0030 Soundness: 'Possible temporal warnings can be false'). `cjson_functions_should_not_crash_with_null_pointers` passes NULL to every entry point; each callee tests its arguments and returns false without deleting anything (the test asserts exactly that), so `item` is released once, by `cJSON_Delete(item)` at tests/misc_tests.c:489. The engine cannot relate the callee's NULL test to the argument it was given."
+    },
+    {
+      "fingerprint": "724a353f2fc50b5c59b4277f513e555c",
+      "config": "cJSON",
+      "id": "use-after-free",
+      "certainty": "possible",
+      "file": "tests/misc_tests.c",
+      "line": 477,
+      "verdict": "false",
+      "note": "FALSE POSITIVE, correlated conditions (RFC 0030 Soundness: 'Possible temporal warnings can be false'). `cjson_functions_should_not_crash_with_null_pointers` passes NULL to every entry point; each callee tests its arguments and returns false without deleting anything (the test asserts exactly that), so `item` is released once, by `cJSON_Delete(item)` at tests/misc_tests.c:489. The engine cannot relate the callee's NULL test to the argument it was given."
+    },
+    {
+      "fingerprint": "7d7a2495a2bb210065a7e3f7129573a6",
+      "config": "cJSON",
+      "id": "use-after-free",
+      "certainty": "possible",
+      "file": "tests/misc_tests.c",
+      "line": 480,
+      "verdict": "false",
+      "note": "FALSE POSITIVE, correlated conditions (RFC 0030 Soundness: 'Possible temporal warnings can be false'). `cjson_functions_should_not_crash_with_null_pointers` passes NULL to every entry point; each callee tests its arguments and returns false without deleting anything (the test asserts exactly that), so `item` is released once, by `cJSON_Delete(item)` at tests/misc_tests.c:489. The engine cannot relate the callee's NULL test to the argument it was given."
+    },
+    {
+      "fingerprint": "63c2892d00cff4efb8409a328c3576eb",
+      "config": "cJSON",
+      "id": "double-free",
+      "certainty": "possible",
+      "file": "tests/misc_tests.c",
+      "line": 489,
+      "verdict": "false",
+      "note": "FALSE POSITIVE, correlated conditions (RFC 0030 Soundness: 'Possible temporal warnings can be false'). `cjson_functions_should_not_crash_with_null_pointers` passes NULL to every entry point; each callee tests its arguments and returns false without deleting anything (the test asserts exactly that), so `item` is released once, by `cJSON_Delete(item)` at tests/misc_tests.c:489. The engine cannot relate the callee's NULL test to the argument it was given."
     }
   ]
 }

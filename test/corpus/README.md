@@ -144,6 +144,49 @@ Each config's `notes` say why its build and test are what they are.
   needs a verdict, and a config without an `expected.json` record is a note
   until `--update` records it.
 
+## The RFC 0034 sets (`fresh34`, `sealed34`; RFC 0034, section 9)
+
+Fifteen more projects nobody tuned WeaveC on, pinned by SHA with their own
+build, test and (for `fresh34`) a run-time workload (`bench`), marked
+`"heldOut": true` and `"set": "fresh34"` or `"sealed34"`. `--set SET`
+runs one set alone; `sealed34` runs only with `--set sealed34` (before the
+final tree only with `--reference-only`, to write its commands).
+
+| Config | Set | Files | Test | Workload (`bench`) |
+| --- | --- | --- | --- | --- |
+| quickjs | fresh34 | 6 | `make test`, the examples | `qjs` over `bench/quickjs-bench.js` |
+| lmdb | fresh34 | 8 | `support/lmdb/run-tests.sh` | `bench/lmdb-bench.c` (put, get) |
+| janet | fresh34 | 2 | `make test` (its socket suite is timing-dependent) | `bench/janet-bench.janet` |
+| brotli | fresh34 | 3 | CTest, round trips | `brotli -q 7` and back, 64 MiB |
+| xz | fresh34 | 45 | CTest, round trips | `xz -6 -T1` and back, 64 MiB |
+| libdeflate | fresh34 | 2 | CTest, round trips | `libdeflate-gzip -1/-6/-9` and back, 64 MiB |
+| zlib-ng | fresh34 | 38 | CTest, `support/zlib-ng/round-trips.sh` | `minigzip -1/-6/-9` and back, 64 MiB |
+| curl | fresh34 | 45 | `runtests.pl` (1–999, 1300–1399, 1500–1699, not flaky or timing-dependent) | `bench/curl-bench.c` (URL and cookie parsing) |
+| cmark | fresh34 | 1 | CTest | the spec rendered in five formats |
+| libgit2 | fresh34 | 45 | `util_tests`, offline suites of `libgit2_tests` | `bench/libgit2-bench.c` (history walk) |
+| libjpeg-turbo | sealed34 | 45 | CTest | — |
+| opus | sealed34 | 45 | CTest (`SEED=1`) | — |
+| flac | sealed34 | 42 | CTest, the test streams at level 0 | — |
+| giflib | sealed34 | 1 | `support/giflib/run-tests.sh` | — |
+| wren | sealed34 | 4 | `util/test.py` | — |
+
+- **Gates** (`gates.rfc0034` in the manifest): `rfc0034.F1` over `fresh34`
+  (every build passes with the default flags, or stops only at definite
+  errors triaged true, and every test suite passes in trap mode with no trap
+  and in report mode with no failure); `rfc0034.F2`, the same over
+  `sealed34` from its one run; `rfc0034.F5` (each config's build CPU time
+  at most 5 times the reference compiler's, `sqlite3.c` within 120 CPU
+  seconds, no compiler process above 2,048 MiB of peak memory) and
+  `rfc0034.F7` (with `--bench`, each `fresh34` workload at most 4 times the
+  reference compiler's user CPU time and their geometric mean at most 2.5;
+  RFC 0032's G14 benchmarks: Lua 2.5, zlib 1.5, cJSON 1.5).
+- **Benchmarks.** A config's `bench` builds the workload three times (the
+  default build, one with `-fno-weavec-runtime`, and the reference
+  compiler's), runs `command` `repeat` times and takes the minimum user CPU time; `check`
+  verifies the output, `input` makes a deterministic input. Run nothing
+  else heavy on the machine during `--full`: the workloads and janet's
+  socket suite are timing-sensitive.
+
 ## Running it
 
 Checkouts live in `build/corpus/<project>` (`--workdir`). A missing one is

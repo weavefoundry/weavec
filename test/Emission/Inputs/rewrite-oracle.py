@@ -7,7 +7,8 @@
 Compiles SOURCE with `weavec-cc`, which inserts the checks, and EXPECTED, a
 hand-written file that calls the same prelude helpers explicitly, with the
 reference Clang and `-include` of the prelude `weavec-cc
--fweavec-print-prelude` prints. Both go to LLVM IR at -O0, lose their debug
+-fweavec-print-prelude` prints. Both go to LLVM IR at -O0 without the LLVM
+passes (the guard passes' lowering is not the rewrite), lose their debug
 information (`opt -S --strip-debug`) and the lines that name the source file,
 and must then be equal; otherwise the script prints a diff and fails.
 
@@ -79,12 +80,15 @@ def main():
 
     run([args.weavec_cc, "-fweavec-print-prelude"] + weavec_flags +
         ["-o", prelude])
-    run([args.weavec_cc] + sysroot + ["-O0", "-S", "-emit-llvm",
-                                      "-fno-color-diagnostics"] +
+    # (The rewrite is the oracle's: neither side runs the LLVM passes, so
+    # the guard passes' lowering, RFC 0034 section 1, is not compared.)
+    passes = ["-Xclang", "-disable-llvm-passes"]
+    run([args.weavec_cc] + sysroot + passes + ["-O0", "-S", "-emit-llvm",
+                                               "-fno-color-diagnostics"] +
         weavec_flags + common + [args.source, "-o", instrumented])
     zero = ("-fno-weavec-zero-init" not in weavec_flags and
             "-fweavec-checks=none" not in weavec_flags)
-    reference = [args.clang] + sysroot + [
+    reference = [args.clang] + sysroot + passes + [
         "-O0", "-S", "-emit-llvm", "-include", prelude, "-isystem",
         args.resource_dir, "-D__WEAVEC__=1",
         '-DORACLE_FILE="%s"' % args.source]

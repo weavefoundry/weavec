@@ -1,6 +1,7 @@
-/* rewrite-oracle-lowered-violation.c as the check emitter rewrites it. */
+/* rewrite-oracle-lowered-violation.c as the check emitter rewrites it, with
+ * the runtime. */
 void free(void *);
 void twice(int *p) {
-  free(p);
-  (__weavec_chk_violation(), free(p));
+  free(__weavec_chk_release(p));
+  free(__weavec_chk_release(p));
 }

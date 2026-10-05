@@ -256,15 +256,22 @@ static std::vector<SlotKindRow> slotKinds(const analysis::KindTable &kinds,
                                           const clang::ASTContext &context,
                                           const std::string &unit) {
   const clang::SourceManager &sm = context.getSourceManager();
+  // (Each place once, and a few: the stores a macro expands are one place,
+  // and a header's every includer records its slots.)
+  static constexpr std::size_t MaxDemotions = 8;
   const auto locations = [&](const analysis::KindEntry &entry) {
     std::vector<core::SourceLocation> stores;
     for (const analysis::KindDemotion &demotion : entry.demotedBy) {
-      if (demotion.store == nullptr)
+      if (demotion.store == nullptr || stores.size() == MaxDemotions)
         continue;
       core::SourceLocation location =
           analysis::toCoreLocation(sm, demotion.store->getBeginLoc());
       location.opaque = 0;
-      stores.push_back(std::move(location));
+      if (std::ranges::none_of(stores, [&](const core::SourceLocation &each) {
+            return each.file == location.file && each.line == location.line &&
+                   each.column == location.column;
+          }))
+        stores.push_back(std::move(location));
     }
     return stores;
   };

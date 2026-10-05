@@ -8,7 +8,7 @@ void run(void) {
   if (!p) return;
   p->claimed = 10;
   int *tail = p->data;
-  tail[2] = 0; // BUG: out-of-bounds // TRAP: index
+  tail[2] = 0; // BUG: out-of-bounds // TRAP: span
   free(p);
 }
 // Driver (RFC 0030 section 17.2): executes the defect so the runtime oracle can observe the check.

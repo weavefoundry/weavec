@@ -146,6 +146,20 @@ struct LibDisjoint {
   friend bool operator==(const LibDisjoint &, const LibDisjoint &) = default;
 };
 
+/// RFC 0034 §5.2: `wrapper(name, room, source, disjoint)`: the prelude's
+/// checked wrapper `__weavec_chk_<name>` may replace the call. It computes at
+/// run time what the row's terms state but a check could not name at the
+/// site: the bytes argument 0 needs (`room`), the bytes argument 1 needs
+/// (`source`, a copy's), and the row's `disjoint` clause.
+struct LibWrapper {
+  std::string name;
+  bool room = false;
+  bool source = false;
+  bool disjoint = false;
+
+  friend bool operator==(const LibWrapper &, const LibWrapper &) = default;
+};
+
 /// `copies(dst, src, length)`: the call copies the first `length` bytes of
 /// argument `src` to argument `dst` (`memcpy`, `strncpy`).
 struct LibCopy {
@@ -295,6 +309,11 @@ struct LibraryParam {
   /// `out(…)`: the call stores this value through the pointer, which points
   /// to a pointer slot (`getline`, `asprintf`, `strtol`'s end pointer).
   std::optional<LibraryResult> out;
+  /// `range(t)` (Release only, RFC 0034 §6.3): the call releases the `t`
+  /// bytes from the pointer (`munmap`): the object only when they cover it
+  /// from its start; any other release of it is possible, and the pointer
+  /// may point anywhere in it.
+  std::optional<LibTerm> range;
 
   friend bool operator==(const LibraryParam &, const LibraryParam &) = default;
 };
@@ -355,6 +374,8 @@ struct LibraryEntry {
   bool exits = false;
   bool returnsTwice = false;
   std::optional<LibFormat> format;
+  /// RFC 0034 §5.2: the checked wrapper that may replace the call.
+  std::optional<LibWrapper> wrapper;
   /// The line of `LibrarySpec.txt` the row starts on.
   unsigned line = 0;
 
@@ -366,6 +387,11 @@ struct LibraryEntry {
   [[nodiscard]] bool releases() const noexcept;
   /// Some argument carries a callback clause (a §9.4 boundary).
   [[nodiscard]] bool hasCallback() const noexcept;
+  /// RFC 0034 §6.3: the row gives pointer argument `index` no access
+  /// requirement and no effect (`mmap`'s address hint, `none` with neither
+  /// an extent, an effect, a callback nor an out value, and named by no
+  /// clause or callback): the call uses only its value.
+  [[nodiscard]] bool usesValueOnly(unsigned index) const noexcept;
   /// Neither `noreturn` nor `exits` (§7.5 "known to return").
   [[nodiscard]] bool knownToReturn() const noexcept;
   /// Declared by the compiler rather than a header (`__builtin_expect`).
