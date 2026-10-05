@@ -86,6 +86,11 @@ public:
     return possible;
   }
 
+  /// RFC 0033 §8: makes `id` off unless a flag enables it (`-Wweavec-<id>`,
+  /// `-Wweavec`), as `allocation-failure` is everywhere; `weavec-cc` does
+  /// this for `leak`.
+  void turnOffByDefault(std::string_view id) { offByDefault.emplace(id); }
+
   friend bool operator==(const DiagnosticControl &,
                          const DiagnosticControl &) = default;
 
@@ -102,6 +107,7 @@ private:
   bool enableAll = false;
   std::map<std::string, bool, std::less<>> enabledIds;
   std::optional<bool> possible;
+  std::set<std::string, std::less<>> offByDefault;
 };
 
 /// Where a diagnostic was emitted, for deduplication between the compile

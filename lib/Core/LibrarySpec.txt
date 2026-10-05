@@ -62,6 +62,7 @@
 #              | 'scanf(' INT ',' INT ')' | 'chk(' NAME ':' INT { ',' INT } ')'
 #   term     ::= INT | 'a' N | 'strlen(a' N ')' | 'fmtlen(a' N ')' | MACRO+
 #              | term '*' term | term '+' term | term '-' INT
+#              | term '/' INT+
 #              | 'min(' term ',' term ')' | '(' term ')'+
 #
 # PARAMETERS
@@ -187,7 +188,25 @@
 #                    unknown where it is not defined. No unit defines
 #                    __WEAVEC_UNBOUNDED: a requirement that uses it is never
 #                    proven or checked (gets).
-#   Terms are mathematical integers; '*' binds tighter than '+' and '-'.
+#   t / N+           t divided by the positive integer N, rounded down
+#                    (RFC 0033 section 3: select's fd_set words).
+#   Terms are mathematical integers; '*' and '/' bind tighter than '+' and
+#   '-'.
+#
+# PORTABILITY (RFC 0033 section 3)
+#   A row states what every supported C library (Darwin's libSystem, glibc)
+#   does with an argument, not what a standard permits it to do: where they
+#   differ, the row takes the more permissive behaviour. Null is allowed if
+#   any of them accepts it, and a count of zero allows null if any of them
+#   then reads nothing. A row that requires more than a library does is a
+#   false stop. A library accepts null when its manual (or the standard it
+#   implements, or a nullability annotation in its headers) says what the
+#   call does with null: an error such as EINVAL, a default, or nothing done.
+#   An undocumented test in one library for a call that crashes in another
+#   (glibc's EINVAL for a null printf format) is not acceptance, and neither
+#   is a system call's EFAULT. An extent is what the call reads or writes,
+#   or, for a buffer whose size is an argument, that size (the fortified
+#   forms of both libraries enforce it).
 #
 # OVERLOADS AND ABSENCES
 #   A name may have several entries when their signatures (parameter classes,
@@ -426,8 +445,9 @@ free (none:null-ok:release(free)) -> void;
 free_sized (none:null-ok:release(free), int) -> void;
 free_aligned_sized (none:null-ok:release(free), int, int) -> void;
 # glibc: allocates the result of realpath(path, NULL) in one call.
-canonicalize_file_name (r:str) -> fresh(free):null-on-failure:zero-init:str;
-realpath (r:str, w:null-ok:bytes(PATH_MAX)) -> \
+canonicalize_file_name (r:str:null-ok) -> \
+    fresh(free):null-on-failure:zero-init:str;
+realpath (r:str:null-ok, w:null-ok:bytes(PATH_MAX)) -> \
     arg(1):null-on-failure:or-fresh(free):zero-init:str \
     chk(__realpath_chk: 0,1,-1);
 
@@ -446,7 +466,7 @@ alloca (int) -> fresh(stack):extent(a0):nonnull:zero-init;
 header string.h;
 strdup (r:str) -> \
     fresh(free):extent(strlen(a0)+1):null-on-failure:zero-init:str;
-strndup (r:bytes(min(a1,strlen(a0)+1)), int) -> \
+strndup (r:bytes(min(a1,strlen(a0)+1)):null-if-zero(a1), int) -> \
     fresh(free):extent(min(a1,strlen(a0))+1):null-on-failure:zero-init:str;
 
 header wchar.h;
@@ -459,9 +479,10 @@ vasprintf (w:out(fresh(free):extent(fmtlen(a1)+1):null-on-failure:zero-init:str)
     r:str, other) -> int printf(1,2) chk(__vasprintf_chk: 0,-1,1,2);
 # The buffer is reallocated in place of the old one, and stays allocated
 # after a failed read: it is freed on every path.
-getline (rw:out(fresh(free):null-ok:zero-init:str:replaces), rw, rw) -> int;
-getdelim (rw:out(fresh(free):null-ok:zero-init:str:replaces), rw, int, rw) \
-    -> int;
+getline (rw:null-ok:out(fresh(free):null-ok:zero-init:str:replaces), \
+    rw:null-ok, rw) -> int;
+getdelim (rw:null-ok:out(fresh(free):null-ok:zero-init:str:replaces), \
+    rw:null-ok, int, rw) -> int;
 tempnam (r:str:null-ok, r:str:null-ok) -> \
     fresh(free):null-on-failure:zero-init:str reads(environ);
 
@@ -495,18 +516,24 @@ memset_explicit (w:bytes(a2):null-if-zero(a2), int, int) -> arg(0) \
     fills(0,a1,a2);
 memcmp (r:bytes(a2):null-if-zero(a2), r:bytes(a2):null-if-zero(a2), int) \
     -> int;
-memchr (r:bytes(a2):null-if-zero(a2), int, int) -> interior(0):null-ok;
+# C11: memchr stops at the first match, so a NUL ends what memchr(s, 0, n)
+# reads; a byte other than NUL found earlier is not described.
+memchr (r:bytes(min(a2,strlen(a0)+1)):null-if-zero(a2), int, int) -> \
+    interior(0):null-ok;
 memrchr (r:bytes(a2):null-if-zero(a2), int, int) -> interior(0):null-ok;
 # GNU: searches without a bound for a byte the caller promises is there.
 rawmemchr (r:bytes(__WEAVEC_UNBOUNDED), int) -> interior(0):nonnull;
-memmem (r:bytes(a1), int, r:bytes(a3), int) -> interior(0):null-ok;
-mempcpy (w:bytes(a2), r:bytes(a2), int) -> interior(0):offset(a2):nonnull \
+memmem (r:bytes(a1):null-if-zero(a1), int, r:bytes(a3):null-if-zero(a3), int) \
+    -> interior(0):null-ok;
+mempcpy (w:bytes(a2):null-if-zero(a2), r:bytes(a2):null-if-zero(a2), int) \
+    -> interior(0):offset(a2):nonnull \
     disjoint(0,1,a2) copies(0,1,a2) \
     chk(__builtin___mempcpy_chk: 0,1,2,-1) chk(__mempcpy_chk: 0,1,2,-1);
 # memccpy stops after the byte c; a NUL-terminated source bounds the read for
 # the common c == 0 use, and a source without c or NUL is read for n bytes.
-memccpy (w:bytes(min(a3,strlen(a1)+1)), r:bytes(min(a3,strlen(a1)+1)), \
-    int, int) -> interior(0):null-ok disjoint(0,1,min(a3,strlen(a1)+1)) \
+memccpy (w:bytes(min(a3,strlen(a1)+1)):null-if-zero(a3), \
+    r:bytes(min(a3,strlen(a1)+1)):null-if-zero(a3), int, int) -> \
+    interior(0):null-ok disjoint(0,1,min(a3,strlen(a1)+1)) \
     chk(__builtin___memccpy_chk: 0,1,2,3,-1);
 strcpy (w:bytes(strlen(a1)+1), r:str) -> arg(0) \
     disjoint(0,1,strlen(a1)+1) writes-str(0,strlen(a1)) \
@@ -519,7 +546,8 @@ stpcpy (w:bytes(strlen(a1)+1), r:str) -> \
     interior(0):offset(strlen(a1)):nonnull \
     disjoint(0,1,strlen(a1)+1) writes-str(0,strlen(a1)) \
     chk(__builtin___stpcpy_chk: 0,1,-1) chk(__stpcpy_chk: 0,1,-1);
-stpncpy (w:bytes(a2), r:bytes(min(a2,strlen(a1)+1)), int) \
+stpncpy (w:bytes(a2):null-if-zero(a2), \
+    r:bytes(min(a2,strlen(a1)+1)):null-if-zero(a2), int) \
     -> interior(0):offset(min(a2,strlen(a1))):nonnull \
     disjoint(0,1,min(a2,strlen(a1)+1)) copies(0,1,min(a2,strlen(a1)+1)) \
     chk(__builtin___stpncpy_chk: 0,1,2,-1) chk(__stpncpy_chk: 0,1,2,-1);
@@ -544,9 +572,9 @@ strcmp (r:str, r:str) -> int;
 strncmp (r:bytes(min(a2,strlen(a0)+1)):null-if-zero(a2), \
     r:bytes(min(a2,strlen(a1)+1)):null-if-zero(a2), int) -> int;
 strcoll (r:str, r:str) -> int;
-strcoll_l (r:str, r:str, none) -> int;
+strcoll_l (r:str, r:str, none:null-ok) -> int;
 strxfrm (w:bytes(a2):null-if-zero(a2), r:str, int) -> int;
-strxfrm_l (w:bytes(a2):null-if-zero(a2), r:str, int, none) -> int;
+strxfrm_l (w:bytes(a2):null-if-zero(a2), r:str, int, none:null-ok) -> int;
 strverscmp (r:str, r:str) -> int;
 strchr (r:str, int) -> interior(0):null-ok;
 strrchr (r:str, int) -> interior(0):null-ok;
@@ -564,25 +592,28 @@ strsep (rw, r:str) -> ptr:null-ok:str;
 strerror (int) -> static(strerror):nonnull:str;
 strerror_l (int, none) -> static(strerror):nonnull:str;
 # GNU: the message is in buf or in static storage. XSI: an int result.
-strerror_r (int, w:bytes(a2), int) -> ptr:nonnull:str;
-strerror_r (int, w:bytes(a2), int) -> int;
+strerror_r (int, w:bytes(a2):null-if-zero(a2), int) -> ptr:nonnull:str;
+strerror_r (int, w:bytes(a2):null-if-zero(a2), int) -> int;
 strsignal (int) -> static(strsignal):null-ok:str;
-explicit_bzero (w:bytes(a1), int) -> void fills(0,0,a1) \
+explicit_bzero (w:bytes(a1):null-if-zero(a1), int) -> void fills(0,0,a1) \
     chk(__explicit_bzero_chk: 0,1,-1);
-memset_s (w:bytes(a1), int, int, int) -> int fills(0,a2,a3);
+# macOS: a null s is EINVAL, and min(smax, n) bytes are set.
+memset_s (w:bytes(min(a1,a3)):null-ok, int, int, int) -> int \
+    fills(0,a2,min(a1,a3));
 
 header strings.h;
-bzero (w:bytes(a1), int) -> void fills(0,0,a1);
-bcopy (r:bytes(a2), w:bytes(a2), int) -> void copies(1,0,a2);
-bcmp (r:bytes(a2), r:bytes(a2), int) -> int;
+bzero (w:bytes(a1):null-if-zero(a1), int) -> void fills(0,0,a1);
+bcopy (r:bytes(a2):null-if-zero(a2), w:bytes(a2):null-if-zero(a2), int) -> void \
+    copies(1,0,a2);
+bcmp (r:bytes(a2):null-if-zero(a2), r:bytes(a2):null-if-zero(a2), int) -> int;
 index (r:str, int) -> interior(0):null-ok;
 rindex (r:str, int) -> interior(0):null-ok;
 strcasecmp (r:str, r:str) -> int;
 strncasecmp (r:bytes(min(a2,strlen(a0)+1)):null-if-zero(a2), \
     r:bytes(min(a2,strlen(a1)+1)):null-if-zero(a2), int) -> int;
-strcasecmp_l (r:str, r:str, none) -> int;
+strcasecmp_l (r:str, r:str, none:null-ok) -> int;
 strncasecmp_l (r:bytes(min(a2,strlen(a0)+1)):null-if-zero(a2), \
-    r:bytes(min(a2,strlen(a1)+1)):null-if-zero(a2), int, none) -> int;
+    r:bytes(min(a2,strlen(a1)+1)):null-if-zero(a2), int, none:null-ok) -> int;
 ffs (int) -> int;
 ffsl (int) -> int;
 ffsll (int) -> int;
@@ -599,8 +630,9 @@ freopen (r:str:null-ok, r:str, rw) -> arg(2):null-on-failure;
 tmpfile () -> fresh(fclose):null-on-failure;
 fmemopen (w:bytes(a1):null-ok:escape, int, r:str) \
     -> fresh(fclose):null-on-failure;
-open_memstream (w:escape:out(fresh(free):null-on-failure:no-zero-init), \
-    w:escape) -> fresh(fclose):null-on-failure;
+open_memstream ( \
+    w:null-ok:escape:out(fresh(free):null-on-failure:no-zero-init), \
+    w:null-ok:escape) -> fresh(fclose):null-on-failure;
 fclose (rw:release(fclose)) -> int;
 popen (r:str, r:str) -> fresh(pclose):null-on-failure reads(environ);
 pclose (rw:release(pclose)) -> int;
@@ -636,7 +668,7 @@ putc (int, rw) -> int;
 putc_unlocked (int, rw) -> int;
 putchar (int) -> int;
 putchar_unlocked (int) -> int;
-fgets (w:bytes(a1), int, rw) -> arg(0):null-ok writes-str(0) \
+fgets (w:bytes(a1):null-if-zero(a1), int, rw) -> arg(0):null-ok writes-str(0) \
     chk(__fgets_chk: 0,-1,1,2);
 # gets has no bound: no unit defines the macro, so its requirement is never
 # proven (C11 removed gets).
@@ -648,8 +680,8 @@ fread_unlocked (w:bytes(a1*a2):null-if-zero(a1*a2), int, int, rw) -> int \
     chk(__fread_unlocked_chk: 0,-1,1,2,3);
 fwrite (r:bytes(a1*a2):null-if-zero(a1*a2), int, int, rw) -> int;
 fwrite_unlocked (r:bytes(a1*a2):null-if-zero(a1*a2), int, int, rw) -> int;
-puts (r:str) -> int;
-fputs (r:str, rw) -> int;
+puts (r:str:null-ok) -> int;
+fputs (r:str:null-ok, rw) -> int;
 perror (r:str:null-ok) -> void;
 printf (r:str, ...) -> int printf(0,1) \
     chk(__builtin___printf_chk: -1,0,1) chk(__printf_chk: -1,0,1);
@@ -718,19 +750,23 @@ strtoull (r:str, w:null-ok:out(interior(0):nonnull), int) -> int \
 strtod (r:str, w:null-ok:out(interior(0):nonnull)) -> int;
 strtof (r:str, w:null-ok:out(interior(0):nonnull)) -> int;
 strtold (r:str, w:null-ok:out(interior(0):nonnull)) -> int;
-getenv (r:str) -> static(environ):null-ok:str reads(environ);
+getenv (r:str:null-ok) -> static(environ):null-ok:str reads(environ);
 secure_getenv (r:str) -> static(environ):null-ok:str reads(environ);
-setenv (r:str, r:str, int) -> int invalidates(environ) reads(environ);
-unsetenv (r:str) -> int invalidates(environ) reads(environ);
+setenv (r:str:null-ok, r:str, int) -> int invalidates(environ) reads(environ);
+unsetenv (r:str:null-ok) -> int invalidates(environ) reads(environ);
 # The string itself becomes part of the environment.
-putenv (r:str:retain(environ)) -> int invalidates(environ) reads(environ);
+putenv (r:str:null-ok:retain(environ)) -> int invalidates(environ) \
+    reads(environ);
 clearenv () -> int invalidates(environ);
 system (r:str:null-ok) -> int reads(environ);
-qsort (rw:bytes(a1*a2), int, int, fn:sync(0,0)) -> void;
+qsort (rw:bytes(a1*a2):null-if-zero(a1*a2), int, int, fn:sync(0,0)) -> void;
 # glibc (and C2y): compar(a, b, arg). BSD and macOS: compar(thunk, a, b).
-qsort_r (rw:bytes(a1*a2), int, int, fn:sync(0,0,4), none:null-ok) -> void;
-qsort_r (rw:bytes(a1*a2), int, int, none:null-ok, fn:sync(3,0,0)) -> void;
-bsearch (none, r:bytes(a2*a3), int, int, fn:sync(0,1)) -> interior(1):null-ok;
+qsort_r (rw:bytes(a1*a2):null-if-zero(a1*a2), int, int, fn:sync(0,0,4), \
+    none:null-ok) -> void;
+qsort_r (rw:bytes(a1*a2):null-if-zero(a1*a2), int, int, none:null-ok, \
+    fn:sync(3,0,0)) -> void;
+bsearch (none:null-ok, r:bytes(a2*a3):null-if-zero(a2*a3), int, int, \
+    fn:sync(0,1)) -> interior(1):null-ok;
 exit (int) -> noreturn exits;
 _Exit (int) -> noreturn exits;
 quick_exit (int) -> noreturn exits;
@@ -773,12 +809,13 @@ arc4random_buf (w:bytes(a1), int) -> void;
 getsubopt (rw, r, w:out(ptr:null-ok)) -> int;
 a64l (r:str) -> int;
 l64a (int) -> static(l64a):nonnull:str;
-getloadavg (w:count(a1), int) -> int;
+# At most three averages are stored.
+getloadavg (w:count(min(a1,3)):null-if-zero(a1), int) -> int;
 # BSD and macOS: the name set by setprogname is kept, not copied.
 getprogname () -> interior-state(progname):nonnull:str reads(progname);
 setprogname (r:str:retain(progname)) -> void;
 ptsname (int) -> static(ptsname):null-on-failure:str;
-ptsname_r (int, w:bytes(a2), int) -> int;
+ptsname_r (int, w:bytes(a2):null-ok, int) -> int;
 posix_openpt (int) -> int;
 grantpt (int) -> int;
 unlockpt (int) -> int;
@@ -814,8 +851,9 @@ rmdir (r:str) -> int;
 chdir (r:str) -> int;
 fchdir (int) -> int;
 getwd (w:bytes(PATH_MAX)) -> arg(0):null-on-failure;
-readlink (r:str, w:bytes(a2), int) -> int chk(__readlink_chk: 0,1,2,-1);
-readlinkat (int, r:str, w:bytes(a3), int) -> int \
+readlink (r:str, w:bytes(a2):null-if-zero(a2), int) -> int \
+    chk(__readlink_chk: 0,1,2,-1);
+readlinkat (int, r:str, w:bytes(a3):null-if-zero(a3), int) -> int \
     chk(__readlinkat_chk: 0,1,2,3,-1);
 symlink (r:str, r:str) -> int;
 symlinkat (r:str, int, r:str) -> int;
@@ -832,7 +870,7 @@ fdatasync (int) -> int;
 sync () -> void;
 isatty (int) -> int;
 ttyname (int) -> static(ttyname):null-on-failure:str;
-ttyname_r (int, w:bytes(a2), int) -> int chk(__ttyname_r_chk: 0,1,2,-1);
+ttyname_r (int, w:bytes(a2):null-ok, int) -> int chk(__ttyname_r_chk: 0,1,2,-1);
 gethostname (w:bytes(a1), int) -> int chk(__gethostname_chk: 0,1,-1);
 sethostname (r:bytes(a1), int) -> int;
 getdomainname (w:bytes(a1), int) -> int chk(__getdomainname_chk: 0,1,-1);
@@ -840,14 +878,14 @@ getlogin () -> static(getlogin):null-on-failure:str;
 getlogin_r (w:bytes(a1), int) -> int chk(__getlogin_r_chk: 0,1,-1);
 # GNU getopt permutes argv; optarg points into its strings.
 getopt (int, rw:count(a0), r:str) -> int;
-execv (r:str, r) -> int reads(environ);
-execve (r:str, r, r:null-ok) -> int;
-execvp (r:str, r) -> int reads(environ);
-execvpe (r:str, r, r) -> int reads(environ);
+execv (r:str, r:null-ok) -> int reads(environ);
+execve (r:str, r:null-ok, r:null-ok) -> int;
+execvp (r:str, r:null-ok) -> int reads(environ);
+execvpe (r:str, r:null-ok, r:null-ok) -> int reads(environ);
 execl (r:str, r:str:null-ok, ...) -> int reads(environ);
 execlp (r:str, r:str:null-ok, ...) -> int reads(environ);
 execle (r:str, r:str:null-ok, ...) -> int;
-fexecve (int, r, r) -> int;
+fexecve (int, r:null-ok, r:null-ok) -> int;
 fork () -> int;
 vfork () -> int returns-twice;
 _exit (int) -> noreturn exits;
@@ -864,10 +902,11 @@ confstr (int, w:bytes(a2):null-if-zero(a2), int) -> int \
     chk(__confstr_chk: 0,1,2,-1);
 chroot (r:str) -> int;
 nice (int) -> int;
-getentropy (w:bytes(a1), int) -> int;
+getentropy (w:bytes(a1):null-if-zero(a1), int) -> int;
 getgroups (int, w:count(a0):null-if-zero(a0)) -> int \
     chk(__getgroups_chk: 0,1,-1);
-swab (r:bytes(a2), w:bytes(a2), int) -> void disjoint(0,1,a2);
+swab (r:bytes(a2):null-if-zero(a2), w:bytes(a2):null-if-zero(a2), int) -> void \
+    disjoint(0,1,a2);
 
 header getopt.h;
 getopt_long (int, rw:count(a0), r:str, r:null-ok, w:null-ok) -> int;
@@ -896,7 +935,7 @@ mkfifoat (int, r:str, int) -> int;
 mknod (r:str, int, int) -> int;
 mknodat (int, r:str, int, int) -> int;
 umask (int) -> int;
-utimensat (int, r:str, r:count(2):null-ok, int) -> int;
+utimensat (int, r:str:null-ok, r:count(2):null-ok, int) -> int;
 futimens (int, r:count(2):null-ok) -> int;
 
 header sys/statvfs.h;
@@ -914,10 +953,10 @@ header sys/time.h;
 utimes (r:str, r:count(2):null-ok) -> int;
 futimes (int, r:count(2):null-ok) -> int;
 lutimes (r:str, r:count(2):null-ok) -> int;
-gettimeofday (w, w:null-ok) -> int;
-settimeofday (r, r:null-ok) -> int;
+gettimeofday (w:null-ok, w:null-ok) -> int;
+settimeofday (r:null-ok, r:null-ok) -> int;
 getitimer (int, w) -> int;
-setitimer (int, r, w:null-ok) -> int;
+setitimer (int, r:null-ok, w:null-ok) -> int;
 
 #============================================================================
 # <dirent.h>, <time.h>, <sys/mman.h>, <dlfcn.h>
@@ -955,8 +994,8 @@ asctime_r (r, w:bytes(26)) -> arg(1):null-on-failure:str;
 ctime_r (r, w:bytes(26)) -> arg(1):null-on-failure:str reads(environ);
 gmtime_r (r, w) -> arg(1):null-on-failure;
 localtime_r (r, w) -> arg(1):null-on-failure reads(environ);
-strftime (w:bytes(a1), int, r:str, r) -> int reads(environ);
-strftime_l (w:bytes(a1), int, r:str, r, none) -> int;
+strftime (w:bytes(a1):null-if-zero(a1), int, r:str, r) -> int reads(environ);
+strftime_l (w:bytes(a1):null-if-zero(a1), int, r:str, r, none:null-ok) -> int;
 strptime (r:str, r:str, w) -> interior(0):null-ok;
 tzset () -> void reads(environ);
 timespec_get (w, int) -> int;
@@ -977,25 +1016,25 @@ header sys/mman.h;
 # mmap fails with MAP_FAILED, not null.
 mmap (none:null-ok, int, int, int, int, int) -> \
     fresh(munmap):extent(a1):nonnull;
-munmap (none:release(munmap), int) -> int;
-mprotect (none, int, int) -> int;
-msync (none, int, int) -> int;
-madvise (none, int, int) -> int;
-posix_madvise (none, int, int) -> int;
-mlock (none, int) -> int;
-munlock (none, int) -> int;
-mincore (none, int, w) -> int;
+munmap (none:null-ok:release(munmap), int) -> int;
+mprotect (none:null-ok, int, int) -> int;
+msync (none:null-ok, int, int) -> int;
+madvise (none:null-ok, int, int) -> int;
+posix_madvise (none:null-ok, int, int) -> int;
+mlock (none:null-ok, int) -> int;
+munlock (none:null-ok, int) -> int;
+mincore (none:null-ok, int, w:null-if-zero(a1)) -> int;
 shm_open (r:str, int, int) -> int;
 shm_unlink (r:str) -> int;
 memfd_create (r:str, int) -> int;
 
 header dlfcn.h;
 dlopen (r:str:null-ok, int) -> fresh(dlclose):null-on-failure;
-dlclose (none:release(dlclose)) -> int;
+dlclose (none:null-ok:release(dlclose)) -> int;
 # The handle may be a pseudo-handle (RTLD_DEFAULT, RTLD_NEXT).
 dlsym (none:null-ok, r:str) -> ptr:null-ok;
 dlerror () -> static(dlerror):null-ok:str;
-dladdr (none, w) -> int;
+dladdr (none:null-ok, w) -> int;
 
 #============================================================================
 # Users and groups, locales, conversions, paths, patterns, messages
@@ -1020,7 +1059,7 @@ setgrent () -> void;
 endgrent () -> void;
 getgrnam_r (r:str, w, w:bytes(a3), int, w:out(arg(1):null-ok)) -> int;
 getgrgid_r (int, w, w:bytes(a3), int, w:out(arg(1):null-ok)) -> int;
-setgroups (int, r:count(a0)) -> int;
+setgroups (int, r:count(a0):null-if-zero(a0)) -> int;
 initgroups (r:str, int) -> int;
 
 header locale.h;
@@ -1029,15 +1068,15 @@ setlocale (int, r:str:null-ok) -> static(setlocale):null-on-failure:str \
     invalidates(setlocale) invalidates(localeconv) invalidates(nl_langinfo);
 localeconv () -> static(localeconv):nonnull;
 # The base locale is reused for the result, or freed, on success only.
-newlocale (int, r:str, none:null-ok:realloc(freelocale)) -> \
+newlocale (int, r:str:null-ok, none:null-ok:realloc(freelocale)) -> \
     fresh(freelocale):null-on-failure;
-duplocale (none) -> fresh(freelocale):null-on-failure;
-freelocale (none:release(freelocale)) -> void;
+duplocale (none:null-ok) -> fresh(freelocale):null-on-failure;
+freelocale (none:null-ok:release(freelocale)) -> void;
 uselocale (none:null-ok) -> ptr:null-ok;
 
 header langinfo.h;
 nl_langinfo (int) -> static(nl_langinfo):nonnull:str;
-nl_langinfo_l (int, none) -> static(nl_langinfo):nonnull:str;
+nl_langinfo_l (int, none:null-ok) -> static(nl_langinfo):nonnull:str;
 
 header iconv.h;
 # iconv_open fails with (iconv_t)-1, not null.
@@ -1055,7 +1094,7 @@ dirname (rw:str:null-ok) -> interior(0):nonnull:str;
 header regex.h;
 regcomp (w:init(regfree), r:str, int) -> int;
 regexec (r, r:str, int, w:count(a2):null-ok, int) -> int;
-regerror (int, r, w:bytes(a3):null-if-zero(a3), int) -> int;
+regerror (int, r:null-ok, w:bytes(a3):null-if-zero(a3), int) -> int;
 regfree (rw:fini(regfree)) -> void;
 
 header fnmatch.h;
@@ -1067,7 +1106,7 @@ globfree (rw:fini(globfree)) -> void;
 
 header wordexp.h;
 wordexp (r:str, rw:init(wordfree), int) -> int reads(environ);
-wordfree (rw:fini(wordfree)) -> void;
+wordfree (rw:null-ok:fini(wordfree)) -> void;
 
 header err.h;
 err (int, r:str:null-ok, ...) -> noreturn exits printf(1,2);
@@ -1082,7 +1121,8 @@ vwarnx (r:str:null-ok, other) -> void printf(0,1);
 header error.h;
 # Exits when the status is non-zero, so it is not noreturn.
 error (int, int, r:str, ...) -> void printf(2,3);
-error_at_line (int, int, r:str:null-ok, int, r:str, ...) -> void printf(4,5);
+error_at_line (int, int, r:str:null-ok, int, r:str, ...) -> void \
+    printf(4,5);
 
 header syslog.h;
 # glibc and BSD keep the ident pointer, not a copy.
@@ -1151,7 +1191,7 @@ pthread_mutexattr_setpshared (rw, int) -> int;
 pthread_cond_init (w, r:null-ok) -> int;
 pthread_cond_destroy (rw) -> int;
 pthread_cond_wait (rw, rw) -> int;
-pthread_cond_timedwait (rw, rw, r) -> int;
+pthread_cond_timedwait (rw, rw, r:null-ok) -> int;
 pthread_cond_signal (rw) -> int;
 pthread_cond_broadcast (rw) -> int;
 pthread_condattr_init (w) -> int;
@@ -1238,7 +1278,7 @@ psiginfo (r, r:str:null-ok) -> void;
 header sys/wait.h;
 wait (w:null-ok) -> int;
 waitpid (int, w:null-ok, int) -> int;
-waitid (int, int, w, int) -> int;
+waitid (int, int, w:null-ok, int) -> int;
 wait4 (int, w:null-ok, int, w:null-ok) -> int;
 
 # jmp_buf decays to a pointer; the rows do not model its contents. glibc's
@@ -1256,9 +1296,9 @@ header sched.h;
 sched_yield () -> int;
 sched_getaffinity (int, int, w:bytes(a1)) -> int;
 sched_setaffinity (int, int, r:bytes(a1)) -> int;
-sched_getparam (int, w) -> int;
-sched_setparam (int, r) -> int;
-sched_setscheduler (int, int, r) -> int;
+sched_getparam (int, w:null-ok) -> int;
+sched_setparam (int, r:null-ok) -> int;
+sched_setscheduler (int, int, r:null-ok) -> int;
 
 header semaphore.h;
 # SEM_FAILED is null on glibc and (sem_t *)-1 on macOS.
@@ -1275,15 +1315,16 @@ sem_getvalue (rw, w) -> int;
 
 header search.h;
 # The tree keeps the key; comparisons see the key and the tree's keys.
-tsearch (none:escape, rw, fn:sync(0,1)) -> ptr:null-ok;
-tfind (none, r, fn:sync(0,1)) -> ptr:null-ok;
-tdelete (none, rw, fn:sync(0,1)) -> ptr:null-ok;
+tsearch (none:null-ok:escape, rw:null-ok, fn:sync(0,1)) -> ptr:null-ok;
+tfind (none:null-ok, r:null-ok, fn:sync(0,1)) -> ptr:null-ok;
+tdelete (none:null-ok, rw:null-ok, fn:sync(0,1)) -> ptr:null-ok;
 twalk (none:null-ok, fn:sync(0)) -> void;
 tdestroy (none:null-ok, fn:sync()) -> void;
 # The element count is behind a pointer, which no term can read.
-lfind (none, r:bytes(__WEAVEC_UNBOUNDED), rw, int, fn:sync(0,1)) \
+lfind (none:null-ok, r:bytes(__WEAVEC_UNBOUNDED):null-ok, rw, int, \
+    fn:sync(0,1)) \
     -> interior(1):null-ok;
-lsearch (none, rw:bytes(__WEAVEC_UNBOUNDED), rw, int, fn:sync(0,1)) \
+lsearch (none:null-ok, rw:bytes(__WEAVEC_UNBOUNDED), rw, int, fn:sync(0,1)) \
     -> interior(1):nonnull;
 
 header ftw.h;
@@ -1291,8 +1332,10 @@ ftw (r:str, fn:sync(), int) -> int;
 nftw (r:str, fn:sync(), int, int) -> int;
 
 header spawn.h;
-posix_spawn (w:null-ok, r:str, r:null-ok, r:null-ok, r, r) -> int;
-posix_spawnp (w:null-ok, r:str, r:null-ok, r:null-ok, r, r) -> int \
+posix_spawn (w:null-ok, r:str, r:null-ok, r:null-ok, r:null-ok, r:null-ok) \
+    -> int;
+posix_spawnp (w:null-ok, r:str, r:null-ok, r:null-ok, r:null-ok, \
+    r:null-ok) -> int \
     reads(environ);
 
 header poll.h;
@@ -1302,16 +1345,20 @@ ppoll (rw:count(a1):null-if-zero(a1), int, r:null-ok, r:null-ok) -> int \
     chk(__ppoll_chk: 0,1,2,3,-1);
 
 header sys/select.h;
-select (int, rw:null-ok, rw:null-ok, rw:null-ok, rw:null-ok) -> int;
-pselect (int, rw:null-ok, rw:null-ok, rw:null-ok, r:null-ok, r:null-ok) \
-    -> int;
+# The sets are read and written only in the words that cover a0 descriptors
+# (howmany(a0, NFDBITS) words, at least (a0 + 7) / 8 bytes on every library),
+# not sizeof(fd_set): a program may allocate exactly those words.
+select (int, rw:null-ok:bytes((a0+7)/8), rw:null-ok:bytes((a0+7)/8), \
+    rw:null-ok:bytes((a0+7)/8), rw:null-ok) -> int;
+pselect (int, rw:null-ok:bytes((a0+7)/8), rw:null-ok:bytes((a0+7)/8), \
+    rw:null-ok:bytes((a0+7)/8), r:null-ok, r:null-ok) -> int;
 
 header sys/epoll.h;
 epoll_create (int) -> int;
 epoll_create1 (int) -> int;
 epoll_ctl (int, int, int, r:null-ok) -> int;
-epoll_wait (int, w:count(a2), int, int) -> int;
-epoll_pwait (int, w:count(a2), int, int, r:null-ok) -> int;
+epoll_wait (int, w:count(a2):null-if-zero(a2), int, int) -> int;
+epoll_pwait (int, w:count(a2):null-if-zero(a2), int, int, r:null-ok) -> int;
 
 header sys/event.h;
 kqueue () -> int;
@@ -1327,8 +1374,8 @@ kevent (int, r:count(a2):null-if-zero(a2), int, \
 header sys/socket.h;
 socket (int, int, int) -> int;
 socketpair (int, int, int, w:count(2)) -> int;
-bind (int, r:bytes(a2), int) -> int;
-connect (int, r:bytes(a2), int) -> int;
+bind (int, r:bytes(a2):null-if-zero(a2), int) -> int;
+connect (int, r:bytes(a2):null-if-zero(a2), int) -> int;
 listen (int, int) -> int;
 accept (int, w:null-ok, rw:null-ok) -> int;
 accept4 (int, w:null-ok, rw:null-ok, int) -> int;
@@ -1350,9 +1397,9 @@ getpeername (int, w, rw) -> int;
 header netdb.h;
 getaddrinfo (r:str:null-ok, r:str:null-ok, r:null-ok, \
     w:out(fresh(freeaddrinfo):null-on-failure)) -> int;
-freeaddrinfo (none:release(freeaddrinfo)) -> void;
+freeaddrinfo (none:null-ok:release(freeaddrinfo)) -> void;
 gai_strerror (int) -> static(gai_strerror):nonnull:str;
-getnameinfo (r:bytes(a1), int, w:bytes(a3):null-ok, int, \
+getnameinfo (r:bytes(a1):null-ok, int, w:bytes(a3):null-ok, int, \
     w:bytes(a5):null-ok, int, int) -> int;
 gethostbyname (r:str) -> static(hostent):null-ok invalidates(hostent);
 gethostbyname2 (r:str, int) -> static(hostent):null-ok invalidates(hostent);
@@ -1372,7 +1419,7 @@ header arpa/inet.h;
 inet_ntop (int, r, w:bytes(a3), int) -> arg(2):null-on-failure:str;
 inet_pton (int, r:str, w) -> int;
 inet_addr (r:str) -> int;
-inet_aton (r:str, w) -> int;
+inet_aton (r:str, w:null-ok) -> int;
 inet_network (r:str) -> int;
 inet_ntoa (other) -> static(inet_ntoa):nonnull:str;
 htons (int) -> int;
@@ -1382,26 +1429,26 @@ ntohl (int) -> int;
 
 header ifaddrs.h;
 getifaddrs (w:out(fresh(freeifaddrs):null-on-failure)) -> int;
-freeifaddrs (none:release(freeifaddrs)) -> void;
+freeifaddrs (none:null-ok:release(freeifaddrs)) -> void;
 
 header net/if.h;
 if_nametoindex (r:str) -> int;
 if_indextoname (int, w:bytes(IF_NAMESIZE)) -> arg(1):null-on-failure:str;
 if_nameindex () -> fresh(if_freenameindex):null-on-failure;
-if_freenameindex (none:release(if_freenameindex)) -> void;
+if_freenameindex (none:null-ok:release(if_freenameindex)) -> void;
 
 # Only the iovec array is described; the buffers it names are not.
 header sys/uio.h;
-readv (int, r:count(a2), int) -> int;
-writev (int, r:count(a2), int) -> int;
-preadv (int, r:count(a2), int, int) -> int;
-pwritev (int, r:count(a2), int, int) -> int;
+readv (int, r:count(a2):null-if-zero(a2), int) -> int;
+writev (int, r:count(a2):null-if-zero(a2), int) -> int;
+preadv (int, r:count(a2):null-if-zero(a2), int, int) -> int;
+pwritev (int, r:count(a2):null-if-zero(a2), int, int) -> int;
 
 header sys/sendfile.h;
 sendfile (int, int, rw:null-ok, int) -> int;
 
 header sys/random.h;
-getrandom (w:bytes(a1), int, int) -> int;
+getrandom (w:bytes(a1):null-if-zero(a1), int, int) -> int;
 
 header sys/eventfd.h;
 eventfd (int, int) -> int;
@@ -1436,14 +1483,14 @@ header sys/shm.h;
 shmget (int, int, int) -> int;
 # shmat fails with (void *)-1, not null.
 shmat (int, none:null-ok, int) -> fresh(shmdt):nonnull;
-shmdt (none:release(shmdt)) -> int;
+shmdt (none:null-ok:release(shmdt)) -> int;
 shmctl (int, int, rw:null-ok) -> int;
 
 header mqueue.h;
 mq_open (r:str, int, ...) -> int;
 mq_close (int) -> int;
 mq_unlink (r:str) -> int;
-mq_send (int, r:bytes(a2), int, int) -> int;
+mq_send (int, r:bytes(a2):null-if-zero(a2), int, int) -> int;
 mq_receive (int, w:bytes(a2), int, w:null-ok) -> int;
 
 # The control block and its buffer are used until the operation completes.
@@ -1458,7 +1505,7 @@ aio_cancel (int, rw:null-ok) -> int;
 header mntent.h;
 setmntent (r:str, r:str) -> fresh(endmntent):null-on-failure;
 getmntent (rw) -> static(mntent):null-ok invalidates(mntent);
-endmntent (rw:release(endmntent)) -> int;
+endmntent (rw:null-ok:release(endmntent)) -> int;
 
 header fts.h;
 fts_open (r, int, fn:null-ok:sync()) -> fresh(fts_close):null-on-failure;
@@ -1475,25 +1522,28 @@ fts_close (rw:release(fts_close)) -> int;
 # disjoint clauses: their lengths are in bytes.
 header wchar.h;
 wcslen (r:str) -> int:value(strlen(a0));
-wcsnlen (r:count(min(a1,strlen(a0)+1)), int) -> int:value(min(a1,strlen(a0)));
+wcsnlen (r:count(min(a1,strlen(a0)+1)):null-if-zero(a1), int) -> \
+    int:value(min(a1,strlen(a0)));
 wcscpy (w:count(strlen(a1)+1), r:str) -> arg(0) chk(__wcscpy_chk: 0,1,-1);
-wcsncpy (w:count(a2), r:count(min(a2,strlen(a1)+1)), int) -> arg(0) \
+wcsncpy (w:count(a2):null-if-zero(a2), \
+    r:count(min(a2,strlen(a1)+1)):null-if-zero(a2), int) -> arg(0) \
     chk(__wcsncpy_chk: 0,1,2,-1);
 wcpcpy (w:count(strlen(a1)+1), r:str) -> interior(0):nonnull \
     chk(__wcpcpy_chk: 0,1,-1);
-wcpncpy (w:count(a2), r:count(min(a2,strlen(a1)+1)), int) \
+wcpncpy (w:count(a2):null-if-zero(a2), \
+    r:count(min(a2,strlen(a1)+1)):null-if-zero(a2), int) \
     -> interior(0):nonnull chk(__wcpncpy_chk: 0,1,2,-1);
 wcscat (rw:count(strlen(a0)+strlen(a1)+1):str, r:str) -> arg(0) \
     chk(__wcscat_chk: 0,1,-1);
 wcsncat (rw:count(strlen(a0)+min(a2,strlen(a1))+1):str, \
-    r:count(min(a2,strlen(a1)+1)), int) -> arg(0) \
+    r:count(min(a2,strlen(a1)+1)):null-if-zero(a2), int) -> arg(0) \
     chk(__wcsncat_chk: 0,1,2,-1);
 wcscmp (r:str, r:str) -> int;
-wcsncmp (r:count(min(a2,strlen(a0)+1)), r:count(min(a2,strlen(a1)+1)), int) \
-    -> int;
+wcsncmp (r:count(min(a2,strlen(a0)+1)):null-if-zero(a2), \
+    r:count(min(a2,strlen(a1)+1)):null-if-zero(a2), int) -> int;
 wcscasecmp (r:str, r:str) -> int;
-wcsncasecmp (r:count(min(a2,strlen(a0)+1)), \
-    r:count(min(a2,strlen(a1)+1)), int) -> int;
+wcsncasecmp (r:count(min(a2,strlen(a0)+1)):null-if-zero(a2), \
+    r:count(min(a2,strlen(a1)+1)):null-if-zero(a2), int) -> int;
 wcscoll (r:str, r:str) -> int;
 wcsxfrm (w:count(a2):null-if-zero(a2), r:str, int) -> int;
 wcschr (r:str, int) -> interior(0):null-ok;
@@ -1504,7 +1554,7 @@ wcsspn (r:str, r:str) -> int;
 wcscspn (r:str, r:str) -> int;
 wcstok (rw:str:null-ok, r:str, rw:out(interior(0):null-ok)) -> \
     interior(0):null-ok;
-wcswidth (r:count(min(a1,strlen(a0)+1)), int) -> int;
+wcswidth (r:count(min(a1,strlen(a0)+1)):null-if-zero(a1), int) -> int;
 wcwidth (int) -> int;
 wmemcpy (w:count(a2):null-if-zero(a2), r:count(a2):null-if-zero(a2), int) \
     -> arg(0) chk(__wmemcpy_chk: 0,1,2,-1);
@@ -1514,8 +1564,10 @@ wmemset (w:count(a2):null-if-zero(a2), int, int) -> arg(0) \
     chk(__wmemset_chk: 0,1,2,-1);
 wmemcmp (r:count(a2):null-if-zero(a2), r:count(a2):null-if-zero(a2), int) \
     -> int;
-wmemchr (r:count(a2), int, int) -> interior(0):null-ok;
-wmempcpy (w:count(a2), r:count(a2), int) -> interior(0):nonnull \
+wmemchr (r:count(min(a2,strlen(a0)+1)):null-if-zero(a2), int, int) -> \
+    interior(0):null-ok;
+wmempcpy (w:count(a2):null-if-zero(a2), r:count(a2):null-if-zero(a2), int) \
+    -> interior(0):nonnull \
     chk(__wmempcpy_chk: 0,1,2,-1);
 wcstol (r:str, w:null-ok:out(interior(0):nonnull), int) -> int \
     chk(__isoc23_wcstol: 0,1,2);
@@ -1551,11 +1603,13 @@ fputwc (int, rw) -> int;
 putwc (int, rw) -> int;
 putwchar (int) -> int;
 ungetwc (int, rw) -> int;
-fgetws (w:count(a1), int, rw) -> arg(0):null-ok chk(__fgetws_chk: 0,-1,1,2);
+fgetws (w:count(a1):null-if-zero(a1), int, rw) -> arg(0):null-ok \
+    chk(__fgetws_chk: 0,-1,1,2);
 fputws (r:str, rw) -> int;
 fwide (rw, int) -> int;
 wprintf (r:str, ...) -> int printf(0,1) chk(__wprintf_chk: -1,0,1);
-fwprintf (rw, r:str, ...) -> int printf(1,2) chk(__fwprintf_chk: 0,-1,1,2);
+fwprintf (rw, r:str, ...) -> int printf(1,2) \
+    chk(__fwprintf_chk: 0,-1,1,2);
 swprintf (w:count(a1):null-if-zero(a1), int, r:str, ...) -> int printf(2,3) \
     chk(__swprintf_chk: 0,1,-1,-1,2,3);
 vwprintf (r:str, other) -> int printf(0,1) chk(__vwprintf_chk: -1,0,1);
@@ -1575,9 +1629,10 @@ vfwscanf (rw, r:str, other) -> int scanf(1,2) \
     chk(__isoc99_vfwscanf: 0,1,2) chk(__isoc23_vfwscanf: 0,1,2);
 vswscanf (r:str, r:str, other) -> int scanf(1,2) \
     chk(__isoc99_vswscanf: 0,1,2) chk(__isoc23_vswscanf: 0,1,2);
-wcsftime (w:count(a1), int, r:str, r) -> int reads(environ);
-open_wmemstream (w:escape:out(fresh(free):null-on-failure:no-zero-init), \
-    w:escape) -> fresh(fclose):null-on-failure;
+wcsftime (w:count(a1):null-if-zero(a1), int, r:str, r) -> int reads(environ);
+open_wmemstream ( \
+    w:null-ok:escape:out(fresh(free):null-on-failure:no-zero-init), \
+    w:null-ok:escape) -> fresh(fclose):null-on-failure;
 
 header wctype.h;
 wctype (r:str) -> int;
@@ -1675,9 +1730,11 @@ __builtin_frame_address (int) -> ptr:null-ok;
 __builtin_return_address (int) -> ptr:null-ok;
 __builtin_extract_return_addr (none:null-ok) -> arg(0);
 __builtin___clear_cache (none, none) -> void;
-__builtin_memcpy_inline (w:bytes(a2), r:bytes(a2), int) -> void \
+__builtin_memcpy_inline (w:bytes(a2):null-if-zero(a2), \
+    r:bytes(a2):null-if-zero(a2), int) -> void \
     disjoint(0,1,a2) copies(0,1,a2);
-__builtin_memset_inline (w:bytes(a2), int, int) -> void fills(0,a1,a2);
+__builtin_memset_inline (w:bytes(a2):null-if-zero(a2), int, int) -> void \
+    fills(0,a1,a2);
 __builtin_alloca_with_align (int, int) -> \
     fresh(stack):extent(a0):nonnull:zero-init;
 __builtin_alloca_uninitialized (int) -> \

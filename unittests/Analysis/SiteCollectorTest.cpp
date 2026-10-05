@@ -242,7 +242,9 @@ int f(unsigned long addr, int *RAW r, int n, ...) {
             sites.end());
   EXPECT_NE(std::ranges::find(sites, "raw free(r) spatial,temporal"),
             sites.end());
-  EXPECT_NE(std::ranges::find(sites, "raw *(int*)addr spatial,null,temporal"),
+  // RFC 0033 §2: a pointer converted from an integer is not raw; its
+  // dereference is an ordinary one.
+  EXPECT_NE(std::ranges::find(sites, "deref *(int*)addr spatial,null,temporal"),
             sites.end());
   EXPECT_NE(std::ranges::find(sites, "int-to-ptr (int*)addr spatial,temporal"),
             sites.end());

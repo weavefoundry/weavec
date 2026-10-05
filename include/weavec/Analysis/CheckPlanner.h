@@ -205,10 +205,13 @@ private:
       parentMaps;
   [[nodiscard]] const clang::ParentMap *
   parentsIn(const clang::FunctionDecl &function) const;
-  /// RFC 0032 §6: the guards of one site, appended to `planned`.
+  /// RFC 0032 §6: the guards of one site, appended to `planned`; also of
+  /// the `lowered` facets' violations that no check guards (RFC 0033 (V)),
+  /// which keep their outcome.
   void planGuards(const SiteInfo &site, core::Site &row,
                   const WitnessTable &witnesses, PlaceHandleTable &handles,
-                  std::vector<core::CheckPlanEntry> &planned) const;
+                  std::vector<core::CheckPlanEntry> &planned,
+                  const std::set<core::Facet> &lowered = {}) const;
 };
 
 } // namespace weavec::analysis

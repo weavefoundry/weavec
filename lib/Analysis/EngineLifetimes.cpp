@@ -871,10 +871,15 @@ void Transfer::exitLifetimes(const Stmt &exit, const ReturnStmt *ret) {
       std::string holder = stored != nullptr && !stored->holder.empty()
                                ? stored->holder
                                : cellName(run, reached.object, key);
+      // RFC 0033 §1: storing the frame's address where the caller can
+      // reach it accesses no memory; only a use of it after the frame ends
+      // would, which the analysis reports where it sees it. A warning, and
+      // nothing to trap when it is lowered.
       lifetimeError(holder, frame,
                     stored != nullptr ? stored->at->getBeginLoc()
                                       : exit.getBeginLoc(),
-                    only);
+                    false);
+      (void)only;
     }
   }
   if (!facts.dangling.empty())
@@ -924,7 +929,8 @@ void Transfer::exitLifetimes(const Stmt &exit, const ReturnStmt *ret) {
       lifetimeError(holder, frames.front(),
                     stored != nullptr ? stored->at->getBeginLoc()
                                       : exit.getBeginLoc(),
-                    only);
+                    false);
+      (void)only;
     }
   }
 }
@@ -947,6 +953,77 @@ bool FunctionRun::inUnsafeRegion(const Stmt &stmt) const {
     if (isUnsafeBlock(*at))
       return true;
   return false;
+}
+
+bool FunctionRun::isDiscarded(const Expr &expr) const {
+  if (function.getBody() == nullptr)
+    return false;
+  if (!parentMap)
+    parentMap = std::make_unique<ParentMap>(function.getBody());
+  for (const Stmt *at = parentMap->getParent(&expr); at != nullptr;
+       at = parentMap->getParent(at)) {
+    if (const auto *cast = dyn_cast<CastExpr>(at)) {
+      if (cast->getCastKind() == CK_ToVoid)
+        return true;
+      if (isa<ImplicitCastExpr>(cast))
+        continue;
+      return false;
+    }
+    if (!isa<ParenExpr>(at))
+      return false;
+  }
+  return false;
+}
+
+/// The local an argument passes the address of: `&x`, `&x.f`, `&x[i]`, or
+/// an array `x` decaying.
+static const VarDecl *addressedLocal(const Expr &argument) {
+  const Expr *expr = argument.IgnoreParenCasts();
+  bool addressed = false;
+  if (const auto *unary = dyn_cast<UnaryOperator>(expr);
+      unary != nullptr && unary->getOpcode() == UO_AddrOf) {
+    addressed = true;
+    expr = unary->getSubExpr();
+  }
+  for (unsigned depth = 0; depth < 16; ++depth) {
+    expr = expr->IgnoreParenImpCasts();
+    if (const auto *member = dyn_cast<MemberExpr>(expr);
+        member != nullptr && !member->isArrow()) {
+      expr = member->getBase();
+      continue;
+    }
+    if (const auto *subscript = dyn_cast<ArraySubscriptExpr>(expr)) {
+      expr = subscript->getBase();
+      continue;
+    }
+    break;
+  }
+  const auto *ref = dyn_cast<DeclRefExpr>(expr);
+  const auto *var =
+      ref != nullptr ? dyn_cast<VarDecl>(ref->getDecl()) : nullptr;
+  if (var == nullptr || !var->hasLocalStorage())
+    return nullptr;
+  return addressed || var->getType()->isArrayType() ? var : nullptr;
+}
+
+bool FunctionRun::isPassedToCall(const VarDecl &var) const {
+  if (!passedToCalls) {
+    passedToCalls.emplace();
+    std::vector<const Stmt *> work{function.getBody()};
+    while (!work.empty()) {
+      const Stmt *stmt = work.back();
+      work.pop_back();
+      if (stmt == nullptr)
+        continue;
+      if (const auto *call = dyn_cast<CallExpr>(stmt))
+        for (const Expr *argument : call->arguments())
+          if (const VarDecl *local = addressedLocal(*argument))
+            passedToCalls->insert(local->getCanonicalDecl());
+      for (const Stmt *child : stmt->children())
+        work.push_back(child);
+    }
+  }
+  return passedToCalls->contains(var.getCanonicalDecl());
 }
 
 bool FunctionRun::isBypassed(const Expr &operand) const {
@@ -992,11 +1069,18 @@ core::Sym Transfer::launder(core::Sym value, const AnnotationSet &declared,
     diagnostic.message = std::move(message);
     const SourceManager &sm = context.getSourceManager();
     diagnostic.location = toCoreLocation(sm, source.getBeginLoc());
-    if (info.rawAt.isValid())
+    if (info.rawAt.isValid()) {
+      // RFC 0033 §2: a raw value is declared so, or came from one.
+      std::string origin = "declared WEAVEC_RAW";
+      if (info.rawOrigin == core::SymInfo::RawOrigin::Loaded)
+        origin = "loaded through a raw pointer";
+      else if (info.rawOrigin == core::SymInfo::RawOrigin::Returned)
+        origin = "handed out by a callee";
       diagnostic.addNote((name.empty() ? std::string("the pointer is raw: ")
                                        : "'" + name + "' is raw: ") +
-                             "cast from an integer here",
+                             origin + " here",
                          info.rawAt);
+    }
     diagnostic.addNote("move this operation into a WEAVEC_UNSAFE block or "
                        "function, or assert the pointer's ownership first",
                        toCoreLocation(sm, source.getBeginLoc()));

@@ -89,6 +89,10 @@ struct CheckEmitterOptions {
   /// RFC 0032 §13: guards of a pointer the function uses more than once, or
   /// in a loop, remember the range that passed in a cache in its frame.
   bool rangeCaches = true;
+  /// RFC 0033 *Implementation amendments* (build cost): a function with
+  /// more plan entries than this calls the prelude's copies of the check
+  /// and guard helpers that are not inlined (`<name>_ool`).
+  unsigned inlinedHelperCalls = 4096;
 };
 
 /// The C type of one prelude helper, for its `extern` declaration (§10.9).

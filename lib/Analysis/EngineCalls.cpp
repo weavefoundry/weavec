@@ -111,6 +111,12 @@ static core::Term termOfLibTerm(Transfer &transfer, const core::LibTerm &term,
       return core::Term::of(std::min(a.constant, b.constant));
     return core::Term::unknown();
   }
+  case Kind::Quotient: {
+    core::Term a = termOfLibTerm(transfer, term.operands[0], args, rowCall);
+    if (a.isConstant() && a.constant >= 0 && term.value > 0)
+      return core::Term::of(a.constant / term.value);
+    return core::Term::unknown();
+  }
   case Kind::StringLength: {
     // RFC 0012 *Length places*: after a call that required the string (a
     // `str` argument), its length is known or becomes a length symbol;
@@ -685,15 +691,21 @@ core::Sym CallApplier::applyPlatform(const FunctionDecl &callee) {
           run.table().info(target.object).key.kind !=
               core::ObjectKind::Literal) {
         core::ObjectState &object = state.objects.at(target.object);
-        // Integer cells may change; pointers stay what they were.
+        // Integer cells may change; pointers stay what they were, except
+        // behind a pointer to a pointer, which is an out-parameter the
+        // function may store a pointer into (RFC 0033 §1:
+        // `host_processor_info(..., (processor_info_array_t *)&info, ...)`).
+        const bool pointerOut = type->getPointeeType()->isPointerType();
         std::vector<core::CellKey> scalars;
         for (const auto &[key, sym] : object.cells)
-          if (heap.info(state, sym).type != core::SymInfo::Type::Pointer)
+          if (pointerOut ||
+              heap.info(state, sym).type != core::SymInfo::Type::Pointer)
             scalars.push_back(key);
         for (const core::CellKey &key : scalars)
           object.cells.erase(key);
         // The callee may write any byte (RFC 0012).
-        if (!scalars.empty() || object.zeroed || object.nulWithin) {
+        if (pointerOut || !scalars.empty() || object.zeroed ||
+            object.nulWithin) {
           object.havocked = true;
           object.nulWithin.reset();
           object.nulFrom.reset();

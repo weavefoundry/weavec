@@ -100,11 +100,8 @@ struct __weavec_rt_found {
   uint32_t value;
 };
 
-/* The tracked object `p` points into. With `before`, a pointer that is the
- * start of a stack or global object is taken as one past the end of the
- * object before it, when there is one. */
-WEAVEC_RT_API struct __weavec_rt_found __weavec_rt_find(const void *p,
-                                                        int before);
+/* The tracked object `p` points into. */
+WEAVEC_RT_API struct __weavec_rt_found __weavec_rt_find(const void *p);
 
 /* Bumped whenever a range a guard may have remembered, other than an arena
  * block, stops being valid: a huge block mapped or unmapped, a table of
@@ -164,6 +161,10 @@ WEAVEC_RT_API void __weavec_rt_globals_add(const void *const *begin,
 
 /*===-- Reports ------------------------------------------------------------===*/
 
+/* RFC 0033 section 6.1: called by a failed check or guard right before it
+ * traps, so that the trap ends the program even where the program blocked
+ * or caught SIGTRAP and SIGILL. */
+WEAVEC_RT_API void __weavec_rt_trapping(void);
 WEAVEC_RT_API void __weavec_rt_report(const char *check, const char *file,
                                       unsigned line, unsigned column);
 /* Prints `weavec: <what>: <why>` with the pointer and traps. */
@@ -171,12 +172,77 @@ WEAVEC_RT_API void __weavec_rt_fatal(const char *what, const void *p,
                                      const char *why)
     __attribute__((noreturn));
 
+/*===-- One runtime per process (RFC 0033, section 6.2) --------------------===*/
+
+/* Every image linked by weavec-cc carries a copy of the runtime. On Darwin
+ * each copy would have its own arena and tables, so one of them, the one
+ * `dlsym(RTLD_DEFAULT, "__weavec_rt_dispatch")` finds (the same for every
+ * image), owns the process: the others forward their entry points to it
+ * through its table, and copy its arena's descriptor for the guards that
+ * read it inline. On ELF the dynamic linker already binds every image to
+ * the first definition, and nothing forwards. */
+struct __weavec_rt_dispatch {
+  unsigned magic;
+  unsigned version;
+  const struct __weavec_rt_heap_t *heap;
+  int (*initialise)(void);
+  void *(*alloc)(size_t, size_t);
+  void (*release)(void *);
+  void *(*realloc)(void *, size_t);
+  size_t (*size)(const void *);
+  struct __weavec_rt_found (*find)(const void *);
+  int (*object)(const void *, long long, unsigned long long, unsigned long long,
+                unsigned long long);
+  int (*string)(const char *);
+  unsigned long long (*strlen)(const char *);
+  int (*live)(const void *);
+  int (*releaseOk)(const void *);
+  struct __weavec_rt_range (*objectRange)(const void *, long long,
+                                          unsigned long long,
+                                          unsigned long long,
+                                          unsigned long long, void *);
+  struct __weavec_rt_range (*liveRange)(const void *, void *);
+  void *(*stackEnter)(void *, size_t, void *, int);
+  void (*stackLeave)(void *, void *);
+  void (*stackRewind)(void *);
+  void (*globalsAdd)(const void *const *, const void *const *);
+  void (*report)(const char *, const char *, unsigned, unsigned);
+  void (*fatal)(const char *, const void *, const char *);
+};
+WEAVEC_RT_API extern const struct __weavec_rt_dispatch __weavec_rt_dispatch;
+
+#if defined(__APPLE__)
+/* The owner's table when this copy forwards to it; null when this copy is
+ * the owner (or while it is finding out, on the thread doing so). */
+const struct __weavec_rt_dispatch *weavecRtForward(void);
+#else
+#define weavecRtForward() ((const struct __weavec_rt_dispatch *)0)
+#endif
+/* Forwards a call of this copy's entry point to the owner's. */
+#define WEAVEC_RT_FORWARD(entry, ...)                                          \
+  do {                                                                         \
+    const struct __weavec_rt_dispatch *weavecRtOwner_ = weavecRtForward();      \
+    if (weavecRtOwner_ != 0)                                                   \
+      return weavecRtOwner_->entry(__VA_ARGS__);                               \
+  } while (0)
+#define WEAVEC_RT_FORWARD_VOID(entry, ...)                                     \
+  do {                                                                         \
+    const struct __weavec_rt_dispatch *weavecRtOwner_ = weavecRtForward();      \
+    if (weavecRtOwner_ != 0) {                                                 \
+      weavecRtOwner_->entry(__VA_ARGS__);                                      \
+      return;                                                                  \
+    }                                                                          \
+  } while (0)
+
 /*===-- Internal -----------------------------------------------------------===*/
+
+/* Reserves this copy's arena on first use; 0 when there is no room. */
+int weavecRtInitialise(void);
 
 /* Whether the calling thread's stack or the global table holds `p`. */
 int weavecRtIsStackOrGlobal(const void *p);
 /* The stack and global parts of a lookup. */
-struct __weavec_rt_found weavecRtFindStackOrGlobal(const void *p, int before);
+struct __weavec_rt_found weavecRtFindStackOrGlobal(const void *p);
 /* A range around an address no stack or global object is in, inside its
  * page; false when none can be given (the calling thread's stack). */
 int weavecRtUntrackedRange(uintptr_t address, uintptr_t *low, uintptr_t *high);

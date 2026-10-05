@@ -178,12 +178,17 @@ static constexpr std::array BoundaryFields{
     scalar("function", String), scalar("site", Integer),
     scalar("reason", String), scalar("placeClass", String)};
 static constexpr std::array BoundaryElement{object({}, BoundaryFields)};
-/// `[ordinal, kind, line, column, spatial, null, temporal, assertion]`.
+/// `[ordinal, kind, line, column, spatial, null, temporal, assertion, their
+/// four requirement lists, text, boundary, callee]` (RFC 0033 §7).
 static constexpr std::array SiteRowPositions{
     scalar({}, Integer),      scalar({}, String),
     scalar({}, Integer),      scalar({}, Integer),
     scalar({}, String, true), scalar({}, String, true),
-    scalar({}, String, true), scalar({}, String, true)};
+    scalar({}, String, true), scalar({}, String, true),
+    scalar({}, String, true), scalar({}, String, true),
+    scalar({}, String, true), scalar({}, String, true),
+    scalar({}, String),       scalar({}, String, true),
+    scalar({}, String, true)};
 static constexpr std::array SiteRowElement{tuple({}, SiteRowPositions)};
 static constexpr std::array SiteFields{
     scalar("function", String), scalar("file", String), scalar("line", Integer),

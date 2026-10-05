@@ -3,7 +3,7 @@
 // RUN: rm -rf %t && mkdir -p %t
 // RUN: %weavec_cc -c %S/Inputs/heap13.c -o %t/library.o 2>&1 | count 0
 // RUN: %weavec_cc -c %s -o %t/caller.o 2>&1 | count 0
-// RUN: not %weavec_cc %t/library.o %t/caller.o -o %t/program 2>&1 | FileCheck %s
+// RUN: not %weavec_cc -fweavec-link=analyze %t/library.o %t/caller.o -o %t/program 2>&1 | FileCheck %s
 #include "../Inputs/prelude.h"
 #include "Inputs/heap13.h"
 void bad(void) {

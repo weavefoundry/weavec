@@ -59,11 +59,12 @@ int *h(struct s *p) {
   return p->buf;
 }
 
-// A pointer made from an integer is a raw value in the summary (RFC 0004).
+// A pointer made from an integer is a value of unknown provenance in the
+// summary, not a raw one (RFC 0033 §2).
 // CHECK-LABEL: function 'launder':
 // CHECK-NEXT: summary:
 // CHECK-NEXT: always-returns
-// CHECK-NEXT: result unknown raw maybe-null when null nonnull
+// CHECK-NEXT: result unknown maybe-null when null nonnull
 char *launder(char *r, unsigned long x) {
   r = (char *)x;
   return r;

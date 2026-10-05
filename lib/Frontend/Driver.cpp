@@ -96,10 +96,12 @@ static std::string invalidValue(llvm::StringRef arg, llvm::StringRef value,
 /// then says what is wrong with it, if anything.
 static bool consumeValueFlag(DriverOptions &options, llvm::StringRef arg,
                              std::string &error) {
-  static constexpr std::array<llvm::StringLiteral, 7> Names{
-      "-fweavec-analysis-stats", "-fweavec-checks",        "-fweavec-require",
-      "-fweavec-ledger",         "-fweavec-ledger-format", "-fweavec-budget",
-      "-fweavec-print-prelude"};
+  static constexpr std::array<llvm::StringLiteral, 10> Names{
+      "-fweavec-analysis-stats", "-fweavec-checks",
+      "-fweavec-require",        "-fweavec-ledger",
+      "-fweavec-ledger-format",  "-fweavec-budget",
+      "-fweavec-print-prelude",  "-fweavec-link",
+      "-fweavec-link-budget",    "-fweavec-unit-budget"};
   const auto [flag, value] = arg.split('=');
   if (!llvm::is_contained(Names, flag))
     return false;
@@ -146,6 +148,27 @@ static bool consumeValueFlag(DriverOptions &options, llvm::StringRef arg,
       error = invalidValue(arg, value, "a number of block transfers");
     else
       options.budget = budget;
+  } else if (flag == "-fweavec-unit-budget") {
+    std::uint64_t budget = 0;
+    if (value.getAsInteger(10, budget))
+      error = invalidValue(arg, value, "a number of block transfers");
+    else
+      options.unitBudget = budget;
+  } else if (flag == "-fweavec-link") {
+    if (value == "records")
+      options.link = DriverOptions::LinkMode::Records;
+    else if (value == "analyze")
+      options.link = DriverOptions::LinkMode::Analyze;
+    else if (value == "none")
+      options.link = DriverOptions::LinkMode::None;
+    else
+      error = invalidValue(arg, value, "records, analyze or none");
+  } else if (flag == "-fweavec-link-budget") {
+    double seconds = 0;
+    if (value.getAsDouble(seconds) || seconds < 0)
+      error = invalidValue(arg, value, "a number of seconds");
+    else
+      options.linkBudget = seconds;
   }
   options.spellings.push_back(arg.str());
   return true;
@@ -174,10 +197,9 @@ bool DriverOptions::consume(llvm::StringRef arg, std::string &error) {
     llvm::StringLiteral name;
     bool DriverOptions::*member;
   };
-  static constexpr std::array<Flag, 5> Flags{{
+  static constexpr std::array<Flag, 4> Flags{{
       {.name = "weavec", .member = &DriverOptions::enabled},
       {.name = "weavec-dump-analysis", .member = &DriverOptions::dumpAnalysis},
-      {.name = "weavec-link", .member = &DriverOptions::link},
       {.name = "weavec-stack-objects", .member = &DriverOptions::stackObjects},
       {.name = "weavec-global-objects",
        .member = &DriverOptions::globalObjects},
@@ -223,6 +245,7 @@ FrontendOptions DriverOptions::toFrontendOptions() const {
   // zero-initialises unless `-fno-weavec-zero-init` says otherwise.
   options.engine.zeroInit = zeroInit.value_or(true);
   options.engine.budget = budget;
+  options.engine.unitBudget = unitBudget;
   options.control = control;
   options.config = core::LedgerConfig{
       .checks = checks,
@@ -280,8 +303,18 @@ llvm::StringRef driverFlagsHelp() {
   -fweavec-budget=<n>
       Block transfers per function before its analysis stops (default:
       50000; 0: unlimited).
-  -fweavec-link, -fno-weavec-link
-      Run the whole-program step before linking (default: on).
+  -fweavec-unit-budget=<n>
+      Block transfers over every analysis run of a unit; functions analysed
+      after it is spent take the over-budget defaults (default: 6 per site,
+      at least 200000; 0: unlimited).
+  -fweavec-link=records|analyze|none
+      What the link step does before linking (RFC 0033): check the units'
+      records against each other and compose the program ledger (records,
+      the default); also analyse the units again with the whole program in
+      view, reporting what spans units (analyze); or nothing (none).
+  -fweavec-link-budget=<seconds>
+      Wall-clock budget of -fweavec-link=analyze (default: 120; 0: none).
+      Units it does not finish keep their compile-time results.
   -fweavec-print-prelude
       Print the check prelude of the -fweavec-checks mode and exit.
   -fweavec-dump-analysis, -fweavec-analysis-stats=<path>
@@ -289,7 +322,8 @@ llvm::StringRef driverFlagsHelp() {
   -Wno-weavec-<id>, -Wweavec-<id>, -Werror=weavec[-<id>],
   -Wno-error=weavec[-<id>], -Wweavec, -Wno-weavec
       Control WeaveC's diagnostics. Errors can be lowered, not disabled;
-      -Wweavec-allocation-failure enables the one id that is off by default.
+      -Wweavec-allocation-failure and -Wweavec-leak enable the ids that are
+      off by default (leak is off in weavec-cc only: RFC 0033).
 )";
 }
 
@@ -1089,15 +1123,17 @@ static bool runLinkStep(const clang::driver::Compilation &compilation,
   for (const core::Diagnostic &diagnostic : declarations.diagnostics)
     sink.report(diagnostic);
 
-  // Step 4: the units analysed again with the program in view. The units'
+  // Step 4, with -fweavec-link=analyze (RFC 0033 §7): the units analysed
+  // again with the program in view, within the link budget. The units'
   // ledgers and summary lines are the compile step's; the link writes only
-  // the program's. Composing that ledger needs every unit's rows in full,
-  // which records do not carry, so then every unit runs again.
+  // the program's, from the records' rows where a unit did not run again.
+  const bool analyze = weavec.link == DriverOptions::LinkMode::Analyze;
   unitOptions.ledgerOutput.path.clear();
   unitOptions.ledgerOutput.summary = false;
   ProgramAnalysis program(std::move(unitOptions));
   program.setProgramFacts(facts);
   program.keepLedgers(compose);
+  program.setBudget(weavec.linkBudget);
   std::vector<std::optional<std::size_t>> analysed(inputs.size());
   std::size_t added = 0;
   std::set<core::RuntimeUse> runtimeUses;
@@ -1108,7 +1144,7 @@ static bool runLinkStep(const clang::driver::Compilation &compilation,
     if (firstGuarded.empty() && header.config.runtime == core::RuntimeUse::On)
       firstGuarded = inputs[i].object;
     const record::Payload &payload = members[i].payload;
-    if ((compose || needsAnalysis(members, i, facts->slots)) &&
+    if (analyze && needsAnalysis(members, i, facts->slots) &&
         !header.command.empty()) {
       const std::string name =
           header.source.empty() ? inputs[i].object : header.source;
@@ -1117,7 +1153,7 @@ static bool runLinkStep(const clang::driver::Compilation &compilation,
                                                 argv0),
                       payload.exports, payload.reported);
       analysed[i] = added++;
-    } else if (!header.command.empty() &&
+    } else if (analyze && !header.command.empty() &&
                llvm::any_of(payload.exports.functions, [](const auto &entry) {
                  return entry.second.external || entry.second.addressTaken;
                })) {
@@ -1133,16 +1169,24 @@ static bool runLinkStep(const clang::driver::Compilation &compilation,
       program.addExports(payload.exports);
     }
   }
-  const ProgramAnalysis::Result result = program.run();
-  for (const std::string &name : result.failed)
-    llvm::errs() << "weavec-cc: error: cannot re-analyse '" << name << "'\n";
-  for (const std::vector<std::string> &component : result.nonConverging) {
-    llvm::errs() << "weavec-cc: error: whole-program analysis of ";
-    llvm::interleaveComma(component, llvm::errs(), [](const std::string &n) {
+  // RFC 0033 §7: what the re-analysis could not finish keeps its
+  // compile-time results; only a definite error it reports fails the link.
+  const ProgramAnalysis::Result result =
+      analyze ? program.run() : ProgramAnalysis::Result{};
+  const auto noteUnits = [](llvm::ArrayRef<std::string> names,
+                            llvm::StringRef what) {
+    if (names.empty())
+      return;
+    llvm::errs() << "weavec-cc: note: the whole-program analysis of ";
+    llvm::interleaveComma(names, llvm::errs(), [](const std::string &n) {
       llvm::errs() << '\'' << n << '\'';
     });
-    llvm::errs() << " did not converge\n";
-  }
+    llvm::errs() << ' ' << what << "; their compile-time results stand\n";
+  };
+  noteUnits(result.failed, "could not run again");
+  noteUnits(result.unfinished, "stopped at its budget");
+  for (const std::vector<std::string> &component : result.nonConverging)
+    noteUnits(component, "did not converge (its widened summaries are used)");
 
   // Step 5: the exported requirements decided at the callers in other
   // units, and the allocator (the rest of the step is part of the program
@@ -1216,7 +1260,7 @@ static bool runLinkStep(const clang::driver::Compilation &compilation,
                       "ledger: "
                    << error << '\n';
   }
-  return result.ok() && sink.errors() == 0 && written;
+  return result.errors == 0 && sink.errors() == 0 && written;
 }
 
 //===----------------------------------------------------------------------===//
@@ -1320,7 +1364,7 @@ static std::size_t countLedgers(const clang::driver::Compilation &compilation,
   for (const clang::driver::Command &job : compilation.getJobs()) {
     const clang::driver::Action::ActionClass kind = job.getSource().getKind();
     if (kind == clang::driver::Action::LinkJobClass) {
-      count += weavec.link ? 1 : 0;
+      count += weavec.link != DriverOptions::LinkMode::None ? 1 : 0;
       continue;
     }
     if (job.getArguments().empty() ||
@@ -1338,27 +1382,40 @@ static std::size_t countLedgers(const clang::driver::Compilation &compilation,
   return count;
 }
 
-/// Clang's Darwin link job names `<weavec-cc>/../lib/libLTO.dylib` as
-/// `-lto_library`, which is not installed beside weavec-cc (and current
-/// linkers warn about it): without it the linker uses its own, as it did
-/// when it ignored the missing one. (Not the one of the Clang WeaveC was
-/// built with: objects built by the system compiler, the runtime archives
-/// among them, may carry bitcode only the linker's own reads.)
-static void dropMissingLtoLibrary(clang::driver::Compilation &compilation) {
+/// RFC 0033 §10: the driver names `<weavec-cc>/../lib/libLTO.dylib`, which
+/// a WeaveC install does not have. The link then uses the libLTO of the
+/// LLVM WeaveC was built with, which reads the bitcode its own compiler
+/// writes (the system linker's own cannot read a newer LLVM's), or, when
+/// that LLVM has none, the linker's own.
+static void replaceMissingLtoLibrary(clang::driver::Compilation &compilation) {
+  std::string ownLto;
+  if (const std::string clang = getClangExecutable(); !clang.empty()) {
+    llvm::SmallString<256> path(
+        llvm::sys::path::parent_path(llvm::sys::path::parent_path(clang)));
+    llvm::sys::path::append(path, "lib", "libLTO.dylib");
+    if (llvm::sys::fs::exists(path))
+      ownLto = path.str().str();
+  }
   for (clang::driver::Command &job : compilation.getJobs()) {
     if (job.getSource().getKind() != clang::driver::Action::LinkJobClass)
       continue;
     const llvm::opt::ArgStringList &old = job.getArguments();
     llvm::opt::ArgStringList args;
+    bool changed = false;
     for (std::size_t i = 0; i < old.size(); ++i) {
       if (llvm::StringRef(old[i]) == "-lto_library" && i + 1 < old.size() &&
           !llvm::sys::fs::exists(old[i + 1])) {
+        changed = true;
         ++i;
+        if (!ownLto.empty()) {
+          args.push_back("-lto_library");
+          args.push_back(compilation.getArgs().MakeArgString(ownLto));
+        }
         continue;
       }
       args.push_back(old[i]);
     }
-    if (args.size() != old.size())
+    if (changed)
       job.replaceArguments(args);
   }
 }
@@ -1624,6 +1681,17 @@ int runCc1(llvm::ArrayRef<const char *> argv, const char *argv0) {
 }
 
 int runDriver(llvm::ArrayRef<const char *> argv, void *mainAddress) {
+  // RFC 0033 §10: printed after everything Clang prints for `--version`.
+  struct VersionTrailer {
+    bool print = false;
+    VersionTrailer() = default;
+    VersionTrailer(const VersionTrailer &) = delete;
+    VersionTrailer &operator=(const VersionTrailer &) = delete;
+    ~VersionTrailer() {
+      if (print)
+        printVersion(llvm::outs());
+    }
+  } versionTrailer;
   if (argv.size() > 1) {
     const llvm::StringRef mode = argv[1];
     if (mode == "-cc1")
@@ -1658,8 +1726,10 @@ int runDriver(llvm::ArrayRef<const char *> argv, void *mainAddress) {
       llvm::outs() << driverFlagsHelp();
       return 0;
     }
+    // RFC 0033 §10: Clang's version block first, so a configure script that
+    // reads the first line takes the Clang path; WeaveC's own after it.
     if (text == "--version")
-      printVersion(llvm::outs());
+      versionTrailer.print = true;
     if (text == "-###")
       printJobsOnly = true;
     if (text.starts_with("-isysroot") || text.starts_with("--sysroot"))
@@ -1754,7 +1824,7 @@ int runDriver(llvm::ArrayRef<const char *> argv, void *mainAddress) {
   if (!runtimeOff.empty() && links)
     llvm::errs() << "weavec-cc: note: building without the WeaveC runtime ("
                  << runtimeOff << "): guardable facets stay unresolved\n";
-  dropMissingLtoLibrary(*compilation);
+  replaceMissingLtoLibrary(*compilation);
   if (printJobsOnly) {
     compilation->getJobs().Print(llvm::errs(), "\n", /*Quote=*/true);
     return 0;
@@ -1776,7 +1846,8 @@ int runDriver(llvm::ArrayRef<const char *> argv, void *mainAddress) {
     // The objects exist now: a program-defined allocator is visible.
     if (isLink && weavec.enabled)
       dropAllocatorIfDefined(*compilation, job);
-    if (isLink && weavec.enabled && weavec.link &&
+    if (isLink && weavec.enabled &&
+        weavec.link != DriverOptions::LinkMode::None &&
         !runLinkStep(*compilation, job, weavec, executable.c_str())) {
       status = 1;
       break;

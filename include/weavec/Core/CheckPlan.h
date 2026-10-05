@@ -153,7 +153,10 @@ struct CheckPlanEntry {
     Result,
     Violation,
     Need,
-    String
+    String,
+    /// RFC 0033 §5: wraps a call's length argument, which a guard of the
+    /// pointer argument (its operand) checks and returns.
+    Length
   };
   /// §10.4: where the rewrite goes.
   enum class Placement : std::uint8_t {

@@ -98,7 +98,6 @@ static unsigned long long hugeReleases;
 
 static size_t pageBytes;
 static size_t quarantineBudget = (size_t)64 << 20;
-static int quarantineRead;
 static size_t quarantineBytes;
 static unsigned sweepCursor;
 
@@ -182,6 +181,7 @@ static void forkParent(void);
 static void forkChild(void);
 #if defined(__APPLE__)
 static void registerZone(void);
+static void promoteZone(void);
 #else
 extern int pthread_atfork(void (*)(void), void (*)(void), void (*)(void))
     __attribute__((weak));
@@ -223,7 +223,7 @@ static int reserve(unsigned shift) {
   return 1;
 }
 
-static int initialise(void) {
+int weavecRtInitialise(void) {
   int ok = 1;
   if (__atomic_load_n(&__weavec_rt_heap.base, __ATOMIC_ACQUIRE) != 0)
     return 1;
@@ -235,6 +235,7 @@ static int initialise(void) {
     if (ok) {
 #if defined(__APPLE__)
       registerZone();
+      promoteZone();
 #else
       if (pthread_atfork != NULL)
         (void)pthread_atfork(forkPrepare, forkParent, forkChild);
@@ -332,14 +333,12 @@ static inline uint32_t wordOf(SlotRef ref) {
 
 /*===-- The quarantine (section 2.4) ----------------------------------------===*/
 
-static void readQuarantineBudget(void) {
-  const char *text;
-  if (__atomic_load_n(&quarantineRead, __ATOMIC_RELAXED))
-    return;
-  text = getenv("WEAVEC_RT_QUARANTINE");
+/* Read in a constructor, never by `free`: the C library frees with its
+ * environment lock held (`unsetenv`), and `getenv` takes it again. */
+__attribute__((constructor)) static void readQuarantineBudget(void) {
+  const char *text = getenv("WEAVEC_RT_QUARANTINE");
   if (text != NULL && *text >= '0' && *text <= '9')
     quarantineBudget = (size_t)strtoull(text, NULL, 10);
-  __atomic_store_n(&quarantineRead, 1, __ATOMIC_RELAXED);
 }
 
 /* Moves the oldest dead slot of a class to its free list. The class's lock
@@ -384,7 +383,6 @@ static void retire(SlotRef ref) {
   const struct __weavec_rt_class *entry = &__weavec_rt_heap.table[ref.region];
   ClassState *state = &classState[ref.region];
   uint32_t *words = slotWords(ref.region);
-  readQuarantineBudget();
   /* Before the slot is queued: once it is, another thread may recycle it. */
   if (entry->size >= WeavecRtDecommitBytes)
     decommit(ref.base, entry->size);
@@ -634,7 +632,8 @@ void *__weavec_rt_alloc(size_t size, size_t alignment) {
   unsigned region;
   void *block;
   int recycled = 0;
-  if (!initialise()) {
+  WEAVEC_RT_FORWARD(alloc, size, alignment);
+  if (!weavecRtInitialise()) {
     errno = ENOMEM;
     return NULL;
   }
@@ -699,6 +698,7 @@ static const char *whyNotReleasable(uintptr_t address) {
 
 void __weavec_rt_free(void *p) {
   const uintptr_t address = (uintptr_t)p;
+  WEAVEC_RT_FORWARD_VOID(release, p);
   if (p == NULL)
     return;
   if (inArena(address)) {
@@ -728,6 +728,7 @@ void *__weavec_rt_realloc(void *p, size_t size) {
   const uintptr_t address = (uintptr_t)p;
   size_t old = 0;
   void *moved;
+  WEAVEC_RT_FORWARD(realloc, p, size);
   if (p == NULL)
     return __weavec_rt_alloc(size, 0);
   if (inArena(address)) {
@@ -760,20 +761,27 @@ void *__weavec_rt_realloc(void *p, size_t size) {
 
 size_t __weavec_rt_size(const void *p) {
   size_t size = 0;
+  WEAVEC_RT_FORWARD(size, p);
   if (p == NULL)
     return 0;
   if (ownedSize(p, &size))
     return size;
-  if (inArena((uintptr_t)p) || maybeHuge((uintptr_t)p))
-    return 0;
+  /* (The huge blocks' address span holds other allocators' blocks too: only
+   * a pointer into one of them is the runtime's.) */
+  {
+    HugeBlock block;
+    if (inArena((uintptr_t)p) || hugeFind((uintptr_t)p, &block))
+      return 0;
+  }
   return nextSize(p);
 }
 
 /*===-- Lookup (section 3) --------------------------------------------------===*/
 
-struct __weavec_rt_found __weavec_rt_find(const void *p, int before) {
+struct __weavec_rt_found __weavec_rt_find(const void *p) {
   const uintptr_t address = (uintptr_t)p;
   struct __weavec_rt_found found;
+  WEAVEC_RT_FORWARD(find, p);
   found.state = WeavecRtUntracked;
   found.kind = WeavecRtHeap;
   found.base = 0;
@@ -810,7 +818,7 @@ struct __weavec_rt_found __weavec_rt_find(const void *p, int before) {
       return found;
     }
   }
-  return weavecRtFindStackOrGlobal(p, before);
+  return weavecRtFindStackOrGlobal(p);
 }
 
 int weavecRtMayHoldHuge(uintptr_t low, uintptr_t high) {
@@ -1017,6 +1025,34 @@ static void registerZone(void) {
   arenaZone.pressure_relief = zonePressureRelief;
   arenaZone.claimed_address = zoneClaimedAddress;
   malloc_zone_register(&arenaZone);
+}
+
+/* The zone malloc() serves from: the first registered one. */
+static malloc_zone_t *firstZone(void) {
+  vm_address_t *zones = NULL;
+  unsigned count = 0;
+  if (malloc_get_all_zones(0, NULL, &zones, &count) != KERN_SUCCESS ||
+      count == 0)
+    return malloc_default_zone();
+  return (malloc_zone_t *)zones[0];
+}
+
+/* RFC 0033 section 6.2: the arena's zone becomes the process's default, so
+ * that malloc() from every image, the C library's own calls included
+ * (strdup, getline, asprintf), is served by the arena. Registering a zone
+ * appends it: the zones before the arena's are moved to the end, one at a
+ * time, until it is first (jemalloc's zone_promote moves the system's
+ * zones the same way). Blocks the system's zones allocated before stay
+ * theirs; the next allocator releases them. */
+static void promoteZone(void) {
+  unsigned tries;
+  for (tries = 0; tries < 64; ++tries) {
+    malloc_zone_t *first = firstZone();
+    if (first == &arenaZone)
+      return;
+    malloc_zone_unregister(first);
+    malloc_zone_register(first);
+  }
 }
 
 #endif

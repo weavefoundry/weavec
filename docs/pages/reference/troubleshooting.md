@@ -1,6 +1,6 @@
 ---
 title: Troubleshooting
-description: Resolve installation problems, missing compilation flags, runtime traps, guard failures, runtime fallback notes, slow programs, unresolved ledger rows, and link inputs without WeaveC records.
+description: Resolve installation problems, missing compilation flags, runtime traps, guard failures, runtime fallback notes, slow programs and builds, unresolved ledger rows, and link inputs without WeaveC records.
 ---
 
 ## CMake cannot find LLVM or Clang
@@ -29,7 +29,7 @@ Resolve Clang parse errors before interpreting analysis results.
 
 ## A helper's behavior is not visible
 
-Analyze its source with the caller using `--whole-program`, or use the compiler driver through the final link. An unannotated declaration alone does not describe an unavailable function: WeaveC assumes it may free, keep or replace its pointer arguments, and the ledger lists the affected operations with the reason `unknown-callee` (guarded where a guard covers them, unresolved otherwise) and a suggested annotation.
+Analyze its source with the caller using `weavec --whole-program`, or link with `weavec-cc -fweavec-link=analyze`; a default link reads the units' records and does not analyse them again. An unannotated declaration alone does not describe an unavailable function: WeaveC assumes it may free, keep or replace its pointer arguments, and the ledger lists the affected operations with the reason `unknown-callee` (guarded where a guard covers them, unresolved otherwise) and a suggested annotation.
 
 For callbacks, ensure the actual targets are stored somewhere the program can see. A function-pointer type alone does not say which function a call reaches.
 
@@ -86,7 +86,7 @@ The link was given `-fno-weavec-runtime` (or something that implies it, such as 
 The default mode links a runtime: every guarded operation looks its pointer up, and freed blocks are held in a 64 MiB quarantine before reuse. The measured cost on the project's benchmarks is 1.66 times the CPU time of a plain Clang build for cJSON, 1.85 for zlib and 5.94 for the Lua interpreter; code that spends its time in tight loops over pointers, as an interpreter does, is at the high end.
 
 - Run with `WEAVEC_RT_STATS=1` to see how many lookups the program makes.
-- Read `summary.guardedReasons` in the ledger. Each guarded facet that becomes proven or checked loses its guard: declare extents (`WEAVEC_COUNTED_BY`, `WEAVEC_ENDED_BY`, `WEAVEC_STRING`) for `unknown-extent`, and link definitions or declare ownership for `unknown-callee`.
+- Read `summary.guardedReasons` in the ledger. Each guarded facet that becomes proven or checked loses its guard: declare extents (`WEAVEC_COUNTED_BY`, `WEAVEC_ENDED_BY`, `WEAVEC_STRING`) for `unknown-extent`, and declare ownership for `unknown-callee`.
 - Set `WEAVEC_RT_QUARANTINE=<bytes>` to shrink the quarantine if memory is the problem. A smaller quarantine catches fewer uses of freed blocks; `0` reuses blocks at once.
 - Build the units that cannot pay with `-fno-weavec-runtime`. Their guardable facets become `unresolved` and are not enforced, and their cost returns to that of the checks alone (1.15, 1.00 and 1.09 times on the same benchmarks).
 
@@ -96,7 +96,15 @@ In a `weavec-cc` build with the runtime, a possible temporal finding (`use of 'p
 
 ## The ledger has many unresolved rows
 
-Read `summary.unresolvedReasons` in the ledger. In a default build a facet the analysis could not decide is `guarded` where a guard exists for it; what remains unresolved has no pointer for a guard to look up (the temporal facet of a call boundary, pointer arithmetic, casts) or a reason a guard does not address. With `-fno-weavec-runtime`, or after one of the fallback notes above, nothing is guarded and the count is higher. `unknown-callee` rows go away when the callee's definition is linked in or its declaration states its ownership; `unknown-extent` rows need a declared extent (`WEAVEC_COUNTED_BY`, `WEAVEC_ENDED_BY`, `WEAVEC_STRING`); `budget` rows name a function that exceeded the analysis budget (`-fweavec-budget`). See [adopt WeaveC incrementally](/guides/adoption/).
+Read `summary.unresolvedReasons` in the ledger. In a default build a facet the analysis could not decide is `guarded` where a guard exists for it; what remains unresolved has no pointer for a guard to look up (the temporal facet of a call boundary, pointer arithmetic, casts) or a reason a guard does not address. With `-fno-weavec-runtime`, or after one of the fallback notes above, nothing is guarded and the count is higher. `unknown-callee` rows go away when the callee's definition is analysed with the caller (`weavec --whole-program`) or its declaration states its ownership; `unknown-extent` rows need a declared extent (`WEAVEC_COUNTED_BY`, `WEAVEC_ENDED_BY`, `WEAVEC_STRING`); `budget` rows name a function that exceeded the analysis budget (`-fweavec-budget`). See [adopt WeaveC incrementally](/guides/adoption/).
+
+## A compile or link is slow
+
+Each unit's analysis has a budget, `-fweavec-unit-budget=<n>` block transfers over all of its functions (by default 6 per site, at least 200,000); the functions analysed after it is spent get the over-budget defaults (`unresolved(budget)`, guarded where a guard applies). Lower it for faster builds of very large units, or set `0` for no limit. A default link analyses nothing; `-fweavec-link=analyze` does, within `-fweavec-link-budget=<seconds>` (default 120). When it runs out, or a group of units does not converge, the link goes on with a note and those units keep their compile-time results:
+
+```text
+weavec-cc: note: the whole-program analysis of 'parser.c' stopped at its budget; their compile-time results stand
+```
 
 ## The link warns about an unanalyzed input
 

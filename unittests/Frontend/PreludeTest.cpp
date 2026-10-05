@@ -141,7 +141,15 @@ TEST(PreludeTest, ZeroInitNeedsTheSwitchAndAQuery) {
                 "extern __typeof__(sizeof 0) malloc_usable_size(void *);"),
             std::string::npos);
   options.verboseTrap = false;
+  // RFC 0033 §6.1: with the runtime a trap first makes sure it ends the
+  // program.
+  EXPECT_NE(buildCheckPrelude(options).find(
+                "(__weavec_rt_trapping(), __builtin_trap());"),
+            std::string::npos);
+  options.runtime = false;
   EXPECT_NE(buildCheckPrelude(options).find("__builtin_trap();"),
+            std::string::npos);
+  EXPECT_EQ(buildCheckPrelude(options).find("__weavec_rt_trapping"),
             std::string::npos);
 }
 

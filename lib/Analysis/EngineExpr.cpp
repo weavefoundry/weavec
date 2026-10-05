@@ -248,11 +248,13 @@ core::Sym Transfer::constant(std::int64_t value, QualType type) {
     core::SymInfo &info = heap.infoMut(state, sym);
     info.type = core::SymInfo::Type::Pointer;
     info.null = value == 0 ? core::PointerNull::Null : core::PointerNull::Maybe;
+    // RFC 0033 §2: a non-zero address written as a number is a pointer of
+    // unknown provenance, not a raw one.
     if (value != 0) {
       core::ObjectId any = run.unknownObject();
       heap.ensure(state, any);
       info.targets = {core::Target{.object = any}};
-      info.raw = true;
+      info.rawCast = true;
     }
   }
   return sym;
@@ -1384,6 +1386,10 @@ ExprResult Transfer::evaluateUncached(const Expr &expr) {
   case Stmt::ConstantExprClass:
   case Stmt::ExprWithCleanupsClass:
     return evaluate(*cast<FullExpr>(expr).getSubExpr());
+  // A record a call returned, named by a member access (`f().x`): the
+  // call's temporary, where its summary put the fields.
+  case Stmt::MaterializeTemporaryExprClass:
+    return evaluate(*cast<MaterializeTemporaryExpr>(expr).getSubExpr());
   case Stmt::IntegerLiteralClass: {
     const auto &literal = cast<IntegerLiteral>(expr);
     result.value = constant(
@@ -1696,7 +1702,8 @@ void Transfer::uninitialisedRead(core::Sym value, const Expr &lvalue,
   // RFC 0008, RFC 0031 §5.9: reading a local pointer that no path assigned
   // (to copy, pass, release or dereference it) is the error, reported where
   // it is read and once per value: a copy reports at the copy.
-  if (!run.isPublishing() || address.top || address.targets.empty())
+  if (!run.isPublishing() || address.top || address.targets.empty() ||
+      run.isDiscarded(lvalue))
     return;
   const core::SymInfo &info = heap.info(state, value);
   if (info.type != core::SymInfo::Type::Pointer || !info.uninit ||
@@ -1843,12 +1850,12 @@ core::Sym Transfer::evaluateCast(const CastExpr &castExpr) {
       return info.pointerBehind;
     if (auto c = state.zone.constant(value); c && *c == 0)
       return nullPointer(type);
-    core::Sym raw = unknownValue(type);
-    core::SymInfo &rawInfo = heap.infoMut(state, raw);
-    rawInfo.raw = true;
-    rawInfo.rawAt =
-        toCoreLocation(context.getSourceManager(), castExpr.getBeginLoc());
-    return raw;
+    // RFC 0033 §2: an integer converted to a pointer is a pointer of
+    // unknown provenance (`raw-cast`), guarded like one an unknown callee
+    // returned; only a declaration makes a raw pointer.
+    core::Sym converted = unknownValue(type);
+    heap.infoMut(state, converted).rawCast = true;
+    return converted;
   }
   case CK_PointerToIntegral: {
     core::Sym pointer = valueOf(sub);

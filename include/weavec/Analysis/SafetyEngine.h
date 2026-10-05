@@ -34,6 +34,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <vector>
 
 namespace weavec::analysis {
@@ -46,6 +47,11 @@ struct EngineOptions {
   core::AnalysisStats *stats = nullptr;
   /// §5.5: block transfers per function body; 0 is unlimited.
   std::uint64_t budget = core::DefaultBudget;
+  /// RFC 0033 §9: block transfers summed over every run in the unit
+  /// (summary rounds, contexts, invariant rounds, the authoritative runs);
+  /// none means the default for the unit's size, 0 unlimited. Functions
+  /// run after it is spent take the over-budget defaults.
+  std::optional<std::uint64_t> unitBudget = std::nullopt;
   /// §11: locals and allocations are zero-initialised.
   bool zeroInit = true;
   /// §6.3.

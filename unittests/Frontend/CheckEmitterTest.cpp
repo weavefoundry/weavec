@@ -82,6 +82,9 @@ struct EmitOptions {
   /// §10.9: declare the helpers `extern` instead.
   bool externalHelpers = false;
   bool zeroInit = false;
+  /// Functions with more plan entries call the helpers' copies that are
+  /// not inlined.
+  unsigned inlinedHelperCalls = 4096;
   PlanEdit edit = nullptr;
 };
 
@@ -135,8 +138,10 @@ void emitUnit(clang::ASTContext &context, clang::Sema &sema,
   if (setup.edit)
     setup.edit(*unit.ledger, context);
   CheckEmitter emitter(
-      sema, CheckEmitterOptions{.mode = setup.mode,
-                                .externalHelpers = setup.externalHelpers});
+      sema,
+      CheckEmitterOptions{.mode = setup.mode,
+                          .externalHelpers = setup.externalHelpers,
+                          .inlinedHelperCalls = setup.inlinedHelperCalls});
   out.ok = emitter.emit(*unit.ledger);
   if (setup.zeroInit) {
     const ZeroInitPlan plan =
@@ -453,6 +458,19 @@ TEST(CheckEmitterTest, HelperSignaturesMatchThePrelude) {
                               helperFunctionType(context, helper, form.report)))
           << name << " in " << checkModeName(form.mode).str();
       ++matched;
+      // RFC 0033 *Implementation amendments* (build cost): the copy that is
+      // not inlined has the helper's type.
+      const auto copy = context.getTranslationUnitDecl()->lookup(
+          clang::DeclarationName(&context.Idents.get(name + "_ool")));
+      if (form.form == PreludeForm::Inline && helper.reports) {
+        ASSERT_FALSE(copy.empty()) << name;
+        const auto *copied = llvm::dyn_cast<clang::FunctionDecl>(copy.front());
+        ASSERT_NE(copied, nullptr) << name;
+        EXPECT_TRUE(context.hasSameType(copied->getType(), function->getType()))
+            << name << "_ool";
+      } else {
+        EXPECT_TRUE(copy.empty()) << name;
+      }
     }
     // Out of line, the report object has only the check helpers.
     EXPECT_GE(matched, 11U) << checkModeName(form.mode).str();
@@ -460,6 +478,37 @@ TEST(CheckEmitterTest, HelperSignaturesMatchThePrelude) {
   EXPECT_EQ(findHelperSignature("__weavec_chk_span")->params[4],
             HelperSignature::Type::UnsignedLongLong);
   EXPECT_EQ(findHelperSignature("__weavec_chk_bogus"), nullptr);
+}
+
+// RFC 0033 *Implementation amendments* (build cost): a function with more
+// plan entries than the limit calls the helpers' copies that are not
+// inlined; the others keep the inlined helpers, and the unit compiles.
+TEST(CheckEmitterTest, LargeFunctionsCallTheCopies) {
+  const char *code = R"C(
+int large(int *p, int i) { int a[10] = {0}; return *p + a[i]; }
+int small(int *p) { return *p; }
+)C";
+  EmitOptions setup;
+  setup.inlinedHelperCalls = 1;
+  const Emitted out = rewrite(code, setup);
+  EXPECT_TRUE(out.ok);
+  EXPECT_NE(out.bodies.find("large { int a[10] = {0}; return "
+                            "*__weavec_chk_nonnull_ool((p)) + "
+                            "a[__weavec_chk_index_ool((i), 10ULL)]; }"),
+            std::string::npos)
+      << out.bodies;
+  EXPECT_NE(out.bodies.find("small { return *__weavec_chk_nonnull((p)); }"),
+            std::string::npos)
+      << out.bodies;
+  for (const core::ChecksMode mode :
+       {core::ChecksMode::Trap, core::ChecksMode::Report,
+        core::ChecksMode::Verify}) {
+    EmitOptions compiled = setup;
+    compiled.mode = mode;
+    const Emitted ir = compile(code, &compiled);
+    EXPECT_TRUE(ir.errors.empty()) << ir.errors.front();
+    EXPECT_NE(ir.ir.find("_ool("), std::string::npos);
+  }
 }
 
 //===----------------------------------------------------------------------===//

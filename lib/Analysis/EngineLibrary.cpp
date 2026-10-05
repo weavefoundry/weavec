@@ -118,6 +118,12 @@ static std::optional<WitnessTerm> libraryTerm(const core::LibTerm &term,
     return WitnessTerm::sub(std::move(*lhs),
                             WitnessTerm::ofConstant(term.value));
   }
+  case core::LibTerm::Kind::Quotient: {
+    auto lhs = operand(0);
+    if (!lhs)
+      return std::nullopt;
+    return WitnessTerm::div(std::move(*lhs), term.value);
+  }
   case core::LibTerm::Kind::FormatLength:
   case core::LibTerm::Kind::Macro:
   case core::LibTerm::Kind::Min:
@@ -200,6 +206,13 @@ static core::Term valueTerm(Transfer &transfer, const core::LibTerm &term,
   }
   case Kind::Difference:
     return operand(0).plusConstant(-term.value);
+  case Kind::Quotient: {
+    // (Not linear: known only for a constant.)
+    core::Term a = operand(0);
+    if (!a.isConstant() || term.value <= 0 || a.constant < 0)
+      return core::Term::unknown();
+    return core::Term::of(a.constant / term.value);
+  }
   case Kind::FormatLength: {
     // A literal format's least output; exact when nothing in it varies.
     Transfer::FormatFacts format = transfer.formatFacts(call, match);
@@ -324,8 +337,10 @@ void Transfer::decideArguments(const CallExpr &call, const SiteInfo &site,
   auto objectWitness = [&](const ArgRequirement &requirement,
                            const std::optional<WitnessTerm> &needTerm)
       -> std::optional<CheckWitness> {
-    if (requirement.rowOnly || requirement.formatArgument ||
-        requirement.argvElement || (!requirement.enforced && !library))
+    // (RFC 0033 §5: a `%s` argument is a string the call reads, as any
+    // other; null passes the guard, which both libraries print.)
+    if (requirement.rowOnly || requirement.argvElement ||
+        (!requirement.enforced && !library && !requirement.formatArgument))
       return std::nullopt;
     // A callee's inferred requirement counts whole elements of the
     // pointee. For a record that is more than the callee touches when the
@@ -491,8 +506,6 @@ void Transfer::decideArguments(const CallExpr &call, const SiteInfo &site,
                    core::Facet::Spatial);
         continue;
       }
-      if (requirement.formatArgument)
-        continue;
       if (!extent) {
         publish(i,
                 core::FacetDecision::unresolvedFor(
@@ -811,7 +824,10 @@ void Transfer::decideLibraryCall(const CallExpr &call, const SiteInfo &site,
           a.targets[0].offset.constant - b.targets[0].offset.constant;
       if (gap < 0)
         gap = -gap;
-      if (gap >= length.constant) {
+      // RFC 0033 §1: a copy onto itself (`fe25519_copy(h, h)`, a struct
+      // assigned to itself) is undefined by the letter but leaves the bytes
+      // as they were in every supported C library: no violation.
+      if (gap == 0 || gap >= length.constant) {
         publish(argument, core::FacetDecision::proven(), needText, std::nullopt,
                 std::nullopt);
         continue;

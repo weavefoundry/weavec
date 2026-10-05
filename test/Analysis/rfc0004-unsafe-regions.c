@@ -45,10 +45,10 @@ void escapes(struct node *p) {
   // CHECK: rfc0004-unsafe-regions.c:[[@LINE-3]]:19: note: freed here
 }
 
-// A raw value made inside stays raw outside.
-void raw_escapes(uintptr_t x) {
+// A raw value used inside stays raw outside.
+void raw_escapes(struct node *WEAVEC_RAW x) {
   struct node *n;
-  WEAVEC_UNSAFE { n = (struct node *)x; n->v = 1; }
+  WEAVEC_UNSAFE { n = x; n->v = 1; }
   // CHECK: rfc0004-unsafe-regions.c:[[@LINE+1]]:3: error: dereference of raw pointer 'n' outside an unsafe region [weavec::unsafe-operation]
   n->v = 2;
 }

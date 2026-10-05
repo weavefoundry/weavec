@@ -21,10 +21,10 @@
 //
 // §16: a file receives one ledger; an invocation that would write two to
 // it is an error, while a directory takes one per unit and per link.
-// RUN: not %weavec_cc -fweavec-ledger=%t/one.json %s -o %t/prog 2>&1 | FileCheck --check-prefix=TWO %s
+// RUN: not %weavec_cc -fweavec-link=analyze -fweavec-ledger=%t/one.json %s -o %t/prog 2>&1 | FileCheck --check-prefix=TWO %s
 // RUN: not %weavec_cc -fweavec-ledger=%t/one.json -c %s %S/Inputs/rfc0014-callback-helper.c 2>&1 | FileCheck --check-prefix=TWO %s
-// RUN: %weavec_cc -fweavec-ledger=%t/ledgers/ %s -o %t/prog
-// RUN: %weavec_cc -fweavec-ledger=%t/one.json -fno-weavec-link %s -o %t/prog
+// RUN: %weavec_cc -fweavec-link=analyze -fweavec-ledger=%t/ledgers/ %s -o %t/prog
+// RUN: %weavec_cc -fweavec-ledger=%t/one.json -fweavec-link=none %s -o %t/prog
 //
 // weavec: the §16 options, and the removed ones are unknown arguments.
 // RUN: %weavec --require=proven --budget=0 --no-zero-init --ledger-format=sarif %s -- 2>&1 | FileCheck --allow-empty --check-prefix=ACCEPTED %s

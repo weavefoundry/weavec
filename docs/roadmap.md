@@ -119,10 +119,54 @@ for a block's accesses through one pointer, hoisting), proof-dependency
 tracking for a sharper blame property, hardware tagging (Arm MTE, Apple
 MIE), and the boundary facets of call sites.
 
-## Next: RFC 0033 — Adoption (planned)
+## Done: RFC 0033 — Drop-in by default
 
-- Format-30 records embedded in object sections, so archives, shared
-  libraries, ccache and LTO carry them.
+Design: [RFC 0033 — Drop-in by default](rfcs/0033-drop-in-by-default.md)
+(Implemented, with its build-cost gate D5 amended). A correct program built
+with `CC=weavec-cc` and default flags compiles, links and runs as it does
+with Clang, measured on eight fresh projects WeaveC was never tuned on and
+on a sealed set built once at the end. The stages landed on the
+`rfc0033-drop-in` branch and ship as one change; the decisions made while
+implementing them are recorded in the RFC's *Implementation amendments*:
+
+- [x] **S0 Tests first**: fresh and sealed configs, the `dropin/` cases.
+- [x] **S1 Witnessed violations and raw pointers.**
+- [x] **S2 The library table.**
+- [x] **S3 Guards**: the accessed address, fortified calls, format arguments.
+- [x] **S4 The runtime**: failure terminates, one runtime per process on
+      Darwin, the system's heap in the arena.
+- [x] **S5 The link step and records**, and the per-unit budget.
+- [x] **S6 The driver and diagnostics.**
+- [x] **S7 Fresh-corpus iterations.**
+- [x] **S8 Gates, the sealed run, documentation.**
+
+Every fresh project (zstd, libuv, oniguruma, redis, expat, pcre2,
+libevent, libsodium) builds with its own build and passes its own tests
+in trap and report mode with no trap and no false error. The sealed set
+(libxml2, libpng, mbedtls, msgpack-c, yyjson), built once at the end,
+found four more classes of false stops; they are fixed, and all five now
+build and pass. One target was not met and is carried forward: the build
+cost. libsodium, libevent, libuv and msgpack-c build within 4× the
+reference compiler's CPU time, zstd and redis within 3.6–5.6×, and
+oniguruma (6.1×), expat (8.1–8.7×), libxml2 (12–16×) and pcre2 (32–36×)
+do not, because the analysis's joins rebuild the whole abstract state at
+every merge. Making joins share what both sides hold is the next step for
+build time.
+
+## Next: RFC 0034 — Guard elimination
+
+Dominated guards, the hull of a block's guards per pointer, loop hoisting
+and guards as optimiser-visible intrinsics, against RFC 0032's carried cost
+gate (Lua at most 2.0× and zlib at most 1.5× the reference compiler). The
+build-cost gate RFC 0033 carries forward (every build within 4× the
+reference compiler) needs joins that keep what both sides of a merge share
+instead of renumbering the whole state; it is either part of this RFC or
+the next.
+
+## Planned: RFC 0035 — Adoption
+
+- Format-31 records embedded in object sections, so archives, shared
+  libraries, ccache and LTO carry them; incremental `-fweavec-link=analyze`.
 - Fingerprinted baselines, reasoned suppressions and waivers for accepted
   definite errors.
 - `weavec.toml`, with path scoping and API overlays.

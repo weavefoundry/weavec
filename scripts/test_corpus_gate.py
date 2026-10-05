@@ -151,6 +151,9 @@ class ManifestTest(unittest.TestCase):
     # RFC 0031, section 11.2.
     HELD_OUT = ["bzip2", "hiredis", "http-parser", "inih", "libyaml", "lz4", "miniz", "mujs", "sqlite", "tinyexpr",
                 "utf8proc"]
+    # RFC 0033, section 11.
+    FRESH = ["zstd", "libuv", "oniguruma", "redis", "expat", "pcre2", "libevent", "libsodium"]
+    SEALED = ["libxml2", "libpng", "mbedtls", "msgpack-c", "yyjson"]
 
     def write(self, directory: Path, data: dict) -> Path:
         path = directory / "manifest.json"
@@ -166,7 +169,8 @@ class ManifestTest(unittest.TestCase):
     def test_repository_manifest(self):
         manifest = gate.load_manifest(CORPUS / "manifest.json", CORPUS / "support")
         self.assertEqual(sorted(c.name for c in manifest.original), sorted(self.CONFIGS))
-        self.assertEqual(sorted(c.name for c in manifest.configs), sorted(self.CONFIGS + self.HELD_OUT))
+        self.assertEqual(sorted(c.name for c in manifest.configs),
+                         sorted(self.CONFIGS + self.HELD_OUT + self.FRESH + self.SEALED))
         for project in manifest.projects:
             self.assertRegex(project.sha, r"^[0-9a-f]{40}$")
         whole = {c.name for c in manifest.original if c.whole_program}
@@ -192,8 +196,9 @@ class ManifestTest(unittest.TestCase):
     def test_repository_held_out_configs(self):
         """RFC 0031, section 11.2: the eleven held-out projects, built and (but sqlite and mujs) tested."""
         manifest = gate.load_manifest(CORPUS / "manifest.json", CORPUS / "support")
-        held = {c.name: c for c in manifest.configs if c.held_out}
+        held = {c.name: c for c in manifest.configs if c.set == "heldOut"}
         self.assertEqual(sorted(held), self.HELD_OUT)
+        self.assertTrue(all(c.held_out for c in held.values()))
         for name, config in held.items():
             self.assertEqual(config.project.name, name)
             self.assertTrue(config.build, f"{name}: a held-out config builds as shipped (G5)")
@@ -213,6 +218,79 @@ class ManifestTest(unittest.TestCase):
         for limits in spec["G12"]["maxUnitCost"].values():
             self.assertEqual((limits["cpuSeconds"], limits["maxRssMiB"]), (900, 4096))
             self.assertIn(limits["file"], held["mujs"].files + held["sqlite"].files)
+
+    def test_repository_fresh_and_sealed_configs(self):
+        """RFC 0033, section 11: eight fresh and five sealed projects, each built and tested as shipped."""
+        manifest = gate.load_manifest(CORPUS / "manifest.json", CORPUS / "support")
+        for corpus_set, names in (("fresh", self.FRESH), ("sealed", self.SEALED)):
+            configs = {c.name: c for c in manifest.configs if c.set == corpus_set}
+            self.assertEqual(sorted(configs), sorted(names))
+            for name, config in configs.items():
+                self.assertEqual(config.project.name, name)
+                self.assertTrue(config.held_out, f"{name}: a {corpus_set} config is marked heldOut")
+                self.assertTrue(config.build and config.test, f"{name}: built and tested (D1)")
+                self.assertIsNone(config.bench)
+                self.assertFalse(config.whole_program, f"{name}: too big for the --quick whole-program run")
+                self.assertTrue(config.notes)
+                self.assertLessEqual(len(config.files), 45)
+            # Only the sealed configs' notes say they are sealed.
+            self.assertEqual({n for n, c in configs.items() if c.notes.startswith("SEALED")},
+                             set(names) if corpus_set == "sealed" else set())
+        spec = manifest.gates["rfc0033"]
+        self.assertEqual(spec["D1"], {"maxFalseDefiniteErrors": 0, "maxTraps": 0})
+        self.assertEqual(spec["D5"], {"maxBuildRatio": 4.0})
+        # --full runs the fresh configs with the held-out ones; the sealed ones
+        # run only with --sealed or when --only names them.
+        full = {c.name for c in gate.select_configs(manifest, [], True)}
+        self.assertTrue(set(self.FRESH) | set(self.HELD_OUT) <= full)
+        self.assertFalse(set(self.SEALED) & full)
+        self.assertEqual(sorted(c.name for c in gate.select_configs(manifest, [], True, sealed=True)),
+                         sorted(self.SEALED))
+        quick = {c.name for c in gate.select_configs(manifest, [], False)}
+        self.assertEqual(quick, set(self.CONFIGS))
+
+    def test_set_field(self):
+        with tempfile.TemporaryDirectory() as directory:
+            d = Path(directory)
+            load = lambda **config: gate.load_manifest(self.write(d, self.minimal(**config)), d).configs[0]
+            self.assertEqual(load().set, "original")
+            self.assertEqual(load(heldOut=True).set, "heldOut")
+            self.assertEqual(load(heldOut=True, set="fresh").set, "fresh")
+            sealed = load(heldOut=True, set="sealed")
+            self.assertEqual((sealed.set, sealed.held_out), ("sealed", True))
+            with self.assertRaisesRegex(gate.GateError, "set 'fresh' needs heldOut true"):
+                load(set="fresh")
+            with self.assertRaisesRegex(gate.GateError, "set 'sealed' needs heldOut true"):
+                load(heldOut=False, set="sealed")
+            # Without `set` a config is original or heldOut: neither is spelled out.
+            for value in ("heldOut", "original", "Fresh", ""):
+                with self.assertRaisesRegex(gate.GateError, "set must be \"fresh\" or \"sealed\""):
+                    load(heldOut=True, set=value)
+
+    def test_set_selection(self):
+        with tempfile.TemporaryDirectory() as directory:
+            d = Path(directory)
+            data = self.minimal()
+            data["projects"][0]["configs"] += [
+                {"name": "h", "heldOut": True, "compile": {"files": ["a.c"]}},
+                {"name": "f", "heldOut": True, "set": "fresh", "compile": {"files": ["a.c"]}},
+                {"name": "s", "heldOut": True, "set": "sealed", "compile": {"files": ["a.c"]}}]
+            manifest = gate.load_manifest(self.write(d, data), d)
+            self.assertEqual([c.name for c in manifest.original], ["p"])
+            names = lambda *a, **kw: [c.name for c in gate.select_configs(manifest, *a, **kw)]
+            self.assertEqual(names([], False), ["p"])
+            self.assertEqual(names([], True), ["p", "h", "f"])  # --full: not the sealed set
+            self.assertEqual(names([], True, sealed=True), ["s"])  # --sealed: the sealed set alone
+            self.assertEqual(names([], False, sealed=True), ["s"])
+            # --only names any config, sealed or not, with or without --sealed.
+            self.assertEqual(names(["s"], False), ["s"])
+            self.assertEqual(names(["f", "s"], True, sealed=True), ["f", "s"])
+
+        args = gate.parse_args(["--full", "--sealed"])
+        self.assertTrue(args.sealed)
+        self.assertFalse(gate.parse_args(["--full"]).sealed)
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            gate.parse_args(["--quick", "--legacy", "--sealed"])
 
     def test_held_out_field(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1050,6 +1128,59 @@ class FullEndToEndTest(unittest.TestCase):
         self.assertEqual(status, 1, output)
         results = json.loads((self.root / "r.json").read_text())
         self.assertEqual(results["gates"]["rfc0031.G5"]["status"], "fail")
+
+    def set_config(self, corpus_set: str, max_ratio: float) -> None:
+        manifest = json.loads(self.manifest.read_text())
+        manifest["projects"][0]["configs"][0].update({"heldOut": True, "set": corpus_set})
+        manifest["gates"]["rfc0033"] = {"D1": {"maxFalseDefiniteErrors": 0, "maxTraps": 0},
+                                        "D5": {"maxBuildRatio": max_ratio}}
+        self.manifest.write_text(json.dumps(manifest))
+
+    def test_fresh_config_gates(self):
+        """RFC 0033 D1 and D5 over a fresh config: its own gates and summary section."""
+        self.set_config("fresh", 1000)
+        self.triage_entries()
+        status, output = self.run_gate("--full", "--json", str(self.root / "r.json"))
+        self.assertEqual(status, 0, output)
+        self.assertIn("fresh configs (RFC 0033, section 11; gates D1 and D5):", output)
+        self.assertNotIn("held-out configs", output)
+        results = json.loads((self.root / "r.json").read_text())
+        self.assertEqual((results["freshConfigs"], results["heldOutConfigs"]), (["built"], []))
+        self.assertEqual(sorted(results["configs"]["built"]["builds"]), ["reference", "report", "trap"])
+        gates = results["gates"]
+        self.assertEqual(gates["rfc0033.D1"]["status"], "pass")
+        self.assertEqual(gates["rfc0033.D1"]["detail"]["built"]["reportTestsPassed"], True)
+        self.assertEqual(gates["rfc0033.D5"]["status"], "pass")
+        self.assertEqual(gates["rfc0033.D5"]["detail"]["built"]["limit"], 1000)
+        self.assertNotIn("rfc0031.G5", gates)  # RFC 0031's gates are the eleven held-out configs'
+        self.assertEqual(gates["G11"]["status"], "skip")
+        self.assertIn("built", results["fresh"]["configs"])
+        # D5 is a limit for fresh configs.
+        self.set_config("fresh", 1e-9)
+        status, output = self.run_gate("--full", "--json", str(self.root / "r.json"))
+        self.assertEqual(status, 1, output)
+        self.assertEqual(json.loads((self.root / "r.json").read_text())["gates"]["rfc0033.D5"]["status"], "fail")
+        # A trap in a fresh test suite fails D1.
+        self.set_config("fresh", 1000)
+        status, output = self.run_gate("--full", "--json", str(self.root / "r.json"), trap=True)
+        self.assertEqual(status, 1, output)
+        self.assertEqual(json.loads((self.root / "r.json").read_text())["gates"]["rfc0033.D1"]["status"], "fail")
+
+    def test_sealed_config_runs_only_when_asked(self):
+        self.set_config("sealed", 1e-9)
+        self.triage_entries()
+        status, output = self.run_gate("--full", "--json", str(self.root / "r.json"))
+        self.assertEqual(status, 0, output)
+        self.assertEqual(json.loads((self.root / "r.json").read_text())["configs"], {})
+        # --sealed runs it, reports it in its own section and fails on its D5.
+        status, output = self.run_gate("--full", "--sealed", "--json", str(self.root / "r.json"))
+        self.assertEqual(status, 1, output)
+        self.assertIn("sealed configs (RFC 0033, section 11; gate D2):", output)
+        results = json.loads((self.root / "r.json").read_text())
+        self.assertEqual(results["sealedConfigs"], ["built"])
+        self.assertEqual(results["gates"]["rfc0033.sealed.D1"]["status"], "pass")
+        self.assertEqual(results["gates"]["rfc0033.sealed.D5"]["status"], "fail")
+        self.assertNotIn("rfc0033.D1", results["gates"])
 
     def test_reference_only(self):
         # The synthetic trap injection only prints a report line; ASan has nothing to find in it.

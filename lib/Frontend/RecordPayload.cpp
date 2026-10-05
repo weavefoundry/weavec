@@ -59,12 +59,25 @@ std::vector<FunctionRows> siteRows(const core::UnitLedger &unit) {
                   .kind = site.kind,
                   .line = site.location.line,
                   .column = site.location.column,
-                  .facets = {}};
+                  .facets = {},
+                  .checks = {},
+                  .requirements = {},
+                  .text = site.text,
+                  .boundary = site.boundary,
+                  .callee = site.callee.empty()
+                                ? std::nullopt
+                                : std::optional<std::string>(site.callee)};
       for (const core::Facet facet : core::AllFacets) {
         if (const core::FacetRecord *record = site.facet(facet)) {
+          const auto index = static_cast<std::size_t>(facet);
           core::FacetDecision decision = record->decision;
           decision.detail.clear();
-          row.facets.at(static_cast<std::size_t>(facet)) = std::move(decision);
+          row.facets.at(index) = std::move(decision);
+          row.checks.at(index) = record->check;
+          for (core::Requirement requirement : record->requirements) {
+            requirement.decision.detail.clear();
+            row.requirements.at(index).push_back(std::move(requirement));
+          }
         }
       }
       rows.rows.push_back(std::move(row));
@@ -95,15 +108,21 @@ core::UnitLedger unitLedgerOf(std::span<const FunctionRows> rows) {
                                            .line = row.line,
                                            .column = row.column,
                                            .opaque = 0};
-      if (row.kind == core::SiteKind::Call)
+      site.text = row.text;
+      site.boundary = row.boundary;
+      site.callee = row.callee.value_or("");
+      if (row.kind == core::SiteKind::Call && !site.boundary)
         site.boundary = core::Boundary::Call;
       for (const core::Facet facet : core::AllFacets) {
-        const auto &decision = row.facets.at(static_cast<std::size_t>(facet));
+        const auto index = static_cast<std::size_t>(facet);
+        const auto &decision = row.facets.at(index);
         if (!decision)
           continue;
         core::FacetRecord &record = site.addFacet(facet);
         record.decided = true;
         record.decision = *decision;
+        record.check = row.checks.at(index);
+        record.requirements = row.requirements.at(index);
       }
       ledger.sites.push_back(std::move(site));
     }
@@ -238,6 +257,86 @@ static llvm::json::Object importJson(const std::string &name,
   return json;
 }
 
+/// RFC 0033 §7: a facet cell, `outcome[/reason][@template[!]]` (`!`: a
+/// verify check of a proven facet).
+static std::string facetCell(const core::FacetDecision &decision,
+                             const std::optional<core::FacetCheck> &check) {
+  std::string cell = decision.compact();
+  if (check) {
+    cell += '@';
+    cell += core::toString(check->kind);
+    if (check->proven)
+      cell += '!';
+  }
+  return cell;
+}
+
+/// The requirement records of a facet, one per line, each
+/// `arg\tneed\thave\tcell` with an empty field for an absent value.
+static std::string
+requirementsCell(std::span<const core::Requirement> requirements) {
+  std::string cell;
+  for (const core::Requirement &requirement : requirements) {
+    if (!cell.empty())
+      cell += '\n';
+    if (requirement.argument)
+      cell += std::to_string(*requirement.argument);
+    cell += '\t';
+    cell += requirement.need.value_or("");
+    cell += '\t';
+    cell += requirement.have.value_or("");
+    cell += '\t';
+    cell += facetCell(requirement.decision, requirement.check);
+  }
+  return cell;
+}
+
+static bool parseFacetCell(llvm::StringRef cell, core::FacetDecision &decision,
+                           std::optional<core::FacetCheck> &check) {
+  const auto [compact, checked] = cell.split('@');
+  const auto parsed = core::parseCompactFacet(compact);
+  if (!parsed)
+    return false;
+  decision = *parsed;
+  check.reset();
+  if (checked.empty())
+    return compact == cell;
+  llvm::StringRef name = checked;
+  const bool proven = name.consume_back("!");
+  const auto kind = core::parseCheckTemplate(name);
+  if (!kind)
+    return false;
+  check = core::FacetCheck{.kind = *kind, .proven = proven};
+  return true;
+}
+
+static bool parseRequirementsCell(llvm::StringRef cell,
+                                  std::vector<core::Requirement> &out) {
+  llvm::SmallVector<llvm::StringRef, 4> lines;
+  cell.split(lines, '\n');
+  for (llvm::StringRef line : lines) {
+    llvm::SmallVector<llvm::StringRef, 4> fields;
+    line.split(fields, '\t');
+    if (fields.size() != 4)
+      return false;
+    core::Requirement requirement;
+    if (!fields[0].empty()) {
+      std::uint32_t argument = 0;
+      if (fields[0].getAsInteger(10, argument))
+        return false;
+      requirement.argument = argument;
+    }
+    if (!fields[1].empty())
+      requirement.need = fields[1].str();
+    if (!fields[2].empty())
+      requirement.have = fields[2].str();
+    if (!parseFacetCell(fields[3], requirement.decision, requirement.check))
+      return false;
+    out.push_back(std::move(requirement));
+  }
+  return true;
+}
+
 static llvm::json::Array siteRowsJson(std::span<const FunctionRows> sites) {
   llvm::json::Array array;
   for (const FunctionRows &function : sites) {
@@ -247,9 +346,22 @@ static llvm::json::Array siteRowsJson(std::span<const FunctionRows> sites) {
                               std::string(core::toString(row.kind)),
                               static_cast<std::int64_t>(row.line),
                               static_cast<std::int64_t>(row.column)};
-      for (const auto &facet : row.facets)
-        cells.push_back(facet ? llvm::json::Value(facet->compact())
-                              : llvm::json::Value(nullptr));
+      for (std::size_t facet = 0; facet < core::FacetCount; ++facet)
+        cells.push_back(row.facets.at(facet)
+                            ? llvm::json::Value(facetCell(*row.facets.at(facet),
+                                                          row.checks.at(facet)))
+                            : llvm::json::Value(nullptr));
+      for (const auto &requirements : row.requirements)
+        cells.push_back(
+            requirements.empty()
+                ? llvm::json::Value(nullptr)
+                : llvm::json::Value(utf8(requirementsCell(requirements))));
+      cells.push_back(utf8(row.text));
+      cells.push_back(row.boundary ? llvm::json::Value(std::string(
+                                         core::toString(*row.boundary)))
+                                   : llvm::json::Value(nullptr));
+      cells.push_back(row.callee ? llvm::json::Value(utf8(*row.callee))
+                                 : llvm::json::Value(nullptr));
       rows.push_back(std::move(cells));
     }
     llvm::json::Object entry;
@@ -814,12 +926,31 @@ bool PayloadReader::readRows(const llvm::json::Object &json) {
         const llvm::json::Value &cell = row[4 + facet];
         if (cell.kind() == llvm::json::Value::Null)
           continue;
-        const auto decision = core::parseCompactFacet(*cell.getAsString());
-        if (!decision)
+        core::FacetDecision decision;
+        if (!parseFacetCell(*cell.getAsString(), decision,
+                            site.checks.at(facet)))
           return fail(at + "[" + std::to_string(4 + facet) + "]",
                       "malformed facet '" + cell.getAsString()->str() + "'");
-        site.facets.at(facet) = *decision;
+        site.facets.at(facet) = decision;
+        const llvm::json::Value &requirements =
+            row[4 + core::FacetCount + facet];
+        if (requirements.kind() != llvm::json::Value::Null &&
+            !parseRequirementsCell(*requirements.getAsString(),
+                                   site.requirements.at(facet)))
+          return fail(at + "[" + std::to_string(4 + core::FacetCount + facet) +
+                          "]",
+                      "malformed requirements");
       }
+      site.text = row[4 + (2 * core::FacetCount)].getAsString()->str();
+      if (const llvm::json::Value &boundary = row[5 + (2 * core::FacetCount)];
+          boundary.kind() != llvm::json::Value::Null) {
+        site.boundary = core::parseBoundary(*boundary.getAsString());
+        if (!site.boundary)
+          return fail(at, "unknown boundary");
+      }
+      if (const llvm::json::Value &callee = row[6 + (2 * core::FacetCount)];
+          callee.kind() != llvm::json::Value::Null)
+        site.callee = callee.getAsString()->str();
       rows.rows.push_back(std::move(site));
     }
     payload.sites.push_back(std::move(rows));

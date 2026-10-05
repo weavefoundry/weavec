@@ -220,6 +220,8 @@ std::string_view toString(Form form) noexcept {
     return "need";
   case Form::String:
     return "string";
+  case Form::Length:
+    return "length";
   }
   return "<invalid>";
 }
@@ -292,6 +294,8 @@ std::optional<std::size_t> operandCount(Template kind, Form form,
       return 1;
     if (form == Form::String && placement == Placement::WrapArgument)
       return 0;
+    if (form == Form::Length && placement == Placement::WrapArgument)
+      return 1;
     return std::nullopt;
   case Template::Live:
     if (form == Form::Plain && (placement == Placement::WrapOperand ||
@@ -373,6 +377,9 @@ std::string helperName(const CheckPlanEntry &entry) {
     break;
   case Form::String:
     name += "_s";
+    break;
+  case Form::Length:
+    name += "_l";
     break;
   case Form::Plain:
   case Form::Violation:

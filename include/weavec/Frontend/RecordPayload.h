@@ -284,6 +284,19 @@ struct SiteRow {
   /// Indexed by `core::Facet`; none where the facet does not apply.
   // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
   std::array<std::optional<core::FacetDecision>, core::FacetCount> facets = {};
+  /// RFC 0033 §7 (format 31): what a program ledger composed from records
+  /// alone needs besides: each facet's check and requirement records (their
+  /// details are not kept), the site's text and its boundary.
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
+  std::array<std::optional<core::FacetCheck>, core::FacetCount> checks = {};
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
+  std::array<std::vector<core::Requirement>, core::FacetCount> requirements =
+      {};
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
+  std::string text = {};
+  std::optional<core::Boundary> boundary = std::nullopt;
+  // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
+  std::optional<std::string> callee = {};
 
   friend bool operator==(const SiteRow &, const SiteRow &) = default;
 };

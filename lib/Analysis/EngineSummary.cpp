@@ -863,9 +863,7 @@ core::FunctionEffects FunctionRun::deriveEffects() {
       core::SummaryPath root = core::SummaryPath::global(unit.globalId(*var));
       for (const auto &[key, sym] : object.cells) {
         const core::SymInfo &value = heap.info(exit, sym);
-        if (!key.isConcrete() || (value.type != core::SymInfo::Type::Pointer &&
-                                  value.type != core::SymInfo::Type::Int &&
-                                  value.type != core::SymInfo::Type::Function))
+        if (!key.isConcrete())
           continue;
         // A cell still holding its entry value is no store; nor is one of
         // an object no store reached (only read).
@@ -982,11 +980,11 @@ core::FunctionEffects FunctionRun::deriveEffects() {
         for (const auto &[key, sym] : object.cells) {
           const core::SymInfo &value = heap.info(exit, sym);
           // (A function pointer the callee stored is a store too: the
-          // caller's indirect calls through the cell must see it.)
-          if ((value.type != core::SymInfo::Type::Pointer &&
-               value.type != core::SymInfo::Type::Int &&
-               value.type != core::SymInfo::Type::Function) ||
-              !key.isConcrete())
+          // caller's indirect calls through the cell must see it. So is a
+          // value of no known type, read through a `void *` (a field read
+          // by an accessor that takes `void *`): the caller forgets what the
+          // cell held.)
+          if (!key.isConcrete())
             continue;
           // The callee rewrote the object's bytes: an unknown store at its
           // own path says so (below), not its cells.
@@ -1773,7 +1771,17 @@ static QualType fieldStepType(const ASTContext &context, QualType type,
     QualType leaf = type;
     while (const auto *array = context.getAsArrayType(leaf))
       leaf = array->getElementType();
-    return leaf->isRecordType() ? QualType() : leaf;
+    if (leaf->isRecordType())
+      return {};
+    // RFC 0033 §1: an offset that is no element's start is a byte there
+    // (`memset(p, 0, 16)` over `int *p` stores bytes `#0`..`#15`); taking
+    // it for a whole element would reach past the bytes the callee wrote.
+    if (!leaf->isIncompleteType()) {
+      const std::int64_t width = context.getTypeSizeInChars(leaf).getQuantity();
+      if (width > 1 && offset % width != 0)
+        return context.UnsignedCharTy;
+    }
+    return leaf;
   }
   const ASTRecordLayout &layout = context.getASTRecordLayout(record);
   for (const FieldDecl *field : record->fields()) {
@@ -2474,6 +2482,16 @@ core::Sym Transfer::instantiate(const CallExpr &call,
     result = anyNull && type->isPointerType() ? nullPointer(type)
                                               : unknownValue(type);
   if (type->isPointerType()) {
+    // RFC 0033 §1: a result that is an argument on some classes and null on
+    // others is a value of its own. Made maybe-null in place, it would be
+    // the argument's value, and a test of the result would refine the
+    // argument (`if (add(list, v) == NULL)` taken as `list == NULL`).
+    if (anyNull && anyNonNull &&
+        heap.info(state, result).type == core::SymInfo::Type::Pointer &&
+        heap.info(state, result).null != core::PointerNull::Maybe) {
+      core::SymInfo own = heap.info(state, result);
+      result = heap.fresh(state, std::move(own));
+    }
     core::SymInfo &info = heap.infoMut(state, result);
     if (info.type == core::SymInfo::Type::Pointer) {
       if (anyNull && anyNonNull)

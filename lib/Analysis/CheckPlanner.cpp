@@ -8,10 +8,14 @@
 
 #include "weavec/Analysis/CheckPlanner.h"
 
+#include "weavec/Analysis/KindTable.h"
+#include "weavec/Core/LibrarySpec.h"
+
 #include "clang/AST/Expr.h"
 #include "clang/AST/RecordLayout.h"
 #include "clang/AST/RecursiveASTVisitor.h"
 #include "clang/AST/Stmt.h"
+#include "clang/Basic/Builtins.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
@@ -22,6 +26,7 @@
 #include <limits>
 #include <map>
 #include <optional>
+#include <set>
 #include <string>
 #include <utility>
 
@@ -331,7 +336,11 @@ private:
     const auto *variable = llvm::dyn_cast<clang::VarDecl>(&decl);
     if (variable == nullptr)
       return fail("it names neither a parameter nor a local");
-    if (!variable->hasLocalStorage())
+    // RFC 0033 *Implementation amendments*: a global array named alone
+    // stands for its address, which no store changes; what a term reads
+    // through it, it reads at the check (a format argument's `strnlen`).
+    if (!variable->hasLocalStorage() &&
+        !(variable->getType()->isArrayType() && path.empty()))
       return fail("it names a global");
     const clang::QualType type = variable->getType();
     if (type.isVolatileQualified())
@@ -413,6 +422,13 @@ private:
         return fromExpr(*cast->getSubExpr(), depth + 1);
       case clang::CK_ArrayToPointerDecay:
         return fromLvalue(*cast->getSubExpr());
+      case clang::CK_BitCast:
+        // A pointer seen as another pointer type (an argument passed as
+        // `void *`) is the same address.
+        if (cast->getType()->isPointerType() &&
+            cast->getSubExpr()->getType()->isPointerType())
+          return fromExpr(*cast->getSubExpr(), depth + 1);
+        return fail("it converts between kinds of values");
       default:
         return fail("it converts between kinds of values");
       }
@@ -481,6 +497,36 @@ static bool writesPlace(const clang::Expr *lvalue, const TermPlaces &places) {
   return ref != nullptr && llvm::is_contained(places.roots, ref->getDecl());
 }
 
+/// RFC 0033 §5: a call that writes no memory: a size query that evaluates
+/// nothing (the ones a fortified call passes), or a library function whose
+/// row only reads (`strlen(p)` as a need).
+static bool writesNothing(const clang::CallExpr &call) {
+  const unsigned builtin = call.getBuiltinCallee();
+  if (builtin == clang::Builtin::BI__builtin_object_size ||
+      builtin == clang::Builtin::BI__builtin_dynamic_object_size ||
+      builtin == clang::Builtin::BI__builtin_constant_p)
+    return true;
+  const clang::FunctionDecl *callee = call.getDirectCallee();
+  if (callee == nullptr)
+    return false;
+  const std::optional<core::LibraryMatch> match =
+      governingLibraryEntry(*callee, core::LibrarySpec::shipped());
+  if (!match || match->entry == nullptr)
+    return false;
+  const core::LibraryEntry &entry = *match->entry;
+  if (entry.variadic || entry.format || !entry.invalidates.empty() ||
+      !entry.copies.empty() || !entry.fills.empty() ||
+      !entry.writesString.empty() || entry.noreturn || entry.returnsTwice ||
+      entry.allocates() || entry.releases() || entry.hasCallback())
+    return false;
+  return llvm::all_of(entry.params, [](const core::LibraryParam &param) {
+    return param.type != core::LibraryParam::Type::Function && !param.out &&
+           param.effect == core::LibraryParam::Effect::Borrow &&
+           (param.access == core::LibraryParam::Access::None ||
+            param.access == core::LibraryParam::Access::Read);
+  });
+}
+
 /// Rule 7: whether evaluating `stmt` may write a place `places` names. The
 /// site's own call runs after its check, so only calls inside it count; a
 /// callee can write what is reached through a pointer, but not parameters
@@ -499,7 +545,9 @@ static bool mayWrite(const clang::Stmt *stmt, const TermPlaces &places,
        unary->getOpcode() == clang::UO_AddrOf) &&
       writesPlace(unary->getSubExpr(), places))
     return true;
-  if (llvm::isa<clang::CallExpr>(stmt) && stmt != site && places.throughPointer)
+  if (const auto *call = llvm::dyn_cast<clang::CallExpr>(stmt);
+      call != nullptr && stmt != site && places.throughPointer &&
+      !writesNothing(*call))
     return true;
   return llvm::any_of(stmt->children(), [&](const clang::Stmt *child) {
     return mayWrite(child, places, site, depth + 1);
@@ -583,6 +631,18 @@ static Entry makeEntry(Entry::Template kind, Entry::Form form,
   entry.argument = argument;
   entry.operands = std::move(operands);
   return entry;
+}
+
+/// RFC 0033 §5: the argument of `call` a witness term is, if it is one.
+static std::optional<unsigned> argumentIndex(const WitnessTerm &term,
+                                             const clang::CallExpr &call) {
+  if (term.kind != WitnessTerm::Kind::Expr || term.expr == nullptr)
+    return std::nullopt;
+  for (unsigned i = 0; i < call.getNumArgs(); ++i)
+    if (call.getArg(i)->IgnoreParenImpCasts() ==
+        term.expr->IgnoreParenImpCasts())
+      return i;
+  return std::nullopt;
 }
 
 static bool isCallLike(core::SiteKind kind) {
@@ -1043,7 +1103,8 @@ static bool releasesHeap(const SiteInfo &site) {
 void CheckPlanner::planGuards(const SiteInfo &site, core::Site &row,
                               const WitnessTable &witnesses,
                               PlaceHandleTable &handles,
-                              std::vector<Entry> &planned) const {
+                              std::vector<Entry> &planned,
+                              const std::set<core::Facet> &lowered) const {
   // RFC 0030 §2.1: no check can serve these sites.
   if (site.constantExpression || site.sharedOperand ||
       site.nonDefaultAddressSpace || site.stmt == nullptr)
@@ -1052,10 +1113,19 @@ void CheckPlanner::planGuards(const SiteInfo &site, core::Site &row,
   // What a facet wants: a guard (it is unresolved), a verify guard (it is
   // proven and nothing checks it yet), or nothing.
   enum class Want : std::uint8_t { None, Guard, Verify };
+  // RFC 0033 (V): a lowered violation no check guards.
+  const auto loweredViolation = [&](const core::FacetRecord *record) {
+    return record != nullptr && record->decided &&
+           record->outcome() == core::SiteOutcome::Violation &&
+           !record->check &&
+           llvm::any_of(core::AllFacets, [&](core::Facet facet) {
+             return lowered.contains(facet) && row.facet(facet) == record;
+           });
+  };
   const auto wantOf = [&](const core::FacetRecord *record) {
     if (record == nullptr || !record->decided)
       return Want::None;
-    if (isUnresolvedForGuard(record->decision))
+    if (isUnresolvedForGuard(record->decision) || loweredViolation(record))
       return Want::Guard;
     if (verify && record->outcome() == core::SiteOutcome::Proven &&
         !record->check)
@@ -1120,9 +1190,15 @@ void CheckPlanner::planGuards(const SiteInfo &site, core::Site &row,
       // An `object` guard of the same family already fails on a dead
       // object; a verify guard and a real one must not stand in for each
       // other, or a false proof would look like an ordinary trap.
+      // RFC 0033 §4: a subscripted pointer may lie outside the object the
+      // access reads (`base + index`), so a verify `live` of the pointer
+      // would ask about other bytes; a real `object` guard of the accessed
+      // bytes already fails on a dead object.
+      const bool coveredByRealObject =
+          object && proven && site.index != nullptr;
       if (object && object->proven == proven)
         guard(*temporal, *object);
-      else
+      else if (!coveredByRealObject)
         guard(*temporal,
               add(makeEntry(Entry::Template::Live, Entry::Form::Plain,
                             Entry::Placement::WrapOperand),
@@ -1176,7 +1252,13 @@ void CheckPlanner::planGuards(const SiteInfo &site, core::Site &row,
     bool left = false;
     for (std::size_t i = 0; i < spatial->requirements.size(); ++i) {
       core::Requirement &requirement = spatial->requirements[i];
-      if (requirement.decision.outcome != core::SiteOutcome::Unresolved)
+      // RFC 0033 (V): a lowered violation of the requirement is guarded
+      // like an unresolved one, and stays a violation.
+      const bool loweredRequirement =
+          requirement.decision.outcome == core::SiteOutcome::Violation &&
+          !requirement.check && lowered.contains(core::Facet::Spatial);
+      if (requirement.decision.outcome != core::SiteOutcome::Unresolved &&
+          !loweredRequirement)
         continue;
       const auto index = static_cast<std::uint16_t>(i);
       const CheckWitness *witness = nullptr;
@@ -1185,10 +1267,20 @@ void CheckPlanner::planGuards(const SiteInfo &site, core::Site &row,
             (candidate.shape == CheckWitness::Shape::Object ||
              candidate.shape == CheckWitness::Shape::Disjoint))
           witness = &candidate;
+      // RFC 0033 §5: a static length check that could not be planned (its
+      // have is only a lower bound, a flexible array member's) still names
+      // the need a guard can check against the object.
+      if (witness == nullptr)
+        for (const CheckWitness &candidate : all)
+          if (candidate.requirement == std::optional(index) &&
+              candidate.shape == CheckWitness::Shape::Length &&
+              candidate.need && candidate.argument && !candidate.guard)
+            witness = &candidate;
       // A requirement that binds only under a guard term has no guard yet:
       // the helpers take no condition.
-      if (!isUnresolvedForGuard(requirement.decision) || witness == nullptr ||
-          !witness->argument || witness->guard ||
+      if ((!isUnresolvedForGuard(requirement.decision) &&
+           !loweredRequirement) ||
+          witness == nullptr || !witness->argument || witness->guard ||
           *witness->argument >= call->getNumArgs() ||
           !call->getArg(*witness->argument)->getType()->isPointerType()) {
         left = true;
@@ -1217,20 +1309,42 @@ void CheckPlanner::planGuards(const SiteInfo &site, core::Site &row,
       } else if (witness->need) {
         auto need = express(*witness->need, site, *witness, handles,
                             std::nullopt, /*objectStrings=*/true);
-        if (need.term)
+        if (need.term) {
           entry = makeEntry(Entry::Template::Object, Entry::Form::Need,
                             Entry::Placement::WrapArgument,
                             {std::move(*need.term)}, *witness->argument);
+        } else if (const std::optional<unsigned> length =
+                       argumentIndex(*witness->need, *call)) {
+          // RFC 0033 §5: a need that is a call argument no term can
+          // repeat (`strlen(p)`) is checked where the call evaluates it,
+          // against the pointer argument, which a term can repeat. The
+          // pointer is read at the call that reads it (rule 4 holds by
+          // construction; rule 7 still applies).
+          CheckWitness atCall = *witness;
+          atCall.unmodified = true;
+          auto pointer =
+              express(WitnessTerm::ofExpr(*call->getArg(*witness->argument)),
+                      site, atCall, handles);
+          if (pointer.term &&
+              pointer.term->kind == core::CheckTerm::Kind::Place &&
+              *length != *witness->argument)
+            entry = makeEntry(Entry::Template::Object, Entry::Form::Length,
+                              Entry::Placement::WrapArgument,
+                              {std::move(*pointer.term)},
+                              static_cast<std::uint8_t>(*length));
+        }
       }
       if (!entry) {
         left = true;
         continue;
       }
-      reason = requirement.decision.unresolved;
       requirement.check =
           add(std::move(*entry), core::Facet::Spatial, false, index);
-      requirement.decision = core::FacetDecision::guardedFor(
-          *reason, std::move(requirement.decision.detail));
+      if (!loweredRequirement) {
+        reason = requirement.decision.unresolved;
+        requirement.decision = core::FacetDecision::guardedFor(
+            *reason, std::move(requirement.decision.detail));
+      }
       if (witness->shape != CheckWitness::Shape::Disjoint)
         covered.insert({*witness->argument, false});
     }
@@ -1249,13 +1363,26 @@ void CheckPlanner::planGuards(const SiteInfo &site, core::Site &row,
   }
 
   // The temporal facet of a library call: every pointer the row reads or
-  // writes through is live. A row whose variadic arguments may be pointers
-  // (the `printf` family) names no such list, and stays unresolved.
+  // writes through is live. Of a variadic row's arguments (the `printf`
+  // family, RFC 0033 §5) only the strings a literal format reads are; their
+  // `object` guards cover them, and the others it does not dereference. A
+  // variadic row with no format, or a format that is no literal, names no
+  // such list, and stays unresolved.
   const Want wantTemporal = wantOf(temporal);
   if (site.kind != core::SiteKind::LibCall || wantTemporal == Want::None ||
       !site.library || site.library->entry == nullptr ||
-      site.library->entry->variadic || !temporal->requirements.empty())
+      !temporal->requirements.empty())
     return;
+  const core::LibraryEntry &entry = *site.library->entry;
+  if (entry.variadic) {
+    if (!entry.format)
+      return;
+    const int format = site.library->callArgument(entry.format->format);
+    if (format < 0 || static_cast<unsigned>(format) >= call->getNumArgs() ||
+        !llvm::isa<clang::StringLiteral>(
+            call->getArg(static_cast<unsigned>(format))->IgnoreParenImpCasts()))
+      return;
+  }
   const bool proven = wantTemporal == Want::Verify;
   std::vector<unsigned> arguments;
   for (unsigned i = 0; i < call->getNumArgs(); ++i) {
@@ -1268,6 +1395,15 @@ void CheckPlanner::planGuards(const SiteInfo &site, core::Site &row,
     if (accessed && param->effect == core::LibraryParam::Effect::Borrow)
       arguments.push_back(i);
   }
+  // RFC 0033 §5: the variadic strings the format reads (each has a spatial
+  // requirement record).
+  if (entry.variadic && spatial != nullptr)
+    for (const core::Requirement &requirement : spatial->requirements)
+      if (requirement.argument && *requirement.argument < call->getNumArgs() &&
+          site.library->param(*requirement.argument) == nullptr &&
+          call->getArg(*requirement.argument)->getType()->isPointerType() &&
+          !llvm::is_contained(arguments, *requirement.argument))
+        arguments.push_back(*requirement.argument);
   if (arguments.empty() || arguments.size() > 255)
     return;
   std::optional<core::FacetCheck> check;
@@ -1312,6 +1448,16 @@ core::CheckPlan CheckPlanner::plan(core::UnitLedger &unit,
         continue;
       SitePlanner planner(*this, site, handles);
       std::vector<Entry> planned;
+      std::set<core::Facet> loweredFacets;
+      // RFC 0033 (V): a lowered violation the analysis decided from the
+      // program's own model of other code (a temporal fact, a callee's or a
+      // library row's requirement at a call) is guarded, so that it traps
+      // when it happens and a false one runs; one decided at the access
+      // from an exact extent traps whenever it is reached, as before.
+      const auto guardsLowered = [&](const SiteInfo &at, core::Facet facet) {
+        return options.runtime &&
+               (facet == core::Facet::Temporal || isCallLike(at.kind));
+      };
 
       // Plans one record; returns false when it became unresolved.
       const auto planRecord = [&](core::Facet facet,
@@ -1353,6 +1499,12 @@ core::CheckPlan CheckPlanner::plan(core::UnitLedger &unit,
         // proven.
         if (verify)
           return true;
+        if (lowered && guardsLowered(site, facet)) {
+          // RFC 0033 (V): the guard pass guards it if it can; what it
+          // cannot traps unconditionally, below.
+          loweredFacets.insert(facet);
+          return true;
+        }
         if (lowered) {
           Entry guard = violationGuard(site, facet);
           guard.site = site.id;
@@ -1404,6 +1556,10 @@ core::CheckPlan CheckPlanner::plan(core::UnitLedger &unit,
                           [](const core::Requirement &requirement) {
                             return requirement.check.has_value();
                           })) {
+          if (guardsLowered(site, facet)) {
+            loweredFacets.insert(facet);
+            continue;
+          }
           Entry guard = violationGuard(site, facet);
           guard.site = site.id;
           guard.facet = facet;
@@ -1421,7 +1577,35 @@ core::CheckPlan CheckPlanner::plan(core::UnitLedger &unit,
       // RFC 0032 §6: what is still unresolved is guarded, where the site has
       // a pointer operand.
       if (options.runtime)
-        planGuards(site, *ledgerSite, witnesses, handles, planned);
+        planGuards(site, *ledgerSite, witnesses, handles, planned,
+                   loweredFacets);
+      // §3.4: a lowered violation no check or guard serves traps before the
+      // operation.
+      for (const core::Facet facet : loweredFacets) {
+        core::FacetRecord *record = ledgerSite->facet(facet);
+        if (record == nullptr)
+          continue;
+        const bool unguardedRequirement = llvm::any_of(
+            record->requirements, [](const core::Requirement &requirement) {
+              return requirement.decision.outcome ==
+                         core::SiteOutcome::Violation &&
+                     !requirement.check;
+            });
+        const bool unguardedFacet =
+            record->outcome() == core::SiteOutcome::Violation &&
+            !record->check &&
+            llvm::none_of(record->requirements,
+                          [](const core::Requirement &requirement) {
+                            return requirement.check.has_value();
+                          });
+        if (!unguardedRequirement && !unguardedFacet)
+          continue;
+        Entry guard = violationGuard(site, facet);
+        guard.site = site.id;
+        guard.facet = facet;
+        record->check = core::facetCheck(guard);
+        planned.push_back(std::move(guard));
+      }
 
       // §10.4: a span check traps on null, so it replaces the nonnull check
       // of the same operand.

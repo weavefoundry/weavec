@@ -51,6 +51,8 @@
 // JOBS-SAME: "-D" "__WEAVEC__=1"
 // JOBS-SAME: "-fno-weavec-zero-init" "-Wno-weavec-leak"
 // JOBS-NOT: error:
+// RFC 0033 §10: Clang's version block comes first, WeaveC's line after it.
+// VERSION: clang version
 // VERSION: weavec-cc version {{[0-9]+\.[0-9]+\.[0-9]+}}
 // VERSION-NEXT: built with LLVM {{[0-9]+\.}}
 // RECORDED: "reported": [

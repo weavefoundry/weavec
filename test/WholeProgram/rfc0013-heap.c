@@ -4,14 +4,15 @@
 // RUN: %weavec_cc -c %S/Inputs/heap13.c -o %t/library.o 2>&1 | count 0
 // RUN: %weavec_cc -c %s -o %t/caller.o 2>&1 | count 0
 // RUN: %weavec --dump-record=%t/library.o.weavec | FileCheck --check-prefix=RECORD %s
-// RUN: not %weavec_cc %t/library.o %t/caller.o -o %t/program 2>&1 | FileCheck %s
+// RFC 0033 §8: weavec-cc prints leak warnings when asked.
+// RUN: not %weavec_cc -fweavec-link=analyze -Wweavec-leak %t/library.o %t/caller.o -o %t/program 2>&1 | FileCheck %s
 #include "../Inputs/prelude.h"
 #include "Inputs/heap13.h"
 
 // The record's format-30 summaries (RFC 0031 *Summary format 30*, *The
 // unit record*): `heap13_new`'s result owns a fresh 4-byte block in `data`,
 // and `heap13_wrap`'s result holds its argument there.
-// RECORD: "format": 30,
+// RECORD: "format": 31,
 // RECORD: "name": "heap13_new",
 // RECORD: "effects": "{{.*}}store r*.data when=-:- :: fresh family=free extent=4 {{.*}}result classes=nonnull :: fresh family=free extent=8
 // RECORD: "name": "heap13_wrap",

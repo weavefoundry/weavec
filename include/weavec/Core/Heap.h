@@ -473,7 +473,9 @@ struct SymInfo {
   /// null findings (never for a decision).
   std::optional<NullOrigin> nullOrigin = std::nullopt;
   std::optional<ReleaseRecord> release = std::nullopt;
-  /// RFC 0004: a raw pointer and where it became one.
+  /// RFC 0004, RFC 0033 §2: a raw pointer (declared `WEAVEC_RAW`, or loaded
+  /// through or handed out as one) and where it became one. Must: a merge
+  /// of a raw value and another is `rawSome`.
   bool raw = false;
   /// Raw only through some of the functions a call may reach (a hook whose
   /// functions return raw and tracked pointers, RFC 0031 *Implementation
@@ -482,8 +484,8 @@ struct SymInfo {
   bool rawSome = false;
   SourceLocation rawAt = {};
   /// How the raw origin arose, for the note at `rawAt` (RFC 0004).
-  enum class RawOrigin : std::uint8_t { Cast, Declared, Loaded, Returned };
-  RawOrigin rawOrigin = RawOrigin::Cast;
+  enum class RawOrigin : std::uint8_t { Declared, Loaded, Returned };
+  RawOrigin rawOrigin = RawOrigin::Declared;
   /// `Loaded`: the raw pointer it was loaded through; `Returned`: the
   /// callee that handed it out.
   std::string rawFrom = {};

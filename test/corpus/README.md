@@ -7,12 +7,12 @@ replaces `scripts/corpus.py` and `scripts/corpus/`.
 
 | File | What it holds |
 | --- | --- |
-| `manifest.json` | The 9 projects (url, 40-hex `sha`, `support` files) and their 11 configs: `compile` (files and arguments), `wholeProgram`, `build`, `test`, `bench`, `link`, `lowered`; the 11 held-out projects of RFC 0031 (`heldOut`, below); and `gates`, the limits of gates G9–G15 (G14 as RFC 0032 amended it: three limits per benchmark), under `heldOut` of RFC 0031's G5, G6 and G12, and under `rfc0032` of RFC 0032's R4 |
+| `manifest.json` | The 9 projects (url, 40-hex `sha`, `support` files) and their 11 configs: `compile` (files and arguments), `wholeProgram`, `build`, `test`, `bench`, `link`, `lowered`; the 11 held-out projects of RFC 0031 (`heldOut`, below); the 8 fresh and 5 sealed projects of RFC 0033 (`set`, below); and `gates`, the limits of gates G9–G15 (G14 as RFC 0032 amended it: three limits per benchmark), under `heldOut` of RFC 0031's G5, G6 and G12, under `rfc0032` of RFC 0032's R4, and under `rfc0033` of RFC 0033's D1 and D5 |
 | `expected.json` | The ratchet, per platform and config (written by `--update`), and `legacy`, v0.10.0's numbers for S0 and S1 |
 | `triage.json` | A verdict for every definite error and possible temporal warning, and `guardFailures`: the guard failures of a test suite that were triaged as true bugs |
 | `injections/` | `injections.json` and one patch per injected bug, by project (39; RFC 0032's eight exercise the runtime's guards), plus drivers the trap injections build |
 | `bench/` | `lua-bench.lua`, the `cjson-bench.c` driver and `zlib-input.py`, the generator of the 64 MiB zlib input |
-| `support/` | Files a checkout needs that it does not have: jansson's, bzip2's, libyaml's and miniz's generated headers (`{support}` in compile arguments), the Lua `testes` subset driver, bzip2's makefile, hiredis's test wrapper and utf8proc's test-data fetcher |
+| `support/` | Files a checkout needs that it does not have: jansson's, bzip2's, libyaml's and miniz's generated headers, and those of oniguruma, expat, pcre2, libevent, libsodium, libxml2, libpng and msgpack-c (`{support}` in compile arguments), the Lua `testes` subset driver, bzip2's makefile, the test wrappers of hiredis, libuv and redis, utf8proc's test-data fetcher, mbedtls's `framework` submodule fetcher, and msgpack-c's expected example outputs |
 
 ## The configs
 
@@ -90,6 +90,60 @@ forbids naming a corpus project under `lib/`).
   the others. Every analysis now also records `unresolvedShare.temporal`,
   compared once a record has it.
 
+## The fresh and sealed configs (RFC 0033, section 11)
+
+Thirteen more projects WeaveC was never tuned on, pinned by SHA with their
+own build and test commands, marked `"heldOut": true` and a `set`:
+`"fresh"` for the eight that measure the drop-in default (gates D1 and D5)
+and `"sealed"` for the five kept for gate D2's single run. A config without
+`set` is `original`, or `heldOut` when it is marked heldOut; `set` takes
+only `fresh` or `sealed`, and needs `heldOut: true`. None is a whole-program
+config (too big for the PR-time run), and the gate's word check forbids
+every one of their names under `lib/`. The test times are those of the
+reference compiler on darwin-arm64 (`--full --reference-only`, `--jobs 4`).
+
+| Config | Set | Files | Build | Test | Test time |
+| --- | --- | --- | --- | --- | --- |
+| zstd | fresh | `lib/{common,compress,decompress,dictBuilder}/*.c` (30) | `lib-release zstd-release`, `tests/` `datagen fuzzer zstreamtest` | `playTests.sh` without long tests, `fuzzer -s1 -i300`, `zstreamtest -s1 -i100`, a `--train`ed dictionary round trip at `-13` | 21 s |
+| libuv | fresh | the 37 sources of the Darwin build | CMake, `uv_run_tests_a` | `support/libuv/run-tests.sh`: every test in its own process but `emfile`, `spawn_exercise_sigchld_issue`, `udp_multicast_join` and `udp_multicast_join6`, which fail on Darwin with the reference compiler too | 43 s |
+| oniguruma | fresh | the 35 library sources (`-I{support}` for `config.h`) | CMake, static, POSIX API, tests | the eight test programs | 1 s |
+| redis | fresh | 40 data-structure and command sources of `src/` | `make MALLOC=libc BUILD_TLS=no CLANG=clang OPTIMIZATION=-O2` | `support/redis/run-tests.sh`: 11 units of the Tcl suite (list, hash, set, zset, string, incr, expire, keyspace, sort, scan, hyperloglog), 4 clients | 55 s |
+| expat | fresh | `expat/lib/xml{parse,role,tok}.c` (`-I{support}` for `expat_config.h`) | CMake in `expat/`: `runtests`, `xmlwf`, three examples | `runtests`, `xmlwf` over `testdata/largefiles`, the examples | 11 s |
+| pcre2 | fresh | 29 library sources, 8-bit (`-I{support}` for `config.h`, `pcre2.h`) | CMake, 8/16/32-bit, no JIT | CTest: `RunTest`, `RunGrepTest`, `pcre2posix_test` | 2 s |
+| libevent | fresh | the 24 core and extra sources (`-I{support}` for the two config headers) | CMake, static, no OpenSSL, Mbed TLS or benchmarks | CTest without `regress`, then `regress` on kqueue and on poll in debug mode, without `dns/initialize_nameservers` | 167 s |
+| libsodium | fresh | 44 portable sources (`-I{support}` for `sodium/version.h`) | the shipped `./configure --disable-shared`, `make`, `make check TESTS=` | `make check` (80 programs against their `.exp` files) | 5 s |
+| libxml2 | sealed | 39 library sources | CMake, static, no Python, iconv, ICU, lzma, zlib, HTTP | CTest (7 tests) | 2 s |
+| libpng | sealed | the 15 library sources and `pngtest.c` | CMake with tests and tools (the SDK's zlib) | CTest (33 tests) | 20 s |
+| mbedtls | sealed | 40 `library/` sources | `support/mbedtls/fetch-framework.sh`, CMake with tests and programs | CTest serially (135 suites), `selftest` | 36 s |
+| msgpack-c | sealed | the five `src/` files | CMake, static, examples | the examples, three against recorded outputs (its tests need GoogleTest) | 2 s |
+| yyjson | sealed | `src/yyjson.c` | CMake with tests | CTest (12 tests) | 3 s |
+
+Each config's `notes` say why its build and test are what they are.
+
+- **Selection.** The fresh configs run with the held-out ones: in `--full`,
+  in other modes with `--held-out`, never with `--legacy`. The sealed ones
+  run only with `--sealed` (which selects them alone) or when `--only` names
+  them. RFC 0033 runs `--sealed` once, on the final tree, for gate D2;
+  before that a sealed config may be built only with the reference compiler
+  (`--full --sealed --reference-only`), to write its commands. After D2 they
+  become fresh configs and the next RFC seals a new set.
+- **Gates.** Each set has its own section at the end of the run (`fresh` and
+  `sealed` in `--json`) and none counts towards G9, G10, G11, RFC 0031's
+  held-out gates or G15's over-budget share. `rfc0033.D1`: no definite error
+  triaged false and, with `--full`, every build and test suite passes, in
+  trap mode with no trap and in report mode with no failure (a build that
+  stops only at definite errors triaged true is kept, as for `rfc0031.G5`);
+  `rfc0033.D5`: with `--full`, each config's `weavec-cc` build CPU time at
+  most `gates.rfc0033.D5.maxBuildRatio` (4.0) times the reference
+  compiler's, which builds it once more for the measurement. The sealed
+  configs get the same values as `rfc0033.sealed.D1` and
+  `rfc0033.sealed.D5`; a failure fails the run, and D2 records the result
+  whatever it is. Their unresolved shares are reported under `rfc0032.R4`,
+  not gated.
+- **Triage and ratchet.** As for the held-out configs: every definite error
+  needs a verdict, and a config without an `expected.json` record is a note
+  until `--update` records it.
+
 ## Running it
 
 Checkouts live in `build/corpus/<project>` (`--workdir`). A missing one is
@@ -122,6 +176,11 @@ scripts/corpus-gate.py --full --reference-only --cc "$(brew --prefix llvm)/bin/c
 # RFC 0031's held-out configs: in --full by default, in --quick on request.
 scripts/corpus-gate.py --quick --held-out --only bzip2 hiredis
 scripts/corpus-gate.py --full --no-held-out ...
+
+# RFC 0033: the fresh configs run with the held-out ones; the sealed ones
+# only with --sealed (gate D2, once) or by name.
+scripts/corpus-gate.py --quick --held-out --only zstd redis
+scripts/corpus-gate.py --full --sealed --reference-only --cc "$(brew --prefix llvm)/bin/clang"
 ```
 
 The binaries default to `build/release/bin`, then `build/dev/bin`; with
@@ -197,7 +256,8 @@ otherwise), the unresolved facets of each kind over all facets of that kind,
 and compares the shares with `gates.rfc0032.R4.maxUnresolvedShare`: spatial
 0.12, null 0.01, temporal 0.20. A facet the runtime guards is `guarded`, not
 unresolved, so it does not count. A group is gated only when all of its
-configs were selected; the shares are reported either way.
+configs were selected; the shares are reported either way, and those of
+RFC 0033's fresh and sealed sets are reported but never gated.
 
 `--legacy` runs v0.10.0's semantics: `weavec` exactly as `scripts/corpus.py`
 ran it (per file, or `--whole-program` over all files; `-ferror-limit=0`;

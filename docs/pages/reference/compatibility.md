@@ -26,7 +26,7 @@ With the runtime, the image's `malloc`, `calloc`, `realloc`, `free`, `reallocarr
 - Every block is zero-filled, and its usable size is its requested size: `malloc_usable_size` and `malloc_size` return what was asked for, not a rounded-up size.
 - A freed block is not reused until it leaves the quarantine (64 MiB by default; `WEAVEC_RT_QUARANTINE=<bytes>`), so a program that frees and allocates heavily can hold more memory than the same program on the system allocator.
 - An invalid `free` or `realloc` (a double free, an interior, stack or global pointer) stops the program, in whichever object of the image it happens.
-- On ELF targets the executable's allocator serves every shared library in the process, the C library included. On Darwin it serves its own image; the system libraries keep their allocator, and a block that one side frees or reallocates for the other is handed to the allocator that owns it.
+- On ELF targets the executable's allocator serves every shared library in the process, the C library included. On Darwin one runtime serves the process (the copy the dynamic loader finds first; the others forward to it), and its malloc zone becomes the default zone, so the system libraries' own allocations (`strdup`, `getline`, `asprintf`) come from it too. Blocks the system allocated before that are handed back to the zone that owns them.
 - Speed, fragmentation and address layout are those of WeaveC's allocator, not the system's. Programs that depend on the system allocator's identity (a `malloc_zone_t` of their own, allocator introspection, `mallopt`) see WeaveC's allocator.
 
 A program that defines `malloc`, `calloc`, `realloc` or `free` itself keeps its own allocator, and its heap is untracked. A program's own definition of one of the other functions over `malloc` replaces WeaveC's and keeps the tracked heap.
@@ -53,10 +53,10 @@ Current releases are source archives. Portable binary packages and package-manag
 
 ## External code and object files
 
-The library table (`lib/Core/LibrarySpec.txt`) describes the C library, POSIX and platform functions WeaveC models: allocation, release, string, stream and runtime operations. Other functions declared in platform headers are assumed to borrow their arguments and are trusted. Functions WeaveC cannot see at all are treated conservatively as possibly freeing or keeping their pointer arguments, and are listed in the ledger.
+The library table (`lib/Core/LibrarySpec.txt`) describes the C library, POSIX and platform functions WeaveC models: allocation, release, string, stream and runtime operations. Each row states what every supported C library (Darwin's and glibc) accepts, not the strictest reading of a standard: where one of them documents accepting a null pointer (`gettimeofday(NULL, &tz)`, `setgroups(0, NULL)`), the row allows it. Other functions declared in platform headers are assumed to borrow their arguments and are trusted. Functions WeaveC cannot see at all are treated conservatively as possibly freeing or keeping their pointer arguments, and are listed in the ledger.
 
 Keep `.o.weavec` records beside the corresponding objects and rebuild after source, header or command changes. Link inputs without a valid record, including static archives and shared libraries, are named in one `unanalyzed-input` warning, and calls into them are trusted.
 
 ## Version changes
 
-WeaveC is in early 0.x development. Flags, diagnostics, the ledger schema and the object record format can change between minor versions; a record from an incompatible version is treated as missing. The ledger schema is at version 2 and the unit record at format 30, both changed by [RFC 0032](/rfcs/0032-runtime-enforcement/): rebuild objects compiled by an earlier version. Check the [release notes](/project/releases/) before upgrading and rebuild affected objects.
+WeaveC is in early 0.x development. Flags, diagnostics, the ledger schema and the object record format can change between minor versions; a record from an incompatible version is treated as missing. The ledger schema is at version 2, changed by [RFC 0032](/rfcs/0032-runtime-enforcement/), and the unit record at format 31, changed by [RFC 0033](/rfcs/0033-drop-in-by-default/): rebuild objects compiled by an earlier version. Check the [release notes](/project/releases/) before upgrading and rebuild affected objects.

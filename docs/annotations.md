@@ -12,7 +12,7 @@ portable C.
 | `WEAVEC_OWNED`    | pointer parameters, returns, variables, fields | The pointer uniquely owns its referent and must release it exactly once. On a struct field: the field owns its referent whenever the struct is live, so freeing the struct without releasing, moving or nulling the field first is a `leak` ([RFC 0007](rfcs/0007-resource-lifecycle.md)). |
 | `WEAVEC_BORROWED` | pointer parameters, returns, variables, fields | Shared, read-only borrow. The referent outlives the borrow.              |
 | `WEAVEC_MUT`      | pointer parameters, returns, variables, fields | Exclusive, mutable borrow.                                               |
-| `WEAVEC_RAW`      | pointer parameters, returns, variables, fields, function-pointer types | No guarantee at all: the checker tracks the pointer but any dereference, release or transfer of ownership must happen inside a `WEAVEC_UNSAFE` region. |
+| `WEAVEC_RAW`      | pointer parameters, returns, variables, fields, function-pointer types | No guarantee at all: the checker tracks the pointer but any dereference, release or transfer of ownership must happen inside a `WEAVEC_UNSAFE` region. The only source of raw pointers: a pointer converted from an integer is not raw ([RFC 0033](rfcs/0033-drop-in-by-default.md) §2). |
 | `WEAVEC_UNSAFE`   | function declarations, compound statements     | An *unsafe region* ([RFC 0030](rfcs/0030-prove-or-trap.md) §6.1): raw pointers and spatial and null operations inside it are trusted, and no runtime checks or spatial guards are inserted there. Temporal state is still tracked: possible temporal findings are warnings or guarded facets as elsewhere ([RFC 0032](rfcs/0032-runtime-enforcement.md) §6), and definite violations remain errors. Ownership still flows through it and out of it. |
 | `WEAVEC_NULLABLE` | pointer parameters, returns, variables, fields | The pointer may be null ([RFC 0008](rfcs/0008-pointer-validity.md)). On a parameter: the body must test it before dereferencing it, and callers may pass null. On a return type: callers must test the result. On a variable or field: every load is treated as maybe-null until it is tested. Says nothing about ownership; combine with `WEAVEC_OWNED`/`WEAVEC_BORROWED`/`WEAVEC_MUT` as needed. |
 | `WEAVEC_NONNULL`  | pointer parameters, returns, variables, fields | The pointer is never null ([RFC 0008](rfcs/0008-pointer-validity.md)). On a parameter: an argument that may be null is checked at the call ([RFC 0030](rfcs/0030-prove-or-trap.md)), and a definitely null one is an error, even if the body never dereferences it. On a return type: callers need not test the result. On a variable or field: it is never reported as null. Says nothing about ownership. |
@@ -118,12 +118,21 @@ cascade. See [RFC 0004](rfcs/0004-unsafe-boundaries.md), *Laundering*.
 
 ### Where raw pointers come from
 
-- a cast from an integer (`(struct node *)h`, `(void *)uintptr`);
 - a declaration annotated `WEAVEC_RAW` (parameters, variables, fields,
-  results and function-pointer results);
-- a load through a raw pointer (`raw->next` is raw too);
+  results and function-pointer results), the only source of raw pointers
+  ([RFC 0033](rfcs/0033-drop-in-by-default.md) §2);
+- a load through, or arithmetic on, a raw pointer (`raw->next` is raw too);
 - the result of a callee whose body returns or stores a raw value, or whose
   declaration says `WEAVEC_RAW`.
+
+Rawness is a *must* fact: a value that is raw on some paths only, or a
+cell that holds raw and non-raw values, is not raw; its accesses are
+`unresolved(raw-cast)` and guarded, never an error. A pointer converted
+from an integer (`(struct node *)h`, `(void *)(uintptr_t)n`) is not raw
+either: it is a pointer of unknown provenance, whose accesses are
+`unresolved(raw-cast)`, hence guarded in an enforcing `weavec-cc` build
+with the runtime, with their null facets checked. Inside an unsafe region
+they are `trusted(unsafe)`.
 
 Copying, comparing and converting a raw pointer back to an integer are fine
 anywhere; passing it to a callee's `WEAVEC_RAW` parameter is fine too. Only a
@@ -156,11 +165,11 @@ a reason.
 | `use-after-free`      | error / warning | A pointer (or any alias of it) is used after being passed to `free`. An error when the release happened on every path to the use; otherwise a warning with "may" wording ([RFC 0030](rfcs/0030-prove-or-trap.md) §3.1): `use of '<p>' after it may have been freed`, note `freed here on some paths`. Note: `freed here` / `freed here (through '<q>')`. After a share release ([RFC 0010](rfcs/0010-shared-ownership.md)): `use of '<p>' after its reference was released` (`... may have been released`), note `reference released here`. A release by code WeaveC cannot see (an unknown callee, inline assembly) is never reported: the use is a ledger row with the reason `unknown-callee` (§5.1), `guarded` where a `live` or `object` guard covers it ([RFC 0032](rfcs/0032-runtime-enforcement.md)) and `unresolved` otherwise. |
 | `double-free`         | error / warning | A pointer (or any alias of it) is passed to `free` twice without reassignment: `'<p>' is freed twice`, or, when the first release happened on some paths only, `'<p>' may be freed twice` ([RFC 0030](rfcs/0030-prove-or-trap.md) §3.1). Note: `previously freed here [on some paths] [(through '<q>')]`. Two share releases of one name ([RFC 0010](rfcs/0010-shared-ownership.md)): `'<p>' is released twice` (`may be released twice`), note `previously released here`. |
 | `use-after-move`      | error / warning | A pointer is used after being passed to a `WEAVEC_OWNED` parameter, to `realloc`, or to a function that moves it (on every path, or on the paths whose result the caller has not ruled out; [RFC 0006](rfcs/0006-precision.md)). Note: `moved here`. On some paths only: `use of '<p>' after it may have been moved`, a warning ([RFC 0030](rfcs/0030-prove-or-trap.md) §3.1). |
-| `conflicting-borrow`  | error / warning | An object is freed or moved while a live pointer into it exists: `cannot free '<p>' while it is borrowed`, `cannot move '<p>' while it is borrowed`. Note: `borrowed by '<q>' here`. A pointer is *live* until its last use ([RFC 0006](rfcs/0006-precision.md)). Not reported for a pointer *derived* from `<p>` (`q = &p->f`, `q = p + 1`): that is a name for the same object, and its later use is a `use-after-free` ([RFC 0011](rfcs/0011-spatial-safety.md)). An error when the loan holds on every path and the release or move happens whenever the call does, otherwise a warning ([RFC 0030](rfcs/0030-prove-or-trap.md) §3.1). RFC 0030 removed `--exclusive-borrows`, the opt-in to RFC 0001's full exclusivity rules. |
+| `conflicting-borrow`  | warning         | An object is freed or moved while a live pointer into it exists: `cannot free '<p>' while it is borrowed`, `cannot move '<p>' while it is borrowed`. Note: `borrowed by '<q>' here`. A pointer is *live* until its last use ([RFC 0006](rfcs/0006-precision.md)). Not reported for a pointer *derived* from `<p>` (`q = &p->f`, `q = p + 1`): that is a name for the same object, and its later use is a `use-after-free` ([RFC 0011](rfcs/0011-spatial-safety.md)). Always a warning: the release accesses nothing through the copy, and a later use of the copy is a `use-after-free` ([RFC 0033](rfcs/0033-drop-in-by-default.md) amendment 1). RFC 0030 removed `--exclusive-borrows`, the opt-in to RFC 0001's full exclusivity rules. |
 | `lifetime-too-short`  | error / warning | A pointer may outlive what it points to: `'<p>' may outlive '<x>', which it points to` (stored into an outer scope, a global or through a parameter) or `returned pointer may outlive '<x>', which it points to`. Notes: where `<x>` is declared and where it goes out of scope. Reported at the store, but decided when `<x>` dies ([RFC 0011](rfcs/0011-spatial-safety.md)): a store undone before then (`ls->fs = fs.prev`), or into a holder that is dead by then, is not reported. `alloca` storage belongs to the frame ([RFC 0030](rfcs/0030-prove-or-trap.md) §8.2), so returning it is reported here too. An error when the escape happens on every path, otherwise a warning ([RFC 0030](rfcs/0030-prove-or-trap.md) §3.4). |
-| `unsafe-operation`    | error    | A raw operation outside a `WEAVEC_UNSAFE` region ([RFC 0004](rfcs/0004-unsafe-boundaries.md)): `dereference of raw pointer '<p>' outside an unsafe region`, `'<f>' dereferences raw pointer '<p>' ...` (also `releases`, `takes ownership of`), `raw pointer '<p>' is assigned to '<q>', which is declared WEAVEC_OWNED, outside an unsafe region` (any safe annotation), `raw pointer is returned from a function whose return type is annotated WEAVEC_OWNED outside an unsafe region`. [RFC 0030](rfcs/0030-prove-or-trap.md) §16 removed the `--strict-externs` forms (`unchecked call to '<f>' outside an unsafe region`, `unchecked call through '<fp>' ...`) along with the flag; an unknown callee is now an `unresolved(unknown-callee)` ledger row instead (§5.1). Notes: why the pointer is raw (`'<p>' is raw: cast from an integer here`, `declared WEAVEC_RAW here`, `loaded through raw pointer '<q>' here`, `handed out by '<f>' here`, each optionally `(through '<alias>')`) and `move this operation into a WEAVEC_UNSAFE block or function, or assert the pointer's ownership first`. |
+| `unsafe-operation`    | error    | A raw operation outside a `WEAVEC_UNSAFE` region ([RFC 0004](rfcs/0004-unsafe-boundaries.md)): `dereference of raw pointer '<p>' outside an unsafe region`, `'<f>' dereferences raw pointer '<p>' ...` (also `releases`, `takes ownership of`), `raw pointer '<p>' is assigned to '<q>', which is declared WEAVEC_OWNED, outside an unsafe region` (any safe annotation), `raw pointer is returned from a function whose return type is annotated WEAVEC_OWNED outside an unsafe region`. [RFC 0030](rfcs/0030-prove-or-trap.md) §16 removed the `--strict-externs` forms (`unchecked call to '<f>' outside an unsafe region`, `unchecked call through '<fp>' ...`) along with the flag; an unknown callee is now an `unresolved(unknown-callee)` ledger row instead (§5.1). [RFC 0033](rfcs/0033-drop-in-by-default.md) §2 removed the forms for pointers converted from integers, which are no longer raw: their accesses are `unresolved(raw-cast)` and guarded, and only a pointer declared `WEAVEC_RAW` (or loaded through, derived from or handed out as one) is raw, on every path. Notes: why the pointer is raw (`'<p>' is raw: declared WEAVEC_RAW here`, `loaded through raw pointer '<q>' here`, `handed out by '<f>' here`, each optionally `(through '<alias>')`) and `move this operation into a WEAVEC_UNSAFE block or function, or assert the pointer's ownership first`. |
 | `mismatched-release`  | error / warning | A resource is released (or moved into a consuming parameter) by a function of another release family ([RFC 0007](rfcs/0007-resource-lifecycle.md)): `'<p>' is released with 'free' but must be released with 'fclose'`. Both names are family names, the canonical releaser of the allocator (`malloc`/`strdup`/`realloc` → `free`, `fopen` → `fclose`, `opendir` → `closedir`, ...), even when the release went through a wrapper defined in the program. Note: `allocated here`. |
-| `leak`                | warning  | An owned resource is lost without being released, moved or stored where the caller can see it ([RFC 0007](rfcs/0007-resource-lifecycle.md)): `'<p>' is leaked` at the point its last holder goes out of reach (a `return`, a scope end, the statement after its last use); `'<p>' is leaked: it is overwritten without being released` at the assignment; `'<b>->p' is leaked when '<b>' is freed` (also `'*a' is leaked when 'a' is freed`) at the release of a container whose `WEAVEC_OWNED` field, or a field this function stored an owned value into, still owns something; `result of '<f>' is leaked` at a discarded allocating call. Notes: `allocated here`, `'<p>' is declared WEAVEC_OWNED here` for a parameter or field, or `reference taken here` for a share retained by a count increment and dropped ([RFC 0010](rfcs/0010-shared-ownership.md); reported only through a *known count*: a field some function in the program releases through, or one annotated `WEAVEC_REFCOUNT`). Not reported: pointers handed to callees the checker cannot follow or cast to integers (they are *escaped*), resources kept by globals or `static` locals when the function returns, blocks that end in a `noreturn` or `exits` call, what is still held at a `return` from `main` ([RFC 0030](rfcs/0030-prove-or-trap.md) §8.4: the process is ending, so it is not a leak), fields of an object this function allocated, and the old block after a failed in-place `realloc`. A warning whatever the certainty ([RFC 0030](rfcs/0030-prove-or-trap.md), *Diagnostics*); `-Werror=weavec-leak` still promotes it. |
+| `leak`                | warning  | An owned resource is lost without being released, moved or stored where the caller can see it ([RFC 0007](rfcs/0007-resource-lifecycle.md)): `'<p>' is leaked` at the point its last holder goes out of reach (a `return`, a scope end, the statement after its last use); `'<p>' is leaked: it is overwritten without being released` at the assignment; `'<b>->p' is leaked when '<b>' is freed` (also `'*a' is leaked when 'a' is freed`) at the release of a container whose `WEAVEC_OWNED` field, or a field this function stored an owned value into, still owns something; `result of '<f>' is leaked` at a discarded allocating call. Notes: `allocated here`, `'<p>' is declared WEAVEC_OWNED here` for a parameter or field, or `reference taken here` for a share retained by a count increment and dropped ([RFC 0010](rfcs/0010-shared-ownership.md); reported only through a *known count*: a field some function in the program releases through, or one annotated `WEAVEC_REFCOUNT`). Not reported: pointers handed to callees the checker cannot follow or cast to integers (they are *escaped*), resources kept by globals or `static` locals when the function returns, blocks that end in a `noreturn` or `exits` call, what is still held at a `return` from `main` ([RFC 0030](rfcs/0030-prove-or-trap.md) §8.4: the process is ending, so it is not a leak), fields of an object this function allocated, and the old block after a failed in-place `realloc`. A warning whatever the certainty ([RFC 0030](rfcs/0030-prove-or-trap.md), *Diagnostics*); `-Werror=weavec-leak` still promotes it. Off by default in `weavec-cc` ([RFC 0033](rfcs/0033-drop-in-by-default.md) §8): `-Wweavec-leak`, `-Werror=weavec-leak` or `-Wweavec` turns it on; `weavec` reports it by default. |
 | `null-dereference`    | error    | A pointer that is null on every path reaching here is dereferenced ([RFC 0008](rfcs/0008-pointer-validity.md)): `dereference of '<p>', which is null`; or passed to a callee whose declaration or library entry requires it non-null: `'<p>', which is null, is passed to '<f>', which dereferences it` (also `a null pointer is passed to '<f>' ...`). The note says why: `'<p>' is assigned NULL here`, `'<p>' is declared WEAVEC_NULLABLE here` / `the result of '<f>' is declared WEAVEC_NULLABLE here`; for a call, also `'<f>' is declared here`. [RFC 0030](rfcs/0030-prove-or-trap.md) §3.2 removed the "may be null" forms: a pointer that may be null has a *checked* null facet (a `nonnull` check in the enforcing modes), and an allocation's result used untested is `allocation-failure` (off by default). |
 | `use-of-uninitialized`| error    | A pointer variable, or a pointer field of a record variable, declared without an initialiser is read, dereferenced, copied or released before it is assigned ([RFC 0008](rfcs/0008-pointer-validity.md)): `use of '<p>' before it was initialized` (also `'<s>.f'`). Note: `'<p>' is declared here`. Any assignment, a callee's store (`init(&p)`), a mutable borrow for a call, `memset` or a whole-object write initialises it; `static` and address-taken variables are not tracked. Reported only when it holds on every path ([RFC 0030](rfcs/0030-prove-or-trap.md), *Diagnostics*): a use that is uninitialised on some paths only is defined by zero-initialisation, which the enforcing modes turn on, and produces no diagnostic. |
 | `invalid-release`     | error / warning | A releaser (or a consuming parameter) is handed a pointer that is not the start of a heap allocation ([RFC 0008](rfcs/0008-pointer-validity.md)): `'<p>' is released but points to '<x>', which is not a heap object` (a stack or static variable, an array, a field of one; `'<x>' is released but is not a heap object` when `<p>` is `<x>` itself), `'<p>' is released but points to a string literal`, `'<p>' is released but points 4 elements past the start of its allocation` / `points to field 'in' of its allocation` / `does not point to the start of its allocation` (`p + 1`, `strchr(p, c)`, `p++`, `&o->in`; the offset is named when the checker knows it, [RFC 0011](rfcs/0011-spatial-safety.md)). Notes: `'<x>' is declared here` / `allocated here`. When that holds on some paths only, a warning ([RFC 0030](rfcs/0030-prove-or-trap.md) §3.1): `'<p>' is released but may point to <x>, which is not a heap object`, and for an interior pointer at an unknown offset `'<p>' is released but may not point to the start of its allocation`. A release the callee may not perform — one it makes only on some result class, under a guard on the arguments, or from a widened case ([RFC 0030](rfcs/0030-prove-or-trap.md) §3.4, §9.1) — makes the finding possible whatever the argument is, which is where the `may be released` forms come from: `a string literal may be released`, `'<x>' may be released but is not a heap object`. |
@@ -457,7 +466,8 @@ neither keeps nor frees. Write the ledger with `-fweavec-ledger=` (or
   the count with no store into the pointer, such as `v->n++`); the pair
   holds when the witnesses agree on one count and nothing refutes it. A
   unit is analysed once more when its own stores confirm a pair its
-  readers use, and the whole-program step does the same across units, so
+  readers use, and the whole-program analysis (`weavec --whole-program`,
+  `-fweavec-link=analyze`) does the same across units, so
   the inference needs no annotation and no particular order of files;
   what it costs is one more analysis of the functions that read the field.
 - **Offsets and lower bounds** ([RFC 0012](rfcs/0012-spatial-safety-strings-and-fields.md)):
@@ -517,7 +527,7 @@ neither keeps nor frees. Write the ledger with `-fweavec-ledger=` (or
   casts between pointer types (`(char *)p`, `(void *)p`) name the same
   object as the operand, so `free(p); use(p + 1)` is a use after free. Only
   a round trip through an integer loses identity, and what comes back is a
-  *raw* pointer.
+  pointer of unknown provenance (`unresolved(raw-cast)`, guarded).
 - **Raw pointers and unsafe regions**: a raw pointer is tracked (copies,
   comparisons and conversions to integers are fine) but dereferencing,
   releasing or handing it to an owning parameter outside a `WEAVEC_UNSAFE`
@@ -536,7 +546,8 @@ neither keeps nor frees. Write the ledger with `-fweavec-ledger=` (or
   ownership. A function declared in a platform header but missing from the
   table borrows its arguments for the call; its rows are
   `trusted(system-api)` (§5.2). In a per-file compile, calls into other
-  files are unknown until the link step applies their definitions.
+  files are unknown; `weavec --whole-program` and a link with
+  `-fweavec-link=analyze` apply their definitions.
 
 `weavec --dump-kinds file.c -- <flags>` prints, instead of analysing, each
 unit's pointer kinds ([RFC 0030](rfcs/0030-prove-or-trap.md) §7): the declared
@@ -553,10 +564,12 @@ object's kind, extent and life, the symbols its cells hold (targets,
 nullness, release records, raw origin) and the zone; with
 `--whole-program` it ends with the program database (every exported
 summary). The format is unstable. `weavec-cc` writes each unit's record to
-`<object>.weavec`: format 30, framed JSON whose payload carries each
-exported function's summary in summary format 30
+`<object>.weavec`: format 31, framed JSON whose payload carries each
+exported function's summary in summary format 30 and every site's ledger
+row, from which a default link composes the program ledger
 ([RFC 0030](rfcs/0030-prove-or-trap.md) §13.1, RFC 0031 §7,
-[RFC 0032](rfcs/0032-runtime-enforcement.md) §10).
+[RFC 0032](rfcs/0032-runtime-enforcement.md) §10,
+[RFC 0033](rfcs/0033-drop-in-by-default.md) §7).
 
 ### Constructors, returned fields and allocation-time sizes
 
@@ -731,9 +744,9 @@ unrestricted aliases, byte-encoded pointers, GC invariants and concurrency
 remain outside the supported model.
 
 RFC 0017 introduced summary format **13**. The current summary format is
-**30**, carried in format-30 unit records
+**30**, carried in format-31 unit records
 ([RFC 0031](rfcs/0031-object-engine.md) §7,
-[RFC 0032](rfcs/0032-runtime-enforcement.md) §10); rebuild older objects.
+[RFC 0033](rfcs/0033-drop-in-by-default.md) §7); rebuild older objects.
 RFC 0017 added no runtime instrumentation; under RFC 0030, `weavec-cc` checks
 at run time the accesses these rules leave unproven when their bounds can be
 named, and under RFC 0032 it guards the others against the runtime's object
@@ -746,22 +759,29 @@ table.
 | Flag                          | Effect                                                                                            |
 | ----------------------------- | ------------------------------------------------------------------------------------------------- |
 | `-Wno-weavec-<id>`            | Disable the diagnostics of `<id>` whose default severity is *warning*: all of `leak`, `invalid-annotation`, `allocation-failure` and `unanalyzed-input`, and the possible (warning) findings of `use-after-free`, `double-free`, `use-after-move`, `conflicting-borrow`, `lifetime-too-short`, `mismatched-release` and `invalid-release`, whose definite findings stay errors ([RFC 0030](rfcs/0030-prove-or-trap.md) §3). Refused for an id that is always an error (`null-dereference`, `use-of-uninitialized`, `out-of-bounds`, `unsafe-operation`, `annotation-mismatch`, `invalid-integer-operation`, `contradicted-assumption`, `unresolved-operation`, `unchecked-operation`; lower those with `-Wno-error=`), and for an id RFC 0030 removed (`analysis-incomplete`, `annotation-required`, `checking-incomplete`, `checking-failed`): naming one in any `-W` flag is an error. |
-| `-Wweavec-<id>`               | Re-enable it. `-Wweavec-allocation-failure` enables the one id that is off by default; `-Wweavec` enables every id.                                      |
-| `-Wno-error=weavec-<id>`      | Report an error as a warning (the migration path for a codebase that wants to build while it works through the reports). |
+| `-Wweavec-<id>`               | Re-enable it. `-Wweavec-allocation-failure` enables `allocation-failure`, which is off by default, and `-Wweavec-leak` enables `leak`, which is off by default in `weavec-cc` only; `-Wweavec` enables every id. |
+| `-Wno-error=weavec-<id>`      | Report an error as a warning (the migration path for a codebase that wants to build while it works through the reports). The site is then guarded or checked ([RFC 0033](rfcs/0033-drop-in-by-default.md), *Lowered violations*). |
 | `-Werror=weavec-<id>`         | Report a warning as an error.                                                                     |
 | `-Wno-weavec`, `-Wno-error=weavec`, `-Werror=weavec` | The same for every WeaveC id (`-Wno-weavec` leaves the errors alone).                  |
 | `-Wweavec-possible`, `-Wno-weavec-possible` | A switch, not an id ([RFC 0032](rfcs/0032-runtime-enforcement.md) §9): print, or do not print, the possible temporal findings whose facet the build guards. Off by default in an enforcing `weavec-cc` build with the runtime; where nothing is guarded or enforced those findings are always printed. `-Werror=weavec-possible` and `-Wno-error=weavec-possible` are errors. |
 
 The guarantee ([RFC 0030](rfcs/0030-prove-or-trap.md), *Soundness*) does
 not depend on these flags, except that a violation lowered with
-`-Wno-error=` is compiled behind a check that traps. `weavec-cc` additionally
+`-Wno-error=` is compiled behind a guard or check: a temporal violation, or
+a violation of a callee's or library function's requirement, is guarded and
+traps when it happens; a spatial or null violation decided from an exact
+extent keeps its check, or traps unconditionally, as does every lowered
+violation in a build without the runtime. `weavec-cc` additionally
 takes `-fno-weavec` (compile only), `-fweavec-checks=`, `-f[no-]weavec-zero-init`,
 `-f[no-]weavec-runtime` (`--no-runtime`), `-fno-weavec-stack-objects`,
 `-fno-weavec-global-objects`, `-fweavec-require=` (`--require`), `-fweavec-ledger=` (`--ledger`),
 `-fweavec-ledger-format=` (`--ledger-format`), `-f[no-]weavec-summary`,
-`-fweavec-budget=` (`--budget`), `-fweavec-print-prelude`,
-`-fweavec-dump-analysis` and `-fno-weavec-link` (skip the link-time
-whole-program step); `weavec-cc --help-weavec` lists them. RFC 0030 §16
+`-fweavec-budget=` (`--budget`), `-fweavec-unit-budget=`,
+`-fweavec-print-prelude`, `-fweavec-dump-analysis`,
+`-fweavec-link=records|analyze|none` (what the link step does: read the
+records, also analyse the program again, or nothing) and
+`-fweavec-link-budget=`; `weavec-cc --help-weavec` lists them. RFC 0033
+replaced `-f[no-]weavec-link` with `-fweavec-link=`, with no alias. RFC 0030 §16
 removes, with no aliases, the checked-mode flags (`-fweavec-checked`,
 `-fweavec-checked-function=`, `-fweavec-checked-report=`,
 `-fweavec-checked-report-format=` and their `weavec` spellings),

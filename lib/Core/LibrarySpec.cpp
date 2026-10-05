@@ -73,6 +73,12 @@ LibTerm LibTerm::min(LibTerm left, LibTerm right) {
   return binary(Kind::Min, std::move(left), std::move(right));
 }
 
+LibTerm LibTerm::quotient(LibTerm left, std::int64_t divisor) {
+  LibTerm term{.kind = Kind::Quotient, .value = divisor};
+  term.operands.push_back(std::move(left));
+  return term;
+}
+
 static bool isAdditive(const LibTerm &term) {
   return term.kind == LibTerm::Kind::Sum ||
          term.kind == LibTerm::Kind::Difference;
@@ -105,6 +111,9 @@ std::string LibTerm::str() const {
     return operands[0].str() + "-" + std::to_string(value);
   case Kind::Min:
     return "min(" + operands[0].str() + "," + operands[1].str() + ")";
+  case Kind::Quotient:
+    return parenthesised(operands[0], isAdditive(operands[0])) + "/" +
+           std::to_string(value);
   }
   return {};
 }
@@ -182,6 +191,13 @@ std::optional<std::int64_t> LibTerm::evaluate(const Values &values) const {
     if (!left || value == std::numeric_limits<std::int64_t>::min())
       return std::nullopt;
     return checkedAdd(*left, -value);
+  }
+  case Kind::Quotient: {
+    const auto left = operands[0].evaluate(values);
+    if (!left || value <= 0)
+      return std::nullopt;
+    // Rounded down, as a mathematical integer.
+    return *left >= 0 ? *left / value : -((-*left + value - 1) / value);
   }
   case Kind::Product:
   case Kind::Sum:
@@ -708,11 +724,20 @@ private:
   }
   std::optional<LibTerm> product() {
     auto left = atom();
-    while (left && accept("*")) {
-      auto right = atom();
-      if (!right)
-        return std::nullopt;
-      left = LibTerm::product(std::move(*left), std::move(*right));
+    while (left) {
+      if (accept("*")) {
+        auto right = atom();
+        if (!right)
+          return std::nullopt;
+        left = LibTerm::product(std::move(*left), std::move(*right));
+      } else if (accept("/")) {
+        const auto right = number();
+        if (!right || *right <= 0)
+          return fail("expected a positive integer after '/' in a term");
+        left = LibTerm::quotient(std::move(*left), *right);
+      } else {
+        break;
+      }
     }
     return left;
   }

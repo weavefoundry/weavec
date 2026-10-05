@@ -11,15 +11,15 @@
 // RUN: count 0 < %t/compile.log
 // RUN: %weavec --dump-record=%t/node.o.weavec | FileCheck --check-prefix=RECORD %s
 // RUN: %weavec --dump-record=%t/main.o.weavec | FileCheck --check-prefix=MAIN %s
-// RUN: not %weavec_cc %t/node.o %t/main.o -o %t/prog 2>&1 | FileCheck --check-prefix=LINK %s
+// RUN: not %weavec_cc -fweavec-link=analyze %t/node.o %t/main.o -o %t/prog 2>&1 | FileCheck --check-prefix=LINK %s
 // RUN: not ls %t/prog
 //
 // A one-step build reports the same and produces nothing.
-// RUN: not %weavec_cc %S/../WholeProgram/Inputs/node.c %s -o %t/prog1 -I%S/../WholeProgram/Inputs 2>&1 | FileCheck --check-prefix=LINK %s
+// RUN: not %weavec_cc -fweavec-link=analyze %S/../WholeProgram/Inputs/node.c %s -o %t/prog1 -I%S/../WholeProgram/Inputs 2>&1 | FileCheck --check-prefix=LINK %s
 // RUN: not ls %t/prog1
 //
-// -fno-weavec-link skips the whole-program step; the objects link as usual.
-// RUN: %weavec_cc -fno-weavec-link %t/node.o %t/main.o -o %t/prog2 2>&1 | count 0
+// -fweavec-link=none skips the whole-program step; the objects link as usual.
+// RUN: %weavec_cc -fweavec-link=none %t/node.o %t/main.o -o %t/prog2 2>&1 | count 0
 // RUN: ls %t/prog2
 //
 // A callee no unit defines is unknown code at the link step too: RFC 0030
@@ -27,14 +27,14 @@
 // fails on the undefined symbols.
 // RUN: %weavec_cc -c %s -o %t/bnd.o -I%S/../WholeProgram/Inputs -DBOUNDARY 2>&1 | count 0
 // RUN: %weavec --dump-record=%t/bnd.o.weavec | FileCheck --check-prefix=DEFERRED %s
-// RUN: not %weavec_cc %t/node.o %t/bnd.o -o %t/prog3 2>&1 | FileCheck --check-prefix=BOUNDARY %s
+// RUN: not %weavec_cc -fweavec-link=analyze %t/node.o %t/bnd.o -o %t/prog3 2>&1 | FileCheck --check-prefix=BOUNDARY %s
 //
 // A record written for another object is stale (RFC 0030 §13.1): here the
 // object is rebuilt without WeaveC, which leaves the old record behind. The
 // input is named in the link's `unanalyzed-input` warning (§13.2), and the
 // object is unknown code, so nothing is checked and the link goes ahead.
 // RUN: %weavec_cc -fno-weavec -c %s -o %t/main.o -I%S/../WholeProgram/Inputs
-// RUN: %weavec_cc %t/node.o %t/main.o -o %t/prog4 2>&1 | FileCheck --check-prefix=STALE %s
+// RUN: %weavec_cc -fweavec-link=analyze %t/node.o %t/main.o -o %t/prog4 2>&1 | FileCheck --check-prefix=STALE %s
 // RUN: ls %t/prog4
 #include "../Inputs/prelude.h"
 #include "node.h"
@@ -42,7 +42,7 @@
 // The record is format 30: each function's summary is its format-30 text in
 // the field `effects` (RFC 0031 *Implementation amendments*, "The unit
 // record" and "Summary format 30").
-// RECORD: "format": 30,
+// RECORD: "format": 31,
 // RECORD: "source": "{{.*}}node.c",
 // RECORD-NEXT: "cwd": "{{.+}}",
 // RECORD-NEXT: "command": [

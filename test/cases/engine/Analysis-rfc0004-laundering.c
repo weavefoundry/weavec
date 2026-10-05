@@ -4,7 +4,8 @@
 // a place declared with a safe kind or by returning it from a function whose
 // return type is annotated. The same assertion outside an unsafe region is
 // an unsafe-operation. A pointer leaves the model by conversion to an integer
-// or by being stored into a WEAVEC_RAW place.
+// or by being stored into a WEAVEC_RAW place. RFC 0033 §2: a pointer converted
+// from an integer is no longer raw, so the raw sources here are declared.
 #include "Inputs/prelude.h"
 #include <weavec.h>
 
@@ -14,8 +15,8 @@ struct node {
 };
 
 // Assertion by return.
-WEAVEC_OWNED struct node *by_return_outside(uintptr_t x) {
-  return (struct node *)x; // BUG: unsafe-operation
+WEAVEC_OWNED struct node *by_return_outside(struct node *WEAVEC_RAW x) {
+  return x; // BUG: unsafe-operation
 }
 WEAVEC_OWNED struct node *by_return_inside(uintptr_t x) {
   WEAVEC_UNSAFE { return (struct node *)x; }
@@ -28,15 +29,15 @@ void uses_by_return(uintptr_t x) {
 }
 
 // Assertion by assignment to an annotated local.
-void by_local_outside(uintptr_t x) {
-  struct node *raw = (struct node *)x;
+void by_local_outside(struct node *WEAVEC_RAW x) {
+  struct node *raw = x;
   WEAVEC_OWNED struct node *n = raw; // BUG: unsafe-operation
   n->v = 1; /* asserted anyway, so this does not cascade */
   free(n);
 }
-void by_local_inside(uintptr_t x) {
+void by_local_inside(struct node *WEAVEC_RAW x) {
   WEAVEC_OWNED struct node *n;
-  WEAVEC_UNSAFE { n = (struct node *)x; }
+  WEAVEC_UNSAFE { n = x; }
   n->v = 1;
   free(n);
   free(n); // BUG: double-free
@@ -46,9 +47,9 @@ void by_local_inside(uintptr_t x) {
 struct box {
   struct node *WEAVEC_OWNED owned;
 };
-void by_field(struct box *b, uintptr_t x) {
-  b->owned = (struct node *)x; // BUG: unsafe-operation
-  WEAVEC_UNSAFE { b->owned = (struct node *)x; }
+void by_field(struct box *b, struct node *WEAVEC_RAW x) {
+  b->owned = x; // BUG: unsafe-operation
+  WEAVEC_UNSAFE { b->owned = x; }
   free(b->owned);
   use(b->owned); // BUG: use-after-free
 }

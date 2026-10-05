@@ -20,7 +20,7 @@
 // RUN: %weavec_cc -c %S/Inputs/buffers.c -o %t/buffers.o -I%S/Inputs 2>&1 | count 0
 // RUN: %weavec_cc -c %s -o %t/main.o -I%S/Inputs 2>&1 | count 0
 // RUN: %weavec --dump-record=%t/buffers.o.weavec | FileCheck --check-prefix=RECORD %s
-// RUN: not %weavec_cc %t/buffers.o %t/main.o -o %t/prog 2>&1 | FileCheck %s
+// RUN: not %weavec_cc -fweavec-link=analyze %t/buffers.o %t/main.o -o %t/prog 2>&1 | FileCheck %s
 #include "../Inputs/prelude.h"
 #include "buffers.h"
 
@@ -38,7 +38,7 @@
 // DUMP-NEXT: always-returns
 // DUMP-NEXT: release *param0 free offset -4 when always
 
-// RECORD: "format": 30,
+// RECORD: "format": 31,
 // RECORD: "name": "buffer_fill",
 // RECORD: "effects": "{{.*}}store p0*[] when=-:- elements=0,p1@1@0 :: int lo=0 hi=0\nreads p0*\nwrites p0*\n",
 // RECORD: "kind": "counted(param 1 scale 1 plus 0) nonnull",

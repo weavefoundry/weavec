@@ -117,7 +117,7 @@ weavec: vec.c: 11 sites: 8 proven, 2 checked, 1 guarded, 0 unresolved, 0 trusted
 weavec: program vec: 11 sites in 1 unit: 8 proven, 2 checked, 1 guarded, 0 unresolved, 0 trusted; 0 errors, 0 warnings; unverified: 0 exported requirements (A1), 0 header invariants (A3)
 ```
 
-The first line is the file's summary and the second the linked program's. The access is _guarded_. `weavec-cc` linked its runtime into the program, and the runtime's allocator knows that the block behind `v->data` is 16 bytes long. The guard looks the pointer up before the access:
+The first line is the file's summary and the second the linked program's. The access is _guarded_. `weavec-cc` linked its runtime into the program, and the runtime's allocator knows that the block behind `v->data` is 16 bytes long. The guard looks up the bytes the access reads before it reads them:
 
 ```sh
 ./vec 2       # prints 0

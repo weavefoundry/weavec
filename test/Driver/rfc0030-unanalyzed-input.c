@@ -13,30 +13,30 @@
 // RUN: llvm-ar rcs %t/libextra.a %t/c.o
 //
 // One input without a record: the message names it.
-// RUN: %weavec_cc %t/main.o %t/b.o %t/cw.o -o %t/one 2>&1 | FileCheck --check-prefix=ONE %s
+// RUN: %weavec_cc -fweavec-link=analyze %t/main.o %t/b.o %t/cw.o -o %t/one 2>&1 | FileCheck --check-prefix=ONE %s
 // RUN: %t/one
 //
 // Several: one warning, with a note per input.
-// RUN: %weavec_cc %t/main.o %t/b.o %t/libextra.a -o %t/many 2>&1 | FileCheck --check-prefix=MANY %s
+// RUN: %weavec_cc -fweavec-link=analyze %t/main.o %t/b.o %t/libextra.a -o %t/many 2>&1 | FileCheck --check-prefix=MANY %s
 // RUN: %t/many
 //
 // `-l` is resolved as the linker resolves it; a library of the platform
 // (`-lm`) is not named, one found through `-L` is.
-// RUN: %weavec_cc %t/main.o %t/bw.o -L%t -lextra -lm -o %t/lib 2>&1 | FileCheck --check-prefix=LIB %s
-// RUN: %weavec_cc %t/main.o %t/bw.o %t/cw.o -lm -o %t/system 2>&1 | count 0
+// RUN: %weavec_cc -fweavec-link=analyze %t/main.o %t/bw.o -L%t -lextra -lm -o %t/lib 2>&1 | FileCheck --check-prefix=LIB %s
+// RUN: %weavec_cc -fweavec-link=analyze %t/main.o %t/bw.o %t/cw.o -lm -o %t/system 2>&1 | count 0
 //
 // A record written for another object is stale (§13.1): rebuilding the
 // object without WeaveC (and with another value) leaves the old record
 // behind. rfc0030-stale-record.c has the other reasons.
 // RUN: %weavec_cc -fno-weavec -c %s -DUNIT_C -DOTHER=8 -o %t/cw.o
-// RUN: %weavec_cc %t/main.o %t/bw.o %t/cw.o -o %t/stale 2>&1 | FileCheck --check-prefix=STALE %s
+// RUN: %weavec_cc -fweavec-link=analyze %t/main.o %t/bw.o %t/cw.o -o %t/stale 2>&1 | FileCheck --check-prefix=STALE %s
 //
 // The warning follows the -W flags: it can be disabled, or made an error
 // that stops the link.
-// RUN: %weavec_cc -Wno-weavec-unanalyzed-input %t/main.o %t/b.o %t/libextra.a -o %t/quiet 2>&1 | count 0
-// RUN: not %weavec_cc -Werror=weavec-unanalyzed-input %t/main.o %t/b.o %t/libextra.a -o %t/raised 2>&1 | FileCheck --check-prefix=RAISED %s
+// RUN: %weavec_cc -fweavec-link=analyze -Wno-weavec-unanalyzed-input %t/main.o %t/b.o %t/libextra.a -o %t/quiet 2>&1 | count 0
+// RUN: not %weavec_cc -fweavec-link=analyze -Werror=weavec-unanalyzed-input %t/main.o %t/b.o %t/libextra.a -o %t/raised 2>&1 | FileCheck --check-prefix=RAISED %s
 // RUN: not ls %t/raised
-// RUN: %weavec_cc -fno-weavec-link %t/main.o %t/b.o %t/libextra.a -o %t/nolink 2>&1 | count 0
+// RUN: %weavec_cc -fweavec-link=none %t/main.o %t/b.o %t/libextra.a -o %t/nolink 2>&1 | count 0
 
 // ONE: weavec-cc: warning: link input '{{.*}}b.o' has no WeaveC record; calls into it are trusted [weavec::unanalyzed-input]
 // ONE-NOT: warning:

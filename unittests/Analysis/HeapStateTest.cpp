@@ -343,19 +343,39 @@ TEST(HeapState, CopiesOfConstructorResultsKeepSharedFields) {
 }
 
 TEST(HeapState, RawFieldStaysRaw) {
+  // RFC 0033 §2: a declared raw value stays raw through a summary's field.
   const auto result = analyze(R"c(
+    #define RAW __attribute__((annotate("weavec.raw")))
     struct box { char *data; };
-    struct box *make(unsigned long bits) {
+    struct box *make(char *RAW bits) {
       struct box *b = malloc(sizeof *b); if (!b) return NULL;
-      b->data = (char *)bits; return b;
+      b->data = bits; return b;
     }
-    void bad(unsigned long bits) {
+    void bad(char *RAW bits) {
       struct box *b = make(bits); if (!b) return;
       b->data[0] = 0; free(b);
     }
   )c");
   ASSERT_TRUE(result.ast);
   EXPECT_EQ(ids(result.diagnostics), Strings{"unsafe-operation"});
+}
+
+TEST(HeapState, IntegerConvertedFieldIsNotRaw) {
+  // RFC 0033 §2: a pointer converted from an integer is not raw, through a
+  // summary's field too.
+  const auto result = analyze(R"c(
+    struct box { char *data; };
+    struct box *make(unsigned long bits) {
+      struct box *b = malloc(sizeof *b); if (!b) return NULL;
+      b->data = (char *)bits; return b;
+    }
+    void ok(unsigned long bits) {
+      struct box *b = make(bits); if (!b) return;
+      b->data[0] = 0; free(b);
+    }
+  )c");
+  ASSERT_TRUE(result.ast);
+  EXPECT_EQ(ids(result.diagnostics), Strings{});
 }
 
 TEST(HeapState, RecordResultsAndCopiesPreserveSharedChildBounds) {

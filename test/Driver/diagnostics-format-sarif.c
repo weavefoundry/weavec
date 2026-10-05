@@ -7,7 +7,7 @@
 // RUN: not %weavec_cc -fdiagnostics-format=sarif -c %s -o %t/bug.o -DBUG 2>&1 | FileCheck --check-prefix=SARIF %s
 // RUN: %weavec_cc -fdiagnostics-format=sarif -c %S/../WholeProgram/Inputs/node.c -o %t/node.o -I%S/../WholeProgram/Inputs > %t/node.log 2>&1
 // RUN: %weavec_cc -fdiagnostics-format=sarif -c %s -o %t/main.o -I%S/../WholeProgram/Inputs > %t/main.log 2>&1
-// RUN: %weavec_cc %t/node.o %t/main.o -o %t/prog 2>&1 | FileCheck --check-prefix=LINK %s
+// RUN: %weavec_cc -fweavec-link=analyze %t/node.o %t/main.o -o %t/prog 2>&1 | FileCheck --check-prefix=LINK %s
 //
 // weavec's runs create their SourceManager before Clang would attach the
 // SARIF printer's document writer, so the tool refuses the flag and points

@@ -312,6 +312,32 @@ class CorpusWordTest(TreeTest):
             (3, "word 'minigzip' at column 59"),
         ])
 
+    def test_fresh_and_sealed_projects(self):
+        # RFC 0033 section 11: the fresh and sealed corpus projects.
+        fresh_and_sealed = ("zstd", "libuv", "oniguruma", "redis", "expat", "pcre2", "libevent", "libsodium",
+                            "libxml2", "libpng", "mbedtls", "msgpack", "yyjson")
+        self.assertTrue(set(fresh_and_sealed) <= set(hygiene.CORPUS_WORDS))
+        self.write("lib/Analysis/Fresh.cpp", """
+            // ZSTD_compress, redisCommand and expatriate are not words; msgpack_pack is.
+            #include <zstd.h> // libuv, oniguruma, pcre2, libevent, libsodium
+            // libxml2 libpng mbedtls yyjson redis expat
+            """)
+        self.assertEqual([(line, message) for _, line, message in self.found("corpus-word")], [
+            (1, "word 'msgpack' at column 62"),
+            (2, "word 'zstd' at column 11"),
+            (2, "word 'libuv' at column 22"),
+            (2, "word 'oniguruma' at column 29"),
+            (2, "word 'pcre2' at column 40"),
+            (2, "word 'libevent' at column 47"),
+            (2, "word 'libsodium' at column 57"),
+            (3, "word 'libxml2' at column 4"),
+            (3, "word 'libpng' at column 12"),
+            (3, "word 'mbedtls' at column 19"),
+            (3, "word 'yyjson' at column 27"),
+            (3, "word 'redis' at column 34"),
+            (3, "word 'expat' at column 40"),
+        ])
+
     def test_every_file_under_lib_and_nothing_else(self):
         self.edit("lib/Core/LibrarySpec.txt", "a small table", "a small table (jansson.h is not listed)")
         self.write("lib/Analysis/README.txt", "Measured on zlib.\n")
@@ -539,7 +565,7 @@ class MainTest(TreeTest):
         self.assertRegex(output, r"\n  files: +14 from a directory walk \(not a git work tree\); "
                                  r"skipped 0 binary, 0 unreadable\n")
         self.assertRegex(output, r"\n  LibrarySpec: +5 entries, 3 chk aliases, and their __builtin_ spellings\n")
-        self.assertRegex(output, r"\n  engine lines: +24 / 21,000 \(2 lib/Analysis/Engine\*\.\{h,cpp\} files\)\n")
+        self.assertRegex(output, r"\n  engine lines: +24 / 21,500 \(2 lib/Analysis/Engine\*\.\{h,cpp\} files\)\n")
         self.assertRegex(output, r"\n  library lines: +\d+ / 10 \(10 code files under lib/, include/ and "
                                  r"tools/, lib/Core/LibrarySpec\.txt excluded\)\n")
         self.assertRegex(output, r"\n  retired-name +1  checked-mode or old-engine names")

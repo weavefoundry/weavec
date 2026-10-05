@@ -1043,9 +1043,6 @@ static std::string rawNote(const core::SymInfo &value,
     origin = value.rawFrom.empty() ? std::string("handed out by a callee")
                                    : "handed out by '" + value.rawFrom + "'";
     break;
-  case core::SymInfo::RawOrigin::Cast:
-    origin = "cast from an integer";
-    break;
   }
   std::string subject =
       name.empty() ? std::string("the pointer") : "'" + name + "'";
@@ -1068,13 +1065,15 @@ void Decider::access() {
   core::Sym pointer = core::ZeroSym;
   if (operand != nullptr && operand->getType()->isPointerType())
     pointer = transfer.valueOf(*operand);
-  // A pointer with an RFC 0004 raw origin (declared `WEAVEC_RAW`, from an
-  // integer, loaded through a raw pointer, handed out as raw).
+  // A pointer with an RFC 0004 raw origin (declared `WEAVEC_RAW`, loaded
+  // through a raw pointer, handed out as raw; RFC 0033 §2).
   const bool raw = site.kind == core::SiteKind::Raw ||
                    (pointer != core::ZeroSym && heap.info(state, pointer).raw);
   // RFC 0030 §6.1: inside a region a raw access is trusted for every facet,
-  // the temporal one included.
-  if (raw && site.inUnsafe) {
+  // the temporal one included, and so is one through a pointer converted
+  // from an integer (RFC 0033 §2: no longer raw, but no object either).
+  if (site.inUnsafe && (raw || (pointer != core::ZeroSym &&
+                                heap.info(state, pointer).rawCast))) {
     for (core::Facet facet :
          {core::Facet::Null, core::Facet::Spatial, core::Facet::Temporal})
       if (applies(facet))
@@ -1494,39 +1493,32 @@ void Decider::conflictingBorrow(core::Sym pointer) {
       if (held.type != core::SymInfo::Type::Pointer)
         continue;
       bool borrows = false;
-      bool only = !held.targets.empty() && !held.top;
       for (const core::Target &target : held.targets) {
         if (released.contains(target.object))
           borrows = true;
-        else
-          only = false;
         if (!released.contains(target.object) &&
             seen.insert(target.object).second)
           work.push_back(target.object);
       }
       if (!borrows || !held.derived || sym == pointer)
         continue;
-      // An error when the loan holds on every path and the release is
-      // certain (RFC 0030 §3.1).
-      bool definite = only && value.targets.size() == 1 &&
-                      run.table().info(value.targets[0].object).singular;
-      decide(core::Facet::Temporal,
-             definite ? core::FacetDecision::violation()
-                      : core::FacetDecision::unresolvedFor(
-                            core::UnresolvedReason::MayConflict));
+      // RFC 0033 §1: a release while a copy is held breaks no access by
+      // itself (an initialiser that frees a buffer whose copies it left in
+      // the caller's struct on a failure path); a later use through the copy
+      // is a use after free, reported there. Possible, never definite.
+      decide(core::Facet::Temporal, core::FacetDecision::unresolvedFor(
+                                        core::UnresolvedReason::MayConflict));
       std::string name = transfer.spell(*site.operand);
       core::Diagnostic diagnostic = makeDiagnostic(
           core::diag::ConflictingBorrow,
           "cannot free " + inQuotes(name) + " while it is borrowed", context,
-          site.stmt->getBeginLoc(),
-          definite ? core::Severity::Error : core::Severity::Warning);
+          site.stmt->getBeginLoc(), core::Severity::Warning);
       const FunctionRun::FrameStore *stored = run.borrowStore(id, key);
       if (stored != nullptr && !stored->holder.empty())
         addNote(diagnostic, "borrowed by " + inQuotes(stored->holder) + " here",
                 toCoreLocation(context.getSourceManager(),
                                stored->at->getBeginLoc()));
-      report(std::move(diagnostic),
-             definite ? core::Certainty::Definite : core::Certainty::Possible,
+      report(std::move(diagnostic), core::Certainty::Possible,
              core::Facet::Temporal);
       return;
     }
@@ -2088,6 +2080,106 @@ bool Transfer::calleeTouches(const CallExpr &call, core::Sym calleeValue,
   return false;
 }
 
+/// RFC 0033 §1: whether `param` appears in `body` only as a value: an
+/// operand of `==` or `!=`, converted to an integer, a variadic argument of
+/// a call whose literal format reads no string (`%p`), or an argument of a
+/// function of the unit that itself uses it only so (`depth` levels down).
+static bool onlyValueUses(const Stmt &body, const ParmVarDecl &param,
+                          ASTContext &context, unsigned depth) {
+  const auto parentOf = [&](const Stmt &child) -> const Stmt * {
+    const DynTypedNodeList parents = context.getParents(child);
+    return parents.empty() ? nullptr : parents[0].get<Stmt>();
+  };
+  // The use of an argument by its callee.
+  const auto valueArgument = [&](const CallExpr &call, const Expr &argument) {
+    unsigned index = 0;
+    while (index < call.getNumArgs() &&
+           call.getArg(index)->IgnoreParenImpCasts() !=
+               argument.IgnoreParenImpCasts())
+      ++index;
+    const FunctionDecl *callee = call.getDirectCallee();
+    if (callee == nullptr || index == call.getNumArgs())
+      return false;
+    if (index >= callee->getNumParams()) {
+      // A variadic argument: a literal format that reads no string reads
+      // nothing through it.
+      for (const Expr *other : call.arguments())
+        if (const auto *format =
+                dyn_cast<StringLiteral>(other->IgnoreParenImpCasts()))
+          return format->getCharByteWidth() == 1 &&
+                 !format->getString().contains("%s") &&
+                 !format->getString().contains("%n") &&
+                 !format->getString().contains("%.");
+      return false;
+    }
+    const FunctionDecl *definition = nullptr;
+    return depth > 0 && callee->hasBody(definition) && definition != nullptr &&
+           !definition->isVariadic() &&
+           onlyValueUses(*definition->getBody(),
+                         *definition->getParamDecl(index), context, depth - 1);
+  };
+  std::vector<const Stmt *> work{&body};
+  while (!work.empty()) {
+    const Stmt *stmt = work.back();
+    work.pop_back();
+    if (stmt == nullptr)
+      continue;
+    if (const auto *ref = dyn_cast<DeclRefExpr>(stmt);
+        ref != nullptr && ref->getDecl() == &param) {
+      // Up through parentheses and the load of its value.
+      const Stmt *use = parentOf(*ref);
+      const Stmt *operand = ref;
+      while (use != nullptr) {
+        const auto *cast = dyn_cast<ImplicitCastExpr>(use);
+        if (!isa<ParenExpr>(use) &&
+            (cast == nullptr || (cast->getCastKind() != CK_LValueToRValue &&
+                                 cast->getCastKind() != CK_NoOp &&
+                                 cast->getCastKind() != CK_BitCast)))
+          break;
+        operand = use;
+        use = parentOf(*use);
+      }
+      const auto *binary = dyn_cast_or_null<BinaryOperator>(use);
+      const auto *cast = dyn_cast_or_null<CastExpr>(use);
+      const auto *call = dyn_cast_or_null<CallExpr>(use);
+      const bool value =
+          isa_and_nonnull<UnaryExprOrTypeTraitExpr>(use) ||
+          (binary != nullptr && binary->isEqualityOp()) ||
+          (cast != nullptr && cast->getCastKind() == CK_PointerToIntegral) ||
+          (call != nullptr && call->getCallee() != operand &&
+           valueArgument(*call, *cast_or_null<Expr>(operand)));
+      if (!value)
+        return false;
+      continue;
+    }
+    for (const Stmt *child : stmt->children())
+      work.push_back(child);
+  }
+  return true;
+}
+
+bool Transfer::usesValueOnly(const CallExpr &call, core::Sym calleeValue,
+                             const std::vector<core::Sym> &args,
+                             unsigned index) const {
+  const std::vector<const FunctionDecl *> targets =
+      callTargets(call, calleeValue);
+  if (targets.empty())
+    return false;
+  for (const FunctionDecl *target : targets) {
+    const FunctionDecl *definition = nullptr;
+    if (!target->hasBody(definition) || definition == nullptr ||
+        index >= definition->getNumParams() || definition->isVariadic())
+      return false;
+    const core::FunctionEffects *effects =
+        run.unitRun().summaryOf(*target->getCanonicalDecl());
+    if (effects == nullptr || effects->incomplete ||
+        !onlyValueUses(*definition->getBody(), *definition->getParamDecl(index),
+                       context, 3))
+      return false;
+  }
+  return !calleeReleases(call, calleeValue, args, index, true);
+}
+
 bool Transfer::calleeReleases(const CallExpr &call, core::Sym calleeValue,
                               const std::vector<core::Sym> &args,
                               unsigned index, bool possibly) const {
@@ -2318,6 +2410,13 @@ void Transfer::decideCall(const CallExpr &call,
             value.null == core::PointerNull::Null)
           continue;
         core::TemporalVerdict verdict = heap.temporal(state, args[i]);
+        // RFC 0033 §1: a callee whose summary neither reads, writes nor
+        // releases through the argument uses only its value (a table keyed
+        // by address, `set_remove(s, p)` after `free(p)`), which accesses
+        // no memory.
+        if (verdict.kind != core::TemporalVerdict::Kind::Proven &&
+            usesValueOnly(call, calleeValue, args, i))
+          continue;
         // A second release when the callee releases it, or may where the
         // argument is only possibly released already, or may and reads
         // nothing through it first; otherwise the first invalid operation

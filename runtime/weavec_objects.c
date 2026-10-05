@@ -152,6 +152,7 @@ static inline void dropDeeper(StackList *list, uintptr_t frame) {
 
 void *__weavec_rt_stack_enter(void *base, size_t size, void *framePointer,
                               int flags) {
+  WEAVEC_RT_FORWARD(stackEnter, base, size, framePointer, flags);
   StackList *list = threadList();
   const uintptr_t frame = (uintptr_t)framePointer;
   const uintptr_t start = (uintptr_t)base;
@@ -182,6 +183,7 @@ void *__weavec_rt_stack_enter(void *base, size_t size, void *framePointer,
 }
 
 void __weavec_rt_stack_leave(void *base, void *framePointer) {
+  WEAVEC_RT_FORWARD_VOID(stackLeave, base, framePointer);
   StackList *list = threadList();
   const uintptr_t frame = (uintptr_t)framePointer;
   size_t i;
@@ -195,6 +197,7 @@ void __weavec_rt_stack_leave(void *base, void *framePointer) {
 }
 
 void __weavec_rt_stack_rewind(void *frame) {
+  WEAVEC_RT_FORWARD_VOID(stackRewind, frame);
   dropDeeper(threadList(), (uintptr_t)frame);
 }
 
@@ -214,8 +217,7 @@ static int frameIsLoose(const StackList *list, uintptr_t frame, size_t from,
 /* The stack object `address` points into. An address that is one past the
  * end of an object, where no object starts, still belongs to it (unless the
  * object is loose): a walk off its end is caught at the first step. */
-static int findStack(uintptr_t address, int before,
-                     struct __weavec_rt_found *found) {
+static int findStack(uintptr_t address, struct __weavec_rt_found *found) {
   StackList *list = threadList();
   const StackEntry *inside = NULL;
   const StackEntry *ending = NULL;
@@ -262,18 +264,10 @@ static int findStack(uintptr_t address, int before,
     else if (entry->size == 0 && address == entry->base)
       ending = entry;
   }
-  if (inside != NULL && before && address == inside->base && ending != NULL)
-    inside = NULL;
   if (inside == NULL && ending != NULL &&
-      (before || !frameIsLoose(list, ending->frame, first, high)))
+      !frameIsLoose(list, ending->frame, first, high))
     inside = ending;
   if (inside == NULL)
-    return 0;
-  /* The start of an object, with a negative index: one past an object the
-   * list does not know, if the frame has any; otherwise the index leaves
-   * this object, and the guard fails on it. */
-  if (before && address == inside->base && inside->size != 0 &&
-      frameIsLoose(list, inside->frame, first, high))
     return 0;
   found->state = WeavecRtTrackedLive;
   found->kind = WeavecRtStack;
@@ -291,11 +285,21 @@ typedef struct {
   size_t size;
 } GlobalEntry;
 
+/* The table of global objects, sorted by address. Lookups read it without a
+ * lock, so that a guard in a signal handler that interrupted a lookup still
+ * finds them: writers (the constructors that add a unit's globals) hold
+ * `globalsLock`, make `globalsSequence` odd while they change the table and
+ * even again after, and a reader retries a read that overlapped a change. A
+ * grown table is never unmapped, since a reader may still be in it. */
+typedef struct {
+  size_t capacity;
+  size_t count;
+  GlobalEntry entries[];
+} GlobalTable;
+
 static WeavecRtLock globalsLock;
-static GlobalEntry *globals;
-static size_t globalCount;
-static size_t globalCapacity;
-static int globalsSorted = 1;
+static GlobalTable *globalTable;
+static unsigned long globalsSequence;
 static uintptr_t globalsLow = ~(uintptr_t)0;
 static uintptr_t globalsHigh;
 
@@ -316,124 +320,180 @@ static void siftDown(GlobalEntry *entries, size_t root, size_t count) {
   }
 }
 
-/* Sorts by address and merges the descriptors of one address to the largest
- * size (tentative definitions of different sizes). The lock is held. */
-static void sortGlobals(void) {
+static void sortEntries(GlobalEntry *entries, size_t count) {
   size_t i;
-  size_t kept = 0;
-  for (i = globalCount / 2; i-- > 0;)
-    siftDown(globals, i, globalCount);
-  for (i = globalCount; i-- > 1;) {
-    const GlobalEntry swap = globals[0];
-    globals[0] = globals[i];
-    globals[i] = swap;
-    siftDown(globals, 0, i);
+  for (i = count / 2; i-- > 0;)
+    siftDown(entries, i, count);
+  for (i = count; i-- > 1;) {
+    const GlobalEntry swap = entries[0];
+    entries[0] = entries[i];
+    entries[i] = swap;
+    siftDown(entries, 0, i);
   }
-  for (i = 0; i < globalCount; ++i) {
-    if (kept != 0 && globals[kept - 1].base == globals[i].base) {
-      if (globals[i].size > globals[kept - 1].size)
-        globals[kept - 1].size = globals[i].size;
-      continue;
-    }
-    globals[kept++] = globals[i];
-  }
-  globalCount = kept;
-  globalsSorted = 1;
+}
+
+/* A table with room for `capacity` entries holding `table`'s. */
+static GlobalTable *growGlobals(const GlobalTable *table, size_t capacity) {
+  const size_t count = table != NULL ? table->count : 0;
+  GlobalTable *grown = (GlobalTable *)mmap(
+      NULL, offsetof(GlobalTable, entries) + capacity * sizeof(GlobalEntry),
+      PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  if ((void *)grown == MAP_FAILED)
+    return NULL;
+  grown->capacity = capacity;
+  grown->count = count;
+  if (count != 0)
+    memcpy(grown->entries, table->entries, count * sizeof(GlobalEntry));
+  return grown;
 }
 
 void __weavec_rt_globals_add(const void *const *begin, const void *const *end) {
+  WEAVEC_RT_FORWARD_VOID(globalsAdd, begin, end);
   const size_t pairs = (size_t)(end - begin) / 2;
+  GlobalTable *table;
+  GlobalEntry *added;
+  size_t count;
+  size_t fresh = 0;
   size_t i;
+  size_t j;
+  size_t kept = 0;
   if (begin == NULL || pairs == 0)
     return;
   weavecRtLock(&globalsLock);
-  if (globalCount + pairs > globalCapacity) {
-    size_t capacity = globalCapacity != 0 ? globalCapacity : 1024;
-    GlobalEntry *grown;
-    while (capacity < globalCount + pairs)
+  table = globalTable;
+  count = table != NULL ? table->count : 0;
+  /* Room for the new entries twice: sorted at the end, then merged. */
+  if (table == NULL || count + 2 * pairs > table->capacity) {
+    size_t capacity = table != NULL ? table->capacity : 1024;
+    while (capacity < count + 2 * pairs)
       capacity *= 2;
-    grown = (GlobalEntry *)mmap(NULL, capacity * sizeof(GlobalEntry),
-                                PROT_READ | PROT_WRITE,
-                                MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    if ((void *)grown == MAP_FAILED) {
+    table = growGlobals(table, capacity);
+    if (table == NULL) {
       weavecRtUnlock(&globalsLock);
       return;
     }
-    if (globalCount != 0)
-      memcpy(grown, globals, globalCount * sizeof(GlobalEntry));
-    if (globals != NULL)
-      (void)munmap(globals, globalCapacity * sizeof(GlobalEntry));
-    globals = grown;
-    globalCapacity = capacity;
+    __atomic_store_n(&globalTable, table, __ATOMIC_RELEASE);
   }
+  __atomic_store_n(&globalsSequence, globalsSequence + 1, __ATOMIC_RELAXED);
+  __atomic_thread_fence(__ATOMIC_RELEASE);
+  added = table->entries + table->capacity - pairs;
   for (i = 0; i < pairs; ++i) {
     const uintptr_t base = (uintptr_t)begin[2 * i];
     const size_t size = (size_t)(uintptr_t)begin[2 * i + 1];
     if (base == 0)
       continue;
-    globals[globalCount].base = base;
-    globals[globalCount].size = size;
-    ++globalCount;
-    weavecRtBumpEpoch();
+    added[fresh].base = base;
+    added[fresh].size = size;
+    ++fresh;
     if (base < __atomic_load_n(&globalsLow, __ATOMIC_RELAXED))
       __atomic_store_n(&globalsLow, base, __ATOMIC_RELAXED);
     if (base + size + 1 > __atomic_load_n(&globalsHigh, __ATOMIC_RELAXED))
       __atomic_store_n(&globalsHigh, base + size + 1, __ATOMIC_RELAXED);
   }
-  globalsSorted = 0;
+  sortEntries(added, fresh);
+  /* Merge from the end: the next write is never past an unread entry. */
+  i = count;
+  j = fresh;
+  while (j != 0) {
+    if (i != 0 && table->entries[i - 1].base > added[j - 1].base) {
+      table->entries[i + j - 1] = table->entries[i - 1];
+      --i;
+    } else {
+      table->entries[i + j - 1] = added[j - 1];
+      --j;
+    }
+  }
+  /* One address's descriptors merge to the largest size (tentative
+   * definitions of different sizes). */
+  for (i = 0; i < count + fresh; ++i) {
+    if (kept != 0 && table->entries[kept - 1].base == table->entries[i].base) {
+      if (table->entries[i].size > table->entries[kept - 1].size)
+        table->entries[kept - 1].size = table->entries[i].size;
+      continue;
+    }
+    table->entries[kept++] = table->entries[i];
+  }
+  table->count = kept;
+  if (fresh != 0)
+    weavecRtBumpEpoch();
+  __atomic_store_n(&globalsSequence, globalsSequence + 1, __ATOMIC_RELEASE);
   weavecRtUnlock(&globalsLock);
 }
 
-/* The global object `address` points into; with `before`, the object that
- * ends at an address where another starts. */
-static int findGlobal(uintptr_t address, int before,
-                      struct __weavec_rt_found *found) {
-  size_t low = 0;
-  size_t high;
-  int ok = 0;
+/* The global objects around `address`: the last one starting at or below it
+ * (`below`) and the first one above it (`above`); 0 for none. Fails if a
+ * change it interrupted never finishes. */
+static int globalsAround(uintptr_t address, GlobalEntry *below,
+                          GlobalEntry *above) {
+  unsigned tries;
+  for (tries = 0; tries < 1u << 16; ++tries) {
+    const unsigned long sequence =
+        __atomic_load_n(&globalsSequence, __ATOMIC_ACQUIRE);
+    const GlobalTable *table;
+    size_t low = 0;
+    size_t high;
+    size_t count;
+    below->base = 0;
+    below->size = 0;
+    above->base = 0;
+    above->size = 0;
+    if (sequence & 1)
+      continue;
+    table = __atomic_load_n(&globalTable, __ATOMIC_ACQUIRE);
+    if (table == NULL)
+      return 1;
+    count = __atomic_load_n(&table->count, __ATOMIC_RELAXED);
+    if (count > table->capacity)
+      count = table->capacity;
+    high = count;
+    while (low < high) {
+      const size_t mid = low + (high - low) / 2;
+      if (__atomic_load_n(&table->entries[mid].base, __ATOMIC_RELAXED) <=
+          address)
+        low = mid + 1;
+      else
+        high = mid;
+    }
+    /* `low` entries start at or below the address. */
+    if (low != 0) {
+      below->base = __atomic_load_n(&table->entries[low - 1].base,
+                                    __ATOMIC_RELAXED);
+      below->size = __atomic_load_n(&table->entries[low - 1].size,
+                                    __ATOMIC_RELAXED);
+    }
+    if (low < count) {
+      above->base =
+          __atomic_load_n(&table->entries[low].base, __ATOMIC_RELAXED);
+      above->size =
+          __atomic_load_n(&table->entries[low].size, __ATOMIC_RELAXED);
+    }
+    __atomic_thread_fence(__ATOMIC_ACQUIRE);
+    if (__atomic_load_n(&globalsSequence, __ATOMIC_RELAXED) == sequence)
+      return 1;
+  }
+  return 0;
+}
+
+/* The global object `address` points into. */
+static int findGlobal(uintptr_t address, struct __weavec_rt_found *found) {
+  GlobalEntry below;
+  GlobalEntry above;
   if (address < __atomic_load_n(&globalsLow, __ATOMIC_RELAXED) ||
       address >= __atomic_load_n(&globalsHigh, __ATOMIC_RELAXED))
     return 0;
-  weavecRtLock(&globalsLock);
-  if (!globalsSorted)
-    sortGlobals();
-  high = globalCount;
-  while (low < high) {
-    const size_t mid = low + (high - low) / 2;
-    if (globals[mid].base <= address)
-      low = mid + 1;
-    else
-      high = mid;
-  }
-  /* `low` entries start at or below the address. */
-  if (low != 0) {
-    const GlobalEntry *entry = &globals[low - 1];
-    if (before && address == entry->base) {
-      /* Taken as one past the object before it, when one ends here. */
-      if (low >= 2 && globals[low - 2].base + globals[low - 2].size == address) {
-        found->base = globals[low - 2].base;
-        found->size = globals[low - 2].size;
-        ok = 1;
-      }
-    } else if (address - entry->base < entry->size ||
-               (before && address - entry->base == entry->size)) {
-      found->base = entry->base;
-      found->size = entry->size;
-      ok = 1;
-    }
-  }
-  weavecRtUnlock(&globalsLock);
-  if (ok) {
-    found->state = WeavecRtTrackedLive;
-    found->kind = WeavecRtGlobal;
-  }
-  return ok;
+  if (!globalsAround(address, &below, &above) || below.base == 0 || address - below.base >= below.size)
+    return 0;
+  found->base = below.base;
+  found->size = below.size;
+  found->state = WeavecRtTrackedLive;
+  found->kind = WeavecRtGlobal;
+  return 1;
 }
 
 /* The gap between the global objects around an untracked address. */
 static void globalGap(uintptr_t address, uintptr_t *low, uintptr_t *high) {
-  size_t first = 0;
-  size_t last;
+  GlobalEntry below;
+  GlobalEntry above;
   if (address < __atomic_load_n(&globalsLow, __ATOMIC_RELAXED) ||
       address >= __atomic_load_n(&globalsHigh, __ATOMIC_RELAXED)) {
     /* Outside the table: only its near end can cut the range. */
@@ -445,31 +505,21 @@ static void globalGap(uintptr_t address, uintptr_t *low, uintptr_t *high) {
       *low = tableHigh;
     return;
   }
-  weavecRtLock(&globalsLock);
-  if (!globalsSorted)
-    sortGlobals();
-  last = globalCount;
-  while (first < last) {
-    const size_t mid = first + (last - first) / 2;
-    if (globals[mid].base <= address)
-      first = mid + 1;
-    else
-      last = mid;
+  if (!globalsAround(address, &below, &above)) {
+    /* No range is known to be untracked. */
+    *low = *high = address;
+    return;
   }
-  /* `first` entries start at or below the address; it is in none of them. */
-  if (first != 0) {
-    const uintptr_t end = globals[first - 1].base + globals[first - 1].size;
-    if (end > *low)
-      *low = end;
-  }
-  if (first < globalCount && globals[first].base < *high)
-    *high = globals[first].base;
-  weavecRtUnlock(&globalsLock);
+  /* The address is in neither. */
+  if (below.base != 0 && below.base + below.size > *low)
+    *low = below.base + below.size;
+  if (above.base != 0 && above.base < *high)
+    *high = above.base;
 }
 
 /*===-- Lookup --------------------------------------------------------------===*/
 
-struct __weavec_rt_found weavecRtFindStackOrGlobal(const void *p, int before) {
+struct __weavec_rt_found weavecRtFindStackOrGlobal(const void *p) {
   struct __weavec_rt_found found;
   found.state = WeavecRtUntracked;
   found.kind = WeavecRtHeap;
@@ -479,9 +529,9 @@ struct __weavec_rt_found weavecRtFindStackOrGlobal(const void *p, int before) {
   found.scoped = 0;
   found.word = NULL;
   found.value = 0;
-  if (findStack((uintptr_t)p, before, &found))
+  if (findStack((uintptr_t)p, &found))
     weavecRtCount(WeavecRtStatStackLookups);
-  else if (findGlobal((uintptr_t)p, before, &found))
+  else if (findGlobal((uintptr_t)p, &found))
     weavecRtCount(WeavecRtStatGlobalLookups);
   else
     weavecRtCount(WeavecRtStatUntrackedLookups);
@@ -509,33 +559,78 @@ int weavecRtIsStackOrGlobal(const void *p) {
   /* Anything in the live part of the calling thread's stack. */
   if (address >= (uintptr_t)__builtin_frame_address(0) && address < list->high)
     return 1;
-  return findGlobal(address, 0, &found);
+  return findGlobal(address, &found);
 }
 
 /*===-- Guards (section 3) --------------------------------------------------===*/
 
+/* RFC 0033 section 4: the address of the access `p + offset + index * step`,
+ * or 0 when the arithmetic leaves the address space. */
+static int accessAddress(const void *p, long long index,
+                         unsigned long long step, unsigned long long offset,
+                         uintptr_t *address) {
+  long long stride;
+  uintptr_t at;
+  if (step > (unsigned long long)__LONG_LONG_MAX__ ||
+      __builtin_mul_overflow(index, (long long)step, &stride) ||
+      __builtin_add_overflow((uintptr_t)p, (uintptr_t)offset, &at))
+    return 0;
+  if (stride >= 0 ? __builtin_add_overflow(at, (uintptr_t)stride, &at)
+                  : __builtin_sub_overflow(at, (uintptr_t)0 - (uintptr_t)stride,
+                                           &at))
+    return 0;
+  *address = at;
+  return 1;
+}
+
+/* RFC 0033 section 4: whether the `width` bytes at `address`, reached from
+ * the pointer `from`, fail, given the object `found` that holds the first of
+ * them. They pass inside one live heap object, wherever `from` points (an
+ * index may bring a pointer formed outside a buffer back into it). Inside a
+ * live stack or global object they fail when reached forwards from inside
+ * another one: such objects lie next to each other with no gap, and a walk
+ * off one lands in the next. Outside every object they pass unless their
+ * last byte is in one, or `from` is in a live object (the access left it for
+ * memory nothing tracks). */
+static int accessFails(const struct __weavec_rt_found *found,
+                       uintptr_t address, unsigned long long width,
+                       const void *from) {
+  struct __weavec_rt_found origin;
+  if (found->state == WeavecRtTrackedDead)
+    return 1;
+  if (found->state == WeavecRtTrackedLive) {
+    if (width > found->size ||
+        (unsigned long long)(address - found->base) > found->size - width)
+      return 1;
+    if (found->kind == WeavecRtHeap || address <= (uintptr_t)from ||
+        (uintptr_t)from - found->base < found->size)
+      return 0;
+    origin = __weavec_rt_find(from);
+    return origin.state == WeavecRtTrackedLive && origin.kind != WeavecRtHeap &&
+           origin.base != found->base;
+  }
+  if (width > 1 &&
+      __weavec_rt_find((const void *)(address + (width - 1))).state !=
+          WeavecRtUntracked)
+    return 1;
+  return (uintptr_t)from != address &&
+         __weavec_rt_find(from).state == WeavecRtTrackedLive;
+}
+
 int __weavec_rt_object(const void *p, long long index, unsigned long long step,
                        unsigned long long offset, unsigned long long width) {
-  const struct __weavec_rt_found found = __weavec_rt_find(p, index < 0);
-  long long at;
-  long long stride;
-  if (found.state == WeavecRtUntracked)
-    return 0;
-  if (found.state == WeavecRtTrackedDead)
+  WEAVEC_RT_FORWARD(object, p, index, step, offset, width);
+  uintptr_t address;
+  struct __weavec_rt_found found;
+  if (!accessAddress(p, index, step, offset, &address))
     return 1;
-  at = (long long)((uintptr_t)p - found.base);
-  if (step > (unsigned long long)__LONG_LONG_MAX__ ||
-      offset > (unsigned long long)__LONG_LONG_MAX__ ||
-      __builtin_mul_overflow(index, (long long)step, &stride) ||
-      __builtin_add_overflow(at, stride, &at) ||
-      __builtin_add_overflow(at, (long long)offset, &at))
-    return 1;
-  return at < 0 || width > found.size ||
-         (unsigned long long)at > found.size - width;
+  found = __weavec_rt_find((const void *)address);
+  return accessFails(&found, address, width, p);
 }
 
 int __weavec_rt_string(const char *p) {
-  const struct __weavec_rt_found found = __weavec_rt_find(p, 0);
+  WEAVEC_RT_FORWARD(string, p);
+  const struct __weavec_rt_found found = __weavec_rt_find(p);
   uintptr_t at;
   if (found.state == WeavecRtUntracked)
     return 0;
@@ -548,7 +643,8 @@ int __weavec_rt_string(const char *p) {
 }
 
 unsigned long long __weavec_rt_strlen(const char *p) {
-  const struct __weavec_rt_found found = __weavec_rt_find(p, 0);
+  WEAVEC_RT_FORWARD(strlen, p);
+  const struct __weavec_rt_found found = __weavec_rt_find(p);
   const char *end;
   uintptr_t at;
   if (found.state == WeavecRtUntracked)
@@ -563,7 +659,8 @@ unsigned long long __weavec_rt_strlen(const char *p) {
 }
 
 int __weavec_rt_live(const void *p) {
-  return __weavec_rt_find(p, 0).state == WeavecRtTrackedDead;
+  WEAVEC_RT_FORWARD(live, p);
+  return __weavec_rt_find(p).state == WeavecRtTrackedDead;
 }
 
 /* For a guard that passed, the range around `address` that will keep
@@ -608,34 +705,32 @@ struct __weavec_rt_range
 __weavec_rt_object_range(const void *p, long long index,
                          unsigned long long step, unsigned long long offset,
                          unsigned long long width, void *frame) {
+  WEAVEC_RT_FORWARD(objectRange, p, index, step, offset, width, frame);
   /* Read before the lookup: a change in between leaves the range stale by
    * its own epoch. */
   const unsigned epoch = __atomic_load_n(&__weavec_rt_epoch, __ATOMIC_RELAXED);
-  const struct __weavec_rt_found found = __weavec_rt_find(p, index < 0);
   struct __weavec_rt_range range = {0, 0, &__weavec_rt_epoch, 0, 1};
+  struct __weavec_rt_found found;
+  uintptr_t address;
   weavecRtCount(WeavecRtStatRanges);
-  long long at;
-  long long stride;
-  if (found.state == WeavecRtTrackedDead)
+  if (!accessAddress(p, index, step, offset, &address))
     return range;
-  if (found.state == WeavecRtTrackedLive) {
-    at = (long long)((uintptr_t)p - found.base);
-    if (step > (unsigned long long)__LONG_LONG_MAX__ ||
-        offset > (unsigned long long)__LONG_LONG_MAX__ ||
-        __builtin_mul_overflow(index, (long long)step, &stride) ||
-        __builtin_add_overflow(at, stride, &at) ||
-        __builtin_add_overflow(at, (long long)offset, &at) || at < 0 ||
-        width > found.size || (unsigned long long)at > found.size - width)
-      return range;
-  }
+  found = __weavec_rt_find((const void *)address);
+  if (accessFails(&found, address, width, p))
+    return range;
   range.failed = 0;
-  remember(&found, (uintptr_t)p, epoch, &range, frame);
+  /* (Untracked bytes reached from another pointer passed because of where
+   * that pointer is, which a range of the bytes cannot remember.) */
+  if (found.state == WeavecRtUntracked && address != (uintptr_t)p)
+    return range;
+  remember(&found, address, epoch, &range, frame);
   return range;
 }
 
 struct __weavec_rt_range __weavec_rt_live_range(const void *p, void *frame) {
+  WEAVEC_RT_FORWARD(liveRange, p, frame);
   const unsigned epoch = __atomic_load_n(&__weavec_rt_epoch, __ATOMIC_RELAXED);
-  const struct __weavec_rt_found found = __weavec_rt_find(p, 0);
+  const struct __weavec_rt_found found = __weavec_rt_find(p);
   struct __weavec_rt_range range = {0, 0, &__weavec_rt_epoch, 0, 1};
   weavecRtCount(WeavecRtStatRanges);
   if (found.state == WeavecRtTrackedDead)
@@ -646,10 +741,11 @@ struct __weavec_rt_range __weavec_rt_live_range(const void *p, void *frame) {
 }
 
 int __weavec_rt_release_ok(const void *p) {
+  WEAVEC_RT_FORWARD(releaseOk, p);
   struct __weavec_rt_found found;
   if (p == NULL)
     return 0;
-  found = __weavec_rt_find(p, 0);
+  found = __weavec_rt_find(p);
   if (found.state == WeavecRtUntracked)
     return weavecRtIsStackOrGlobal(p);
   if (found.state == WeavecRtTrackedDead || found.base != (uintptr_t)p)

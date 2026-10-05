@@ -26,11 +26,17 @@
 |*
 |* and traps. It uses no allocation and no stdio.
 |*
+|* __weavec_rt_trapping (RFC 0033, section 6.1) runs before every trap of a
+|* failed check or guard: a trap the program has blocked or catches would
+|* otherwise repeat forever on Darwin instead of ending the program.
+|*
 \*===----------------------------------------------------------------------===*/
 
 #include "weavec_rt.h"
 
 #include <fcntl.h>
+#include <pthread.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -78,25 +84,23 @@ static int firstReport(unsigned long long hash) {
   return 1;
 }
 
-/* WEAVEC_RT_ABORT=1, read once: -1 unknown, 0 no, 1 yes. */
-static int abortSetting = -1;
+/* The settings below are read in a constructor, never while reporting: a
+ * check can fail in a function the C library calls with its environment
+ * lock held, and `getenv` takes it again. */
 
-static int shouldAbort(void) {
-  int setting = __atomic_load_n(&abortSetting, __ATOMIC_RELAXED);
-  if (setting < 0) {
-    const char *value = getenv("WEAVEC_RT_ABORT");
-    setting = value != NULL && strcmp(value, "1") == 0;
-    __atomic_store_n(&abortSetting, setting, __ATOMIC_RELAXED);
-  }
-  return setting;
-}
+/* WEAVEC_RT_ABORT=1. */
+static int abortSetting;
 
-/* WEAVEC_RT_REPORT_LOG=<path>: every report is also appended to that file,
- * one write per line, for a test harness that keeps the output of a passing
- * test to itself. */
-static void logReport(const char *text, size_t size) {
+/* WEAVEC_RT_REPORT_LOG=<path>: every report is appended to that file, one
+ * write per line, for a test harness that keeps the output of a passing test
+ * to itself, and not printed (RFC 0033, section 6.3: a test that captures
+ * standard error sees only the program's own output). */
+static char reportLog[1024];
+
+__attribute__((constructor)) static void readReportSettings(void) {
+  const char *value = getenv("WEAVEC_RT_ABORT");
   const char *path;
-  int fd;
+  abortSetting = value != NULL && strcmp(value, "1") == 0;
   /* A set-user-ID or set-group-ID program does not write where its
    * environment says. */
 #if defined(__APPLE__)
@@ -107,21 +111,52 @@ static void logReport(const char *text, size_t size) {
     return;
 #endif
   path = getenv("WEAVEC_RT_REPORT_LOG");
-  if (path == NULL || *path == 0)
-    return;
-  fd = open(path, O_WRONLY | O_APPEND | O_CREAT | O_CLOEXEC | O_NOFOLLOW,
+  if (path != NULL && strlen(path) < sizeof reportLog)
+    memcpy(reportLog, path, strlen(path) + 1);
+}
+
+static int shouldAbort(void) { return abortSetting; }
+
+/* Appends a report to the log; returns whether it was written there. */
+static int logReport(const char *text, size_t size) {
+  int fd;
+  if (reportLog[0] == 0)
+    return 0;
+  fd = open(reportLog, O_WRONLY | O_APPEND | O_CREAT | O_CLOEXEC | O_NOFOLLOW,
             0644);
   if (fd < 0)
-    return;
+    return 0;
   {
     const long written = (long)write(fd, text, size);
     (void)written;
   }
   (void)close(fd);
+  return 1;
+}
+
+void __weavec_rt_trapping(void) {
+  static const int Traps[2] = {SIGTRAP, SIGILL};
+  sigset_t traps;
+  int i;
+  sigemptyset(&traps);
+  for (i = 0; i < 2; ++i) {
+    struct sigaction action;
+    sigaddset(&traps, Traps[i]);
+    /* A handler the program installed (a crash reporter) still runs; an
+     * ignored trap would repeat forever. */
+    if (sigaction(Traps[i], NULL, &action) == 0 &&
+        (action.sa_flags & SA_SIGINFO) == 0 && action.sa_handler == SIG_IGN) {
+      memset(&action, 0, sizeof action);
+      action.sa_handler = SIG_DFL;
+      (void)sigaction(Traps[i], &action, NULL);
+    }
+  }
+  (void)pthread_sigmask(SIG_UNBLOCK, &traps, NULL);
 }
 
 void __weavec_rt_report(const char *check, const char *file, unsigned line,
                         unsigned column) {
+  WEAVEC_RT_FORWARD_VOID(report, check, file, line, column);
   const int abortNow = shouldAbort();
   char text[1024];
   int size;
@@ -137,9 +172,10 @@ void __weavec_rt_report(const char *check, const char *file, unsigned line,
     size = (int)sizeof text - 1;
     text[size - 1] = '\n';
   }
-  fputs(text, stderr);
-  fflush(stderr);
-  logReport(text, (size_t)size);
+  if (!logReport(text, (size_t)size)) {
+    fputs(text, stderr);
+    fflush(stderr);
+  }
   if (abortNow)
     abort();
 }
@@ -155,7 +191,8 @@ __attribute__((destructor)) static void printStats(void) {
       "range requests",   "ranges kept",   "stack objects entered"};
   const char *value = getenv("WEAVEC_RT_STATS");
   int i;
-  if (value == NULL || strcmp(value, "1") != 0)
+  /* (The owner's counters count every image's work.) */
+  if (weavecRtForward() != 0 || value == NULL || strcmp(value, "1") != 0)
     return;
   for (i = 0; i < WeavecRtStatCount; ++i)
     fprintf(stderr, "weavec: runtime: %llu %s\n", weavecRtStats[i], Names[i]);
@@ -168,6 +205,13 @@ static char *appendText(char *at, const char *end, const char *text) {
 }
 
 void __weavec_rt_fatal(const char *what, const void *p, const char *why) {
+  {
+    const struct __weavec_rt_dispatch *owner = weavecRtForward();
+    if (owner != 0) {
+      owner->fatal(what, p, why);
+      __builtin_unreachable();
+    }
+  }
   char line[256] = {0};
   const char *end = line + sizeof line - 1;
   char *at = line;
@@ -190,5 +234,6 @@ void __weavec_rt_fatal(const char *what, const void *p, const char *why) {
     const long written = (long)write(2, line, (size_t)(at - line));
     (void)written;
   }
+  __weavec_rt_trapping();
   __builtin_trap();
 }

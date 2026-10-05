@@ -1407,8 +1407,10 @@ def cc_flags(case: Case, cfg: Config, checks: str | None, unit: Path | None) -> 
     flags: list[str] = []
     if not plain:
         # RFC 0032 section 9: the cases pin the analysis's possible findings,
-        # which a build that guards the facet does not report by itself.
+        # which a build that guards the facet does not report by itself; and
+        # RFC 0033 section 8: its leaks, which a build reports only when asked.
         flags.append("-Wweavec-possible")
+        flags.append("-Wweavec-leak")
         if checks and not cfg.no_emission:
             flags.append(f"-fweavec-checks={checks}")
         if cfg.require:
@@ -1445,6 +1447,10 @@ def build(case: Case, cfg: Config, ev: Evidence, directory: Path, checks: str | 
         return None
     output = directory / "a.out"
     command = [str(cfg.weavec_cc), *extra, *cc_flags(case, cfg, checks, None)]
+    # RFC 0033 §7: the default link reads records only; the cases pin what
+    # the analysis reports across units, so their links analyse again.
+    if len(case.units) > 1 and not any(f.startswith("-fweavec-link") for f in case.flags):
+        command.append("-fweavec-link=analyze")
     if ledger is not None:
         command.append(f"-fweavec-ledger={ledger}{os.sep}")
     command.extend([*(str(objects[u]) for u in case.units), "-o", str(output)])

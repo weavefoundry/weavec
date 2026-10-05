@@ -160,8 +160,21 @@ static void announce(llvm::raw_ostream *dump, const ProgramUnit &unit) {
     *dump << "unit '" << unit.name() << "':\n";
 }
 
+bool ProgramAnalysis::exhausted() const {
+  return budgetSeconds > 0 && std::chrono::duration<double>(
+                                  std::chrono::steady_clock::now() - started)
+                                      .count() > budgetSeconds;
+}
+
 void ProgramAnalysis::analyzeAcyclic(unsigned index, Result &result) {
   Unit &unit = units[index];
+  // RFC 0033 §7: past the budget the compile-time view stands.
+  if (exhausted()) {
+    result.unfinished.push_back(unit.unit->name());
+    if (unit.exports)
+      settled.add(*unit.exports);
+    return;
+  }
   announce(options.engine.dumpStream, *unit.unit);
 
   FrontendOptions overrides;
@@ -289,13 +302,18 @@ void ProgramAnalysis::analyzeCyclic(const std::vector<unsigned> &component,
 
   bool stale = false;
   bool changed = true;
-  for (unsigned round = 0; round < MaxRounds && changed; ++round) {
+  bool cut = false;
+  for (unsigned round = 0; round < MaxRounds && changed && !cut; ++round) {
     if (options.engine.stats)
       options.engine.stats->add("program_fixpoint_rounds");
     changed = false;
     for (const unsigned k : schedule) {
       if (broken[k] || !dirty[k])
         continue;
+      if (exhausted()) {
+        cut = true;
+        break;
+      }
       dirty[k] = false;
       if (stale) {
         // RFC 0020: no analyzer is active between unit runs. Release the
@@ -331,7 +349,7 @@ void ProgramAnalysis::analyzeCyclic(const std::vector<unsigned> &component,
       }
     }
   }
-  if (changed) {
+  if (changed && !cut) {
     std::vector<std::string> names;
     names.reserve(component.size());
     for (const unsigned member : component)
@@ -347,6 +365,13 @@ void ProgramAnalysis::analyzeCyclic(const std::vector<unsigned> &component,
     Unit &unit = units[component[k]];
     if (broken[k])
       continue;
+    // RFC 0033 §7: a group the budget cut keeps its compile-time view.
+    if (cut || exhausted()) {
+      broken[k] = true;
+      current[k] = *unit.exports;
+      result.unfinished.push_back(unit.unit->name());
+      continue;
+    }
     announce(options.engine.dumpStream, *unit.unit);
     FrontendOptions overrides;
     overrides.database = &db;
@@ -392,6 +417,7 @@ void ProgramAnalysis::analyzeComponent(const std::vector<unsigned> &component,
 
 ProgramAnalysis::Result ProgramAnalysis::run() {
   Result result;
+  started = std::chrono::steady_clock::now();
   settled.clear();
   settled.programFacts = programFacts;
   attempted.clear();
@@ -522,7 +548,7 @@ void ProgramAnalysis::serveContexts(Result &result) {
   const std::vector<std::vector<unsigned>> order =
       core::stronglyConnectedComponents(adjacency);
   std::set<unsigned> pending;
-  for (unsigned round = 0; round < MaxContextRounds; ++round) {
+  for (unsigned round = 0; round < MaxContextRounds && !exhausted(); ++round) {
     rebuild();
     // Requests no unit has served yet: their definers run, once per
     // request (one the definer cannot serve stays unserved).
@@ -538,7 +564,7 @@ void ProgramAnalysis::serveContexts(Result &result) {
     std::set<unsigned> next;
     for (const std::vector<unsigned> &component : order)
       for (const unsigned index : component) {
-        if (!pending.contains(index) || !units[index].exports)
+        if (!pending.contains(index) || !units[index].exports || exhausted())
           continue;
         const std::optional<bool> changed = reportingRun(index, true);
         // Its callers use the contexts it now serves, or its new summaries:
@@ -552,8 +578,15 @@ void ProgramAnalysis::serveContexts(Result &result) {
   // Every unit still held reports now, with whatever is served.
   for (const std::vector<unsigned> &component : order)
     for (const unsigned index : component)
-      if (units[index].held && units[index].exports)
+      if (units[index].held && units[index].exports) {
+        // RFC 0033 §7: past the budget its compile-time results stand.
+        if (exhausted()) {
+          result.unfinished.push_back(units[index].unit->name());
+          units[index].ledger.reset();
+          continue;
+        }
         (void)reportingRun(index, false);
+      }
   rebuild();
 }
 

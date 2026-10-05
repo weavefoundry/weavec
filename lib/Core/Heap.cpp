@@ -672,13 +672,15 @@ Sym Heap::mergeWeak(HeapState &state, Sym left, Sym right) const {
       record.aliasOnly = true;
       out.release = record;
     }
-    out.raw = a.raw || b.raw;
-    out.rawSome = a.rawSome || b.rawSome;
+    // RFC 0033 §2: raw is a must fact. A raw value merged with another is
+    // raw only on some paths: its accesses are unresolved, never an error.
+    out.raw = a.raw && b.raw;
+    out.rawSome = a.rawSome || b.rawSome || a.raw != b.raw;
     out.rawAt = a.raw ? a.rawAt : b.rawAt;
     out.rawOrigin = a.raw ? a.rawOrigin : b.rawOrigin;
     out.rawFrom = a.raw ? a.rawFrom : b.rawFrom;
     out.rawVia = a.raw ? a.rawVia : b.rawVia;
-    out.rawCast = a.rawCast || b.rawCast;
+    out.rawCast = a.rawCast || b.rawCast || a.raw != b.raw;
     out.uninit = a.uninit && b.uninit;
     out.mayUninit = a.uninit || b.uninit || a.mayUninit || b.mayUninit;
     out.nullJoined = joinsNull(a, b);
@@ -2542,13 +2544,14 @@ private:
         record.allPaths = false;
         joined.release = record;
       }
-      joined.raw = a->raw || b->raw;
-      joined.rawSome = a->rawSome || b->rawSome;
+      // RFC 0033 §2: as in `mergeWeak`.
+      joined.raw = a->raw && b->raw;
+      joined.rawSome = a->rawSome || b->rawSome || a->raw != b->raw;
       joined.rawAt = a->raw ? a->rawAt : b->rawAt;
       joined.rawOrigin = a->raw ? a->rawOrigin : b->rawOrigin;
       joined.rawFrom = a->raw ? a->rawFrom : b->rawFrom;
       joined.rawVia = a->raw ? a->rawVia : b->rawVia;
-      joined.rawCast = a->rawCast || b->rawCast;
+      joined.rawCast = a->rawCast || b->rawCast || a->raw != b->raw;
       if (a->shares && b->shares && *a->shares == *b->shares)
         joined.shares = a->shares;
       joined.uninit = a->uninit && b->uninit;

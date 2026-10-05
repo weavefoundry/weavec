@@ -238,11 +238,23 @@ void UnitRun::inferInvariants(
     refuted.clear();
     witnessed.clear();
     for (const FunctionDecl *fn : writers) {
+      // (Every candidate refuted: the rest of the round decides nothing.)
+      if (refuted.size() == standing.size())
+        break;
       FunctionRun run(*this, *fn, discarding, RunMode::Summary);
       run.checkingInvariants = true;
       (void)run.run();
     }
     settled = refuted.empty();
+    // A witness is a value the writer stored itself; with fewer
+    // candidates assumed a later round finds no more of them, so a round
+    // that witnesses none it keeps decides that none stands.
+    if (std::ranges::none_of(standing, [&](const ResolvedCandidate *c) {
+          return witnessed.contains(c) && !refuted.contains(c);
+        })) {
+      standing.clear();
+      break;
+    }
     std::erase_if(standing, [&](const ResolvedCandidate *candidate) {
       return refuted.contains(candidate);
     });
