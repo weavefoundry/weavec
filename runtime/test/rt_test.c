@@ -496,20 +496,26 @@ static void testLargeObject(void) {
  * unnamed storage) has the whole granule, and is still found from its
  * middle; one that nothing shares has it exact. */
 static void testLoosePartial(void) {
-  static char shared[24] __attribute__((aligned(16)));
+  /* Two whole granules of its own, whatever the linker puts after it. */
+  static struct {
+    char object[24];
+    char rest[8];
+  } block __attribute__((aligned(16)));
+  char *const shared = block.object;
   if (!weavecRtShadowReady())
     return;
-  weavecRtShadowObject((uintptr_t)shared, sizeof shared, 0);
+  weavecRtShadowClear((uintptr_t)&block, (uintptr_t)&block + sizeof block);
+  weavecRtShadowObject((uintptr_t)shared, sizeof block.object, 0);
   CHECK(*weavecRtShadowOf((uintptr_t)shared) == WeavecRtShadowObjectRun + 1);
   CHECK(*weavecRtShadowOf((uintptr_t)shared + 16) ==
         WeavecRtShadowObjectLast + 16);
   CHECK(__weavec_rt_find(shared + 20).base == (uintptr_t)shared);
   CHECK(guardByte(shared, 31) == 0);
-  weavecRtShadowClear((uintptr_t)shared, (uintptr_t)shared + sizeof shared);
-  weavecRtShadowObject((uintptr_t)shared, sizeof shared, 1);
+  weavecRtShadowClear((uintptr_t)&block, (uintptr_t)&block + sizeof block);
+  weavecRtShadowObject((uintptr_t)shared, sizeof block.object, 1);
   CHECK(*weavecRtShadowOf((uintptr_t)shared + 16) ==
         WeavecRtShadowObjectLast + 8);
-  weavecRtShadowClear((uintptr_t)shared, (uintptr_t)shared + sizeof shared);
+  weavecRtShadowClear((uintptr_t)&block, (uintptr_t)&block + sizeof block);
 }
 
 static jmp_buf jump;

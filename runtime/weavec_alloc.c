@@ -693,10 +693,13 @@ static void *nextRealloc(void *p, size_t size) {
 
 static size_t nextSize(const void *p) {
   size_t (*usable)(void *) = (size_t (*)(void *))nextSymbol("malloc_usable_size");
-  /* The runtime's own definition is the first in lookup order when it
-   * interposes, and it would ask again. */
+  /* With libweavec_alloc.a linked, the runtime's own definition may be the
+   * first in lookup order, and it would ask again; without it, the first is
+   * the C library's, which answers. */
   extern size_t malloc_usable_size(void *) __attribute__((weak));
-  if (usable == NULL || usable == malloc_usable_size)
+  extern const char __weavec_alloc_linked __attribute__((weak));
+  if (usable == NULL ||
+      (&__weavec_alloc_linked != NULL && usable == malloc_usable_size))
     return 0;
   return usable((void *)(uintptr_t)p);
 }

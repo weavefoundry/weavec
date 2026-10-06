@@ -926,9 +926,9 @@ static bool builtByWeaveC(const std::string &path) {
       llvm::raw_svector_ostream stream(name);
       if (llvm::errorToBool(symbol.printName(stream)))
         continue;
-      llvm::StringRef text = name;
-      text.consume_front("_");
-      if (text.starts_with("__weavec_"))
+      // (Mach-O spells C names with one more leading underscore.)
+      const llvm::StringRef text = name;
+      if (text.starts_with("__weavec_") || text.starts_with("___weavec_"))
         return true;
     }
     return false;
