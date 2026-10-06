@@ -33,7 +33,9 @@
 // the frames a `longjmp` abandoned are dropped. A function with automatic
 // objects the plan does not register (compound literals, `alloca`) enters
 // its objects *loose*: the address one past such an object may be the start
-// of an unknown one.
+// of an unknown one. So does a function that calls such a function directly
+// (or through others) unless it is `noinline`: once inlined, the callee's
+// storage lies in the caller's frame.
 //
 // Global objects are the variables of static storage duration the unit
 // defines (file-scope and static locals, tentative definitions included),

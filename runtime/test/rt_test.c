@@ -481,7 +481,7 @@ static void testLargeObject(void) {
   struct __weavec_rt_found found;
   if (!weavecRtShadowReady())
     return;
-  weavecRtShadowObject((uintptr_t)big, sizeof big, 0);
+  weavecRtShadowObject((uintptr_t)big, sizeof big, 1);
   found = __weavec_rt_find(big + 700001);
   CHECK(found.state == WeavecRtTrackedLive);
   CHECK(found.base == (uintptr_t)big);
@@ -490,6 +490,26 @@ static void testLargeObject(void) {
   CHECK(guardByte(big, (long long)sizeof big - 1) == 0);
   CHECK(guardByte(big, (long long)sizeof big) != 0);
   weavecRtShadowClear((uintptr_t)big, (uintptr_t)big + sizeof big);
+}
+
+/* An object whose last granule unknown storage may share (a frame with
+ * unnamed storage) has the whole granule, and is still found from its
+ * middle; one that nothing shares has it exact. */
+static void testLoosePartial(void) {
+  static char shared[24] __attribute__((aligned(16)));
+  if (!weavecRtShadowReady())
+    return;
+  weavecRtShadowObject((uintptr_t)shared, sizeof shared, 0);
+  CHECK(*weavecRtShadowOf((uintptr_t)shared) == WeavecRtShadowObjectRun + 1);
+  CHECK(*weavecRtShadowOf((uintptr_t)shared + 16) ==
+        WeavecRtShadowObjectLast + 16);
+  CHECK(__weavec_rt_find(shared + 20).base == (uintptr_t)shared);
+  CHECK(guardByte(shared, 31) == 0);
+  weavecRtShadowClear((uintptr_t)shared, (uintptr_t)shared + sizeof shared);
+  weavecRtShadowObject((uintptr_t)shared, sizeof shared, 1);
+  CHECK(*weavecRtShadowOf((uintptr_t)shared + 16) ==
+        WeavecRtShadowObjectLast + 8);
+  weavecRtShadowClear((uintptr_t)shared, (uintptr_t)shared + sizeof shared);
 }
 
 static jmp_buf jump;
@@ -675,6 +695,7 @@ static const struct {
     {"mixed-neighbours", testMixedNeighbours},
     {"shadow-clear", testShadowClear},
     {"large-object", testLargeObject},
+    {"loose-partial", testLoosePartial},
     {"longjmp", testLongjmp},
     {"deep-stack", testDeepStack},
     {"globals", testGlobals},

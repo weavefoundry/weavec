@@ -182,6 +182,20 @@ static inline uintptr_t regionStart(unsigned region) {
 
 /*===-- The shadow (RFC 0034, section 2) -----------------------------------===*/
 
+/* Whether a core dump includes [p, p + bytes). The shadow and the arena's
+ * reservations are terabytes a dump would otherwise walk page by page (and,
+ * piped to a crash handler, write out as zeros): a trapping program would
+ * not end. What the arena has committed is dumped. */
+static void dumpable(void *p, size_t bytes, int dump) {
+#if defined(MADV_DONTDUMP)
+  (void)madvise(p, bytes, dump ? MADV_DODUMP : MADV_DONTDUMP);
+#else
+  (void)p;
+  (void)bytes;
+  (void)dump;
+#endif
+}
+
 /* Reserves the shadow of the address space: 2^48 bytes of it where the
  * system allows, else 2^47, 2^44 (39-bit address spaces are 2^35). Pages no
  * allocation wrote read 0, which no live arena object's bytes are. */
@@ -194,6 +208,7 @@ static void reserveShadow(void) {
                      MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
     if (map == MAP_FAILED)
       continue;
+    dumpable(map, bytes + 64, 0);
     __atomic_store_n(&__weavec_rt_heap.shadow, (uintptr_t)map,
                      __ATOMIC_RELEASE);
     /* Published last: until then every guard asks the runtime. */
@@ -253,6 +268,7 @@ static int reserve(unsigned shift) {
              MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
   if (map == MAP_FAILED)
     return 0;
+  dumpable(map, total, 0);
   /* Regions start at multiples of their size, so that the slots of a
    * power-of-two class are aligned to it. */
   start = ((uintptr_t)map + align - 1) & ~(align - 1);
@@ -312,6 +328,7 @@ static int commit(uintptr_t start, uintptr_t *committed, uintptr_t end,
   if (mprotect((void *)(start + *committed), target - *committed,
                PROT_READ | PROT_WRITE) != 0)
     return 0;
+  dumpable((void *)(start + *committed), target - *committed, 1);
   *committed = target;
   return 1;
 }
@@ -851,6 +868,7 @@ void weavecRtShadowZero(unsigned char *start, size_t bytes) {
     memset(start, 0, bytes);
     return;
   }
+  dumpable((void *)first, last - first, 0);
   memset(start, 0, first - (uintptr_t)start);
   memset((void *)last, 0, (uintptr_t)start + bytes - last);
 }

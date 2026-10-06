@@ -356,9 +356,11 @@ $A void *__weavec_stack_enter(void *base, __typeof__(sizeof 0) size, int flags) 
     }
     for (; r > 0; --r)
       *at++ = (unsigned char)(0x80 + r);
-    /* A last granule it shares with a live mixed object stays mixed. */
+    /* A last granule it shares with a live mixed object stays mixed; in a
+     * frame with unnamed storage (flag 1), which may share a last granule
+     * it fills in part, it has the whole granule. */
     if ((size & 15) == 0 || *at != 0xFC)
-      *at = (unsigned char)(0x40 + ((unsigned long long)size - 16 * (n - 1)));
+      *at = (unsigned char)(0x40 + ((flags & 1) != 0 ? 16 : (unsigned long long)size - 16 * (n - 1)));
     /* One past it belongs to it: an untracked granule after it says so,
      * unless the frame has unnamed storage (flag 1), which may start there. */
     if ((size & 15) == 0 && (flags & 1) == 0 && at[1] == 0)

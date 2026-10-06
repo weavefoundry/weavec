@@ -166,15 +166,17 @@ static inline void weavecRtShadowFill(uintptr_t base, size_t size,
 }
 
 /* A live stack or global object of `size` bytes at `base`: exactly when it
- * starts on a granule, else `Mixed` over its granules and the next. An
- * untracked granule after it (`onePast`: a global's padding, or the next
- * granule of a frame with no unnamed storage) says that an address one
- * past it belongs to it. The
+ * starts on a granule, else `Mixed` over its granules and the next. When no
+ * storage the runtime does not know can follow it (`known`: a global's
+ * padding, a frame with no unnamed storage), an untracked granule after it
+ * says that an address one past it belongs to it; otherwise it has the
+ * whole of a last granule it fills only in part, since unknown storage may
+ * share it. The
  * granule after it may start a live exactly encoded neighbour, whose bytes
  * stay (its leave walks them); one past the end of this one then reads as
  * the neighbour's, as with two exact objects. */
 static inline void weavecRtShadowObject(uintptr_t base, size_t size,
-                                        int onePast) {
+                                        int known) {
   uintptr_t g;
   if (!weavecRtShadowReady() || size == 0)
     return;
@@ -202,8 +204,9 @@ static inline void weavecRtShadowObject(uintptr_t base, size_t size,
     if ((size & 15) == 0 ||
         *weavecRtShadowOf(base + ((n - 1) << 4)) != WeavecRtShadowMixed)
       *weavecRtShadowOf(base + ((n - 1) << 4)) =
-          (unsigned char)(WeavecRtShadowObjectLast + (size - ((n - 1) << 4)));
-    if (onePast && (size & 15) == 0 && *weavecRtShadowOf(base + (n << 4)) == 0)
+          (unsigned char)(WeavecRtShadowObjectLast +
+                          (known ? size - ((n - 1) << 4) : 16));
+    if (known && (size & 15) == 0 && *weavecRtShadowOf(base + (n << 4)) == 0)
       *weavecRtShadowOf(base + (n << 4)) = WeavecRtShadowOnePast;
     return;
   }

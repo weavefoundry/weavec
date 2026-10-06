@@ -96,6 +96,8 @@ public:
   llvm::SmallVector<const clang::VarDecl *, 4> statics;
   /// A compound literal or an `alloca`: automatic storage with no name.
   bool unnamedStorage = false;
+  /// The functions called directly that may be inlined here.
+  llvm::SmallVector<const clang::FunctionDecl *, 8> inlinable;
   /// A label: a backward `goto` can run a declaration again.
   bool labels = false;
 
@@ -178,6 +180,8 @@ public:
     if (const clang::FunctionDecl *callee = call->getDirectCallee();
         callee != nullptr && analysis::isReturnsTwice(*callee, library))
       returnsTwice.push_back(call);
+    else if (callee != nullptr && !callee->hasAttr<clang::NoInlineAttr>())
+      inlinable.push_back(callee->getCanonicalDecl());
     return true;
   }
   // NOLINTEND(readability-identifier-naming,bugprone-derived-method-shadowing-base-method)
@@ -346,6 +350,12 @@ ObjectPlan planObjects(clang::ASTContext &context,
       plan.globals.push_back(definition);
   };
 
+  // Functions with automatic storage the plan does not enter, and the
+  // functions each one calls that may be inlined into it.
+  llvm::DenseSet<const clang::FunctionDecl *> looseFunctions;
+  llvm::DenseMap<const clang::FunctionDecl *,
+                 llvm::SmallVector<const clang::FunctionDecl *, 8>>
+      inlinableCallees;
   for (const analysis::SiteIndex::FunctionSites &function : sites.functions()) {
     const clang::FunctionDecl *definition = nullptr;
     if (function.decl == nullptr || !function.decl->hasBody(definition) ||
@@ -357,13 +367,17 @@ ObjectPlan planObjects(clang::ASTContext &context,
       addGlobal(*variable);
     if (!options.stack)
       continue;
+    const clang::FunctionDecl *canonical = definition->getCanonicalDecl();
+    inlinableCallees[canonical] = std::move(walker.inlinable);
     for (const clang::CallExpr *call : walker.returnsTwice)
       plan.rewinds.push_back(
           ReturnsTwiceCall{.call = call, .function = definition});
     // A `longjmp` back into this function skips the cleanups of the scopes
     // it leaves, so nothing here is entered (§4.3).
-    if (!walker.returnsTwice.empty() || function.callsSetjmp)
+    if (!walker.returnsTwice.empty() || function.callsSetjmp) {
+      looseFunctions.insert(canonical);
       continue;
+    }
     bool loose = walker.unnamedStorage;
     // A declaration a jump bypasses does not run its registration either:
     // the local is automatic storage the list does not know.
@@ -408,7 +422,25 @@ ObjectPlan planObjects(clang::ASTContext &context,
                                        .loose = loose,
                                        .scoped = scoped});
     }
+    if (loose)
+      looseFunctions.insert(canonical);
   }
+  // Inlined, a callee's storage lies in its caller's frame: a function that
+  // calls a loose one, directly or through others, enters its objects loose.
+  for (bool grew = true; grew;) {
+    grew = false;
+    for (const auto &[caller, callees] : inlinableCallees)
+      if (!looseFunctions.contains(caller) &&
+          llvm::any_of(callees, [&](const clang::FunctionDecl *callee) {
+            return looseFunctions.contains(callee);
+          })) {
+        looseFunctions.insert(caller);
+        grew = true;
+      }
+  }
+  for (StackObject &object : plan.stack)
+    object.loose = object.loose ||
+                   looseFunctions.contains(object.function->getCanonicalDecl());
 
   if (options.globals) {
     const clang::SourceManager &sm = context.getSourceManager();

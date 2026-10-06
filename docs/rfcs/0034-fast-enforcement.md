@@ -991,6 +991,30 @@ disagree, the amendment holds.
       a leave clears a run byte's least run at once (6.3 seconds; most of
       what remains is the zero-initialisation of the arrays, RFC 0033).
 
+19. **What Linux found (§2, §4).** The gates were measured on darwin-arm64;
+    the first Linux CI run found two more faults:
+    - **A trapping program did not end where core dumps are on.** The
+      shadow (2^44 bytes) and the arena's reservations are anonymous
+      mappings a dump walks page by page, and a dump piped to a crash
+      handler (Ubuntu's apport) writes them out as zeros: every bug case
+      timed out. The runtime marks the shadow, the arena's reservation and
+      the shadow it remaps excluded from core dumps (`MADV_DONTDUMP` where
+      the system has it) and includes again each part of the arena it
+      commits, so a dump keeps the heap. A trapping case's dump on Linux
+      went from 17.6 TB (sparse; 100 seconds) to 8 MB (3 milliseconds).
+    - **Unnamed storage an inlined callee lays in its caller's frame.** On
+      linux-arm64 a compound literal of an inlined callee shared the last
+      granule of an 8-byte local, whose exact encoding then made the
+      literal's read trap (`semantics/runtime/stack-inlined-literal_ok.c`).
+      A function now enters its objects loose when it calls, directly or
+      through others, a function of the unit that may be inlined (not
+      `noinline`) and is loose itself or registers nothing for a
+      returns-twice call; and a loose object has the whole of a last
+      granule it fills only in part (`0x40 + 16`), so storage sharing it
+      reads as inside the object and lookups from the shadow still find
+      the object's end. An overflow into the rest of that granule is not
+      caught in such a frame.
+
 ## Drawbacks
 
 - **A pass in the backend.** WeaveC's checks have been C that any Clang
