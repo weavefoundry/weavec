@@ -549,9 +549,9 @@ void Transfer::decideArguments(const CallExpr &call, const SiteInfo &site,
         std::optional<CheckWitness> lowered;
         if (haveTerm && needTerm && !requirement.rowOnly)
           lowered = CheckWitness{.shape = CheckWitness::Shape::Length,
-                                 .extent = *haveTerm,
+                                 .extent = haveTerm,
                                  .extentClass = extent->cls,
-                                 .need = *needTerm,
+                                 .need = needTerm,
                                  .unmodified = true,
                                  .accessesSafe = true};
         else
