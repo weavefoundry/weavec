@@ -1351,8 +1351,8 @@
     },
     "linux-x86_64": {
       "machine": "linux-x86_64 AMD EPYC 7763 64-Core Processor x4",
-      "producer": "weavec-cc version 0.13.0-dev (7fa8250197ab)",
-      "updated": "2026-10-04",
+      "producer": "weavec-cc version 0.14.0-dev (a8e5c2350f90)",
+      "updated": "2026-10-05",
       "configs": {
         "cJSON-program": {
           "units": {
@@ -1362,18 +1362,18 @@
               "sites": 1709,
               "proven": 2630,
               "checked": 119,
-              "guarded": 659,
+              "guarded": 664,
               "violation": 0,
-              "unresolved": 235,
+              "unresolved": 230,
               "trusted": 18
             },
             "unresolvedShare": {
-              "spatialNull": 0.0156,
+              "spatialNull": 0.0131,
               "temporal": 0.1219
             },
-            "cpuSeconds": 3.74,
+            "cpuSeconds": 3.8,
             "workCounters": {
-              "blockTransfers": 12886,
+              "blockTransfers": 13153,
               "functions": 151,
               "sites": 1709
             }
@@ -1385,16 +1385,16 @@
               "sites": 1709,
               "proven": 2697,
               "checked": 111,
-              "guarded": 670,
+              "guarded": 677,
               "violation": 0,
-              "unresolved": 169,
+              "unresolved": 162,
               "trusted": 18
             },
             "unresolvedShare": {
-              "spatialNull": 0.0186,
+              "spatialNull": 0.0151,
               "temporal": 0.0789
             },
-            "cpuSeconds": 6.48,
+            "cpuSeconds": 8.51,
             "workCounters": {
               "blockTransfers": 25181,
               "functions": 151,
@@ -1410,41 +1410,41 @@
               "sites": 2337,
               "proven": 2800,
               "checked": 199,
-              "guarded": 628,
+              "guarded": 629,
               "violation": 0,
-              "unresolved": 694,
+              "unresolved": 693,
               "trusted": 16
             },
             "unresolvedShare": {
-              "spatialNull": 0.0428,
+              "spatialNull": 0.0423,
               "temporal": 0.2802
             },
-            "cpuSeconds": 3.46,
+            "cpuSeconds": 3.48,
             "workCounters": {
-              "blockTransfers": 13536,
+              "blockTransfers": 16152,
               "functions": 236,
               "sites": 2337
             }
           },
           "program": {
             "errors": 0,
-            "warnings": 38,
+            "warnings": 33,
             "ledger": {
               "sites": 2337,
               "proven": 3071,
               "checked": 206,
-              "guarded": 555,
+              "guarded": 556,
               "violation": 0,
-              "unresolved": 549,
+              "unresolved": 548,
               "trusted": 12
             },
             "unresolvedShare": {
-              "spatialNull": 0.0631,
+              "spatialNull": 0.0626,
               "temporal": 0.1901
             },
-            "cpuSeconds": 11.51,
+            "cpuSeconds": 16.09,
             "workCounters": {
-              "blockTransfers": 59075,
+              "blockTransfers": 58323,
               "functions": 236,
               "sites": 2337
             }
@@ -1458,18 +1458,18 @@
               "sites": 1146,
               "proven": 1869,
               "checked": 134,
-              "guarded": 288,
+              "guarded": 290,
               "violation": 0,
-              "unresolved": 85,
+              "unresolved": 83,
               "trusted": 13
             },
             "unresolvedShare": {
-              "spatialNull": 0.0138,
+              "spatialNull": 0.0124,
               "temporal": 0.0652
             },
-            "cpuSeconds": 0.99,
+            "cpuSeconds": 0.92,
             "workCounters": {
-              "blockTransfers": 4083,
+              "blockTransfers": 4509,
               "functions": 88,
               "sites": 1146
             }
@@ -1481,18 +1481,18 @@
               "sites": 1146,
               "proven": 1888,
               "checked": 135,
-              "guarded": 284,
+              "guarded": 286,
               "violation": 0,
-              "unresolved": 74,
+              "unresolved": 72,
               "trusted": 13
             },
             "unresolvedShare": {
-              "spatialNull": 0.0174,
+              "spatialNull": 0.0159,
               "temporal": 0.0494
             },
-            "cpuSeconds": 2.45,
+            "cpuSeconds": 2.59,
             "workCounters": {
-              "blockTransfers": 12759,
+              "blockTransfers": 12719,
               "functions": 88,
               "sites": 1146
             }
@@ -1517,7 +1517,7 @@
             },
             "cpuSeconds": 0.12,
             "workCounters": {
-              "blockTransfers": 500,
+              "blockTransfers": 718,
               "functions": 12,
               "sites": 74
             }
