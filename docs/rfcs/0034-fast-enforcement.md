@@ -950,13 +950,17 @@ disagree, the amendment holds.
       over budget (G15) and Lua without the runtime ran 1.47 times slower.
     - **F6 recorded.** On the 48 blind programs of `test/cases/detection-blind/`,
       written after the first set by an author who had not seen it, the
-      default build stops 41 and ASan (`-O1`) 44, with no false stop on a
-      twin. WeaveC alone stops 2 (an intra-object overflow, a negative index
-      past ASan's red zone); ASan alone 5: three stack uses after return
-      (RFC 0032 leaves a dead frame's objects untracked; ASan sees them only
-      through inlining), a use after free through a borrowed reference at a
-      call boundary whose liveness is not guarded, and a never-set pointer
-      that zero-initialisation makes null (and free(NULL) harmless).
+      default build stops 40 and ASan (`-O1`) 44, with no false stop on a
+      twin. WeaveC alone stops 2 (an intra-object overflow, a negative
+      index past ASan's red zone); ASan alone 6: three stack uses after
+      return and one after scope (RFC 0032 leaves an object untracked once
+      its scope ends; ASan sees the first three only through inlining), a
+      use after free through a borrowed reference at a call boundary whose
+      liveness is not guarded, and a never-set pointer that
+      zero-initialisation makes null (and free(NULL) harmless). The use
+      after scope stops on darwin-arm64 and linux-arm64 only because the
+      dead buffer lies one past a live array there; it is marked a known
+      miss.
     - **F7 not met, carried forward.** Run time over the reference
       compiler's: quickjs 4.00, curl 3.51, brotli 3.27, libdeflate 3.16,
       libgit2 2.84, cmark 2.69, zlib-ng 2.39, lmdb 1.77, janet 1.62, xz

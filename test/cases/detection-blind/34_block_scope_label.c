@@ -34,7 +34,7 @@ static int describe(const struct item *it, char *out, size_t cap)
         snprintf(tmp, sizeof tmp, "item-%d", it->id);
         label = tmp;
     }
-    return snprintf(out, cap, "%s (%u in stock)", label, it->stock); // STOP
+    return snprintf(out, cap, "%s (%u in stock)", label, it->stock); // STOP // MISS: a stack object is untracked once its scope ends (RFC 0032 §4); it stops only where the frame puts the buffer one past a live object (darwin-arm64, linux-arm64)
 }
 
 int main(void)
