@@ -40,7 +40,11 @@ witness rule for definite errors, raw pointers only from `WEAVEC_RAW`, the
 library table's portability rule, guards on the accessed address, the link
 modes (`-fweavec-link=records|analyze|none`), the per-unit budget and unit
 record format 31; its *Implementation amendments* override its body too.
-There is no checked mode.
+Then `0034-fast-enforcement.md`: guards as declared calls the LLVM passes
+lower to inline shadow-memory checks, registration only where a guard can
+reach, definite errors confirmed by a replay, and the work budget; its
+*Implementation amendments* (the shadow encoding as built, among others)
+override its body. There is no checked mode.
 
 ## Before touching the model or the checker
 
@@ -123,7 +127,7 @@ cmake --preset dev && cmake --build --preset dev && ctest --preset dev
 | Change pointer kinds / how annotations become kinds | `lib/Core/PointerKind.cpp`, `lib/Analysis/AttributeReader.cpp`, `lib/Analysis/KindInference*.cpp`; what the engine takes from them: `lib/Analysis/EngineKinds.cpp` |
 | Change which checks are inserted     | `lib/Analysis/CheckPlanner.cpp` (plan), `lib/Frontend/CheckEmitter.cpp` and `Prelude.cpp` (emission) |
 | Change which facets get a guard      | `CheckPlanner::planGuards` in `lib/Analysis/CheckPlanner.cpp` (RFC 0032 §6); the need of a call argument's guard: `objectWitness` in `lib/Analysis/EngineLibrary.cpp`; possible findings dropped on guarded facets: `LedgerAdapter::dropGuardedPossible` |
-| Change the guard helpers / range caches | `lib/Frontend/Prelude.cpp` (`GuardHelpers`, `RuntimeHelpers`, `RuntimeDeclarations`), `lib/Frontend/CheckEmitter.cpp` (`planCache`, `declareCaches`, `isQuietLoop`); oracle tests `test/Emission/runtime-oracle-*.c` |
+| Change the guards' lowering / shadow checks | `lib/Frontend/GuardPasses.cpp` (`GuardCanonicalize`, `GuardMerge`, `GuardExpand`, `GlobalPadding`; RFC 0034 §1), the shadow encoding in `runtime/weavec_rt.h`, the prelude's declarations and stack helpers in `lib/Frontend/Prelude.cpp`; tests `test/Emission/guard-passes-*.c`, `runtime-oracle-*.c` |
 | Change stack / global object registration | `lib/Frontend/ObjectRegistration.cpp` (`planObjects`), `CheckEmitter::registerObjects` |
 | Change the runtime (allocator, object table, guards, reports) | `runtime/weavec_alloc.c`, `weavec_malloc.c`, `weavec_objects.c`, `weavec_report.c`, `weavec_rt.h` (the prelude declares the same entry points); its C test `runtime/test/rt_test.c` (CTest `runtime`); cases in `test/cases/semantics/runtime/` |
 | Change the runtime's link line and fallbacks | `lib/Frontend/Driver.cpp` (`addRuntimeLibraries`, `runtimeObstacle`, `allocatorDefinedBy`, `dropAllocatorIfDefined`); `test/Driver/runtime-*.c` |

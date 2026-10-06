@@ -19,6 +19,8 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
+
 namespace weavec::core {
 
 //===----------------------------------------------------------------------===//
@@ -445,6 +447,19 @@ TEST_F(HeapTest, I3_ReleaseOnBothPathsStaysDefinite) {
             TemporalVerdict::Kind::Violation);
 }
 
+TEST_F(HeapTest, APossibleReleaseIsNeverDefinite) {
+  // RFC 0034 §6.3: `munmap` of a range that may not cover the object.
+  HeapState state;
+  ObjectId holder = local(1);
+  ObjectId block = allocation(2);
+  Sym p = pointsTo(state, block);
+  set(state, holder, p);
+  heap.release(state, p, freed(), /*possibly=*/true);
+  EXPECT_EQ(heap.temporal(state, get(state, holder)).kind,
+            TemporalVerdict::Kind::MayReleased);
+  EXPECT_EQ(state.objects.at(block).life, Life::MayReleased);
+}
+
 //===----------------------------------------------------------------------===//
 // I4: weak cells hold every value
 //===----------------------------------------------------------------------===//
@@ -690,6 +705,47 @@ TEST_F(HeapTest, ElementsAtDistinctIndicesAreApart) {
   Sym same = heap.fresh(state, SymInfo{.type = SymInfo::Type::Int});
   ASSERT_TRUE(state.zone.addEq(same, next, -1));
   EXPECT_EQ(heap.load(state, array, elementAt(same), hint), atI);
+}
+
+TEST_F(HeapTest, AnIntegerCellAnElementMayBeKeepsItsPointerTargets) {
+  // struct { T *kids[4]; int n; }: kids[j] with j bounded only by n may be
+  // n's cell (offset 32). The read stays a pointer to what kids[0] holds
+  // and to any object (RFC 0034 §6.3, a release in a loop left early), so
+  // `free(p->kids[j])` still releases, possibly, what the elements hold.
+  HeapState state;
+  ObjectId panel = allocation(1);
+  heap.ensure(state, panel);
+  ObjectId block = allocation(2);
+  heap.write(state, panel, CellKey{.offset = 0}, pointsTo(state, block), false);
+  Sym count = heap.fresh(state, SymInfo{.type = SymInfo::Type::Int});
+  heap.write(state, panel, CellKey{.offset = 32}, count, false);
+  Sym j = heap.fresh(state, SymInfo{.type = SymInfo::Type::Int});
+  ASSERT_TRUE(state.zone.addRange(j, 0, std::nullopt));
+  Sym kid = heap.load(state, panel, elementAt(j),
+                      SymInfo{.type = SymInfo::Type::Pointer});
+  const SymInfo &value = heap.info(state, kid);
+  ASSERT_EQ(value.type, SymInfo::Type::Pointer);
+  EXPECT_TRUE(value.rawCast);
+  EXPECT_TRUE(std::ranges::any_of(value.targets, [&](const Target &target) {
+    return target.object == block;
+  }));
+  heap.release(state, kid, freed());
+  EXPECT_EQ(state.objects.at(block).life, Life::MayReleased);
+}
+
+TEST_F(HeapTest, AnIntegerInTheSummaryCellLeavesAnElementReadAPointer) {
+  // A loop folded the count `n` into the element position (`kids[*]`): a
+  // pointer read of some element is still a pointer, raw on that side.
+  HeapState state;
+  ObjectId panel = allocation(1);
+  heap.ensure(state, panel);
+  Sym count = heap.fresh(state, SymInfo{.type = SymInfo::Type::Int});
+  heap.write(state, panel, CellKey{.offset = 0, .stride = 8}, count, true);
+  Sym j = heap.fresh(state, SymInfo{.type = SymInfo::Type::Int});
+  Sym kid = heap.load(state, panel, elementAt(j),
+                      SymInfo{.type = SymInfo::Type::Pointer});
+  EXPECT_EQ(heap.info(state, kid).type, SymInfo::Type::Pointer);
+  EXPECT_TRUE(heap.info(state, kid).rawCast);
 }
 
 TEST_F(HeapTest, ReleasedRangeDecidesTheElementsInIt) {
@@ -1067,6 +1123,27 @@ TEST_F(HeapTest, AnOperationBothPathsComputeSurvivesTheJoin) {
   EXPECT_EQ(value.defined->op, IntegerOp::Multiply);
   EXPECT_EQ(value.defined->left, get(joined, count));
   EXPECT_EQ(value.defined->constant, 4);
+}
+
+TEST_F(HeapTest, AJoinKeepsTheConstantsBothSidesExclude) {
+  // RFC 0034 §6.2: `t` is not 1 on either side, and not 3 on the left; on
+  // the right its bounds leave 5 out, which the left excludes.
+  ObjectId holder = local(1, "t");
+  HeapState before;
+  Sym t = heap.fresh(before, SymInfo{.type = SymInfo::Type::Int});
+  set(before, holder, t);
+  HeapState left = before;
+  HeapState right = before;
+  heap.infoMut(left, t).excluded = {1, 3, 5};
+  heap.infoMut(right, t).excluded = {1};
+  ASSERT_TRUE(right.zone.addRange(t, 0, 4));
+  HeapState joined = heap.join(left, right, 9);
+  EXPECT_EQ(heap.info(joined, get(joined, holder)).excluded,
+            (std::vector<std::int64_t>{1, 5}));
+  // A side that excludes nothing keeps nothing.
+  HeapState joinedAgain = heap.join(joined, before, 9);
+  EXPECT_TRUE(
+      heap.info(joinedAgain, get(joinedAgain, holder)).excluded.empty());
 }
 
 } // namespace weavec::core

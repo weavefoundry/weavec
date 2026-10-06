@@ -25,13 +25,17 @@
 // variables of automatic storage, parameters included, whose address is
 // taken, or which are (or hold) an array that decays to a pointer anywhere
 // but as the base of a subscript. A local that is only read, written and
-// subscripted directly is never looked up and is not registered. A function
+// subscripted directly is never looked up and is not registered, and
+// neither is one whose address is only an argument of library calls that
+// take no callback and guard none of their arguments (RFC 0034 §4). A function
 // that calls a returns-twice function registers none (a `longjmp` skips the
 // cleanups) and has each such call wrapped instead, so that the entries of
 // the frames a `longjmp` abandoned are dropped. A function with automatic
 // objects the plan does not register (compound literals, `alloca`) enters
 // its objects *loose*: the address one past such an object may be the start
-// of an unknown one.
+// of an unknown one. So does a function that calls such a function directly
+// (or through others) unless it is `noinline`: once inlined, the callee's
+// storage lies in the caller's frame.
 //
 // Global objects are the variables of static storage duration the unit
 // defines (file-scope and static locals, tentative definitions included),
@@ -60,6 +64,7 @@ class SiteIndex;
 
 namespace weavec::core {
 class LibrarySpec;
+struct CheckPlan;
 } // namespace weavec::core
 
 namespace weavec::frontend {
@@ -73,14 +78,13 @@ struct ObjectOptions {
 
 /// One escaping local.
 struct StackObject {
-  /// Null for the marker of a function that has unregistered automatic
-  /// storage and nothing to enter: its guard variable is entered itself.
   const clang::VarDecl *variable = nullptr;
   /// The declaration statement that declares it; null for a parameter,
   /// which is entered at the start of the body.
   const clang::DeclStmt *statement = nullptr;
   const clang::FunctionDecl *function = nullptr;
-  /// The function has automatic objects that are not registered.
+  /// The function has automatic objects that are not registered (an
+  /// `alloca`, a compound literal): one may start at this one's end.
   bool loose = false;
   /// Declared in a nested scope of the function: it may leave scope, and
   /// its storage be reused, while the function runs (RFC 0032 §13).
@@ -108,10 +112,12 @@ struct ObjectPlan {
 
 /// Plans the registrations of the unit: the escaping locals and the
 /// returns-twice calls of the functions `sites` holds (the emitted ones),
-/// and the globals the unit defines.
+/// and the globals the unit defines. `checks` (may be null: every library
+/// argument then counts as guarded) says which calls guard their arguments.
 [[nodiscard]] ObjectPlan planObjects(clang::ASTContext &context,
                                      const analysis::SiteIndex &sites,
                                      const core::LibrarySpec &library,
+                                     const core::CheckPlan *checks,
                                      const ObjectOptions &options = {});
 
 } // namespace weavec::frontend

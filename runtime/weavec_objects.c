@@ -79,6 +79,7 @@ static void readStackBounds(StackList *list) {
   list->entries = list->inlineEntries;
   list->capacity = InlineEntries;
   list->ready = 1;
+  (void)weavecRtInitialise();
 #if defined(__APPLE__)
   {
     const uintptr_t top = (uintptr_t)pthread_get_stackaddr_np(self);
@@ -104,6 +105,11 @@ static void readStackBounds(StackList *list) {
 #else
   (void)self;
 #endif
+  /* RFC 0034, section 2.1: a thread's stack may be an exited thread's,
+   * whose objects a `pthread_exit` or `longjmp` left in the shadow. Below
+   * the calling frame nothing is live yet. */
+  if (list->low != 0)
+    weavecRtShadowClear(list->low, (uintptr_t)__builtin_frame_address(0));
 }
 
 static inline StackList *threadList(void) {
@@ -144,16 +150,28 @@ static int growStackList(StackList *list) {
   return 1;
 }
 
+/* Drops the entries from `count` on, and their shadow tags. */
+static inline void truncateList(StackList *list, size_t count) {
+  while (list->count > count) {
+    const StackEntry *entry = &list->entries[--list->count];
+    weavecRtShadowForget(entry->base, entry->size);
+  }
+}
+
 /* Drops the entries of frames deeper than `frame`: those frames are gone. */
 static inline void dropDeeper(StackList *list, uintptr_t frame) {
-  while (list->count != 0 && list->entries[list->count - 1].frame < frame)
-    --list->count;
+  size_t count = list->count;
+  while (count != 0 && list->entries[count - 1].frame < frame)
+    --count;
+  truncateList(list, count);
 }
 
 void *__weavec_rt_stack_enter(void *base, size_t size, void *framePointer,
                               int flags) {
   WEAVEC_RT_FORWARD(stackEnter, base, size, framePointer, flags);
   StackList *list = threadList();
+  if (__builtin_expect(!weavecRtShadowReady(), 0))
+    (void)weavecRtInitialise();
   const uintptr_t frame = (uintptr_t)framePointer;
   const uintptr_t start = (uintptr_t)base;
   size_t i;
@@ -166,6 +184,7 @@ void *__weavec_rt_stack_enter(void *base, size_t size, void *framePointer,
   for (i = list->count; i-- > 0 && list->entries[i].frame == frame;) {
     const StackEntry *entry = &list->entries[i];
     if (entry->base < start + size && start < entry->base + entry->size) {
+      weavecRtShadowForget(entry->base, entry->size);
       memmove(&list->entries[i], &list->entries[i + 1],
               (list->count - i - 1) * sizeof(StackEntry));
       --list->count;
@@ -179,6 +198,7 @@ void *__weavec_rt_stack_enter(void *base, size_t size, void *framePointer,
   list->entries[list->count].frame = frame;
   list->entries[list->count].flags = flags;
   ++list->count;
+  weavecRtShadowObject(start, size, (flags & WeavecRtLoose) == 0);
   return base;
 }
 
@@ -191,14 +211,22 @@ void __weavec_rt_stack_leave(void *base, void *framePointer) {
   for (i = list->count; i-- > 0 && list->entries[i].frame == frame;)
     if (list->entries[i].base == (uintptr_t)base) {
       /* It and whatever was declared after it in the frame. */
-      list->count = i;
+      truncateList(list, i);
       return;
     }
 }
 
 void __weavec_rt_stack_rewind(void *frame) {
+  StackList *list;
   WEAVEC_RT_FORWARD_VOID(stackRewind, frame);
-  dropDeeper(threadList(), (uintptr_t)frame);
+  list = threadList();
+  dropDeeper(list, (uintptr_t)frame);
+  /* The frames a `longjmp` abandoned lie below `frame`, whose function
+   * registers nothing (it calls setjmp); the objects the compiler entered
+   * inline there are only in the shadow (RFC 0034, section 4). */
+  if (list->low != 0 && (uintptr_t)frame > list->low &&
+      (uintptr_t)frame <= list->high)
+    weavecRtShadowClear(list->low, (uintptr_t)frame);
 }
 
 /* Whether the frame has automatic storage the list does not know: any of
@@ -359,6 +387,8 @@ void __weavec_rt_globals_add(const void *const *begin, const void *const *end) {
   size_t kept = 0;
   if (begin == NULL || pairs == 0)
     return;
+  /* The shadow first: the globals' tags go there (RFC 0034, section 2.1). */
+  (void)weavecRtInitialise();
   weavecRtLock(&globalsLock);
   table = globalTable;
   count = table != NULL ? table->count : 0;
@@ -414,8 +444,9 @@ void __weavec_rt_globals_add(const void *const *begin, const void *const *end) {
     table->entries[kept++] = table->entries[i];
   }
   table->count = kept;
-  if (fresh != 0)
-    weavecRtBumpEpoch();
+  /* RFC 0034, section 2.1. */
+  for (i = 0; i < kept; ++i)
+    weavecRtShadowObject(table->entries[i].base, table->entries[i].size, 1);
   __atomic_store_n(&globalsSequence, globalsSequence + 1, __ATOMIC_RELEASE);
   weavecRtUnlock(&globalsLock);
 }
@@ -490,34 +521,43 @@ static int findGlobal(uintptr_t address, struct __weavec_rt_found *found) {
   return 1;
 }
 
-/* The gap between the global objects around an untracked address. */
-static void globalGap(uintptr_t address, uintptr_t *low, uintptr_t *high) {
-  GlobalEntry below;
-  GlobalEntry above;
-  if (address < __atomic_load_n(&globalsLow, __ATOMIC_RELAXED) ||
-      address >= __atomic_load_n(&globalsHigh, __ATOMIC_RELAXED)) {
-    /* Outside the table: only its near end can cut the range. */
-    const uintptr_t tableLow = __atomic_load_n(&globalsLow, __ATOMIC_RELAXED);
-    const uintptr_t tableHigh = __atomic_load_n(&globalsHigh, __ATOMIC_RELAXED);
-    if (tableLow > address && tableLow < *high)
-      *high = tableLow;
-    if (tableHigh <= address && tableHigh > *low)
-      *low = tableHigh;
-    return;
-  }
-  if (!globalsAround(address, &below, &above)) {
-    /* No range is known to be untracked. */
-    *low = *high = address;
-    return;
-  }
-  /* The address is in neither. */
-  if (below.base != 0 && below.base + below.size > *low)
-    *low = below.base + below.size;
-  if (above.base != 0 && above.base < *high)
-    *high = above.base;
-}
-
 /*===-- Lookup --------------------------------------------------------------===*/
+
+/* RFC 0034, section 4: a stack or global object the shadow encodes exactly
+ * (the compiler entered it inline, or a global on a granule). An address
+ * one past its end, where no other object starts, still belongs to it. */
+static int findExact(uintptr_t address, struct __weavec_rt_found *found) {
+  uintptr_t end = weavecRtShadowObjectEnd(address);
+  uintptr_t first;
+  if (end == 0 && address != 0) {
+    end = weavecRtShadowObjectEnd(address - 1);
+    if (end != address)
+      return 0;
+    address -= 1;
+  }
+  if (end == 0)
+    return 0;
+  /* Back to its first granule (the slow path only): the granules with its
+   * end are one run, found by doubling steps back and then halving them. */
+  first = address >> 4;
+  {
+    uintptr_t step = 1;
+    while (step <= first &&
+           weavecRtShadowObjectEnd((first - step) << 4) == end) {
+      first -= step;
+      step <<= 1;
+    }
+    for (; step != 0; step >>= 1)
+      if (step <= first &&
+          weavecRtShadowObjectEnd((first - step) << 4) == end)
+        first -= step;
+  }
+  found->state = WeavecRtTrackedLive;
+  found->kind = WeavecRtStack;
+  found->base = first << 4;
+  found->size = end - (first << 4);
+  return 1;
+}
 
 struct __weavec_rt_found weavecRtFindStackOrGlobal(const void *p) {
   struct __weavec_rt_found found;
@@ -529,37 +569,109 @@ struct __weavec_rt_found weavecRtFindStackOrGlobal(const void *p) {
   found.scoped = 0;
   found.word = NULL;
   found.value = 0;
-  if (findStack((uintptr_t)p, &found))
-    weavecRtCount(WeavecRtStatStackLookups);
-  else if (findGlobal((uintptr_t)p, &found))
+  /* (The globals' table first: decoding a large global's start from the
+   * shadow walks it backwards.) */
+  if (findGlobal((uintptr_t)p, &found))
     weavecRtCount(WeavecRtStatGlobalLookups);
+  else if (findStack((uintptr_t)p, &found) || findExact((uintptr_t)p, &found))
+    weavecRtCount(WeavecRtStatStackLookups);
   else
     weavecRtCount(WeavecRtStatUntrackedLookups);
   return found;
-}
-
-int weavecRtUntrackedRange(uintptr_t address, uintptr_t *low, uintptr_t *high) {
-  const StackList *list = threadList();
-  enum { Page = 4096 };
-  /* Stack objects come and go without changing the epoch. */
-  if (address >= list->low && address < list->high)
-    return 0;
-  *low = address & ~(uintptr_t)(Page - 1);
-  *high = *low + Page;
-  if (*low < list->high && *high > list->low)
-    return 0;
-  globalGap(address, low, high);
-  return address >= *low && address < *high;
 }
 
 int weavecRtIsStackOrGlobal(const void *p) {
   const StackList *list = threadList();
   const uintptr_t address = (uintptr_t)p;
   struct __weavec_rt_found found;
+  if (findGlobal(address, &found))
+    return 1;
   /* Anything in the live part of the calling thread's stack. */
   if (address >= (uintptr_t)__builtin_frame_address(0) && address < list->high)
     return 1;
-  return findGlobal(address, &found);
+  return findExact(address, &found);
+}
+
+/*===-- What the shadow answers (RFC 0034, section 2.5) ---------------------===*/
+
+static inline int inArena(uintptr_t address) {
+  return address - __weavec_rt_heap.base < __weavec_rt_heap.bytes;
+}
+
+static inline int isHeapLive(unsigned char v) {
+  return (v >= 1 && v <= WeavecRtShadowWhole) || v == WeavecRtShadowTail;
+}
+
+/* 1 when the shadow shows that `address` is in no live tracked object and
+ * that no lookup is needed to say so: untracked (outside the arena, where
+ * every tracked object has a non-zero byte) or a dead arena slot. */
+static inline int shadowNotLive(uintptr_t address) {
+  return *weavecRtShadowOf(address) == WeavecRtShadowDead;
+}
+
+/* Whether the shadow alone shows that the `width` bytes at `at`, reached
+ * from `from`, pass RFC 0033 section 4's rule: 1 pass, 0 fail, -1 ask the
+ * lookup. */
+static int shadowObject(uintptr_t from, uintptr_t at, unsigned long long width) {
+  uintptr_t last;
+  uintptr_t g;
+  unsigned char first;
+  if (!weavecRtShadowReady() || width == 0 ||
+      __builtin_add_overflow(at, (uintptr_t)(width - 1), &last))
+    return -1;
+  first = *weavecRtShadowOf(at);
+  if (isHeapLive(first)) {
+    /* Bytes inside one live heap object pass wherever `from` is. Beyond a
+     * few granules the slot's lookup (constant time) is cheaper than the
+     * walk (a `memcmp` of a long run that stops at its first byte). */
+    if ((last >> 4) - (at >> 4) > 3)
+      return -1;
+    for (g = at >> 4; g <= last >> 4; ++g) {
+      const unsigned char v = *weavecRtShadowOf(g << 4);
+      const unsigned need = g == (last >> 4) ? (unsigned)(last & 15) + 1 : 16;
+      if (v < 1 || v > WeavecRtShadowWhole || v < need)
+        return -1;
+    }
+    return 1;
+  }
+  if (weavecRtIsObjectByte(first)) {
+    /* One stack or global object's bytes, reached from inside it or from
+     * no stack or global object; an access past its end fails. */
+    const unsigned char origin = *weavecRtShadowOf(from);
+    const uintptr_t end = weavecRtShadowObjectEnd(at);
+    if (end == 0)
+      return -1;
+    if (at + width > end || at + width < at)
+      return 0;
+    if ((weavecRtIsObjectByte(origin) && weavecRtShadowObjectEnd(from) == end &&
+         from < end) ||
+        isHeapLive(origin) || origin == WeavecRtShadowDead)
+      return 1;
+    /* From inside another one: forwards fails, backwards passes. */
+    if (weavecRtIsObjectByte(origin))
+      return at > from ? 0 : 1;
+    return -1;
+  }
+  if (first == WeavecRtShadowDead && !inArena(at)) {
+    /* Untracked bytes, reached from no live tracked object. */
+    for (g = at >> 4; g <= last >> 4; ++g)
+      if (*weavecRtShadowOf(g << 4) != WeavecRtShadowDead || inArena(g << 4))
+        return -1;
+    return from == at || shadowNotLive(from) ? 1 : -1;
+  }
+  return -1;
+}
+
+/* The same for a `live` guard of `p`. */
+static int shadowLive(uintptr_t p) {
+  unsigned char v;
+  if (!weavecRtShadowReady())
+    return -1;
+  v = *weavecRtShadowOf(p);
+  if (isHeapLive(v) || weavecRtIsObjectByte(v) ||
+      (v == WeavecRtShadowDead && !inArena(p)))
+    return 1;
+  return -1;
 }
 
 /*===-- Guards (section 3) --------------------------------------------------===*/
@@ -624,6 +736,11 @@ int __weavec_rt_object(const void *p, long long index, unsigned long long step,
   struct __weavec_rt_found found;
   if (!accessAddress(p, index, step, offset, &address))
     return 1;
+  {
+    const int answer = shadowObject((uintptr_t)p, address, width);
+    if (answer >= 0)
+      return !answer;
+  }
   found = __weavec_rt_find((const void *)address);
   return accessFails(&found, address, width, p);
 }
@@ -658,86 +775,60 @@ unsigned long long __weavec_rt_strlen(const char *p) {
   return end != NULL ? (unsigned long long)(end - p) : ~0ULL;
 }
 
+unsigned long long __weavec_rt_room(const void *p) {
+  WEAVEC_RT_FORWARD(room, p);
+  const struct __weavec_rt_found found = __weavec_rt_find(p);
+  uintptr_t at;
+  if (found.state == WeavecRtUntracked)
+    return ~0ULL;
+  if (found.state == WeavecRtTrackedDead)
+    return 0;
+  at = (uintptr_t)p - found.base;
+  return at < found.size ? found.size - at : 0;
+}
+
 int __weavec_rt_live(const void *p) {
   WEAVEC_RT_FORWARD(live, p);
   return __weavec_rt_find(p).state == WeavecRtTrackedDead;
 }
 
-/* For a guard that passed, the range around `address` that will keep
- * passing while the epoch stands (see `__weavec_rt_object_range`). */
-static void remember(const struct __weavec_rt_found *found, uintptr_t address,
-                     unsigned epoch, struct __weavec_rt_range *range,
-                     void *frame) {
-  uintptr_t low;
-  uintptr_t high;
-  if (found->state == WeavecRtTrackedLive) {
-    /* An object of a deeper frame is not live; one the guarding function
-     * declared in a nested scope may leave it under the cache. */
-    if (found->kind == WeavecRtStack &&
-        (found->frame < (uintptr_t)frame ||
-         (found->frame == (uintptr_t)frame && found->scoped)))
+/* RFC 0034, section 2.5. */
+static const char *guardName(unsigned kind) {
+  return (kind & WeavecRtGuardKindMask) == WeavecRtGuardLive ? "live"
+                                                             : "object";
+}
+
+void __weavec_rt_guard(const void *from, const void *at,
+                       unsigned long long width, unsigned kind,
+                       const struct __weavec_rt_site *site) {
+  WEAVEC_RT_FORWARD_VOID(guard, from, at, width, kind, site);
+  int failed;
+  weavecRtCount(WeavecRtStatSlowGuards);
+  if ((kind & WeavecRtGuardOverflow) != 0) {
+    failed = 1;
+  } else if ((kind & WeavecRtGuardKindMask) == WeavecRtGuardLive) {
+    if (shadowLive((uintptr_t)from) == 1)
       return;
-    low = found->base;
-    high = found->base + found->size;
+    failed = __weavec_rt_find(from).state == WeavecRtTrackedDead;
   } else {
-    if (!weavecRtUntrackedRange(address, &low, &high) ||
-        weavecRtMayHoldHuge(low, high) ||
-        (low < __weavec_rt_heap.base + __weavec_rt_heap.bytes &&
-         high > __weavec_rt_heap.base))
+    const int answer = shadowObject((uintptr_t)from, (uintptr_t)at, width);
+    if (answer == 1)
       return;
+    if (answer == 0) {
+      failed = 1;
+    } else {
+      const struct __weavec_rt_found found = __weavec_rt_find(at);
+      failed = accessFails(&found, (uintptr_t)at, width, from);
+    }
   }
-  if (high <= low)
+  if (__builtin_expect(!failed, 1))
     return;
-  weavecRtCount(WeavecRtStatRangesKept);
-  range->lo = low;
-  range->len = high - low;
-  if (found->word != NULL) {
-    /* An arena block is this block while its slot word says so. */
-    range->state = found->word;
-    range->expect = found->value;
-  } else {
-    range->state = &__weavec_rt_epoch;
-    range->expect = epoch;
+  if (site != NULL) {
+    __weavec_rt_report(guardName(kind), site->file, site->line, site->column);
+    return;
   }
-}
-
-struct __weavec_rt_range
-__weavec_rt_object_range(const void *p, long long index,
-                         unsigned long long step, unsigned long long offset,
-                         unsigned long long width, void *frame) {
-  WEAVEC_RT_FORWARD(objectRange, p, index, step, offset, width, frame);
-  /* Read before the lookup: a change in between leaves the range stale by
-   * its own epoch. */
-  const unsigned epoch = __atomic_load_n(&__weavec_rt_epoch, __ATOMIC_RELAXED);
-  struct __weavec_rt_range range = {0, 0, &__weavec_rt_epoch, 0, 1};
-  struct __weavec_rt_found found;
-  uintptr_t address;
-  weavecRtCount(WeavecRtStatRanges);
-  if (!accessAddress(p, index, step, offset, &address))
-    return range;
-  found = __weavec_rt_find((const void *)address);
-  if (accessFails(&found, address, width, p))
-    return range;
-  range.failed = 0;
-  /* (Untracked bytes reached from another pointer passed because of where
-   * that pointer is, which a range of the bytes cannot remember.) */
-  if (found.state == WeavecRtUntracked && address != (uintptr_t)p)
-    return range;
-  remember(&found, address, epoch, &range, frame);
-  return range;
-}
-
-struct __weavec_rt_range __weavec_rt_live_range(const void *p, void *frame) {
-  WEAVEC_RT_FORWARD(liveRange, p, frame);
-  const unsigned epoch = __atomic_load_n(&__weavec_rt_epoch, __ATOMIC_RELAXED);
-  const struct __weavec_rt_found found = __weavec_rt_find(p);
-  struct __weavec_rt_range range = {0, 0, &__weavec_rt_epoch, 0, 1};
-  weavecRtCount(WeavecRtStatRanges);
-  if (found.state == WeavecRtTrackedDead)
-    return range;
-  range.failed = 0;
-  remember(&found, (uintptr_t)p, epoch, &range, frame);
-  return range;
+  __weavec_rt_trapping();
+  __builtin_trap();
 }
 
 int __weavec_rt_release_ok(const void *p) {

@@ -130,7 +130,7 @@ weavec-cc -c main.c -o main.o
 weavec-cc node.o main.o -o prog        # checks the records against each other, then links
 ```
 
-A bug inside one file is reported when that file is compiled. By default the link step only reads the records: it checks declarations against definitions and the requirements of each exported function at the calls other files make, and analyses no file again. A bug that needs two files, such as a use after free whose `free` is in another file, is caught by its guard at run time; to report it at build time, link with `-fweavec-link=analyze` (which analyses the units again, within a time budget) or run `weavec --whole-program`. Link inputs without a WeaveC record (archives, shared libraries, objects from another compiler) are named in one `unanalyzed-input` warning.
+A bug inside one file is reported when that file is compiled. By default the link step only reads the records: it checks declarations against definitions and the requirements of each exported function at the calls other files make, and analyses no file again. A bug that needs two files, such as a use after free whose `free` is in another file, is caught by its guard at run time; to report it at build time, link with `-fweavec-link=analyze` (which analyses the units again, within a time budget) or run `weavec --whole-program`. Link inputs without a WeaveC record (archives, shared libraries, objects from another compiler) are named in one `unanalyzed-input` warning; an archive whose objects `weavec-cc` built is named in a note instead.
 
 ### Checks
 
@@ -210,7 +210,7 @@ For a translation unit compiled by `weavec-cc` in an enforcing mode (the default
 - **(N) Null.** If its null facet is proven or checked, it does not dereference null, or the program traps first.
 - **(T) Temporal.** If its temporal facet is proven, the object is still alive, and a release releases a live allocation once.
 - **(G) Guards.** If a facet is guarded (the default; not with `-fno-weavec-runtime`) and the bytes it accesses start inside an object the runtime tracks (a heap block from the runtime's allocator, a local whose address escapes, a global), the object is live and the access stays inside it, or the program traps first. A guarded release is of null or the start of a live heap block, or the program traps.
-- **(V) Violations.** A definite violation never reaches the object unguarded: it fails the build, or, if lowered with `-Wno-error`, the site is guarded or checked, and traps unconditionally only where it can be neither.
+- **(V) Violations.** A definite violation, confirmed on a feasible path, fails the build; an unconfirmed one is a warning. If lowered with `-Wno-error`, its site is guarded or checked as a possible finding, so it traps only if it happens; nothing traps unconditionally.
 
 These hold under six assumptions:
 
@@ -230,22 +230,22 @@ If a memory-safety violation happens anyway, then a check trapped first, or the 
 (G) is weaker than (S) and (T), which is why the ledger counts guarded facets separately from checked ones:
 
 - **Provenance is the address accessed.** A guard asks which object the bytes an access touches lie in *now*, at a subscript `p[i]` as at a dereference, so arithmetic that carries a pointer out of one tracked object and into another live one passes. (This is what lets a base formed outside a buffer, such as `base = src - start`, index back into it.) Two cases still trap: an index or field offset that reaches forwards from inside a live local or global into another one, since those lie next to each other with no gap, and an index or offset from a pointer into a live object that lands in memory nothing tracks. Between heap blocks there is always a byte that belongs to none, so a walk off a heap block traps at its first step.
-- **Freed memory is recycled.** A freed heap block is caught only while it is in the quarantine (64 MiB by default); once its storage is reused, the guard sees the new object.
+- **Freed memory is recycled.** A freed heap block is caught only while it is in the quarantine (16 MiB by default); once its storage is reused, the guard sees the new object.
 - **Untracked memory passes.** String literals, `alloca` blocks, and memory from other allocators or from code built without the runtime are not tracked; a guard passes on them unless an index carried the pointer there from a live tracked object.
 
 The full statement, including what is and is not caught, is in [the guarantees reference](docs/pages/reference/guarantees.md), [RFC 0030, *Soundness*](docs/rfcs/0030-prove-or-trap.md#soundness), [RFC 0032, *Soundness*](docs/rfcs/0032-runtime-enforcement.md#soundness) and [RFC 0033, *Soundness*](docs/rfcs/0033-drop-in-by-default.md#soundness).
 
 ## Performance
 
-Guards run on every execution of the operations they cover, and the runtime's allocator replaces the system's. Measured on the corpus benchmarks as user CPU time and peak memory, relative to the same program built by the reference Clang ([RFC 0032](docs/rfcs/0032-runtime-enforcement.md#implementation-amendments), amendment 3):
+Guards run on every execution of the operations they cover, and the runtime's allocator replaces the system's. A guard is an inline check of the runtime's shadow memory (one byte per 16 bytes) that the compiler merges and hoists like a load; only what the shadow cannot decide calls the runtime. Measured as user CPU time and peak memory, relative to the same program built by the reference Clang ([RFC 0034](docs/rfcs/0034-fast-enforcement.md#implementation-amendments), amendment 16):
 
 | Benchmark | Default (runtime) | `-fno-weavec-runtime` | Peak memory (default) |
 | --- | ---: | ---: | ---: |
-| cJSON parse/print | 1.66× | 1.14× | 0.59× |
-| zlib minigzip | 1.85× | 1.00× | 1.09× |
-| Lua bench | 5.94× | 1.11× | 1.61× |
+| cJSON parse/print | 1.59× | 1.15× | 0.37× |
+| zlib minigzip | 1.62× | 1.00× | 1.26× |
+| Lua bench | 2.43× | 1.09× | 1.54× |
 
-Interpreters and tight loops over pointers pay the most: Lua's dispatch loop executes roughly one guard for every two instructions of the unguarded program. Code that cannot afford this can build with `-fno-weavec-runtime`; facets that would have been guarded are then `unresolved` and not enforced, and a use of a freed object is not caught at run time.
+On ten more projects nobody tuned WeaveC on (QuickJS, LMDB, Janet, brotli, xz, libdeflate, zlib-ng, curl, cmark, libgit2), the default build runs their workloads at 1.5 to 4.0 times the reference compiler's CPU time, 2.55 on average (geometric mean), and every one of them builds and passes its own test suite. Interpreters and tight loops over pointers pay the most. Code that cannot afford this can build with `-fno-weavec-runtime`; facets that would have been guarded are then `unresolved` and not enforced, and a use of a freed object is not caught at run time.
 
 ## Building
 

@@ -248,6 +248,32 @@ bool LibraryEntry::hasCallback() const noexcept {
       params, [](const LibraryParam &p) { return p.callback.has_value(); });
 }
 
+bool LibraryEntry::usesValueOnly(unsigned index) const noexcept {
+  const LibraryParam *p = param(index);
+  if (p == nullptr || p->type != LibraryParam::Type::Pointer ||
+      p->access != LibraryParam::Access::None || p->bytes || p->count ||
+      p->string || p->effect != LibraryParam::Effect::Borrow || p->callback ||
+      p->out)
+    return false;
+  const auto names = [index](unsigned argument) { return argument == index; };
+  for (const LibraryParam &other : params)
+    if (other.callback && std::ranges::any_of(other.callback->arguments, names))
+      return false;
+  return std::ranges::none_of(disjoint,
+                              [&](const LibDisjoint &d) {
+                                return names(d.first) || names(d.second);
+                              }) &&
+         std::ranges::none_of(
+             copies,
+             [&](const LibCopy &c) { return names(c.dst) || names(c.src); }) &&
+         std::ranges::none_of(fills,
+                              [&](const LibFill &f) { return names(f.dst); }) &&
+         std::ranges::none_of(
+             writesString,
+             [&](const LibStringWrite &w) { return names(w.dst); }) &&
+         (!format || !names(format->format));
+}
+
 bool LibraryEntry::knownToReturn() const noexcept {
   return !noreturn && !exits;
 }
@@ -481,6 +507,8 @@ static std::string paramText(const LibraryParam &param) {
   else if (param.null == LibraryParam::Null::AllowedIfZero && param.zeroTerm)
     text += ":null-if-zero(" + param.zeroTerm->str() + ")";
   text += effectText(param);
+  if (param.range)
+    text += ":range(" + param.range->str() + ")";
   if (param.callback)
     text += ":" + callbackText(*param.callback);
   if (param.out)
@@ -520,6 +548,10 @@ std::string LibraryEntry::str() const {
     text += std::to_string(format->format) + "," +
             std::to_string(format->first) + ")";
   }
+  if (wrapper)
+    text += " wrapper(" + wrapper->name + (wrapper->room ? ",room" : "") +
+            (wrapper->source ? ",source" : "") +
+            (wrapper->disjoint ? ",disjoint" : "") + ")";
   for (const LibraryChk &alias : chk) {
     text += " chk(" + alias.name + ":";
     for (std::size_t i = 0; i < alias.argumentOf.size(); ++i)
@@ -1067,6 +1099,11 @@ bool LibrarySpecParser::parseParamFlag(LibraryParam &param,
       return false;
     param.null = LibraryParam::Null::AllowedIfZero;
     param.zeroTerm = std::move(*term);
+  } else if (flag == "range") {
+    auto term = parenthesisedTerm(flag);
+    if (!term)
+      return false;
+    param.range = std::move(*term);
   } else if (flag == "escape") {
     param.effect = Effect::Escape;
   } else if (effect) {
@@ -1319,6 +1356,32 @@ bool LibrarySpecParser::parseClause(LibraryEntry &entry,
                                              : LibFormat::Kind::Scanf,
                   .format = *format,
                   .first = *first};
+  } else if (clause == "wrapper") {
+    if (entry.wrapper)
+      return fail("duplicate clause 'wrapper'");
+    if (!expect('(', "after 'wrapper'"))
+      return false;
+    auto wrapped = name("a wrapper name");
+    if (!wrapped)
+      return false;
+    LibWrapper wrapper{.name = std::move(*wrapped)};
+    while (accept(',')) {
+      const std::string what = word();
+      bool *flag = nullptr;
+      if (what == "room")
+        flag = &wrapper.room;
+      else if (what == "source")
+        flag = &wrapper.source;
+      else if (what == "disjoint")
+        flag = &wrapper.disjoint;
+      if (flag == nullptr || *flag)
+        return fail("expected 'room', 'source' or 'disjoint', once each, in "
+                    "'wrapper(…)'");
+      *flag = true;
+    }
+    if (!expect(')', "after 'wrapper(…'"))
+      return false;
+    entry.wrapper = std::move(wrapper);
   } else if (clause == "chk") {
     if (!expect('(', "after 'chk'"))
       return false;
@@ -1524,9 +1587,12 @@ bool LibrarySpecParser::validateEntry(LibraryEntry &entry) {
   for (std::size_t i = 0; i < count; ++i) {
     const LibraryParam &param = entry.params[i];
     const std::string where = "parameter " + std::to_string(i);
-    for (const auto *term : {&param.bytes, &param.count, &param.zeroTerm})
+    for (const auto *term :
+         {&param.bytes, &param.count, &param.zeroTerm, &param.range})
       if (*term && !validateTerm(entry, **term, where))
         return false;
+    if (param.range && param.effect != LibraryParam::Effect::Release)
+      return fail(where + ": 'range' needs 'release'");
     if (param.string && param.access != LibraryParam::Access::Read &&
         param.access != LibraryParam::Access::ReadWrite)
       return fail(where + ": 'str' needs read access ('r' or 'rw')");
@@ -1545,6 +1611,14 @@ bool LibrarySpecParser::validateEntry(LibraryEntry &entry) {
     return fail("'exits' needs a 'noreturn' result");
   if (entry.returnsTwice && entry.result.kind != LibraryResult::Kind::Int)
     return fail("'returns-twice' needs an 'int' result");
+  if (entry.wrapper && entry.wrapper->disjoint && entry.disjoint.empty())
+    return fail("'wrapper(…, disjoint)' needs a 'disjoint' clause");
+  if (entry.wrapper && entry.wrapper->room &&
+      (!isPointer(0) || !entry.params[0].bytes))
+    return fail("'wrapper(…, room)' needs bytes behind argument 0");
+  if (entry.wrapper && entry.wrapper->source &&
+      (entry.params.size() < 2 || !isPointer(1) || !entry.params[1].bytes))
+    return fail("'wrapper(…, source)' needs bytes behind argument 1");
   for (const LibDisjoint &disjoint : entry.disjoint) {
     if (!isPointer(disjoint.first) || !isPointer(disjoint.second) ||
         disjoint.first == disjoint.second)

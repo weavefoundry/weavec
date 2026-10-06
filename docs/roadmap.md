@@ -153,15 +153,35 @@ do not, because the analysis's joins rebuild the whole abstract state at
 every merge. Making joins share what both sides hold is the next step for
 build time.
 
-## Next: RFC 0034 — Guard elimination
+## Done: RFC 0034 — Fast enforcement, confirmed errors and a bounded analysis
 
-Dominated guards, the hull of a block's guards per pointer, loop hoisting
-and guards as optimiser-visible intrinsics, against RFC 0032's carried cost
-gate (Lua at most 2.0× and zlib at most 1.5× the reference compiler). The
-build-cost gate RFC 0033 carries forward (every build within 4× the
-reference compiler) needs joins that keep what both sides of a merge share
-instead of renumbering the whole state; it is either part of this RFC or
-the next.
+Design: [RFC 0034](rfcs/0034-fast-enforcement.md) (Implemented, with its
+build-cost and run-time gates carried forward). Guards are declared calls
+that LLVM passes merge, hoist and expand into an inline check of a shadow
+byte per 16 bytes of memory; a local is registered only where a guard can
+reach it, and registered objects are encoded exactly in the shadow; a
+definite error fails the build only once a replay confirms it on a
+feasible path, and nothing traps unconditionally; the analysis is bounded
+by a work budget. The stages landed on `rfc0034-fast-enforcement` and ship
+as one change; the RFC's *Implementation amendments* record the decisions:
+
+- [x] **S0 Tests first**: fresh and sealed configs, detection and confirm cases.
+- [x] **S1 Shadow memory** and the slow path.
+- [x] **S2 The backend passes**: canonical guards, merging, expansion.
+- [x] **S3 Stack objects and library calls.**
+- [x] **S4 Confirmed errors.**
+- [x] **S5 The bounded analysis.**
+- [x] **S6 The driver.**
+- [x] **S7 Fresh-project iterations.**
+- [x] **S8 Gates, the sealed run, the blind detection set, documentation.**
+
+All ten fresh projects (QuickJS, LMDB, Janet, brotli, xz, libdeflate,
+zlib-ng, curl, cmark, libgit2) build with `CC=weavec-cc` and pass their own
+test suites with no trap; six had stopped at definite errors
+before. Run time over Clang's: Lua 2.43× (from 5.94×), zlib 1.62×, cJSON
+1.59×, the fresh projects 1.5–4.0× (2.55 on average). Carried forward: the
+build cost of the heaviest units (pcre2 13.6×, sqlite 9.7×, lmdb and mujs
+7.4×) and the 1.5× run-time bound for zlib and cJSON.
 
 ## Planned: RFC 0035 — Adoption
 

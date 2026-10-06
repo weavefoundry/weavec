@@ -6,8 +6,8 @@
 #endif
 
 extern int Elsewhere[4];
-int Table[8];
-static char Name[5] = "name";
+int Table[8] __attribute__((aligned(16)));
+static char Name[5] __attribute__((aligned(16))) = "name";
 
 char *name(void) { return Name; }
 int *table(void) { return Table; }

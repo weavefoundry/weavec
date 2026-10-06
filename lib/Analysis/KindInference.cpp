@@ -1062,6 +1062,10 @@ KindInferenceResult KindInference::infer(KindTable &kinds) {
   result.state =
       std::make_unique<KindInferenceState>(context, library, options, kinds);
   result.state->run();
+  // The CFGs and parent maps of every definition are the run's; the result
+  // outlives it into the object engine's runs, which build their own.
+  result.state->cfgs.clear();
+  result.state->parentMaps.clear();
   return result;
 }
 

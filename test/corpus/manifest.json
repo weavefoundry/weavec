@@ -17,7 +17,10 @@
     "projects, run by --full and by --held-out). RFC 0033, section 11: a config marked heldOut may",
     "name a `set`, `fresh` (its eight projects, run by --full and by --held-out, gated by D1 and D5",
     "under `gates.rfc0033`) or `sealed` (five projects, run only by --sealed or --only, built with",
-    "the reference compiler alone until gate D2)."
+    "the reference compiler alone until gate D2). RFC 0034, section 9: two more sets, `fresh34`",
+    "(ten projects, run by --full, --held-out and --set fresh34, gated by F1, F5 and F7 under",
+    "`gates.rfc0034`; the only held-out configs with a `bench`) and `sealed34` (five projects, run",
+    "only by --set sealed34 or --only, built with the reference compiler alone until gate F2)."
   ],
   "gates": {
     "referenceMachine": "darwin-arm64 Apple M3 x8",
@@ -66,6 +69,21 @@
       "_comment": "RFC 0033's gates over the configs of set fresh (section 11), which G9, G10, G11 and RFC 0031's held-out gates do not count: D1 (no definite error triaged false; with --full every build and test suite passes, in trap mode with no trap and in report mode with no failure) and D5 (with --full the weavec-cc build's CPU time over the reference compiler's, per config). The sealed configs get the same values under rfc0033.sealed.*, from the one --sealed run of gate D2.",
       "D1": {"maxFalseDefiniteErrors": 0, "maxTraps": 0},
       "D5": {"maxBuildRatio": 4.0}
+    },
+    "rfc0034": {
+      "_comment": "RFC 0034's gates (Acceptance gates). F1 over the configs of set fresh34 (section 9): every build passes with the default flags (or stops only at definite errors triaged true) and every test suite passes, in trap mode with no trap and in report mode with no failure. F2: the same over set sealed34, with F5's build ratio, from the one --set sealed34 run. F5: with --full each config's weavec-cc build CPU time at most maxBuildRatio times the reference compiler's (every config but sealed34 ones; the reference compiler builds each once more); the single-unit compiles of maxUnitCpuSeconds within their CPU seconds; no compilation above maxCompileRssMiB (the per-file compiles of --quick, and every compiler process of a --full trap-mode build). F7: with --bench the default build's run time (with the runtime) over the reference compiler's: each fresh34 workload at most maxOverhead and their geometric mean at most maxGeometricMean; RFC 0032's G14 benchmarks at maxOverheadG14.",
+      "F1": {"maxFalseDefiniteErrors": 0, "maxTraps": 0},
+      "F2": {"maxFalseDefiniteErrors": 0, "maxTraps": 0},
+      "F5": {
+        "maxBuildRatio": 5.0,
+        "maxUnitCpuSeconds": {"sqlite": {"file": "sqlite3.c", "cpuSeconds": 120}},
+        "maxCompileRssMiB": 2048
+      },
+      "F7": {
+        "maxOverhead": 4.0,
+        "maxGeometricMean": 2.5,
+        "maxOverheadG14": {"lua": 2.5, "zlib": 1.5, "cJSON": 1.5}
+      }
     }
   },
   "projects": [
@@ -821,6 +839,477 @@
             "cmake --build out -j \"$JOBS\""
           ],
           "test": ["ctest --test-dir out --output-on-failure -j \"$JOBS\""]
+        }
+      ]
+    },
+    {
+      "name": "quickjs",
+      "url": "https://github.com/bellard/quickjs.git",
+      "sha": "535a7c250ff4a577ec36c3e103daab6dadeea650",
+      "support": [],
+      "configs": [
+        {
+          "name": "quickjs",
+          "heldOut": true,
+          "set": "fresh34",
+          "notes": "A JavaScript engine: reference-counted JSValues (tagged structs) over objects with shapes and property arrays, a cycle-collecting GC over intrusive list.h lists (container_of), atoms, strings and ropes, a bytecode compiler and interpreter with its own value stack, a regexp engine and Unicode tables (libregexp, libunicode), dtoa, allocation through JSMallocFunctions, and quickjs-libc's std/os modules with workers (threads). The build is the project's Makefile (-O2) with explicit targets: qjs, qjsc, run-test262, libquickjs.a and the three examples (hello, test_fib, hello_module, which qjsc compiles with $CC). quickjs.check.o (the Makefile's CONFIG_CHECK_JSVALUE build, compile-only by the project's own account; JS_GetOpaque always returns null in it) is left out of the build: WeaveC's definite null dereferences there are true but vacuous (RFC 0034, gate F1), and lowering them would need one triage entry per finding and would lower null-dereference errors across the whole build. The default target `all` builds it (and qjs.check.o), so the build names the targets; `make test` depends only on qjs on Darwin (the bjson and point shared-library tests are off there), so it builds no check object. The test is `make test` (tests/test_*.js: closures, language, builtins, loops, BigInt, cyclic imports, a worker, std/os, rw handlers) and the three examples against their expected output; run-test262 is built but not run (test262 is a separate checkout of the conformance suite). The per-file compiles are the six library sources with the Makefile's defines (-D_GNU_SOURCE, CONFIG_VERSION from VERSION) and its -funsigned-char -fwrapv.",
+          "compile": {
+            "files": ["quickjs.c", "libregexp.c", "libunicode.c", "cutils.c", "dtoa.c", "quickjs-libc.c"],
+            "args": ["-D_GNU_SOURCE", "-DCONFIG_VERSION=\"2026-06-04\"", "-funsigned-char", "-fwrapv"]
+          },
+          "build": ["make -j\"$JOBS\" CC=\"$CC\" qjs qjsc run-test262 libquickjs.a examples/hello examples/test_fib examples/hello_module"],
+          "test": [
+            "make test CC=\"$CC\"",
+            "test \"$(./examples/hello)\" = \"Hello World\" && ./examples/test_fib | grep -qx 'fib(10)= 55' && ./examples/hello_module | grep -q '^msg= '"
+          ],
+          "testTimeout": 1800,
+          "bench": {
+            "name": "quickjs-qjs",
+            "build": ["make -j\"$JOBS\" CC=\"$CC\" qjs"],
+            "command": "./qjs \"$BENCH/quickjs-bench.js\" > bench.out && cat bench.out",
+            "check": "grep -qx 10347472 bench.out",
+            "repeat": 7
+          }
+        }
+      ]
+    },
+    {
+      "name": "lmdb",
+      "url": "https://github.com/LMDB/lmdb.git",
+      "sha": "700e10f91a65fae69520301926fb9819f16d292f",
+      "support": ["lmdb/run-tests.sh", "lmdb/fixed-seed.h"],
+      "configs": [
+        {
+          "name": "lmdb",
+          "heldOut": true,
+          "set": "fresh34",
+          "notes": "The Lightning memory-mapped database (libraries/liblmdb): a copy-on-write B+tree whose pages are read through pointers into a memory-mapped file (page headers, node offsets and overflow pages by pointer arithmetic), dirty pages in malloc'd buffers, free-page ID lists (midl), cursors with page stacks, a reader table in a shared lock file, nested transactions, and a crypto/checksum module hook (module.c). The build is liblmdb's Makefile (-O2 -g -pthread): the static and shared library and the five tools, with VERSION_OPT=-Wl,-current_version,1.0 (the Makefile's Mac OS X value; its default -soname is a GNU ld option), then mtest..mtest5 with support/lmdb/fixed-seed.h forced in (mtest, mtest2, mtest3 and mtest5 seed rand() with time(NULL); the header fixes the seed so the tests are deterministic). The test is support/lmdb/run-tests.sh: each mtest against a fresh testdb (what `make test` does for mtest), and over mtest's database mdb_stat, an mdb_dump / mdb_load round trip and mdb_copy (plain and compacting), compared record by record. mtest6, mtest_remap and mtest_enc* are not built: none is among the Makefile's default programs (its rall target, for MDB_VL32 / MDB_RPAGE_CACHE builds, adds the remap and two encryption tests). The per-file compiles are the library (mdb.c, midl.c, module.c) and the five tools.",
+          "compile": {
+            "files": ["libraries/liblmdb/mdb.c", "libraries/liblmdb/midl.c", "libraries/liblmdb/module.c", "libraries/liblmdb/mdb_stat.c", "libraries/liblmdb/mdb_copy.c", "libraries/liblmdb/mdb_dump.c", "libraries/liblmdb/mdb_load.c", "libraries/liblmdb/mdb_drop.c"],
+            "args": ["-Ilibraries/liblmdb"]
+          },
+          "build": [
+            "cd libraries/liblmdb && make -j\"$JOBS\" CC=\"$CC\" VERSION_OPT=-Wl,-current_version,1.0 liblmdb.a liblmdb.so.1.0 mdb_stat mdb_copy mdb_dump mdb_load mdb_drop",
+            "cd libraries/liblmdb && make -j\"$JOBS\" CC=\"$CC\" XCFLAGS=\"-include $SUPPORT/fixed-seed.h\" mtest mtest2 mtest3 mtest4 mtest5"
+          ],
+          "test": ["sh \"$SUPPORT/run-tests.sh\""],
+          "testTimeout": 1800,
+          "bench": {
+            "name": "lmdb-put-get",
+            "build": [
+              "cd libraries/liblmdb && make -j\"$JOBS\" CC=\"$CC\" liblmdb.a",
+              "cd libraries/liblmdb && \"$CC\" -O2 -pthread -I. -c \"$BENCH/lmdb-bench.c\" -o lmdb-bench.o && \"$CC\" -pthread -o lmdb-bench lmdb-bench.o liblmdb.a"
+            ],
+            "command": "rm -rf bench-db && libraries/liblmdb/lmdb-bench bench-db > bench.out && cat bench.out",
+            "check": "grep -qx 163099980 bench.out",
+            "repeat": 7
+          }
+        }
+      ]
+    },
+    {
+      "name": "janet",
+      "url": "https://github.com/janet-lang/janet.git",
+      "sha": "0e5fdd5309699c1c6c3168c4cff71cf202e37cfb",
+      "support": [],
+      "configs": [
+        {
+          "name": "janet",
+          "heldOut": true,
+          "set": "fresh34",
+          "notes": "A Lisp-like language and its bytecode VM: NaN-boxed values, a mark-and-sweep GC with a header in front of every object (janet_gcalloc), fibers with their own growable stacks, buffers, arrays, tables and interned strings and structs, abstract types with vtables, setjmp/longjmp panics, a PEG engine, marshalling, an event loop with threads and sockets, and an FFI. The build is the project's Makefile (`make`, CFLAGS default -O2 -g), which bootstraps: it compiles src/core/*.c and src/boot/*.c with -DJANET_BOOTSTRAP -O0 into build/janet_boot, runs janet_boot to generate the amalgamated build/c/janet.c (the core sources plus the compiled boot image), compiles that with -O2 into build/janet, libjanet.a and libjanet.dylib, and runs build/janet to write build/janet.h; so the build runs code the compiler built. The test is `make test`: every test/suite*.janet (stopping at the first failure) and every example compiled with -k; suite-ev opens sockets on localhost port 8761 (JANET_TEST_PORT). The per-file compiles are the 40 core sources and the shell (src/mainclient/shell.c) without -DJANET_BOOTSTRAP, as the amalgamated janet.c compiles them.",
+          "compile": {
+            "files": ["src/core/*.c", "src/mainclient/shell.c"],
+            "args": ["-std=c99", "-Isrc/include", "-Isrc/conf"]
+          },
+          "build": ["make -j\"$JOBS\" CC=\"$CC\""],
+          "test": ["make test CC=\"$CC\""],
+          "testTimeout": 1800,
+          "bench": {
+            "name": "janet-vm",
+            "build": ["make -j\"$JOBS\" CC=\"$CC\" build/janet"],
+            "command": "build/janet \"$BENCH/janet-bench.janet\" > bench.out && cat bench.out",
+            "check": "grep -qx 4235397 bench.out",
+            "repeat": 7
+          }
+        }
+      ]
+    },
+    {
+      "name": "brotli",
+      "url": "https://github.com/google/brotli",
+      "sha": "42a2ed4355bc6287da6bb6319f090b499cba4550",
+      "support": [],
+      "configs": [
+        {
+          "name": "brotli",
+          "heldOut": true,
+          "set": "fresh34",
+          "notes": "Brotli: encoder state and ring buffer, hashers and block splitters carved out of BrotliAllocate'd arenas through allocator hooks (memory.c), Huffman tables and a decoder state machine over caller buffers, the static dictionary and transforms. The build is the project's CMake build, static (BUILD_SHARED_LIBS=OFF), with the CLI; the test is its CTest suite (73 round-trip and compatibility tests over tests/testdata), then round trips with the CLI of seven test files (text, binary, random, empty, one byte, a source file) at qualities 0-11 and windows 10/16/24, a large-window (--large_window=26) round trip of bb.binast, and a raw-dictionary (-D) round trip. Bench: the CLI compressing the 64 MiB zlib-input.py text at -q 7 and decompressing it.",
+          "compile": {
+            "files": ["c/common/*.c", "c/dec/*.c", "c/enc/*.c"],
+            "args": ["-Ic/include"]
+          },
+          "build": [
+            "cmake -S . -B out -DCMAKE_C_COMPILER=\"$CC\" -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF",
+            "cmake --build out -j \"$JOBS\""
+          ],
+          "test": [
+            "ctest --test-dir out --output-on-failure -j \"$JOBS\"",
+            "mkdir -p gate-rt && for f in tests/testdata/alice29.txt tests/testdata/mapsdatazrh tests/testdata/random_org_10k.bin tests/testdata/zerosukkanooa tests/testdata/empty tests/testdata/x c/enc/encode.c; do for q in 0 1 2 3 5 7 9 10 11; do for w in 10 16 24; do out/brotli -q $q --lgwin=$w -c \"$f\" > gate-rt/c.br && out/brotli -d -c gate-rt/c.br > gate-rt/d && cmp gate-rt/d \"$f\" || { echo \"FAIL q$q w$w $f\"; exit 1; }; done; done; done",
+            "mkdir -p gate-rt && out/brotli -q 9 --large_window=26 -c tests/testdata/bb.binast > gate-rt/l.br && out/brotli -d --large_window=26 -c gate-rt/l.br | cmp - tests/testdata/bb.binast && out/brotli -q 6 -D tests/testdata/alice29.txt -c tests/testdata/asyoulik.txt > gate-rt/dict.br && out/brotli -d -D tests/testdata/alice29.txt -c gate-rt/dict.br | cmp - tests/testdata/asyoulik.txt && out/brotli -t --large_window=26 gate-rt/l.br"
+          ],
+          "testTimeout": 1800,
+          "bench": {
+            "name": "brotli-cli",
+            "build": [
+              "cmake -S . -B out -DCMAKE_C_COMPILER=\"$CC\" -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DBROTLI_DISABLE_TESTS=ON",
+              "cmake --build out -j \"$JOBS\" --target brotli"
+            ],
+            "input": "python3 \"$BENCH/zlib-input.py\" \"$INPUT\" --mib 64 --sha256 022ae1f8b846add8965f30fb7e5f150e1f4861b740423dad57bf4cc7ec4e8a20",
+            "command": "./out/brotli -q 7 -c \"$INPUT\" > bench.br && ./out/brotli -d -c bench.br > /dev/null",
+            "check": "./out/brotli -d -c bench.br | cmp - \"$INPUT\"",
+            "repeat": 7
+          }
+        }
+      ]
+    },
+    {
+      "name": "xz",
+      "url": "https://github.com/tukaani-project/xz",
+      "sha": "3b1efb04d17c3a9ef7f473d73af13f1531428ffe",
+      "support": ["xz/config.h"],
+      "configs": [
+        {
+          "name": "xz",
+          "heldOut": true,
+          "set": "fresh34",
+          "notes": "XZ Utils' liblzma: coder chains of lzma_next_coder structs allocated through lzma_allocator hooks and freed through end callbacks, the LZ match finders' hash chains and binary trees over a sliding window, the range coder, BCJ and delta filters in place over caller buffers, the multithreaded encoder and decoder (worker threads, an output queue), index trees. The build is the project's CMake build (liblzma static, the xz, xzdec, lzmadec and lzmainfo tools, the tests) with XZ_NLS=OFF (no gettext, so nothing links Homebrew's libintl); the test is its CTest suite (22 tests: the liblzma unit tests, test_compress on generated files, test_files.sh over tests/files, test_scripts.sh, test_suffix.sh), then round trips with the CLI of liblzma's concatenated sources, an empty file and doc/faq.txt at presets -0 to -9e, multithreaded with small blocks, through the x86, arm64 and delta filters, in the .lzma format, through xzdec and lzmadec, raw LZMA1, plus xz -t and xz -l -vv. Bench: xz -6 -T1 compressing the 8 MiB zlib-input.py text and decompressing it. The per-file compiles use support/xz/config.h, the definitions CMake passes to liblzma written as a header (sysdefs.h includes it under HAVE_CONFIG_H); 45 of liblzma's 77 sources: the check, LZ, LZMA, range-coder and delta sources, the simple-filter core with x86 and arm64, and the block, index, stream (single and multithreaded), filter, alone, lzip and string-conversion sources of common/.",
+          "compile": {
+            "files": ["src/liblzma/check/check.c", "src/liblzma/check/crc32_fast.c", "src/liblzma/check/crc64_fast.c", "src/liblzma/check/sha256.c", "src/liblzma/lz/lz_decoder.c", "src/liblzma/lz/lz_encoder.c", "src/liblzma/lz/lz_encoder_mf.c", "src/liblzma/lzma/fastpos_table.c", "src/liblzma/lzma/lzma2_decoder.c", "src/liblzma/lzma/lzma2_encoder.c", "src/liblzma/lzma/lzma_decoder.c", "src/liblzma/lzma/lzma_encoder.c", "src/liblzma/lzma/lzma_encoder_optimum_fast.c", "src/liblzma/lzma/lzma_encoder_optimum_normal.c", "src/liblzma/lzma/lzma_encoder_presets.c", "src/liblzma/rangecoder/price_table.c", "src/liblzma/delta/delta_common.c", "src/liblzma/delta/delta_decoder.c", "src/liblzma/delta/delta_encoder.c", "src/liblzma/simple/simple_coder.c", "src/liblzma/simple/simple_decoder.c", "src/liblzma/simple/simple_encoder.c", "src/liblzma/simple/x86.c", "src/liblzma/simple/arm64.c", "src/liblzma/common/common.c", "src/liblzma/common/block_decoder.c", "src/liblzma/common/block_encoder.c", "src/liblzma/common/block_header_decoder.c", "src/liblzma/common/block_util.c", "src/liblzma/common/index.c", "src/liblzma/common/index_decoder.c", "src/liblzma/common/index_encoder.c", "src/liblzma/common/index_hash.c", "src/liblzma/common/stream_decoder.c", "src/liblzma/common/stream_encoder.c", "src/liblzma/common/stream_decoder_mt.c", "src/liblzma/common/stream_encoder_mt.c", "src/liblzma/common/outqueue.c", "src/liblzma/common/filter_common.c", "src/liblzma/common/filter_decoder.c", "src/liblzma/common/filter_encoder.c", "src/liblzma/common/alone_decoder.c", "src/liblzma/common/lzip_decoder.c", "src/liblzma/common/string_conversion.c", "src/liblzma/common/file_info.c"],
+            "args": ["-std=gnu11", "-DHAVE_CONFIG_H", "-I{support}", "-Isrc/liblzma/api", "-Isrc/liblzma/common", "-Isrc/liblzma/check", "-Isrc/liblzma/lz", "-Isrc/liblzma/rangecoder", "-Isrc/liblzma/lzma", "-Isrc/liblzma/delta", "-Isrc/liblzma/simple", "-Isrc/common"]
+          },
+          "build": [
+            "cmake -S . -B out -DCMAKE_C_COMPILER=\"$CC\" -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DXZ_NLS=OFF",
+            "cmake --build out -j \"$JOBS\""
+          ],
+          "test": [
+            "ctest --test-dir out --output-on-failure -j \"$JOBS\"",
+            "mkdir -p gate-rt && cat src/liblzma/*/*.c > gate-rt/src && : > gate-rt/empty && X=out/xz && for f in gate-rt/src gate-rt/empty doc/faq.txt; do for o in -0 -1 -3 -6 -9e \"-6 -T4 --block-size=64KiB\" \"--x86 --lzma2=preset=6\" \"--arm64 --lzma2\" \"--delta=dist=4 --lzma2=preset=1 --check=sha256\" \"--format=lzma\"; do $X $o -c \"$f\" > gate-rt/c && $X -d -c gate-rt/c | cmp - \"$f\" || { echo \"FAIL $o $f\"; exit 1; }; done; $X -c \"$f\" > gate-rt/c.xz && out/xzdec gate-rt/c.xz | cmp - \"$f\" && $X -t gate-rt/c.xz && $X -l -vv gate-rt/c.xz > /dev/null && $X --format=lzma -c \"$f\" | out/lzmadec | cmp - \"$f\" && $X --format=raw --lzma1=preset=2 -c \"$f\" | $X --format=raw --lzma1 -d -c | cmp - \"$f\" || { echo \"FAIL tools $f\"; exit 1; }; done"
+          ],
+          "testTimeout": 1800,
+          "bench": {
+            "name": "xz-cli",
+            "build": [
+              "cmake -S . -B out -DCMAKE_C_COMPILER=\"$CC\" -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DXZ_NLS=OFF -DBUILD_TESTING=OFF",
+              "cmake --build out -j \"$JOBS\" --target xz"
+            ],
+            "input": "python3 \"$BENCH/zlib-input.py\" \"$INPUT\" --mib 8 --sha256 528778d9eac25c011d0d49a722ed6e8497f5f7ff507cbecd86b18ce3930925c2",
+            "command": "./out/xz -6 -T1 -c \"$INPUT\" > bench.xz && ./out/xz -d -c bench.xz > /dev/null",
+            "check": "./out/xz -d -c bench.xz | cmp - \"$INPUT\"",
+            "repeat": 7
+          }
+        }
+      ]
+    },
+    {
+      "name": "libdeflate",
+      "url": "https://github.com/ebiggers/libdeflate",
+      "sha": "92e6a0db9fa848d742f9eb286c92afc60f2c3dda",
+      "support": [],
+      "configs": [
+        {
+          "name": "libdeflate",
+          "heldOut": true,
+          "set": "fresh34",
+          "notes": "libdeflate: whole-buffer DEFLATE, zlib and gzip compression and decompression; compressors with hash-chain, binary-tree and hash-table match finders in one large allocation (custom allocator hooks, libdeflate_set_memory_allocator), decompression tables in the decompressor struct, word-at-a-time copies near buffer ends, Adler-32 and CRC-32 with arm64 NEON/PMULL paths chosen at run time. The build is the project's CMake build with LIBDEFLATE_BUILD_TESTS=ON (static and shared libraries; the programs link the static one; the tests use the SDK's zlib for comparisons); the test is CTest (8 test programs), then scripts/exec_tests.sh (each test program again and the benchmark program in deflate, gzip and zlib formats, at levels 0-12, checked against zlib with -Y/-Z) and scripts/gzip_tests.sh (libdeflate-gzip against itself, as scripts/run_tests.sh --quick does) over a 1,000,000-byte TESTDATA made from the project's sources in sorted order (run_tests.sh uses find's unsorted order). Bench: libdeflate-gzip compressing the 64 MiB zlib-input.py text at -1, -6 and -9 and decompressing each. The per-file compiles are the library's sources and the arm64 cpu_features.c (x86/cpu_features.c compiles to nothing on arm64).",
+          "compile": {
+            "files": ["lib/*.c", "lib/arm/cpu_features.c"],
+            "args": ["-std=gnu11", "-I."]
+          },
+          "build": [
+            "cmake -S . -B out -DCMAKE_C_COMPILER=\"$CC\" -DCMAKE_BUILD_TYPE=Release -DLIBDEFLATE_BUILD_TESTS=ON",
+            "cmake --build out -j \"$JOBS\""
+          ],
+          "test": [
+            "ctest --test-dir out --output-on-failure -j \"$JOBS\"",
+            "cat lib/*.c lib/*.h lib/*/*.h programs/*.c programs/*.h scripts/*.sh | head -c 1000000 > gate-testdata && WRAPPER= TESTDATA=\"$PWD/gate-testdata\" sh ./scripts/exec_tests.sh out/programs > /dev/null",
+            "cat lib/*.c lib/*.h lib/*/*.h programs/*.c programs/*.h scripts/*.sh | head -c 1000000 > gate-testdata && GZIP=\"$PWD/out/programs/libdeflate-gzip\" GUNZIP=\"$PWD/out/programs/libdeflate-gzip -d\" TESTDATA=\"$PWD/gate-testdata\" bash ./scripts/gzip_tests.sh"
+          ],
+          "testTimeout": 1800,
+          "bench": {
+            "name": "libdeflate-gzip",
+            "build": [
+              "cmake -S . -B out -DCMAKE_C_COMPILER=\"$CC\" -DCMAKE_BUILD_TYPE=Release -DLIBDEFLATE_BUILD_SHARED_LIB=OFF",
+              "cmake --build out -j \"$JOBS\" --target libdeflate-gzip"
+            ],
+            "input": "python3 \"$BENCH/zlib-input.py\" \"$INPUT\" --mib 64 --sha256 022ae1f8b846add8965f30fb7e5f150e1f4861b740423dad57bf4cc7ec4e8a20",
+            "command": "for l in 1 6 9; do ./out/programs/libdeflate-gzip -$l -c \"$INPUT\" > bench.gz && ./out/programs/libdeflate-gzip -d -c bench.gz > /dev/null || exit 1; done",
+            "check": "./out/programs/libdeflate-gzip -d -c bench.gz | cmp - \"$INPUT\"",
+            "repeat": 7
+          }
+        }
+      ]
+    },
+    {
+      "name": "zlib-ng",
+      "url": "https://github.com/zlib-ng/zlib-ng",
+      "sha": "72aceeac37bdd0704df14aac1823b4f80f4a5cf3",
+      "support": ["zlib-ng/round-trips.sh", "zlib-ng/zconf.h", "zlib-ng/zlib.h", "zlib-ng/zlib_name_mangling.h", "zlib-ng/gzread_mangle.h"],
+      "configs": [
+        {
+          "name": "zlib-ng",
+          "heldOut": true,
+          "set": "fresh34",
+          "notes": "zlib-ng, built zlib-compatible (ZLIB_COMPAT=ON): the deflate and inflate state, window and pending buffer allocated in one aligned block through zalloc/zfree hooks, deflate strategies (quick, fast, medium, slow, rle, huff, stored) over the window, chunked copies and a function table of arm64 NEON/CRC/PMULL implementations chosen at run time, gz* file wrappers. The build is the project's CMake build with ZLIB_COMPAT=ON and WITH_GTEST=OFF: its GoogleTest suite is C++ and fetches googletest from the network, so it is off (WITH_FUZZERS also stays off, since it enables C++ in the project); the test is CTest's C tests (69: example, infcover, the CVE and GitHub-issue regressions, minigzip and minideflate over test/data at every level and strategy, makefixed/maketrees/makecrct), then support/zlib-ng/round-trips.sh: minigzip round trips of the library's concatenated sources, an empty file and test/data's JPEG and text at levels 0-9 and strategies -h/-R/-F/-f/-T, and minideflate round trips at levels 1/6/9 and windows 9/12/15. Bench: minigzip compressing the 64 MiB zlib-input.py text at -1, -6 and -9 and decompressing each. The per-file compiles are the 38 sources of the arm64 build (generic and arm, with CMake's definitions; the NEON, dotprod and PMULL files compile without their -march flags) and use the headers CMake generates, copied into support/zlib-ng/.",
+          "compile": {
+            "files": ["adler32.c", "arch/arm/adler32_neon.c", "arch/arm/adler32_neon_dotprod.c", "arch/arm/arm_features.c", "arch/arm/chunkset_neon.c", "arch/arm/compare256_neon.c", "arch/arm/crc32_armv8.c", "arch/arm/crc32_armv8_pmull_eor3.c", "arch/arm/slide_hash_neon.c", "arch/generic/adler32_c.c", "arch/generic/chunkset_c.c", "arch/generic/compare256_c.c", "arch/generic/crc32_braid_c.c", "arch/generic/crc32_chorba_c.c", "arch/generic/slide_hash_c.c", "compress.c", "cpu_features.c", "crc32.c", "crc32_braid_comb.c", "deflate.c", "deflate_fast.c", "deflate_huff.c", "deflate_medium.c", "deflate_quick.c", "deflate_rle.c", "deflate_slow.c", "deflate_stored.c", "functable.c", "gzlib.c", "gzread.c", "gzwrite.c", "infback.c", "inflate.c", "inftrees.c", "insert_string.c", "trees.c", "uncompr.c", "zutil.c"],
+            "args": ["-std=c11", "-I{support}", "-I.", "-DARM_CRC32", "-DARM_CRC32_INTRIN", "-DARM_FEATURES", "-DARM_NEON", "-DARM_NEON_DOTPROD", "-DARM_NEON_HASLD4", "-DARM_PMULL_EOR3", "-DHAVE_ARM_ACLE_H", "-DHAVE_ATTRIBUTE_ALIGNED", "-DHAVE_BUILTIN_ASSUME_ALIGNED", "-DHAVE_SYS_SDT_H", "-DHAVE_VISIBILITY_HIDDEN", "-DHAVE_VISIBILITY_INTERNAL", "-DWITH_GZFILEOP", "-DWITH_OPTIM", "-DZLIB_COMPAT"]
+          },
+          "build": [
+            "cmake -S . -B out -DCMAKE_C_COMPILER=\"$CC\" -DCMAKE_BUILD_TYPE=Release -DZLIB_COMPAT=ON -DWITH_GTEST=OFF",
+            "cmake --build out -j \"$JOBS\""
+          ],
+          "test": [
+            "ctest --test-dir out --output-on-failure -j \"$JOBS\"",
+            "sh \"$SUPPORT/round-trips.sh\""
+          ],
+          "testTimeout": 1800,
+          "bench": {
+            "name": "zlib-ng-minigzip",
+            "build": [
+              "cmake -S . -B out -DCMAKE_C_COMPILER=\"$CC\" -DCMAKE_BUILD_TYPE=Release -DZLIB_COMPAT=ON -DWITH_GTEST=OFF",
+              "cmake --build out -j \"$JOBS\" --target minigzip"
+            ],
+            "input": "python3 \"$BENCH/zlib-input.py\" \"$INPUT\" --mib 64 --sha256 022ae1f8b846add8965f30fb7e5f150e1f4861b740423dad57bf4cc7ec4e8a20",
+            "command": "for l in 1 6 9; do ./out/minigzip -$l < \"$INPUT\" > bench.gz && ./out/minigzip -d < bench.gz > /dev/null || exit 1; done",
+            "check": "./out/minigzip -d < bench.gz | cmp - \"$INPUT\"",
+            "repeat": 7
+          }
+        }
+      ]
+    },
+    {
+      "name": "curl",
+      "url": "https://github.com/curl/curl.git",
+      "sha": "6d013631195b1c349e5f783ac8b58ad376c0bdde",
+      "support": ["curl/curl_config.h"],
+      "configs": [
+        {
+          "name": "curl",
+          "heldOut": true,
+          "set": "fresh34",
+          "notes": "libcurl and the curl tool: transfer and connection state machines over intrusive linked lists, hash tables, splay trees and uint tables, dynbuf and bufq buffers, connection filters chained through function pointers, a multi handle owning easy handles, its own printf (mprintf), the URL API and the cookie, header, chunked and FTP-listing parsers. The build is the project's CMake build with the milestone evaluation's options (no TLS, IDN, PSL, SSH, zstd, brotli, nghttp2 or LDAP; zlib is the SDK's): the library, the tool, the examples and the test programs (target testdeps: libtests, units, tunits, the test servers). The test is runtests.pl run from out/tests over a fixed selection: tests 1-999 (HTTP, FTP, file://, cookies, proxies, globbing, the libtests 500-699), 1300-1399 (unit tests, more HTTP and FTP) and 1500-1699 (multi-interface libtests, the URL API test 1560, unit tests 1600-1699): 1015 tests at the reference, about 70 s with 4 jobs on an idle machine. Tests keyworded flaky or timing-dependent are disabled ('!', not the milestone's '~', so none runs with its result ignored); -a goes on after a failure and the exit status is then 1; --min=1000 fails the run when test servers do not start, since runtests.pl only skips a test whose server fails. The tests needing a Unix-socket server (1435, 1436, 1467, 1468, 1470) are outside the selection: under the gate's directory their socket paths exceed Darwin's 104 bytes, and they would be skipped after a 30 s wait each. A few selected tests skip for features this build lacks (SSL, crypto, NTLM, PSL, debug) or because 'ip6-localhost' does not resolve. The bench (test/corpus/bench/curl-bench.c) links the static libcurl, built alone, and for 10 rounds parses 20,000 generated URLs with the URL API (every part read back, a relative reference resolved, a query appended), escapes, unescapes and parses a date for each, and loads 5,000 cookie lines through CURLOPT_COOKIELIST, read back with CURLINFO_COOKIELIST: libcurl's own parsing, allocation and list code with no transfer, so no socket or kernel time (file:// transfers spend most of their time in the kernel, --trace in libc's stdio); it prints one checksum line. The per-file compiles are 45 library sources with support/curl/curl_config.h, which CMake generates.",
+          "compile": {
+            "files": ["lib/altsvc.c", "lib/bufq.c", "lib/bufref.c", "lib/cfilters.c", "lib/conncache.c", "lib/connect.c", "lib/content_encoding.c", "lib/cookie.c", "lib/curl_fnmatch.c", "lib/curl_get_line.c", "lib/cw-out.c", "lib/dynhds.c", "lib/easy.c", "lib/escape.c", "lib/file.c", "lib/formdata.c", "lib/ftp.c", "lib/ftplistparser.c", "lib/getinfo.c", "lib/hash.c", "lib/headers.c", "lib/http.c", "lib/http1.c", "lib/http_chunks.c", "lib/llist.c", "lib/mime.c", "lib/mprintf.c", "lib/multi.c", "lib/netrc.c", "lib/parsedate.c", "lib/pingpong.c", "lib/request.c", "lib/sendf.c", "lib/setopt.c", "lib/slist.c", "lib/splay.c", "lib/transfer.c", "lib/uint-table.c", "lib/url.c", "lib/urlapi.c", "lib/ws.c", "lib/curlx/base64.c", "lib/curlx/dynbuf.c", "lib/curlx/strparse.c", "lib/vauth/digest.c"],
+            "args": ["-Iinclude", "-Ilib", "-I{support}", "-DHAVE_CONFIG_H", "-DBUILDING_LIBCURL"]
+          },
+          "build": [
+            "cmake -S . -B out -DCMAKE_C_COMPILER=\"$CC\" -DCMAKE_BUILD_TYPE=Release -DCURL_ENABLE_SSL=OFF -DCURL_USE_OPENSSL=OFF -DUSE_LIBIDN2=OFF -DUSE_APPLE_IDN=OFF -DCURL_USE_LIBPSL=OFF -DCURL_USE_LIBSSH2=OFF -DCURL_ZSTD=OFF -DCURL_BROTLI=OFF -DUSE_NGHTTP2=OFF -DCURL_DISABLE_LDAP=ON -DBUILD_TESTING=ON",
+            "cmake --build out -j \"$JOBS\" --target all testdeps"
+          ],
+          "test": ["cd out/tests && perl ../../tests/runtests.pl -a -p -j\"$JOBS\" --min=1000 '!flaky' '!timing-dependent' 1 to 999 1300 to 1399 1500 to 1699"],
+          "testTimeout": 1800,
+          "bench": {
+            "name": "curl-url-cookies",
+            "build": [
+              "cmake -S . -B bench-out -DCMAKE_C_COMPILER=\"$CC\" -DCMAKE_BUILD_TYPE=Release -DCURL_ENABLE_SSL=OFF -DCURL_USE_OPENSSL=OFF -DUSE_LIBIDN2=OFF -DUSE_APPLE_IDN=OFF -DCURL_USE_LIBPSL=OFF -DCURL_USE_LIBSSH2=OFF -DCURL_ZSTD=OFF -DCURL_BROTLI=OFF -DUSE_NGHTTP2=OFF -DCURL_DISABLE_LDAP=ON -DBUILD_TESTING=OFF -DBUILD_SHARED_LIBS=OFF -DBUILD_STATIC_LIBS=ON -DBUILD_CURL_EXE=OFF -DBUILD_EXAMPLES=OFF -DBUILD_LIBCURL_DOCS=OFF -DBUILD_MISC_DOCS=OFF -DENABLE_CURL_MANUAL=OFF",
+              "cmake --build bench-out -j \"$JOBS\" --target libcurl_static",
+              "\"$CC\" -O2 -DCURL_STATICLIB -Iinclude \"$BENCH/curl-bench.c\" bench-out/lib/libcurl.a $(sed -n 's/^Libs.private: //p' bench-out/libcurl.pc) -o curl-bench"
+            ],
+            "command": "./curl-bench 10",
+            "repeat": 7
+          }
+        }
+      ]
+    },
+    {
+      "name": "cmark",
+      "url": "https://github.com/commonmark/cmark.git",
+      "sha": "6566d91bdb25898bd910f8bed2a3f18f4a05cf91",
+      "support": ["cmark/cmark_export.h", "cmark/cmark_version.h"],
+      "configs": [
+        {
+          "name": "cmark",
+          "heldOut": true,
+          "set": "fresh34",
+          "notes": "The CommonMark reference implementation: a tree of malloc'd nodes linked by parent, child and sibling pointers and freed iteratively, allocation through a cmark_mem table of function pointers, growable cmark_strbuf buffers, chunks pointing into the input, a re2c scanner, the inline parser's delimiter stack and bracket list, a reference map, an iterator and five renderers. The build is the project's CMake Release build (static library, the cmark executable and api_test, which has one C++ file built by CMake's default C++ compiler); the test is CTest: api_test, html_normalization and the spec, smart-punctuation and regression tests through the executable (5 tests; the spec tests need python3). The library tests (spectest_library, pathological, roundtrip, entity) exist only with BUILD_SHARED_LIBS, which is off by default on this platform, as in the milestone evaluation. The bench concatenates test/spec.txt 160 times (33 MB, in bench.build, from the pinned checkout) and renders it with --smart to HTML, XML, LaTeX, man and CommonMark into /dev/null (no output); its check compares the SHA-256 of the five renderings with a pinned value. The per-file compiles are the 20 src/*.c with support/cmark/cmark_export.h and cmark_version.h, which CMake generates, in C23 as CMake 3.21 and later build them.",
+          "compile": {
+            "files": ["src/*.c"],
+            "args": ["-std=c23", "-Isrc", "-I{support}", "-DCMARK_STATIC_DEFINE"]
+          },
+          "build": [
+            "cmake -S . -B out -DCMAKE_C_COMPILER=\"$CC\" -DCMAKE_BUILD_TYPE=Release",
+            "cmake --build out -j \"$JOBS\""
+          ],
+          "test": ["ctest --test-dir out --output-on-failure -j \"$JOBS\""],
+          "testTimeout": 1800,
+          "bench": {
+            "name": "cmark-spec-render",
+            "build": [
+              "cmake -S . -B bench-out -DCMAKE_C_COMPILER=\"$CC\" -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF",
+              "cmake --build bench-out -j \"$JOBS\" --target cmark_exe",
+              "i=0; while [ $i -lt 160 ]; do cat test/spec.txt; i=$((i+1)); done > bench.md"
+            ],
+            "command": "for t in html xml latex man commonmark; do bench-out/src/cmark --smart -t $t bench.md > /dev/null || exit 1; done",
+            "check": "test \"$(for t in html xml latex man commonmark; do bench-out/src/cmark --smart -t $t bench.md; done | shasum -a 256 | cut -c1-64)\" = 9e0efde0132b65579bea7e2a0d4a3fae8f2f99dced288443eff65e866232e7c1",
+            "repeat": 7
+          }
+        }
+      ]
+    },
+    {
+      "name": "libgit2",
+      "url": "https://github.com/libgit2/libgit2.git",
+      "sha": "0551dfd4ad989b6a3d5683c0d4cf326c6efef929",
+      "support": ["libgit2/git2_features.h", "libgit2/experimental.h"],
+      "configs": [
+        {
+          "name": "libgit2",
+          "heldOut": true,
+          "set": "fresh34",
+          "notes": "The Git library: reference-counted objects in a cache, an object database with loose and pack backends reading packs through mmap'd windows, delta application, the index, tree and diff iterators, the refdb, diff and merge over xdiff, a utility layer of git_str buffers, vectors, pools and hash maps, allocation through a table of function pointers (git__malloc). Bundled code in this build: SHA-1 with collision detection, SHA-256, llhttp and xdiff; zlib is the system's (the SDK's) and regular expressions use the system's regcomp_l (the zlib and PCRE under deps/ are not built). The build is the project's CMake build with the milestone evaluation's options (no HTTPS, SSH, GSSAPI or NTLM; tests on): the library, the git2 CLI and the two clar runners. The test is util_tests (the utility layer, every test) and libgit2_tests over 38 suites selected with -s: core, date, delta, message, patch, path, object, odb, refs, index, diff, status, config, revwalk, pack, merge, apply, blame, commit, describe, email, filter, graph, ignore, iterator, mailmap, notes, rebase, reset, revert, cherrypick, stash, attr, repo, grafts, fetchhead, remote and threads (about 2,500 tests, 70-90 s at the reference, most of it in the kernel copying fixtures); clar exits non-zero on any failure. Left out: online (the network); checkout, whose checkout::icase::overwrites_links_for_folders_when_forced fails with the reference compiler too (macOS's case-insensitive file system); clone (76 s, mostly waiting), network, submodule and worktree (slow and file-system bound); stress and perf (60 s and 5 s of load tests); and the empty or Windows-only win32, trace, stream, transport and transports. The bench (test/corpus/bench/libgit2-bench.c) links the static library, built without tests or CLI, and builds a 1,500-commit history in memory (a mempack-only object database and an empty configuration, so no file system and no user configuration): each commit edits two of eight generated files, writes blobs, a tree and a commit, renders each edit's patch (git_patch_from_buffers) and merges it three-way with an unrelated edit (git_merge_file); then a revision walk diffs every commit against its parent with stats. Its time is mostly xdiff and SHA-1; it prints one checksum line. The per-file compiles are 45 sources of src/util, src/libgit2, deps/xdiff and deps/llhttp with support/libgit2/git2_features.h and experimental.h, which CMake generates, in C90 as the build compiles them.",
+          "compile": {
+            "files": ["src/util/alloc.c", "src/util/date.c", "src/util/errors.c", "src/util/filebuf.c", "src/util/fs_path.c", "src/util/futils.c", "src/util/pool.c", "src/util/pqueue.c", "src/util/str.c", "src/util/strlist.c", "src/util/tsort.c", "src/util/utf8.c", "src/util/varint.c", "src/util/vector.c", "src/util/zstream.c", "src/libgit2/buf.c", "src/libgit2/cache.c", "src/libgit2/commit.c", "src/libgit2/commit_list.c", "src/libgit2/config.c", "src/libgit2/config_file.c", "src/libgit2/config_parse.c", "src/libgit2/delta.c", "src/libgit2/diff.c", "src/libgit2/diff_generate.c", "src/libgit2/diff_tform.c", "src/libgit2/index.c", "src/libgit2/index_map.c", "src/libgit2/iterator.c", "src/libgit2/merge.c", "src/libgit2/mwindow.c", "src/libgit2/object.c", "src/libgit2/odb.c", "src/libgit2/odb_loose.c", "src/libgit2/odb_pack.c", "src/libgit2/oid.c", "src/libgit2/pack.c", "src/libgit2/refdb_fs.c", "src/libgit2/refs.c", "src/libgit2/revwalk.c", "src/libgit2/status.c", "src/libgit2/tree.c", "deps/xdiff/xdiffi.c", "deps/xdiff/xprepare.c", "deps/llhttp/llhttp.c"],
+            "args": ["-std=c90", "-D_GNU_SOURCE", "-D_FILE_OFFSET_BITS=64", "-Isrc/libgit2", "-Isrc/util", "-Iinclude", "-I{support}", "-Ideps/llhttp", "-Ideps/xdiff", "-Ideps/reftable"]
+          },
+          "build": [
+            "cmake -S . -B out -DCMAKE_C_COMPILER=\"$CC\" -DCMAKE_BUILD_TYPE=Release -DUSE_HTTPS=OFF -DUSE_SSH=OFF -DUSE_GSSAPI=OFF -DUSE_NTLMCLIENT=OFF -DBUILD_TESTS=ON",
+            "cmake --build out -j \"$JOBS\""
+          ],
+          "test": [
+            "out/util_tests",
+            "out/libgit2_tests -score -sdate -sdelta -smessage -spatch -spath -sobject -sodb -srefs -sindex -sdiff -sstatus -sconfig -srevwalk -spack -smerge -sapply -sblame -scommit -sdescribe -semail -sfilter -sgraph -signore -siterator -smailmap -snotes -srebase -sreset -srevert -scherrypick -sstash -sattr -srepo -sgrafts -sfetchhead -sremote -sthreads"
+          ],
+          "testTimeout": 1800,
+          "bench": {
+            "name": "libgit2-history",
+            "build": [
+              "cmake -S . -B bench-out -DCMAKE_C_COMPILER=\"$CC\" -DCMAKE_BUILD_TYPE=Release -DUSE_HTTPS=OFF -DUSE_SSH=OFF -DUSE_GSSAPI=OFF -DUSE_NTLMCLIENT=OFF -DBUILD_TESTS=OFF -DBUILD_CLI=OFF -DBUILD_EXAMPLES=OFF -DBUILD_SHARED_LIBS=OFF",
+              "cmake --build bench-out -j \"$JOBS\"",
+              "\"$CC\" -O2 -Ibench-out/include \"$BENCH/libgit2-bench.c\" bench-out/libgit2.a $(sed -n 's/^Libs.private: //p' bench-out/libgit2.pc) -o libgit2-bench"
+            ],
+            "command": "./libgit2-bench 1500",
+            "repeat": 7
+          }
+        }
+      ]
+    },
+    {
+      "name": "libjpeg-turbo",
+      "url": "https://github.com/libjpeg-turbo/libjpeg-turbo.git",
+      "sha": "da20b14ff0db8785a0cabb2b8a71b5dc033d4006",
+      "support": ["libjpeg-turbo/jconfig.h", "libjpeg-turbo/jconfigint.h", "libjpeg-turbo/jversion.h"],
+      "configs": [
+        {
+          "name": "libjpeg-turbo",
+          "heldOut": true,
+          "set": "sealed34",
+          "notes": "SEALED (RFC 0034, section 9): built with the reference compiler only until gate F2. The JPEG codec behind libjpeg and the TurboJPEG API: a pool allocator (jmemmgr) handing out small objects and 2-D sample arrays (row pointer tables over one large block), method tables of function pointers in every module, virtual sample arrays, 8/12/16-bit sample code compiled three times from the same sources through src/wrapper/*-N.c, Huffman bit buffers over caller buffers, longjmp error recovery in TurboJPEG, NEON SIMD on arm64. The build is the project's CMake build in Release with its defaults: static and shared libraries (the tests run both), TurboJPEG, the tools and the tests, and the SIMD extensions on (on arm64 they are NEON intrinsics and GAS assembly, which the compiler builds without nasm). The test is CTest (664 tests: the cjpeg/djpeg/jpegtran MD5 comparisons over testimages/, tjunittest, the examples). The per-file compiles use the three headers CMake generates (jconfig.h, jconfigint.h, jversion.h) from support/libjpeg-turbo; they cover the format-independent sources and the 8-bit wrappers of the rest.",
+          "compile": {
+            "files": ["src/jcapimin.c", "src/jchuff.c", "src/jcicc.c", "src/jcinit.c", "src/jclhuff.c", "src/jcmarker.c", "src/jcmaster.c", "src/jcomapi.c", "src/jcparam.c", "src/jcphuff.c", "src/jctrans.c", "src/jdapimin.c", "src/jdatadst.c", "src/jdatasrc.c", "src/jdhuff.c", "src/jdicc.c", "src/jdinput.c", "src/jdlhuff.c", "src/jdmarker.c", "src/jdmaster.c", "src/jdphuff.c", "src/jdtrans.c", "src/jerror.c", "src/jfdctflt.c", "src/jmemmgr.c", "src/jmemnobs.c", "src/jpeg_nbits.c", "src/jaricom.c", "src/jcarith.c", "src/jdarith.c", "src/turbojpeg.c", "src/transupp.c", "src/wrapper/jccolor-8.c", "src/wrapper/jcsample-8.c", "src/wrapper/jdcolor-8.c", "src/wrapper/jdsample-8.c", "src/wrapper/jdmerge-8.c", "src/wrapper/jidctint-8.c", "src/wrapper/jfdctint-8.c", "src/wrapper/jquant1-8.c", "src/wrapper/jquant2-8.c", "src/wrapper/jdcoefct-8.c", "src/wrapper/jccoefct-8.c", "src/wrapper/jdmainct-8.c", "src/wrapper/jutils-8.c"],
+            "args": ["-Isrc", "-I{support}"]
+          },
+          "build": [
+            "cmake -S . -B out -DCMAKE_C_COMPILER=\"$CC\" -DCMAKE_BUILD_TYPE=Release -DENABLE_SHARED=ON -DENABLE_STATIC=ON -DWITH_TESTS=ON",
+            "cmake --build out -j \"$JOBS\""
+          ],
+          "test": ["ctest --test-dir out --output-on-failure -j \"$JOBS\""],
+          "testTimeout": 1800
+        }
+      ]
+    },
+    {
+      "name": "opus",
+      "url": "https://github.com/xiph/opus.git",
+      "sha": "503d81b138d76621aae4b12786e90de48aa8db3a",
+      "support": ["opus/config.h"],
+      "configs": [
+        {
+          "name": "opus",
+          "heldOut": true,
+          "set": "sealed34",
+          "notes": "SEALED (RFC 0034, section 9): built with the reference compiler only until gate F2. The Opus audio codec (SILK + CELT): encoder and decoder states laid out as one allocation with the sub-codec states at computed offsets (opus_decoder_get_size, align()), variable-length stack arrays (VAR_ARRAYS) and a range coder over caller buffers, multistream and projection wrappers carving several codec states out of one block, packet parsing and repacketizing with extension padding, float and fixed-point DSP with NEON intrinsics on arm64. The build is the project's CMake build in Release with OPUS_BUILD_TESTING (static library, the five test programs); the deep-learning features (DRED, OSCE, which need downloaded model weights) are off, as they are by default, and so are the programs, which no test uses. The test is CTest (test_opus_api, _decode, _encode, _padding, _extensions) with SEED=1: left alone the decode, encode and extensions tests take their random seed from the time. The per-file compiles use the definitions of the CMake build and its config.h (support/opus, only PACKAGE_VERSION).",
+          "compile": {
+            "files": ["src/opus.c", "src/opus_decoder.c", "src/opus_encoder.c", "src/extensions.c", "src/opus_multistream.c", "src/opus_multistream_decoder.c", "src/opus_multistream_encoder.c", "src/opus_projection_decoder.c", "src/opus_projection_encoder.c", "src/mapping_matrix.c", "src/repacketizer.c", "src/analysis.c", "src/mlp.c", "celt/bands.c", "celt/celt.c", "celt/celt_decoder.c", "celt/celt_encoder.c", "celt/celt_lpc.c", "celt/cwrs.c", "celt/entdec.c", "celt/entenc.c", "celt/kiss_fft.c", "celt/laplace.c", "celt/mathops.c", "celt/mdct.c", "celt/modes.c", "celt/pitch.c", "celt/quant_bands.c", "celt/rate.c", "celt/vq.c", "silk/dec_API.c", "silk/enc_API.c", "silk/NSQ.c", "silk/NSQ_del_dec.c", "silk/PLC.c", "silk/decode_frame.c", "silk/resampler.c", "silk/resampler_private_IIR_FIR.c", "silk/VAD.c", "silk/NLSF_encode.c", "silk/NLSF_del_dec_quant.c", "silk/stereo_LR_to_MS.c", "silk/float/encode_frame_FLP.c", "silk/float/pitch_analysis_core_FLP.c", "silk/float/noise_shape_analysis_FLP.c"],
+            "args": ["-std=gnu99", "-I{support}", "-Iinclude", "-I.", "-Icelt", "-Isilk", "-Isilk/float", "-Idnn", "-DHAVE_CONFIG_H", "-DOPUS_BUILD", "-DVAR_ARRAYS", "-DHAVE_LRINT", "-DHAVE_LRINTF", "-DHAVE_ALLOCA_H", "-DENABLE_HARDENING", "-DDISABLE_DEBUG_FLOAT", "-DOPUS_ARM_MAY_HAVE_NEON", "-DOPUS_ARM_MAY_HAVE_NEON_INTR", "-DOPUS_WILL_BE_SLOW"]
+          },
+          "build": [
+            "cmake -S . -B out -DCMAKE_C_COMPILER=\"$CC\" -DCMAKE_BUILD_TYPE=Release -DOPUS_BUILD_TESTING=ON -DOPUS_BUILD_PROGRAMS=OFF -DOPUS_DRED=OFF -DOPUS_OSCE=OFF",
+            "cmake --build out -j \"$JOBS\""
+          ],
+          "test": ["SEED=1 ctest --test-dir out --output-on-failure -j \"$JOBS\""],
+          "testTimeout": 1800
+        }
+      ]
+    },
+    {
+      "name": "flac",
+      "url": "https://github.com/xiph/flac.git",
+      "sha": "e94ff9f68b8e7dbd3e9f8b1ac18a8eca1914f181",
+      "support": ["flac/config.h"],
+      "configs": [
+        {
+          "name": "flac",
+          "heldOut": true,
+          "set": "sealed34",
+          "notes": "SEALED (RFC 0034, section 9): built with the reference compiler only until gate F2. The Free Lossless Audio Codec: a bit reader and writer over growable word buffers, encoder and decoder objects with private structs behind opaque handles and per-channel buffers allocated with padding for the LPC and residual code, metadata blocks as owned trees (Vorbis comments, cue sheets, pictures, seek tables) copied, resized and freed by metadata_object.c, a metadata chain editor over files, multithreaded encoding, NEON LPC on arm64. The build is the project's CMake build in Release without Ogg, the C++ libraries, the docs and the man pages, with the tests, the programs (flac, metaflac) and the examples. The first step pins the random seeds of the two test programs that seed random() from gettimeofday (test_streams, which generates the noise streams, and test_seeking, which picks random seek targets) to 1, in the copy only, so that every run sees the same data. The test is CTest without its streams test (libFLAC, grabbag, generate_streams, flac, metaflac, replaygain, seeking, compression), then the streams script run directly at FLAC__TEST_LEVEL=0 (about 1200 encode, decode and compare round trips): CTest sets level 1, at which it alone takes 300 s with the reference compiler. The per-file compiles use the CMake build's config.h (support/flac).",
+          "compile": {
+            "files": ["src/libFLAC/bitmath.c", "src/libFLAC/bitreader.c", "src/libFLAC/bitwriter.c", "src/libFLAC/cpu.c", "src/libFLAC/crc.c", "src/libFLAC/fixed.c", "src/libFLAC/float.c", "src/libFLAC/format.c", "src/libFLAC/lpc.c", "src/libFLAC/lpc_intrin_neon.c", "src/libFLAC/md5.c", "src/libFLAC/memory.c", "src/libFLAC/metadata_iterators.c", "src/libFLAC/metadata_object.c", "src/libFLAC/stream_decoder.c", "src/libFLAC/stream_encoder.c", "src/libFLAC/stream_encoder_framing.c", "src/libFLAC/window.c", "src/flac/analyze.c", "src/flac/decode.c", "src/flac/encode.c", "src/flac/foreign_metadata.c", "src/flac/iffscan.c", "src/flac/utils.c", "src/flac/vorbiscomment.c", "src/metaflac/operations.c", "src/metaflac/operations_shorthand_cuesheet.c", "src/metaflac/operations_shorthand_picture.c", "src/metaflac/operations_shorthand_seektable.c", "src/metaflac/operations_shorthand_vorbiscomment.c", "src/metaflac/options.c", "src/metaflac/utils.c", "src/share/grabbag/alloc.c", "src/share/grabbag/cuesheet.c", "src/share/grabbag/file.c", "src/share/grabbag/picture.c", "src/share/grabbag/replaygain.c", "src/share/grabbag/seektable.c", "src/share/replaygain_analysis/replaygain_analysis.c", "src/share/replaygain_synthesis/replaygain_synthesis.c", "src/share/utf8/utf8.c", "src/share/utf8/charset.c"],
+            "args": ["-I{support}", "-Iinclude", "-Isrc/libFLAC/include", "-DHAVE_CONFIG_H", "-DFLAC__NO_DLL", "-D_DARWIN_C_SOURCE"]
+          },
+          "build": [
+            "perl -pi -e 's/srandom\\(tv\\.tv_usec\\)/srandom(1)/' src/test_streams/main.c src/test_seeking/main.c && grep -q 'srandom(1)' src/test_streams/main.c && grep -q 'srandom(1)' src/test_seeking/main.c",
+            "cmake -S . -B out -DCMAKE_C_COMPILER=\"$CC\" -DCMAKE_BUILD_TYPE=Release -DWITH_OGG=OFF -DBUILD_CXXLIBS=OFF -DBUILD_DOCS=OFF -DINSTALL_MANPAGES=OFF -DBUILD_TESTING=ON",
+            "cmake --build out -j \"$JOBS\""
+          ],
+          "test": [
+            "ctest --test-dir out --output-on-failure -j \"$JOBS\" -E '^streams$'",
+            "cd out/test && FLAC__TEST_LEVEL=0 ECHO_C='\\c' ../../test/test_streams.sh"
+          ],
+          "testTimeout": 1800
+        }
+      ]
+    },
+    {
+      "name": "giflib",
+      "url": "https://git.code.sf.net/p/giflib/code",
+      "sha": "a8e3114a81f0987a61d06a41c99fd7cc2d58232c",
+      "support": ["giflib/run-tests.sh"],
+      "configs": [
+        {
+          "name": "giflib",
+          "heldOut": true,
+          "set": "sealed34",
+          "notes": "SEALED (RFC 0034, section 9): built with the reference compiler only until gate F2. GIFLIB, the GIF reader and writer: decoder and encoder state behind a GifFileType handle with a private struct, an LZW decoder and encoder with a hash table and a prefix stack, saved images as arrays of structs with owned color maps, extension blocks and raster buffers grown with reallocarray, I/O through read and write callbacks, color quantization; the utilities copy, filter, dump and build GIFs. The checkout is the canonical SourceForge repository. The build is the top-level Makefile's static library and its 14 utilities: its default target also builds libutil.dylib, which does not link on Darwin (qprintf.o needs GifErrorString from libgif) with the reference compiler, and nothing uses the shared libraries. The test is support/giflib/run-tests.sh: tests/makefile's regression targets (51 TAP checks of the utilities against recorded dumps, colormaps and RGB files) through tapview, as `make check` does, with giffix-regress run by the script itself with a portable `head -c`, because the makefile uses GNU head's `--bytes=-20`, which BSD head rejects. The per-file compiles cover every C file of the top directory (library, getarg/qprintf and the utilities).",
+          "compile": {
+            "files": ["*.c"],
+            "args": ["-std=gnu99", "-I."]
+          },
+          "build": ["make -j\"$JOBS\" CC=\"$CC\" static-lib gifbuild giffix giftext giftool gifclrmp gifbg gifcolor gifecho giffilter gifhisto gifinto gifsponge gifwedge gif2rgb"],
+          "test": ["sh \"$SUPPORT/run-tests.sh\""],
+          "testTimeout": 1800
+        }
+      ]
+    },
+    {
+      "name": "wren",
+      "url": "https://github.com/wren-lang/wren.git",
+      "sha": "99d2f0b8fc2686134b32b18166e037639f7e9f2c",
+      "support": [],
+      "configs": [
+        {
+          "name": "wren",
+          "heldOut": true,
+          "set": "sealed34",
+          "notes": "SEALED (RFC 0034, section 9): built with the reference compiler only until gate F2. Wren, a small class-based scripting language: a single-pass compiler emitting bytecode into growable buffers, a stack VM over NaN-tagged values (doubles and object pointers packed in 64 bits), fibers with their own growable stacks and call frames (pointers into the stack rebased when it moves), a mark-and-sweep collector over an intrusive object list with a gray stack, strings, lists, maps (open addressing) and ranges as flexible objects, foreign objects with user data, and the embedding API's slots and handles. The build is projects/make.mac's release_64bit configuration (libwren.a and .dylib, bin/wren_test); the test is util/test.py, which runs bin/wren_test over test/ (866 scripts with their expected output, errors and exit codes, the API tests in C included) and exits non-zero on any failure. The per-file compiles cover the VM, the optional modules and the test host.",
+          "compile": {
+            "files": ["src/vm/*.c", "src/optional/*.c", "test/*.c", "test/api/*.c"],
+            "args": ["-std=c99", "-DNDEBUG", "-Isrc/include", "-Isrc/vm", "-Isrc/optional"]
+          },
+          "build": ["make -C projects/make.mac -j\"$JOBS\" CC=\"$CC\" config=release_64bit"],
+          "test": ["python3 util/test.py"],
+          "testTimeout": 1800
         }
       ]
     }

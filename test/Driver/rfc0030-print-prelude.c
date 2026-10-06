@@ -1,6 +1,7 @@
 // RFC 0030 §10.9, §16: `weavec-cc -fweavec-print-prelude` prints the check
 // prelude of the -fweavec-checks mode, zero-initialisation helpers included
-// unless -fno-weavec-zero-init, with the usable-size query of the target,
+// unless -fno-weavec-zero-init, with the usable-size query of the target
+// (the runtime's when it is linked),
 // and exits without compiling anything. `=out-of-line` prints the external
 // definitions libweavec_chk.a is built from.
 //
@@ -10,9 +11,10 @@
 // RUN: %weavec_cc -fweavec-print-prelude -fweavec-checks=verify | FileCheck --check-prefix=VERIFY %s
 // RUN: %weavec_cc -fweavec-print-prelude -fweavec-checks=none | count 0
 // RUN: %weavec_cc -fweavec-print-prelude -fno-weavec-zero-init | FileCheck --check-prefix=NOZERO %s
-// RUN: %weavec_cc -fweavec-print-prelude --target=x86_64-unknown-linux-gnu | FileCheck --check-prefix=GLIBC %s
-// RUN: %weavec_cc -fweavec-print-prelude -target aarch64-unknown-linux-android34 | FileCheck --check-prefix=BIONIC %s
-// RUN: %weavec_cc -fweavec-print-prelude --target=arm64-apple-macosx14.0 | FileCheck --check-prefix=DARWIN %s
+// RUN: %weavec_cc -fweavec-print-prelude -fno-weavec-runtime --target=x86_64-unknown-linux-gnu | FileCheck --check-prefix=GLIBC %s
+// RUN: %weavec_cc -fweavec-print-prelude -fno-weavec-runtime -target aarch64-unknown-linux-android34 | FileCheck --check-prefix=BIONIC %s
+// RUN: %weavec_cc -fweavec-print-prelude -fno-weavec-runtime --target=arm64-apple-macosx14.0 | FileCheck --check-prefix=DARWIN %s
+// RUN: %weavec_cc -fweavec-print-prelude --target=arm64-apple-macosx14.0 | FileCheck --check-prefix=RUNTIME %s
 // RUN: %weavec_cc -fweavec-print-prelude --target=x86_64-pc-windows-msvc | FileCheck --check-prefix=NOQUERY %s
 // RUN: %weavec_cc -fweavec-print-prelude=out-of-line -fweavec-checks=verify | FileCheck --check-prefix=OUTOFLINE %s
 // RUN: rm -f %t.h && %weavec_cc -fweavec-print-prelude -o %t.h && FileCheck --check-prefix=TRAP %s < %t.h
@@ -38,6 +40,9 @@
 // GLIBC: extern __typeof__(sizeof 0) malloc_usable_size(void *);
 // BIONIC: extern __typeof__(sizeof 0) malloc_usable_size(const void *);
 // DARWIN: extern __typeof__(sizeof 0) malloc_size(const void *);
+//
+// RFC 0034 §5.3: with the runtime, zero-initialisation asks the runtime.
+// RUNTIME: extern __typeof__(sizeof 0) __weavec_rt_size(const void *);
 //
 // NOQUERY: __weavec_chk_nonnull
 // NOQUERY-NOT: __weavec_malloc_zero

@@ -1,0 +1,1 @@
+#define PACKAGE_VERSION "1.6.1-68-g503d81b1"

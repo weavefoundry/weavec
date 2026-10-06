@@ -486,8 +486,9 @@ void Transfer::decideArguments(const CallExpr &call, const SiteInfo &site,
       }
       if (facts.unterminated && extent &&
           extent->cls == core::ExtentClass::Exact) {
+        // RFC 0034 §6.4: lowered, the string is guarded.
         publish(i, core::FacetDecision::violation(), std::nullopt, haveText,
-                std::nullopt);
+                objectWitness(requirement, std::nullopt));
         core::Diagnostic diagnostic;
         diagnostic.id = core::diag::OutOfBounds;
         diagnostic.severity = core::Severity::Error;
@@ -542,8 +543,21 @@ void Transfer::decideArguments(const CallExpr &call, const SiteInfo &site,
       if (fits && !*fits && atLeast &&
           extent->cls == core::ExtentClass::Exact && requirement.enforced &&
           !requirement.guard) {
+        // RFC 0034 §6.4: lowered, it is checked where the need and the
+        // extent have names, and guarded otherwise; never trapped
+        // unconditionally.
+        std::optional<CheckWitness> lowered;
+        if (haveTerm && needTerm && !requirement.rowOnly)
+          lowered = CheckWitness{.shape = CheckWitness::Shape::Length,
+                                 .extent = haveTerm,
+                                 .extentClass = extent->cls,
+                                 .need = needTerm,
+                                 .unmodified = true,
+                                 .accessesSafe = true};
+        else
+          lowered = objectWitness(requirement, needTerm);
         publish(i, core::FacetDecision::violation(), spellTerm(need), haveText,
-                std::nullopt);
+                std::move(lowered));
         run.requirementViolated.insert(&call);
         std::string object = "'" + spell(pointedObject(argument)) + "'";
         std::string least = requirement.bound == ArgRequirement::Bound::AtLeast
@@ -750,6 +764,16 @@ void Transfer::decideLibraryCall(const CallExpr &call, const SiteInfo &site,
       requirement.formatArgument = true;
       requirements.push_back(std::move(requirement));
     }
+    // A `%.Ns` argument: at most N bytes, no terminator needed. Its record
+    // states no need, but names it for the call's liveness guard.
+    for (unsigned argument : format.bounded)
+      if (argument < call.getNumArgs() && argument < args.size() &&
+          call.getArg(argument)->getType()->isPointerType())
+        requirements.push_back(
+            ArgRequirement{.argument = argument,
+                           .bound = ArgRequirement::Bound::AtMost,
+                           .rowOnly = true,
+                           .formatArgument = true});
     if (format.reads && *format.reads > format.passed) {
       core::Diagnostic diagnostic;
       diagnostic.id = core::diag::OutOfBounds;

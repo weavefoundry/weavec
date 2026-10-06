@@ -233,8 +233,13 @@ private:
   core::Sym freshAllocation(const std::string &family,
                             std::optional<core::Term> extent, bool zeroed,
                             bool maybeNull, bool wrapped);
+  /// `possibly`: the call may release it (RFC 0034 §6.3).
   void releaseArgument(unsigned index, const std::string &family,
-                       core::ReleaseRecord::Reason reason);
+                       core::ReleaseRecord::Reason reason,
+                       bool possibly = false);
+  /// RFC 0034 §6.3: a `range(t)` release covers argument `index`'s whole
+  /// object: it points to the start and `t` is at least the extent.
+  bool releasesWhole(unsigned index, const core::LibTerm &range);
   void havocReachable(unsigned index, bool constPointee, bool callback = false);
   /// RFC 0003: a mutable borrow may write what the argument reaches but
   /// releases nothing.
@@ -363,8 +368,23 @@ core::Sym CallApplier::freshAllocation(const std::string &family,
   return heap.fresh(state, info);
 }
 
+bool CallApplier::releasesWhole(unsigned index, const core::LibTerm &range) {
+  const core::SymInfo &info = heap.info(state, args[index]);
+  if (info.top || info.targets.size() != 1)
+    return false;
+  const core::Target &target = info.targets[0];
+  const core::ObjectState *object = heap.findObject(state, target.object);
+  if (object == nullptr || !object->extent ||
+      heap.lessEqual(state, target.offset, core::Term::of(0)) != true ||
+      heap.lessEqual(state, core::Term::of(0), target.offset) != true)
+    return false;
+  core::Term bytes = termOfLibTerm(transfer, range, args, rowCall);
+  return heap.lessEqual(state, object->extent->bytes, bytes) == true;
+}
+
 void CallApplier::releaseArgument(unsigned index, const std::string &family,
-                                  core::ReleaseRecord::Reason reason) {
+                                  core::ReleaseRecord::Reason reason,
+                                  bool possibly) {
   if (index >= args.size())
     return;
   core::Sym pointer = args[index];
@@ -383,7 +403,7 @@ void CallApplier::releaseArgument(unsigned index, const std::string &family,
   record.nonNullLocals = transfer.nonNullLocals();
   // A release after an unknown callee's: the record is replaced (RFC 0030
   // §3.1).
-  heap.release(state, pointer, record);
+  heap.release(state, pointer, record, possibly);
 }
 
 void CallApplier::havocReachable(unsigned index, bool constPointee,
@@ -401,8 +421,10 @@ void Transfer::havocArgument(const CallExpr &call, core::Sym pointer,
   start.reserve(info.targets.size());
   for (const core::Target &target : info.targets)
     start.push_back(target.object);
-  std::vector<core::ObjectId> reached =
-      constPointee ? start : reachableFrom(heap, state, start);
+  // RFC 0034 §6.3: C's `const` is shallow. The callee may still write
+  // through the pointers a `const` object holds, so what they reach is
+  // havocked as for any argument; only the object itself keeps its cells.
+  std::vector<core::ObjectId> reached = reachableFrom(heap, state, start);
   core::ReleaseRecord record;
   record.reason = callback ? core::ReleaseRecord::Reason::Callback
                            : core::ReleaseRecord::Reason::UnknownCallee;
@@ -644,6 +666,21 @@ void Transfer::forgetGlobals(const core::ReleaseRecord &record) {
     core::ObjectKind kind = run.table().info(id).key.kind;
     if (kind == core::ObjectKind::Global)
       globals.push_back(id);
+  }
+  // A local a global reaches escapes (the code may keep its address), and
+  // the code may write every local that escaped.
+  for (core::ObjectId id : reachableFrom(heap, state, globals))
+    if (run.table().info(id).key.kind == core::ObjectKind::Local &&
+        state.objects.contains(id))
+      state.objects.at(id).escaped = true;
+  std::vector<core::ObjectId> escaped;
+  for (const auto &[id, object] : state.objects)
+    if (object.escaped &&
+        run.table().info(id).key.kind == core::ObjectKind::Local)
+      escaped.push_back(id);
+  for (core::ObjectId id : escaped) {
+    heap.forgetCells(state, id, 0, std::nullopt);
+    state.objects.at(id).havocked = true;
   }
   const SourceManager &sources = run.ast().getSourceManager();
   for (core::ObjectId id : globals) {
@@ -1471,10 +1508,14 @@ core::Sym CallApplier::applyLibrary(const core::LibraryMatch &match) {
       break;
     switch (param.effect) {
     case core::LibraryParam::Effect::Release:
+      // RFC 0034 §6.3, RFC 0033 §1's witness rule: a release of part of an
+      // object (`munmap` of a guard page) is no witness of the whole
+      // object's release, so one not known to cover it is possible.
       releaseArgument(row,
                       param.family.empty() ? std::string(core::HeapFamily)
                                            : param.family,
-                      core::ReleaseRecord::Reason::Freed);
+                      core::ReleaseRecord::Reason::Freed,
+                      param.range && !releasesWhole(row, *param.range));
       break;
     case core::LibraryParam::Effect::Realloc:
       realloced = args[row];
@@ -2120,10 +2161,34 @@ void Transfer::checkAliasContext(const CallExpr &call,
     outOfBudget();
     return;
   }
+  // RFC 0034 §7.2: no context run (diagnostics only) of an expensive callee.
+  static constexpr std::uint64_t MaxContextWork = 200000;
+  if (auto cost = run.unitRun().workOf.find(definition->getCanonicalDecl());
+      cost == run.unitRun().workOf.end() || cost->second > MaxContextWork) {
+    outOfBudget();
+    return;
+  }
   std::set<AliasContext> &done =
       run.unitRun().contextsRun[definition->getCanonicalDecl()];
-  if (done.contains(alias))
+  core::SourceLocation at =
+      toCoreLocation(context.getSourceManager(), call.getBeginLoc());
+  const auto reportFindings = [&](std::vector<core::Diagnostic> findings) {
+    for (core::Diagnostic &diagnostic : findings) {
+      core::Certainty certainty = diagnostic.certainty;
+      diagnostic.addNote("called here with related pointer arguments", at);
+      run.report(std::move(diagnostic), certainty, &call,
+                 core::Facet::Temporal);
+    }
+  };
+  if (done.contains(alias)) {
+    // (The replay of this caller sees what the first run of it saw.)
+    if (run.witnessing)
+      if (auto found = run.unitRun().contextFindings.find(
+              {definition->getCanonicalDecl(), alias});
+          found != run.unitRun().contextFindings.end())
+        reportFindings(found->second);
     return;
+  }
   if (done.size() >= MaxContextsPerCallee) {
     outOfBudget();
     return;
@@ -2138,17 +2203,15 @@ void Transfer::checkAliasContext(const CallExpr &call,
   (void)contextRun.run();
   if (contextRun.contextIncomplete)
     outOfBudget();
-  core::SourceLocation at =
-      toCoreLocation(context.getSourceManager(), call.getBeginLoc());
-  for (core::Diagnostic diagnostic : collector.diagnostics()) {
-    if (diagnostic.id != core::diag::UseAfterFree &&
-        diagnostic.id != core::diag::DoubleFree &&
-        diagnostic.id != core::diag::UseAfterMove)
-      continue;
-    core::Certainty certainty = diagnostic.certainty;
-    diagnostic.addNote("called here with related pointer arguments", at);
-    run.report(std::move(diagnostic), certainty, &call, core::Facet::Temporal);
-  }
+  std::vector<core::Diagnostic> findings;
+  for (const core::Diagnostic &diagnostic : collector.diagnostics())
+    if (diagnostic.id == core::diag::UseAfterFree ||
+        diagnostic.id == core::diag::DoubleFree ||
+        diagnostic.id == core::diag::UseAfterMove)
+      findings.push_back(diagnostic);
+  run.unitRun().contextFindings[{definition->getCanonicalDecl(), alias}] =
+      findings;
+  reportFindings(std::move(findings));
 }
 
 /// §6.6 *Amendment (numeric contexts)*: whether what `effects` says of a

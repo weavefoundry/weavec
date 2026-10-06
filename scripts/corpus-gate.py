@@ -9,8 +9,10 @@ configs marked "heldOut" (bzip2, hiredis, http-parser, inih, libyaml, lz4,
 miniz, mujs, sqlite, tinyexpr, utf8proc). Per RFC 0033 section 11, configs
 marked heldOut may also name a "set": the 8 "fresh" configs (zstd, libuv,
 oniguruma, redis, expat, pcre2, libevent, libsodium) and the 5 "sealed" ones
-(libxml2, libpng, mbedtls, msgpack-c, yyjson). test/corpus/README.md
-documents the files.
+(libxml2, libpng, mbedtls, msgpack-c, yyjson). Per RFC 0034 section 9, two
+more sets: the 10 "fresh34" configs (QuickJS, LMDB, Janet, brotli, xz,
+libdeflate, zlib-ng, curl, cmark, libgit2), each with a run-time workload,
+and the 5 "sealed34" ones. test/corpus/README.md documents the files.
 
 Modes (combine freely; at least one, or --update-from):
 
@@ -66,6 +68,22 @@ Modifiers:
                     config otherwise runs only when --only names it. Their
                     D1 and D5 values are reported in a section of their own
                     (rfc0033.sealed.*) and failures fail the run.
+  --set SET         run the configs of SET alone (repeatable): one of
+                    original, heldOut, fresh, sealed, fresh34, sealed34;
+                    --only overrides it. RFC 0034, section 9: the fresh34
+                    configs also run with the held-out ones (--full,
+                    --held-out); the sealed34 ones only with --set sealed34
+                    or --only (gate F2, once, on the final tree; before it
+                    with --reference-only alone). RFC 0034's gates
+                    (manifest gates.rfc0034): F1 over fresh34 (as D1), F2
+                    over sealed34 (F1 and F5's build ratio), F5 (with --full
+                    each config's build CPU ratio over the reference
+                    compiler's, every config but sealed34; the named
+                    single-unit compiles' CPU seconds; each compilation's
+                    peak memory, from --quick's per-file compiles and the
+                    trap build's compiler processes) and F7 (with --bench
+                    each fresh34 workload's run-time ratio, their geometric
+                    mean, and the G14 benchmarks' tighter limits).
 
 Examples:
 
@@ -74,6 +92,8 @@ Examples:
       --weavec-cc build/release/bin/weavec-cc --only jansson --json out.json
   scripts/corpus-gate.py --full --reference-only --cc "$(brew --prefix llvm)/bin/clang"
   scripts/corpus-gate.py --full --sealed --reference-only --cc "$(brew --prefix llvm)/bin/clang"
+  scripts/corpus-gate.py --full --set fresh34 --json fresh34.json
+  scripts/corpus-gate.py --full --set sealed34 --reference-only --cc "$(brew --prefix llvm)/bin/clang"
   scripts/corpus-gate.py --inject --legacy --update
 
 Exit status: 0 when every check passes, 1 when a check fails, 2 on a usage
@@ -91,6 +111,7 @@ import fnmatch
 import glob
 import hashlib
 import json
+import math
 import os
 import platform
 import re
@@ -501,15 +522,23 @@ class Manifest:
 # (RFC 0033). A manifest names the last two in a config's `set`, which needs
 # `heldOut: true`; without `set` a config is original, or heldOut when it is
 # marked heldOut.
-SETS = ("original", "heldOut", "fresh", "sealed")
-NAMED_SETS = ("fresh", "sealed")
+SETS = ("original", "heldOut", "fresh", "sealed", "fresh34", "sealed34")
+NAMED_SETS = ("fresh", "sealed", "fresh34", "sealed34")
+# The sets that run only when asked for (--set, --sealed, --only): RFC 0033's
+# and RFC 0034's sealed sets.
+SEALED_SETS = ("sealed", "sealed34")
+# RFC 0034, section 9: the fresh34 configs carry a run-time workload (gate F7).
+BENCH_SETS = ("fresh34",)
 SET_TITLES = {
     "heldOut": "held-out configs (RFC 0031, section 11.2)",
     "fresh": "fresh configs (RFC 0033, section 11; gates D1 and D5)",
     "sealed": "sealed configs (RFC 0033, section 11; gate D2)",
+    "fresh34": "fresh34 configs (RFC 0034, section 9; gates F1, F5 and F7)",
+    "sealed34": "sealed34 configs (RFC 0034, section 9; gate F2)",
 }
 # What a finding's message calls a config of each set.
-SET_LABELS = {"original": "", "heldOut": "held-out ", "fresh": "fresh ", "sealed": "sealed "}
+SET_LABELS = {"original": "", "heldOut": "held-out ", "fresh": "fresh ", "sealed": "sealed ",
+              "fresh34": "fresh34 ", "sealed34": "sealed34 "}
 
 SHA_RE = re.compile(r"[0-9a-f]{40}")
 LOWERED_RE = re.compile(r"-Wno-error=weavec-(?P<id>[a-z-]+)")
@@ -555,17 +584,19 @@ def load_manifest(path: Path, support_root: Path) -> Manifest:
             held_out = c.get("heldOut", False)
             if not isinstance(held_out, bool):
                 problems.append(f"config {cname}: heldOut must be true or false")
-            elif held_out and bench is not None:
-                problems.append(f"config {cname}: a held-out config has no bench (RFC 0031, section 11.2)")
             corpus_set = "heldOut" if held_out is True else "original"
             if "set" in c:
                 if c["set"] not in NAMED_SETS:
-                    problems.append(f"config {cname}: set must be \"fresh\" or \"sealed\" (got {c['set']!r}); "
+                    problems.append(f"config {cname}: set must be one of "
+                                    f"{', '.join(repr(s) for s in NAMED_SETS)} (got {c['set']!r}); "
                                     f"without it a config is original, or heldOut when marked heldOut")
                 elif held_out is not True:
                     problems.append(f"config {cname}: set {c['set']!r} needs heldOut true (RFC 0033, section 11)")
                 else:
                     corpus_set = c["set"]
+            if held_out is True and bench is not None and corpus_set not in BENCH_SETS:
+                problems.append(f"config {cname}: a held-out config has no bench (RFC 0031, section 11.2), "
+                                f"unless its set is {' or '.join(BENCH_SETS)} (RFC 0034, section 9)")
             config = Config(
                 name=cname, project=project, files=list(compile_.get("files", [])),
                 args=list(compile_.get("args", [])), whole_program=bool(c.get("wholeProgram", False)),
@@ -636,14 +667,17 @@ def with_held_out(args: argparse.Namespace) -> bool:
 
 
 def select_configs(manifest: Manifest, only: list[str], held_out: bool = True,
-                   sealed: bool = False) -> list[Config]:
-    """The configs named by --only; else the sealed set alone when `sealed`
-    (--sealed, RFC 0033 section 11); else every config but the sealed ones,
-    the held-out and fresh ones only when `held_out`."""
+                   sealed: bool = False, sets: Iterable[str] = ()) -> list[Config]:
+    """The configs named by --only; else the configs of the sets named by
+    --set (RFC 0034 section 9), with RFC 0033's sealed set when `sealed`
+    (--sealed, RFC 0033 section 11), alone; else every config but those of
+    the sealed sets (SEALED_SETS), the held-out, fresh and fresh34 ones only
+    when `held_out`."""
     if not only:
-        if sealed:
-            return [c for c in manifest.configs if c.set == "sealed"]
-        return [c for c in manifest.configs if c.set != "sealed" and (held_out or not c.held_out)]
+        wanted = set(sets) | ({"sealed"} if sealed else set())
+        if wanted:
+            return [c for c in manifest.configs if c.set in wanted]
+        return [c for c in manifest.configs if c.set not in SEALED_SETS and (held_out or not c.held_out)]
     known = {c.name for c in manifest.configs}
     unknown = sorted(set(only) - known)
     if unknown:
@@ -1529,10 +1563,16 @@ class BuildRun:
     trap_deaths: list[str] = dataclasses.field(default_factory=list)
     reports: list[dict] = dataclasses.field(default_factory=list)
     failures: list[str] = dataclasses.field(default_factory=list)
+    # RFC 0034 F5: compiler processes the wrapper logged, and the largest peak
+    # resident size among them (bytes), when the wrapper ran them under time(1).
+    compiles: int | None = None
+    compile_max_rss: int | None = None
 
     def to_json(self) -> dict:
         return {"config": self.config, "mode": self.mode, "compiler": self.compiler,
                 "built": self.built, "testsPassed": self.tests_passed,
+                "compiles": self.compiles,
+                "compileMaxRssMiB": round(self.compile_max_rss / 2 ** 20, 1) if self.compile_max_rss else None,
                 "steps": [s.to_json() for s in self.steps], "tests": [s.to_json() for s in self.tests],
                 "diagnostics": [d.to_json() for d in self.diagnostics],
                 "ledger": self.program.to_json() if self.program else None,
@@ -1557,12 +1597,34 @@ def sanitizer_symbolizer(cc: str) -> dict:
     return {}
 
 
-def write_wrapper(path: Path, compiler: str, flags: list[str]) -> str:
+# RFC 0034 gate F5: the peak memory of each compilation of a build. The
+# wrapper runs the compiler under time(1), which appends the child's rusage to
+# a log: `-l` on BSD and Darwin ("<bytes>  maximum resident set size"), `-v`
+# with GNU time ("Maximum resident set size (kbytes): <n>").
+TIME_BINARY = "/usr/bin/time"
+RUSAGE_RSS_RE = re.compile(r"^\s*(?P<bytes>\d+)\s+maximum resident set size\s*$"
+                           r"|^\s*Maximum resident set size \(kbytes\):\s*(?P<kib>\d+)\s*$", re.MULTILINE)
+
+
+def write_wrapper(path: Path, compiler: str, flags: list[str], rusage_log: Path | None = None) -> str:
     path.parent.mkdir(parents=True, exist_ok=True)
     words = " ".join(shlex.quote(w) for w in [compiler, *flags])
+    if rusage_log is not None and os.access(TIME_BINARY, os.X_OK):
+        verbose = "-l" if sys.platform == "darwin" or "bsd" in sys.platform else "-v"
+        words = f"{TIME_BINARY} -a -o {shlex.quote(str(rusage_log))} {verbose} {words}"
     path.write_text(f"#!/bin/sh\n# written by scripts/corpus-gate.py\nexec {words} \"$@\"\n")
     path.chmod(0o755)
     return str(path)
+
+
+def compile_peaks(rusage_log: Path) -> list[int]:
+    """The peak resident size, in bytes, of each compiler process a wrapper logged."""
+    try:
+        text = rusage_log.read_text(errors="replace")
+    except OSError:
+        return []
+    return [int(m.group("bytes")) if m.group("bytes") else int(m.group("kib")) * 1024
+            for m in RUSAGE_RSS_RE.finditer(text)]
 
 
 def base_env(config: Config, cc: str, src: Path, support_root: Path, bench_dir: Path, jobs: int,
@@ -1659,13 +1721,16 @@ def run_build(config: Config, mode: str, compiler: str, flags: list[str], checko
         if applied:
             run.failures.append(applied)
             return run
+    logs = work / "logs"
+    logs.mkdir(parents=True, exist_ok=True)
+    rusage_log = None
     if with_ledger:
         ledger_dir.mkdir(parents=True, exist_ok=True)
         flags = [*flags, f"-fweavec-ledger={ledger_dir}/"]
-    cc = write_wrapper(work / "bin" / "cc", compiler, flags) if flags else compiler
+        # RFC 0034 F5: each compilation's peak memory.
+        rusage_log = logs / "compile-rusage.log"
+    cc = write_wrapper(work / "bin" / "cc", compiler, flags, rusage_log) if flags else compiler
     env = base_env(config, cc, src, support_root, bench_dir, jobs, extra_env)
-    logs = work / "logs"
-    logs.mkdir(parents=True, exist_ok=True)
     output = []
     run.built = True
     for index, command in enumerate(config.build):
@@ -1712,6 +1777,10 @@ def run_build(config: Config, mode: str, compiler: str, flags: list[str], checko
         run.reports = parse_reports("\n".join(test_output), src)
         for report in run.reports:
             report["file"] = normalise_report_file(report["file"])
+    if rusage_log is not None:
+        peaks = compile_peaks(rusage_log)
+        run.compiles = len(peaks)
+        run.compile_max_rss = max(peaks) if peaks else None
     if not keep:
         remove_tree(src)
     return run
@@ -1913,7 +1982,7 @@ class Gate:
         self.support_root = args.support_dir
         self.bench_dir = args.bench_dir
         self.manifest = load_manifest(args.manifest, self.support_root)
-        self.configs = select_configs(self.manifest, args.only, with_held_out(args), args.sealed)
+        self.configs = select_configs(self.manifest, args.only, with_held_out(args), args.sealed, args.set)
         # Every selected config outside the original set: RFC 0030's gates
         # (G9, G10, G11) and the ratchet's records leave them out.
         self.held_out = {c.name for c in self.configs if c.held_out}
@@ -2217,8 +2286,9 @@ class Gate:
             entry = self.config_entry(config)
             runs = {}
             config_modes = list(modes)
-            if config.held_out and modes != ["reference"] and modes != ["legacy"] and self.binaries.reference_cc:
-                # RFC 0031 G12 and RFC 0033 D5: the build's CPU time against the
+            if modes != ["reference"] and modes != ["legacy"] and self.binaries.reference_cc:
+                # RFC 0031 G12, RFC 0033 D5 and RFC 0034 F5 (which counts the
+                # original configs too): the build's CPU time against the
                 # reference compiler's.
                 config_modes.append("reference")
             cache = self.args.workdir / ".cache" / config.project.name
@@ -2227,8 +2297,7 @@ class Gate:
                 compiler, flags = self.wrapper_flags(mode, config)
                 with_ledger = mode in ("trap", "verify")
                 log(f"[{config.name}] {mode} build with {compiler}")
-                # The reference build of a held-out, fresh or sealed config only
-                # times the build.
+                # The reference build next to a WeaveC build only times the build.
                 no_tests = [] if mode == "reference" and mode not in modes else None
                 build = run_build(config, mode, compiler, flags, checkout, self.run_dir / "builds" / config.name,
                                   self.support_root, self.bench_dir, self.jobs, self.args.build_timeout,
@@ -2716,9 +2785,10 @@ class Gate:
                       all(t == 0 for t in traps.values()) if traps else None, traps)
         if self.sets["heldOut"]:
             self.evaluate_held_out()
-        for corpus_set in NAMED_SETS:
+        for corpus_set in ("fresh", "sealed"):
             if self.sets[corpus_set]:
                 self.evaluate_rfc0033(corpus_set)
+        self.evaluate_rfc0034()
 
     def evaluate_findings_and_analyses(self) -> None:
         # RFC 0030's gates (G9, G10) count the original configs; the held-out
@@ -2853,7 +2923,7 @@ class Gate:
         complete = {"original": all_original,
                     "heldOut": bool(self.sets["heldOut"]) and all(c.name in selected for c in self.manifest.configs
                                                                   if c.set == "heldOut"),
-                    "fresh": False, "sealed": False}
+                    **{s: False for s in NAMED_SETS}}
         detail: dict = {}
         ok = True
         gated = False
@@ -2894,12 +2964,7 @@ class Gate:
             facets = (shares.get("facets") or {}).get("temporal") or {}
             builds = entry.get("builds") or {}
             checked = builds.get(self.args.checks) or builds.get("reference") or {}
-            reference = builds.get("reference") or {}
-            ratio = None
-            weavec_cpu = sum(s["cpu"] for s in checked.get("steps", [])) if checked is not reference else None
-            reference_cpu = sum(s["cpu"] for s in reference.get("steps", []))
-            if weavec_cpu is not None and reference_cpu > 0 and checked.get("built") and reference.get("built"):
-                ratio = round(weavec_cpu / reference_cpu, 2)
+            ratio = build_cpu_ratio(builds, self.args.checks)
             rows[config.name] = {
                 "errors": units.get("errors"), "warnings": units.get("warnings"),
                 "temporalUnresolved": facets.get("unresolved"), "temporalTotal": sum(facets.values()) if facets else None,
@@ -2919,6 +2984,7 @@ class Gate:
                 "reportTestsPassed": (builds.get("report") or {}).get("testsPassed"),
                 "traps": entry.get("traps"),
                 "buildCpuRatio": ratio,
+                "compileMaxRssMiB": checked.get("compileMaxRssMiB"),
                 "unitCosts": units.get("unitCosts") or {},
             }
         return rows
@@ -3013,6 +3079,130 @@ class Gate:
             if limit5 is not None:
                 ok5 &= row["buildCpuRatio"] <= limit5
         self.gate(f"{prefix}.D5", ok5 if detail5 and limit5 is not None else None, detail5)
+
+    # ---- fresh34 and sealed34 configs (RFC 0034, section 9) ----
+
+    def drop_in_ok(self, row: dict, spec: dict) -> bool:
+        """RFC 0033 D1, as RFC 0034 F1 and F2 restate it for their sets: no
+        definite error triaged false; with --full the build passes (or stops
+        only at definite errors all triaged true) and the test suite passes,
+        in trap mode with no trap (or only at triaged-true sites) and in
+        report mode with no failure."""
+        ok = row["falseDefiniteErrors"] <= spec.get("maxFalseDefiniteErrors", 0)
+        if self.args.full:
+            stopped_by_true_errors = (row["built"] is False and row["definiteErrors"] > 0
+                                      and not row["falseDefiniteErrors"] and not row["untriagedDefiniteErrors"])
+            ok &= row["built"] is not False or stopped_by_true_errors
+            ok &= row["testsPassed"] is not False or row["trueTrapsOnly"]
+            ok &= row["reportTestsPassed"] is not False
+            ok &= (row["traps"] or 0) <= spec.get("maxTraps", 0)
+        return ok
+
+    def evaluate_rfc0034(self) -> None:
+        """RFC 0034's gates (manifest gates.rfc0034).
+
+        F1: every fresh34 config builds with the default flags and passes its
+        test suite, in trap mode with no trap and in report mode with no
+        failure; a build may stop only at definite errors triaged true.
+        F2: the same over the sealed34 configs, with F5's build ratio (the one
+        sealed run, recorded as measured; a failure fails the run).
+        F5: each selected config's weavec-cc build CPU time at most
+        maxBuildRatio times the reference compiler's (--full; the reference
+        compiler builds every config once more for it); the named single-unit
+        compiles (sqlite3.c) within their CPU seconds; and no compilation
+        above maxCompileRssMiB, from the per-file compiles of --quick and,
+        with --full, from every compiler process of the trap-mode builds.
+        F7: the run-time ratios of --bench (the default build, with the
+        runtime, over the reference): each fresh34 workload at most
+        maxOverhead and their geometric mean at most maxGeometricMean, and
+        RFC 0032's G14 benchmarks (lua, zlib, cJSON) at their own limits.
+        """
+        spec = self.manifest.gates.get("rfc0034")
+        if not spec:
+            return
+        selected = {c.name for c in self.configs}
+        for corpus_set, name in (("fresh34", "F1"), ("sealed34", "F2")):
+            if not self.sets[corpus_set]:
+                continue
+            rows = self.held_out_rows(corpus_set)
+            self.results.setdefault(corpus_set, {})["configs"] = rows
+            limits = spec.get(name, {})
+            detail = {}
+            ok = True
+            for config, row in rows.items():
+                detail[config] = {k: row[k] for k in (
+                    "definiteErrors", "falseDefiniteErrors", "untriagedDefiniteErrors", "built", "testsPassed",
+                    "trueTrapsOnly", "reportTestsPassed", "traps")}
+                ok &= self.drop_in_ok(row, limits)
+                if corpus_set == "sealed34" and row["buildCpuRatio"] is not None:
+                    limit = spec.get("F5", {}).get("maxBuildRatio")
+                    detail[config]["buildCpuRatio"] = {"ratio": row["buildCpuRatio"], "limit": limit}
+                    if limit is not None:
+                        ok &= row["buildCpuRatio"] <= limit
+            self.gate(f"rfc0034.{name}", ok if rows else None, detail)
+        # F5: build ratios, named unit costs, and every compilation's memory.
+        f5 = spec.get("F5", {})
+        detail5: dict = {}
+        ok5 = True
+        limit_ratio = f5.get("maxBuildRatio")
+        limit_rss = f5.get("maxCompileRssMiB")
+        for config in self.configs:
+            if config.set == "sealed34":
+                continue  # F2 records the sealed run
+            entry = self.results["configs"].get(config.name, {})
+            ratio = build_cpu_ratio(entry.get("builds") or {}, self.args.checks)
+            units = ((entry.get("analyses") or {}).get("units") or {}).get("unitCosts") or {}
+            peaks = [c["maxRssMiB"] for c in units.values() if c.get("maxRssMiB") is not None]
+            build_peak = ((entry.get("builds") or {}).get(self.args.checks) or {}).get("compileMaxRssMiB")
+            if build_peak is not None:
+                peaks.append(build_peak)
+            row: dict = {}
+            if ratio is not None:
+                row["buildCpuRatio"] = {"ratio": ratio, "limit": limit_ratio}
+                if limit_ratio is not None:
+                    ok5 &= ratio <= limit_ratio
+            if peaks:
+                row["compileMaxRssMiB"] = {"value": max(peaks), "limit": limit_rss}
+                if limit_rss is not None:
+                    ok5 &= max(peaks) <= limit_rss
+            if row:
+                detail5[config.name] = row
+        for name, limits in (f5.get("maxUnitCpuSeconds") or {}).items():
+            if name not in selected:
+                continue
+            entry = self.results["configs"].get(name, {})
+            cost = (((entry.get("analyses") or {}).get("units") or {}).get("unitCosts") or {}).get(limits["file"])
+            if not cost:
+                continue
+            detail5[f"{name}.{limits['file']}"] = {"cpuSeconds": cost["cpuSeconds"], "limit": limits["cpuSeconds"]}
+            ok5 &= cost["cpuSeconds"] <= limits["cpuSeconds"]
+        self.gate("rfc0034.F5", ok5 if detail5 else None, detail5)
+        # F7: run time with the runtime.
+        f7 = spec.get("F7", {})
+        detail7: dict = {}
+        ok7 = True
+        fresh = {}
+        for config in self.sets["fresh34"]:
+            ratio = self.measured.get(config.name, {}).get("overhead")
+            if ratio is not None:
+                fresh[config.name] = ratio
+                detail7[config.name] = {"overhead": ratio, "limit": f7.get("maxOverhead")}
+                if f7.get("maxOverhead") is not None:
+                    ok7 &= ratio <= f7["maxOverhead"]
+        mean = geometric_mean(list(fresh.values()))
+        if mean is not None:
+            detail7["geometricMean"] = {"value": mean, "limit": f7.get("maxGeometricMean"),
+                                        "configs": len(fresh),
+                                        "complete": all(c.name in fresh for c in self.manifest.configs
+                                                        if c.set == "fresh34")}
+            if f7.get("maxGeometricMean") is not None:
+                ok7 &= mean <= f7["maxGeometricMean"]
+        for name, limit in (f7.get("maxOverheadG14") or {}).items():
+            ratio = self.measured.get(name, {}).get("overhead")
+            if name in selected and ratio is not None:
+                detail7[name] = {"overhead": ratio, "limit": limit}
+                ok7 &= ratio <= limit
+        self.gate("rfc0034.F7", ok7 if detail7 else None, detail7)
 
     def must_report(self, entries: list[dict]) -> list[dict] | None:
         if not self.args.full:
@@ -3182,6 +3372,24 @@ class Gate:
 # -- reporting ----------------------------------------------------------------
 
 
+def build_cpu_ratio(builds: dict, checks: str) -> float | None:
+    """A config's WeaveC build CPU time over the reference compiler's, both built."""
+    checked = builds.get(checks) or {}
+    reference = builds.get("reference") or {}
+    if not checked or not reference or not checked.get("built") or not reference.get("built"):
+        return None
+    reference_cpu = sum(s["cpu"] for s in reference.get("steps", []))
+    if reference_cpu <= 0:
+        return None
+    return round(sum(s["cpu"] for s in checked.get("steps", [])) / reference_cpu, 2)
+
+
+def geometric_mean(values: list[float]) -> float | None:
+    if not values or any(v <= 0 for v in values):
+        return None
+    return round(math.exp(sum(math.log(v) for v in values) / len(values)), 4)
+
+
 def print_legacy_table(configs: list[Config], tallies: dict[str, dict], totals: dict) -> None:
     ids = sorted(totals["byId"])
     name_w = max(len("config"), *(len(c.name) for c in configs))
@@ -3206,6 +3414,8 @@ SET_GATES = {
     "heldOut": ("rfc0031.G5", "rfc0031.G6", "rfc0031.G12"),
     "fresh": ("rfc0033.D1", "rfc0033.D5"),
     "sealed": ("rfc0033.sealed.D1", "rfc0033.sealed.D5"),
+    "fresh34": ("rfc0034.F1", "rfc0034.F5", "rfc0034.F7"),
+    "sealed34": ("rfc0034.F2",),
 }
 
 
@@ -3299,6 +3509,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     sel.add_argument("--sealed", action="store_true",
                      help="run the sealed configs of RFC 0033, section 11 (gate D2), alone unless --only names "
                           "configs; otherwise they run only when --only names them")
+    sel.add_argument("--set", action="append", default=[], choices=SETS, metavar="SET",
+                     help="run the configs of this set alone (repeatable; one of " + ", ".join(SETS)
+                          + "): --set fresh34 for RFC 0034's gates F1, F5 and F7, --set sealed34 for "
+                            "its gate F2; --only overrides it")
     sel.add_argument("--injection", action="append", default=[], metavar="ID", help="run only this injection")
     sel.add_argument("--jobs", type=int, default=os.cpu_count() or 4, help="parallel processes (default: CPUs)")
     sel.add_argument("--timeout", type=float, default=1800, help="seconds per analysis process (default 1800)")
@@ -3328,6 +3542,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         ap.error("--held-out has no --legacy form: v0.10.0 was never measured on the held-out configs")
     if args.legacy and args.sealed:
         ap.error("--sealed has no --legacy form: v0.10.0 was never measured on the sealed configs")
+    if args.legacy and set(args.set) - {"original"}:
+        ap.error("--set has no --legacy form but for the original set: v0.10.0 was measured on it alone")
     if args.reference_only and (args.quick or args.compare_golden or args.legacy):
         ap.error("--reference-only runs builds, tests, benchmarks and injection checks only")
     if args.update and (args.compare_golden and not (args.quick or args.full or args.inject or args.bench)):

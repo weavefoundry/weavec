@@ -2,7 +2,8 @@
 // thread's object list where it is declared, by the initialiser of a variable declared right
 // after it, and left by that variable's cleanup when its scope ends. An object declared in a
 // nested scope is entered with flag 2; a parameter is entered when the body starts; a local
-// whose address stays (a subscript, a member) is not entered.
+// whose address stays (a subscript, a member) is not entered. RFC 0034 §4: a registered
+// local (not a parameter) is aligned to a 16-byte granule, so the shadow encodes it exactly.
 // The -O0 IR equals that of Inputs/runtime-oracle-stack-objects.expected.c
 // compiled by the reference Clang with the printed prelude.
 //

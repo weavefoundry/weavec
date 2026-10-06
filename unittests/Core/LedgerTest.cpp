@@ -68,7 +68,9 @@ TEST(Ledger, UnresolvedReasonsAreTheClosedListInOrder) {
                                                "raw-cast",
                                                "dangling-escape",
                                                "second-owner",
-                                               "no-zero-init"};
+                                               "no-zero-init",
+                                               "unconfirmed",
+                                               "lowered"};
   const auto all = allUnresolvedReasons();
   ASSERT_EQ(all.size(), UnresolvedReasonCount);
   ASSERT_EQ(expected.size(), UnresolvedReasonCount);
@@ -139,9 +141,11 @@ TEST(Ledger, AuxiliarySpellingsRoundTrip) {
   EXPECT_EQ(toString(LedgerScope::Program), "program");
   EXPECT_EQ(parseLedgerScope("unit"), LedgerScope::Unit);
   for (const std::string_view name :
-       {"nonnull", "index", "span", "len", "disjoint", "assert", "violation"})
+       {"nonnull", "index", "span", "len", "disjoint", "assert", "object"})
     EXPECT_EQ(toString(*parseCheckTemplate(name)), name);
   EXPECT_FALSE(parseCheckTemplate("strnlen"));
+  // RFC 0034 §6.4: no lowered violation traps unconditionally.
+  EXPECT_FALSE(parseCheckTemplate("violation"));
   EXPECT_FALSE(parseCertainty("maybe"));
 }
 

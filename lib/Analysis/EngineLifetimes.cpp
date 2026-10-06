@@ -947,21 +947,20 @@ bool FunctionRun::inUnsafeRegion(const Stmt &stmt) const {
   for (const FunctionDecl *redecl : function.redecls())
     if (getAnnotations(*redecl).unsafe)
       return true;
-  if (!parentMap)
-    parentMap = std::make_unique<ParentMap>(function.getBody());
-  for (const Stmt *at = &stmt; at != nullptr; at = parentMap->getParent(at))
+  for (const Stmt *at = &stmt; at != nullptr; at = parentOf(*at))
     if (isUnsafeBlock(*at))
       return true;
   return false;
 }
 
-bool FunctionRun::isDiscarded(const Expr &expr) const {
-  if (function.getBody() == nullptr)
-    return false;
-  if (!parentMap)
+const Stmt *FunctionRun::parentOf(const Stmt &stmt) const {
+  if (!parentMap && function.getBody() != nullptr)
     parentMap = std::make_unique<ParentMap>(function.getBody());
-  for (const Stmt *at = parentMap->getParent(&expr); at != nullptr;
-       at = parentMap->getParent(at)) {
+  return parentMap ? parentMap->getParent(&stmt) : nullptr;
+}
+
+bool FunctionRun::isDiscarded(const Expr &expr) const {
+  for (const Stmt *at = parentOf(expr); at != nullptr; at = parentOf(*at)) {
     if (const auto *cast = dyn_cast<CastExpr>(at)) {
       if (cast->getCastKind() == CK_ToVoid)
         return true;
@@ -1009,10 +1008,10 @@ static const VarDecl *addressedLocal(const Expr &argument) {
 bool FunctionRun::isPassedToCall(const VarDecl &var) const {
   if (!passedToCalls) {
     passedToCalls.emplace();
-    std::vector<const Stmt *> work{function.getBody()};
-    while (!work.empty()) {
-      const Stmt *stmt = work.back();
-      work.pop_back();
+    std::vector<const Stmt *> pending{function.getBody()};
+    while (!pending.empty()) {
+      const Stmt *stmt = pending.back();
+      pending.pop_back();
       if (stmt == nullptr)
         continue;
       if (const auto *call = dyn_cast<CallExpr>(stmt))
@@ -1020,7 +1019,7 @@ bool FunctionRun::isPassedToCall(const VarDecl &var) const {
           if (const VarDecl *local = addressedLocal(*argument))
             passedToCalls->insert(local->getCanonicalDecl());
       for (const Stmt *child : stmt->children())
-        work.push_back(child);
+        pending.push_back(child);
     }
   }
   return passedToCalls->contains(var.getCanonicalDecl());

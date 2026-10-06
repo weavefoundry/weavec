@@ -60,17 +60,47 @@ TEST(PreludeTest, ModeNoneHasNoPrelude) {
 
 TEST(PreludeTest, TrapModeTrapsWithEveryTemplate) {
   const std::string text = prelude(CheckMode::Trap);
+  // RFC 0034 §1.1: `live` is only declared; the backend and the runtime
+  // check it.
+  EXPECT_NE(text.find("extern void *__weavec_chk_live(const volatile void *);"),
+            std::string::npos);
+  EXPECT_NE(text.find("extern void *__weavec_chk_object(const volatile void "
+                      "*, long long, unsigned long long,"),
+            std::string::npos);
   for (const llvm::StringLiteral name : checkTemplates())
-    EXPECT_NE(
-        text.find("__builtin_verbose_trap(\"weavec\", \"" + name.str() + "\")"),
-        std::string::npos)
-        << name.str();
+    if (name != "live")
+      EXPECT_NE(text.find("__builtin_verbose_trap(\"weavec\", \"" + name.str() +
+                          "\")"),
+                std::string::npos)
+          << name.str();
   EXPECT_NE(text.find("static __inline__ __attribute__((always_inline, "
                       "nodebug, unused)) void *__weavec_chk_nonnull("),
             std::string::npos);
   EXPECT_EQ(text.find("__weavec_prv_"), std::string::npos);
   EXPECT_EQ(text.find("__weavec_rt_report"), std::string::npos);
-  EXPECT_NE(text.find("extern __typeof__(sizeof 0) malloc_size(const void *);"),
+  // RFC 0034 §5.2: the checked wrappers, which compute the need at run
+  // time; sprintf's forwards to vsprintf's, through the bounded writer.
+  EXPECT_NE(text.find("extern unsigned long long __weavec_rt_room(const void "
+                      "*);"),
+            std::string::npos);
+  EXPECT_NE(text.find("char *__weavec_chk_strcpy(char *d, const char *s, "
+                      "unsigned long long cap,\n                    unsigned "
+                      "what) {"),
+            std::string::npos);
+  EXPECT_NE(text.find("static __attribute__((unused, nodebug)) int "
+                      "__weavec_chk_sprintf(char *d, const char *f, unsigned "
+                      "long long cap,\n                   unsigned what, ...) "
+                      "{"),
+            std::string::npos);
+  EXPECT_NE(text.find("__builtin_va_start(ap, what);"), std::string::npos);
+  EXPECT_NE(text.find("r = __builtin_vsnprintf(d, room, f, ap);"),
+            std::string::npos);
+  EXPECT_NE(text.find("__builtin_verbose_trap(\"weavec\", \"disjoint\"))"),
+            std::string::npos);
+  // RFC 0034 §5.3: with the runtime, zero-initialisation asks the runtime
+  // for a block's size.
+  EXPECT_NE(text.find("extern __typeof__(sizeof 0) __weavec_rt_size(const void "
+                      "*);"),
             std::string::npos);
 }
 
@@ -84,7 +114,9 @@ TEST(PreludeTest, UsesNoMacrosNorLineComments) {
     EXPECT_EQ(text.find("//"), std::string::npos);
     EXPECT_EQ(text.find('$'), std::string::npos) << "an unexpanded marker";
     // Every helper is a static always-inline function, but for the static
-    // non-inline wrappers whose address a program takes (section 11).
+    // non-inline wrappers whose address a program takes (section 11) and
+    // the variadic checked wrapper (RFC 0034 section 5.2), which cannot be
+    // inlined.
     llvm::SmallVector<llvm::StringRef, 256> lines;
     llvm::StringRef(text).split(lines, '\n');
     for (const llvm::StringRef line : lines)
@@ -93,7 +125,8 @@ TEST(PreludeTest, UsesNoMacrosNorLineComments) {
         EXPECT_TRUE(line.starts_with("static __inline__ __attribute__") ||
                     (line.starts_with("static __attribute__((unused, "
                                       "nodebug))") &&
-                     line.contains("_zero_fn(")))
+                     (line.contains("_zero_fn(") ||
+                      line.contains("__weavec_chk_sprintf("))))
             << line.str();
   }
 }
@@ -107,13 +140,20 @@ TEST(PreludeTest, ReportModeTakesTheSiteAndCallsTheRuntime) {
                       "long n, const char *file, unsigned line, unsigned "
                       "column)"),
             std::string::npos);
-  EXPECT_NE(text.find("__weavec_chk_violation(const char *file, unsigned "
-                      "line, unsigned column)"),
-            std::string::npos);
+  // RFC 0034 §6.4: no unconditional trap.
+  EXPECT_EQ(text.find("__weavec_chk_violation"), std::string::npos);
   EXPECT_NE(text.find("__weavec_rt_report(\"span\", file, line, column);"),
             std::string::npos);
   EXPECT_EQ(text.find("__builtin_verbose_trap"), std::string::npos);
   EXPECT_EQ(text.find("__builtin_trap"), std::string::npos);
+  // RFC 0034 §5.2: a variadic wrapper takes the site before its `...`.
+  EXPECT_NE(text.find("unsigned what, const char *file, unsigned line, "
+                      "unsigned column, ...) {"),
+            std::string::npos);
+  EXPECT_NE(text.find("__builtin_va_start(ap, column);"), std::string::npos);
+  EXPECT_NE(text.find("r = __weavec_chk_vsprintf(d, f, ap, cap, what, file, "
+                      "line, column);"),
+            std::string::npos);
 }
 
 TEST(PreludeTest, VerifyModeAddsTheProvenFamily) {
@@ -138,8 +178,15 @@ TEST(PreludeTest, ZeroInitNeedsTheSwitchAndAQuery) {
             std::string::npos);
   options.usableSize = UsableSizeQuery::MallocUsableSize;
   EXPECT_NE(buildCheckPrelude(options).find(
-                "extern __typeof__(sizeof 0) malloc_usable_size(void *);"),
+                "extern __typeof__(sizeof 0) __weavec_rt_size(const void *);"),
             std::string::npos);
+  {
+    PreludeOptions plain = options;
+    plain.runtime = false;
+    EXPECT_NE(buildCheckPrelude(plain).find(
+                  "extern __typeof__(sizeof 0) malloc_usable_size(void *);"),
+              std::string::npos);
+  }
   options.verboseTrap = false;
   // RFC 0033 §6.1: with the runtime a trap first makes sure it ends the
   // program.
@@ -172,6 +219,8 @@ TEST(PreludeTest, OutOfLineFormDefinesExternalHelpers) {
                         "const char *file"),
             std::string::npos);
   EXPECT_NE(report.find("__weavec_strnlen_report("), std::string::npos);
+  EXPECT_NE(report.find("\nint __weavec_chk_sprintf_report(char *d"),
+            std::string::npos);
   EXPECT_EQ(report.find("__weavec_need_add"), std::string::npos);
 }
 

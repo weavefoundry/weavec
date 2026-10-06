@@ -214,14 +214,14 @@ std::string_view toString(Form form) noexcept {
     return "function";
   case Form::Result:
     return "result";
-  case Form::Violation:
-    return "violation";
   case Form::Need:
     return "need";
   case Form::String:
     return "string";
   case Form::Length:
     return "length";
+  case Form::Wrapper:
+    return "wrapper";
   }
   return "<invalid>";
 }
@@ -246,8 +246,6 @@ std::string_view toString(Placement placement) noexcept {
 
 std::optional<std::size_t> operandCount(Template kind, Form form,
                                         Placement placement) noexcept {
-  if (form == Form::Violation)
-    return 0;
   switch (kind) {
   case Template::Nonnull:
     if (form == Form::Plain && (placement == Placement::WrapOperand ||
@@ -280,6 +278,8 @@ std::optional<std::size_t> operandCount(Template kind, Form form,
   case Template::Disjoint:
     if (form == Form::Plain && placement == Placement::WrapArgument)
       return 2;
+    if (form == Form::Wrapper && placement == Placement::ReplaceCall)
+      return 0;
     return std::nullopt;
   case Template::Assert:
     if (form == Form::Plain && placement == Placement::ReplaceCall)
@@ -296,6 +296,8 @@ std::optional<std::size_t> operandCount(Template kind, Form form,
       return 0;
     if (form == Form::Length && placement == Placement::WrapArgument)
       return 1;
+    if (form == Form::Wrapper && placement == Placement::ReplaceCall)
+      return 0;
     return std::nullopt;
   case Template::Live:
     if (form == Form::Plain && (placement == Placement::WrapOperand ||
@@ -322,8 +324,6 @@ bool isWellFormed(const CheckPlanEntry &entry) noexcept {
 }
 
 CheckTemplate ledgerTemplate(const CheckPlanEntry &entry) noexcept {
-  if (entry.form == Form::Violation)
-    return CheckTemplate::Violation;
   switch (entry.kind) {
   case Template::Nonnull:
     return CheckTemplate::Nonnull;
@@ -344,13 +344,12 @@ CheckTemplate ledgerTemplate(const CheckPlanEntry &entry) noexcept {
   case Template::Release:
     return CheckTemplate::Release;
   }
-  return CheckTemplate::Violation;
+  return CheckTemplate::Assert;
 }
 
 bool isGuard(const CheckPlanEntry &entry) noexcept {
-  return entry.form != Form::Violation &&
-         (entry.kind == Template::Object || entry.kind == Template::Live ||
-          entry.kind == Template::Release);
+  return entry.kind == Template::Object || entry.kind == Template::Live ||
+         entry.kind == Template::Release;
 }
 
 FacetCheck facetCheck(const CheckPlanEntry &entry) noexcept {
@@ -358,7 +357,7 @@ FacetCheck facetCheck(const CheckPlanEntry &entry) noexcept {
 }
 
 std::string helperName(const CheckPlanEntry &entry) {
-  if (entry.form == Form::Violation)
+  if (entry.form == Form::Wrapper)
     return {};
   std::string name = entry.proven ? "__weavec_prv_" : "__weavec_chk_";
   name += toString(entry.kind);
@@ -382,7 +381,7 @@ std::string helperName(const CheckPlanEntry &entry) {
     name += "_l";
     break;
   case Form::Plain:
-  case Form::Violation:
+  case Form::Wrapper:
     break;
   }
   return name;

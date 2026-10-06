@@ -364,9 +364,25 @@ one raw on some paths is `rawSome`, guarded and never an error); a pointer
 read back from reinterpreted bits is `raw-cast`; a construct the engine does not evaluate yields unknown values
 and `unresolved(unanalysed)` for its sites. `memcpy`, `memmove` and record
 assignments copy leaf by leaf, every source cell read before any is
-written. A body that transfers more blocks than `-fweavec-budget` (or visits
-one block more than 64 times) stops: its facets take the defaults with
-reason `budget`, and its summary is incomplete.
+written. A run whose work (the sizes of the states it transfers and
+joins) exceeds `-fweavec-budget`, whose entry states hold more than
+1,000,000 symbols and objects, whose graph has more than 100,000 blocks, or
+that visits one block more than its limit stops (RFC 0034 §7): its facets
+take the defaults with reason `budget`, and its summary is incomplete.
+
+### Confirmation
+
+A definite finding of the authoritative run is a candidate
+(`FunctionRun::confirmCandidates`, RFC 0034 §6). The function is replayed
+in witness mode: a depth-first search along single paths with no joins
+(at most 256 paths and 20,000 transfers), each block transferred with the
+evidence its fixpoint entry state had, a loop left from its fixpoint state
+after two turns, and an edge that refinement or a symbol's excluded
+constants (`SymInfo::excluded`) empties ending the path. A candidate some
+feasible path reaches, and that every such path decides alike, stays an
+error; otherwise `LedgerAdapter::unconfirm` makes it a warning with the
+note `not confirmed on a feasible path` and plans it as a possible
+finding.
 
 ### Decisions
 
@@ -504,9 +520,9 @@ checks, writes ledgers and unit records, and runs the link step.
 | --- | --- |
 | `FrontendAction.h` | `WeaveCAction`, an `ASTFrontendAction` for libTooling, and `createWeaveCConsumer`, which `weavec-cc` runs at the end of each unit; both run `UnitPipeline`. Every emitted function is analysed, including `static inline` functions from user headers (§5.6). |
 | `DeferredCodeGenConsumer` | Sits in front of CodeGen in every C code-generating action (§10.5). It forwards Sema set-up at once and records every other callback. At the end of the unit it runs the analysis and `CheckEmitter`, then replays the callbacks in order. Without deferral, CodeGen emits external functions before the analysis runs. It overrides every `ASTConsumer` and `SemaConsumer` virtual of LLVM 23, a list on the LLVM-upgrade checklist. |
-| `CheckEmitter` | Applies the `CheckPlan` through Sema (§10.6): `BuildCallExpr` to the helper, `ImpCastExprToType` back to the operand's type so a dereference stays an lvalue, `BuildBinOp` with a comma for a check before a call. User expressions are never evaluated twice. A rewrite Sema rejects leaves the subtree unchanged and fails the compile with an internal error. It also applies the zero-initialisation lowering, gives the guards of a function their range cache (`planCache`, `declareCaches`; see *The runtime*), and registers the unit's stack and global objects (`registerObjects`). |
+| `CheckEmitter` | Applies the `CheckPlan` through Sema (§10.6): `BuildCallExpr` to the helper, `ImpCastExprToType` back to the operand's type so a dereference stays an lvalue, `BuildBinOp` with a comma for a check before a call. User expressions are never evaluated twice. A rewrite Sema rejects leaves the subtree unchanged and fails the compile with an internal error. It also applies the zero-initialisation lowering and registers the unit's stack and global objects (`registerObjects`: a registered local is declared `aligned(16)` and entered inline by `__weavec_stack_enter`). |
 | `ObjectRegistration` | `planObjects` (RFC 0032 §4, §5): which locals and parameters of each emitted function escape and are entered into the runtime's stack list, which calls return twice and are wrapped, and which globals the unit defines and describes. The plan is pure; `CheckEmitter::registerObjects` applies it. |
-| `Prelude` | The helpers the rewrites call, injected into the predefines buffer (§10.2): `static`, `always_inline`, `nodebug` functions for the six templates and their forms, term helpers that saturate toward failure, and the allocation wrappers. With the runtime it also declares the runtime's entry points and the arena descriptor, and defines the guard helpers (`object`, `object_c`, `object_n`, `object_s`, `object_l`, `live`, `live_c`, `release`) and the stack-object helpers. Trap mode calls `__builtin_verbose_trap("weavec", <template>)`, report mode `__weavec_rt_report`, and verify mode adds `__weavec_prv_*` with the category `weavec.proven`. PCH and module builds declare the helpers `extern` instead (§10.9). Each check and guard helper also has a copy that is not inlined, `<helper>_ool`, which a function with more than 4,096 plan entries calls ([RFC 0033](rfcs/0033-drop-in-by-default.md) amendment 12). |
+| `Prelude` | The helpers the rewrites call, injected into the predefines buffer (§10.2): `static`, `always_inline`, `nodebug` functions for the six templates and their forms, term helpers that saturate toward failure, and the allocation wrappers. With the runtime it also declares the runtime's entry points, the arena descriptor and the guards `object` and `live` (without a body: the guard passes lower their calls, and the runtime defines them as a fallback), and defines the call guards (`object_n`, `object_s`, `object_l`, `release`), the checked wrappers and the stack-object helpers. Trap mode calls `__builtin_verbose_trap("weavec", <template>)`, report mode `__weavec_rt_report`, and verify mode adds `__weavec_prv_*` with the category `weavec.proven`. PCH and module builds declare the helpers `extern` instead (§10.9). Each check helper and call guard also has a copy that is not inlined, `<helper>_ool`, which a function with more than 4,096 plan entries calls ([RFC 0033](rfcs/0033-drop-in-by-default.md) amendment 12). |
 | `ZeroInit` | Plans the zero-initialisation of the allocation family (§11): calls to `LibrarySpec` entries with the `zero-init` flag become wrappers that zero the usable region, and `alloca` gets a `memset`. The plan is pure, so the ledger's A5 counts precede any rewrite. A unit that defines an allocator lowers nothing. |
 | `LedgerWriter` | JSON (`weavec-ledger`, version 2: `LedgerSchemaVersion`) and SARIF 2.1.0 renderings of a ledger (§12, RFC 0032 §10), the `weavec-fp/1` fingerprints (a truncated SHA-256 of key, root-relative path, function, normalised message and ordinal), the fingerprint root and atomic writes. |
 | `LedgerOutput` | Completes a unit or program ledger with the producer, root, configuration and the unit's source, object and target; applies the `-W` flags so the ledger counts what was reported; writes it where `-fweavec-ledger` says (a file, or a directory receiving one ledger per unit and per link) through a temporary file renamed into place; and prints the summary line under `-fweavec-summary`, whenever a ledger is written, and always in `weavec`. |
@@ -553,7 +569,7 @@ with the states never allocated, live, free and dead; free lists and the
 quarantine queues live in the metadata, never in freed memory. The object a
 pointer points into, its requested size and whether it is live therefore
 follow from the pointer by arithmetic and one load. Every block is
-zero-filled. A released slot is *dead* and waits in a quarantine (64 MiB by
+zero-filled. A released slot is *dead* and waits in a quarantine (16 MiB by
 default, `WEAVEC_RT_QUARANTINE=<bytes>` in the environment) before it is
 recycled; a reallocation that leaves its size class releases the old block
 the same way. A request no class can hold is mapped on its own as a *huge
@@ -585,13 +601,20 @@ otherwise the pointer is *untracked*, and every guard passes on it
 (assumption A6 of RFC 0032). A pointer into the arena that points to no
 live block is into a dead object.
 
-- **Stack objects** are kept per thread, ordered by frame. An entry is
-  trusted only while its frame can still be live: entering, leaving,
-  rewinding and looking up drop the entries of deeper frames, which is how
-  a `longjmp` that skipped the cleanups is absorbed.
+- **Stack objects** that start on a granule (every registered local, and
+  a parameter passed in registers) are written into the shadow by the
+  prelude's inline `__weavec_stack_enter` and cleared by its cleanup;
+  only those that do not (a parameter passed in memory) are kept in the
+  runtime's per-thread list, ordered by frame. An entry is trusted only
+  while its frame can still be live: entering, leaving, rewinding and
+  looking up drop the entries of deeper frames, and a `setjmp` that
+  returns clears the shadow of the frames below it, which is how a
+  `longjmp` that skipped the cleanups is absorbed.
 - **Global objects** come from descriptors `{address, size}` that each unit
   emits into one section (`__DATA,__weavec_glob` on Mach-O,
-  `weavec_globals` on ELF). A constructor in each image hands its section
+  `weavec_globals` on ELF). The `GlobalPadding` pass pads each registered
+  global to whole granules (one more when it fills its last), so no other
+  data shares its last granule or starts at its one-past address. A constructor in each image hands its section
   to `__weavec_rt_globals_add`; the table is sorted before the next lookup.
 
 ### Guards
@@ -609,33 +632,58 @@ templates exist:
 | `live` | `__weavec_chk_live(p)` | `p` does not point into a dead tracked object |
 | `release` | `__weavec_chk_release(p)` | `p` is null, the start of a live heap object, or untracked |
 
-A guard reaches the runtime in three steps:
+A guard reaches the runtime in three steps (RFC 0034 §1–§3):
 
-1. **Inline arena lookup.** The prelude declares the arena's descriptor
-   (`__weavec_rt_heap`: base, size, metadata base, region shift, class
-   table). For a pointer inside the arena, `object` and `live` compute the
-   region and slot and load the slot word in the helper itself, with no
-   call.
-2. **Range caches** (RFC 0032 *Implementation amendments*, 2). A function
-   that guards a pointer inside a loop gets a local array
-   `__weavec_ranges` of four words per entry, `{lo, len, state, expect}`,
-   cleared on entry, with at most 64 entries. An entry belongs to the local
-   variable the guards read their pointer from, or to one site. The cached
-   helpers `object_c` and `live_c` pass without a lookup when the access
-   lies in `[lo, lo + len)` and the 32-bit word at `state` still reads
-   `expect`: for an arena block `state` is the block's own slot word, for
-   anything else the runtime's epoch `__weavec_rt_epoch`, which changes
-   when a huge block is mapped or unmapped or a table of globals is added.
-   A loop that calls nothing (`isQuietLoop`) checks the state of its
-   entries once on the way in (`__weavec_range_check`), and its guards do
-   not read it. A unit whose helpers are external has no range cache.
-3. **Out-of-line entry points.** Any other pointer, and a cache miss
-   outside the arena, call the runtime: `__weavec_rt_object`,
-   `__weavec_rt_string`, `__weavec_rt_live`, `__weavec_rt_release_ok`, and
-   for a cached guard `__weavec_rt_object_range` and
-   `__weavec_rt_live_range`, which answer the range to remember by value.
-   `__weavec_rt_strlen` reads a string's length inside its own object, for
-   a need that is a string's length.
+1. **Declared guards.** The prelude declares `object`, `live` and their
+   report-mode forms (`__weavec_chk_*`, `__weavec_prv_*` where the facet
+   is proven, for `--checks verify`) without a body; the runtime defines
+   them as an out-of-line fallback. `GuardCanonicalize`
+   (`lib/Frontend/GuardPasses.cpp`, at the pipeline's start) rewrites each
+   call into the address arithmetic of its access and a call of
+   `__weavec_rt_guard(from, at, width, kind, site)` that is `nounwind` and
+   reads only inaccessible memory, so the optimizer removes, merges and
+   hoists guards as it does loads. A call argument's guard of a constant
+   need (`object_n`, `object_l`: `memcpy(&v, p, 4)`) becomes the same
+   access guard. `GuardMerge` and `GuardExpand` run last: guards of one
+   base whose bytes overlap become one, and each remaining guard of at
+   most 16 bytes is expanded inline.
+2. **Shadow memory.** One byte per 16-byte granule of the whole address
+   space (`__weavec_rt_heap.shadow`, indexed by `(a >> 4) & mask`;
+   `mask` is 0 until it is reserved). 0 is no live tracked object, 1–16 a
+   live heap granule's bytes, `0xFE` a heap slot after its object, and a
+   registered stack or global object that starts on a granule is encoded
+   exactly: its last granule `0x40 + k`, each earlier one a run byte saying
+   how many granules at least follow it (`0x80 + r` up to 48, then
+   `0x80 + 48 + c` for at least 2^(c + 4)), so two granules are of one
+   object when their distance is at most the earlier one's run, and an
+   object's end or start is a logarithmic number of jumps away. `0xFB`
+   marks the untracked granule one past such an object (not in a frame
+   with an `alloca` or a compound literal), `0xFC` an object
+   that does not start on a granule (the runtime looks it up), `0xFD` a
+   released huge block. The inline check passes a live heap object's
+   bytes (an access crossing into the next granule reads it too),
+   untracked bytes outside the arena reached from untracked memory, and a
+   registered object's bytes reached from inside it; anything else calls
+   `__weavec_rt_guard`. A function with more than 1,024 guards gets a
+   compact form that loads the descriptor at each guard.
+3. **The slow path.** `__weavec_rt_guard` decides any address: the shadow
+   first, then the arena's slot word (constant time), the huge blocks,
+   the stack list (objects off a granule only) and the table of globals.
+   `__weavec_rt_object`, `__weavec_rt_string`, `__weavec_rt_live` and
+   `__weavec_rt_release_ok` serve the call guards and releases;
+   `__weavec_rt_strlen` reads a string's length inside its own object.
+4. **Checked wrappers** (RFC 0034 §5.2). A call of a library row with a
+   `wrapper(…)` clause (`strcpy`, `stpcpy`, `strcat`, `sprintf`,
+   `vsprintf`, `memcpy`, `memmove`) whose destination's or source's need,
+   or overlap, no term can state, or whose guard would check only a format's least output, calls
+   the prelude's `__weavec_chk_<name>` instead (`CheckPlanner::planGuards`
+   plans `Form::Wrapper`, `CheckEmitter` replaces the callee). The wrapper
+   computes the need at run time, checks it against the object
+   (`__weavec_rt_object`) or the operands' overlap, and makes the call;
+   `sprintf` writes through `vsnprintf` bounded by `__weavec_rt_room`, the
+   bytes left in the object its destination points into, and fails when
+   the output did not fit. A fortified call's object size is passed on and
+   checked too.
 
 `__weavec_rt_object` looks up the accessed address, not `p` (RFC 0033 §4).
 In a live heap object the access passes wherever `p` points, so a base
@@ -809,8 +857,9 @@ analysing no unit again; `analyze` adds step 4; `none` runs nothing.
 1. **Collect inputs.** `collectLinkInputs` resolves objects, archives,
    shared libraries and `-l` arguments as the linker does. One
    `unanalyzed-input` warning per link names every non-system input without
-   a valid record. Calls into functions no record defines are then
-   `trusted(external-unit)`.
+   a valid record, except those whose objects name a `__weavec_` symbol
+   (built by `weavec-cc`: an archive), which one note names instead. Calls
+   into functions no record defines are then `trusted(external-unit)`.
 2. **Solve slots** over all records.
 3. **Verify declarations** against the defining units' summaries and kinds.
    A contradiction is an `annotation-mismatch` error.
@@ -1060,8 +1109,9 @@ temporal finding on a facet the build guards is not reported unless
 enforces nothing, reports it. `-Werror`
 in project flags does not promote WeaveC warnings; `-Werror=weavec[-<id>]`
 does. An error can be lowered with `-Wno-error=weavec-<id>` but not
-disabled; a lowered violation is guarded where the runtime can check it,
-and otherwise checked or trapped unconditionally. RFC 0030 removed
+disabled; a lowered violation gets the check or guard its facet would
+have as a possible finding, or none (`unresolved(lowered)`); nothing traps
+unconditionally (RFC 0034 §6.4). RFC 0030 removed
 `analysis-incomplete` (now unresolved rows, with reasons such as
 `unanalysed` and `budget`), `annotation-required` (now
 `unresolved(unknown-callee)` rows with fix-its), `checking-incomplete` and
@@ -1086,8 +1136,9 @@ and otherwise checked or trapped unconditionally. RFC 0030 removed
 - **Lit tests** (`test/Analysis`, `test/Annotations`, `test/Driver`,
   `test/WholeProgram`, `test/Prelude`, `test/Emission`) pin exact messages
   and driver behaviour; `test/Emission` holds the rewrite-oracle pairs,
-  those of the guards, the range cache and the object registrations among
-  them (`runtime-oracle-*.c`), and `test/Driver/runtime-*.c` pins the
+  those of the guards and the object registrations among them
+  (`runtime-oracle-*.c`; the oracle compares IR without the LLVM passes),
+  `guard-passes-*.c` pin the guard passes' lowering, and `test/Driver/runtime-*.c` pins the
   runtime's flags, link line and fallbacks.
 - **`test/cases`** is one tree of executable C cases by feature, with
   expectations as line-comment markers (`BUG`, `TRAP`, `GUARDED`,

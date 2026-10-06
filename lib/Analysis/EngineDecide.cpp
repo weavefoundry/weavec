@@ -18,7 +18,6 @@
 #include "weavec/Analysis/KindTable.h"
 #include "weavec/Analysis/SiteCollector.h"
 
-#include "clang/AST/ParentMapContext.h"
 #include "clang/AST/RecordLayout.h"
 #include "clang/Basic/SourceManager.h"
 
@@ -766,7 +765,12 @@ void Decider::spatialOf(core::Sym pointer, std::int64_t width,
                             .offset = std::move(index),
                             .unmodified = true,
                             .accessesSafe = true};
-    // A cursor: its object's start must have a name.
+    // A cursor: its object's start must have a name, and be the one start
+    // (a pointer into one of several objects of one size has no base).
+    if (std::ranges::any_of(value.targets, [&](const core::Target &each) {
+          return each.object != target.object;
+        }))
+      return std::nullopt;
     std::optional<WitnessTerm> base;
     for (const auto &[sym, info] : state.syms) {
       if (info.type != core::SymInfo::Type::Pointer || info.targets.size() != 1)
@@ -804,9 +808,12 @@ void Decider::spatialOf(core::Sym pointer, std::int64_t width,
     decide(core::Facet::Spatial, core::FacetDecision::proven());
     return;
   case Kind::Violation: {
-    // A lowered violation traps with the `violation` template (RFC 0030
-    // §3.4).
+    // RFC 0034 §6.4: a lowered violation gets the check its witness states,
+    // which traps exactly when the access is out of bounds.
     decide(core::Facet::Spatial, core::FacetDecision::violation());
+    if (std::optional<CheckWitness> witness = witnessFor();
+        witness && run.isPublishing())
+      out.witness(*site.stmt, core::Facet::Spatial, std::move(*witness));
     std::string subject = inQuotes(transfer.spell(*cast<Expr>(site.stmt)));
     // The object: an array member's is the object it is a member of.
     const Expr *objectExpr =
@@ -975,14 +982,11 @@ void Decider::spatialOf(core::Sym pointer, std::int64_t width,
 }
 
 /// Whether the site's lvalue is stored to (`p[0] = c`, `++*p`).
-static bool isWritten(ASTContext &context, const Stmt &lvalue) {
-  DynTypedNodeList parents = context.getParents(lvalue);
-  for (int depth = 0; depth < 4 && !parents.empty(); ++depth) {
-    const Stmt *parent = parents[0].get<Stmt>();
-    if (parent == nullptr)
-      return false;
+static bool isWritten(const FunctionRun &run, const Stmt &lvalue) {
+  const Stmt *parent = run.parentOf(lvalue);
+  for (int depth = 0; depth < 4 && parent != nullptr; ++depth) {
     if (isa<ParenExpr>(parent)) {
-      parents = context.getParents(*parent);
+      parent = run.parentOf(*parent);
       continue;
     }
     if (const auto *binary = dyn_cast<BinaryOperator>(parent))
@@ -1007,7 +1011,7 @@ bool Decider::writesLiteral(core::Sym pointer, const Expr &operand) {
     any = any || literal;
     all = all && literal;
   }
-  if (!any || !isWritten(context, *site.stmt))
+  if (!any || !isWritten(run, *site.stmt))
     return false;
   if (!all) {
     decide(core::Facet::Spatial, core::FacetDecision::unresolvedFor(
@@ -1561,8 +1565,13 @@ void Decider::invalidRelease(core::Sym pointer) {
     return;
   const Expr *operand = site.operand;
   std::string name = transfer.spell(releasedBase(*operand));
+  const bool ranged = site.library.has_value() &&
+                      std::ranges::any_of(site.library->entry->params,
+                                          [](const core::LibraryParam &param) {
+                                            return param.range.has_value();
+                                          });
   Transfer::ReleaseCheck check =
-      transfer.releaseCheck(pointer, name, *operand, "released");
+      transfer.releaseCheck(pointer, name, *operand, "released", ranged);
   switch (check.kind) {
   case Transfer::ReleaseCheck::Kind::Proven:
     decide(core::Facet::Spatial, core::FacetDecision::proven());
@@ -1594,7 +1603,8 @@ void Decider::invalidRelease(core::Sym pointer) {
 Transfer::ReleaseCheck Transfer::releaseCheck(core::Sym pointer,
                                               const std::string &subject,
                                               const Expr &operand,
-                                              const std::string &verb) const {
+                                              const std::string &verb,
+                                              bool anywhere) const {
   ReleaseCheck out;
   const core::SymInfo &value = heap.info(state, pointer);
   if (value.null == core::PointerNull::Null)
@@ -1662,6 +1672,11 @@ Transfer::ReleaseCheck Transfer::releaseCheck(core::Sym pointer,
           kind != nullptr && !kind->hasShape() &&
           !kind->shapeFromSystemHeader())
         cursor = true;
+    // (A release that may take any part of a heap object takes this one.)
+    if (anywhere && heapObject) {
+      allInvalid = false;
+      continue;
+    }
     if (nonHeap) {
       anyInvalid = true;
       if (out.message.empty()) {
@@ -2080,15 +2095,33 @@ bool Transfer::calleeTouches(const CallExpr &call, core::Sym calleeValue,
   return false;
 }
 
+/// RFC 0034 §6.3: a library row gives argument `index` of a call of
+/// `callee` no access requirement and no effect (`mmap`'s address hint).
+static bool libraryUsesValueOnly(const FunctionDecl &callee, unsigned index,
+                                 const core::LibrarySpec &library) {
+  auto match = governingLibraryEntry(callee, library);
+  if (!match)
+    return false;
+  const int row = match->rowArgument(index);
+  return row >= 0 && match->entry->usesValueOnly(static_cast<unsigned>(row));
+}
+
 /// RFC 0033 §1: whether `param` appears in `body` only as a value: an
-/// operand of `==` or `!=`, converted to an integer, a variadic argument of
-/// a call whose literal format reads no string (`%p`), or an argument of a
-/// function of the unit that itself uses it only so (`depth` levels down).
-static bool onlyValueUses(const Stmt &body, const ParmVarDecl &param,
-                          ASTContext &context, unsigned depth) {
-  const auto parentOf = [&](const Stmt &child) -> const Stmt * {
-    const DynTypedNodeList parents = context.getParents(child);
-    return parents.empty() ? nullptr : parents[0].get<Stmt>();
+/// operand of `==` or `!=`, tested for truth, converted to an integer, a
+/// variadic argument of a call whose literal format reads no string (`%p`),
+/// an argument a library row gives no access and no effect (RFC 0034
+/// §6.3), or an argument of a function of the unit that itself uses it only
+/// so (`depth` levels down).
+static bool onlyValueUses(UnitRun &unit, const FunctionDecl &definition,
+                          unsigned index, unsigned depth) {
+  auto [cached, inserted] =
+      unit.valueOnly.try_emplace({&definition, index, depth}, false);
+  if (!inserted)
+    return cached->second;
+  const ParmVarDecl &param = *definition.getParamDecl(index);
+  const ParentMap parents(definition.getBody());
+  const auto parentOf = [&](const Stmt &child) {
+    return parents.getParent(&child);
   };
   // The use of an argument by its callee.
   const auto valueArgument = [&](const CallExpr &call, const Expr &argument) {
@@ -2113,12 +2146,12 @@ static bool onlyValueUses(const Stmt &body, const ParmVarDecl &param,
       return false;
     }
     const FunctionDecl *definition = nullptr;
-    return depth > 0 && callee->hasBody(definition) && definition != nullptr &&
-           !definition->isVariadic() &&
-           onlyValueUses(*definition->getBody(),
-                         *definition->getParamDecl(index), context, depth - 1);
+    if (!callee->hasBody(definition) || definition == nullptr)
+      return libraryUsesValueOnly(*callee, index, unit.library());
+    return depth > 0 && !definition->isVariadic() &&
+           onlyValueUses(unit, *definition, index, depth - 1);
   };
-  std::vector<const Stmt *> work{&body};
+  std::vector<const Stmt *> work{definition.getBody()};
   while (!work.empty()) {
     const Stmt *stmt = work.back();
     work.pop_back();
@@ -2140,12 +2173,29 @@ static bool onlyValueUses(const Stmt &body, const ParmVarDecl &param,
         use = parentOf(*use);
       }
       const auto *binary = dyn_cast_or_null<BinaryOperator>(use);
+      const auto *unary = dyn_cast_or_null<UnaryOperator>(use);
       const auto *cast = dyn_cast_or_null<CastExpr>(use);
       const auto *call = dyn_cast_or_null<CallExpr>(use);
+      // A truth test (`if (p)`, `p && …`, `!p`) is a comparison with null.
+      const auto truthTest = [&] {
+        if (const auto *test = dyn_cast_or_null<IfStmt>(use))
+          return test->getCond() == operand;
+        if (const auto *test = dyn_cast_or_null<WhileStmt>(use))
+          return test->getCond() == operand;
+        if (const auto *test = dyn_cast_or_null<DoStmt>(use))
+          return test->getCond() == operand;
+        if (const auto *test = dyn_cast_or_null<ForStmt>(use))
+          return test->getCond() == operand;
+        if (const auto *test = dyn_cast_or_null<ConditionalOperator>(use))
+          return test->getCond() == operand;
+        return (binary != nullptr && binary->isLogicalOp()) ||
+               (unary != nullptr && unary->getOpcode() == UO_LNot);
+      };
       const bool value =
           isa_and_nonnull<UnaryExprOrTypeTraitExpr>(use) ||
-          (binary != nullptr && binary->isEqualityOp()) ||
-          (cast != nullptr && cast->getCastKind() == CK_PointerToIntegral) ||
+          (binary != nullptr && binary->isEqualityOp()) || truthTest() ||
+          (cast != nullptr && (cast->getCastKind() == CK_PointerToIntegral ||
+                               cast->getCastKind() == CK_PointerToBoolean)) ||
           (call != nullptr && call->getCallee() != operand &&
            valueArgument(*call, *cast_or_null<Expr>(operand)));
       if (!value)
@@ -2155,7 +2205,7 @@ static bool onlyValueUses(const Stmt &body, const ParmVarDecl &param,
     for (const Stmt *child : stmt->children())
       work.push_back(child);
   }
-  return true;
+  return cached->second = true;
 }
 
 bool Transfer::usesValueOnly(const CallExpr &call, core::Sym calleeValue,
@@ -2165,16 +2215,20 @@ bool Transfer::usesValueOnly(const CallExpr &call, core::Sym calleeValue,
       callTargets(call, calleeValue);
   if (targets.empty())
     return false;
+  const core::LibrarySpec &library = run.unitRun().library();
   for (const FunctionDecl *target : targets) {
     const FunctionDecl *definition = nullptr;
-    if (!target->hasBody(definition) || definition == nullptr ||
-        index >= definition->getNumParams() || definition->isVariadic())
+    if (!target->hasBody(definition) || definition == nullptr) {
+      if (libraryUsesValueOnly(*target, index, library))
+        continue;
+      return false;
+    }
+    if (index >= definition->getNumParams() || definition->isVariadic())
       return false;
     const core::FunctionEffects *effects =
         run.unitRun().summaryOf(*target->getCanonicalDecl());
     if (effects == nullptr || effects->incomplete ||
-        !onlyValueUses(*definition->getBody(), *definition->getParamDecl(index),
-                       context, 3))
+        !onlyValueUses(run.unitRun(), *definition, index, 3))
       return false;
   }
   return !calleeReleases(call, calleeValue, args, index, true);

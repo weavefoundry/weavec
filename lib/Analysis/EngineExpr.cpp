@@ -2639,6 +2639,13 @@ core::Sym Transfer::compare(BinaryOperatorKind kind, core::Sym left,
     condition.left = right;
     condition.rightIsConstant = true;
     condition.constant = 0;
+  } else if (auto k = state.zone.constant(left);
+             k && !operandType->isPointerType() &&
+             (kind == BO_EQ || kind == BO_NE)) {
+    // `DIRECT == t`: swap, so its edges refine `t` (RFC 0034 §6.2).
+    condition.left = right;
+    condition.rightIsConstant = true;
+    condition.constant = *k;
   } else {
     condition.right = right;
   }
@@ -3519,8 +3526,14 @@ bool Transfer::refineCondition(FunctionRun &run, core::HeapState &state,
       if (c != INT64_MIN)
         le(core::ZeroSym, cond.left, -c);
     };
+    // RFC 0034 §6.2: the constants the value is known not to equal, which
+    // the zone's bounds cannot hold (`t != DIRECT` with `t` in [0, 3]).
+    const core::SymInfo &tested = heap.info(state, cond.left);
     switch (op) {
     case Op::Eq:
+      if ((c == 0 && tested.nonZero) ||
+          std::ranges::binary_search(tested.excluded, c))
+        return false;
       le(cond.left, core::ZeroSym, c);
       atLeast();
       break;
@@ -3529,10 +3542,19 @@ bool Transfer::refineCondition(FunctionRun &run, core::HeapState &state,
       auto hi = state.zone.upper(cond.left);
       if (lo && hi && *lo == c && *hi == c)
         return false;
-      if (lo && *lo == c)
+      if (lo && *lo == c) {
         above();
-      else if (hi && *hi == c)
+      } else if (hi && *hi == c) {
         below();
+      } else if ((!lo || *lo < c) && (!hi || *hi > c)) {
+        // (Zero too: `nonZero` stays what a truth test makes, which the
+        // summary's entry tests read.)
+        core::SymInfo &value = heap.infoMut(state, cond.left);
+        auto at = std::ranges::lower_bound(value.excluded, c);
+        if (value.excluded.size() < core::MaxExcluded &&
+            (at == value.excluded.end() || *at != c))
+          value.excluded.insert(at, c);
+      }
       break;
     }
     case Op::Lt:

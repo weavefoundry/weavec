@@ -1,4 +1,6 @@
-// Many independent branches before a real UAF (path/state explosion).
+// Many independent branches before a real UAF (path/state explosion). RFC 0034 §6.1: the
+// replay cannot visit 2^30 paths within its budget, so the definite error is unconfirmed, a
+// warning, and the use is guarded, which traps when it happens.
 // ASAN
 #include <stdlib.h>
 int main(int argc, char **argv) {
@@ -11,5 +13,5 @@ int main(int argc, char **argv) {
   B(0) B(1) B(2) B(3) B(4) B(5) B(6) B(7) B(8) B(9) B(10) B(11) B(12) B(13) B(14) B(15)
   B(16) B(17) B(18) B(19) B(20) B(21) B(22) B(23) B(24) B(25) B(26) B(27) B(28) B(29)
   free(p);
-  return x + p[argc & 1]; // BUG: use-after-free
+  return x + p[argc & 1]; // BUG: use-after-free // TRAP: live
 }

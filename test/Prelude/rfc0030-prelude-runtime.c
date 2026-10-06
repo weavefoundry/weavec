@@ -17,7 +17,6 @@
 //
 // RUN: %t/trap0 nonnull 2>&1 | FileCheck --check-prefix=TRAPPED %s
 // RUN: %t/trap0 span 2>&1 | FileCheck --check-prefix=TRAPPED %s
-// RUN: %t/trap0 violation 2>&1 | FileCheck --check-prefix=TRAPPED %s
 // RUN: %t/trap2 nonnull 2>&1 | FileCheck --check-prefix=TRAPPED %s
 // RUN: %t/trap2 nonnull_n 2>&1 | FileCheck --check-prefix=TRAPPED %s
 // RUN: %t/trap2 nonnull_fn 2>&1 | FileCheck --check-prefix=TRAPPED %s
@@ -30,7 +29,6 @@
 // RUN: %t/trap2 len_r 2>&1 | FileCheck --check-prefix=TRAPPED %s
 // RUN: %t/trap2 disjoint 2>&1 | FileCheck --check-prefix=TRAPPED %s
 // RUN: %t/trap2 assert 2>&1 | FileCheck --check-prefix=TRAPPED %s
-// RUN: %t/trap2 violation 2>&1 | FileCheck --check-prefix=TRAPPED %s
 // RUN: %t/trap2 strnlen 2>&1 | FileCheck --check-prefix=TRAPPED %s
 // RUN: %t/trap2 prv_nonnull 2>&1 | FileCheck --check-prefix=TRAPPED %s
 // RUN: %t/trap2 prv_index 2>&1 | FileCheck --check-prefix=TRAPPED %s
@@ -183,24 +181,39 @@ static void passes(void) {
   __weavec_prv_assert(1);
 #endif
 
-  // Term arithmetic saturates toward failure.
+  // Term arithmetic is exact over long long and saturates toward failure;
+  // only the result is clamped.
+  const long long top = (long long)(max >> 1);
   EXPECT(__weavec_need_s(opaque(-1)) == max);
   EXPECT(__weavec_need_s(5) == 5);
   EXPECT(__weavec_have_s(opaque(-1)) == 0);
   EXPECT(__weavec_have_s(5) == 5);
-  EXPECT(__weavec_need_add(max, 1) == max);
+  EXPECT(__weavec_term_u(max) == top);
+  EXPECT(__weavec_term_u(7) == 7);
+  EXPECT(__weavec_need_add(opaque(-5), 8) == 3);
+  EXPECT(__weavec_need_add(top, opaque(-1)) == top);
+  EXPECT(__weavec_need_add(top - 1, 2) == top);
   EXPECT(__weavec_need_add(2, 3) == 5);
-  EXPECT(__weavec_need_sub(1, 2) == max);
-  EXPECT(__weavec_need_sub(max, 5) == max);
+  EXPECT(__weavec_need_s(__weavec_need_sub(1, 2)) == max);
+  EXPECT(__weavec_need_sub(top, 5) == top);
+  EXPECT(__weavec_need_sub(5, -top - 1) == top);
   EXPECT(__weavec_need_sub(5, 2) == 3);
-  EXPECT(__weavec_need_mul(1ULL << 40, 1ULL << 40) == max);
+  EXPECT(__weavec_need_mul(1LL << 40, 1LL << 40) == top);
   EXPECT(__weavec_need_mul(6, 7) == 42);
-  EXPECT(__weavec_have_add(max, 1) == 0);
+  EXPECT(__weavec_need_div(opaque(-3), 4) == -1);
+  EXPECT(__weavec_need_div(top, 4) == top);
+  EXPECT(__weavec_need_div(9, 4) == 2);
+  EXPECT(__weavec_have_add(opaque(-2), 5) == 3);
+  EXPECT(__weavec_have_add(-top - 1, 5) == -top - 1);
+  EXPECT(__weavec_have_s(__weavec_have_add(top, 1)) == 0);
   EXPECT(__weavec_have_add(2, 3) == 5);
-  EXPECT(__weavec_have_sub(1, 2) == 0);
+  EXPECT(__weavec_have_s(__weavec_have_sub(1, 2)) == 0);
+  EXPECT(__weavec_have_sub(9, top) == -top - 1);
   EXPECT(__weavec_have_sub(5, 2) == 3);
-  EXPECT(__weavec_have_mul(1ULL << 40, 1ULL << 40) == 0);
+  EXPECT(__weavec_have_s(__weavec_have_mul(1LL << 40, 1LL << 40)) == 0);
   EXPECT(__weavec_have_mul(6, 7) == 42);
+  EXPECT(__weavec_have_div(opaque(-3), 4) == -1);
+  EXPECT(__weavec_have_div(9, 4) == 2);
 
   // Zero-initialisation: every usable byte is zero or written.
   unsigned char *p = __weavec_malloc_zero(10);
@@ -293,9 +306,6 @@ static void fails(const char *which) {
   if (want(which, "assert"))
     // REPORT-NEXT: failed: assert at {{.*}}.c:[[#@LINE+1]]:7
     __weavec_chk_assert((int)opaque(0) AT);
-  if (want(which, "violation"))
-    // REPORT-NEXT: failed: violation at {{.*}}.c:[[#@LINE+1]]:7
-    __weavec_chk_violation(AT0);
   if (want(which, "strnlen"))
     // REPORT-NEXT: failed: nonnull at {{.*}}.c:[[#@LINE+1]]:7
     sink(__weavec_strnlen(opaquePointer(0), 4 AT));
@@ -343,8 +353,7 @@ unsigned long long __weavec_chk_index_report(unsigned long long i,
                                              unsigned long long n,
                                              const char *file, unsigned line,
                                              unsigned column);
-unsigned long long __weavec_need_mul(unsigned long long a,
-                                     unsigned long long b);
+long long __weavec_need_mul(long long a, long long b);
 void *__weavec_malloc_zero(size_t n);
 void *__weavec_realloc_zero(void *p, size_t n);
 
@@ -360,7 +369,7 @@ int main(int argc, char **argv) {
   int a[4];
   EXPECT(__weavec_chk_nonnull(a) == a);
   EXPECT(__weavec_chk_index(3, 8) == 3);
-  EXPECT(__weavec_need_mul(1ULL << 40, 1ULL << 40) == ~0ULL);
+  EXPECT(__weavec_need_mul(1LL << 40, 1LL << 40) == (long long)(~0ULL >> 1));
   unsigned char *p = __weavec_malloc_zero(10);
   EXPECT(p && zeroFrom(p, 0));
   fill(p, 0xab);

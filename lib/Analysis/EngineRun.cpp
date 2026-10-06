@@ -68,6 +68,10 @@ static constexpr unsigned VisitsPerPredecessor = 2;
 /// as many per edge, so a round of them does not exhaust it.
 static constexpr unsigned MaxJoinsPerBlock = 256;
 static constexpr unsigned JoinsPerPredecessor = 64;
+/// RFC 0034 §7.1: the size of a run's entry states (memory), and of its
+/// graph, over budget.
+static constexpr std::uint64_t MaxRetainedState = 1000000;
+static constexpr unsigned MaxBlocks = 100000;
 /// Symbols a block's joined state may hold before the function is over
 /// budget: every later join pairs them all (sqlite's `sqlite3VdbeExec`
 /// reached 4,677; the next largest in the corpus, under 1,000).
@@ -77,8 +81,8 @@ FunctionRun::FunctionRun(UnitRun &unitRun, const FunctionDecl &fn,
                          LedgerAdapter &adapter, RunMode runMode,
                          const AliasContext *alias, unsigned depth)
     : unit(unitRun), function(fn), aliasContext(alias), contextDepth(depth),
-      context(unitRun.context()), out(adapter), mode(runMode),
-      heap(objects, *this) {}
+      context(unitRun.context()), out(adapter), publishTo(&adapter),
+      mode(runMode), heap(objects, *this) {}
 
 FunctionRun::~FunctionRun() = default;
 
@@ -727,6 +731,12 @@ core::Sym FunctionRun::unwritten(core::HeapState &state, core::ObjectId object,
   if (!objectType.isNull())
     at = fieldAt(context, objectType,
                  key.isSelected() ? key.position().offset : key.offset);
+  // (An element position is kept modulo its stride, so it may name another
+  // member that shares it, `n` for `kids[j]` in `{int n; T *kids[4];}`: the
+  // lvalue's type is the element's then.)
+  if (at && !key.isConcrete() && hint.ctype != 0 &&
+      !ASTContext::hasSameUnqualifiedType(at->type, typeOfHandle(hint.ctype)))
+    at.reset();
   QualType cellType = at ? at->type : QualType();
   if (cellType.isNull() && hint.ctype != 0)
     cellType = typeOfHandle(hint.ctype);
@@ -811,8 +821,8 @@ core::Sym FunctionRun::unwritten(core::HeapState &state, core::ObjectId object,
   }
   case core::ObjectKind::Focus: {
     // Every candidate's value at the cell.
-    std::vector<core::ObjectId> candidates = target.candidates;
-    for (core::ObjectId candidate : candidates) {
+    std::vector<core::ObjectId> focused = target.candidates;
+    for (core::ObjectId candidate : focused) {
       if (!state.objects.contains(candidate))
         continue;
       core::Sym sym = heap.load(state, candidate, key, hint);
@@ -958,7 +968,7 @@ void FunctionRun::dropDeadLocals(core::HeapState &state, unsigned block) const {
 void FunctionRun::dropDeadValues(core::HeapState &state, unsigned block) const {
   if (block >= carriedLiveIn.size() || state.unreachable || state.exprs.empty())
     return;
-  const llvm::BitVector &live = carriedLiveIn[block];
+  const llvm::SparseBitVector<> &live = carriedLiveIn[block];
   state.exprs.eraseIf([&](core::Handle handle, core::Sym) {
     auto index = carriedIndex.find(handle);
     return index != carriedIndex.end() && !live.test(index->second);
@@ -1163,10 +1173,10 @@ bool FunctionRun::blockReaches(unsigned from, unsigned to) const {
   for (const CFGBlock *block : *cfg)
     byId[block->getBlockID()] = block;
   std::vector<bool> seen(byId.size(), false);
-  std::vector<unsigned> work{from};
-  while (!work.empty()) {
-    unsigned id = work.back();
-    work.pop_back();
+  std::vector<unsigned> pending{from};
+  while (!pending.empty()) {
+    unsigned id = pending.back();
+    pending.pop_back();
     if (id >= byId.size() || seen[id] || byId[id] == nullptr)
       continue;
     seen[id] = true;
@@ -1174,7 +1184,7 @@ bool FunctionRun::blockReaches(unsigned from, unsigned to) const {
       if (const CFGBlock *next = succ.getReachableBlock()) {
         if (next->getBlockID() == to)
           return true;
-        work.push_back(next->getBlockID());
+        pending.push_back(next->getBlockID());
       }
   }
   return false;
@@ -1188,11 +1198,133 @@ void FunctionRun::report(core::Diagnostic diagnostic, core::Certainty certainty,
                          const Stmt *site, std::optional<core::Facet> facet) {
   if (!publishing)
     return;
+  // RFC 0034 §6.1: in the replay, a report of a candidate at its location
+  // witnesses it on this path when definite, and counters it when not.
+  if (witnessing) {
+    for (Candidate &candidate : candidates)
+      if (candidate.id == diagnostic.id &&
+          candidate.where == diagnostic.location) {
+        if (certainty == core::Certainty::Definite &&
+            diagnostic.severity == core::Severity::Error)
+          candidate.reportedHere = true;
+        else
+          candidate.otherwiseHere = true;
+      }
+    return;
+  }
   auto key =
       std::make_pair(site, std::string(diagnostic.id) + diagnostic.message);
   if (!reported.insert(key).second)
     return;
+  if (mode == RunMode::Authoritative && site != nullptr && facet &&
+      certainty == core::Certainty::Definite &&
+      diagnostic.severity == core::Severity::Error)
+    candidates.push_back(Candidate{.site = site,
+                                   .facet = *facet,
+                                   .id = std::string(diagnostic.id),
+                                   .where = diagnostic.location});
   out.report(std::move(diagnostic), certainty, site, facet);
+}
+
+/// RFC 0034 §6.1: the replay's bounds.
+static constexpr unsigned ReplayPaths = 256;
+static constexpr unsigned ReplayTransfers = 20000;
+static constexpr unsigned ReplayLoopTurns = 2;
+
+void FunctionRun::confirmCandidates() {
+  if (candidates.empty() || mode != RunMode::Authoritative || !cfg)
+    return;
+  LedgerAdapter witness(context, sites(), {}, LedgerAdapter::Mode::Witness);
+  // A decision of a candidate's facet at its site that is no violation:
+  // this path reaches the site and does not fail it.
+  witness.observer = [this](const Stmt &site, core::Facet facet,
+                            const core::FacetDecision &decision) {
+    if (decision.outcome == core::SiteOutcome::Violation)
+      return;
+    for (Candidate &candidate : candidates)
+      if (candidate.site == &site && candidate.facet == facet)
+        candidate.otherwiseHere = true;
+  };
+  publishTo = &witness;
+  witnessing = true;
+  publishing = true;
+  struct Frame {
+    unsigned block = 0;
+    core::HeapState state;
+    std::vector<std::uint8_t> turns;
+  };
+  std::vector<Frame> stack;
+  const unsigned entry = cfg->getEntry().getBlockID();
+  bool complete = entryStates[entry].has_value();
+  if (complete)
+    stack.push_back(
+        Frame{.block = entry,
+              .state = *entryStates[entry],
+              .turns = std::vector<std::uint8_t>(cfg->getNumBlockIDs(), 0)});
+  unsigned paths = 0;
+  unsigned transfersLeft = ReplayTransfers;
+  std::vector<const CFGBlock *> byId(cfg->getNumBlockIDs(), nullptr);
+  for (const CFGBlock *block : *cfg)
+    byId[block->getBlockID()] = block;
+  while (!stack.empty()) {
+    Frame frame = std::move(stack.back());
+    stack.pop_back();
+    const CFGBlock *block = byId[frame.block];
+    if (block == nullptr)
+      continue;
+    // A loop taken more than twice on one path leaves it from its head's
+    // fixpoint state, by its exits only; anything else repeated stops.
+    bool leaveLoop = false;
+    if (frame.turns[frame.block]++ >= ReplayLoopTurns) {
+      if (!loopHead[frame.block] || !entryStates[frame.block])
+        continue;
+      frame.state = *entryStates[frame.block];
+      leaveLoop = true;
+    }
+    if (transfersLeft-- == 0) {
+      complete = false;
+      break;
+    }
+    // (Each path reports for itself: what makes a finding once per run.)
+    requirementViolated.clear();
+    reportedUninit.clear();
+    std::vector<std::pair<unsigned, core::HeapState>> outs;
+    transferBlock(*block, frame.state, outs);
+    // A definite report in this block witnesses its candidate whatever the
+    // site's own decision says (a trusted facet still reports, and the
+    // authoritative pass links the error to it); anything else counters.
+    for (Candidate &candidate : candidates) {
+      if (candidate.reportedHere)
+        candidate.witnessed = true;
+      else if (candidate.otherwiseHere)
+        candidate.countered = true;
+      candidate.reportedHere = candidate.otherwiseHere = false;
+    }
+    if (outs.empty()) {
+      if (++paths > ReplayPaths) {
+        complete = false;
+        break;
+      }
+      continue;
+    }
+    for (auto &[succ, state] : llvm::reverse(outs)) {
+      if (leaveLoop) {
+        const auto body = loopBody.find(frame.block);
+        if (body != loopBody.end() && body->second.test(succ))
+          continue;
+      }
+      dropDeadLocals(state, succ);
+      dropDeadValues(state, succ);
+      stack.push_back(Frame{
+          .block = succ, .state = std::move(state), .turns = frame.turns});
+    }
+  }
+  witnessing = false;
+  publishing = false;
+  publishTo = &out;
+  for (const Candidate &candidate : candidates)
+    if (!complete || !candidate.witnessed || candidate.countered)
+      out.unconfirm(*candidate.site, candidate.facet, candidate.id);
 }
 
 //===----------------------------------------------------------------------===//
@@ -1207,7 +1339,8 @@ void FunctionRun::buildCfg() {
   options.AddScopes = false;
   options.PruneTriviallyFalseEdges = true;
   cfg = CFG::buildCFG(&function, function.getBody(), &context, options);
-  if (!cfg)
+  // RFC 0034 §7.1: no pre-pass (they are quadratic) over a graph too large.
+  if (!cfg || cfg->getNumBlockIDs() > MaxBlocks)
     return;
   entryStates.assign(cfg->getNumBlockIDs(), std::nullopt);
   visits.assign(cfg->getNumBlockIDs(), 0);
@@ -1326,15 +1459,16 @@ void FunctionRun::buildCfg() {
     for (const auto &[arm, op] : arms)
       track(op);
     const unsigned blocks = cfg->getNumBlockIDs();
-    std::vector<llvm::BitVector> use(blocks, llvm::BitVector(index.size()));
-    std::vector<llvm::BitVector> kill(blocks, llvm::BitVector(index.size()));
+    // (Sparse: thousands of blocks carry thousands of short-lived values.)
+    std::vector<llvm::SparseBitVector<>> use(blocks);
+    std::vector<llvm::SparseBitVector<>> kill(blocks);
     for (const CFGBlock *block : *cfg) {
-      llvm::BitVector &reads = use[block->getBlockID()];
-      llvm::BitVector &writes = kill[block->getBlockID()];
-      std::vector<const Stmt *> work;
+      llvm::SparseBitVector<> &reads = use[block->getBlockID()];
+      llvm::SparseBitVector<> &writes = kill[block->getBlockID()];
+      std::vector<const Stmt *> pending;
       for (const CFGElement &element : *block)
         if (auto stmt = element.getAs<CFGStmt>()) {
-          work.push_back(stmt->getStmt());
+          pending.push_back(stmt->getStmt());
           if (const auto *expr = dyn_cast<Expr>(stmt->getStmt())) {
             if (auto it = index.find(expr); it != index.end())
               writes.set(it->second);
@@ -1346,12 +1480,12 @@ void FunctionRun::buildCfg() {
       if (const Stmt *terminator = block->getTerminatorStmt();
           terminator != nullptr && isa<Expr>(terminator) &&
           !isa<AbstractConditionalOperator>(terminator))
-        work.push_back(terminator);
+        pending.push_back(terminator);
       if (const Stmt *condition = block->getTerminatorCondition(false))
-        work.push_back(condition);
-      while (!work.empty()) {
-        const Stmt *stmt = work.back();
-        work.pop_back();
+        pending.push_back(condition);
+      while (!pending.empty()) {
+        const Stmt *stmt = pending.back();
+        pending.pop_back();
         if (const auto *expr = dyn_cast<Expr>(stmt))
           if (auto it = index.find(expr); it != index.end())
             reads.set(it->second);
@@ -1361,10 +1495,10 @@ void FunctionRun::buildCfg() {
           continue;
         if (const auto *opaque = dyn_cast<OpaqueValueExpr>(stmt))
           if (const Expr *source = opaque->getSourceExpr())
-            work.push_back(source);
+            pending.push_back(source);
         for (const Stmt *child : stmt->children())
           if (child != nullptr)
-            work.push_back(child);
+            pending.push_back(child);
       }
       if (const auto *conditional =
               dyn_cast_or_null<AbstractConditionalOperator>(
@@ -1372,17 +1506,17 @@ void FunctionRun::buildCfg() {
         if (auto it = index.find(conditional); it != index.end())
           writes.set(it->second);
     }
-    carriedLiveIn.assign(blocks, llvm::BitVector(index.size()));
+    carriedLiveIn.assign(blocks, llvm::SparseBitVector<>());
     std::vector<const CFGBlock *> postOrder(cfg->begin(), cfg->end());
     for (bool changed = true; changed;) {
       changed = false;
       for (const CFGBlock *block : postOrder) {
         const unsigned id = block->getBlockID();
-        llvm::BitVector live(index.size());
+        llvm::SparseBitVector<> live;
         for (const CFGBlock::AdjacentBlock &succ : block->succs())
           if (const CFGBlock *next = succ.getReachableBlock())
             live |= carriedLiveIn[next->getBlockID()];
-        live.reset(kill[id]);
+        live.intersectWithComplement(kill[id]);
         live |= use[id];
         if (live != carriedLiveIn[id]) {
           carriedLiveIn[id] = std::move(live);
@@ -1614,21 +1748,21 @@ void FunctionRun::buildCfg() {
         loopBody.try_emplace(head, llvm::BitVector(cfg->getNumBlockIDs()));
     llvm::BitVector &body = it->second;
     body.set(head);
-    std::vector<unsigned> work;
+    std::vector<unsigned> pending;
     if (!body.test(source)) {
       body.set(source);
-      work.push_back(source);
+      pending.push_back(source);
     }
-    while (!work.empty()) {
-      const CFGBlock *block = byId[work.back()];
-      work.pop_back();
+    while (!pending.empty()) {
+      const CFGBlock *block = byId[pending.back()];
+      pending.pop_back();
       if (block == nullptr)
         continue;
       for (const CFGBlock::AdjacentBlock &pred : block->preds())
         if (const CFGBlock *from = pred.getReachableBlock();
             from != nullptr && !body.test(from->getBlockID())) {
           body.set(from->getBlockID());
-          work.push_back(from->getBlockID());
+          pending.push_back(from->getBlockID());
         }
     }
   }
@@ -2124,10 +2258,10 @@ RunResult FunctionRun::run() {
   if (mode == RunMode::Authoritative)
     validateAnnotations();
   buildCfg();
-  if (!cfg) {
-    result.effects.incomplete = "the function has no CFG";
-    overBudget = true;
-    result.overBudget = true;
+  if (!cfg || cfg->getNumBlockIDs() > MaxBlocks) {
+    result.effects.incomplete = cfg ? "its graph is over budget" : "no CFG";
+    overBudget = result.overBudget = true;
+    result.spentBudget = spentBudget = cfg != nullptr;
     return result;
   }
   // Reverse post-order for the worklist priority.
@@ -2206,23 +2340,32 @@ RunResult FunctionRun::run() {
     // (Irreducible loops whose bodies hold each other's heads.)
     return worklist.begin();
   };
+  // RFC 0034 §7.1: work is the size of what a transfer or a join handles.
+  const auto sizeOf = [](const core::HeapState &state) -> std::uint64_t {
+    return 1 + state.syms.size() + state.objects.size();
+  };
+  const auto spend = [&](std::uint64_t amount) {
+    work += amount;
+    unit.unitWork += amount;
+  };
+  retained = sizeOf(start);
   while (!worklist.empty()) {
     auto next = nextBlock();
     unsigned id = next->second;
     worklist.erase(next);
     changedByBackEdge[id] = false;
-    ++unit.unitTransfers;
-    if (budget != 0)
-      ++transfers;
-    if ((budget != 0 && transfers > budget) ||
-        (share != 0 && transfers > share)) {
+    ++transfers;
+    if ((budget != 0 && work > budget) || (share != 0 && work > share) ||
+        retained > MaxRetainedState) {
       overBudget = true;
-      spentBudget = budget != 0 && transfers > budget;
+      spentBudget =
+          (budget != 0 && work > budget) || retained > MaxRetainedState;
       break;
     }
     const CFGBlock *block = byId[id];
     if (block == nullptr || !entryStates[id])
       continue;
+    spend(sizeOf(*entryStates[id]));
     std::vector<std::pair<unsigned, core::HeapState>> outs;
     transferBlock(*block, *entryStates[id], outs);
     if (Trace)
@@ -2235,6 +2378,7 @@ RunResult FunctionRun::run() {
                      << (entryStates[succ] ? " join" : " first") << "\n"
                      << heap.dump(state);
       if (!entryStates[succ]) {
+        retained += sizeOf(state);
         entryStates[succ] = std::move(state);
         worklist.emplace(rank[succ], succ);
         continue;
@@ -2248,6 +2392,7 @@ RunResult FunctionRun::run() {
       }
       core::HeapState joined = heap.join(
           *entryStates[succ], state, handleOf(blockById(succ)), loopHead[succ]);
+      spend(sizeOf(joined) + sizeOf(state));
       // Widening starts after a loop head's first joins; its budget counts
       // the joins that changed its state (another back edge of the same
       // round that adds nothing is none), and all its joins.
@@ -2277,6 +2422,8 @@ RunResult FunctionRun::run() {
       if (Trace)
         llvm::errs() << "  joined at B" << succ << "\n" << heap.dump(joined);
       if (changed) {
+        retained += sizeOf(joined);
+        retained -= std::min(retained, sizeOf(*entryStates[succ]));
         entryStates[succ] = std::move(joined);
         worklist.emplace(rank[succ], succ);
         if (backEdges.contains({id, succ}))
@@ -2285,10 +2432,12 @@ RunResult FunctionRun::run() {
     }
   }
   result.transfers = transfers;
+  result.work = work;
   // §12: what the run cost.
   if (core::AnalysisStats *stats = unit.input.options.stats) {
     stats->add("engine_runs");
     stats->add("block_transfers", transfers);
+    stats->add("work", work);
     stats->add("joins", joins);
     stats->add("materialisations", materialisations);
     stats->atLeast("objects_max", objects.size());
@@ -2317,6 +2466,9 @@ RunResult FunctionRun::run() {
       level != nullptr && std::string_view(level) == "3")
     dump(llvm::errs());
   result.effects = deriveEffects();
+  // RFC 0034 §6.1: after the summary, so the replay changes nothing it
+  // derives from.
+  confirmCandidates();
   return result;
 }
 

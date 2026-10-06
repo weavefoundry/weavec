@@ -309,17 +309,6 @@ Emitted compile(llvm::StringRef code, const EmitOptions *setup,
   return out;
 }
 
-/// The IR without the lines that name the source.
-std::string comparable(const std::string &ir) {
-  std::string out;
-  llvm::SmallVector<llvm::StringRef, 128> lines;
-  llvm::StringRef(ir).split(lines, '\n');
-  for (const llvm::StringRef line : lines)
-    if (!line.starts_with("; ModuleID") && !line.starts_with("source_filename"))
-      out += line.str() + "\n";
-  return out;
-}
-
 std::size_t count(llvm::StringRef text, llvm::StringRef needle) {
   std::size_t found = 0;
   for (std::size_t at = text.find(needle); at != llvm::StringRef::npos;
@@ -445,7 +434,10 @@ TEST(CheckEmitterTest, HelperSignaturesMatchThePrelude) {
     std::size_t matched = 0;
     for (const HelperSignature &helper : CheckEmitter::helperSignatures()) {
       std::string name = helper.name.str();
-      if (form.form == PreludeForm::OutOfLine && form.report && helper.reports)
+      // Out of line every report helper has the `_report` name, and inline
+      // the guards the backend expands do (RFC 0034 §1.1).
+      if ((form.form == PreludeForm::OutOfLine || helper.declared) &&
+          form.report && helper.reports)
         name += "_report";
       const auto found = context.getTranslationUnitDecl()->lookup(
           clang::DeclarationName(&context.Idents.get(name)));
@@ -462,7 +454,8 @@ TEST(CheckEmitterTest, HelperSignaturesMatchThePrelude) {
       // not inlined has the helper's type.
       const auto copy = context.getTranslationUnitDecl()->lookup(
           clang::DeclarationName(&context.Idents.get(name + "_ool")));
-      if (form.form == PreludeForm::Inline && helper.reports) {
+      if (form.form == PreludeForm::Inline && helper.reports &&
+          !helper.declared && !helper.wrapper) {
         ASSERT_FALSE(copy.empty()) << name;
         const auto *copied = llvm::dyn_cast<clang::FunctionDecl>(copy.front());
         ASSERT_NE(copied, nullptr) << name;
@@ -477,6 +470,26 @@ TEST(CheckEmitterTest, HelperSignaturesMatchThePrelude) {
   }
   EXPECT_EQ(findHelperSignature("__weavec_chk_span")->params[4],
             HelperSignature::Type::UnsignedLongLong);
+  // RFC 0034 §5.2: the checked wrappers take the row's arguments, a
+  // fortified call's object size and the checks planned; sprintf's are
+  // variadic.
+  const HelperSignature *sprintfWrapper =
+      findHelperSignature("__weavec_chk_sprintf");
+  ASSERT_NE(sprintfWrapper, nullptr);
+  EXPECT_TRUE(sprintfWrapper->wrapper);
+  EXPECT_TRUE(sprintfWrapper->variadic);
+  EXPECT_EQ(sprintfWrapper->params[2], HelperSignature::Type::UnsignedLongLong);
+  EXPECT_EQ(sprintfWrapper->params[3], HelperSignature::Type::Unsigned);
+  EXPECT_EQ(findHelperSignature("__weavec_chk_vsprintf")->params[2],
+            HelperSignature::Type::VaList);
+  for (const llvm::StringRef name :
+       {"__weavec_chk_strcpy", "__weavec_chk_stpcpy", "__weavec_chk_strcat",
+        "__weavec_chk_memcpy", "__weavec_chk_vsprintf"}) {
+    const HelperSignature *wrapper = findHelperSignature(name);
+    ASSERT_NE(wrapper, nullptr) << name.str();
+    EXPECT_TRUE(wrapper->wrapper && wrapper->reports && !wrapper->variadic)
+        << name.str();
+  }
   EXPECT_EQ(findHelperSignature("__weavec_chk_bogus"), nullptr);
 }
 
@@ -680,17 +693,18 @@ int f(int *p, int *q, int k, const char *t, struct buf *s, unsigned long n,
                       "sizeof(int))"),
             std::string::npos)
       << text;
-  EXPECT_NE(text.find("__weavec_have_sub(__weavec_have_s(k), 2ULL) ? "
-                      "__weavec_chk_len(__weavec_need_add(__weavec_need_s(k), "
-                      "1ULL), __weavec_strnlen(t, 16ULL)) : 0"),
+  // Term arithmetic is exact; only its result is clamped.
+  EXPECT_NE(text.find("__weavec_have_s(__weavec_have_sub(k, 2LL)) ? "
+                      "__weavec_chk_len(__weavec_need_s(__weavec_need_add(k, "
+                      "1LL)), __weavec_strnlen(t, 16ULL)) : 0"),
             std::string::npos)
       << text;
-  EXPECT_NE(text.find("memset(q, 0, __weavec_chk_len((n), __weavec_have_sub("
-                      "__weavec_have_s(*s.len), 1ULL)))"),
+  EXPECT_NE(text.find("memset(q, 0, __weavec_chk_len((n), __weavec_have_s("
+                      "__weavec_have_sub(*s.len, 1LL))))"),
             std::string::npos)
       << text;
   EXPECT_NE(text.find("memcpy(__weavec_chk_disjoint((q), arr, "
-                      "__weavec_need_mul(__weavec_need_s(k), sizeof(int))), "
+                      "__weavec_need_s(__weavec_need_mul(k, sizeof(int)))), "
                       "__weavec_chk_span((arr), 0LL, arr, sizeof(int[4]), "
                       "sizeof(int)), n)"),
             std::string::npos)
@@ -701,106 +715,6 @@ int f(int *p, int *q, int k, const char *t, struct buf *s, unsigned long n,
   const Emitted compiled = compile(code, &setup);
   EXPECT_TRUE(compiled.errors.empty()) << compiled.errors.front();
   EXPECT_NE(compiled.ir.find("define"), std::string::npos);
-}
-
-// §3.4: the unconditional trap of a lowered violation, before the operation,
-// in each placement the planner gives it.
-TEST(CheckEmitterTest, LoweredViolationForms) {
-  EmitOptions setup;
-  setup.edit = [](analysis::PlannedLedger &planned,
-                  clang::ASTContext &context) {
-    const auto violation = [](Entry::Placement placement) {
-      Entry made =
-          entry(Entry::Template::Assert, Entry::Form::Violation, placement);
-      made.facet = core::Facet::Temporal;
-      return made;
-    };
-    const auto *deref = siteAt(planned, context, "*p", core::SiteKind::Deref);
-    const auto *call = siteAt(planned, context, "g(p)", core::SiteKind::Call);
-    const auto *assume =
-        siteAt(planned, context, "weavec_assume_", core::SiteKind::Assume);
-    ASSERT_TRUE(deref && call && assume);
-    replaceChecks(planned, *deref, {violation(Entry::Placement::WrapOperand)});
-    replaceChecks(planned, *call, {violation(Entry::Placement::BeforeCall)});
-    replaceChecks(planned, *assume, {violation(Entry::Placement::ReplaceCall)});
-    // The exits: a `return;` and the end of a body.
-    for (const auto &function : planned.sites->functions())
-      for (const analysis::SiteInfo &site : function.sites)
-        if (site.kind == core::SiteKind::Call &&
-            site.boundary == core::Boundary::Exit &&
-            function.decl->getName() == "early")
-          replaceChecks(planned, site,
-                        {violation(Entry::Placement::BeforeCall)});
-  };
-  const char *code = R"C(
-__attribute__((annotate("weavec.assume"))) static inline void
-weavec_assume_(int c) { (void)c; }
-void g(int *p);
-int f(int *p, int n) { weavec_assume_(n > 0); g(p); return *p; }
-void early(int c) { if (c) return; g(0); }
-)C";
-  const Emitted out = rewrite(code, setup);
-  EXPECT_TRUE(out.ok);
-  EXPECT_TRUE(out.errors.empty()) << out.errors.front();
-  const std::string &text = out.bodies;
-  EXPECT_NE(text.find("__weavec_chk_violation();"), std::string::npos) << text;
-  EXPECT_NE(text.find("__weavec_chk_violation() , (g(p));"), std::string::npos)
-      << text;
-  EXPECT_NE(text.find("return *__weavec_chk_violation() , (p);"),
-            std::string::npos)
-      << text;
-  EXPECT_NE(text.find("if (c) { __weavec_chk_violation(); return; }"),
-            std::string::npos)
-      << text;
-  EXPECT_NE(text.find("g(0); __weavec_chk_violation(); }"), std::string::npos)
-      << text;
-  const Emitted compiled = compile(code, &setup);
-  EXPECT_TRUE(compiled.errors.empty()) << compiled.errors.front();
-}
-
-// G8 for a lowered violation, in process: the engine of this stage does not
-// publish violations, so the plan carries the planner's guard by hand; the
-// IR must equal that of the hand-written rewrite.
-TEST(CheckEmitterTest, LoweredViolationOracle) {
-  EmitOptions setup;
-  setup.edit = [](analysis::PlannedLedger &planned,
-                  clang::ASTContext &context) {
-    const auto *deref = siteAt(planned, context, "*p", core::SiteKind::Deref);
-    const auto *release =
-        siteAt(planned, context, "free", core::SiteKind::Release);
-    ASSERT_TRUE(deref && release);
-    Entry temporal = entry(Entry::Template::Assert, Entry::Form::Violation,
-                           Entry::Placement::WrapOperand);
-    temporal.facet = core::Facet::Temporal;
-    Entry nonnull = entry(Entry::Template::Nonnull, Entry::Form::Plain,
-                          Entry::Placement::WrapOperand);
-    nonnull.facet = core::Facet::Null;
-    replaceChecks(planned, *deref, {nonnull, temporal});
-    Entry twice = entry(Entry::Template::Assert, Entry::Form::Violation,
-                        Entry::Placement::BeforeCall);
-    twice.facet = core::Facet::Temporal;
-    replaceChecks(planned, *release, {twice});
-  };
-  const Emitted instrumented = compile(R"C(
-void free(void *);
-int f(int *p) {
-  free(p);
-  return *p;
-}
-)C",
-                                       &setup);
-  const Emitted expected = compile(R"C(
-void free(void *);
-int f(int *p) {
-  (__weavec_chk_violation(), free(p));
-  return *(__weavec_chk_violation(), (int *)__weavec_chk_nonnull(p));
-}
-)C",
-                                   nullptr, setup);
-  EXPECT_TRUE(instrumented.errors.empty()) << instrumented.errors.front();
-  EXPECT_TRUE(expected.errors.empty()) << expected.errors.front();
-  ASSERT_FALSE(instrumented.ir.empty());
-  EXPECT_EQ(comparable(instrumented.ir), comparable(expected.ir));
 }
 
 //===----------------------------------------------------------------------===//

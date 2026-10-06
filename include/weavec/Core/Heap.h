@@ -438,6 +438,9 @@ struct NullOrigin {
 
 /// The most entry places a value records it was computed from.
 inline constexpr std::size_t MaxEntryOrigins = 8;
+/// The most constants a value records it is known not to equal (RFC 0034
+/// §6.2).
+inline constexpr std::size_t MaxExcluded = 8;
 
 // (The fields stay in the groups they are documented in.)
 // NOLINTNEXTLINE(clang-analyzer-optin.performance.Padding): documented order
@@ -455,6 +458,11 @@ struct SymInfo {
   Sym pointerBehind = ZeroSym;
   /// Known to be non-zero (a disequality the zone cannot hold).
   bool nonZero = false;
+  /// RFC 0034 §6.2: the constants it is known not to equal besides what
+  /// `nonZero` says (sorted, at most `MaxExcluded`): the false edge of
+  /// `x == c` and the true edge of `x != c` add `c`, and an edge that
+  /// requires `x == c` for one of them is infeasible.
+  std::vector<std::int64_t> excluded = {};
   /// §4.4: the value's interval in its type (RFC 0017), where the zone's
   /// 64-bit bounds cannot hold it (an unsigned 64-bit value above
   /// `INT64_MAX`); none means the type's range, refined by the zone.
@@ -958,9 +966,11 @@ public:
                                   bool equal);
 
   // Releases.
-  /// Releases `pointer`'s value and targets (§5.5 *Effect*).
-  void release(HeapState &state, Sym pointer,
-               const ReleaseRecord &record) const;
+  /// Releases `pointer`'s value and targets (§5.5 *Effect*). `possibly`:
+  /// the call may release them (a range that may not cover the object, RFC
+  /// 0034 §6.3): no target becomes definitely released.
+  void release(HeapState &state, Sym pointer, const ReleaseRecord &record,
+               bool possibly = false) const;
 
   // Lattice.
   /// The join of two states at the entry of block `block` (§4.8). At a
@@ -1009,6 +1019,9 @@ private:
   /// hold `value`.
   void writeSummary(HeapState &state, ObjectId object, CellKey key,
                     Sym value) const;
+  /// `sym` as a value read through a pointer `hint`: an integer or untyped
+  /// value becomes a raw pointer to any object (§4.2).
+  Sym asPointer(HeapState &state, Sym sym, const SymInfo &hint) const;
   /// The value of "some element" at a summary key's position.
   Sym anyElement(HeapState &state, ObjectId object, CellKey key,
                  const SymInfo &hint) const;

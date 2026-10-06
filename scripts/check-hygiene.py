@@ -43,7 +43,7 @@ Seven checks, one per bullet of H2 (its fourth bullet is split in two):
                      string literals ignored. A missing lib/Analysis/Engine.h
                      is a violation.
   engine-lines       lib/Analysis/Engine*.h and lib/Analysis/Engine*.cpp
-                     (EngineIntegers.h included) total at most 21,500 lines.
+                     (EngineIntegers.h included) total at most 22,000 lines.
   library-lines      the code under lib/, include/ and tools/ totals at most
                      70,000 lines. lib/Core/LibrarySpec.txt does not count:
                      it is a declarative table, and its growth is coverage,
@@ -59,7 +59,10 @@ Seven checks, one per bullet of H2 (its fourth bullet is split in two):
                      RFC 0033 (gate H1, Implementation amendments) raised
                      them to 21,500 and 70,000 for the witness rule, the
                      length guards, the link modes and the unit budget
-                     (21,078 and 69,980 lines measured).
+                     (21,078 and 69,980 lines measured). RFC 0034 (gate
+                     H1, Implementation amendments) raised them to 22,000
+                     and 72,000 for the shadow guards' passes, confirmation
+                     by replay and the work and memory budgets.
   runtime-lines      the C runtime (runtime/, its tests under runtime/test/
                      excluded) totals at most 4,000 lines (RFC 0032 gate H1).
                      It is counted apart from the libraries: it is linked
@@ -117,10 +120,10 @@ ROOT = Path(__file__).resolve().parent.parent
 # Gate H2 (RFC 0030, Acceptance gates, Hygiene; RFC 0031, section 2)
 # ---------------------------------------------------------------------------
 
-# Recorded by RFC 0031 stage S7 and RFC 0032 and 0033 gate H1 (see the
+# Recorded by RFC 0031 stage S7 and RFC 0032, 0033 and 0034 gate H1 (see the
 # module docstring).
-ENGINE_LINE_LIMIT = 21_500
-LIBRARY_LINE_LIMIT = 70_000
+ENGINE_LINE_LIMIT = 22_000
+LIBRARY_LINE_LIMIT = 72_000
 RUNTIME_LINE_LIMIT = 4_000
 
 # retired-name
@@ -144,7 +147,11 @@ SOURCE_SUFFIXES = (".h", ".hpp", ".cpp", ".cc", ".c", ".def", ".inc")
 # fresh and sealed projects)
 CORPUS_WORDS = ("cJSON", "jansson", "linenoise", "jsmn", "zlib", "lua", "Lua", "sds", "minigzip",
                 "zstd", "libuv", "oniguruma", "redis", "expat", "pcre2", "libevent", "libsodium",
-                "libxml2", "libpng", "mbedtls", "msgpack", "yyjson")
+                "libxml2", "libpng", "mbedtls", "msgpack", "yyjson",
+                # RFC 0034, section 9.
+                "quickjs", "QuickJS", "lmdb", "LMDB", "janet", "Janet", "brotli", "xz",
+                "libdeflate", "zlib-ng", "curl", "cmark", "libgit2", "libjpeg", "opus",
+                "flac", "giflib", "wren")
 CORPUS_WORD_DIRS = ("lib",)
 # engine-include (RFC 0030 sections 1 and 14, RFC 0031 section 2)
 NEW_COMPONENTS = ("SiteCollector", "AttributeReader", "KindInference", "SlotCollector",

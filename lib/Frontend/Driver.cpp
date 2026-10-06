@@ -14,6 +14,7 @@
 #include "weavec/Frontend/ClangDiagnosticSink.h"
 #include "weavec/Frontend/DeferredCodeGenConsumer.h"
 #include "weavec/Frontend/DispatchEdges.h"
+#include "weavec/Frontend/GuardPasses.h"
 #include "weavec/Frontend/LedgerOutput.h"
 #include "weavec/Frontend/LinkStep.h"
 #include "weavec/Frontend/ObjectRegistration.h"
@@ -46,6 +47,7 @@
 
 #include "llvm/ADT/IntrusiveRefCntPtr.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringSet.h"
@@ -301,12 +303,12 @@ llvm::StringRef driverFlagsHelp() {
   -fweavec-summary, -fno-weavec-summary
       Print the summary line on stderr (default: when a ledger is written).
   -fweavec-budget=<n>
-      Block transfers per function before its analysis stops (default:
-      50000; 0: unlimited).
+      Work per function before its analysis stops: the sizes of the states
+      it transfers and joins (RFC 0034; default: 20000000; 0: unlimited).
   -fweavec-unit-budget=<n>
-      Block transfers over every analysis run of a unit; functions analysed
-      after it is spent take the over-budget defaults (default: 6 per site,
-      at least 200000; 0: unlimited).
+      Work over every analysis run of a unit; functions analysed after it is
+      spent take the over-budget defaults (default: 400 per site, at least
+      20000000; 0: unlimited).
   -fweavec-link=records|analyze|none
       What the link step does before linking (RFC 0033): check the units'
       records against each other and compose the program ledger (records,
@@ -391,8 +393,11 @@ protected:
     // RFC 0031 §9.2: a unit whose checks are emitted keeps its dispatch
     // blocks' predecessors duplicable. Registered before the code generator
     // is made, which reads the callbacks when it runs the pipeline.
-    if (emitsChecks(compiler))
+    if (emitsChecks(compiler)) {
+      // RFC 0034 §1: before the dispatch split, which runs after expansion.
+      registerGuardPasses(compiler.getCodeGenOpts());
       registerDispatchEdgeSplit(compiler.getCodeGenOpts());
+    }
     std::unique_ptr<clang::ASTConsumer> inner =
         WrapperFrontendAction::CreateASTConsumer(compiler, inFile);
     if (!inner)
@@ -411,6 +416,11 @@ protected:
                              analysis = std::move(analysis)](
                                 clang::ASTContext &context, clang::Sema &sema) {
             analysis->HandleTranslationUnit(context);
+            // The plan is spent here: the code generator gets its memory.
+            const llvm::scope_exit spent([&] {
+              planned->ledger.reset();
+              planned->zeroInit.reset();
+            });
             // §10.5 step 2: the checks of a unit without errors.
             if (!checks || diagnostics.hasErrorOccurred())
               return;
@@ -424,11 +434,11 @@ protected:
             // RFC 0032 §4, §5: the unit's stack and global objects.
             if (options.config.runtime == core::RuntimeUse::On &&
                 planned->ledger && planned->ledger->sites) {
-              emitter.registerObjects(
-                  planObjects(context, *planned->ledger->sites,
-                              core::LibrarySpec::shipped(),
-                              ObjectOptions{.stack = options.stackObjects,
-                                            .globals = options.globalObjects}));
+              emitter.registerObjects(planObjects(
+                  context, *planned->ledger->sites,
+                  core::LibrarySpec::shipped(), &planned->ledger->plan,
+                  ObjectOptions{.stack = options.stackObjects,
+                                .globals = options.globalObjects}));
               for (clang::Decl *added : emitter.newTopLevelDecls())
                 (*self)->HandleTopLevelDecl(clang::DeclGroupRef(added));
             }
@@ -517,7 +527,8 @@ static bool writeUnitRecord(llvm::StringRef path, llvm::StringRef output,
                             llvm::ArrayRef<const char *> cc1Args,
                             const clang::CompilerInstance &compiler,
                             const core::LedgerConfig &config,
-                            const UnitResult &result, std::string *error) {
+                            const record::Payload &payload,
+                            std::string *error) {
   record::UnitRecord unit;
   unit.header.producer = record::currentProducer();
   const auto &inputs = compiler.getFrontendOpts().Inputs;
@@ -538,7 +549,7 @@ static bool writeUnitRecord(llvm::StringRef path, llvm::StringRef output,
   }
   unit.header.object =
       record::RecordObject{.path = output.str(), .digest = *digest};
-  unit.payload = record::toJson(record::payloadOf(result));
+  unit.payload = record::toJson(payload);
   return record::writeRecord(path, unit, error);
 }
 
@@ -630,8 +641,12 @@ static int runCc1Job(llvm::ArrayRef<const char *> argv, const char *argv0,
   FrontendOptions options = weavec.toFrontendOptions();
   options.collectInterface = writesRecord;
   const core::LedgerConfig config = options.config;
-  std::optional<UnitResult> result;
-  options.onResult = [&result](UnitResult r) { result = std::move(r); };
+  // (The record's rows are taken when the analysis ends, so that its
+  // structures are released before the code generator runs.)
+  std::optional<record::Payload> payload;
+  options.onResult = [&payload](const UnitResult &r) {
+    payload = record::payloadOf(r);
+  };
 
   WeaveCWrapperAction action(std::move(inner), std::move(options));
   success = compiler->ExecuteAction(action);
@@ -639,10 +654,10 @@ static int runCc1Job(llvm::ArrayRef<const char *> argv, const char *argv0,
   if (writesRecord) {
     const std::string path = record::recordPathFor(output);
     std::string error;
-    if (!success || !result) {
+    if (!success || !payload) {
       removeQuietly(path);
     } else if (!writeUnitRecord(path, output, cc1Args, *compiler, config,
-                                *result, &error)) {
+                                *payload, &error)) {
       removeQuietly(path);
       llvm::errs() << "weavec-cc: warning: " << error << '\n';
     }
@@ -786,6 +801,9 @@ struct UnanalyzedInput {
   /// Why its record is not valid; empty when it has none.
   // NOLINTNEXTLINE(readability-redundant-member-init): designated-init default
   std::string stale = {};
+  /// RFC 0034 §8: its objects were built by `weavec-cc` (an archive, which
+  /// carries no records): checked and guarded, only not read at the link.
+  bool builtByWeaveC = false;
 };
 
 /// The inputs of one link: those with a valid record, and those without
@@ -895,6 +913,28 @@ resolveLibrary(llvm::StringRef name,
   return std::nullopt;
 }
 
+template <typename Visit>
+static bool anyRelocatableObject(const std::string &path, const Visit &visit);
+
+/// RFC 0034 §8: whether an object or archive without a record was built by
+/// `weavec-cc`: one of its objects names a symbol of the runtime, of the
+/// helpers or of the global descriptors.
+static bool builtByWeaveC(const std::string &path) {
+  return anyRelocatableObject(path, [](const llvm::object::SymbolicFile &file) {
+    for (const llvm::object::BasicSymbolRef symbol : file.symbols()) {
+      llvm::SmallString<64> name;
+      llvm::raw_svector_ostream stream(name);
+      if (llvm::errorToBool(symbol.printName(stream)))
+        continue;
+      // (Mach-O spells C names with one more leading underscore.)
+      const llvm::StringRef text = name;
+      if (text.starts_with("__weavec_") || text.starts_with("___weavec_"))
+        return true;
+    }
+    return false;
+  });
+}
+
 /// Reads the record of every input on the link line, and names every other
 /// input that is not the platform's (§13.2): objects, archives and shared
 /// libraries without a record, records that are stale or unreadable, and
@@ -934,7 +974,8 @@ collectLinkInputs(const clang::driver::Compilation &compilation,
     const std::string path = record::recordPathFor(object);
     if (!llvm::sys::fs::exists(path)) {
       if (!isSystem(object))
-        addUnanalyzed(UnanalyzedInput{.name = name});
+        addUnanalyzed(UnanalyzedInput{.name = name,
+                                      .builtByWeaveC = builtByWeaveC(object)});
       continue;
     }
     // §13.1: a record that is not format 28 with this schema and a valid
@@ -964,6 +1005,8 @@ collectLinkInputs(const clang::driver::Compilation &compilation,
       stale(reason);
       continue;
     }
+    // (The JSON is read: a program of hundreds of units cannot keep it.)
+    unit->payload = {};
     inputs.analysed.push_back(LinkInput{.object = object,
                                         .record = std::move(*unit),
                                         .payload = std::move(*payload)});
@@ -973,7 +1016,8 @@ collectLinkInputs(const clang::driver::Compilation &compilation,
     const std::optional<std::string> library =
         resolveLibrary(arg->getValue(), compilation);
     if (library && !isSystem(*library))
-      addUnanalyzed(UnanalyzedInput{.name = *library});
+      addUnanalyzed(UnanalyzedInput{.name = *library,
+                                    .builtByWeaveC = builtByWeaveC(*library)});
   }
   return inputs;
 }
@@ -1085,9 +1129,24 @@ static bool runLinkStep(const clang::driver::Compilation &compilation,
   LinkDiagnosticPrinter reporter("weavec-cc");
   FilteringSink sink(reporter, weavec.control);
   std::vector<core::Diagnostic> linkDiagnostics;
-  // Step 1.
-  if (const auto unanalyzed =
-          unanalyzedInputDiagnostic(linkInputs.unanalyzed)) {
+  // Step 1. Inputs `weavec-cc` built are named in a note (RFC 0034 §8).
+  std::vector<UnanalyzedInput> foreign;
+  std::vector<std::string> built;
+  for (const UnanalyzedInput &input : linkInputs.unanalyzed)
+    if (input.builtByWeaveC && input.stale.empty())
+      built.push_back(input.name);
+    else
+      foreign.push_back(input);
+  if (!built.empty()) {
+    std::string names;
+    for (const std::string &name : built)
+      names += (names.empty() ? "'" : ", '") + name + "'";
+    llvm::errs() << "weavec-cc: note: " << names
+                 << (built.size() == 1 ? " was" : " were")
+                 << " built by weavec-cc without records: checked and "
+                    "guarded, not analysed with the program\n";
+  }
+  if (const auto unanalyzed = unanalyzedInputDiagnostic(foreign)) {
     sink.report(*unanalyzed);
     linkDiagnostics.push_back(*unanalyzed);
     if (sink.errors() != 0)
@@ -1779,11 +1838,18 @@ int runDriver(llvm::ArrayRef<const char *> argv, void *mainAddress) {
     }
   }
 
-  clang::DiagnosticOptions diagOptions;
-  auto *printer = new clang::TextDiagnosticPrinter(llvm::errs(), diagOptions);
+  // RFC 0034 §8: the driver's own diagnostics obey the -W options as
+  // Clang's do (CMake's flag probes rely on
+  // -Werror=unused-command-line-argument).
+  const std::unique_ptr<clang::DiagnosticOptions> diagOptions =
+      clang::CreateAndPopulateDiagOpts(clangArgs);
+  auto *printer = new clang::TextDiagnosticPrinter(llvm::errs(), *diagOptions);
   printer->setPrefix("weavec-cc");
   clang::DiagnosticsEngine diags(
-      llvm::makeIntrusiveRefCnt<clang::DiagnosticIDs>(), diagOptions, printer);
+      llvm::makeIntrusiveRefCnt<clang::DiagnosticIDs>(), *diagOptions, printer);
+  clang::ProcessWarningOptions(diags, *diagOptions,
+                               *llvm::vfs::getRealFileSystem(),
+                               /*ReportDiags=*/false);
 
   clang::driver::Driver driver(executable, llvm::sys::getDefaultTargetTriple(),
                                diags, "weavec-cc: WeaveC C compiler");

@@ -11,6 +11,7 @@ Checks: >
   cert-*,
   -cert-err58-cpp,
   clang-analyzer-*,
+  -clang-analyzer-security.ArrayBound,
   cppcoreguidelines-*,
   -cppcoreguidelines-avoid-magic-numbers,
   -cppcoreguidelines-non-private-member-variables-in-classes,
@@ -55,6 +56,10 @@ Checks: >
 #   llvm-use-ranges: lib/Core must not depend on LLVM ADT.
 #   *-macro-to-enum: configuration macros live in generated headers.
 #   readability-trailing-comma: conflicts with clang-format's bin-packing.
+#   clang-analyzer-security.ArrayBound: reports every operand access of an
+#     LLVM instruction the analyzed function creates as an access before its
+#     region (LLVM keeps a User's operands in front of the object), in the
+#     LLVM headers, where no NOLINT in our code reaches (the guard passes).
 
 WarningsAsErrors: '*'
 HeaderFilterRegex: '(include|lib|tools|unittests)/.*'

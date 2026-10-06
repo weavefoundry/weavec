@@ -95,10 +95,10 @@ namespace engine {
 // UnitRun
 //===----------------------------------------------------------------------===//
 
-/// RFC 0033 §9: the default budget of a unit, in block transfers: a few per
-/// site, so that a unit's analysis costs a bounded multiple of its size.
-static constexpr std::uint64_t MinUnitBudget = 200000;
-static constexpr std::uint64_t UnitBudgetPerSite = 6;
+/// RFC 0033 §9, RFC 0034 §7.1: a unit's default budget of work, a share
+/// per site (its analysis costs a bounded multiple of compiling it).
+static constexpr std::uint64_t MinUnitBudget = 20000000;
+static constexpr std::uint64_t UnitBudgetPerSite = 400;
 
 UnitRun::UnitRun(const EngineInput &engineInput, LedgerAdapter &adapter)
     : input(engineInput), authoritative(adapter),
@@ -652,6 +652,9 @@ void UnitRun::analyzeAll(
       if (functionsLeft > 1)
         --functionsLeft;
       transfersOf[fn->getCanonicalDecl()] = result.transfers;
+      workOf[fn->getCanonicalDecl()] =
+          result.overBudget ? std::numeric_limits<std::uint64_t>::max()
+                            : result.work;
       if (result.overBudget) {
         overBudget.insert(fn->getCanonicalDecl());
         if (report)

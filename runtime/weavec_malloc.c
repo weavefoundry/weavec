@@ -148,4 +148,8 @@ void *pvalloc(size_t size) {
 
 size_t malloc_usable_size(void *p) { return __weavec_rt_size(p); }
 
+/* Tells the runtime that the `malloc_usable_size` first in lookup order may
+ * be the one above, which would ask it again. */
+WEAVEC_RT_API const char __weavec_alloc_linked = 1;
+
 #endif

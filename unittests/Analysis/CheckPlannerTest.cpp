@@ -280,7 +280,8 @@ int f(int *p, int *q, int *r, int *t) {
                    .width = WitnessTerm::sizeOf(unit.context().IntTy),
                    .unmodified = true,
                    .accessesSafe = true});
-  // *r: lowered violations are guarded (§3.4).
+  // *r: lowered violations are checked or guarded, never trapped (RFC 0034
+  // §6.4).
   facet(r, core::Facet::Null)->decide(core::FacetDecision::violation());
   facet(r, core::Facet::Temporal)->decide(core::FacetDecision::violation());
   // *t: verify mode checks proven facets that have witnesses (§10.7).
@@ -308,14 +309,16 @@ int f(int *p, int *q, int *r, int *t) {
             (std::vector<std::string>{
                 "*q spatial span/plain/replace-access " + base + " 16 " + width,
                 "*r null nonnull/plain/wrap-operand",
-                "*r temporal assert/violation/wrap-operand",
                 "*t spatial index/plain/wrap-operand 1 proven"}));
   EXPECT_EQ(facet(p, core::Facet::Spatial)->decision.detail,
             "its extent is only a lower bound");
   EXPECT_EQ(facet(q, core::Facet::Null)->check->kind,
             core::CheckTemplate::Span);
-  EXPECT_EQ(facet(r, core::Facet::Temporal)->check->kind,
-            core::CheckTemplate::Violation);
+  // RFC 0034 §6.4: no unconditional trap; with no runtime to guard it, the
+  // lowered temporal violation is unresolved.
+  EXPECT_FALSE(facet(r, core::Facet::Temporal)->check.has_value());
+  EXPECT_EQ(facet(r, core::Facet::Temporal)->decision.unresolved,
+            core::UnresolvedReason::Lowered);
   EXPECT_TRUE(facet(t, core::Facet::Spatial)->check->proven);
   EXPECT_EQ(facet(t, core::Facet::Spatial)->outcome(),
             core::SiteOutcome::Proven);
@@ -459,6 +462,104 @@ void f(char *d, const char *s, unsigned long n) { memcpy(d, s, n); }
   EXPECT_EQ(
       spatial->requirements[0].check,
       (core::FacetCheck{.kind = core::CheckTemplate::Len, .proven = false}));
+}
+
+TEST(CheckPlanner, CheckedWrappersComputeWhatNoTermStates) {
+  // RFC 0034 §5.2: a requirement no guard states, or states only as a
+  // format's least output, is computed by the row's checked wrapper; one a
+  // guard states keeps its guard, and a row without the check has none.
+  const auto unit = collectUnit(R"c(
+char *strcpy(char *, const char *);
+char *strcat(char *, const char *);
+void *memcpy(void *, const void *, unsigned long);
+int sprintf(char *, const char *, ...);
+void f(char *d, char *const *v, int i, int n) {
+  strcpy(d, v[i]);
+  memcpy(d, d + n, 4);
+  strcat(d, v[i]);
+  sprintf(d, "%d", i);
+}
+)c");
+  const SiteInfo *copy =
+      siteNamed(unit, "f", "strcpy(d,v[i])", core::SiteKind::LibCall);
+  const SiteInfo *move =
+      siteNamed(unit, "f", "memcpy(d,d+n,4)", core::SiteKind::LibCall);
+  const SiteInfo *append =
+      siteNamed(unit, "f", "strcat(d,v[i])", core::SiteKind::LibCall);
+  const SiteInfo *format =
+      siteNamed(unit, "f", "sprintf(d,\"%d\",i)", core::SiteKind::LibCall);
+  ASSERT_TRUE(copy && move && append && format);
+  const auto planWith = [&](bool runtime, core::UnitLedger &ledger) {
+    ledger.functions = unit.sites.ledgers();
+    core::FunctionLedger &row =
+        ledger.functions[unit.sites.function(*unit.function("f"))->index];
+    decideAll(row, core::FacetDecision::proven());
+    WitnessTable witnesses;
+    const auto require = [&](const SiteInfo *site, core::UnresolvedReason why,
+                             std::optional<CheckWitness> witness) {
+      core::FacetRecord *spatial =
+          row.sites[site->id.ordinal].facet(core::Facet::Spatial);
+      const auto index =
+          static_cast<std::uint16_t>(spatial->requirements.size());
+      spatial->addRequirement(core::Requirement{
+          .argument = 0, .decision = core::FacetDecision::unresolvedFor(why)});
+      if (witness) {
+        witness->requirement = index;
+        witness->argument = 0;
+        witnesses.add(site->id, core::Facet::Spatial, *witness);
+      }
+    };
+    const auto bytes = [](std::int64_t need) {
+      return CheckWitness{.shape = CheckWitness::Shape::Object,
+                          .need = WitnessTerm::ofConstant(need),
+                          .unmodified = true,
+                          .accessesSafe = true};
+    };
+    const auto overlap = [&](const clang::Expr &other) {
+      return CheckWitness{.shape = CheckWitness::Shape::Disjoint,
+                          .need = WitnessTerm::ofConstant(4),
+                          .other = WitnessTerm::ofExpr(other),
+                          .unmodified = true,
+                          .accessesSafe = true};
+    };
+    const auto *strcpyCall = llvm::cast<clang::CallExpr>(copy->stmt);
+    const auto *memcpyCall = llvm::cast<clang::CallExpr>(move->stmt);
+    require(copy, core::UnresolvedReason::UnknownExtent, std::nullopt);
+    require(copy, core::UnresolvedReason::Inexpressible,
+            overlap(*strcpyCall->getArg(1)));
+    require(move, core::UnresolvedReason::UnknownExtent, bytes(4));
+    require(move, core::UnresolvedReason::Inexpressible,
+            overlap(*memcpyCall->getArg(1)));
+    require(append, core::UnresolvedReason::UnknownExtent, bytes(4));
+    require(format, core::UnresolvedReason::UnknownExtent, bytes(2));
+    PlaceHandleTable handles;
+    return CheckPlanner(unit.context(), unit.sites, {.runtime = runtime})
+        .plan(ledger, witnesses, handles);
+  };
+
+  core::UnitLedger ledger;
+  const core::CheckPlan plan = planWith(true, ledger);
+  const std::vector<std::string> entries = spell(plan, ledger);
+  EXPECT_EQ(entries,
+            (std::vector<std::string>{
+                "strcpy(d,v[i]) spatial object/wrapper/replace-call",
+                "strcpy(d,v[i]) spatial disjoint/wrapper/replace-call",
+                "memcpy(d,d+n,4) spatial object/need/wrap-argument#0 4",
+                "memcpy(d,d+n,4) spatial disjoint/wrapper/replace-call",
+                "strcat(d,v[i]) spatial object/need/wrap-argument#0 4",
+                "sprintf(d,\"%d\",i) spatial object/wrapper/replace-call"}));
+  const core::FunctionLedger &row =
+      ledger.functions[unit.sites.function(*unit.function("f"))->index];
+  const core::FacetRecord &copied =
+      *row.sites[copy->id.ordinal].facet(core::Facet::Spatial);
+  EXPECT_EQ(copied.decision.compact(), "guarded/unknown-extent");
+  EXPECT_EQ(copied.requirements[1].decision.compact(), "guarded/inexpressible");
+  EXPECT_EQ(copied.requirements[1].check,
+            (core::FacetCheck{.kind = core::CheckTemplate::Disjoint,
+                              .proven = false}));
+
+  core::UnitLedger plainLedger;
+  EXPECT_TRUE(planWith(false, plainLedger).entries.empty());
 }
 
 TEST(PlaceHandleTable, ResolvesHandles) {

@@ -1245,6 +1245,7 @@ core::FunctionEffects FunctionRun::deriveEffects() {
     // (Exits that released the value at different offsets: at one the
     // caller cannot tell.)
     bool anyOffset = false;
+    bool mixedFamily = false;
     const ExitEffect *first = nullptr;
     // RFC 0014: the pointer parameter comparisons every such exit's
     // release was made under.
@@ -1266,6 +1267,9 @@ core::FunctionEffects FunctionRun::deriveEffects() {
         });
       if (first == nullptr)
         first = &it->second;
+      // RFC 0034 §6.3: a family two exits disagree on is unknown.
+      if (first->family != it->second.family)
+        mixedFamily = true;
       anyOffset =
           anyOffset || !it->second.offset || it->second.offset != first->offset;
       anyMay = anyMay || it->second.may;
@@ -1274,7 +1278,7 @@ core::FunctionEffects FunctionRun::deriveEffects() {
     core::PathEffect effect;
     effect.kind = kind;
     effect.path = path;
-    effect.family = first->family;
+    effect.family = mixedFamily ? std::string() : first->family;
     effect.anyOffset = anyOffset;
     effect.offset = anyOffset ? 0 : *first->offset;
     effect.may = anyMay;
@@ -2320,6 +2324,85 @@ bool Transfer::lostView(const CallExpr &call,
   return true;
 }
 
+/// RFC 0034 §6.3: the new objects a summary leaves in several places (its
+/// result, cells) on exits a call's arguments do not show to be the same:
+/// each exit numbers its own new objects from #0, so one object of the
+/// call stands for several (`if (w) *a = f(); else *b = f();`) and is not
+/// singular. The result's parameter test only names a test its exits pass;
+/// a store's is the exits it is on.
+static std::set<std::uint32_t>
+scatteredObjects(const core::Heap &heap, const core::HeapState &state,
+                 const core::FunctionEffects &effects,
+                 const std::vector<core::Sym> &args) {
+  using Test = std::optional<std::pair<std::uint32_t, bool>>;
+  // The test the call leaves open, or none; false when it excludes.
+  auto open = [&](Test &test) {
+    if (!test || test->first >= args.size() ||
+        args[test->first] == core::ZeroSym)
+      return true;
+    std::optional<bool> zero = isZeroValue(heap, state, args[test->first]);
+    if (zero && *zero != test->second)
+      return false;
+    if (zero)
+      test.reset();
+    return true;
+  };
+  std::set<core::ResultClass> all;
+  for (const core::ResultEffect &alternative : effects.results)
+    all.insert(alternative.classes.begin(), alternative.classes.end());
+  auto classes = [&](std::vector<core::ResultClass> of) {
+    std::ranges::sort(of);
+    return std::ranges::includes(of, all) ? std::vector<core::ResultClass>{}
+                                          : of;
+  };
+  struct Places {
+    std::vector<core::EffectCase> stores;
+    bool may = false;
+    std::optional<std::vector<core::ResultClass>> result;
+    std::vector<Test> resultTests;
+  };
+  std::map<std::uint32_t, Places> places;
+  for (core::ResultEffect alternative : effects.results)
+    if (alternative.value.kind == core::ValueDesc::Kind::Fresh &&
+        open(alternative.paramZero)) {
+      Places &at = places[alternative.value.object];
+      std::vector<core::ResultClass> with =
+          at.result.value_or(std::vector<core::ResultClass>{});
+      with.insert(with.end(), alternative.classes.begin(),
+                  alternative.classes.end());
+      at.result = classes(with);
+      at.resultTests.push_back(alternative.paramZero);
+    }
+  for (const core::StoreEffect &store : effects.stores) {
+    core::EffectCase when = store.when;
+    if (store.value.kind != core::ValueDesc::Kind::Fresh || store.contents ||
+        store.dest.isResult() || !open(when.paramZero))
+      continue;
+    when.classes = classes(when.classes);
+    Places &at = places[store.value.object];
+    at.stores.push_back(when);
+    at.may = at.may || store.may;
+  }
+  std::set<std::uint32_t> several;
+  for (const auto &[object, at] : places) {
+    if (at.stores.size() + (at.result ? 1 : 0) < 2)
+      continue;
+    bool apart = at.may || std::ranges::any_of(at.stores, [&](const auto &c) {
+                   return !(c == at.stores.front());
+                 });
+    if (at.result) {
+      const core::EffectCase &store = at.stores.front();
+      apart = apart || store.paramsEqual || store.entryZero ||
+              store.classes != *at.result;
+      for (const Test &test : at.resultTests)
+        apart = apart || (store.paramZero && test != store.paramZero);
+    }
+    if (apart)
+      several.insert(object);
+  }
+  return several;
+}
+
 /// The value a `path` description names at the call: the value `at` the
 /// path holds, `offset` bytes on, or null where the description says the
 /// callee may have left null instead (its entry value joined with null).
@@ -2349,15 +2432,31 @@ core::Sym Transfer::instantiate(const CallExpr &call,
   PathResolver resolver(*this, call, args);
   // The callee's new objects by their summary index.
   std::map<std::uint32_t, core::ObjectId> created;
+  std::map<std::uint32_t, const core::ValueDesc *> madeBy;
+  std::set<std::uint32_t> several =
+      scatteredObjects(heap, state, effects, args);
   auto freshObject = [&](const core::ValueDesc &desc, QualType pointee,
                          bool owned) -> core::ObjectId {
-    if (auto it = created.find(desc.object); it != created.end())
+    if (auto it = created.find(desc.object); it != created.end()) {
+      // RFC 0034 §6.3: rows that give one new object different facts are
+      // applied together: their join (an unknown family or extent).
+      const core::ValueDesc &first = *madeBy.at(desc.object);
+      if (state.objects.contains(it->second)) {
+        core::ObjectState &made = state.objects.at(it->second);
+        if (first.family != desc.family)
+          made.family.clear();
+        if (first.extent != desc.extent)
+          made.extent.reset();
+        made.zeroed = made.zeroed && desc.zeroed;
+      }
       return it->second;
+    }
+    madeBy[desc.object] = &desc;
     core::SummaryPath key = core::SummaryPath::result();
     key.index = desc.object;
     core::ObjectId object =
         run.allocationObject(call, pointee, spell(call), key);
-    if (desc.many) {
+    if (desc.many || several.contains(desc.object)) {
       // One object per element (RFC 0015 §5): several runtime objects.
       core::ObjectKey manyKey = run.table().info(object).key;
       manyKey.kind = core::ObjectKind::HeapOld;

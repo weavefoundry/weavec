@@ -80,5 +80,6 @@ decision is a new RFC that supersedes the relevant section.
 | [0031](0031-object-engine.md) | The object engine: a sound heap abstraction behind the engine seam | Implemented |
 | [0032](0032-runtime-enforcement.md) | Runtime enforcement: an object table, guarded facets and a temporal backstop | Implemented |
 | [0033](0033-drop-in-by-default.md) | Drop-in by default: no false stops on code WeaveC was never tuned on | Implemented |
+| [0034](0034-fast-enforcement.md) | Fast enforcement, confirmed errors and a bounded analysis | Implemented |
 
 The [roadmap](../roadmap.md) links each milestone to the RFCs that define it.

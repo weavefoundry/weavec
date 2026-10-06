@@ -204,6 +204,10 @@ public:
     /// the diagnostics are kept, with their certainty, for the caller to
     /// report at its call.
     Collecting,
+    /// RFC 0034 §6.1: the replay of one function along single paths. The
+    /// unit's sites apply as in the authoritative pass, nothing is
+    /// published, and every decision goes to `observer`.
+    Witness,
   };
 
   LedgerAdapter(clang::ASTContext &ctx, const SiteIndex &siteIndex,
@@ -284,6 +288,17 @@ public:
   /// records the broken boundaries and applies the propagation, after the
   /// defaults and before the planner.
   void boundaryDecisions(std::vector<BoundaryDecision> decisions);
+
+  /// RFC 0034 §6.1: a definite error of the authoritative pass that the
+  /// replay did not confirm. Its facet's violation becomes
+  /// `unresolved(unconfirmed)`, and each of its diagnostics at the site a
+  /// warning with the note `not confirmed on a feasible path`.
+  void unconfirm(const clang::Stmt &site, core::Facet facet,
+                 std::string_view id);
+  /// Witness mode: called with every decision of a facet of a site.
+  std::function<void(const clang::Stmt &, core::Facet,
+                     const core::FacetDecision &)>
+      observer;
 
   /// Completes the unit's ledger and plans its checks; see the file
   /// comment. Call once, after the engine is done.

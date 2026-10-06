@@ -20,7 +20,7 @@
 
 #include <string.h>
 
-enum { WeavecRtDispatchMagic = 0x52435657, WeavecRtDispatchVersion = 1 };
+enum { WeavecRtDispatchMagic = 0x52435657, WeavecRtDispatchVersion = 2 };
 
 const struct __weavec_rt_dispatch __weavec_rt_dispatch = {
     WeavecRtDispatchMagic,      WeavecRtDispatchVersion,
@@ -30,10 +30,11 @@ const struct __weavec_rt_dispatch __weavec_rt_dispatch = {
     __weavec_rt_find,           __weavec_rt_object,
     __weavec_rt_string,         __weavec_rt_strlen,
     __weavec_rt_live,           __weavec_rt_release_ok,
-    __weavec_rt_object_range,   __weavec_rt_live_range,
+    __weavec_rt_guard,
     __weavec_rt_stack_enter,    __weavec_rt_stack_leave,
     __weavec_rt_stack_rewind,   __weavec_rt_globals_add,
-    __weavec_rt_report,         __weavec_rt_fatal};
+    __weavec_rt_report,         __weavec_rt_fatal,
+    __weavec_rt_room};
 
 #if defined(__APPLE__)
 
@@ -41,28 +42,28 @@ const struct __weavec_rt_dispatch __weavec_rt_dispatch = {
 #include <pthread.h>
 #include <sched.h>
 
-enum { Unresolved = 0, Resolving = 1, Resolved = 2 };
+enum { Unresolved = 0, Resolving = 1, Resolved = WeavecRtOwnerResolved };
 
-static const struct __weavec_rt_dispatch *owner;
-static unsigned ownerState = Unresolved;
+const struct __weavec_rt_dispatch *weavecRtOwner;
+unsigned weavecRtOwnerState = Unresolved;
 /* The thread finding the owner: what it calls meanwhile (dlsym may
  * allocate) is served here. Not a thread-local variable: Darwin allocates
  * those on first use, through malloc. */
 static pthread_t resolver;
 
-const struct __weavec_rt_dispatch *weavecRtForward(void) {
-  unsigned state = __atomic_load_n(&ownerState, __ATOMIC_ACQUIRE);
+const struct __weavec_rt_dispatch *weavecRtResolveOwner(void) {
+  unsigned state = __atomic_load_n(&weavecRtOwnerState, __ATOMIC_ACQUIRE);
   unsigned expected = Unresolved;
   const struct __weavec_rt_dispatch *found;
-  if (__builtin_expect(state == Resolved, 1))
-    return owner;
+  if (state == Resolved)
+    return weavecRtOwner;
   if (state == Resolving && pthread_equal(resolver, pthread_self()))
     return 0;
-  if (!__atomic_compare_exchange_n(&ownerState, &expected, Resolving, 0,
-                                   __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
-    while (__atomic_load_n(&ownerState, __ATOMIC_ACQUIRE) != Resolved)
+  if (!__atomic_compare_exchange_n(&weavecRtOwnerState, &expected, Resolving,
+                                   0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+    while (__atomic_load_n(&weavecRtOwnerState, __ATOMIC_ACQUIRE) != Resolved)
       sched_yield();
-    return owner;
+    return weavecRtOwner;
   }
   resolver = pthread_self();
   found = (const struct __weavec_rt_dispatch *)dlsym(RTLD_DEFAULT,
@@ -70,18 +71,23 @@ const struct __weavec_rt_dispatch *weavecRtForward(void) {
   if (found != 0 && found != &__weavec_rt_dispatch &&
       found->magic == WeavecRtDispatchMagic &&
       found->version == WeavecRtDispatchVersion && found->initialise()) {
-    /* The owner's arena is fixed once reserved: its descriptor serves this
-     * image's inline guards; its base, published last, opens it. */
-    const uintptr_t base = found->heap->base;
+    /* The owner's arena and shadow are fixed once reserved: its descriptor
+     * serves this image's inline guards. `mask` and `bytes`, published
+     * last, open them; until then every guard asks the runtime, which
+     * forwards. */
     struct __weavec_rt_heap_t copy;
     memcpy(&copy, found->heap, sizeof copy);
-    copy.base = 0;
+    copy.mask = 0;
+    copy.bytes = 0;
     memcpy(&__weavec_rt_heap, &copy, sizeof copy);
-    __atomic_store_n(&__weavec_rt_heap.base, base, __ATOMIC_RELEASE);
-    owner = found;
+    __atomic_store_n(&__weavec_rt_heap.bytes, found->heap->bytes,
+                     __ATOMIC_RELEASE);
+    __atomic_store_n(&__weavec_rt_heap.mask, found->heap->mask,
+                     __ATOMIC_RELEASE);
+    weavecRtOwner = found;
   }
-  __atomic_store_n(&ownerState, Resolved, __ATOMIC_RELEASE);
-  return owner;
+  __atomic_store_n(&weavecRtOwnerState, Resolved, __ATOMIC_RELEASE);
+  return weavecRtOwner;
 }
 
 /* Before this image's own code runs, as far as an initialiser can be. The

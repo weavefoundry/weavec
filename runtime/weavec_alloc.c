@@ -15,6 +15,11 @@
 |*   slot   = offset in the region / class size   (a multiplication)
 |*   word   = metadata[region][slot]              (size << 2 | state)
 |*
+|* RFC 0034, section 2: a shadow byte per 16-byte granule of the regions says
+|* which bytes are a live object's, so that a guard asks one load (see
+|* weavec_rt.h for the encoding). The allocator writes it whenever a slot
+|* word changes.
+|*
 |* A request takes a slot of the smallest class strictly larger than it, so
 |* at least one byte after every object belongs to no object. Slot words,
 |* the free lists and the quarantine queues live in the metadata, never in
@@ -49,8 +54,16 @@
 #define MAP_NORESERVE 0
 #endif
 
-struct __weavec_rt_heap_t __weavec_rt_heap;
-unsigned __weavec_rt_epoch = 1;
+/* The bytes the guards read for every address until the shadow exists (a
+ * guard of a crossing access reads the second). */
+static const unsigned char deadBytes[2] = {WeavecRtShadowDead,
+                                           WeavecRtShadowDead};
+
+/* Until the shadow exists `mask` is 0, so the guards' index into it is
+ * always 0: a dead byte, and the runtime answers. Until the arena exists
+ * `bytes` is 0, so every pointer is outside it. */
+struct __weavec_rt_heap_t __weavec_rt_heap = {
+    0, 0, (uintptr_t)deadBytes, 0, 0, 0, 0, {{0, 0, 0, 0}}};
 
 /*===-- State ---------------------------------------------------------------===*/
 
@@ -97,7 +110,8 @@ static size_t hugeDeadCount;
 static unsigned long long hugeReleases;
 
 static size_t pageBytes;
-static size_t quarantineBudget = (size_t)64 << 20;
+/* RFC 0034, section 5.3. */
+static size_t quarantineBudget = (size_t)16 << 20;
 static size_t quarantineBytes;
 static unsigned sweepCursor;
 
@@ -166,6 +180,55 @@ static inline uintptr_t regionStart(unsigned region) {
   return __weavec_rt_heap.base + ((uintptr_t)region << __weavec_rt_heap.shift);
 }
 
+/*===-- The shadow (RFC 0034, section 2) -----------------------------------===*/
+
+/* Whether a core dump includes [p, p + bytes). The shadow and the arena's
+ * reservations are terabytes a dump would otherwise walk page by page (and,
+ * piped to a crash handler, write out as zeros): a trapping program would
+ * not end. What the arena has committed is dumped. */
+static void dumpable(void *p, size_t bytes, int dump) {
+#if defined(MADV_DONTDUMP)
+  (void)madvise(p, bytes, dump ? MADV_DODUMP : MADV_DONTDUMP);
+#else
+  (void)p;
+  (void)bytes;
+  (void)dump;
+#endif
+}
+
+/* Reserves the shadow of the address space: 2^48 bytes of it where the
+ * system allows, else 2^47, 2^44 (39-bit address spaces are 2^35). Pages no
+ * allocation wrote read 0, which no live arena object's bytes are. */
+static void reserveShadow(void) {
+  static const unsigned Bits[] = {48, 47, 44, 39};
+  unsigned i;
+  for (i = 0; i < sizeof Bits / sizeof Bits[0]; ++i) {
+    const uintptr_t bytes = (uintptr_t)1 << (Bits[i] - 4);
+    void *map = mmap(NULL, bytes + 64, PROT_READ | PROT_WRITE,
+                     MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+    if (map == MAP_FAILED)
+      continue;
+    dumpable(map, bytes + 64, 0);
+    __atomic_store_n(&__weavec_rt_heap.shadow, (uintptr_t)map,
+                     __ATOMIC_RELEASE);
+    /* Published last: until then every guard asks the runtime. */
+    __atomic_store_n(&__weavec_rt_heap.mask, bytes - 1, __ATOMIC_RELEASE);
+    return;
+  }
+}
+
+static inline unsigned char *shadowOf(uintptr_t address) {
+  return weavecRtShadowOf(address);
+}
+
+static void shadowLive(uintptr_t base, size_t size) {
+  weavecRtShadowLive(base, size);
+}
+
+static void shadowDead(uintptr_t base, size_t size) {
+  weavecRtShadowFill(base, size, WeavecRtShadowDead);
+}
+
 static inline uint32_t loadWord(const uint32_t *word) {
   return __atomic_load_n(word, __ATOMIC_RELAXED);
 }
@@ -205,6 +268,7 @@ static int reserve(unsigned shift) {
              MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
   if (map == MAP_FAILED)
     return 0;
+  dumpable(map, total, 0);
   /* Regions start at multiples of their size, so that the slots of a
    * power-of-two class are aligned to it. */
   start = ((uintptr_t)map + align - 1) & ~(align - 1);
@@ -217,20 +281,21 @@ static int reserve(unsigned shift) {
   }
   __weavec_rt_heap.shift = shift;
   __weavec_rt_heap.meta = start + data;
-  __weavec_rt_heap.bytes = data;
-  /* Published last: until then every pointer is outside the arena. */
   __atomic_store_n(&__weavec_rt_heap.base, start, __ATOMIC_RELEASE);
+  /* Published last: until then every pointer is outside the arena. */
+  __atomic_store_n(&__weavec_rt_heap.bytes, data, __ATOMIC_RELEASE);
   return 1;
 }
 
 int weavecRtInitialise(void) {
   int ok = 1;
-  if (__atomic_load_n(&__weavec_rt_heap.base, __ATOMIC_ACQUIRE) != 0)
+  if (__atomic_load_n(&__weavec_rt_heap.bytes, __ATOMIC_ACQUIRE) != 0)
     return 1;
   weavecRtLock(&initLock);
-  if (__weavec_rt_heap.base == 0) {
+  if (__weavec_rt_heap.bytes == 0) {
     const long page = sysconf(_SC_PAGESIZE);
     pageBytes = page > 0 ? (size_t)page : 4096;
+    reserveShadow();
     ok = reserve(32) || reserve(30);
     if (ok) {
 #if defined(__APPLE__)
@@ -263,6 +328,7 @@ static int commit(uintptr_t start, uintptr_t *committed, uintptr_t end,
   if (mprotect((void *)(start + *committed), target - *committed,
                PROT_READ | PROT_WRITE) != 0)
     return 0;
+  dumpable((void *)(start + *committed), target - *committed, 1);
   *committed = target;
   return 1;
 }
@@ -366,7 +432,7 @@ static inline int overBudget(void) {
 }
 
 /* Gives the whole pages inside a dead slot back to the system. */
-static void decommit(uintptr_t base, size_t bytes) {
+static void giveBack(uintptr_t base, size_t bytes) {
   const uintptr_t first = (base + pageBytes - 1) & ~(uintptr_t)(pageBytes - 1);
   const uintptr_t last = (base + bytes) & ~(uintptr_t)(pageBytes - 1);
   if (last <= first)
@@ -378,12 +444,21 @@ static void decommit(uintptr_t base, size_t bytes) {
 #endif
 }
 
+/* The pages of a dead slot, and the whole pages of its shadow, which reads
+ * 0 already (`retire` cleared it). */
+static void decommit(uintptr_t base, size_t bytes) {
+  giveBack(base, bytes);
+  if (__weavec_rt_heap.mask != 0)
+    giveBack((uintptr_t)shadowOf(base), bytes >> 4);
+}
+
 /* Makes the live slot `ref` dead and queues it. */
 static void retire(SlotRef ref) {
   const struct __weavec_rt_class *entry = &__weavec_rt_heap.table[ref.region];
   ClassState *state = &classState[ref.region];
   uint32_t *words = slotWords(ref.region);
   /* Before the slot is queued: once it is, another thread may recycle it. */
+  shadowDead(ref.base, loadWord(&words[ref.slot]) >> 2);
   if (entry->size >= WeavecRtDecommitBytes)
     decommit(ref.base, entry->size);
   weavecRtLock(&state->lock);
@@ -486,7 +561,7 @@ static void *hugeAlloc(size_t size, size_t alignment) {
   hugeBlocks[at].mapBytes = mapBytes;
   hugeBlocks[at].dead = 0;
   ++hugeCount;
-  weavecRtBumpEpoch();
+  shadowLive(base, size);
   if (map < __atomic_load_n(&hugeLow, __ATOMIC_RELAXED))
     __atomic_store_n(&hugeLow, map, __ATOMIC_RELAXED);
   if (map + mapBytes > __atomic_load_n(&hugeHigh, __ATOMIC_RELAXED))
@@ -531,7 +606,7 @@ static int hugeFree(uintptr_t address) {
       hugeBlocks[index].dead == 0) {
     HugeBlock *block = &hugeBlocks[index];
     block->dead = ++hugeReleases;
-    weavecRtBumpEpoch();
+    weavecRtShadowFill(block->base, block->size, WeavecRtShadowHugeDead);
     /* The memory goes back; the address range stays this block's. */
     (void)mmap((void *)block->map, block->mapBytes, PROT_NONE,
                MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED | MAP_NORESERVE, -1, 0);
@@ -553,8 +628,10 @@ static int hugeFree(uintptr_t address) {
     }
   }
   weavecRtUnlock(&hugeLock);
-  if (unmap)
+  if (unmap) {
+    weavecRtShadowFill(gone.base, gone.size, WeavecRtShadowDead);
     (void)munmap((void *)gone.map, gone.mapBytes);
+  }
   return ok;
 }
 
@@ -616,10 +693,13 @@ static void *nextRealloc(void *p, size_t size) {
 
 static size_t nextSize(const void *p) {
   size_t (*usable)(void *) = (size_t (*)(void *))nextSymbol("malloc_usable_size");
-  /* The runtime's own definition is the first in lookup order when it
-   * interposes, and it would ask again. */
+  /* With libweavec_alloc.a linked, the runtime's own definition may be the
+   * first in lookup order, and it would ask again; without it, the first is
+   * the C library's, which answers. */
   extern size_t malloc_usable_size(void *) __attribute__((weak));
-  if (usable == NULL || usable == malloc_usable_size)
+  extern const char __weavec_alloc_linked __attribute__((weak));
+  if (usable == NULL ||
+      (&__weavec_alloc_linked != NULL && usable == malloc_usable_size))
     return 0;
   return usable((void *)(uintptr_t)p);
 }
@@ -657,6 +737,7 @@ void *__weavec_rt_alloc(size_t size, size_t alignment) {
     if (block != NULL) {
       if (recycled && size != 0)
         memset(block, 0, size);
+      shadowLive((uintptr_t)block, size);
       return block;
     }
   }
@@ -742,6 +823,9 @@ void *__weavec_rt_realloc(void *p, size_t size) {
       /* The block stays; bytes it gains are zero (section 2.3). */
       if (size > old)
         memset((char *)p + old, 0, size - old);
+      if (size < old)
+        shadowDead(address, old);
+      shadowLive(address, size);
       storeWord(word, ((uint32_t)size << 2) | WeavecRtLive);
       return p;
     }
@@ -774,6 +858,22 @@ size_t __weavec_rt_size(const void *p) {
       return 0;
   }
   return nextSize(p);
+}
+
+void weavecRtShadowZero(unsigned char *start, size_t bytes) {
+  const uintptr_t first = ((uintptr_t)start + pageBytes - 1) &
+                          ~(uintptr_t)(pageBytes - 1);
+  const uintptr_t last = ((uintptr_t)start + bytes) & ~(uintptr_t)(pageBytes - 1);
+  if (last <= first ||
+      mmap((void *)first, last - first, PROT_READ | PROT_WRITE,
+           MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED | MAP_NORESERVE, -1,
+           0) == MAP_FAILED) {
+    memset(start, 0, bytes);
+    return;
+  }
+  dumpable((void *)first, last - first, 0);
+  memset(start, 0, first - (uintptr_t)start);
+  memset((void *)last, 0, (uintptr_t)start + bytes - last);
 }
 
 /*===-- Lookup (section 3) --------------------------------------------------===*/
@@ -819,11 +919,6 @@ struct __weavec_rt_found __weavec_rt_find(const void *p) {
     }
   }
   return weavecRtFindStackOrGlobal(p);
-}
-
-int weavecRtMayHoldHuge(uintptr_t low, uintptr_t high) {
-  return low < __atomic_load_n(&hugeHigh, __ATOMIC_RELAXED) &&
-         high > __atomic_load_n(&hugeLow, __ATOMIC_RELAXED);
 }
 
 /*===-- fork ----------------------------------------------------------------===*/
