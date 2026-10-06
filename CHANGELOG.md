@@ -1,6 +1,15 @@
 # CHANGELOG
 
 
+## v0.15.0 (2026-10-06)
+
+### Features
+
+- Guard through shadow memory and confirm errors
+  ([#45](https://github.com/weavefoundry/weavec/pull/45),
+  [`ee50157`](https://github.com/weavefoundry/weavec/commit/ee50157d408ffd6b42c251bd244b194ab16ea9ee))
+
+
 ## v0.14.0 (2026-10-05)
 
 ### Documentation
